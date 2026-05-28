@@ -9,23 +9,22 @@ data class PolicyInput(
 )
 
 data class PolicyDecision(
-    val canProcess: Boolean,
+    val canProcessNow: Boolean,
+    val canRunLocalModel: Boolean,
+    val canManualReadNow: Boolean,
 )
 
 object PolicyEngine {
     fun decide(input: PolicyInput): PolicyDecision {
-        if (input.batterySaverEnabled) {
-            return PolicyDecision(canProcess = false)
-        }
+        val canRunLocalModel = input.isCharging || input.batteryPercent > 70
+        val canScheduleNow = input.isCharging || input.batteryPercent > 30
+        val canManualReadNow = input.isManualRead && !input.batterySaverEnabled
+        val canProcessNow = canScheduleNow || canManualReadNow
 
-        if (input.requiresLocalModel) {
-            return PolicyDecision(canProcess = input.isCharging || input.batteryPercent > 70)
-        }
-
-        if (input.batteryPercent <= 30 && !input.isCharging) {
-            return PolicyDecision(canProcess = false)
-        }
-
-        return PolicyDecision(canProcess = true)
+        return PolicyDecision(
+            canProcessNow = canProcessNow,
+            canRunLocalModel = canRunLocalModel,
+            canManualReadNow = canManualReadNow,
+        )
     }
 }
