@@ -202,28 +202,6 @@ fi
 # Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 DEFAULT_JVM_OPTS='-Dfile.encoding=UTF-8 "-Xmx64m" "-Xms64m"'
 
-# Bootstrap plugin/dependency repositories for minimal projects that only declare plugins in build files.
-REPO_BOOTSTRAP_INIT="${TMPDIR:-/tmp}/gradle-init-$$.init.gradle.kts"
-cat >"$REPO_BOOTSTRAP_INIT" <<'EOF'
-settingsEvaluated {
-    pluginManagement {
-        repositories {
-            google()
-            mavenCentral()
-            gradlePluginPortal()
-        }
-    }
-    dependencyResolutionManagement {
-        repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-        repositories {
-            google()
-            mavenCentral()
-        }
-    }
-}
-EOF
-trap 'rm -f "$REPO_BOOTSTRAP_INIT"' EXIT
-
 # Collect all arguments for the java command:
 #   * DEFAULT_JVM_OPTS, JAVA_OPTS, JAVA_OPTS, and optsEnvironmentVar are not allowed to contain shell fragments,
 #     and any embedded shellness will be escaped.
@@ -234,7 +212,6 @@ set -- \
         "-Dorg.gradle.appname=$APP_BASE_NAME" \
         -classpath "$CLASSPATH" \
         org.gradle.wrapper.GradleWrapperMain \
-        -I "$REPO_BOOTSTRAP_INIT" \
         "$@"
 
 # Stop when "xargs" is not available.
