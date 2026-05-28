@@ -29,4 +29,5 @@ android {
 dependencies {
     compileOnly("androidx.room:room-runtime:2.6.1")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 }
