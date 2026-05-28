@@ -14,7 +14,7 @@ data class PolicyDecision(
 
 object PolicyEngine {
     fun decide(input: PolicyInput): PolicyDecision {
-        if (input.isManualRead && input.batterySaverEnabled) {
+        if (input.batterySaverEnabled) {
             return PolicyDecision(canProcess = false)
         }
 
