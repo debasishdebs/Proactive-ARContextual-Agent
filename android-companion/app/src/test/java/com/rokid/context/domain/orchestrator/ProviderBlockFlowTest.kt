@@ -69,6 +69,25 @@ class ProviderBlockFlowTest {
         assertEquals(ProviderBlockState.Healthy, orchestrator.providerBlockState)
     }
 
+    @Test
+    fun nonSystemQueuesAreRejectedOnSystemSubmissionPathWhileBlocked() {
+        val orchestrator = OrchestratorService()
+        orchestrator.onProviderBlocked(emptyList())
+
+        val readJob = job(QueuePriority.READ, "read")
+        val writeJob = job(QueuePriority.EXPLICIT_WRITE, "write")
+
+        assertEquals(
+            OrchestratorService.SubmitResult.Rejected(ProviderBlockState.REASON_PROVIDER_BLOCKED),
+            orchestrator.submitSystemRequest(readJob),
+        )
+        assertEquals(
+            OrchestratorService.SubmitResult.Rejected(ProviderBlockState.REASON_PROVIDER_BLOCKED),
+            orchestrator.submitSystemRequest(writeJob),
+        )
+        assertTrue(orchestrator.onProviderRecovered().isEmpty())
+    }
+
     private fun job(queuePriority: QueuePriority, payload: String): JobEnvelope =
         JobEnvelope(
             queue = queuePriority,
