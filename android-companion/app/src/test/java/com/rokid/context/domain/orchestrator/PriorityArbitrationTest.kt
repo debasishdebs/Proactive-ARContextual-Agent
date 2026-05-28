@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Test
 import java.security.MessageDigest
+import java.util.Locale
 
 class PriorityArbitrationTest {
 
@@ -50,9 +51,23 @@ class PriorityArbitrationTest {
         val keyA2 = JobEnvelope.idempotencyKey(queue, payload, stillBucketA)
         val keyB = JobEnvelope.idempotencyKey(queue, payload, inBucketB)
 
-        assertEquals("${queue.name.lowercase()}:$expectedHash:$expectedBucketA", keyA1)
+        assertEquals("summarizer:$expectedHash:$expectedBucketA", keyA1)
         assertEquals(keyA1, keyA2)
         assertNotEquals(keyA1, keyB)
+    }
+
+    @Test
+    fun idempotencyKeyQueueCanonicalizationIsLocaleStable() {
+        val queue = QueuePriority.PRIORITY_REPROCESS
+        val payload = "{\"frameId\":42,\"intent\":\"summary\"}"
+        val timestamp = 1704067200000L
+        val expectedHash = sha256Hex(payload)
+        val expectedBucket = timestamp / (60 * 60 * 1000)
+
+        withDefaultLocale(Locale("tr", "TR")) {
+            val key = JobEnvelope.idempotencyKey(queue, payload, timestamp)
+            assertEquals("priority_reprocess:$expectedHash:$expectedBucket", key)
+        }
     }
 
     @Test
@@ -98,5 +113,15 @@ class PriorityArbitrationTest {
     private fun sha256Hex(value: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private inline fun withDefaultLocale(locale: Locale, block: () -> Unit) {
+        val original = Locale.getDefault()
+        try {
+            Locale.setDefault(locale)
+            block()
+        } finally {
+            Locale.setDefault(original)
+        }
     }
 }
