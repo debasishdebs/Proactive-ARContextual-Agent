@@ -3,8 +3,6 @@ package com.rokid.context.model
 import com.rokid.context.model.lifecycle.DownloadState
 import com.rokid.context.model.lifecycle.ModelDownloadManager
 import com.rokid.context.model.lifecycle.ModelSlotManager
-import com.rokid.context.model.provider.OllamaProvider
-import com.rokid.context.model.provider.OpenAiCompatProvider
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -33,9 +31,16 @@ class ModelSlotManagerTest {
 
     @Test
     fun fallbackToCloudWhenLocalUnhealthy() = runBlocking {
+        val cloudProvider = object : ModelProvider {
+            override suspend fun generate(prompt: String): String = "cloud:$prompt"
+        }
+        val localProvider = object : ModelProvider {
+            override suspend fun generate(prompt: String): String = "local:$prompt"
+        }
+
         val gateway = ModelGateway(
-            cloudProvider = OpenAiCompatProvider(),
-            localProvider = OllamaProvider(),
+            cloudProvider = cloudProvider,
+            localProvider = localProvider,
         )
 
         val result = gateway.generate(prompt = "hello", preferLocal = true, localHealthy = false)
