@@ -3,42 +3,61 @@ package com.rokid.context.domain.orchestrator
 import com.rokid.context.domain.queue.JobEnvelope
 import com.rokid.context.domain.queue.QueuePriority
 
-class OrchestratorService {
-    var providerBlockState: ProviderBlockState = ProviderBlockState.Healthy
-        private set
+class OrchestratorService(
+    private val nowEpochMillis: () -> Long = { System.currentTimeMillis() },
+) {
+    private val stateLock = Any()
+    private var currentProviderBlockState: ProviderBlockState = ProviderBlockState.Healthy
 
-    private val retriggerQueue = mutableListOf<JobEnvelope>()
+    val providerBlockState: ProviderBlockState
+        get() = synchronized(stateLock) { currentProviderBlockState }
+
+    private val retriggerQueueByKey = linkedMapOf<String, JobEnvelope>()
 
     fun onProviderBlocked(pending: List<JobEnvelope>): List<CanceledJob> {
-        providerBlockState = ProviderBlockState.Blocked
-        retriggerQueue += pending.filter(::isSystemQueue)
-        return pending.map { CanceledJob(job = it, reason = ProviderBlockState.REASON_PROVIDER_BLOCKED) }
+        synchronized(stateLock) {
+            currentProviderBlockState = ProviderBlockState.Blocked
+            enqueueSystemJobsForRetrigger(pending)
+            return pending.map { CanceledJob(job = it, reason = ProviderBlockState.REASON_PROVIDER_BLOCKED) }
+        }
     }
 
-    fun submitUserRequest(job: JobEnvelope): SubmitResult =
-        if (providerBlockState == ProviderBlockState.Blocked) {
-            SubmitResult.Rejected(ProviderBlockState.REASON_PROVIDER_BLOCKED)
-        } else {
-            SubmitResult.Accepted
-        }
-
-    fun submitSystemRequest(job: JobEnvelope): SubmitResult =
-        if (providerBlockState == ProviderBlockState.Blocked) {
-            if (isSystemQueue(job)) {
-                retriggerQueue += job
-                SubmitResult.Deferred
-            } else {
+    fun submitUserRequest(@Suppress("UNUSED_PARAMETER") job: JobEnvelope): SubmitResult {
+        synchronized(stateLock) {
+            return if (currentProviderBlockState == ProviderBlockState.Blocked) {
                 SubmitResult.Rejected(ProviderBlockState.REASON_PROVIDER_BLOCKED)
+            } else {
+                SubmitResult.Accepted
             }
-        } else {
-            SubmitResult.Accepted
         }
+    }
+
+    fun submitSystemRequest(job: JobEnvelope): SubmitResult {
+        synchronized(stateLock) {
+            return if (currentProviderBlockState == ProviderBlockState.Blocked) {
+                if (isSystemQueue(job)) {
+                    enqueueSystemJobsForRetrigger(listOf(job))
+                    SubmitResult.Deferred
+                } else {
+                    SubmitResult.Rejected(ProviderBlockState.REASON_PROVIDER_BLOCKED)
+                }
+            } else {
+                SubmitResult.Accepted
+            }
+        }
+    }
 
     fun onProviderRecovered(): List<JobEnvelope> {
-        providerBlockState = ProviderBlockState.Healthy
-        val jobsToRetrigger = retriggerQueue.toList()
-        retriggerQueue.clear()
-        return jobsToRetrigger
+        synchronized(stateLock) {
+            currentProviderBlockState = ProviderBlockState.Healthy
+            val replayWindowStartEpochMillis = nowEpochMillis() - RETRIGGER_WARM_START_WINDOW_MILLIS
+            val jobsToRetrigger =
+                retriggerQueueByKey.values.filter {
+                    it.enqueuedAtEpochMillis >= replayWindowStartEpochMillis
+                }
+            retriggerQueueByKey.clear()
+            return jobsToRetrigger
+        }
     }
 
     private fun isSystemQueue(job: JobEnvelope): Boolean = when (job.queue) {
@@ -53,6 +72,13 @@ class OrchestratorService {
         -> true
     }
 
+    private fun enqueueSystemJobsForRetrigger(jobs: List<JobEnvelope>) {
+        jobs
+            .asSequence()
+            .filter(::isSystemQueue)
+            .forEach { retriggerQueueByKey.putIfAbsent(it.idempotencyKey, it) }
+    }
+
     data class CanceledJob(
         val job: JobEnvelope,
         val reason: String,
@@ -64,5 +90,9 @@ class OrchestratorService {
         data object Deferred : SubmitResult()
 
         data class Rejected(val reason: String) : SubmitResult()
+    }
+
+    companion object {
+        private const val RETRIGGER_WARM_START_WINDOW_MILLIS = 10 * 60 * 1000L
     }
 }
