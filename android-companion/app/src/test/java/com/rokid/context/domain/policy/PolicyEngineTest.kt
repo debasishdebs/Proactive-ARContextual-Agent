@@ -95,4 +95,34 @@ class PolicyEngineTest {
 
         assertFalse(decision.canProcess)
     }
+
+    @Test
+    fun batterySaverBlocksScheduledProcessing() {
+        val decision = PolicyEngine.decide(
+            PolicyInput(
+                batteryPercent = 95,
+                isCharging = false,
+                batterySaverEnabled = true,
+                requiresLocalModel = false,
+                isManualRead = false,
+            )
+        )
+
+        assertFalse(decision.canProcess)
+    }
+
+    @Test
+    fun batterySaverBlocksLocalModelProcessingEvenWhenCharging() {
+        val decision = PolicyEngine.decide(
+            PolicyInput(
+                batteryPercent = 10,
+                isCharging = true,
+                batterySaverEnabled = true,
+                requiresLocalModel = true,
+                isManualRead = false,
+            )
+        )
+
+        assertFalse(decision.canProcess)
+    }
 }
