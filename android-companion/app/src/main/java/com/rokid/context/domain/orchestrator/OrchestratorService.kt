@@ -24,8 +24,12 @@ class OrchestratorService {
 
     fun submitSystemRequest(job: JobEnvelope): SubmitResult =
         if (providerBlockState == ProviderBlockState.Blocked) {
-            retriggerQueue += job
-            SubmitResult.Deferred
+            if (isSystemQueue(job)) {
+                retriggerQueue += job
+                SubmitResult.Deferred
+            } else {
+                SubmitResult.Rejected(ProviderBlockState.REASON_PROVIDER_BLOCKED)
+            }
         } else {
             SubmitResult.Accepted
         }
