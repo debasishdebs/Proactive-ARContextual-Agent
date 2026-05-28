@@ -15,9 +15,10 @@ data class JobEnvelope(
         private const val BUCKET_MILLIS = 60 * 60 * 1000L
 
         fun idempotencyKey(queue: String, payload: String, enqueuedAtEpochMillis: Long): String {
+            val canonicalQueue = queue.trim().lowercase()
             val payloadHash = sha256Hex(payload)
             val bucket = enqueuedAtEpochMillis / BUCKET_MILLIS
-            return "$queue:$payloadHash:$bucket"
+            return "$canonicalQueue:$payloadHash:$bucket"
         }
 
         private fun sha256Hex(payload: String): String {

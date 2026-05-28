@@ -11,9 +11,13 @@ enum class QueuePriority(private val order: Int) {
 
     companion object {
         fun arbitrate(vararg priorities: QueuePriority): List<QueuePriority> =
-            priorities.sortedBy { it.order }
+            priorities
+                .distinct()
+                .sortedBy { it.order }
 
         fun arbitrate(priorities: Iterable<QueuePriority>): List<QueuePriority> =
-            priorities.sortedBy { it.order }
+            priorities
+                .distinct()
+                .sortedBy { it.order }
     }
 }
