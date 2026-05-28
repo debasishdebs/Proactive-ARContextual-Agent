@@ -20,8 +20,23 @@ class ProviderBlockFlowTest {
 
         val canceled = orchestrator.onProviderBlocked(pending)
 
-        assertEquals(pending.size, canceled.size)
-        assertTrue(canceled.all { it.reason == ProviderBlockState.REASON_PROVIDER_BLOCKED })
+        assertEquals(
+            listOf(
+                OrchestratorService.CanceledJob(
+                    job = pending[0],
+                    reason = ProviderBlockState.REASON_PROVIDER_BLOCKED,
+                ),
+                OrchestratorService.CanceledJob(
+                    job = pending[1],
+                    reason = ProviderBlockState.REASON_PROVIDER_BLOCKED,
+                ),
+                OrchestratorService.CanceledJob(
+                    job = pending[2],
+                    reason = ProviderBlockState.REASON_PROVIDER_BLOCKED,
+                ),
+            ),
+            canceled,
+        )
         assertEquals(ProviderBlockState.Blocked, orchestrator.providerBlockState)
     }
 
@@ -88,10 +103,73 @@ class ProviderBlockFlowTest {
         assertTrue(orchestrator.onProviderRecovered().isEmpty())
     }
 
-    private fun job(queuePriority: QueuePriority, payload: String): JobEnvelope =
+    @Test
+    fun repeatedProviderBlockedEventsDoNotAccumulateDuplicateSystemRetriggers() {
+        val orchestrator = OrchestratorService()
+        val summarizer = job(QueuePriority.SUMMARIZER, "summary")
+        val retry = job(QueuePriority.RETRY, "retry")
+        val pending = listOf(summarizer, retry, job(QueuePriority.READ, "user read"))
+
+        orchestrator.onProviderBlocked(pending)
+        orchestrator.onProviderBlocked(pending)
+        assertEquals(OrchestratorService.SubmitResult.Deferred, orchestrator.submitSystemRequest(summarizer))
+        assertEquals(OrchestratorService.SubmitResult.Deferred, orchestrator.submitSystemRequest(retry))
+
+        val retrigger = orchestrator.onProviderRecovered()
+
+        assertEquals(listOf(summarizer, retry), retrigger)
+    }
+
+    @Test
+    fun repeatedBlockRecoveryCyclesReplayEachSystemJobOnlyOncePerCycle() {
+        val orchestrator = OrchestratorService()
+        val retry = job(QueuePriority.RETRY, "retry")
+        val summarize = job(QueuePriority.SUMMARIZER, "summary")
+
+        orchestrator.onProviderBlocked(listOf(retry, retry))
+        assertEquals(listOf(retry), orchestrator.onProviderRecovered())
+        assertEquals(ProviderBlockState.Healthy, orchestrator.providerBlockState)
+
+        orchestrator.onProviderBlocked(listOf(retry, summarize, summarize))
+        assertEquals(listOf(retry, summarize), orchestrator.onProviderRecovered())
+    }
+
+    @Test
+    fun recoveryRetriggersOnlyJobsInsideTenMinuteWarmStartWindow() {
+        val now = 1_704_067_200_000L
+        val orchestrator = OrchestratorService(nowEpochMillis = { now })
+        val staleSystemJob = job(
+            QueuePriority.SUMMARIZER,
+            "stale",
+            enqueuedAtEpochMillis = now - 601_000L,
+        )
+        val freshSystemJob = job(
+            QueuePriority.RETRY,
+            "fresh",
+            enqueuedAtEpochMillis = now - 599_000L,
+        )
+
+        orchestrator.onProviderBlocked(
+            listOf(
+                staleSystemJob,
+                freshSystemJob,
+                job(QueuePriority.READ, "user"),
+            ),
+        )
+
+        val retrigger = orchestrator.onProviderRecovered()
+
+        assertEquals(listOf(freshSystemJob), retrigger)
+    }
+
+    private fun job(
+        queuePriority: QueuePriority,
+        payload: String,
+        enqueuedAtEpochMillis: Long = System.currentTimeMillis(),
+    ): JobEnvelope =
         JobEnvelope(
             queue = queuePriority,
             payload = payload,
-            enqueuedAtEpochMillis = 1_704_067_200_000,
+            enqueuedAtEpochMillis = enqueuedAtEpochMillis,
         )
 }
