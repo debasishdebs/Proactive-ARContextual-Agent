@@ -12,6 +12,10 @@ This spec covers:
 - Processing/defer rules from battery, charging, network, battery saver, and pressure signals.
 - Concurrency model across ingest, summarize, read, and write flows.
 - Failure handling, retry behavior, and user-visible responses.
+- Standard LLM interface and provider adapter contracts.
+- Companion app main/config/detail screen requirements.
+- Activity-aware capture policy inputs for frame rule decisions.
+- Memory-tier defaults, promotion, and future RAG direction.
 - Testing strategy for MVP readiness.
 
 This spec does not cover full state-machine architecture yet. Migration to explicit state machine (Option 3) is intentionally deferred by one week until after MVP completion and token refresh.
@@ -35,6 +39,7 @@ Rationale:
 - summarizerWorker: FIFO consumer from raw_frame_store; writes normalized summaries.
 - summary_store: read-optimized context store used by readContext queries.
 - deferred/retry queue: FIFO queue for policy/pressure/network deferrals and retriable failures.
+- modelGateway: backend-agnostic LLM interface with cloud/local adapters.
 
 ### 3.2 Logical queues
 - frameIngest queue: persists raw frames + metadata.
@@ -114,9 +119,96 @@ Auto-pause policy:
 - Optional local fallback if configured and policy-allowed.
 - Drop/expire at 24h TTL.
 
-## 6. Failure Taxonomy And Handling
+## 6. LLM Interface Contract
 
-### 6.1 Failure classes
+### 6.1 Core contract
+- Use a custom backend-agnostic interface aligned to [reference/language_models.py](/Users/<user>/Desktop/rokid/proactive-context-agent/reference/language_models.py).
+- Support cloud and local providers through a shared request/response contract.
+- Preserve a messages-capable shape for chat and future tool extensions.
+
+### 6.2 Provider support (MVP)
+- Cloud adapter: OpenAI-compatible HTTP adapter with configurable `baseUrl`, `apiKey`, `model`.
+- Local adapter: Ollama-first plugin for easiest Kotlin integration and wide model availability.
+- Local abstraction remains model-agnostic so future adapters can include HF or llama.cpp without changing orchestration interfaces.
+
+### 6.3 Routing behavior
+- Policy-driven routing uses existing battery/charging/network gates.
+- Local fallback attempted during retry only if enabled in settings and policy-allowed.
+- Return standardized backend metadata for observability and debugging.
+
+## 7. Companion App UX Requirements
+
+### 7.1 Home/Main screen
+- Home screen includes cards for key categories:
+  - current mode/status
+  - queue health
+  - memory overview
+  - operational signals (sync/policy/defer states)
+- Each card has a dedicated icon.
+- Tapping a card opens a detailed category screen.
+
+### 7.2 Detail screens
+- Status detail: active policy gates, battery/saver/network state, current processing mode.
+- Queue detail: per-queue depth, oldest item age, retry/backoff state, TTL risk.
+- Memory detail: short/medium/long counts, recent promotions, summary freshness.
+- Diagnostics detail: failures by reason code, local fallback usage, connection errors.
+
+### 7.3 LLM config screen
+User-editable MVP settings:
+- provider type
+- model
+- endpoint/base URL
+- API key
+- timeout
+- local fallback toggle
+
+Security constraints:
+- API keys/secrets must be masked in UI.
+- Sensitive values must be stored in secure encrypted storage (Android Keystore-backed path in implementation).
+
+### 7.4 Glasses interaction navigation
+- Reuse Rokid D-pad navigation pattern from `rokid-upi-payment-mvp` in MVP without redesign.
+- Any navigation optimization is deferred post-MVP.
+
+## 8. Activity-Aware Capture Inputs
+
+### 8.1 Signal priority
+- Primary activity signal: Android Activity Recognition.
+- Secondary enrichment/fallback: Health Connect.
+
+### 8.2 Activity-to-capture mapping (MVP defaults)
+- STILL: slow capture interval.
+- WALKING: medium interval.
+- RUNNING and IN_VEHICLE: faster burst mode.
+
+All activity-based behavior remains gated by battery and dedup policies.
+
+## 9. Summarization And Memory Model
+
+### 9.1 Summarization strategy
+- Two-stage summarization:
+  - Stage A: per-frame/per-chunk factual extraction from raw_frame_store.
+  - Stage B: periodic consolidation into durable memory entries.
+
+### 9.2 Memory tiers
+- short_term
+- medium_term
+- long_term
+- episodic_events tags across tiers
+
+### 9.3 Retention defaults
+- Configurable from mobile settings.
+- Default values:
+  - short_term: 24h
+  - medium_term: 7d
+  - long_term: 30d
+
+### 9.4 Promotion behavior
+- long_term promotion is automatic based on confidence/importance scoring (not manual-only).
+
+## 10. Failure Taxonomy And Handling
+
+### 10.1 Failure classes
 - NetworkUnavailable: internet unavailable/poor for cloud path.
 - BatterySaverBlocked: Android Battery Saver blocked immediate work.
 - PolicyDeferred: battery/charging gate deferred work.
@@ -126,13 +218,13 @@ Auto-pause policy:
 - ConnectionError: transport/link failure between glasses and phone.
 - GlassPolicyBlocked: frame blocked on glasses side (battery/dedup/capture policy).
 
-### 6.2 Handling rules
+### 10.2 Handling rules
 - Retriable: NetworkUnavailable, ConnectionError, PolicyDeferred, PressureDeferred.
 - Not retriable: GlassPolicyBlocked (counted as expected policy drop).
 - JobStuck (readContext): cancel and continue queue.
 - TTLExpired: terminate request with expiry status.
 
-### 6.3 User-visible responses
+### 10.3 User-visible responses
 - Queue acknowledged: "I got it. You're in queue; I'll respond shortly."
 - Battery Saver block: "Power-saving mode is on. I queued this and will process it when power conditions improve."
 - Local fallback active: "Network is limited, using on-device processing."
@@ -143,7 +235,7 @@ Auto-pause policy:
 - GlassPolicyBlocked (companion/debug): "Frame skipped by glasses policy (battery/dedup/capture rule)."
 - GlassPolicyBlocked (voice-safe status): "I skipped a frame to protect battery and avoid duplicates."
 
-## 7. Observability
+## 11. Observability
 Emit reason-coded events for all defer/cancel/drop transitions.
 
 Minimum metrics:
@@ -154,42 +246,53 @@ Minimum metrics:
 - Local fallback usage count.
 - GlassPolicyBlocked count.
 - ConnectionError frequency and reconnect latency.
+- Activity-state distribution driving capture-policy transitions.
+- Auto-promotion counts to long_term.
 
-## 8. Testing Plan
+## 12. Testing Plan
 
-### 8.1 Unit tests
+### 12.1 Unit tests
 - Battery/charging thresholds and saver gating.
 - Cloud/local/defer routing decisions.
 - Dedup admission acceptance/rejection.
+- Activity-mapping correctness for STILL/WALKING/RUNNING/IN_VEHICLE.
+- Long-term auto-promotion scoring threshold behavior.
 
-### 8.2 Queue behavior tests
+### 12.2 Queue behavior tests
 - FIFO ordering for readContext and deferred queue.
 - 15-minute stuck watchdog cancel + next-item progression.
 - 24h TTL deterministic eviction.
 
-### 8.3 Concurrency and integrity tests
+### 12.3 Concurrency and integrity tests
 - frameIngest + writeContext concurrent atomic writes.
 - summarizerWorker FIFO processing while ingest continues.
 - readContext snapshot stability during concurrent summary writes.
 
-### 8.4 Failure-path tests
+### 12.4 Failure-path tests
 - Network unavailable -> backoff -> local fallback (if enabled) -> queued otherwise.
 - Battery Saver defer message and queued behavior.
 - ConnectionError reconnect + eventual flush.
 - GlassPolicyBlocked classified as policy drop, no retries.
 
-### 8.5 Pressure tests
+### 12.5 Pressure tests
 - CPU/thermal/low-battery pressure triggers auto-defer to TTL queue.
 - Resume processing when pressure clears.
 
-## 9. Implementation Boundary For Next Phase
+## 13. Future RAG Direction
+- Future retrieval will use hybrid strategy:
+  - keyword retrieval
+  - vector retrieval
+  - recency boost
+- This remains explicitly post-MVP and should reuse current memory tiers and summary_store outputs.
+
+## 14. Implementation Boundary For Next Phase
 The next phase should convert this design into an implementation plan without expanding scope.
 
 Explicitly out of scope for MVP implementation plan:
 - Full finite-state machine rewrite.
-- Advanced ranking/RAG beyond current summary_store read path.
-- Non-essential UX polish beyond required user-visible status messages.
+- Full production RAG stack (beyond preparing memory outputs).
+- Post-MVP UX polish beyond required operational/detail/config screens.
 
-## 10. Deferred Follow-up
+## 15. Deferred Follow-up
 Post-MVP (target start: June 4, 2026):
 - Migrate orchestration core from Option 1 to Option 3 (explicit state machine) while preserving queue contracts and policy semantics defined in this spec.
