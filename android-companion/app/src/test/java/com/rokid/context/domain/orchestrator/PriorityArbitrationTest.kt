@@ -37,8 +37,7 @@ class PriorityArbitrationTest {
 
     @Test
     fun idempotencyKeyUsesQueuePayloadHashAndSixtyMinuteBucket() {
-        val queue = "summarizer"
-        val alternateQueueFormat = "  SUMMARIZER  "
+        val queue = QueuePriority.SUMMARIZER
         val payload = "{\"frameId\":42,\"intent\":\"summary\"}"
         val inBucketA = 1704067200000L
         val stillBucketA = inBucketA + 59 * 60 * 1000
@@ -50,13 +49,50 @@ class PriorityArbitrationTest {
         val keyA1 = JobEnvelope.idempotencyKey(queue, payload, inBucketA)
         val keyA2 = JobEnvelope.idempotencyKey(queue, payload, stillBucketA)
         val keyB = JobEnvelope.idempotencyKey(queue, payload, inBucketB)
-        val keyWithAlternateQueueFormat =
-            JobEnvelope.idempotencyKey(alternateQueueFormat, payload, inBucketA)
 
-        assertEquals("$queue:$expectedHash:$expectedBucketA", keyA1)
+        assertEquals("${queue.name.lowercase()}:$expectedHash:$expectedBucketA", keyA1)
         assertEquals(keyA1, keyA2)
-        assertEquals(keyA1, keyWithAlternateQueueFormat)
         assertNotEquals(keyA1, keyB)
+    }
+
+    @Test
+    fun idempotencyKeyDiffersAcrossPrioritiesForSamePayloadAndBucket() {
+        val payload = "{\"frameId\":42,\"intent\":\"summary\"}"
+        val timestamp = 1704067200000L
+
+        val summaryEnvelope =
+            JobEnvelope(
+                queue = QueuePriority.SUMMARIZER,
+                payload = payload,
+                enqueuedAtEpochMillis = timestamp,
+            )
+        val readEnvelope =
+            JobEnvelope(
+                queue = QueuePriority.READ,
+                payload = payload,
+                enqueuedAtEpochMillis = timestamp,
+            )
+
+        assertNotEquals(summaryEnvelope.idempotencyKey, readEnvelope.idempotencyKey)
+    }
+
+    @Test
+    fun idempotencyKeyInstancePropertyMatchesHelperContract() {
+        val queue = QueuePriority.SUMMARIZER
+        val payload = "{\"frameId\":99,\"intent\":\"summary\"}"
+        val timestamp = 1704067200000L
+
+        val envelope =
+            JobEnvelope(
+                queue = queue,
+                payload = payload,
+                enqueuedAtEpochMillis = timestamp,
+            )
+
+        assertEquals(
+            JobEnvelope.idempotencyKey(queue, payload, timestamp),
+            envelope.idempotencyKey,
+        )
     }
 
     private fun sha256Hex(value: String): String {
