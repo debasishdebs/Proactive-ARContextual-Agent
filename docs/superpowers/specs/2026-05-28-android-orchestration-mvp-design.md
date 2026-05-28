@@ -153,14 +153,28 @@ Auto-pause policy:
 - Memory detail: short/medium/long counts, recent promotions, summary freshness.
 - Diagnostics detail: failures by reason code, local fallback usage, connection errors.
 
-### 7.3 LLM config screen
-User-editable MVP settings:
-- provider type
-- model
-- endpoint/base URL
-- API key
-- timeout
-- local fallback toggle
+### 7.3 Config hub screen (from Home Config card)
+- Home `Config` card opens a centralized configuration hub with detailed sections.
+- MVP should show full section-level coverage unless there is a concrete implementation-risk reason to defer specific controls.
+
+Config hub sections:
+- LLM config:
+  - provider type
+  - model
+  - endpoint/base URL
+  - API key
+  - timeout
+  - local fallback toggle
+- Local mode/runtime settings.
+- Prompt personas.
+- Glass invocation shortcuts.
+- Activity identification settings (high-level policy controls).
+- Memory settings (tier retention and promotion behavior).
+- Operational policy/settings relevant to queues, retries, and defer behavior.
+
+Versioning rule:
+- If any advanced control cannot be safely delivered in MVP, keep it visible but read-only and mark it for v1.1.
+- Read-only controls must show clear in-UI status text and expected v1.1 enablement.
 
 Security constraints:
 - API keys/secrets must be masked in UI.
