@@ -17,7 +17,9 @@ class PriorityArbitrationTest {
             QueuePriority.SUMMARIZER,
             QueuePriority.EXPLICIT_WRITE,
             QueuePriority.FRAME_INGEST,
+            QueuePriority.READ,
             QueuePriority.PRIORITY_REPROCESS,
+            QueuePriority.RETRY,
         )
 
         assertEquals(
@@ -36,6 +38,7 @@ class PriorityArbitrationTest {
     @Test
     fun idempotencyKeyUsesQueuePayloadHashAndSixtyMinuteBucket() {
         val queue = "summarizer"
+        val alternateQueueFormat = "  SUMMARIZER  "
         val payload = "{\"frameId\":42,\"intent\":\"summary\"}"
         val inBucketA = 1704067200000L
         val stillBucketA = inBucketA + 59 * 60 * 1000
@@ -47,9 +50,12 @@ class PriorityArbitrationTest {
         val keyA1 = JobEnvelope.idempotencyKey(queue, payload, inBucketA)
         val keyA2 = JobEnvelope.idempotencyKey(queue, payload, stillBucketA)
         val keyB = JobEnvelope.idempotencyKey(queue, payload, inBucketB)
+        val keyWithAlternateQueueFormat =
+            JobEnvelope.idempotencyKey(alternateQueueFormat, payload, inBucketA)
 
         assertEquals("$queue:$expectedHash:$expectedBucketA", keyA1)
         assertEquals(keyA1, keyA2)
+        assertEquals(keyA1, keyWithAlternateQueueFormat)
         assertNotEquals(keyA1, keyB)
     }
 
