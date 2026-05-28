@@ -18,7 +18,8 @@ class PolicyEngineTest {
             )
         )
 
-        assertTrue(decision.canProcess)
+        assertTrue(decision.canProcessNow)
+        assertFalse(decision.canManualReadNow)
     }
 
     @Test
@@ -42,8 +43,8 @@ class PolicyEngineTest {
             )
         )
 
-        assertFalse(at30.canProcess)
-        assertFalse(below30.canProcess)
+        assertFalse(at30.canProcessNow)
+        assertFalse(below30.canProcessNow)
     }
 
     @Test
@@ -76,9 +77,9 @@ class PolicyEngineTest {
             )
         )
 
-        assertFalse(blocked.canProcess)
-        assertTrue(allowedByBattery.canProcess)
-        assertTrue(allowedByCharging.canProcess)
+        assertFalse(blocked.canRunLocalModel)
+        assertTrue(allowedByBattery.canRunLocalModel)
+        assertTrue(allowedByCharging.canRunLocalModel)
     }
 
     @Test
@@ -93,11 +94,27 @@ class PolicyEngineTest {
             )
         )
 
-        assertFalse(decision.canProcess)
+        assertFalse(decision.canManualReadNow)
     }
 
     @Test
-    fun batterySaverBlocksScheduledProcessing() {
+    fun manualReadIsAllowedWhenBatterySaverIsOff() {
+        val decision = PolicyEngine.decide(
+            PolicyInput(
+                batteryPercent = 5,
+                isCharging = false,
+                batterySaverEnabled = false,
+                requiresLocalModel = false,
+                isManualRead = true,
+            )
+        )
+
+        assertTrue(decision.canManualReadNow)
+        assertTrue(decision.canProcessNow)
+    }
+
+    @Test
+    fun batterySaverDoesNotBlockScheduledProcessing() {
         val decision = PolicyEngine.decide(
             PolicyInput(
                 batteryPercent = 95,
@@ -108,11 +125,11 @@ class PolicyEngineTest {
             )
         )
 
-        assertFalse(decision.canProcess)
+        assertTrue(decision.canProcessNow)
     }
 
     @Test
-    fun batterySaverBlocksLocalModelProcessingEvenWhenCharging() {
+    fun batterySaverDoesNotBlockLocalModelProcessingWhenCharging() {
         val decision = PolicyEngine.decide(
             PolicyInput(
                 batteryPercent = 10,
@@ -123,6 +140,6 @@ class PolicyEngineTest {
             )
         )
 
-        assertFalse(decision.canProcess)
+        assertTrue(decision.canRunLocalModel)
     }
 }
