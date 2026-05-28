@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "com.rokid.context"
     compileSdk = 35
+
     defaultConfig {
         applicationId = "com.rokid.context"
         minSdk = 29
@@ -14,4 +15,17 @@ android {
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
 }
