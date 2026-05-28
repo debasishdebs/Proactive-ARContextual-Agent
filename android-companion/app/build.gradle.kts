@@ -27,5 +27,6 @@ android {
 }
 
 dependencies {
+    compileOnly("androidx.room:room-runtime:2.6.1")
     testImplementation("junit:junit:4.13.2")
 }
