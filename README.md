@@ -47,3 +47,28 @@ Implemented baseline modules:
 - security migration/export safeguards
 - multilingual retrieval routing
 - telemetry event reporter
+
+## Real Client Wiring (Android)
+- Azure KG GPT client now reads build-time values from `.env`:
+  - `AZURE_KG_ENDPOINT`
+  - `AZURE_KG_54_API_KEY`
+  - optional `AZURE_KG_DEPLOYMENT` (defaults to `gpt-5.4`)
+- Ollama client uses `OLLAMA_BASE_URL` + `OLLAMA_MODEL` (default model `llama3.1:8b`).
+
+### Ollama runtime note
+- Docker is not run inside Android app runtime.
+- Recommended setup is running Ollama on host/laptop or local server and connecting from Android over network:
+  - Emulator default: `http://10.0.2.2:11434`
+  - Physical device: use your machine LAN IP, e.g. `http://192.168.x.x:11434`
+
+### Local Ollama quick start (host)
+```bash
+docker run -d --name ollama -p 11434:11434 ollama/ollama:latest
+docker exec -it ollama ollama pull llama3.1:8b
+```
+
+### Android orchestration
+- WorkManager scheduler added:
+  - periodic frame ingest (15 min)
+  - periodic critic job (3h)
+  - one-shot summarizer enqueue
