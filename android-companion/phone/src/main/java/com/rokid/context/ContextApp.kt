@@ -16,7 +16,7 @@ class ContextApp : Application() {
             localNativeModelPath = BuildConfig.LOCAL_NATIVE_MODEL_PATH,
         )
         com.rokid.context.memory.MemoryGraph.get(this) { com.rokid.context.data.runtime.AppConfigStore.get(this).encryptionEnabled }
-        // Eager background import so it is normally done before any facade use; facades block only if it is still running.
+        // Eager background import so it is normally done before first use; PipelineRecords calls wait only if it is still running.
         kotlin.concurrent.thread(name = "legacy-import") {
             runCatching { com.rokid.context.memory.MemoryGraph.ensureLegacyImported(this) }
                 .onFailure { android.util.Log.w("ContextApp", "legacy import failed; will retry", it) }

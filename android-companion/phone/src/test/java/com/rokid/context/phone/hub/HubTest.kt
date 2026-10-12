@@ -69,13 +69,15 @@ class HubTest {
         clock: () -> Long = { now },
         dao: PauseDao = db.pauseDao(),
         onStored: () -> Unit = {},
+        startService: () -> Unit = {},
+        start: Boolean = true,
     ): Hub {
         val pauses = HubPauses(dao, clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
         val ingestor = FrameIngestor(File(tmp.root, "inbox"), FrameReassembler(), FrameAdmission(ledger, pauses), ledger, onStored = onStored)
         val settings = HubSettingsStore(ctx.getSharedPreferences("hub_test_${tmp.root.name}", 0)) { "hud" }
-        return Hub(backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler))
-            .also { it.start(); runCurrent() }
+        return Hub(backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler), startService = startService)
+            .also { if (start) { it.start(); runCurrent() } }
     }
     private fun FakeGlassesLink.lastOn(channel: String) = sent.last { it.first == channel }.second
     private fun hello(glassesNowMs: Long = now, pauses: List<PauseRecord> = emptyList()) =
@@ -188,6 +190,43 @@ class HubTest {
         val link = FakeGlassesLink()
         hub(link).requestReconnect()
         assertEquals(1, link.connectCalls)
+    }
+
+    /**
+     * Carry (Phase 3 review): Reconnect with the hub service down only starts the service; its hub.start() connects
+     * once from Idle, so no second connect is sent from here.
+     */
+    @Test fun reconnectStartsTheHubServiceWhenTheHubIsNotRunning() = runTest {
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        var starts = 0
+        hub(link, startService = { starts++ }, start = false).requestReconnect()
+        assertEquals(1, starts)
+        assertEquals(0, link.connectCalls)
+    }
+
+    @Test fun reconnectOnARunningHubConnectsWithoutRestartingIt() = runTest {
+        val link = FakeGlassesLink()
+        var starts = 0
+        hub(link, startService = { starts++ }).requestReconnect()
+        assertEquals(0, starts)
+        assertEquals(1, link.connectCalls)
+    }
+
+    /** Carry (Phase 3 review): each frame the glasses deliver leaves their buffer, so the count drops without a new hello. */
+    @Test fun bufferedFramesCountDownAsTheFlushIsAcked() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.emit(hello()); runCurrent() // bufferSize = 4
+        assertEquals(4, h.status.value.bufferedFrames)
+        for (i in 1..3) {
+            link.emit(GlassesEvent.Frame(FrameCodec.split("b$i", ByteArray(2_000) { i.toByte() }, capturedAtMs = now - 10_000 + i).single())); runCurrent()
+        }
+        assertEquals(1, h.status.value.bufferedFrames)
+        link.emit(GlassesEvent.Frame(FrameCodec.split("b3", ByteArray(2_000) { 3 }, capturedAtMs = now - 10_000 + 3).single())); runCurrent()
+        assertEquals("a resend (our ack was lost) is still in their buffer: counted once", 1, h.status.value.bufferedFrames)
+        link.emit(GlassesEvent.Frame(FrameCodec.split("b4", ByteArray(2_000) { 4 }, capturedAtMs = now - 10_000 + 4).single())); runCurrent()
+        link.emit(GlassesEvent.Frame(FrameCodec.split("b5", ByteArray(2_000) { 5 }, capturedAtMs = now - 10_000 + 5).single())); runCurrent()
+        assertEquals("never below zero", 0, h.status.value.bufferedFrames)
     }
 
     @Test fun nothingIsSentWhileTheLinkIsDownButTheFrameIsKept() = runTest {

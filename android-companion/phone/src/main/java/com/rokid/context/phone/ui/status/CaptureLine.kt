@@ -10,11 +10,15 @@ import kotlin.math.ceil
 object CaptureLine {
     fun paused(s: GlassesStatus, pipelineEnabled: Boolean): Boolean = !pipelineEnabled || s.frame?.capture is CaptureState.Paused
 
+    /** Paused by the glasses' own pause set while the phone pipeline is on (the phone cannot resume it until Phase 7). */
+    fun pausedOnGlasses(s: GlassesStatus, pipelineEnabled: Boolean): Boolean = pipelineEnabled && s.frame?.capture is CaptureState.Paused
+
     fun live(s: GlassesStatus, pipelineEnabled: Boolean): Boolean =
         !paused(s, pipelineEnabled) && s.link == LinkState.CONNECTED && s.frame?.capture == CaptureState.Running
 
     fun text(s: GlassesStatus, pipelineEnabled: Boolean, nowMs: Long): String {
-        if (paused(s, pipelineEnabled)) return "Paused"
+        if (!pipelineEnabled) return "Paused"
+        if (pausedOnGlasses(s, pipelineEnabled)) return "Paused on glasses"
         val frame = s.frame
         if (frame == null || s.link != LinkState.CONNECTED) return when (s.link) {
             LinkState.CONNECTING -> "Connecting to glasses…"

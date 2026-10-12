@@ -2,9 +2,9 @@ package com.rokid.context.phone.ui.shell
 
 import android.content.Context
 import com.rokid.context.core.model.GlassesStatusSource
+import com.rokid.context.core.model.Verbosity
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.orchestration.AskActions
-import com.rokid.context.phone.ui.glasses.FakeGlassesStatusSource
 import com.rokid.context.phone.ui.home.AskService
 import com.rokid.context.phone.ui.onboarding.OnboardingStore
 import com.rokid.context.phone.ui.settings.DiagnosticsActions
@@ -39,6 +39,8 @@ class PhoneDeps(
     val storagePct: Flow<Int?>,
     val clock: Flow<Long>,
     val zone: () -> ZoneId = { ZoneId.systemDefault() },
+    /** Sends a HUD verbosity to the glasses (`pc_settings` through the hub). */
+    val hudVerbosity: (Verbosity) -> Unit = {},
 ) {
     fun today(): LocalDate = LocalDate.now(zone())
 
@@ -61,7 +63,7 @@ class PhoneDeps(
             val scheduler = OrchestrationScheduler(app)
             return PhoneDeps(
                 memory = MemoryGraph.get(app),
-                glasses = FakeGlassesStatusSource(), // Task 11 (after Phase 3 merges): HubGraph.glassesStatus(app)
+                glasses = com.rokid.context.phone.hub.HubGraph.glassesStatus(app),
                 pipeline = LegacyPipelineControl(app, scheduler),
                 onboarding = OnboardingStore(app),
                 askService = AskService { q -> AskActions.ask(app, q) },
@@ -70,6 +72,7 @@ class PhoneDeps(
                 queues = LegacyQueueActions(app, scheduler),
                 storagePct = StorageUsage.percentFlow(app),
                 clock = ticker(),
+                hudVerbosity = { v -> com.rokid.context.phone.hub.HubGraph.get(app).updateSettings { it.copy(verbosity = v) } },
             )
         }
     }

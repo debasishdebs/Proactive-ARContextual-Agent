@@ -36,9 +36,12 @@ class FrameViewerViewModel(dateArg: String?, startId: String?, timeline: Timelin
             flowOf(FrameViewerUiState(loading = false, found = false))
         } else {
             val z = zone()
-            timeline.framesIn(DayBucket.bounds(date, z)).map { frames ->
+            // Guarded like the Day screen: an extreme date (e.g. +999999999-12-31) has no bounds → not found, never a crash.
+            val d: LocalDate = date
+            val r = runCatching { DayBucket.bounds(d, z) }.getOrNull()
+            if (r == null) flowOf(FrameViewerUiState(loading = false, found = false)) else timeline.framesIn(r).map { frames ->
                 FrameViewerUiState(
-                    loading = false, found = true, title = ActivityModel.dayLabel(date, today()),
+                    loading = false, found = true, title = ActivityModel.dayLabel(d, today()),
                     frames = frames.map { ViewerFrame(it.id, it.path, time.format(Instant.ofEpochMilli(it.ts).atZone(z))) },
                     startIndex = frames.indexOfFirst { it.id == startId }.coerceAtLeast(0),
                 )
