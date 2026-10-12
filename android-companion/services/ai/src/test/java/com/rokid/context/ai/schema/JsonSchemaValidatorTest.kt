@@ -58,4 +58,37 @@ class JsonSchemaValidatorTest {
         assertEquals(listOf("$: must be > 0"), errs("""{"type":"number","exclusiveMinimum":0}""", "0"))
         assertEquals(listOf("$: must be a multiple of 0.5"), errs("""{"type":"number","multipleOf":0.5}""", "0.3"))
     }
+
+    private fun deep(n: Int): kotlinx.serialization.json.JsonElement { var e: kotlinx.serialization.json.JsonElement = kotlinx.serialization.json.JsonArray(emptyList()); repeat(n) { e = kotlinx.serialization.json.JsonArray(listOf(e)) }; return e }
+
+    @Test fun tooDeepValueIsAnErrorNotAStackOverflow() {
+        val e = JsonSchemaValidator.validate(s("""{"type":"array","uniqueItems":true}"""), deep(100_000))
+        assertEquals(listOf("$: nested too deeply"), e)
+    }
+
+    @Test fun recursiveOneOfSchemaTerminates() {
+        val schema = s("""{"${'$'}ref":"#/${'$'}defs/A","${'$'}defs":{"A":{"oneOf":[{"${'$'}ref":"#/${'$'}defs/A"}]}}}""")
+        assertTrue(JsonSchemaValidator.validate(schema, v("1")).isNotEmpty())
+    }
+
+    @Test fun longKeysAreTruncatedInMessages() {
+        val key = "k".repeat(100)
+        val e = errs("""{"type":"object","additionalProperties":false}""", "{\"$key\":1}")
+        assertEquals(listOf("$: unexpected property '${"k".repeat(32)}…'"), e)
+    }
+
+    @Test fun errorListIsCappedAtTwenty() {
+        val e = errs("""{"type":"array","items":{"type":"string"}}""", "[" + (1..500).joinToString(",") + "]")
+        assertEquals(20, e.size)
+    }
+
+    @Test fun badPatternStringsAreNotMatchedAfterLengthFailed() =
+        assertEquals(listOf("$: at most 2 characters"), errs("""{"type":"string","maxLength":2,"pattern":"^z+$"}""", "\"abcd\""))
+
+    @Test fun numbersMustBeFiniteAndIntegersExact() {
+        assertEquals(listOf("$: must be number"), errs("""{"type":"number"}""", "1e999"))
+        assertEquals(listOf("$: must be integer"), errs("""{"type":"integer"}""", "1e300"))
+        assertEquals(listOf("$: must be integer"), errs("""{"type":"integer"}""", "9007199254740993"))
+        assertEquals(emptyList<String>(), errs("""{"type":"integer"}""", "9007199254740992"))
+    }
 }

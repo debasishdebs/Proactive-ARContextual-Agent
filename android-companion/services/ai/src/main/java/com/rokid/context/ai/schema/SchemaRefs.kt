@@ -34,4 +34,21 @@ object SchemaRefs {
         is JsonArray -> type.map { (it as JsonPrimitive).content }
         else -> emptyList()
     }
+
+    const val MAX_DEPTH = 64
+
+    /** True when the tree nests deeper than [max]. Iterative, so a hostile tree can't overflow the stack. */
+    fun exceedsDepth(root: JsonElement, max: Int = MAX_DEPTH): Boolean {
+        val stack = ArrayDeque<Pair<JsonElement, Int>>()
+        stack.addLast(root to 1)
+        while (stack.isNotEmpty()) {
+            val (e, d) = stack.removeLast()
+            when (e) {
+                is JsonObject -> { if (d > max) return true; e.values.forEach { stack.addLast(it to d + 1) } }
+                is JsonArray -> { if (d > max) return true; e.forEach { stack.addLast(it to d + 1) } }
+                else -> Unit
+            }
+        }
+        return false
+    }
 }
