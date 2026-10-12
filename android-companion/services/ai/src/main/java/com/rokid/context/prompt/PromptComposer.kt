@@ -15,6 +15,6 @@ class PromptComposer(
         PLACEHOLDER.replace(template) { m -> variables[m.groupValues[1]] ?: m.value }
 
     private companion object {
-        val PLACEHOLDER = Regex("""\{\{([^{}]+)}}""")
+        val PLACEHOLDER = Regex("""\{\{([^\{\}]+)\}\}""")
     }
 }
