@@ -15,7 +15,9 @@ import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.ProposalEntity
 import com.rokid.context.memory.db.ReviewState
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.job
+import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.time.LocalDate
 import java.time.ZoneId
@@ -61,4 +63,5 @@ object TestGraph {
 }
 
 /** ViewModel scopes outlive a test; cancel them before closing the DB so no collector hits a closed database. */
-fun ViewModel.cancelScope() = viewModelScope.cancel()
+/** Cancels and waits, so no child still touches Dispatchers.Main when MainDispatcherRule resets it. */
+fun ViewModel.cancelScope() = runBlocking { viewModelScope.coroutineContext.job.cancelAndJoin() }
