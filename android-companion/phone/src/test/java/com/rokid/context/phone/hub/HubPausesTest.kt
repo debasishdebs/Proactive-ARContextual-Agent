@@ -70,4 +70,35 @@ class HubPausesTest {
         pauses.pruneHistory()
         assertFalse(pauses.pausedAt(t - 8 * 86_400_000L + 500))
     }
+
+    @Test fun aStaleTimedCopyNeverShortensAnIndefinitePause() = runTest {
+        pauses.add(PauseRecord("p1", PauseOrigin.PHONE, t, null))
+        pauses.union(listOf(PauseRecord("p1", PauseOrigin.PHONE, t, t + 1_000)))
+        t += 5_000
+        assertEquals(listOf(null), pauses.active().map { it.untilMs })
+    }
+
+    @Test fun mergeKeepsTheLaterEnd() = runTest {
+        pauses.add(PauseRecord("p1", PauseOrigin.PHONE, t, t + 60_000))
+        pauses.add(PauseRecord("p1", PauseOrigin.PHONE, t, t + 10_000))
+        assertEquals(listOf(t + 60_000), pauses.active().map { it.untilMs })
+        pauses.add(PauseRecord("p1", PauseOrigin.PHONE, t, null))
+        assertEquals(listOf(null), pauses.active().map { it.untilMs })
+    }
+
+    @Test fun aResumedPauseIsNeverResurrected() = runTest {
+        pauses.add(PauseRecord("g1", PauseOrigin.GLASSES, t, null))
+        t += 1_000
+        pauses.resume(setOf("g1"))
+        pauses.union(listOf(PauseRecord("g1", PauseOrigin.GLASSES, t - 1_000, null)))
+        assertTrue(pauses.active().isEmpty())
+        assertFalse(pauses.pausedAt(t + 10))
+    }
+
+    @Test fun orphanOpenIntervalsAreClosedByPrune() = runTest {
+        db.pauseDao().insertInterval(com.rokid.context.memory.db.PauseIntervalEntity("orphan", "PHONE", t - 1_000, null))
+        assertTrue(pauses.pausedAt(t))
+        pauses.pruneHistory()
+        assertFalse(pauses.pausedAt(t))
+    }
 }
