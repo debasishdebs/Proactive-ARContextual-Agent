@@ -98,4 +98,23 @@ class WireSchemaCompilerTest {
         val t = """{"type":"object","properties":{"a":{"${'$'}ref":"#/${'$'}defs/S"},"b":{"${'$'}ref":"#/${'$'}defs/S"}},"required":["a","b"],"${'$'}defs":{"S":{"type":"string"}}}"""
         EndpointKind.entries.forEach { assertTrue("$it", compile(t, it).isSuccess) }
     }
+
+    private val fanOut = (1..30).joinToString(",") { i ->
+        "\"D$i\":{\"anyOf\":[{\"${'$'}ref\":\"#/${'$'}defs/D${i + 1}\"},{\"${'$'}ref\":\"#/${'$'}defs/D${i + 1}\"}]}"
+    } + ",\"D31\":{\"type\":\"string\"}"
+    private val fanOutSchema = """{"type":"object","properties":{"a":{"${'$'}ref":"#/${'$'}defs/D1"}},"required":["a"],"${'$'}defs":{$fanOut}}"""
+
+    @Test(timeout = 10_000) fun aRefFanOutIsRefusedQuicklyForEveryKind() = EndpointKind.entries.forEach {
+        assertEquals("$it", "The schema is too large", compile(fanOutSchema, it).exceptionOrNull()!!.message)
+    }
+
+    @Test fun optionalConstBecomesANullableEnum() {
+        val w = compile("""{"type":"object","properties":{"k":{"type":"string","const":"v"}}}""").getOrThrow()
+        assertEquals(j("""{"type":["string","null"],"enum":["v",null]}"""), w["properties"]!!.jsonObject["k"])
+    }
+
+    @Test fun aTypeArrayAlreadyNullableStillGetsNullInItsEnum() {
+        val w = compile("""{"type":"object","properties":{"k":{"type":["string","null"],"enum":["a","b"]}}}""").getOrThrow()
+        assertEquals(j("""{"type":["string","null"],"enum":["a","b",null]}"""), w["properties"]!!.jsonObject["k"])
+    }
 }
