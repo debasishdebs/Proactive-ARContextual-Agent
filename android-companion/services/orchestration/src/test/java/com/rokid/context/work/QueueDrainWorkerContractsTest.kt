@@ -12,9 +12,11 @@ import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.orchestration.TestAi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -62,6 +64,19 @@ class QueueDrainWorkerContractsTest {
         run()
         assertEquals(ReviewState.NEEDS_REVIEW, saved().single().reviewState)
         assertTrue(QueueRuntimeStore.recent(ctx, 10).any { it.queue == QueuePriority.PRIORITY_REPROCESS })
+    }
+
+    /** Fix M5: a READ job run again after a late cancellation keeps one Ask row (deterministic id, insert-ignore). */
+    @Test fun aReRunOfAReadJobKeepsOneAsk() {
+        QueueRuntimeStore.markSucceeded(ctx, QueueRuntimeStore.recent(ctx, 10).single().id)
+        runBlocking { PipelineRecords.appendFact(ctx, "rokid_mem_m_0", "f_new", "Milk carton nearly empty", "object", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK) }
+        val job = QueueRuntimeStore.enqueue(ctx, QueuePriority.READ, QueuePayloads.readContext("milk?", "en", manual = true), personaSnapshot = "p")
+        replies = { """{"answer":"Milk is almost empty.","sources":["rokid_mem_m_0"]}""" }
+        run()
+        QueueRuntimeStore.markPostponed(ctx, job.id, "cancelled; will retry", delayMs = 0, nowEpochMs = System.currentTimeMillis() - 60_000)
+        run()
+        assertEquals(QueueRuntimeStore.STATE_SUCCEEDED, QueueRuntimeStore.recent(ctx, 10).single { it.id == job.id }.state)
+        assertEquals(1, runBlocking { MemoryGraph.get(ctx).asks.recent(10).first() }.size)
     }
 
     @Test fun lowConfidenceFactsTheCriticPassesAreTrusted() {

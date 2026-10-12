@@ -113,6 +113,14 @@ object PipelineRecords {
         )
     }
 
+    /** Fix M5: before a job (re)writes facts `<prefix>0..keep-1`, drop its rows `<prefix>keep…` left by an earlier run. */
+    suspend fun dropFactsFrom(context: Context, prefix: String, keep: Int) {
+        val g = graph(context)
+        g.memories.deleteByIds(
+            g.memories.all().filter { m -> m.id.startsWith(prefix) && (m.id.removePrefix(prefix).toIntOrNull()?.let { it >= keep } == true) }.map { it.id },
+        )
+    }
+
     suspend fun recentMemories(context: Context, limit: Int): List<MemoryEntity> = graph(context).memories.recent(limit)
 
     suspend fun purgeNonRokidMemories(context: Context) {

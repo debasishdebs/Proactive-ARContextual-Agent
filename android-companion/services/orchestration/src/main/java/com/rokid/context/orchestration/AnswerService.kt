@@ -116,7 +116,8 @@ class AnswerService(
     }
 
     /** Queue jobs: failures propagate so the queue's retry policy applies (RetryClassifier). */
-    suspend fun answerOrThrow(question: String, source: String, nowMs: Long = System.currentTimeMillis()): AskOutcome.Answered {
+    /** [askId]: a queue job passes one derived from its id, so a re-run after a cancellation adds no second Ask row. */
+    suspend fun answerOrThrow(question: String, source: String, nowMs: Long = System.currentTimeMillis(), askId: String? = null): AskOutcome.Answered {
         val q = AskText.collapse(question).take(MAX_QUESTION)
         if (q.isEmpty()) throw EmptyQuestionException()
         val r = retrieve(q, nowMs)
@@ -124,7 +125,7 @@ class AnswerService(
         val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, inputIds = r.ids)).output as AnswerOutput
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
-        val id = "ask_${UUID.randomUUID()}"
+        val id = askId ?: "ask_${UUID.randomUUID()}"
         memory.asks.add(AskEntity(id, nowMs, q, text, AskSources.encode(out.sources), null, source, false))
         return AskOutcome.Answered(id, out.proposedAction)
     }
