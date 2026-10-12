@@ -4,7 +4,7 @@
 
 **Goal:** Measure, on the user's real phone + Rokid glasses, the facts Phases 3 and 6 depend on: the glasses→phone CXR text limit and throughput for chunked Base64 JPEGs, ack/interrupt/backlog behaviour, PTT audio latency during a frame flush, whether the glasses can send while backgrounded, the TTS audio route, and on-device STT with external audio.
 
-**Architecture:** A throwaway, standalone Gradle project `spikes/cxr-probe/` (its own settings, not part of `android-companion`) with two tiny apps: `phone-probe` (CXR-L session + receivers + TTS/STT probes) and `glasses-probe` (CXR-S bridge + senders). Plain Android Views (no Compose) to keep code small. Spike code lives only on branch `spike/cxr-probe` and is never merged; the **results document** is committed to the feature branch.
+**Architecture:** A throwaway, standalone Gradle project `spikes/cxr-probe/` (its own settings, not part of `android-companion`) with two tiny apps: `phone-probe` (CXR-L session + receivers + TTS/STT probes) and `glasses-probe` (CXR-S bridge + senders). Plain Android Views (no Compose) to keep code small. Spike code lives only in a **separate git worktree** at `/Users/debasishkanhar/Desktop/rokid/pca-spike` on branch `spike/cxr-probe`, created from the baseline commit, and is never merged. The main checkout never switches branches, so Phase 1 can run there in parallel. Only the **results document** is committed, in the main checkout on `feat/proactive-mvp-implementation`.
 
 **Tech Stack:** AGP 8.13.2, Kotlin 2.0.21, Gradle 8.13 (copied from Live Fit), `com.rokid.cxr:client-l:1.1.2`, `com.rokid.cxr:cxr-service-bridge:1.5`.
 
@@ -12,7 +12,10 @@
 
 ## Global Constraints
 
+- **Prerequisite:** Phase 1 Task 0 (baseline commit) is done; its SHA is `BASELINE`.
 - Throwaway code: no tests, no production quality bar, never merged. Only `docs/spikes/2026-10-12-phase0-results.md` survives.
+- All spike paths below are relative to the worktree `$SPIKE=/Users/debasishkanhar/Desktop/rokid/pca-spike`. Never run `git switch`/`git checkout` in the main checkout.
+- Frame transfer follows the spec §1.8 contract: the phone sends a **frame-level** `probe_frame_ack {frameId, ok, reason}` only after reassembly, CRC check and Base64 decode; the glasses delete a frame from their buffer **only** on `ok=true`; frames that fail or time out stay buffered for the next flush.
 - Glasses side sends with `CXRServiceBridge.sendMessage(channel, Caps)` — text only (Base64 for binary), per Live Fit's verified `lf_audio` path.
 - Device steps need the user: phone with **Hi Rokid** installed and paired to the glasses; glasses connected by USB with adb enabled. Ask the user before every physical action (toggle Bluetooth, take glasses off, etc.).
 - `adb` binary: `/Users/debasishkanhar/Desktop/rokid/android-sdk/platform-tools/adb`. Use `-s <serial>` for every command (two devices attached).
@@ -35,15 +38,18 @@
 - Create: `spikes/cxr-probe/phone-probe/build.gradle.kts`, `.../src/main/AndroidManifest.xml`, `.../src/main/java/com/rokid/context/probe/{MainActivity.kt,ProbeLink.kt}`
 - Create: `spikes/cxr-probe/glasses-probe/build.gradle.kts`, `.../src/main/AndroidManifest.xml`, `.../src/main/java/com/rokid/context/probe/glasses/MainActivity.kt`
 
+**Requirements:** R-76
+
 **Interfaces:**
-- Produces (probe-only, Tasks 2–4): channels `probe_cmd` (P→G), `probe_ack` (P→G), `probe_data` / `probe_chunk` / `probe_audio` / `probe_hb` / `probe_log` (G→P). `ProbeLink.send(channel: String, text: String): Boolean`, `ProbeLink.onMessage: (channel: String, parts: List<String>) -> Unit`. Glasses: `Probe.send(channel: String, vararg parts: String): Int` (CXR rc, 0 = sent).
+- Produces (probe-only, Tasks 2–4): channels `probe_cmd` (P→G), `probe_chunk_ack` and `probe_frame_ack` (P→G), `probe_data` / `probe_chunk` / `probe_audio` / `probe_hb` / `probe_log` (G→P). `ProbeLink.send(channel: String, text: String): Boolean`, `ProbeLink.onMessage: (channel: String, parts: List<String>) -> Unit`. Glasses: `Probe.send(channel: String, vararg parts: String): Int` (CXR rc, 0 = sent).
 
 - [ ] **Step 1: Branch and scaffold**
 
 ```bash
 cd /Users/debasishkanhar/Desktop/rokid/proactive-context-agent
-git switch -c spike/cxr-probe
-mkdir -p spikes/cxr-probe && cd spikes/cxr-probe
+git worktree add /Users/debasishkanhar/Desktop/rokid/pca-spike -b spike/cxr-probe BASELINE
+SPIKE=/Users/debasishkanhar/Desktop/rokid/pca-spike
+mkdir -p $SPIKE/spikes/cxr-probe && cd $SPIKE/spikes/cxr-probe
 cp -R /Users/debasishkanhar/Desktop/rokid/live-fitness-tracker/gradle .
 cp /Users/debasishkanhar/Desktop/rokid/live-fitness-tracker/gradlew .
 rm -f gradle/libs.versions.toml
@@ -320,9 +326,11 @@ class MainActivity : Activity() {
             val text = runCatching { caps?.at(0)?.string }.getOrNull() ?: return@MsgCallback
             thread(name = "probe-test") { Tests.run(this, JSONObject(text)) }
         })
-        Probe.bridge.subscribe("probe_ack", CXRServiceBridge.MsgCallback { _, caps, _ ->
-            runCatching { caps?.at(0)?.string }.getOrNull()?.let { Acks.onAck(JSONObject(it)) }
-        })
+        for (ch in listOf("probe_chunk_ack", "probe_frame_ack")) {
+            Probe.bridge.subscribe(ch, CXRServiceBridge.MsgCallback { _, caps, _ ->
+                runCatching { caps?.at(0)?.string }.getOrNull()?.let { Acks.onAck(JSONObject(it)) }
+            })
+        }
     }
 }
 
@@ -348,7 +356,7 @@ class HeartbeatService : Service() { override fun onBind(i: Intent?) = null }
 
 - [ ] **Step 7: Build both**
 
-Run: `cd spikes/cxr-probe && ./gradlew :phone-probe:assembleDebug :glasses-probe:assembleDebug`
+Run: `cd $SPIKE/spikes/cxr-probe && ./gradlew :phone-probe:assembleDebug :glasses-probe:assembleDebug`
 Expected: BUILD SUCCESSFUL. If a CXR class/parameter name differs from Live Fit's, open the AAR (`~/.gradle/caches/.../client-l-1.1.2.aar`) with `unzip -l` / `javap` and adapt; record the difference in the results doc.
 
 - [ ] **Step 8: Install and verify round trip (needs the user)**
@@ -365,50 +373,63 @@ Expected on phone log: `auth ok=true`, `connect ok=true`, `session started`, the
 - [ ] **Step 9: Commit (spike branch only)**
 
 ```bash
-git add spikes/cxr-probe && git commit -m "spike: cxr probe scaffold with ping
+cd $SPIKE && git add spikes/cxr-probe && git commit -m "spike: cxr probe scaffold with ping
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 2: Size limit, chunked frames, backlog, interrupted flush
+### Task 2: Size limit, chunked frames, frame-level ack, backlog, interrupted flush
+
+**Requirements:** R-76, R-08
 
 **Files:**
 - Modify: `spikes/cxr-probe/glasses-probe/src/main/java/com/rokid/context/probe/glasses/MainActivity.kt` (`Tests`, `Acks`)
-- Create: `spikes/cxr-probe/glasses-probe/src/main/assets/sample.jpg` (copy of repo-root `latest_rokid_frame.jpg`, 360×270, 20 KB)
+- Create: `spikes/cxr-probe/glasses-probe/src/main/assets/sample.jpg` (copy of the main checkout's `latest_rokid_frame.jpg`, 360×270, 20 KB)
 - Modify: `spikes/cxr-probe/phone-probe/src/main/java/com/rokid/context/probe/MainActivity.kt` (`Handlers`)
 
 **Interfaces:**
 - Consumes: `Probe.send`, `ProbeLink.send`, channels from Task 1.
-- Produces: measured `SAFE_CHUNK_CHARS` and per-frame timings → results doc.
+- Produces: measured `SAFE_CHUNK_CHARS`, whether per-chunk acks are needed for flow control, per-frame timings, and verified buffer semantics (delete-after-positive-ack, retain-on-failure, recover-on-flush, dedupe) → results doc.
 
 - [ ] **Step 1: Copy the sample JPEG**
 
 ```bash
-mkdir -p spikes/cxr-probe/glasses-probe/src/main/assets
-cp latest_rokid_frame.jpg spikes/cxr-probe/glasses-probe/src/main/assets/sample.jpg
+mkdir -p $SPIKE/spikes/cxr-probe/glasses-probe/src/main/assets
+cp /Users/debasishkanhar/Desktop/rokid/proactive-context-agent/latest_rokid_frame.jpg $SPIKE/spikes/cxr-probe/glasses-probe/src/main/assets/sample.jpg
 ```
 
-- [ ] **Step 2: Glasses tests — sizes, frame, backlog**
+- [ ] **Step 2: Glasses — sizes test and a buffered sender with frame-level acks**
 
 Replace `Acks` and `Tests` in the glasses `MainActivity.kt`:
 
 ```kotlin
 object Acks {
-    private val latches = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CountDownLatch>()
-    fun expect(key: String) = java.util.concurrent.CountDownLatch(1).also { latches[key] = it }
-    fun onAck(j: JSONObject) { latches.remove(j.getString("k"))?.countDown() }
+    private val waiting = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<JSONObject>>()
+    fun expect(key: String) = java.util.concurrent.CompletableFuture<JSONObject>().also { waiting[key] = it }
+    /** Chunk acks carry `k = frameId/idx`; frame acks carry `k = frameId` plus `ok` and `reason`. */
+    fun onAck(j: JSONObject) { waiting.remove(j.getString("k"))?.complete(j) }
 }
 
+/** One buffered frame. Deleted only on a positive frame ack (spec §1.8). */
+class Pending(val frameId: String, val b64: String, var corruptNextSend: Boolean = false)
+
 object Tests {
+    private val buffer = java.util.concurrent.ConcurrentLinkedDeque<Pending>()
+    @Volatile private var flushing = false
     private fun crc(s: String) = java.util.zip.CRC32().apply { update(s.toByteArray()) }.value
 
     fun run(a: Activity, cmd: JSONObject) {
         when (cmd.getString("t")) {
             "ping" -> Probe.log("pong at=${cmd.getLong("at")} now=${System.currentTimeMillis()}")
             "sizes" -> sizes()
-            "frames" -> frames(a, count = cmd.optInt("count", 1), chunkChars = cmd.optInt("chunk", 16_384))
+            "frames" -> {
+                enqueue(a, count = cmd.optInt("count", 1), corruptFirst = cmd.optBoolean("corrupt", false))
+                flush(chunkChars = cmd.optInt("chunk", 16_384), chunkAck = cmd.optBoolean("chunkAck", false))
+            }
+            "flush" -> flush(chunkChars = cmd.optInt("chunk", 16_384), chunkAck = cmd.optBoolean("chunkAck", false))
+            "buffer" -> Probe.log("buffer size=${buffer.size} ids=${buffer.map { it.frameId }}")
             else -> Probe.log("unknown test ${cmd.getString("t")}")
         }
     }
@@ -425,53 +446,93 @@ object Tests {
         Probe.log("sizes done")
     }
 
-    private fun frames(a: Activity, count: Int, chunkChars: Int) {
-        val jpeg = a.assets.open("sample.jpg").readBytes()
-        val b64 = android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP)
-        val chunks = b64.chunked(chunkChars)
-        val total = System.currentTimeMillis()
-        repeat(count) { f ->
-            val frameId = "f${System.currentTimeMillis()}_$f"
-            val t0 = System.currentTimeMillis()
-            var attempt = 0
+    private fun enqueue(a: Activity, count: Int, corruptFirst: Boolean) {
+        val b64 = android.util.Base64.encodeToString(a.assets.open("sample.jpg").readBytes(), android.util.Base64.NO_WRAP)
+        repeat(count) { f -> buffer.addLast(Pending("f${System.currentTimeMillis()}_$f", b64, corruptNextSend = corruptFirst && f == 0)) }
+        Probe.log("enqueued $count buffer=${buffer.size}")
+    }
+
+    /** Stop-and-wait per frame. Positive frame ack → delete; negative → resend (≤ 3 attempts); timeout → keep and stop. */
+    private fun flush(chunkChars: Int, chunkAck: Boolean) {
+        if (flushing) return Probe.log("flush already running")
+        flushing = true
+        val t0 = System.currentTimeMillis()
+        var sent = 0
+        try {
             while (true) {
-                attempt++
-                var ok = true
-                for ((idx, c) in chunks.withIndex()) {
-                    val latch = Acks.expect("$frameId/$idx")
-                    val meta = JSONObject().put("frameId", frameId).put("idx", idx).put("n", chunks.size).put("crc", crc(b64)).toString()
-                    val rc = Probe.send("probe_chunk", meta, c)
-                    if (rc != 0 || !latch.await(5, java.util.concurrent.TimeUnit.SECONDS)) { ok = false; Probe.log("frame $frameId chunk $idx rc=$rc timeout/fail attempt=$attempt"); break }
+                val frame = buffer.peekFirst() ?: break
+                val tf = System.currentTimeMillis()
+                var attempt = 0
+                var delivered = false
+                while (attempt < 3 && !delivered) {
+                    attempt++
+                    val body = if (frame.corruptNextSend) frame.b64.replaceRange(10, 11, if (frame.b64[10] == 'A') "B" else "A") else frame.b64
+                    frame.corruptNextSend = false
+                    val chunks = body.chunked(chunkChars)
+                    val frameAck = Acks.expect(frame.frameId)
+                    var chunkFailed = false
+                    for ((idx, c) in chunks.withIndex()) {
+                        val chunkAckF = if (chunkAck) Acks.expect("${frame.frameId}/$idx") else null
+                        val meta = JSONObject().put("frameId", frame.frameId).put("idx", idx).put("n", chunks.size).put("crc", crc(frame.b64)).toString()
+                        val rc = Probe.send("probe_chunk", meta, c)
+                        val chunkOk = chunkAckF?.let { runCatching { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }.isSuccess } ?: true
+                        if (rc != 0 || !chunkOk) { Probe.log("frame ${frame.frameId} chunk $idx rc=$rc chunkAck=$chunkOk attempt=$attempt"); chunkFailed = true; break }
+                    }
+                    if (chunkFailed) break
+                    val ack = runCatching { frameAck.get(5, java.util.concurrent.TimeUnit.SECONDS) }.getOrNull()
+                    when {
+                        ack == null -> { Probe.log("frame ${frame.frameId} no frame ack attempt=$attempt"); break }
+                        ack.getBoolean("ok") -> delivered = true
+                        else -> Probe.log("frame ${frame.frameId} NACK reason=${ack.optString("reason")} attempt=$attempt")
+                    }
                 }
-                if (ok) break
-                if (attempt >= 3) { Probe.log("frame $frameId gave up"); break }
-                Thread.sleep(2_000)
+                if (!delivered) { Probe.log("flush stopped; retained=${buffer.size}"); return }
+                buffer.pollFirst()
+                sent++
+                Probe.log("frame ${frame.frameId} delivered ms=${System.currentTimeMillis() - tf} attempts=$attempt")
             }
-            Probe.log("frame $frameId ms=${System.currentTimeMillis() - t0} chunks=${chunks.size} attempts=$attempt")
-        }
-        Probe.log("frames done count=$count chunk=$chunkChars totalMs=${System.currentTimeMillis() - total}")
+            Probe.log("flush done sent=$sent retained=${buffer.size} chunk=$chunkChars chunkAck=$chunkAck totalMs=${System.currentTimeMillis() - t0}")
+        } finally { flushing = false }
     }
 }
 ```
 
-- [ ] **Step 3: Phone handlers — verify sizes, reassemble frames, ack, dedupe**
+- [ ] **Step 3: Phone handlers — verify sizes; validate the whole frame before a frame-level ack; dedupe**
 
 Replace `Handlers` in the phone `MainActivity.kt`:
 
 ```kotlin
 object Handlers {
     private val sizeStats = sortedMapOf<Int, IntArray>() // kb -> [received, intact]
-    private val frames = HashMap<String, Array<String?>>()
-    private val done = HashSet<String>()
+    private val slots = HashMap<String, Array<String?>>()
+    private val ingested = HashSet<String>()
+    private var dupes = 0
+    private var nacks = 0
     private fun crc(s: String) = java.util.zip.CRC32().apply { update(s.toByteArray()) }.value
 
     fun registerButtons(a: MainActivity) {
         a.button("Test: sizes") { sizeStats.clear(); a.link.send("probe_cmd", """{"t":"sizes"}""") }
         for (chunk in listOf(8_192, 16_384, 32_768)) {
-            a.button("Test: 1 frame @${chunk / 1024}K") { a.link.send("probe_cmd", """{"t":"frames","count":1,"chunk":$chunk}""") }
+            a.button("1 frame @${chunk / 1024}K") { a.link.send("probe_cmd", """{"t":"frames","count":1,"chunk":$chunk}""") }
         }
-        a.button("Test: backlog 20 @16K") { a.link.send("probe_cmd", """{"t":"frames","count":20,"chunk":16384}""") }
-        a.button("Print size stats") { sizeStats.forEach { (kb, s) -> a.log("kb=$kb received=${s[0]}/5 intact=${s[1]}") } }
+        a.button("1 frame @16K + chunk acks") { a.link.send("probe_cmd", """{"t":"frames","count":1,"chunk":16384,"chunkAck":true}""") }
+        a.button("1 corrupted frame @16K") { a.link.send("probe_cmd", """{"t":"frames","count":1,"chunk":16384,"corrupt":true}""") }
+        a.button("Backlog 20 @16K") { a.link.send("probe_cmd", """{"t":"frames","count":20,"chunk":16384}""") }
+        a.button("Flush retained") { a.link.send("probe_cmd", """{"t":"flush","chunk":16384}""") }
+        a.button("Glasses buffer?") { a.link.send("probe_cmd", """{"t":"buffer"}""") }
+        a.button("Drop next frame ack") { dropNextFrameAck = true }
+        a.button("Print stats") {
+            sizeStats.forEach { (kb, s) -> a.log("kb=$kb received=${s[0]}/5 intact=${s[1]}") }
+            a.log("ingested=${ingested.size} dupes=$dupes nacks=$nacks")
+        }
+    }
+
+    /** Simulates a lost ack: the frame is ingested but the glasses never hear "ok", so they resend it. */
+    @Volatile private var dropNextFrameAck = false
+
+    private fun frameAck(a: MainActivity, id: String, ok: Boolean, reason: String? = null) {
+        if (ok && dropNextFrameAck) { dropNextFrameAck = false; a.log("dropping ack for $id (simulated loss)"); return }
+        a.link.send("probe_frame_ack", org.json.JSONObject().put("k", id).put("ok", ok).apply { reason?.let { put("reason", it) } }.toString())
     }
 
     fun onMessage(a: MainActivity, channel: String, parts: List<String>) {
@@ -483,17 +544,19 @@ object Handlers {
                 s[0]++; if (crc(payload) == meta.getLong("crc")) s[1]++
             }
             "probe_chunk" -> {
-                val meta = org.json.JSONObject(parts[0]); val id = meta.getString("frameId"); val idx = meta.getInt("idx")
-                if (id in done) { a.link.send("probe_ack", """{"k":"$id/$idx"}"""); a.log("dup chunk $id/$idx (already complete)"); return }
-                val slots = frames.getOrPut(id) { arrayOfNulls(meta.getInt("n")) }
-                slots[idx] = parts.getOrElse(1) { "" }
-                a.link.send("probe_ack", """{"k":"$id/$idx"}""")
-                if (slots.all { it != null }) {
-                    val whole = slots.joinToString("")
-                    val ok = crc(whole) == meta.getLong("crc")
-                    val bytes = runCatching { android.util.Base64.decode(whole, android.util.Base64.NO_WRAP) }.getOrNull()
-                    a.log("frame $id complete crc=${if (ok) "ok" else "MISMATCH"} jpegBytes=${bytes?.size}")
-                    frames.remove(id); done += id
+                val meta = org.json.JSONObject(parts[0]); val id = meta.getString("frameId"); val idx = meta.getInt("idx"); val n = meta.getInt("n")
+                a.link.send("probe_chunk_ack", """{"k":"$id/$idx"}""") // flow-control only; ignored unless chunkAck mode
+                val buf = slots.getOrPut(id) { arrayOfNulls(n) }.let { if (it.size != n) arrayOfNulls<String>(n).also { f -> slots[id] = f } else it }
+                buf[idx] = parts.getOrElse(1) { "" }
+                if (buf.any { it == null }) return
+                slots.remove(id)
+                val whole = buf.joinToString("")
+                val bytes = runCatching { android.util.Base64.decode(whole, android.util.Base64.NO_WRAP) }.getOrNull()
+                when {
+                    crc(whole) != meta.getLong("crc") -> { nacks++; a.log("frame $id CRC MISMATCH → NACK"); frameAck(a, id, false, "crc") }
+                    bytes == null || bytes.size < 4 || bytes[0] != 0xFF.toByte() || bytes[1] != 0xD8.toByte() -> { nacks++; a.log("frame $id not a JPEG → NACK"); frameAck(a, id, false, "decode") }
+                    id in ingested -> { dupes++; a.log("frame $id duplicate (already ingested) → ack ok, not re-ingested"); frameAck(a, id, true) }
+                    else -> { ingested += id; a.log("frame $id ingested jpegBytes=${bytes.size}"); frameAck(a, id, true) }
                 }
             }
             else -> a.log("rx $channel parts=${parts.size}")
@@ -509,18 +572,22 @@ Record: for each kb, received/5 and intact/5, and the glasses `rc` values. `SAFE
 
 - [ ] **Step 5: Run frame tests**
 
-User taps **1 frame @8K / @16K / @32K** (each 3×). Record frame `ms`, chunk count, CRC result.
-Then **backlog 20 @16K**: record `totalMs` and any retries.
+User taps **1 frame @8K / @16K / @32K** (each 3×) and **1 frame @16K + chunk acks** (3×). Record per run: delivered ms, chunk count, attempts.
+Decision: per-chunk acks are needed only if the no-chunk-ack runs show missing/CRC-failed frames that the chunk-ack runs do not.
+Then **1 corrupted frame @16K**: expected phone log `CRC MISMATCH → NACK` then `ingested`; glasses log `NACK reason=crc attempt=1` then `delivered … attempts=2`.
+Then **Drop next frame ack** → **1 frame @16K**: expected glasses `no frame ack` → `flush stopped; retained=1`; tap **Flush retained**: phone logs `duplicate (already ingested) → ack ok, not re-ingested`; glasses `delivered`, buffer 0 (**Glasses buffer?**).
+Then **Backlog 20 @16K**: record `totalMs`, retries, final `retained=0`.
 
-- [ ] **Step 6: Interrupted flush (needs the user)**
+- [ ] **Step 6: Interrupted flush and recovery (needs the user)**
 
-User starts **backlog 20 @16K**; after ~5 frames, ask the user to toggle **phone Bluetooth off for 5 s, then on**, and tap Connect again if the session closed.
-Record: what the glasses logged (timeouts, attempts, "gave up"), whether frames resumed after reconnect, whether the phone logged `dup chunk` (dedupe working), and how long reconnect took.
+User starts **Backlog 20 @16K**; after ~5 `delivered` lines, ask the user to toggle **phone Bluetooth off for 5 s, then on**, and tap Connect again if the session closed.
+Expected: glasses log `no frame ack` (or chunk rc ≠ 0) → `flush stopped; retained=N` with N ≥ 1 and **no frame deleted that the phone did not ingest** (compare **Glasses buffer?** ids with phone `ingested` ids). After reconnect, user taps **Flush retained**: all retained frames are delivered; phone `ingested` total = 20 (+ any `dupes` for frames whose ack was lost in the drop).
+Record: N retained, reconnect ms, frames ingested twice (must be 0), frames lost (must be 0).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add spikes/cxr-probe && git commit -m "spike: size, chunked frame, backlog and interrupt probes
+cd $SPIKE && git add spikes/cxr-probe && git commit -m "spike: size, chunked frame, backlog and interrupt probes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -528,6 +595,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 3: PTT audio during a flush + background sending
+
+**Requirements:** R-76, R-08, R-30
 
 **Files:**
 - Modify: glasses `MainActivity.kt` (`Tests`), `HeartbeatService.kt`
@@ -547,7 +616,7 @@ Add to `Tests.run`'s `when`:
 Add to `Tests`:
 ```kotlin
     private fun audio(withFlush: Boolean, a: Activity) {
-        if (withFlush) thread { frames(a, count = 20, chunkChars = 16_384) }
+        if (withFlush) thread { run(a, JSONObject().put("t", "frames").put("count", 20).put("chunk", 16_384)) }
         val chunk = android.util.Base64.encodeToString(ByteArray(3_200), android.util.Base64.NO_WRAP)
         val start = System.currentTimeMillis()
         var seq = 0
@@ -624,7 +693,7 @@ Decision for Phase 3: if (b)/(c) keep heartbeats flowing, `CaptureService` sends
 - [ ] **Step 5: Commit**
 
 ```bash
-git add spikes/cxr-probe && git commit -m "spike: ptt-during-flush and background send probes
+cd $SPIKE && git add spikes/cxr-probe && git commit -m "spike: ptt-during-flush and background send probes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -632,6 +701,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 4: TTS route and on-device STT with injected audio
+
+**Requirements:** R-76, R-67, R-35
 
 **Files:**
 - Create: `spikes/cxr-probe/phone-probe/src/main/java/com/rokid/context/probe/VoiceProbes.kt`
@@ -644,7 +715,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - [ ] **Step 1: Generate the injected-audio asset**
 
 ```bash
-cd spikes/cxr-probe/phone-probe/src/main && mkdir -p assets
+cd $SPIKE/spikes/cxr-probe/phone-probe/src/main && mkdir -p assets
 say -o /tmp/q.wav --data-format=LEI16@16000 --channels=1 "what do I need from the store"
 python3 - <<'EOF'
 import wave; w=wave.open('/tmp/q.wav'); open('assets/question.pcm','wb').write(w.readframes(w.getnframes()))
@@ -767,22 +838,25 @@ In glasses `Tests.run`'s `when`:
 - [ ] **Step 5: Commit**
 
 ```bash
-git add spikes/cxr-probe && git commit -m "spike: tts route and injected stt probes
+cd $SPIKE && git add spikes/cxr-probe && git commit -m "spike: tts route and injected stt probes
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 5: Record results and decisions (feature branch)
+### Task 5: Record results and decisions (main checkout)
+
+**Requirements:** R-76
 
 **Files:**
 - Create: `docs/spikes/2026-10-12-phase0-results.md` (on `feat/proactive-mvp-implementation`)
 
-- [ ] **Step 1: Switch back and write the results doc**
+- [ ] **Step 1: Write the results doc in the main checkout (no branch switch)**
 
 ```bash
-git switch feat/proactive-mvp-implementation
+cd /Users/debasishkanhar/Desktop/rokid/proactive-context-agent
+git -C $SPIKE log --oneline -1   # record this SHA in the doc
 mkdir -p docs/spikes
 ```
 
@@ -801,11 +875,14 @@ Probe branch: spike/cxr-probe @ <sha>.
 **SAFE_CHUNK_CHARS = …**
 
 ## Chunked frames (20 KB JPEG ≈ 27 KB Base64)
-| chunk | runs | ms per frame (min/median/max) | chunks | CRC ok |
-Backlog 20 @16K: total ms …, retries …
+| chunk | chunk acks | runs | ms per frame (min/median/max) | chunks | attempts |
+Per-chunk acks needed for flow control: yes/no (evidence: …)
+Corrupted frame: NACK observed yes/no; resend delivered yes/no.
+Lost frame ack: frame retained yes/no; re-flush deduped yes/no.
+Backlog 20 @16K: total ms …, retries …, retained at end …
 
 ## Interrupted flush
-What happened: … ; reconnect ms: … ; dedupe observed: yes/no.
+Retained N: … ; reconnect ms: … ; recovered by Flush: yes/no; ingested twice: … (must be 0); lost: … (must be 0).
 
 ## PTT audio gaps (ms)
 | case | n | p50 | p95 | max |
@@ -832,10 +909,11 @@ Injected transcript: "…"; written progression: … ; **verdict:** injection wo
 
 For every "Spec/plan follow-ups" line, edit the named section of `docs/superpowers/specs/2026-10-12-v1-redesign-design.md` (e.g. replace "assume 16 KB until measured" with the measured `SAFE_CHUNK_CHARS`; replace "1 s buffer" in §5.1.1 with the verified detection method).
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 3: Commit and detach the worktree**
 
 ```bash
 git add docs/spikes/2026-10-12-phase0-results.md docs/superpowers/specs/2026-10-12-v1-redesign-design.md
+git worktree remove /Users/debasishkanhar/Desktop/rokid/pca-spike   # branch spike/cxr-probe keeps the probe code
 git commit -m "docs: record phase 0 spike results and spec follow-ups
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"

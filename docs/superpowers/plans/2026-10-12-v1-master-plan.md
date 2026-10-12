@@ -30,9 +30,9 @@
 Inputs/conditions the spec implies but does not spell out; each is pinned by a test in the owning task:
 
 1. **Legacy data that is malformed, partial, or imported twice** (crash mid-import, re-run) — expected: bad lines skipped and counted, no duplicates, import resumes. Owner: Phase 2 Task 4.
-2. **Endpoint input with whitespace, trailing slash, missing scheme, mixed-case host, or a key with surrounding spaces** — expected: normalised or rejected with a clear message; never stored broken. Owner: Phase 2 Task 5.
-3. **Non-Latin memory text (Hindi/Devanagari, CJK, emoji) in lexical search** — expected: a word typed by the user finds memories containing it (SQLite tokenizers split Indic words at combining marks unless text is normalised). Owner: Phase 2 Task 1 (normaliser + FTS test).
-4. **Timezone/DST/clock changes** (user travels; phone and glasses clocks differ) — expected: Today/Week grouping uses the device's current zone at query time on capture instants; pause/quiet-hours math uses offset-corrected instants. Owner: Phase 2 Task 2 (day-bucket query) + Phase 3/7 (pause, quiet hours — tests listed in this plan's phase table).
+2. **Endpoint input with whitespace, trailing slash, missing scheme, mixed-case host, or a key with surrounding spaces** — expected: normalised or rejected with a clear message; never stored broken. Owner: Phase 2 Task 6.
+3. **Non-Latin memory text (Hindi/Devanagari, CJK anywhere in a sentence, Japanese, Thai, emoji) in lexical search** — expected: a word typed by the user finds memories containing it (SQLite tokenizers split Indic words at combining marks, and unsegmented scripts have no spaces; text is normalised and unsegmented runs are indexed as bigrams). Owner: Phase 2 Task 1.
+4. **Timezone/DST/clock changes** (user travels; phone and glasses clocks differ) — expected: Today/Week grouping uses the device's current zone at query time on capture instants; pause/quiet-hours math uses offset-corrected instants. Owner: Phase 2 Task 3 (day-bucket query) + Phase 3/7 (pause, quiet hours — tests listed in this plan's phase table).
 5. **Low storage** while writing frames/DB — expected: write fails cleanly with a `UserFacingError` ("Phone storage full"), glasses keep the frame buffered (no ack), nothing half-written. Owner: Phase 3 (frame ingest).
 
 ---
@@ -41,8 +41,9 @@ Inputs/conditions the spec implies but does not spell out; each is pinned by a t
 
 | Phase | Plan file | Status | Depends on |
 |---|---|---|---|
-| 0 Spikes | `2026-10-12-v1-phase0-spikes.md` | written | — |
-| 1 Module restructure + core modules | `2026-10-12-v1-phase1-restructure.md` | written | — (can run in parallel with 0) |
+| B Baseline commit | Phase 1 Task 0 in `2026-10-12-v1-phase1-restructure.md` | written | — (**first**; everything else starts from its SHA) |
+| 0 Spikes | `2026-10-12-v1-phase0-spikes.md` | written | B (runs in its own worktree `../pca-spike`) |
+| 1 Module restructure + core modules | `2026-10-12-v1-phase1-restructure.md` | written | B (main checkout; may run in parallel with 0) |
 | 2 Data layer | `2026-10-12-v1-phase2-data-layer.md` | written | 1 |
 | 3 CXR link + glasses app | to be written after Phase 0 results | — | 0, 2 |
 | 4 Phone shell | to be written after Phase 2 | — | 2 (+3 for live glasses state; fixtures otherwise) |
@@ -51,7 +52,7 @@ Inputs/conditions the spec implies but does not spell out; each is pinned by a t
 | 7 Nudges, actions, sources, pause, onboarding | to be written after 6 | — | 3, 5, 6 |
 | 8 Hardening | to be written after 7 | — | all |
 
-Phases 3–8 get their own detailed plan (same header/format, bite-sized TDD steps) when their prerequisites are done, because their concrete values (CXR message limit, TTS route, STT behaviour, final DAO shapes) come from earlier phases. Each later plan MUST cite R-IDs per task and MUST cover the R-IDs assigned to it below.
+Task references are `Phase.Task` (e.g. 2.6 = Phase 2 Task 6); every detailed task also carries a `**Requirements:**` line. Phases 3–8 get their own detailed plan (same header/format, bite-sized TDD steps) when their prerequisites are done, because their concrete values (CXR message limit, TTS route, STT behaviour, final DAO shapes) come from earlier phases. Each later plan MUST cite R-IDs per task and MUST cover the R-IDs assigned to it below.
 
 ## Requirement coverage
 
@@ -59,36 +60,36 @@ Phases 3–8 get their own detailed plan (same header/format, bite-sized TDD ste
 |---|---|---|
 | R-01 | 1.1–1.8 (+ new modules created in 3, 5, 6, 7) | `:phone`, `:glasses`, `:core:model/ui/hud`, `:services:ai/memory/orchestration` in P1; `:services:glasses-link` P3; `:services:voice` P6; `:services:connectors` P7 |
 | R-02 | 1.4, 1.5 (theme, components, Swipe/DoubleTap) · 3 (CxrGlassesLink, AuthActivity, GlassAppWatcher, HudController, HudNav, ConfirmOverlay) · 6 (PushToTalk, EnergyVad, AndroidOnDeviceStt, SpeechPacks) · 7 (setup wizard scaffold) | |
-| R-03 | 1.6–1.8 | existing 45 tests keep passing |
+| R-03 | 1.0 (baseline) · 1.1–1.8 · 2.5, 2.7–2.9 | existing 45 tests keep passing (43 after 2.2 removes the dead-entity tests); legacy queue, Config screen and fallback behaviour preserved |
 | R-04 | 3 | RFCOMM removal after CXR frames flow |
 | R-05 | 1.3 (types, channels, version) · 3 (wiring + mismatch UX) | |
 | R-06 | 1.3 (type) · 3 (`StateBroadcaster` ≤ 4 Hz) | |
 | R-07 | 3 | `ContextHubService`; polling loop removal completes in 4 |
-| R-08 | 3 | chunk size from Phase 0 |
+| R-08 | 0.2–0.3 (measured) · 3 (implemented) | chunk size and ack mode from Phase 0 |
 | R-10 | 4 | |
 | R-11 | 4 | |
 | R-12 | 1.5 (tokens + base components) · 4 (FrameThumb, BarChart, StatusStrip, ConfidenceChip, app icon) · 5 (CodeBox, VersionStrip, HudPreview) | |
-| R-13 – R-16 | 4 | R-16 cascade semantics from R-77 (7) |
+| R-13, R-14, R-15, R-16 | 4 (R-15 day buckets from 2.3) | R-16 cascade semantics from R-77 (7) |
 | R-17, R-18 | 5 (Settings tree, glasses settings) | |
 | R-19 | 7 | |
 | R-20 | 4, 5 | |
-| R-30 – R-35 | 3 (R-30–R-34) · 6 (R-35 TTS) · 3 (R-35 offline) | |
-| R-40 | 2.5 | Test button logic; UI in 5 |
-| R-41 | 2.5 (EMBEDDINGS capability + kinds) · 5 (embedding calls) | |
-| R-42 | 2.6 | picker UI in 5 |
-| R-43 – R-47 | 5 | |
-| R-48 | 2.1 (FTS + normaliser) · 5 (BM25, cosine, hybrid) | |
-| R-49 – R-53 | 5 | |
+| R-30, R-31, R-32, R-33, R-34, R-35 | 0.3–0.4 (background send, TTS route measured) · 1.3–1.4 (R-32/R-34 primitives) · 3 (R-30–R-34) · 6 (R-35 TTS) · 3 (R-35 offline) | |
+| R-40 | 2.6 (registry, keys, Test) · 2.7 (seed) · 2.9 (legacy Config bridge) | UI in 5 |
+| R-41 | 2.6 (EMBEDDINGS capability, kinds, embedding probe) · 5 (embedding calls) | |
+| R-42 | 2.7 | picker UI in 5 |
+| R-43, R-44, R-45, R-46, R-47 | 5 | |
+| R-48 | 2.1 (FTS, normaliser, CJK bigrams) · 5 (BM25, cosine, hybrid) | |
+| R-49, R-50, R-51, R-52, R-53 | 5 | |
 | R-60 | 6 | |
-| R-61 – R-66 | 7 | |
-| R-67 | 0 (probe) · 6 (gate + UX) | |
-| R-70 | 2.1 | encryption toggle migration in 5 (Settings → Memory) |
-| R-71 | 2.4 | |
-| R-72 | 3 (`UserFacingError` introduced) · all later phases | |
+| R-61, R-62, R-63, R-64, R-65, R-66 | 7 (R-65 `PauseRecord`/`QuietHours` types from 1.3) | |
+| R-67 | 0.4 (probe) · 6 (gate + UX) | |
+| R-70 | 2.1–2.3 | encryption toggle migration in 5 (Settings → Memory) |
+| R-71 | 2.4–2.5 | |
+| R-72 | 2.8 (typed model errors, short trace messages) · 3 (`UserFacingError` introduced) · all later phases | |
 | R-73 | every task (TDD) · 8 (UI smoke suite completion) | |
 | R-74 | 8 | |
 | R-75 | 8 | |
-| R-76 | 0 | |
+| R-76 | 0.1–0.5 | |
 | R-77 | 7 | |
 
 ## Cross-phase interfaces (fixed here so phases agree)
@@ -117,6 +118,6 @@ Phases 3–8 get their own detailed plan (same header/format, bite-sized TDD ste
 - `:core:model` — `PROTOCOL_VERSION`, `Channels`, `Wire`, `StateFrame`, `CaptureState`, `PauseRecord`, `PauseOrigin`, `Health`, `NudgeLine`, `MemoryLine`, `Overlay`, `HudSettings`, `Verbosity`, `HudPosition`, `Gesture`, `GestureAction`, `Command`, `Hello`, `FrameMeta`, `FrameAck`.
 - `:core:ui` — `PcColors`, `PcTheme`, `SoftCard`, `IconChip`, `TextChip`, `ChipRow`, `SectionLabel`, `ScreenHeader`, `GradientHeader`, `PillNav`, `PillNavItem`, `SegmentedSwitch`, `MetricTile`, `GradientCircleButton`, `GradientButton`, `Banner`, `BannerTone`.
 - `:core:hud` — `Hud`, `Glyph`, `Label`, `Scaled`, `OutlinedBox`, `HudToast`, `SwipeClassifier`, `SwipeKey`, `Swipe`, `DoubleTapDetector`.
-- `:services:ai` — `ProviderSettings`, `ModelProvider`, `ModelImageInput`, `EndpointKind`, `Capability`, `Endpoint`, `EndpointRepository`, `KeyVault`, `UrlNormalizer`, `EndpointTester`, `Role`, `RoleBinding`, `RoleBindingRepository`, `ModelRouter` (incl. `generateFromFrames`), `ProviderBuilder`, `ProviderFactory`, `EndpointSeeder`, `EndpointTester`/`TestResult`, `EnvDefaults`, `AiGraph`.
-- `:services:memory` — `ContextDatabase`, all entities/DAOs in spec §6.1, `SearchNormalizer`, `FrameRepository`, `MemoryRepository`, `TraceRepository`, `DayBucket`, `MemoryGraph` (incl. `ensureLegacyImported`), `LegacyImporter`, `ImportReport`, `DbKeyStore`, `Embedder` (interface only).
-- `:services:orchestration` — `LegacyImportWorker`; legacy facades `MemoryRecordStore` (in memory), `FrameStreamStore`, `SummaryTraceStore` (transitional, deleted in Phase 4).
+- `:services:ai` — `ProviderSettings`, `ModelProvider`, `ModelImageInput`, `EndpointKind`, `Capability`, `Endpoint`, `EndpointRepository`, `KeyVault`, `UrlNormalizer`, `EndpointTester`, `Role`, `RoleBinding`, `RoleBindingRepository`, `ModelRouter` (incl. `generateFromFrames`), `ModelCallException`, `ProviderErrors`, `ProviderBuilder`, `ProviderFactory`, `EndpointSeeder` (`seedIfNeeded`, `syncFromLegacy`), `SeedState`, `EndpointTester`/`TestResult`, `EnvDefaults`, `AiGraph`.
+- `:services:memory` — `ContextDatabase`, all entities/DAOs in spec §6.1, `SearchNormalizer` (incl. bigram segmentation), `FrameRepository`, `MemoryRepository`, `TraceRepository`, `DayBucket`, `MemoryGraph` (incl. `ensureLegacyImported`), `LegacyImporter`, `ImportReport`, `DbKeyStore`, `Embedder` (interface only).
+- `:services:orchestration` — `LegacyImportWorker`, `RetryClassifier`, `LegacyConfigBridge` (transitional, deleted in 5); legacy facades `MemoryRecordStore` (in memory), `FrameStreamStore`, `SummaryTraceStore` (transitional, deleted in Phase 4).
