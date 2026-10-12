@@ -1,0 +1,73 @@
+package com.rokid.context.phone.ui.banner
+
+import com.rokid.context.core.model.CaptureState
+import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.PauseOrigin
+import com.rokid.context.core.model.PauseRecord
+import com.rokid.context.core.ui.components.BannerTone
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class BannerResolverTest {
+    @Test fun healthyStateHasNoBanner() = assertNull(BannerResolver.resolve(BannerInputs()))
+
+    @Test fun severityOrderMatchesSpec() {
+        val all = BannerInputs(
+            aiBlockedText = "AI key rejected", link = LinkState.OFFLINE, capture = CaptureState.Deferred("Low battery"),
+            pipelineEnabled = false, index = IndexState.NEEDED, storagePct = 75,
+        )
+        assertEquals(
+            listOf(BannerKind.AI_BLOCKED, BannerKind.GLASSES_DISCONNECTED, BannerKind.CAPTURE_DEFERRED, BannerKind.CAPTURE_PAUSED, BannerKind.INDEX, BannerKind.STORAGE),
+            BannerResolver.candidates(all).map { it.kind },
+        )
+        assertEquals(BannerKind.AI_BLOCKED, BannerResolver.resolve(all)?.kind)
+        assertEquals(
+            listOf(BannerKind.PROTOCOL_MISMATCH, BannerKind.CAPTURE_DEFERRED),
+            BannerResolver.candidates(BannerInputs(link = LinkState.VERSION_MISMATCH, capture = CaptureState.Deferred("Low battery"))).map { it.kind },
+        )
+    }
+
+    @Test fun disconnectedVariantsOfferReconnect() {
+        val offline = BannerResolver.resolve(BannerInputs(link = LinkState.OFFLINE))!!
+        assertEquals("Glasses disconnected", offline.title); assertEquals("Reconnect", offline.actionLabel); assertEquals(BannerAction.RECONNECT, offline.action)
+        val closed = BannerResolver.resolve(BannerInputs(link = LinkState.CLOSED_ON_GLASSES))!!
+        assertEquals("Open on glasses", closed.actionLabel); assertEquals(BannerAction.RECONNECT, closed.action)
+        assertEquals(BannerKind.GLASSES_DISCONNECTED, BannerResolver.resolve(BannerInputs(link = LinkState.NOT_AUTHORIZED))?.kind)
+        for (quiet in listOf(LinkState.CONNECTED, LinkState.CONNECTING, LinkState.PAUSED_BT)) assertNull(quiet.name, BannerResolver.resolve(BannerInputs(link = quiet)))
+    }
+
+    @Test fun pausedByPipelineOrByCaptureStateOffersResume() {
+        val p = BannerResolver.resolve(BannerInputs(pipelineEnabled = false))!!
+        assertEquals(BannerKind.CAPTURE_PAUSED, p.kind); assertEquals(BannerTone.SLATE, p.tone); assertEquals(BannerAction.RESUME, p.action)
+        val rec = CaptureState.Paused(listOf(PauseRecord("p1", PauseOrigin.GLASSES, 1)))
+        assertEquals(BannerKind.CAPTURE_PAUSED, BannerResolver.resolve(BannerInputs(capture = rec))?.kind)
+        assertEquals(BannerTone.AMBER, BannerResolver.resolve(BannerInputs(capture = CaptureState.Deferred("Low battery")))?.tone)
+    }
+
+    @Test fun storageThresholds() {
+        assertNull(BannerResolver.resolve(BannerInputs(storagePct = 69)))
+        assertEquals(BannerTone.AMBER, BannerResolver.resolve(BannerInputs(storagePct = 70))?.tone)
+        assertEquals(BannerTone.AMBER, BannerResolver.resolve(BannerInputs(storagePct = 89))?.tone)
+        assertEquals(BannerTone.CORAL, BannerResolver.resolve(BannerInputs(storagePct = 90))?.tone)
+        assertEquals("Memory storage 92% full", BannerResolver.resolve(BannerInputs(storagePct = 92))?.title)
+    }
+
+    @Test fun aiBlockedBannerTruncatesLongText() {
+        val b = BannerResolver.resolve(BannerInputs(aiBlockedText = "x".repeat(200) + "\nstack"))!!
+        assertTrue(b.title.startsWith("AI unavailable · "))
+        assertTrue(b.title.length <= "AI unavailable · ".length + 60)
+        assertTrue(b.title.endsWith("…"))
+        assertEquals(BannerAction.FIX_AI, b.action)
+    }
+
+    @Test fun hubPauseWithPipelineOnShowsPausedBannerWithoutResume() {
+        val rec = CaptureState.Paused(listOf(PauseRecord("p1", PauseOrigin.GLASSES, 1)))
+        val b = BannerResolver.resolve(BannerInputs(capture = rec, pipelineEnabled = true))!!
+        assertEquals(BannerKind.CAPTURE_PAUSED, b.kind)
+        assertNull(b.action); assertNull(b.actionLabel)
+        val both = BannerResolver.resolve(BannerInputs(capture = rec, pipelineEnabled = false))!!
+        assertEquals(BannerAction.RESUME, both.action)
+    }
+}

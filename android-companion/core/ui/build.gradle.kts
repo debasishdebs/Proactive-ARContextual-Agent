@@ -21,6 +21,7 @@ dependencies {
     api("androidx.compose.ui:ui")
     api("androidx.compose.material3:material3")
     api("androidx.compose.material:material-icons-extended")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation(platform("androidx.compose:compose-bom:2024.09.00"))
     testImplementation(kotlin("test"))
     testImplementation("junit:junit:4.13.2")
