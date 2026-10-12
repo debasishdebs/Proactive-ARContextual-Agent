@@ -144,6 +144,23 @@ class HudControllerTest {
         assertTrue(bridge.sent.isEmpty())
     }
 
+    /** Spec §1.7 send gate: the session must not reopen after the activity exits, until it starts again. */
+    @Test fun anExitedActivityIsNotReopenedByPhoneMessagesUntilItStartsAgain() = runTest {
+        val c = controller()
+        bridge.phone(Channels.STATE, state())
+        assertEquals(1, hellos())
+        c.onActivityExit()
+        bridge.phone(Channels.STATE, state())
+        bridge.phone(Channels.HELLO_REQUEST, Wire.encode(HelloRequest()))
+        assertFalse(c.sessionOpen.value)
+        assertEquals(1, hellos())
+        assertEquals(-1, c.sendFrameChunk(FrameCodec.split("g1", ByteArray(4) { 1 }, capturedAtMs = 1).single()))
+        c.onActivityStart()
+        bridge.phone(Channels.STATE, state())
+        assertTrue(c.sessionOpen.value)
+        assertEquals(2, hellos())
+    }
+
     @Test fun connectionStates() {
         assertEquals(HudConnection.CONNECTING, connectionFor(everReceived = false, online = false, outdated = false, sinceStartMs = 11_999))
         assertEquals(HudConnection.OFFLINE, connectionFor(everReceived = false, online = false, outdated = false, sinceStartMs = 12_000))
