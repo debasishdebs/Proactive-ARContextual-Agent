@@ -49,9 +49,9 @@ class RoleRunner(
         val at = now()
         val prompt = PromptComposer.compose(system.template, version.template, call.vars.toMap(persona.persona.value, NowText.of(at)))
         val ctx = SemanticContext(call.inputIds, at)
-        var problems = emptyList<String>()
+        var rejected: OutputEvaluation? = null
         for (attempt in 1..2) {
-            val text = if (attempt == 1) prompt else prompt + RETRY_NOTE.format(problems.joinToString("; ").take(400))
+            val text = rejected?.let { prompt + retryNote(it) } ?: prompt
             val build: (com.rokid.context.ai.Endpoint) -> ModelRequest = { e ->
                 val plan = StructuredOutput.plan(e, schema, call.key.name)
                 ModelRequest(text + plan.promptSuffix, call.images, format = plan.format)
@@ -64,14 +64,49 @@ class RoleRunner(
                 Log.w(TAG, "${call.key.name} v${version.version} output schema can't be applied")
                 throw ModelCallException("${call.key.name} v${version.version} output schema can't be applied", retryable = true, kind = FailureKind.INVALID_OUTPUT)
             }
-            problems = eval.problems()
-            Log.i(TAG, "${call.key.name} v${version.version} reply rejected (attempt $attempt, ${problems.size} problem(s)) from ${reply.endpoint.name}")
+            rejected = eval
+            Log.i(TAG, "${call.key.name} v${version.version} reply rejected (attempt $attempt, ${eval.problems().size} problem(s)) from ${reply.endpoint.name}")
         }
-        throw ModelCallException("${call.key.name} reply didn't match its schema: ${problems.joinToString("; ").take(200)}", retryable = true, kind = FailureKind.INVALID_OUTPUT)
+        val last = checkNotNull(rejected)
+        throw ModelCallException("${call.key.name} reply didn't match its schema: ${failureSummary(last)}", retryable = true, kind = FailureKind.INVALID_OUTPUT)
     }
 
     private companion object {
         const val TAG = "RoleRunner"
-        const val RETRY_NOTE = "\n\nYour previous reply was rejected: %s\nReply again with corrected JSON only."
+        const val MAX_ECHO = 400
+        private val SAFE_PATH = Regex("^\\$[A-Za-z0-9_.\\[\\]]*$")
+
+        /** No JSON, or JSON the decoder couldn't read: the problem line is fixed text. */
+        fun fixedText(e: OutputEvaluation) = !e.parsed || (e.schemaValid && !e.decoded)
+
+        /**
+         * The corrective note. Its instruction text is fixed; problem lines can carry model-controlled text (keys, cited
+         * ids), so they go in a data block, at most [MAX_ECHO] characters in all.
+         */
+        fun retryNote(e: OutputEvaluation): String {
+            val problems = e.problems()
+            val detail = if (fixedText(e)) problems.joinToString("; ")
+            else "${problems.size} problem(s), listed in the validation_errors data below.\n" + PromptComposer.dataBlock("validation_errors", bounded(problems))
+            return "\n\nYour previous reply was rejected: $detail\nReply again with corrected JSON only."
+        }
+
+        fun bounded(lines: List<String>): List<String> {
+            var left = MAX_ECHO
+            return buildList {
+                for (l in lines) { if (left <= 0) break; add(l.take(left)); left -= l.length }
+            }
+        }
+
+        /** For the exception (and so the logs): the count and where the first problem is, never reply text. */
+        fun failureSummary(e: OutputEvaluation): String {
+            val problems = e.problems()
+            val first = problems.firstOrNull().orEmpty()
+            val where = when {
+                fixedText(e) -> first
+                !e.schemaValid -> first.substringBefore(": ").takeIf { it.length <= 60 && SAFE_PATH.matches(it) } ?: "$"
+                else -> first.substringBefore(": ") // semantic lines: fixed text, then ": <cited ids>"
+            }
+            return "${problems.size} problem(s), first: $where"
+        }
     }
 }
