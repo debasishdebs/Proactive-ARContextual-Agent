@@ -12,6 +12,7 @@ Build a separate app stack that:
 ## Repository Layout
 - `docs/ARCHITECTURE.md`: system design and state flow.
 - `docs/PHONE_PROCESSING_POLICY.md`: battery + charging processing rules.
+- `android-companion/glasses-app/`: glasses-side camera frame relay app (CameraX + SPP).
 - `src/model_gateway.py`: uniform provider interface (API/local interchangeable).
 - `src/phone_request_policy.py`: scheduling policy for uploads + local inference.
 - `reference/language_models.py`: copied reference abstraction source.
@@ -54,6 +55,19 @@ Implemented baseline modules:
   - `AZURE_KG_54_API_KEY`
   - optional `AZURE_KG_DEPLOYMENT` (defaults to `gpt-5.4`)
 - Ollama client uses `OLLAMA_BASE_URL` + `OLLAMA_MODEL` (default model `llama3.1:8b`).
+- Local runtime selection is now configurable:
+  - `LOCAL_RUNTIME_MODE=native_first|native_only|ollama_only`
+  - `LOCAL_NATIVE_MODEL_PATH=/absolute/path/to/model.gguf`
+  - Default is `native_first` (try on-device llama.cpp, fallback to Ollama only if unavailable).
+
+### True on-device model (Android)
+- Yes, native on-device inference is supported via llama.cpp JNI path in app (`LlamaCppNativeProvider`).
+- No server hosting is required in `native_first` / `native_only` modes once:
+  - native library is bundled in APK (`libllama_jni.so`), and
+  - GGUF model is present at `LOCAL_NATIVE_MODEL_PATH`.
+- If native runtime is unavailable and mode is:
+  - `native_first`: app falls back to Ollama provider.
+  - `native_only`: app raises configuration/runtime error (expected, by design).
 
 ### Ollama runtime note
 - Docker is not run inside Android app runtime.
@@ -72,3 +86,35 @@ docker exec -it ollama ollama pull llama3.1:8b
   - periodic frame ingest (15 min)
   - periodic critic job (3h)
   - one-shot summarizer enqueue
+
+## Glasses Frame Relay (Real Camera Path)
+- `glasses-app` captures camera frames with CameraX (not display `screencap`).
+- Guardrails enforced on glasses before send:
+  - reject dark/black frames by luminance threshold
+  - reject near-duplicate frames via perceptual hash distance
+  - reject under low battery policy (`<=10%` and not charging)
+  - send-rate throttle and single in-flight send
+- Compression strategy:
+  - compress on glasses to JPEG before transfer (default quality ~62, width capped to 360 px)
+  - send over Bluetooth SPP to phone bridge (`RokidBridgeService`) payload type `rokid_frame`
+- Phone bridge adds second-layer guardrail to reject blank/dark payloads before ingest.
+
+### Build
+```bash
+cd android-companion
+./gradlew :app:assembleDebug :glasses-app:assembleDebug
+```
+
+## Prompt Templates (Editable)
+- Location: `android-companion/app/src/main/assets/prompts/`
+- Files:
+  - `system_global.txt`: shared system behavior for all tasks.
+  - `write_context_explicit.txt`: explicit remember/writeContext requests.
+  - `write_context_batched.txt`: scheduled/batched frame-to-memory summarization.
+  - `read_context_answer.txt`: readContext / answer generation.
+  - `critic_validation.txt`: critic validation pass for summaries.
+  - `re_summarize.txt`: recovery prompt for low-confidence re-summarization.
+- Runtime usage:
+  - `SummarizerWorkerJob` composes `system_global + write_context_batched`.
+  - `CriticWorkerJob` composes `system_global + critic_validation`.
+  - Prompt hash is logged for audit/debug without exposing full prompt text.
