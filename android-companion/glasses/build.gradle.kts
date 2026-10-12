@@ -5,12 +5,13 @@ plugins {
 
 android {
     namespace = "com.rokid.context.glasses"
+    lint { disable += "ExpiredTargetSdkVersion" }
     compileSdk = 36
 
     defaultConfig {
         applicationId = "com.rokid.context.glasses"
-        minSdk = 29
-        targetSdk = 35
+        minSdk = 28
+        targetSdk = 32
         versionCode = 1
         versionName = "0.1.0"
     }

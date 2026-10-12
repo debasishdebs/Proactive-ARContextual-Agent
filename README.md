@@ -12,7 +12,7 @@ Build a separate app stack that:
 ## Repository Layout
 - `docs/ARCHITECTURE.md`: system design and state flow.
 - `docs/PHONE_PROCESSING_POLICY.md`: battery + charging processing rules.
-- `android-companion/glasses-app/`: glasses-side camera frame relay app (CameraX + SPP).
+- `android-companion/glasses/`: glasses-side camera frame relay app (CameraX + SPP).
 - `src/model_gateway.py`: uniform provider interface (API/local interchangeable).
 - `src/phone_request_policy.py`: scheduling policy for uploads + local inference.
 - `reference/language_models.py`: copied reference abstraction source.
@@ -88,7 +88,7 @@ docker exec -it ollama ollama pull llama3.1:8b
   - one-shot summarizer enqueue
 
 ## Glasses Frame Relay (Real Camera Path)
-- `glasses-app` captures camera frames with CameraX (not display `screencap`).
+- `glasses` captures camera frames with CameraX (not display `screencap`).
 - Guardrails enforced on glasses before send:
   - reject dark/black frames by luminance threshold
   - reject near-duplicate frames via perceptual hash distance
@@ -102,11 +102,11 @@ docker exec -it ollama ollama pull llama3.1:8b
 ### Build
 ```bash
 cd android-companion
-./gradlew :app:assembleDebug :glasses-app:assembleDebug
+./gradlew :phone:assembleDebug :glasses:assembleDebug
 ```
 
 ## Prompt Templates (Editable)
-- Location: `android-companion/app/src/main/assets/prompts/`
+- Location: `android-companion/phone/src/main/assets/prompts/`
 - Files:
   - `system_global.txt`: shared system behavior for all tasks.
   - `write_context_explicit.txt`: explicit remember/writeContext requests.
