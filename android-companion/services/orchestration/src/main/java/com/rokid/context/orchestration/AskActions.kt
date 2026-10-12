@@ -6,6 +6,10 @@ import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.ModelCallException
 import com.rokid.context.ai.Role
 import com.rokid.context.data.runtime.AppConfigStore
+import com.rokid.context.data.runtime.QueuePayloads
+import com.rokid.context.data.runtime.QueueRuntimeStore
+import com.rokid.context.domain.queue.QueuePriority
+import com.rokid.context.work.OrchestrationScheduler
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.ReviewState
@@ -48,6 +52,7 @@ object AskActions {
     const val NO_MEMORIES = "Nothing saved yet — ask again once a few moments are captured"
     const val AI_UNAVAILABLE = "AI unavailable — check Settings › Model endpoints"
     const val FAILED = "Couldn't answer that — try again"
+    const val REVIEW_REASON = "User marked an answer unhelpful"
     private const val TAG = "AskActions"
 
     suspend fun ask(context: Context, question: String, nowMs: Long = System.currentTimeMillis()): AskOutcome {
@@ -88,5 +93,32 @@ object AskActions {
             ),
         )
         return AskOutcome.Answered(id)
+    }
+
+    /**
+     * 👍 = 1, 👎 = −1 (spec §2.4 Ask detail). Changing to 👎 enqueues one critic re-summarise over the cited memories
+     * (the legacy PRIORITY_REPROCESS queue). Repeating the same rating is a no-op. Redacted or unknown asks → false.
+     */
+    suspend fun rate(context: Context, askId: String, up: Boolean): Boolean {
+        val graph = MemoryGraph.get(context)
+        val ask = graph.asks.byId(askId) ?: return false
+        if (ask.redacted) return false
+        val rating = if (up) 1 else -1
+        if (ask.rating == rating) return true
+        graph.asks.setRating(askId, rating) // field-level UPDATE: never a whole-row upsert
+        if (!up) {
+            val cited = graph.timeline.memoriesByIds(AskSources.parse(ask.sourcesJson))
+            if (cited.isNotEmpty()) withContext(Dispatchers.IO) {
+                QueueRuntimeStore.enqueue(
+                    context = context,
+                    queue = QueuePriority.PRIORITY_REPROCESS,
+                    payload = QueuePayloads.reprocess(reason = REVIEW_REASON, sourceContext = cited.joinToString("\n") { it.text }),
+                    personaSnapshot = AppConfigStore.get(context).persona,
+                    ttlHours = 24,
+                )
+                OrchestrationScheduler(context).enqueueQueueDrainNow()
+            }
+        }
+        return true
     }
 }
