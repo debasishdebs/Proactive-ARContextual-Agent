@@ -7,12 +7,18 @@ import com.rokid.context.core.model.PauseRecord
  * is ignored. All values are epoch ms, so time zones and DST never enter this math.
  */
 data class ClockOffset(val glassesMinusPhoneMs: Long) {
-    fun toPhone(glassesMs: Long): Long = glassesMs - glassesMinusPhoneMs
-    fun toGlasses(phoneMs: Long): Long = phoneMs + glassesMinusPhoneMs
+    fun toPhone(glassesMs: Long): Long = saturatingAdd(glassesMs, -glassesMinusPhoneMs.coerceAtLeast(-Long.MAX_VALUE))
+    fun toGlasses(phoneMs: Long): Long = saturatingAdd(phoneMs, glassesMinusPhoneMs)
     fun recordToPhone(r: PauseRecord): PauseRecord = r.copy(createdAtMs = toPhone(r.createdAtMs), untilMs = r.untilMs?.let(::toPhone))
     fun recordToGlasses(r: PauseRecord): PauseRecord = r.copy(createdAtMs = toGlasses(r.createdAtMs), untilMs = r.untilMs?.let(::toGlasses))
 
     companion object {
+        /** Overflow clamps to the Long range, so sentinel stamps (MAX/MIN) stay extreme instead of wrapping. */
+        private fun saturatingAdd(a: Long, b: Long): Long {
+            val r = a + b
+            return if (((a xor r) and (b xor r)) < 0) (if (a < 0) Long.MIN_VALUE else Long.MAX_VALUE) else r
+        }
+
         fun fromHello(glassesNowMs: Long, phoneReceivedAtMs: Long) = ClockOffset(glassesNowMs - phoneReceivedAtMs)
 
         /** No offset yet: keep the record's duration but start it at the phone's [nowMs] (never shorter: fail-closed). */

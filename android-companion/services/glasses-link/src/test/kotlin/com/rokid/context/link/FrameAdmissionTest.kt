@@ -32,8 +32,20 @@ class FrameAdmissionTest {
         val a = FrameAdmission(ledger(), Intervals(pauseStart to pauseStart + 30 * 60_000))
         val capturedOnGlasses = pauseStart + 10 * 60_000 + twoHours
         assertEquals(Admission.AckOnly(FrameAckReason.PAUSED_DROP), a.decide(meta("g1", capturedOnGlasses), ClockOffset(twoHours), phoneNow))
-        // Uncorrected, the same stamp lands 70 min in the future, is clamped to now and slips past the pause.
-        assertEquals(Admission.Ingest(phoneNow), a.decide(meta("g1", capturedOnGlasses), ClockOffset(0), phoneNow))
+        // Uncorrected (stale offset), the same stamp lands 70 min in the future: held, never judged at "now".
+        assertEquals(Admission.Hold, a.decide(meta("g1", capturedOnGlasses), ClockOffset(0), phoneNow))
+    }
+
+    @Test fun futureFrameWithinSkewToleranceIsIngestedAtNow() = runTest {
+        val a = FrameAdmission(ledger(), Intervals())
+        assertEquals(Admission.Ingest(phoneNow), a.decide(meta("s1", phoneNow + 2_000), ClockOffset(0), phoneNow))
+        assertEquals(Admission.Hold, a.decide(meta("s2", phoneNow + FrameAdmission.SKEW_TOLERANCE_MS + 1), ClockOffset(0), phoneNow))
+    }
+
+    @Test fun extremeTimestampsDoNotOverflowIntoAdmission() = runTest {
+        val a = FrameAdmission(ledger(), Intervals())
+        assertEquals(Admission.Hold, a.decide(meta("m1", Long.MAX_VALUE), ClockOffset(-5), phoneNow))
+        assertEquals(Admission.AckOnly(FrameAckReason.TOO_OLD), a.decide(meta("m2", Long.MIN_VALUE), ClockOffset(5), phoneNow))
     }
 
     @Test fun frameOutsidePausesIsIngestedAtPhoneTime() = runTest {

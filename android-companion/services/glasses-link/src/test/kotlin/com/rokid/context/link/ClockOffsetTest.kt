@@ -45,4 +45,10 @@ class ClockOffsetTest {
         assertEquals(1_060_000, r.untilMs)
         assertNull(ClockOffset.anchoredAt(PauseRecord("q", PauseOrigin.GLASSES, 5_000, null), nowMs = 9).untilMs)
     }
+
+    @Test fun conversionsSaturateInsteadOfOverflowing() {
+        assertEquals(Long.MAX_VALUE, ClockOffset(-5).toPhone(Long.MAX_VALUE))
+        assertEquals(Long.MIN_VALUE, ClockOffset(5).toPhone(Long.MIN_VALUE))
+        assertEquals(Long.MAX_VALUE, ClockOffset(5).toGlasses(Long.MAX_VALUE))
+    }
 }
