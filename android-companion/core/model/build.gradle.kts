@@ -7,6 +7,8 @@ kotlin { jvmToolchain(17) }
 
 dependencies {
     api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    // For StateFlow in GlassesStatusSource (Phase 3↔4 contract; Phase 4 adds the identical line).
+    api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     testImplementation(kotlin("test"))
 }
 
