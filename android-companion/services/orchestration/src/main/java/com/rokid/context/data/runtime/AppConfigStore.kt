@@ -3,7 +3,7 @@ package com.rokid.context.data.runtime
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import com.rokid.context.BuildConfig
+import com.rokid.context.ai.EnvDefaults
 
 data class AppConfig(
     val pipelineEnabled: Boolean,
@@ -43,15 +43,15 @@ object AppConfigStore {
             memoryWindow = p.getString(K_MEMORY_WINDOW, "24h").orEmpty().ifBlank { "24h" },
             persona = p.getString(K_PERSONA, "Global Default").orEmpty().ifBlank { "Global Default" },
             providerType = p.getString(K_PROVIDER_TYPE, "openai").orEmpty().ifBlank { "openai" },
-            endpoint = p.getString(K_ENDPOINT, BuildConfig.AZURE_KG_ENDPOINT).orEmpty(),
+            endpoint = p.getString(K_ENDPOINT, EnvDefaults.azureEndpoint).orEmpty(),
             apiKey = secrets(context)
-                .getString(K_API_KEY, BuildConfig.AZURE_KG_API_KEY)
+                .getString(K_API_KEY, EnvDefaults.azureApiKey)
                 .orEmpty()
                 .replace("\\s+".toRegex(), ""),
-            deploymentOrModel = p.getString(K_DEPLOYMENT_OR_MODEL, BuildConfig.AZURE_KG_DEPLOYMENT).orEmpty().ifBlank {
-                BuildConfig.AZURE_KG_DEPLOYMENT
+            deploymentOrModel = p.getString(K_DEPLOYMENT_OR_MODEL, EnvDefaults.azureDeployment).orEmpty().ifBlank {
+                EnvDefaults.azureDeployment
             },
-            nativeModelPath = p.getString(K_NATIVE_MODEL_PATH, BuildConfig.LOCAL_NATIVE_MODEL_PATH).orEmpty(),
+            nativeModelPath = p.getString(K_NATIVE_MODEL_PATH, EnvDefaults.localNativeModelPath).orEmpty(),
         )
     }
 
