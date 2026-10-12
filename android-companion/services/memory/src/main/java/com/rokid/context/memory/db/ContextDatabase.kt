@@ -7,6 +7,9 @@ import androidx.room.RoomDatabase
     entities = [
         FrameEntity::class, MemoryEntity::class, MemoryFts::class, MemorySourceEntity::class, ForgetTombstoneEntity::class,
         EmbeddingSpaceEntity::class, MemoryVectorEntity::class, SummaryTraceEntity::class,
+        EndpointEntity::class, RoleBindingEntity::class, PromptEntity::class, PromptVersionEntity::class, AskEntity::class,
+        NudgeEntity::class, ProposalEntity::class, ActionLogEntity::class, PauseRecordEntity::class, PauseIntervalEntity::class,
+        ShoppingItemEntity::class, NoteEntity::class,
     ],
     version = 1,
     exportSchema = true,
@@ -15,4 +18,6 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun frameDao(): FrameDao
     abstract fun memoryDao(): MemoryDao
     abstract fun traceDao(): TraceDao
+    abstract fun endpointDao(): EndpointDao
+    abstract fun roleBindingDao(): RoleBindingDao
 }

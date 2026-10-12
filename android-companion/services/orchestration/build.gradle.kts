@@ -16,7 +16,6 @@ dependencies {
     api(project(":services:ai"))
     api(project(":services:memory"))
     api("androidx.work:work-runtime-ktx:2.9.1")
-    implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     testImplementation("junit:junit:4.13.2")
