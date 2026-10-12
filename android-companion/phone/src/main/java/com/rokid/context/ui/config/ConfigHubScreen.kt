@@ -13,12 +13,14 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 
@@ -167,6 +169,8 @@ object ConfigHubScreen {
                         label = { Text("API Key / Token") },
                         placeholder = { if (state.apiKeySaved) Text("Key saved") },
                         visualTransformation = PasswordVisualTransformation(),
+                        // The IME must never learn, suggest or sync the key.
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
                     )
                     if (state.apiKeySaved) TextButton(onClick = onClearApiKey) { Text("Clear key") }
                     OutlinedTextField(
