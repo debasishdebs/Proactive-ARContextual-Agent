@@ -27,7 +27,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.rokid.context.bridge.RokidBridgeService
+import com.rokid.context.phone.hub.ContextHubService
+import com.rokid.context.phone.hub.HubGraph
+import com.rokid.context.phone.hub.HubSettingsStore
 import com.rokid.context.data.frames.FrameStreamStore
 import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.data.runtime.AppConfigStore
@@ -166,8 +168,8 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
     var glassesSilencyMode by rememberSaveable { mutableStateOf(AppConfigStore.glassesSilencyMode(context)) }
     var testResult by rememberSaveable { mutableStateOf("Not tested") }
 
-    var bridgeListening by rememberSaveable { mutableStateOf(RokidBridgeService.isListening(context)) }
-    var bridgeMessage by rememberSaveable { mutableStateOf(RokidBridgeService.lastMessage(context)) }
+    var bridgeListening by rememberSaveable { mutableStateOf(ContextHubService.isRunning()) }
+    var bridgeMessage by rememberSaveable { mutableStateOf(ContextHubService.statusLine()) }
     var pendingBridgeEnable by rememberSaveable { mutableStateOf(false) }
 
     val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
@@ -175,7 +177,7 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
     ) { granted ->
         if (pendingBridgeEnable && granted) {
             bridgeListening = true
-            RokidBridgeService.start(context)
+            ContextHubService.ensureRunning(context)
             lastAction = "Rokid bridge started"
         } else if (pendingBridgeEnable) {
             bridgeListening = false
@@ -230,14 +232,14 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
             return
         }
         bridgeListening = true
-        RokidBridgeService.start(context)
+        ContextHubService.ensureRunning(context)
         bridgeMessage = "Bridge start requested ($reason)"
     }
 
     fun stopBridge(reason: String) {
         bridgeListening = false
         pendingBridgeEnable = false
-        context.stopService(Intent(context, RokidBridgeService::class.java))
+        ContextHubService.stop(context)
         bridgeMessage = "Bridge stopped ($reason)"
     }
 
@@ -315,8 +317,8 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
             totalSummFailed = stats.summarizerFailed
             totalFramesCaptured = stats.framesCaptured
 
-            bridgeListening = RokidBridgeService.isListening(context)
-            bridgeMessage = RokidBridgeService.lastMessage(context)
+            bridgeListening = ContextHubService.isRunning()
+            bridgeMessage = ContextHubService.statusLine()
             if (pipelineEnabled && hasBluetoothConnectPermission() && !bridgeListening) {
                 ensureBridgeStarted("watchdog")
             }
@@ -456,13 +458,13 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
                                 bluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
                             } else {
                                 bridgeListening = true
-                                RokidBridgeService.start(context)
+                                ContextHubService.ensureRunning(context)
                                 lastAction = "Rokid bridge started"
                             }
                         } else {
                             bridgeListening = false
                             pendingBridgeEnable = false
-                            context.stopService(Intent(context, RokidBridgeService::class.java))
+                            ContextHubService.stop(context)
                             lastAction = "Rokid bridge stopped"
                         }
                     },
@@ -631,20 +633,9 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
                     onSelectGlassesSilencyMode = { mode ->
                         glassesSilencyMode = mode
                         AppConfigStore.setGlassesSilencyMode(context, mode)
-                        RokidBridgeService.queueSilencyModeSync(context, mode)
-                        scope.launch {
-                            val result = RokidBridgeService.pushSilencyModeNow(context, mode)
-                            val label = when (mode.trim().lowercase()) {
-                                "stealth", "silent" -> "SILENT"
-                                "compact", "max" -> "MAX"
-                                else -> "MEDIUM"
-                            }
-                            lastAction = if (result.ok) {
-                                "Glasses verbosity synced: $label"
-                            } else {
-                                "Glasses verbosity queued ($label): ${result.message}"
-                            }
-                        }
+                        val verbosity = HubSettingsStore.verbosityFor(mode)
+                        HubGraph.get(context).updateSettings { it.copy(verbosity = verbosity) }
+                        lastAction = "Glasses verbosity: ${verbosity.name} (applied when linked)"
                     },
                     onTestConnectivity = {
                         scope.launch {

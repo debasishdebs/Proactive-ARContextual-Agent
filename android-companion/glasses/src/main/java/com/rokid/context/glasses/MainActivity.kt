@@ -222,7 +222,7 @@ class MainActivity : ComponentActivity() {
     private fun ensureCaptureScheduled() = CaptureScheduler(this).ensureScheduled()
 
     private fun handleIntent(i: Intent?) {
-        if (i == null || (i.action != ACTION_CAPTURE_NOW && i.action != ACTION_PULSE_CAPTURE)) return
+        if (i == null || i.action != ACTION_CAPTURE_NOW) return
         CaptureService.captureNow(this, skipDedupe = i.getBooleanExtra(CaptureService.EXTRA_SKIP_DEDUPE, false))
     }
 
@@ -237,8 +237,5 @@ class MainActivity : ComponentActivity() {
         const val TAG = "PcGlasses"
         /** adb and foreground-fallback entry: capture one frame now. */
         const val ACTION_CAPTURE_NOW = "com.rokid.context.glasses.action.CAPTURE_NOW"
-        /** Sent by the RFCOMM-era PulseKeepAliveService; removed with it in Task 12. */
-        const val ACTION_PULSE_CAPTURE = "com.rokid.context.glasses.action.PULSE_CAPTURE"
-        const val EXTRA_SILENCY_MODE = "silency_mode"
     }
 }
