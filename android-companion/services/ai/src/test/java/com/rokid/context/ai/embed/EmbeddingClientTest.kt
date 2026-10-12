@@ -7,6 +7,7 @@ import com.rokid.context.ai.ProviderConfigException
 import com.rokid.context.ai.ProviderHttpException
 import com.rokid.context.ai.ProviderResponseException
 import com.rokid.context.ai.Http
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -143,5 +144,31 @@ class EmbeddingClientTest {
         val out = emb.embedDocuments((0 until 150).map { "t$it" })
         assertEquals(3, server.requestCount)
         assertEquals((0 until 150).map { it.toFloat() }, out.map { it[0] })
+    }
+
+    private fun local() = Endpoint("l", "L", EndpointKind.LLAMACPP_LOCAL, "/models/m.gguf", null, listOf("m"), setOf(Capability.EMBEDDINGS), 1)
+
+    @Test fun aHungNativeCallTimesOutOnTimeAndNativeCallsNeverOverlap() = runBlocking {
+        val running = java.util.concurrent.atomic.AtomicInteger(); val maxRunning = java.util.concurrent.atomic.AtomicInteger(); val calls = java.util.concurrent.atomic.AtomicInteger()
+        val c = EmbeddingClient(Http.modelClient(60), nativeTimeoutMs = 100, native = { _, texts ->
+            calls.incrementAndGet(); maxRunning.accumulateAndGet(running.incrementAndGet()) { a, b -> maxOf(a, b) }
+            try { Thread.sleep(1_000); texts.map { floatArrayOf(1f) } } finally { running.decrementAndGet() }
+        })
+        val t0 = System.nanoTime()
+        val ex = runCatching { c.embed(local(), "m", null, listOf("a")) }.exceptionOrNull()
+        assertTrue("took ${(System.nanoTime() - t0) / 1_000_000} ms", (System.nanoTime() - t0) < 800_000_000L)
+        assertTrue(ex is java.io.IOException)
+        runCatching { c.embed(local(), "m", null, listOf("b")) }
+        Thread.sleep(2_500)
+        assertEquals(2, calls.get()); assertEquals(1, maxRunning.get())
+    }
+
+    @Test fun aMissingTagsEndpointMeansNoRevisionButOtherErrorsStayTyped() = runTest {
+        server.enqueue(MockResponse().setResponseCode(404))
+        assertEquals(null, client.revision(e(EndpointKind.OLLAMA), "m"))
+        server.enqueue(MockResponse().setResponseCode(500))
+        assertTrue(runCatching { client.revision(e(EndpointKind.OLLAMA), "m") }.exceptionOrNull() is ProviderHttpException)
+        server.enqueue(MockResponse().setBody("not json"))
+        assertTrue(runCatching { client.revision(e(EndpointKind.OLLAMA), "m") }.exceptionOrNull() is ProviderResponseException)
     }
 }
