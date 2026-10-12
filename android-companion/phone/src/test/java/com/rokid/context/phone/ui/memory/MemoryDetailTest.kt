@@ -26,6 +26,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Rule
+import org.junit.rules.RuleChain
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -33,8 +34,10 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34], application = Application::class)
 class MemoryDetailTest {
-    @get:Rule val main = MainDispatcherRule()
-    @get:Rule val compose = createComposeRule()
+    private val main = MainDispatcherRule()
+    private val compose = createComposeRule()
+    /** Explicit order: Main is installed before, and reset after, the Compose rule (unordered @Rules raced on Dispatchers.setMain). */
+    @get:Rule val rules: RuleChain = RuleChain.outerRule(main).around(compose)
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var graph: MemoryGraph
     private val vms = mutableListOf<MemoryDetailViewModel>()

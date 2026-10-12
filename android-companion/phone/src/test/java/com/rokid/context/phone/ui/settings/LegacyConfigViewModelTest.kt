@@ -91,14 +91,51 @@ class LegacyConfigViewModelTest {
         assertFalse(vm.state.value.config.pipelineEnabled)
     }
 
-    @Test fun keyIsNeverInUiStateAndEditingOtherFieldsKeepsIt() = runBlocking {
-        assertEquals("****", vm.state.value.config.apiKeyMasked)
+    private suspend fun storedKeyBecomes(expected: String) = withTimeout(10_000) { while (AppConfigStore.get(ctx).apiKey != expected) kotlinx.coroutines.delay(20) }
+    private fun assertKeyNotInState(key: String) = assertFalse(vm.state.value.toString().contains(key))
+
+    @Test fun openingWithAStoredKeyShowsAnEmptyFieldAndTheSavedHint() {
+        assertEquals("", vm.state.value.config.apiKeyMasked)
+        assertTrue(vm.state.value.config.apiKeySaved)
+        assertKeyNotInState("key-1")
+    }
+
+    @Test fun firstKeyTypedOrPastedIsSaved() = runBlocking {
+        AppConfigStore.setProvider(ctx, "openai", "https://az.example", "", "gpt-5.4", "")
+        vm = LegacyConfigViewModel(ctx, pipeline)
+        assertFalse(vm.state.value.config.apiKeySaved)
+        vm.updateApiKey("sk-first-123")
+        storedKeyBecomes("sk-first-123")
+    }
+
+    @Test fun editingOtherFieldsKeepsTheStoredKey() = runBlocking {
         vm.updateEndpoint("https://other.example")
         main.dispatcher.scheduler.advanceTimeBy(LegacyConfigViewModel.TYPING_DEBOUNCE_MS + 100)
         withTimeout(10_000) { while (AppConfigStore.get(ctx).endpoint != "https://other.example") kotlinx.coroutines.delay(20) }
         assertEquals("key-1", AppConfigStore.get(ctx).apiKey)
-        vm.updateApiKey("****new-key")
-        assertEquals("****", vm.state.value.config.apiKeyMasked)
-        withTimeout(10_000) { while (AppConfigStore.get(ctx).apiKey != "new-key") kotlinx.coroutines.delay(20) }
+    }
+
+    @Test fun typingANewKeyReplacesItAndClearsTheBufferAfterSync() = runBlocking {
+        vm.updateApiKey("new-key")
+        storedKeyBecomes("new-key")
+        main.dispatcher.scheduler.advanceTimeBy(LegacyConfigViewModel.TYPING_DEBOUNCE_MS + 100)
+        withTimeout(10_000) { vm.state.first { it.config.apiKeyMasked.isEmpty() && it.config.apiKeySaved } }
+        assertEquals("new-key", AppConfigStore.get(ctx).apiKey)
+        assertKeyNotInState("key-1")
+    }
+
+    @Test fun clearKeyRemovesIt() = runBlocking {
+        vm.clearApiKey()
+        storedKeyBecomes("")
+        assertFalse(vm.state.value.config.apiKeySaved)
+    }
+
+    @Test fun testNeverReportsOkWhenTheSyncFailed() = runBlocking {
+        vm.updateEndpoint("https://az exa")
+        vm.testConnectivity()
+        val s = withTimeout(10_000) { vm.state.first { it.config.testResult != "Testing…" && it.config.testResult != "Not tested" } }
+        assertEquals(ConfigTestText.NOT_APPLIED, s.config.testResult)
+        assertEquals(LegacyConfigViewModel.NOT_APPLIED, s.notice)
+        assertEquals(emptyList<String>(), models)
     }
 }

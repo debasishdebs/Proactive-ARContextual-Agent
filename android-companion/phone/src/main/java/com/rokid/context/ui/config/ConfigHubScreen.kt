@@ -16,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -39,11 +40,13 @@ data class ConfigUiState(
     val persona: String,
     val providerType: String,
     val endpoint: String,
+    /** Write-only: only what the user typed this session; the stored key is never put here. */
     val apiKeyMasked: String,
     val deploymentOrModel: String,
     val nativeModelPath: String,
     val glassesSilencyMode: String,
     val testResult: String,
+    val apiKeySaved: Boolean = false,
 )
 
 object ConfigHubScreen {
@@ -84,6 +87,7 @@ object ConfigHubScreen {
         onSelectGlassesSilencyMode: (String) -> Unit,
         onTestConnectivity: () -> Unit,
         onBack: () -> Unit,
+        onClearApiKey: () -> Unit = {},
     ) {
         val scroll = rememberScrollState()
         Column(
@@ -161,8 +165,10 @@ object ConfigHubScreen {
                         onValueChange = onUpdateApiKey,
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("API Key / Token") },
+                        placeholder = { if (state.apiKeySaved) Text("Key saved") },
                         visualTransformation = PasswordVisualTransformation(),
                     )
+                    if (state.apiKeySaved) TextButton(onClick = onClearApiKey) { Text("Clear key") }
                     OutlinedTextField(
                         value = state.nativeModelPath,
                         onValueChange = onUpdateNativePath,
