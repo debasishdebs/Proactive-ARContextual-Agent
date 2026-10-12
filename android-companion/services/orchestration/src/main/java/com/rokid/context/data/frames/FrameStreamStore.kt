@@ -13,87 +13,39 @@ data class CapturedFrame(
 )
 
 object FrameStreamStore {
-    private const val FILE_NAME = "captured_frames.log"
     private const val TAG = "FrameStreamStore"
-    private val lock = Any()
+
+    private fun <T> io(context: Context, block: suspend (com.rokid.context.memory.MemoryGraph) -> T): T {
+        com.rokid.context.memory.MemoryGraph.ensureLegacyImported(context)
+        val graph = com.rokid.context.memory.MemoryGraph.get(context)
+        return kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) { block(graph) }
+    }
+
+    private fun com.rokid.context.memory.db.FrameEntity.toCaptured() = CapturedFrame(id, ts, source, payload, path)
 
     fun append(context: Context, frame: CapturedFrame): Boolean {
-        synchronized(lock) {
-            if (!frame.source.startsWith("rokid", ignoreCase = true)) {
-                Log.w(TAG, "append rejected non-rokid source=${frame.source}")
-                return false
-            }
-            val file = file(context)
-            if (!file.exists()) file.createNewFile()
-            val safePayload = frame.payload.replace("\n", " ").replace("\t", " ").take(220)
-            val preview = ensurePreviewPath(frame)
-            if (preview.isBlank()) {
-                Log.w(TAG, "append rejected preview missing frameId=${frame.frameId} path=${frame.previewImagePath}")
-                return false
-            }
-            file.appendText("${frame.frameId}\t${frame.capturedAtEpochMs}\t${frame.source}\t$safePayload\t$preview\n")
-            Log.i(TAG, "append success frameId=${frame.frameId} preview=$preview")
-            return true
-        }
+        if (!frame.source.startsWith("rokid", ignoreCase = true)) { Log.w(TAG, "append rejected non-rokid source=${frame.source}"); return false }
+        val preview = ensurePreviewPath(frame)
+        if (preview.isBlank()) { Log.w(TAG, "append rejected preview missing frameId=${frame.frameId} path=${frame.previewImagePath}"); return false }
+        val safePayload = frame.payload.replace("\n", " ").replace("\t", " ").take(220)
+        val ok = io(context) { it.frames.add(com.rokid.context.memory.db.FrameEntity(id = frame.frameId, ts = frame.capturedAtEpochMs, path = preview, source = frame.source, payload = safePayload)) }
+        Log.i(TAG, "append ok=$ok frameId=${frame.frameId}")
+        return ok
     }
 
-    fun recent(context: Context, limit: Int): List<CapturedFrame> {
-        synchronized(lock) {
-            val file = file(context)
-            if (!file.exists()) return emptyList()
-            return file.readLines()
-                .asReversed()
-                .asSequence()
-                .mapNotNull { parse(it) }
-                .filter { it.source.startsWith("rokid", ignoreCase = true) }
-                .map { parsed ->
-                    if (parsed.previewImagePath.isBlank()) return@map null
-                    val preview = File(parsed.previewImagePath)
-                    if (preview.exists()) parsed else null
-                }
-                .filterNotNull()
-                .take(limit.coerceAtLeast(1))
-                .toList()
-        }
-    }
+    private fun existing(list: List<com.rokid.context.memory.db.FrameEntity>) =
+        list.filter { it.source.startsWith("rokid", true) && it.path.isNotBlank() && File(it.path).exists() }.map { it.toCaptured() }
 
-    fun all(context: Context): List<CapturedFrame> {
-        synchronized(lock) {
-            val file = file(context)
-            if (!file.exists()) return emptyList()
-            return file.readLines()
-                .asSequence()
-                .mapNotNull { parse(it) }
-                .filter { it.source.startsWith("rokid", ignoreCase = true) }
-                .map { parsed ->
-                    if (parsed.previewImagePath.isBlank()) return@map null
-                    val preview = File(parsed.previewImagePath)
-                    if (preview.exists()) parsed else null
-                }
-                .filterNotNull()
-                .toList()
-        }
-    }
-
+    fun recent(context: Context, limit: Int): List<CapturedFrame> = io(context) { existing(it.frames.recent(limit.coerceAtLeast(1) * 2)) }.take(limit.coerceAtLeast(1))
+    fun all(context: Context): List<CapturedFrame> = io(context) { existing(it.frames.all()) }
     fun byIds(context: Context, frameIds: List<String>): List<CapturedFrame> {
-        if (frameIds.isEmpty()) return emptyList()
-        val wanted = frameIds.map { it.trim() }.filter { it.isNotBlank() }.toSet()
-        if (wanted.isEmpty()) return emptyList()
-        return all(context).filter { it.frameId in wanted }
+        val wanted = frameIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        return if (wanted.isEmpty()) emptyList() else io(context) { existing(it.frames.byIds(wanted)) }
     }
 
     fun purgeNonRokidEntries(context: Context) {
-        synchronized(lock) {
-            val file = file(context)
-            if (!file.exists()) return
-            val filtered = file.readLines().mapNotNull { line ->
-                val parsed = parse(line) ?: return@mapNotNull null
-                if (!parsed.source.startsWith("rokid", ignoreCase = true)) return@mapNotNull null
-                if (parsed.previewImagePath.isBlank()) return@mapNotNull null
-                line
-            }
-            file.writeText(filtered.joinToString(separator = "\n"))
-            if (filtered.isNotEmpty()) file.appendText("\n")
+        io(context) { g ->
+            g.frames.deleteByIds(g.frames.all().filter { !it.source.startsWith("rokid", true) || it.path.isBlank() }.map { it.id })
         }
     }
 
@@ -103,51 +55,12 @@ object FrameStreamStore {
         val deletedFiles: Int,
     )
 
-    fun purgeNonPhotoAndSynthetic(context: Context): PurgeResult {
-        synchronized(lock) {
-            val file = file(context)
-            if (!file.exists()) return PurgeResult(kept = 0, dropped = 0, deletedFiles = 0)
-
-            val parsed = file.readLines().mapNotNull(::parse)
-            val kept = mutableListOf<CapturedFrame>()
-            val toDelete = mutableListOf<File>()
-
-            parsed.forEach { frame ->
-                if (isRealPhotoFrame(frame)) {
-                    kept += frame
-                } else {
-                    if (frame.previewImagePath.isNotBlank()) {
-                        val preview = File(frame.previewImagePath)
-                        if (preview.exists()) {
-                            toDelete += preview
-                        }
-                    }
-                }
-            }
-
-            val rewritten = kept.joinToString(separator = "\n") {
-                val safePayload = it.payload.replace("\n", " ").replace("\t", " ").take(220)
-                "${it.frameId}\t${it.capturedAtEpochMs}\t${it.source}\t$safePayload\t${it.previewImagePath}"
-            }
-            file.writeText(
-                if (rewritten.isBlank()) {
-                    ""
-                } else {
-                    "$rewritten\n"
-                },
-            )
-
-            var deleted = 0
-            toDelete.distinctBy { it.absolutePath }.forEach { candidate ->
-                if (candidate.exists() && candidate.delete()) deleted += 1
-            }
-
-            return PurgeResult(
-                kept = kept.size,
-                dropped = (parsed.size - kept.size).coerceAtLeast(0),
-                deletedFiles = deleted,
-            )
-        }
+    fun purgeNonPhotoAndSynthetic(context: Context): PurgeResult = io(context) { g ->
+        val all = g.frames.all().map { it.toCaptured() }
+        val (kept, dropped) = all.partition(::isRealPhotoFrame)
+        g.frames.deleteByIds(dropped.map { it.frameId })
+        val deleted = dropped.map { it.previewImagePath }.filter { it.isNotBlank() }.distinct().count { File(it).let { f -> f.exists() && f.delete() } }
+        PurgeResult(kept = kept.size, dropped = dropped.size, deletedFiles = deleted)
     }
 
     fun isRealPhotoFrame(frame: CapturedFrame): Boolean {
@@ -160,20 +73,6 @@ object FrameStreamStore {
         val ext = File(frame.previewImagePath).extension.lowercase()
         return ext in setOf("jpg", "jpeg", "webp")
     }
-
-    private fun parse(line: String): CapturedFrame? {
-        val parts = line.split("\t")
-        if (parts.size < 5) return null
-        return CapturedFrame(
-            frameId = parts[0],
-            capturedAtEpochMs = parts[1].toLongOrNull() ?: return null,
-            source = parts[2],
-            payload = parts[3],
-            previewImagePath = parts[4],
-        )
-    }
-
-    private fun file(context: Context): File = File(context.filesDir, FILE_NAME)
 
     private fun ensurePreviewPath(frame: CapturedFrame): String {
         if (frame.previewImagePath.isBlank()) return ""

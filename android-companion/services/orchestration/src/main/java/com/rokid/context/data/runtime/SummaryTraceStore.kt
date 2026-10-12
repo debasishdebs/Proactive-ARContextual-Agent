@@ -1,7 +1,6 @@
 package com.rokid.context.data.runtime
 
 import android.content.Context
-import java.io.File
 
 data class SummaryTrace(
     val summaryId: String,
@@ -11,58 +10,25 @@ data class SummaryTrace(
 )
 
 object SummaryTraceStore {
-    private const val FILE_NAME = "summary_trace.log"
-    private val lock = Any()
+    private fun <T> io(context: Context, block: suspend (com.rokid.context.memory.MemoryGraph) -> T): T {
+        com.rokid.context.memory.MemoryGraph.ensureLegacyImported(context)
+        val graph = com.rokid.context.memory.MemoryGraph.get(context)
+        return kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) { block(graph) }
+    }
 
     fun upsert(context: Context, trace: SummaryTrace) {
-        synchronized(lock) {
-            val current = recent(context, 200).associateBy { it.summaryId }.toMutableMap()
-            current[trace.summaryId] = trace
-            val sorted = current.values.sortedByDescending { it.updatedAtEpochMs }
-            val file = file(context)
-            file.parentFile?.mkdirs()
-            file.writeText("")
-            sorted.forEach { t ->
-                val safeNote = t.note.replace("\n", " ").replace("\t", " ")
-                file.appendText("${t.summaryId}\t${t.state}\t${t.updatedAtEpochMs}\t$safeNote\n")
-            }
+        io(context) {
+            it.traces.upsert(com.rokid.context.memory.db.SummaryTraceEntity(trace.summaryId, trace.state, trace.updatedAtEpochMs, trace.note.replace("\n", " ").replace("\t", " ")))
         }
     }
 
-    fun recent(context: Context, limit: Int): List<SummaryTrace> {
-        synchronized(lock) {
-            val file = file(context)
-            if (!file.exists()) return emptyList()
-            return file.readLines().asSequence().mapNotNull { parse(it) }.take(limit).toList()
-        }
+    fun recent(context: Context, limit: Int): List<SummaryTrace> = io(context) { g ->
+        g.traces.recent(limit).map { SummaryTrace(it.summaryId, it.state, it.updatedAt, it.note) }
     }
 
     fun purgeSynthetic(context: Context) {
-        synchronized(lock) {
-            val file = file(context)
-            if (!file.exists()) return
-            val kept = file.readLines().mapNotNull { parse(it) }.filterNot {
-                it.note.contains("placeholder", ignoreCase = true) ||
-                    it.summaryId.startsWith("frame_ingest", ignoreCase = true)
-            }
-            file.writeText("")
-            kept.sortedByDescending { it.updatedAtEpochMs }.forEach { t ->
-                val safeNote = t.note.replace("\n", " ").replace("\t", " ")
-                file.appendText("${t.summaryId}\t${t.state}\t${t.updatedAtEpochMs}\t$safeNote\n")
-            }
+        io(context) { g ->
+            g.traces.deleteByIds(g.traces.recent(Int.MAX_VALUE).filter { it.note.contains("placeholder", true) || it.summaryId.startsWith("frame_ingest", true) }.map { it.summaryId })
         }
     }
-
-    private fun parse(line: String): SummaryTrace? {
-        val parts = line.split("\t", limit = 4)
-        if (parts.size < 4) return null
-        return SummaryTrace(
-            summaryId = parts[0],
-            state = parts[1],
-            updatedAtEpochMs = parts[2].toLongOrNull() ?: return null,
-            note = parts[3],
-        )
-    }
-
-    private fun file(context: Context): File = File(context.filesDir, FILE_NAME)
 }
