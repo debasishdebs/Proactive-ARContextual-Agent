@@ -30,6 +30,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import kotlin.coroutines.cancellation.CancellationException
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
@@ -95,5 +96,11 @@ class TestBedTest {
             assertNull(r.failure)
             assertEquals(listOf(OutputCheck.SCHEMA_UNUSABLE), r.evaluation!!.problems())
         }
+    }
+
+    /** Fix round 1 (finding 5): cancelling a test-bed run is never turned into a failure result. */
+    @Test fun cancellationPropagates() = runBlocking {
+        reply = { throw CancellationException("stop") }
+        assertTrue(runCatching { ai.testBed.run(req("az", "gpt")) }.exceptionOrNull() is CancellationException)
     }
 }
