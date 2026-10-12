@@ -12,12 +12,12 @@ sealed interface FusionStrategy {
         }
     }
 
-    /** Reciprocal rank fusion: Σ 1 / (k + rank), rank from 1 (default k = 60). */
+    /** Reciprocal rank fusion: Σ 1 / (k + rank), rank from 1 (default k = 60); equal scores rank by id. */
     data class Rrf(val k: Int = 60) : FusionStrategy {
         override fun fuse(lexical: List<Hit>, semantic: List<Hit>): Map<String, Double> {
             val out = HashMap<String, Double>()
             for (list in listOf(lexical, semantic)) {
-                list.sortedByDescending { it.score }.forEachIndexed { i, h -> out[h.id] = (out[h.id] ?: 0.0) + 1.0 / (k + i + 1) }
+                list.sortedWith(compareByDescending<Hit> { it.score }.thenBy { it.id }).forEachIndexed { i, h -> out[h.id] = (out[h.id] ?: 0.0) + 1.0 / (k + i + 1) }
             }
             return out
         }

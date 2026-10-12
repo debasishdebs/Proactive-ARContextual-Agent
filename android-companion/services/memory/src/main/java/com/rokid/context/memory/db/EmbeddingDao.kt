@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.Flow
 /** One memory to embed: only what the embedder needs. */
 data class EmbedInput(val id: String, val text: String)
 
+/** One searchable vector with its rowid (the keyset cursor for [EmbeddingDao.livePage]). */
+class VectorRow(val rowid: Long, val memoryId: String, val blob: ByteArray)
+
 /**
  * Embedding generations (spec §4.6). "Current" = the newest ACTIVE or STALE space (STALE is never read). At most one
  * BUILDING. Eligible memories = every memory not INVALIDATED. Schema v1 unchanged.
@@ -24,15 +27,13 @@ abstract class EmbeddingDao {
     @Query("SELECT * FROM memory_vector WHERE spaceId = :spaceId") abstract suspend fun vectors(spaceId: String): List<MemoryVectorEntity>
 
     /**
-     * One keyset page of searchable vectors in [spaceId], by `memoryId` ascending after [afterId] ("" = first page).
-     * Only vectors whose memory still exists and is OK: an INVALIDATED, under-review, forgotten or deleted memory's
-     * vector (memory_vector has no foreign key) is never a hit.
+     * One keyset page of searchable vectors in [spaceId], by `memory_vector.rowid` after [afterRowid] (0 = first page),
+     * so each page is an index range seek with no sort. Only vectors whose memory still exists, is OK and has at
+     * least [minConfidence]: an INVALIDATED, under-review, forgotten or deleted memory's vector (memory_vector has no
+     * foreign key) is never a hit.
      */
-    @Query(
-        "SELECT v.* FROM memory_vector v JOIN memory m ON m.id = v.memoryId WHERE v.spaceId = :spaceId AND m.reviewState = 'OK' " +
-            "AND v.memoryId > :afterId ORDER BY v.memoryId LIMIT :limit",
-    )
-    abstract suspend fun livePage(spaceId: String, afterId: String, limit: Int): List<MemoryVectorEntity>
+    @Query(LIVE_PAGE_SQL)
+    abstract suspend fun livePage(spaceId: String, afterRowid: Long, minConfidence: Double, limit: Int): List<VectorRow>
     @Upsert abstract suspend fun putVector(v: MemoryVectorEntity)
 
     @Query(
@@ -94,4 +95,10 @@ abstract class EmbeddingDao {
 
     @Transaction
     open suspend fun discard(spaceId: String) { deleteVectors(spaceId); deleteSpace(spaceId) }
+
+    companion object {
+        const val LIVE_PAGE_SQL = "SELECT v.rowid AS rowid, v.memoryId AS memoryId, v.blob AS blob FROM memory_vector v " +
+            "JOIN memory m ON m.id = v.memoryId WHERE v.spaceId = :spaceId AND v.rowid > :afterRowid AND m.reviewState = 'OK' " +
+            "AND m.confidence >= :minConfidence ORDER BY v.rowid LIMIT :limit"
+    }
 }

@@ -3,6 +3,7 @@ package com.rokid.context.memory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.EmbeddingDao
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.MemoryVectorEntity
@@ -115,13 +116,21 @@ class VectorIndexTest {
         assertTrue(index.search("S", q, 0).isEmpty())
     }
 
-    @Test fun vectorsArriveInBoundedPages() = runBlocking {
+    @Test fun vectorsArriveInBoundedRowidPages() = runBlocking {
         (0 until 12).forEach { put("m$it", "S", floatArrayOf(1f, it.toFloat())) }
         put("x", "S", floatArrayOf(1f, 0f), review = ReviewState.INVALIDATED)
-        val pages = generateSequence(db.embeddingDao().livePage("S", "", 5)) { prev ->
-            prev.takeIf { it.size == 5 }?.let { runBlocking { db.embeddingDao().livePage("S", it.last().memoryId, 5) } }
+        val pages = generateSequence(db.embeddingDao().livePage("S", 0L, 0.0, 5)) { prev ->
+            prev.takeIf { it.size == 5 }?.let { runBlocking { db.embeddingDao().livePage("S", it.last().rowid, 0.0, 5) } }
         }.toList()
         assertEquals(listOf(5, 5, 2), pages.map { it.size })
-        assertEquals((0 until 12).map { "m$it" }.sorted(), pages.flatten().map { it.memoryId })
+        assertEquals((0 until 12).map { "m$it" }, pages.flatten().map { it.memoryId }) // insertion (rowid) order
+    }
+
+    @Test fun livePageWalksTheSpaceIndexInRowidOrderWithoutATempSort() {
+        val sql = "EXPLAIN QUERY PLAN " + EmbeddingDao.LIVE_PAGE_SQL.replace(":spaceId", "?").replace(":afterRowid", "?")
+            .replace(":minConfidence", "?").replace(":limit", "?")
+        val plan = db.openHelper.readableDatabase.query(sql, arrayOf<Any?>("S", 0L, 0.0, 5)).use { c -> buildList { while (c.moveToNext()) add(c.getString(3)) } }
+        assertTrue(plan.toString(), plan.none { "TEMP B-TREE" in it })
+        assertTrue(plan.toString(), plan.first().contains("USING INDEX index_memory_vector_spaceId (spaceId=? AND rowid>?)"))
     }
 }
