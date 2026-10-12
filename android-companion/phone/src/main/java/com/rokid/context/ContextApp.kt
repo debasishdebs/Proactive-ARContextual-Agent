@@ -15,5 +15,7 @@ class ContextApp : Application() {
             localRuntimeMode = BuildConfig.LOCAL_RUNTIME_MODE,
             localNativeModelPath = BuildConfig.LOCAL_NATIVE_MODEL_PATH,
         )
+        com.rokid.context.memory.MemoryGraph.get(this) { com.rokid.context.data.runtime.AppConfigStore.get(this).encryptionEnabled }
+        com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
     }
 }

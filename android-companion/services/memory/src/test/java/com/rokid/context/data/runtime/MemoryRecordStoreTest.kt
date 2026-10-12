@@ -11,6 +11,8 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class MemoryRecordStoreTest {
     private val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+    @org.junit.Before fun setUp() = com.rokid.context.memory.MemoryGraph.resetForTests(com.rokid.context.memory.db.DatabaseFactory.inMemory(ctx))
+    @org.junit.After fun tearDown() = com.rokid.context.memory.MemoryGraph.resetForTests(null)
 
     @Test fun recentIsNewestFirstAndSanitisesContent() {
         MemoryRecordStore.append(ctx, MemoryRecord("rokid_mem_1", "short_term", "a\tb\nc", 0.9, 1))
