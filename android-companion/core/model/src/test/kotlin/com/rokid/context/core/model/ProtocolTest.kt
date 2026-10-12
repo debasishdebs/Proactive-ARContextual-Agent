@@ -60,6 +60,24 @@ class ProtocolTest {
         assertIs<Decoded.Malformed>(Wire.decode<StateFrame>("""{"v":$PROTOCOL_VERSION,"seq":"x"}"""))
     }
 
+    /** Privacy: a decode error must never quote the payload (it can hold `today` memory text), only a class name. */
+    @Test fun malformedReasonNeverQuotesThePayload() {
+        val marker = "SECRET_MEMORY_MARKER"
+        val bad = """{"v":$PROTOCOL_VERSION,"seq":1,"capture":{"kind":"running"},"intervalSec":300,"phoneLinked":true,""" +
+            """"aiHealth":{"kind":"ok"},"today":[{"id":"m1","atMs":"$marker","text":"$marker"}]}"""
+        val d = assertIs<Decoded.Malformed>(Wire.decode<StateFrame>(bad))
+        assertFalse(d.reason.contains(marker), d.reason)
+        assertFalse(d.reason.contains("today"), d.reason)
+    }
+
+    /** `resumedAtMs` is additive: a v1 hello without it still decodes (no PROTOCOL_VERSION bump). */
+    @Test fun helloWithoutResumedStillDecodes() {
+        val old = """{"v":$PROTOCOL_VERSION,"glassesBatteryPct":80,"bufferSize":0,"glassesNowMs":5,"pauses":[]}"""
+        assertEquals(emptyMap<String, Long>(), assertIs<Decoded.Ok<Hello>>(Wire.decode<Hello>(old)).value.resumedAtMs)
+        val h = Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = 5, pauses = emptyList(), resumedAtMs = mapOf("p1" to 4L))
+        assertEquals(Decoded.Ok(h), Wire.decode<Hello>(Wire.encode(h)))
+    }
+
     @Test fun quietHoursWrapPastMidnight() {
         val q = QuietHours(startMinute = 22 * 60, endMinute = 7 * 60)
         assertTrue(q.contains(23 * 60)); assertTrue(q.contains(0)); assertTrue(q.contains(6 * 60 + 59))

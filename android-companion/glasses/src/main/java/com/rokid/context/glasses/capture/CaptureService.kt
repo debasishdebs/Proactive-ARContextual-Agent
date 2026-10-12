@@ -30,7 +30,6 @@ import androidx.lifecycle.LifecycleService
 import com.rokid.context.glasses.BufferResult
 import com.rokid.context.glasses.BuildConfig
 import com.rokid.context.glasses.GlassesRuntime
-import com.rokid.context.glasses.MainActivity
 import com.rokid.context.glasses.link.HudSettingsCache
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -149,7 +148,7 @@ class CaptureService : LifecycleService() {
             return Outcome.FAILED
         }
         val outcome = withTimeoutOrNull(WINDOW_MS) { result.await() } ?: run {
-            if (analyzed.get() == 0 || isBackgroundRestricted()) launchForegroundFallback()
+            if (analyzed.get() == 0 || isBackgroundRestricted()) runtime.fallback.maybeLaunch(this)
             Outcome.FAILED
         }
         provider.unbindAll()
@@ -177,17 +176,6 @@ class CaptureService : LifecycleService() {
         Log.i(TAG, "buffered $frameId (${prepared.jpeg.size / 1024} KB) buffer=${runtime.buffer.size}")
         runtime.onFrameBuffered()
         return Outcome.BUFFERED
-    }
-
-    /** Background camera restriction: bring the HUD forward, where capture works (PulseKeepAliveService behaviour), at most every 20 s. */
-    private fun launchForegroundFallback() {
-        val now = System.currentTimeMillis()
-        if (now - lastFallbackAtMs < FALLBACK_COOLDOWN_MS) return
-        lastFallbackAtMs = now
-        Log.w(TAG, "camera restricted in background; opening the HUD to capture")
-        runCatching {
-            startActivity(Intent(this, MainActivity::class.java).setAction(MainActivity.ACTION_CAPTURE_NOW).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
-        }
     }
 
     private fun notification(): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -444,8 +432,6 @@ class CaptureService : LifecycleService() {
         private const val JPEG_QUALITY_CAPTURE = 72
         private const val JPEG_QUALITY = 62
         private const val MAX_SEND_WIDTH = 360
-        private const val FALLBACK_COOLDOWN_MS = 20_000L
-        @Volatile private var lastFallbackAtMs = 0L
 
         fun captureNow(context: Context, skipDedupe: Boolean = false) {
             context.startForegroundService(Intent(context, CaptureService::class.java).setAction(ACTION_NOW).putExtra(EXTRA_SKIP_DEDUPE, skipDedupe))

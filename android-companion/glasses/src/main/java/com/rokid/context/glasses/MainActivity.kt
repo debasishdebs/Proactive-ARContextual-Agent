@@ -89,11 +89,13 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         controller.onActivityStart()
+        runtime.hudPresence.onStarted()
     }
 
     /** Finishing closes the session at once; [onDestroy] may come late. */
     override fun onStop() {
         if (isFinishing) controller.onActivityExit()
+        runtime.hudPresence.onStopped(finishing = isFinishing)
         super.onStop()
     }
 
@@ -200,7 +202,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Applied on the glasses first (spec §5.5); the phone hears it now, or from `pc_hello` after a reconnect. */
+    /**
+     * Applied on the glasses first (spec §5.5); the phone hears it now, or from `pc_hello` after a reconnect: a Resume
+     * stays in every hello's `resumedAtMs` until the phone stops listing the ids, since a send result of 0 is not delivery.
+     */
     private fun onPauseToggle(t: PauseToggle, now: Long) {
         when (t) {
             is PauseToggle.Paused -> {
@@ -229,6 +234,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         swipeTimer.removeCallbacks(closeSwipe)
         controller.onActivityExit()
+        if (isFinishing) runtime.hudPresence.onExited()
         runtime.detach(controller)
         super.onDestroy()
     }

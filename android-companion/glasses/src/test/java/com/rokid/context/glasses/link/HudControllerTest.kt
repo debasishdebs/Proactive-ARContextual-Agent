@@ -26,6 +26,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
@@ -159,6 +160,21 @@ class HudControllerTest {
         bridge.phone(Channels.STATE, state())
         assertTrue(c.sessionOpen.value)
         assertEquals(2, hellos())
+    }
+
+    /** Privacy: a malformed phone message is logged by class name only; its text (memory lines) never reaches logcat. */
+    @Test fun aMalformedMessageNeverLogsItsPayload() = runTest {
+        controller()
+        val marker = "SECRET_MEMORY_MARKER"
+        val bad = state().replace("\"today\":[]", "\"today\":[{\"id\":\"m1\",\"atMs\":\"$marker\",\"text\":\"$marker\"}]")
+        check(bad.contains(marker)) { bad }
+        ShadowLog.clear()
+        bridge.phone(Channels.STATE, bad)
+        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings()).replace("\"scale\":0.4", "\"scale\":\"$marker\""))
+        bridge.phone(Channels.HELLO_REQUEST, "{\"v\":$PROTOCOL_VERSION,\"x\":[\"$marker\"")
+        val logs = ShadowLog.getLogs()
+        assertTrue("the malformed messages were logged", logs.count { it.msg.startsWith("bad pc_") } >= 2)
+        assertTrue(logs.joinToString("\n") { it.msg }, logs.none { it.msg.contains(marker) })
     }
 
     @Test fun connectionStates() {

@@ -83,7 +83,7 @@ class HudController(
                 (d.value.capture as? CaptureState.Paused)?.let { onPhonePauses(it.records) }
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
-            is Decoded.Malformed -> Log.w(TAG, "bad pc_state: ${d.reason}")
+            is Decoded.Malformed -> Log.w(TAG, "bad pc_state (${d.reason})") // a class name only: the text could quote memory lines
         }
         refreshConnection()
     }
@@ -97,7 +97,7 @@ class HudController(
                 onPhonePauses(d.value.pauses)
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
-            is Decoded.Malformed -> Log.w(TAG, "bad pc_settings: ${d.reason}")
+            is Decoded.Malformed -> Log.w(TAG, "bad pc_settings (${d.reason})")
         }
         refreshConnection()
     }
@@ -112,7 +112,7 @@ class HudController(
                 if (wasOpen) sendHello()
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
-            is Decoded.Malformed -> Log.w(TAG, "bad pc_hello_request: ${d.reason}")
+            is Decoded.Malformed -> Log.w(TAG, "bad pc_hello_request (${d.reason})")
         }
         refreshConnection()
     }

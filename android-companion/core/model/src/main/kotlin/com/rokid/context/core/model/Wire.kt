@@ -11,6 +11,7 @@ sealed interface Decoded<out T> {
     data class Ok<T>(val value: T) : Decoded<T>
     /** [remote] is the sender's `v`, or null when absent. */
     data class VersionMismatch(val remote: Int?) : Decoded<Nothing>
+    /** [reason] is a fixed text or an exception class name, never the exception message: that can quote the payload. */
     data class Malformed(val reason: String) : Decoded<Nothing>
 }
 
@@ -30,6 +31,6 @@ object Wire {
         val v = runCatching { obj["v"]?.jsonPrimitive?.intOrNull }.getOrNull()
         if (v != PROTOCOL_VERSION) return Decoded.VersionMismatch(v)
         return runCatching { Decoded.Ok(json.decodeFromJsonElement<T>(obj)) }
-            .getOrElse { Decoded.Malformed(it.message?.take(120) ?: it.javaClass.simpleName) }
+            .getOrElse { Decoded.Malformed(it.javaClass.simpleName) }
     }
 }
