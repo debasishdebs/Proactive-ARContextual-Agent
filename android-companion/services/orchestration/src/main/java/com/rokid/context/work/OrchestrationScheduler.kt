@@ -237,6 +237,7 @@ class OrchestrationScheduler(
         scheduleQueueDrain()
         scheduleCritic()
         enqueueFrameIngestQueue(source = "resume")
+        com.rokid.context.orchestration.EmbeddingWorker.enqueue(context) // index backlog and any Rebuild left pending by the pause
     }
 
     suspend fun runtimeSnapshot(focusSummarizerId: UUID?): RuntimeSnapshot = withContext(Dispatchers.IO) {

@@ -11,20 +11,36 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.SafeLog
+import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.memory.MemoryGraph
 import kotlin.coroutines.cancellation.CancellationException
 
-/** Keeps the semantic index current (spec §4.6). Runs on battery-not-low; continues itself while work remains. */
+/**
+ * Keeps the semantic index current (spec §4.6). Runs on battery-not-low; continues itself while work remains.
+ *
+ * No network constraint on purpose: the EMBED binding may be a localhost (Ollama on the device) or on-device llama.cpp
+ * endpoint that works offline. An unreachable remote endpoint fails the run, which retries with backoff, capped.
+ *
+ * Paused (phone ⏸): nothing goes to the AI provider, not even the binding probe. A Rebuild asked for while paused is
+ * kept pending and honoured after resume (`OrchestrationScheduler.resumePipeline` enqueues this worker).
+ */
 class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
-        val maintenance = IndexMaintenance(MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(AiGraph.get(applicationContext).embedders), PrefsIndexClock(applicationContext))
         val rebuild = inputData.getBoolean(KEY_REBUILD, false)
-        return execute(applicationContext, runAttemptCount) { maintenance.run(rebuild) }
+        val clock = PrefsIndexClock(applicationContext)
+        if (!AppConfigStore.get(applicationContext).pipelineEnabled) {
+            if (rebuild) clock.setRebuildPending(true)
+            Log.i(TAG, "pipeline paused: index work left for resume")
+            return Result.success()
+        }
+        val maintenance = IndexMaintenance(MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(AiGraph.get(applicationContext).embedders), clock)
+        return execute(applicationContext, runAttemptCount) { maintenance.run(rebuild, rebuildToken = id.toString()) }
     }
 
     companion object {
         private const val TAG = "EmbeddingWorker"
-        private const val MAX_ATTEMPTS = 5
+        /** Runs in total for one request (the first included) before a failure is final. */
+        private const val MAX_RUNS = 5
         const val NAME = "embedding_index"
         const val KEY_REBUILD = "rebuild"
 
@@ -32,6 +48,7 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         internal suspend fun execute(context: Context, attempt: Int, run: suspend () -> IndexMaintenance.Outcome): Result = try {
             when (run()) {
                 IndexMaintenance.Outcome.MORE -> { continueLater(context); Result.success() }
+                IndexMaintenance.Outcome.RETRY -> retryOrFail(attempt)
                 else -> Result.success()
             }
         } catch (c: CancellationException) {
@@ -41,9 +58,10 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             Result.failure()
         } catch (e: Exception) {
             Log.w(TAG, "index run failed: ${SafeLog.describe(e)}")
-            if (attempt < MAX_ATTEMPTS) Result.retry() else Result.failure()
+            retryOrFail(attempt)
         }
 
+        private fun retryOrFail(attempt: Int): Result = if (attempt + 1 < MAX_RUNS) Result.retry() else Result.failure()
         private fun request(rebuild: Boolean) = OneTimeWorkRequestBuilder<EmbeddingWorker>()
             .setInputData(workDataOf(KEY_REBUILD to rebuild))
             .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build())

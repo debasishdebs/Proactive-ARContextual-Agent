@@ -55,24 +55,42 @@ class IndexMaintenanceTest {
     /**
      * Model "fp" with [dim]; [drift] turns every vector sideways (a model silently replaced behind the same name);
      * [tilt] rotates every vector by that many radians (cosine to the original = cos(tilt)); [docDim] makes document
-     * vectors come back with another size than the bound dimension.
+     * vectors come back with another size than the bound dimension. Canary calls (exactly [Canaries.TEXTS]) take the
+     * next angle from [canaryTilts] when it is not empty, and throw while [failCanaries]. [spaceGone] makes
+     * `forSpace` return null (the stored space's endpoint was deleted).
      */
     private val fake = object : IndexEmbedders {
         var fp = "A"; var dim = 2; var drift = false; var bound = true; var calls = 0; var tilt = 0.0; var docDim: Int? = null
+        var canaryCalls = 0; val canaryTilts = ArrayDeque<Double>(); var failCanaries = false; var spaceGone = false
         fun embedder(fingerprint: String = fp, d: Int = dim) = object : Embedder {
             override val fingerprint = fingerprint
-            override suspend fun embedDocuments(texts: List<String>) = texts.map { t ->
-                calls++
-                val v = FloatArray(docDim ?: d) { i -> if (drift) (if (i == 1) 1f else 0f) else if (i == 0) 1f else (t.length % 5) / 10f }
-                if (tilt != 0.0 && v.size >= 2) { val x = v[0]; val y = v[1]; v[0] = (x * cos(tilt) - y * sin(tilt)).toFloat(); v[1] = (x * sin(tilt) + y * cos(tilt)).toFloat() }
-                v
+            override suspend fun embedDocuments(texts: List<String>): List<FloatArray> {
+                val canary = texts == Canaries.TEXTS
+                if (canary) { if (failCanaries) throw java.io.IOException("endpoint unreachable"); canaryCalls++ }
+                val angle = if (canary && canaryTilts.isNotEmpty()) canaryTilts.removeFirst() else tilt
+                return texts.map { t ->
+                    calls++
+                    val v = FloatArray(docDim ?: d) { i -> if (drift) (if (i == 1) 1f else 0f) else if (i == 0) 1f else (t.length % 5) / 10f }
+                    if (angle != 0.0 && v.size >= 2) { val x = v[0]; val y = v[1]; v[0] = (x * cos(angle) - y * sin(angle)).toFloat(); v[1] = (x * sin(angle) + y * cos(angle)).toFloat() }
+                    v
+                }
             }
             override suspend fun embedQuery(text: String) = embedDocuments(listOf(text)).single()
         }
         override suspend fun bound() = if (!bound) null else BoundEmbedder(embedder(), "{\"fp\":\"$fp\"}", dim)
-        override suspend fun forSpace(space: EmbeddingSpaceEntity): Embedder = embedder(space.fingerprint, space.dim)
+        override suspend fun forSpace(space: EmbeddingSpaceEntity): Embedder? = if (spaceGone) null else embedder(space.fingerprint, space.dim)
     }
-    private val clock = object : IndexClock { var at = 0L; override fun lastCanaryAt() = at; override fun markCanary(at: Long) { this.at = at } }
+    private val clock = object : IndexClock {
+        var at = 0L; var pending = false; var token: String? = null; var discard: DiscardRecord? = null
+        override fun lastCanaryAt() = at
+        override fun markCanary(at: Long) { this.at = at }
+        override fun rebuildPending() = pending
+        override fun setRebuildPending(pending: Boolean) { this.pending = pending }
+        override fun consumedRebuild() = token
+        override fun consumeRebuild(token: String) { this.token = token }
+        override fun lastDiscard() = discard
+        override fun recordDiscard(record: DiscardRecord?) { discard = record }
+    }
     private fun maintenance(maxPerRun: Int = 256) = IndexMaintenance(spaces, fake, clock, { now }, batch = 2, maxPerRun = maxPerRun)
     @After fun close() = db.close()
 
@@ -156,15 +174,127 @@ class IndexMaintenanceTest {
         stored.zip(expected).forEach { (a, b) -> assertArrayEquals(b, a, 0f) }
     }
 
-    @Test fun driftWhileBuildingIsCaughtBeforeTheSwap() = runBlocking {
+    private val far = acos(0.9) // well below the 0.995 threshold
+
+    @Test fun driftWhileBuildingIsDiscardedOnceAndNoNewSpaceStartsWithin24h() = runBlocking {
         repeat(4) { mem("m$it") }
         maintenance(maxPerRun = 2).run()
         val partial = spaces.building()!!
-        fake.drift = true // the model changed behind its name in the middle of the build
-        while (maintenance(maxPerRun = 2).run() == Outcome.MORE) Unit
+        fake.drift = true // the model changed behind its name in the middle of the build: both fresh probes agree
+        assertEquals(Outcome.DONE, maintenance(maxPerRun = 8).run()) // discarded, and no continuation
         assertNull("a drifted build is never swapped in", db.embeddingDao().space(partial.id))
+        assertEquals(1, clock.discard!!.streak); assertEquals(now, clock.discard!!.at)
+        now += 23 * 3_600_000L
+        val before = fake.calls
+        assertEquals(Outcome.DONE, maintenance(maxPerRun = 8).run())
+        assertNull("no new space within 24 h of a discard", spaces.building()); assertNull(spaces.current())
+        assertEquals(before, fake.calls)
+        now += 2 * 3_600_000L
+        while (maintenance(maxPerRun = 8).run() == Outcome.MORE) Unit
         val active = spaces.queryable()!!
         assertTrue(Canaries.decode(active.canaryJson).all { it[1] == 1f }) // rebuilt with the new model's canaries
+        assertNull("a successful swap ends the streak", clock.discard)
+    }
+
+    @Test fun noisyCanariesKeepTheBuildAndSwapNormally() = runBlocking {
+        repeat(4) { mem("m$it") }
+        maintenance(maxPerRun = 2).run()
+        val partial = spaces.building()!!
+        fake.canaryTilts += listOf(far, 0.0) // first fresh set mismatches, second disagrees with the first: noise, not drift
+        assertEquals(Outcome.DONE, maintenance(maxPerRun = 8).run())
+        assertEquals(partial.id, spaces.queryable()!!.id)
+        assertNull(clock.discard)
+    }
+
+    @Test fun threeDriftDiscardsStopAutoRebuildingUntilAManualRebuild() = runBlocking {
+        mem("m1")
+        repeat(3) {
+            fake.canaryTilts += listOf(0.0, far, far) // stored at creation, then two agreeing fresh sets that differ from it
+            assertEquals(Outcome.DONE, maintenance().run())
+            assertNull(spaces.building()); assertNull(spaces.current())
+            now += 25 * 3_600_000L
+        }
+        assertEquals(3, clock.discard!!.streak)
+        assertTrue("index unstable", clock.unstable())
+        val canaries = fake.canaryCalls
+        now += 25 * 3_600_000L
+        assertEquals(Outcome.DONE, maintenance().run())
+        assertNull("auto-rebuild has stopped", spaces.building()); assertEquals(canaries, fake.canaryCalls)
+        assertEquals(Outcome.DONE, maintenance().run(rebuild = true)) // the user's Rebuild resets the streak
+        assertTrue(spaces.queryable() != null); assertNull(clock.discard)
+        assertTrue(!clock.unstable())
+    }
+
+    @Test fun anotherModelIsNotHeldBackByADiscardedOne() = runBlocking {
+        mem("m1")
+        fake.canaryTilts += listOf(0.0, far, far)
+        maintenance().run()
+        assertEquals("A", clock.discard!!.fingerprint)
+        fake.fp = "B" // the user bound another model straight after
+        assertEquals(Outcome.DONE, maintenance().run())
+        assertEquals("B", spaces.queryable()!!.fingerprint)
+    }
+
+    @Test fun unreachableCanariesBeforeASwapRetryAndNeverSwap() = runBlocking {
+        repeat(4) { mem("m$it") }
+        maintenance(maxPerRun = 2).run()
+        val partial = spaces.building()!!
+        fake.failCanaries = true
+        assertEquals(Outcome.RETRY, maintenance(maxPerRun = 8).run())
+        assertEquals(SpaceState.BUILDING, db.embeddingDao().space(partial.id)!!.state); assertNull(spaces.queryable())
+        assertEquals(0L, clock.at)
+        fake.failCanaries = false
+        assertEquals(Outcome.DONE, maintenance(maxPerRun = 8).run())
+        assertEquals(partial.id, spaces.queryable()!!.id)
+        assertEquals("a passed pre-swap check marks the clock", now, clock.at)
+    }
+
+    @Test fun aCanaryCheckThatCouldNotRunDoesNotMarkTheClock() = runBlocking {
+        mem("m1"); maintenance().run()
+        clock.at = now
+        val first = spaces.queryable()!!
+        now += 25 * 3_600_000L
+        fake.failCanaries = true
+        maintenance().run()
+        assertEquals(now - 25 * 3_600_000L, clock.at)
+        fake.failCanaries = false; fake.spaceGone = true
+        maintenance().run()
+        assertEquals(now - 25 * 3_600_000L, clock.at)
+        assertEquals(first.id, spaces.queryable()!!.id)
+        fake.spaceGone = false
+        maintenance().run()
+        assertEquals(now, clock.at)
+    }
+
+    @Test fun anExactlySpentBudgetWithNothingLeftIsDone() = runBlocking {
+        mem("m1"); maintenance().run()
+        mem("m2"); mem("m3")
+        assertEquals(Outcome.DONE, maintenance(maxPerRun = 2).run())
+        mem("m4"); mem("m5"); mem("m6")
+        assertEquals(Outcome.MORE, maintenance(maxPerRun = 2).run())
+    }
+
+    @Test fun aRedeliveredRebuildRequestRunsOnce() = runBlocking {
+        mem("m1"); maintenance().run()
+        val first = spaces.queryable()!!
+        assertEquals(Outcome.DONE, maintenance().run(rebuild = true, rebuildToken = "work-1"))
+        val rebuilt = spaces.queryable()!!
+        assertNotEquals(first.id, rebuilt.id)
+        assertEquals(Outcome.DONE, maintenance().run(rebuild = true, rebuildToken = "work-1")) // WorkManager re-ran it after a crash
+        assertEquals(rebuilt.id, spaces.queryable()!!.id)
+        maintenance().run(rebuild = true, rebuildToken = "work-2")
+        assertNotEquals(rebuilt.id, spaces.queryable()!!.id)
+    }
+
+    @Test fun aPendingRebuildFromAPauseIsHonouredOnce() = runBlocking {
+        mem("m1"); maintenance().run()
+        val first = spaces.queryable()!!
+        clock.pending = true
+        assertEquals(Outcome.DONE, maintenance().run())
+        val rebuilt = spaces.queryable()!!
+        assertNotEquals(first.id, rebuilt.id); assertTrue(!clock.pending)
+        maintenance().run()
+        assertEquals(rebuilt.id, spaces.queryable()!!.id)
     }
 
     @Test fun dimensionChangeRestartsTheBuild() = runBlocking {

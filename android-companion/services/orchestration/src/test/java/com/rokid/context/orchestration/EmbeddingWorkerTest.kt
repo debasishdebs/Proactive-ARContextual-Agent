@@ -13,6 +13,7 @@ import com.rokid.context.ai.InMemoryKeyVault
 import com.rokid.context.ai.InMemorySeedState
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.DatabaseFactory
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -59,9 +60,58 @@ class EmbeddingWorkerTest {
         assertTrue("nothing re-queued", queued().isEmpty())
     }
 
+    /** 5 runs in total: attempts 0..3 retry, attempt 4 (the fifth run) fails. */
     @Test fun anOtherFailureRetriesABoundedNumberOfTimes() = runBlocking {
-        assertTrue(EmbeddingWorker.execute(ctx, attempt = 0) { throw java.io.IOException("offline") } is ListenableWorker.Result.Retry)
-        assertTrue(EmbeddingWorker.execute(ctx, attempt = 5) { throw java.io.IOException("offline") } is ListenableWorker.Result.Failure)
+        (0..3).forEach { a -> assertTrue("attempt $a", EmbeddingWorker.execute(ctx, attempt = a) { throw java.io.IOException("offline") } is ListenableWorker.Result.Retry) }
+        assertTrue(EmbeddingWorker.execute(ctx, attempt = 4) { throw java.io.IOException("offline") } is ListenableWorker.Result.Failure)
+    }
+
+    @Test fun anUncheckedCanaryRetriesWithTheSameCap() = runBlocking {
+        assertTrue(EmbeddingWorker.execute(ctx, attempt = 0) { IndexMaintenance.Outcome.RETRY } is ListenableWorker.Result.Retry)
+        assertTrue(EmbeddingWorker.execute(ctx, attempt = 4) { IndexMaintenance.Outcome.RETRY } is ListenableWorker.Result.Failure)
+        assertTrue("no continuation", queued().isEmpty())
+    }
+
+    private fun bindOllama(server: okhttp3.mockwebserver.MockWebServer) = runBlocking {
+        MemoryGraph.get(ctx).db.endpointDao().upsert(com.rokid.context.memory.db.EndpointEntity("ol", "Ollama", "OLLAMA",
+            server.url("/").toString().trimEnd('/'), null, "nomic-embed-text", com.rokid.context.ai.EndpointRepository.keyRef("ol"), "EMBEDDINGS", 1))
+        AiGraph.get(ctx).bindings.set(com.rokid.context.ai.RoleBinding(com.rokid.context.ai.Role.EMBED, "ol", "nomic-embed-text")).getOrThrow()
+    }
+
+    /** Phase 4 rule: paused (phone ⏸), nothing goes to the AI provider — not even the binding probe. */
+    @Test fun pausedSendsNothingToTheEmbeddingEndpoint() = runBlocking {
+        val server = okhttp3.mockwebserver.MockWebServer().apply { start() }
+        try {
+            bindOllama(server)
+            com.rokid.context.data.runtime.AppConfigStore.setPipelineEnabled(ctx, false)
+            assertTrue(TestListenableWorkerBuilder<EmbeddingWorker>(ctx).build().doWork() is ListenableWorker.Result.Success)
+            assertEquals(0, server.requestCount)
+        } finally { server.shutdown() }
+    }
+
+    @Test fun aRebuildRequestedWhilePausedIsKeptPending() = runBlocking {
+        com.rokid.context.data.runtime.AppConfigStore.setPipelineEnabled(ctx, false)
+        val worker = TestListenableWorkerBuilder<EmbeddingWorker>(ctx).setInputData(androidx.work.workDataOf(EmbeddingWorker.KEY_REBUILD to true)).build()
+        assertTrue(worker.doWork() is ListenableWorker.Result.Success)
+        assertTrue(PrefsIndexClock(ctx).rebuildPending())
+    }
+
+    @Test fun resumingThePipelineQueuesTheIndexWork() {
+        com.rokid.context.work.OrchestrationScheduler(ctx).resumePipeline()
+        assertEquals(1, queued().size)
+    }
+
+    @Test fun prefsClockKeepsItsStateAndExposesUnstable() = runBlocking {
+        val clock = PrefsIndexClock(ctx)
+        assertTrue(!clock.unstable()); assertTrue(!PrefsIndexClock(ctx).observeUnstable().first())
+        clock.markCanary(42); clock.setRebuildPending(true); clock.consumeRebuild("w1")
+        clock.recordDiscard(DiscardRecord("A", 7, IndexMaintenance.MAX_DISCARD_STREAK))
+        val again = PrefsIndexClock(ctx)
+        assertEquals(42L, again.lastCanaryAt()); assertTrue(again.rebuildPending()); assertEquals("w1", again.consumedRebuild())
+        assertEquals(DiscardRecord("A", 7, 3), again.lastDiscard())
+        assertTrue(again.unstable()); assertTrue(again.observeUnstable().first())
+        again.recordDiscard(null)
+        assertTrue(!PrefsIndexClock(ctx).unstable())
     }
 
     @Test fun moreWorkContinuesInANewRun() = runBlocking {

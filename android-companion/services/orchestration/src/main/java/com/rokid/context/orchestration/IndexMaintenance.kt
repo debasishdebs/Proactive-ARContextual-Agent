@@ -1,6 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.ai.embed.Canaries
@@ -10,6 +11,10 @@ import com.rokid.context.memory.Embedder
 import com.rokid.context.memory.SpaceEmbedderProvider
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
 import com.rokid.context.memory.db.SpaceState
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.coroutines.cancellation.CancellationException
 
 data class BoundEmbedder(val embedder: Embedder, val configJson: String, val dim: Int)
@@ -31,15 +36,62 @@ class AiIndexEmbedders(private val embedders: Embedders) : IndexEmbedders {
     override suspend fun forSpace(space: EmbeddingSpaceEntity): Embedder? = embedders.forSpace(space)
 }
 
+/** The last pre-swap drift discard: which model, when, and how many in a row for that model. */
+data class DiscardRecord(val fingerprint: String, val at: Long, val streak: Int)
+
+/** Small durable state of the index job (what must survive a process death or a pause). */
 interface IndexClock {
     fun lastCanaryAt(): Long
     fun markCanary(at: Long)
+    /** A Rebuild asked for while the pipeline was paused; honoured by the first run after resume. */
+    fun rebuildPending(): Boolean
+    fun setRebuildPending(pending: Boolean)
+    /** The last Rebuild request already applied, so a re-delivered request does not rebuild twice. */
+    fun consumedRebuild(): String?
+    fun consumeRebuild(token: String)
+    fun lastDiscard(): DiscardRecord?
+    /** null clears it (a successful swap, or the user's Rebuild). */
+    fun recordDiscard(record: DiscardRecord?)
+    /** "Index unstable": auto-rebuild stopped after repeated drift discards; only a manual Rebuild resumes it. */
+    fun unstable(): Boolean = (lastDiscard()?.streak ?: 0) >= IndexMaintenance.MAX_DISCARD_STREAK
 }
 
 class PrefsIndexClock(context: Context) : IndexClock {
-    private val prefs = context.applicationContext.getSharedPreferences("index_maintenance", Context.MODE_PRIVATE)
-    override fun lastCanaryAt() = prefs.getLong("last_canary_at", 0L)
-    override fun markCanary(at: Long) { prefs.edit().putLong("last_canary_at", at).apply() }
+    private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    override fun lastCanaryAt() = prefs.getLong(K_CANARY, 0L)
+    override fun markCanary(at: Long) { prefs.edit().putLong(K_CANARY, at).apply() }
+    override fun rebuildPending() = prefs.getBoolean(K_PENDING, false)
+    override fun setRebuildPending(pending: Boolean) { prefs.edit().putBoolean(K_PENDING, pending).commit() }
+    override fun consumedRebuild(): String? = prefs.getString(K_TOKEN, null)
+    override fun consumeRebuild(token: String) { prefs.edit().putString(K_TOKEN, token).commit() }
+    override fun lastDiscard(): DiscardRecord? {
+        val fp = prefs.getString(K_DISCARD_FP, null) ?: return null
+        return DiscardRecord(fp, prefs.getLong(K_DISCARD_AT, 0L), prefs.getInt(K_DISCARD_STREAK, 0))
+    }
+    override fun recordDiscard(record: DiscardRecord?) {
+        prefs.edit().apply {
+            if (record == null) { remove(K_DISCARD_FP); remove(K_DISCARD_AT); remove(K_DISCARD_STREAK) }
+            else { putString(K_DISCARD_FP, record.fingerprint); putLong(K_DISCARD_AT, record.at); putInt(K_DISCARD_STREAK, record.streak) }
+        }.commit()
+    }
+
+    /** For the T19 banner: true while the index is unstable (see [IndexClock.unstable]). */
+    fun observeUnstable(): Flow<Boolean> = callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> trySend(unstable()) }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        trySend(unstable())
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.distinctUntilChanged()
+
+    private companion object {
+        const val PREFS = "index_maintenance"
+        const val K_CANARY = "last_canary_at"
+        const val K_PENDING = "rebuild_pending"
+        const val K_TOKEN = "consumed_rebuild"
+        const val K_DISCARD_FP = "discard_fingerprint"
+        const val K_DISCARD_AT = "discard_at"
+        const val K_DISCARD_STREAK = "discard_streak"
+    }
 }
 
 /**
@@ -47,6 +99,11 @@ class PrefsIndexClock(context: Context) : IndexClock {
  * start or resume a BUILDING space when the binding's fingerprint differs from the current space or it is STALE;
  * embed missing memories into the ACTIVE space (when it still answers) and into the BUILDING one; swap at 100 %
  * coverage after the new space's canaries still match.
+ *
+ * Canary drift is bounded so an unstable embedder can never re-embed the store in a loop: a mismatch is confirmed
+ * with a second probe (two fresh sets that disagree with each other = a noisy embedder, not drift); a real drift
+ * discard holds new builds of that model for 24 h; after [MAX_DISCARD_STREAK] discards in a row auto-rebuild stops
+ * ("index unstable") until the user's Rebuild.
  */
 class IndexMaintenance(
     private val spaces: EmbeddingSpaces,
@@ -56,39 +113,87 @@ class IndexMaintenance(
     private val batch: Int = 16,
     private val maxPerRun: Int = 256,
 ) {
-    enum class Outcome { IDLE, DONE, MORE }
+    /** RETRY: a pre-swap canary check could not run; the worker retries with backoff (bounded) and never swaps unchecked. */
+    enum class Outcome { IDLE, DONE, MORE, RETRY }
 
-    suspend fun run(rebuild: Boolean = false): Outcome {
+    private enum class Check { MATCH, NOISY, DRIFTED, UNCHECKED }
+
+    /**
+     * [rebuild] = the user's Rebuild; [rebuildToken] identifies that request so a re-delivery after it was applied is a
+     * normal run. A Rebuild left pending by a pause ([IndexClock.rebuildPending]) counts as one.
+     */
+    suspend fun run(rebuild: Boolean = false, rebuildToken: String? = null): Outcome {
         val bound = embedders.bound() ?: return Outcome.IDLE
         val fp = bound.embedder.fingerprint
+        val pending = clock.rebuildPending()
+        val requested = rebuild && (rebuildToken == null || rebuildToken != clock.consumedRebuild())
+        val manual = requested || pending
         var current = spaces.current()
-        if (current != null && current.state == SpaceState.ACTIVE && (rebuild || now() - clock.lastCanaryAt() >= DAY_MS)) {
+        if (current != null && current.state == SpaceState.ACTIVE && !(manual && current.fingerprint == fp) &&
+            (manual || now() - clock.lastCanaryAt() >= DAY_MS)
+        ) {
             val e = embedders.forSpace(current)
-            if (e != null && drifted(current, e)) { Log.i(TAG, "canaries drifted: space marked stale"); spaces.markStale(current.id) }
-            clock.markCanary(now())
+            when (if (e == null) Check.UNCHECKED else check(current, e)) {
+                Check.DRIFTED -> { Log.i(TAG, "canaries drifted: space marked stale"); spaces.markStale(current.id) }
+                Check.MATCH, Check.NOISY -> clock.markCanary(now())
+                Check.UNCHECKED -> Log.i(TAG, "canary check could not run; trying again next time")
+            }
             current = spaces.current()
         }
-        if (rebuild && current != null && current.state == SpaceState.ACTIVE && current.fingerprint == fp) {
-            spaces.markStale(current.id); current = spaces.current()
+        if (manual) {
+            // F26: a same-model Rebuild marks the space STALE first, because the fingerprint is unique.
+            if (current != null && current.state == SpaceState.ACTIVE && current.fingerprint == fp) { spaces.markStale(current.id); current = spaces.current() }
+            if (rebuild && rebuildToken != null) clock.consumeRebuild(rebuildToken)
+            if (pending) clock.setRebuildPending(false)
+            clock.recordDiscard(null) // the user's Rebuild resets the drift streak
         }
         val needsBuild = current == null || current.state == SpaceState.STALE || current.fingerprint != fp
         val building = if (needsBuild) start(bound, fp) else null
+
         var budget = maxPerRun
+        var activeLeft = false
         if (current != null && current.state == SpaceState.ACTIVE) {
             val e = if (current.fingerprint == fp) bound.embedder else embedders.forSpace(current)
-            if (e != null) budget = try { fill(current, e, budget) } catch (c: CancellationException) { throw c } catch (c: IndexConfigException) { throw c } catch (t: Exception) {
-                Log.i(TAG, "old space not reachable; it keeps its vectors: ${SafeLog.describe(t)}"); budget
+            if (e != null) {
+                try {
+                    budget = fill(current, e, budget)
+                    activeLeft = spaces.missing(current.id, 1).isNotEmpty() // re-checked so a memory written meanwhile is not left behind
+                } catch (c: CancellationException) { throw c } catch (c: IndexConfigException) { throw c } catch (t: Exception) {
+                    if (building == null) throw t // nothing else to do: let the worker retry with backoff
+                    Log.i(TAG, "old space not reachable; it keeps its vectors: ${SafeLog.describe(t)}")
+                }
             }
         }
-        if (building == null) return if (budget == 0) Outcome.MORE else Outcome.DONE
-        budget = fill(building, bound.embedder, budget)
+        if (building == null) return if (activeLeft) Outcome.MORE else Outcome.DONE
+
+        fill(building, bound.embedder, budget)
         if (!spaces.coverage(building.id).complete) return Outcome.MORE
-        if (drifted(building, bound.embedder)) { spaces.discard(building.id); return Outcome.MORE }
-        return if (spaces.swapIfComplete(building.id)) Outcome.DONE else Outcome.MORE
+        when (check(building, bound.embedder)) {
+            Check.UNCHECKED -> { Log.i(TAG, "pre-swap canary check could not run; not swapping"); return Outcome.RETRY }
+            Check.DRIFTED -> {
+                spaces.discard(building.id)
+                val last = clock.lastDiscard()
+                val streak = if (last?.fingerprint == fp) last.streak + 1 else 1
+                clock.recordDiscard(DiscardRecord(fp, now(), streak))
+                Log.i(TAG, "canaries drifted while building: build discarded (streak $streak)")
+                return Outcome.DONE
+            }
+            Check.NOISY -> Log.i(TAG, "canaries are noisy, not drifted: swapping")
+            Check.MATCH -> Unit
+        }
+        if (!spaces.swapIfComplete(building.id)) return Outcome.MORE
+        clock.markCanary(now())
+        clock.recordDiscard(null)
+        return if (spaces.missing(building.id, 1).isNotEmpty()) Outcome.MORE else Outcome.DONE
     }
 
-    private suspend fun start(bound: BoundEmbedder, fp: String): EmbeddingSpaceEntity {
+    /** Resumes the BUILDING space of this model, or starts one unless drift discards are holding this model back (then null). */
+    private suspend fun start(bound: BoundEmbedder, fp: String): EmbeddingSpaceEntity? {
         spaces.building()?.takeIf { it.fingerprint == fp }?.let { return it }
+        clock.lastDiscard()?.takeIf { it.fingerprint == fp }?.let { d ->
+            if (d.streak >= MAX_DISCARD_STREAK) { Log.i(TAG, "index unstable: auto-rebuild stopped until Rebuild"); return null }
+            if (now() - d.at < DAY_MS) { Log.i(TAG, "build held for 24 h after a drift discard"); return null }
+        }
         val canaries = bound.embedder.embedDocuments(Canaries.TEXTS)
         return spaces.startBuilding(fp, bound.configJson, bound.dim, Canaries.encode(canaries), now())
     }
@@ -113,14 +218,23 @@ class IndexMaintenance(
         return left
     }
 
-    /** True only when fresh canaries disagree; an unreachable endpoint is not evidence of drift. */
-    private suspend fun drifted(space: EmbeddingSpaceEntity, embedder: Embedder): Boolean {
-        val fresh = try { embedder.embedDocuments(Canaries.TEXTS) } catch (c: CancellationException) { throw c } catch (_: Exception) { return false }
-        return Canaries.stale(Canaries.decode(space.canaryJson), fresh)
-    }
+    /**
+     * Re-embeds the canaries (the embedder applies the space's document prefix) against the stored set. A mismatch is
+     * confirmed by a second probe; an unreachable endpoint is UNCHECKED, never evidence of drift.
+     */
+    private suspend fun check(space: EmbeddingSpaceEntity, embedder: Embedder): Check = try {
+        val stored = Canaries.decode(space.canaryJson)
+        val first = embedder.embedDocuments(Canaries.TEXTS)
+        when {
+            !Canaries.stale(stored, first) -> Check.MATCH
+            Canaries.stale(first, embedder.embedDocuments(Canaries.TEXTS)) -> Check.NOISY
+            else -> Check.DRIFTED
+        }
+    } catch (c: CancellationException) { throw c } catch (_: Exception) { Check.UNCHECKED }
 
-    private companion object {
-        const val TAG = "IndexMaintenance"
-        const val DAY_MS = 24 * 60 * 60 * 1000L
+    companion object {
+        const val MAX_DISCARD_STREAK = 3
+        private const val TAG = "IndexMaintenance"
+        private const val DAY_MS = 24 * 60 * 60 * 1000L
     }
 }
