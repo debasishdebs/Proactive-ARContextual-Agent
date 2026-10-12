@@ -6,8 +6,11 @@ import android.util.Log
 import com.rokid.context.core.model.Hello
 import com.rokid.context.core.model.Overlay
 import com.rokid.context.glasses.capture.OutboundBuffer
+import com.rokid.context.glasses.link.CxrBridge
 import com.rokid.context.glasses.link.FrameUplink
+import com.rokid.context.glasses.link.GlassesBridge
 import com.rokid.context.glasses.link.HudController
+import com.rokid.context.glasses.link.SharedBridge
 import com.rokid.context.glasses.pause.GlassesPauses
 import com.rokid.context.glasses.pause.PauseStore
 import com.rokid.context.glasses.pause.PauseToggle
@@ -20,6 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -32,12 +36,17 @@ class GlassesRuntime private constructor(private val app: Context) {
     /** Nothing launched here may crash the glasses app; only the exception's simple name is logged. */
     private val errors = CoroutineExceptionHandler { _, e -> Log.w(TAG, "runtime job failed: ${e.javaClass.simpleName}") }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + errors)
-    val pauses = GlassesPauses(PauseStore(File(app.filesDir, "pauses.preferences_pb"), CoroutineScope(SupervisorJob() + Dispatchers.IO + errors)))
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + errors)
+    val pauses = GlassesPauses(PauseStore(File(app.filesDir, "pauses.preferences_pb"), ioScope))
     val buffer = OutboundBuffer(File(app.filesDir, "outbound"), log = { Log.i(UPLINK_TAG, it) })
     /** Push-to-talk recording (set by Phase 6); frames never flush while true (spec §1.8). */
     val listening = MutableStateFlow(false)
-    @Volatile private var controller: HudController? = null
+    /** The attached controller (tests check that exactly one is live). */
+    @Volatile internal var controller: HudController? = null
+        private set
     private var attachJob: Job? = null
+    /** Process-wide: built once from the application context, never per activity (CXR-S cannot unsubscribe). */
+    val bridge: SharedBridge by lazy { SharedBridge(bridgeFactory(app)) }
     val uplink = FrameUplink(scope, buffer, sendChunk = { c -> controller?.sendFrameChunk(c) ?: -1 }, canSend = ::canSend, log = { Log.i(UPLINK_TAG, it) })
 
     /** Session open, not listening, and the phone is not showing Listening (flush resumes once the answer is up). */
@@ -60,10 +69,15 @@ class GlassesRuntime private constructor(private val app: Context) {
         }
     }
 
+    /** [c]'s activity is gone: its callbacks go quiet; if it is current, the bridge stops calling it too. */
     fun detach(c: HudController) {
+        c.onFrameAck = {}
+        c.onSessionOpened = {}
+        c.onPhonePauses = {}
         if (controller !== c) return
         controller = null
         attachJob?.cancel()
+        bridge.release()
     }
 
     /** `pc_hello`: clock, battery, buffer size, local pauses, next capture (all glasses clock). */
@@ -98,5 +112,14 @@ class GlassesRuntime private constructor(private val app: Context) {
         @Volatile private var instance: GlassesRuntime? = null
         fun get(context: Context): GlassesRuntime =
             instance ?: synchronized(this) { instance ?: GlassesRuntime(context.applicationContext).also { instance = it } }
+
+        /** Test seam: the CXR bridge (a fake in Robolectric tests). */
+        @Volatile internal var bridgeFactory: (Context) -> GlassesBridge = { CxrBridge(it) }
+
+        /** Drops the singleton and stops its jobs (so the next test's PauseStore owns its file alone). */
+        internal fun resetForTests() = synchronized(this) {
+            instance?.let { it.scope.cancel(); it.ioScope.cancel() }
+            instance = null
+        }
     }
 }
