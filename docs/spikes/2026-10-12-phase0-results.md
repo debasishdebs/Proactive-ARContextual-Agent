@@ -70,11 +70,12 @@ Heartbeat every 2 s from a glasses foreground service (`HeartbeatService`).
 | (a) probe activity in front | ~15 (18 in first ~36 s) | 2 039 ms | none |
 | (b) backed out to Rokid launcher | 3 (only during the 5 s terminating grace), then 0 | ∞ (stopped) | none — rc stayed 0 |
 | (c) display asleep, activity was already exited | 0 | ∞ | none |
-| (c′) display asleep (`KEYCODE_SLEEP`) with probe activity still resumed | ~15 (22 in 44 s) | ~2 000 ms | none |
+| (c′) display asleep (`KEYCODE_SLEEP`) with probe activity not exited | ~15 (22 in 44 s; re-run 17 in 34 s) | 2 105 ms (re-run) | none |
 
 In (b) the phone's CXR service still logs `recv Notify: cmd probe_hb`, but the app's `CxrSession` has closed (`GLASSES_EXIT`) and delivers nothing — silent loss. A phone-side `connect()` while the glasses sit on the launcher reopens the glasses activity and delivery resumes.
 Physically removing the glasses (wear sensor) was not tested; display sleep is the closest proxy.
-**Decision for CaptureService:** capture may run in the service, but **buffer until foreground** — send only while the glasses `MainActivity` is the resumed CUSTOM_APP activity (display may be asleep). When the activity is not resumed, keep frames in `OutboundBuffer`; the phone hub reconnects on `onSessionClosed(GLASSES_EXIT)`, which reopens the activity, then the glasses flush. Frame-level acks make loss in the 5 s grace window safe.
+Re-run with lifecycle logging (review follow-up): on display sleep the activity goes `onPause` → `onStop` (not resumed, not destroyed) and heartbeats keep flowing — the working condition is **session open / activity not exited**, not RESUMED.
+**Decision for CaptureService:** capture may run in the service, but **buffer until the session is open** — send only while the CUSTOM_APP session is open (activity not exited; display may sleep). Otherwise keep frames in `OutboundBuffer`. The phone hub does not auto-reconnect on `GLASSES_EXIT` (it would reopen the activity and steal the foreground); like Live Fit it starts `GlassAppWatcher` and reconnects when the user reopens the app or on an explicit phone action. Frame-level acks make loss in the 5 s grace window safe. rc=0 is also returned during a BT pause — only the frame ack proves delivery.
 
 ## TTS
 Phone TTS heard on: **glasses** (user confirmed; media routed over the existing BT A2DP link, AAC). Glasses BT output listed: **yes** (Glasses_9120 as BT SCO type 7 and BT A2DP type 8; active media device = glasses A2DP). Glasses TTS engine: init=-1, engines=null, heard: **no**.
@@ -88,7 +89,8 @@ Injected transcript: "What do I need from the store" (partials; user silent in a
 
 ## Spec/plan follow-ups
 - §1.8: replace "assume 16 KB until measured" with SAFE_CHUNK_CHARS = 32 768 (no limit seen up to 256 KB); frame-level acks only, no per-chunk acks; note post-reconnect throughput ≈ half.
-- §1.7 / §3.1 `CaptureService`: frames may only be **sent** while the glasses `MainActivity` is the resumed CUSTOM_APP activity; otherwise buffer. `CXRServiceBridge.sendMessage` rc=0 does not mean delivered. Phone `ContextHubService` reconnects on `GLASSES_EXIT`, which reopens the glasses activity; BT drops pause/resume automatically.
+- §1.7 / §3.1 `CaptureService`: frames may only be **sent** while the CUSTOM_APP session is open (activity not exited); otherwise buffer. `CXRServiceBridge.sendMessage` rc=0 does not mean delivered. No auto-reconnect on `GLASSES_EXIT`; `GlassAppWatcher` reconnect as in Live Fit; BT drops pause/resume automatically.
+- §5.1.1 production guard: fires only after > 2 s of fed audio with < 64 KiB consumed; non-blocking writes. §7 risk line and R-35: TTS fallback reworded to HUD-only.
 - §3.6: TTS route verified (phone TTS plays in the glasses over BT A2DP); remove the glasses-side `TextToSpeech` fallback (no engine on YodaOS); without BT audio the answer is HUD-only.
 - §5.1.1: replace the "1 s buffer" probe with a paced ≥ 96 KB (≥ 3 s) feed and back-pressure check; treat a null/empty final result as the last non-empty partial.
 - Phase 3/6 plans: use the numbers above (5 s ack timeout and 3 attempts are adequate; reconnect resumes in ~2 s; PTT suspends flush).
