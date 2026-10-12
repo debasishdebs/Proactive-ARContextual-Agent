@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.rokid.context.glasses"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.rokid.context.glasses"
@@ -45,5 +45,5 @@ dependencies {
     implementation("androidx.camera:camera-view:1.3.4")
     implementation("androidx.lifecycle:lifecycle-service:2.8.4")
 
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }
