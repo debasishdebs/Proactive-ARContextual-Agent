@@ -43,6 +43,11 @@ class PromptComposerTest {
         }
     }
 
+    @Test fun itemWithoutAMarkerKeepsItsOriginalCharacters() {
+        val hindi = "\u0915\u094D\u200D\u0937 \u0926\u0942\u0927 \u0930\u0916\u093E\u0964 \u0930\u093E\u0937\u094D\u200C\u091F\u094D\u0930"
+        assertEquals("- $hindi \uFF11", item("$hindi\n\uFF11"))
+    }
+
     @Test fun nelAndUnicodeLineSeparatorsCollapse() {
         listOf("\u0085", "\u2028", "\u2029").forEach { sep ->
             val b = PromptComposer.dataBlock("memories", listOf("one${sep}two"))

@@ -27,10 +27,16 @@ object PromptComposer {
         return (listOf("BEGIN_DATA $label") + body + "END_DATA $label").joinToString("\n")
     }
 
-    /** NFKC folds full-width forms, stripping \p{Cf} removes zero-width joiners, then markers go wherever they appear. */
-    private fun item(text: String): String =
-        Normalizer.normalize(text, Normalizer.Form.NFKC).replace(FORMAT_CHARS, "")
-            .replace(LINE_BREAKS, " ").replace(MARKERS, "[marker]").trim()
+    /**
+     * Markers are detected on a folded copy (NFKC, \p{Cf} removed), so full-width and zero-width look-alikes count.
+     * Only an item that contains one is sent as that copy with the marker neutralised; any other item keeps its own
+     * characters, so Devanagari ZWJ/ZWNJ survive.
+     */
+    private fun item(text: String): String {
+        val folded = Normalizer.normalize(text, Normalizer.Form.NFKC).replace(FORMAT_CHARS, "")
+        val safe = if (MARKERS.containsMatchIn(folded)) folded.replace(MARKERS, "[marker]") else text
+        return safe.replace(LINE_BREAKS, " ").trim()
+    }
 }
 
 /** Legacy call shape kept until Task 13 moves the last callers to RoleRunner. */
