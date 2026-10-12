@@ -74,6 +74,17 @@ class EndpointSeederTest {
         assertEquals(EndpointKind.OLLAMA, endpoints.all().single().kind)
     }
 
+    @Test fun keyedLegacyOllamaRowIsCleanedBySyncAndStaysSavable() = runTest {
+        val ollama = ProviderSettings("ollama", "http://o.local:11434", "", "llama3.1:8b", "", false)
+        db.endpointDao().upsert(com.rokid.context.memory.db.EndpointEntity(EndpointSeeder.OLLAMA_ID, "Ollama", "OLLAMA", "http://o.local:11434", null, "llama3.1:8b",
+            EndpointRepository.keyRef(EndpointSeeder.OLLAMA_ID), "CHAT", 1))
+        vault.put(EndpointRepository.keyRef(EndpointSeeder.OLLAMA_ID), "old-key")
+        seeder.syncFromLegacy(ollama).getOrThrow()
+        val e = endpoints.byId(EndpointSeeder.OLLAMA_ID)!!
+        assertNull(endpoints.keyFor(e))
+        assertTrue(endpoints.save(e, apiKey = null).isSuccess)
+    }
+
     @Test fun syncFromLegacyRebindsToTheEditedProvider() = runTest {
         seeder.seedIfNeeded(azure).getOrThrow()
         seeder.syncFromLegacy(azure.copy(deploymentOrModel = "gpt-6", apiKey = "k2")).getOrThrow()

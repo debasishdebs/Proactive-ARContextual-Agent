@@ -4,6 +4,7 @@ import com.rokid.context.ai.ProviderConfigException
 import com.rokid.context.ai.ProviderHttpException
 import com.rokid.context.ai.ProviderResponseException
 import com.rokid.context.ai.EnvDefaults
+import com.rokid.context.ai.KeyTransport
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelProvider
 import kotlinx.coroutines.Dispatchers
@@ -86,6 +87,7 @@ class OpenAiCompatProvider(
     private fun requestChatCompletion(payload: kotlinx.serialization.json.JsonObject): String {
         if (endpoint.isBlank()) throw ProviderConfigException("AZURE_KG_ENDPOINT is missing")
         if (style == ApiStyle.AZURE && apiKey.isBlank()) throw ProviderConfigException("API key is missing")
+        KeyTransport.requireSecure(endpoint, apiKey)
 
         val normalized = endpoint.trimEnd('/')
         val url = when (style) {

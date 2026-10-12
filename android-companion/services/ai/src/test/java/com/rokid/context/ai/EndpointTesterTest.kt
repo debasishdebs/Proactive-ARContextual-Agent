@@ -20,7 +20,8 @@ import org.robolectric.annotation.Config
 class EndpointTesterTest {
     private val server = MockWebServer().apply { start() }
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
-    @After fun close() { server.shutdown(); db.close() }
+    @org.junit.Before fun allowMock() { KeyTransport.allowCleartextKeyForTests = true }
+    @After fun close() { KeyTransport.allowCleartextKeyForTests = false; server.shutdown(); db.close() }
 
     private val vault = InMemoryKeyVault()
     private val repo = EndpointRepository(db.endpointDao(), vault)
@@ -66,6 +67,13 @@ class EndpointTesterTest {
         val r = tester.test("e", "m")
         assertFalse(r.ok)
         assertEquals("Key rejected (401)", r.message)
+    }
+
+    @Test fun aKeyIsNeverSentOverHttpEvenForAnOldRow() = runTest {
+        KeyTransport.allowCleartextKeyForTests = false
+        save(EndpointKind.AZURE_OPENAI, setOf(Capability.CHAT)); tester.test("e", "m").let { assertFalse(it.ok) }
+        save(EndpointKind.OPENAI_COMPAT, setOf(Capability.EMBEDDINGS)); tester.test("e", "m").let { assertFalse(it.ok) }
+        assertEquals(0, server.requestCount)
     }
 
     private val redirectMsg = "Address redirects — enter the final address"

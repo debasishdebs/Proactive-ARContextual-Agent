@@ -42,6 +42,7 @@ class EndpointTester(private val repo: EndpointRepository, private val providers
             EndpointKind.OPENAI_COMPAT -> "${e.baseUrl}/embeddings" to """{"model":"$model","input":["ok"]}"""
             EndpointKind.LLAMACPP_LOCAL -> throw ProviderConfigException("On-device embeddings need the llama.cpp runtime")
         }
+        KeyTransport.requireSecure(url, key)
         val req = Request.Builder().url(url).post(body.toRequestBody("application/json".toMediaType())).apply {
             when (e.kind) {
                 EndpointKind.AZURE_OPENAI -> key?.let { addHeader("api-key", it) }

@@ -64,5 +64,8 @@ class UrlNormalizerTest {
         listOf("http://192.168.1.5:11434", "http://api.example.com", "http://[::1]:1").forEach { assertEquals(it, msg, httpErr(it, EndpointKind.OLLAMA, false)) }
     }
 
+    @Test fun trailingDotHostIsStoredWithoutTheDot() =
+        assertEquals("http://box.local:1", ok("http://box.local.:1", EndpointKind.OLLAMA))
+
     @Test fun localModelPathIgnoresTheKeyRule() = assertEquals(null, httpErr("/sdcard/m.gguf", EndpointKind.LLAMACPP_LOCAL, false))
 }

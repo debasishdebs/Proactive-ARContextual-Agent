@@ -50,9 +50,9 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
         }
         // Seeding: a blank key means "none known yet" (null = keep). Explicit Config edits: pass it through, so a
         // cleared key ("") removes the stored credential instead of silently keeping the old one.
-        // Keyless kinds never store a key (EndpointRules); seeding keeps any key saved earlier, explicit edits pass it through.
+        // Keyless kinds never store a key (EndpointRules): an explicit edit clears a key left by an older version; seeding keeps what is there.
         val apiKey = when {
-            desired.kind in EndpointRules.KEYLESS -> null
+            desired.kind in EndpointRules.KEYLESS -> if (overwrite) "" else null
             overwrite -> settings.apiKey
             else -> settings.apiKey.ifBlank { null }
         }
