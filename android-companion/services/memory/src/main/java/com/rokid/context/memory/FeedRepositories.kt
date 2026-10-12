@@ -32,13 +32,11 @@ class TimelineRepository(private val frames: FrameViewDao, private val memories:
 class MemoryEdits(private val view: MemoryViewDao, private val memories: MemoryRepository) {
     suspend fun trust(id: String): Boolean = view.setTrusted(id, true) > 0
 
-    /** Single-line, trimmed, ≤ 500 chars; re-indexes FTS through [MemoryRepository.add]. False for blank text or unknown id. */
+    /** Single-line, whitespace-collapsed, trimmed, ≤ 500 chars. Field-level atomic update (see [MemoryViewDao.editText]); false for blank text, unknown or INVALIDATED id. */
     suspend fun editText(id: String, text: String): Boolean {
-        val clean = text.replace('\n', ' ').replace('\t', ' ').trim().take(500)
+        val clean = text.replace(Regex("\\s+"), " ").trim().take(500)
         if (clean.isEmpty()) return false
-        val current = view.byId(id) ?: return false
-        memories.add(current.copy(text = clean))
-        return true
+        return view.editText(id, clean) > 0
     }
 }
 

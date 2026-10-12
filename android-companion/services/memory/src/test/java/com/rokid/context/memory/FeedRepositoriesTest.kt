@@ -117,6 +117,25 @@ class FeedRepositoriesTest {
         assertEquals(listOf("s1"), timeline.recentTraces(10).first().map { it.summaryId })
     }
 
+    @Test fun editPreservesTrustAndReviewState() = runTest {
+        memories.add(m("m1", "Keys", day.first, ReviewState.NEEDS_REVIEW).copy(tags = "home", confidence = 0.4))
+        assertTrue(edits.trust("m1"))
+        assertTrue(edits.editText("m1", "Keys\n on\t\t the   shelf"))
+        val got = timeline.memory("m1").first()!!
+        assertEquals("Keys on the shelf", got.text)
+        assertTrue(got.trusted)
+        assertEquals(ReviewState.NEEDS_REVIEW, got.reviewState)
+        assertEquals(0.4, got.confidence, 0.0)
+        assertEquals("home", got.tags)
+        assertEquals(listOf("m1"), memories.search("home", 5).map { it.id })
+    }
+
+    @Test fun editOfInvalidatedMemoryIsRejectedAndUnchanged() = runTest {
+        memories.add(m("gone", "Forgotten fact", day.first, ReviewState.INVALIDATED))
+        assertFalse(edits.editText("gone", "Resurrected"))
+        assertEquals("Forgotten fact", timeline.memory("gone").first()?.text)
+    }
+
     @Test fun emptyIdListsNeverQuery() = runTest {
         assertTrue(timeline.memoriesByIds(emptyList()).isEmpty())
         assertTrue(timeline.framesByIds(emptyList()).isEmpty())
