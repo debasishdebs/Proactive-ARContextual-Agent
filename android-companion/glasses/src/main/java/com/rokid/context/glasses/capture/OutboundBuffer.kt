@@ -80,6 +80,9 @@ class OutboundBuffer(
         return null
     }
 
+    /** False once the frame has left the buffer (acked, dropped, aged out or cleared). */
+    @Synchronized fun contains(frameId: String): Boolean = frames.values.any { it.meta.frameId == frameId }
+
     @Synchronized fun remove(frameId: String) {
         frames.entries.firstOrNull { it.value.meta.frameId == frameId }?.key?.let { delete(it) }
     }

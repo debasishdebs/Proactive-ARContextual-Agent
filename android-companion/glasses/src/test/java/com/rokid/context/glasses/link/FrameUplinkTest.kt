@@ -125,4 +125,47 @@ class FrameUplinkTest {
         assertEquals(1, sent.size)
         assertTrue(u.flushing.value)
     }
+
+    /** R-65: a privacy pause clears the buffer; the frame in flight must not keep sending or retrying. */
+    @Test fun clearingTheBufferMidFrameStopsSending() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(5_000), now, null, null, null)
+        val u = FrameUplink(this, b, sendChunk = { c ->
+            sent += c
+            if (c.meta.chunkIdx == 1) b.clear()
+            0
+        }, canSend = { open }, config = UplinkConfig(chunkChars = 2_000))
+        u.kick(); advanceUntilIdle()
+        assertEquals(listOf(0, 1), sent.map { it.meta.chunkIdx })
+        assertEquals(0, b.size)
+        assertFalse(u.flushing.value)
+    }
+
+    @Test fun clearingWhileAwaitingTheAckDoesNotRetry() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now, null, null, null)
+        val u = FrameUplink(this, b, sendChunk = { sent += it; 0 }, canSend = { open })
+        u.kick(); advanceTimeBy(1_000); b.clear(); advanceUntilIdle()
+        assertEquals(1, sent.size)
+    }
+
+    @Test fun aThrowingSendKeepsTheFrameAndDoesNotEscape() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now, null, null, null)
+        val u = FrameUplink(this, b, sendChunk = { throw IllegalStateException("boom") }, canSend = { open })
+        u.kick(); advanceUntilIdle()
+        assertEquals(1, b.size)
+        assertFalse(u.flushing.value)
+    }
+
+    @Test fun aThirdConsecutiveCrashOnTheSameFrameDropsIt() = runTest {
+        val b = buffer()
+        b.add("poison", jpeg(100), now - 1, null, null, null); b.add("g2", jpeg(100), now, null, null, null)
+        val u = FrameUplink(this, b, sendChunk = { if (it.meta.frameId == "poison") throw IllegalStateException("boom"); sent += it; 0 }, canSend = { open })
+        u.kick(); advanceUntilIdle(); u.kick(); advanceUntilIdle()
+        assertEquals(2, b.size)
+        u.kick(); advanceUntilIdle()
+        assertEquals("g2", b.oldest()!!.meta.frameId)
+        assertEquals(1, b.size)
+    }
 }

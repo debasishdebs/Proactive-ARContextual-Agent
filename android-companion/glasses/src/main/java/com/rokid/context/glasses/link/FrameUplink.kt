@@ -5,6 +5,7 @@ import com.rokid.context.core.model.FrameChunk
 import com.rokid.context.core.model.FrameCodec
 import com.rokid.context.core.model.SAFE_CHUNK_CHARS
 import com.rokid.context.glasses.capture.OutboundBuffer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -41,10 +42,12 @@ class FrameUplink(
     private val config: UplinkConfig = UplinkConfig(),
     private val log: (String) -> Unit = {},
 ) {
-    private enum class Outcome { DELIVERED, DROPPED, RETAINED, INTERRUPTED }
+    private enum class Outcome { DELIVERED, DROPPED, RETAINED, INTERRUPTED, CLEARED }
 
     private val acks = ConcurrentHashMap<String, CompletableDeferred<FrameAck>>()
     private var job: Job? = null
+    /** Consecutive flush crashes per frame; a frame that crashes [MAX_CRASHES] flushes in a row is dropped. */
+    private val crashes = HashMap<String, Int>()
     private val _flushing = MutableStateFlow(false)
     val flushing: StateFlow<Boolean> = _flushing
 
@@ -61,10 +64,27 @@ class FrameUplink(
     fun onAck(ack: FrameAck) { acks[ack.frameId]?.complete(ack) }
 
     private suspend fun flush() {
+        var current: String? = null
+        try {
+            flushLoop { current = it }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val id = current
+            log("flush crashed: ${e.javaClass.simpleName}")
+            if (id != null) {
+                val n = (crashes[id] ?: 0) + 1
+                if (n >= MAX_CRASHES) { crashes.remove(id); buffer.remove(id); log("dropped $id after $n crashes") } else crashes[id] = n
+            }
+        }
+    }
+
+    private suspend fun flushLoop(onFrame: (String) -> Unit) {
         var sent = 0
         var dropped = 0
         while (canSend()) {
             val f = buffer.oldest() ?: break
+            onFrame(f.meta.frameId)
             val jpeg = try {
                 buffer.readJpeg(f)
             } catch (e: IOException) {
@@ -73,10 +93,13 @@ class FrameUplink(
                 continue
             }
             val chunks = FrameCodec.split(f.meta.frameId, jpeg, f.meta.capturedAtMs, f.meta.luma, f.meta.phash, f.meta.batteryPct, config.chunkChars)
-            when (deliver(f.meta.frameId, chunks)) {
+            val outcome = deliver(f.meta.frameId, chunks)
+            if (outcome != Outcome.INTERRUPTED && outcome != Outcome.CLEARED) crashes.remove(f.meta.frameId)
+            when (outcome) {
                 Outcome.DELIVERED -> { buffer.remove(f.meta.frameId); sent++; log("delivered ${f.meta.frameId}") }
                 Outcome.DROPPED -> { buffer.remove(f.meta.frameId); dropped++; log("dropped ${f.meta.frameId} after ${config.maxNacks} NACKs") }
                 Outcome.RETAINED -> { log("flush stopped after ${config.maxAttempts} timeouts; retained=${buffer.size}"); break }
+                Outcome.CLEARED -> log("${f.meta.frameId} cleared while sending; not sent further")
                 Outcome.INTERRUPTED -> { log("flush interrupted; retained=${buffer.size}"); break }
             }
         }
@@ -87,15 +110,18 @@ class FrameUplink(
         var timeouts = 0
         var nacks = 0
         while (true) {
+            if (!buffer.contains(frameId)) return Outcome.CLEARED
             val waiter = CompletableDeferred<FrameAck>()
             acks[frameId] = waiter
             try {
                 var refused = false
                 for (c in chunks) {
+                    if (!buffer.contains(frameId)) return Outcome.CLEARED
                     if (!canSend()) return Outcome.INTERRUPTED
                     if (sendChunk(c) != 0) { refused = true; break }
                 }
                 val ack = if (refused) null else withTimeoutOrNull(config.ackTimeoutMs) { waiter.await() }
+                if (!buffer.contains(frameId)) return Outcome.CLEARED
                 when {
                     ack == null -> {
                         timeouts++
@@ -115,4 +141,6 @@ class FrameUplink(
             }
         }
     }
+
+    private companion object { const val MAX_CRASHES = 3 }
 }
