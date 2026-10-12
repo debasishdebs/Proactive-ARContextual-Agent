@@ -665,6 +665,7 @@ interface RoleBindingDao {
     @Upsert suspend fun upsert(binding: RoleBindingEntity)
     @Query("SELECT * FROM role_binding WHERE role = :role") suspend fun byRole(role: String): RoleBindingEntity?
     @Query("SELECT * FROM role_binding") suspend fun all(): List<RoleBindingEntity>
+    @Query("DELETE FROM role_binding WHERE role = :role") suspend fun delete(role: String)
 }
 ```
 
@@ -1988,7 +1989,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 6 types; `ProviderSettings`, `EnvDefaults` (Phase 1).
-- Produces: `enum Role {VISION_EXTRACT, EXPLICIT_REMEMBER, SUMMARIZE, CRITIC, ANSWER, NUDGE, EMBED}` with `requiredCapability`; `RoleBinding(role, endpointId, model, temperature, maxTokens, fallbackEndpointId, fallbackModel)`; `RoleBindingRepository(dao, endpoints)` (`get(role)`, `set(binding): Result<Unit>`, `eligibleEndpoints(role)`); `ModelCallException(message, retryable: Boolean, cause)`; `ProviderErrors.isPermanent(t): Boolean`; `ModelRouter(bindings, endpoints, providers)` with `generate(role, prompt, images)` and `generateFromFrames(prompt, images)` (never wraps `CancellationException`); `interface SeedState { isDone(); markDone() }`, `PrefsSeedState(context)`, `InMemorySeedState`; `EndpointSeeder(endpoints, bindings, state)` with `seedIfNeeded(settings): Result<Unit>` and `syncFromLegacy(settings): Result<Unit>`; `AiGraph(memory, vault, seedState, providers)` (`endpoints`, `bindings`, `router`, `tester`, `seeder`, `get(context)`, `resetForTests(graph)`).
+- Produces: `enum Role {VISION_EXTRACT, EXPLICIT_REMEMBER, SUMMARIZE, CRITIC, ANSWER, NUDGE, EMBED}` with `requiredCapability`; `RoleBinding(role, endpointId, model, temperature, maxTokens, fallbackEndpointId, fallbackModel)`; `RoleBindingRepository(dao, endpoints)` (`get(role)`, `set(binding): Result<Unit>`, `clear(role)`, `eligibleEndpoints(role)`); `ModelCallException(message, retryable: Boolean, cause)`; `ProviderErrors.isPermanent(t): Boolean`; `ModelRouter(bindings, endpoints, providers)` with `generate(role, prompt, images)` and `generateFromFrames(prompt, images)` (never wraps `CancellationException`); `interface SeedState { isDone(); markDone() }`, `PrefsSeedState(context)`, `InMemorySeedState`; `EndpointSeeder(endpoints, bindings, state)` with `seedIfNeeded(settings): Result<Unit>` and `syncFromLegacy(settings): Result<Unit>`; `AiGraph(memory, vault, seedState, providers)` (`endpoints`, `bindings`, `router`, `tester`, `seeder`, `get(context)`, `resetForTests(graph)`).
 
 Error contract (consumed by Task 8's `RetryClassifier`):
 
@@ -2000,7 +2001,7 @@ Error contract (consumed by Task 8's `RetryClassifier`):
 | Primary and fallback both fail | `ModelCallException("Primary+fallback generation failed: …; …")` | true if either failure is not permanent |
 | Coroutine cancelled | the original `CancellationException`, unwrapped | — |
 
-`isPermanent` = message contains a 401/403/404 status (word-bounded) or one of: `resource not found`, `deployment not found`, `unsupported parameter`, `invalid_request_error`, `api key is missing`, `endpoint is missing`, `model path is required`, `native runtime not available`. Everything else (HTTP 5xx, timeouts, connection errors, unknown) is transient.
+Configuration failures are classified **by type**: before calling a provider, `ModelRouter` checks the endpoint's own preconditions (Azure/OpenAI-compatible needs a stored key; every remote kind needs a non-blank URL and model; llama.cpp needs a model path) and throws `ModelCallException(retryable = false)` with a short message (e.g. "No API key saved for Azure OpenAI"). As a second line, `isPermanent` = message contains a 401/403/404 status (word-bounded) or one of the providers' actual config messages — `azure_kg_api_key is missing`, `azure_kg_endpoint is missing`, `ollama_base_url is missing`, `local model path is required`, `native runtime not available` — or `resource not found`, `deployment not found`, `unsupported parameter`, `invalid_request_error`. Tests use the real provider messages. Everything else (HTTP 5xx, timeouts, connection errors, unknown) is transient.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2147,6 +2148,22 @@ class ModelRouterTest {
         assertTrue((err { router.generate(Role.ANSWER, "q") } as ModelCallException).retryable)
     }
 
+    @Test fun missingKeyIsPermanentByTypeAndByRealProviderMessage() = runTest {
+        // By type: Azure endpoint saved without a key → router's precondition check.
+        endpoints.save(Endpoint("az", "Azure OpenAI", EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt"), setOf(Capability.CHAT), 1), apiKey = null).getOrThrow()
+        bindings.set(RoleBinding(Role.ANSWER, "az", "gpt")).getOrThrow()
+        val e = err { router.generate(Role.ANSWER, "q") } as ModelCallException
+        assertFalse(e.retryable); assertTrue(e.message!!.contains("No API key saved"))
+        // By message: the real legacy providers' own require() texts.
+        val real = listOf(
+            runCatching { com.rokid.context.model.provider.OpenAiCompatProvider("https://az.example", "", "gpt").generate("q") }.exceptionOrNull()!!,
+            runCatching { com.rokid.context.model.provider.OpenAiCompatProvider("", "k", "gpt").generate("q") }.exceptionOrNull()!!,
+            runCatching { com.rokid.context.model.provider.OllamaProvider("", "m").generate("q") }.exceptionOrNull()!!,
+            runCatching { com.rokid.context.model.provider.LlamaCppNativeProvider("").generate("q") }.exceptionOrNull()!!,
+        )
+        real.forEach { assertTrue("permanent: ${it.message}", ProviderErrors.isPermanent(it)) }
+    }
+
     @Test fun cancellationIsNeverWrapped() = runTest {
         ep("a", Capability.CHAT); ep("b", Capability.CHAT)
         bindings.set(RoleBinding(Role.ANSWER, "a", "m", fallbackEndpointId = "b")).getOrThrow()
@@ -2241,7 +2258,22 @@ class EndpointSeederTest {
         assertEquals("gpt-6", bindings.get(Role.ANSWER)!!.model)
         seeder.syncFromLegacy(ProviderSettings("ollama", "http://o:11434", "", "llama3.1:8b", "", false)).getOrThrow()
         assertEquals(EndpointSeeder.OLLAMA_ID, bindings.get(Role.ANSWER)!!.endpointId)
-        assertEquals(EndpointSeeder.AZURE_ID, bindings.get(Role.VISION_EXTRACT)!!.endpointId) // Ollama has no VISION: keep the last vision binding
+        assertNull(bindings.get(Role.VISION_EXTRACT)) // Ollama has no VISION: the stale Azure vision binding is cleared
+    }
+
+    @Test fun switchingToTextOnlyProviderMakesFramesUseItWithZeroAzureCalls() = runTest {
+        val calls = mutableListOf<String>()
+        val router = ModelRouter(bindings, endpoints, ProviderBuilder { e, m, _ ->
+            object : com.rokid.context.model.ModelProvider {
+                override suspend fun generate(prompt: String): String { calls += "${e.id}:text"; return "${e.id}/$m" }
+                override suspend fun generateWithImages(prompt: String, images: List<com.rokid.context.model.ModelImageInput>): String { calls += "${e.id}:vision"; return "${e.id}/vision" }
+            }
+        })
+        seeder.seedIfNeeded(azure).getOrThrow()
+        seeder.syncFromLegacy(ProviderSettings("ollama", "http://o:11434", "", "llama3.1:8b", "", false)).getOrThrow()
+        assertEquals("ollama/llama3.1:8b", router.generateFromFrames("q", listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA"))))
+        assertEquals(listOf("ollama:text"), calls)
+        assertTrue(calls.none { it.startsWith(EndpointSeeder.AZURE_ID) })
     }
 }
 ```
@@ -2293,6 +2325,8 @@ class RoleBindingRepository(private val dao: RoleBindingDao, private val endpoin
 
     suspend fun eligibleEndpoints(role: Role): List<Endpoint> = endpoints.all().filter { role.requiredCapability in it.capabilities }
 
+    suspend fun clear(role: Role) = dao.delete(role.name)
+
     suspend fun set(binding: RoleBinding): Result<Unit> = runCatching {
         val eligible = eligibleEndpoints(binding.role).map { it.id }.toSet()
         require(binding.endpointId in eligible) { "That endpoint can't do ${binding.role.requiredCapability.name.lowercase()}" }
@@ -2314,13 +2348,16 @@ class ModelCallException(message: String, val retryable: Boolean, cause: Throwab
 
 object ProviderErrors {
     private val PERMANENT_STATUS = Regex("\\b(401|403|404)\\b")
+    /** Exact (lower-cased) messages thrown by the legacy providers' `require` checks, plus provider API errors. */
     private val PERMANENT_TEXT = listOf(
+        "azure_kg_api_key is missing", "azure_kg_endpoint is missing", "ollama_base_url is missing",
+        "local model path is required", "native runtime not available",
         "resource not found", "deployment not found", "unsupported parameter", "invalid_request_error",
-        "api key is missing", "endpoint is missing", "model path is required", "native runtime not available",
     )
 
     /** Auth/config errors that will not succeed on retry. HTTP 5xx, timeouts and network errors are transient. */
     fun isPermanent(t: Throwable): Boolean {
+        if (t is ModelCallException) return !t.retryable
         val m = t.message.orEmpty().lowercase(Locale.US)
         return PERMANENT_STATUS.containsMatchIn(m) || PERMANENT_TEXT.any { it in m }
     }
@@ -2388,8 +2425,21 @@ class ModelRouter(
         }
     }
 
+    /** Type-based config check (permanent): never depends on a provider's error wording. */
+    private fun requireConfigured(e: Endpoint, model: String, key: String?) {
+        val problem = when {
+            e.baseUrl.isBlank() -> if (e.kind == EndpointKind.LLAMACPP_LOCAL) "No model file set for ${e.name}" else "No address set for ${e.name}"
+            e.kind != EndpointKind.LLAMACPP_LOCAL && model.isBlank() -> "No model set for ${e.name}"
+            e.kind == EndpointKind.AZURE_OPENAI && key.isNullOrBlank() -> "No API key saved for ${e.name}"
+            else -> null
+        }
+        if (problem != null) throw ModelCallException(problem, retryable = false)
+    }
+
     private suspend fun call(e: Endpoint, model: String, prompt: String, images: List<ModelImageInput>): String {
-        val p = providers.create(e, model, endpoints.keyFor(e))
+        val key = endpoints.keyFor(e)
+        requireConfigured(e, model, key)
+        val p = providers.create(e, model, key)
         if (images.isNotEmpty() && Capability.VISION in e.capabilities) {
             try { return p.generateWithImages(prompt, images) } catch (c: CancellationException) { throw c } catch (t: Throwable) {
                 Log.w(TAG, "vision failed on ${e.name}, retrying as text: ${t.message}")
@@ -2458,7 +2508,12 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
         } else null
         val model = primary.models.firstOrNull().orEmpty()
         for (role in Role.entries) {
-            if (role == Role.EMBED || role.requiredCapability !in primary.capabilities) continue
+            if (role == Role.EMBED) continue
+            if (role.requiredCapability !in primary.capabilities) {
+                // Switching the legacy provider to a text-only endpoint must not leave frames on the old vision endpoint.
+                if (overwrite) bindings.clear(role)
+                continue
+            }
             if (!overwrite && bindings.get(role) != null) continue
             // Text roles get the on-device fallback (legacy `localFallback`); VISION_EXTRACT can't, the local endpoint has no VISION.
             val fallback = local?.takeIf { role.requiredCapability in it.capabilities }
@@ -2503,7 +2558,7 @@ class AiGraph(memory: MemoryGraph, vault: KeyVault, seedState: SeedState, provid
 - [ ] **Step 8: Run ai tests**
 
 Run: `./gradlew :services:ai:testDebugUnitTest`
-Expected: PASS (RoleBindingRepositoryTest 2, ModelRouterTest 9, EndpointSeederTest 7, plus earlier).
+Expected: PASS (RoleBindingRepositoryTest 2, ModelRouterTest 10, EndpointSeederTest 8, plus earlier).
 
 - [ ] **Step 9: Seed at startup (resumes a partial seed on every start until done)**
 
@@ -2827,12 +2882,13 @@ import org.robolectric.annotation.Config
 class LegacyConfigBridgeTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val usedKeys = mutableListOf<String?>()
+    private val usedEndpoints = mutableListOf<String>()
     private lateinit var ai: AiGraph
 
     @Before fun setUp() {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         ai = AiGraph(MemoryGraph.get(ctx), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { e, model, key ->
-            object : ModelProvider { override suspend fun generate(prompt: String): String { usedKeys += key; return "${e.id}/$model" } }
+            object : ModelProvider { override suspend fun generate(prompt: String): String { usedKeys += key; usedEndpoints += e.id; return "${e.id}/$model" } }
         })
         AiGraph.resetForTests(ai)
     }
@@ -2851,6 +2907,10 @@ class LegacyConfigBridgeTest {
         AppConfigStore.setProvider(ctx, "openai", "https://az.example", "k", "gpt-5.4", "")
         AppConfigStore.setProvider(ctx, "ollama", "192.168.1.5:11434", "", "llama3.1:8b", "")
         assertEquals(EndpointSeeder.OLLAMA_ID, ai.bindings.get(Role.ANSWER)!!.endpointId)
+        assertEquals(null, ai.bindings.get(Role.VISION_EXTRACT))
+        usedEndpoints.clear()
+        ai.router.generateFromFrames("q", listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA")))
+        assertEquals(listOf(EndpointSeeder.OLLAMA_ID), usedEndpoints) // zero Azure calls for frames
         assertEquals(EndpointKind.OLLAMA, ai.endpoints.byId(EndpointSeeder.OLLAMA_ID)!!.kind)
         assertEquals("http://192.168.1.5:11434", ai.endpoints.byId(EndpointSeeder.OLLAMA_ID)!!.baseUrl)
     }

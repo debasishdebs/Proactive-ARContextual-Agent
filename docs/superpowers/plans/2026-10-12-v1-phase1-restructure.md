@@ -67,12 +67,24 @@ git diff --cached --stat | tail -5
 ```
 Ask the user to confirm the staged list (they own this uncommitted work). Expected: no `.env`, no `*.png`, no `build/` paths.
 
-- [ ] **Step 3: Secret scan of the staged diff**
+- [ ] **Step 3: Secret scan of the staged files (values never printed)**
 
 ```bash
-git diff --cached | grep -inE "(api[_-]?key|secret|password|token)\s*[:=]\s*['\"][^'\"]{8,}" || echo "no literal secrets"
+python3 - <<'EOF'
+import re, subprocess
+pat = re.compile(r"(api[_-]?key|secret|password|passwd|token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-+/=]{8,}", re.I)
+files = subprocess.run(["git", "diff", "--cached", "--name-only", "--diff-filter=AM"], capture_output=True, text=True).stdout.split()
+total = 0
+for f in files:
+    blob = subprocess.run(["git", "show", f":{f}"], capture_output=True).stdout.decode("utf-8", "replace")
+    hits = [n for n, line in enumerate(blob.splitlines(), 1) if pat.search(line)]
+    if hits:
+        total += len(hits)
+        print(f"{f}: {len(hits)} finding(s) at lines {hits[:20]} [values redacted]")
+print(f"files scanned={len(files)} findings={total}")
+EOF
 ```
-Expected: `no literal secrets`. If anything matches, unstage that file and ask the user.
+Expected: `findings=0`. The script prints only file names, line numbers and counts — never the matching text. If a file has findings, open it yourself (do not paste the lines into chat), unstage it if it holds a real secret, and ask the user.
 
 - [ ] **Step 4: Commit**
 
