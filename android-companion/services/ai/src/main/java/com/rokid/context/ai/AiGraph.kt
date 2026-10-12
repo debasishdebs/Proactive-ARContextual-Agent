@@ -32,6 +32,7 @@ class AiGraph(
     val bindings = RoleBindingRepository(memory.db.roleBindingDao(), endpoints)
     val router = ModelRouter(bindings, endpoints, providers)
     val tester = EndpointTester(endpoints, providers)
+    val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings)
     val seeder = EndpointSeeder(endpoints, bindings, seedState)
     val prompts = PromptRepository(memory.db.promptDao(), seeds, settings.prompts)
     val persona: PersonaSettings get() = settings.persona

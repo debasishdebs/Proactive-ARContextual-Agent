@@ -41,7 +41,7 @@ class EndpointTesterTest {
             else -> OpenAiCompatProvider(e.baseUrl, key.orEmpty(), model, e.apiVersion ?: "", OpenAiCompatProvider.ApiStyle.OPENAI, client)
         }
     }
-    private val tester = EndpointTester(repo, tlsProviders, client)
+    private val tester = EndpointTester(repo, tlsProviders, com.rokid.context.ai.embed.EmbeddingClient(client))
     private val strictTester = EndpointTester(repo, ProviderFactory)
 
     /** Writes straight to the DAO so the (http) MockWebServer can stand in for https-only Azure. */
