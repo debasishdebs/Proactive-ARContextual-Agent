@@ -18,9 +18,12 @@ class EndpointEmbedder(
 
     override suspend fun embedQuery(text: String): FloatArray = embed(listOf(spec.queryPrefix + text.take(spec.maxInputChars))).single()
 
-    private suspend fun embed(inputs: List<String>): List<FloatArray> =
-        client.embed(endpoint, spec.model, key, inputs, spec.dimensions).map { v ->
+    private suspend fun embed(inputs: List<String>): List<FloatArray> = inputs.chunked(BATCH).flatMap { chunk ->
+        client.embed(endpoint, spec.model, key, chunk, spec.dimensions).map { v ->
             if (v.size != spec.dim) throw ProviderResponseException("Embedding size changed (expected ${spec.dim}, got ${v.size})")
             if (spec.l2) VectorMath.l2(v) else v
         }
+    }
+
+    private companion object { const val BATCH = 64 }
 }

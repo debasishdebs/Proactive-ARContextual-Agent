@@ -111,4 +111,37 @@ class EmbeddingClientTest {
         assertTrue(runCatching { client.embed(e(EndpointKind.AZURE_OPENAI), "m", null, listOf("a")) }.exceptionOrNull() is ProviderConfigException)
         assertEquals(0, server.requestCount)
     }
+
+    @Test fun anAzureDeploymentNameIsPathEncoded() = runTest {
+        server.enqueue(MockResponse().setBody("""{"data":[{"index":0,"embedding":[1]}]}"""))
+        client.embed(e(EndpointKind.AZURE_OPENAI), "my dep/x", "k", listOf("a"))
+        assertEquals("/openai/deployments/my%20dep%2Fx/embeddings?api-version=2024-10-21", server.takeRequest().path)
+    }
+
+    @Test fun aFailedRevisionLookupIsAnErrorNotNull() = runTest {
+        server.enqueue(MockResponse().setResponseCode(503))
+        assertTrue(runCatching { client.revision(e(EndpointKind.OLLAMA), "m") }.exceptionOrNull() is ProviderHttpException)
+        server.enqueue(MockResponse().setBody("""{"models":[]}"""))
+        assertEquals(null, client.revision(e(EndpointKind.OLLAMA), "m"))
+        assertEquals(null, client.revision(e(EndpointKind.OPENAI_COMPAT), "m"))
+    }
+
+    @Test fun providerBodyInTheExceptionIsCapped() = runTest {
+        server.enqueue(MockResponse().setResponseCode(500).setBody("x".repeat(5_000)))
+        val ex = runCatching { client.embed(e(EndpointKind.OPENAI_COMPAT), "m", "k", listOf("a")) }.exceptionOrNull() as ProviderHttpException
+        assertTrue(ex.message!!.length < 260)
+    }
+
+    @Test fun embedderBatchesDocumentsInOrder() = runTest {
+        val spec = EmbeddingSpec("e", EndpointKind.OPENAI_COMPAT, "https://localhost:${server.port}", null, "m", null, null, 1, false, "", "", 100)
+        val emb = EndpointEmbedder(spec, e(EndpointKind.OPENAI_COMPAT), "k", client)
+        repeat(3) { n ->
+            val count = if (n < 2) 64 else 22
+            val rows = (0 until count).joinToString(",") { """{"index":$it,"embedding":[${n * 64 + it}]}""" }
+            server.enqueue(MockResponse().setBody("""{"data":[$rows]}"""))
+        }
+        val out = emb.embedDocuments((0 until 150).map { "t$it" })
+        assertEquals(3, server.requestCount)
+        assertEquals((0 until 150).map { it.toFloat() }, out.map { it[0] })
+    }
 }

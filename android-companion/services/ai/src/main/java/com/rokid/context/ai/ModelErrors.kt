@@ -16,9 +16,9 @@ class ModelCallException(
     val kind: FailureKind = if (retryable) FailureKind.TRANSIENT else FailureKind.REJECTED,
 ) : RuntimeException(message, cause)
 
-/** A non-2xx reply. The message keeps "<provider> request failed: <code> <body>" for Diagnostics logs only (the router redacts it). */
+/** A non-2xx reply. Never user-facing (UI maps by [code]); the message keeps "<provider> request failed: <code> <body>" for Diagnostics logs only (the router redacts it). */
 class ProviderHttpException(val code: Int, provider: String, body: String) :
-    IllegalStateException("$provider request failed: $code ${body.take(2_000)}")
+    IllegalStateException("$provider request failed: $code ${body.take(200)}")
 
 /** Missing address, model, key, model file or native runtime: only fixing the settings helps. */
 class ProviderConfigException(message: String) : IllegalArgumentException(message)

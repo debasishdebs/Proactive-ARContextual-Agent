@@ -9,7 +9,11 @@ import com.rokid.context.ai.ProviderHttpException
 import com.rokid.context.ai.ProviderResponseException
 import com.rokid.context.model.provider.LlamaCppNativeProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -29,13 +33,13 @@ import okhttp3.RequestBody.Companion.toRequestBody
 class EmbeddingClient(private val http: OkHttpClient = Http.modelClient(60)) {
     suspend fun embed(e: Endpoint, model: String, key: String?, inputs: List<String>, dimensions: Int? = null): List<FloatArray> {
         if (inputs.isEmpty()) return emptyList()
-        if (e.kind == EndpointKind.LLAMACPP_LOCAL) return validated(withContext(Dispatchers.Default) { LlamaCppNativeProvider.embed(e.baseUrl, inputs) }, inputs.size)
+        if (e.kind == EndpointKind.LLAMACPP_LOCAL) return validated(nativeEmbed(e.baseUrl, inputs), inputs.size)
         val base = e.baseUrl.trimEnd('/')
         val (url, body) = when (e.kind) {
             EndpointKind.OLLAMA -> "$base/api/embed" to buildJsonObject { put("model", JsonPrimitive(model)); put("input", strings(inputs)) }
             EndpointKind.AZURE_OPENAI -> {
                 if (key.isNullOrBlank()) throw ProviderConfigException("API key is missing")
-                "$base/openai/deployments/$model/embeddings?api-version=${e.apiVersion ?: "2024-10-21"}" to
+                "$base/openai/deployments/${java.net.URLEncoder.encode(model, "UTF-8").replace("+", "%20")}/embeddings?api-version=${e.apiVersion ?: "2024-10-21"}" to
                     buildJsonObject { put("input", strings(inputs)); dimensions?.let { put("dimensions", JsonPrimitive(it)) } }
             }
             else -> "$base/embeddings" to buildJsonObject {
@@ -80,6 +84,11 @@ class EmbeddingClient(private val http: OkHttpClient = Http.modelClient(60)) {
         return validated(vectors, inputs.size)
     }
 
+    /** The native call can't be interrupted, but the caller stops waiting after the same 60 s budget as HTTP. */
+    private suspend fun nativeEmbed(path: String, inputs: List<String>): List<FloatArray> = try {
+        withTimeout(NATIVE_TIMEOUT_MS) { coroutineScope { async(Dispatchers.Default) { LlamaCppNativeProvider.embed(path, inputs) }.await() } }
+    } catch (_: TimeoutCancellationException) { throw java.net.SocketTimeoutException("Local embedding timed out") }
+
     /** A reply can never yield bad vectors: right count, one non-zero dimension, every value finite. */
     private fun validated(vectors: List<FloatArray>, expected: Int): List<FloatArray> {
         if (vectors.size != expected) throw ProviderResponseException("Expected $expected embeddings, got ${vectors.size}")
@@ -94,11 +103,20 @@ class EmbeddingClient(private val http: OkHttpClient = Http.modelClient(60)) {
     suspend fun revision(e: Endpoint, model: String): String? {
         if (e.kind != EndpointKind.OLLAMA) return null
         val request = Request.Builder().url("${e.baseUrl.trimEnd('/')}/api/tags").get().build()
-        val text = withContext(Dispatchers.IO) { http.newCall(request).execute().use { r -> if (r.isSuccessful) r.body?.string() else null } } ?: return null
-        val models = runCatching { Json.parseToJsonElement(text).jsonObject["models"] as? JsonArray }.getOrNull() ?: return null
+        val text = withContext(Dispatchers.IO) {
+            http.newCall(request).execute().use { r ->
+                val t = r.body?.string().orEmpty()
+                if (!r.isSuccessful) throw ProviderHttpException(r.code, "Embedding", t)
+                t
+            }
+        }
+        val models = runCatching { Json.parseToJsonElement(text).jsonObject["models"] as? JsonArray }.getOrNull()
+            ?: throw ProviderResponseException("Model list wasn't understood")
         return models.map { it.jsonObject }.firstOrNull { (it["name"] as? JsonPrimitive)?.content in setOf(model, "$model:latest") }
             ?.let { (it["digest"] as? JsonPrimitive)?.content }
     }
 
     private fun strings(xs: List<String>) = JsonArray(xs.map { JsonPrimitive(it) })
+
+    private companion object { const val NATIVE_TIMEOUT_MS = 60_000L }
 }
