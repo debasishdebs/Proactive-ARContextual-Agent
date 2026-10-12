@@ -15,6 +15,7 @@ class LegacyImportWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
     override suspend fun doWork(): Result {
         val report = withContext(Dispatchers.IO) { MemoryGraph.ensureLegacyImported(applicationContext) }
         if (report != null) Log.i(TAG, "legacy import $report")
+        EmbeddingWorker.enqueue(applicationContext) // imported memories are embedded in the background (spec §6.2)
         return Result.success()
     }
 

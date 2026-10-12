@@ -19,7 +19,7 @@ class ContextApp : Application() {
         // Eager background import so it is normally done before first use; PipelineRecords calls wait only if it is still running.
         kotlin.concurrent.thread(name = "legacy-import") {
             runCatching { com.rokid.context.memory.MemoryGraph.ensureLegacyImported(this) }
-                .onFailure { android.util.Log.w("ContextApp", "legacy import failed; will retry", it) }
+                .onFailure { android.util.Log.w("ContextApp", "legacy import failed; will retry: ${com.rokid.context.ai.SafeLog.describe(it)}") }
         }
         // Resumes a partial seed on every start until done. The seeder logs its own (key-free) failure line and leaves
         // roles unbound; this guard only catches setup failures (e.g. Keystore) so they can never crash the app.
@@ -32,6 +32,7 @@ class ContextApp : Application() {
             }.onFailure { android.util.Log.w("ContextApp", "AI seed failed; will retry next start (${it.javaClass.simpleName})") }
         }
         com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
+        com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) // daily canary check + any backlog
         registerActivityLifecycleCallbacks(com.rokid.context.phone.hub.HubActivityHook)
     }
 }
