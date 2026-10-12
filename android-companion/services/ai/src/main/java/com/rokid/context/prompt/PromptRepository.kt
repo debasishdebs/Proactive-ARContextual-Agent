@@ -4,7 +4,9 @@ import com.rokid.context.ai.contract.DefaultSchemas
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.memory.db.PromptDao
 import com.rokid.context.memory.db.PromptVersionEntity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withContext
 
 data class PromptDraft(val template: String, val outputSchema: String?)
 
@@ -20,7 +22,12 @@ class PromptRepository(
 ) {
     suspend fun ensureSeeded() { PromptKey.entries.forEach { seed(it) } }
 
-    private suspend fun seed(key: PromptKey) = dao.seedIfAbsent(key.name, seeds.template(key), DefaultSchemas.text(key), now())
+    /** Reads the seed (an asset file for [AssetPromptSeeds]) on IO, and only for a key that has no prompt row yet. */
+    private suspend fun seed(key: PromptKey): Boolean {
+        if (dao.prompt(key.name) != null) return false
+        val text = withContext(Dispatchers.IO) { seeds.template(key) }.trim()
+        return dao.seedIfAbsent(key.name, text, DefaultSchemas.text(key), now())
+    }
 
     suspend fun active(key: PromptKey): PromptVersionEntity = dao.active(key.name) ?: run { seed(key); checkNotNull(dao.active(key.name)) }
     fun observeActive(key: PromptKey): Flow<PromptVersionEntity?> = dao.observeActive(key.name)
@@ -32,7 +39,7 @@ class PromptRepository(
         val template = draft.template.trim()
         require(template.isNotEmpty()) { "The template is empty" }
         val schema = if (key == PromptKey.SYSTEM) null else draft.outputSchema?.trim()?.ifEmpty { null }
-        active(key) // v1 is always the seed, never the first user save
+        active(key) // seed first; with versioning off the first save then overwrites that seeded v1 in place (spec §4.3)
         val n = note.replace(Regex("\\s+"), " ").trim().take(80)
         return if (settings.keepVersions.value) dao.appendAndActivate(key.name, template, schema, n, testedOk, now())
         else dao.overwriteActive(key.name, template, schema, n, testedOk, now())
