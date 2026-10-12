@@ -24,7 +24,8 @@ object SchemaCompatibilityChecker {
         val base = DefaultSchemas.forKey(key) ?: return emptyList()
         val text = draftSchema?.takeIf { it.isNotBlank() } ?: return emptyList()
         val draft = runCatching { SchemaRefs.parse(text) }.getOrElse { return listOf("Schema isn't valid JSON") }
-        refCycle(draft)?.let { return listOf("Recursive schemas aren't supported (\$defs/$it refers back to itself)") }
+        badRef(draft)?.let { return listOf("Unsupported \$ref \"$it\" (use #/\$defs/<name> or #/definitions/<name> of an existing entry)") }
+        refCycle(draft)?.let { return listOf("Recursive schemas aren't supported ($it refers back to itself)") }
         val problems = runCatching { refine(base, base, draft, draft, "") }.getOrElse { listOf(it.message ?: "Schema isn't valid") }.toMutableList()
         if (problems.isEmpty()) {
             boundEndpoints.filter { Capability.JSON_SCHEMA in it.capabilities }.distinctBy { it.id }.forEach { e ->
@@ -34,10 +35,21 @@ object SchemaCompatibilityChecker {
         return problems
     }
 
-    /** Name of a `$defs`/`definitions` entry that can reach itself through `$ref`s (direct or indirect), or null. Iterative. */
+    private val POINTER = Regex("^#/(\\\$defs|definitions)/([^/]+)$")
+
+    private fun defsOf(root: JsonObject): Map<String, JsonElement> =
+        listOf("\$defs", "definitions").flatMap { k -> (root[k] as? JsonObject)?.entries.orEmpty().map { "$k/${it.key}" to it.value } }.toMap()
+
+    /** First `$ref` anywhere in [root] that isn't `#/$defs/<name>` or `#/definitions/<name>` of an existing entry, or null. */
+    private fun badRef(root: JsonObject): String? {
+        val defs = defsOf(root)
+        return refs(root).firstOrNull { r -> POINTER.matchEntire(r)?.let { "${it.groupValues[1]}/${it.groupValues[2]}" } !in defs }
+    }
+
+    /** Key (`$defs/X` or `definitions/X`) of an entry that can reach itself through `$ref`s (direct or indirect), or null. Iterative. */
     private fun refCycle(root: JsonObject): String? {
-        val defs = listOf("\$defs", "definitions").flatMap { (root[it] as? JsonObject)?.entries.orEmpty() }.associate { it.key to it.value }
-        val edges = defs.mapValues { (_, v) -> refs(v).filter { it in defs }.toSet() }
+        val defs = defsOf(root)
+        val edges = defs.mapValues { (_, v) -> refs(v).mapNotNull { r -> POINTER.matchEntire(r)?.let { "${it.groupValues[1]}/${it.groupValues[2]}" } }.filter { it in defs }.toSet() }
         for (start in edges.keys) {
             val seen = HashSet<String>()
             val todo = ArrayDeque(edges.getValue(start))
@@ -54,7 +66,7 @@ object SchemaCompatibilityChecker {
         val out = ArrayList<String>(); val stack = ArrayDeque<JsonElement>().apply { addLast(e) }
         while (stack.isNotEmpty()) when (val n = stack.removeLast()) {
             is JsonObject -> n.forEach { (k, v) ->
-                if (k == "\$ref" && v is JsonPrimitive) out += v.content.substringAfterLast('/') else stack.addLast(v)
+                if (k == "\$ref" && v is JsonPrimitive) out += v.content else stack.addLast(v)
             }
             is JsonArray -> n.forEach { stack.addLast(it) }
             else -> Unit
@@ -68,7 +80,9 @@ object SchemaCompatibilityChecker {
         val where = path.ifEmpty { "the top level" }
         val bt = SchemaRefs.typeNames(b["type"]); val dt = SchemaRefs.typeNames(d["type"])
         if (bt.isNotEmpty() && dt.toSet() != bt.toSet()) { add("Changed the type of $where"); return@buildList }
-        (b["enum"] as? JsonArray)?.let { be -> val de = d["enum"] as? JsonArray; if (de == null || !be.containsAll(de)) add("Widened the allowed values of $where") }
+        enumValues(b)?.let { be -> val de = enumValues(d); if (de == null || !be.containsAll(de)) add("Widened the allowed values of $where") }
+        (b["pattern"] as? JsonPrimitive)?.let { bp -> if ((d["pattern"] as? JsonPrimitive)?.content != bp.content) add("Changed the pattern of $where") }
+        if (b["additionalProperties"] == JsonPrimitive(false) && d["additionalProperties"] != JsonPrimitive(false)) add("Allowed extra properties in $where")
         MIN_KEYS.forEach { k -> num(b, k)?.let { bv -> val dv = num(d, k); if (dv == null || dv < bv) add("Loosened $k of $where") } }
         MAX_KEYS.forEach { k -> num(b, k)?.let { bv -> val dv = num(d, k); if (dv == null || dv > bv) add("Loosened $k of $where") } }
         val bProps = b["properties"] as? JsonObject
@@ -91,6 +105,7 @@ object SchemaCompatibilityChecker {
         val bBranches = (b["oneOf"] ?: b["anyOf"]) as? JsonArray
         if (bBranches != null) {
             val dBranches = (d["oneOf"] ?: d["anyOf"]) as? JsonArray
+            if (dBranches != null && dBranches.isEmpty()) { add("proposedAction must keep at least one variant"); return@buildList }
             if (dBranches == null) { add("Changed the type of $where"); return@buildList }
             val byTag = bBranches.associateBy { tag(SchemaRefs.resolve(bRoot, it.jsonObject)) }
             for (db in dBranches) {
@@ -101,6 +116,8 @@ object SchemaCompatibilityChecker {
             }
         }
     }
+
+    private fun enumValues(s: JsonObject): List<JsonElement>? = (s["enum"] as? JsonArray) ?: s["const"]?.let { listOf(it) }
 
     private fun tag(branch: JsonObject): String? {
         val t = (branch["properties"] as? JsonObject)?.get("type") as? JsonObject ?: return null
