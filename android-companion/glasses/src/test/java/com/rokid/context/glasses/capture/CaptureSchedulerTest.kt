@@ -36,6 +36,26 @@ class CaptureSchedulerTest {
         assertEquals(1, alarmIntents().size)
     }
 
+    /**
+     * A force-stop (Rokid's AssistServer closes apps that way; `am force-stop`) or a reboot removes the alarm but keeps
+     * the stored trigger time, and on the RG-glasses (API 32) the PendingIntent survives too; seen on device, the
+     * chain then stayed dead after relaunch. Re-arming keeps the stored time.
+     */
+    @Test fun ensureScheduledRearmsAnAlarmLostToAForceStop() {
+        val s = CaptureScheduler(ctx)
+        s.scheduleNext(60_000)
+        val at = s.nextTriggerAtMs()
+        val intent = Intent(ctx, CaptureService::class.java).setAction(CaptureService.ACTION_SCHEDULED)
+        am.cancel(PendingIntent.getForegroundService(ctx, 30_101, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)!!)
+        assertEquals(0, alarmIntents().size)
+
+        s.ensureScheduled()
+        val alarm = shadowOf(am).scheduledAlarms.single()
+        assertEquals(CaptureService::class.java.name, shadowOf(alarm.operation).savedIntent.component!!.className)
+        assertEquals(at, alarm.triggerAtTime)
+        assertEquals(at, s.nextTriggerAtMs())
+    }
+
     /** The pre-CXR app armed PulseKeepAliveService; that chain must not keep running beside CaptureService. */
     @Test fun theLegacyPulseAlarmIsRetired() {
         val legacy = Intent().setClassName(ctx, "com.rokid.context.glasses.PulseKeepAliveService").setAction("com.rokid.context.glasses.action.PULSE_SERVICE")
