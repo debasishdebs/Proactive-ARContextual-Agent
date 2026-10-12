@@ -1,0 +1,80 @@
+package com.rokid.context.ai.embed
+
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.ai.EndpointKind
+import com.rokid.context.ai.EndpointRepository
+import com.rokid.context.ai.InMemoryKeyVault
+import com.rokid.context.ai.ProviderResponseException
+import com.rokid.context.ai.Role
+import com.rokid.context.ai.RoleBinding
+import com.rokid.context.ai.RoleBindingRepository
+import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.EmbeddingSpaceEntity
+import com.rokid.context.memory.db.SpaceState
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34])
+class EmbeddersTest {
+    private val a = MockWebServer().apply { start() }
+    private val b = MockWebServer().apply { start() }
+    private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
+    private val endpoints = EndpointRepository(db.endpointDao(), InMemoryKeyVault())
+    private val bindings = RoleBindingRepository(db.roleBindingDao(), endpoints)
+    private val embedders = Embedders(endpoints, bindings)
+    @After fun stop() { a.shutdown(); b.shutdown(); db.close() }
+
+    /** Saved through the DAO so the http MockWebServer host needs no cleartext allowance (same trick as EndpointTesterTest). */
+    private suspend fun ollamaAt(server: MockWebServer) {
+        db.endpointDao().upsert(com.rokid.context.memory.db.EndpointEntity("ol", "Ollama", "OLLAMA", server.url("/").toString().trimEnd('/'), null,
+            "nomic-embed-text", EndpointRepository.keyRef("ol"), "EMBEDDINGS", 1))
+    }
+
+    @Test fun forBindingProbesDimensionRevisionAndPrefixes() = runTest {
+        assertNull(embedders.forBinding())
+        ollamaAt(a); bindings.set(RoleBinding(Role.EMBED, "ol", "nomic-embed-text")).getOrThrow()
+        a.enqueue(MockResponse().setBody("""{"models":[{"name":"nomic-embed-text:latest","digest":"sha256:abc"}]}"""))
+        a.enqueue(MockResponse().setBody("""{"embeddings":[[3,4,0]]}"""))
+        val emb = embedders.forBinding()!!
+        assertEquals(3, emb.spec.dim); assertEquals("sha256:abc", emb.spec.revision); assertEquals("search_query: ", emb.spec.queryPrefix)
+        a.takeRequest()
+        assertTrue(Json.parseToJsonElement(a.takeRequest().body.readUtf8()).jsonObject["input"]!!.jsonArray.single().jsonPrimitive.content.startsWith("search_query: "))
+        a.enqueue(MockResponse().setBody("""{"embeddings":[[3,4,0]]}"""))
+        val q = emb.embedQuery("milk")
+        assertEquals(0.6f, q[0], 1e-6f) // L2-normalised
+    }
+
+    @Test fun forSpaceUsesTheSpacesConfigEvenAfterTheEndpointMoved() = runTest {
+        ollamaAt(a)
+        val spec = EmbeddingSpec("ol", EndpointKind.OLLAMA, a.url("/").toString().trimEnd('/'), null, "nomic-embed-text", null, null, 2, true, "", "", 2_000)
+        val space = EmbeddingSpaceEntity("s1", spec.fingerprint, spec.configJson(), 2, SpaceState.ACTIVE, "[]", 1)
+        ollamaAt(b) // the user pointed the endpoint at another server
+        a.enqueue(MockResponse().setBody("""{"embeddings":[[1,0]]}"""))
+        embedders.forSpace(space)!!.embedQuery("q")
+        assertEquals(1, a.requestCount); assertEquals(0, b.requestCount)
+        endpoints.delete("ol")
+        assertNull(embedders.forSpace(space))
+    }
+
+    @Test fun aDimensionChangeIsAnError() = runTest {
+        ollamaAt(a)
+        val spec = EmbeddingSpec("ol", EndpointKind.OLLAMA, a.url("/").toString().trimEnd('/'), null, "m", null, null, 2, true, "", "", 2_000)
+        a.enqueue(MockResponse().setBody("""{"embeddings":[[1,0,0]]}"""))
+        val e = runCatching { embedders.forSpace(EmbeddingSpaceEntity("s", spec.fingerprint, spec.configJson(), 2, SpaceState.ACTIVE, "[]", 1))!!.embedQuery("q") }.exceptionOrNull()
+        assertTrue(e is ProviderResponseException)
+    }
+}

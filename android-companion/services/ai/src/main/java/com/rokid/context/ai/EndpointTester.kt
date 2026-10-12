@@ -1,15 +1,5 @@
 package com.rokid.context.ai
 
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 
 data class TestResult(val ok: Boolean, val latencyMs: Long, val message: String)
 
@@ -17,7 +7,7 @@ data class TestResult(val ok: Boolean, val latencyMs: Long, val message: String)
 class EndpointTester(
     private val repo: EndpointRepository,
     private val providers: ProviderBuilder,
-    private val http: OkHttpClient = Http.modelClient(30),
+    private val embeddings: com.rokid.context.ai.embed.EmbeddingClient = com.rokid.context.ai.embed.EmbeddingClient(),
 ) {
 
     suspend fun test(endpointId: String, model: String): TestResult {
@@ -26,7 +16,7 @@ class EndpointTester(
         val start = System.nanoTime()
         return runCatching {
             if (Capability.CHAT !in e.capabilities && Capability.EMBEDDINGS in e.capabilities) {
-                val dim = embedProbe(e, model, key)
+                val dim = embeddings.embed(e, model, key, listOf("ok")).single().size
                 TestResult(true, elapsed(start), "OK · $dim dimensions")
             } else {
                 val out = providers.create(e, model, key).generate("Reply only with OK")
@@ -36,32 +26,6 @@ class EndpointTester(
     }
 
     private fun elapsed(startNs: Long) = (System.nanoTime() - startNs) / 1_000_000
-
-    private suspend fun embedProbe(e: Endpoint, model: String, key: String?): Int = withContext(Dispatchers.IO) {
-        val (url, body) = when (e.kind) {
-            EndpointKind.OLLAMA -> "${e.baseUrl}/api/embed" to """{"model":"$model","input":["ok"]}"""
-            EndpointKind.AZURE_OPENAI -> "${e.baseUrl}/openai/deployments/$model/embeddings?api-version=${e.apiVersion ?: "2024-10-21"}" to """{"input":["ok"]}"""
-            EndpointKind.OPENAI_COMPAT -> "${e.baseUrl}/embeddings" to """{"model":"$model","input":["ok"]}"""
-            EndpointKind.LLAMACPP_LOCAL -> throw ProviderConfigException("On-device embeddings need the llama.cpp runtime")
-        }
-        KeyTransport.requireSecure(url, key.takeIf { e.kind != EndpointKind.OLLAMA })
-        val req = Request.Builder().url(url).post(body.toRequestBody("application/json".toMediaType())).apply {
-            when (e.kind) {
-                EndpointKind.AZURE_OPENAI -> key?.let { addHeader("api-key", it) }
-                EndpointKind.OPENAI_COMPAT -> key?.let { addHeader("Authorization", "Bearer $it") }
-                else -> Unit
-            }
-        }.build()
-        http.newCall(req).execute().use { r ->
-            val text = r.body?.string().orEmpty()
-            if (!r.isSuccessful) throw ProviderHttpException(r.code, "Embedding", "")
-            val json = Json.parseToJsonElement(text).jsonObject
-            val vec = (json["embeddings"]?.jsonArray?.firstOrNull() as? JsonArray)
-                ?: json["data"]?.jsonArray?.firstOrNull()?.jsonObject?.get("embedding")?.jsonArray
-                ?: throw ProviderResponseException("No embedding in response")
-            vec.size
-        }
-    }
 
     companion object {
         fun humanize(t: Throwable): String {
