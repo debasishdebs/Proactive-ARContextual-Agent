@@ -40,7 +40,8 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     private var session: CxrSession? = null
     private val auth = AuthGate()
     private var authJob: Job? = null
-    private var authDeclined = false
+    private var authDeclined = false // a real decline (or a failed launch); a timeout is not one
+    private var authTimedOut = false
     private var retryJob: Job? = null
     private var connectJob: Job? = null
     private val inbound = GlassesInbound() // thread-safe: fed from CXR callback threads
@@ -85,17 +86,19 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     internal fun onAuthResult(ok: Boolean) {
         if (!auth.result(ok)) return // late or duplicate report for an attempt already resolved
         authJob?.cancel(); authJob = null
+        authTimedOut = false
         if (ok) { authDeclined = false; act(policy.manualConnect()) }
         else { authDeclined = true; act(policy.onEvent(LinkEvent.AuthFailed)) } // no auto-relaunch
     }
 
-    override fun connect() = post { auth.clearStale(now()); authDeclined = false; act(policy.manualConnect()) }
+    override fun connect() = post { auth.clearStale(now()); authDeclined = false; authTimedOut = false; act(policy.manualConnect()) }
 
     override fun connectOnce() = post { auth.clearStale(now()); act(policy.autoConnect()) }
 
     override fun connectOnResume() = post {
-        if (!shouldReconnectOnResume(_state.value, token() != null, authDeclined)) return@post
+        if (!shouldReconnectOnResume(_state.value, token() != null, authDeclined, authTimedOut)) return@post
         Log.i(TAG, "phone app resumed: reconnecting")
+        authTimedOut = false
         auth.clearStale(now())
         act(policy.manualConnect())
     }
@@ -103,6 +106,9 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     override fun close() = post {
         watcher.stop()
         retryJob?.cancel(); connectJob?.cancel(); authJob?.cancel()
+        auth.cancel() // a late AuthActivity result must not reopen a session after stop
+        authTimedOut = false
+        policy.reset() // session is nulled below, so its close callback never reaches the policy
         val s = session
         session = null
         s?.close()
@@ -140,7 +146,7 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
             authJob = scope.launch {
                 delay(AuthGate.AUTH_TIMEOUT_MS)
                 auth.expire()
-                authDeclined = true
+                authTimedOut = true // not a decline: with a token, the next phone-app resume retries
                 act(policy.onEvent(LinkEvent.AuthFailed))
             }
             if (AuthActivity.launch(app).isFailure) onAuthResult(false)
@@ -239,7 +245,7 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
             session = null
             Log.w(TAG, "connect failed $code")
             if (code == SessionErrorCode.TOKEN_EXPIRED || code == SessionErrorCode.NOT_AUTHENTICATED) onTokenRejected()
-            else act(policy.onEvent(LinkEvent.ConnectFailed))
+            else act(policy.onEvent(if (isTerminalConnectError(code)) LinkEvent.ConnectRefused else LinkEvent.ConnectFailed))
         }
     }
 

@@ -4,5 +4,6 @@ package com.rokid.context.link
 class Backoff(private val stepsMs: List<Long> = listOf(2_000, 5_000, 10_000, 30_000)) {
     private var i = 0
     fun next(): Long = stepsMs[minOf(i++, stepsMs.lastIndex)]
+    val ceilingMs: Long get() = stepsMs.last()
     fun reset() { i = 0 }
 }
