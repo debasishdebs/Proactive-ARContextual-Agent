@@ -21,6 +21,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -136,5 +137,30 @@ class FrameIngestorTest {
         assertNull(r.ack)
         assertTrue("stale offset", r.held)
         assertFalse(ing.onChunk(chunk("g5"), offset, now).held)
+    }
+    /** Fix round 1: the queue append / WorkManager enqueue failing on a full disk must not escape (the frame is durable). */
+    @Test fun aFailingQueueEnqueueIsReportedNotThrown() = runTest {
+        val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
+        val ing = FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, noPauses), ledger) {
+            throw IOException("write failed: ENOSPC (No space left on device)")
+        }
+        val r = ing.onChunk(chunk(), offset, now)
+        assertEquals("stored durably in inbox + ledger, so the glasses may delete it", FrameAck(frameId = "g1", ok = true), r.ack)
+        assertEquals(UserFacingErrors.StorageFull, r.error)
+        assertNotNull(File(inbox, "rokid_${now - 60_000}_g1.jpg").takeIf { it.isFile })
+        assertTrue(ledger.contains("g1"))
+        val other = FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, noPauses), ledger) { error("boom") }
+        assertEquals(UserFacingErrors.Unknown, other.onChunk(chunk("g2"), offset, now).error)
+    }
+
+    /** Fix round 1: the capture time is on the file before it appears under its inbox name (the rename keeps it). */
+    @Test fun atomicWriterStampsTheCaptureTimeBeforeTheRename() {
+        val dir = File(tmp.root, "in2")
+        val stamp = now - 3_600_000
+        var seenAtRename: Long? = null
+        AtomicJpegWriter.write(File(dir, "b.jpg"), jpeg, lastModifiedMs = stamp) { part -> seenAtRename = part.lastModified() }
+        assertTrue(abs(seenAtRename!! - stamp) < 1_000)
+        assertTrue(abs(File(dir, "b.jpg").lastModified() - stamp) < 1_000)
+        assertEquals(listOf("b.jpg"), dir.list()!!.toList())
     }
 }

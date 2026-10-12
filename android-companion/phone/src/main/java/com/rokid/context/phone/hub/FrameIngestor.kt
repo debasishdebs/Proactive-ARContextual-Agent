@@ -1,6 +1,7 @@
 package com.rokid.context.phone.hub
 
 import android.content.Context
+import android.database.sqlite.SQLiteFullException
 import android.os.SystemClock
 import android.system.ErrnoException
 import android.system.OsConstants
@@ -30,16 +31,30 @@ import java.io.IOException
 fun interface JpegWriter {
     @Throws(IOException::class)
     fun write(target: File, bytes: ByteArray)
+
+    /** Writes and stamps the file time (RokidFrameInbox reads the capture time from it). */
+    @Throws(IOException::class)
+    fun writeStamped(target: File, bytes: ByteArray, lastModifiedMs: Long) {
+        write(target, bytes)
+        target.setLastModified(lastModifiedMs)
+    }
 }
 
 object AtomicJpegWriter : JpegWriter {
-    override fun write(target: File, bytes: ByteArray) {
+    override fun write(target: File, bytes: ByteArray) = write(target, bytes, lastModifiedMs = null)
+
+    /** The time is stamped on the `.part` before the rename (which keeps it), so no reader sees the receipt time. */
+    override fun writeStamped(target: File, bytes: ByteArray, lastModifiedMs: Long) = write(target, bytes, lastModifiedMs)
+
+    internal fun write(target: File, bytes: ByteArray, lastModifiedMs: Long?, beforeRename: (File) -> Unit = {}) {
         val dir = target.parentFile ?: throw IOException("no parent directory")
         if (!dir.isDirectory && !dir.mkdirs()) throw IOException("cannot create ${dir.name}")
         // ".part" is not an inbox extension, so RokidFrameInbox never picks up a half-written file.
         val tmp = File(dir, "${target.name}.part")
         try {
             FileOutputStream(tmp).use { out -> out.write(bytes); out.fd.sync() }
+            lastModifiedMs?.let { tmp.setLastModified(it) }
+            beforeRename(tmp)
             if (!tmp.renameTo(target)) throw IOException("rename failed")
         } catch (e: IOException) {
             tmp.delete()
@@ -53,6 +68,13 @@ fun isNoSpace(t: Throwable): Boolean = generateSequence(t) { it.cause }.take(8).
     (c is ErrnoException && c.errno == OsConstants.ENOSPC) ||
         c.message?.let { "ENOSPC" in it || it.contains("No space left", ignoreCase = true) } == true
 }
+
+/** Disk or database full anywhere in the cause chain: ENOSPC or SQLite's "database or disk is full". */
+fun isStorageFull(t: Throwable): Boolean =
+    isNoSpace(t) || generateSequence(t) { it.cause }.take(8).any { it is SQLiteFullException }
+
+/** The only text a storage-side failure may show: "Phone storage full", otherwise the generic preset. */
+fun storageErrorFor(t: Throwable): UserFacingError = if (isStorageFull(t)) UserFacingErrors.StorageFull else UserFacingErrors.Unknown
 
 /**
  * One handled chunk: [ack] to send (null = none), [ingestedAtMs] = phone capture time of a newly stored frame.
@@ -105,17 +127,24 @@ class FrameIngestor(
     private fun store(id: String, jpeg: ByteArray, capturedAtMs: Long): IngestResult {
         val target = File(inboxDir, "rokid_${capturedAtMs}_$id.jpg")
         try {
-            writer.write(target, jpeg)
-            target.setLastModified(capturedAtMs) // RokidFrameInbox takes the capture time from lastModified
+            writer.writeStamped(target, jpeg, capturedAtMs) // RokidFrameInbox takes the capture time from lastModified
             ledger.add(id)
         } catch (e: IOException) {
             target.delete()
             Log.w(TAG, "frame $id not stored: ${e.javaClass.simpleName}")
-            return IngestResult(ack = null, error = if (isNoSpace(e)) UserFacingErrors.StorageFull else UserFacingErrors.Unknown)
+            return IngestResult(ack = null, error = storageErrorFor(e))
         }
-        onStored()
+        // The frame is durable in the inbox and the ledger, so it is acked even if queueing fails: the next queue drain
+        // scans the whole inbox and picks it up. A full disk here (queue file, WorkManager DB) must never crash the app.
+        val queueError = try {
+            onStored()
+            null
+        } catch (e: Exception) {
+            Log.w(TAG, "frame $id stored but not queued: ${e.javaClass.simpleName}")
+            storageErrorFor(e)
+        }
         Log.i(TAG, "frame ingested $id")
-        return IngestResult(FrameAck(frameId = id, ok = true), ingestedAtMs = capturedAtMs)
+        return IngestResult(FrameAck(frameId = id, ok = true), ingestedAtMs = capturedAtMs, error = queueError)
     }
 
     companion object { const val TAG = "ContextHub" }
