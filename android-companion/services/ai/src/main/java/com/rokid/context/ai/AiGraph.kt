@@ -35,6 +35,8 @@ class AiGraph(
     val seeder = EndpointSeeder(endpoints, bindings, seedState)
     val prompts = PromptRepository(memory.db.promptDao(), seeds, settings.prompts)
     val persona: PersonaSettings get() = settings.persona
+    val runner = com.rokid.context.ai.run.RoleRunner(router, prompts, settings.persona)
+    val testBed = com.rokid.context.ai.run.TestBed(router, prompts, settings.persona, bindings, endpoints)
 
     companion object {
         @Volatile private var instance: AiGraph? = null
