@@ -15,12 +15,15 @@ import androidx.lifecycle.viewModelScope
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.TestResult
+import com.rokid.context.core.model.Verbosity
 import com.rokid.context.core.ui.components.Banner
 import com.rokid.context.core.ui.components.BannerTone
 import com.rokid.context.core.ui.components.ScreenHeader
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.orchestration.LegacyConfigBridge
+import com.rokid.context.phone.hub.HubGraph
+import com.rokid.context.phone.hub.HubSettingsStore
 import com.rokid.context.phone.ui.status.PipelineControl
 import com.rokid.context.ui.config.ConfigHubScreen
 import com.rokid.context.ui.config.ConfigUiState
@@ -61,6 +64,8 @@ class LegacyConfigViewModel(
     private val context: Context,
     private val pipeline: PipelineControl,
     private val ai: () -> AiGraph = { AiGraph.get(context) },
+    /** HUD verbosity goes out through the hub (`pc_settings`, pushed now when linked and kept for the next session). */
+    private val setVerbosity: (Verbosity) -> Unit = { v -> HubGraph.get(context).updateSettings { it.copy(verbosity = v) } },
 ) : ViewModel() {
     private val io = Dispatchers.IO.limitedParallelism(1)
     private var syncJob: Job? = null
@@ -118,10 +123,11 @@ class LegacyConfigViewModel(
     fun updateModel(value: String) { config { copy(deploymentOrModel = value) }; persist(); syncLater(TYPING_DEBOUNCE_MS) }
     fun updateNativePath(value: String) { config { copy(nativeModelPath = value) }; persist(); syncLater(TYPING_DEBOUNCE_MS) }
 
-    /** Stored only: the RFCOMM push this used is removed (Phase 3); HUD verbosity is pushed via HudSettings (Phase 3/5). */
+    /** Kept in the legacy prefs (this screen reads it back) and sent to the glasses as HUD verbosity through the hub. */
     fun selectGlassesSilencyMode(mode: String) {
         config { copy(glassesSilencyMode = mode) }
         viewModelScope.launch(io) { AppConfigStore.setGlassesSilencyMode(context, mode) }
+        setVerbosity(HubSettingsStore.verbosityFor(mode))
     }
 
     fun testConnectivity() {
