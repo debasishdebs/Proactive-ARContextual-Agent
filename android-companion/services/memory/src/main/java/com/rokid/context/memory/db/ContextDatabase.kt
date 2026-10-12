@@ -20,4 +20,5 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun traceDao(): TraceDao
     abstract fun endpointDao(): EndpointDao
     abstract fun roleBindingDao(): RoleBindingDao
+    abstract fun pauseDao(): PauseDao
 }
