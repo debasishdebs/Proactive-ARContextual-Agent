@@ -73,5 +73,6 @@ class RetrievalSettingsStore(private val prefs: SharedPreferences) {
         fun get(context: Context): RetrievalSettingsStore = instance ?: synchronized(this) {
             instance ?: RetrievalSettingsStore(context.applicationContext.getSharedPreferences("retrieval_settings", Context.MODE_PRIVATE)).also { instance = it }
         }
+        fun resetForTests(store: RetrievalSettingsStore?) { synchronized(this) { instance = store } }
     }
 }
