@@ -56,8 +56,9 @@ object AppConfigStore {
     }
 
     fun setPipelineEnabled(context: Context, enabled: Boolean) = edit(context) { putBoolean(K_PIPELINE_ENABLED, enabled) }
-    fun setLocalModeEnabled(context: Context, enabled: Boolean): Result<Unit> {
+    fun setLocalModeEnabled(context: Context, enabled: Boolean, syncRegistry: Boolean = true): Result<Unit> {
         edit(context) { putBoolean(K_LOCAL_MODE_ENABLED, enabled) }
+        if (!syncRegistry) return Result.success(Unit)
         return com.rokid.context.orchestration.LegacyConfigBridge.sync(context)
     }
     fun setEncryptionEnabled(context: Context, enabled: Boolean) = edit(context) { putBoolean(K_ENCRYPTION_ENABLED, enabled) }
@@ -78,6 +79,7 @@ object AppConfigStore {
         apiKey: String,
         deploymentOrModel: String,
         nativeModelPath: String,
+        syncRegistry: Boolean = true,
     ): Result<Unit> {
         edit(context) {
             putString(K_PROVIDER_TYPE, providerType)
@@ -86,6 +88,7 @@ object AppConfigStore {
             putString(K_NATIVE_MODEL_PATH, nativeModelPath)
         }
         secrets(context).edit().putString(K_API_KEY, apiKey.replace("\\s+".toRegex(), "")).apply()
+        if (!syncRegistry) return Result.success(Unit) // per-keystroke edits: the caller syncs once, debounced, off the main thread
         // Mirror into the endpoint registry; a failure carries a short message for the Config screen.
         return com.rokid.context.orchestration.LegacyConfigBridge.sync(context)
     }

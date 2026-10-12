@@ -112,4 +112,22 @@ class LegacyConfigBridgeTest {
     @Test fun validInputReturnsSuccess() = runBlocking {
         assertTrue(AppConfigStore.setProvider(ctx, "openai", "https://az.example", "k", "gpt-5.4", "").isSuccess)
     }
+
+    @Test fun textEditsWithoutRegistrySyncLeaveRegistryUntilExplicitSync() = runBlocking {
+        AppConfigStore.setProvider(ctx, "openai", "https://az.example", "k", "gpt-5.4", "")
+        val r = AppConfigStore.setProvider(ctx, "openai", "https://az.exampl", "k", "gpt-5.4", "", syncRegistry = false)
+        assertTrue(r.isSuccess)
+        assertEquals("https://az.example", ai.endpoints.byId(EndpointSeeder.AZURE_ID)!!.baseUrl)
+        assertTrue(LegacyConfigBridge.sync(ctx).isSuccess)
+        assertEquals("https://az.exampl", ai.endpoints.byId(EndpointSeeder.AZURE_ID)!!.baseUrl)
+    }
+
+    @Test fun localModeToggleWithoutRegistrySyncLeavesBindingsUntilExplicitSync() = runBlocking {
+        AppConfigStore.setProvider(ctx, "openai", "https://az.example", "k", "gpt-5.4", "/m.gguf")
+        AppConfigStore.setLocalModeEnabled(ctx, false)
+        AppConfigStore.setLocalModeEnabled(ctx, true, syncRegistry = false)
+        assertEquals(null, ai.bindings.get(Role.ANSWER)!!.fallbackEndpointId)
+        LegacyConfigBridge.sync(ctx)
+        assertEquals(EndpointSeeder.LOCAL_ID, ai.bindings.get(Role.ANSWER)!!.fallbackEndpointId)
+    }
 }
