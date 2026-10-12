@@ -14,7 +14,8 @@
 
 - All master-plan Global Constraints apply.
 - **Schema version 1 is frozen at the end of Task 2.** Room is first used on a device in Task 5. Every later schema change (any phase) bumps `ContextDatabase.version` and ships a `Migration` with a `MigrationTestHelper` test. No `fallbackToDestructiveMigration` outside tests.
-- Room DAO calls never run on the main thread. The transitional facades (Task 5) wrap them in `runBlocking(Dispatchers.IO)`; this is the only allowed `runBlocking` and is deleted in Phase 4.
+- Room DAO calls never run on the main thread. The transitional facades (Task 5) and `LegacyConfigBridge` (Task 9) wrap them in `runBlocking(Dispatchers.IO)`; these are the only allowed `runBlocking` uses and are deleted in Phase 4/5.
+- Lexical search over unsegmented scripts (Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar) indexes overlapping character **bigrams** (spec §4.6), so a word anywhere in a sentence is found. Other scripts are word-tokenised.
 - Lexical search indexes `memory.searchText` = `SearchNormalizer.normalize(text + " " + tags)`; queries go through `SearchNormalizer.toMatchQuery`. Never put raw user text into `MATCH`.
 - Robolectric tests use `@Config(sdk = [34])`, in-memory Room, `InMemoryKeyVault`, and call `MemoryGraph.resetForTests()` / `AiGraph.resetForTests()` in `@After`.
 
@@ -23,13 +24,17 @@
 (From the master plan; owned here.)
 1. **Malformed / partial / re-run legacy import** → Task 4 tests `skipsMalformedLines`, `rerunIsIdempotent`, `resumesAfterPartialImport`.
 2. **Messy endpoint input** → Task 6 tests in `UrlNormalizerTest`.
-3. **Non-Latin search text** → Task 1 tests `devanagariWordIsFound`, `cjkPrefixIsFound`, `emojiAndPunctuationAreIgnored`.
+3. **Non-Latin search text** → Task 1 tests `devanagariWordIsFound`, `cjkWordInsideSentenceIsFound`, `japaneseWordIsFound`, `emojiAndPunctuationAreIgnored`.
 4. **Timezone/DST day buckets** → Task 3 tests `dstDayHas23Hours`, `bucketUsesGivenZone`.
 5. **Process killed while the facade is first used (import not finished)** → Task 5 test `facadeTriggersImportOnFirstUse`.
+6. **Process killed between seeding an endpoint and binding its roles** → Task 7 test `resumesAfterCrashBetweenEndpointAndBindings`.
+7. **Azure outage during frame summarisation with a local model configured** → Task 7 test `frameOutageReachesSummarizeLocalFallbackOnce`.
 
 ---
 
 ### Task 1: Room database core — frames, memories, FTS, provenance, vectors, traces
+
+**Requirements:** R-70, R-48 (lexical FTS + script-safe normalisation)
 
 **Files:**
 - Modify: `android-companion/services/memory/build.gradle.kts`
@@ -103,6 +108,13 @@ class SearchNormalizerTest {
         assertEquals("क्षेत्र", SearchNormalizer.normalize("क्‍षेत्र"))
     }
 
+    @Test fun unsegmentedScriptsBecomeOverlappingBigrams() {
+        assertEquals("今天 天牛 牛奶", SearchNormalizer.normalize("今天牛奶"))
+        assertEquals("奶", SearchNormalizer.normalize("奶"))
+        assertEquals("milk 牛奶 奶没", SearchNormalizer.normalize("milk牛奶没"))
+        assertEquals("ข้ ้า าว", SearchNormalizer.normalize("ข้าว")) // Thai ข ้ า ว → code-point bigrams, identical for index and query
+    }
+
     @Test fun matchQueryQuotesAndPrefixesEachToken() {
         assertEquals("\"दूध*\" \"milk*\"", SearchNormalizer.toMatchQuery("दूध, milk"))
         assertNull(SearchNormalizer.toMatchQuery("  !!! 🥛 "))
@@ -157,7 +169,32 @@ object SearchNormalizer {
             }
             i += Character.charCount(cp)
         }
-        return out.toString().trim().replace(Regex(" +"), " ")
+        val words = out.toString().trim().split(Regex(" +")).filter { it.isNotEmpty() }
+        return words.flatMap(::segment).joinToString(" ")
+    }
+
+    private val UNSEGMENTED = setOf(
+        Character.UnicodeScript.HAN, Character.UnicodeScript.HIRAGANA, Character.UnicodeScript.KATAKANA,
+        Character.UnicodeScript.THAI, Character.UnicodeScript.LAO, Character.UnicodeScript.KHMER, Character.UnicodeScript.MYANMAR,
+    )
+
+    /** Splits a word into script runs; runs of unsegmented scripts become overlapping code-point bigrams (a 1-char run stays). */
+    private fun segment(word: String): List<String> {
+        val cps = word.codePoints().toArray()
+        val out = mutableListOf<String>()
+        var i = 0
+        while (i < cps.size) {
+            val unseg = Character.UnicodeScript.of(cps[i]) in UNSEGMENTED
+            var j = i
+            while (j < cps.size && (Character.UnicodeScript.of(cps[j]) in UNSEGMENTED) == unseg) j++
+            when {
+                !unseg -> out += String(cps, i, j - i)
+                j - i == 1 -> out += String(cps, i, 1)
+                else -> for (k in i until j - 1) out += String(cps, k, 2)
+            }
+            i = j
+        }
+        return out
     }
 
     /** Each token becomes a quoted prefix term, AND-ed by FTS; null when nothing searchable remains. */
@@ -166,12 +203,12 @@ object SearchNormalizer {
             .joinToString(" ") { "\"$it*\"" }.ifBlank { null }
 }
 ```
-Note: emoji such as 🥛 are surrogate pairs; `codePointAt` yields the full code point whose type is `OTHER_SYMBOL`, so it becomes a space.
+Notes: emoji such as 🥛 are surrogate pairs; `codePointAt` yields the full code point whose type is `OTHER_SYMBOL`, so it becomes a space. Thai/Lao/Khmer/Myanmar combining marks report their own script, so they stay inside the run. Because queries go through the same `normalize`, 牛奶 becomes the prefix term `"牛奶*"`, matching the bigram 牛奶 inside 今天牛奶没了; a one-character query 奶 becomes `"奶*"`, matching any bigram starting with 奶. Known limit (spec §4.6): a bigram can also match across a word boundary (e.g. 天牛), trading some precision for recall.
 
 - [ ] **Step 5: Run normaliser test**
 
 Run: `./gradlew :services:memory:testDebugUnitTest --tests "*SearchNormalizerTest"`
-Expected: PASS (6 tests).
+Expected: PASS (7 tests).
 
 - [ ] **Step 6: Write the failing DAO test**
 
@@ -206,9 +243,20 @@ class MemoryDaoTest {
         assertEquals(listOf("m1"), db.memoryDao().search(SearchNormalizer.toMatchQuery("दूध")!!, 10).map { it.id })
     }
 
-    @Test fun cjkPrefixIsFound() = runTest {
-        db.memoryDao().insert(mem("m1", "牛奶没了", 1))
-        assertEquals(listOf("m1"), db.memoryDao().search(SearchNormalizer.toMatchQuery("牛奶")!!, 10).map { it.id })
+    @Test fun cjkWordInsideSentenceIsFound() = runTest {
+        db.memoryDao().insert(mem("m1", "今天牛奶没了", 1))
+        db.memoryDao().insert(mem("m2", "咖啡在桌子上", 2))
+        suspend fun q(t: String) = db.memoryDao().search(SearchNormalizer.toMatchQuery(t)!!, 10).map { it.id }
+        assertEquals(listOf("m1"), q("牛奶"))   // middle of the sentence
+        assertEquals(listOf("m1"), q("没了"))   // end of the sentence
+        assertEquals(listOf("m1"), q("奶"))     // single character
+        assertEquals(listOf("m2"), q("桌子"))
+        assertEquals(emptyList<String>(), q("面包"))
+    }
+
+    @Test fun japaneseWordIsFound() = runTest {
+        db.memoryDao().insert(mem("m1", "冷蔵庫の牛乳が少ない", 1))
+        assertEquals(listOf("m1"), db.memoryDao().search(SearchNormalizer.toMatchQuery("牛乳")!!, 10).map { it.id })
     }
 
     @Test fun emojiAndPunctuationAreIgnored() = runTest {
@@ -433,7 +481,7 @@ object DatabaseFactory {
 - [ ] **Step 11: Run DAO tests**
 
 Run: `./gradlew :services:memory:testDebugUnitTest`
-Expected: PASS (SearchNormalizerTest 6, MemoryDaoTest 7, legacy 6). `services/memory/schemas/com.rokid.context.memory.db.ContextDatabase/1.json` is generated.
+Expected: PASS (SearchNormalizerTest 7, MemoryDaoTest 8, legacy 6). `services/memory/schemas/com.rokid.context.memory.db.ContextDatabase/1.json` is generated.
 
 - [ ] **Step 12: Commit**
 
@@ -447,6 +495,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 2: Remaining v1 tables + endpoint/role DAOs; remove the dead legacy Room code
+
+**Requirements:** R-70
 
 **Files:**
 - Create: `android-companion/services/memory/src/main/java/com/rokid/context/memory/db/AppEntities.kt`, `.../memory/db/AppDaos.kt`
@@ -692,6 +742,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 3: Repositories, `MemoryGraph`, day buckets
+
+**Requirements:** R-70, R-15 (local-day buckets the Activity tab groups by)
 
 **Files:**
 - Create: `android-companion/services/memory/src/main/java/com/rokid/context/memory/DayBucket.kt`, `.../memory/Repositories.kt`, `.../memory/MemoryGraph.kt`, `.../memory/DbKeyStore.kt`, `.../memory/Embedder.kt`
@@ -952,6 +1004,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 4: `LegacyImporter` + `LegacyImportWorker`
+
+**Requirements:** R-71
 
 **Files:**
 - Create: `android-companion/services/memory/src/main/java/com/rokid/context/memory/legacy/LegacyImporter.kt`
@@ -1225,6 +1279,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 5: Switch legacy stores to Room (signature-preserving facades)
 
+**Requirements:** R-71, R-03
+
 **Files:**
 - Modify: `android-companion/services/memory/src/main/java/com/rokid/context/data/runtime/MemoryRecordStore.kt`
 - Modify: `android-companion/services/orchestration/src/main/java/com/rokid/context/data/frames/FrameStreamStore.kt`
@@ -1483,6 +1539,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 6: Endpoint registry, key vault, URL normalisation, endpoint test
+
+**Requirements:** R-40, R-41
 
 **Files:**
 - Modify: `android-companion/services/ai/build.gradle.kts`
@@ -1952,17 +2010,30 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 7: Role bindings + `ModelRouter`; workers use the router; seed from current config
+### Task 7: Role bindings, typed model errors, `ModelRouter`, resumable seeding
+
+**Requirements:** R-42, R-40 (seed from legacy config), R-03 (frame jobs keep the legacy vision → text → local fallback chain)
 
 **Files:**
-- Create: `android-companion/services/ai/src/main/java/com/rokid/context/ai/{Role.kt,RoleBindingRepository.kt,ModelRouter.kt,EndpointSeeder.kt,AiGraph.kt}`
-- Modify: `android-companion/services/orchestration/src/main/java/com/rokid/context/work/QueueDrainWorker.kt`
+- Create: `android-companion/services/ai/src/main/java/com/rokid/context/ai/{Role.kt,RoleBindingRepository.kt,ModelErrors.kt,ModelRouter.kt,EndpointSeeder.kt,AiGraph.kt}`
 - Modify: `android-companion/phone/src/main/java/com/rokid/context/ContextApp.kt`
 - Test: `.../services/ai/src/test/java/com/rokid/context/ai/{RoleBindingRepositoryTest.kt,ModelRouterTest.kt,EndpointSeederTest.kt}`
 
 **Interfaces:**
-- Consumes: Task 6 types; `ProviderSettings` (Phase 1).
-- Produces: `enum Role {VISION_EXTRACT, EXPLICIT_REMEMBER, SUMMARIZE, CRITIC, ANSWER, NUDGE, EMBED}` with `requiredCapability`; `RoleBinding(role, endpointId, model, temperature, maxTokens, fallbackEndpointId, fallbackModel)`; `RoleBindingRepository(dao, endpoints)` (`get(role)`, `set(binding): Result<Unit>` — rejects endpoints lacking the capability, `eligibleEndpoints(role)`); `ModelRouter(bindings, endpoints, providers)` with `suspend fun generate(role: Role, prompt: String, images: List<ModelImageInput> = emptyList()): String` and `suspend fun generateFromFrames(prompt, images): String`; `EndpointSeeder(endpoints, bindings).seedIfEmpty(settings: ProviderSettings)`; `AiGraph` (`endpoints`, `bindings`, `router`, `tester`, `get(context)`, `resetForTests(graph)`).
+- Consumes: Task 6 types; `ProviderSettings`, `EnvDefaults` (Phase 1).
+- Produces: `enum Role {VISION_EXTRACT, EXPLICIT_REMEMBER, SUMMARIZE, CRITIC, ANSWER, NUDGE, EMBED}` with `requiredCapability`; `RoleBinding(role, endpointId, model, temperature, maxTokens, fallbackEndpointId, fallbackModel)`; `RoleBindingRepository(dao, endpoints)` (`get(role)`, `set(binding): Result<Unit>`, `eligibleEndpoints(role)`); `ModelCallException(message, retryable: Boolean, cause)`; `ProviderErrors.isPermanent(t): Boolean`; `ModelRouter(bindings, endpoints, providers)` with `generate(role, prompt, images)` and `generateFromFrames(prompt, images)` (never wraps `CancellationException`); `interface SeedState { isDone(); markDone() }`, `PrefsSeedState(context)`, `InMemorySeedState`; `EndpointSeeder(endpoints, bindings, state)` with `seedIfNeeded(settings): Result<Unit>` and `syncFromLegacy(settings): Result<Unit>`; `AiGraph(memory, vault, seedState, providers)` (`endpoints`, `bindings`, `router`, `tester`, `seeder`, `get(context)`, `resetForTests(graph)`).
+
+Error contract (consumed by Task 8's `RetryClassifier`):
+
+| Situation | Exception | `retryable` |
+|---|---|---|
+| Role has no binding yet (startup seeding race, onboarding not done) | `ModelCallException("No model is set for ROLE")` | true |
+| Bound endpoint deleted | `ModelCallException("Endpoint for ROLE was deleted")` | true |
+| Provider failure, no fallback | `ModelCallException("Primary provider failed: …")` | `!isPermanent(error)` |
+| Primary and fallback both fail | `ModelCallException("Primary+fallback generation failed: …; …")` | true if either failure is not permanent |
+| Coroutine cancelled | the original `CancellationException`, unwrapped | — |
+
+`isPermanent` = message contains a 401/403/404 status (word-bounded) or one of: `resource not found`, `deployment not found`, `unsupported parameter`, `invalid_request_error`, `api key is missing`, `endpoint is missing`, `model path is required`, `native runtime not available`. Everything else (HTTP 5xx, timeouts, connection errors, unknown) is transient.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2017,9 +2088,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -2032,11 +2105,12 @@ class ModelRouterTest {
     private val endpoints = EndpointRepository(db.endpointDao(), InMemoryKeyVault())
     private val bindings = RoleBindingRepository(db.roleBindingDao(), endpoints)
     private val calls = mutableListOf<String>()
-    private val failing = mutableSetOf<String>()
+    /** "id:text" / "id:vision" → exception to throw. */
+    private val failures = mutableMapOf<String, Throwable>()
     private val providers = ProviderBuilder { e, model, _ ->
         object : ModelProvider {
-            override suspend fun generate(prompt: String): String { calls += "${e.id}:text"; if (e.id in failing) error("HTTP 500"); return "${e.id}/$model" }
-            override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String { calls += "${e.id}:vision"; if ("${e.id}:vision" in failing) error("vision 400"); return "${e.id}/vision" }
+            override suspend fun generate(prompt: String): String { calls += "${e.id}:text"; failures["${e.id}:text"]?.let { throw it }; return "${e.id}/$model" }
+            override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String { calls += "${e.id}:vision"; failures["${e.id}:vision"]?.let { throw it }; return "${e.id}/vision" }
         }
     }
     private val router = ModelRouter(bindings, endpoints, providers)
@@ -2045,6 +2119,8 @@ class ModelRouterTest {
     private suspend fun ep(id: String, vararg caps: Capability) =
         endpoints.save(Endpoint(id, id, EndpointKind.OLLAMA, "http://h:1", null, listOf("m"), caps.toSet(), 1), apiKey = null).getOrThrow()
     private val img = listOf(ModelImageInput("image/jpeg", "AAAA"))
+    private fun http(code: Int) = IllegalStateException("Azure OpenAI request failed: $code {\"error\":\"x\"}")
+    private suspend fun err(block: suspend () -> Unit) = runCatching { block() }.exceptionOrNull()!!
 
     @Test fun usesPrimaryBinding() = runTest {
         ep("a", Capability.CHAT); bindings.set(RoleBinding(Role.ANSWER, "a", "m1")).getOrThrow()
@@ -2054,7 +2130,7 @@ class ModelRouterTest {
     @Test fun fallsBackWhenPrimaryFails() = runTest {
         ep("a", Capability.CHAT); ep("b", Capability.CHAT)
         bindings.set(RoleBinding(Role.ANSWER, "a", "m1", fallbackEndpointId = "b", fallbackModel = "m2")).getOrThrow()
-        failing += "a"
+        failures["a:text"] = http(500)
         assertEquals("b/m2", router.generate(Role.ANSWER, "q"))
     }
 
@@ -2064,20 +2140,52 @@ class ModelRouterTest {
         assertEquals("t/m", router.generate(Role.SUMMARIZE, "q", img))
         bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
         assertEquals("v/vision", router.generate(Role.VISION_EXTRACT, "q", img))
-        failing += "v:vision"
+        failures["v:vision"] = http(400)
         assertEquals("v/m", router.generate(Role.VISION_EXTRACT, "q", img))
     }
 
     @Test fun framesUseSummarizeWhenNoVisionBinding() = runTest {
         ep("t", Capability.CHAT); bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
         assertEquals("t/m", router.generateFromFrames("q", img))
-        ep("v", Capability.CHAT, Capability.VISION); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
-        assertEquals("v/vision", router.generateFromFrames("q", img))
     }
 
-    @Test fun unboundRoleFailsWithClearMessage() = runTest {
-        val e = runCatching { router.generate(Role.NUDGE, "q") }.exceptionOrNull()!!
-        assertTrue(e.message!!.contains("No model is set for NUDGE"))
+    @Test fun frameOutageReachesSummarizeLocalFallbackOnce() = runTest {
+        ep("az", Capability.CHAT, Capability.VISION); ep("loc", Capability.CHAT)
+        bindings.set(RoleBinding(Role.VISION_EXTRACT, "az", "gpt")).getOrThrow()
+        bindings.set(RoleBinding(Role.SUMMARIZE, "az", "gpt", fallbackEndpointId = "loc", fallbackModel = "local")).getOrThrow()
+        failures["az:vision"] = http(503); failures["az:text"] = http(503)
+        assertEquals("loc/local", router.generateFromFrames("q", img))
+        assertEquals(listOf("az:vision", "az:text", "loc:text"), calls) // Azure text is not retried a second time
+    }
+
+    @Test fun unboundRoleIsRetryable() = runTest {
+        val e = err { router.generate(Role.NUDGE, "q") } as ModelCallException
+        assertTrue(e.message!!.contains("No model is set for NUDGE")); assertTrue(e.retryable)
+    }
+
+    @Test fun serverErrorsAreRetryableAuthErrorsAreNot() = runTest {
+        ep("a", Capability.CHAT); bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        failures["a:text"] = http(500)
+        assertTrue((err { router.generate(Role.ANSWER, "q") } as ModelCallException).retryable)
+        failures["a:text"] = http(401)
+        assertFalse((err { router.generate(Role.ANSWER, "q") } as ModelCallException).retryable)
+        failures["a:text"] = java.net.SocketTimeoutException("timeout")
+        assertTrue((err { router.generate(Role.ANSWER, "q") } as ModelCallException).retryable)
+    }
+
+    @Test fun permanentPrimaryWithTransientFallbackIsRetryable() = runTest {
+        ep("a", Capability.CHAT); ep("b", Capability.CHAT)
+        bindings.set(RoleBinding(Role.ANSWER, "a", "m", fallbackEndpointId = "b")).getOrThrow()
+        failures["a:text"] = http(401); failures["b:text"] = http(502)
+        assertTrue((err { router.generate(Role.ANSWER, "q") } as ModelCallException).retryable)
+    }
+
+    @Test fun cancellationIsNeverWrapped() = runTest {
+        ep("a", Capability.CHAT); ep("b", Capability.CHAT)
+        bindings.set(RoleBinding(Role.ANSWER, "a", "m", fallbackEndpointId = "b")).getOrThrow()
+        failures["a:text"] = CancellationException("stopped")
+        assertTrue(err { router.generate(Role.ANSWER, "q") } is CancellationException)
+        assertEquals(listOf("a:text"), calls) // no fallback attempt after cancellation
     }
 }
 ```
@@ -2092,7 +2200,9 @@ import com.rokid.context.memory.db.DatabaseFactory
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -2103,30 +2213,68 @@ class EndpointSeederTest {
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     private val endpoints = EndpointRepository(db.endpointDao(), InMemoryKeyVault())
     private val bindings = RoleBindingRepository(db.roleBindingDao(), endpoints)
-    private val seeder = EndpointSeeder(endpoints, bindings)
+    private val state = InMemorySeedState()
+    private val seeder = EndpointSeeder(endpoints, bindings, state)
     @After fun close() = db.close()
 
-    @Test fun seedsAzureFromCurrentConfigAndBindsChatRoles() = runTest {
-        seeder.seedIfEmpty(ProviderSettings("openai", "https://az.example", "k", "gpt-5.4", nativeModelPath = "", localModeEnabled = false))
+    private val azure = ProviderSettings("openai", "https://az.example", "k", "gpt-5.4", nativeModelPath = "", localModeEnabled = false)
+    private val textRoles = listOf(Role.EXPLICIT_REMEMBER, Role.SUMMARIZE, Role.CRITIC, Role.ANSWER, Role.NUDGE)
+
+    @Test fun seedsAzureFromCurrentConfigAndBindsRoles() = runTest {
+        seeder.seedIfNeeded(azure).getOrThrow()
         val e = endpoints.all().single()
-        assertEquals(EndpointKind.AZURE_OPENAI, e.kind)
-        assertEquals("k", endpoints.keyFor(e))
-        for (r in listOf(Role.VISION_EXTRACT, Role.EXPLICIT_REMEMBER, Role.SUMMARIZE, Role.CRITIC, Role.ANSWER, Role.NUDGE)) {
-            assertEquals(e.id, bindings.get(r)!!.endpointId)
-        }
-        assertNull(bindings.get(Role.EMBED))
+        assertEquals(EndpointKind.AZURE_OPENAI, e.kind); assertEquals("k", endpoints.keyFor(e))
+        (textRoles + Role.VISION_EXTRACT).forEach { assertEquals(e.id, bindings.get(it)!!.endpointId) }
+        assertNull(bindings.get(Role.EMBED)); assertTrue(state.isDone())
     }
 
-    @Test fun localModeAddsLlamaCppFallback() = runTest {
-        seeder.seedIfEmpty(ProviderSettings("openai", "https://az.example", "k", "gpt-5.4", nativeModelPath = "/m.gguf", localModeEnabled = true))
+    @Test fun localModeAddsLlamaCppFallbackToTextRolesOnly() = runTest {
+        seeder.seedIfNeeded(azure.copy(nativeModelPath = "/m.gguf", localModeEnabled = true)).getOrThrow()
         val local = endpoints.all().single { it.kind == EndpointKind.LLAMACPP_LOCAL }
-        assertEquals(local.id, bindings.get(Role.ANSWER)!!.fallbackEndpointId)
+        textRoles.forEach { assertEquals(local.id, bindings.get(it)!!.fallbackEndpointId) }
+        assertNull(bindings.get(Role.VISION_EXTRACT)!!.fallbackEndpointId)
     }
 
-    @Test fun doesNothingWhenEndpointsExist() = runTest {
-        seeder.seedIfEmpty(ProviderSettings("ollama", "http://o:11434", "", "llama3.1:8b", "", false))
-        seeder.seedIfEmpty(ProviderSettings("openai", "https://az.example", "k", "gpt", "", false))
+    @Test fun resumesAfterCrashBetweenEndpointAndBindings() = runTest {
+        // Simulate a crash after the endpoint was saved and before any binding/marker was written.
+        endpoints.save(Endpoint(EndpointSeeder.AZURE_ID, "Azure OpenAI", EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt-5.4"),
+            setOf(Capability.CHAT, Capability.VISION, Capability.JSON_SCHEMA), 1), apiKey = "k").getOrThrow()
+        assertFalse(state.isDone())
+        seeder.seedIfNeeded(azure).getOrThrow()
+        assertEquals(1, endpoints.all().size)
+        (textRoles + Role.VISION_EXTRACT).forEach { assertEquals(EndpointSeeder.AZURE_ID, bindings.get(it)!!.endpointId) }
+        assertTrue(state.isDone())
+    }
+
+    @Test fun repairNeverOverwritesAnExistingBinding() = runTest {
+        endpoints.save(Endpoint(EndpointSeeder.AZURE_ID, "Azure OpenAI", EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt-5.4"),
+            setOf(Capability.CHAT, Capability.VISION), 1), apiKey = "k").getOrThrow()
+        bindings.set(RoleBinding(Role.ANSWER, EndpointSeeder.AZURE_ID, "custom-model")).getOrThrow()
+        seeder.seedIfNeeded(azure).getOrThrow()
+        assertEquals("custom-model", bindings.get(Role.ANSWER)!!.model)
+        assertEquals("gpt-5.4", bindings.get(Role.SUMMARIZE)!!.model)
+    }
+
+    @Test fun invalidConfigFailsWithoutMarkingDone() = runTest {
+        assertTrue(seeder.seedIfNeeded(azure.copy(endpoint = "")).isFailure) // EnvDefaults.azureEndpoint is "" in tests
+        assertFalse(state.isDone()); assertTrue(endpoints.all().isEmpty())
+    }
+
+    @Test fun doneMarkerMakesSeedANoOp() = runTest {
+        seeder.seedIfNeeded(ProviderSettings("ollama", "http://o:11434", "", "llama3.1:8b", "", false)).getOrThrow()
+        seeder.seedIfNeeded(azure).getOrThrow()
         assertEquals(EndpointKind.OLLAMA, endpoints.all().single().kind)
+    }
+
+    @Test fun syncFromLegacyRebindsToTheEditedProvider() = runTest {
+        seeder.seedIfNeeded(azure).getOrThrow()
+        seeder.syncFromLegacy(azure.copy(deploymentOrModel = "gpt-6", apiKey = "k2")).getOrThrow()
+        val e = endpoints.byId(EndpointSeeder.AZURE_ID)!!
+        assertEquals(listOf("gpt-6"), e.models); assertEquals("k2", endpoints.keyFor(e))
+        assertEquals("gpt-6", bindings.get(Role.ANSWER)!!.model)
+        seeder.syncFromLegacy(ProviderSettings("ollama", "http://o:11434", "", "llama3.1:8b", "", false)).getOrThrow()
+        assertEquals(EndpointSeeder.OLLAMA_ID, bindings.get(Role.ANSWER)!!.endpointId)
+        assertEquals(EndpointSeeder.AZURE_ID, bindings.get(Role.VISION_EXTRACT)!!.endpointId) // Ollama has no VISION: keep the last vision binding
     }
 }
 ```
@@ -2134,7 +2282,7 @@ class EndpointSeederTest {
 - [ ] **Step 2: Run to verify failure**
 
 Run: `./gradlew :services:ai:testDebugUnitTest`
-Expected: FAIL — unresolved `Role`, `RoleBindingRepository`, `ModelRouter`, `EndpointSeeder`.
+Expected: FAIL — unresolved `Role`, `RoleBindingRepository`, `ModelRouter`, `ModelCallException`, `EndpointSeeder`, `InMemorySeedState`.
 
 - [ ] **Step 3: `Role.kt` + `RoleBindingRepository.kt`**
 
@@ -2187,18 +2335,44 @@ class RoleBindingRepository(private val dao: RoleBindingDao, private val endpoin
 }
 ```
 
-- [ ] **Step 4: `ModelRouter.kt`** (replaces `QueueDrainWorker.generateWithFallback` / `generateBatchedSummary` semantics)
+- [ ] **Step 4: `ModelErrors.kt`**
+
+```kotlin
+package com.rokid.context.ai
+
+import java.util.Locale
+
+/** Every failure leaving [ModelRouter] (except cancellation) is one of these, with an explicit retry decision. */
+class ModelCallException(message: String, val retryable: Boolean, cause: Throwable? = null) : RuntimeException(message, cause)
+
+object ProviderErrors {
+    private val PERMANENT_STATUS = Regex("\\b(401|403|404)\\b")
+    private val PERMANENT_TEXT = listOf(
+        "resource not found", "deployment not found", "unsupported parameter", "invalid_request_error",
+        "api key is missing", "endpoint is missing", "model path is required", "native runtime not available",
+    )
+
+    /** Auth/config errors that will not succeed on retry. HTTP 5xx, timeouts and network errors are transient. */
+    fun isPermanent(t: Throwable): Boolean {
+        val m = t.message.orEmpty().lowercase(Locale.US)
+        return PERMANENT_STATUS.containsMatchIn(m) || PERMANENT_TEXT.any { it in m }
+    }
+}
+```
+
+- [ ] **Step 5: `ModelRouter.kt`**
 
 ```kotlin
 package com.rokid.context.ai
 
 import android.util.Log
 import com.rokid.context.model.ModelImageInput
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Routes a role's call to its bound endpoint. Vision is used only when the endpoint has VISION and images are given;
  * a vision failure retries as text on the same endpoint; a primary failure retries on the fallback binding.
- * Error messages keep the provider's text so the queue's retry classifier still works.
+ * Failures surface as [ModelCallException] (see the error contract in the plan); cancellation is rethrown untouched.
  */
 class ModelRouter(
     private val bindings: RoleBindingRepository,
@@ -2206,27 +2380,53 @@ class ModelRouter(
     private val providers: ProviderBuilder,
 ) {
     suspend fun generate(role: Role, prompt: String, images: List<ModelImageInput> = emptyList()): String {
-        val b = bindings.get(role) ?: error("No model is set for ${role.name}")
-        val primary = endpoints.byId(b.endpointId) ?: error("Endpoint for ${role.name} was deleted")
-        return runCatching { call(primary, b.model, prompt, images) }.getOrElse { first ->
-            val fbId = b.fallbackEndpointId ?: throw first
-            val fb = endpoints.byId(fbId) ?: throw first
-            runCatching { call(fb, b.fallbackModel ?: b.model, prompt, images) }
-                .getOrElse { throw IllegalStateException("Primary+fallback generation failed: ${first.message}; ${it.message}") }
-        }
+        val b = bindings.get(role) ?: throw ModelCallException("No model is set for ${role.name}", retryable = true)
+        return generateWith(b, prompt, images, skipPrimary = false)
     }
 
     /**
-     * Frame summarisation: VISION_EXTRACT when bound, else SUMMARIZE as text. Keeps text-only setups (e.g. Ollama seeded
-     * without VISION) summarising exactly as the legacy worker did.
+     * Frame summarisation, matching the legacy worker: vision → text on the vision endpoint, then SUMMARIZE's chain.
+     * When SUMMARIZE shares the vision endpoint+model, only its fallback is tried (the primary already failed as text).
      */
-    suspend fun generateFromFrames(prompt: String, images: List<ModelImageInput>): String =
-        if (bindings.get(Role.VISION_EXTRACT) != null) generate(Role.VISION_EXTRACT, prompt, images) else generate(Role.SUMMARIZE, prompt, images)
+    suspend fun generateFromFrames(prompt: String, images: List<ModelImageInput>): String {
+        val vision = bindings.get(Role.VISION_EXTRACT) ?: return generate(Role.SUMMARIZE, prompt, images)
+        return try {
+            generateWith(vision, prompt, images, skipPrimary = false)
+        } catch (first: ModelCallException) {
+            val summarize = bindings.get(Role.SUMMARIZE) ?: throw first
+            val samePrimary = summarize.endpointId == vision.endpointId && summarize.model == vision.model
+            if (samePrimary && summarize.fallbackEndpointId == null) throw first
+            try {
+                generateWith(summarize, prompt, images, skipPrimary = samePrimary)
+            } catch (second: ModelCallException) {
+                throw ModelCallException("Frame summary failed: ${first.message}; ${second.message}", first.retryable || second.retryable, second)
+            }
+        }
+    }
+
+    private suspend fun generateWith(b: RoleBinding, prompt: String, images: List<ModelImageInput>, skipPrimary: Boolean): String {
+        val first: Throwable? = if (skipPrimary) null else {
+            val primary = endpoints.byId(b.endpointId) ?: throw ModelCallException("Endpoint for ${b.role.name} was deleted", retryable = true)
+            try { return call(primary, b.model, prompt, images) } catch (c: CancellationException) { throw c } catch (t: Throwable) { t }
+        }
+        val fallback = b.fallbackEndpointId?.let { endpoints.byId(it) }
+            ?: throw ModelCallException("Primary provider failed: ${first?.message}", retryable = first == null || !ProviderErrors.isPermanent(first), first)
+        return try {
+            call(fallback, b.fallbackModel ?: b.model, prompt, images)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            val retryable = !ProviderErrors.isPermanent(t) || (first != null && !ProviderErrors.isPermanent(first))
+            throw ModelCallException("Primary+fallback generation failed: ${first?.message}; ${t.message}", retryable, t)
+        }
+    }
 
     private suspend fun call(e: Endpoint, model: String, prompt: String, images: List<ModelImageInput>): String {
         val p = providers.create(e, model, endpoints.keyFor(e))
         if (images.isNotEmpty() && Capability.VISION in e.capabilities) {
-            runCatching { return p.generateWithImages(prompt, images) }.onFailure { Log.w(TAG, "vision failed on ${e.name}, retrying as text: ${it.message}") }
+            try { return p.generateWithImages(prompt, images) } catch (c: CancellationException) { throw c } catch (t: Throwable) {
+                Log.w(TAG, "vision failed on ${e.name}, retrying as text: ${t.message}")
+            }
         }
         return p.generate(prompt)
     }
@@ -2235,74 +2435,325 @@ class ModelRouter(
 }
 ```
 
-- [ ] **Step 5: `EndpointSeeder.kt` + `AiGraph.kt`**
+- [ ] **Step 6: `EndpointSeeder.kt`** (resumable, idempotent; overwrite mode for Task 9)
 
-`EndpointSeeder.kt`:
 ```kotlin
 package com.rokid.context.ai
 
-/** First run on the registry: turn the legacy single-provider config into endpoints + bindings (spec §4.1 seed). */
-class EndpointSeeder(private val endpoints: EndpointRepository, private val bindings: RoleBindingRepository) {
-    suspend fun seedIfEmpty(settings: ProviderSettings) {
-        if (endpoints.all().isNotEmpty()) return
+import android.content.Context
+
+interface SeedState { fun isDone(): Boolean; fun markDone() }
+
+class PrefsSeedState(context: Context) : SeedState {
+    private val prefs = context.getSharedPreferences("ai_seed", Context.MODE_PRIVATE)
+    override fun isDone() = prefs.getBoolean("v1_done", false)
+    override fun markDone() { prefs.edit().putBoolean("v1_done", true).commit() }
+}
+
+class InMemorySeedState : SeedState {
+    @Volatile private var done = false
+    override fun isDone() = done
+    override fun markDone() { done = true }
+}
+
+/**
+ * Turns the legacy single-provider config into endpoints + role bindings (spec §4.1 seed).
+ * [seedIfNeeded] only creates what is missing and marks done after every binding exists, so a crash at any point
+ * is repaired on the next start. [syncFromLegacy] overwrites (legacy Config screen edits, Task 9).
+ */
+class EndpointSeeder(private val endpoints: EndpointRepository, private val bindings: RoleBindingRepository, private val state: SeedState) {
+    suspend fun seedIfNeeded(settings: ProviderSettings): Result<Unit> = runCatching {
+        if (state.isDone()) return@runCatching
+        apply(settings, overwrite = false)
+        state.markDone()
+    }
+
+    suspend fun syncFromLegacy(settings: ProviderSettings): Result<Unit> = runCatching {
+        apply(settings, overwrite = true)
+        state.markDone()
+    }
+
+    private suspend fun apply(settings: ProviderSettings, overwrite: Boolean) {
         val now = System.currentTimeMillis()
-        val primary = when (settings.providerType.lowercase()) {
-            "ollama" -> Endpoint("ollama", "Ollama", EndpointKind.OLLAMA, settings.endpoint.ifBlank { EnvDefaults.ollamaBaseUrl }, null,
+        val desired = when (settings.providerType.lowercase()) {
+            "ollama" -> Endpoint(OLLAMA_ID, "Ollama", EndpointKind.OLLAMA, settings.endpoint.ifBlank { EnvDefaults.ollamaBaseUrl }, null,
                 listOf(settings.deploymentOrModel.ifBlank { EnvDefaults.ollamaModel }), setOf(Capability.CHAT), now)
-            "llama_cpp" -> Endpoint("llamacpp", "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null,
+            "llama_cpp" -> Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null,
                 listOf("local"), setOf(Capability.CHAT), now)
-            else -> Endpoint("azure", "Azure OpenAI", EndpointKind.AZURE_OPENAI, settings.endpoint.ifBlank { EnvDefaults.azureEndpoint }, "2024-10-21",
+            else -> Endpoint(AZURE_ID, "Azure OpenAI", EndpointKind.AZURE_OPENAI, settings.endpoint.ifBlank { EnvDefaults.azureEndpoint }, "2024-10-21",
                 listOf(settings.deploymentOrModel.ifBlank { EnvDefaults.azureDeployment }), setOf(Capability.CHAT, Capability.VISION, Capability.JSON_SCHEMA), now)
         }
-        val saved = endpoints.save(primary, apiKey = settings.apiKey.ifBlank { null }).getOrNull() ?: return
-        val local = if (settings.localModeEnabled && settings.nativeModelPath.isNotBlank() && saved.kind != EndpointKind.LLAMACPP_LOCAL) {
-            endpoints.save(Endpoint("llamacpp", "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null, listOf("local"), setOf(Capability.CHAT), now), apiKey = null).getOrNull()
+        val primary = endpoints.byId(desired.id)?.takeUnless { overwrite }
+            ?: endpoints.save(desired, apiKey = settings.apiKey.ifBlank { null }).getOrThrow()
+        val local = if (settings.localModeEnabled && settings.nativeModelPath.isNotBlank() && primary.id != LOCAL_ID) {
+            endpoints.byId(LOCAL_ID)?.takeUnless { overwrite }
+                ?: endpoints.save(Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null, listOf("local"), setOf(Capability.CHAT), now), apiKey = null).getOrThrow()
         } else null
-        val model = saved.models.firstOrNull().orEmpty()
+        val model = primary.models.firstOrNull().orEmpty()
         for (role in Role.entries) {
-            if (role == Role.EMBED || role.requiredCapability !in saved.capabilities) continue
+            if (role == Role.EMBED || role.requiredCapability !in primary.capabilities) continue
+            if (!overwrite && bindings.get(role) != null) continue
             // Text roles get the on-device fallback (legacy `localFallback`); VISION_EXTRACT can't, the local endpoint has no VISION.
             val fallback = local?.takeIf { role.requiredCapability in it.capabilities }
-            bindings.set(RoleBinding(role, saved.id, model, fallbackEndpointId = fallback?.id, fallbackModel = fallback?.models?.firstOrNull()))
+            bindings.set(RoleBinding(role, primary.id, model, fallbackEndpointId = fallback?.id, fallbackModel = fallback?.models?.firstOrNull())).getOrThrow()
         }
+    }
+
+    companion object {
+        const val AZURE_ID = "azure"
+        const val OLLAMA_ID = "ollama"
+        const val LOCAL_ID = "llamacpp"
     }
 }
 ```
 
-`AiGraph.kt`:
+- [ ] **Step 7: `AiGraph.kt`**
+
 ```kotlin
 package com.rokid.context.ai
 
 import android.content.Context
 import com.rokid.context.memory.MemoryGraph
 
-class AiGraph(memory: MemoryGraph, vault: KeyVault, providers: ProviderBuilder = ProviderFactory) {
+class AiGraph(memory: MemoryGraph, vault: KeyVault, seedState: SeedState, providers: ProviderBuilder = ProviderFactory) {
     val endpoints = EndpointRepository(memory.db.endpointDao(), vault)
     val bindings = RoleBindingRepository(memory.db.roleBindingDao(), endpoints)
     val router = ModelRouter(bindings, endpoints, providers)
     val tester = EndpointTester(endpoints, providers)
-    val seeder = EndpointSeeder(endpoints, bindings)
+    val seeder = EndpointSeeder(endpoints, bindings, seedState)
 
     companion object {
         @Volatile private var instance: AiGraph? = null
         fun get(context: Context): AiGraph = instance ?: synchronized(this) {
-            instance ?: AiGraph(MemoryGraph.get(context), EncryptedKeyVault(context.applicationContext)).also { instance = it }
+            val app = context.applicationContext
+            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app)).also { instance = it }
         }
         fun resetForTests(graph: AiGraph?) { synchronized(this) { instance = graph } }
     }
 }
 ```
 
-- [ ] **Step 6: Run ai tests**
+- [ ] **Step 8: Run ai tests**
 
 Run: `./gradlew :services:ai:testDebugUnitTest`
-Expected: PASS.
+Expected: PASS (RoleBindingRepositoryTest 2, ModelRouterTest 9, EndpointSeederTest 7, plus earlier).
 
-- [ ] **Step 7: Workers use the router**
+- [ ] **Step 9: Seed at startup (resumes a partial seed on every start until done)**
 
-In `services/orchestration/src/main/java/com/rokid/context/work/QueueDrainWorker.kt`:
-- Add imports `com.rokid.context.ai.AiGraph`, `com.rokid.context.ai.Role`; remove `ModelProviderResolver` and `toProviderSettings` imports.
-- Replace the two private functions `generateWithFallback(...)` and `generateBatchedSummary(...)` with:
+In `ContextApp.onCreate`, after the `MemoryGraph.get(...)` line:
+```kotlin
+        kotlin.concurrent.thread(name = "ai-seed") {
+            kotlinx.coroutines.runBlocking {
+                com.rokid.context.ai.AiGraph.get(this@ContextApp).seeder
+                    .seedIfNeeded(com.rokid.context.data.runtime.AppConfigStore.get(this@ContextApp).toProviderSettings())
+                    .onFailure { android.util.Log.w("ContextApp", "AI seed not finished: ${it.message}") }
+            }
+        }
+```
+Add `import com.rokid.context.data.runtime.toProviderSettings`. Workers are not switched to the router yet (Task 8), so this step cannot affect processing.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add -A android-companion
+git commit -m "feat(ai): role bindings, typed model errors, ModelRouter with frame fallback chain, resumable seeding
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 8: Retry classifier with behaviour tests; workers use the router; cancellation keeps jobs
+
+**Requirements:** R-03 (queue retry/defer semantics preserved or fixed), R-72 (failures classified, short messages in traces)
+
+**Files:**
+- Create: `android-companion/services/orchestration/src/main/java/com/rokid/context/orchestration/RetryClassifier.kt`
+- Modify: `android-companion/services/orchestration/src/main/java/com/rokid/context/work/QueueDrainWorker.kt`
+- Modify: `android-companion/services/orchestration/build.gradle.kts`
+- Test: `android-companion/services/orchestration/src/test/java/com/rokid/context/orchestration/RetryClassifierTest.kt`
+- Test: `android-companion/services/orchestration/src/test/java/com/rokid/context/work/QueueDrainWorkerRetryTest.kt`
+
+**Interfaces:**
+- Consumes: `ModelCallException`, `ModelRouter.generate`, `ModelRouter.generateFromFrames`, `AiGraph.resetForTests`, `MemoryGraph.resetForTests`, `QueueRuntimeStore`, `QueuePayloads.explicitWrite`.
+- Produces: `RetryClassifier.classify(t): RetryClassifier.Outcome {RETRY, FAIL, CANCELLED}`; `QueueDrainWorker` behaviour: RETRY → `markDeferred`, FAIL → `markFailed`, CANCELLED → `markDeferred(backoff 0)` and rethrow.
+
+Behaviour change vs legacy (intended, recorded in the commit): the legacy `isRetryable` defaulted to **false**, so a bare HTTP 500 or a WorkManager cancellation marked the job FAILED. Now transient errors and cancellation keep the job.
+
+- [ ] **Step 1: Test dependencies**
+
+In `services/orchestration/build.gradle.kts` add:
+```kotlin
+    testImplementation("androidx.work:work-testing:2.9.1")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+```
+
+- [ ] **Step 2: Write the failing tests**
+
+`services/orchestration/src/test/java/com/rokid/context/orchestration/RetryClassifierTest.kt`:
+```kotlin
+package com.rokid.context.orchestration
+
+import com.rokid.context.ai.ModelCallException
+import com.rokid.context.orchestration.RetryClassifier.Outcome
+import kotlinx.coroutines.CancellationException
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class RetryClassifierTest {
+    @Test fun modelErrorsFollowTheirFlag() {
+        assertEquals(Outcome.RETRY, RetryClassifier.classify(ModelCallException("No model is set for ANSWER", retryable = true)))
+        assertEquals(Outcome.RETRY, RetryClassifier.classify(ModelCallException("Primary provider failed: Azure OpenAI request failed: 500", retryable = true)))
+        assertEquals(Outcome.FAIL, RetryClassifier.classify(ModelCallException("Primary provider failed: Azure OpenAI request failed: 401", retryable = false)))
+    }
+
+    @Test fun ioErrorsRetry() {
+        assertEquals(Outcome.RETRY, RetryClassifier.classify(java.net.SocketTimeoutException("read timed out")))
+        assertEquals(Outcome.RETRY, RetryClassifier.classify(java.net.UnknownHostException("no host")))
+    }
+
+    @Test fun cancellationIsItsOwnOutcome() {
+        assertEquals(Outcome.CANCELLED, RetryClassifier.classify(CancellationException("worker stopped")))
+    }
+
+    @Test fun nonModelErrorsKeepLegacyRules() {
+        assertEquals(Outcome.FAIL, RetryClassifier.classify(IllegalStateException("No Rokid frames available for summarization")))
+        assertEquals(Outcome.FAIL, RetryClassifier.classify(IllegalArgumentException("Empty explicit write input")))
+        assertEquals(Outcome.RETRY, RetryClassifier.classify(IllegalStateException("connection reset")))
+    }
+}
+```
+
+`services/orchestration/src/test/java/com/rokid/context/work/QueueDrainWorkerRetryTest.kt`:
+```kotlin
+package com.rokid.context.work
+
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.work.testing.TestListenableWorkerBuilder
+import com.rokid.context.ai.AiGraph
+import com.rokid.context.ai.Capability
+import com.rokid.context.ai.Endpoint
+import com.rokid.context.ai.EndpointKind
+import com.rokid.context.ai.InMemoryKeyVault
+import com.rokid.context.ai.InMemorySeedState
+import com.rokid.context.ai.ProviderBuilder
+import com.rokid.context.ai.Role
+import com.rokid.context.ai.RoleBinding
+import com.rokid.context.data.runtime.QueuePayloads
+import com.rokid.context.data.runtime.QueueRuntimeStore
+import com.rokid.context.domain.queue.QueuePriority
+import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.model.ModelProvider
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34])
+class QueueDrainWorkerRetryTest {
+    private val ctx = ApplicationProvider.getApplicationContext<Context>()
+    private var behaviour: () -> String = { "ok" }
+    private lateinit var ai: AiGraph
+
+    @Before fun setUp() {
+        MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
+        ai = AiGraph(MemoryGraph.get(ctx), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { _, _, _ ->
+            object : ModelProvider { override suspend fun generate(prompt: String) = behaviour() }
+        })
+        AiGraph.resetForTests(ai)
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.EXPLICIT_WRITE, QueuePayloads.explicitWrite("remember milk", "en", manual = true), personaSnapshot = "default")
+    }
+
+    @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
+
+    private fun bind() = runBlocking {
+        ai.endpoints.save(Endpoint("az", "Azure", EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt"), setOf(Capability.CHAT), 1), apiKey = "k").getOrThrow()
+        ai.bindings.set(RoleBinding(Role.EXPLICIT_REMEMBER, "az", "gpt")).getOrThrow()
+    }
+
+    private fun runWorker(): Throwable? = runCatching { runBlocking { TestListenableWorkerBuilder<QueueDrainWorker>(ctx).build().doWork() } }.exceptionOrNull()
+    private fun state() = QueueRuntimeStore.recent(ctx, 10).single().state
+
+    @Test fun startupBeforeSeedingDefersTheJob() {
+        runWorker()
+        assertEquals(QueueRuntimeStore.STATE_DEFERRED, state())
+    }
+
+    @Test fun transientServerErrorDefers() {
+        bind(); behaviour = { error("Azure OpenAI request failed: 500 upstream") }
+        runWorker()
+        assertEquals(QueueRuntimeStore.STATE_DEFERRED, state())
+    }
+
+    @Test fun authFailureFails() {
+        bind(); behaviour = { error("Azure OpenAI request failed: 401 invalid key") }
+        runWorker()
+        assertEquals(QueueRuntimeStore.STATE_FAILED, state())
+    }
+
+    @Test fun cancellationKeepsTheJobAndPropagates() {
+        bind(); behaviour = { throw CancellationException("work stopped") }
+        assertTrue(runWorker() is CancellationException)
+        assertEquals(QueueRuntimeStore.STATE_DEFERRED, state())
+    }
+
+    @Test fun successStillSucceeds() {
+        bind(); behaviour = { """{"memory":"milk","confidence":0.9}""" }
+        assertEquals(null, runWorker())
+        assertEquals(QueueRuntimeStore.STATE_SUCCEEDED, state())
+    }
+}
+```
+
+- [ ] **Step 3: Run to verify failure**
+
+Run: `./gradlew :services:orchestration:testDebugUnitTest --tests "*RetryClassifierTest" --tests "*QueueDrainWorkerRetryTest"`
+Expected: FAIL — `RetryClassifier` unresolved; worker still calls `ModelProviderResolver` (startup/transient/cancellation cases end FAILED or call the network).
+
+- [ ] **Step 4: `RetryClassifier.kt`**
+
+```kotlin
+package com.rokid.context.orchestration
+
+import com.rokid.context.ai.ModelCallException
+import java.util.Locale
+import kotlin.coroutines.cancellation.CancellationException
+
+object RetryClassifier {
+    enum class Outcome { RETRY, FAIL, CANCELLED }
+
+    fun classify(t: Throwable): Outcome = when (t) {
+        is CancellationException -> Outcome.CANCELLED
+        is ModelCallException -> if (t.retryable) Outcome.RETRY else Outcome.FAIL
+        is java.io.IOException -> Outcome.RETRY
+        else -> if (legacyRetryable(t)) Outcome.RETRY else Outcome.FAIL
+    }
+
+    /** The legacy `QueueDrainWorker.isRetryable` rules, kept for non-model errors. */
+    private fun legacyRetryable(error: Throwable): Boolean {
+        val msg = error.message?.lowercase(Locale.US).orEmpty()
+        val permanent = listOf("404", "401", "403", "resource not found", "deployment not found", "unsupported parameter",
+            "invalid_request_error", "api key is missing", "endpoint is missing")
+        if (permanent.any { it in msg }) return false
+        return listOf("timeout", "network", "connection", "temporarily unavailable", "provider failed").any { it in msg }
+    }
+}
+```
+
+- [ ] **Step 5: Worker — route by role and classify**
+
+In `QueueDrainWorker.kt`:
+- Add imports `com.rokid.context.ai.AiGraph`, `com.rokid.context.ai.Role`, `com.rokid.context.orchestration.RetryClassifier`; remove the `ModelProviderResolver` and `toProviderSettings` imports.
+- Replace the private `generateWithFallback(...)` and `generateBatchedSummary(...)` with:
 ```kotlin
     private suspend fun generateWithFallback(role: Role, prompt: String): String =
         AiGraph.get(applicationContext).router.generate(role, prompt)
@@ -2310,56 +2761,210 @@ In `services/orchestration/src/main/java/com/rokid/context/work/QueueDrainWorker
     private suspend fun generateBatchedSummary(prompt: String, frames: List<com.rokid.context.data.frames.CapturedFrame>): String =
         AiGraph.get(applicationContext).router.generateFromFrames(prompt, images = buildVisionInputs(frames, maxImages = 3))
 ```
-- Update the 4 call sites:
-  - in `processBatchedSummarization` and `processPriorityReprocess`: `generateBatchedSummary(prompt, config, frames)` → `generateBatchedSummary(prompt, frames)` (both used the vision-then-text path before; `generateFromFrames` keeps that)
-  - in `processExplicitWrite`: `generateWithFallback(prompt, config)` → `generateWithFallback(Role.EXPLICIT_REMEMBER, prompt)`
-  - in `processReadContext`: `generateWithFallback(prompt, config)` → `generateWithFallback(Role.ANSWER, prompt)`
-- Leave any remaining `val config = AppConfigStore.get(...)` lines that are still used for other fields; delete only those that become unused (the compiler warns).
-
-The phone's Config screen **Test** button keeps using `ModelProviderResolver` with the typed-in values until Phase 5 replaces that screen; `ModelProviderResolver`/`ProviderSettings` stay for that and for seeding.
-
-- [ ] **Step 8: Seed at startup**
-
-In `ContextApp.onCreate`, after the `MemoryGraph.get(...)` line:
+- Call sites: `processBatchedSummarization` and `processPriorityReprocess`: `generateBatchedSummary(prompt, config, frames)` → `generateBatchedSummary(prompt, frames)`; `processExplicitWrite`: `generateWithFallback(prompt, config)` → `generateWithFallback(Role.EXPLICIT_REMEMBER, prompt)`; `processReadContext`: `generateWithFallback(prompt, config)` → `generateWithFallback(Role.ANSWER, prompt)`. Delete `val config = …` lines that become unused.
+- In `doWork`, replace the `.onFailure { error -> … }` block with:
 ```kotlin
-        kotlin.concurrent.thread(name = "ai-seed") {
-            kotlinx.coroutines.runBlocking {
-                com.rokid.context.ai.AiGraph.get(this@ContextApp).seeder.seedIfEmpty(
-                    com.rokid.context.data.runtime.AppConfigStore.get(this@ContextApp).toProviderSettings(),
+            }.onFailure { error ->
+                val outcome = RetryClassifier.classify(error)
+                if (outcome == RetryClassifier.Outcome.CANCELLED) {
+                    // WorkManager stopped us: keep the job for the next run, then let cancellation propagate.
+                    QueueRuntimeStore.markDeferred(applicationContext, job.id, "cancelled; will retry", backoffMs = 0)
+                    throw error
+                }
+                val message = error.message ?: "unknown queue error"
+                val retryable = outcome == RetryClassifier.Outcome.RETRY
+                if (retryable) {
+                    QueueRuntimeStore.markDeferred(context = applicationContext, id = job.id, error = message, backoffMs = computeBackoffMs(job.attemptCount))
+                } else {
+                    QueueRuntimeStore.markFailed(applicationContext, job.id, message)
+                }
+                SummaryTraceStore.upsert(
+                    applicationContext,
+                    SummaryTrace(summaryId = job.id, state = if (retryable) "RETRY" else "FAILED", updatedAtEpochMs = System.currentTimeMillis(), note = message),
                 )
             }
-        }
 ```
-Add `import com.rokid.context.data.runtime.toProviderSettings`. (A worker that runs before seeding finishes fails with "No model is set for …", which the queue treats as retryable — see Step 9.)
+- Delete the private `isRetryable` function (its rules now live in `RetryClassifier.legacyRetryable`).
 
-- [ ] **Step 9: Keep the retry classifier correct**
+- [ ] **Step 6: Run tests**
 
-"No model is set for …" must stay retryable (seeding may finish after the first worker run). `isRetryable` is private to the worker, so check its marker list:
+Run: `./gradlew :services:orchestration:testDebugUnitTest`
+Expected: PASS (RetryClassifierTest 4, QueueDrainWorkerRetryTest 5, plus earlier).
+
+- [ ] **Step 7: Device check (needs the user)**
+
+Install over the existing app; ask the user to trigger **Run Smoke** / **Trigger Summarizer** with frames available (glasses or `tools/sync_rokid_frame.sh`):
 ```bash
-grep -A25 "private fun isRetryable" services/orchestration/src/main/java/com/rokid/context/work/QueueDrainWorker.kt | grep -iE '"(no model|is set|deleted)' || echo retryable
+$ADB -s <phone> logcat -d -s QueueDrainWorker ModelRouter ContextApp AndroidRuntime | tail -40
 ```
-Expected: `retryable`.
+Expected: summarisation completes (`TRUSTED` or `NEEDS_REVIEW` trace), no crash, new memory visible. Then ask the user to turn on airplane mode and trigger again: the job shows `RETRY`/`DEFERRED` (not `FAILED`).
 
-- [ ] **Step 10: Run all tests and build**
-
-Run: `./gradlew test :phone:assembleDebug :glasses:assembleDebug -q`
-Expected: PASS.
-
-- [ ] **Step 11: Device check (needs the user)**
-
-Install over the existing app; ask the user to trigger **Run Smoke** / **Trigger Summarizer** with the glasses sending frames (or use `tools/sync_rokid_frame.sh`). Then:
-```bash
-$ADB -s <phone> logcat -d -s QueueDrainWorker ModelRouter AndroidRuntime | tail -40
-```
-Expected: summarisation completes as before (`TRUSTED` or `NEEDS_REVIEW` traces), no crash; Memory screen shows the new record.
-
-- [ ] **Step 12: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add -A android-companion
-git commit -m "feat(ai): role bindings and ModelRouter; workers route by role; seed from legacy config
+git commit -m "fix(queue): typed retry classification; workers route by role; cancellation keeps the job
+
+Legacy isRetryable defaulted to false, so HTTP 5xx and WorkManager cancellation
+marked jobs FAILED; both now defer.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-Phase 2 done when: all tests green, both APKs build, upgrade import verified on device, summarisation works through the router. R-40 (logic), R-41 (kinds/capability + embedding probe), R-42 (logic), R-48 (FTS part), R-70, R-71 covered.
+---
+
+### Task 9: Keep the legacy Config screen connected to the registry
+
+**Requirements:** R-40 (edits reach the endpoint the workers use), R-03 (Config screen keeps working until Phase 5 replaces it)
+
+**Files:**
+- Create: `android-companion/services/orchestration/src/main/java/com/rokid/context/orchestration/LegacyConfigBridge.kt`
+- Modify: `android-companion/services/orchestration/src/main/java/com/rokid/context/data/runtime/AppConfigStore.kt` (`setProvider`, `setLocalModeEnabled`)
+- Test: `android-companion/services/orchestration/src/test/java/com/rokid/context/orchestration/LegacyConfigBridgeTest.kt`
+
+**Interfaces:**
+- Consumes: `EndpointSeeder.syncFromLegacy`, `AiGraph`, `AppConfigStore.get`, `toProviderSettings`.
+- Produces: `LegacyConfigBridge.sync(context): Result<Unit>`; `AppConfigStore.setProvider(...)` and `setLocalModeEnabled(...)` now also update the registry. Deleted in Phase 5 with the legacy screen.
+
+- [ ] **Step 1: Write the failing test**
+
+`services/orchestration/src/test/java/com/rokid/context/orchestration/LegacyConfigBridgeTest.kt`:
+```kotlin
+package com.rokid.context.orchestration
+
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.ai.AiGraph
+import com.rokid.context.ai.EndpointKind
+import com.rokid.context.ai.EndpointSeeder
+import com.rokid.context.ai.InMemoryKeyVault
+import com.rokid.context.ai.InMemorySeedState
+import com.rokid.context.ai.ProviderBuilder
+import com.rokid.context.ai.Role
+import com.rokid.context.data.runtime.AppConfigStore
+import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.model.ModelProvider
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34])
+class LegacyConfigBridgeTest {
+    private val ctx = ApplicationProvider.getApplicationContext<Context>()
+    private val usedKeys = mutableListOf<String?>()
+    private lateinit var ai: AiGraph
+
+    @Before fun setUp() {
+        MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
+        ai = AiGraph(MemoryGraph.get(ctx), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { e, model, key ->
+            object : ModelProvider { override suspend fun generate(prompt: String): String { usedKeys += key; return "${e.id}/$model" } }
+        })
+        AiGraph.resetForTests(ai)
+    }
+
+    @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
+
+    @Test fun savingTheConfigScreenChangesWhatWorkersUse() = runBlocking {
+        AppConfigStore.setProvider(ctx, "openai", "https://az.example", "key-1", "gpt-5.4", "")
+        assertEquals("azure/gpt-5.4", ai.router.generate(Role.ANSWER, "q"))
+        AppConfigStore.setProvider(ctx, "openai", "https://az.example", "key-2", "gpt-6", "")
+        assertEquals("azure/gpt-6", ai.router.generate(Role.ANSWER, "q"))
+        assertEquals("key-2", usedKeys.last())
+    }
+
+    @Test fun switchingProviderRebinds() = runBlocking {
+        AppConfigStore.setProvider(ctx, "openai", "https://az.example", "k", "gpt-5.4", "")
+        AppConfigStore.setProvider(ctx, "ollama", "192.168.1.5:11434", "", "llama3.1:8b", "")
+        assertEquals(EndpointSeeder.OLLAMA_ID, ai.bindings.get(Role.ANSWER)!!.endpointId)
+        assertEquals(EndpointKind.OLLAMA, ai.endpoints.byId(EndpointSeeder.OLLAMA_ID)!!.kind)
+        assertEquals("http://192.168.1.5:11434", ai.endpoints.byId(EndpointSeeder.OLLAMA_ID)!!.baseUrl)
+    }
+
+    @Test fun localModeToggleAddsAndRemovesFallback() = runBlocking {
+        AppConfigStore.setProvider(ctx, "openai", "https://az.example", "k", "gpt-5.4", "/m.gguf")
+        AppConfigStore.setLocalModeEnabled(ctx, true)
+        assertEquals(EndpointSeeder.LOCAL_ID, ai.bindings.get(Role.ANSWER)!!.fallbackEndpointId)
+        AppConfigStore.setLocalModeEnabled(ctx, false)
+        assertEquals(null, ai.bindings.get(Role.ANSWER)!!.fallbackEndpointId)
+    }
+
+    @Test fun halfTypedAddressLeavesLastGoodBindingInPlace() = runBlocking {
+        AppConfigStore.setProvider(ctx, "openai", "https://az.example", "k", "gpt-5.4", "")
+        AppConfigStore.setProvider(ctx, "openai", "https://az exa", "k", "gpt-5.4", "") // user mid-typing a space
+        assertEquals("https://az.example", ai.endpoints.byId(EndpointSeeder.AZURE_ID)!!.baseUrl)
+        assertTrue(LegacyConfigBridge.sync(ctx).isFailure)
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `./gradlew :services:orchestration:testDebugUnitTest --tests "*LegacyConfigBridgeTest"`
+Expected: FAIL — `LegacyConfigBridge` unresolved; router reports "No model is set".
+
+- [ ] **Step 3: `LegacyConfigBridge.kt`**
+
+```kotlin
+package com.rokid.context.orchestration
+
+import android.content.Context
+import android.util.Log
+import com.rokid.context.ai.AiGraph
+import com.rokid.context.data.runtime.AppConfigStore
+import com.rokid.context.data.runtime.toProviderSettings
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
+
+/**
+ * Transitional (Phase 2–4): the legacy Config screen writes AppConfig; this mirrors provider edits into the endpoint
+ * registry so the Test button and the workers use the same settings. Invalid half-typed input fails and leaves the
+ * last good endpoint/bindings in place. Deleted when Phase 5 ships the new AI settings screens.
+ */
+object LegacyConfigBridge {
+    fun sync(context: Context): Result<Unit> = runBlocking(Dispatchers.IO) {
+        AiGraph.get(context).seeder.syncFromLegacy(AppConfigStore.get(context).toProviderSettings())
+            .onFailure { Log.i("LegacyConfigBridge", "not synced: ${it.message}") }
+    }
+}
+```
+
+- [ ] **Step 4: Hook the two provider writes**
+
+In `AppConfigStore.kt`:
+- at the end of `setProvider(...)` (after the secrets `.apply()`), add `com.rokid.context.orchestration.LegacyConfigBridge.sync(context)`;
+- change `setLocalModeEnabled` to:
+```kotlin
+    fun setLocalModeEnabled(context: Context, enabled: Boolean) {
+        edit(context) { putBoolean(K_LOCAL_MODE_ENABLED, enabled) }
+        com.rokid.context.orchestration.LegacyConfigBridge.sync(context)
+    }
+```
+(`SharedPreferences.apply()` updates the in-memory map immediately, so `AppConfigStore.get` in `sync` sees the new values.)
+
+- [ ] **Step 5: Run all tests and build**
+
+Run: `./gradlew test :phone:assembleDebug :glasses:assembleDebug -q`
+Expected: PASS.
+
+- [ ] **Step 6: Device check (needs the user)**
+
+Ask the user to open **Config**, change the model/deployment to a wrong name, tap **Test** (expect failure), trigger **Summarize Now** (expect the trace to show the same failure, not success with the old model), then restore the right name and repeat (both succeed).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add -A android-companion
+git commit -m "feat(ai): bridge legacy Config screen edits into the endpoint registry
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+```
+
+Phase 2 done when: all tests green, both APKs build, upgrade import verified on device, summarisation works through the router, Config edits reach the workers. Requirements covered: R-03, R-15 (buckets), R-40, R-41, R-42, R-48 (lexical), R-70, R-71, R-72 (queue classification).

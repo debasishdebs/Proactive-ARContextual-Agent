@@ -277,7 +277,7 @@ Roles: `VISION_EXTRACT`, `EXPLICIT_REMEMBER`, `SUMMARIZE`, `CRITIC`, `ANSWER`, `
 - Templates are checked too: required variables per role (e.g. ANSWER needs `{{question}}` and `{{retrieved_memories}}`) must be present.
 
 ### 4.6 Retrieval (`:services:memory`)
-- `LexicalRetriever`: Room FTS4 `memory_fts` (text + tags); BM25 computed in Kotlin from `matchinfo`.
+- `LexicalRetriever`: Room FTS4 `memory_fts` over a normalised `searchText` (NFKC, lowercase, punctuation/symbols/emoji → space); BM25 computed in Kotlin from `matchinfo`. Unsegmented scripts (Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar) are indexed and queried as overlapping character bigrams, so a word is found anywhere in a sentence; a bigram may also match across a word boundary (accepted precision trade-off).
 - `SemanticRetriever`: embed query via EMBED binding; brute-force cosine over `memory_vector` BLOBs behind `VectorIndex` interface (swappable later).
 - `HybridRetriever`: both, merged by `FusionStrategy`:
   - `WeightedScore` — min-max normalised, semantic/lexical weight slider (default 60/40).

@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - All Global Constraints in the master plan apply.
+- Task 0 runs first, before Phase 0 and before any other task here: every later `git mv` and the spike worktree depend on the baseline being committed.
 - Behaviour-neutral phase: the 45 existing unit tests must pass after every task; `:phone:assembleDebug` and `:glasses:assembleDebug` must succeed after every task.
 - Run Gradle from `android-companion/` as `ANDROID_HOME=/Users/<user>/Desktop/rokid/android-sdk ./gradlew …` (abbreviated `./gradlew` below).
 - Robolectric tests use `@Config(sdk = [34])`.
@@ -27,7 +28,77 @@
 
 ---
 
+### Task 0: Commit a reproducible baseline
+
+**Requirements:** R-03 (precondition: the existing behaviour must be versioned before it can be preserved)
+
+**Files:**
+- Commit (currently untracked or modified): `android-companion/**` source and build files (incl. the whole untracked `android-companion/glasses-app/`), `README.md`, `CONTEXT.md`, `DECISIONS.md`, `docs/ARCHITECTURE.md`, `docs/PHONE_PROCESSING_POLICY.md`, the two modified 2026-05-28 docs.
+- Never commit: `.env`, root-level `*.png`, `window-*.xml`, `.tmp_*`, `latest_rokid_frame.jpg`, any `build/` or `.gradle/` directory, `local.properties`.
+
+**Interfaces:**
+- Produces: commit `BASELINE` (record its SHA in the commit message of Task 1 and in Phase 0's results doc).
+
+- [ ] **Step 1: Ignore build output and local files**
+
+Append to the repo-root `.gitignore`:
+```gitignore
+# Android / Gradle
+**/build/
+**/.gradle/
+local.properties
+*.apk
+# Local debug artefacts
+/*.png
+/window-*.xml
+/.tmp_*
+/latest_rokid_frame.jpg
+```
+
+- [ ] **Step 2: Stage exactly the baseline source and show it to the user**
+
+```bash
+cd /Users/<user>/Desktop/rokid/proactive-context-agent
+git add .gitignore README.md CONTEXT.md DECISIONS.md docs/ARCHITECTURE.md docs/PHONE_PROCESSING_POLICY.md \
+        docs/superpowers/plans/2026-05-28-proactive-context-agent-mvp-implementation-plan.md \
+        docs/superpowers/specs/2026-05-28-android-orchestration-mvp-design.md android-companion
+git status --short
+git diff --cached --stat | tail -5
+```
+Ask the user to confirm the staged list (they own this uncommitted work). Expected: no `.env`, no `*.png`, no `build/` paths.
+
+- [ ] **Step 3: Secret scan of the staged diff**
+
+```bash
+git diff --cached | grep -inE "(api[_-]?key|secret|password|token)\s*[:=]\s*['\"][^'\"]{8,}" || echo "no literal secrets"
+```
+Expected: `no literal secrets`. If anything matches, unstage that file and ask the user.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git commit -m "chore: commit baseline source (phone app, glasses relay, docs) before v1 restructure
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git rev-parse HEAD   # = BASELINE
+```
+
+- [ ] **Step 5: Prove the baseline builds from a clean tree**
+
+```bash
+git worktree add /Users/<user>/Desktop/rokid/pca-baseline-check BASELINE
+cd /Users/<user>/Desktop/rokid/pca-baseline-check/android-companion
+ANDROID_HOME=/Users/<user>/Desktop/rokid/android-sdk ./gradlew :app:testDebugUnitTest :app:assembleDebug :glasses-app:assembleDebug -q
+grep -h "<testsuite" app/build/test-results/testDebugUnitTest/*.xml | grep -o 'tests="[0-9]*"' | awk -F'"' '{s+=$2} END {print s}'
+cd /Users/<user>/Desktop/rokid/proactive-context-agent && git worktree remove --force /Users/<user>/Desktop/rokid/pca-baseline-check
+```
+Expected: BUILD SUCCESSFUL, `45`. (No `.env` in the clean tree, so BuildConfig falls back to the Gradle defaults — that is the reproducible configuration.) If it fails, a needed file was left out of Step 2: add it, amend the commit, repeat.
+
+---
+
 ### Task 1: Toolchain upgrade to Live Fit versions
+
+**Requirements:** R-01, R-03
 
 **Files:**
 - Modify: `android-companion/gradle/wrapper/gradle-wrapper.properties`, `android-companion/gradle/wrapper/gradle-wrapper.jar`
@@ -39,7 +110,7 @@
 
 - [ ] **Step 1: Record the baseline**
 
-Run: `cd android-companion && ./gradlew :app:testDebugUnitTest :app:assembleDebug :glasses-app:assembleDebug -q`
+Run: `cd android-companion && ./gradlew :app:testDebugUnitTest :app:assembleDebug :glasses-app:assembleDebug -q` (on `BASELINE` from Task 0)
 Expected: BUILD SUCCESSFUL; 45 tests, 0 failures (count with `grep -h "<testsuite" app/build/test-results/testDebugUnitTest/*.xml`).
 
 - [ ] **Step 2: Gradle 8.13 wrapper**
@@ -137,6 +208,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 2: Rename `:app` → `:phone`, `:glasses-app` → `:glasses`
 
+**Requirements:** R-01, R-03
+
 **Files:**
 - Move: `android-companion/app/` → `android-companion/phone/`; `android-companion/glasses-app/` → `android-companion/glasses/`
 - Modify: `android-companion/settings.gradle.kts`, `android-companion/glasses/build.gradle.kts`, `README.md`
@@ -189,6 +262,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 3: `:core:model` — shared CXR protocol
+
+**Requirements:** R-05 (channels, version, mismatch decoding), R-06 (`StateFrame` type), R-34 (gesture defaults), R-65 (`PauseRecord`, `QuietHours` types)
 
 **Files:**
 - Create: `android-companion/core/model/build.gradle.kts`
@@ -545,6 +620,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 4: `:core:hud` — HUD design primitives + touchpad gestures
 
+**Requirements:** R-02 (ported Swipe/DoubleTap), R-32 (rendering primitives), R-34 (gesture classifiers)
+
 **Files:**
 - Create: `android-companion/core/hud/build.gradle.kts`, `android-companion/core/hud/src/main/AndroidManifest.xml`
 - Create: `android-companion/core/hud/src/main/kotlin/com/rokid/context/core/hud/Hud.kt`
@@ -802,6 +879,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 5: `:core:ui` — phone design system
+
+**Requirements:** R-02 (ported theme/components), R-12 (tokens, type, shapes, base components)
 
 **Files:**
 - Create: `android-companion/core/ui/build.gradle.kts`, `android-companion/core/ui/src/main/AndroidManifest.xml`
@@ -1290,6 +1369,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 6: `:services:ai` — move providers + prompts; `EnvDefaults`, `ProviderSettings`, `ContextApp`
 
+**Requirements:** R-01, R-03
+
 **Files:**
 - Create: `android-companion/services/ai/build.gradle.kts`, `.../services/ai/src/main/AndroidManifest.xml`
 - Move: `phone/src/main/java/com/rokid/context/{model,prompt}` → `services/ai/src/main/java/com/rokid/context/{model,prompt}`; `phone/src/test/java/com/rokid/context/{model,prompt}` → `services/ai/src/test/java/com/rokid/context/{model,prompt}`
@@ -1516,6 +1597,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 7: `:services:memory` — move memory store + retrieval
 
+**Requirements:** R-01, R-03
+
 **Files:**
 - Create: `android-companion/services/memory/build.gradle.kts`, `.../src/main/AndroidManifest.xml`
 - Move: `phone/src/main/java/com/rokid/context/data/runtime/MemoryRecordStore.kt` → `services/memory/src/main/java/com/rokid/context/data/runtime/MemoryRecordStore.kt`; `phone/src/main/java/com/rokid/context/retrieval/` → `services/memory/src/main/java/com/rokid/context/retrieval/`; `phone/src/test/java/com/rokid/context/retrieval/` → `services/memory/src/test/java/com/rokid/context/retrieval/`
@@ -1623,6 +1706,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ---
 
 ### Task 8: `:services:orchestration` — move domain, workers, data, telemetry, security
+
+**Requirements:** R-01, R-03
 
 **Files:**
 - Create: `android-companion/services/orchestration/build.gradle.kts`, `.../src/main/AndroidManifest.xml`
