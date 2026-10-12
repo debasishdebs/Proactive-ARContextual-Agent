@@ -11,7 +11,10 @@ import com.rokid.context.model.provider.LlamaCppNativeProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -21,16 +24,22 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /** spec §4.1 embedding support per kind: Azure/OpenAI-compatible `/embeddings`, Ollama `/api/embed`, llama.cpp native. */
-class EmbeddingClient(private val http: OkHttpClient = Http.modelClient(60)) {
+class EmbeddingClient(
+    private val http: OkHttpClient = Http.modelClient(60),
+    private val nativeTimeoutMs: Long = 60_000,
+    private val native: (String, List<String>) -> List<FloatArray> = LlamaCppNativeProvider::embed,
+) {
+    /** Owns native work so a timed-out, uninterruptible call keeps running here without blocking or overlapping anyone. */
+    private val nativeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val nativeLock = Mutex()
+
     suspend fun embed(e: Endpoint, model: String, key: String?, inputs: List<String>, dimensions: Int? = null): List<FloatArray> {
         if (inputs.isEmpty()) return emptyList()
         if (e.kind == EndpointKind.LLAMACPP_LOCAL) return validated(nativeEmbed(e.baseUrl, inputs), inputs.size)
@@ -84,10 +93,12 @@ class EmbeddingClient(private val http: OkHttpClient = Http.modelClient(60)) {
         return validated(vectors, inputs.size)
     }
 
-    /** The native call can't be interrupted, but the caller stops waiting after the same 60 s budget as HTTP. */
-    private suspend fun nativeEmbed(path: String, inputs: List<String>): List<FloatArray> = try {
-        withTimeout(NATIVE_TIMEOUT_MS) { coroutineScope { async(Dispatchers.Default) { LlamaCppNativeProvider.embed(path, inputs) }.await() } }
-    } catch (_: TimeoutCancellationException) { throw java.net.SocketTimeoutException("Local embedding timed out") }
+    /** The caller stops waiting after [nativeTimeoutMs]; native calls run one at a time, even after a caller gave up. */
+    private suspend fun nativeEmbed(path: String, inputs: List<String>): List<FloatArray> {
+        val work = nativeScope.async { nativeLock.withLock { native(path, inputs) } }
+        return try { withTimeout(nativeTimeoutMs) { work.await() } }
+        catch (_: TimeoutCancellationException) { throw java.net.SocketTimeoutException("Local embedding timed out") }
+    }
 
     /** A reply can never yield bad vectors: right count, one non-zero dimension, every value finite. */
     private fun validated(vectors: List<FloatArray>, expected: Int): List<FloatArray> {
@@ -106,10 +117,11 @@ class EmbeddingClient(private val http: OkHttpClient = Http.modelClient(60)) {
         val text = withContext(Dispatchers.IO) {
             http.newCall(request).execute().use { r ->
                 val t = r.body?.string().orEmpty()
+                if (r.code == 404) return@use null // an older server without /api/tags: no revision to report
                 if (!r.isSuccessful) throw ProviderHttpException(r.code, "Embedding", t)
                 t
             }
-        }
+        } ?: return null
         val models = runCatching { Json.parseToJsonElement(text).jsonObject["models"] as? JsonArray }.getOrNull()
             ?: throw ProviderResponseException("Model list wasn't understood")
         return models.map { it.jsonObject }.firstOrNull { (it["name"] as? JsonPrimitive)?.content in setOf(model, "$model:latest") }
@@ -117,6 +129,4 @@ class EmbeddingClient(private val http: OkHttpClient = Http.modelClient(60)) {
     }
 
     private fun strings(xs: List<String>) = JsonArray(xs.map { JsonPrimitive(it) })
-
-    private companion object { const val NATIVE_TIMEOUT_MS = 60_000L }
 }
