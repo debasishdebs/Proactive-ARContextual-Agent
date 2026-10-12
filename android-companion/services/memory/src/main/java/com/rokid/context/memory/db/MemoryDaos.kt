@@ -20,7 +20,8 @@ interface FrameDao {
 
 @Dao
 interface MemoryDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun insert(memory: MemoryEntity)
+    /** Upsert (update in place) so FTS content-sync UPDATE triggers fire; REPLACE would orphan the old FTS docid. */
+    @Upsert suspend fun insert(memory: MemoryEntity)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertIgnore(memory: MemoryEntity): Long
     @Query("SELECT * FROM memory ORDER BY createdAt DESC LIMIT :limit") suspend fun recent(limit: Int): List<MemoryEntity>
     @Query("SELECT * FROM memory ORDER BY createdAt ASC") suspend fun all(): List<MemoryEntity>

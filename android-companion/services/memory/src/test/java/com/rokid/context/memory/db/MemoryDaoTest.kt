@@ -61,6 +61,15 @@ class MemoryDaoTest {
         assertTrue(db.memoryDao().search("\"eggs*\"", 10).isEmpty())
     }
 
+    @Test fun replacedThenDeletedMemoryLeavesNoStaleFtsEntry() = runTest {
+        db.memoryDao().insert(mem("m1", "milk", 1))
+        db.memoryDao().insert(mem("m1", "eggs", 1))
+        db.memoryDao().deleteByIds(listOf("m1"))
+        db.memoryDao().insert(mem("m2", "bread", 2))
+        assertTrue(db.memoryDao().search("\"milk*\"", 10).isEmpty())
+        assertEquals(listOf("m2"), db.memoryDao().search("\"bread*\"", 10).map { it.id })
+    }
+
     @Test fun recentAndBetweenAreNewestFirst() = runTest {
         listOf(mem("a", "x", 10), mem("b", "y", 30), mem("c", "z", 20)).forEach { db.memoryDao().insert(it) }
         assertEquals(listOf("b", "c", "a"), db.memoryDao().recent(10).map { it.id })
