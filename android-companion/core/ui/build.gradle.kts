@@ -29,3 +29,6 @@ dependencies {
     testImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
+
+// Compose UI tests need ui-test-manifest's host activity, which is debug-only; release unit tests would have none.
+androidComponents { beforeVariants(selector().withBuildType("release")) { it.enableUnitTest = false } }
