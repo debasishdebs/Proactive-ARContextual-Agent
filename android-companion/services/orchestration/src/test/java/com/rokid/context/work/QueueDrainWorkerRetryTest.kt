@@ -14,6 +14,7 @@ import com.rokid.context.ai.ProviderBuilder
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
 import com.rokid.context.core.model.UserFacingErrors
+import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.domain.queue.QueuePriority
@@ -58,6 +59,20 @@ class QueueDrainWorkerRetryTest {
 
     private fun runWorker(): Throwable? = runCatching { runBlocking { TestListenableWorkerBuilder<QueueDrainWorker>(ctx).build().doWork() } }.exceptionOrNull()
     private fun state() = QueueRuntimeStore.recent(ctx, 10).single().state
+
+    /** Final review I2: a paused pipeline sends nothing to the AI provider and leaves the queue intact; resuming drains it. */
+    @Test fun pausedPipelineCallsNoProviderAndTheResumedDrainProcessesTheBacklog() {
+        var calls = 0
+        bind(); behaviour = { calls++; """{"memory":"milk","confidence":0.9}""" }
+        AppConfigStore.setPipelineEnabled(ctx, false)
+        assertEquals(null, runWorker())
+        assertEquals(0, calls)
+        assertEquals(QueueRuntimeStore.STATE_ENQUEUED, state())
+        AppConfigStore.setPipelineEnabled(ctx, true)
+        assertEquals(null, runWorker())
+        assertEquals(1, calls)
+        assertEquals(QueueRuntimeStore.STATE_SUCCEEDED, state())
+    }
 
     @Test fun startupBeforeSeedingDefersTheJob() {
         runWorker()

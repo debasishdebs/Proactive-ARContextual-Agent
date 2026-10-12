@@ -45,6 +45,11 @@ class QueueDrainWorker(
     private val criticWorker = CriticWorker()
 
     override suspend fun doWork(): Result {
+        // Paused (phone ⏸): nothing goes to the AI provider. Jobs stay queued; resuming drains them (resumePipeline).
+        if (!AppConfigStore.get(applicationContext).pipelineEnabled) {
+            Log.i(TAG, "pipeline paused: queue left for resume")
+            return Result.success()
+        }
         var processed = 0
         repeat(MAX_JOBS_PER_RUN) {
             val job = QueueRuntimeStore.claimNextReady(applicationContext) ?: return@repeat

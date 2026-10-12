@@ -150,8 +150,12 @@ class FrameIngestor(
     companion object { const val TAG = "ContextHub" }
 }
 
-/** Production `onStored`: queue the inbox ingest exactly as the RFCOMM bridge did. */
+/**
+ * Production `onStored`: queue the inbox ingest exactly as the RFCOMM bridge did. While the phone pipeline is paused the
+ * frame only waits in `rokid_inbox` (it is stored and acked); resuming queues the ingest (`resumePipeline`).
+ */
 fun enqueueInboxIngest(context: Context) {
+    if (!AppConfigStore.get(context).pipelineEnabled) return
     QueueRuntimeStore.enqueue(
         context = context,
         queue = QueuePriority.FRAME_INGEST,
