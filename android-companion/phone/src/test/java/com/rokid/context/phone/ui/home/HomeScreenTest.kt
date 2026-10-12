@@ -3,6 +3,8 @@ package com.rokid.context.phone.ui.home
 import android.app.Application
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -47,11 +49,21 @@ class HomeScreenTest {
     }
 
     @Test fun pausedHeaderOffersResumeAndShowsBanner() {
-        show(HomeUiState(status = StatusUi("Paused", false, true, null, BannerResolver.resolve(BannerInputs(link = LinkState.OFFLINE)))))
+        show(HomeUiState(status = StatusUi("Paused", false, true, null, BannerResolver.resolve(BannerInputs(link = LinkState.OFFLINE)), pipelineEnabled = false)))
         compose.onNodeWithText("❚❚ Paused").assertIsDisplayed()
         compose.onNodeWithContentDescription("Resume capture").assertIsDisplayed()
         compose.onNodeWithText("Reconnect").performClick()
         assertEquals(BannerAction.RECONNECT, banner)
+    }
+
+    /** Final review I1: a glasses pause (pipeline on) offers no resume that would switch the pipeline off. */
+    @Test fun glassesPauseShowsANonActionablePausedOnGlassesState() {
+        show(HomeUiState(status = StatusUi("Paused on glasses", false, true, null, null, pipelineEnabled = true, pausedOnGlasses = true)))
+        compose.onNodeWithText("❚❚ Paused on glasses").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Paused on glasses").assertIsNotEnabled()
+        compose.onAllNodesWithContentDescription("Resume capture").assertCountEquals(0)
+        compose.onAllNodesWithContentDescription("Pause capture").assertCountEquals(0)
+        assertEquals(0, pauses)
     }
 
     @Test fun suggestionChipsAskImmediatelyAndMicIsDisabled() {

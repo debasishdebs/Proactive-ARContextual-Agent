@@ -4,7 +4,10 @@ import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.PauseOrigin
+import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.orchestration.AskOutcome
 import com.rokid.context.phone.ui.FakePipelineControl
@@ -76,6 +79,15 @@ class HomeViewModelTest {
         val s = withTimeout(5_000) { vm.state.first { it.askError != null } }
         assertEquals("AI unavailable — check Settings › Model endpoints", s.askError)
         assertEquals("milk", s.question)
+    }
+
+    /** Final review I1: hub Paused frame + pipeline on → "Paused on glasses"; the pipeline is left on. */
+    @Test fun hubPauseWithThePipelineOnIsPausedOnGlasses() = runBlocking {
+        glasses.emit(FakeGlassesStatusSource.connected(Fixtures.stateFrame(capture = CaptureState.Paused(listOf(PauseRecord("g", PauseOrigin.GLASSES, 1))))))
+        val s = withTimeout(5_000) { vm.state.first { it.status.pausedOnGlasses } }.status
+        assertEquals("Paused on glasses", s.captureText)
+        assertTrue(s.pipelineEnabled)
+        assertTrue(pipeline.enabled.value)
     }
 
     @Test fun pauseAndBannerActionsReachTheirTargets() = runBlocking {

@@ -34,8 +34,20 @@ class CaptureLineTest {
         assertEquals("Paused", CaptureLine.text(running, pipelineEnabled = false, nowMs = NOW))
         assertFalse(CaptureLine.live(running, false))
         val paused = FakeGlassesStatusSource.connected(Fixtures.stateFrame(capture = CaptureState.Paused(listOf(PauseRecord("p", PauseOrigin.GLASSES, 1)))))
-        assertEquals("Paused", CaptureLine.text(paused, true, NOW))
+        assertEquals("Paused on glasses", CaptureLine.text(paused, true, NOW))
         assertTrue(CaptureLine.paused(paused, true))
+        assertEquals("phone switch off wins", "Paused", CaptureLine.text(paused, false, NOW))
+    }
+
+    /** Final review I1: a glasses pause with the pipeline on is shown as such; the ⏸/▶ control follows only the pipeline. */
+    @Test fun aGlassesPauseWithThePipelineOnIsNotAPhonePause() {
+        val paused = FakeGlassesStatusSource.connected(Fixtures.stateFrame(capture = CaptureState.Paused(listOf(PauseRecord("p", PauseOrigin.GLASSES, 1)))))
+        val ui = StatusUi.build(paused, pipelineEnabled = true, storagePct = null, nowMs = NOW)
+        assertTrue(ui.pausedOnGlasses)
+        assertTrue(ui.pipelineEnabled)
+        val off = StatusUi.build(paused, pipelineEnabled = false, storagePct = null, nowMs = NOW)
+        assertFalse(off.pausedOnGlasses)
+        assertFalse(off.pipelineEnabled)
     }
 
     @Test fun offlineConnectingAndStaleFrames() {
