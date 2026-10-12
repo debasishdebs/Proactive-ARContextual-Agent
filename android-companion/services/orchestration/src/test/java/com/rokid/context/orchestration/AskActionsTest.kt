@@ -112,6 +112,15 @@ class AskActionsTest {
         assertEquals("Milk carton nearly empty", QueuePayloads.string(payload, "source_context"))
     }
 
+    /** Final review I2: while the pipeline is paused 👎 still records the review job but does not start a drain. */
+    @Test fun thumbsDownWhilePausedQueuesTheReviewWithoutADrain() = runBlocking {
+        AppConfigStore.setPipelineEnabled(ctx, false)
+        seedAsk()
+        assertTrue(AskActions.rate(ctx, "a1", up = false))
+        assertEquals(1, reviewJobs().size)
+        assertTrue(androidx.work.WorkManager.getInstance(ctx).getWorkInfosForUniqueWork("queue-drain-now").get().isEmpty())
+    }
+
     @Test fun thumbsUpOnlyStoresTheRating() = runBlocking {
         seedAsk()
         assertTrue(AskActions.rate(ctx, "a1", up = true))

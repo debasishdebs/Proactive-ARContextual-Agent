@@ -231,11 +231,12 @@ class OrchestrationScheduler(
         workManager.cancelAllWorkByTag(TAG_QUEUE_DRAIN)
     }
 
+    /** Frames that waited in the inbox while paused are ingested by the FRAME_INGEST job, which also kicks the drain. */
     fun resumePipeline() {
         scheduleFrameIngest()
         scheduleQueueDrain()
         scheduleCritic()
-        enqueueQueueDrainNow()
+        enqueueFrameIngestQueue(source = "resume")
     }
 
     suspend fun runtimeSnapshot(focusSummarizerId: UUID?): RuntimeSnapshot = withContext(Dispatchers.IO) {

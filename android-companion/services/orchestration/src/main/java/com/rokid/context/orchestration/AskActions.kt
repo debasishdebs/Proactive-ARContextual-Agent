@@ -141,7 +141,8 @@ object AskActions {
                     personaSnapshot = AppConfigStore.get(context).persona,
                     ttlHours = 24,
                 )
-                OrchestrationScheduler(context).enqueueQueueDrainNow()
+                // Paused: the review waits in the queue; resuming drains it.
+                if (AppConfigStore.get(context).pipelineEnabled) OrchestrationScheduler(context).enqueueQueueDrainNow()
             }
         }
         return true
