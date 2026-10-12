@@ -163,6 +163,82 @@ class QueueDrainWorkerRetryTest {
         assertEquals(QueueRuntimeStore.STATE_SUCCEEDED, QueueRuntimeStore.recent(ctx, 10).single { it.id == old.id }.state)
     }
 
+    private val hour = 60L * 60L * 1000L
+    private val factsReply = """{"facts":[{"text":"milk","type":"note","confidence":0.9,"tags":[]}]}"""
+    private fun setAsideTheSetUpJob() = QueueRuntimeStore.markSucceeded(ctx, QueueRuntimeStore.recent(ctx, 10).single().id)
+    private fun row(id: String) = QueueRuntimeStore.recent(ctx, 10).single { it.id == id }
+    private fun explicitJob(raw: String = "remember milk", at: Long = System.currentTimeMillis()) =
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.EXPLICIT_WRITE, QueuePayloads.explicitWrite(raw, "en", manual = true), personaSnapshot = "default", ttlHours = 24, enqueueAtEpochMs = at)
+    /** Runs a finished job again, as after a cancellation that landed between its writes and the end of the job. */
+    private fun rerun(id: String) = QueueRuntimeStore.markPostponed(ctx, id, "cancelled; will retry", delayMs = 0, nowEpochMs = System.currentTimeMillis() - 60_000)
+
+    /** Fix I1: the user asked to remember something; an empty reply still stores their words as one note. */
+    @Test fun anEmptyExplicitReplyStoresTheUsersWordsAsOneNote() {
+        var calls = 0
+        bind(); behaviour = { calls++; """{"facts":[]}""" }
+        setAsideTheSetUpJob()
+        val job = explicitJob(raw = "remember  oat\r\nmilk\u2028please ")
+        runWorker()
+        assertEquals(1, calls) // no retry: a retry can come back empty too
+        assertEquals(QueueRuntimeStore.STATE_SUCCEEDED, row(job.id).state)
+        val m = runBlocking { MemoryGraph.get(ctx).memories.recent(10) }.single()
+        assertEquals("remember oat milk please", m.text)
+        assertEquals("note", m.type); assertEquals(MemoryTier.MEDIUM, m.tier); assertEquals(ReviewState.OK, m.reviewState)
+        assertTrue(m.id.startsWith("rokid_mem_"))
+        assertEquals("Explicit write saved (1 fact(s))", runBlocking { PipelineRecords.recentTraces(ctx, 5) }.first { it.summaryId == job.id }.note)
+        assertTrue(androidx.work.WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(com.rokid.context.orchestration.EmbeddingWorker.NAME).get().isNotEmpty())
+    }
+
+    /** Fix M1: a pause from before the stamp existed still gives every live job a full TTL from resume. */
+    @Test fun aResumeWithoutAPauseStampStillGivesQueuedJobsAFullTtl() {
+        var calls = 0
+        bind(); behaviour = { calls++; factsReply }
+        setAsideTheSetUpJob()
+        val old = explicitJob(at = System.currentTimeMillis() - 25 * hour)
+        ctx.getSharedPreferences("app_config", Context.MODE_PRIVATE).edit().putBoolean("pipeline_enabled", false).commit() // pre-stamp pause
+        AppConfigStore.setPipelineEnabled(ctx, true)
+        assertEquals(null, runWorker())
+        assertEquals(1, calls)
+        assertEquals(QueueRuntimeStore.STATE_SUCCEEDED, row(old.id).state)
+    }
+
+    /** Fix M2: a job already past its TTL when the pause starts expires then and is not revived by the resume credit. */
+    @Test fun aJobPastItsTtlAtPauseExpiresAndIsNotRevived() {
+        var calls = 0
+        bind(); behaviour = { calls++; factsReply }
+        setAsideTheSetUpJob()
+        val now = System.currentTimeMillis()
+        val overdue = explicitJob(at = now - 30 * hour) // TTL ran out 6 h ago; nothing normalized it yet
+        AppConfigStore.setPipelineEnabled(ctx, false, nowEpochMs = now - hour)
+        assertEquals(QueueRuntimeStore.STATE_EXPIRED, row(overdue.id).state)
+        AppConfigStore.setPipelineEnabled(ctx, true)
+        runWorker()
+        assertEquals(0, calls)
+        assertEquals(QueueRuntimeStore.STATE_EXPIRED, row(overdue.id).state)
+    }
+
+    /** Fix M3: one pause is credited once; a second resume (or a resume after a crash mid-resume) adds nothing. */
+    @Test fun aPauseIsCreditedOnce() {
+        setAsideTheSetUpJob()
+        val now = System.currentTimeMillis()
+        val job = explicitJob(at = now - 2 * hour)
+        AppConfigStore.setPipelineEnabled(ctx, false, nowEpochMs = now - hour)
+        AppConfigStore.setPipelineEnabled(ctx, true, nowEpochMs = now)
+        AppConfigStore.setPipelineEnabled(ctx, true, nowEpochMs = now + hour)
+        assertEquals(job.ttlExpiryEpochMs + hour, row(job.id).ttlExpiryEpochMs)
+    }
+
+    /** Fix M5: a re-run replaces the job's earlier facts instead of leaving extra _i rows behind. */
+    @Test fun aReRunReplacesTheJobsEarlierFacts() {
+        bind(); behaviour = { """{"facts":[{"text":"Buy milk","type":"task","confidence":0.9,"tags":[]},{"text":"Oat milk","type":"note","confidence":0.7,"tags":[]}]}""" }
+        runWorker()
+        assertEquals(2, runBlocking { MemoryGraph.get(ctx).memories.recent(10) }.size)
+        behaviour = { """{"facts":[{"text":"Buy oat milk","type":"task","confidence":0.9,"tags":[]}]}""" }
+        rerun(QueueRuntimeStore.recent(ctx, 10).single().id)
+        runWorker()
+        assertEquals(listOf("Buy oat milk"), runBlocking { MemoryGraph.get(ctx).memories.recent(10) }.map { it.text })
+    }
+
     /** Makes a deferred job due again (tests do not wait out the backoff). */
     private fun dueNow() {
         val r = QueueRuntimeStore.recent(ctx, 10).single()

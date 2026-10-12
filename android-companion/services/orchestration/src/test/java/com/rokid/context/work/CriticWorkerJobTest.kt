@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.testing.TestListenableWorkerBuilder
 import androidx.work.testing.WorkManagerTestInitHelper
+import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.memory.MemoryGraph
@@ -14,6 +15,7 @@ import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.orchestration.PipelineRecords
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -47,6 +49,29 @@ class CriticWorkerJobTest {
         val job = reprocessJobs().single()
         assertTrue(job.payload.contains("Maybe a cat"))
         assertTrue(!job.payload.contains("A red mug"))
+    }
+
+    /** Fix M4: no second reprocess while one for the same facts is still pending (the scan runs every 3 h). */
+    @Test fun periodicScanDoesNotQueueASecondReprocessWhileOneIsPending() {
+        fact("rokid_mem_a_0", "Maybe a cat", ReviewState.NEEDS_REVIEW)
+        scan()
+        scan()
+        assertEquals(1, reprocessJobs().size)
+    }
+
+    @Test fun periodicScanSkipsFactsTheDrainAlreadyQueuedForReprocess() {
+        fact("rokid_mem_a_0", "Maybe a cat", ReviewState.NEEDS_REVIEW)
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess("Critic low confidence=0.30", "Maybe a cat\nid=f1 · ts=1 · source=rokid_glasses · p"), personaSnapshot = "p")
+        scan()
+        assertEquals(1, reprocessJobs().size)
+    }
+
+    @Test fun periodicScanQueuesAgainOnceThePendingReprocessFinished() {
+        fact("rokid_mem_a_0", "Maybe a cat", ReviewState.NEEDS_REVIEW)
+        scan()
+        QueueRuntimeStore.markSucceeded(ctx, reprocessJobs().single().id)
+        scan()
+        assertEquals(2, reprocessJobs().size)
     }
 
     @Test fun periodicScanQueuesNothingWhenNoFactAwaitsReview() {

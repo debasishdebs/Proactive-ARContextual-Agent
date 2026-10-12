@@ -158,6 +158,8 @@ class QueueDrainWorker(
                 images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true),
         )
         val facts = (result.output as ExtractOutput).facts.filter { it.text.isNotBlank() }
+        val factPrefix = factIdPrefix(job)
+        PipelineRecords.dropFactsFrom(applicationContext, factPrefix, keep = facts.size)
         if (facts.isEmpty()) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "NO_FACTS", "No facts in ${frames.size} frame(s)")
             return
@@ -166,7 +168,7 @@ class QueueDrainWorker(
         val trusted = criticWorker.validate(job.id, confidence).status == SummaryStatus.TRUSTED || modelCriticPasses(facts, frameLines)
         val frameId = frames.maxBy { it.ts }.id
         facts.forEachIndexed { i, f ->
-            PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}_$i", frameId, f.text, f.type, f.tags, f.confidence,
+            PipelineRecords.appendFact(applicationContext, "$factPrefix$i", frameId, f.text, f.type, f.tags, f.confidence,
                 MemoryTier.SHORT, if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW)
         }
         EmbeddingWorker.enqueue(applicationContext)
@@ -218,10 +220,15 @@ class QueueDrainWorker(
         val payload = QueuePayloads.parse(job.payload)
         val rawInput = QueuePayloads.string(payload, "raw_input")
         require(rawInput.isNotBlank()) { "Empty explicit write input" }
-        val facts = (ai.runner.run(RoleCall(PromptKey.EXPLICIT_REMEMBER, PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(rawInput))))).output as ExtractOutput)
+        val extracted = (ai.runner.run(RoleCall(PromptKey.EXPLICIT_REMEMBER, PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(rawInput))))).output as ExtractOutput)
             .facts.filter { it.text.isNotBlank() }
+        // Fix I1: the user asked to remember this, so an empty reply keeps their own words as one note (no retry: it can
+        // come back empty again).
+        val facts = extracted.ifEmpty { listOf(Fact(rawInput, "note", RAW_NOTE_CONFIDENCE, emptyList())) }
+        val factPrefix = factIdPrefix(job)
+        PipelineRecords.dropFactsFrom(applicationContext, factPrefix, keep = facts.size)
         facts.forEachIndexed { i, f ->
-            PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}_$i", null, f.text, f.type, f.tags, f.confidence,
+            PipelineRecords.appendFact(applicationContext, "$factPrefix$i", null, f.text, f.type, f.tags, f.confidence,
                 if (f.confidence >= 0.80) MemoryTier.LONG else MemoryTier.MEDIUM, ReviewState.OK)
         }
         EmbeddingWorker.enqueue(applicationContext)
@@ -232,13 +239,16 @@ class QueueDrainWorker(
         val query = QueuePayloads.string(QueuePayloads.parse(job.payload), "query")
         require(query.isNotBlank()) { "Empty read context query" }
         val answered = try {
-            AnswerService.forApp(applicationContext).answerOrThrow(query, source = "queue")
+            AnswerService.forApp(applicationContext).answerOrThrow(query, source = "queue", askId = "ask_queue_${job.id}")
         } catch (e: NoMemoriesException) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "CONTEXT_TEMP_UNAVAILABLE", "No trusted memory found; queue status can be checked from Queue card")
             throw e
         }
         PipelineRecords.upsertTrace(applicationContext, job.id, "READ_CONTEXT_OK", "Answered (${answered.askId})")
     }
+
+    /** `rokid_mem_<job>_<i>`: the prefix must stay `rokid_` (legacy purges) and per job (re-runs replace, fix M5). */
+    private fun factIdPrefix(job: QueueJobRecord) = "rokid_mem_${job.id.takeLast(12)}_"
 
     private fun computeBackoffMs(attempt: Int): Long {
         val power = attempt.coerceAtMost(8)
@@ -285,5 +295,6 @@ class QueueDrainWorker(
         private const val TAG = "QueueDrainWorker"
         private const val MAX_JOBS_PER_RUN = 8
         private const val POLICY_DEFER_MS = 15 * 60 * 1000L
+        private const val RAW_NOTE_CONFIDENCE = 0.5
     }
 }

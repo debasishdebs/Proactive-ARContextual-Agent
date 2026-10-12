@@ -24,6 +24,8 @@ object AppConfigStore {
 
     private const val K_PIPELINE_ENABLED = "pipeline_enabled"
     private const val K_PAUSED_AT_MS = "paused_at_ms"
+    /** "Paused for an unknown time": large enough that each row's own-age cap in extendTtl decides. */
+    private const val UNKNOWN_PAUSE_MS = Long.MAX_VALUE / 4
     private const val K_LOCAL_MODE_ENABLED = "local_mode_enabled"
     private const val K_ENCRYPTION_ENABLED = "encryption_enabled"
     private const val K_MEMORY_WINDOW = "memory_window"
@@ -57,25 +59,32 @@ object AppConfigStore {
     }
 
     /**
-     * Carry C1: a pause freezes the queue-job TTL. Pausing records when it started (a repeated pause keeps the first time);
-     * resuming gives the queued jobs that paused time back ([QueueRuntimeStore.extendTtl]) before the flag flips, so no
-     * drain or snapshot sees a job expire for time it spent paused.
+     * Carry C1: a pause freezes the queue-job TTL.
+     * - Pausing (from running) first expires jobs already past their TTL, so the resume credit can't revive them (fix M2),
+     *   then records when the pause started. A repeated pause keeps the first time.
+     * - Resuming clears the stamp with a synchronous commit() *before* crediting the paused time back
+     *   ([QueueRuntimeStore.extendTtl]), so a crash mid-resume can lose this credit but never apply it twice (fix M3).
+     * - A pause without a stamp (from before the stamp existed, or a crash mid-resume) gives every live job a full TTL
+     *   from resume: extendTtl caps each row at its own age (fix M1).
      */
     fun setPipelineEnabled(context: Context, enabled: Boolean, nowEpochMs: Long = System.currentTimeMillis()) {
         val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        val wasEnabled = p.getBoolean(K_PIPELINE_ENABLED, true)
         if (!enabled) {
+            if (wasEnabled) QueueRuntimeStore.expireOverdue(context, nowEpochMs)
             edit(context) {
                 putBoolean(K_PIPELINE_ENABLED, false)
-                if (!p.contains(K_PAUSED_AT_MS)) putLong(K_PAUSED_AT_MS, nowEpochMs)
+                if (wasEnabled && !p.contains(K_PAUSED_AT_MS)) putLong(K_PAUSED_AT_MS, nowEpochMs)
             }
             return
         }
         val pausedAt = p.getLong(K_PAUSED_AT_MS, -1L)
-        if (pausedAt >= 0L) QueueRuntimeStore.extendTtl(context, byMs = (nowEpochMs - pausedAt).coerceAtLeast(0L), nowEpochMs = nowEpochMs)
-        edit(context) {
-            putBoolean(K_PIPELINE_ENABLED, true)
-            remove(K_PAUSED_AT_MS)
+        if (pausedAt >= 0L) p.edit().remove(K_PAUSED_AT_MS).commit()
+        when {
+            pausedAt >= 0L -> QueueRuntimeStore.extendTtl(context, byMs = (nowEpochMs - pausedAt).coerceAtLeast(0L), nowEpochMs = nowEpochMs)
+            !wasEnabled -> QueueRuntimeStore.extendTtl(context, byMs = UNKNOWN_PAUSE_MS, nowEpochMs = nowEpochMs)
         }
+        edit(context) { putBoolean(K_PIPELINE_ENABLED, true) }
     }
 
     /** Just the ⏸ flag ([get] also opens the secrets store). */

@@ -22,7 +22,12 @@ class CriticWorkerJob(
         val summaryId = inputData.getString(KEY_SUMMARY_ID)
         if (summaryId.isNullOrBlank()) {
             // Periodic run: scan facts awaiting review (preflight F10: by reviewState; facts keep their own type) and queue a reprocess.
-            val reviews = PipelineRecords.recentMemories(applicationContext, 80).filter { it.reviewState == ReviewState.NEEDS_REVIEW }
+            // Fix M4: skip facts a still-pending reprocess already covers (same text, or a frame line for the same frame).
+            val pending = QueueRuntimeStore.live(applicationContext, QueuePriority.PRIORITY_REPROCESS)
+                .map { QueuePayloads.string(QueuePayloads.parse(it.payload), "source_context") }
+            val reviews = PipelineRecords.recentMemories(applicationContext, 80)
+                .filter { it.reviewState == ReviewState.NEEDS_REVIEW }
+                .filter { m -> pending.none { c -> m.text in c || (m.frameId != null && "id=${m.frameId} ·" in c) } }
             if (reviews.isNotEmpty()) {
                 val payload = QueuePayloads.reprocess(
                     reason = "Periodic critic retry for review memories",

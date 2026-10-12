@@ -163,6 +163,22 @@ object QueueRuntimeStore {
         }
     }
 
+    /** Fix M2, called when a pause starts: rows already past their TTL expire now, before expiry is frozen. */
+    fun expireOverdue(context: Context, nowEpochMs: Long = System.currentTimeMillis()) {
+        synchronized(lock) {
+            val rows = readAll(context)
+            val normalized = rows.map { normalizeState(it, nowEpochMs, paused = false) }
+            if (normalized != rows) writeAll(context, normalized)
+        }
+    }
+
+    /** Rows of [queue] that are not finished yet (queued, running or deferred). */
+    fun live(context: Context, queue: QueuePriority): List<QueueJobRecord> {
+        synchronized(lock) {
+            return readAll(context).filter { it.queue == queue && !isTerminal(it) }
+        }
+    }
+
     fun snapshot(context: Context, nowEpochMs: Long = System.currentTimeMillis()): QueueRuntimeSnapshot {
         synchronized(lock) {
             val paused = !AppConfigStore.isPipelineEnabled(context)
