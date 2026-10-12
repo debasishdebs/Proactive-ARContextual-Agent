@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -14,9 +15,15 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -53,37 +60,45 @@ fun AppShell(
     val showNav = Routes.showsNav(route)
     val btMissing by bluetoothMissing.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    // Content inset = measured height of the bottom bar (hint + PillNav + system nav bar), so neither ever covers the
+    // end of a scrolled list; 84 dp until the first measure.
+    var bottomBarPx by remember { mutableIntStateOf(0) }
+    val bottomInset = if (bottomBarPx > 0) with(LocalDensity.current) { bottomBarPx.toDp() } else 84.dp
     Box(Modifier.fillMaxSize().background(PcColors.Surface)) {
-        NavHost(nav, startDestination = startRoute, modifier = if (showNav) Modifier.padding(bottom = 84.dp) else Modifier) {
+        NavHost(nav, startDestination = startRoute, modifier = if (showNav) Modifier.padding(bottom = bottomInset) else Modifier) {
             phoneDestinations(deps, nav)
         }
         if (showNav) {
-            if (btMissing) {
-                Banner(
-                    BannerTone.AMBER, BluetoothPermission.HINT,
-                    modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, bottom = 84.dp),
-                    actionLabel = "Allow",
-                    onAction = {
-                        runCatching {
-                            context.startActivity(
-                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
-                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            )
+            Column(
+                Modifier.align(Alignment.BottomCenter).onSizeChanged { bottomBarPx = it.height }.navigationBarsPadding().padding(bottom = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (btMissing) {
+                    Banner(
+                        BannerTone.AMBER, BluetoothPermission.HINT,
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp).testTag(BluetoothPermission.TAG),
+                        actionLabel = "Allow",
+                        onAction = {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            }
+                        },
+                    )
+                }
+                PillNav(
+                    items = TABS,
+                    selectedRoute = Routes.tabFor(route)?.route.orEmpty(),
+                    onSelect = { tab ->
+                        nav.navigate(tab) {
+                            popUpTo(Routes.HOME) { saveState = false }
+                            launchSingleTop = true
                         }
                     },
                 )
             }
-            PillNav(
-                items = TABS,
-                selectedRoute = Routes.tabFor(route)?.route.orEmpty(),
-                onSelect = { tab ->
-                    nav.navigate(tab) {
-                        popUpTo(Routes.HOME) { saveState = false }
-                        launchSingleTop = true
-                    }
-                },
-                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 12.dp),
-            )
         }
     }
 }

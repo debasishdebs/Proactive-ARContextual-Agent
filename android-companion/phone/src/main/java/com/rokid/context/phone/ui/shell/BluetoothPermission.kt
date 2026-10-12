@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
  */
 object BluetoothPermission {
     const val PERMISSION = Manifest.permission.BLUETOOTH_CONNECT
+    const val TAG = "bluetooth_hint"
     const val HINT = "Bluetooth permission is off, so your glasses can't connect."
 
     fun isMissing(sdkInt: Int, granted: Boolean): Boolean = sdkInt >= Build.VERSION_CODES.S && !granted
