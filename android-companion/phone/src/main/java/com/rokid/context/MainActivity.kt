@@ -195,6 +195,21 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
         ) == PackageManager.PERMISSION_GRANTED
     }
 
+    var registrySyncJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
+    // Prefs are written per keystroke; the registry is synced once, off the main thread (debounced for text edits).
+    fun syncRegistryLater(debounceMs: Long) {
+        registrySyncJob?.cancel()
+        registrySyncJob = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            if (debounceMs > 0) delay(debounceMs)
+            val r = com.rokid.context.orchestration.LegacyConfigBridge.sync(context)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                r.onSuccess { if (lastAction.startsWith(AI_NOT_APPLIED)) lastAction = "" }
+                    .onFailure { lastAction = "$AI_NOT_APPLIED: ${it.message}" }
+            }
+        }
+    }
+
     fun persistProviderState() {
         AppConfigStore.setProvider(
             context = context,
@@ -203,7 +218,8 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
             apiKey = apiKeyInput,
             deploymentOrModel = deploymentOrModelInput,
             nativeModelPath = nativePathInput,
-        ).onFailure { lastAction = "AI settings not applied: ${it.message}" }
+            syncRegistry = false,
+        )
     }
 
     fun ensureBridgeStarted(reason: String) {
@@ -571,8 +587,8 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
                     },
                     onToggleLocalMode = {
                         localModeEnabled = it
-                        AppConfigStore.setLocalModeEnabled(context, it)
-                            .onFailure { e -> lastAction = "AI settings not applied: ${e.message}" }
+                        AppConfigStore.setLocalModeEnabled(context, it, syncRegistry = false)
+                        syncRegistryLater(0)
                     },
                     onToggleEncryption = {
                         encryptionEnabled = it
@@ -589,23 +605,28 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
                     onSelectProvider = {
                         providerType = it
                         persistProviderState()
+                        syncRegistryLater(0)
                         testResult = "Not tested"
                     },
                     onUpdateEndpoint = {
                         endpointInput = it
                         persistProviderState()
+                        syncRegistryLater(600)
                     },
                     onUpdateApiKey = {
                         apiKeyInput = it
                         persistProviderState()
+                        syncRegistryLater(600)
                     },
                     onUpdateDeploymentOrModel = {
                         deploymentOrModelInput = it
                         persistProviderState()
+                        syncRegistryLater(600)
                     },
                     onUpdateNativePath = {
                         nativePathInput = it
                         persistProviderState()
+                        syncRegistryLater(600)
                     },
                     onSelectGlassesSilencyMode = { mode ->
                         glassesSilencyMode = mode
@@ -673,3 +694,5 @@ private fun formatTime(epochMs: Long): String {
     val sdf = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     return sdf.format(Date(epochMs))
 }
+
+private const val AI_NOT_APPLIED = "AI settings not applied"
