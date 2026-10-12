@@ -24,7 +24,10 @@ class InputRouterTest {
         val custom = defaults + (Gesture.TAP to GestureAction.PAUSE_RESUME) + (Gesture.DOUBLE_TAP to GestureAction.NONE)
         assertEquals(Routed.Mapped(GestureAction.PAUSE_RESUME), InputRouter.route(PadInput.Tapped, null, custom))
         assertEquals(Routed.Mapped(GestureAction.NONE), InputRouter.route(PadInput.DoubleTapped, null, custom))
-        assertEquals(Routed.Mapped(GestureAction.NONE), InputRouter.route(PadInput.Tapped, null, emptyMap()), "unmapped = none")
+        assertEquals(Routed.Mapped(GestureAction.ASK), InputRouter.route(PadInput.Tapped, null, emptyMap()), "unmapped = default")
+        val partial = mapOf(Gesture.TAP to GestureAction.NONE)
+        assertEquals(Routed.Mapped(GestureAction.NONE), InputRouter.route(PadInput.Tapped, null, partial), "explicit NONE = none")
+        assertEquals(Routed.Mapped(GestureAction.PAUSE_RESUME), InputRouter.route(PadInput.DoubleTapped, null, partial))
     }
 
     @Test fun confirmHasItsOwnRules() {

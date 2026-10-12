@@ -2,6 +2,7 @@ package com.rokid.context.glasses.hud
 
 import com.rokid.context.core.model.Gesture
 import com.rokid.context.core.model.GestureAction
+import com.rokid.context.core.model.GestureDefaults
 import com.rokid.context.core.model.Overlay
 
 /** What a pad input means right now. */
@@ -17,7 +18,7 @@ sealed interface Routed {
 
 /**
  * Spec §3.5: an overlay's own rules first (Confirm: swipe moves, tap answers, double-tap = No; Listening: double-tap
- * cancels; Answer: swipe or double-tap dismisses), otherwise `HudSettings.gestures` (unmapped = NONE).
+ * cancels; Answer: swipe or double-tap dismisses), otherwise `HudSettings.gestures` (unmapped = default).
  */
 object InputRouter {
     fun route(input: PadInput, overlay: Overlay?, gestures: Map<Gesture, GestureAction>): Routed = when (overlay) {
@@ -31,9 +32,12 @@ object InputRouter {
         else -> mapped(input, gestures)
     }
 
+    /** An unmapped gesture uses its default (a partial table must not disable navigation); only an explicit NONE is none. */
+    private fun action(g: Map<Gesture, GestureAction>, k: Gesture): GestureAction = g[k] ?: GestureDefaults.map[k] ?: GestureAction.NONE
+
     private fun mapped(input: PadInput, g: Map<Gesture, GestureAction>): Routed = when (input) {
-        is PadInput.Swiped -> Routed.Mapped(g[if (input.swipe.forward) Gesture.SWIPE_FORWARD else Gesture.SWIPE_BACK] ?: GestureAction.NONE, input.swipe.long)
-        PadInput.Tapped -> Routed.Mapped(g[Gesture.TAP] ?: GestureAction.NONE)
-        PadInput.DoubleTapped -> Routed.Mapped(g[Gesture.DOUBLE_TAP] ?: GestureAction.NONE)
+        is PadInput.Swiped -> Routed.Mapped(action(g, if (input.swipe.forward) Gesture.SWIPE_FORWARD else Gesture.SWIPE_BACK), input.swipe.long)
+        PadInput.Tapped -> Routed.Mapped(action(g, Gesture.TAP))
+        PadInput.DoubleTapped -> Routed.Mapped(action(g, Gesture.DOUBLE_TAP))
     }
 }

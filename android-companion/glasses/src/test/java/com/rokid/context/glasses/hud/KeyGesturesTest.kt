@@ -55,4 +55,11 @@ class KeyGesturesTest {
     }
 
     @Test fun repeatsAreSwallowed() = assertTrue(k.onKeyDown(KeyGestures.KEY_RIGHT, repeatCount = 1, uptimeMs = 0, wallMs = 0).let { it.consumed && it.inputs.isEmpty() })
+
+    @Test fun aTapBreaksADoubleTapPair() {
+        k.onKeyDown(KeyGestures.KEY_NOTIFICATION, 0, 0, 0)
+        k.onKeyDown(KeyGestures.KEY_ENTER, 0, 20, 20)
+        assertEquals(listOf<PadInput>(PadInput.Tapped), k.onKeyUp(KeyGestures.KEY_ENTER).inputs)
+        assertFalse(PadInput.DoubleTapped in k.onKeyDown(KeyGestures.KEY_NOTIFICATION, 0, 200, 200).inputs)
+    }
 }
