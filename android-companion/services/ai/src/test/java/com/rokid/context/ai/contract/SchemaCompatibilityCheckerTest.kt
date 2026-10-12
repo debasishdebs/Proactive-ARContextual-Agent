@@ -93,4 +93,50 @@ class SchemaCompatibilityCheckerTest {
         val draft = JsonObject(base + ("\$defs" to looped))
         assertEquals(listOf(cycleReason.format("Node")), SchemaCompatibilityChecker.check(PromptKey.ANSWER, draft.toString(), emptyList()))
     }
+
+    private fun withProp(name: String, schema: String): String { val p = props(base.toMutableMap()); p[name] = Json.parseToJsonElement(schema); return JsonObject(base + ("properties" to JsonObject(p))).toString() }
+
+    @Test fun nonDefsRefsAreRejectedExplicitly() {
+        val bad = "Unsupported \$ref \"%s\" (use #/\$defs/<name> or #/definitions/<name> of an existing entry)"
+        assertEquals(listOf(bad.format("#")), SchemaCompatibilityChecker.check(PromptKey.ANSWER, withProp("t", """{"${'$'}ref":"#"}"""), emptyList()))
+        assertEquals(listOf(bad.format("#/properties/answer")), SchemaCompatibilityChecker.check(PromptKey.ANSWER, withProp("t", """{"${'$'}ref":"#/properties/answer"}"""), emptyList()))
+        assertEquals(listOf(bad.format("#/${'$'}defs/Nope")), SchemaCompatibilityChecker.check(PromptKey.ANSWER, withProp("t", """{"${'$'}ref":"#/${'$'}defs/Nope"}"""), emptyList()))
+    }
+
+    @Test fun defsAndDefinitionsWithTheSameNameAreSeparate() {
+        val draft = JsonObject(base + ("definitions" to Json.parseToJsonElement("""{"ProposedAction":{"${'$'}ref":"#/${'$'}defs/ProposedAction"}}""")))
+        assertEquals(emptyList<String>(), SchemaCompatibilityChecker.check(PromptKey.ANSWER, draft.toString(), emptyList()))
+        val looped = JsonObject(base + ("definitions" to Json.parseToJsonElement("""{"X":{"${'$'}ref":"#/definitions/X"}}""")))
+        assertEquals(listOf("Recursive schemas aren't supported (\$defs/X refers back to itself)").map { it.replace("\$defs/X", "definitions/X") }, SchemaCompatibilityChecker.check(PromptKey.ANSWER, looped.toString(), emptyList()))
+    }
+
+    @Test fun emptyOneOfIsRejected() {
+        val defs = base["\$defs"]!!.jsonObject
+        val draft = JsonObject(base + ("\$defs" to JsonObject(defs + ("ProposedAction" to JsonObject(mapOf("oneOf" to JsonArray(emptyList())))))))
+        assertEquals(listOf("proposedAction must keep at least one variant"), check(draft.toString()))
+    }
+
+    private fun editBranch(tag: String, f: (MutableMap<String, JsonElement>) -> Unit): String {
+        val defs = base["\$defs"]!!.jsonObject
+        val branches = (defs["ProposedAction"]!!.jsonObject["oneOf"] as JsonArray).map { b ->
+            val o = b.jsonObject
+            if ((o["properties"]!!.jsonObject["type"]!!.jsonObject["enum"] as JsonArray).single() == JsonPrimitive(tag)) JsonObject(o.toMutableMap().also(f)) else o
+        }
+        return JsonObject(base + ("\$defs" to JsonObject(defs + ("ProposedAction" to JsonObject(mapOf("oneOf" to JsonArray(branches))))))).toString()
+    }
+
+    @Test fun patternAndAdditionalPropertiesCannotBeLoosened() {
+        fun withField(f: String, g: (JsonObject) -> JsonObject) = editBranch("REMINDER") { m ->
+            val p = m["properties"]!!.jsonObject.toMutableMap(); p[f] = g(p[f]!!.jsonObject); m["properties"] = JsonObject(p) }
+        assertEquals(listOf("Changed the pattern of proposedAction[REMINDER].dueAt"), check(withField("dueAt") { JsonObject(it - "pattern") }))
+        assertEquals(listOf("Changed the pattern of proposedAction[REMINDER].dueAt"), check(withField("dueAt") { JsonObject(it + ("pattern" to JsonPrimitive(".*"))) }))
+        assertEquals(listOf("Allowed extra properties in the top level"), check(edit { m -> m["additionalProperties"] = JsonPrimitive(true) }))
+    }
+
+    @Test fun constEqualsASingleValueEnum() {
+        val draft = editBranch("REMINDER") { m ->
+            val p = m["properties"]!!.jsonObject.toMutableMap()
+            p["type"] = Json.parseToJsonElement("""{"type":"string","const":"REMINDER"}"""); m["properties"] = JsonObject(p) }
+        assertEquals(emptyList<String>(), check(draft))
+    }
 }
