@@ -13,6 +13,7 @@ import com.rokid.context.memory.db.ProposalEntity
 import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.db.TraceViewDao
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 /** Phone read model (spec §2.5). Ranges come from [DayBucket.bounds]: `first` and `last` are both inclusive. */
 class TimelineRepository(private val frames: FrameViewDao, private val memories: MemoryViewDao, private val traces: TraceViewDao) {
@@ -23,9 +24,12 @@ class TimelineRepository(private val frames: FrameViewDao, private val memories:
     fun recentVisibleMemories(limit: Int): Flow<List<MemoryEntity>> = memories.observeRecentVisible(limit)
     fun memory(id: String): Flow<MemoryEntity?> = memories.observe(id)
     suspend fun frame(id: String): FrameEntity? = frames.byId(id)
-    suspend fun memoriesByIds(ids: List<String>): List<MemoryEntity> = ids.distinct().let { if (it.isEmpty()) emptyList() else memories.byIds(it) }
-    suspend fun framesByIds(ids: List<String>): List<FrameEntity> = ids.distinct().let { if (it.isEmpty()) emptyList() else frames.byIds(it) }
+    /** Chunked by [MAX_IN]: SQLite's bound-parameter limit is 999 on older devices. Empty input never queries. */
+    suspend fun memoriesByIds(ids: List<String>): List<MemoryEntity> = ids.distinct().chunked(MAX_IN).flatMap { memories.byIds(it) }
+    suspend fun framesByIds(ids: List<String>): List<FrameEntity> = ids.distinct().chunked(MAX_IN).flatMap { frames.byIds(it) }
     fun recentTraces(limit: Int): Flow<List<SummaryTraceEntity>> = traces.observeRecent(limit)
+
+    private companion object { const val MAX_IN = 900 }
 }
 
 /** Memory detail writes (spec §2.4): Trust and Edit. Forget is Phase 7 (spec §6.1.1, R-77). */
@@ -41,18 +45,22 @@ class MemoryEdits(private val view: MemoryViewDao, private val memories: MemoryR
 }
 
 class AskRepository(private val dao: AskDao) {
+    /** Seeding/tests only (see [AskDao.upsert]). */
     suspend fun upsert(ask: AskEntity) = dao.upsert(ask)
+    /** False when an ask with this id already exists. */
+    suspend fun add(ask: AskEntity): Boolean = dao.insertIgnore(ask) != -1L
+    suspend fun complete(id: String, answer: String, sourcesJson: String): Boolean = dao.complete(id, answer, sourcesJson) > 0
     suspend fun byId(id: String): AskEntity? = dao.byId(id)
-    fun observe(id: String): Flow<AskEntity?> = dao.observe(id)
-    fun recent(limit: Int): Flow<List<AskEntity>> = dao.observeRecent(limit)
-    fun timesIn(range: LongRange): Flow<List<Long>> = dao.observeTimes(range.first, range.last + 1)
-    suspend fun setRating(id: String, rating: Int?) = dao.setRating(id, rating)
+    fun observe(id: String): Flow<AskEntity?> = dao.observe(id).distinctUntilChanged()
+    fun recent(limit: Int): Flow<List<AskEntity>> = dao.observeRecent(limit).distinctUntilChanged()
+    fun timesIn(range: LongRange): Flow<List<Long>> = dao.observeTimes(range.first, range.last + 1).distinctUntilChanged()
+    suspend fun setRating(id: String, rating: Int?): Boolean = dao.setRating(id, rating) > 0
 }
 
 class NudgeRepository(private val dao: NudgeDao) {
     suspend fun addIgnore(nudge: NudgeEntity): Boolean = dao.insertIgnore(nudge) != -1L
-    fun recent(limit: Int): Flow<List<NudgeEntity>> = dao.observeRecent(limit)
-    fun timesIn(range: LongRange): Flow<List<Long>> = dao.observeTimes(range.first, range.last + 1)
+    fun recent(limit: Int): Flow<List<NudgeEntity>> = dao.observeRecent(limit).distinctUntilChanged()
+    fun timesIn(range: LongRange): Flow<List<Long>> = dao.observeTimes(range.first, range.last + 1).distinctUntilChanged()
 }
 
 class ProposalRepository(private val dao: ProposalDao) {
