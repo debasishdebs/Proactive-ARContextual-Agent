@@ -8,6 +8,7 @@ import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.InMemoryKeyVault
 import com.rokid.context.ai.InMemorySeedState
 import com.rokid.context.ai.ProviderBuilder
+import com.rokid.context.core.model.Verbosity
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.DatabaseFactory
@@ -122,6 +123,17 @@ class LegacyConfigViewModelTest {
         withTimeout(10_000) { vm.state.first { it.config.apiKeyMasked.isEmpty() && it.config.apiKeySaved } }
         assertEquals("new-key", AppConfigStore.get(ctx).apiKey)
         assertKeyNotInState("key-1")
+    }
+
+    /** Carry (Phase 3 review): the glasses mode reaches the HUD as `pc_settings` verbosity through the hub, not only the prefs. */
+    @Test fun glassesModeIsPushedToTheHudAsVerbosity() {
+        val pushed = mutableListOf<Verbosity>()
+        vm.cancelScope()
+        vm = LegacyConfigViewModel(ctx, pipeline, setVerbosity = { pushed += it })
+        vm.selectGlassesSilencyMode("stealth")
+        vm.selectGlassesSilencyMode("compact")
+        assertEquals(listOf(Verbosity.SILENT, Verbosity.MAX), pushed)
+        assertEquals("compact", vm.state.value.config.glassesSilencyMode)
     }
 
     @Test fun clearKeyRemovesIt() = runBlocking {
