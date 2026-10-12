@@ -47,4 +47,18 @@ class ShellSourceRulesTest {
             for (facade in listOf("MemoryRecordStore", "FrameStreamStore", "SummaryTraceStore")) assertFalse("${f.name}: $facade", src.contains(facade))
         }
     }
+
+    @Test fun productionDepsReadTheHubStatus() {
+        val src = File(main, "phone/ui/shell/PhoneDeps.kt").readText()
+        assertTrue(src.contains("HubGraph.glassesStatus("))
+        assertFalse(src.contains("FakeGlassesStatusSource"))
+    }
+
+    @Test fun legacyFacadesAreDeletedEverywhere() {
+        val roots = listOf(File("src/main"), File("../services/memory/src/main"), File("../services/orchestration/src/main"))
+        val hits = roots.flatMap { r -> r.walkTopDown().filter { it.isFile && it.name.endsWith(".kt") }.toList() }
+            .filter { f -> listOf("MemoryRecordStore", "FrameStreamStore", "SummaryTraceStore").any { f.readText().contains(it) } }
+            .map { it.path }
+        assertTrue("facade references left: $hits", hits.isEmpty())
+    }
 }

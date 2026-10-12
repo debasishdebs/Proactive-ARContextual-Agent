@@ -68,7 +68,7 @@ class LegacyImporter(private val context: Context, private val graph: MemoryGrap
 
     companion object {
         private const val K_DONE = "v1_done"
-        /** Same markers as `MemoryRecordStore.purgeLowSignalSummaries`. */
+        /** Same markers as `PipelineRecords.purgeLowSignalMemories` (orchestration). */
         private val LOW_SIGNAL = listOf(
             "no visual content", "only file references", "file references and timestamps", "metadata only", "no image pixels",
             "no visual content or scene details",

@@ -4,15 +4,13 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.rokid.context.data.runtime.MemoryRecordStore
 import com.rokid.context.data.runtime.PipelineStatsStore
 import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
-import com.rokid.context.data.runtime.SummaryTrace
-import com.rokid.context.data.runtime.SummaryTraceStore
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
+import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptHash
 import com.rokid.context.prompt.PromptTemplateId
@@ -28,12 +26,11 @@ class CriticWorkerJob(
         val summaryId = inputData.getString(KEY_SUMMARY_ID)
         if (summaryId.isNullOrBlank()) {
             // Periodic run: scan review records and ensure reprocess queue exists.
-            val reviews = MemoryRecordStore.recent(applicationContext, 80)
-                .filter { it.memoryType.contains("review", ignoreCase = true) }
+            val reviews = PipelineRecords.recentMemories(applicationContext, 80).filter { it.type.contains("review", ignoreCase = true) }
             if (reviews.isNotEmpty()) {
                 val payload = QueuePayloads.reprocess(
                     reason = "Periodic critic retry for review memories",
-                    sourceContext = reviews.take(5).joinToString("\n") { it.content },
+                    sourceContext = reviews.take(5).joinToString("\n") { it.text },
                 )
                 QueueRuntimeStore.enqueue(
                     context = applicationContext,
@@ -48,9 +45,7 @@ class CriticWorkerJob(
         }
 
         val confidence = inputData.getDouble(KEY_CONFIDENCE, 0.0)
-        val sourceContext = MemoryRecordStore.recent(applicationContext, 20)
-            .joinToString("\n") { it.content }
-            .ifBlank { "no-context" }
+        val sourceContext = PipelineRecords.recentMemories(applicationContext, 20).joinToString("\n") { it.text }.ifBlank { "no-context" }
         val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
             templateId = PromptTemplateId.CRITIC_VALIDATION,
             variables = mapOf(
@@ -64,28 +59,12 @@ class CriticWorkerJob(
 
         return when (result.status) {
             SummaryStatus.TRUSTED -> {
-                SummaryTraceStore.upsert(
-                    applicationContext,
-                    SummaryTrace(
-                        summaryId = summaryId,
-                        state = "TRUSTED",
-                        updatedAtEpochMs = System.currentTimeMillis(),
-                        note = "Critic approved summary",
-                    ),
-                )
+                PipelineRecords.upsertTrace(applicationContext, summaryId, "TRUSTED", "Critic approved summary")
                 Result.success()
             }
 
             SummaryStatus.NEEDS_REVIEW -> {
-                SummaryTraceStore.upsert(
-                    applicationContext,
-                    SummaryTrace(
-                        summaryId = summaryId,
-                        state = "NEEDS_REVIEW",
-                        updatedAtEpochMs = System.currentTimeMillis(),
-                        note = "Critic flagged low confidence",
-                    ),
-                )
+                PipelineRecords.upsertTrace(applicationContext, summaryId, "NEEDS_REVIEW", "Critic flagged low confidence")
                 PipelineStatsStore.incSummarizerFailed(applicationContext)
                 QueueRuntimeStore.enqueue(
                     context = applicationContext,

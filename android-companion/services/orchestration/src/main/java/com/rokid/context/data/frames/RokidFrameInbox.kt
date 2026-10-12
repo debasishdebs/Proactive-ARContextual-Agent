@@ -3,6 +3,8 @@ package com.rokid.context.data.frames
 import android.content.Context
 import android.util.Log
 import com.rokid.context.data.runtime.PipelineStatsStore
+import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.orchestration.PipelineRecords
 import java.io.File
 import java.util.Locale
 
@@ -18,7 +20,7 @@ object RokidFrameInbox {
         return File(context.filesDir, "rokid_archive")
     }
 
-    fun ingestPending(context: Context, maxItems: Int = 8): Int {
+    suspend fun ingestPending(context: Context, maxItems: Int = 8): Int {
         val inbox = inboxDir(context)
         if (!inbox.exists()) inbox.mkdirs()
         val archive = archiveDir(context)
@@ -45,7 +47,7 @@ object RokidFrameInbox {
         return imported
     }
 
-    fun ingestSinglePath(context: Context, absolutePath: String, source: String = "rokid_glasses"): Boolean {
+    suspend fun ingestSinglePath(context: Context, absolutePath: String, source: String = "rokid_glasses"): Boolean {
         val file = File(absolutePath)
         if (!file.exists() || !file.isFile) return false
         if (extOf(file.name) !in supportedExt) return false
@@ -57,18 +59,18 @@ object RokidFrameInbox {
     // Full archived file name (<archiveMs>_rokid_<rxMs>_<id>): unique per file. Never truncate, ids only dedupe via insertIgnore.
     private fun frameIdOf(file: File): String = file.nameWithoutExtension.ifBlank { "rokid_frame" }
 
-    private fun ingestFile(context: Context, file: File, source: String): Boolean {
+    private suspend fun ingestFile(context: Context, file: File, source: String): Boolean {
         val frameId = frameIdOf(file)
         val payload = "rokid_file=${file.name} bytes=${file.length()}"
         Log.i(TAG, "ingestFile path=${file.absolutePath} source=$source exists=${file.exists()} size=${file.length()}")
-        val appended = FrameStreamStore.append(
-            context = context,
-            frame = CapturedFrame(
-                frameId = frameId,
-                capturedAtEpochMs = file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis(),
+        val appended = PipelineRecords.appendFrame(
+            context,
+            FrameEntity(
+                id = frameId,
+                ts = file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis(),
+                path = file.absolutePath,
                 source = source,
                 payload = payload,
-                previewImagePath = file.absolutePath,
             ),
         )
         Log.i(TAG, "append result=$appended frameId=$frameId")
