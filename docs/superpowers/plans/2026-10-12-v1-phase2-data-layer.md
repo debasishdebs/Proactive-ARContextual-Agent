@@ -15,7 +15,7 @@
 - All master-plan Global Constraints apply.
 - **Schema version 1 is frozen at the end of Task 2.** Room is first used on a device in Task 5. Every later schema change (any phase) bumps `ContextDatabase.version` and ships a `Migration` with a `MigrationTestHelper` test. No `fallbackToDestructiveMigration` outside tests.
 - Room DAO calls never run on the main thread. The transitional facades (Task 5) and `LegacyConfigBridge` (Task 9) wrap them in `runBlocking(Dispatchers.IO)`; these are the only allowed `runBlocking` uses and are deleted in Phase 4/5.
-- Lexical search over unsegmented scripts (Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar) indexes overlapping character **bigrams** (spec §4.6), so a word anywhere in a sentence is found. Other scripts are word-tokenised.
+- Lexical search targets English and Hindi with word tokens and Devanagari combining-mark preservation (spec §4.6).
 - Lexical search indexes `memory.searchText` = `SearchNormalizer.normalize(text + " " + tags)`; queries go through `SearchNormalizer.toMatchQuery`. Never put raw user text into `MATCH`.
 - Robolectric tests use `@Config(sdk = [34])`, in-memory Room, `InMemoryKeyVault`, and call `MemoryGraph.resetForTests()` / `AiGraph.resetForTests()` in `@After`.
 
@@ -24,7 +24,7 @@
 (From the master plan; owned here.)
 1. **Malformed / partial / re-run legacy import** → Task 4 tests `skipsMalformedLines`, `rerunIsIdempotent`, `resumesAfterPartialImport`.
 2. **Messy endpoint input** → Task 6 tests in `UrlNormalizerTest`.
-3. **Non-Latin search text** → Task 1 tests `devanagariWordIsFound`, `cjkWordInsideSentenceIsFound`, `japaneseWordIsFound`, `emojiAndPunctuationAreIgnored`.
+3. **English, Hindi, and mixed English/Hindi search text** → Task 1 tests `englishWordInsideSentenceIsFound`, `devanagariWordIsFound`, `mixedEnglishHindiQueryIsFound`, `emojiAndPunctuationAreIgnored`.
 4. **Timezone/DST day buckets** → Task 3 tests `dstDayHas23Hours`, `bucketUsesGivenZone`.
 5. **Process killed while the facade is first used (import not finished)** → Task 5 test `facadeTriggersImportOnFirstUse`.
 6. **Process killed between seeding an endpoint and binding its roles** → Task 7 test `resumesAfterCrashBetweenEndpointAndBindings`.
@@ -34,7 +34,7 @@
 
 ### Task 1: Room database core — frames, memories, FTS, provenance, vectors, traces
 
-**Requirements:** R-70, R-48 (lexical FTS + script-safe normalisation)
+**Requirements:** R-70, R-48 (lexical FTS + English/Hindi normalisation)
 
 **Files:**
 - Modify: `android-companion/services/memory/build.gradle.kts`
@@ -108,13 +108,6 @@ class SearchNormalizerTest {
         assertEquals("क्षेत्र", SearchNormalizer.normalize("क्‍षेत्र"))
     }
 
-    @Test fun unsegmentedScriptsBecomeOverlappingBigrams() {
-        assertEquals("今天 天牛 牛奶", SearchNormalizer.normalize("今天牛奶"))
-        assertEquals("奶", SearchNormalizer.normalize("奶"))
-        assertEquals("milk 牛奶 奶没", SearchNormalizer.normalize("milk牛奶没"))
-        assertEquals("ข้ ้า าว", SearchNormalizer.normalize("ข้าว")) // Thai ข ้ า ว → code-point bigrams, identical for index and query
-    }
-
     @Test fun matchQueryQuotesAndPrefixesEachToken() {
         assertEquals("\"दूध*\" \"milk*\"", SearchNormalizer.toMatchQuery("दूध, milk"))
         assertNull(SearchNormalizer.toMatchQuery("  !!! 🥛 "))
@@ -144,7 +137,7 @@ import java.text.Normalizer
 import java.util.Locale
 
 /**
- * Makes text safe for SQLite's `simple` FTS tokenizer in every script (Review Focus #3). `simple` treats all
+ * Normalises English/Hindi text for SQLite's `simple` FTS tokenizer (Review Focus #3). `simple` treats all
  * code points ≥ 128 as word characters, so Indic combining marks stay inside words; we therefore must turn
  * Unicode punctuation, symbols (incl. emoji), separators and format characters into spaces ourselves.
  */
@@ -169,32 +162,7 @@ object SearchNormalizer {
             }
             i += Character.charCount(cp)
         }
-        val words = out.toString().trim().split(Regex(" +")).filter { it.isNotEmpty() }
-        return words.flatMap(::segment).joinToString(" ")
-    }
-
-    private val UNSEGMENTED = setOf(
-        Character.UnicodeScript.HAN, Character.UnicodeScript.HIRAGANA, Character.UnicodeScript.KATAKANA,
-        Character.UnicodeScript.THAI, Character.UnicodeScript.LAO, Character.UnicodeScript.KHMER, Character.UnicodeScript.MYANMAR,
-    )
-
-    /** Splits a word into script runs; runs of unsegmented scripts become overlapping code-point bigrams (a 1-char run stays). */
-    private fun segment(word: String): List<String> {
-        val cps = word.codePoints().toArray()
-        val out = mutableListOf<String>()
-        var i = 0
-        while (i < cps.size) {
-            val unseg = Character.UnicodeScript.of(cps[i]) in UNSEGMENTED
-            var j = i
-            while (j < cps.size && (Character.UnicodeScript.of(cps[j]) in UNSEGMENTED) == unseg) j++
-            when {
-                !unseg -> out += String(cps, i, j - i)
-                j - i == 1 -> out += String(cps, i, 1)
-                else -> for (k in i until j - 1) out += String(cps, k, 2)
-            }
-            i = j
-        }
-        return out
+        return out.toString().trim().replace(Regex(" +"), " ")
     }
 
     /** Each token becomes a quoted prefix term, AND-ed by FTS; null when nothing searchable remains. */
@@ -203,12 +171,12 @@ object SearchNormalizer {
             .joinToString(" ") { "\"$it*\"" }.ifBlank { null }
 }
 ```
-Notes: emoji such as 🥛 are surrogate pairs; `codePointAt` yields the full code point whose type is `OTHER_SYMBOL`, so it becomes a space. Thai/Lao/Khmer/Myanmar combining marks report their own script, so they stay inside the run. Because queries go through the same `normalize`, 牛奶 becomes the prefix term `"牛奶*"`, matching the bigram 牛奶 inside 今天牛奶没了; a one-character query 奶 becomes `"奶*"`, matching any bigram starting with 奶. Known limit (spec §4.6): a bigram can also match across a word boundary (e.g. 天牛), trading some precision for recall.
+Notes: emoji such as 🥛 are surrogate pairs; `codePointAt` yields the full code point whose type is `OTHER_SYMBOL`, so it becomes a space. Devanagari combining marks remain part of their word. Index and query use the same normalisation for English, Hindi, and mixed English/Hindi text.
 
 - [ ] **Step 5: Run normaliser test**
 
 Run: `./gradlew :services:memory:testDebugUnitTest --tests "*SearchNormalizerTest"`
-Expected: PASS (7 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 6: Write the failing DAO test**
 
@@ -243,20 +211,19 @@ class MemoryDaoTest {
         assertEquals(listOf("m1"), db.memoryDao().search(SearchNormalizer.toMatchQuery("दूध")!!, 10).map { it.id })
     }
 
-    @Test fun cjkWordInsideSentenceIsFound() = runTest {
-        db.memoryDao().insert(mem("m1", "今天牛奶没了", 1))
-        db.memoryDao().insert(mem("m2", "咖啡在桌子上", 2))
+    @Test fun englishWordInsideSentenceIsFound() = runTest {
+        db.memoryDao().insert(mem("m1", "Milk carton on the kitchen shelf", 1))
+        db.memoryDao().insert(mem("m2", "Keys on the hallway shelf", 2))
         suspend fun q(t: String) = db.memoryDao().search(SearchNormalizer.toMatchQuery(t)!!, 10).map { it.id }
-        assertEquals(listOf("m1"), q("牛奶"))   // middle of the sentence
-        assertEquals(listOf("m1"), q("没了"))   // end of the sentence
-        assertEquals(listOf("m1"), q("奶"))     // single character
-        assertEquals(listOf("m2"), q("桌子"))
-        assertEquals(emptyList<String>(), q("面包"))
+        assertEquals(listOf("m1"), q("kitchen"))
+        assertEquals(listOf("m2"), q("hallway"))
+        assertEquals(emptyList<String>(), q("bread"))
     }
 
-    @Test fun japaneseWordIsFound() = runTest {
-        db.memoryDao().insert(mem("m1", "冷蔵庫の牛乳が少ない", 1))
-        assertEquals(listOf("m1"), db.memoryDao().search(SearchNormalizer.toMatchQuery("牛乳")!!, 10).map { it.id })
+    @Test fun mixedEnglishHindiQueryIsFound() = runTest {
+        db.memoryDao().insert(mem("m1", "Shopping list: दूध and bread", 1))
+        db.memoryDao().insert(mem("m2", "Shopping list: दूध and eggs", 2))
+        assertEquals(listOf("m1"), db.memoryDao().search(SearchNormalizer.toMatchQuery("दूध bread")!!, 10).map { it.id })
     }
 
     @Test fun emojiAndPunctuationAreIgnored() = runTest {
@@ -481,13 +448,13 @@ object DatabaseFactory {
 - [ ] **Step 11: Run DAO tests**
 
 Run: `./gradlew :services:memory:testDebugUnitTest`
-Expected: PASS (SearchNormalizerTest 7, MemoryDaoTest 8, legacy 6). `services/memory/schemas/com.rokid.context.memory.db.ContextDatabase/1.json` is generated.
+Expected: PASS (SearchNormalizerTest 6, MemoryDaoTest 8, legacy 6). `services/memory/schemas/com.rokid.context.memory.db.ContextDatabase/1.json` is generated.
 
 - [ ] **Step 12: Commit**
 
 ```bash
 git add android-companion/services/memory
-git commit -m "feat(memory): Room core schema with script-safe FTS search
+git commit -m "feat(memory): Room core schema with English/Hindi FTS search
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```

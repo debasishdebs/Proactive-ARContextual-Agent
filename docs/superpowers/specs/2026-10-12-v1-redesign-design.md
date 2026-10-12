@@ -19,6 +19,7 @@
 - Add: push-to-talk queries, proactive cards (nudges), onboarding wizard, privacy pause, spoken answers (TTS), memory timeline, gesture mapping, health/limited-mode banners.
 - Settings must cover: model endpoints, models per role, connectors (data sources + actions/tools), prompts (with test bed, versioning, output schema / guided decoding), retrieval (lexical / semantic / hybrid with selectable fusion), embedding models on open-source/custom endpoints.
 - Target is **v1.0**. MCP / custom tools are v2.0.
+- Language scope: **English is primary; Hindi is the only additional language target**. Hindi voice is optional and subject to the on-device speech capability gate (§5.1.1).
 
 ### 0.2 Product (unchanged)
 Battery-first proactive memory assistant: glasses capture sparse frames → phone extracts memories → memories answer contextual questions and drive proactive nudges.
@@ -32,7 +33,7 @@ Battery-first proactive memory assistant: glasses capture sparse frames → phon
 6. No raw exception/socket text appears in any UI.
 
 ### 0.4 Out of scope (v1.0)
-MCP / custom tool connectors (interface only), background phone-camera capture, cloud sync, dark theme, multi-user.
+MCP / custom tool connectors (interface only), background phone-camera capture, cloud sync, dark theme, multi-user, language-specific tuning beyond English and Hindi.
 
 ---
 
@@ -277,7 +278,7 @@ Roles: `VISION_EXTRACT`, `EXPLICIT_REMEMBER`, `SUMMARIZE`, `CRITIC`, `ANSWER`, `
 - Templates are checked too: required variables per role (e.g. ANSWER needs `{{question}}` and `{{retrieved_memories}}`) must be present.
 
 ### 4.6 Retrieval (`:services:memory`)
-- `LexicalRetriever`: Room FTS4 `memory_fts` over a normalised `searchText` (NFKC, lowercase, punctuation/symbols/emoji → space); BM25 computed in Kotlin from `matchinfo`. Unsegmented scripts (Han, Hiragana, Katakana, Thai, Lao, Khmer, Myanmar) are indexed and queried as overlapping character bigrams, so a word is found anywhere in a sentence; a bigram may also match across a word boundary (accepted precision trade-off).
+- `LexicalRetriever`: Room FTS4 `memory_fts` over a normalised `searchText` (NFKC, lowercase, punctuation/symbols/emoji → space); BM25 computed in Kotlin from `matchinfo`. English and Hindi use word tokens, with Devanagari combining marks preserved inside words. Validation covers English, Hindi, and mixed English/Hindi text.
 - `SemanticRetriever`: embed query via EMBED binding; brute-force cosine over `memory_vector` BLOBs behind `VectorIndex` interface (swappable later).
 - `HybridRetriever`: both, merged by `FusionStrategy`:
   - `WeightedScore` — min-max normalised, semantic/lexical weight slider (default 60/40).
