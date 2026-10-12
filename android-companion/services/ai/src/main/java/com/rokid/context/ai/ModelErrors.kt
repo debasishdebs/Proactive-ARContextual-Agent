@@ -6,7 +6,8 @@ import java.util.Locale
 class ModelCallException(message: String, val retryable: Boolean, cause: Throwable? = null) : RuntimeException(message, cause)
 
 object ProviderErrors {
-    private val PERMANENT_STATUS = Regex("\\b(401|403|404)\\b")
+    /** Anchored to the provider prefix so a 5xx body that merely contains "404" stays transient. */
+    private val PERMANENT_STATUS = Regex("request failed: (401|403|404)\\b")
     /** Exact (lower-cased) messages thrown by the legacy providers' `require` checks, plus provider API errors. */
     private val PERMANENT_TEXT = listOf(
         "azure_kg_api_key is missing", "azure_kg_endpoint is missing", "ollama_base_url is missing",

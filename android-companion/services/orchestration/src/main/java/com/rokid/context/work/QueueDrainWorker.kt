@@ -9,6 +9,8 @@ import android.util.Base64
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.rokid.context.ai.AiGraph
+import com.rokid.context.ai.Role
 import com.rokid.context.data.frames.FrameStreamStore
 import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.data.runtime.AppConfigStore
@@ -20,12 +22,11 @@ import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.data.runtime.SummaryTrace
 import com.rokid.context.data.runtime.SummaryTraceStore
-import com.rokid.context.data.runtime.toProviderSettings
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
 import com.rokid.context.model.ModelImageInput
-import com.rokid.context.model.ModelProviderResolver
+import com.rokid.context.orchestration.RetryClassifier
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptHash
 import com.rokid.context.prompt.PromptTemplateId
@@ -73,26 +74,22 @@ class QueueDrainWorker(
             }.onSuccess {
                 QueueRuntimeStore.markSucceeded(applicationContext, job.id)
             }.onFailure { error ->
+                val outcome = RetryClassifier.classify(error)
+                if (outcome == RetryClassifier.Outcome.CANCELLED) {
+                    // WorkManager stopped us: keep the job for the next run, then let cancellation propagate.
+                    QueueRuntimeStore.markDeferred(applicationContext, job.id, "cancelled; will retry", backoffMs = 0)
+                    throw error
+                }
                 val message = error.message ?: "unknown queue error"
-                val retryable = isRetryable(error)
+                val retryable = outcome == RetryClassifier.Outcome.RETRY
                 if (retryable) {
-                    QueueRuntimeStore.markDeferred(
-                        context = applicationContext,
-                        id = job.id,
-                        error = message,
-                        backoffMs = computeBackoffMs(job.attemptCount),
-                    )
+                    QueueRuntimeStore.markDeferred(context = applicationContext, id = job.id, error = message, backoffMs = computeBackoffMs(job.attemptCount))
                 } else {
                     QueueRuntimeStore.markFailed(applicationContext, job.id, message)
                 }
                 SummaryTraceStore.upsert(
                     applicationContext,
-                    SummaryTrace(
-                        summaryId = job.id,
-                        state = if (retryable) "RETRY" else "FAILED",
-                        updatedAtEpochMs = System.currentTimeMillis(),
-                        note = message,
-                    ),
+                    SummaryTrace(summaryId = job.id, state = if (retryable) "RETRY" else "FAILED", updatedAtEpochMs = System.currentTimeMillis(), note = message),
                 )
             }
         }
@@ -178,7 +175,6 @@ class QueueDrainWorker(
             "id=${it.frameId}, ts=${it.capturedAtEpochMs}, source=${it.source}, payload=${it.payload}"
         }
 
-        val config = AppConfigStore.get(applicationContext)
         val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
             templateId = PromptTemplateId.WRITE_CONTEXT_BATCHED,
             variables = mapOf(
@@ -190,7 +186,7 @@ class QueueDrainWorker(
         )
         Log.i(TAG, "batched write promptHash=${PromptHash.sha256(prompt)}")
 
-        val modelOutput = generateBatchedSummary(prompt, config, frames)
+        val modelOutput = generateBatchedSummary(prompt, frames)
         val confidence = extractConfidence(modelOutput)
         val critic = criticWorker.validate(job.id, confidence)
 
@@ -251,7 +247,6 @@ class QueueDrainWorker(
         val payload = QueuePayloads.parse(job.payload)
         val sourceContext = QueuePayloads.string(payload, "source_context")
         val reason = QueuePayloads.string(payload, "reason", "low confidence")
-        val config = AppConfigStore.get(applicationContext)
         val frames = FrameStreamStore.recent(applicationContext, 6)
 
         val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
@@ -265,7 +260,7 @@ class QueueDrainWorker(
         )
         Log.i(TAG, "re-summarize promptHash=${PromptHash.sha256(prompt)}")
 
-        val output = generateBatchedSummary(prompt, config, frames)
+        val output = generateBatchedSummary(prompt, frames)
         val confidence = extractConfidence(output).coerceAtLeast(0.75)
 
         MemoryRecordStore.append(
@@ -295,7 +290,6 @@ class QueueDrainWorker(
         val inputLanguage = QueuePayloads.string(payload, "input_language", "auto")
         require(rawInput.isNotBlank()) { "Empty explicit write input" }
 
-        val config = AppConfigStore.get(applicationContext)
         val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
             templateId = PromptTemplateId.WRITE_CONTEXT_EXPLICIT,
             variables = mapOf(
@@ -307,7 +301,7 @@ class QueueDrainWorker(
         )
         Log.i(TAG, "explicit write promptHash=${PromptHash.sha256(prompt)}")
 
-        val output = generateWithFallback(prompt, config)
+        val output = generateWithFallback(Role.EXPLICIT_REMEMBER, prompt)
         val confidence = extractConfidence(output)
 
         MemoryRecordStore.append(
@@ -357,7 +351,6 @@ class QueueDrainWorker(
             "${it.memoryType} | conf=${"%.2f".format(Locale.US, it.confidence)} | ${it.content}"
         }
 
-        val config = AppConfigStore.get(applicationContext)
         val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
             templateId = PromptTemplateId.READ_CONTEXT_ANSWER,
             variables = mapOf(
@@ -369,7 +362,7 @@ class QueueDrainWorker(
         )
         Log.i(TAG, "read context promptHash=${PromptHash.sha256(prompt)}")
 
-        val answer = generateWithFallback(prompt, config)
+        val answer = generateWithFallback(Role.ANSWER, prompt)
         SummaryTraceStore.upsert(
             applicationContext,
             SummaryTrace(
@@ -381,37 +374,11 @@ class QueueDrainWorker(
         )
     }
 
-    private suspend fun generateWithFallback(prompt: String, config: com.rokid.context.data.runtime.AppConfig): String {
-        val primary = ModelProviderResolver.primary(config.toProviderSettings())
-        return runCatching {
-            primary.generate(prompt)
-        }.getOrElse { firstError ->
-            val local = ModelProviderResolver.localFallback(config.toProviderSettings())
-                ?: throw IllegalStateException("Primary provider failed and no local fallback available: ${firstError.message}")
-            runCatching {
-                local.generate(prompt)
-            }.getOrElse {
-                throw IllegalStateException("Primary+local generation failed: ${firstError.message}; ${it.message}")
-            }
-        }
-    }
+    private suspend fun generateWithFallback(role: Role, prompt: String): String =
+        AiGraph.get(applicationContext).router.generate(role, prompt)
 
-    private suspend fun generateBatchedSummary(
-        prompt: String,
-        config: com.rokid.context.data.runtime.AppConfig,
-        frames: List<com.rokid.context.data.frames.CapturedFrame>,
-    ): String {
-        val primary = ModelProviderResolver.primary(config.toProviderSettings())
-        val visionInputs = buildVisionInputs(frames, maxImages = 3)
-        if (visionInputs.isNotEmpty()) {
-            runCatching {
-                return primary.generateWithImages(prompt, visionInputs)
-            }.onFailure {
-                Log.w(TAG, "vision summarize failed, fallback=text reason=${it.message}")
-            }
-        }
-        return generateWithFallback(prompt, config)
-    }
+    private suspend fun generateBatchedSummary(prompt: String, frames: List<com.rokid.context.data.frames.CapturedFrame>): String =
+        AiGraph.get(applicationContext).router.generateFromFrames(prompt, images = buildVisionInputs(frames, maxImages = 3))
 
     private fun buildAttachedImagesLabel(frames: List<com.rokid.context.data.frames.CapturedFrame>): String {
         val withPreview = frames.count { it.previewImagePath.isNotBlank() }
@@ -455,28 +422,6 @@ class QueueDrainWorker(
         val power = attempt.coerceAtMost(8)
         val base = 30_000.0 * 2.0.pow(power.toDouble())
         return base.toLong().coerceAtMost(30L * 60L * 1000L)
-    }
-
-    private fun isRetryable(error: Throwable): Boolean {
-        val msg = error.message?.lowercase(Locale.US).orEmpty()
-        if (
-            msg.contains("404") ||
-            msg.contains("401") ||
-            msg.contains("403") ||
-            msg.contains("resource not found") ||
-            msg.contains("deployment not found") ||
-            msg.contains("unsupported parameter") ||
-            msg.contains("invalid_request_error") ||
-            msg.contains("api key is missing") ||
-            msg.contains("endpoint is missing")
-        ) {
-            return false
-        }
-        return msg.contains("timeout") ||
-            msg.contains("network") ||
-            msg.contains("connection") ||
-            msg.contains("temporarily unavailable") ||
-            msg.contains("provider failed")
     }
 
     private fun policyDeferralReason(job: QueueJobRecord): String? {
