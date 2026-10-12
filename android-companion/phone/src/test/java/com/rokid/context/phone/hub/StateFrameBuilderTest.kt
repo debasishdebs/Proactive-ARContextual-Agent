@@ -74,4 +74,16 @@ class StateFrameBuilderTest {
         Health.Blocked("AI unavailable"),
         AiHealthRule.from(listOf(SummaryTrace("s", "FAILED", now - 1_000, "Azure OpenAI request failed: 500 {\"error\":1}")), now),
     )
+
+    @Test fun hudCountdownTimesGoOutInGlassesClock() {
+        val o = ClockOffset(7_200_000)
+        val f = StateFrameBuilder.build(inputs(offset = o))
+        assertEquals(now + 60_000 + 7_200_000, f.nextCaptureAtMs)
+        assertEquals(now - 5_000 + 7_200_000, f.lastSentAtMs)
+    }
+
+    @Test fun hudCountdownTimesAreOmittedWithoutAnOffset() {
+        val f = StateFrameBuilder.build(inputs(offset = null))
+        assertEquals(null, f.nextCaptureAtMs); assertEquals(null, f.lastSentAtMs)
+    }
 }

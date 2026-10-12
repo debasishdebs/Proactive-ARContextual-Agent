@@ -22,22 +22,15 @@ class HubPauses(private val dao: PauseDao, private val now: () -> Long = System:
         return live
     }
 
-    /** Union semantics: adds [record] (or keeps it); an already expired record only adds history. */
-    suspend fun add(record: PauseRecord) {
-        dao.insertInterval(PauseIntervalEntity(record.pauseId, record.origin.name, record.createdAtMs, null))
-        if (record.isActiveAt(now())) dao.upsertRecord(record.toEntity())
-        else dao.closeInterval(record.pauseId, record.untilMs ?: now())
-    }
+    /** Union: most restrictive wins (null end beats any end, else the later end); a resumed id is never resurrected. */
+    suspend fun add(record: PauseRecord) = dao.addMerged(record.toEntity(), record.isActiveAt(now()), now())
 
     suspend fun union(records: List<PauseRecord>) = records.forEach { add(it) }
 
     /** Ends only the named records (spec §5.5: a Resume never clears pauses its sender did not know). */
     suspend fun resume(clears: Set<String>) {
         if (clears.isEmpty()) return
-        val t = now()
-        val known = dao.records().map { it.pauseId }.filter { it in clears }
-        known.forEach { dao.closeInterval(it, t) }
-        if (known.isNotEmpty()) dao.deleteRecords(known)
+        dao.resumeNamed(clears, now())
     }
 
     override suspend fun pausedAt(phoneMs: Long): Boolean {
@@ -46,7 +39,11 @@ class HubPauses(private val dao: PauseDao, private val now: () -> Long = System:
     }
 
     /** Closed intervals are kept 7 days (spec §5.5); frames older than that are dropped by [FrameAdmission]. */
-    suspend fun pruneHistory() = dao.pruneEndedBefore(now() - FrameAdmission.HISTORY_MS)
+    suspend fun pruneHistory() {
+        active() // expire first, so only true orphans remain open without a record
+        dao.closeOrphanIntervals(now())
+        dao.pruneEndedBefore(now() - FrameAdmission.HISTORY_MS)
+    }
 }
 
 private fun PauseRecordEntity.toModel() =

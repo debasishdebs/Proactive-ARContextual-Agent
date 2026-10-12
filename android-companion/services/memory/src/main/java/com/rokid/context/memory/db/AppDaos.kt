@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Upsert
 
 @Dao
@@ -36,4 +37,40 @@ interface PauseDao {
     @Query("DELETE FROM pause_interval WHERE effectiveEndMs IS NOT NULL AND effectiveEndMs < :before")
     suspend fun pruneEndedBefore(before: Long)
     @Query("SELECT * FROM pause_interval ORDER BY startMs ASC") suspend fun intervals(): List<PauseIntervalEntity>
+    @Query("SELECT * FROM pause_interval WHERE pauseId = :pauseId") suspend fun intervalFor(pauseId: String): PauseIntervalEntity?
+    @Query("SELECT * FROM pause_record WHERE pauseId = :pauseId") suspend fun recordFor(pauseId: String): PauseRecordEntity?
+    @Query("UPDATE pause_interval SET effectiveEndMs = :endMs WHERE effectiveEndMs IS NULL AND pauseId NOT IN (SELECT pauseId FROM pause_record)")
+    suspend fun closeOrphanIntervals(endMs: Long)
+
+    /**
+     * Atomic union of one record (most restrictive wins; a pauseId whose interval is closed is a tombstone and is never
+     * resurrected). [activeNow]: the record has not expired by [now].
+     */
+    @Transaction
+    suspend fun addMerged(record: PauseRecordEntity, activeNow: Boolean, now: Long) {
+        val interval = intervalFor(record.pauseId)
+        if (interval != null && interval.effectiveEndMs != null) return
+        if (interval == null) insertInterval(PauseIntervalEntity(record.pauseId, record.origin, record.createdAtMs, null))
+        val existing = recordFor(record.pauseId)
+        val until = when {
+            existing == null -> record.untilMs
+            existing.untilMs == null || record.untilMs == null -> null
+            else -> maxOf(existing.untilMs, record.untilMs)
+        }
+        if (existing != null) {
+            upsertRecord(existing.copy(untilMs = until))
+        } else if (activeNow) {
+            upsertRecord(record)
+        } else {
+            closeInterval(record.pauseId, until ?: now)
+        }
+    }
+
+    /** Atomically ends the named records that exist. */
+    @Transaction
+    suspend fun resumeNamed(clears: Set<String>, now: Long) {
+        val known = records().map { it.pauseId }.filter { it in clears }
+        known.forEach { closeInterval(it, now) }
+        if (known.isNotEmpty()) deleteRecords(known)
+    }
 }

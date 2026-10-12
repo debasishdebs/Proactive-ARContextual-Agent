@@ -33,21 +33,20 @@ data class HubInputs(
 
 object StateFrameBuilder {
     /**
-     * Pause records go out in glasses clock (the glasses enforce them on their own clock, spec §5.5); every other
-     * instant stays phone clock. Without an offset the records go unchanged (a pause is never dropped).
+     * Pause records go out in glasses clock (the glasses enforce them on their own clock, spec §5.5); HUD countdown times (nextCaptureAtMs, lastSentAtMs) too, or null without an offset. Without an offset the records go unchanged (a pause is never dropped).
      */
     fun build(i: HubInputs): StateFrame {
         val pauses = toGlasses(i.activePauses, i.offset)
         return StateFrame(
             seq = i.seq,
             capture = if (pauses.isEmpty()) CaptureState.Running else CaptureState.Paused(pauses),
-            nextCaptureAtMs = i.nextCaptureAtMs,
+            nextCaptureAtMs = i.nextCaptureAtMs?.let { m -> i.offset?.toGlasses(m) }, // HUD countdown: glasses clock, omitted without an offset
             intervalSec = i.settings.captureIntervalSec,
             glassesBatteryPct = i.glassesBatteryPct,
             phoneLinked = i.link == LinkState.CONNECTED,
             aiHealth = i.aiHealth,
             queueDepth = i.queueDepth,
-            lastSentAtMs = i.lastFrameAtMs,
+            lastSentAtMs = i.lastFrameAtMs?.let { m -> i.offset?.toGlasses(m) },
             latestNudge = null, // NudgeEngine arrives in Phase 7
             today = i.today.take(8),
             overlay = i.overlay,
