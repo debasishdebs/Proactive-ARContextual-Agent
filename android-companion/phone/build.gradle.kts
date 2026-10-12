@@ -68,12 +68,18 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
 dependencies {
     implementation(project(":services:ai"))
     implementation(project(":services:memory"))
     implementation(project(":services:orchestration"))
+    implementation(project(":core:model"))
+    implementation(project(":core:ui"))
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.5")
     implementation(platform("androidx.compose:compose-bom:2024.09.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
@@ -94,4 +100,15 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+    testImplementation(platform("androidx.compose:compose-bom:2024.09.00"))
+    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("androidx.work:work-testing:2.9.1")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
+
+// Compose UI tests need ui-test-manifest's host activity, which is debug-only; release unit tests would have none.
+androidComponents { beforeVariants(selector().withBuildType("release")) { it.enableUnitTest = false } }
