@@ -61,4 +61,13 @@ class BannerResolverTest {
         assertTrue(b.title.endsWith("…"))
         assertEquals(BannerAction.FIX_AI, b.action)
     }
+
+    @Test fun hubPauseWithPipelineOnShowsPausedBannerWithoutResume() {
+        val rec = CaptureState.Paused(listOf(PauseRecord("p1", PauseOrigin.GLASSES, 1)))
+        val b = BannerResolver.resolve(BannerInputs(capture = rec, pipelineEnabled = true))!!
+        assertEquals(BannerKind.CAPTURE_PAUSED, b.kind)
+        assertNull(b.action); assertNull(b.actionLabel)
+        val both = BannerResolver.resolve(BannerInputs(capture = rec, pipelineEnabled = false))!!
+        assertEquals(BannerAction.RESUME, both.action)
+    }
 }
