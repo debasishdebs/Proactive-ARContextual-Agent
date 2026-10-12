@@ -5,8 +5,12 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.EndpointEntity
 import kotlinx.coroutines.test.runTest
+import com.rokid.context.model.provider.OpenAiCompatProvider
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.tls.HandshakeCertificates
+import okhttp3.tls.HeldCertificate
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -18,17 +22,30 @@ import org.robolectric.annotation.Config
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class EndpointTesterTest {
-    private val server = MockWebServer().apply { start() }
+    private val cert = HeldCertificate.Builder().addSubjectAlternativeName("localhost").addSubjectAlternativeName("127.0.0.1").build()
+    private val serverTls = HandshakeCertificates.Builder().heldCertificate(cert).build()
+    private val clientTls = HandshakeCertificates.Builder().addTrustedCertificate(cert.certificate).build()
+    private val client = OkHttpClient.Builder().sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager)
+        .followRedirects(false).followSslRedirects(false).build()
+    private val server = MockWebServer().apply { useHttps(serverTls.sslSocketFactory(), false); start() }
+    private fun httpsUrl() = "https://localhost:${server.port}"
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
-    @org.junit.Before fun allowMock() { KeyTransport.allowCleartextKeyForTests = true }
-    @After fun close() { KeyTransport.allowCleartextKeyForTests = false; server.shutdown(); db.close() }
+    @After fun close() { server.shutdown(); db.close() }
 
     private val vault = InMemoryKeyVault()
     private val repo = EndpointRepository(db.endpointDao(), vault)
-    private val tester = EndpointTester(repo, ProviderFactory)
+    /** Same wiring as [ProviderFactory], with a client that trusts the test certificate. */
+    private val tlsProviders = ProviderBuilder { e, model, key ->
+        when (e.kind) {
+            EndpointKind.AZURE_OPENAI -> OpenAiCompatProvider(e.baseUrl, key.orEmpty(), model, e.apiVersion ?: "2024-10-21", OpenAiCompatProvider.ApiStyle.AZURE, client)
+            else -> OpenAiCompatProvider(e.baseUrl, key.orEmpty(), model, e.apiVersion ?: "", OpenAiCompatProvider.ApiStyle.OPENAI, client)
+        }
+    }
+    private val tester = EndpointTester(repo, tlsProviders, client)
+    private val strictTester = EndpointTester(repo, ProviderFactory)
 
     /** Writes straight to the DAO so the (http) MockWebServer can stand in for https-only Azure. */
-    private suspend fun save(kind: EndpointKind, caps: Set<Capability>, url: String = server.url("/").toString().trimEnd('/')) {
+    private suspend fun save(kind: EndpointKind, caps: Set<Capability>, url: String = httpsUrl()) {
         db.endpointDao().upsert(
             EndpointEntity("e", "t", kind.name, url, "2024-10-21", "m", EndpointRepository.keyRef("e"), caps.joinToString(",") { it.name }, 1),
         )
@@ -70,10 +87,17 @@ class EndpointTesterTest {
     }
 
     @Test fun aKeyIsNeverSentOverHttpEvenForAnOldRow() = runTest {
-        KeyTransport.allowCleartextKeyForTests = false
-        save(EndpointKind.AZURE_OPENAI, setOf(Capability.CHAT)); tester.test("e", "m").let { assertFalse(it.ok) }
-        save(EndpointKind.OPENAI_COMPAT, setOf(Capability.EMBEDDINGS)); tester.test("e", "m").let { assertFalse(it.ok) }
-        assertEquals(0, server.requestCount)
+        val plain = MockWebServer().apply { start() }
+        try {
+            val url = plain.url("/").toString().trimEnd('/')
+            save(EndpointKind.AZURE_OPENAI, setOf(Capability.CHAT), url)
+            plain.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"OK"}}]}"""))
+            assertFalse(strictTester.test("e", "m").ok)
+            save(EndpointKind.OPENAI_COMPAT, setOf(Capability.EMBEDDINGS), url)
+            plain.enqueue(MockResponse().setBody("""{"data":[{"embedding":[0.1]}]}"""))
+            assertFalse(strictTester.test("e", "m").ok)
+            assertEquals(0, plain.requestCount)
+        } finally { plain.shutdown() }
     }
 
     private val redirectMsg = "Address redirects — enter the final address"

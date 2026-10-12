@@ -15,8 +15,11 @@ import java.util.concurrent.TimeUnit
 data class TestResult(val ok: Boolean, val latencyMs: Long, val message: String)
 
 /** spec §4.1 Test: a one-token chat, or one embedding for embedding-only endpoints. Messages are short and human. */
-class EndpointTester(private val repo: EndpointRepository, private val providers: ProviderBuilder) {
-    private val http = OkHttpClient.Builder().callTimeout(30, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()
+class EndpointTester(
+    private val repo: EndpointRepository,
+    private val providers: ProviderBuilder,
+    private val http: OkHttpClient = OkHttpClient.Builder().callTimeout(30, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build(),
+) {
 
     suspend fun test(endpointId: String, model: String): TestResult {
         val e = repo.byId(endpointId) ?: return TestResult(false, 0, "Endpoint not found")
@@ -42,7 +45,7 @@ class EndpointTester(private val repo: EndpointRepository, private val providers
             EndpointKind.OPENAI_COMPAT -> "${e.baseUrl}/embeddings" to """{"model":"$model","input":["ok"]}"""
             EndpointKind.LLAMACPP_LOCAL -> throw ProviderConfigException("On-device embeddings need the llama.cpp runtime")
         }
-        KeyTransport.requireSecure(url, key)
+        KeyTransport.requireSecure(url, key.takeIf { e.kind != EndpointKind.OLLAMA })
         val req = Request.Builder().url(url).post(body.toRequestBody("application/json".toMediaType())).apply {
             when (e.kind) {
                 EndpointKind.AZURE_OPENAI -> key?.let { addHeader("api-key", it) }
