@@ -23,6 +23,7 @@ import com.rokid.context.glasses.capture.CaptureService
 import com.rokid.context.glasses.link.CxrBridge
 import com.rokid.context.glasses.link.FakeBridge
 import com.rokid.context.glasses.link.HudController
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -142,6 +143,33 @@ class MainActivityTest {
             phoneState()
             s.onActivity { assertTrue(it.controller.sessionOpen.value) }
             assertFalse(old.sessionOpen.value)
+        }
+    }
+
+    /** Spec §5.5: a pause during the capture window (after CaptureService's check before binding) keeps the frame out. */
+    @Test fun aPauseDuringTheCaptureWindowKeepsTheFrameOutAndSendsNothing() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            phoneState()
+            runBlocking { runtime.pauses.ensureLoaded() }
+            assertTrue(runtime.pauses.captureAllowed()) // CaptureService's check before the camera binds
+            runBlocking { runtime.togglePause() } // the wearer pauses while the analyzer waits for a frame
+            assertEquals(BufferResult.PAUSED, runtime.bufferCaptured("g1", byteArrayOf(1, 2, 3), System.currentTimeMillis(), 90, "0", 80))
+            assertEquals(0, runtime.buffer.size)
+            runtime.onFrameBuffered()
+            Thread.sleep(GlassesRuntime.FLUSH_AFTER_HELLO_MS)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(bridge.sent.none { it.first == Channels.FRAME })
+        }
+    }
+
+    /** Control for the test above: the same path sends a frame when capture is allowed. */
+    @Test fun aFrameCapturedWhileAllowedIsSent() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            phoneState()
+            runBlocking { runtime.pauses.ensureLoaded() }
+            assertEquals(BufferResult.STORED, runtime.bufferCaptured("g2", byteArrayOf(1, 2, 3), System.currentTimeMillis(), 90, "0", 80))
+            runtime.onFrameBuffered()
+            waitUntil { bridge.sent.any { it.first == Channels.FRAME } }
         }
     }
 }

@@ -51,8 +51,8 @@ class CaptureSchedulerTest {
 
         s.ensureScheduled()
         val alarm = shadowOf(am).scheduledAlarms.single()
-        assertEquals(CaptureService::class.java.name, shadowOf(alarm.operation).savedIntent.component!!.className)
-        assertEquals(at, alarm.triggerAtTime)
+        assertEquals(CaptureService::class.java.name, alarmIntents().single().component!!.className)
+        assertEquals(at, alarm.getTriggerAtMs())
         assertEquals(at, s.nextTriggerAtMs())
     }
 
@@ -62,5 +62,27 @@ class CaptureSchedulerTest {
         am.set(AlarmManager.RTC_WAKEUP, 1_000_000, PendingIntent.getForegroundService(ctx, 30_071, legacy, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         CaptureScheduler(ctx).ensureScheduled()
         assertTrue(alarmIntents().none { it.action == "com.rokid.context.glasses.action.PULSE_SERVICE" })
+    }
+
+    private fun storeNext(at: Long) = ctx.getSharedPreferences("capture_scheduler", 0).edit().putLong("next_trigger_at_ms", at).commit()
+
+    /** A stored time beyond any real delay (the glasses clock jumped back) would stall capture for that long. */
+    @Test fun aStoredTimeBeyondTheLongestDelayIsStale() {
+        val now = System.currentTimeMillis()
+        storeNext(now + CaptureCadence.MAX_DELAY_MS + 60_000)
+        CaptureScheduler(ctx).ensureScheduled()
+        val at = CaptureScheduler(ctx).nextTriggerAtMs()!!
+        assertTrue("re-armed at $at", at <= System.currentTimeMillis() + CaptureScheduler.FIRST_DELAY_MS)
+        assertEquals(1, alarmIntents().size)
+    }
+
+    /** Due a moment ago: the alarm may have been lost to a force-stop just before it fired, so arm again soon. */
+    @Test fun aTimeDueWithinTheGraceIsArmedSoon() {
+        val now = System.currentTimeMillis()
+        storeNext(now - 2_000)
+        CaptureScheduler(ctx).ensureScheduled()
+        val at = CaptureScheduler(ctx).nextTriggerAtMs()!!
+        assertTrue("armed at $at", at in now..System.currentTimeMillis() + 1_000)
+        assertEquals(1, alarmIntents().size)
     }
 }

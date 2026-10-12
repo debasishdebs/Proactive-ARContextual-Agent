@@ -18,12 +18,16 @@ object FrameGuard {
         batteryPct: Int, charging: Boolean, meanLuma: Double, hash: Long, lastHash: Long?,
         nowMs: Long, lastKeptAtMs: Long, skipDedupe: Boolean = false,
     ): SkipReason? = when {
-        batteryPct in 0..LOW_BATTERY_PCT && !charging -> SkipReason.LOW_BATTERY
+        lowBattery(batteryPct, charging) -> SkipReason.LOW_BATTERY
         meanLuma < DARK_MEAN_LUMA -> SkipReason.DARK
         !skipDedupe && lastHash != null && hamming(lastHash, hash) <= DEDUP_HAMMING -> SkipReason.DUPLICATE
-        !skipDedupe && nowMs - lastKeptAtMs < MIN_KEEP_INTERVAL_MS -> SkipReason.THROTTLED
+        // A clock that moved back (negative gap) does not throttle, or capture would stop until it caught up.
+        !skipDedupe && nowMs - lastKeptAtMs in 0 until MIN_KEEP_INTERVAL_MS -> SkipReason.THROTTLED
         else -> null
     }
+
+    /** Unknown battery (-1) fails open on purpose: a missing reading must not stop capture for good. */
+    fun lowBattery(batteryPct: Int, charging: Boolean): Boolean = batteryPct in 0..LOW_BATTERY_PCT && !charging
 
     fun hamming(a: Long, b: Long): Int = java.lang.Long.bitCount(a xor b)
 }

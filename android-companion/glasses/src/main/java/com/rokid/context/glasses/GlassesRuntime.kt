@@ -89,6 +89,23 @@ class GlassesRuntime private constructor(private val app: Context) {
         nextCaptureAtMs = nextCaptureAtMs,
     )
 
+    /** Serialises a captured frame's write with the pause toggle's buffer clear (spec §5.5). */
+    private val captureGate = Any()
+
+    /**
+     * Stores a captured frame only while capture is allowed. Checked again under [captureGate], because the camera
+     * window lasts seconds after CaptureService's first check: a double-tap pause clears under the same gate after
+     * recording the pause, so either this sees the pause or the clear removes the frame. A pause that arrives during
+     * the write (a phone merge) is caught by the second check.
+     */
+    fun bufferCaptured(frameId: String, jpeg: ByteArray, capturedAtMs: Long, luma: Int?, phash: String?, batteryPct: Int?): BufferResult =
+        synchronized(captureGate) {
+            if (!pauses.captureAllowed()) return BufferResult.PAUSED
+            if (!buffer.add(frameId, jpeg, capturedAtMs, luma, phash, batteryPct)) return BufferResult.NOT_STORED
+            if (!pauses.captureAllowed()) { buffer.remove(frameId); return BufferResult.PAUSED }
+            BufferResult.STORED
+        }
+
     /** A frame was buffered: report the new buffer size and flush if the session is open. */
     fun onFrameBuffered() {
         controller?.sendHello()
@@ -98,7 +115,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     /** Double-tap pause/resume, applied here at once (spec §5.5); a pause drops the buffered frames. */
     suspend fun togglePause(): PauseToggle {
         val t = pauses.toggle()
-        if (t is PauseToggle.Paused) buffer.clear()
+        if (t is PauseToggle.Paused) synchronized(captureGate) { buffer.clear() }
         return t
     }
 
@@ -123,3 +140,6 @@ class GlassesRuntime private constructor(private val app: Context) {
         }
     }
 }
+
+/** [GlassesRuntime.bufferCaptured]: NOT_STORED = the write failed (e.g. storage full). */
+enum class BufferResult { STORED, PAUSED, NOT_STORED }
