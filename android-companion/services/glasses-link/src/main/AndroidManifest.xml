@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- preferGlobalHiRokid() looks up the global Hi Rokid build (package visibility on Android 11+). -->
+    <queries>
+        <package android:name="com.rokid.sprite.global.aiapp" />
+    </queries>
+    <application>
+        <activity
+            android:name="com.rokid.context.link.AuthActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+    </application>
+</manifest>

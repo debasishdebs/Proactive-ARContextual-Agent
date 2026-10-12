@@ -1,0 +1,150 @@
+package com.rokid.context.link
+
+import com.rokid.context.core.model.LinkState
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+class GlassesSessionPolicyTest {
+    @Test fun startedSendsSettingsAndMarksConnected() {
+        val p = GlassesSessionPolicy()
+        p.onEvent(LinkEvent.DevicePresent)
+        assertEquals(listOf(LinkAction.MarkConnected, LinkAction.SendSettings), p.onEvent(LinkEvent.Started))
+    }
+
+    /** BT drop → CXR pauses the session and resumes it by itself (phase 0): keep it, no second session. */
+    @Test fun pausedSessionIsKeptAndResumeResendsSettings() {
+        val p = GlassesSessionPolicy()
+        p.onEvent(LinkEvent.DevicePresent); p.onEvent(LinkEvent.Started)
+        assertEquals(listOf(LinkAction.MarkPaused), p.onEvent(LinkEvent.Paused))
+        assertEquals(listOf(LinkAction.MarkConnected, LinkAction.SendSettings), p.onEvent(LinkEvent.Resumed))
+    }
+
+    @Test fun closedWhilePresentRetriesWithBackoffAndNeverDoubleConnects() {
+        val p = GlassesSessionPolicy()
+        p.onEvent(LinkEvent.DevicePresent)
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.Closed))
+        assertEquals(listOf(LinkAction.Connect), p.onEvent(LinkEvent.RetryTimer))
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty(), "connect already in flight")
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(5_000)), p.onEvent(LinkEvent.ConnectFailed))
+        p.onEvent(LinkEvent.RetryTimer); p.onEvent(LinkEvent.Started)
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.Closed), "backoff reset after success")
+    }
+
+    @Test fun deviceGoneStopsRetrying() {
+        val p = GlassesSessionPolicy()
+        p.onEvent(LinkEvent.DevicePresent)
+        p.onEvent(LinkEvent.Closed)
+        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.DeviceGone))
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+    }
+
+    @Test fun manualConnectReplacesAStuckConnectingAttemptButNotAnOpenSession() {
+        val p = GlassesSessionPolicy()
+        p.onEvent(LinkEvent.DevicePresent)
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect())
+        p.onEvent(LinkEvent.Started)
+        assertTrue(p.manualConnect().isEmpty())
+        p.onEvent(LinkEvent.Paused)
+        assertTrue(p.manualConnect().isEmpty())
+    }
+
+    @Test fun connectTimeoutBehavesLikeFailureOnlyWhileConnecting() {
+        val p = GlassesSessionPolicy()
+        assertTrue(p.onEvent(LinkEvent.ConnectTimeout).isEmpty(), "nothing in flight")
+        p.onEvent(LinkEvent.DevicePresent)
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.ConnectTimeout))
+        assertTrue(p.onEvent(LinkEvent.ConnectTimeout).isEmpty(), "already waiting to retry")
+    }
+
+    /** Spec §1.7: GLASSES_EXIT never auto-reconnects (it would reopen the activity and steal the foreground). */
+    @Test fun glassesExitDoesNotAutoRetryUntilManualConnect() {
+        val p = GlassesSessionPolicy()
+        p.onEvent(LinkEvent.DevicePresent); p.onEvent(LinkEvent.Started)
+        assertEquals(listOf(LinkAction.MarkClosedOnGlasses), p.onEvent(LinkEvent.GlassesExited))
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect())
+    }
+
+    @Test fun linkLossStillRetriesWithBackoff() {
+        val p = GlassesSessionPolicy()
+        p.onEvent(LinkEvent.DevicePresent); p.onEvent(LinkEvent.Started)
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.Closed))
+    }
+
+    @Test fun authFailureStopsAutoRetry() {
+        val p = GlassesSessionPolicy()
+        p.onEvent(LinkEvent.DevicePresent)
+        assertEquals(listOf(LinkAction.MarkAuthNeeded), p.onEvent(LinkEvent.AuthFailed))
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+    }
+
+    @Test fun autoConnectTriesOnceWithoutARetryLoop() {
+        val p = GlassesSessionPolicy()
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.autoConnect())
+        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.ConnectFailed), "no ScheduleRetry")
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+    }
+
+    @Test fun autoConnectLeavesAnAttemptInFlightOrAnOpenSessionAlone() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect()
+        assertTrue(p.autoConnect().isEmpty(), "a connect is already in flight")
+        p.onEvent(LinkEvent.Started)
+        assertTrue(p.autoConnect().isEmpty(), "open session")
+    }
+
+    /** The user reopened the app on the glasses after closing it there: that is consent, so reconnect. */
+    @Test fun glassesAppOpenedReconnectsOnlyAfterAClosedOnGlasses() {
+        val p = GlassesSessionPolicy()
+        assertTrue(p.onEvent(LinkEvent.GlassesAppOpened).isEmpty(), "never closed on glasses")
+        p.onEvent(LinkEvent.DevicePresent); p.onEvent(LinkEvent.Started)
+        assertTrue(p.onEvent(LinkEvent.GlassesAppOpened).isEmpty(), "session open")
+        p.onEvent(LinkEvent.GlassesExited)
+        assertTrue(p.closedOnGlasses)
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.onEvent(LinkEvent.GlassesAppOpened))
+        assertFalse(p.closedOnGlasses)
+        assertTrue(p.onEvent(LinkEvent.GlassesAppOpened).isEmpty(), "connect already in flight")
+    }
+
+    @Test fun closedOnGlassesEndsOnDeviceGoneOrManualConnect() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited)
+        p.onEvent(LinkEvent.DeviceGone)
+        assertFalse(p.closedOnGlasses)
+        assertTrue(p.onEvent(LinkEvent.GlassesAppOpened).isEmpty())
+        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited)
+        p.manualConnect()
+        assertFalse(p.closedOnGlasses)
+    }
+
+    @Test fun closedOnGlassesStillAllowsAHubStartAttempt() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited)
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.autoConnect())
+    }
+
+    /** Spec §1.7: phone-app resume is not an explicit action, so a close on the glasses is never undone by it. */
+    @Test fun resumeReconnectsOnlyAnAuthorizedOfflineLink() {
+        assertTrue(shouldReconnectOnResume(LinkState.OFFLINE, hasToken = true, authDeclined = false))
+        assertFalse(shouldReconnectOnResume(LinkState.OFFLINE, hasToken = false, authDeclined = false), "never authorized")
+        assertFalse(shouldReconnectOnResume(LinkState.OFFLINE, hasToken = true, authDeclined = true), "declined")
+        assertFalse(shouldReconnectOnResume(LinkState.CLOSED_ON_GLASSES, hasToken = true, authDeclined = false), "closed on glasses")
+        for (s in listOf(LinkState.CONNECTING, LinkState.CONNECTED, LinkState.PAUSED_BT, LinkState.NOT_AUTHORIZED, LinkState.VERSION_MISMATCH)) {
+            assertFalse(shouldReconnectOnResume(s, hasToken = true, authDeclined = false), "$s")
+        }
+    }
+
+    @Test fun markActionsMapToLinkStates() {
+        assertEquals(LinkState.CONNECTED, LinkAction.MarkConnected.linkState())
+        assertEquals(LinkState.CONNECTING, LinkAction.MarkConnecting.linkState())
+        assertEquals(LinkState.PAUSED_BT, LinkAction.MarkPaused.linkState())
+        assertEquals(LinkState.OFFLINE, LinkAction.MarkDisconnected.linkState())
+        assertEquals(LinkState.CLOSED_ON_GLASSES, LinkAction.MarkClosedOnGlasses.linkState())
+        assertEquals(LinkState.NOT_AUTHORIZED, LinkAction.MarkAuthNeeded.linkState())
+        assertNull(LinkAction.Connect.linkState())
+        assertNull(LinkAction.ScheduleRetry(1).linkState())
+    }
+}
