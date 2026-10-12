@@ -225,6 +225,8 @@ class OrchestrationScheduler(
         workManager.cancelUniqueWork(FRAME_INGEST_WORK)
         workManager.cancelUniqueWork(CRITIC_WORK)
         workManager.cancelUniqueWork(QUEUE_DRAIN_WORK)
+        // Paused: no embedding calls either. A requested Rebuild is already persisted as pending (EmbeddingWorker.enqueue).
+        workManager.cancelUniqueWork(com.rokid.context.orchestration.EmbeddingWorker.NAME)
         workManager.cancelAllWorkByTag(TAG_SUMMARIZER)
         workManager.cancelAllWorkByTag(TAG_FRAME_INGEST)
         workManager.cancelAllWorkByTag(TAG_CRITIC)
