@@ -51,9 +51,12 @@ class ContextHubService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
-        running = false
-        watcher?.cancel()
-        HubGraph.get(this).stop()
+        // A service that never reached the foreground never started the hub: do not build one just to close it.
+        if (running) {
+            running = false
+            watcher?.cancel()
+            HubGraph.get(this).stop()
+        }
         super.onDestroy()
     }
 

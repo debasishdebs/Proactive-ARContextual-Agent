@@ -1,5 +1,10 @@
 package com.rokid.context.phone.hub
 
+import android.app.Application
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.annotation.Config
 import com.rokid.context.core.model.GlassesStatus
 import com.rokid.context.core.model.LinkState
 import org.junit.Assert.assertEquals
@@ -7,7 +12,16 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34], application = Application::class)
 class ContextHubServiceTest {
+    /** Fix round 1: a service destroyed without having started never builds the hub (or a CxrGlassesLink) just to close it. */
+    @Test fun destroyWithoutStartLeavesTheHubUnbuilt() {
+        HubGraph.resetForTests(null)
+        Robolectric.buildService(ContextHubService::class.java).destroy()
+        assertFalse(HubGraph.isBuilt)
+    }
+
     /** Android 14+ needs a runtime prerequisite for a connectedDevice FGS; BLUETOOTH_CONNECT exists from API 31. */
     @Test fun startsOnlyWithTheBluetoothPrerequisite() {
         assertTrue(ContextHubService.canStart(sdk = 30, bluetoothGranted = false))

@@ -14,6 +14,7 @@ import com.rokid.context.core.model.Wire
 import com.rokid.context.link.ClockOffset
 import com.rokid.context.link.GlassesEvent
 import com.rokid.context.link.GlassesLink
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,10 +59,10 @@ class Hub(
     fun start() {
         if (started) return
         jobs = listOf(
-            scope.launch { link.state.collect { s -> set { it.copy(link = s) } } },
-            scope.launch { link.events.collect { onEvent(it) } },
-            scope.launch { link.ready.collect { onReady() } },
-            scope.launch { withContext(io) { pauses.pruneHistory() } },
+            scope.launch { link.state.collect { s -> onLinkState(s) } },
+            scope.launch { link.events.collect { guarded("event ${it::class.simpleName}") { onEvent(it) } } },
+            scope.launch { link.ready.collect { guarded("ready") { onReady() } } },
+            scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
             broadcaster.start(),
         )
         link.connectOnce()
@@ -80,7 +81,37 @@ class Hub(
     /** A settings change from the phone: persisted, pushed now (when linked) and reflected in the next frame. */
     fun updateSettings(transform: (HudSettings) -> HudSettings) {
         settings.write(transform(settings.read()))
-        scope.launch { pushSettings(); broadcaster.markDirty() }
+        scope.launch { guarded("settings") { pushSettings(); broadcaster.markDirty() } }
+    }
+
+    /**
+     * One failing event (disk/DB full, …) is logged by class name and shown as a [UserFacingError]; it never ends
+     * collection or reaches the scope (master Review Focus 5).
+     */
+    private suspend fun guarded(what: String, block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "$what failed: ${e.javaClass.simpleName}")
+            set { it.copy(error = storageErrorFor(e)) }
+        }
+    }
+
+    private fun onLinkState(s: LinkState) {
+        if (s != LinkState.CONNECTED) newSession()
+        set { it.copy(link = s, offset = offset) }
+    }
+
+    /**
+     * The offset belongs to one glasses session (no RTC there: the clock can jump at a reboot). Until the new
+     * session's hello, pauses are anchored at receipt. Anchored originals of the old session are in its clock: dropped.
+     */
+    private fun newSession() {
+        offset = null
+        anchoredBeforeOffset.clear()
+        lastHelloRequestAtMs = null
     }
 
     private fun set(markDirty: Boolean = true, f: (HubState) -> HubState) {
@@ -89,10 +120,12 @@ class Hub(
         if (markDirty) broadcaster.markDirty()
     }
 
+    /** `pc_settings` first, then a `pc_state` through the broadcaster (≤ 4 Hz, Global Constraint). */
     private suspend fun onReady() {
-        set { it.copy(versionMismatch = false) }
+        newSession()
+        set(markDirty = false) { it.copy(versionMismatch = false, offset = null) }
         pushSettings()
-        broadcast()
+        broadcaster.markDirty()
     }
 
     private suspend fun pushSettings() {
@@ -173,12 +206,12 @@ class Hub(
 
     /** Computed on every change/heartbeat; sent only while linked. Sent even to an outdated app so it can show "Update". */
     private suspend fun broadcast() {
-        val s = _state.value
         val now = clock()
         val active = withContext(io) { pauses.active() }
         val today = withContext(io) { sources.today() }
         val depth = withContext(io) { sources.queueDepth() }
         val health = withContext(io) { sources.aiHealth(now) }
+        val s = _state.value // after the IO reads: the newest snapshot gets the next seq
         val frame = StateFrameBuilder.build(
             HubInputs(
                 seq = ++seq, nowMs = now, link = s.link, activePauses = active, offset = s.offset, settings = settings.read(),

@@ -26,6 +26,7 @@ import com.rokid.context.link.FakeGlassesLink
 import com.rokid.context.link.FrameAdmission
 import com.rokid.context.link.FrameReassembler
 import com.rokid.context.link.GlassesEvent
+import com.rokid.context.link.GlassesLink
 import com.rokid.context.link.ReceivedFrameLedger
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -35,6 +36,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -42,6 +44,11 @@ import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import java.io.File
+import java.io.IOException
+import android.database.sqlite.SQLiteFullException
+import com.rokid.context.core.model.UserFacingErrors
+import com.rokid.context.memory.db.PauseDao
+import com.rokid.context.memory.db.PauseRecordEntity
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34], application = Application::class)
@@ -57,10 +64,15 @@ class HubTest {
         override suspend fun aiHealth(nowMs: Long): Health = Health.Ok
     }
 
-    private fun TestScope.hub(link: FakeGlassesLink, clock: () -> Long = { now }): Hub {
-        val pauses = HubPauses(db.pauseDao(), clock)
+    private fun TestScope.hub(
+        link: GlassesLink,
+        clock: () -> Long = { now },
+        dao: PauseDao = db.pauseDao(),
+        onStored: () -> Unit = {},
+    ): Hub {
+        val pauses = HubPauses(dao, clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
-        val ingestor = FrameIngestor(File(tmp.root, "inbox"), FrameReassembler(), FrameAdmission(ledger, pauses), ledger) {}
+        val ingestor = FrameIngestor(File(tmp.root, "inbox"), FrameReassembler(), FrameAdmission(ledger, pauses), ledger, onStored = onStored)
         val settings = HubSettingsStore(ctx.getSharedPreferences("hub_test_${tmp.root.name}", 0)) { "hud" }
         return Hub(backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler))
             .also { it.start(); runCurrent() }
@@ -74,7 +86,7 @@ class HubTest {
         hub(link)
         assertEquals(1, link.connectOnceCalls)
         link.sent.clear()
-        link.emitReady(); runCurrent()
+        link.emitReady(); advanceTimeBy(300) // STATE goes through the broadcaster's 250 ms window
         assertEquals(listOf(Channels.SETTINGS, Channels.STATE), link.sent.map { it.first }.take(2))
         val frame = (Wire.decode<StateFrame>(link.lastOn(Channels.STATE)) as Decoded.Ok).value
         assertEquals(CaptureState.Running, frame.capture)
@@ -181,7 +193,7 @@ class HubTest {
     @Test fun aHeldFrameAsksForAFreshHelloAtMostOncePerWindow() = runTest {
         var t = now
         val link = FakeGlassesLink()
-        hub(link) { t }
+        hub(link, clock = { t })
         link.emit(hello()); runCurrent()
         fun future(id: String) = GlassesEvent.Frame(FrameCodec.split(id, ByteArray(2_000) { 3 }, capturedAtMs = now + 60_000).single())
         fun requests() = link.sent.count { it.first == Channels.HELLO_REQUEST }
@@ -193,5 +205,75 @@ class HubTest {
         t += Hub.HELLO_REQUEST_MIN_INTERVAL_MS
         link.emit(future("g10")); runCurrent()
         assertEquals(2, requests())
+    }
+
+    /** Fix round 1 (master Review Focus 5): a full disk while handling an event is shown, never crashes, never stops the hub. */
+    @Test fun aFullDiskInAnEventIsShownAndLaterEventsStillWork() = runTest {
+        var full = true
+        val dao = object : PauseDao by db.pauseDao() {
+            override suspend fun addMerged(record: PauseRecordEntity, activeNow: Boolean, now: Long) {
+                if (full) throw SQLiteFullException("database or disk is full")
+                db.pauseDao().addMerged(record, activeNow, now)
+            }
+        }
+        val link = FakeGlassesLink()
+        val h = hub(link, dao = dao)
+        link.emit(hello()); runCurrent()
+        link.emit(GlassesEvent.Cmd(Command.Pause(PauseRecord("g12", PauseOrigin.GLASSES, now, null)))); runCurrent()
+        assertEquals(UserFacingErrors.StorageFull, h.state.value.error)
+        full = false
+        link.emit(GlassesEvent.Cmd(Command.Pause(PauseRecord("g13", PauseOrigin.GLASSES, now, null)))); advanceTimeBy(300)
+        assertTrue("collection survived", h.status.value.frame!!.capture is CaptureState.Paused)
+    }
+
+    /** Fix round 1: the queue enqueue after a stored frame throws (ENOSPC): the frame is acked, the error shown, the hub lives. */
+    @Test fun aFailingQueueEnqueueAcksTheStoredFrameAndShowsStorageFull() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link, onStored = { throw IOException("write failed: ENOSPC (No space left on device)") })
+        link.emit(hello()); runCurrent()
+        link.emit(GlassesEvent.Frame(FrameCodec.split("g14", ByteArray(2_000) { 3 }, capturedAtMs = now - 1_000).single())); runCurrent()
+        assertEquals(FrameAck(frameId = "g14", ok = true), (Wire.decode<FrameAck>(link.lastOn(Channels.FRAME_ACK)) as Decoded.Ok).value)
+        assertEquals(UserFacingErrors.StorageFull, h.state.value.error)
+        link.emit(GlassesEvent.Cmd(Command.Pause(PauseRecord("g15", PauseOrigin.GLASSES, now, null)))); advanceTimeBy(300)
+        assertTrue(h.status.value.frame!!.capture is CaptureState.Paused)
+        assertEquals("Phone storage full", h.status.value.frame!!.error)
+    }
+
+    /** Fix round 1: a new session forgets the old offset (the glasses have no RTC), so an early pause is anchored, then re-converted. */
+    @Test fun aNewSessionForgetsTheOldOffset() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.emit(hello(glassesNowMs = now + 7_200_000)); runCurrent()
+        link.emitReady(); runCurrent()
+        assertNull("ready starts a new session", h.state.value.offset)
+        link.emit(hello(glassesNowMs = now + 7_200_000)); runCurrent()
+        link.setState(LinkState.PAUSED_BT); runCurrent()
+        assertNull("leaving CONNECTED ends the session", h.state.value.offset)
+        link.setState(LinkState.CONNECTED); link.emitReady(); runCurrent()
+        // The glasses rebooted and their clock now matches the phone's.
+        link.emit(GlassesEvent.Cmd(Command.Pause(PauseRecord("g16", PauseOrigin.GLASSES, now - 10_000, null)))); runCurrent()
+        assertEquals("anchored at receipt, not converted with the stale 2 h offset", now, db.pauseDao().intervalFor("g16")!!.startMs)
+        link.emit(hello(glassesNowMs = now)); runCurrent()
+        assertEquals(now - 10_000, db.pauseDao().intervalFor("g16")!!.startMs)
+    }
+
+    private class TimedLink(val inner: FakeGlassesLink, val time: () -> Long) : GlassesLink by inner {
+        val stateAt = mutableListOf<Long>()
+        override suspend fun send(channel: String, json: String): Boolean =
+            inner.send(channel, json).also { if (it && channel == Channels.STATE) stateAt += time() }
+    }
+
+    /** Fix round 1 (≤ 4 Hz Global Constraint): ready goes through the broadcaster, so frames are always ≥ 250 ms apart. */
+    @Test fun readyAndAnImmediateChangeNeverSendTwoFramesWithin250Ms() = runTest {
+        val fake = FakeGlassesLink()
+        val link = TimedLink(fake) { testScheduler.currentTime }
+        hub(link)
+        advanceTimeBy(100) // inside the window of the start-up frame
+        fake.emitReady(); runCurrent()
+        fake.emit(hello()); runCurrent()
+        advanceTimeBy(2_000)
+        val at = link.stateAt.toList()
+        assertTrue("frames: $at", at.size >= 2)
+        at.zipWithNext().forEach { (a, b) -> assertTrue("frames ${b - a} ms apart in $at", b - a >= 250) }
     }
 }
