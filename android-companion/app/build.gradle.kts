@@ -40,6 +40,8 @@ android {
         buildConfigField("String", "AZURE_KG_DEPLOYMENT", "\"${envOrDefault("AZURE_KG_DEPLOYMENT", "gpt-5.4")}\"")
         buildConfigField("String", "OLLAMA_BASE_URL", "\"${envOrDefault("OLLAMA_BASE_URL", "http://10.0.2.2:11434")}\"")
         buildConfigField("String", "OLLAMA_MODEL", "\"${envOrDefault("OLLAMA_MODEL", "llama3.1:8b")}\"")
+        buildConfigField("String", "LOCAL_RUNTIME_MODE", "\"${envOrDefault("LOCAL_RUNTIME_MODE", "native_first")}\"")
+        buildConfigField("String", "LOCAL_NATIVE_MODEL_PATH", "\"${envOrDefault("LOCAL_NATIVE_MODEL_PATH", "")}\"")
     }
 
     buildTypes {
@@ -84,6 +86,7 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")

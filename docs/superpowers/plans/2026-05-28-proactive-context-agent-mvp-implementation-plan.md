@@ -17,6 +17,13 @@ The approved spec spans multiple independent subsystems. To keep implementation 
 3. Track C: UX/onboarding/config/diagnostics.
 4. Track D: Model lifecycle + multilingual retrieval + E2E hardening.
 
+## Status Correction (2026-05-29)
+- First-priority gap acknowledged: direct Rokid↔Companion bridge + write/read queue correctness should be completed before UI polish.
+- Immediate execution order update:
+1. Implement production bridge contract (glasses producer + companion consumer), keep USB bridge only as debug fallback.
+2. Implement durable queue processor for `writeContext explicit`, `writeContext batched`, `readContext`, `retry` with FIFO + TTL + cancellation rules.
+3. Bind queue screen and memory/tracker to real queue/storage state only (remove placeholders).
+
 Each track below is independently testable and commit-scoped.
 
 ## File Structure Map

@@ -1,0 +1,13 @@
+Task: Re-summarize low-confidence memory using critic feedback.
+PriorSummary:
+{{prior_summary}}
+CriticReasoning:
+{{critic_reasoning}}
+AttachedImages:
+{{attached_images}}
+SourceContext:
+{{source_context}}
+Rules:
+- If images are attached, inspect them for scene details and use them in the revised summary.
+- Mention uncertainty clearly when image quality/content is ambiguous.
+Return improved JSON summary with updated confidence and notes.

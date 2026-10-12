@@ -13,11 +13,17 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 
 class OllamaProvider(
     private val baseUrl: String = BuildConfig.OLLAMA_BASE_URL,
     private val model: String = BuildConfig.OLLAMA_MODEL,
-    private val client: OkHttpClient = OkHttpClient(),
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
+        .callTimeout(150, TimeUnit.SECONDS)
+        .build(),
 ) : ModelProvider {
     override suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
         require(baseUrl.isNotBlank()) { "OLLAMA_BASE_URL is missing" }

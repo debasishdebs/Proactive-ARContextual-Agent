@@ -1,0 +1,14 @@
+Task: Convert explicit user-provided memory input into durable context.
+Persona: {{persona}}
+InputLanguage: {{input_language}}
+TimestampIso: {{timestamp_iso}}
+RawInput:
+{{raw_input}}
+Output JSON schema:
+{
+  "memory_type": "short_term|medium_term|long_term",
+  "summary": "<=120 words",
+  "facts": ["..."],
+  "confidence": 0.0,
+  "tags": ["..."]
+}

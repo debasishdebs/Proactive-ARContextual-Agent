@@ -21,6 +21,17 @@ This spec covers:
 
 This spec intentionally keeps Option 1 orchestration for MVP and defers Option 3 state-machine migration by one week after MVP completion.
 
+## 1.1 Implementation Reality Check (As Of 2026-05-29)
+- Implemented:
+  - Companion app UI shell with Home/Live/Queues/Frames/Memory/Config.
+  - Summarizer + critic workers and tracker/memory runtime logs.
+  - Frame slideshow UI with fullscreen controls.
+  - USB debug bridge script for host-mediated glasses screenshot ingest.
+- Not fully implemented yet:
+  - Production Rokid↔Companion direct bridge (no socket/BLE/Wi-Fi direct transport yet).
+  - Durable multi-queue orchestration for `writeContext explicit`, `writeContext batched`, `readContext`, `retry` with true FIFO persistence and cancellation semantics.
+  - End-to-end write/read context pipeline where queues are authoritative (current queue counts partly derived from runtime counters and placeholders).
+
 ## 2. Chosen Approach
 Chosen for MVP: Single Orchestrator + Concurrent Queues (Option 1).
 
