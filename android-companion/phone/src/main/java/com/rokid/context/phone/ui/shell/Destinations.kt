@@ -115,7 +115,7 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
 
     composable(Routes.SETTINGS_ENDPOINTS) {
         val app = LocalContext.current.applicationContext
-        val vm = viewModel { LegacyConfigViewModel(app, deps.pipeline) }
+        val vm = viewModel { LegacyConfigViewModel(app, deps.pipeline, setVerbosity = deps.hudVerbosity) }
         val state by vm.state.collectAsStateWithLifecycle()
         LegacyConfigScreen(
             state, onBack = back, onTogglePipeline = vm::togglePipeline, onToggleLocalMode = vm::toggleLocalMode, onToggleEncryption = vm::toggleEncryption,

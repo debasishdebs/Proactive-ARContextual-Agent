@@ -192,19 +192,24 @@ class HubTest {
         assertEquals(1, link.connectCalls)
     }
 
-    /** Carry (Phase 3 review): Reconnect with the hub service down starts it first; it is never a silent no-op. */
+    /**
+     * Carry (Phase 3 review): Reconnect with the hub service down only starts the service; its hub.start() connects
+     * once from Idle, so no second connect is sent from here.
+     */
     @Test fun reconnectStartsTheHubServiceWhenTheHubIsNotRunning() = runTest {
         val link = FakeGlassesLink(LinkState.OFFLINE)
         var starts = 0
         hub(link, startService = { starts++ }, start = false).requestReconnect()
         assertEquals(1, starts)
-        assertEquals(1, link.connectCalls)
+        assertEquals(0, link.connectCalls)
     }
 
-    @Test fun reconnectDoesNotRestartARunningHub() = runTest {
+    @Test fun reconnectOnARunningHubConnectsWithoutRestartingIt() = runTest {
+        val link = FakeGlassesLink()
         var starts = 0
-        hub(FakeGlassesLink(), startService = { starts++ }).requestReconnect()
+        hub(link, startService = { starts++ }).requestReconnect()
         assertEquals(0, starts)
+        assertEquals(1, link.connectCalls)
     }
 
     /** Carry (Phase 3 review): each frame the glasses deliver leaves their buffer, so the count drops without a new hello. */

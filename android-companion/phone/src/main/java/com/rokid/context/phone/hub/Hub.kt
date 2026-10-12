@@ -78,10 +78,12 @@ class Hub(
         link.close()
     }
 
-    /** Explicit Reconnect: a hub whose service is down is started too, so the tap is never a silent no-op. */
+    /**
+     * Explicit Reconnect. A hub whose service is down only starts the service (never a silent no-op): its [start]
+     * connects once from Idle, so a second connect here would race it.
+     */
     override fun requestReconnect() {
-        if (!started) startService()
-        link.connect()
+        if (started) link.connect() else startService()
     }
 
     fun onAppResumed() = link.connectOnResume()

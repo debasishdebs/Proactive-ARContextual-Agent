@@ -22,7 +22,6 @@ import com.rokid.context.core.ui.components.ScreenHeader
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.orchestration.LegacyConfigBridge
-import com.rokid.context.phone.hub.HubGraph
 import com.rokid.context.phone.hub.HubSettingsStore
 import com.rokid.context.phone.ui.status.PipelineControl
 import com.rokid.context.ui.config.ConfigHubScreen
@@ -64,8 +63,8 @@ class LegacyConfigViewModel(
     private val context: Context,
     private val pipeline: PipelineControl,
     private val ai: () -> AiGraph = { AiGraph.get(context) },
-    /** HUD verbosity goes out through the hub (`pc_settings`, pushed now when linked and kept for the next session). */
-    private val setVerbosity: (Verbosity) -> Unit = { v -> HubGraph.get(context).updateSettings { it.copy(verbosity = v) } },
+    /** HUD verbosity out through the hub (`pc_settings`), handed in by the shell (`PhoneDeps.hudVerbosity`). */
+    private val setVerbosity: (Verbosity) -> Unit = {},
 ) : ViewModel() {
     private val io = Dispatchers.IO.limitedParallelism(1)
     private var syncJob: Job? = null
