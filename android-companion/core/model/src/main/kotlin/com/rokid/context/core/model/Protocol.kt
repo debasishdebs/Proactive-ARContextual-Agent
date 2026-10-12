@@ -136,6 +136,9 @@ sealed interface Command {
 /**
  * Glasses → phone on `pc_hello`: sent when a session opens and again after each buffered frame (a status report).
  * [glassesNowMs] gives the phone the clock offset; [pauses] and [nextCaptureAtMs] are in glasses clock.
+ * [resumedAtMs] = pauseId → glasses-clock instant of every Resume the wearer made that the phone has not yet confirmed
+ * (it still listed the id). Re-sent in every hello, so a Resume made while the link was down is never lost. Additive:
+ * an older payload without it decodes to empty.
  */
 @Serializable
 data class Hello(
@@ -145,6 +148,7 @@ data class Hello(
     val glassesNowMs: Long,
     val pauses: List<PauseRecord>,
     val nextCaptureAtMs: Long? = null,
+    val resumedAtMs: Map<String, Long> = emptyMap(),
 )
 
 /** Phone → glasses on `pc_hello_request`: the glasses answer with [Hello]. Sent rate-limited when a frame is held. */

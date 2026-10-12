@@ -36,10 +36,14 @@ class HubPauses(private val dao: PauseDao, private val now: () -> Long = System:
         add(exact)
     }
 
-    /** Ends only the named records (spec §5.5: a Resume never clears pauses its sender did not know). */
-    suspend fun resume(clears: Set<String>) {
+    /**
+     * Ends only the named records (spec §5.5: a Resume never clears pauses its sender did not know), at [atMs] (phone
+     * clock; never later than now). A past [atMs] is a Resume made offline: frames captured after it are admitted.
+     */
+    suspend fun resume(clears: Set<String>, atMs: Long? = null) {
         if (clears.isEmpty()) return
-        dao.resumeNamed(clears, now())
+        val t = now()
+        dao.resumeNamed(clears, atMs?.coerceAtMost(t) ?: t)
     }
 
     override suspend fun pausedAt(phoneMs: Long): Boolean {

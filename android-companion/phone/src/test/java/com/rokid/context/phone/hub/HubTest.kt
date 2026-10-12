@@ -121,6 +121,40 @@ class HubTest {
         assertEquals(CaptureState.Running, h.status.value.frame!!.capture)
     }
 
+    /**
+     * Cross-boundary: pause P stored while linked; the wearer resumes offline (the Resume command is lost); the next
+     * session's hello names P in `resumedAtMs`. P ends at the glasses' resume instant, so a frame buffered offline after
+     * the resume and the next live frame are both admitted, not PAUSED_DROP.
+     */
+    @Test fun aResumeCarriedInHelloEndsThePauseAndFramesAreAdmitted() = runTest {
+        val link = FakeGlassesLink()
+        var t = now
+        val h = hub(link, clock = { t })
+        val skew = 3_600_000L // glasses clock = phone + 1 h
+        link.emit(hello(glassesNowMs = t + skew)); runCurrent()
+        link.emit(GlassesEvent.Cmd(Command.Pause(PauseRecord("P", PauseOrigin.GLASSES, t + skew, null)))); runCurrent()
+        assertEquals(listOf("P"), HubPauses(db.pauseDao()) { t }.active().map { it.pauseId })
+
+        val resumedAt = t + 60_000 // glasses clock - skew; BT is down from here
+        t += 600_000
+        link.setState(LinkState.PAUSED_BT); runCurrent(); link.setState(LinkState.CONNECTED); runCurrent()
+        link.emit(
+            GlassesEvent.HelloReceived(
+                Hello(glassesBatteryPct = 70, bufferSize = 1, glassesNowMs = t + skew, pauses = emptyList(), resumedAtMs = mapOf("P" to resumedAt + skew)),
+            ),
+        ); runCurrent()
+        assertTrue("no active pause", HubPauses(db.pauseDao()) { t }.active().isEmpty())
+
+        val offline = FrameCodec.split("g_offline", ByteArray(2_000) { 4 }, capturedAtMs = resumedAt + skew + 1_000).single()
+        link.emit(GlassesEvent.Frame(offline)); runCurrent()
+        assertEquals(FrameAck(frameId = "g_offline", ok = true), (Wire.decode<FrameAck>(link.lastOn(Channels.FRAME_ACK)) as Decoded.Ok).value)
+        val live = FrameCodec.split("g_live", ByteArray(2_000) { 5 }, capturedAtMs = t + skew - 1_000).single()
+        link.emit(GlassesEvent.Frame(live)); runCurrent()
+        assertEquals(FrameAck(frameId = "g_live", ok = true), (Wire.decode<FrameAck>(link.lastOn(Channels.FRAME_ACK)) as Decoded.Ok).value)
+        advanceTimeBy(300)
+        assertEquals(CaptureState.Running, h.status.value.frame!!.capture)
+    }
+
     @Test fun frameIsHeldBeforeHelloThenIngestedAndAcked() = runTest {
         val link = FakeGlassesLink()
         val h = hub(link)

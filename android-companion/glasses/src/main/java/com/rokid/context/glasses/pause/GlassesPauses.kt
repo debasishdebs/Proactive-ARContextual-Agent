@@ -18,7 +18,8 @@ sealed interface PauseToggle {
 /**
  * Glasses-local pause enforcement (spec §1.7 exception, §5.5). A double-tap pause applies at once and persists, linked
  * or not; phone records merge by union and are never removed here; capture runs only when no record is active on the
- * glasses clock; before the store is loaded nothing is allowed. A Resume names only the records the glasses know.
+ * glasses clock; before the store is loaded nothing is allowed. A Resume names only the records the glasses know, and is
+ * repeated in each `pc_hello` until the phone stops listing the ids.
  */
 class GlassesPauses(
     private val store: PauseStore,
@@ -29,11 +30,18 @@ class GlassesPauses(
     private val mutex = Mutex()
     private val _records = MutableStateFlow<List<PauseRecord>>(emptyList())
     val records: StateFlow<List<PauseRecord>> = _records
-    /** Ids the wearer resumed locally; a phone push that still lists one must not re-pause capture. */
-    private var tombstones: Map<String, Long> = emptyMap()
+    /**
+     * Ids the wearer resumed locally (-> glasses-clock resume instant); a phone push that still lists one must not
+     * re-pause capture. Each stays until a phone push no longer lists it (the phone has applied the Resume), and is
+     * re-sent in every `pc_hello` until then, so a Resume made while the link was down is not lost.
+     */
+    @Volatile private var tombstones: Map<String, Long> = emptyMap()
     @Volatile private var loaded = false
 
     suspend fun ensureLoaded() = mutex.withLock { loadLocked() }
+
+    /** Resumes the phone has not confirmed yet (pauseId -> glasses-clock instant), for `Hello.resumedAtMs`. */
+    fun resumedAtMs(): Map<String, Long> = tombstones
 
     fun active(nowMs: Long = clock()): List<PauseRecord> = _records.value.filter { it.isActiveAt(nowMs) }
 
@@ -61,8 +69,9 @@ class GlassesPauses(
         val known = _records.value.map { it.pauseId }.toSet()
         val now = clock()
         val listed = records.map { it.pauseId }.toSet()
-        // A tombstone ends once the phone no longer lists the id, or after TOMBSTONE_TTL_MS.
-        val liveTombs = tombstones.filter { (id, at) -> id in listed && now - at < TOMBSTONE_TTL_MS }
+        // A tombstone ends only once the phone no longer lists the id. No time limit: after a long offline spell the
+        // first push still lists it (the hello naming it is handled after), and must not re-pause capture.
+        val liveTombs = tombstones.filterKeys { it in listed }
         val added = records.filter { it.pauseId !in known && it.pauseId !in liveTombs && it.isActiveAt(now) }
         val tombsChanged = liveTombs != tombstones
         tombstones = liveTombs
@@ -96,6 +105,5 @@ class GlassesPauses(
 
     companion object {
         const val TAG = "PcPause"
-        const val TOMBSTONE_TTL_MS = 600_000L
     }
 }

@@ -5,6 +5,8 @@ import android.os.BatteryManager
 import android.util.Log
 import com.rokid.context.core.model.Hello
 import com.rokid.context.core.model.Overlay
+import com.rokid.context.glasses.capture.ForegroundFallback
+import com.rokid.context.glasses.capture.HudPresence
 import com.rokid.context.glasses.capture.OutboundBuffer
 import com.rokid.context.glasses.link.CxrBridge
 import com.rokid.context.glasses.link.FrameUplink
@@ -39,6 +41,9 @@ class GlassesRuntime private constructor(private val app: Context) {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + errors)
     val pauses = GlassesPauses(PauseStore(File(app.filesDir, "pauses.preferences_pb"), ioScope))
     val buffer = OutboundBuffer(File(app.filesDir, "outbound"), log = { Log.i(UPLINK_TAG, it) })
+    /** Our HUD activity's lifecycle, for the capture fallback (spec §1.7: never reopened over another app). */
+    val hudPresence = HudPresence()
+    val fallback = ForegroundFallback(hudPresence)
     /** Push-to-talk recording (set by Phase 6); frames never flush while true (spec §1.8). */
     val listening = MutableStateFlow(false)
     /** The attached controller (tests check that exactly one is live). */
@@ -80,13 +85,14 @@ class GlassesRuntime private constructor(private val app: Context) {
         bridge.release()
     }
 
-    /** `pc_hello`: clock, battery, buffer size, local pauses, next capture (all glasses clock). */
+    /** `pc_hello`: clock, battery, buffer size, local pauses, unconfirmed resumes, next capture (all glasses clock). */
     fun hello(nextCaptureAtMs: Long?): Hello = Hello(
         glassesBatteryPct = batteryPct(),
         bufferSize = buffer.size,
         glassesNowMs = System.currentTimeMillis(),
         pauses = pauses.records.value,
         nextCaptureAtMs = nextCaptureAtMs,
+        resumedAtMs = pauses.resumedAtMs(),
     )
 
     /** Serialises a captured frame's write with the pause toggle's buffer clear (spec §5.5). */

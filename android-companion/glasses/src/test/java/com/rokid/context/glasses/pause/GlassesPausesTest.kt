@@ -112,12 +112,22 @@ class GlassesPausesTest {
         assertEquals(listOf("p2"), p.records.value.map { it.pauseId })
     }
 
-    @Test fun aTombstoneExpiresAfterTenMinutes() = runBlocking {
+    /**
+     * An offline Resume stays pending (and is re-sent in every `pc_hello`) until the phone stops listing the id, however
+     * long the link was down: a time limit would let a stale push re-pause capture with no user action.
+     */
+    @Test fun aTombstoneLastsUntilThePhoneDropsTheId() = runBlocking {
         val p = pauses().also { it.ensureLoaded() }
         p.mergeFromPhone(listOf(p1)); p.toggle()
-        now += 600_000
+        assertEquals(mapOf("p1" to now), p.resumedAtMs())
+        now += 3_600_000
         p.mergeFromPhone(listOf(p1))
-        assertFalse(p.captureAllowed())
+        assertTrue("an hour offline does not re-pause", p.captureAllowed())
+        assertEquals(setOf("p1"), p.resumedAtMs().keys)
+        val again = pauses().also { it.ensureLoaded() }
+        assertEquals("persisted", setOf("p1"), again.resumedAtMs().keys)
+        again.mergeFromPhone(emptyList())
+        assertEquals("the phone dropped it: resolved", emptyMap<String, Long>(), again.resumedAtMs())
     }
 
     @Test fun nothingIsAllowedBeforeLoading() = assertFalse(pauses().captureAllowed())

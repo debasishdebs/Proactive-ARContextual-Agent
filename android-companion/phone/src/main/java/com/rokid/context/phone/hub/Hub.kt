@@ -144,9 +144,11 @@ class Hub(
                 anchoredBeforeOffset.clear()
                 withContext(io) {
                     anchored.forEach { pauses.reanchor(it) }
+                    // Resumes the wearer made while the link was down (their pc_cmd may never have arrived).
+                    h.resumedAtMs.forEach { (id, at) -> pauses.resume(setOf(id), measured.toPhone(at)) }
                     pauses.union(h.pauses.map(measured::recordToPhone))
                 }
-                Log.i(TAG, "hello battery=${h.glassesBatteryPct} buffered=${h.bufferSize} offsetMs=${measured.glassesMinusPhoneMs}")
+                Log.i(TAG, "hello battery=${h.glassesBatteryPct} buffered=${h.bufferSize} resumed=${h.resumedAtMs.size} offsetMs=${measured.glassesMinusPhoneMs}")
                 set {
                     it.copy(
                         versionMismatch = false, offset = measured, glassesBatteryPct = h.glassesBatteryPct ?: it.glassesBatteryPct,

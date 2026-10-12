@@ -17,6 +17,10 @@ import com.rokid.context.core.model.Command
 import com.rokid.context.core.model.CommandEnvelope
 import com.rokid.context.core.model.Decoded
 import com.rokid.context.core.model.Health
+import com.rokid.context.core.model.Hello
+import com.rokid.context.core.model.HudSettings
+import com.rokid.context.core.model.PauseOrigin
+import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.StateFrame
 import com.rokid.context.core.model.Wire
 import com.rokid.context.glasses.capture.CaptureService
@@ -101,6 +105,28 @@ class MainActivityTest {
         }
     }
 
+    /** A Resume made while BT is down (its one-shot command lost) is re-sent in the `pc_hello` of the next session. */
+    @Suppress("DEPRECATION")
+    @Test fun aResumeMadeOfflineIsResentInTheNextSessionsHello() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            val p = PauseRecord("phone-p", PauseOrigin.PHONE, System.currentTimeMillis() - 1_000, null)
+            val settings = Wire.encode(HudSettings(pauses = listOf(p)))
+            bridge.phone(Channels.SETTINGS, settings)
+            waitUntil { runtime.pauses.records.value.any { it.pauseId == p.pauseId } }
+            bridge.disconnected()
+            s.onActivity { it.onBackPressed() } // the wearer resumes offline
+            waitUntil { commands().any { it is Command.Resume } }
+            assertTrue(runtime.pauses.captureAllowed())
+
+            bridge.sent.clear()
+            bridge.phone(Channels.SETTINGS, settings) // reconnect: the phone still lists P
+            val hello = bridge.sent.first { it.first == Channels.HELLO }.second.single()
+            assertEquals(setOf(p.pauseId), (Wire.decode<Hello>(hello) as Decoded.Ok).value.resumedAtMs.keys)
+            Thread.sleep(200); shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(runtime.pauses.captureAllowed(), "the stale push does not re-pause")
+        }
+    }
+
     @Test fun tapWhileLiveSaysAskIsComingSoon() {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             phoneState()
@@ -123,6 +149,23 @@ class MainActivityTest {
         assertNull(runtime.controller)
         phoneState() // the phone's heartbeat must not reopen it
         assertFalse(c.sessionOpen.value)
+    }
+
+    /** Spec §1.7: the capture fallback may bring the HUD back while it is in front... */
+    @Test fun theCaptureFallbackWorksWhileTheActivityIsInFront() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            assertTrue(runtime.fallback.maybeLaunch(app))
+            assertEquals(MainActivity::class.java.name, shadowOf(app).nextStartedActivity.component?.className)
+        }
+    }
+
+    /** ...and never after the wearer exited it: a failed capture window must not pull the HUD over another app. */
+    @Test fun theCaptureFallbackDoesNotReopenAnExitedActivity() {
+        ActivityScenario.launch(MainActivity::class.java).close()
+        while (shadowOf(app).nextStartedActivity != null) Unit // drain the scenario's own launch
+        assertFalse(runtime.hudPresence.fallbackAllowed())
+        assertFalse(runtime.fallback.maybeLaunch(app))
+        assertNull(shadowOf(app).nextStartedActivity)
     }
 
     @Test fun recreationKeepsOneControllerAndDoesNotRerunTheCaptureIntent() {
