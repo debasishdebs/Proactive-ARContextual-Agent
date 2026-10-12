@@ -36,7 +36,9 @@ class KeyGestures(
             if (doubleTap.onNotificationKey(wallMs)) out += PadInput.DoubleTapped
             return KeyResult(true, out)
         }
-        val key = swipeKey(keyCode) ?: return KeyResult(keyCode == KEY_ENTER || keyCode == KEY_DPAD_CENTER)
+        val tapKey = keyCode == KEY_ENTER || keyCode == KEY_DPAD_CENTER
+        if (tapKey && first) doubleTap.onGestureKey() // a tap breaks a 83 pair, like a swipe
+        val key = swipeKey(keyCode) ?: return KeyResult(tapKey)
         if (!first) return KeyResult(true)
         doubleTap.onGestureKey()
         return KeyResult(true, listOfNotNull(swipes.onKey(key, uptimeMs)?.let { PadInput.Swiped(it) }))

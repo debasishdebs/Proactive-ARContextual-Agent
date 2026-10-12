@@ -40,4 +40,13 @@ class ConfirmInputTest {
         assertFalse(i.hasPending)
         assertNull(i.onTap()); assertNull(i.onNo())
     }
+
+    @Test fun aProposalGetsOneVote() {
+        val i = ConfirmInput(); i.onConfirm(c("a"))
+        assertEquals(Command.Confirm("a", yes = true), i.onTap())
+        assertNull(i.onTap()); assertNull(i.onNo())
+        assertFalse(i.onConfirm(c("a")), "a re-sent proposal is not new after its vote")
+        assertNull(i.onTap())
+        assertTrue(i.onConfirm(c("b")))
+    }
 }
