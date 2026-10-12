@@ -3,8 +3,12 @@ package com.rokid.context.memory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.MemoryEntity
+import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.MemoryVectorEntity
+import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.memory.retrieval.BruteForceVectorIndex
+import com.rokid.context.memory.retrieval.Hit
 import com.rokid.context.memory.retrieval.VectorCodec
 import com.rokid.context.memory.retrieval.VectorMath
 import kotlinx.coroutines.runBlocking
@@ -22,7 +26,14 @@ import org.robolectric.annotation.Config
 class VectorIndexTest {
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     private val index = BruteForceVectorIndex(db.embeddingDao())
+    private val memories = MemoryRepository(db.memoryDao())
     @After fun close() = db.close()
+
+    /** Stores the vector and (unless [memory] is false) an OK memory row for it: the index only scores live memories. */
+    private suspend fun put(id: String, space: String, v: FloatArray, memory: Boolean = true, review: ReviewState = ReviewState.OK) {
+        if (memory) memories.addIgnore(MemoryEntity(id, null, "m $id", "note", "", MemoryTier.SHORT, 0.8, review, false, 1, false, ""))
+        db.embeddingDao().putVector(MemoryVectorEntity(id, space, VectorCodec.encode(v)))
+    }
 
     @Test fun codecIsLittleEndianFloat32() {
         val bytes = VectorCodec.encode(floatArrayOf(1f, -2.5f))
@@ -32,10 +43,10 @@ class VectorIndexTest {
     }
 
     @Test fun ranksByCosineWithinOneSpaceOnly() = runBlocking {
-        // memory_vector has no foreign key, so a literal space id is enough here
-        db.embeddingDao().putVector(MemoryVectorEntity("near", "S", VectorCodec.encode(floatArrayOf(1f, 0.1f))))
-        db.embeddingDao().putVector(MemoryVectorEntity("far", "S", VectorCodec.encode(floatArrayOf(-1f, 0f))))
-        db.embeddingDao().putVector(MemoryVectorEntity("elsewhere", "OTHER", VectorCodec.encode(floatArrayOf(1f, 0f))))
+        // memory_vector has no foreign key, so a literal space id is enough here (the memory rows must exist)
+        put("near", "S", floatArrayOf(1f, 0.1f))
+        put("far", "S", floatArrayOf(-1f, 0f))
+        put("elsewhere", "OTHER", floatArrayOf(1f, 0f))
         val hits = index.search("S", floatArrayOf(1f, 0f), 5)
         assertEquals(listOf("near", "far"), hits.map { it.id })
         assertTrue(hits[0].score > 0.99 && hits[1].score < -0.99)
@@ -43,9 +54,9 @@ class VectorIndexTest {
     }
 
     @Test fun zeroAndMismatchedVectorsNeverProduceNaN() = runBlocking {
-        db.embeddingDao().putVector(MemoryVectorEntity("zero", "S", VectorCodec.encode(floatArrayOf(0f, 0f))))
-        db.embeddingDao().putVector(MemoryVectorEntity("wrongDim", "S", VectorCodec.encode(floatArrayOf(1f, 0f, 0f))))
-        db.embeddingDao().putVector(MemoryVectorEntity("ok", "S", VectorCodec.encode(floatArrayOf(0f, 1f))))
+        put("zero", "S", floatArrayOf(0f, 0f))
+        put("wrongDim", "S", floatArrayOf(1f, 0f, 0f))
+        put("ok", "S", floatArrayOf(0f, 1f))
         val hits = index.search("S", floatArrayOf(0f, 1f), 5)
         assertEquals(listOf("ok", "zero"), hits.map { it.id })
         assertTrue(hits.none { it.score.isNaN() }); assertEquals(0.0, hits[1].score, 0.0)
@@ -60,17 +71,57 @@ class VectorIndexTest {
 
     @Test fun decodeRejectsATruncatedBlobAndTheIndexSkipsIt() = runBlocking {
         assertThrows(IllegalArgumentException::class.java) { VectorCodec.decode(ByteArray(7)) }
-        db.embeddingDao().putVector(MemoryVectorEntity("broken", "S", ByteArray(7)))
-        db.embeddingDao().putVector(MemoryVectorEntity("ok", "S", VectorCodec.encode(floatArrayOf(1f, 0f))))
+        put("broken", "S", floatArrayOf()); db.embeddingDao().putVector(MemoryVectorEntity("broken", "S", ByteArray(7)))
+        put("ok", "S", floatArrayOf(1f, 0f))
         assertEquals(listOf("ok"), index.search("S", floatArrayOf(1f, 0f), 5).map { it.id })
     }
 
     @Test fun nonFiniteVectorsScoreZeroNotNaN() = runBlocking {
         assertEquals(0.0, VectorMath.cosine(floatArrayOf(Float.POSITIVE_INFINITY, 0f), floatArrayOf(1f, 0f)), 0.0)
         assertEquals(0.0, VectorMath.cosine(floatArrayOf(Float.NaN, 1f), floatArrayOf(1f, 0f)), 0.0)
-        db.embeddingDao().putVector(MemoryVectorEntity("inf", "S", VectorCodec.encode(floatArrayOf(Float.POSITIVE_INFINITY, 0f))))
+        put("inf", "S", floatArrayOf(Float.POSITIVE_INFINITY, 0f))
         val hits = index.search("S", floatArrayOf(1f, 0f), 5)
         assertTrue(hits.none { it.score.isNaN() })
         assertTrue(index.search("S", floatArrayOf(Float.POSITIVE_INFINITY, 0f), 5).isEmpty())
+    }
+
+    @Test fun invalidatedNeedsReviewForgottenAndDeletedMemoriesAreNeverHits() = runBlocking {
+        put("ok", "S", floatArrayOf(1f, 0f))
+        put("invalidated", "S", floatArrayOf(1f, 0f), review = ReviewState.INVALIDATED)
+        put("review", "S", floatArrayOf(1f, 0f), review = ReviewState.NEEDS_REVIEW)
+        put("orphan", "S", floatArrayOf(1f, 0f), memory = false) // vector left behind by a deleted memory
+        put("forgotten", "S", floatArrayOf(1f, 0f))
+        memories.deleteByIds(listOf("forgotten")) // Forget / delete removes the memory row; its vector may linger
+        assertEquals(listOf("ok"), index.search("S", floatArrayOf(1f, 0f), 10).map { it.id })
+        db.openHelper.writableDatabase.execSQL("UPDATE memory SET reviewState = 'INVALIDATED' WHERE id = 'ok'")
+        assertTrue(index.search("S", floatArrayOf(1f, 0f), 10).isEmpty())
+    }
+
+    @Test fun pagedBoundedHeapMatchesTheFullSortAcrossManyPages() = runBlocking {
+        val rnd = java.util.Random(42)
+        val all = (0 until 1_237).map { i ->
+            // Every 7th vector repeats an earlier direction so equal scores straddle page boundaries.
+            val v = if (i % 7 == 0 && i > 0) floatArrayOf(1f, 1f, 0f) else floatArrayOf(rnd.nextFloat() - 0.5f, rnd.nextFloat() - 0.5f, rnd.nextFloat() - 0.5f)
+            "m${i.toString().padStart(4, '0')}" to v
+        }
+        all.forEach { (id, v) -> put(id, "S", v) }
+        val q = floatArrayOf(0.7f, 0.7f, 0.1f)
+        val full = all.map { (id, v) -> Hit(id, VectorMath.cosine(q, v)) }
+            .sortedWith(compareByDescending<Hit> { it.score }.thenBy { it.id })
+        for (pageSize in listOf(1, 3, 500, 5_000)) {
+            val paged = BruteForceVectorIndex(db.embeddingDao(), pageSize)
+            for (k in listOf(1, 10, 100, 2_000)) assertEquals("page $pageSize k $k", full.take(k), paged.search("S", q, k))
+        }
+        assertTrue(index.search("S", q, 0).isEmpty())
+    }
+
+    @Test fun vectorsArriveInBoundedPages() = runBlocking {
+        (0 until 12).forEach { put("m$it", "S", floatArrayOf(1f, it.toFloat())) }
+        put("x", "S", floatArrayOf(1f, 0f), review = ReviewState.INVALIDATED)
+        val pages = generateSequence(db.embeddingDao().livePage("S", "", 5)) { prev ->
+            prev.takeIf { it.size == 5 }?.let { runBlocking { db.embeddingDao().livePage("S", it.last().memoryId, 5) } }
+        }.toList()
+        assertEquals(listOf(5, 5, 2), pages.map { it.size })
+        assertEquals((0 until 12).map { "m$it" }.sorted(), pages.flatten().map { it.memoryId })
     }
 }
