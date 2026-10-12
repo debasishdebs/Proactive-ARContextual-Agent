@@ -4,7 +4,13 @@ import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.work.Configuration
+import androidx.work.ListenableWorker
 import androidx.work.WorkInfo
+import androidx.work.WorkerFactory
+import androidx.work.WorkerParameters
+import androidx.work.Worker
+import androidx.work.testing.SynchronousExecutor
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
 import com.rokid.context.data.runtime.AppConfigStore
@@ -22,7 +28,24 @@ import org.robolectric.annotation.Config
 class LegacyPipelineControlTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
 
-    @Before fun setUp() = WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
+    /**
+     * Without this the scheduled workers (QueueDrainWorker etc.) really execute on background dispatchers the moment they are
+     * enqueued, so a WorkInfo can be RUNNING when asserted. No-op workers + synchronous executors make the states deterministic.
+     */
+    private class NoopWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
+        override fun doWork(): Result = Result.success()
+    }
+
+    @Before fun setUp() {
+        val config = Configuration.Builder()
+            .setExecutor(SynchronousExecutor())
+            .setWorkerFactory(object : WorkerFactory() {
+                override fun createWorker(appContext: Context, workerClassName: String, workerParameters: WorkerParameters): ListenableWorker =
+                    NoopWorker(appContext, workerParameters)
+            })
+            .build()
+        WorkManagerTestInitHelper.initializeTestWorkManager(ctx, config)
+    }
 
     private fun drainStates() = WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(OrchestrationScheduler.QUEUE_DRAIN_WORK).get().map { it.state }
 
