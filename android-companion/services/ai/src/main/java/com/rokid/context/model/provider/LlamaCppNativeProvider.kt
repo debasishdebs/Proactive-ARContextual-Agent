@@ -1,5 +1,6 @@
 package com.rokid.context.model.provider
 
+import com.rokid.context.ai.ProviderConfigException
 import com.rokid.context.model.ModelProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -14,10 +15,8 @@ class LlamaCppNativeProvider(
     private val modelPath: String,
 ) : ModelProvider {
     override suspend fun generate(prompt: String): String = withContext(Dispatchers.Default) {
-        require(isNativeAvailable()) {
-            "llama.cpp native runtime not available in current APK build"
-        }
-        require(modelPath.isNotBlank()) { "Local model path is required for native inference" }
+        if (!isNativeAvailable()) throw ProviderConfigException("llama.cpp native runtime not available in current APK build")
+        if (modelPath.isBlank()) throw ProviderConfigException("Local model path is required for native inference")
 
         val handle = nativeLoadModel(modelPath)
         try {

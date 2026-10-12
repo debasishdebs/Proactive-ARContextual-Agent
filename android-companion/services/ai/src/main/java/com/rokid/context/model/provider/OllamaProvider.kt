@@ -1,5 +1,8 @@
 package com.rokid.context.model.provider
 
+import com.rokid.context.ai.ProviderConfigException
+import com.rokid.context.ai.ProviderHttpException
+import com.rokid.context.ai.ProviderResponseException
 import com.rokid.context.ai.EnvDefaults
 import com.rokid.context.model.ModelProvider
 import kotlinx.coroutines.Dispatchers
@@ -26,7 +29,7 @@ class OllamaProvider(
         .build(),
 ) : ModelProvider {
     override suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
-        require(baseUrl.isNotBlank()) { "OLLAMA_BASE_URL is missing" }
+        if (baseUrl.isBlank()) throw ProviderConfigException("OLLAMA_BASE_URL is missing")
         val url = "${baseUrl.trimEnd('/')}/api/generate"
 
         val payload = buildJsonObject {
@@ -44,12 +47,12 @@ class OllamaProvider(
         client.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                error("Ollama request failed: ${response.code} $body")
+                throw ProviderHttpException(response.code, "Ollama", body)
             }
 
             val json = Json.parseToJsonElement(body).jsonObject
             json["response"]?.jsonPrimitive?.content
-                ?: error("Ollama response missing `response` text")
+                ?: throw ProviderResponseException("Ollama response missing text")
         }
     }
 }

@@ -40,7 +40,7 @@ class EndpointTester(private val repo: EndpointRepository, private val providers
             EndpointKind.OLLAMA -> "${e.baseUrl}/api/embed" to """{"model":"$model","input":["ok"]}"""
             EndpointKind.AZURE_OPENAI -> "${e.baseUrl}/openai/deployments/$model/embeddings?api-version=${e.apiVersion ?: "2024-10-21"}" to """{"input":["ok"]}"""
             EndpointKind.OPENAI_COMPAT -> "${e.baseUrl}/embeddings" to """{"model":"$model","input":["ok"]}"""
-            EndpointKind.LLAMACPP_LOCAL -> error("On-device embeddings are tested in Phase 5")
+            EndpointKind.LLAMACPP_LOCAL -> throw ProviderConfigException("On-device embeddings need the llama.cpp runtime")
         }
         val req = Request.Builder().url(url).post(body.toRequestBody("application/json".toMediaType())).apply {
             when (e.kind) {
@@ -51,27 +51,28 @@ class EndpointTester(private val repo: EndpointRepository, private val providers
         }.build()
         http.newCall(req).execute().use { r ->
             val text = r.body?.string().orEmpty()
-            if (!r.isSuccessful) error("HTTP ${r.code}")
+            if (!r.isSuccessful) throw ProviderHttpException(r.code, "Embedding", "")
             val json = Json.parseToJsonElement(text).jsonObject
             val vec = (json["embeddings"]?.jsonArray?.firstOrNull() as? JsonArray)
                 ?: json["data"]?.jsonArray?.firstOrNull()?.jsonObject?.get("embedding")?.jsonArray
-                ?: error("No embedding in response")
+                ?: throw ProviderResponseException("No embedding in response")
             vec.size
         }
     }
 
     companion object {
         fun humanize(t: Throwable): String {
-            val m = t.message.orEmpty()
-            val code = Regex("\\b(3\\d\\d|4\\d\\d|5\\d\\d)\\b").find(m)?.value
+            val code = (t as? ProviderHttpException)?.code ?: (t.cause as? ProviderHttpException)?.code
             return when {
-                code != null && code.startsWith("3") -> "Address redirects — enter the final address"
-                code == "401" || code == "403" -> "Key rejected ($code)"
-                code == "404" -> "Not found — check address and model (404)"
-                code != null && code.startsWith("5") -> "Server error ($code)"
-                t is java.net.UnknownHostException -> "Can't reach that address"
+                code != null && code in 300..399 -> "Address redirects — enter the final address"
+                code == 401 || code == 403 -> "Key rejected ($code)"
+                code == 404 -> "Not found — check address and model (404)"
+                code != null && code >= 500 -> "Server error ($code)"
+                code != null -> "Request rejected ($code)"
+                t is ProviderConfigException -> "Address or key missing"
+                t is java.net.UnknownServiceException -> "Plain http isn't allowed for that address"
+                t is java.net.UnknownHostException || t is java.net.ConnectException -> "Can't reach that address"
                 t is java.net.SocketTimeoutException || t is java.io.InterruptedIOException -> "Timed out"
-                m.contains("missing", true) -> "Address or key missing"
                 else -> "Test failed"
             }
         }

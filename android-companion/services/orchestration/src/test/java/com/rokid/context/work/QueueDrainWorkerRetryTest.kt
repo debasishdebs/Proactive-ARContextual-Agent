@@ -11,6 +11,7 @@ import com.rokid.context.ai.EndpointKind
 import com.rokid.context.ai.InMemoryKeyVault
 import com.rokid.context.ai.InMemorySeedState
 import com.rokid.context.ai.ProviderBuilder
+import com.rokid.context.ai.ProviderHttpException
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
 import com.rokid.context.core.model.UserFacingErrors
@@ -80,19 +81,19 @@ class QueueDrainWorkerRetryTest {
     }
 
     @Test fun transientServerErrorDefers() {
-        bind(); behaviour = { error("Azure OpenAI request failed: 500 upstream") }
+        bind(); behaviour = { throw ProviderHttpException(500, "Azure OpenAI", "upstream") }
         runWorker()
         assertEquals(QueueRuntimeStore.STATE_DEFERRED, state())
     }
 
     @Test fun serverErrorWhoseBodyMentions404Defers() {
-        bind(); behaviour = { error("Azure OpenAI request failed: 500 {\"detail\":\"upstream route 404\"}") }
+        bind(); behaviour = { throw ProviderHttpException(500, "Azure OpenAI", "{\"detail\":\"upstream route 404\"}") }
         runWorker()
         assertEquals(QueueRuntimeStore.STATE_DEFERRED, state())
     }
 
     @Test fun authFailureFails() {
-        bind(); behaviour = { error("Azure OpenAI request failed: 401 invalid key") }
+        bind(); behaviour = { throw ProviderHttpException(401, "Azure OpenAI", "invalid key") }
         runWorker()
         assertEquals(QueueRuntimeStore.STATE_FAILED, state())
     }
@@ -110,14 +111,14 @@ class QueueDrainWorkerRetryTest {
     }
 
     @Test fun traceNoteAndQueueRowAreUserFacing() {
-        bind(); behaviour = { error("Azure OpenAI request failed: 500 upstream body") }
+        bind(); behaviour = { throw ProviderHttpException(500, "Azure OpenAI", "upstream body") }
         runWorker()
         assertEquals(UserFacingErrors.AiUnavailable.line, runBlocking { PipelineRecords.recentTraces(ctx, 5) }.first { it.state == "RETRY" }.note)
         assertEquals(UserFacingErrors.AiUnavailable.line, QueueRuntimeStore.recent(ctx, 10).single().lastError)
     }
 
     @Test fun retryStopsAtTheCap() {
-        bind(); behaviour = { error("Azure OpenAI request failed: 500 upstream") }
+        bind(); behaviour = { throw ProviderHttpException(500, "Azure OpenAI", "upstream") }
         val id = QueueRuntimeStore.recent(ctx, 10).single().id
         // Earlier attempts, already due again (notBefore = now - 60 s + 15 s minimum backoff).
         repeat(RetryPolicy.MAX_ATTEMPTS - 1) {
@@ -130,7 +131,7 @@ class QueueDrainWorkerRetryTest {
 
     @Test fun failuresAreLoggedWithoutThrowablesOrKeys() {
         ShadowLog.reset()
-        bind(key = "sk-live-123"); behaviour = { error("Azure OpenAI request failed: 500 echoed sk-live-123") }
+        bind(key = "sk-live-123"); behaviour = { throw ProviderHttpException(500, "Azure OpenAI", "echoed sk-live-123") }
         runWorker()
         val ours = listOf("QueueDrainWorker", "ModelRouter").flatMap { ShadowLog.getLogsForTag(it) }
         assertTrue("the failure is logged", ours.any { "RETRY" in it.msg })

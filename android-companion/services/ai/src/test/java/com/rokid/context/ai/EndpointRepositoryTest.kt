@@ -68,12 +68,12 @@ class EndpointRepositoryTest {
         assertTrue(repo.all().isEmpty())
     }
 
-    @Test fun openAiCompatRemoteHttpWithKeyRejectedButLanAllowed() = runTest {
+    @Test fun httpWithAKeyIsRejectedEvenOnTheLanAndKeylessLocalIsAllowed() = runTest {
         fun o(url: String) = e(url).copy(kind = EndpointKind.OPENAI_COMPAT)
-        val bad = repo.save(o("http://api.example.com"), apiKey = "k")
-        assertEquals("Use https:// when sending a key", bad.exceptionOrNull()!!.message)
+        assertEquals("Use https:// when sending a key", repo.save(o("http://api.example.com"), apiKey = "k").exceptionOrNull()!!.message)
+        assertEquals("Use https:// when sending a key", repo.save(o("http://box.local:8080"), apiKey = "k").exceptionOrNull()!!.message)
         assertTrue(repo.all().isEmpty())
-        assertTrue(repo.save(o("http://192.168.1.5:8080"), apiKey = "k").isSuccess)
+        assertTrue(repo.save(o("http://box.local:8080"), apiKey = null).isSuccess)
     }
 
     @Test fun keptKeyStillBlocksRemoteHttpOnResave() = runTest {

@@ -20,7 +20,7 @@ class RoleBindingRepositoryTest {
     @After fun close() = db.close()
 
     private suspend fun ep(id: String, vararg caps: Capability) =
-        endpoints.save(Endpoint(id, id, EndpointKind.OLLAMA, "http://h:1", null, listOf("m"), caps.toSet(), 1), apiKey = null).getOrThrow()
+        endpoints.save(Endpoint(id, id, EndpointKind.OLLAMA, "http://localhost:1", null, listOf("m"), caps.toSet(), 1), apiKey = null).getOrThrow()
 
     @Test fun pickerListsOnlyCapableEndpoints() = runTest {
         ep("chat", Capability.CHAT); ep("vision", Capability.CHAT, Capability.VISION); ep("emb", Capability.EMBEDDINGS)

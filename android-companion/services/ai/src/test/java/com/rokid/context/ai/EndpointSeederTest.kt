@@ -69,7 +69,7 @@ class EndpointSeederTest {
     }
 
     @Test fun doneMarkerMakesSeedANoOp() = runTest {
-        seeder.seedIfNeeded(ProviderSettings("ollama", "http://o:11434", "", "llama3.1:8b", "", false)).getOrThrow()
+        seeder.seedIfNeeded(ProviderSettings("ollama", "http://o.local:11434", "", "llama3.1:8b", "", false)).getOrThrow()
         seeder.seedIfNeeded(azure).getOrThrow()
         assertEquals(EndpointKind.OLLAMA, endpoints.all().single().kind)
     }
@@ -80,7 +80,7 @@ class EndpointSeederTest {
         val e = endpoints.byId(EndpointSeeder.AZURE_ID)!!
         assertEquals(listOf("gpt-6"), e.models); assertEquals("k2", endpoints.keyFor(e))
         assertEquals("gpt-6", bindings.get(Role.ANSWER)!!.model)
-        seeder.syncFromLegacy(ProviderSettings("ollama", "http://o:11434", "", "llama3.1:8b", "", false)).getOrThrow()
+        seeder.syncFromLegacy(ProviderSettings("ollama", "http://o.local:11434", "", "llama3.1:8b", "", false)).getOrThrow()
         assertEquals(EndpointSeeder.OLLAMA_ID, bindings.get(Role.ANSWER)!!.endpointId)
         assertNull(bindings.get(Role.VISION_EXTRACT)) // Ollama has no VISION: the stale Azure vision binding is cleared
     }
@@ -111,7 +111,7 @@ class EndpointSeederTest {
             }
         })
         seeder.seedIfNeeded(azure).getOrThrow()
-        seeder.syncFromLegacy(ProviderSettings("ollama", "http://o:11434", "", "llama3.1:8b", "", false)).getOrThrow()
+        seeder.syncFromLegacy(ProviderSettings("ollama", "http://o.local:11434", "", "llama3.1:8b", "", false)).getOrThrow()
         assertEquals("ollama/llama3.1:8b", router.generateFromFrames("q", listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA"))))
         assertEquals(listOf("ollama:text"), calls)
         assertTrue(calls.none { it.startsWith(EndpointSeeder.AZURE_ID) })

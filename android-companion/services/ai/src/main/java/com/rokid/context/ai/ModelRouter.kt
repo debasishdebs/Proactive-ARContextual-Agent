@@ -15,7 +15,7 @@ class ModelRouter(
     private val providers: ProviderBuilder,
 ) {
     suspend fun generate(role: Role, prompt: String, images: List<ModelImageInput> = emptyList()): String {
-        val b = bindings.get(role) ?: throw ModelCallException("No model is set for ${role.name}", retryable = true)
+        val b = bindings.get(role) ?: throw ModelCallException("No model is set for ${role.name}", retryable = true, kind = FailureKind.NOT_SET)
         return generateWith(b, prompt, images, skipPrimary = false)
     }
 
@@ -34,20 +34,20 @@ class ModelRouter(
             try {
                 generateWith(summarize, prompt, images, skipPrimary = samePrimary)
             } catch (second: ModelCallException) {
-                throw ModelCallException("Frame summary failed: ${first.message}; ${second.message}", first.retryable || second.retryable, second)
+                throw ModelCallException("Frame summary failed: ${first.message}; ${second.message}", first.retryable || second.retryable, second, ProviderErrors.worst(first.kind, second.kind))
             }
         }
     }
 
     private suspend fun generateWith(b: RoleBinding, prompt: String, images: List<ModelImageInput>, skipPrimary: Boolean): String {
         val primaryEndpoint = if (skipPrimary) null else
-            endpoints.byId(b.endpointId) ?: throw ModelCallException("Endpoint for ${b.role.name} was deleted", retryable = true)
+            endpoints.byId(b.endpointId) ?: throw ModelCallException("Endpoint for ${b.role.name} was deleted", retryable = true, kind = FailureKind.NOT_SET)
         val first: Throwable? = primaryEndpoint?.let { primary ->
             try { return call(primary, b.model, prompt, images) } catch (c: CancellationException) { throw c } catch (t: Throwable) { t }
         }
         val primaryKey = primaryEndpoint?.let { endpoints.keyFor(it) }
         val fallback = b.fallbackEndpointId?.let { endpoints.byId(it) }
-            ?: throw ModelCallException("Primary provider failed: ${safe(first, primaryKey)}", retryable = first == null || !ProviderErrors.isPermanent(first), first)
+            ?: throw ModelCallException("Primary provider failed: ${safe(first, primaryKey)}", retryable = first == null || !ProviderErrors.isPermanent(first), first, kind = first?.let(ProviderErrors::kindOf) ?: FailureKind.NOT_SET)
         val fallbackKey = endpoints.keyFor(fallback)
         return try {
             call(fallback, b.fallbackModel ?: b.model, prompt, images)
@@ -55,7 +55,7 @@ class ModelRouter(
             throw c
         } catch (t: Throwable) {
             val retryable = !ProviderErrors.isPermanent(t) || (first != null && !ProviderErrors.isPermanent(first))
-            throw ModelCallException("Primary+fallback generation failed: ${safe(first, primaryKey, fallbackKey)}; ${safe(t, primaryKey, fallbackKey)}", retryable, t)
+            throw ModelCallException("Primary+fallback generation failed: ${safe(first, primaryKey, fallbackKey)}; ${safe(t, primaryKey, fallbackKey)}", retryable, t, ProviderErrors.worst(first?.let(ProviderErrors::kindOf), ProviderErrors.kindOf(t)))
         }
     }
 
@@ -67,7 +67,7 @@ class ModelRouter(
             e.kind == EndpointKind.AZURE_OPENAI && key.isNullOrBlank() -> "No API key saved for ${e.name}"
             else -> null
         }
-        if (problem != null) throw ModelCallException(problem, retryable = false)
+        if (problem != null) throw ModelCallException(problem, retryable = false, kind = FailureKind.NOT_SET)
     }
 
     private suspend fun call(e: Endpoint, model: String, prompt: String, images: List<ModelImageInput>): String {
