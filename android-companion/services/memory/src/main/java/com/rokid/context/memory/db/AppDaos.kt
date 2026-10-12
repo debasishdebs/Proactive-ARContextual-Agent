@@ -66,6 +66,18 @@ interface PauseDao {
         }
     }
 
+    @Query("UPDATE pause_record SET createdAtMs = :startMs WHERE pauseId = :pauseId AND createdAtMs > :startMs")
+    suspend fun lowerRecordStart(pauseId: String, startMs: Long)
+    @Query("UPDATE pause_interval SET startMs = :startMs WHERE pauseId = :pauseId AND startMs > :startMs")
+    suspend fun lowerIntervalStart(pauseId: String, startMs: Long)
+
+    /** Moves a pause's start earlier (never later), on its record and its interval, open or closed. */
+    @Transaction
+    suspend fun widenStart(pauseId: String, startMs: Long) {
+        lowerRecordStart(pauseId, startMs)
+        lowerIntervalStart(pauseId, startMs)
+    }
+
     /** Atomically ends the named records that exist. */
     @Transaction
     suspend fun resumeNamed(clears: Set<String>, now: Long) {

@@ -27,6 +27,15 @@ class HubPauses(private val dao: PauseDao, private val now: () -> Long = System:
 
     suspend fun union(records: List<PauseRecord>) = records.forEach { add(it) }
 
+    /**
+     * [exact] is the offset-converted form of a record first stored with `ClockOffset.anchoredAt` (no offset yet).
+     * Only widens: the start moves earlier (also on a resumed pause's interval) and the end merges like [add].
+     */
+    suspend fun reanchor(exact: PauseRecord) {
+        dao.widenStart(exact.pauseId, exact.createdAtMs)
+        add(exact)
+    }
+
     /** Ends only the named records (spec §5.5: a Resume never clears pauses its sender did not know). */
     suspend fun resume(clears: Set<String>) {
         if (clears.isEmpty()) return
