@@ -35,7 +35,6 @@ import com.rokid.context.glasses.hud.LocalOverlay
 import com.rokid.context.glasses.hud.PadInput
 import com.rokid.context.glasses.hud.Routed
 import com.rokid.context.glasses.hud.pagesFor
-import com.rokid.context.glasses.link.CxrBridge
 import com.rokid.context.glasses.link.HudConnection
 import com.rokid.context.glasses.link.HudController
 import com.rokid.context.glasses.link.HudSettingsCache
@@ -53,7 +52,8 @@ import kotlinx.coroutines.launch
  */
 class MainActivity : ComponentActivity() {
     private val runtime by lazy { GlassesRuntime.get(this) }
-    private lateinit var controller: HudController
+    internal lateinit var controller: HudController
+        private set
     private val keys = KeyGestures()
     private val swipeTimer = Handler(Looper.getMainLooper())
     private val closeSwipe = Runnable { handle(keys.onTimer(SystemClock.uptimeMillis())); scheduleSwipeClose() }
@@ -70,7 +70,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         controller = HudController(
-            lifecycleScope, CxrBridge(this), HudSettingsCache(getSharedPreferences(HudSettingsCache.PREFS, MODE_PRIVATE)),
+            lifecycleScope, runtime.bridge, HudSettingsCache(getSharedPreferences(HudSettingsCache.PREFS, MODE_PRIVATE)),
             hello = { runtime.hello(nextCaptureAt()) },
         )
         runtime.attach(controller)
@@ -79,7 +79,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { runtime.pauses.ensureLoaded() }
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) ensureCaptureScheduled()
         else cameraPermission.launch(Manifest.permission.CAMERA)
-        handleIntent(intent)
+        if (savedInstanceState == null) handleIntent(intent) // a recreated activity must not capture again
         setContent { Hud() }
     }
 
