@@ -9,6 +9,8 @@ android {
     defaultConfig { minSdk = 29 }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
+    // Real prompt templates (they ship in :phone's assets) so tests see the {{placeholders}} filled in.
+    sourceSets["test"].assets.srcDirs("$projectDir/../../phone/src/main/assets")
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
 
