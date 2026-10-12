@@ -69,6 +69,9 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
 
         /** New memories, app start, binding change: KEEP (a run already queued will see them). Rebuild: REPLACE. */
         fun enqueue(context: Context, rebuild: Boolean = false) {
+            // A Rebuild is durable from the moment it is asked for: a pause (which cancels this work) or a process
+            // death before it runs leaves it pending, and the first run after resume honours it.
+            if (rebuild) PrefsIndexClock(context).setRebuildPending(true)
             WorkManager.getInstance(context).enqueueUniqueWork(NAME, if (rebuild) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, request(rebuild))
         }
 

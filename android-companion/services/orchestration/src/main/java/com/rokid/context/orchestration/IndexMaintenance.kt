@@ -101,7 +101,7 @@ class PrefsIndexClock(context: Context) : IndexClock {
  * coverage after the new space's canaries still match.
  *
  * Canary drift is bounded so an unstable embedder can never re-embed the store in a loop: a mismatch is confirmed
- * with a second probe (two fresh sets that disagree with each other = a noisy embedder, not drift); a real drift
+ * with a second probe (back on the stored set = a noisy embedder, not drift); a real drift
  * discard holds new builds of that model for 24 h; after [MAX_DISCARD_STREAK] discards in a row auto-rebuild stops
  * ("index unstable") until the user's Rebuild.
  */
@@ -125,6 +125,8 @@ class IndexMaintenance(
     suspend fun run(rebuild: Boolean = false, rebuildToken: String? = null): Outcome {
         val bound = embedders.bound() ?: return Outcome.IDLE
         val fp = bound.embedder.fingerprint
+        // The drift streak (and so "index unstable") belongs to one model: binding another one starts afresh.
+        clock.lastDiscard()?.takeIf { it.fingerprint != fp }?.let { clock.recordDiscard(null) }
         val pending = clock.rebuildPending()
         val requested = rebuild && (rebuildToken == null || rebuildToken != clock.consumedRebuild())
         val manual = requested || pending
@@ -220,14 +222,16 @@ class IndexMaintenance(
 
     /**
      * Re-embeds the canaries (the embedder applies the space's document prefix) against the stored set. A mismatch is
-     * confirmed by a second probe; an unreachable endpoint is UNCHECKED, never evidence of drift.
+     * confirmed by a second probe: NOISY only if that one matches the stored set again, otherwise DRIFTED (whether
+     * or not the two fresh sets agree). An unreachable endpoint is UNCHECKED, never evidence of drift.
      */
     private suspend fun check(space: EmbeddingSpaceEntity, embedder: Embedder): Check = try {
         val stored = Canaries.decode(space.canaryJson)
         val first = embedder.embedDocuments(Canaries.TEXTS)
         when {
             !Canaries.stale(stored, first) -> Check.MATCH
-            Canaries.stale(first, embedder.embedDocuments(Canaries.TEXTS)) -> Check.NOISY
+            // Noise only when the second probe is back on the stored set; two sets that both miss it are a changed model.
+            !Canaries.stale(stored, embedder.embedDocuments(Canaries.TEXTS)) -> Check.NOISY
             else -> Check.DRIFTED
         }
     } catch (c: CancellationException) { throw c } catch (_: Exception) { Check.UNCHECKED }

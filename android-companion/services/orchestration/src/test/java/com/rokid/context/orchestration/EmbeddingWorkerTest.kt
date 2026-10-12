@@ -126,4 +126,18 @@ class EmbeddingWorkerTest {
         assertEquals(1, queued().size)
         assertTrue(queued().single().constraints.requiresBatteryNotLow())
     }
+
+    @Test fun pausingCancelsTheIndexWorkAndKeepsARequestedRebuild() {
+        EmbeddingWorker.enqueue(ctx, rebuild = true)
+        com.rokid.context.work.OrchestrationScheduler(ctx).pausePipeline()
+        assertTrue(queued().all { it.state == WorkInfo.State.CANCELLED })
+        assertTrue("the Rebuild is not lost", PrefsIndexClock(ctx).rebuildPending())
+    }
+
+    @Test fun pausingCancelsANormalIndexRun() {
+        EmbeddingWorker.enqueue(ctx)
+        com.rokid.context.work.OrchestrationScheduler(ctx).pausePipeline()
+        assertTrue(queued().all { it.state == WorkInfo.State.CANCELLED })
+        assertTrue(!PrefsIndexClock(ctx).rebuildPending())
+    }
 }

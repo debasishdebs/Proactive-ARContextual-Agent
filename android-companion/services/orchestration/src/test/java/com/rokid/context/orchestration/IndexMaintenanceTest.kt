@@ -206,6 +206,28 @@ class IndexMaintenanceTest {
         assertNull(clock.discard)
     }
 
+    @Test fun freshSetsThatDisagreeWithEachOtherAndWithTheStoredSetAreDrift() = runBlocking {
+        repeat(4) { mem("m$it") }
+        maintenance(maxPerRun = 2).run()
+        val partial = spaces.building()!!
+        fake.canaryTilts += listOf(far, -far) // neither fresh set matches the stored one: a changed, non-deterministic model
+        assertEquals(Outcome.DONE, maintenance(maxPerRun = 8).run())
+        assertNull(db.embeddingDao().space(partial.id)); assertNull(spaces.queryable())
+        assertEquals(1, clock.discard!!.streak)
+    }
+
+    @Test fun aNewModelClearsTheUnstableState() = runBlocking {
+        mem("m1")
+        repeat(3) { fake.canaryTilts += listOf(0.0, far, far); maintenance().run(); now += 25 * 3_600_000L }
+        assertTrue(clock.unstable())
+        mem("m2"); mem("m3")
+        fake.fp = "B"
+        assertEquals(Outcome.MORE, maintenance(maxPerRun = 1).run()) // B's build is under way, not swapped yet
+        assertTrue("a new fingerprint starts a fresh streak", !clock.unstable())
+        while (maintenance().run() == Outcome.MORE) Unit
+        assertEquals("B", spaces.queryable()!!.fingerprint)
+    }
+
     @Test fun threeDriftDiscardsStopAutoRebuildingUntilAManualRebuild() = runBlocking {
         mem("m1")
         repeat(3) {
