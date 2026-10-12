@@ -103,7 +103,7 @@ Every JSON payload carries `v: PROTOCOL_VERSION`. On mismatch the glasses show "
 Broadcast on change, throttled to ≤ 4 Hz; full frame (not deltas).
 
 ### 1.7 Lifecycle
-`ContextHubService` (phone, foreground) owns: CXR session, voice pipeline, nudge engine trigger, `StateBroadcaster`. ViewModels observe repository/hub `StateFlow`s. Capture *timing* lives on the glasses (`CaptureScheduler`) so it survives link drops; glasses buffer up to 20 frames while offline and flush on reconnect. Frames are **sent only while the glasses `MainActivity` is the resumed CUSTOM_APP activity** (display may be asleep): when it exits, the phone session closes (`GLASSES_EXIT`) and glasses-side `sendMessage` still returns 0 while messages are dropped (phase 0). The glasses buffer whenever the activity is not resumed; `ContextHubService` reconnects on `GLASSES_EXIT`, which reopens the activity. BT drops pause/resume the session automatically (~2 s after BT returns).
+`ContextHubService` (phone, foreground) owns: CXR session, voice pipeline, nudge engine trigger, `StateBroadcaster`. ViewModels observe repository/hub `StateFlow`s. Capture *timing* lives on the glasses (`CaptureScheduler`) so it survives link drops; glasses buffer up to 20 frames while offline and flush on reconnect. Frames are **sent only while the CUSTOM_APP session is open**, i.e. the glasses `MainActivity` has not exited (it may be paused/stopped by display sleep — phase 0 verified delivery then). When the activity exits, the phone session closes (`GLASSES_EXIT`) and glasses-side `sendMessage` still returns 0 while messages are dropped; rc=0 is also returned during a BT pause, so only `pc_frame_ack` proves delivery. The glasses track session-open locally (set on the first phone message of a session, cleared in `onDestroy`/exit) and buffer whenever it is closed. **Reconnect policy (as Live Fit):** `ContextHubService` does **not** auto-reconnect on `GLASSES_EXIT` (that would reopen the activity and steal the foreground from a user who pressed Back or from Hi Rokid); it starts `GlassAppWatcher` and reconnects when the user reopens Proactive Context on the glasses, or on an explicit phone action (e.g. Home "Open on glasses"). BT drops pause/resume the session automatically (~2 s after BT returns).
 
 **State authority exception — capture pause.** The phone is the authority for everything in `StateFrame` *except* whether capture is allowed: pause is enforced locally on the glasses as well and reconciled by the most-restrictive-wins rule in §5.5. Nothing (reconnect, stale `StateFrame`, settings push) can resume capture implicitly.
 
@@ -195,7 +195,7 @@ One ViewModel per screen; screens are `@Composable fun XScreen(state: XUiState, 
 |---|---|
 | `MainActivity` | Single activity, FLAG_KEEP_SCREEN_ON, hosts `HudRoot`, forwards key events to `InputRouter`. |
 | `HudController` | CXR bridge (`CXRServiceBridge.subscribe` / `sendMessage`); exposes `StateFlow<StateFrame>`, `StateFlow<HudSettings>`; sends `Command`, frames, audio. |
-| `CaptureService` | Foreground camera service — **only** capture path. Contains `CaptureScheduler` (AlarmManager), `FrameGuard` (dark-frame, pHash dedupe, battery ≤ 10 %, throttle), JPEG encoder (q62, 360 px), `OutboundBuffer` (cap 20, FIFO drop-oldest); flushes only while `MainActivity` is resumed (§1.7). |
+| `CaptureService` | Foreground camera service — **only** capture path. Contains `CaptureScheduler` (AlarmManager), `FrameGuard` (dark-frame, pHash dedupe, battery ≤ 10 %, throttle), JPEG encoder (q62, 360 px), `OutboundBuffer` (cap 20, FIFO drop-oldest); flushes only while the session is open (§1.7). |
 | `InputRouter` | Key events → `SwipeClassifier` + `DoubleTap` → gesture → mapped action (per `HudSettings.gestures`). |
 | `PushToTalk` | Mic capture → `pc_audio` chunks → `pc_listen_end`. |
 | `HudNav` | Page/scroll state machine, 6 s idle → Glance. |
@@ -316,7 +316,7 @@ Glasses-audio STT feeds our PCM into the recognizer via `RecognizerIntent.EXTRA_
 | `PHONE_VOICE` | API ≥ 31 **and** `SpeechRecognizer.isOnDeviceRecognitionAvailable` **and** language pack installed; always created via `createOnDeviceSpeechRecognizer`. The ordinary (possibly network-backed) `SpeechRecognizer` is **never** used. | same probe |
 | Pack download | API ≥ 34 (Live Fit `SpeechPacks`); below 34 → deep-link to system speech settings | — |
 
-- **External-audio verification:** the recognizer must not silently fall back to the phone mic. The probe (onboarding + after OS/app updates) streams a paced ≥ 96 KB (≥ 3 s, above the 64 KiB pipe capacity) PCM feed through the `ParcelFileDescriptor` pipe and counts bytes the recognizer reads (writes block near 64 KiB when nobody reads); if it reads < 50 % of the feed, or a session returns results while pipe reads stay ~0, `GLASSES_VOICE` = unsupported. The same byte-count guard runs in every production session: if it trips, the session is aborted (never answered from phone-mic audio) and capability is re-probed.
+- **External-audio verification:** the recognizer must not silently fall back to the phone mic. The probe (onboarding + after OS/app updates) streams a paced ≥ 96 KB (≥ 3 s, above the 64 KiB pipe capacity) PCM feed through the `ParcelFileDescriptor` pipe and counts bytes the recognizer reads (writes block near 64 KiB when nobody reads); if it reads < 50 % of the feed, or a session returns results while pipe reads stay ~0, `GLASSES_VOICE` = unsupported. In every production session a guard aborts (never answers from phone-mic audio) and re-probes capability when partials/results arrive while < 64 KiB has been consumed after > 2 s of fed audio; writes to the pipe are non-blocking/timed so a non-reading recognizer cannot hang the feeder. Utterances shorter than ~2 s fit in the pipe buffer and rely on the onboarding probe.
 - **Final result:** on-device `onResults` may return a null/empty `RESULTS_RECOGNITION` after complete partials (phase 0); the transcript is then the last non-empty partial.
 - **Unavailable UX:**
   - Glasses tap = Ask → HUD Toast "Voice not supported on this phone" (or "Download speech pack on phone"); gesture map greys out Ask with reason.
@@ -419,7 +419,7 @@ Cascade to dependants (same Room transaction, then background work):
 ## 7. Open risks
 - **CXR glasses → phone binary transfer** for ~20–40 KB JPEGs — unproven direction; phase 0 spike; chunking protocol already specified (§1.8).
 - **STT external-audio support** varies by phone/recognizer — capability gate + byte-count guard (§5.1.1).
-- **TTS audio route** to glasses speaker — phase 0 spike; fallback per §3.6.
+- **TTS audio route** to glasses speaker — verified in phase 0 (BT A2DP); without BT audio the answer is HUD-only (§3.6).
 - **On-device STT language packs** on the phone — reuse Live Fit `SpeechPacks` flow in onboarding.
 - **Guided decoding support** varies by deployment/model — capability flag + fallback (§4.4).
 - **Brute-force vector search** scale — fine < ~50k memories; `VectorIndex` interface allows swap.
@@ -458,7 +458,7 @@ Every plan task cites the R-IDs it satisfies. All must be covered.
 - R-32 Rendering rules per §3.3 via `:core:hud`.
 - R-33 Verbosity behaviour per §3.4.
 - R-34 Gestures + remapping per §3.5.
-- R-35 TTS path + fallback; offline behaviour; no raw errors (§3.6).
+- R-35 TTS path (phone TTS over BT; HUD-only when BT audio is absent); offline behaviour; no raw errors (§3.6).
 
 **AI / retrieval**
 - R-40 Endpoint registry with kinds, capabilities, encrypted keys, Test, `.env` seed (§4.1).
