@@ -2001,7 +2001,7 @@ Error contract (consumed by Task 8's `RetryClassifier`):
 | Primary and fallback both fail | `ModelCallException("Primary+fallback generation failed: …; …")` | true if either failure is not permanent |
 | Coroutine cancelled | the original `CancellationException`, unwrapped | — |
 
-Configuration failures are classified **by type**: before calling a provider, `ModelRouter` checks the endpoint's own preconditions (Azure/OpenAI-compatible needs a stored key; every remote kind needs a non-blank URL and model; llama.cpp needs a model path) and throws `ModelCallException(retryable = false)` with a short message (e.g. "No API key saved for Azure OpenAI"). As a second line, `isPermanent` = message contains a 401/403/404 status (word-bounded) or one of the providers' actual config messages — `azure_kg_api_key is missing`, `azure_kg_endpoint is missing`, `ollama_base_url is missing`, `local model path is required`, `native runtime not available` — or `resource not found`, `deployment not found`, `unsupported parameter`, `invalid_request_error`. Tests use the real provider messages. Everything else (HTTP 5xx, timeouts, connection errors, unknown) is transient.
+Configuration failures are classified **by type**: before calling a provider, `ModelRouter` checks the endpoint's own preconditions (Azure needs a stored key — OpenAI-compatible keys are optional, since local servers often run without one; every remote kind needs a non-blank URL and model; llama.cpp needs a model path) and throws `ModelCallException(retryable = false)` with a short message (e.g. "No API key saved for Azure OpenAI"). As a second line, `isPermanent` = message contains a 401/403/404 status (word-bounded) or one of the providers' actual config messages — `azure_kg_api_key is missing`, `azure_kg_endpoint is missing`, `ollama_base_url is missing`, `local model path is required`, `native runtime not available` — or `resource not found`, `deployment not found`, `unsupported parameter`, `invalid_request_error`. Tests use the real provider messages. Everything else (HTTP 5xx, timeouts, connection errors, unknown) is transient.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2261,6 +2261,23 @@ class EndpointSeederTest {
         assertNull(bindings.get(Role.VISION_EXTRACT)) // Ollama has no VISION: the stale Azure vision binding is cleared
     }
 
+    @Test fun clearingTheKeyInConfigRemovesTheStoredCredential() = runTest {
+        seeder.seedIfNeeded(azure).getOrThrow()
+        assertEquals("k", endpoints.keyFor(endpoints.byId(EndpointSeeder.AZURE_ID)!!))
+        seeder.syncFromLegacy(azure.copy(apiKey = "")).getOrThrow()
+        assertNull(endpoints.keyFor(endpoints.byId(EndpointSeeder.AZURE_ID)!!))
+        val router = ModelRouter(bindings, endpoints, ProviderFactory)
+        val e = runCatching { router.generate(Role.ANSWER, "q") }.exceptionOrNull() as ModelCallException
+        assertFalse(e.retryable); assertTrue(e.message!!.contains("No API key saved"))
+    }
+
+    @Test fun seedingWithBlankKeyDoesNotEraseAKeySavedEarlier() = runTest {
+        endpoints.save(Endpoint(EndpointSeeder.AZURE_ID, "Azure OpenAI", EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt-5.4"),
+            setOf(Capability.CHAT, Capability.VISION), 1), apiKey = "saved").getOrThrow()
+        seeder.seedIfNeeded(azure.copy(apiKey = "")).getOrThrow()
+        assertEquals("saved", endpoints.keyFor(endpoints.byId(EndpointSeeder.AZURE_ID)!!))
+    }
+
     @Test fun switchingToTextOnlyProviderMakesFramesUseItWithZeroAzureCalls() = runTest {
         val calls = mutableListOf<String>()
         val router = ModelRouter(bindings, endpoints, ProviderBuilder { e, m, _ ->
@@ -2500,8 +2517,11 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
             else -> Endpoint(AZURE_ID, "Azure OpenAI", EndpointKind.AZURE_OPENAI, settings.endpoint.ifBlank { EnvDefaults.azureEndpoint }, "2024-10-21",
                 listOf(settings.deploymentOrModel.ifBlank { EnvDefaults.azureDeployment }), setOf(Capability.CHAT, Capability.VISION, Capability.JSON_SCHEMA), now)
         }
+        // Seeding: a blank key means "none known yet" (null = keep). Explicit Config edits: pass it through, so a
+        // cleared key ("") removes the stored credential instead of silently keeping the old one.
+        val apiKey = if (overwrite) settings.apiKey else settings.apiKey.ifBlank { null }
         val primary = endpoints.byId(desired.id)?.takeUnless { overwrite }
-            ?: endpoints.save(desired, apiKey = settings.apiKey.ifBlank { null }).getOrThrow()
+            ?: endpoints.save(desired, apiKey = apiKey).getOrThrow()
         val local = if (settings.localModeEnabled && settings.nativeModelPath.isNotBlank() && primary.id != LOCAL_ID) {
             endpoints.byId(LOCAL_ID)?.takeUnless { overwrite }
                 ?: endpoints.save(Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null, listOf("local"), setOf(Capability.CHAT), now), apiKey = null).getOrThrow()
@@ -2558,7 +2578,7 @@ class AiGraph(memory: MemoryGraph, vault: KeyVault, seedState: SeedState, provid
 - [ ] **Step 8: Run ai tests**
 
 Run: `./gradlew :services:ai:testDebugUnitTest`
-Expected: PASS (RoleBindingRepositoryTest 2, ModelRouterTest 10, EndpointSeederTest 8, plus earlier).
+Expected: PASS (RoleBindingRepositoryTest 2, ModelRouterTest 10, EndpointSeederTest 10, plus earlier).
 
 - [ ] **Step 9: Seed at startup (resumes a partial seed on every start until done)**
 
@@ -2901,6 +2921,17 @@ class LegacyConfigBridgeTest {
         AppConfigStore.setProvider(ctx, "openai", "https://az.example", "key-2", "gpt-6", "")
         assertEquals("azure/gpt-6", ai.router.generate(Role.ANSWER, "q"))
         assertEquals("key-2", usedKeys.last())
+    }
+
+    @Test fun clearingTheKeyOnTheConfigScreenStopsWorkersUsingTheOldKey() = runBlocking {
+        AppConfigStore.setProvider(ctx, "openai", "https://az.example", "key-1", "gpt-5.4", "")
+        assertEquals("azure/gpt-5.4", ai.router.generate(Role.ANSWER, "q"))
+        AppConfigStore.setProvider(ctx, "openai", "https://az.example", "", "gpt-5.4", "")
+        assertEquals(null, ai.endpoints.keyFor(ai.endpoints.byId(EndpointSeeder.AZURE_ID)!!))
+        val e = runCatching { ai.router.generate(Role.ANSWER, "q") }.exceptionOrNull() as com.rokid.context.ai.ModelCallException
+        assertEquals(false, e.retryable)
+        assertTrue(e.message!!.contains("No API key saved"))
+        assertEquals(listOf<String?>("key-1"), usedKeys) // the old key was never sent after it was cleared
     }
 
     @Test fun switchingProviderRebinds() = runBlocking {
