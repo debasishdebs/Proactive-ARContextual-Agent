@@ -46,6 +46,10 @@ class DayTest {
         for (arg in listOf("2026-13-45", "", null)) assertFalse("$arg", withTimeout(5_000) { vm(arg).state.first { !it.loading } }.found)
     }
 
+    @Test fun extremeDateShowsNotFound() = runBlocking {
+        assertFalse(withTimeout(5_000) { vm("+999999999-12-31").state.first { !it.loading } }.found)
+    }
+
     @Test fun loadsThatDaysTimeline() = runBlocking {
         graph.memories.add(Fixtures.memory("m1", "Market run", Fixtures.at(TODAY.minusDays(2), 18)))
         val s = withTimeout(5_000) { vm(TODAY.minusDays(2).toString()).state.first { it.found && it.sections.isNotEmpty() } }
