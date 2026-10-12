@@ -2,6 +2,7 @@ package com.rokid.context
 
 import android.app.Application
 import com.rokid.context.ai.EnvDefaults
+import com.rokid.context.data.runtime.toProviderSettings
 
 class ContextApp : Application() {
     override fun onCreate() {
@@ -20,6 +21,16 @@ class ContextApp : Application() {
         kotlin.concurrent.thread(name = "legacy-import") {
             runCatching { com.rokid.context.memory.MemoryGraph.ensureLegacyImported(this) }
                 .onFailure { android.util.Log.w("ContextApp", "legacy import failed; will retry", it) }
+        }
+        // Resumes a partial seed on every start until done. The seeder logs its own (key-free) failure line and leaves
+        // roles unbound; this guard only catches setup failures (e.g. Keystore) so they can never crash the app.
+        kotlin.concurrent.thread(name = "ai-seed") {
+            runCatching {
+                kotlinx.coroutines.runBlocking {
+                    com.rokid.context.ai.AiGraph.get(this@ContextApp).seeder
+                        .seedIfNeeded(com.rokid.context.data.runtime.AppConfigStore.get(this@ContextApp).toProviderSettings())
+                }
+            }.onFailure { android.util.Log.w("ContextApp", "AI seed failed; will retry next start (${it.javaClass.simpleName})") }
         }
         com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
     }
