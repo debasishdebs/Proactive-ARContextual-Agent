@@ -36,11 +36,10 @@ class ActivityViewModel(
     private val zone: () -> ZoneId,
 ) : ViewModel() {
     private val period = MutableStateFlow(initial)
-    /** Re-queries only when the local date changes (midnight, or a zone change noticed on the next tick). */
-    private val today = clock.map { DayBucket.dayOf(it, zone()) }.distinctUntilChanged()
+    /** (local date, zone) at each clock tick; re-queries and regroups when either changes (midnight, or a zone change noticed on the next tick). */
+    private val today = clock.map { ms -> zone().let { DayBucket.dayOf(ms, it) to it } }.distinctUntilChanged()
 
-    private val content: Flow<ActivityUiState> = combine(period, today) { p, d -> p to d }.distinctUntilChanged().flatMapLatest { (p, d) ->
-        val z = zone()
+    private val content: Flow<ActivityUiState> = combine(period, today) { p, dz -> Triple(p, dz.first, dz.second) }.distinctUntilChanged().flatMapLatest { (p, d, z) ->
         val w = PeriodWindow.of(p, d)
         val r = w.millis(z)
         if (p == Period.TODAY) {

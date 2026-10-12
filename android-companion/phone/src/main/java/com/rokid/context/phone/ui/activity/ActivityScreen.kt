@@ -75,7 +75,8 @@ fun ActivityScreen(
             }
         }
         if (state.period == Period.TODAY) {
-            if (state.sections.isEmpty()) item { Hint("Nothing captured yet today") } else timelineItems(state.sections, onOpenMemory)
+            if (state.sections.isNotEmpty()) timelineItems(state.sections, onOpenMemory)
+            else if (state.today != null) item { Hint("Nothing captured yet today") }
         } else {
             item {
                 SoftCard(Modifier.padding(16.dp).fillMaxWidth()) {
