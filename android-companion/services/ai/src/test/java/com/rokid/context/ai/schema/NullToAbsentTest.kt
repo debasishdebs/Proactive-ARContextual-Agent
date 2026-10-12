@@ -2,6 +2,7 @@ package com.rokid.context.ai.schema
 
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NullToAbsentTest {
@@ -23,5 +24,12 @@ class NullToAbsentTest {
         assertEquals(j("""{"answer":"a","sources":[],"proposedAction":{"type":"SHOPPING_ADD","items":[{"name":"milk"}]}}"""), NullToAbsent.apply(schema, wire))
         val reminder = j("""{"answer":"a","sources":[],"proposedAction":{"type":"REMINDER","title":"t","note":null}}""")
         assertEquals(emptyList<String>(), JsonSchemaValidator.validate(schema, NullToAbsent.apply(schema, reminder)))
+    }
+
+    @Test fun tooDeepInputAndRecursiveSchemasDoNotOverflow() {
+        var deep: kotlinx.serialization.json.JsonElement = kotlinx.serialization.json.JsonArray(emptyList()); repeat(100_000) { deep = kotlinx.serialization.json.JsonArray(listOf(deep)) }
+        assertTrue(deep === NullToAbsent.apply(schema, deep))
+        val rec = SchemaRefs.parse("""{"${'$'}ref":"#/${'$'}defs/A","${'$'}defs":{"A":{"oneOf":[{"${'$'}ref":"#/${'$'}defs/A"}]}}}""")
+        assertEquals(j("""{"a":null}"""), NullToAbsent.apply(rec, j("""{"a":null}""")))
     }
 }
