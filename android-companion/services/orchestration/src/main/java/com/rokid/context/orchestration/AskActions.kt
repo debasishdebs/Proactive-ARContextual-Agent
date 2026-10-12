@@ -41,8 +41,9 @@ object AskActions {
     const val FAILED = "Couldn't answer that — try again"
     const val REVIEW_REASON = "User marked an answer unhelpful"
 
+    /** Built on IO: the first ask reads SharedPreferences (RetrievalSettingsStore) and the key store, never on Main. */
     suspend fun ask(context: Context, question: String, nowMs: Long = System.currentTimeMillis()): AskOutcome =
-        AnswerService.forApp(context).answer(question, "phone_typed", nowMs)
+        withContext(Dispatchers.IO) { AnswerService.forApp(context).answer(question, "phone_typed", nowMs) }
 
     /**
      * 👍 = 1, 👎 = −1 (spec §2.4 Ask detail). Changing to 👎 enqueues one critic re-summarise over the cited memories

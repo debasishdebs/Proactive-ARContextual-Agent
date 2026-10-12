@@ -37,7 +37,8 @@ class NoMemoriesException : IllegalStateException("Context temporarily unavailab
 
 /** Shared text hygiene for questions and retrieved memories (Phase 4 rules, moved here). */
 object AskText {
-    private val WHITESPACE = Regex("[\\s\\p{Cntrl}\\u2028\\u2029]+")
+    /** NEL, LS and PS are listed explicitly: the JVM's `\s` and `\p{Cntrl}` miss them (Android ICU may not). */
+    private val WHITESPACE = Regex("[\\s\\p{Cntrl}\\u0085\\u2028\\u2029]+")
     fun collapse(text: String) = text.replace(WHITESPACE, " ").trim()
 
     /** Cut at a word boundary (when there is one) and mark the cut with an ellipsis. */
@@ -78,13 +79,18 @@ class AnswerService(
 
     suspend fun retrieve(question: String, nowMs: Long): Retrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val hits = retriever.retrieve(q, settings(), nowMs).hits.map { it.memory }
-        val pool = hits.ifEmpty { memory.memories.recent(30).filter { it.reviewState == ReviewState.OK }.take(FALLBACK) }
+        val s = settings().clamped()
+        val hits = retriever.retrieve(q, s, nowMs).hits.map { it.memory }
+        // No hits: the newest trusted memories, under the same minConfidence and top-k the retriever applies.
+        val pool = hits.ifEmpty {
+            memory.memories.recent(30).filter { it.reviewState == ReviewState.OK && it.confidence >= s.minConfidence }.take(minOf(FALLBACK, s.topK))
+        }
         val lines = AskText.bounded(pool.map(::line))
         val kept = pool.take(lines.size)
         return Retrieved(
             PromptVars(
-                question = q,
+                // The question is user (later ASR) text: a data block folds look-alike markers as for memories.
+                question = PromptComposer.dataBlock("question", listOf(q)),
                 retrievedMemories = PromptComposer.dataBlock("memories", lines),
                 contextSources = PromptComposer.dataBlock("sources", sources.lines(q)),
             ),

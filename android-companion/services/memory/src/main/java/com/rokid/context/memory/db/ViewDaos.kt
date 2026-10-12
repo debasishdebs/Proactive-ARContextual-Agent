@@ -61,7 +61,7 @@ interface TraceViewDao {
 
 @Dao
 interface AskDao {
-    /** Seeding/tests only: a whole-row write would reset `rating` — production uses [insertIgnore] + [complete]. */
+    /** Seeding/tests only: a whole-row write would reset `rating`. Production uses [insertIgnore]; [complete] is for two-phase asks. */
     @Upsert suspend fun upsert(ask: AskEntity)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertIgnore(ask: AskEntity): Long
     /** Field-level completion (Phase 2 carry): writes the answer and sources only, never the rating. */
