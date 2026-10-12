@@ -1,0 +1,128 @@
+package com.rokid.context.glasses.link
+
+import com.rokid.context.core.model.FrameAck
+import com.rokid.context.core.model.FrameAckReason
+import com.rokid.context.core.model.FrameChunk
+import com.rokid.context.glasses.capture.OutboundBuffer
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
+
+class FrameUplinkTest {
+    @get:Rule val tmp = TemporaryFolder()
+    private val now = 1_793_000_000_000L
+    private val sent = mutableListOf<FrameChunk>()
+    private var open = true
+    private fun buffer() = OutboundBuffer(File(tmp.root, "out"), clock = { now })
+    private fun jpeg(n: Int) = ByteArray(n) { (it % 7).toByte() }
+
+    /** [answer] is the phone: called for each frame's last chunk, its ack (if any) arrives before the wait starts. */
+    private fun TestScope.uplink(b: OutboundBuffer, config: UplinkConfig = UplinkConfig(), rc: Int = 0, answer: (FrameChunk) -> FrameAck? = { null }): FrameUplink {
+        lateinit var u: FrameUplink
+        u = FrameUplink(this, b, sendChunk = { c ->
+            sent += c
+            if (rc == 0 && c.meta.chunkIdx == c.meta.chunkCount - 1) answer(c)?.let(u::onAck)
+            rc
+        }, canSend = { open }, config = config)
+        return u
+    }
+    private fun okFor(c: FrameChunk) = FrameAck(frameId = c.meta.frameId, ok = true)
+
+    @Test fun ackedFramesAreDeletedOldestFirst() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now - 2, null, null, 80); b.add("g2", jpeg(100), now - 1, null, null, 80)
+        uplink(b, answer = ::okFor).kick(); advanceUntilIdle()
+        assertEquals(listOf("g1", "g2"), sent.map { it.meta.frameId })
+        assertEquals(0, b.size)
+    }
+
+    @Test fun aLargeFrameSendsEveryChunkBeforeWaiting() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(5_000), now, null, null, null)
+        uplink(b, UplinkConfig(chunkChars = 2_000), answer = ::okFor).kick(); advanceUntilIdle()
+        assertEquals(listOf(0, 1, 2, 3), sent.map { it.meta.chunkIdx })
+        assertEquals(0, b.size)
+    }
+
+    /** Phase 0: 5 s ack timeout + 2 s backoff, 3 attempts, then stop and keep the backlog. */
+    @Test fun noAckRetriesThreeTimesThenKeepsTheBacklog() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now - 1, null, null, null); b.add("g2", jpeg(100), now, null, null, null)
+        val sentAt = mutableListOf<Long>()
+        val u = FrameUplink(this, b, sendChunk = { sentAt += testScheduler.currentTime; sent += it; 0 }, canSend = { open })
+        u.kick(); advanceUntilIdle()
+        assertEquals(listOf(0L, 7_000L, 14_000L), sentAt)
+        assertEquals("later frames wait for the next flush", setOf("g1"), sent.map { it.meta.frameId }.toSet())
+        assertEquals(2, b.size)
+        assertFalse(u.flushing.value)
+    }
+
+    @Test fun nackResendsOnceThenDropsAndMovesOn() = runTest {
+        val b = buffer()
+        b.add("bad", jpeg(100), now - 1, null, null, null); b.add("good", jpeg(100), now, null, null, null)
+        uplink(b, answer = { c ->
+            if (c.meta.frameId == "bad") FrameAck(frameId = "bad", ok = false, reason = FrameAckReason.CRC) else okFor(c)
+        }).kick(); advanceUntilIdle()
+        assertEquals(listOf("bad", "bad", "good"), sent.map { it.meta.frameId })
+        assertEquals(0, b.size)
+    }
+
+    /** rc ≠ 0 (CXR refused) is a failed attempt without the 5 s wait. */
+    @Test fun aRefusedSendCountsAsATimeout() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now, null, null, null)
+        uplink(b, rc = -1).kick(); advanceUntilIdle()
+        assertEquals(3, sent.size)
+        assertEquals(1, b.size)
+        assertEquals(4_000L, testScheduler.currentTime)
+    }
+
+    /** Session closed or listening (PTT priority): nothing is sent; the next kick after the gate opens flushes. */
+    @Test fun aClosedGateSendsNothing() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now, null, null, null)
+        open = false
+        val u = uplink(b, answer = ::okFor)
+        u.kick(); advanceUntilIdle()
+        assertTrue(sent.isEmpty())
+        assertEquals(1, b.size)
+        open = true
+        u.kick(); advanceUntilIdle()
+        assertEquals(0, b.size)
+    }
+
+    /** Review Focus 3: link drop mid-frame keeps it and the rest; the next flush restarts it from chunk 0. */
+    @Test fun gateClosingMidBacklogKeepsTheRestAndRestartsFromChunkZero() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(5_000), now - 1, null, null, null); b.add("g2", jpeg(100), now, null, null, null)
+        val first = FrameUplink(this, b, sendChunk = { c ->
+            sent += c
+            if (c.meta.frameId == "g1" && c.meta.chunkIdx == 1) open = false
+            0
+        }, canSend = { open }, config = UplinkConfig(chunkChars = 2_000))
+        first.kick(); advanceUntilIdle()
+        assertEquals(listOf(0, 1), sent.map { it.meta.chunkIdx })
+        assertEquals(2, b.size)
+        sent.clear(); open = true
+        uplink(b, UplinkConfig(chunkChars = 2_000), answer = ::okFor).kick(); advanceUntilIdle()
+        assertEquals(listOf(0, 1, 2, 3, 0), sent.map { it.meta.chunkIdx })
+        assertEquals(0, b.size)
+    }
+
+    @Test fun kickWhileFlushingDoesNotStartASecondFlush() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now, null, null, null)
+        val u = uplink(b)
+        u.kick(); u.kick(); advanceTimeBy(1)
+        assertEquals(1, sent.size)
+        assertTrue(u.flushing.value)
+    }
+}
