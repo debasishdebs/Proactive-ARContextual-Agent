@@ -46,7 +46,7 @@ Inputs/conditions the spec implies but does not spell out; each is pinned by a t
 | 0 Spikes | `2026-10-12-v1-phase0-spikes.md` | written | B (runs in its own worktree `../pca-spike`) |
 | 1 Module restructure + core modules | `2026-10-12-v1-phase1-restructure.md` | written | B (main checkout; may run in parallel with 0) |
 | 2 Data layer | `2026-10-12-v1-phase2-data-layer.md` | written | 1 |
-| 3 CXR link + glasses app | to be written after Phase 0 results | — | 0, 2 |
+| 3 CXR link + glasses app | `2026-10-12-v1-phase3-cxr-link.md` | written | 0, 2 |
 | 4 Phone shell | `2026-10-12-v1-phase4-phone-shell.md` | written | 2 (+3 for live glasses state; fixtures otherwise) |
 | 5 AI + Settings | to be written after Phase 4 | — | 2, 4 |
 | 6 Voice + answers | to be written after Phase 0 + 5 | — | 0, 3, 5 |
