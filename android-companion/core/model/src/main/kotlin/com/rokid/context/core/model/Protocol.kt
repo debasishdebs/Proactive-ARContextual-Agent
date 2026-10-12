@@ -131,7 +131,10 @@ sealed interface Command {
 /** `pc_cmd` payload: commands are wrapped so every message carries [v]. */
 @Serializable data class CommandEnvelope(val v: Int = PROTOCOL_VERSION, val command: Command)
 
-/** Glasses → phone on `pc_hello`, sent on every (re)connect. */
+/**
+ * Glasses → phone on `pc_hello`: sent when a session opens and again after each buffered frame (a status report).
+ * [glassesNowMs] gives the phone the clock offset; [pauses] and [nextCaptureAtMs] are in glasses clock.
+ */
 @Serializable
 data class Hello(
     val v: Int = PROTOCOL_VERSION,
@@ -139,6 +142,7 @@ data class Hello(
     val bufferSize: Int,
     val glassesNowMs: Long,
     val pauses: List<PauseRecord>,
+    val nextCaptureAtMs: Long? = null,
 )
 
 /** First Caps string of every `pc_frame` message; the second string is one Base64 chunk (spec §1.8). */
