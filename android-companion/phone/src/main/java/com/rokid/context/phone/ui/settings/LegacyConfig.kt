@@ -40,6 +40,7 @@ import kotlin.coroutines.cancellation.CancellationException
 object ConfigTestText {
     const val NOT_SET_UP = "Not set up — enter an address and key"
     const val FAILED = "Test failed"
+    const val NOT_APPLIED = "Not tested — settings not applied"
 
     fun of(result: TestResult?): String = when {
         result == null -> NOT_SET_UP
@@ -63,8 +64,6 @@ class LegacyConfigViewModel(
 ) : ViewModel() {
     private val io = Dispatchers.IO.limitedParallelism(1)
     private var syncJob: Job? = null
-    /** The key is never held in UI state (only [KEY_MASK] when one is set); a new one is kept here until persisted. */
-    private var typedKey: String? = null
     private val _state = MutableStateFlow(initial())
     val state: StateFlow<LegacyConfigUiState> = _state.asStateFlow()
 
@@ -73,7 +72,7 @@ class LegacyConfigViewModel(
         return LegacyConfigUiState(
             ConfigUiState(
                 pipelineEnabled = pipeline.enabled.value, localModeEnabled = c.localModeEnabled, encryptionEnabled = c.encryptionEnabled,
-                memoryWindow = c.memoryWindow, persona = c.persona, providerType = c.providerType, endpoint = c.endpoint, apiKeyMasked = if (c.apiKey.isBlank()) "" else KEY_MASK,
+                memoryWindow = c.memoryWindow, persona = c.persona, providerType = c.providerType, endpoint = c.endpoint, apiKeyMasked = "", apiKeySaved = c.apiKey.isNotBlank(),
                 deploymentOrModel = c.deploymentOrModel, nativeModelPath = c.nativeModelPath,
                 glassesSilencyMode = AppConfigStore.glassesSilencyMode(context), testResult = NOT_TESTED,
             ),
@@ -103,18 +102,19 @@ class LegacyConfigViewModel(
 
     fun selectProvider(type: String) { config { copy(providerType = type, testResult = NOT_TESTED) }; persist(); syncLater(0) }
     fun updateEndpoint(value: String) { config { copy(endpoint = value) }; persist(); syncLater(TYPING_DEBOUNCE_MS) }
-    /** The field shows only [KEY_MASK] (or empty); typed characters arrive as "****x" and a backspace as "***". */
+    /** Write-only field: the state holds only what was typed this session (cleared once synced); the stored key is never read into it. */
     fun updateApiKey(value: String) {
-        val key = when {
-            value.startsWith(KEY_MASK) -> (typedKey ?: "") + value.removePrefix(KEY_MASK)
-            typedKey.isNullOrEmpty() -> ""
-            else -> typedKey!!.dropLast(1)
-        }
-        typedKey = key
-        config { copy(apiKeyMasked = if (key.isBlank()) "" else KEY_MASK) }
+        config { copy(apiKeyMasked = value) }
         persist()
         syncLater(TYPING_DEBOUNCE_MS)
     }
+
+    fun clearApiKey() {
+        config { copy(apiKeyMasked = "", apiKeySaved = false) }
+        viewModelScope.launch(io) { saveProvider(_state.value.config, key = "") }
+        syncLater(0)
+    }
+
     fun updateModel(value: String) { config { copy(deploymentOrModel = value) }; persist(); syncLater(TYPING_DEBOUNCE_MS) }
     fun updateNativePath(value: String) { config { copy(nativeModelPath = value) }; persist(); syncLater(TYPING_DEBOUNCE_MS) }
 
@@ -127,13 +127,17 @@ class LegacyConfigViewModel(
     fun testConnectivity() {
         syncJob?.cancel()
         config { copy(testResult = "Testing…") }
+        val sent = _state.value.config.apiKeyMasked
         viewModelScope.launch {
-            val text = try {
+            val text: String? = try {
                 withContext(io) {
-                    LegacyConfigBridge.sync(context)
-                    val graph = ai()
-                    val binding = graph.bindings.get(Role.ANSWER)
-                    ConfigTestText.of(binding?.let { graph.tester.test(it.endpointId, it.model) })
+                    if (LegacyConfigBridge.sync(context).isFailure) {
+                        null
+                    } else {
+                        val graph = ai()
+                        val binding = graph.bindings.get(Role.ANSWER)
+                        ConfigTestText.of(binding?.let { graph.tester.test(it.endpointId, it.model) })
+                    }
                 }
             } catch (c: CancellationException) {
                 throw c
@@ -141,30 +145,44 @@ class LegacyConfigViewModel(
                 Log.i(TAG, "config test failed (${e.javaClass.simpleName})")
                 ConfigTestText.FAILED
             }
-            config { copy(testResult = text) }
+            if (text == null) {
+                config { copy(testResult = ConfigTestText.NOT_APPLIED) }
+                _state.update { it.copy(notice = NOT_APPLIED) }
+            } else {
+                _state.update { it.copy(notice = null) }
+                config { copy(testResult = text) }
+                typedKeySynced(sent)
+            }
         }
     }
 
     private fun persist() {
         val c = _state.value.config
-        val typed = typedKey
-        viewModelScope.launch(io) {
-            val key = typed ?: AppConfigStore.get(context).apiKey
-            AppConfigStore.setProvider(context, c.providerType, c.endpoint, key, c.deploymentOrModel, c.nativeModelPath, syncRegistry = false)
-        }
+        viewModelScope.launch(io) { saveProvider(c, key = c.apiKeyMasked.ifEmpty { null }) }
+    }
+
+    /** [key] null keeps the stored key; "" clears it. */
+    private fun saveProvider(c: ConfigUiState, key: String?) {
+        AppConfigStore.setProvider(context, c.providerType, c.endpoint, key ?: AppConfigStore.get(context).apiKey, c.deploymentOrModel, c.nativeModelPath, syncRegistry = false)
+    }
+
+    /** After a successful sync the typed key is stored: drop the buffer (unless the user kept typing) and show "Key saved". */
+    private fun typedKeySynced(sent: String) {
+        if (sent.isNotEmpty()) config { if (apiKeyMasked == sent) copy(apiKeyMasked = "", apiKeySaved = true) else this }
     }
 
     private fun syncLater(debounceMs: Long) {
         syncJob?.cancel()
         syncJob = viewModelScope.launch {
             if (debounceMs > 0) delay(debounceMs)
+            val sent = _state.value.config.apiKeyMasked
             val ok = withContext(io) { LegacyConfigBridge.sync(context).isSuccess }
             _state.update { it.copy(notice = if (ok) null else NOT_APPLIED) }
+            if (ok) typedKeySynced(sent)
         }
     }
 
     companion object {
-        const val KEY_MASK = "****"
         const val NOT_TESTED = "Not tested"
         const val NOT_APPLIED = "AI settings not applied — check the address, key and model"
         const val TYPING_DEBOUNCE_MS = 600L
@@ -187,6 +205,7 @@ fun LegacyConfigScreen(
     onUpdateNativePath: (String) -> Unit,
     onSelectGlassesSilencyMode: (String) -> Unit,
     onTestConnectivity: () -> Unit,
+    onClearApiKey: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.Surface)) {
         ScreenHeader("Model endpoint", onBack)
@@ -197,7 +216,7 @@ fun LegacyConfigScreen(
                 onToggleEncryption = onToggleEncryption, onCycleMemoryWindow = onCycleMemoryWindow, onSelectProvider = onSelectProvider,
                 onUpdateEndpoint = onUpdateEndpoint, onUpdateApiKey = onUpdateApiKey, onUpdateDeploymentOrModel = onUpdateDeploymentOrModel,
                 onUpdateNativePath = onUpdateNativePath, onSelectGlassesSilencyMode = onSelectGlassesSilencyMode,
-                onTestConnectivity = onTestConnectivity, onBack = onBack,
+                onTestConnectivity = onTestConnectivity, onBack = onBack, onClearApiKey = onClearApiKey,
             )
         }
     }
