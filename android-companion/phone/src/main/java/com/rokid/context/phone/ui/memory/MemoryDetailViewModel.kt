@@ -39,9 +39,10 @@ class MemoryDetailViewModel(
 
     fun saveEdit() {
         val draft = local.value.draft ?: return
+        if (draft.isBlank()) { local.update { it.copy(message = "Text can't be empty") }; return }
         viewModelScope.launch {
             if (edits.editText(memoryId, draft)) local.update { it.copy(draft = null, message = "Saved") }
-            else local.update { it.copy(message = "Text can't be empty") }
+            else local.update { it.copy(message = "This memory can't be edited") }
         }
     }
 }

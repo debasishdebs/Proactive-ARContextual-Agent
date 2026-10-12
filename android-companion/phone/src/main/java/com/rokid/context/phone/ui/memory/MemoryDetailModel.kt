@@ -20,6 +20,8 @@ data class MemoryDetailUiState(
     val confidence: Double = 0.0,
     val reviewLabel: String = "",
     val trusted: Boolean = false,
+    /** False for hidden (INVALIDATED) memories: Trust and Edit are disabled. */
+    val editable: Boolean = true,
     val createdLabel: String = "",
     val framePath: String? = null,
     val frameId: String? = null,
@@ -42,6 +44,7 @@ object MemoryDetailModel {
         confidence = m.confidence,
         reviewLabel = when (m.reviewState) { ReviewState.OK -> "Reviewed"; ReviewState.NEEDS_REVIEW -> "Needs review"; ReviewState.INVALIDATED -> "Hidden" },
         trusted = m.trusted,
+        editable = m.reviewState != ReviewState.INVALIDATED,
         createdLabel = CREATED.format(Instant.ofEpochMilli(m.createdAt).atZone(zone)),
         framePath = frame?.path,
         frameId = frame?.id,
@@ -54,4 +57,10 @@ object Zoom {
     const val MIN = 1f
     const val MAX = 5f
     fun clamp(scale: Float): Float = if (scale.isNaN()) MIN else scale.coerceIn(MIN, MAX)
+
+    /** Keeps a zoomed image covering its viewport on one axis: |offset| <= size * (scale - 1) / 2; 0 at unit scale. */
+    fun clampPan(offset: Float, scale: Float, size: Float): Float {
+        val limit = size * (clamp(scale) - 1f) / 2f
+        return if (offset.isNaN() || limit <= 0f) 0f else offset.coerceIn(-limit, limit)
+    }
 }
