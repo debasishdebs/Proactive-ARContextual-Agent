@@ -98,6 +98,7 @@ class CaptureService : LifecycleService() {
             } finally {
                 val s = HudSettingsCache(getSharedPreferences(HudSettingsCache.PREFS, Context.MODE_PRIVATE)).read()
                 scheduler.scheduleNext(CaptureCadence.nextDelayMs(s.captureIntervalSec, batteryPercent(), isBatterySaverOn(), failed))
+                runtime.onCaptureScheduled()
                 inFlight.set(false)
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
