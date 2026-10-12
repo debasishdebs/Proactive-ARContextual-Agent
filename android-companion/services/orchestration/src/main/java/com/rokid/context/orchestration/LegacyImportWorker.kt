@@ -8,14 +8,13 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.rokid.context.memory.MemoryGraph
-import com.rokid.context.memory.legacy.LegacyImporter
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class LegacyImportWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
-        val importer = LegacyImporter(applicationContext, MemoryGraph.get(applicationContext))
-        if (importer.isDone()) return Result.success()
-        val report = importer.importAll()
-        Log.i(TAG, "legacy import $report")
+        val report = withContext(Dispatchers.IO) { MemoryGraph.ensureLegacyImported(applicationContext) }
+        if (report != null) Log.i(TAG, "legacy import $report")
         return Result.success()
     }
 

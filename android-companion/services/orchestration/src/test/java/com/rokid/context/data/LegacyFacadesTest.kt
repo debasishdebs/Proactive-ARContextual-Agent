@@ -58,4 +58,13 @@ class LegacyFacadesTest {
         File(ctx.filesDir, "memory_records.log").writeText("rokid_mem_9\tshort_term\t0.8\t5\tImported before first use\n")
         assertEquals(listOf("rokid_mem_9"), MemoryRecordStore.recent(ctx, 10).map { it.id })
     }
+
+    @Test fun ensureLegacyImportedRunsImportOnlyOnce() {
+        File(ctx.filesDir, "memory_records.log").writeText("rokid_mem_9\tshort_term\t0.8\t5\tOnce only\n")
+        val first = MemoryGraph.ensureLegacyImported(ctx)
+        val second = MemoryGraph.ensureLegacyImported(ctx)
+        assertEquals(1, first?.memories)
+        assertEquals(null, second)
+        assertEquals(1, MemoryRecordStore.recent(ctx, 10).size)
+    }
 }

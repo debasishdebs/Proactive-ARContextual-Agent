@@ -50,12 +50,13 @@ class MemoryGraph private constructor(val db: ContextDatabase) {
         private val importLock = Any()
 
         /** Runs the legacy import once, blocking, before the first facade read/write (Review Focus #5). */
-        fun ensureLegacyImported(context: Context) {
+        fun ensureLegacyImported(context: Context): com.rokid.context.memory.legacy.ImportReport? {
             val graph = get(context)
             val importer = com.rokid.context.memory.legacy.LegacyImporter(context.applicationContext, graph)
-            if (importer.isDone()) return
+            if (importer.isDone()) return null
             synchronized(importLock) {
-                if (!importer.isDone()) kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) { importer.importAll() }
+                if (importer.isDone()) return null
+                return kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) { importer.importAll() }
             }
         }
 

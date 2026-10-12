@@ -61,6 +61,7 @@ import com.rokid.context.ui.tracker.SummarizerTrackerScreen
 import com.rokid.context.ui.tracker.TrackerItem
 import com.rokid.context.work.OrchestrationScheduler
 import kotlinx.coroutines.delay
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -71,10 +72,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        FrameStreamStore.purgeNonRokidEntries(this)
         QueueRuntimeStore.purgeSynthetic(this)
-        SummaryTraceStore.purgeSynthetic(this)
-        MemoryRecordStore.purgeNonRokid(this)
+        // Room-backed facades must not run on the main thread (may wait on the legacy import).
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            FrameStreamStore.purgeNonRokidEntries(this@MainActivity)
+            SummaryTraceStore.purgeSynthetic(this@MainActivity)
+            MemoryRecordStore.purgeNonRokid(this@MainActivity)
+        }
 
         val scheduler = OrchestrationScheduler(this)
         scheduler.apply {
@@ -253,7 +257,9 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
                 summarizerEvent = "${snapshot.focusSummarizerState} at ${System.currentTimeMillis()}"
             }
 
-            val visibleRecords = FrameStreamStore.recent(context, 40)
+            val (visibleRecords, traceRows, memoryRows) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                Triple(FrameStreamStore.recent(context, 40), SummaryTraceStore.recent(context, 40), MemoryRecordStore.recent(context, 220))
+            }
             recentFrames = visibleRecords.take(12).map {
                 "${formatTime(it.capturedAtEpochMs)} ${it.source} ${it.payload.take(38)}"
             }
@@ -268,7 +274,7 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
                 )
             }
 
-            trackerItems = SummaryTraceStore.recent(context, 40).map {
+            trackerItems = traceRows.map {
                 TrackerItem(
                     summaryId = it.summaryId,
                     state = it.state,
@@ -277,7 +283,7 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
                 )
             }
 
-            memoryItems = MemoryRecordStore.recent(context, 220).map {
+            memoryItems = memoryRows.map {
                 MemoryItem(
                     id = it.id,
                     type = it.memoryType,
