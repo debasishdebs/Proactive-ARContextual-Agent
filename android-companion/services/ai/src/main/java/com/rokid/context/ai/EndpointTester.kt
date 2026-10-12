@@ -16,7 +16,7 @@ data class TestResult(val ok: Boolean, val latencyMs: Long, val message: String)
 
 /** spec §4.1 Test: a one-token chat, or one embedding for embedding-only endpoints. Messages are short and human. */
 class EndpointTester(private val repo: EndpointRepository, private val providers: ProviderBuilder) {
-    private val http = OkHttpClient.Builder().callTimeout(30, TimeUnit.SECONDS).build()
+    private val http = OkHttpClient.Builder().callTimeout(30, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()
 
     suspend fun test(endpointId: String, model: String): TestResult {
         val e = repo.byId(endpointId) ?: return TestResult(false, 0, "Endpoint not found")
@@ -63,8 +63,9 @@ class EndpointTester(private val repo: EndpointRepository, private val providers
     companion object {
         fun humanize(t: Throwable): String {
             val m = t.message.orEmpty()
-            val code = Regex("\\b(4\\d\\d|5\\d\\d)\\b").find(m)?.value
+            val code = Regex("\\b(3\\d\\d|4\\d\\d|5\\d\\d)\\b").find(m)?.value
             return when {
+                code != null && code.startsWith("3") -> "Address redirects — enter the final address"
                 code == "401" || code == "403" -> "Key rejected ($code)"
                 code == "404" -> "Not found — check address and model (404)"
                 code != null && code.startsWith("5") -> "Server error ($code)"

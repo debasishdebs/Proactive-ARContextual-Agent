@@ -31,4 +31,34 @@ class UrlNormalizerTest {
         assertEquals("abc123", UrlNormalizer.cleanKey("  abc123\n").getOrThrow())
         assertTrue(UrlNormalizer.cleanKey("abc 123").isFailure)
     }
+
+    private fun keyErr(raw: String) = UrlNormalizer.cleanKey(raw).exceptionOrNull()!!.message!!
+
+    @Test fun keyWithInvisibleOrSmartCharsIsRejected() {
+        assertEquals("Key has invalid characters", keyErr("abc\u200B123"))
+        assertEquals("Key has invalid characters", keyErr("\uFEFFabc123"))
+        assertEquals("Key has invalid characters", keyErr("\u201Cabc123\u201D"))
+    }
+
+    private fun httpErr(raw: String, kind: EndpointKind, key: Boolean) =
+        UrlNormalizer.normalize(raw, kind, hasKey = key).exceptionOrNull()?.message
+
+    @Test fun azureRejectsHttp() = assertEquals("Azure needs https://", httpErr("http://x.example", EndpointKind.AZURE_OPENAI, true))
+
+    @Test fun openAiCompatWithKeyRejectsRemoteHttp() {
+        assertEquals("Use https:// when sending a key", httpErr("http://api.example.com", EndpointKind.OPENAI_COMPAT, true))
+        assertEquals("Use https:// when sending a key", httpErr("http://8.8.8.8", EndpointKind.OPENAI_COMPAT, true))
+        assertEquals("Use https:// when sending a key", httpErr("http://172.32.0.1", EndpointKind.OPENAI_COMPAT, true))
+    }
+
+    @Test fun openAiCompatHttpAllowedForLocalOrKeyless() {
+        listOf("http://localhost:8080", "http://127.0.0.1:1", "http://[::1]:1", "http://10.0.2.2:8080", "http://192.168.1.5", "http://172.16.0.9", "http://10.1.2.3", "http://box.local")
+            .forEach { assertEquals(it, null, httpErr(it, EndpointKind.OPENAI_COMPAT, true)) }
+        assertEquals(null, httpErr("http://api.example.com", EndpointKind.OPENAI_COMPAT, false))
+    }
+
+    @Test fun ollamaAndLocalUnchanged() {
+        assertEquals(null, httpErr("http://api.example.com", EndpointKind.OLLAMA, true))
+        assertEquals(null, httpErr("/sdcard/m.gguf", EndpointKind.LLAMACPP_LOCAL, true))
+    }
 }

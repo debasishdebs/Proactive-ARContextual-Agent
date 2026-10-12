@@ -29,6 +29,8 @@ class OpenAiCompatProvider(
         .readTimeout(75, TimeUnit.SECONDS)
         .writeTimeout(75, TimeUnit.SECONDS)
         .callTimeout(90, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
         .build(),
 ) : ModelProvider {
     enum class ApiStyle { AZURE, OPENAI }
