@@ -22,6 +22,17 @@ abstract class EmbeddingDao {
     @Query("SELECT * FROM embedding_space WHERE id = :id") abstract suspend fun space(id: String): EmbeddingSpaceEntity?
     @Query("SELECT * FROM embedding_space ORDER BY createdAt ASC") abstract fun observeSpaces(): Flow<List<EmbeddingSpaceEntity>>
     @Query("SELECT * FROM memory_vector WHERE spaceId = :spaceId") abstract suspend fun vectors(spaceId: String): List<MemoryVectorEntity>
+
+    /**
+     * One keyset page of searchable vectors in [spaceId], by `memoryId` ascending after [afterId] ("" = first page).
+     * Only vectors whose memory still exists and is OK: an INVALIDATED, under-review, forgotten or deleted memory's
+     * vector (memory_vector has no foreign key) is never a hit.
+     */
+    @Query(
+        "SELECT v.* FROM memory_vector v JOIN memory m ON m.id = v.memoryId WHERE v.spaceId = :spaceId AND m.reviewState = 'OK' " +
+            "AND v.memoryId > :afterId ORDER BY v.memoryId LIMIT :limit",
+    )
+    abstract suspend fun livePage(spaceId: String, afterId: String, limit: Int): List<MemoryVectorEntity>
     @Upsert abstract suspend fun putVector(v: MemoryVectorEntity)
 
     @Query(

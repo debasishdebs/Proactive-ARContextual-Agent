@@ -29,4 +29,5 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun proposalDao(): ProposalDao
     abstract fun promptDao(): PromptDao
     abstract fun embeddingDao(): EmbeddingDao
+    abstract fun retrievalDao(): RetrievalDao
 }

@@ -33,6 +33,11 @@ class AiGraph(
     val router = ModelRouter(bindings, endpoints, providers)
     val tester = EndpointTester(endpoints, providers)
     val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings)
+    val retriever = com.rokid.context.memory.retrieval.MemoryRetriever(
+        com.rokid.context.memory.retrieval.LexicalRetriever(memory.db.retrievalDao()),
+        com.rokid.context.memory.retrieval.SemanticRetriever(memory.spaces, memory.vectorIndex, embedders),
+        memory.db.memoryViewDao(),
+    )
     val seeder = EndpointSeeder(endpoints, bindings, seedState)
     val prompts = PromptRepository(memory.db.promptDao(), seeds, settings.prompts)
     val persona: PersonaSettings get() = settings.persona

@@ -36,4 +36,11 @@ object SearchNormalizer {
     fun toMatchQuery(userText: String): String? =
         normalize(userText).split(' ').filter { it.isNotBlank() }.take(MAX_QUERY_TOKENS)
             .joinToString(" ") { "\"$it*\"" }.ifBlank { null }
+
+    private const val MAX_ANY_TOKENS = 16
+
+    /** Ranked retrieval: any term may match (BM25 weighs them); distinct quoted prefix terms joined with OR. */
+    fun toAnyMatchQuery(userText: String): String? =
+        normalize(userText).split(' ').filter { it.isNotBlank() }.distinct().take(MAX_ANY_TOKENS)
+            .joinToString(" OR ") { "\"$it*\"" }.ifBlank { null }
 }
