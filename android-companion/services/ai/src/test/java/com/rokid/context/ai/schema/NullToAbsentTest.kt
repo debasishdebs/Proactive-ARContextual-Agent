@@ -1,0 +1,27 @@
+package com.rokid.context.ai.schema
+
+import kotlinx.serialization.json.Json
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class NullToAbsentTest {
+    private val schema = SchemaRefs.parse("""{"type":"object","properties":{"answer":{"type":"string"},"sources":{"type":"array","items":{"type":"string"}},
+        "proposedAction":{"${'$'}ref":"#/${'$'}defs/PA"}},"required":["answer","sources"],"${'$'}defs":{"PA":{"oneOf":[
+        {"type":"object","properties":{"type":{"enum":["REMINDER"]},"title":{"type":"string"},"note":{"type":"string"}},"required":["type","title"]},
+        {"type":"object","properties":{"type":{"enum":["SHOPPING_ADD"]},"items":{"type":"array","items":{"type":"object",
+          "properties":{"name":{"type":"string"},"qty":{"type":"number"}},"required":["name"]}}},"required":["type","items"]}]}}}""")
+    private fun j(t: String) = Json.parseToJsonElement(t)
+
+    @Test fun nullForAnOptionalFieldBecomesAbsent() =
+        assertEquals(j("""{"answer":"a","sources":[]}"""), NullToAbsent.apply(schema, j("""{"answer":"a","sources":[],"proposedAction":null}""")))
+
+    @Test fun requiredNullsStaySoValidationReportsThem() =
+        assertEquals(j("""{"answer":null,"sources":[]}"""), NullToAbsent.apply(schema, j("""{"answer":null,"sources":[]}""")))
+
+    @Test fun nestedBranchAndArrayItemsAreNormalised() {
+        val wire = j("""{"answer":"a","sources":[],"proposedAction":{"type":"SHOPPING_ADD","items":[{"name":"milk","qty":null}]}}""")
+        assertEquals(j("""{"answer":"a","sources":[],"proposedAction":{"type":"SHOPPING_ADD","items":[{"name":"milk"}]}}"""), NullToAbsent.apply(schema, wire))
+        val reminder = j("""{"answer":"a","sources":[],"proposedAction":{"type":"REMINDER","title":"t","note":null}}""")
+        assertEquals(emptyList<String>(), JsonSchemaValidator.validate(schema, NullToAbsent.apply(schema, reminder)))
+    }
+}
