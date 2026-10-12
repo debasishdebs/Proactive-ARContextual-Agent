@@ -55,4 +55,30 @@ class EndpointRepositoryTest {
         assertTrue(repo.all().isEmpty())
         assertEquals(null, vault.get(EndpointRepository.keyRef("e1")))
     }
+
+    @Test fun nonAsciiKeyIsRejectedAndNothingStored() = runTest {
+        val r = repo.save(e("https://h.example"), apiKey = "abc\u200B123")
+        assertEquals("Key has invalid characters", r.exceptionOrNull()!!.message)
+        assertTrue(repo.all().isEmpty())
+        assertEquals(null, vault.get(EndpointRepository.keyRef("e1")))
+    }
+
+    @Test fun azureHttpIsRejectedAndNothingStored() = runTest {
+        assertTrue(repo.save(e("http://h.example"), apiKey = "k").isFailure)
+        assertTrue(repo.all().isEmpty())
+    }
+
+    @Test fun openAiCompatRemoteHttpWithKeyRejectedButLanAllowed() = runTest {
+        fun o(url: String) = e(url).copy(kind = EndpointKind.OPENAI_COMPAT)
+        val bad = repo.save(o("http://api.example.com"), apiKey = "k")
+        assertEquals("Use https:// when sending a key", bad.exceptionOrNull()!!.message)
+        assertTrue(repo.all().isEmpty())
+        assertTrue(repo.save(o("http://192.168.1.5:8080"), apiKey = "k").isSuccess)
+    }
+
+    @Test fun keptKeyStillBlocksRemoteHttpOnResave() = runTest {
+        fun o(url: String) = e(url).copy(kind = EndpointKind.OPENAI_COMPAT)
+        repo.save(o("https://api.example.com"), apiKey = "k").getOrThrow()
+        assertTrue(repo.save(o("http://api.example.com"), apiKey = null).isFailure)
+    }
 }

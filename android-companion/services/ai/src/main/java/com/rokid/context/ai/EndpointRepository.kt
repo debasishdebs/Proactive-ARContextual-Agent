@@ -6,8 +6,9 @@ import com.rokid.context.memory.db.EndpointEntity
 class EndpointRepository(private val dao: EndpointDao, private val vault: KeyVault) {
     /** [apiKey] null = keep the stored key; blank = remove it (e.g. Ollama without auth). */
     suspend fun save(endpoint: Endpoint, apiKey: String?): Result<Endpoint> = runCatching {
-        val url = UrlNormalizer.normalize(endpoint.baseUrl, endpoint.kind).getOrThrow()
         val key = apiKey?.takeIf { it.isNotBlank() }?.let { UrlNormalizer.cleanKey(it).getOrThrow() }
+        val willHaveKey = key != null || (apiKey == null && vault.get(keyRef(endpoint.id)) != null)
+        val url = UrlNormalizer.normalize(endpoint.baseUrl, endpoint.kind, willHaveKey).getOrThrow()
         val clean = endpoint.copy(baseUrl = url, models = endpoint.models.map { it.trim() }.filter { it.isNotEmpty() })
         dao.upsert(clean.toEntity())
         when {

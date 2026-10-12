@@ -3,6 +3,7 @@ package com.rokid.context.ai
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.EndpointEntity
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -19,13 +20,19 @@ import org.robolectric.annotation.Config
 class EndpointTesterTest {
     private val server = MockWebServer().apply { start() }
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
-    private val repo = EndpointRepository(db.endpointDao(), InMemoryKeyVault())
-    private val tester = EndpointTester(repo, ProviderFactory)
     @After fun close() { server.shutdown(); db.close() }
 
-    private suspend fun save(kind: EndpointKind, caps: Set<Capability>) = repo.save(
-        Endpoint("e", "t", kind, server.url("/").toString(), "2024-10-21", listOf("m"), caps, 1), apiKey = "k",
-    ).getOrThrow()
+    private val vault = InMemoryKeyVault()
+    private val repo = EndpointRepository(db.endpointDao(), vault)
+    private val tester = EndpointTester(repo, ProviderFactory)
+
+    /** Writes straight to the DAO so the (http) MockWebServer can stand in for https-only Azure. */
+    private suspend fun save(kind: EndpointKind, caps: Set<Capability>, url: String = server.url("/").toString().trimEnd('/')) {
+        db.endpointDao().upsert(
+            EndpointEntity("e", "t", kind.name, url, "2024-10-21", "m", EndpointRepository.keyRef("e"), caps.joinToString(",") { it.name }, 1),
+        )
+        vault.put(EndpointRepository.keyRef("e"), "k")
+    }
 
     @Test fun azureChatSuccess() = runTest {
         save(EndpointKind.AZURE_OPENAI, setOf(Capability.CHAT))
@@ -59,5 +66,30 @@ class EndpointTesterTest {
         val r = tester.test("e", "m")
         assertFalse(r.ok)
         assertEquals("Key rejected (401)", r.message)
+    }
+
+    private val redirectMsg = "Address redirects — enter the final address"
+
+    @Test fun chatRedirectIsNotFollowedAndKeyNotForwarded() = runTest {
+        val other = MockWebServer().apply { start() }
+        try {
+            save(EndpointKind.AZURE_OPENAI, setOf(Capability.CHAT))
+            server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", other.url("/x").toString()))
+            val r = tester.test("e", "m")
+            assertFalse(r.ok)
+            assertEquals(redirectMsg, r.message)
+            assertEquals(0, other.requestCount)
+        } finally { other.shutdown() }
+    }
+
+    @Test fun embeddingRedirectIsNotFollowedAndKeyNotForwarded() = runTest {
+        val other = MockWebServer().apply { start() }
+        try {
+            save(EndpointKind.AZURE_OPENAI, setOf(Capability.EMBEDDINGS))
+            server.enqueue(MockResponse().setResponseCode(308).setHeader("Location", other.url("/x").toString()))
+            val r = tester.test("e", "m")
+            assertEquals(redirectMsg, r.message)
+            assertEquals(0, other.requestCount)
+        } finally { other.shutdown() }
     }
 }
