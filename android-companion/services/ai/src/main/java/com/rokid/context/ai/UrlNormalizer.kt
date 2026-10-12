@@ -30,7 +30,7 @@ object UrlNormalizer {
         val uri = URI(withScheme)
         val scheme = uri.scheme?.lowercase()
         require(scheme == "http" || scheme == "https") { "Address must start with http:// or https://" }
-        val host = uri.host?.lowercase()
+        val host = uri.host?.lowercase()?.trimEnd('.')
         require(!host.isNullOrBlank()) { "Address is missing a host" }
         if (scheme == "http") {
             require(kind != EndpointKind.AZURE_OPENAI) { "Azure needs https://" }
