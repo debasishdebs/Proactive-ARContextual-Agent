@@ -30,4 +30,9 @@ class FusionStrategyTest {
         assertEquals(mapOf("x" to 1.0, "y" to 1.0), FusionStrategy.minMax(listOf(Hit("x", 2.0), Hit("y", 2.0))))
         assertEquals(emptyMap<String, Double>(), FusionStrategy.CombMnz.fuse(emptyList(), emptyList()))
     }
+
+    @Test fun rrfBreaksEqualScoresById() {
+        val f = FusionStrategy.Rrf(60).fuse(listOf(Hit("b", 1.0), Hit("a", 1.0)), emptyList())
+        assertEquals(1 / 61.0, f.getValue("a"), 1e-12); assertEquals(1 / 62.0, f.getValue("b"), 1e-12)
+    }
 }

@@ -62,4 +62,11 @@ class LexicalRetrieverTest {
         assertEquals(listOf("m"), lexical.search("\"milk\" OR NOT", 10).map { it.id })
         assertTrue(lexical.search("OR AND NOT", 10).isEmpty())
     }
+
+    @Test fun theNewestBestMatchSurvivesMoreThanAThousandMatches() = runBlocking {
+        // Every filler row matches "i" and "the"; an unranked candidate cut would keep only the oldest ones.
+        repeat(1_500) { mem("f$it", "i think the weekend was fine number $it") }
+        mem("milk", "milk carton is in the fridge")
+        assertEquals("milk", lexical.search("where did i leave the milk", 10).first().id)
+    }
 }

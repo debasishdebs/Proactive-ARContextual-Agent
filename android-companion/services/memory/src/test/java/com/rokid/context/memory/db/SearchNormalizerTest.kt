@@ -39,7 +39,23 @@ class SearchNormalizerTest {
 
     @Test fun anyMatchQueryCannotInjectFtsSyntax() {
         // Quotes, wildcards, column filters, grouping and operators all become inert quoted terms.
-        assertEquals("\"a*\" OR \"or*\" OR \"b*\" OR \"near*\" OR \"c*\"", SearchNormalizer.toAnyMatchQuery("a\" OR \"b NEAR(c*)"))
+        assertEquals("\"ab*\" OR \"or*\" OR \"cd*\" OR \"near*\" OR \"ef*\"", SearchNormalizer.toAnyMatchQuery("ab\" OR \"cd NEAR(ef*)"))
         assertEquals("\"searchtext*\" OR \"milk*\"", SearchNormalizer.toAnyMatchQuery("searchText:-milk"))
+    }
+
+    @Test fun anyMatchQueryDropsOneCharacterPrefixes() {
+        // "i*" / "a*" would match nearly every memory; a two-code-point Hindi word stays.
+        assertEquals("\"milk*\"", SearchNormalizer.toAnyMatchQuery("i a milk"))
+        assertNull(SearchNormalizer.toAnyMatchQuery("i a"))
+        assertEquals("\"है*\"", SearchNormalizer.toAnyMatchQuery("है"))
+    }
+
+    @Test fun emojiVariationAndKeycapResidueIsStripped() {
+        assertEquals("milk", SearchNormalizer.normalize("❤️ milk"))
+        assertEquals("ok", SearchNormalizer.normalize("☺\uFE0E ok"))
+        assertEquals("1 milk", SearchNormalizer.normalize("1️⃣ milk"))
+        assertEquals("dudh", SearchNormalizer.normalize("\u0301\u0302 dudh")) // a term of combining marks only
+        assertNull(SearchNormalizer.toAnyMatchQuery("❤️ ❤️"))
+        assertEquals("आज दूध", SearchNormalizer.normalize("आज दूध"))
     }
 }
