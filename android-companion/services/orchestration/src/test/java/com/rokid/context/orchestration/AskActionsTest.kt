@@ -7,7 +7,12 @@ import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.InMemoryKeyVault
 import com.rokid.context.ai.InMemorySeedState
 import com.rokid.context.ai.ProviderBuilder
+import androidx.work.testing.WorkManagerTestInitHelper
 import com.rokid.context.data.runtime.AppConfigStore
+import com.rokid.context.data.runtime.QueuePayloads
+import com.rokid.context.data.runtime.QueueRuntimeStore
+import com.rokid.context.domain.queue.QueuePriority
+import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.legacy.LegacyImporter
@@ -31,6 +36,7 @@ class AskActionsTest {
     private val prompts = mutableListOf<String>()
 
     @Before fun setUp() {
+        WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         AiGraph.resetForTests(AiGraph(MemoryGraph.get(ctx), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { _, _, _ ->
             object : ModelProvider { override suspend fun generate(prompt: String): String { prompts += prompt; return reply(prompt) } }
@@ -85,5 +91,39 @@ class AskActionsTest {
         assertEquals(emptyList<String>(), AskSources.parse("{}"))
         assertEquals(listOf("a"), AskSources.parse("""[1, "a", "a", " ", null]"""))
         assertEquals("""["a","b"]""", AskSources.encode(listOf("a", "b", "a")))
+    }
+
+    private fun reviewJobs() = QueueRuntimeStore.recent(ctx, 50).filter { it.queue == QueuePriority.PRIORITY_REPROCESS }
+
+    private suspend fun seedAsk(redacted: Boolean = false) {
+        remember("rokid_mem_1", "Milk carton nearly empty", 10)
+        MemoryGraph.get(ctx).asks.upsert(AskEntity("a1", 50, "milk?", "Almost empty", AskSources.encode(listOf("rokid_mem_1", "gone")), null, "phone_typed", redacted))
+    }
+
+    @Test fun thumbsDownEnqueuesOneReviewOfTheCitedMemories() = runBlocking {
+        seedAsk()
+        assertTrue(AskActions.rate(ctx, "a1", up = false))
+        assertTrue(AskActions.rate(ctx, "a1", up = false)) // second tap is a no-op
+        assertEquals(-1, MemoryGraph.get(ctx).asks.byId("a1")!!.rating)
+        val jobs = reviewJobs()
+        assertEquals(1, jobs.size)
+        val payload = QueuePayloads.parse(jobs.single().payload)
+        assertEquals(AskActions.REVIEW_REASON, QueuePayloads.string(payload, "reason"))
+        assertEquals("Milk carton nearly empty", QueuePayloads.string(payload, "source_context"))
+    }
+
+    @Test fun thumbsUpOnlyStoresTheRating() = runBlocking {
+        seedAsk()
+        assertTrue(AskActions.rate(ctx, "a1", up = true))
+        assertEquals(1, MemoryGraph.get(ctx).asks.byId("a1")!!.rating)
+        assertTrue(reviewJobs().isEmpty())
+    }
+
+    @Test fun redactedOrUnknownAsksCannotBeRated() = runBlocking {
+        seedAsk(redacted = true)
+        assertFalse(AskActions.rate(ctx, "a1", up = false))
+        assertFalse(AskActions.rate(ctx, "missing", up = true))
+        assertEquals(null, MemoryGraph.get(ctx).asks.byId("a1")!!.rating)
+        assertTrue(reviewJobs().isEmpty())
     }
 }
