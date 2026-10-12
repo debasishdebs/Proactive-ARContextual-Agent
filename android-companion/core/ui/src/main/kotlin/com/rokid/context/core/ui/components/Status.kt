@@ -13,8 +13,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.BatteryStd
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -85,7 +85,7 @@ fun StatusStrip(
                     .clickable(role = Role.Button, onClickLabel = label, onClick = onTogglePause),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(if (paused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause, contentDescription = label, tint = PcColors.Ink, modifier = Modifier.size(18.dp))
+                Icon(if (paused) Icons.Outlined.PlayArrow else Icons.Outlined.Pause, contentDescription = label, tint = PcColors.Ink, modifier = Modifier.size(18.dp))
             }
         }
     }

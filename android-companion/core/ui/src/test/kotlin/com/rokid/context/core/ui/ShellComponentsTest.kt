@@ -21,6 +21,8 @@ import com.rokid.context.core.ui.components.FrameThumb
 import com.rokid.context.core.ui.components.StatusStrip
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.core.ui.theme.PcTheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Rule
@@ -95,6 +97,22 @@ class ShellComponentsTest {
 
     @Test fun missingFileShowsPlaceholder() {
         compose.setContent { PcTheme { FrameThumb("/definitely/missing.jpg") } }
+        compose.waitUntil(5_000) { compose.onAllNodesWithContentDescription("No photo").fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test fun changingPathNeverShowsThePreviousPhoto() {
+        val a = java.io.File.createTempFile("frame-a", ".jpg").apply {
+            deleteOnExit()
+            outputStream().use { android.graphics.Bitmap.createBitmap(8, 8, android.graphics.Bitmap.Config.ARGB_8888).compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }
+        }
+        var path by androidx.compose.runtime.mutableStateOf<String?>(a.path)
+        compose.setContent { PcTheme { FrameThumb(path) } }
+        compose.waitUntil(5_000) { compose.onAllNodesWithContentDescription("Photo").fetchSemanticsNodes().isNotEmpty() }
+        compose.mainClock.autoAdvance = false
+        compose.runOnUiThread { path = "/definitely/missing.jpg"; androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications() }
+        compose.mainClock.advanceTimeBy(100)
+        compose.onAllNodesWithContentDescription("Photo").assertCountEquals(0)
+        compose.mainClock.autoAdvance = true
         compose.waitUntil(5_000) { compose.onAllNodesWithContentDescription("No photo").fetchSemanticsNodes().isNotEmpty() }
     }
 }
