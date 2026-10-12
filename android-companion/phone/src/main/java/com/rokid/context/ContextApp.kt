@@ -17,7 +17,10 @@ class ContextApp : Application() {
         )
         com.rokid.context.memory.MemoryGraph.get(this) { com.rokid.context.data.runtime.AppConfigStore.get(this).encryptionEnabled }
         // Eager background import so it is normally done before any facade use; facades block only if it is still running.
-        kotlin.concurrent.thread(name = "legacy-import") { com.rokid.context.memory.MemoryGraph.ensureLegacyImported(this) }
+        kotlin.concurrent.thread(name = "legacy-import") {
+            runCatching { com.rokid.context.memory.MemoryGraph.ensureLegacyImported(this) }
+                .onFailure { android.util.Log.w("ContextApp", "legacy import failed; will retry", it) }
+        }
         com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
     }
 }
