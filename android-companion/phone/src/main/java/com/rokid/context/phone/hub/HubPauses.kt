@@ -1,0 +1,55 @@
+package com.rokid.context.phone.hub
+
+import com.rokid.context.core.model.PauseOrigin
+import com.rokid.context.core.model.PauseRecord
+import com.rokid.context.link.FrameAdmission
+import com.rokid.context.link.PauseHistory
+import com.rokid.context.memory.db.PauseDao
+import com.rokid.context.memory.db.PauseIntervalEntity
+import com.rokid.context.memory.db.PauseRecordEntity
+
+/**
+ * Phone pause set (spec §5.5), persisted in Room: `pause_record` = active records, `pause_interval` = retained history.
+ * Instants are phone clock. A record ends only by its own expiry or a Resume naming it; nothing resumes implicitly.
+ */
+class HubPauses(private val dao: PauseDao, private val now: () -> Long = System::currentTimeMillis) : PauseHistory {
+    /** Active records; expired ones are first closed at their `untilMs` and removed. */
+    suspend fun active(): List<PauseRecord> {
+        val t = now()
+        val (live, expired) = dao.records().map { it.toModel() }.partition { it.isActiveAt(t) }
+        expired.forEach { dao.closeInterval(it.pauseId, it.untilMs ?: t) }
+        if (expired.isNotEmpty()) dao.deleteRecords(expired.map { it.pauseId })
+        return live
+    }
+
+    /** Union semantics: adds [record] (or keeps it); an already expired record only adds history. */
+    suspend fun add(record: PauseRecord) {
+        dao.insertInterval(PauseIntervalEntity(record.pauseId, record.origin.name, record.createdAtMs, null))
+        if (record.isActiveAt(now())) dao.upsertRecord(record.toEntity())
+        else dao.closeInterval(record.pauseId, record.untilMs ?: now())
+    }
+
+    suspend fun union(records: List<PauseRecord>) = records.forEach { add(it) }
+
+    /** Ends only the named records (spec §5.5: a Resume never clears pauses its sender did not know). */
+    suspend fun resume(clears: Set<String>) {
+        if (clears.isEmpty()) return
+        val t = now()
+        val known = dao.records().map { it.pauseId }.filter { it in clears }
+        known.forEach { dao.closeInterval(it, t) }
+        if (known.isNotEmpty()) dao.deleteRecords(known)
+    }
+
+    override suspend fun pausedAt(phoneMs: Long): Boolean {
+        active() // close anything that expired before checking
+        return dao.countCovering(phoneMs) > 0
+    }
+
+    /** Closed intervals are kept 7 days (spec §5.5); frames older than that are dropped by [FrameAdmission]. */
+    suspend fun pruneHistory() = dao.pruneEndedBefore(now() - FrameAdmission.HISTORY_MS)
+}
+
+private fun PauseRecordEntity.toModel() =
+    PauseRecord(pauseId, runCatching { PauseOrigin.valueOf(origin) }.getOrDefault(PauseOrigin.PHONE), createdAtMs, untilMs)
+
+private fun PauseRecord.toEntity() = PauseRecordEntity(pauseId, origin.name, createdAtMs, untilMs)
