@@ -23,7 +23,7 @@ object StructuredOutput {
         val format = when (endpoint.kind) {
             EndpointKind.AZURE_OPENAI, EndpointKind.OPENAI_COMPAT -> WireFormat.JsonSchema(name.replace(NAME, "_").take(64).ifEmpty { "output" }, wire)
             EndpointKind.OLLAMA -> WireFormat.OllamaSchema(wire)
-            EndpointKind.LLAMACPP_LOCAL -> WireFormat.Grammar(GbnfConverter.convert(wire))
+            EndpointKind.LLAMACPP_LOCAL -> WireFormat.Grammar(runCatching { GbnfConverter.convert(wire) }.getOrElse { return instructions(canonical) })
         }
         return StructuredPlan(format, "\n\nReply with JSON only.", wire)
     }

@@ -25,9 +25,12 @@ object GbnfConverter {
 
     private fun rule(s: JsonObject, rules: MutableMap<String, String>): String {
         (s["const"])?.let { return lit(it) }
-        (s["enum"] as? JsonArray)?.let { e -> return named(rules, e.joinToString(" | ") { lit(it) }) }
+        (s["enum"] as? JsonArray)?.let { e ->
+            require(e.isNotEmpty()) { "An enum needs at least one value" }
+            return named(rules, e.joinToString(" | ") { lit(it) })
+        }
         (s["anyOf"] as? JsonArray)?.let { b -> return named(rules, b.joinToString(" | ") { rule(it.jsonObject, rules) }) }
-        val types = SchemaRefs.typeNames(s["type"])
+        val types = SchemaRefs.typeNames(s["type"]).ifEmpty { if (s["properties"] is JsonObject) listOf("object") else emptyList() }
         if (types.size > 1) return named(rules, types.joinToString(" | ") { t -> single(t, s, rules) })
         return single(types.firstOrNull() ?: "string", s, rules)
     }

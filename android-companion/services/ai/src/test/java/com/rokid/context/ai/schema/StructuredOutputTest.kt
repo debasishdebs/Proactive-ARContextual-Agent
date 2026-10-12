@@ -36,4 +36,10 @@ class StructuredOutputTest {
         val p = StructuredOutput.plan(e(EndpointKind.AZURE_OPENAI, Capability.CHAT, Capability.JSON_SCHEMA), cyc, "x")
         assertEquals(WireFormat.None, p.format); assertNull(p.wireSchema); assertTrue(p.promptSuffix.contains("JSON Schema"))
     }
+
+    @Test fun anEmptyEnumFallsBackForLlamaCpp() {
+        val s = Json.parseToJsonElement("""{"type":"object","properties":{"p":{"type":"string","enum":[]}},"required":["p"]}""").jsonObject
+        val p = StructuredOutput.plan(e(EndpointKind.LLAMACPP_LOCAL, Capability.CHAT, Capability.JSON_SCHEMA), s, "x")
+        assertEquals(WireFormat.None, p.format); assertTrue(p.promptSuffix.contains("JSON Schema"))
+    }
 }
