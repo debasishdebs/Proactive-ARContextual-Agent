@@ -27,6 +27,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
+import com.rokid.context.glasses.BufferResult
 import com.rokid.context.glasses.BuildConfig
 import com.rokid.context.glasses.GlassesRuntime
 import com.rokid.context.glasses.MainActivity
@@ -109,6 +110,8 @@ class CaptureService : LifecycleService() {
     private suspend fun captureOnce(skipDedupe: Boolean): Outcome {
         if (!runtime.pauses.captureAllowed()) { Log.i(TAG, "capture skipped: paused"); return Outcome.SKIPPED }
         if (isBatterySaverOn()) { Log.i(TAG, "capture skipped: battery saver"); return Outcome.SKIPPED }
+        // Low battery skips before the camera opens; FrameGuard checks again per frame. Unknown battery fails open.
+        if (FrameGuard.lowBattery(batteryPercent(), isCharging())) { Log.i(TAG, "capture skipped: ${SkipReason.LOW_BATTERY}"); return Outcome.SKIPPED }
         val provider = awaitCameraProvider() ?: return Outcome.FAILED
         val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
         val texture = SurfaceTexture(0)
@@ -125,6 +128,8 @@ class CaptureService : LifecycleService() {
         analysis.setAnalyzer(cameraExecutor) { image ->
             try {
                 if (result.isCompleted) return@setAnalyzer
+                // Paused mid-window: stop now so the camera unbinds promptly (spec §5.5).
+                if (!runtime.pauses.captureAllowed()) { Log.i(TAG, "capture skipped: paused"); result.complete(Outcome.SKIPPED); return@setAnalyzer }
                 analyzed.incrementAndGet()
                 val now = System.currentTimeMillis()
                 if (now - lastAnalyzeAtMs < ANALYZE_INTERVAL_MS) return@setAnalyzer
@@ -162,9 +167,12 @@ class CaptureService : LifecycleService() {
         val skip = FrameGuard.check(battery, isCharging(), prepared.meanLuma, prepared.hash, lastHash, nowMs, prefs.getLong(KEY_LAST_KEPT_AT, 0L), skipDedupe)
         if (skip != null) { Log.i(TAG, "capture skipped: $skip"); return Outcome.SKIPPED }
         val frameId = "g${nowMs}_${Random.nextInt(0x1000000).toString(16).padStart(6, '0')}"
-        val stored = runtime.buffer.add(frameId, prepared.jpeg, nowMs, prepared.meanLuma.roundToInt(), java.lang.Long.toHexString(prepared.hash), battery.takeIf { it in 0..100 })
-        // OutboundBuffer logged the exception class; the capture fails and retries in 15 s (CaptureCadence.RETRY_MS).
-        if (!stored) { Log.w(TAG, "capture failed: frame $frameId not buffered"); return Outcome.FAILED }
+        when (runtime.bufferCaptured(frameId, prepared.jpeg, nowMs, prepared.meanLuma.roundToInt(), java.lang.Long.toHexString(prepared.hash), battery.takeIf { it in 0..100 })) {
+            BufferResult.STORED -> Unit
+            BufferResult.PAUSED -> { Log.i(TAG, "capture skipped: paused"); return Outcome.SKIPPED }
+            // OutboundBuffer logged the exception class; the capture fails and retries in 15 s (CaptureCadence.RETRY_MS).
+            BufferResult.NOT_STORED -> { Log.w(TAG, "capture failed: frame $frameId not buffered"); return Outcome.FAILED }
+        }
         prefs.edit().putLong(KEY_LAST_HASH, prepared.hash).putLong(KEY_LAST_KEPT_AT, nowMs).apply()
         Log.i(TAG, "buffered $frameId (${prepared.jpeg.size / 1024} KB) buffer=${runtime.buffer.size}")
         runtime.onFrameBuffered()

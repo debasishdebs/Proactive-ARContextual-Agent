@@ -2,7 +2,9 @@ package com.rokid.context.glasses.capture
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class FrameGuardTest {
     private fun check(
@@ -38,5 +40,16 @@ class FrameGuardTest {
         assertNull(check(hash = 1, last = 1, now = 1, lastKept = 0, skipDedupe = true))
         assertEquals(SkipReason.DARK, check(luma = 1.0, skipDedupe = true))
         assertEquals(SkipReason.LOW_BATTERY, check(battery = 5, skipDedupe = true))
+    }
+
+    /** A glasses clock set back (travel, manual change) must not block capture until it catches up. */
+    @Test fun aClockThatMovedBackDoesNotThrottle() = assertNull(check(now = 5_000, lastKept = 10_000))
+
+    /** One rule for CaptureService's early skip (before the camera opens) and the guard; unknown battery (-1) fails open. */
+    @Test fun lowBatteryRule() {
+        assertTrue(FrameGuard.lowBattery(10, charging = false))
+        assertFalse(FrameGuard.lowBattery(10, charging = true))
+        assertFalse(FrameGuard.lowBattery(11, charging = false))
+        assertFalse(FrameGuard.lowBattery(-1, charging = false))
     }
 }

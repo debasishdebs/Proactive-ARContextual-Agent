@@ -38,9 +38,11 @@ class CaptureScheduler(private val context: Context) {
         val next = nextTriggerAtMs()
         val now = System.currentTimeMillis()
         when {
-            next == null || next < now - STALE_GRACE_MS -> scheduleNext(FIRST_DELAY_MS)
+            // Missing, long past, or beyond any real delay (the glasses clock moved back).
+            next == null || next < now - STALE_GRACE_MS || next > now + CaptureCadence.MAX_DELAY_MS -> scheduleNext(FIRST_DELAY_MS)
             next > now -> armAt(next)
-            else -> Unit // due within the grace: the alarm is firing now and its capture re-arms the chain
+            // Due a moment ago: maybe firing now (inFlight drops the extra start), maybe lost to a force-stop.
+            else -> scheduleNext(1_000L)
         }
     }
 
