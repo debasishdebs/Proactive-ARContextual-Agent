@@ -14,6 +14,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
@@ -119,5 +120,20 @@ class ModelRouterTest {
         failures["a:text"] = CancellationException("stopped")
         assertTrue(err { router.generate(Role.ANSWER, "q") } is CancellationException)
         assertEquals(listOf("a:text"), calls) // no fallback attempt after cancellation
+    }
+
+    @Test fun providerTextIsRedactedAndTruncatedInErrorsAndLogs() = runTest {
+        val key = "sk-test-SECRET-1234567890"
+        endpoints.save(Endpoint("az", "Azure OpenAI", EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt"),
+            setOf(Capability.CHAT, Capability.VISION), 1), apiKey = key).getOrThrow()
+        bindings.set(RoleBinding(Role.ANSWER, "az", "gpt")).getOrThrow()
+        val body = "Azure OpenAI request failed: 401 Incorrect API key provided: $key. " + "x".repeat(500)
+        failures["az:vision"] = IllegalStateException(body); failures["az:text"] = IllegalStateException(body)
+        val e = err { router.generate(Role.ANSWER, "q", img) } as ModelCallException
+        assertFalse(e.message!!.contains(key)); assertTrue(e.message!!.contains("request failed: 401"))
+        assertTrue("length ${e.message!!.length}", e.message!!.length <= 260)
+        assertFalse(e.retryable) // classified on the original throwable
+        assertTrue(ShadowLog.getLogs().isNotEmpty())
+        assertTrue(ShadowLog.getLogs().none { key in it.msg })
     }
 }
