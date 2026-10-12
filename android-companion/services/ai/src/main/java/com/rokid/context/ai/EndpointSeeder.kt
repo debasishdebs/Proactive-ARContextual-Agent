@@ -52,6 +52,10 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
         // cleared key ("") removes the stored credential instead of silently keeping the old one.
         val apiKey = if (overwrite) settings.apiKey else settings.apiKey.ifBlank { null }
         val primary = endpoints.byId(desired.id)?.takeUnless { overwrite }
+            ?.also { existing ->
+                // Repair: a crash after the row was written but before the key was stored leaves a keyless endpoint.
+                if (apiKey != null && endpoints.keyFor(existing) == null) endpoints.save(existing, apiKey = apiKey).getOrThrow()
+            }
             ?: endpoints.save(desired, apiKey = apiKey).getOrThrow()
         val local = if (settings.localModeEnabled && settings.nativeModelPath.isNotBlank() && primary.id != LOCAL_ID) {
             endpoints.byId(LOCAL_ID)?.takeUnless { overwrite }

@@ -16,8 +16,8 @@ class EncryptedKeyVault(context: Context) : KeyVault {
         EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
     override fun get(ref: String) = prefs.getString(ref, null)
-    override fun put(ref: String, key: String) { prefs.edit().putString(ref, key).apply() }
-    override fun remove(ref: String) { prefs.edit().remove(ref).apply() }
+    override fun put(ref: String, key: String) { check(prefs.edit().putString(ref, key).commit()) { "Couldn't store the API key" } }
+    override fun remove(ref: String) { check(prefs.edit().remove(ref).commit()) { "Couldn't remove the API key" } }
 }
 
 class InMemoryKeyVault : KeyVault {
