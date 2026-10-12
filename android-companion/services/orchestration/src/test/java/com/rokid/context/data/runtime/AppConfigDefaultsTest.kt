@@ -12,7 +12,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class AppConfigDefaultsTest {
     @Test fun unsetPrefsFallBackToEnvDefaults() {
-        EnvDefaults.init("https://az.example", "key-1", "gpt-x", "http://o:11434", "llama", "ollama_only", "/m.gguf")
+        EnvDefaults.init("https://az.example", "gpt-x", "http://o:11434", "llama", "ollama_only", "/m.gguf")
         val c = AppConfigStore.get(ApplicationProvider.getApplicationContext())
         assertEquals("https://az.example", c.endpoint)
         assertEquals("gpt-x", c.deploymentOrModel)

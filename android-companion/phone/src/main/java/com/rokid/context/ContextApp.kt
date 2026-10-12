@@ -9,7 +9,6 @@ class ContextApp : Application() {
         super.onCreate()
         EnvDefaults.init(
             azureEndpoint = BuildConfig.AZURE_KG_ENDPOINT,
-            azureApiKey = BuildConfig.AZURE_KG_API_KEY,
             azureDeployment = BuildConfig.AZURE_KG_DEPLOYMENT,
             ollamaBaseUrl = BuildConfig.OLLAMA_BASE_URL,
             ollamaModel = BuildConfig.OLLAMA_MODEL,

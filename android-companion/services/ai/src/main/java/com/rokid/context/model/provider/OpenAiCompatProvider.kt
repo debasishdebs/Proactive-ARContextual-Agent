@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
 
 class OpenAiCompatProvider(
     private val endpoint: String = EnvDefaults.azureEndpoint,
-    private val apiKey: String = EnvDefaults.azureApiKey,
+    private val apiKey: String = "",
     private val deployment: String = EnvDefaults.azureDeployment,
     private val apiVersion: String = "2024-10-21",
     private val style: ApiStyle = ApiStyle.AZURE,
@@ -82,7 +82,7 @@ class OpenAiCompatProvider(
 
     private fun requestChatCompletion(payload: kotlinx.serialization.json.JsonObject): String {
         require(endpoint.isNotBlank()) { "AZURE_KG_ENDPOINT is missing" }
-        if (style == ApiStyle.AZURE) require(apiKey.isNotBlank()) { "AZURE_KG_API_KEY is missing" }
+        if (style == ApiStyle.AZURE) require(apiKey.isNotBlank()) { "API key is missing" }
 
         val normalized = endpoint.trimEnd('/')
         val url = when (style) {
