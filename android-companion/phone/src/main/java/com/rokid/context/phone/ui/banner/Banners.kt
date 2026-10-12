@@ -47,7 +47,9 @@ object BannerResolver {
             else -> null
         },
         if (!i.pipelineEnabled || i.capture is CaptureState.Paused) {
-            BannerSpec(BannerKind.CAPTURE_PAUSED, BannerTone.SLATE, "Capture paused", "Resume", BannerAction.RESUME)
+            // Resume only drives the legacy pipeline switch; a hub pause has no phone-side resume until Phase 7 (R-65).
+            if (!i.pipelineEnabled) BannerSpec(BannerKind.CAPTURE_PAUSED, BannerTone.SLATE, "Capture paused", "Resume", BannerAction.RESUME)
+            else BannerSpec(BannerKind.CAPTURE_PAUSED, BannerTone.SLATE, "Capture paused")
         } else null,
         when (i.index) {
             IndexState.NEEDED -> BannerSpec(BannerKind.INDEX, BannerTone.SKY, "Memory index needs a rebuild")

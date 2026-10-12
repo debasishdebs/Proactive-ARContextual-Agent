@@ -19,9 +19,10 @@ class LegacyPipelineControl(private val context: Context, private val scheduler:
     override val enabled: StateFlow<Boolean> = state.asStateFlow()
 
     override fun setEnabled(enabled: Boolean) {
-        if (state.value == enabled) return
+        // No cached-state early return: legacy MainActivity writes the flag/scheduler directly until Task 10,
+        // and scheduling is idempotent, so always apply and then publish.
         AppConfigStore.setPipelineEnabled(context, enabled)
         if (enabled) scheduler.resumePipeline() else scheduler.pausePipeline()
-        state.value = enabled
+        state.value = AppConfigStore.get(context).pipelineEnabled // publish what was actually persisted
     }
 }
