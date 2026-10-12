@@ -1,5 +1,8 @@
 package com.rokid.context.model.provider
 
+import com.rokid.context.ai.ProviderConfigException
+import com.rokid.context.ai.ProviderHttpException
+import com.rokid.context.ai.ProviderResponseException
 import com.rokid.context.ai.EnvDefaults
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelProvider
@@ -81,8 +84,8 @@ class OpenAiCompatProvider(
     }
 
     private fun requestChatCompletion(payload: kotlinx.serialization.json.JsonObject): String {
-        require(endpoint.isNotBlank()) { "AZURE_KG_ENDPOINT is missing" }
-        if (style == ApiStyle.AZURE) require(apiKey.isNotBlank()) { "API key is missing" }
+        if (endpoint.isBlank()) throw ProviderConfigException("AZURE_KG_ENDPOINT is missing")
+        if (style == ApiStyle.AZURE && apiKey.isBlank()) throw ProviderConfigException("API key is missing")
 
         val normalized = endpoint.trimEnd('/')
         val url = when (style) {
@@ -100,7 +103,7 @@ class OpenAiCompatProvider(
         client.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                error("Azure OpenAI request failed: ${response.code} $body")
+                throw ProviderHttpException(response.code, "Azure OpenAI", body)
             }
 
             val json = Json.parseToJsonElement(body).jsonObject
@@ -111,7 +114,7 @@ class OpenAiCompatProvider(
                 ?.get("message")
                 ?.jsonObject
                 ?.get("content")
-                ?: error("Azure OpenAI response missing message content")
+                ?: throw ProviderResponseException("Azure OpenAI response missing message content")
 
             return runCatching { content.jsonPrimitive.content }.getOrElse {
                 val merged = content.jsonArray.joinToString(separator = "\n") { part ->
@@ -120,7 +123,7 @@ class OpenAiCompatProvider(
                         ?: obj["refusal"]?.jsonPrimitive?.content
                         ?: ""
                 }.trim()
-                if (merged.isBlank()) error("Azure OpenAI response contained empty content parts")
+                if (merged.isBlank()) throw ProviderResponseException("Azure OpenAI response contained empty content parts")
                 merged
             }
         }

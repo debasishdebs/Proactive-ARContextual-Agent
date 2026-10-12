@@ -13,7 +13,9 @@ class UrlNormalizerTest {
 
     @Test fun addsSchemeByKind() {
         assertEquals("https://api.example.com", ok("api.example.com"))
-        assertEquals("http://192.168.1.5:11434", ok("192.168.1.5:11434", EndpointKind.OLLAMA))
+        assertEquals("http://box.local:11434", ok("box.local:11434", EndpointKind.OLLAMA))
+        assertEquals("http://localhost:11434", ok("localhost:11434", EndpointKind.OLLAMA))
+        assertEquals("https://ollama.example.com", ok("ollama.example.com", EndpointKind.OLLAMA))
     }
 
     @Test fun dropsDefaultPort() = assertEquals("https://h.example", ok("https://h.example:443/"))
@@ -45,20 +47,22 @@ class UrlNormalizerTest {
 
     @Test fun azureRejectsHttp() = assertEquals("Azure needs https://", httpErr("http://x.example", EndpointKind.AZURE_OPENAI, true))
 
-    @Test fun openAiCompatWithKeyRejectsRemoteHttp() {
-        assertEquals("Use https:// when sending a key", httpErr("http://api.example.com", EndpointKind.OPENAI_COMPAT, true))
-        assertEquals("Use https:// when sending a key", httpErr("http://8.8.8.8", EndpointKind.OPENAI_COMPAT, true))
-        assertEquals("Use https:// when sending a key", httpErr("http://172.32.0.1", EndpointKind.OPENAI_COMPAT, true))
+    @Test fun aKeyAlwaysNeedsHttps() {
+        listOf("http://api.example.com", "http://localhost:8080", "http://10.0.2.2:8080", "http://box.local").forEach {
+            assertEquals(it, "Use https:// when sending a key", httpErr(it, EndpointKind.OPENAI_COMPAT, true))
+        }
     }
 
-    @Test fun openAiCompatHttpAllowedForLocalOrKeyless() {
-        listOf("http://localhost:8080", "http://127.0.0.1:1", "http://[::1]:1", "http://10.0.2.2:8080", "http://192.168.1.5", "http://172.16.0.9", "http://10.1.2.3", "http://box.local")
-            .forEach { assertEquals(it, null, httpErr(it, EndpointKind.OPENAI_COMPAT, true)) }
-        assertEquals(null, httpErr("http://api.example.com", EndpointKind.OPENAI_COMPAT, false))
+    @Test fun keylessHttpOnlyForTheCleartextHosts() {
+        listOf("http://localhost:8080", "http://127.0.0.1:1", "http://10.0.2.2:8080", "http://box.local", "http://router.lan:1", "http://nas.home.arpa")
+            .forEach { assertEquals(it, null, httpErr(it, EndpointKind.OPENAI_COMPAT, false)) }
+        assertEquals(null, httpErr("http://localhost:11434", EndpointKind.OLLAMA, false))
     }
 
-    @Test fun ollamaAndLocalUnchanged() {
-        assertEquals(null, httpErr("http://api.example.com", EndpointKind.OLLAMA, true))
-        assertEquals(null, httpErr("/sdcard/m.gguf", EndpointKind.LLAMACPP_LOCAL, true))
+    @Test fun lanIpOverHttpGetsAClearMessage() {
+        val msg = "Plain http:// works only for localhost or a .local / .lan name \u2014 use https://"
+        listOf("http://192.168.1.5:11434", "http://api.example.com", "http://[::1]:1").forEach { assertEquals(it, msg, httpErr(it, EndpointKind.OLLAMA, false)) }
     }
+
+    @Test fun localModelPathIgnoresTheKeyRule() = assertEquals(null, httpErr("/sdcard/m.gguf", EndpointKind.LLAMACPP_LOCAL, false))
 }

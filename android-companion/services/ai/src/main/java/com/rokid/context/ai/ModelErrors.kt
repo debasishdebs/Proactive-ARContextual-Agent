@@ -1,24 +1,50 @@
 package com.rokid.context.ai
 
-import java.util.Locale
+import java.io.IOException
+
+/**
+ * What went wrong with a model call. Decides what people see ([ModelErrorMapper]) and is the only input to
+ * classification: no provider wording is ever matched (Phase 2 carry). Declared most actionable first ([ProviderErrors.worst]).
+ */
+enum class FailureKind { NOT_SET, AUTH, REJECTED, INVALID_OUTPUT, TRANSIENT }
 
 /** Every failure leaving [ModelRouter] (except cancellation) is one of these, with an explicit retry decision. */
-class ModelCallException(message: String, val retryable: Boolean, cause: Throwable? = null) : RuntimeException(message, cause)
+class ModelCallException(
+    message: String,
+    val retryable: Boolean,
+    cause: Throwable? = null,
+    val kind: FailureKind = if (retryable) FailureKind.TRANSIENT else FailureKind.REJECTED,
+) : RuntimeException(message, cause)
+
+/** A non-2xx reply. The message keeps "<provider> request failed: <code> <body>" for Diagnostics logs only (the router redacts it). */
+class ProviderHttpException(val code: Int, provider: String, body: String) :
+    IllegalStateException("$provider request failed: $code ${body.take(2_000)}")
+
+/** Missing address, model, key, model file or native runtime: only fixing the settings helps. */
+class ProviderConfigException(message: String) : IllegalArgumentException(message)
+
+/** A 2xx reply without the expected content. */
+class ProviderResponseException(message: String) : IllegalStateException(message)
 
 object ProviderErrors {
-    /** Anchored to the provider prefix so a 5xx body that merely contains "404" stays transient. */
-    private val PERMANENT_STATUS = Regex("request failed: (401|403|404)\\b")
-    /** Exact (lower-cased) messages thrown by the legacy providers' `require` checks, plus provider API errors. */
-    private val PERMANENT_TEXT = listOf(
-        "api key is missing", "azure_kg_endpoint is missing", "ollama_base_url is missing",
-        "local model path is required", "native runtime not available",
-        "resource not found", "deployment not found", "unsupported parameter", "invalid_request_error",
-    )
+    private val AUTH_CODES = setOf(401, 403)
+    private val REJECTED_CODES = setOf(400, 404, 405, 409, 410, 413, 415, 422)
 
-    /** Auth/config errors that will not succeed on retry. HTTP 5xx, timeouts and network errors are transient. */
-    fun isPermanent(t: Throwable): Boolean {
-        if (t is ModelCallException) return !t.retryable
-        val m = t.message.orEmpty().lowercase(Locale.US)
-        return PERMANENT_STATUS.containsMatchIn(m) || PERMANENT_TEXT.any { it in m }
+    fun kindOf(t: Throwable): FailureKind = when (t) {
+        is ModelCallException -> t.kind
+        is ProviderConfigException -> FailureKind.NOT_SET
+        is ProviderHttpException -> when (t.code) {
+            in AUTH_CODES -> FailureKind.AUTH
+            in REJECTED_CODES -> FailureKind.REJECTED
+            else -> FailureKind.TRANSIENT // 408, 429, 5xx, 3xx and anything unexpected
+        }
+        is IOException -> FailureKind.TRANSIENT
+        else -> FailureKind.TRANSIENT
     }
+
+    /** Settings/request errors that will not succeed on retry. 5xx, 408, 429, timeouts and network errors are transient. */
+    fun isPermanent(t: Throwable): Boolean = if (t is ModelCallException) !t.retryable else kindOf(t) != FailureKind.TRANSIENT
+
+    /** When two attempts failed, the kind people should act on: a settings problem outranks a transient one. */
+    fun worst(a: FailureKind?, b: FailureKind): FailureKind = if (a == null || b.ordinal <= a.ordinal) b else a
 }

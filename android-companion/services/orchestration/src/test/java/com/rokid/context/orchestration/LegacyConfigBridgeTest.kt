@@ -64,14 +64,14 @@ class LegacyConfigBridgeTest {
 
     @Test fun switchingProviderRebinds() = runBlocking {
         AppConfigStore.setProvider(ctx, "openai", "https://az.example", "k", "gpt-5.4", "")
-        AppConfigStore.setProvider(ctx, "ollama", "192.168.1.5:11434", "", "llama3.1:8b", "")
+        AppConfigStore.setProvider(ctx, "ollama", "box.local:11434", "", "llama3.1:8b", "")
         assertEquals(EndpointSeeder.OLLAMA_ID, ai.bindings.get(Role.ANSWER)!!.endpointId)
         assertEquals(null, ai.bindings.get(Role.VISION_EXTRACT))
         usedEndpoints.clear()
         ai.router.generateFromFrames("q", listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA")))
         assertEquals(listOf(EndpointSeeder.OLLAMA_ID), usedEndpoints) // zero Azure calls for frames
         assertEquals(EndpointKind.OLLAMA, ai.endpoints.byId(EndpointSeeder.OLLAMA_ID)!!.kind)
-        assertEquals("http://192.168.1.5:11434", ai.endpoints.byId(EndpointSeeder.OLLAMA_ID)!!.baseUrl)
+        assertEquals("http://box.local:11434", ai.endpoints.byId(EndpointSeeder.OLLAMA_ID)!!.baseUrl)
     }
 
     @Test fun localModeToggleAddsAndRemovesFallback() = runBlocking {

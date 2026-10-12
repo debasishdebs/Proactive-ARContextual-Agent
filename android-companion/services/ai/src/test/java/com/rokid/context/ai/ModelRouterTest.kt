@@ -35,9 +35,9 @@ class ModelRouterTest {
     @After fun close() = db.close()
 
     private suspend fun ep(id: String, vararg caps: Capability) =
-        endpoints.save(Endpoint(id, id, EndpointKind.OLLAMA, "http://h:1", null, listOf("m"), caps.toSet(), 1), apiKey = null).getOrThrow()
+        endpoints.save(Endpoint(id, id, EndpointKind.OLLAMA, "http://localhost:1", null, listOf("m"), caps.toSet(), 1), apiKey = null).getOrThrow()
     private val img = listOf(ModelImageInput("image/jpeg", "AAAA"))
-    private fun http(code: Int) = IllegalStateException("Azure OpenAI request failed: $code {\"error\":\"x\"}")
+    private fun http(code: Int) = ProviderHttpException(code, "Azure OpenAI", "{\"error\":\"x\"}")
     private suspend fun err(block: suspend () -> Unit) = runCatching { block() }.exceptionOrNull()!!
 
     @Test fun usesPrimaryBinding() = runTest {
@@ -98,20 +98,18 @@ class ModelRouterTest {
         assertTrue((err { router.generate(Role.ANSWER, "q") } as ModelCallException).retryable)
     }
 
-    @Test fun missingKeyIsPermanentByTypeAndByRealProviderMessage() = runTest {
-        // By type: Azure endpoint saved without a key → router's precondition check.
+    @Test fun missingKeyIsPermanentByType() = runTest {
         endpoints.save(Endpoint("az", "Azure OpenAI", EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt"), setOf(Capability.CHAT), 1), apiKey = null).getOrThrow()
         bindings.set(RoleBinding(Role.ANSWER, "az", "gpt")).getOrThrow()
         val e = err { router.generate(Role.ANSWER, "q") } as ModelCallException
-        assertFalse(e.retryable); assertTrue(e.message!!.contains("No API key saved"))
-        // By message: the real legacy providers' own require() texts.
+        assertFalse(e.retryable); assertEquals(FailureKind.NOT_SET, e.kind); assertTrue(e.message!!.contains("No API key saved"))
         val real = listOf(
             runCatching { com.rokid.context.model.provider.OpenAiCompatProvider("https://az.example", "", "gpt").generate("q") }.exceptionOrNull()!!,
             runCatching { com.rokid.context.model.provider.OpenAiCompatProvider("", "k", "gpt").generate("q") }.exceptionOrNull()!!,
             runCatching { com.rokid.context.model.provider.OllamaProvider("", "m").generate("q") }.exceptionOrNull()!!,
             runCatching { com.rokid.context.model.provider.LlamaCppNativeProvider("").generate("q") }.exceptionOrNull()!!,
         )
-        real.forEach { assertTrue("permanent: ${it.message}", ProviderErrors.isPermanent(it)) }
+        real.forEach { assertTrue("typed: $it", it is ProviderConfigException); assertTrue(ProviderErrors.isPermanent(it)) }
     }
 
     @Test fun cancellationIsNeverWrapped() = runTest {
@@ -127,22 +125,32 @@ class ModelRouterTest {
         endpoints.save(Endpoint("az", "Azure OpenAI", EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt"),
             setOf(Capability.CHAT, Capability.VISION), 1), apiKey = key).getOrThrow()
         bindings.set(RoleBinding(Role.ANSWER, "az", "gpt")).getOrThrow()
-        val body = "Azure OpenAI request failed: 401 Incorrect API key provided: $key. " + "x".repeat(500)
-        failures["az:vision"] = IllegalStateException(body); failures["az:text"] = IllegalStateException(body)
+        failures["az:vision"] = ProviderHttpException(401, "Azure OpenAI", "Incorrect API key provided: $key. " + "x".repeat(500))
+        failures["az:text"] = ProviderHttpException(401, "Azure OpenAI", "Incorrect API key provided: $key. " + "x".repeat(500))
         val e = err { router.generate(Role.ANSWER, "q", img) } as ModelCallException
         assertFalse(e.message!!.contains(key)); assertTrue(e.message!!.contains("request failed: 401"))
         assertTrue("length ${e.message!!.length}", e.message!!.length <= 260)
         assertFalse(e.retryable) // classified on the original throwable
+        assertEquals(FailureKind.AUTH, e.kind)
         assertTrue(ShadowLog.getLogs().isNotEmpty())
         assertTrue(ShadowLog.getLogs().none { key in it.msg })
     }
 
     @Test fun serverErrorWhoseBodyMentions404StaysRetryable() = runTest {
         ep("a", Capability.CHAT); bindings.set(RoleBinding(Role.ANSWER, "a", "m1")).getOrThrow()
-        failures["a:text"] = IllegalStateException("Azure OpenAI request failed: 500 {\"detail\":\"upstream route 404\"}")
+        failures["a:text"] = ProviderHttpException(500, "Azure OpenAI", "{\"detail\":\"upstream route 404\"}")
         val e = runCatching { router.generate(Role.ANSWER, "q") }.exceptionOrNull() as ModelCallException
         assertTrue(e.retryable)
         failures["a:text"] = http(404)
         assertFalse((runCatching { router.generate(Role.ANSWER, "q") }.exceptionOrNull() as ModelCallException).retryable)
+    }
+
+    @Test fun kindsSurviveTheFallbackChain() = runTest {
+        ep("a", Capability.CHAT); ep("b", Capability.CHAT)
+        bindings.set(RoleBinding(Role.ANSWER, "a", "m", fallbackEndpointId = "b")).getOrThrow()
+        failures["a:text"] = http(401); failures["b:text"] = http(502)
+        val e = err { router.generate(Role.ANSWER, "q") } as ModelCallException
+        assertTrue(e.retryable); assertEquals(FailureKind.AUTH, e.kind)
+        assertEquals(FailureKind.NOT_SET, (err { router.generate(Role.NUDGE, "q") } as ModelCallException).kind)
     }
 }

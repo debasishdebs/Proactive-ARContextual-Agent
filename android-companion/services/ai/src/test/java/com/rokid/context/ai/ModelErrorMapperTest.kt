@@ -8,35 +8,32 @@ import java.net.SocketTimeoutException
 
 class ModelErrorMapperTest {
     private fun map(t: Throwable) = ModelErrorMapper.toUserFacing(t)
+    private fun mce(kind: FailureKind, msg: String = "x") = ModelCallException(msg, retryable = kind == FailureKind.TRANSIENT, kind = kind)
 
-    @Test fun missingBindingIsNotSetUp() =
-        assertEquals(UserFacingErrors.AiNotSet, map(ModelCallException("No model is set for ANSWER", retryable = true)))
+    @Test fun eachKindHasItsMessage() {
+        assertEquals(UserFacingErrors.AiNotSet, map(mce(FailureKind.NOT_SET)))
+        assertEquals(UserFacingErrors.AiKeyRejected, map(mce(FailureKind.AUTH)))
+        assertEquals(UserFacingErrors.AiRequestRejected, map(mce(FailureKind.REJECTED)))
+        assertEquals(UserFacingErrors.AiUnavailable, map(mce(FailureKind.TRANSIENT)))
+        assertEquals(UserFacingErrors.AiUnavailable, map(mce(FailureKind.INVALID_OUTPUT)))
+    }
 
-    @Test fun deletedEndpointIsNotSetUp() =
-        assertEquals(UserFacingErrors.AiNotSet, map(ModelCallException("Endpoint for ANSWER was deleted", retryable = true)))
+    @Test fun wordingNeverDecides() {
+        assertEquals(UserFacingErrors.AiUnavailable, map(mce(FailureKind.TRANSIENT, "No model is set for ANSWER; request failed: 401")))
+        assertEquals(UserFacingErrors.AiKeyRejected, map(mce(FailureKind.AUTH, "server said 500")))
+    }
 
-    @Test fun rejectedKeyIsKeyRejected() = assertEquals(
-        UserFacingErrors.AiKeyRejected,
-        map(ModelCallException("Primary provider failed: Azure OpenAI request failed: 401 invalid ***", retryable = false)),
-    )
-
-    @Test fun otherPermanentFailureIsRequestRejected() = assertEquals(
-        UserFacingErrors.AiRequestRejected,
-        map(ModelCallException("Primary provider failed: Azure OpenAI request failed: 404 deployment not found", retryable = false)),
-    )
-
-    @Test fun transientFailureIsUnavailable() = assertEquals(
-        UserFacingErrors.AiUnavailable,
-        map(ModelCallException("Primary provider failed: Azure OpenAI request failed: 500 upstream", retryable = true)),
-    )
+    @Test fun defaultKindFollowsTheRetryFlag() {
+        assertEquals(UserFacingErrors.AiUnavailable, map(ModelCallException("a", retryable = true)))
+        assertEquals(UserFacingErrors.AiRequestRejected, map(ModelCallException("b", retryable = false)))
+    }
 
     @Test fun networkErrorIsUnavailable() = assertEquals(UserFacingErrors.AiUnavailable, map(SocketTimeoutException("timeout")))
 
-    @Test fun anythingElseIsGeneric() =
-        assertEquals(UserFacingErrors.Unknown, map(IllegalStateException("No Rokid frames available for summarization")))
+    @Test fun anythingElseIsGeneric() = assertEquals(UserFacingErrors.Unknown, map(IllegalStateException("request failed: 401")))
 
     @Test fun providerTextNeverReachesTheLine() {
-        val line = map(ModelCallException("Primary provider failed: 500 secret-body", retryable = true)).line
+        val line = map(mce(FailureKind.TRANSIENT, "Primary provider failed: 500 secret-body")).line
         assertFalse(line, "secret" in line || "500" in line)
     }
 }

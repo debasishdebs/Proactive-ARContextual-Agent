@@ -47,7 +47,7 @@ class LegacyConfigViewModelTest {
             object : ModelProvider {
                 override suspend fun generate(prompt: String): String {
                     models += model
-                    if (fail) throw RuntimeException("request failed: 401 {\"error\":{\"message\":\"Incorrect API key provided: sk-live-999\"}}")
+                    if (fail) throw com.rokid.context.ai.ProviderHttpException(401, "Azure OpenAI", "{\"error\":{\"message\":\"Incorrect API key provided: sk-live-999\"}}")
                     return "OK"
                 }
             }
