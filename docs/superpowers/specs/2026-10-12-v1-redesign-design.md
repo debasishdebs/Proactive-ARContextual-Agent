@@ -71,11 +71,12 @@ Raw RFCOMM/SPP: `glasses/RokidBluetoothProtocol.kt`, `bridge/RokidBridgeService.
 |---|---|---|
 | P→G | `pc_state` | `StateFrame` JSON (see 1.6) |
 | P→G | `pc_settings` | `HudSettings` JSON |
-| G→P | `pc_frame` | Caps: metadata JSON + JPEG bytes |
-| G→P | `pc_cmd` | `Command` JSON: `Tap`, `DoubleTap`, `Swipe(dir,long)`, `Confirm(id,yes)`, `Pause(durationMin?)`, `Resume`, `PageChanged(page)`, `ListenStart`, `Cancel` |
+| G→P | `pc_frame` | Caps: metadata JSON (`frameId`, `chunkIdx`, `chunkCount`, `crc32`, capture ts on glasses clock, luma, phash, battery) + JPEG bytes (whole or one chunk — see 1.8) |
+| P→G | `pc_frame_ack` | `{frameId, ok, reason?}` — glasses delete a buffered frame only after `ok=true` |
+| G→P | `pc_cmd` | `Command` JSON: `Tap`, `DoubleTap`, `Swipe(dir,long)`, `Confirm(proposalId, yes)`, `Pause(pause: PauseRecord)`, `Resume(clears: Set<pauseId>)`, `PageChanged(page)`, `ListenStart`, `Cancel` |
 | G→P | `pc_audio` | PCM 16 kHz mono chunks |
 | G→P | `pc_listen_end` | end-of-utterance marker |
-| G→P | `pc_hello` | glasses protocol version, battery, buffer size |
+| G→P | `pc_hello` | glasses protocol version, battery, buffer size, glasses wall-clock ms (for offset), local `PauseRecord`s (§5.5) |
 
 Every JSON payload carries `v: PROTOCOL_VERSION`. On mismatch the glasses show "Update Proactive Context"; the phone shows a banner.
 
@@ -84,7 +85,7 @@ Every JSON payload carries `v: PROTOCOL_VERSION`. On mismatch the glasses show "
 @Serializable data class StateFrame(
   val v: Int,
   val seq: Long,
-  val capture: CaptureState,        // RUNNING | PAUSED(until?) | DEFERRED(reason) | BLOCKED(reason)
+  val capture: CaptureState,        // RUNNING | PAUSED(records: List<PauseRecord>) | DEFERRED(reason) | BLOCKED(reason)
   val nextCaptureAtMs: Long?,
   val intervalSec: Int,
   val glassesBatteryPct: Int?,
@@ -94,7 +95,7 @@ Every JSON payload carries `v: PROTOCOL_VERSION`. On mismatch the glasses show "
   val lastSentAtMs: Long?,
   val latestNudge: NudgeLine?,      // one-liner for Glance
   val today: List<MemoryLine>,      // top 8, newest first
-  val overlay: Overlay?,            // Listening(partial) | Answer(q, text, speaking) | Nudge(text) | Confirm(id, title, detail) | PausedSplash | Toast(text)
+  val overlay: Overlay?,            // Listening(partial) | Answer(q, text, speaking) | Nudge(text) | Confirm(proposalId, title, detail) | PausedSplash | Toast(text)
   val error: String?                // short human text only (§6.3)
 )
 ```
@@ -102,6 +103,15 @@ Broadcast on change, throttled to ≤ 4 Hz; full frame (not deltas).
 
 ### 1.7 Lifecycle
 `ContextHubService` (phone, foreground) owns: CXR session, voice pipeline, nudge engine trigger, `StateBroadcaster`. ViewModels observe repository/hub `StateFlow`s. Capture *timing* lives on the glasses (`CaptureScheduler`) so it survives link drops; glasses buffer up to 20 frames while offline and flush on reconnect.
+
+**State authority exception — capture pause.** The phone is the authority for everything in `StateFrame` *except* whether capture is allowed: pause is enforced locally on the glasses as well and reconciled by the most-restrictive-wins rule in §5.5. Nothing (reconnect, stale `StateFrame`, settings push) can resume capture implicitly.
+
+### 1.8 Frame transfer (glasses → phone)
+- Frames > the CXR per-message limit (measured in the phase 0 spike; assume 16 KB until measured) are split into chunks with `frameId`, `chunkIdx`, `chunkCount`, `crc32` of the whole JPEG.
+- Phone reassembles per `frameId`; incomplete frames are discarded after 10 s without a new chunk; CRC mismatch → `pc_frame_ack{ok=false}` → glasses resend once, then drop.
+- Glasses send one frame at a time (stop-and-wait on `pc_frame_ack`, 5 s timeout → retry from chunk 0, max 3 attempts, then keep in buffer for next flush).
+- Interrupted flush (link drop mid-frame): un-acked frame stays in buffer; next flush restarts it from chunk 0. Phone dedupes by `frameId`, so a frame acked-but-ack-lost is not ingested twice.
+- **PTT priority:** while `Listening`, frame flush is suspended; `pc_audio` is never queued behind frame chunks. Flush resumes after `pc_listen_end` + answer delivered.
 
 ---
 
@@ -145,7 +155,7 @@ Shown under the header on Home and Activity; one at a time, highest severity fir
 - Today: tiles (Frames, Memories, Answers, Nudges) + timeline (FrameThumb + memory text + ConfidenceChip), grouped Morning/Afternoon/Evening.
 - Week/Month: `BarChart` frames per day, totals tiles, day rows → `day/{date}` (timeline for that day).
 
-**Memory detail** — frame (pinch-zoom), facts, tier, confidence, review state; actions **Trust**, **Edit**, **Forget** (Forget deletes frame file + memory + FTS row + vectors).
+**Memory detail** — frame (pinch-zoom), facts, tier, confidence, review state; actions **Trust**, **Edit**, **Forget fact**, **Forget moment**. Deletion semantics are defined in §6.1.1.
 
 **Frame viewer** — full-screen swipe across a day's frames with play/pause (replaces current slideshow).
 
@@ -196,7 +206,7 @@ One ViewModel per screen; screens are `@Composable fun XScreen(state: XUiState, 
 - **Listening:** pulsing ring + mic glyph, live partial transcript, hint "tap to send · double-tap cancel".
 - **Answer:** "YOU ASKED" (60 %) + question; answer in outlined box in lower band; "🔊 speaking · swipe to dismiss".
 - **Nudge:** outlined toast "HEADS UP" + text; auto-hide 8 s.
-- **Confirm:** Live Fit `ConfirmOverlay` ✓/✕; timeout 15 s → ✕.
+- **Confirm:** Live Fit `ConfirmOverlay` ✓/✕; auto-hides after 15 s without voting (proposal stays answerable on phone — §5.3).
 - **Paused:** splash 3 s, then ❚❚ persists in status row.
 - Page dots at bottom.
 
@@ -204,7 +214,7 @@ One ViewModel per screen; screens are `@Composable fun XScreen(state: XUiState, 
 `Hud.Green = #3CFF6E`; black = transparent; outlines not fills, strokes ≥ 2 dp (highlight 3–4 dp); brightness hierarchy PRIMARY 1.0 / SECONDARY 0.6 / TERTIARY 0.35; tabular digits (`tnum`); Material **Outlined** icons only; centre kept clear (cards in lower band); `Scaled(scale, position)` wrapper — default scale 0.4 BottomCenter for pages, overlays at 1.0; corner radii 12–16 dp overlays, 6 dp badges.
 
 ### 3.4 Verbosity
-- **Silent:** REC dot only; overlays only for user-initiated flows (Listening, Answer, Confirm, Paused). Confirm can therefore only arise from an Ask; nudge-proposed actions surface on the phone only.
+- **Silent:** REC dot only; overlays only for user-initiated flows (Listening, Answer, Confirm, Paused). Confirm can therefore only arise from an Ask; nudge-proposed actions surface on the phone only (full matrix in §5.3).
 - **Medium (default):** Glance page shown when idle; nudges only as Glance one-liner.
 - **Max:** Medium + auto-shown Nudge toasts + Status page in swipe rotation.
 
@@ -240,13 +250,25 @@ Roles: `VISION_EXTRACT`, `EXPLICIT_REMEMBER`, `SUMMARIZE`, `CRITIC`, `ANSWER`, `
 - Editor section "Output schema": JSON Schema text, pre-filled with the role's default; **Reset to default**. Version stores template + schema together.
 - `StructuredOutput` adapter per kind: Azure/OpenAI `response_format: {type: json_schema, strict: true}`; Ollama `format: <schema>`; llama.cpp schema→GBNF grammar; fallback (no `JSON_SCHEMA` capability) = schema appended as instructions.
 - All outputs validated against schema; on failure: one retry including the validation error; then job → retry queue (existing policy).
-- Default schemas: VISION_EXTRACT / EXPLICIT_REMEMBER `{facts:[{text,type,confidence,tags[]}]}`; SUMMARIZE (current format); CRITIC `{verdict: pass|fail, reasons[]}`; ANSWER `{answer, sources:[memoryId], proposedAction?}`; NUDGE `{shouldNudge, text, why, sourceIds[], priority}`.
+- Default schemas: VISION_EXTRACT / EXPLICIT_REMEMBER `{facts:[{text,type,confidence,tags[]}]}`; SUMMARIZE (current format); CRITIC `{verdict: pass|fail, reasons[]}`; ANSWER `{answer, sources:[memoryId], proposedAction?: ProposedAction}`; NUDGE `{shouldNudge, text, why, sourceIds[], priority, proposedAction?: ProposedAction}`.
+- `ProposedAction` (shared JSON Schema `$defs`, `oneOf` discriminated by `type`; identical in ANSWER and NUDGE):
+  - `REMINDER {title: string (1–80), dueAt: string (ISO-8601 local date-time, must be in the future), note?: string (≤ 200)}`
+  - `SHOPPING_ADD {items: [{name: string (1–40), qty?: number > 0, unit?: string (≤ 10)}] (1–10 items)}`
+  - `CALENDAR_EVENT {title: string (1–80), startAt: ISO-8601 local date-time, endAt?: ISO-8601 (> startAt; default startAt + 30 min), location?: string (≤ 80)}`
+  - Decoded into Kotlin `sealed interface ProposedAction`; the phone assigns a `proposalId` (UUID) on receipt.
+
+### 4.4.1 Role contracts
+- Each role has a fixed **contract** = the Kotlin decoder type the pipeline consumes (e.g. `AnswerOutput`, `NudgeOutput`, `ExtractOutput`, `CriticOutput`, `SummaryOutput`) plus semantic checks. The contract, not the user's schema, is the source of truth.
+- The user-editable schema must be a **refinement** of the contract's base schema. Allowed: edit `description`s/titles; tighten constraints (`maxLength`, `minItems`/`maxItems`, numeric bounds, `enum` subsets for `type`/`priority`); add *optional* extra properties (decoded into an `extras: JsonObject`, ignored by the pipeline). Not allowed: removing, renaming or retyping contract properties; making contract-required properties optional; removing `ProposedAction` variants' required fields.
+- `SchemaCompatibilityChecker` validates refinement statically in the editor (inline errors; Save disabled while incompatible).
+- Semantic checks per role (run in test bed and production): ANSWER/NUDGE source ids ⊆ retrieved/input ids; `confidence ∈ [0,1]`; `ProposedAction` dates parse and are in the future; NUDGE `text` non-empty when `shouldNudge`.
 
 ### 4.5 Test bed
 - Inputs: sample frame (picker over recent frames), free text, or canned question (ANSWER/NUDGE use real retrieval).
 - Model selector (defaults to role binding). **Run** executes the *draft* template + schema.
 - Output panel: raw output, latency, tokens, schema-validation result.
-- **Save as vN & activate** enabled only after a successful run of the current, unmodified draft; any edit re-disables. Discard reverts draft.
+- **Save as vN & activate** enabled only when **all** hold for the current, unmodified draft: (1) schema passes `SchemaCompatibilityChecker` (§4.4.1); (2) a test run completed; (3) its output validated against the draft schema; (4) it decoded through the role's contract decoder; (5) it passed the role's semantic checks. The output panel shows each gate as ✓/✕. Any edit re-disables. Discard reverts draft.
+- Templates are checked too: required variables per role (e.g. ANSWER needs `{{question}}` and `{{retrieved_memories}}`) must be present.
 
 ### 4.6 Retrieval (`:services:memory`)
 - `LexicalRetriever`: Room FTS4 `memory_fts` (text + tags); BM25 computed in Kotlin from `matchinfo`.
@@ -258,7 +280,10 @@ Roles: `VISION_EXTRACT`, `EXPLICIT_REMEMBER`, `SUMMARIZE`, `CRITIC`, `ANSWER`, `
   - Strategy chosen via dropdown; each shows its own config.
 - Shared tuning: top-k (default 8), recency boost toggle + half-life (default 3 days), min confidence.
 - Settings → Retrieval: mode `SegmentedSwitch` Lexical / Semantic / Hybrid; fusion dropdown + config (Hybrid only); embedding binding shortcut; index stats + **Rebuild**; tuning; **Try it** search showing ranked hits with scores.
-- **Reindex:** each vector row stores `modelId`, `dim`. If EMBED binding changes (mismatch) → banner + `ReindexWorker`; semantic part falls back to lexical until done.
+- **Embedding space identity.** Vectors belong to an `embedding_space`, never to a bare model name. Fingerprint = SHA-256 over the canonical JSON of: endpoint `kind`; normalised `baseUrl` (scheme + host + path, lowercased, no trailing slash); `apiVersion`; deployment/model name; model revision/digest when the backend exposes it (Ollama `digest`); requested `dimensions` (if set) and returned `dim`; normalisation (L2 applied by us: yes/no); document/query input prefixes or task types (e.g. `search_document:` / `search_query:`); truncation/max input tokens. Endpoint display name and key are excluded.
+- **Canary check.** At space creation we embed 3 fixed canary strings and store their vectors. On app start (max once per 24 h) and before any rebuild swap, canaries are re-embedded; cosine < 0.995 for any canary → space marked `STALE` (catches a silently updated model behind the same name) → rebuild banner.
+- **Generations.** `embedding_space.state ∈ BUILDING | ACTIVE | STALE | RETIRED`; at most one `ACTIVE` and one `BUILDING`. `SemanticRetriever` reads vectors only from the `ACTIVE` space and embeds the query with that same space's config; it never reads `BUILDING` rows.
+- **Reindex.** EMBED binding change (fingerprint differs) or `STALE` → banner + `ReindexWorker` writes into a new `BUILDING` space. Swap to `ACTIVE` happens in one Room transaction only when coverage = 100 % of eligible memories; the old space becomes `RETIRED` and its vectors are deleted. During build: if the old `ACTIVE` space's endpoint is still reachable and not `STALE`, semantic keeps using it; otherwise semantic falls back to lexical (Hybrid → lexical only), shown in Retrieval "Try it" and the banner. New memories created during a build are embedded into both spaces.
 
 ### 4.7 Answer path
 Question → retriever (current mode) → ANSWER prompt with top-k memories (+ frame refs) and `{{context_sources}}` → guided decode → `ask` row → HUD overlay + TTS + phone feed; `proposedAction` → §5.3.
@@ -274,6 +299,23 @@ Question → retriever (current mode) → ANSWER prompt with top-k memories (+ f
 4. Phone hero mic: same path, phone mic.
 5. Swipe dismisses Answer. Errors → short Toast ("Couldn't hear that", "AI unavailable").
 
+### 5.1.1 STT capability gate
+Glasses-audio STT feeds our PCM into the recognizer via `RecognizerIntent.EXTRA_AUDIO_SOURCE` (Live Fit `AndroidOnDeviceStt`). Phone `minSdk` stays 29, so this is gated:
+
+| Capability | Requirement | Check |
+|---|---|---|
+| `GLASSES_VOICE` | API ≥ 33 **and** `SpeechRecognizer.isOnDeviceRecognitionAvailable` **and** language pack installed **and** external-audio verified | `VoiceCapabilityProbe` |
+| `PHONE_VOICE` | On-device recognizer available (API ≥ 31 via `createOnDeviceSpeechRecognizer`), else system `SpeechRecognizer` with explicit "uses Google speech service" note | same probe |
+| Pack download | API ≥ 34 (Live Fit `SpeechPacks`); below 34 → deep-link to system speech settings | — |
+
+- **External-audio verification:** the recognizer must not silently fall back to the phone mic. The probe (onboarding + after OS/app updates) streams a 1 s buffer through the `ParcelFileDescriptor` pipe and counts bytes the recognizer reads; if it reads < 50 % of the buffer, or a session returns results while pipe reads stay ~0, `GLASSES_VOICE` = unsupported. The same byte-count guard runs in every production session: if it trips, the session is aborted (never answered from phone-mic audio) and capability is re-probed.
+- **Unavailable UX:**
+  - Glasses tap = Ask → HUD Toast "Voice not supported on this phone" (or "Download speech pack on phone"); gesture map greys out Ask with reason.
+  - Phone Home hero: mic still works via `PHONE_VOICE` if available; otherwise mic shows disabled state + "Type a question" field (typed Ask uses the same answer path).
+  - Settings → Devices → Phone camera & mic shows a Voice status row: Supported / Needs speech pack (Download / Open settings) / Needs Android 13+ for glasses voice.
+  - Onboarding Permissions step includes the probe and shows the same status.
+- Cloud transcription fallback is **out of scope for v1**.
+
 ### 5.2 Nudges
 - `NudgeEngine` worker: after each summarizer pass, max every 30 min.
 - Input: recent memories, enabled data sources (e.g. next calendar event), last 24 h of nudges.
@@ -281,10 +323,19 @@ Question → retriever (current mode) → ANSWER prompt with top-k memories (+ f
 - Gates: quiet hours; daily cap (default 6, configurable); dedupe hash over 24 h; verbosity (Silent → phone feed only; Medium → Glance one-liner; Max → toast).
 
 ### 5.3 Actions (v1 built-ins)
-- From ANSWER/NUDGE `proposedAction {type: REMINDER | SHOPPING_ADD | CALENDAR_EVENT, params}`.
-- If action enabled and "Always confirm" on (default): HUD Confirm overlay + phone card; either side answers; 15 s timeout → ✕. If disabled: shown as suggestion text only.
-- Execution: Reminder → in-app AlarmManager notification; Shopping list → Room `shopping_item`; Calendar event → `CalendarContract` insert (needs WRITE_CALENDAR, requested on enable).
-- Every proposal + outcome → `action_log`.
+- Source: `proposedAction` in ANSWER or NUDGE output (typed per §4.4). Phone assigns `proposalId` and writes a `proposal` row (`state = PENDING`, `origin = ASK | NUDGE`, `expiresAt`).
+- **Behaviour matrix** (per action type; settings in Connectors → Actions):
+
+| Action enabled | Always confirm | Phone surface | HUD surface | Execution |
+|---|---|---|---|---|
+| Off | — | Suggestion text on the card + "Enable in Settings" link; no buttons | Nothing (answer text only) | Never; proposal stored as `SUPPRESSED` |
+| On | On (default) | Confirm card (✓/✕) on Ask detail / nudge card + notification action | Confirm overlay **iff** origin = ASK (any verbosity), or origin = NUDGE and verbosity = Max. Otherwise none. | On ✓ only |
+| On | Off | Result card "Added · Undo" (10 s) | Toast "Added · double-tap undo" (10 s) iff the HUD would have shown a Confirm per the row above; else none | Immediately; Undo deletes the created reminder/item/event by id |
+
+- **Expiry (phone-owned):** `expiresAt` = +60 s for ASK, +10 min for NUDGE. The HUD overlay auto-hides after 15 s **without voting**; the proposal remains answerable on the phone until `expiresAt`, then → `EXPIRED`. No surface ever converts a timeout into ✓.
+- **Single execution:** all responses (HUD `Confirm(proposalId, yes)`, phone tap, notification action) go to `ProposalRepository.resolve(proposalId, decision)`, a Room transaction doing compare-and-set `PENDING → EXECUTING | DECLINED`. First writer wins; later responses are no-ops and the surface re-renders the final state (`StateFrame.overlay` cleared, phone card shows "Already added" / "Declined" / "Expired"). Expiry uses the same CAS (`PENDING → EXPIRED`). Executors are idempotent on `proposalId` (stored on the created reminder/item/event) so a crash between `EXECUTING` and `EXECUTED` is retried safely on restart.
+- Execution: Reminder → in-app AlarmManager notification; Shopping list → Room `shopping_item`; Calendar event → `CalendarContract` insert (needs WRITE_CALENDAR, requested on enable). Failure → `FAILED` + UserFacingError.
+- Every proposal + state transition → `action_log`.
 - `ToolConnector { listTools(); invoke(name, args) }` interface; `McpConnector` stub, not registered; Settings row "Coming in v2".
 
 ### 5.4 Data sources
@@ -295,6 +346,15 @@ Toggles with on-demand permission: Calendar (read, next 24 h), Contacts (name ma
 - Durations: indefinite / 30 min / 1 h.
 - Effect: `CaptureService` stops scheduling and **drops** buffered frames; HUD REC → ❚❚ (+3 s splash); phone slate banner + Resume.
 
+**Ownership & offline rules (fail-closed):**
+- A pause is a `PauseRecord {pauseId (UUID), origin: GLASSES | PHONE | QUIET_HOURS, createdAt, untilMs? (null = indefinite)}`. Capture is allowed only when the set of *active* records is empty. Each side persists its set (glasses: DataStore; phone: Room) so pauses survive process death and reboot.
+- **Glasses-local enforcement:** a double-tap pause is applied on the glasses immediately and persisted locally, whether or not the phone is linked. `CaptureService` checks the local set before every capture.
+- **Quiet hours offline:** the schedule is part of `HudSettings` and cached on the glasses; the glasses evaluate it on their own clock and synthesise a `QUIET_HOURS` record locally. No phone link is needed.
+- **Timed pauses** expire independently on each side using `untilMs` (the phone converts with the clock offset measured from `pc_hello`).
+- **Reconnect reconciliation:** on `pc_hello` the phone merges sets by **union** (most-restrictive wins) and pushes the merged set back in `StateFrame`/`HudSettings`. A record disappears only through (a) its own expiry or (b) an explicit `Resume(clears)` that names its `pauseId`.
+- **Resume never clears unknown pauses:** a Resume issued from either side carries only the `pauseId`s that side currently knows. If the merge then reveals a pause the user had not seen (e.g. paused on glasses while offline, resumed on phone), capture stays paused and the phone shows "Still paused on glasses — Resume?" to get an explicit second Resume.
+- **Frames captured while the phone believed capture was paused** (phone paused, glasses offline and unaware): on flush, the phone drops any frame whose capture time (offset-corrected) falls inside a known pause interval, acks it `ok=true, reason=paused_drop` so the glasses delete it, and never ingests it.
+
 ### 5.6 Input devices
 Glasses (default capture + PTT). Phone mic (Ask from phone). Phone camera: manual "Capture now" only (enters the same ingest pipeline with `source=phone`).
 
@@ -303,7 +363,19 @@ Glasses (default capture + PTT). Phone mic (Ask from phone). Phone camera: manua
 ## 6. Data, migration, errors, testing, delivery
 
 ### 6.1 Room schema (KSP; optional SQLCipher bound to encryption toggle)
-`frame(id, ts, path, source, luma, phash, placeLabel)` · `memory(id, frameId?, text, type, tags, tier, confidence, reviewState, trusted, createdAt)` + `memory_fts` (FTS4) · `memory_vector(memoryId, modelId, dim, blob)` · `endpoint` · `role_binding` · `prompt` · `prompt_version` · `ask(id, ts, question, answer, sourcesJson, rating, source)` · `nudge(id, ts, text, why, sourceIdsJson, priority, hash, shownOn)` · `action_log(id, ts, type, paramsJson, origin, outcome)` · `shopping_item` · `note` · `summary_trace`. Frame JPEGs remain on disk (encrypted when enabled).
+`frame(id, ts, path, source, luma, phash, placeLabel)` · `memory(id, frameId?, text, type, tags, tier, confidence, reviewState, trusted, createdAt, derived: Boolean)` + `memory_fts` (FTS4) · `memory_source(memoryId, sourceMemoryId)` (provenance for derived/summary memories) · `embedding_space(id, fingerprint, configJson, dim, state, canaryJson, createdAt)` · `memory_vector(memoryId, spaceId, blob)` PK `(memoryId, spaceId)` · `forget_tombstone(frameId?, textHash, createdAt)` · `endpoint` · `role_binding` · `prompt` · `prompt_version` · `ask(id, ts, question, answer, sourcesJson, rating, source, redacted)` · `nudge(id, ts, text, why, sourceIdsJson, priority, hash, shownOn, redacted)` · `proposal(id, origin, originId, type, paramsJson, state, expiresAt, resolvedBy?, createdRef?)` · `action_log(id, ts, proposalId, transition, detail)` · `pause_record` · `shopping_item(…, proposalId?)` · `note` · `summary_trace`. Frame JPEGs remain on disk (encrypted when enabled).
+
+### 6.1.1 Forget semantics
+Two user actions, both behind a confirm dialog that states the scope:
+- **Forget fact** — removes one memory: its row, FTS row, vectors in all spaces, and `memory_source` edges. Writes a `forget_tombstone(frameId, textHash)` so reprocessing/backfill of that frame cannot re-extract the same fact (extractor output is filtered against tombstones by normalised-text hash). The frame JPEG is deleted **only if no remaining memory references it**.
+- **Forget moment** — removes the frame JPEG, the `frame` row and **all** memories with that `frameId` (each handled as Forget fact), plus a frame-level tombstone.
+
+Cascade to dependants (same Room transaction, then background work):
+- **Derived memories** (summaries / medium-long tier) with a `memory_source` edge to a forgotten memory are immediately excluded from retrieval (`reviewState = NEEDS_RESUMMARIZE`) and re-summarised from their remaining sources by the SUMMARIZE role; if no sources remain, they are deleted (recursively).
+- **Asks and nudges** citing a forgotten memory: `answer`/`text` replaced with "Removed — a source was forgotten", `redacted = true`, sources stripped. Any `PENDING` proposal from them → `EXPIRED`.
+- **HUD:** next `StateFrame` omits the memory from `today`.
+- **Summary traces** referencing the memory keep only ids, no text.
+- **Delete all** (Settings → Memory) = Forget moment for every frame + drop all derived memories, asks, nudges, vectors, tombstones.
 
 ### 6.2 Legacy migration
 `LegacyImportWorker` (once): `MemoryRecordStore`, `FrameStreamStore`, `SummaryTraceStore`, frame inbox → Room; then embed in background; mark done. Legacy files retained one release, then deleted.
@@ -312,14 +384,17 @@ Glasses (default capture + PTT). Phone mic (Ask from phone). Phone camera: manua
 `UserFacingError` mapper: provider / link / schema / permission failures → `{title, hint, action}` (e.g. "AI key rejected" → Fix now; "Glasses offline" → Reconnect). Persistent conditions → banners (§2.2). Full detail → Diagnostics logs only. Glasses receive only short strings.
 
 ### 6.4 Testing
-- **Unit:** fusion strategies (fixtures), BM25, cosine, prompt versioning rules (save / overwrite-when-off / restore / one-active invariant), schema validate + retry, StructuredOutput request shape per kind, nudge gating, SwipeClassifier / DoubleTap / HudNav (ported), `StateFrame` serialization round-trip + version check, existing worker/policy/provider tests relocated.
+- **Unit:** fusion strategies (fixtures), BM25, cosine, prompt versioning rules (save / overwrite-when-off / restore / one-active invariant), schema validate + retry, StructuredOutput request shape per kind, `SchemaCompatibilityChecker` (allowed vs forbidden edits), role contract decoders + semantic checks, save-gating gates, `ProposedAction` decoding, proposal CAS (concurrent HUD/phone/expiry → exactly one terminal state, one execution), action matrix, pause merge/resume-clears/offline-drop rules, embedding fingerprint + canary staleness + generation swap (no mixed-space reads), Forget fact/moment cascades + tombstone filtering, frame chunk reassembly/CRC/dedupe, STT capability probe decisions, nudge gating, SwipeClassifier / DoubleTap / HudNav (ported), `StateFrame` serialization round-trip + version check, existing worker/policy/provider tests relocated.
 - **Room:** in-memory DAO + FTS tests; migration import test with fixture legacy files.
 - **Compose UI:** smoke per screen (Home, Activity, Settings tree, Prompt editor save-gating, Retrieval, Onboarding); HUD pages rendered from fixture StateFrames.
 - **Screenshots:** reference screens in `docs/screens/phone/` and `docs/screens/hud/`; existing root `phone-*.png`, `window-*.xml`, `.tmp_glasses_*.png`, `check-*.png` move to `docs/screens/legacy/`.
-- **On-device checklist** (scripted adb, phone + glasses): link, capture→memory, ask→answer→TTS, nudge, action confirm, pause/resume, offline buffer flush.
+- **On-device checklist** (scripted adb, phone + glasses): link, capture→memory, ask→answer→TTS, nudge, action confirm (incl. simultaneous phone + HUD response), pause/resume, offline pause on glasses then reconnect (stays paused), offline buffer flush incl. mid-frame link drop, Forget fact vs Forget moment.
 
 ### 6.5 Delivery phases (each buildable + demoable)
-0. **Spikes:** CXR custom channel with binary payload between our two apps; TTS via glasses BT audio.
+0. **Spikes** (results recorded in `docs/spikes/`):
+   - **CXR glasses → phone JPEG** (Live Fit's binary path is phone → glasses, so this direction is unproven): max per-message payload; throughput for 20–40 KB frames; chunking + reassembly per §1.8; CRC; ack round-trip; interrupted flush (kill link mid-frame, verify resume from chunk 0 and phone dedupe); 20-frame backlog flush time; concurrent PTT — audio latency while a flush is in progress and with flush suspended.
+   - **TTS** via glasses BT audio route (+ glasses-side engine availability).
+   - **STT** on the target phone: API level, on-device availability, pack install, external-audio byte-count probe (§5.1.1).
 1. Module restructure + `:core:model` / `:core:ui` / `:core:hud` (no behaviour change; build + existing tests green).
 2. Data layer: Room, legacy import, endpoint registry + role bindings.
 3. CXR link replaces RFCOMM; frames end-to-end; glasses Glance / Today / Status.
@@ -332,7 +407,8 @@ Glasses (default capture + PTT). Phone mic (Ask from phone). Phone camera: manua
 ---
 
 ## 7. Open risks
-- **CXR binary throughput** for ~20–40 KB JPEGs — phase 0 spike; fallback: chunk frames over multiple messages.
+- **CXR glasses → phone binary transfer** for ~20–40 KB JPEGs — unproven direction; phase 0 spike; chunking protocol already specified (§1.8).
+- **STT external-audio support** varies by phone/recognizer — capability gate + byte-count guard (§5.1.1).
 - **TTS audio route** to glasses speaker — phase 0 spike; fallback per §3.6.
 - **On-device STT language packs** on the phone — reuse Live Fit `SpeechPacks` flow in onboarding.
 - **Guided decoding support** varies by deployment/model — capability flag + fallback (§4.4).
@@ -348,9 +424,10 @@ Every plan task cites the R-IDs it satisfies. All must be covered.
 - R-02 Live Fit pieces copied/adapted per §1.2 (with their tests).
 - R-03 Existing backend logic ported per §1.3; existing tests pass in new modules.
 - R-04 RFCOMM/SPP code removed per §1.4.
-- R-05 CXR channels per §1.5 with protocol version + mismatch handling.
+- R-05 CXR channels per §1.5 (incl. `pc_frame_ack`, `pc_hello` clock + pause records) with protocol version + mismatch handling.
 - R-06 `StateFrame` per §1.6, full-frame broadcast ≤ 4 Hz.
-- R-07 `ContextHubService` owns link/voice/broadcast; no polling loop; glasses-side capture timing + 20-frame offline buffer.
+- R-07 `ContextHubService` owns link/voice/broadcast; no polling loop; glasses-side capture timing + 20-frame offline buffer; pause authority exception (§1.7).
+- R-08 Frame transfer per §1.8: chunking, CRC, stop-and-wait ack, delete-after-ack, interrupted-flush restart, phone dedupe by `frameId`, PTT priority.
 
 **Phone**
 - R-10 NavHost + 3-tab PillNav + routes per §2.1; onboarding gate.
@@ -359,7 +436,7 @@ Every plan task cites the R-IDs it satisfies. All must be covered.
 - R-13 Home (Ask-first) per §2.4 incl. suggested questions + For you feed.
 - R-14 Ask detail with sources, rating, action state.
 - R-15 Activity: status strip, Today/Week/Month, bar chart, tiles, day drill-down, timeline.
-- R-16 Memory detail (Trust/Edit/Forget, full delete cascade) + Frame viewer.
+- R-16 Memory detail (Trust/Edit/Forget fact/Forget moment per §6.1.1) + Frame viewer.
 - R-17 Settings tree per §2.4 incl. Devices, Capture & privacy, AI, Connectors, Memory & system, Diagnostics.
 - R-18 Glasses settings: verbosity with HudPreview, scale/position, gesture mapping, re-authorize.
 - R-19 Onboarding wizard steps per §2.4.
@@ -379,29 +456,32 @@ Every plan task cites the R-IDs it satisfies. All must be covered.
 - R-42 Role bindings with capability-filtered picker (§4.2).
 - R-43 Prompt store, seeds, variables, one-active invariant (§4.3).
 - R-44 Versioning toggle on Prompts screen (default on); history view/diff/restore; off = overwrite.
-- R-45 Output schema per version; default schemas; Reset to default (§4.4).
+- R-45 Output schema per version; default schemas incl. typed `ProposedAction` in ANSWER **and** NUDGE; Reset to default (§4.4).
 - R-46 `StructuredOutput` adapters per kind + fallback; validate + 1 retry + retry queue.
-- R-47 Test bed with frame/text/question inputs, model selector, metrics, save-gating (§4.5).
+- R-47 Test bed with frame/text/question inputs, model selector, metrics, five-gate save-gating + required template variables (§4.5).
 - R-48 Lexical (FTS4 + BM25), Semantic (cosine, `VectorIndex`), Hybrid (§4.6).
 - R-49 Fusion strategies WeightedScore / RRF / CombMNZ selectable with per-strategy config.
 - R-50 Retrieval tuning (top-k, recency half-life, min confidence) + Try it + index stats/Rebuild.
-- R-51 Reindex on embedding model change with lexical fallback.
+- R-51 Embedding space identity (fingerprint), canary staleness check, BUILDING/ACTIVE generations with atomic swap, no mixed-space reads, fallback rules (§4.6).
 - R-52 Answer path per §4.7.
+- R-53 Role contracts: decoders + semantic checks used in production and test bed; `SchemaCompatibilityChecker` enforcing refinement rules (§4.4.1).
 
 **Flows**
 - R-60 Push-to-talk ask from glasses and phone per §5.1.
+- R-67 STT capability gate, external-audio byte-count probe + production guard (never answer from phone-mic fallback), unavailable-state UX on HUD/Home/Settings/Onboarding, typed-Ask fallback (§5.1.1).
 - R-61 NudgeEngine with gates per §5.2.
-- R-62 Built-in actions Reminder / Shopping / Calendar with confirm overlay, timeout, action_log (§5.3).
+- R-62 Built-in actions Reminder / Shopping / Calendar per the §5.3 behaviour matrix (enabled × confirm × origin × verbosity), phone-owned expiry, HUD timeout never votes, CAS single execution, idempotent executors, Undo, action_log.
 - R-63 `ToolConnector` interface + `McpConnector` stub + "Coming in v2" row.
 - R-64 Data sources with on-demand permissions, injected as context only (§5.4).
-- R-65 Privacy pause triggers, durations, buffer drop, HUD + phone indication (§5.5).
+- R-65 Privacy pause triggers, durations, buffer drop, HUD + phone indication; `PauseRecord` persistence on both sides, glasses-local enforcement + offline quiet hours, union merge on reconnect, Resume clears only named pauses, paused-interval frame drop (§5.5).
 - R-66 Phone camera manual capture into same pipeline (§5.6).
 
 **Data / quality**
 - R-70 Room schema per §6.1 (KSP; SQLCipher when encryption on).
+- R-77 Forget fact / Forget moment semantics, tombstones, derived-memory re-summarise/delete, ask/nudge redaction, pending-proposal expiry (§6.1.1).
 - R-71 Legacy import worker per §6.2.
 - R-72 `UserFacingError` mapping; no raw errors in any UI (§6.3).
 - R-73 Test suites per §6.4.
 - R-74 Screenshot references + legacy screenshot relocation.
 - R-75 On-device checklist script.
-- R-76 Phase 0 spikes executed and results recorded before phase 3.
+- R-76 Phase 0 spikes (CXR G→P JPEG incl. chunking/ack/interrupt/PTT concurrency; TTS; STT probe) executed and recorded in `docs/spikes/` before phase 3.
