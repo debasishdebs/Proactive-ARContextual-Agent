@@ -1,0 +1,46 @@
+package com.rokid.context.glasses.capture
+
+import android.app.AlarmManager
+import android.app.Application
+import android.app.PendingIntent
+import android.content.Intent
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34])
+class CaptureSchedulerTest {
+    private val ctx = ApplicationProvider.getApplicationContext<Application>()
+    private val am get() = ctx.getSystemService(AlarmManager::class.java)
+    private fun alarmIntents() = shadowOf(am).scheduledAlarms.map { shadowOf(it.operation).savedIntent }
+
+    @Test fun ensureScheduledArmsOneAlarmForCaptureService() {
+        CaptureScheduler(ctx).ensureScheduled()
+        assertEquals(CaptureService::class.java.name, alarmIntents().single().component!!.className)
+        assertNotNull(CaptureScheduler(ctx).nextTriggerAtMs())
+    }
+
+    @Test fun ensureScheduledKeepsAPendingAlarm() {
+        val s = CaptureScheduler(ctx)
+        s.scheduleNext(60_000)
+        val at = s.nextTriggerAtMs()
+        s.ensureScheduled()
+        assertEquals(at, s.nextTriggerAtMs())
+        assertEquals(1, alarmIntents().size)
+    }
+
+    /** The pre-CXR app armed PulseKeepAliveService; that chain must not keep running beside CaptureService. */
+    @Test fun theLegacyPulseAlarmIsRetired() {
+        val legacy = Intent().setClassName(ctx, "com.rokid.context.glasses.PulseKeepAliveService").setAction("com.rokid.context.glasses.action.PULSE_SERVICE")
+        am.set(AlarmManager.RTC_WAKEUP, 1_000_000, PendingIntent.getForegroundService(ctx, 30_071, legacy, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        CaptureScheduler(ctx).ensureScheduled()
+        assertTrue(alarmIntents().none { it.action == "com.rokid.context.glasses.action.PULSE_SERVICE" })
+    }
+}

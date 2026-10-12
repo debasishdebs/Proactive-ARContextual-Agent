@@ -23,6 +23,10 @@
         <receiver
             android:name=".PulseAlarmReceiver"
             android:exported="false" />
+        <service
+            android:name=".capture.CaptureService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

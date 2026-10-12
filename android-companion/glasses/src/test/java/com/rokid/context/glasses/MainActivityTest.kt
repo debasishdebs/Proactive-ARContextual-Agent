@@ -19,6 +19,7 @@ import com.rokid.context.core.model.Decoded
 import com.rokid.context.core.model.Health
 import com.rokid.context.core.model.StateFrame
 import com.rokid.context.core.model.Wire
+import com.rokid.context.glasses.capture.CaptureService
 import com.rokid.context.glasses.link.CxrBridge
 import com.rokid.context.glasses.link.FakeBridge
 import com.rokid.context.glasses.link.HudController
@@ -74,11 +75,12 @@ class MainActivityTest {
         fail("condition not reached")
     }
 
-    private fun pulseStarts(): Int {
+    /** Capture requests sent to [CaptureService], the only capture path (Task 11). */
+    private fun captureStarts(): Int {
         var n = 0
         while (true) {
             val i = shadowOf(app).nextStartedService ?: return n
-            if (i.action == PulseKeepAliveService.ACTION_PULSE) n++
+            if (i.component?.className == CaptureService::class.java.name && i.action == CaptureService.ACTION_NOW) n++
         }
     }
 
@@ -125,12 +127,12 @@ class MainActivityTest {
     @Test fun recreationKeepsOneControllerAndDoesNotRerunTheCaptureIntent() {
         val intent = Intent(app, MainActivity::class.java).setAction(MainActivity.ACTION_CAPTURE_NOW)
         ActivityScenario.launch<MainActivity>(intent).use { s ->
-            assertEquals(1, pulseStarts())
+            assertEquals(1, captureStarts())
             lateinit var old: HudController
             s.onActivity { old = it.controller }
 
             s.recreate()
-            assertEquals(0, pulseStarts())
+            assertEquals(0, captureStarts())
             s.onActivity {
                 assertNotSame(old, it.controller)
                 assertSame(it.controller, runtime.controller)
