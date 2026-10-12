@@ -15,7 +15,7 @@
 - **Prerequisite:** Phase 1 Task 0 (baseline commit) is done; its SHA is `BASELINE`.
 - Throwaway code: no tests, no production quality bar, never merged. Only `docs/spikes/2026-10-12-phase0-results.md` survives.
 - All spike paths below are relative to the worktree `$SPIKE=/Users/<user>/Desktop/rokid/pca-spike`. Never run `git switch`/`git checkout` in the main checkout.
-- Frame transfer follows the spec §1.8 contract: the phone sends a **frame-level** `probe_frame_ack {frameId, ok, reason}` only after reassembly, CRC check and Base64 decode; the glasses delete a frame from their buffer **only** on `ok=true`; frames that fail or time out stay buffered for the next flush.
+- Frame transfer follows the spec §1.8 contract exactly: the phone sends a **frame-level** `probe_frame_ack {frameId, ok, reason}` only after reassembly, CRC check and Base64 decode; on `ok=true` the glasses delete the frame; on a NACK they resend once and drop the frame after a second NACK; on a timeout they retry from chunk 0 up to 3 attempts, then keep it (and the rest of the backlog) for the next flush.
 - Glasses side sends with `CXRServiceBridge.sendMessage(channel, Caps)` — text only (Base64 for binary), per Live Fit's verified `lf_audio` path.
 - Device steps need the user: phone with **Hi Rokid** installed and paired to the glasses; glasses connected by USB with adb enabled. Ask the user before every physical action (toggle Bluetooth, take glasses off, etc.).
 - `adb` binary: `/Users/<user>/Desktop/rokid/android-sdk/platform-tools/adb`. Use `-s <serial>` for every command (two devices attached).
@@ -413,7 +413,7 @@ object Acks {
 }
 
 /** One buffered frame. Deleted only on a positive frame ack (spec §1.8). */
-class Pending(val frameId: String, val b64: String, var corruptNextSend: Boolean = false)
+class Pending(val frameId: String, val b64: String, var corruptNextSend: Boolean = false, val corruptAlways: Boolean = false)
 
 object Tests {
     private val buffer = java.util.concurrent.ConcurrentLinkedDeque<Pending>()
@@ -425,7 +425,7 @@ object Tests {
             "ping" -> Probe.log("pong at=${cmd.getLong("at")} now=${System.currentTimeMillis()}")
             "sizes" -> sizes()
             "frames" -> {
-                enqueue(a, count = cmd.optInt("count", 1), corruptFirst = cmd.optBoolean("corrupt", false))
+                enqueue(a, count = cmd.optInt("count", 1), corruptFirst = cmd.optBoolean("corrupt", false), corruptFirstAlways = cmd.optBoolean("corruptAlways", false))
                 flush(chunkChars = cmd.optInt("chunk", 16_384), chunkAck = cmd.optBoolean("chunkAck", false))
             }
             "flush" -> flush(chunkChars = cmd.optInt("chunk", 16_384), chunkAck = cmd.optBoolean("chunkAck", false))
@@ -446,52 +446,69 @@ object Tests {
         Probe.log("sizes done")
     }
 
-    private fun enqueue(a: Activity, count: Int, corruptFirst: Boolean) {
+    private fun enqueue(a: Activity, count: Int, corruptFirst: Boolean, corruptFirstAlways: Boolean) {
         val b64 = android.util.Base64.encodeToString(a.assets.open("sample.jpg").readBytes(), android.util.Base64.NO_WRAP)
-        repeat(count) { f -> buffer.addLast(Pending("f${System.currentTimeMillis()}_$f", b64, corruptNextSend = corruptFirst && f == 0)) }
+        repeat(count) { f -> buffer.addLast(Pending("f${System.currentTimeMillis()}_$f", b64, corruptNextSend = corruptFirst && f == 0, corruptAlways = corruptFirstAlways && f == 0)) }
         Probe.log("enqueued $count buffer=${buffer.size}")
     }
 
-    /** Stop-and-wait per frame. Positive frame ack → delete; negative → resend (≤ 3 attempts); timeout → keep and stop. */
+    /**
+     * spec §1.8, stop-and-wait per frame:
+     * - positive frame ack → delete from buffer;
+     * - negative ack (CRC/decode) → resend once; a second NACK → drop the frame (logged) and continue the backlog;
+     * - timeout (no frame ack in 5 s, chunk rc ≠ 0, or chunk-ack timeout) → retry from chunk 0, at most 3 attempts,
+     *   then keep the frame and every later one buffered and stop this flush (next flush retries).
+     */
     private fun flush(chunkChars: Int, chunkAck: Boolean) {
         if (flushing) return Probe.log("flush already running")
         flushing = true
         val t0 = System.currentTimeMillis()
         var sent = 0
+        var dropped = 0
         try {
             while (true) {
                 val frame = buffer.peekFirst() ?: break
                 val tf = System.currentTimeMillis()
-                var attempt = 0
-                var delivered = false
-                while (attempt < 3 && !delivered) {
-                    attempt++
-                    val body = if (frame.corruptNextSend) frame.b64.replaceRange(10, 11, if (frame.b64[10] == 'A') "B" else "A") else frame.b64
+                var timeouts = 0
+                var nacks = 0
+                val outcome: String
+                while (true) {
+                    val corrupt = frame.corruptAlways || frame.corruptNextSend
                     frame.corruptNextSend = false
+                    val body = if (corrupt) frame.b64.replaceRange(10, 11, if (frame.b64[10] == 'A') "B" else "A") else frame.b64
                     val chunks = body.chunked(chunkChars)
                     val frameAck = Acks.expect(frame.frameId)
-                    var chunkFailed = false
+                    var sendFailed = false
                     for ((idx, c) in chunks.withIndex()) {
                         val chunkAckF = if (chunkAck) Acks.expect("${frame.frameId}/$idx") else null
                         val meta = JSONObject().put("frameId", frame.frameId).put("idx", idx).put("n", chunks.size).put("crc", crc(frame.b64)).toString()
                         val rc = Probe.send("probe_chunk", meta, c)
                         val chunkOk = chunkAckF?.let { runCatching { it.get(5, java.util.concurrent.TimeUnit.SECONDS) }.isSuccess } ?: true
-                        if (rc != 0 || !chunkOk) { Probe.log("frame ${frame.frameId} chunk $idx rc=$rc chunkAck=$chunkOk attempt=$attempt"); chunkFailed = true; break }
+                        if (rc != 0 || !chunkOk) { Probe.log("frame ${frame.frameId} chunk $idx rc=$rc chunkAck=$chunkOk"); sendFailed = true; break }
                     }
-                    if (chunkFailed) break
-                    val ack = runCatching { frameAck.get(5, java.util.concurrent.TimeUnit.SECONDS) }.getOrNull()
+                    val ack = if (sendFailed) null else runCatching { frameAck.get(5, java.util.concurrent.TimeUnit.SECONDS) }.getOrNull()
                     when {
-                        ack == null -> { Probe.log("frame ${frame.frameId} no frame ack attempt=$attempt"); break }
-                        ack.getBoolean("ok") -> delivered = true
-                        else -> Probe.log("frame ${frame.frameId} NACK reason=${ack.optString("reason")} attempt=$attempt")
+                        ack == null -> {
+                            timeouts++
+                            Probe.log("frame ${frame.frameId} timeout $timeouts/3")
+                            if (timeouts >= 3) { outcome = "retain"; break }
+                            Thread.sleep(2_000)
+                        }
+                        ack.getBoolean("ok") -> { outcome = "delivered"; break }
+                        else -> {
+                            nacks++
+                            Probe.log("frame ${frame.frameId} NACK reason=${ack.optString("reason")} $nacks/2")
+                            if (nacks >= 2) { outcome = "dropped"; break }
+                        }
                     }
                 }
-                if (!delivered) { Probe.log("flush stopped; retained=${buffer.size}"); return }
-                buffer.pollFirst()
-                sent++
-                Probe.log("frame ${frame.frameId} delivered ms=${System.currentTimeMillis() - tf} attempts=$attempt")
+                when (outcome) {
+                    "delivered" -> { buffer.pollFirst(); sent++; Probe.log("frame ${frame.frameId} delivered ms=${System.currentTimeMillis() - tf} timeouts=$timeouts nacks=$nacks") }
+                    "dropped" -> { buffer.pollFirst(); dropped++; Probe.log("frame ${frame.frameId} DROPPED after 2 NACKs") }
+                    else -> { Probe.log("flush stopped after 3 timeouts; retained=${buffer.size}"); return }
+                }
             }
-            Probe.log("flush done sent=$sent retained=${buffer.size} chunk=$chunkChars chunkAck=$chunkAck totalMs=${System.currentTimeMillis() - t0}")
+            Probe.log("flush done sent=$sent dropped=$dropped retained=${buffer.size} chunk=$chunkChars chunkAck=$chunkAck totalMs=${System.currentTimeMillis() - t0}")
         } finally { flushing = false }
     }
 }
@@ -517,6 +534,7 @@ object Handlers {
         }
         a.button("1 frame @16K + chunk acks") { a.link.send("probe_cmd", """{"t":"frames","count":1,"chunk":16384,"chunkAck":true}""") }
         a.button("1 corrupted frame @16K") { a.link.send("probe_cmd", """{"t":"frames","count":1,"chunk":16384,"corrupt":true}""") }
+        a.button("3 frames, #1 always corrupt") { a.link.send("probe_cmd", """{"t":"frames","count":3,"chunk":16384,"corruptAlways":true}""") }
         a.button("Backlog 20 @16K") { a.link.send("probe_cmd", """{"t":"frames","count":20,"chunk":16384}""") }
         a.button("Flush retained") { a.link.send("probe_cmd", """{"t":"flush","chunk":16384}""") }
         a.button("Glasses buffer?") { a.link.send("probe_cmd", """{"t":"buffer"}""") }
@@ -574,14 +592,15 @@ Record: for each kb, received/5 and intact/5, and the glasses `rc` values. `SAFE
 
 User taps **1 frame @8K / @16K / @32K** (each 3×) and **1 frame @16K + chunk acks** (3×). Record per run: delivered ms, chunk count, attempts.
 Decision: per-chunk acks are needed only if the no-chunk-ack runs show missing/CRC-failed frames that the chunk-ack runs do not.
-Then **1 corrupted frame @16K**: expected phone log `CRC MISMATCH → NACK` then `ingested`; glasses log `NACK reason=crc attempt=1` then `delivered … attempts=2`.
-Then **Drop next frame ack** → **1 frame @16K**: expected glasses `no frame ack` → `flush stopped; retained=1`; tap **Flush retained**: phone logs `duplicate (already ingested) → ack ok, not re-ingested`; glasses `delivered`, buffer 0 (**Glasses buffer?**).
+Then **1 corrupted frame @16K**: expected phone `CRC MISMATCH → NACK` then `ingested`; glasses `NACK reason=crc 1/2` then `delivered … nacks=1`.
+Then **3 frames, #1 always corrupt**: expected glasses `NACK 1/2`, `NACK 2/2`, `DROPPED after 2 NACKs`, then frames 2 and 3 `delivered`; `flush done sent=2 dropped=1 retained=0` (persistent corruption never blocks the backlog).
+Then **Drop next frame ack** → **1 frame @16K**: expected glasses `timeout 1/3`, resend, phone `duplicate (already ingested) → ack ok, not re-ingested`, glasses `delivered … timeouts=1`; phone `ingested` count +1 only.
 Then **Backlog 20 @16K**: record `totalMs`, retries, final `retained=0`.
 
 - [ ] **Step 6: Interrupted flush and recovery (needs the user)**
 
 User starts **Backlog 20 @16K**; after ~5 `delivered` lines, ask the user to toggle **phone Bluetooth off for 5 s, then on**, and tap Connect again if the session closed.
-Expected: glasses log `no frame ack` (or chunk rc ≠ 0) → `flush stopped; retained=N` with N ≥ 1 and **no frame deleted that the phone did not ingest** (compare **Glasses buffer?** ids with phone `ingested` ids). After reconnect, user taps **Flush retained**: all retained frames are delivered; phone `ingested` total = 20 (+ any `dupes` for frames whose ack was lost in the drop).
+Expected: glasses log `timeout 1/3 … 3/3` (or chunk rc ≠ 0) and either recover within the 3 attempts or end with `flush stopped after 3 timeouts; retained=N`; **no frame is deleted that the phone did not ingest** (compare **Glasses buffer?** ids with phone `ingested` ids). If frames were retained, after reconnect the user taps **Flush retained**: all are delivered; phone `ingested` total = 20, with `dupes` only for frames whose ack was lost in the drop.
 Record: N retained, reconnect ms, frames ingested twice (must be 0), frames lost (must be 0).
 
 - [ ] **Step 7: Commit**
@@ -878,7 +897,8 @@ Probe branch: spike/cxr-probe @ <sha>.
 | chunk | chunk acks | runs | ms per frame (min/median/max) | chunks | attempts |
 Per-chunk acks needed for flow control: yes/no (evidence: …)
 Corrupted frame: NACK observed yes/no; resend delivered yes/no.
-Lost frame ack: frame retained yes/no; re-flush deduped yes/no.
+Persistent corruption: frame dropped after 2 NACKs yes/no; later frames delivered yes/no.
+Lost frame ack: resend after timeout deduped yes/no.
 Backlog 20 @16K: total ms …, retries …, retained at end …
 
 ## Interrupted flush
