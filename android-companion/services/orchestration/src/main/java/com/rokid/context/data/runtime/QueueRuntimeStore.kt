@@ -76,7 +76,8 @@ object QueueRuntimeStore {
             val all = readAll(context)
             if (all.isEmpty()) return null
 
-            val normalized = all.map { normalizeState(it, nowEpochMs) }
+            val paused = !AppConfigStore.isPipelineEnabled(context)
+            val normalized = all.map { normalizeState(it, nowEpochMs, paused) }
                 .map {
                     if (it.state == STATE_DEFERRED && it.notBeforeEpochMs <= nowEpochMs) {
                         it.copy(state = STATE_ENQUEUED, lastError = "")
@@ -136,9 +137,36 @@ object QueueRuntimeStore {
         )
     }
 
+    /**
+     * Not an attempt (Phase 2 carry): battery/policy deferrals and WorkManager cancellations keep [QueueJobRecord.attemptCount],
+     * so only real RETRY outcomes count towards RetryPolicy.MAX_ATTEMPTS; the 24 h TTL still applies.
+     */
+    fun markPostponed(context: Context, id: String, note: String, delayMs: Long, nowEpochMs: Long = System.currentTimeMillis()) = mutate(context, id) {
+        copy(state = STATE_DEFERRED, notBeforeEpochMs = nowEpochMs + delayMs.coerceAtLeast(15_000L), lastError = sanitize(note))
+    }
+
+    /**
+     * Carry C1, called on resume: every live row's TTL moves out by the paused time it lived through,
+     * `min(byMs, now − enqueued)`, so a job queued during the pause gets back only its own share.
+     */
+    fun extendTtl(context: Context, byMs: Long, nowEpochMs: Long = System.currentTimeMillis()) {
+        if (byMs <= 0L) return
+        synchronized(lock) {
+            val rows = readAll(context)
+            if (rows.isEmpty()) return
+            writeAll(
+                context,
+                rows.map { r ->
+                    if (isTerminal(r)) r else r.copy(ttlExpiryEpochMs = r.ttlExpiryEpochMs + byMs.coerceAtMost((nowEpochMs - r.originalEnqueuedAtEpochMs).coerceAtLeast(0L)))
+                },
+            )
+        }
+    }
+
     fun snapshot(context: Context, nowEpochMs: Long = System.currentTimeMillis()): QueueRuntimeSnapshot {
         synchronized(lock) {
-            val rows = readAll(context).map { normalizeState(it, nowEpochMs) }
+            val paused = !AppConfigStore.isPipelineEnabled(context)
+            val rows = readAll(context).map { normalizeState(it, nowEpochMs, paused) }
             writeAll(context, rows)
 
             val pendingByQueue = QueuePriority.entries.associateWith { q ->
@@ -194,8 +222,12 @@ object QueueRuntimeStore {
         }
     }
 
-    private fun normalizeState(record: QueueJobRecord, nowEpochMs: Long): QueueJobRecord {
-        if (record.state == STATE_SUCCEEDED || record.state == STATE_FAILED || record.state == STATE_EXPIRED) {
+    private fun isTerminal(record: QueueJobRecord) =
+        record.state == STATE_SUCCEEDED || record.state == STATE_FAILED || record.state == STATE_EXPIRED
+
+    /** While paused nothing expires (carry C1); the paused time is given back on resume by [extendTtl]. */
+    private fun normalizeState(record: QueueJobRecord, nowEpochMs: Long, paused: Boolean): QueueJobRecord {
+        if (paused || isTerminal(record)) {
             return record
         }
         return if (nowEpochMs >= record.ttlExpiryEpochMs) {

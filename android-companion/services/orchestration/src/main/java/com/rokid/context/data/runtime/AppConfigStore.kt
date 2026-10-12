@@ -23,6 +23,7 @@ object AppConfigStore {
     private const val SECRET_PREF = "app_config_secret"
 
     private const val K_PIPELINE_ENABLED = "pipeline_enabled"
+    private const val K_PAUSED_AT_MS = "paused_at_ms"
     private const val K_LOCAL_MODE_ENABLED = "local_mode_enabled"
     private const val K_ENCRYPTION_ENABLED = "encryption_enabled"
     private const val K_MEMORY_WINDOW = "memory_window"
@@ -55,7 +56,31 @@ object AppConfigStore {
         )
     }
 
-    fun setPipelineEnabled(context: Context, enabled: Boolean) = edit(context) { putBoolean(K_PIPELINE_ENABLED, enabled) }
+    /**
+     * Carry C1: a pause freezes the queue-job TTL. Pausing records when it started (a repeated pause keeps the first time);
+     * resuming gives the queued jobs that paused time back ([QueueRuntimeStore.extendTtl]) before the flag flips, so no
+     * drain or snapshot sees a job expire for time it spent paused.
+     */
+    fun setPipelineEnabled(context: Context, enabled: Boolean, nowEpochMs: Long = System.currentTimeMillis()) {
+        val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        if (!enabled) {
+            edit(context) {
+                putBoolean(K_PIPELINE_ENABLED, false)
+                if (!p.contains(K_PAUSED_AT_MS)) putLong(K_PAUSED_AT_MS, nowEpochMs)
+            }
+            return
+        }
+        val pausedAt = p.getLong(K_PAUSED_AT_MS, -1L)
+        if (pausedAt >= 0L) QueueRuntimeStore.extendTtl(context, byMs = (nowEpochMs - pausedAt).coerceAtLeast(0L), nowEpochMs = nowEpochMs)
+        edit(context) {
+            putBoolean(K_PIPELINE_ENABLED, true)
+            remove(K_PAUSED_AT_MS)
+        }
+    }
+
+    /** Just the ⏸ flag ([get] also opens the secrets store). */
+    fun isPipelineEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(K_PIPELINE_ENABLED, true)
     fun setLocalModeEnabled(context: Context, enabled: Boolean, syncRegistry: Boolean = true): Result<Unit> {
         edit(context) { putBoolean(K_LOCAL_MODE_ENABLED, enabled) }
         if (!syncRegistry) return Result.success(Unit)

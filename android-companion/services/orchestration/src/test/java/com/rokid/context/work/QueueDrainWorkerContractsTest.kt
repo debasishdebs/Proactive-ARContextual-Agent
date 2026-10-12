@@ -1,0 +1,73 @@
+package com.rokid.context.work
+
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.work.testing.TestListenableWorkerBuilder
+import androidx.work.testing.WorkManagerTestInitHelper
+import com.rokid.context.ai.AiGraph
+import com.rokid.context.data.runtime.QueuePayloads
+import com.rokid.context.data.runtime.QueueRuntimeStore
+import com.rokid.context.domain.queue.QueuePriority
+import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.ReviewState
+import com.rokid.context.orchestration.PipelineRecords
+import com.rokid.context.orchestration.TestAi
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+import java.io.File
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34])
+class QueueDrainWorkerContractsTest {
+    private val ctx = ApplicationProvider.getApplicationContext<Context>()
+    private val prompts = mutableListOf<String>()
+    private var replies: (String) -> String = { "{}" }
+
+    @Before fun setUp() {
+        WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
+        MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
+        TestAi.bindAll(TestAi.graph(ctx) { p -> prompts += p; replies(p) })
+        runBlocking {
+            val jpg = File(ctx.filesDir, "f.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }.absolutePath
+            PipelineRecords.appendFrame(ctx, FrameEntity("f_old", 10, jpg, "rokid_glasses", "old"))
+            PipelineRecords.appendFrame(ctx, FrameEntity("f_new", 20, jpg, "rokid_glasses", "new"))
+        }
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.SUMMARIZER, QueuePayloads.batchedWrite(source = "test", importedFrames = 2, manual = true), personaSnapshot = "p")
+    }
+
+    @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
+
+    private fun run() = runBlocking { TestListenableWorkerBuilder<QueueDrainWorker>(ctx).build().doWork() }
+    private fun saved() = runBlocking { MemoryGraph.get(ctx).memories.recent(20) }
+
+    @Test fun frameFactsAreStoredPerFactOnTheNewestFrame() {
+        replies = { """{"facts":[{"text":"Milk carton on the counter","type":"object","confidence":0.9,"tags":["kitchen"]}]}""" }
+        run()
+        val m = saved().single()
+        assertEquals("Milk carton on the counter", m.text); assertEquals("f_new", m.frameId); assertEquals(ReviewState.OK, m.reviewState)
+        assertTrue(prompts.single().contains("BEGIN_DATA frames")); assertTrue(prompts.single().contains("id=f_new"))
+    }
+
+    @Test fun lowConfidenceFactsTheCriticRejectsGoToTheReviewQueue() {
+        replies = { p -> if ("verdict" in p) """{"verdict":"fail","reasons":["not visible"]}""" else """{"facts":[{"text":"Maybe a cat","type":"object","confidence":0.3,"tags":[]}]}""" }
+        run()
+        assertEquals(ReviewState.NEEDS_REVIEW, saved().single().reviewState)
+        assertTrue(QueueRuntimeStore.recent(ctx, 10).any { it.queue == QueuePriority.PRIORITY_REPROCESS })
+    }
+
+    @Test fun lowConfidenceFactsTheCriticPassesAreTrusted() {
+        replies = { p -> if ("verdict" in p) """{"verdict":"pass","reasons":[]}""" else """{"facts":[{"text":"A red mug","type":"object","confidence":0.5,"tags":[]}]}""" }
+        run()
+        assertEquals(ReviewState.OK, saved().single().reviewState)
+        assertTrue(QueueRuntimeStore.recent(ctx, 10).none { it.queue == QueuePriority.PRIORITY_REPROCESS })
+    }
+}

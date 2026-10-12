@@ -1,9 +1,6 @@
-@file:Suppress("DEPRECATION")
-
 package com.rokid.context.work
 
 import android.content.Context
-import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.rokid.context.data.runtime.PipelineStatsStore
@@ -12,11 +9,8 @@ import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
+import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.orchestration.PipelineRecords
-import com.rokid.context.prompt.LegacyPromptComposer
-import com.rokid.context.prompt.PromptHash
-import com.rokid.context.prompt.PromptTemplateId
-import com.rokid.context.prompt.PromptTemplateRepository
 
 class CriticWorkerJob(
     appContext: Context,
@@ -27,8 +21,8 @@ class CriticWorkerJob(
     override suspend fun doWork(): Result {
         val summaryId = inputData.getString(KEY_SUMMARY_ID)
         if (summaryId.isNullOrBlank()) {
-            // Periodic run: scan review records and ensure reprocess queue exists.
-            val reviews = PipelineRecords.recentMemories(applicationContext, 80).filter { it.type.contains("review", ignoreCase = true) }
+            // Periodic run: scan facts awaiting review (preflight F10: by reviewState; facts keep their own type) and queue a reprocess.
+            val reviews = PipelineRecords.recentMemories(applicationContext, 80).filter { it.reviewState == ReviewState.NEEDS_REVIEW }
             if (reviews.isNotEmpty()) {
                 val payload = QueuePayloads.reprocess(
                     reason = "Periodic critic retry for review memories",
@@ -48,15 +42,6 @@ class CriticWorkerJob(
 
         val confidence = inputData.getDouble(KEY_CONFIDENCE, 0.0)
         val sourceContext = PipelineRecords.recentMemories(applicationContext, 20).joinToString("\n") { it.text }.ifBlank { "no-context" }
-        val prompt = LegacyPromptComposer(PromptTemplateRepository(applicationContext)).compose(
-            templateId = PromptTemplateId.CRITIC_VALIDATION,
-            variables = mapOf(
-                "summary_id" to summaryId,
-                "summary" to summaryId,
-                "source_context" to sourceContext,
-            ),
-        )
-        Log.i(TAG, "critic_validation promptHash=${PromptHash.sha256(prompt)}")
         val result = criticWorker.validate(summaryId, confidence)
 
         return when (result.status) {
@@ -85,7 +70,6 @@ class CriticWorkerJob(
     }
 
     companion object {
-        private const val TAG = "CriticWorkerJob"
         const val KEY_SUMMARY_ID = "summary_id"
         const val KEY_CONFIDENCE = "confidence"
     }
