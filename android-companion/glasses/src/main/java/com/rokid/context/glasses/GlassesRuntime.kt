@@ -118,6 +118,11 @@ class GlassesRuntime private constructor(private val app: Context) {
         uplink.kick()
     }
 
+    /** The next capture is armed: tell the phone its new time (the hello from [onFrameBuffered] still has the old one). */
+    fun onCaptureScheduled() {
+        controller?.sendHello()
+    }
+
     /** Double-tap pause/resume, applied here at once (spec §5.5); a pause drops the buffered frames. */
     suspend fun togglePause(): PauseToggle {
         val t = pauses.toggle()

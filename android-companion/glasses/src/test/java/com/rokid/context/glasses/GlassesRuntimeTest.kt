@@ -3,6 +3,11 @@ package com.rokid.context.glasses
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.core.model.Channels
+import com.rokid.context.core.model.Hello
+import com.rokid.context.glasses.link.HudSettingsCache
+import com.rokid.context.glasses.link.FakeBridge
+import com.rokid.context.glasses.link.HudController
 import com.rokid.context.glasses.pause.PauseToggle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -33,5 +38,15 @@ class GlassesRuntimeTest {
             assertEquals(0, runtime.buffer.size, "round $i")
             runtime.togglePause() // resume for the next round
         }
+    }
+
+    /** The hello sent when a frame is buffered still carries the trigger that just fired; the phone needs the new one. */
+    @Test fun schedulingTheNextCaptureSendsAFreshHello() {
+        val runtime = GlassesRuntime.get(app)
+        val bridge = FakeBridge()
+        val c = HudController(runtime.scope, bridge, HudSettingsCache(app.getSharedPreferences("rt_test", 0)), { Hello(glassesBatteryPct = 80, bufferSize = 0, glassesNowMs = 0, pauses = emptyList()) })
+        runtime.attach(c)
+        runtime.onCaptureScheduled()
+        assertEquals(1, bridge.sent.count { it.first == Channels.HELLO })
     }
 }
