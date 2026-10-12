@@ -11,7 +11,8 @@ import kotlinx.coroutines.runBlocking
 
 /**
  * Transitional (Phase 2-4): the legacy Config screen writes AppConfig; this mirrors provider edits into the endpoint
- * registry so the Test button and the workers use the same settings. Invalid half-typed input fails and leaves the
+ * registry so the workers use the saved settings. The Config screen's Test button still goes through
+ * ModelProviderResolver with the raw screen values until Phase 5. Invalid half-typed input fails and leaves the
  * last good endpoint/bindings in place (the primary endpoint is validated and written before any binding changes).
  * Deleted when Phase 5 ships the new AI settings screens.
  *

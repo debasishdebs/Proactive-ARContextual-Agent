@@ -18,7 +18,8 @@ import org.robolectric.shadows.ShadowLog
 @Config(sdk = [34])
 class EndpointSeederTest {
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
-    private val endpoints = EndpointRepository(db.endpointDao(), InMemoryKeyVault())
+    private val vault = InMemoryKeyVault()
+    private val endpoints = EndpointRepository(db.endpointDao(), vault)
     private val bindings = RoleBindingRepository(db.roleBindingDao(), endpoints)
     private val state = InMemorySeedState()
     private val seeder = EndpointSeeder(endpoints, bindings, state)
@@ -129,4 +130,14 @@ class EndpointSeederTest {
         assertEquals(1, logs.size)
         assertTrue(logs.none { secret in it.msg || secret in (it.throwable?.message ?: "") })
     }
+
+    @Test fun reseedRestoresKeyLostAfterEndpointRowWasWritten() = runTest {
+        seeder.seedIfNeeded(azure).getOrThrow()
+        vault.remove(EndpointRepository.keyRef(EndpointSeeder.AZURE_ID))
+        assertNull(vault.get(EndpointRepository.keyRef(EndpointSeeder.AZURE_ID)))
+        state2().seedIfNeeded(azure).getOrThrow()
+        assertEquals("k", vault.get(EndpointRepository.keyRef(EndpointSeeder.AZURE_ID)))
+    }
+
+    private fun state2() = EndpointSeeder(endpoints, bindings, InMemorySeedState())
 }

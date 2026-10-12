@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.data.frames.CapturedFrame
 import com.rokid.context.data.frames.FrameStreamStore
+import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.data.runtime.MemoryRecordStore
 import com.rokid.context.data.runtime.SummaryTrace
 import com.rokid.context.data.runtime.SummaryTraceStore
@@ -66,5 +67,15 @@ class LegacyFacadesTest {
         assertEquals(1, first?.memories)
         assertEquals(null, second)
         assertEquals(1, MemoryRecordStore.recent(ctx, 10).size)
+    }
+
+    @Test fun inboxFramesArchivedInTheSameMillisecondBothStoreWithDistinctFullIds() {
+        val a = jpg("1760000000000_rokid_1111_a.jpg")
+        val b = jpg("1760000000000_rokid_1111_b.jpg")
+        assertTrue(RokidFrameInbox.ingestSinglePath(ctx, a))
+        assertTrue(RokidFrameInbox.ingestSinglePath(ctx, b))
+        val ids = FrameStreamStore.all(ctx).map { it.frameId }
+        assertEquals(2, ids.size)
+        assertEquals(setOf("1760000000000_rokid_1111_a", "1760000000000_rokid_1111_b"), ids.toSet())
     }
 }

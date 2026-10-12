@@ -54,14 +54,11 @@ object RokidFrameInbox {
 
     private fun extOf(name: String): String = name.substringAfterLast('.', "").lowercase(Locale.US)
 
-    private fun normalizeId(source: String): String =
-        source.lowercase(Locale.US)
-            .replace(Regex("[^a-z0-9_-]"), "_")
-            .take(24)
-            .ifBlank { "rokid_frame" }
+    // Full archived file name (<archiveMs>_rokid_<rxMs>_<id>): unique per file. Never truncate, ids only dedupe via insertIgnore.
+    private fun frameIdOf(file: File): String = file.nameWithoutExtension.ifBlank { "rokid_frame" }
 
     private fun ingestFile(context: Context, file: File, source: String): Boolean {
-        val frameId = normalizeId(file.nameWithoutExtension)
+        val frameId = frameIdOf(file)
         val payload = "rokid_file=${file.name} bytes=${file.length()}"
         Log.i(TAG, "ingestFile path=${file.absolutePath} source=$source exists=${file.exists()} size=${file.length()}")
         val appended = FrameStreamStore.append(
