@@ -47,7 +47,7 @@ Inputs/conditions the spec implies but does not spell out; each is pinned by a t
 | 1 Module restructure + core modules | `2026-10-12-v1-phase1-restructure.md` | written | B (main checkout; may run in parallel with 0) |
 | 2 Data layer | `2026-10-12-v1-phase2-data-layer.md` | written | 1 |
 | 3 CXR link + glasses app | to be written after Phase 0 results | — | 0, 2 |
-| 4 Phone shell | to be written after Phase 2 | — | 2 (+3 for live glasses state; fixtures otherwise) |
+| 4 Phone shell | `2026-10-12-v1-phase4-phone-shell.md` | written | 2 (+3 for live glasses state; fixtures otherwise) |
 | 5 AI + Settings | to be written after Phase 4 | — | 2, 4 |
 | 6 Voice + answers | to be written after Phase 0 + 5 | — | 0, 3, 5 |
 | 7 Nudges, actions, sources, pause, onboarding | to be written after 6 | — | 3, 5, 6 |
