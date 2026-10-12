@@ -40,19 +40,22 @@ class ModelRouter(
     }
 
     private suspend fun generateWith(b: RoleBinding, prompt: String, images: List<ModelImageInput>, skipPrimary: Boolean): String {
-        val first: Throwable? = if (skipPrimary) null else {
-            val primary = endpoints.byId(b.endpointId) ?: throw ModelCallException("Endpoint for ${b.role.name} was deleted", retryable = true)
+        val primaryEndpoint = if (skipPrimary) null else
+            endpoints.byId(b.endpointId) ?: throw ModelCallException("Endpoint for ${b.role.name} was deleted", retryable = true)
+        val first: Throwable? = primaryEndpoint?.let { primary ->
             try { return call(primary, b.model, prompt, images) } catch (c: CancellationException) { throw c } catch (t: Throwable) { t }
         }
+        val primaryKey = primaryEndpoint?.let { endpoints.keyFor(it) }
         val fallback = b.fallbackEndpointId?.let { endpoints.byId(it) }
-            ?: throw ModelCallException("Primary provider failed: ${first?.message}", retryable = first == null || !ProviderErrors.isPermanent(first), first)
+            ?: throw ModelCallException("Primary provider failed: ${safe(first, primaryKey)}", retryable = first == null || !ProviderErrors.isPermanent(first), first)
+        val fallbackKey = endpoints.keyFor(fallback)
         return try {
             call(fallback, b.fallbackModel ?: b.model, prompt, images)
         } catch (c: CancellationException) {
             throw c
         } catch (t: Throwable) {
             val retryable = !ProviderErrors.isPermanent(t) || (first != null && !ProviderErrors.isPermanent(first))
-            throw ModelCallException("Primary+fallback generation failed: ${first?.message}; ${t.message}", retryable, t)
+            throw ModelCallException("Primary+fallback generation failed: ${safe(first, primaryKey, fallbackKey)}; ${safe(t, primaryKey, fallbackKey)}", retryable, t)
         }
     }
 
@@ -73,11 +76,24 @@ class ModelRouter(
         val p = providers.create(e, model, key)
         if (images.isNotEmpty() && Capability.VISION in e.capabilities) {
             try { return p.generateWithImages(prompt, images) } catch (c: CancellationException) { throw c } catch (t: Throwable) {
-                Log.w(TAG, "vision failed on ${e.name}, retrying as text: ${t.message}")
+                Log.w(TAG, "vision failed on ${e.name}, retrying as text: ${safe(t, key)}")
             }
         }
         return p.generate(prompt)
     }
 
-    private companion object { const val TAG = "ModelRouter" }
+    private companion object {
+        const val TAG = "ModelRouter"
+        const val MAX_PROVIDER_TEXT = 200
+
+        /**
+         * Provider text for messages/logs: some servers echo the API key in error bodies, so known keys become "***";
+         * then truncated, keeping the leading "…request failed: <code>" for classification. Retry decisions use the original.
+         */
+        fun safe(t: Throwable?, vararg keys: String?): String {
+            var m = t?.message.orEmpty()
+            keys.filterNotNull().map { it.trim() }.filter { it.isNotEmpty() }.forEach { m = m.replace(it, "***") }
+            return if (m.length <= MAX_PROVIDER_TEXT) m else m.take(MAX_PROVIDER_TEXT) + "…"
+        }
+    }
 }
