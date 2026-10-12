@@ -58,15 +58,18 @@ object FrameDecode {
 private sealed interface FrameLoad {
     data object Loading : FrameLoad
     data object Missing : FrameLoad
-    data class Loaded(val bitmap: ImageBitmap) : FrameLoad
+    data class Loaded(val path: String?, val targetPx: Int, val bitmap: ImageBitmap) : FrameLoad
 }
 
 @Composable
 private fun rememberFrame(path: String?, targetPx: Int): FrameLoad {
-    val load by produceState<FrameLoad>(FrameLoad.Loading, path, targetPx) {
-        value = withContext(Dispatchers.IO) { FrameDecode.decode(path, targetPx) }?.let { FrameLoad.Loaded(it.asImageBitmap()) } ?: FrameLoad.Missing
+    val current by produceState<FrameLoad>(FrameLoad.Loading, path, targetPx) {
+        value = FrameLoad.Loading
+        value = withContext(Dispatchers.IO) { FrameDecode.decode(path, targetPx) }?.let { FrameLoad.Loaded(path, targetPx, it.asImageBitmap()) } ?: FrameLoad.Missing
     }
-    return load
+    // produceState keeps its last value across key changes; never show a photo decoded for a different path/size.
+    val load = current
+    return if (load is FrameLoad.Loaded && (load.path != path || load.targetPx != targetPx)) FrameLoad.Loading else load
 }
 
 /** Rounded square thumbnail (timeline rows, "Based on" source cards). Missing file → placeholder icon. */
