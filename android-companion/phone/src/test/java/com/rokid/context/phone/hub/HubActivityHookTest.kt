@@ -30,6 +30,6 @@ class HubActivityHookTest {
         shadowOf(app).grantPermissions(Manifest.permission.BLUETOOTH_CONNECT)
         HubActivityHook.onActivityResumed(activity)
         assertEquals(ContextHubService::class.java.name, shadowOf(app).nextStartedService?.component?.className)
-        assertFalse("the hub is built by the service, not by the hook", HubGraph.isBuilt)
+        assertFalse("the hook doesn't build the hub", HubGraph.isBuilt)
     }
 }
