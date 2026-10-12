@@ -6,11 +6,13 @@ class AuthGate(private val timeoutMs: Long = AUTH_TIMEOUT_MS) {
         private set
     private var inFlight = false
     private var startedAt = 0L
+    private var cancelled = false // closed by the owner: results of the cancelled attempt are ignored until the next begin
     private var rejected = false // the SDK rejected a token since the last started session
 
     /** True when the caller should launch the authorization UI now (none is in flight, or the last one is stale). */
     fun begin(now: Long): Boolean {
         if (inFlight && now - startedAt < timeoutMs) return false
+        cancelled = false
         inFlight = true
         startedAt = now
         return true
@@ -19,12 +21,15 @@ class AuthGate(private val timeoutMs: Long = AUTH_TIMEOUT_MS) {
     /** Drops an attempt older than the timeout (e.g. before a manual connect). */
     fun clearStale(now: Long) { if (inFlight && now - startedAt >= timeoutMs) inFlight = false }
 
+    /** The owner closed the link: drop the attempt and ignore its late result. */
+    fun cancel() { inFlight = false; cancelled = true }
+
     /** The timeout fired without any result. */
     fun expire() { inFlight = false }
 
     /** Returns true if this result should be applied; late/duplicate reports for a resolved attempt are ignored. */
     fun result(ok: Boolean): Boolean {
-        if (authorized && !inFlight) return false
+        if (cancelled || (authorized && !inFlight)) return false
         inFlight = false
         if (ok) authorized = true
         return true

@@ -62,4 +62,21 @@ class AuthGateTest {
         g.sessionStarted()
         assertTrue(g.tokenRejected(), "a later expiry is a new rejection")
     }
+
+    /** close() cancels the attempt: a late AuthActivity result must not reopen a session after stop. */
+    @Test fun cancelledAttemptIgnoresLateResultsUntilTheNextBegin() {
+        val g = AuthGate()
+        g.begin(0); g.cancel()
+        assertFalse(g.result(true), "late success after close")
+        assertFalse(g.authorized)
+        assertTrue(g.begin(1))
+        assertTrue(g.result(true))
+    }
+
+    @Test fun lateSuccessAfterTimeoutIsStillApplied() {
+        val g = AuthGate()
+        g.begin(0); g.expire()
+        assertTrue(g.result(true))
+        assertTrue(g.authorized)
+    }
 }

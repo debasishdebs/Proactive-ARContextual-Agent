@@ -1,6 +1,7 @@
 package com.rokid.context.link
 
 import com.rokid.context.core.model.LinkState
+import com.rokid.cxr.session.SessionErrorCode
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -146,5 +147,68 @@ class GlassesSessionPolicyTest {
         assertEquals(LinkState.NOT_AUTHORIZED, LinkAction.MarkAuthNeeded.linkState())
         assertNull(LinkAction.Connect.linkState())
         assertNull(LinkAction.ScheduleRetry(1).linkState())
+    }
+
+    /** close() must leave the policy Idle: a hub stop/start in one process has to reconnect. */
+    @Test fun resetReturnsToIdleSoTheNextHubStartConnects() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect(); p.onEvent(LinkEvent.Started)
+        assertTrue(p.autoConnect().isEmpty(), "open session")
+        p.reset()
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.autoConnect())
+    }
+
+    @Test fun resetCancelsAPendingRetry() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect(); p.onEvent(LinkEvent.Closed)
+        p.reset()
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+        assertFalse(p.closedOnGlasses)
+    }
+
+    @Test fun refusedConnectIsTerminalUntilAnExplicitAction() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect()
+        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.ConnectRefused))
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect())
+    }
+
+    @Test fun transientRetriesStopAfterFiveAtTheCeiling() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect()
+        val delays = mutableListOf<Long>()
+        repeat(8) {
+            val a = p.onEvent(LinkEvent.ConnectFailed)
+            delays += (a.last() as LinkAction.ScheduleRetry).delayMs
+            assertEquals(listOf(LinkAction.Connect), p.onEvent(LinkEvent.RetryTimer))
+        }
+        assertEquals(listOf(2_000L, 5_000, 10_000, 30_000, 30_000, 30_000, 30_000, 30_000), delays)
+        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.ConnectFailed), "cap reached: no ScheduleRetry")
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty(), "no further Connect")
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect(), "explicit connect works")
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.ConnectFailed), "budget renewed")
+    }
+
+    @Test fun aStartedSessionRenewsTheRetryBudget() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect()
+        repeat(6) { p.onEvent(LinkEvent.ConnectFailed); p.onEvent(LinkEvent.RetryTimer) }
+        p.onEvent(LinkEvent.Started)
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.Closed))
+    }
+
+    @Test fun nonTransientSdkCodesAreTerminal() {
+        for (c in listOf(SessionErrorCode.ROKID_APP_NOT_INSTALLED, SessionErrorCode.ROKID_APP_VERSION_LOW, SessionErrorCode.BT_NOT_CONNECTED,
+            SessionErrorCode.GLASSES_APP_NOT_FOUND, SessionErrorCode.GLASSES_APP_INSTALL_FAILED)) assertTrue(isTerminalConnectError(c), "$c")
+        for (c in listOf(SessionErrorCode.LINK_LOST, SessionErrorCode.LINK_TIMEOUT, SessionErrorCode.CONNECT_FAILED, null)) assertFalse(isTerminalConnectError(c), "$c")
+    }
+
+    /** An auth timeout (blocked background start) is not a decline: a resume with a token retries. */
+    @Test fun resumeRetriesAnAuthTimeoutButNotADecline() {
+        assertTrue(shouldReconnectOnResume(LinkState.NOT_AUTHORIZED, hasToken = true, authDeclined = false, authTimedOut = true))
+        assertFalse(shouldReconnectOnResume(LinkState.NOT_AUTHORIZED, hasToken = true, authDeclined = true, authTimedOut = true))
+        assertFalse(shouldReconnectOnResume(LinkState.NOT_AUTHORIZED, hasToken = false, authDeclined = false, authTimedOut = true))
+        assertFalse(shouldReconnectOnResume(LinkState.NOT_AUTHORIZED, hasToken = true, authDeclined = false, authTimedOut = false))
     }
 }
