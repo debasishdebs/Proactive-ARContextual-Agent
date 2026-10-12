@@ -10,7 +10,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import java.util.concurrent.TimeUnit
 
 data class TestResult(val ok: Boolean, val latencyMs: Long, val message: String)
 
@@ -18,7 +17,7 @@ data class TestResult(val ok: Boolean, val latencyMs: Long, val message: String)
 class EndpointTester(
     private val repo: EndpointRepository,
     private val providers: ProviderBuilder,
-    private val http: OkHttpClient = OkHttpClient.Builder().callTimeout(30, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build(),
+    private val http: OkHttpClient = Http.modelClient(30),
 ) {
 
     suspend fun test(endpointId: String, model: String): TestResult {
