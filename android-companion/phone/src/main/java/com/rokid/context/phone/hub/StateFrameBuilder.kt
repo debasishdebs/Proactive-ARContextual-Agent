@@ -10,8 +10,8 @@ import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.StateFrame
 import com.rokid.context.core.model.UserFacingError
 import com.rokid.context.core.model.UserFacingErrors
-import com.rokid.context.data.runtime.SummaryTrace
 import com.rokid.context.link.ClockOffset
+import com.rokid.context.memory.db.SummaryTraceEntity
 
 /** Everything one [StateFrame] is built from. Instants are phone clock; [activePauses] are phone-clock records. */
 data class HubInputs(
@@ -67,10 +67,10 @@ object AiHealthRule {
     private val OK_STATES = setOf("TRUSTED", "NEEDS_REVIEW", "REPROCESSED", "WRITE_CONTEXT_OK", "READ_CONTEXT_OK")
     private val TITLES = UserFacingErrors.all.map { it.title }.toSet()
 
-    fun from(traces: List<SummaryTrace>, nowMs: Long): Health {
+    fun from(traces: List<SummaryTraceEntity>, nowMs: Long): Health {
         val latest = traces
-            .filter { nowMs - it.updatedAtEpochMs <= WINDOW_MS && (it.state in OK_STATES || it.state == "RETRY" || it.state == "FAILED") }
-            .maxByOrNull { it.updatedAtEpochMs } ?: return Health.Ok
+            .filter { nowMs - it.updatedAt <= WINDOW_MS && (it.state in OK_STATES || it.state == "RETRY" || it.state == "FAILED") }
+            .maxByOrNull { it.updatedAt } ?: return Health.Ok
         // Only a known UserFacingError title may reach the glasses; anything else (pre-Task-2 notes) is replaced.
         val title = latest.note.substringBefore(" · ").takeIf { it in TITLES } ?: UserFacingErrors.AiUnavailable.title
         return when (latest.state) {

@@ -69,9 +69,15 @@ fun HomeScreen(
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("home_list")) {
         item {
             GradientHeader(title = "Proactive Context", subtitle = glyph + state.status.captureText) {
-                val label = if (state.status.paused) "Resume capture" else "Pause capture"
-                IconButton(onClick = onTogglePause, modifier = Modifier.clip(CircleShape).background(PcColors.Surface)) {
-                    Icon(if (state.status.paused) Icons.Rounded.PlayArrow else Icons.Rounded.Pause, contentDescription = label, tint = PcColors.Ink)
+                // ⏸/▶ follows only the phone pipeline; a glasses pause is shown but not actionable (resume from the phone: Phase 7).
+                val onGlasses = state.status.pausedOnGlasses
+                val running = state.status.pipelineEnabled
+                val label = when { onGlasses -> "Paused on glasses"; running -> "Pause capture"; else -> "Resume capture" }
+                IconButton(onClick = onTogglePause, enabled = !onGlasses, modifier = Modifier.clip(CircleShape).background(PcColors.Surface)) {
+                    Icon(
+                        if (onGlasses || running) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, contentDescription = label,
+                        tint = if (onGlasses) PcColors.InkSoft else PcColors.Ink,
+                    )
                 }
             }
         }

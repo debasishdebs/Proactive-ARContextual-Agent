@@ -1,7 +1,9 @@
 package com.rokid.context.phone.ui.activity
 
 import android.app.Application
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -60,6 +62,15 @@ class ActivityScreenTest {
         compose.onNodeWithText("92%").assertIsDisplayed()
         compose.onNodeWithText("Oatmeal and coffee at the counter").performClick()
         assertEquals(listOf("m1"), memories)
+    }
+
+    /** Final review I1: under a glasses pause the strip has no ⏸/▶ (a tap would switch the phone pipeline off). */
+    @Test fun glassesPauseHidesThePipelineToggle() {
+        val onGlasses = StatusUi("Paused on glasses", false, true, null, null, pipelineEnabled = true, pausedOnGlasses = true)
+        show(ActivityUiState(period = Period.TODAY, header = "Mon 12 Oct", status = onGlasses, today = TODAY))
+        compose.onNodeWithText("Paused on glasses").assertIsDisplayed()
+        compose.onAllNodesWithContentDescription("Resume capture").assertCountEquals(0)
+        compose.onAllNodesWithContentDescription("Pause capture").assertCountEquals(0)
     }
 
     @Test fun emptyTodayShowsHint() {

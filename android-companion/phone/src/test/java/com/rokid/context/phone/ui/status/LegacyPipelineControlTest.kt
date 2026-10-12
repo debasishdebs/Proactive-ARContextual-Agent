@@ -14,6 +14,8 @@ import androidx.work.testing.SynchronousExecutor
 import androidx.work.WorkManager
 import androidx.work.testing.WorkManagerTestInitHelper
 import com.rokid.context.data.runtime.AppConfigStore
+import com.rokid.context.data.runtime.QueueRuntimeStore
+import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.work.OrchestrationScheduler
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -62,6 +64,16 @@ class LegacyPipelineControlTest {
         control.setEnabled(true)
         assertTrue(AppConfigStore.get(ctx).pipelineEnabled)
         assertEquals(true, drainStates().any { it == WorkInfo.State.ENQUEUED })
+    }
+
+    /** Final review I2: frames that waited in the inbox while paused are drained on resume (a FRAME_INGEST job + drain now). */
+    @Test fun resumeQueuesTheInboxBacklogAndADrain() {
+        val control = LegacyPipelineControl(ctx, OrchestrationScheduler(ctx))
+        control.setEnabled(false)
+        assertEquals(0, QueueRuntimeStore.snapshot(ctx).pendingByQueue[QueuePriority.FRAME_INGEST])
+        control.setEnabled(true)
+        assertEquals(1, QueueRuntimeStore.snapshot(ctx).pendingByQueue[QueuePriority.FRAME_INGEST])
+        assertTrue(WorkManager.getInstance(ctx).getWorkInfosForUniqueWork("queue-drain-now").get().isNotEmpty())
     }
 
     @Test fun staleCacheDoesNotSkipResume() {

@@ -11,16 +11,12 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
-import com.rokid.context.data.frames.CapturedFrame
-import com.rokid.context.data.frames.FrameStreamStore
 import com.rokid.context.data.runtime.AppConfigStore
-import com.rokid.context.data.runtime.MemoryRecordStore
 import com.rokid.context.data.runtime.PipelineStatsStore
 import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
-import com.rokid.context.data.runtime.SummaryTrace
-import com.rokid.context.data.runtime.SummaryTraceStore
 import com.rokid.context.domain.queue.QueuePriority
+import com.rokid.context.orchestration.PipelineRecords
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -93,7 +89,7 @@ class OrchestrationScheduler(
         )
     }
 
-    fun enqueueSummarizer(summaryId: String, confidence: Double, createdAt: Long): UUID {
+    suspend fun enqueueSummarizer(summaryId: String, confidence: Double, createdAt: Long): UUID {
         val config = AppConfigStore.get(context)
         val payload = buildString {
             append("{")
@@ -118,15 +114,7 @@ class OrchestrationScheduler(
         )
 
         PipelineStatsStore.incSummarizerTriggered(context)
-        SummaryTraceStore.upsert(
-            context,
-            SummaryTrace(
-                summaryId = summaryId,
-                state = "ENQUEUED",
-                updatedAtEpochMs = System.currentTimeMillis(),
-                note = "Queued for summarization",
-            ),
-        )
+        PipelineRecords.upsertTrace(context, summaryId, "ENQUEUED", "Queued for summarization")
         enqueueQueueDrainNow()
         return UUID.fromString(summaryId)
     }
@@ -170,15 +158,14 @@ class OrchestrationScheduler(
         return row.id
     }
 
-    fun enqueueHistoricalPhotoBackfill(
+    suspend fun enqueueHistoricalPhotoBackfill(
         maxFrames: Int = 60,
         chunkSize: Int = 6,
     ): HistoricalBackfillResult {
         val config = AppConfigStore.get(context)
-        val purgeResult = FrameStreamStore.purgeNonPhotoAndSynthetic(context)
-        val allFrames = FrameStreamStore.all(context)
-        val selected = allFrames
-            .filter(FrameStreamStore::isRealPhotoFrame)
+        val purgeResult = PipelineRecords.purgeNonPhotoAndSynthetic(context)
+        val selected = PipelineRecords.allFrames(context)
+            .filter(PipelineRecords::isRealPhotoFrame)
             .takeLast(maxFrames.coerceAtLeast(1))
         if (selected.isEmpty()) {
             return HistoricalBackfillResult(
@@ -189,7 +176,7 @@ class OrchestrationScheduler(
             )
         }
 
-        MemoryRecordStore.purgeLowSignalSummaries(context)
+        PipelineRecords.purgeLowSignalMemories(context)
 
         val safeChunkSize = chunkSize.coerceIn(1, 12)
         val batches = selected.chunked(safeChunkSize)
@@ -199,7 +186,7 @@ class OrchestrationScheduler(
                 source = "historical_backfill",
                 importedFrames = batch.size,
                 manual = true,
-                frameIdsCsv = batch.joinToString(",") { it.frameId },
+                frameIdsCsv = batch.joinToString(",") { it.id },
             )
             QueueRuntimeStore.enqueue(
                 context = context,
@@ -209,15 +196,7 @@ class OrchestrationScheduler(
                 ttlHours = 24,
             )
             PipelineStatsStore.incSummarizerTriggered(context)
-            SummaryTraceStore.upsert(
-                context,
-                SummaryTrace(
-                    summaryId = summaryId,
-                    state = "ENQUEUED",
-                    updatedAtEpochMs = System.currentTimeMillis(),
-                    note = "Historical backfill chunk ${index + 1}/${batches.size}",
-                ),
-            )
+            PipelineRecords.upsertTrace(context, summaryId, "ENQUEUED", "Historical backfill chunk ${index + 1}/${batches.size}")
         }
         enqueueQueueDrainNow()
         return HistoricalBackfillResult(
@@ -252,11 +231,12 @@ class OrchestrationScheduler(
         workManager.cancelAllWorkByTag(TAG_QUEUE_DRAIN)
     }
 
+    /** Frames that waited in the inbox while paused are ingested by the FRAME_INGEST job, which also kicks the drain. */
     fun resumePipeline() {
         scheduleFrameIngest()
         scheduleQueueDrain()
         scheduleCritic()
-        enqueueQueueDrainNow()
+        enqueueFrameIngestQueue(source = "resume")
     }
 
     suspend fun runtimeSnapshot(focusSummarizerId: UUID?): RuntimeSnapshot = withContext(Dispatchers.IO) {
@@ -265,21 +245,15 @@ class OrchestrationScheduler(
         val queueInfos = workManager.getWorkInfosByTag(TAG_QUEUE_DRAIN).get()
         val queueSnapshot = QueueRuntimeStore.snapshot(context)
 
+        val traces = PipelineRecords.recentTraces(context, 300)
         val focusId = focusSummarizerId?.toString().orEmpty()
-        val focusState = if (focusId.isNotBlank()) {
-            SummaryTraceStore.recent(context, 300)
-                .firstOrNull { it.summaryId == focusId }
-                ?.state
-                ?: "IDLE"
-        } else {
-            "IDLE"
-        }
+        val focusState = if (focusId.isNotBlank()) traces.firstOrNull { it.summaryId == focusId }?.state ?: "IDLE" else "IDLE"
 
         RuntimeSnapshot(
             summarizerEnqueued = queueSnapshot.pendingByQueue[QueuePriority.SUMMARIZER] ?: 0,
             summarizerRunning = queueSnapshot.runningByQueue[QueuePriority.SUMMARIZER] ?: 0,
-            summarizerSucceeded = SummaryTraceStore.recent(context, 300).count { it.state in setOf("TRUSTED", "REPROCESSED", "WRITE_CONTEXT_OK") },
-            summarizerFailed = SummaryTraceStore.recent(context, 300).count { it.state in setOf("FAILED", "NEEDS_REVIEW", "RETRY", "DEFERRED") },
+            summarizerSucceeded = traces.count { it.state in setOf("TRUSTED", "REPROCESSED", "WRITE_CONTEXT_OK") },
+            summarizerFailed = traces.count { it.state in setOf("FAILED", "NEEDS_REVIEW", "RETRY", "DEFERRED") },
             frameIngestRunning = frameInfos.any { it.state == WorkInfo.State.RUNNING } ||
                 ((queueSnapshot.runningByQueue[QueuePriority.FRAME_INGEST] ?: 0) > 0),
             criticRunning = criticInfos.any { it.state == WorkInfo.State.RUNNING },

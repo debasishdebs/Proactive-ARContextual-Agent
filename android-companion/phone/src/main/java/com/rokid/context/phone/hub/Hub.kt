@@ -40,6 +40,8 @@ class Hub(
     private val sources: HubSources,
     private val clock: () -> Long = System::currentTimeMillis,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** Starts [ContextHubService] (which calls [start]); used when Reconnect is tapped while the hub is not running. */
+    private val startService: () -> Unit = {},
 ) : GlassesStatusSource {
     private val _state = MutableStateFlow(HubState())
     val state: StateFlow<HubState> = _state
@@ -51,6 +53,8 @@ class Hub(
     /** Glasses-clock originals of pauses stored via [ClockOffset.anchoredAt] before any offset; re-converted on the first hello. */
     private val anchoredBeforeOffset = LinkedHashMap<String, PauseRecord>()
     private var lastHelloRequestAtMs: Long? = null
+    /** Frames acked ok since the last hello: each left the glasses' buffer once (a resend of a lost ack is not counted again). */
+    private val ackedSinceHello = HashSet<String>()
     private var jobs: List<Job> = emptyList()
     private val broadcaster = StateBroadcaster(scope, onError = { Log.w(TAG, "broadcast failed: ${it.javaClass.simpleName}") }) { broadcast() }
 
@@ -74,7 +78,13 @@ class Hub(
         link.close()
     }
 
-    override fun requestReconnect() = link.connect()
+    /**
+     * Explicit Reconnect. A hub whose service is down only starts the service (never a silent no-op): its [start]
+     * connects once from Idle, so a second connect here would race it.
+     */
+    override fun requestReconnect() {
+        if (started) link.connect() else startService()
+    }
 
     fun onAppResumed() = link.connectOnResume()
 
@@ -112,6 +122,7 @@ class Hub(
         offset = null
         anchoredBeforeOffset.clear()
         lastHelloRequestAtMs = null
+        ackedSinceHello.clear()
     }
 
     private fun set(markDirty: Boolean = true, f: (HubState) -> HubState) {
@@ -142,6 +153,7 @@ class Hub(
                 offset = measured
                 val anchored = anchoredBeforeOffset.values.map(measured::recordToPhone)
                 anchoredBeforeOffset.clear()
+                ackedSinceHello.clear()
                 withContext(io) {
                     anchored.forEach { pauses.reanchor(it) }
                     // Resumes the wearer made while the link was down (their pc_cmd may never have arrived).
@@ -162,8 +174,10 @@ class Hub(
                 val r = withContext(io) { ingestor.onChunk(e.chunk, offset, now) }
                 r.ack?.let { link.send(Channels.FRAME_ACK, Wire.encode(it)) }
                 if (r.held) requestHello(now)
+                val delivered = r.ack?.takeIf { it.ok }?.let { ackedSinceHello.add(it.frameId) } == true
                 set { s ->
                     s.copy(
+                        bufferedFrames = if (delivered) (s.bufferedFrames - 1).coerceAtLeast(0) else s.bufferedFrames,
                         glassesBatteryPct = e.chunk.meta.batteryPct ?: s.glassesBatteryPct,
                         lastFrameAtMs = r.ingestedAtMs ?: s.lastFrameAtMs,
                         error = r.error ?: if (r.ingestedAtMs != null) null else s.error,

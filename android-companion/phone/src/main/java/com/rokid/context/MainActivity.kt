@@ -7,10 +7,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
 import com.rokid.context.core.ui.theme.PcTheme
-import com.rokid.context.data.frames.FrameStreamStore
-import com.rokid.context.data.runtime.MemoryRecordStore
 import com.rokid.context.data.runtime.QueueRuntimeStore
-import com.rokid.context.data.runtime.SummaryTraceStore
+import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.phone.ui.shell.AppShell
 import com.rokid.context.phone.ui.shell.BluetoothPermission
 import com.rokid.context.phone.ui.shell.PhoneDeps
@@ -32,13 +30,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         // Legacy cleanup once per launch (not on configuration changes), off the main thread (Room-backed calls may
-        // wait on the one-time import). Task 11 swaps the three facade calls for PipelineRecords.
+        // wait on the one-time import).
         if (savedInstanceState == null) {
             lifecycleScope.launch(Dispatchers.IO) {
                 QueueRuntimeStore.purgeSynthetic(this@MainActivity)
-                FrameStreamStore.purgeNonRokidEntries(this@MainActivity)
-                SummaryTraceStore.purgeSynthetic(this@MainActivity)
-                MemoryRecordStore.purgeNonRokid(this@MainActivity)
+                PipelineRecords.purgeNonRokidFrames(this@MainActivity)
+                PipelineRecords.purgeSyntheticTraces(this@MainActivity)
+                PipelineRecords.purgeNonRokidMemories(this@MainActivity)
             }
         }
         val deps = PhoneDeps.get(this)

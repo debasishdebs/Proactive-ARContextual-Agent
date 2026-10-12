@@ -14,21 +14,18 @@ import com.rokid.context.ai.ModelErrorMapper
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.core.model.UserFacingErrors
-import com.rokid.context.data.frames.FrameStreamStore
 import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.data.runtime.AppConfigStore
-import com.rokid.context.data.runtime.MemoryRecord
-import com.rokid.context.data.runtime.MemoryRecordStore
 import com.rokid.context.data.runtime.PipelineStatsStore
 import com.rokid.context.data.runtime.QueueJobRecord
 import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
-import com.rokid.context.data.runtime.SummaryTrace
-import com.rokid.context.data.runtime.SummaryTraceStore
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
+import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.model.ModelImageInput
+import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.orchestration.RetryClassifier
 import com.rokid.context.orchestration.RetryPolicy
 import com.rokid.context.prompt.PromptComposer
@@ -48,6 +45,11 @@ class QueueDrainWorker(
     private val criticWorker = CriticWorker()
 
     override suspend fun doWork(): Result {
+        // Paused (phone ⏸): nothing goes to the AI provider. Jobs stay queued; resuming drains them (resumePipeline).
+        if (!AppConfigStore.get(applicationContext).pipelineEnabled) {
+            Log.i(TAG, "pipeline paused: queue left for resume")
+            return Result.success()
+        }
         var processed = 0
         repeat(MAX_JOBS_PER_RUN) {
             val job = QueueRuntimeStore.claimNextReady(applicationContext) ?: return@repeat
@@ -61,15 +63,7 @@ class QueueDrainWorker(
                     error = policyError,
                     backoffMs = computeBackoffMs(job.attemptCount),
                 )
-                SummaryTraceStore.upsert(
-                    applicationContext,
-                    SummaryTrace(
-                        summaryId = job.id,
-                        state = "DEFERRED",
-                        updatedAtEpochMs = System.currentTimeMillis(),
-                        note = policyError,
-                    ),
-                )
+                PipelineRecords.upsertTrace(applicationContext, job.id, "DEFERRED", policyError)
                 return@repeat
             }
 
@@ -97,15 +91,7 @@ class QueueDrainWorker(
                 } else {
                     QueueRuntimeStore.markFailed(applicationContext, job.id, shown.line)
                 }
-                SummaryTraceStore.upsert(
-                    applicationContext,
-                    SummaryTrace(
-                        summaryId = job.id,
-                        state = if (decision == RetryPolicy.Decision.DEFER) "RETRY" else "FAILED",
-                        updatedAtEpochMs = System.currentTimeMillis(),
-                        note = shown.line,
-                    ),
-                )
+                PipelineRecords.upsertTrace(applicationContext, job.id, if (decision == RetryPolicy.Decision.DEFER) "RETRY" else "FAILED", shown.line)
             }
         }
 
@@ -126,20 +112,12 @@ class QueueDrainWorker(
         }
     }
 
-    private fun processFrameIngest(job: QueueJobRecord) {
+    private suspend fun processFrameIngest(job: QueueJobRecord) {
         val payload = QueuePayloads.parse(job.payload)
         val source = QueuePayloads.string(payload, "source", "scheduled")
         val imported = RokidFrameInbox.ingestPending(applicationContext, maxItems = 16)
         val manualLiveRequest = source.equals("manual_live", ignoreCase = true)
-        SummaryTraceStore.upsert(
-            applicationContext,
-            SummaryTrace(
-                summaryId = job.id,
-                state = "FRAME_INGEST_DONE",
-                updatedAtEpochMs = System.currentTimeMillis(),
-                note = "source=$source imported=$imported",
-            ),
-        )
+        PipelineRecords.upsertTrace(applicationContext, job.id, "FRAME_INGEST_DONE", "source=$source imported=$imported")
         if (imported > 0 || manualLiveRequest) {
             val config = AppConfigStore.get(applicationContext)
             QueueRuntimeStore.enqueue(
@@ -153,18 +131,15 @@ class QueueDrainWorker(
                 personaSnapshot = config.persona,
                 ttlHours = 24,
             )
-            SummaryTraceStore.upsert(
+            PipelineRecords.upsertTrace(
                 applicationContext,
-                SummaryTrace(
-                    summaryId = "${job.id}-followup",
-                    state = "ENQUEUED",
-                    updatedAtEpochMs = System.currentTimeMillis(),
-                    note = if (imported > 0) {
-                        "Summarizer queued from imported frame(s)"
-                    } else {
-                        "No new inbox frames. Summarizer queued on latest stored frame window."
-                    },
-                ),
+                "${job.id}-followup",
+                "ENQUEUED",
+                if (imported > 0) {
+                    "Summarizer queued from imported frame(s)"
+                } else {
+                    "No new inbox frames. Summarizer queued on latest stored frame window."
+                },
             )
         }
     }
@@ -178,16 +153,16 @@ class QueueDrainWorker(
             .map { it.trim() }
             .filter { it.isNotBlank() }
         val frames = if (frameIds.isNotEmpty()) {
-            FrameStreamStore.byIds(applicationContext, frameIds).takeLast(12)
+            PipelineRecords.framesByIds(applicationContext, frameIds).takeLast(12)
         } else {
-            FrameStreamStore.recent(applicationContext, 10)
+            PipelineRecords.recentFrames(applicationContext, 10)
         }
         if (frames.isEmpty()) {
             throw IllegalStateException("No Rokid frames available for summarization")
         }
 
         val frameWindow = frames.joinToString(separator = "\n") {
-            "id=${it.frameId}, ts=${it.capturedAtEpochMs}, source=${it.source}, payload=${it.payload}"
+            "id=${it.id}, ts=${it.ts}, source=${it.source}, payload=${it.payload}"
         }
 
         val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
@@ -206,25 +181,15 @@ class QueueDrainWorker(
         val critic = criticWorker.validate(job.id, confidence)
 
         if (critic.status == SummaryStatus.TRUSTED) {
-            MemoryRecordStore.append(
+            PipelineRecords.appendMemory(
                 applicationContext,
-                MemoryRecord(
-                    id = "rokid_mem_${job.id.takeLast(12)}",
-                    memoryType = "short_term",
-                    content = modelOutput.take(260),
-                    confidence = confidence,
-                    createdAtEpochMs = System.currentTimeMillis(),
-                ),
+                id = "rokid_mem_${job.id.takeLast(12)}",
+                type = "short_term",
+                content = modelOutput.take(260),
+                confidence = confidence,
+                createdAt = System.currentTimeMillis(),
             )
-            SummaryTraceStore.upsert(
-                applicationContext,
-                SummaryTrace(
-                    summaryId = job.id,
-                    state = "TRUSTED",
-                    updatedAtEpochMs = System.currentTimeMillis(),
-                    note = "frames=${frames.size} imported=$importedFrames",
-                ),
-            )
+            PipelineRecords.upsertTrace(applicationContext, job.id, "TRUSTED", "frames=${frames.size} imported=$importedFrames")
             PipelineStatsStore.incSummarizerSucceeded(applicationContext)
         } else {
             val reason = "Critic low confidence=${"%.2f".format(Locale.US, confidence)}"
@@ -235,25 +200,15 @@ class QueueDrainWorker(
                 personaSnapshot = job.personaSnapshot,
                 ttlHours = 24,
             )
-            MemoryRecordStore.append(
+            PipelineRecords.appendMemory(
                 applicationContext,
-                MemoryRecord(
-                    id = "rokid_review_${job.id.takeLast(12)}",
-                    memoryType = "review",
-                    content = "$reason | ${modelOutput.take(200)}",
-                    confidence = confidence,
-                    createdAtEpochMs = System.currentTimeMillis(),
-                ),
+                id = "rokid_review_${job.id.takeLast(12)}",
+                type = "review",
+                content = "$reason | ${modelOutput.take(200)}",
+                confidence = confidence,
+                createdAt = System.currentTimeMillis(),
             )
-            SummaryTraceStore.upsert(
-                applicationContext,
-                SummaryTrace(
-                    summaryId = job.id,
-                    state = "NEEDS_REVIEW",
-                    updatedAtEpochMs = System.currentTimeMillis(),
-                    note = "Reprocess queued: $reason",
-                ),
-            )
+            PipelineRecords.upsertTrace(applicationContext, job.id, "NEEDS_REVIEW", "Reprocess queued: $reason")
             PipelineStatsStore.incSummarizerFailed(applicationContext)
         }
     }
@@ -262,7 +217,7 @@ class QueueDrainWorker(
         val payload = QueuePayloads.parse(job.payload)
         val sourceContext = QueuePayloads.string(payload, "source_context")
         val reason = QueuePayloads.string(payload, "reason", "low confidence")
-        val frames = FrameStreamStore.recent(applicationContext, 6)
+        val frames = PipelineRecords.recentFrames(applicationContext, 6)
 
         val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
             templateId = PromptTemplateId.RE_SUMMARIZE,
@@ -278,25 +233,15 @@ class QueueDrainWorker(
         val output = generateBatchedSummary(prompt, frames)
         val confidence = extractConfidence(output).coerceAtLeast(0.75)
 
-        MemoryRecordStore.append(
+        PipelineRecords.appendMemory(
             applicationContext,
-            MemoryRecord(
-                id = "rokid_mem_${job.id.takeLast(12)}",
-                memoryType = "short_term",
-                content = output.take(260),
-                confidence = confidence,
-                createdAtEpochMs = System.currentTimeMillis(),
-            ),
+            id = "rokid_mem_${job.id.takeLast(12)}",
+            type = "short_term",
+            content = output.take(260),
+            confidence = confidence,
+            createdAt = System.currentTimeMillis(),
         )
-        SummaryTraceStore.upsert(
-            applicationContext,
-            SummaryTrace(
-                summaryId = job.id,
-                state = "REPROCESSED",
-                updatedAtEpochMs = System.currentTimeMillis(),
-                note = "Re-summarized after critic feedback",
-            ),
-        )
+        PipelineRecords.upsertTrace(applicationContext, job.id, "REPROCESSED", "Re-summarized after critic feedback")
     }
 
     private suspend fun processExplicitWrite(job: QueueJobRecord) {
@@ -319,25 +264,15 @@ class QueueDrainWorker(
         val output = generateWithFallback(Role.EXPLICIT_REMEMBER, prompt)
         val confidence = extractConfidence(output)
 
-        MemoryRecordStore.append(
+        PipelineRecords.appendMemory(
             applicationContext,
-            MemoryRecord(
-                id = "rokid_mem_${job.id.takeLast(12)}",
-                memoryType = if (confidence >= 0.80) "long_term" else "short_term",
-                content = output.take(260),
-                confidence = confidence,
-                createdAtEpochMs = System.currentTimeMillis(),
-            ),
+            id = "rokid_mem_${job.id.takeLast(12)}",
+            type = if (confidence >= 0.80) "long_term" else "short_term",
+            content = output.take(260),
+            confidence = confidence,
+            createdAt = System.currentTimeMillis(),
         )
-        SummaryTraceStore.upsert(
-            applicationContext,
-            SummaryTrace(
-                summaryId = job.id,
-                state = "WRITE_CONTEXT_OK",
-                updatedAtEpochMs = System.currentTimeMillis(),
-                note = "Explicit write saved",
-            ),
-        )
+        PipelineRecords.upsertTrace(applicationContext, job.id, "WRITE_CONTEXT_OK", "Explicit write saved")
     }
 
     private suspend fun processReadContext(job: QueueJobRecord) {
@@ -346,24 +281,16 @@ class QueueDrainWorker(
         val inputLanguage = QueuePayloads.string(payload, "input_language", "auto")
         require(query.isNotBlank()) { "Empty read context query" }
 
-        val trusted = MemoryRecordStore.recent(applicationContext, 60)
-            .filter { !it.memoryType.contains("review", ignoreCase = true) }
+        val trusted = PipelineRecords.recentMemories(applicationContext, 60)
+            .filter { !it.type.contains("review", ignoreCase = true) }
 
         if (trusted.isEmpty()) {
-            SummaryTraceStore.upsert(
-                applicationContext,
-                SummaryTrace(
-                    summaryId = job.id,
-                    state = "CONTEXT_TEMP_UNAVAILABLE",
-                    updatedAtEpochMs = System.currentTimeMillis(),
-                    note = "No trusted memory found; queue status can be checked from Queue card",
-                ),
-            )
+            PipelineRecords.upsertTrace(applicationContext, job.id, "CONTEXT_TEMP_UNAVAILABLE", "No trusted memory found; queue status can be checked from Queue card")
             throw IllegalStateException("Context temporarily unavailable")
         }
 
         val retrieved = trusted.take(10).joinToString(separator = "\n") {
-            "${it.memoryType} | conf=${"%.2f".format(Locale.US, it.confidence)} | ${it.content}"
+            "${it.type} | conf=${"%.2f".format(Locale.US, it.confidence)} | ${it.text}"
         }
 
         val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
@@ -378,36 +305,28 @@ class QueueDrainWorker(
         Log.i(TAG, "read context promptHash=${PromptHash.sha256(prompt)}")
 
         val answer = generateWithFallback(Role.ANSWER, prompt)
-        SummaryTraceStore.upsert(
-            applicationContext,
-            SummaryTrace(
-                summaryId = job.id,
-                state = "READ_CONTEXT_OK",
-                updatedAtEpochMs = System.currentTimeMillis(),
-                note = answer.take(180),
-            ),
-        )
+        PipelineRecords.upsertTrace(applicationContext, job.id, "READ_CONTEXT_OK", answer.take(180))
     }
 
     private suspend fun generateWithFallback(role: Role, prompt: String): String =
         AiGraph.get(applicationContext).router.generate(role, prompt)
 
-    private suspend fun generateBatchedSummary(prompt: String, frames: List<com.rokid.context.data.frames.CapturedFrame>): String =
+    private suspend fun generateBatchedSummary(prompt: String, frames: List<FrameEntity>): String =
         AiGraph.get(applicationContext).router.generateFromFrames(prompt, images = buildVisionInputs(frames, maxImages = 3))
 
-    private fun buildAttachedImagesLabel(frames: List<com.rokid.context.data.frames.CapturedFrame>): String {
-        val withPreview = frames.count { it.previewImagePath.isNotBlank() }
+    private fun buildAttachedImagesLabel(frames: List<FrameEntity>): String {
+        val withPreview = frames.count { it.path.isNotBlank() }
         return "$withPreview candidate image(s) in current frame window"
     }
 
     private fun buildVisionInputs(
-        frames: List<com.rokid.context.data.frames.CapturedFrame>,
+        frames: List<FrameEntity>,
         maxImages: Int,
     ): List<ModelImageInput> {
         if (maxImages <= 0) return emptyList()
         return frames.asSequence()
             .mapNotNull { frame ->
-                val path = frame.previewImagePath
+                val path = frame.path
                 if (path.isBlank()) return@mapNotNull null
                 val file = File(path)
                 if (!file.exists() || !file.canRead() || file.length() <= 0L) return@mapNotNull null

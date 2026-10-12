@@ -55,6 +55,11 @@ class FrameViewerTest {
         frames = listOf(ViewerFrame("f1", "/missing/f1.jpg", "09:00"), ViewerFrame("f2", "/missing/f2.jpg", "09:05")), startIndex = 0,
     )
 
+    /** Final review M2: like the Day screen, an extreme date gives not-found instead of crashing in DayBucket.bounds. */
+    @Test fun extremeDateShowsNotFound() = runBlocking {
+        assertFalse(withTimeout(5_000) { vm("+999999999-12-31").state.first { !it.loading } }.found)
+    }
+
     @Test fun framesOfTheDayOldestFirstStartingAtTheRequestedFrame() = runBlocking {
         graph.frames.add(Fixtures.frame("f2", Fixtures.at(TODAY, 9, 5)))
         graph.frames.add(Fixtures.frame("f1", Fixtures.at(TODAY, 9, 0)))

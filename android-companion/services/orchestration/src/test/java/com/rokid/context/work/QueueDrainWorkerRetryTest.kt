@@ -14,13 +14,14 @@ import com.rokid.context.ai.ProviderBuilder
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
 import com.rokid.context.core.model.UserFacingErrors
+import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
-import com.rokid.context.data.runtime.SummaryTraceStore
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.model.ModelProvider
+import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.orchestration.RetryPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
@@ -58,6 +59,20 @@ class QueueDrainWorkerRetryTest {
 
     private fun runWorker(): Throwable? = runCatching { runBlocking { TestListenableWorkerBuilder<QueueDrainWorker>(ctx).build().doWork() } }.exceptionOrNull()
     private fun state() = QueueRuntimeStore.recent(ctx, 10).single().state
+
+    /** Final review I2: a paused pipeline sends nothing to the AI provider and leaves the queue intact; resuming drains it. */
+    @Test fun pausedPipelineCallsNoProviderAndTheResumedDrainProcessesTheBacklog() {
+        var calls = 0
+        bind(); behaviour = { calls++; """{"memory":"milk","confidence":0.9}""" }
+        AppConfigStore.setPipelineEnabled(ctx, false)
+        assertEquals(null, runWorker())
+        assertEquals(0, calls)
+        assertEquals(QueueRuntimeStore.STATE_ENQUEUED, state())
+        AppConfigStore.setPipelineEnabled(ctx, true)
+        assertEquals(null, runWorker())
+        assertEquals(1, calls)
+        assertEquals(QueueRuntimeStore.STATE_SUCCEEDED, state())
+    }
 
     @Test fun startupBeforeSeedingDefersTheJob() {
         runWorker()
@@ -97,7 +112,7 @@ class QueueDrainWorkerRetryTest {
     @Test fun traceNoteAndQueueRowAreUserFacing() {
         bind(); behaviour = { error("Azure OpenAI request failed: 500 upstream body") }
         runWorker()
-        assertEquals(UserFacingErrors.AiUnavailable.line, SummaryTraceStore.recent(ctx, 5).first { it.state == "RETRY" }.note)
+        assertEquals(UserFacingErrors.AiUnavailable.line, runBlocking { PipelineRecords.recentTraces(ctx, 5) }.first { it.state == "RETRY" }.note)
         assertEquals(UserFacingErrors.AiUnavailable.line, QueueRuntimeStore.recent(ctx, 10).single().lastError)
     }
 
@@ -110,7 +125,7 @@ class QueueDrainWorkerRetryTest {
         }
         runWorker()
         assertEquals(QueueRuntimeStore.STATE_FAILED, state())
-        assertEquals(UserFacingErrors.AiGaveUp.line, SummaryTraceStore.recent(ctx, 5).first { it.state == "FAILED" }.note)
+        assertEquals(UserFacingErrors.AiGaveUp.line, runBlocking { PipelineRecords.recentTraces(ctx, 5) }.first { it.state == "FAILED" }.note)
     }
 
     @Test fun failuresAreLoggedWithoutThrowablesOrKeys() {

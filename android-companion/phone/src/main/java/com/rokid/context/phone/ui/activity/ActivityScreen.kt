@@ -51,8 +51,9 @@ fun ActivityScreen(
         item { BannerHost(state.status.banner, onBannerAction) }
         item {
             StatusStrip(
-                state.status.captureText, live = state.status.live, batteryPct = state.status.batteryPct, paused = state.status.paused,
-                onTogglePause = onTogglePause, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                state.status.captureText, live = state.status.live, batteryPct = state.status.batteryPct, paused = !state.status.pipelineEnabled,
+                // ⏸/▶ follows only the phone pipeline; under a glasses pause the strip text says so and offers no toggle.
+                onTogglePause = onTogglePause.takeUnless { state.status.pausedOnGlasses }, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
             )
         }
         item {
