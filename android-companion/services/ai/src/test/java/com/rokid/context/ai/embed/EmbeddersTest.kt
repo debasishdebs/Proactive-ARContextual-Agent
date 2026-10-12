@@ -3,6 +3,7 @@ package com.rokid.context.ai.embed
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.ai.EndpointKind
+import com.rokid.context.ai.embed.EmbeddingClient
 import com.rokid.context.ai.EndpointRepository
 import com.rokid.context.ai.InMemoryKeyVault
 import com.rokid.context.ai.ProviderResponseException
@@ -33,7 +34,8 @@ class EmbeddersTest {
     private val a = MockWebServer().apply { start() }
     private val b = MockWebServer().apply { start() }
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
-    private val endpoints = EndpointRepository(db.endpointDao(), InMemoryKeyVault())
+    private val vault = InMemoryKeyVault()
+    private val endpoints = EndpointRepository(db.endpointDao(), vault)
     private val bindings = RoleBindingRepository(db.roleBindingDao(), endpoints)
     private val embedders = Embedders(endpoints, bindings)
     @After fun stop() { a.shutdown(); b.shutdown(); db.close() }
@@ -76,5 +78,25 @@ class EmbeddersTest {
         a.enqueue(MockResponse().setBody("""{"embeddings":[[1,0,0]]}"""))
         val e = runCatching { embedders.forSpace(EmbeddingSpaceEntity("s", spec.fingerprint, spec.configJson(), 2, SpaceState.ACTIVE, "[]", 1))!!.embedQuery("q") }.exceptionOrNull()
         assertTrue(e is ProviderResponseException)
+    }
+
+    @Test fun aRepointedEndpointNeverReceivesItsNewKeyAtTheOldHost() = runTest {
+        val cert = okhttp3.tls.HeldCertificate.Builder().addSubjectAlternativeName("localhost").build()
+        val serverTls = okhttp3.tls.HandshakeCertificates.Builder().heldCertificate(cert).build()
+        val clientTls = okhttp3.tls.HandshakeCertificates.Builder().addTrustedCertificate(cert.certificate).build()
+        val old = MockWebServer().apply { useHttps(serverTls.sslSocketFactory(), false); start() }
+        try {
+            val tls = EmbeddingClient(com.rokid.context.ai.Http.modelClient(60).newBuilder().sslSocketFactory(clientTls.sslSocketFactory(), clientTls.trustManager).build())
+            val emb = Embedders(endpoints, bindings, tls)
+            val oldUrl = "https://localhost:${old.port}"
+            val spec = EmbeddingSpec("oa", EndpointKind.OPENAI_COMPAT, oldUrl, null, "m", null, null, 1, false, "", "", 100)
+            val space = EmbeddingSpaceEntity("s", spec.fingerprint, spec.configJson(), 1, SpaceState.ACTIVE, "[]", 1)
+            db.endpointDao().upsert(com.rokid.context.memory.db.EndpointEntity("oa", "OA", "OPENAI_COMPAT", "https://new.example.com", null, "m", EndpointRepository.keyRef("oa"), "EMBEDDINGS", 1))
+            vault.put(EndpointRepository.keyRef("oa"), "NEWKEY")
+            old.enqueue(MockResponse().setBody("""{"data":[{"index":0,"embedding":[1]}]}"""))
+            runCatching { emb.forSpace(space)!!.embedQuery("q") }
+            val req = if (old.requestCount > 0) old.takeRequest() else null
+            assertNull(req?.getHeader("Authorization")); assertNull(req?.getHeader("api-key"))
+        } finally { old.shutdown() }
     }
 }

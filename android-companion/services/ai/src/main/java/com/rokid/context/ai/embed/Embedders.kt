@@ -6,7 +6,6 @@ import com.rokid.context.ai.RoleBindingRepository
 import com.rokid.context.memory.Embedder
 import com.rokid.context.memory.SpaceEmbedderProvider
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
-import kotlin.coroutines.cancellation.CancellationException
 
 /** Turns the EMBED binding (or a stored space's config) into an [EndpointEmbedder]. */
 class Embedders(
@@ -19,7 +18,7 @@ class Embedders(
         val b = bindings.get(Role.EMBED) ?: return null
         val e = endpoints.byId(b.endpointId) ?: return null
         val key = endpoints.keyFor(e)
-        val revision = try { client.revision(e, b.model) } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+        val revision = client.revision(e, b.model) // a failed lookup is an error, never a silently different fingerprint
         val (doc, query) = PrefixRules.forModel(b.model)
         val probe = client.embed(e, b.model, key, listOf(query + Canaries.TEXTS[0])).single()
         val spec = EmbeddingSpec(e.id, e.kind, e.baseUrl, e.apiVersion, b.model, revision, null, probe.size, true, doc, query, MAX_INPUT_CHARS)
@@ -30,7 +29,10 @@ class Embedders(
     override suspend fun forSpace(space: EmbeddingSpaceEntity): Embedder? {
         val spec = EmbeddingSpec.fromConfig(space.configJson) ?: return null
         val e = endpoints.byId(spec.endpointId) ?: return null
-        return EndpointEmbedder(spec, e.copy(kind = spec.kind, baseUrl = spec.baseUrl, apiVersion = spec.apiVersion), endpoints.keyFor(e), client)
+        // The key belongs to the endpoint's current address: never send it to the space's older address.
+        val sameTarget = e.kind == spec.kind && e.baseUrl.trimEnd('/') == spec.baseUrl.trimEnd('/')
+        val key = if (sameTarget) endpoints.keyFor(e) else null
+        return EndpointEmbedder(spec, e.copy(kind = spec.kind, baseUrl = spec.baseUrl, apiVersion = spec.apiVersion), key, client)
     }
 
     private companion object { const val MAX_INPUT_CHARS = 2_000 }
