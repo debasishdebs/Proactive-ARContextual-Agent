@@ -1,6 +1,6 @@
 package com.rokid.context.model.provider
 
-import com.rokid.context.BuildConfig
+import com.rokid.context.ai.EnvDefaults
 import com.rokid.context.model.ModelProvider
 
 object LocalProviderSelector {
@@ -15,8 +15,8 @@ object LocalProviderSelector {
      * Fallback to Ollama HTTP provider when native runtime is unavailable.
      */
     fun select(
-        mode: LocalRuntimeMode = LocalRuntimeMode.from(BuildConfig.LOCAL_RUNTIME_MODE),
-        nativeModelPath: String? = BuildConfig.LOCAL_NATIVE_MODEL_PATH,
+        mode: LocalRuntimeMode = LocalRuntimeMode.from(EnvDefaults.localRuntimeMode),
+        nativeModelPath: String? = EnvDefaults.localNativeModelPath,
         ollamaProvider: ModelProvider,
         nativeAvailable: Boolean = LlamaCppNativeProvider.isNativeAvailable(),
         nativeProviderFactory: (String) -> ModelProvider = { LlamaCppNativeProvider(it) },

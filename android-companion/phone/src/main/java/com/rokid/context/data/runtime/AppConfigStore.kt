@@ -121,3 +121,11 @@ object AppConfigStore {
         }
     }
 }
+fun AppConfig.toProviderSettings(): com.rokid.context.ai.ProviderSettings = com.rokid.context.ai.ProviderSettings(
+    providerType = providerType,
+    endpoint = endpoint,
+    apiKey = apiKey,
+    deploymentOrModel = deploymentOrModel,
+    nativeModelPath = nativeModelPath,
+    localModeEnabled = localModeEnabled,
+)

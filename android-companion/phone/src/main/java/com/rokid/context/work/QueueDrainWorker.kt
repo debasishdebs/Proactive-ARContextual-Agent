@@ -20,6 +20,7 @@ import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.data.runtime.SummaryTrace
 import com.rokid.context.data.runtime.SummaryTraceStore
+import com.rokid.context.data.runtime.toProviderSettings
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
@@ -381,11 +382,11 @@ class QueueDrainWorker(
     }
 
     private suspend fun generateWithFallback(prompt: String, config: com.rokid.context.data.runtime.AppConfig): String {
-        val primary = ModelProviderResolver.primary(config)
+        val primary = ModelProviderResolver.primary(config.toProviderSettings())
         return runCatching {
             primary.generate(prompt)
         }.getOrElse { firstError ->
-            val local = ModelProviderResolver.localFallback(config)
+            val local = ModelProviderResolver.localFallback(config.toProviderSettings())
                 ?: throw IllegalStateException("Primary provider failed and no local fallback available: ${firstError.message}")
             runCatching {
                 local.generate(prompt)
@@ -400,7 +401,7 @@ class QueueDrainWorker(
         config: com.rokid.context.data.runtime.AppConfig,
         frames: List<com.rokid.context.data.frames.CapturedFrame>,
     ): String {
-        val primary = ModelProviderResolver.primary(config)
+        val primary = ModelProviderResolver.primary(config.toProviderSettings())
         val visionInputs = buildVisionInputs(frames, maxImages = 3)
         if (visionInputs.isNotEmpty()) {
             runCatching {
