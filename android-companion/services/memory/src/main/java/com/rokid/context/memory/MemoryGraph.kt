@@ -10,6 +10,11 @@ class MemoryGraph private constructor(val db: ContextDatabase) {
     val frames = FrameRepository(db.frameDao())
     val memories = MemoryRepository(db.memoryDao())
     val traces = TraceRepository(db.traceDao())
+    val timeline = TimelineRepository(db.frameViewDao(), db.memoryViewDao(), db.traceViewDao())
+    val memoryEdits = MemoryEdits(db.memoryViewDao(), memories)
+    val asks = AskRepository(db.askDao())
+    val nudges = NudgeRepository(db.nudgeDao())
+    val proposals = ProposalRepository(db.proposalDao())
 
     companion object {
         private const val PREFS = "memory_graph"
