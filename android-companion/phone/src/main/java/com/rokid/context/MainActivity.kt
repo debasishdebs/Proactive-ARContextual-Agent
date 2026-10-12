@@ -203,7 +203,7 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
             apiKey = apiKeyInput,
             deploymentOrModel = deploymentOrModelInput,
             nativeModelPath = nativePathInput,
-        )
+        ).onFailure { lastAction = "AI settings not applied: ${it.message}" }
     }
 
     fun ensureBridgeStarted(reason: String) {
@@ -572,6 +572,7 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
                     onToggleLocalMode = {
                         localModeEnabled = it
                         AppConfigStore.setLocalModeEnabled(context, it)
+                            .onFailure { e -> lastAction = "AI settings not applied: ${e.message}" }
                     },
                     onToggleEncryption = {
                         encryptionEnabled = it

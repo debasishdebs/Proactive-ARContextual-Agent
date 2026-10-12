@@ -56,7 +56,10 @@ object AppConfigStore {
     }
 
     fun setPipelineEnabled(context: Context, enabled: Boolean) = edit(context) { putBoolean(K_PIPELINE_ENABLED, enabled) }
-    fun setLocalModeEnabled(context: Context, enabled: Boolean) = edit(context) { putBoolean(K_LOCAL_MODE_ENABLED, enabled) }
+    fun setLocalModeEnabled(context: Context, enabled: Boolean): Result<Unit> {
+        edit(context) { putBoolean(K_LOCAL_MODE_ENABLED, enabled) }
+        return com.rokid.context.orchestration.LegacyConfigBridge.sync(context)
+    }
     fun setEncryptionEnabled(context: Context, enabled: Boolean) = edit(context) { putBoolean(K_ENCRYPTION_ENABLED, enabled) }
     fun setMemoryWindow(context: Context, value: String) = edit(context) { putString(K_MEMORY_WINDOW, value) }
     fun setPersona(context: Context, value: String) = edit(context) { putString(K_PERSONA, value) }
@@ -75,7 +78,7 @@ object AppConfigStore {
         apiKey: String,
         deploymentOrModel: String,
         nativeModelPath: String,
-    ) {
+    ): Result<Unit> {
         edit(context) {
             putString(K_PROVIDER_TYPE, providerType)
             putString(K_ENDPOINT, endpoint)
@@ -83,6 +86,8 @@ object AppConfigStore {
             putString(K_NATIVE_MODEL_PATH, nativeModelPath)
         }
         secrets(context).edit().putString(K_API_KEY, apiKey.replace("\\s+".toRegex(), "")).apply()
+        // Mirror into the endpoint registry; a failure carries a short message for the Config screen.
+        return com.rokid.context.orchestration.LegacyConfigBridge.sync(context)
     }
 
     private inline fun edit(
