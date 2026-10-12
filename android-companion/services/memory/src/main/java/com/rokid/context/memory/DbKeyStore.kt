@@ -18,7 +18,8 @@ object DbKeyStore {
         )
         prefs.getString(KEY, null)?.let { return Base64.decode(it, Base64.NO_WRAP) }
         val fresh = ByteArray(32).also { SecureRandom().nextBytes(it) }
-        prefs.edit().putString(KEY, Base64.encodeToString(fresh, Base64.NO_WRAP)).commit()
+        // Never hand out a key that was not durably stored: the DB would become unreadable next launch.
+        check(prefs.edit().putString(KEY, Base64.encodeToString(fresh, Base64.NO_WRAP)).commit()) { "could not persist DB key" }
         return fresh
     }
 }
