@@ -10,7 +10,10 @@ import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.rokid.context.ai.AiGraph
+import com.rokid.context.ai.ModelErrorMapper
 import com.rokid.context.ai.Role
+import com.rokid.context.ai.SafeLog
+import com.rokid.context.core.model.UserFacingErrors
 import com.rokid.context.data.frames.FrameStreamStore
 import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.data.runtime.AppConfigStore
@@ -27,6 +30,7 @@ import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.orchestration.RetryClassifier
+import com.rokid.context.orchestration.RetryPolicy
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptHash
 import com.rokid.context.prompt.PromptTemplateId
@@ -80,16 +84,27 @@ class QueueDrainWorker(
                     QueueRuntimeStore.markDeferred(applicationContext, job.id, "cancelled; will retry", backoffMs = 0)
                     throw error
                 }
-                val message = error.message ?: "unknown queue error"
-                val retryable = outcome == RetryClassifier.Outcome.RETRY
-                if (retryable) {
-                    QueueRuntimeStore.markDeferred(context = applicationContext, id = job.id, error = message, backoffMs = computeBackoffMs(job.attemptCount))
+                val decision = RetryPolicy.decide(outcome, job.attemptCount)
+                // Detail for Diagnostics logs only: text, never the throwable (a ModelCallException's cause may echo a key).
+                Log.w(TAG, "job ${job.id} ${outcome.name} attempt ${job.attemptCount + 1}/${RetryPolicy.MAX_ATTEMPTS}: ${SafeLog.describe(error)}")
+                val shown = if (decision == RetryPolicy.Decision.FAIL && outcome == RetryClassifier.Outcome.RETRY) {
+                    UserFacingErrors.AiGaveUp
                 } else {
-                    QueueRuntimeStore.markFailed(applicationContext, job.id, message)
+                    ModelErrorMapper.toUserFacing(error)
+                }
+                if (decision == RetryPolicy.Decision.DEFER) {
+                    QueueRuntimeStore.markDeferred(context = applicationContext, id = job.id, error = shown.line, backoffMs = computeBackoffMs(job.attemptCount))
+                } else {
+                    QueueRuntimeStore.markFailed(applicationContext, job.id, shown.line)
                 }
                 SummaryTraceStore.upsert(
                     applicationContext,
-                    SummaryTrace(summaryId = job.id, state = if (retryable) "RETRY" else "FAILED", updatedAtEpochMs = System.currentTimeMillis(), note = message),
+                    SummaryTrace(
+                        summaryId = job.id,
+                        state = if (decision == RetryPolicy.Decision.DEFER) "RETRY" else "FAILED",
+                        updatedAtEpochMs = System.currentTimeMillis(),
+                        note = shown.line,
+                    ),
                 )
             }
         }
