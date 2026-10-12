@@ -27,14 +27,19 @@ class FrameAdmission(private val ledger: ReceivedFrameLedger, private val pauses
         if (!FrameCodec.isValidFrameId(meta.frameId)) return Admission.Reject(FrameAckReason.DECODE)
         if (ledger.contains(meta.frameId)) return Admission.AckOnly(FrameAckReason.DUPLICATE)
         offset ?: return Admission.Hold
-        // A frame "from the future" means the offset is stale: it cannot have been taken after now.
-        val t = offset.toPhone(meta.capturedAtMs).coerceAtMost(nowMs)
+        val captured = offset.toPhone(meta.capturedAtMs)
+        // A frame "from the future" means the offset is stale (clock jump, old hello): judging it at "now" would let a
+        // frame taken inside a closed pause slip through. Hold it; the link asks for a fresh hello.
+        if (captured > nowMs + SKEW_TOLERANCE_MS) return Admission.Hold
+        val t = captured.coerceAtMost(nowMs)
         if (t < nowMs - historyMs) return Admission.AckOnly(FrameAckReason.TOO_OLD)
         if (pauses.pausedAt(t)) return Admission.AckOnly(FrameAckReason.PAUSED_DROP)
         return Admission.Ingest(t)
     }
 
     companion object {
+        /** Normal clock jitter between a fresh offset and a frame stamp; beyond it the offset is treated as stale. */
+        const val SKEW_TOLERANCE_MS = 5_000L
         /** Pause intervals are kept 7 days (spec §5.5); an older frame cannot be checked, so it is dropped. */
         const val HISTORY_MS = 7 * 24 * 3_600_000L
     }
