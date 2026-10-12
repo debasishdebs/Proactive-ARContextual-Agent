@@ -25,6 +25,8 @@ import androidx.lifecycle.lifecycleScope
 import com.rokid.context.core.model.Command
 import com.rokid.context.core.model.GestureAction
 import com.rokid.context.core.model.Overlay
+import com.rokid.context.glasses.capture.CaptureScheduler
+import com.rokid.context.glasses.capture.CaptureService
 import com.rokid.context.glasses.hud.ConfirmInput
 import com.rokid.context.glasses.hud.HudNav
 import com.rokid.context.glasses.hud.HudPresenter
@@ -214,16 +216,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Capture still runs through the RFCOMM-era PulseKeepAliveService; Task 11 moves these three to CaptureService.
-    private fun nextCaptureAt(): Long? = PulseCaptureScheduler(this).nextTriggerAtMs().takeIf { it > 0 }
+    // CaptureService is the only capture path (spec §3.1); its scheduler drives the Glance countdown.
+    private fun nextCaptureAt(): Long? = CaptureScheduler(this).nextTriggerAtMs()
 
-    private fun ensureCaptureScheduled() {
-        val s = PulseCaptureScheduler(this)
-        if (s.nextTriggerAtMs() < System.currentTimeMillis()) s.scheduleNext(30_000)
-    }
+    private fun ensureCaptureScheduled() = CaptureScheduler(this).ensureScheduled()
 
     private fun handleIntent(i: Intent?) {
-        if (i?.action == ACTION_PULSE_CAPTURE || i?.action == ACTION_CAPTURE_NOW) PulseKeepAliveService.startPulse(this)
+        if (i == null || (i.action != ACTION_CAPTURE_NOW && i.action != ACTION_PULSE_CAPTURE)) return
+        CaptureService.captureNow(this, skipDedupe = i.getBooleanExtra(CaptureService.EXTRA_SKIP_DEDUPE, false))
     }
 
     override fun onDestroy() {
