@@ -1,6 +1,6 @@
 package com.rokid.context.model.provider
 
-import com.rokid.context.BuildConfig
+import com.rokid.context.ai.EnvDefaults
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelProvider
 import kotlinx.coroutines.Dispatchers
@@ -19,9 +19,9 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 class OpenAiCompatProvider(
-    private val endpoint: String = BuildConfig.AZURE_KG_ENDPOINT,
-    private val apiKey: String = BuildConfig.AZURE_KG_API_KEY,
-    private val deployment: String = BuildConfig.AZURE_KG_DEPLOYMENT,
+    private val endpoint: String = EnvDefaults.azureEndpoint,
+    private val apiKey: String = EnvDefaults.azureApiKey,
+    private val deployment: String = EnvDefaults.azureDeployment,
     private val apiVersion: String = "2024-10-21",
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)

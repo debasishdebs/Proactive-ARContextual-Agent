@@ -1,12 +1,12 @@
 package com.rokid.context.model
 
-import com.rokid.context.data.runtime.AppConfig
+import com.rokid.context.ai.ProviderSettings
 import com.rokid.context.model.provider.LlamaCppNativeProvider
 import com.rokid.context.model.provider.OllamaProvider
 import com.rokid.context.model.provider.OpenAiCompatProvider
 
 object ModelProviderResolver {
-    fun primary(config: AppConfig): ModelProvider {
+    fun primary(config: ProviderSettings): ModelProvider {
         return when (config.providerType.lowercase()) {
             "openai" -> OpenAiCompatProvider(
                 endpoint = config.endpoint,
@@ -28,7 +28,7 @@ object ModelProviderResolver {
         }
     }
 
-    fun localFallback(config: AppConfig): ModelProvider? {
+    fun localFallback(config: ProviderSettings): ModelProvider? {
         if (!config.localModeEnabled) return null
 
         if (LlamaCppNativeProvider.isNativeAvailable() && config.nativeModelPath.isNotBlank()) {

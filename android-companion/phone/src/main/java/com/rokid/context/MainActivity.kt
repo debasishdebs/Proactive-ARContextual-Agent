@@ -36,6 +36,7 @@ import com.rokid.context.data.runtime.PipelineStatsStore
 import com.rokid.context.data.runtime.QueueRuntimeSnapshot
 import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.data.runtime.SummaryTraceStore
+import com.rokid.context.data.runtime.toProviderSettings
 import com.rokid.context.ui.config.ConfigHubScreen
 import com.rokid.context.ui.config.ConfigUiState
 import com.rokid.context.ui.diagnostics.DiagnosticsScreen
@@ -633,7 +634,7 @@ private fun AppRoot(scheduler: OrchestrationScheduler) {
                                         apiKey = apiKeyInput,
                                         deploymentOrModel = deploymentOrModelInput,
                                         nativeModelPath = nativePathInput,
-                                    ),
+                                    ).toProviderSettings(),
                                 )
                                 val out = provider.generate("Reply only with OK")
                                 "OK: ${out.take(30)}"

@@ -1,6 +1,6 @@
 package com.rokid.context.model.provider
 
-import com.rokid.context.BuildConfig
+import com.rokid.context.ai.EnvDefaults
 import com.rokid.context.model.ModelProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -16,8 +16,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 class OllamaProvider(
-    private val baseUrl: String = BuildConfig.OLLAMA_BASE_URL,
-    private val model: String = BuildConfig.OLLAMA_MODEL,
+    private val baseUrl: String = EnvDefaults.ollamaBaseUrl,
+    private val model: String = EnvDefaults.ollamaModel,
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)

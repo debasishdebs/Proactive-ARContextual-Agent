@@ -71,6 +71,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":services:ai"))
     implementation(platform("androidx.compose:compose-bom:2024.09.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
