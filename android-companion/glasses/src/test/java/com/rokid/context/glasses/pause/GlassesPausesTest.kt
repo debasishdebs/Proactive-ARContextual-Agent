@@ -75,5 +75,50 @@ class GlassesPausesTest {
         assertTrue("the repaired store reads back resumed", pauses("bad.preferences_pb").also { it.ensureLoaded() }.captureAllowed())
     }
 
+    private val p1 = PauseRecord("p1", PauseOrigin.PHONE, 1_000_000, null)
+
+    /** The wearer's Resume must not be undone by a phone push that still lists the cleared record. */
+    @Test fun aStalePhonePushDoesNotRepauseAfterResume() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        p.mergeFromPhone(listOf(p1))
+        p.toggle()
+        assertTrue(p.captureAllowed())
+        p.mergeFromPhone(listOf(p1))
+        assertTrue(p.captureAllowed())
+        assertTrue(p.records.value.isEmpty())
+    }
+
+    @Test fun theTombstoneSurvivesARestart() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        p.mergeFromPhone(listOf(p1)); p.toggle()
+        val again = pauses().also { it.ensureLoaded() }
+        again.mergeFromPhone(listOf(p1))
+        assertTrue(again.captureAllowed())
+    }
+
+    @Test fun aPushWithoutTheIdDropsItsTombstone() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        p.mergeFromPhone(listOf(p1)); p.toggle()
+        p.mergeFromPhone(emptyList())
+        p.mergeFromPhone(listOf(p1))
+        assertFalse(p.captureAllowed())
+    }
+
+    @Test fun aNewPhonePauseIsNotBlockedByATombstone() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        p.mergeFromPhone(listOf(p1)); p.toggle()
+        p.mergeFromPhone(listOf(p1, PauseRecord("p2", PauseOrigin.PHONE, now, null)))
+        assertFalse(p.captureAllowed())
+        assertEquals(listOf("p2"), p.records.value.map { it.pauseId })
+    }
+
+    @Test fun aTombstoneExpiresAfterTenMinutes() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        p.mergeFromPhone(listOf(p1)); p.toggle()
+        now += 600_000
+        p.mergeFromPhone(listOf(p1))
+        assertFalse(p.captureAllowed())
+    }
+
     @Test fun nothingIsAllowedBeforeLoading() = assertFalse(pauses().captureAllowed())
 }

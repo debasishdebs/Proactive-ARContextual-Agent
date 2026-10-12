@@ -49,6 +49,8 @@ class HudController(
     private val startedAt = clock()
     @Volatile private var everReceived = false
     @Volatile private var outdated = false
+    /** Latched by [onActivityExit] until [onActivityStart]: the phone's heartbeat must not reopen the session (spec §1.7). */
+    @Volatile private var exited = false
 
     private val _frame = MutableStateFlow<StateFrame?>(null)
     val frame: StateFlow<StateFrame?> = _frame
@@ -104,6 +106,7 @@ class HudController(
     private fun onHelloRequest(text: String) {
         when (val d = Wire.decode<HelloRequest>(text)) {
             is Decoded.Ok -> {
+                if (exited) return
                 val wasOpen = _sessionOpen.value
                 phoneMessage() // opens the session (and says hello) if this is its first message
                 if (wasOpen) sendHello()
@@ -121,7 +124,7 @@ class HudController(
         everReceived = true
         outdated = false
         liveness.onFrame()
-        if (_sessionOpen.compareAndSet(false, true)) {
+        if (!exited && _sessionOpen.compareAndSet(false, true)) {
             Log.i(TAG, "session open")
             sendHello()
             onSessionOpened()
@@ -141,7 +144,10 @@ class HudController(
     }
 
     /** The activity is going away: the phone's CUSTOM_APP session closes with it (spec §1.7). */
-    fun onActivityExit() = closeSession("activity exit")
+    fun onActivityExit() { exited = true; closeSession("activity exit") }
+
+    /** The activity (re)started: phone messages may open a session again. */
+    fun onActivityStart() { exited = false }
 
     fun send(command: Command): Boolean = bridge.send(Channels.CMD, Wire.encode(CommandEnvelope(command = command))) == 0
 

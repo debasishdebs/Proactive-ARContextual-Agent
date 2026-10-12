@@ -29,6 +29,8 @@ class GlassesPauses(
     private val mutex = Mutex()
     private val _records = MutableStateFlow<List<PauseRecord>>(emptyList())
     val records: StateFlow<List<PauseRecord>> = _records
+    /** Ids the wearer resumed locally; a phone push that still lists one must not re-pause capture. */
+    private var tombstones: Map<String, Long> = emptyMap()
     @Volatile private var loaded = false
 
     suspend fun ensureLoaded() = mutex.withLock { loadLocked() }
@@ -43,6 +45,7 @@ class GlassesPauses(
         val active = active(now)
         if (active.isNotEmpty()) {
             val clears = active.map { it.pauseId }.toSet()
+            tombstones = tombstones + clears.associateWith { now }
             save(_records.value.filter { it.pauseId !in clears && it.isActiveAt(now) })
             PauseToggle.Resumed(clears)
         } else {
@@ -57,14 +60,19 @@ class GlassesPauses(
         loadLocked()
         val known = _records.value.map { it.pauseId }.toSet()
         val now = clock()
-        val added = records.filter { it.pauseId !in known && it.isActiveAt(now) }
-        if (added.isNotEmpty()) save(_records.value + added)
+        val listed = records.map { it.pauseId }.toSet()
+        // A tombstone ends once the phone no longer lists the id, or after TOMBSTONE_TTL_MS.
+        val liveTombs = tombstones.filter { (id, at) -> id in listed && now - at < TOMBSTONE_TTL_MS }
+        val added = records.filter { it.pauseId !in known && it.pauseId !in liveTombs && it.isActiveAt(now) }
+        val tombsChanged = liveTombs != tombstones
+        tombstones = liveTombs
+        if (added.isNotEmpty() || tombsChanged) save(_records.value + added)
     }
 
     private suspend fun loadLocked() {
         if (loaded) return
         _records.value = try {
-            store.read()
+            store.read().also { tombstones = it.tombstones }.records
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -78,7 +86,7 @@ class GlassesPauses(
     private suspend fun save(list: List<PauseRecord>) {
         _records.value = list
         try {
-            store.write(list)
+            store.write(PauseState(list, tombstones))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -86,5 +94,8 @@ class GlassesPauses(
         }
     }
 
-    companion object { const val TAG = "PcPause" }
+    companion object {
+        const val TAG = "PcPause"
+        const val TOMBSTONE_TTL_MS = 600_000L
+    }
 }
