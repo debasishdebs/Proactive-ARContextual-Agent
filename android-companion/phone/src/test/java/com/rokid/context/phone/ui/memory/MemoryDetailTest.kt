@@ -110,4 +110,33 @@ class MemoryDetailTest {
         assertEquals(1, saved)
         compose.onNodeWithText("Cancel").assertIsDisplayed()
     }
+
+    @Test fun panIsBoundedAndResetsAtUnitScale() {
+        assertEquals(0f, Zoom.clampPan(50f, 1f, 400f))
+        assertEquals(200f, Zoom.clampPan(999f, 2f, 400f))
+        assertEquals(-600f, Zoom.clampPan(-999f, 4f, 400f))
+        assertEquals(30f, Zoom.clampPan(30f, 2f, 400f))
+        assertEquals(0f, Zoom.clampPan(Float.NaN, 2f, 400f))
+    }
+
+    @Test fun hiddenMemoryIsReadOnly() {
+        val m = Fixtures.memory("m1", "Keys", 1, review = ReviewState.INVALIDATED)
+        val state = MemoryDetailModel.build(m, null, Fixtures.ZONE)
+        assertFalse(state.editable)
+        compose.setContent { PcTheme { MemoryDetailScreen(state, {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
+        compose.onNodeWithText("Trust").assertIsNotEnabled()
+        compose.onNodeWithText("Edit").assertIsNotEnabled()
+    }
+
+    @Test fun saveRejectedBecauseMemoryBecameHidden() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1))
+        val model = vm("m1")
+        withTimeout(5_000) { model.state.first { it.found } }
+        model.startEdit()
+        model.updateDraft("Keys in drawer")
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1, review = ReviewState.INVALIDATED))
+        withTimeout(5_000) { model.state.first { !it.editable } }
+        model.saveEdit()
+        assertEquals("This memory can't be edited", withTimeout(5_000) { model.state.first { it.message != null } }.message)
+    }
 }

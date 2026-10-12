@@ -30,6 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.rokid.context.core.ui.components.ConfidenceChip
 import com.rokid.context.core.ui.components.FrameImage
@@ -88,8 +90,8 @@ fun MemoryDetailScreen(
             }
         }
         Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            GradientButton(if (state.trusted) "Trusted" else "Trust", onClick = onTrust, enabled = !state.trusted && state.draft == null)
-            OutlinedButton(onClick = onStartEdit, enabled = state.draft == null) { Text("Edit") }
+            GradientButton(if (state.trusted) "Trusted" else "Trust", onClick = onTrust, enabled = state.editable && !state.trusted && state.draft == null)
+            OutlinedButton(onClick = onStartEdit, enabled = state.editable && state.draft == null) { Text("Edit") }
         }
         Spacer(Modifier.height(12.dp))
         Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -105,11 +107,13 @@ fun MemoryDetailScreen(
 private fun ZoomableFrame(path: String, modifier: Modifier) {
     var scale by remember(path) { mutableFloatStateOf(1f) }
     var offset by remember(path) { mutableStateOf(Offset.Zero) }
+    var size by remember { mutableStateOf(IntSize.Zero) }
     val transform = rememberTransformableState { zoom, pan, _ ->
         scale = Zoom.clamp(scale * zoom)
-        offset = if (scale == Zoom.MIN) Offset.Zero else offset + pan
+        val next = offset + pan
+        offset = if (scale == Zoom.MIN) Offset.Zero else Offset(Zoom.clampPan(next.x, scale, size.width.toFloat()), Zoom.clampPan(next.y, scale, size.height.toFloat()))
     }
-    Box(modifier.clip(RoundedCornerShape(20.dp)).transformable(transform)) {
+    Box(modifier.clip(RoundedCornerShape(20.dp)).onSizeChanged { size = it }.transformable(transform)) {
         FrameImage(path, Modifier.fillMaxSize().graphicsLayer { scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y })
     }
 }
