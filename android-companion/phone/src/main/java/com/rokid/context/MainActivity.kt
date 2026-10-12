@@ -31,13 +31,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // Legacy cleanup, off the main thread (Room-backed calls may wait on the one-time import). Task 11 swaps the
-        // three facade calls for PipelineRecords.
-        lifecycleScope.launch(Dispatchers.IO) {
-            QueueRuntimeStore.purgeSynthetic(this@MainActivity)
-            FrameStreamStore.purgeNonRokidEntries(this@MainActivity)
-            SummaryTraceStore.purgeSynthetic(this@MainActivity)
-            MemoryRecordStore.purgeNonRokid(this@MainActivity)
+        // Legacy cleanup once per launch (not on configuration changes), off the main thread (Room-backed calls may
+        // wait on the one-time import). Task 11 swaps the three facade calls for PipelineRecords.
+        if (savedInstanceState == null) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                QueueRuntimeStore.purgeSynthetic(this@MainActivity)
+                FrameStreamStore.purgeNonRokidEntries(this@MainActivity)
+                SummaryTraceStore.purgeSynthetic(this@MainActivity)
+                MemoryRecordStore.purgeNonRokid(this@MainActivity)
+            }
         }
         val deps = PhoneDeps.get(this)
         // The legacy app re-scheduled workers on every launch even when the pipeline was off; honour the switch.

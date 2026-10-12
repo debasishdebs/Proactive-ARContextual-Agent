@@ -44,13 +44,14 @@ private val dateArg = navArgument("date") { type = NavType.StringType }
  * in-flight Home ask is cancelled when Home leaves the back stack).
  */
 fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
-    val back: () -> Unit = { nav.popBackStack() }
+    // Never pop the root: a second quick Back tap (or Back on a restored single-entry stack) would leave an empty NavHost.
+    val back: () -> Unit = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
     val bannerNav: (BannerAction, (BannerAction) -> Unit) -> Unit = { a, apply -> if (a == BannerAction.FIX_AI) nav.navigate(Routes.SETTINGS_ENDPOINTS) else apply(a) }
 
     composable(Routes.ONBOARDING) {
         WelcomeScreen(onGetStarted = {
             deps.onboarding.markComplete()
-            nav.navigate(Routes.HOME) { popUpTo(Routes.ONBOARDING) { inclusive = true } }
+            nav.navigate(Routes.HOME) { popUpTo(Routes.ONBOARDING) { inclusive = true }; launchSingleTop = true }
         })
     }
 

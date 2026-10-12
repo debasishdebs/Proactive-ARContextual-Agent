@@ -22,6 +22,9 @@ class ShellSourceRulesTest {
         val src = File(main, "MainActivity.kt").readText()
         assertFalse("MainActivity.kt must not mention bridge", src.contains("bridge", ignoreCase = true))
         assertFalse("MainActivity.kt must not hold apiKeyInput", src.contains("apiKeyInput"))
+        // Legacy purges run once per launch, not again on every configuration change.
+        val guard = src.indexOf("if (savedInstanceState == null)")
+        assertTrue("purges must sit behind savedInstanceState == null", guard in 0 until src.indexOf("QueueRuntimeStore.purgeSynthetic"))
         assertTrue("MainActivity.kt must request BLUETOOTH_CONNECT", src.contains("RequestPermission()") && src.contains("BluetoothPermission"))
     }
 

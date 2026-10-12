@@ -3,6 +3,10 @@ package com.rokid.context.phone.ui.shell
 import android.app.Application
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.getBoundsInRoot
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -32,6 +36,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -155,5 +160,38 @@ class AppShellTest {
         compose.onNodeWithText(BluetoothPermission.HINT).assertIsDisplayed()
         compose.onNodeWithText("Activity").performClick()
         compose.onNodeWithText("What your glasses noticed").assertIsDisplayed()
+    }
+
+    /** Two quick Back taps on a detail screen (the exiting screen is still composed) must never pop the root entry. */
+    @Test fun doubleBackOnADetailScreenKeepsHome() {
+        launch(Routes.HOME)
+        compose.runOnIdle { nav.navigate(Routes.ask("ask_missing")) }
+        waitForText("This answer is no longer available")
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.mainClock.autoAdvance = true
+        compose.onNodeWithText("Ask about your day").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(Routes.HOME, nav.currentDestination?.route) }
+    }
+
+    /** A double-tapped "Get started" must not stack two Home entries. */
+    @Test fun doubleTappedGetStartedLeavesOneHome() {
+        launch(Routes.ONBOARDING)
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithText("Get started").performClick()
+        compose.onNodeWithText("Get started").performClick()
+        compose.mainClock.autoAdvance = true
+        compose.onNodeWithText("Ask about your day").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(listOf(Routes.HOME), nav.currentBackStack.value.mapNotNull { it.destination.route }.filter { it != nav.graph.route }) }
+    }
+
+    /** While the hint shows, the content inset grows with it: the end of a long list scrolls clear of the banner. */
+    @Test fun bluetoothHintNeverCoversTheEndOfAList() {
+        launch(Routes.SETTINGS, bluetoothMissing = true)
+        compose.onNodeWithTag("settings_list").performScrollToNode(hasText("Queues, summarizer tracker, manual runs"))
+        val last = compose.onNodeWithText("Queues, summarizer tracker, manual runs").getBoundsInRoot()
+        val hint = compose.onNodeWithTag(BluetoothPermission.TAG).getBoundsInRoot()
+        assertTrue("last row bottom ${last.bottom} must be above the hint top ${hint.top}", last.bottom <= hint.top)
     }
 }
