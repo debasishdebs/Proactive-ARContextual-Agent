@@ -4,7 +4,6 @@ import android.content.Context
 import com.rokid.context.core.model.GlassesStatusSource
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.orchestration.AskActions
-import com.rokid.context.phone.ui.glasses.FakeGlassesStatusSource
 import com.rokid.context.phone.ui.home.AskService
 import com.rokid.context.phone.ui.onboarding.OnboardingStore
 import com.rokid.context.phone.ui.settings.DiagnosticsActions
@@ -61,7 +60,7 @@ class PhoneDeps(
             val scheduler = OrchestrationScheduler(app)
             return PhoneDeps(
                 memory = MemoryGraph.get(app),
-                glasses = FakeGlassesStatusSource(), // Task 11 (after Phase 3 merges): HubGraph.glassesStatus(app)
+                glasses = com.rokid.context.phone.hub.HubGraph.glassesStatus(app),
                 pipeline = LegacyPipelineControl(app, scheduler),
                 onboarding = OnboardingStore(app),
                 askService = AskService { q -> AskActions.ask(app, q) },

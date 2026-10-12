@@ -7,9 +7,8 @@ import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.PipelineStatsStore
 import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
-import com.rokid.context.data.runtime.SummaryTrace
-import com.rokid.context.data.runtime.SummaryTraceStore
 import com.rokid.context.domain.queue.QueuePriority
+import com.rokid.context.orchestration.PipelineRecords
 
 /**
  * Legacy entrypoint kept for compatibility.
@@ -23,15 +22,7 @@ class SummarizerWorkerJob(
         val summaryId = inputData.getString(KEY_SUMMARY_ID) ?: return Result.failure()
         val confidence = inputData.getDouble(KEY_CONFIDENCE, 0.8)
 
-        SummaryTraceStore.upsert(
-            applicationContext,
-            SummaryTrace(
-                summaryId = summaryId,
-                state = "ENQUEUED",
-                updatedAtEpochMs = System.currentTimeMillis(),
-                note = "Queued for queue-drain summarization",
-            ),
-        )
+        PipelineRecords.upsertTrace(applicationContext, summaryId, "ENQUEUED", "Queued for queue-drain summarization")
 
         val config = AppConfigStore.get(applicationContext)
         QueueRuntimeStore.enqueue(

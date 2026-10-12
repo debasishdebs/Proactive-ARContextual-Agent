@@ -8,8 +8,8 @@ import com.rokid.context.core.model.MemoryLine
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.UserFacingErrors
-import com.rokid.context.data.runtime.SummaryTrace
 import com.rokid.context.link.ClockOffset
+import com.rokid.context.memory.db.SummaryTraceEntity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -61,7 +61,7 @@ class StateFrameBuilderTest {
     }
 
     @Test fun aiHealthComesFromTheNewestRecentTrace() {
-        fun t(state: String, ago: Long, note: String = "") = SummaryTrace("s$ago", state, now - ago, note)
+        fun t(state: String, ago: Long, note: String = "") = SummaryTraceEntity("s$ago", state, now - ago, note)
         assertEquals(Health.Ok, AiHealthRule.from(emptyList(), now))
         assertEquals(Health.Blocked("AI key rejected"), AiHealthRule.from(listOf(t("FAILED", 1_000, UserFacingErrors.AiKeyRejected.line)), now))
         assertEquals(Health.Degraded("AI unavailable"), AiHealthRule.from(listOf(t("RETRY", 1_000, UserFacingErrors.AiUnavailable.line)), now))
@@ -72,7 +72,7 @@ class StateFrameBuilderTest {
     /** Notes written before Task 2 may hold raw provider text: it never reaches the HUD. */
     @Test fun rawLegacyNoteNeverReachesTheHud() = assertEquals(
         Health.Blocked("AI unavailable"),
-        AiHealthRule.from(listOf(SummaryTrace("s", "FAILED", now - 1_000, "Azure OpenAI request failed: 500 {\"error\":1}")), now),
+        AiHealthRule.from(listOf(SummaryTraceEntity("s", "FAILED", now - 1_000, "Azure OpenAI request failed: 500 {\"error\":1}")), now),
     )
 
     @Test fun hudCountdownTimesGoOutInGlassesClock() {

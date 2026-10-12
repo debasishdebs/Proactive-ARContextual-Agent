@@ -4,9 +4,9 @@ import android.content.Context
 import com.rokid.context.core.model.Health
 import com.rokid.context.core.model.MemoryLine
 import com.rokid.context.data.runtime.QueueRuntimeStore
-import com.rokid.context.data.runtime.SummaryTraceStore
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.ReviewState
+import com.rokid.context.orchestration.PipelineRecords
 
 /** What a [StateFrame][com.rokid.context.core.model.StateFrame] reads from the rest of the app. Called on IO. */
 interface HubSources {
@@ -25,5 +25,5 @@ class LegacyHubSources(private val context: Context) : HubSources {
 
     override suspend fun queueDepth(): Int = QueueRuntimeStore.snapshot(context).totalPending
 
-    override suspend fun aiHealth(nowMs: Long): Health = AiHealthRule.from(SummaryTraceStore.recent(context, 20), nowMs)
+    override suspend fun aiHealth(nowMs: Long): Health = AiHealthRule.from(PipelineRecords.recentTraces(context, 20), nowMs)
 }
