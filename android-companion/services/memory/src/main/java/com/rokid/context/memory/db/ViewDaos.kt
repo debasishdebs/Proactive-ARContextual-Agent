@@ -61,12 +61,16 @@ interface TraceViewDao {
 
 @Dao
 interface AskDao {
+    /** Seeding/tests only: a whole-row write would reset `rating` — production uses [insertIgnore] + [complete]. */
     @Upsert suspend fun upsert(ask: AskEntity)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertIgnore(ask: AskEntity): Long
+    /** Field-level completion (Phase 2 carry): writes the answer and sources only, never the rating. */
+    @Query("UPDATE ask SET answer = :answer, sourcesJson = :sourcesJson WHERE id = :id") suspend fun complete(id: String, answer: String, sourcesJson: String): Int
     @Query("SELECT * FROM ask WHERE id = :id") suspend fun byId(id: String): AskEntity?
     @Query("SELECT * FROM ask WHERE id = :id") fun observe(id: String): Flow<AskEntity?>
     @Query("SELECT * FROM ask ORDER BY ts DESC LIMIT :limit") fun observeRecent(limit: Int): Flow<List<AskEntity>>
     @Query("SELECT ts FROM ask WHERE ts >= :fromMs AND ts < :toMs") fun observeTimes(fromMs: Long, toMs: Long): Flow<List<Long>>
-    @Query("UPDATE ask SET rating = :rating WHERE id = :id") suspend fun setRating(id: String, rating: Int?)
+    @Query("UPDATE ask SET rating = :rating WHERE id = :id") suspend fun setRating(id: String, rating: Int?): Int
 }
 
 @Dao

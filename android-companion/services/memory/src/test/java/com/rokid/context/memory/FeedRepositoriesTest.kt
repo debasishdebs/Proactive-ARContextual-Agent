@@ -63,7 +63,7 @@ class FeedRepositoriesTest {
         val next = async(Dispatchers.IO) {
             timeline.visibleMemoriesIn(day).onEach { if (it.isEmpty()) sawEmpty.complete(Unit) }.first { it.isNotEmpty() }
         }
-        sawEmpty.await()
+        withTimeout(5_000) { sawEmpty.await() }
         memories.add(m("new", "Fresh", day.first + 5))
         assertEquals(listOf("new"), withTimeout(5_000) { next.await() }.map { it.id })
     }
@@ -110,7 +110,7 @@ class FeedRepositoriesTest {
         assertFalse(nudges.addIgnore(NudgeEntity("n1", day.first + 3, "dup", "", "[]", 1, "h1", "phone", false)))
         assertEquals(listOf("Milk low"), nudges.recent(5).first().map { it.text })
         assertEquals(listOf(day.first + 3), nudges.timesIn(day).first())
-        proposals.addIgnore(ProposalEntity("p1", "ASK", "a1", "SHOPPING_ADD", "{}", "PENDING", 9, null, null, 1))
+        assertTrue(proposals.addIgnore(ProposalEntity("p1", "ASK", "a1", "SHOPPING_ADD", "{}", "PENDING", 9, null, null, 1)))
         assertEquals(listOf("p1"), proposals.forOrigin("a1").first().map { it.id })
         assertTrue(proposals.forOrigin("other").first().isEmpty())
         traces.upsert(SummaryTraceEntity("s1", "TRUSTED", 5, "ok"))
@@ -139,5 +139,23 @@ class FeedRepositoriesTest {
     @Test fun emptyIdListsNeverQuery() = runTest {
         assertTrue(timeline.memoriesByIds(emptyList()).isEmpty())
         assertTrue(timeline.framesByIds(emptyList()).isEmpty())
+    }
+
+    @Test fun completingAnAskNeverResetsItsRating() = runTest {
+        assertTrue(asks.add(AskEntity("a1", day.first + 1, "q", "", "[]", null, "glasses_voice", false)))
+        assertFalse(asks.add(AskEntity("a1", day.first + 1, "q", "", "[]", null, "glasses_voice", false)))
+        assertTrue(asks.setRating("a1", 1))
+        assertTrue(asks.complete("a1", "On the shelf", "[\"m1\"]"))
+        val a = asks.observe("a1").first()!!
+        assertEquals("On the shelf", a.answer); assertEquals("[\"m1\"]", a.sourcesJson); assertEquals(1, a.rating)
+        assertFalse(asks.complete("missing", "x", "[]")); assertFalse(asks.setRating("missing", 1))
+    }
+
+    @Test fun lookupsAboveTheSqliteParameterLimitAreChunked() = runTest {
+        repeat(1_200) { memories.add(m("m$it", "t", day.first + it)) }
+        assertEquals(1_200, timeline.memoriesByIds((0 until 1_200).map { "m$it" }).size)
+        // Robolectric's SQLite allows 32 766 bound parameters (not the device's 999), so also cross that limit.
+        assertEquals(1_200, timeline.memoriesByIds((0 until 40_000).map { "m$it" }).size)
+        assertTrue(timeline.framesByIds((0 until 40_000).map { "f$it" }).isEmpty())
     }
 }

@@ -69,10 +69,16 @@ class HomeViewModel(
         if (q.isEmpty() || local.value.asking) return
         local.update { it.copy(question = q, asking = true, error = null) }
         viewModelScope.launch {
-            val r = try { askService.ask(q) } catch (c: CancellationException) { throw c } catch (e: Exception) { AskOutcome.Failed(AskActions.FAILED) }
-            when (r) {
-                is AskOutcome.Answered -> local.update { it.copy(question = "", asking = false, lastAskId = r.askId) }
-                is AskOutcome.Failed -> local.update { it.copy(asking = false, error = r.message) }
+            try {
+                when (val r = askService.ask(q)) {
+                    is AskOutcome.Answered -> local.update { it.copy(question = "", asking = false, lastAskId = r.askId) }
+                    is AskOutcome.Failed -> local.update { it.copy(asking = false, error = r.message) }
+                }
+            } catch (c: CancellationException) {
+                local.update { it.copy(asking = false) } // Phase 2 carry: never left "asking" after a cancel
+                throw c
+            } catch (e: Exception) {
+                local.update { it.copy(asking = false, error = AskActions.FAILED) }
             }
         }
     }

@@ -100,4 +100,12 @@ class HomeViewModelTest {
         assertEquals(1, glasses.reconnectRequests)
         assertEquals(LinkState.OFFLINE, glasses.status.value.link)
     }
+
+    @Test fun cancellingAnAskResetsTheAskingFlag() = runBlocking {
+        outcome = { throw kotlinx.coroutines.CancellationException("stopped") }
+        vm.ask("milk")
+        val s = withTimeout(5_000) { vm.state.first { !it.asking && it.question == "milk" } }
+        assertFalse(s.asking)
+        assertEquals(listOf("milk"), questions)
+    }
 }
