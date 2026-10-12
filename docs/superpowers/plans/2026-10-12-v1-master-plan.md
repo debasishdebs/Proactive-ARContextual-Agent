@@ -19,6 +19,7 @@
 - Every CXR JSON payload carries `v: PROTOCOL_VERSION`. Glasses → phone payloads are text in `Caps` strings (Base64 for binary); there is no bytes argument on the glasses side.
 - No raw exception/socket text in any UI (phone or HUD); all errors go through `UserFacingError` (spec §6.3).
 - No audio leaves the phone for transcription; phone voice uses `createOnDeviceSpeechRecognizer` only.
+- Language scope: English is primary; Hindi is the only additional language target. Hindi voice is optional and capability-gated. Retrieval validation covers English, Hindi, and mixed English/Hindi text.
 - Capture pause is fail-closed: nothing resumes capture implicitly (spec §1.7, §5.5).
 - Secrets: `.env` is git-ignored; API keys live in EncryptedSharedPreferences, never in Room or logs.
 - Room: schema version 1 is frozen at the end of Phase 2 Task 2; every later schema change bumps the version and ships a `Migration` with a `MigrationTestHelper` test (no destructive migration outside tests).
@@ -31,7 +32,7 @@ Inputs/conditions the spec implies but does not spell out; each is pinned by a t
 
 1. **Legacy data that is malformed, partial, or imported twice** (crash mid-import, re-run) — expected: bad lines skipped and counted, no duplicates, import resumes. Owner: Phase 2 Task 4.
 2. **Endpoint input with whitespace, trailing slash, missing scheme, mixed-case host, or a key with surrounding spaces** — expected: normalised or rejected with a clear message; never stored broken. Owner: Phase 2 Task 6.
-3. **Non-Latin memory text (Hindi/Devanagari, CJK anywhere in a sentence, Japanese, Thai, emoji) in lexical search** — expected: a word typed by the user finds memories containing it (SQLite tokenizers split Indic words at combining marks, and unsegmented scripts have no spaces; text is normalised and unsegmented runs are indexed as bigrams). Owner: Phase 2 Task 1.
+3. **English, Hindi/Devanagari, and mixed English/Hindi memory text in lexical search** — expected: a word typed by the user finds memories containing it; Devanagari combining marks stay within word tokens, and punctuation/emoji are ignored. Owner: Phase 2 Task 1.
 4. **Timezone/DST/clock changes** (user travels; phone and glasses clocks differ) — expected: Today/Week grouping uses the device's current zone at query time on capture instants; pause/quiet-hours math uses offset-corrected instants. Owner: Phase 2 Task 3 (day-bucket query) + Phase 3/7 (pause, quiet hours — tests listed in this plan's phase table).
 5. **Low storage** while writing frames/DB — expected: write fails cleanly with a `UserFacingError` ("Phone storage full"), glasses keep the frame buffered (no ack), nothing half-written. Owner: Phase 3 (frame ingest).
 
@@ -78,7 +79,7 @@ Task references are `Phase.Task` (e.g. 2.6 = Phase 2 Task 6); every detailed tas
 | R-41 | 2.6 (EMBEDDINGS capability, kinds, embedding probe) · 5 (embedding calls) | |
 | R-42 | 2.7 | picker UI in 5 |
 | R-43, R-44, R-45, R-46, R-47 | 5 | |
-| R-48 | 2.1 (FTS, normaliser, CJK bigrams) · 5 (BM25, cosine, hybrid) | |
+| R-48 | 2.1 (FTS, English/Hindi normaliser) · 5 (BM25, cosine, hybrid) | |
 | R-49, R-50, R-51, R-52, R-53 | 5 | |
 | R-60 | 6 | |
 | R-61, R-62, R-63, R-64, R-65, R-66 | 7 (R-65 `PauseRecord`/`QuietHours` types from 1.3) | |
@@ -119,5 +120,5 @@ Task references are `Phase.Task` (e.g. 2.6 = Phase 2 Task 6); every detailed tas
 - `:core:ui` — `PcColors`, `PcTheme`, `SoftCard`, `IconChip`, `TextChip`, `ChipRow`, `SectionLabel`, `ScreenHeader`, `GradientHeader`, `PillNav`, `PillNavItem`, `SegmentedSwitch`, `MetricTile`, `GradientCircleButton`, `GradientButton`, `Banner`, `BannerTone`.
 - `:core:hud` — `Hud`, `Glyph`, `Label`, `Scaled`, `OutlinedBox`, `HudToast`, `SwipeClassifier`, `SwipeKey`, `Swipe`, `DoubleTapDetector`.
 - `:services:ai` — `ProviderSettings`, `ModelProvider`, `ModelImageInput`, `EndpointKind`, `Capability`, `Endpoint`, `EndpointRepository`, `KeyVault`, `UrlNormalizer`, `EndpointTester`, `Role`, `RoleBinding`, `RoleBindingRepository`, `ModelRouter` (incl. `generateFromFrames`), `ModelCallException`, `ProviderErrors`, `ProviderBuilder`, `ProviderFactory`, `EndpointSeeder` (`seedIfNeeded`, `syncFromLegacy`), `SeedState`, `EndpointTester`/`TestResult`, `EnvDefaults`, `AiGraph`.
-- `:services:memory` — `ContextDatabase`, all entities/DAOs in spec §6.1, `SearchNormalizer` (incl. bigram segmentation), `FrameRepository`, `MemoryRepository`, `TraceRepository`, `DayBucket`, `MemoryGraph` (incl. `ensureLegacyImported`), `LegacyImporter`, `ImportReport`, `DbKeyStore`, `Embedder` (interface only).
+- `:services:memory` — `ContextDatabase`, all entities/DAOs in spec §6.1, `SearchNormalizer` (English/Hindi word normalisation), `FrameRepository`, `MemoryRepository`, `TraceRepository`, `DayBucket`, `MemoryGraph` (incl. `ensureLegacyImported`), `LegacyImporter`, `ImportReport`, `DbKeyStore`, `Embedder` (interface only).
 - `:services:orchestration` — `LegacyImportWorker`, `RetryClassifier`, `LegacyConfigBridge` (transitional, deleted in 5); legacy facades `MemoryRecordStore` (in memory), `FrameStreamStore`, `SummaryTraceStore` (transitional, deleted in Phase 4).
