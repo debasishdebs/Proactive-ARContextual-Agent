@@ -18,6 +18,10 @@ data class StatusUi(
     val paused: Boolean,
     val batteryPct: Int?,
     val banner: BannerSpec?,
+    /** The phone pipeline switch: the only thing the ⏸/▶ control reads and changes. */
+    val pipelineEnabled: Boolean = true,
+    /** The glasses paused capture while the pipeline is on: shown, not actionable (phone→glasses Resume is Phase 7). */
+    val pausedOnGlasses: Boolean = false,
 ) {
     companion object {
         val Initial = StatusUi("Glasses offline", live = false, paused = false, batteryPct = null, banner = null)
@@ -27,6 +31,8 @@ data class StatusUi(
             live = CaptureLine.live(s, pipelineEnabled),
             paused = CaptureLine.paused(s, pipelineEnabled),
             batteryPct = s.glassesBatteryPct ?: s.frame?.glassesBatteryPct,
+            pipelineEnabled = pipelineEnabled,
+            pausedOnGlasses = CaptureLine.pausedOnGlasses(s, pipelineEnabled),
             banner = BannerResolver.resolve(
                 BannerInputs(
                     aiBlockedText = (s.frame?.aiHealth as? Health.Blocked)?.text,
