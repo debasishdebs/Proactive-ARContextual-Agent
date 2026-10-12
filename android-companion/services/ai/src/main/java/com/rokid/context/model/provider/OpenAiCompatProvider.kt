@@ -23,6 +23,7 @@ class OpenAiCompatProvider(
     private val apiKey: String = EnvDefaults.azureApiKey,
     private val deployment: String = EnvDefaults.azureDeployment,
     private val apiVersion: String = "2024-10-21",
+    private val style: ApiStyle = ApiStyle.AZURE,
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(75, TimeUnit.SECONDS)
@@ -30,6 +31,8 @@ class OpenAiCompatProvider(
         .callTimeout(90, TimeUnit.SECONDS)
         .build(),
 ) : ModelProvider {
+    enum class ApiStyle { AZURE, OPENAI }
+
     override suspend fun generate(prompt: String): String = withContext(Dispatchers.IO) {
         requestChatCompletion(
             buildJsonObject {
@@ -77,15 +80,19 @@ class OpenAiCompatProvider(
 
     private fun requestChatCompletion(payload: kotlinx.serialization.json.JsonObject): String {
         require(endpoint.isNotBlank()) { "AZURE_KG_ENDPOINT is missing" }
-        require(apiKey.isNotBlank()) { "AZURE_KG_API_KEY is missing" }
+        if (style == ApiStyle.AZURE) require(apiKey.isNotBlank()) { "AZURE_KG_API_KEY is missing" }
 
         val normalized = endpoint.trimEnd('/')
-        val url = "$normalized/openai/deployments/$deployment/chat/completions?api-version=$apiVersion"
+        val url = when (style) {
+            ApiStyle.AZURE -> "$normalized/openai/deployments/$deployment/chat/completions?api-version=$apiVersion"
+            ApiStyle.OPENAI -> "$normalized/chat/completions"
+        }
+        val requestBody = if (style == ApiStyle.OPENAI) kotlinx.serialization.json.JsonObject(payload + ("model" to JsonPrimitive(deployment))) else payload
         val request = Request.Builder()
             .url(url)
-            .addHeader("api-key", apiKey)
+            .apply { if (style == ApiStyle.AZURE) addHeader("api-key", apiKey) else addHeader("Authorization", "Bearer $apiKey") }
             .addHeader("Content-Type", "application/json")
-            .post(payload.toString().toRequestBody("application/json".toMediaType()))
+            .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
             .build()
 
         client.newCall(request).execute().use { response ->
