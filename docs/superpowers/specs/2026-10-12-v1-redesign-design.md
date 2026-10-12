@@ -249,6 +249,12 @@ Roles: `VISION_EXTRACT`, `EXPLICIT_REMEMBER`, `SUMMARIZE`, `CRITIC`, `ANSWER`, `
 ### 4.4 Output schema & guided decoding
 - Editor section "Output schema": JSON Schema text, pre-filled with the role's default; **Reset to default**. Version stores template + schema together.
 - `StructuredOutput` adapter per kind: Azure/OpenAI `response_format: {type: json_schema, strict: true}`; Ollama `format: <schema>`; llama.cpp schema→GBNF grammar; fallback (no `JSON_SCHEMA` capability) = schema appended as instructions.
+- **Canonical vs wire schema.** The stored (canonical) schema is full JSON Schema and is the only thing validation uses. Each adapter compiles it via `WireSchemaCompiler.compile(canonical, kind) → WireSchema` into the subset that backend accepts; the wire schema only steers decoding.
+  - **Azure/OpenAI strict:** every object gets `additionalProperties: false` and lists **all** properties in `required`; each optional property becomes required with type `[T, "null"]` (nullable); `oneOf` → `anyOf` (discriminated unions keep their `type` `const`/single-value `enum`); root stays a plain object (union only below root); unsupported keywords are stripped — strings `minLength`/`maxLength`/`pattern`/`format`, numbers `minimum`/`maximum`/`exclusive*`/`multipleOf`, arrays `minItems`/`maxItems`/`uniqueItems`/`contains`, objects `minProperties`/`maxProperties`/`patternProperties`/`propertyNames` — and each stripped constraint is appended in words to that property's `description` (e.g. "1–80 characters"). `$defs`/`$ref` kept only if supported, else inlined.
+  - **Ollama / llama.cpp:** same nullable/required normalisation and `oneOf → anyOf`; keywords the grammar converter doesn't support are stripped into `description` the same way.
+  - **Limits:** compiled wire schema must satisfy the target kind's limits (Azure/OpenAI: nesting depth ≤ 5, ≤ 100 properties total, enum values within limit). `SchemaCompatibilityChecker` compiles the draft for every endpoint currently bound to that role and blocks Save if any compile fails or exceeds limits (error names the endpoint + rule).
+  - **Decode path:** response → convert `null` for originally-optional properties back to *absent* → validate against the **canonical** schema (all stripped constraints enforced locally) → role contract decoder → semantic checks (§4.4.1). Failure → the single retry with the validation error, as above.
+  - Test bed shows the compiled wire schema (read-only tab) alongside the canonical one.
 - All outputs validated against schema; on failure: one retry including the validation error; then job → retry queue (existing policy).
 - Default schemas: VISION_EXTRACT / EXPLICIT_REMEMBER `{facts:[{text,type,confidence,tags[]}]}`; SUMMARIZE (current format); CRITIC `{verdict: pass|fail, reasons[]}`; ANSWER `{answer, sources:[memoryId], proposedAction?: ProposedAction}`; NUDGE `{shouldNudge, text, why, sourceIds[], priority, proposedAction?: ProposedAction}`.
 - `ProposedAction` (shared JSON Schema `$defs`, `oneOf` discriminated by `type`; identical in ANSWER and NUDGE):
@@ -280,7 +286,7 @@ Roles: `VISION_EXTRACT`, `EXPLICIT_REMEMBER`, `SUMMARIZE`, `CRITIC`, `ANSWER`, `
   - Strategy chosen via dropdown; each shows its own config.
 - Shared tuning: top-k (default 8), recency boost toggle + half-life (default 3 days), min confidence.
 - Settings → Retrieval: mode `SegmentedSwitch` Lexical / Semantic / Hybrid; fusion dropdown + config (Hybrid only); embedding binding shortcut; index stats + **Rebuild**; tuning; **Try it** search showing ranked hits with scores.
-- **Embedding space identity.** Vectors belong to an `embedding_space`, never to a bare model name. Fingerprint = SHA-256 over the canonical JSON of: endpoint `kind`; normalised `baseUrl` (scheme + host + path, lowercased, no trailing slash); `apiVersion`; deployment/model name; model revision/digest when the backend exposes it (Ollama `digest`); requested `dimensions` (if set) and returned `dim`; normalisation (L2 applied by us: yes/no); document/query input prefixes or task types (e.g. `search_document:` / `search_query:`); truncation/max input tokens. Endpoint display name and key are excluded.
+- **Embedding space identity.** Vectors belong to an `embedding_space`, never to a bare model name. Fingerprint = SHA-256 over the canonical JSON of: endpoint `kind`; normalised `baseUrl` (scheme + host lowercased, default port removed, path case preserved, no trailing slash); `apiVersion`; deployment/model name; model revision/digest when the backend exposes it (Ollama `digest`); requested `dimensions` (if set) and returned `dim`; normalisation (L2 applied by us: yes/no); document/query input prefixes or task types (e.g. `search_document:` / `search_query:`); truncation/max input tokens. Endpoint display name and key are excluded.
 - **Canary check.** At space creation we embed 3 fixed canary strings and store their vectors. On app start (max once per 24 h) and before any rebuild swap, canaries are re-embedded; cosine < 0.995 for any canary → space marked `STALE` (catches a silently updated model behind the same name) → rebuild banner.
 - **Generations.** `embedding_space.state ∈ BUILDING | ACTIVE | STALE | RETIRED`; at most one `ACTIVE` and one `BUILDING`. `SemanticRetriever` reads vectors only from the `ACTIVE` space and embeds the query with that same space's config; it never reads `BUILDING` rows.
 - **Reindex.** EMBED binding change (fingerprint differs) or `STALE` → banner + `ReindexWorker` writes into a new `BUILDING` space. Swap to `ACTIVE` happens in one Room transaction only when coverage = 100 % of eligible memories; the old space becomes `RETIRED` and its vectors are deleted. During build: if the old `ACTIVE` space's endpoint is still reachable and not `STALE`, semantic keeps using it; otherwise semantic falls back to lexical (Hybrid → lexical only), shown in Retrieval "Try it" and the banner. New memories created during a build are embedded into both spaces.
@@ -305,13 +311,13 @@ Glasses-audio STT feeds our PCM into the recognizer via `RecognizerIntent.EXTRA_
 | Capability | Requirement | Check |
 |---|---|---|
 | `GLASSES_VOICE` | API ≥ 33 **and** `SpeechRecognizer.isOnDeviceRecognitionAvailable` **and** language pack installed **and** external-audio verified | `VoiceCapabilityProbe` |
-| `PHONE_VOICE` | On-device recognizer available (API ≥ 31 via `createOnDeviceSpeechRecognizer`), else system `SpeechRecognizer` with explicit "uses Google speech service" note | same probe |
+| `PHONE_VOICE` | API ≥ 31 **and** `SpeechRecognizer.isOnDeviceRecognitionAvailable` **and** language pack installed; always created via `createOnDeviceSpeechRecognizer`. The ordinary (possibly network-backed) `SpeechRecognizer` is **never** used. | same probe |
 | Pack download | API ≥ 34 (Live Fit `SpeechPacks`); below 34 → deep-link to system speech settings | — |
 
 - **External-audio verification:** the recognizer must not silently fall back to the phone mic. The probe (onboarding + after OS/app updates) streams a 1 s buffer through the `ParcelFileDescriptor` pipe and counts bytes the recognizer reads; if it reads < 50 % of the buffer, or a session returns results while pipe reads stay ~0, `GLASSES_VOICE` = unsupported. The same byte-count guard runs in every production session: if it trips, the session is aborted (never answered from phone-mic audio) and capability is re-probed.
 - **Unavailable UX:**
   - Glasses tap = Ask → HUD Toast "Voice not supported on this phone" (or "Download speech pack on phone"); gesture map greys out Ask with reason.
-  - Phone Home hero: mic still works via `PHONE_VOICE` if available; otherwise mic shows disabled state + "Type a question" field (typed Ask uses the same answer path).
+  - Phone Home hero: mic works only via `PHONE_VOICE`; otherwise mic shows disabled state + "Type a question" field (typed Ask uses the same answer path). No audio ever leaves the phone for transcription.
   - Settings → Devices → Phone camera & mic shows a Voice status row: Supported / Needs speech pack (Download / Open settings) / Needs Android 13+ for glasses voice.
   - Onboarding Permissions step includes the probe and shows the same status.
 - Cloud transcription fallback is **out of scope for v1**.
@@ -319,7 +325,7 @@ Glasses-audio STT feeds our PCM into the recognizer via `RecognizerIntent.EXTRA_
 ### 5.2 Nudges
 - `NudgeEngine` worker: after each summarizer pass, max every 30 min.
 - Input: recent memories, enabled data sources (e.g. next calendar event), last 24 h of nudges.
-- NUDGE prompt → `{shouldNudge, text, why, sourceIds[], priority}`.
+- NUDGE prompt → `{shouldNudge, text, why, sourceIds[], priority, proposedAction?}` (§4.4).
 - Gates: quiet hours; daily cap (default 6, configurable); dedupe hash over 24 h; verbosity (Silent → phone feed only; Medium → Glance one-liner; Max → toast).
 
 ### 5.3 Actions (v1 built-ins)
@@ -351,9 +357,10 @@ Toggles with on-demand permission: Calendar (read, next 24 h), Contacts (name ma
 - **Glasses-local enforcement:** a double-tap pause is applied on the glasses immediately and persisted locally, whether or not the phone is linked. `CaptureService` checks the local set before every capture.
 - **Quiet hours offline:** the schedule is part of `HudSettings` and cached on the glasses; the glasses evaluate it on their own clock and synthesise a `QUIET_HOURS` record locally. No phone link is needed.
 - **Timed pauses** expire independently on each side using `untilMs` (the phone converts with the clock offset measured from `pc_hello`).
+- **Closed intervals are retained.** When a record ends (expiry or Resume) it is not deleted: the phone stores a `pause_interval(pauseId, origin, startMs, effectiveEndMs)` with `effectiveEndMs` = the phone-clock time the pause actually stopped applying (expiry time, or Resume time — for a pause first learned on reconnect, the time of the Resume that cleared it). Open intervals have `effectiveEndMs = null`. Intervals are kept 7 days. Glasses drop any buffered frame older than 72 h, so every flushed frame falls inside the retained history window.
 - **Reconnect reconciliation:** on `pc_hello` the phone merges sets by **union** (most-restrictive wins) and pushes the merged set back in `StateFrame`/`HudSettings`. A record disappears only through (a) its own expiry or (b) an explicit `Resume(clears)` that names its `pauseId`.
 - **Resume never clears unknown pauses:** a Resume issued from either side carries only the `pauseId`s that side currently knows. If the merge then reveals a pause the user had not seen (e.g. paused on glasses while offline, resumed on phone), capture stays paused and the phone shows "Still paused on glasses — Resume?" to get an explicit second Resume.
-- **Frames captured while the phone believed capture was paused** (phone paused, glasses offline and unaware): on flush, the phone drops any frame whose capture time (offset-corrected) falls inside a known pause interval, acks it `ok=true, reason=paused_drop` so the glasses delete it, and never ingests it.
+- **Frames captured while the phone believed capture was paused** (phone paused, glasses offline and unaware): on flush, the phone drops any frame whose capture time (offset-corrected) falls inside **any** retained `pause_interval` — open or closed — acks it `ok=true, reason=paused_drop` so the glasses delete it, and never ingests it. Fail closed: frames are held (not ingested) until a `pc_hello` clock offset exists; a frame older than the oldest retained interval history is dropped.
 
 ### 5.6 Input devices
 Glasses (default capture + PTT). Phone mic (Ask from phone). Phone camera: manual "Capture now" only (enters the same ingest pipeline with `source=phone`).
@@ -363,16 +370,16 @@ Glasses (default capture + PTT). Phone mic (Ask from phone). Phone camera: manua
 ## 6. Data, migration, errors, testing, delivery
 
 ### 6.1 Room schema (KSP; optional SQLCipher bound to encryption toggle)
-`frame(id, ts, path, source, luma, phash, placeLabel)` · `memory(id, frameId?, text, type, tags, tier, confidence, reviewState, trusted, createdAt, derived: Boolean)` + `memory_fts` (FTS4) · `memory_source(memoryId, sourceMemoryId)` (provenance for derived/summary memories) · `embedding_space(id, fingerprint, configJson, dim, state, canaryJson, createdAt)` · `memory_vector(memoryId, spaceId, blob)` PK `(memoryId, spaceId)` · `forget_tombstone(frameId?, textHash, createdAt)` · `endpoint` · `role_binding` · `prompt` · `prompt_version` · `ask(id, ts, question, answer, sourcesJson, rating, source, redacted)` · `nudge(id, ts, text, why, sourceIdsJson, priority, hash, shownOn, redacted)` · `proposal(id, origin, originId, type, paramsJson, state, expiresAt, resolvedBy?, createdRef?)` · `action_log(id, ts, proposalId, transition, detail)` · `pause_record` · `shopping_item(…, proposalId?)` · `note` · `summary_trace`. Frame JPEGs remain on disk (encrypted when enabled).
+`frame(id, ts, path, source, luma, phash, placeLabel)` · `memory(id, frameId?, text, type, tags, tier, confidence, reviewState, trusted, createdAt, derived: Boolean)` + `memory_fts` (FTS4) · `memory_source(memoryId, sourceMemoryId)` (provenance for derived/summary memories) · `embedding_space(id, fingerprint, configJson, dim, state, canaryJson, createdAt)` · `memory_vector(memoryId, spaceId, blob)` PK `(memoryId, spaceId)` · `forget_tombstone(frameId, createdAt)` · `endpoint` · `role_binding` · `prompt` · `prompt_version` · `ask(id, ts, question, answer, sourcesJson, rating, source, redacted)` · `nudge(id, ts, text, why, sourceIdsJson, priority, hash, shownOn, redacted)` · `proposal(id, origin, originId, type, paramsJson, state, expiresAt, resolvedBy?, createdRef?)` · `action_log(id, ts, proposalId, transition, detail)` · `pause_record` · `pause_interval(pauseId, origin, startMs, effectiveEndMs?)` · `shopping_item(…, proposalId?)` · `note` · `summary_trace`. Frame JPEGs remain on disk (encrypted when enabled).
 
 ### 6.1.1 Forget semantics
 Two user actions, both behind a confirm dialog that states the scope:
-- **Forget fact** — removes one memory: its row, FTS row, vectors in all spaces, and `memory_source` edges. Writes a `forget_tombstone(frameId, textHash)` so reprocessing/backfill of that frame cannot re-extract the same fact (extractor output is filtered against tombstones by normalised-text hash). The frame JPEG is deleted **only if no remaining memory references it**.
+- **Forget fact** — removes one memory: its row, FTS row, vectors in all spaces, and `memory_source` edges. The frame is marked `extractionLocked = true` (via `forget_tombstone(frameId)`): reprocessing, backfill ("Reprocess old photos") and critic re-summarisation **never run extraction on that frame again**, so the fact cannot return in any wording; the frame's remaining memories stay as they are. The frame JPEG is deleted **only if no remaining memory references it**. (Explicit "remember" by the user is unaffected.)
 - **Forget moment** — removes the frame JPEG, the `frame` row and **all** memories with that `frameId` (each handled as Forget fact), plus a frame-level tombstone.
 
 Cascade to dependants (same Room transaction, then background work):
-- **Derived memories** (summaries / medium-long tier) with a `memory_source` edge to a forgotten memory are immediately excluded from retrieval (`reviewState = NEEDS_RESUMMARIZE`) and re-summarised from their remaining sources by the SUMMARIZE role; if no sources remain, they are deleted (recursively).
-- **Asks and nudges** citing a forgotten memory: `answer`/`text` replaced with "Removed — a source was forgotten", `redacted = true`, sources stripped. Any `PENDING` proposal from them → `EXPIRED`.
+- **Derived memories — transitive.** Compute the full descendant closure of the forgotten memories over `memory_source` (recursive CTE; A → B → C ⇒ both B and C). In the same transaction every descendant is hidden from retrieval, FTS and the HUD (`reviewState = INVALIDATED`). Background work then, in topological order, re-summarises each invalidated derived memory from its remaining non-forgotten, non-invalidated sources into a **new** memory id (old id deleted, never reused), or deletes it if no sources remain. Re-summarisation inputs never include invalidated text.
+- **Asks and nudges** citing any memory in the forgotten set **or its descendant closure**: `answer`/`text` replaced with "Removed — a source was forgotten", `redacted = true`, sources stripped. Any `PENDING` proposal from them → `EXPIRED`. Because re-summarised memories get new ids, old citations stay redacted.
 - **HUD:** next `StateFrame` omits the memory from `today`.
 - **Summary traces** referencing the memory keep only ids, no text.
 - **Delete all** (Settings → Memory) = Forget moment for every frame + drop all derived memories, asks, nudges, vectors, tombstones.
@@ -384,7 +391,7 @@ Cascade to dependants (same Room transaction, then background work):
 `UserFacingError` mapper: provider / link / schema / permission failures → `{title, hint, action}` (e.g. "AI key rejected" → Fix now; "Glasses offline" → Reconnect). Persistent conditions → banners (§2.2). Full detail → Diagnostics logs only. Glasses receive only short strings.
 
 ### 6.4 Testing
-- **Unit:** fusion strategies (fixtures), BM25, cosine, prompt versioning rules (save / overwrite-when-off / restore / one-active invariant), schema validate + retry, StructuredOutput request shape per kind, `SchemaCompatibilityChecker` (allowed vs forbidden edits), role contract decoders + semantic checks, save-gating gates, `ProposedAction` decoding, proposal CAS (concurrent HUD/phone/expiry → exactly one terminal state, one execution), action matrix, pause merge/resume-clears/offline-drop rules, embedding fingerprint + canary staleness + generation swap (no mixed-space reads), Forget fact/moment cascades + tombstone filtering, frame chunk reassembly/CRC/dedupe, STT capability probe decisions, nudge gating, SwipeClassifier / DoubleTap / HudNav (ported), `StateFrame` serialization round-trip + version check, existing worker/policy/provider tests relocated.
+- **Unit:** fusion strategies (fixtures), BM25, cosine, prompt versioning rules (save / overwrite-when-off / restore / one-active invariant), schema validate + retry, StructuredOutput request shape per kind, `SchemaCompatibilityChecker` (allowed vs forbidden edits), role contract decoders + semantic checks, save-gating gates, `ProposedAction` decoding, proposal CAS (concurrent HUD/phone/expiry → exactly one terminal state, one execution), action matrix, pause merge/resume-clears/offline-drop rules, embedding fingerprint + canary staleness + generation swap (no mixed-space reads), Forget fact/moment cascades + extraction lock + transitive closure (A→B→C) invalidation and redaction, WireSchemaCompiler per kind (golden wire schemas + null→absent round-trip), closed pause interval filtering, frame chunk reassembly/CRC/dedupe, STT capability probe decisions, nudge gating, SwipeClassifier / DoubleTap / HudNav (ported), `StateFrame` serialization round-trip + version check, existing worker/policy/provider tests relocated.
 - **Room:** in-memory DAO + FTS tests; migration import test with fixture legacy files.
 - **Compose UI:** smoke per screen (Home, Activity, Settings tree, Prompt editor save-gating, Retrieval, Onboarding); HUD pages rendered from fixture StateFrames.
 - **Screenshots:** reference screens in `docs/screens/phone/` and `docs/screens/hud/`; existing root `phone-*.png`, `window-*.xml`, `.tmp_glasses_*.png`, `check-*.png` move to `docs/screens/legacy/`.
@@ -457,28 +464,28 @@ Every plan task cites the R-IDs it satisfies. All must be covered.
 - R-43 Prompt store, seeds, variables, one-active invariant (§4.3).
 - R-44 Versioning toggle on Prompts screen (default on); history view/diff/restore; off = overwrite.
 - R-45 Output schema per version; default schemas incl. typed `ProposedAction` in ANSWER **and** NUDGE; Reset to default (§4.4).
-- R-46 `StructuredOutput` adapters per kind + fallback; validate + 1 retry + retry queue.
+- R-46 `StructuredOutput` adapters per kind + fallback; `WireSchemaCompiler` canonical → wire subset (nullable-required, `anyOf`, stripped constraints into descriptions, per-kind limits); null→absent normalisation; full local validation against canonical schema; 1 retry + retry queue.
 - R-47 Test bed with frame/text/question inputs, model selector, metrics, five-gate save-gating + required template variables (§4.5).
 - R-48 Lexical (FTS4 + BM25), Semantic (cosine, `VectorIndex`), Hybrid (§4.6).
 - R-49 Fusion strategies WeightedScore / RRF / CombMNZ selectable with per-strategy config.
 - R-50 Retrieval tuning (top-k, recency half-life, min confidence) + Try it + index stats/Rebuild.
 - R-51 Embedding space identity (fingerprint), canary staleness check, BUILDING/ACTIVE generations with atomic swap, no mixed-space reads, fallback rules (§4.6).
 - R-52 Answer path per §4.7.
-- R-53 Role contracts: decoders + semantic checks used in production and test bed; `SchemaCompatibilityChecker` enforcing refinement rules (§4.4.1).
+- R-53 Role contracts: decoders + semantic checks used in production and test bed; `SchemaCompatibilityChecker` enforcing refinement rules (§4.4.1) and wire-compilability for every bound endpoint (§4.4).
 
 **Flows**
 - R-60 Push-to-talk ask from glasses and phone per §5.1.
-- R-67 STT capability gate, external-audio byte-count probe + production guard (never answer from phone-mic fallback), unavailable-state UX on HUD/Home/Settings/Onboarding, typed-Ask fallback (§5.1.1).
+- R-67 STT capability gate, external-audio byte-count probe + production guard (never answer from phone-mic fallback), unavailable-state UX on HUD/Home/Settings/Onboarding, typed-Ask fallback; phone voice on-device only, never network `SpeechRecognizer` (§5.1.1).
 - R-61 NudgeEngine with gates per §5.2.
 - R-62 Built-in actions Reminder / Shopping / Calendar per the §5.3 behaviour matrix (enabled × confirm × origin × verbosity), phone-owned expiry, HUD timeout never votes, CAS single execution, idempotent executors, Undo, action_log.
 - R-63 `ToolConnector` interface + `McpConnector` stub + "Coming in v2" row.
 - R-64 Data sources with on-demand permissions, injected as context only (§5.4).
-- R-65 Privacy pause triggers, durations, buffer drop, HUD + phone indication; `PauseRecord` persistence on both sides, glasses-local enforcement + offline quiet hours, union merge on reconnect, Resume clears only named pauses, paused-interval frame drop (§5.5).
+- R-65 Privacy pause triggers, durations, buffer drop, HUD + phone indication; `PauseRecord` persistence on both sides, glasses-local enforcement + offline quiet hours, union merge on reconnect, Resume clears only named pauses, retained closed `pause_interval`s with effective end (7 d) + 72 h glasses buffer age cap, flush filter over open and closed intervals, fail-closed before clock offset (§5.5).
 - R-66 Phone camera manual capture into same pipeline (§5.6).
 
 **Data / quality**
 - R-70 Room schema per §6.1 (KSP; SQLCipher when encryption on).
-- R-77 Forget fact / Forget moment semantics, tombstones, derived-memory re-summarise/delete, ask/nudge redaction, pending-proposal expiry (§6.1.1).
+- R-77 Forget fact / Forget moment semantics; frame extraction lock (no re-extraction after Forget fact); transitive descendant invalidation + re-summarise into new ids / delete; ask/nudge redaction over the full closure; pending-proposal expiry (§6.1.1).
 - R-71 Legacy import worker per §6.2.
 - R-72 `UserFacingError` mapping; no raw errors in any UI (§6.3).
 - R-73 Test suites per §6.4.
