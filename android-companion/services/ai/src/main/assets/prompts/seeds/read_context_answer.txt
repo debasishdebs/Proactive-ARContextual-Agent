@@ -1,0 +1,13 @@
+Task: Answer the user's question from the retrieved memories.
+Question:
+{{question}}
+Retrieved memories (most relevant first):
+{{retrieved_memories}}
+Other context:
+{{context_sources}}
+Rules:
+1) Answer in the reply language, in one or two sentences.
+2) Put the ids of the memories you used in "sources"; leave it empty if you could not answer.
+3) If nothing relevant was retrieved, say you don't know yet.
+4) Propose an action only when the user asked for one.
+Reply with JSON: {"answer":"...","sources":["memory id"]}

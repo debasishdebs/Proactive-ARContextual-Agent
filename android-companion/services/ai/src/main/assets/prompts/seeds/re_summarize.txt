@@ -1,0 +1,6 @@
+Task: Re-summarise these memories into one corrected summary, using the critic's notes.
+{{recent_context}}
+Rules:
+- If images are attached, use what they show; say what is unclear and lower the confidence.
+- At most 140 words.
+Reply with JSON: {"summary":"...","events":["..."],"entities":["..."],"confidence":0.0,"candidate_memory_type":"short_term|medium_term"}

@@ -1,0 +1,9 @@
+Task: Decide whether one short, useful heads-up is worth showing right now.
+Recent memories:
+{{recent_context}}
+Other context:
+{{context_sources}}
+Rules:
+- Nudge only when it saves the user time or prevents a mistake. Otherwise shouldNudge is false.
+- text is at most 12 words; why says which memory triggered it; sourceIds are those memory ids.
+Reply with JSON: {"shouldNudge":false,"text":"","why":"","sourceIds":[],"priority":"normal"}

@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION")
+
 package com.rokid.context.work
 
 import android.content.Context
@@ -11,7 +13,7 @@ import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
 import com.rokid.context.orchestration.PipelineRecords
-import com.rokid.context.prompt.PromptComposer
+import com.rokid.context.prompt.LegacyPromptComposer
 import com.rokid.context.prompt.PromptHash
 import com.rokid.context.prompt.PromptTemplateId
 import com.rokid.context.prompt.PromptTemplateRepository
@@ -46,7 +48,7 @@ class CriticWorkerJob(
 
         val confidence = inputData.getDouble(KEY_CONFIDENCE, 0.0)
         val sourceContext = PipelineRecords.recentMemories(applicationContext, 20).joinToString("\n") { it.text }.ifBlank { "no-context" }
-        val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
+        val prompt = LegacyPromptComposer(PromptTemplateRepository(applicationContext)).compose(
             templateId = PromptTemplateId.CRITIC_VALIDATION,
             variables = mapOf(
                 "summary_id" to summaryId,

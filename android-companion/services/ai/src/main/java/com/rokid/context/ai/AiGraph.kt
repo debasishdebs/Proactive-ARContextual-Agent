@@ -2,19 +2,46 @@ package com.rokid.context.ai
 
 import android.content.Context
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.prompt.AssetPromptSeeds
+import com.rokid.context.prompt.BuiltInPromptSeeds
+import com.rokid.context.prompt.InMemoryPersonaSettings
+import com.rokid.context.prompt.InMemoryPromptSettings
+import com.rokid.context.prompt.PersonaSettings
+import com.rokid.context.prompt.PrefsPersonaSettings
+import com.rokid.context.prompt.PrefsPromptSettings
+import com.rokid.context.prompt.PromptRepository
+import com.rokid.context.prompt.PromptSeeds
+import com.rokid.context.prompt.PromptSettings
 
-class AiGraph(memory: MemoryGraph, vault: KeyVault, seedState: SeedState, providers: ProviderBuilder = ProviderFactory) {
+data class AiSettings(val prompts: PromptSettings, val persona: PersonaSettings) {
+    companion object {
+        fun inMemory() = AiSettings(InMemoryPromptSettings(), InMemoryPersonaSettings())
+        fun prefs(context: Context) = AiSettings(PrefsPromptSettings(context), PrefsPersonaSettings(context))
+    }
+}
+
+class AiGraph(
+    memory: MemoryGraph,
+    vault: KeyVault,
+    seedState: SeedState,
+    providers: ProviderBuilder = ProviderFactory,
+    val settings: AiSettings = AiSettings.inMemory(),
+    seeds: PromptSeeds = BuiltInPromptSeeds,
+) {
     val endpoints = EndpointRepository(memory.db.endpointDao(), vault)
     val bindings = RoleBindingRepository(memory.db.roleBindingDao(), endpoints)
     val router = ModelRouter(bindings, endpoints, providers)
     val tester = EndpointTester(endpoints, providers)
     val seeder = EndpointSeeder(endpoints, bindings, seedState)
+    val prompts = PromptRepository(memory.db.promptDao(), seeds, settings.prompts)
+    val persona: PersonaSettings get() = settings.persona
 
     companion object {
         @Volatile private var instance: AiGraph? = null
         fun get(context: Context): AiGraph = instance ?: synchronized(this) {
             val app = context.applicationContext
-            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app)).also { instance = it }
+            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app))
+                .also { instance = it }
         }
         fun resetForTests(graph: AiGraph?) { synchronized(this) { instance = graph } }
     }

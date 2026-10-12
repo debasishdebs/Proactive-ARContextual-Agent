@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION")
+
 package com.rokid.context.work
 
 import android.content.Context
@@ -28,7 +30,7 @@ import com.rokid.context.model.ModelImageInput
 import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.orchestration.RetryClassifier
 import com.rokid.context.orchestration.RetryPolicy
-import com.rokid.context.prompt.PromptComposer
+import com.rokid.context.prompt.LegacyPromptComposer
 import com.rokid.context.prompt.PromptHash
 import com.rokid.context.prompt.PromptTemplateId
 import com.rokid.context.prompt.PromptTemplateRepository
@@ -165,7 +167,7 @@ class QueueDrainWorker(
             "id=${it.id}, ts=${it.ts}, source=${it.source}, payload=${it.payload}"
         }
 
-        val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
+        val prompt = LegacyPromptComposer(PromptTemplateRepository(applicationContext)).compose(
             templateId = PromptTemplateId.WRITE_CONTEXT_BATCHED,
             variables = mapOf(
                 "persona" to job.personaSnapshot,
@@ -219,7 +221,7 @@ class QueueDrainWorker(
         val reason = QueuePayloads.string(payload, "reason", "low confidence")
         val frames = PipelineRecords.recentFrames(applicationContext, 6)
 
-        val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
+        val prompt = LegacyPromptComposer(PromptTemplateRepository(applicationContext)).compose(
             templateId = PromptTemplateId.RE_SUMMARIZE,
             variables = mapOf(
                 "prior_summary" to "See source context",
@@ -250,7 +252,7 @@ class QueueDrainWorker(
         val inputLanguage = QueuePayloads.string(payload, "input_language", "auto")
         require(rawInput.isNotBlank()) { "Empty explicit write input" }
 
-        val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
+        val prompt = LegacyPromptComposer(PromptTemplateRepository(applicationContext)).compose(
             templateId = PromptTemplateId.WRITE_CONTEXT_EXPLICIT,
             variables = mapOf(
                 "persona" to job.personaSnapshot,
@@ -293,7 +295,7 @@ class QueueDrainWorker(
             "${it.type} | conf=${"%.2f".format(Locale.US, it.confidence)} | ${it.text}"
         }
 
-        val prompt = PromptComposer(PromptTemplateRepository(applicationContext)).compose(
+        val prompt = LegacyPromptComposer(PromptTemplateRepository(applicationContext)).compose(
             templateId = PromptTemplateId.READ_CONTEXT_ANSWER,
             variables = mapOf(
                 "persona" to job.personaSnapshot,
