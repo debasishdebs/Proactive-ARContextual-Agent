@@ -32,5 +32,6 @@ class ContextApp : Application() {
             }.onFailure { android.util.Log.w("ContextApp", "AI seed failed; will retry next start (${it.javaClass.simpleName})") }
         }
         com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
+        registerActivityLifecycleCallbacks(com.rokid.context.phone.hub.HubActivityHook)
     }
 }

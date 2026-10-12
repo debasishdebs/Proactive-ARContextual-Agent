@@ -15,6 +15,8 @@ object Channels {
     const val AUDIO = "pc_audio"
     const val LISTEN_END = "pc_listen_end"
     const val HELLO = "pc_hello"
+    /** Phone → glasses: please send a fresh `pc_hello` (the phone's clock offset looks stale). */
+    const val HELLO_REQUEST = "pc_hello_request"
 }
 
 @Serializable enum class PauseOrigin { GLASSES, PHONE, QUIET_HOURS }
@@ -144,6 +146,9 @@ data class Hello(
     val pauses: List<PauseRecord>,
     val nextCaptureAtMs: Long? = null,
 )
+
+/** Phone → glasses on `pc_hello_request`: the glasses answer with [Hello]. Sent rate-limited when a frame is held. */
+@Serializable data class HelloRequest(val v: Int = PROTOCOL_VERSION)
 
 /** First Caps string of every `pc_frame` message; the second string is one Base64 chunk (spec §1.8). */
 @Serializable

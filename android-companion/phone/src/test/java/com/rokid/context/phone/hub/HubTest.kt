@@ -1,0 +1,197 @@
+package com.rokid.context.phone.hub
+
+import android.app.Application
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.core.model.CaptureState
+import com.rokid.context.core.model.Channels
+import com.rokid.context.core.model.Command
+import com.rokid.context.core.model.Decoded
+import com.rokid.context.core.model.FrameAck
+import com.rokid.context.core.model.FrameCodec
+import com.rokid.context.core.model.GlassesStatus
+import com.rokid.context.core.model.Health
+import com.rokid.context.core.model.Hello
+import com.rokid.context.core.model.HelloRequest
+import com.rokid.context.core.model.HudSettings
+import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.MemoryLine
+import com.rokid.context.core.model.PROTOCOL_VERSION
+import com.rokid.context.core.model.PauseOrigin
+import com.rokid.context.core.model.PauseRecord
+import com.rokid.context.core.model.StateFrame
+import com.rokid.context.core.model.Verbosity
+import com.rokid.context.core.model.Wire
+import com.rokid.context.link.FakeGlassesLink
+import com.rokid.context.link.FrameAdmission
+import com.rokid.context.link.FrameReassembler
+import com.rokid.context.link.GlassesEvent
+import com.rokid.context.link.ReceivedFrameLedger
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+import java.io.File
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34], application = Application::class)
+class HubTest {
+    @get:Rule val tmp = TemporaryFolder()
+    private val ctx = ApplicationProvider.getApplicationContext<Application>()
+    private val db = testDb(ctx)
+    @After fun close() = db.close()
+    private val now = 1_793_000_000_000L
+    private val sources = object : HubSources {
+        override suspend fun today() = listOf(MemoryLine("m1", now, "Keys on the hallway shelf"))
+        override suspend fun queueDepth() = 2
+        override suspend fun aiHealth(nowMs: Long): Health = Health.Ok
+    }
+
+    private fun TestScope.hub(link: FakeGlassesLink, clock: () -> Long = { now }): Hub {
+        val pauses = HubPauses(db.pauseDao(), clock)
+        val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
+        val ingestor = FrameIngestor(File(tmp.root, "inbox"), FrameReassembler(), FrameAdmission(ledger, pauses), ledger) {}
+        val settings = HubSettingsStore(ctx.getSharedPreferences("hub_test_${tmp.root.name}", 0)) { "hud" }
+        return Hub(backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler))
+            .also { it.start(); runCurrent() }
+    }
+    private fun FakeGlassesLink.lastOn(channel: String) = sent.last { it.first == channel }.second
+    private fun hello(glassesNowMs: Long = now, pauses: List<PauseRecord> = emptyList()) =
+        GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 77, bufferSize = 4, glassesNowMs = glassesNowMs, pauses = pauses))
+
+    @Test fun startConnectsOnceAndReadyPushesSettingsThenState() = runTest {
+        val link = FakeGlassesLink()
+        hub(link)
+        assertEquals(1, link.connectOnceCalls)
+        link.sent.clear()
+        link.emitReady(); runCurrent()
+        assertEquals(listOf(Channels.SETTINGS, Channels.STATE), link.sent.map { it.first }.take(2))
+        val frame = (Wire.decode<StateFrame>(link.lastOn(Channels.STATE)) as Decoded.Ok).value
+        assertEquals(CaptureState.Running, frame.capture)
+        assertEquals(2, frame.queueDepth)
+        assertTrue(frame.phoneLinked)
+        assertEquals("Keys on the hallway shelf", frame.today.single().text)
+    }
+
+    /** Review Focus 1: glasses 2 h ahead; their pause is stored in phone clock and sent back in glasses clock. */
+    @Test fun helloMeasuresTheOffsetAndUnionsGlassesPausesInPhoneClock() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        val g = now + 7_200_000
+        link.emit(hello(glassesNowMs = g, pauses = listOf(PauseRecord("g1", PauseOrigin.GLASSES, g - 60_000, null)))); runCurrent()
+        assertEquals(7_200_000L, h.state.value.offset!!.glassesMinusPhoneMs)
+        assertEquals(GlassesStatus(LinkState.CONNECTED, 77, 4, null, h.status.value.frame), h.status.value)
+        advanceTimeBy(300)
+        val paused = (Wire.decode<StateFrame>(link.lastOn(Channels.STATE)) as Decoded.Ok).value.capture as CaptureState.Paused
+        assertEquals("sent back in glasses clock", g - 60_000, paused.records.single().createdAtMs)
+        assertEquals("stored in phone clock", now - 60_000, HubPauses(db.pauseDao()) { now }.active().single().createdAtMs)
+    }
+
+    @Test fun pauseAndResumeCommandsChangeTheCaptureState() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.emit(hello()); runCurrent()
+        link.emit(GlassesEvent.Cmd(Command.Pause(PauseRecord("g2", PauseOrigin.GLASSES, now, null)))); advanceTimeBy(300)
+        assertTrue(h.status.value.frame!!.capture is CaptureState.Paused)
+        link.emit(GlassesEvent.Cmd(Command.Resume(setOf("unknown")))); advanceTimeBy(300)
+        assertTrue("an unknown id clears nothing", h.status.value.frame!!.capture is CaptureState.Paused)
+        link.emit(GlassesEvent.Cmd(Command.Resume(setOf("g2")))); advanceTimeBy(300)
+        assertEquals(CaptureState.Running, h.status.value.frame!!.capture)
+    }
+
+    @Test fun frameIsHeldBeforeHelloThenIngestedAndAcked() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        val c = FrameCodec.split("g5", ByteArray(2_000) { 3 }, capturedAtMs = now - 1_000).single()
+        link.emit(GlassesEvent.Frame(c)); runCurrent()
+        assertTrue("held before hello", link.sent.none { it.first == Channels.FRAME_ACK })
+        link.emit(hello()); runCurrent()
+        link.emit(GlassesEvent.Frame(c)); runCurrent()
+        assertEquals(FrameAck(frameId = "g5", ok = true), (Wire.decode<FrameAck>(link.lastOn(Channels.FRAME_ACK)) as Decoded.Ok).value)
+        assertEquals(now - 1_000, h.status.value.lastFrameAtMs)
+    }
+
+    /** Review Focus 4: a mismatched glasses app is shown as such until a new session starts. */
+    @Test fun outdatedGlassesShowVersionMismatchUntilANewSession() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.emit(GlassesEvent.Outdated(PROTOCOL_VERSION + 1)); runCurrent()
+        assertEquals(LinkState.VERSION_MISMATCH, h.status.value.link)
+        link.emitReady(); runCurrent()
+        assertEquals(LinkState.CONNECTED, h.status.value.link)
+    }
+
+    @Test fun linkStateFlowsIntoTheStatus() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.setState(LinkState.CLOSED_ON_GLASSES); runCurrent()
+        assertEquals(LinkState.CLOSED_ON_GLASSES, h.status.value.link)
+    }
+
+    @Test fun reconnectIsAnExplicitConnect() = runTest {
+        val link = FakeGlassesLink()
+        hub(link).requestReconnect()
+        assertEquals(1, link.connectCalls)
+    }
+
+    @Test fun nothingIsSentWhileTheLinkIsDownButTheFrameIsKept() = runTest {
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        val h = hub(link)
+        advanceTimeBy(11_000)
+        assertTrue(link.sent.isEmpty())
+        assertNotNull(h.status.value.frame)
+    }
+
+    @Test fun settingsChangesArePushed() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        h.updateSettings { it.copy(verbosity = Verbosity.MAX) }; runCurrent()
+        assertEquals(Verbosity.MAX, (Wire.decode<HudSettings>(link.lastOn(Channels.SETTINGS)) as Decoded.Ok).value.verbosity)
+    }
+    /** Ruling (Task 4 review): a pause heard before any offset was anchored at receipt; the first hello re-converts it. */
+    @Test fun pausesHeardBeforeTheFirstHelloAreReConvertedWhenTheOffsetArrives() = runTest {
+        val link = FakeGlassesLink()
+        hub(link)
+        val g = now + 7_200_000
+        link.emit(GlassesEvent.Cmd(Command.Pause(PauseRecord("g6", PauseOrigin.GLASSES, g - 30_000, g + 60_000)))); runCurrent()
+        link.emit(GlassesEvent.Cmd(Command.Pause(PauseRecord("g7", PauseOrigin.GLASSES, g - 20_000, null)))); runCurrent()
+        link.emit(GlassesEvent.Cmd(Command.Resume(setOf("g7")))); runCurrent()
+        assertEquals("anchored at receipt", now, db.pauseDao().intervalFor("g6")!!.startMs)
+        link.emit(hello(glassesNowMs = g)); runCurrent()
+        val r = HubPauses(db.pauseDao()) { now }.active().single()
+        assertEquals("start moved to the true capture-side instant", now - 30_000, r.createdAtMs)
+        assertEquals("the later (more restrictive) end is kept", now + 90_000, r.untilMs)
+        assertEquals(now - 30_000, db.pauseDao().intervalFor("g6")!!.startMs)
+        val closed = db.pauseDao().intervalFor("g7")!!
+        assertEquals("a resumed pause still covers its true start", now - 20_000, closed.startMs)
+        assertEquals("and stays resumed", now, closed.effectiveEndMs)
+    }
+
+    /** Ruling (Task 4 review): a held frame is not acked and asks the glasses for a fresh hello, rate-limited. */
+    @Test fun aHeldFrameAsksForAFreshHelloAtMostOncePerWindow() = runTest {
+        var t = now
+        val link = FakeGlassesLink()
+        hub(link) { t }
+        link.emit(hello()); runCurrent()
+        fun future(id: String) = GlassesEvent.Frame(FrameCodec.split(id, ByteArray(2_000) { 3 }, capturedAtMs = now + 60_000).single())
+        fun requests() = link.sent.count { it.first == Channels.HELLO_REQUEST }
+        link.emit(future("g8")); runCurrent()
+        link.emit(future("g9")); runCurrent()
+        assertTrue(link.sent.none { it.first == Channels.FRAME_ACK })
+        assertEquals(1, requests())
+        assertTrue(Wire.decode<HelloRequest>(link.lastOn(Channels.HELLO_REQUEST)) is Decoded.Ok)
+        t += Hub.HELLO_REQUEST_MIN_INTERVAL_MS
+        link.emit(future("g10")); runCurrent()
+        assertEquals(2, requests())
+    }
+}
