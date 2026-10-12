@@ -1,0 +1,7 @@
+Task: The user asked you to remember something. Turn it into durable facts.
+What the user said:
+{{recent_context}}
+Rules:
+- Keep the user's own words where possible; one fact per item.
+- confidence is between 0 and 1. tags are 1-3 lowercase words.
+Reply with JSON: {"facts":[{"text":"...","type":"note","confidence":0.0,"tags":["..."]}]}

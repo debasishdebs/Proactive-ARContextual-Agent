@@ -1,3 +1,5 @@
+@file:Suppress("DEPRECATION")
+
 package com.rokid.context.orchestration
 
 import android.content.Context
@@ -13,7 +15,7 @@ import com.rokid.context.work.OrchestrationScheduler
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.ReviewState
-import com.rokid.context.prompt.PromptComposer
+import com.rokid.context.prompt.LegacyPromptComposer
 import com.rokid.context.prompt.PromptTemplateId
 import com.rokid.context.prompt.PromptTemplateRepository
 import kotlinx.coroutines.Dispatchers
@@ -88,7 +90,7 @@ object AskActions {
         val pool = hits.ifEmpty { graph.memories.recent(30).filter { it.reviewState == ReviewState.OK } }.take(10)
         if (pool.isEmpty()) return AskOutcome.Failed(NO_MEMORIES)
         val prompt = withContext(Dispatchers.IO) {
-            PromptComposer(PromptTemplateRepository(context)).compose(
+            LegacyPromptComposer(PromptTemplateRepository(context)).compose(
                 templateId = PromptTemplateId.READ_CONTEXT_ANSWER,
                 variables = mapOf(
                     "persona" to AppConfigStore.get(context).persona,

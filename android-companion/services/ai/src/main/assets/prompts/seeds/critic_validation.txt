@@ -1,0 +1,5 @@
+Task: Check whether each extracted fact is supported by the source context.
+{{recent_context}}
+Rules:
+- verdict is "pass" only if every fact is supported; otherwise "fail" with short reasons.
+Reply with JSON: {"verdict":"pass|fail","reasons":["..."]}

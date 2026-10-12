@@ -27,4 +27,5 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun askDao(): AskDao
     abstract fun nudgeDao(): NudgeDao
     abstract fun proposalDao(): ProposalDao
+    abstract fun promptDao(): PromptDao
 }
