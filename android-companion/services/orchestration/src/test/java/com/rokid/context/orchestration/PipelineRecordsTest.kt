@@ -7,6 +7,8 @@ import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.MemoryTier
+import com.rokid.context.memory.db.ReviewState
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -96,6 +98,21 @@ class PipelineRecordsTest {
         PipelineRecords.appendMemory(ctx, "rokid_mem_5", "short_term", "Milk carton nearly empty", 0.8, 3)
         PipelineRecords.purgeLowSignalMemories(ctx)
         assertEquals(listOf("rokid_mem_5"), PipelineRecords.recentMemories(ctx, 10).map { it.id })
+    }
+
+    @Test fun oneLineCollapsesEveryKindOfLineBreak() = runBlocking {
+        PipelineRecords.upsertTrace(ctx, "s1", "QUEUED", "a\r\nb\u2028c\u0085d\t e", updatedAt = 1)
+        assertEquals("a b c d e", PipelineRecords.recentTraces(ctx, 1).single().note)
+    }
+
+    /** Carry C2: the Phase 5 ids (rokid_mem_<job>_<i> facts, rokid_mem_<job> summaries) survive every legacy purge. */
+    @Test fun phase5MemoryIdsSurviveTheLegacyPurges() = runBlocking {
+        PipelineRecords.appendFact(ctx, "rokid_mem_abc_0", "f1", "Milk carton on the counter", "object", listOf("kitchen"), 0.9, MemoryTier.SHORT, ReviewState.OK, createdAt = 1)
+        PipelineRecords.appendFact(ctx, "rokid_mem_abc_1", "f1", "Maybe a cat", "object", emptyList(), 0.3, MemoryTier.SHORT, ReviewState.NEEDS_REVIEW, createdAt = 2)
+        PipelineRecords.appendFact(ctx, "rokid_mem_def", null, "A quiet morning in the kitchen", "summary", emptyList(), 0.8, MemoryTier.MEDIUM, ReviewState.OK, createdAt = 3)
+        PipelineRecords.purgeNonRokidMemories(ctx)
+        PipelineRecords.purgeLowSignalMemories(ctx)
+        assertEquals(setOf("rokid_mem_abc_0", "rokid_mem_abc_1", "rokid_mem_def"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
     }
 
     @Test fun inboxFramesArchivedInTheSameMillisecondBothStoreWithDistinctFullIds() = runBlocking {

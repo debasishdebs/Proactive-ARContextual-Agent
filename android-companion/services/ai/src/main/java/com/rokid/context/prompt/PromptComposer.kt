@@ -38,12 +38,3 @@ object PromptComposer {
         return safe.replace(LINE_BREAKS, " ").trim()
     }
 }
-
-/** Legacy call shape kept until Task 13 moves the last callers to RoleRunner. */
-@Deprecated("Use the prompt store and RoleRunner")
-class LegacyPromptComposer(private val repository: PromptTemplateSource) {
-    fun compose(templateId: PromptTemplateId, variables: Map<String, String>): String {
-        val system = repository.load(PromptTemplateId.SYSTEM_GLOBAL).trim()
-        return "$system\n\n${PromptComposer.render(repository.load(templateId), variables).trim()}"
-    }
-}

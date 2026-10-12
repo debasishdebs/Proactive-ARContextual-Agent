@@ -1,5 +1,3 @@
-@file:Suppress("DEPRECATION")
-
 package com.rokid.context.work
 
 import android.content.Context
@@ -7,7 +5,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.PowerManager
-import android.util.Base64
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
@@ -15,6 +12,12 @@ import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.ModelErrorMapper
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.SafeLog
+import com.rokid.context.ai.contract.CriticOutput
+import com.rokid.context.ai.contract.ExtractOutput
+import com.rokid.context.ai.contract.Fact
+import com.rokid.context.ai.contract.PromptKey
+import com.rokid.context.ai.contract.SummaryOutput
+import com.rokid.context.ai.run.RoleCall
 import com.rokid.context.core.model.UserFacingErrors
 import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.data.runtime.AppConfigStore
@@ -25,19 +28,19 @@ import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
-import com.rokid.context.memory.db.FrameEntity
-import com.rokid.context.model.ModelImageInput
+import com.rokid.context.memory.db.MemoryTier
+import com.rokid.context.memory.db.ReviewState
+import com.rokid.context.orchestration.AnswerService
+import com.rokid.context.orchestration.EmbeddingWorker
+import com.rokid.context.orchestration.FrameInputs
+import com.rokid.context.orchestration.NoMemoriesException
 import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.orchestration.RetryClassifier
 import com.rokid.context.orchestration.RetryPolicy
-import com.rokid.context.prompt.LegacyPromptComposer
-import com.rokid.context.prompt.PromptHash
-import com.rokid.context.prompt.PromptTemplateId
-import com.rokid.context.prompt.PromptTemplateRepository
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import java.io.File
+import com.rokid.context.prompt.PromptComposer
+import com.rokid.context.prompt.PromptVars
 import java.util.Locale
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.pow
 
 class QueueDrainWorker(
@@ -59,12 +62,7 @@ class QueueDrainWorker(
 
             val policyError = policyDeferralReason(job)
             if (policyError != null) {
-                QueueRuntimeStore.markDeferred(
-                    context = applicationContext,
-                    id = job.id,
-                    error = policyError,
-                    backoffMs = computeBackoffMs(job.attemptCount),
-                )
+                QueueRuntimeStore.markPostponed(applicationContext, job.id, policyError, delayMs = POLICY_DEFER_MS)
                 PipelineRecords.upsertTrace(applicationContext, job.id, "DEFERRED", policyError)
                 return@repeat
             }
@@ -77,7 +75,7 @@ class QueueDrainWorker(
                 val outcome = RetryClassifier.classify(error)
                 if (outcome == RetryClassifier.Outcome.CANCELLED) {
                     // WorkManager stopped us: keep the job for the next run, then let cancellation propagate.
-                    QueueRuntimeStore.markDeferred(applicationContext, job.id, "cancelled; will retry", backoffMs = 0)
+                    QueueRuntimeStore.markPostponed(applicationContext, job.id, "cancelled; will retry", delayMs = 0)
                     throw error
                 }
                 val decision = RetryPolicy.decide(outcome, job.attemptCount)
@@ -146,72 +144,59 @@ class QueueDrainWorker(
         }
     }
 
+    private val ai get() = AiGraph.get(applicationContext)
+
     private suspend fun processBatchedSummarization(job: QueueJobRecord) {
         val payload = QueuePayloads.parse(job.payload)
         val importedFrames = QueuePayloads.int(payload, "imported_frames", 0)
-        val frameIdsCsv = QueuePayloads.string(payload, "frame_ids_csv")
-        val frameIds = frameIdsCsv
-            .split(",")
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-        val frames = if (frameIds.isNotEmpty()) {
-            PipelineRecords.framesByIds(applicationContext, frameIds).takeLast(12)
-        } else {
-            PipelineRecords.recentFrames(applicationContext, 10)
-        }
-        if (frames.isEmpty()) {
-            throw IllegalStateException("No Rokid frames available for summarization")
-        }
-
-        val frameWindow = frames.joinToString(separator = "\n") {
-            "id=${it.id}, ts=${it.ts}, source=${it.source}, payload=${it.payload}"
-        }
-
-        val prompt = LegacyPromptComposer(PromptTemplateRepository(applicationContext)).compose(
-            templateId = PromptTemplateId.WRITE_CONTEXT_BATCHED,
-            variables = mapOf(
-                "persona" to job.personaSnapshot,
-                "input_language" to "auto",
-                "frame_window" to frameWindow,
-                "attached_images" to buildAttachedImagesLabel(frames),
-            ),
+        val frameIds = QueuePayloads.string(payload, "frame_ids_csv").split(",").map { it.trim() }.filter { it.isNotBlank() }
+        val frames = if (frameIds.isNotEmpty()) PipelineRecords.framesByIds(applicationContext, frameIds).takeLast(12) else PipelineRecords.recentFrames(applicationContext, 10)
+        if (frames.isEmpty()) throw IllegalStateException("No Rokid frames available for summarization")
+        val frameLines = frames.sortedBy { it.ts }.map { "id=${it.id} · ts=${it.ts} · source=${it.source} · ${it.payload}" }
+        val result = ai.runner.run(
+            RoleCall(PromptKey.VISION_EXTRACT, PromptVars(recentContext = PromptComposer.dataBlock("frames", frameLines)),
+                images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true),
         )
-        Log.i(TAG, "batched write promptHash=${PromptHash.sha256(prompt)}")
-
-        val modelOutput = generateBatchedSummary(prompt, frames)
-        val confidence = extractConfidence(modelOutput)
-        val critic = criticWorker.validate(job.id, confidence)
-
-        if (critic.status == SummaryStatus.TRUSTED) {
-            PipelineRecords.appendMemory(
-                applicationContext,
-                id = "rokid_mem_${job.id.takeLast(12)}",
-                type = "short_term",
-                content = modelOutput.take(260),
-                confidence = confidence,
-                createdAt = System.currentTimeMillis(),
-            )
-            PipelineRecords.upsertTrace(applicationContext, job.id, "TRUSTED", "frames=${frames.size} imported=$importedFrames")
+        val facts = (result.output as ExtractOutput).facts.filter { it.text.isNotBlank() }
+        if (facts.isEmpty()) {
+            PipelineRecords.upsertTrace(applicationContext, job.id, "NO_FACTS", "No facts in ${frames.size} frame(s)")
+            return
+        }
+        val confidence = facts.map { it.confidence }.average()
+        val trusted = criticWorker.validate(job.id, confidence).status == SummaryStatus.TRUSTED || modelCriticPasses(facts, frameLines)
+        val frameId = frames.maxBy { it.ts }.id
+        facts.forEachIndexed { i, f ->
+            PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}_$i", frameId, f.text, f.type, f.tags, f.confidence,
+                MemoryTier.SHORT, if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW)
+        }
+        EmbeddingWorker.enqueue(applicationContext)
+        if (trusted) {
+            PipelineRecords.upsertTrace(applicationContext, job.id, "TRUSTED", "frames=${frames.size} imported=$importedFrames facts=${facts.size} v${result.promptVersion}")
             PipelineStatsStore.incSummarizerSucceeded(applicationContext)
         } else {
             val reason = "Critic low confidence=${"%.2f".format(Locale.US, confidence)}"
             QueueRuntimeStore.enqueue(
-                context = applicationContext,
-                queue = QueuePriority.PRIORITY_REPROCESS,
-                payload = QueuePayloads.reprocess(reason = reason, sourceContext = frameWindow),
-                personaSnapshot = job.personaSnapshot,
-                ttlHours = 24,
-            )
-            PipelineRecords.appendMemory(
-                applicationContext,
-                id = "rokid_review_${job.id.takeLast(12)}",
-                type = "review",
-                content = "$reason | ${modelOutput.take(200)}",
-                confidence = confidence,
-                createdAt = System.currentTimeMillis(),
+                context = applicationContext, queue = QueuePriority.PRIORITY_REPROCESS,
+                payload = QueuePayloads.reprocess(reason = reason, sourceContext = (facts.map { it.text } + frameLines).joinToString("\n")),
+                personaSnapshot = job.personaSnapshot, ttlHours = 24,
             )
             PipelineRecords.upsertTrace(applicationContext, job.id, "NEEDS_REVIEW", "Reprocess queued: $reason")
             PipelineStatsStore.incSummarizerFailed(applicationContext)
+        }
+    }
+
+    /** spec §4.2 CRITIC as a second opinion on low-confidence facts. Unbound or failing → keep the local verdict. */
+    private suspend fun modelCriticPasses(facts: List<Fact>, frameLines: List<String>): Boolean {
+        if (ai.bindings.get(Role.CRITIC) == null) return false
+        val vars = PromptVars(recentContext = PromptComposer.dataBlock("facts", facts.map { "${it.text} (confidence ${"%.2f".format(Locale.US, it.confidence)})" }) +
+            "\n" + PromptComposer.dataBlock("source", frameLines))
+        return try {
+            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars)).output as CriticOutput).pass
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            Log.i(TAG, "critic unavailable, keeping the local verdict: ${SafeLog.describe(e)}")
+            false
         }
     }
 
@@ -220,138 +205,39 @@ class QueueDrainWorker(
         val sourceContext = QueuePayloads.string(payload, "source_context")
         val reason = QueuePayloads.string(payload, "reason", "low confidence")
         val frames = PipelineRecords.recentFrames(applicationContext, 6)
-
-        val prompt = LegacyPromptComposer(PromptTemplateRepository(applicationContext)).compose(
-            templateId = PromptTemplateId.RE_SUMMARIZE,
-            variables = mapOf(
-                "prior_summary" to "See source context",
-                "critic_reasoning" to reason,
-                "source_context" to sourceContext,
-                "attached_images" to buildAttachedImagesLabel(frames),
-            ),
-        )
-        Log.i(TAG, "re-summarize promptHash=${PromptHash.sha256(prompt)}")
-
-        val output = generateBatchedSummary(prompt, frames)
-        val confidence = extractConfidence(output).coerceAtLeast(0.75)
-
-        PipelineRecords.appendMemory(
-            applicationContext,
-            id = "rokid_mem_${job.id.takeLast(12)}",
-            type = "short_term",
-            content = output.take(260),
-            confidence = confidence,
-            createdAt = System.currentTimeMillis(),
-        )
+        val vars = PromptVars(recentContext = PromptComposer.dataBlock("memories", sourceContext.lines().filter { it.isNotBlank() }) +
+            "\n" + PromptComposer.dataBlock("critic_notes", listOf(reason)))
+        val out = ai.runner.run(RoleCall(PromptKey.SUMMARIZE, vars, images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true)).output as SummaryOutput
+        PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}", null, out.summary, "summary", out.entities,
+            out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK)
+        EmbeddingWorker.enqueue(applicationContext)
         PipelineRecords.upsertTrace(applicationContext, job.id, "REPROCESSED", "Re-summarized after critic feedback")
     }
 
     private suspend fun processExplicitWrite(job: QueueJobRecord) {
         val payload = QueuePayloads.parse(job.payload)
         val rawInput = QueuePayloads.string(payload, "raw_input")
-        val inputLanguage = QueuePayloads.string(payload, "input_language", "auto")
         require(rawInput.isNotBlank()) { "Empty explicit write input" }
-
-        val prompt = LegacyPromptComposer(PromptTemplateRepository(applicationContext)).compose(
-            templateId = PromptTemplateId.WRITE_CONTEXT_EXPLICIT,
-            variables = mapOf(
-                "persona" to job.personaSnapshot,
-                "input_language" to inputLanguage,
-                "timestamp_iso" to java.time.Instant.now().toString(),
-                "raw_input" to rawInput,
-            ),
-        )
-        Log.i(TAG, "explicit write promptHash=${PromptHash.sha256(prompt)}")
-
-        val output = generateWithFallback(Role.EXPLICIT_REMEMBER, prompt)
-        val confidence = extractConfidence(output)
-
-        PipelineRecords.appendMemory(
-            applicationContext,
-            id = "rokid_mem_${job.id.takeLast(12)}",
-            type = if (confidence >= 0.80) "long_term" else "short_term",
-            content = output.take(260),
-            confidence = confidence,
-            createdAt = System.currentTimeMillis(),
-        )
-        PipelineRecords.upsertTrace(applicationContext, job.id, "WRITE_CONTEXT_OK", "Explicit write saved")
+        val facts = (ai.runner.run(RoleCall(PromptKey.EXPLICIT_REMEMBER, PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(rawInput))))).output as ExtractOutput)
+            .facts.filter { it.text.isNotBlank() }
+        facts.forEachIndexed { i, f ->
+            PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}_$i", null, f.text, f.type, f.tags, f.confidence,
+                if (f.confidence >= 0.80) MemoryTier.LONG else MemoryTier.MEDIUM, ReviewState.OK)
+        }
+        EmbeddingWorker.enqueue(applicationContext)
+        PipelineRecords.upsertTrace(applicationContext, job.id, "WRITE_CONTEXT_OK", "Explicit write saved (${facts.size} fact(s))")
     }
 
     private suspend fun processReadContext(job: QueueJobRecord) {
-        val payload = QueuePayloads.parse(job.payload)
-        val query = QueuePayloads.string(payload, "query")
-        val inputLanguage = QueuePayloads.string(payload, "input_language", "auto")
+        val query = QueuePayloads.string(QueuePayloads.parse(job.payload), "query")
         require(query.isNotBlank()) { "Empty read context query" }
-
-        val trusted = PipelineRecords.recentMemories(applicationContext, 60)
-            .filter { !it.type.contains("review", ignoreCase = true) }
-
-        if (trusted.isEmpty()) {
+        val answered = try {
+            AnswerService.forApp(applicationContext).answerOrThrow(query, source = "queue")
+        } catch (e: NoMemoriesException) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "CONTEXT_TEMP_UNAVAILABLE", "No trusted memory found; queue status can be checked from Queue card")
-            throw IllegalStateException("Context temporarily unavailable")
+            throw e
         }
-
-        val retrieved = trusted.take(10).joinToString(separator = "\n") {
-            "${it.type} | conf=${"%.2f".format(Locale.US, it.confidence)} | ${it.text}"
-        }
-
-        val prompt = LegacyPromptComposer(PromptTemplateRepository(applicationContext)).compose(
-            templateId = PromptTemplateId.READ_CONTEXT_ANSWER,
-            variables = mapOf(
-                "persona" to job.personaSnapshot,
-                "input_language" to inputLanguage,
-                "query" to query,
-                "retrieved_context" to retrieved,
-            ),
-        )
-        Log.i(TAG, "read context promptHash=${PromptHash.sha256(prompt)}")
-
-        val answer = generateWithFallback(Role.ANSWER, prompt)
-        PipelineRecords.upsertTrace(applicationContext, job.id, "READ_CONTEXT_OK", answer.take(180))
-    }
-
-    private suspend fun generateWithFallback(role: Role, prompt: String): String =
-        AiGraph.get(applicationContext).router.generate(role, prompt)
-
-    private suspend fun generateBatchedSummary(prompt: String, frames: List<FrameEntity>): String =
-        AiGraph.get(applicationContext).router.generateFromFrames(prompt, images = buildVisionInputs(frames, maxImages = 3))
-
-    private fun buildAttachedImagesLabel(frames: List<FrameEntity>): String {
-        val withPreview = frames.count { it.path.isNotBlank() }
-        return "$withPreview candidate image(s) in current frame window"
-    }
-
-    private fun buildVisionInputs(
-        frames: List<FrameEntity>,
-        maxImages: Int,
-    ): List<ModelImageInput> {
-        if (maxImages <= 0) return emptyList()
-        return frames.asSequence()
-            .mapNotNull { frame ->
-                val path = frame.path
-                if (path.isBlank()) return@mapNotNull null
-                val file = File(path)
-                if (!file.exists() || !file.canRead() || file.length() <= 0L) return@mapNotNull null
-                val raw = runCatching { file.readBytes() }.getOrNull() ?: return@mapNotNull null
-                val mime = when (file.extension.lowercase(Locale.US)) {
-                    "png" -> "image/png"
-                    "webp" -> "image/webp"
-                    else -> "image/jpeg"
-                }
-                ModelImageInput(
-                    mimeType = mime,
-                    base64Data = Base64.encodeToString(raw, Base64.NO_WRAP),
-                    detail = "low",
-                )
-            }
-            .take(maxImages)
-            .toList()
-    }
-
-    private fun extractConfidence(output: String): Double {
-        val regex = Regex("\\\"confidence\\\"\\s*:\\s*([0-9]*\\.?[0-9]+)")
-        val fromJson = regex.find(output)?.groupValues?.getOrNull(1)?.toDoubleOrNull()
-        return (fromJson ?: 0.76).coerceIn(0.0, 1.0)
+        PipelineRecords.upsertTrace(applicationContext, job.id, "READ_CONTEXT_OK", "Answered (${answered.askId})")
     }
 
     private fun computeBackoffMs(attempt: Int): Long {
@@ -398,5 +284,6 @@ class QueueDrainWorker(
     companion object {
         private const val TAG = "QueueDrainWorker"
         private const val MAX_JOBS_PER_RUN = 8
+        private const val POLICY_DEFER_MS = 15 * 60 * 1000L
     }
 }

@@ -3,7 +3,8 @@ package com.rokid.context.orchestration
 /**
  * Phase 2 carry: a RETRY outcome is retried at most [MAX_ATTEMPTS] times in total, then the job fails. With the
  * 30 s × 2ⁿ backoff (capped at 30 min) the last attempt runs about an hour after the first. Policy deferrals
- * (battery saver, low battery) also count, as they always incremented `attemptCount`; the 24 h TTL still applies.
+ * (battery saver, low battery) and cancellations are postponements, not attempts (`QueueRuntimeStore.markPostponed`);
+ * the 24 h TTL still applies.
  */
 object RetryPolicy {
     const val MAX_ATTEMPTS = 8

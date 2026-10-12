@@ -5,11 +5,14 @@ import android.util.Log
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
+import com.rokid.context.memory.db.MemoryTier
+import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.legacy.LegacyImporter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 
 /**
  * The legacy pipeline's record rules over the Room repositories (replaces the Phase 2 frame / memory / summary-trace
@@ -29,7 +32,8 @@ object PipelineRecords {
         return MemoryGraph.get(context)
     }
 
-    private fun oneLine(s: String) = s.replace("\n", " ").replace("\t", " ")
+    private val LINE_BREAKS = Regex("[\\s\\p{Cntrl}\\u2028\\u2029\\u0085]+")
+    private fun oneLine(s: String) = s.replace(LINE_BREAKS, " ").trim()
 
     // --- frames -------------------------------------------------------------------------------------------------
 
@@ -89,6 +93,24 @@ object PipelineRecords {
 
     suspend fun appendMemory(context: Context, id: String, type: String, content: String, confidence: Double, createdAt: Long) {
         graph(context).memories.add(LegacyImporter.toMemory(id, type, confidence, createdAt, oneLine(content).take(260)))
+    }
+
+    /**
+     * One extracted fact (spec §4.4 VISION_EXTRACT / EXPLICIT_REMEMBER) or a summary, indexed for search.
+     * Ids must keep the `rokid_` prefix (and not `rokid_review_`) or [purgeNonRokidMemories] / [purgeLowSignalMemories] drop them.
+     */
+    suspend fun appendFact(
+        context: Context, id: String, frameId: String?, text: String, type: String, tags: List<String>, confidence: Double,
+        tier: MemoryTier, reviewState: ReviewState, createdAt: Long = System.currentTimeMillis(),
+    ) {
+        graph(context).memories.add(
+            MemoryEntity(
+                id = id, frameId = frameId, text = oneLine(text).take(260), type = oneLine(type).take(20).ifEmpty { "note" },
+                tags = tags.map { oneLine(it).lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.take(5).joinToString(" "),
+                tier = tier, confidence = confidence.coerceIn(0.0, 1.0), reviewState = reviewState, trusted = false,
+                createdAt = createdAt, derived = type == "summary", searchText = "",
+            ),
+        )
     }
 
     suspend fun recentMemories(context: Context, limit: Int): List<MemoryEntity> = graph(context).memories.recent(limit)
