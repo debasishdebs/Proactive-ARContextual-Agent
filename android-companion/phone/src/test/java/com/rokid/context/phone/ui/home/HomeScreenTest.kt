@@ -1,0 +1,99 @@
+package com.rokid.context.phone.ui.home
+
+import android.app.Application
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.ui.theme.PcTheme
+import com.rokid.context.phone.ui.banner.BannerAction
+import com.rokid.context.phone.ui.banner.BannerInputs
+import com.rokid.context.phone.ui.banner.BannerResolver
+import com.rokid.context.phone.ui.status.StatusUi
+import org.junit.Assert.assertEquals
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34], application = Application::class)
+class HomeScreenTest {
+    @get:Rule val compose = createComposeRule()
+    private val asked = mutableListOf<String>()
+    private val opened = mutableListOf<String>()
+    private var pauses = 0
+    private var banner: BannerAction? = null
+
+    private fun show(state: HomeUiState) = compose.setContent {
+        PcTheme { HomeScreen(state, onQuestionChange = {}, onAsk = { asked += it }, onOpenAsk = { opened += it }, onTogglePause = { pauses++ }, onBannerAction = { banner = it }) }
+    }
+
+    private val live = StatusUi("Capturing · next 4:12", live = true, paused = false, batteryPct = 82, banner = null)
+
+    @Test fun headerShowsCaptureLineAndPauseToggles() {
+        show(HomeUiState(status = live))
+        compose.onNodeWithText("Proactive Context").assertIsDisplayed()
+        compose.onNodeWithText("● Capturing · next 4:12").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Pause capture").performClick()
+        assertEquals(1, pauses)
+    }
+
+    @Test fun pausedHeaderOffersResumeAndShowsBanner() {
+        show(HomeUiState(status = StatusUi("Paused", false, true, null, BannerResolver.resolve(BannerInputs(link = LinkState.OFFLINE)))))
+        compose.onNodeWithText("❚❚ Paused").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Resume capture").assertIsDisplayed()
+        compose.onNodeWithText("Reconnect").performClick()
+        assertEquals(BannerAction.RECONNECT, banner)
+    }
+
+    @Test fun suggestionChipsAskImmediatelyAndMicIsDisabled() {
+        show(HomeUiState(status = live, suggestions = listOf("What about milk?", "Where did I leave my keys?", "What did I eat today?")))
+        compose.onNodeWithText("Ask about your day").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Ask by voice").assertIsNotEnabled()
+        compose.onNodeWithText("What about milk?").performClick()
+        assertEquals(listOf("What about milk?"), asked)
+    }
+
+    @Test fun typedQuestionIsSentAndErrorsShow() {
+        show(HomeUiState(status = live, question = "where are my keys", askError = "AI unavailable — check Settings › Model endpoints"))
+        compose.onNodeWithContentDescription("Send question").performClick()
+        assertEquals(listOf("where are my keys"), asked)
+        compose.onNodeWithText("AI unavailable — check Settings › Model endpoints").assertIsDisplayed()
+    }
+
+    @Test fun feedShowsAsksAndNudgesAndOpensAnAsk() {
+        val feed = listOf(
+            FeedItem.Nudge("n1", 2, "09:41", "Milk looked almost empty", "Seen in the fridge at 09:41", redacted = false),
+            FeedItem.Ask("a1", 1, "08:15", "Did I take my vitamins?", "Yes, at 07:52.", redacted = false),
+        )
+        show(HomeUiState(status = live, feed = feed))
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("You asked “Did I take my vitamins?”"))
+        compose.onNodeWithText("You asked “Did I take my vitamins?”").performClick()
+        assertEquals(listOf("a1"), opened)
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Milk looked almost empty"))
+        compose.onNodeWithText("Milk looked almost empty").performClick()
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Seen in the fridge at 09:41"))
+        compose.onNodeWithText("Seen in the fridge at 09:41").assertIsDisplayed()
+    }
+
+    @Test fun emptyFeedShowsHint() {
+        show(HomeUiState(status = live))
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Answers and heads-ups will appear here."))
+        compose.onNodeWithText("Answers and heads-ups will appear here.").assertIsDisplayed()
+    }
+
+    @Test fun inlineAnswerOpensItsDetail() {
+        show(HomeUiState(status = live, lastAnswer = FeedItem.Ask("a9", 1, "10:00", "milk?", "Milk is almost empty.", false)))
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Milk is almost empty."))
+        compose.onNodeWithText("Milk is almost empty.").performClick()
+        assertEquals(listOf("a9"), opened)
+    }
+}
