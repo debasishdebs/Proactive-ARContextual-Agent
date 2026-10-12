@@ -5,6 +5,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelProvider
+import com.rokid.context.model.ModelReply
+import com.rokid.context.model.ModelRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -152,5 +154,40 @@ class ModelRouterTest {
         val e = err { router.generate(Role.ANSWER, "q") } as ModelCallException
         assertTrue(e.retryable); assertEquals(FailureKind.AUTH, e.kind)
         assertEquals(FailureKind.NOT_SET, (err { router.generate(Role.NUDGE, "q") } as ModelCallException).kind)
+    }
+
+    @Test fun bindingTemperatureAndMaxTokensReachTheRequest() = runTest {
+        val seen = mutableListOf<ModelRequest>()
+        val r = ModelRouter(bindings, endpoints, ProviderBuilder { _, _, _ ->
+            object : ModelProvider {
+                override suspend fun generate(prompt: String) = error("unused")
+                override suspend fun complete(request: ModelRequest): ModelReply { seen += request; return ModelReply("ok", 3, 1) }
+            }
+        })
+        ep("a", Capability.CHAT)
+        bindings.set(RoleBinding(Role.ANSWER, "a", "m", temperature = 0.9, maxTokens = 42)).getOrThrow()
+        val reply = r.complete(Role.ANSWER) { ModelRequest("q") }
+        assertEquals(0.9, seen.single().temperature!!, 0.0); assertEquals(42, seen.single().maxTokens)
+        assertEquals("a", reply.endpoint.id); assertEquals("m", reply.model); assertEquals(3, reply.promptTokens)
+        r.complete(Role.ANSWER) { ModelRequest("q", temperature = 0.0) }
+        assertEquals(0.0, seen.last().temperature!!, 0.0) // an explicit request value wins over the binding
+    }
+
+    @Test fun theBuilderSeesTheEndpointItIsCalledFor() = runTest {
+        ep("a", Capability.CHAT); ep("b", Capability.CHAT)
+        bindings.set(RoleBinding(Role.ANSWER, "a", "m1", fallbackEndpointId = "b", fallbackModel = "m2")).getOrThrow()
+        failures["a:text"] = http(500)
+        val built = mutableListOf<String>()
+        assertEquals("b/m2", router.complete(Role.ANSWER) { e -> built += e.id; ModelRequest("q") }.text)
+        assertEquals(listOf("a", "b"), built)
+    }
+
+    @Test fun completeOnUsesOnlyTheGivenEndpoint() = runTest {
+        ep("a", Capability.CHAT); ep("b", Capability.CHAT)
+        bindings.set(RoleBinding(Role.ANSWER, "a", "m1", fallbackEndpointId = "b")).getOrThrow()
+        failures["b:text"] = http(401)
+        val e = err { router.completeOn("b", "x") { ModelRequest("q") } } as ModelCallException
+        assertEquals(FailureKind.AUTH, e.kind); assertEquals(listOf("b:text"), calls)
+        assertEquals(FailureKind.NOT_SET, (err { router.completeOn("gone", "x") { ModelRequest("q") } } as ModelCallException).kind)
     }
 }
