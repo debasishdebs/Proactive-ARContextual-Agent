@@ -12,6 +12,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -75,5 +76,41 @@ class PromptRepositoryTest {
         assertEquals("The template is empty", runCatching { repo.save(PromptKey.ANSWER, PromptDraft("  ", null), "", false) }.exceptionOrNull()?.message)
         repo.save(PromptKey.SYSTEM, PromptDraft("You are terse.", "{\"type\":\"object\"}"), "", false)
         assertEquals(null, repo.active(PromptKey.SYSTEM).outputSchema)
+    }
+
+    private class CountingSeeds(private val text: (PromptKey) -> String = BuiltInPromptSeeds::template) : PromptSeeds {
+        val reads = AtomicInteger()
+        val threads = java.util.Collections.synchronizedList(mutableListOf<String>())
+        override fun template(key: PromptKey): String { reads.incrementAndGet(); threads += Thread.currentThread().name; return text(key) }
+    }
+
+    @Test fun seedsAreReadOffTheCallerThreadAndOnlyForUnseededKeys() = runBlocking {
+        val seeds = CountingSeeds()
+        val r = PromptRepository(db.promptDao(), seeds, settings) { clock++ }
+        r.active(PromptKey.ANSWER)
+        assertEquals(1, seeds.reads.get())
+        r.ensureSeeded()
+        assertEquals(PromptKey.entries.size, seeds.reads.get())
+        r.ensureSeeded(); PromptKey.entries.forEach { r.active(it) }
+        assertEquals(PromptKey.entries.size, seeds.reads.get())
+        val caller = Thread.currentThread().name
+        assertTrue(seeds.threads.toString(), seeds.threads.none { it == caller })
+    }
+
+    @Test fun versioningOffFirstSaveOverwritesTheSeededV1() = runBlocking {
+        settings.setKeepVersions(false)
+        assertEquals(1, repo.save(PromptKey.ANSWER, draft("x"), "edit", true))
+        assertEquals(listOf(1), repo.history(PromptKey.ANSWER).first().map { it.version })
+        assertTrue(repo.active(PromptKey.ANSWER).template.endsWith("x"))
+    }
+
+    @Test fun seedTextIsTrimmedSoRestoringV1IsExact() = runBlocking {
+        val r = PromptRepository(db.promptDao(), CountingSeeds { "\n  " + BuiltInPromptSeeds.template(it) + "\n\n" }, settings) { clock++ }
+        val v1 = r.active(PromptKey.ANSWER).template
+        assertEquals(BuiltInPromptSeeds.template(PromptKey.ANSWER), v1)
+        r.save(PromptKey.ANSWER, draft("a"), "", true)
+        assertEquals(3, r.restore(PromptKey.ANSWER, 1))
+        assertEquals(v1, r.active(PromptKey.ANSWER).template)
+        assertTrue(LineDiff.diff(v1, r.active(PromptKey.ANSWER).template).all { it.kind == LineDiff.Kind.SAME })
     }
 }

@@ -1,6 +1,7 @@
 package com.rokid.context.prompt
 
 import android.content.Context
+import android.util.Log
 import com.rokid.context.ai.contract.PromptKey
 
 /** First-launch prompt text per key (spec §4.3 seeds). */
@@ -20,14 +21,16 @@ object BuiltInPromptSeeds : PromptSeeds {
 }
 
 /** Reads `assets/prompts/seeds/<file>` (shipped by `:services:ai`); falls back to [BuiltInPromptSeeds]. */
-class AssetPromptSeeds(context: Context) : PromptSeeds {
+class AssetPromptSeeds(context: Context, private val dir: String = "prompts/seeds") : PromptSeeds {
     private val assets = context.applicationContext.assets
 
     override fun template(key: PromptKey): String =
-        runCatching { assets.open("prompts/seeds/${file(key)}").bufferedReader().use { it.readText() } }.getOrNull()?.takeIf { it.isNotBlank() }
-            ?: BuiltInPromptSeeds.template(key)
+        runCatching { assets.open("$dir/${file(key)}").bufferedReader().use { it.readText() } }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: BuiltInPromptSeeds.template(key).also { Log.w(TAG, "Seed asset missing for ${key.name}; using the built-in seed") }
 
     companion object {
+        private const val TAG = "AssetPromptSeeds"
+
         fun file(key: PromptKey): String = when (key) {
             PromptKey.SYSTEM -> "system_global.txt"
             PromptKey.VISION_EXTRACT -> "write_context_batched.txt"
