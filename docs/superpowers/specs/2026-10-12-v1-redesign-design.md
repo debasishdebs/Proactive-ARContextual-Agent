@@ -71,10 +71,10 @@ Raw RFCOMM/SPP: `glasses/RokidBluetoothProtocol.kt`, `bridge/RokidBridgeService.
 |---|---|---|
 | P→G | `pc_state` | `StateFrame` JSON (see 1.6) |
 | P→G | `pc_settings` | `HudSettings` JSON |
-| G→P | `pc_frame` | Caps: metadata JSON (`frameId`, `chunkIdx`, `chunkCount`, `crc32`, capture ts on glasses clock, luma, phash, battery) + JPEG bytes (whole or one chunk — see 1.8) |
+| G→P | `pc_frame` | Caps: metadata JSON (`frameId`, `chunkIdx`, `chunkCount`, `crc32`, capture ts on glasses clock, luma, phash, battery) + one Base64 JPEG chunk as a second Caps string (see 1.8). Glasses-side `CXRServiceBridge.sendMessage(channel, Caps)` has no bytes argument; Base64-in-Caps is the path Live Fit verified on device for `lf_audio`. |
 | P→G | `pc_frame_ack` | `{frameId, ok, reason?}` — glasses delete a buffered frame only after `ok=true` |
 | G→P | `pc_cmd` | `Command` JSON: `Tap`, `DoubleTap`, `Swipe(dir,long)`, `Confirm(proposalId, yes)`, `Pause(pause: PauseRecord)`, `Resume(clears: Set<pauseId>)`, `PageChanged(page)`, `ListenStart`, `Cancel` |
-| G→P | `pc_audio` | PCM 16 kHz mono chunks |
+| G→P | `pc_audio` | PCM 16 kHz mono chunks, Base64 in a Caps string (3 200-byte chunks, as Live Fit) |
 | G→P | `pc_listen_end` | end-of-utterance marker |
 | G→P | `pc_hello` | glasses protocol version, battery, buffer size, glasses wall-clock ms (for offset), local `PauseRecord`s (§5.5) |
 
@@ -107,7 +107,7 @@ Broadcast on change, throttled to ≤ 4 Hz; full frame (not deltas).
 **State authority exception — capture pause.** The phone is the authority for everything in `StateFrame` *except* whether capture is allowed: pause is enforced locally on the glasses as well and reconciled by the most-restrictive-wins rule in §5.5. Nothing (reconnect, stale `StateFrame`, settings push) can resume capture implicitly.
 
 ### 1.8 Frame transfer (glasses → phone)
-- Frames > the CXR per-message limit (measured in the phase 0 spike; assume 16 KB until measured) are split into chunks with `frameId`, `chunkIdx`, `chunkCount`, `crc32` of the whole JPEG.
+- Frames whose Base64 form exceeds the safe per-message Caps string size (measured in the phase 0 spike; assume 16 KB until measured) are split into chunks with `frameId`, `chunkIdx`, `chunkCount`, `crc32` of the whole JPEG.
 - Phone reassembles per `frameId`; incomplete frames are discarded after 10 s without a new chunk; CRC mismatch → `pc_frame_ack{ok=false}` → glasses resend once, then drop.
 - Glasses send one frame at a time (stop-and-wait on `pc_frame_ack`, 5 s timeout → retry from chunk 0, max 3 attempts, then keep in buffer for next flush).
 - Interrupted flush (link drop mid-frame): un-acked frame stays in buffer; next flush restarts it from chunk 0. Phone dedupes by `frameId`, so a frame acked-but-ack-lost is not ingested twice.
@@ -370,7 +370,7 @@ Glasses (default capture + PTT). Phone mic (Ask from phone). Phone camera: manua
 ## 6. Data, migration, errors, testing, delivery
 
 ### 6.1 Room schema (KSP; optional SQLCipher bound to encryption toggle)
-`frame(id, ts, path, source, luma, phash, placeLabel)` · `memory(id, frameId?, text, type, tags, tier, confidence, reviewState, trusted, createdAt, derived: Boolean)` + `memory_fts` (FTS4) · `memory_source(memoryId, sourceMemoryId)` (provenance for derived/summary memories) · `embedding_space(id, fingerprint, configJson, dim, state, canaryJson, createdAt)` · `memory_vector(memoryId, spaceId, blob)` PK `(memoryId, spaceId)` · `forget_tombstone(frameId, createdAt)` · `endpoint` · `role_binding` · `prompt` · `prompt_version` · `ask(id, ts, question, answer, sourcesJson, rating, source, redacted)` · `nudge(id, ts, text, why, sourceIdsJson, priority, hash, shownOn, redacted)` · `proposal(id, origin, originId, type, paramsJson, state, expiresAt, resolvedBy?, createdRef?)` · `action_log(id, ts, proposalId, transition, detail)` · `pause_record` · `pause_interval(pauseId, origin, startMs, effectiveEndMs?)` · `shopping_item(…, proposalId?)` · `note` · `summary_trace`. Frame JPEGs remain on disk (encrypted when enabled).
+`frame(id, ts, path, source, payload, luma, phash, placeLabel)` (`payload` = legacy metadata excerpt) · `memory(id, frameId?, text, type, tags, tier, confidence, reviewState, trusted, createdAt, derived: Boolean)` + `memory_fts` (FTS4) · `memory_source(memoryId, sourceMemoryId)` (provenance for derived/summary memories) · `embedding_space(id, fingerprint, configJson, dim, state, canaryJson, createdAt)` · `memory_vector(memoryId, spaceId, blob)` PK `(memoryId, spaceId)` · `forget_tombstone(frameId, createdAt)` · `endpoint` · `role_binding` · `prompt` · `prompt_version` · `ask(id, ts, question, answer, sourcesJson, rating, source, redacted)` · `nudge(id, ts, text, why, sourceIdsJson, priority, hash, shownOn, redacted)` · `proposal(id, origin, originId, type, paramsJson, state, expiresAt, resolvedBy?, createdRef?)` · `action_log(id, ts, proposalId, transition, detail)` · `pause_record` · `pause_interval(pauseId, origin, startMs, effectiveEndMs?)` · `shopping_item(…, proposalId?)` · `note` · `summary_trace`. Frame JPEGs remain on disk (encrypted when enabled).
 
 ### 6.1.1 Forget semantics
 Two user actions, both behind a confirm dialog that states the scope:
