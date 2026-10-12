@@ -11,8 +11,9 @@ class CaptureScheduler(private val context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val alarms: AlarmManager? get() = context.getSystemService(AlarmManager::class.java)
 
-    fun scheduleNext(delayMs: Long) {
-        val at = System.currentTimeMillis() + delayMs.coerceAtLeast(1_000L)
+    fun scheduleNext(delayMs: Long) = armAt(System.currentTimeMillis() + delayMs.coerceAtLeast(1_000L))
+
+    private fun armAt(at: Long) {
         val am = alarms ?: return
         val pi = captureIntent()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !am.canScheduleExactAlarms()) {
@@ -27,11 +28,20 @@ class CaptureScheduler(private val context: Context) {
     /** Glasses clock; drives the Glance countdown and `Hello.nextCaptureAtMs`. */
     fun nextTriggerAtMs(): Long? = prefs.getLong(KEY_NEXT, -1L).takeIf { it > 0 }
 
-    /** Arms the chain when nothing is pending (app start, camera grant) and retires the RFCOMM-era pulse alarm. */
+    /**
+     * Arms the chain when nothing is pending (app start, camera grant) and retires the RFCOMM-era pulse alarm. A
+     * force-stop (Rokid closes apps that way) or a reboot drops the alarm but keeps the stored time, and the app cannot
+     * ask AlarmManager what is armed, so a future stored time is re-armed as is (same PendingIntent: idempotent).
+     */
     fun ensureScheduled() {
         cancelLegacyPulse()
         val next = nextTriggerAtMs()
-        if (next == null || next < System.currentTimeMillis() - STALE_GRACE_MS) scheduleNext(FIRST_DELAY_MS)
+        val now = System.currentTimeMillis()
+        when {
+            next == null || next < now - STALE_GRACE_MS -> scheduleNext(FIRST_DELAY_MS)
+            next > now -> armAt(next)
+            else -> Unit // due within the grace: the alarm is firing now and its capture re-arms the chain
+        }
     }
 
     fun cancel() {
