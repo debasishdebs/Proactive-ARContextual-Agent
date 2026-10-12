@@ -24,6 +24,9 @@ val env = loadDotEnv(rootDir.parentFile.resolve(".env"))
 
 fun envOrDefault(key: String, default: String): String = env[key].orEmpty().ifBlank { default }
 
+// No API key or other secret may be compiled into the APK; keys live only in the on-device KeyVault.
+val secretName = Regex("(?i)(KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)")
+
 android {
     namespace = "com.rokid.context"
     compileSdk = 36
@@ -36,13 +39,17 @@ android {
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "AZURE_KG_ENDPOINT", "\"${envOrDefault("AZURE_KG_ENDPOINT", "")}\"")
-        buildConfigField("String", "AZURE_KG_API_KEY", "\"${envOrDefault("AZURE_KG_54_API_KEY", "")}\"")
-        buildConfigField("String", "AZURE_KG_DEPLOYMENT", "\"${envOrDefault("AZURE_KG_DEPLOYMENT", "gpt-5.4")}\"")
-        buildConfigField("String", "OLLAMA_BASE_URL", "\"${envOrDefault("OLLAMA_BASE_URL", "http://10.0.2.2:11434")}\"")
-        buildConfigField("String", "OLLAMA_MODEL", "\"${envOrDefault("OLLAMA_MODEL", "llama3.1:8b")}\"")
-        buildConfigField("String", "LOCAL_RUNTIME_MODE", "\"${envOrDefault("LOCAL_RUNTIME_MODE", "native_first")}\"")
-        buildConfigField("String", "LOCAL_NATIVE_MODEL_PATH", "\"${envOrDefault("LOCAL_NATIVE_MODEL_PATH", "")}\"")
+        fun publicField(name: String, value: String) {
+            require(!secretName.containsMatchIn(name)) { "Secret $name must not be compiled into the APK" }
+            buildConfigField("String", name, "\"$value\"")
+        }
+
+        publicField("AZURE_KG_ENDPOINT", envOrDefault("AZURE_KG_ENDPOINT", ""))
+        publicField("AZURE_KG_DEPLOYMENT", envOrDefault("AZURE_KG_DEPLOYMENT", "gpt-5.4"))
+        publicField("OLLAMA_BASE_URL", envOrDefault("OLLAMA_BASE_URL", "http://10.0.2.2:11434"))
+        publicField("OLLAMA_MODEL", envOrDefault("OLLAMA_MODEL", "llama3.1:8b"))
+        publicField("LOCAL_RUNTIME_MODE", envOrDefault("LOCAL_RUNTIME_MODE", "native_first"))
+        publicField("LOCAL_NATIVE_MODEL_PATH", envOrDefault("LOCAL_NATIVE_MODEL_PATH", ""))
     }
 
     buildTypes {
@@ -54,6 +61,8 @@ android {
             )
         }
     }
+
+    testOptions { unitTests.isIncludeAndroidResources = true }
 
     buildFeatures {
         buildConfig = true
@@ -93,5 +102,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.13")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 }

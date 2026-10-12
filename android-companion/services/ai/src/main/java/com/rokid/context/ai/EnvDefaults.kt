@@ -6,7 +6,6 @@ package com.rokid.context.ai
  */
 object EnvDefaults {
     @Volatile var azureEndpoint: String = ""; private set
-    @Volatile var azureApiKey: String = ""; private set
     @Volatile var azureDeployment: String = "gpt-5.4"; private set
     @Volatile var ollamaBaseUrl: String = "http://10.0.2.2:11434"; private set
     @Volatile var ollamaModel: String = "llama3.1:8b"; private set
@@ -15,7 +14,6 @@ object EnvDefaults {
 
     fun init(
         azureEndpoint: String,
-        azureApiKey: String,
         azureDeployment: String,
         ollamaBaseUrl: String,
         ollamaModel: String,
@@ -23,7 +21,6 @@ object EnvDefaults {
         localNativeModelPath: String,
     ) {
         this.azureEndpoint = azureEndpoint
-        this.azureApiKey = azureApiKey
         this.azureDeployment = azureDeployment
         this.ollamaBaseUrl = ollamaBaseUrl
         this.ollamaModel = ollamaModel

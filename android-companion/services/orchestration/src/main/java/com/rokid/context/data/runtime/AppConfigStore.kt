@@ -45,7 +45,7 @@ object AppConfigStore {
             providerType = p.getString(K_PROVIDER_TYPE, "openai").orEmpty().ifBlank { "openai" },
             endpoint = p.getString(K_ENDPOINT, EnvDefaults.azureEndpoint).orEmpty(),
             apiKey = secrets(context)
-                .getString(K_API_KEY, EnvDefaults.azureApiKey)
+                .getString(K_API_KEY, "")
                 .orEmpty()
                 .replace("\\s+".toRegex(), ""),
             deploymentOrModel = p.getString(K_DEPLOYMENT_OR_MODEL, EnvDefaults.azureDeployment).orEmpty().ifBlank {
