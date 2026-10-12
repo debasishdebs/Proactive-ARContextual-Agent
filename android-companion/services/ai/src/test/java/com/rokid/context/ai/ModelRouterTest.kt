@@ -136,4 +136,13 @@ class ModelRouterTest {
         assertTrue(ShadowLog.getLogs().isNotEmpty())
         assertTrue(ShadowLog.getLogs().none { key in it.msg })
     }
+
+    @Test fun serverErrorWhoseBodyMentions404StaysRetryable() = runTest {
+        ep("a", Capability.CHAT); bindings.set(RoleBinding(Role.ANSWER, "a", "m1")).getOrThrow()
+        failures["a:text"] = IllegalStateException("Azure OpenAI request failed: 500 {\"detail\":\"upstream route 404\"}")
+        val e = runCatching { router.generate(Role.ANSWER, "q") }.exceptionOrNull() as ModelCallException
+        assertTrue(e.retryable)
+        failures["a:text"] = http(404)
+        assertFalse((runCatching { router.generate(Role.ANSWER, "q") }.exceptionOrNull() as ModelCallException).retryable)
+    }
 }
