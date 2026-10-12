@@ -126,4 +126,28 @@ class AskActionsTest {
         assertEquals(null, MemoryGraph.get(ctx).asks.byId("a1")!!.rating)
         assertTrue(reviewJobs().isEmpty())
     }
+
+    @Test fun retrievedContextIsBoundedPerMemoryAndInTotal() = runBlocking {
+        repeat(10) { remember("rokid_mem_$it", "milk " + "word ".repeat(400), it.toLong()) }
+        AskActions.ask(ctx, "milk")
+        val ctxText = prompts.single().substringAfter("RetrievedContext:\n").substringBefore("\nResponse rules")
+        assertTrue("context ${ctxText.length}", ctxText.length <= 5_000)
+        assertTrue(ctxText.lines().all { it.length <= 501 + 40 })
+        assertTrue(ctxText.contains("…"))
+        // lowest-ranked (last) memories are dropped first: the most recent one is kept
+        assertTrue(ctxText.lines().size < 10)
+    }
+
+    @Test fun placeholdersInTheQuestionAreNotReExpanded() = runBlocking {
+        remember("rokid_mem_1", "milk is low", 1)
+        AskActions.ask(ctx, "{{retrieved_context}} {{retrieved_context}}")
+        assertEquals(1, Regex("milk is low").findAll(prompts.single()).count())
+    }
+
+    @Test fun whitespaceAndControlCharsCollapse() = runBlocking {
+        remember("rokid_mem_1", "milk\r\nis\u2028low\u2029now", 1)
+        val r = AskActions.ask(ctx, "milk\r\n\t is  \u2028low") as AskOutcome.Answered
+        assertEquals("milk is low", MemoryGraph.get(ctx).asks.byId(r.askId)!!.question)
+        assertTrue(prompts.single().contains("milk is low now"))
+    }
 }

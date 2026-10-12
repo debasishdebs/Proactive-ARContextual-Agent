@@ -54,9 +54,34 @@ object AskActions {
     const val FAILED = "Couldn't answer that — try again"
     const val REVIEW_REASON = "User marked an answer unhelpful"
     private const val TAG = "AskActions"
+    private const val MAX_MEMORY_CHARS = 500
+    private const val MAX_CONTEXT_CHARS = 5_000
+    private val WHITESPACE = Regex("[\\s\\p{Cntrl}\\u2028\\u2029]+")
+
+    private fun collapse(text: String) = text.replace(WHITESPACE, " ").trim()
+
+    /** Cut at a word boundary (when there is one) and mark the cut with an ellipsis. */
+    private fun clip(text: String, max: Int): String {
+        if (text.length <= max) return text
+        val cut = text.take(max)
+        val at = cut.lastIndexOf(' ')
+        return (if (at > max / 2) cut.take(at) else cut).trimEnd() + "…"
+    }
+
+    /** Lines are in rank order; whole lowest-ranked lines are dropped until the joined text fits. */
+    private fun boundedContext(lines: List<String>): String {
+        val kept = mutableListOf<String>()
+        var size = 0
+        for (l in lines) {
+            val add = l.length + if (kept.isEmpty()) 0 else 1
+            if (size + add > MAX_CONTEXT_CHARS) break
+            kept += l; size += add
+        }
+        return kept.joinToString("\n")
+    }
 
     suspend fun ask(context: Context, question: String, nowMs: Long = System.currentTimeMillis()): AskOutcome {
-        val q = question.replace('\n', ' ').trim().take(500)
+        val q = collapse(question).take(500)
         if (q.isEmpty()) return AskOutcome.Failed(EMPTY_QUESTION)
         val graph = MemoryGraph.get(context)
         val hits = graph.memories.search(q, 8).filter { it.reviewState == ReviewState.OK }
@@ -69,7 +94,7 @@ object AskActions {
                     "persona" to AppConfigStore.get(context).persona,
                     "input_language" to "auto",
                     "query" to q,
-                    "retrieved_context" to pool.joinToString("\n") { "${it.type} | conf=${"%.2f".format(Locale.US, it.confidence)} | ${it.text}" },
+                    "retrieved_context" to boundedContext(pool.map { "${it.type} | conf=${"%.2f".format(Locale.US, it.confidence)} | ${clip(collapse(it.text), MAX_MEMORY_CHARS)}" }),
                 ),
             )
         }
