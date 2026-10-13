@@ -39,6 +39,7 @@ import com.rokid.context.glasses.hud.InputRouter
 import com.rokid.context.glasses.hud.KeyGestures
 import com.rokid.context.glasses.hud.KeyResult
 import com.rokid.context.glasses.hud.PadInput
+import com.rokid.context.glasses.hud.PhoneAskWatch
 import com.rokid.context.glasses.hud.Routed
 import com.rokid.context.glasses.link.HudController
 import com.rokid.context.glasses.link.HudSettingsCache
@@ -46,6 +47,7 @@ import com.rokid.context.glasses.pause.PauseToggle
 import com.rokid.context.glasses.voice.PttProblem
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -62,6 +64,7 @@ class MainActivity : ComponentActivity() {
     private val closeSwipe = Runnable { handle(keys.onTimer(SystemClock.uptimeMillis())); scheduleSwipeClose() }
     private val presenter = HudPresenter()
     private val confirm = ConfirmInput()
+    private val askWatch = PhoneAskWatch()
     private var nav by mutableStateOf(HudNav())
     private var highlightYes by mutableStateOf(true)
     private var local by mutableStateOf<LocalOverlay?>(null)
@@ -85,6 +88,13 @@ class MainActivity : ComponentActivity() {
         controller.onActivityStart()
         controller.start()
         lifecycleScope.launch { runtime.pauses.ensureLoaded() }
+        // Final review I2: a phone toast during our recording means the phone refused or ended the ask. Stop recording
+        // (no Cancel: the phone already dropped it) so the wearer sees the toast instead of "tap to send".
+        lifecycleScope.launch {
+            combine(controller.frame, runtime.listening) { f, r -> f?.overlay to r }.collect { (o, r) ->
+                if (askWatch.shouldEnd(r, o)) runtime.ptt.cancel()
+            }
+        }
         if (granted(Manifest.permission.CAMERA)) ensureCaptureScheduled()
         val missing = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO).filterNot(::granted)
         if (missing.isNotEmpty()) requestPermissions(missing)
@@ -231,6 +241,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         local = null
+        askWatch.onStart(controller.frame.value?.overlay)
         runtime.ptt.start()
     }
 
