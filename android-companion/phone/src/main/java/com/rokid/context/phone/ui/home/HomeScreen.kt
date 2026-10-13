@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Lightbulb
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -32,6 +33,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,7 +70,12 @@ fun HomeScreen(
     onBannerAction: (BannerAction) -> Unit,
     onMic: () -> Unit = {},
     onRequestMic: () -> Unit = {},
+    onOpenAppSettings: () -> Unit = {},
+    /** Home left the composition (navigated away): cancels a phone ask still being spoken. */
+    onLeave: () -> Unit = {},
 ) {
+    val leave by rememberUpdatedState(onLeave)
+    DisposableEffect(Unit) { onDispose { leave() } }
     var expandedNudge by rememberSaveable { mutableStateOf<String?>(null) }
     val glyph = when { state.status.live -> "● "; state.status.paused -> "❚❚ "; else -> "" }
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("home_list")) {
@@ -85,7 +94,7 @@ fun HomeScreen(
             }
         }
         item { BannerHost(state.status.banner, onBannerAction) }
-        item { AskHero(state, onQuestionChange, onAsk, onOpenAsk, onMic, onRequestMic) }
+        item { AskHero(state, onQuestionChange, onAsk, onOpenAsk, onMic, onRequestMic, onOpenAppSettings) }
         item { SectionLabel("For you") }
         if (state.feed.isEmpty()) {
             item {
@@ -116,20 +125,21 @@ fun HomeScreen(
 @Composable
 private fun AskHero(
     state: HomeUiState, onQuestionChange: (String) -> Unit, onAsk: (String) -> Unit, onOpenAsk: (String) -> Unit,
-    onMic: () -> Unit, onRequestMic: () -> Unit,
+    onMic: () -> Unit, onRequestMic: () -> Unit, onOpenAppSettings: () -> Unit,
 ) {
     SoftCard(Modifier.padding(16.dp).fillMaxWidth()) {
         Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             val v = state.voice
             GradientCircleButton(
-                if (v.listening) Icons.Rounded.Stop else Icons.Rounded.Mic,
-                contentDescription = if (v.listening) "Stop and send" else "Ask by voice",
-                onClick = { if (v.needsPermission) onRequestMic() else onMic() },
+                when { v.listening -> Icons.Rounded.Stop; v.thinking -> Icons.Rounded.Close; else -> Icons.Rounded.Mic },
+                contentDescription = when { v.listening -> "Stop and send"; v.thinking -> "Cancel"; else -> "Ask by voice" },
+                onClick = { when { v.blocked -> onOpenAppSettings(); v.needsPermission -> onRequestMic(); else -> onMic() } },
                 enabled = v.enabled,
             )
             Spacer(Modifier.height(12.dp))
             Text("Ask about your day", style = MaterialTheme.typography.titleLarge, color = PcColors.Ink)
             Text(v.hint, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
+            if (v.blocked) TextButton(onClick = onOpenAppSettings) { Text(HomeVoiceUi.OPEN_APP_SETTINGS) }
             if (v.partial.isNotBlank()) Text("\u201c${v.partial}\u201d", style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, modifier = Modifier.padding(top = 6.dp))
             v.error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.ChipCoral.second, modifier = Modifier.padding(top = 6.dp)) }
             Spacer(Modifier.height(12.dp))
