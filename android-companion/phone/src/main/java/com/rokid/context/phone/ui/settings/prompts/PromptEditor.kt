@@ -1,9 +1,22 @@
 package com.rokid.context.phone.ui.settings.prompts
 
 import android.util.Log
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.OpenInFull
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rokid.context.ai.AiGraph
@@ -280,11 +293,13 @@ fun PromptEditorScreen(
     onToggleWire: () -> Unit,
     onOpenHistory: () -> Unit,
 ) {
+    // Which full-screen editor is open ("template" / "schema"); saved so it survives recreation with its text.
+    var full by rememberSaveable { mutableStateOf<String?>(null) }
     SettingsPage(state.label.ifEmpty { "Prompt" }, onBack, tag = "prompt_editor", actions = { SecondaryAction("History", onOpenHistory, tag = "prompt_history") }) {
         if (state.notFound) { item { SettingsCard { NoticeText("This prompt doesn't exist") } }; return@SettingsPage }
         item {
             SettingsCard {
-                Text("Template · active v${state.activeVersion}", style = MaterialTheme.typography.titleMedium)
+                TitleWithExpand("Template · active v${state.activeVersion}", enabled = !state.saving, tag = "prompt_template_expand") { full = "template" }
                 CodeBox(state.template, onTemplate.takeUnless { state.saving }, tag = "prompt_template", minLines = 8)
                 NoticeText("Variables: " + TemplateVariables.KNOWN.joinToString(" ") { "{{$it}}" })
                 if (state.unknownVariables.isNotEmpty()) NoticeText("Unknown: " + state.unknownVariables.joinToString(" ") { "{{$it}}" }, error = true, tag = "prompt_unknown")
@@ -293,7 +308,7 @@ fun PromptEditorScreen(
         }
         if (state.hasSchema) item {
             SettingsCard {
-                Text("Output schema", style = MaterialTheme.typography.titleMedium)
+                TitleWithExpand("Output schema", enabled = !state.saving, tag = "prompt_schema_expand") { full = "schema" }
                 CodeBox(state.schema, onSchema.takeUnless { state.saving }, tag = "prompt_schema", minLines = 8, isError = state.compatProblems.isNotEmpty())
                 state.compatProblems.forEach { NoticeText(it, error = true, tag = "prompt_compat") }
                 SecondaryAction("Reset to default", onResetSchema, tag = "prompt_reset_schema", enabled = !state.saving)
@@ -339,5 +354,18 @@ fun PromptEditorScreen(
                 state.notice?.let { NoticeText(it, tag = "prompt_notice") }
             }
         }
+    }
+    // Done goes through the same onTemplate/onSchema path as an inline edit, so the existing gates decide (SYSTEM: Variables only).
+    when (full) {
+        "template" -> FullScreenTextEditor("Template", state.template, TemplateVariables.KNOWN, onDone = { full = null; onTemplate(it) }, onCancel = { full = null }, tag = "prompt_template_full")
+        "schema" -> if (state.hasSchema) FullScreenTextEditor("Output schema", state.schema, emptyList(), onDone = { full = null; onSchema(it) }, onCancel = { full = null }, tag = "prompt_schema_full")
+    }
+}
+
+@Composable
+private fun TitleWithExpand(title: String, enabled: Boolean, tag: String, onExpand: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        IconButton(onExpand, Modifier.testTag(tag), enabled = enabled) { Icon(Icons.Outlined.OpenInFull, contentDescription = "Full screen") }
     }
 }
