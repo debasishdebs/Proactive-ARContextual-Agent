@@ -42,6 +42,19 @@ class ModelRouterTest {
     private fun http(code: Int) = ProviderHttpException(code, "Azure OpenAI", "{\"error\":\"x\"}")
     private suspend fun err(block: suspend () -> Unit) = runCatching { block() }.exceptionOrNull()!!
 
+    /** F18 (Task 12 carry): the ask path reads the key through keyFor, which must not touch the Keystore on Main. */
+    @Test fun theAskPathNeverReadsTheVaultOnTheMainThread() = runTest {
+        val spy = MainThreadVault()
+        val eps = EndpointRepository(db.endpointDao(), spy)
+        val binds = RoleBindingRepository(db.roleBindingDao(), eps)
+        eps.save(Endpoint("a", "a", EndpointKind.OLLAMA, "http://localhost:1", null, listOf("m"), setOf(Capability.CHAT), 1), apiKey = null).getOrThrow()
+        binds.set(RoleBinding(Role.ANSWER, "a", "m1")).getOrThrow()
+        spy.onMain.clear()
+        assertEquals("a/m1", ModelRouter(binds, eps, providers).generate(Role.ANSWER, "q"))
+        assertTrue(spy.onMain.isNotEmpty())
+        assertEquals(listOf<Boolean>(), spy.onMain.filter { it })
+    }
+
     @Test fun usesPrimaryBinding() = runTest {
         ep("a", Capability.CHAT); bindings.set(RoleBinding(Role.ANSWER, "a", "m1")).getOrThrow()
         assertEquals("a/m1", router.generate(Role.ANSWER, "q"))
