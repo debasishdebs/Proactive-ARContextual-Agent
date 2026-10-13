@@ -91,15 +91,35 @@ class CodeBoxTest {
         compose.onNodeWithTag("code_box").assertTextEquals("")
     }
 
-    /** Phase 5 T15 carry: a parent that echoes only the newest text leaves no stale record to mask a later restore. */
-    @Test fun aConflatedEchoLeavesNothingStaleToMaskARestore() {
+    /**
+     * Phase 5 T15 carry, fix round 1: a parent that echoes only the newest text can leave older duplicates in the
+     * record (from values alone that is the same as a parent still echoing in order, see the next test), but they
+     * are gone once the next edit is echoed, so they can't mask a later restore.
+     */
+    @Test fun aConflatedEchoLeavesNothingStaleOnceTheNextEditIsEchoed() {
         var t by mutableStateOf("")
         compose.setContent { PcTheme { CodeBox(t, { }) } }
         compose.onNodeWithTag("code_box").performTextInput("a")
         compose.onNodeWithTag("code_box").performTextInput("b")
         compose.onNodeWithTag("code_box").performTextReplacement("a") // emitted: a, ab, a
         t = "a"; compose.waitForIdle() // the parent conflated to the newest text
+        compose.onNodeWithTag("code_box").performTextInput("c")
+        t = "ac"; compose.waitForIdle() // the next edit is echoed
         t = "ab"; compose.waitForIdle() // then an external restore to an earlier text
         compose.onNodeWithTag("code_box").assertTextEquals("ab")
+    }
+
+    /** Fix round 1: a parent that echoes every value in order (a, ab, a) never overwrites the newer field text. */
+    @Test fun aSequentialEchoOfEveryValueLosesNothing() {
+        var t by mutableStateOf("")
+        compose.setContent { PcTheme { CodeBox(t, { }) } }
+        compose.onNodeWithTag("code_box").performTextInput("a")
+        compose.onNodeWithTag("code_box").performTextInput("b")
+        compose.onNodeWithTag("code_box").performTextReplacement("a") // emitted: a, ab, a
+        for (v in listOf("a", "ab")) { t = v; compose.waitForIdle(); compose.onNodeWithTag("code_box").assertTextEquals("a") }
+        t = "a"; compose.waitForIdle()
+        compose.onNodeWithTag("code_box").assertTextEquals("a")
+        compose.onNodeWithTag("code_box").performTextInput("c")
+        compose.onNodeWithTag("code_box").assertTextEquals("ac")
     }
 }

@@ -36,8 +36,11 @@ class HistoricalBackfillTest {
     @Test fun aWipeAfterTheFramesWereChosenQueuesNothing() = runBlocking {
         val jpeg = File(ctx.filesDir, "f1.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
         MemoryGraph.get(ctx).frames.add(FrameEntity("f1", 1, jpeg.path, "rokid_glasses"))
+        MemoryGraph.get(ctx).frames.add(FrameEntity("s1", 2, "", "phone_screenshot")) // what a backfill's purge drops
         val stale = MemoryWipe.generation.get() - 1
         assertEquals(0, OrchestrationScheduler(ctx).enqueueHistoricalPhotoBackfill(generation = stale).queuedJobs)
+        // Fix round 1: a stale run touches nothing, not even the purges.
+        assertEquals(setOf("f1", "s1"), MemoryGraph.get(ctx).frames.all().map { it.id }.toSet())
         assertEquals(0, QueueRuntimeStore.snapshot(ctx).pendingByQueue[QueuePriority.SUMMARIZER] ?: 0)
         assertEquals(1, OrchestrationScheduler(ctx).enqueueHistoricalPhotoBackfill().queuedJobs)
     }
