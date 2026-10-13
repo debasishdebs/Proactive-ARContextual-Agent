@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
@@ -243,6 +244,68 @@ class ActionEngineTest {
         recovering.await()
         assertEquals(ProposalState.EXECUTED, proposing.await()!!.state)
         assertEquals(1, runs.get())
+    }
+
+    /** Final review I2: a Done with a warning still ends EXECUTED, and the warning code is logged for the card. */
+    @Test fun warningIsLoggedWithTheExecution() = runBlocking {
+        val warns = object : ActionExecutor {
+            override suspend fun execute(p: ProposalEntity): ExecResult = ExecResult.Done("alarm:${p.id}", com.rokid.context.connectors.actions.executors.FailCode.NOTIFICATIONS_OFF)
+            override suspend fun undo(p: ProposalEntity) = true
+        }
+        val e = engine(warns)
+        val p = e.propose(ProposalOrigin.ASK, "a1", reminderIn(3_600_000), now)!!
+        e.respond(p.proposalId, true, "phone")
+        assertEquals(ProposalState.EXECUTED.name, repo.byId(p.proposalId)!!.state)
+        val warn = db.actionDao().logFor(p.proposalId).single { it.transition == ActionEngine.WARN }
+        assertEquals("NOTIFICATIONS_OFF", warn.detail)
+    }
+
+    /** Final review I1: an executor gated until after the caller is cancelled, then arming the real reminder alarm. */
+    private class GatedReminder(ctx: Context) : ActionExecutor {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        private val real = com.rokid.context.connectors.actions.executors.ReminderExecutor(ctx)
+        override suspend fun execute(p: ProposalEntity): ExecResult { entered.complete(Unit); release.await(); return real.execute(p) }
+        override suspend fun undo(p: ProposalEntity) = real.undo(p)
+    }
+
+    private fun alarms() = org.robolectric.Shadows.shadowOf(ctx.getSystemService(android.app.AlarmManager::class.java)).scheduledAlarms
+
+    /** Final review I1: the card's scope is cancelled (user leaves Ask detail) while the approved reminder executes. */
+    @Test fun approvedProposalFinishesWhenTheCallerIsCancelled() = runBlocking {
+        val gated = GatedReminder(ctx)
+        val e = engine(gated)
+        val p = e.propose(ProposalOrigin.ASK, "a1", reminderIn(3_600_000), now)!!
+        assertEquals(ProposalState.PENDING, p.state)
+        val caller = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val job = caller.launch { e.respond(p.proposalId, true, "phone") }
+        gated.entered.await()
+        job.cancel()
+        gated.release.complete(Unit)
+        job.join()
+        awaitState(p.proposalId, ProposalState.EXECUTED)
+        assertEquals(1, alarms().size)
+    }
+
+    /** Final review I1: same for the auto-execute path (NudgeWorker stopped while propose runs). */
+    @Test fun autoExecutionFinishesWhenTheCallerIsCancelled() = runBlocking {
+        settings.set(ActionType.REMINDER, ActionToggle(enabled = true, alwaysConfirm = false))
+        val gated = GatedReminder(ctx)
+        val e = engine(gated)
+        val caller = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val job = caller.launch { e.propose(ProposalOrigin.NUDGE, "n1", reminderIn(3_600_000), now) }
+        gated.entered.await()
+        job.cancel()
+        gated.release.complete(Unit)
+        job.join()
+        awaitState(ActionEngine.idFor(ProposalOrigin.NUDGE, "n1"), ProposalState.EXECUTED)
+        assertEquals(1, alarms().size)
+    }
+
+    private suspend fun awaitState(id: String, want: ProposalState) {
+        // Bounded wait: a run that outlives the caller may land a moment after join().
+        repeat(40) { if (repo.byId(id)?.state == want.name) return; Thread.sleep(50) }
+        assertEquals(want.name, repo.byId(id)?.state)
     }
 
     /** Fix round 1 I-2: the undo window starts when the effect lands, not when the ask arrived. */

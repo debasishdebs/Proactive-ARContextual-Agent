@@ -34,7 +34,14 @@ object ActionCopy {
     fun failureTitle(code: String?): String = when (FailCode.entries.firstOrNull { it.name == code }) {
         FailCode.NO_PERMISSION -> "Calendar permission needed"
         FailCode.NO_CALENDAR -> "No calendar on this phone"
+        FailCode.NOTIFICATIONS_OFF -> "Notifications are off"
         else -> "Couldn't add that \u2014 try again"
+    }
+
+    /** An executed action that can't reach the user as is (ExecResult.Done.warning); null = nothing to say. */
+    fun warningTitle(code: String?): String? = when (FailCode.entries.firstOrNull { it.name == code }) {
+        FailCode.NOTIFICATIONS_OFF -> "Added, but notifications are off"
+        else -> null
     }
 
     /** Ellipsised to [max] chars (the last char becomes "…"). */

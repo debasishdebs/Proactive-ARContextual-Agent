@@ -22,7 +22,17 @@ class ReminderExecutorTest {
     private val exec = ReminderExecutor(ctx)
     private val due = System.currentTimeMillis() + 3_600_000
 
-    @After fun reset() = ShadowAlarmManager.setCanScheduleExactAlarms(true)
+    @After fun reset() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        shadowOf(ctx.getSystemService(android.app.NotificationManager::class.java)).setNotificationsEnabled(true)
+    }
+
+    /** Final review I2: the alarm is still armed, but the result carries NOTIFICATIONS_OFF so the user is told. */
+    @Test fun notificationsOffArmsButWarns() = runBlocking {
+        shadowOf(ctx.getSystemService(android.app.NotificationManager::class.java)).setNotificationsEnabled(false)
+        assertEquals(ExecResult.Done("alarm:p1", FailCode.NOTIFICATIONS_OFF), exec.execute(reminder("p1", due)))
+        assertEquals(1, shadowOf(am).scheduledAlarms.size)
+    }
 
     @Test fun reExecuteDoesNotDuplicateAlarm() = runBlocking {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)

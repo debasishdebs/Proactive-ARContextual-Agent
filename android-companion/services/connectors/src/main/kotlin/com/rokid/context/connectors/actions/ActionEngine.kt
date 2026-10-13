@@ -19,6 +19,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -64,8 +65,14 @@ class ActionEngine(
     suspend fun propose(origin: ProposalOrigin, originId: String, a: ProposedAction, nowMs: Long): Proposed? = withContext(work) {
         val params = ActionParams.from(a, zone())
         if (params is ActionParams.Shopping && params.items.none { it.name.isNotBlank() }) return@withContext null
+        // From the insert on, the run must outlive the caller (final review I1): a row inserted EXECUTING whose caller
+        // is cancelled (NudgeWorker stopped) would otherwise stay EXECUTING until the next process start.
+        withContext(NonCancellable) { proposeStored(origin, originId, params, nowMs) }
+    }
+
+    private suspend fun proposeStored(origin: ProposalOrigin, originId: String, params: ActionParams, nowMs: Long): Proposed? {
         val (proposed, run) = store(origin, originId, params, nowMs)
-            ?: return@withContext repo.byId(idFor(origin, originId))?.let(::existing)
+            ?: return repo.byId(idFor(origin, originId))?.let(::existing)
         val out = if (run != null) {
             // Claimed in store() before the insert; the window starts when the effect has landed (I-2).
             val until = executeClaimed(run)
@@ -74,11 +81,16 @@ class ActionEngine(
         } else proposed
         if (out.state == ProposalState.PENDING) repo.byId(out.proposalId)?.let { scheduleExpiry(it.id, it.expiresAt - clock()) }
         _events.tryEmit(out)
-        out
+        return out
     }
 
     /** [by] ∈ hud | phone | notification. A late or second answer gets `Lost(current)`. */
-    suspend fun respond(proposalId: String, yes: Boolean, by: String): Resolve = withContext(work) {
+    /**
+     * NonCancellable (final review I1): once the CAS to EXECUTING commits, the executor and the terminal mark finish even
+     * when the caller's scope (a ProposalCard the user just left) is cancelled. A cancelled caller still gets its
+     * CancellationException when the block returns.
+     */
+    suspend fun respond(proposalId: String, yes: Boolean, by: String): Resolve = withContext(work + NonCancellable) {
         val r = repo.resolve(proposalId, if (yes) Decision.APPROVE else Decision.DECLINE, by, clock())
         if (r == Resolve.Won(ProposalState.EXECUTING)) repo.byId(proposalId)?.let { if (inFlight.add(it.id)) executeClaimed(it) }
         r
@@ -172,7 +184,11 @@ class ActionEngine(
             ExecResult.Failed(FailCode.UNKNOWN)
         }
         return when (result) {
-            is ExecResult.Done -> repo.markExecuted(p.id, result.createdRef, clock())
+            is ExecResult.Done -> repo.markExecuted(p.id, result.createdRef, clock()).also { ok ->
+                if (ok && result.warning != null) {
+                    try { audit(p.id, WARN, result.warning.name, clock()) } catch (c: CancellationException) { throw c } catch (t: Throwable) { log("warn", t) }
+                }
+            }
             is ExecResult.Failed -> { repo.markFailed(p.id, result.code.name, clock()); false }
         }
     }
@@ -205,6 +221,8 @@ class ActionEngine(
         const val UNDO_MS = 10_000L
         const val AUTO = "auto"
         const val PAST = "PAST"
+        /** action_log transition for [ExecResult.Done.warning]; detail = the FailCode name. */
+        const val WARN = "WARN"
         private const val TAG = "ActionEngine"
     }
 }

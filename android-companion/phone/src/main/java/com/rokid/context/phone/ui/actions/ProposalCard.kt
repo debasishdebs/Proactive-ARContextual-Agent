@@ -1,5 +1,10 @@
 package com.rokid.context.phone.ui.actions
 
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,12 +36,17 @@ import kotlinx.coroutines.launch
 
 /**
  * The proposal card under an Ask or nudge (R-62, spec §2.4): observes the origin's proposal. PENDING offers Add / No
- * thanks (the engine's CAS decides; a late tap says what happened), EXECUTED offers Undo for 10 s, SUPPRESSED links to
+ * thanks (the engine's CAS decides; a late tap says what happened), EXECUTED offers Undo for 10 s (and "Turn on" when it
+ * can't alert: notifications off), SUPPRESSED links to
  * Settings › Actions. Renders nothing when the origin has no proposal.
  */
 @Composable
-fun ProposalCard(originId: String, modifier: Modifier = Modifier, source: ProposalCardSource? = null, onEnable: (() -> Unit)? = null) {
-    val app = LocalContext.current.applicationContext
+fun ProposalCard(
+    originId: String, modifier: Modifier = Modifier, source: ProposalCardSource? = null, onEnable: (() -> Unit)? = null,
+    onFixNotifications: (() -> Unit)? = null,
+) {
+    val context = LocalContext.current
+    val app = context.applicationContext
     val src = source ?: remember(app) { GraphCardSource.forApp(app) }
     val ui by remember(originId, src) { src.observe(originId) }.collectAsState(initial = null)
     val p = ui ?: return
@@ -70,10 +80,13 @@ fun ProposalCard(originId: String, modifier: Modifier = Modifier, source: Propos
                 else -> {
                     Text(p.summary, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(stateText(p), style = MaterialTheme.typography.titleSmall, color = PcColors.InkSoft, modifier = Modifier.padding(top = 12.dp))
+                        Text(p.warning ?: stateText(p), style = MaterialTheme.typography.titleSmall, color = PcColors.InkSoft, modifier = Modifier.padding(top = 12.dp))
                         if (p.state == ProposalState.EXECUTED && undoOffered) TextButton(onClick = {
                             scope.launch { if (!src.undo(p.id)) snack.showSnackbar(UNDO_FAILED) }
                         }) { Text("Undo") }
+                        if (p.state == ProposalState.EXECUTED && p.warning != null) TextButton(onClick = {
+                            onFixNotifications?.invoke() ?: openNotificationSettings(context)
+                        }) { Text("Turn on") }
                     }
                 }
             }
@@ -83,6 +96,13 @@ fun ProposalCard(originId: String, modifier: Modifier = Modifier, source: Propos
 }
 
 private const val UNDO_FAILED = "Couldn't undo"
+
+/** This app's notification settings (the fix for an "Added, but notifications are off" card). */
+private fun openNotificationSettings(context: Context) {
+    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+    if (context !is Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try { context.startActivity(intent) } catch (_: ActivityNotFoundException) { /* no settings screen on this build */ }
+}
 
 private fun stateText(p: ProposalUi): String = when (p.state) {
     ProposalState.EXECUTING -> "Adding\u2026"
