@@ -33,7 +33,7 @@ class DeferredOpenHelperFactory(
         private fun open(): SupportSQLiteOpenHelper = delegate ?: synchronized(this) {
             delegate ?: run {
                 // Before the decision (preflight F12): encryptedAtOpen may run a migration and read the Keystore key.
-                check(!onMainThread()) { "Encrypted database opened on the main thread" }
+                check(!onMainThread()) { "Database opened on the main thread" }
                 val encrypted = encryptedAtOpen()
                 val factory = if (encrypted) { System.loadLibrary("sqlcipher"); SupportOpenHelperFactory(passphrase()) } else FrameworkSQLiteOpenHelperFactory()
                 factory.create(config).also { h -> wal?.let(h::setWriteAheadLoggingEnabled); delegate = h }

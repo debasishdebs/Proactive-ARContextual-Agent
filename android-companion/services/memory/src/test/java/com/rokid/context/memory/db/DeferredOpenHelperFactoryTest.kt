@@ -30,7 +30,7 @@ class DeferredOpenHelperFactoryTest {
         } finally { db.close(); ctx.deleteDatabase("deferred_test.db") }
     }
 
-    @Test fun anEncryptedOpenOnTheMainThreadIsRefusedBeforeTheKeyIsRead() {
+    @Test fun anOpenOnTheMainThreadIsRefusedBeforeTheModeOrKeyIsRead() {
         var keyReads = 0
         var decisions = 0
         val config = SupportSQLiteOpenHelper.Configuration.builder(ctx).name("guard_test.db").callback(object : SupportSQLiteOpenHelper.Callback(1) {
@@ -39,7 +39,7 @@ class DeferredOpenHelperFactoryTest {
         }).build()
         val helper = DeferredOpenHelperFactory({ decisions++; true }, { keyReads++; ByteArray(32) }, onMainThread = { true }).create(config)
         val e = runCatching { helper.writableDatabase }.exceptionOrNull()
-        assertTrue(e is IllegalStateException); assertEquals("Encrypted database opened on the main thread", e!!.message)
+        assertTrue(e is IllegalStateException); assertEquals("Database opened on the main thread", e!!.message)
         assertEquals(0, keyReads)
         assertEquals("the mode decision (which may migrate and read the key) must not run on main (preflight F12)", 0, decisions)
     }
