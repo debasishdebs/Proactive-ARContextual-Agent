@@ -76,7 +76,7 @@ fun SwitchRow(title: String, subtitle: String?, checked: Boolean, onChange: (Boo
 
 /** A labelled single choice (announced "<title>: <value>"); the menu items are tagged "<tag>_<index>". */
 @Composable
-fun ChoiceRow(title: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit, tag: String, enabled: Boolean = true) {
+fun ChoiceRow(title: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit, tag: String, enabled: Boolean = true, disabled: Set<Int> = emptySet()) {
     var open by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
@@ -85,7 +85,7 @@ fun ChoiceRow(title: String, options: List<String>, selected: Int, onSelect: (In
             TextButton(onClick = { open = true }, enabled = enabled, modifier = Modifier.testTag(tag).semantics { contentDescription = "$title: $value" }) { Text(value) }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
                 options.forEachIndexed { i, o ->
-                    DropdownMenuItem(text = { Text(o) }, onClick = { open = false; onSelect(i) }, modifier = Modifier.testTag("${tag}_$i"))
+                    DropdownMenuItem(text = { Text(o) }, onClick = { open = false; onSelect(i) }, enabled = i !in disabled, modifier = Modifier.testTag("${tag}_$i"))
                 }
             }
         }

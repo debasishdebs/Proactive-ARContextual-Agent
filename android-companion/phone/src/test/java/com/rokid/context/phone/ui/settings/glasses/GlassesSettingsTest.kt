@@ -40,6 +40,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import com.rokid.context.voice.VoiceCapabilities
+import com.rokid.context.voice.VoiceStatus
+import kotlinx.coroutines.flow.flowOf
+import androidx.compose.ui.test.assertIsNotEnabled
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -119,5 +123,20 @@ class GlassesSettingsTest {
         val tap = GlassesLabels.ACTIONS.getValue(HudSettings().gestures.getValue(Gesture.TAP))
         page.performScrollToNode(hasTestTag("gesture_TAP"))
         compose.onNodeWithContentDescription("Tap: $tap").assertExists()
+    }
+
+    /** Spec §5.1.1: the gesture map greys out Ask, with the reason, while glasses voice can't work. */
+    @Test fun askIsGreyedOutWithItsReasonWhileGlassesVoiceIsUnavailable() = runBlocking<Unit> {
+        val vm = GlassesSettingsViewModel(FakeGlassesStatusSource(), FakeHudSettings(),
+            voice = flowOf(VoiceCapabilities(VoiceStatus.NEEDS_SPEECH_PACK, VoiceStatus.NEEDS_SPEECH_PACK, canDownloadPack = true))) {}
+        assertEquals("Needs speech pack", withTimeout(5_000) { vm.state.first { it.askUnavailable != null } }.askUnavailable)
+        vm.cancelScope()
+        compose.setContent {
+            PcTheme { GlassesSettingsScreen(GlassesSettingsUiState("Linked", HudSettings(), askUnavailable = "Needs speech pack"), onBack = {}, onVerbosity = {}, onScale = {}, onPosition = {}, onGesture = { _, _ -> }, onReauthorize = {}) }
+        }
+        compose.onNodeWithTag("glasses_settings").performScrollToNode(hasTestTag("ask_unavailable"))
+        compose.onNodeWithText("Ask by voice from the glasses: Needs speech pack — see Phone camera & mic").assertExists()
+        compose.onNodeWithTag("gesture_TAP").performClick()
+        compose.onNodeWithTag("gesture_TAP_${GestureAction.entries.indexOf(GestureAction.ASK)}").assertIsNotEnabled()
     }
 }

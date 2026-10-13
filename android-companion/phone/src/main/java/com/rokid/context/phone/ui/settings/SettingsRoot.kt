@@ -41,6 +41,10 @@ import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.settings.capture.CaptureIntervals
 import com.rokid.context.phone.ui.shell.Routes
+import com.rokid.context.voice.VoiceCapabilities
+import com.rokid.context.voice.VoiceStatusText
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -59,14 +63,22 @@ object SettingsModel {
 
     fun captureSummary(s: HudSettings): String =
         "Every ${CaptureIntervals.label(CaptureIntervals.clamp(s.captureIntervalSec))}" + if (s.burstOnChange) " · burst on change" else ""
+
+    fun voiceSummary(c: VoiceCapabilities): String = "Voice · ${VoiceStatusText.glasses(c.glasses)}"
 }
 
-data class SettingsRootUiState(val glassesSummary: String = "Not connected", val captureSummary: String = "")
+data class SettingsRootUiState(val glassesSummary: String = "Not connected", val captureSummary: String = "", val voiceSummary: String = "Voice · Checking…")
 
-class SettingsRootViewModel(glasses: GlassesStatusSource, hud: HudSettingsControl) : ViewModel() {
-    val state: StateFlow<SettingsRootUiState> = combine(glasses.status, hud.settings) { g, h -> SettingsRootUiState(SettingsModel.glassesSummary(g), SettingsModel.captureSummary(h)) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsRootUiState())
+class SettingsRootViewModel(
+    glasses: GlassesStatusSource,
+    hud: HudSettingsControl,
+    voice: Flow<VoiceCapabilities> = flowOf(VoiceCapabilities.UNKNOWN),
+) : ViewModel() {
+    val state: StateFlow<SettingsRootUiState> = combine(glasses.status, hud.settings, voice) { g, h, v ->
+        SettingsRootUiState(SettingsModel.glassesSummary(g), SettingsModel.captureSummary(h), SettingsModel.voiceSummary(v))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsRootUiState())
 }
+
 
 private data class SettingRow(val icon: ImageVector, val colors: Pair<Color, Color>, val title: String, val subtitle: String, val route: String?)
 
@@ -77,7 +89,7 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
     val groups = listOf(
         "Devices" to listOf(
             SettingRow(GlassesIcon, PcColors.ChipMint, "Rokid Glasses", state.glassesSummary, Routes.SETTINGS_GLASSES),
-            SettingRow(Icons.Outlined.PhoneAndroid, PcColors.ChipSky, "Phone camera & mic", soon, null),
+            SettingRow(Icons.Outlined.PhoneAndroid, PcColors.ChipSky, "Phone camera & mic", state.voiceSummary, Routes.SETTINGS_PHONE_INPUTS),
         ),
         "Capture & privacy" to listOf(
             SettingRow(Icons.Outlined.Schedule, PcColors.ChipAmber, "Capture schedule", state.captureSummary, Routes.SETTINGS_CAPTURE),

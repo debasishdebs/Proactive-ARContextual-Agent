@@ -1,5 +1,8 @@
 package com.rokid.context.phone.ui.shell
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -27,6 +30,8 @@ import com.rokid.context.phone.ui.settings.capture.CaptureSettingsScreen
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsViewModel
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsScreen
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsViewModel
+import com.rokid.context.phone.ui.settings.inputs.PhoneInputsScreen
+import com.rokid.context.phone.ui.settings.inputs.PhoneInputsViewModel
 import com.rokid.context.phone.ui.settings.memory.MemorySettingsScreen
 import com.rokid.context.phone.ui.settings.memory.MemorySettingsViewModel
 import com.rokid.context.phone.ui.settings.memory.ReviewQueueScreen
@@ -45,16 +50,26 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     val s = deps.settings
 
     composable(Routes.SETTINGS) {
-        val vm = viewModel { SettingsRootViewModel(deps.glasses, s.hud) }
+        val vm = viewModel { SettingsRootViewModel(deps.glasses, s.hud, s.voice.capabilities) }
         val state by vm.state.collectAsStateWithLifecycle()
         SettingsRootScreen(state, live = Routes.LIVE_SETTINGS, onOpen = { nav.navigate(it) })
     }
 
     composable(Routes.SETTINGS_GLASSES) {
-        val vm = viewModel { GlassesSettingsViewModel(deps.glasses, s.hud, s.reauthorize) }
+        val vm = viewModel { GlassesSettingsViewModel(deps.glasses, s.hud, voice = s.voice.capabilities, reauthorizeAction = s.reauthorize) }
         val state by vm.state.collectAsStateWithLifecycle()
         GlassesSettingsScreen(state, onBack = back, onVerbosity = vm::setVerbosity, onScale = vm::setScale, onPosition = vm::setPosition,
             onGesture = vm::setGesture, onReauthorize = vm::reauthorize)
+    }
+
+    composable(Routes.SETTINGS_PHONE_INPUTS) {
+        val vm = viewModel { PhoneInputsViewModel(s.voice) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { vm.onMicResult() }
+        PhoneInputsScreen(
+            state, onBack = back, onAllowMic = { mic.launch(Manifest.permission.RECORD_AUDIO) }, onDownload = vm::download,
+            onOpenSettings = vm::openSettings, onRecheck = vm::recheck, onLanguage = vm::setLanguage, onPhoneMic = vm::setPhoneMic,
+        )
     }
 
     composable(Routes.SETTINGS_CAPTURE) {

@@ -62,6 +62,8 @@ class SettingsDeps(
     val logs: suspend () -> List<String>,
     /** Diagnostics › Export: a text file in cache/exports (the FileProvider folder), shared through [share]. */
     val exportDiagnostics: suspend () -> File,
+    /** Settings › Phone camera & mic (Phase 6). */
+    val voice: com.rokid.context.phone.voice.VoiceControls = com.rokid.context.phone.voice.VoiceControls.None,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -96,6 +98,7 @@ class SettingsDeps(
                 val traces = com.rokid.context.orchestration.PipelineRecords.recentTraces(app, 50).map { "${it.updatedAt} ${it.state} ${it.summaryId} ${it.note}" }
                 DiagnosticsExport.write(app.cacheDir, traces, LogReader.ownLines())
             },
+            voice = com.rokid.context.phone.voice.VoiceGraph.get(app).controls,
         )
     }
 }
