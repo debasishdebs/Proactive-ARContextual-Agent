@@ -87,6 +87,21 @@ class VoiceModuleRulesTest {
         assertEquals(emptyList(), bad.map { it.name })
     }
 
+    /** Spec §3.6 / R-73: the speaker has the answer text in hand and logs nothing at all. */
+    @Test fun theSpeakerNeverLogs() {
+        val files = listOf("Speaker.kt", "android/AndroidSpeaker.kt", "android/AudioRoutes.kt").map { File(main, "com/rokid/context/voice/$it") }
+        files.forEach { assertTrue(it.isFile, "missing ${it.path}") }
+        val logging = Regex("\\bLog\\.|\\blog\\(|SafeLog|println\\(|printStackTrace")
+        val bad = files.flatMap { f -> f.readLines().filter { logging.containsMatchIn(it) }.map { "${f.name}: ${it.trim()}" } }
+        assertEquals(emptyList(), bad)
+    }
+
+    /** Android 11+ package visibility: without this query `TextToSpeech` sees no engine and never initialises. */
+    @Test fun theManifestCanSeeTtsEngines() {
+        val manifest = File(module, "src/main/AndroidManifest.xml").readText()
+        assertTrue(Regex("<queries>[\\s\\S]*android\\.intent\\.action\\.TTS_SERVICE[\\s\\S]*</queries>").containsMatchIn(manifest))
+    }
+
     /** Log lines carry event names, counts and class names: never a transcript, partial, question or answer. */
     @Test fun noLogLineInterpolatesVoiceText() {
         val bad = sources().flatMap { f -> f.readLines().filter(::logsVoiceText).map { "${f.name}: ${it.trim()}" } }
