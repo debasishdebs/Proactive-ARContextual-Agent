@@ -41,13 +41,24 @@ class HudPresence(private val clock: () -> Long = System::currentTimeMillis) {
 /**
  * The background-camera fallback (PulseKeepAliveService behaviour): bring the HUD forward, where capture works, at most
  * every [COOLDOWN_MS], and only when [presence] allows it. Otherwise it logs one line and the next scheduled capture retries.
+ * After [maxConsecutive] launches with no successful capture between them it stops (logging once) until
+ * [onCaptureSucceeded], so a camera that fails for good never keeps pulling the HUD forward (R-07).
  */
 class ForegroundFallback(
     private val presence: HudPresence,
     private val clock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = { Log.w(CaptureService.TAG, it) },
+    private val maxConsecutive: Int = 3,
 ) {
     @Volatile private var lastAtMs: Long? = null
+    @Volatile private var launchesSinceCapture = 0
+    @Volatile private var gaveUpLogged = false
+
+    /** A frame was buffered: the camera works again, so a later failure may bring the HUD forward again. */
+    fun onCaptureSucceeded() {
+        launchesSinceCapture = 0
+        gaveUpLogged = false
+    }
 
     /** True when the HUD was asked to come forward. */
     fun maybeLaunch(context: Context): Boolean {
@@ -56,9 +67,14 @@ class ForegroundFallback(
             log("camera restricted in background; HUD ${presence.describe()}: not reopening it, next capture retries")
             return false
         }
+        if (launchesSinceCapture >= maxConsecutive) {
+            if (!gaveUpLogged) { gaveUpLogged = true; log("camera keeps failing in background; not reopening the HUD until a capture works") }
+            return false
+        }
         val last = lastAtMs
         if (last != null && now - last in 0 until COOLDOWN_MS) return false
         lastAtMs = now
+        launchesSinceCapture++
         log("camera restricted in background; opening the HUD to capture")
         return runCatching {
             context.startActivity(
