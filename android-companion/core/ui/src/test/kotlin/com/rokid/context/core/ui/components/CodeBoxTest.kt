@@ -33,4 +33,38 @@ class CodeBoxTest {
         compose.onNodeWithTag("wire").assertExists()
         compose.onNodeWithText("{\"type\":\"object\"}").assertExists()
     }
+
+    @Test fun delayedParentLosesNoKeystrokes() {
+        var t by mutableStateOf("")
+        val pending = mutableListOf<String>()
+        compose.setContent { PcTheme { CodeBox(t, { pending += it }) } }
+        for (c in "abc") compose.onNodeWithTag("code_box").performTextInput(c.toString())
+        // the parent has applied nothing yet; the field must still hold everything typed
+        compose.onNodeWithTag("code_box").assertTextEquals("abc")
+        t = pending.last()
+        compose.waitForIdle()
+        compose.onNodeWithTag("code_box").assertTextEquals("abc")
+    }
+
+    @Test fun externalChangeReplacesTextAndCaretGoesToEnd() {
+        var t by mutableStateOf("old")
+        compose.setContent { PcTheme { CodeBox(t, { t = it }) } }
+        t = "restored"
+        compose.waitForIdle()
+        compose.onNodeWithTag("code_box").assertTextEquals("restored")
+        compose.onNodeWithTag("code_box").performTextInput("!")
+        compose.onNodeWithTag("code_box").assertTextEquals("restored!")
+    }
+
+    @Test fun caretSurvivesUnrelatedRecomposition() {
+        var t by mutableStateOf("ab")
+        var tick by mutableStateOf(0)
+        compose.setContent { PcTheme { tick; CodeBox(t, { t = it }) } }
+        compose.onNodeWithTag("code_box").performTextInput("c")
+        compose.onNodeWithTag("code_box").performTextInput("d")
+        tick++
+        compose.waitForIdle()
+        compose.onNodeWithTag("code_box").performTextInput("e")
+        compose.onNodeWithTag("code_box").assertTextEquals("abcde")
+    }
 }

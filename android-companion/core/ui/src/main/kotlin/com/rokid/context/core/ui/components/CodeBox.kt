@@ -50,10 +50,15 @@ fun CodeBox(
         } else {
             // Keeps the caret across edits and starts it at the end (the String overload starts at 0).
             var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
-            if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
+            // Resync only when the parent's value itself changed (e.g. a restore), never because it lags behind typing.
+            var seen by remember { mutableStateOf(value) }
+            if (seen != value) {
+                seen = value
+                if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
+            }
             BasicTextField(
                 value = field,
-                onValueChange = { field = it; if (it.text != value) onValueChange(it.text) },
+                onValueChange = { next -> val changed = next.text != field.text; field = next; if (changed) onValueChange(next.text) },
                 textStyle = style, cursorBrush = SolidColor(PcColors.MintDeep), modifier = box,
             )
         }

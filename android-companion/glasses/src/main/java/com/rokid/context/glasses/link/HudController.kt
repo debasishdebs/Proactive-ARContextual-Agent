@@ -1,8 +1,7 @@
 package com.rokid.context.glasses.link
 
-import com.rokid.context.core.hud.render.HudConnection
-
 import android.util.Log
+import com.rokid.context.core.hud.render.HudConnection
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.Channels
 import com.rokid.context.core.model.Command
