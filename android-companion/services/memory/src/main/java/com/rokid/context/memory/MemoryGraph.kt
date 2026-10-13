@@ -51,17 +51,48 @@ class MemoryGraph private constructor(val db: ContextDatabase) {
             synchronized(importLock) { com.rokid.context.memory.legacy.LegacyImporter.markDone(context.applicationContext) }
         }
 
-        /** Runs the legacy import once, blocking, before the first facade read/write (Review Focus #5). */
-        fun ensureLegacyImported(context: Context): com.rokid.context.memory.legacy.ImportReport? {
+        /** Set by a failed facade import: the facades try at most once per process; the worker keeps retrying. */
+        @Volatile private var facadeImportFailed = false
+
+        /**
+         * Runs the legacy import once, blocking, before the first facade read/write (Review Focus #5). P8 D5:
+         * - on Main it returns null at once, without taking [importLock]: the worker (or a background caller) imports;
+         * - a failed import is logged (class only) and returns null, never throwing; it is not marked done, so the
+         *   worker or the next process retries, and the facades make no second attempt in this process.
+         */
+        fun ensureLegacyImported(
+            context: Context,
+            isMain: () -> Boolean = { android.os.Looper.myLooper() == android.os.Looper.getMainLooper() },
+        ): com.rokid.context.memory.legacy.ImportReport? = ensureLegacyImported(context, isMain, null)
+
+        internal fun ensureLegacyImported(
+            context: Context,
+            isMain: () -> Boolean,
+            import: (suspend () -> com.rokid.context.memory.legacy.ImportReport)?,
+        ): com.rokid.context.memory.legacy.ImportReport? {
+            if (isMain() || facadeImportFailed) return null
+            return try {
+                importOnce(context, import)
+            } catch (e: Exception) {
+                facadeImportFailed = true
+                android.util.Log.w("MemoryGraph", "legacy import failed; the worker retries: ${e.javaClass.simpleName}")
+                null
+            }
+        }
+
+        /** LegacyImportWorker only: the same import, but a failure throws so the worker can retry. Never on Main. */
+        fun importLegacyForWorker(context: Context): com.rokid.context.memory.legacy.ImportReport? = importOnce(context, null)
+
+        private fun importOnce(context: Context, import: (suspend () -> com.rokid.context.memory.legacy.ImportReport)?): com.rokid.context.memory.legacy.ImportReport? {
             val graph = get(context)
             val importer = com.rokid.context.memory.legacy.LegacyImporter(context.applicationContext, graph)
             if (importer.isDone()) return null
             synchronized(importLock) {
                 if (importer.isDone()) return null
-                return kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) { importer.importAll() }
+                return kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) { (import ?: importer::importAll)() }
             }
         }
 
-        fun resetForTests(db: ContextDatabase?) { synchronized(this) { instance = db?.let { MemoryGraph(it) } } }
+        fun resetForTests(db: ContextDatabase?) { synchronized(this) { instance = db?.let { MemoryGraph(it) }; facadeImportFailed = false } }
     }
 }
