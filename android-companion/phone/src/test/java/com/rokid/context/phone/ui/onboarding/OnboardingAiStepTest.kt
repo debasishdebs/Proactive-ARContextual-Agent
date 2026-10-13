@@ -75,10 +75,10 @@ class OnboardingAiStepTest {
         assertEquals(Step.PERSONA, v.state.value.step)
     }
 
-    @Test fun continueWithSeedBindsNothingAndAiCanBeSkipped() {
+    @Test fun continueWithSeedBindsTheSeedAndAiCanBeSkipped() {
         val env = Env(ai = FakeOnboardingAi(SeedEndpoint("azure", "Azure OpenAI", "gpt-4o")))
         val v = vm(env); v.primary {}
-        assertTrue(env.ai.used.isEmpty())
+        assertEquals(listOf("azure"), env.ai.used)
         assertEquals(Step.PERSONA, v.state.value.step)
         val v2 = vm(Env()); v2.secondary()
         assertEquals(Step.PERSONA, v2.state.value.step)

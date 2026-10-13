@@ -146,4 +146,18 @@ class OnboardingWizardTest {
         assertEquals(1, env.completed)
         assertEquals(1, done)
     }
+
+    @Test fun testButtonDisabledWithoutModelAndResultIsALiveRegion() {
+        goTo(Step.AI)
+        vm.selectPreset(AiPreset.OLLAMA); vm.onUrl("box.local:11434")
+        show()
+        compose.onNodeWithTag("ai_test").assertIsEnabled()
+        vm.onModel("")
+        compose.waitForIdle()
+        compose.onNodeWithTag("ai_test").assertIsNotEnabled()
+        vm.onModel("llama3.2"); vm.testAi()
+        compose.waitForIdle()
+        val cfg = compose.onNodeWithTag("ai_result").fetchSemanticsNode().config
+        assertEquals(androidx.compose.ui.semantics.LiveRegionMode.Polite, cfg[SemanticsProperties.LiveRegion])
+    }
 }
