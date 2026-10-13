@@ -40,7 +40,7 @@ class InputRouterTest {
     @Test fun doubleTapCancelsWhileListening() {
         val l = Overlay.Listening("what")
         assertEquals(Routed.CancelListening, InputRouter.route(PadInput.DoubleTapped, l, defaults))
-        assertEquals(Routed.Mapped(GestureAction.ASK), InputRouter.route(PadInput.Tapped, l, defaults), "tap again = send")
+        assertEquals(Routed.FinishListening, InputRouter.route(PadInput.Tapped, l, defaults), "tap again = send")
     }
 
     @Test fun swipeOrDoubleTapDismissesAnAnswer() {
@@ -48,5 +48,12 @@ class InputRouterTest {
         assertEquals(Routed.DismissOverlay, InputRouter.route(fwd, a, defaults))
         assertEquals(Routed.DismissOverlay, InputRouter.route(PadInput.DoubleTapped, a, defaults))
         assertEquals(Routed.Mapped(GestureAction.ASK), InputRouter.route(PadInput.Tapped, a, defaults))
+    }
+
+    /** Spec §3.2 "tap to send" holds whatever the tap is mapped to. */
+    @Test fun aTapSendsWhileListeningEvenWhenTapIsRemapped() {
+        val custom = defaults + (Gesture.TAP to GestureAction.NEXT_PAGE)
+        assertEquals(Routed.FinishListening, InputRouter.route(PadInput.Tapped, Overlay.Listening(""), custom))
+        assertEquals(Routed.Mapped(GestureAction.NEXT_PAGE), InputRouter.route(fwd, Overlay.Listening(""), defaults), "swipes still page")
     }
 }

@@ -13,12 +13,14 @@ sealed interface Routed {
     data object ConfirmChoose : Routed
     data object ConfirmNo : Routed
     data object CancelListening : Routed
+    /** Listening: a tap sends whatever the tap is mapped to (spec §3.2 "tap to send"). */
+    data object FinishListening : Routed
     data object DismissOverlay : Routed
 }
 
 /**
  * Spec §3.5: an overlay's own rules first (Confirm: swipe moves, tap answers, double-tap = No; Listening: double-tap
- * cancels; Answer: swipe or double-tap dismisses), otherwise `HudSettings.gestures` (unmapped = default).
+ * cancels, tap sends; Answer: swipe or double-tap dismisses), otherwise `HudSettings.gestures` (unmapped = default).
  */
 object InputRouter {
     fun route(input: PadInput, overlay: Overlay?, gestures: Map<Gesture, GestureAction>): Routed = when (overlay) {
@@ -27,7 +29,11 @@ object InputRouter {
             PadInput.Tapped -> Routed.ConfirmChoose
             PadInput.DoubleTapped -> Routed.ConfirmNo
         }
-        is Overlay.Listening -> if (input == PadInput.DoubleTapped) Routed.CancelListening else mapped(input, gestures)
+        is Overlay.Listening -> when (input) {
+            PadInput.DoubleTapped -> Routed.CancelListening
+            PadInput.Tapped -> Routed.FinishListening
+            is PadInput.Swiped -> mapped(input, gestures)
+        }
         is Overlay.Answer -> if (input == PadInput.Tapped) mapped(input, gestures) else Routed.DismissOverlay
         else -> mapped(input, gestures)
     }
