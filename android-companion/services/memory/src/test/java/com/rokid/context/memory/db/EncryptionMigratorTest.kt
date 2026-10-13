@@ -97,4 +97,41 @@ class EncryptionMigratorTest {
         store.target = true
         assertTrue(m.prepare { false }); assertEquals(1, reads)
     }
+
+    @Test fun aFailedFlagCommitAfterTheSwapKeepsTheNewModeAndTheNextOpenSucceeds() {
+        var failCommit = true
+        val flaky = object : EncryptionMigrator.ModeStore {
+            override var current: Boolean? = false
+                set(v) { if (v == true && failCommit) { failCommit = false; throw IllegalStateException("couldn't save db_encrypted") }; field = v }
+            override var target: Boolean? = true; override var stage: Boolean? = null; override var failed = false
+        }
+        db.writeText("data")
+        val m = EncryptionMigrator(db, flaky, converter) { ByteArray(32) }
+        assertTrue("the file on disk is encrypted, so this open must use the encrypted mode", m.prepare { false })
+        assertEquals("ENC:data", db.readText()); assertFalse(flaky.failed)
+        assertTrue(EncryptionMigrator(db, flaky, converter) { ByteArray(32) }.prepare { false })
+        assertEquals(true, flaky.current); assertNull(flaky.stage); assertNull(flaky.target); assertFalse(old.exists())
+        assertEquals("ENC:data", db.readText())
+    }
+
+    @Test fun aFailedSecondRenameRestoresTheOldDatabase() {
+        db.writeText("data"); store.current = false; store.target = true
+        val m = EncryptionMigrator(db, store, converter, rename = { from, to -> from != tmp && from.renameTo(to) }) { ByteArray(32) }
+        assertFalse(m.prepare { false })
+        assertEquals("data", db.readText()); assertFalse(old.exists()); assertFalse(tmp.exists())
+        assertEquals(false, store.current); assertNull(store.stage); assertNull(store.target); assertTrue(store.failed)
+        assertFalse(EncryptionMigrator(db, store, converter) { ByteArray(32) }.prepare { true })
+        assertEquals("data", db.readText())
+    }
+
+    @Test fun theTempFilesJournalAndWalAreDiscardedWithIt() {
+        db.writeText("data"); store.current = false
+        val side = listOf("-journal", "-wal", "-shm").map { File(tmp.path + it) }
+        tmp.writeText("half"); side.forEach { it.writeText("x") }
+        assertFalse(migrator.prepare { true })
+        assertFalse(tmp.exists()); side.forEach { assertFalse(it.name, it.exists()) }
+        store.target = true; fail = true; side.forEach { it.writeText("x") }
+        assertFalse(migrator.prepare { false })
+        side.forEach { assertFalse("after a failed conversion: ${it.name}", it.exists()) }
+    }
 }

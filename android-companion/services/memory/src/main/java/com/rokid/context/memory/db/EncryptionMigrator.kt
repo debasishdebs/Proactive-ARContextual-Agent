@@ -14,6 +14,8 @@ class EncryptionMigrator(
     private val dbFile: File,
     private val store: ModeStore,
     private val converter: DbConverter,
+    /** Atomic same-directory rename; injectable so a test can fail one step of the swap. */
+    private val rename: (from: File, to: File) -> Boolean = { from, to -> from.renameTo(to) },
     private val key: () -> ByteArray,
 ) {
     interface ModeStore {
@@ -40,26 +42,38 @@ class EncryptionMigrator(
         val current = store.current ?: (!isPlaintextSqlite(dbFile)).also { store.current = it }
         val target = store.target ?: return current
         if (target == current) { store.target = null; return current }
+        var inPlace = false
         return try {
-            tmp.delete()
+            discardTmp()
             converter.convert(dbFile, tmp, target, key())
             store.stage = target
-            swap(target)
+            swap(target) { inPlace = true }
             store.failed = false
             target
         } catch (e: Exception) {
+            if (inPlace) {
+                // The converted file is the database now: never roll the mode back. stage (committed before the renames)
+                // is only cleared after current = target is committed, so the next recover() can always finish the flags.
+                Log.w(TAG, "encryption change applied, flags not yet saved (${e.javaClass.simpleName}); finishing at next open")
+                runCatching { recover() }
+                return target
+            }
             Log.w(TAG, "encryption change failed (${e.javaClass.simpleName}); keeping the current database")
-            if (!dbFile.exists() && old.exists()) old.renameTo(dbFile) // a failed swap rename: put the old database back
-            tmp.delete()
+            if (!dbFile.exists() && old.exists()) rename(old, dbFile) // a failed swap rename: put the old database back
+            discardTmp()
             store.stage = null; store.target = null; store.failed = true
             current
         }
     }
 
-    private fun swap(to: Boolean) {
-        if (dbFile.exists()) check(dbFile.renameTo(old)) { "couldn't move the old database aside" }
+    private fun discardTmp() { tmp.delete(); sidecars(tmp).forEach { it.delete() } }
+
+    private fun swap(to: Boolean, onInPlace: () -> Unit = {}) {
+        if (dbFile.exists()) check(rename(dbFile, old)) { "couldn't move the old database aside" }
         sidecars(dbFile).forEach { it.delete() } // the old file's journal/WAL must never be applied to the new one
-        check(tmp.renameTo(dbFile)) { "couldn't move the converted database in place" }
+        check(rename(tmp, dbFile)) { "couldn't move the converted database in place" }
+        onInPlace()
+        sidecars(tmp).forEach { it.delete() }
         store.current = to; store.target = null; store.stage = null
         old.delete(); sidecars(old).forEach { it.delete() }
     }
@@ -67,14 +81,14 @@ class EncryptionMigrator(
     private fun recover() {
         val to = store.stage
         if (to == null) {
-            tmp.delete()
+            discardTmp()
             if (dbFile.exists()) old.delete()
             return
         }
         when {
             tmp.exists() -> swap(to)
             dbFile.exists() -> { store.current = to; store.target = null; store.stage = null; old.delete() }
-            old.exists() -> { check(old.renameTo(dbFile)); store.stage = null } // nothing converted survived: keep the old file and mode
+            old.exists() -> { check(rename(old, dbFile)); store.stage = null } // nothing converted survived: keep the old file and mode
             else -> store.stage = null
         }
     }
