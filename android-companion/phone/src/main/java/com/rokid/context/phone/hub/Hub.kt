@@ -75,6 +75,8 @@ class Hub(
     private var jobs: List<Job> = emptyList()
     private val broadcaster = StateBroadcaster(scope, onError = { Log.w(TAG, "broadcast failed: ${it.javaClass.simpleName}") }) { broadcast() }
 
+    init { scope.launch { guarded("pauses") { refreshPauses() } } }
+
     val started: Boolean get() = jobs.isNotEmpty()
 
     fun start() {
@@ -125,6 +127,7 @@ class Hub(
         withContext(io) { pauses.add(r) }
         Log.i(TAG, "phone pause added ${r.pauseId}")
         pushSettings(); broadcaster.markDirty()
+        refreshPauses()
         return r
     }
 
@@ -133,10 +136,17 @@ class Hub(
         withContext(io) { pauses.resume(ids) }
         Log.i(TAG, "phone resume for ${ids.size} pause(s)")
         pushSettings(); broadcaster.markDirty()
+        refreshPauses()
     }
 
     /** Something a frame shows changed outside the hub's own flows: send a fresh frame (≤ 4 Hz). */
-    fun refresh() = broadcaster.markDirty()
+    fun refresh() {
+        scope.launch { guarded("pauses") { refreshPauses() } }
+        broadcaster.markDirty()
+    }
+
+    /** [activePauses] without waiting for a broadcast (works before [start] too). */
+    private suspend fun refreshPauses() { _activePauses.value = withContext(io) { pauses.active() } }
 
     /**
      * One failing event (disk/DB full, …) is logged by class name and shown as a [UserFacingError]; it never ends
@@ -184,8 +194,7 @@ class Hub(
     }
 
     private suspend fun pushSettings() {
-        val active = withContext(io) { pauses.active() }
-        val resumed = withContext(io) { pauses.recentlyResumedIds() }
+        val (active, resumed) = withContext(io) { pauses.active() to pauses.recentlyResumedIds() }
         val pushed = StateFrameBuilder.settingsFor(
             settings.read(), active, _state.value.offset, voice.askBlockedReason.value, resumed = resumed, zoneId = ZoneId.systemDefault().id,
         )
