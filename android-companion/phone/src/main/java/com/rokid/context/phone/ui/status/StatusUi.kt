@@ -10,6 +10,7 @@ import com.rokid.context.phone.ui.banner.BannerSpec
 import com.rokid.context.phone.ui.banner.IndexState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 
 /** Shared status block for Home and Activity: subline/strip text, live dot, pause state, battery, top banner. */
 data class StatusUi(
@@ -45,18 +46,18 @@ data class StatusUi(
             ),
         )
 
-        fun flow(glasses: GlassesStatusSource, pipeline: PipelineControl, clock: Flow<Long>, storagePct: Flow<Int?>): Flow<StatusUi> =
-            combine(glasses.status, pipeline.enabled, clock, storagePct) { s, enabled, now, storage -> build(s, enabled, storage, now) }
+        fun flow(glasses: GlassesStatusSource, pipeline: PipelineControl, clock: Flow<Long>, storagePct: Flow<Int?>, index: Flow<IndexState> = flowOf(IndexState.NONE)): Flow<StatusUi> =
+            combine(glasses.status, pipeline.enabled, clock, storagePct, index) { s, enabled, now, storage, idx -> build(s, enabled, storage, now, idx) }
     }
 }
 
-/** RECONNECT and RESUME act here; FIX_AI is navigation and is handled by the route (Destinations.kt). */
+/** RECONNECT and RESUME act here; FIX_AI (navigation) and REBUILD_INDEX (SettingsDeps.rebuildIndex) are handled by the route (Destinations.kt). */
 object BannerActions {
     fun apply(action: BannerAction, glasses: GlassesStatusSource, pipeline: PipelineControl) {
         when (action) {
             BannerAction.RECONNECT -> glasses.requestReconnect()
             BannerAction.RESUME -> pipeline.setEnabled(true)
-            BannerAction.FIX_AI -> Unit
+            BannerAction.FIX_AI, BannerAction.REBUILD_INDEX -> Unit
         }
     }
 }

@@ -41,7 +41,13 @@ private val dateArg = navArgument("date") { type = NavType.StringType }
 fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
     // Never pop the root: a second quick Back tap (or Back on a restored single-entry stack) would leave an empty NavHost.
     val back: () -> Unit = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
-    val bannerNav: (BannerAction, (BannerAction) -> Unit) -> Unit = { a, apply -> if (a == BannerAction.FIX_AI) nav.navigate(Routes.SETTINGS_ENDPOINTS) else apply(a) }
+    val bannerNav: (BannerAction, (BannerAction) -> Unit) -> Unit = { a, apply ->
+        when (a) {
+            BannerAction.FIX_AI -> nav.navigate(Routes.SETTINGS_ENDPOINTS)
+            BannerAction.REBUILD_INDEX -> deps.settings.rebuildIndex()
+            else -> apply(a)
+        }
+    }
 
     composable(Routes.ONBOARDING) {
         WelcomeScreen(onGetStarted = {
@@ -51,7 +57,7 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
     }
 
     composable(Routes.HOME) {
-        val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone) }
+        val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index) }
         val state by vm.state.collectAsStateWithLifecycle()
         HomeScreen(
             state, onQuestionChange = vm::onQuestionChange, onAsk = { vm.ask(it) }, onOpenAsk = { nav.navigate(Routes.ask(it)) },
@@ -68,7 +74,7 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
 
     composable(Routes.ACTIVITY, arguments = listOf(navArgument("period") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
         val period = Period.parse(entry.arguments?.getString("period"))
-        val vm = viewModel { ActivityViewModel(period, deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.clock, deps.storagePct, deps.zone) }
+        val vm = viewModel { ActivityViewModel(period, deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.clock, deps.storagePct, deps.zone, index = deps.index) }
         val state by vm.state.collectAsStateWithLifecycle()
         ActivityScreen(
             state, onSelectPeriod = vm::selectPeriod, onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },

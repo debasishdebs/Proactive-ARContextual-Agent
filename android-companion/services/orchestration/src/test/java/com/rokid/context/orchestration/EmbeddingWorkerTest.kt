@@ -140,4 +140,15 @@ class EmbeddingWorkerTest {
         assertTrue(queued().all { it.state == WorkInfo.State.CANCELLED })
         assertTrue(!PrefsIndexClock(ctx).rebuildPending())
     }
+
+    /** T19: the user's Rebuild resets the drift streak when it is asked for, so "index unstable" clears even while paused. */
+    @Test fun aRebuildRequestClearsTheUnstableStateAndStaysQueuedWhilePaused() = runBlocking {
+        com.rokid.context.work.OrchestrationScheduler(ctx).pausePipeline()
+        PrefsIndexClock(ctx).recordDiscard(DiscardRecord("A", 7, IndexMaintenance.MAX_DISCARD_STREAK))
+        assertTrue(PrefsIndexClock(ctx).observeUnstable().first())
+        EmbeddingWorker.enqueue(ctx, rebuild = true)
+        assertTrue("streak reset", !PrefsIndexClock(ctx).unstable())
+        assertTrue(!PrefsIndexClock(ctx).observeUnstable().first())
+        assertTrue("queued, not lost", PrefsIndexClock(ctx).rebuildPending())
+    }
 }

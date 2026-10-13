@@ -8,6 +8,7 @@ import com.rokid.context.ai.ProviderBuilder
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.retrieval.RetrievalSettings
+import com.rokid.context.memory.retrieval.RetrievalSettingsStore
 import com.rokid.context.model.ModelProvider
 import com.rokid.context.orchestration.AnswerService
 import com.rokid.context.orchestration.TestBedInputs
@@ -25,6 +26,7 @@ class FakeHudSettings(initial: HudSettings = HudSettings()) : HudSettingsControl
 object TestSettings {
     var reauthorized = 0
     var embedChanges = 0
+    var rebuilds = 0
 
     fun ai(ctx: Context, reply: suspend (String) -> String = { "OK" }): AiGraph =
         AiGraph(MemoryGraph.get(ctx), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { _, _, _ ->
@@ -33,5 +35,6 @@ object TestSettings {
 
     fun deps(ctx: Context, ai: AiGraph = ai(ctx), hud: HudSettingsControl = FakeHudSettings()): SettingsDeps =
         SettingsDeps(lazyAi = lazyOf(ai), hud = hud, reauthorize = { reauthorized++ }, onEmbedBindingChanged = { embedChanges++ },
-            lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(ctx), AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() })) })
+            lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(ctx), AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() })) },
+            lazyRetrieval = lazy { RetrievalSettingsStore(ctx.getSharedPreferences("retrieval_test", 0)) }, lazySpaces = lazy { MemoryGraph.get(ctx).spaces }, rebuildIndex = { rebuilds++ })
 }

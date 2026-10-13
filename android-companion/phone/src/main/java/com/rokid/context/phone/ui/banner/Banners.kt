@@ -4,9 +4,24 @@ import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.LinkState
 import com.rokid.context.core.ui.components.BannerTone
 
-enum class IndexState { NONE, NEEDED, RUNNING }
+enum class IndexState {
+    NONE, NEEDED, RUNNING,
+    /** Auto-rebuild stopped after repeated canary drift (Task 11); only the user's Rebuild resumes it. */
+    UNSTABLE;
+
+    companion object {
+        fun of(h: com.rokid.context.memory.IndexHealth): IndexState = when (h) {
+            com.rokid.context.memory.IndexHealth.NONE -> NONE
+            com.rokid.context.memory.IndexHealth.NEEDED -> NEEDED
+            com.rokid.context.memory.IndexHealth.RUNNING -> RUNNING
+        }
+
+        /** [unstable] = `PrefsIndexClock.observeUnstable()`; it wins, because no build runs while it holds. */
+        fun of(h: com.rokid.context.memory.IndexHealth, unstable: Boolean): IndexState = if (unstable) UNSTABLE else of(h)
+    }
+}
 enum class BannerKind { AI_BLOCKED, GLASSES_DISCONNECTED, PROTOCOL_MISMATCH, CAPTURE_DEFERRED, CAPTURE_PAUSED, INDEX, STORAGE }
-enum class BannerAction { FIX_AI, RECONNECT, RESUME }
+enum class BannerAction { FIX_AI, RECONNECT, RESUME, REBUILD_INDEX }
 
 /** Everything the banner needs; [aiBlockedText] is the hub's short `Health.Blocked` text, never an exception message. */
 data class BannerInputs(
@@ -54,6 +69,7 @@ object BannerResolver {
         when (i.index) {
             IndexState.NEEDED -> BannerSpec(BannerKind.INDEX, BannerTone.SKY, "Memory index needs a rebuild")
             IndexState.RUNNING -> BannerSpec(BannerKind.INDEX, BannerTone.SKY, "Rebuilding memory index…")
+            IndexState.UNSTABLE -> BannerSpec(BannerKind.INDEX, BannerTone.AMBER, "Memory index unstable", "Rebuild", BannerAction.REBUILD_INDEX)
             IndexState.NONE -> null
         },
         i.storagePct?.let { p ->
