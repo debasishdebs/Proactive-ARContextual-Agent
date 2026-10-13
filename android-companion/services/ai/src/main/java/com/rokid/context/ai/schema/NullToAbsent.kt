@@ -24,7 +24,10 @@ object NullToAbsent {
             val normalised = candidates.map { walk(root, it, v, depth + 1) }
             val valid = candidates.indices.firstOrNull { JsonSchemaValidator.errorsOf(root, candidates[it], normalised[it], "$", depth + 1).isEmpty() }
             val byTag = candidates.indices.firstOrNull { discriminatorMatches(candidates[it], v) }
-            return (valid ?: byTag)?.let { normalised[it] } ?: v
+            val chosen = (valid ?: byTag)?.let { normalised[it] } ?: v
+            // Keywords beside the union (properties, items) apply as well (Phase 5 T3 carry).
+            val siblings = JsonObject(s - "anyOf" - "oneOf")
+            return if ("properties" in siblings || "items" in siblings) walk(root, siblings, chosen, depth + 1) else chosen
         }
         return when (v) {
             is JsonObject -> {

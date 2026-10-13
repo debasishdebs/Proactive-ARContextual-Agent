@@ -24,21 +24,26 @@ object WireSchemaCompiler {
     const val MAX_NODES = 2000
     private const val REF = "\$ref"
     private const val DEFS = "\$defs"
+    private const val DEFINITIONS = "definitions"
     private val UNSUPPORTED = listOf("allOf", "not", "if", "then", "else", "dependentRequired", "dependentSchemas", "unevaluatedProperties")
 
     fun compile(canonical: JsonObject, kind: EndpointKind): Result<JsonObject> = runCatching {
         val keepRefs = kind == EndpointKind.AZURE_OPENAI
-        val checkLimits = keepRefs || kind == EndpointKind.OPENAI_COMPAT
+        val strict = keepRefs || kind == EndpointKind.OPENAI_COMPAT
         rejectUnless(!SchemaRefs.exceedsDepth(canonical)) { "The schema is nested too deeply" }
         rejectRefCycles(canonical)
         val top = SchemaRefs.resolve(canonical, canonical)
         rejectUnless("object" in SchemaRefs.typeNames(top["type"]) && "anyOf" !in top && "oneOf" !in top) { "The top level must be an object" }
         val budget = Budget()
-        val body = node(canonical, canonical, keepRefs, emptyList(), budget)
-        val out = if (keepRefs && canonical[DEFS] is JsonObject) {
-            JsonObject(body + (DEFS to JsonObject(canonical[DEFS]!!.jsonObject.mapValues { (_, d) -> node(canonical, d.jsonObject, true, emptyList(), budget) })))
-        } else body
-        if (checkLimits) checkLimits(out)
+        val body = node(canonical, canonical, keepRefs, strict, emptyList(), budget)
+        // Azure keeps refs: every local definition goes out under $defs (a #/definitions/... ref is rewritten to match).
+        val defs = LinkedHashMap<String, JsonElement>()
+        if (keepRefs) for (section in listOf(DEFS, DEFINITIONS)) (canonical[section] as? JsonObject)?.forEach { (name, d) ->
+            rejectUnless(name !in defs) { "'${SchemaRefs.clip(name)}' is defined in both \$defs and definitions" }
+            defs[name] = node(canonical, d.jsonObject, true, strict, emptyList(), budget)
+        }
+        val out = if (defs.isNotEmpty()) JsonObject(body + (DEFS to JsonObject(defs))) else body
+        if (strict) checkLimits(out)
         out
     }
 
@@ -60,20 +65,24 @@ object WireSchemaCompiler {
             next.forEach { visit(it, stack + ref) }
         }
         val top = ArrayList<String>()
-        root.forEach { (k, v) -> if (k != DEFS && k != "definitions") refsIn(v, top) }
+        root.forEach { (k, v) -> if (k != DEFS && k != DEFINITIONS) refsIn(v, top) }
         top.forEach { visit(it, emptySet()) }
-        (root[DEFS] as? JsonObject)?.keys?.forEach { visit("#/$DEFS/$it", emptySet()) }
+        (root[DEFS] as? JsonObject)?.keys?.forEach { visit("#/$DEFS/${SchemaRefs.escapeToken(it)}", emptySet()) }
     }
 
     private class Budget { var used = 0; fun spend() { rejectUnless(++used <= MAX_NODES) { "The schema is too large" } } }
 
-    private fun node(root: JsonObject, raw: JsonObject, keepRefs: Boolean, stack: List<String>, budget: Budget): JsonObject {
+    private fun node(root: JsonObject, raw: JsonObject, keepRefs: Boolean, strict: Boolean, stack: List<String>, budget: Budget): JsonObject {
         budget.spend()
         if (REF in raw) {
-            if (keepRefs) { SchemaRefs.resolve(root, raw); return JsonObject(mapOf(REF to raw[REF]!!)) }
             val ref = (raw[REF] as JsonPrimitive).content
+            if (keepRefs) { SchemaRefs.resolve(root, raw); return JsonObject(mapOf(REF to JsonPrimitive(ref.replaceFirst("#/$DEFINITIONS/", "#/$DEFS/")))) }
             rejectUnless(ref !in stack) { "Recursive \$ref isn't supported" }
-            return node(root, SchemaRefs.resolve(root, raw), false, stack + ref, budget)
+            val target = node(root, SchemaRefs.resolve(root, raw), false, strict, stack + ref, budget)
+            // A description beside the $ref describes this use of the shared schema: it is kept (Phase 5 T4 carry).
+            val sibling = (raw["description"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() } ?: return target
+            val own = (target["description"] as? JsonPrimitive)?.content
+            return JsonObject(target + ("description" to JsonPrimitive(if (own == null) sibling else "$sibling ($own)")))
         }
         UNSUPPORTED.firstOrNull { it in raw }?.let { throw SchemaRejected("'$it' isn't supported") }
         val out = LinkedHashMap<String, JsonElement>()
@@ -88,18 +97,20 @@ object WireSchemaCompiler {
             desc != null -> out["description"] = JsonPrimitive(desc)
             words.isNotEmpty() -> out["description"] = JsonPrimitive(words.joinToString("; "))
         }
-        ((raw["anyOf"] ?: raw["oneOf"]) as? JsonArray)?.let { b -> out["anyOf"] = JsonArray(b.map { node(root, it.jsonObject, keepRefs, stack, budget) }) }
-        (raw["items"] as? JsonObject)?.let { out["items"] = node(root, it, keepRefs, stack, budget) }
+        ((raw["anyOf"] ?: raw["oneOf"]) as? JsonArray)?.let { b -> out["anyOf"] = JsonArray(b.map { node(root, it.jsonObject, keepRefs, strict, stack, budget) }) }
+        (raw["items"] as? JsonObject)?.let { out["items"] = node(root, it, keepRefs, strict, stack, budget) }
         val props = raw["properties"] as? JsonObject
         if (props != null || "object" in SchemaRefs.typeNames(raw["type"])) {
             val required = (raw["required"] as? JsonArray)?.map { (it as JsonPrimitive).content }?.toSet().orEmpty()
             val compiled = (props ?: JsonObject(emptyMap())).mapValues { (k, p) ->
-                val c = node(root, p.jsonObject, keepRefs, stack, budget)
+                val c = node(root, p.jsonObject, keepRefs, strict, stack, budget)
                 if (k in required) c else nullable(c)
             }
             out["properties"] = JsonObject(compiled)
             out["required"] = JsonArray(compiled.keys.map { JsonPrimitive(it) })
-            out["additionalProperties"] = JsonPrimitive(false)
+            // Strict modes require false; the grammar backends can take a map's value schema (Phase 5 T4 carry).
+            val extra = raw["additionalProperties"]
+            out["additionalProperties"] = if (!strict && extra is JsonObject) node(root, extra, keepRefs, strict, stack, budget) else JsonPrimitive(false)
         }
         return JsonObject(out)
     }
@@ -133,6 +144,9 @@ object WireSchemaCompiler {
         if ((s["uniqueItems"] as? JsonPrimitive)?.booleanOrNull == true) add("items must be unique")
         if ("contains" in s) add("must include a matching item")
         range(s, "minProperties", "maxProperties", "properties")?.let { add(it) }
+        range(s, "minContains", "maxContains", "matching items")?.let { add(it) }
+        (s["patternProperties"] as? JsonObject)?.keys?.takeIf { it.isNotEmpty() }?.let { add("other property names match ${it.joinToString(", ")}") }
+        if ("propertyNames" in s) add("property names are restricted")
     }
 
     private fun range(s: JsonObject, minKey: String, maxKey: String, unit: String): String? {

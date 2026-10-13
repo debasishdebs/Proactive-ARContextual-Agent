@@ -168,4 +168,17 @@ class SchemaCompatibilityCheckerTest {
             p["type"] = Json.parseToJsonElement("""{"type":"string","const":"REMINDER"}"""); m["properties"] = JsonObject(p) }
         assertEquals(emptyList<String>(), check(draft))
     }
+
+    /** Phase 5 T5 carries: an escaped pointer name is a local ref, and the empty-union line names its own path. */
+    @Test fun escapedPointerNamesAreLocalRefsAndEmptyUnionsNameTheirPath() {
+        val defs = base["\$defs"]!!.jsonObject
+        val renamed = JsonObject(base + ("\$defs" to JsonObject(defs - "ProposedAction" + ("Proposed/Action" to defs["ProposedAction"]!!))))
+        val p = renamed["properties"]!!.jsonObject
+        val draft = JsonObject(renamed + ("properties" to JsonObject(p + ("proposedAction" to Json.parseToJsonElement("""{"${'$'}ref":"#/${'$'}defs/Proposed~1Action"}""")))))
+        assertEquals(emptyList<String>(), check(draft.toString()))
+        val nudgeBase = DefaultSchemas.forKey(PromptKey.NUDGE)!!
+        val nDefs = nudgeBase["\$defs"]!!.jsonObject
+        val empty = JsonObject(nudgeBase + ("\$defs" to JsonObject(nDefs + ("ProposedAction" to JsonObject(mapOf("oneOf" to JsonArray(emptyList())))))))
+        assertEquals(listOf("proposedAction must keep at least one variant"), SchemaCompatibilityChecker.check(PromptKey.NUDGE, empty.toString(), emptyList()))
+    }
 }
