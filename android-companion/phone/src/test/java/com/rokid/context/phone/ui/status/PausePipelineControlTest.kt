@@ -69,6 +69,16 @@ class PausePipelineControlTest {
         assertEquals(1, hub.created.size)
     }
 
+    @Test fun pauseUntilAndResumeIdsAreExact() = runCtl {
+        hub.active.value = listOf(PauseRecord("a", PauseOrigin.GLASSES, 1, null), PauseRecord("b", PauseOrigin.GLASSES, 1, null))
+        val c = control(); advanceUntilIdle()
+        c.pauseUntil(now + 1_800_000); advanceUntilIdle()
+        assertEquals(now + 1_800_000, hub.created.single().untilMs)
+        c.resumeIds(setOf("a")); advanceUntilIdle()
+        assertEquals(listOf(setOf("a")), hub.resumed)
+        assertEquals(setOf("b", "phone1"), hub.active.value.map { it.pauseId }.toSet())
+    }
+
     @Test fun legacyTrueFlagOnlyMarks() = runCtl {
         control(); advanceUntilIdle()
         assertTrue(hub.created.isEmpty())

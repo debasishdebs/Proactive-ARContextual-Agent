@@ -31,6 +31,20 @@ interface PipelineControl {
     val activePauses: StateFlow<List<PauseRecord>> get() = NO_PAUSES
     /** Phase 7: when the last Resume from this control finished (phone clock), for "Still paused on glasses". */
     val lastResumeAtMs: StateFlow<Long?> get() = NO_RESUME
+    /** Phase 7: a PHONE pause until [untilMs] (phone clock; null = until resumed). Legacy: a null pause only. */
+    fun pauseUntil(untilMs: Long?) { if (untilMs == null) setEnabled(false) }
+    /** Phase 7: resumes exactly [ids] (the ones a screen showed). Legacy: nothing. */
+    fun resumeIds(ids: Set<String>) = Unit
+
+    companion object {
+        /** Strict default for deps built without the hub: never paused, every call ignored. */
+        val None: PipelineControl = object : PipelineControl {
+            override val enabled: StateFlow<Boolean> = MutableStateFlow(true).asStateFlow()
+            override fun setEnabled(enabled: Boolean) = Unit
+            override fun toggle() = Unit
+            override fun pauseUntil(untilMs: Long?) = Unit
+        }
+    }
 }
 
 private val NO_PAUSES: StateFlow<List<PauseRecord>> = MutableStateFlow<List<PauseRecord>>(emptyList()).asStateFlow()
@@ -81,8 +95,8 @@ class PausePipelineControl(
     override val lastResumeAtMs: StateFlow<Long?> = _lastResume.asStateFlow()
 
     private sealed interface Op {
-        data object Pause : Op
-        data class Resume(val shown: Set<String>) : Op
+        data class Pause(val untilMs: Long?) : Op
+        data class Resume(val shown: Set<String>, val includeQueued: Boolean = true) : Op
     }
     private val ops = Channel<Op>(Channel.UNLIMITED)
     private val lock = Any()
@@ -124,10 +138,10 @@ class PausePipelineControl(
 
     private suspend fun run(op: Op) {
         when (op) {
-            Op.Pause -> hub.pausePhone(null).also { createdByTaps += it.pauseId }
+            is Op.Pause -> hub.pausePhone(op.untilMs).also { if (op.untilMs == null) createdByTaps += it.pauseId }
             is Op.Resume -> {
-                val ids = op.shown + createdByTaps
-                createdByTaps.clear()
+                val ids = if (op.includeQueued) op.shown + createdByTaps else op.shown
+                if (op.includeQueued) createdByTaps.clear() else createdByTaps.removeAll(op.shown)
                 if (ids.isNotEmpty()) hub.resume(ids)
                 _lastResume.value = clock()
             }
@@ -135,9 +149,20 @@ class PausePipelineControl(
     }
 
     override fun setEnabled(enabled: Boolean) {
-        val op = if (enabled) Op.Resume(hub.activePauses.value.map { it.pauseId }.toSet()) else Op.Pause
+        val op = if (enabled) Op.Resume(hub.activePauses.value.map { it.pauseId }.toSet()) else Op.Pause(null)
         synchronized(lock) { requested = enabled; inFlight++ }
         ops.trySend(op)
+    }
+
+    override fun pauseUntil(untilMs: Long?) {
+        synchronized(lock) { requested = false; inFlight++ }
+        ops.trySend(Op.Pause(untilMs))
+    }
+
+    /** Exactly [ids]: a screen's "Resume all shown" (a pause queued by a tap is not added). */
+    override fun resumeIds(ids: Set<String>) {
+        synchronized(lock) { inFlight++ }
+        ops.trySend(Op.Resume(ids, includeQueued = false))
     }
 
     override fun toggle() = synchronized(lock) { setEnabled(!(requested ?: hub.activePauses.value.isEmpty())) }
