@@ -23,7 +23,8 @@ data class SeedEndpoint(val id: String, val name: String, val model: String)
 enum class AiPreset(val label: String, val kind: EndpointKind, val hasKey: Boolean, val defaultModel: String, val urlHint: String) {
     AZURE("Azure OpenAI", EndpointKind.AZURE_OPENAI, true, "", "https://your-resource.openai.azure.com"),
     OPENAI("OpenAI-compatible", EndpointKind.OPENAI_COMPAT, true, "gpt-4o-mini", "https://api.openai.com/v1"),
-    OLLAMA("Ollama (on your network)", EndpointKind.OLLAMA, false, "llama3.2", "http://mybox.local:11434"),
+    OLLAMA("Ollama (on your network)", EndpointKind.OLLAMA, false, "llama3.2", "http://mybox.local:11434");
+    val endpointId: String get() = "onboarding_" + name.lowercase()
 }
 
 /** What the user typed. [baseUrl] is already normalised by [com.rokid.context.ai.UrlNormalizer]. */
@@ -48,7 +49,7 @@ class AiGraphOnboardingAi(private val ai: () -> AiGraph) : OnboardingAi {
 
     override suspend fun testDraft(draft: EndpointDraft): Result<TestResult> = runCatching {
         val g = ai()
-        val id = "onboarding_" + draft.preset.name.lowercase()
+        val id = draft.preset.endpointId
         val caps = setOf(Capability.CHAT, Capability.VISION, Capability.JSON_SCHEMA).takeIf { draft.preset != AiPreset.OLLAMA } ?: setOf(Capability.CHAT)
         val e = Endpoint(id, draft.preset.label, draft.preset.kind, draft.baseUrl, draft.apiVersion, listOf(draft.model), caps, System.currentTimeMillis())
         val key = if (draft.preset.kind in EndpointRules.KEYLESS) null else draft.apiKey
