@@ -209,7 +209,12 @@ class OnboardingViewModel(
         }
     }
 
+    private var finishing = false
+
+    /** A double-tapped "Open Home" finishes once. */
     private fun finish(onDone: () -> Unit) {
+        if (finishing) return
+        finishing = true
         viewModelScope.launch(work) {
             deps.markComplete()
             withContext(main) { onDone() }

@@ -117,4 +117,12 @@ class OnboardingAiStepTest {
         val v = vm(Env()); repeat(10) { v.next() }
         assertEquals(Step.DONE, v.state.value.step)
     }
+
+    @Test fun doubleTappedDoneFinishesOnce() {
+        val env = Env(); val v = vm(env); v.secondary(); v.primary {}; v.primary {}
+        var done = 0
+        v.primary { done++ }; v.primary { done++ }
+        assertEquals(1, done)
+        assertEquals(1, env.completed)
+    }
 }
