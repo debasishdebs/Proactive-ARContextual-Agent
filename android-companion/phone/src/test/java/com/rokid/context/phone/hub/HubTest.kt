@@ -237,6 +237,13 @@ class HubTest {
         assertNotNull(h.status.value.frame)
     }
 
+    @Test fun hudSettingsFlowFollowsUpdatesImmediately() = runTest {
+        val h = hub(FakeGlassesLink())
+        assertEquals(300, h.hudSettings.value.captureIntervalSec)
+        h.updateSettings { it.copy(captureIntervalSec = 600) }
+        assertEquals(600, h.hudSettings.value.captureIntervalSec)
+    }
+
     @Test fun settingsChangesArePushed() = runTest {
         val link = FakeGlassesLink()
         val h = hub(link)

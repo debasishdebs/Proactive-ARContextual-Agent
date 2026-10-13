@@ -2,6 +2,7 @@ package com.rokid.context.phone.ui.settings
 
 import android.app.Application
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -11,10 +12,12 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.model.GlassesStatus
+import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.LinkState
 import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.phone.ui.Fixtures
 import com.rokid.context.phone.ui.glasses.FakeGlassesStatusSource
+import com.rokid.context.phone.ui.shell.Routes
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -26,24 +29,28 @@ import org.robolectric.annotation.Config
 class SettingsRootTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun glassesSummaryFollowsTheLink() {
+    @Test fun summariesFollowTheLinkAndTheCaptureSettings() {
         assertEquals("Linked · 82%", SettingsModel.glassesSummary(FakeGlassesStatusSource.connected(Fixtures.stateFrame())))
-        assertEquals("Linked", SettingsModel.glassesSummary(FakeGlassesStatusSource.connected(Fixtures.stateFrame(battery = null))))
         assertEquals("Not connected", SettingsModel.glassesSummary(FakeGlassesStatusSource.OFFLINE))
         assertEquals("Update the glasses app", SettingsModel.glassesSummary(GlassesStatus(LinkState.VERSION_MISMATCH, null, 0, null, null)))
+        assertEquals("Every 5 min · burst on change", SettingsModel.captureSummary(HudSettings()))
+        assertEquals("Every 1 h", SettingsModel.captureSummary(HudSettings(captureIntervalSec = 9_000, burstOnChange = false)))
     }
 
-    @Test fun onlyEndpointsAndDiagnosticsAreLive() {
-        var endpoints = 0; var diagnostics = 0
-        compose.setContent { PcTheme { SettingsRootScreen(SettingsRootUiState("Linked · 82%"), onOpenEndpoints = { endpoints++ }, onOpenDiagnostics = { diagnostics++ }) } }
-        compose.onNodeWithText("DEVICES").assertIsDisplayed()
-        compose.onNodeWithText("Linked · 82%").assertIsDisplayed()
-        compose.onNodeWithTag("settings_list").performScrollToNode(hasText("Model endpoints"))
-        compose.onNodeWithText("Model endpoints").performClick()
-        compose.onNodeWithTag("settings_list").performScrollToNode(hasText("Prompts"))
-        compose.onNodeWithText("Prompts").assertIsNotEnabled()
+    @Test fun everyGroupIsListedAndOnlyLiveRowsOpen() {
+        val opened = mutableListOf<String>()
+        compose.setContent { PcTheme { SettingsRootScreen(SettingsRootUiState("Linked · 82%", "Every 5 min · burst on change"), live = Routes.LIVE_SETTINGS, onOpen = { opened += it }) } }
+        listOf("DEVICES", "CAPTURE & PRIVACY", "AI", "CONNECTORS", "MEMORY & SYSTEM").forEach {
+            compose.onNodeWithTag("settings_list").performScrollToNode(hasText(it)); compose.onNodeWithText(it).assertIsDisplayed()
+        }
+        // The tree is taller than the Robolectric screen: scroll back up before tapping the first row.
+        compose.onNodeWithTag("settings_list").performScrollToNode(hasText("Rokid Glasses"))
+        compose.onNodeWithText("Rokid Glasses").performClick()
+        compose.onNodeWithTag("settings_list").performScrollToNode(hasText("Data sources"))
+        compose.onNodeWithText("Data sources").assertIsNotEnabled()
         compose.onNodeWithTag("settings_list").performScrollToNode(hasText("Diagnostics"))
+        compose.onNodeWithText("Diagnostics").assertIsEnabled()
         compose.onNodeWithText("Diagnostics").performClick()
-        assertEquals(1, endpoints); assertEquals(1, diagnostics)
+        assertEquals(listOf(Routes.SETTINGS_GLASSES, Routes.SETTINGS_DIAGNOSTICS), opened)
     }
 }

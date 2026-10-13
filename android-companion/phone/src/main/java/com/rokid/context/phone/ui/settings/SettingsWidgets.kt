@@ -1,0 +1,115 @@
+package com.rokid.context.phone.ui.settings
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import com.rokid.context.core.ui.components.GradientButton
+import com.rokid.context.core.ui.components.ScreenHeader
+import com.rokid.context.core.ui.components.SoftCard
+import com.rokid.context.core.ui.theme.PcColors
+
+/** One settings screen: header + scrolling cards (spec §2.3 spacing). */
+@Composable
+fun SettingsPage(title: String, onBack: () -> Unit, tag: String, actions: @Composable () -> Unit = {}, content: LazyListScope.() -> Unit) {
+    LazyColumn(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).testTag(tag)) {
+        item { ScreenHeader(title, onBack, actions) }
+        content()
+        item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+fun SettingsCard(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    SoftCard(modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+    }
+}
+
+@Composable
+fun SwitchRow(title: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit, tag: String, enabled: Boolean = true) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            if (subtitle != null) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
+        }
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled, modifier = Modifier.testTag(tag))
+    }
+}
+
+/** A labelled single choice; the menu items are tagged "<tag>_<index>". */
+@Composable
+fun ChoiceRow(title: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit, tag: String, enabled: Boolean = true) {
+    var open by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+        Box {
+            TextButton(onClick = { open = true }, enabled = enabled, modifier = Modifier.testTag(tag)) { Text(options.getOrElse(selected) { "—" }) }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                options.forEachIndexed { i, o ->
+                    DropdownMenuItem(text = { Text(o) }, onClick = { open = false; onSelect(i) }, modifier = Modifier.testTag("${tag}_$i"))
+                }
+            }
+        }
+    }
+}
+
+/** F14 / Phase 4 ApiKeyFieldRulesTest: a secret never goes to the IME's learning or suggestions. */
+private val SECRET_KEYBOARD = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false)
+
+@Composable
+fun TextFieldRow(
+    label: String, value: String, onChange: (String) -> Unit, tag: String,
+    singleLine: Boolean = true, placeholder: String? = null, secret: Boolean = false, enabled: Boolean = true,
+    supporting: String? = null, isError: Boolean = false, number: Boolean = false,
+) {
+    OutlinedTextField(
+        value = value, onValueChange = onChange, label = { Text(label) }, singleLine = singleLine, enabled = enabled, isError = isError,
+        placeholder = placeholder?.let { { Text(it) } }, supportingText = supporting?.let { { Text(it) } },
+        visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+        keyboardOptions = if (secret) SECRET_KEYBOARD else KeyboardOptions(keyboardType = if (number) KeyboardType.Decimal else KeyboardType.Text),
+        modifier = Modifier.fillMaxWidth().testTag(tag),
+    )
+}
+
+@Composable
+fun NoticeText(text: String, error: Boolean = false, tag: String = "notice") {
+    Text(text, style = MaterialTheme.typography.bodyMedium, color = if (error) PcColors.ChipCoral.second else PcColors.InkSoft, modifier = Modifier.testTag(tag))
+}
+
+@Composable
+fun PrimaryAction(text: String, onClick: () -> Unit, tag: String, enabled: Boolean = true) =
+    GradientButton(text, onClick, Modifier.fillMaxWidth().testTag(tag), enabled = enabled)
+
+@Composable
+fun SecondaryAction(text: String, onClick: () -> Unit, tag: String, enabled: Boolean = true) =
+    TextButton(onClick = onClick, enabled = enabled, modifier = Modifier.testTag(tag)) { Text(text) }
