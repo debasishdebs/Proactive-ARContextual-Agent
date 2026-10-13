@@ -60,4 +60,12 @@ class GlassesInboundTest {
         inbound.reset()
         assertTrue(inbound.onMessage(Channels.LISTEN_END, listOf("")).isEmpty())
     }
+
+    /** Carry (Task 9): the glasses send `pc_listen_end` as `{"v":N}` (F3); the body is not version-gated, only the open listen counts. */
+    @Test fun listenEndCarriesAVersionButIsNotGatedByIt() {
+        inbound.onMessage(Channels.CMD, listOf(cmd(Command.ListenStart)))
+        assertEquals(listOf<GlassesEvent>(GlassesEvent.ListenEnd), inbound.onMessage(Channels.LISTEN_END, listOf("{\"v\":$PROTOCOL_VERSION}")))
+        inbound.onMessage(Channels.CMD, listOf(cmd(Command.ListenStart)))
+        assertEquals(listOf<GlassesEvent>(GlassesEvent.ListenEnd), inbound.onMessage(Channels.LISTEN_END, listOf("{\"v\":${PROTOCOL_VERSION + 1}}")), "no Outdated from listen_end")
+    }
 }

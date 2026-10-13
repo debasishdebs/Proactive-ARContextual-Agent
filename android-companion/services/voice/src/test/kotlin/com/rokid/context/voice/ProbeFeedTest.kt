@@ -62,7 +62,7 @@ class ProbeFeedTest {
             override fun close() = Unit
         }
         val pauses = mutableListOf<Long>()
-        ProbeFeed.stream(PcmFeeder(sink, clock = { testScheduler.currentTime }), ByteArray(6_500)) { pauses += it; kotlinx.coroutines.delay(it) }
+        ProbeFeed.stream(PcmFeeder(sink, clock = { testScheduler.currentTime }, capacityBytes = TestPipes.CAPACITY), ByteArray(6_500)) { pauses += it; kotlinx.coroutines.delay(it) }
         // 6 500 + 32 000 = 38 500 bytes: 12 chunks of 3 200 and one of 100.
         assertEquals(List(12) { Pcm.CHUNK_BYTES } + 100, sizes)
         assertEquals(List(12) { 100L } + 3L, pauses)

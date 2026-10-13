@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,6 +43,8 @@ class Hub(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** Starts [ContextHubService] (which calls [start]); used when Reconnect is tapped while the hub is not running. */
     private val startService: () -> Unit = {},
+    /** Voice (Phase 6): glasses voice events go here; its overlay goes into every StateFrame. */
+    private val voice: HubVoice = HubVoice.None,
 ) : GlassesStatusSource {
     private val _state = MutableStateFlow(HubState())
     val state: StateFlow<HubState> = _state
@@ -70,12 +73,16 @@ class Hub(
             scope.launch { link.events.collect { guarded("event ${it::class.simpleName}") { onEvent(it) } } },
             scope.launch { link.ready.collect { guarded("ready") { onReady() } } },
             scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
+            scope.launch { voice.overlay.drop(1).collect { broadcaster.markDirty() } },
+            // The gate's reason travels in pc_settings (the glasses toast it on tap = Ask, spec §5.1.1).
+            scope.launch { voice.askBlockedReason.drop(1).collect { guarded("settings") { pushSettings() } } },
             broadcaster.start(),
         )
         link.connectOnce()
     }
 
     fun stop() {
+        voice.onLinkLost() // first (preflight F15): the link is closing, so an open glasses listen can't complete
         jobs.forEach { it.cancel() }
         jobs = emptyList()
         link.close()
@@ -114,7 +121,7 @@ class Hub(
     }
 
     private fun onLinkState(s: LinkState) {
-        if (s != LinkState.CONNECTED) newSession()
+        if (s != LinkState.CONNECTED) { newSession(); voice.onLinkLost() }
         set { it.copy(link = s, offset = offset) }
     }
 
@@ -145,7 +152,7 @@ class Hub(
 
     private suspend fun pushSettings() {
         val active = withContext(io) { pauses.active() }
-        link.send(Channels.SETTINGS, Wire.encode(StateFrameBuilder.settingsFor(settings.read(), active, _state.value.offset)))
+        link.send(Channels.SETTINGS, Wire.encode(StateFrameBuilder.settingsFor(settings.read(), active, _state.value.offset, voice.askBlockedReason.value)))
     }
 
     private suspend fun onEvent(e: GlassesEvent) {
@@ -192,7 +199,8 @@ class Hub(
                 Log.w(TAG, "glasses protocol v=${e.remote}, phone v=$PROTOCOL_VERSION")
                 set { it.copy(versionMismatch = true) }
             }
-            is GlassesEvent.Audio, GlassesEvent.ListenEnd -> Unit // voice: Phase 6
+            is GlassesEvent.Audio -> voice.onAudio(e.pcm) // never logged: it is the wearer's voice
+            GlassesEvent.ListenEnd -> voice.onListenEnd()
         }
     }
 
@@ -210,6 +218,8 @@ class Hub(
                 Log.i(TAG, "resume asked for ${c.clears.size} pause(s)")
                 pushSettings(); broadcaster.markDirty()
             }
+            Command.ListenStart -> { Log.i(TAG, "listen start"); voice.onListenStart() }
+            Command.Cancel -> { Log.i(TAG, "voice cancel"); voice.onCancel() }
             else -> Log.i(TAG, "command ${c::class.simpleName} is handled in a later phase")
         }
     }
@@ -236,7 +246,7 @@ class Hub(
             HubInputs(
                 seq = ++seq, nowMs = now, link = s.link, activePauses = active, offset = s.offset, settings = settings.read(),
                 glassesBatteryPct = s.glassesBatteryPct, nextCaptureAtMs = s.nextCaptureAtMs, queueDepth = depth,
-                lastFrameAtMs = s.lastFrameAtMs, today = today, aiHealth = health, overlay = null, error = s.error,
+                lastFrameAtMs = s.lastFrameAtMs, today = today, aiHealth = health, overlay = voice.overlay.value, error = s.error,
             ),
         )
         set(markDirty = false) { it.copy(lastFrame = frame) }

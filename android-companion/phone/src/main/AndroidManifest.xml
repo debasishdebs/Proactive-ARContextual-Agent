@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Voice (Phase 6): on-device recognition only; the hub keeps the mic while the phone is locked. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <application
         android:name=".ContextApp"
@@ -32,7 +35,7 @@
         <service
             android:name=".phone.hub.ContextHubService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|microphone" />
 
         <!-- Settings → Memory › Export: shares cache/exports only (res/xml/file_paths.xml), read grant per share. -->
         <provider

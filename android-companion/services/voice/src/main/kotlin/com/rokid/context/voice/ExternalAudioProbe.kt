@@ -11,7 +11,7 @@ enum class ProbeVerdict { SUPPORTED, UNSUPPORTED }
 data class ProbeOutcome(
     val fedBytes: Long,
     val acceptedBytes: Long,
-    val capacityBytes: Long = PipeLimits.PIPE_CAPACITY_BYTES,
+    val capacityBytes: Long,
     val peerClosed: Boolean = false,
     /** The speech part of the feed (the bundled clip); by default everything before the silence tail. */
     val clipBytes: Long = fedBytes - ExternalAudioProbe.SILENCE_TAIL_BYTES,
@@ -21,7 +21,7 @@ data class ProbeOutcome(
 object ExternalAudioProbe {
     /** 134 142 bytes of "What do I need from the store" (phase 0's clip), bundled in `:services:voice` assets. */
     const val ASSET = "voice_probe.pcm"
-    /** A paced feed of at least 96 KB (≥ 3 s), above the 64 KiB pipe capacity. */
+    /** A paced feed of at least 96 KB (≥ 3 s), above the pinned pipe's measured capacity. */
     const val MIN_FEED_BYTES = 3L * Pcm.BYTES_PER_SECOND
     /** 1 s of silence after the clip, so a recognizer that stops at the end of speech still reads past the capacity. */
     const val SILENCE_TAIL_BYTES = Pcm.BYTES_PER_SECOND

@@ -26,8 +26,10 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
- * Foreground (connectedDevice) service that keeps the hub — glasses link, frame ingest, `StateFrame` broadcast — alive
- * (spec §1.7). Adapted from Live Fit `LiveFitHubService`. Started from a resumed activity ([HubActivityHook]).
+ * Foreground (connectedDevice, + microphone once RECORD_AUDIO is granted) service that keeps the hub — glasses link,
+ * frame ingest, voice, `StateFrame` broadcast — alive (spec §1.7). Adapted from Live Fit `LiveFitHubService`. Started
+ * from a resumed activity ([HubActivityHook]); the microphone type lets the on-device recognizer take glasses audio
+ * while the phone is locked.
  */
 class ContextHubService : Service() {
     private var watcher: Job? = null
@@ -38,8 +40,7 @@ class ContextHubService : Service() {
         super.onCreate()
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Glasses link", NotificationManager.IMPORTANCE_LOW))
-        runCatching { ServiceCompat.startForeground(this, ID, notification(READY), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE) }
-            .onFailure { Log.w(TAG, "foreground refused: ${it.javaClass.simpleName}"); stopSelf(); return }
+        if (!enterForeground(READY)) { stopSelf(); return }
         running = true
         val hub = HubGraph.get(this)
         hub.start()
@@ -48,7 +49,24 @@ class ContextHubService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_REFRESH_TYPES && running) enterForeground(lastText)
+        return START_STICKY
+    }
+
+    /**
+     * startForeground with the microphone type when allowed; a microphone FGS can't start from the background (a sticky
+     * restart), so that case falls back to connectedDevice alone and glasses voice waits for the next app resume.
+     */
+    private fun enterForeground(text: String): Boolean {
+        val mic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val wanted = foregroundTypes(Build.VERSION.SDK_INT, mic)
+        val ok = runCatching { ServiceCompat.startForeground(this, ID, notification(text), wanted) }
+            .onFailure { Log.w(TAG, "foreground ($wanted) refused: ${it.javaClass.simpleName}") }.isSuccess
+        if (ok || wanted == ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE) return ok
+        return runCatching { ServiceCompat.startForeground(this, ID, notification(text), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE) }
+            .onFailure { Log.w(TAG, "foreground refused: ${it.javaClass.simpleName}") }.isSuccess
+    }
 
     override fun onDestroy() {
         // A service that never reached the foreground never started the hub: do not build one just to close it.
@@ -76,6 +94,7 @@ class ContextHubService : Service() {
         private const val CHANNEL = "hub"
         private const val ID = 31
         private const val READY = "Glasses link ready"
+        private const val ACTION_REFRESH_TYPES = "com.rokid.context.hub.REFRESH_FOREGROUND_TYPES"
         @Volatile private var running = false
         @Volatile private var lastText = READY
 
@@ -93,10 +112,21 @@ class ContextHubService : Service() {
                 .onFailure { Log.w(TAG, "start refused: ${it.javaClass.simpleName}") }
         }
 
+        /** Re-enters the foreground with the current types (a mic grant made while the app is in front). */
+        fun refreshForegroundTypes(context: Context) {
+            if (!running) return
+            runCatching { context.startService(Intent(context, ContextHubService::class.java).setAction(ACTION_REFRESH_TYPES)) }
+                .onFailure { Log.w(TAG, "refresh refused: ${it.javaClass.simpleName}") }
+        }
+
         fun stop(context: Context) { context.stopService(Intent(context, ContextHubService::class.java)) }
 
         internal fun canStart(sdk: Int, bluetoothGranted: Boolean) = sdk < 31 || bluetoothGranted
         internal fun shouldStart(running: Boolean, canStart: Boolean) = !running && canStart
+
+        /** FOREGROUND_SERVICE_TYPE_MICROPHONE exists from API 30 (R). */
+        internal fun foregroundTypes(sdk: Int, micGranted: Boolean): Int =
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or (if (sdk >= 30 && micGranted) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
 
         internal fun notificationText(s: GlassesStatus): String = UserFacingErrors.forLink(s.link)?.title ?: when (s.link) {
             LinkState.CONNECTED -> "Glasses connected"

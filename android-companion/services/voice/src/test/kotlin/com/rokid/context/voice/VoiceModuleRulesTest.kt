@@ -154,4 +154,19 @@ class VoiceModuleRulesTest {
         }
         assertEquals(emptyList(), bad)
     }
+
+    /**
+     * Carry (Task 5/6): a pipe's capacity is measured on the device, never assumed. Production code holds no 64 KiB
+     * capacity constant or default; the one 65 536 left is the `F_SETPIPE_SZ` size we ask the kernel for, which is
+     * then re-measured (`AndroidPipes`).
+     */
+    @Test fun productionCodeUsesTheMeasuredPipeCapacity() {
+        val assumed = Regex("PIPE_CAPACITY_BYTES|\\b65_?536L?\\b|\\b64\\s*\\*\\s*1024\\b|\\b0x10000\\b")
+        val bad = sources().flatMap { f ->
+            f.readLines().filter { l -> assumed.containsMatchIn(l) && !l.trimStart().startsWith("*") && !l.trimStart().startsWith("//") }
+                .filterNot { "const val PINNED_PIPE_BYTES = 65_536" in it }
+                .map { "${f.name}: ${it.trim()}" }
+        }
+        assertEquals(emptyList(), bad)
+    }
 }

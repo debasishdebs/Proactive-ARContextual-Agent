@@ -85,6 +85,7 @@ dependencies {
     implementation(project(":services:ai"))
     implementation(project(":services:memory"))
     implementation(project(":services:orchestration"))
+    implementation(project(":services:voice"))
     implementation(project(":core:ui"))
     implementation(project(":core:hud")) // clampHudScale, Hud.MIN_SCALE/MAX_SCALE for the glasses settings (Task 16)
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")

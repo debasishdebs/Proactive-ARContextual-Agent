@@ -6,7 +6,7 @@ import kotlin.test.assertNull
 
 class ExternalAudioProbeTest {
     private val feed = 134_142L + ExternalAudioProbe.SILENCE_TAIL_BYTES
-    private val cap = PipeLimits.PIPE_CAPACITY_BYTES
+    private val cap = TestPipes.CAPACITY
 
     @Test fun aReaderThatTookTheWholeFeedIsSupported() =
         assertEquals(ProbeVerdict.SUPPORTED, ExternalAudioProbe.verdict(ProbeOutcome(feed, feed, cap)))

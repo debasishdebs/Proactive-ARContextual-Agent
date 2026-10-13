@@ -43,7 +43,16 @@ object AskActions {
 
     /** Built on IO: the first ask reads SharedPreferences (RetrievalSettingsStore) and the key store, never on Main. */
     suspend fun ask(context: Context, question: String, nowMs: Long = System.currentTimeMillis()): AskOutcome =
-        withContext(Dispatchers.IO) { AnswerService.forApp(context).answer(question, "phone_typed", nowMs) }
+        askFrom(context, question, "phone_typed", nowMs)
+
+    /**
+     * Voice asks (Phase 6): the same answer path and messages, recorded with their [source] (`glasses_voice`,
+     * `phone_voice`). The transcript gets the question hygiene of [AnswerService] (collapse + data-block folding).
+     * Cancelled before the reply is stored, it saves nothing: the ask row is written in one transaction after the model
+     * answered, so only a cancel that lands after that commit leaves one (a complete, answered ask in the feed).
+     */
+    suspend fun askFrom(context: Context, question: String, source: String, nowMs: Long = System.currentTimeMillis()): AskOutcome =
+        withContext(Dispatchers.IO) { AnswerService.forApp(context).answer(question, source, nowMs) }
 
     /**
      * 👍 = 1, 👎 = −1 (spec §2.4 Ask detail). Changing to 👎 enqueues one critic re-summarise over the cited memories

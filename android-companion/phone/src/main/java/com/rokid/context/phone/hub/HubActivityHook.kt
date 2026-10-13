@@ -11,7 +11,11 @@ import android.os.Bundle
 object HubActivityHook : Application.ActivityLifecycleCallbacks {
     override fun onActivityResumed(activity: Activity) {
         ContextHubService.ensureRunning(activity)
-        if (ContextHubService.isRunning()) HubGraph.get(activity).onAppResumed()
+        if (!ContextHubService.isRunning()) return
+        HubGraph.get(activity).onAppResumed()
+        // In front: re-check voice (and probe external audio if needed); onForeground also takes the mic FGS type if it
+        // was just granted (preflight F12: that refresh lives there only, so one resume re-enters the foreground once).
+        com.rokid.context.phone.voice.VoiceGraph.get(activity).onForeground()
     }
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
     override fun onActivityStarted(activity: Activity) = Unit
