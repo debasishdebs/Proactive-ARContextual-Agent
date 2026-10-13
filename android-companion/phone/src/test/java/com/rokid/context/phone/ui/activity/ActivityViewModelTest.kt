@@ -82,4 +82,14 @@ class ActivityViewModelTest {
         val next = withTimeout(5_000) { model.state.first { it.sections.map { s -> s.label } == listOf("Morning") } }
         assertEquals(TODAY, next.today)
     }
+
+    @Test fun aQuickPauseThenResumeIsTwoRequests() {
+        val slow = FakePipelineControl(publishAtOnce = false)
+        val model = ActivityViewModel(
+            Period.TODAY, FakeGlassesStatusSource(), slow, graph.timeline, graph.asks, graph.nudges,
+            clock = flowOf(Fixtures.NOW), storagePct = flowOf(null), zone = { zone },
+        ).also { vms += it }
+        model.togglePause(); model.togglePause()
+        assertEquals(listOf(false, true), slow.requests)
+    }
 }

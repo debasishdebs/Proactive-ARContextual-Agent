@@ -108,4 +108,15 @@ class HomeViewModelTest {
         assertFalse(s.asking)
         assertEquals(listOf("milk"), questions)
     }
+
+    /** Phase 4 carry: two quick taps are a pause and a resume, even before the first one is persisted. */
+    @Test fun aQuickPauseThenResumeIsTwoRequests() {
+        val slow = FakePipelineControl(publishAtOnce = false)
+        val v = HomeViewModel(glasses, slow, graph.timeline, graph.asks, graph.nudges, AskService { AskOutcome.Failed("x") },
+            clock = flowOf(Fixtures.NOW), storagePct = flowOf(10), zone = { Fixtures.ZONE })
+        try {
+            v.togglePause(); v.togglePause()
+            assertEquals(listOf(false, true), slow.requests)
+        } finally { v.cancelScope() }
+    }
 }
