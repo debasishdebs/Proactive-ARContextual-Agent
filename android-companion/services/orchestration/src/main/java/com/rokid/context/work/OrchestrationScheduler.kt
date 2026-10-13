@@ -168,6 +168,8 @@ class OrchestrationScheduler(
         /** Read before the frames are chosen: a Delete all meanwhile stops the enqueue (Phase 5 T20 carry). */
         generation: Long = MemoryWipe.generation.get(),
     ): HistoricalBackfillResult {
+        // Fix round 1: a run that is already stale touches nothing, not even the purges.
+        if (MemoryWipe.generation.get() != generation) return HistoricalBackfillResult(0, 0, 0, DELETED_MEANWHILE)
         val config = this.config.getWithoutSecret(context)
         val purgeResult = PipelineRecords.purgeNonPhotoAndSynthetic(context)
         val selected = PipelineRecords.allFrames(context)
@@ -201,7 +203,7 @@ class OrchestrationScheduler(
             PipelineRecords.upsertTrace(context, summaryId, "ENQUEUED", "Historical backfill chunk ${index + 1}/${batches.size}")
         }
         if (queued == 0) {
-            return HistoricalBackfillResult(0, selected.size, purgeResult.dropped, "Memory was deleted meanwhile; nothing was queued.")
+            return HistoricalBackfillResult(0, selected.size, purgeResult.dropped, DELETED_MEANWHILE)
         }
         enqueueQueueDrainNow()
         return HistoricalBackfillResult(
@@ -287,6 +289,7 @@ class OrchestrationScheduler(
     }
 
     companion object {
+        private const val DELETED_MEANWHILE = "Memory was deleted meanwhile; nothing was queued."
         const val FRAME_INGEST_WORK = "frame_ingest_work"
         const val QUEUE_DRAIN_WORK = "queue_drain_work"
         const val CRITIC_WORK = "critic_work"

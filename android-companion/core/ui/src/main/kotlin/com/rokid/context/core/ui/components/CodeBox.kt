@@ -56,12 +56,14 @@ fun CodeBox(
             var seen by remember { mutableStateOf(value) }
             if (seen != value) {
                 seen = value
-                // Phase 5 T15 carry: the record follows the newest emitted text and clears once the parent has caught up.
-                val at = emitted.lastIndexOf(value)
-                when {
-                    value == field.text -> emitted.clear() // caught up: nothing of ours is still in flight
-                    at >= 0 -> repeat(at + 1) { emitted.removeFirst() } // a lagging echo: everything up to it has arrived
-                    else -> { emitted.clear(); field = TextFieldValue(value, TextRange(value.length)) } // an external change
+                // An echo drops its entry and everything older (it has arrived); newer entries are still in flight, so a
+                // parent echoing each value in order (a, ab, a) never overwrites the field (fix round 1). The oldest match
+                // is taken: a duplicate left by a conflating parent goes with the next echoed edit.
+                val at = emitted.indexOf(value)
+                if (at >= 0) repeat(at + 1) { emitted.removeFirst() }
+                else {
+                    emitted.clear() // an external change
+                    if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
                 }
             }
             BasicTextField(

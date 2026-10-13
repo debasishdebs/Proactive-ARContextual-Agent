@@ -170,4 +170,36 @@ class GlassesSettingsTest {
         assertEquals(finger, current(), 0.0001f)
         slider.performTouchInput { up() }
     }
+
+    /** Fix round 1: after release the dragged value stays until the stored scale catches up; then the store leads again. */
+    @Test fun aReleasedDragKeepsItsValueUntilTheStoredScaleCatchesUp() {
+        var hud by mutableStateOf(HudSettings())
+        var written: Float? = null
+        compose.setContent {
+            PcTheme { GlassesSettingsScreen(GlassesSettingsUiState("Linked", hud), onBack = {}, onVerbosity = {}, onScale = { written = it }, onPosition = {}, onGesture = { _, _ -> }, onReauthorize = {}) }
+        }
+        compose.onNodeWithTag("glasses_settings").performScrollToNode(hasTestTag("hud_scale"))
+        val slider = compose.onNodeWithTag("hud_scale")
+        fun current() = slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current
+        slider.performTouchInput { down(centerLeft + androidx.compose.ui.geometry.Offset(10f, 0f)); moveBy(androidx.compose.ui.geometry.Offset(width * 0.6f, 0f)); up() }
+        compose.waitForIdle()
+        val finger = written!!
+        assertEquals("the write has not landed yet: the finger's value stays", finger, current(), 0.0001f)
+        hud = hud.copy(scale = finger); compose.waitForIdle()
+        assertEquals(finger, current(), 0.0001f)
+        hud = hud.copy(scale = Hud.MIN_SCALE); compose.waitForIdle()
+        assertEquals("caught up: the stored scale leads again", Hud.MIN_SCALE, current(), 0.0001f)
+    }
+
+    /** Fix round 1: a cancelled gesture (no onValueChangeFinished guarantee) drops the dragged value. */
+    @Test fun aCancelledDragShowsTheStoredScale() {
+        compose.setContent {
+            PcTheme { GlassesSettingsScreen(GlassesSettingsUiState("Linked", HudSettings()), onBack = {}, onVerbosity = {}, onScale = {}, onPosition = {}, onGesture = { _, _ -> }, onReauthorize = {}) }
+        }
+        compose.onNodeWithTag("glasses_settings").performScrollToNode(hasTestTag("hud_scale"))
+        val slider = compose.onNodeWithTag("hud_scale")
+        slider.performTouchInput { down(centerLeft + androidx.compose.ui.geometry.Offset(10f, 0f)); moveBy(androidx.compose.ui.geometry.Offset(width * 0.6f, 0f)); cancel() }
+        compose.waitForIdle()
+        assertEquals(HudSettings().scale, slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current, 0.0001f)
+    }
 }
