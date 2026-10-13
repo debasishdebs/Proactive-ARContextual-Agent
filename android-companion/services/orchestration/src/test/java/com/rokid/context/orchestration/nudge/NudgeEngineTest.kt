@@ -39,10 +39,11 @@ class NudgeEngineTest {
     private var reply = """{"shouldNudge":true,"text":"Milk is nearly out","why":"You saw an empty carton","sourceIds":["rokid_mem_1"],"priority":"normal"}"""
     private val proposed = mutableListOf<Pair<ProposalOrigin, String>>()
     private lateinit var ai: AiGraph
+    private var duringCall: suspend () -> Unit = {}
 
     @Before fun setUp() {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
-        ai = TestAi.graph(ctx) { p -> calls++; prompts += p; if (reply == "THROW") throw java.io.IOException("down") else reply }
+        ai = TestAi.graph(ctx) { p -> calls++; prompts += p; duringCall(); if (reply == "THROW") throw java.io.IOException("down") else reply }
         TestAi.bindAll(ai)
     }
 
@@ -75,6 +76,16 @@ class NudgeEngineTest {
         assertTrue(p, p.contains("BEGIN_DATA memories") && p.contains("id=rokid_mem_1 \u00b7 17:00 \u00b7 Milk carton nearly empty"))
         assertTrue(p, p.contains("BEGIN_DATA sources") && p.contains("Dentist"))
         assertTrue(p, p.contains("BEGIN_DATA recent_nudges"))
+    }
+
+    /** Integration carry 1: a source forgotten while the model ran drops the nudge (no row, no proposal). */
+    @Test fun sourceForgottenMidFlightDropsTheNudge() = runBlocking {
+        memory()
+        duringCall = { val g = MemoryGraph.get(ctx); com.rokid.context.memory.forget.ForgetService(g.db, g.proposals).forgetFact("rokid_mem_1") }
+        reply = """{"shouldNudge":true,"text":"Milk is nearly out","why":"You saw an empty carton","sourceIds":["rokid_mem_1"],"priority":"normal","proposedAction":{"type":"SHOPPING_ADD","items":[{"name":"milk"}]}}"""
+        assertEquals(NudgeRun.Forgotten, engine().runOnce())
+        assertTrue(rows().isEmpty())
+        assertTrue(proposed.isEmpty())
     }
 
     @Test fun quietHoursDropsNudge() = runBlocking {
