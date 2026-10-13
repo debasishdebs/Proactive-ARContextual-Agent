@@ -75,6 +75,19 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
         return true
     }
 
+    /**
+     * The start-up orphan-key sweep ([EndpointRepository.sweepOrphanKeys], P8 D2), run by LegacyKeySeed after seeding.
+     * Never throws, apart from [CancellationException]: a vault failure is logged and retried next start.
+     */
+    suspend fun sweepOrphanKeys(): Int = try {
+        endpoints.sweepOrphanKeys()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "Orphan key sweep not finished: ${e.javaClass.simpleName}")
+        0
+    }
+
     /** The endpoint the legacy provider type maps to (one place: [apply] and [retireLegacyKey]). */
     private fun desired(settings: ProviderSettings, now: Long): Endpoint = when (settings.providerType.lowercase()) {
         "ollama" -> Endpoint(OLLAMA_ID, "Ollama", EndpointKind.OLLAMA, settings.endpoint.ifBlank { EnvDefaults.ollamaBaseUrl }, null,
