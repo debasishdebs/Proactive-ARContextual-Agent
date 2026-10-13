@@ -34,6 +34,7 @@ abstract class EmbeddingDao {
      */
     @Query(LIVE_PAGE_SQL)
     abstract suspend fun livePage(spaceId: String, afterRowid: Long, minConfidence: Double, limit: Int): List<VectorRow>
+    @Query("SELECT COUNT(*) FROM memory WHERE id = :id AND reviewState != 'INVALIDATED'") protected abstract suspend fun liveMemory(id: String): Int
     @Upsert abstract suspend fun putVector(v: MemoryVectorEntity)
 
     @Query(
@@ -63,11 +64,13 @@ abstract class EmbeddingDao {
     /**
      * Writes one vector only while its space can still use it (BUILDING or ACTIVE); a late write to a discarded,
      * RETIRED or STALE space is dropped (returns false) so no orphan vectors appear. A vector whose size differs
-     * from the space's `dim` is a caller bug and throws: it would count towards coverage yet never be searchable.
+     * from the space's `dim` is a caller bug and throws. A missing or INVALIDATED memory gets no vector (returns false): it would count towards coverage yet never be searchable.
      */
     @Transaction
     open suspend fun putChecked(v: MemoryVectorEntity, size: Int): Boolean {
         val s = space(v.spaceId)?.takeIf { it.state == SpaceState.BUILDING || it.state == SpaceState.ACTIVE } ?: return false
+        // Phase 7 (fix round 1 I5): a vector computed before a Forget never lands for a deleted or INVALIDATED memory.
+        if (liveMemory(v.memoryId) == 0) return false
         require(size == s.dim) { "vector has $size dimensions, space expects ${s.dim}" }
         putVector(v)
         return true
