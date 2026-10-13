@@ -156,8 +156,8 @@ class HudController(
     /** pc_audio: one Base64 PCM chunk, only while the session is open (a send result of 0 is not delivery). */
     fun sendAudio(base64: String): Boolean = _sessionOpen.value && bridge.send(Channels.AUDIO, base64) == 0
 
-    /** pc_listen_end (spec §1.5): the end-of-utterance marker; its body carries only the protocol version (preflight F3). */
-    fun sendListenEnd(): Boolean = bridge.send(Channels.LISTEN_END, """{"v":$PROTOCOL_VERSION}""") == 0
+    /** pc_listen_end (spec §1.5): the end-of-utterance marker, only while the session is open; its body carries only the protocol version (preflight F3). */
+    fun sendListenEnd(): Boolean = _sessionOpen.value && bridge.send(Channels.LISTEN_END, """{"v":$PROTOCOL_VERSION}""") == 0
 
     /** -1 while the session is closed; otherwise CXR's code (0 = handed over, not delivered). */
     fun sendFrameChunk(chunk: FrameChunk): Int =

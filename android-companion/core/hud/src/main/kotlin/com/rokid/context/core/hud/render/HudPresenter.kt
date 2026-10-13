@@ -28,7 +28,7 @@ class HudPresenter {
 
     fun dismiss(o: Overlay?) { dismissed = o }
 
-    /** While [recording], Listening shows at once until the phone's own Listening arrives; Confirm and local overlays still win. */
+    /** While [recording], Listening shows at once until the phone's own Listening arrives; only a Confirm outranks it (local toasts wait). */
     fun present(frame: StateFrame?, verbosity: Verbosity, nav: HudNav, local: LocalOverlay?, nowMs: Long, recording: Boolean = false): HudView {
         val pages = pagesFor(verbosity)
         val page = if (pages.isEmpty()) null else nav.page.takeIf { it in pages } ?: HudPage.GLANCE
@@ -43,8 +43,8 @@ class HudPresenter {
         val listening = if (recording && phoneVisible !is Overlay.Listening) Overlay.Listening("") else null
         val overlay = when {
             phoneVisible is Overlay.Confirm -> phoneVisible
-            localVisible != null -> localVisible
             listening != null -> listening
+            localVisible != null -> localVisible
             else -> phoneVisible
         }
         return HudView(page, overlay)

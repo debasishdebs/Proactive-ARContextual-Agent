@@ -65,7 +65,10 @@ class MainActivity : ComponentActivity() {
     private var nav by mutableStateOf(HudNav())
     private var highlightYes by mutableStateOf(true)
     private var local by mutableStateOf<LocalOverlay?>(null)
+    /** A permission request is on screen: Android drops a second one, so none is launched until it answers. */
+    private var permissionPending = false
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        permissionPending = false
         if (result[Manifest.permission.CAMERA] == true) ensureCaptureScheduled()
         else if (!granted(Manifest.permission.CAMERA)) Log.w(TAG, "camera permission denied: capture stays off")
     }
@@ -84,7 +87,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { runtime.pauses.ensureLoaded() }
         if (granted(Manifest.permission.CAMERA)) ensureCaptureScheduled()
         val missing = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO).filterNot(::granted)
-        if (missing.isNotEmpty()) permissions.launch(missing.toTypedArray())
+        if (missing.isNotEmpty()) requestPermissions(missing)
         if (savedInstanceState == null) handleIntent(intent) // a recreated activity must not capture again
         setContent { Hud() }
     }
@@ -98,7 +101,7 @@ class MainActivity : ComponentActivity() {
 
     /** Finishing closes the session at once; [onDestroy] may come late. */
     override fun onStop() {
-        if (isFinishing) controller.onActivityExit()
+        if (isFinishing) { cancelAsk(); controller.onActivityExit() }
         runtime.hudPresence.onStopped(finishing = isFinishing)
         super.onStop()
     }
@@ -166,10 +169,11 @@ class MainActivity : ComponentActivity() {
     private fun handle(inputs: List<PadInput>) {
         for (input in inputs) {
             val now = System.currentTimeMillis()
-            val shown = presenter.present(controller.frame.value, controller.settings.value.verbosity, nav, local, now, runtime.listening.value).overlay
+            val recording = runtime.listening.value
+            val shown = presenter.present(controller.frame.value, controller.settings.value.verbosity, nav, local, now, recording).overlay
             confirm.onConfirm(shown as? Overlay.Confirm)
             highlightYes = confirm.highlightYes
-            when (val r = InputRouter.route(input, shown, controller.settings.value.gestures)) {
+            when (val r = InputRouter.route(input, shown, controller.settings.value.gestures, recording)) {
                 Routed.ConfirmToggle -> { confirm.onSwipe(); highlightYes = confirm.highlightYes }
                 Routed.ConfirmChoose -> confirm.onTap()?.let { controller.send(it); presenter.dismiss(shown) }
                 Routed.ConfirmNo -> confirm.onNo()?.let { controller.send(it); presenter.dismiss(shown) }
@@ -222,7 +226,7 @@ class MainActivity : ComponentActivity() {
         HudCopy.askUnavailable(controller.connection.value, controller.settings.value.askBlockedReason)?.let { local = LocalOverlay.Toast(it, now); return }
         if (!granted(Manifest.permission.RECORD_AUDIO)) {
             local = LocalOverlay.Toast(MIC_PERMISSION, now)
-            permissions.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+            requestPermissions(listOf(Manifest.permission.RECORD_AUDIO))
             return
         }
         local = null
@@ -254,6 +258,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun requestPermissions(missing: List<String>) {
+        if (permissionPending) return
+        permissionPending = true
+        permissions.launch(missing.toTypedArray())
+    }
+
+    /** Ruling (fix round 1): leaving mid-recording tells the phone to drop the ask, or it would answer what it heard. */
+    private fun cancelAsk() {
+        if (runtime.controller !== controller) return // a newer activity owns push-to-talk now
+        if (runtime.ptt.cancel()) controller.send(Command.Cancel)
+    }
+
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     // CaptureService is the only capture path (spec §3.1); its scheduler drives the Glance countdown.
@@ -268,7 +284,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         swipeTimer.removeCallbacks(closeSwipe)
-        runtime.ptt.onProblem = {}
+        cancelAsk()
         controller.onActivityExit()
         if (isFinishing) runtime.hudPresence.onExited()
         runtime.detach(controller)

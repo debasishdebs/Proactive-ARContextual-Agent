@@ -56,4 +56,14 @@ class InputRouterTest {
         assertEquals(Routed.FinishListening, InputRouter.route(PadInput.Tapped, Overlay.Listening(""), custom))
         assertEquals(Routed.Mapped(GestureAction.NEXT_PAGE), InputRouter.route(fwd, Overlay.Listening(""), defaults), "swipes still page")
     }
+
+    /** Fix round 1: while the glasses record, a double-tap is Cancel whatever is shown (toast, splash, Confirm). */
+    @Test fun aDoubleTapWhileRecordingAlwaysCancels() {
+        val confirm = Overlay.Confirm("p1", "Add milk?", "Shopping list")
+        for (o in listOf(null, Overlay.Toast("Capture resumed"), Overlay.PausedSplash, confirm, Overlay.Listening(""))) {
+            assertEquals(Routed.CancelListening, InputRouter.route(PadInput.DoubleTapped, o, defaults, recording = true), "$o")
+        }
+        assertEquals(Routed.ConfirmNo, InputRouter.route(PadInput.DoubleTapped, confirm, defaults), "not recording: Confirm's own rule")
+        assertEquals(Routed.Mapped(GestureAction.PAUSE_RESUME), InputRouter.route(PadInput.DoubleTapped, null, defaults))
+    }
 }

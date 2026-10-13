@@ -187,10 +187,12 @@ class HudControllerTest {
         assertEquals(HudConnection.OUTDATED, connectionFor(everReceived = true, online = true, outdated = true, sinceStartMs = 1))
     }
 
-    /** Push-to-talk wire (preflight F3): audio only while the session is open; pc_listen_end carries `v` like every payload. */
+    /** Push-to-talk wire (preflight F3): audio only while the session is open; pc_listen_end too, and it carries `v` like every payload. */
     @Test fun audioNeedsAnOpenSessionAndListenEndIsVersioned() = runTest {
         val c = controller()
         assertFalse(c.sendAudio("AAAA"))
+        assertFalse("a closed session takes no pc_listen_end", c.sendListenEnd())
+        assertEquals(0, bridge.sent.count { it.first == Channels.LISTEN_END })
         bridge.phone(Channels.STATE, state())
         assertTrue(c.sendAudio("AAAA"))
         assertEquals(listOf("AAAA"), bridge.sent.single { it.first == Channels.AUDIO }.second)
