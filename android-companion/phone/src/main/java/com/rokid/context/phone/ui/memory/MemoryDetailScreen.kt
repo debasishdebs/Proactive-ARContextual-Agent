@@ -1,5 +1,6 @@
 package com.rokid.context.phone.ui.memory
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -117,6 +118,7 @@ fun MemoryDetailScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class) // transformable(canPan) is experimental in foundation 1.7
 @Composable
 private fun ZoomableFrame(path: String, modifier: Modifier) {
     var scale by remember(path) { mutableFloatStateOf(1f) }
@@ -127,7 +129,9 @@ private fun ZoomableFrame(path: String, modifier: Modifier) {
         val next = offset + pan
         offset = if (scale == Zoom.MIN) Offset.Zero else Offset(Zoom.clampPan(next.x, scale, size.width.toFloat()), Zoom.clampPan(next.y, scale, size.height.toFloat()))
     }
-    Box(modifier.clip(RoundedCornerShape(20.dp)).onSizeChanged { size = it }.transformable(transform)) {
+    // Pan only once zoomed: at unit scale a one-finger drag belongs to the page's verticalScroll (device check D-E1;
+    // in landscape the photo fills the viewport). Pinch still zooms at any scale.
+    Box(modifier.clip(RoundedCornerShape(20.dp)).onSizeChanged { size = it }.transformable(transform, canPan = { scale > Zoom.MIN })) {
         FrameImage(path, Modifier.fillMaxSize().graphicsLayer { scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y })
     }
 }

@@ -60,6 +60,13 @@ class DayTest {
         assertEquals(listOf("Evening"), s.sections.map { it.label })
     }
 
+    @Test fun backlogMemoryFromAnEarlierDayPhotoKeepsItsPhoto() = runBlocking {
+        graph.frames.add(Fixtures.frame("old", Fixtures.at(TODAY.minusDays(3), 23, 10), path = "/old.jpg"))
+        graph.memories.add(Fixtures.memory("m1", "Cable by the cushion", Fixtures.at(TODAY.minusDays(2), 9), frameId = "old"))
+        val s = withTimeout(5_000) { vm(TODAY.minusDays(2).toString()).state.first { !it.loading } }
+        assertEquals("/old.jpg", s.sections.flatMap { it.rows }.single().framePath)
+    }
+
     @Test fun dayScreenListsRowsAndOpensFrames() {
         val opened = mutableListOf<LocalDate>()
         val state = DayUiState(
