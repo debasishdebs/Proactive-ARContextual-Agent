@@ -15,6 +15,10 @@ import kotlin.coroutines.cancellation.CancellationException
  * final = last partial) → [Answerer] → Answer overlay + TTS → cleared after [VoiceTimings.answerHoldMs]. Every method
  * runs on [scope]'s thread (Main in the app) and every recognizer/speaker callback arrives there. A generation number
  * makes callbacks of a replaced ask harmless. Voice and answer text is never logged: [log] gets event names only.
+ *
+ * Bounds: [VoiceTimings.maxListenMs] (20 s) caps audio intake for any listen; the [VoiceTimings.finalTimeoutMs] (6 s)
+ * final wait sits on top of it (worst case 26 s), and a recognizer that never sends a final is then cancelled.
+ * Thinking is bounded by [VoiceTimings.answerTimeoutMs] (60 s).
  */
 class VoicePipeline(
     private val scope: CoroutineScope,
@@ -44,6 +48,7 @@ class VoicePipeline(
     private var hudToast: String? = null
     private var hudToastJob: Job? = null
     private var phoneError: String? = null
+    private var phoneErrorJob: Job? = null
     private var lastPhoneAskId: String? = null
 
     init { scope.launch { capabilities.collect { publish() } } }
@@ -79,10 +84,10 @@ class VoicePipeline(
     }
 
     fun phoneStart() {
-        phoneError = null
+        showPhoneError(null)
         val status = capabilities.value.phone
-        if (status != VoiceStatus.SUPPORTED) { phoneError = VoiceCopy.phoneHint(status); publish(); return }
-        if (busyWith(VoiceSource.GLASSES)) { phoneError = VoiceCopy.GLASSES_BUSY_PHONE; publish(); return }
+        if (status != VoiceStatus.SUPPORTED) { showPhoneError(VoiceCopy.phoneHint(status)); publish(); return }
+        if (busyWith(VoiceSource.GLASSES)) { showPhoneError(VoiceCopy.GLASSES_BUSY_PHONE); publish(); return }
         begin(VoiceSource.PHONE)
     }
 
@@ -116,8 +121,8 @@ class VoicePipeline(
             override fun onPartial(text: String) = onPartial(g, text)
             override fun onFinal(result: SttResult) = onFinal(g, result)
         }
-        val tag = language().tag
         session = try {
+            val tag = language().tag // inside the try: a throw ends in short copy, never a Listening with no session
             if (source == VoiceSource.GLASSES) engine.startExternal(tag, listener) else engine.startPhoneMic(tag, listener)
         } catch (e: Exception) {
             log("recognizer did not start (${e.javaClass.simpleName})")
@@ -156,7 +161,11 @@ class VoicePipeline(
         timer = scope.launch {
             delay(timings.finalTimeoutMs)
             val heard = (_state.value as? VoiceState.Listening)?.partial.orEmpty()
+            val silent = session
             onFinal(g, if (heard.isNotEmpty()) SttResult.Text(heard) else SttResult.NoSpeech)
+            // No final came: release the recognizer, its pipe and pump. After onFinal, so a late final it may send is inert.
+            log("no final: session cancelled")
+            silent?.cancel()
         }
     }
 
@@ -198,10 +207,18 @@ class VoicePipeline(
                 AnswerResult.Failed(VoiceCopy.FAILED_HUD, VoiceCopy.FAILED_PHONE)
             }
             if (g != gen) return@launch
+            timer?.cancel() // the Thinking bound
             when (r) {
                 is AnswerResult.Answered -> answered(g, source, question, r)
                 is AnswerResult.Failed -> problem(g, source, r.hudText, r.phoneText)
             }
+        }
+        // A timer, not withTimeout: an answer path that ignores cancellation (a NonCancellable write) can't hold Thinking.
+        timer = scope.launch {
+            delay(timings.answerTimeoutMs)
+            if (g != gen) return@launch
+            log("answer timed out")
+            problem(newGeneration(), source, VoiceCopy.TOO_LONG, VoiceCopy.TOO_LONG) // new generation: a late answer is ignored
         }
     }
 
@@ -227,7 +244,7 @@ class VoicePipeline(
     }
 
     private fun problem(g: Long, source: VoiceSource, hud: String, phoneText: String) {
-        if (source == VoiceSource.PHONE) phoneError = phoneText
+        if (source == VoiceSource.PHONE) showPhoneError(phoneText)
         set(VoiceState.Problem(source, hud, phoneText))
         timer?.cancel()
         timer = scope.launch { delay(timings.toastMs); if (g == gen) set(VoiceState.Idle) }
@@ -237,6 +254,13 @@ class VoicePipeline(
         newGeneration()
         log(why)
         set(VoiceState.Idle)
+    }
+
+    /** Home's voice error clears after [VoiceTimings.toastMs], like the glasses toast. */
+    private fun showPhoneError(text: String?) {
+        phoneError = text
+        phoneErrorJob?.cancel()
+        phoneErrorJob = text?.let { scope.launch { delay(timings.toastMs); phoneError = null; publish() } }
     }
 
     private fun toastHud(text: String) {
@@ -270,7 +294,7 @@ class VoicePipeline(
         is VoiceState.Listening -> if (s.source == VoiceSource.GLASSES) Overlay.Listening(VoiceText.clip(s.partial, HUD_TEXT)) else null
         is VoiceState.Thinking -> if (s.source == VoiceSource.GLASSES) Overlay.Listening(VoiceText.clip(s.question, HUD_TEXT)) else null
         is VoiceState.Answer -> Overlay.Answer(VoiceText.clip(s.question, HUD_TEXT), VoiceText.clip(s.text, HUD_ANSWER), s.speaking)
-        is VoiceState.Problem -> if (s.source == VoiceSource.GLASSES) Overlay.Toast(s.hudText) else null
+        is VoiceState.Problem -> if (s.source == VoiceSource.GLASSES) Overlay.Toast(VoiceText.clip(s.hudText, HUD_TEXT)) else null
     }
 
     private companion object {
