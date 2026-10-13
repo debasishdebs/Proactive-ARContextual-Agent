@@ -123,7 +123,11 @@ class IndexMaintenance(
      * normal run. A Rebuild left pending by a pause ([IndexClock.rebuildPending]) counts as one.
      */
     suspend fun run(rebuild: Boolean = false, rebuildToken: String? = null): Outcome {
-        val bound = embedders.bound() ?: return Outcome.IDLE
+        val bound = embedders.bound() ?: run {
+            // No EMBED model: a drift streak (and "index unstable") belonged to a model that is gone.
+            if (clock.lastDiscard() != null) clock.recordDiscard(null)
+            return Outcome.IDLE
+        }
         val fp = bound.embedder.fingerprint
         // The drift streak (and so "index unstable") belongs to one model: binding another one starts afresh.
         clock.lastDiscard()?.takeIf { it.fingerprint != fp }?.let { clock.recordDiscard(null) }

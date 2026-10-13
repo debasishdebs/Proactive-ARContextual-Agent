@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
@@ -84,7 +86,11 @@ class PhoneDeps(
                 storagePct = StorageUsage.percentFlow(app),
                 clock = ticker(),
                 hudVerbosity = { v -> com.rokid.context.phone.hub.HubGraph.get(app).updateSettings { it.copy(verbosity = v) } },
-                index = combine(MemoryGraph.get(app).spaces.health(), PrefsIndexClock(app).observeUnstable()) { h, unstable -> IndexState.of(h, unstable) }
+                index = combine(
+                    MemoryGraph.get(app).spaces.health(),
+                    PrefsIndexClock(app).observeUnstable(),
+                    flow { emitAll(com.rokid.context.ai.AiGraph.get(app).bindings.observeAll()) }.map { b -> b.any { it.role == com.rokid.context.ai.Role.EMBED } },
+                ) { h, unstable, bound -> IndexState.of(h, unstable, bound) }
                     .flowOn(Dispatchers.IO), // the clock's first prefs read stays off Main
             )
         }

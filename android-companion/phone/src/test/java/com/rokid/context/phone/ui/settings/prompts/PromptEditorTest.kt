@@ -67,7 +67,7 @@ class PromptEditorTest {
         ai.bindings.set(RoleBinding(Role.ANSWER, "az", "gpt")).getOrThrow()
         MemoryGraph.get(ctx).memories.add(LegacyImporter.toMemory("m1", "short_term", 0.9, 10, "Milk carton in the fridge"))
         val mem = MemoryGraph.get(ctx)
-        vm = PromptEditorViewModel("ANSWER", ai, TestBedInputs(mem, AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() })))
+        vm = PromptEditorViewModel("ANSWER", ai, TestBedInputs(mem, AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() })), work = main.dispatcher)
         withTimeout(5_000) { vm.state.first { !it.loading && it.endpointId == "az" } }
         vm.onInputText("where is the milk")
     }
@@ -78,8 +78,11 @@ class PromptEditorTest {
     private fun editor(id: String, check: (suspend (PromptKey, PromptDraft) -> List<String>)? = null): PromptEditorViewModel {
         val mem = MemoryGraph.get(ctx)
         val inputs = TestBedInputs(mem, AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() }))
-        return (if (check == null) PromptEditorViewModel(id, ai, inputs) else PromptEditorViewModel(id, ai, inputs, check)).also { extra += it }
+        return (if (check == null) PromptEditorViewModel(id, ai, inputs, work = main.dispatcher) else PromptEditorViewModel(id, ai, inputs, check, work = main.dispatcher)).also { extra += it }
     }
+
+    /** The schema-check debounce runs on [MainDispatcherRule]'s virtual clock: let it fire. */
+    private fun debounced() = main.dispatcher.scheduler.advanceUntilIdle()
 
     @After fun tearDown() { try { extra.forEach { it.cancelScope() }; vm.cancelScope() } finally { TestGraph.close(ctx) } }
 
@@ -105,21 +108,21 @@ class PromptEditorTest {
     }
 
     @Test fun anIncompatibleSchemaBlocksSaveWithANamedProblem() = runBlocking<Unit> {
-        vm.onSchema(DefaultSchemas.text(PromptKey.ANSWER)!!.replace("\"maxLength\":600", "\"maxLength\":900"))
+        vm.onSchema(DefaultSchemas.text(PromptKey.ANSWER)!!.replace("\"maxLength\":600", "\"maxLength\":900")); debounced()
         assertEquals(listOf("Loosened maxLength of answer"), withTimeout(5_000) { vm.state.first { it.compatProblems.isNotEmpty() } }.compatProblems)
         vm.run(); assertFalse(ran().canSave)
-        vm.resetSchema()
+        vm.resetSchema(); debounced()
         assertEquals(DefaultSchemas.text(PromptKey.ANSWER), vm.state.value.schema)
         withTimeout(5_000) { vm.state.first { it.compatProblems.isEmpty() } }
     }
 
     @Test fun savingCreatesVersionTwoThenOverwritesWhenVersioningIsOff() = runBlocking {
         vm.onTemplate(vm.state.value.template + "\nBe brief."); vm.run(); ran(); vm.save()
-        assertEquals("Saved as v2", withTimeout(5_000) { vm.state.first { it.notice != null } }.notice)
+        assertEquals("Saved as v2", withTimeout(5_000) { vm.state.first { it.notice == "Saved as v2" && !it.saving } }.notice)
         assertEquals(2, ai.prompts.active(PromptKey.ANSWER).version); assertTrue(ai.prompts.active(PromptKey.ANSWER).testedOk)
         ai.prompts.settings.setKeepVersions(false)
         vm.onTemplate(vm.state.value.template + "\nEven briefer."); vm.run(); ran(); vm.save()
-        assertEquals("Saved over v2", withTimeout(5_000) { vm.state.first { it.notice == "Saved over v2" } }.notice)
+        assertEquals("Saved over v2", withTimeout(5_000) { vm.state.first { it.notice == "Saved over v2" && !it.saving } }.notice)
         assertEquals(2, ai.prompts.active(PromptKey.ANSWER).version)
     }
 
@@ -147,9 +150,10 @@ class PromptEditorTest {
         withTimeout(5_000) { vm.state.first { it.gates.compatible } }
         vm.onSchema(DefaultSchemas.text(PromptKey.ANSWER)!!.replace("\"maxLength\":600", "\"maxLength\":900"))
         assertFalse(vm.state.value.gates.compatible)
+        debounced()
         withTimeout(5_000) { vm.state.first { it.compatProblems.isNotEmpty() } }
         assertFalse(vm.state.value.gates.compatible)
-        vm.resetSchema()
+        vm.resetSchema(); debounced()
         assertTrue(withTimeout(5_000) { vm.state.first { it.gates.compatible } }.gates.compatible)
     }
 
@@ -168,7 +172,7 @@ class PromptEditorTest {
     @Test fun aRecursiveSchemaBlocksSaveAndTheRunShowsItIsNotCompatible() = runBlocking {
         val base = DefaultSchemas.forKey(PromptKey.ANSWER)!!
         val looped = JsonObject(base + ("\$defs" to JsonObject(base["\$defs"]!!.jsonObject + ("Node" to Json.parseToJsonElement("""{"${'$'}ref":"#/${'$'}defs/Node"}""")))))
-        vm.onSchema(looped.toString())
+        vm.onSchema(looped.toString()); debounced()
         val c = withTimeout(5_000) { vm.state.first { it.compatProblems.isNotEmpty() } }
         assertTrue(c.compatProblems.toString(), c.compatProblems.single().startsWith("Recursive schemas aren't supported"))
         vm.run()
@@ -200,7 +204,7 @@ class PromptEditorTest {
         sys.run()
         assertEquals(null, sys.state.value.result); assertFalse(sys.state.value.running)
         sys.save()
-        assertEquals("Saved as v2", withTimeout(5_000) { sys.state.first { it.notice != null } }.notice)
+        assertEquals("Saved as v2", withTimeout(5_000) { sys.state.first { it.notice == "Saved as v2" && !it.saving } }.notice)
         assertEquals(2, ai.prompts.active(PromptKey.SYSTEM).version)
     }
 
@@ -221,12 +225,13 @@ class PromptEditorTest {
         assertEquals(1, calls.get()) // the opening check
         val schema = e.state.value.schema
         repeat(5) { i -> e.onSchema(schema.replace("\"maxLength\":600", "\"maxLength\":${590 - i}")) }
+        debounced()
         withTimeout(5_000) { e.state.first { it.compatFor == it.draft } }
         assertEquals(2, calls.get())
         assertTrue(e.state.value.gates.compatible) // a tightened maxLength is a refinement
         repeat(5) { e.onTemplate(e.state.value.template + " x") }
         assertTrue(e.state.value.gates.compatible)
-        Thread.sleep(500)
+        debounced()
         assertEquals(2, calls.get())
     }
 
@@ -238,7 +243,7 @@ class PromptEditorTest {
         assertTrue(vm.state.value.saving); assertFalse(vm.state.value.canSave)
         vm.onTemplate("typed during save")
         assertEquals(saved, vm.state.value.template)
-        val s = withTimeout(5_000) { vm.state.first { it.notice != null && !it.saving } }
+        val s = withTimeout(5_000) { vm.state.first { it.notice == "Saved as v2" && !it.saving } }
         assertEquals("Saved as v2", s.notice)
         assertEquals(saved.trim(), s.template)
     }

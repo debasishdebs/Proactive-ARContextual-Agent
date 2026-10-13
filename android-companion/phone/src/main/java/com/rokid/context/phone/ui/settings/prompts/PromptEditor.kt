@@ -30,6 +30,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -102,6 +103,8 @@ class PromptEditorViewModel(
     private val inputs: TestBedInputs,
     /** Gate (1). TestBed runs the checker off Main; injectable so tests can count checks. */
     private val compatibility: suspend (PromptKey, PromptDraft) -> List<String> = { k, d -> ai.testBed.compatibility(k, d) },
+    /** Where the schema-check debounce waits (real time, off Main by default). */
+    private val work: CoroutineDispatcher = Dispatchers.Default,
 ) : ViewModel() {
     private val _state = MutableStateFlow(PromptEditorUiState())
     val state: StateFlow<PromptEditorUiState> = _state.asStateFlow()
@@ -112,9 +115,9 @@ class PromptEditorViewModel(
     private val time = DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH)
 
     init {
-        // The debounce waits on Default (real time, off Main); the check itself hops to Default inside TestBed.
+        // The debounce waits on [work] (Default: real time, off Main); the check itself hops to Default inside TestBed.
         viewModelScope.launch {
-            checkRequests.filterNotNull().debounce { it.debounceMs }.flowOn(Dispatchers.Default).collectLatest { check() }
+            checkRequests.filterNotNull().debounce { it.debounceMs }.flowOn(work).collectLatest { check() }
         }
         viewModelScope.launch {
             val key = PromptKey.parse(keyId) ?: run { _state.update { it.copy(loading = false, notFound = true) }; return@launch }

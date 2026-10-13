@@ -57,7 +57,10 @@ data class RetrievalUiState(
     val searching: Boolean = false,
     val results: List<RetrievalHitUi> = emptyList(),
     val fallbackNotice: String? = null,
-    val error: String? = null,
+    /** The RRF k field's validation; only [RetrievalViewModel.setRrfK] sets or clears it. */
+    val rrfError: String? = null,
+    /** Try it's status ("No matches", "Search failed"); never touches [rrfError]. */
+    val tryError: String? = null,
 )
 
 /** spec §4.6 Settings → Retrieval. Every control writes [RetrievalSettingsStore]; Try it runs the real retriever. */
@@ -68,7 +71,7 @@ class RetrievalViewModel(
     ai: AiGraph,
     private val rebuildAction: () -> Unit,
     private val now: () -> Long = System::currentTimeMillis,
-    /** Try it runs here (retrieval, ranking and formatting), never on Main. */
+    /** Try it (retrieval, ranking and formatting) and Rebuild run here, never on Main. */
     private val work: CoroutineDispatcher = Dispatchers.Default,
 ) : ViewModel() {
     private val _state = MutableStateFlow(fromSettings(RetrievalUiState(), store.settings.value))
@@ -88,7 +91,7 @@ class RetrievalViewModel(
     private fun fromSettings(u: RetrievalUiState, s: RetrievalSettings) = u.copy(
         mode = s.mode,
         fusionIndex = when (s.fusion) { is FusionStrategy.WeightedScore -> 0; is FusionStrategy.Rrf -> 1; FusionStrategy.CombMnz -> 2 },
-        weight = store.weightedConfig().semanticWeight.toFloat(), rrfK = if (u.error == null) store.rrfConfig().k.toString() else u.rrfK,
+        weight = store.weightedConfig().semanticWeight.toFloat(), rrfK = if (u.rrfError == null) store.rrfConfig().k.toString() else u.rrfK,
         topK = s.topK, recency = s.recencyBoost, halfLifeDays = s.halfLifeDays.toFloat(), minConfidence = s.minConfidence.toFloat(),
     )
 
@@ -97,8 +100,8 @@ class RetrievalViewModel(
     fun setWeight(w: Float) = store.update { it.copy(fusion = FusionStrategy.WeightedScore(w.toDouble())) }
     fun setRrfK(text: String) {
         val k = text.trim().toIntOrNull()
-        if (k == null || k !in 1..200) { _state.update { it.copy(rrfK = text, error = "k is a whole number 1–200") }; return }
-        _state.update { it.copy(rrfK = text, error = null) }
+        if (k == null || k !in 1..200) { _state.update { it.copy(rrfK = text, rrfError = "k is a whole number 1–200") }; return }
+        _state.update { it.copy(rrfK = text, rrfError = null) }
         store.update { it.copy(fusion = FusionStrategy.Rrf(k)) }
     }
     fun setTopK(k: Int) = store.update { it.copy(topK = k) }
@@ -106,7 +109,8 @@ class RetrievalViewModel(
     fun setHalfLife(days: Float) = store.update { it.copy(halfLifeDays = days.toDouble()) }
     fun setMinConfidence(c: Float) = store.update { it.copy(minConfidence = c.toDouble()) }
     fun onQuery(q: String) = _state.update { it.copy(query = q.take(300)) }
-    fun rebuild() { rebuildAction(); viewModelScope.launch { refreshStats() } }
+    /** The Rebuild request commits prefs and enqueues work: on [work], never Main. */
+    fun rebuild() { viewModelScope.launch(work) { rebuildAction(); refreshStats() } }
 
     fun tryIt() {
         val q = _state.value.query.trim()
@@ -129,14 +133,14 @@ class RetrievalViewModel(
                     it.copy(
                         results = hits,
                         fallbackNotice = if (semanticUnavailable) "Semantic search unavailable — showing lexical results" else null,
-                        error = if (hits.isEmpty()) "No matches" else null,
+                        tryError = if (hits.isEmpty()) "No matches" else null,
                     )
                 }
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
                 Log.i(TAG, "try it failed (${e.javaClass.simpleName})") // the type only: a message could carry provider text
-                _state.update { it.copy(results = emptyList(), fallbackNotice = null, error = "Search failed") }
+                _state.update { it.copy(results = emptyList(), fallbackNotice = null, tryError = "Search failed") }
             } finally {
                 _state.update { it.copy(searching = false) }
             }
@@ -189,7 +193,7 @@ fun RetrievalSettingsScreen(
                             Text("Semantic weight ${(state.weight * 100).toInt()} % · lexical ${100 - (state.weight * 100).toInt()} %", style = MaterialTheme.typography.bodyMedium)
                             Slider(value = state.weight, onValueChange = onWeight, valueRange = 0f..1f, modifier = Modifier.testTag("fusion_weight"))
                         }
-                        1 -> TextFieldRow("k", state.rrfK, onRrfK, tag = "fusion_rrf_k", number = true, supporting = "Higher k flattens the rank bonus (default 60)")
+                        1 -> TextFieldRow("k", state.rrfK, onRrfK, tag = "fusion_rrf_k", number = true, supporting = state.rrfError ?: "Higher k flattens the rank bonus (default 60)", isError = state.rrfError != null)
                         else -> NoticeText("Sum of normalised scores × number of searches that found the memory.")
                     }
                 }
@@ -221,7 +225,7 @@ fun RetrievalSettingsScreen(
                 TextFieldRow("Search your memories", state.query, onQuery, tag = "try_query")
                 PrimaryAction(if (state.searching) "Searching…" else "Try it", onTryIt, tag = "try_it", enabled = !state.searching)
                 state.fallbackNotice?.let { NoticeText(it, tag = "try_fallback") }
-                state.error?.let { NoticeText(it, error = true, tag = "try_error") }
+                state.tryError?.let { NoticeText(it, error = true, tag = "try_error") }
                 state.results.forEachIndexed { i, r ->
                     Text("${i + 1}. ${r.text}", style = MaterialTheme.typography.bodyMedium)
                     NoticeText(r.scores, tag = "try_scores_$i")
