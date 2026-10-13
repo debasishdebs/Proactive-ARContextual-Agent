@@ -132,4 +132,21 @@ class LegacyPipelineControlTest {
         assertTrue(control.enabled.value)
         assertEquals(true, drainStates().any { it == WorkInfo.State.ENQUEUED })
     }
+
+    /** Phase 4 carry: the second tap toggles the first tap's request, not the not-yet-published state. */
+    @Test fun aQuickPauseThenResumeTogglesFromTheRequestedState() = kotlinx.coroutines.test.runTest {
+        AppConfigStore.setPipelineEnabled(ctx, true)
+        val io = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)
+        // The TestScope itself, not backgroundScope: advanceUntilIdle never runs background-only work.
+        val control = LegacyPipelineControl(ctx, OrchestrationScheduler(ctx), io = io, scope = this)
+        control.toggle() // pause
+        control.toggle() // resume, before the pause was persisted
+        assertTrue("nothing published yet", control.enabled.value)
+        testScheduler.advanceUntilIdle()
+        assertTrue(control.enabled.value)
+        assertTrue(AppConfigStore.isPipelineEnabled(ctx))
+        control.toggle()
+        testScheduler.advanceUntilIdle()
+        assertFalse("the requested state resynced after both applied", control.enabled.value)
+    }
 }

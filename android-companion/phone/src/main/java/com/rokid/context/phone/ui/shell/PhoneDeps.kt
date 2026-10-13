@@ -14,7 +14,7 @@ import com.rokid.context.phone.ui.settings.QueueActions
 import com.rokid.context.phone.ui.settings.SchedulerDiagnosticsActions
 import com.rokid.context.memory.MemorySettingsStore
 import com.rokid.context.phone.ui.settings.SettingsDeps
-import com.rokid.context.phone.ui.status.LegacyPipelineControl
+import com.rokid.context.phone.ui.status.CapturePauses
 import com.rokid.context.phone.ui.status.PipelineControl
 import com.rokid.context.phone.ui.status.StorageUsage
 import com.rokid.context.work.OrchestrationScheduler
@@ -51,6 +51,10 @@ class PhoneDeps(
     val zone: () -> ZoneId = { ZoneId.systemDefault() },
     /** Banner 6 (spec §2.2): index rebuild needed / running, or unstable after repeated drift (Task 11). */
     val index: Flow<IndexState> = flowOf(IndexState.NONE),
+    /** Home's phone-mic Ask (Phase 6). */
+    val voice: com.rokid.context.phone.voice.PhoneVoice = com.rokid.context.phone.voice.PhoneVoice.None,
+    /** RECORD_AUDIO was answered: re-check the voice gate. */
+    val onMicGranted: () -> Unit = {},
 ) {
     fun today(): LocalDate = LocalDate.now(zone())
 
@@ -71,12 +75,14 @@ class PhoneDeps(
 
         fun create(app: Context): PhoneDeps {
             val scheduler = OrchestrationScheduler(app)
+            val voice = com.rokid.context.phone.voice.VoiceGraph.get(app)
             return PhoneDeps(
                 memory = MemoryGraph.get(app),
                 glasses = com.rokid.context.phone.hub.HubGraph.glassesStatus(app),
-                pipeline = LegacyPipelineControl(app, scheduler),
+                pipeline = CapturePauses.control(app),
                 onboarding = OnboardingStore(app),
-                askService = AskService { q -> AskActions.ask(app, q) },
+                // Typed asks are mirrored to the HUD (spec §2.4) without being spoken.
+                askService = AskService { q -> AskActions.ask(app, q).also { r -> if (r is com.rokid.context.orchestration.AskOutcome.Answered) voice.mirrorTyped(r.askId) } },
                 rateAsk = { id, up -> AskActions.rate(app, id, up) },
                 diagnostics = SchedulerDiagnosticsActions(scheduler),
                 queues = LegacyQueueActions(app, scheduler),
@@ -89,6 +95,8 @@ class PhoneDeps(
                     flow { emitAll(com.rokid.context.ai.AiGraph.get(app).bindings.observeAll()) }.map { b -> b.any { it.role == com.rokid.context.ai.Role.EMBED } },
                 ) { h, unstable, bound -> IndexState.of(h, unstable, bound) }
                     .flowOn(Dispatchers.IO), // the clock's first prefs read stays off Main
+                voice = voice.phoneVoice,
+                onMicGranted = voice::onForeground,
             )
         }
     }

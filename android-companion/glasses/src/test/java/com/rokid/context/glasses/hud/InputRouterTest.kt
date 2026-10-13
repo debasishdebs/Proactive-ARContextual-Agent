@@ -40,7 +40,7 @@ class InputRouterTest {
     @Test fun doubleTapCancelsWhileListening() {
         val l = Overlay.Listening("what")
         assertEquals(Routed.CancelListening, InputRouter.route(PadInput.DoubleTapped, l, defaults))
-        assertEquals(Routed.Mapped(GestureAction.ASK), InputRouter.route(PadInput.Tapped, l, defaults), "tap again = send")
+        assertEquals(Routed.FinishListening, InputRouter.route(PadInput.Tapped, l, defaults), "tap again = send")
     }
 
     @Test fun swipeOrDoubleTapDismissesAnAnswer() {
@@ -48,5 +48,32 @@ class InputRouterTest {
         assertEquals(Routed.DismissOverlay, InputRouter.route(fwd, a, defaults))
         assertEquals(Routed.DismissOverlay, InputRouter.route(PadInput.DoubleTapped, a, defaults))
         assertEquals(Routed.Mapped(GestureAction.ASK), InputRouter.route(PadInput.Tapped, a, defaults))
+    }
+
+    /** Spec §3.2 "tap to send" holds whatever the tap is mapped to. */
+    @Test fun aTapSendsWhileListeningEvenWhenTapIsRemapped() {
+        val custom = defaults + (Gesture.TAP to GestureAction.NEXT_PAGE)
+        assertEquals(Routed.FinishListening, InputRouter.route(PadInput.Tapped, Overlay.Listening(""), custom))
+        assertEquals(Routed.Mapped(GestureAction.NEXT_PAGE), InputRouter.route(fwd, Overlay.Listening(""), defaults), "swipes still page")
+    }
+
+    /** Fix round 1: while the glasses record, a double-tap is Cancel whatever is shown (toast, splash, Confirm). */
+    @Test fun aDoubleTapWhileRecordingAlwaysCancels() {
+        val confirm = Overlay.Confirm("p1", "Add milk?", "Shopping list")
+        for (o in listOf(null, Overlay.Toast("Capture resumed"), Overlay.PausedSplash, confirm, Overlay.Listening(""))) {
+            assertEquals(Routed.CancelListening, InputRouter.route(PadInput.DoubleTapped, o, defaults, recording = true), "$o")
+        }
+        assertEquals(Routed.ConfirmNo, InputRouter.route(PadInput.DoubleTapped, confirm, defaults), "not recording: Confirm's own rule")
+        assertEquals(Routed.Mapped(GestureAction.PAUSE_RESUME), InputRouter.route(PadInput.DoubleTapped, null, defaults))
+    }
+
+    @Test fun doubleTapOnUndoToastUndoesNotPauses() {
+        val undo = Overlay.Toast("Added \u00b7 double-tap undo", undoProposalId = "p")
+        assertEquals(Routed.Undo("p"), InputRouter.route(PadInput.DoubleTapped, undo, defaults))
+        // Other inputs on an undo toast, and a double-tap on a plain toast, keep today's routing.
+        assertEquals(Routed.Mapped(GestureAction.ASK), InputRouter.route(PadInput.Tapped, undo, defaults))
+        assertEquals(Routed.Mapped(GestureAction.PAUSE_RESUME), InputRouter.route(PadInput.DoubleTapped, Overlay.Toast("Saved"), defaults))
+        // Push-to-talk still cancels first.
+        assertEquals(Routed.CancelListening, InputRouter.route(PadInput.DoubleTapped, undo, defaults, recording = true))
     }
 }

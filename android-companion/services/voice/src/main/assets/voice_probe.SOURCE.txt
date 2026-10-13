@@ -1,0 +1,5 @@
+voice_probe.pcm: raw PCM, 16 kHz, mono, signed 16-bit little-endian, 134 142 bytes.
+
+Speech: LJ Speech Dataset clip LJ001-0013, "than in the same operations with ugly ones."
+(https://keithito.com/LJ-Speech-Dataset/). The dataset is in the public domain.
+Resampled from 22.05 kHz to 16 kHz and padded with silence to 134 142 bytes.

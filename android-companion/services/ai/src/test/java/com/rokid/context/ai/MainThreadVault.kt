@@ -10,4 +10,5 @@ class MainThreadVault(private val inner: KeyVault = InMemoryKeyVault()) : KeyVau
     override fun get(ref: String): String? { mark(); return inner.get(ref) }
     override fun put(ref: String, key: String) { mark(); inner.put(ref, key) }
     override fun remove(ref: String) { mark(); inner.remove(ref) }
+    override fun refs(): Set<String> { mark(); return inner.refs() }
 }

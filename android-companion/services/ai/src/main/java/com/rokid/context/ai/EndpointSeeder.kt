@@ -2,19 +2,26 @@ package com.rokid.context.ai
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 
-interface SeedState { fun isDone(): Boolean; fun markDone() }
+/** [keyRetired]: the legacy key was dealt with once (copied in, or not needed); it is never read or copied again (P8 D1). */
+interface SeedState { fun isDone(): Boolean; fun markDone(); fun keyRetired(): Boolean = false; fun markKeyRetired() {} }
 
 class PrefsSeedState(context: Context) : SeedState {
     private val prefs = context.getSharedPreferences("ai_seed", Context.MODE_PRIVATE)
     override fun isDone() = prefs.getBoolean("v1_done", false)
     override fun markDone() { prefs.edit().putBoolean("v1_done", true).commit() }
+    override fun keyRetired() = prefs.getBoolean("key_retired", false)
+    override fun markKeyRetired() { prefs.edit().putBoolean("key_retired", true).commit() }
 }
 
 class InMemorySeedState : SeedState {
     @Volatile private var done = false
+    @Volatile private var retired = false
     override fun isDone() = done
     override fun markDone() { done = true }
+    override fun keyRetired() = retired
+    override fun markKeyRetired() { retired = true }
 }
 
 /**
@@ -24,30 +31,83 @@ class InMemorySeedState : SeedState {
  */
 class EndpointSeeder(private val endpoints: EndpointRepository, private val bindings: RoleBindingRepository, private val state: SeedState) {
     /**
-     * Never throws: legacy config the new validation rejects (e.g. an http remote endpoint with a key) returns the
-     * failure, logs one short line without the key, and leaves the roles unbound (the router reports "No model is set").
+     * Never throws, apart from [CancellationException]. Legacy config the new validation rejects (checked first by
+     * [rejection] against [EndpointRules]/[UrlNormalizer], e.g. an http remote endpoint with a key) returns
+     * the failure, logs one short line without the key, marks the seed done so it is not retried on every start (P8 D1),
+     * and leaves the roles unbound (the router reports "No model is set"). Any other failure (an I/O or Keystore error)
+     * is retried on the next start.
      */
-    suspend fun seedIfNeeded(settings: ProviderSettings): Result<Unit> = runCatching {
-        if (state.isDone()) return@runCatching
-        apply(settings)
-        state.markDone()
-    }.onFailure { Log.w(TAG, "AI seed not finished: ${SafeLog.describe(it)}") }
+    suspend fun seedIfNeeded(settings: ProviderSettings): Result<Unit> {
+        if (state.isDone()) return Result.success(Unit)
+        // Fix round 1: validate first, with no I/O. Only this rejection is permanent; an IllegalArgumentException from
+        // anywhere else (a DAO, a binding) is retried like any other failure.
+        rejection(settings)?.let { e ->
+            Log.w(TAG, "AI seed rejected the legacy config: ${SafeLog.describe(e)}")
+            state.markDone()
+            return Result.failure(e)
+        }
+        return try {
+            apply(settings)
+            state.markDone()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "AI seed not finished: ${SafeLog.describe(e)}")
+            Result.failure(e)
+        }
+    }
+
+    /** What [EndpointRules]/[UrlNormalizer] reject in the endpoints [apply] would create, or null when they pass. */
+    private fun rejection(settings: ProviderSettings): Throwable? {
+        val desired = desired(settings, 0L)
+        val rawKey = if (desired.kind in EndpointRules.KEYLESS) null else settings.apiKey.ifBlank { null }
+        val key = rawKey?.let { UrlNormalizer.cleanKey(it) }
+        key?.exceptionOrNull()?.let { return it }
+        EndpointRules.clean(desired, hasKey = key != null).exceptionOrNull()?.let { return it }
+        if (settings.localModeEnabled && settings.nativeModelPath.isNotBlank() && desired.id != LOCAL_ID) {
+            EndpointRules.clean(localEndpoint(settings, 0L), hasKey = false).exceptionOrNull()?.let { return it }
+        }
+        return null
+    }
+
+    private fun localEndpoint(settings: ProviderSettings, now: Long) =
+        Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null, listOf("local"), setOf(Capability.CHAT), now)
 
     /**
      * Whether the legacy key may be deleted (T21 F23 + fix round 1). Only once the seed is done:
+     * - already decided on an earlier start ([SeedState.keyRetired]): yes, with no read and no copy, so a key the user
+     *   removed from the seeded endpoint is never copied back (P8 D1, review focus 6);
      * - keyless seeded kind: always (that endpoint can never take a key);
      * - keyed kind, blank read (Keystore unavailable): never, it may be the only copy (F23);
      * - keyed kind with a key: the seeded endpoint keeps a key it already has; one without a key gets this key first
      *   (a seed that finished earlier without it); a deleted endpoint needs none. A vault write failure throws.
+     * Each "yes" that decided something is recorded with [SeedState.markKeyRetired] before returning.
      */
     suspend fun retireLegacyKey(settings: ProviderSettings): Boolean {
         if (!state.isDone()) return false
+        if (state.keyRetired()) return true
         val desired = desired(settings, 0L)
-        if (desired.kind in EndpointRules.KEYLESS) return true
-        if (settings.apiKey.isBlank()) return false
-        val e = endpoints.byId(desired.id) ?: return true
-        if (endpoints.keyFor(e).isNullOrBlank()) endpoints.save(e, apiKey = settings.apiKey).getOrThrow()
+        if (desired.kind !in EndpointRules.KEYLESS) {
+            if (settings.apiKey.isBlank()) return false
+            val e = endpoints.byId(desired.id)
+            if (e != null && endpoints.keyFor(e).isNullOrBlank()) endpoints.save(e, apiKey = settings.apiKey).getOrThrow()
+        }
+        state.markKeyRetired()
         return true
+    }
+
+    /**
+     * The start-up orphan-key sweep ([EndpointRepository.sweepOrphanKeys], P8 D2), run by LegacyKeySeed after seeding.
+     * Never throws, apart from [CancellationException]: a vault failure is logged and retried next start.
+     */
+    suspend fun sweepOrphanKeys(): Int = try {
+        endpoints.sweepOrphanKeys()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "Orphan key sweep not finished: ${e.javaClass.simpleName}")
+        0
     }
 
     /** The endpoint the legacy provider type maps to (one place: [apply] and [retireLegacyKey]). */
@@ -73,7 +133,7 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
             ?: endpoints.save(desired, apiKey = apiKey).getOrThrow()
         val local = if (settings.localModeEnabled && settings.nativeModelPath.isNotBlank() && primary.id != LOCAL_ID) {
             endpoints.byId(LOCAL_ID)
-                ?: endpoints.save(Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null, listOf("local"), setOf(Capability.CHAT), now), apiKey = null).getOrThrow()
+                ?: endpoints.save(localEndpoint(settings, now), apiKey = null).getOrThrow()
         } else null
         val model = primary.models.firstOrNull().orEmpty()
         for (role in Role.entries) {

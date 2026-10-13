@@ -203,4 +203,58 @@ class ModelRouterTest {
         assertEquals(FailureKind.AUTH, e.kind); assertEquals(listOf("b:text"), calls)
         assertEquals(FailureKind.NOT_SET, (err { router.completeOn("gone", "x") { ModelRequest("q") } } as ModelCallException).kind)
     }
+
+    // ---- Phase 8 D3 ----
+
+    private val key = "a+b/c=d0123456789xyz"
+
+    @Test fun aUrlEncodedKeyIsMasked() {
+        val m = ModelRouter.safe(ProviderConfigException("GET /v1?k=${java.net.URLEncoder.encode(key, "UTF-8")} failed"), key)
+        assertFalse(m.contains(java.net.URLEncoder.encode(key, "UTF-8"))); assertTrue(m.contains("***"))
+    }
+
+    @Test fun aBase64EncodedKeyIsMasked() {
+        val basic = java.util.Base64.getEncoder().encodeToString(key.toByteArray())
+        val m = ModelRouter.safe(ProviderConfigException("Authorization: Basic $basic"), key)
+        assertFalse(m.contains(basic)); assertTrue(m.contains("***"))
+    }
+
+    @Test fun aKeystoreFailureInTheFailurePathKeepsTheOriginalError() = runTest {
+        val inner = InMemoryKeyVault()
+        var gets = 0
+        var failFrom = Int.MAX_VALUE
+        val vault = object : KeyVault by inner {
+            override fun get(ref: String): String? { gets++; if (gets >= failFrom) throw IllegalStateException("vault broken"); return inner.get(ref) }
+        }
+        val eps = EndpointRepository(db.endpointDao(), vault)
+        eps.save(Endpoint("k", "k", EndpointKind.OPENAI_COMPAT, "https://h.example", null, listOf("m"), setOf(Capability.CHAT), 1), apiKey = "secret-1").getOrThrow()
+        val bad = ProviderBuilder { _, _, _ ->
+            object : ModelProvider {
+                override suspend fun generate(prompt: String): String = throw ProviderConfigException("Bad model name")
+                override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String = generate(prompt)
+            }
+        }
+        gets = 0; failFrom = 2
+        val e = err { ModelRouter(RoleBindingRepository(db.roleBindingDao(), eps), eps, bad).completeOn("k", "m") { ModelRequest("q") } }
+        assertTrue(e.toString(), e is ModelCallException)
+        assertTrue(e.message!!.contains("Bad model name"))
+    }
+
+    @Test fun aKeystoreFailureInTheRoutedFailurePathKeepsTheOriginalError() = runTest {
+        val inner = InMemoryKeyVault()
+        var gets = 0
+        var failFrom = Int.MAX_VALUE
+        val vault = object : KeyVault by inner {
+            override fun get(ref: String): String? { gets++; if (gets >= failFrom) throw IllegalStateException("vault broken"); return inner.get(ref) }
+        }
+        val eps = EndpointRepository(db.endpointDao(), vault)
+        val binds = RoleBindingRepository(db.roleBindingDao(), eps)
+        eps.save(Endpoint("k", "k", EndpointKind.OPENAI_COMPAT, "https://h.example", null, listOf("m"), setOf(Capability.CHAT), 1), apiKey = "secret-1").getOrThrow()
+        binds.set(RoleBinding(Role.ANSWER, "k", "m")).getOrThrow()
+        gets = 0; failFrom = 2
+        failures["k:text"] = http(503)
+        val e = err { ModelRouter(binds, eps, providers).generate(Role.ANSWER, "q") }
+        assertTrue(e.toString(), e is ModelCallException)
+        assertTrue(e.message!!.contains("ProviderHttpException"))
+    }
 }

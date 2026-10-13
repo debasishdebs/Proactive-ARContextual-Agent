@@ -97,7 +97,7 @@ fun StatusPage(m: HudModel) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Label("STATUS", 20.sp, Hud.SECONDARY)
         StatusLine("Capture", "every ${formatInterval(f?.intervalSec ?: m.settings.captureIntervalSec)}")
-        StatusLine("Phone", if (m.connection == HudConnection.LIVE) "linked" else "offline")
+        StatusLine("Phone", HudCopy.phoneLink(m.connection))
         StatusLine("AI", when (val h = f?.aiHealth) { null, Health.Ok -> "ok"; is Health.Degraded -> h.text; is Health.Blocked -> h.text })
         StatusLine("Queue", "${f?.queueDepth ?: 0} waiting")
         StatusLine("Last sent", f?.lastSentAtMs?.let { formatClock(it) } ?: "—")

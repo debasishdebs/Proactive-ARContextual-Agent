@@ -62,12 +62,25 @@ class SettingsDeps(
     val logs: suspend () -> List<String>,
     /** Diagnostics › Export: a text file in cache/exports (the FileProvider folder), shared through [share]. */
     val exportDiagnostics: suspend () -> File,
+    /** Settings › Phone camera & mic (Phase 6). */
+    val voice: com.rokid.context.phone.voice.VoiceControls = com.rokid.context.phone.voice.VoiceControls.None,
+    /** This app's system settings page (a microphone denied with "don't ask again"). */
+    val openAppSettings: () -> Unit = {},
+    /** Settings › Privacy (Phase 7 Stream A): the shared capture pause control. */
+    val pauses: com.rokid.context.phone.ui.status.PipelineControl = com.rokid.context.phone.ui.status.PipelineControl.None,
+    /** Settings › Data sources (Phase 7 C2). */
+    val sources: com.rokid.context.phone.ui.settings.connectors.SourcesControl = com.rokid.context.phone.ui.settings.connectors.SourcesControl.None,
+    /** Settings › Phone camera & mic "Capture now" (Phase 7 C2). */
+    val capture: com.rokid.context.phone.capture.CaptureNowControl = com.rokid.context.phone.capture.CaptureNowControl.None,
+    /** Settings › Actions & tools (Phase 7 B): lazy, so building these deps on Main never builds the actions graph. */
+    private val lazyActions: Lazy<com.rokid.context.connectors.actions.ActionsGraphApi>,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
     val retrieval: RetrievalSettingsStore get() = lazyRetrieval.value
     val spaces: EmbeddingSpaces get() = lazySpaces.value
     val memorySettings: MemorySettingsStore get() = lazyMemorySettings.value
+    val actions: com.rokid.context.connectors.actions.ActionsGraphApi get() = lazyActions.value
 
     companion object {
         /** Process-lifetime work the Settings deps start (a Rebuild commits prefs, so it leaves Main). */
@@ -78,7 +91,10 @@ class SettingsDeps(
             hud = HubHudSettings(HubGraph.get(app)),
             reauthorize = { AuthActivity.launch(app).onFailure { Log.i("Settings", "re-authorize failed (${it.javaClass.simpleName})") } },
             onEmbedBindingChanged = { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app) },
-            lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(app), AnswerService.forApp(app)) },
+            lazyTestInputs = lazy {
+                val mem = MemoryGraph.get(app)
+                TestBedInputs(mem, AnswerService.forApp(app), com.rokid.context.orchestration.nudge.NudgeInputs(mem, com.rokid.context.connectors.sources.SourcesGraph.get(app).provider))
+            },
             lazyRetrieval = lazy { RetrievalSettingsStore.get(app) },
             lazySpaces = lazy { MemoryGraph.get(app).spaces },
             rebuildIndex = { scope.launch(Dispatchers.IO) { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app, rebuild = true) } },
@@ -96,6 +112,30 @@ class SettingsDeps(
                 val traces = com.rokid.context.orchestration.PipelineRecords.recentTraces(app, 50).map { "${it.updatedAt} ${it.state} ${it.summaryId} ${it.note}" }
                 DiagnosticsExport.write(app.cacheDir, traces, LogReader.ownLines())
             },
+            voice = com.rokid.context.phone.voice.VoiceGraph.get(app).controls,
+            openAppSettings = {
+                val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", app.packageName, null))
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                runCatching { app.startActivity(intent) }.onFailure { Log.i("Settings", "app settings unavailable (${it.javaClass.simpleName})") }
+            },
+            pauses = com.rokid.context.phone.ui.status.CapturePauses.control(app),
+            sources = AppSources(app),
+            capture = com.rokid.context.phone.capture.PhoneCaptureControl(
+                app, com.rokid.context.phone.capture.PhoneCaptureControl.storedPauses({ MemoryGraph.get(app).db.pauseDao() }, quietHours = { HubGraph.get(app).hudSettings.value.quietHours }),
+            ),
+            lazyActions = lazy { com.rokid.context.connectors.actions.ActionsGraph.get(app) },
         )
+    }
+}
+
+/** Settings › Data sources over the process-wide sources graph; the store is first read off Main by the ViewModel. */
+private class AppSources(private val app: Context) : com.rokid.context.phone.ui.settings.connectors.SourcesControl {
+    private val graph get() = com.rokid.context.connectors.sources.SourcesGraph.get(app)
+    override val enabled get() = graph.settings.enabled
+    override val nudgesPerDay get() = graph.settings.nudgesPerDay
+    override fun set(k: com.rokid.context.connectors.sources.SourceKind, on: Boolean) = graph.settings.set(k, on)
+    override fun setNudgesPerDay(n: Int) = graph.settings.setNudgesPerDay(n)
+    override fun granted(k: com.rokid.context.connectors.sources.SourceKind) = com.rokid.context.connectors.sources.SourcePermissions.of(k).all {
+        androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 }

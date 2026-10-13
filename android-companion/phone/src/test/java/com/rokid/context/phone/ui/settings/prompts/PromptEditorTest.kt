@@ -267,4 +267,16 @@ class PromptEditorTest {
         assertEquals(null, vm.state.value.result); assertEquals(original, vm.state.value.template)
         assertFalse(vm.state.value.gates.ran)
     }
+
+    /** Phase 5 T18 carry: reverting to the draft that ran brings back its \u2713 Ran gate and its result panel together. */
+    @Test fun revertingToTheRanDraftShowsItsResultAgain() = runBlocking {
+        val base = vm.state.value.template
+        vm.run(); ran()
+        vm.onTemplate("$base x")
+        assertEquals(null, vm.state.value.result); assertFalse(vm.state.value.gates.ran)
+        vm.onTemplate(base)
+        val s = vm.state.value
+        assertTrue(s.gates.ran)
+        assertTrue("Ran has its result panel", s.result != null)
+    }
 }

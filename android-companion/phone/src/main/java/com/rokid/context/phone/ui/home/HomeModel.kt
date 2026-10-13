@@ -4,6 +4,8 @@ import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.phone.ui.status.StatusUi
+import com.rokid.context.voice.PhoneVoiceState
+import com.rokid.context.voice.VoiceStatus
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -68,6 +70,54 @@ data class HomeUiState(
     val asking: Boolean = false,
     val askError: String? = null,
     val lastAnswer: FeedItem.Ask? = null,
-    /** Phone voice arrives with Phase 6 (R-60/R-67); until then the mic is shown disabled. */
-    val voiceAvailable: Boolean = false,
+    /** The hero mic (spec §2.4, §5.1.1): phone voice through the on-device recognizer only. */
+    val voice: HomeVoiceUi = HomeVoiceUi(),
 )
+
+/**
+ * What the hero mic shows. [enabled] with [needsPermission] = a tap asks for RECORD_AUDIO instead of listening.
+ * [listening] (the user is still speaking) and [thinking] (the words are sent) never hold together; while thinking the
+ * mic cancels. [blocked] = permanently denied: the mic opens the app's settings instead.
+ */
+data class HomeVoiceUi(
+    val enabled: Boolean = false,
+    val listening: Boolean = false,
+    val thinking: Boolean = false,
+    val partial: String = "",
+    val needsPermission: Boolean = false,
+    val hint: String = HINT_TYPE,
+    val error: String? = null,
+    val micOff: Boolean = false,
+    val blocked: Boolean = false,
+) {
+    companion object {
+        const val HINT_READY = "or tap your glasses"
+        const val HINT_TYPE = "Type a question below, or tap your glasses"
+        const val HINT_LISTENING = "Listening\u2026 tap the mic to send"
+        const val HINT_THINKING = "Thinking\u2026"
+        const val HINT_PERMISSION = "Allow the microphone to ask by voice"
+        const val HINT_PACK = "Download the speech pack in Settings to ask by voice"
+        const val HINT_OFF = "The phone mic is off in Settings \u2014 type a question below"
+        const val HINT_LOADING = "Voice is still loading\u2026"
+        const val HINT_BLOCKED = "The microphone is blocked for this app"
+        const val OPEN_APP_SETTINGS = "Open app settings"
+
+        /** [micBlocked]: RECORD_AUDIO was permanently denied (only meaningful while the gate still needs it). */
+        fun from(v: PhoneVoiceState, micBlocked: Boolean = false): HomeVoiceUi {
+            val off = v.micOff && !v.settingsLoading
+            return when {
+                v.listening -> HomeVoiceUi(enabled = true, listening = true, partial = v.partial, hint = HINT_LISTENING)
+                v.thinking -> HomeVoiceUi(enabled = true, thinking = true, hint = HINT_THINKING, error = v.error, micOff = off)
+                v.settingsLoading -> HomeVoiceUi(hint = HINT_LOADING, error = v.error)
+                v.micOff -> HomeVoiceUi(hint = HINT_OFF, error = v.error, micOff = true)
+                v.status == VoiceStatus.SUPPORTED -> HomeVoiceUi(enabled = true, hint = HINT_READY, error = v.error)
+                v.status == VoiceStatus.NEEDS_MIC_PERMISSION -> HomeVoiceUi(
+                    enabled = true, needsPermission = true, blocked = micBlocked,
+                    hint = if (micBlocked) HINT_BLOCKED else HINT_PERMISSION, error = v.error,
+                )
+                v.status == VoiceStatus.NEEDS_SPEECH_PACK -> HomeVoiceUi(hint = HINT_PACK, error = v.error)
+                else -> HomeVoiceUi(hint = HINT_TYPE, error = v.error)
+            }
+        }
+    }
+}

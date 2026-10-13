@@ -7,6 +7,8 @@ import android.system.ErrnoException
 import android.system.OsConstants
 import android.util.Log
 import com.rokid.context.core.model.FrameAck
+import com.rokid.context.core.model.FileDurability
+import com.rokid.context.core.model.FrameAckReason
 import com.rokid.context.core.model.FrameChunk
 import com.rokid.context.core.model.UserFacingError
 import com.rokid.context.core.model.UserFacingErrors
@@ -21,6 +23,7 @@ import com.rokid.context.link.ClockOffset
 import com.rokid.context.link.FrameAdmission
 import com.rokid.context.link.FrameReassembler
 import com.rokid.context.link.ReceivedFrameLedger
+import com.rokid.context.orchestration.WipeFence
 import com.rokid.context.work.OrchestrationScheduler
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -47,7 +50,13 @@ object AtomicJpegWriter : JpegWriter {
     /** The time is stamped on the `.part` before the rename (which keeps it), so no reader sees the receipt time. */
     override fun writeStamped(target: File, bytes: ByteArray, lastModifiedMs: Long) = write(target, bytes, lastModifiedMs)
 
-    internal fun write(target: File, bytes: ByteArray, lastModifiedMs: Long?, beforeRename: (File) -> Unit = {}) {
+    internal fun write(
+        target: File,
+        bytes: ByteArray,
+        lastModifiedMs: Long?,
+        beforeRename: (File) -> Unit = {},
+        fsyncDir: (File) -> Boolean = FileDurability::fsyncDir,
+    ) {
         val dir = target.parentFile ?: throw IOException("no parent directory")
         if (!dir.isDirectory && !dir.mkdirs()) throw IOException("cannot create ${dir.name}")
         // ".part" is not an inbox extension, so RokidFrameInbox never picks up a half-written file.
@@ -61,6 +70,8 @@ object AtomicJpegWriter : JpegWriter {
             tmp.delete()
             throw e
         }
+        // The rename is durable only once the directory entry is; a failure here still leaves a whole file.
+        if (!fsyncDir(dir)) Log.w(FrameIngestor.TAG, "frame dir not fsynced")
     }
 }
 
@@ -102,6 +113,8 @@ class FrameIngestor(
     private val ledger: ReceivedFrameLedger,
     private val writer: JpegWriter = AtomicJpegWriter,
     private val monotonicMs: () -> Long = SystemClock::elapsedRealtime,
+    private val wipeFence: () -> WipeFence.Fence = { WipeFence.fence(inboxDir.absoluteFile.parentFile) },
+    private val wipeLock: Mutex = WipeFence.mutex,
     private val onStored: () -> Unit,
 ) {
     private val mutex = Mutex()
@@ -125,15 +138,32 @@ class FrameIngestor(
         }
     }
 
-    private fun store(id: String, jpeg: ByteArray, capturedAtMs: Long): IngestResult {
+    /**
+     * Under [wipeLock], so a Delete all deleting frame files never races this write. A frame captured before the last
+     * Delete all started is acked `ok=true` ([FrameAckReason.WIPED]) and recorded, never written (spec 6.1.1). While
+     * the fence is unknown (it could not be recorded) nothing is stored and no ack is sent.
+     */
+    private suspend fun store(id: String, jpeg: ByteArray, capturedAtMs: Long): IngestResult = wipeLock.withLock {
         val target = File(inboxDir, "rokid_${capturedAtMs}_$id.jpg")
+        val fence = wipeFence()
+        if (fence is WipeFence.Fence.Unknown) {
+            // Fail closed (fix round 1 I3): no ack, so the glasses keep the frame and resend it once the fence is known.
+            Log.w(TAG, "frame $id not stored: Delete all fence unknown")
+            return@withLock IngestResult(ack = null, error = storageErrorFor(fence.cause ?: IOException("wipe fence unknown")))
+        }
+        val wipedAt = (fence as? WipeFence.Fence.At)?.ms
         try {
+            if (wipedAt != null && capturedAtMs < wipedAt) {
+                ledger.add(id)
+                Log.i(TAG, "frame $id dropped: captured before Delete all")
+                return@withLock IngestResult(FrameAck(frameId = id, ok = true, reason = FrameAckReason.WIPED))
+            }
             writer.writeStamped(target, jpeg, capturedAtMs) // RokidFrameInbox takes the capture time from lastModified
             ledger.add(id)
         } catch (e: IOException) {
             target.delete()
             Log.w(TAG, "frame $id not stored: ${e.javaClass.simpleName}")
-            return IngestResult(ack = null, error = storageErrorFor(e))
+            return@withLock IngestResult(ack = null, error = storageErrorFor(e))
         }
         // The frame is durable in the inbox and the ledger, so it is acked even if queueing fails: the next queue drain
         // scans the whole inbox and picks it up. A full disk here (queue file, WorkManager DB) must never crash the app.
@@ -145,7 +175,7 @@ class FrameIngestor(
             storageErrorFor(e)
         }
         Log.i(TAG, "frame ingested $id")
-        return IngestResult(FrameAck(frameId = id, ok = true), ingestedAtMs = capturedAtMs, error = queueError)
+        IngestResult(FrameAck(frameId = id, ok = true), ingestedAtMs = capturedAtMs, error = queueError)
     }
 
     companion object { const val TAG = "ContextHub" }

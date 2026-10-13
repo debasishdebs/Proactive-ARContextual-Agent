@@ -81,6 +81,32 @@ interface PauseDao {
         lowerIntervalStart(pauseId, startMs)
     }
 
+    /** Closes each expired record's interval at its end and deletes the records, in one transaction. */
+    @Transaction
+    suspend fun expire(ids: List<String>, ends: Map<String, Long>) {
+        if (ids.isEmpty()) return
+        ids.forEach { id -> ends[id]?.let { closeInterval(id, it) } }
+        deleteRecords(ids)
+    }
+
+    /** A quiet-hours interval (open or closed) at or overlapping the occurrence [startMs, endMs), if one was ever created. */
+    @Query(
+        "SELECT * FROM pause_interval WHERE origin = 'QUIET_HOURS' AND (startMs = :startMs OR " +
+            "(startMs < :endMs AND (effectiveEndMs IS NULL OR effectiveEndMs > :startMs))) LIMIT 1",
+    )
+    suspend fun quietOccurrence(startMs: Long, endMs: Long): PauseIntervalEntity?
+
+    /** History older than [before] becomes an id-only tombstone: zero length, so it covers no frame. */
+    @Query("UPDATE pause_interval SET startMs = effectiveEndMs WHERE effectiveEndMs IS NOT NULL AND effectiveEndMs < :before AND startMs < effectiveEndMs")
+    suspend fun collapseEndedBefore(before: Long)
+
+    /** Ids whose interval closed at or after [since] and that have no live record, newest 200. */
+    @Query(
+        "SELECT pauseId FROM pause_interval WHERE effectiveEndMs IS NOT NULL AND effectiveEndMs >= :since " +
+            "AND pauseId NOT IN (SELECT pauseId FROM pause_record) ORDER BY effectiveEndMs DESC LIMIT 200",
+    )
+    suspend fun resumedSince(since: Long): List<String>
+
     /** Atomically ends the named records that exist. */
     @Transaction
     suspend fun resumeNamed(clears: Set<String>, now: Long) {

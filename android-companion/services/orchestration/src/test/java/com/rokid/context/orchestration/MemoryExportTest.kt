@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.ExportDao
 import com.rokid.context.memory.legacy.LegacyImporter
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -51,7 +52,7 @@ class MemoryExportTest {
     }
 
     /** Review M3: a forgotten (INVALIDATED) memory's text is never exported. */
-    @Test fun invalidatedMemoriesAreNotExported() = runBlocking<Unit> {
+    @Test fun invalidatedMemoriesAreNeverExported() = runBlocking<Unit> {
         val g = MemoryGraph.get(ctx)
         g.memories.add(LegacyImporter.toMemory("keep", "short_term", 0.9, 1, "Keys on the shelf"))
         g.memories.add(LegacyImporter.toMemory("gone", "short_term", 0.9, 2, "Forgotten secret").copy(reviewState = com.rokid.context.memory.db.ReviewState.INVALIDATED))
@@ -60,5 +61,87 @@ class MemoryExportTest {
         assertEquals(listOf("keep"), ids)
         assertFalse(f.readText().contains("Forgotten secret"))
         f.delete()
+    }
+
+    private fun bulkAsks(n: Int) {
+        val w = MemoryGraph.get(ctx).db.openHelper.writableDatabase
+        w.beginTransaction()
+        try {
+            val st = w.compileStatement("INSERT INTO ask (id, ts, question, answer, sourcesJson, rating, source, redacted) VALUES (?, ?, 'q', 'a', '[]', NULL, 'phone_typed', 0)")
+            repeat(n) { st.clearBindings(); st.bindString(1, "a$it"); st.bindLong(2, it.toLong()); st.executeInsert() }
+            w.setTransactionSuccessful()
+        } finally { w.endTransaction() }
+    }
+
+    /** B1: every ask is exported; the old 10 k cap is gone. */
+    @Test fun exportsEveryAskBeyondTenThousand() = runBlocking<Unit> {
+        bulkAsks(12_000)
+        val f = MemoryExport.write(ctx, nowMs = 10)
+        val asks = Json.parseToJsonElement(f.readText()).jsonObject["asks"]!!.jsonArray
+        assertEquals(12_000, asks.size)
+        assertEquals(12_000, asks.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet().size)
+        f.delete()
+    }
+
+    private class SpyDao(private val real: ExportDao, private val failOnMemoryCall: Int = -1) : ExportDao {
+        val limits = mutableListOf<Int>(); var memoryCalls = 0; var askCalls = 0
+        override suspend fun memoryPage(after: Long, limit: Int): List<com.rokid.context.memory.db.MemoryExportRow> {
+            limits += limit; memoryCalls++
+            if (memoryCalls == failOnMemoryCall) throw IllegalStateException("disk")
+            return real.memoryPage(after, limit)
+        }
+        override suspend fun askPage(after: Long, limit: Int): List<com.rokid.context.memory.db.AskExportRow> {
+            limits += limit; askCalls++
+            return real.askPage(after, limit)
+        }
+    }
+
+    /** B1: the export reads the library in 500-row pages through ExportDao, never the whole table at once. */
+    @Test fun exportReadsInPagesNotAllAtOnce() = runBlocking<Unit> {
+        val g = MemoryGraph.get(ctx)
+        repeat(1_200) { g.memories.add(LegacyImporter.toMemory("m$it", "short_term", 0.9, it.toLong(), "note $it")) }
+        bulkAsks(700)
+        val spy = SpyDao(g.db.exportDao())
+        val f = MemoryExport.write(ctx, spy, nowMs = 11)
+        assertEquals(3, spy.memoryCalls); assertEquals(2, spy.askCalls)
+        assertTrue(spy.limits.toString(), spy.limits.all { it == 500 })
+        val json = Json.parseToJsonElement(f.readText()).jsonObject
+        assertEquals(1_200, json["memories"]!!.jsonArray.size); assertEquals(700, json["asks"]!!.jsonArray.size)
+        f.delete()
+    }
+
+    /** B1: same JSON shape and key names as before the streaming rewrite. */
+    @Test fun jsonShapeIsUnchanged() = runBlocking<Unit> {
+        val g = MemoryGraph.get(ctx)
+        g.memories.add(LegacyImporter.toMemory("m1", "short_term", 0.9, 1, "one"))
+        g.memories.add(LegacyImporter.toMemory("m2", "short_term", 0.5, 2, "two").copy(frameId = "f2"))
+        g.asks.add(AskEntity("a1", 2, "milk?", "In the fridge", "[\"m1\"]", null, "phone_typed", false))
+        val f = MemoryExport.write(ctx, nowMs = 12)
+        val json = Json.parseToJsonElement(f.readText()).jsonObject
+        assertEquals(setOf("exportedAt", "memories", "asks"), json.keys)
+        assertEquals(12L, json["exportedAt"]!!.jsonPrimitive.content.toLong())
+        val mems = json["memories"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(2, mems.size)
+        mems.forEach { assertEquals(setOf("id", "text", "type", "tags", "tier", "confidence", "review", "createdAt", "frameId"), it.keys) }
+        val m2 = mems.single { it["id"]!!.jsonPrimitive.content == "m2" }
+        assertEquals("f2", m2["frameId"]!!.jsonPrimitive.content); assertEquals(0.5, m2["confidence"]!!.jsonPrimitive.content.toDouble(), 0.0)
+        assertEquals("OK", m2["review"]!!.jsonPrimitive.content); assertEquals(2L, m2["createdAt"]!!.jsonPrimitive.content.toLong())
+        assertEquals(kotlinx.serialization.json.JsonNull, mems.single { it["id"]!!.jsonPrimitive.content == "m1" }["frameId"])
+        val ask = json["asks"]!!.jsonArray.single().jsonObject
+        assertEquals(setOf("id", "at", "question", "answer"), ask.keys)
+        assertEquals(2L, ask["at"]!!.jsonPrimitive.content.toLong()); assertEquals("milk?", ask["question"]!!.jsonPrimitive.content)
+        f.delete()
+    }
+
+    /** B1: a failure mid-export leaves the previous export in place and no `.part` behind. */
+    @Test fun aFailedExportLeavesThePreviousExportAndNoPart() = runBlocking<Unit> {
+        val g = MemoryGraph.get(ctx)
+        repeat(600) { g.memories.add(LegacyImporter.toMemory("m$it", "short_term", 0.9, it.toLong(), "note $it")) }
+        val old = MemoryExport.write(ctx, nowMs = 20)
+        val failed = runCatching { MemoryExport.write(ctx, SpyDao(g.db.exportDao(), failOnMemoryCall = 2), nowMs = 21) }
+        assertTrue(failed.exceptionOrNull() is IllegalStateException)
+        assertTrue(old.exists())
+        assertEquals(listOf(old.name), MemoryExport.dir(ctx).listFiles()!!.map { it.name })
+        old.delete()
     }
 }

@@ -23,19 +23,21 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Lightbulb
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,6 +47,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.rokid.context.core.ui.components.GradientCircleButton
 import com.rokid.context.core.ui.components.GradientHeader
 import com.rokid.context.core.ui.components.IconChip
@@ -53,6 +58,10 @@ import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.banner.BannerHost
+import com.rokid.context.phone.ui.actions.ProposalCard
+
+/** A nudge whose source was forgotten (Forget redacts the row; its text is never shown). */
+const val REDACTED_NUDGE = "Removed \u2014 a source was forgotten"
 
 /** Home, Ask-first (spec §2.4, mock phone-home.html option B). Stateless. */
 @Composable
@@ -63,8 +72,25 @@ fun HomeScreen(
     onOpenAsk: (String) -> Unit,
     onTogglePause: () -> Unit,
     onBannerAction: (BannerAction) -> Unit,
+    onMic: () -> Unit = {},
+    onRequestMic: () -> Unit = {},
+    onOpenAppSettings: () -> Unit = {},
+    /**
+     * Home left the composition (navigated away) or the app left the foreground (Home's lifecycle ON_STOP: back on the
+     * root, home, app switch, screen off): cancels a phone ask still being spoken. Back on the root Home entry only moves
+     * the task to the background (Android 12+), so the composition is not disposed and the ViewModel is not cleared.
+     */
+    onLeave: () -> Unit = {},
+    /** A nudge card opens its detail (`nudge/{id}`); a redacted one is not tappable. */
+    onOpenNudge: (String) -> Unit = {},
 ) {
-    var expandedNudge by rememberSaveable { mutableStateOf<String?>(null) }
+    val leave by rememberUpdatedState(onLeave)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val stop = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_STOP) leave() }
+        lifecycle.addObserver(stop)
+        onDispose { lifecycle.removeObserver(stop); leave() }
+    }
     val glyph = when { state.status.live -> "● "; state.status.paused -> "❚❚ "; else -> "" }
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("home_list")) {
         item {
@@ -82,7 +108,7 @@ fun HomeScreen(
             }
         }
         item { BannerHost(state.status.banner, onBannerAction) }
-        item { AskHero(state, onQuestionChange, onAsk, onOpenAsk) }
+        item { AskHero(state, onQuestionChange, onAsk, onOpenAsk, onMic, onRequestMic, onOpenAppSettings) }
         item { SectionLabel("For you") }
         if (state.feed.isEmpty()) {
             item {
@@ -99,9 +125,10 @@ fun HomeScreen(
                     title = "You asked “${item.question}”", body = item.answer, onClick = { onOpenAsk(item.id) },
                 )
                 is FeedItem.Nudge -> FeedCard(
-                    icon = Icons.Outlined.Lightbulb, colors = PcColors.ChipAmber, meta = "Heads up · ${item.timeLabel}", title = item.text,
-                    body = if (expandedNudge == item.id && !item.redacted && item.why.isNotBlank()) item.why else null,
-                    onClick = { expandedNudge = if (expandedNudge == item.id) null else item.id },
+                    icon = Icons.Outlined.Lightbulb, colors = PcColors.ChipAmber, meta = "Heads up · ${item.timeLabel}",
+                    title = if (item.redacted) REDACTED_NUDGE else item.text, body = null,
+                    onClick = if (item.redacted) null else ({ onOpenNudge(item.id) }),
+                    footer = if (item.redacted) null else ({ ProposalCard(item.id) }),
                 )
             }
         }
@@ -111,16 +138,25 @@ fun HomeScreen(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AskHero(state: HomeUiState, onQuestionChange: (String) -> Unit, onAsk: (String) -> Unit, onOpenAsk: (String) -> Unit) {
+private fun AskHero(
+    state: HomeUiState, onQuestionChange: (String) -> Unit, onAsk: (String) -> Unit, onOpenAsk: (String) -> Unit,
+    onMic: () -> Unit, onRequestMic: () -> Unit, onOpenAppSettings: () -> Unit,
+) {
     SoftCard(Modifier.padding(16.dp).fillMaxWidth()) {
         Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            GradientCircleButton(Icons.Rounded.Mic, contentDescription = "Ask by voice", onClick = {}, enabled = state.voiceAvailable)
+            val v = state.voice
+            GradientCircleButton(
+                when { v.listening -> Icons.Rounded.Stop; v.thinking -> Icons.Rounded.Close; else -> Icons.Rounded.Mic },
+                contentDescription = when { v.listening -> "Stop and send"; v.thinking -> "Cancel"; else -> "Ask by voice" },
+                onClick = { when { v.blocked -> onOpenAppSettings(); v.needsPermission -> onRequestMic(); else -> onMic() } },
+                enabled = v.enabled,
+            )
             Spacer(Modifier.height(12.dp))
             Text("Ask about your day", style = MaterialTheme.typography.titleLarge, color = PcColors.Ink)
-            Text(
-                if (state.voiceAvailable) "or tap your glasses" else "Type a question below, or tap your glasses",
-                style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft,
-            )
+            Text(v.hint, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
+            if (v.blocked) TextButton(onClick = onOpenAppSettings) { Text(HomeVoiceUi.OPEN_APP_SETTINGS) }
+            if (v.partial.isNotBlank()) Text("\u201c${v.partial}\u201d", style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, modifier = Modifier.padding(top = 6.dp))
+            v.error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.ChipCoral.second, modifier = Modifier.padding(top = 6.dp)) }
             Spacer(Modifier.height(12.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 state.suggestions.forEach { QuestionPill(it, enabled = !state.asking) { onAsk(it) } }
@@ -168,7 +204,10 @@ private fun QuestionPill(text: String, enabled: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FeedCard(icon: ImageVector, colors: Pair<Color, Color>, meta: String, title: String, body: String?, onClick: () -> Unit) {
+private fun FeedCard(
+    icon: ImageVector, colors: Pair<Color, Color>, meta: String, title: String, body: String?, onClick: (() -> Unit)?,
+    footer: (@Composable () -> Unit)? = null,
+) {
     SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth(), onClick = onClick) {
         Row(Modifier.padding(14.dp)) {
             IconChip(icon, colors, size = 36.dp, shapeRadius = 10.dp)
@@ -176,6 +215,7 @@ private fun FeedCard(icon: ImageVector, colors: Pair<Color, Color>, meta: String
                 Text(meta, style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
                 Text(title, style = MaterialTheme.typography.titleMedium, color = PcColors.Ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (body != null) Text(body, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                footer?.invoke()
             }
         }
     }

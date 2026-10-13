@@ -1,6 +1,7 @@
 package com.rokid.context.memory.legacy
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
@@ -11,8 +12,15 @@ import java.io.File
 
 data class ImportReport(val memories: Int, val frames: Int, val traces: Int, val skipped: Int)
 
-/** One-time copy of the legacy tab-separated logs into Room (spec §6.2). Safe to re-run: inserts ignore existing ids. */
-class LegacyImporter(private val context: Context, private val graph: MemoryGraph) {
+/**
+ * One-time copy of the legacy tab-separated logs into Room (spec §6.2). Safe to re-run: inserts ignore existing ids.
+ * P8 D5: each file is streamed ([useLines]) and written in [inTransaction] batches of [BATCH] rows.
+ */
+class LegacyImporter(
+    private val context: Context,
+    private val graph: MemoryGraph,
+    private val inTransaction: suspend (suspend () -> Unit) -> Unit = { block -> graph.db.withTransaction { block() } },
+) {
     private val prefs = prefs(context)
 
     fun isDone(): Boolean = prefs.getBoolean(K_DONE, false)
@@ -23,32 +31,33 @@ class LegacyImporter(private val context: Context, private val graph: MemoryGrap
         var frames = 0
         var traces = 0
 
-        lines(MEMORY_LOG).forEach { line ->
+        forEachBatch(MEMORY_LOG) { line ->
             val p = line.split("\t", limit = 5)
-            val confidence = p.getOrNull(2)?.toDoubleOrNull()
+            // P8 D5: a non-numeric or blank confidence imports as 0.0, as the legacy reader tolerated, instead of being lost.
+            val confidence = p.getOrNull(2)?.toDoubleOrNull() ?: 0.0
             val createdAt = p.getOrNull(3)?.toLongOrNull()
-            if (p.size < 5 || confidence == null || createdAt == null) { skipped++; return@forEach }
+            if (p.size < 5 || createdAt == null) { skipped++; return@forEachBatch }
             val (id, type, content) = Triple(p[0], p[1], p[4])
             if (!id.startsWith("rokid_", ignoreCase = true) || id.startsWith("rokid_review_", ignoreCase = true) ||
                 LOW_SIGNAL.any { content.lowercase().contains(it) }
-            ) return@forEach
+            ) return@forEachBatch
             if (graph.memories.addIgnore(toMemory(id, type, confidence, createdAt, content))) memories++
         }
 
-        lines(FRAME_LOG).forEach { line ->
+        forEachBatch(FRAME_LOG) { line ->
             val p = line.split("\t")
             val ts = p.getOrNull(1)?.toLongOrNull()
-            if (p.size < 5 || ts == null) { skipped++; return@forEach }
+            if (p.size < 5 || ts == null) { skipped++; return@forEachBatch }
             val (id, source, payload, path) = listOf(p[0], p[2], p[3], p[4])
-            if (!isRealPhoto(source, payload, path)) return@forEach
+            if (!isRealPhoto(source, payload, path)) return@forEachBatch
             if (graph.frames.add(FrameEntity(id = id, ts = ts, path = path, source = source, payload = payload))) frames++
         }
 
-        lines(TRACE_LOG).forEach { line ->
+        forEachBatch(TRACE_LOG) { line ->
             val p = line.split("\t", limit = 4)
             val updated = p.getOrNull(2)?.toLongOrNull()
-            if (p.size < 4 || updated == null) { skipped++; return@forEach }
-            if (p[3].contains("placeholder", ignoreCase = true) || p[0].startsWith("frame_ingest", ignoreCase = true)) return@forEach
+            if (p.size < 4 || updated == null) { skipped++; return@forEachBatch }
+            if (p[3].contains("placeholder", ignoreCase = true) || p[0].startsWith("frame_ingest", ignoreCase = true)) return@forEachBatch
             if (graph.traces.addIgnore(SummaryTraceEntity(p[0], p[1], updated, p[3]))) traces++
         }
 
@@ -56,17 +65,26 @@ class LegacyImporter(private val context: Context, private val graph: MemoryGrap
         return ImportReport(memories, frames, traces, skipped)
     }
 
-    private fun lines(name: String): List<String> =
-        File(context.filesDir, name).takeIf { it.exists() }?.readLines()?.filter { it.isNotBlank() }.orEmpty()
+    /** Streams [name]'s non-blank lines, [BATCH] per transaction; a missing file is nothing to import. */
+    private suspend fun forEachBatch(name: String, row: suspend (String) -> Unit) {
+        val file = File(context.filesDir, name)
+        if (!file.exists()) return
+        file.useLines { lines ->
+            lines.filter { it.isNotBlank() }.chunked(BATCH).forEach { batch -> inTransaction { batch.forEach { row(it) } } }
+        }
+    }
 
+    /** The "synthetic"/"screenshot" test looks at the payload and the file name only, never the folders (P8 D5). */
     private fun isRealPhoto(source: String, payload: String, path: String): Boolean {
         if (!source.startsWith("rokid", ignoreCase = true) || path.isBlank()) return false
-        if (listOf(payload, path).any { it.contains("synthetic", true) || it.contains("screenshot", true) }) return false
+        val name = File(path).name
+        if (listOf(payload, name).any { it.contains("synthetic", true) || it.contains("screenshot", true) }) return false
         if (File(path).extension.lowercase() !in setOf("jpg", "jpeg", "webp")) return false
         return File(path).exists()
     }
 
     companion object {
+        private const val BATCH = 500
         private const val K_DONE = "v1_done"
         private fun prefs(context: Context) = context.getSharedPreferences("legacy_import", Context.MODE_PRIVATE)
 

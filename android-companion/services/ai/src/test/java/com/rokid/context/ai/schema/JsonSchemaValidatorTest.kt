@@ -91,4 +91,22 @@ class JsonSchemaValidatorTest {
         assertEquals(listOf("$: must be integer"), errs("""{"type":"integer"}""", "9007199254740993"))
         assertEquals(emptyList<String>(), errs("""{"type":"integer"}""", "9007199254740992"))
     }
+
+    /** Phase 5 T3 carry: JSON Schema compares numbers by value, so 1.0 is the const 1. */
+    @Test fun constAndEnumCompareNumbersByValue() {
+        assertEquals(emptyList<String>(), errs("""{"const":1}""", "1.0"))
+        assertEquals(emptyList<String>(), errs("""{"enum":[2,3]}""", "3.00"))
+        assertEquals(listOf("$: must be one of 2, 3"), errs("""{"enum":[2,3]}""", "\"3\""))
+        assertEquals(emptyList<String>(), errs("""{"const":{"a":[1,2.0]}}""", """{"a":[1.0,2]}"""))
+    }
+
+    /** Phase 5 T7 carry: a map entry's path never carries the model-chosen key (it reaches exception messages). */
+    @Test fun aMapEntryIsReportedWithoutItsKey() =
+        assertEquals(listOf("$.*: must be string"), errs("""{"type":"object","additionalProperties":{"type":"string"}}""", """{"sk-live-secret-key":1}"""))
+
+    /** Phase 5 T5 carry: JSON-pointer tokens are unescaped (~1 = '/', ~0 = '~'). */
+    @Test fun escapedPointerTokensResolve() {
+        val schema = """{"type":"object","properties":{"x":{"${'$'}ref":"#/${'$'}defs/a~1b~0c"}},"${'$'}defs":{"a/b~c":{"type":"string"}}}"""
+        assertEquals(listOf("$.x: must be string"), errs(schema, """{"x":1}"""))
+    }
 }

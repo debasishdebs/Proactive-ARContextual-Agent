@@ -20,8 +20,14 @@ class FrameUplinkTest {
     @get:Rule val tmp = TemporaryFolder()
     private val now = 1_793_000_000_000L
     private val sent = mutableListOf<FrameChunk>()
+    private val logs = mutableListOf<String>()
     private var open = true
-    private fun buffer() = OutboundBuffer(File(tmp.root, "out"), clock = { now })
+    private var clockThrows = 0
+    private var changed = 0
+    private fun buffer() = OutboundBuffer(File(tmp.root, "out"), clock = {
+        if (clockThrows > 0) { clockThrows--; throw IllegalStateException("clock") }
+        now
+    }, elapsed = { 0L }, bootId = { "" })
     private fun jpeg(n: Int) = ByteArray(n) { (it % 7).toByte() }
 
     /** [answer] is the phone: called for each frame's last chunk, its ack (if any) arrives before the wait starts. */
@@ -31,7 +37,7 @@ class FrameUplinkTest {
             sent += c
             if (rc == 0 && c.meta.chunkIdx == c.meta.chunkCount - 1) answer(c)?.let(u::onAck)
             rc
-        }, canSend = { open }, config = config)
+        }, canSend = { open }, config = config, log = { logs += it }, onBufferChanged = { changed++ })
         return u
     }
     private fun okFor(c: FrameChunk) = FrameAck(frameId = c.meta.frameId, ok = true)
@@ -167,5 +173,129 @@ class FrameUplinkTest {
         u.kick(); advanceUntilIdle()
         assertEquals("g2", b.oldest()!!.meta.frameId)
         assertEquals(1, b.size)
+    }
+
+    private fun TestScope.crashingUplink(b: OutboundBuffer, crashFor: MutableMap<String, Int>, answer: (FrameChunk) -> FrameAck? = ::okFor): FrameUplink {
+        lateinit var u: FrameUplink
+        u = FrameUplink(this, b, sendChunk = { c ->
+            val left = crashFor[c.meta.frameId] ?: 0
+            if (left > 0) { crashFor[c.meta.frameId] = left - 1; throw IllegalStateException("boom") }
+            sent += c
+            if (c.meta.chunkIdx == c.meta.chunkCount - 1) answer(c)?.let(u::onAck)
+            0
+        }, canSend = { open }, log = { logs += it }, onBufferChanged = { changed++ })
+        return u
+    }
+
+    @Test fun aCrashInOldestIsNotChargedToThePreviousFrame() = runTest {
+        val b = buffer()
+        b.add("x", jpeg(100), now - 1, null, null, null); b.add("y", jpeg(100), now, null, null, null)
+        val u = uplink(b, answer = { c -> if (c.meta.frameId == "x") { clockThrows = 3; okFor(c) } else null })
+        u.kick(); advanceUntilIdle()
+        assertFalse(b.contains("x"))
+        assertEquals(null, u.crashCount("x"))
+        assertEquals(null, u.crashCount("y"))
+        assertTrue(logs.none { it.startsWith("dropped") })
+    }
+
+    @Test fun crashCountsResetAfterAFrameIsDelivered() = runTest {
+        val b = buffer()
+        b.add("a", jpeg(100), now - 1, null, null, null); b.add("b", jpeg(100), now, null, null, null)
+        val crash = mutableMapOf("a" to 2)
+        val u = crashingUplink(b, crash, answer = { c -> if (c.meta.frameId == "a") okFor(c) else null })
+        repeat(2) { u.kick(); advanceUntilIdle() }
+        u.kick(); advanceUntilIdle() // a delivered; b times out and stays
+        assertFalse(b.contains("a"))
+        crash["b"] = 2
+        repeat(2) { u.kick(); advanceUntilIdle() }
+        assertTrue(b.contains("b"))
+    }
+
+    @Test fun aPoisonFrameIsDroppedAndTheFlushContinues() = runTest {
+        val b = buffer()
+        b.add("poison", jpeg(100), now - 1, null, null, null); b.add("g2", jpeg(100), now, null, null, null)
+        val u = crashingUplink(b, mutableMapOf("poison" to 3))
+        repeat(3) { u.kick(); advanceUntilIdle() }
+        assertEquals(0, b.size)
+        assertEquals(listOf("g2"), sent.map { it.meta.frameId })
+    }
+
+    @Test fun aClearDuringTheAckWaitEndsTheWaitWithinOnePoll() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now, null, null, null)
+        val u = uplink(b)
+        u.kick(); advanceTimeBy(100); b.clear()
+        advanceTimeBy(300)
+        assertFalse(u.flushing.value)
+        assertEquals(1, sent.size)
+    }
+
+    @Test fun aTransientReadErrorKeepsTheFrame() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now, null, null, null)
+        val f = b.oldest()!!.jpeg
+        assertTrue(f.setReadable(false))
+        val u = uplink(b, answer = ::okFor)
+        u.kick(); advanceUntilIdle()
+        f.setReadable(true)
+        assertTrue(b.contains("g1"))
+        u.kick(); advanceUntilIdle()
+        assertEquals(0, b.size)
+    }
+
+    @Test fun aMissingJpegIsDropped() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now, null, null, null)
+        assertTrue(b.oldest()!!.jpeg.delete())
+        uplink(b, answer = ::okFor).kick(); advanceUntilIdle()
+        assertEquals(0, b.size)
+        assertTrue(changed >= 1)
+    }
+
+    /** The race: a capture kicks after the loop found the buffer empty but before the flush job ended. */
+    @Test fun aKickDuringTheFinalFrameRunsAnotherFlush() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now - 1, null, null, null)
+        lateinit var u: FrameUplink
+        var raced = false
+        u = FrameUplink(this, b, sendChunk = { c ->
+            sent += c
+            u.onAck(okFor(c))
+            0
+        }, canSend = { open }, log = { msg ->
+            if (msg.startsWith("flush done") && !raced) { raced = true; b.add("g2", jpeg(100), now, null, null, null); u.kick() }
+        })
+        u.kick(); advanceUntilIdle()
+        assertEquals(listOf("g1", "g2"), sent.map { it.meta.frameId })
+        assertEquals(0, b.size)
+        assertFalse(u.flushing.value)
+    }
+
+    @Test fun aHelloFollowsAFlushThatDroppedAFrame() = runTest {
+        val b = buffer()
+        b.add("bad", jpeg(100), now, null, null, null)
+        uplink(b, answer = { c -> FrameAck(frameId = c.meta.frameId, ok = false, reason = FrameAckReason.CRC) }).kick(); advanceUntilIdle()
+        assertEquals(0, b.size)
+        assertTrue(changed >= 1)
+    }
+
+    @Test fun aHelloFollowsEveryFlushThatSentFrames() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now - 1, null, null, null); b.add("g2", jpeg(100), now, null, null, null)
+        uplink(b, answer = ::okFor).kick(); advanceUntilIdle()
+        assertEquals(0, b.size)
+        assertEquals(1, changed)
+    }
+
+    @Test fun chunksCarryTheRebasedCaptureTime() = runTest {
+        var wall = now
+        var up = 10_000L
+        val b = OutboundBuffer(File(tmp.root, "rebased"), clock = { wall }, elapsed = { up }, bootId = { "boot" })
+        b.add("g1", jpeg(100), now, null, null, null)
+        wall += 300_000; up += 1_000
+        val expected = b.sendTimeMs(b.oldest()!!)
+        uplink(b, answer = ::okFor).kick(); advanceUntilIdle()
+        assertEquals(now + 299_000, expected)
+        assertEquals(expected, sent.single().meta.capturedAtMs)
     }
 }

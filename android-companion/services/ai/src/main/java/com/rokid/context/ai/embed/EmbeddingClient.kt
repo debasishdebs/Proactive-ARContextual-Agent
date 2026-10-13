@@ -93,11 +93,12 @@ class EmbeddingClient(
         return validated(vectors, inputs.size)
     }
 
-    /** The caller stops waiting after [nativeTimeoutMs]; native calls run one at a time, even after a caller gave up. */
+    /** The caller stops waiting after [nativeTimeoutMs]; native calls run one at a time, and a call still queued when the caller gives up is cancelled and never runs. */
     private suspend fun nativeEmbed(path: String, inputs: List<String>): List<FloatArray> {
         val work = nativeScope.async { nativeLock.withLock { native(path, inputs) } }
         return try { withTimeout(nativeTimeoutMs) { work.await() } }
         catch (_: TimeoutCancellationException) { throw java.net.SocketTimeoutException("Local embedding timed out") }
+        finally { work.cancel() } // timeout or caller cancellation: a call still queued never runs
     }
 
     /** A reply can never yield bad vectors: right count, one non-zero dimension, every value finite. */

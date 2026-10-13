@@ -2,24 +2,50 @@ package com.rokid.context.phone.hub
 
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
+import com.rokid.context.core.model.QuietHours
+import com.rokid.context.core.model.QuietWindow
 import com.rokid.context.link.FrameAdmission
 import com.rokid.context.link.PauseHistory
 import com.rokid.context.memory.db.PauseDao
 import com.rokid.context.memory.db.PauseIntervalEntity
 import com.rokid.context.memory.db.PauseRecordEntity
+import java.time.ZoneId
+import java.util.UUID
 
 /**
  * Phone pause set (spec §5.5), persisted in Room: `pause_record` = active records, `pause_interval` = retained history.
  * Instants are phone clock. A record ends only by its own expiry or a Resume naming it; nothing resumes implicitly.
  */
-class HubPauses(private val dao: PauseDao, private val now: () -> Long = System::currentTimeMillis) : PauseHistory {
-    /** Active records; expired ones are first closed at their `untilMs` and removed. */
+class HubPauses(
+    private val dao: PauseDao,
+    /** Quiet hours from the HUD settings; null = off. */
+    private val quietHours: () -> QuietHours? = { null },
+    /** The zone quiet hours are evaluated in. */
+    private val zone: () -> ZoneId = ZoneId::systemDefault,
+    /** Last, so `HubPauses(dao) { t }` keeps passing the clock. */
+    private val now: () -> Long = System::currentTimeMillis,
+) : PauseHistory {
+    /**
+     * Active records; expired ones are first closed at their `untilMs` and removed (one transaction). Inside a quiet-hours
+     * occurrence that was never created (open or closed interval at its start), a fresh QUIET_HOURS record is added, so
+     * each occurrence gets its own id and a resumed occurrence never comes back.
+     */
     suspend fun active(): List<PauseRecord> {
         val t = now()
         val (live, expired) = dao.records().map { it.toModel() }.partition { it.isActiveAt(t) }
-        expired.forEach { dao.closeInterval(it.pauseId, it.untilMs ?: t) }
-        if (expired.isNotEmpty()) dao.deleteRecords(expired.map { it.pauseId })
-        return live
+        if (expired.isNotEmpty()) dao.expire(expired.map { it.pauseId }, expired.associate { it.pauseId to (it.untilMs ?: t) })
+        return live + listOfNotNull(quietRecord(t, live))
+    }
+
+    private suspend fun quietRecord(t: Long, live: List<PauseRecord>): PauseRecord? {
+        val q = quietHours() ?: return null
+        val occ = QuietWindow.occurrenceAt(q, t, zone()) ?: return null
+        // A live QUIET_HOURS record (e.g. minted before a zone change) already covers this window; it keeps its end.
+        if (live.any { it.origin == PauseOrigin.QUIET_HOURS }) return null
+        if (dao.quietOccurrence(occ.first, occ.last + 1) != null) return null
+        val record = PauseRecord(UUID.randomUUID().toString(), PauseOrigin.QUIET_HOURS, occ.first, occ.last + 1)
+        add(record)
+        return record
     }
 
     /** Union: most restrictive wins (null end beats any end, else the later end); a resumed id is never resurrected. */
@@ -46,16 +72,45 @@ class HubPauses(private val dao: PauseDao, private val now: () -> Long = System:
         dao.resumeNamed(clears, atMs?.coerceAtMost(t) ?: t)
     }
 
+    /** Ids the phone resumed (closed intervals <= 7 d, no live record, newest 200), sent as `HudSettings.resumedPauseIds`. */
+    suspend fun recentlyResumedIds(): List<String> {
+        active() // expire first, so the list reflects now
+        return dao.resumedSince(now() - FrameAdmission.HISTORY_MS)
+    }
+
     override suspend fun pausedAt(phoneMs: Long): Boolean {
         active() // close anything that expired before checking
         return dao.countCovering(phoneMs) > 0
     }
 
-    /** Closed intervals are kept 7 days (spec §5.5); frames older than that are dropped by [FrameAdmission]. */
+    /**
+     * Closed intervals are kept 7 days as history (spec §5.5); frames older than that are dropped by [FrameAdmission].
+     * Past that they become id-only tombstones (zero length, so they cover nothing) for [TOMBSTONE_MS], so a late echo
+     * of a resumed id is never re-inserted by [add] (fix round 1, I2).
+     */
     suspend fun pruneHistory() {
         active() // expire first, so only true orphans remain open without a record
         dao.closeOrphanIntervals(now())
-        dao.pruneEndedBefore(now() - FrameAdmission.HISTORY_MS)
+        dao.collapseEndedBefore(now() - FrameAdmission.HISTORY_MS)
+        dao.pruneEndedBefore(now() - TOMBSTONE_MS)
+    }
+
+    /** The stored active records, without expiring or minting anything (a read for a Resume before the hub loads). */
+    suspend fun stored(): List<PauseRecord> = now().let { t -> dao.records().map { it.toModel() }.filter { it.isActiveAt(t) } }
+
+    /**
+     * Read-only form of "is [active] non-empty" (nothing expired or minted): a stored record active now, or now inside a
+     * quiet-hours occurrence that was never created. A resumed occurrence (closed interval) does not pause (final review I2).
+     */
+    suspend fun pausedNow(): Boolean {
+        if (stored().isNotEmpty()) return true
+        val q = quietHours() ?: return false
+        val occ = QuietWindow.occurrenceAt(q, now(), zone()) ?: return false
+        return dao.quietOccurrence(occ.first, occ.last + 1) == null
+    }
+
+    companion object {
+        const val TOMBSTONE_MS = 90 * 24 * 3_600_000L
     }
 }
 

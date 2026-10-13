@@ -56,10 +56,13 @@ fun CodeBox(
             var seen by remember { mutableStateOf(value) }
             if (seen != value) {
                 seen = value
+                // An echo drops its entry and everything older (it has arrived); newer entries are still in flight, so a
+                // parent echoing each value in order (a, ab, a) never overwrites the field (fix round 1). The oldest match
+                // is taken: a duplicate left by a conflating parent goes with the next echoed edit.
                 val at = emitted.indexOf(value)
                 if (at >= 0) repeat(at + 1) { emitted.removeFirst() }
                 else {
-                    emitted.clear()
+                    emitted.clear() // an external change
                     if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
                 }
             }

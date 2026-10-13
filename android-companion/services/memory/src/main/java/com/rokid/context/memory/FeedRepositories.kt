@@ -1,6 +1,10 @@
 package com.rokid.context.memory
 
+import androidx.room.withTransaction
+import com.rokid.context.memory.db.ActionDao
+import com.rokid.context.memory.db.ActionLogEntity
 import com.rokid.context.memory.db.AskDao
+import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.FrameViewDao
@@ -71,7 +75,93 @@ class NudgeRepository(private val dao: NudgeDao) {
     fun timesIn(range: LongRange): Flow<List<Long>> = dao.observeTimes(range.first, range.last + 1).distinctUntilChanged()
 }
 
-class ProposalRepository(private val dao: ProposalDao) {
+/**
+ * Proposal state machine (spec §5.3, R-62). Every write runs in one transaction and moves state only by compare-and-set,
+ * so HUD, phone, notification and expiry racing on one row end in exactly one terminal state. Each successful
+ * transition appends `action_log(transition = "<FROM>\u2192<TO>", detail = by)`.
+ */
+class ProposalRepository(private val dao: ProposalDao, private val actions: ActionDao, private val db: ContextDatabase) {
+    /** Seeding/tests only: no action_log row. Production code uses [create]. */
     suspend fun addIgnore(proposal: ProposalEntity): Boolean = dao.insertIgnore(proposal) != -1L
+
+    /** False when the id already exists. Logs `CREATED:<state>`. */
+    suspend fun create(p: ProposalEntity, nowMs: Long): Boolean = db.withTransaction {
+        val inserted = dao.insertIgnore(p) != -1L
+        if (inserted) actions.log(ActionLogEntity(ts = nowMs, proposalId = p.id, transition = "CREATED:${p.state}", detail = p.origin))
+        inserted
+    }
+
+    /** PENDING and `expiresAt > now` → EXECUTING (approve) or DECLINED; PENDING but expired → EXPIRED and `Lost(EXPIRED)`. */
+    suspend fun resolve(id: String, d: Decision, by: String, nowMs: Long): Resolve = db.withTransaction {
+        val row = actions.proposal(id) ?: return@withTransaction Resolve.Lost(null)
+        val current = stateOf(row.state)
+        if (current != ProposalState.PENDING) return@withTransaction Resolve.Lost(current)
+        if (row.expiresAt <= nowMs) {
+            move(id, ProposalState.PENDING, ProposalState.EXPIRED, EXPIRY, nowMs)
+            return@withTransaction Resolve.Lost(ProposalState.EXPIRED)
+        }
+        val to = if (d == Decision.APPROVE) ProposalState.EXECUTING else ProposalState.DECLINED
+        if (move(id, ProposalState.PENDING, to, by, nowMs)) Resolve.Won(to) else Resolve.Lost(actions.proposal(id)?.state?.let(::stateOf))
+    }
+
+    /** EXECUTING → EXECUTED; records [createdRef] (what the executor created, used by Undo). */
+    suspend fun markExecuted(id: String, createdRef: String, nowMs: Long): Boolean = db.withTransaction {
+        val ok = actions.casCreated(id, ProposalState.EXECUTING.name, ProposalState.EXECUTED.name, createdRef) == 1
+        if (ok) log(id, ProposalState.EXECUTING, ProposalState.EXECUTED, "", nowMs)
+        ok
+    }
+
+    /** EXECUTING → FAILED; [detailCode] is a fixed code (never provider text). `resolvedBy` is kept. */
+    suspend fun markFailed(id: String, detailCode: String, nowMs: Long): Boolean = db.withTransaction {
+        val ok = actions.casState(id, ProposalState.EXECUTING.name, ProposalState.FAILED.name) == 1
+        if (ok) log(id, ProposalState.EXECUTING, ProposalState.FAILED, detailCode, nowMs)
+        ok
+    }
+
+    /** EXECUTED → DECLINED with `resolvedBy = "undo:<by>"`; logs `UNDONE`. */
+    suspend fun markUndone(id: String, by: String, nowMs: Long): Boolean = db.withTransaction {
+        val ok = actions.cas(id, ProposalState.EXECUTED.name, ProposalState.DECLINED.name, "undo:$by") == 1
+        if (ok) actions.log(ActionLogEntity(ts = nowMs, proposalId = id, transition = UNDONE, detail = by))
+        ok
+    }
+
+    /** PENDING with `expiresAt ≤ now` → EXPIRED. Returns the ids this call expired. */
+    suspend fun expireDue(nowMs: Long): List<String> = db.withTransaction {
+        actions.dueIds(ProposalState.PENDING.name, nowMs).filter { move(it, ProposalState.PENDING, ProposalState.EXPIRED, EXPIRY, nowMs) }
+    }
+
+    /** Forget: every PENDING proposal of [originIds] → EXPIRED, in chunks of [CHUNK] ids. Returns how many moved. */
+    suspend fun expireForOrigins(originIds: Collection<String>, nowMs: Long): Int {
+        var moved = 0
+        for (chunk in originIds.distinct().chunked(CHUNK)) {
+            moved += db.withTransaction {
+                actions.idsForOrigins(ProposalState.PENDING.name, chunk).count { move(it, ProposalState.PENDING, ProposalState.EXPIRED, FORGET, nowMs) }
+            }
+        }
+        return moved
+    }
+
+    suspend fun inState(s: ProposalState): List<ProposalEntity> = actions.inState(s.name)
+    suspend fun byId(id: String): ProposalEntity? = actions.proposal(id)
     fun forOrigin(originId: String): Flow<List<ProposalEntity>> = dao.observeForOrigin(originId)
+    fun pending(): Flow<List<ProposalEntity>> = actions.observeInState(ProposalState.PENDING.name).distinctUntilChanged()
+
+    private suspend fun move(id: String, from: ProposalState, to: ProposalState, by: String, nowMs: Long): Boolean {
+        val ok = actions.cas(id, from.name, to.name, by) == 1
+        if (ok) log(id, from, to, by, nowMs)
+        return ok
+    }
+
+    private suspend fun log(id: String, from: ProposalState, to: ProposalState, detail: String, nowMs: Long) =
+        actions.log(ActionLogEntity(ts = nowMs, proposalId = id, transition = "${from.name}\u2192${to.name}", detail = detail))
+
+    /** An unknown stored state reads as null (treated like an unknown row: never resolvable). */
+    private fun stateOf(s: String): ProposalState? = ProposalState.entries.firstOrNull { it.name == s }
+
+    private companion object {
+        const val CHUNK = 500
+        const val EXPIRY = "expiry"
+        const val FORGET = "forget"
+        const val UNDONE = "UNDONE"
+    }
 }

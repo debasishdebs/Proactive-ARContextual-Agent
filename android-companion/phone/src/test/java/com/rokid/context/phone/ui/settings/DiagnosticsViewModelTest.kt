@@ -51,6 +51,24 @@ class DiagnosticsViewModelTest {
         assertEquals(listOf("reprocess"), calls)
     }
 
+    /** Phase 7 fix round 1 (M2): a capture pause is capture-only; Summarize now follows the processing flag. */
+    @Test fun aCapturePauseDoesNotBlockSummarize() = runBlocking {
+        val capturePaused = object : com.rokid.context.phone.ui.status.PipelineControl {
+            override val enabled = kotlinx.coroutines.flow.MutableStateFlow(false)
+            override val processingEnabled = kotlinx.coroutines.flow.MutableStateFlow(true)
+            override fun setEnabled(enabled: Boolean) = Unit
+            override fun toggle() = Unit
+        }
+        val v = DiagnosticsViewModel(actions, capturePaused)
+        try {
+            v.summarizeNow()
+            assertEquals("Summarizer queued", withTimeout(5_000) { v.state.first { it.message != null } }.message)
+            capturePaused.processingEnabled.value = false
+            v.captureNow()
+            assertEquals(DiagnosticsViewModel.PAUSED, v.state.value.message)
+        } finally { v.cancelScope() }
+    }
+
     @Test fun failureShowsAFixedMessage() = runBlocking {
         failWith = IllegalStateException("No Rokid frames available for summarization sk-live-1")
         vm.summarizeNow()

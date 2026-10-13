@@ -109,4 +109,35 @@ class ProtocolTest {
         assertEquals(Verbosity.MEDIUM, s.verbosity); assertEquals(0.4f, s.scale); assertEquals(HudPosition.BOTTOM_CENTER, s.position)
         assertEquals(Decoded.Ok(s), Wire.decode<HudSettings>(Wire.encode(s)))
     }
+
+    /** Phase 6: additive, so an older phone's settings decode on newer glasses and the other way round. */
+    @Test fun askBlockedReasonIsAdditive() {
+        val old = """{"v":$PROTOCOL_VERSION,"verbosity":"MEDIUM"}"""
+        assertEquals(null, assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(old)).value.askBlockedReason)
+        val s = HudSettings(askBlockedReason = "Voice not supported on this phone")
+        assertEquals(s, assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(Wire.encode(s))).value)
+    }
+
+    /** Both builds decode with `ignoreUnknownKeys`: a field a newer build adds never breaks an older one. */
+    @Test fun hudSettingsToleratesUnknownKeys() {
+        val newer = """{"v":1,"askBlockedReason":"x","futureField":1}"""
+        assertEquals(HudSettings(askBlockedReason = "x"), assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(newer)).value)
+    }
+
+    /** Phase 7 (S0.1): additive pause fields; an older payload decodes with defaults. */
+    @Test fun newHudSettingsFieldsDefaultAndRoundTrip() {
+        val old = """{"v":$PROTOCOL_VERSION,"verbosity":"MEDIUM","pauses":[]}"""
+        val d = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(old)).value
+        assertEquals(emptyList(), d.resumedPauseIds); assertFalse(d.pausesExact); assertEquals(null, d.zoneId)
+        val s = HudSettings(resumedPauseIds = listOf("p1", "p2"), pausesExact = true, zoneId = "Asia/Kolkata")
+        assertEquals(s, assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(Wire.encode(s))).value)
+    }
+
+    @Test fun undoCommandAndUndoToastRoundTrip() {
+        val env = CommandEnvelope(command = Command.Undo("p1"))
+        assertEquals(Decoded.Ok(env), Wire.decode<CommandEnvelope>(Wire.encode(env)))
+        val f = frame(Overlay.Toast("x", "p1"))
+        assertEquals(Decoded.Ok(f), Wire.decode<StateFrame>(Wire.encode(f)))
+        assertEquals(null, Overlay.Toast("x").undoProposalId)
+    }
 }

@@ -72,4 +72,16 @@ class CaptureLineTest {
         assertEquals(BannerKind.AI_BLOCKED, StatusUi.build(blocked, true, null, NOW).banner?.kind)
         assertEquals(BannerKind.GLASSES_DISCONNECTED, StatusUi.build(FakeGlassesStatusSource.OFFLINE, true, null, NOW).banner?.kind)
     }
+
+    @Test fun quietHoursOnlyReadsQuietHours() {
+        val q = PauseRecord("q", PauseOrigin.QUIET_HOURS, 1, NOW + 60_000)
+        val g = PauseRecord("g", PauseOrigin.GLASSES, 1, null)
+        val ph = PauseRecord("p", PauseOrigin.PHONE, 1, null)
+        val paused = FakeGlassesStatusSource.connected(Fixtures.stateFrame(capture = CaptureState.Paused(listOf(q))))
+        assertEquals("Quiet hours", CaptureLine.text(paused, false, NOW, listOf(q)))
+        assertEquals("Paused on glasses", CaptureLine.text(paused, false, NOW, listOf(g)))
+        assertEquals("Paused", CaptureLine.text(paused, false, NOW, listOf(ph)))
+        assertEquals("Paused", CaptureLine.text(paused, false, NOW, listOf(q, g)))
+        assertFalse("actionable: not the legacy glasses-only state", CaptureLine.pausedOnGlasses(paused, false))
+    }
 }

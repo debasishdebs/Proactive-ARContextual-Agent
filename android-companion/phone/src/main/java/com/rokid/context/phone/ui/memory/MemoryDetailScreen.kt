@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -41,7 +42,7 @@ import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
 import java.time.LocalDate
 
-/** Memory detail (spec §2.4). Forget fact / Forget moment arrive with Phase 7's cascade (spec §6.1.1); shown disabled. */
+/** Memory detail (spec §2.4). Forget fact / Forget moment run the Phase 7 cascade (spec §6.1.1) after a confirm dialog. */
 @Composable
 fun MemoryDetailScreen(
     state: MemoryDetailUiState,
@@ -52,7 +53,19 @@ fun MemoryDetailScreen(
     onSaveEdit: () -> Unit,
     onCancelEdit: () -> Unit,
     onOpenFrames: (LocalDate, String) -> Unit,
+    onForget: (ForgetKind) -> Unit = {},
+    onConfirmForget: () -> Unit = {},
+    onDismissForget: () -> Unit = {},
 ) {
+    state.confirm?.let { kind ->
+        AlertDialog(
+            onDismissRequest = onDismissForget,
+            title = { Text(if (kind == ForgetKind.FACT) ForgetCopy.FACT_TITLE else ForgetCopy.MOMENT_TITLE) },
+            text = { Text(if (kind == ForgetKind.FACT) ForgetCopy.FACT_BODY else ForgetCopy.MOMENT_BODY) },
+            confirmButton = { TextButton(onClick = onConfirmForget, enabled = !state.forgetting) { Text(ForgetCopy.CONFIRM) } },
+            dismissButton = { TextButton(onClick = onDismissForget) { Text(ForgetCopy.CANCEL) } },
+        )
+    }
     Column(Modifier.fillMaxSize().background(PcColors.Surface).verticalScroll(rememberScrollState())) {
         ScreenHeader("Memory", onBack)
         if (state.loading) return@Column
@@ -95,10 +108,11 @@ fun MemoryDetailScreen(
         }
         Spacer(Modifier.height(12.dp))
         Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedButton(onClick = {}, enabled = false) { Text("Forget fact") }
-            OutlinedButton(onClick = {}, enabled = false) { Text("Forget moment") }
+            OutlinedButton(onClick = { onForget(ForgetKind.FACT) }, enabled = state.editable && !state.forgetting && state.draft == null) { Text("Forget fact") }
+            if (state.frameId != null) {
+                OutlinedButton(onClick = { onForget(ForgetKind.MOMENT) }, enabled = !state.forgetting && state.draft == null) { Text("Forget moment") }
+            }
         }
-        Text("Forgetting arrives with the privacy update.", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft, modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
         Spacer(Modifier.height(24.dp))
     }
 }

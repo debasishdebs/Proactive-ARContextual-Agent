@@ -108,4 +108,48 @@ class LegacyKeySeedTest {
         assertNotNull(MemoryGraph.get(ctx).db.endpointDao().byId(EndpointSeeder.AZURE_ID))
         assertFalse(secretFile.exists())
     }
+
+    /** P8 D1: a file holding only the two Tink keyset entries carries no key, so it goes without a Keystore open. */
+    @Test fun aKeysetOnlyFileIsDeletedWithoutOpeningTheKeystore() = runBlocking {
+        ctx.getSharedPreferences("app_config_secret", Context.MODE_PRIVATE).edit()
+            .putString("__androidx_security_crypto_encrypted_prefs_key_keyset__", "a")
+            .putString("__androidx_security_crypto_encrypted_prefs_value_keyset__", "b").commit()
+        assertFalse(AppConfigStore.legacySecretHasKey(ctx))
+        val throwing = object : AppConfigReader {
+            override fun getWithLegacySecret(context: Context): AppConfig = throw IllegalStateException("Keystore opened")
+            override fun getWithoutSecret(context: Context): AppConfig = AppConfigStore.getWithoutSecret(context)
+            override fun isPipelineEnabled(context: Context): Boolean = AppConfigStore.isPipelineEnabled(context)
+        }
+        assertTrue(LegacyKeySeed.run(ctx, seeder(), throwing).isSuccess)
+        assertFalse(secretFile.exists())
+    }
+
+    @Test fun aFileWithAnyOtherEntryCountsAsHoldingAKey() {
+        legacyKey()
+        assertTrue(AppConfigStore.legacySecretHasKey(ctx))
+    }
+
+    /** P8 D1: the pre-registry gateway classes are gone. */
+    @Test fun deadGatewayClassesAreGone() {
+        val root = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
+        val main = File(root, "services/ai/src/main")
+        assertTrue(main.isDirectory)
+        val names = main.walkTopDown().map { it.name }.toSet()
+        assertFalse("ModelProviderResolver.kt" in names)
+        assertFalse("ModelGatewayFactory.kt" in names)
+    }
+
+    /** P8 D2: a key left without its endpoint row (a crash mid-save or mid-delete) is swept after seeding. */
+    @Test fun runSweepsOrphanKeysAfterSeeding() = runBlocking {
+        vault.put(EndpointRepository.keyRef("gone"), "k")
+        assertTrue(LegacyKeySeed.run(ctx, seeder()).isSuccess)
+        assertEquals(null, vault.get(EndpointRepository.keyRef("gone")))
+    }
+
+    @Test fun aSweepFailureDoesNotFailTheSeed() = runBlocking {
+        val broken = object : KeyVault by vault {
+            override fun refs(): Set<String> = throw IllegalStateException("Keystore unavailable")
+        }
+        assertTrue(LegacyKeySeed.run(ctx, seeder(broken)).isSuccess)
+    }
 }
