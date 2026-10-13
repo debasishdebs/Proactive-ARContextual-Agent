@@ -62,11 +62,12 @@ class BannerResolverTest {
         assertEquals(BannerAction.FIX_AI, b.action)
     }
 
-    @Test fun hubPauseWithPipelineOnShowsPausedBannerWithoutResume() {
+    /** Phase 7 (closes the P6 T4 ruling): every paused banner offers Resume, which resumes the ids shown. */
+    @Test fun hubPauseWithPipelineOnShowsPausedBannerWithResume() {
         val rec = CaptureState.Paused(listOf(PauseRecord("p1", PauseOrigin.GLASSES, 1)))
         val b = BannerResolver.resolve(BannerInputs(capture = rec, pipelineEnabled = true))!!
         assertEquals(BannerKind.CAPTURE_PAUSED, b.kind)
-        assertNull(b.action); assertNull(b.actionLabel)
+        assertEquals(BannerAction.RESUME, b.action); assertEquals("Resume", b.actionLabel)
         val both = BannerResolver.resolve(BannerInputs(capture = rec, pipelineEnabled = false))!!
         assertEquals(BannerAction.RESUME, both.action)
     }

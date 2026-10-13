@@ -2,6 +2,7 @@ package com.rokid.context.phone.ui.banner
 
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.ui.components.BannerTone
 
 enum class IndexState {
@@ -35,6 +36,10 @@ data class BannerInputs(
     val pipelineEnabled: Boolean = true,
     val index: IndexState = IndexState.NONE,
     val storagePct: Int? = null,
+    /** Phase 7: the active pause records, and when the last Resume finished (both phone clock). */
+    val pauses: List<PauseRecord> = emptyList(),
+    val lastResumeAtMs: Long? = null,
+    val nowMs: Long = 0,
 )
 
 data class BannerSpec(
@@ -48,6 +53,8 @@ data class BannerSpec(
 /** spec §2.2: one banner at a time, highest severity first. */
 object BannerResolver {
     private const val MAX_TEXT = 60
+    /** "Still paused on glasses - Resume?" shows for 10 minutes after a Resume. */
+    const val STILL_PAUSED_MS = 10 * 60_000L
 
     fun resolve(i: BannerInputs): BannerSpec? = candidates(i).firstOrNull()
 
@@ -65,10 +72,12 @@ object BannerResolver {
             is CaptureState.Blocked -> BannerSpec(BannerKind.CAPTURE_DEFERRED, BannerTone.AMBER, "Capture blocked · ${short(c.reason)}")
             else -> null
         },
-        if (!i.pipelineEnabled || i.capture is CaptureState.Paused) {
-            // Resume only drives the legacy pipeline switch; a hub pause has no phone-side resume until Phase 7 (R-65).
-            if (!i.pipelineEnabled) BannerSpec(BannerKind.CAPTURE_PAUSED, BannerTone.SLATE, "Capture paused", "Resume", BannerAction.RESUME)
-            else BannerSpec(BannerKind.CAPTURE_PAUSED, BannerTone.SLATE, "Capture paused")
+        if (!i.pipelineEnabled || i.capture is CaptureState.Paused || i.pauses.isNotEmpty()) {
+            // Phase 7: Resume resumes the ids shown now. Still paused soon after a Resume = the glasses hold a pause the
+            // phone didn't know when it resumed (R-11); the second Resume names the now-visible ids.
+            val recent = i.lastResumeAtMs?.let { i.nowMs - it in 0..STILL_PAUSED_MS } == true
+            val title = if (recent) "Still paused on glasses \u2014 Resume?" else "Capture paused"
+            BannerSpec(BannerKind.CAPTURE_PAUSED, BannerTone.SLATE, title, "Resume", BannerAction.RESUME)
         } else null,
         when (i.index) {
             IndexState.NEEDED -> BannerSpec(BannerKind.INDEX, BannerTone.SKY, "Memory index needs a rebuild")

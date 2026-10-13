@@ -14,7 +14,15 @@ class HubSettingsStore(private val prefs: SharedPreferences, private val legacyM
     fun write(s: HudSettings) { prefs.edit().putString(KEY, Wire.encode(s.copy(pauses = emptyList()))).apply() }
 
     companion object {
+        /** The prefs file HubGraph opens for this store. */
+        const val PREFS = "hub_settings"
         private const val KEY = "hud_settings"
+        /** Phase 7: the legacy pipeline-off flag has been turned into a PHONE pause (once). */
+        private const val PAUSE_MIGRATED = "pause_migrated_v7"
+
+        fun pauseMigrated(prefs: SharedPreferences): Boolean = prefs.getBoolean(PAUSE_MIGRATED, false)
+        /** Committed synchronously (callers are on IO): the migration must not run twice after a crash. */
+        fun markPauseMigrated(prefs: SharedPreferences) { prefs.edit().putBoolean(PAUSE_MIGRATED, true).commit() }
 
         /** Legacy Config screen values (`AppConfigStore.glassesSilencyMode`) → spec §3.4 verbosity. */
         fun verbosityFor(mode: String): Verbosity = when (mode.trim().lowercase()) {
