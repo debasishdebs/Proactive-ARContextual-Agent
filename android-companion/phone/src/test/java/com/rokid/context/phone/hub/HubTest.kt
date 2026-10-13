@@ -421,4 +421,12 @@ class HubTest {
         assertEquals(emptyList<PauseRecord>(), (Wire.decode<HudSettings>(link.lastOn(Channels.SETTINGS)) as Decoded.Ok).value.pauses)
         assertEquals(emptyList<PauseRecord>(), h.activePauses.value)
     }
+
+    @Test fun activePausesFollowPausePhoneAndResumeWithoutStart() = runTest {
+        val h = hub(FakeGlassesLink(), start = false)
+        val r = h.pausePhone(untilMs = null)
+        assertEquals(listOf(r), h.activePauses.value)
+        h.resume(setOf(r.pauseId))
+        assertEquals(emptyList<PauseRecord>(), h.activePauses.value)
+    }
 }
