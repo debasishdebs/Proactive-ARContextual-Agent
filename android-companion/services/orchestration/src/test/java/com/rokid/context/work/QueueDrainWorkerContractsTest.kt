@@ -51,18 +51,23 @@ class QueueDrainWorkerContractsTest {
     private fun run() = runBlocking { TestListenableWorkerBuilder<QueueDrainWorker>(ctx).build().doWork() }
     private fun saved() = runBlocking { MemoryGraph.get(ctx).memories.recent(20) }
 
-    @Test fun frameFactsAreStoredPerFactOnTheNewestFrame() {
-        replies = { """{"facts":[{"text":"Milk carton on the counter","type":"object","confidence":0.9,"tags":["kitchen"]}]}""" }
+    /** Final review I1: one VISION_EXTRACT call per photo; each fact is stored on the frame that call showed. */
+    @Test fun frameFactsAreStoredOnTheFrameTheModelSaw() {
+        replies = { p ->
+            val text = if ("id=f_old" in p) "Keys by the door" else "Milk carton on the counter"
+            """{"facts":[{"text":"$text","type":"object","confidence":0.9,"tags":["kitchen"]}]}"""
+        }
         run()
-        val m = saved().single()
-        assertEquals("Milk carton on the counter", m.text); assertEquals("f_new", m.frameId); assertEquals(ReviewState.OK, m.reviewState)
-        assertTrue(prompts.single().contains("BEGIN_DATA frames")); assertTrue(prompts.single().contains("id=f_new"))
+        assertEquals(mapOf("Keys by the door" to "f_old", "Milk carton on the counter" to "f_new"), saved().associate { it.text to it.frameId })
+        assertTrue(saved().all { it.reviewState == ReviewState.OK })
+        assertEquals(2, prompts.size)
+        prompts.forEach { p -> assertTrue(p.contains("BEGIN_DATA frames")); assertTrue(("id=f_old" in p) != ("id=f_new" in p)) }
     }
 
     @Test fun lowConfidenceFactsTheCriticRejectsGoToTheReviewQueue() {
         replies = { p -> if ("verdict" in p) """{"verdict":"fail","reasons":["not visible"]}""" else """{"facts":[{"text":"Maybe a cat","type":"object","confidence":0.3,"tags":[]}]}""" }
         run()
-        assertEquals(ReviewState.NEEDS_REVIEW, saved().single().reviewState)
+        assertTrue(saved().isNotEmpty() && saved().all { it.reviewState == ReviewState.NEEDS_REVIEW })
         assertTrue(QueueRuntimeStore.recent(ctx, 10).any { it.queue == QueuePriority.PRIORITY_REPROCESS })
     }
 
@@ -82,7 +87,7 @@ class QueueDrainWorkerContractsTest {
     @Test fun lowConfidenceFactsTheCriticPassesAreTrusted() {
         replies = { p -> if ("verdict" in p) """{"verdict":"pass","reasons":[]}""" else """{"facts":[{"text":"A red mug","type":"object","confidence":0.5,"tags":[]}]}""" }
         run()
-        assertEquals(ReviewState.OK, saved().single().reviewState)
+        assertTrue(saved().isNotEmpty() && saved().all { it.reviewState == ReviewState.OK })
         assertTrue(QueueRuntimeStore.recent(ctx, 10).none { it.queue == QueuePriority.PRIORITY_REPROCESS })
     }
 }
