@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- API <= 30. Encrypted key prefs restore without their Keystore master key, and the Room DB needs one of them
-     (SQLCipher passphrase), so keys, DB and the "done in DB" markers are excluded. Everything else is backed up. -->
+     (SQLCipher passphrase), so keys (and the legacy key file app_config_secret.xml, plaintext on some old builds), DB and the "done in DB"
+     markers are excluded. Everything else is backed up. -->
 <full-backup-content>
     <exclude domain="sharedpref" path="endpoint_keys.xml" />
     <exclude domain="sharedpref" path="db_key.xml" />
+    <exclude domain="sharedpref" path="app_config_secret.xml" />
     <exclude domain="sharedpref" path="ai_seed.xml" />
     <exclude domain="sharedpref" path="legacy_import.xml" />
     <exclude domain="database" path="context.db" />

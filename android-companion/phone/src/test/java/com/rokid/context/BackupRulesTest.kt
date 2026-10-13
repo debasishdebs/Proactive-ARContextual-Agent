@@ -14,6 +14,8 @@ import javax.xml.parsers.DocumentBuilderFactory
 class BackupRulesTest {
     private val excluded = setOf(
         "sharedpref:endpoint_keys.xml", "sharedpref:db_key.xml",
+        // T21 fix round 1 (I3): the legacy key file, which an old build may have written in plaintext.
+        "sharedpref:app_config_secret.xml",
         // Markers that say "already done in the DB": restored without the DB they would skip re-seeding/re-import.
         "sharedpref:ai_seed.xml", "sharedpref:legacy_import.xml",
         "database:context.db", "database:context.db-wal", "database:context.db-shm",
@@ -51,5 +53,23 @@ class BackupRulesTest {
             assertEquals(tag, excluded, excludes(section!!))
             assertEquals("$tag: no <include>", 0, includes(section))
         }
+    }
+
+    /** Every prefs file opened through EncryptedSharedPreferences in any module is a secret file and must be excluded. */
+    @Test fun everySecretPrefsFileIsExcluded() {
+        val roots = listOf("src/main", "../services/ai/src/main", "../services/memory/src/main", "../services/orchestration/src/main", "../glasses/src/main")
+        val names = roots.map(::File).filter { it.isDirectory }.flatMap { it.walkTopDown().filter { f -> f.isFile && f.name.endsWith(".kt") } }
+            .flatMap { f ->
+                val src = f.readText()
+                src.split("EncryptedSharedPreferences.create(").drop(1).map { call ->
+                    val arg = call.split(",")[1].trim()
+                    if (arg.startsWith("\"")) arg.trim('"')
+                    else Regex("""const val $arg = "([^"]+)"""").find(src)?.groupValues?.get(1) ?: error("${f.name}: can't resolve $arg")
+                }
+            }.toSet()
+        assertEquals(setOf("endpoint_keys", "db_key", "app_config_secret"), names)
+        val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) +
+            listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
+        for (section in sections) for (n in names) assertTrue("${section.tagName}: $n.xml", "sharedpref:$n.xml" in excludes(section))
     }
 }

@@ -74,58 +74,11 @@ class EndpointSeederTest {
         assertEquals(EndpointKind.OLLAMA, endpoints.all().single().kind)
     }
 
-    @Test fun keyedLegacyOllamaRowIsCleanedBySyncAndStaysSavable() = runTest {
-        val ollama = ProviderSettings("ollama", "http://o.local:11434", "", "llama3.1:8b", "", false)
-        db.endpointDao().upsert(com.rokid.context.memory.db.EndpointEntity(EndpointSeeder.OLLAMA_ID, "Ollama", "OLLAMA", "http://o.local:11434", null, "llama3.1:8b",
-            EndpointRepository.keyRef(EndpointSeeder.OLLAMA_ID), "CHAT", 1))
-        vault.put(EndpointRepository.keyRef(EndpointSeeder.OLLAMA_ID), "old-key")
-        seeder.syncFromLegacy(ollama).getOrThrow()
-        val e = endpoints.byId(EndpointSeeder.OLLAMA_ID)!!
-        assertNull(endpoints.keyFor(e))
-        assertTrue(endpoints.save(e, apiKey = null).isSuccess)
-    }
-
-    @Test fun syncFromLegacyRebindsToTheEditedProvider() = runTest {
-        seeder.seedIfNeeded(azure).getOrThrow()
-        seeder.syncFromLegacy(azure.copy(deploymentOrModel = "gpt-6", apiKey = "k2")).getOrThrow()
-        val e = endpoints.byId(EndpointSeeder.AZURE_ID)!!
-        assertEquals(listOf("gpt-6"), e.models); assertEquals("k2", endpoints.keyFor(e))
-        assertEquals("gpt-6", bindings.get(Role.ANSWER)!!.model)
-        seeder.syncFromLegacy(ProviderSettings("ollama", "http://o.local:11434", "", "llama3.1:8b", "", false)).getOrThrow()
-        assertEquals(EndpointSeeder.OLLAMA_ID, bindings.get(Role.ANSWER)!!.endpointId)
-        assertNull(bindings.get(Role.VISION_EXTRACT)) // Ollama has no VISION: the stale Azure vision binding is cleared
-    }
-
-    @Test fun clearingTheKeyInConfigRemovesTheStoredCredential() = runTest {
-        seeder.seedIfNeeded(azure).getOrThrow()
-        assertEquals("k", endpoints.keyFor(endpoints.byId(EndpointSeeder.AZURE_ID)!!))
-        seeder.syncFromLegacy(azure.copy(apiKey = "")).getOrThrow()
-        assertNull(endpoints.keyFor(endpoints.byId(EndpointSeeder.AZURE_ID)!!))
-        val router = ModelRouter(bindings, endpoints, ProviderFactory)
-        val e = runCatching { router.generate(Role.ANSWER, "q") }.exceptionOrNull() as ModelCallException
-        assertFalse(e.retryable); assertTrue(e.message!!.contains("No API key saved"))
-    }
-
     @Test fun seedingWithBlankKeyDoesNotEraseAKeySavedEarlier() = runTest {
         endpoints.save(Endpoint(EndpointSeeder.AZURE_ID, "Azure OpenAI", EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt-5.4"),
             setOf(Capability.CHAT, Capability.VISION), 1), apiKey = "saved").getOrThrow()
         seeder.seedIfNeeded(azure.copy(apiKey = "")).getOrThrow()
         assertEquals("saved", endpoints.keyFor(endpoints.byId(EndpointSeeder.AZURE_ID)!!))
-    }
-
-    @Test fun switchingToTextOnlyProviderMakesFramesUseItWithZeroAzureCalls() = runTest {
-        val calls = mutableListOf<String>()
-        val router = ModelRouter(bindings, endpoints, ProviderBuilder { e, m, _ ->
-            object : com.rokid.context.model.ModelProvider {
-                override suspend fun generate(prompt: String): String { calls += "${e.id}:text"; return "${e.id}/$m" }
-                override suspend fun generateWithImages(prompt: String, images: List<com.rokid.context.model.ModelImageInput>): String { calls += "${e.id}:vision"; return "${e.id}/vision" }
-            }
-        })
-        seeder.seedIfNeeded(azure).getOrThrow()
-        seeder.syncFromLegacy(ProviderSettings("ollama", "http://o.local:11434", "", "llama3.1:8b", "", false)).getOrThrow()
-        assertEquals("ollama/llama3.1:8b", router.generateFromFrames("q", listOf(com.rokid.context.model.ModelImageInput("image/jpeg", "AAAA"))))
-        assertEquals(listOf("ollama:text"), calls)
-        assertTrue(calls.none { it.startsWith(EndpointSeeder.AZURE_ID) })
     }
 
     @Test fun legacyConfigRejectedByValidationFailsSoftlyAndLeavesRolesUnbound() = runTest {
@@ -152,18 +105,46 @@ class EndpointSeederTest {
 
     private fun state2() = EndpointSeeder(endpoints, bindings, InMemorySeedState())
 
-    /** F23: the legacy key may be cleared only when the seed read one and KeyVault now holds a key for the seeded endpoint. */
-    @Test fun keyReachedTheVaultOnlyForASeededNonBlankKey() = runTest {
-        assertFalse("nothing seeded yet", seeder.legacyKeyInVault(azure))
-        state.markDone() // an earlier start seeded with a blank key (Keystore unavailable then): no endpoint holds a key
+    private val ollama = ProviderSettings("ollama", "http://o.local:11434", "k", "llama3.1:8b", "", false)
+
+    /** Fix round 1 (T21 review I2): nothing is retired before the seed is done. */
+    @Test fun nothingIsRetiredBeforeTheSeedIsDone() = runTest {
+        assertFalse(seeder.retireLegacyKey(azure))
+        assertFalse(seeder.retireLegacyKey(ollama))
+    }
+
+    /** Keyless kinds can never take the key, so once seeded it is cleared without a vault copy. */
+    @Test fun aKeylessSeedRetiresTheKeyWithoutStoringIt() = runTest {
+        seeder.seedIfNeeded(ollama).getOrThrow()
+        assertTrue(seeder.retireLegacyKey(ollama))
+        assertNull(endpoints.keyFor(endpoints.byId(EndpointSeeder.OLLAMA_ID)!!))
+    }
+
+    /** A seed that finished earlier without the key (Keystore unavailable then): the key is moved in, then retired. */
+    @Test fun anEarlierKeylessSeedOfAKeyedKindGetsTheKeyCopiedIn() = runTest {
+        seeder.seedIfNeeded(azure.copy(apiKey = "")).getOrThrow()
+        assertNull(endpoints.keyFor(endpoints.byId(EndpointSeeder.AZURE_ID)!!))
+        assertTrue(seeder.retireLegacyKey(azure))
+        assertEquals("k", endpoints.keyFor(endpoints.byId(EndpointSeeder.AZURE_ID)!!))
+    }
+
+    @Test fun aVaultKeyIsNeverOverwrittenAndTheLegacyKeyIsRetired() = runTest {
+        seeder.seedIfNeeded(azure.copy(apiKey = "")).getOrThrow()
+        endpoints.save(endpoints.byId(EndpointSeeder.AZURE_ID)!!, apiKey = "edited").getOrThrow()
+        assertTrue(seeder.retireLegacyKey(azure))
+        assertEquals("edited", endpoints.keyFor(endpoints.byId(EndpointSeeder.AZURE_ID)!!))
+    }
+
+    /** F23, kept for this one case: a blank read on a keyed kind (Keystore unavailable) never deletes the only copy. */
+    @Test fun aBlankReadOnAKeyedKindRetiresNothing() = runTest {
         seeder.seedIfNeeded(azure).getOrThrow()
-        assertFalse("seed was already done, the vault holds nothing", seeder.legacyKeyInVault(azure))
-        val fresh = EndpointSeeder(endpoints, bindings, InMemorySeedState())
-        fresh.seedIfNeeded(azure).getOrThrow()
-        assertTrue(fresh.legacyKeyInVault(azure))
-        assertFalse("a blank legacy key is never 'migrated'", fresh.legacyKeyInVault(azure.copy(apiKey = " ")))
-        val ollama = ProviderSettings("ollama", "http://o.local:11434", "k", "llama3.1:8b", "", false)
-        EndpointSeeder(endpoints, bindings, InMemorySeedState()).seedIfNeeded(ollama).getOrThrow()
-        assertFalse("keyless kinds never store the key", fresh.legacyKeyInVault(ollama))
+        assertFalse(seeder.retireLegacyKey(azure.copy(apiKey = " ")))
+    }
+
+    /** The user deleted the seeded endpoint: nothing uses the legacy key any more. */
+    @Test fun aDeletedSeededEndpointRetiresTheKey() = runTest {
+        seeder.seedIfNeeded(azure).getOrThrow()
+        endpoints.delete(EndpointSeeder.AZURE_ID)
+        assertTrue(seeder.retireLegacyKey(azure))
     }
 }

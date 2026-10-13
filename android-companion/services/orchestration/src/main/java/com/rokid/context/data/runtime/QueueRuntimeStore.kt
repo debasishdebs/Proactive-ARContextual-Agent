@@ -268,7 +268,9 @@ object QueueRuntimeStore {
         synchronized(lock) {
             val rows = readAll(context).toMutableList()
             val idx = rows.indexOfFirst { it.id == id }
-            if (idx < 0) return
+            // T21 review m11: a late outcome never revives a row that TTL-expired while it ran. (Only the drain marks
+            // rows, and only rows it claimed, so this is the one state an outcome can race with.)
+            if (idx < 0 || rows[idx].state == STATE_EXPIRED) return
             rows[idx] = rows[idx].update()
             writeAll(context, rows)
         }

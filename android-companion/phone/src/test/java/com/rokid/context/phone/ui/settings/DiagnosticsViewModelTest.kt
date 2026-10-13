@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -62,5 +63,30 @@ class DiagnosticsViewModelTest {
         v.exportDiagnostics(); v.pushSettings()
         withTimeout(5_000) { v.state.first { !it.busy && shared.isNotEmpty() } }
         assertEquals(1, pushed); assertEquals("Settings sent to the glasses", v.state.value.message)
+    }
+
+    /** Fix round 1 (m6): Push during an export keeps the busy guard; the export's own result still lands. */
+    @Test fun pushDuringAnExportKeepsItBusy() = runBlocking {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>(); var pushed = 0
+        val shared = mutableListOf<java.io.File>()
+        val v = DiagnosticsViewModel(actions, pipeline, exportDiagnostics = { gate.await(); java.io.File.createTempFile("diag", ".txt") }, share = { shared += it }, pushSettings = { pushed++ })
+        v.exportDiagnostics()
+        assertTrue(v.state.value.busy)
+        v.pushSettings()
+        assertTrue("still busy", v.state.value.busy)
+        assertEquals(1, pushed)
+        gate.complete(Unit)
+        assertEquals("Diagnostics ready to share", withTimeout(5_000) { v.state.first { !it.busy } }.message)
+        assertEquals(1, shared.size)
+        v.cancelScope()
+    }
+
+    @Test fun pushWithoutLinkedGlassesSaysItWillSyncLater() {
+        var pushed = 0
+        val v = DiagnosticsViewModel(actions, pipeline, pushSettings = { pushed++ }, glassesConnected = { false })
+        v.pushSettings()
+        assertEquals(1, pushed)
+        assertEquals("Glasses not connected — settings will sync when they connect", v.state.value.message)
+        v.cancelScope()
     }
 }

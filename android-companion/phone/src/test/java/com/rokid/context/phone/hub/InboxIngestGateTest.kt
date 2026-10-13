@@ -37,8 +37,8 @@ class InboxIngestGateTest {
     @Test fun theIngestCallbackNeverReadsTheSecretOnMain() {
         val secretOnMain = mutableListOf<String>(); var plain = 0
         val spy = object : AppConfigReader {
-            override fun get(context: Context): AppConfig {
-                if (Looper.myLooper() == Looper.getMainLooper()) secretOnMain += "get"
+            override fun getWithLegacySecret(context: Context): AppConfig {
+                if (Looper.myLooper() == Looper.getMainLooper()) secretOnMain += "getWithLegacySecret"
                 return AppConfigStore.getWithoutSecret(context)
             }
             override fun getWithoutSecret(context: Context): AppConfig { plain++; return AppConfigStore.getWithoutSecret(context) }

@@ -25,8 +25,8 @@ class SpyConfigReader : AppConfigReader {
     val secretReadsOnMain = mutableListOf<String>()
     var plainReads = 0
     private fun onMain() = Looper.myLooper() == Looper.getMainLooper()
-    override fun get(context: Context): AppConfig {
-        if (onMain()) secretReadsOnMain += "get"
+    override fun getWithLegacySecret(context: Context): AppConfig {
+        if (onMain()) secretReadsOnMain += "getWithLegacySecret"
         return AppConfigStore.getWithoutSecret(context)
     }
     override fun getWithoutSecret(context: Context): AppConfig { plainReads++; return AppConfigStore.getWithoutSecret(context) }

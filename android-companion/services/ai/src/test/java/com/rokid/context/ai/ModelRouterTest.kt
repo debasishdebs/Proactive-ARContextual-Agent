@@ -143,7 +143,7 @@ class ModelRouterTest {
         failures["az:vision"] = ProviderHttpException(401, "Azure OpenAI", "Incorrect API key provided: $key. " + "x".repeat(500))
         failures["az:text"] = ProviderHttpException(401, "Azure OpenAI", "Incorrect API key provided: $key. " + "x".repeat(500))
         val e = err { router.generate(Role.ANSWER, "q", img) } as ModelCallException
-        assertFalse(e.message!!.contains(key)); assertTrue(e.message!!.contains("request failed: 401"))
+        assertFalse(e.message!!.contains(key)); assertTrue(e.message, e.message!!.contains("http=401")); assertFalse(e.message!!.contains("Incorrect API key"))
         assertTrue("length ${e.message!!.length}", e.message!!.length <= 260)
         assertFalse(e.retryable) // classified on the original throwable
         assertEquals(FailureKind.AUTH, e.kind)

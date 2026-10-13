@@ -13,7 +13,7 @@ import org.robolectric.annotation.Config
 class AppConfigDefaultsTest {
     @Test fun unsetPrefsFallBackToEnvDefaults() {
         EnvDefaults.init("https://az.example", "gpt-x", "http://o:11434", "llama", "ollama_only", "/m.gguf")
-        val c = AppConfigStore.get(ApplicationProvider.getApplicationContext())
+        val c = AppConfigStore.getWithLegacySecret(ApplicationProvider.getApplicationContext())
         assertEquals("https://az.example", c.endpoint)
         assertEquals("gpt-x", c.deploymentOrModel)
         assertEquals("/m.gguf", c.nativeModelPath)

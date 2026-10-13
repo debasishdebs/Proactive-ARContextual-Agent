@@ -140,7 +140,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_DIAGNOSTICS) {
-        val vm = viewModel { DiagnosticsViewModel(deps.diagnostics, deps.pipeline, s.exportDiagnostics, { f -> s.share(f) }, { s.hud.update { it } }) }
+        val vm = viewModel { DiagnosticsViewModel(deps.diagnostics, deps.pipeline, s.exportDiagnostics, { f -> s.share(f) }, { s.hud.update { it } },
+            glassesConnected = { deps.glasses.status.value.link == com.rokid.context.core.model.LinkState.CONNECTED }) }
         val state by vm.state.collectAsStateWithLifecycle()
         DiagnosticsScreen(
             state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },

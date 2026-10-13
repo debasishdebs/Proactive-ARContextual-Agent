@@ -16,7 +16,11 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /** Diagnostics › Logs (spec §6.3 "full detail → Diagnostics"): this app's own recent log lines. */
 object LogReader {
-    private val SECRET = Regex("(?i)(api[-_ ]?key|authorization|bearer\\s)")
+    /**
+     * Credential shapes (fix round 1, m4): key/auth headers, Azure's subscription key, key/token/sig query params,
+     * token/secret/password values, bare `sk-…` keys, JWTs and long base64 runs. `--pid` also carries SDK lines.
+     */
+    private val SECRET = Regex("(?i)(api[-_. ]?key|authorization|bearer\\s|subscription-key|[?&](key|token|sig)=|access[_-]?token|(token|secret|password)\\s*[=:])|\\bsk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{10,}\\.|[A-Za-z0-9+/]{40,}={0,2}")
 
     /** Our logs never carry keys (SafeLog); lines that even look like they do are dropped anyway. */
     fun redact(lines: List<String>): List<String> = lines.filterNot { SECRET.containsMatchIn(it) }
