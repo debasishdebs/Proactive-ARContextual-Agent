@@ -19,7 +19,16 @@ class BackupRulesTest {
         // Markers that say "already done in the DB": restored without the DB they would skip re-seeding/re-import.
         "sharedpref:ai_seed.xml", "sharedpref:legacy_import.xml",
         "database:context.db", "database:context.db-wal", "database:context.db-shm",
-    )
+    ) + memoryCopies
+
+    /**
+     * Final-review B1: copies of memory/user text outside the DB — frame JPEGs, the queue log (fact and question text
+     * in payloads), the legacy logs and the exports — are neither backed up nor transferred.
+     */
+    private val memoryCopies: Set<String> get() =
+        com.rokid.context.data.frames.RokidFrameInbox.FRAME_DIRS.map { "file:$it" }.toSet() +
+            com.rokid.context.memory.legacy.LegacyImporter.LEGACY_FILES.map { "file:$it" } +
+            "file:queue_runtime.log" + "root:cache/exports"
 
     private fun parse(path: String) = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
         .newDocumentBuilder().parse(File(path)).documentElement
@@ -39,13 +48,13 @@ class BackupRulesTest {
         assertEquals("true", app.getAttributeNS(ns, "allowBackup"))
     }
 
-    @Test fun legacyFullBackupExcludesKeysAndDbOnly() {
+    @Test fun legacyFullBackupExcludesKeysDbAndMemoryCopiesOnly() {
         val root = parse("src/main/res/xml/backup_rules.xml")
         assertEquals(excluded, excludes(root))
         assertEquals("no <include>: everything else stays backed up", 0, includes(root))
     }
 
-    @Test fun cloudBackupAndDeviceTransferExcludeKeysAndDbOnly() {
+    @Test fun cloudBackupAndDeviceTransferExcludeKeysDbAndMemoryCopiesOnly() {
         val root = parse("src/main/res/xml/data_extraction_rules.xml")
         for (tag in listOf("cloud-backup", "device-transfer")) {
             val section = root.getElementsByTagName(tag).item(0) as Element?
@@ -53,6 +62,12 @@ class BackupRulesTest {
             assertEquals(tag, excluded, excludes(section!!))
             assertEquals("$tag: no <include>", 0, includes(section))
         }
+    }
+
+    /** The queue log's name is private to QueueRuntimeStore: pin it so a rename can't silently drop the exclusion. */
+    @Test fun theQueueLogNameMatchesTheStore() {
+        val src = File("../services/orchestration/src/main/java/com/rokid/context/data/runtime/QueueRuntimeStore.kt").readText()
+        assertTrue(src.contains("FILE_NAME = \"queue_runtime.log\""))
     }
 
     /** Every prefs file opened through EncryptedSharedPreferences in any module is a secret file and must be excluded. */
