@@ -2,25 +2,39 @@ package com.rokid.context.memory.retrieval
 
 import com.rokid.context.memory.db.RetrievalDao
 import com.rokid.context.memory.db.SearchNormalizer
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 
 /**
- * spec §4.6 `LexicalRetriever`: every FTS4 match is BM25-scored in Kotlin. Matches stream in docid pages into a bounded
- * top-[limit] heap, so no match is cut before it is ranked (a newest best match is never lost behind older rows).
+ * spec §4.6 `LexicalRetriever`: every FTS4 match is BM25-scored in Kotlin. One cursor per query (the FTS doclists are
+ * read once, Phase 8 B2) streams every match into a bounded top-[limit] heap, so no match is cut before it is ranked
+ * and peak memory is O(k) plus one CursorWindow. Reads on [io], never on Main; the cursor is closed on every path.
  */
-class LexicalRetriever(private val dao: RetrievalDao) {
+class LexicalRetriever(private val dao: RetrievalDao, private val io: CoroutineDispatcher = Dispatchers.IO) {
     suspend fun search(query: String, limit: Int, minConfidence: Double = 0.0): List<Hit> {
         if (limit <= 0) return emptyList()
         val match = SearchNormalizer.toAnyMatchQuery(query) ?: return emptyList()
-        val top = TopHits(limit)
-        var after = 0L
-        while (true) {
-            val rows = dao.lexicalPage(match, after, minConfidence, PAGE)
-            for (r in rows) top.offer(Hit(r.id, Bm25.score(Bm25.ints(r.mi))))
-            if (rows.size < PAGE) break
-            after = rows.last().rowid
+        return withContext(io) {
+            val top = TopHits(limit)
+            val cursor = dao.lexicalCursor(match, minConfidence)
+            try {
+                val idCol = cursor.getColumnIndexOrThrow("id")
+                val miCol = cursor.getColumnIndexOrThrow("mi")
+                var n = 0
+                while (cursor.moveToNext()) {
+                    if (++n and CHECK_MASK == 0) coroutineContext.ensureActive()
+                    top.offer(Hit(cursor.getString(idCol), Bm25.score(Bm25.ints(cursor.getBlob(miCol)))))
+                }
+            } finally {
+                cursor.close()
+            }
+            top.sorted()
         }
-        return top.sorted()
     }
 
-    private companion object { const val PAGE = 500 }
+    /** Cancellation is checked every 256 rows. */
+    private companion object { const val CHECK_MASK = 255 }
 }
