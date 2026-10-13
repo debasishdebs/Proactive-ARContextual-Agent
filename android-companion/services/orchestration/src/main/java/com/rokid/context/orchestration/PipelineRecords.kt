@@ -128,6 +128,11 @@ object PipelineRecords {
                 Log.i(TAG, "fact dropped: Delete all ran since this job started")
                 return@withTransaction false
             }
+            // Forget fence: a fact extracted from a frame that was forgotten meanwhile (tombstoned) is never written.
+            if (frameId != null && g.db.forgetDao().tombstoned(listOf(frameId)).isNotEmpty()) {
+                Log.i(TAG, "fact dropped: its frame was forgotten")
+                return@withTransaction false
+            }
             val sources = sourceIds.distinct()
             if (sources.isNotEmpty()) {
                 val alive = sources.chunked(MAX_IN).flatMap { g.db.forgetDao().memories(it) }.count { it.reviewState != ReviewState.INVALIDATED }

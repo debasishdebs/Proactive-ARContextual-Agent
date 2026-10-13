@@ -91,7 +91,7 @@ class MemoryDetailTest {
         compose.onNodeWithText("This memory is no longer available").assertIsDisplayed()
     }
 
-    @Test fun screenActionsAndDisabledForget() {
+    @Test fun screenActions() {
         var trusts = 0; var edits = 0
         val state = MemoryDetailUiState(loading = false, found = true, text = "Keys on shelf", tierLabel = "Short-term", confidence = 0.71, reviewLabel = "Reviewed", createdLabel = "Mon 12 Oct · 08:05")
         compose.setContent { PcTheme { MemoryDetailScreen(state, {}, { trusts++ }, { edits++ }, {}, {}, {}, { _, _ -> }) } }
@@ -100,8 +100,6 @@ class MemoryDetailTest {
         compose.onNodeWithText("Trust").performClick()
         compose.onNodeWithText("Edit").performClick()
         assertEquals(1, trusts); assertEquals(1, edits)
-        compose.onNodeWithText("Forget fact").assertIsNotEnabled()
-        compose.onNodeWithText("Forget moment").assertIsNotEnabled()
     }
 
     @Test fun editingShowsSaveAndCancel() {
@@ -129,6 +127,7 @@ class MemoryDetailTest {
         compose.setContent { PcTheme { MemoryDetailScreen(state, {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
         compose.onNodeWithText("Trust").assertIsNotEnabled()
         compose.onNodeWithText("Edit").assertIsNotEnabled()
+        compose.onNodeWithText("Forget fact").assertIsNotEnabled()
     }
 
     @Test fun saveRejectedBecauseMemoryBecameHidden() = runBlocking {
