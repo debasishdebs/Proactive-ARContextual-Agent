@@ -8,6 +8,8 @@ import com.rokid.context.core.model.GlassesStatusSource
 import com.rokid.context.core.model.HelloRequest
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.Overlay
+import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.PROTOCOL_VERSION
 import com.rokid.context.core.model.Wire
@@ -25,6 +27,8 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.ZoneId
+import java.util.UUID
 
 /**
  * Phone hub (spec §1.7): handles glasses messages, keeps the pause set, ingests frames and broadcasts `StateFrame`s.
@@ -45,6 +49,10 @@ class Hub(
     private val startService: () -> Unit = {},
     /** Voice (Phase 6): glasses voice events go here; its overlay goes into every StateFrame. */
     private val voice: HubVoice = HubVoice.None,
+    /** Actions (Phase 7): HUD Confirm/Undo go here; its Confirm/undo-toast overlay goes into every StateFrame. */
+    private val actions: HubActions = HubActions.None,
+    /** Nudges (Phase 7): the latest nudge line and the HUD nudge overlay. */
+    private val nudges: HubNudges = HubNudges.None,
 ) : GlassesStatusSource {
     private val _state = MutableStateFlow(HubState())
     val state: StateFlow<HubState> = _state
@@ -53,6 +61,9 @@ class Hub(
     private val _hudSettings = MutableStateFlow(settings.read())
     /** The phone's persisted HUD settings (pauses are merged in only when pushed). Settings screens observe this. */
     val hudSettings: StateFlow<HudSettings> = _hudSettings
+    private val _activePauses = MutableStateFlow<List<PauseRecord>>(emptyList())
+    /** Active pause records in phone clock, refreshed on every broadcast. */
+    val activePauses: StateFlow<List<PauseRecord>> = _activePauses
     private var seq = 0L
     /** Written by the hello handler, read on the frame path: the one clock offset holder ([HubState.offset] mirrors it). */
     @Volatile private var offset: ClockOffset? = null
@@ -74,6 +85,9 @@ class Hub(
             scope.launch { link.ready.collect { guarded("ready") { onReady() } } },
             scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
             scope.launch { voice.overlay.drop(1).collect { broadcaster.markDirty() } },
+            scope.launch { actions.overlay.drop(1).collect { broadcaster.markDirty() } },
+            scope.launch { nudges.overlay.drop(1).collect { broadcaster.markDirty() } },
+            scope.launch { nudges.latest.drop(1).collect { broadcaster.markDirty() } },
             // The gate's reason travels in pc_settings (the glasses toast it on tap = Ask, spec §5.1.1).
             scope.launch { voice.askBlockedReason.drop(1).collect { guarded("settings") { pushSettings() } } },
             broadcaster.start(),
@@ -104,6 +118,25 @@ class Hub(
         _hudSettings.value = settings.read()
         scope.launch { guarded("settings") { pushSettings(); broadcaster.markDirty() } }
     }
+
+    /** A phone pause (capture only): a new PHONE record from now until [untilMs] (null = until resumed), pushed now. */
+    suspend fun pausePhone(untilMs: Long?): PauseRecord {
+        val r = PauseRecord(UUID.randomUUID().toString(), PauseOrigin.PHONE, createdAtMs = clock(), untilMs = untilMs)
+        withContext(io) { pauses.add(r) }
+        Log.i(TAG, "phone pause added ${r.pauseId}")
+        pushSettings(); broadcaster.markDirty()
+        return r
+    }
+
+    /** Ends only the named records (spec §5.5), then pushes the settings and a frame. */
+    suspend fun resume(ids: Set<String>) {
+        withContext(io) { pauses.resume(ids) }
+        Log.i(TAG, "phone resume for ${ids.size} pause(s)")
+        pushSettings(); broadcaster.markDirty()
+    }
+
+    /** Something a frame shows changed outside the hub's own flows: send a fresh frame (≤ 4 Hz). */
+    fun refresh() = broadcaster.markDirty()
 
     /**
      * One failing event (disk/DB full, …) is logged by class name and shown as a [UserFacingError]; it never ends
@@ -152,7 +185,11 @@ class Hub(
 
     private suspend fun pushSettings() {
         val active = withContext(io) { pauses.active() }
-        link.send(Channels.SETTINGS, Wire.encode(StateFrameBuilder.settingsFor(settings.read(), active, _state.value.offset, voice.askBlockedReason.value)))
+        val resumed = withContext(io) { pauses.recentlyResumedIds() }
+        val pushed = StateFrameBuilder.settingsFor(
+            settings.read(), active, _state.value.offset, voice.askBlockedReason.value, resumed = resumed, zoneId = ZoneId.systemDefault().id,
+        )
+        link.send(Channels.SETTINGS, Wire.encode(pushed))
     }
 
     private suspend fun onEvent(e: GlassesEvent) {
@@ -220,6 +257,8 @@ class Hub(
             }
             Command.ListenStart -> { Log.i(TAG, "listen start"); voice.onListenStart() }
             Command.Cancel -> { Log.i(TAG, "voice cancel"); voice.onCancel() }
+            is Command.Confirm -> { Log.i(TAG, "confirm answered"); actions.onConfirm(c.proposalId, c.yes) }
+            is Command.Undo -> { Log.i(TAG, "undo asked"); actions.onUndo(c.proposalId) }
             else -> Log.i(TAG, "command ${c::class.simpleName} is handled in a later phase")
         }
     }
@@ -238,6 +277,7 @@ class Hub(
     private suspend fun broadcast() {
         val now = clock()
         val active = withContext(io) { pauses.active() }
+        _activePauses.value = active
         val today = withContext(io) { sources.today() }
         val depth = withContext(io) { sources.queueDepth() }
         val health = withContext(io) { sources.aiHealth(now) }
@@ -246,11 +286,18 @@ class Hub(
             HubInputs(
                 seq = ++seq, nowMs = now, link = s.link, activePauses = active, offset = s.offset, settings = settings.read(),
                 glassesBatteryPct = s.glassesBatteryPct, nextCaptureAtMs = s.nextCaptureAtMs, queueDepth = depth,
-                lastFrameAtMs = s.lastFrameAtMs, today = today, aiHealth = health, overlay = voice.overlay.value, error = s.error,
+                lastFrameAtMs = s.lastFrameAtMs, today = today, aiHealth = health, overlay = overlay(), error = s.error,
+                latestNudge = nudges.latest.value,
             ),
         )
         set(markDirty = false) { it.copy(lastFrame = frame) }
         if (s.link == LinkState.CONNECTED) link.send(Channels.STATE, Wire.encode(frame))
+    }
+
+    /** Precedence (Phase 7): voice Listening > actions (Confirm/undo toast) > other voice overlays > nudge. */
+    private fun overlay(): Overlay? {
+        val v = voice.overlay.value
+        return (v as? Overlay.Listening) ?: actions.overlay.value ?: v ?: nudges.overlay.value
     }
 
     companion object {

@@ -16,6 +16,8 @@ import com.rokid.context.core.model.HelloRequest
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.LinkState
 import com.rokid.context.core.model.MemoryLine
+import com.rokid.context.core.model.NudgeLine
+import com.rokid.context.core.model.Overlay
 import com.rokid.context.core.model.PROTOCOL_VERSION
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
@@ -28,6 +30,7 @@ import com.rokid.context.link.FrameReassembler
 import com.rokid.context.link.GlassesEvent
 import com.rokid.context.link.GlassesLink
 import com.rokid.context.link.ReceivedFrameLedger
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -71,12 +74,18 @@ class HubTest {
         onStored: () -> Unit = {},
         startService: () -> Unit = {},
         start: Boolean = true,
+        voice: HubVoice = HubVoice.None,
+        actions: HubActions = HubActions.None,
+        nudges: HubNudges = HubNudges.None,
     ): Hub {
-        val pauses = HubPauses(dao, clock)
+        val pauses = HubPauses(dao, now = clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
         val ingestor = FrameIngestor(File(tmp.root, "inbox"), FrameReassembler(), FrameAdmission(ledger, pauses), ledger, onStored = onStored)
         val settings = HubSettingsStore(ctx.getSharedPreferences("hub_test_${tmp.root.name}", 0)) { "hud" }
-        return Hub(backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler), startService = startService)
+        return Hub(
+            backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler),
+            startService = startService, voice = voice, actions = actions, nudges = nudges,
+        )
             .also { if (start) { it.start(); runCurrent() } }
     }
     private fun FakeGlassesLink.lastOn(channel: String) = sent.last { it.first == channel }.second
@@ -355,5 +364,61 @@ class HubTest {
         val at = link.stateAt.toList()
         assertTrue("frames: $at", at.size >= 2)
         at.zipWithNext().forEach { (a, b) -> assertTrue("frames ${b - a} ms apart in $at", b - a >= 250) }
+    }
+
+    private class FakeActions : HubActions {
+        override val overlay = MutableStateFlow<Overlay?>(null)
+        val calls = mutableListOf<String>()
+        override fun onConfirm(proposalId: String, yes: Boolean) { calls += "confirm:$proposalId:$yes" }
+        override fun onUndo(proposalId: String) { calls += "undo:$proposalId" }
+    }
+
+    private class FakeNudges : HubNudges {
+        override val latest = MutableStateFlow<NudgeLine?>(null)
+        override val overlay = MutableStateFlow<Overlay.Nudge?>(null)
+    }
+
+    private fun FakeGlassesLink.lastFrame() = (Wire.decode<StateFrame>(lastOn(Channels.STATE)) as Decoded.Ok).value
+
+    @Test fun confirmAndUndoCommandsReachActionsPort() = runTest {
+        val link = FakeGlassesLink()
+        val actions = FakeActions()
+        hub(link, actions = actions)
+        link.emit(GlassesEvent.Cmd(Command.Confirm("p", yes = true))); runCurrent()
+        link.emit(GlassesEvent.Cmd(Command.Undo("p"))); runCurrent()
+        assertEquals(listOf("confirm:p:true", "undo:p"), actions.calls)
+    }
+
+    @Test fun overlayPrecedence() = runTest {
+        val link = FakeGlassesLink()
+        val voice = FakeHubVoice()
+        val actions = FakeActions()
+        val nudges = FakeNudges()
+        hub(link, voice = voice, actions = actions, nudges = nudges)
+        val confirm = Overlay.Confirm("p", "Add milk?", "Shopping list")
+        voice.overlay.value = Overlay.Listening("what"); actions.overlay.value = confirm; advanceTimeBy(300)
+        assertEquals(Overlay.Listening("what"), link.lastFrame().overlay)
+        voice.overlay.value = Overlay.Answer("q", "a", speaking = false); advanceTimeBy(300)
+        assertEquals(confirm, link.lastFrame().overlay)
+        voice.overlay.value = null; actions.overlay.value = null; nudges.overlay.value = Overlay.Nudge("Heads up"); advanceTimeBy(300)
+        assertEquals(Overlay.Nudge("Heads up"), link.lastFrame().overlay)
+        nudges.latest.value = NudgeLine("Milk low", now); advanceTimeBy(300)
+        assertEquals(NudgeLine("Milk low", now), link.lastFrame().latestNudge)
+    }
+
+    @Test fun pausePhonePushesSettingsWithNewRecord() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.sent.clear()
+        val r = h.pausePhone(untilMs = now + 60_000); advanceTimeBy(300)
+        assertEquals(PauseOrigin.PHONE, r.origin); assertEquals(now, r.createdAtMs); assertEquals(now + 60_000, r.untilMs)
+        val pushed = (Wire.decode<HudSettings>(link.lastOn(Channels.SETTINGS)) as Decoded.Ok).value
+        assertEquals(listOf(r), pushed.pauses)
+        assertEquals(false, pushed.pausesExact)
+        assertEquals(java.time.ZoneId.systemDefault().id, pushed.zoneId)
+        assertEquals(listOf(r), h.activePauses.value)
+        h.resume(setOf(r.pauseId)); advanceTimeBy(300)
+        assertEquals(emptyList<PauseRecord>(), (Wire.decode<HudSettings>(link.lastOn(Channels.SETTINGS)) as Decoded.Ok).value.pauses)
+        assertEquals(emptyList<PauseRecord>(), h.activePauses.value)
     }
 }

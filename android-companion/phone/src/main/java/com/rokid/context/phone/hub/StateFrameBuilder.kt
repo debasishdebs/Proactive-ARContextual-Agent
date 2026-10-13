@@ -5,6 +5,7 @@ import com.rokid.context.core.model.Health
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.LinkState
 import com.rokid.context.core.model.MemoryLine
+import com.rokid.context.core.model.NudgeLine
 import com.rokid.context.core.model.Overlay
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.StateFrame
@@ -29,6 +30,8 @@ data class HubInputs(
     val aiHealth: Health,
     val overlay: Overlay?,
     val error: UserFacingError?,
+    /** Phone clock; converted to glasses clock in the frame (Phase 7). */
+    val latestNudge: NudgeLine? = null,
 )
 
 object StateFrameBuilder {
@@ -47,7 +50,7 @@ object StateFrameBuilder {
             aiHealth = i.aiHealth,
             queueDepth = i.queueDepth,
             lastSentAtMs = i.lastFrameAtMs?.let { m -> i.offset?.toGlasses(m) },
-            latestNudge = null, // NudgeEngine arrives in Phase 7
+            latestNudge = i.latestNudge?.let { n -> i.offset?.let { o -> n.copy(atMs = o.toGlasses(n.atMs)) } ?: n },
             today = i.today.take(8),
             overlay = i.overlay,
             error = i.error?.title,
@@ -55,8 +58,14 @@ object StateFrameBuilder {
     }
 
     /** `pc_settings` carries the merged pause set (spec §5.5), converted like [build], and why Ask can't start (§5.1.1). */
-    fun settingsFor(settings: HudSettings, activePauses: List<PauseRecord>, offset: ClockOffset?, askBlockedReason: String? = null): HudSettings =
-        settings.copy(pauses = toGlasses(activePauses, offset), askBlockedReason = askBlockedReason)
+    /** Phase 7: [resumed] = ids the phone resumed; `pausesExact` only when [offset] measured the conversion; [zoneId] for quiet hours. */
+    fun settingsFor(
+        settings: HudSettings, activePauses: List<PauseRecord>, offset: ClockOffset?, askBlockedReason: String? = null,
+        resumed: List<String> = emptyList(), zoneId: String? = null,
+    ): HudSettings = settings.copy(
+        pauses = toGlasses(activePauses, offset), askBlockedReason = askBlockedReason,
+        resumedPauseIds = resumed, pausesExact = offset != null, zoneId = zoneId,
+    )
 
     private fun toGlasses(records: List<PauseRecord>, offset: ClockOffset?) = records.map { r -> offset?.recordToGlasses(r) ?: r }
 }

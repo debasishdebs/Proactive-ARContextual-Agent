@@ -31,6 +31,12 @@ object Routes {
     const val SETTINGS_MEMORY = "settings/memory"
     const val SETTINGS_MEMORY_REVIEW = "settings/memory/review"
     const val DIAGNOSTICS_LOGS = "settings/diagnostics/logs"
+    const val SETTINGS_PRIVACY = "settings/privacy"
+    const val SETTINGS_SOURCES = "settings/sources"
+    const val SETTINGS_ACTIONS = "settings/actions"
+    const val SETTINGS_SHOPPING = "settings/shopping"
+    /** Nudge detail (Phase 7 ruling: the spec names a "nudge detail" without a route). */
+    const val NUDGE = "nudge/{id}"
     /** id "new" opens an empty editor. */
     const val NEW_ENDPOINT = "new"
 
@@ -38,8 +44,11 @@ object Routes {
     fun prompt(id: String) = "settings/prompts/${enc(id)}"
     fun promptHistory(id: String) = "settings/prompts/${enc(id)}/history"
 
-    /** Settings rows that open a screen in this build; Phase 7 rows (privacy, sources, actions) stay "Coming soon". */
-    val LIVE_SETTINGS: Set<String> = setOf(SETTINGS_GLASSES, SETTINGS_PHONE_INPUTS, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL, SETTINGS_PERSONA, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS)
+    /** Settings rows that open a screen in this build. */
+    val LIVE_SETTINGS: Set<String> = setOf(
+        SETTINGS_GLASSES, SETTINGS_PHONE_INPUTS, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL,
+        SETTINGS_PERSONA, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS, SETTINGS_PRIVACY, SETTINGS_SOURCES, SETTINGS_ACTIONS, SETTINGS_SHOPPING,
+    )
 
     enum class Tab(val route: String, val label: String) { HOME("home", "Home"), ACTIVITY("activity", "Activity"), SETTINGS("settings", "Settings") }
 
@@ -49,13 +58,14 @@ object Routes {
     fun activity(period: Period? = null) = if (period == null) "activity" else "activity?period=${period.name.lowercase()}"
     fun day(date: LocalDate) = "day/$date"
     fun memory(id: String) = "memory/${enc(id)}"
+    fun nudge(id: String) = "nudge/${enc(id)}"
     fun frames(date: LocalDate, start: String? = null) = "frames/$date" + (start?.let { "?start=${enc(it)}" } ?: "")
     fun startRoute(onboardingComplete: Boolean) = if (onboardingComplete) HOME else ONBOARDING
 
     /** [route] is the destination's pattern (`NavDestination.route`). */
     fun tabFor(route: String?): Tab? = when {
         route == null || route == ONBOARDING -> null
-        route == HOME || route.startsWith("ask/") -> Tab.HOME
+        route == HOME || route.startsWith("ask/") || route.startsWith("nudge/") -> Tab.HOME
         route.startsWith("activity") || route.startsWith("day/") || route.startsWith("memory/") || route.startsWith("frames/") -> Tab.ACTIVITY
         route.startsWith("settings") -> Tab.SETTINGS
         else -> null

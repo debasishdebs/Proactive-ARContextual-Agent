@@ -93,7 +93,7 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
         ),
         "Capture & privacy" to listOf(
             SettingRow(Icons.Outlined.Schedule, PcColors.ChipAmber, "Capture schedule", state.captureSummary, Routes.SETTINGS_CAPTURE),
-            SettingRow(Icons.Outlined.Shield, PcColors.ChipSlate, "Privacy", soon, null),
+            SettingRow(Icons.Outlined.Shield, PcColors.ChipSlate, "Privacy", "Pause, quiet hours", Routes.SETTINGS_PRIVACY),
         ),
         "AI" to listOf(
             SettingRow(Icons.Outlined.Cloud, PcColors.ChipSky, "Model endpoints", "Provider, address, key and Test", Routes.SETTINGS_ENDPOINTS),
@@ -103,8 +103,8 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
             SettingRow(Icons.Outlined.Face, PcColors.ChipAmber, "Persona & language", "How answers sound", Routes.SETTINGS_PERSONA),
         ),
         "Connectors" to listOf(
-            SettingRow(Icons.Outlined.Event, PcColors.ChipSky, "Data sources", soon, null),
-            SettingRow(Icons.Outlined.Bolt, PcColors.ChipAmber, "Actions & tools", soon, null),
+            SettingRow(Icons.Outlined.Event, PcColors.ChipSky, "Data sources", "Calendar, contacts, notes, location", Routes.SETTINGS_SOURCES),
+            SettingRow(Icons.Outlined.Bolt, PcColors.ChipAmber, "Actions & tools", "Reminders, shopping list, calendar", Routes.SETTINGS_ACTIONS),
         ),
         "Memory & system" to listOf(
             SettingRow(Icons.Outlined.Memory, PcColors.ChipViolet, "Memory", "Retention, storage, encryption, export", Routes.SETTINGS_MEMORY),
