@@ -160,7 +160,7 @@ class EmbeddingClientTest {
         assertTrue(ex is java.io.IOException)
         runCatching { c.embed(local(), "m", null, listOf("b")) }
         Thread.sleep(2_500)
-        assertEquals(2, calls.get()); assertEquals(1, maxRunning.get())
+        assertEquals("a call that timed out while queued never runs (Phase 5 T9 carry)", 1, calls.get()); assertEquals(1, maxRunning.get())
     }
 
     @Test fun aMissingTagsEndpointMeansNoRevisionButOtherErrorsStayTyped() = runTest {

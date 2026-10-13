@@ -176,4 +176,12 @@ class EndpointTesterTest {
         val thrown = runCatching { EndpointTester(repo, cancelling, client).test("e", "m") }.exceptionOrNull()
         assertTrue("got $thrown", thrown is CancellationException)
     }
+
+    /** Phase 5 T1 carry: the whole cause chain decides the message, not just one level. */
+    @Test fun humanizeReadsTheWholeCauseChain() {
+        assertEquals("Can't reach that address", EndpointTester.humanize(IllegalStateException("x", java.io.IOException("y", java.net.UnknownHostException("h")))))
+        assertEquals("Key rejected (401)", EndpointTester.humanize(RuntimeException(IllegalStateException(ProviderHttpException(401, "Azure OpenAI", "no")))))
+        assertEquals("Timed out", EndpointTester.humanize(RuntimeException(RuntimeException(java.net.SocketTimeoutException()))))
+        assertEquals("Test failed", EndpointTester.humanize(RuntimeException("Incorrect key sk-live-999")))
+    }
 }
