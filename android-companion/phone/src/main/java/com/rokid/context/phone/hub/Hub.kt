@@ -121,12 +121,12 @@ class Hub(
         scope.launch { guarded("settings") { pushSettings(); broadcaster.markDirty() } }
     }
 
-    /** A phone pause (capture only): a new PHONE record from now until [untilMs] (null = until resumed), pushed now. */
+    /** A phone pause (capture only): a new PHONE record from now until [untilMs] (null = until resumed), pushed now (on [scope]). */
     suspend fun pausePhone(untilMs: Long?): PauseRecord {
         val r = PauseRecord(UUID.randomUUID().toString(), PauseOrigin.PHONE, createdAtMs = clock(), untilMs = untilMs)
         withContext(io) { pauses.add(r) }
         Log.i(TAG, "phone pause added ${r.pauseId}")
-        pushSettings(); broadcaster.markDirty()
+        onHubScope { pushSettings(); broadcaster.markDirty() }
         refreshPauses()
         return r
     }
@@ -135,7 +135,7 @@ class Hub(
     suspend fun resume(ids: Set<String>) {
         withContext(io) { pauses.resume(ids) }
         Log.i(TAG, "phone resume for ${ids.size} pause(s)")
-        pushSettings(); broadcaster.markDirty()
+        onHubScope { pushSettings(); broadcaster.markDirty() }
         refreshPauses()
     }
 
@@ -144,6 +144,12 @@ class Hub(
         scope.launch { guarded("pauses") { refreshPauses() } }
         broadcaster.markDirty()
     }
+
+    /**
+     * Runs [block] on [scope]'s dispatcher, keeping the caller's job: [pausePhone]/[resume] are called from IO
+     * (PausePipelineControl), and [GlassesLink.send] must stay on the link's thread (final review I3).
+     */
+    private suspend fun onHubScope(block: suspend () -> Unit) = withContext(scope.coroutineContext.minusKey(Job)) { block() }
 
     /** [activePauses] without waiting for a broadcast (works before [start] too). */
     private suspend fun refreshPauses() { _activePauses.value = withContext(io) { pauses.active() } }

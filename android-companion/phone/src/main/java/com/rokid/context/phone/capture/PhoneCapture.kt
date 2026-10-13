@@ -155,11 +155,17 @@ class PhoneCaptureControl(
     }
 
     companion object {
-        /** Read-only: a stored record active now, or local now inside quiet hours. Never writes or mints a record. */
-        fun storedPauses(dao: () -> com.rokid.context.memory.db.PauseDao, quietHours: () -> com.rokid.context.core.model.QuietHours?): suspend () -> Boolean = {
-            val now = System.currentTimeMillis()
-            val local = java.time.Instant.ofEpochMilli(now).atZone(java.time.ZoneId.systemDefault())
-            dao().records().any { it.untilMs == null || now < it.untilMs!! } || quietHours()?.contains(local.hour * 60 + local.minute) == true
+        /**
+         * Read-only ([com.rokid.context.phone.hub.HubPauses.pausedNow]): a stored record active now, or now inside a
+         * quiet-hours occurrence ([com.rokid.context.core.model.QuietWindow]) that was not resumed. Never writes or mints a record.
+         */
+        fun storedPauses(
+            dao: () -> com.rokid.context.memory.db.PauseDao,
+            quietHours: () -> com.rokid.context.core.model.QuietHours?,
+            zone: () -> java.time.ZoneId = java.time.ZoneId::systemDefault,
+            now: () -> Long = System::currentTimeMillis,
+        ): suspend () -> Boolean = {
+            com.rokid.context.phone.hub.HubPauses(dao(), quietHours, zone, now).pausedNow()
         }
     }
 }
