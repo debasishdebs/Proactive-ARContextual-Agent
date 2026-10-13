@@ -40,6 +40,24 @@ class ActionsSettingsTest {
         PcTheme { ActionsSettings(store, requestCalendar = { cb -> cb(result) }, back = {}, openShopping = {}, openAppSettings = { openedAppSettings++ }) }
     }
 
+    /** Integration carry 5: the route takes its store from SettingsDeps.actions (lazy ActionsGraph), not a process-wide read. */
+    @Test fun routeUsesTheSettingsDepsActionsGraph() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        val fake = object : com.rokid.context.connectors.actions.ActionsGraphApi {
+            override val intake = com.rokid.context.connectors.ProposalIntake.None
+            override val engine: com.rokid.context.connectors.actions.ActionEngine get() = error("unused")
+            override val settings = store
+            override val shopping: com.rokid.context.memory.db.ShoppingDao get() = error("unused")
+            override val tools = emptyList<com.rokid.context.connectors.tools.ToolConnector>()
+        }
+        val deps = com.rokid.context.phone.ui.settings.TestSettings.deps(ctx, actions = fake)
+        compose.setContent { PcTheme { ActionsRoute(deps, back = {}, openShopping = {}) } }
+        compose.waitUntil(5_000) { compose.onAllNodes(hasTestTag("enabled_REMINDER")).fetchSemanticsNodes().isNotEmpty() }
+        val before = store.toggle(ActionType.REMINDER).enabled
+        compose.onNodeWithTag("enabled_REMINDER").performClick()
+        compose.waitUntil(5_000) { store.toggle(ActionType.REMINDER).enabled != before }
+    }
+
     @Test fun calendarDeniedStaysOff() {
         show(grant = false)
         compose.onNodeWithTag("enabled_CALENDAR_EVENT").performScrollTo().assertIsOff().performClick()
