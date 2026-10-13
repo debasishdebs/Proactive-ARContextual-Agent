@@ -6,9 +6,11 @@ import com.rokid.context.data.runtime.PipelineStatsStore
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.orchestration.MemoryWipe
+import com.rokid.context.orchestration.WipeFence
 import com.rokid.context.orchestration.PipelineRecords
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
@@ -78,10 +80,9 @@ object RokidFrameInbox {
             val result = try {
                 ingestFile(context, sourceFile, source = "rokid_glasses", appendFrame)
             } catch (e: CancellationException) {
-                // Fix round 1 I4: a drain cancelled mid-insert returns the file unless its row landed, so it stays eligible.
-                withContext(NonCancellable) {
-                    if (moved && MemoryGraph.get(context).frames.byIds(listOf(frameIdOf(sourceFile))).isEmpty()) archived.renameTo(file)
-                }
+                // Fix round 1/2 I4: a drain cancelled mid-insert keeps the file eligible unless its row landed. If a Delete
+                // all started meanwhile, the file (and any row) goes instead: it must not come back after the wipe.
+                withContext(NonCancellable) { afterCancelledIngest(context, generation, moved, sourceFile, file) }
                 throw e
             }
             when (result) {
@@ -97,6 +98,19 @@ object RokidFrameInbox {
             }
         }
         return imported
+    }
+
+    private suspend fun afterCancelledIngest(context: Context, generation: Long, moved: Boolean, sourceFile: File, original: File) {
+        val id = frameIdOf(sourceFile)
+        if (MemoryWipe.generation.get() != generation) {
+            try { MemoryGraph.get(context).frames.deleteByIds(listOf(id)) } catch (e: Exception) { Log.w(TAG, "row not removed: ${e.javaClass.simpleName}") }
+            sourceFile.delete()
+            return
+        }
+        if (!moved) return
+        // A throwing check keeps the file (worst case: one duplicate ingest), never loses it.
+        val hasRow = try { MemoryGraph.get(context).frames.byIds(listOf(id)).isNotEmpty() } catch (e: Exception) { false }
+        if (!hasRow) WipeFence.mutex.withLock { sourceFile.renameTo(original) }
     }
 
     suspend fun ingestSinglePath(context: Context, absolutePath: String, source: String = "rokid_glasses"): Boolean {

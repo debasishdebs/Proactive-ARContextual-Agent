@@ -105,6 +105,21 @@ class RokidFrameInboxTest {
         assertEquals(0, rows())
     }
 
+    /** Fix round 2 I4: a drain cancelled while a Delete all runs deletes the file instead of resurrecting it. */
+    @Test fun aCancelDuringAWipeDeletesTheFile() = runBlocking {
+        inboxFile("rokid_1_a.jpg")
+        val entered = CompletableDeferred<Unit>()
+        val job = launch(Dispatchers.IO) {
+            RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _ -> entered.complete(Unit); awaitCancellation() }
+        }
+        entered.await()
+        MemoryWipe.generation.incrementAndGet()
+        job.cancelAndJoin()
+        assertTrue(inbox.list().orEmpty().isEmpty())
+        assertTrue(archive.list().orEmpty().isEmpty())
+        assertEquals(0, rows())
+    }
+
     /** Fix round 1: Delete all walks the inbox before the archive, so a file an ingest moves mid-walk is still seen. */
     @Test fun theInboxIsWalkedBeforeTheArchive() {
         assertEquals(listOf("rokid_inbox", "rokid_archive"), RokidFrameInbox.FRAME_DIRS)
