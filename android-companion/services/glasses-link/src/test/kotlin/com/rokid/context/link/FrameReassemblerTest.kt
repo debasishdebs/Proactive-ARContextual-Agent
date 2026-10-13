@@ -74,4 +74,47 @@ class FrameReassemblerTest {
         assertIs<Assembly.Complete>(r.accept(b[3], 0))
         assertIs<Assembly.Complete>(r.accept(a[3], 0))
     }
+
+    @Test fun aFifthConcurrentFrameEvictsTheStalestPartial() {
+        val r = FrameReassembler()
+        val frames = (1..5).map { chunks("p$it") }
+        frames.forEachIndexed { i, c -> r.accept(c[0], i.toLong()) }
+        assertEquals(4, r.pendingCount)
+        val stalest = frames[0]
+        (1..3).forEach { assertEquals(Assembly.Pending, r.accept(stalest[it], 10L + it)) }
+        val newest = frames[4]
+        (1..2).forEach { r.accept(newest[it], 20L + it) }
+        assertIs<Assembly.Complete>(r.accept(newest[3], 30))
+    }
+
+    @Test fun anOversizeChunkIsIgnored() {
+        val m = chunks()[0].meta
+        assertEquals(Assembly.Ignored, FrameReassembler().accept(FrameChunk(m, "A".repeat(70_000)), 0))
+    }
+
+    @Test fun aDuplicateChunkIsIdempotent() {
+        val r = FrameReassembler()
+        val c = chunks()
+        r.accept(c[0], 0); r.accept(c[1], 1); r.accept(c[1], 2); r.accept(c[2], 3)
+        val done = r.accept(c[3], 4)
+        assertIs<Assembly.Complete>(done)
+        assertContentEquals(jpeg, done.jpeg)
+    }
+
+    @Test fun aChangedCrcOrCountRestartsTheFrame() {
+        val r = FrameReassembler()
+        val old = chunks()
+        r.accept(old[0], 0); r.accept(old[1], 1); r.accept(old[2], 2)
+        val other = ByteArray(5_000) { (it % 13).toByte() }
+        val fresh = FrameCodec.split("f1", other, capturedAtMs = 7, chunkChars = 2_000)
+        assertEquals(Assembly.Pending, r.accept(fresh[3], 3), "a new crc discards the old parts")
+        (0..1).forEach { assertEquals(Assembly.Pending, r.accept(fresh[it], 4L + it)) }
+        val done = r.accept(fresh[2], 6)
+        assertIs<Assembly.Complete>(done)
+        assertContentEquals(other, done.jpeg)
+        val longer = FrameCodec.split("f2", jpeg, capturedAtMs = 7, chunkChars = 1_000)
+        r.accept(chunks("f2")[0], 7)
+        (1 until longer.size).forEach { assertEquals(Assembly.Pending, r.accept(longer[it], 8L + it), "a new count restarts") }
+        assertIs<Assembly.Complete>(r.accept(longer[0], 30))
+    }
 }
