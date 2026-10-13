@@ -43,8 +43,14 @@ object ProbeFeed {
      * The run's bytes count only when the recognizer ended normally ([SttResult.Text], [SttResult.NoSpeech], or no final
      * before the wait ran out). A recognizer that errored (busy, disconnected, pack missing, no permission) stopped
      * reading for its own reasons: null, NOT_VERIFIED, so a transient error is never stored as UNSUPPORTED (review I1).
+     *
+     * A closed feed ([ProbeOutcome.peerClosed]) is null too, whatever the recognizer said. We hold the pipe's read end
+     * until the recognizer is destroyed (preflight F1), so the recognizer closing its copy can't give EPIPE: a closed
+     * feed is our own I/O fault (a short write, EIO/EBADF, a throwing sink). This supersedes Task 5's ruling that a
+     * peer close before the minimum feed is UNSUPPORTED, which still holds in [ExternalAudioProbe.verdict] for a
+     * caller that doesn't hold the read end, but never reaches it from the Android probe.
      */
-    fun judge(final: SttResult?, outcome: ProbeOutcome): ProbeOutcome? = when (final) {
+    fun judge(final: SttResult?, outcome: ProbeOutcome): ProbeOutcome? = if (outcome.peerClosed) null else when (final) {
         null, is SttResult.Text, SttResult.NoSpeech -> outcome
         SttResult.Failed, SttResult.PackMissing, SttResult.NoPermission, SttResult.FallbackSuspected -> null
     }
