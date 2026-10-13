@@ -22,10 +22,7 @@ import com.rokid.context.phone.ui.status.StorageUsage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -117,10 +114,9 @@ class SettingsDeps(
                 runCatching { app.startActivity(intent) }.onFailure { Log.i("Settings", "app settings unavailable (${it.javaClass.simpleName})") }
             },
             sources = AppSources(app),
-            capture = HubGraph.get(app).let { hub ->
-                val paused = hub.activePauses.map { it.isNotEmpty() }.stateIn(scope, SharingStarted.Eagerly, hub.activePauses.value.isNotEmpty())
-                com.rokid.context.phone.capture.PhoneCaptureControl(app, paused)
-            },
+            capture = com.rokid.context.phone.capture.PhoneCaptureControl(
+                app, com.rokid.context.phone.capture.PhoneCaptureControl.storedPauses({ MemoryGraph.get(app).db.pauseDao() }) { HubGraph.get(app).hudSettings.value.quietHours },
+            ),
         )
     }
 }

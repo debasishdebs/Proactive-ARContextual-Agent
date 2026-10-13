@@ -46,4 +46,11 @@ class NudgeWorkerTest {
         assertEquals(true, g.run())
         assertEquals(now, prefs.getLong(NudgeRunGate.KEY_LAST_RUN, 0))
     }
+
+    /** Fix round 1: a HUD read that throws is a skipped run (fail-closed), not a crash. */
+    @Test fun aThrowingHudReadSkipsTheRun() = runBlocking {
+        val g = NudgeRunGate(prefs, { now }, { throw IllegalStateException("prefs") }) { runs++; NudgeRun.NotNeeded }
+        assertEquals(false, g.run())
+        assertEquals(0, runs)
+    }
 }

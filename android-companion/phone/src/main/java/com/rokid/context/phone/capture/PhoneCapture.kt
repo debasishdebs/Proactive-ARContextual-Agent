@@ -13,25 +13,41 @@ import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.work.FrameIngestWorker
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 
+sealed interface CapturePrepare {
+    data class Ready(val uri: Uri) : CapturePrepare
+    data object Paused : CapturePrepare
+    data object Failed : CapturePrepare
+}
+
+enum class CaptureResult { SAVED, CANCELLED, PAUSED, FAILED }
+
 /** Settings › Phone camera & mic "Capture now" (R-66) as the screen sees it. */
 interface CaptureNowControl {
-    /** Capture is paused (any active pause): Capture now is disabled. */
+    /** Capture is paused (any active pause), as last read on IO by [refresh]: Capture now is disabled. */
     val paused: StateFlow<Boolean>
-    /** A fresh FileProvider target for TakePicture, or null if none could be made. Off Main. */
-    suspend fun prepare(): Uri?
-    /** TakePicture returned: [saved] = false (cancelled) writes nothing. True when the photo entered the pipeline. */
-    suspend fun finish(saved: Boolean): Boolean
+    /** Re-reads the pause set on IO (screen open and resume). */
+    fun refresh()
+    /** Re-checks the pause set, deletes stale shots, then makes a FileProvider target for TakePicture. Off Main. */
+    suspend fun prepare(): CapturePrepare
+    /** TakePicture returned. Cancelled, or paused meanwhile: the file is deleted and nothing is ingested. */
+    suspend fun finish(saved: Boolean): CaptureResult
 
     companion object {
         val None: CaptureNowControl = object : CaptureNowControl {
             override val paused: StateFlow<Boolean> = kotlinx.coroutines.flow.MutableStateFlow(true)
-            override suspend fun prepare(): Uri? = null
-            override suspend fun finish(saved: Boolean) = false
+            override fun refresh() = Unit
+            override suspend fun prepare(): CapturePrepare = CapturePrepare.Failed
+            override suspend fun finish(saved: Boolean) = CaptureResult.FAILED
         }
     }
 }
@@ -49,6 +65,9 @@ class PhoneCapture(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     fun target(): File = File(File(app.cacheDir, DIR).apply { mkdirs() }, "phone_${clock()}.jpg")
+
+    /** Shots in `cache/capture`, newest first. */
+    fun pending(): List<File> = File(app.cacheDir, DIR).listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() }.orEmpty()
 
     fun discard(file: File) { runCatching { file.delete() } }
 
@@ -96,23 +115,51 @@ class PhoneCapture(
     }
 }
 
-/** The production [CaptureNowControl]: one capture at a time; the target is kept until TakePicture returns. */
+/**
+ * The production [CaptureNowControl]. [pausedNow] reads the stored pause set on IO (fail-closed: paused until the first
+ * read). The target is not kept in memory: after process death [finish] takes the newest file in `cache/capture`,
+ * and [prepare] deletes any older shot first (one capture at a time).
+ */
 class PhoneCaptureControl(
     private val app: Context,
-    override val paused: StateFlow<Boolean>,
+    private val pausedNow: suspend () -> Boolean,
     private val capture: PhoneCapture = PhoneCapture(app),
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val uri: (File) -> Uri = { PhoneCapture.uriFor(app, it) },
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : CaptureNowControl {
-    @Volatile private var pending: File? = null
+    private val state = MutableStateFlow(true)
+    override val paused: StateFlow<Boolean> = state.asStateFlow()
 
-    override suspend fun prepare(): Uri? = withContext(io) {
-        runCatching { capture.target().also { pending = it }.let { PhoneCapture.uriFor(app, it) } }.getOrNull()
+    override fun refresh() { scope.launch { read() } }
+
+    private suspend fun read(): Boolean = withContext(io) {
+        try { pausedNow() } catch (c: CancellationException) { throw c } catch (e: Exception) { true } // fail-closed
+    }.also { state.value = it }
+
+    override suspend fun prepare(): CapturePrepare {
+        if (read()) return CapturePrepare.Paused
+        return withContext(io) {
+            runCatching {
+                capture.pending().forEach(capture::discard)
+                CapturePrepare.Ready(uri(capture.target()))
+            }.getOrDefault(CapturePrepare.Failed)
+        }
     }
 
-    override suspend fun finish(saved: Boolean): Boolean {
-        val file = pending ?: return false
-        pending = null
-        if (!saved) { withContext(io) { capture.discard(file) }; return false }
-        return capture.ingest(file)
+    override suspend fun finish(saved: Boolean): CaptureResult {
+        val file = withContext(io) { capture.pending().firstOrNull() } ?: return if (saved) CaptureResult.FAILED else CaptureResult.CANCELLED
+        if (!saved) { withContext(io) { capture.discard(file) }; return CaptureResult.CANCELLED }
+        if (read()) { withContext(io) { capture.discard(file) }; return CaptureResult.PAUSED }
+        return if (capture.ingest(file)) CaptureResult.SAVED else CaptureResult.FAILED
+    }
+
+    companion object {
+        /** Read-only: a stored record active now, or local now inside quiet hours. Never writes or mints a record. */
+        fun storedPauses(dao: () -> com.rokid.context.memory.db.PauseDao, quietHours: () -> com.rokid.context.core.model.QuietHours?): suspend () -> Boolean = {
+            val now = System.currentTimeMillis()
+            val local = java.time.Instant.ofEpochMilli(now).atZone(java.time.ZoneId.systemDefault())
+            dao().records().any { it.untilMs == null || now < it.untilMs!! } || quietHours()?.contains(local.hour * 60 + local.minute) == true
+        }
     }
 }

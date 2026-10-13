@@ -134,6 +134,7 @@ fun SourcesScreen(
                     if (r.kind in state.needsPermission) SecondaryAction(PERMISSION_NEEDED, onOpenAppSettings, tag = "${tag}_permission")
                 }
                 NoticeText(FOOTER, tag = "sources_footer")
+                NoticeText(LOCATION_NOTE, tag = "sources_location_note")
             }
         }
         item {
@@ -150,6 +151,7 @@ fun SourcesScreen(
 }
 
 const val PERMISSION_NEEDED = "Permission needed \u00b7 Open settings"
+const val LOCATION_NOTE = "Location names come from the phone's built-in geocoder, which may look the place up online."
 const val FOOTER = "Used only on this phone to answer and nudge. Never sent to your glasses."
 
 /**

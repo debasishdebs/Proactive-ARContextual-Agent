@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.hasText
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -274,12 +275,41 @@ class PhoneInputsTest {
             assertEquals("Couldn't save the photo", withTimeout(5_000) { vm.state.first { it.captureNotice != "Captured" && it.captureNotice != null } }.captureNotice)
         } finally { vm.cancelScope() }
     }
+
+    /** Fix round 1 (I2): a pause that began during the shot ingests nothing and says so; a launch failure frees the button. */
+    @Test fun aPauseDuringTheShotShowsThePausedCopyAndALaunchFailureResetsBusy() = runBlocking {
+        val capture = FakeCaptureNow()
+        val vm = PhoneInputsViewModel(FakeVoiceControls(VoiceCapabilities(VoiceStatus.SUPPORTED, VoiceStatus.SUPPORTED, canDownloadPack = false)), capture)
+        try {
+            assertTrue("opening the screen re-reads the pause", capture.refreshes >= 1)
+            capture.pausedAtFinish = true
+            vm.captureNow {}
+            vm.onPictureTaken(true)
+            assertEquals("Paused \u2014 resume to capture", withTimeout(5_000) { vm.state.first { it.captureNotice != null } }.captureNotice)
+            vm.captureNow { throw IllegalStateException("no camera") }
+            assertEquals(false, withTimeout(5_000) { vm.state.first { !it.captureBusy && it.captureNotice == "Couldn't save the photo" } }.captureBusy)
+        } finally { vm.cancelScope() }
+    }
 }
 
 class FakeCaptureNow : com.rokid.context.phone.capture.CaptureNowControl {
     override val paused = MutableStateFlow(false)
     var ok = true
+    var pausedAtFinish = false
+    var throwOnLaunch = false
+    var refreshes = 0
     val finished = mutableListOf<Boolean>()
-    override suspend fun prepare(): android.net.Uri? = android.net.Uri.parse("content://x/capture/phone_1.jpg")
-    override suspend fun finish(saved: Boolean): Boolean { finished += saved; return saved && ok }
+    override fun refresh() { refreshes++ }
+    override suspend fun prepare(): com.rokid.context.phone.capture.CapturePrepare =
+        if (paused.value) com.rokid.context.phone.capture.CapturePrepare.Paused
+        else com.rokid.context.phone.capture.CapturePrepare.Ready(android.net.Uri.parse("content://x/capture/phone_1.jpg"))
+    override suspend fun finish(saved: Boolean): com.rokid.context.phone.capture.CaptureResult {
+        finished += saved
+        return when {
+            !saved -> com.rokid.context.phone.capture.CaptureResult.CANCELLED
+            pausedAtFinish -> com.rokid.context.phone.capture.CaptureResult.PAUSED
+            ok -> com.rokid.context.phone.capture.CaptureResult.SAVED
+            else -> com.rokid.context.phone.capture.CaptureResult.FAILED
+        }
+    }
 }

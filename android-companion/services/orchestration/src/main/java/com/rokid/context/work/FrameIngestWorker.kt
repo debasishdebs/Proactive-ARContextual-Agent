@@ -18,19 +18,21 @@ class FrameIngestWorker(
         // R-64: one place lookup per run, and only when Location is on and granted (else null). Never sent to the glasses.
         val place = SourcesGraph.get(applicationContext).placeLabel(System.currentTimeMillis())
         val sourceImagePath = inputData.getString(KEY_SOURCE_IMAGE_PATH).orEmpty()
-        var single = 0
+        val ids = mutableListOf<String>()
         if (sourceImagePath.isNotBlank()) {
             val source = inputData.getString(KEY_SOURCE)?.takeIf { it.startsWith("rokid") } ?: "rokid_single_push"
-            if (RokidFrameInbox.ingestSinglePath(applicationContext, sourceImagePath, source = source, placeLabel = place)) single = 1
+            RokidFrameInbox.ingestSinglePath(applicationContext, sourceImagePath, source = source, placeLabel = place)?.let(ids::add)
         }
+        ids += RokidFrameInbox.ingestPendingIds(applicationContext, maxItems = 16, placeLabel = place)
 
-        val imported = single + RokidFrameInbox.ingestPending(applicationContext, maxItems = 16, placeLabel = place)
+        val imported = ids.size
         if (imported > 0) {
             val config = AppConfigStore.getWithoutSecret(applicationContext)
             QueueRuntimeStore.enqueue(
                 context = applicationContext,
                 queue = QueuePriority.SUMMARIZER,
-                payload = QueuePayloads.batchedWrite(source = "frame_ingest_worker", importedFrames = imported, manual = false),
+                // Exactly this run's frames: a phone capture never re-summarises older frames (fix round 1).
+                payload = QueuePayloads.batchedWrite(source = "frame_ingest_worker", importedFrames = imported, manual = false, frameIdsCsv = ids.joinToString(",")),
                 personaSnapshot = config.persona,
                 ttlHours = 24,
             )

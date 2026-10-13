@@ -127,8 +127,8 @@ class PipelineRecordsTest {
     @Test fun inboxFramesArchivedInTheSameMillisecondBothStoreWithDistinctFullIds() = runBlocking {
         val a = jpg("1760000000000_rokid_1111_a.jpg")
         val b = jpg("1760000000000_rokid_1111_b.jpg")
-        assertTrue(RokidFrameInbox.ingestSinglePath(ctx, a))
-        assertTrue(RokidFrameInbox.ingestSinglePath(ctx, b))
+        assertTrue(RokidFrameInbox.ingestSinglePath(ctx, a) != null)
+        assertTrue(RokidFrameInbox.ingestSinglePath(ctx, b) != null)
         assertEquals(setOf("1760000000000_rokid_1111_a", "1760000000000_rokid_1111_b"), PipelineRecords.allFrames(ctx).map { it.id }.toSet())
     }
 }
