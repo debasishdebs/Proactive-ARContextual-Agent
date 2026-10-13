@@ -5,6 +5,7 @@ import kotlin.math.min
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -104,9 +105,10 @@ class PageSlotPipeTest {
         assertFalse(FallbackGuard.suspects(m), "page $page")
     }
 
-    /** The review's case: 16 KiB pages at 16 slots take the whole probe feed unread. Measured, that fails closed. */
+    /** The review's case: 16 KiB pages at 16 slots take the whole probe feed unread. Measured, it is never verified. */
     @Test fun anUnpinnedSixteenKiBPipeNeverPassesANonReader() {
-        assertEquals(ProbeVerdict.UNSUPPORTED, probe(16_384, 16, readUpTo = 0))
+        assertNull(probe(16_384, 16, readUpTo = 0))
+        assertNull(probe(16_384, 16, readUpTo = everything), "nor a reader: 256 000 > half the feed")
         assertFalse(FallbackGuard.suspects(guard(16_384, 16, seconds = 8, readUpTo = 0)), "the pipe holds 8 s")
         assertTrue(FallbackGuard.suspects(guard(16_384, 16, seconds = 10, readUpTo = 0)))
     }

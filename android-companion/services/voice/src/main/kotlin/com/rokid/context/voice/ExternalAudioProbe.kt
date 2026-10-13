@@ -13,6 +13,8 @@ data class ProbeOutcome(
     val acceptedBytes: Long,
     val capacityBytes: Long = PipeLimits.PIPE_CAPACITY_BYTES,
     val peerClosed: Boolean = false,
+    /** The speech part of the feed (the bundled clip); by default everything before the silence tail. */
+    val clipBytes: Long = fedBytes - ExternalAudioProbe.SILENCE_TAIL_BYTES,
 )
 
 /** Spec §5.1.1 external-audio verification (onboarding, after OS/app updates, after the guard fired). */
@@ -25,12 +27,18 @@ object ExternalAudioProbe {
     const val SILENCE_TAIL_BYTES = Pcm.BYTES_PER_SECOND
 
     /**
-     * SUPPORTED when at least half the feed was certainly consumed (accepted − capacity ≥ fed / 2). A feed too short
-     * to decide gives null, unless the recognizer closed our pipe first: that is UNSUPPORTED.
+     * SUPPORTED when at least half the feed was certainly consumed (accepted − capacity ≥ fed / 2). Null (NOT_VERIFIED)
+     * whenever the run can't decide: a feed too short, or a pipe too big to tell a reader from a non-reader
+     * (2 × capacity > fed, or capacity > clip). A recognizer that closed our pipe before the feed ended is UNSUPPORTED.
      */
     fun verdict(o: ProbeOutcome): ProbeVerdict? {
         if (o.fedBytes < MIN_FEED_BYTES) return if (o.peerClosed) ProbeVerdict.UNSUPPORTED else null
+        if (!decidable(o.fedBytes, o.clipBytes, o.capacityBytes)) return null
         val consumedAtLeast = (o.acceptedBytes - o.capacityBytes).coerceAtLeast(0)
         return if (consumedAtLeast * 2 >= o.fedBytes) ProbeVerdict.SUPPORTED else ProbeVerdict.UNSUPPORTED
     }
+
+    /** Whether a feed of [fedBytes] (speech: [clipBytes]) through a pipe of [capacityBytes] can produce a verdict at all. */
+    fun decidable(fedBytes: Long, clipBytes: Long, capacityBytes: Long): Boolean =
+        2 * capacityBytes <= fedBytes && capacityBytes <= clipBytes
 }

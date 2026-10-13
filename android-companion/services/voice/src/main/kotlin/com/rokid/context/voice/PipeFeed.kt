@@ -46,7 +46,14 @@ object PipeLimits {
     const val MAX_PENDING_BYTES = 3 * Pcm.BYTES_PER_SECOND
 }
 
-/** Measures a pipe's real capacity: fill a scratch pipe (created like the feed pipe) with [PipeLimits.MAX_WRITE_BYTES] writes. */
+/**
+ * Measures a pipe's real capacity: fill a scratch pipe (created like the feed pipe) with [PipeLimits.MAX_WRITE_BYTES] writes.
+ *
+ * Task 6 MUST first pin both pipes with `F_SETPIPE_SZ(65536)`: `Os.fcntlInt(fd, 1031, 65536)`, then re-measure. The
+ * kernel default is 16 page slots, which is 256 000 bytes of 3 200-byte writes on 16 KiB-page phones. If the pinned
+ * capacity is still above half the probe feed ([ExternalAudioProbe.decidable] is false), skip the probe: the result
+ * is NOT_VERIFIED, never UNSUPPORTED.
+ */
 object PipeCapacity {
     /** Bytes accepted before the first refusal, at most [limitBytes]. The caller closes [sink]. */
     fun measure(sink: PipeSink, limitBytes: Long = 4L * 1024 * 1024): Long {

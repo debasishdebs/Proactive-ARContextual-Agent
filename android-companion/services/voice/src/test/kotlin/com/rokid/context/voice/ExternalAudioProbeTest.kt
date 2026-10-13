@@ -21,7 +21,23 @@ class ExternalAudioProbeTest {
     @Test fun theMeasuredCapacityIsSubtracted() {
         assertEquals(ProbeVerdict.SUPPORTED, ExternalAudioProbe.verdict(ProbeOutcome(feed, 51_200L + 83_071, capacityBytes = 51_200)))
         assertEquals(ProbeVerdict.UNSUPPORTED, ExternalAudioProbe.verdict(ProbeOutcome(feed, 51_200L + 83_071, capacityBytes = 65_536)))
-        assertEquals(ProbeVerdict.UNSUPPORTED, ExternalAudioProbe.verdict(ProbeOutcome(feed, feed, capacityBytes = 256_000)), "a 256 000-byte pipe swallows the whole feed")
+        assertNull(ExternalAudioProbe.verdict(ProbeOutcome(feed, feed, capacityBytes = 256_000)), "a 256 000-byte pipe swallows the whole feed: undecidable")
+    }
+
+    /** Fix round 2: a pipe bigger than half the feed can't tell a reader from a non-reader, so the probe decides nothing. */
+    @Test fun aCapacityAboveHalfTheFeedDecidesNothing() {
+        val half = feed / 2 // 83 071
+        assertEquals(ProbeVerdict.SUPPORTED, ExternalAudioProbe.verdict(ProbeOutcome(feed, feed, capacityBytes = half)))
+        assertEquals(ProbeVerdict.UNSUPPORTED, ExternalAudioProbe.verdict(ProbeOutcome(feed, half, capacityBytes = half)))
+        assertNull(ExternalAudioProbe.verdict(ProbeOutcome(feed, feed, capacityBytes = half + 1)))
+        assertNull(ExternalAudioProbe.verdict(ProbeOutcome(feed, half + 1, capacityBytes = half + 1)), "a non-reader is never UNSUPPORTED here")
+    }
+
+    /** A recognizer that stops at the end of speech must still read past the capacity: it can't exceed the clip. */
+    @Test fun aCapacityAboveTheClipDecidesNothing() {
+        assertEquals(ProbeVerdict.SUPPORTED, ExternalAudioProbe.verdict(ProbeOutcome(400_000, 400_000, capacityBytes = 150_000, clipBytes = 150_000)))
+        assertNull(ExternalAudioProbe.verdict(ProbeOutcome(400_000, 400_000, capacityBytes = 150_000, clipBytes = 149_999)))
+        assertNull(ExternalAudioProbe.verdict(ProbeOutcome(400_000, 150_000, capacityBytes = 150_000, clipBytes = 149_999)))
     }
 
     /** Writes stall at the capacity when nobody reads: < 50 % of the feed can have been consumed. */
