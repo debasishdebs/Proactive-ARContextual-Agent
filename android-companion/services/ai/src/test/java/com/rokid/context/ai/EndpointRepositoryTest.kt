@@ -6,6 +6,8 @@ import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.EndpointDao
 import com.rokid.context.memory.db.EndpointEntity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -168,5 +170,39 @@ class EndpointRepositoryTest {
         }
         val thrown = runCatching { EndpointRepository(dao, vault).save(e("https://h.example"), apiKey = "k1") }.exceptionOrNull()
         assertTrue(thrown is CancellationException)
+    }
+
+    // ---- Phase 8 D fix round 1 ----
+
+    /** I1: the sweep can't see a key whose row is still being written (both hold the repository's write lock). */
+    @Test fun aSaveInterleavedWithTheSweepKeepsItsKey() = kotlinx.coroutines.runBlocking {
+        val upsertStarted = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val dao = object : EndpointDao by db.endpointDao() {
+            override suspend fun upsert(endpoint: EndpointEntity) { upsertStarted.complete(Unit); release.await(); db.endpointDao().upsert(endpoint) }
+        }
+        val r = EndpointRepository(dao, vault)
+        val save = async(kotlinx.coroutines.Dispatchers.Default) { r.save(e("https://h.example"), apiKey = "k1").getOrThrow() }
+        upsertStarted.await()
+        val sweep = async(kotlinx.coroutines.Dispatchers.Default) { r.sweepOrphanKeys() }
+        kotlinx.coroutines.delay(300) // without the lock the sweep finishes here and removes the key
+        release.complete(Unit)
+        save.await()
+        assertEquals(0, sweep.await())
+        assertEquals("k1", vault.get(EndpointRepository.keyRef("e1")))
+    }
+
+    /** A cancellation right after the key is stored still writes the row: never a key without its row. */
+    @Test fun aCancelledSaveNeverLeavesAKeyWithoutItsRow() = kotlinx.coroutines.runBlocking {
+        var job: kotlinx.coroutines.Job? = null
+        val cancelling = object : KeyVault by vault {
+            override fun put(ref: String, key: String) { vault.put(ref, key); job!!.cancel() }
+        }
+        val r = EndpointRepository(db.endpointDao(), cancelling)
+        job = launch(kotlinx.coroutines.Dispatchers.Default, start = kotlinx.coroutines.CoroutineStart.LAZY) { r.save(e("https://h.example"), apiKey = "k1") }
+        job.start(); job.join()
+        val hasKey = vault.get(EndpointRepository.keyRef("e1")) != null
+        val hasRow = r.byId("e1") != null
+        assertEquals(hasRow, hasKey)
     }
 }

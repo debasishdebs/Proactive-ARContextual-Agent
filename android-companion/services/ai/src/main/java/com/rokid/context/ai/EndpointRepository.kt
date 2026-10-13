@@ -9,10 +9,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** Endpoints live in Room; their keys in [vault] (the Keystore in the app), which is only ever reached on [io] (F18). */
 class EndpointRepository(private val dao: EndpointDao, private val vault: KeyVault, private val io: CoroutineDispatcher = Dispatchers.IO) {
+    /** Held by [save]'s key + row writes and by the whole of [sweepOrphanKeys] (fix round 1, I1). */
+    private val writes = Mutex()
+
     /**
      * [apiKey] null = keep the stored key; blank = remove it (e.g. Ollama without auth).
      * A new key is written before the row (P8 D2): if the row write fails, the vault is put back as it was (the earlier
@@ -24,17 +29,23 @@ class EndpointRepository(private val dao: EndpointDao, private val vault: KeyVau
         val previous = if (key != null || apiKey == null) withContext(io) { vault.get(keyRef(endpoint.id)) } else null
         val willHaveKey = key != null || (apiKey == null && previous != null)
         val clean = EndpointRules.clean(endpoint, willHaveKey).getOrThrow()
-        if (key != null) {
-            withContext(io) { vault.put(keyRef(clean.id), key) }
-            try {
-                dao.upsert(clean.toEntity())
-            } catch (e: Throwable) {
-                withContext(NonCancellable + io) { restoreKey(clean.id, previous) }
-                throw e
+        // Fix round 1: [writes] keeps the orphan sweep out while a key is stored before its row; NonCancellable makes
+        // put + upsert (+ rollback) one unit, so a cancellation can't leave a key without its row or a row without its key.
+        writes.withLock {
+            withContext(NonCancellable) {
+                if (key != null) {
+                    withContext(io) { vault.put(keyRef(clean.id), key) }
+                    try {
+                        dao.upsert(clean.toEntity())
+                    } catch (e: Throwable) {
+                        withContext(io) { restoreKey(clean.id, previous) }
+                        throw e
+                    }
+                } else {
+                    dao.upsert(clean.toEntity())
+                    if (apiKey != null) withContext(io) { vault.remove(keyRef(clean.id)) }
+                }
             }
-        } else {
-            dao.upsert(clean.toEntity())
-            if (apiKey != null) withContext(io) { vault.remove(keyRef(clean.id)) }
         }
         Result.success(clean)
     } catch (e: CancellationException) {
@@ -71,7 +82,7 @@ class EndpointRepository(private val dao: EndpointDao, private val vault: KeyVau
     }
 
     /** Removes every `key:<id>` with no endpoint row (a crash mid-save or mid-delete), off Main; returns how many went. */
-    suspend fun sweepOrphanKeys(): Int = withContext(io) {
+    suspend fun sweepOrphanKeys(): Int = writes.withLock { withContext(io) {
         val live = dao.all().map { keyRef(it.id) }.toSet()
         vault.refs().filter { it.startsWith(KEY_PREFIX) && it !in live }.count { ref ->
             try {
@@ -82,7 +93,7 @@ class EndpointRepository(private val dao: EndpointDao, private val vault: KeyVau
                 Log.w(TAG, "Orphan key remove failed: ${e.javaClass.simpleName}"); false
             }
         }
-    }
+    } }
 
     companion object {
         private const val TAG = "EndpointRepository"

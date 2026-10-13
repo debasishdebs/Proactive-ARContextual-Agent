@@ -201,6 +201,17 @@ class EndpointSeederTest {
         assertTrue(runCatching { s.retireLegacyKey(azure) }.exceptionOrNull() is CancellationException)
     }
 
+    /** Fix round 1: only the rules' own rejection is permanent; any other IllegalArgumentException retries next start. */
+    @Test fun anUnexpectedIllegalArgumentIsRetriedNextStart() = runTest {
+        val dao = object : EndpointDao by db.endpointDao() {
+            override suspend fun upsert(endpoint: EndpointEntity) = throw IllegalArgumentException("unexpected")
+        }
+        val repo = EndpointRepository(dao, vault)
+        val s = EndpointSeeder(repo, RoleBindingRepository(db.roleBindingDao(), repo), state)
+        assertTrue(s.seedIfNeeded(azure).isFailure)
+        assertFalse(state.isDone())
+    }
+
     private class CountingEndpointDao(private val d: EndpointDao) : EndpointDao by d {
         var writes = 0
         override suspend fun upsert(endpoint: EndpointEntity) { writes++; d.upsert(endpoint) }
