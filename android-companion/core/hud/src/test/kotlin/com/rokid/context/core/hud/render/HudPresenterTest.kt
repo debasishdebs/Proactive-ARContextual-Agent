@@ -81,7 +81,7 @@ class HudPresenterTest {
         assertEquals(Overlay.Listening(""), p.present(frame(null), Verbosity.SILENT, HudNav(), null, 0, recording = true).overlay)
         assertEquals(Overlay.Listening(""), p.present(frame(Overlay.Answer("q", "a", speaking = true)), Verbosity.MEDIUM, HudNav(), null, 0, recording = true).overlay)
         assertEquals(Overlay.Listening("milk"), p.present(frame(Overlay.Listening("milk")), Verbosity.MEDIUM, HudNav(), null, 0, recording = true).overlay)
-        assertEquals(confirm, HudPresenter().present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 0, recording = true).overlay)
+        assertEquals(Overlay.Listening(""), HudPresenter().present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 0, recording = true).overlay, "final review I1: a Confirm waits")
         assertEquals(null, HudPresenter().present(frame(null), Verbosity.MEDIUM, HudNav(), null, 0).overlay)
     }
 
@@ -91,6 +91,34 @@ class HudPresenterTest {
             assertEquals(Overlay.Listening(""), HudPresenter().present(frame(null), Verbosity.MEDIUM, HudNav(), local, 1, recording = true).overlay)
         }
         assertEquals(Overlay.Toast("Capture resumed"), HudPresenter().present(frame(null), Verbosity.MEDIUM, HudNav(), LocalOverlay.Toast("Capture resumed", 0), 1).overlay)
+    }
+
+    /** Final review I1: a Confirm that arrives while recording waits under Listening; its 15 s start when it shows. */
+    @Test fun aConfirmArrivingWhileRecordingWaitsAndGetsItsFullWindow() {
+        val p = HudPresenter()
+        assertEquals(Overlay.Listening(""), p.present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 0, recording = true).overlay)
+        assertEquals(Overlay.Listening(""), p.present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 20_000, recording = true).overlay)
+        assertEquals(confirm, p.present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 20_001).overlay, "shown once recording ends")
+        assertEquals(confirm, p.present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 34_900).overlay, "never expired unseen")
+        assertNull(p.present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 35_001).overlay)
+    }
+
+    /** Final review I1, other order: a shown Confirm hidden by a recording gets a fresh window when it shows again. */
+    @Test fun aShownConfirmHiddenByRecordingGetsAFreshWindowAfter() {
+        val p = HudPresenter()
+        assertEquals(confirm, p.present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 0).overlay)
+        assertEquals(Overlay.Listening(""), p.present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 10_000, recording = true).overlay)
+        assertEquals(confirm, p.present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 30_000).overlay)
+        assertEquals(confirm, p.present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 44_900).overlay)
+        assertNull(p.present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 45_001).overlay)
+    }
+
+    /** Final review I2: a phone toast (the ask was refused or failed) shows over the glasses' own Listening; an undo toast does not. */
+    @Test fun aPhoneToastOutranksListeningWhileRecording() {
+        val busy = Overlay.Toast("Phone is listening \u2014 try again")
+        assertEquals(busy, HudPresenter().present(frame(busy), Verbosity.SILENT, HudNav(), null, 0, recording = true).overlay)
+        val undo = Overlay.Toast("Added \u00b7 double-tap undo", undoProposalId = "p")
+        assertEquals(Overlay.Listening(""), HudPresenter().present(frame(undo), Verbosity.SILENT, HudNav(), null, 0, recording = true).overlay)
     }
 
     @Test fun undoToastVisibleForTenSeconds() {
