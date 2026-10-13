@@ -88,7 +88,11 @@ object GlassesLabels {
     )
     val VOICE_AVAILABLE = VoiceCapabilities(VoiceStatus.SUPPORTED, VoiceStatus.SUPPORTED, canDownloadPack = true)
 
-    /** Why tap = Ask can't work from the glasses, in phone words (the HUD gets its own short text), or null. */
+    /**
+     * Why tap = Ask can't work from the glasses, in phone words (the HUD gets its own short text), or null.
+     * [VoiceCapabilities.micHeld] is ignored on purpose: this screen is only visible with the app in front, where the
+     * hub holds the mic, and a mic not held is a transient state the HUD toast (`askBlockedReason`) explains.
+     */
     fun askUnavailable(c: VoiceCapabilities): String? = c.glasses.takeUnless { it == VoiceStatus.SUPPORTED }?.let(VoiceStatusText::glasses)
 }
 
@@ -142,7 +146,7 @@ fun GlassesSettingsScreen(
                 val disabled = if (state.askUnavailable != null) setOf(actions.indexOf(GestureAction.ASK)) else emptySet()
                 GlassesLabels.GESTURES.forEach { (g, label) ->
                     val current = s.gestures[g] ?: GestureAction.NONE
-                    ChoiceRow(label, actions.map { GlassesLabels.ACTIONS.getValue(it) }, actions.indexOf(current), { onGesture(g, actions[it]) }, tag = "gesture_${g.name}", disabled = disabled)
+                    ChoiceRow(label, actions.map { GlassesLabels.ACTIONS.getValue(it) }, actions.indexOf(current), { onGesture(g, actions[it]) }, tag = "gesture_${g.name}", disabled = disabled, disabledReason = state.askUnavailable)
                 }
                 state.askUnavailable?.let { NoticeText("Ask by voice from the glasses: $it — see Phone camera & mic", tag = "ask_unavailable") }
                 NoticeText("Long-press stays reserved for \"Hi Rokid\".")

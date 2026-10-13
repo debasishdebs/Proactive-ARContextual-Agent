@@ -44,6 +44,7 @@ import com.rokid.context.voice.VoiceCapabilities
 import com.rokid.context.voice.VoiceStatus
 import kotlinx.coroutines.flow.flowOf
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -138,5 +139,7 @@ class GlassesSettingsTest {
         compose.onNodeWithText("Ask by voice from the glasses: Needs speech pack — see Phone camera & mic").assertExists()
         compose.onNodeWithTag("gesture_TAP").performClick()
         compose.onNodeWithTag("gesture_TAP_${GestureAction.entries.indexOf(GestureAction.ASK)}").assertIsNotEnabled()
+        // Fix round 1: the greyed-out item itself carries the reason for TalkBack.
+        compose.onNodeWithTag("gesture_TAP_${GestureAction.entries.indexOf(GestureAction.ASK)}").assertContentDescriptionEquals("Ask \u2014 Needs speech pack")
     }
 }
