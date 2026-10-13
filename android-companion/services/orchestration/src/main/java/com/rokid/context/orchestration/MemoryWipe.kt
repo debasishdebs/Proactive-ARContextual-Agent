@@ -3,6 +3,9 @@ package com.rokid.context.orchestration
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
+import com.rokid.context.ai.SafeLog
+import com.rokid.context.connectors.actions.ProposalNotifications
+import com.rokid.context.connectors.actions.executors.ReminderExecutor
 import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.QueueRuntimeStore
@@ -53,7 +56,19 @@ object MemoryWipe {
             QueueRuntimeStore.clearAll(context) // bumps the generation again, under the queue lock (fix round 2 N1)
             val wipe = db.wipeDao()
             val paths = wipe.framePaths()
-            wipe.wipeMemory()
+            val proposals = wipe.wipeMemory()
+            // P7xP8 I1: as Forget does (ForgetActions.apply), an armed reminder alarm and a posted notification still
+            // hold the redacted text: cancel them for every proposal the wipe saw.
+            try {
+                proposals.forEach { ReminderExecutor.cancelAlarm(context, it) }
+            } catch (e: Exception) {
+                Log.w("MemoryWipe", "alarms not cancelled: ${SafeLog.describe(e)}")
+            }
+            try {
+                ProposalNotifications.cancel(context, proposals)
+            } catch (e: Exception) {
+                Log.w("MemoryWipe", "notifications not cancelled: ${SafeLog.describe(e)}")
+            }
             val deleted = WipeFence.mutex.withLock {
                 val listed = paths.filter { it.isNotBlank() }.map(::File)
                 val inbox = RokidFrameInbox.inboxDir(context)

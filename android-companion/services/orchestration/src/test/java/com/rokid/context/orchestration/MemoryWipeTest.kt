@@ -57,6 +57,26 @@ class MemoryWipeTest {
         assertEquals(listOf("m2"), g.memories.search("keys", 5).map { it.id }) // FTS rebuilt after the vacuum
     }
 
+    /** P7xP8 I1: Delete all redacts every surviving proposal (EXECUTED included), scrubs its log and disarms its reminder alarm. */
+    @Test fun deleteAllRedactsExecutedProposalsAndCancelsTheirReminderAlarms() = runBlocking<Unit> {
+        val g = MemoryGraph.get(ctx)
+        g.asks.add(AskEntity("ask9", 1, "q", "a", "[]", null, "phone", false))
+        val pid = "prop_ASK_ask9"
+        val r = com.rokid.context.connectors.actions.ActionParams.Reminder("Call the clinic", System.currentTimeMillis() + 3_600_000, "about the results")
+        g.proposals.addIgnore(com.rokid.context.memory.db.ProposalEntity(pid, "ASK", "ask9", "REMINDER", com.rokid.context.connectors.actions.ActionParams.encode(r), "EXECUTED", 0, "auto", "alarm:$pid", 1))
+        g.db.actionDao().log(com.rokid.context.memory.db.ActionLogEntity(ts = 1, proposalId = pid, transition = "EXECUTED", detail = "Call the clinic"))
+        com.rokid.context.connectors.actions.executors.ReminderExecutor(ctx).arm(pid, r)
+        val alarms = org.robolectric.Shadows.shadowOf(ctx.getSystemService(android.app.AlarmManager::class.java))
+        assertEquals(1, alarms.scheduledAlarms.size)
+
+        MemoryWipe.deleteAll(ctx)
+
+        assertEquals(0, alarms.scheduledAlarms.size)
+        val p = g.db.actionDao().proposal(pid)
+        assertTrue(p == null || p.paramsJson == com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS)
+        assertTrue(g.db.actionDao().logFor(pid).all { it.detail.isEmpty() })
+    }
+
     /** Final-review I2: cancelling the caller (the Memory screen's ViewModel) right after Delete all starts never stops it part-way. */
     @Test fun cancellingTheCallerRightAfterTheStartStillFinishesTheWipe() = runBlocking<Unit> {
         ctx.deleteDatabase(com.rokid.context.memory.db.DatabaseFactory.NAME)
