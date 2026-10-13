@@ -104,4 +104,25 @@ class RetentionWorkerTest {
         OrchestrationScheduler(ctx).pausePipeline()
         assertFalse(WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(RetentionWorker.NAME).get().single().state.isFinished)
     }
+
+    /** Fix round 1 C1: expiry never invalidates descendants; a MEDIUM summary outlives its SHORT sources. */
+    @Test fun summaryOutlivesItsShortSources() = runBlocking {
+        mem("src", MemoryTier.SHORT, 25 * hour)
+        mem("sum_young", MemoryTier.MEDIUM, 25 * hour)
+        mem("sum_old", MemoryTier.MEDIUM, 8 * 24 * hour)
+        graph.db.forgetDao().insertEdges(listOf(com.rokid.context.memory.db.MemorySourceEntity("sum_young", "src"), com.rokid.context.memory.db.MemorySourceEntity("sum_old", "src")))
+        work()
+        assertFalse(exists("src"))
+        assertEquals(ReviewState.OK, graph.db.memoryViewDao().byId("sum_young")!!.reviewState)
+        assertFalse(exists("sum_old"))
+        assertTrue(WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(ResummarizeWorker.NAME).get().isEmpty())
+    }
+
+    /** Fix round 1 I3: retention also sweeps JPEGs of tombstoned frames left behind by an earlier failed delete. */
+    @Test fun retentionSweepsOrphanJpegsOfTombstonedFrames() = runBlocking {
+        val jpg = File(ctx.filesDir, "rokid_archive/f_gone.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        graph.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("f_gone", 1))
+        work()
+        assertFalse(jpg.exists())
+    }
 }

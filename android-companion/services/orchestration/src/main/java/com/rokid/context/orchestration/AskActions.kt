@@ -83,6 +83,10 @@ object AskActions {
         if (!up) {
             val cited = graph.timeline.memoriesByIds(AskSources.parse(ask.sourcesJson)).filter { it.reviewState != ReviewState.INVALIDATED }
             if (cited.isNotEmpty()) {
+                // Fix round 1: review state (and the 👎 mark, I7) before the enqueue, so a drain it starts finds NEEDS_REVIEW.
+                val moved = cited.filter { it.reviewState == ReviewState.OK }
+                    .filter { graph.db.memoryViewDao().moveReviewState(it.id, ReviewState.OK.name, ReviewState.NEEDS_REVIEW.name) > 0 }
+                UserReviews.mark(context, cited.map { it.id })
                 val queued = withContext(Dispatchers.IO) {
                     val already = QueueRuntimeStore.live(context, QueuePriority.PRIORITY_REPROCESS)
                         .any { QueuePayloads.string(QueuePayloads.parse(it.payload), "dedupe") == askId }
@@ -95,9 +99,11 @@ object AskActions {
                         false
                     }
                 }
-                if (!queued) return@withLock false
-                cited.filter { it.reviewState == ReviewState.OK }
-                    .forEach { graph.db.memoryViewDao().moveReviewState(it.id, ReviewState.OK.name, ReviewState.NEEDS_REVIEW.name) }
+                if (!queued) {
+                    moved.forEach { graph.db.memoryViewDao().moveReviewState(it.id, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) }
+                    UserReviews.clear(context, cited.map { it.id })
+                    return@withLock false
+                }
             }
         }
         graph.asks.setRating(askId, rating) // field-level UPDATE: never a whole-row upsert

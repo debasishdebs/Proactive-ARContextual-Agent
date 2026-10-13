@@ -139,12 +139,20 @@ class AnswerService(
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
         val id = askId ?: "ask_${UUID.randomUUID()}"
+        var redacted = false
         val saved = memory.db.withTransaction {
             if (MemoryWipe.generation.get() != generation) return@withTransaction false
-            memory.asks.add(AskEntity(id, nowMs, q, text, AskSources.encode(out.sources), null, source, false))
+            // Phase 7 Forget fence (Stream F fix round 1 I1): a memory in the prompt or cited was forgotten while the
+            // model answered, so the reply may hold forgotten text: store it redacted, with no sources and no proposal.
+            redacted = !com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, r.ids + out.sources)
+            memory.asks.add(
+                if (redacted) AskEntity(id, nowMs, q, com.rokid.context.memory.forget.ForgetService.REDACTED, "[]", null, source, true)
+                else AskEntity(id, nowMs, q, text, AskSources.encode(out.sources), null, source, false),
+            )
             true
         }
         if (!saved) throw NoMemoriesException()
+        if (redacted) return AskOutcome.Answered(id)
         // Phase 7 (R-62): only after the ask row commits, so a proposal always has its origin row.
         val proposalId = out.proposedAction?.let { proposals.onProposed(ProposalOrigin.ASK, id, it, nowMs) }
         return AskOutcome.Answered(id, out.proposedAction, proposalId)

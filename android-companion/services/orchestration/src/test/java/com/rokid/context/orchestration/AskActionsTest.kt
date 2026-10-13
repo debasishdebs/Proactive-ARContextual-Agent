@@ -184,6 +184,7 @@ class AskActionsTest {
         assertEquals(listOf("rokid_mem_1"), QueuePayloads.ids(payload, "memory_ids_csv"))
         assertFalse(jobs.single().payload.contains("Milk carton")) // ids only, never text
         assertEquals(ReviewState.NEEDS_REVIEW, MemoryGraph.get(ctx).db.memoryViewDao().byId("rokid_mem_1")!!.reviewState)
+        assertEquals(setOf("rokid_mem_1"), UserReviews.marked(ctx)) // fix round 1 I7: the periodic scan skips it
     }
 
     /** Phase 7 ruling + carry: 👎 is a critic review (pass → OK); it never writes a summary through the reprocess path. */
@@ -208,6 +209,30 @@ class AskActionsTest {
         QueueRuntimeStore.clearAll(ctx)
     }
 
+    /** Fix round 1 minor: the review state is set before the enqueue (a drain started by it finds NEEDS_REVIEW). */
+    @Test fun reviewStateIsSetBeforeTheEnqueue() = runBlocking {
+        seedAsk()
+        var seen: ReviewState? = null
+        assertTrue(AskActions.rate(ctx, "a1", up = false) { _, _, _ -> seen = runBlocking { MemoryGraph.get(ctx).db.memoryViewDao().byId("rokid_mem_1")!!.reviewState }; Unit })
+        assertEquals(ReviewState.NEEDS_REVIEW, seen)
+    }
+
+    /** Fix round 1 I1: a memory forgotten while the model answers makes the saved ask redacted, with no proposal. */
+    @Test fun forgetDuringTheModelCallRedactsTheAsk() = runBlocking {
+        remember("rokid_mem_1", "Milk carton nearly empty in the fridge", 10)
+        reply = {
+            val g = MemoryGraph.get(ctx)
+            com.rokid.context.memory.forget.ForgetService(g.db, g.proposals).forgetFact("rokid_mem_1")
+            """{"answer":"Milk is almost empty.","sources":["rokid_mem_1"],"proposedAction":{"type":"SHOPPING_ADD","items":[{"name":"milk"}]}}"""
+        }
+        val r = AskActions.ask(ctx, "milk?") as AskOutcome.Answered
+        val ask = MemoryGraph.get(ctx).asks.byId(r.askId)!!
+        assertTrue(ask.redacted)
+        assertEquals(com.rokid.context.memory.forget.ForgetService.REDACTED, ask.answer)
+        assertEquals("[]", ask.sourcesJson)
+        assertEquals(null, r.proposedAction); assertEquals(null, r.proposalId)
+    }
+
     /** P6 T6 carry: two 👎 at once (double-tap) still queue one job. */
     @Test fun thumbsDownSelectedTwiceEnqueuesOnce() = runBlocking {
         seedAsk()
@@ -223,6 +248,7 @@ class AskActionsTest {
         assertFalse(AskActions.rate(ctx, "a1", up = false) { _, _, _ -> throw IllegalStateException("disk full") })
         assertEquals(null, MemoryGraph.get(ctx).asks.byId("a1")!!.rating)
         assertEquals(ReviewState.OK, MemoryGraph.get(ctx).db.memoryViewDao().byId("rokid_mem_1")!!.reviewState)
+        assertTrue(UserReviews.marked(ctx).isEmpty())
         assertFalse(AskActions.rate(ctx, "a1", up = false) { _, _, _ -> null }) // Delete all ran: nothing queued
         assertEquals(null, MemoryGraph.get(ctx).asks.byId("a1")!!.rating)
     }

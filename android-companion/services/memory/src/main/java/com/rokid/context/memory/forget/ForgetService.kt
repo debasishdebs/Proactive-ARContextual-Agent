@@ -56,13 +56,21 @@ class ForgetService(
         cascade(ids.distinct(), lockFrames)
     }
 
-    private suspend fun cascade(ids: List<String>, lockFrames: Boolean): Result {
+    /**
+     * Retention expiry (fix round 1 C1 ruling): like [forgetFacts] (rows, vectors, edges, tombstones, redaction of the
+     * asks/nudges citing [ids]) but derived memories are left alone: each one expires on its own tier window.
+     */
+    suspend fun expire(ids: Collection<String>): Result = db.withTransaction {
+        cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false)
+    }
+
+    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
         val frames = found.mapNotNull { it.frameId }.distinct()
         // 1. Closure, before any edge goes.
-        val invalidated = forgotten.chunked(CHUNK).flatMap { dao.descendants(it) }.toSet() - forgotten
+        val invalidated = if (!invalidateDescendants) emptySet() else forgotten.chunked(CHUNK).flatMap { dao.descendants(it) }.toSet() - forgotten
         val f = forgotten.toList()
         val d = invalidated.toList()
         // 2. F: rows, vectors (all spaces), every edge touching F.
@@ -78,9 +86,13 @@ class ForgetService(
         val nudges = cited.flatMap { id -> dao.nudgesCiting(likeFor(id)) }.distinctBy { it.id }.filter { n -> parseIds(n.sourceIdsJson).any { it in cited } }
         asks.forEach { dao.redactAsk(it.id, REDACTED) }
         nudges.forEach { dao.redactNudge(it.id, REDACTED) }
-        // 6. Proposals of redacted asks/nudges expire (nested in this transaction).
+        // 6. Proposals of redacted asks/nudges: PENDING expires (nested in this transaction); every proposal of those
+        //    origins loses its params (titles, items) and its action_log details (fix round 1 I2).
         val origins = asks.map { it.id } + nudges.map { it.id }
-        if (origins.isNotEmpty()) proposals.expireForOrigins(origins, now)
+        if (origins.isNotEmpty()) {
+            proposals.expireForOrigins(origins, now)
+            origins.chunked(CHUNK).forEach { c -> db.actionDao().scrubLogsForOrigins(c); db.actionDao().scrubParamsForOrigins(c, REDACTED_PARAMS) }
+        }
         val files = frames.filter { dao.remainingRefs(it) == 0 }.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
         return Result(forgotten, invalidated, asks.size, nudges.size, files)
     }
@@ -89,6 +101,11 @@ class ForgetService(
 
     companion object {
         const val REDACTED = "Removed \u2014 a source was forgotten"
+        /**
+         * `proposal.paramsJson` after its origin was redacted. Has no action fields, so executors and boot re-arm
+         * (Stream B) find nothing to run; an EXECUTED reminder is never re-armed from it.
+         */
+        const val REDACTED_PARAMS = "{\"redacted\":true}"
         private const val CHUNK = 500
 
         private fun parseIds(json: String): Set<String> = runCatching {

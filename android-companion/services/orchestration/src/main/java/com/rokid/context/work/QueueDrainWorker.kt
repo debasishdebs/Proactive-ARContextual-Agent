@@ -176,8 +176,11 @@ class QueueDrainWorker(
         val trusted = criticWorker.validate(job.id, confidence).status == SummaryStatus.TRUSTED || modelCriticPasses(facts, frameLines)
         val frameId = frames.maxBy { it.ts }.id
         val written = facts.withIndex().all { (i, f) ->
+            // Fix round 1 I6: fenced on every frame of the batch (any one forgotten → nothing written). Limitation: the fact
+            // is stored against the newest frame only, so a later Forget of an older contributing frame does not reach it.
             PipelineRecords.appendFact(applicationContext, "$factPrefix$i", frameId, f.text, f.type, f.tags, f.confidence,
-                MemoryTier.SHORT, if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation)
+                MemoryTier.SHORT, if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation,
+                fenceFrameIds = frames.map { it.id })
         }
         if (!written) return // Delete all ran meanwhile: no reprocess job (it would carry the fact text)
         EmbeddingWorker.enqueue(applicationContext)
@@ -253,6 +256,7 @@ class QueueDrainWorker(
         if (pass) {
             val view = com.rokid.context.memory.MemoryGraph.get(applicationContext).db.memoryViewDao()
             reviews.forEach { view.moveReviewState(it.id, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) }
+            com.rokid.context.orchestration.UserReviews.clear(applicationContext, reviews.map { it.id })
             EmbeddingWorker.enqueue(applicationContext)
         }
         PipelineRecords.upsertTrace(applicationContext, job.id, if (pass) "REVIEW_PASSED" else "NEEDS_REVIEW", "Critic review of ${reviews.size} memory(ies)")

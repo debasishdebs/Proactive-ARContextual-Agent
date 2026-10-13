@@ -119,6 +119,8 @@ object PipelineRecords {
         generation: Long = MemoryWipe.generation.get(),
         derived: Boolean = type == "summary",
         sourceIds: List<String> = emptyList(),
+        /** Every frame the fact came from (a batch); any one tombstoned → nothing written. */
+        fenceFrameIds: List<String> = listOfNotNull(frameId),
     ): Boolean {
         val g = graph(context)
         // Review I1: the Delete-all check and the insert share one transaction, and Delete all bumps the generation
@@ -129,17 +131,15 @@ object PipelineRecords {
                 return@withTransaction false
             }
             // Forget fence: a fact extracted from a frame that was forgotten meanwhile (tombstoned) is never written.
-            if (frameId != null && g.db.forgetDao().tombstoned(listOf(frameId)).isNotEmpty()) {
+            val fence = (fenceFrameIds + listOfNotNull(frameId)).distinct()
+            if (fence.chunked(MAX_IN).any { g.db.forgetDao().tombstoned(it).isNotEmpty() }) {
                 Log.i(TAG, "fact dropped: its frame was forgotten")
                 return@withTransaction false
             }
             val sources = sourceIds.distinct()
-            if (sources.isNotEmpty()) {
-                val alive = sources.chunked(MAX_IN).flatMap { g.db.forgetDao().memories(it) }.count { it.reviewState != ReviewState.INVALIDATED }
-                if (alive != sources.size) {
-                    Log.i(TAG, "fact dropped: a source was forgotten since this job started")
-                    return@withTransaction false
-                }
+            if (!com.rokid.context.memory.forget.ForgetFence.allLive(g.db, sources)) {
+                Log.i(TAG, "fact dropped: a source was forgotten since this job started")
+                return@withTransaction false
             }
             g.memories.add(
             MemoryEntity(

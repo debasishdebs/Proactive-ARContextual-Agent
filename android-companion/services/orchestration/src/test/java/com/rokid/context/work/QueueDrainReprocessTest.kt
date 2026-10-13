@@ -44,6 +44,8 @@ class QueueDrainReprocessTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val prompts = mutableListOf<String>()
     private val images = mutableListOf<String>()
+    private var extract: () -> Unit = {}
+    private val facts = """{"facts":[{"text":"A red mug","type":"object","confidence":0.9,"tags":[]}]}"""
     private val summary = """{"summary":"Fruit bowl on the table","events":[],"entities":["fruit"],"confidence":0.9,"candidate_memory_type":"short_term"}"""
 
     @Before fun setUp() {
@@ -51,7 +53,10 @@ class QueueDrainReprocessTest {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         val ai = AiGraph(MemoryGraph.get(ctx), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { _, _, _ ->
             object : ModelProvider {
-                override suspend fun generate(prompt: String): String { prompts += prompt; return summary }
+                override suspend fun generate(prompt: String): String {
+                    prompts += prompt
+                    return if ("BEGIN_DATA frames" in prompt) { extract(); facts } else summary
+                }
                 override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String {
                     this@QueueDrainReprocessTest.images += images.map { it.base64Data }; return generate(prompt)
                 }
@@ -147,5 +152,19 @@ class QueueDrainReprocessTest {
         assertEquals(listOf("f1"), QueuePayloads.ids(o, "frame_ids_csv"))
         assertFalse(o.containsKey("source_context"))
         assertEquals(listOf("m1"), QueuePayloads.ids(QueuePayloads.parse(QueuePayloads.criticReview(listOf("m1"))), "memory_ids_csv"))
+    }
+
+    /** Fix round 1 I6: a batch whose frames include one forgotten during the call writes nothing. */
+    @Test fun batchWithAForgottenFrameWritesNothing() {
+        runBlocking {
+            listOf("b1", "b2").forEachIndexed { i, id ->
+                val jpg = File(ctx.filesDir, "rokid_archive/$id.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(i.toByte())) }.absolutePath
+                PipelineRecords.appendFrame(ctx, FrameEntity(id, 10L + i, jpg, "rokid_glasses", "frame"))
+            }
+        }
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.SUMMARIZER, QueuePayloads.batchedWrite("test", 2, manual = true, frameIdsCsv = "b1,b2"), personaSnapshot = "p")
+        extract = { runBlocking { MemoryGraph.get(ctx).db.forgetDao().insertTombstone(ForgetTombstoneEntity("b1", 1)) } }
+        drain()
+        assertTrue(runBlocking { MemoryGraph.get(ctx).memories.all() }.isEmpty())
     }
 }

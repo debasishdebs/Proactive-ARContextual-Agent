@@ -112,4 +112,38 @@ class ResummarizeWorkerTest {
         assertTrue(prompts.single().contains("Sibling source"))
         assertFalse(prompts.single().contains("Hidden parent secret"))
     }
+
+    /** Fix round 1 I8: one memory's failure is skipped, the others are still rebuilt, and the run retries. */
+    @Test fun perMemoryFailureSkipsAndContinues() = runBlocking {
+        mem("A", "Forgotten", derived = false); mem("S", "Sibling source", derived = false); mem("T", "Third source", derived = false)
+        mem("B", "b"); mem("C", "c")
+        edge("B", "A"); edge("B", "S"); edge("C", "A"); edge("C", "T")
+        forget("A")
+        reply = { p -> if ("Sibling source" in p) throw java.io.IOException("socket closed") else """{"summary":"Rebuilt C","events":[],"entities":[],"confidence":0.9,"candidate_memory_type":"short_term"}""" }
+        assertTrue(work() is ListenableWorker.Result.Retry)
+        assertEquals(ReviewState.INVALIDATED, graph.db.memoryViewDao().byId("B")!!.reviewState)
+        assertTrue(graph.memories.all().any { it.text == "Rebuilt C" })
+    }
+
+    @Test fun attemptsAreCappedAtFive() = runBlocking {
+        mem("A", "Forgotten", derived = false); mem("S", "Sibling source", derived = false); mem("B", "b")
+        edge("B", "A"); edge("B", "S")
+        forget("A")
+        reply = { throw java.io.IOException("socket closed") }
+        val last = TestListenableWorkerBuilder<ResummarizeWorker>(ctx).setRunAttemptCount(4).build().doWork()
+        assertTrue(last is ListenableWorker.Result.Failure)
+        // A permanent failure (FAIL by RetryClassifier) never retries.
+        reply = { throw com.rokid.context.ai.ProviderHttpException(401, "Azure OpenAI", "denied") }
+        assertTrue(work() is ListenableWorker.Result.Failure)
+    }
+
+    /** Fix round 1 C1: a rebuilt memory keeps the original createdAt, so it keeps its retention window. */
+    @Test fun rebuiltMemoryKeepsCreatedAt() = runBlocking {
+        mem("A", "Forgotten", derived = false); mem("S", "Sibling source", derived = false)
+        graph.db.memoryDao().insert(MemoryEntity("B", null, "b", "summary", "", MemoryTier.MEDIUM, 0.8, ReviewState.OK, false, 777, true, "b"))
+        edge("B", "A"); edge("B", "S")
+        forget("A")
+        work()
+        assertEquals(777L, graph.memories.all().single { it.text == "Rebuilt B" }.createdAt)
+    }
 }

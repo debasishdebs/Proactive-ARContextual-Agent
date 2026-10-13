@@ -253,6 +253,26 @@ object QueueRuntimeStore {
         }
     }
 
+    /**
+     * Forget (Phase 7 Stream F, fix round 1 I4): finished rows keep their payload in the queue log; blank every one that
+     * can hold memory or user text (explicit writes, Ask questions, a v1 reprocess `source_context`). Live rows stay.
+     * Returns how many rows were blanked.
+     */
+    fun scrubTerminalText(context: Context): Int = synchronized(lock) {
+        val rows = readAll(context)
+        var n = 0
+        val out = rows.map { r ->
+            if (!isTerminal(r)) return@map r
+            val kind = QueuePayloads.string(QueuePayloads.parse(r.payload), "kind")
+            val holdsText = kind == "write_explicit" || kind == "read_context" || r.payload.contains("\"source_context\"") || r.queue == QueuePriority.READ
+            if (!holdsText || r.payload == scrubbed(kind)) r else { n++; r.copy(payload = scrubbed(kind)) }
+        }
+        if (n > 0) writeAll(context, out)
+        n
+    }
+
+    private fun scrubbed(kind: String) = """{"kind":"${kind.filter { it.isLetterOrDigit() || it == '_' }}","scrubbed":true}"""
+
     fun purgeSynthetic(context: Context) {
         synchronized(lock) {
             val kept = readAll(context).filter { it.payload.contains("\"source\":\"rokid", ignoreCase = true) || it.queue != QueuePriority.FRAME_INGEST }
