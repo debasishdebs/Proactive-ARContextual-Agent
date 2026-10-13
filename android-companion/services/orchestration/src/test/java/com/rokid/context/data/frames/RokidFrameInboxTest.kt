@@ -91,6 +91,17 @@ class RokidFrameInboxTest {
         assertTrue(inbox.list().orEmpty().isEmpty())
     }
 
+    /** P7xP8 I3: a phone capture (single-path ingest) racing Delete all leaves no row and no file either. */
+    @Test fun aWipeDuringASinglePathIngestLeavesNoRowAndNoFile() = runBlocking {
+        val shot = File(archive.apply { mkdirs() }, "rokid_phone_1.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val id = RokidFrameInbox.ingestSinglePath(ctx, shot.absolutePath, source = "rokid_phone", placeLabel = "home") { c, f ->
+            PipelineRecords.appendFrame(c, f).also { MemoryWipe.generation.incrementAndGet() }
+        }
+        assertEquals(null, id)
+        assertEquals(0, rows())
+        assertFalse(shot.exists())
+    }
+
     /** Fix round 1 I4: a drain cancelled mid-insert puts the file back, so the next drain still ingests it. */
     @Test fun aCancelledIngestKeepsTheFileEligible() = runBlocking {
         inboxFile("rokid_1_a.jpg")
