@@ -138,7 +138,7 @@ class AppShellTest {
         compose.runOnIdle { nav.navigate(Routes.memory("mem_missing")) }
         waitForText("This memory is no longer available")
         compose.runOnIdle { nav.navigate(Routes.SETTINGS_ENDPOINTS) }
-        waitForText("Model endpoint")
+        waitForText("Model endpoints")
         compose.runOnIdle { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }
         waitForText("Queues")
     }

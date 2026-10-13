@@ -1,7 +1,6 @@
 package com.rokid.context.phone.ui.shell
 
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraphBuilder
@@ -26,8 +25,6 @@ import com.rokid.context.phone.ui.memory.MemoryDetailViewModel
 import com.rokid.context.phone.ui.onboarding.WelcomeScreen
 import com.rokid.context.phone.ui.settings.DiagnosticsScreen
 import com.rokid.context.phone.ui.settings.DiagnosticsViewModel
-import com.rokid.context.phone.ui.settings.LegacyConfigScreen
-import com.rokid.context.phone.ui.settings.LegacyConfigViewModel
 import com.rokid.context.phone.ui.settings.QueuesScreen
 import com.rokid.context.phone.ui.settings.QueuesViewModel
 import com.rokid.context.phone.ui.settings.TrackerScreen
@@ -103,18 +100,6 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         val vm = viewModel { FrameViewerViewModel(date, start, deps.memory.timeline, deps.zone, deps::today) }
         val state by vm.state.collectAsStateWithLifecycle()
         FrameViewerScreen(state, onBack = back)
-    }
-
-    composable(Routes.SETTINGS_ENDPOINTS) {
-        val app = LocalContext.current.applicationContext
-        val vm = viewModel { LegacyConfigViewModel(app, deps.pipeline, setVerbosity = deps.hudVerbosity) }
-        val state by vm.state.collectAsStateWithLifecycle()
-        LegacyConfigScreen(
-            state, onBack = back, onTogglePipeline = vm::togglePipeline, onToggleLocalMode = vm::toggleLocalMode, onToggleEncryption = vm::toggleEncryption,
-            onCycleMemoryWindow = vm::cycleMemoryWindow, onSelectProvider = vm::selectProvider, onUpdateEndpoint = vm::updateEndpoint,
-            onUpdateApiKey = vm::updateApiKey, onUpdateDeploymentOrModel = vm::updateModel, onUpdateNativePath = vm::updateNativePath,
-            onSelectGlassesSilencyMode = vm::selectGlassesSilencyMode, onTestConnectivity = vm::testConnectivity, onClearApiKey = vm::clearApiKey,
-        )
     }
 
     composable(Routes.SETTINGS_DIAGNOSTICS) {

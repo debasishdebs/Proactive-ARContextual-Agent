@@ -21,6 +21,7 @@ class FakeHudSettings(initial: HudSettings = HudSettings()) : HudSettingsControl
 /** Settings dependencies over the test MemoryGraph; every model call returns [reply]. */
 object TestSettings {
     var reauthorized = 0
+    var embedChanges = 0
 
     fun ai(ctx: Context, reply: suspend (String) -> String = { "OK" }): AiGraph =
         AiGraph(MemoryGraph.get(ctx), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { _, _, _ ->
@@ -28,5 +29,5 @@ object TestSettings {
         })
 
     fun deps(ctx: Context, ai: AiGraph = ai(ctx), hud: HudSettingsControl = FakeHudSettings()): SettingsDeps =
-        SettingsDeps(ai = ai, hud = hud, reauthorize = { reauthorized++ })
+        SettingsDeps(lazyAi = lazyOf(ai), hud = hud, reauthorize = { reauthorized++ }, onEmbedBindingChanged = { embedChanges++ })
 }

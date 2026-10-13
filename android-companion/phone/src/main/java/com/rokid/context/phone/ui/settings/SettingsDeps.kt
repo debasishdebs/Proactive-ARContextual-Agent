@@ -22,15 +22,20 @@ class HubHudSettings(private val hub: Hub) : HudSettingsControl {
 
 /** Everything the Settings screens need (no DI in v1). Only this file may reach for process-wide graphs. */
 class SettingsDeps(
-    val ai: AiGraph,
+    /** Built on first use by a Settings screen, not when the shell builds these deps on Main (its prompt/persona settings read prefs). */
+    private val lazyAi: Lazy<AiGraph>,
     val hud: HudSettingsControl,
     val reauthorize: () -> Unit,
+    val onEmbedBindingChanged: () -> Unit,
 ) {
+    val ai: AiGraph get() = lazyAi.value
+
     companion object {
         fun create(app: Context): SettingsDeps = SettingsDeps(
-            ai = AiGraph.get(app),
+            lazyAi = lazy { AiGraph.get(app) },
             hud = HubHudSettings(HubGraph.get(app)),
             reauthorize = { AuthActivity.launch(app).onFailure { Log.i("Settings", "re-authorize failed (${it.javaClass.simpleName})") } },
+            onEmbedBindingChanged = { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app) },
         )
     }
 }
