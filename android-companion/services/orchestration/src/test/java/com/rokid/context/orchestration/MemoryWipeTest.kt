@@ -10,6 +10,7 @@ import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.legacy.LegacyImporter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -82,7 +83,8 @@ class MemoryWipeTest {
         g.memories.add(LegacyImporter.toMemory("m1", "short_term", 0.9, 1, "Milk carton"))
         val active = g.spaces.startBuilding("fp1", "{}", 2, "[]", 1); g.spaces.put("m1", active.id, floatArrayOf(1f, 0f)); assertTrue(g.spaces.swapIfComplete(active.id))
         val other = g.spaces.startBuilding("fp2", "{}", 2, "[]", 2); g.spaces.put("m1", other.id, floatArrayOf(0f, 1f))
-        val waiting = File(ctx.filesDir, "rokid_inbox/w.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(9)) }
+        // Stamped before the wipe (inbox files carry their capture time; one at or after the fence survives, fix round 1 I2).
+        val waiting = File(ctx.filesDir, "rokid_inbox/w.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(9)); setLastModified(System.currentTimeMillis() - 5_000) }
         val unrelated = File(ctx.filesDir, "keep.bin").apply { writeBytes(byteArrayOf(1)) }
 
         assertEquals(1, MemoryWipe.deleteAll(ctx))
@@ -140,6 +142,48 @@ class MemoryWipeTest {
         File(ctx.filesDir, "memory_records.log").writeText("rokid_mem_1\tshort_term\t0.9\t100\tMilk carton nearly empty\n")
         assertEquals(null, MemoryGraph.ensureLegacyImported(ctx, isMain = { false }))
         assertEquals(0, g().db.memoryDao().count())
+    }
+
+    /** Review Focus 3: the start time lets the phone drop frames captured before the wipe that are still on the glasses. */
+    @Test fun deleteAllMarksTheWipeStart() = runBlocking<Unit> {
+        val before = System.currentTimeMillis()
+        MemoryWipe.deleteAll(ctx)
+        assertTrue((WipeFence.lastStartedAtMs(ctx.filesDir) ?: 0L) >= before)
+        assertFalse(WipeFence.mutex.isLocked)
+    }
+
+    /** Fix round 2 I2: a file already in the inbox when the fence is marked goes, whatever its stamp says. */
+    @Test fun aPreWipeInboxFileWithAFutureStampIsDeleted() = runBlocking<Unit> {
+        val inbox = File(ctx.filesDir, "rokid_inbox").apply { mkdirs() }
+        val future = File(inbox, "rokid_2_b.jpg").apply { writeBytes(byteArrayOf(2)); setLastModified(System.currentTimeMillis() + 60_000) }
+        MemoryWipe.deleteAll(ctx)
+        assertFalse(future.exists())
+    }
+
+    /** Fix round 1/2 I2: a frame stored after the fence mark (outside the snapshot, stamped after it) survives the wipe. */
+    @Test fun aFrameStoredAfterTheFenceMarkSurvives() = runBlocking<Unit> {
+        val inbox = File(ctx.filesDir, "rokid_inbox").apply { mkdirs() }
+        File(ctx.filesDir, WipeFence.FILE).delete()
+        WipeFence.mutex.lock() // the wipe marks its fence, then waits here before deleting files
+        val wipe = launch(Dispatchers.IO) { MemoryWipe.deleteAll(ctx) }
+        while (WipeFence.lastStartedAtMs(ctx.filesDir) == null) Thread.sleep(5)
+        val after = File(inbox, "rokid_3_c.jpg").apply { writeBytes(byteArrayOf(3)); setLastModified(System.currentTimeMillis() + 1_000) }
+        WipeFence.mutex.unlock()
+        wipe.join()
+        assertTrue(after.exists())
+        after.delete()
+    }
+
+    /** Fix round 1 I3: a fence that can't be recorded (even after the frames are gone) fails closed. */
+    @Test fun aFenceThatCannotBeRecordedFailsClosed() = runBlocking<Unit> {
+        val blocker = File(ctx.filesDir, WipeFence.FILE).apply { mkdirs(); File(this, "x").writeText("x") }
+        try {
+            MemoryWipe.deleteAll(ctx)
+            assertTrue(WipeFence.fence(ctx.filesDir) is WipeFence.Fence.Unknown)
+        } finally {
+            blocker.deleteRecursively()
+        }
+        assertTrue("written once possible", WipeFence.fence(ctx.filesDir) is WipeFence.Fence.At)
     }
 
     private fun g() = MemoryGraph.get(ctx)

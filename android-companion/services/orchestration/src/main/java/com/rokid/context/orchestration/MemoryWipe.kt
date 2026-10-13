@@ -1,6 +1,8 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
+import android.os.SystemClock
+import android.util.Log
 import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.QueueRuntimeStore
@@ -11,6 +13,7 @@ import com.rokid.context.memory.legacy.LegacyImporter
 import com.rokid.context.work.OrchestrationScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
@@ -39,6 +42,11 @@ object MemoryWipe {
         // waited for (it holds the lock until it finishes or throws); then it is marked done and never runs again.
         MemoryGraph.markLegacyImportDone(context)
         generation.incrementAndGet()
+        val wipedAt = System.currentTimeMillis()
+        val wipedElapsed = SystemClock.elapsedRealtime()
+        // Fix round 2 I2: every file in the inbox when the fence is marked is pre-wipe, whatever its stamp says.
+        val inboxAtMark = RokidFrameInbox.inboxDir(context).list().orEmpty().toSet()
+        val marked = WipeFence.markStarted(context.filesDir, wipedAt, wipedElapsed)
         val scheduler = OrchestrationScheduler(context)
         scheduler.pausePipeline()
         try {
@@ -46,9 +54,21 @@ object MemoryWipe {
             val wipe = db.wipeDao()
             val paths = wipe.framePaths()
             wipe.wipeMemory()
-            val listed = paths.filter { it.isNotBlank() }.map(::File)
-            val folders = RokidFrameInbox.FRAME_DIRS.flatMap { name -> File(context.filesDir, name).walkTopDown().filter { it.isFile }.toList() }
-            val deleted = (listed + folders).distinctBy { it.absolutePath }.count { it.exists() && it.delete() }
+            val deleted = WipeFence.mutex.withLock {
+                val listed = paths.filter { it.isNotBlank() }.map(::File)
+                val inbox = RokidFrameInbox.inboxDir(context)
+                // Fix round 1/2 I2: spared only if stored after the mark: not in the snapshot and stamped at or after the fence.
+                val folders = RokidFrameInbox.FRAME_DIRS.flatMap { name ->
+                    val dir = File(context.filesDir, name)
+                    dir.walkTopDown().filter { f ->
+                        f.isFile && !(dir == inbox && f.parentFile == inbox && f.name !in inboxAtMark && f.lastModified() >= wipedAt)
+                    }.toList()
+                }
+                val n = (listed + folders).distinctBy { it.absolutePath }.count { it.exists() && it.delete() }
+                // Fix round 1 I3: the deleted frames may have freed the space the fence record needs; else it fails closed.
+                if (!marked && !WipeFence.markStarted(context.filesDir, wipedAt, wipedElapsed)) Log.w("MemoryWipe", "Delete all fence unknown: frames are held until it is recorded")
+                n
+            }
             LegacyImporter.LEGACY_FILES.forEach { File(context.filesDir, it).delete() }
             MemoryExport.dir(context).listFiles()?.filter { it.isFile }?.forEach { it.delete() }
             MemoryMaintenance.vacuum(db)
