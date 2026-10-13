@@ -60,8 +60,10 @@ class EndpointTester(
         val provider = providers.create(e, model, key, testClient)
         if (e.kind != EndpointKind.LLAMACPP_LOCAL) return provider.generate(PROMPT)
         val work = nativeScope.async { nativeLock.withLock { provider.generate(PROMPT) } }
+        // A caller that stops waiting (timeout or cancellation) cancels the work: still queued = never runs.
         return try { withTimeout(callTimeoutMs) { work.await() } }
-        catch (_: TimeoutCancellationException) { work.cancel(); throw SocketTimeoutException("Local test timed out") } // still queued = never runs
+        catch (_: TimeoutCancellationException) { throw SocketTimeoutException("Local test timed out") }
+        finally { work.cancel() }
     }
 
     private fun elapsed(startNs: Long) = (System.nanoTime() - startNs) / 1_000_000

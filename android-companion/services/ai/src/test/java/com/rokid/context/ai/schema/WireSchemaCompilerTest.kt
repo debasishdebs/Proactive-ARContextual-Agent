@@ -147,4 +147,10 @@ class WireSchemaCompilerTest {
         val d = compile(s).getOrThrow()["properties"]!!.jsonObject["tags"]!!.jsonObject["description"]!!.jsonPrimitive.content
         assertTrue(d, d.contains("other property names match ^t_") && d.contains("property names are restricted"))
     }
+
+    /** T14 fix round 1: an unreferenced self-recursive `definitions` entry is refused (Azure would send it). */
+    @Test fun anUnreferencedRecursiveDefinitionsEntryIsRefused() {
+        val s = """{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"definitions":{"N":{"type":"object","properties":{"n":{"${'$'}ref":"#/definitions/N"}}}}}"""
+        EndpointKind.entries.forEach { assertEquals("$it", "Recursive \$ref isn't supported", compile(s, it).exceptionOrNull()?.message) }
+    }
 }
