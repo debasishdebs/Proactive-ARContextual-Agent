@@ -1,0 +1,84 @@
+package com.rokid.context.orchestration.nudge
+
+import android.util.Log
+import com.rokid.context.ai.SafeLog
+import com.rokid.context.ai.contract.NudgeOutput
+import com.rokid.context.ai.contract.PromptKey
+import com.rokid.context.ai.run.RoleCall
+import com.rokid.context.ai.run.RoleRunner
+import com.rokid.context.connectors.ProposalIntake
+import com.rokid.context.core.model.Verbosity
+import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.ProposalOrigin
+import com.rokid.context.memory.db.NudgeEntity
+import com.rokid.context.memory.db.SummaryTraceEntity
+import com.rokid.context.orchestration.AskSources
+import com.rokid.context.orchestration.AskText
+import java.util.UUID
+import kotlin.coroutines.cancellation.CancellationException
+
+sealed interface NudgeRun {
+    data object NoHud : NudgeRun
+    data object NoMemories : NudgeRun
+    data object NotNeeded : NudgeRun
+    data object Failed : NudgeRun
+    data class Dropped(val gate: Gate) : NudgeRun
+    data class Shown(val nudgeId: String) : NudgeRun
+}
+
+/**
+ * R-61: one nudge decision. No HUD settings → skip (fail-closed); OFF/quiet hours/cap → no model call; no recent
+ * memories → no model call; else the NUDGE role (sourceIds ⊆ the memory ids) and, when it nudges and the gates
+ * pass, one `nudge` row, then its proposed action to [intake] with origin NUDGE. A model failure is traced, not thrown.
+ */
+class NudgeEngine(
+    private val inputs: NudgeInputs,
+    private val runner: RoleRunner,
+    private val gates: NudgeGates,
+    private val memory: MemoryGraph,
+    private val intake: ProposalIntake,
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val hud: () -> NudgeHud? = { NudgeEnvironment.hud?.invoke() },
+) {
+    suspend fun runOnce(): NudgeRun {
+        val now = clock()
+        val h = hud() ?: return NudgeRun.NoHud
+        gates.precheck(h, now).takeIf { it != Gate.PASS }?.let { return NudgeRun.Dropped(it) }
+        val prepared = inputs.build(now)
+        if (prepared.inputIds.isEmpty()) return NudgeRun.NoMemories
+        val out = try {
+            runner.run(RoleCall(PromptKey.NUDGE, prepared.vars, inputIds = prepared.inputIds)).output as NudgeOutput
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            Log.i(TAG, "nudge failed: ${SafeLog.describe(e)}")
+            memory.traces.upsert(SummaryTraceEntity("nudge_run_$now", "NUDGE_FAILED", now, SafeLog.describe(e)))
+            return NudgeRun.Failed
+        }
+        val text = AskText.collapse(out.text).take(MAX_TEXT)
+        if (!out.shouldNudge || text.isEmpty()) return NudgeRun.NotNeeded
+        val gate = gates.check(text, h, now)
+        if (gate != Gate.PASS) return NudgeRun.Dropped(gate)
+        val id = "nudge_${UUID.randomUUID()}"
+        memory.nudges.addIgnore(
+            NudgeEntity(
+                id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encode(out.sourceIds),
+                priority = out.priority, hash = NudgeGates.hash(text), shownOn = shownOn(h.verbosity), redacted = false,
+            ),
+        )
+        out.proposedAction?.let { intake.onProposed(ProposalOrigin.NUDGE, id, it, now) }
+        return NudgeRun.Shown(id)
+    }
+
+    companion object {
+        private const val TAG = "NudgeEngine"
+        private const val MAX_TEXT = 200
+        private const val MAX_WHY = 300
+
+        fun shownOn(v: Verbosity): String = when (v) {
+            Verbosity.SILENT -> "phone"
+            Verbosity.MEDIUM -> "glance"
+            Verbosity.MAX -> "toast"
+        }
+    }
+}
