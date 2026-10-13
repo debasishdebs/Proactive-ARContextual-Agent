@@ -36,6 +36,30 @@ abstract class ForgetDao {
 
     @Query("SELECT frameId FROM forget_tombstone") abstract suspend fun allTombstones(): List<String>
 
+    // --- FrameSweep (final review I2): set-based, so a pass costs the same however many tombstones there are -------
+    /** Paths of tombstoned frames whose row is kept but that no memory points at any more (their JPEG may go). */
+    @Query(
+        "SELECT f.path FROM forget_tombstone t JOIN frame f ON f.id = t.frameId " +
+            "WHERE f.path != '' AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = t.frameId)",
+    )
+    abstract suspend fun orphanTombstonedFramePaths(): List<String>
+
+    /** Those of [frameIds] (file names found on disk) that are tombstoned and have no frame row. Callers chunk. */
+    @Query("SELECT t.frameId FROM forget_tombstone t WHERE t.frameId IN (:frameIds) AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = t.frameId)")
+    abstract suspend fun rowlessTombstones(frameIds: List<String>): List<String>
+
+    /**
+     * Drops tombstones nothing needs: created before [beforeMs], no frame row (so no live frame's extraction lock) and no
+     * memory pointing at the frame id; [keep] (ids whose JPEG is still on disk) stay for the next sweep. Callers pass
+     * at most 500 [keep] ids.
+     */
+    @Query(
+        "DELETE FROM forget_tombstone WHERE createdAt < :beforeMs AND frameId NOT IN (:keep) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = forget_tombstone.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = forget_tombstone.frameId)",
+    )
+    abstract suspend fun pruneTombstones(beforeMs: Long, keep: List<String>): Int
+
     /** Memories (any review state) that still point at [frameId]. */
     @Query("SELECT COUNT(*) FROM memory WHERE frameId = :frameId") abstract suspend fun remainingRefs(frameId: String): Int
     @Query("SELECT * FROM frame WHERE id = :id") abstract suspend fun frame(id: String): FrameEntity?
