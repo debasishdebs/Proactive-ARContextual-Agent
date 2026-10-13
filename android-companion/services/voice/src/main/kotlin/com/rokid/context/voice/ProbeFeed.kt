@@ -39,5 +39,15 @@ object ProbeFeed {
         return ProbeOutcome(m.fedBytes, m.acceptedBytes, m.capacityBytes, m.peerClosed, clipBytes = clip.size.toLong())
     }
 
+    /**
+     * The run's bytes count only when the recognizer ended normally ([SttResult.Text], [SttResult.NoSpeech], or no final
+     * before the wait ran out). A recognizer that errored (busy, disconnected, pack missing, no permission) stopped
+     * reading for its own reasons: null, NOT_VERIFIED, so a transient error is never stored as UNSUPPORTED (review I1).
+     */
+    fun judge(final: SttResult?, outcome: ProbeOutcome): ProbeOutcome? = when (final) {
+        null, is SttResult.Text, SttResult.NoSpeech -> outcome
+        SttResult.Failed, SttResult.PackMissing, SttResult.NoPermission, SttResult.FallbackSuspected -> null
+    }
+
     private const val MAX_DRAIN_PUMPS = (4 * DRAIN_MS / PUMP_MS).toInt()
 }

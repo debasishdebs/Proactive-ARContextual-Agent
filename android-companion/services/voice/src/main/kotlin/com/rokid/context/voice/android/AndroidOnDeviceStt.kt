@@ -22,6 +22,10 @@ import java.util.concurrent.atomic.AtomicReference
  * On-device recognizer only, never the network one (spec §5.1.1), adapted from Live Fit `AndroidOnDeviceStt`.
  * Glasses audio goes through a non-blocking pipe ([PcmFeeder]) and every output is checked by [FallbackGuard]; the
  * phone-mic session lets the on-device recognizer use the phone mic itself. Recognizers live on Main only.
+ *
+ * We hold the pipe's read end until the recognizer is destroyed (preflight F1), so the recognizer closing its own copy
+ * never gives EPIPE: [com.rokid.context.voice.PipeMeter.peerClosed] fires only on EBADF/EIO or a short write, and the
+ * guard's peer-close branch is not something to rely on here; a recognizer that stops reading fills the pipe instead.
  */
 class AndroidOnDeviceStt(context: Context) : SpeechEngine {
     private val app = context.applicationContext
@@ -30,14 +34,14 @@ class AndroidOnDeviceStt(context: Context) : SpeechEngine {
 
     override fun startExternal(localeTag: String, listener: SttListener): SttSession {
         if (Build.VERSION.SDK_INT < 33) return failed(listener)
+        // Fails closed when the pipe can't be pinned to (at most) the measured size: no guard on a pipe it can't judge.
         val pipe = try {
-            val capacity = AndroidPipes.capacity()
-            AndroidPipes.open().let { (read, sink) -> Triple(read, sink, capacity) }
+            AndroidPipes.SHARED.openFeed()
         } catch (e: Exception) {
             Log.w(TAG, "audio pipe unavailable (${e.javaClass.simpleName})"); return failed(listener)
         }
-        val read = pipe.first
-        val feeder = PcmFeeder(pipe.second, capacityBytes = pipe.third)
+        val read = pipe.read
+        val feeder = PcmFeeder(pipe.sink, capacityBytes = pipe.capacityBytes)
         val core = SttSessionCore(listener) { FallbackGuard.suspects(feeder.meter()) }
         val pump = pumps.scheduleWithFixedDelay({ runCatching { feeder.pump() } }, PUMP_MS, PUMP_MS, TimeUnit.MILLISECONDS)
         val recognizer = AtomicReference<SpeechRecognizer?>()
@@ -59,7 +63,10 @@ class AndroidOnDeviceStt(context: Context) : SpeechEngine {
             }
             recognizer.set(r)
             r.setRecognitionListener(RecognitionBridge(core))
-            r.startListening(SpeechIntents.external(localeTag, read)) // read stays open until release() (preflight F1)
+            // read stays open until release() (preflight F1). A synchronous throw is a Failed final, never a crash on Main.
+            runCatching { r.startListening(SpeechIntents.external(localeTag, read)) }.onFailure {
+                Log.w(TAG, "recognizer start failed (${it.javaClass.simpleName})"); core.onError(SttSessionCore.ERROR_CLIENT)
+            }
         }
         return object : SttSession {
             override fun feed(pcm: ByteArray) = feeder.offer(pcm)
@@ -85,7 +92,9 @@ class AndroidOnDeviceStt(context: Context) : SpeechEngine {
             }
             recognizer.set(r)
             r.setRecognitionListener(RecognitionBridge(core))
-            r.startListening(SpeechIntents.base(localeTag))
+            runCatching { r.startListening(SpeechIntents.base(localeTag)) }.onFailure {
+                Log.w(TAG, "recognizer start failed (${it.javaClass.simpleName})"); core.onError(SttSessionCore.ERROR_CLIENT)
+            }
         }
         return object : SttSession {
             override fun feed(pcm: ByteArray) = Unit // the recognizer records the phone mic itself

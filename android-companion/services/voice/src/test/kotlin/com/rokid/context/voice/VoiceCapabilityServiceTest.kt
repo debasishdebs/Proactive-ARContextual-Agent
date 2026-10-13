@@ -16,10 +16,11 @@ class VoiceCapabilityServiceTest {
         var build = "build-1"
         var outcome: ProbeOutcome? = ProbeOutcome(166_142, 166_142)
         var throwOnProbe = false
+        var packsThrow: Throwable? = null
         var probes = 0
         override fun onDeviceAvailable() = onDevice
         override fun micGranted() = mic
-        override suspend fun installedPacks() = packs
+        override suspend fun installedPacks(): Set<String>? { packsThrow?.let { throw it }; return packs }
         override suspend fun runProbe(localeTag: String): ProbeOutcome? { probes++; if (throwOnProbe) throw IllegalStateException("recognizer died"); return outcome }
         override fun fingerprint() = build
     }
@@ -116,5 +117,28 @@ class VoiceCapabilityServiceTest {
         assertEquals(VoiceStatus.NOT_VERIFIED, s.capabilities.value.glasses)
         assertNull(records.read())
         assertEquals(2, platform.probes, "nothing recorded, so the next foreground refresh tries again")
+    }
+
+    /** Review Important 1: a transient recognizer error (busy, disconnected) during the probe is never stored as UNSUPPORTED. */
+    @Test fun aTransientRecognizerErrorNeverStoresUnsupported() = runTest {
+        platform.outcome = ProbeFeed.judge(SttResult.Failed, ProbeOutcome(166_142, 64_000, 64_000))
+        val s = service()
+        s.refresh(allowProbe = true).join()
+        assertEquals(VoiceStatus.NOT_VERIFIED, s.capabilities.value.glasses)
+        assertNull(records.read())
+        platform.outcome = ProbeFeed.judge(SttResult.NoSpeech, ProbeOutcome(166_142, 166_142, 64_000))
+        s.refresh(allowProbe = true).join()
+        assertEquals(VoiceStatus.SUPPORTED, s.capabilities.value.glasses, "the next foreground refresh probes again")
+    }
+
+    @Test fun aFailedPackQueryCountsAsInstalledButACancelledOneStopsTheRefresh() = runTest {
+        platform.packsThrow = IllegalStateException("query died")
+        val s = service()
+        s.refresh().join()
+        assertEquals(VoiceStatus.SUPPORTED, s.capabilities.value.phone)
+        val t = service()
+        platform.packsThrow = kotlin.coroutines.cancellation.CancellationException("refresh cancelled")
+        t.refresh().join()
+        assertEquals(VoiceCapabilities.UNKNOWN, t.capabilities.value, "cancellation is not swallowed")
     }
 }

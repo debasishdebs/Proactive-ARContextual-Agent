@@ -20,6 +20,7 @@ object SpeechPacks {
     enum class Download { SUCCESS, SCHEDULED, FAILED, UNSUPPORTED }
 
     private const val QUERY_TIMEOUT_MS = 5_000L
+    private const val DOWNLOAD_TIMEOUT_MS = 60_000L
 
     /** Null when the platform can't answer (below 33, no on-device recognizer, an error or a timeout). */
     suspend fun query(context: Context): Packs? {
@@ -49,7 +50,8 @@ object SpeechPacks {
 
     suspend fun download(context: Context, tag: String): Download {
         if (Build.VERSION.SDK_INT < 34) return Download.UNSUPPORTED
-        return withContext(Dispatchers.Main) { download34(context, tag) }
+        // Neither callback may ever come: after DOWNLOAD_TIMEOUT_MS the pack counts as not available.
+        return withContext(Dispatchers.Main) { withTimeoutOrNull(DOWNLOAD_TIMEOUT_MS) { download34(context, tag) } ?: Download.FAILED }
     }
 
     @RequiresApi(34)

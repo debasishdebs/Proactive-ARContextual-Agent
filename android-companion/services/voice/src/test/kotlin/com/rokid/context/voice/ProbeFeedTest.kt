@@ -67,4 +67,13 @@ class ProbeFeedTest {
         assertEquals(List(12) { Pcm.CHUNK_BYTES } + 100, sizes)
         assertEquals(List(12) { 100L } + 3L, pauses)
     }
+
+    /** Review Important 1: a recognizer that errored stopped reading for its own reasons; its bytes prove nothing. */
+    @Test fun aRecognizerErrorDecidesNothing() {
+        val nonReader = ProbeOutcome(166_142, 64_000, 64_000)
+        listOf(SttResult.Failed, SttResult.PackMissing, SttResult.NoPermission, SttResult.FallbackSuspected)
+            .forEach { assertEquals(null, ProbeFeed.judge(it, nonReader), "$it") }
+        listOf(SttResult.Text("what do I need from the store"), SttResult.NoSpeech, null)
+            .forEach { assertEquals(nonReader, ProbeFeed.judge(it, nonReader), "$it") }
+    }
 }
