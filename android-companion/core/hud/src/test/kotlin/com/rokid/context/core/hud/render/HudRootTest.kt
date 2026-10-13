@@ -106,4 +106,11 @@ class HudRootTest {
             compose.onNodeWithText(text, substring = true).assertExists()
         }
     }
+
+    /** Phase 3 carry: the Status page says "connecting" (not "offline") while the first phone message is awaited. */
+    @Test fun statusPageSaysConnectingWhileConnecting() {
+        compose.setContent { HudRoot(model(page = HudPage.STATUS, verbosity = Verbosity.MAX, connection = HudConnection.CONNECTING)) }
+        compose.onNodeWithText("connecting", substring = true).assertExists()
+        compose.onNodeWithText("offline", substring = true).assertDoesNotExist()
+    }
 }

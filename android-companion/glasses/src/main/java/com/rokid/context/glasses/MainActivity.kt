@@ -22,7 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import com.rokid.context.core.hud.render.HudConnection
+import com.rokid.context.core.hud.render.HudCopy
 import com.rokid.context.core.hud.render.HudModel
 import com.rokid.context.core.hud.render.HudNav
 import com.rokid.context.core.hud.render.HudPresenter
@@ -140,7 +140,7 @@ class MainActivity : ComponentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val r = when (event.action) {
             KeyEvent.ACTION_DOWN -> keys.onKeyDown(event.keyCode, event.repeatCount, event.eventTime, System.currentTimeMillis())
-            KeyEvent.ACTION_UP -> keys.onKeyUp(event.keyCode)
+            KeyEvent.ACTION_UP -> keys.onKeyUp(event.keyCode, event.eventTime)
             else -> KeyResult(consumed = false)
         }
         if (!r.consumed) return super.dispatchKeyEvent(event)
@@ -185,7 +185,9 @@ class MainActivity : ComponentActivity() {
                 nav = next
             }
             // Push-to-talk arrives in Phase 6; until then a tap gives feedback instead of silence (spec §3.6 offline toast).
-            GestureAction.ASK -> local = LocalOverlay.Toast(if (controller.connection.value == HudConnection.LIVE) "Ask coming soon" else "Phone not connected", now)
+            GestureAction.ASK -> local = LocalOverlay.Toast(
+                HudCopy.askUnavailable(controller.connection.value, controller.settings.value.askBlockedReason) ?: "Ask coming soon", now,
+            )
             GestureAction.PAUSE_RESUME -> lifecycleScope.launch {
                 val t = try {
                     runtime.togglePause()
