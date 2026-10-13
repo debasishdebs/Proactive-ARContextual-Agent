@@ -13,7 +13,7 @@ data class ImportReport(val memories: Int, val frames: Int, val traces: Int, val
 
 /** One-time copy of the legacy tab-separated logs into Room (spec §6.2). Safe to re-run: inserts ignore existing ids. */
 class LegacyImporter(private val context: Context, private val graph: MemoryGraph) {
-    private val prefs = context.getSharedPreferences("legacy_import", Context.MODE_PRIVATE)
+    private val prefs = prefs(context)
 
     fun isDone(): Boolean = prefs.getBoolean(K_DONE, false)
 
@@ -68,6 +68,10 @@ class LegacyImporter(private val context: Context, private val graph: MemoryGrap
 
     companion object {
         private const val K_DONE = "v1_done"
+        private fun prefs(context: Context) = context.getSharedPreferences("legacy_import", Context.MODE_PRIVATE)
+
+        /** Only through MemoryGraph.markLegacyImportDone (under the import lock). */
+        internal fun markDone(context: Context) { prefs(context).edit().putBoolean(K_DONE, true).commit() }
         private const val MEMORY_LOG = "memory_records.log"
         private const val FRAME_LOG = "captured_frames.log"
         private const val TRACE_LOG = "summary_trace.log"

@@ -40,7 +40,16 @@ class MemoryGraph private constructor(val db: ContextDatabase) {
 
         internal fun isPlaintextSqlite(file: File): Boolean = com.rokid.context.memory.db.EncryptionMigrator.isPlaintextSqlite(file)
 
-        private val importLock = Any()
+        /** Held by a running legacy import (until it finishes or throws) and by [markLegacyImportDone]. */
+        internal val importLock = Any()
+
+        /**
+         * Delete all (fix round 3): never imports. Waits for an import in progress to finish or abort, then marks the
+         * import done so it never runs; the wipe deletes the legacy logs, so nothing the user didn't delete is lost.
+         */
+        fun markLegacyImportDone(context: Context) {
+            synchronized(importLock) { com.rokid.context.memory.legacy.LegacyImporter.markDone(context.applicationContext) }
+        }
 
         /** Runs the legacy import once, blocking, before the first facade read/write (Review Focus #5). */
         fun ensureLegacyImported(context: Context): com.rokid.context.memory.legacy.ImportReport? {
