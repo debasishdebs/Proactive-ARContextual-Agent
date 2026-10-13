@@ -32,6 +32,10 @@ import com.rokid.context.phone.ui.settings.ai.EndpointsListViewModel
 import com.rokid.context.phone.ui.settings.ai.RolesScreen
 import com.rokid.context.phone.ui.settings.ai.RolesViewModel
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsScreen
+import com.rokid.context.phone.ui.settings.flows.AgentFlowSummaries
+import com.rokid.context.phone.ui.settings.flows.FlowViewModel
+import com.rokid.context.phone.ui.settings.flows.FlowViewRoute
+import com.rokid.context.phone.ui.settings.flows.FlowsListRoute
 import com.rokid.context.phone.ui.settings.connectors.ActionsRoute
 import com.rokid.context.phone.ui.settings.connectors.ShoppingRoute
 import com.rokid.context.phone.ui.settings.connectors.SourcesRoute
@@ -116,6 +120,22 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val state by vm.state.collectAsStateWithLifecycle()
         RolesScreen(state, onBack = back, onEndpoint = vm::setEndpoint, onModel = vm::setModel, onFallback = vm::setFallback,
             onTemperature = vm::setTemperature, onMaxTokens = vm::setMaxTokens, onClear = { vm.clear(it) })
+    }
+
+    composable(Routes.SETTINGS_FLOWS) {
+        FlowsListRoute(AgentFlowSummaries, models = { s.ai.bindings.get(it)?.model }, onBack = back, navigate = { nav.navigate(it) })
+    }
+
+    composable(Routes.SETTINGS_FLOWS_VIEW, arguments = listOf(navArgument("ids") { type = NavType.StringType; defaultValue = "" })) { entry ->
+        val ids = entry.arguments?.getString("ids").orEmpty().split(",")
+        val vm = viewModel { FlowViewModel(ids, s.ai, s.retrieval) }
+        // The sheet's tabs build these as their own destinations do, so a save goes through the same write path and validation.
+        FlowViewRoute(
+            vm,
+            roles = { viewModel { RolesViewModel(s.ai, s.onEmbedBindingChanged) } },
+            retrieval = { viewModel { RetrievalViewModel(s.retrieval, s.ai.retriever, s.spaces, s.ai, s.rebuildIndex) } },
+            onBack = back, navigate = { nav.navigate(it) },
+        )
     }
 
     composable(Routes.SETTINGS_PROMPTS) {
