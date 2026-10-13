@@ -3,6 +3,7 @@ package com.rokid.context.data.runtime
 import android.content.Context
 import android.util.Base64
 import com.rokid.context.domain.queue.QueuePriority
+import com.rokid.context.orchestration.MemoryWipe
 import java.io.File
 import java.util.UUID
 
@@ -71,9 +72,39 @@ object QueueRuntimeStore {
         }
     }
 
-    /** Settings → Memory › Delete all: every job goes, payloads included (they carry fact and user text). */
+    /**
+     * Settings → Memory › Delete all: every job goes, payloads included (they carry fact and user text). The Delete-all
+     * generation moves under the same lock, so [claim] stamps every job with the generation of its own side of the wipe.
+     */
     fun clearAll(context: Context) {
-        synchronized(lock) { file(context).delete() }
+        synchronized(lock) {
+            file(context).delete()
+            MemoryWipe.generation.incrementAndGet()
+        }
+    }
+
+    /** A claimed job and the Delete-all generation read under the same lock as the claim. */
+    data class Claimed(val job: QueueJobRecord, val generation: Long)
+
+    /** [claimNextReady] stamped with the generation its writes must still match (PipelineRecords.appendFact). */
+    fun claim(context: Context, nowEpochMs: Long = System.currentTimeMillis()): Claimed? = synchronized(lock) {
+        val generation = MemoryWipe.generation.get()
+        claimNextReady(context, nowEpochMs)?.let { Claimed(it, generation) }
+    }
+
+    /**
+     * [enqueue] for a producer whose payload carries memory text: [generation] is what it read before reading that
+     * memory. Null (nothing queued) when a Delete all ran since, checked under the lock [clearAll] takes.
+     */
+    fun enqueueIfCurrent(
+        context: Context,
+        generation: Long,
+        queue: QueuePriority,
+        payload: String,
+        personaSnapshot: String,
+        ttlHours: Int = 24,
+    ): QueueJobRecord? = synchronized(lock) {
+        if (MemoryWipe.generation.get() != generation) null else enqueue(context, queue, payload, personaSnapshot, ttlHours)
     }
 
     fun claimNextReady(context: Context, nowEpochMs: Long = System.currentTimeMillis()): QueueJobRecord? {

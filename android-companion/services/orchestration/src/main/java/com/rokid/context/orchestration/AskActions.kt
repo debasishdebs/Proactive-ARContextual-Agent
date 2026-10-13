@@ -50,6 +50,7 @@ object AskActions {
      * (the legacy PRIORITY_REPROCESS queue). Repeating the same rating is a no-op. Redacted or unknown asks → false.
      */
     suspend fun rate(context: Context, askId: String, up: Boolean): Boolean {
+        val generation = MemoryWipe.generation.get() // before the memory read (fix round 2 N2)
         val graph = MemoryGraph.get(context)
         val ask = graph.asks.byId(askId) ?: return false
         if (ask.redacted) return false
@@ -59,8 +60,9 @@ object AskActions {
         if (!up) {
             val cited = graph.timeline.memoriesByIds(AskSources.parse(ask.sourcesJson))
             if (cited.isNotEmpty()) withContext(Dispatchers.IO) {
-                QueueRuntimeStore.enqueue(
+                QueueRuntimeStore.enqueueIfCurrent(
                     context = context,
+                    generation = generation,
                     queue = QueuePriority.PRIORITY_REPROCESS,
                     payload = QueuePayloads.reprocess(reason = REVIEW_REASON, sourceContext = cited.joinToString("\n") { it.text }),
                     personaSnapshot = AppConfigStore.get(context).persona,

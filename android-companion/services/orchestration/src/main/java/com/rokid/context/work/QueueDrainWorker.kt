@@ -33,7 +33,6 @@ import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.orchestration.AnswerService
 import com.rokid.context.orchestration.EmbeddingWorker
 import com.rokid.context.orchestration.FrameInputs
-import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.NoMemoriesException
 import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.orchestration.RetryClassifier
@@ -58,9 +57,8 @@ class QueueDrainWorker(
         }
         var processed = 0
         repeat(MAX_JOBS_PER_RUN) {
-            // Read before the claim (review I1): a job claimed before a Delete all then writes nothing after it.
-            val generation = MemoryWipe.generation.get()
-            val job = QueueRuntimeStore.claimNextReady(applicationContext) ?: return@repeat
+            // Stamped under the queue lock (review I1, fix round 2 N1): a job claimed before a Delete all writes nothing after it.
+            val (job, generation) = QueueRuntimeStore.claim(applicationContext) ?: return@repeat
             processed += 1
 
             val policyError = policyDeferralReason(job)
@@ -181,8 +179,8 @@ class QueueDrainWorker(
             PipelineStatsStore.incSummarizerSucceeded(applicationContext)
         } else {
             val reason = "Critic low confidence=${"%.2f".format(Locale.US, confidence)}"
-            QueueRuntimeStore.enqueue(
-                context = applicationContext, queue = QueuePriority.PRIORITY_REPROCESS,
+            QueueRuntimeStore.enqueueIfCurrent(
+                context = applicationContext, generation = generation, queue = QueuePriority.PRIORITY_REPROCESS,
                 payload = QueuePayloads.reprocess(reason = reason, sourceContext = (facts.map { it.text } + frameLines).joinToString("\n")),
                 personaSnapshot = job.personaSnapshot, ttlHours = 24,
             )

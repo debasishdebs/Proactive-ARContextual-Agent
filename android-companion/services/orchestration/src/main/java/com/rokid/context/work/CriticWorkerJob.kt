@@ -10,6 +10,7 @@ import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
 import com.rokid.context.memory.db.ReviewState
+import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.PipelineRecords
 
 class CriticWorkerJob(
@@ -26,6 +27,7 @@ class CriticWorkerJob(
             // Fix round 2: this stays a substring match on purpose. A PRIORITY_REPROCESS payload (QueuePayloads.reprocess)
             // carries only `reason` and `source_context` text, never memory or frame ids, and every producer (this job,
             // QueueDrainWorker, AskActions) writes it that way, so the text is the only key a pending job exposes.
+            val generation = MemoryWipe.generation.get() // before the memory read (fix round 2 N2)
             val pending = QueueRuntimeStore.live(applicationContext, QueuePriority.PRIORITY_REPROCESS)
                 .map { QueuePayloads.string(QueuePayloads.parse(it.payload), "source_context") }
             val reviews = PipelineRecords.recentMemories(applicationContext, 80)
@@ -36,8 +38,9 @@ class CriticWorkerJob(
                     reason = "Periodic critic retry for review memories",
                     sourceContext = reviews.take(5).joinToString("\n") { it.text },
                 )
-                QueueRuntimeStore.enqueue(
+                QueueRuntimeStore.enqueueIfCurrent(
                     context = applicationContext,
+                    generation = generation,
                     queue = QueuePriority.PRIORITY_REPROCESS,
                     payload = payload,
                     personaSnapshot = "Global Default",
@@ -49,6 +52,7 @@ class CriticWorkerJob(
         }
 
         val confidence = inputData.getDouble(KEY_CONFIDENCE, 0.0)
+        val generation = MemoryWipe.generation.get() // before the memory read (fix round 2 N2)
         val sourceContext = PipelineRecords.recentMemories(applicationContext, 20).joinToString("\n") { it.text }.ifBlank { "no-context" }
         val result = criticWorker.validate(summaryId, confidence)
 
@@ -61,8 +65,9 @@ class CriticWorkerJob(
             SummaryStatus.NEEDS_REVIEW -> {
                 PipelineRecords.upsertTrace(applicationContext, summaryId, "NEEDS_REVIEW", "Critic flagged low confidence")
                 PipelineStatsStore.incSummarizerFailed(applicationContext)
-                QueueRuntimeStore.enqueue(
+                QueueRuntimeStore.enqueueIfCurrent(
                     context = applicationContext,
+                    generation = generation,
                     queue = QueuePriority.PRIORITY_REPROCESS,
                     payload = QueuePayloads.reprocess(
                         reason = "critic low confidence",
