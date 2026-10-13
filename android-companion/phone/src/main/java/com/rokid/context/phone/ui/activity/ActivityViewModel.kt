@@ -62,6 +62,6 @@ class ActivityViewModel(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ActivityUiState(period = initial))
 
     fun selectPeriod(p: Period) { period.value = p }
-    fun togglePause() = pipeline.setEnabled(!pipeline.enabled.value)
+    fun togglePause() = pipeline.toggle()
     fun onBannerAction(action: BannerAction) = BannerActions.apply(action, glasses, pipeline)
 }

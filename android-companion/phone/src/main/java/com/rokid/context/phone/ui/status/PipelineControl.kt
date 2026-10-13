@@ -16,6 +16,8 @@ import kotlinx.coroutines.launch
 interface PipelineControl {
     val enabled: StateFlow<Boolean>
     fun setEnabled(enabled: Boolean)
+    /** A pause/resume tap: flips the newest *requested* state (Phase 4 carry), so a quick pause then resume never reads a stale [enabled]. */
+    fun toggle()
 }
 
 /**
@@ -34,15 +36,26 @@ class LegacyPipelineControl(
     private val state = MutableStateFlow(AppConfigStore.isPipelineEnabled(context))
     override val enabled: StateFlow<Boolean> = state.asStateFlow()
 
+    private val lock = Any()
+    /** What the newest tap asked for; resynced to [enabled] once nothing is in flight. */
+    private var requested = state.value
+    private var inFlight = 0
+
     override fun setEnabled(enabled: Boolean) {
+        synchronized(lock) { requested = enabled; inFlight++ }
         scope.launch(io) {
-            // No cached-state early return: legacy MainActivity writes the flag/scheduler directly until Task 10,
-            // and scheduling is idempotent, so always apply and then publish.
-            AppConfigStore.setPipelineEnabled(context, enabled) // stamp / TTL freeze or extend / flag, in that order
-            if (enabled) scheduler.resumePipeline() else scheduler.pausePipeline()
-            state.value = AppConfigStore.isPipelineEnabled(context) // publish what was actually persisted
+            try {
+                // No cached-state early return: scheduling is idempotent, so always apply and then publish.
+                AppConfigStore.setPipelineEnabled(context, enabled) // stamp / TTL freeze or extend / flag, in that order
+                if (enabled) scheduler.resumePipeline() else scheduler.pausePipeline()
+                state.value = AppConfigStore.isPipelineEnabled(context) // publish what was actually persisted
+            } finally {
+                synchronized(lock) { if (--inFlight == 0) requested = state.value }
+            }
         }
     }
+
+    override fun toggle() = synchronized(lock) { setEnabled(!requested) }
 
     private companion object {
         /** One at a time, FIFO: a quick pause-then-resume applies in tap order. */
