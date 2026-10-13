@@ -1,5 +1,6 @@
 package com.rokid.context.orchestration.nudge
 
+import com.rokid.context.core.model.QuietWindow
 import com.rokid.context.memory.db.NudgeGateDao
 import com.rokid.context.orchestration.AskText
 import java.security.MessageDigest
@@ -12,7 +13,7 @@ enum class Gate { PASS, QUIET_HOURS, CAP_REACHED, DUPLICATE, OFF }
  * every engine run goes through the unique work "nudge_engine" (ExistingWorkPolicy.KEEP), so runs never overlap. A
  * second caller of NudgeEngine would have to keep that serialisation, or the cap could be exceeded by one.
  *
- * R-61 gates, in order: a cap of 0 → OFF; local now inside quiet hours → QUIET_HOURS (dropped, not deferred); nudges
+ * R-61 gates, in order: a cap of 0 → OFF; now inside a quiet-hours occurrence ([QuietWindow]) → QUIET_HOURS (dropped, not deferred); nudges
  * since local midnight ≥ cap → CAP_REACHED; the same collapsed, lower-cased text in the last 24 h → DUPLICATE.
  */
 class NudgeGates(private val dao: NudgeGateDao, private val cap: () -> Int) {
@@ -21,7 +22,8 @@ class NudgeGates(private val dao: NudgeGateDao, private val cap: () -> Int) {
         val limit = cap()
         if (limit <= 0) return Gate.OFF
         val local = Instant.ofEpochMilli(nowMs).atZone(hud.zone)
-        if (hud.quietHours?.contains(local.hour * 60 + local.minute) == true) return Gate.QUIET_HOURS
+        // One quiet-hours implementation with the phone pause set (integration carry 9): DST-consistent occurrences.
+        if (hud.quietHours?.let { QuietWindow.occurrenceAt(it, nowMs, hud.zone) } != null) return Gate.QUIET_HOURS
         val midnight = local.toLocalDate().atStartOfDay(hud.zone).toInstant().toEpochMilli()
         if (dao.countSince(midnight) >= limit) return Gate.CAP_REACHED
         return Gate.PASS
