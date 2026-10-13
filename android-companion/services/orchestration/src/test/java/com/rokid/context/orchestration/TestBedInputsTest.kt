@@ -25,14 +25,18 @@ import java.io.File
 class TestBedInputsTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var inputs: TestBedInputs
+    private val now = 1_800_000_000_000L
+    private lateinit var nudgeInputs: com.rokid.context.orchestration.nudge.NudgeInputs
 
     @Before fun setUp() = runBlocking {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         val ai = TestAi.graph(ctx) { "{}" }
         val mem = MemoryGraph.get(ctx)
-        mem.memories.add(LegacyImporter.toMemory("m1", "short_term", 0.9, 10, "Milk carton in the fridge"))
+        mem.memories.add(LegacyImporter.toMemory("m1", "short_term", 0.9, now - 3_600_000L, "Milk carton in the fridge"))
         mem.frames.add(FrameEntity("f1", 20, File(ctx.filesDir, "f1.jpg").apply { writeBytes(byteArrayOf(1, 2)) }.absolutePath, "rokid_glasses", "kitchen"))
-        inputs = TestBedInputs(mem, AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() }))
+        val sources = com.rokid.context.connectors.ContextSourceProvider { q, _ -> if (q == null) listOf("event \u00b7 Dentist") else emptyList() }
+        nudgeInputs = com.rokid.context.orchestration.nudge.NudgeInputs(mem, sources)
+        inputs = TestBedInputs(mem, AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() }), nudgeInputs, clock = { now })
     }
 
     @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
@@ -65,5 +69,16 @@ class TestBedInputsTest {
         assertTrue(p.vars.recentContext, p.vars.recentContext.contains("\nBEGIN_DATA source"))
         val f = inputs.prepare(PromptKey.CRITIC, TestInput.Frame("f1"))
         assertTrue(f.vars.recentContext, f.vars.recentContext.contains("id=f1"))
+    }
+
+    /** Phase 7 C4 carry: the test bed's NUDGE run gets exactly the production inputs (+ the typed line). */
+    @Test fun nudgeUsesProductionInputs() = runBlocking {
+        val p = inputs.prepare(PromptKey.NUDGE, TestInput.Text("leaving for work"))
+        val prod = nudgeInputs.build(now, extraText = "leaving for work")
+        assertEquals(prod.vars, p.vars)
+        assertEquals(setOf("m1"), p.inputIds)
+        assertTrue(p.vars.recentContext, p.vars.recentContext.contains("- leaving for work"))
+        assertTrue(p.vars.contextSources, p.vars.contextSources.contains("Dentist"))
+        assertTrue(p.vars.recentContext.contains("BEGIN_DATA recent_nudges"))
     }
 }

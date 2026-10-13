@@ -89,7 +89,10 @@ class SettingsDeps(
             hud = HubHudSettings(HubGraph.get(app)),
             reauthorize = { AuthActivity.launch(app).onFailure { Log.i("Settings", "re-authorize failed (${it.javaClass.simpleName})") } },
             onEmbedBindingChanged = { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app) },
-            lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(app), AnswerService.forApp(app)) },
+            lazyTestInputs = lazy {
+                val mem = MemoryGraph.get(app)
+                TestBedInputs(mem, AnswerService.forApp(app), com.rokid.context.orchestration.nudge.NudgeInputs(mem, com.rokid.context.connectors.sources.SourcesGraph.get(app).provider))
+            },
             lazyRetrieval = lazy { RetrievalSettingsStore.get(app) },
             lazySpaces = lazy { MemoryGraph.get(app).spaces },
             rebuildIndex = { scope.launch(Dispatchers.IO) { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app, rebuild = true) } },

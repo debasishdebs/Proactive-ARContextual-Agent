@@ -37,7 +37,7 @@ class SettingsDepsTest {
         val src = File("src/main/java/com/rokid/context/phone/ui/settings/SettingsDeps.kt").readText()
         assertTrue("SettingsDeps.create must wrap AiGraph.get in lazy", src.contains("lazyAi = lazy { AiGraph.get(app) }"))
         assertTrue("SettingsDeps.create must wrap the test-bed inputs (AnswerService.forApp reaches AiGraph) in lazy",
-            src.contains("lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(app), AnswerService.forApp(app)) }"))
+            Regex("""lazyTestInputs = lazy \{\s+val mem = MemoryGraph.get\(app\)\s+TestBedInputs\(mem, AnswerService.forApp\(app\)""").containsMatchIn(src))
         // T19 fix round 1: the Rebuild (button or banner tap, both on Main) commits prefs; it runs on IO.
         assertTrue("rebuildIndex runs on IO", src.contains("rebuildIndex = { scope.launch(Dispatchers.IO) { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app, rebuild = true) } }"))
     }
