@@ -10,6 +10,7 @@ import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.legacy.LegacyImporter
 import com.rokid.context.work.OrchestrationScheduler
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
@@ -29,9 +30,11 @@ object MemoryWipe {
      * and embedding spaces), every frame JPEG (the rows' paths plus [RokidFrameInbox.FRAME_DIRS]), the legacy logs and
      * the exports, then VACUUMs (crash-safe FTS rebuild) and truncates the WAL. The pipeline restarts unless it was
      * paused. Keeps `cxr_received_frames.txt`, so the glasses don't re-send frames from before the wipe.
-     * Returns the frame files deleted.
+     * Returns the frame files deleted. Not cancellable once started (final-review I2): it is a privacy action, so
+     * leaving the Memory screen mid-wipe (ViewModel cleared) must not stop it part-way; the caller sees its
+     * cancellation only after the wipe has finished.
      */
-    suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db): Int = withContext(Dispatchers.IO) {
+    suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db): Int = withContext(Dispatchers.IO + NonCancellable) {
         // Fix round 3: never import here (a failing import must not block Delete all). An import in progress is
         // waited for (it holds the lock until it finishes or throws); then it is marked done and never runs again.
         MemoryGraph.markLegacyImportDone(context)
