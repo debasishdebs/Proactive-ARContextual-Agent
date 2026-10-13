@@ -15,7 +15,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 
 sealed interface AskOutcome {
-    data class Answered(val askId: String, val proposedAction: com.rokid.context.ai.contract.ProposedAction? = null) : AskOutcome
+    /** [proposalId]: the stored proposal for [proposedAction] (Phase 7), null when none was stored. */
+    data class Answered(
+        val askId: String, val proposedAction: com.rokid.context.ai.contract.ProposedAction? = null, val proposalId: String? = null,
+    ) : AskOutcome
     data class Failed(val message: String) : AskOutcome
 }
 

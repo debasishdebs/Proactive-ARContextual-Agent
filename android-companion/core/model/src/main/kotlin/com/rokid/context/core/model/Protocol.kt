@@ -52,7 +52,8 @@ sealed interface Overlay {
     @Serializable @SerialName("nudge") data class Nudge(val text: String) : Overlay
     @Serializable @SerialName("confirm") data class Confirm(val proposalId: String, val title: String, val detail: String) : Overlay
     @Serializable @SerialName("paused_splash") data object PausedSplash : Overlay
-    @Serializable @SerialName("toast") data class Toast(val text: String) : Overlay
+    /** [undoProposalId] (Phase 7, additive): an undo toast; a glasses double-tap then undoes instead of toggling pause. */
+    @Serializable @SerialName("toast") data class Toast(val text: String, val undoProposalId: String? = null) : Overlay
 }
 
 /** Full HUD state pushed phone → glasses on `pc_state` (spec §1.6). Short human strings only. */
@@ -119,6 +120,12 @@ data class HudSettings(
     val quietHours: QuietHours? = null,
     val pauses: List<PauseRecord> = emptyList(),
     val askBlockedReason: String? = null,
+    /** Phase 7, additive: ids the phone resumed (closed intervals ≤ 7 d, ≤ 200 newest); glasses drop them. */
+    val resumedPauseIds: List<String> = emptyList(),
+    /** Phase 7, additive: true = [pauses] were converted with a measured clock offset. */
+    val pausesExact: Boolean = false,
+    /** Phase 7, additive: the phone's ZoneId.id; the glasses evaluate quiet hours in it. */
+    val zoneId: String? = null,
 )
 
 @Serializable
@@ -132,6 +139,8 @@ sealed interface Command {
     @Serializable @SerialName("page_changed") data class PageChanged(val page: HudPage) : Command
     @Serializable @SerialName("listen_start") data object ListenStart : Command
     @Serializable @SerialName("cancel") data object Cancel : Command
+    /** Phase 7, additive: undo an executed proposal (glasses double-tap on an undo toast). */
+    @Serializable @SerialName("undo") data class Undo(val proposalId: String) : Command
 }
 
 /** `pc_cmd` payload: commands are wrapped so every message carries [v]. */
