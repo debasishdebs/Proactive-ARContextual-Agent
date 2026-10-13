@@ -207,6 +207,23 @@ class ActionEngineTest {
         assertNull(repo.byId("prop_ASK_a1"))
     }
 
+    private fun redacted(id: String, state: ProposalState) = ProposalEntity(
+        id, ProposalOrigin.NUDGE.name, "n1", ActionType.REMINDER.name, com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS, state.name,
+        now + 600_000, resolvedBy = null, createdRef = null, createdAt = now,
+    )
+
+    /** Integration carry 2: a row whose params Forget redacted never reaches an executor (recover or a late approve). */
+    @Test fun redactedProposalsNeverExecute() = runBlocking {
+        val exec = CountingExecutor()
+        repo.addIgnore(redacted("prop_x", ProposalState.EXECUTING))
+        repo.addIgnore(redacted("prop_y", ProposalState.PENDING))
+        val e = engine(exec)
+        e.recover()
+        e.respond("prop_y", yes = true, by = "phone")
+        assertEquals(0, exec.executed.get())
+        assertEquals(ProposalState.FAILED.name, repo.byId("prop_x")!!.state)
+    }
+
     /** Fix round 1 I-1: recover() racing an in-flight auto-execute must not run the executor a second time. */
     @Test fun recoverSkipsAnInFlightExecution() = runBlocking {
         val entered = kotlinx.coroutines.CompletableDeferred<Unit>()

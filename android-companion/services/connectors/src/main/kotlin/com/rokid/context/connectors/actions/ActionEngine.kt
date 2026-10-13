@@ -14,6 +14,7 @@ import com.rokid.context.memory.ProposalRepository
 import com.rokid.context.memory.ProposalState
 import com.rokid.context.memory.Resolve
 import com.rokid.context.memory.db.ProposalEntity
+import com.rokid.context.memory.forget.ForgetService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -159,6 +160,8 @@ class ActionEngine(
     }
 
     private suspend fun execute(p: ProposalEntity): Boolean {
+        // Forget redacted this proposal's origin (integration carry 2): its params hold no action, so nothing runs.
+        if (p.paramsJson == ForgetService.REDACTED_PARAMS) { repo.markFailed(p.id, FailCode.UNKNOWN.name, clock()); return false }
         val exec = ActionParams.typeOf(p.type)?.let(executors::get)
         val result = try {
             exec?.execute(p) ?: ExecResult.Failed(FailCode.UNKNOWN)

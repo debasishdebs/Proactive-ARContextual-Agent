@@ -35,4 +35,12 @@ class BootReceiverTest {
         val alarms = shadowOf(ctx.getSystemService(AlarmManager::class.java)).scheduledAlarms
         assertEquals(listOf(now + 3_600_000), alarms.map { it.triggerAtMs })
     }
+
+    /** Integration carry 2: a reminder whose params Forget redacted is never re-armed. */
+    @Test fun redactedRemindersAreNotRearmed() = runBlocking {
+        val now = System.currentTimeMillis()
+        repo.addIgnore(reminder("future", now + 3_600_000, ProposalState.EXECUTED).copy(paramsJson = com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS))
+        assertEquals(0, BootReceiver.rearm(repo, ReminderExecutor(ctx), now))
+        assertEquals(0, shadowOf(ctx.getSystemService(AlarmManager::class.java)).scheduledAlarms.size)
+    }
 }
