@@ -51,11 +51,14 @@ class VoiceSettingsStore(private val prefs: () -> SharedPreferences, private val
     private val p by lazy(prefs)
     private val state = MutableStateFlow(VoiceSettings())
     val settings: StateFlow<VoiceSettings> = state.asStateFlow()
+    private val _loaded = MutableStateFlow(false)
+    /** False until the stored values replaced the defaults: callers that must not act on a default can wait for it. */
+    val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
     private val writes = Mutex()
-    private val loaded = scope.async(work) { state.value = read() }
+    private val load = scope.async(work) { state.value = read(); _loaded.value = true }
 
     fun update(f: (VoiceSettings) -> VoiceSettings): Job = scope.launch(work) {
-        loaded.await()
+        load.await()
         writes.withLock {
             val n = f(state.value)
             p.edit().putString(K_LANG, n.language.name).putBoolean(K_MIC, n.phoneMic).commit()

@@ -11,6 +11,7 @@ import com.rokid.context.voice.VoiceSettings
 import com.rokid.context.voice.VoiceSettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -31,27 +32,48 @@ class PipelineHubVoice(private val pipeline: VoicePipeline, capabilities: StateF
 }
 
 /**
- * Home's mic: the pipeline's phone state plus Settings' "Use the phone mic for Ask" switch. [PhoneVoiceState.micOff]
- * is applied on top of every pipeline update (the pipeline publishes it as false). Turning the switch off while Home is
- * listening or thinking cancels that ask; a glasses ask is left alone.
+ * Home's mic: the pipeline's phone state plus Settings' "Use the phone mic for Ask" switch. [settings] is null until the
+ * stored values have loaded, and the switch then counts as off (privacy ruling, fix round 1): a tap is a no-op with the
+ * [LOADING] note, never an ask the user turned off. [PhoneVoiceState.micOff] is applied on top of every pipeline update
+ * (the pipeline publishes it as false). Turning the switch off while Home is listening or thinking cancels that ask; a
+ * glasses ask is left alone.
  */
-class PipelinePhoneVoice(private val pipeline: VoicePipeline, private val settings: StateFlow<VoiceSettings>, scope: CoroutineScope) : PhoneVoice {
-    override val state: StateFlow<PhoneVoiceState> = combine(pipeline.phone, settings) { p, s -> p.copy(micOff = !s.phoneMic) }
-        .stateIn(scope, SharingStarted.Eagerly, pipeline.phone.value.copy(micOff = !settings.value.phoneMic))
+class PipelinePhoneVoice(private val pipeline: VoicePipeline, private val settings: StateFlow<VoiceSettings?>, scope: CoroutineScope) : PhoneVoice {
+    private val loadingTapped = MutableStateFlow(false)
+
+    override val state: StateFlow<PhoneVoiceState> = combine(pipeline.phone, settings, loadingTapped) { p, s, tapped -> view(p, s, tapped) }
+        .stateIn(scope, SharingStarted.Eagerly, view(pipeline.phone.value, settings.value, false))
 
     init {
         scope.launch {
             settings.collect { s ->
+                if (s != null) loadingTapped.value = false
                 val p = pipeline.phone.value
-                if (!s.phoneMic && (p.listening || p.thinking)) pipeline.phoneCancel()
+                if (s?.phoneMic != true && (p.listening || p.thinking)) pipeline.phoneCancel()
             }
         }
     }
 
-    override fun start() { if (settings.value.phoneMic) pipeline.phoneStart() }
+    private fun view(p: PhoneVoiceState, s: VoiceSettings?, tapped: Boolean) =
+        p.copy(micOff = s?.phoneMic != true, error = if (s == null && tapped) LOADING else p.error)
+
+    override fun start() {
+        val s = settings.value
+        if (s == null) { loadingTapped.value = true; return }
+        if (s.phoneMic) pipeline.phoneStart()
+    }
     override fun stop() = pipeline.phoneStop()
     override fun cancel() = pipeline.phoneCancel()
+
+    companion object {
+        const val LOADING = "Voice is still loading, try again in a moment"
+    }
 }
+
+/** The store's settings once loaded, null before (the defaults must not count as the user's choice). */
+internal fun VoiceSettingsStore.loadedSettings(scope: CoroutineScope): StateFlow<VoiceSettings?> =
+    combine(settings, loaded) { s, isLoaded -> s.takeIf { isLoaded } }
+        .stateIn(scope, SharingStarted.Eagerly, settings.value.takeIf { loaded.value })
 
 /**
  * Settings › Phone camera & mic over the stores. A new language needs its own pack and probe (spec §5.1.1): once the
@@ -59,7 +81,7 @@ class PipelinePhoneVoice(private val pipeline: VoicePipeline, private val settin
  */
 internal class StoreVoiceControls(
     private val store: VoiceSettingsStore,
-    service: VoiceCapabilityService,
+    private val service: VoiceCapabilityService,
     private val scope: CoroutineScope,
     private val onForeground: () -> Unit,
     private val download: suspend (localeTag: String) -> PackDownload,
@@ -76,9 +98,13 @@ internal class StoreVoiceControls(
     override fun setPhoneMic(on: Boolean) { store.update { it.copy(phoneMic = on) } }
     override fun recheck() = onForeground()
 
+    /**
+     * A download can take up to a minute and finish after the app left the front (fix round 1), so the gate is then
+     * re-read without a probe and the foreground is not re-entered; the next resume probes if still needed.
+     */
     override suspend fun downloadPack(): PackDownload {
         val r = download(settings.value.language.tag)
-        onForeground()
+        service.refresh()
         return r
     }
 

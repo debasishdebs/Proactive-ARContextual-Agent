@@ -7,6 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class VoiceCapabilityServiceTest {
     private class FakePlatform : VoicePlatform {
         override var sdk = 37
