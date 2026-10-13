@@ -18,12 +18,32 @@ import kotlin.coroutines.cancellation.CancellationException
 object LogReader {
     /**
      * Credential shapes (fix round 1, m4): key/auth headers, Azure's subscription key, key/token/sig query params,
-     * token/secret/password values, bare `sk-…` keys, JWTs and long base64 runs. `--pid` also carries SDK lines.
+     * token/secret/password values, bare `sk-…` keys and JWTs. `--pid` also carries SDK lines. Long base64 runs are
+     * checked apart ([BASE64_RUN], [isLikelyBase64Secret]) so JNI class descriptors are kept (P8 D3).
      */
-    private val SECRET = Regex("(?i)(api[-_. ]?key|authorization|bearer\\s|subscription-key|[?&](key|token|sig)=|access[_-]?token|(token|secret|password)\\s*[=:])|\\bsk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{10,}\\.|[A-Za-z0-9+/]{40,}={0,2}")
+    private val SECRET = Regex("(?i)(api[-_. ]?key|authorization|bearer\\s|subscription-key|[?&](key|token|sig)=|access[_-]?token|(token|secret|password)\\s*[=:])|\\bsk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{10,}\\.")
+    private val BASE64_RUN = Regex("[A-Za-z0-9+/]{40,}")
+    private val DIGIT = Regex("[0-9]")
+    private val UPPER = Regex("[A-Z]")
+    private val LOWER = Regex("[a-z]")
+    /** A JNI/Java path segment: an identifier whose digits, if any, come last (`v2`, `Interface2`), as random Base64 rarely is. */
+    private val PATH_SEGMENT = Regex("[A-Za-z_$][A-Za-z_$]*[0-9]*")
+
+    /**
+     * A 40+ char base64 run is a likely key when it mixes a digit, an upper- and a lower-case letter and is not a
+     * `/`-separated identifier path such as a JNI descriptor (`Lcom/rokid/cxr/.../SomeCallbackInterface;`).
+     */
+    internal fun isLikelyBase64Secret(run: String): Boolean {
+        if (!DIGIT.containsMatchIn(run) || !UPPER.containsMatchIn(run) || !LOWER.containsMatchIn(run)) return false
+        val identifierPath = '/' in run && run.split('/').all { PATH_SEGMENT.matches(it) }
+        return !identifierPath
+    }
+
+    private fun looksSecret(line: String): Boolean =
+        SECRET.containsMatchIn(line) || BASE64_RUN.findAll(line).any { isLikelyBase64Secret(it.value) }
 
     /** Our logs never carry keys (SafeLog); lines that even look like they do are dropped anyway. */
-    fun redact(lines: List<String>): List<String> = lines.filterNot { SECRET.containsMatchIn(it) }
+    fun redact(lines: List<String>): List<String> = lines.filterNot(::looksSecret)
 
     suspend fun ownLines(max: Int = 400): List<String> = withContext(Dispatchers.IO) {
         val p = ProcessBuilder("logcat", "-d", "-t", max.toString(), "--pid=${Process.myPid()}").redirectErrorStream(true).start()
