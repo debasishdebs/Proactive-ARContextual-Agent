@@ -52,11 +52,14 @@ class KeyGestures(
         return KeyResult(true, listOfNotNull(swipes.onKey(key, uptimeMs)?.let { PadInput.Swiped(it) }))
     }
 
-    /** A tap is a short ENTER/DPAD_CENTER press; a held one (repeats, or [LONG_PRESS_MS]) is "Hi Rokid" (spec §3.5). */
+    /**
+     * A tap is a short ENTER/DPAD_CENTER press; a held one (repeats, or [LONG_PRESS_MS]) is "Hi Rokid" (spec §3.5).
+     * A key-up with no recorded down (the press began before an activity recreate) is not a tap either.
+     */
     fun onKeyUp(keyCode: Int, uptimeMs: Long): KeyResult = when (keyCode) {
         KEY_ENTER, KEY_DPAD_CENTER -> {
             val down = tapDownAtMs
-            val held = tapHeld || (down != null && uptimeMs - down >= LONG_PRESS_MS)
+            val held = down == null || tapHeld || uptimeMs - down >= LONG_PRESS_MS
             tapDownAtMs = null
             tapHeld = false
             KeyResult(true, if (held) emptyList() else listOf(PadInput.Tapped))

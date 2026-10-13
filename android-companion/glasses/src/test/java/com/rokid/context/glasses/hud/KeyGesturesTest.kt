@@ -80,4 +80,21 @@ class KeyGesturesTest {
         k.onKeyDown(KeyGestures.KEY_ENTER, 0, 2_000, 2_000)
         assertEquals(listOf<PadInput>(PadInput.Tapped), k.onKeyUp(KeyGestures.KEY_ENTER, 2_120).inputs)
     }
+
+    /** A key-up with no recorded down (the press began before an activity recreate, e.g. into Hi Rokid) is not a tap. */
+    @Test fun anOrphanKeyUpIsNotATap() {
+        val up = k.onKeyUp(KeyGestures.KEY_ENTER, 1_000)
+        assertTrue(up.consumed)
+        assertEquals(emptyList(), up.inputs)
+    }
+
+    @Test fun aPressJustUnderTheLongPressThresholdIsATap() {
+        k.onKeyDown(KeyGestures.KEY_ENTER, 0, 1_000, 1_000)
+        assertEquals(listOf<PadInput>(PadInput.Tapped), k.onKeyUp(KeyGestures.KEY_ENTER, 1_000 + KeyGestures.LONG_PRESS_MS - 1).inputs)
+    }
+
+    @Test fun aPressOfExactlyTheLongPressThresholdIsNotATap() {
+        k.onKeyDown(KeyGestures.KEY_DPAD_CENTER, 0, 1_000, 1_000)
+        assertEquals(emptyList(), k.onKeyUp(KeyGestures.KEY_DPAD_CENTER, 1_000 + KeyGestures.LONG_PRESS_MS).inputs)
+    }
 }
