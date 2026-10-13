@@ -101,7 +101,8 @@ class PushToTalk(
     /**
      * Double-tap, session close or activity exit: stop without `pc_listen_end`. True when the phone already has this
      * capture's ListenStart, so the caller owes it a Cancel; a ListenStart in flight is waited for (it is sent under
-     * the same lock), so the caller's Cancel always follows it, and none is sent after a cancel.
+     * the same lock), so the caller's Cancel always follows it, and none is sent after a cancel. Called on Main, it
+     * can therefore wait for that one CXR send (PENDING-DEVICE, T16: a blocking send would stall Main).
      */
     fun cancel(): Boolean = synchronized(lock) {
         val c = current ?: return false
@@ -126,6 +127,8 @@ class PushToTalk(
         var clean = false
         var micFailed = false
         try {
+            // ListenStart goes out under the lock, so a cancel() waits for it (and Cancel always follows it). A cancel()
+            // on Main therefore waits for this CXR send; PENDING-DEVICE (T16): a blocking CXR send would stall Main.
             val opened = synchronized(lock) {
                 if (c.stop) return
                 link.start().also { c.started = it }
@@ -167,20 +170,22 @@ class PushToTalk(
         while (true) {
             try { Thread.sleep(step) } catch (e: InterruptedException) { return }
             val since = c.readSinceMs
-            val owed = synchronized(lock) {
+            val fired = synchronized(lock) {
                 if (current !== c) return
-                if (since == 0L || nowMs() - since < readTimeoutMs || c.readSinceMs != since) null
+                if (since == 0L || nowMs() - since < readTimeoutMs || c.readSinceMs != since) false
                 else {
-                    val owed = c.started && !c.cancelled
+                    // The owed Cancel goes out under the lock, before the capture is released: a new tap's ListenStart
+                    // (also sent under the lock) cannot overtake it.
+                    if (c.started && !c.cancelled) runCatching { link.cancel() }
                     c.stop = true; c.cancelled = true
                     current = null; recording.value = false
-                    owed
+                    true
                 }
-            } ?: continue
+            }
+            if (!fired) continue
             log("mic stalled")
-            c.close()
-            if (owed) runCatching { link.cancel() }
             onProblem(PttProblem.MIC_UNAVAILABLE)
+            c.close() // last: on a hung HAL, stop()/release() may block too, and must not swallow the Cancel or the toast
             return
         }
     }

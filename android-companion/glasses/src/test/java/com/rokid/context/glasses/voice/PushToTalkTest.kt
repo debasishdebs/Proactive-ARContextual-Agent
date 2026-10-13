@@ -3,6 +3,7 @@ package com.rokid.context.glasses.voice
 import com.rokid.context.core.model.audio.Pcm
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -159,6 +160,24 @@ class PushToTalkTest {
         assertTrue(closed.get(), "the mic is released")
         assertEquals(listOf(PttProblem.MIC_UNAVAILABLE), problems.toList())
         assertEquals(listOf("start", "cancel"), link.sent.toList(), "the phone drops the ask; no pc_listen_end")
+    }
+
+    /** Fix round 2: a close() that hangs too (the same hung HAL) cannot swallow the owed Cancel or the toast. */
+    @Test fun aWatchdogWhoseCloseHangsHasAlreadySentTheCancelAndTheToast() {
+        val problems = CopyOnWriteArrayList<PttProblem>()
+        val link = FakeLink()
+        val closeEntered = Semaphore(0)
+        val hung = object : PcmSource {
+            override fun start() = Unit
+            override fun read(buf: ByteArray): Int { Semaphore(0).acquire(); return -1 }
+            override fun close() { closeEntered.release(); Semaphore(0).acquire() }
+        }
+        val ptt = PushToTalk(link, sourceFactory = { hung }, readTimeoutMs = 300).apply { onProblem = { problems += it } }
+        ptt.start()
+        assertTrue(closeEntered.tryAcquire(3, TimeUnit.SECONDS), "the watchdog fired")
+        assertEquals(listOf("start", "cancel"), link.sent.toList(), "the Cancel went out before the close")
+        assertEquals(listOf(PttProblem.MIC_UNAVAILABLE), problems.toList(), "the toast came before the close")
+        assertFalse(ptt.recording.value)
     }
 
     @Test fun aStalledReadDoesNotLockAsk() {
