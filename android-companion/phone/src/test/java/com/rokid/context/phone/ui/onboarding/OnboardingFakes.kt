@@ -34,11 +34,12 @@ class FakeOnboardingAi(var seed: SeedEndpoint? = null) : OnboardingAi {
     var nextResult: Result<TestResult> = Result.success(TestResult(true, 420, "OK"))
     val drafts = mutableListOf<EndpointDraft>()
     val used = mutableListOf<String>()
+    val chosen = mutableListOf<Boolean>()
     var seedTests = 0
     override suspend fun seeded(): SeedEndpoint? = seed
     override suspend fun testSeed(seed: SeedEndpoint): TestResult { seedTests++; return nextResult.getOrThrow() }
     override suspend fun testDraft(draft: EndpointDraft): Result<TestResult> { drafts += draft; return nextResult }
-    override suspend fun use(endpointId: String) { used += endpointId }
+    override suspend fun use(endpointId: String, chosen: Boolean) { used += endpointId; this.chosen += chosen }
 }
 
 class Env(

@@ -98,6 +98,17 @@ class HubPauses(
     /** The stored active records, without expiring or minting anything (a read for a Resume before the hub loads). */
     suspend fun stored(): List<PauseRecord> = now().let { t -> dao.records().map { it.toModel() }.filter { it.isActiveAt(t) } }
 
+    /**
+     * Read-only form of "is [active] non-empty" (nothing expired or minted): a stored record active now, or now inside a
+     * quiet-hours occurrence that was never created. A resumed occurrence (closed interval) does not pause (final review I2).
+     */
+    suspend fun pausedNow(): Boolean {
+        if (stored().isNotEmpty()) return true
+        val q = quietHours() ?: return false
+        val occ = QuietWindow.occurrenceAt(q, now(), zone()) ?: return false
+        return dao.quietOccurrence(occ.first, occ.last + 1) == null
+    }
+
     companion object {
         const val TOMBSTONE_MS = 90 * 24 * 3_600_000L
     }
