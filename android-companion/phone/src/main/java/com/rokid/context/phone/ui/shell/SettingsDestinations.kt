@@ -33,7 +33,7 @@ import com.rokid.context.phone.ui.settings.ai.EndpointsListViewModel
 import com.rokid.context.phone.ui.settings.ai.RolesScreen
 import com.rokid.context.phone.ui.settings.ai.RolesViewModel
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsScreen
-import com.rokid.context.phone.ui.settings.flows.DayOneFlowSummaries
+import com.rokid.context.phone.ui.settings.flows.AgentFlowSummaries
 import com.rokid.context.phone.ui.settings.flows.FlowsListRoute
 import com.rokid.context.phone.ui.settings.connectors.ActionsRoute
 import com.rokid.context.phone.ui.settings.connectors.ShoppingRoute
@@ -122,7 +122,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_FLOWS) {
-        FlowsListRoute(DayOneFlowSummaries, models = { s.ai.bindings.get(it)?.model }, onBack = back, navigate = { nav.navigate(it) })
+        FlowsListRoute(AgentFlowSummaries, models = { s.ai.bindings.get(it)?.model }, onBack = back, navigate = { nav.navigate(it) })
     }
 
     composable(Routes.SETTINGS_FLOWS_VIEW, arguments = listOf(navArgument("ids") { type = NavType.StringType; defaultValue = "" })) { entry ->
