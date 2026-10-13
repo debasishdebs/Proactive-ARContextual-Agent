@@ -19,6 +19,7 @@ import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.work.OrchestrationScheduler
+import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -62,16 +63,41 @@ class LegacyPipelineControlTest {
     /** Fix round 1 (review I1, Threads): the ⏸ control runs on Main, so it reads only the plain flag, never the Keystore-backed secrets. */
     @Test fun constructingAndTogglingNeverOpensTheSecretsStore() {
         val spy = PrefsSpyContext(ctx)
-        val control = LegacyPipelineControl(spy, OrchestrationScheduler(ctx))
+        val control = LegacyPipelineControl(spy, OrchestrationScheduler(ctx), io = kotlinx.coroutines.Dispatchers.Unconfined)
         control.setEnabled(false); control.setEnabled(true)
         assertTrue(control.enabled.value)
         assertTrue(spy.opened.isNotEmpty())
         assertEquals(listOf<String>(), spy.opened.filter { it == "app_config_secret" })
     }
 
+    /** Records the thread of every prefs open and queue-file lookup made through it. */
+    private class ThreadSpyContext(base: Context) : ContextWrapper(base) {
+        val threads = java.util.Collections.synchronizedList(mutableListOf<Thread>())
+        override fun getSharedPreferences(name: String?, mode: Int): SharedPreferences { threads += Thread.currentThread(); return super.getSharedPreferences(name, mode) }
+        override fun getFilesDir(): java.io.File { threads += Thread.currentThread(); return super.getFilesDir() }
+    }
+
+    /** Final-review I3: the tap returns at once; the TTL freeze/extend (queue file) and the flag commits run off Main. */
+    @Test fun aTapDoesNoPrefsOrQueueFileWorkOnMain() = kotlinx.coroutines.runBlocking {
+        AppConfigStore.setPipelineEnabled(ctx, true)
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.EXPLICIT_WRITE, com.rokid.context.data.runtime.QueuePayloads.explicitWrite("x", "en", manual = true), personaSnapshot = "p")
+        val spy = ThreadSpyContext(ctx)
+        val control = LegacyPipelineControl(spy, OrchestrationScheduler(ctx))
+        val main = android.os.Looper.getMainLooper().thread
+        assertEquals(main, Thread.currentThread())
+        spy.threads.clear() // the constructor's one plain-flag read is allowed (the initial state)
+        control.setEnabled(false)
+        kotlinx.coroutines.withTimeout(5_000) { control.enabled.first { !it } }
+        control.setEnabled(true)
+        kotlinx.coroutines.withTimeout(5_000) { control.enabled.first { it } }
+        assertTrue(spy.threads.isNotEmpty())
+        assertEquals(listOf<Thread>(), spy.threads.filter { it == main })
+        assertTrue(AppConfigStore.isPipelineEnabled(ctx))
+    }
+
     @Test fun pauseStopsWorkersAndPersistsResumeReschedules() {
         val scheduler = OrchestrationScheduler(ctx).apply { scheduleQueueDrain() }
-        val control = LegacyPipelineControl(ctx, scheduler)
+        val control = LegacyPipelineControl(ctx, scheduler, io = kotlinx.coroutines.Dispatchers.Unconfined)
         assertTrue(control.enabled.value)
 
         control.setEnabled(false)
@@ -86,7 +112,7 @@ class LegacyPipelineControlTest {
 
     /** Final review I2: frames that waited in the inbox while paused are drained on resume (a FRAME_INGEST job + drain now). */
     @Test fun resumeQueuesTheInboxBacklogAndADrain() {
-        val control = LegacyPipelineControl(ctx, OrchestrationScheduler(ctx))
+        val control = LegacyPipelineControl(ctx, OrchestrationScheduler(ctx), io = kotlinx.coroutines.Dispatchers.Unconfined)
         control.setEnabled(false)
         assertEquals(0, QueueRuntimeStore.snapshot(ctx).pendingByQueue[QueuePriority.FRAME_INGEST])
         control.setEnabled(true)
@@ -96,7 +122,7 @@ class LegacyPipelineControlTest {
 
     @Test fun staleCacheDoesNotSkipResume() {
         val scheduler = OrchestrationScheduler(ctx)
-        val control = LegacyPipelineControl(ctx, scheduler)
+        val control = LegacyPipelineControl(ctx, scheduler, io = kotlinx.coroutines.Dispatchers.Unconfined)
         assertTrue(control.enabled.value)
         // legacy MainActivity path: flips the flag and stops workers behind the control's back
         AppConfigStore.setPipelineEnabled(ctx, false)
