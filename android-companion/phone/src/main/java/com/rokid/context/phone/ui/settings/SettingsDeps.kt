@@ -66,6 +66,8 @@ class SettingsDeps(
     val voice: com.rokid.context.phone.voice.VoiceControls = com.rokid.context.phone.voice.VoiceControls.None,
     /** This app's system settings page (a microphone denied with "don't ask again"). */
     val openAppSettings: () -> Unit = {},
+    /** Settings › Privacy (Phase 7 Stream A): the shared capture pause control. */
+    val pauses: com.rokid.context.phone.ui.status.PipelineControl = com.rokid.context.phone.ui.status.PipelineControl.None,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -106,6 +108,7 @@ class SettingsDeps(
                     .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                 runCatching { app.startActivity(intent) }.onFailure { Log.i("Settings", "app settings unavailable (${it.javaClass.simpleName})") }
             },
+            pauses = com.rokid.context.phone.ui.status.CapturePauses.control(app),
         )
     }
 }
