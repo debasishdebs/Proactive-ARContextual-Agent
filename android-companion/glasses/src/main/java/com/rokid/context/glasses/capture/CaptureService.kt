@@ -189,6 +189,7 @@ class CaptureService : LifecycleService() {
         prefs.edit().putLong(KEY_LAST_HASH, prepared.hash).putLong(KEY_LAST_KEPT_AT, nowMs).apply()
         Log.i(TAG, "buffered $frameId (${prepared.jpeg.size / 1024} KB) buffer=${runtime.buffer.size}")
         runtime.onFrameBuffered()
+        runtime.fallback.onCaptureSucceeded()
         return Outcome.BUFFERED
     }
 
