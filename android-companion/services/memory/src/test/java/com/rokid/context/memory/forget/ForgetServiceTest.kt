@@ -1,0 +1,167 @@
+package com.rokid.context.memory.forget
+
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.memory.ProposalOrigin
+import com.rokid.context.memory.ProposalRepository
+import com.rokid.context.memory.ProposalState
+import com.rokid.context.memory.db.AskEntity
+import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.EmbeddingSpaceEntity
+import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.MemoryEntity
+import com.rokid.context.memory.db.MemorySourceEntity
+import com.rokid.context.memory.db.MemoryTier
+import com.rokid.context.memory.db.MemoryVectorEntity
+import com.rokid.context.memory.db.NudgeEntity
+import com.rokid.context.memory.db.ProposalEntity
+import com.rokid.context.memory.db.ReviewState
+import com.rokid.context.memory.db.SpaceState
+import com.rokid.context.memory.db.SummaryTraceEntity
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34])
+class ForgetServiceTest {
+    private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
+    private val proposals = ProposalRepository(db.proposalDao(), db.actionDao(), db)
+    private val service = ForgetService(db, proposals) { 1_000 }
+
+    @After fun close() = db.close()
+
+    private suspend fun mem(id: String, frameId: String? = null, derived: Boolean = false, text: String = "text of $id") =
+        db.memoryDao().insert(MemoryEntity(id, frameId, text, "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, derived, text))
+
+    private suspend fun edge(child: String, parent: String) = db.forgetDao().insertEdges(listOf(MemorySourceEntity(child, parent)))
+    private suspend fun state(id: String) = db.memoryViewDao().byId(id)?.reviewState
+
+    @Test fun transitiveClosureInvalidatesBAndC() = runBlocking {
+        mem("A"); mem("B", derived = true); mem("C", derived = true)
+        edge("B", "A"); edge("C", "B")
+        val r = service.forgetFact("A")
+        assertEquals(setOf("A"), r.forgotten)
+        assertEquals(setOf("B", "C"), r.invalidated)
+        assertNull(db.memoryViewDao().byId("A"))
+        assertEquals(ReviewState.INVALIDATED, state("B")); assertEquals(ReviewState.INVALIDATED, state("C"))
+        // every edge touching A is gone; B→… edges stay for the re-summarise worker
+        assertTrue(db.forgetDao().edgesTo(listOf("A")).isEmpty())
+        assertEquals(1, db.forgetDao().edgesTo(listOf("B")).size)
+    }
+
+    @Test fun diamondInvalidatesOnce() = runBlocking {
+        listOf("A", "B", "C", "D").forEach { mem(it) }
+        edge("B", "A"); edge("C", "A"); edge("D", "B"); edge("D", "C")
+        assertEquals(setOf("B", "C", "D"), service.forgetFact("A").invalidated)
+    }
+
+    @Test fun cycleTerminates() = runBlocking {
+        listOf("A", "B", "C").forEach { mem(it) }
+        edge("B", "A"); edge("C", "B"); edge("B", "C")
+        assertEquals(setOf("B", "C"), service.forgetFact("A").invalidated)
+    }
+
+    @Test fun closureOver999Ids() = runBlocking {
+        mem("A")
+        // a wide fan-out (1 500 children of A) and a long chain hanging off one of them
+        val kids = (0 until 1_500).map { "k$it" }
+        kids.forEach { mem(it, derived = true) }
+        db.forgetDao().insertEdges(kids.map { MemorySourceEntity(it, "A") })
+        val r = service.forgetFacts(listOf("A") + (0 until 1_200).map { "unknown$it" })
+        assertEquals(1_500, r.invalidated.size)
+        assertTrue(kids.all { state(it) == ReviewState.INVALIDATED })
+        // and forgetting 1 500 ids at once (all IN lists chunked)
+        val r2 = service.forgetFacts(kids)
+        assertEquals(1_500, r2.forgotten.size)
+        assertEquals(0, db.memoryDao().count())
+    }
+
+    @Test fun forgetFactTombstonesFrameAndKeepsSiblings() = runBlocking {
+        db.frameDao().insertIgnore(FrameEntity("f1", 1, "/f1.jpg", "rokid_glasses"))
+        mem("m1", frameId = "f1"); mem("m2", frameId = "f1")
+        val r = service.forgetFact("m1")
+        assertEquals(ReviewState.OK, state("m2"))
+        assertEquals(listOf("f1"), db.forgetDao().tombstoned(listOf("f1")))
+        assertTrue(r.framesToDelete.isEmpty())
+        assertTrue(db.forgetDao().frame("f1") != null)
+    }
+
+    @Test fun lastMemoryOfFrameListsJpeg() = runBlocking {
+        db.frameDao().insertIgnore(FrameEntity("f1", 1, "/f1.jpg", "rokid_glasses"))
+        mem("m1", frameId = "f1")
+        assertEquals(listOf("/f1.jpg"), service.forgetFact("m1").framesToDelete)
+    }
+
+    @Test fun forgetMomentDeletesFrameAndAllMemories() = runBlocking {
+        db.frameDao().insertIgnore(FrameEntity("f1", 1, "/f1.jpg", "rokid_glasses"))
+        mem("m1", frameId = "f1"); mem("m2", frameId = "f1"); mem("other")
+        val r = service.forgetMoment("f1")
+        assertEquals(setOf("m1", "m2"), r.forgotten)
+        assertEquals(listOf("/f1.jpg"), r.framesToDelete)
+        assertNull(db.forgetDao().frame("f1"))
+        assertEquals(0, db.forgetDao().memoryIdsOfFrame("f1").size)
+        assertEquals(listOf("f1"), db.forgetDao().tombstoned(listOf("f1")))
+        assertEquals(1, db.memoryDao().count())
+    }
+
+    @Test fun unknownIdsGiveAnEmptyResult() = runBlocking {
+        assertEquals(ForgetService.Result.EMPTY, service.forgetFact("nope"))
+        assertEquals(ForgetService.Result.EMPTY, service.forgetMoment("nope"))
+    }
+
+    @Test fun asksAndNudgesCitingClosureRedacted() = runBlocking {
+        mem("A"); mem("C", derived = true); mem("A1")
+        edge("C", "A")
+        db.askDao().upsert(AskEntity("q1", 1, "q", "answer from C", """["C"]""", null, "phone_typed", false))
+        db.askDao().upsert(AskEntity("q2", 1, "q", "answer from A1", """["A1"]""", null, "phone_typed", false))
+        db.nudgeDao().insertIgnore(NudgeEntity("n1", 1, "nudge from A", "why A", """["A"]""", 1, "h", "phone", false))
+        val r = service.forgetFact("A")
+        assertEquals(1, r.redactedAsks); assertEquals(1, r.redactedNudges)
+        val q1 = db.askDao().byId("q1")!!
+        assertEquals(ForgetService.REDACTED, q1.answer); assertTrue(q1.redacted); assertEquals("[]", q1.sourcesJson)
+        val q2 = db.askDao().byId("q2")!!
+        assertFalse(q2.redacted); assertEquals("answer from A1", q2.answer)
+        db.query("SELECT text, why, sourceIdsJson, redacted FROM nudge", null).use { c -> c.moveToFirst(); assertEquals(ForgetService.REDACTED, c.getString(0)); assertEquals("", c.getString(1)); assertEquals("[]", c.getString(2)); assertEquals(1, c.getInt(3)) }
+    }
+
+    @Test fun pendingProposalOfRedactedAskExpires() = runBlocking {
+        mem("A")
+        db.askDao().upsert(AskEntity("q1", 1, "q", "a", """["A"]""", null, "phone_typed", false))
+        proposals.create(ProposalEntity("p1", ProposalOrigin.ASK.name, "q1", "REMINDER", "{}", ProposalState.PENDING.name, 99_999, null, null, 1), 1)
+        service.forgetFact("A")
+        assertEquals(ProposalState.EXPIRED.name, proposals.byId("p1")!!.state)
+    }
+
+    @Test fun vectorsRemovedFromAllSpaces() = runBlocking {
+        mem("A"); mem("B")
+        edge("B", "A")
+        val e = db.embeddingDao()
+        listOf("s1", "s2").forEachIndexed { i, s ->
+            db.query("INSERT INTO embedding_space VALUES ('$s','fp$i','{}',1,'${if (i == 0) SpaceState.ACTIVE else SpaceState.BUILDING}','{}',$i)", null).close()
+            listOf("A", "B").forEach { m -> e.putVector(MemoryVectorEntity(m, s, byteArrayOf(1))) }
+        }
+        service.forgetFact("A")
+        assertTrue(e.vectors("s1").isEmpty() && e.vectors("s2").isEmpty())
+    }
+
+    @Test fun traceNotesHoldNoMemoryText() = runBlocking {
+        mem("A", text = "Secret diary on the desk")
+        db.traceDao().upsert(SummaryTraceEntity("t1", "TRUSTED", 1, "frames=1 facts=1 v1"))
+        service.forgetFact("A")
+        assertTrue(db.traceDao().recent(10).none { "Secret" in it.note || "diary" in it.note })
+        assertEquals(1, db.traceDao().recent(10).size) // trace notes are untouched
+    }
+
+    @Test fun forgottenTextLeavesTheFtsIndex() = runBlocking {
+        mem("A", text = "zebra umbrella")
+        service.forgetFact("A")
+        assertTrue(db.memoryDao().search("zebra*", 5).isEmpty())
+    }
+}
