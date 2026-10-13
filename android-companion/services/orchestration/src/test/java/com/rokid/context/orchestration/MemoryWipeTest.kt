@@ -101,4 +101,24 @@ class MemoryWipeTest {
         assertEquals(null, MemoryGraph.ensureLegacyImported(ctx)) // nothing left to import later
         assertEquals(0, MemoryGraph.get(ctx).db.memoryDao().count())
     }
+
+    /** Fix round 3: an importer that would throw (unreadable legacy log) never blocks Delete all; it doesn't run at all. */
+    @Test fun aBrokenLegacyImportDoesNotStopDeleteAll() = runBlocking<Unit> {
+        val broken = File(ctx.filesDir, "memory_records.log").apply { mkdirs() } // readLines() on a directory throws
+        g().memories.add(LegacyImporter.toMemory("m1", "short_term", 0.9, 1, "Milk carton"))
+        MemoryWipe.deleteAll(ctx)
+        assertEquals(0, g().db.memoryDao().count())
+        assertFalse(broken.exists())
+    }
+
+    /** Fix round 3: after Delete all the import is marked done, so legacy logs that appear later are never imported. */
+    @Test fun afterDeleteAllTheLegacyImportNeverRuns() = runBlocking<Unit> {
+        MemoryWipe.deleteAll(ctx)
+        assertTrue(LegacyImporter(ctx, g()).isDone())
+        File(ctx.filesDir, "memory_records.log").writeText("rokid_mem_1\tshort_term\t0.9\t100\tMilk carton nearly empty\n")
+        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx))
+        assertEquals(0, g().db.memoryDao().count())
+    }
+
+    private fun g() = MemoryGraph.get(ctx)
 }

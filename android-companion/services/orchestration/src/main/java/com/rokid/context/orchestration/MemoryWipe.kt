@@ -32,9 +32,9 @@ object MemoryWipe {
      * Returns the frame files deleted.
      */
     suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db): Int = withContext(Dispatchers.IO) {
-        // Fix round 2 N3: a first-run legacy import (in flight or not yet run) finishes first, under its lock, so it
-        // can't re-insert legacy memories after the wipe; afterwards it is marked done and never runs again.
-        MemoryGraph.ensureLegacyImported(context)
+        // Fix round 3: never import here (a failing import must not block Delete all). An import in progress is
+        // waited for (it holds the lock until it finishes or throws); then it is marked done and never runs again.
+        MemoryGraph.markLegacyImportDone(context)
         generation.incrementAndGet()
         val scheduler = OrchestrationScheduler(context)
         scheduler.pausePipeline()
