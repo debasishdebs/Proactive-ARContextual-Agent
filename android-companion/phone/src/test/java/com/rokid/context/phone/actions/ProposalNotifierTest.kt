@@ -48,4 +48,14 @@ class ProposalNotifierTest {
         assertEquals(0, shadowOf(nm).activeNotifications.size)
         @Suppress("UNUSED_VARIABLE") val unused = repo
     }
+
+    /** Fix round 1 I-3: nothing about the action on the lock screen, and Add / No thanks need an unlocked phone. */
+    @Test fun lockScreenSafe() = runBlocking {
+        notifier.sync(listOf(row("p1", ProposalState.PENDING)))
+        val n = shadowOf(nm).activeNotifications.single().notification
+        assertEquals(android.app.Notification.VISIBILITY_PRIVATE, n.visibility)
+        assertEquals("Suggested action", n.publicVersion.extras.getString(android.app.Notification.EXTRA_TITLE))
+        assertEquals(null, n.publicVersion.extras.getCharSequence(android.app.Notification.EXTRA_TEXT))
+        assertEquals(listOf(true, true), n.actions.map { it.isAuthenticationRequired })
+    }
 }

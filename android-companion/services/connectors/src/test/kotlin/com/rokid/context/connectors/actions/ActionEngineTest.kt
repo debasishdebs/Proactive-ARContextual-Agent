@@ -18,6 +18,7 @@ import com.rokid.context.memory.db.ProposalEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -204,6 +205,65 @@ class ActionEngineTest {
     @Test fun intakeReturnsNullWhenNormalisingFails() = runBlocking {
         assertNull(engine(zoneOf = { error("no zone") }).onProposed(ProposalOrigin.ASK, "a1", reminderIn(3_600_000), now))
         assertNull(repo.byId("prop_ASK_a1"))
+    }
+
+    /** Fix round 1 I-1: recover() racing an in-flight auto-execute must not run the executor a second time. */
+    @Test fun recoverSkipsAnInFlightExecution() = runBlocking {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val runs = AtomicInteger()
+        val slow = object : ActionExecutor {
+            override suspend fun execute(p: ProposalEntity): ExecResult { runs.incrementAndGet(); entered.complete(Unit); release.await(); return ExecResult.Done("event:1") }
+            override suspend fun undo(p: ProposalEntity) = true
+        }
+        settings.set(ActionType.REMINDER, ActionToggle(enabled = true, alwaysConfirm = false))
+        val e = engine(slow)
+        val proposing = async(Dispatchers.IO) { e.propose(ProposalOrigin.ASK, "a1", reminderIn(3_600_000), now) }
+        entered.await()
+        val recovering = async(Dispatchers.IO) { e.recover() }
+        Thread.sleep(300) // recover() reads the EXECUTING row while the first run is still inside the executor
+        release.complete(Unit)
+        recovering.await()
+        assertEquals(ProposalState.EXECUTED, proposing.await()!!.state)
+        assertEquals(1, runs.get())
+    }
+
+    /** Fix round 1 I-2: the undo window starts when the effect lands, not when the ask arrived. */
+    @Test fun slowExecutionStillGetsAFullUndoWindow() = runBlocking {
+        val slow = object : ActionExecutor {
+            override suspend fun execute(p: ProposalEntity): ExecResult { now += 12_000; return ExecResult.Done("ref") }
+            override suspend fun undo(p: ProposalEntity) = true
+        }
+        settings.set(ActionType.REMINDER, ActionToggle(enabled = true, alwaysConfirm = false))
+        val askAt = now
+        val e = engine(slow)
+        val p = e.propose(ProposalOrigin.ASK, "a1", reminderIn(3_600_000), askAt)!!
+        assertEquals(askAt + 12_000 + 10_000, p.undoUntilMs)
+        now += 9_000
+        assertEquals(true, e.undo(p.proposalId, "hud"))
+    }
+
+    @Test fun pendingExpiryCountsFromHandlingTime() = runBlocking {
+        val askAt = now
+        now += 5_000
+        val p = engine().propose(ProposalOrigin.ASK, "a1", reminderIn(3_600_000), askAt)!!
+        assertEquals(askAt + 5_000 + 60_000, repo.byId(p.proposalId)!!.expiresAt)
+    }
+
+    @Test fun emptyShoppingListIsRejected() = runBlocking {
+        val items = listOf(ShoppingLine("  ", null, null))
+        assertNull(engine().propose(ProposalOrigin.ASK, "a1", ProposedAction.ShoppingAdd(items), now))
+        assertNull(engine().propose(ProposalOrigin.ASK, "a2", ProposedAction.ShoppingAdd(emptyList()), now))
+        assertNull(repo.byId("prop_ASK_a1"))
+    }
+
+    @Test fun settingsStoreReadsPrefsOnlyOnFirstUse() {
+        var opened = 0
+        val store = ActionSettingsStore { opened++; ctx.getSharedPreferences("t_lazy", Context.MODE_PRIVATE) }
+        assertEquals(0, opened)
+        store.toggle(ActionType.REMINDER)
+        store.settings.value
+        assertEquals(1, opened)
     }
 
     private suspend fun waitFor(cond: suspend () -> Boolean) {

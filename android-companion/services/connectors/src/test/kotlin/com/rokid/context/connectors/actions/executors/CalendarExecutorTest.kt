@@ -36,7 +36,9 @@ class FakeCalendarProvider : ContentProvider() {
             }
         } else {
             MatrixCursor(arrayOf(CalendarContract.Events._ID)).apply {
-                events.filter { it.value.getAsString(CalendarContract.Events.UID_2445) == args?.firstOrNull() }.keys.forEach { addRow(arrayOf(it)) }
+                val liveOnly = selection?.contains("${CalendarContract.Events.DELETED} = 0") == true
+                events.filter { it.value.getAsString(CalendarContract.Events.UID_2445) == args?.firstOrNull() }
+                    .filter { !liveOnly || it.value.getAsInteger(CalendarContract.Events.DELETED) != 1 }.keys.forEach { addRow(arrayOf(it)) }
             }
         }
     }
@@ -84,5 +86,13 @@ class CalendarExecutorTest {
         val ref = (exec.execute(p) as ExecResult.Done).createdRef
         assertTrue(exec.undo(p.copy(createdRef = ref)))
         assertTrue(provider.events.isEmpty())
+    }
+
+    @Test fun deletedEventWithSameUidIsNotReused() = runBlocking {
+        val ref = (exec.execute(p) as ExecResult.Done).createdRef
+        provider.events.getValue(ContentUris.parseId(android.net.Uri.parse("content://x/" + ref.removePrefix("event:")))).put(CalendarContract.Events.DELETED, 1)
+        val again = exec.execute(p) as ExecResult.Done
+        assertEquals(2, provider.inserts)
+        assertEquals("event:102", again.createdRef)
     }
 }

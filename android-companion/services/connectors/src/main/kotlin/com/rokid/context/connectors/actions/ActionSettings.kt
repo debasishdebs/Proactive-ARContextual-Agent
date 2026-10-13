@@ -10,11 +10,17 @@ enum class ActionType { REMINDER, SHOPPING_ADD, CALENDAR_EVENT }
 
 data class ActionToggle(val enabled: Boolean, val alwaysConfirm: Boolean = true)
 
-/** Settings › Actions & tools. Defaults: Reminder on, Shopping on, Calendar off (needs WRITE_CALENDAR); always-confirm on. */
-class ActionSettingsStore(private val prefs: SharedPreferences) {
+/**
+ * Settings › Actions & tools. Defaults: Reminder on, Shopping on, Calendar off (needs WRITE_CALENDAR); always-confirm on.
+ * The prefs are opened and read on first use, never at construction (the graph may be built on Main).
+ */
+class ActionSettingsStore(prefsProvider: () -> SharedPreferences) {
+    constructor(prefs: SharedPreferences) : this({ prefs })
+
     private val lock = Any()
-    private val state = MutableStateFlow(read())
-    val settings: StateFlow<Map<ActionType, ActionToggle>> = state.asStateFlow()
+    private val prefs by lazy(prefsProvider)
+    private val state by lazy { MutableStateFlow(read()) }
+    val settings: StateFlow<Map<ActionType, ActionToggle>> get() = state.asStateFlow()
 
     fun set(t: ActionType, v: ActionToggle) = synchronized(lock) {
         prefs.edit().putBoolean(enabledKey(t), v.enabled).putBoolean(confirmKey(t), v.alwaysConfirm).apply()

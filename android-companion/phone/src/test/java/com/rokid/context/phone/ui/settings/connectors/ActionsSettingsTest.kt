@@ -17,6 +17,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.connectors.actions.ActionSettingsStore
 import com.rokid.context.connectors.actions.ActionType
+import com.rokid.context.phone.ui.actions.CalendarAccess
 import com.rokid.context.core.ui.theme.PcTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -33,8 +34,10 @@ class ActionsSettingsTest {
         ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("t_actions_ui", Context.MODE_PRIVATE).also { it.edit().clear().commit() },
     )
 
-    private fun show(grant: Boolean) = compose.setContent {
-        PcTheme { ActionsSettings(store, requestCalendar = { cb -> cb(grant) }, back = {}, openShopping = {}) }
+    private var openedAppSettings = 0
+    private fun show(grant: Boolean, forever: Boolean = false) = compose.setContent {
+        val result = when { grant -> CalendarAccess.GRANTED; forever -> CalendarAccess.DENIED_FOREVER; else -> CalendarAccess.DENIED }
+        PcTheme { ActionsSettings(store, requestCalendar = { cb -> cb(result) }, back = {}, openShopping = {}, openAppSettings = { openedAppSettings++ }) }
     }
 
     @Test fun calendarDeniedStaysOff() {
@@ -44,6 +47,21 @@ class ActionsSettingsTest {
         compose.onNodeWithTag("settings_actions").performScrollToNode(hasTestTag("calendar_denied"))
         compose.onNodeWithText("Calendar permission needed").assertIsDisplayed()
         assertFalse(store.toggle(ActionType.CALENDAR_EVENT).enabled)
+    }
+
+    @Test fun calendarDeniedForeverOffersAppSettings() {
+        show(grant = false, forever = true)
+        compose.onNodeWithTag("enabled_CALENDAR_EVENT").performScrollTo().performClick()
+        compose.onNodeWithTag("settings_actions").performScrollToNode(hasTestTag("open_app_settings"))
+        compose.onNodeWithTag("open_app_settings").performClick()
+        assertEquals(1, openedAppSettings)
+        assertFalse(store.toggle(ActionType.CALENDAR_EVENT).enabled)
+    }
+
+    @Test fun calendarDeniedOnceOffersNoAppSettings() {
+        show(grant = false)
+        compose.onNodeWithTag("enabled_CALENDAR_EVENT").performScrollTo().performClick()
+        compose.onNodeWithTag("open_app_settings").assertDoesNotExist()
     }
 
     @Test fun calendarGrantedTurnsOn() {

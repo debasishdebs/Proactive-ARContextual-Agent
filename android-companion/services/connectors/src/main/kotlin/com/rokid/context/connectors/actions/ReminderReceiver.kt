@@ -22,9 +22,15 @@ class ReminderReceiver : BroadcastReceiver() {
             .setContentTitle(intent.getStringExtra(ReminderExecutor.EXTRA_TITLE) ?: "Reminder")
             .setContentText(intent.getStringExtra(ReminderExecutor.EXTRA_NOTE)?.takeIf { it.isNotBlank() } ?: "Reminder")
             .setAutoCancel(true)
+            // Lock screen: a generic "Reminder", never the title or note (fix round 1 I-3).
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(NotificationCompat.Builder(context, CHANNEL).setSmallIcon(android.R.drawable.ic_popup_reminder).setContentTitle(PUBLIC_TITLE).build())
             .build()
         try { nm.notify(id.hashCode(), n) } catch (_: SecurityException) { /* POST_NOTIFICATIONS revoked */ }
     }
 
-    companion object { const val CHANNEL = "reminders" }
+    companion object {
+        const val CHANNEL = "reminders"
+        const val PUBLIC_TITLE = "Reminder"
+    }
 }

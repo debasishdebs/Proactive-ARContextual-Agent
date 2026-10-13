@@ -42,12 +42,18 @@ class ProposalNotifier(private val context: Context, private val zone: () -> Zon
                 .setContentTitle(ActionCopy.confirmTitle(type))
                 .setContentText(detail)
                 .setOnlyAlertOnce(true)
-                .addAction(0, "Add", answer(p.id, true))
-                .addAction(0, "No thanks", answer(p.id, false))
+                // Lock screen: a generic line only, and answering needs an unlocked phone (fix round 1 I-3).
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPublicVersion(NotificationCompat.Builder(context, CHANNEL).setSmallIcon(android.R.drawable.ic_menu_add).setContentTitle(PUBLIC_TITLE).build())
+                .addAction(action("Add", answer(p.id, true)))
+                .addAction(action("No thanks", answer(p.id, false)))
                 .build()
             try { manager.notify(p.id, NOTIFICATION_ID, n) } catch (_: SecurityException) { return }
         }
     }
+
+    /** setAuthenticationRequired takes effect on API 31+ (NotificationCompat ignores it below). */
+    private fun action(title: String, pi: PendingIntent) = NotificationCompat.Action.Builder(0, title, pi).setAuthenticationRequired(true).build()
 
     private fun answer(id: String, yes: Boolean): PendingIntent {
         val i = Intent(context, ProposalActionReceiver::class.java)
@@ -59,6 +65,7 @@ class ProposalNotifier(private val context: Context, private val zone: () -> Zon
     companion object {
         const val CHANNEL = "proposals"
         const val NOTIFICATION_ID = 7_301
+        const val PUBLIC_TITLE = "Suggested action"
 
         /** Follows the PENDING set for the life of [scope]. */
         fun start(app: Context, repo: ProposalRepository, scope: CoroutineScope) {
