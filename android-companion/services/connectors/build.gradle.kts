@@ -1,6 +1,7 @@
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.serialization")
 }
 
 android {
@@ -18,7 +19,7 @@ android {
 dependencies {
     api(project(":core:model"))
     api(project(":services:memory"))
-    implementation(project(":services:ai"))
+    api(project(":services:ai")) // ProposedAction is in ProposalIntake's signature
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
