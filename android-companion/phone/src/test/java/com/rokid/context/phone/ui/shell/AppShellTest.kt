@@ -110,6 +110,27 @@ class AppShellTest {
         assertTrue(deps.onboarding.isComplete())
     }
 
+    /** Integration carry 4: the shell provides LocalOpenActionsSettings, so a Home nudge card's "Enable in Settings" opens Settings > Actions. */
+    @Test fun homeNudgeEnableInSettingsOpensActionsSettings() {
+        kotlinx.coroutines.runBlocking {
+            val mem = MemoryGraph.get(ctx)
+            mem.nudges.addIgnore(com.rokid.context.memory.db.NudgeEntity("nudge_1", Fixtures.NOW - 60_000, "Milk is nearly out", "why", "[]", 1, "h", "glance", false))
+            mem.proposals.addIgnore(
+                com.rokid.context.memory.db.ProposalEntity(
+                    "prop_NUDGE_nudge_1", "NUDGE", "nudge_1", "SHOPPING_ADD", "{\"items\":[{\"name\":\"milk\",\"qty\":null,\"unit\":null}]}",
+                    "SUPPRESSED", Fixtures.NOW, null, null, Fixtures.NOW,
+                ),
+            )
+        }
+        launch(Routes.HOME)
+        // The feed loads off Main and sits below the fold: scroll until the card has composed.
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("home_list").performScrollToNode(hasText("Enable in Settings")); true }.getOrDefault(false)
+        }
+        compose.onNodeWithText("Enable in Settings").performClick()
+        compose.runOnIdle { assertEquals(Routes.SETTINGS_ACTIONS, nav.currentDestination?.route) }
+    }
+
     @Test fun pillNavSwitchesBetweenTheThreeTabs() {
         launch(Routes.HOME)
         compose.onNodeWithText("Activity").performClick()

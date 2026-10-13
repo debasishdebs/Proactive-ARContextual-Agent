@@ -14,6 +14,7 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +28,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
+import com.rokid.context.phone.ui.actions.LocalOpenActionsSettings
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
@@ -65,8 +67,12 @@ fun AppShell(
     var bottomBarPx by remember { mutableIntStateOf(0) }
     val bottomInset = if (bottomBarPx > 0) with(LocalDensity.current) { bottomBarPx.toDp() } else 84.dp
     Box(Modifier.fillMaxSize().background(PcColors.Surface)) {
-        NavHost(nav, startDestination = startRoute, modifier = if (showNav) Modifier.padding(bottom = bottomInset) else Modifier) {
-            phoneDestinations(deps, nav)
+        // Proposal cards without their own onEnable (Home and nudge detail) open Settings > Actions.
+        val openActions = remember(nav) { { nav.navigate(Routes.SETTINGS_ACTIONS) { launchSingleTop = true } } }
+        CompositionLocalProvider(LocalOpenActionsSettings provides openActions) {
+            NavHost(nav, startDestination = startRoute, modifier = if (showNav) Modifier.padding(bottom = bottomInset) else Modifier) {
+                phoneDestinations(deps, nav)
+            }
         }
         if (showNav) {
             Column(
