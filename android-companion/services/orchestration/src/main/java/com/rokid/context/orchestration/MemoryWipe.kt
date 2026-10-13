@@ -1,6 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
+import android.util.Log
 import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.QueueRuntimeStore
@@ -40,7 +41,8 @@ object MemoryWipe {
         // waited for (it holds the lock until it finishes or throws); then it is marked done and never runs again.
         MemoryGraph.markLegacyImportDone(context)
         generation.incrementAndGet()
-        WipeFence.markStarted(context.filesDir, System.currentTimeMillis())
+        val wipedAt = System.currentTimeMillis()
+        val marked = WipeFence.markStarted(context.filesDir, wipedAt)
         val scheduler = OrchestrationScheduler(context)
         scheduler.pausePipeline()
         try {
@@ -50,8 +52,16 @@ object MemoryWipe {
             wipe.wipeMemory()
             val deleted = WipeFence.mutex.withLock {
                 val listed = paths.filter { it.isNotBlank() }.map(::File)
-                val folders = RokidFrameInbox.FRAME_DIRS.flatMap { name -> File(context.filesDir, name).walkTopDown().filter { it.isFile }.toList() }
-                (listed + folders).distinctBy { it.absolutePath }.count { it.exists() && it.delete() }
+                val inbox = RokidFrameInbox.inboxDir(context)
+                // Fix round 1 I2: an inbox file stamped at or after the fence was captured after the wipe began (no row yet).
+                val folders = RokidFrameInbox.FRAME_DIRS.flatMap { name ->
+                    val dir = File(context.filesDir, name)
+                    dir.walkTopDown().filter { it.isFile && !(dir == inbox && it.lastModified() >= wipedAt) }.toList()
+                }
+                val n = (listed + folders).distinctBy { it.absolutePath }.count { it.exists() && it.delete() }
+                // Fix round 1 I3: the deleted frames may have freed the space the fence record needs; else it fails closed.
+                if (!marked && !WipeFence.markStarted(context.filesDir, wipedAt)) Log.w("MemoryWipe", "Delete all fence unknown: frames are held until it is recorded")
+                n
             }
             LegacyImporter.LEGACY_FILES.forEach { File(context.filesDir, it).delete() }
             MemoryExport.dir(context).listFiles()?.filter { it.isFile }?.forEach { it.delete() }

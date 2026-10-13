@@ -13,6 +13,7 @@ import com.rokid.context.link.FrameAdmission
 import com.rokid.context.link.FrameReassembler
 import com.rokid.context.link.PauseHistory
 import com.rokid.context.link.ReceivedFrameLedger
+import com.rokid.context.orchestration.WipeFence
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -48,8 +49,13 @@ class FrameIngestorTest {
     private val inbox get() = File(tmp.root, "rokid_inbox")
 
     private val ledger by lazy { ReceivedFrameLedger(File(tmp.root, "ledger.txt")) }
-    private fun ingestor(writer: JpegWriter = AtomicJpegWriter, wipeAt: Long? = null, lock: Mutex = Mutex()): FrameIngestor =
-        FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, noPauses), ledger, writer, wipeStartedAtMs = { wipeAt }, wipeLock = lock) { stored++ }
+    private fun ingestor(
+        writer: JpegWriter = AtomicJpegWriter,
+        wipeAt: Long? = null,
+        lock: Mutex = Mutex(),
+        fence: WipeFence.Fence = wipeAt?.let { WipeFence.Fence.At(it) } ?: WipeFence.Fence.None,
+    ): FrameIngestor =
+        FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, noPauses), ledger, writer, wipeFence = { fence }, wipeLock = lock) { stored++ }
     private fun chunk(id: String = "g1") = FrameCodec.split(id, jpeg, capturedAtMs = now - 60_000 + 140).single()
 
     @Test fun completeFrameIsStoredAckedAndQueued() = runTest {
@@ -192,5 +198,15 @@ class FrameIngestorTest {
         assertEquals(FrameAck(frameId = "g1", ok = true), r.ack)
         assertTrue(File(inbox, "rokid_${now - 60_000}_g1.jpg").isFile)
         assertEquals(1, stored)
+    }
+
+    /** Fix round 1 I3: an unknown fence stores nothing and sends no ack (the glasses keep the frame), and says why. */
+    @Test fun anUnknownFenceStoresNothingAndSendsNoAck() = runTest {
+        val r = ingestor(fence = WipeFence.Fence.Unknown(IOException("write failed: ENOSPC (No space left on device)"))).onChunk(chunk(), offset, now)
+        assertNull(r.ack)
+        assertEquals(UserFacingErrors.StorageFull, r.error)
+        assertTrue(inbox.listFiles().orEmpty().isEmpty())
+        assertFalse(ledger.contains("g1"))
+        assertEquals(0, stored)
     }
 }

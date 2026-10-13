@@ -150,5 +150,28 @@ class MemoryWipeTest {
         assertFalse(WipeFence.mutex.isLocked)
     }
 
+    /** Fix round 1 I2: a frame written after the fence mark (no row yet) is not part of the wipe. */
+    @Test fun aFrameStoredBetweenTheFenceMarkAndTheDeletionSurvives() = runBlocking<Unit> {
+        val inbox = File(ctx.filesDir, "rokid_inbox").apply { mkdirs() }
+        val before = File(inbox, "rokid_1_a.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(System.currentTimeMillis() - 60_000) }
+        val after = File(inbox, "rokid_2_b.jpg").apply { writeBytes(byteArrayOf(2)); setLastModified(System.currentTimeMillis() + 60_000) }
+        MemoryWipe.deleteAll(ctx)
+        assertFalse(before.exists())
+        assertTrue(after.exists())
+        after.delete()
+    }
+
+    /** Fix round 1 I3: a fence that can't be recorded (even after the frames are gone) fails closed. */
+    @Test fun aFenceThatCannotBeRecordedFailsClosed() = runBlocking<Unit> {
+        val blocker = File(ctx.filesDir, WipeFence.FILE).apply { mkdirs(); File(this, "x").writeText("x") }
+        try {
+            MemoryWipe.deleteAll(ctx)
+            assertTrue(WipeFence.fence(ctx.filesDir) is WipeFence.Fence.Unknown)
+        } finally {
+            blocker.deleteRecursively()
+        }
+        assertTrue("written once possible", WipeFence.fence(ctx.filesDir) is WipeFence.Fence.At)
+    }
+
     private fun g() = MemoryGraph.get(ctx)
 }
