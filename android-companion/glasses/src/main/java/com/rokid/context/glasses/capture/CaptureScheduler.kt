@@ -6,6 +6,9 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 
+/** What [CaptureScheduler.ensureScheduled] found: nothing stored, a live chain, or a chain a force-stop/reboot lost. */
+enum class Rearm { FRESH, ARMED, MISSED }
+
 /** Exact-ish AlarmManager chain that wakes [CaptureService] (logic from PulseCaptureScheduler). */
 class CaptureScheduler(private val context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -30,19 +33,24 @@ class CaptureScheduler(private val context: Context) {
 
     /**
      * Arms the chain when nothing is pending (app start, camera grant) and retires the RFCOMM-era pulse alarm. A
-     * force-stop (Rokid closes apps that way) or a reboot drops the alarm but keeps the stored time, and the app cannot
-     * ask AlarmManager what is armed, so a future stored time is re-armed as is (same PendingIntent: idempotent).
+     * force-stop (Rokid's AssistServer closes apps that way) or a reboot drops the alarm but keeps the stored time, and
+     * the app cannot ask AlarmManager what is armed, so a future stored time is re-armed as is (same PendingIntent:
+     * idempotent). A stored time more than [STALE_GRACE_MS] past means the alarm was lost and captures were missed while
+     * the app was stopped: it re-arms soon and reports [Rearm.MISSED] so the HUD can say so (Phase 8 C3). Nothing can
+     * capture while the app is force-stopped; the platform blocks every restart until the user opens it.
      */
-    fun ensureScheduled() {
+    fun ensureScheduled(): Rearm {
         cancelLegacyPulse()
         val next = nextTriggerAtMs()
         val now = System.currentTimeMillis()
-        when {
-            // Missing, long past, or beyond any real delay (the glasses clock moved back).
-            next == null || next < now - STALE_GRACE_MS || next > now + CaptureCadence.MAX_DELAY_MS -> scheduleNext(FIRST_DELAY_MS)
-            next > now -> armAt(next)
+        return when {
+            next == null -> { scheduleNext(FIRST_DELAY_MS); Rearm.FRESH }
+            next < now - STALE_GRACE_MS -> { scheduleNext(1_000L); Rearm.MISSED }
+            // Beyond any real delay: the glasses clock moved back.
+            next > now + CaptureCadence.MAX_DELAY_MS -> { scheduleNext(FIRST_DELAY_MS); Rearm.ARMED }
+            next > now -> { armAt(next); Rearm.ARMED }
             // Due a moment ago: maybe firing now (inFlight drops the extra start), maybe lost to a force-stop.
-            else -> scheduleNext(1_000L)
+            else -> { scheduleNext(1_000L); Rearm.ARMED }
         }
     }
 

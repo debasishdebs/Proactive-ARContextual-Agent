@@ -357,4 +357,16 @@ class MainActivityTest {
             assertFalse(ShadowLog.getLogs().any { it.msg?.contains("only one set of permissions") == true }, "a second request was launched")
         }
     }
+
+    /** Phase 8 C3: a force-stop lost the capture alarm; reopening re-arms it and says so, once. */
+    @Test fun aMissedCaptureShowsTheResumeToastOnce() {
+        app.getSharedPreferences("capture_scheduler", 0).edit().putLong("next_trigger_at_ms", System.currentTimeMillis() - 10 * 60_000).commit()
+        ActivityScenario.launch(MainActivity::class.java).use {
+            compose.onNodeWithText(MainActivity.CAPTURE_RESUMED_AFTER_STOP, substring = true).assertExists()
+        }
+        ActivityScenario.launch(MainActivity::class.java).use {
+            compose.onNodeWithText(MainActivity.CAPTURE_RESUMED_AFTER_STOP, substring = true).assertDoesNotExist()
+        }
+        assertEquals("Capture resumed \u2014 it stops while the app is closed", MainActivity.CAPTURE_RESUMED_AFTER_STOP)
+    }
 }
