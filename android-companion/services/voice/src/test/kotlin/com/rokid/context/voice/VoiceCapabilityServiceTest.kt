@@ -14,7 +14,7 @@ class VoiceCapabilityServiceTest {
         var mic = true
         var packs: Set<String>? = setOf("en-US")
         var build = "build-1"
-        var outcome: ProbeOutcome? = ProbeOutcome(166_142, 166_142)
+        var outcome: ProbeOutcome? = ProbeOutcome(166_142, 166_142, TestPipes.CAPACITY)
         var throwOnProbe = false
         var packsThrow: Throwable? = null
         var probes = 0
@@ -51,7 +51,7 @@ class VoiceCapabilityServiceTest {
     }
 
     @Test fun aNonReadingRecognizerMakesGlassesVoiceUnsupported() = runTest {
-        platform.outcome = ProbeOutcome(166_142, 65_536)
+        platform.outcome = ProbeOutcome(166_142, 65_536, TestPipes.CAPACITY)
         val s = service()
         s.refresh(allowProbe = true).join()
         assertEquals(VoiceStatus.EXTERNAL_AUDIO_UNSUPPORTED, s.capabilities.value.glasses)

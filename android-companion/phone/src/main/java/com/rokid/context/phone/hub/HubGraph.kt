@@ -37,6 +37,9 @@ object HubGraph {
         val pauses = HubPauses(MemoryGraph.get(app).db.pauseDao())
         val ingestor = FrameIngestor(RokidFrameInbox.inboxDir(app), FrameReassembler(), FrameAdmission(ledger, pauses), ledger) { enqueueInboxIngest(app) }
         val settings = HubSettingsStore(app.getSharedPreferences("hub_settings", Context.MODE_PRIVATE)) { AppConfigStore.glassesSilencyMode(app) }
-        return Hub(scope, CxrGlassesLink(app, scope), pauses, settings, ingestor, LegacyHubSources(app), startService = { ContextHubService.ensureRunning(app) })
+        return Hub(
+            scope, CxrGlassesLink(app, scope), pauses, settings, ingestor, LegacyHubSources(app),
+            startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
+        )
     }
 }

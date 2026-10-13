@@ -19,6 +19,7 @@ import com.rokid.context.memory.retrieval.RetrievalSettingsStore
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -121,6 +122,39 @@ class AskActionsTest {
         remember("rokid_mem_1", "Milk carton nearly empty", 10)
         assertTrue(AskActions.ask(ctx, "milk") is AskOutcome.Answered)
         assertEquals(1, prompts.size)
+    }
+
+    /** Phase 6: a voice ask takes the same path and is recorded with its source. */
+    @Test fun aVoiceAskIsStoredWithItsSource() = runBlocking {
+        remember("rokid_mem_1", "Milk carton nearly empty in the fridge", 10)
+        val r = AskActions.askFrom(ctx, "milk?", "glasses_voice", nowMs = 99) as AskOutcome.Answered
+        assertEquals("glasses_voice", MemoryGraph.get(ctx).asks.byId(r.askId)!!.source)
+    }
+
+    /** Carry (Phase 4/5 ruling, Task 8): a voice ask answers while the pipeline is paused, like a typed one. */
+    @Test fun aVoiceAskStillAnswersWhileThePipelineIsPaused() = runBlocking {
+        AppConfigStore.setPipelineEnabled(ctx, false)
+        remember("rokid_mem_1", "Milk carton nearly empty", 10)
+        assertTrue(AskActions.askFrom(ctx, "milk", "phone_voice") is AskOutcome.Answered)
+        assertEquals(1, prompts.size)
+    }
+
+    /**
+     * Carry (Task 8): a voice ask cancelled while the model is answering (double-tap, link lost, Thinking timeout) saves
+     * no ask row. The row is written in one transaction after the reply, so only a cancel landing after that commit
+     * leaves one: a complete, answered ask in the feed.
+     */
+    @Test fun aVoiceAskCancelledWhileTheModelAnswersSavesNoAsk() = runBlocking {
+        remember("rokid_mem_1", "Milk carton nearly empty", 10)
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        reply = { entered.complete(Unit); gate.await(); """{"answer":"Milk is almost empty.","sources":["rokid_mem_1"]}""" }
+        val job = launch(kotlinx.coroutines.Dispatchers.Default) { AskActions.askFrom(ctx, "milk?", "glasses_voice") }
+        entered.await()
+        job.cancel(); job.join()
+        gate.complete(Unit)
+        kotlinx.coroutines.delay(200)
+        assertTrue(MemoryGraph.get(ctx).asks.recent(10).first().isEmpty())
     }
 
     @Test fun malformedSourcesJsonGivesNoSources() {

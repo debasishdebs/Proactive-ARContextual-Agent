@@ -45,4 +45,13 @@ class ContextHubServiceTest {
         assertEquals("Glasses not authorized", text(LinkState.NOT_AUTHORIZED))
         assertEquals("Update glasses app", text(LinkState.VERSION_MISMATCH))
     }
+
+    /** A locked phone still hears glasses asks: the hub's FGS also holds the microphone type once RECORD_AUDIO is granted. */
+    @Test fun foregroundTypesAddTheMicOnlyWhenGranted() {
+        val device = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        val mic = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        assertEquals(device, ContextHubService.foregroundTypes(sdk = 37, micGranted = false))
+        assertEquals(device or mic, ContextHubService.foregroundTypes(sdk = 37, micGranted = true))
+        assertEquals(device, ContextHubService.foregroundTypes(sdk = 29, micGranted = true))
+    }
 }

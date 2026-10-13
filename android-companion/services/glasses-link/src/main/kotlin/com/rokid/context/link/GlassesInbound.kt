@@ -13,8 +13,9 @@ import java.util.Base64
 /**
  * Pure decoding and version gate for glasses → phone messages (ported from Live Fit `GlassesInbound`). [parts] are a
  * message's Caps strings in order: one JSON string, except `pc_frame` (meta JSON + Base64 chunk). A message from another
- * protocol version becomes [GlassesEvent.Outdated] and is never applied. `pc_audio` / `pc_listen_end` carry no `v`, so
- * they count only after an accepted `ListenStart`.
+ * protocol version becomes [GlassesEvent.Outdated] and is never applied. `pc_audio` is raw Base64 PCM with no `v`;
+ * `pc_listen_end` carries `{"v":N}` (preflight F3) but its body is ignored. Both are bound to the session's version by
+ * the `ListenStart` they follow: they count only after an accepted (version-gated) `ListenStart`.
  */
 class GlassesInbound {
     private var listenAccepted = false

@@ -25,17 +25,17 @@ data class PipeMeter(
     val fedBytes: Long,
     val acceptedBytes: Long,
     val lastWriteRefused: Boolean,
-    val capacityBytes: Long = PipeLimits.PIPE_CAPACITY_BYTES,
+    val capacityBytes: Long,
     val flatFedBytes: Long = 0,
     val peerClosed: Boolean = false,
 )
 
+/**
+ * There is no capacity constant: a real pipe counts page slots, not bytes (3 200-byte writes give 51 200 with 4 KiB pages
+ * and 256 000 with 16 KiB pages), so every [PcmFeeder], [PipeMeter] and [ProbeOutcome] carries what [PipeCapacity.measure]
+ * found on the device.
+ */
 object PipeLimits {
-    /**
-     * Default capacity for tests only. A real pipe counts 16 page slots, not bytes: 3 200-byte writes give 51 200 with
-     * 4 KiB pages and 256 000 with 16 KiB pages, so production passes the value [PipeCapacity.measure] found.
-     */
-    const val PIPE_CAPACITY_BYTES = 65_536L
     /** Spec §5.1.1: the guard judges only after more than 2 s of fed audio. */
     const val GUARD_AFTER_FED_BYTES = 2L * Pcm.BYTES_PER_SECOND
     /** …and only once the pipe took nothing for 1 s of feed (a reader catching up after a slow start isn't flat). */
@@ -77,8 +77,8 @@ class PcmFeeder(
     private val sink: PipeSink,
     private val maxPendingBytes: Int = PipeLimits.MAX_PENDING_BYTES,
     private val clock: () -> Long = System::currentTimeMillis,
-    /** The pipe's measured capacity ([PipeCapacity.measure]); the default is for tests only. */
-    private val capacityBytes: Long = PipeLimits.PIPE_CAPACITY_BYTES,
+    /** The pipe's measured capacity ([PipeCapacity.measure]). */
+    private val capacityBytes: Long,
 ) {
     private val pending = ArrayDeque<ByteArray>()
     private var pendingBytes = 0

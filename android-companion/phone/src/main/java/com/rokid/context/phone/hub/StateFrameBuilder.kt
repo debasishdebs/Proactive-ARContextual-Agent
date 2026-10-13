@@ -54,9 +54,9 @@ object StateFrameBuilder {
         )
     }
 
-    /** `pc_settings` carries the merged pause set (spec §5.5), converted like [build]. */
-    fun settingsFor(settings: HudSettings, activePauses: List<PauseRecord>, offset: ClockOffset?): HudSettings =
-        settings.copy(pauses = toGlasses(activePauses, offset))
+    /** `pc_settings` carries the merged pause set (spec §5.5), converted like [build], and why Ask can't start (§5.1.1). */
+    fun settingsFor(settings: HudSettings, activePauses: List<PauseRecord>, offset: ClockOffset?, askBlockedReason: String? = null): HudSettings =
+        settings.copy(pauses = toGlasses(activePauses, offset), askBlockedReason = askBlockedReason)
 
     private fun toGlasses(records: List<PauseRecord>, offset: ClockOffset?) = records.map { r -> offset?.recordToGlasses(r) ?: r }
 }
