@@ -57,4 +57,13 @@ class TestBedInputsTest {
         assertTrue(p.vars.recentContext.contains("[marker]"))
         assertTrue(inputs.prepare(PromptKey.NUDGE, TestInput.Text("")).inputIds.contains("m1"))
     }
+
+    /** Fix round 1: CRITIC sees the facts and the `source` block, as QueueDrainWorker sends them. */
+    @Test fun criticGetsTheFactsAndTheSourceBlock() = runBlocking {
+        val p = inputs.prepare(PromptKey.CRITIC, TestInput.Text("milk in fridge"))
+        assertTrue(p.vars.recentContext, p.vars.recentContext.startsWith("BEGIN_DATA facts"))
+        assertTrue(p.vars.recentContext, p.vars.recentContext.contains("\nBEGIN_DATA source"))
+        val f = inputs.prepare(PromptKey.CRITIC, TestInput.Frame("f1"))
+        assertTrue(f.vars.recentContext, f.vars.recentContext.contains("id=f1"))
+    }
 }

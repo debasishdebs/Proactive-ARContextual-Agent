@@ -36,8 +36,8 @@ class TestBedInputs(private val memory: MemoryGraph, private val answers: Answer
                     emptyList(), recent.map { it.id }.toSet())
             }
             PromptKey.VISION_EXTRACT -> {
-                val frame = (input as? TestInput.Frame)?.let { f -> memory.frames.byIds(listOf(f.frameId)).firstOrNull() }
-                val lines = listOfNotNull(frame?.let { "id=${it.id} · ts=${it.ts} · source=${it.source} · ${it.payload}" }, text.takeIf { it.isNotBlank() })
+                val frame = frameFor(input)
+                val lines = listOfNotNull(frame?.let(::frameLine), text.takeIf { it.isNotBlank() })
                 Prepared(PromptVars(recentContext = PromptComposer.dataBlock("frames", lines)), frame?.let { FrameInputs.fromFrames(listOf(it), 1) }.orEmpty(), emptySet())
             }
             PromptKey.EXPLICIT_REMEMBER -> Prepared(PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(text))), emptyList(), emptySet())
@@ -45,7 +45,17 @@ class TestBedInputs(private val memory: MemoryGraph, private val answers: Answer
                 PromptVars(recentContext = PromptComposer.dataBlock("memories", text.lines().filter { it.isNotBlank() }) + "\n" + PromptComposer.dataBlock("critic_notes", listOf("test run"))),
                 emptyList(), emptySet(),
             )
-            PromptKey.CRITIC -> Prepared(PromptVars(recentContext = PromptComposer.dataBlock("facts", text.lines().filter { it.isNotBlank() })), emptyList(), emptySet())
+            PromptKey.CRITIC -> {
+                // Same two blocks as QueueDrainWorker: the facts, then the frame they came from (none for typed facts).
+                val frame = frameFor(input)
+                val facts = PromptComposer.dataBlock("facts", text.lines().filter { it.isNotBlank() })
+                Prepared(PromptVars(recentContext = facts + "\n" + PromptComposer.dataBlock("source", listOfNotNull(frame?.let(::frameLine)))), emptyList(), emptySet())
+            }
         }
     }
+
+    private suspend fun frameFor(input: TestInput): FrameEntity? =
+        (input as? TestInput.Frame)?.let { f -> memory.frames.byIds(listOf(f.frameId)).firstOrNull() }
+
+    private fun frameLine(f: FrameEntity) = "id=${f.id} · ts=${f.ts} · source=${f.source} · ${f.payload}"
 }

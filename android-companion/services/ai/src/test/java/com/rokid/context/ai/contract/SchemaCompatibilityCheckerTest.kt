@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SchemaCompatibilityCheckerTest {
@@ -143,6 +144,22 @@ class SchemaCompatibilityCheckerTest {
             val p = props(m); p["extra"] = Json.parseToJsonElement("""{"${'$'}ref":"#/${'$'}defs/X"}"""); m["properties"] = JsonObject(p)
         }
         assertEquals(listOf("Azure: Schema isn't valid"), check(badDefRequired))
+    }
+
+    /** Fix round 1: an oversized draft is refused before any parse or walk. */
+    @Test fun schemasOver64KbAreRejected() {
+        val big = edit { m -> m["description"] = JsonPrimitive("x".repeat(64 * 1024)) }
+        assertEquals(listOf("Schema is too large"), check(big))
+        assertEquals(emptyList<String>(), check(base.toString()))
+    }
+
+    /** Fix round 1: a user's ${'$'}ref string is clipped to 64 characters in error text. */
+    @Test fun longRefsAreClippedInErrorText() {
+        val ref = "#/nowhere/" + "a".repeat(200)
+        val draft = withProp("odd", """{"${'$'}ref":"$ref"}""")
+        val line = check(draft).single()
+        assertTrue(line, line.contains("\"" + ref.take(64) + "…\""))
+        assertTrue(line, !line.contains(ref.take(65)))
     }
 
     @Test fun constEqualsASingleValueEnum() {

@@ -21,6 +21,8 @@ import com.rokid.context.phone.ui.settings.PrimaryAction
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsPage
 import com.rokid.context.prompt.LineDiff
+import com.rokid.context.prompt.PromptDraft
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -28,7 +30,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlin.coroutines.cancellation.CancellationException
 
 data class PromptHistoryUiState(
     val label: String = "",
@@ -68,8 +69,14 @@ class PromptHistoryViewModel(keyId: String, private val ai: AiGraph) : ViewModel
         val v = state.value.selected ?: return
         viewModelScope.launch {
             try {
+                // Gate (1) against the endpoints bound now: a version that fit an earlier binding may not fit this one.
+                val source = ai.prompts.version(k, v) ?: run { notice.value = "That version no longer exists"; return@launch }
+                if (ai.testBed.compatibility(k, PromptDraft(source.template, source.outputSchema)).isNotEmpty()) {
+                    notice.value = "This version's schema doesn't fit the endpoints bound now"
+                    return@launch
+                }
                 val keep = ai.prompts.settings.keepVersions.value
-                val n = ai.prompts.restore(k, v)
+                val n = ai.prompts.restore(k, v) // a restored copy is untested until it is run
                 selected.value = n
                 notice.value = if (keep) "Restored as v$n" else "v$v copied over v$n"
             } catch (c: CancellationException) {

@@ -1,5 +1,6 @@
 package com.rokid.context.phone.ui.settings.prompts
 
+import android.util.Log
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.Icons
@@ -20,6 +21,8 @@ import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsPage
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -27,17 +30,30 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 data class PromptRowUi(val key: PromptKey, val title: String, val subtitle: String)
-data class PromptsListUiState(val rows: List<PromptRowUi> = emptyList(), val keepVersions: Boolean = true)
+data class PromptsListUiState(val rows: List<PromptRowUi> = emptyList(), val keepVersions: Boolean = true, val notice: String? = null)
 
-class PromptsListViewModel(private val ai: AiGraph) : ViewModel() {
-    init { viewModelScope.launch { ai.prompts.ensureSeeded() } }
+class PromptsListViewModel(private val ai: AiGraph, private val seed: suspend () -> Unit = { ai.prompts.ensureSeeded() }) : ViewModel() {
+    private val notice = MutableStateFlow<String?>(null)
+    init {
+        viewModelScope.launch {
+            try {
+                seed()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                Log.i("PromptsList", "seeding prompts failed (${e.javaClass.simpleName})")
+                notice.value = "Couldn't load the prompts"
+            }
+        }
+    }
 
-    val state: StateFlow<PromptsListUiState> = combine(ai.prompts.observeAllActive(), ai.prompts.settings.keepVersions) { active, keep ->
+    val state: StateFlow<PromptsListUiState> = combine(ai.prompts.observeAllActive(), ai.prompts.settings.keepVersions, notice) { active, keep, n ->
         PromptsListUiState(
             PromptKey.entries.mapNotNull { k ->
                 active.firstOrNull { it.promptId == k.name }?.let { v -> PromptRowUi(k, k.label, "v${v.version}" + if (v.testedOk) " · tested ✓" else "") }
             },
             keep,
+            n,
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PromptsListUiState(keepVersions = ai.prompts.settings.keepVersions.value))
 
@@ -55,6 +71,7 @@ fun PromptsListScreen(state: PromptsListUiState, onBack: () -> Unit, onKeepVersi
     }) {
         item {
             SettingsCard {
+                state.notice?.let { NoticeText(it, error = true, tag = "prompts_notice") }
                 NoticeText(if (state.keepVersions) "Saving makes a new version and activates it." else "Saving overwrites the active version; older versions stay read-only.")
                 Column { state.rows.forEach { r -> ChipRow(Icons.Outlined.Edit, PcColors.ChipRose, r.title, r.subtitle, onClick = { onOpen(r.key.name) }) } }
             }

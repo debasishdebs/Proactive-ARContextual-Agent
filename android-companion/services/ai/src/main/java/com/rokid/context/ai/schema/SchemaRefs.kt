@@ -17,6 +17,9 @@ inline fun rejectUnless(ok: Boolean, message: () -> String) { if (!ok) throw Sch
 object SchemaRefs {
     private const val MAX_HOPS = 16
 
+    /** User text (a `${'$'}ref` or a `${'$'}defs` name) in an error line: at most 64 characters, then "…". */
+    fun clip(text: String): String = if (text.length <= 64) text else text.take(64) + "…"
+
     fun parse(text: String): JsonObject = runCatching { Json.parseToJsonElement(text).jsonObject }
         .getOrElse { throw SchemaRejected("Schema isn't valid JSON") }
 
@@ -27,10 +30,10 @@ object SchemaRefs {
             val name = when {
                 ref.startsWith("#/\$defs/") -> ref.removePrefix("#/\$defs/") to "\$defs"
                 ref.startsWith("#/definitions/") -> ref.removePrefix("#/definitions/") to "definitions"
-                else -> throw SchemaRejected("Only local \$ref is supported: $ref")
+                else -> throw SchemaRejected("Only local \$ref is supported: ${clip(ref)}")
             }
             n = (root[name.second] as? JsonObject)?.get(name.first) as? JsonObject
-                ?: throw SchemaRejected("Unknown \$ref: $ref")
+                ?: throw SchemaRejected("Unknown \$ref: ${clip(ref)}")
         }
         throw SchemaRejected("Recursive \$ref isn't supported")
     }

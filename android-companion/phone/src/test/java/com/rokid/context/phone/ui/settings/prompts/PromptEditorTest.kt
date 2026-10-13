@@ -48,6 +48,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34], application = Application::class)
@@ -71,7 +72,16 @@ class PromptEditorTest {
         vm.onInputText("where is the milk")
     }
 
-    @After fun tearDown() { vm.cancelScope(); TestGraph.close(ctx) }
+    private val extra = mutableListOf<PromptEditorViewModel>()
+
+    /** Another editor over the same graph; cancelled in [tearDown] even when an assertion fails. */
+    private fun editor(id: String, check: (suspend (PromptKey, PromptDraft) -> List<String>)? = null): PromptEditorViewModel {
+        val mem = MemoryGraph.get(ctx)
+        val inputs = TestBedInputs(mem, AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() }))
+        return (if (check == null) PromptEditorViewModel(id, ai, inputs) else PromptEditorViewModel(id, ai, inputs, check)).also { extra += it }
+    }
+
+    @After fun tearDown() { try { extra.forEach { it.cancelScope() }; vm.cancelScope() } finally { TestGraph.close(ctx) } }
 
     private suspend fun ran() = withTimeout(5_000) { vm.state.first { !it.running && it.result != null } }
 
@@ -148,11 +158,10 @@ class PromptEditorTest {
         val seed = ai.prompts.active(PromptKey.ANSWER).template
         ai.prompts.save(PromptKey.ANSWER, PromptDraft("$seed\nNo schema.", null), "", true)
         assertEquals(null, ai.prompts.active(PromptKey.ANSWER).outputSchema)
-        val other = PromptEditorViewModel("ANSWER", ai, TestBedInputs(MemoryGraph.get(ctx), AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() })))
+        val other = editor("ANSWER")
         val s = withTimeout(5_000) { other.state.first { !it.loading } }
         assertEquals(DefaultSchemas.text(PromptKey.ANSWER), s.schema)
         assertFalse(s.dirty)
-        other.cancelScope()
     }
 
     /** Carried from Tasks 3/5/7: a recursive schema can't be saved, and the run result shows the compatibility verdict beside it. */
@@ -183,7 +192,7 @@ class PromptEditorTest {
 
     /** Carried from Task 7: SYSTEM has no schema, so no Test is offered and its preamble saves without a run. */
     @Test fun systemOffersNoTestAndSavesWithoutARun() = runBlocking {
-        val sys = PromptEditorViewModel("SYSTEM", ai, TestBedInputs(MemoryGraph.get(ctx), AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() })))
+        val sys = editor("SYSTEM")
         val s0 = withTimeout(5_000) { sys.state.first { !it.loading } }
         assertFalse(s0.hasSchema)
         sys.onTemplate(s0.template + "\nBe terse.")
@@ -193,7 +202,6 @@ class PromptEditorTest {
         sys.save()
         assertEquals("Saved as v2", withTimeout(5_000) { sys.state.first { it.notice != null } }.notice)
         assertEquals(2, ai.prompts.active(PromptKey.SYSTEM).version)
-        sys.cancelScope()
     }
 
     @Test fun systemScreenHasNoTestBed() {
@@ -203,5 +211,55 @@ class PromptEditorTest {
         compose.onNodeWithTag("prompt_editor").performScrollToNode(hasTestTag("prompt_save"))
         compose.onNodeWithTag("prompt_run").assertDoesNotExist()
         compose.onNodeWithTag("prompt_schema").assertDoesNotExist()
+    }
+
+    /** Fix round 1: N rapid schema edits make one check (300 ms debounce); template-only edits make none. */
+    @Test fun schemaChecksAreDebouncedAndSkippedForTemplateEdits() = runBlocking {
+        val calls = AtomicInteger()
+        val e = editor("ANSWER") { k, d -> calls.incrementAndGet(); ai.testBed.compatibility(k, d) }
+        withTimeout(5_000) { e.state.first { !it.loading && it.gates.compatible } }
+        assertEquals(1, calls.get()) // the opening check
+        val schema = e.state.value.schema
+        repeat(5) { i -> e.onSchema(schema.replace("\"maxLength\":600", "\"maxLength\":${590 - i}")) }
+        withTimeout(5_000) { e.state.first { it.compatFor == it.draft } }
+        assertEquals(2, calls.get())
+        assertTrue(e.state.value.gates.compatible) // a tightened maxLength is a refinement
+        repeat(5) { e.onTemplate(e.state.value.template + " x") }
+        assertTrue(e.state.value.gates.compatible)
+        Thread.sleep(500)
+        assertEquals(2, calls.get())
+    }
+
+    /** Fix round 1: while Save runs, edits are ignored and Save is off; the saved text is what was saved. */
+    @Test fun editsAreIgnoredWhileSaving() = runBlocking {
+        vm.onTemplate(vm.state.value.template + "\nBe brief."); vm.run(); ran()
+        val saved = vm.state.value.template
+        vm.save()
+        assertTrue(vm.state.value.saving); assertFalse(vm.state.value.canSave)
+        vm.onTemplate("typed during save")
+        assertEquals(saved, vm.state.value.template)
+        val s = withTimeout(5_000) { vm.state.first { it.notice != null && !it.saving } }
+        assertEquals("Saved as v2", s.notice)
+        assertEquals(saved.trim(), s.template)
+    }
+
+    /** Fix round 1: SYSTEM shows only the gate that applies. */
+    @Test fun systemShowsOnlyTheVariablesGate() = runBlocking {
+        val sys = editor("SYSTEM")
+        val s = withTimeout(5_000) { sys.state.first { !it.loading } }
+        assertEquals(listOf("✓ Variables"), s.gateLines)
+    }
+
+    /** Fix round 1: an edit or Discard clears the result, and a run that ends after Discard writes nothing. */
+    @Test fun aRunThatEndsAfterDiscardWritesNoResult() = runBlocking {
+        val original = vm.state.value.template
+        vm.onTemplate("$original!"); vm.run(); ran()
+        vm.onTemplate("$original!!")
+        assertEquals(null, vm.state.value.result)
+        vm.run(); vm.discard()
+        withTimeout(5_000) { vm.state.first { !it.running } }
+        Thread.sleep(200)
+        assertEquals(null, vm.state.value.result); assertEquals(original, vm.state.value.template)
+        assertFalse(vm.state.value.gates.ran)
     }
 }

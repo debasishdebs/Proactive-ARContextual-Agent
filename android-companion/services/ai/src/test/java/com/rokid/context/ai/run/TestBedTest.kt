@@ -89,6 +89,16 @@ class TestBedTest {
         assertEquals(emptyList<String>(), ai.testBed.compatibility(PromptKey.SYSTEM, PromptDraft("t", null)))
     }
 
+    /** Fix round 1: the schema check never runs on the caller's (Main) thread. */
+    @Test fun theSchemaCheckRunsOffTheCallersThread() = runBlocking {
+        val caller = Thread.currentThread()
+        var ranOn: Thread? = null
+        val bed = TestBed(ai.router, ai.prompts, ai.persona, ai.bindings, ai.endpoints, checker = SchemaCheck { _, _, _ -> ranOn = Thread.currentThread(); emptyList() })
+        bed.compatibility(PromptKey.ANSWER, PromptDraft("t", DefaultSchemas.text(PromptKey.ANSWER)))
+        assertNotNull(ranOn)
+        assertTrue(ranOn!!.name, ranOn !== caller && ranOn!!.name.startsWith("DefaultDispatcher"))
+    }
+
     /** Task 3 carry: a draft schema the validator can't apply shows a fixed problem line, never a crash or exception text. */
     @Test fun aMalformedDraftSchemaIsAProblemNotACrash() = runBlocking {
         listOf("""{"type":"object","properties":{"answer":{"type":[{}]}}}""", """{"anyOf":[1]}""").forEach { schema ->

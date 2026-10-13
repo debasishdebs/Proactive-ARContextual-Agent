@@ -3,6 +3,7 @@ package com.rokid.context.ai.run
 import com.rokid.context.ai.contract.ContractOutput
 import com.rokid.context.ai.contract.DefaultSchemas
 import com.rokid.context.ai.contract.PromptKey
+import com.rokid.context.ai.contract.SchemaCompatibilityChecker
 import com.rokid.context.ai.contract.RoleContracts
 import com.rokid.context.ai.contract.SemanticContext
 import com.rokid.context.ai.schema.JsonSchemaValidator
@@ -58,6 +59,6 @@ object OutputCheck {
 
     /** The version's stored schema, or the role default when it is blank or no longer parses (Save normally prevents that). */
     fun schemaFor(key: PromptKey, stored: String?): JsonObject =
-        stored?.takeIf { it.isNotBlank() }?.let { runCatching { SchemaRefs.parse(it) }.getOrNull() }
+        stored?.takeIf { it.isNotBlank() && it.length <= SchemaCompatibilityChecker.MAX_SCHEMA_CHARS }?.let { runCatching { SchemaRefs.parse(it) }.getOrNull() }
             ?: checkNotNull(DefaultSchemas.forKey(key)) { "${key.name} has no output schema" }
 }

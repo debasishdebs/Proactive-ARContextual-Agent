@@ -63,6 +63,7 @@ class PromptRepositoryTest {
         assertEquals(3, repo.restore(PromptKey.ANSWER, 2))
         assertTrue(repo.active(PromptKey.ANSWER).template.endsWith("a"))
         assertEquals(3, repo.history(PromptKey.ANSWER).first().size)
+        assertEquals(false, repo.active(PromptKey.ANSWER).testedOk) // v2 was saved tested; a restored copy is untested until run
     }
 
     @Test fun exactlyOneActiveVersionUnderConcurrentSaves() = runBlocking {
