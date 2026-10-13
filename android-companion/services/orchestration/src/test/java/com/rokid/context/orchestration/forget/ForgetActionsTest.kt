@@ -133,4 +133,32 @@ class ForgetActionsTest {
         assertEquals(1, FrameSweep.sweep(ctx))
         assertFalse(gone.exists()); assertTrue(kept.exists()); assertTrue(sibling.exists())
     }
+
+    /**
+     * Final review I2: the sweep prunes tombstones nothing needs any more (no frame row, no memory, no file left, older
+     * than FrameSweep.TOMBSTONE_KEEP_MS); a tombstone that still locks a live frame, a recent one, or one a memory still
+     * points at is kept.
+     */
+    @Test fun sweepPrunesTombstonesNothingNeeds() = runBlocking {
+        val fdao = graph.db.forgetDao()
+        val now = System.currentTimeMillis()
+        val old = now - FrameSweep.TOMBSTONE_KEEP_MS - 1
+        val dir = File(ctx.filesDir, "rokid_archive").apply { mkdirs() }
+        // 3 000 old rowless tombstones with no file: all go
+        (0 until 3_000).forEach { fdao.insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("gone$it", old)) }
+        // old rowless with a leftover JPEG: the file is deleted, then the tombstone may go
+        val leftover = File(dir, "left.jpg").apply { writeBytes(byteArrayOf(1)) }
+        fdao.insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("left", old))
+        // kept: a live frame's lock (row kept by Forget fact), a recent rowless one, one a memory still points at
+        val live = File(dir, "live.jpg").apply { writeBytes(byteArrayOf(2)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("live", 1, live.absolutePath, "rokid_glasses"))
+        mem("m_live", "live")
+        fdao.insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("live", old))
+        fdao.insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("recent", now - 60_000))
+        mem("m_ref", "ref")
+        fdao.insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("ref", old))
+        FrameSweep.sweep(ctx, nowMs = now)
+        assertFalse(leftover.exists()); assertTrue(live.exists())
+        assertEquals(setOf("live", "recent", "ref"), fdao.allTombstones().toSet())
+    }
 }

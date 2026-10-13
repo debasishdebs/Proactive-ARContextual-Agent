@@ -125,4 +125,42 @@ class RetentionWorkerTest {
         work()
         assertFalse(jpg.exists())
     }
+
+    /** Final review C1: an accepted reminder whose cited memory expires keeps its params and its armed alarm. */
+    private suspend fun acceptedReminder(askId: String, source: String): Pair<String, org.robolectric.shadows.ShadowAlarmManager> {
+        graph.db.askDao().upsert(AskEntity(askId, 1, "q", "answer", "[\"$source\"]", null, "phone_typed", false))
+        val pid = "prop_ASK_$askId"
+        val r = com.rokid.context.connectors.actions.ActionParams.Reminder("Call the clinic", now + 72 * hour, "about the results")
+        graph.proposals.addIgnore(
+            com.rokid.context.memory.db.ProposalEntity(pid, "ASK", askId, "REMINDER", com.rokid.context.connectors.actions.ActionParams.encode(r), "EXECUTED", 0, "hud", "alarm:$pid", 1),
+        )
+        graph.proposals.addIgnore(com.rokid.context.memory.db.ProposalEntity("pend_$askId", "ASK", askId, "SHOPPING", "{\"items\":[\"milk\"]}", "PENDING", Long.MAX_VALUE, null, null, 1))
+        com.rokid.context.connectors.actions.executors.ReminderExecutor(ctx).arm(pid, r)
+        val alarms = org.robolectric.Shadows.shadowOf(ctx.getSystemService(android.app.AlarmManager::class.java))
+        assertEquals(1, alarms.scheduledAlarms.size)
+        return pid to alarms
+    }
+
+    @Test fun retentionKeepsAnAcceptedRemindersAlarmAndParams() = runBlocking {
+        mem("s_old", MemoryTier.SHORT, 25 * hour)
+        val (pid, alarms) = acceptedReminder("qa", "s_old")
+        val params = graph.proposals.byId(pid)!!.paramsJson
+        work()
+        assertFalse(exists("s_old"))
+        assertTrue(graph.db.askDao().byId("qa")!!.redacted)
+        assertEquals(1, alarms.scheduledAlarms.size)
+        assertEquals("EXECUTED", graph.proposals.byId(pid)!!.state)
+        assertEquals(params, graph.proposals.byId(pid)!!.paramsJson)
+        // a PENDING proposal of the same ask still expires and loses its text (spec 6.1.1: PENDING -> EXPIRED)
+        assertEquals("EXPIRED", graph.proposals.byId("pend_qa")!!.state)
+        assertEquals(ForgetService.REDACTED_PARAMS, graph.proposals.byId("pend_qa")!!.paramsJson)
+    }
+
+    @Test fun aUserForgetOfTheSameSourceStillCancelsIt() = runBlocking {
+        mem("s_young", MemoryTier.SHORT, 1 * hour)
+        val (pid, alarms) = acceptedReminder("qb", "s_young")
+        assertTrue(ForgetActions.forgetFact(ctx, "s_young"))
+        assertEquals(0, alarms.scheduledAlarms.size)
+        assertEquals(ForgetService.REDACTED_PARAMS, graph.proposals.byId(pid)!!.paramsJson)
+    }
 }

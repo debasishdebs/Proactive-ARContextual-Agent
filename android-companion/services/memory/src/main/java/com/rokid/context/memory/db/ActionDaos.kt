@@ -49,6 +49,17 @@ interface ActionDao {
     @Query("UPDATE action_log SET detail = '' WHERE proposalId IN (SELECT id FROM proposal WHERE originId IN (:originIds))")
     suspend fun scrubLogsForOrigins(originIds: List<String>): Int
 
+    /** Retention (final review C1): proposals of [originIds] not in [keepStates] (the accepted ones). Callers chunk. */
+    @Query("SELECT id FROM proposal WHERE originId IN (:originIds) AND state NOT IN (:keepStates)")
+    suspend fun idsForOriginsExcept(originIds: List<String>, keepStates: List<String>): List<String>
+
+    /** Callers chunk [ids]. */
+    @Query("UPDATE proposal SET paramsJson = :params WHERE id IN (:ids)")
+    suspend fun scrubParams(ids: List<String>, params: String): Int
+
+    @Query("UPDATE action_log SET detail = '' WHERE proposalId IN (:ids)")
+    suspend fun scrubLogs(ids: List<String>): Int
+
     /** Origin fence (P7xP8 I2): the ask / nudge is still there and not redacted. */
     @Query("SELECT EXISTS(SELECT 1 FROM ask WHERE id = :id AND redacted = 0)")
     suspend fun askLive(id: String): Boolean
