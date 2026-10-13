@@ -11,6 +11,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.rokid.context.data.runtime.AppConfigReader
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.PipelineStatsStore
 import com.rokid.context.data.runtime.QueuePayloads
@@ -24,6 +25,8 @@ import java.util.concurrent.TimeUnit
 
 class OrchestrationScheduler(
     private val context: Context,
+    /** Every enqueue may run on Main (hub callback, UI): only the plain-prefs reads, never the Keystore (Task 16 carry). */
+    private val config: AppConfigReader = AppConfigStore,
 ) {
     data class HistoricalBackfillResult(
         val queuedJobs: Int,
@@ -90,7 +93,7 @@ class OrchestrationScheduler(
     }
 
     suspend fun enqueueSummarizer(summaryId: String, confidence: Double, createdAt: Long): UUID {
-        val config = AppConfigStore.get(context)
+        val config = this.config.getWithoutSecret(context)
         val payload = buildString {
             append("{")
             append("\"kind\":\"write_batched\",")
@@ -120,7 +123,7 @@ class OrchestrationScheduler(
     }
 
     fun enqueueExplicitWrite(rawInput: String, inputLanguage: String = "auto"): String {
-        val config = AppConfigStore.get(context)
+        val config = this.config.getWithoutSecret(context)
         val row = QueueRuntimeStore.enqueue(
             context = context,
             queue = QueuePriority.EXPLICIT_WRITE,
@@ -133,7 +136,7 @@ class OrchestrationScheduler(
     }
 
     fun enqueueReadContext(query: String, inputLanguage: String = "auto"): String {
-        val config = AppConfigStore.get(context)
+        val config = this.config.getWithoutSecret(context)
         val row = QueueRuntimeStore.enqueue(
             context = context,
             queue = QueuePriority.READ,
@@ -146,7 +149,7 @@ class OrchestrationScheduler(
     }
 
     fun enqueueFrameIngestQueue(source: String = "scheduled"): String {
-        val config = AppConfigStore.get(context)
+        val config = this.config.getWithoutSecret(context)
         val row = QueueRuntimeStore.enqueue(
             context = context,
             queue = QueuePriority.FRAME_INGEST,
@@ -162,7 +165,7 @@ class OrchestrationScheduler(
         maxFrames: Int = 60,
         chunkSize: Int = 6,
     ): HistoricalBackfillResult {
-        val config = AppConfigStore.get(context)
+        val config = this.config.getWithoutSecret(context)
         val purgeResult = PipelineRecords.purgeNonPhotoAndSynthetic(context)
         val selected = PipelineRecords.allFrames(context)
             .filter(PipelineRecords::isRealPhotoFrame)

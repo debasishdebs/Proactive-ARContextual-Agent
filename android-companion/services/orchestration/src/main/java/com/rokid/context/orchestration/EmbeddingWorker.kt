@@ -28,7 +28,7 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
     override suspend fun doWork(): Result {
         val rebuild = inputData.getBoolean(KEY_REBUILD, false)
         val clock = PrefsIndexClock(applicationContext)
-        if (!AppConfigStore.get(applicationContext).pipelineEnabled) {
+        if (!AppConfigStore.isPipelineEnabled(applicationContext)) {
             if (rebuild) clock.setRebuildPending(true)
             Log.i(TAG, "pipeline paused: index work left for resume")
             return Result.success()

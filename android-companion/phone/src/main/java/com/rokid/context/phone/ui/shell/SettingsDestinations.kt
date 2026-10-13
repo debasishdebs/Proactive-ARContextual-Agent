@@ -9,6 +9,12 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.rokid.context.phone.ui.settings.DiagnosticsScreen
+import com.rokid.context.phone.ui.settings.DiagnosticsViewModel
+import com.rokid.context.phone.ui.settings.LogsScreen
+import com.rokid.context.phone.ui.settings.LogsViewModel
+import com.rokid.context.phone.ui.settings.PersonaScreen
+import com.rokid.context.phone.ui.settings.PersonaViewModel
 import com.rokid.context.phone.ui.settings.SettingsRootScreen
 import com.rokid.context.phone.ui.settings.SettingsRootViewModel
 import com.rokid.context.phone.ui.settings.ai.EndpointEditorScreen
@@ -131,5 +137,27 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val vm = viewModel { ReviewQueueViewModel(deps.memory.memoryEdits, deps.zone) }
         val state by vm.state.collectAsStateWithLifecycle()
         ReviewQueueScreen(state, onBack = back, onKeep = { vm.keep(it) })
+    }
+
+    composable(Routes.SETTINGS_DIAGNOSTICS) {
+        val vm = viewModel { DiagnosticsViewModel(deps.diagnostics, deps.pipeline, s.exportDiagnostics, { f -> s.share(f) }, { s.hud.update { it } }) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        DiagnosticsScreen(
+            state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },
+            onSummarizeNow = vm::summarizeNow, onCaptureNow = vm::captureNow, onReprocess = vm::reprocess,
+            onOpenLogs = { nav.navigate(Routes.DIAGNOSTICS_LOGS) }, onExport = vm::exportDiagnostics, onPushSettings = vm::pushSettings,
+        )
+    }
+
+    composable(Routes.DIAGNOSTICS_LOGS) {
+        val vm = viewModel { LogsViewModel(s.logs) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        LogsScreen(state, onBack = back, onRefresh = vm::refresh)
+    }
+
+    composable(Routes.SETTINGS_PERSONA) {
+        val vm = viewModel { PersonaViewModel(s.ai.persona) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        PersonaScreen(state, onBack = back, onText = vm::onText, onLanguage = vm::onLanguage, onSave = vm::save)
     }
 }

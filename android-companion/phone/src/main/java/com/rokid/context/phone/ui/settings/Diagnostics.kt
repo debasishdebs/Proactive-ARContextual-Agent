@@ -9,10 +9,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Article
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Inbox
+import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -62,13 +65,30 @@ class SchedulerDiagnosticsActions(private val scheduler: OrchestrationScheduler)
 
 data class DiagnosticsUiState(val busy: Boolean = false, val message: String? = null)
 
-class DiagnosticsViewModel(private val actions: DiagnosticsActions, private val pipeline: PipelineControl) : ViewModel() {
+class DiagnosticsViewModel(
+    private val actions: DiagnosticsActions,
+    private val pipeline: PipelineControl,
+    exportDiagnostics: (suspend () -> java.io.File)? = null,
+    private val share: (java.io.File) -> Unit = {},
+    pushSettings: () -> Unit = {},
+) : ViewModel() {
+    // F16: plain parameters (named like the test passes them) kept in vals that don't clash with the methods.
+    private val exportAction = exportDiagnostics
+    private val pushAction = pushSettings
     private val _state = MutableStateFlow(DiagnosticsUiState())
     val state: StateFlow<DiagnosticsUiState> = _state.asStateFlow()
 
     fun summarizeNow() = run(requiresPipeline = true) { actions.summarizeNow() }
     fun captureNow() = run(requiresPipeline = true) { actions.captureNow() }
     fun reprocess() = run(requiresPipeline = false) { actions.reprocessOldPhotos() }
+
+    fun exportDiagnostics() = run(requiresPipeline = false) {
+        val f = exportAction?.invoke() ?: return@run FAILED
+        share(f); "Diagnostics ready to share"
+    }
+
+    /** spec §2.4 "manual config sync": re-push the HUD settings to the glasses (ruling, Task 21). */
+    fun pushSettings() { pushAction(); _state.value = DiagnosticsUiState(message = PUSHED) }
 
     private fun run(requiresPipeline: Boolean, block: suspend () -> String) {
         if (_state.value.busy) return
@@ -86,6 +106,7 @@ class DiagnosticsViewModel(private val actions: DiagnosticsActions, private val 
     companion object {
         const val PAUSED = "Capture is paused — resume it from Home first"
         const val FAILED = "That didn't work — try again"
+        const val PUSHED = "Settings sent to the glasses"
         private const val TAG = "Diagnostics"
     }
 }
@@ -99,6 +120,9 @@ fun DiagnosticsScreen(
     onSummarizeNow: () -> Unit,
     onCaptureNow: () -> Unit,
     onReprocess: () -> Unit,
+    onOpenLogs: () -> Unit,
+    onExport: () -> Unit,
+    onPushSettings: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState())) {
         ScreenHeader("Diagnostics", onBack)
@@ -106,6 +130,9 @@ fun DiagnosticsScreen(
             Column {
                 ChipRow(Icons.Outlined.Inbox, PcColors.ChipSky, "Queues", "Pending, deferred and failed jobs", onClick = onOpenQueues)
                 ChipRow(Icons.Outlined.Timeline, PcColors.ChipViolet, "Summarizer tracker", "Recent summary jobs", onClick = onOpenTracker)
+                ChipRow(Icons.Outlined.Article, PcColors.ChipSlate, "Logs", "Recent app log lines", onClick = onOpenLogs)
+                ChipRow(Icons.Outlined.IosShare, PcColors.ChipMint, "Export diagnostics", "Logs and recent jobs as a text file", onClick = onExport, enabled = !state.busy)
+                ChipRow(Icons.Outlined.Sync, PcColors.ChipSky, "Push settings to glasses", "Re-send HUD settings now", onClick = onPushSettings)
             }
         }
         SectionLabel("Manual runs")

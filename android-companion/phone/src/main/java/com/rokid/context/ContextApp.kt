@@ -2,7 +2,6 @@ package com.rokid.context
 
 import android.app.Application
 import com.rokid.context.ai.EnvDefaults
-import com.rokid.context.data.runtime.toProviderSettings
 
 class ContextApp : Application() {
     override fun onCreate() {
@@ -15,7 +14,7 @@ class ContextApp : Application() {
             localRuntimeMode = BuildConfig.LOCAL_RUNTIME_MODE,
             localNativeModelPath = BuildConfig.LOCAL_NATIVE_MODEL_PATH,
         )
-        com.rokid.context.memory.MemoryGraph.get(this) { com.rokid.context.data.runtime.AppConfigStore.get(this).encryptionEnabled }
+        com.rokid.context.memory.MemoryGraph.get(this) { com.rokid.context.data.runtime.AppConfigStore.getWithoutSecret(this).encryptionEnabled }
         // Eager background import so it is normally done before first use; PipelineRecords calls wait only if it is still running.
         kotlin.concurrent.thread(name = "legacy-import") {
             runCatching { com.rokid.context.memory.MemoryGraph.ensureLegacyImported(this) }
@@ -26,8 +25,8 @@ class ContextApp : Application() {
         kotlin.concurrent.thread(name = "ai-seed") {
             runCatching {
                 kotlinx.coroutines.runBlocking {
-                    com.rokid.context.ai.AiGraph.get(this@ContextApp).seeder
-                        .seedIfNeeded(com.rokid.context.data.runtime.AppConfigStore.get(this@ContextApp).toProviderSettings())
+                    // Seeds, then clears the legacy key only once it reached KeyVault (F23).
+                    com.rokid.context.orchestration.LegacyKeySeed.run(this@ContextApp, com.rokid.context.ai.AiGraph.get(this@ContextApp).seeder)
                 }
             }.onFailure { android.util.Log.w("ContextApp", "AI seed failed; will retry next start (${it.javaClass.simpleName})") }
         }

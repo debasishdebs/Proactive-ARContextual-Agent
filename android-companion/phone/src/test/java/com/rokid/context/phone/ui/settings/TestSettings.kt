@@ -42,5 +42,6 @@ object TestSettings {
             lazyRetrieval = lazy { RetrievalSettingsStore(ctx.getSharedPreferences("retrieval_test", 0)) }, lazySpaces = lazy { MemoryGraph.get(ctx).spaces }, rebuildIndex = { rebuilds++ },
             lazyMemorySettings = lazy { MemorySettingsStore(ctx.getSharedPreferences("memory_settings_test_deps", 0)) },
             encryption = object : EncryptionControl { override fun status() = DbEncryption.Status(false, null, false); override fun request(encrypted: Boolean) = Unit },
-            usedBytes = { 0L }, wipe = {}, export = { java.io.File(ctx.cacheDir, "x.json") }, share = {})
+            usedBytes = { 0L }, wipe = {}, export = { java.io.File(ctx.cacheDir, "x.json") }, share = {},
+            logs = { emptyList() }, exportDiagnostics = { java.io.File(ctx.cacheDir, "diag.txt") })
 }

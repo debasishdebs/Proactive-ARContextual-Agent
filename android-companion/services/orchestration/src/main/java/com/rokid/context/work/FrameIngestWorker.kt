@@ -21,7 +21,7 @@ class FrameIngestWorker(
 
         val imported = RokidFrameInbox.ingestPending(applicationContext, maxItems = 16)
         if (imported > 0) {
-            val config = AppConfigStore.get(applicationContext)
+            val config = AppConfigStore.getWithoutSecret(applicationContext)
             QueueRuntimeStore.enqueue(
                 context = applicationContext,
                 queue = QueuePriority.SUMMARIZER,

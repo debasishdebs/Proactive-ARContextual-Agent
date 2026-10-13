@@ -23,8 +23,6 @@ import com.rokid.context.phone.ui.home.HomeViewModel
 import com.rokid.context.phone.ui.memory.MemoryDetailScreen
 import com.rokid.context.phone.ui.memory.MemoryDetailViewModel
 import com.rokid.context.phone.ui.onboarding.WelcomeScreen
-import com.rokid.context.phone.ui.settings.DiagnosticsScreen
-import com.rokid.context.phone.ui.settings.DiagnosticsViewModel
 import com.rokid.context.phone.ui.settings.QueuesScreen
 import com.rokid.context.phone.ui.settings.QueuesViewModel
 import com.rokid.context.phone.ui.settings.TrackerScreen
@@ -106,15 +104,6 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         val vm = viewModel { FrameViewerViewModel(date, start, deps.memory.timeline, deps.zone, deps::today) }
         val state by vm.state.collectAsStateWithLifecycle()
         FrameViewerScreen(state, onBack = back)
-    }
-
-    composable(Routes.SETTINGS_DIAGNOSTICS) {
-        val vm = viewModel { DiagnosticsViewModel(deps.diagnostics, deps.pipeline) }
-        val state by vm.state.collectAsStateWithLifecycle()
-        DiagnosticsScreen(
-            state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },
-            onSummarizeNow = vm::summarizeNow, onCaptureNow = vm::captureNow, onReprocess = vm::reprocess,
-        )
     }
 
     composable(Routes.DIAGNOSTICS_QUEUES) {

@@ -11,7 +11,7 @@ class SettingsSourceRulesTest {
 
     @Test fun settingsFilesNeverReachForGlobalsOrContext() {
         val banned = listOf("AiGraph.get(", "MemoryGraph.get(", "HubGraph.get(", "LocalContext", "AppConfigStore", "runBlocking", "delay(")
-        val hits = kt(File(ui, "settings")).filter { it.name != "SettingsDeps.kt" && it.name != "LegacyConfig.kt" }
+        val hits = kt(File(ui, "settings")).filter { it.name != "SettingsDeps.kt" }
             .flatMap { f -> banned.filter { f.readText().contains(it) }.map { "${f.name}: $it" } }
         assertTrue("$hits", hits.isEmpty())
     }
@@ -30,5 +30,18 @@ class SettingsSourceRulesTest {
         assertTrue("no autocorrect", secret.contains("autoCorrectEnabled = false"))
         assertTrue("secret branch", src.contains("keyboardOptions = if (secret) SECRET_KEYBOARD"))
         assertTrue("masked", src.contains("if (secret) PasswordVisualTransformation()"))
+    }
+
+    @Test fun theLegacyConfigPathIsGone() {
+        val roots = listOf(File("src/main"), File("../services/orchestration/src/main"))
+        val hits = roots.flatMap { r -> kt(r) }.filter { f -> listOf("LegacyConfigBridge", "ConfigHubScreen", "LegacyConfigScreen", "setProvider(").any { it in f.readText() } }.map { it.name }
+        assertTrue("$hits", hits.isEmpty())
+    }
+
+    /** Task 16 carry: `AppConfigStore.get` opens the Keystore; only the off-Main legacy-key seed may call it. */
+    @Test fun onlyTheLegacyKeySeedReadsTheLegacySecret() {
+        val roots = listOf(File("src/main"), File("../services/orchestration/src/main"))
+        val hits = roots.flatMap { r -> kt(r) }.filter { "AppConfigStore.get(" in it.readText() }.map { it.name }
+        assertTrue("$hits", hits == listOf("LegacyKeySeed.kt"))
     }
 }

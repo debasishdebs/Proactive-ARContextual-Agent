@@ -58,6 +58,10 @@ class SettingsDeps(
     val wipe: suspend () -> Unit,
     val export: suspend () -> File,
     val share: (File) -> Unit,
+    /** Diagnostics › Logs: this app's own recent log lines, key-looking lines dropped (Task 21). */
+    val logs: suspend () -> List<String>,
+    /** Diagnostics › Export: a text file in cache/exports (the FileProvider folder), shared through [share]. */
+    val exportDiagnostics: suspend () -> File,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -87,6 +91,11 @@ class SettingsDeps(
             wipe = { MemoryWipe.deleteAll(app) },
             export = { MemoryExport.write(app) },
             share = { f -> ShareFile.share(app, f) },
+            logs = { LogReader.ownLines() },
+            exportDiagnostics = {
+                val traces = com.rokid.context.orchestration.PipelineRecords.recentTraces(app, 50).map { "${it.updatedAt} ${it.state} ${it.summaryId} ${it.note}" }
+                DiagnosticsExport.write(app.cacheDir, traces, LogReader.ownLines())
+            },
         )
     }
 }

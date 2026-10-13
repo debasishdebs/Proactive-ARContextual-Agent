@@ -31,6 +31,9 @@ class CriticWorkerJobTest {
     @Before fun setUp() {
         WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
+        // The scan also starts a drain (enqueueQueueDrainNow), which runs on its own thread and can claim and re-write a
+        // reprocess row while the test marks it done. These tests pin the scan's queueing only, so the drain stays paused.
+        com.rokid.context.data.runtime.AppConfigStore.setPipelineEnabled(ctx, false)
     }
 
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }

@@ -21,7 +21,7 @@ class SettingsDepsTest {
             encryption = object : com.rokid.context.phone.ui.settings.memory.EncryptionControl {
                 override fun status() = com.rokid.context.memory.DbEncryption.Status(false, null, false); override fun request(encrypted: Boolean) = Unit
             },
-            usedBytes = { 0L }, wipe = {}, export = { File("x") }, share = {})
+            usedBytes = { 0L }, wipe = {}, export = { File("x") }, share = {}, logs = { emptyList() }, exportDiagnostics = { File("d") })
         assertEquals(0, built); assertEquals(0, inputs); assertEquals(0, retrieval); assertEquals(0, memorySettings)
         runCatching { deps.ai }
         assertEquals(1, built)

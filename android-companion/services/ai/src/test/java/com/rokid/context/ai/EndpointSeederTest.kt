@@ -151,4 +151,19 @@ class EndpointSeederTest {
     }
 
     private fun state2() = EndpointSeeder(endpoints, bindings, InMemorySeedState())
+
+    /** F23: the legacy key may be cleared only when the seed read one and KeyVault now holds a key for the seeded endpoint. */
+    @Test fun keyReachedTheVaultOnlyForASeededNonBlankKey() = runTest {
+        assertFalse("nothing seeded yet", seeder.legacyKeyInVault(azure))
+        state.markDone() // an earlier start seeded with a blank key (Keystore unavailable then): no endpoint holds a key
+        seeder.seedIfNeeded(azure).getOrThrow()
+        assertFalse("seed was already done, the vault holds nothing", seeder.legacyKeyInVault(azure))
+        val fresh = EndpointSeeder(endpoints, bindings, InMemorySeedState())
+        fresh.seedIfNeeded(azure).getOrThrow()
+        assertTrue(fresh.legacyKeyInVault(azure))
+        assertFalse("a blank legacy key is never 'migrated'", fresh.legacyKeyInVault(azure.copy(apiKey = " ")))
+        val ollama = ProviderSettings("ollama", "http://o.local:11434", "k", "llama3.1:8b", "", false)
+        EndpointSeeder(endpoints, bindings, InMemorySeedState()).seedIfNeeded(ollama).getOrThrow()
+        assertFalse("keyless kinds never store the key", fresh.legacyKeyInVault(ollama))
+    }
 }

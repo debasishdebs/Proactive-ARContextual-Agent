@@ -36,8 +36,7 @@ class ShellSourceRulesTest {
             val src = f.readText()
             assertFalse("${f.name}: runBlocking", src.contains("runBlocking"))
             assertFalse("${f.name}: while (true)", src.contains("while (true)"))
-            // LegacyConfig's 600 ms debounce is the only allowed delay in a ViewModel file (Phase 2 ruling).
-            if (f.name != "LegacyConfig.kt") assertFalse("${f.name}: delay(", src.contains("delay("))
+            assertFalse("${f.name}: delay(", src.contains("delay("))
         }
     }
 
