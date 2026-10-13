@@ -16,12 +16,23 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
     val settings: StateFlow<MemorySettings> = state.asStateFlow()
 
     private val lock = Any()
+    /** True on the thread running a transform: the lock is reentrant, so a nested update would be silently overwritten. */
+    private val updating = ThreadLocal<Boolean>()
 
-    /** Atomic: read, transform, one prefs write and publish happen under one lock, so concurrent edits never lose each other. */
+    /**
+     * Atomic: read, transform, one prefs write and publish happen under one lock, so concurrent edits never lose each other.
+     * A call from inside its own transform throws IllegalStateException instead of losing the inner write (Phase 5 T20 carry).
+     */
     fun update(transform: (MemorySettings) -> MemorySettings) = synchronized(lock) {
-        val n = clean(transform(state.value))
-        prefs.edit().putInt("short_hours", n.shortHours).putInt("medium_days", n.mediumDays).putInt("long_days", n.longDays).putInt("quota_mb", n.quotaMb).apply()
-        state.value = n
+        check(updating.get() != true) { "MemorySettingsStore.update called from inside its own transform" }
+        updating.set(true)
+        try {
+            val n = clean(transform(state.value))
+            prefs.edit().putInt("short_hours", n.shortHours).putInt("medium_days", n.mediumDays).putInt("long_days", n.longDays).putInt("quota_mb", n.quotaMb).apply()
+            state.value = n
+        } finally {
+            updating.remove()
+        }
     }
 
     private fun read() = clean(MemorySettings(prefs.getInt("short_hours", 24), prefs.getInt("medium_days", 7), prefs.getInt("long_days", 30), prefs.getInt("quota_mb", 100)))

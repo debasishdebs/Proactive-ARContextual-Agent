@@ -80,7 +80,7 @@ object AppConfigStore : AppConfigReader {
      *   ([QueueRuntimeStore.extendTtl]), so a crash mid-resume can lose this credit but never apply it twice (fix M3).
      * - A pause without a stamp (from before the stamp existed, or a crash mid-resume) gives every live job a full TTL
      *   from resume: extendTtl caps each row at its own age (fix M1).
- * - The resume flag flip is also a commit(), so once this returns the queue is running for good (fix round 2).
+     * - The resume flag flip is also a commit(), so once this returns the queue is running for good (fix round 2).
      */
     fun setPipelineEnabled(context: Context, enabled: Boolean, nowEpochMs: Long = System.currentTimeMillis()) {
         val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)

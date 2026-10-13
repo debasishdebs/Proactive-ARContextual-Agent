@@ -175,7 +175,10 @@ class PromptEditorViewModel(
                 val p = inputs.prepare(key, input)
                 val result = ai.testBed.run(TestBedRequest(key, draft, endpoint, s.model, p.vars, p.images, p.inputIds))
                 // Edited or discarded meanwhile: this run belongs to a draft that no longer exists, so it writes nothing.
-                _state.update { if (it.draft == draft) { lastRun = draft to result; it.copy(result = result) } else it }
+                // lastRun is set outside the update: its lambda may run more than once (Phase 5 T18 carry).
+                var current = false
+                _state.update { if (it.draft == draft) { current = true; it.copy(result = result) } else { current = false; it } }
+                if (current) lastRun = draft to result
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
@@ -227,15 +230,18 @@ class PromptEditorViewModel(
         PromptDraft(template, if (key == PromptKey.SYSTEM) null else schema?.takeIf { it.isNotBlank() } ?: DefaultSchemas.text(key))
 
     /**
-     * One draft edit: ignored while saving (returns false). Clears the result panel. If the last check covered this
-     * schema it still holds for the edited draft (the checker reads only the schema), so [PromptEditorUiState.compatFor] follows.
+     * One draft edit: ignored while saving (returns false). Clears the result panel unless the edit returns to the
+     * draft that last ran. If the last check covered this schema it still holds for the edited draft (the checker reads
+     * only the schema), so [PromptEditorUiState.compatFor] follows.
      */
     private fun edit(f: (PromptEditorUiState) -> PromptEditorUiState): Boolean {
         if (_state.value.saving) return false
         _state.update { cur ->
             if (cur.saving) return@update cur
-            val n = f(cur).copy(notice = null, result = null, showWire = false)
-            regated(if (n.compatFor?.outputSchema == n.draft.outputSchema) n.copy(compatFor = n.draft) else n)
+            val n = f(cur).copy(notice = null, showWire = false)
+            // Back to the draft that ran: its panel comes back with its Ran gate (Phase 5 T18 carry); any other draft has none.
+            val r = n.copy(result = lastRun?.takeIf { it.first == n.draft }?.second)
+            regated(if (r.compatFor?.outputSchema == r.draft.outputSchema) r.copy(compatFor = r.draft) else r)
         }
         return true
     }
