@@ -62,7 +62,7 @@ class NudgeWorker(appContext: Context, params: WorkerParameters) : CoroutineWork
         val sources = SourcesGraph.get(app)
         return NudgeEngine(
             NudgeInputs(memory, sources.provider), AiGraph.get(app).runner, NudgeGates(memory.db.nudgeGateDao()) { sources.settings.nudgesPerDay.value },
-            memory, ActionsGraph.get(app).intake,
+            memory, com.rokid.context.orchestration.OriginFencedIntake(app, memory, ActionsGraph.get(app).intake),
         )
     }
 }
