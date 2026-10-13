@@ -18,22 +18,78 @@ class VoiceModuleRulesTest {
         return files
     }
 
+    /** Every project dependency a build file names: `project(":x")`, `project(path = ":x")`, `projects.x` accessors. */
+    private fun projectDeps(gradle: String): Set<String> {
+        val named = Regex("\\bproject\\(\\s*(?:path\\s*=\\s*)?\"([^\"]+)\"").findAll(gradle).map { it.groupValues[1] }.toList()
+        val accessors = Regex("\\bprojects\\.([A-Za-z0-9_.]+)").findAll(gradle).map { "projects." + it.groupValues[1] }.toList()
+        val calls = Regex("\\bproject\\(").findAll(gradle).count()
+        val unparsed = if (calls > named.size) listOf("unparsed project(...)") else emptyList()
+        return (named + accessors + unparsed).toSet()
+    }
+
+    /** An import of any `com.rokid.context` package other than `:core:model`'s and this module's (phone root included). */
+    private fun foreignImport(line: String): Boolean {
+        val l = line.trim()
+        return l.startsWith("import com.rokid.context.") &&
+            !l.startsWith("import com.rokid.context.core.model.") && !l.startsWith("import com.rokid.context.voice.")
+    }
+
+    /** `createSpeechRecognizer(...)` or a `::createSpeechRecognizer` reference; `createOnDeviceSpeechRecognizer` is fine. */
+    private fun createsNetworkRecognizer(source: String): Boolean = Regex("\\bcreateSpeechRecognizer\\b").containsMatchIn(source)
+
+    private val voiceWord = Regex("(?i)(text|partial|question|transcript|answer|result|spoken|utterance|heard)")
+    private val countOnly = Regex("\\.(size|length|count\\(\\)|isEmpty\\(\\)|isNotEmpty\\(\\)|isBlank\\(\\))$")
+
+    /** A log line that puts voice text into the message: `$name`, `${expr}` or `+ name` concatenation; counts are fine. */
+    private fun logsVoiceText(line: String): Boolean {
+        if (!("Log." in line || "log(" in line)) return false
+        val exprs = Regex("\\$([A-Za-z_]\\w*)").findAll(line).map { it.groupValues[1] } +
+            Regex("\\$\\{([^}]*)\\}").findAll(line).map { it.groupValues[1].trim() } +
+            Regex("\\+\\s*([A-Za-z_][\\w.]*)").findAll(line).map { it.groupValues[1] } +
+            Regex("([A-Za-z_][\\w.]*)\\s*\\+").findAll(line).map { it.groupValues[1] }
+        return exprs.any { e -> !countOnly.containsMatchIn(e) && voiceWord.containsMatchIn(e) }
+    }
+
+    @Test fun theScannersCatchEveryForm() {
+        assertEquals(setOf(":core:model", ":services:ai", "projects.services.memory"), projectDeps(
+            "api(project(\":core:model\"))\nimplementation(project(path = \":services:ai\"))\nimplementation(projects.services.memory)",
+        ))
+        listOf("phone.hub.Hub", "ai.ModelRouter", "memory.MemoryStore", "orchestration.X", "link.GlassesLink", "data.runtime.X", "domain.queue.X", "ContextApp", "glasses.X")
+            .forEach { assertTrue(foreignImport("import com.rokid.context.$it"), it) }
+        listOf("core.model.audio.Pcm", "core.model.TextHygiene", "voice.PipeSink")
+            .forEach { assertTrue(!foreignImport("import com.rokid.context.$it"), it) }
+        assertTrue(createsNetworkRecognizer("SpeechRecognizer.createSpeechRecognizer(context)"))
+        assertTrue(createsNetworkRecognizer("val make = SpeechRecognizer::createSpeechRecognizer"))
+        assertTrue(!createsNetworkRecognizer("SpeechRecognizer.createOnDeviceSpeechRecognizer(context)"))
+        listOf(
+            "Log.d(TAG, \"final \$finalText\")",
+            "Log.i(TAG, \"got \${r.text}\")",
+            "Log.w(TAG, \"heard: \" + spoken)",
+            "log(\"q=\" + question.trim())",
+            "Log.d(TAG, \"partial=\$partial\")",
+        ).forEach { assertTrue(logsVoiceText(it), it) }
+        listOf(
+            "Log.d(TAG, \"partials=\${partials.size}\")",
+            "Log.i(TAG, \"event=start count=\$count\")",
+            "Log.w(TAG, \"failed: \${e.javaClass.simpleName}\")",
+            "val s = \"x \$text\"",
+        ).forEach { assertTrue(!logsVoiceText(it), it) }
+    }
+
     @Test fun dependsOnlyOnCoreModel() {
-        val gradle = File(module, "build.gradle.kts").readText()
-        assertEquals(setOf(":core:model"), Regex("project\\(\"([^\"]+)\"\\)").findAll(gradle).map { it.groupValues[1] }.toSet())
-        val bad = sources().filter { f -> f.readLines().any { l -> listOf("phone", "ai", "memory", "orchestration", "link").any { l.startsWith("import com.rokid.context.$it.") } } }
+        assertEquals(setOf(":core:model"), projectDeps(File(module, "build.gradle.kts").readText()))
+        val bad = sources().filter { f -> f.readLines().any(::foreignImport) }
         assertEquals(emptyList(), bad.map { it.name })
     }
 
     @Test fun onlyTheOnDeviceRecognizerIsEverCreated() {
-        val bad = sources().filter { "createSpeechRecognizer(" in it.readText() }
+        val bad = sources().filter { createsNetworkRecognizer(it.readText()) }
         assertEquals(emptyList(), bad.map { it.name })
     }
 
     /** Log lines carry event names, counts and class names: never a transcript, partial, question or answer. */
     @Test fun noLogLineInterpolatesVoiceText() {
-        val text = Regex("\\$\\{?(text|partial|question|transcript|answer|results|spoken)\\b")
-        val bad = sources().flatMap { f -> f.readLines().filter { l -> ("Log." in l || "log(" in l) && text.containsMatchIn(l) }.map { "${f.name}: ${it.trim()}" } }
+        val bad = sources().flatMap { f -> f.readLines().filter(::logsVoiceText).map { "${f.name}: ${it.trim()}" } }
         assertEquals(emptyList(), bad)
     }
 }
