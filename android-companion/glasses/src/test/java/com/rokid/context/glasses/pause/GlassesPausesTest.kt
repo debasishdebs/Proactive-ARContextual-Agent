@@ -1,7 +1,12 @@
 package com.rokid.context.glasses.pause
 
 import com.rokid.context.core.model.PauseOrigin
+import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.PauseRecord
+import com.rokid.context.core.model.QuietHours
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.util.TimeZone
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -16,6 +21,10 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+
+/** Phase 6 tests: a clock-exact push of [records] (the old list-only merge). */
+private suspend fun GlassesPauses.mergeFromPhone(records: List<PauseRecord>) =
+    mergeFromPhone(HudSettings(pauses = records, pausesExact = true))
 
 class GlassesPausesTest {
     @get:Rule val tmp = TemporaryFolder()
@@ -131,4 +140,150 @@ class GlassesPausesTest {
     }
 
     @Test fun nothingIsAllowedBeforeLoading() = assertFalse(pauses().captureAllowed())
+
+    // ---- Phase 7 A2: phone resumes, exact/provisional merge, quiet hours ----
+
+    private var hud: HudSettings? = null
+    private fun qPauses(name: String = "q.preferences_pb"): GlassesPauses = runBlocking {
+        job?.cancelAndJoin()
+        val j = SupervisorJob().also { job = it }
+        GlassesPauses(PauseStore(File(tmp.root, name), CoroutineScope(Dispatchers.IO + j)) { now }, { now }, { "id${++n}" }, log = {},
+            quiet = QuietHoursClock { hud })
+    }
+    private fun exact(vararg r: PauseRecord, resumed: List<String> = emptyList()) =
+        HudSettings(pauses = r.toList(), pausesExact = true, resumedPauseIds = resumed)
+    private fun inexact(vararg r: PauseRecord) = HudSettings(pauses = r.toList(), pausesExact = false)
+
+    @Test fun phoneResumedIdRemovesPhoneRecordAndIsNeverReadded() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        val rec = PauseRecord("p", PauseOrigin.PHONE, now, null)
+        p.mergeFromPhone(exact(rec))
+        assertFalse(p.captureAllowed())
+        val r = p.mergeFromPhone(exact(resumed = listOf("p")))
+        assertEquals(setOf("p"), r.removed)
+        assertTrue(p.captureAllowed())
+        p.mergeFromPhone(exact(rec))
+        p.mergeFromPhone(inexact(rec))
+        assertTrue("never re-added", p.captureAllowed())
+        assertTrue("also after a restart", pauses().also { it.ensureLoaded(); it.mergeFromPhone(exact(rec)) }.captureAllowed())
+    }
+
+    @Test fun exactPushMergesMostRestrictive() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        val ten = now + 600_000; val eleven = now + 1_200_000; val nine = now + 300_000
+        p.mergeFromPhone(exact(PauseRecord("p", PauseOrigin.PHONE, now, ten)))
+        p.mergeFromPhone(exact(PauseRecord("p", PauseOrigin.PHONE, now, eleven)))
+        assertEquals(listOf(eleven), p.records.value.map { it.untilMs })
+        p.mergeFromPhone(exact(PauseRecord("p", PauseOrigin.PHONE, now, nine)))
+        assertEquals(listOf(eleven), p.records.value.map { it.untilMs })
+    }
+
+    @Test fun inexactTimedPhoneRecordIsIndefiniteUntilExact() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        val ten = now + 600_000
+        val r = p.mergeFromPhone(inexact(PauseRecord("p", PauseOrigin.PHONE, now, ten)))
+        assertEquals(listOf<Long?>(null), r.added.map { it.untilMs })
+        assertEquals(listOf<Long?>(null), p.records.value.map { it.untilMs })
+        assertEquals(emptyList<PauseRecord>(), p.helloRecords())
+        val nineFiftyEight = ten - 120_000
+        p.mergeFromPhone(exact(PauseRecord("p", PauseOrigin.PHONE, now, nineFiftyEight)))
+        assertEquals(listOf<Long?>(nineFiftyEight), p.records.value.map { it.untilMs })
+        assertEquals("no longer provisional", listOf("p"), p.helloRecords().map { it.pauseId })
+        p.mergeFromPhone(exact(PauseRecord("p", PauseOrigin.PHONE, now, nineFiftyEight - 60_000)))
+        assertEquals(listOf<Long?>(nineFiftyEight), p.records.value.map { it.untilMs })
+    }
+
+    @Test fun provisionalSurvivesARestart() = runBlocking {
+        pauses().also { it.ensureLoaded() }.mergeFromPhone(inexact(PauseRecord("p", PauseOrigin.PHONE, now, now + 600_000)))
+        val again = pauses().also { it.ensureLoaded() }
+        again.mergeFromPhone(exact(PauseRecord("p", PauseOrigin.PHONE, now, now + 60_000)))
+        assertEquals(listOf<Long?>(now + 60_000), again.records.value.map { it.untilMs })
+    }
+
+    @Test fun inexactPushNeverNarrowsKnownId() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        p.mergeFromPhone(exact(PauseRecord("p", PauseOrigin.PHONE, now, null)))
+        p.mergeFromPhone(inexact(PauseRecord("p", PauseOrigin.PHONE, now, now + 1_000)))
+        now += 5_000
+        assertEquals(listOf<Long?>(null), p.records.value.map { it.untilMs })
+        assertFalse(p.captureAllowed())
+    }
+
+    private fun ms(zone: ZoneId, y: Int, mo: Int, d: Int, h: Int, mi: Int) =
+        LocalDateTime.of(y, mo, d, h, mi).atZone(zone).toInstant().toEpochMilli()
+
+    @Test fun quietHoursOfflineCreatesUniqueIdsPerNight() = runBlocking {
+        val z = ZoneId.of("Europe/Berlin")
+        hud = HudSettings(quietHours = QuietHours(22 * 60, 7 * 60), zoneId = z.id)
+        val p = qPauses().also { it.ensureLoaded() }
+        now = ms(z, 2026, 10, 13, 23, 0)
+        assertFalse(p.captureAllowed())
+        p.ensureLoaded()
+        val first = p.active().single()
+        now = ms(z, 2026, 10, 14, 7, 0)
+        assertTrue(p.captureAllowed())
+        now = ms(z, 2026, 10, 14, 22, 30)
+        p.ensureLoaded()
+        val second = p.active().single()
+        assertEquals(PauseOrigin.QUIET_HOURS, second.origin)
+        assertEquals(ms(z, 2026, 10, 14, 7, 0), first.untilMs)
+        assertEquals(ms(z, 2026, 10, 15, 7, 0), second.untilMs)
+        assertTrue(first.pauseId != second.pauseId)
+    }
+
+    @Test fun quietHoursUseSentZone() = runBlocking {
+        val old = TimeZone.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+        try {
+            val k = ZoneId.of("Asia/Kolkata")
+            hud = HudSettings(quietHours = QuietHours(22 * 60, 7 * 60), zoneId = k.id)
+            val clock = QuietHoursClock { hud }
+            val r = clock.occurrenceAt(ms(k, 2026, 10, 13, 23, 0))!!
+            assertEquals(ms(k, 2026, 10, 13, 22, 0), r.first)
+            assertEquals(ms(k, 2026, 10, 14, 7, 0), r.last + 1)
+            // 23:00 UTC is 04:30 Kolkata: inside; 12:00 UTC is 17:30 Kolkata: outside
+            assertTrue(clock.occurrenceAt(ms(ZoneId.of("UTC"), 2026, 10, 13, 23, 0)) != null)
+            assertEquals(null, clock.occurrenceAt(ms(ZoneId.of("UTC"), 2026, 10, 13, 12, 0)))
+        } finally {
+            TimeZone.setDefault(old)
+        }
+    }
+
+    @Test fun localResumeInsideQuietWindowStaysResumed() = runBlocking {
+        val z = ZoneId.of("Europe/Berlin")
+        hud = HudSettings(quietHours = QuietHours(22 * 60, 7 * 60), zoneId = z.id)
+        val p = qPauses().also { it.ensureLoaded() }
+        now = ms(z, 2026, 10, 13, 23, 0)
+        assertTrue(p.toggle() is PauseToggle.Resumed)
+        assertTrue(p.captureAllowed())
+        now += 3_600_000
+        p.ensureLoaded()
+        assertTrue(p.captureAllowed())
+        assertTrue("also after a restart", qPauses().also { it.ensureLoaded() }.captureAllowed())
+    }
+
+    @Test fun aLiveQuietRecordFromThePhoneIsAdoptedNotDuplicated() = runBlocking {
+        val z = ZoneId.of("Europe/Berlin")
+        hud = HudSettings(quietHours = QuietHours(22 * 60, 7 * 60), zoneId = z.id)
+        val p = qPauses().also { it.ensureLoaded() }
+        now = ms(z, 2026, 10, 13, 21, 0)
+        p.ensureLoaded()
+        p.mergeFromPhone(exact(PauseRecord("phq", PauseOrigin.QUIET_HOURS, ms(z, 2026, 10, 13, 22, 0), ms(z, 2026, 10, 14, 7, 0))))
+        now = ms(z, 2026, 10, 13, 23, 0)
+        p.ensureLoaded()
+        assertEquals(listOf("phq"), p.active().map { it.pauseId })
+        p.mergeFromPhone(exact(resumed = listOf("phq")))
+        assertTrue("the phone's resume of the occurrence holds", p.captureAllowed())
+    }
+
+    /** Ruling: a provisional record the phone no longer lists in an exact push has ended there (expired or resumed). */
+    @Test fun exactPushWithoutAProvisionalIdEndsIt() = runBlocking {
+        val p = pauses().also { it.ensureLoaded() }
+        p.mergeFromPhone(exact(PauseRecord("known", PauseOrigin.PHONE, now, null)))
+        p.mergeFromPhone(inexact(PauseRecord("p", PauseOrigin.PHONE, now, now + 600_000)))
+        assertTrue(p.mergeFromPhone(inexact()).removed.isEmpty())
+        assertEquals(setOf("known", "p"), p.active().map { it.pauseId }.toSet())
+        assertEquals(setOf("p"), p.mergeFromPhone(exact()).removed)
+        assertEquals("a non-provisional record is never dropped this way", listOf("known"), p.active().map { it.pauseId })
+    }
 }

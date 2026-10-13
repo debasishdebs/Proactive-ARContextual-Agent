@@ -93,11 +93,13 @@ class HudControllerTest {
     @Test fun phonePausesAreForwardedFromStateAndSettings() = runTest {
         val c = controller()
         val got = mutableListOf<List<PauseRecord>>()
-        c.onPhonePauses = { got += it }
+        val exact = mutableListOf<Boolean>()
+        c.onPhoneSettings = { got += it.pauses; exact += it.pausesExact }
         val p = PauseRecord("p1", PauseOrigin.PHONE, 1, null)
         bridge.phone(Channels.STATE, state(CaptureState.Paused(listOf(p))))
-        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(pauses = listOf(p))))
+        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(pauses = listOf(p), pausesExact = true)))
         assertEquals(listOf(listOf(p), listOf(p)), got)
+        assertEquals("a pc_state list is inexact; pc_settings keeps its flag", listOf(false, true), exact)
     }
 
     @Test fun frameAcksReachTheUplinkAndGarbageDoesNot() = runTest {
