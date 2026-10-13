@@ -13,6 +13,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <!-- P7-C sources -->
+    <!-- Settings › Data sources (R-64): asked for only when a source is turned on; context only, never sent to the glasses. -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- /P7-C sources -->
 
     <application
