@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
+    <!-- P7-C sources -->
+    <!-- /P7-C sources -->
+
     <application
         android:name=".ContextApp"
         android:allowBackup="true"
@@ -45,6 +48,12 @@
             android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- P7-B proposals -->
+        <!-- /P7-B proposals -->
+
+        <!-- P7-C sources (application) -->
+        <!-- /P7-C sources (application) -->
     </application>
 
 </manifest>

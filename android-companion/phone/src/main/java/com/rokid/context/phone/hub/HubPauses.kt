@@ -2,17 +2,27 @@ package com.rokid.context.phone.hub
 
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
+import com.rokid.context.core.model.QuietHours
 import com.rokid.context.link.FrameAdmission
 import com.rokid.context.link.PauseHistory
 import com.rokid.context.memory.db.PauseDao
 import com.rokid.context.memory.db.PauseIntervalEntity
 import com.rokid.context.memory.db.PauseRecordEntity
+import java.time.ZoneId
 
 /**
  * Phone pause set (spec §5.5), persisted in Room: `pause_record` = active records, `pause_interval` = retained history.
  * Instants are phone clock. A record ends only by its own expiry or a Resume naming it; nothing resumes implicitly.
  */
-class HubPauses(private val dao: PauseDao, private val now: () -> Long = System::currentTimeMillis) : PauseHistory {
+class HubPauses(
+    private val dao: PauseDao,
+    /** Quiet hours from the HUD settings (Phase 7; stored, used from Stream A1). */
+    private val quietHours: () -> QuietHours? = { null },
+    /** The zone quiet hours are evaluated in (Phase 7; stored, used from Stream A1). */
+    private val zone: () -> ZoneId = ZoneId::systemDefault,
+    /** Last, so `HubPauses(dao) { t }` keeps passing the clock. */
+    private val now: () -> Long = System::currentTimeMillis,
+) : PauseHistory {
     /** Active records; expired ones are first closed at their `untilMs` and removed. */
     suspend fun active(): List<PauseRecord> {
         val t = now()
@@ -45,6 +55,9 @@ class HubPauses(private val dao: PauseDao, private val now: () -> Long = System:
         val t = now()
         dao.resumeNamed(clears, atMs?.coerceAtMost(t) ?: t)
     }
+
+    /** Ids the phone resumed (closed intervals ≤ 7 d, ≤ 200 newest), sent as `HudSettings.resumedPauseIds`. Stream A1 fills it. */
+    suspend fun recentlyResumedIds(): List<String> = emptyList()
 
     override suspend fun pausedAt(phoneMs: Long): Boolean {
         active() // close anything that expired before checking

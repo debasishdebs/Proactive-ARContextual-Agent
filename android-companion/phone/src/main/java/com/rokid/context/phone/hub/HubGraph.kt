@@ -9,6 +9,8 @@ import com.rokid.context.link.FrameAdmission
 import com.rokid.context.link.FrameReassembler
 import com.rokid.context.link.ReceivedFrameLedger
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.phone.actions.PhoneActions
+import com.rokid.context.phone.nudge.PhoneNudges
 import android.util.Log
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -34,12 +36,13 @@ object HubGraph {
         val guard = CoroutineExceptionHandler { _, t -> Log.w(Hub.TAG, "hub coroutine failed: ${t.javaClass.simpleName}") }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + guard)
         val ledger = ReceivedFrameLedger(File(app.filesDir, "cxr_received_frames.txt"))
-        val pauses = HubPauses(MemoryGraph.get(app).db.pauseDao())
-        val ingestor = FrameIngestor(RokidFrameInbox.inboxDir(app), FrameReassembler(), FrameAdmission(ledger, pauses), ledger) { enqueueInboxIngest(app) }
         val settings = HubSettingsStore(app.getSharedPreferences("hub_settings", Context.MODE_PRIVATE)) { AppConfigStore.glassesSilencyMode(app) }
+        val pauses = HubPauses(MemoryGraph.get(app).db.pauseDao(), quietHours = { settings.read().quietHours })
+        val ingestor = FrameIngestor(RokidFrameInbox.inboxDir(app), FrameReassembler(), FrameAdmission(ledger, pauses), ledger) { enqueueInboxIngest(app) }
         return Hub(
             scope, CxrGlassesLink(app, scope), pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
+            actions = PhoneActions.hubPort(app) { settings.read() }, nudges = PhoneNudges.hubPort(app) { settings.read() },
         )
     }
 }

@@ -18,7 +18,12 @@ class SettingsSourceRulesTest {
 
     @Test fun onlyDestinationFilesCollectState() {
         // F13: AppShell.kt collects the shell's own bluetoothMissing flag (Phase 4); it creates no ViewModel.
-        val hits = kt(ui).filter { "collectAsStateWithLifecycle" in it.readText() && !it.name.endsWith("Destinations.kt") && it.name != "AppShell.kt" }.map { it.name }
+        // Phase 7 Stream 0: a route composable (`fun XxxRoute(`) is destination wiring moved out of Destinations.kt.
+        val route = Regex("""fun [A-Za-z]+Route\(""")
+        val hits = kt(ui).filter {
+            val text = it.readText()
+            "collectAsStateWithLifecycle" in text && !it.name.endsWith("Destinations.kt") && it.name != "AppShell.kt" && !route.containsMatchIn(text)
+        }.map { it.name }
         assertTrue("$hits", hits.isEmpty())
     }
 
