@@ -66,6 +66,7 @@ object AppConfigStore {
      *   ([QueueRuntimeStore.extendTtl]), so a crash mid-resume can lose this credit but never apply it twice (fix M3).
      * - A pause without a stamp (from before the stamp existed, or a crash mid-resume) gives every live job a full TTL
      *   from resume: extendTtl caps each row at its own age (fix M1).
+ * - The resume flag flip is also a commit(), so once this returns the queue is running for good (fix round 2).
      */
     fun setPipelineEnabled(context: Context, enabled: Boolean, nowEpochMs: Long = System.currentTimeMillis()) {
         val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
@@ -84,7 +85,8 @@ object AppConfigStore {
             pausedAt >= 0L -> QueueRuntimeStore.extendTtl(context, byMs = (nowEpochMs - pausedAt).coerceAtLeast(0L), nowEpochMs = nowEpochMs)
             !wasEnabled -> QueueRuntimeStore.extendTtl(context, byMs = UNKNOWN_PAUSE_MS, nowEpochMs = nowEpochMs)
         }
-        edit(context) { putBoolean(K_PIPELINE_ENABLED, true) }
+        // Fix round 2: synchronous, like the stamp clear above, so the credited resume is durable before we return.
+        p.edit().putBoolean(K_PIPELINE_ENABLED, true).commit()
     }
 
     /** Just the ⏸ flag ([get] also opens the secrets store). */

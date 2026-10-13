@@ -23,6 +23,9 @@ class CriticWorkerJob(
         if (summaryId.isNullOrBlank()) {
             // Periodic run: scan facts awaiting review (preflight F10: by reviewState; facts keep their own type) and queue a reprocess.
             // Fix M4: skip facts a still-pending reprocess already covers (same text, or a frame line for the same frame).
+            // Fix round 2: this stays a substring match on purpose. A PRIORITY_REPROCESS payload (QueuePayloads.reprocess)
+            // carries only `reason` and `source_context` text, never memory or frame ids, and every producer (this job,
+            // QueueDrainWorker, AskActions) writes it that way, so the text is the only key a pending job exposes.
             val pending = QueueRuntimeStore.live(applicationContext, QueuePriority.PRIORITY_REPROCESS)
                 .map { QueuePayloads.string(QueuePayloads.parse(it.payload), "source_context") }
             val reviews = PipelineRecords.recentMemories(applicationContext, 80)

@@ -33,6 +33,13 @@ class MemoryRepository(private val dao: MemoryDao) {
         return dao.between(r.first, r.last + 1)
     }
     suspend fun deleteByIds(ids: List<String>) { if (ids.isNotEmpty()) dao.deleteByIds(ids) }
+    /** Ids starting with [prefix], literally (LIKE wildcards escaped; startsWith re-checks LIKE's ASCII case folding). */
+    suspend fun idsWithPrefix(prefix: String): List<String> = dao.idsLike(escapeLike(prefix)).filter { it.startsWith(prefix) }
+
+    companion object {
+        /** Escapes `\`, `%` and `_` with `\` for a `LIKE ... ESCAPE '\'` pattern. */
+        fun escapeLike(raw: String): String = raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    }
 }
 
 class TraceRepository(private val dao: TraceDao) {
