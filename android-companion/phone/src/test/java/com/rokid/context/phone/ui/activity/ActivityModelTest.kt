@@ -58,13 +58,32 @@ class ActivityModelTest {
             Fixtures.memory("m2", "Coffee", Fixtures.at(TODAY, 11, 59)),
             Fixtures.memory("m1", "Breakfast", Fixtures.at(TODAY, 7, 40), frameId = "f1", confidence = 0.92),
         )
-        val s = Timeline.sections(mems, listOf(Fixtures.frame("f1", 1, path = "/f1.jpg")), ZONE)
+        val s = Timeline.sections(mems, listOf(Fixtures.frame("f1", Fixtures.at(TODAY, 7, 40), path = "/f1.jpg")), ZONE, TODAY)
         assertEquals(listOf("Morning", "Afternoon", "Evening"), s.map { it.label })
         assertEquals(listOf("m1", "m2"), s[0].rows.map { it.memoryId })
         assertEquals(listOf("a1", "a2"), s[1].rows.map { it.memoryId })
         assertEquals("07:40", s[0].rows[0].time)
         assertEquals("/f1.jpg", s[0].rows[0].framePath)
         assertEquals(null, s[0].rows[1].framePath)
+    }
+
+    @Test fun rowTimeIsThePhotoTimeAndEarlierDayPhotosGetTheirOwnSection() {
+        // Ruling BUG-1: the row shows when the photo was taken, not when it was extracted.
+        val mems = listOf(
+            Fixtures.memory("today", "Coffee", Fixtures.at(TODAY, 9, 30), frameId = "f-today"),
+            Fixtures.memory("backlog", "Cable by the cushion", Fixtures.at(TODAY, 9, 0), frameId = "f-old"),
+            Fixtures.memory("noframe", "Typed note", Fixtures.at(TODAY, 14, 5)),
+        )
+        val frames = listOf(
+            Fixtures.frame("f-today", Fixtures.at(TODAY, 8, 15), path = "/today.jpg"),
+            Fixtures.frame("f-old", Fixtures.at(TODAY.minusDays(1), 23, 10), path = "/old.jpg"),
+        )
+        val s = Timeline.sections(mems, frames, ZONE, TODAY)
+        assertEquals(listOf(Timeline.EARLIER, "Morning", "Afternoon"), s.map { it.label })
+        assertEquals(TimelineRow("backlog", "Sun 11 Oct 23:10", "Cable by the cushion", 0.8, "/old.jpg", "f-old"), s[0].rows.single())
+        assertEquals("08:15", s[1].rows.single().time)
+        assertEquals("/today.jpg", s[1].rows.single().framePath)
+        assertEquals("14:05", s[2].rows.single().time)
     }
 
     @Test fun emptyWeekShowsZeroBarsAndHint() {

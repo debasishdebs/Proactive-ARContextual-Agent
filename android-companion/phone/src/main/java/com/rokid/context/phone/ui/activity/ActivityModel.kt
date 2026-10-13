@@ -46,7 +46,10 @@ data class DayRow(val date: LocalDate, val title: String, val subtitle: String)
 private val HHMM = DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH)
 
 object Timeline {
+    /** Leading section for memories whose photo was taken on another day (a backlog extracted on this day). */
+    const val EARLIER = "Earlier days"
     private val ORDER = listOf("Morning", "Afternoon", "Evening")
+    private val DAY_HHMM = DateTimeFormatter.ofPattern("EEE d MMM HH:mm", Locale.ENGLISH)
 
     fun partOfDay(hour: Int): String = when {
         hour < 12 -> "Morning"
@@ -54,17 +57,30 @@ object Timeline {
         else -> "Evening"
     }
 
-    /** Sections in day order, rows oldest first (the day reads as a story). */
-    fun sections(memories: List<MemoryEntity>, frames: List<FrameEntity>, zone: ZoneId): List<TimelineSection> {
-        val paths = frames.associate { it.id to it.path }
-        val grouped = memories.sortedBy { it.createdAt }.groupBy { partOfDay(Instant.ofEpochMilli(it.createdAt).atZone(zone).hour) }
-        return ORDER.mapNotNull { label ->
-            grouped[label]?.let { rows ->
-                TimelineSection(label, rows.map { m ->
-                    TimelineRow(m.id, HHMM.format(Instant.ofEpochMilli(m.createdAt).atZone(zone)), m.text, m.confidence, m.frameId?.let(paths::get), m.frameId)
-                })
-            }
-        }
+    /**
+     * Sections in day order, rows oldest first (the day reads as a story). [day] is the day the memories were
+     * extracted on (the query window). [frames] must hold each memory's own frame, whatever day it was captured.
+     * Ruling BUG-1: a row's time is its photo's capture time (the moment the memory is about), falling back to
+     * createdAt when it has no frame; a photo from another day goes under [EARLIER] with its date shown.
+     */
+    fun sections(memories: List<MemoryEntity>, frames: List<FrameEntity>, zone: ZoneId, day: LocalDate): List<TimelineSection> {
+        val byId = frames.associateBy { it.id }
+        val rows = memories.map { m ->
+            val frame = m.frameId?.let(byId::get)
+            val at = Instant.ofEpochMilli(frame?.ts ?: m.createdAt).atZone(zone)
+            val otherDay = at.toLocalDate() != day
+            val label = if (otherDay) EARLIER else partOfDay(at.hour)
+            val time = (if (otherDay) DAY_HHMM else HHMM).format(at)
+            Triple(label, at.toInstant().toEpochMilli(), TimelineRow(m.id, time, m.text, m.confidence, frame?.path, m.frameId))
+        }.sortedBy { it.second }.groupBy({ it.first }, { it.third })
+        return (listOf(EARLIER) + ORDER).mapNotNull { label -> rows[label]?.let { TimelineSection(label, it) } }
+    }
+
+    /** [dayFrames] plus the frames of [memories] captured outside that window (looked up by frameId). */
+    suspend fun framesFor(memories: List<MemoryEntity>, dayFrames: List<FrameEntity>, lookup: suspend (List<String>) -> List<FrameEntity>): List<FrameEntity> {
+        val have = dayFrames.mapTo(HashSet()) { it.id }
+        val missing = memories.mapNotNull { it.frameId }.filter { it !in have }.distinct()
+        return if (missing.isEmpty()) dayFrames else dayFrames + lookup(missing)
     }
 }
 

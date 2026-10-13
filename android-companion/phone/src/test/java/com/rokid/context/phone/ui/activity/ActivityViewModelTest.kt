@@ -59,6 +59,16 @@ class ActivityViewModelTest {
         assertEquals("Week of 12 Oct", week.header)
     }
 
+    @Test fun backlogMemoryFromAnEarlierDayPhotoKeepsItsPhoto() = runBlocking {
+        // BUG-1 (device run 2026-10-14): photo captured yesterday, extracted today -> row showed "No photo".
+        graph.frames.add(Fixtures.frame("old", Fixtures.at(TODAY.minusDays(1), 23, 10), path = "/old.jpg"))
+        graph.memories.add(Fixtures.memory("m1", "Cable by the cushion", Fixtures.at(TODAY, 9), frameId = "old"))
+        val model = vm(flowOf(Fixtures.at(TODAY, 10)))
+        val s = withTimeout(5_000) { model.state.first { it.today == TODAY && it.tiles.memories == 1 } }
+        assertEquals(0, s.tiles.frames)
+        assertEquals("/old.jpg", s.sections.flatMap { it.rows }.single().framePath)
+    }
+
     @Test fun todayRollsOverAtLocalMidnight() = runBlocking {
         graph.memories.add(Fixtures.memory("late", "Late snack", Fixtures.at(TODAY, 22)))
         val clock = MutableStateFlow(Fixtures.at(TODAY, 23, 59))
