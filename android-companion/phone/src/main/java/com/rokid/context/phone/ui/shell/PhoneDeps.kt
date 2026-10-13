@@ -13,6 +13,7 @@ import com.rokid.context.phone.ui.settings.DiagnosticsActions
 import com.rokid.context.phone.ui.settings.LegacyQueueActions
 import com.rokid.context.phone.ui.settings.QueueActions
 import com.rokid.context.phone.ui.settings.SchedulerDiagnosticsActions
+import com.rokid.context.memory.MemorySettingsStore
 import com.rokid.context.phone.ui.settings.SettingsDeps
 import com.rokid.context.phone.ui.status.LegacyPipelineControl
 import com.rokid.context.phone.ui.status.PipelineControl
@@ -83,7 +84,7 @@ class PhoneDeps(
                 diagnostics = SchedulerDiagnosticsActions(scheduler),
                 queues = LegacyQueueActions(app, scheduler),
                 settings = SettingsDeps.create(app),
-                storagePct = StorageUsage.percentFlow(app),
+                storagePct = StorageUsage.percentFlow(app) { MemorySettingsStore.get(app).settings.value.quotaBytes },
                 clock = ticker(),
                 hudVerbosity = { v -> com.rokid.context.phone.hub.HubGraph.get(app).updateSettings { it.copy(verbosity = v) } },
                 index = combine(

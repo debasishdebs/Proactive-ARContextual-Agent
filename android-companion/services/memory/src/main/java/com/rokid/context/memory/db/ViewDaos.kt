@@ -32,6 +32,12 @@ abstract class MemoryViewDao {
     @Query("SELECT * FROM memory WHERE reviewState = 'OK' ORDER BY createdAt DESC LIMIT :limit")
     abstract fun observeRecentVisible(limit: Int): Flow<List<MemoryEntity>>
 
+    @Query("SELECT * FROM memory WHERE reviewState = 'NEEDS_REVIEW' ORDER BY createdAt DESC LIMIT :limit")
+    abstract fun observeNeedsReview(limit: Int): Flow<List<MemoryEntity>>
+
+    @Query("UPDATE memory SET reviewState = :to WHERE id = :id AND reviewState = :from")
+    abstract suspend fun moveReviewState(id: String, from: String, to: String): Int
+
     @Query("SELECT * FROM memory WHERE id = :id") abstract fun observe(id: String): Flow<MemoryEntity?>
     @Query("SELECT * FROM memory WHERE id = :id") abstract suspend fun byId(id: String): MemoryEntity?
     @Query("SELECT * FROM memory WHERE id IN (:ids)") abstract suspend fun byIds(ids: List<String>): List<MemoryEntity>

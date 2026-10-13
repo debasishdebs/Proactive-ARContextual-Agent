@@ -10,6 +10,7 @@ import com.rokid.context.memory.db.NudgeDao
 import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.ProposalDao
 import com.rokid.context.memory.db.ProposalEntity
+import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.db.TraceViewDao
 import kotlinx.coroutines.flow.Flow
@@ -42,6 +43,11 @@ class MemoryEdits(private val view: MemoryViewDao, private val memories: MemoryR
         if (clean.isEmpty()) return false
         return view.editText(id, clean) > 0
     }
+
+    fun needsReview(limit: Int): Flow<List<MemoryEntity>> = view.observeNeedsReview(limit).distinctUntilChanged()
+
+    /** Review queue "Keep": NEEDS_REVIEW → OK (back into feeds and retrieval). Anything else is untouched. */
+    suspend fun approve(id: String): Boolean = view.moveReviewState(id, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) > 0
 }
 
 class AskRepository(private val dao: AskDao) {
