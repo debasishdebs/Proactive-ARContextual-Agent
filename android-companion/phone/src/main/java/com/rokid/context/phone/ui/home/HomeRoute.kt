@@ -13,6 +13,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.ActivityCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
@@ -26,10 +28,13 @@ fun HomeRoute(deps: PhoneDeps, nav: NavController, onBanner: (BannerAction, (Ban
     val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index, voice = deps.voice) }
     val state by vm.state.collectAsStateWithLifecycle()
     val activity = LocalContext.current.findActivity()
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
     val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         // Refused with no rationale left = "don't ask again": Home then points at the app's settings.
         if (!granted) vm.onMicDenied(permanent = activity?.let { !ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.RECORD_AUDIO) } ?: false)
-        deps.onMicGranted() // re-check the gate either way
+        // Re-check the gate either way, but it probes: only while RESUMED (Phase 6 F2). A result that lands while only
+        // STARTED is re-checked by the activity resume that follows (HubActivityHook -> VoiceGraph.onForeground).
+        if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) deps.onMicGranted()
     }
     HomeScreen(
         state, onQuestionChange = vm::onQuestionChange, onAsk = { vm.ask(it) }, onOpenAsk = { nav.navigate(Routes.ask(it)) },
