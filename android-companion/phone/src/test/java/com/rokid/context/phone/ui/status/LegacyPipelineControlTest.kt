@@ -2,6 +2,8 @@ package com.rokid.context.phone.ui.status
 
 import android.app.Application
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.Configuration
@@ -50,6 +52,22 @@ class LegacyPipelineControlTest {
     }
 
     private fun drainStates() = WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(OrchestrationScheduler.QUEUE_DRAIN_WORK).get().map { it.state }
+
+    /** Records every SharedPreferences file opened through it; the legacy secrets store is "app_config_secret". */
+    private class PrefsSpyContext(base: Context) : ContextWrapper(base) {
+        val opened = java.util.Collections.synchronizedList(mutableListOf<String>())
+        override fun getSharedPreferences(name: String?, mode: Int): SharedPreferences { opened += name.orEmpty(); return super.getSharedPreferences(name, mode) }
+    }
+
+    /** Fix round 1 (review I1, Threads): the ⏸ control runs on Main, so it reads only the plain flag, never the Keystore-backed secrets. */
+    @Test fun constructingAndTogglingNeverOpensTheSecretsStore() {
+        val spy = PrefsSpyContext(ctx)
+        val control = LegacyPipelineControl(spy, OrchestrationScheduler(ctx))
+        control.setEnabled(false); control.setEnabled(true)
+        assertTrue(control.enabled.value)
+        assertTrue(spy.opened.isNotEmpty())
+        assertEquals(listOf<String>(), spy.opened.filter { it == "app_config_secret" })
+    }
 
     @Test fun pauseStopsWorkersAndPersistsResumeReschedules() {
         val scheduler = OrchestrationScheduler(ctx).apply { scheduleQueueDrain() }

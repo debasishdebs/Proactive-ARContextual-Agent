@@ -15,7 +15,8 @@ interface PipelineControl {
 
 /** Phase 4: the legacy "pipeline enabled" flag + worker pause/resume. Phase 7 replaces it with PauseRecords (R-65). */
 class LegacyPipelineControl(private val context: Context, private val scheduler: OrchestrationScheduler) : PipelineControl {
-    private val state = MutableStateFlow(AppConfigStore.get(context).pipelineEnabled)
+    // Plain prefs only: AppConfigStore.get also opens the Keystore-backed secrets, and this runs on Main (Threads constraint).
+    private val state = MutableStateFlow(AppConfigStore.isPipelineEnabled(context))
     override val enabled: StateFlow<Boolean> = state.asStateFlow()
 
     override fun setEnabled(enabled: Boolean) {
@@ -23,6 +24,6 @@ class LegacyPipelineControl(private val context: Context, private val scheduler:
         // and scheduling is idempotent, so always apply and then publish.
         AppConfigStore.setPipelineEnabled(context, enabled)
         if (enabled) scheduler.resumePipeline() else scheduler.pausePipeline()
-        state.value = AppConfigStore.get(context).pipelineEnabled // publish what was actually persisted
+        state.value = AppConfigStore.isPipelineEnabled(context) // publish what was actually persisted
     }
 }
