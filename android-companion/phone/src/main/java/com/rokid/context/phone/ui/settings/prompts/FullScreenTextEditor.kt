@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Surface
@@ -36,12 +37,15 @@ import androidx.compose.ui.window.DialogProperties
 /**
  * Agent flows spec section 4: a full-screen editor for a prompt template or schema. It holds its own text (saved across
  * recreation) and hands it back only on Done, so the caller's existing edit path and gates decide what it means.
- * Cancel and Back leave the caller's draft untouched. Tapping a chip inserts `{{name}}` at the cursor.
+ * Cancel and Back leave the caller's draft untouched; Back with edited text first asks "Discard changes?". Tapping a chip
+ * inserts `{{name}}` at the cursor.
  */
 @Composable
 fun FullScreenTextEditor(title: String, initial: String, chips: List<String>, onDone: (String) -> Unit, onCancel: () -> Unit, tag: String) {
     var field by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(initial, TextRange(initial.length))) }
-    Dialog(onDismissRequest = onCancel, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    var confirmDiscard by rememberSaveable { mutableStateOf(false) }
+    val back: () -> Unit = { if (field.text != initial) { confirmDiscard = true } else { onCancel() } }
+    Dialog(onDismissRequest = back, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize().testTag(tag)) {
             Column(Modifier.fillMaxSize().systemBarsPadding().imePadding().padding(12.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -63,6 +67,13 @@ fun FullScreenTextEditor(title: String, initial: String, chips: List<String>, on
                 )
             }
         }
+        if (confirmDiscard) AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text("Discard changes?") },
+            text = { Text("Your edits in full screen will be lost.") },
+            confirmButton = { TextButton({ confirmDiscard = false; onCancel() }, Modifier.testTag("${tag}_discard")) { Text("Discard") } },
+            dismissButton = { TextButton({ confirmDiscard = false }, Modifier.testTag("${tag}_keep_editing")) { Text("Keep editing") } },
+        )
     }
 }
 
