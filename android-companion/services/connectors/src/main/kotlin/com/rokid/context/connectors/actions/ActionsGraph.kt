@@ -3,6 +3,9 @@ package com.rokid.context.connectors.actions
 import android.content.Context
 import com.rokid.context.connectors.ProposalIntake
 import com.rokid.context.connectors.actions.executors.ActionExecutor
+import com.rokid.context.connectors.actions.executors.CalendarExecutor
+import com.rokid.context.connectors.actions.executors.ReminderExecutor
+import com.rokid.context.connectors.actions.executors.ShoppingExecutor
 import com.rokid.context.core.model.Verbosity
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.ActionLogEntity
@@ -39,8 +42,12 @@ object ActionsGraph {
         g.scope.launch { runCatching { g.engine.recover() }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it } }
     }
 
-    /** The executors in production; B2 fills the map. */
-    internal fun executors(@Suppress("UNUSED_PARAMETER") app: Context): Map<ActionType, ActionExecutor> = emptyMap()
+    /** The production executors. No ToolConnector is registered in v1 (R-63: MCP is "Coming in v2"). */
+    internal fun executors(app: Context, memory: MemoryGraph): Map<ActionType, ActionExecutor> = mapOf(
+        ActionType.REMINDER to ReminderExecutor(app),
+        ActionType.SHOPPING_ADD to ShoppingExecutor(memory.shopping),
+        ActionType.CALENDAR_EVENT to CalendarExecutor(app.contentResolver),
+    )
 
     private class Impl(app: Context) : ActionsGraphApi {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -48,7 +55,7 @@ object ActionsGraph {
         override val settings by lazy { ActionSettingsStore(app.getSharedPreferences(ActionSettingsStore.PREFS, Context.MODE_PRIVATE)) }
         override val engine: ActionEngine by lazy {
             ActionEngine(
-                memory.proposals, settings, executors(app), { verbosity() }, scope, Dispatchers.IO, System::currentTimeMillis,
+                memory.proposals, settings, executors(app, memory), { verbosity() }, scope, Dispatchers.IO, System::currentTimeMillis,
                 audit = { id, transition, detail, now -> memory.db.actionDao().log(ActionLogEntity(ts = now, proposalId = id, transition = transition, detail = detail)) },
             )
         }
