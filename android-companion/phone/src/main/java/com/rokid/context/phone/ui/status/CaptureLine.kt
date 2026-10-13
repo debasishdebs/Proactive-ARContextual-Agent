@@ -3,6 +3,8 @@ package com.rokid.context.phone.ui.status
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.GlassesStatus
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.PauseOrigin
+import com.rokid.context.core.model.PauseRecord
 import java.util.Locale
 import kotlin.math.ceil
 
@@ -10,14 +12,18 @@ import kotlin.math.ceil
 object CaptureLine {
     fun paused(s: GlassesStatus, pipelineEnabled: Boolean): Boolean = !pipelineEnabled || s.frame?.capture is CaptureState.Paused
 
-    /** Paused by the glasses' own pause set while the phone pipeline is on (the phone cannot resume it until Phase 7). */
+    /**
+     * Legacy only: paused by the glasses while the old pipeline switch is on, so the switch can't resume it. With the
+     * Phase 7 pause control `pipelineEnabled` is false whenever a record is active, so this is false and ⏸/▶ resumes.
+     */
     fun pausedOnGlasses(s: GlassesStatus, pipelineEnabled: Boolean): Boolean = pipelineEnabled && s.frame?.capture is CaptureState.Paused
 
     fun live(s: GlassesStatus, pipelineEnabled: Boolean): Boolean =
         !paused(s, pipelineEnabled) && s.link == LinkState.CONNECTED && s.frame?.capture == CaptureState.Running
 
-    fun text(s: GlassesStatus, pipelineEnabled: Boolean, nowMs: Long): String {
-        if (!pipelineEnabled) return "Paused"
+    /** [pauses]: the active records (Phase 7); they name the pause when the control reports paused. */
+    fun text(s: GlassesStatus, pipelineEnabled: Boolean, nowMs: Long, pauses: List<PauseRecord> = emptyList()): String {
+        if (!pipelineEnabled) return pausedText(pauses)
         if (pausedOnGlasses(s, pipelineEnabled)) return "Paused on glasses"
         val frame = s.frame
         if (frame == null || s.link != LinkState.CONNECTED) return when (s.link) {
@@ -32,6 +38,14 @@ object CaptureLine {
             is CaptureState.Blocked -> "Blocked · ${c.reason.take(40)}"
             is CaptureState.Paused -> "Paused"
         }
+    }
+
+    /** "Quiet hours" when only quiet hours, "Paused on glasses" when every record is the glasses', else "Paused". */
+    fun pausedText(pauses: List<PauseRecord>): String = when {
+        pauses.isEmpty() -> "Paused"
+        pauses.all { it.origin == PauseOrigin.QUIET_HOURS } -> "Quiet hours"
+        pauses.all { it.origin == PauseOrigin.GLASSES } -> "Paused on glasses"
+        else -> "Paused"
     }
 
     /** m:ss (h:mm:ss past an hour), rounded up; "now" once due. */

@@ -10,14 +10,141 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import android.util.Log
+import com.rokid.context.core.model.PauseRecord
+import com.rokid.context.phone.hub.Hub
+import com.rokid.context.ai.SafeLog
 
-/** The ⏸/▶ switch behind Home, Activity, the paused banner and the legacy Config screen (one source of truth). */
+/** The ⏸/▶ switch behind Home, Activity, the paused banner and the notification (one source of truth). */
 interface PipelineControl {
     val enabled: StateFlow<Boolean>
     fun setEnabled(enabled: Boolean)
     /** A pause/resume tap: flips the newest *requested* state (Phase 4 carry), so a quick pause then resume never reads a stale [enabled]. */
     fun toggle()
+    /** Phase 7: the active pause records behind [enabled] (phone clock); none for the legacy switch. */
+    val activePauses: StateFlow<List<PauseRecord>> get() = NO_PAUSES
+    /** Phase 7: when the last Resume from this control finished (phone clock), for "Still paused on glasses". */
+    val lastResumeAtMs: StateFlow<Long?> get() = NO_RESUME
+}
+
+private val NO_PAUSES: StateFlow<List<PauseRecord>> = MutableStateFlow<List<PauseRecord>>(emptyList()).asStateFlow()
+private val NO_RESUME: StateFlow<Long?> = MutableStateFlow<Long?>(null).asStateFlow()
+
+/** The part of the hub the pause control uses ([Hub] in production). */
+interface PauseHub {
+    val activePauses: StateFlow<List<PauseRecord>>
+    suspend fun pausePhone(untilMs: Long?): PauseRecord
+    suspend fun resume(ids: Set<String>)
+}
+
+fun Hub.asPauseHub(): PauseHub = object : PauseHub {
+    override val activePauses: StateFlow<List<PauseRecord>> get() = this@asPauseHub.activePauses
+    override suspend fun pausePhone(untilMs: Long?): PauseRecord = this@asPauseHub.pausePhone(untilMs)
+    override suspend fun resume(ids: Set<String>) = this@asPauseHub.resume(ids)
+}
+
+/** The legacy "pipeline enabled" flag, for the one-time Phase 7 migration (each call does prefs I/O: off Main only). */
+interface LegacyFlag {
+    fun migrated(): Boolean
+    fun markMigrated()
+    fun pipelineEnabled(): Boolean
+    /** Turns the legacy flag on and resumes the workers it paused. */
+    fun enablePipeline()
+}
+
+/**
+ * Phase 7 (R-65): ⏸ creates an indefinite PHONE pause record through the hub; ▶ resumes **only the ids active at the
+ * moment of the tap** (spec §5.5), plus a pause queued by an earlier tap that had not landed yet. Taps run one at a
+ * time, in tap order, on [io]. [enabled] = no active record. The legacy flag no longer follows ⏸: once, a legacy "off"
+ * becomes one indefinite PHONE pause and the flag is switched back on (marker in [legacyFlag]).
+ */
+class PausePipelineControl(
+    private val hub: PauseHub,
+    private val scope: CoroutineScope,
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val legacyFlag: LegacyFlag,
+    private val io: CoroutineDispatcher = Dispatchers.IO,
+) : PipelineControl {
+    constructor(hub: Hub, scope: CoroutineScope, clock: () -> Long = System::currentTimeMillis, legacyFlag: LegacyFlag) :
+        this(hub.asPauseHub(), scope, clock, legacyFlag)
+
+    override val activePauses: StateFlow<List<PauseRecord>> = hub.activePauses
+    override val enabled: StateFlow<Boolean> =
+        hub.activePauses.map { it.isEmpty() }.stateIn(scope, SharingStarted.Eagerly, hub.activePauses.value.isEmpty())
+    private val _lastResume = MutableStateFlow<Long?>(null)
+    override val lastResumeAtMs: StateFlow<Long?> = _lastResume.asStateFlow()
+
+    private sealed interface Op {
+        data object Pause : Op
+        data class Resume(val shown: Set<String>) : Op
+    }
+    private val ops = Channel<Op>(Channel.UNLIMITED)
+    private val lock = Any()
+    /** The newest requested running state while taps are in flight (null = none in flight: read [activePauses]). */
+    private var requested: Boolean? = null
+    private var inFlight = 0
+    /** Ids created by pause taps whose record a later Resume tap could not have seen yet. */
+    private val createdByTaps = mutableSetOf<String>()
+
+    init {
+        scope.launch(io) {
+            migrateLegacy()
+            for (op in ops) {
+                try {
+                    run(op)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "pause tap failed: ${SafeLog.describe(e)}")
+                } finally {
+                    synchronized(lock) { if (--inFlight == 0) requested = null }
+                }
+            }
+        }
+    }
+
+    private suspend fun migrateLegacy() {
+        try {
+            if (legacyFlag.migrated()) return
+            if (!legacyFlag.pipelineEnabled()) hub.pausePhone(null)
+            legacyFlag.enablePipeline()
+            legacyFlag.markMigrated()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "legacy pause migration failed: ${SafeLog.describe(e)}")
+        }
+    }
+
+    private suspend fun run(op: Op) {
+        when (op) {
+            Op.Pause -> hub.pausePhone(null).also { createdByTaps += it.pauseId }
+            is Op.Resume -> {
+                val ids = op.shown + createdByTaps
+                createdByTaps.clear()
+                if (ids.isNotEmpty()) hub.resume(ids)
+                _lastResume.value = clock()
+            }
+        }
+    }
+
+    override fun setEnabled(enabled: Boolean) {
+        val op = if (enabled) Op.Resume(hub.activePauses.value.map { it.pauseId }.toSet()) else Op.Pause
+        synchronized(lock) { requested = enabled; inFlight++ }
+        ops.trySend(op)
+    }
+
+    override fun toggle() = synchronized(lock) { setEnabled(!(requested ?: hub.activePauses.value.isEmpty())) }
+
+    private companion object {
+        const val TAG = "PcPause"
+    }
 }
 
 /**

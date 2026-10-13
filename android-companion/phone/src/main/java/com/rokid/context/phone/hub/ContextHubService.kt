@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -18,12 +19,14 @@ import androidx.core.content.ContextCompat
 import com.rokid.context.core.model.GlassesStatus
 import com.rokid.context.core.model.LinkState
 import com.rokid.context.core.model.UserFacingErrors
+import com.rokid.context.phone.ui.status.CapturePauses
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -56,6 +59,11 @@ class ContextHubService : Service() {
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resume = intent?.takeIf { it.hasExtra(EXTRA_RESUME) }?.getLongExtra(EXTRA_RESUME, 0)
+        // The notification's action: through the shared pause control (Resume names the ids active at this moment).
+        when (intent?.action) {
+            ACTION_PAUSE -> CapturePauses.control(this).setEnabled(false)
+            ACTION_RESUME -> CapturePauses.control(this).setEnabled(true)
+        }
         if (!running) {
             if (!enterForeground(READY, micRetry.toTry(wantedTypes(startedInFront(intent)), resume))) { stopSelf(); return START_NOT_STICKY }
             running = true
@@ -63,7 +71,9 @@ class ContextHubService : Service() {
             val hub = HubGraph.get(this)
             hub.start()
             watcher = CoroutineScope(Dispatchers.Main.immediate).launch {
-                hub.status.map(::notificationText).distinctUntilChanged().collect { text -> lastText = text; nm.notify(ID, notification(text)) }
+                combine(hub.status.map(::notificationText), hub.activePauses.map { it.isNotEmpty() }) { t, p -> t to p }
+                    .distinctUntilChanged()
+                    .collect { (text, paused) -> lastText = text; lastPaused = paused; nm.notify(ID, notification(text, paused)) }
             }
         } else if (intent?.action == ACTION_REFRESH_TYPES) {
             val wanted = micRetry.toTry(wantedTypes(inFront = true), resume)
@@ -80,7 +90,7 @@ class ContextHubService : Service() {
     /** startForeground with [wanted], falling back to connectedDevice alone if the mic type is refused. */
     private fun enterForeground(text: String, wanted: Int): Boolean {
         val entered = enterWithFallback(wanted) { types ->
-            runCatching { ServiceCompat.startForeground(this, ID, notification(text), types) }
+            runCatching { ServiceCompat.startForeground(this, ID, notification(text, lastPaused), types) }
                 .onFailure { Log.w(TAG, "foreground ($types) refused: ${it.javaClass.simpleName}") }.getOrThrow()
         }
         micRetry.entered(tried = wanted, entered = entered)
@@ -99,16 +109,7 @@ class ContextHubService : Service() {
         super.onDestroy()
     }
 
-    private fun notification(text: String): Notification {
-        val open = packageManager.getLaunchIntentForPackage(packageName) ?: Intent()
-        return Notification.Builder(this, CHANNEL)
-            .setContentTitle("Proactive Context")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setOngoing(true)
-            .setContentIntent(PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE))
-            .build()
-    }
+    private fun notification(text: String, paused: Boolean): Notification = buildNotification(this, text, paused)
 
     companion object {
         const val TAG = "ContextHub"
@@ -120,6 +121,29 @@ class ContextHubService : Service() {
         private const val EXTRA_RESUME = "com.rokid.context.hub.RESUME"
         @Volatile private var running = false
         @Volatile private var lastText = READY
+        @Volatile private var lastPaused = false
+        /** Notification action intents (handled in [onStartCommand], on the pause control's IO). */
+        const val ACTION_PAUSE = "com.rokid.context.hub.PAUSE_CAPTURE"
+        const val ACTION_RESUME = "com.rokid.context.hub.RESUME_CAPTURE"
+
+        /** One action: "Pause capture" while running, "Resume capture" while paused (R-65). */
+        internal fun buildNotification(context: Context, text: String, paused: Boolean): Notification {
+            val open = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: Intent()
+            val (label, action) = if (paused) "Resume capture" to ACTION_RESUME else "Pause capture" to ACTION_PAUSE
+            val tap = PendingIntent.getService(
+                context, if (paused) 2 else 1, Intent(context, ContextHubService::class.java).setAction(action),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            val icon = Icon.createWithResource(context, if (paused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause)
+            return Notification.Builder(context, CHANNEL)
+                .setContentTitle("Proactive Context")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setOngoing(true)
+                .setContentIntent(PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_IMMUTABLE))
+                .addAction(Notification.Action.Builder(icon, label, tap).build())
+                .build()
+        }
 
         fun isRunning(): Boolean = running
 
