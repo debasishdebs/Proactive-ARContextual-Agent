@@ -9,14 +9,20 @@ import java.io.File
 class SettingsDepsTest {
     @Test fun theAiGraphIsBuiltOnFirstUseOnly() {
         var built = 0
-        val deps = SettingsDeps(lazyAi = lazy<com.rokid.context.ai.AiGraph> { built++; error("not a real graph") }, hud = FakeHudSettings(), reauthorize = {}, onEmbedBindingChanged = {})
-        assertEquals(0, built)
+        var inputs = 0
+        val deps = SettingsDeps(lazyAi = lazy<com.rokid.context.ai.AiGraph> { built++; error("not a real graph") }, hud = FakeHudSettings(), reauthorize = {}, onEmbedBindingChanged = {},
+            lazyTestInputs = lazy<com.rokid.context.orchestration.TestBedInputs> { inputs++; error("not real inputs") })
+        assertEquals(0, built); assertEquals(0, inputs)
         runCatching { deps.ai }
         assertEquals(1, built)
+        runCatching { deps.testInputs }
+        assertEquals(1, inputs)
     }
 
     @Test fun createDefersAiGraphGet() {
         val src = File("src/main/java/com/rokid/context/phone/ui/settings/SettingsDeps.kt").readText()
         assertTrue("SettingsDeps.create must wrap AiGraph.get in lazy", src.contains("lazyAi = lazy { AiGraph.get(app) }"))
+        assertTrue("SettingsDeps.create must wrap the test-bed inputs (AnswerService.forApp reaches AiGraph) in lazy",
+            src.contains("lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(app), AnswerService.forApp(app)) }"))
     }
 }

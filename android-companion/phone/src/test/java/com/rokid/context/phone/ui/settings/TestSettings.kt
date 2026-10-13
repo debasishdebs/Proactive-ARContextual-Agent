@@ -7,7 +7,10 @@ import com.rokid.context.ai.InMemorySeedState
 import com.rokid.context.ai.ProviderBuilder
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.retrieval.RetrievalSettings
 import com.rokid.context.model.ModelProvider
+import com.rokid.context.orchestration.AnswerService
+import com.rokid.context.orchestration.TestBedInputs
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,5 +32,6 @@ object TestSettings {
         })
 
     fun deps(ctx: Context, ai: AiGraph = ai(ctx), hud: HudSettingsControl = FakeHudSettings()): SettingsDeps =
-        SettingsDeps(lazyAi = lazyOf(ai), hud = hud, reauthorize = { reauthorized++ }, onEmbedBindingChanged = { embedChanges++ })
+        SettingsDeps(lazyAi = lazyOf(ai), hud = hud, reauthorize = { reauthorized++ }, onEmbedBindingChanged = { embedChanges++ },
+            lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(ctx), AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() })) })
 }

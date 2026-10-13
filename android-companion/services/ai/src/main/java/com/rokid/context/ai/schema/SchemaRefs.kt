@@ -7,12 +7,18 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 
+/** A schema we refuse on purpose: its message is written for people and may be shown in the editor (anything else thrown is not). */
+class SchemaRejected(message: String) : IllegalArgumentException(message)
+
+/** Throws [SchemaRejected] with [message] unless [ok]. */
+inline fun rejectUnless(ok: Boolean, message: () -> String) { if (!ok) throw SchemaRejected(message()) }
+
 /** Shared JSON Schema helpers (local refs only; our schemas never point outside the document). */
 object SchemaRefs {
     private const val MAX_HOPS = 16
 
     fun parse(text: String): JsonObject = runCatching { Json.parseToJsonElement(text).jsonObject }
-        .getOrElse { throw IllegalArgumentException("Schema isn't valid JSON") }
+        .getOrElse { throw SchemaRejected("Schema isn't valid JSON") }
 
     fun resolve(root: JsonObject, node: JsonObject): JsonObject {
         var n = node
@@ -21,12 +27,12 @@ object SchemaRefs {
             val name = when {
                 ref.startsWith("#/\$defs/") -> ref.removePrefix("#/\$defs/") to "\$defs"
                 ref.startsWith("#/definitions/") -> ref.removePrefix("#/definitions/") to "definitions"
-                else -> throw IllegalArgumentException("Only local \$ref is supported: $ref")
+                else -> throw SchemaRejected("Only local \$ref is supported: $ref")
             }
             n = (root[name.second] as? JsonObject)?.get(name.first) as? JsonObject
-                ?: throw IllegalArgumentException("Unknown \$ref: $ref")
+                ?: throw SchemaRejected("Unknown \$ref: $ref")
         }
-        throw IllegalArgumentException("Recursive \$ref isn't supported")
+        throw SchemaRejected("Recursive \$ref isn't supported")
     }
 
     fun typeNames(type: JsonElement?): List<String> = when (type) {

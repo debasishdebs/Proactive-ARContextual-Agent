@@ -133,6 +133,18 @@ class SchemaCompatibilityCheckerTest {
         assertEquals(listOf("Allowed extra properties in the top level"), check(edit { m -> m["additionalProperties"] = JsonPrimitive(true) }))
     }
 
+    /** The editor shows these lines: a malformed draft gets fixed text, never a JVM/kotlinx exception message. */
+    @Test fun malformedDraftsGiveFixedTextNotExceptionMessages() {
+        val badRequired = edit { m -> m["required"] = Json.parseToJsonElement("""[{}]""") }
+        assertEquals(listOf("Schema isn't valid"), check(badRequired))
+        val badDefRequired = edit { m ->
+            val x = Json.parseToJsonElement("""{"type":"object","properties":{"a":{"type":"string"}},"required":[{}]}""")
+            m["\$defs"] = JsonObject(m["\$defs"]!!.jsonObject + ("X" to x))
+            val p = props(m); p["extra"] = Json.parseToJsonElement("""{"${'$'}ref":"#/${'$'}defs/X"}"""); m["properties"] = JsonObject(p)
+        }
+        assertEquals(listOf("Azure: Schema isn't valid"), check(badDefRequired))
+    }
+
     @Test fun constEqualsASingleValueEnum() {
         val draft = editBranch("REMINDER") { m ->
             val p = m["properties"]!!.jsonObject.toMutableMap()
