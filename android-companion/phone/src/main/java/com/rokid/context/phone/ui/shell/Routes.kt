@@ -27,6 +27,9 @@ object Routes {
     const val SETTINGS_PROMPT = "settings/prompts/{id}"
     const val SETTINGS_PROMPT_HISTORY = "settings/prompts/{id}/history"
     const val SETTINGS_RETRIEVAL = "settings/retrieval"
+    /** Settings -> AI -> Agent flows (agent flows spec): the list, then the selected flows' view. */
+    const val SETTINGS_FLOWS = "settings/flows"
+    const val SETTINGS_FLOWS_VIEW = "settings/flows/view?ids={ids}"
     const val SETTINGS_PERSONA = "settings/persona"
     const val SETTINGS_MEMORY = "settings/memory"
     const val SETTINGS_MEMORY_REVIEW = "settings/memory/review"
@@ -43,10 +46,13 @@ object Routes {
     fun endpoint(id: String) = "settings/endpoints/${enc(id)}"
     fun prompt(id: String) = "settings/prompts/${enc(id)}"
     fun promptHistory(id: String) = "settings/prompts/${enc(id)}/history"
+    /** Flow ids are registry constants (no commas or reserved characters). */
+    fun flowsView(ids: List<String>) = "settings/flows/view?ids=" + ids.joinToString(",")
 
     /** Settings rows that open a screen in this build. */
     val LIVE_SETTINGS: Set<String> = setOf(
         SETTINGS_GLASSES, SETTINGS_PHONE_INPUTS, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL,
+        SETTINGS_FLOWS,
         SETTINGS_PERSONA, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS, SETTINGS_PRIVACY, SETTINGS_SOURCES, SETTINGS_ACTIONS, SETTINGS_SHOPPING,
     )
 

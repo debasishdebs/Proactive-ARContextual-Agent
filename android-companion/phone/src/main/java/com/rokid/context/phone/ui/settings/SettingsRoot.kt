@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Cloud
@@ -96,6 +97,7 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
             SettingRow(Icons.Outlined.Shield, PcColors.ChipSlate, "Privacy", "Pause, quiet hours", Routes.SETTINGS_PRIVACY),
         ),
         "AI" to listOf(
+            SettingRow(Icons.Outlined.AccountTree, PcColors.ChipViolet, "Agent flows", "See and tune each step of every agent", Routes.SETTINGS_FLOWS),
             SettingRow(Icons.Outlined.Cloud, PcColors.ChipSky, "Model endpoints", "Provider, address, key and Test", Routes.SETTINGS_ENDPOINTS),
             SettingRow(Icons.Outlined.AutoAwesome, PcColors.ChipViolet, "Models by role", "Which model does what", Routes.SETTINGS_ROLES),
             SettingRow(Icons.Outlined.Edit, PcColors.ChipRose, "Prompts", "Templates, schemas, versions and test bed", Routes.SETTINGS_PROMPTS),
