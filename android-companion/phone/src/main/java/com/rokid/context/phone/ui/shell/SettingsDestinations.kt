@@ -71,7 +71,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
 
     composable(Routes.SETTINGS_ENDPOINT, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
         val id = entry.arguments?.getString("id").orEmpty()
-        val vm = viewModel { EndpointEditorViewModel(id, s.ai) }
+        val vm = viewModel { EndpointEditorViewModel(id, s.ai, onEmbedChanged = s.onEmbedBindingChanged) }
         val state by vm.state.collectAsStateWithLifecycle()
         LaunchedEffect(state.deleted) { if (state.deleted) back() }
         EndpointEditorScreen(

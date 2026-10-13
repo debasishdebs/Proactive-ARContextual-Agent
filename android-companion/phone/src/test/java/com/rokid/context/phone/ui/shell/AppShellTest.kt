@@ -14,6 +14,8 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.hasTestTag
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
 import androidx.test.core.app.ApplicationProvider
@@ -141,6 +143,25 @@ class AppShellTest {
         waitForText("Model endpoints")
         compose.runOnIdle { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }
         waitForText("Queues")
+    }
+
+    /** Final-review I1: the editor route wires the EMBED reindex trigger, so re-pointing the EMBED endpoint starts a new space. */
+    @Test fun savingTheEmbedEndpointsNewAddressStartsAReindex() {
+        val ai = deps.settings.ai
+        kotlinx.coroutines.runBlocking {
+            ai.endpoints.save(com.rokid.context.ai.Endpoint("ol", "Ollama", com.rokid.context.ai.EndpointKind.OLLAMA, "http://localhost:11434", null,
+                listOf("nomic-embed-text"), setOf(com.rokid.context.ai.Capability.EMBEDDINGS), 2), null).getOrThrow()
+            ai.bindings.set(com.rokid.context.ai.RoleBinding(com.rokid.context.ai.Role.EMBED, "ol", "nomic-embed-text")).getOrThrow()
+        }
+        val before = com.rokid.context.phone.ui.settings.TestSettings.embedChanges
+        launch(Routes.HOME)
+        compose.runOnIdle { nav.navigate(Routes.endpoint("ol")) }
+        waitForText("http://localhost:11434")
+        compose.onNodeWithTag("endpoint_url").performTextReplacement("http://localhost:11435")
+        compose.onNodeWithTag("endpoint_editor").performScrollToNode(hasTestTag("endpoint_save"))
+        compose.onNodeWithTag("endpoint_save").performClick()
+        waitForText("Saved") // the save ran (its main-thread continuation is idled by the node wait)
+        compose.runOnIdle { assertEquals(before + 1, com.rokid.context.phone.ui.settings.TestSettings.embedChanges) }
     }
 
     /** HomeViewModel is scoped to the Home back-stack entry: popping Home cancels an in-flight ask. */

@@ -60,16 +60,36 @@ class EmbeddersTest {
         assertEquals(0.6f, q[0], 1e-6f) // L2-normalised
     }
 
-    @Test fun forSpaceUsesTheSpacesConfigEvenAfterTheEndpointMoved() = runTest {
+    /** Final-review I1 (ruling): a moved endpoint makes its old space unavailable (lexical fallback); no text goes to the old host. */
+    @Test fun forSpaceIsUnavailableOnceTheEndpointMoved() = runTest {
         ollamaAt(a)
         val spec = EmbeddingSpec("ol", EndpointKind.OLLAMA, a.url("/").toString().trimEnd('/'), null, "nomic-embed-text", null, null, 2, true, "", "", 2_000)
         val space = EmbeddingSpaceEntity("s1", spec.fingerprint, spec.configJson(), 2, SpaceState.ACTIVE, "[]", 1)
-        ollamaAt(b) // the user pointed the endpoint at another server
         a.enqueue(MockResponse().setBody("""{"embeddings":[[1,0]]}"""))
-        embedders.forSpace(space)!!.embedQuery("q")
+        embedders.forSpace(space)!!.embedQuery("q") // same target: still served
+        assertEquals(1, a.requestCount)
+        ollamaAt(b) // the user pointed the endpoint at another server
+        assertNull(embedders.forSpace(space))
         assertEquals(1, a.requestCount); assertEquals(0, b.requestCount)
         endpoints.delete("ol")
         assertNull(embedders.forSpace(space))
+    }
+
+    @Test fun forSpaceIsUnavailableOnceTheEndpointKindChanged() = runTest {
+        ollamaAt(a)
+        val url = a.url("/").toString().trimEnd('/')
+        val spec = EmbeddingSpec("ol", EndpointKind.OPENAI_COMPAT, url, null, "nomic-embed-text", null, null, 2, true, "", "", 2_000)
+        assertNull(embedders.forSpace(EmbeddingSpaceEntity("s1", spec.fingerprint, spec.configJson(), 2, SpaceState.ACTIVE, "[]", 1)))
+        assertEquals(0, a.requestCount)
+    }
+
+    @Test fun forSpaceComparesNormalisedAddresses() = runTest {
+        ollamaAt(a)
+        val spaced = a.url("/").toString().replace("localhost", "LOCALHOST") + "/" // same server, different spelling
+        val spec = EmbeddingSpec("ol", EndpointKind.OLLAMA, spaced, null, "nomic-embed-text", null, null, 2, true, "", "", 2_000)
+        a.enqueue(MockResponse().setBody("""{"embeddings":[[1,0]]}"""))
+        embedders.forSpace(EmbeddingSpaceEntity("s1", spec.fingerprint, spec.configJson(), 2, SpaceState.ACTIVE, "[]", 1))!!.embedQuery("q")
+        assertEquals(1, a.requestCount)
     }
 
     @Test fun aDimensionChangeIsAnError() = runTest {
