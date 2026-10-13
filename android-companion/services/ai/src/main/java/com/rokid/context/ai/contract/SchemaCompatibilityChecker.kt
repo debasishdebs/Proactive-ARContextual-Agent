@@ -3,6 +3,7 @@ package com.rokid.context.ai.contract
 import com.rokid.context.ai.Capability
 import com.rokid.context.ai.Endpoint
 import com.rokid.context.ai.schema.SchemaRefs
+import com.rokid.context.ai.schema.SchemaRejected
 import com.rokid.context.ai.schema.WireSchemaCompiler
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -26,14 +27,17 @@ object SchemaCompatibilityChecker {
         val draft = runCatching { SchemaRefs.parse(text) }.getOrElse { return listOf("Schema isn't valid JSON") }
         badRef(draft)?.let { return listOf("Unsupported \$ref \"$it\" (use #/\$defs/<name> or #/definitions/<name> of an existing entry)") }
         refCycle(draft)?.let { return listOf("Recursive schemas aren't supported ($it refers back to itself)") }
-        val problems = runCatching { refine(base, base, draft, draft, "") }.getOrElse { listOf(it.message ?: "Schema isn't valid") }.toMutableList()
+        val problems = runCatching { refine(base, base, draft, draft, "") }.getOrElse { listOf(shown(it)) }.toMutableList()
         if (problems.isEmpty()) {
             boundEndpoints.filter { Capability.JSON_SCHEMA in it.capabilities }.distinctBy { it.id }.forEach { e ->
-                WireSchemaCompiler.compile(draft, e.kind).exceptionOrNull()?.let { problems += "${e.name}: ${it.message}" }
+                WireSchemaCompiler.compile(draft, e.kind).exceptionOrNull()?.let { problems += "${e.name}: ${shown(it)}" }
             }
         }
         return problems
     }
+
+    /** Only our own [SchemaRejected] texts reach the editor; a JVM or kotlinx message never does. */
+    private fun shown(t: Throwable): String = (t as? SchemaRejected)?.message ?: "Schema isn't valid"
 
     private val POINTER = Regex("^#/(\\\$defs|definitions)/([^/]+)$")
 

@@ -21,6 +21,12 @@ import com.rokid.context.phone.ui.settings.capture.CaptureSettingsScreen
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsViewModel
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsScreen
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsViewModel
+import com.rokid.context.phone.ui.settings.prompts.PromptEditorScreen
+import com.rokid.context.phone.ui.settings.prompts.PromptEditorViewModel
+import com.rokid.context.phone.ui.settings.prompts.PromptHistoryScreen
+import com.rokid.context.phone.ui.settings.prompts.PromptHistoryViewModel
+import com.rokid.context.phone.ui.settings.prompts.PromptsListScreen
+import com.rokid.context.phone.ui.settings.prompts.PromptsListViewModel
 
 /** Settings tree routes (spec §2.1). Same rule as Destinations.kt: the only place these ViewModels are created. */
 fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController, back: () -> Unit) {
@@ -67,5 +73,29 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val state by vm.state.collectAsStateWithLifecycle()
         RolesScreen(state, onBack = back, onEndpoint = vm::setEndpoint, onModel = vm::setModel, onFallback = vm::setFallback,
             onTemperature = vm::setTemperature, onMaxTokens = vm::setMaxTokens, onClear = { vm.clear(it) })
+    }
+
+    composable(Routes.SETTINGS_PROMPTS) {
+        val vm = viewModel { PromptsListViewModel(s.ai) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        PromptsListScreen(state, onBack = back, onKeepVersions = vm::setKeepVersions, onOpen = { nav.navigate(Routes.prompt(it)) })
+    }
+
+    composable(Routes.SETTINGS_PROMPT, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
+        val id = entry.arguments?.getString("id").orEmpty()
+        val vm = viewModel { PromptEditorViewModel(id, s.ai, s.testInputs) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        PromptEditorScreen(
+            state, onBack = back, onTemplate = vm::onTemplate, onSchema = vm::onSchema, onResetSchema = vm::resetSchema, onInputKind = vm::onInputKind,
+            onInputText = vm::onInputText, onFrame = vm::onFrame, onEndpoint = vm::onEndpoint, onModel = vm::onModel, onRun = vm::run, onSave = vm::save,
+            onDiscard = vm::discard, onToggleWire = vm::toggleWire, onOpenHistory = { nav.navigate(Routes.promptHistory(id)) },
+        )
+    }
+
+    composable(Routes.SETTINGS_PROMPT_HISTORY, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
+        val id = entry.arguments?.getString("id").orEmpty()
+        val vm = viewModel { PromptHistoryViewModel(id, s.ai) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        PromptHistoryScreen(state, onBack = back, onSelect = vm::select, onRestore = vm::restore)
     }
 }

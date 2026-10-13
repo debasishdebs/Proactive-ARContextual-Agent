@@ -29,10 +29,10 @@ object WireSchemaCompiler {
     fun compile(canonical: JsonObject, kind: EndpointKind): Result<JsonObject> = runCatching {
         val keepRefs = kind == EndpointKind.AZURE_OPENAI
         val checkLimits = keepRefs || kind == EndpointKind.OPENAI_COMPAT
-        require(!SchemaRefs.exceedsDepth(canonical)) { "The schema is nested too deeply" }
+        rejectUnless(!SchemaRefs.exceedsDepth(canonical)) { "The schema is nested too deeply" }
         rejectRefCycles(canonical)
         val top = SchemaRefs.resolve(canonical, canonical)
-        require("object" in SchemaRefs.typeNames(top["type"]) && "anyOf" !in top && "oneOf" !in top) { "The top level must be an object" }
+        rejectUnless("object" in SchemaRefs.typeNames(top["type"]) && "anyOf" !in top && "oneOf" !in top) { "The top level must be an object" }
         val budget = Budget()
         val body = node(canonical, canonical, keepRefs, emptyList(), budget)
         val out = if (keepRefs && canonical[DEFS] is JsonObject) {
@@ -53,7 +53,7 @@ object WireSchemaCompiler {
             }
         }
         fun visit(ref: String, stack: Set<String>) {
-            require(ref !in stack) { "Recursive \$ref isn't supported" }
+            rejectUnless(ref !in stack) { "Recursive \$ref isn't supported" }
             if (!done.add(ref)) return
             val target = SchemaRefs.resolve(root, JsonObject(mapOf(REF to JsonPrimitive(ref))))
             val next = ArrayList<String>().also { refsIn(target, it) }
@@ -65,17 +65,17 @@ object WireSchemaCompiler {
         (root[DEFS] as? JsonObject)?.keys?.forEach { visit("#/$DEFS/$it", emptySet()) }
     }
 
-    private class Budget { var used = 0; fun spend() { require(++used <= MAX_NODES) { "The schema is too large" } } }
+    private class Budget { var used = 0; fun spend() { rejectUnless(++used <= MAX_NODES) { "The schema is too large" } } }
 
     private fun node(root: JsonObject, raw: JsonObject, keepRefs: Boolean, stack: List<String>, budget: Budget): JsonObject {
         budget.spend()
         if (REF in raw) {
             if (keepRefs) { SchemaRefs.resolve(root, raw); return JsonObject(mapOf(REF to raw[REF]!!)) }
             val ref = (raw[REF] as JsonPrimitive).content
-            require(ref !in stack) { "Recursive \$ref isn't supported" }
+            rejectUnless(ref !in stack) { "Recursive \$ref isn't supported" }
             return node(root, SchemaRefs.resolve(root, raw), false, stack + ref, budget)
         }
-        UNSUPPORTED.firstOrNull { it in raw }?.let { throw IllegalArgumentException("'$it' isn't supported") }
+        UNSUPPORTED.firstOrNull { it in raw }?.let { throw SchemaRejected("'$it' isn't supported") }
         val out = LinkedHashMap<String, JsonElement>()
         raw["type"]?.let { out["type"] = it }
         raw["enum"]?.let { out["enum"] = it }
@@ -156,14 +156,14 @@ object WireSchemaCompiler {
             if (REF in n) { visit(SchemaRefs.resolve(wire, n), depth); return }
             val isObject = n["properties"] is JsonObject
             val d = if (isObject) depth + 1 else depth
-            require(d <= MAX_DEPTH) { "Too deeply nested (max $MAX_DEPTH levels)" }
+            rejectUnless(d <= MAX_DEPTH) { "Too deeply nested (max $MAX_DEPTH levels)" }
             (n["enum"] as? JsonArray)?.let { enums += it.size }
             (n["properties"] as? JsonObject)?.let { p -> properties += p.size; p.values.forEach { visit(it.jsonObject, d) } }
             (n["items"] as? JsonObject)?.let { visit(it, d) }
             (n["anyOf"] as? JsonArray)?.forEach { visit(it.jsonObject, d) }
         }
         visit(wire, 0)
-        require(properties <= MAX_PROPERTIES) { "Too many properties (max $MAX_PROPERTIES)" }
-        require(enums <= MAX_ENUM_VALUES) { "Too many enum values (max $MAX_ENUM_VALUES)" }
+        rejectUnless(properties <= MAX_PROPERTIES) { "Too many properties (max $MAX_PROPERTIES)" }
+        rejectUnless(enums <= MAX_ENUM_VALUES) { "Too many enum values (max $MAX_ENUM_VALUES)" }
     }
 }

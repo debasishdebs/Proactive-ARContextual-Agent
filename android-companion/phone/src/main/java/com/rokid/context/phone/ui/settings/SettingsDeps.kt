@@ -5,6 +5,9 @@ import android.util.Log
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.link.AuthActivity
+import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.orchestration.AnswerService
+import com.rokid.context.orchestration.TestBedInputs
 import com.rokid.context.phone.hub.Hub
 import com.rokid.context.phone.hub.HubGraph
 import kotlinx.coroutines.flow.StateFlow
@@ -27,8 +30,11 @@ class SettingsDeps(
     val hud: HudSettingsControl,
     val reauthorize: () -> Unit,
     val onEmbedBindingChanged: () -> Unit,
+    /** Lazy for the same reason as [lazyAi]: building it reaches AiGraph and the memory database. */
+    private val lazyTestInputs: Lazy<TestBedInputs>,
 ) {
     val ai: AiGraph get() = lazyAi.value
+    val testInputs: TestBedInputs get() = lazyTestInputs.value
 
     companion object {
         fun create(app: Context): SettingsDeps = SettingsDeps(
@@ -36,6 +42,7 @@ class SettingsDeps(
             hud = HubHudSettings(HubGraph.get(app)),
             reauthorize = { AuthActivity.launch(app).onFailure { Log.i("Settings", "re-authorize failed (${it.javaClass.simpleName})") } },
             onEmbedBindingChanged = { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app) },
+            lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(app), AnswerService.forApp(app)) },
         )
     }
 }
