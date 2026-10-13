@@ -50,6 +50,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.rokid.context.core.ui.components.GradientCircleButton
 import com.rokid.context.core.ui.components.GradientHeader
 import com.rokid.context.core.ui.components.IconChip
@@ -71,11 +74,20 @@ fun HomeScreen(
     onMic: () -> Unit = {},
     onRequestMic: () -> Unit = {},
     onOpenAppSettings: () -> Unit = {},
-    /** Home left the composition (navigated away): cancels a phone ask still being spoken. */
+    /**
+     * Home left the composition (navigated away) or the app left the foreground (Home's lifecycle ON_STOP: back on the
+     * root, home, app switch, screen off): cancels a phone ask still being spoken. Back on the root Home entry only moves
+     * the task to the background (Android 12+), so the composition is not disposed and the ViewModel is not cleared.
+     */
     onLeave: () -> Unit = {},
 ) {
     val leave by rememberUpdatedState(onLeave)
-    DisposableEffect(Unit) { onDispose { leave() } }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val stop = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_STOP) leave() }
+        lifecycle.addObserver(stop)
+        onDispose { lifecycle.removeObserver(stop); leave() }
+    }
     var expandedNudge by rememberSaveable { mutableStateOf<String?>(null) }
     val glyph = when { state.status.live -> "● "; state.status.paused -> "❚❚ "; else -> "" }
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("home_list")) {
