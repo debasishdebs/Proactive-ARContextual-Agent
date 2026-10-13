@@ -4,6 +4,8 @@ import com.rokid.context.memory.db.EndpointDao
 import com.rokid.context.memory.db.EndpointEntity
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
 /** Endpoints live in Room; their keys in [vault] (the Keystore in the app), which is only ever reached on [io] (F18). */
@@ -24,6 +26,7 @@ class EndpointRepository(private val dao: EndpointDao, private val vault: KeyVau
     }
 
     suspend fun all(): List<Endpoint> = dao.all().map { it.toDomain() }
+    fun observeAll(): Flow<List<Endpoint>> = dao.observeAll().map { list -> list.map { it.toDomain() } }
     suspend fun byId(id: String): Endpoint? = dao.byId(id)?.toDomain()
     suspend fun keyFor(endpoint: Endpoint): String? = withContext(io) { vault.get(keyRef(endpoint.id)) }
     suspend fun delete(id: String) { dao.delete(id); withContext(io) { vault.remove(keyRef(id)) } }

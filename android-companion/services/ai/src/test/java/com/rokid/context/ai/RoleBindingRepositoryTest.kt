@@ -3,6 +3,7 @@ package com.rokid.context.ai
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -34,5 +35,14 @@ class RoleBindingRepositoryTest {
         assertTrue(bindings.set(RoleBinding(Role.VISION_EXTRACT, "chat", "m")).isFailure)
         assertTrue(bindings.set(RoleBinding(Role.ANSWER, "chat", "m")).isSuccess)
         assertEquals("chat", bindings.get(Role.ANSWER)!!.endpointId)
+    }
+
+    @Test fun usagesIncludePrimaryAndFallbackAndFlowsUpdate() = runTest {
+        ep("a", Capability.CHAT); ep("b", Capability.CHAT)
+        bindings.set(RoleBinding(Role.ANSWER, "a", "m", fallbackEndpointId = "b")).getOrThrow()
+        bindings.set(RoleBinding(Role.CRITIC, "b", "m")).getOrThrow()
+        assertEquals(setOf(Role.ANSWER, Role.CRITIC), bindings.usages("b").toSet())
+        assertEquals(listOf(Role.ANSWER), bindings.usages("a"))
+        assertEquals(2, bindings.observeAll().first().size)
     }
 }

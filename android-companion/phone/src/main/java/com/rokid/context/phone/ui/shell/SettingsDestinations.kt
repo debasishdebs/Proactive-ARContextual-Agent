@@ -1,13 +1,22 @@
 package com.rokid.context.phone.ui.shell
 
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.composable
+import androidx.navigation.navArgument
 import com.rokid.context.phone.ui.settings.SettingsRootScreen
 import com.rokid.context.phone.ui.settings.SettingsRootViewModel
+import com.rokid.context.phone.ui.settings.ai.EndpointEditorScreen
+import com.rokid.context.phone.ui.settings.ai.EndpointEditorViewModel
+import com.rokid.context.phone.ui.settings.ai.EndpointsListScreen
+import com.rokid.context.phone.ui.settings.ai.EndpointsListViewModel
+import com.rokid.context.phone.ui.settings.ai.RolesScreen
+import com.rokid.context.phone.ui.settings.ai.RolesViewModel
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsScreen
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsViewModel
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsScreen
@@ -34,5 +43,29 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val vm = viewModel { CaptureSettingsViewModel(s.hud) }
         val state by vm.state.collectAsStateWithLifecycle()
         CaptureSettingsScreen(state, onBack = back, onInterval = vm::setInterval, onBurst = vm::setBurst)
+    }
+
+    composable(Routes.SETTINGS_ENDPOINTS) {
+        val vm = viewModel { EndpointsListViewModel(s.ai) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        EndpointsListScreen(state, onBack = back, onOpen = { nav.navigate(Routes.endpoint(it)) })
+    }
+
+    composable(Routes.SETTINGS_ENDPOINT, arguments = listOf(navArgument("id") { type = NavType.StringType })) { entry ->
+        val id = entry.arguments?.getString("id").orEmpty()
+        val vm = viewModel { EndpointEditorViewModel(id, s.ai) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        LaunchedEffect(state.deleted) { if (state.deleted) back() }
+        EndpointEditorScreen(
+            state, onBack = back, onName = vm::onName, onKind = vm::onKind, onBaseUrl = vm::onBaseUrl, onApiVersion = vm::onApiVersion, onModels = vm::onModels,
+            onCapability = vm::onCapability, onKey = vm::onKey, onClearKey = vm::clearKey, onTestModel = vm::onTestModel, onSave = vm::save, onTest = vm::test, onDelete = vm::delete,
+        )
+    }
+
+    composable(Routes.SETTINGS_ROLES) {
+        val vm = viewModel { RolesViewModel(s.ai, s.onEmbedBindingChanged) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        RolesScreen(state, onBack = back, onEndpoint = vm::setEndpoint, onModel = vm::setModel, onFallback = vm::setFallback,
+            onTemperature = vm::setTemperature, onMaxTokens = vm::setMaxTokens, onClear = { vm.clear(it) })
     }
 }
