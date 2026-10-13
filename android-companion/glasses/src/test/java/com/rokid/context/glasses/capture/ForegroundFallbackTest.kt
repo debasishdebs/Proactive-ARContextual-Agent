@@ -63,4 +63,30 @@ class ForegroundFallbackTest {
         assertFalse(fallback.maybeLaunch(app))
         assertNull(started())
     }
+
+    @Test fun afterThreeLaunchesWithoutACaptureItStopsLaunching() {
+        presence.onStarted()
+        repeat(3) {
+            assertTrue(fallback.maybeLaunch(app)); started()
+            now += ForegroundFallback.COOLDOWN_MS
+        }
+        logs.clear()
+        assertFalse(fallback.maybeLaunch(app))
+        assertNull(started())
+        assertEquals(listOf("camera keeps failing in background; not reopening the HUD until a capture works"), logs)
+        now += ForegroundFallback.COOLDOWN_MS
+        assertFalse(fallback.maybeLaunch(app))
+        assertEquals(1, logs.size)
+    }
+
+    @Test fun aSuccessfulCaptureReArmsTheFallback() {
+        presence.onStarted()
+        repeat(3) {
+            assertTrue(fallback.maybeLaunch(app)); started()
+            now += ForegroundFallback.COOLDOWN_MS
+        }
+        fallback.onCaptureSucceeded()
+        assertTrue(fallback.maybeLaunch(app))
+        assertEquals(MainActivity::class.java.name, started().component?.className)
+    }
 }

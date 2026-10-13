@@ -70,4 +70,11 @@ class BannerResolverTest {
         val both = BannerResolver.resolve(BannerInputs(capture = rec, pipelineEnabled = false))!!
         assertEquals(BannerAction.RESUME, both.action)
     }
+
+    /** Phase 8 C3: closing the glasses app force-stops it, which stops capture until it is reopened. */
+    @Test fun closedOnGlassesSaysCaptureStopped() {
+        val closed = BannerResolver.resolve(BannerInputs(link = LinkState.CLOSED_ON_GLASSES))!!
+        assertEquals("Closed on glasses \u00b7 capture stopped", closed.title)
+        assertEquals("Open on glasses", closed.actionLabel)
+    }
 }

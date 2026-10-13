@@ -36,4 +36,32 @@ class SharedBridgeTest {
         assertEquals(-2, shared.send("pc_cmd", "a", "b"))
         assertEquals("pc_cmd" to listOf("a", "b"), inner.sent.single())
     }
+
+    /** Phase 8 C4: a controller made after the bridge connected (activity recreated) still learns it is connected. */
+    @Test fun aLaterListenerIsToldTheBridgeIsAlreadyConnected() {
+        shared.setConnectionListener(connected = {}, disconnected = {})
+        inner.connected()
+        shared.release()
+        var connects = 0; var disconnects = 0
+        shared.setConnectionListener(connected = { connects++ }, disconnected = { disconnects++ })
+        assertEquals(1, connects)
+        assertEquals(0, disconnects)
+    }
+
+    @Test fun aLaterListenerIsToldItIsDisconnected() {
+        shared.setConnectionListener(connected = {}, disconnected = {})
+        inner.connected()
+        inner.disconnected()
+        shared.release()
+        var connects = 0; var disconnects = 0
+        shared.setConnectionListener(connected = { connects++ }, disconnected = { disconnects++ })
+        assertEquals(0, connects)
+        assertEquals(1, disconnects)
+    }
+
+    @Test fun noReplayBeforeAnyState() {
+        var calls = 0
+        shared.setConnectionListener(connected = { calls++ }, disconnected = { calls++ })
+        assertEquals(0, calls)
+    }
 }

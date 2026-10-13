@@ -275,7 +275,7 @@ class MainActivity : ComponentActivity() {
     // CaptureService is the only capture path (spec §3.1); its scheduler drives the Glance countdown.
     private fun nextCaptureAt(): Long? = CaptureScheduler(this).nextTriggerAtMs()
 
-    private fun ensureCaptureScheduled() = CaptureScheduler(this).ensureScheduled()
+    private fun ensureCaptureScheduled() { if (CaptureScheduler(this).ensureScheduled() == com.rokid.context.glasses.capture.Rearm.MISSED) local = LocalOverlay.Toast(CAPTURE_RESUMED_AFTER_STOP, System.currentTimeMillis()) }
 
     private fun handleIntent(i: Intent?) {
         if (i == null || i.action != ACTION_CAPTURE_NOW) return
@@ -294,6 +294,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val TAG = "PcGlasses"
         const val MIC_PERMISSION = "Allow the microphone on the glasses"
+        /** Phase 8 C3: shown once when reopening finds the capture alarm lost to a force-stop. */
+        const val CAPTURE_RESUMED_AFTER_STOP = "Capture resumed \u2014 it stops while the app is closed"
         /** adb and foreground-fallback entry: capture one frame now. */
         const val ACTION_CAPTURE_NOW = "com.rokid.context.glasses.action.CAPTURE_NOW"
     }

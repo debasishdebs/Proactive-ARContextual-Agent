@@ -32,4 +32,8 @@ class UserFacingErrorTest {
         // Transient states have no banner: CXR resumes a BT pause by itself (~2 s, phase 0).
         for (s in listOf(LinkState.CONNECTED, LinkState.CONNECTING, LinkState.PAUSED_BT)) assertNull(UserFacingErrors.forLink(s), "$s")
     }
+
+    /** Phase 8 C3: a closed glasses app is force-stopped, so capture stops until it is reopened. */
+    @Test fun closedOnGlassesHintSaysCaptureStops() =
+        assertEquals("Capture stops until you open Proactive Context on your glasses.", UserFacingErrors.ClosedOnGlasses.hint)
 }
