@@ -60,11 +60,13 @@ class FrameReassemblerTest {
         }
     }
 
-    @Test fun badIndexesAreIgnored() {
+    /** Fix round 1: a NACK (not silence), so the glasses drop the frame after two instead of resending it forever. */
+    @Test fun badIndexesAreRejected() {
         val m = chunks()[0].meta
-        assertEquals(Assembly.Ignored, FrameReassembler().accept(FrameChunk(m.copy(chunkIdx = 4), "AAAA"), 0))
-        assertEquals(Assembly.Ignored, FrameReassembler().accept(FrameChunk(m.copy(chunkCount = 0, chunkIdx = 0), "AAAA"), 0))
-        assertEquals(Assembly.Ignored, FrameReassembler().accept(FrameChunk(m.copy(chunkCount = 65, chunkIdx = 0), "AAAA"), 0))
+        val nack = Assembly.Rejected("f1", FrameAckReason.DECODE)
+        assertEquals(nack, FrameReassembler().accept(FrameChunk(m.copy(chunkIdx = 4), "AAAA"), 0))
+        assertEquals(nack, FrameReassembler().accept(FrameChunk(m.copy(chunkCount = 0, chunkIdx = 0), "AAAA"), 0))
+        assertEquals(nack, FrameReassembler().accept(FrameChunk(m.copy(chunkCount = 65, chunkIdx = 0), "AAAA"), 0))
     }
 
     @Test fun twoFramesInterleave() {
@@ -87,9 +89,12 @@ class FrameReassemblerTest {
         assertIs<Assembly.Complete>(r.accept(newest[3], 30))
     }
 
-    @Test fun anOversizeChunkIsIgnored() {
-        val m = chunks()[0].meta
-        assertEquals(Assembly.Ignored, FrameReassembler().accept(FrameChunk(m, "A".repeat(70_000)), 0))
+    @Test fun anOversizeChunkIsRejectedAndDiscardsThePartial() {
+        val r = FrameReassembler()
+        val c = chunks()
+        r.accept(c[0], 0)
+        assertEquals(Assembly.Rejected("f1", FrameAckReason.DECODE), r.accept(FrameChunk(c[1].meta, "A".repeat(70_000)), 1))
+        assertEquals(0, r.pendingCount)
     }
 
     @Test fun aDuplicateChunkIsIdempotent() {
