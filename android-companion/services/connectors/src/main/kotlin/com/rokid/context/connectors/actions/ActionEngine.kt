@@ -92,6 +92,9 @@ class ActionEngine(
 
     fun undoUntil(proposalId: String): Long? = undoUntil[proposalId]
 
+    /** The engine's clock (undo windows are measured on it). */
+    fun now(): Long = clock()
+
     /** At install: re-execute rows left EXECUTING (idempotent executors), expire what is due, re-arm the other timers. */
     suspend fun recover() = withContext(work) {
         repo.inState(ProposalState.EXECUTING).forEach { execute(it) }
