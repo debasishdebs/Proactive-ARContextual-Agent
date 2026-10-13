@@ -25,7 +25,10 @@ sealed interface VoiceState {
     data class Problem(override val source: VoiceSource, val hudText: String, val phoneText: String) : VoiceState
 }
 
-/** What Home shows for the phone mic (spec §2.4, §5.1.1). [micOff] = turned off in Settings (set by the phone adapter). */
+/**
+ * What Home shows for the phone mic (spec §2.4, §5.1.1). [micOff] = turned off in Settings, or not loaded yet;
+ * [settingsLoading] = the switch has not loaded (both set by the phone adapter).
+ */
 data class PhoneVoiceState(
     val status: VoiceStatus = VoiceStatus.CHECKING,
     val listening: Boolean = false,
@@ -34,6 +37,7 @@ data class PhoneVoiceState(
     val error: String? = null,
     val lastAskId: String? = null,
     val micOff: Boolean = false,
+    val settingsLoading: Boolean = false,
 )
 
 data class VoiceTimings(
