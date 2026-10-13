@@ -20,7 +20,8 @@ data class AppConfig(
 
 /**
  * The config reads the app makes, as an interface so a test can inject a spy through a constructor (Task 16 carry).
- * Only [get] opens the Keystore-backed secrets store; everything that may run on Main uses the other two.
+ * Only [getWithLegacySecret] opens the Keystore-backed secrets store (LegacyKeySeed only, off Main); everything that may
+ * run on Main uses [getWithoutSecret] or [isPipelineEnabled].
  */
 interface AppConfigReader {
     fun getWithLegacySecret(context: Context): AppConfig
@@ -144,6 +145,46 @@ object AppConfigStore : AppConfigReader {
 
     /** Whether the legacy key file is on disk (checked without opening the Keystore, which would recreate it). */
     fun hasLegacySecretFile(context: Context): Boolean = java.io.File(context.applicationInfo.dataDir, "shared_prefs/$SECRET_PREF.xml").exists()
+
+    /**
+     * Whether the legacy key file may hold a key, from its XML entry names only: it never opens the Keystore (P8 D1).
+     * False when every entry is one of the two Tink keyset entries EncryptedSharedPreferences writes on creation (a
+     * file an old build created but never stored a key in). A file that can't be parsed counts as holding a key, so it
+     * takes the normal read-then-retire path.
+     */
+    fun legacySecretHasKey(context: Context): Boolean {
+        val file = java.io.File(context.applicationInfo.dataDir, "shared_prefs/$SECRET_PREF.xml")
+        if (!file.exists()) return false
+        val names = runCatching { prefsEntryNames(file) }.getOrElse { return true }
+        return names.any { it !in KEYSET_ENTRIES }
+    }
+
+    private val KEYSET_ENTRIES = setOf(
+        "__androidx_security_crypto_encrypted_prefs_key_keyset__",
+        "__androidx_security_crypto_encrypted_prefs_value_keyset__",
+    )
+
+    private fun prefsEntryNames(file: java.io.File): List<String> = file.inputStream().use { input ->
+        val parser = android.util.Xml.newPullParser()
+        parser.setInput(input, "UTF-8")
+        buildList {
+            var depth = 0
+            while (true) {
+                when (parser.next()) {
+                    org.xmlpull.v1.XmlPullParser.END_DOCUMENT -> break
+                    org.xmlpull.v1.XmlPullParser.START_TAG -> {
+                        depth++
+                        // Entries are the direct children of <map>; a <set>'s <string> items carry no name.
+                        if (depth == 2) add(checkNotNull(parser.getAttributeValue(null, "name")))
+                    }
+                    org.xmlpull.v1.XmlPullParser.END_TAG -> depth--
+                }
+            }
+        }
+    }
+
+    /** Deletes a legacy file that holds no key ([legacySecretHasKey] false) without opening the Keystore. */
+    fun deleteKeylessLegacySecretFile(context: Context) { context.deleteSharedPreferences(SECRET_PREF) }
 
     /** The legacy key is read once, to seed the endpoint registry; afterwards it lives in KeyVault only (F23: caller checks). */
     fun clearLegacySecret(context: Context) {
