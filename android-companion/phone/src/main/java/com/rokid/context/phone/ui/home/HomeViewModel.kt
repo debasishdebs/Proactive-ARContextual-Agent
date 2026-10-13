@@ -12,6 +12,7 @@ import com.rokid.context.orchestration.AskOutcome
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.status.BannerActions
 import com.rokid.context.phone.ui.status.PipelineControl
+import com.rokid.context.phone.ui.banner.IndexState
 import com.rokid.context.phone.ui.status.StatusUi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -40,6 +41,7 @@ class HomeViewModel(
     clock: Flow<Long>,
     storagePct: Flow<Int?>,
     private val zone: () -> ZoneId,
+    index: Flow<IndexState> = flowOf(IndexState.NONE),
 ) : ViewModel() {
     private data class Local(val question: String = "", val asking: Boolean = false, val error: String? = null, val lastAskId: String? = null)
 
@@ -53,7 +55,7 @@ class HomeViewModel(
         .flatMapLatest { (id, d) -> if (id == null) flowOf(null) else asks.observe(id).map { a -> a?.let { Feed.ask(it, d, zone()) } } }
 
     val state: StateFlow<HomeUiState> = combine(
-        StatusUi.flow(glasses, pipeline, clock, storagePct),
+        StatusUi.flow(glasses, pipeline, clock, storagePct, index),
         timeline.recentVisibleMemories(20).map(SuggestedQuestions::from),
         feed,
         lastAnswer,

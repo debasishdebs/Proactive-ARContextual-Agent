@@ -5,6 +5,8 @@ import com.rokid.context.core.model.GlassesStatusSource
 import com.rokid.context.core.model.Verbosity
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.orchestration.AskActions
+import com.rokid.context.orchestration.PrefsIndexClock
+import com.rokid.context.phone.ui.banner.IndexState
 import com.rokid.context.phone.ui.home.AskService
 import com.rokid.context.phone.ui.onboarding.OnboardingStore
 import com.rokid.context.phone.ui.settings.DiagnosticsActions
@@ -19,6 +21,10 @@ import com.rokid.context.work.OrchestrationScheduler
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import java.time.LocalDate
@@ -43,6 +49,8 @@ class PhoneDeps(
     val zone: () -> ZoneId = { ZoneId.systemDefault() },
     /** Sends a HUD verbosity to the glasses (`pc_settings` through the hub). */
     val hudVerbosity: (Verbosity) -> Unit = {},
+    /** Banner 6 (spec §2.2): index rebuild needed / running, or unstable after repeated drift (Task 11). */
+    val index: Flow<IndexState> = flowOf(IndexState.NONE),
 ) {
     fun today(): LocalDate = LocalDate.now(zone())
 
@@ -76,6 +84,8 @@ class PhoneDeps(
                 storagePct = StorageUsage.percentFlow(app),
                 clock = ticker(),
                 hudVerbosity = { v -> com.rokid.context.phone.hub.HubGraph.get(app).updateSettings { it.copy(verbosity = v) } },
+                index = combine(MemoryGraph.get(app).spaces.health(), PrefsIndexClock(app).observeUnstable()) { h, unstable -> IndexState.of(h, unstable) }
+                    .flowOn(Dispatchers.IO), // the clock's first prefs read stays off Main
             )
         }
     }

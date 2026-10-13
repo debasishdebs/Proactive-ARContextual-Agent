@@ -10,13 +10,19 @@ class SettingsDepsTest {
     @Test fun theAiGraphIsBuiltOnFirstUseOnly() {
         var built = 0
         var inputs = 0
+        var retrieval = 0
         val deps = SettingsDeps(lazyAi = lazy<com.rokid.context.ai.AiGraph> { built++; error("not a real graph") }, hud = FakeHudSettings(), reauthorize = {}, onEmbedBindingChanged = {},
-            lazyTestInputs = lazy<com.rokid.context.orchestration.TestBedInputs> { inputs++; error("not real inputs") })
-        assertEquals(0, built); assertEquals(0, inputs)
+            lazyTestInputs = lazy<com.rokid.context.orchestration.TestBedInputs> { inputs++; error("not real inputs") },
+            lazyRetrieval = lazy<com.rokid.context.memory.retrieval.RetrievalSettingsStore> { retrieval++; error("not a real store") },
+            lazySpaces = lazy<com.rokid.context.memory.EmbeddingSpaces> { error("not real spaces") },
+            rebuildIndex = {})
+        assertEquals(0, built); assertEquals(0, inputs); assertEquals(0, retrieval)
         runCatching { deps.ai }
         assertEquals(1, built)
         runCatching { deps.testInputs }
         assertEquals(1, inputs)
+        runCatching { deps.retrieval }
+        assertEquals(1, retrieval)
     }
 
     @Test fun createDefersAiGraphGet() {

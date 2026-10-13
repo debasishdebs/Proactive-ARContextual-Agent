@@ -10,9 +10,11 @@ import com.rokid.context.memory.TimelineRepository
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.status.BannerActions
 import com.rokid.context.phone.ui.status.PipelineControl
+import com.rokid.context.phone.ui.banner.IndexState
 import com.rokid.context.phone.ui.status.StatusUi
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +36,7 @@ class ActivityViewModel(
     clock: Flow<Long>,
     storagePct: Flow<Int?>,
     private val zone: () -> ZoneId,
+    index: Flow<IndexState> = flowOf(IndexState.NONE),
 ) : ViewModel() {
     private val period = MutableStateFlow(initial)
     /** (local date, zone) at each clock tick; re-queries and regroups when either changes (midnight, or a zone change noticed on the next tick). */
@@ -55,7 +58,7 @@ class ActivityViewModel(
         }
     }
 
-    val state: StateFlow<ActivityUiState> = combine(content, StatusUi.flow(glasses, pipeline, clock, storagePct)) { c, s -> c.copy(status = s) }
+    val state: StateFlow<ActivityUiState> = combine(content, StatusUi.flow(glasses, pipeline, clock, storagePct, index)) { c, s -> c.copy(status = s) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ActivityUiState(period = initial))
 
     fun selectPeriod(p: Period) { period.value = p }

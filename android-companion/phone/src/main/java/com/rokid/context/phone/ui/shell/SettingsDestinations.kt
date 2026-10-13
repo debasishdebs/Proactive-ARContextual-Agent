@@ -27,6 +27,8 @@ import com.rokid.context.phone.ui.settings.prompts.PromptHistoryScreen
 import com.rokid.context.phone.ui.settings.prompts.PromptHistoryViewModel
 import com.rokid.context.phone.ui.settings.prompts.PromptsListScreen
 import com.rokid.context.phone.ui.settings.prompts.PromptsListViewModel
+import com.rokid.context.phone.ui.settings.retrieval.RetrievalSettingsScreen
+import com.rokid.context.phone.ui.settings.retrieval.RetrievalViewModel
 
 /** Settings tree routes (spec §2.1). Same rule as Destinations.kt: the only place these ViewModels are created. */
 fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController, back: () -> Unit) {
@@ -97,5 +99,15 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val vm = viewModel { PromptHistoryViewModel(id, s.ai) }
         val state by vm.state.collectAsStateWithLifecycle()
         PromptHistoryScreen(state, onBack = back, onSelect = vm::select, onRestore = vm::restore)
+    }
+
+    composable(Routes.SETTINGS_RETRIEVAL) {
+        val vm = viewModel { RetrievalViewModel(s.retrieval, s.ai.retriever, s.spaces, s.ai, s.rebuildIndex) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        RetrievalSettingsScreen(
+            state, onBack = back, onMode = vm::setMode, onFusion = vm::setFusion, onWeight = vm::setWeight, onRrfK = vm::setRrfK, onTopK = vm::setTopK,
+            onRecency = vm::setRecency, onHalfLife = vm::setHalfLife, onMinConfidence = vm::setMinConfidence, onQuery = vm::onQuery, onTryIt = vm::tryIt,
+            onRebuild = vm::rebuild, onOpenRoles = { nav.navigate(Routes.SETTINGS_ROLES) },
+        )
     }
 }
