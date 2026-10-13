@@ -9,6 +9,8 @@ import com.rokid.context.connectors.actions.executors.ShoppingExecutor
 import com.rokid.context.core.model.Verbosity
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.ActionLogEntity
+import com.rokid.context.memory.db.ShoppingDao
+import com.rokid.context.connectors.tools.ToolConnector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -19,6 +21,9 @@ interface ActionsGraphApi {
     val intake: ProposalIntake
     val engine: ActionEngine
     val settings: ActionSettingsStore
+    val shopping: ShoppingDao
+    /** Registered tool connectors (R-63): none in v1. */
+    val tools: List<ToolConnector>
 }
 
 /**
@@ -34,6 +39,9 @@ object ActionsGraph {
     fun get(context: Context): ActionsGraphApi = instance ?: synchronized(this) {
         instance ?: Impl(context.applicationContext).also { instance = it }
     }
+
+    /** The graph if any caller built it (the hub does at app start); for screens that get no Context (Settings rules). */
+    fun current(): ActionsGraphApi? = instance
 
     fun install(context: Context, verbosity: () -> Verbosity) {
         this.verbosity = verbosity
@@ -59,6 +67,8 @@ object ActionsGraph {
                 audit = { id, transition, detail, now -> memory.db.actionDao().log(ActionLogEntity(ts = now, proposalId = id, transition = transition, detail = detail)) },
             )
         }
+        override val shopping: ShoppingDao get() = memory.shopping
+        override val tools: List<ToolConnector> = emptyList()
         override val intake: ProposalIntake = ProposalIntake { o, id, a, now -> engine.onProposed(o, id, a, now) }
     }
 }

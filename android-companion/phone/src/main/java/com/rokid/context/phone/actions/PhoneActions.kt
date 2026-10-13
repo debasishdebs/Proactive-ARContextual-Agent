@@ -15,6 +15,7 @@ object PhoneActions {
         ActionsGraph.install(app) { hud().verbosity }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val engine = ActionsGraph.get(app).engine
+        ProposalNotifier.start(app, MemoryGraph.get(app).proposals, scope)
         return HubActionsImpl(engine, MemoryGraph.get(app).proposals, scope)
     }
 }

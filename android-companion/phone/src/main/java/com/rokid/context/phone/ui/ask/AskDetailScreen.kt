@@ -34,9 +34,12 @@ import com.rokid.context.core.ui.components.SectionLabel
 import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
 
-/** Ask detail (spec §2.4). Stateless. */
+/** Ask detail (spec §2.4). Stateless; [proposalCard] (the live ProposalCard) replaces the read-only proposal line when given. */
 @Composable
-fun AskDetailScreen(state: AskDetailUiState, onBack: () -> Unit, onRate: (Boolean) -> Unit, onOpenMemory: (String) -> Unit) {
+fun AskDetailScreen(
+    state: AskDetailUiState, onBack: () -> Unit, onRate: (Boolean) -> Unit, onOpenMemory: (String) -> Unit,
+    proposalCard: (@Composable () -> Unit)? = null,
+) {
     Column(Modifier.fillMaxSize().background(PcColors.Surface).verticalScroll(rememberScrollState())) {
         ScreenHeader("Answer", onBack)
         if (state.loading) return@Column
@@ -62,7 +65,7 @@ fun AskDetailScreen(state: AskDetailUiState, onBack: () -> Unit, onRate: (Boolea
                 }
             }
         }
-        state.proposal?.let { p ->
+        if (proposalCard != null) proposalCard() else state.proposal?.let { p ->
             SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
                 Text("${p.title} · ${p.state}", style = MaterialTheme.typography.titleMedium, color = PcColors.Ink, modifier = Modifier.padding(16.dp))
             }

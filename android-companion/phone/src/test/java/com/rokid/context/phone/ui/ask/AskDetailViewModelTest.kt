@@ -53,4 +53,17 @@ class AskDetailViewModelTest {
         val s = withTimeout(5_000) { vm("missing").state.first { !it.loading } }
         assertFalse(s.found)
     }
+
+    /** P6 T6 carry: source cards observe memory changes, so a Forget removes the card live. */
+    @Test fun forgottenSourceDisappearsLive() = runBlocking {
+        graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1))
+        graph.memories.add(Fixtures.memory("m2", "Wallet in drawer", 2))
+        graph.asks.upsert(Fixtures.ask("a1", Fixtures.NOW, sources = """["m1","m2"]"""))
+        val model = vm("a1")
+        assertEquals(2, withTimeout(5_000) { model.state.first { it.found } }.sources.size)
+        graph.memories.deleteByIds(listOf("m1"))
+        val s = withTimeout(5_000) { model.state.first { it.sources.size == 1 } }
+        assertEquals(listOf("Wallet in drawer"), s.sources.map { it.text })
+        assertEquals(1, s.missingSources)
+    }
 }
