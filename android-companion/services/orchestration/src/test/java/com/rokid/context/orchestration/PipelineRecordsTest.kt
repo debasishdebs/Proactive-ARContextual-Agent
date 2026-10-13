@@ -131,4 +131,11 @@ class PipelineRecordsTest {
         assertTrue(RokidFrameInbox.ingestSinglePath(ctx, b))
         assertEquals(setOf("1760000000000_rokid_1111_a", "1760000000000_rokid_1111_b"), PipelineRecords.allFrames(ctx).map { it.id }.toSet())
     }
+
+    @Test fun aParentFolderNamedScreenshotsDoesNotHideRealPhotos() {
+        assertTrue(PipelineRecords.isRealPhotoFrame(frame("f1", 1, "/x/Screenshots/rokid_1_a.jpg")))
+        assertTrue(PipelineRecords.isRealPhotoFrame(frame("f2", 1, "/x/synthetic-data/rokid_1_b.jpg")))
+        assertFalse(PipelineRecords.isRealPhotoFrame(frame("f3", 1, "/x/screenshot_1.jpg")))
+        assertFalse(PipelineRecords.isRealPhotoFrame(frame("f4", 1, "/x/rokid_1_c.jpg", payload = "synthetic test")))
+    }
 }

@@ -8,7 +8,7 @@ const val SAFE_CHUNK_CHARS = 32_768
 
 /**
  * `FrameAck.reason` values. With `ok=false` ([CRC], [DECODE]) the glasses resend once, then drop the frame.
- * With `ok=true` ([DUPLICATE], [PAUSED_DROP], [TOO_OLD]) the glasses delete it like any delivered frame.
+ * With `ok=true` ([DUPLICATE], [PAUSED_DROP], [TOO_OLD], [WIPED]) the glasses delete it like any delivered frame.
  */
 object FrameAckReason {
     const val CRC = "crc"
@@ -16,6 +16,8 @@ object FrameAckReason {
     const val DUPLICATE = "duplicate"
     const val PAUSED_DROP = "paused_drop"
     const val TOO_OLD = "too_old"
+    /** Captured before the last Delete all started (spec 6.1.1): acked `ok=true` and never stored. */
+    const val WIPED = "wiped_drop"
 }
 
 /** One `pc_frame` message: [meta] is the first Caps string (JSON), [chunk] the second (Base64 text, spec §1.5). */

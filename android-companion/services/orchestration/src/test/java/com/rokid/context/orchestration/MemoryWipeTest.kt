@@ -142,5 +142,13 @@ class MemoryWipeTest {
         assertEquals(0, g().db.memoryDao().count())
     }
 
+    /** Review Focus 3: the start time lets the phone drop frames captured before the wipe that are still on the glasses. */
+    @Test fun deleteAllMarksTheWipeStart() = runBlocking<Unit> {
+        val before = System.currentTimeMillis()
+        MemoryWipe.deleteAll(ctx)
+        assertTrue((WipeFence.lastStartedAtMs(ctx.filesDir) ?: 0L) >= before)
+        assertFalse(WipeFence.mutex.isLocked)
+    }
+
     private fun g() = MemoryGraph.get(ctx)
 }

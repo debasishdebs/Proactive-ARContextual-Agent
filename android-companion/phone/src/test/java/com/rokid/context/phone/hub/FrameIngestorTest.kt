@@ -17,6 +17,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -45,10 +47,9 @@ class FrameIngestorTest {
     private var stored = 0
     private val inbox get() = File(tmp.root, "rokid_inbox")
 
-    private fun ingestor(writer: JpegWriter = AtomicJpegWriter): FrameIngestor {
-        val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
-        return FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, noPauses), ledger, writer) { stored++ }
-    }
+    private val ledger by lazy { ReceivedFrameLedger(File(tmp.root, "ledger.txt")) }
+    private fun ingestor(writer: JpegWriter = AtomicJpegWriter, wipeAt: Long? = null, lock: Mutex = Mutex()): FrameIngestor =
+        FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, noPauses), ledger, writer, wipeStartedAtMs = { wipeAt }, wipeLock = lock) { stored++ }
     private fun chunk(id: String = "g1") = FrameCodec.split(id, jpeg, capturedAtMs = now - 60_000 + 140).single()
 
     @Test fun completeFrameIsStoredAckedAndQueued() = runTest {
@@ -158,9 +159,38 @@ class FrameIngestorTest {
         val dir = File(tmp.root, "in2")
         val stamp = now - 3_600_000
         var seenAtRename: Long? = null
-        AtomicJpegWriter.write(File(dir, "b.jpg"), jpeg, lastModifiedMs = stamp) { part -> seenAtRename = part.lastModified() }
+        AtomicJpegWriter.write(File(dir, "b.jpg"), jpeg, lastModifiedMs = stamp, beforeRename = { part -> seenAtRename = part.lastModified() })
         assertTrue(abs(seenAtRename!! - stamp) < 1_000)
         assertTrue(abs(File(dir, "b.jpg").lastModified() - stamp) < 1_000)
         assertEquals(listOf("b.jpg"), dir.list()!!.toList())
+    }
+
+    /** Review Focus 3, spec 6.1.1: Delete all covers frames still buffered on the glasses when it started. */
+    @Test fun aFrameCapturedBeforeDeleteAllIsAckedAndNotStored() = runTest {
+        val r = ingestor(wipeAt = now - 30_000).onChunk(chunk(), offset, now)
+        assertEquals(FrameAck(frameId = "g1", ok = true, reason = FrameAckReason.WIPED), r.ack)
+        assertEquals("wiped_drop", r.ack!!.reason)
+        assertTrue(inbox.listFiles().orEmpty().isEmpty())
+        assertTrue(ledger.contains("g1"))
+        assertEquals(0, stored)
+    }
+
+    @Test fun aStoreWaitsForAWipeInProgress() = runTest {
+        val lock = Mutex()
+        lock.lock()
+        val ing = ingestor(lock = lock)
+        val pending = async { ing.onChunk(chunk(), offset, now) }
+        runCurrent()
+        assertFalse(pending.isCompleted)
+        assertTrue(inbox.listFiles().orEmpty().isEmpty())
+        lock.unlock()
+        assertEquals(FrameAck(frameId = "g1", ok = true), pending.await().ack)
+    }
+
+    @Test fun aFrameCapturedAfterTheWipeIsStored() = runTest {
+        val r = ingestor(wipeAt = now - 90_000).onChunk(chunk(), offset, now)
+        assertEquals(FrameAck(frameId = "g1", ok = true), r.ack)
+        assertTrue(File(inbox, "rokid_${now - 60_000}_g1.jpg").isFile)
+        assertEquals(1, stored)
     }
 }
