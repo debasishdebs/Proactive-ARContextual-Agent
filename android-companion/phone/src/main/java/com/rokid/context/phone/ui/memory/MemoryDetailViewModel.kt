@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.rokid.context.memory.MemoryEdits
 import com.rokid.context.memory.TimelineRepository
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -19,14 +20,22 @@ class MemoryDetailViewModel(
     private val timeline: TimelineRepository,
     private val edits: MemoryEdits,
     zone: () -> ZoneId,
+    private val forget: MemoryForget = MemoryForget.None,
 ) : ViewModel() {
-    private data class Local(val draft: String? = null, val message: String? = null)
+    private data class Local(
+        val draft: String? = null, val message: String? = null, val confirm: ForgetKind? = null,
+        val forgetting: Boolean = false, val forgotten: Boolean = false,
+    )
     private val local = MutableStateFlow(Local())
 
     val state: StateFlow<MemoryDetailUiState> = combine(
         timeline.memory(memoryId).map { m -> m?.let { MemoryDetailModel.build(it, it.frameId?.let { id -> timeline.frame(id) }, zone()) } ?: MemoryDetailModel.NOT_FOUND },
         local,
-    ) { base, l -> if (base.found) base.copy(draft = l.draft, message = l.message) else base }
+    ) { base, l ->
+        // `forgotten` survives the row disappearing (the Forget itself deletes it).
+        if (base.found) base.copy(draft = l.draft, message = l.message, confirm = l.confirm, forgetting = l.forgetting, forgotten = l.forgotten)
+        else base.copy(forgotten = l.forgotten)
+    }
         .stateIn(viewModelScope, SharingStarted.Eagerly, MemoryDetailUiState())
 
     fun trust() {
@@ -43,6 +52,34 @@ class MemoryDetailViewModel(
         viewModelScope.launch {
             if (edits.editText(memoryId, draft)) local.update { it.copy(draft = null, message = "Saved") }
             else local.update { it.copy(message = "This memory can't be edited") }
+        }
+    }
+
+    /** Opens the dialog. Forget fact needs a visible memory; Forget moment needs a frame. */
+    fun askForget(kind: ForgetKind) {
+        val s = state.value
+        val allowed = s.found && !s.forgetting && when (kind) { ForgetKind.FACT -> s.editable; ForgetKind.MOMENT -> s.frameId != null }
+        if (allowed) local.update { it.copy(confirm = kind, message = null) }
+    }
+
+    fun dismissForget() = local.update { it.copy(confirm = null) }
+
+    /** Runs once: a second tap while running (or after success) is ignored. Failure shows fixed copy, never the error. */
+    fun confirmForget() {
+        val kind = local.value.confirm ?: return
+        val frameId = state.value.frameId
+        var start = false
+        local.update { l -> if (l.forgetting || l.forgotten || l.confirm == null) l else { start = true; l.copy(confirm = null, forgetting = true, message = null) } }
+        if (!start) return
+        viewModelScope.launch {
+            val ok = try {
+                when (kind) { ForgetKind.FACT -> forget.forgetFact(memoryId); ForgetKind.MOMENT -> frameId != null && forget.forgetMoment(frameId) }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                false
+            }
+            local.update { if (ok) it.copy(forgetting = false, forgotten = true) else it.copy(forgetting = false, message = ForgetCopy.FAILED) }
         }
     }
 }

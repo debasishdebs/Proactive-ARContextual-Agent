@@ -14,7 +14,7 @@ import com.rokid.context.phone.ui.settings.QueueActions
 import com.rokid.context.phone.ui.settings.SchedulerDiagnosticsActions
 import com.rokid.context.memory.MemorySettingsStore
 import com.rokid.context.phone.ui.settings.SettingsDeps
-import com.rokid.context.phone.ui.status.LegacyPipelineControl
+import com.rokid.context.phone.ui.status.CapturePauses
 import com.rokid.context.phone.ui.status.PipelineControl
 import com.rokid.context.phone.ui.status.StorageUsage
 import com.rokid.context.work.OrchestrationScheduler
@@ -79,7 +79,7 @@ class PhoneDeps(
             return PhoneDeps(
                 memory = MemoryGraph.get(app),
                 glasses = com.rokid.context.phone.hub.HubGraph.glassesStatus(app),
-                pipeline = LegacyPipelineControl(app, scheduler),
+                pipeline = CapturePauses.control(app),
                 onboarding = OnboardingStore(app),
                 // Typed asks are mirrored to the HUD (spec §2.4) without being spoken.
                 askService = AskService { q -> AskActions.ask(app, q).also { r -> if (r is com.rokid.context.orchestration.AskOutcome.Answered) voice.mirrorTyped(r.askId) } },

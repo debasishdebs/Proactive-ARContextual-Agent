@@ -17,7 +17,11 @@ import com.rokid.context.glasses.link.FrameUplink
 import com.rokid.context.glasses.link.GlassesBridge
 import com.rokid.context.glasses.link.HudController
 import com.rokid.context.glasses.link.SharedBridge
+import com.rokid.context.core.model.HudSettings
+import com.rokid.context.glasses.link.HudSettingsCache
 import com.rokid.context.glasses.pause.GlassesPauses
+import com.rokid.context.glasses.pause.MergeResult
+import com.rokid.context.glasses.pause.QuietHoursClock
 import com.rokid.context.glasses.pause.PauseStore
 import com.rokid.context.glasses.pause.PauseToggle
 import com.rokid.context.glasses.voice.AudioRecordSource
@@ -35,6 +39,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -47,7 +52,13 @@ class GlassesRuntime private constructor(private val app: Context) {
     private val errors = CoroutineExceptionHandler { _, e -> Log.w(TAG, "runtime job failed: ${e.javaClass.simpleName}") }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + errors)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + errors)
-    val pauses = GlassesPauses(PauseStore(File(app.filesDir, "pauses.preferences_pb"), ioScope))
+    /** The persisted last `pc_settings` (quiet hours and their zone apply offline); HudController writes it on each push. */
+    private val settingsCache = HudSettingsCache(app.getSharedPreferences(HudSettingsCache.PREFS, Context.MODE_PRIVATE))
+    @Volatile private var latestSettings: HudSettings? = null
+    val pauses = GlassesPauses(
+        PauseStore(File(app.filesDir, "pauses.preferences_pb"), ioScope),
+        quiet = QuietHoursClock { latestSettings ?: settingsCache.read().also { latestSettings = it } },
+    )
     val buffer = OutboundBuffer(File(app.filesDir, "outbound"), log = { Log.i(UPLINK_TAG, it) })
     /** Our HUD activity's lifecycle, for the capture fallback (spec §1.7: never reopened over another app). */
     val hudPresence = HudPresence()
@@ -88,7 +99,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onFrameAck = uplink::onAck
         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
-        c.onPhonePauses = { records -> scope.launch { pauses.mergeFromPhone(records) } }
+        c.onPhoneSettings = { s -> ioScope.launch { applyPhoneSettings(s) } }
         attachJob?.cancel()
         attachJob = scope.launch {
             launch {
@@ -105,7 +116,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     fun detach(c: HudController) {
         c.onFrameAck = {}
         c.onSessionOpened = {}
-        c.onPhonePauses = {}
+        c.onPhoneSettings = {}
         if (controller !== c) return
         ptt.cancel()
         ptt.onProblem = {} // only the current activity's handler: a newer activity's must survive an old detach
@@ -119,7 +130,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         glassesBatteryPct = batteryPct(),
         bufferSize = buffer.size,
         glassesNowMs = System.currentTimeMillis(),
-        pauses = pauses.records.value,
+        pauses = pauses.helloRecords(),
         nextCaptureAtMs = nextCaptureAtMs,
         resumedAtMs = pauses.resumedAtMs(),
     )
@@ -152,11 +163,23 @@ class GlassesRuntime private constructor(private val app: Context) {
         controller?.sendHello()
     }
 
-    /** Double-tap pause/resume, applied here at once (spec §5.5); a pause drops the buffered frames. */
+    /** Double-tap pause/resume, applied here at once (spec §5.5); a pause drops the buffered frames (off Main). */
     suspend fun togglePause(): PauseToggle {
         val t = pauses.toggle()
-        if (t is PauseToggle.Paused) synchronized(captureGate) { buffer.clear() }
+        if (t is PauseToggle.Paused) withContext(Dispatchers.IO) { synchronized(captureGate) { buffer.clear() } }
         return t
+    }
+
+    /**
+     * A phone push (on the IO scope): merges its pauses and, when it added a record active now, drops the buffered
+     * frames under [captureGate], the same as a local pause (spec §5.5).
+     */
+    internal suspend fun applyPhoneSettings(s: HudSettings): MergeResult {
+        latestSettings = s
+        val r = pauses.mergeFromPhone(s)
+        val now = System.currentTimeMillis()
+        if (r.added.any { it.isActiveAt(now) }) withContext(Dispatchers.IO) { synchronized(captureGate) { buffer.clear() } }
+        return r
     }
 
     fun batteryPct(): Int? = app.getSystemService(BatteryManager::class.java)

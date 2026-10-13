@@ -47,12 +47,23 @@ object RokidFrameInbox {
             f.isFile && f.name.endsWith(".part") && nowMs - f.lastModified() >= minAgeMs && f.delete()
         }
 
+    /** [placeLabel]: a rough place for every frame of this run (Phase 7 C2; null unless Location is on and granted). */
     suspend fun ingestPending(
         context: Context,
         maxItems: Int = 8,
+        placeLabel: String? = null,
         nowMs: () -> Long = System::currentTimeMillis,
         appendFrame: suspend (Context, FrameEntity) -> Boolean = PipelineRecords::appendFrame,
-    ): Int {
+    ): Int = ingestPendingIds(context, maxItems, placeLabel, nowMs, appendFrame).size
+
+    /** The ids of the frames this call appended (fix round 1: the summarizer job names exactly these). */
+    suspend fun ingestPendingIds(
+        context: Context,
+        maxItems: Int = 8,
+        placeLabel: String? = null,
+        nowMs: () -> Long = System::currentTimeMillis,
+        appendFrame: suspend (Context, FrameEntity) -> Boolean = PipelineRecords::appendFrame,
+    ): List<String> {
         val swept = sweepOrphanParts(context, nowMs())
         if (swept > 0) Log.i(TAG, "swept orphan parts=$swept")
         val inbox = inboxDir(context)
@@ -70,7 +81,7 @@ object RokidFrameInbox {
             .orEmpty()
         Log.i(TAG, "ingestPending inbox=${inbox.absolutePath} files=${candidates.size}")
 
-        var imported = 0
+        val imported = mutableListOf<String>()
         for (file in candidates) {
             // Review Focus 3: a Delete all that starts while this file is ingested bumps the generation; its row and file go.
             val generation = MemoryWipe.generation.get()
@@ -78,7 +89,7 @@ object RokidFrameInbox {
             val moved = runCatching { file.renameTo(archived) }.getOrDefault(false)
             val sourceFile = if (moved) archived else file
             val result = try {
-                ingestFile(context, sourceFile, source = "rokid_glasses", appendFrame)
+                ingestFile(context, sourceFile, source = "rokid_glasses", placeLabel, appendFrame)
             } catch (e: CancellationException) {
                 // Fix round 1/2 I4: a drain cancelled mid-insert keeps the file eligible unless its row landed. If a Delete
                 // all started meanwhile, the file (and any row) goes instead: it must not come back after the wipe.
@@ -91,7 +102,7 @@ object RokidFrameInbox {
                     sourceFile.delete()
                     Log.i(TAG, "frame dropped: Delete all ran during its ingest")
                 } else {
-                    imported += 1
+                    imported += frameIdOf(sourceFile)
                 }
                 InboxResult.DUPLICATE -> Unit
                 // Fix round 3: same rule as a cancelled ingest. A Delete all since it began deletes the file, else it goes back.
@@ -119,11 +130,12 @@ object RokidFrameInbox {
         if (!hasRow) WipeFence.mutex.withLock { sourceFile.renameTo(original) }
     }
 
-    suspend fun ingestSinglePath(context: Context, absolutePath: String, source: String = "rokid_glasses"): Boolean {
+    /** The appended frame's id, or null when nothing was appended. */
+    suspend fun ingestSinglePath(context: Context, absolutePath: String, source: String = "rokid_glasses", placeLabel: String? = null): String? {
         val file = File(absolutePath)
-        if (!file.exists() || !file.isFile) return false
-        if (extOf(file.name) !in supportedExt) return false
-        return ingestFile(context, file, source) == InboxResult.STORED
+        if (!file.exists() || !file.isFile) return null
+        if (extOf(file.name) !in supportedExt) return null
+        return frameIdOf(file).takeIf { ingestFile(context, file, source, placeLabel) == InboxResult.STORED }
     }
 
     private fun extOf(name: String): String = name.substringAfterLast('.', "").lowercase(Locale.US)
@@ -135,6 +147,7 @@ object RokidFrameInbox {
         context: Context,
         file: File,
         source: String,
+        placeLabel: String? = null,
         appendFrame: suspend (Context, FrameEntity) -> Boolean = PipelineRecords::appendFrame,
     ): InboxResult {
         val frameId = frameIdOf(file)
@@ -149,6 +162,7 @@ object RokidFrameInbox {
                     path = file.absolutePath,
                     source = source,
                     payload = payload,
+                    placeLabel = placeLabel,
                 ),
             )
         } catch (e: CancellationException) {

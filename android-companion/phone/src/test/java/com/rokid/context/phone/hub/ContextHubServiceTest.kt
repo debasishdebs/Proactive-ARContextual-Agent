@@ -35,6 +35,18 @@ class ContextHubServiceTest {
         assertFalse(ContextHubService.shouldStart(running = false, canStart = false))
     }
 
+    /** R-65: one action, "Pause capture" while running and "Resume capture" while paused. */
+    @Test fun notificationActionFollowsPauseState() {
+        val ctx = androidx.test.core.app.ApplicationProvider.getApplicationContext<Application>()
+        val paused = ContextHubService.buildNotification(ctx, "Glasses connected", paused = true)
+        assertEquals(1, paused.actions.size)
+        assertEquals("Resume capture", paused.actions.single().title.toString())
+        val running = ContextHubService.buildNotification(ctx, "Glasses connected", paused = false)
+        assertEquals("Pause capture", running.actions.single().title.toString())
+        assertEquals(ContextHubService.ACTION_RESUME, org.robolectric.Shadows.shadowOf(paused.actions.single().actionIntent).savedIntent.action)
+        assertEquals(ContextHubService.ACTION_PAUSE, org.robolectric.Shadows.shadowOf(running.actions.single().actionIntent).savedIntent.action)
+    }
+
     @Test fun notificationTextIsShortAndHuman() {
         fun text(l: LinkState) = ContextHubService.notificationText(GlassesStatus(l, null, 0, null, null))
         assertEquals("Glasses connected", text(LinkState.CONNECTED))

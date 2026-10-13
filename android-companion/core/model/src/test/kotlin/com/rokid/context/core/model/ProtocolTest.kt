@@ -123,4 +123,21 @@ class ProtocolTest {
         val newer = """{"v":1,"askBlockedReason":"x","futureField":1}"""
         assertEquals(HudSettings(askBlockedReason = "x"), assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(newer)).value)
     }
+
+    /** Phase 7 (S0.1): additive pause fields; an older payload decodes with defaults. */
+    @Test fun newHudSettingsFieldsDefaultAndRoundTrip() {
+        val old = """{"v":$PROTOCOL_VERSION,"verbosity":"MEDIUM","pauses":[]}"""
+        val d = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(old)).value
+        assertEquals(emptyList(), d.resumedPauseIds); assertFalse(d.pausesExact); assertEquals(null, d.zoneId)
+        val s = HudSettings(resumedPauseIds = listOf("p1", "p2"), pausesExact = true, zoneId = "Asia/Kolkata")
+        assertEquals(s, assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(Wire.encode(s))).value)
+    }
+
+    @Test fun undoCommandAndUndoToastRoundTrip() {
+        val env = CommandEnvelope(command = Command.Undo("p1"))
+        assertEquals(Decoded.Ok(env), Wire.decode<CommandEnvelope>(Wire.encode(env)))
+        val f = frame(Overlay.Toast("x", "p1"))
+        assertEquals(Decoded.Ok(f), Wire.decode<StateFrame>(Wire.encode(f)))
+        assertEquals(null, Overlay.Toast("x").undoProposalId)
+    }
 }

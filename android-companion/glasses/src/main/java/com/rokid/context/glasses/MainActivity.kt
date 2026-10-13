@@ -180,6 +180,7 @@ class MainActivity : ComponentActivity() {
                 Routed.FinishListening -> runtime.ptt.stop()
                 Routed.CancelListening -> { runtime.ptt.cancel(); controller.send(Command.Cancel) }
                 Routed.DismissOverlay -> dismiss(shown)
+                is Routed.Undo -> { controller.send(Command.Undo(r.proposalId)); presenter.dismiss(shown) }
                 is Routed.Mapped -> onAction(r, shown, now)
             }
             nav = nav.touched(now)

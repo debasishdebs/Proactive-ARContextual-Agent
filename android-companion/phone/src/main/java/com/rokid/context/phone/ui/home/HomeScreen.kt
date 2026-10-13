@@ -38,9 +38,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -61,6 +58,10 @@ import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.banner.BannerHost
+import com.rokid.context.phone.ui.actions.ProposalCard
+
+/** A nudge whose source was forgotten (Forget redacts the row; its text is never shown). */
+const val REDACTED_NUDGE = "Removed \u2014 a source was forgotten"
 
 /** Home, Ask-first (spec §2.4, mock phone-home.html option B). Stateless. */
 @Composable
@@ -80,6 +81,8 @@ fun HomeScreen(
      * the task to the background (Android 12+), so the composition is not disposed and the ViewModel is not cleared.
      */
     onLeave: () -> Unit = {},
+    /** A nudge card opens its detail (`nudge/{id}`); a redacted one is not tappable. */
+    onOpenNudge: (String) -> Unit = {},
 ) {
     val leave by rememberUpdatedState(onLeave)
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -88,7 +91,6 @@ fun HomeScreen(
         lifecycle.addObserver(stop)
         onDispose { lifecycle.removeObserver(stop); leave() }
     }
-    var expandedNudge by rememberSaveable { mutableStateOf<String?>(null) }
     val glyph = when { state.status.live -> "● "; state.status.paused -> "❚❚ "; else -> "" }
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("home_list")) {
         item {
@@ -123,9 +125,10 @@ fun HomeScreen(
                     title = "You asked “${item.question}”", body = item.answer, onClick = { onOpenAsk(item.id) },
                 )
                 is FeedItem.Nudge -> FeedCard(
-                    icon = Icons.Outlined.Lightbulb, colors = PcColors.ChipAmber, meta = "Heads up · ${item.timeLabel}", title = item.text,
-                    body = if (expandedNudge == item.id && !item.redacted && item.why.isNotBlank()) item.why else null,
-                    onClick = { expandedNudge = if (expandedNudge == item.id) null else item.id },
+                    icon = Icons.Outlined.Lightbulb, colors = PcColors.ChipAmber, meta = "Heads up · ${item.timeLabel}",
+                    title = if (item.redacted) REDACTED_NUDGE else item.text, body = null,
+                    onClick = if (item.redacted) null else ({ onOpenNudge(item.id) }),
+                    footer = if (item.redacted) null else ({ ProposalCard(item.id) }),
                 )
             }
         }
@@ -201,7 +204,10 @@ private fun QuestionPill(text: String, enabled: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FeedCard(icon: ImageVector, colors: Pair<Color, Color>, meta: String, title: String, body: String?, onClick: () -> Unit) {
+private fun FeedCard(
+    icon: ImageVector, colors: Pair<Color, Color>, meta: String, title: String, body: String?, onClick: (() -> Unit)?,
+    footer: (@Composable () -> Unit)? = null,
+) {
     SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth(), onClick = onClick) {
         Row(Modifier.padding(14.dp)) {
             IconChip(icon, colors, size = 36.dp, shapeRadius = 10.dp)
@@ -209,6 +215,7 @@ private fun FeedCard(icon: ImageVector, colors: Pair<Color, Color>, meta: String
                 Text(meta, style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
                 Text(title, style = MaterialTheme.typography.titleMedium, color = PcColors.Ink, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (body != null) Text(body, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                footer?.invoke()
             }
         }
     }

@@ -14,7 +14,9 @@ class MemoryGraph private constructor(val db: ContextDatabase) {
     val memoryEdits = MemoryEdits(db.memoryViewDao(), memories)
     val asks = AskRepository(db.askDao())
     val nudges = NudgeRepository(db.nudgeDao())
-    val proposals = ProposalRepository(db.proposalDao())
+    val proposals = ProposalRepository(db.proposalDao(), db.actionDao(), db)
+    val shopping = db.shoppingDao()
+    val notes = db.noteDao()
     val spaces = EmbeddingSpaces(db.embeddingDao())
     val vectorIndex: com.rokid.context.memory.retrieval.VectorIndex = com.rokid.context.memory.retrieval.BruteForceVectorIndex(db.embeddingDao())
 

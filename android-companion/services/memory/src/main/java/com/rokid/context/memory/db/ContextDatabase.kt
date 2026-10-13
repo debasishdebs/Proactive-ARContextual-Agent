@@ -32,4 +32,9 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun retrievalDao(): RetrievalDao
     abstract fun wipeDao(): WipeDao
     abstract fun exportDao(): ExportDao
+    abstract fun actionDao(): ActionDao
+    abstract fun shoppingDao(): ShoppingDao
+    abstract fun noteDao(): NoteDao
+    abstract fun forgetDao(): ForgetDao
+    abstract fun nudgeGateDao(): NudgeGateDao
 }
