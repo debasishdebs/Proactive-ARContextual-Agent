@@ -76,4 +76,23 @@ class RolesTest {
         vm.setMaxTokens(Role.ANSWER, "")
         withTimeout(5_000) { while (ai.bindings.get(Role.ANSWER)?.maxTokens != null) delay(10) }
     }
+
+    /** Fix round 1 (M-3): making the fallback the primary clears the fallback. */
+    @Test fun choosingTheFallbackAsPrimaryClearsTheFallback() = runBlocking {
+        ai.endpoints.save(Endpoint("az2", "Azure 2", EndpointKind.AZURE_OPENAI, "https://az2.example", null, listOf("gpt"), setOf(Capability.CHAT), 3), "k").getOrThrow()
+        vm.setEndpoint(Role.ANSWER, "az"); withTimeout(5_000) { while (ai.bindings.get(Role.ANSWER) == null) delay(10) }
+        vm.setFallback(Role.ANSWER, "az2"); withTimeout(5_000) { while (ai.bindings.get(Role.ANSWER)?.fallbackEndpointId != "az2") delay(10) }
+        vm.setEndpoint(Role.ANSWER, "az2"); withTimeout(5_000) { while (ai.bindings.get(Role.ANSWER)?.endpointId != "az2") delay(10) }
+        assertNull(ai.bindings.get(Role.ANSWER)!!.fallbackEndpointId)
+        assertNull(ai.bindings.get(Role.ANSWER)!!.fallbackModel)
+    }
+
+    /** Fix round 1 (M-4): re-selecting the same EMBED endpoint and model does not reindex. */
+    @Test fun reselectingTheSameEmbedBindingDoesNotReindex() = runBlocking {
+        vm.setEndpoint(Role.EMBED, "ol")
+        withTimeout(5_000) { while (reindexed == 0) delay(10) }
+        vm.setEndpoint(Role.EMBED, "ol"); vm.setModel(Role.EMBED, "nomic-embed-text")
+        delay(300)
+        assertEquals(1, reindexed)
+    }
 }
