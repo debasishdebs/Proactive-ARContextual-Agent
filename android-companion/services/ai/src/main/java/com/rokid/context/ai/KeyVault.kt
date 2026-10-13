@@ -10,11 +10,15 @@ interface KeyVault {
     fun remove(ref: String)
 }
 
+/** Opens the Keystore on first use, never at construction (built on Main by `AiGraph.get`); callers use it off Main. */
 class EncryptedKeyVault(context: Context) : KeyVault {
-    private val prefs = EncryptedSharedPreferences.create(
-        context, "endpoint_keys", MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    private val app = context.applicationContext
+    private val prefs by lazy {
+        EncryptedSharedPreferences.create(
+            app, "endpoint_keys", MasterKey.Builder(app).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+    }
     override fun get(ref: String) = prefs.getString(ref, null)
     override fun put(ref: String, key: String) { check(prefs.edit().putString(ref, key).commit()) { "Couldn't store the API key" } }
     override fun remove(ref: String) { check(prefs.edit().remove(ref).commit()) { "Couldn't remove the API key" } }

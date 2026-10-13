@@ -42,6 +42,19 @@ class EndpointRepositoryTest {
         assertEquals("Renamed", repo.byId("e1")!!.name)
     }
 
+    /** F18: the vault is the Keystore; save, keyFor and delete reach it off the main thread (the test thread is Main). */
+    @Test fun vaultCallsNeverRunOnTheMainThread() = runTest {
+        val spy = MainThreadVault()
+        val r = EndpointRepository(db.endpointDao(), spy)
+        val saved = r.save(e("https://h.example"), apiKey = "k1").getOrThrow()
+        r.save(saved, apiKey = null).getOrThrow()
+        assertEquals("k1", r.keyFor(saved))
+        r.save(saved.copy(kind = EndpointKind.OLLAMA, baseUrl = "http://localhost:1"), apiKey = "").getOrThrow()
+        r.delete("e1")
+        assertTrue(spy.onMain.size >= 5)
+        assertEquals(listOf<Boolean>(), spy.onMain.filter { it })
+    }
+
     @Test fun deleteRemovesKey() = runTest {
         val saved = repo.save(e("https://h.example"), apiKey = "k1").getOrThrow()
         repo.delete("e1")
