@@ -14,7 +14,8 @@ import org.json.JSONArray
  * 3. D becomes INVALIDATED (hidden from feeds, retrieval and the critic) and loses its vectors. The re-summarise worker
  *    rebuilds D from the sources that survive.
  * 4. Each F frame is tombstoned (the extraction lock) when [lockFrames].
- * 5. Asks and nudges citing F ∪ D are redacted. 6. Their PENDING proposals expire.
+ * 5. Asks and nudges citing F ∪ D are redacted. 6. Their PENDING proposals expire (and, except on retention expiry,
+ *    every proposal of theirs is scrubbed and disarmed).
  * Every `IN (…)` is chunked at [CHUNK]. Trace notes are untouched: they hold ids and counts, never memory text.
  * File deletion is the caller's job (on IO), from [Result.framesToDelete].
  */
@@ -61,12 +62,14 @@ class ForgetService(
     /**
      * Retention expiry (fix round 1 C1 ruling): like [forgetFacts] (rows, vectors, edges, tombstones, redaction of the
      * asks/nudges citing [ids]) but derived memories are left alone: each one expires on its own tier window.
+     * Final review C1: retention is storage hygiene, not a user removal, so an accepted proposal (EXECUTING/EXECUTED)
+     * keeps its params, log and armed alarm; it is not listed in [Result.redactedProposals]. PENDING still expires.
      */
     suspend fun expire(ids: Collection<String>): Result = db.withTransaction {
-        cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false)
+        cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false)
     }
 
-    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true): Result {
+    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
@@ -89,12 +92,20 @@ class ForgetService(
         asks.forEach { dao.redactAsk(it.id, REDACTED) }
         nudges.forEach { dao.redactNudge(it.id, REDACTED) }
         // 6. Proposals of redacted asks/nudges: PENDING expires (nested in this transaction); every proposal of those
-        //    origins loses its params (titles, items) and its action_log details (fix round 1 I2).
+        //    origins loses its params (titles, items) and its action_log details (fix round 1 I2). Retention
+        //    ([scrubAccepted] false) skips the accepted ones: EXECUTING/EXECUTED keep params, log and alarm.
         val origins = asks.map { it.id } + nudges.map { it.id }
-        val redactedProposals = origins.chunked(CHUNK).flatMap { db.actionDao().allIdsForOrigins(it) }
+        var redactedProposals = emptyList<String>()
         if (origins.isNotEmpty()) {
             proposals.expireForOrigins(origins, now)
-            origins.chunked(CHUNK).forEach { c -> db.actionDao().scrubLogsForOrigins(c); db.actionDao().scrubParamsForOrigins(c, REDACTED_PARAMS) }
+            val actions = db.actionDao()
+            if (scrubAccepted) {
+                redactedProposals = origins.chunked(CHUNK).flatMap { actions.allIdsForOrigins(it) }
+                origins.chunked(CHUNK).forEach { c -> actions.scrubLogsForOrigins(c); actions.scrubParamsForOrigins(c, REDACTED_PARAMS) }
+            } else {
+                redactedProposals = origins.chunked(CHUNK).flatMap { actions.idsForOriginsExcept(it, ACCEPTED) }
+                redactedProposals.chunked(CHUNK).forEach { c -> actions.scrubLogs(c); actions.scrubParams(c, REDACTED_PARAMS) }
+            }
         }
         val files = frames.filter { dao.remainingRefs(it) == 0 }.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
         return Result(forgotten, invalidated, asks.size, nudges.size, files, redactedProposals)
@@ -110,6 +121,8 @@ class ForgetService(
          */
         const val REDACTED_PARAMS = "{\"redacted\":true}"
         private const val CHUNK = 500
+        /** Proposal states retention never scrubs or disarms (final review C1). */
+        private val ACCEPTED = listOf(com.rokid.context.memory.ProposalState.EXECUTING.name, com.rokid.context.memory.ProposalState.EXECUTED.name)
 
         private fun parseIds(json: String): Set<String> = runCatching {
             val a = JSONArray(json)
