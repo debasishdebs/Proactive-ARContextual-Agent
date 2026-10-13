@@ -86,11 +86,25 @@ class AppShellTest {
     private fun waitForText(text: String, substring: Boolean = false) =
         compose.waitUntil(5_000) { compose.onAllNodesWithText(text, substring = substring).fetchSemanticsNodes().isNotEmpty() }
 
+    /** Walks the Phase 7 wizard to its end; every step after Welcome is optional. */
+    private fun walkWizardToDone() {
+        compose.onNodeWithText("Get started").performClick()
+        compose.onNodeWithText("Continue").performClick() // Permissions
+        compose.onNodeWithText("Set up later").performClick() // Glasses
+        compose.onNodeWithText("Set up later").performClick() // AI
+        compose.onNodeWithText("Continue").performClick() // Persona (stores off Main)
+        waitForText("Glasses gestures")
+        compose.onNodeWithText("Continue").performClick() // Gestures
+        waitForText("You're set")
+    }
+
     @Test fun firstRunShowsWelcomeWithoutPillNavThenHome() {
         launch(Routes.startRoute(deps.onboarding.isComplete()))
-        compose.onNodeWithText("Welcome to Proactive Context").assertIsDisplayed()
+        compose.onNodeWithText("Proactive Context").assertIsDisplayed()
         compose.onNodeWithText("Home").assertDoesNotExist()
-        compose.onNodeWithText("Get started").performClick()
+        walkWizardToDone()
+        compose.onNodeWithText("Open Home").performClick()
+        waitForText("Ask about your day")
         compose.onNodeWithText("Ask about your day").assertIsDisplayed()
         compose.onNodeWithText("Home").assertIsDisplayed()
         assertTrue(deps.onboarding.isComplete())
@@ -200,10 +214,13 @@ class AppShellTest {
     /** A double-tapped "Get started" must not stack two Home entries. */
     @Test fun doubleTappedGetStartedLeavesOneHome() {
         launch(Routes.ONBOARDING)
-        compose.mainClock.autoAdvance = false
-        compose.onNodeWithText("Get started").performClick()
-        compose.onNodeWithText("Get started").performClick()
         compose.mainClock.autoAdvance = true
+        walkWizardToDone()
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithText("Open Home").performClick()
+        compose.onNodeWithText("Open Home").performClick()
+        compose.mainClock.autoAdvance = true
+        waitForText("Ask about your day")
         compose.onNodeWithText("Ask about your day").assertIsDisplayed()
         compose.runOnIdle { assertEquals(listOf(Routes.HOME), nav.currentBackStack.value.mapNotNull { it.destination.route }.filter { it != nav.graph.route }) }
     }
