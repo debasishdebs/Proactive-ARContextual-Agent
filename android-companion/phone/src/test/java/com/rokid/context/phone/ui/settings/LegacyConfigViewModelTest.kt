@@ -95,9 +95,25 @@ class LegacyConfigViewModelTest {
     private suspend fun storedKeyBecomes(expected: String) = withTimeout(10_000) { while (AppConfigStore.get(ctx).apiKey != expected) kotlinx.coroutines.delay(20) }
     private fun assertKeyNotInState(key: String) = assertFalse(vm.state.value.toString().contains(key))
 
-    @Test fun openingWithAStoredKeyShowsAnEmptyFieldAndTheSavedHint() {
+    /** Fix round 1 (review I1, Threads): opening the endpoint list builds this VM on Main; the secrets store opens only on IO. */
+    @Test fun openingNeverReadsTheSecretsStoreOnTheMainThread() = runBlocking {
+        val onMain = java.util.Collections.synchronizedList(mutableListOf<Boolean>())
+        val spy = object : android.content.ContextWrapper(ctx) {
+            override fun getSharedPreferences(name: String?, mode: Int): android.content.SharedPreferences {
+                if (name == "app_config_secret") onMain += android.os.Looper.getMainLooper().isCurrentThread
+                return super.getSharedPreferences(name, mode)
+            }
+        }
+        vm.cancelScope()
+        vm = LegacyConfigViewModel(spy, pipeline)
+        assertTrue(withTimeout(10_000) { vm.state.first { it.config.apiKeySaved } }.config.apiKeySaved)
+        assertTrue(onMain.isNotEmpty())
+        assertEquals(listOf<Boolean>(), onMain.filter { it })
+    }
+
+    @Test fun openingWithAStoredKeyShowsAnEmptyFieldAndTheSavedHint() = runBlocking {
+        withTimeout(10_000) { vm.state.first { it.config.apiKeySaved } } // the saved hint loads off Main (fix round 1)
         assertEquals("", vm.state.value.config.apiKeyMasked)
-        assertTrue(vm.state.value.config.apiKeySaved)
         assertKeyNotInState("key-1")
     }
 

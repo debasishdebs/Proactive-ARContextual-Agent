@@ -71,12 +71,24 @@ class LegacyConfigViewModel(
     private val _state = MutableStateFlow(initial())
     val state: StateFlow<LegacyConfigUiState> = _state.asStateFlow()
 
+    /** Set (on Main) once the user types or clears a key; the late saved-key hint then never overrides it. */
+    private var keyEdited = false
+
+    init {
+        // Fix round 1 (Threads): the saved-key hint needs the Keystore-backed secrets, so it loads on IO, never in this
+        // constructor (built on Main when the endpoint list opens). An edit's own save sets the hint and wins.
+        viewModelScope.launch {
+            val saved = withContext(io) { AppConfigStore.get(context).apiKey.isNotBlank() }
+            if (saved && !keyEdited) config { copy(apiKeySaved = true) }
+        }
+    }
+
     private fun initial(): LegacyConfigUiState {
-        val c = AppConfigStore.get(context)
+        val c = AppConfigStore.getWithoutSecret(context)
         return LegacyConfigUiState(
             ConfigUiState(
                 pipelineEnabled = pipeline.enabled.value, localModeEnabled = c.localModeEnabled, encryptionEnabled = c.encryptionEnabled,
-                memoryWindow = c.memoryWindow, persona = c.persona, providerType = c.providerType, endpoint = c.endpoint, apiKeyMasked = "", apiKeySaved = c.apiKey.isNotBlank(),
+                memoryWindow = c.memoryWindow, persona = c.persona, providerType = c.providerType, endpoint = c.endpoint, apiKeyMasked = "", apiKeySaved = false,
                 deploymentOrModel = c.deploymentOrModel, nativeModelPath = c.nativeModelPath,
                 glassesSilencyMode = AppConfigStore.glassesSilencyMode(context), testResult = NOT_TESTED,
             ),
@@ -108,12 +120,14 @@ class LegacyConfigViewModel(
     fun updateEndpoint(value: String) { config { copy(endpoint = value) }; persist(); syncLater(TYPING_DEBOUNCE_MS) }
     /** Write-only field: the state holds only what was typed this session (cleared once synced); the stored key is never read into it. */
     fun updateApiKey(value: String) {
+        keyEdited = true
         config { copy(apiKeyMasked = value) }
         persist()
         syncLater(TYPING_DEBOUNCE_MS)
     }
 
     fun clearApiKey() {
+        keyEdited = true
         config { copy(apiKeyMasked = "", apiKeySaved = false) }
         viewModelScope.launch(io) { saveProvider(_state.value.config, key = "") }
         syncLater(0)

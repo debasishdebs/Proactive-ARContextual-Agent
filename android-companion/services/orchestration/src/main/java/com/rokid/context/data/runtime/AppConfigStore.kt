@@ -37,7 +37,12 @@ object AppConfigStore {
     private const val K_NATIVE_MODEL_PATH = "native_model_path"
     private const val K_GLASSES_SILENCY_MODE = "glasses_silency_mode"
 
-    fun get(context: Context): AppConfig {
+    fun get(context: Context): AppConfig = getWithoutSecret(context).copy(
+        apiKey = secrets(context).getString(K_API_KEY, "").orEmpty().replace("\\s+".toRegex(), ""),
+    )
+
+    /** Everything but the API key, from plain prefs only: [get] also opens the Keystore-backed secrets (never on Main). */
+    fun getWithoutSecret(context: Context): AppConfig {
         val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
         return AppConfig(
             pipelineEnabled = p.getBoolean(K_PIPELINE_ENABLED, true),
@@ -47,10 +52,7 @@ object AppConfigStore {
             persona = p.getString(K_PERSONA, "Global Default").orEmpty().ifBlank { "Global Default" },
             providerType = p.getString(K_PROVIDER_TYPE, "openai").orEmpty().ifBlank { "openai" },
             endpoint = p.getString(K_ENDPOINT, EnvDefaults.azureEndpoint).orEmpty(),
-            apiKey = secrets(context)
-                .getString(K_API_KEY, "")
-                .orEmpty()
-                .replace("\\s+".toRegex(), ""),
+            apiKey = "",
             deploymentOrModel = p.getString(K_DEPLOYMENT_OR_MODEL, EnvDefaults.azureDeployment).orEmpty().ifBlank {
                 EnvDefaults.azureDeployment
             },

@@ -1,7 +1,6 @@
 package com.rokid.context.phone.ui.settings.glasses
 
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,14 +8,23 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -63,6 +71,8 @@ class GlassesSettingsViewModel(
 }
 
 object GlassesLabels {
+    /** "Top left", "Bottom center", … for TalkBack. */
+    fun position(p: HudPosition): String = p.name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
     val VERBOSITY = listOf("Silent", "Medium", "Max")
     val GESTURES = mapOf(Gesture.TAP to "Tap", Gesture.DOUBLE_TAP to "Double-tap", Gesture.SWIPE_FORWARD to "Swipe forward", Gesture.SWIPE_BACK to "Swipe back")
     val ACTIONS = mapOf(
@@ -103,8 +113,13 @@ fun GlassesSettingsScreen(
         }
         item {
             SettingsCard {
-                Text("HUD size ${String.format(Locale.US, "%.0f", s.scale * 100)} %", style = MaterialTheme.typography.titleMedium)
-                Slider(value = s.scale, onValueChange = onScale, valueRange = Hud.MIN_SCALE..Hud.MAX_SCALE, modifier = Modifier.testTag("hud_scale"))
+                // Fix round 1 (I2): the drag stays local; one write (one `pc_settings` push) when the finger lifts.
+                var dragging by remember(s.scale) { mutableFloatStateOf(s.scale) }
+                Text("HUD size ${String.format(Locale.US, "%.0f", dragging * 100)} %", style = MaterialTheme.typography.titleMedium)
+                Slider(
+                    value = dragging, onValueChange = { dragging = it }, onValueChangeFinished = { onScale(dragging) },
+                    valueRange = Hud.MIN_SCALE..Hud.MAX_SCALE, modifier = Modifier.testTag("hud_scale").semantics { contentDescription = "HUD size" },
+                )
                 Text("Position", style = MaterialTheme.typography.titleMedium)
                 PositionGrid(s.position, onPosition)
             }
@@ -125,14 +140,15 @@ fun GlassesSettingsScreen(
 
 @Composable
 private fun PositionGrid(selected: HudPosition, onPick: (HudPosition) -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         HudPosition.entries.chunked(3).forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 row.forEach { p ->
                     val on = p == selected
                     Box(
-                        Modifier.size(36.dp).border(if (on) 3.dp else 1.dp, if (on) PcColors.MintDeep else PcColors.Line, RoundedCornerShape(8.dp))
-                            .clickable { onPick(p) }.padding(4.dp).testTag("pos_${p.name}"),
+                        Modifier.size(48.dp).border(if (on) 3.dp else 1.dp, if (on) PcColors.MintDeep else PcColors.Line, RoundedCornerShape(8.dp))
+                            .selectable(selected = on, role = Role.RadioButton, onClick = { onPick(p) })
+                            .semantics { contentDescription = GlassesLabels.position(p) }.testTag("pos_${p.name}"),
                     )
                 }
             }
