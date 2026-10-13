@@ -115,6 +115,15 @@ class PipelineRecordsTest {
         assertEquals(setOf("rokid_mem_abc_0", "rokid_mem_abc_1", "rokid_mem_def"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
     }
 
+    /** Fix round 2: drops only this job's surplus fact rows; a sibling id differing at an underscore position survives. */
+    @Test fun dropFactsFromRemovesOnlyThatJobsSurplusRows() = runBlocking {
+        listOf("rokid_mem_ab_c_0", "rokid_mem_ab_c_1", "rokid_mem_ab_c_2", "rokid_mem_abxc_1", "rokid_mem_ab_cx2", "rokid_mem_ab_c").forEachIndexed { i, id ->
+            PipelineRecords.appendFact(ctx, id, null, "fact $i", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK, createdAt = i.toLong())
+        }
+        PipelineRecords.dropFactsFrom(ctx, "rokid_mem_ab_c_", keep = 1)
+        assertEquals(setOf("rokid_mem_ab_c_0", "rokid_mem_abxc_1", "rokid_mem_ab_cx2", "rokid_mem_ab_c"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
+    }
+
     @Test fun inboxFramesArchivedInTheSameMillisecondBothStoreWithDistinctFullIds() = runBlocking {
         val a = jpg("1760000000000_rokid_1111_a.jpg")
         val b = jpg("1760000000000_rokid_1111_b.jpg")

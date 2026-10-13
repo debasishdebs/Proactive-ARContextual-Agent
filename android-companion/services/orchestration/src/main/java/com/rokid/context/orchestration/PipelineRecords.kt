@@ -117,7 +117,7 @@ object PipelineRecords {
     suspend fun dropFactsFrom(context: Context, prefix: String, keep: Int) {
         val g = graph(context)
         g.memories.deleteByIds(
-            g.memories.all().filter { m -> m.id.startsWith(prefix) && (m.id.removePrefix(prefix).toIntOrNull()?.let { it >= keep } == true) }.map { it.id },
+            g.memories.idsWithPrefix(prefix).filter { id -> id.removePrefix(prefix).toIntOrNull()?.let { it >= keep } == true },
         )
     }
 
