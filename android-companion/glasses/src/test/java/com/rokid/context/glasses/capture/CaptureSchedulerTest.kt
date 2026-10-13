@@ -85,4 +85,20 @@ class CaptureSchedulerTest {
         assertTrue("armed at $at", at in now..System.currentTimeMillis() + 1_000)
         assertEquals(1, alarmIntents().size)
     }
+
+    /** Phase 8 C3: Rokid's AssistServer force-stops the app; the lost alarm is reported so the HUD can say so. */
+    @Test fun aTimeLostToAForceStopReportsMissedAndReArms() {
+        val now = System.currentTimeMillis()
+        storeNext(now - 10 * 60_000)
+        assertEquals(Rearm.MISSED, CaptureScheduler(ctx).ensureScheduled())
+        val at = shadowOf(am).scheduledAlarms.single().getTriggerAtMs()
+        assertTrue("armed at $at", at in now..System.currentTimeMillis() + 1_000)
+    }
+
+    @Test fun aFutureStoredTimeReportsArmed() {
+        storeNext(System.currentTimeMillis() + 60_000)
+        assertEquals(Rearm.ARMED, CaptureScheduler(ctx).ensureScheduled())
+    }
+
+    @Test fun nothingStoredReportsFresh() = assertEquals(Rearm.FRESH, CaptureScheduler(ctx).ensureScheduled())
 }

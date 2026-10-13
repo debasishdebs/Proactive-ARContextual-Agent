@@ -21,8 +21,10 @@ internal class GlassAppWatcher(private val app: Context, private val glassesPkg:
 
     fun start(token: String) {
         if (link != null) return
+        var built: CXRLink? = null
         try {
             val l = CXRLink(app)
+            built = l
             l.configCXRSession(CxrDefs.CXRSession(CxrDefs.CXRSessionType.CUSTOMAPP, glassesPkg))
             l.setCXRLinkCbk(NoLinkCbk) // CXRLink dereferences it on every service callback
             l.setCXRGlassAppCbk(object : IGlassAppCbk {
@@ -36,11 +38,16 @@ internal class GlassAppWatcher(private val app: Context, private val glassesPkg:
                 override fun onStopAppResult(ok: Boolean) = Unit
                 override fun onQueryAppResult(ok: Boolean) = Unit
             })
-            if (!l.connect(token)) { Log.w(CxrGlassesLink.TAG, "watcher: bind failed"); return }
+            if (!l.connect(token)) {
+                Log.w(CxrGlassesLink.TAG, "watcher: bind failed")
+                runCatching { l.disconnect() } // Phase 8 C4: a failed bind must not leak the CXRLink
+                return
+            }
             link = l
             Log.i(CxrGlassesLink.TAG, "watcher: watching for our app reopened on glasses")
         } catch (e: Exception) {
             Log.w(CxrGlassesLink.TAG, "watcher: start failed (${e.javaClass.simpleName})")
+            if (link == null) built?.let { runCatching { it.disconnect() } }
         }
     }
 

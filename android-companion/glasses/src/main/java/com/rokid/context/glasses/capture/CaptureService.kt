@@ -63,6 +63,7 @@ class CaptureService : LifecycleService() {
     private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
     private val runtime by lazy { GlassesRuntime.get(this) }
     private val inFlight = AtomicBoolean(false)
+    @Volatile private var lastStartId = 0
 
     private enum class Outcome { BUFFERED, SKIPPED, FAILED }
 
@@ -82,7 +83,12 @@ class CaptureService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
         val action = intent?.action
         if (action != ACTION_SCHEDULED && action != ACTION_NOW) { stopSelf(startId); return START_NOT_STICKY }
-        startForeground(NOTIFICATION_ID, notification())
+        lastStartId = startId
+        val started = startForegroundOrStop(start = { startForeground(NOTIFICATION_ID, notification()) }) {
+            scheduleNextCapture(failed = true)
+            stopSelf(startId)
+        }
+        if (!started) return START_NOT_STICKY
         if (!inFlight.compareAndSet(false, true)) return START_NOT_STICKY // the running capture stops the service
         val skipDedupe = BuildConfig.DEBUG && intent?.getBooleanExtra(EXTRA_SKIP_DEDUPE, false) == true
         scope.launch {
@@ -96,15 +102,20 @@ class CaptureService : LifecycleService() {
                 failed = true
                 Log.w(TAG, "capture failed: ${e.javaClass.simpleName}")
             } finally {
-                val s = HudSettingsCache(getSharedPreferences(HudSettingsCache.PREFS, Context.MODE_PRIVATE)).read()
-                scheduler.scheduleNext(CaptureCadence.nextDelayMs(s.captureIntervalSec, batteryPercent(), isBatterySaverOn(), failed))
-                runtime.onCaptureScheduled()
+                scheduleNextCapture(failed)
                 inFlight.set(false)
                 stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                // The latest start, so a start that arrived during this capture is not cut off early.
+                stopSelfResult(lastStartId)
             }
         }
         return START_NOT_STICKY
+    }
+
+    private fun scheduleNextCapture(failed: Boolean) {
+        val s = HudSettingsCache(getSharedPreferences(HudSettingsCache.PREFS, Context.MODE_PRIVATE)).read()
+        scheduler.scheduleNext(CaptureCadence.nextDelayMs(s.captureIntervalSec, batteryPercent(), isBatterySaverOn(), failed))
+        runtime.onCaptureScheduled()
     }
 
     private suspend fun captureOnce(skipDedupe: Boolean): Outcome {
@@ -114,7 +125,13 @@ class CaptureService : LifecycleService() {
         if (FrameGuard.lowBattery(batteryPercent(), isCharging())) { Log.i(TAG, "capture skipped: ${SkipReason.LOW_BATTERY}"); return Outcome.SKIPPED }
         val provider = awaitCameraProvider() ?: return Outcome.FAILED
         val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
-        val texture = SurfaceTexture(0)
+        lateinit var texture: SurfaceTexture
+        // The texture is owned by the session from creation: every exit below unbinds and releases it exactly once.
+        val session = CaptureSession(unbind = { provider.unbindAll() }, release = { texture.release() }).also { texture = SurfaceTexture(0) }
+        return session.use { captureWindow(provider, analysis, texture, skipDedupe) }
+    }
+
+    private suspend fun captureWindow(provider: ProcessCameraProvider, analysis: ImageAnalysis, texture: SurfaceTexture, skipDedupe: Boolean): Outcome {
         val preview = Preview.Builder().build().also { p ->
             p.setSurfaceProvider { request ->
                 texture.setDefaultBufferSize(request.resolution.width, request.resolution.height)
@@ -144,17 +161,13 @@ class CaptureService : LifecycleService() {
         }
         provider.unbindAll()
         if (runCatching { provider.bindToLifecycle(this, resolveCameraSelector(provider), analysis, preview) }.isFailure) {
-            provider.unbindAll()
             Log.w(TAG, "camera bind failed")
             return Outcome.FAILED
         }
-        val outcome = withTimeoutOrNull(WINDOW_MS) { result.await() } ?: run {
+        return withTimeoutOrNull(WINDOW_MS) { result.await() } ?: run {
             if (analyzed.get() == 0 || isBackgroundRestricted()) runtime.fallback.maybeLaunch(this)
             Outcome.FAILED
         }
-        provider.unbindAll()
-        runCatching { texture.release() }
-        return outcome
     }
 
     /** Null = this camera frame is unusable; the analyzer tries the next one. */
@@ -176,6 +189,7 @@ class CaptureService : LifecycleService() {
         prefs.edit().putLong(KEY_LAST_HASH, prepared.hash).putLong(KEY_LAST_KEPT_AT, nowMs).apply()
         Log.i(TAG, "buffered $frameId (${prepared.jpeg.size / 1024} KB) buffer=${runtime.buffer.size}")
         runtime.onFrameBuffered()
+        runtime.fallback.onCaptureSucceeded()
         return Outcome.BUFFERED
     }
 
