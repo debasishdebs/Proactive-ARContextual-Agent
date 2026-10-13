@@ -120,7 +120,7 @@ class MemoryWipeTest {
         assertFalse(importer.isDone())
         MemoryWipe.deleteAll(ctx)
         assertTrue(importer.isDone())
-        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx)) // nothing left to import later
+        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx, isMain = { false })) // nothing left to import later
         assertEquals(0, MemoryGraph.get(ctx).db.memoryDao().count())
     }
 
@@ -138,7 +138,7 @@ class MemoryWipeTest {
         MemoryWipe.deleteAll(ctx)
         assertTrue(LegacyImporter(ctx, g()).isDone())
         File(ctx.filesDir, "memory_records.log").writeText("rokid_mem_1\tshort_term\t0.9\t100\tMilk carton nearly empty\n")
-        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx))
+        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx, isMain = { false }))
         assertEquals(0, g().db.memoryDao().count())
     }
 

@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.EndpointEntity
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import com.rokid.context.model.ModelProvider
 import java.util.concurrent.TimeUnit
@@ -175,5 +176,27 @@ class EndpointTesterTest {
         val cancelling = ProviderBuilder { _, _, _ -> object : ModelProvider { override suspend fun generate(prompt: String): String = throw CancellationException("left the screen") } }
         val thrown = runCatching { EndpointTester(repo, cancelling, client).test("e", "m") }.exceptionOrNull()
         assertTrue("got $thrown", thrown is CancellationException)
+    }
+
+    /** Phase 5 T1 carry: the whole cause chain decides the message, not just one level. */
+    @Test fun humanizeReadsTheWholeCauseChain() {
+        assertEquals("Can't reach that address", EndpointTester.humanize(IllegalStateException("x", java.io.IOException("y", java.net.UnknownHostException("h")))))
+        assertEquals("Key rejected (401)", EndpointTester.humanize(RuntimeException(IllegalStateException(ProviderHttpException(401, "Azure OpenAI", "no")))))
+        assertEquals("Timed out", EndpointTester.humanize(RuntimeException(RuntimeException(java.net.SocketTimeoutException()))))
+        assertEquals("Test failed", EndpointTester.humanize(RuntimeException("Incorrect key sk-live-999")))
+    }
+
+    /** T14 fix round 1: a caller that gives up (cancellation) while its local test is queued leaves nothing to run. */
+    @Test fun aCancelledQueuedLocalTestNeverRuns() = kotlinx.coroutines.runBlocking {
+        save(EndpointKind.LLAMACPP_LOCAL, setOf(Capability.CHAT), url = "/sdcard/m.gguf")
+        val gate = CompletableDeferred<String>(); val calls = java.util.concurrent.atomic.AtomicInteger()
+        val held = ProviderBuilder { _, _, _ -> object : ModelProvider { override suspend fun generate(prompt: String): String { calls.incrementAndGet(); return gate.await() } } }
+        val tester = EndpointTester(repo, held, client, callTimeoutMs = 10_000)
+        val first = launch(kotlinx.coroutines.Dispatchers.Default) { tester.test("e", "m") }
+        while (calls.get() == 0) kotlinx.coroutines.delay(10)
+        val second = launch(kotlinx.coroutines.Dispatchers.Default) { tester.test("e", "m") }
+        kotlinx.coroutines.delay(200); second.cancel(); second.join()
+        gate.complete("OK"); first.join(); kotlinx.coroutines.delay(300)
+        assertEquals(1, calls.get())
     }
 }

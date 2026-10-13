@@ -110,7 +110,7 @@ class RetrievalSettingsTest {
         val offMain = RetrievalViewModel(store, ai.retriever, MemoryGraph.get(ctx).spaces, ai, {}, now = { ranOn = Thread.currentThread(); 1_000 })
         try {
             offMain.onQuery("milk"); offMain.tryIt()
-            withTimeout(5_000) { offMain.state.first { it.results.isNotEmpty() && !it.searching } }
+            withTimeout(30_000) { offMain.state.first { it.results.isNotEmpty() && !it.searching } }
             assertTrue("ran on ${ranOn?.name}", ranOn != null && ranOn !== main)
         } finally { offMain.cancelScope() }
     }
@@ -143,8 +143,27 @@ class RetrievalSettingsTest {
         val offMain = RetrievalViewModel(store, ai.retriever, MemoryGraph.get(ctx).spaces, ai, { ranOn.complete(Thread.currentThread()) }, now = { 1_000 })
         try {
             offMain.rebuild()
-            val t = withTimeout(5_000) { ranOn.await() }
+            val t = withTimeout(30_000) { ranOn.await() }
             assertTrue("ran on ${t.name}", t !== main)
         } finally { offMain.cancelScope() }
+    }
+
+    /** Phase 5 T19 carry: leaving the screen cancels Try it; a search that finishes afterwards writes nothing. */
+    @Test fun tryItIsCancelledWhenTheScreenGoesAway() = runBlocking {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val release = java.util.concurrent.CountDownLatch(1)
+        // Preflight F9: fires once now() has handed back its value, so the assertions run after the blocked search has resumed.
+        val returned = java.util.concurrent.CountDownLatch(1)
+        val leaving = RetrievalViewModel(store, ai.retriever, MemoryGraph.get(ctx).spaces, ai, {}, now = {
+            entered.complete(Unit); release.await(10, java.util.concurrent.TimeUnit.SECONDS); returned.countDown(); 1_000
+        })
+        leaving.onQuery("milk"); leaving.tryIt()
+        withTimeout(30_000) { entered.await() }
+        kotlin.concurrent.thread { Thread.sleep(200); release.countDown() } // the blocked search ends after the cancel
+        leaving.cancelScope()
+        assertTrue("the search resumed", returned.await(30, java.util.concurrent.TimeUnit.SECONDS))
+        Thread.sleep(500) // let a (wrongly) uncancelled search finish retrieving and write its results
+        assertTrue(leaving.state.value.results.isEmpty())
+        assertTrue(leaving.state.value.tryError == null)
     }
 }

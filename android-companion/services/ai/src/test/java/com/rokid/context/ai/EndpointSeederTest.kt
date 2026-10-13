@@ -3,6 +3,9 @@ package com.rokid.context.ai
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.EndpointDao
+import com.rokid.context.memory.db.EndpointEntity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -63,9 +66,10 @@ class EndpointSeederTest {
         assertEquals("gpt-5.4", bindings.get(Role.SUMMARIZE)!!.model)
     }
 
-    @Test fun invalidConfigFailsWithoutMarkingDone() = runTest {
+    /** P8 D1: config the rules reject is marked done (logged once), so it is not retried on every start. */
+    @Test fun invalidConfigFailsAndIsMarkedDone() = runTest {
         assertTrue(seeder.seedIfNeeded(azure.copy(endpoint = "")).isFailure) // EnvDefaults.azureEndpoint is "" in tests
-        assertFalse(state.isDone()); assertTrue(endpoints.all().isEmpty())
+        assertTrue(state.isDone()); assertTrue(endpoints.all().isEmpty())
     }
 
     @Test fun doneMarkerMakesSeedANoOp() = runTest {
@@ -86,7 +90,7 @@ class EndpointSeederTest {
         val secret = "sekret-key-123"
         val r = seeder.seedIfNeeded(azure.copy(endpoint = "http://remote.example", apiKey = secret))
         assertTrue(r.isFailure)
-        assertFalse(state.isDone()); assertTrue(endpoints.all().isEmpty())
+        assertTrue(state.isDone()); assertTrue(endpoints.all().isEmpty()) // P8 D1: done, so not retried each start
         Role.entries.forEach { assertNull(bindings.get(it)) }
         val e = runCatching { ModelRouter(bindings, endpoints, ProviderFactory).generate(Role.ANSWER, "q") }.exceptionOrNull() as ModelCallException
         assertTrue(e.retryable); assertTrue(e.message!!.contains("No model is set for ANSWER"))
@@ -146,5 +150,71 @@ class EndpointSeederTest {
         seeder.seedIfNeeded(azure).getOrThrow()
         endpoints.delete(EndpointSeeder.AZURE_ID)
         assertTrue(seeder.retireLegacyKey(azure))
+    }
+
+    // ---- Phase 8 D1 ----
+
+    /** Review focus 6: the user removed the seeded key; a later start with the legacy file still present never copies it back. */
+    @Test fun aKeyRemovedByTheUserIsNeverCopiedBack() = runTest {
+        seeder.seedIfNeeded(azure).getOrThrow()
+        assertTrue(seeder.retireLegacyKey(azure))
+        endpoints.save(endpoints.byId(EndpointSeeder.AZURE_ID)!!, apiKey = "").getOrThrow()
+        assertTrue(seeder.retireLegacyKey(azure))
+        assertNull(vault.get(EndpointRepository.keyRef(EndpointSeeder.AZURE_ID)))
+        assertTrue(state.keyRetired())
+    }
+
+    @Test fun aRejectedLegacyConfigIsNotRetriedEachStart() = runTest {
+        val dao = CountingEndpointDao(db.endpointDao())
+        val repo = EndpointRepository(dao, vault)
+        val s = EndpointSeeder(repo, RoleBindingRepository(db.roleBindingDao(), repo), state)
+        val bad = azure.copy(endpoint = "http://remote.example", apiKey = "k")
+        assertTrue(s.seedIfNeeded(bad).isFailure)
+        assertTrue(state.isDone())
+        val writes = dao.writes
+        s.seedIfNeeded(bad)
+        assertEquals(writes, dao.writes)
+    }
+
+    @Test fun anIoFailureIsRetriedNextStart() = runTest {
+        val broken = object : KeyVault {
+            override fun get(ref: String): String? = null
+            override fun put(ref: String, key: String) = throw IllegalStateException("Couldn't store the API key")
+            override fun remove(ref: String) = Unit
+        }
+        val repo = EndpointRepository(db.endpointDao(), broken)
+        val s = EndpointSeeder(repo, RoleBindingRepository(db.roleBindingDao(), repo), state)
+        assertTrue(s.seedIfNeeded(azure).isFailure)
+        assertFalse(state.isDone())
+    }
+
+    @Test fun cancellationPropagatesFromSeed() = runTest {
+        val dao = object : EndpointDao by db.endpointDao() {
+            override suspend fun byId(id: String): EndpointEntity? = throw CancellationException("stop")
+        }
+        val repo = EndpointRepository(dao, vault)
+        val s = EndpointSeeder(repo, RoleBindingRepository(db.roleBindingDao(), repo), state)
+        val thrown = runCatching { s.seedIfNeeded(azure) }.exceptionOrNull()
+        assertTrue(thrown is CancellationException)
+        assertTrue(runCatching { s.retireLegacyKey(azure) }.isSuccess) // not done yet: returns false without a read
+        state.markDone()
+        assertTrue(runCatching { s.retireLegacyKey(azure) }.exceptionOrNull() is CancellationException)
+    }
+
+    /** Fix round 1: only the rules' own rejection is permanent; any other IllegalArgumentException retries next start. */
+    @Test fun anUnexpectedIllegalArgumentIsRetriedNextStart() = runTest {
+        val dao = object : EndpointDao by db.endpointDao() {
+            override suspend fun upsert(endpoint: EndpointEntity) = throw IllegalArgumentException("unexpected")
+        }
+        val repo = EndpointRepository(dao, vault)
+        val s = EndpointSeeder(repo, RoleBindingRepository(db.roleBindingDao(), repo), state)
+        assertTrue(s.seedIfNeeded(azure).isFailure)
+        assertFalse(state.isDone())
+    }
+
+    private class CountingEndpointDao(private val d: EndpointDao) : EndpointDao by d {
+        var writes = 0
+        override suspend fun upsert(endpoint: EndpointEntity) { writes++; d.upsert(endpoint) }
+        override suspend fun delete(id: String) { writes++; d.delete(id) }
     }
 }

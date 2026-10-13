@@ -10,7 +10,7 @@ import java.io.File
  */
 object SqlCipherConverter : EncryptionMigrator.DbConverter {
     override fun convert(src: File, dst: File, toEncrypted: Boolean, key: ByteArray) {
-        System.loadLibrary("sqlcipher")
+        SqlCipherLoader.ensureLoaded()
         val flags = SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.CREATE_IF_NECESSARY
         if (toEncrypted) {
             SQLiteDatabase.openDatabase(dst.absolutePath, key, null, flags, null, null).use { db ->

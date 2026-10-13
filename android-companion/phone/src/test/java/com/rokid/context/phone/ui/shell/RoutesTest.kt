@@ -20,6 +20,8 @@ class RoutesTest {
         listOf(Routes.SETTINGS_GLASSES, Routes.SETTINGS_ENDPOINT, Routes.SETTINGS_PROMPT_HISTORY, Routes.DIAGNOSTICS_LOGS)
             .forEach { assertEquals(it, Routes.Tab.SETTINGS, Routes.tabFor(it)) }
         assertTrue(Routes.SETTINGS_GLASSES in Routes.LIVE_SETTINGS)
+        assertTrue(Routes.SETTINGS_PHONE_INPUTS in Routes.LIVE_SETTINGS)
+        assertEquals(Routes.Tab.SETTINGS, Routes.tabFor(Routes.SETTINGS_PHONE_INPUTS))
     }
 
     @Test fun tabsFollowTheRoutePattern() {

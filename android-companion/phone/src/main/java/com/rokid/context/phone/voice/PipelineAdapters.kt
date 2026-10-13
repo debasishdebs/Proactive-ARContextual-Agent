@@ -55,7 +55,7 @@ class PipelinePhoneVoice(private val pipeline: VoicePipeline, private val settin
     }
 
     private fun view(p: PhoneVoiceState, s: VoiceSettings?, tapped: Boolean) =
-        p.copy(micOff = s?.phoneMic != true, error = if (s == null && tapped) LOADING else p.error)
+        p.copy(micOff = s?.phoneMic != true, settingsLoading = s == null, error = if (s == null && tapped) LOADING else p.error)
 
     override fun start() {
         val s = settings.value

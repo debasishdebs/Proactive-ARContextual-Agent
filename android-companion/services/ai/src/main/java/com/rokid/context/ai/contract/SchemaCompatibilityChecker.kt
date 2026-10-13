@@ -48,16 +48,19 @@ object SchemaCompatibilityChecker {
     private fun defsOf(root: JsonObject): Map<String, JsonElement> =
         listOf("\$defs", "definitions").flatMap { k -> (root[k] as? JsonObject)?.entries.orEmpty().map { "$k/${it.key}" to it.value } }.toMap()
 
+    /** `$defs/<name>` or `definitions/<name>` (name unescaped) of a local pointer, or null. */
+    private fun refKey(r: String): String? = POINTER.matchEntire(r)?.let { "${it.groupValues[1]}/${SchemaRefs.pointerToken(it.groupValues[2])}" }
+
     /** First `$ref` anywhere in [root] that isn't `#/$defs/<name>` or `#/definitions/<name>` of an existing entry, or null. */
     private fun badRef(root: JsonObject): String? {
         val defs = defsOf(root)
-        return refs(root).firstOrNull { r -> POINTER.matchEntire(r)?.let { "${it.groupValues[1]}/${it.groupValues[2]}" } !in defs }
+        return refs(root).firstOrNull { r -> refKey(r) !in defs }
     }
 
     /** Key (`$defs/X` or `definitions/X`) of an entry that can reach itself through `$ref`s (direct or indirect), or null. Iterative. */
     private fun refCycle(root: JsonObject): String? {
         val defs = defsOf(root)
-        val edges = defs.mapValues { (_, v) -> refs(v).mapNotNull { r -> POINTER.matchEntire(r)?.let { "${it.groupValues[1]}/${it.groupValues[2]}" } }.filter { it in defs }.toSet() }
+        val edges = defs.mapValues { (_, v) -> refs(v).mapNotNull(::refKey).filter { it in defs }.toSet() }
         for (start in edges.keys) {
             val seen = HashSet<String>()
             val todo = ArrayDeque(edges.getValue(start))
@@ -113,7 +116,7 @@ object SchemaCompatibilityChecker {
         val bBranches = (b["oneOf"] ?: b["anyOf"]) as? JsonArray
         if (bBranches != null) {
             val dBranches = (d["oneOf"] ?: d["anyOf"]) as? JsonArray
-            if (dBranches != null && dBranches.isEmpty()) { add("proposedAction must keep at least one variant"); return@buildList }
+            if (dBranches != null && dBranches.isEmpty()) { add("$where must keep at least one variant"); return@buildList }
             if (dBranches == null) { add("Changed the type of $where"); return@buildList }
             val byTag = bBranches.associateBy { tag(SchemaRefs.resolve(bRoot, it.jsonObject)) }
             for (db in dBranches) {
