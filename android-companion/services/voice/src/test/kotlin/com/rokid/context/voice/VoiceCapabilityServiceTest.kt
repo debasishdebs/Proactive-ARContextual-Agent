@@ -141,4 +141,25 @@ class VoiceCapabilityServiceTest {
         t.refresh().join()
         assertEquals(VoiceCapabilities.UNKNOWN, t.capabilities.value, "cancellation is not swallowed")
     }
+
+    /**
+     * Fix round 2: we hold the read end (F1), so a closed feed is our own I/O fault (a short write or EIO, which
+     * AndroidPipeSink reports as CLOSED, or a throwing sink), never the recognizer's answer: nothing is stored.
+     */
+    @Test fun aShortWriteOrEioDuringTheProbeStoresNothing() = runTest {
+        for (fault in listOf<(Int) -> Int>({ n -> if (n < 20) PipeSink.WROTE else PipeSink.CLOSED }, { n -> if (n < 2) PipeSink.WROTE else throw java.io.IOException("EIO") })) {
+            var writes = 0
+            val sink = object : PipeSink {
+                override fun tryWrite(bytes: ByteArray): Int = fault(writes++)
+                override fun close() = Unit
+            }
+            val outcome = ProbeFeed.stream(PcmFeeder(sink, clock = { testScheduler.currentTime }, capacityBytes = 64_000), ByteArray(134_142)) { kotlinx.coroutines.delay(it) }
+            assertEquals(true, outcome.peerClosed)
+            platform.outcome = ProbeFeed.judge(SttResult.NoSpeech, outcome)
+            val s = service()
+            s.refresh(allowProbe = true).join()
+            assertEquals(VoiceStatus.NOT_VERIFIED, s.capabilities.value.glasses)
+            assertNull(records.read())
+        }
+    }
 }

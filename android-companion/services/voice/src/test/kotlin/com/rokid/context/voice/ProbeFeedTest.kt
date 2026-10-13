@@ -76,4 +76,9 @@ class ProbeFeedTest {
         listOf(SttResult.Text("what do I need from the store"), SttResult.NoSpeech, null)
             .forEach { assertEquals(nonReader, ProbeFeed.judge(it, nonReader), "$it") }
     }
+
+    @Test fun aClosedFeedDecidesNothingWhateverTheRecognizerSaid() {
+        val closed = ProbeOutcome(166_142, 6_400, 64_000, peerClosed = true)
+        listOf(SttResult.Text("x"), SttResult.NoSpeech, null).forEach { assertEquals(null, ProbeFeed.judge(it, closed), "$it") }
+    }
 }
