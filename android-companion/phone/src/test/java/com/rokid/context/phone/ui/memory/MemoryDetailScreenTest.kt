@@ -1,7 +1,15 @@
 package com.rokid.context.phone.ui.memory
 
 import android.app.Application
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipe
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -53,5 +61,12 @@ class MemoryDetailScreenTest {
         compose.setContent { PcTheme { MemoryDetailScreen(base.copy(frameId = "f1", forgetting = true), {}, {}, {}, {}, {}, {}, { _, _ -> }) } }
         compose.onNodeWithText("Forget fact").assertIsNotEnabled()
         compose.onNodeWithText("Forget moment").assertIsNotEnabled()
+    }
+    /** Device check D-E1: in a short viewport (landscape) the photo fills the screen; a one-finger drag on it must scroll the page. */
+    @Test fun dragOnUnzoomedPhotoScrollsThePage() {
+        compose.setContent { PcTheme { Box(Modifier.height(360.dp)) { MemoryDetailScreen(base.copy(frameId = "f1", framePath = "/missing.jpg"), {}, {}, {}, {}, {}, {}, { _, _ -> }) } } }
+        compose.onNodeWithText("Photo no longer on this phone").performTouchInput { swipe(start = center, end = center - Offset(0f, 600f), durationMillis = 300) }
+        compose.waitForIdle()
+        compose.onNodeWithText("Forget fact").assertIsDisplayed()
     }
 }
