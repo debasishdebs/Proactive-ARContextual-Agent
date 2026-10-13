@@ -38,6 +38,10 @@ interface ActionDao {
     @Query("SELECT id FROM proposal WHERE state = :state AND originId IN (:originIds)")
     suspend fun idsForOrigins(state: String, originIds: List<String>): List<String>
 
+    /** Every proposal of [originIds], any state (Forget: their notifications are cancelled). Callers chunk. */
+    @Query("SELECT id FROM proposal WHERE originId IN (:originIds)")
+    suspend fun allIdsForOrigins(originIds: List<String>): List<String>
+
     /** Forget redaction (Stream F): callers chunk [originIds]. */
     @Query("UPDATE proposal SET paramsJson = :params WHERE originId IN (:originIds)")
     suspend fun scrubParamsForOrigins(originIds: List<String>, params: String): Int

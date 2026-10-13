@@ -26,7 +26,7 @@ class ReminderReceiver : BroadcastReceiver() {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(NotificationCompat.Builder(context, CHANNEL).setSmallIcon(android.R.drawable.ic_popup_reminder).setContentTitle(PUBLIC_TITLE).build())
             .build()
-        try { nm.notify(id.hashCode(), n) } catch (_: SecurityException) { /* POST_NOTIFICATIONS revoked */ }
+        try { nm.notify(ProposalNotifications.reminderId(id), n) } catch (_: SecurityException) { /* POST_NOTIFICATIONS revoked */ }
     }
 
     companion object {

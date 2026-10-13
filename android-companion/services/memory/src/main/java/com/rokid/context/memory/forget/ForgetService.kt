@@ -29,6 +29,8 @@ class ForgetService(
         val redactedAsks: Int,
         val redactedNudges: Int,
         val framesToDelete: List<String>,
+        /** Proposals of the redacted asks/nudges (any state): their posted notifications must go. */
+        val redactedProposals: List<String> = emptyList(),
     ) {
         companion object { val EMPTY = Result(emptySet(), emptySet(), 0, 0, emptyList()) }
     }
@@ -89,12 +91,13 @@ class ForgetService(
         // 6. Proposals of redacted asks/nudges: PENDING expires (nested in this transaction); every proposal of those
         //    origins loses its params (titles, items) and its action_log details (fix round 1 I2).
         val origins = asks.map { it.id } + nudges.map { it.id }
+        val redactedProposals = origins.chunked(CHUNK).flatMap { db.actionDao().allIdsForOrigins(it) }
         if (origins.isNotEmpty()) {
             proposals.expireForOrigins(origins, now)
             origins.chunked(CHUNK).forEach { c -> db.actionDao().scrubLogsForOrigins(c); db.actionDao().scrubParamsForOrigins(c, REDACTED_PARAMS) }
         }
         val files = frames.filter { dao.remainingRefs(it) == 0 }.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
-        return Result(forgotten, invalidated, asks.size, nudges.size, files)
+        return Result(forgotten, invalidated, asks.size, nudges.size, files, redactedProposals)
     }
 
     private fun likeFor(id: String) = "%\"${MemoryRepository.escapeLike(id)}\"%"

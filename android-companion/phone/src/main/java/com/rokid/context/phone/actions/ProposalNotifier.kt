@@ -64,7 +64,7 @@ class ProposalNotifier(private val context: Context, private val zone: () -> Zon
 
     companion object {
         const val CHANNEL = "proposals"
-        const val NOTIFICATION_ID = 7_301
+        const val NOTIFICATION_ID = com.rokid.context.connectors.actions.ProposalNotifications.PROPOSAL_ID
         const val PUBLIC_TITLE = "Suggested action"
 
         /** Follows the PENDING set for the life of [scope]. */
