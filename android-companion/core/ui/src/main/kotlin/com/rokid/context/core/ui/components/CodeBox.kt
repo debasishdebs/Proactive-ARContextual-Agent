@@ -50,15 +50,22 @@ fun CodeBox(
         } else {
             // Keeps the caret across edits and starts it at the end (the String overload starts at 0).
             var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
-            // Resync only when the parent's value itself changed (e.g. a restore), never because it lags behind typing.
+            // Texts this field emitted (most recent 32). A parent value in the record is a (possibly lagging) echo;
+            // one outside it is an external change (restore, normalisation, rejection) and replaces the field.
+            val emitted = remember { ArrayDeque<String>() }
             var seen by remember { mutableStateOf(value) }
             if (seen != value) {
                 seen = value
-                if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
+                val at = emitted.indexOf(value)
+                if (at >= 0) repeat(at + 1) { emitted.removeFirst() }
+                else {
+                    emitted.clear()
+                    if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
+                }
             }
             BasicTextField(
                 value = field,
-                onValueChange = { next -> val changed = next.text != field.text; field = next; if (changed) onValueChange(next.text) },
+                onValueChange = { next -> val changed = next.text != field.text; field = next; if (changed) { emitted.addLast(next.text); while (emitted.size > 32) emitted.removeFirst(); onValueChange(next.text) } },
                 textStyle = style, cursorBrush = SolidColor(PcColors.MintDeep), modifier = box,
             )
         }

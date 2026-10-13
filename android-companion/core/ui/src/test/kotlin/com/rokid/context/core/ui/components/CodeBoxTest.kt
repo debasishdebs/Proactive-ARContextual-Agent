@@ -67,4 +67,26 @@ class CodeBoxTest {
         compose.onNodeWithTag("code_box").performTextInput("e")
         compose.onNodeWithTag("code_box").assertTextEquals("abcde")
     }
+
+    @Test fun laggingEchoesOfQuickTypingLoseNothing() {
+        var t by mutableStateOf("")
+        compose.setContent { PcTheme { CodeBox(t, { }) } }
+        for (c in "abc") compose.onNodeWithTag("code_box").performTextInput(c.toString())
+        t = "a"; compose.waitForIdle()
+        compose.onNodeWithTag("code_box").assertTextEquals("abc")
+        compose.onNodeWithTag("code_box").performTextInput("d")
+        for (v in listOf("ab", "abc", "abcd")) { t = v; compose.waitForIdle() }
+        compose.onNodeWithTag("code_box").assertTextEquals("abcd")
+        compose.onNodeWithTag("code_box").performTextInput("e")
+        compose.onNodeWithTag("code_box").assertTextEquals("abcde")
+    }
+
+    @Test fun rejectedEditResyncsToTheParentValue() {
+        var t by mutableStateOf("")
+        compose.setContent { PcTheme { CodeBox(t, { }) } }
+        compose.onNodeWithTag("code_box").performTextInput("x")
+        t = "x"; compose.waitForIdle()
+        t = ""; compose.waitForIdle()
+        compose.onNodeWithTag("code_box").assertTextEquals("")
+    }
 }
