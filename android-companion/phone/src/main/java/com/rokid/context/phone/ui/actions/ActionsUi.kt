@@ -2,6 +2,7 @@ package com.rokid.context.phone.ui.actions
 
 import android.content.Context
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.core.app.NotificationManagerCompat
 import com.rokid.context.connectors.actions.ActionCopy
 import com.rokid.context.connectors.actions.ActionEngine
 import com.rokid.context.connectors.actions.ActionParams
@@ -20,10 +21,13 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import java.time.ZoneId
 
-/** One proposal as a card shows it (R-62, R-14). [undone] = DECLINED by Undo (`resolvedBy = "undo:*"`). */
+/**
+ * One proposal as a card shows it (R-62, R-14). [undone] = DECLINED by Undo (`resolvedBy = "undo:*"`). [warning] = an
+ * EXECUTED action that can't reach the user as is (fixed copy, e.g. notifications off; final review I2).
+ */
 data class ProposalUi(
     val id: String, val type: ActionType, val summary: String, val state: ProposalState,
-    val canAnswer: Boolean, val canUndo: Boolean, val failure: String?, val undone: Boolean = false,
+    val canAnswer: Boolean, val canUndo: Boolean, val failure: String?, val undone: Boolean = false, val warning: String? = null,
 )
 
 /** What a ProposalCard needs; the production one reads the engine and the database (off Main). */
@@ -41,7 +45,7 @@ val LocalOpenActionsSettings = staticCompositionLocalOf<(() -> Unit)?> { null }
 object ActionsUi {
     const val PHONE = "phone"
 
-    fun build(p: ProposalEntity, failureCode: String?, undoRemainingMs: Long, zone: ZoneId): ProposalUi? {
+    fun build(p: ProposalEntity, failureCode: String?, undoRemainingMs: Long, zone: ZoneId, warningCode: String? = null): ProposalUi? {
         val type = ActionParams.typeOf(p.type) ?: return null
         val state = ProposalState.entries.firstOrNull { it.name == p.state } ?: return null
         val summary = ActionParams.decode(type, p.paramsJson)?.let { ActionCopy.clip(ActionCopy.summary(it, zone)) } ?: typeLabel(type)
@@ -51,6 +55,7 @@ object ActionsUi {
             canUndo = state == ProposalState.EXECUTED && undoRemainingMs > 0,
             failure = if (state == ProposalState.FAILED) ActionCopy.failureTitle(failureCode) else null,
             undone = state == ProposalState.DECLINED && p.resolvedBy?.startsWith("undo:") == true,
+            warning = if (state == ProposalState.EXECUTED) ActionCopy.warningTitle(warningCode) else null,
         )
     }
 
@@ -75,11 +80,16 @@ class GraphCardSource(
     private val log: ActionDao,
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val work: CoroutineDispatcher = Dispatchers.IO,
+    /** Live check: once notifications are back on, the logged NOTIFICATIONS_OFF warning no longer applies. */
+    private val notificationsOn: () -> Boolean = { true },
 ) : ProposalCardSource {
     override fun observe(originId: String): Flow<ProposalUi?> = repo.forOrigin(originId).map { rows ->
         rows.firstOrNull()?.let { p ->
             val code = if (p.state == ProposalState.FAILED.name) log.logFor(p.id).lastOrNull { it.transition.endsWith(ProposalState.FAILED.name) }?.detail else null
-            ActionsUi.build(p, code, undoRemainingMs(p.id), zone())
+            val warn = if (p.state == ProposalState.EXECUTED.name && !notificationsOn()) {
+                log.logFor(p.id).lastOrNull { it.transition == ActionEngine.WARN }?.detail
+            } else null
+            ActionsUi.build(p, code, undoRemainingMs(p.id), zone(), warn)
         }
     }.flowOn(work)
 
@@ -90,7 +100,10 @@ class GraphCardSource(
     companion object {
         fun forApp(app: Context): GraphCardSource {
             val memory = MemoryGraph.get(app)
-            return GraphCardSource(ActionsGraph.get(app).engine, memory.proposals, memory.db.actionDao())
+            return GraphCardSource(
+                ActionsGraph.get(app).engine, memory.proposals, memory.db.actionDao(),
+                notificationsOn = { NotificationManagerCompat.from(app).areNotificationsEnabled() },
+            )
         }
     }
 }

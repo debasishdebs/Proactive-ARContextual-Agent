@@ -246,6 +246,20 @@ class ActionEngineTest {
         assertEquals(1, runs.get())
     }
 
+    /** Final review I2: a Done with a warning still ends EXECUTED, and the warning code is logged for the card. */
+    @Test fun warningIsLoggedWithTheExecution() = runBlocking {
+        val warns = object : ActionExecutor {
+            override suspend fun execute(p: ProposalEntity): ExecResult = ExecResult.Done("alarm:${p.id}", com.rokid.context.connectors.actions.executors.FailCode.NOTIFICATIONS_OFF)
+            override suspend fun undo(p: ProposalEntity) = true
+        }
+        val e = engine(warns)
+        val p = e.propose(ProposalOrigin.ASK, "a1", reminderIn(3_600_000), now)!!
+        e.respond(p.proposalId, true, "phone")
+        assertEquals(ProposalState.EXECUTED.name, repo.byId(p.proposalId)!!.state)
+        val warn = db.actionDao().logFor(p.proposalId).single { it.transition == ActionEngine.WARN }
+        assertEquals("NOTIFICATIONS_OFF", warn.detail)
+    }
+
     /** Final review I1: an executor gated until after the caller is cancelled, then arming the real reminder alarm. */
     private class GatedReminder(ctx: Context) : ActionExecutor {
         val entered = kotlinx.coroutines.CompletableDeferred<Unit>()

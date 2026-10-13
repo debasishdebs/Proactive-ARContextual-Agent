@@ -12,7 +12,11 @@ interface ActionExecutor {
 }
 
 sealed interface ExecResult {
-    data class Done(val createdRef: String) : ExecResult
+    /**
+     * The effect landed. [warning] = it landed but cannot reach the user as is (e.g. NOTIFICATIONS_OFF): the proposal
+     * still ends EXECUTED, and the engine logs the code so the card can say so (final review I2).
+     */
+    data class Done(val createdRef: String, val warning: FailCode? = null) : ExecResult
     data class Failed(val code: FailCode) : ExecResult
 }
 
