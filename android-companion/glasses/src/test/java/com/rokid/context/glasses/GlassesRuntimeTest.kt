@@ -5,6 +5,9 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.model.Channels
 import com.rokid.context.core.model.Hello
+import com.rokid.context.core.model.HudSettings
+import com.rokid.context.core.model.PauseOrigin
+import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.glasses.link.HudSettingsCache
 import com.rokid.context.glasses.link.FakeBridge
 import com.rokid.context.glasses.link.HudController
@@ -42,6 +45,21 @@ class GlassesRuntimeTest {
             assertEquals(0, runtime.buffer.size, "round $i")
             runtime.togglePause() // resume for the next round
         }
+    }
+
+    /** Spec §5.5: a newly merged phone pause active now drops the buffer, like a local pause; an expired one doesn't. */
+    @Test fun newActivePhoneRecordClearsBuffer() = runBlocking {
+        val runtime = GlassesRuntime.get(app)
+        runtime.pauses.ensureLoaded()
+        val now = System.currentTimeMillis()
+        repeat(3) { runtime.bufferCaptured("f$it", ByteArray(1_024), now - 10_000 + it, 90, "0", 80) }
+        assertEquals(3, runtime.buffer.size)
+        runtime.applyPhoneSettings(HudSettings(pauses = listOf(PauseRecord("old", PauseOrigin.PHONE, now - 9_000, now - 1_000)), pausesExact = true))
+        assertEquals(3, runtime.buffer.size, "an expired record keeps the buffer")
+        runtime.applyPhoneSettings(HudSettings(pauses = listOf(PauseRecord("p", PauseOrigin.PHONE, now, null)), pausesExact = true))
+        assertEquals(0, runtime.buffer.size)
+        runtime.togglePause() // resume, so later tests start clear
+        runtime.buffer.clear()
     }
 
     /** The hello sent when a frame is buffered still carries the trigger that just fired; the phone needs the new one. */

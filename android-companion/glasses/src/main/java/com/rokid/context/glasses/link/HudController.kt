@@ -13,7 +13,6 @@ import com.rokid.context.core.model.Hello
 import com.rokid.context.core.model.HelloRequest
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.PROTOCOL_VERSION
-import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.StateFrame
 import com.rokid.context.core.model.Wire
 import kotlinx.coroutines.CoroutineScope
@@ -64,7 +63,11 @@ class HudController(
     /** All three are called on a bridge thread. */
     @Volatile var onFrameAck: (FrameAck) -> Unit = {}
     @Volatile var onSessionOpened: () -> Unit = {}
-    @Volatile var onPhonePauses: (List<PauseRecord>) -> Unit = {}
+    /**
+     * Each phone push: `pc_settings` as sent; a `pc_state` pause list as the last settings with those pauses, inexact
+     * (a frame carries no clock flag) and with no resumes.
+     */
+    @Volatile var onPhoneSettings: (HudSettings) -> Unit = {}
 
     fun start() {
         bridge.subscribe(Channels.STATE) { onState(it) }
@@ -80,7 +83,7 @@ class HudController(
             is Decoded.Ok -> {
                 phoneMessage()
                 _frame.value = d.value
-                (d.value.capture as? CaptureState.Paused)?.let { onPhonePauses(it.records) }
+                (d.value.capture as? CaptureState.Paused)?.let { onPhoneSettings(_settings.value.copy(pauses = it.records, pausesExact = false, resumedPauseIds = emptyList())) }
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
             is Decoded.Malformed -> Log.w(TAG, "bad pc_state (${d.reason})") // a class name only: the text could quote memory lines
@@ -94,7 +97,7 @@ class HudController(
                 phoneMessage()
                 _settings.value = d.value
                 cache.write(d.value)
-                onPhonePauses(d.value.pauses)
+                onPhoneSettings(d.value)
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
             is Decoded.Malformed -> Log.w(TAG, "bad pc_settings (${d.reason})")
