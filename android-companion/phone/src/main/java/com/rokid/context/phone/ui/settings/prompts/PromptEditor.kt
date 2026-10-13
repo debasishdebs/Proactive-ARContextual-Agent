@@ -25,17 +25,22 @@ import com.rokid.context.phone.ui.settings.TextFieldRow
 import com.rokid.context.phone.ui.settings.ai.EndpointChoice
 import com.rokid.context.prompt.PromptDraft
 import com.rokid.context.prompt.TemplateVariables
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 enum class InputKind(val label: String) { FRAME("Recent frame"), TEXT("Free text"), QUESTION("Question") }
 data class FrameChoice(val id: String, val label: String)
@@ -65,17 +70,20 @@ data class PromptEditorUiState(
     val showWire: Boolean = false,
     val gates: SaveGates = SaveGates(false, false, false, false, false, false),
     val notice: String? = null,
+    /** A Save is in progress: editing and Save are off until it ends. */
+    val saving: Boolean = false,
 ) {
     val hasSchema: Boolean get() = key != null && key != PromptKey.SYSTEM
     val draft: PromptDraft get() = PromptDraft(template, schema.takeIf { hasSchema && it.isNotBlank() })
     val dirty: Boolean get() = activeDraft != null && draft != activeDraft
-    val canSave: Boolean get() = dirty && gates.all && !running
+    val canSave: Boolean get() = dirty && gates.all && !running && !saving
     val unknownVariables: List<String> get() = TemplateVariables.unknown(template)
     val missingVariables: Set<String> get() = key?.let { TemplateVariables.missing(it, template) }.orEmpty()
-    val gateLines: List<String> get() = listOf(
+    /** SYSTEM has no schema and no run, so only the Variables gate applies and only it is shown. */
+    val gateLines: List<String> get() = (if (key == PromptKey.SYSTEM) listOf(gates.variables to "Variables") else listOf(
         gates.compatible to "Schema compatible", gates.variables to "Variables", gates.ran to "Ran",
         gates.validated to "Matches schema", gates.decoded to "Fits the contract", gates.semantic to "Checks passed",
-    ).map { (ok, label) -> "${if (ok) "✓" else "✕"} $label" }
+    )).map { (ok, label) -> "${if (ok) "✓" else "✕"} $label" }
     /** Shown beside a run result: TestBed runs an unparseable draft schema on the default, so a run alone can look OK. */
     val runCompatLine: String? get() = when {
         result == null -> null
@@ -87,15 +95,27 @@ data class PromptEditorUiState(
 }
 
 /** spec §4.3–§4.5: edit the draft, run it on a chosen model with real inputs, Save only when every gate holds for it. */
-class PromptEditorViewModel(private val keyId: String, private val ai: AiGraph, private val inputs: TestBedInputs) : ViewModel() {
+@OptIn(FlowPreview::class)
+class PromptEditorViewModel(
+    private val keyId: String,
+    private val ai: AiGraph,
+    private val inputs: TestBedInputs,
+    /** Gate (1). TestBed runs the checker off Main; injectable so tests can count checks. */
+    private val compatibility: suspend (PromptKey, PromptDraft) -> List<String> = { k, d -> ai.testBed.compatibility(k, d) },
+) : ViewModel() {
     private val _state = MutableStateFlow(PromptEditorUiState())
     val state: StateFlow<PromptEditorUiState> = _state.asStateFlow()
     private var lastRun: Pair<PromptDraft, TestBedResult>? = null
-    private var compatJob: Job? = null
-    private var saving = false
+    private data class CheckRequest(val seq: Long, val debounceMs: Long)
+    private val checkRequests = MutableStateFlow<CheckRequest?>(null)
+    private var checkSeq = 0L
     private val time = DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH)
 
     init {
+        // The debounce waits on Default (real time, off Main); the check itself hops to Default inside TestBed.
+        viewModelScope.launch {
+            checkRequests.filterNotNull().debounce { it.debounceMs }.flowOn(Dispatchers.Default).collectLatest { check() }
+        }
         viewModelScope.launch {
             val key = PromptKey.parse(keyId) ?: run { _state.update { it.copy(loading = false, notFound = true) }; return@launch }
             val active = ai.prompts.active(key)
@@ -110,16 +130,17 @@ class PromptEditorViewModel(private val keyId: String, private val ai: AiGraph, 
                     template = active.template, schema = active.outputSchema ?: DefaultSchemas.text(key).orEmpty(),
                     activeDraft = stored(key, active.template, active.outputSchema),
                     endpoints = endpoints, endpointId = endpointId, model = model, frames = frames, frameId = frames.firstOrNull()?.id, inputKind = kind,
-                    inputText = if (kind == InputKind.QUESTION) "What did I see today?" else "")
+                    inputText = if (kind == InputKind.QUESTION) "What did I see today?" else "").let(::regated)
             }
-            regate(); recheck()
+            recheck(debounceMs = 0)
         }
         viewModelScope.launch { ai.prompts.settings.keepVersions.collect { k -> _state.update { it.copy(keepVersions = k) } } }
     }
 
-    fun onTemplate(t: String) { edit { it.copy(template = t) }; recheck() }
-    fun onSchema(s: String) { edit { it.copy(schema = s) }; recheck() }
-    fun resetSchema() { edit { it.copy(schema = it.key?.let(DefaultSchemas::text).orEmpty()) }; recheck() }
+    /** The checker reads only the schema, so a template edit re-gates (variables) without a new schema check. */
+    fun onTemplate(t: String) = edit { it.copy(template = t) }
+    fun onSchema(s: String) { if (edit { it.copy(schema = s) }) recheck() }
+    fun resetSchema() { if (edit { it.copy(schema = it.key?.let(DefaultSchemas::text).orEmpty()) }) recheck() }
     fun onInputKind(k: InputKind) = _state.update { it.copy(inputKind = k) }
     fun onInputText(t: String) = _state.update { it.copy(inputText = t.take(2_000)) }
     fun onFrame(id: String) = _state.update { it.copy(frameId = id) }
@@ -128,9 +149,9 @@ class PromptEditorViewModel(private val keyId: String, private val ai: AiGraph, 
     fun toggleWire() = _state.update { it.copy(showWire = !it.showWire) }
 
     fun discard() {
+        if (_state.value.saving) return
         lastRun = null
-        _state.update { s -> regated(s.activeDraft?.let { d -> s.copy(template = d.template, schema = d.outputSchema ?: s.key?.let(DefaultSchemas::text).orEmpty(), result = null, notice = null) } ?: s) }
-        recheck()
+        if (edit { s -> s.activeDraft?.let { d -> s.copy(template = d.template, schema = d.outputSchema ?: s.key?.let(DefaultSchemas::text).orEmpty()) } ?: s }) recheck()
     }
 
     fun run() {
@@ -150,8 +171,8 @@ class PromptEditorViewModel(private val keyId: String, private val ai: AiGraph, 
                 }
                 val p = inputs.prepare(key, input)
                 val result = ai.testBed.run(TestBedRequest(key, draft, endpoint, s.model, p.vars, p.images, p.inputIds))
-                lastRun = draft to result
-                _state.update { it.copy(result = result) }
+                // Edited or discarded meanwhile: this run belongs to a draft that no longer exists, so it writes nothing.
+                _state.update { if (it.draft == draft) { lastRun = draft to result; it.copy(result = result) } else it }
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
@@ -166,13 +187,13 @@ class PromptEditorViewModel(private val keyId: String, private val ai: AiGraph, 
     fun save() {
         val s = _state.value
         val key = s.key ?: return
-        if (!s.canSave || saving) return
-        saving = true
+        if (!s.canSave) return
         val draft = s.draft
+        _state.update { it.copy(saving = true) }
         viewModelScope.launch {
             try {
                 // Save runs the checker itself on the exact draft it stores (it rejects $ref cycles, so it can't hang).
-                val problems = ai.testBed.compatibility(key, draft)
+                val problems = compatibility(key, draft)
                 if (problems.isNotEmpty()) {
                     _state.update { regated(it.copy(compatFor = draft, compatProblems = problems, notice = "Fix the schema before saving")) }
                     return@launch
@@ -181,18 +202,19 @@ class PromptEditorViewModel(private val keyId: String, private val ai: AiGraph, 
                 val active = ai.prompts.active(key)
                 lastRun = null
                 _state.update {
-                    it.copy(activeVersion = active.version, activeDraft = stored(key, active.template, active.outputSchema),
-                        template = active.template, schema = active.outputSchema ?: DefaultSchemas.text(key).orEmpty(), result = null,
-                        notice = if (s.keepVersions) "Saved as v$v" else "Saved over v$v").let(::regated)
+                    val saved = it.copy(activeVersion = active.version, activeDraft = stored(key, active.template, active.outputSchema),
+                        notice = if (s.keepVersions) "Saved as v$v" else "Saved over v$v")
+                    // Edits are off while saving; the guard still never replaces text that isn't what was saved.
+                    if (it.draft != draft) saved else saved.copy(template = active.template, schema = active.outputSchema ?: DefaultSchemas.text(key).orEmpty(), result = null)
                 }
-                recheck()
+                recheck(debounceMs = 0)
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
                 Log.i(TAG, "save failed (${e.javaClass.simpleName})")
                 _state.update { it.copy(notice = "Couldn't save") }
             } finally {
-                saving = false
+                _state.update { regated(it.copy(saving = false)) }
             }
         }
     }
@@ -201,23 +223,34 @@ class PromptEditorViewModel(private val keyId: String, private val ai: AiGraph, 
     private fun stored(key: PromptKey, template: String, schema: String?) =
         PromptDraft(template, if (key == PromptKey.SYSTEM) null else schema?.takeIf { it.isNotBlank() } ?: DefaultSchemas.text(key))
 
-    private fun edit(f: (PromptEditorUiState) -> PromptEditorUiState) = _state.update { regated(f(it).copy(notice = null)) }
-
-    private fun regated(s: PromptEditorUiState): PromptEditorUiState = s.key?.let { k -> s.copy(gates = SaveGates.of(k, s.draft, s.compatFor?.let { it to s.compatProblems }, lastRun)) } ?: s
-    private fun regate() = _state.update(::regated)
-
-    private fun recheck() {
-        compatJob?.cancel()
-        compatJob = viewModelScope.launch {
-            val s = _state.value
-            val key = s.key ?: return@launch
-            val draft = s.draft
-            val problems = ai.testBed.compatibility(key, draft)
-            _state.update { regated(it.copy(compatFor = draft, compatProblems = problems)) }
+    /**
+     * One draft edit: ignored while saving (returns false). Clears the result panel. If the last check covered this
+     * schema it still holds for the edited draft (the checker reads only the schema), so [PromptEditorUiState.compatFor] follows.
+     */
+    private fun edit(f: (PromptEditorUiState) -> PromptEditorUiState): Boolean {
+        if (_state.value.saving) return false
+        _state.update { cur ->
+            if (cur.saving) return@update cur
+            val n = f(cur).copy(notice = null, result = null, showWire = false)
+            regated(if (n.compatFor?.outputSchema == n.draft.outputSchema) n.copy(compatFor = n.draft) else n)
         }
+        return true
     }
 
-    private companion object { const val TAG = "PromptEditor" }
+    private fun regated(s: PromptEditorUiState): PromptEditorUiState = s.key?.let { k -> s.copy(gates = SaveGates.of(k, s.draft, s.compatFor?.let { it to s.compatProblems }, lastRun)) } ?: s
+    /** Asks for a schema check; a burst of requests within [DEBOUNCE_MS] makes one check (see [checks]). */
+    private fun recheck(debounceMs: Long = DEBOUNCE_MS) { checkRequests.value = CheckRequest(++checkSeq, debounceMs) }
+
+    /** The check of the draft as it stands once the burst ends; a newer request cancels a check still running. */
+    private suspend fun check() {
+        val s = _state.value
+        val key = s.key ?: return
+        val draft = s.draft
+        val problems = compatibility(key, draft)
+        _state.update { regated(it.copy(compatFor = if (it.draft.outputSchema == draft.outputSchema) it.draft else draft, compatProblems = problems)) }
+    }
+
+    private companion object { const val TAG = "PromptEditor"; const val DEBOUNCE_MS = 300L }
 }
 
 @Composable
@@ -243,7 +276,7 @@ fun PromptEditorScreen(
         item {
             SettingsCard {
                 Text("Template · active v${state.activeVersion}", style = MaterialTheme.typography.titleMedium)
-                CodeBox(state.template, onTemplate, tag = "prompt_template", minLines = 8)
+                CodeBox(state.template, onTemplate.takeUnless { state.saving }, tag = "prompt_template", minLines = 8)
                 NoticeText("Variables: " + TemplateVariables.KNOWN.joinToString(" ") { "{{$it}}" })
                 if (state.unknownVariables.isNotEmpty()) NoticeText("Unknown: " + state.unknownVariables.joinToString(" ") { "{{$it}}" }, error = true, tag = "prompt_unknown")
                 if (state.missingVariables.isNotEmpty()) NoticeText("Required: " + state.missingVariables.joinToString(" ") { "{{$it}}" }, error = true, tag = "prompt_missing")
@@ -252,9 +285,9 @@ fun PromptEditorScreen(
         if (state.hasSchema) item {
             SettingsCard {
                 Text("Output schema", style = MaterialTheme.typography.titleMedium)
-                CodeBox(state.schema, onSchema, tag = "prompt_schema", minLines = 8, isError = state.compatProblems.isNotEmpty())
+                CodeBox(state.schema, onSchema.takeUnless { state.saving }, tag = "prompt_schema", minLines = 8, isError = state.compatProblems.isNotEmpty())
                 state.compatProblems.forEach { NoticeText(it, error = true, tag = "prompt_compat") }
-                SecondaryAction("Reset to default", onResetSchema, tag = "prompt_reset_schema")
+                SecondaryAction("Reset to default", onResetSchema, tag = "prompt_reset_schema", enabled = !state.saving)
             }
         }
         if (state.hasSchema) item {
@@ -292,8 +325,8 @@ fun PromptEditorScreen(
         item {
             SettingsCard {
                 state.gateLines.forEach { NoticeText(it, error = it.startsWith("✕"), tag = "gate") }
-                PrimaryAction(state.saveLabel, onSave, tag = "prompt_save", enabled = state.canSave)
-                SecondaryAction("Discard changes", onDiscard, tag = "prompt_discard", enabled = state.dirty)
+                PrimaryAction(if (state.saving) "Saving…" else state.saveLabel, onSave, tag = "prompt_save", enabled = state.canSave)
+                SecondaryAction("Discard changes", onDiscard, tag = "prompt_discard", enabled = state.dirty && !state.saving)
                 state.notice?.let { NoticeText(it, tag = "prompt_notice") }
             }
         }

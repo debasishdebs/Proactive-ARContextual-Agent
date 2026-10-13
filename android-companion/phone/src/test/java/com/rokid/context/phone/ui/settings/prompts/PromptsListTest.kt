@@ -18,6 +18,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.After
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -29,16 +30,29 @@ class PromptsListTest {
     @get:Rule val main = MainDispatcherRule()
     @get:Rule val compose = createComposeRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
+    private val vms = mutableListOf<PromptsListViewModel>()
+    private var graph = false
+
+    private fun fresh() { TestGraph.fresh(ctx); graph = true }
+
+    @After fun tearDown() { try { vms.forEach { it.cancelScope() } } finally { if (graph) TestGraph.close(ctx) } }
 
     @Test fun everyPromptIsListedAndTheToggleIsTheSetting() = runBlocking {
-        TestGraph.fresh(ctx)
+        fresh()
         val ai = TestSettings.ai(ctx)
-        val vm = PromptsListViewModel(ai)
+        val vm = PromptsListViewModel(ai).also { vms += it }
         val s = withTimeout(5_000) { vm.state.first { it.rows.size == PromptKey.entries.size } }
         assertEquals("v1", s.rows.first { it.key == PromptKey.ANSWER }.subtitle)
         vm.setKeepVersions(false)
         assertFalse(ai.prompts.settings.keepVersions.value)
-        vm.cancelScope(); TestGraph.close(ctx)
+    }
+
+    /** Fix round 1: a seed failure shows fixed text instead of crashing the app. */
+    @Test fun aSeedFailureShowsFixedText() = runBlocking {
+        fresh()
+        val ai = TestSettings.ai(ctx)
+        val vm = PromptsListViewModel(ai, seed = { throw IllegalStateException("asset prompts/answer.txt missing") }).also { vms += it }
+        assertEquals("Couldn't load the prompts", withTimeout(5_000) { vm.state.first { it.notice != null } }.notice)
     }
 
     @Test fun theToggleSitsInTheHeader() {

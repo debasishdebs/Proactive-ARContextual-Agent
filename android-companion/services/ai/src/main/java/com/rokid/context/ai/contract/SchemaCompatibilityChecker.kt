@@ -21,12 +21,16 @@ object SchemaCompatibilityChecker {
     private val MIN_KEYS = listOf("minLength", "minItems", "minimum", "exclusiveMinimum", "minProperties")
     private val MAX_KEYS = listOf("maxLength", "maxItems", "maximum", "exclusiveMaximum", "maxProperties")
 
+    /** 64 KB: a pasted schema larger than this is refused before it is parsed or walked. */
+    const val MAX_SCHEMA_CHARS = 64 * 1024
+
     fun check(key: PromptKey, draftSchema: String?, boundEndpoints: List<Endpoint>): List<String> {
         val base = DefaultSchemas.forKey(key) ?: return emptyList()
         val text = draftSchema?.takeIf { it.isNotBlank() } ?: return emptyList()
+        if (text.length > MAX_SCHEMA_CHARS) return listOf("Schema is too large")
         val draft = runCatching { SchemaRefs.parse(text) }.getOrElse { return listOf("Schema isn't valid JSON") }
-        badRef(draft)?.let { return listOf("Unsupported \$ref \"$it\" (use #/\$defs/<name> or #/definitions/<name> of an existing entry)") }
-        refCycle(draft)?.let { return listOf("Recursive schemas aren't supported ($it refers back to itself)") }
+        badRef(draft)?.let { return listOf("Unsupported \$ref \"${SchemaRefs.clip(it)}\" (use #/\$defs/<name> or #/definitions/<name> of an existing entry)") }
+        refCycle(draft)?.let { return listOf("Recursive schemas aren't supported (${SchemaRefs.clip(it)} refers back to itself)") }
         val problems = runCatching { refine(base, base, draft, draft, "") }.getOrElse { listOf(shown(it)) }.toMutableList()
         if (problems.isEmpty()) {
             boundEndpoints.filter { Capability.JSON_SCHEMA in it.capabilities }.distinctBy { it.id }.forEach { e ->

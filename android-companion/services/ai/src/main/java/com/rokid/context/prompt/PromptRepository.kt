@@ -47,6 +47,6 @@ class PromptRepository(
 
     suspend fun restore(key: PromptKey, version: Int): Int {
         val v = dao.version(key.name, version) ?: throw IllegalArgumentException("That version no longer exists")
-        return save(key, PromptDraft(v.template, v.outputSchema), "Restored from v$version", v.testedOk)
+        return save(key, PromptDraft(v.template, v.outputSchema), "Restored from v$version", testedOk = false) // untested until it is run again
     }
 }
