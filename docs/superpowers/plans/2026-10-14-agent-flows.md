@@ -164,12 +164,12 @@ The output is deterministic, and no two nodes share a cell.
 - `sideInputAboveALayerZeroTargetShiftsEverythingDown`;
 - `twoNodeSideChainEndsOneLayerAboveItsJoin` (uses Capture's remember_in→remember→save);
 - `noTwoNodesShareACell`, checked for all `AgentFlows.all`;
-- `layerStrictlyIncreasesAlongEveryEdge`, also for all flows. The capture→… edges into `save` from side chains satisfy this because chains end at `layer(save) − 1`. The `reprocess→save` back-edge is the exception: `save` is reached from `confidence`, while reprocess sits below `save_review`, which is below critic. Rule here: an edge whose target's layer ≤ source's layer is a **back-edge**. It is drawn routed around the side and excluded from this assertion, and `FlowLayout` exposes `val backEdges: Set<FlowEdge>`. Add `reprocessToSaveIsTheOnlyBackEdgeInCapture`.
+- `layerStrictlyIncreasesAlongEveryEdge` (all flows; they are acyclic, so longest-path layering guarantees it, e.g. Capture places `save` below `reprocess`).
 - `layoutIsDeterministic`.
 
 - [ ] Write the tests, then RED (compile).
-- [ ] Implement, add `backEdges` to `FlowLayout`, then GREEN.
-- [ ] Commit `feat(flows): layered layout with side-input alignment and back-edges`.
+- [ ] Implement, then GREEN.
+- [ ] Commit `feat(flows): layered layout with side-input alignment`.
 
 ---
 
@@ -286,7 +286,7 @@ Reuse the existing `PromptEditor` test fixtures and fake runner. Find them via `
 - Test: `phone/src/test/java/com/rokid/context/phone/ui/settings/flows/FlowViewTest.kt`
 
 **Interfaces:**
-- Consumes `AgentFlows`, `FlowLayouts.layout`, `FlowLayout.backEdges` (A), and `ai.bindings.observeAll()`, `ai.prompts` (active version per key; find the observe method in `PromptRepository`) and `s.retrieval` (current mode and fusion), all from `SettingsDeps`/`AiGraph`.
+- Consumes `AgentFlows`, `FlowLayouts.layout` (A), and `ai.bindings.observeAll()`, `ai.prompts` (active version per key; find the observe method in `PromptRepository`) and `s.retrieval` (current mode and fusion), all from `SettingsDeps`/`AiGraph`.
 - Produces:
 ```kotlin
 data class FacetLine(val facet: Facet, val text: String)          // "Prompt v3", "gpt-4o · t 0.2", "Not set", "Hybrid · RRF"
@@ -303,7 +303,7 @@ class FlowViewModel(ids: List<String>, ai: AiGraph, retrieval: RetrievalStore /*
 - Unknown ids are dropped. If no ids remain, `empty = true` and the screen shows "No flows selected".
 - The System chip at the top (tag `flow_system`) shows "System preamble · v<N>".
 - Each section (tag `flow_section_<id>`) has the title, then a `Box` with `horizontalScroll` containing a `Canvas` for edges, plus node composables absolutely positioned at `cell → (column*W, layer*H)`.
-- Edges are straight lines with arrowheads. Back-edges route out to the right margin and back, and labels are drawn at the edge midpoint (testable as a `Text` with tag `flow_edge_label_<from>_<to>`).
+- Edges are straight lines with arrowheads; an edge that skips layers or crosses columns is drawn as a cubic curve. Labels are drawn at the edge midpoint (testable as a `Text` with tag `flow_edge_label_<from>_<to>`).
 - An AI-step card (tag `flow_node_<flowId>_<nodeId>`) shows the title (max 2 lines, ellipsis) and its facet lines. Other kinds render as muted pills.
 - Facet line text:
   - Prompt: `"Prompt v<active>"`, or `"Prompt missing — Reset to default"`;
