@@ -3,10 +3,16 @@ package com.rokid.context.data.frames
 import android.content.Context
 import android.util.Log
 import com.rokid.context.data.runtime.PipelineStatsStore
+import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.PipelineRecords
+import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.util.Locale
+
+/** One inbox file's ingest: [FAILED] (threw) goes back to the inbox for the next drain; a [DUPLICATE] stays archived. */
+internal enum class InboxResult { STORED, DUPLICATE, FAILED }
 
 object RokidFrameInbox {
     private const val TAG = "RokidFrameInbox"
@@ -25,7 +31,23 @@ object RokidFrameInbox {
         return File(context.filesDir, ARCHIVE_DIR)
     }
 
-    suspend fun ingestPending(context: Context, maxItems: Int = 8): Int {
+    /**
+     * Deletes `.part` files (an atomic write the process died in) older than [minAgeMs]; a fresh one may be a write in
+     * progress. Returns how many went.
+     */
+    fun sweepOrphanParts(context: Context, nowMs: Long = System.currentTimeMillis(), minAgeMs: Long = 60_000): Int =
+        inboxDir(context).listFiles().orEmpty().count { f ->
+            f.isFile && f.name.endsWith(".part") && nowMs - f.lastModified() >= minAgeMs && f.delete()
+        }
+
+    suspend fun ingestPending(
+        context: Context,
+        maxItems: Int = 8,
+        nowMs: () -> Long = System::currentTimeMillis,
+        appendFrame: suspend (Context, FrameEntity) -> Boolean = PipelineRecords::appendFrame,
+    ): Int {
+        val swept = sweepOrphanParts(context, nowMs())
+        if (swept > 0) Log.i(TAG, "swept orphan parts=$swept")
         val inbox = inboxDir(context)
         if (!inbox.exists()) inbox.mkdirs()
         val archive = archiveDir(context)
@@ -43,11 +65,22 @@ object RokidFrameInbox {
 
         var imported = 0
         for (file in candidates) {
-            val archived = File(archive, "${System.currentTimeMillis()}_${file.name}")
+            // Review Focus 3: a Delete all that starts while this file is ingested bumps the generation; its row and file go.
+            val generation = MemoryWipe.generation.get()
+            val archived = File(archive, "${nowMs()}_${file.name}")
             val moved = runCatching { file.renameTo(archived) }.getOrDefault(false)
             val sourceFile = if (moved) archived else file
-            val ok = ingestFile(context, sourceFile, source = "rokid_glasses")
-            if (ok) imported += 1
+            when (ingestFile(context, sourceFile, source = "rokid_glasses", appendFrame)) {
+                InboxResult.STORED -> if (MemoryWipe.generation.get() != generation) {
+                    MemoryGraph.get(context).frames.deleteByIds(listOf(frameIdOf(sourceFile)))
+                    sourceFile.delete()
+                    Log.i(TAG, "frame dropped: Delete all ran during its ingest")
+                } else {
+                    imported += 1
+                }
+                InboxResult.DUPLICATE -> Unit
+                InboxResult.FAILED -> if (moved && !archived.renameTo(file)) Log.w(TAG, "failed ingest not returned to the inbox")
+            }
         }
         return imported
     }
@@ -56,7 +89,7 @@ object RokidFrameInbox {
         val file = File(absolutePath)
         if (!file.exists() || !file.isFile) return false
         if (extOf(file.name) !in supportedExt) return false
-        return ingestFile(context, file, source)
+        return ingestFile(context, file, source) == InboxResult.STORED
     }
 
     private fun extOf(name: String): String = name.substringAfterLast('.', "").lowercase(Locale.US)
@@ -64,22 +97,35 @@ object RokidFrameInbox {
     // Full archived file name (<archiveMs>_rokid_<rxMs>_<id>): unique per file. Never truncate, ids only dedupe via insertIgnore.
     private fun frameIdOf(file: File): String = file.nameWithoutExtension.ifBlank { "rokid_frame" }
 
-    private suspend fun ingestFile(context: Context, file: File, source: String): Boolean {
+    internal suspend fun ingestFile(
+        context: Context,
+        file: File,
+        source: String,
+        appendFrame: suspend (Context, FrameEntity) -> Boolean = PipelineRecords::appendFrame,
+    ): InboxResult {
         val frameId = frameIdOf(file)
         val payload = "rokid_file=${file.name} bytes=${file.length()}"
         Log.i(TAG, "ingestFile path=${file.absolutePath} source=$source exists=${file.exists()} size=${file.length()}")
-        val appended = PipelineRecords.appendFrame(
-            context,
-            FrameEntity(
-                id = frameId,
-                ts = file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis(),
-                path = file.absolutePath,
-                source = source,
-                payload = payload,
-            ),
-        )
+        val appended = try {
+            appendFrame(
+                context,
+                FrameEntity(
+                    id = frameId,
+                    ts = file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis(),
+                    path = file.absolutePath,
+                    source = source,
+                    payload = payload,
+                ),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "ingest failed frameId=$frameId: ${e.javaClass.simpleName}")
+            return InboxResult.FAILED
+        }
         Log.i(TAG, "append result=$appended frameId=$frameId")
         if (appended) PipelineStatsStore.incFrameCaptured(context)
-        return appended
+        // appendFrame's false is a duplicate id or a file that vanished: neither is worth a retry.
+        return if (appended) InboxResult.STORED else InboxResult.DUPLICATE
     }
 }

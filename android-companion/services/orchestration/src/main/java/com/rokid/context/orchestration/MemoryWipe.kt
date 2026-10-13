@@ -11,6 +11,7 @@ import com.rokid.context.memory.legacy.LegacyImporter
 import com.rokid.context.work.OrchestrationScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
@@ -39,6 +40,7 @@ object MemoryWipe {
         // waited for (it holds the lock until it finishes or throws); then it is marked done and never runs again.
         MemoryGraph.markLegacyImportDone(context)
         generation.incrementAndGet()
+        WipeFence.markStarted(context.filesDir, System.currentTimeMillis())
         val scheduler = OrchestrationScheduler(context)
         scheduler.pausePipeline()
         try {
@@ -46,9 +48,11 @@ object MemoryWipe {
             val wipe = db.wipeDao()
             val paths = wipe.framePaths()
             wipe.wipeMemory()
-            val listed = paths.filter { it.isNotBlank() }.map(::File)
-            val folders = RokidFrameInbox.FRAME_DIRS.flatMap { name -> File(context.filesDir, name).walkTopDown().filter { it.isFile }.toList() }
-            val deleted = (listed + folders).distinctBy { it.absolutePath }.count { it.exists() && it.delete() }
+            val deleted = WipeFence.mutex.withLock {
+                val listed = paths.filter { it.isNotBlank() }.map(::File)
+                val folders = RokidFrameInbox.FRAME_DIRS.flatMap { name -> File(context.filesDir, name).walkTopDown().filter { it.isFile }.toList() }
+                (listed + folders).distinctBy { it.absolutePath }.count { it.exists() && it.delete() }
+            }
             LegacyImporter.LEGACY_FILES.forEach { File(context.filesDir, it).delete() }
             MemoryExport.dir(context).listFiles()?.filter { it.isFile }?.forEach { it.delete() }
             MemoryMaintenance.vacuum(db)
