@@ -50,7 +50,7 @@ Inputs/conditions the spec implies but does not spell out; each is pinned by a t
 | 4 Phone shell | `2026-10-12-v1-phase4-phone-shell.md` | written | 2 (+3 for live glasses state; fixtures otherwise) |
 | 5 AI + Settings | `2026-10-12-v1-phase5-ai-settings.md` | written | 2, 4 |
 | 6 Voice + answers | `2026-10-12-v1-phase6-voice-answers.md` | written | 0, 3, 5 |
-| 7 Nudges, actions, sources, pause, onboarding | to be written after 6 | — | 3, 5, 6 |
+| 7 Nudges, actions, sources, pause, onboarding | `2026-10-12-v1-phase7-nudges-actions.md` (Stream 0 seams, then 5 parallel streams A pause · B actions · C sources+nudges · F forget+retention · E onboarding) | written | 3, 5, 6 (Phase 6 Tasks 11–16 merged first) |
 | 8 Hardening | to be written after 7 | — | all |
 
 Task references are `Phase.Task` (e.g. 2.6 = Phase 2 Task 6); every detailed task also carries a `**Requirements:**` line. Phases 3–8 get their own detailed plan (same header/format, bite-sized TDD steps) when their prerequisites are done, because their concrete values (CXR message limit, TTS route, STT behaviour, final DAO shapes) come from earlier phases. Each later plan MUST cite R-IDs per task and MUST cover the R-IDs assigned to it below.
