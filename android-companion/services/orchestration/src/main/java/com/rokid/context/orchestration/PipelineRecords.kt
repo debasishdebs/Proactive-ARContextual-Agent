@@ -2,6 +2,7 @@ package com.rokid.context.orchestration
 
 import android.content.Context
 import android.util.Log
+import androidx.room.withTransaction
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
@@ -96,14 +97,24 @@ object PipelineRecords {
     }
 
     /**
-     * One extracted fact (spec §4.4 VISION_EXTRACT / EXPLICIT_REMEMBER) or a summary, indexed for search.
+     * One extracted fact (spec §4.4 VISION_EXTRACT / EXPLICIT_REMEMBER) or a summary, indexed for search. False (nothing
+     * written) when Delete all ran after [generation] was read: a queue job passes the value it read before its claim.
      * Ids must keep the `rokid_` prefix (and not `rokid_review_`) or [purgeNonRokidMemories] / [purgeLowSignalMemories] drop them.
      */
     suspend fun appendFact(
         context: Context, id: String, frameId: String?, text: String, type: String, tags: List<String>, confidence: Double,
         tier: MemoryTier, reviewState: ReviewState, createdAt: Long = System.currentTimeMillis(),
-    ) {
-        graph(context).memories.add(
+        generation: Long = MemoryWipe.generation.get(),
+    ): Boolean {
+        val g = graph(context)
+        // Review I1: the Delete-all check and the insert share one transaction, and Delete all bumps the generation
+        // before its own transaction, so a fact from work begun before the wipe can never land after it.
+        return g.db.withTransaction {
+            if (MemoryWipe.generation.get() != generation) {
+                Log.i(TAG, "fact dropped: Delete all ran since this job started")
+                return@withTransaction false
+            }
+            g.memories.add(
             MemoryEntity(
                 id = id, frameId = frameId, text = oneLine(text).take(260), type = oneLine(type).take(20).ifEmpty { "note" },
                 tags = tags.map { oneLine(it).lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.take(5).joinToString(" "),
@@ -111,6 +122,8 @@ object PipelineRecords {
                 createdAt = createdAt, derived = type == "summary", searchText = "",
             ),
         )
+            true
+        }
     }
 
     /** Fix M5: before a job (re)writes facts `<prefix>0..keep-1`, drop its rows `<prefix>keep…` left by an earlier run. */

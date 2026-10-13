@@ -26,6 +26,12 @@ object MemoryMaintenance {
         override fun onOpen(db: SupportSQLiteDatabase) { if (rebuildPending(db)) rebuildFts(db) }
     }
 
+    /** Moves the WAL into the main file and truncates it, so deleted pages don't linger in `-wal` (Delete all). */
+    suspend fun checkpoint(db: ContextDatabase) = withContext(Dispatchers.IO) {
+        db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(TRUNCATE)").use { it.moveToFirst() }
+        Unit
+    }
+
     internal fun markRebuildPending(w: SupportSQLiteDatabase) = w.execSQL("PRAGMA application_id = $FTS_REBUILD_PENDING")
 
     internal fun rebuildPending(w: SupportSQLiteDatabase): Boolean =

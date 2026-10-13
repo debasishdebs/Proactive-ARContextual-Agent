@@ -23,7 +23,7 @@ class LegacyImporter(private val context: Context, private val graph: MemoryGrap
         var frames = 0
         var traces = 0
 
-        lines("memory_records.log").forEach { line ->
+        lines(MEMORY_LOG).forEach { line ->
             val p = line.split("\t", limit = 5)
             val confidence = p.getOrNull(2)?.toDoubleOrNull()
             val createdAt = p.getOrNull(3)?.toLongOrNull()
@@ -35,7 +35,7 @@ class LegacyImporter(private val context: Context, private val graph: MemoryGrap
             if (graph.memories.addIgnore(toMemory(id, type, confidence, createdAt, content))) memories++
         }
 
-        lines("captured_frames.log").forEach { line ->
+        lines(FRAME_LOG).forEach { line ->
             val p = line.split("\t")
             val ts = p.getOrNull(1)?.toLongOrNull()
             if (p.size < 5 || ts == null) { skipped++; return@forEach }
@@ -44,7 +44,7 @@ class LegacyImporter(private val context: Context, private val graph: MemoryGrap
             if (graph.frames.add(FrameEntity(id = id, ts = ts, path = path, source = source, payload = payload))) frames++
         }
 
-        lines("summary_trace.log").forEach { line ->
+        lines(TRACE_LOG).forEach { line ->
             val p = line.split("\t", limit = 4)
             val updated = p.getOrNull(2)?.toLongOrNull()
             if (p.size < 4 || updated == null) { skipped++; return@forEach }
@@ -68,6 +68,11 @@ class LegacyImporter(private val context: Context, private val graph: MemoryGrap
 
     companion object {
         private const val K_DONE = "v1_done"
+        private const val MEMORY_LOG = "memory_records.log"
+        private const val FRAME_LOG = "captured_frames.log"
+        private const val TRACE_LOG = "summary_trace.log"
+        /** The legacy plaintext logs in filesDir (kept one release, spec §6.2); Delete all removes them. */
+        val LEGACY_FILES: List<String> = listOf(MEMORY_LOG, FRAME_LOG, TRACE_LOG)
         /** Same markers as `PipelineRecords.purgeLowSignalMemories` (orchestration). */
         private val LOW_SIGNAL = listOf(
             "no visual content", "only file references", "file references and timestamps", "metadata only", "no image pixels",

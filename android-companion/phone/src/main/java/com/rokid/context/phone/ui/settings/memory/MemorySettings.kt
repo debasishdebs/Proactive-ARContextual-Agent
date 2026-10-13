@@ -51,7 +51,8 @@ data class MemorySettingsUiState(
 )
 
 class MemorySettingsViewModel(
-    private val store: MemorySettingsStore,
+    /** Prefs-backed (lazy in SettingsDeps): reached only on [work], never in the ViewModel factory on Main (review M7). */
+    private val store: () -> MemorySettingsStore,
     private val encryption: EncryptionControl,
     private val usedBytes: suspend () -> Long,
     private val wipe: suspend () -> Unit,
@@ -61,19 +62,21 @@ class MemorySettingsViewModel(
     /** Prefs reads/commits, file sizes, the wipe and the export run here, never on Main. */
     private val work: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
-    private val _state = MutableStateFlow(MemorySettingsUiState(settings = store.settings.value))
+    private val _state = MutableStateFlow(MemorySettingsUiState())
     val state: StateFlow<MemorySettingsUiState> = _state.asStateFlow()
 
     init {
-        viewModelScope.launch { store.settings.collect { s -> _state.update { it.copy(settings = s) }; refreshStorage() } }
+        viewModelScope.launch { withContext(work) { store() }.settings.collect { s -> _state.update { it.copy(settings = s) }; refreshStorage() } }
         viewModelScope.launch { reviewCount.collect { n -> _state.update { it.copy(reviewCount = n) } } }
         viewModelScope.launch { refreshEncryption() }
     }
 
-    fun setShort(h: Int) = store.update { it.copy(shortHours = h) }
-    fun setMedium(d: Int) = store.update { it.copy(mediumDays = d) }
-    fun setLong(d: Int) = store.update { it.copy(longDays = d) }
-    fun setQuota(mb: Int) = store.update { it.copy(quotaMb = mb) }
+    fun setShort(h: Int) = edit { it.copy(shortHours = h) }
+    fun setMedium(d: Int) = edit { it.copy(mediumDays = d) }
+    fun setLong(d: Int) = edit { it.copy(longDays = d) }
+    fun setQuota(mb: Int) = edit { it.copy(quotaMb = mb) }
+
+    private fun edit(transform: (MemorySettings) -> MemorySettings) { viewModelScope.launch(work) { store().update(transform) } }
 
     fun setEncryption(on: Boolean) = viewModelScope.launch {
         withContext(work) { encryption.request(on) }
@@ -91,7 +94,12 @@ class MemorySettingsViewModel(
     fun confirmDeleteAll() {
         when (_state.value.confirmStep) {
             1 -> _state.update { it.copy(confirmStep = 2) }
-            2 -> { _state.update { it.copy(confirmStep = 0) }; busy { withContext(work) { wipe() }; _state.update { it.copy(notice = "Everything was deleted") }; refreshStorage() } }
+            2 -> {
+                // Review M5: an export still running blocks the wipe; say so rather than closing silently.
+                if (_state.value.busy) { _state.update { it.copy(confirmStep = 0, notice = "Export in progress — try again") }; return }
+                _state.update { it.copy(confirmStep = 0) }
+                busy { withContext(work) { wipe() }; _state.update { it.copy(notice = "Everything was deleted") }; refreshStorage() }
+            }
         }
     }
 
@@ -102,8 +110,8 @@ class MemorySettingsViewModel(
             it.copy(
                 encryptionOn = target ?: (s.encrypted == true),
                 encryptionNote = when {
-                    target == true -> "Turns on the next time Proactive Context starts"
-                    target == false -> "Turns off the next time Proactive Context starts"
+                    target == true -> ENCRYPTION_ON_NOTE
+                    target == false -> ENCRYPTION_OFF_NOTE
                     s.lastChangeFailed -> "The last change didn't finish — your memory is unchanged"
                     else -> null
                 },
@@ -129,7 +137,13 @@ class MemorySettingsViewModel(
         }
     }
 
-    private companion object { const val TAG = "MemorySettings" }
+    companion object {
+        private const val TAG = "MemorySettings"
+        /** Task 14 applies the change when the database next opens; the hub service keeps the process alive (review M6). */
+        private const val RESTART_HINT = "Restart the app to apply: Android Settings › Apps › Proactive Context › Force stop, then open it again."
+        const val ENCRYPTION_ON_NOTE = "Turns on after Proactive Context restarts. $RESTART_HINT"
+        const val ENCRYPTION_OFF_NOTE = "Turns off after Proactive Context restarts. $RESTART_HINT"
+    }
 }
 
 @Composable

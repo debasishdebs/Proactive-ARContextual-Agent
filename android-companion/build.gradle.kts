@@ -7,3 +7,15 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization") version "2.0.21" apply false
     id("com.google.devtools.ksp") version "2.0.21-1.0.27" apply false
 }
+
+// Test-hang diagnostics (Task 20 fix round 1 ruling): every module's test tasks name each test as it starts and fail
+// after 10 minutes, so a stall names the test instead of hanging the Gate. Test behaviour is otherwise unchanged.
+subprojects {
+    tasks.withType<Test>().configureEach {
+        timeout.set(java.time.Duration.ofMinutes(10))
+        testLogging {
+            events("started", "failed", "skipped")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
+    }
+}

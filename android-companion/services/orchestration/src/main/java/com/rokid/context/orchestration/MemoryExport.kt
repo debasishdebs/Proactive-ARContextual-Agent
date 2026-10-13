@@ -2,6 +2,7 @@ package com.rokid.context.orchestration
 
 import android.content.Context
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.db.ReviewState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -15,8 +16,12 @@ import java.io.File
 object MemoryExport {
     private const val PREFIX = "proactive-context-memories-"
 
+    /** cache/exports: the only folder the FileProvider shares (res/xml/file_paths.xml); Delete all empties it. */
+    fun dir(context: Context): File = File(context.cacheDir, "exports")
+
     suspend fun write(context: Context, graph: MemoryGraph = MemoryGraph.get(context), nowMs: Long = System.currentTimeMillis()): File {
-        val memories = graph.memories.all()
+        // Forgotten (INVALIDATED) rows keep their text until Phase 7's redaction; never export it (review M3).
+        val memories = graph.memories.all().filter { it.reviewState != ReviewState.INVALIDATED }
         val asks = graph.asks.recent(10_000).first()
         val json = JsonObject(mapOf(
             "exportedAt" to JsonPrimitive(nowMs),
@@ -32,7 +37,7 @@ object MemoryExport {
             }),
         ))
         return withContext(Dispatchers.IO) {
-            val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+            val dir = dir(context).apply { mkdirs() }
             // Keep only the newest memory export; other files here (Task 21's diagnostics export) are not ours (F22).
             dir.listFiles()?.filter { it.isFile && it.name.startsWith(PREFIX) && it.name.endsWith(".json") }?.forEach { it.delete() }
             File(dir, "$PREFIX$nowMs.json").apply { writeText(json.toString()) }

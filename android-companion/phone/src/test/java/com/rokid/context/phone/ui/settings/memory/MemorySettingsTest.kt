@@ -13,6 +13,7 @@ import com.rokid.context.memory.DbEncryption
 import com.rokid.context.memory.MemorySettingsStore
 import com.rokid.context.phone.ui.MainDispatcherRule
 import com.rokid.context.phone.ui.cancelScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -39,9 +40,15 @@ class MemorySettingsTest {
         override fun request(encrypted: Boolean) { status = status.copy(pendingTarget = encrypted) }
     }
 
+    private var exportGate: CompletableDeferred<Unit>? = null
+    private var storeReads = 0
+    private val store by lazy { MemorySettingsStore(ctx.getSharedPreferences("mem_settings_vm", Context.MODE_PRIVATE)) }
+
+    /** [work] = the test's Main dispatcher: off-Main work runs inline, so every step is deterministic. */
     private fun vm() = MemorySettingsViewModel(
-        MemorySettingsStore(ctx.getSharedPreferences("mem_settings_vm", Context.MODE_PRIVATE)), encryption, usedBytes = { 42L * 1024 * 1024 },
-        wipe = { wiped++ }, export = { File(ctx.cacheDir, "e.json").apply { writeText("{}") } }, share = { shared += it }, reviewCount = flowOf(3),
+        { storeReads++; store }, encryption, usedBytes = { 42L * 1024 * 1024 },
+        wipe = { wiped++ }, export = { exportGate?.await(); File(ctx.cacheDir, "e.json").apply { writeText("{}") } }, share = { shared += it }, reviewCount = flowOf(3),
+        work = main.dispatcher,
     )
 
     @Test fun settingsEncryptionExportAndTheDoubleConfirm() = runBlocking {
@@ -51,7 +58,7 @@ class MemorySettingsTest {
         vm.setShort(48); vm.setQuota(200)
         assertEquals(48, vm.state.value.settings.shortHours); assertEquals(200, vm.state.value.settings.quotaMb)
         vm.setEncryption(true)
-        assertEquals("Turns on the next time Proactive Context starts", withTimeout(5_000) { vm.state.first { it.encryptionNote != null } }.encryptionNote)
+        assertEquals(MemorySettingsViewModel.ENCRYPTION_ON_NOTE, withTimeout(5_000) { vm.state.first { it.encryptionNote != null } }.encryptionNote)
         vm.export()
         withTimeout(5_000) { vm.state.first { !it.busy && shared.isNotEmpty() } }
         vm.askDeleteAll(); assertEquals(1, vm.state.value.confirmStep)
@@ -70,5 +77,33 @@ class MemorySettingsTest {
         compose.onNodeWithText("This can't be undone. Delete every memory, photo and answer?").assertExists()
         compose.onNodeWithTag("delete_confirm").performClick()
         assertEquals(1, confirmed)
+    }
+
+    /** Review M6: the note says a restart applies it and how (the hub service keeps the process alive). */
+    @Test fun theEncryptionNoteSaysToRestartTheApp() {
+        assertTrue(MemorySettingsViewModel.ENCRYPTION_ON_NOTE.startsWith("Turns on after Proactive Context restarts. Restart the app to apply"))
+        assertTrue(MemorySettingsViewModel.ENCRYPTION_OFF_NOTE.startsWith("Turns off after Proactive Context restarts. Restart the app to apply"))
+        assertTrue(MemorySettingsViewModel.ENCRYPTION_ON_NOTE.contains("Force stop"))
+    }
+
+    /** Review M5: the final confirm during an export says so instead of closing silently; nothing is wiped. */
+    @Test fun theFinalConfirmDuringAnExportSaysSo() {
+        exportGate = CompletableDeferred()
+        val vm = vm()
+        vm.export(); assertTrue(vm.state.value.busy)
+        vm.askDeleteAll(); vm.confirmDeleteAll(); vm.confirmDeleteAll()
+        assertEquals("Export in progress — try again", vm.state.value.notice); assertEquals(0, vm.state.value.confirmStep); assertEquals(0, wiped)
+        exportGate!!.complete(Unit)
+        vm.cancelScope()
+    }
+
+    /** Review M7: the prefs-backed store is reached on the work dispatcher, not in the ViewModel factory on Main. */
+    @Test fun theStoreIsNotReadWhenTheViewModelIsBuilt() {
+        val vm = MemorySettingsViewModel({ storeReads++; store }, encryption, usedBytes = { 0L }, wipe = {}, export = { File("x") }, share = {},
+            reviewCount = flowOf(0), work = kotlinx.coroutines.test.StandardTestDispatcher(main.dispatcher.scheduler))
+        assertEquals(0, storeReads)
+        main.dispatcher.scheduler.advanceUntilIdle()
+        assertTrue(storeReads > 0)
+        vm.cancelScope()
     }
 }
