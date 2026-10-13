@@ -195,4 +195,28 @@ class ForgetServiceTest {
         }
         assertEquals(ProposalState.EXECUTED.name, proposals.byId("p1")!!.state) // state kept: Undo still works by createdRef
     }
+
+    /** Final review C1: retention expiry leaves accepted (EXECUTING/EXECUTED) proposals whole; the rest are scrubbed. */
+    @Test fun expireLeavesAcceptedProposalsAlone() = runBlocking {
+        mem("A")
+        db.askDao().upsert(AskEntity("q1", 1, "q", "a", """["A"]""", null, "phone_typed", false))
+        val params = """{"title":"Call mom","dueAt":5}"""
+        listOf("p1" to ProposalState.EXECUTED, "p2" to ProposalState.EXECUTING, "p3" to ProposalState.PENDING, "p4" to ProposalState.DECLINED).forEach { (id, st) ->
+            proposals.create(ProposalEntity(id, ProposalOrigin.ASK.name, "q1", "REMINDER", params, st.name, 99_999, null, null, 1), 1)
+            db.actionDao().log(com.rokid.context.memory.db.ActionLogEntity(ts = 2, proposalId = id, transition = "X", detail = "Call mom"))
+        }
+        val r = service.expire(listOf("A"))
+        assertTrue(db.askDao().byId("q1")!!.redacted)
+        assertEquals(setOf("p3", "p4"), r.redactedProposals.toSet())
+        listOf("p1", "p2").forEach { id ->
+            assertEquals(params, proposals.byId(id)!!.paramsJson)
+            assertTrue(db.actionDao().logFor(id).any { "Call mom" in it.detail })
+        }
+        assertEquals(ProposalState.EXECUTED.name, proposals.byId("p1")!!.state)
+        assertEquals(ProposalState.EXPIRED.name, proposals.byId("p3")!!.state)
+        listOf("p3", "p4").forEach { id ->
+            assertEquals(ForgetService.REDACTED_PARAMS, proposals.byId(id)!!.paramsJson)
+            assertTrue(db.actionDao().logFor(id).none { "Call mom" in it.detail })
+        }
+    }
 }
