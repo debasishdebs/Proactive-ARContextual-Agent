@@ -3,6 +3,8 @@
 
     <!-- CaptureService and CaptureScheduler (kept after Task 12). -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Push-to-talk (Phase 6): the glasses' own mic; the audio goes to the phone's on-device recognizer only. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />

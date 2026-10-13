@@ -34,9 +34,9 @@ import com.rokid.context.core.model.Overlay
 
 /** One overlay at full scale in the lower band (spec §3.2–§3.3). */
 @Composable
-fun OverlayView(o: Overlay, confirmHighlightYes: Boolean) {
+fun OverlayView(o: Overlay, confirmHighlightYes: Boolean, recording: Boolean = false) {
     when (o) {
-        is Overlay.Listening -> ListeningOverlay(o.partial)
+        is Overlay.Listening -> ListeningOverlay(o.partial, recording)
         is Overlay.Answer -> AnswerCard(o)
         is Overlay.Nudge -> NudgeToast(o.text)
         is Overlay.Confirm -> ConfirmOverlay(o.title, o.detail, confirmHighlightYes)
@@ -46,7 +46,7 @@ fun OverlayView(o: Overlay, confirmHighlightYes: Boolean) {
 }
 
 @Composable
-fun ListeningOverlay(partial: String) {
+fun ListeningOverlay(partial: String, recording: Boolean = false) {
     val ring by rememberInfiniteTransition(label = "listening")
         .animateFloat(Hud.TERTIARY, Hud.PRIMARY, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "ring")
     Column(
@@ -55,7 +55,7 @@ fun ListeningOverlay(partial: String) {
     ) {
         Glyph(Icons.Outlined.Mic, 36.dp, Hud.PRIMARY)
         if (partial.isNotBlank()) Label(partial, 24.sp, Hud.PRIMARY, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Label("tap to send · double-tap cancel", 18.sp, Hud.TERTIARY)
+        Label(if (recording) "tap to send · double-tap cancel" else "thinking… · double-tap cancel", 18.sp, Hud.TERTIARY)
     }
 }
 

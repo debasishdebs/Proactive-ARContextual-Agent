@@ -74,4 +74,14 @@ class HudPresenterTest {
         assertEquals(HudPage.GLANCE, HudPresenter().present(frame(null), Verbosity.MEDIUM, HudNav(page = HudPage.STATUS), null, 0).page)
         assertEquals(HudPage.STATUS, HudPresenter().present(frame(null), Verbosity.MAX, HudNav(page = HudPage.STATUS), null, 0).page)
     }
+
+    /** Recording shows Listening at once (before the phone's first partial); the phone's partials replace it. */
+    @Test fun recordingShowsListeningUntilThePhoneSendsPartials() {
+        val p = HudPresenter()
+        assertEquals(Overlay.Listening(""), p.present(frame(null), Verbosity.SILENT, HudNav(), null, 0, recording = true).overlay)
+        assertEquals(Overlay.Listening(""), p.present(frame(Overlay.Answer("q", "a", speaking = true)), Verbosity.MEDIUM, HudNav(), null, 0, recording = true).overlay)
+        assertEquals(Overlay.Listening("milk"), p.present(frame(Overlay.Listening("milk")), Verbosity.MEDIUM, HudNav(), null, 0, recording = true).overlay)
+        assertEquals(confirm, HudPresenter().present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 0, recording = true).overlay)
+        assertEquals(null, HudPresenter().present(frame(null), Verbosity.MEDIUM, HudNav(), null, 0).overlay)
+    }
 }

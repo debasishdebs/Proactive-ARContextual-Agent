@@ -39,6 +39,8 @@ data class HudModel(
     val nowMs: Long,
     val nav: HudNav,
     val confirmHighlightYes: Boolean,
+    /** The glasses are recording push-to-talk audio (Listening says "tap to send"; after it, "thinking…"). */
+    val recording: Boolean = false,
 )
 
 /**
@@ -72,7 +74,7 @@ fun HudRoot(m: HudModel) {
             }
         }
         val overlay = m.view.overlay
-        if (overlay != null) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)) { OverlayView(overlay, m.confirmHighlightYes) }
+        if (overlay != null) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)) { OverlayView(overlay, m.confirmHighlightYes, m.recording) }
     }
 }
 

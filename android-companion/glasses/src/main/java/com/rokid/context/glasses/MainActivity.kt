@@ -43,6 +43,7 @@ import com.rokid.context.glasses.hud.Routed
 import com.rokid.context.glasses.link.HudController
 import com.rokid.context.glasses.link.HudSettingsCache
 import com.rokid.context.glasses.pause.PauseToggle
+import com.rokid.context.glasses.voice.PttProblem
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -64,8 +65,9 @@ class MainActivity : ComponentActivity() {
     private var nav by mutableStateOf(HudNav())
     private var highlightYes by mutableStateOf(true)
     private var local by mutableStateOf<LocalOverlay?>(null)
-    private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) ensureCaptureScheduled() else Log.w(TAG, "camera permission denied: capture stays off")
+    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        if (result[Manifest.permission.CAMERA] == true) ensureCaptureScheduled()
+        else if (!granted(Manifest.permission.CAMERA)) Log.w(TAG, "camera permission denied: capture stays off")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -76,11 +78,13 @@ class MainActivity : ComponentActivity() {
             hello = { runtime.hello(nextCaptureAt()) },
         )
         runtime.attach(controller)
+        runtime.ptt.onProblem = { p -> runOnUiThread { local = LocalOverlay.Toast(pttText(p), System.currentTimeMillis()) } }
         controller.onActivityStart()
         controller.start()
         lifecycleScope.launch { runtime.pauses.ensureLoaded() }
-        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) ensureCaptureScheduled()
-        else cameraPermission.launch(Manifest.permission.CAMERA)
+        if (granted(Manifest.permission.CAMERA)) ensureCaptureScheduled()
+        val missing = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO).filterNot(::granted)
+        if (missing.isNotEmpty()) permissions.launch(missing.toTypedArray())
         if (savedInstanceState == null) handleIntent(intent) // a recreated activity must not capture again
         setContent { Hud() }
     }
@@ -110,6 +114,7 @@ class MainActivity : ComponentActivity() {
         val settings by controller.settings.collectAsStateWithLifecycle()
         val connection by controller.connection.collectAsStateWithLifecycle()
         val pauses by runtime.pauses.records.collectAsStateWithLifecycle()
+        val recording by runtime.listening.collectAsStateWithLifecycle()
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
         var battery by remember { mutableStateOf(runtime.batteryPct()) }
         LaunchedEffect(Unit) {
@@ -123,7 +128,7 @@ class MainActivity : ComponentActivity() {
         }
         val todayRows = frame?.today?.size ?: 0
         LaunchedEffect(settings.verbosity, todayRows) { nav = nav.reconcile(pagesFor(settings.verbosity), todayRows) }
-        val view = presenter.present(frame, settings.verbosity, nav, local, now)
+        val view = presenter.present(frame, settings.verbosity, nav, local, now, recording)
         // Votes follow the presented overlay: an expired, hidden or dismissed Confirm can never be answered unseen.
         val shownConfirm = view.overlay as? Overlay.Confirm
         LaunchedEffect(shownConfirm?.proposalId) { confirm.onConfirm(shownConfirm); highlightYes = confirm.highlightYes }
@@ -131,7 +136,7 @@ class MainActivity : ComponentActivity() {
             HudModel(
                 view = view, frame = frame, settings = settings,
                 connection = connection, batteryPct = battery, paused = pauses.any { it.isActiveAt(now) },
-                nextCaptureAtMs = nextCaptureAt(), nowMs = now, nav = nav, confirmHighlightYes = highlightYes,
+                nextCaptureAtMs = nextCaptureAt(), nowMs = now, nav = nav, confirmHighlightYes = highlightYes, recording = recording,
             ),
         )
     }
@@ -161,19 +166,26 @@ class MainActivity : ComponentActivity() {
     private fun handle(inputs: List<PadInput>) {
         for (input in inputs) {
             val now = System.currentTimeMillis()
-            val shown = presenter.present(controller.frame.value, controller.settings.value.verbosity, nav, local, now).overlay
+            val shown = presenter.present(controller.frame.value, controller.settings.value.verbosity, nav, local, now, runtime.listening.value).overlay
             confirm.onConfirm(shown as? Overlay.Confirm)
             highlightYes = confirm.highlightYes
             when (val r = InputRouter.route(input, shown, controller.settings.value.gestures)) {
                 Routed.ConfirmToggle -> { confirm.onSwipe(); highlightYes = confirm.highlightYes }
                 Routed.ConfirmChoose -> confirm.onTap()?.let { controller.send(it); presenter.dismiss(shown) }
                 Routed.ConfirmNo -> confirm.onNo()?.let { controller.send(it); presenter.dismiss(shown) }
-                Routed.CancelListening -> controller.send(Command.Cancel)
-                Routed.DismissOverlay -> presenter.dismiss(shown)
+                Routed.FinishListening -> runtime.ptt.stop()
+                Routed.CancelListening -> { runtime.ptt.cancel(); controller.send(Command.Cancel) }
+                Routed.DismissOverlay -> dismiss(shown)
                 is Routed.Mapped -> onAction(r, shown, now)
             }
             nav = nav.touched(now)
         }
+    }
+
+    /** A dismissed Answer also tells the phone, which stops speaking it (spec §5.1 step 5). */
+    private fun dismiss(shown: Overlay?) {
+        presenter.dismiss(shown)
+        if (shown is Overlay.Answer) controller.send(Command.Cancel)
     }
 
     private fun onAction(r: Routed.Mapped, shown: Overlay?, now: Long) {
@@ -184,10 +196,7 @@ class MainActivity : ComponentActivity() {
                 if (next.page != nav.page) controller.send(Command.PageChanged(next.page))
                 nav = next
             }
-            // Push-to-talk arrives in Phase 6; until then a tap gives feedback instead of silence (spec §3.6 offline toast).
-            GestureAction.ASK -> local = LocalOverlay.Toast(
-                HudCopy.askUnavailable(controller.connection.value, controller.settings.value.askBlockedReason) ?: "Ask coming soon", now,
-            )
+            GestureAction.ASK -> onAsk(now)
             GestureAction.PAUSE_RESUME -> lifecycleScope.launch {
                 val t = try {
                     runtime.togglePause()
@@ -199,9 +208,31 @@ class MainActivity : ComponentActivity() {
                 }
                 onPauseToggle(t, now)
             }
-            GestureAction.DISMISS -> { presenter.dismiss(shown); local = null }
+            GestureAction.DISMISS -> { dismiss(shown); local = null }
             GestureAction.NONE -> Unit
         }
+    }
+
+    /**
+     * Tap = Ask (spec §5.1): starts push-to-talk; a tap while recording sends. Not while the phone is offline, still
+     * connecting or outdated, or says voice can't work (spec §3.6, §5.1.1). Capture pauses don't matter: Ask is a user action.
+     */
+    private fun onAsk(now: Long) {
+        if (runtime.listening.value) { runtime.ptt.stop(); return }
+        HudCopy.askUnavailable(controller.connection.value, controller.settings.value.askBlockedReason)?.let { local = LocalOverlay.Toast(it, now); return }
+        if (!granted(Manifest.permission.RECORD_AUDIO)) {
+            local = LocalOverlay.Toast(MIC_PERMISSION, now)
+            permissions.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+            return
+        }
+        local = null
+        runtime.ptt.start()
+    }
+
+    private fun pttText(p: PttProblem): String = when (p) {
+        PttProblem.NO_PERMISSION -> MIC_PERMISSION
+        PttProblem.MIC_UNAVAILABLE -> "Microphone unavailable"
+        PttProblem.LINK_DOWN -> HudCopy.OFFLINE
     }
 
     /**
@@ -223,6 +254,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
     // CaptureService is the only capture path (spec §3.1); its scheduler drives the Glance countdown.
     private fun nextCaptureAt(): Long? = CaptureScheduler(this).nextTriggerAtMs()
 
@@ -235,6 +268,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         swipeTimer.removeCallbacks(closeSwipe)
+        runtime.ptt.onProblem = {}
         controller.onActivityExit()
         if (isFinishing) runtime.hudPresence.onExited()
         runtime.detach(controller)
@@ -243,6 +277,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val TAG = "PcGlasses"
+        const val MIC_PERMISSION = "Allow the microphone on the glasses"
         /** adb and foreground-fallback entry: capture one frame now. */
         const val ACTION_CAPTURE_NOW = "com.rokid.context.glasses.action.CAPTURE_NOW"
     }
