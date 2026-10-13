@@ -55,7 +55,7 @@ object BannerResolver {
         i.aiBlockedText?.let { BannerSpec(BannerKind.AI_BLOCKED, BannerTone.CORAL, "AI unavailable · ${short(it)}", "Fix now", BannerAction.FIX_AI) },
         when (i.link) {
             LinkState.OFFLINE -> BannerSpec(BannerKind.GLASSES_DISCONNECTED, BannerTone.SKY, "Glasses disconnected", "Reconnect", BannerAction.RECONNECT)
-            LinkState.CLOSED_ON_GLASSES -> BannerSpec(BannerKind.GLASSES_DISCONNECTED, BannerTone.SKY, "Proactive Context is closed on the glasses", "Open on glasses", BannerAction.RECONNECT)
+            LinkState.CLOSED_ON_GLASSES -> BannerSpec(BannerKind.GLASSES_DISCONNECTED, BannerTone.SKY, "Closed on glasses \u00b7 capture stopped", "Open on glasses", BannerAction.RECONNECT)
             LinkState.NOT_AUTHORIZED -> BannerSpec(BannerKind.GLASSES_DISCONNECTED, BannerTone.SKY, "Glasses not authorized", "Reconnect", BannerAction.RECONNECT)
             else -> null
         },
