@@ -10,6 +10,8 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import com.rokid.context.ai.Role
+import com.rokid.context.ai.flow.AgentFlows
+import com.rokid.context.ai.flow.Facet
 import com.rokid.context.phone.ui.list.ActionResult
 import com.rokid.context.phone.ui.list.ItemAction
 import com.rokid.context.phone.ui.list.ListItem
@@ -17,23 +19,17 @@ import com.rokid.context.phone.ui.list.ListScreen
 import com.rokid.context.phone.ui.list.ListSource
 import com.rokid.context.phone.ui.shell.Routes
 
-/** What the Agent flows list needs from a flow. Stand-in for the AgentFlows registry (stream A); D backs it with `AgentFlows.all`. */
+/** What the Agent flows list needs from a flow. */
 data class FlowSummary(val id: String, val title: String, val purpose: String, val aiSteps: Int, val roles: List<Role>)
 
 interface FlowSummaries { fun summaries(): List<FlowSummary> }
 
-/**
- * Production stand-in until the AgentFlows registry merges: the day-one flows as the plan's A1 encodes them
- * (Capture: extract, critic, reprocess, embed, remember, critic review, re-summarise; Ask: search, answer; Nudge: nudge).
- * D replaces this with summaries derived from `AgentFlows.all`.
- */
-object DayOneFlowSummaries : FlowSummaries {
-    override fun summaries() = listOf(
-        FlowSummary("capture", "Capture", "Turns glasses photos and things you say into memories.", 7,
-            listOf(Role.VISION_EXTRACT, Role.CRITIC, Role.SUMMARIZE, Role.EMBED, Role.EXPLICIT_REMEMBER)),
-        FlowSummary("ask", "Ask", "Answers your questions from your memories.", 2, listOf(Role.EMBED, Role.ANSWER)),
-        FlowSummary("nudge", "Nudge", "Suggests something useful after new memories land.", 1, listOf(Role.NUDGE)),
-    )
+/** The registry's flows: AI steps are the nodes with a facet, roles are the Model facets' roles in node order. */
+object AgentFlowSummaries : FlowSummaries {
+    override fun summaries() = AgentFlows.all.map { f ->
+        FlowSummary(f.id, f.title, f.purpose, f.nodes.count { it.isAiStep },
+            f.nodes.flatMap { n -> n.facets.filterIsInstance<Facet.Model>().map { it.role } }.distinct())
+    }
 }
 
 /** Settings -> AI -> Agent flows: one row per flow, in registry order; rows are multi-selectable. */
