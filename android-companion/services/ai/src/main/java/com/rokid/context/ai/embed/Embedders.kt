@@ -1,8 +1,10 @@
 package com.rokid.context.ai.embed
 
+import com.rokid.context.ai.EndpointKind
 import com.rokid.context.ai.EndpointRepository
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBindingRepository
+import com.rokid.context.ai.UrlNormalizer
 import com.rokid.context.memory.Embedder
 import com.rokid.context.memory.SpaceEmbedderProvider
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
@@ -25,15 +27,21 @@ class Embedders(
         return EndpointEmbedder(spec, e, key, client)
     }
 
-    /** Uses the space's own config (address included), so an edited endpoint never mixes spaces; null if the endpoint is gone. */
+    /**
+     * Serves the space only while the endpoint still points where the space was built (same kind, same normalised
+     * address): after a move this returns null, so retrieval falls back to lexical and no text reaches the old host.
+     * null too if the endpoint is gone.
+     */
     override suspend fun forSpace(space: EmbeddingSpaceEntity): Embedder? {
         val spec = EmbeddingSpec.fromConfig(space.configJson) ?: return null
         val e = endpoints.byId(spec.endpointId) ?: return null
-        // The key belongs to the endpoint's current address: never send it to the space's older address.
-        val sameTarget = e.kind == spec.kind && e.baseUrl.trimEnd('/') == spec.baseUrl.trimEnd('/')
-        val key = if (sameTarget) endpoints.keyFor(e) else null
-        return EndpointEmbedder(spec, e.copy(kind = spec.kind, baseUrl = spec.baseUrl, apiVersion = spec.apiVersion), key, client)
+        if (!sameTarget(e.kind, e.baseUrl, spec.kind, spec.baseUrl)) return null
+        return EndpointEmbedder(spec, e.copy(apiVersion = spec.apiVersion), endpoints.keyFor(e), client)
     }
 
-    private companion object { const val MAX_INPUT_CHARS = 2_000 }
+    private companion object {
+        const val MAX_INPUT_CHARS = 2_000
+        fun norm(url: String, kind: EndpointKind) = UrlNormalizer.normalize(url, kind).getOrNull() ?: url.trim().trimEnd('/')
+        fun sameTarget(k1: EndpointKind, u1: String, k2: EndpointKind, u2: String) = k1 == k2 && norm(u1, k1) == norm(u2, k2)
+    }
 }
