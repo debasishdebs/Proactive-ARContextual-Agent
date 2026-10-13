@@ -72,12 +72,15 @@ class SettingsDeps(
     val sources: com.rokid.context.phone.ui.settings.connectors.SourcesControl = com.rokid.context.phone.ui.settings.connectors.SourcesControl.None,
     /** Settings › Phone camera & mic "Capture now" (Phase 7 C2). */
     val capture: com.rokid.context.phone.capture.CaptureNowControl = com.rokid.context.phone.capture.CaptureNowControl.None,
+    /** Settings › Actions & tools (Phase 7 B): lazy, so building these deps on Main never builds the actions graph. */
+    private val lazyActions: Lazy<com.rokid.context.connectors.actions.ActionsGraphApi>,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
     val retrieval: RetrievalSettingsStore get() = lazyRetrieval.value
     val spaces: EmbeddingSpaces get() = lazySpaces.value
     val memorySettings: MemorySettingsStore get() = lazyMemorySettings.value
+    val actions: com.rokid.context.connectors.actions.ActionsGraphApi get() = lazyActions.value
 
     companion object {
         /** Process-lifetime work the Settings deps start (a Rebuild commits prefs, so it leaves Main). */
@@ -120,6 +123,7 @@ class SettingsDeps(
             capture = com.rokid.context.phone.capture.PhoneCaptureControl(
                 app, com.rokid.context.phone.capture.PhoneCaptureControl.storedPauses({ MemoryGraph.get(app).db.pauseDao() }) { HubGraph.get(app).hudSettings.value.quietHours },
             ),
+            lazyActions = lazy { com.rokid.context.connectors.actions.ActionsGraph.get(app) },
         )
     }
 }
