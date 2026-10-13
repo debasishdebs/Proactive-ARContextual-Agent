@@ -41,9 +41,16 @@ data class VoiceTimings(
     val audioIdleMs: Long = 3_000,
     /** After the end of audio, the recognizer's final is awaited this long; then the last partial is used. */
     val finalTimeoutMs: Long = 6_000,
+    /**
+     * Audio intake cap for one listen (glasses stream or phone mic). Then the [finalTimeoutMs] wait sits on top, so the
+     * worst-case listen is 20 s + 6 s = 26 s before the ask is answered from the last partial or ends as unheard.
+     */
     val maxListenMs: Long = 20_000,
+    /** Thinking is bounded: no answer within this ends the ask with [VoiceCopy.TOO_LONG]; a late answer is ignored. */
+    val answerTimeoutMs: Long = 60_000,
     /** An Answer stays this long after speech ends (or after it is shown, when not spoken). */
     val answerHoldMs: Long = 30_000,
+    /** A glasses problem toast, and a Home voice error, clear after this. */
     val toastMs: Long = 4_000,
 )
 
@@ -61,6 +68,8 @@ object VoiceCopy {
     const val GLASSES_BUSY_PHONE = "Your glasses are listening — try again"
     const val FAILED_HUD = "Couldn't answer that"
     const val FAILED_PHONE = "Couldn't answer that — try again"
+    /** Thinking ran past [VoiceTimings.answerTimeoutMs]: the same copy on the HUD and Home. */
+    const val TOO_LONG = "That took too long — try again"
 
     fun phoneHint(s: VoiceStatus): String = when (s) {
         VoiceStatus.NEEDS_MIC_PERMISSION -> MIC_PHONE

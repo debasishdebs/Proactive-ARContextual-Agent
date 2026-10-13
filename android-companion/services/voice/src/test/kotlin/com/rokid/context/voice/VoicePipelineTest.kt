@@ -2,6 +2,9 @@ package com.rokid.context.voice
 
 import com.rokid.context.core.model.Overlay
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -13,6 +16,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class VoicePipelineTest {
     private val engine = FakeSpeechEngine()
     private val speaker = FakeSpeaker()
@@ -22,9 +26,10 @@ class VoicePipelineTest {
     private val asked = mutableListOf<Pair<String, VoiceSource>>()
     private var answer: suspend (String) -> AnswerResult = { AnswerResult.Answered("ask_1", "Milk and eggs.") }
     private val pcm = ByteArray(3_200) { 9 }
+    private var language: () -> SpeechLanguage = { SpeechLanguage.ENGLISH }
 
     private fun TestScope.pipeline() = VoicePipeline(
-        backgroundScope, engine, caps, { SpeechLanguage.ENGLISH },
+        backgroundScope, engine, caps, { language() },
         Answerer { q, source -> asked += q to source; answer(q) },
         speaker, bluetoothMedia = { bluetooth }, onFallbackSuspected = { fallbacks++ },
     ).also { runCurrent() }
@@ -69,6 +74,7 @@ class VoicePipelineTest {
         p.glassesListenEnd()
         advanceTimeBy(6_001); runCurrent()
         assertEquals(listOf("where did I park" to VoiceSource.GLASSES), asked)
+        assertEquals(1, engine.last.cancels, "a recognizer that never sent a final is released")
     }
 
     /** Phase 0 saw a 1.19 s gap before the first chunk after idle: tolerated; 3 s of nothing ends the utterance. */
@@ -216,5 +222,160 @@ class VoicePipelineTest {
         val a = p.overlay.value as Overlay.Answer
         assertTrue(a.question.length <= 120); assertTrue(a.text.length <= 300)
         assertTrue(speaker.spoken.single().length > 300, "the whole answer is spoken")
+    }
+    @Test fun thinkingIsBoundedAndALateAnswerIsIgnored() = runTest {
+        val gate = CompletableDeferred<AnswerResult>()
+        answer = { withContext(NonCancellable) { gate.await() } }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        advanceTimeBy(59_999)
+        assertEquals(Overlay.Listening("milk?"), p.overlay.value)
+        advanceTimeBy(2); runCurrent()
+        assertEquals(Overlay.Toast("That took too long — try again"), p.overlay.value)
+        gate.complete(AnswerResult.Answered("ask_1", "Milk and eggs.")); runCurrent()
+        assertEquals(Overlay.Toast("That took too long — try again"), p.overlay.value)
+        assertTrue(speaker.spoken.isEmpty())
+        advanceTimeBy(4_001)
+        assertNull(p.overlay.value)
+        p.phoneStart()
+        assertTrue(p.phone.value.listening, "the phone mic is free again")
+    }
+
+    @Test fun aPhoneAskThatTimesOutShowsTheSameCopyOnHome() = runTest {
+        answer = { CompletableDeferred<AnswerResult>().await() }
+        val p = pipeline()
+        p.phoneStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        advanceTimeBy(60_001); runCurrent()
+        assertEquals("That took too long — try again", p.phone.value.error)
+        assertFalse(p.phone.value.thinking)
+    }
+
+    /** The 20 s cap ends audio intake; the 6 s final wait sits on top of it (worst case 26 s). */
+    @Test fun aPhoneListenIsCappedAtTwentySecondsThenGetsTheFinalWait() = runTest {
+        val p = pipeline()
+        p.phoneStart()
+        advanceTimeBy(19_999)
+        assertFalse(engine.last.ended)
+        advanceTimeBy(2)
+        assertTrue(engine.last.ended)
+        assertTrue(p.phone.value.thinking)
+        advanceTimeBy(6_001); runCurrent()
+        assertEquals(1, engine.last.cancels)
+        assertEquals("Couldn't hear that — try again", p.phone.value.error)
+        assertTrue(asked.isEmpty())
+    }
+
+    @Test fun aGlassesStreamThatNeverGoesQuietIsCappedAtTwentySeconds() = runTest {
+        val p = pipeline()
+        p.glassesListenStart()
+        engine.last.listener.onPartial("tell me everything")
+        repeat(19) { advanceTimeBy(1_000); p.glassesAudio(pcm) }
+        assertFalse(engine.last.ended)
+        advanceTimeBy(1_001)
+        assertTrue(engine.last.ended)
+        p.glassesAudio(pcm)
+        assertEquals(19, engine.last.fed.size, "no audio is taken after the cap")
+        advanceTimeBy(6_001); runCurrent()
+        assertEquals(listOf("tell me everything" to VoiceSource.GLASSES), asked)
+    }
+
+    @Test fun aSpeakerThatCannotSpeakLeavesASilentAnswerThatStillClears() = runTest {
+        speaker.available = false
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        assertEquals(Overlay.Answer("milk?", "Milk and eggs.", speaking = false), p.overlay.value)
+        advanceTimeBy(30_001)
+        assertNull(p.overlay.value)
+    }
+
+    @Test fun aRecognizerThatFailsToStartGivesShortCopyAndNeverStaysListening() = runTest {
+        engine.failStart = true
+        val p = pipeline()
+        p.glassesListenStart()
+        assertEquals(Overlay.Toast("Couldn't hear that"), p.overlay.value)
+        p.phoneStart()
+        assertEquals("Couldn't hear that — try again", p.phone.value.error)
+        assertFalse(p.phone.value.listening)
+        advanceTimeBy(4_001)
+        assertEquals(VoiceState.Idle, p.state.value)
+    }
+
+    @Test fun aLanguageThatThrowsEndsTheAskInsteadOfListeningForever() = runTest {
+        language = { throw IllegalStateException("prefs") }
+        val p = pipeline()
+        p.glassesListenStart()
+        assertEquals(Overlay.Toast("Couldn't hear that"), p.overlay.value)
+        assertTrue(engine.sessions.isEmpty())
+        advanceTimeBy(4_001)
+        assertEquals(VoiceState.Idle, p.state.value)
+    }
+
+    @Test fun failedAndNoPermissionResultsGiveTheirCopy() = runTest {
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Failed)
+        assertEquals(Overlay.Toast("Couldn't hear that"), p.overlay.value)
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.NoPermission)
+        assertEquals(Overlay.Toast("Allow the microphone on phone"), p.overlay.value)
+        p.phoneStart(); engine.last.listener.onFinal(SttResult.NoPermission)
+        assertEquals("Allow the microphone to ask by voice", p.phone.value.error)
+        assertTrue(asked.isEmpty())
+    }
+
+    @Test fun thePhoneErrorClearsAfterTheToastTime() = runTest {
+        val p = pipeline()
+        p.phoneStart(); engine.last.listener.onFinal(SttResult.NoSpeech)
+        assertEquals("Couldn't hear that — try again", p.phone.value.error)
+        advanceTimeBy(3_999)
+        assertEquals("Couldn't hear that — try again", p.phone.value.error)
+        advanceTimeBy(2)
+        assertNull(p.phone.value.error)
+        p.glassesListenStart(); p.phoneStart()
+        assertEquals("Your glasses are listening — try again", p.phone.value.error)
+        advanceTimeBy(4_001)
+        assertNull(p.phone.value.error, "the busy note does not outlive its toast time")
+    }
+
+    @Test fun phoneCancelWhileThinkingAnswersNothing() = runTest {
+        val gate = CompletableDeferred<AnswerResult>()
+        answer = { gate.await() }
+        val p = pipeline()
+        p.phoneStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        assertTrue(p.phone.value.thinking)
+        p.phoneCancel()
+        assertFalse(p.phone.value.thinking)
+        gate.complete(AnswerResult.Answered("ask_1", "Milk and eggs.")); runCurrent()
+        assertNull(p.overlay.value)
+        assertTrue(speaker.spoken.isEmpty())
+        assertNull(p.phone.value.lastAskId)
+    }
+
+    @Test fun aLinkLostWhileThinkingStillAnswers() = runTest {
+        val gate = CompletableDeferred<AnswerResult>()
+        answer = { gate.await() }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        p.linkLost()
+        gate.complete(AnswerResult.Answered("ask_1", "Milk and eggs.")); runCurrent()
+        assertEquals(Overlay.Answer("milk?", "Milk and eggs.", speaking = true), p.overlay.value)
+    }
+
+    @Test fun aPhoneAnswerIsHeldThirtySecondsAfterItsSpeech() = runTest {
+        val p = pipeline()
+        p.phoneStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        advanceTimeBy(45_000)
+        assertTrue((p.overlay.value as Overlay.Answer).speaking, "held while still speaking")
+        speaker.finish()
+        advanceTimeBy(29_999)
+        assertEquals(Overlay.Answer("milk?", "Milk and eggs.", speaking = false), p.overlay.value)
+        advanceTimeBy(2)
+        assertNull(p.overlay.value)
+        assertEquals(VoiceState.Idle, p.state.value)
+    }
+
+    @Test fun aLongFailureToastIsClippedForTheHud() = runTest {
+        answer = { AnswerResult.Failed("x".repeat(500), "y") }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        assertTrue((p.overlay.value as Overlay.Toast).text.length <= 120)
     }
 }
