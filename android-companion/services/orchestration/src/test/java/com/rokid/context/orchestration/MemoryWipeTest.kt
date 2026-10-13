@@ -26,7 +26,7 @@ import java.io.File
 @Config(sdk = [34])
 class MemoryWipeTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
-    @Before fun setUp() { MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx)) }
+    @Before fun setUp() { androidx.work.testing.WorkManagerTestInitHelper.initializeTestWorkManager(ctx); MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx)) }
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
     @Test fun deleteAllRemovesMemoryButKeepsSettingsAndSearchStillWorks() = runBlocking {
@@ -42,7 +42,7 @@ class MemoryWipeTest {
         assertEquals(1, MemoryWipe.deleteAll(ctx))
         assertFalse(jpg.exists())
         assertEquals(0, g.db.memoryDao().count()); assertEquals(0, g.db.frameDao().count())
-        assertTrue(g.asks.recent(10).first().isEmpty()); assertTrue(g.traces.recent(10).isEmpty())
+        assertTrue(g.asks.recent(10).first().isEmpty()); assertTrue(g.traces.recent(10).none { it.summaryId == "s1" }) // the resumed pipeline may log a fresh status trace
         assertTrue(g.db.embeddingDao().vectors(s.id).isEmpty())
         assertEquals("Azure", ai.endpoints.byId("az")!!.name) // settings survive
         assertEquals(1, ai.prompts.active(PromptKey.ANSWER).version)
@@ -65,5 +65,25 @@ class MemoryWipeTest {
         assertTrue(g.db.embeddingDao().vectors(active.id).isEmpty() && g.db.embeddingDao().vectors(other.id).isEmpty())
         assertEquals(null, g.db.embeddingDao().current())
         unrelated.delete()
+    }
+
+    /** Review I2: copies of memory text outside the database go too; the received-frames ledger stays (no re-send). */
+    @Test fun deleteAllRemovesTheQueueLegacyLogsAndExportsButKeepsTheFrameLedger() = runBlocking<Unit> {
+        com.rokid.context.data.runtime.QueueRuntimeStore.enqueue(ctx, com.rokid.context.domain.queue.QueuePriority.EXPLICIT_WRITE,
+            com.rokid.context.data.runtime.QueuePayloads.explicitWrite("remember the milk", "en", manual = true), personaSnapshot = "p")
+        val queue = File(ctx.filesDir, "queue_runtime.log")
+        assertTrue(queue.exists())
+        val legacy = listOf("memory_records.log", "captured_frames.log", "summary_trace.log").map { File(ctx.filesDir, it).apply { writeText("old text") } }
+        val exports = File(ctx.cacheDir, "exports").apply { mkdirs() }
+        val exported = listOf("proactive-context-memories-1.json", "proactive-context-diagnostics-1.txt").map { File(exports, it).apply { writeText("x") } }
+        val ledger = File(ctx.filesDir, "cxr_received_frames.txt").apply { writeText("f1\n") }
+
+        MemoryWipe.deleteAll(ctx)
+        // The resumed pipeline may queue a fresh frame-ingest job; nothing queued before the wipe survives.
+        assertTrue(com.rokid.context.data.runtime.QueueRuntimeStore.recent(ctx, 50).none { it.queue == com.rokid.context.domain.queue.QueuePriority.EXPLICIT_WRITE })
+        legacy.forEach { assertFalse(it.name, it.exists()) }
+        exported.forEach { assertFalse(it.name, it.exists()) }
+        assertTrue(ledger.exists())
+        ledger.delete()
     }
 }

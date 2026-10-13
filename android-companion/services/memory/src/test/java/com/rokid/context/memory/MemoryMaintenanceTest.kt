@@ -83,4 +83,19 @@ class MemoryMaintenanceTest {
             assertFalse(withContext(Dispatchers.IO) { MemoryMaintenance.rebuildPending(second.openHelper.writableDatabase) })
         } finally { second.close(); ctx.deleteDatabase(DatabaseFactory.NAME) }
     }
+
+    /** Review M1: after Delete all the deleted pages don't linger in the -wal file. */
+    @Test fun checkpointTruncatesTheWal() = runBlocking {
+        val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        ctx.deleteDatabase(DatabaseFactory.NAME)
+        val fileDb = DatabaseFactory.buildDeferred(ctx, { false }) { ByteArray(0) }
+        try {
+            val repo = MemoryRepository(fileDb.memoryDao())
+            repeat(20) { repo.add(MemoryEntity("m$it", null, "text $it", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, "")) }
+            val wal = java.io.File(ctx.getDatabasePath(DatabaseFactory.NAME).path + "-wal")
+            assertTrue("WAL in use", wal.length() > 0)
+            MemoryMaintenance.checkpoint(fileDb)
+            assertEquals(0L, wal.length())
+        } finally { fileDb.close(); ctx.deleteDatabase(DatabaseFactory.NAME) }
+    }
 }

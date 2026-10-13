@@ -49,4 +49,16 @@ class MemoryExportTest {
         assertFalse(old.exists()); assertTrue(new.exists()); assertTrue(diagnostics.exists())
         dir.deleteRecursively()
     }
+
+    /** Review M3: a forgotten (INVALIDATED) memory's text is never exported. */
+    @Test fun invalidatedMemoriesAreNotExported() = runBlocking<Unit> {
+        val g = MemoryGraph.get(ctx)
+        g.memories.add(LegacyImporter.toMemory("keep", "short_term", 0.9, 1, "Keys on the shelf"))
+        g.memories.add(LegacyImporter.toMemory("gone", "short_term", 0.9, 2, "Forgotten secret").copy(reviewState = com.rokid.context.memory.db.ReviewState.INVALIDATED))
+        val f = MemoryExport.write(ctx, nowMs = 3)
+        val ids = Json.parseToJsonElement(f.readText()).jsonObject["memories"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }
+        assertEquals(listOf("keep"), ids)
+        assertFalse(f.readText().contains("Forgotten secret"))
+        f.delete()
+    }
 }

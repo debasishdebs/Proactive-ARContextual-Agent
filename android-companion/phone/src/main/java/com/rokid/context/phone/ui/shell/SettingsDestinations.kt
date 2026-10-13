@@ -33,7 +33,6 @@ import com.rokid.context.phone.ui.settings.prompts.PromptsListScreen
 import com.rokid.context.phone.ui.settings.prompts.PromptsListViewModel
 import com.rokid.context.phone.ui.settings.retrieval.RetrievalSettingsScreen
 import com.rokid.context.phone.ui.settings.retrieval.RetrievalViewModel
-import kotlinx.coroutines.flow.map
 
 /** Settings tree routes (spec §2.1). Same rule as Destinations.kt: the only place these ViewModels are created. */
 fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController, back: () -> Unit) {
@@ -118,7 +117,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
 
     composable(Routes.SETTINGS_MEMORY) {
         val vm = viewModel {
-            MemorySettingsViewModel(s.memorySettings, s.encryption, s.usedBytes, s.wipe, s.export, s.share, deps.memory.memoryEdits.needsReview(100).map { it.size })
+            MemorySettingsViewModel({ s.memorySettings }, s.encryption, s.usedBytes, s.wipe, s.export, s.share, deps.memory.memoryEdits.needsReviewCount())
         }
         val state by vm.state.collectAsStateWithLifecycle()
         MemorySettingsScreen(

@@ -45,6 +45,8 @@ class MemoryEdits(private val view: MemoryViewDao, private val memories: MemoryR
     }
 
     fun needsReview(limit: Int): Flow<List<MemoryEntity>> = view.observeNeedsReview(limit).distinctUntilChanged()
+    /** The Settings badge: a COUNT, so no row cap. */
+    fun needsReviewCount(): Flow<Int> = view.observeNeedsReviewCount().distinctUntilChanged()
 
     /** Review queue "Keep": NEEDS_REVIEW → OK (back into feeds and retrieval). Anything else is untouched. */
     suspend fun approve(id: String): Boolean = view.moveReviewState(id, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) > 0

@@ -33,6 +33,7 @@ import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.orchestration.AnswerService
 import com.rokid.context.orchestration.EmbeddingWorker
 import com.rokid.context.orchestration.FrameInputs
+import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.NoMemoriesException
 import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.orchestration.RetryClassifier
@@ -57,6 +58,8 @@ class QueueDrainWorker(
         }
         var processed = 0
         repeat(MAX_JOBS_PER_RUN) {
+            // Read before the claim (review I1): a job claimed before a Delete all then writes nothing after it.
+            val generation = MemoryWipe.generation.get()
             val job = QueueRuntimeStore.claimNextReady(applicationContext) ?: return@repeat
             processed += 1
 
@@ -68,7 +71,7 @@ class QueueDrainWorker(
             }
 
             runCatching {
-                processJob(job)
+                processJob(job, generation)
             }.onSuccess {
                 QueueRuntimeStore.markSucceeded(applicationContext, job.id)
             }.onFailure { error ->
@@ -101,13 +104,13 @@ class QueueDrainWorker(
         return Result.success()
     }
 
-    private suspend fun processJob(job: QueueJobRecord) {
+    private suspend fun processJob(job: QueueJobRecord, generation: Long) {
         when (job.queue) {
             QueuePriority.FRAME_INGEST -> processFrameIngest(job)
-            QueuePriority.SUMMARIZER -> processBatchedSummarization(job)
-            QueuePriority.PRIORITY_REPROCESS -> processPriorityReprocess(job)
-            QueuePriority.EXPLICIT_WRITE -> processExplicitWrite(job)
-            QueuePriority.READ -> processReadContext(job)
+            QueuePriority.SUMMARIZER -> processBatchedSummarization(job, generation)
+            QueuePriority.PRIORITY_REPROCESS -> processPriorityReprocess(job, generation)
+            QueuePriority.EXPLICIT_WRITE -> processExplicitWrite(job, generation)
+            QueuePriority.READ -> processReadContext(job, generation)
             QueuePriority.RETRY -> throw IllegalStateException("retry queue item must be re-queued as source queue")
         }
     }
@@ -146,7 +149,7 @@ class QueueDrainWorker(
 
     private val ai get() = AiGraph.get(applicationContext)
 
-    private suspend fun processBatchedSummarization(job: QueueJobRecord) {
+    private suspend fun processBatchedSummarization(job: QueueJobRecord, generation: Long) {
         val payload = QueuePayloads.parse(job.payload)
         val importedFrames = QueuePayloads.int(payload, "imported_frames", 0)
         val frameIds = QueuePayloads.string(payload, "frame_ids_csv").split(",").map { it.trim() }.filter { it.isNotBlank() }
@@ -167,10 +170,11 @@ class QueueDrainWorker(
         val confidence = facts.map { it.confidence }.average()
         val trusted = criticWorker.validate(job.id, confidence).status == SummaryStatus.TRUSTED || modelCriticPasses(facts, frameLines)
         val frameId = frames.maxBy { it.ts }.id
-        facts.forEachIndexed { i, f ->
+        val written = facts.withIndex().all { (i, f) ->
             PipelineRecords.appendFact(applicationContext, "$factPrefix$i", frameId, f.text, f.type, f.tags, f.confidence,
-                MemoryTier.SHORT, if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW)
+                MemoryTier.SHORT, if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation)
         }
+        if (!written) return // Delete all ran meanwhile: no reprocess job (it would carry the fact text)
         EmbeddingWorker.enqueue(applicationContext)
         if (trusted) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "TRUSTED", "frames=${frames.size} imported=$importedFrames facts=${facts.size} v${result.promptVersion}")
@@ -202,7 +206,7 @@ class QueueDrainWorker(
         }
     }
 
-    private suspend fun processPriorityReprocess(job: QueueJobRecord) {
+    private suspend fun processPriorityReprocess(job: QueueJobRecord, generation: Long) {
         val payload = QueuePayloads.parse(job.payload)
         val sourceContext = QueuePayloads.string(payload, "source_context")
         val reason = QueuePayloads.string(payload, "reason", "low confidence")
@@ -210,13 +214,15 @@ class QueueDrainWorker(
         val vars = PromptVars(recentContext = PromptComposer.dataBlock("memories", sourceContext.lines().filter { it.isNotBlank() }) +
             "\n" + PromptComposer.dataBlock("critic_notes", listOf(reason)))
         val out = ai.runner.run(RoleCall(PromptKey.SUMMARIZE, vars, images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true)).output as SummaryOutput
-        PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}", null, out.summary, "summary", out.entities,
-            out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK)
+        val written = PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}", null, out.summary, "summary", out.entities,
+            out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,
+            generation = generation)
+        if (!written) return
         EmbeddingWorker.enqueue(applicationContext)
         PipelineRecords.upsertTrace(applicationContext, job.id, "REPROCESSED", "Re-summarized after critic feedback")
     }
 
-    private suspend fun processExplicitWrite(job: QueueJobRecord) {
+    private suspend fun processExplicitWrite(job: QueueJobRecord, generation: Long) {
         val payload = QueuePayloads.parse(job.payload)
         val rawInput = QueuePayloads.string(payload, "raw_input")
         require(rawInput.isNotBlank()) { "Empty explicit write input" }
@@ -227,19 +233,20 @@ class QueueDrainWorker(
         val facts = extracted.ifEmpty { listOf(Fact(rawInput, "note", RAW_NOTE_CONFIDENCE, emptyList())) }
         val factPrefix = factIdPrefix(job)
         PipelineRecords.dropFactsFrom(applicationContext, factPrefix, keep = facts.size)
-        facts.forEachIndexed { i, f ->
+        val written = facts.withIndex().all { (i, f) ->
             PipelineRecords.appendFact(applicationContext, "$factPrefix$i", null, f.text, f.type, f.tags, f.confidence,
-                if (f.confidence >= 0.80) MemoryTier.LONG else MemoryTier.MEDIUM, ReviewState.OK)
+                if (f.confidence >= 0.80) MemoryTier.LONG else MemoryTier.MEDIUM, ReviewState.OK, generation = generation)
         }
+        if (!written) return
         EmbeddingWorker.enqueue(applicationContext)
         PipelineRecords.upsertTrace(applicationContext, job.id, "WRITE_CONTEXT_OK", "Explicit write saved (${facts.size} fact(s))")
     }
 
-    private suspend fun processReadContext(job: QueueJobRecord) {
+    private suspend fun processReadContext(job: QueueJobRecord, generation: Long) {
         val query = QueuePayloads.string(QueuePayloads.parse(job.payload), "query")
         require(query.isNotBlank()) { "Empty read context query" }
         val answered = try {
-            AnswerService.forApp(applicationContext).answerOrThrow(query, source = "queue", askId = "ask_queue_${job.id}")
+            AnswerService.forApp(applicationContext).answerOrThrow(query, source = "queue", askId = "ask_queue_${job.id}", generation = generation)
         } catch (e: NoMemoriesException) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "CONTEXT_TEMP_UNAVAILABLE", "No trusted memory found; queue status can be checked from Queue card")
             throw e

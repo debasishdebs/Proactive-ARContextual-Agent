@@ -1,6 +1,7 @@
 package com.rokid.context.orchestration
 
 import android.content.Context
+import androidx.room.withTransaction
 import android.util.Log
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.FailureKind
@@ -117,7 +118,14 @@ class AnswerService(
 
     /** Queue jobs: failures propagate so the queue's retry policy applies (RetryClassifier). */
     /** [askId]: a queue job passes one derived from its id, so a re-run after a cancellation adds no second Ask row. */
-    suspend fun answerOrThrow(question: String, source: String, nowMs: Long = System.currentTimeMillis(), askId: String? = null): AskOutcome.Answered {
+    /**
+     * [generation]: read before retrieval. If Delete all runs while the model answers, the ask (built from memories that
+     * no longer exist) is not saved and the call fails as "no memories" (review I1).
+     */
+    suspend fun answerOrThrow(
+        question: String, source: String, nowMs: Long = System.currentTimeMillis(), askId: String? = null,
+        generation: Long = MemoryWipe.generation.get(),
+    ): AskOutcome.Answered {
         val q = AskText.collapse(question).take(MAX_QUESTION)
         if (q.isEmpty()) throw EmptyQuestionException()
         val r = retrieve(q, nowMs)
@@ -126,7 +134,12 @@ class AnswerService(
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
         val id = askId ?: "ask_${UUID.randomUUID()}"
-        memory.asks.add(AskEntity(id, nowMs, q, text, AskSources.encode(out.sources), null, source, false))
+        val saved = memory.db.withTransaction {
+            if (MemoryWipe.generation.get() != generation) return@withTransaction false
+            memory.asks.add(AskEntity(id, nowMs, q, text, AskSources.encode(out.sources), null, source, false))
+            true
+        }
+        if (!saved) throw NoMemoriesException()
         return AskOutcome.Answered(id, out.proposedAction)
     }
 

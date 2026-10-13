@@ -71,6 +71,11 @@ object QueueRuntimeStore {
         }
     }
 
+    /** Settings → Memory › Delete all: every job goes, payloads included (they carry fact and user text). */
+    fun clearAll(context: Context) {
+        synchronized(lock) { file(context).delete() }
+    }
+
     fun claimNextReady(context: Context, nowEpochMs: Long = System.currentTimeMillis()): QueueJobRecord? {
         synchronized(lock) {
             val all = readAll(context)

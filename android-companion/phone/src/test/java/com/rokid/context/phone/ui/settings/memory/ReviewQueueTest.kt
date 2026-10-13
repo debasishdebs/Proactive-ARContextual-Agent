@@ -35,6 +35,8 @@ class ReviewQueueTest {
         withTimeout(5_000) { vm.state.first { it.items.isEmpty() } }
         assertEquals(ReviewState.OK, g.db.memoryViewDao().byId("r1")!!.reviewState)
         assertFalse(g.memoryEdits.approve("ok")) // only review-queue facts can be approved
+        g.memories.add(Fixtures.memory("r2", "Maybe a dog", Fixtures.NOW, review = ReviewState.NEEDS_REVIEW))
+        assertEquals(1, withTimeout(5_000) { g.memoryEdits.needsReviewCount().first { it == 1 } }) // review nit: a COUNT, no cap
         vm.cancelScope(); TestGraph.close(ctx)
     }
 }
