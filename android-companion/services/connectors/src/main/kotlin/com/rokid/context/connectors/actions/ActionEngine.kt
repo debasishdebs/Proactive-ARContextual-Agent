@@ -184,7 +184,11 @@ class ActionEngine(
             ExecResult.Failed(FailCode.UNKNOWN)
         }
         return when (result) {
-            is ExecResult.Done -> repo.markExecuted(p.id, result.createdRef, clock())
+            is ExecResult.Done -> repo.markExecuted(p.id, result.createdRef, clock()).also { ok ->
+                if (ok && result.warning != null) {
+                    try { audit(p.id, WARN, result.warning.name, clock()) } catch (c: CancellationException) { throw c } catch (t: Throwable) { log("warn", t) }
+                }
+            }
             is ExecResult.Failed -> { repo.markFailed(p.id, result.code.name, clock()); false }
         }
     }
@@ -217,6 +221,8 @@ class ActionEngine(
         const val UNDO_MS = 10_000L
         const val AUTO = "auto"
         const val PAST = "PAST"
+        /** action_log transition for [ExecResult.Done.warning]; detail = the FailCode name. */
+        const val WARN = "WARN"
         private const val TAG = "ActionEngine"
     }
 }

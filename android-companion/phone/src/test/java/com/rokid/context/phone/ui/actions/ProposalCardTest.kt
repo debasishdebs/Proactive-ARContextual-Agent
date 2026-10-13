@@ -6,13 +6,16 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.connectors.actions.ActionCopy
 import com.rokid.context.connectors.actions.ActionType
+import com.rokid.context.memory.db.ProposalEntity
 import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.memory.ProposalState
 import com.rokid.context.memory.Resolve
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -69,6 +72,27 @@ class ProposalCardTest {
         compose.onNodeWithText("Undone").assertIsDisplayed()
         src.flow.value = ui(ProposalState.EXPIRED)
         compose.onNodeWithText("Expired").assertIsDisplayed()
+    }
+
+    /** Final review I2: an added reminder that can't alert says so, with a way to fix it (no raw error text). */
+    @Test fun addedWithNotificationsOffOffersTurnOn() {
+        var fixed = 0
+        val src = FakeCardSource(ui(ProposalState.EXECUTED).copy(warning = ActionCopy.warningTitle("NOTIFICATIONS_OFF")))
+        compose.setContent { PcTheme { ProposalCard("a1", source = src, onFixNotifications = { fixed++ }) } }
+        compose.onNodeWithText("Added, but notifications are off").assertIsDisplayed()
+        compose.onNodeWithText("Added").assertDoesNotExist()
+        compose.onNodeWithText("Turn on").performClick()
+        assertEquals(1, fixed)
+    }
+
+    @Test fun warningIsBuiltOnlyForAnExecutedRow() {
+        val row = ProposalEntity(
+            "p1", "ASK", "a1", ActionType.REMINDER.name, "{}", ProposalState.EXECUTED.name, 0L, resolvedBy = "phone", createdRef = "alarm:p1", createdAt = 0L,
+        )
+        val zone = java.time.ZoneId.of("UTC")
+        assertEquals("Added, but notifications are off", ActionsUi.build(row, null, 0, zone, warningCode = "NOTIFICATIONS_OFF")!!.warning)
+        assertNull(ActionsUi.build(row, null, 0, zone)!!.warning)
+        assertNull(ActionsUi.build(row.copy(state = ProposalState.DECLINED.name), null, 0, zone, warningCode = "NOTIFICATIONS_OFF")!!.warning)
     }
 
     @Test fun failedUndoSaysSo() {
