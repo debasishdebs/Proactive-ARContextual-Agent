@@ -89,9 +89,16 @@ interface PauseDao {
         deleteRecords(ids)
     }
 
-    /** The quiet-hours occurrence starting at [startMs] (open or closed), if one was ever created. */
-    @Query("SELECT * FROM pause_interval WHERE origin = 'QUIET_HOURS' AND startMs = :startMs LIMIT 1")
-    suspend fun quietOccurrence(startMs: Long): PauseIntervalEntity?
+    /** A quiet-hours interval (open or closed) at or overlapping the occurrence [startMs, endMs), if one was ever created. */
+    @Query(
+        "SELECT * FROM pause_interval WHERE origin = 'QUIET_HOURS' AND (startMs = :startMs OR " +
+            "(startMs < :endMs AND (effectiveEndMs IS NULL OR effectiveEndMs > :startMs))) LIMIT 1",
+    )
+    suspend fun quietOccurrence(startMs: Long, endMs: Long): PauseIntervalEntity?
+
+    /** History older than [before] becomes an id-only tombstone: zero length, so it covers no frame. */
+    @Query("UPDATE pause_interval SET startMs = effectiveEndMs WHERE effectiveEndMs IS NOT NULL AND effectiveEndMs < :before AND startMs < effectiveEndMs")
+    suspend fun collapseEndedBefore(before: Long)
 
     /** Ids whose interval closed at or after [since] and that have no live record, newest 200. */
     @Query(

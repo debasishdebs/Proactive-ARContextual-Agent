@@ -11,14 +11,19 @@ class HudSettingsCache(private val prefs: SharedPreferences) {
     @Volatile private var last: HudSettings? = null
 
     fun read(): HudSettings = last
-        ?: (prefs.getString(KEY, null)?.let { (Wire.decode<HudSettings>(it) as? Decoded.Ok)?.value } ?: HudSettings()).also { last = it }
+        ?: validQuiet(prefs.getString(KEY, null)?.let { (Wire.decode<HudSettings>(it) as? Decoded.Ok)?.value } ?: HudSettings()).also { last = it }
     fun write(s: HudSettings) {
-        last = s
-        prefs.edit().putString(KEY, Wire.encode(s)).apply()
+        val v = validQuiet(s)
+        last = v
+        prefs.edit().putString(KEY, Wire.encode(v)).apply()
     }
 
     companion object {
         const val PREFS = "hud"
         private const val KEY = "hudSettings"
+
+        /** Quiet hours with a minute outside 0..1439 are dropped (no window), never stored or evaluated. */
+        fun validQuiet(s: HudSettings): HudSettings =
+            s.quietHours?.takeUnless { it.startMinute in 0..1439 && it.endMinute in 0..1439 }?.let { s.copy(quietHours = null) } ?: s
     }
 }

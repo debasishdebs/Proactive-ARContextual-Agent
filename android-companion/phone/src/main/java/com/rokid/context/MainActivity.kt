@@ -41,7 +41,8 @@ class MainActivity : ComponentActivity() {
         }
         val deps = PhoneDeps.get(this)
         // The legacy app re-scheduled workers on every launch even when the pipeline was off; honour the switch.
-        if (deps.pipeline.enabled.value) {
+        // Phase 7: processing follows the pipeline flag; capture pauses (incl. quiet hours) don't stop it.
+        if (deps.pipeline.processingEnabled.value) {
             OrchestrationScheduler(this).apply { scheduleFrameIngest(); scheduleQueueDrain(); scheduleCritic() }
         }
         val start = Routes.startRoute(deps.onboarding.isComplete())

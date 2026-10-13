@@ -95,9 +95,10 @@ class HudController(
         when (val d = Wire.decode<HudSettings>(text)) {
             is Decoded.Ok -> {
                 phoneMessage()
-                _settings.value = d.value
-                cache.write(d.value)
-                onPhoneSettings(d.value)
+                val v = HudSettingsCache.validQuiet(d.value)
+                _settings.value = v
+                cache.write(v)
+                onPhoneSettings(v)
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
             is Decoded.Malformed -> Log.w(TAG, "bad pc_settings (${d.reason})")

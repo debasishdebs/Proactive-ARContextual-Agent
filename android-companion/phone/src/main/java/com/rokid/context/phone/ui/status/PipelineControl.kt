@@ -35,6 +35,13 @@ interface PipelineControl {
     fun pauseUntil(untilMs: Long?) { if (untilMs == null) setEnabled(false) }
     /** Phase 7: resumes exactly [ids] (the ones a screen showed). Legacy: nothing. */
     fun resumeIds(ids: Set<String>) = Unit
+    /** Phase 7: resumes the pauses stored now (loaded first; a notification tap after a process death). Legacy: Resume. */
+    fun resumeLoaded() = setEnabled(true)
+    /**
+     * Whether already-captured frames are processed (ingest, drain, embedding, critic): the legacy pipeline flag. Capture
+     * pauses are capture-only (Phase 7 fix round 1, M2). Legacy: the same as [enabled].
+     */
+    val processingEnabled: StateFlow<Boolean> get() = enabled
 
     companion object {
         /** Strict default for deps built without the hub: never paused, every call ignored. */
@@ -55,9 +62,12 @@ interface PauseHub {
     val activePauses: StateFlow<List<PauseRecord>>
     suspend fun pausePhone(untilMs: Long?): PauseRecord
     suspend fun resume(ids: Set<String>)
+    /** The active pauses as stored (on IO), for a Resume made before [activePauses] has loaded. */
+    suspend fun loadActive(): List<PauseRecord> = activePauses.value
 }
 
-fun Hub.asPauseHub(): PauseHub = object : PauseHub {
+fun Hub.asPauseHub(loadActive: suspend () -> List<PauseRecord>): PauseHub = object : PauseHub {
+    override suspend fun loadActive(): List<PauseRecord> = loadActive()
     override val activePauses: StateFlow<List<PauseRecord>> get() = this@asPauseHub.activePauses
     override suspend fun pausePhone(untilMs: Long?): PauseRecord = this@asPauseHub.pausePhone(untilMs)
     override suspend fun resume(ids: Set<String>) = this@asPauseHub.resume(ids)
@@ -66,9 +76,11 @@ fun Hub.asPauseHub(): PauseHub = object : PauseHub {
 /** The legacy "pipeline enabled" flag, for the one-time Phase 7 migration (each call does prefs I/O: off Main only). */
 interface LegacyFlag {
     fun migrated(): Boolean
-    fun markMigrated()
+    /** Marks the migration done; [heldPauseId] = the PHONE pause whose Resume releases the held backlog (null: none). */
+    fun markMigrated(heldPauseId: String?)
+    fun heldPauseId(): String?
     fun pipelineEnabled(): Boolean
-    /** Turns the legacy flag on and resumes the workers it paused. */
+    /** Turns the legacy flag on, resumes the workers it paused and clears [heldPauseId]. */
     fun enablePipeline()
 }
 
@@ -76,7 +88,9 @@ interface LegacyFlag {
  * Phase 7 (R-65): ⏸ creates an indefinite PHONE pause record through the hub; ▶ resumes **only the ids active at the
  * moment of the tap** (spec §5.5), plus a pause queued by an earlier tap that had not landed yet. Taps run one at a
  * time, in tap order, on [io]. [enabled] = no active record. The legacy flag no longer follows ⏸: once, a legacy "off"
- * becomes one indefinite PHONE pause and the flag is switched back on (marker in [legacyFlag]).
+ * becomes one indefinite PHONE pause (marker in [legacyFlag]). The flag stays off, so frames and jobs held while it was
+ * off stay held, until that pause is resumed by any path; then the flag is switched on and the workers resumed (fix
+ * round 1, I1). [processingEnabled] = the flag.
  */
 class PausePipelineControl(
     private val hub: PauseHub,
@@ -85,8 +99,14 @@ class PausePipelineControl(
     private val legacyFlag: LegacyFlag,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : PipelineControl {
-    constructor(hub: Hub, scope: CoroutineScope, clock: () -> Long = System::currentTimeMillis, legacyFlag: LegacyFlag) :
-        this(hub.asPauseHub(), scope, clock, legacyFlag)
+    constructor(
+        hub: Hub, scope: CoroutineScope, clock: () -> Long = System::currentTimeMillis, legacyFlag: LegacyFlag,
+        loadActive: suspend () -> List<PauseRecord>,
+    ) : this(hub.asPauseHub(loadActive), scope, clock, legacyFlag)
+
+    /** Plain prefs (the old control read the same flag at construction); updated on IO when the backlog is released. */
+    private val processing = MutableStateFlow(legacyFlag.pipelineEnabled())
+    override val processingEnabled: StateFlow<Boolean> = processing.asStateFlow()
 
     override val activePauses: StateFlow<List<PauseRecord>> = hub.activePauses
     override val enabled: StateFlow<Boolean> =
@@ -96,7 +116,7 @@ class PausePipelineControl(
 
     private sealed interface Op {
         data class Pause(val untilMs: Long?) : Op
-        data class Resume(val shown: Set<String>, val includeQueued: Boolean = true) : Op
+        data class Resume(val shown: Set<String>, val includeQueued: Boolean = true, val loaded: Boolean = false) : Op
     }
     private val ops = Channel<Op>(Channel.UNLIMITED)
     private val lock = Any()
@@ -109,6 +129,7 @@ class PausePipelineControl(
     init {
         scope.launch(io) {
             migrateLegacy()
+            launch { watchHeld() }
             for (op in ops) {
                 try {
                     run(op)
@@ -126,9 +147,9 @@ class PausePipelineControl(
     private suspend fun migrateLegacy() {
         try {
             if (legacyFlag.migrated()) return
-            if (!legacyFlag.pipelineEnabled()) hub.pausePhone(null)
-            legacyFlag.enablePipeline()
-            legacyFlag.markMigrated()
+            // No resumePipeline here: the backlog held while the flag was off waits for the user's Resume.
+            val held = if (!legacyFlag.pipelineEnabled()) hub.pausePhone(null).pauseId else null
+            legacyFlag.markMigrated(held)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -136,12 +157,30 @@ class PausePipelineControl(
         }
     }
 
+    /** Releases the held backlog once the migrated pause is no longer active (checked against the store). */
+    private suspend fun watchHeld() {
+        hub.activePauses.collect { shown ->
+            try {
+                val held = legacyFlag.heldPauseId() ?: return@collect
+                if (shown.any { it.pauseId == held }) return@collect
+                if (hub.loadActive().any { it.pauseId == held }) return@collect
+                legacyFlag.enablePipeline()
+                processing.value = legacyFlag.pipelineEnabled()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "backlog release failed: ${SafeLog.describe(e)}")
+            }
+        }
+    }
+
     private suspend fun run(op: Op) {
         when (op) {
             is Op.Pause -> hub.pausePhone(op.untilMs).also { if (op.untilMs == null) createdByTaps += it.pauseId }
             is Op.Resume -> {
-                val ids = if (op.includeQueued) op.shown + createdByTaps else op.shown
-                if (op.includeQueued) createdByTaps.clear() else createdByTaps.removeAll(op.shown)
+                val shown = if (op.loaded) hub.loadActive().map { it.pauseId }.toSet() else op.shown
+                val ids = if (op.includeQueued) shown + createdByTaps else shown
+                if (op.includeQueued) createdByTaps.clear() else createdByTaps.removeAll(shown)
                 if (ids.isNotEmpty()) hub.resume(ids)
                 _lastResume.value = clock()
             }
@@ -163,6 +202,11 @@ class PausePipelineControl(
     override fun resumeIds(ids: Set<String>) {
         synchronized(lock) { inFlight++ }
         ops.trySend(Op.Resume(ids, includeQueued = false))
+    }
+
+    override fun resumeLoaded() {
+        synchronized(lock) { requested = true; inFlight++ }
+        ops.trySend(Op.Resume(emptySet(), loaded = true))
     }
 
     override fun toggle() = synchronized(lock) { setEnabled(!(requested ?: hub.activePauses.value.isEmpty())) }
