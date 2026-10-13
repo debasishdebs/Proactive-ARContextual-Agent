@@ -12,14 +12,14 @@ sealed interface Assembly {
     class Complete(val meta: FrameMeta, val jpeg: ByteArray) : Assembly
     /** Ack `ok=false` with [reason]: the glasses resend once, then drop the frame (spec §1.8). */
     data class Rejected(val frameId: String, val reason: String) : Assembly
-    /** Not a usable chunk (bad index/count): no ack, so the glasses' timeout retries it. */
+    /** No ack (kept for callers; the reassembler now NACKs unusable chunks as [Rejected]). */
     data object Ignored : Assembly
 }
 
 /**
  * Phone-side reassembly per `frameId` (spec §1.8). Chunks may arrive in any order; a second chunk 0 for a frame that
  * already has one is the glasses' retry from chunk 0 and restarts it; a partial frame without a new chunk for
- * [staleMs] is discarded. At most [maxPartials] frames are held and a chunk longer than [MAX_CHUNK_CHARS] is ignored, so
+ * [staleMs] is discarded. At most [maxPartials] frames are held; a chunk longer than [MAX_CHUNK_CHARS] or with a bad index is NACKed, so
  * memory stays bounded. Thread-safe.
  */
 class FrameReassembler(private val staleMs: Long = STALE_MS, private val maxPartials: Int = MAX_PARTIALS) {
@@ -31,8 +31,11 @@ class FrameReassembler(private val staleMs: Long = STALE_MS, private val maxPart
     @Synchronized fun accept(chunk: FrameChunk, nowMs: Long): Assembly {
         sweep(nowMs)
         val m = chunk.meta
-        if (m.chunkCount !in 1..MAX_CHUNKS || m.chunkIdx !in 0 until m.chunkCount) return Assembly.Ignored
-        if (chunk.chunk.length > MAX_CHUNK_CHARS) return Assembly.Ignored
+        // A NACK, not silence: the glasses resend once, then drop it, so a bad frame can't stick at the buffer head.
+        if (m.chunkCount !in 1..MAX_CHUNKS || m.chunkIdx !in 0 until m.chunkCount || chunk.chunk.length > MAX_CHUNK_CHARS) {
+            partials.remove(m.frameId)
+            return Assembly.Rejected(m.frameId, FrameAckReason.DECODE)
+        }
         val existing = partials[m.frameId]
         if (existing == null) evictForNewFrame()
         val restart = existing == null || existing.meta.chunkCount != m.chunkCount || existing.meta.crc32 != m.crc32 ||
