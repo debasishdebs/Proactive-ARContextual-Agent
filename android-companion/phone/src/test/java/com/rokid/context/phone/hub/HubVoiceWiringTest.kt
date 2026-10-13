@@ -120,4 +120,17 @@ class HubVoiceWiringTest {
         h.stop(); runCurrent()
         assertEquals(listOf("lost"), voice.calls)
     }
+
+    /** Review minor 5 (Phase 4/5 ruling): Ask is a user action, so a capture pause does not hold back a glasses ask. */
+    @Test fun aCapturePauseDoesNotHoldBackAGlassesAsk() = runTest {
+        val link = FakeGlassesLink()
+        hub(link)
+        link.emit(GlassesEvent.Cmd(Command.Pause(com.rokid.context.core.model.PauseRecord("g1", com.rokid.context.core.model.PauseOrigin.GLASSES, now, null)))); runCurrent()
+        assertEquals(1, HubPauses(db.pauseDao()) { now }.active().size)
+        link.emit(GlassesEvent.Cmd(Command.ListenStart))
+        link.emit(GlassesEvent.Audio(ByteArray(3_200)))
+        link.emit(GlassesEvent.ListenEnd); runCurrent()
+        assertEquals(listOf("start", "end"), voice.calls)
+        assertEquals(listOf(3_200), voice.audio)
+    }
 }

@@ -33,6 +33,8 @@ import kotlinx.coroutines.launch
  */
 class ContextHubService : Service() {
     private var watcher: Job? = null
+    /** The types the service is in the foreground with now (null before the first start). */
+    private var currentTypes: Int? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -40,7 +42,10 @@ class ContextHubService : Service() {
         super.onCreate()
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Glasses link", NotificationManager.IMPORTANCE_LOW))
-        if (!enterForeground(READY)) { stopSelf(); return }
+        // In front only when a resumed activity asked for this start; a sticky restart is in the background.
+        val inFront = startRequestedInFront
+        startRequestedInFront = false
+        if (!enterForeground(READY, inFront)) { stopSelf(); return }
         running = true
         val hub = HubGraph.get(this)
         hub.start()
@@ -50,22 +55,27 @@ class ContextHubService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_REFRESH_TYPES && running) enterForeground(lastText)
+        // Sent only from a resumed activity (VoiceGraph.onForeground), so the app is in front.
+        if (intent?.action == ACTION_REFRESH_TYPES && running) {
+            if (needsReentry(currentTypes, wantedTypes(inFront = true))) enterForeground(lastText, inFront = true)
+        }
         return START_STICKY
     }
 
-    /**
-     * startForeground with the microphone type when allowed; a microphone FGS can't start from the background (a sticky
-     * restart), so that case falls back to connectedDevice alone and glasses voice waits for the next app resume.
-     */
-    private fun enterForeground(text: String): Boolean {
+    private fun wantedTypes(inFront: Boolean): Int {
         val mic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        val wanted = foregroundTypes(Build.VERSION.SDK_INT, mic)
-        val ok = runCatching { ServiceCompat.startForeground(this, ID, notification(text), wanted) }
-            .onFailure { Log.w(TAG, "foreground ($wanted) refused: ${it.javaClass.simpleName}") }.isSuccess
-        if (ok || wanted == ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE) return ok
-        return runCatching { ServiceCompat.startForeground(this, ID, notification(text), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE) }
-            .onFailure { Log.w(TAG, "foreground refused: ${it.javaClass.simpleName}") }.isSuccess
+        return foregroundTypes(Build.VERSION.SDK_INT, mic, inFront)
+    }
+
+    /** startForeground with [wantedTypes], falling back to connectedDevice alone if the mic type is refused. */
+    private fun enterForeground(text: String, inFront: Boolean): Boolean {
+        val wanted = wantedTypes(inFront)
+        val entered = enterWithFallback(wanted) { types ->
+            runCatching { ServiceCompat.startForeground(this, ID, notification(text), types) }
+                .onFailure { Log.w(TAG, "foreground ($types) refused: ${it.javaClass.simpleName}") }.getOrThrow()
+        }
+        if (entered != null) currentTypes = entered
+        return entered != null
     }
 
     override fun onDestroy() {
@@ -103,16 +113,23 @@ class ContextHubService : Service() {
         /** One line for the legacy Live screen (Task 12 shows it in place of the RFCOMM bridge message). */
         fun statusLine(): String = lastText
 
+        /** Set by [ensureRunning] (a resumed activity) for the onCreate it causes; a sticky restart leaves it false. */
+        @Volatile private var startRequestedInFront = false
+
         /** Idempotent: called on every activity resume. */
         fun ensureRunning(context: Context) {
             val granted = Build.VERSION.SDK_INT < 31 ||
                 ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
             if (!shouldStart(running, canStart(Build.VERSION.SDK_INT, granted))) return
+            startRequestedInFront = true
             runCatching { context.startForegroundService(Intent(context, ContextHubService::class.java)) }
-                .onFailure { Log.w(TAG, "start refused: ${it.javaClass.simpleName}") }
+                .onFailure { startRequestedInFront = false; Log.w(TAG, "start refused: ${it.javaClass.simpleName}") }
         }
 
-        /** Re-enters the foreground with the current types (a mic grant made while the app is in front). */
+        /**
+         * Asks the running service to take the types it should have now (a mic grant made while the app is in front, or
+         * the mic after a sticky restart). Call it only from the foreground; it re-enters only when the types change.
+         */
         fun refreshForegroundTypes(context: Context) {
             if (!running) return
             runCatching { context.startService(Intent(context, ContextHubService::class.java).setAction(ACTION_REFRESH_TYPES)) }
@@ -124,9 +141,29 @@ class ContextHubService : Service() {
         internal fun canStart(sdk: Int, bluetoothGranted: Boolean) = sdk < 31 || bluetoothGranted
         internal fun shouldStart(running: Boolean, canStart: Boolean) = !running && canStart
 
-        /** FOREGROUND_SERVICE_TYPE_MICROPHONE exists from API 30 (R). */
-        internal fun foregroundTypes(sdk: Int, micGranted: Boolean): Int =
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or (if (sdk >= 30 && micGranted) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
+        /**
+         * FOREGROUND_SERVICE_TYPE_MICROPHONE exists from API 30 (R) and is taken only from the foreground ([inFront]).
+         * From the background (a sticky restart) the service takes connectedDevice alone, on every API level: on 34+ a
+         * microphone start would throw, and on 30-33 it would start without while-in-use mic access. Glasses voice then
+         * waits for the next app resume, which re-enters with the mic ([refreshForegroundTypes]).
+         */
+        internal fun foregroundTypes(sdk: Int, micGranted: Boolean, inFront: Boolean): Int =
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                (if (sdk >= 30 && micGranted && inFront) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
+
+        /**
+         * Enters with [wanted] through [start] (which throws when refused). A refused mic type retries once with
+         * connectedDevice alone; a refused connectedDevice does not retry. Returns the types entered, or null.
+         */
+        internal fun enterWithFallback(wanted: Int, start: (Int) -> Unit): Int? {
+            val device = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            if (runCatching { start(wanted) }.isSuccess) return wanted
+            if (wanted == device) return null
+            return if (runCatching { start(device) }.isSuccess) device else null
+        }
+
+        /** A resume re-enters the foreground only when the types it wants differ from the current ones. */
+        internal fun needsReentry(current: Int?, wanted: Int): Boolean = current != wanted
 
         internal fun notificationText(s: GlassesStatus): String = UserFacingErrors.forLink(s.link)?.title ?: when (s.link) {
             LinkState.CONNECTED -> "Glasses connected"

@@ -77,6 +77,46 @@ class PipelineAdaptersTest {
         assertEquals(0, answered)
     }
 
+    /** Review minor 4: switching the phone mic off while Home's question is being answered ends that ask too. */
+    @Test fun turningThePhoneMicOffWhileThinkingCancelsThePhoneAsk() = runTest {
+        val settings = MutableStateFlow(VoiceSettings(phoneMic = true))
+        val never = kotlinx.coroutines.CompletableDeferred<AnswerResult>()
+        var asked = 0
+        val pipeline = VoicePipeline(backgroundScope, engine, caps, { SpeechLanguage.ENGLISH }, Answerer { _, _ -> asked++; never.await() }, speaker, { false })
+        val phone = PipelinePhoneVoice(pipeline, settings, backgroundScope)
+        runCurrent()
+        phone.start(); runCurrent()
+        listener!!.onFinal(com.rokid.context.voice.SttResult.Text("where are my keys")); runCurrent()
+        assertTrue(pipeline.state.value is VoiceState.Thinking)
+        assertTrue(phone.state.value.thinking)
+        settings.value = VoiceSettings(phoneMic = false); runCurrent()
+        assertEquals(VoiceState.Idle, pipeline.state.value)
+        assertFalse(phone.state.value.thinking)
+        assertEquals(1, asked)
+        never.complete(AnswerResult.Answered("a1", "x")); runCurrent()
+        assertEquals(VoiceState.Idle, pipeline.state.value)
+    }
+
+    /**
+     * Review minor 6 (privacy ruling): until the stored switch has loaded it counts as off, so an early tap never starts
+     * an ask the user turned off; Home shows a short "loading" note instead.
+     */
+    @Test fun beforeTheMicSwitchLoadsATapIsANoOpWithALoadingNote() = runTest {
+        val settings = MutableStateFlow<VoiceSettings?>(null)
+        val pipeline = VoicePipeline(backgroundScope, engine, caps, { SpeechLanguage.ENGLISH }, Answerer { _, _ -> AnswerResult.Failed("x", "y") }, speaker, { false })
+        val phone = PipelinePhoneVoice(pipeline, settings, backgroundScope)
+        runCurrent()
+        assertTrue(phone.state.value.micOff)
+        phone.start(); runCurrent()
+        assertEquals(0, sessions)
+        assertEquals(PipelinePhoneVoice.LOADING, phone.state.value.error)
+        settings.value = VoiceSettings(phoneMic = true); runCurrent()
+        assertFalse(phone.state.value.micOff)
+        assertEquals(null, phone.state.value.error)
+        phone.start(); runCurrent()
+        assertEquals(1, sessions)
+    }
+
     /** A glasses ask is not the phone mic's: switching the phone mic off leaves it alone. */
     @Test fun turningThePhoneMicOffLeavesAGlassesListenAlone() = runTest {
         val settings = MutableStateFlow(VoiceSettings(phoneMic = true))

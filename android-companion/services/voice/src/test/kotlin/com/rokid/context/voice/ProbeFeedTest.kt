@@ -8,6 +8,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** The probe's paced feed (Task 5 carries: pump after the drain deadline; skip when the measured pipe can't decide). */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ProbeFeedTest {
     /** A pipe that takes [capacity] bytes and then nothing (a non-reading recognizer), or everything ([reads]). */
     private class Sink(private val capacity: Long, private val reads: Boolean = false, private val now: () -> Long) : PipeSink {

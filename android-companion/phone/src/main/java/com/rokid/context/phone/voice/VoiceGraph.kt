@@ -49,7 +49,7 @@ class VoiceGraph private constructor(private val app: Context) {
         log = { Log.i(TAG, it) },
     )
     val hubVoice: HubVoice = PipelineHubVoice(pipeline, capabilities.capabilities, scope)
-    val phoneVoice: PhoneVoice = PipelinePhoneVoice(pipeline, settings.settings, scope)
+    val phoneVoice: PhoneVoice = PipelinePhoneVoice(pipeline, settings.loadedSettings(scope), scope)
     val controls: VoiceControls = StoreVoiceControls(
         settings, capabilities, scope, onForeground = ::onForeground,
         download = { tag ->
