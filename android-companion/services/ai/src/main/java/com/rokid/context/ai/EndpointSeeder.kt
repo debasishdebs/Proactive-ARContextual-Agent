@@ -33,6 +33,16 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
         state.markDone()
     }.onFailure { Log.w(TAG, "AI seed not finished: ${redact(it.message, settings.apiKey)}") }
 
+    /**
+     * F23: true only when [settings] carries a non-blank key and KeyVault holds a key for the endpoint this seed
+     * creates, i.e. the legacy copy is no longer the only one. Keyless kinds never take the key, so they are never true.
+     */
+    suspend fun legacyKeyInVault(settings: ProviderSettings): Boolean {
+        if (settings.apiKey.isBlank()) return false
+        val e = endpoints.byId(primaryId(settings)) ?: return false
+        return !endpoints.keyFor(e).isNullOrBlank()
+    }
+
     suspend fun syncFromLegacy(settings: ProviderSettings): Result<Unit> = runCatching {
         apply(settings, overwrite = true)
         state.markDone()
@@ -83,6 +93,13 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
 
     companion object {
         private const val TAG = "EndpointSeeder"
+
+        /** The id of the endpoint [apply] creates for [settings] (same `when` as there). */
+        private fun primaryId(settings: ProviderSettings): String = when (settings.providerType.lowercase()) {
+            "ollama" -> OLLAMA_ID
+            "llama_cpp" -> LOCAL_ID
+            else -> AZURE_ID
+        }
         const val AZURE_ID = "azure"
         const val OLLAMA_ID = "ollama"
         const val LOCAL_ID = "llamacpp"

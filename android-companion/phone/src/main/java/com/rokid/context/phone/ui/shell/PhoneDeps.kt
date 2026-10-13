@@ -2,7 +2,6 @@ package com.rokid.context.phone.ui.shell
 
 import android.content.Context
 import com.rokid.context.core.model.GlassesStatusSource
-import com.rokid.context.core.model.Verbosity
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.orchestration.AskActions
 import com.rokid.context.orchestration.PrefsIndexClock
@@ -50,8 +49,6 @@ class PhoneDeps(
     val storagePct: Flow<Int?>,
     val clock: Flow<Long>,
     val zone: () -> ZoneId = { ZoneId.systemDefault() },
-    /** Sends a HUD verbosity to the glasses (`pc_settings` through the hub). */
-    val hudVerbosity: (Verbosity) -> Unit = {},
     /** Banner 6 (spec §2.2): index rebuild needed / running, or unstable after repeated drift (Task 11). */
     val index: Flow<IndexState> = flowOf(IndexState.NONE),
 ) {
@@ -86,7 +83,6 @@ class PhoneDeps(
                 settings = SettingsDeps.create(app),
                 storagePct = StorageUsage.percentFlow(app) { MemorySettingsStore.get(app).settings.value.quotaBytes },
                 clock = ticker(),
-                hudVerbosity = { v -> com.rokid.context.phone.hub.HubGraph.get(app).updateSettings { it.copy(verbosity = v) } },
                 index = combine(
                     MemoryGraph.get(app).spaces.health(),
                     PrefsIndexClock(app).observeUnstable(),

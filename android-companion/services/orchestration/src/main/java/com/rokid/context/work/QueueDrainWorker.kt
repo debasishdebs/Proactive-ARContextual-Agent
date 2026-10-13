@@ -51,7 +51,7 @@ class QueueDrainWorker(
 
     override suspend fun doWork(): Result {
         // Paused (phone ⏸): nothing goes to the AI provider. Jobs stay queued; resuming drains them (resumePipeline).
-        if (!AppConfigStore.get(applicationContext).pipelineEnabled) {
+        if (!AppConfigStore.isPipelineEnabled(applicationContext)) {
             Log.i(TAG, "pipeline paused: queue left for resume")
             return Result.success()
         }
@@ -120,7 +120,7 @@ class QueueDrainWorker(
         val manualLiveRequest = source.equals("manual_live", ignoreCase = true)
         PipelineRecords.upsertTrace(applicationContext, job.id, "FRAME_INGEST_DONE", "source=$source imported=$imported")
         if (imported > 0 || manualLiveRequest) {
-            val config = AppConfigStore.get(applicationContext)
+            val config = AppConfigStore.getWithoutSecret(applicationContext)
             QueueRuntimeStore.enqueue(
                 context = applicationContext,
                 queue = QueuePriority.SUMMARIZER,

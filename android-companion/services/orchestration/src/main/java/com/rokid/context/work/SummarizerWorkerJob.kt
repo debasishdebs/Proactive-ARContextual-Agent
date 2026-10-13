@@ -24,7 +24,7 @@ class SummarizerWorkerJob(
 
         PipelineRecords.upsertTrace(applicationContext, summaryId, "ENQUEUED", "Queued for queue-drain summarization")
 
-        val config = AppConfigStore.get(applicationContext)
+        val config = AppConfigStore.getWithoutSecret(applicationContext)
         QueueRuntimeStore.enqueue(
             context = applicationContext,
             queue = QueuePriority.SUMMARIZER,

@@ -55,4 +55,12 @@ class DiagnosticsViewModelTest {
         vm.summarizeNow()
         assertEquals(DiagnosticsViewModel.FAILED, withTimeout(5_000) { vm.state.first { it.message != null } }.message)
     }
+
+    @Test fun exportSharesTheFileAndPushResendsSettings() = runBlocking {
+        val shared = mutableListOf<java.io.File>(); var pushed = 0
+        val v = DiagnosticsViewModel(actions, pipeline, exportDiagnostics = { java.io.File.createTempFile("diag", ".txt") }, share = { shared += it }, pushSettings = { pushed++ })
+        v.exportDiagnostics(); v.pushSettings()
+        withTimeout(5_000) { v.state.first { !it.busy && shared.isNotEmpty() } }
+        assertEquals(1, pushed); assertEquals("Settings sent to the glasses", v.state.value.message)
+    }
 }

@@ -18,7 +18,17 @@ data class AppConfig(
     val nativeModelPath: String,
 )
 
-object AppConfigStore {
+/**
+ * The config reads the app makes, as an interface so a test can inject a spy through a constructor (Task 16 carry).
+ * Only [get] opens the Keystore-backed secrets store; everything that may run on Main uses the other two.
+ */
+interface AppConfigReader {
+    fun get(context: Context): AppConfig
+    fun getWithoutSecret(context: Context): AppConfig
+    fun isPipelineEnabled(context: Context): Boolean
+}
+
+object AppConfigStore : AppConfigReader {
     private const val PREF = "app_config"
     private const val SECRET_PREF = "app_config_secret"
 
@@ -37,12 +47,14 @@ object AppConfigStore {
     private const val K_NATIVE_MODEL_PATH = "native_model_path"
     private const val K_GLASSES_SILENCY_MODE = "glasses_silency_mode"
 
-    fun get(context: Context): AppConfig = getWithoutSecret(context).copy(
-        apiKey = secrets(context).getString(K_API_KEY, "").orEmpty().replace("\\s+".toRegex(), ""),
-    )
+    /**
+     * Also returns the legacy single-provider key, which is read only to seed the endpoint registry (LegacyKeySeed, off
+     * Main). Opens the Keystore: never call it on Main.
+     */
+    override fun get(context: Context): AppConfig = getWithoutSecret(context).copy(apiKey = legacyApiKey(context))
 
     /** Everything but the API key, from plain prefs only: [get] also opens the Keystore-backed secrets (never on Main). */
-    fun getWithoutSecret(context: Context): AppConfig {
+    override fun getWithoutSecret(context: Context): AppConfig {
         val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
         return AppConfig(
             pipelineEnabled = p.getBoolean(K_PIPELINE_ENABLED, true),
@@ -92,13 +104,8 @@ object AppConfigStore {
     }
 
     /** Just the ⏸ flag ([get] also opens the secrets store). */
-    fun isPipelineEnabled(context: Context): Boolean =
+    override fun isPipelineEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(K_PIPELINE_ENABLED, true)
-    fun setLocalModeEnabled(context: Context, enabled: Boolean, syncRegistry: Boolean = true): Result<Unit> {
-        edit(context) { putBoolean(K_LOCAL_MODE_ENABLED, enabled) }
-        if (!syncRegistry) return Result.success(Unit)
-        return com.rokid.context.orchestration.LegacyConfigBridge.sync(context)
-    }
     fun setEncryptionEnabled(context: Context, enabled: Boolean) = edit(context) { putBoolean(K_ENCRYPTION_ENABLED, enabled) }
     fun setMemoryWindow(context: Context, value: String) = edit(context) { putString(K_MEMORY_WINDOW, value) }
     fun setPersona(context: Context, value: String) = edit(context) { putString(K_PERSONA, value) }
@@ -110,27 +117,6 @@ object AppConfigStore {
         return normalizeSilencyMode(raw)
     }
 
-    fun setProvider(
-        context: Context,
-        providerType: String,
-        endpoint: String,
-        apiKey: String,
-        deploymentOrModel: String,
-        nativeModelPath: String,
-        syncRegistry: Boolean = true,
-    ): Result<Unit> {
-        edit(context) {
-            putString(K_PROVIDER_TYPE, providerType)
-            putString(K_ENDPOINT, endpoint)
-            putString(K_DEPLOYMENT_OR_MODEL, deploymentOrModel)
-            putString(K_NATIVE_MODEL_PATH, nativeModelPath)
-        }
-        secrets(context).edit().putString(K_API_KEY, apiKey.replace("\\s+".toRegex(), "")).apply()
-        if (!syncRegistry) return Result.success(Unit) // per-keystroke edits: the caller syncs once, debounced, off the main thread
-        // Mirror into the endpoint registry; a failure carries a short message for the Config screen.
-        return com.rokid.context.orchestration.LegacyConfigBridge.sync(context)
-    }
-
     private inline fun edit(
         context: Context,
         block: android.content.SharedPreferences.Editor.() -> Unit,
@@ -140,22 +126,29 @@ object AppConfigStore {
         editor.apply()
     }
 
-    private fun secrets(context: Context): android.content.SharedPreferences {
-        return runCatching {
-            val key = MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .build()
-            EncryptedSharedPreferences.create(
-                context,
-                SECRET_PREF,
-                key,
-                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-            )
-        }.getOrElse {
-            // Fallback to plain prefs if encrypted storage is unavailable on device build.
-            context.getSharedPreferences(SECRET_PREF, Context.MODE_PRIVATE)
-        }
+    /** EncryptedSharedPreferences only, null when the Keystore is unavailable: never a plaintext fallback (C3). */
+    private fun secrets(context: Context): android.content.SharedPreferences? = runCatching {
+        EncryptedSharedPreferences.create(
+            context, SECRET_PREF, MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV, EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+    }.getOrNull()
+
+    /**
+     * Nothing writes this key any more. An old build whose Keystore failed stored it in plaintext under the same file
+     * (encrypted entries never use the plain name [K_API_KEY]), so that copy is read too: only so the seed can move it
+     * into KeyVault, after which [clearLegacySecret] deletes the file.
+     */
+    private fun legacyApiKey(context: Context): String {
+        val encrypted = secrets(context)?.let { runCatching { it.getString(K_API_KEY, null) }.getOrNull() }
+        val raw = encrypted ?: context.getSharedPreferences(SECRET_PREF, Context.MODE_PRIVATE).getString(K_API_KEY, null)
+        return raw.orEmpty().replace("\\s+".toRegex(), "")
+    }
+
+    /** The legacy key is read once, to seed the endpoint registry; afterwards it lives in KeyVault only (F23: caller checks). */
+    fun clearLegacySecret(context: Context) {
+        runCatching { secrets(context)?.edit()?.remove(K_API_KEY)?.commit() }
+        context.deleteSharedPreferences(SECRET_PREF) // also removes a plaintext file an old build may have written
     }
 
     private fun normalizeSilencyMode(mode: String): String {

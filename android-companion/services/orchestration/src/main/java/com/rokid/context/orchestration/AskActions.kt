@@ -65,11 +65,11 @@ object AskActions {
                     generation = generation,
                     queue = QueuePriority.PRIORITY_REPROCESS,
                     payload = QueuePayloads.reprocess(reason = REVIEW_REASON, sourceContext = cited.joinToString("\n") { it.text }),
-                    personaSnapshot = AppConfigStore.get(context).persona,
+                    personaSnapshot = AppConfigStore.getWithoutSecret(context).persona,
                     ttlHours = 24,
                 )
                 // Paused: the review waits in the queue; resuming drains it.
-                if (AppConfigStore.get(context).pipelineEnabled) OrchestrationScheduler(context).enqueueQueueDrainNow()
+                if (AppConfigStore.isPipelineEnabled(context)) OrchestrationScheduler(context).enqueueQueueDrainNow()
             }
         }
         return true

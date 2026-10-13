@@ -10,6 +10,7 @@ import com.rokid.context.core.model.FrameAck
 import com.rokid.context.core.model.FrameChunk
 import com.rokid.context.core.model.UserFacingError
 import com.rokid.context.core.model.UserFacingErrors
+import com.rokid.context.data.runtime.AppConfigReader
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
@@ -154,14 +155,14 @@ class FrameIngestor(
  * Production `onStored`: queue the inbox ingest exactly as the RFCOMM bridge did. While the phone pipeline is paused the
  * frame only waits in `rokid_inbox` (it is stored and acked); resuming queues the ingest (`resumePipeline`).
  */
-fun enqueueInboxIngest(context: Context) {
-    if (!AppConfigStore.get(context).pipelineEnabled) return
+fun enqueueInboxIngest(context: Context, config: AppConfigReader = AppConfigStore) {
+    if (!config.isPipelineEnabled(context)) return
     QueueRuntimeStore.enqueue(
         context = context,
         queue = QueuePriority.FRAME_INGEST,
         payload = QueuePayloads.frameIngest(source = "rokid_cxr"),
-        personaSnapshot = AppConfigStore.get(context).persona,
+        personaSnapshot = config.getWithoutSecret(context).persona,
         ttlHours = 24,
     )
-    OrchestrationScheduler(context).enqueueQueueDrainNow()
+    OrchestrationScheduler(context, config).enqueueQueueDrainNow()
 }
