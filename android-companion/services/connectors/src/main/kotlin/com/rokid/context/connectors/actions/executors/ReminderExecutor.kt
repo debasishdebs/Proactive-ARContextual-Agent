@@ -15,7 +15,7 @@ import com.rokid.context.memory.db.ProposalEntity
 
 /**
  * A reminder is an alarm keyed by proposalId (no table: schema v1 is frozen), so re-arming replaces it. Exact when the
- * platform allows it, else a 10-minute window. Notifications off still counts as Done (the alarm is set).
+ * platform allows it, else a 10-minute window. Notifications off: still armed, Done with warning NOTIFICATIONS_OFF.
  */
 class ReminderExecutor(private val context: Context) : ActionExecutor {
     private val alarms: AlarmManager get() = context.getSystemService(AlarmManager::class.java)
@@ -23,7 +23,11 @@ class ReminderExecutor(private val context: Context) : ActionExecutor {
     override suspend fun execute(p: ProposalEntity): ExecResult {
         val r = ActionParams.decode(ActionType.REMINDER, p.paramsJson) as? ActionParams.Reminder ?: return ExecResult.Failed(FailCode.UNKNOWN)
         arm(p.id, r)
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) logCode(FailCode.NOTIFICATIONS_OFF)
+        // Kept armed (it shows once notifications are back on), but not a plain Done: the card says so (final review I2).
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            logCode(FailCode.NOTIFICATIONS_OFF)
+            return ExecResult.Done("alarm:${p.id}", FailCode.NOTIFICATIONS_OFF)
+        }
         return ExecResult.Done("alarm:${p.id}")
     }
 
