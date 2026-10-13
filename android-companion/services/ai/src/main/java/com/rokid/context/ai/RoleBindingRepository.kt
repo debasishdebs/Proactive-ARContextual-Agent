@@ -7,6 +7,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+/** A save would take away a capability that these [roles] (primary or fallback) need (spec section 4.2). */
+class EndpointInUseException(val roles: List<Role>) : IllegalStateException("endpoint is in use")
+
 class RoleBindingRepository(private val dao: RoleBindingDao, private val endpoints: EndpointRepository) {
     /** Every binding write and the in-use delete take this, so a binding can't land on an endpoint mid-delete. */
     private val writes = Mutex()
@@ -32,6 +35,12 @@ class RoleBindingRepository(private val dao: RoleBindingDao, private val endpoin
         binding.fallbackEndpointId?.let { require(it in eligible) { "Fallback endpoint can't do ${binding.role.requiredCapability.name.lowercase()}" } }
         dao.upsert(RoleBindingEntity(binding.role.name, binding.endpointId, binding.model, binding.temperature, binding.maxTokens, binding.fallbackEndpointId, binding.fallbackModel))
     } }
+
+    /** Endpoint save + the in-use capability check under the bindings' write lock (Phase 5 T17 carry). */
+    suspend fun saveEndpoint(endpoint: Endpoint, apiKey: String?): Result<Endpoint> = writes.withLock {
+        val broken = usages(endpoint.id).filter { it.requiredCapability !in endpoint.capabilities }
+        if (broken.isNotEmpty()) Result.failure(EndpointInUseException(broken)) else endpoints.save(endpoint, apiKey)
+    }
 
     /** Deletes the endpoint only when no role uses it (primary or fallback); returns the roles that block it (empty = deleted). */
     suspend fun deleteEndpointIfUnused(endpointId: String): List<Role> = writes.withLock {

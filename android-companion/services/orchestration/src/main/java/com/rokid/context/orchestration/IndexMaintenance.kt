@@ -49,6 +49,9 @@ interface IndexClock {
     /** The last Rebuild request already applied, so a re-delivered request does not rebuild twice. */
     fun consumedRebuild(): String?
     fun consumeRebuild(token: String)
+    /** The request id of the pending Rebuild (Phase 5 T11 carry): the run that honours it records it as consumed. */
+    fun pendingRebuildToken(): String? = null
+    fun setPendingRebuildToken(token: String?) = Unit
     fun lastDiscard(): DiscardRecord?
     /** null clears it (a successful swap, or the user's Rebuild). */
     fun recordDiscard(record: DiscardRecord?)
@@ -64,6 +67,8 @@ class PrefsIndexClock(context: Context) : IndexClock {
     override fun setRebuildPending(pending: Boolean) { prefs.edit().putBoolean(K_PENDING, pending).commit() }
     override fun consumedRebuild(): String? = prefs.getString(K_TOKEN, null)
     override fun consumeRebuild(token: String) { prefs.edit().putString(K_TOKEN, token).commit() }
+    override fun pendingRebuildToken(): String? = prefs.getString(K_PENDING_TOKEN, null)
+    override fun setPendingRebuildToken(token: String?) { prefs.edit().apply { if (token == null) remove(K_PENDING_TOKEN) else putString(K_PENDING_TOKEN, token) }.commit() }
     override fun lastDiscard(): DiscardRecord? {
         val fp = prefs.getString(K_DISCARD_FP, null) ?: return null
         return DiscardRecord(fp, prefs.getLong(K_DISCARD_AT, 0L), prefs.getInt(K_DISCARD_STREAK, 0))
@@ -88,6 +93,7 @@ class PrefsIndexClock(context: Context) : IndexClock {
         const val K_CANARY = "last_canary_at"
         const val K_PENDING = "rebuild_pending"
         const val K_TOKEN = "consumed_rebuild"
+        const val K_PENDING_TOKEN = "rebuild_pending_token"
         const val K_DISCARD_FP = "discard_fingerprint"
         const val K_DISCARD_AT = "discard_at"
         const val K_DISCARD_STREAK = "discard_streak"
@@ -132,6 +138,7 @@ class IndexMaintenance(
         // The drift streak (and so "index unstable") belongs to one model: binding another one starts afresh.
         clock.lastDiscard()?.takeIf { it.fingerprint != fp }?.let { clock.recordDiscard(null) }
         val pending = clock.rebuildPending()
+        val pendingToken = if (pending) clock.pendingRebuildToken() else null
         val requested = rebuild && (rebuildToken == null || rebuildToken != clock.consumedRebuild())
         val manual = requested || pending
         var current = spaces.current()
@@ -150,7 +157,11 @@ class IndexMaintenance(
             // F26: a same-model Rebuild marks the space STALE first, because the fingerprint is unique.
             if (current != null && current.state == SpaceState.ACTIVE && current.fingerprint == fp) { spaces.markStale(current.id); current = spaces.current() }
             if (rebuild && rebuildToken != null) clock.consumeRebuild(rebuildToken)
-            if (pending) clock.setRebuildPending(false)
+            if (pending) {
+                pendingToken?.let(clock::consumeRebuild) // that request's own run is now a normal one (Phase 5 T11 carry)
+                clock.setRebuildPending(false)
+                clock.setPendingRebuildToken(null)
+            }
             clock.recordDiscard(null) // the user's Rebuild resets the drift streak
         }
         val needsBuild = current == null || current.state == SpaceState.STALE || current.fingerprint != fp
