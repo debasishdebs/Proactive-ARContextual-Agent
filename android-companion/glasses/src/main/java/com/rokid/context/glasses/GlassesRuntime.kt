@@ -67,7 +67,9 @@ class GlassesRuntime private constructor(private val app: Context) {
         link = object : PttLink {
             override fun start(): Boolean = controller?.takeIf { it.sessionOpen.value }?.send(Command.ListenStart) == true
             override fun audio(base64: String): Boolean = controller?.sendAudio(base64) == true
-            override fun end() { controller?.sendListenEnd() }
+            // A closed session can't take the end of an utterance (whichever of the ptt thread and the cancel runs first).
+            override fun end() { controller?.takeIf { it.sessionOpen.value }?.sendListenEnd() }
+            override fun cancel() { controller?.send(Command.Cancel) }
         },
         recording = listening,
         hasPermission = { app.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED },
@@ -106,6 +108,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onPhonePauses = {}
         if (controller !== c) return
         ptt.cancel()
+        ptt.onProblem = {} // only the current activity's handler: a newer activity's must survive an old detach
         controller = null
         attachJob?.cancel()
         bridge.release()

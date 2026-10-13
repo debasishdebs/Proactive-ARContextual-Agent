@@ -84,4 +84,12 @@ class HudPresenterTest {
         assertEquals(confirm, HudPresenter().present(frame(confirm), Verbosity.MEDIUM, HudNav(), null, 0, recording = true).overlay)
         assertEquals(null, HudPresenter().present(frame(null), Verbosity.MEDIUM, HudNav(), null, 0).overlay)
     }
+
+    /** Fix round 1: a local toast or splash never hides Listening while recording (gestures route on what is shown). */
+    @Test fun aLocalOverlayDoesNotOutrankListeningWhileRecording() {
+        for (local in listOf(LocalOverlay.Toast("Capture resumed", 0), LocalOverlay.Splash(0))) {
+            assertEquals(Overlay.Listening(""), HudPresenter().present(frame(null), Verbosity.MEDIUM, HudNav(), local, 1, recording = true).overlay)
+        }
+        assertEquals(Overlay.Toast("Capture resumed"), HudPresenter().present(frame(null), Verbosity.MEDIUM, HudNav(), LocalOverlay.Toast("Capture resumed", 0), 1).overlay)
+    }
 }

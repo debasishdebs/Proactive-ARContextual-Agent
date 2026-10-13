@@ -9,6 +9,10 @@ import com.rokid.context.glasses.link.HudSettingsCache
 import com.rokid.context.glasses.link.FakeBridge
 import com.rokid.context.glasses.link.HudController
 import com.rokid.context.glasses.pause.PauseToggle
+import com.rokid.context.glasses.link.CxrBridge
+import com.rokid.context.glasses.voice.PttProblem
+import kotlin.test.assertNotSame
+import kotlin.test.assertSame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -48,5 +52,24 @@ class GlassesRuntimeTest {
         runtime.attach(c)
         runtime.onCaptureScheduled()
         assertEquals(1, bridge.sent.count { it.first == Channels.HELLO })
+    }
+
+    /** Minor 7: an old activity's late detach must not wipe the new activity's push-to-talk toast handler. */
+    @Test fun anOldControllersDetachKeepsTheNewProblemHandler() {
+        GlassesRuntime.bridgeFactory = { FakeBridge() }
+        try {
+            val runtime = GlassesRuntime.get(app)
+            fun controller() = HudController(runtime.scope, FakeBridge(), HudSettingsCache(app.getSharedPreferences("rt_test", 0)), { Hello(glassesBatteryPct = 80, bufferSize = 0, glassesNowMs = 0, pauses = emptyList()) })
+            val old = controller(); val new = controller()
+            runtime.attach(old); runtime.attach(new)
+            val handler: (PttProblem) -> Unit = {}
+            runtime.ptt.onProblem = handler
+            runtime.detach(old)
+            assertSame(handler, runtime.ptt.onProblem)
+            runtime.detach(new)
+            assertNotSame(handler, runtime.ptt.onProblem)
+        } finally {
+            GlassesRuntime.bridgeFactory = { CxrBridge(it) }
+        }
     }
 }

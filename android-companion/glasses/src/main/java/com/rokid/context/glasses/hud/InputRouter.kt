@@ -23,7 +23,13 @@ sealed interface Routed {
  * cancels, tap sends; Answer: swipe or double-tap dismisses), otherwise `HudSettings.gestures` (unmapped = default).
  */
 object InputRouter {
-    fun route(input: PadInput, overlay: Overlay?, gestures: Map<Gesture, GestureAction>): Routed = when (overlay) {
+    /** While [recording] (the glasses' own push-to-talk), a double-tap is Cancel whatever is shown. */
+    fun route(input: PadInput, overlay: Overlay?, gestures: Map<Gesture, GestureAction>, recording: Boolean = false): Routed = when {
+        recording && input == PadInput.DoubleTapped -> Routed.CancelListening
+        else -> routeShown(input, overlay, gestures)
+    }
+
+    private fun routeShown(input: PadInput, overlay: Overlay?, gestures: Map<Gesture, GestureAction>): Routed = when (overlay) {
         is Overlay.Confirm -> when (input) {
             is PadInput.Swiped -> Routed.ConfirmToggle
             PadInput.Tapped -> Routed.ConfirmChoose

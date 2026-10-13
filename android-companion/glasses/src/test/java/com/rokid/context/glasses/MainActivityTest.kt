@@ -36,6 +36,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
 import java.util.concurrent.Semaphore
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -198,6 +199,10 @@ class MainActivityTest {
         }
     }
 
+    /**
+     * The session closes synchronously on the disconnect; pc_listen_end is gated on the open session, so whichever of
+     * the ptt thread (the permit) and the runtime's cancel runs first, no pc_listen_end goes out (fix round 1).
+     */
     @Test fun closingTheSessionStopsRecordingWithoutAListenEnd() {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             phoneState()
@@ -307,6 +312,49 @@ class MainActivityTest {
             }
             compose.onNodeWithText("Connecting to phone\u2026", substring = true).assertExists()
             compose.onNodeWithText("Phone not connected", substring = true).assertDoesNotExist()
+        }
+    }
+
+    /** Fix round 1 ruling: leaving the activity mid-recording tells the phone to drop the ask (it would answer it otherwise). */
+    @Test fun leavingTheActivityWhileRecordingCancelsTheAsk() {
+        val s = ActivityScenario.launch(MainActivity::class.java)
+        phoneState()
+        s.onActivity { tap(it) }
+        waitUntil { Command.ListenStart in commands() }
+        s.close()
+        assertTrue(Command.Cancel in commands())
+        mic.permits.release(1)
+        waitUntil { !runtime.listening.value }
+        assertEquals(0, sentOn(Channels.LISTEN_END))
+    }
+
+    /** Spec 1.8 / R-08: no frame chunk goes out while recording; the flush resumes after it. */
+    @Test fun noFrameGoesOutWhileRecordingAndTheFlushResumesAfter() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            s.onActivity { tap(it) }
+            waitUntil { Command.ListenStart in commands() }
+            runBlocking { runtime.pauses.ensureLoaded() }
+            assertEquals(BufferResult.STORED, runtime.bufferCaptured("g9", byteArrayOf(1, 2, 3), System.currentTimeMillis(), 90, "0", 80))
+            runtime.onFrameBuffered()
+            Thread.sleep(GlassesRuntime.FLUSH_AFTER_HELLO_MS + 300); shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(0, sentOn(Channels.FRAME), "no frame while recording")
+            s.onActivity { tap(it) }
+            mic.permits.release(1)
+            waitUntil { sentOn(Channels.LISTEN_END) == 1 && !runtime.listening.value }
+            waitUntil { sentOn(Channels.FRAME) > 0 }
+        }
+    }
+
+    /** Minor 11: a tap while the mic request from onCreate is still pending does not launch a second one. */
+    @Test fun aTapDoesNotRequestTheMicTwice() {
+        shadowOf(app).denyPermissions(Manifest.permission.RECORD_AUDIO)
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            s.onActivity { tap(it) }
+            compose.onNodeWithText("Allow the microphone on the glasses", substring = true).assertExists()
+            // Activity drops a second request with this warning (and answers it empty) instead of asking again.
+            assertFalse(ShadowLog.getLogs().any { it.msg?.contains("only one set of permissions") == true }, "a second request was launched")
         }
     }
 }
