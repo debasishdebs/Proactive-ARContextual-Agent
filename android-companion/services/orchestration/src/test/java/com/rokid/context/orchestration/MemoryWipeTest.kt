@@ -26,8 +26,12 @@ import java.io.File
 @Config(sdk = [34])
 class MemoryWipeTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
-    @Before fun setUp() { androidx.work.testing.WorkManagerTestInitHelper.initializeTestWorkManager(ctx); MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx)) }
-    @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
+    /** R20F1-1 isolation: an empty queue and a paused pipeline, so no resumed worker writes during the test. */
+    @Before fun setUp() {
+        androidx.work.testing.WorkManagerTestInitHelper.initializeTestWorkManager(ctx); MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
+        com.rokid.context.data.runtime.QueueRuntimeStore.clearAll(ctx); com.rokid.context.data.runtime.AppConfigStore.setPipelineEnabled(ctx, false)
+    }
+    @After fun tearDown() { com.rokid.context.data.runtime.AppConfigStore.setPipelineEnabled(ctx, true); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
     @Test fun deleteAllRemovesMemoryButKeepsSettingsAndSearchStillWorks() = runBlocking {
         val g = MemoryGraph.get(ctx)
@@ -42,7 +46,7 @@ class MemoryWipeTest {
         assertEquals(1, MemoryWipe.deleteAll(ctx))
         assertFalse(jpg.exists())
         assertEquals(0, g.db.memoryDao().count()); assertEquals(0, g.db.frameDao().count())
-        assertTrue(g.asks.recent(10).first().isEmpty()); assertTrue(g.traces.recent(10).none { it.summaryId == "s1" }) // the resumed pipeline may log a fresh status trace
+        assertTrue(g.asks.recent(10).first().isEmpty()); assertTrue(g.traces.recent(10).isEmpty())
         assertTrue(g.db.embeddingDao().vectors(s.id).isEmpty())
         assertEquals("Azure", ai.endpoints.byId("az")!!.name) // settings survive
         assertEquals(1, ai.prompts.active(PromptKey.ANSWER).version)
@@ -85,5 +89,16 @@ class MemoryWipeTest {
         exported.forEach { assertFalse(it.name, it.exists()) }
         assertTrue(ledger.exists())
         ledger.delete()
+    }
+
+    /** Fix round 2 N3: a first-run legacy import finishes before the wipe, so it can't bring legacy memories back after it. */
+    @Test fun theLegacyImportIsDoneBeforeTheWipe() = runBlocking<Unit> {
+        File(ctx.filesDir, "memory_records.log").writeText("rokid_mem_1\tshort_term\t0.9\t100\tMilk carton nearly empty\n")
+        val importer = LegacyImporter(ctx, MemoryGraph.get(ctx))
+        assertFalse(importer.isDone())
+        MemoryWipe.deleteAll(ctx)
+        assertTrue(importer.isDone())
+        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx)) // nothing left to import later
+        assertEquals(0, MemoryGraph.get(ctx).db.memoryDao().count())
     }
 }

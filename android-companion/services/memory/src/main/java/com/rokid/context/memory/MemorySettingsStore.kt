@@ -15,7 +15,10 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
     private val state = MutableStateFlow(read())
     val settings: StateFlow<MemorySettings> = state.asStateFlow()
 
-    fun update(transform: (MemorySettings) -> MemorySettings) {
+    private val lock = Any()
+
+    /** Atomic: read, transform, one prefs write and publish happen under one lock, so concurrent edits never lose each other. */
+    fun update(transform: (MemorySettings) -> MemorySettings) = synchronized(lock) {
         val n = clean(transform(state.value))
         prefs.edit().putInt("short_hours", n.shortHours).putInt("medium_days", n.mediumDays).putInt("long_days", n.longDays).putInt("quota_mb", n.quotaMb).apply()
         state.value = n

@@ -32,11 +32,14 @@ object MemoryWipe {
      * Returns the frame files deleted.
      */
     suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db): Int = withContext(Dispatchers.IO) {
+        // Fix round 2 N3: a first-run legacy import (in flight or not yet run) finishes first, under its lock, so it
+        // can't re-insert legacy memories after the wipe; afterwards it is marked done and never runs again.
+        MemoryGraph.ensureLegacyImported(context)
         generation.incrementAndGet()
         val scheduler = OrchestrationScheduler(context)
         scheduler.pausePipeline()
         try {
-            QueueRuntimeStore.clearAll(context)
+            QueueRuntimeStore.clearAll(context) // bumps the generation again, under the queue lock (fix round 2 N1)
             val wipe = db.wipeDao()
             val paths = wipe.framePaths()
             wipe.wipeMemory()
