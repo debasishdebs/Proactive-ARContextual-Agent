@@ -8,6 +8,8 @@ import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.PipelineRecords
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
@@ -20,8 +22,11 @@ object RokidFrameInbox {
     private const val INBOX_DIR = "rokid_inbox"
     private const val ARCHIVE_DIR = "rokid_archive"
 
-    /** Every app-private folder (under filesDir) that holds frame JPEGs: the one list storage use and Delete all read. */
-    val FRAME_DIRS: List<String> = listOf(ARCHIVE_DIR, INBOX_DIR)
+    /**
+     * Every app-private folder (under filesDir) that holds frame JPEGs: the one list storage use and Delete all read.
+     * Inbox first: an ingest moves inbox to archive, so a file moved during Delete all's walk is still seen in the archive.
+     */
+    val FRAME_DIRS: List<String> = listOf(INBOX_DIR, ARCHIVE_DIR)
 
     fun inboxDir(context: Context): File {
         return File(context.filesDir, INBOX_DIR)
@@ -70,7 +75,16 @@ object RokidFrameInbox {
             val archived = File(archive, "${nowMs()}_${file.name}")
             val moved = runCatching { file.renameTo(archived) }.getOrDefault(false)
             val sourceFile = if (moved) archived else file
-            when (ingestFile(context, sourceFile, source = "rokid_glasses", appendFrame)) {
+            val result = try {
+                ingestFile(context, sourceFile, source = "rokid_glasses", appendFrame)
+            } catch (e: CancellationException) {
+                // Fix round 1 I4: a drain cancelled mid-insert returns the file unless its row landed, so it stays eligible.
+                withContext(NonCancellable) {
+                    if (moved && MemoryGraph.get(context).frames.byIds(listOf(frameIdOf(sourceFile))).isEmpty()) archived.renameTo(file)
+                }
+                throw e
+            }
+            when (result) {
                 InboxResult.STORED -> if (MemoryWipe.generation.get() != generation) {
                     MemoryGraph.get(context).frames.deleteByIds(listOf(frameIdOf(sourceFile)))
                     sourceFile.delete()

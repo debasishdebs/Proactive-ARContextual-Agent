@@ -8,6 +8,11 @@ import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.PipelineRecords
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -84,5 +89,24 @@ class RokidFrameInboxTest {
         assertEquals(0, rows())
         assertTrue(archive.list().orEmpty().isEmpty())
         assertTrue(inbox.list().orEmpty().isEmpty())
+    }
+
+    /** Fix round 1 I4: a drain cancelled mid-insert puts the file back, so the next drain still ingests it. */
+    @Test fun aCancelledIngestKeepsTheFileEligible() = runBlocking {
+        inboxFile("rokid_1_a.jpg")
+        val entered = CompletableDeferred<Unit>()
+        val job = launch(Dispatchers.IO) {
+            RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _ -> entered.complete(Unit); awaitCancellation() }
+        }
+        entered.await()
+        job.cancelAndJoin()
+        assertTrue(File(inbox, "rokid_1_a.jpg").isFile)
+        assertTrue(archive.list().orEmpty().isEmpty())
+        assertEquals(0, rows())
+    }
+
+    /** Fix round 1: Delete all walks the inbox before the archive, so a file an ingest moves mid-walk is still seen. */
+    @Test fun theInboxIsWalkedBeforeTheArchive() {
+        assertEquals(listOf("rokid_inbox", "rokid_archive"), RokidFrameInbox.FRAME_DIRS)
     }
 }

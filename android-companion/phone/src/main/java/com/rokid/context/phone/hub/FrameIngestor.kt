@@ -113,7 +113,7 @@ class FrameIngestor(
     private val ledger: ReceivedFrameLedger,
     private val writer: JpegWriter = AtomicJpegWriter,
     private val monotonicMs: () -> Long = SystemClock::elapsedRealtime,
-    private val wipeStartedAtMs: () -> Long? = { WipeFence.lastStartedAtMs(inboxDir.absoluteFile.parentFile) },
+    private val wipeFence: () -> WipeFence.Fence = { WipeFence.fence(inboxDir.absoluteFile.parentFile) },
     private val wipeLock: Mutex = WipeFence.mutex,
     private val onStored: () -> Unit,
 ) {
@@ -140,11 +140,18 @@ class FrameIngestor(
 
     /**
      * Under [wipeLock], so a Delete all deleting frame files never races this write. A frame captured before the last
-     * Delete all started is acked `ok=true` ([FrameAckReason.WIPED]) and recorded, never written (spec 6.1.1).
+     * Delete all started is acked `ok=true` ([FrameAckReason.WIPED]) and recorded, never written (spec 6.1.1). While
+     * the fence is unknown (it could not be recorded) nothing is stored and no ack is sent.
      */
     private suspend fun store(id: String, jpeg: ByteArray, capturedAtMs: Long): IngestResult = wipeLock.withLock {
         val target = File(inboxDir, "rokid_${capturedAtMs}_$id.jpg")
-        val wipedAt = wipeStartedAtMs()
+        val fence = wipeFence()
+        if (fence is WipeFence.Fence.Unknown) {
+            // Fail closed (fix round 1 I3): no ack, so the glasses keep the frame and resend it once the fence is known.
+            Log.w(TAG, "frame $id not stored: Delete all fence unknown")
+            return@withLock IngestResult(ack = null, error = storageErrorFor(fence.cause ?: IOException("wipe fence unknown")))
+        }
+        val wipedAt = (fence as? WipeFence.Fence.At)?.ms
         try {
             if (wipedAt != null && capturedAtMs < wipedAt) {
                 ledger.add(id)
