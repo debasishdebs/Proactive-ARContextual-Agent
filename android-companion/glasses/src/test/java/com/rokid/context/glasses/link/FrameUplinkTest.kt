@@ -21,7 +21,7 @@ class FrameUplinkTest {
     private val now = 1_793_000_000_000L
     private val sent = mutableListOf<FrameChunk>()
     private var open = true
-    private fun buffer() = OutboundBuffer(File(tmp.root, "out"), clock = { now })
+    private fun buffer() = OutboundBuffer(File(tmp.root, "out"), clock = { now }, elapsed = { 0L }, bootId = { "" })
     private fun jpeg(n: Int) = ByteArray(n) { (it % 7).toByte() }
 
     /** [answer] is the phone: called for each frame's last chunk, its ack (if any) arrives before the wait starts. */
