@@ -83,4 +83,12 @@ class CriticWorkerJobTest {
         scan()
         assertTrue(reprocessJobs().isEmpty())
     }
+
+    /** Fix round 1 I7: memories a thumbs-down sent to review are the critic review's, never fed to a periodic summary. */
+    @Test fun periodicScanSkipsThumbsDownReviews() {
+        fact("rokid_mem_a_0", "Maybe a cat", ReviewState.NEEDS_REVIEW)
+        runBlocking { com.rokid.context.orchestration.UserReviews.mark(ctx, listOf("rokid_mem_a_0")) }
+        scan()
+        assertTrue(reprocessJobs().isEmpty())
+    }
 }

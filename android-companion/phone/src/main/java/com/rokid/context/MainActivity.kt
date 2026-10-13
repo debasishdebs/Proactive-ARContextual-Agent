@@ -37,6 +37,9 @@ class MainActivity : ComponentActivity() {
                 PipelineRecords.purgeNonRokidFrames(this@MainActivity)
                 PipelineRecords.purgeSyntheticTraces(this@MainActivity)
                 PipelineRecords.purgeNonRokidMemories(this@MainActivity)
+                // Phase 7 Stream F: photo sweep, pending re-summarise, retention schedule (whatever the pipeline state).
+                val app = applicationContext
+                com.rokid.context.orchestration.forget.ForgetStartup.run(app) { com.rokid.context.phone.hub.HubGraph.get(app).refresh() }
             }
         }
         val deps = PhoneDeps.get(this)

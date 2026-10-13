@@ -34,6 +34,8 @@ abstract class ForgetDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertTombstone(t: ForgetTombstoneEntity): Long
     @Query("SELECT frameId FROM forget_tombstone WHERE frameId IN (:frameIds)") abstract suspend fun tombstoned(frameIds: List<String>): List<String>
 
+    @Query("SELECT frameId FROM forget_tombstone") abstract suspend fun allTombstones(): List<String>
+
     /** Memories (any review state) that still point at [frameId]. */
     @Query("SELECT COUNT(*) FROM memory WHERE frameId = :frameId") abstract suspend fun remainingRefs(frameId: String): Int
     @Query("SELECT * FROM frame WHERE id = :id") abstract suspend fun frame(id: String): FrameEntity?

@@ -23,6 +23,7 @@ import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.memory.db.SearchNormalizer
 import com.rokid.context.orchestration.EmbeddingWorker
 import com.rokid.context.orchestration.MemoryWipe
+import com.rokid.context.orchestration.RetryClassifier
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptVars
 import java.util.Locale
@@ -39,49 +40,72 @@ import kotlin.coroutines.cancellation.CancellationException
  * INVALIDATED. None → the memory is deleted with its edges and vectors. Otherwise SUMMARIZE over the source texts
  * gives `rokid_mem_rs_<uuid>` (derived, same tier, OK); edges new→sources are added, child edges old→new re-pointed and
  * the old row deleted, in one transaction that re-checks the sources and the Delete-all generation.
- * A model failure retries (15 min backoff) and the memories stay hidden. Runs while capture is paused (stored data only).
+ * A failed memory is skipped (it stays hidden) and the rest continue; the run then retries per RetryClassifier
+ * (15 min backoff, at most [ResummarizeWorker.MAX_ATTEMPTS] runs). Rebuilt rows keep the original `createdAt`. Runs while capture is paused (stored data only).
  */
 class ResummarizeWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
-    override suspend fun doWork(): Result = try {
-        val ai = AiGraph.get(applicationContext)
-        val changed = Resummarizer(MemoryGraph.get(applicationContext), ai.runner).run()
-        if (changed) EmbeddingWorker.enqueue(applicationContext)
-        Result.success()
-    } catch (c: CancellationException) {
-        throw c
-    } catch (e: Exception) {
-        Log.w(TAG, "re-summarise failed; retrying: ${SafeLog.describe(e)}")
-        Result.retry()
+    override suspend fun doWork(): Result {
+        val outcome = try {
+            val ai = AiGraph.get(applicationContext)
+            val r = Resummarizer(MemoryGraph.get(applicationContext), ai.runner).run()
+            if (r.changed) EmbeddingWorker.enqueue(applicationContext)
+            r.failure
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            e
+        } ?: return Result.success()
+        // Fix round 1 I8: RetryClassifier decides; at most MAX_ATTEMPTS runs. The failed memories stay hidden.
+        val kind = RetryClassifier.classify(outcome)
+        if (kind == RetryClassifier.Outcome.CANCELLED) throw outcome
+        Log.w(TAG, "re-summarise ${kind.name} attempt ${runAttemptCount + 1}/$MAX_ATTEMPTS: ${SafeLog.describe(outcome)}")
+        return if (kind == RetryClassifier.Outcome.RETRY && runAttemptCount + 1 < MAX_ATTEMPTS) Result.retry() else Result.failure()
     }
 
     companion object {
         private const val TAG = "ResummarizeWorker"
         const val NAME = "resummarize"
+        const val MAX_ATTEMPTS = 5
 
         fun enqueue(context: Context) {
             val req = OneTimeWorkRequestBuilder<ResummarizeWorker>().setBackoffCriteria(BackoffPolicy.LINEAR, 15, TimeUnit.MINUTES).build()
-            WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.KEEP, req)
+            // APPEND_OR_REPLACE: a Forget during a run chains one more run, so its new invalidations are never missed.
+            WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, req)
         }
     }
 }
 
 /** The worker's logic over the data graph and a model runner. Throws on a model failure (nothing written for that memory). */
-internal class Resummarizer(private val graph: MemoryGraph, private val runner: RoleRunner, private val clock: () -> Long = System::currentTimeMillis) {
+internal class Resummarizer(private val graph: MemoryGraph, private val runner: RoleRunner) {
     private val db = graph.db
     private val dao = db.forgetDao()
 
-    /** True when anything was written or deleted. */
-    suspend fun run(): Boolean {
+    /** [failure]: the first per-memory failure (that memory was skipped, the others still ran); null = none. */
+    class Outcome(val changed: Boolean, val failure: Throwable?)
+
+    suspend fun run(): Outcome {
         var changed = false
+        var failure: Throwable? = null
+        val skipped = mutableSetOf<String>()
         while (true) {
-            val batch = dao.invalidatedDerived(BATCH)
-            if (batch.isEmpty()) return changed
+            val batch = dao.invalidatedDerived(BATCH + skipped.size).filter { it.id !in skipped }.take(BATCH)
+            if (batch.isEmpty()) return Outcome(changed, failure)
             val generation = MemoryWipe.generation.get()
             var progressed = false
-            for ((m, inCycle) in order(batch)) if (process(m, inCycle, generation)) progressed = true
+            for ((m, inCycle) in order(batch)) {
+                try {
+                    if (process(m, inCycle, generation)) progressed = true else skipped += m.id
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (e: Exception) {
+                    // Fix round 1 I8: skip this memory (it stays hidden) and continue with the others.
+                    skipped += m.id
+                    if (failure == null) failure = e
+                }
+            }
             changed = changed || progressed
             // A lost fence (Delete all, a source forgotten meanwhile) leaves rows for the next run, never a spin.
-            if (!progressed || batch.size < BATCH) return changed
+            if (!progressed || batch.size < BATCH) return Outcome(changed, failure)
         }
     }
 
@@ -128,7 +152,7 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
             db.memoryDao().insert(
                 MemoryEntity(
                     id = newId, frameId = null, text = text, type = "summary", tags = tags, tier = old.tier, confidence = confidence,
-                    reviewState = ReviewState.OK, trusted = false, createdAt = clock(), derived = true,
+                    reviewState = ReviewState.OK, trusted = false, createdAt = old.createdAt, derived = true, // fix round 1 C1: keeps its retention window
                     searchText = SearchNormalizer.normalize("$text $tags"),
                 ),
             )

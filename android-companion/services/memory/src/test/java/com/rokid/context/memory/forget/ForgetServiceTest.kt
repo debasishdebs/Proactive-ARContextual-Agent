@@ -164,4 +164,35 @@ class ForgetServiceTest {
         service.forgetFact("A")
         assertTrue(db.memoryDao().search("zebra*", 5).isEmpty())
     }
+
+    /** Fix round 1 C1: retention expiry deletes only the expired rows; derived memories keep their own windows. */
+    @Test fun expireLeavesDescendantsAlone() = runBlocking {
+        mem("A"); mem("B", derived = true)
+        edge("B", "A")
+        db.askDao().upsert(AskEntity("q1", 1, "q", "from A", """["A"]""", null, "phone_typed", false))
+        db.askDao().upsert(AskEntity("q2", 1, "q", "from B", """["B"]""", null, "phone_typed", false))
+        val r = service.expire(listOf("A"))
+        assertEquals(setOf("A"), r.forgotten)
+        assertTrue(r.invalidated.isEmpty())
+        assertEquals(ReviewState.OK, state("B"))
+        assertTrue(db.forgetDao().edgesFrom(listOf("B")).isEmpty())
+        assertTrue(db.askDao().byId("q1")!!.redacted)
+        assertFalse(db.askDao().byId("q2")!!.redacted)
+    }
+
+    /** Fix round 1 I2: executing/executed proposals of a redacted origin lose their params and log details. */
+    @Test fun executedProposalOfRedactedAskIsScrubbed() = runBlocking {
+        mem("A")
+        db.askDao().upsert(AskEntity("q1", 1, "q", "a", """["A"]""", null, "phone_typed", false))
+        listOf("p1" to ProposalState.EXECUTED, "p2" to ProposalState.EXECUTING, "p3" to ProposalState.DECLINED).forEach { (id, st) ->
+            proposals.create(ProposalEntity(id, ProposalOrigin.ASK.name, "q1", "REMINDER", """{"title":"Call mom","dueAt":5}""", st.name, 99_999, null, null, 1), 1)
+            db.actionDao().log(com.rokid.context.memory.db.ActionLogEntity(ts = 2, proposalId = id, transition = "X", detail = "Call mom"))
+        }
+        service.forgetFact("A")
+        listOf("p1", "p2", "p3").forEach { id ->
+            assertEquals(ForgetService.REDACTED_PARAMS, proposals.byId(id)!!.paramsJson)
+            assertTrue(db.actionDao().logFor(id).none { "Call mom" in it.detail })
+        }
+        assertEquals(ProposalState.EXECUTED.name, proposals.byId("p1")!!.state) // state kept: Undo still works by createdRef
+    }
 }

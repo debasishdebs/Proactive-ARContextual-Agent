@@ -32,6 +32,7 @@ class CriticWorkerJob(
             val reviews = PipelineRecords.recentMemories(applicationContext, 80)
                 .filter { it.reviewState == ReviewState.NEEDS_REVIEW }
                 .filter { m -> m.id !in pending }
+                .let { list -> val mine = com.rokid.context.orchestration.UserReviews.marked(applicationContext); list.filter { it.id !in mine } } // fix round 1 I7
             if (reviews.isNotEmpty()) {
                 val payload = QueuePayloads.reprocess(
                     reason = "Periodic critic retry for review memories",
