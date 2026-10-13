@@ -73,8 +73,9 @@ class DeleteAllFenceTest {
         assertTrue(QueueRuntimeStore.recent(ctx, 10).none { it.queue == QueuePriority.PRIORITY_REPROCESS })
     }
 
-    @Test fun aReprocessJobAndAnExplicitWriteInFlightAcrossTheWipeWriteNothing() {
-        QueueRuntimeStore.enqueue(ctx, QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess(reason = "low", sourceContext = "Milk carton"), personaSnapshot = "p")
+    @Test fun aReprocessJobAndAnExplicitWriteInFlightAcrossTheWipeWriteNothing() = runBlocking<Unit> {
+        PipelineRecords.appendFact(ctx, "rokid_mem_m_0", null, "Milk carton", "object", emptyList(), 0.4, MemoryTier.SHORT, ReviewState.NEEDS_REVIEW)
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess(reason = "low", sourceIds = listOf("rokid_mem_m_0")), personaSnapshot = "p")
         reply = { MemoryWipe.deleteAll(ctx); """{"summary":"Milk in the fridge","entities":[],"confidence":0.9,"candidateMemoryType":"short_term"}""" }
         drain()
         assertTrue(memories().isEmpty())
@@ -103,7 +104,7 @@ class DeleteAllFenceTest {
 
     @Test fun queuedJobsAreGoneAndThePipelineResumes() = runBlocking<Unit> {
         QueueRuntimeStore.enqueue(ctx, QueuePriority.EXPLICIT_WRITE, QueuePayloads.explicitWrite("remember the milk", "en", manual = true), personaSnapshot = "p")
-        QueueRuntimeStore.enqueue(ctx, QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess(reason = "low", sourceContext = "Milk carton"), personaSnapshot = "p")
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess(reason = "low", sourceIds = listOf("rokid_mem_m_0")), personaSnapshot = "p")
         OrchestrationScheduler(ctx).scheduleQueueDrain()
         MemoryWipe.deleteAll(ctx)
         assertTrue(QueueRuntimeStore.recent(ctx, 50).none { it.queue == QueuePriority.EXPLICIT_WRITE || it.queue == QueuePriority.PRIORITY_REPROCESS })

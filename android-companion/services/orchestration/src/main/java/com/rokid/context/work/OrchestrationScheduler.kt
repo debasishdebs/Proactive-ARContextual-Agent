@@ -214,7 +214,19 @@ class OrchestrationScheduler(
         )
     }
 
+    /**
+     * Retention (Phase 7): one daily unique job, KEEP. Called from [scheduleCritic], the existing ensure-periodic path
+     * (app start and resume). [pausePipeline] never cancels it: retention only removes data.
+     */
+    fun ensureRetention() {
+        val request = PeriodicWorkRequestBuilder<com.rokid.context.orchestration.forget.RetentionWorker>(24, TimeUnit.HOURS)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.MINUTES)
+            .build()
+        workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.RetentionWorker.NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+    }
+
     fun scheduleCritic() {
+        ensureRetention()
         val request = PeriodicWorkRequestBuilder<CriticWorkerJob>(3, TimeUnit.HOURS)
             .addTag(TAG_CRITIC)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)

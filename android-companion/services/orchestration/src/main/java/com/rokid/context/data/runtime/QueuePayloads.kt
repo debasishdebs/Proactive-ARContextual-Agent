@@ -7,6 +7,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
+/** A queued job whose inputs changed under it (a forgotten source, an old text payload). Never retried. */
+open class StalePayloadException : IllegalStateException("stale payload")
+
 object QueuePayloads {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -45,14 +48,39 @@ object QueuePayloads {
         }.toString()
     }
 
-    fun reprocess(reason: String, sourceContext: String): String {
+    /**
+     * PRIORITY_REPROCESS v2: ids only, never memory or frame text (spec §6.1.1, R-77). The drain re-reads the memories
+     * when it runs and drops forgotten (missing or INVALIDATED) ones and tombstoned frames, so text forgotten after the
+     * enqueue never reaches a model.
+     */
+    fun reprocess(reason: String, sourceIds: List<String>, frameIds: List<String> = emptyList()): String {
         return buildJsonObject {
-            put("kind", JsonPrimitive("priority_reprocess"))
+            put("kind", JsonPrimitive(KIND_REPROCESS))
+            put("v", JsonPrimitive(2))
             put("reason", JsonPrimitive(reason))
-            put("source_context", JsonPrimitive(sourceContext))
+            put("source_ids_csv", JsonPrimitive(csv(sourceIds)))
+            put("frame_ids_csv", JsonPrimitive(csv(frameIds)))
             put("manual", JsonPrimitive(false))
         }.toString()
     }
+
+    /** 👎 review (Phase 7): CRITIC over the cited memories, ids only. [dedupeKey] = the ask id (one job per ask). */
+    fun criticReview(memoryIds: List<String>, dedupeKey: String = ""): String {
+        return buildJsonObject {
+            put("kind", JsonPrimitive(KIND_CRITIC_REVIEW))
+            put("memory_ids_csv", JsonPrimitive(csv(memoryIds)))
+            if (dedupeKey.isNotEmpty()) put("dedupe", JsonPrimitive(dedupeKey))
+            put("manual", JsonPrimitive(false))
+        }.toString()
+    }
+
+    /** The ids of a `*_csv` field; blanks dropped, order kept, duplicates removed. */
+    fun ids(obj: JsonObject, key: String): List<String> = string(obj, key).split(",").map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+    private fun csv(ids: List<String>) = ids.map { it.trim() }.filter { it.isNotEmpty() && "," !in it }.distinct().joinToString(",")
+
+    const val KIND_REPROCESS = "priority_reprocess"
+    const val KIND_CRITIC_REVIEW = "critic_review"
 
     fun frameIngest(source: String): String {
         return buildJsonObject {
