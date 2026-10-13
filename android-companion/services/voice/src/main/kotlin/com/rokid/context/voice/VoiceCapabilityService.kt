@@ -47,7 +47,13 @@ class VoiceCapabilityService(
         val tag = language().tag
         // API 31–32 can't list packs, and a failed query is not proof of absence: both count as installed (ruling); the
         // recognizer then reports a missing pack as ERROR_LANGUAGE_UNAVAILABLE ("Download speech pack").
-        val packs = if (platform.sdk < VoiceGate.GLASSES_MIN_SDK) null else runCatching { platform.installedPacks() }.getOrNull()
+        val packs = if (platform.sdk < VoiceGate.GLASSES_MIN_SDK) null else try {
+            platform.installedPacks()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            null
+        }
         val packInstalled = packs?.let { PackMatch.installed(tag, it) } ?: true
         val fp = fingerprint()
         val record = records.read()?.takeIf { it.fingerprint == fp }
