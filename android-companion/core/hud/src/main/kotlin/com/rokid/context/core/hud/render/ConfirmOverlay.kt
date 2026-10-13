@@ -1,4 +1,4 @@
-package com.rokid.context.glasses.ui
+package com.rokid.context.core.hud.render
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border

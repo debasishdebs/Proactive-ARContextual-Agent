@@ -1,4 +1,4 @@
-package com.rokid.context.glasses.ui
+package com.rokid.context.core.hud.render
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,9 +17,6 @@ import com.rokid.context.core.model.NudgeLine
 import com.rokid.context.core.model.Overlay
 import com.rokid.context.core.model.StateFrame
 import com.rokid.context.core.model.Verbosity
-import com.rokid.context.glasses.hud.HudNav
-import com.rokid.context.glasses.hud.HudView
-import com.rokid.context.glasses.link.HudConnection
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith

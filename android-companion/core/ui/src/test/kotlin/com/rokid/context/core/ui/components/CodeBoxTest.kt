@@ -1,0 +1,36 @@
+package com.rokid.context.core.ui.components
+
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performTextInput
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.core.ui.theme.PcTheme
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.annotation.Config
+
+@RunWith(AndroidJUnit4::class)
+@Config(sdk = [34])
+class CodeBoxTest {
+    @get:Rule val compose = createComposeRule()
+
+    @Test fun editableBoxTakesInput() {
+        compose.setContent { PcTheme { var t by remember { mutableStateOf("{") }; CodeBox(t, { t = it }, label = "Output schema") } }
+        compose.onNodeWithText("Output schema").assertExists()
+        compose.onNodeWithTag("code_box").performTextInput("}")
+        compose.onNodeWithTag("code_box").assertTextEquals("{}")
+    }
+
+    @Test fun readOnlyBoxShowsTextOnly() {
+        compose.setContent { PcTheme { CodeBox("{\"type\":\"object\"}", null, tag = "wire") } }
+        compose.onNodeWithTag("wire").assertExists()
+        compose.onNodeWithText("{\"type\":\"object\"}").assertExists()
+    }
+}

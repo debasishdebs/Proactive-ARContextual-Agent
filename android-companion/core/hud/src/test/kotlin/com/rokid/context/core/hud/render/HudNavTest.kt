@@ -1,4 +1,4 @@
-package com.rokid.context.glasses.hud
+package com.rokid.context.core.hud.render
 
 import com.rokid.context.core.model.GestureAction
 import com.rokid.context.core.model.HudPage

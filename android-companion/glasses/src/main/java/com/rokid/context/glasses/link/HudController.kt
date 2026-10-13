@@ -1,5 +1,7 @@
 package com.rokid.context.glasses.link
 
+import com.rokid.context.core.hud.render.HudConnection
+
 import android.util.Log
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.Channels
@@ -22,7 +24,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-enum class HudConnection { CONNECTING, LIVE, OFFLINE, OUTDATED }
 
 /** Pure: what the HUD shows about the phone link (spec §3.6; adapted from Live Fit `connectionFor`). */
 fun connectionFor(everReceived: Boolean, online: Boolean, outdated: Boolean, sinceStartMs: Long): HudConnection = when {

@@ -1,4 +1,4 @@
-package com.rokid.context.glasses.ui
+package com.rokid.context.core.hud.render
 
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat

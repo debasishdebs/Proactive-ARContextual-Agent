@@ -1,4 +1,4 @@
-package com.rokid.context.glasses.ui
+package com.rokid.context.core.hud.render
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,10 +24,6 @@ import com.rokid.context.core.hud.Scaled
 import com.rokid.context.core.model.HudPage
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.StateFrame
-import com.rokid.context.glasses.hud.HudNav
-import com.rokid.context.glasses.hud.HudView
-import com.rokid.context.glasses.hud.pagesFor
-import com.rokid.context.glasses.link.HudConnection
 
 /** Everything one HUD render needs; built by MainActivity from the controller, presenter and local state. */
 data class HudModel(
