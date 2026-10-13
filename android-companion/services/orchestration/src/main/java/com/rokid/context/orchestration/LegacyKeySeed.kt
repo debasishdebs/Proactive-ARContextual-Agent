@@ -13,6 +13,8 @@ import com.rokid.context.data.runtime.toProviderSettings
 object LegacyKeySeed {
     suspend fun run(context: Context, seeder: EndpointSeeder, config: AppConfigReader = AppConfigStore): Result<Unit> {
         // Fix round 1 (m5): no legacy key file (new install, or already retired) → no Keystore open on each cold start.
+        // P8 D1: a file with only the Tink keyset entries holds no key: delete it without a Keystore open.
+        if (AppConfigStore.hasLegacySecretFile(context) && !AppConfigStore.legacySecretHasKey(context)) AppConfigStore.deleteKeylessLegacySecretFile(context)
         if (!AppConfigStore.hasLegacySecretFile(context)) return seeder.seedIfNeeded(config.getWithoutSecret(context).toProviderSettings())
         val settings = config.getWithLegacySecret(context).toProviderSettings()
         return seeder.seedIfNeeded(settings).mapCatching {
