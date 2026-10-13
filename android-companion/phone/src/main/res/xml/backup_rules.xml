@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- API <= 30. Encrypted key prefs restore without their Keystore master key, and the Room DB needs one of them
      (SQLCipher passphrase), so keys (and the legacy key file app_config_secret.xml, plaintext on some old builds), DB and the "done in DB"
-     markers are excluded. Everything else is backed up. -->
+     markers are excluded, and so are the copies of memory text kept outside the DB. Everything else is backed up. -->
 <full-backup-content>
     <exclude domain="sharedpref" path="endpoint_keys.xml" />
     <exclude domain="sharedpref" path="db_key.xml" />
@@ -11,4 +11,12 @@
     <exclude domain="database" path="context.db" />
     <exclude domain="database" path="context.db-wal" />
     <exclude domain="database" path="context.db-shm" />
+    <!-- Copies of memory text outside the DB: frame JPEGs, the queue log, the legacy logs, the exports. -->
+    <exclude domain="file" path="rokid_archive" />
+    <exclude domain="file" path="rokid_inbox" />
+    <exclude domain="file" path="queue_runtime.log" />
+    <exclude domain="file" path="memory_records.log" />
+    <exclude domain="file" path="captured_frames.log" />
+    <exclude domain="file" path="summary_trace.log" />
+    <exclude domain="root" path="cache/exports" />
 </full-backup-content>

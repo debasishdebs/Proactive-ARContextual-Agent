@@ -10,6 +10,13 @@
         <exclude domain="database" path="context.db" />
         <exclude domain="database" path="context.db-wal" />
         <exclude domain="database" path="context.db-shm" />
+        <exclude domain="file" path="rokid_archive" />
+        <exclude domain="file" path="rokid_inbox" />
+        <exclude domain="file" path="queue_runtime.log" />
+        <exclude domain="file" path="memory_records.log" />
+        <exclude domain="file" path="captured_frames.log" />
+        <exclude domain="file" path="summary_trace.log" />
+        <exclude domain="root" path="cache/exports" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="endpoint_keys.xml" />
@@ -20,5 +27,12 @@
         <exclude domain="database" path="context.db" />
         <exclude domain="database" path="context.db-wal" />
         <exclude domain="database" path="context.db-shm" />
+        <exclude domain="file" path="rokid_archive" />
+        <exclude domain="file" path="rokid_inbox" />
+        <exclude domain="file" path="queue_runtime.log" />
+        <exclude domain="file" path="memory_records.log" />
+        <exclude domain="file" path="captured_frames.log" />
+        <exclude domain="file" path="summary_trace.log" />
+        <exclude domain="root" path="cache/exports" />
     </device-transfer>
 </data-extraction-rules>
