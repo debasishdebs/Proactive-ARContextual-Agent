@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.QuietHours
+import com.rokid.context.core.model.QuietWindow
 import java.time.LocalDateTime
 import java.time.ZoneId
 import kotlinx.coroutines.test.runTest

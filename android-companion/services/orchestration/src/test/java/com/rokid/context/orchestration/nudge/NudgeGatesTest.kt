@@ -36,6 +36,24 @@ class NudgeGatesTest {
 
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
+    /**
+     * Integration carry 9: the gate uses the phone's QuietWindow occurrence math (Stream A), not a local minute-of-day
+     * match. Berlin falls back on 25 Oct 2026 (03:00 CEST -> 02:00 CET); quiet 00:00-02:30 ends at the first 02:30
+     * (earlier offset), so the repeated 02:15 CET is outside the window, as the phone's pause set sees it.
+     */
+    @Test fun quietHoursFollowTheSharedOccurrenceAcrossAFallBack() = runBlocking {
+        val berlin = ZoneId.of("Europe/Berlin")
+        val h = NudgeHud(QuietHours(0, 150), Verbosity.MEDIUM, berlin)
+        val secondQuarterPastTwo = java.time.Instant.parse("2026-10-25T01:15:00Z").toEpochMilli() // 02:15 CET
+        val firstQuarterPastTwo = java.time.Instant.parse("2026-10-25T00:15:00Z").toEpochMilli() // 02:15 CEST
+        assertEquals(Gate.QUIET_HOURS, gates.precheck(h, firstQuarterPastTwo))
+        assertEquals(Gate.PASS, gates.precheck(h, secondQuarterPastTwo))
+        assertEquals(
+            com.rokid.context.core.model.QuietWindow.occurrenceAt(h.quietHours!!, secondQuarterPastTwo, berlin) != null,
+            gates.precheck(h, secondQuarterPastTwo) == Gate.QUIET_HOURS,
+        )
+    }
+
     private suspend fun stored(id: String, ts: Long, text: String) =
         MemoryGraph.get(ctx).nudges.addIgnore(NudgeEntity(id, ts, text, "", "[]", 1, NudgeGates.hash(text), "glance", false))
 
