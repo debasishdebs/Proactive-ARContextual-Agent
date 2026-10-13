@@ -215,4 +215,16 @@ class MainActivityTest {
             waitUntil { bridge.sent.any { it.first == Channels.FRAME } }
         }
     }
+
+    /** Phase 3 carry: before the phone's first message the link is CONNECTING; a tap says so instead of "not connected". */
+    @Test fun tapWhileConnectingSaysConnecting() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            s.onActivity {
+                it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+                it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+            }
+            compose.onNodeWithText("Connecting to phone\u2026", substring = true).assertExists()
+            compose.onNodeWithText("Phone not connected", substring = true).assertDoesNotExist()
+        }
+    }
 }

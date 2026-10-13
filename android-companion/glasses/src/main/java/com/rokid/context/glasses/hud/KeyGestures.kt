@@ -17,13 +17,18 @@ data class KeyResult(val consumed: Boolean, val inputs: List<PadInput> = emptyLi
 /**
  * Rokid touchpad keys → pad inputs (spec §3.5), ported from Live Fit `MainActivity.dispatchKeyEvent`. Every gesture
  * starts with KEYCODE_NOTIFICATION (83); DPAD keys are swipe steps ([SwipeClassifier], event uptime); two 83 presses or
- * one BACK are a double-tap ([DoubleTapDetector], wall clock); ENTER / DPAD_CENTER key-up is a tap. Long-press belongs
- * to Hi Rokid and vertical swipes are only the twin of a horizontal one.
+ * one BACK are a double-tap ([DoubleTapDetector], wall clock). ENTER / DPAD_CENTER key-up is a tap unless the key was
+ * held ([LONG_PRESS_MS] or a repeat): long-press belongs to Hi Rokid, and vertical swipes are only the twin of a
+ * horizontal one.
  */
 class KeyGestures(
     private val swipes: SwipeClassifier = SwipeClassifier(),
     private val doubleTap: DoubleTapDetector = DoubleTapDetector(),
 ) {
+    /** Uptime of the current ENTER/DPAD_CENTER press, and whether it repeated (held): a long press is Hi Rokid's. */
+    private var tapDownAtMs: Long? = null
+    private var tapHeld = false
+
     /** When [onTimer] must run (uptime ms) to close an open swipe; null = none open. */
     val deadlineMs: Long? get() = swipes.deadlineMs
 
@@ -36,16 +41,26 @@ class KeyGestures(
             if (doubleTap.onNotificationKey(wallMs)) out += PadInput.DoubleTapped
             return KeyResult(true, out)
         }
-        val tapKey = keyCode == KEY_ENTER || keyCode == KEY_DPAD_CENTER
-        if (tapKey && first) doubleTap.onGestureKey() // a tap breaks a 83 pair, like a swipe
-        val key = swipeKey(keyCode) ?: return KeyResult(tapKey)
+        if (keyCode == KEY_ENTER || keyCode == KEY_DPAD_CENTER) {
+            if (first) { doubleTap.onGestureKey(); tapDownAtMs = uptimeMs; tapHeld = false } // a tap breaks a 83 pair, like a swipe
+            else tapHeld = true
+            return KeyResult(true)
+        }
+        val key = swipeKey(keyCode) ?: return KeyResult(false)
         if (!first) return KeyResult(true)
         doubleTap.onGestureKey()
         return KeyResult(true, listOfNotNull(swipes.onKey(key, uptimeMs)?.let { PadInput.Swiped(it) }))
     }
 
-    fun onKeyUp(keyCode: Int): KeyResult = when (keyCode) {
-        KEY_ENTER, KEY_DPAD_CENTER -> KeyResult(true, listOf(PadInput.Tapped))
+    /** A tap is a short ENTER/DPAD_CENTER press; a held one (repeats, or [LONG_PRESS_MS]) is "Hi Rokid" (spec §3.5). */
+    fun onKeyUp(keyCode: Int, uptimeMs: Long): KeyResult = when (keyCode) {
+        KEY_ENTER, KEY_DPAD_CENTER -> {
+            val down = tapDownAtMs
+            val held = tapHeld || (down != null && uptimeMs - down >= LONG_PRESS_MS)
+            tapDownAtMs = null
+            tapHeld = false
+            KeyResult(true, if (held) emptyList() else listOf(PadInput.Tapped))
+        }
         KEY_NOTIFICATION, KEY_RIGHT, KEY_LEFT, KEY_DOWN, KEY_UP -> KeyResult(true)
         else -> KeyResult(false)
     }
@@ -71,6 +86,8 @@ class KeyGestures(
         const val KEY_UP = 19
         const val KEY_ENTER = 66
         const val KEY_DPAD_CENTER = 23
+        /** A press at least this long is a long press (Hi Rokid), not a tap. */
+        const val LONG_PRESS_MS = 500L
         /** KEYCODE_VOLUME_UP: a key we leave to the system. */
         const val KEY_VOLUME_UP = 24
     }

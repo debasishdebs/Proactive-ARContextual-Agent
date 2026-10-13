@@ -11,7 +11,7 @@ class KeyGesturesTest {
 
     @Test fun enterKeyUpIsATap() {
         assertTrue(k.onKeyDown(KeyGestures.KEY_ENTER, 0, 0, 0).consumed)
-        assertEquals(listOf<PadInput>(PadInput.Tapped), k.onKeyUp(KeyGestures.KEY_ENTER).inputs)
+        assertEquals(listOf<PadInput>(PadInput.Tapped), k.onKeyUp(KeyGestures.KEY_ENTER, 50).inputs)
     }
 
     /** Device-verified: a double-tap is two KEYCODE_NOTIFICATION presses ~150 ms apart. */
@@ -51,7 +51,7 @@ class KeyGesturesTest {
 
     @Test fun otherKeysAreNotConsumed() {
         assertFalse(k.onKeyDown(KeyGestures.KEY_VOLUME_UP, 0, 0, 0).consumed)
-        assertFalse(k.onKeyUp(KeyGestures.KEY_VOLUME_UP).consumed)
+        assertFalse(k.onKeyUp(KeyGestures.KEY_VOLUME_UP, 0).consumed)
     }
 
     @Test fun repeatsAreSwallowed() = assertTrue(k.onKeyDown(KeyGestures.KEY_RIGHT, repeatCount = 1, uptimeMs = 0, wallMs = 0).let { it.consumed && it.inputs.isEmpty() })
@@ -59,7 +59,25 @@ class KeyGesturesTest {
     @Test fun aTapBreaksADoubleTapPair() {
         k.onKeyDown(KeyGestures.KEY_NOTIFICATION, 0, 0, 0)
         k.onKeyDown(KeyGestures.KEY_ENTER, 0, 20, 20)
-        assertEquals(listOf<PadInput>(PadInput.Tapped), k.onKeyUp(KeyGestures.KEY_ENTER).inputs)
+        assertEquals(listOf<PadInput>(PadInput.Tapped), k.onKeyUp(KeyGestures.KEY_ENTER, 60).inputs)
         assertFalse(PadInput.DoubleTapped in k.onKeyDown(KeyGestures.KEY_NOTIFICATION, 0, 200, 200).inputs)
+    }
+
+    /** Phase 3 carry: a long press belongs to "Hi Rokid" (spec §3.5), so its key-up is not a tap. */
+    @Test fun aLongPressIsNotATap() {
+        k.onKeyDown(KeyGestures.KEY_ENTER, 0, uptimeMs = 1_000, wallMs = 1_000)
+        assertEquals(emptyList(), k.onKeyUp(KeyGestures.KEY_ENTER, uptimeMs = 1_000 + KeyGestures.LONG_PRESS_MS).inputs)
+    }
+
+    @Test fun aHeldKeyThatRepeatsIsNotATap() {
+        k.onKeyDown(KeyGestures.KEY_DPAD_CENTER, 0, 0, 0)
+        assertTrue(k.onKeyDown(KeyGestures.KEY_DPAD_CENTER, repeatCount = 1, uptimeMs = 100, wallMs = 100).consumed)
+        assertEquals(emptyList(), k.onKeyUp(KeyGestures.KEY_DPAD_CENTER, 200).inputs)
+    }
+
+    @Test fun aQuickTapAfterALongPressIsATapAgain() {
+        k.onKeyDown(KeyGestures.KEY_ENTER, 0, 0, 0); k.onKeyUp(KeyGestures.KEY_ENTER, 900)
+        k.onKeyDown(KeyGestures.KEY_ENTER, 0, 2_000, 2_000)
+        assertEquals(listOf<PadInput>(PadInput.Tapped), k.onKeyUp(KeyGestures.KEY_ENTER, 2_120).inputs)
     }
 }
