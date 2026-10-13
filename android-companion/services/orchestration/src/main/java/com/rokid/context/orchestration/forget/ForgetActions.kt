@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.connectors.actions.ProposalNotifications
+import com.rokid.context.connectors.actions.executors.ReminderExecutor
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.MemoryMaintenance
 import com.rokid.context.memory.forget.ForgetService
@@ -40,7 +41,13 @@ object ForgetActions {
     /** After a committed cascade: files, then the re-summarise. A failure here is logged; the Forget itself succeeded. */
     internal suspend fun apply(context: Context, r: ForgetService.Result) {
         // Integration carry 3: a redacted proposal's notifications still show its text; cancel them in any process.
+        // Privacy carry: so does an armed reminder alarm (its intent holds the title and note); cancel it too.
         if (r.redactedProposals.isNotEmpty()) {
+            try {
+                r.redactedProposals.forEach { ReminderExecutor.cancelAlarm(context, it) }
+            } catch (e: Exception) {
+                Log.w(TAG, "alarms not cancelled: ${SafeLog.describe(e)}")
+            }
             try {
                 ProposalNotifications.cancel(context, r.redactedProposals)
             } catch (e: Exception) {
