@@ -50,8 +50,9 @@ class CriticWorkerJobTest {
         fact("rokid_mem_b_0", "A red mug", ReviewState.OK)
         scan()
         val job = reprocessJobs().single()
-        assertTrue(job.payload.contains("Maybe a cat"))
-        assertTrue(!job.payload.contains("A red mug"))
+        assertEquals(listOf("rokid_mem_a_0"), QueuePayloads.ids(QueuePayloads.parse(job.payload), "source_ids_csv"))
+        // Phase 7: ids only, never memory text.
+        assertTrue(!job.payload.contains("Maybe a cat") && !job.payload.contains("A red mug"))
     }
 
     /** Fix M4: no second reprocess while one for the same facts is still pending (the scan runs every 3 h). */
@@ -64,7 +65,7 @@ class CriticWorkerJobTest {
 
     @Test fun periodicScanSkipsFactsTheDrainAlreadyQueuedForReprocess() {
         fact("rokid_mem_a_0", "Maybe a cat", ReviewState.NEEDS_REVIEW)
-        QueueRuntimeStore.enqueue(ctx, QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess("Critic low confidence=0.30", "Maybe a cat\nid=f1 · ts=1 · source=rokid_glasses · p"), personaSnapshot = "p")
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess("Critic low confidence=0.30", listOf("rokid_mem_a_0"), listOf("f1")), personaSnapshot = "p")
         scan()
         assertEquals(1, reprocessJobs().size)
     }

@@ -23,20 +23,20 @@ class CriticWorkerJob(
         val summaryId = inputData.getString(KEY_SUMMARY_ID)
         if (summaryId.isNullOrBlank()) {
             // Periodic run: scan facts awaiting review (preflight F10: by reviewState; facts keep their own type) and queue a reprocess.
-            // Fix M4: skip facts a still-pending reprocess already covers (same text, or a frame line for the same frame).
-            // Fix round 2: this stays a substring match on purpose. A PRIORITY_REPROCESS payload (QueuePayloads.reprocess)
-            // carries only `reason` and `source_context` text, never memory or frame ids, and every producer (this job,
-            // QueueDrainWorker, AskActions) writes it that way, so the text is the only key a pending job exposes.
+            // Fix M4: skip facts a still-pending reprocess already covers. Phase 7: payloads carry ids only (never text), so
+            // the pending job's `source_ids_csv` is the key.
             val generation = MemoryWipe.generation.get() // before the memory read (fix round 2 N2)
             val pending = QueueRuntimeStore.live(applicationContext, QueuePriority.PRIORITY_REPROCESS)
-                .map { QueuePayloads.string(QueuePayloads.parse(it.payload), "source_context") }
+                .map { QueuePayloads.parse(it.payload) }
+                .flatMap { QueuePayloads.ids(it, "source_ids_csv") + QueuePayloads.ids(it, "memory_ids_csv") }.toSet()
             val reviews = PipelineRecords.recentMemories(applicationContext, 80)
                 .filter { it.reviewState == ReviewState.NEEDS_REVIEW }
-                .filter { m -> pending.none { c -> m.text in c || (m.frameId != null && "id=${m.frameId} ·" in c) } }
+                .filter { m -> m.id !in pending }
             if (reviews.isNotEmpty()) {
                 val payload = QueuePayloads.reprocess(
                     reason = "Periodic critic retry for review memories",
-                    sourceContext = reviews.take(5).joinToString("\n") { it.text },
+                    sourceIds = reviews.take(5).map { it.id },
+                    frameIds = reviews.take(5).mapNotNull { it.frameId },
                 )
                 QueueRuntimeStore.enqueueIfCurrent(
                     context = applicationContext,
@@ -53,7 +53,7 @@ class CriticWorkerJob(
 
         val confidence = inputData.getDouble(KEY_CONFIDENCE, 0.0)
         val generation = MemoryWipe.generation.get() // before the memory read (fix round 2 N2)
-        val sourceContext = PipelineRecords.recentMemories(applicationContext, 20).joinToString("\n") { it.text }.ifBlank { "no-context" }
+        val sourceIds = PipelineRecords.recentMemories(applicationContext, 20).filter { it.reviewState != ReviewState.INVALIDATED }.map { it.id }
         val result = criticWorker.validate(summaryId, confidence)
 
         return when (result.status) {
@@ -65,13 +65,13 @@ class CriticWorkerJob(
             SummaryStatus.NEEDS_REVIEW -> {
                 PipelineRecords.upsertTrace(applicationContext, summaryId, "NEEDS_REVIEW", "Critic flagged low confidence")
                 PipelineStatsStore.incSummarizerFailed(applicationContext)
-                QueueRuntimeStore.enqueueIfCurrent(
+                if (sourceIds.isNotEmpty()) QueueRuntimeStore.enqueueIfCurrent(
                     context = applicationContext,
                     generation = generation,
                     queue = QueuePriority.PRIORITY_REPROCESS,
                     payload = QueuePayloads.reprocess(
                         reason = "critic low confidence",
-                        sourceContext = sourceContext,
+                        sourceIds = sourceIds,
                     ),
                     personaSnapshot = "Global Default",
                     ttlHours = 24,
