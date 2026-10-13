@@ -20,6 +20,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -179,8 +180,77 @@ class AskActionsTest {
         val jobs = reviewJobs()
         assertEquals(1, jobs.size)
         val payload = QueuePayloads.parse(jobs.single().payload)
-        assertEquals(AskActions.REVIEW_REASON, QueuePayloads.string(payload, "reason"))
-        assertEquals("Milk carton nearly empty", QueuePayloads.string(payload, "source_context"))
+        assertEquals(QueuePayloads.KIND_CRITIC_REVIEW, QueuePayloads.string(payload, "kind"))
+        assertEquals(listOf("rokid_mem_1"), QueuePayloads.ids(payload, "memory_ids_csv"))
+        assertFalse(jobs.single().payload.contains("Milk carton")) // ids only, never text
+        assertEquals(ReviewState.NEEDS_REVIEW, MemoryGraph.get(ctx).db.memoryViewDao().byId("rokid_mem_1")!!.reviewState)
+        assertEquals(setOf("rokid_mem_1"), UserReviews.marked(ctx)) // fix round 1 I7: the periodic scan skips it
+    }
+
+    /** Phase 7 ruling + carry: 👎 is a critic review (pass → OK); it never writes a summary through the reprocess path. */
+    @Test fun thumbsDownQueuesCriticReviewNotSummary() = runBlocking {
+        org.robolectric.Shadows.shadowOf(ctx.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager)
+            .setIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY, 80)
+        AppConfigStore.setPipelineEnabled(ctx, false) // no background drain kicked by rate(): this test drains itself
+        QueueRuntimeStore.clearAll(ctx)
+        seedAsk()
+        remember("rokid_mem_x", "Forgotten diary page", 11, ReviewState.INVALIDATED)
+        MemoryGraph.get(ctx).asks.upsert(AskEntity("a1", 50, "milk?", "Almost empty", AskSources.encode(listOf("rokid_mem_1", "rokid_mem_x")), null, "phone_typed", false))
+        reply = { p -> if ("verdict" in p) """{"verdict":"pass","reasons":[]}""" else """{"summary":"Should never be written","events":[],"entities":[],"confidence":0.9,"candidate_memory_type":"short_term"}""" }
+        val before = MemoryGraph.get(ctx).memories.all().size
+        assertTrue(AskActions.rate(ctx, "a1", up = false))
+        AppConfigStore.setPipelineEnabled(ctx, true)
+        androidx.work.testing.TestListenableWorkerBuilder<com.rokid.context.work.QueueDrainWorker>(ctx).build().doWork()
+        assertEquals(ReviewState.OK, MemoryGraph.get(ctx).db.memoryViewDao().byId("rokid_mem_1")!!.reviewState)
+        assertEquals(before, MemoryGraph.get(ctx).memories.all().size)
+        val critic = prompts.single()
+        assertTrue(critic.contains("Milk carton nearly empty"))
+        assertFalse(critic.contains("Forgotten diary")) // INVALIDATED text never reaches the critic
+        QueueRuntimeStore.clearAll(ctx)
+    }
+
+    /** Fix round 1 minor: the review state is set before the enqueue (a drain started by it finds NEEDS_REVIEW). */
+    @Test fun reviewStateIsSetBeforeTheEnqueue() = runBlocking {
+        seedAsk()
+        var seen: ReviewState? = null
+        assertTrue(AskActions.rate(ctx, "a1", up = false) { _, _, _ -> seen = runBlocking { MemoryGraph.get(ctx).db.memoryViewDao().byId("rokid_mem_1")!!.reviewState }; Unit })
+        assertEquals(ReviewState.NEEDS_REVIEW, seen)
+    }
+
+    /** Fix round 1 I1: a memory forgotten while the model answers makes the saved ask redacted, with no proposal. */
+    @Test fun forgetDuringTheModelCallRedactsTheAsk() = runBlocking {
+        remember("rokid_mem_1", "Milk carton nearly empty in the fridge", 10)
+        reply = {
+            val g = MemoryGraph.get(ctx)
+            com.rokid.context.memory.forget.ForgetService(g.db, g.proposals).forgetFact("rokid_mem_1")
+            """{"answer":"Milk is almost empty.","sources":["rokid_mem_1"],"proposedAction":{"type":"SHOPPING_ADD","items":[{"name":"milk"}]}}"""
+        }
+        val r = AskActions.ask(ctx, "milk?") as AskOutcome.Answered
+        val ask = MemoryGraph.get(ctx).asks.byId(r.askId)!!
+        assertTrue(ask.redacted)
+        assertEquals(com.rokid.context.memory.forget.ForgetService.REDACTED, ask.answer)
+        assertEquals("[]", ask.sourcesJson)
+        assertEquals(null, r.proposedAction); assertEquals(null, r.proposalId)
+    }
+
+    /** P6 T6 carry: two 👎 at once (double-tap) still queue one job. */
+    @Test fun thumbsDownSelectedTwiceEnqueuesOnce() = runBlocking {
+        seedAsk()
+        val calls = (1..2).map { async(kotlinx.coroutines.Dispatchers.Default) { AskActions.rate(ctx, "a1", up = false) } }
+        assertTrue(calls.all { it.await() })
+        assertEquals(1, reviewJobs().size)
+        assertEquals(-1, MemoryGraph.get(ctx).asks.byId("a1")!!.rating)
+    }
+
+    /** P6 T6 carry: the job is queued before the rating; a failed enqueue leaves the rating as it was. */
+    @Test fun enqueueFailureKeepsRating() = runBlocking {
+        seedAsk()
+        assertFalse(AskActions.rate(ctx, "a1", up = false) { _, _, _ -> throw IllegalStateException("disk full") })
+        assertEquals(null, MemoryGraph.get(ctx).asks.byId("a1")!!.rating)
+        assertEquals(ReviewState.OK, MemoryGraph.get(ctx).db.memoryViewDao().byId("rokid_mem_1")!!.reviewState)
+        assertTrue(UserReviews.marked(ctx).isEmpty())
+        assertFalse(AskActions.rate(ctx, "a1", up = false) { _, _, _ -> null }) // Delete all ran: nothing queued
+        assertEquals(null, MemoryGraph.get(ctx).asks.byId("a1")!!.rating)
     }
 
     /** Final review I2: while the pipeline is paused 👎 still records the review job but does not start a drain. */

@@ -86,14 +86,49 @@ class AppShellTest {
     private fun waitForText(text: String, substring: Boolean = false) =
         compose.waitUntil(5_000) { compose.onAllNodesWithText(text, substring = substring).fetchSemanticsNodes().isNotEmpty() }
 
+    /** Walks the Phase 7 wizard to its end; every step after Welcome is optional. */
+    private fun walkWizardToDone() {
+        compose.onNodeWithText("Get started").performClick()
+        compose.onNodeWithText("Continue").performClick() // Permissions
+        compose.onNodeWithText("Set up later").performClick() // Glasses
+        compose.onNodeWithText("Set up later").performClick() // AI
+        compose.onNodeWithText("Continue").performClick() // Persona (stores off Main)
+        waitForText("Glasses gestures")
+        compose.onNodeWithText("Continue").performClick() // Gestures
+        waitForText("You're set")
+    }
+
     @Test fun firstRunShowsWelcomeWithoutPillNavThenHome() {
         launch(Routes.startRoute(deps.onboarding.isComplete()))
-        compose.onNodeWithText("Welcome to Proactive Context").assertIsDisplayed()
+        compose.onNodeWithText("Proactive Context").assertIsDisplayed()
         compose.onNodeWithText("Home").assertDoesNotExist()
-        compose.onNodeWithText("Get started").performClick()
+        walkWizardToDone()
+        compose.onNodeWithText("Open Home").performClick()
+        waitForText("Ask about your day")
         compose.onNodeWithText("Ask about your day").assertIsDisplayed()
         compose.onNodeWithText("Home").assertIsDisplayed()
         assertTrue(deps.onboarding.isComplete())
+    }
+
+    /** Integration carry 4: the shell provides LocalOpenActionsSettings, so a Home nudge card's "Enable in Settings" opens Settings > Actions. */
+    @Test fun homeNudgeEnableInSettingsOpensActionsSettings() {
+        kotlinx.coroutines.runBlocking {
+            val mem = MemoryGraph.get(ctx)
+            mem.nudges.addIgnore(com.rokid.context.memory.db.NudgeEntity("nudge_1", Fixtures.NOW - 60_000, "Milk is nearly out", "why", "[]", 1, "h", "glance", false))
+            mem.proposals.addIgnore(
+                com.rokid.context.memory.db.ProposalEntity(
+                    "prop_NUDGE_nudge_1", "NUDGE", "nudge_1", "SHOPPING_ADD", "{\"items\":[{\"name\":\"milk\",\"qty\":null,\"unit\":null}]}",
+                    "SUPPRESSED", Fixtures.NOW, null, null, Fixtures.NOW,
+                ),
+            )
+        }
+        launch(Routes.HOME)
+        // The feed loads off Main and sits below the fold: scroll until the card has composed.
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("home_list").performScrollToNode(hasText("Enable in Settings")); true }.getOrDefault(false)
+        }
+        compose.onNodeWithText("Enable in Settings").performClick()
+        compose.runOnIdle { assertEquals(Routes.SETTINGS_ACTIONS, nav.currentDestination?.route) }
     }
 
     @Test fun pillNavSwitchesBetweenTheThreeTabs() {
@@ -200,10 +235,13 @@ class AppShellTest {
     /** A double-tapped "Get started" must not stack two Home entries. */
     @Test fun doubleTappedGetStartedLeavesOneHome() {
         launch(Routes.ONBOARDING)
-        compose.mainClock.autoAdvance = false
-        compose.onNodeWithText("Get started").performClick()
-        compose.onNodeWithText("Get started").performClick()
         compose.mainClock.autoAdvance = true
+        walkWizardToDone()
+        compose.mainClock.autoAdvance = false
+        compose.onNodeWithText("Open Home").performClick()
+        compose.onNodeWithText("Open Home").performClick()
+        compose.mainClock.autoAdvance = true
+        waitForText("Ask about your day")
         compose.onNodeWithText("Ask about your day").assertIsDisplayed()
         compose.runOnIdle { assertEquals(listOf(Routes.HOME), nav.currentBackStack.value.mapNotNull { it.destination.route }.filter { it != nav.graph.route }) }
     }

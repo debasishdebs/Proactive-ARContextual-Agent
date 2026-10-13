@@ -10,6 +10,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -33,9 +34,10 @@ class HomeScreenTest {
     private val opened = mutableListOf<String>()
     private var pauses = 0
     private var banner: BannerAction? = null
+    private val nudges = mutableListOf<String>()
 
     private fun show(state: HomeUiState) = compose.setContent {
-        PcTheme { HomeScreen(state, onQuestionChange = {}, onAsk = { asked += it }, onOpenAsk = { opened += it }, onTogglePause = { pauses++ }, onBannerAction = { banner = it }) }
+        PcTheme { HomeScreen(state, onQuestionChange = {}, onAsk = { asked += it }, onOpenAsk = { opened += it }, onTogglePause = { pauses++ }, onBannerAction = { banner = it }, onOpenNudge = { nudges += it }) }
     }
 
     private val live = StatusUi("Capturing · next 4:12", live = true, paused = false, batteryPct = 82, banner = null)
@@ -92,8 +94,24 @@ class HomeScreenTest {
         assertEquals(listOf("a1"), opened)
         compose.onNodeWithTag("home_list").performScrollToNode(hasText("Milk looked almost empty"))
         compose.onNodeWithText("Milk looked almost empty").performClick()
-        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Seen in the fridge at 09:41"))
-        compose.onNodeWithText("Seen in the fridge at 09:41").assertIsDisplayed()
+        assertEquals(listOf("n1"), nudges)
+    }
+
+    // Phase 7 C4
+
+    @Test fun nudgeCardOpensDetail() {
+        show(HomeUiState(status = live, feed = listOf(FeedItem.Nudge("n1", 2, "09:41", "Milk looked almost empty", "why", redacted = false))))
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Milk looked almost empty"))
+        compose.onNodeWithText("Milk looked almost empty").performClick()
+        assertEquals(listOf("n1"), nudges)
+    }
+
+    @Test fun aRedactedNudgeSaysWhyAndDoesNotOpen() {
+        show(HomeUiState(status = live, feed = listOf(FeedItem.Nudge("n1", 2, "09:41", "secret text", "why", redacted = true))))
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Removed \u2014 a source was forgotten"))
+        compose.onNodeWithText("Removed \u2014 a source was forgotten").performClick()
+        assertEquals(emptyList<String>(), nudges)
+        compose.onAllNodesWithText("secret text").assertCountEquals(0)
     }
 
     @Test fun emptyFeedShowsHint() {

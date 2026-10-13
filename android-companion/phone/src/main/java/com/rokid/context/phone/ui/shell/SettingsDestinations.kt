@@ -32,6 +32,9 @@ import com.rokid.context.phone.ui.settings.ai.EndpointsListViewModel
 import com.rokid.context.phone.ui.settings.ai.RolesScreen
 import com.rokid.context.phone.ui.settings.ai.RolesViewModel
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsScreen
+import com.rokid.context.phone.ui.settings.connectors.ActionsRoute
+import com.rokid.context.phone.ui.settings.connectors.ShoppingRoute
+import com.rokid.context.phone.ui.settings.connectors.SourcesRoute
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsViewModel
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsScreen
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsViewModel
@@ -41,6 +44,7 @@ import com.rokid.context.phone.ui.settings.memory.MemorySettingsScreen
 import com.rokid.context.phone.ui.settings.memory.MemorySettingsViewModel
 import com.rokid.context.phone.ui.settings.memory.ReviewQueueScreen
 import com.rokid.context.phone.ui.settings.memory.ReviewQueueViewModel
+import com.rokid.context.phone.ui.settings.privacy.PrivacyRoute
 import com.rokid.context.phone.ui.settings.prompts.PromptEditorScreen
 import com.rokid.context.phone.ui.settings.prompts.PromptEditorViewModel
 import com.rokid.context.phone.ui.settings.prompts.PromptHistoryScreen
@@ -68,7 +72,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_PHONE_INPUTS) {
-        val vm = viewModel { PhoneInputsViewModel(s.voice) }
+        val vm = viewModel { PhoneInputsViewModel(s.voice, s.capture) }
         val state by vm.state.collectAsStateWithLifecycle()
         val activity = LocalContext.current.findActivity()
         val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -80,6 +84,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             state, onBack = back, onAllowMic = { mic.launch(Manifest.permission.RECORD_AUDIO) }, onDownload = vm::download,
             onOpenSettings = vm::openSettings, onRecheck = vm::recheck, onLanguage = vm::setLanguage, onPhoneMic = vm::setPhoneMic,
             onOpenAppSettings = s.openAppSettings, onResume = vm::onResume,
+            onCaptureNow = vm::captureNow, onPictureTaken = vm::onPictureTaken,
         )
     }
 
@@ -181,6 +186,14 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val state by vm.state.collectAsStateWithLifecycle()
         LogsScreen(state, onBack = back, onRefresh = vm::refresh)
     }
+
+    composable(Routes.SETTINGS_PRIVACY) { PrivacyRoute(s, back) }
+    composable(Routes.SETTINGS_SOURCES) {
+        val activity = LocalContext.current.findActivity()
+        SourcesRoute(s, back) { p -> activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, p) } ?: true }
+    }
+    composable(Routes.SETTINGS_ACTIONS) { ActionsRoute(s, back, openShopping = { nav.navigate(Routes.SETTINGS_SHOPPING) }) }
+    composable(Routes.SETTINGS_SHOPPING) { ShoppingRoute(s, back) }
 
     composable(Routes.SETTINGS_PERSONA) {
         val vm = viewModel { PersonaViewModel(s.ai.persona) }

@@ -65,4 +65,15 @@ class RoutesTest {
         assertTrue(BluetoothPermission.isMissing(sdkInt = 31, granted = false))
         assertFalse(BluetoothPermission.isMissing(sdkInt = 34, granted = true))
     }
+
+    @Test fun phase7RoutesLiveAndNudgeTabIsHome() {
+        val p7 = setOf(Routes.SETTINGS_PRIVACY, Routes.SETTINGS_SOURCES, Routes.SETTINGS_ACTIONS, Routes.SETTINGS_SHOPPING)
+        assertEquals(setOf("settings/privacy", "settings/sources", "settings/actions", "settings/shopping"), p7)
+        assertTrue(Routes.LIVE_SETTINGS.containsAll(p7))
+        p7.forEach { assertEquals(it, Routes.Tab.SETTINGS, Routes.tabFor(it)) }
+        assertEquals("nudge/{id}", Routes.NUDGE)
+        assertEquals("nudge/n%201", Routes.nudge("n 1"))
+        assertEquals(Routes.Tab.HOME, Routes.tabFor(Routes.NUDGE))
+        assertTrue(Routes.showsNav(Routes.NUDGE))
+    }
 }

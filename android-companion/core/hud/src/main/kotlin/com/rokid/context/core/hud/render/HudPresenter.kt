@@ -18,7 +18,7 @@ data class HudView(val page: HudPage?, val overlay: Overlay?)
 /**
  * Verbosity and overlay timing (spec §3.2, §3.4). Silent: no page; overlays only for user flows (a Nudge never shows).
  * Medium: Glance/Today; a Nudge only as the Glance one-liner. Max: also Nudge toasts and the Status page. Nudge hides
- * after 8 s, Confirm after 15 s without voting, Paused splash and toasts after 3 s; Listening and Answer stay until the
+ * after 8 s, Confirm after 15 s without voting, Paused splash and toasts after 3 s (an undo toast after 10 s); Listening and Answer stay until the
  * phone clears them or the wearer dismisses them. A local overlay wins over a phone one, except over Confirm.
  */
 class HudPresenter {
@@ -55,6 +55,8 @@ class HudPresenter {
         const val CONFIRM_MS = 15_000L
         const val SPLASH_MS = 3_000L
         const val TOAST_MS = 3_000L
+        /** A phone undo toast (`undoProposalId` set) stays for the whole 10 s undo window. */
+        const val UNDO_TOAST_MS = 10_000L
 
         fun allowed(o: Overlay, v: Verbosity): Boolean = !(o is Overlay.Nudge && v != Verbosity.MAX)
 
@@ -62,7 +64,7 @@ class HudPresenter {
             is Overlay.Nudge -> NUDGE_MS
             is Overlay.Confirm -> CONFIRM_MS
             Overlay.PausedSplash -> SPLASH_MS
-            is Overlay.Toast -> TOAST_MS
+            is Overlay.Toast -> if (o.undoProposalId != null) UNDO_TOAST_MS else TOAST_MS
             is Overlay.Listening, is Overlay.Answer -> Long.MAX_VALUE
         }
     }

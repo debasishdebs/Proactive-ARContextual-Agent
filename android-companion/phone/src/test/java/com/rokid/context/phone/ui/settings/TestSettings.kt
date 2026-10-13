@@ -36,12 +36,16 @@ object TestSettings {
             object : ModelProvider { override suspend fun generate(prompt: String): String = reply(prompt) }
         })
 
-    fun deps(ctx: Context, ai: AiGraph = ai(ctx), hud: HudSettingsControl = FakeHudSettings()): SettingsDeps =
+    fun deps(
+        ctx: Context, ai: AiGraph = ai(ctx), hud: HudSettingsControl = FakeHudSettings(),
+        actions: com.rokid.context.connectors.actions.ActionsGraphApi? = null,
+    ): SettingsDeps =
         SettingsDeps(lazyAi = lazyOf(ai), hud = hud, reauthorize = { reauthorized++ }, onEmbedBindingChanged = { embedChanges++ },
             lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(ctx), AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() })) },
             lazyRetrieval = lazy { RetrievalSettingsStore(ctx.getSharedPreferences("retrieval_test", 0)) }, lazySpaces = lazy { MemoryGraph.get(ctx).spaces }, rebuildIndex = { rebuilds++ },
             lazyMemorySettings = lazy { MemorySettingsStore(ctx.getSharedPreferences("memory_settings_test_deps", 0)) },
             encryption = object : EncryptionControl { override fun status() = DbEncryption.Status(false, null, false); override fun request(encrypted: Boolean) = Unit },
             usedBytes = { 0L }, wipe = {}, export = { java.io.File(ctx.cacheDir, "x.json") }, share = {},
-            logs = { emptyList() }, exportDiagnostics = { java.io.File(ctx.cacheDir, "diag.txt") })
+            logs = { emptyList() }, exportDiagnostics = { java.io.File(ctx.cacheDir, "diag.txt") },
+            lazyActions = lazy { actions ?: com.rokid.context.connectors.actions.ActionsGraph.get(ctx) })
 }

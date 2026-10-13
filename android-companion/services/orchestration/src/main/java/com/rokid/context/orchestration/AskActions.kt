@@ -7,7 +7,13 @@ import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.work.OrchestrationScheduler
 import com.rokid.context.memory.MemoryGraph
+import android.util.Log
+import com.rokid.context.ai.SafeLog
+import com.rokid.context.memory.db.ReviewState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -15,7 +21,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 
 sealed interface AskOutcome {
-    data class Answered(val askId: String, val proposedAction: com.rokid.context.ai.contract.ProposedAction? = null) : AskOutcome
+    /** [proposalId]: the stored proposal for [proposedAction] (Phase 7), null when none was stored. */
+    data class Answered(
+        val askId: String, val proposedAction: com.rokid.context.ai.contract.ProposedAction? = null, val proposalId: String? = null,
+    ) : AskOutcome
     data class Failed(val message: String) : AskOutcome
 }
 
@@ -55,32 +64,59 @@ object AskActions {
         withContext(Dispatchers.IO) { AnswerService.forApp(context).answer(question, source, nowMs) }
 
     /**
-     * 👍 = 1, 👎 = −1 (spec §2.4 Ask detail). Changing to 👎 enqueues one critic re-summarise over the cited memories
-     * (the legacy PRIORITY_REPROCESS queue). Repeating the same rating is a no-op. Redacted or unknown asks → false.
+     * 👍 = 1, 👎 = −1 (spec §2.4 Ask detail). Repeating the same rating is a no-op. Redacted or unknown asks → false.
+     * 👎 (Phase 7 ruling): the cited, still-OK memories move to NEEDS_REVIEW and **one** `critic_review` job (ids only,
+     * dedupe key = the ask id) is queued **before** the rating is written, so a failed enqueue leaves the rating as it
+     * was and returns false. The drain runs CRITIC over them (pass → OK); it never writes a summary.
+     * [enqueue] queues the payload (null = not queued: Delete all ran since [MemoryWipe.generation] was read).
      */
-    suspend fun rate(context: Context, askId: String, up: Boolean): Boolean {
+    suspend fun rate(
+        context: Context, askId: String, up: Boolean,
+        enqueue: (Context, Long, String) -> Any? = ::enqueueReview,
+    ): Boolean = rateLock.withLock { // two taps racing: one check-and-enqueue at a time (P6 T6 carry)
         val generation = MemoryWipe.generation.get() // before the memory read (fix round 2 N2)
         val graph = MemoryGraph.get(context)
-        val ask = graph.asks.byId(askId) ?: return false
-        if (ask.redacted) return false
+        val ask = graph.asks.byId(askId) ?: return@withLock false
+        if (ask.redacted) return@withLock false
         val rating = if (up) 1 else -1
-        if (ask.rating == rating) return true
-        graph.asks.setRating(askId, rating) // field-level UPDATE: never a whole-row upsert
+        if (ask.rating == rating) return@withLock true
         if (!up) {
-            val cited = graph.timeline.memoriesByIds(AskSources.parse(ask.sourcesJson))
-            if (cited.isNotEmpty()) withContext(Dispatchers.IO) {
-                QueueRuntimeStore.enqueueIfCurrent(
-                    context = context,
-                    generation = generation,
-                    queue = QueuePriority.PRIORITY_REPROCESS,
-                    payload = QueuePayloads.reprocess(reason = REVIEW_REASON, sourceContext = cited.joinToString("\n") { it.text }),
-                    personaSnapshot = AppConfigStore.getWithoutSecret(context).persona,
-                    ttlHours = 24,
-                )
-                // Paused: the review waits in the queue; resuming drains it.
-                if (AppConfigStore.isPipelineEnabled(context)) OrchestrationScheduler(context).enqueueQueueDrainNow()
+            val cited = graph.timeline.memoriesByIds(AskSources.parse(ask.sourcesJson)).filter { it.reviewState != ReviewState.INVALIDATED }
+            if (cited.isNotEmpty()) {
+                // Fix round 1: review state (and the 👎 mark, I7) before the enqueue, so a drain it starts finds NEEDS_REVIEW.
+                val moved = cited.filter { it.reviewState == ReviewState.OK }
+                    .filter { graph.db.memoryViewDao().moveReviewState(it.id, ReviewState.OK.name, ReviewState.NEEDS_REVIEW.name) > 0 }
+                UserReviews.mark(context, cited.map { it.id })
+                val queued = withContext(Dispatchers.IO) {
+                    val already = QueueRuntimeStore.live(context, QueuePriority.PRIORITY_REPROCESS)
+                        .any { QueuePayloads.string(QueuePayloads.parse(it.payload), "dedupe") == askId }
+                    already || try {
+                        enqueue(context, generation, QueuePayloads.criticReview(cited.map { it.id }, dedupeKey = askId)) != null
+                    } catch (c: CancellationException) {
+                        throw c
+                    } catch (e: Exception) {
+                        Log.w(TAG, "review not queued: ${SafeLog.describe(e)}")
+                        false
+                    }
+                }
+                if (!queued) {
+                    moved.forEach { graph.db.memoryViewDao().moveReviewState(it.id, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) }
+                    UserReviews.clear(context, cited.map { it.id })
+                    return@withLock false
+                }
             }
         }
-        return true
+        graph.asks.setRating(askId, rating) // field-level UPDATE: never a whole-row upsert
+        // Paused: the review waits in the queue; resuming drains it.
+        if (!up && AppConfigStore.isPipelineEnabled(context)) withContext(Dispatchers.IO) { OrchestrationScheduler(context).enqueueQueueDrainNow() }
+        true
     }
+
+    private val rateLock = Mutex()
+    private const val TAG = "AskActions"
+
+    private fun enqueueReview(context: Context, generation: Long, payload: String): Any? = QueueRuntimeStore.enqueueIfCurrent(
+        context = context, generation = generation, queue = QueuePriority.PRIORITY_REPROCESS, payload = payload,
+        personaSnapshot = AppConfigStore.getWithoutSecret(context).persona, ttlHours = 24,
+    )
 }

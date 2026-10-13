@@ -11,7 +11,12 @@ import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.run.RoleCall
 import com.rokid.context.ai.run.RoleRunner
 import com.rokid.context.core.model.TextHygiene
+import com.rokid.context.connectors.ContextSourceProvider
+import com.rokid.context.connectors.ProposalIntake
+import com.rokid.context.connectors.actions.ActionsGraph
+import com.rokid.context.connectors.sources.SourcesGraph
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.ProposalOrigin
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.ReviewState
@@ -30,6 +35,8 @@ import kotlin.coroutines.cancellation.CancellationException
 /** `{{context_sources}}` (spec §5.4). Phase 7 supplies calendar/contacts/notes/location lines; v1 Phase 5 has none. */
 fun interface ContextSources {
     suspend fun lines(question: String): List<String>
+    /** Phase 7: [nowMs] is the ask's clock. Defaults to [lines] without it (additive). */
+    suspend fun lines(question: String, nowMs: Long): List<String> = lines(question)
     companion object { val None = ContextSources { emptyList() } }
 }
 
@@ -75,6 +82,7 @@ class AnswerService(
     private val settings: () -> RetrievalSettings,
     private val sources: ContextSources = ContextSources.None,
     private val zone: () -> ZoneId = ZoneId::systemDefault,
+    private val proposals: ProposalIntake = ProposalIntake.None,
 ) {
     data class Retrieved(val vars: PromptVars, val memories: List<MemoryEntity>) { val ids: Set<String> get() = memories.map { it.id }.toSet() }
 
@@ -93,7 +101,7 @@ class AnswerService(
                 // The question is user (later ASR) text: a data block folds look-alike markers as for memories.
                 question = PromptComposer.dataBlock("question", listOf(q)),
                 retrievedMemories = PromptComposer.dataBlock("memories", lines),
-                contextSources = PromptComposer.dataBlock("sources", sources.lines(q)),
+                contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
             ),
             kept,
         )
@@ -134,13 +142,33 @@ class AnswerService(
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
         val id = askId ?: "ask_${UUID.randomUUID()}"
+        var redacted = false
         val saved = memory.db.withTransaction {
             if (MemoryWipe.generation.get() != generation) return@withTransaction false
-            memory.asks.add(AskEntity(id, nowMs, q, text, AskSources.encode(out.sources), null, source, false))
+            // Phase 7 Forget fence (Stream F fix round 1 I1): a memory in the prompt or cited was forgotten while the
+            // model answered, so the reply may hold forgotten text: store it redacted, with no sources and no proposal.
+            redacted = !com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, r.ids + out.sources)
+            memory.asks.add(
+                if (redacted) AskEntity(id, nowMs, q, com.rokid.context.memory.forget.ForgetService.REDACTED, "[]", null, source, true)
+                else AskEntity(id, nowMs, q, text, AskSources.encode(out.sources), null, source, false),
+            )
             true
         }
         if (!saved) throw NoMemoriesException()
-        return AskOutcome.Answered(id, out.proposedAction)
+        if (redacted) return AskOutcome.Answered(id)
+        // Phase 7 (R-62): only after the ask row commits, so a proposal always has its origin row.
+        // The ask is saved: a failing intake must not fail it (nor make a queue job retry it). Cancellation still propagates.
+        val proposalId = out.proposedAction?.let { action ->
+            try {
+                proposals.onProposed(ProposalOrigin.ASK, id, action, nowMs)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                Log.w(TAG, "proposal intake failed (${t.javaClass.simpleName})")
+                null
+            }
+        }
+        return AskOutcome.Answered(id, out.proposedAction, proposalId)
     }
 
     private fun line(m: MemoryEntity): String =
@@ -155,10 +183,21 @@ class AnswerService(
         private const val FALLBACK = 10
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
 
+        /** Adapts the connectors provider: the ask's nowMs reaches it (the one-argument form falls back to the wall clock). */
+        fun sourcesFrom(provider: ContextSourceProvider): ContextSources = object : ContextSources {
+            override suspend fun lines(question: String): List<String> = provider.lines(question, System.currentTimeMillis())
+            override suspend fun lines(question: String, nowMs: Long): List<String> = provider.lines(question, nowMs)
+        }
+
         fun forApp(context: Context): AnswerService {
             val ai = AiGraph.get(context)
             val store = RetrievalSettingsStore.get(context)
-            return AnswerService(MemoryGraph.get(context), ai.runner, ai.retriever, { store.settings.value })
+            val provider = SourcesGraph.get(context).provider
+            return AnswerService(
+                MemoryGraph.get(context), ai.runner, ai.retriever, { store.settings.value },
+                sources = sourcesFrom(provider),
+                proposals = ActionsGraph.get(context).intake,
+            )
         }
     }
 }

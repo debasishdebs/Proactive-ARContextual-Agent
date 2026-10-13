@@ -25,6 +25,7 @@ import com.rokid.context.data.runtime.PipelineStatsStore
 import com.rokid.context.data.runtime.QueueJobRecord
 import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
+import com.rokid.context.data.runtime.StalePayloadException
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
@@ -73,6 +74,12 @@ class QueueDrainWorker(
             }.onSuccess {
                 QueueRuntimeStore.markSucceeded(applicationContext, job.id)
             }.onFailure { error ->
+                if (error is StalePayloadException) {
+                    // Its sources were forgotten or it is an old text payload: never retried, never sent (R-77).
+                    QueueRuntimeStore.markFailed(applicationContext, job.id, STALE_NOTE)
+                    PipelineRecords.upsertTrace(applicationContext, job.id, "FAILED", STALE_NOTE)
+                    return@onFailure
+                }
                 val outcome = RetryClassifier.classify(error)
                 if (outcome == RetryClassifier.Outcome.CANCELLED) {
                     // WorkManager stopped us: keep the job for the next run, then let cancellation propagate.
@@ -169,19 +176,23 @@ class QueueDrainWorker(
         val trusted = criticWorker.validate(job.id, confidence).status == SummaryStatus.TRUSTED || modelCriticPasses(facts, frameLines)
         val frameId = frames.maxBy { it.ts }.id
         val written = facts.withIndex().all { (i, f) ->
+            // Fix round 1 I6: fenced on every frame of the batch (any one forgotten → nothing written). Limitation: the fact
+            // is stored against the newest frame only, so a later Forget of an older contributing frame does not reach it.
             PipelineRecords.appendFact(applicationContext, "$factPrefix$i", frameId, f.text, f.type, f.tags, f.confidence,
-                MemoryTier.SHORT, if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation)
+                MemoryTier.SHORT, if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation,
+                fenceFrameIds = frames.map { it.id })
         }
         if (!written) return // Delete all ran meanwhile: no reprocess job (it would carry the fact text)
         EmbeddingWorker.enqueue(applicationContext)
         if (trusted) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "TRUSTED", "frames=${frames.size} imported=$importedFrames facts=${facts.size} v${result.promptVersion}")
+            com.rokid.context.orchestration.nudge.NudgeTrigger.afterSummarizerPass(applicationContext)
             PipelineStatsStore.incSummarizerSucceeded(applicationContext)
         } else {
             val reason = "Critic low confidence=${"%.2f".format(Locale.US, confidence)}"
             QueueRuntimeStore.enqueueIfCurrent(
                 context = applicationContext, generation = generation, queue = QueuePriority.PRIORITY_REPROCESS,
-                payload = QueuePayloads.reprocess(reason = reason, sourceContext = (facts.map { it.text } + frameLines).joinToString("\n")),
+                payload = QueuePayloads.reprocess(reason = reason, sourceIds = facts.indices.map { "$factPrefix$it" }, frameIds = frames.map { it.id }),
                 personaSnapshot = job.personaSnapshot, ttlHours = 24,
             )
             PipelineRecords.upsertTrace(applicationContext, job.id, "NEEDS_REVIEW", "Reprocess queued: $reason")
@@ -204,20 +215,51 @@ class QueueDrainWorker(
         }
     }
 
+    /**
+     * PRIORITY_REPROCESS (v2, ids only) or a 👎 `critic_review`. Inputs are re-read now: forgotten (missing or
+     * INVALIDATED) memories and tombstoned frames are dropped, and `recentFrames` is never used, so text forgotten after
+     * the enqueue never reaches a model. A legacy `source_context` payload or one with no surviving source is stale.
+     */
     private suspend fun processPriorityReprocess(job: QueueJobRecord, generation: Long) {
         val payload = QueuePayloads.parse(job.payload)
-        val sourceContext = QueuePayloads.string(payload, "source_context")
+        if (QueuePayloads.string(payload, "kind") == QueuePayloads.KIND_CRITIC_REVIEW) return processCriticReview(job, payload)
+        if (payload.containsKey("source_context") || QueuePayloads.int(payload, "v", 0) != 2) throw StalePayloadException()
         val reason = QueuePayloads.string(payload, "reason", "low confidence")
-        val frames = PipelineRecords.recentFrames(applicationContext, 6)
-        val vars = PromptVars(recentContext = PromptComposer.dataBlock("memories", sourceContext.lines().filter { it.isNotBlank() }) +
+        val sources = PipelineRecords.liveMemories(applicationContext, QueuePayloads.ids(payload, "source_ids_csv"))
+        if (sources.isEmpty()) throw StalePayloadException()
+        val frames = PipelineRecords.framesByIds(applicationContext, QueuePayloads.ids(payload, "frame_ids_csv"))
+        val vars = PromptVars(recentContext = PromptComposer.dataBlock("memories", sources.map { it.text }) +
             "\n" + PromptComposer.dataBlock("critic_notes", listOf(reason)))
         val out = ai.runner.run(RoleCall(PromptKey.SUMMARIZE, vars, images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true)).output as SummaryOutput
         val written = PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}", null, out.summary, "summary", out.entities,
             out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,
-            generation = generation)
+            generation = generation, derived = true, sourceIds = sources.map { it.id })
         if (!written) return
         EmbeddingWorker.enqueue(applicationContext)
         PipelineRecords.upsertTrace(applicationContext, job.id, "REPROCESSED", "Re-summarized after critic feedback")
+        com.rokid.context.orchestration.nudge.NudgeTrigger.afterSummarizerPass(applicationContext)
+    }
+
+    /**
+     * 👎 (Phase 7 ruling): CRITIC over the cited memories still awaiting review; pass → OK, fail → they stay in the
+     * Review queue. It never writes a summary, and forgotten (INVALIDATED) text is never included.
+     */
+    private suspend fun processCriticReview(job: QueueJobRecord, payload: kotlinx.serialization.json.JsonObject) {
+        val reviews = PipelineRecords.liveMemories(applicationContext, QueuePayloads.ids(payload, "memory_ids_csv"))
+            .filter { it.reviewState == ReviewState.NEEDS_REVIEW }
+        if (reviews.isEmpty()) throw StalePayloadException()
+        val frames = PipelineRecords.framesByIds(applicationContext, reviews.mapNotNull { it.frameId })
+        val frameLines = frames.map { "id=${it.id} · ts=${it.ts} · source=${it.source} · ${it.payload}" }
+        val vars = PromptVars(recentContext = PromptComposer.dataBlock("facts", reviews.map { "${it.text} (confidence ${"%.2f".format(Locale.US, it.confidence)})" }) +
+            "\n" + PromptComposer.dataBlock("source", frameLines))
+        val pass = (ai.runner.run(RoleCall(PromptKey.CRITIC, vars)).output as CriticOutput).pass
+        if (pass) {
+            val view = com.rokid.context.memory.MemoryGraph.get(applicationContext).db.memoryViewDao()
+            reviews.forEach { view.moveReviewState(it.id, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) }
+            com.rokid.context.orchestration.UserReviews.clear(applicationContext, reviews.map { it.id })
+            EmbeddingWorker.enqueue(applicationContext)
+        }
+        PipelineRecords.upsertTrace(applicationContext, job.id, if (pass) "REVIEW_PASSED" else "NEEDS_REVIEW", "Critic review of ${reviews.size} memory(ies)")
     }
 
     private suspend fun processExplicitWrite(job: QueueJobRecord, generation: Long) {
@@ -301,5 +343,6 @@ class QueueDrainWorker(
         private const val MAX_JOBS_PER_RUN = 8
         private const val POLICY_DEFER_MS = 15 * 60 * 1000L
         private const val RAW_NOTE_CONFIDENCE = 0.5
+        const val STALE_NOTE = "Skipped: sources changed"
     }
 }
