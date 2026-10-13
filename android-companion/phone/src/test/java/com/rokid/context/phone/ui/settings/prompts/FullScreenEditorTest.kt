@@ -12,6 +12,7 @@ import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
@@ -50,6 +51,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowDialog
 
 /** Agent flows C1: the full-screen template/schema editor writes back through the same VM path as an inline edit. */
 @RunWith(AndroidJUnit4::class)
@@ -209,5 +211,41 @@ class FullScreenEditorTest {
         compose.onNodeWithTag("fs_field").performTextReplacement("typed in full screen")
         restore.emulateSavedInstanceStateRestore()
         compose.onNodeWithTag("fs_field").assertTextEquals("typed in full screen")
+    }
+
+    /** System Back on the topmost showing dialog window (the full-screen editor is a Dialog). */
+    private fun pressBack() = compose.runOnIdle {
+        (ShadowDialog.getShownDialogs().last { it.isShowing } as androidx.activity.ComponentDialog).onBackPressedDispatcher.onBackPressed()
+    }
+
+    /** Back with edited text asks first: Keep editing returns to the text, Discard closes without handing it back. */
+    @Test fun backWithChangesAsksToDiscard() {
+        var cancelled = 0
+        var done: String? = null
+        compose.setContent { PcTheme { FullScreenTextEditor("Template", "start", emptyList(), onDone = { done = it }, onCancel = { cancelled++ }, tag = "fs") } }
+        compose.onNodeWithTag("fs_field").performTextReplacement("changed")
+        pressBack()
+        compose.onNodeWithText("Discard changes?").assertExists()
+        assertEquals(0, cancelled)
+        compose.onNodeWithTag("fs_keep_editing").performClick()
+        compose.onNodeWithText("Discard changes?").assertDoesNotExist()
+        compose.onNodeWithTag("fs_field").assertTextEquals("changed")
+        assertEquals(0, cancelled)
+        pressBack()
+        compose.onNodeWithTag("fs_discard").performClick()
+        compose.waitForIdle()
+        assertEquals(1, cancelled)
+        assertNull(done)
+    }
+
+    /** Back with the text as it opened just closes, with no dialog. */
+    @Test fun backWithoutChangesJustCloses() {
+        var cancelled = 0
+        compose.setContent { PcTheme { FullScreenTextEditor("Template", "start", emptyList(), onDone = {}, onCancel = { cancelled++ }, tag = "fs") } }
+        compose.onNodeWithTag("fs_field").assertTextEquals("start")
+        pressBack()
+        compose.waitForIdle()
+        compose.onNodeWithText("Discard changes?").assertDoesNotExist()
+        assertEquals(1, cancelled)
     }
 }
