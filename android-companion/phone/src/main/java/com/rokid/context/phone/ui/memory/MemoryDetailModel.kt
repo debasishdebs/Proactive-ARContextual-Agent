@@ -20,7 +20,7 @@ data class MemoryDetailUiState(
     val confidence: Double = 0.0,
     val reviewLabel: String = "",
     val trusted: Boolean = false,
-    /** False for hidden (INVALIDATED) memories: Trust and Edit are disabled. */
+    /** False for hidden (INVALIDATED) memories: Trust, Edit and Forget fact are disabled. */
     val editable: Boolean = true,
     val createdLabel: String = "",
     val framePath: String? = null,
@@ -29,6 +29,12 @@ data class MemoryDetailUiState(
     /** Non-null while editing. */
     val draft: String? = null,
     val message: String? = null,
+    /** The Forget dialog on screen, if any. */
+    val confirm: ForgetKind? = null,
+    /** A Forget is running: both Forget buttons are disabled. */
+    val forgetting: Boolean = false,
+    /** The Forget finished: the route refreshes the hub, says "Forgotten" and goes back. */
+    val forgotten: Boolean = false,
 )
 
 object MemoryDetailModel {
@@ -47,7 +53,7 @@ object MemoryDetailModel {
         editable = m.reviewState != ReviewState.INVALIDATED,
         createdLabel = CREATED.format(Instant.ofEpochMilli(m.createdAt).atZone(zone)),
         framePath = frame?.path,
-        frameId = frame?.id,
+        frameId = m.frameId,
         frameDate = frame?.let { DayBucket.dayOf(it.ts, zone) },
     )
 }
