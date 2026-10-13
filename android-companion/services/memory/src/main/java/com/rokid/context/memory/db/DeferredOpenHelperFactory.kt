@@ -4,7 +4,6 @@ import android.os.Looper
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
-import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 /**
  * Room calls `create` while building the database; the encryption mode is decided (and a pending migration applied)
@@ -35,7 +34,8 @@ class DeferredOpenHelperFactory(
                 // Before the decision (preflight F12): encryptedAtOpen may run a migration and read the Keystore key.
                 check(!onMainThread()) { "Database opened on the main thread" }
                 val encrypted = encryptedAtOpen()
-                val factory = if (encrypted) { System.loadLibrary("sqlcipher"); SupportOpenHelperFactory(passphrase()) } else FrameworkSQLiteOpenHelperFactory()
+                // P8 D4: the library loads once; the passphrase is re-read for each open and our copy zeroed (ensureOpenParams).
+                val factory = if (encrypted) DatabaseFactory.ensureOpenParams(passphrase) else FrameworkSQLiteOpenHelperFactory()
                 factory.create(config).also { h -> wal?.let(h::setWriteAheadLoggingEnabled); delegate = h }
             }
         }
