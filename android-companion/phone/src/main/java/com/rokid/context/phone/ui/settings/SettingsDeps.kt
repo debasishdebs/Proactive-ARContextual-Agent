@@ -5,18 +5,26 @@ import android.util.Log
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.link.AuthActivity
+import com.rokid.context.memory.DbEncryption
 import com.rokid.context.memory.EmbeddingSpaces
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.MemorySettingsStore
 import com.rokid.context.memory.retrieval.RetrievalSettingsStore
 import com.rokid.context.orchestration.AnswerService
+import com.rokid.context.orchestration.MemoryExport
+import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.TestBedInputs
 import com.rokid.context.phone.hub.Hub
 import com.rokid.context.phone.hub.HubGraph
+import com.rokid.context.phone.ui.settings.memory.EncryptionControl
+import com.rokid.context.phone.ui.settings.memory.ShareFile
+import com.rokid.context.phone.ui.status.StorageUsage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 
 /** The HUD settings the phone owns (spec §2.4 Devices / Capture): persisted and pushed by the hub. */
 interface HudSettingsControl {
@@ -43,11 +51,19 @@ class SettingsDeps(
     private val lazySpaces: Lazy<EmbeddingSpaces>,
     /** The user's Rebuild: durable at once (pending while paused), resets the drift streak (Task 11). */
     val rebuildIndex: () -> Unit,
+    /** Lazy for the same reason as [lazyRetrieval] (Settings → Memory, Task 20). */
+    private val lazyMemorySettings: Lazy<MemorySettingsStore>,
+    val encryption: EncryptionControl,
+    val usedBytes: suspend () -> Long,
+    val wipe: suspend () -> Unit,
+    val export: suspend () -> File,
+    val share: (File) -> Unit,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
     val retrieval: RetrievalSettingsStore get() = lazyRetrieval.value
     val spaces: EmbeddingSpaces get() = lazySpaces.value
+    val memorySettings: MemorySettingsStore get() = lazyMemorySettings.value
 
     companion object {
         /** Process-lifetime work the Settings deps start (a Rebuild commits prefs, so it leaves Main). */
@@ -62,6 +78,15 @@ class SettingsDeps(
             lazyRetrieval = lazy { RetrievalSettingsStore.get(app) },
             lazySpaces = lazy { MemoryGraph.get(app).spaces },
             rebuildIndex = { scope.launch(Dispatchers.IO) { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app, rebuild = true) } },
+            lazyMemorySettings = lazy { MemorySettingsStore.get(app) },
+            encryption = object : EncryptionControl {
+                override fun status() = DbEncryption.status(app)
+                override fun request(encrypted: Boolean) = DbEncryption.request(app, encrypted)
+            },
+            usedBytes = { StorageUsage.usedBytes(app) },
+            wipe = { MemoryWipe.deleteAll(app) },
+            export = { MemoryExport.write(app) },
+            share = { f -> ShareFile.share(app, f) },
         )
     }
 }

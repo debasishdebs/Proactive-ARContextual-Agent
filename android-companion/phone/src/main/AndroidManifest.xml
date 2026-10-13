@@ -33,6 +33,15 @@
             android:name=".phone.hub.ContextHubService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Settings → Memory › Export: shares cache/exports only (res/xml/file_paths.xml), read grant per share. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

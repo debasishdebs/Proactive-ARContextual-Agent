@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -28,5 +29,16 @@ class StorageUsageTest {
         File(ctx.filesDir, "rokid_inbox").apply { mkdirs() }.resolve("b.jpg").writeBytes(ByteArray(512 * 1024))
         File(ctx.filesDir, "unrelated.bin").writeBytes(ByteArray(4096))
         assertEquals(1_572_864L, StorageUsage.usedBytes(ctx))
+    }
+
+    /** R-11: the banner measures against the quota chosen in Settings → Memory, read when measured. */
+    @Test fun percentFlowUsesTheConfiguredQuota() = runBlocking<Unit> {
+        File(ctx.filesDir, "rokid_archive").apply { mkdirs() }.resolve("q.jpg").writeBytes(ByteArray(1024 * 1024))
+        var quota = 4L * 1024 * 1024
+        val flow = StorageUsage.percentFlow(ctx) { quota }
+        assertEquals(listOf(null, 25), flow.toList())
+        quota = 2L * 1024 * 1024
+        assertEquals(50, flow.toList().last())
+        File(ctx.filesDir, "rokid_archive").deleteRecursively()
     }
 }

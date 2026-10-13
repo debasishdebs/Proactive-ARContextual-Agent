@@ -21,6 +21,10 @@ import com.rokid.context.phone.ui.settings.capture.CaptureSettingsScreen
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsViewModel
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsScreen
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsViewModel
+import com.rokid.context.phone.ui.settings.memory.MemorySettingsScreen
+import com.rokid.context.phone.ui.settings.memory.MemorySettingsViewModel
+import com.rokid.context.phone.ui.settings.memory.ReviewQueueScreen
+import com.rokid.context.phone.ui.settings.memory.ReviewQueueViewModel
 import com.rokid.context.phone.ui.settings.prompts.PromptEditorScreen
 import com.rokid.context.phone.ui.settings.prompts.PromptEditorViewModel
 import com.rokid.context.phone.ui.settings.prompts.PromptHistoryScreen
@@ -29,6 +33,7 @@ import com.rokid.context.phone.ui.settings.prompts.PromptsListScreen
 import com.rokid.context.phone.ui.settings.prompts.PromptsListViewModel
 import com.rokid.context.phone.ui.settings.retrieval.RetrievalSettingsScreen
 import com.rokid.context.phone.ui.settings.retrieval.RetrievalViewModel
+import kotlinx.coroutines.flow.map
 
 /** Settings tree routes (spec §2.1). Same rule as Destinations.kt: the only place these ViewModels are created. */
 fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController, back: () -> Unit) {
@@ -109,5 +114,23 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onRecency = vm::setRecency, onHalfLife = vm::setHalfLife, onMinConfidence = vm::setMinConfidence, onQuery = vm::onQuery, onTryIt = vm::tryIt,
             onRebuild = vm::rebuild, onOpenRoles = { nav.navigate(Routes.SETTINGS_ROLES) },
         )
+    }
+
+    composable(Routes.SETTINGS_MEMORY) {
+        val vm = viewModel {
+            MemorySettingsViewModel(s.memorySettings, s.encryption, s.usedBytes, s.wipe, s.export, s.share, deps.memory.memoryEdits.needsReview(100).map { it.size })
+        }
+        val state by vm.state.collectAsStateWithLifecycle()
+        MemorySettingsScreen(
+            state, onBack = back, onShort = vm::setShort, onMedium = vm::setMedium, onLong = vm::setLong, onQuota = vm::setQuota,
+            onEncryption = { vm.setEncryption(it) }, onExport = vm::export, onAskDeleteAll = vm::askDeleteAll, onConfirmDeleteAll = vm::confirmDeleteAll,
+            onCancelDeleteAll = vm::cancelDeleteAll, onOpenReview = { nav.navigate(Routes.SETTINGS_MEMORY_REVIEW) },
+        )
+    }
+
+    composable(Routes.SETTINGS_MEMORY_REVIEW) {
+        val vm = viewModel { ReviewQueueViewModel(deps.memory.memoryEdits, deps.zone) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        ReviewQueueScreen(state, onBack = back, onKeep = { vm.keep(it) })
     }
 }

@@ -38,7 +38,7 @@ object Routes {
     fun promptHistory(id: String) = "settings/prompts/${enc(id)}/history"
 
     /** Settings rows that open a screen in this build; Phase 6/7 rows (phone inputs, privacy, sources, actions) stay "Coming soon". */
-    val LIVE_SETTINGS: Set<String> = setOf(SETTINGS_GLASSES, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL, SETTINGS_DIAGNOSTICS)
+    val LIVE_SETTINGS: Set<String> = setOf(SETTINGS_GLASSES, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS)
 
     enum class Tab(val route: String, val label: String) { HOME("home", "Home"), ACTIVITY("activity", "Activity"), SETTINGS("settings", "Settings") }
 

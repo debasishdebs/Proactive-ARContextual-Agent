@@ -11,13 +11,18 @@ import java.util.Locale
 object RokidFrameInbox {
     private const val TAG = "RokidFrameInbox"
     private val supportedExt = setOf("jpg", "jpeg", "png", "webp")
+    private const val INBOX_DIR = "rokid_inbox"
+    private const val ARCHIVE_DIR = "rokid_archive"
+
+    /** Every app-private folder (under filesDir) that holds frame JPEGs: the one list storage use and Delete all read. */
+    val FRAME_DIRS: List<String> = listOf(ARCHIVE_DIR, INBOX_DIR)
 
     fun inboxDir(context: Context): File {
-        return File(context.filesDir, "rokid_inbox")
+        return File(context.filesDir, INBOX_DIR)
     }
 
     fun archiveDir(context: Context): File {
-        return File(context.filesDir, "rokid_archive")
+        return File(context.filesDir, ARCHIVE_DIR)
     }
 
     suspend fun ingestPending(context: Context, maxItems: Int = 8): Int {
