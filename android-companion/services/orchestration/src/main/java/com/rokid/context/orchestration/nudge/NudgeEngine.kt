@@ -1,6 +1,7 @@
 package com.rokid.context.orchestration.nudge
 
 import android.util.Log
+import androidx.room.withTransaction
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.ai.contract.NudgeOutput
 import com.rokid.context.ai.contract.PromptKey
@@ -12,6 +13,7 @@ import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.ProposalOrigin
 import com.rokid.context.memory.db.NudgeEntity
 import com.rokid.context.memory.db.SummaryTraceEntity
+import com.rokid.context.memory.forget.ForgetFence
 import com.rokid.context.orchestration.AskSources
 import com.rokid.context.orchestration.AskText
 import java.util.UUID
@@ -22,6 +24,8 @@ sealed interface NudgeRun {
     data object NoMemories : NudgeRun
     data object NotNeeded : NudgeRun
     data object Failed : NudgeRun
+    /** A memory in the prompt or cited was forgotten while the model ran: nothing is written. */
+    data object Forgotten : NudgeRun
     data class Dropped(val gate: Gate) : NudgeRun
     data class Shown(val nudgeId: String) : NudgeRun
 }
@@ -60,12 +64,19 @@ class NudgeEngine(
         val gate = gates.check(text, h, now)
         if (gate != Gate.PASS) return NudgeRun.Dropped(gate)
         val id = "nudge_${UUID.randomUUID()}"
-        memory.nudges.addIgnore(
-            NudgeEntity(
-                id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encode(out.sourceIds),
-                priority = out.priority, hash = NudgeGates.hash(text), shownOn = shownOn(h.verbosity), redacted = false,
-            ),
-        )
+        // Forget fence (integration carry 1): a memory in the prompt or cited forgotten while the model ran means the
+        // text may hold forgotten content, so the nudge is dropped (no row, no proposal). Checked in the insert transaction.
+        val live = memory.db.withTransaction {
+            if (!ForgetFence.allLive(memory.db, prepared.inputIds + out.sourceIds)) return@withTransaction false
+            memory.nudges.addIgnore(
+                NudgeEntity(
+                    id = id, ts = now, text = text, why = AskText.collapse(out.why).take(MAX_WHY), sourceIdsJson = AskSources.encode(out.sourceIds),
+                    priority = out.priority, hash = NudgeGates.hash(text), shownOn = shownOn(h.verbosity), redacted = false,
+                ),
+            )
+            true
+        }
+        if (!live) return NudgeRun.Forgotten
         out.proposedAction?.let { intake.onProposed(ProposalOrigin.NUDGE, id, it, now) }
         return NudgeRun.Shown(id)
     }
