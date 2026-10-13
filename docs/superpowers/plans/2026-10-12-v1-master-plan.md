@@ -51,7 +51,7 @@ Inputs/conditions the spec implies but does not spell out; each is pinned by a t
 | 5 AI + Settings | `2026-10-12-v1-phase5-ai-settings.md` | written | 2, 4 |
 | 6 Voice + answers | `2026-10-12-v1-phase6-voice-answers.md` | written | 0, 3, 5 |
 | 7 Nudges, actions, sources, pause, onboarding | to be written after 6 | — | 3, 5, 6 |
-| 8 Hardening | to be written after 7 | — | all |
+| 8 Hardening | `2026-10-12-v1-phase8-hardening.md` (5 parallel streams A–E; E merges after 7) | written | all (A–D parallel with 7) |
 
 Task references are `Phase.Task` (e.g. 2.6 = Phase 2 Task 6); every detailed task also carries a `**Requirements:**` line. Phases 3–8 get their own detailed plan (same header/format, bite-sized TDD steps) when their prerequisites are done, because their concrete values (CXR message limit, TTS route, STT behaviour, final DAO shapes) come from earlier phases. Each later plan MUST cite R-IDs per task and MUST cover the R-IDs assigned to it below.
 
