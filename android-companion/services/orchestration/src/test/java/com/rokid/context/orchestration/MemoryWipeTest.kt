@@ -10,6 +10,7 @@ import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.legacy.LegacyImporter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -151,13 +152,24 @@ class MemoryWipeTest {
         assertFalse(WipeFence.mutex.isLocked)
     }
 
-    /** Fix round 1 I2: a frame written after the fence mark (no row yet) is not part of the wipe. */
-    @Test fun aFrameStoredBetweenTheFenceMarkAndTheDeletionSurvives() = runBlocking<Unit> {
+    /** Fix round 2 I2: a file already in the inbox when the fence is marked goes, whatever its stamp says. */
+    @Test fun aPreWipeInboxFileWithAFutureStampIsDeleted() = runBlocking<Unit> {
         val inbox = File(ctx.filesDir, "rokid_inbox").apply { mkdirs() }
-        val before = File(inbox, "rokid_1_a.jpg").apply { writeBytes(byteArrayOf(1)); setLastModified(System.currentTimeMillis() - 60_000) }
-        val after = File(inbox, "rokid_2_b.jpg").apply { writeBytes(byteArrayOf(2)); setLastModified(System.currentTimeMillis() + 60_000) }
+        val future = File(inbox, "rokid_2_b.jpg").apply { writeBytes(byteArrayOf(2)); setLastModified(System.currentTimeMillis() + 60_000) }
         MemoryWipe.deleteAll(ctx)
-        assertFalse(before.exists())
+        assertFalse(future.exists())
+    }
+
+    /** Fix round 1/2 I2: a frame stored after the fence mark (outside the snapshot, stamped after it) survives the wipe. */
+    @Test fun aFrameStoredAfterTheFenceMarkSurvives() = runBlocking<Unit> {
+        val inbox = File(ctx.filesDir, "rokid_inbox").apply { mkdirs() }
+        File(ctx.filesDir, WipeFence.FILE).delete()
+        WipeFence.mutex.lock() // the wipe marks its fence, then waits here before deleting files
+        val wipe = launch(Dispatchers.IO) { MemoryWipe.deleteAll(ctx) }
+        while (WipeFence.lastStartedAtMs(ctx.filesDir) == null) Thread.sleep(5)
+        val after = File(inbox, "rokid_3_c.jpg").apply { writeBytes(byteArrayOf(3)); setLastModified(System.currentTimeMillis() + 1_000) }
+        WipeFence.mutex.unlock()
+        wipe.join()
         assertTrue(after.exists())
         after.delete()
     }
