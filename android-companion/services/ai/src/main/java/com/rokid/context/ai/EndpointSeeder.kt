@@ -31,14 +31,21 @@ class InMemorySeedState : SeedState {
  */
 class EndpointSeeder(private val endpoints: EndpointRepository, private val bindings: RoleBindingRepository, private val state: SeedState) {
     /**
-     * Never throws, apart from [CancellationException]. Legacy config the new validation rejects (an
-     * [IllegalArgumentException] from [EndpointRules]/[UrlNormalizer], e.g. an http remote endpoint with a key) returns
+     * Never throws, apart from [CancellationException]. Legacy config the new validation rejects (checked first by
+     * [rejection] against [EndpointRules]/[UrlNormalizer], e.g. an http remote endpoint with a key) returns
      * the failure, logs one short line without the key, marks the seed done so it is not retried on every start (P8 D1),
      * and leaves the roles unbound (the router reports "No model is set"). Any other failure (an I/O or Keystore error)
      * is retried on the next start.
      */
     suspend fun seedIfNeeded(settings: ProviderSettings): Result<Unit> {
         if (state.isDone()) return Result.success(Unit)
+        // Fix round 1: validate first, with no I/O. Only this rejection is permanent; an IllegalArgumentException from
+        // anywhere else (a DAO, a binding) is retried like any other failure.
+        rejection(settings)?.let { e ->
+            Log.w(TAG, "AI seed rejected the legacy config: ${SafeLog.describe(e)}")
+            state.markDone()
+            return Result.failure(e)
+        }
         return try {
             apply(settings)
             state.markDone()
@@ -47,10 +54,25 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "AI seed not finished: ${SafeLog.describe(e)}")
-            if (e is IllegalArgumentException) state.markDone()
             Result.failure(e)
         }
     }
+
+    /** What [EndpointRules]/[UrlNormalizer] reject in the endpoints [apply] would create, or null when they pass. */
+    private fun rejection(settings: ProviderSettings): Throwable? {
+        val desired = desired(settings, 0L)
+        val rawKey = if (desired.kind in EndpointRules.KEYLESS) null else settings.apiKey.ifBlank { null }
+        val key = rawKey?.let { UrlNormalizer.cleanKey(it) }
+        key?.exceptionOrNull()?.let { return it }
+        EndpointRules.clean(desired, hasKey = key != null).exceptionOrNull()?.let { return it }
+        if (settings.localModeEnabled && settings.nativeModelPath.isNotBlank() && desired.id != LOCAL_ID) {
+            EndpointRules.clean(localEndpoint(settings, 0L), hasKey = false).exceptionOrNull()?.let { return it }
+        }
+        return null
+    }
+
+    private fun localEndpoint(settings: ProviderSettings, now: Long) =
+        Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null, listOf("local"), setOf(Capability.CHAT), now)
 
     /**
      * Whether the legacy key may be deleted (T21 F23 + fix round 1). Only once the seed is done:
@@ -111,7 +133,7 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
             ?: endpoints.save(desired, apiKey = apiKey).getOrThrow()
         val local = if (settings.localModeEnabled && settings.nativeModelPath.isNotBlank() && primary.id != LOCAL_ID) {
             endpoints.byId(LOCAL_ID)
-                ?: endpoints.save(Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null, listOf("local"), setOf(Capability.CHAT), now), apiKey = null).getOrThrow()
+                ?: endpoints.save(localEndpoint(settings, now), apiKey = null).getOrThrow()
         } else null
         val model = primary.models.firstOrNull().orEmpty()
         for (role in Role.entries) {

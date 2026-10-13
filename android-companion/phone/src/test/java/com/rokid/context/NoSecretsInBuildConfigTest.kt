@@ -39,7 +39,14 @@ class NoSecretsInBuildConfigTest {
         assertTrue(secretValue.containsMatchIn("https://u:p@h"))
         assertTrue(secretValue.containsMatchIn("https://h/?key=x"))
         assertTrue(secretValue.containsMatchIn("https://h/v1?alt=1&api_key=x"))
+        // Fix round 1: these three in any position (query, fragment, path parameter).
+        listOf("access_token", "subscription-key", "client_secret").forEach { n ->
+            listOf("https://h/?$n=x", "https://h/?a=1&$n=x", "https://h/cb#$n=x", "https://h/p;$n=x", "$n=x").forEach { v ->
+                assertTrue(v, secretValue.containsMatchIn(v))
+            }
+        }
         assertFalse(secretValue.containsMatchIn("http://10.0.2.2:11434"))
+        assertFalse(secretValue.containsMatchIn("https://h/access_tokens/list"))
         assertFalse(secretValue.containsMatchIn("https://res.openai.azure.com"))
     }
 

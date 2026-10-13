@@ -26,7 +26,7 @@ fun envOrDefault(key: String, default: String): String = env[key].orEmpty().ifBl
 
 // No API key or other secret may be compiled into the APK; keys live only in the on-device KeyVault.
 val secretName = Regex("(?i)(KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)")
-val secretValue = Regex("(?i)(://[^/@\\s]+@|[?&](key|api[-_]?key|token|sig|code|password)=)")
+val secretValue = Regex("(?i)(://[^/@\\s]+@|[?&](key|api[-_]?key|token|sig|code|password)=|(^|[^a-z0-9])(access[-_]?token|subscription[-_]?key|client[-_]?secret)=)")
 
 android {
     namespace = "com.rokid.context"
