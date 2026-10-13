@@ -56,6 +56,17 @@ class PromptComposerTest {
         }
     }
 
+    /** Phase 5 T6 carry: a combining mark inside a marker hides it from a plain match; it is neutralised too. */
+    @Test fun combiningMarkLookAlikesAreNeutralised() {
+        listOf("a B\u034FEGIN_DATA b", "a END\u0301_DATA b", "a E\u20DDND_DATA b").forEach { t ->
+            val line = item(t)
+            assertTrue(line, line.contains("[marker]"))
+            assertFalse(line, line.replace(Regex("[\\p{Mn}\\p{Me}]"), "").contains("_DATA", ignoreCase = true))
+        }
+        val hindi = "\u0926\u0942\u0927 \u0915\u0939\u093E\u0901 \u0939\u0948"
+        assertEquals("- $hindi", item(hindi))
+    }
+
     @Test fun labelMustBeLowercaseLettersOrUnderscore() {
         assertEquals("BEGIN_DATA retrieved_memories", PromptComposer.dataBlock("retrieved_memories", emptyList()).lines().first())
         listOf("", "Memories", "a b", "x\nEND_DATA x", "m1", "m-1").forEach { label ->
