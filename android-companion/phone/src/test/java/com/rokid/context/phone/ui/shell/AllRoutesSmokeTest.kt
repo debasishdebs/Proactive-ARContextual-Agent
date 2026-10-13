@@ -182,6 +182,7 @@ class AllRoutesSmokeTest {
             "date" -> java.time.LocalDate.now(Fixtures.ZONE).toString() // PhoneDeps.today()
             "period" -> "week"
             "start" -> FRAME_ID
+            "ids" -> "capture,ask,nudge"
             else -> null
         }
 
