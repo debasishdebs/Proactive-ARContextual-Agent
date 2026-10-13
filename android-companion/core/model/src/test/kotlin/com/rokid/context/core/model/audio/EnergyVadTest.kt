@@ -51,4 +51,22 @@ class EnergyVadTest {
         assertEquals(VadDecision.CONTINUE, vad.feed(ByteArray(0)))
         assertEquals(100L, Pcm.millis(Pcm.CHUNK_BYTES.toLong()))
     }
+
+    /** A trailing odd byte is not a sample: it is dropped, never read past, and adds no time. */
+    @Test fun anOddByteCountIgnoresTheTrailingByte() {
+        val vad = EnergyVad()
+        assertEquals(VadDecision.CONTINUE, vad.feed(ByteArray(1)))
+        repeat(5) { assertEquals(VadDecision.CONTINUE, vad.feed(chunk(4_000) + 0x7F)) }
+        repeat(14) { assertEquals(VadDecision.CONTINUE, vad.feed(chunk(0) + 0x7F)) }
+        assertEquals(VadDecision.END_OF_SPEECH, vad.feed(chunk(0) + 0x7F))
+    }
+
+    /** RMS of a sine is about amp / sqrt(2): amp 424 is RMS ~299.5 (silence), amp 425 is RMS ~300.2 (speech). */
+    @Test fun aSineJustUnderTheRmsThresholdIsSilence() {
+        val under = EnergyVad()
+        repeat(49) { assertEquals(VadDecision.CONTINUE, under.feed(chunk(424))) }
+        assertEquals(VadDecision.NO_SPEECH, under.feed(chunk(424)))
+        val at = EnergyVad()
+        repeat(50) { assertEquals(VadDecision.CONTINUE, at.feed(chunk(425))) }
+    }
 }
