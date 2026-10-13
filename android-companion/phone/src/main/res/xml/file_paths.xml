@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <cache-path name="exports" path="exports/" />
+    <!-- Phone "Capture now" (R-66): the camera app writes the full-size photo here (cache/capture), write grant per shot. -->
+    <cache-path name="capture" path="capture/" />
 </paths>

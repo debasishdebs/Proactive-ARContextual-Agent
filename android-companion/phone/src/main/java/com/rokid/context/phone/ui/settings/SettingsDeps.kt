@@ -22,7 +22,10 @@ import com.rokid.context.phone.ui.status.StorageUsage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -66,6 +69,10 @@ class SettingsDeps(
     val voice: com.rokid.context.phone.voice.VoiceControls = com.rokid.context.phone.voice.VoiceControls.None,
     /** This app's system settings page (a microphone denied with "don't ask again"). */
     val openAppSettings: () -> Unit = {},
+    /** Settings › Data sources (Phase 7 C2). */
+    val sources: com.rokid.context.phone.ui.settings.connectors.SourcesControl = com.rokid.context.phone.ui.settings.connectors.SourcesControl.None,
+    /** Settings › Phone camera & mic "Capture now" (Phase 7 C2). */
+    val capture: com.rokid.context.phone.capture.CaptureNowControl = com.rokid.context.phone.capture.CaptureNowControl.None,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -106,6 +113,23 @@ class SettingsDeps(
                     .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                 runCatching { app.startActivity(intent) }.onFailure { Log.i("Settings", "app settings unavailable (${it.javaClass.simpleName})") }
             },
+            sources = AppSources(app),
+            capture = HubGraph.get(app).let { hub ->
+                val paused = hub.activePauses.map { it.isNotEmpty() }.stateIn(scope, SharingStarted.Eagerly, hub.activePauses.value.isNotEmpty())
+                com.rokid.context.phone.capture.PhoneCaptureControl(app, paused)
+            },
         )
+    }
+}
+
+/** Settings › Data sources over the process-wide sources graph; the store is first read off Main by the ViewModel. */
+private class AppSources(private val app: Context) : com.rokid.context.phone.ui.settings.connectors.SourcesControl {
+    private val graph get() = com.rokid.context.connectors.sources.SourcesGraph.get(app)
+    override val enabled get() = graph.settings.enabled
+    override val nudgesPerDay get() = graph.settings.nudgesPerDay
+    override fun set(k: com.rokid.context.connectors.sources.SourceKind, on: Boolean) = graph.settings.set(k, on)
+    override fun setNudgesPerDay(n: Int) = graph.settings.setNudgesPerDay(n)
+    override fun granted(k: com.rokid.context.connectors.sources.SourceKind) = com.rokid.context.connectors.sources.SourcePermissions.of(k).all {
+        androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 }

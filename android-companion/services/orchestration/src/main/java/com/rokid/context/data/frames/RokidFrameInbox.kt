@@ -25,7 +25,8 @@ object RokidFrameInbox {
         return File(context.filesDir, ARCHIVE_DIR)
     }
 
-    suspend fun ingestPending(context: Context, maxItems: Int = 8): Int {
+    /** [placeLabel]: a rough place for every frame of this run (Phase 7 C2; null unless Location is on and granted). */
+    suspend fun ingestPending(context: Context, maxItems: Int = 8, placeLabel: String? = null): Int {
         val inbox = inboxDir(context)
         if (!inbox.exists()) inbox.mkdirs()
         val archive = archiveDir(context)
@@ -46,17 +47,17 @@ object RokidFrameInbox {
             val archived = File(archive, "${System.currentTimeMillis()}_${file.name}")
             val moved = runCatching { file.renameTo(archived) }.getOrDefault(false)
             val sourceFile = if (moved) archived else file
-            val ok = ingestFile(context, sourceFile, source = "rokid_glasses")
+            val ok = ingestFile(context, sourceFile, source = "rokid_glasses", placeLabel = placeLabel)
             if (ok) imported += 1
         }
         return imported
     }
 
-    suspend fun ingestSinglePath(context: Context, absolutePath: String, source: String = "rokid_glasses"): Boolean {
+    suspend fun ingestSinglePath(context: Context, absolutePath: String, source: String = "rokid_glasses", placeLabel: String? = null): Boolean {
         val file = File(absolutePath)
         if (!file.exists() || !file.isFile) return false
         if (extOf(file.name) !in supportedExt) return false
-        return ingestFile(context, file, source)
+        return ingestFile(context, file, source, placeLabel)
     }
 
     private fun extOf(name: String): String = name.substringAfterLast('.', "").lowercase(Locale.US)
@@ -64,7 +65,7 @@ object RokidFrameInbox {
     // Full archived file name (<archiveMs>_rokid_<rxMs>_<id>): unique per file. Never truncate, ids only dedupe via insertIgnore.
     private fun frameIdOf(file: File): String = file.nameWithoutExtension.ifBlank { "rokid_frame" }
 
-    private suspend fun ingestFile(context: Context, file: File, source: String): Boolean {
+    private suspend fun ingestFile(context: Context, file: File, source: String, placeLabel: String? = null): Boolean {
         val frameId = frameIdOf(file)
         val payload = "rokid_file=${file.name} bytes=${file.length()}"
         Log.i(TAG, "ingestFile path=${file.absolutePath} source=$source exists=${file.exists()} size=${file.length()}")
@@ -76,6 +77,7 @@ object RokidFrameInbox {
                 path = file.absolutePath,
                 source = source,
                 payload = payload,
+                placeLabel = placeLabel,
             ),
         )
         Log.i(TAG, "append result=$appended frameId=$frameId")

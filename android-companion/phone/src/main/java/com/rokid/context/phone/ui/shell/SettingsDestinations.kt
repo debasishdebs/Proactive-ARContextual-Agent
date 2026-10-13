@@ -72,7 +72,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_PHONE_INPUTS) {
-        val vm = viewModel { PhoneInputsViewModel(s.voice) }
+        val vm = viewModel { PhoneInputsViewModel(s.voice, s.capture) }
         val state by vm.state.collectAsStateWithLifecycle()
         val activity = LocalContext.current.findActivity()
         val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -84,6 +84,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             state, onBack = back, onAllowMic = { mic.launch(Manifest.permission.RECORD_AUDIO) }, onDownload = vm::download,
             onOpenSettings = vm::openSettings, onRecheck = vm::recheck, onLanguage = vm::setLanguage, onPhoneMic = vm::setPhoneMic,
             onOpenAppSettings = s.openAppSettings, onResume = vm::onResume,
+            onCaptureNow = vm::captureNow, onPictureTaken = vm::onPictureTaken,
         )
     }
 
@@ -187,7 +188,10 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_PRIVACY) { PrivacyRoute(s, back) }
-    composable(Routes.SETTINGS_SOURCES) { SourcesRoute(s, back) }
+    composable(Routes.SETTINGS_SOURCES) {
+        val activity = LocalContext.current.findActivity()
+        SourcesRoute(s, back) { p -> activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, p) } ?: true }
+    }
     composable(Routes.SETTINGS_ACTIONS) { ActionsRoute(s, back, openShopping = { nav.navigate(Routes.SETTINGS_SHOPPING) }) }
     composable(Routes.SETTINGS_SHOPPING) { ShoppingRoute(s, back) }
 

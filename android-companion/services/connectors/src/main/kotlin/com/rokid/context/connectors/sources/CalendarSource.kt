@@ -17,7 +17,7 @@ data class CalendarEvent(val title: String, val beginMs: Long, val endMs: Long, 
  */
 class CalendarSource(private val zone: ZoneId, private val events: suspend (Long, Long) -> List<CalendarEvent>) : ContextSource {
     override val kind = SourceKind.CALENDAR
-    override val permissions = listOf(android.Manifest.permission.READ_CALENDAR)
+    override val permissions = SourcePermissions.of(SourceKind.CALENDAR)
 
     override suspend fun lines(question: String?, nowMs: Long): List<String> {
         val to = nowMs + DAY_MS
