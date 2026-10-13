@@ -5,6 +5,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -48,5 +49,37 @@ class StateBroadcasterTest {
         b.markDirty(); advanceTimeBy(300)
         assertEquals(2, calls)
         assertEquals(1, errors.size)
+    }
+
+    /** Phase 8 C5: an error handler that throws must not end the loop (the HUD would freeze). */
+    @Test fun aThrowingOnErrorDoesNotStopBroadcasting() = runTest {
+        var calls = 0
+        val logs = mutableListOf<String>()
+        val b = StateBroadcaster(
+            this, heartbeatMs = 60_000, onError = { throw IllegalStateException("handler") }, log = { logs += it },
+        ) { calls++; if (calls == 1) error("link down") }
+        val job = b.start()
+        b.markDirty(); runCurrent()
+        advanceTimeBy(300)
+        b.markDirty(); advanceTimeBy(300)
+        assertEquals(2, calls)
+        assertEquals(1, logs.size)
+        assertTrue(logs.single(), "IllegalStateException" in logs.single())
+        assertFalse("handler" in logs.single())
+        job.cancel()
+    }
+
+    /** Cancelling mid-send ends the loop and is not reported as a send error. */
+    @Test fun cancellationStillStopsTheLoop() = runTest {
+        var calls = 0
+        val errors = mutableListOf<Throwable>()
+        val b = StateBroadcaster(this, heartbeatMs = 60_000, onError = { errors += it }) { calls++; delay(100) }
+        val job = b.start()
+        b.markDirty(); runCurrent()
+        job.cancel(); runCurrent()
+        b.markDirty(); advanceTimeBy(1_000)
+        assertEquals(1, calls)
+        assertEquals(emptyList<Throwable>(), errors)
+        assertTrue(job.isCancelled)
     }
 }
