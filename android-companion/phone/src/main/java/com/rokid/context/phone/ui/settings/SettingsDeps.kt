@@ -121,7 +121,7 @@ class SettingsDeps(
             pauses = com.rokid.context.phone.ui.status.CapturePauses.control(app),
             sources = AppSources(app),
             capture = com.rokid.context.phone.capture.PhoneCaptureControl(
-                app, com.rokid.context.phone.capture.PhoneCaptureControl.storedPauses({ MemoryGraph.get(app).db.pauseDao() }) { HubGraph.get(app).hudSettings.value.quietHours },
+                app, com.rokid.context.phone.capture.PhoneCaptureControl.storedPauses({ MemoryGraph.get(app).db.pauseDao() }, quietHours = { HubGraph.get(app).hudSettings.value.quietHours }),
             ),
             lazyActions = lazy { com.rokid.context.connectors.actions.ActionsGraph.get(app) },
         )
