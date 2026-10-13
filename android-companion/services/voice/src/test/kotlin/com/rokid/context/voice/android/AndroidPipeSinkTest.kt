@@ -124,11 +124,11 @@ class AndroidPipeSinkTest {
         sink.close(); read.close()
     }
 
-    /** Task 6 Step 1: the phase 0 clip ("what do I need from the store", macOS `say`, 16 kHz mono PCM16 + 3 s of silence). */
+    /** Task 6 Step 1: LJSpeech LJ001-0013 ("than in the same operations with ugly ones.", public domain), 16 kHz mono PCM16 + silence. */
     @Test fun theProbeClipIsBundledVerbatim() {
         val bytes = ctx.assets.open(ExternalAudioProbe.ASSET).use { it.readBytes() }
         assertEquals(134_142, bytes.size)
         val sha = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-        assertEquals("09dbcaebf6fc6521eb95d678a08ce0a9d3940a22c7b55493f2db0bbb8e42f34a", sha)
+        assertEquals("ceee25a814f40c58a3758eec605c7af951842802917f4a720346641bb8073c33", sha)
     }
 }
