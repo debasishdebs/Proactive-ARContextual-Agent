@@ -31,4 +31,5 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun embeddingDao(): EmbeddingDao
     abstract fun retrievalDao(): RetrievalDao
     abstract fun wipeDao(): WipeDao
+    abstract fun exportDao(): ExportDao
 }
