@@ -51,4 +51,26 @@ class HomeModelTest {
         assertFalse(HomeVoiceUi.from(PhoneVoiceState(status = VoiceStatus.NEEDS_NEWER_ANDROID)).enabled)
         assertEquals("Type a question below, or tap your glasses", HomeVoiceUi().hint)
     }
+
+    /** Fix 1 #2: before the switch loads the mic is disabled and says so, never "off in Settings". */
+    @Test fun whileSettingsLoadTheMicSaysLoadingNotOff() {
+        val loading = HomeVoiceUi.from(PhoneVoiceState(status = VoiceStatus.SUPPORTED, micOff = true, settingsLoading = true))
+        assertFalse(loading.enabled); assertFalse(loading.micOff)
+        assertEquals("Voice is still loading\u2026", loading.hint)
+    }
+
+    /** Fix 1 #3: thinking is cancellable and keeps the error and the mic switch. */
+    @Test fun thinkingIsCancellableAndKeepsErrorAndMicOff() {
+        val t = HomeVoiceUi.from(PhoneVoiceState(status = VoiceStatus.SUPPORTED, thinking = true, error = "e", micOff = true))
+        assertTrue(t.enabled && t.thinking); assertFalse(t.listening)
+        assertEquals("e", t.error); assertTrue(t.micOff)
+    }
+
+    /** Fix 1 #4: a permanently denied mic points at the app's settings. */
+    @Test fun aBlockedMicPointsAtAppSettings() {
+        val b = HomeVoiceUi.from(PhoneVoiceState(status = VoiceStatus.NEEDS_MIC_PERMISSION), micBlocked = true)
+        assertTrue(b.enabled && b.needsPermission && b.blocked)
+        assertEquals(HomeVoiceUi.HINT_BLOCKED, b.hint)
+        assertFalse(HomeVoiceUi.from(PhoneVoiceState(status = VoiceStatus.SUPPORTED), micBlocked = true).blocked)
+    }
 }

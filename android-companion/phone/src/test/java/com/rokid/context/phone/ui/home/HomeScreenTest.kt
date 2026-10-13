@@ -145,4 +145,55 @@ class HomeScreenTest {
         show(HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, hint = "or tap your glasses", error = "Couldn't hear that \u2014 try again")))
         compose.onNodeWithText("Couldn't hear that \u2014 try again").assertIsDisplayed()
     }
+
+    /** Fix 1 #3: while thinking the mic button cancels. */
+    @Test fun whileThinkingTheMicCancels() {
+        var mics = 0
+        compose.setContent {
+            PcTheme {
+                HomeScreen(
+                    HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, thinking = true, hint = HomeVoiceUi.HINT_THINKING)),
+                    onQuestionChange = {}, onAsk = {}, onOpenAsk = {}, onTogglePause = {}, onBannerAction = {}, onMic = { mics++ },
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Cancel").performClick()
+        assertEquals(1, mics)
+    }
+
+    /** Fix 1 #4: a blocked mic opens the app's settings. */
+    @Test fun aBlockedMicOpensAppSettings() {
+        var opened = 0
+        var requests = 0
+        compose.setContent {
+            PcTheme {
+                HomeScreen(
+                    HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, needsPermission = true, blocked = true, hint = HomeVoiceUi.HINT_BLOCKED)),
+                    onQuestionChange = {}, onAsk = {}, onOpenAsk = {}, onTogglePause = {}, onBannerAction = {},
+                    onRequestMic = { requests++ }, onOpenAppSettings = { opened++ },
+                )
+            }
+        }
+        compose.onNodeWithText(HomeVoiceUi.HINT_BLOCKED).assertIsDisplayed()
+        compose.onNodeWithText("Open app settings").performClick()
+        compose.onNodeWithContentDescription("Ask by voice").performClick()
+        assertEquals(2, opened); assertEquals(0, requests)
+    }
+
+    /** Fix 1 #1: Home leaving the screen tells the caller (which cancels a listen). */
+    @Test fun leavingHomeIsReported() {
+        var left = 0
+        val shown = androidx.compose.runtime.mutableStateOf(true)
+        compose.setContent {
+            PcTheme {
+                if (shown.value) HomeScreen(
+                    HomeUiState(status = live), onQuestionChange = {}, onAsk = {}, onOpenAsk = {}, onTogglePause = {}, onBannerAction = {},
+                    onLeave = { left++ },
+                )
+            }
+        }
+        compose.waitForIdle(); assertEquals(0, left)
+        shown.value = false
+        compose.waitForIdle(); assertEquals(1, left)
+    }
 }
