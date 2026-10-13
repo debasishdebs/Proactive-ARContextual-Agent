@@ -66,7 +66,7 @@ fun FlowViewRoute(
     }
 }
 
-/** One tab per facet, in the node's facet order. Model and Retrieval are labelled as shared: they belong to a role or the app. */
+/** One tab per facet, in the node's facet order. Model and Retrieval are labelled as shared (they belong to a role or the app), and so is a prompt that several steps use. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StepSheet(
@@ -103,7 +103,13 @@ private fun Pad(content: @Composable () -> Unit) = Column(Modifier.padding(horiz
 
 @Composable
 private fun PromptTab(key: PromptKey, prompt: PromptUi?, onOpenEditor: (PromptKey) -> Unit) = Pad {
-    Text(key.label, style = MaterialTheme.typography.titleMedium)
+    val users = AgentFlows.nodesUsing(key).map { it.second.title }
+    if (users.size > 1) {
+        Text("Prompt ${key.label} \u00b7 shared by ${users.size} steps", style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("step_prompt_header"))
+        Text("Used by: ${users.distinct().joinToString(", ")}", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, modifier = Modifier.testTag("step_prompt_users"))
+    } else {
+        Text(key.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("step_prompt_header"))
+    }
     Text(prompt?.let { "Active v${it.version}" } ?: FacetText.prompt(null), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("step_prompt_version"))
     val vars = prompt?.variables.orEmpty()
     Text("Variables: " + if (vars.isEmpty()) "none" else vars.joinToString(", ") { "{{$it}}" },

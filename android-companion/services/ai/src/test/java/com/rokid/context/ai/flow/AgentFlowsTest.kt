@@ -76,6 +76,13 @@ class AgentFlowsTest {
         assertEquals(listOf(AgentFlows.CAPTURE to "Embed", AgentFlows.ASK to "Search memories"), used)
     }
 
+    @Test fun nodesUsingPromptKeyListsEveryStepSharingThePrompt() {
+        val titles = { k: PromptKey -> AgentFlows.nodesUsing(k).map { (f, n) -> f.id to n.title } }
+        assertEquals(listOf(AgentFlows.CAPTURE to "Critic", AgentFlows.CAPTURE to "Critic review"), titles(PromptKey.CRITIC))
+        assertEquals(listOf(AgentFlows.CAPTURE to "Reprocess", AgentFlows.CAPTURE to "Re-summarise derived memories"), titles(PromptKey.SUMMARIZE))
+        assertEquals(listOf(AgentFlows.ASK to "Answer"), titles(PromptKey.ANSWER))
+    }
+
     @Test fun aiStepsAreTheNodesWithFacets() {
         val ask = AgentFlows.byId(AgentFlows.ASK)!!
         assertEquals(listOf("search", "answer"), ask.nodes.filter { it.isAiStep }.map { it.id })

@@ -1,6 +1,7 @@
 package com.rokid.context.ai.flow
 
 import com.rokid.context.ai.Role
+import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.flow.flows.AskFlow
 import com.rokid.context.ai.flow.flows.CaptureFlow
 import com.rokid.context.ai.flow.flows.NudgeFlow
@@ -18,4 +19,8 @@ object AgentFlows {
     /** Every (flowId, node) that has Facet.Model(role) - for "shared by N steps". */
     fun nodesUsing(role: Role): List<Pair<AgentFlow, FlowNode>> =
         all.flatMap { f -> f.nodes.filter { Facet.Model(role) in it.facets }.map { f to it } }
+
+    /** Every (flowId, node) that has Facet.Prompt(key) - a prompt is shared when several steps use the same key. */
+    fun nodesUsing(key: PromptKey): List<Pair<AgentFlow, FlowNode>> =
+        all.flatMap { f -> f.nodes.filter { Facet.Prompt(key) in it.facets }.map { f to it } }
 }

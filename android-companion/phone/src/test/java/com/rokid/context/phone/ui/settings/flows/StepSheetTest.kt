@@ -191,6 +191,20 @@ class StepSheetTest {
         node("step_model_users").assertTextEquals("Used by: Embed, Search memories")
     }
 
+    @Test fun criticPromptTabSaysSharedAndListsBothSteps() {
+        host("capture")
+        open("capture", "critic")
+        node("step_prompt_header").assertTextEquals("Prompt Critic \u00b7 shared by 2 steps")
+        node("step_prompt_users").assertTextEquals("Used by: Critic, Critic review")
+    }
+
+    @Test fun answerPromptTabHasNoSharedLabel() {
+        host("ask")
+        open("ask", "answer")
+        node("step_prompt_header").assertTextEquals("Answer")
+        assertEquals(false, exists("step_prompt_users"))
+    }
+
     @Test fun retrievalHeaderSaysShared() {
         host("ask")
         open("ask", "search")
