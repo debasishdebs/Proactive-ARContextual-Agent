@@ -108,4 +108,41 @@ class HomeScreenTest {
         compose.onNodeWithText("Milk is almost empty.").performClick()
         assertEquals(listOf("a9"), opened)
     }
+
+    @Test fun whileListeningTheMicSendsAndShowsWhatWasHeard() {
+        var mics = 0
+        compose.setContent {
+            PcTheme {
+                HomeScreen(
+                    HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, listening = true, partial = "where are my", hint = "Listening\u2026 tap the mic to send")),
+                    onQuestionChange = {}, onAsk = {}, onOpenAsk = {}, onTogglePause = {}, onBannerAction = {}, onMic = { mics++ },
+                )
+            }
+        }
+        compose.onNodeWithText("\u201cwhere are my\u201d").assertIsDisplayed()
+        compose.onNodeWithText("Listening\u2026 tap the mic to send").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Stop and send").performClick()
+        assertEquals(1, mics)
+    }
+
+    @Test fun aMissingPermissionAsksForItInsteadOfListening() {
+        var requests = 0
+        var mics = 0
+        compose.setContent {
+            PcTheme {
+                HomeScreen(
+                    HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, needsPermission = true, hint = "Allow the microphone to ask by voice")),
+                    onQuestionChange = {}, onAsk = {}, onOpenAsk = {}, onTogglePause = {}, onBannerAction = {}, onMic = { mics++ }, onRequestMic = { requests++ },
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Ask by voice").performClick()
+        assertEquals(1, requests); assertEquals(0, mics)
+        compose.onNodeWithText("Allow the microphone to ask by voice").assertIsDisplayed()
+    }
+
+    @Test fun aVoiceProblemShowsItsFixedText() {
+        show(HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, hint = "or tap your glasses", error = "Couldn't hear that \u2014 try again")))
+        compose.onNodeWithText("Couldn't hear that \u2014 try again").assertIsDisplayed()
+    }
 }

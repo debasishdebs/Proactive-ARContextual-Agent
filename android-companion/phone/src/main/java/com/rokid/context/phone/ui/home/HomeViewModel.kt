@@ -14,6 +14,7 @@ import com.rokid.context.phone.ui.status.BannerActions
 import com.rokid.context.phone.ui.status.PipelineControl
 import com.rokid.context.phone.ui.banner.IndexState
 import com.rokid.context.phone.ui.status.StatusUi
+import com.rokid.context.phone.voice.PhoneVoice
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +22,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -42,10 +44,16 @@ class HomeViewModel(
     storagePct: Flow<Int?>,
     private val zone: () -> ZoneId,
     index: Flow<IndexState> = flowOf(IndexState.NONE),
+    private val voice: PhoneVoice = PhoneVoice.None,
 ) : ViewModel() {
     private data class Local(val question: String = "", val asking: Boolean = false, val error: String? = null, val lastAskId: String? = null)
 
     private val local = MutableStateFlow(Local())
+
+    init {
+        // A phone-mic answer shows inline, like a typed one (spec §2.4).
+        viewModelScope.launch { voice.state.map { it.lastAskId }.filterNotNull().distinctUntilChanged().collect { id -> local.update { it.copy(lastAskId = id) } } }
+    }
     private val today = clock.map { DayBucket.dayOf(it, zone()) }.distinctUntilChanged()
 
     private val feed: Flow<List<FeedItem>> =
@@ -54,7 +62,7 @@ class HomeViewModel(
     private val lastAnswer: Flow<FeedItem.Ask?> = combine(local.map { it.lastAskId }.distinctUntilChanged(), today) { id, d -> id to d }
         .flatMapLatest { (id, d) -> if (id == null) flowOf(null) else asks.observe(id).map { a -> a?.let { Feed.ask(it, d, zone()) } } }
 
-    val state: StateFlow<HomeUiState> = combine(
+    private val base: Flow<HomeUiState> = combine(
         StatusUi.flow(glasses, pipeline, clock, storagePct, index),
         timeline.recentVisibleMemories(20).map(SuggestedQuestions::from),
         feed,
@@ -62,7 +70,10 @@ class HomeViewModel(
         local,
     ) { status, suggestions, items, last, l ->
         HomeUiState(status, suggestions, items, l.question, l.asking, l.error, last)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
+    }
+
+    val state: StateFlow<HomeUiState> = combine(base, voice.state) { s, v -> s.copy(voice = HomeVoiceUi.from(v)) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
     fun onQuestionChange(text: String) = local.update { it.copy(question = text.take(500), error = null) }
 
@@ -84,6 +95,9 @@ class HomeViewModel(
             }
         }
     }
+
+    /** The hero mic: start listening, or send what was heard (works while capture is paused: Ask is a user action). */
+    fun onMic() { if (voice.state.value.listening) voice.stop() else voice.start() }
 
     fun togglePause() = pipeline.toggle()
 

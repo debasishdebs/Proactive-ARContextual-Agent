@@ -1,5 +1,8 @@
 package com.rokid.context.phone.ui.shell
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -55,11 +58,13 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
     }
 
     composable(Routes.HOME) {
-        val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index) }
+        val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index, voice = deps.voice) }
         val state by vm.state.collectAsStateWithLifecycle()
+        val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { deps.onMicGranted() }
         HomeScreen(
             state, onQuestionChange = vm::onQuestionChange, onAsk = { vm.ask(it) }, onOpenAsk = { nav.navigate(Routes.ask(it)) },
             onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
+            onMic = vm::onMic, onRequestMic = { mic.launch(Manifest.permission.RECORD_AUDIO) },
         )
     }
 
