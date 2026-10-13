@@ -13,9 +13,21 @@ data class VoiceInputs(
 )
 
 /** `GLASSES_VOICE` and `PHONE_VOICE` (spec §5.1.1) as statuses the UI can explain. */
-data class VoiceCapabilities(val glasses: VoiceStatus, val phone: VoiceStatus, val canDownloadPack: Boolean) {
-    /** `HudSettings.askBlockedReason`: the HUD toast for tap = Ask, null when glasses voice works. */
-    val askBlockedReason: String? get() = VoiceStatusText.hudReason(glasses)
+data class VoiceCapabilities(
+    val glasses: VoiceStatus,
+    val phone: VoiceStatus,
+    val canDownloadPack: Boolean,
+    /**
+     * Whether the phone app may use the microphone for glasses audio now (the hub's FGS holds the microphone type).
+     * [VoiceCapabilityService] always sets it from the live value; the default only serves hand-built values.
+     */
+    val micHeld: Boolean = true,
+) {
+    /**
+     * `HudSettings.askBlockedReason`: the HUD toast for tap = Ask, null when glasses voice works. A specific status
+     * reason wins; otherwise a mic the hub does not hold blocks the ask (fix round 2).
+     */
+    val askBlockedReason: String? get() = VoiceStatusText.hudReason(glasses) ?: VoiceStatusText.MIC_NOT_HELD_HUD.takeUnless { micHeld }
 
     companion object { val UNKNOWN = VoiceCapabilities(VoiceStatus.CHECKING, VoiceStatus.CHECKING, canDownloadPack = false) }
 }
@@ -62,6 +74,8 @@ object VoiceStatusText {
     const val NOT_SUPPORTED_HUD = "Voice not supported on this phone"
     const val PACK_HUD = "Download speech pack on phone"
     const val MIC_HUD = "Allow the microphone on phone"
+    /** The hub runs without the microphone type (started in the background): opening the app takes it. */
+    const val MIC_NOT_HELD_HUD = "Open Proactive Context on phone to use voice"
 
     fun glasses(s: VoiceStatus): String = when (s) {
         VoiceStatus.NEEDS_NEWER_ANDROID -> "Needs Android 13+ for glasses voice"

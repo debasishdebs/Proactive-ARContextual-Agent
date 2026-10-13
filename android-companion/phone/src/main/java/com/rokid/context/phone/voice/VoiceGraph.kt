@@ -36,7 +36,7 @@ class VoiceGraph private constructor(private val app: Context) {
     val settings = VoiceSettingsStore({ app.getSharedPreferences("voice_settings", Context.MODE_PRIVATE) }, scope)
     val capabilities = VoiceCapabilityService(
         AndroidVoicePlatform(app), PrefsProbeRecords({ app.getSharedPreferences("voice_probe", Context.MODE_PRIVATE) }),
-        language = { settings.settings.value.language }, scope = scope, log = { Log.i(TAG, it) },
+        language = { settings.settings.value.language }, scope = scope, micHeld = ContextHubService.micHeld, log = { Log.i(TAG, it) },
     )
     val pipeline = VoicePipeline(
         scope, AndroidOnDeviceStt(app), capabilities.capabilities, { settings.settings.value.language },
@@ -51,7 +51,7 @@ class VoiceGraph private constructor(private val app: Context) {
     val hubVoice: HubVoice = PipelineHubVoice(pipeline, capabilities.capabilities, scope)
     val phoneVoice: PhoneVoice = PipelinePhoneVoice(pipeline, settings.loadedSettings(scope), scope)
     val controls: VoiceControls = StoreVoiceControls(
-        settings, capabilities, scope, onForeground = ::onForeground,
+        settings, capabilities, scope, onForeground = { onForeground() },
         download = { tag ->
             when (SpeechPacks.download(app, tag)) {
                 SpeechPacks.Download.SUCCESS -> PackDownload.DONE
@@ -70,10 +70,13 @@ class VoiceGraph private constructor(private val app: Context) {
         watchLanguage(scope, settings.settings, capabilities) // the first read and every language change; never a probe
     }
 
-    /** The app is in front: re-read the gate, probe external audio if needed, take the mic FGS type if just granted. */
-    fun onForeground() {
+    /**
+     * The app is in front: re-read the gate, probe external audio if needed, take the mic FGS type if just granted or
+     * missing after a sticky restart. [resume] numbers an activity resume; null (Settings) counts as the latest one.
+     */
+    fun onForeground(resume: Long? = null) {
         capabilities.refresh(allowProbe = true)
-        ContextHubService.refreshForegroundTypes(app)
+        ContextHubService.refreshForegroundTypes(app, resume)
     }
 
     /** A typed Ask's answer, mirrored to the HUD when linked (spec §2.4). */

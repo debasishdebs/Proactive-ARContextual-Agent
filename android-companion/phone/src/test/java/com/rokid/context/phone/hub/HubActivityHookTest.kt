@@ -8,6 +8,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -19,7 +20,8 @@ import org.robolectric.annotation.Config
 class HubActivityHookTest {
     private val app = ApplicationProvider.getApplicationContext<Application>()
     private var voiceForeground = 0
-    private val hook = HubResumeHook(voiceForeground = { voiceForeground++ })
+    private val resumes = mutableListOf<Long>()
+    private val hook = HubResumeHook(voiceForeground = { _, resume -> voiceForeground++; resumes += resume })
 
     /** Carry (Phase 3 review): BLUETOOTH_CONNECT granted while the app is open (dialog closes, activity resumes) starts the hub. */
     @Test fun aLateBluetoothGrantStartsTheHubOnTheNextResume() {
@@ -31,7 +33,9 @@ class HubActivityHookTest {
 
         shadowOf(app).grantPermissions(Manifest.permission.BLUETOOTH_CONNECT)
         hook.onActivityResumed(activity)
-        assertEquals(ContextHubService::class.java.name, shadowOf(app).nextStartedService?.component?.className)
+        val started = shadowOf(app).nextStartedService
+        assertEquals(ContextHubService::class.java.name, started?.component?.className)
+        assertTrue("a resumed activity's start is in front", ContextHubService.startedInFront(started))
         assertFalse("the hook doesn't build the hub", HubGraph.isBuilt)
     }
 
@@ -49,6 +53,7 @@ class HubActivityHookTest {
         shadowOf(app).denyPermissions(Manifest.permission.BLUETOOTH_CONNECT)
         hook.onActivityResumed(activity)
         assertEquals(2, voiceForeground)
+        assertEquals("each resume has its own number", listOf(1L, 2L), resumes)
         assertFalse("the hook doesn't build the hub", HubGraph.isBuilt)
     }
 }

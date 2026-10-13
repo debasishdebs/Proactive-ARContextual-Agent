@@ -21,6 +21,9 @@ import com.rokid.context.core.model.UserFacingErrors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -28,13 +31,15 @@ import kotlinx.coroutines.launch
 /**
  * Foreground (connectedDevice, + microphone once RECORD_AUDIO is granted) service that keeps the hub — glasses link,
  * frame ingest, voice, `StateFrame` broadcast — alive (spec §1.7). Adapted from Live Fit `LiveFitHubService`. Started
- * from a resumed activity ([HubActivityHook]); the microphone type lets the on-device recognizer take glasses audio
- * while the phone is locked.
+ * from the front (a resumed activity, [HubActivityHook]), it takes the microphone type, which lets the on-device
+ * recognizer take glasses audio while the phone is locked. A sticky restart starts in the background without it, and
+ * [micHeld] stays false (glasses asks blocked) until the next resume re-enters with it.
  */
 class ContextHubService : Service() {
     private var watcher: Job? = null
     /** The types the service is in the foreground with now (null before the first start). */
     private var currentTypes: Int? = null
+    private val micRetry = MicRetry()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -42,22 +47,27 @@ class ContextHubService : Service() {
         super.onCreate()
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Glasses link", NotificationManager.IMPORTANCE_LOW))
-        // In front only when a resumed activity asked for this start; a sticky restart is in the background.
-        val inFront = startRequestedInFront
-        startRequestedInFront = false
-        if (!enterForeground(READY, inFront)) { stopSelf(); return }
-        running = true
-        val hub = HubGraph.get(this)
-        hub.start()
-        watcher = CoroutineScope(Dispatchers.Main.immediate).launch {
-            hub.status.map(::notificationText).distinctUntilChanged().collect { text -> lastText = text; nm.notify(ID, notification(text)) }
-        }
     }
 
+    /**
+     * The first command enters the foreground and starts the hub. Whether it came from the front travels in its intent
+     * ([startedInFront]); a sticky restart delivers a null intent, so it is in the background. Later refresh commands
+     * come only from a resumed activity (VoiceGraph.onForeground) and re-enter only when the types change.
+     */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Sent only from a resumed activity (VoiceGraph.onForeground), so the app is in front.
-        if (intent?.action == ACTION_REFRESH_TYPES && running) {
-            if (needsReentry(currentTypes, wantedTypes(inFront = true))) enterForeground(lastText, inFront = true)
+        val resume = intent?.takeIf { it.hasExtra(EXTRA_RESUME) }?.getLongExtra(EXTRA_RESUME, 0)
+        if (!running) {
+            if (!enterForeground(READY, micRetry.toTry(wantedTypes(startedInFront(intent)), resume))) { stopSelf(); return START_NOT_STICKY }
+            running = true
+            val nm = getSystemService(NotificationManager::class.java)
+            val hub = HubGraph.get(this)
+            hub.start()
+            watcher = CoroutineScope(Dispatchers.Main.immediate).launch {
+                hub.status.map(::notificationText).distinctUntilChanged().collect { text -> lastText = text; nm.notify(ID, notification(text)) }
+            }
+        } else if (intent?.action == ACTION_REFRESH_TYPES) {
+            val wanted = micRetry.toTry(wantedTypes(inFront = true), resume)
+            if (needsReentry(currentTypes, wanted)) enterForeground(lastText, wanted)
         }
         return START_STICKY
     }
@@ -67,19 +77,20 @@ class ContextHubService : Service() {
         return foregroundTypes(Build.VERSION.SDK_INT, mic, inFront)
     }
 
-    /** startForeground with [wantedTypes], falling back to connectedDevice alone if the mic type is refused. */
-    private fun enterForeground(text: String, inFront: Boolean): Boolean {
-        val wanted = wantedTypes(inFront)
+    /** startForeground with [wanted], falling back to connectedDevice alone if the mic type is refused. */
+    private fun enterForeground(text: String, wanted: Int): Boolean {
         val entered = enterWithFallback(wanted) { types ->
             runCatching { ServiceCompat.startForeground(this, ID, notification(text), types) }
                 .onFailure { Log.w(TAG, "foreground ($types) refused: ${it.javaClass.simpleName}") }.getOrThrow()
         }
-        if (entered != null) currentTypes = entered
+        micRetry.entered(tried = wanted, entered = entered)
+        if (entered != null) { currentTypes = entered; _micHeld.value = holdsMic(entered) }
         return entered != null
     }
 
     override fun onDestroy() {
         // A service that never reached the foreground never started the hub: do not build one just to close it.
+        _micHeld.value = false
         if (running) {
             running = false
             watcher?.cancel()
@@ -105,34 +116,46 @@ class ContextHubService : Service() {
         private const val ID = 31
         private const val READY = "Glasses link ready"
         private const val ACTION_REFRESH_TYPES = "com.rokid.context.hub.REFRESH_FOREGROUND_TYPES"
+        const val EXTRA_IN_FRONT = "com.rokid.context.hub.IN_FRONT"
+        private const val EXTRA_RESUME = "com.rokid.context.hub.RESUME"
         @Volatile private var running = false
         @Volatile private var lastText = READY
 
         fun isRunning(): Boolean = running
 
+        private val _micHeld = MutableStateFlow(false)
+        /** True while the FGS holds the microphone type: the voice gate blocks glasses asks without it (fix round 2). */
+        val micHeld: StateFlow<Boolean> = _micHeld.asStateFlow()
+
         /** One line for the legacy Live screen (Task 12 shows it in place of the RFCOMM bridge message). */
         fun statusLine(): String = lastText
 
-        /** Set by [ensureRunning] (a resumed activity) for the onCreate it causes; a sticky restart leaves it false. */
-        @Volatile private var startRequestedInFront = false
-
-        /** Idempotent: called on every activity resume. */
-        fun ensureRunning(context: Context) {
+        /** Idempotent: called on every activity resume ([resume] numbers it) and on Reconnect, so always from the front. */
+        fun ensureRunning(context: Context, resume: Long? = null) {
             val granted = Build.VERSION.SDK_INT < 31 ||
                 ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
             if (!shouldStart(running, canStart(Build.VERSION.SDK_INT, granted))) return
-            startRequestedInFront = true
-            runCatching { context.startForegroundService(Intent(context, ContextHubService::class.java)) }
-                .onFailure { startRequestedInFront = false; Log.w(TAG, "start refused: ${it.javaClass.simpleName}") }
+            val start = Intent(context, ContextHubService::class.java).putExtra(EXTRA_IN_FRONT, true)
+            resume?.let { start.putExtra(EXTRA_RESUME, it) }
+            runCatching { context.startForegroundService(start) }
+                .onFailure { Log.w(TAG, "start refused: ${it.javaClass.simpleName}") }
         }
+
+        /** A start is in front only when its intent says so; a sticky restart's null intent is the background. */
+        internal fun startedInFront(intent: Intent?): Boolean = intent?.getBooleanExtra(EXTRA_IN_FRONT, false) == true
+
+        internal fun holdsMic(types: Int?): Boolean = types != null && types and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0
 
         /**
          * Asks the running service to take the types it should have now (a mic grant made while the app is in front, or
          * the mic after a sticky restart). Call it only from the foreground; it re-enters only when the types change.
+         * [resume] numbers the activity resume; null (a Settings recheck, a language change) counts as the latest one.
          */
-        fun refreshForegroundTypes(context: Context) {
+        fun refreshForegroundTypes(context: Context, resume: Long? = null) {
             if (!running) return
-            runCatching { context.startService(Intent(context, ContextHubService::class.java).setAction(ACTION_REFRESH_TYPES)) }
+            val refresh = Intent(context, ContextHubService::class.java).setAction(ACTION_REFRESH_TYPES)
+            resume?.let { refresh.putExtra(EXTRA_RESUME, it) }
+            runCatching { context.startService(refresh) }
                 .onFailure { Log.w(TAG, "refresh refused: ${it.javaClass.simpleName}") }
         }
 
@@ -170,5 +193,26 @@ class ContextHubService : Service() {
             LinkState.PAUSED_BT -> "Reconnecting to glasses"
             else -> "Connecting to glasses"
         }
+    }
+}
+
+/**
+ * Ruling (fix round 2): after the mic type is refused from the front, it is retried at most once per resume. A refresh
+ * with no resume number (Settings recheck, language change) counts as the latest resume, so it never retries again.
+ */
+internal class MicRetry {
+    private val mic = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+    private var resume = 0L
+    private var refusedIn: Long? = null
+
+    /** The types to try now: [wanted] without the mic if it was already refused during this resume. */
+    fun toTry(wanted: Int, resume: Long?): Int {
+        if (resume != null) this.resume = resume
+        return if (refusedIn == this.resume) wanted and mic.inv() else wanted
+    }
+
+    /** Records a try: a mic type that did not end up held was refused during the current resume. */
+    fun entered(tried: Int, entered: Int?) {
+        if (tried and mic != 0 && (entered == null || entered and mic == 0)) refusedIn = resume
     }
 }
