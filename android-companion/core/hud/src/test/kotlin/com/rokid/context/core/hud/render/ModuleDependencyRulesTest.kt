@@ -33,4 +33,14 @@ class ModuleDependencyRulesTest {
             .map { it.name }.toList()
         assertEquals(emptyList<String>(), bad)
     }
+
+    @Test fun uiDependsOnlyOnHudAndModel() {
+        val ui = gradle("../ui/build.gradle.kts")
+        assertEquals(emptySet(), projects(ui) - setOf(":core:hud", ":core:model"), ":core:ui may depend only on :core:hud and :core:model")
+        assertFalse(ui.contains("services") || ui.contains(":phone") || ui.contains(":glasses"))
+        val bad = File("../ui/src").walkTopDown().filter { it.extension == "kt" }
+            .filter { f -> f.readLines().any { it.startsWith("import com.rokid.context.glasses") || it.startsWith("import com.rokid.context.phone") || it.startsWith("import com.rokid.context.services") || it.startsWith("import com.rokid.context.link") || it.startsWith("import com.rokid.context.ai") } }
+            .map { it.name }.toList()
+        assertEquals(emptyList<String>(), bad)
+    }
 }
