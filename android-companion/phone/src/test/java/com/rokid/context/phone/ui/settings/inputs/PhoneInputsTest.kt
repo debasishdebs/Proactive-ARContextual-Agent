@@ -2,6 +2,7 @@ package com.rokid.context.phone.ui.settings.inputs
 
 import android.app.Application
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -236,4 +237,49 @@ class PhoneInputsTest {
         }
         compose.onNodeWithTag("voice_glasses").assert(hasText("Glasses voice")).assert(hasText("Supported"))
     }
+
+    // Phase 7 C2: phone "Capture now"
+
+    @Test fun captureNowDisabledWhilePaused() {
+        compose.setContent {
+            PcTheme {
+                PhoneInputsScreen(PhoneInputsUiState(capturePaused = true), onBack = {}, onAllowMic = {}, onDownload = {}, onOpenSettings = {}, onRecheck = {}, onLanguage = {}, onPhoneMic = {})
+            }
+        }
+        compose.onNodeWithTag("phone_inputs").performScrollToNode(hasTestTag("capture_now"))
+        compose.onNodeWithTag("capture_now").assertIsNotEnabled()
+        compose.onNodeWithText("Paused \u2014 resume to capture").assertIsDisplayed()
+    }
+
+    @Test fun captureNowFollowsThePauseAndSaysWhatHappened() = runBlocking {
+        val capture = FakeCaptureNow()
+        val vm = PhoneInputsViewModel(FakeVoiceControls(VoiceCapabilities(VoiceStatus.SUPPORTED, VoiceStatus.SUPPORTED, canDownloadPack = false)), capture)
+        try {
+            capture.paused.value = true
+            withTimeout(5_000) { vm.state.first { it.capturePaused } }
+            capture.paused.value = false
+            withTimeout(5_000) { vm.state.first { !it.capturePaused } }
+            var launched: android.net.Uri? = null
+            vm.captureNow { launched = it }
+            withTimeout(5_000) { while (launched == null) kotlinx.coroutines.yield() }
+            vm.onPictureTaken(false)
+            assertEquals(listOf(false), capture.finished)
+            assertNull(vm.state.value.captureNotice)
+            vm.captureNow { launched = it }
+            vm.onPictureTaken(true)
+            assertEquals("Captured", withTimeout(5_000) { vm.state.first { it.captureNotice != null } }.captureNotice)
+            capture.ok = false
+            vm.captureNow {}
+            vm.onPictureTaken(true)
+            assertEquals("Couldn't save the photo", withTimeout(5_000) { vm.state.first { it.captureNotice != "Captured" && it.captureNotice != null } }.captureNotice)
+        } finally { vm.cancelScope() }
+    }
+}
+
+class FakeCaptureNow : com.rokid.context.phone.capture.CaptureNowControl {
+    override val paused = MutableStateFlow(false)
+    var ok = true
+    val finished = mutableListOf<Boolean>()
+    override suspend fun prepare(): android.net.Uri? = android.net.Uri.parse("content://x/capture/phone_1.jpg")
+    override suspend fun finish(saved: Boolean): Boolean { finished += saved; return saved && ok }
 }

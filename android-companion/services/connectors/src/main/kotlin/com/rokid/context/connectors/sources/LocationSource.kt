@@ -25,7 +25,7 @@ class LocationSource(
     private val io: CoroutineDispatcher,
 ) : ContextSource {
     override val kind = SourceKind.LOCATION
-    override val permissions = listOf(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+    override val permissions = SourcePermissions.of(SourceKind.LOCATION)
 
     private data class Cached(val label: String, val atMs: Long)
     @Volatile private var cached: Cached? = null

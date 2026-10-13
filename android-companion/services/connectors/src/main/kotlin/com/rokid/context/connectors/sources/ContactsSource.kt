@@ -11,7 +11,7 @@ import com.rokid.context.memory.db.SearchNormalizer
  */
 class ContactsSource(private val names: suspend (List<String>) -> List<String>) : ContextSource {
     override val kind = SourceKind.CONTACTS
-    override val permissions = listOf(android.Manifest.permission.READ_CONTACTS)
+    override val permissions = SourcePermissions.of(SourceKind.CONTACTS)
 
     override suspend fun lines(question: String?, nowMs: Long): List<String> {
         if (question.isNullOrBlank()) return emptyList()
