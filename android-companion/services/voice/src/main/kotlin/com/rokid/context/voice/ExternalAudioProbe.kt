@@ -19,7 +19,7 @@ data class ProbeOutcome(
 
 /** Spec §5.1.1 external-audio verification (onboarding, after OS/app updates, after the guard fired). */
 object ExternalAudioProbe {
-    /** 134 142 bytes of "What do I need from the store" (phase 0's clip), bundled in `:services:voice` assets. */
+    /** 134 142 bytes: 2.6 s of LJSpeech LJ001-0013 (public domain) + silence, bundled in `:services:voice` assets. */
     const val ASSET = "voice_probe.pcm"
     /** A paced feed of at least 96 KB (≥ 3 s), above the pinned pipe's measured capacity. */
     const val MIN_FEED_BYTES = 3L * Pcm.BYTES_PER_SECOND
