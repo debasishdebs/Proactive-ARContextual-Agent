@@ -9,6 +9,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.ui.theme.PcTheme
 import org.junit.Rule
@@ -88,5 +89,17 @@ class CodeBoxTest {
         t = "x"; compose.waitForIdle()
         t = ""; compose.waitForIdle()
         compose.onNodeWithTag("code_box").assertTextEquals("")
+    }
+
+    /** Phase 5 T15 carry: a parent that echoes only the newest text leaves no stale record to mask a later restore. */
+    @Test fun aConflatedEchoLeavesNothingStaleToMaskARestore() {
+        var t by mutableStateOf("")
+        compose.setContent { PcTheme { CodeBox(t, { }) } }
+        compose.onNodeWithTag("code_box").performTextInput("a")
+        compose.onNodeWithTag("code_box").performTextInput("b")
+        compose.onNodeWithTag("code_box").performTextReplacement("a") // emitted: a, ab, a
+        t = "a"; compose.waitForIdle() // the parent conflated to the newest text
+        t = "ab"; compose.waitForIdle() // then an external restore to an earlier text
+        compose.onNodeWithTag("code_box").assertTextEquals("ab")
     }
 }

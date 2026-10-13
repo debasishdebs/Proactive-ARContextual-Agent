@@ -17,6 +17,7 @@ import com.rokid.context.data.runtime.PipelineStatsStore
 import com.rokid.context.data.runtime.QueuePayloads
 import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.domain.queue.QueuePriority
+import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.PipelineRecords
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -164,6 +165,8 @@ class OrchestrationScheduler(
     suspend fun enqueueHistoricalPhotoBackfill(
         maxFrames: Int = 60,
         chunkSize: Int = 6,
+        /** Read before the frames are chosen: a Delete all meanwhile stops the enqueue (Phase 5 T20 carry). */
+        generation: Long = MemoryWipe.generation.get(),
     ): HistoricalBackfillResult {
         val config = this.config.getWithoutSecret(context)
         val purgeResult = PipelineRecords.purgeNonPhotoAndSynthetic(context)
@@ -183,7 +186,8 @@ class OrchestrationScheduler(
 
         val safeChunkSize = chunkSize.coerceIn(1, 12)
         val batches = selected.chunked(safeChunkSize)
-        batches.forEachIndexed { index, batch ->
+        var queued = 0
+        for ((index, batch) in batches.withIndex()) {
             val summaryId = UUID.randomUUID().toString()
             val payload = QueuePayloads.batchedWrite(
                 source = "historical_backfill",
@@ -191,19 +195,17 @@ class OrchestrationScheduler(
                 manual = true,
                 frameIdsCsv = batch.joinToString(",") { it.id },
             )
-            QueueRuntimeStore.enqueue(
-                context = context,
-                queue = QueuePriority.SUMMARIZER,
-                payload = payload,
-                personaSnapshot = config.persona,
-                ttlHours = 24,
-            )
+            QueueRuntimeStore.enqueueIfCurrent(context, generation, QueuePriority.SUMMARIZER, payload, config.persona, ttlHours = 24) ?: break
+            queued++
             PipelineStatsStore.incSummarizerTriggered(context)
             PipelineRecords.upsertTrace(context, summaryId, "ENQUEUED", "Historical backfill chunk ${index + 1}/${batches.size}")
         }
+        if (queued == 0) {
+            return HistoricalBackfillResult(0, selected.size, purgeResult.dropped, "Memory was deleted meanwhile; nothing was queued.")
+        }
         enqueueQueueDrainNow()
         return HistoricalBackfillResult(
-            queuedJobs = batches.size,
+            queuedJobs = queued,
             selectedFrames = selected.size,
             droppedFrames = purgeResult.dropped,
             reason = "Historical backfill queued. Purged ${purgeResult.dropped} legacy frame(s), deleted ${purgeResult.deletedFiles} stale image file(s).",
