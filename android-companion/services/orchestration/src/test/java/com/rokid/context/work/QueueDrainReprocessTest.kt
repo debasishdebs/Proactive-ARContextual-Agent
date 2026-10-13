@@ -45,6 +45,10 @@ class QueueDrainReprocessTest {
     private val prompts = mutableListOf<String>()
     private val images = mutableListOf<String>()
     private var extract: () -> Unit = {}
+    private var summarizeHook: () -> Unit = {}
+    /** The facts reply for one VISION_EXTRACT call, given the images it carried (Base64). */
+    private var factsFor: (List<String>) -> String = { facts }
+    private var lastImages: List<String> = emptyList()
     private val facts = """{"facts":[{"text":"A red mug","type":"object","confidence":0.9,"tags":[]}]}"""
     private val summary = """{"summary":"Fruit bowl on the table","events":[],"entities":["fruit"],"confidence":0.9,"candidate_memory_type":"short_term"}"""
 
@@ -55,10 +59,12 @@ class QueueDrainReprocessTest {
             object : ModelProvider {
                 override suspend fun generate(prompt: String): String {
                     prompts += prompt
-                    return if ("BEGIN_DATA frames" in prompt) { extract(); facts } else summary
+                    return if ("BEGIN_DATA frames" in prompt) { extract(); factsFor(lastImages) } else { summarizeHook(); summary }
                 }
                 override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String {
-                    this@QueueDrainReprocessTest.images += images.map { it.base64Data }; return generate(prompt)
+                    lastImages = images.map { it.base64Data }
+                    this@QueueDrainReprocessTest.images += lastImages
+                    return try { generate(prompt) } finally { lastImages = emptyList() }
                 }
             }
         }).also { AiGraph.resetForTests(it) }
@@ -154,17 +160,57 @@ class QueueDrainReprocessTest {
         assertEquals(listOf("m1"), QueuePayloads.ids(QueuePayloads.parse(QueuePayloads.criticReview(listOf("m1"))), "memory_ids_csv"))
     }
 
-    /** Fix round 1 I6: a batch whose frames include one forgotten during the call writes nothing. */
-    @Test fun batchWithAForgottenFrameWritesNothing() {
-        runBlocking {
-            listOf("b1", "b2").forEachIndexed { i, id ->
-                val jpg = File(ctx.filesDir, "rokid_archive/$id.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(i.toByte())) }.absolutePath
-                PipelineRecords.appendFrame(ctx, FrameEntity(id, 10L + i, jpg, "rokid_glasses", "frame"))
-            }
+    private fun frames(vararg ids: String) = runBlocking {
+        ids.forEachIndexed { i, id ->
+            val jpg = File(ctx.filesDir, "rokid_archive/$id.jpg").apply { parentFile!!.mkdirs(); writeBytes(id.toByteArray()) }.absolutePath
+            PipelineRecords.appendFrame(ctx, FrameEntity(id, 10L + i, jpg, "rokid_glasses", "frame"))
+        }
+    }
+    private fun b64(id: String) = Base64.encodeToString(id.toByteArray(), Base64.NO_WRAP)
+    private fun memories() = runBlocking { MemoryGraph.get(ctx).memories.all() }
+
+    /**
+     * Final review I1: each fact is stored on the frame whose photo the model saw for it (one VISION_EXTRACT call per
+     * photo), so Forget moment on that photo removes it and Forget fact locks that photo.
+     */
+    @Test fun eachFactIsStoredOnTheFrameWhosePhotoProducedIt() {
+        frames("p1", "p2", "p3", "p4")
+        factsFor = { imgs ->
+            val id = listOf("p1", "p2", "p3", "p4").single { b64(it) in imgs }
+            """{"facts":[{"text":"Seen in $id","type":"object","confidence":0.9,"tags":[]}]}"""
+        }
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.SUMMARIZER, QueuePayloads.batchedWrite("test", 4, manual = true, frameIdsCsv = "p1,p2,p3,p4"), personaSnapshot = "p")
+        drain()
+        val byText = memories().associate { it.text to it.frameId }
+        assertTrue(byText.isNotEmpty())
+        byText.forEach { (text, frameId) -> assertEquals("Seen in $frameId", text) }
+        // each prompt lists only the frame whose photo it carries
+        prompts.filter { "BEGIN_DATA frames" in it }.forEach { p -> assertEquals(1, Regex("id=p[0-9]").findAll(p).count()) }
+        // Forget moment of the photo the first fact came from removes that fact
+        assertTrue(runBlocking { com.rokid.context.orchestration.forget.ForgetActions.forgetMoment(ctx, "p1") })
+        assertTrue(memories().none { it.text == "Seen in p1" })
+    }
+
+    /** Final review I1: a re-summarise over frames is fenced on them; a frame forgotten during the call writes nothing. */
+    @Test fun reprocessIsFencedOnItsFrames() {
+        frames("r1")
+        fact("rokid_mem_s_0", "Apples in a bowl", frameId = "r1")
+        enqueue(QueuePayloads.reprocess("low", listOf("rokid_mem_s_0"), frameIds = listOf("r1")))
+        summarizeHook = { runBlocking { MemoryGraph.get(ctx).db.forgetDao().insertTombstone(ForgetTombstoneEntity("r1", 1)) } }
+        drain()
+        assertTrue(memories().none { it.text == "Fruit bowl on the table" })
+    }
+
+    /** Fix round 1 I6, final review I1: a photo forgotten during the calls drops its own facts; other photos' facts stay. */
+    @Test fun aPhotoForgottenDuringTheCallsDropsOnlyItsFacts() {
+        frames("b1", "b2")
+        factsFor = { imgs ->
+            val id = listOf("b1", "b2").single { b64(it) in imgs }
+            """{"facts":[{"text":"Seen in $id","type":"object","confidence":0.9,"tags":[]}]}"""
         }
         QueueRuntimeStore.enqueue(ctx, QueuePriority.SUMMARIZER, QueuePayloads.batchedWrite("test", 2, manual = true, frameIdsCsv = "b1,b2"), personaSnapshot = "p")
         extract = { runBlocking { MemoryGraph.get(ctx).db.forgetDao().insertTombstone(ForgetTombstoneEntity("b1", 1)) } }
         drain()
-        assertTrue(runBlocking { MemoryGraph.get(ctx).memories.all() }.isEmpty())
+        assertEquals(mapOf("Seen in b2" to "b2"), memories().associate { it.text to it.frameId })
     }
 }

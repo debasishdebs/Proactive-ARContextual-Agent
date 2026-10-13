@@ -16,7 +16,8 @@ import kotlin.coroutines.cancellation.CancellationException
 /**
  * Retention (spec §2.4 windows; carry: shown but never enforced). Daily, unique [NAME] (KEEP), scheduled by
  * `OrchestrationScheduler.ensureRetention`. SHORT older than `shortHours`, MEDIUM older than `mediumDays`, LONG older
- * than `longDays` (by `createdAt`, any review state) expire in chunks of [CHUNK] (ForgetService.expire: redaction and the
+ * than `longDays` (by `createdAt`, any review state) expire in chunks of [CHUNK] (ForgetService.expire: redaction, PENDING
+ * proposals expire but accepted ones keep their params and alarms (final review C1), the
  * extraction lock, but no descendant invalidation). JPEGs are deleted per chunk and swept (FrameSweep). Frames older than `longDays` that no memory points at are forgotten as a
  * moment. It runs while capture is paused: it only removes data.
  */

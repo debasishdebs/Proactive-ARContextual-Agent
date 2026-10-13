@@ -13,7 +13,7 @@ import java.io.File
  * (or a process death before it) is caught here. The tombstone has no path column (schema v1), so the path is derived:
  * the frame row's `path` when the row is kept, otherwise any file in [RokidFrameInbox.FRAME_DIRS] whose name without
  * extension is the frame id (how frames are named on ingest). A tombstoned frame that a memory still points at keeps
- * its JPEG. Runs at start-up and in every retention pass.
+ * its JPEG. Runs at start-up and in every retention pass, and prunes tombstones nothing needs (final review I2).
  */
 object FrameSweep {
     private const val TAG = "FrameSweep"
@@ -28,21 +28,35 @@ object FrameSweep {
         }
     }
 
-    suspend fun sweep(context: Context): Int = withContext(Dispatchers.IO) {
+    /**
+     * Final review I2 ruling (spec §6.1.1): a tombstone is pruned once nothing can need it: no frame row (a kept row is
+     * a live frame's extraction lock and keeps its tombstone), no memory with that frameId (the late-fact fence), no
+     * JPEG of that id left on disk, and older than this. 8 days = the glasses' 7-day resend window (FrameAdmission
+     * HISTORY_MS acks an older frame TOO_OLD, so a forgotten frame can't be re-ingested) + 1 day for in-flight queue
+     * jobs (24 h TTL) that still carry the id. Delete all drops every tombstone as before.
+     */
+    const val TOMBSTONE_KEEP_MS = 8 * 24 * 3_600_000L
+    private const val CHUNK = 500
+
+    /**
+     * Deletes leftover JPEGs of tombstoned frames, then prunes tombstones nothing needs ([TOMBSTONE_KEEP_MS]). Set-based
+     * (final review I2): one query for kept rows, one per [CHUNK] files on disk for rowless ids, one delete; no per-tombstone
+     * queries.
+     */
+    suspend fun sweep(context: Context, nowMs: Long = System.currentTimeMillis()): Int = withContext(Dispatchers.IO) {
         val dao = MemoryGraph.get(context).db.forgetDao()
-        val locked = dao.allTombstones().toSet()
-        if (locked.isEmpty()) return@withContext 0
-        val paths = mutableListOf<String>()
-        val rowless = mutableSetOf<String>()
-        for (id in locked) {
-            val frame = dao.frame(id)
-            if (frame == null) rowless += id else if (dao.remainingRefs(id) == 0 && frame.path.isNotBlank()) paths += frame.path
+        val paths = dao.orphanTombstonedFramePaths().toMutableList()
+        val onDisk = RokidFrameInbox.FRAME_DIRS.flatMap { dir -> File(context.filesDir, dir).listFiles()?.filter { it.isFile }.orEmpty() }
+        val byId = onDisk.groupBy { it.nameWithoutExtension }
+        val rowless = byId.keys.toList().chunked(CHUNK).flatMap { dao.rowlessTombstones(it) }
+        rowless.forEach { id -> byId[id]?.forEach { paths += it.absolutePath } }
+        val deleted = delete(paths.filter { File(it).exists() })
+        // A rowless frame's JPEG that could not be deleted keeps its tombstone, so the next sweep still finds it.
+        val stuck = rowless.filter { id -> byId[id].orEmpty().any { it.exists() } }
+        if (stuck.size <= CHUNK) {
+            runCatching { dao.pruneTombstones(nowMs - TOMBSTONE_KEEP_MS, stuck.ifEmpty { listOf("") }) }
+                .onFailure { Log.w(TAG, "tombstones not pruned (next sweep retries): ${it.javaClass.simpleName}") }
         }
-        if (rowless.isNotEmpty()) {
-            RokidFrameInbox.FRAME_DIRS.forEach { dir ->
-                File(context.filesDir, dir).listFiles()?.filter { it.isFile && it.nameWithoutExtension in rowless }?.forEach { paths += it.absolutePath }
-            }
-        }
-        delete(paths.filter { File(it).exists() })
+        deleted
     }
 }
