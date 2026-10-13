@@ -103,7 +103,10 @@ data class QuietHours(val startMinute: Int, val endMinute: Int) {
     }
 }
 
-/** Phone → glasses on `pc_settings`. [pauses] is the merged pause set (spec §5.5). */
+/**
+ * Phone → glasses on `pc_settings`. [pauses] is the merged pause set (spec §5.5). [askBlockedReason] is the short HUD
+ * text for a tap = Ask while voice can't work (spec §5.1.1), null when it can; additive (Phase 6), no version bump.
+ */
 @Serializable
 data class HudSettings(
     val v: Int = PROTOCOL_VERSION,
@@ -115,6 +118,7 @@ data class HudSettings(
     val burstOnChange: Boolean = true,
     val quietHours: QuietHours? = null,
     val pauses: List<PauseRecord> = emptyList(),
+    val askBlockedReason: String? = null,
 )
 
 @Serializable

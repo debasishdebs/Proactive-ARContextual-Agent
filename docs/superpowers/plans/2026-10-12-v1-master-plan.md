@@ -83,7 +83,7 @@ Task references are `Phase.Task` (e.g. 2.6 = Phase 2 Task 6); every detailed tas
 | R-49, R-50, R-51, R-52, R-53 | 5 | |
 | R-60 | 6 | |
 | R-61, R-62, R-63, R-64, R-65, R-66 | 7 (R-65 `PauseRecord`/`QuietHours` types from 1.3) | |
-| R-67 | 0.4 (probe) · 6 (gate + UX) | |
+| R-67 | 0.4 (probe) · 6 (gate + UX) · onboarding probe → 7 (R-19) | |
 | R-70 | 2.1–2.3 | encryption toggle migration in 5 (Settings → Memory) |
 | R-71 | 2.4–2.5 | |
 | R-72 | 2.8 (typed model errors, short trace messages) · 3 (`UserFacingError` introduced) · all later phases | |
