@@ -47,6 +47,9 @@ class Hub(
     val state: StateFlow<HubState> = _state
     private val _status = MutableStateFlow(_state.value.toGlassesStatus())
     override val status: StateFlow<GlassesStatus> = _status
+    private val _hudSettings = MutableStateFlow(settings.read())
+    /** The phone's persisted HUD settings (pauses are merged in only when pushed). Settings screens observe this. */
+    val hudSettings: StateFlow<HudSettings> = _hudSettings
     private var seq = 0L
     /** Written by the hello handler, read on the frame path: the one clock offset holder ([HubState.offset] mirrors it). */
     @Volatile private var offset: ClockOffset? = null
@@ -91,6 +94,7 @@ class Hub(
     /** A settings change from the phone: persisted, pushed now (when linked) and reflected in the next frame. */
     fun updateSettings(transform: (HudSettings) -> HudSettings) {
         settings.write(transform(settings.read()))
+        _hudSettings.value = settings.read()
         scope.launch { guarded("settings") { pushSettings(); broadcaster.markDirty() } }
     }
 

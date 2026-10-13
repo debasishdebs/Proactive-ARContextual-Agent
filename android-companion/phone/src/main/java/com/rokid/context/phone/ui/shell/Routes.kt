@@ -4,7 +4,7 @@ import com.rokid.context.phone.ui.activity.Period
 import java.net.URLEncoder
 import java.time.LocalDate
 
-/** spec §2.1 routes owned by Phase 4 (Phase 5 adds the rest of `settings/…`). */
+/** spec §2.1 routes. */
 object Routes {
     const val ONBOARDING = "onboarding"
     const val HOME = "home"
@@ -18,6 +18,27 @@ object Routes {
     const val SETTINGS_DIAGNOSTICS = "settings/diagnostics"
     const val DIAGNOSTICS_QUEUES = "settings/diagnostics/queues"
     const val DIAGNOSTICS_TRACKER = "settings/diagnostics/tracker"
+    const val SETTINGS_GLASSES = "settings/glasses"
+    const val SETTINGS_CAPTURE = "settings/capture"
+    const val SETTINGS_ENDPOINT = "settings/endpoints/{id}"
+    const val SETTINGS_ROLES = "settings/roles"
+    const val SETTINGS_PROMPTS = "settings/prompts"
+    const val SETTINGS_PROMPT = "settings/prompts/{id}"
+    const val SETTINGS_PROMPT_HISTORY = "settings/prompts/{id}/history"
+    const val SETTINGS_RETRIEVAL = "settings/retrieval"
+    const val SETTINGS_PERSONA = "settings/persona"
+    const val SETTINGS_MEMORY = "settings/memory"
+    const val SETTINGS_MEMORY_REVIEW = "settings/memory/review"
+    const val DIAGNOSTICS_LOGS = "settings/diagnostics/logs"
+    /** id "new" opens an empty editor. */
+    const val NEW_ENDPOINT = "new"
+
+    fun endpoint(id: String) = "settings/endpoints/${enc(id)}"
+    fun prompt(id: String) = "settings/prompts/${enc(id)}"
+    fun promptHistory(id: String) = "settings/prompts/${enc(id)}/history"
+
+    /** Settings rows that open a screen in this build; Phase 6/7 rows (phone inputs, privacy, sources, actions) stay "Coming soon". */
+    val LIVE_SETTINGS: Set<String> = setOf(SETTINGS_GLASSES, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_DIAGNOSTICS)
 
     enum class Tab(val route: String, val label: String) { HOME("home", "Home"), ACTIVITY("activity", "Activity"), SETTINGS("settings", "Settings") }
 

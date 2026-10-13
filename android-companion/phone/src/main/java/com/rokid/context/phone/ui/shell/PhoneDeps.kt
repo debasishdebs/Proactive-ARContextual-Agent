@@ -11,6 +11,7 @@ import com.rokid.context.phone.ui.settings.DiagnosticsActions
 import com.rokid.context.phone.ui.settings.LegacyQueueActions
 import com.rokid.context.phone.ui.settings.QueueActions
 import com.rokid.context.phone.ui.settings.SchedulerDiagnosticsActions
+import com.rokid.context.phone.ui.settings.SettingsDeps
 import com.rokid.context.phone.ui.status.LegacyPipelineControl
 import com.rokid.context.phone.ui.status.PipelineControl
 import com.rokid.context.phone.ui.status.StorageUsage
@@ -36,6 +37,7 @@ class PhoneDeps(
     val rateAsk: suspend (String, Boolean) -> Boolean,
     val diagnostics: DiagnosticsActions,
     val queues: QueueActions,
+    val settings: SettingsDeps,
     val storagePct: Flow<Int?>,
     val clock: Flow<Long>,
     val zone: () -> ZoneId = { ZoneId.systemDefault() },
@@ -70,6 +72,7 @@ class PhoneDeps(
                 rateAsk = { id, up -> AskActions.rate(app, id, up) },
                 diagnostics = SchedulerDiagnosticsActions(scheduler),
                 queues = LegacyQueueActions(app, scheduler),
+                settings = SettingsDeps.create(app),
                 storagePct = StorageUsage.percentFlow(app),
                 clock = ticker(),
                 hudVerbosity = { v -> com.rokid.context.phone.hub.HubGraph.get(app).updateSettings { it.copy(verbosity = v) } },

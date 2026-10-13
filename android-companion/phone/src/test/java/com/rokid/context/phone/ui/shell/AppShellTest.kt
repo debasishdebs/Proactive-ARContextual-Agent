@@ -63,6 +63,7 @@ class AppShellTest {
             override suspend fun snapshot() = QueueSnapshot(0, 0, 0, 0, 0, 24, 0, 0, 0, "none")
             override suspend fun queueExplicitWrite(text: String) = "ok"; override suspend fun queueReadContext(query: String) = "ok"; override suspend fun drainNow() = "ok"
         },
+        settings = com.rokid.context.phone.ui.settings.TestSettings.deps(ctx),
         storagePct = flowOf(10), clock = flowOf(Fixtures.NOW), zone = { Fixtures.ZONE },
     )
 

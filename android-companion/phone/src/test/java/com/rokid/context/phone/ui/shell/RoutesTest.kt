@@ -14,6 +14,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RoutesTest {
+    @Test fun settingsRoutesBuildAndBelongToTheSettingsTab() {
+        assertEquals("settings/endpoints/az%201", Routes.endpoint("az 1"))
+        assertEquals("settings/prompts/ANSWER/history", Routes.promptHistory("ANSWER"))
+        listOf(Routes.SETTINGS_GLASSES, Routes.SETTINGS_ENDPOINT, Routes.SETTINGS_PROMPT_HISTORY, Routes.DIAGNOSTICS_LOGS)
+            .forEach { assertEquals(it, Routes.Tab.SETTINGS, Routes.tabFor(it)) }
+        assertTrue(Routes.SETTINGS_GLASSES in Routes.LIVE_SETTINGS)
+    }
+
     @Test fun tabsFollowTheRoutePattern() {
         assertEquals(Routes.Tab.HOME, Routes.tabFor(Routes.HOME))
         assertEquals(Routes.Tab.HOME, Routes.tabFor(Routes.ASK))

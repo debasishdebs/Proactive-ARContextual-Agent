@@ -30,8 +30,6 @@ import com.rokid.context.phone.ui.settings.LegacyConfigScreen
 import com.rokid.context.phone.ui.settings.LegacyConfigViewModel
 import com.rokid.context.phone.ui.settings.QueuesScreen
 import com.rokid.context.phone.ui.settings.QueuesViewModel
-import com.rokid.context.phone.ui.settings.SettingsRootScreen
-import com.rokid.context.phone.ui.settings.SettingsRootViewModel
 import com.rokid.context.phone.ui.settings.TrackerScreen
 import com.rokid.context.phone.ui.settings.TrackerViewModel
 
@@ -107,12 +105,6 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         FrameViewerScreen(state, onBack = back)
     }
 
-    composable(Routes.SETTINGS) {
-        val vm = viewModel { SettingsRootViewModel(deps.glasses) }
-        val state by vm.state.collectAsStateWithLifecycle()
-        SettingsRootScreen(state, onOpenEndpoints = { nav.navigate(Routes.SETTINGS_ENDPOINTS) }, onOpenDiagnostics = { nav.navigate(Routes.SETTINGS_DIAGNOSTICS) })
-    }
-
     composable(Routes.SETTINGS_ENDPOINTS) {
         val app = LocalContext.current.applicationContext
         val vm = viewModel { LegacyConfigViewModel(app, deps.pipeline, setVerbosity = deps.hudVerbosity) }
@@ -148,4 +140,6 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         val items by vm.state.collectAsStateWithLifecycle()
         TrackerScreen(items, onBack = back)
     }
+
+    settingsDestinations(deps, nav, back)
 }

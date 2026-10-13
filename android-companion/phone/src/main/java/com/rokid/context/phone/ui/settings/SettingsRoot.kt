@@ -31,6 +31,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rokid.context.core.model.GlassesStatus
 import com.rokid.context.core.model.GlassesStatusSource
+import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.LinkState
 import com.rokid.context.core.ui.components.ChipRow
 import com.rokid.context.core.ui.components.GlassesIcon
@@ -38,9 +39,11 @@ import com.rokid.context.core.ui.components.ScreenHeader
 import com.rokid.context.core.ui.components.SectionLabel
 import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
+import com.rokid.context.phone.ui.settings.capture.CaptureIntervals
+import com.rokid.context.phone.ui.shell.Routes
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 
 object SettingsModel {
@@ -53,44 +56,47 @@ object SettingsModel {
         LinkState.NOT_AUTHORIZED -> "Not authorized"
         else -> "Not connected"
     }
+
+    fun captureSummary(s: HudSettings): String =
+        "Every ${CaptureIntervals.label(CaptureIntervals.clamp(s.captureIntervalSec))}" + if (s.burstOnChange) " · burst on change" else ""
 }
 
-data class SettingsRootUiState(val glassesSummary: String = "Not connected")
+data class SettingsRootUiState(val glassesSummary: String = "Not connected", val captureSummary: String = "")
 
-class SettingsRootViewModel(glasses: GlassesStatusSource) : ViewModel() {
-    val state: StateFlow<SettingsRootUiState> = glasses.status.map { SettingsRootUiState(SettingsModel.glassesSummary(it)) }
+class SettingsRootViewModel(glasses: GlassesStatusSource, hud: HudSettingsControl) : ViewModel() {
+    val state: StateFlow<SettingsRootUiState> = combine(glasses.status, hud.settings) { g, h -> SettingsRootUiState(SettingsModel.glassesSummary(g), SettingsModel.captureSummary(h)) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsRootUiState())
 }
 
-private data class SettingRow(val icon: ImageVector, val colors: Pair<Color, Color>, val title: String, val subtitle: String, val onClick: (() -> Unit)?)
+private data class SettingRow(val icon: ImageVector, val colors: Pair<Color, Color>, val title: String, val subtitle: String, val route: String?)
 
-/** Settings root (spec §2.4, mock settings.html). Phase 4: only Model endpoints + Diagnostics open; the rest is Phase 5. */
+/** Settings root (spec §2.4, mock settings.html): five groups; rows open only when [live] contains their route. */
 @Composable
-fun SettingsRootScreen(state: SettingsRootUiState, onOpenEndpoints: () -> Unit, onOpenDiagnostics: () -> Unit) {
+fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (String) -> Unit) {
     val soon = SettingsModel.COMING_SOON
     val groups = listOf(
         "Devices" to listOf(
-            SettingRow(GlassesIcon, PcColors.ChipMint, "Rokid Glasses", state.glassesSummary, null),
+            SettingRow(GlassesIcon, PcColors.ChipMint, "Rokid Glasses", state.glassesSummary, Routes.SETTINGS_GLASSES),
             SettingRow(Icons.Outlined.PhoneAndroid, PcColors.ChipSky, "Phone camera & mic", soon, null),
         ),
         "Capture & privacy" to listOf(
-            SettingRow(Icons.Outlined.Schedule, PcColors.ChipAmber, "Capture schedule", soon, null),
+            SettingRow(Icons.Outlined.Schedule, PcColors.ChipAmber, "Capture schedule", state.captureSummary, Routes.SETTINGS_CAPTURE),
             SettingRow(Icons.Outlined.Shield, PcColors.ChipSlate, "Privacy", soon, null),
         ),
         "AI" to listOf(
-            SettingRow(Icons.Outlined.Cloud, PcColors.ChipSky, "Model endpoints", "Provider, address, key and Test", onOpenEndpoints),
-            SettingRow(Icons.Outlined.AutoAwesome, PcColors.ChipViolet, "Models by role", soon, null),
-            SettingRow(Icons.Outlined.Edit, PcColors.ChipRose, "Prompts", soon, null),
-            SettingRow(Icons.Outlined.Search, PcColors.ChipMint, "Retrieval", soon, null),
-            SettingRow(Icons.Outlined.Face, PcColors.ChipAmber, "Persona & language", soon, null),
+            SettingRow(Icons.Outlined.Cloud, PcColors.ChipSky, "Model endpoints", "Provider, address, key and Test", Routes.SETTINGS_ENDPOINTS),
+            SettingRow(Icons.Outlined.AutoAwesome, PcColors.ChipViolet, "Models by role", "Which model does what", Routes.SETTINGS_ROLES),
+            SettingRow(Icons.Outlined.Edit, PcColors.ChipRose, "Prompts", "Templates, schemas, versions and test bed", Routes.SETTINGS_PROMPTS),
+            SettingRow(Icons.Outlined.Search, PcColors.ChipMint, "Retrieval", "Lexical, semantic or hybrid search", Routes.SETTINGS_RETRIEVAL),
+            SettingRow(Icons.Outlined.Face, PcColors.ChipAmber, "Persona & language", "How answers sound", Routes.SETTINGS_PERSONA),
         ),
         "Connectors" to listOf(
             SettingRow(Icons.Outlined.Event, PcColors.ChipSky, "Data sources", soon, null),
             SettingRow(Icons.Outlined.Bolt, PcColors.ChipAmber, "Actions & tools", soon, null),
         ),
         "Memory & system" to listOf(
-            SettingRow(Icons.Outlined.Memory, PcColors.ChipViolet, "Memory", soon, null),
-            SettingRow(Icons.Outlined.MonitorHeart, PcColors.ChipCoral, "Diagnostics", "Queues, summarizer tracker, manual runs", onOpenDiagnostics),
+            SettingRow(Icons.Outlined.Memory, PcColors.ChipViolet, "Memory", "Retention, storage, encryption, export", Routes.SETTINGS_MEMORY),
+            SettingRow(Icons.Outlined.MonitorHeart, PcColors.ChipCoral, "Diagnostics", "Queues, summarizer tracker, manual runs", Routes.SETTINGS_DIAGNOSTICS),
         ),
     )
     LazyColumn(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).testTag("settings_list")) {
@@ -100,7 +106,10 @@ fun SettingsRootScreen(state: SettingsRootUiState, onOpenEndpoints: () -> Unit, 
                 SectionLabel(label)
                 SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
                     Column {
-                        rows.forEach { r -> ChipRow(r.icon, r.colors, r.title, r.subtitle, onClick = r.onClick ?: {}, enabled = r.onClick != null) }
+                        rows.forEach { r ->
+                            val open = r.route?.takeIf { it in live }
+                            ChipRow(r.icon, r.colors, r.title, if (open == null && r.route != null) soon else r.subtitle, onClick = { open?.let(onOpen) }, enabled = open != null)
+                        }
                     }
                 }
             }
