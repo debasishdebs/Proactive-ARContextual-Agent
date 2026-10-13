@@ -9,13 +9,17 @@ import com.rokid.context.connectors.actions.executors.ReminderExecutor
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.ProposalRepository
 import com.rokid.context.memory.ProposalState
+import com.rokid.context.memory.forget.ForgetService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
-/** Alarms do not survive a reboot or an update: re-arm every EXECUTED reminder still in the future (DB on IO, via goAsync). */
+/**
+ * Alarms do not survive a reboot or an update: re-arm every EXECUTED reminder still in the future (DB on IO, via goAsync).
+ * A reminder whose params Forget redacted is skipped.
+ */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
@@ -39,7 +43,7 @@ class BootReceiver : BroadcastReceiver() {
 
         /** Returns how many alarms were re-armed. */
         suspend fun rearm(repo: ProposalRepository, reminders: ReminderExecutor, nowMs: Long): Int =
-            repo.inState(ProposalState.EXECUTED).filter { it.type == ActionType.REMINDER.name }.count { p ->
+            repo.inState(ProposalState.EXECUTED).filter { it.type == ActionType.REMINDER.name && it.paramsJson != ForgetService.REDACTED_PARAMS }.count { p ->
                 val r = ActionParams.decode(ActionType.REMINDER, p.paramsJson) as? ActionParams.Reminder
                 (r != null && r.dueAtMs > nowMs).also { if (it) reminders.arm(p.id, r!!) }
             }
