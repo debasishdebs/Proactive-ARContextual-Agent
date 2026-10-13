@@ -138,4 +138,18 @@ class LegacyKeySeedTest {
         assertFalse("ModelProviderResolver.kt" in names)
         assertFalse("ModelGatewayFactory.kt" in names)
     }
+
+    /** P8 D2: a key left without its endpoint row (a crash mid-save or mid-delete) is swept after seeding. */
+    @Test fun runSweepsOrphanKeysAfterSeeding() = runBlocking {
+        vault.put(EndpointRepository.keyRef("gone"), "k")
+        assertTrue(LegacyKeySeed.run(ctx, seeder()).isSuccess)
+        assertEquals(null, vault.get(EndpointRepository.keyRef("gone")))
+    }
+
+    @Test fun aSweepFailureDoesNotFailTheSeed() = runBlocking {
+        val broken = object : KeyVault by vault {
+            override fun refs(): Set<String> = throw IllegalStateException("Keystore unavailable")
+        }
+        assertTrue(LegacyKeySeed.run(ctx, seeder(broken)).isSuccess)
+    }
 }
