@@ -40,9 +40,18 @@ class VoiceModuleRulesTest {
     private val voiceWord = Regex("(?i)(text|partial|question|transcript|answer|result|spoken|utterance|heard)")
     private val countOnly = Regex("\\.(size|length|count\\(\\)|isEmpty\\(\\)|isNotEmpty\\(\\)|isBlank\\(\\))$")
 
+    /** Names `import android.util.Log as X` gives the logger in a file (fix round 1: aliases log too). */
+    private fun logAliases(source: String): Set<String> =
+        Regex("(?m)^\\s*import\\s+android\\.util\\.Log\\s+as\\s+(\\w+)").findAll(source).map { it.groupValues[1] }.toSet()
+
+    /** Any logging call: `Log.`, `log(`, Timber, `System.out/err`, `println(`, or an aliased `Log`. */
+    private fun isLogLine(line: String, aliases: Set<String> = emptySet()): Boolean =
+        Regex("\\bLog\\.|\\blog\\(|\\bTimber\\b|\\bSystem\\.(out|err)\\b|\\bprintln\\(|\\bprintStackTrace\\(").containsMatchIn(line) ||
+            aliases.any { Regex("\\b${Regex.escape(it)}\\.").containsMatchIn(line) }
+
     /** A log line that puts voice text into the message: `$name`, `${expr}` or `+ name` concatenation; counts are fine. */
-    private fun logsVoiceText(line: String): Boolean {
-        if (!("Log." in line || "log(" in line)) return false
+    private fun logsVoiceText(line: String, aliases: Set<String> = emptySet()): Boolean {
+        if (!isLogLine(line, aliases)) return false
         val exprs = Regex("\\$([A-Za-z_]\\w*)").findAll(line).map { it.groupValues[1] } +
             Regex("\\$\\{([^}]*)\\}").findAll(line).map { it.groupValues[1].trim() } +
             Regex("\\+\\s*([A-Za-z_][\\w.]*)").findAll(line).map { it.groupValues[1] } +
@@ -67,7 +76,13 @@ class VoiceModuleRulesTest {
             "Log.w(TAG, \"heard: \" + spoken)",
             "log(\"q=\" + question.trim())",
             "Log.d(TAG, \"partial=\$partial\")",
+            "Timber.d(\"heard \$text\")",
+            "System.out.println(\"q=\" + question)",
+            "System.err.print(answer + \"!\")",
+            "println(\"spoken \$spoken\")",
         ).forEach { assertTrue(logsVoiceText(it), it) }
+        assertEquals(setOf("L"), logAliases("package x\nimport android.util.Log as L\n"))
+        assertTrue(logsVoiceText("L.i(TAG, \"said \$text\")", setOf("L")))
         listOf(
             "Log.d(TAG, \"partials=\${partials.size}\")",
             "Log.i(TAG, \"event=start count=\$count\")",
@@ -87,13 +102,42 @@ class VoiceModuleRulesTest {
         assertEquals(emptyList(), bad.map { it.name })
     }
 
-    /** Spec §3.6 / R-73: the speaker has the answer text in hand and logs nothing at all. */
-    @Test fun theSpeakerNeverLogs() {
+    /**
+     * Spec §3.6 / R-73: the speaker holds the answer text, so it logs fixed [SpeakerEvent] names only (fix round 1):
+     * `log(SpeakerEvent.X)` in the core, one `Log.i(TAG, it.wire)` sink in AndroidSpeaker, nothing else.
+     */
+    private fun speakerLogAllowed(line: String): Boolean =
+        Regex("\\blog\\(SpeakerEvent\\.[A-Z_]+\\)").containsMatchIn(line) || line.trim().endsWith("{ Log.i(TAG, it.wire) },") ||
+            Regex("^\\s*private val log: \\(SpeakerEvent\\) -> Unit").containsMatchIn(line)
+
+    private fun speakerLogViolations(name: String, source: String): List<String> {
+        val aliases = logAliases(source)
+        val aliased = if (aliases.isEmpty()) emptyList() else listOf("$name: aliased android.util.Log")
+        return aliased + source.lines().filter { isLogLine(it, aliases) && !speakerLogAllowed(it) }.map { "$name: ${it.trim()}" }
+    }
+
+    @Test fun theSpeakerLogsOnlyFixedEventNames() {
         val files = listOf("Speaker.kt", "android/AndroidSpeaker.kt", "android/AudioRoutes.kt").map { File(main, "com/rokid/context/voice/$it") }
         files.forEach { assertTrue(it.isFile, "missing ${it.path}") }
-        val logging = Regex("\\bLog\\.|\\blog\\(|SafeLog|println\\(|printStackTrace")
-        val bad = files.flatMap { f -> f.readLines().filter { logging.containsMatchIn(it) }.map { "${f.name}: ${it.trim()}" } }
+        assertTrue(files.any { f -> f.readLines().any { "log(SpeakerEvent." in it } }, "the events are logged somewhere")
+        val bad = files.flatMap { speakerLogViolations(it.name, it.readText()) }
         assertEquals(emptyList(), bad)
+    }
+
+    @Test fun theSpeakerLogRuleCatchesEveryForm() {
+        listOf(
+            "log(SpeakerEvent.INIT_FAILED)",
+            "        private val log: (SpeakerEvent) -> Unit = { Log.i(TAG, it.wire) },",
+        ).forEach { assertEquals(emptyList(), speakerLogViolations("ok", it), it) }
+        listOf(
+            "Log.i(TAG, \"speaking \$id\")",
+            "log(\"lang_missing \$locale\")",
+            "Timber.i(\"focus_lost\")",
+            "System.out.println(text)",
+            "System.err.println(\"x\")",
+            "println(event)",
+            "import android.util.Log as L\nL.i(TAG, \"x\")",
+        ).forEach { assertTrue(speakerLogViolations("bad", it).isNotEmpty(), it) }
     }
 
     /** Android 11+ package visibility: without this query `TextToSpeech` sees no engine and never initialises. */
@@ -104,7 +148,10 @@ class VoiceModuleRulesTest {
 
     /** Log lines carry event names, counts and class names: never a transcript, partial, question or answer. */
     @Test fun noLogLineInterpolatesVoiceText() {
-        val bad = sources().flatMap { f -> f.readLines().filter(::logsVoiceText).map { "${f.name}: ${it.trim()}" } }
+        val bad = sources().flatMap { f ->
+            val aliases = logAliases(f.readText())
+            f.readLines().filter { logsVoiceText(it, aliases) }.map { "${f.name}: ${it.trim()}" }
+        }
         assertEquals(emptyList(), bad)
     }
 }
