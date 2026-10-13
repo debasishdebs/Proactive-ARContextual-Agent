@@ -102,6 +102,17 @@ class HudControllerTest {
         assertEquals("a pc_state list is inexact; pc_settings keeps its flag", listOf(false, true), exact)
     }
 
+    /** Fix round 1 (M12): a push with out-of-range quiet minutes is kept without them (cached and forwarded). */
+    @Test fun outOfRangeQuietHoursAreDroppedFromAPush() = runTest {
+        val c = controller(prefs = "m12")
+        val got = mutableListOf<HudSettings>()
+        c.onPhoneSettings = { got += it }
+        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(quietHours = com.rokid.context.core.model.QuietHours(0, 5_000))))
+        assertEquals(null, got.single().quietHours)
+        assertEquals(null, c.settings.value.quietHours)
+        assertEquals(null, HudSettingsCache(ctx.getSharedPreferences("m12", 0)).read().quietHours)
+    }
+
     @Test fun frameAcksReachTheUplinkAndGarbageDoesNot() = runTest {
         val c = controller()
         val acks = mutableListOf<FrameAck>()

@@ -45,7 +45,7 @@ class HubPauses(
         val occ = QuietWindow.occurrenceAt(q, t, zone()) ?: return null
         // A live QUIET_HOURS record (e.g. minted before a zone change) already covers this window; it keeps its end.
         if (live.any { it.origin == PauseOrigin.QUIET_HOURS }) return null
-        if (dao.quietOccurrence(occ.first) != null) return null
+        if (dao.quietOccurrence(occ.first, occ.last + 1) != null) return null
         val record = PauseRecord(UUID.randomUUID().toString(), PauseOrigin.QUIET_HOURS, occ.first, occ.last + 1)
         add(record)
         return record
@@ -86,11 +86,23 @@ class HubPauses(
         return dao.countCovering(phoneMs) > 0
     }
 
-    /** Closed intervals are kept 7 days (spec §5.5); frames older than that are dropped by [FrameAdmission]. */
+    /**
+     * Closed intervals are kept 7 days as history (spec §5.5); frames older than that are dropped by [FrameAdmission].
+     * Past that they become id-only tombstones (zero length, so they cover nothing) for [TOMBSTONE_MS], so a late echo
+     * of a resumed id is never re-inserted by [add] (fix round 1, I2).
+     */
     suspend fun pruneHistory() {
         active() // expire first, so only true orphans remain open without a record
         dao.closeOrphanIntervals(now())
-        dao.pruneEndedBefore(now() - FrameAdmission.HISTORY_MS)
+        dao.collapseEndedBefore(now() - FrameAdmission.HISTORY_MS)
+        dao.pruneEndedBefore(now() - TOMBSTONE_MS)
+    }
+
+    /** The stored active records, without expiring or minting anything (a read for a Resume before the hub loads). */
+    suspend fun stored(): List<PauseRecord> = now().let { t -> dao.records().map { it.toModel() }.filter { it.isActiveAt(t) } }
+
+    companion object {
+        const val TOMBSTONE_MS = 90 * 24 * 3_600_000L
     }
 }
 
@@ -102,7 +114,7 @@ object QuietWindow {
      * first valid instant; in an overlap the earlier offset is used. `start == end` is no window.
      */
     fun occurrenceAt(q: QuietHours, nowMs: Long, zone: ZoneId): LongRange? {
-        if (q.startMinute == q.endMinute) return null
+        if (q.startMinute == q.endMinute || q.startMinute !in 0..1439 || q.endMinute !in 0..1439) return null
         val today = java.time.Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()
         for (startDay in listOf(today.minusDays(1), today)) {
             val endDay = if (q.startMinute < q.endMinute) startDay else startDay.plusDays(1)

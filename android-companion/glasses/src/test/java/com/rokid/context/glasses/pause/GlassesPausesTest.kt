@@ -286,4 +286,12 @@ class GlassesPausesTest {
         assertEquals(setOf("p"), p.mergeFromPhone(exact()).removed)
         assertEquals("a non-provisional record is never dropped this way", listOf("known"), p.active().map { it.pauseId })
     }
+
+    /** Fix round 1 (M12): out-of-range minutes from a bad push or file never crash the glasses; they are no window. */
+    @Test fun outOfRangeQuietMinutesNeverCrash() = runBlocking {
+        hud = HudSettings(quietHours = QuietHours(22 * 60, 1_440), zoneId = "UTC")
+        val p = qPauses().also { it.ensureLoaded() }
+        assertTrue(p.captureAllowed())
+        assertEquals(null, QuietHoursClock { HudSettings(quietHours = QuietHours(-1, 60)) }.occurrenceAt(now))
+    }
 }

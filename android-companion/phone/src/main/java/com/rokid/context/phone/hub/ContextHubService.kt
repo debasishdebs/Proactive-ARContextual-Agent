@@ -59,11 +59,6 @@ class ContextHubService : Service() {
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resume = intent?.takeIf { it.hasExtra(EXTRA_RESUME) }?.getLongExtra(EXTRA_RESUME, 0)
-        // The notification's action: through the shared pause control (Resume names the ids active at this moment).
-        when (intent?.action) {
-            ACTION_PAUSE -> CapturePauses.control(this).setEnabled(false)
-            ACTION_RESUME -> CapturePauses.control(this).setEnabled(true)
-        }
         if (!running) {
             if (!enterForeground(READY, micRetry.toTry(wantedTypes(startedInFront(intent)), resume))) { stopSelf(); return START_NOT_STICKY }
             running = true
@@ -78,6 +73,12 @@ class ContextHubService : Service() {
         } else if (intent?.action == ACTION_REFRESH_TYPES) {
             val wanted = micRetry.toTry(wantedTypes(inFront = true), resume)
             if (needsReentry(currentTypes, wanted)) enterForeground(lastText, wanted)
+        }
+        // The notification's action, after the hub is started: through the shared pause control. Resume loads the stored
+        // pauses first (after a process death activePauses may not have loaded yet) and names those ids.
+        when (intent?.action) {
+            ACTION_PAUSE -> CapturePauses.control(this).setEnabled(false)
+            ACTION_RESUME -> CapturePauses.control(this).resumeLoaded()
         }
         return START_STICKY
     }

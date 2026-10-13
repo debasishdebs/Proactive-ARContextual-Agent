@@ -98,7 +98,7 @@ class DiagnosticsViewModel(
 
     private fun run(requiresPipeline: Boolean, block: suspend () -> String) {
         if (_state.value.busy) return
-        if (requiresPipeline && !pipeline.enabled.value) { _state.value = DiagnosticsUiState(message = PAUSED); return }
+        if (requiresPipeline && !pipeline.processingEnabled.value) { _state.value = DiagnosticsUiState(message = PAUSED); return }
         _state.value = DiagnosticsUiState(busy = true)
         viewModelScope.launch {
             val msg = try { block() } catch (c: CancellationException) { throw c } catch (e: Exception) {

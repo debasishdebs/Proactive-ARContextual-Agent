@@ -207,4 +207,40 @@ class HubPausesTest {
         t += 3_600_000
         assertEquals(listOf("recent"), pauses.recentlyResumedIds())
     }
+
+    // ---- Fix round 1 ----
+
+    /** I2: a resumed id stays a tombstone for 90 days, past the 7-day history prune; a late echo never re-adds it. */
+    @Test fun resumedIdIsNotReinsertedAfterTheHistoryPrune() = runTest {
+        pauses.add(PauseRecord("g1", PauseOrigin.GLASSES, t, null))
+        t += 1_000
+        pauses.resume(setOf("g1"))
+        t += 8 * 86_400_000L
+        pauses.pruneHistory()
+        assertFalse("history no longer covers the old interval", pauses.pausedAt(t - 8 * 86_400_000L - 500))
+        pauses.union(listOf(PauseRecord("g1", PauseOrigin.GLASSES, t - 8 * 86_400_000L - 1_000, null)))
+        assertTrue(pauses.active().isEmpty())
+        assertFalse(pauses.pausedAt(t))
+        t += 90 * 86_400_000L
+        pauses.pruneHistory()
+        assertNull("gone after 90 days", db.pauseDao().intervalFor("g1"))
+    }
+
+    /** M1: an occurrence overlapping a handled one (here: the start moved inside the window) is not re-created. */
+    @Test fun movedStartInsideAResumedWindowIsNotRecreated() = runTest {
+        quiet = QuietHours(22 * 60, 7 * 60)
+        t = at(2026, 10, 13, 23, 0)
+        qPauses.resume(setOf(qPauses.active().single().pauseId))
+        quiet = QuietHours(22 * 60 + 15, 7 * 60)
+        t += 60_000
+        assertTrue(qPauses.active().isEmpty())
+    }
+
+    /** M12: out-of-range minutes never crash; they are no window. */
+    @Test fun outOfRangeQuietMinutesAreNoWindow() = runTest {
+        assertNull(QuietWindow.occurrenceAt(QuietHours(-15, 7 * 60), t, zone))
+        assertNull(QuietWindow.occurrenceAt(QuietHours(22 * 60, 1_440), t, zone))
+        quiet = QuietHours(22 * 60, 99_999)
+        assertTrue(qPauses.active().isEmpty())
+    }
 }

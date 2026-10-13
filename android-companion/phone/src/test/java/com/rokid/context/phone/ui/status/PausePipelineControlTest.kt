@@ -63,10 +63,61 @@ class PausePipelineControlTest {
         assertEquals(1, hub.created.size)
         assertEquals(PauseOrigin.PHONE, hub.created.single().origin)
         assertNull(hub.created.single().untilMs)
-        assertTrue(flag.enabled)
-        flag.enabled = false // e.g. the legacy Config screen switched it off again: no second migration
         control(); advanceUntilIdle()
-        assertEquals(1, hub.created.size)
+        assertEquals("no second migration", 1, hub.created.size)
+    }
+
+    /**
+     * Fix round 1 I1: the migration holds the backlog. The legacy flag (which gates ingest, drain, embedding and so every
+     * model call) stays off and resumePipeline is not called until the migrated pause is resumed; that Resume does both.
+     */
+    @Test fun migrationHoldsTheBacklogUntilTheMigratedPauseIsResumed() = runCtl {
+        flag.enabled = false
+        val c = control(); advanceUntilIdle()
+        assertFalse(flag.enabled)
+        assertEquals(0, flag.resumes)
+        assertFalse(c.processingEnabled.value)
+        val other = PauseRecord("g", PauseOrigin.GLASSES, 1, null)
+        hub.active.value = hub.active.value + other
+        c.resumeIds(setOf(other.pauseId)); advanceUntilIdle()
+        assertEquals("resuming another pause doesn't release it", 0, flag.resumes)
+        c.toggle(); advanceUntilIdle()
+        assertTrue(flag.enabled)
+        assertEquals(1, flag.resumes)
+        assertTrue(c.processingEnabled.value)
+    }
+
+    @Test fun aMigratedPauseResumedBeforeARestartReleasesTheBacklogOnTheNextBuild() = runCtl {
+        flag.enabled = false
+        control(); advanceUntilIdle()
+        hub.active.value = emptyList() // resumed elsewhere (e.g. the glasses) while this process was gone
+        control(); advanceUntilIdle()
+        assertEquals(1, flag.resumes)
+    }
+
+    /** I1: after a restart activePauses starts empty (not loaded yet); the stored held pause keeps the backlog held. */
+    @Test fun anUnloadedActiveListDoesNotReleaseTheBacklog() = runCtl {
+        flag.enabled = false; flag.migrated = true; flag.held = "h"
+        hub.stored = listOf(PauseRecord("h", PauseOrigin.PHONE, 1, null))
+        control(); advanceUntilIdle()
+        assertEquals(0, flag.resumes)
+        assertFalse(flag.enabled)
+    }
+
+    /** M2: capture pauses are capture-only; processing follows the legacy flag. */
+    @Test fun processingFollowsTheLegacyFlagNotCapturePauses() = runCtl {
+        val c = control(); advanceUntilIdle()
+        c.toggle(); advanceUntilIdle()
+        assertFalse(c.enabled.value)
+        assertTrue(c.processingEnabled.value)
+    }
+
+    /** M3: after a process death the notification's Resume loads the stored pauses first, then resumes those ids. */
+    @Test fun resumeLoadedNamesTheStoredIds() = runCtl {
+        hub.stored = listOf(PauseRecord("s", PauseOrigin.PHONE, 1, null))
+        val c = control(); advanceUntilIdle()
+        c.resumeLoaded(); advanceUntilIdle()
+        assertEquals(listOf(setOf("s")), hub.resumed)
     }
 
     @Test fun pauseUntilAndResumeIdsAreExact() = runCtl {
@@ -77,6 +128,13 @@ class PausePipelineControlTest {
         c.resumeIds(setOf("a")); advanceUntilIdle()
         assertEquals(listOf(setOf("a")), hub.resumed)
         assertEquals(setOf("b", "phone1"), hub.active.value.map { it.pauseId }.toSet())
+    }
+
+    /** M2: the launch-time worker scheduling follows the processing flag, not capture pauses. */
+    @Test fun mainActivitySchedulesWorkersOnTheProcessingFlag() {
+        val src = java.io.File("src/main/java/com/rokid/context/MainActivity.kt").readText()
+        assertTrue(src.contains("if (deps.pipeline.processingEnabled.value) {"))
+        assertFalse(src.contains("deps.pipeline.enabled.value"))
     }
 
     @Test fun legacyTrueFlagOnlyMarks() = runCtl {
@@ -91,6 +149,9 @@ class FakePauseHub(private val clock: () -> Long) : PauseHub {
     override val activePauses: StateFlow<List<PauseRecord>> = active
     val created = mutableListOf<PauseRecord>()
     val resumed = mutableListOf<Set<String>>()
+    /** What the database holds (null = the same as [active]). */
+    var stored: List<PauseRecord>? = null
+    override suspend fun loadActive(): List<PauseRecord> = stored ?: active.value
     private var n = 0
     override suspend fun pausePhone(untilMs: Long?): PauseRecord =
         PauseRecord("phone${++n}", PauseOrigin.PHONE, clock(), untilMs).also { created += it; active.value = active.value + it }
@@ -103,8 +164,11 @@ class FakePauseHub(private val clock: () -> Long) : PauseHub {
 class FakeLegacyFlag : LegacyFlag {
     var enabled = true
     var migrated = false
+    var held: String? = null
+    var resumes = 0
     override fun migrated(): Boolean = migrated
-    override fun markMigrated() { migrated = true }
+    override fun markMigrated(heldPauseId: String?) { migrated = true; held = heldPauseId }
+    override fun heldPauseId(): String? = held
     override fun pipelineEnabled(): Boolean = enabled
-    override fun enablePipeline() { enabled = true }
+    override fun enablePipeline() { enabled = true; resumes++; held = null }
 }

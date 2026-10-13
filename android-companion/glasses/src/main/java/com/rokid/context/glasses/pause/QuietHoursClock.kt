@@ -28,7 +28,7 @@ class QuietHoursClock(private val settings: () -> HudSettings?) {
          * to the first valid instant; an overlap takes the earlier offset; `start == end` is no window.
          */
         fun occurrenceAt(q: QuietHours, nowMs: Long, zone: ZoneId): LongRange? {
-            if (q.startMinute == q.endMinute) return null
+            if (q.startMinute == q.endMinute || q.startMinute !in 0..1439 || q.endMinute !in 0..1439) return null
             val today = Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()
             for (startDay in listOf(today.minusDays(1), today)) {
                 val endDay = if (q.startMinute < q.endMinute) startDay else startDay.plusDays(1)
