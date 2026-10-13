@@ -1,6 +1,9 @@
 package com.rokid.context.phone.ui.settings.glasses
 
 import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,8 +18,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -129,10 +133,22 @@ fun GlassesSettingsScreen(
         item {
             SettingsCard {
                 // Fix round 1 (I2): the drag stays local; one write (one `pc_settings` push) when the finger lifts.
-                var dragging by remember(s.scale) { mutableFloatStateOf(s.scale) }
-                Text("HUD size ${String.format(Locale.US, "%.0f", dragging * 100)} %", style = MaterialTheme.typography.titleMedium)
+                // Phase 5 T16 carry: the finger's value wins while dragging, whatever the stored scale does; one write on release.
+                // Fix round 1: after release it stays until the stored scale next changes (the write landing); a cancelled
+                // gesture drops it, since onValueChangeFinished is not guaranteed then.
+                var dragging by remember { mutableStateOf<Float?>(null) }
+                var released by remember { mutableStateOf(false) }
+                val interactions = remember { MutableInteractionSource() }
+                LaunchedEffect(s.scale) { if (released) { dragging = null; released = false } }
+                LaunchedEffect(interactions) {
+                    interactions.interactions.collect { i -> if (i is DragInteraction.Cancel || i is PressInteraction.Cancel) { dragging = null; released = false } }
+                }
+                val shown = ScaleSlider.shown(dragging, s.scale)
+                Text("HUD size ${String.format(Locale.US, "%.0f", shown * 100)} %", style = MaterialTheme.typography.titleMedium)
                 Slider(
-                    value = dragging, onValueChange = { dragging = it }, onValueChangeFinished = { onScale(dragging) },
+                    value = shown, onValueChange = { dragging = it; released = false },
+                    onValueChangeFinished = { dragging?.let { v -> onScale(v); if (v == s.scale) dragging = null else released = true } },
+                    interactionSource = interactions,
                     valueRange = Hud.MIN_SCALE..Hud.MAX_SCALE, modifier = Modifier.testTag("hud_scale").semantics { contentDescription = "HUD size" },
                 )
                 Text("Position", style = MaterialTheme.typography.titleMedium)
@@ -171,4 +187,9 @@ private fun PositionGrid(selected: HudPosition, onPick: (HudPosition) -> Unit) {
             }
         }
     }
+}
+
+/** The HUD-size slider shows the finger's value while dragging and the stored scale otherwise. */
+internal object ScaleSlider {
+    fun shown(dragging: Float?, stored: Float): Float = dragging ?: stored
 }
