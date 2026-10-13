@@ -72,6 +72,7 @@ class OnboardingAiStepTest {
         v.selectPreset(AiPreset.OLLAMA); v.onUrl("box.local:11434"); v.testAi()
         v.primary {}
         assertEquals(listOf("onboarding_ollama"), env.ai.used)
+        assertEquals(listOf(true), env.ai.chosen) // final review I1: a tested preset is an explicit choice
         assertEquals(Step.PERSONA, v.state.value.step)
     }
 
@@ -79,6 +80,7 @@ class OnboardingAiStepTest {
         val env = Env(ai = FakeOnboardingAi(SeedEndpoint("azure", "Azure OpenAI", "gpt-4o")))
         val v = vm(env); v.primary {}
         assertEquals(listOf("azure"), env.ai.used)
+        assertEquals(listOf(false), env.ai.chosen) // "Use <seed>" only fills unbound roles
         assertEquals(Step.PERSONA, v.state.value.step)
         val v2 = vm(Env()); v2.secondary()
         assertEquals(Step.PERSONA, v2.state.value.step)

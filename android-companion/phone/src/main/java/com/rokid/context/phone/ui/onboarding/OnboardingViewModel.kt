@@ -213,7 +213,7 @@ class OnboardingViewModel(
         val endpointId = ai.preset?.endpointId ?: ai.seed?.id
         local.update { it.copy(ai = it.ai.copy(key = "")) }
         viewModelScope.launch(work) {
-            if (endpointId != null) deps.ai.use(endpointId)
+            if (endpointId != null) deps.ai.use(endpointId, chosen = ai.preset != null)
             withContext(main) { go(Step.PERSONA) }
         }
     }

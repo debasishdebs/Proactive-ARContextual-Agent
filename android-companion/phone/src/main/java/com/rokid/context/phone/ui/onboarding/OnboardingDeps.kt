@@ -5,6 +5,7 @@ import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Capability
 import com.rokid.context.ai.Endpoint
 import com.rokid.context.ai.EndpointKind
+import com.rokid.context.ai.EndpointSeeder
 import com.rokid.context.ai.EndpointRules
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
@@ -24,7 +25,8 @@ enum class AiPreset(val label: String, val kind: EndpointKind, val hasKey: Boole
     AZURE("Azure OpenAI", EndpointKind.AZURE_OPENAI, true, "", "https://your-resource.openai.azure.com"),
     OPENAI("OpenAI-compatible", EndpointKind.OPENAI_COMPAT, true, "gpt-4o-mini", "https://api.openai.com/v1"),
     OLLAMA("Ollama (on your network)", EndpointKind.OLLAMA, false, "llama3.2", "http://mybox.local:11434");
-    val endpointId: String get() = "onboarding_" + name.lowercase()
+    val endpointId: String get() = ID_PREFIX + name.lowercase()
+    companion object { const val ID_PREFIX = "onboarding_" }
 }
 
 /** What the user typed. [baseUrl] is already normalised by [com.rokid.context.ai.UrlNormalizer]. */
@@ -39,8 +41,12 @@ interface OnboardingAi {
     suspend fun testSeed(seed: SeedEndpoint): TestResult
     /** Saves the draft (validation failure = the failure) and runs Test on it. */
     suspend fun testDraft(draft: EndpointDraft): Result<TestResult>
-    /** Binds every still-unbound chat role to the tested endpoint. */
-    suspend fun use(endpointId: String)
+    /**
+     * Binds the chat roles to the tested endpoint. Unbound roles always; with [chosen] (the user picked and tested a
+     * preset) also every role still on a binding nobody edited ([AiGraphOnboardingAi.isUntouched]), so the choice wins
+     * over the seeder (final review I1). A binding the user changed in Settings is never replaced.
+     */
+    suspend fun use(endpointId: String, chosen: Boolean = false)
 }
 
 class AiGraphOnboardingAi(private val ai: () -> AiGraph) : OnboardingAi {
@@ -60,15 +66,33 @@ class AiGraphOnboardingAi(private val ai: () -> AiGraph) : OnboardingAi {
         g.tester.test(id, draft.model)
     }
 
-    override suspend fun use(endpointId: String) {
+    override suspend fun use(endpointId: String, chosen: Boolean) {
         val g = ai()
         val e = g.endpoints.byId(endpointId) ?: return
         val model = e.models.firstOrNull() ?: return
         for (role in Role.entries) {
             if (role == Role.EMBED || role.requiredCapability !in e.capabilities) continue
-            if (g.bindings.get(role) != null) continue
+            val current = g.bindings.get(role)
+            if (current != null && !(chosen && current.endpointId != e.id && isUntouched(current, g))) continue
             g.bindings.set(RoleBinding(role, e.id, model)).getOrThrow()
         }
+    }
+
+    /**
+     * True for a binding exactly as [com.rokid.context.ai.EndpointSeeder] or an earlier wizard run wrote it: on a seeded
+     * or `onboarding_` endpoint, with that endpoint's first model, no temperature/max-tokens, and no fallback other
+     * than the seeder's on-device one. Settings edits change at least one of those, so they are kept.
+     */
+    private suspend fun isUntouched(b: RoleBinding, g: AiGraph): Boolean {
+        val wizardOwned = b.endpointId in SEEDED_IDS || b.endpointId.startsWith(AiPreset.ID_PREFIX)
+        if (!wizardOwned || b.temperature != null || b.maxTokens != null) return false
+        if (b.model != g.endpoints.byId(b.endpointId)?.models?.firstOrNull()) return false
+        val fb = b.fallbackEndpointId ?: return b.fallbackModel == null
+        return fb == EndpointSeeder.LOCAL_ID && b.fallbackModel == g.endpoints.byId(fb)?.models?.firstOrNull()
+    }
+
+    private companion object {
+        val SEEDED_IDS = setOf(EndpointSeeder.AZURE_ID, EndpointSeeder.OLLAMA_ID, EndpointSeeder.LOCAL_ID)
     }
 }
 
