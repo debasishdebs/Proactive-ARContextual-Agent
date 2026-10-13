@@ -1,6 +1,7 @@
 package com.rokid.context.phone.ui.settings.retrieval
 
 import android.util.Log
+import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -183,32 +184,7 @@ fun RetrievalSettingsScreen(
 ) {
     SettingsPage("Retrieval", onBack, tag = "retrieval_settings") {
         item {
-            SettingsCard {
-                Text("Search mode", style = MaterialTheme.typography.titleMedium)
-                SegmentedSwitch(listOf("Lexical", "Semantic", "Hybrid"), state.mode.ordinal, { onMode(RetrievalMode.entries[it]) })
-                if (state.mode == RetrievalMode.HYBRID) {
-                    ChoiceRow("Fusion", listOf("Weighted score", "Reciprocal rank (RRF)", "CombMNZ"), state.fusionIndex, onFusion, tag = "fusion")
-                    when (state.fusionIndex) {
-                        0 -> {
-                            Text("Semantic weight ${(state.weight * 100).toInt()} % · lexical ${100 - (state.weight * 100).toInt()} %", style = MaterialTheme.typography.bodyMedium)
-                            Slider(value = state.weight, onValueChange = onWeight, valueRange = 0f..1f, modifier = Modifier.testTag("fusion_weight"))
-                        }
-                        1 -> TextFieldRow("k", state.rrfK, onRrfK, tag = "fusion_rrf_k", number = true, supporting = state.rrfError ?: "Higher k flattens the rank bonus (default 60)", isError = state.rrfError != null)
-                        else -> NoticeText("Sum of normalised scores × number of searches that found the memory.")
-                    }
-                }
-            }
-        }
-        item {
-            SettingsCard {
-                Text("Tuning", style = MaterialTheme.typography.titleMedium)
-                Text("Results: ${state.topK}", style = MaterialTheme.typography.bodyMedium)
-                Slider(value = state.topK.toFloat(), onValueChange = { onTopK(it.toInt()) }, valueRange = 1f..20f, steps = 18, modifier = Modifier.testTag("top_k"))
-                SwitchRow("Prefer recent memories", "Half-life ${String.format(Locale.US, "%.1f", state.halfLifeDays)} days", state.recency, onRecency, tag = "recency")
-                if (state.recency) Slider(value = state.halfLifeDays, onValueChange = onHalfLife, valueRange = 0.25f..30f, modifier = Modifier.testTag("half_life"))
-                Text("Minimum confidence ${String.format(Locale.US, "%.2f", state.minConfidence)}", style = MaterialTheme.typography.bodyMedium)
-                Slider(value = state.minConfidence, onValueChange = onMinConfidence, valueRange = 0f..1f, modifier = Modifier.testTag("min_confidence"))
-            }
+            RetrievalControls(state, onMode, onFusion, onWeight, onRrfK, onTopK, onRecency, onHalfLife, onMinConfidence)
         }
         item {
             SettingsCard {
@@ -231,6 +207,47 @@ fun RetrievalSettingsScreen(
                     NoticeText(r.scores, tag = "try_scores_$i")
                 }
             }
+        }
+    }
+}
+
+/** Search mode, fusion and tuning: the controls Settings > Retrieval and the flow step sheet share. */
+@Composable
+fun RetrievalControls(
+    state: RetrievalUiState,
+    onMode: (RetrievalMode) -> Unit,
+    onFusion: (Int) -> Unit,
+    onWeight: (Float) -> Unit,
+    onRrfK: (String) -> Unit,
+    onTopK: (Int) -> Unit,
+    onRecency: (Boolean) -> Unit,
+    onHalfLife: (Float) -> Unit,
+    onMinConfidence: (Float) -> Unit,
+) {
+    Column {
+        SettingsCard {
+            Text("Search mode", style = MaterialTheme.typography.titleMedium)
+            SegmentedSwitch(listOf("Lexical", "Semantic", "Hybrid"), state.mode.ordinal, { onMode(RetrievalMode.entries[it]) })
+            if (state.mode == RetrievalMode.HYBRID) {
+                ChoiceRow("Fusion", listOf("Weighted score", "Reciprocal rank (RRF)", "CombMNZ"), state.fusionIndex, onFusion, tag = "fusion")
+                when (state.fusionIndex) {
+                    0 -> {
+                        Text("Semantic weight ${(state.weight * 100).toInt()} % · lexical ${100 - (state.weight * 100).toInt()} %", style = MaterialTheme.typography.bodyMedium)
+                        Slider(value = state.weight, onValueChange = onWeight, valueRange = 0f..1f, modifier = Modifier.testTag("fusion_weight"))
+                    }
+                    1 -> TextFieldRow("k", state.rrfK, onRrfK, tag = "fusion_rrf_k", number = true, supporting = state.rrfError ?: "Higher k flattens the rank bonus (default 60)", isError = state.rrfError != null)
+                    else -> NoticeText("Sum of normalised scores × number of searches that found the memory.")
+                }
+            }
+        }
+        SettingsCard {
+            Text("Tuning", style = MaterialTheme.typography.titleMedium)
+            Text("Results: ${state.topK}", style = MaterialTheme.typography.bodyMedium)
+            Slider(value = state.topK.toFloat(), onValueChange = { onTopK(it.toInt()) }, valueRange = 1f..20f, steps = 18, modifier = Modifier.testTag("top_k"))
+            SwitchRow("Prefer recent memories", "Half-life ${String.format(Locale.US, "%.1f", state.halfLifeDays)} days", state.recency, onRecency, tag = "recency")
+            if (state.recency) Slider(value = state.halfLifeDays, onValueChange = onHalfLife, valueRange = 0.25f..30f, modifier = Modifier.testTag("half_life"))
+            Text("Minimum confidence ${String.format(Locale.US, "%.2f", state.minConfidence)}", style = MaterialTheme.typography.bodyMedium)
+            Slider(value = state.minConfidence, onValueChange = onMinConfidence, valueRange = 0f..1f, modifier = Modifier.testTag("min_confidence"))
         }
     }
 }
