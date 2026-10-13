@@ -11,6 +11,8 @@ import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.legacy.LegacyImporter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -52,6 +54,26 @@ class MemoryWipeTest {
         assertEquals(1, ai.prompts.active(PromptKey.ANSWER).version)
         g.memories.add(LegacyImporter.toMemory("m2", "short_term", 0.9, 2, "Keys on the shelf"))
         assertEquals(listOf("m2"), g.memories.search("keys", 5).map { it.id }) // FTS rebuilt after the vacuum
+    }
+
+    /** Final-review I2: cancelling the caller (the Memory screen's ViewModel) right after Delete all starts never stops it part-way. */
+    @Test fun cancellingTheCallerRightAfterTheStartStillFinishesTheWipe() = runBlocking<Unit> {
+        ctx.deleteDatabase(com.rokid.context.memory.db.DatabaseFactory.NAME)
+        val fileDb = com.rokid.context.memory.db.DatabaseFactory.buildDeferred(ctx, { false }) { ByteArray(0) }
+        try {
+            val repo = com.rokid.context.memory.MemoryRepository(fileDb.memoryDao())
+            repeat(20) { repo.add(LegacyImporter.toMemory("m$it", "short_term", 0.9, 1L + it, "Milk carton $it")) }
+            val wal = File(ctx.getDatabasePath(com.rokid.context.memory.db.DatabaseFactory.NAME).path + "-wal")
+            assertTrue("WAL in use", wal.length() > 0)
+            val legacy = File(ctx.filesDir, "memory_records.log").apply { writeText("old text") }
+            val vmScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob())
+            val job = vmScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { MemoryWipe.deleteAll(ctx, fileDb) }
+            vmScope.cancel() // the user pressed Back: the ViewModel is cleared
+            job.join() // returns once deleteAll has returned or thrown
+            assertEquals(0, fileDb.memoryDao().count())
+            assertFalse(legacy.exists())
+            assertEquals(0L, wal.length()) // the checkpoint ran
+        } finally { fileDb.close(); ctx.deleteDatabase(com.rokid.context.memory.db.DatabaseFactory.NAME) }
     }
 
     /** Task 8 carry + F21: no vector or space survives, and a JPEG still waiting in a frame folder (no row yet) goes too. */
