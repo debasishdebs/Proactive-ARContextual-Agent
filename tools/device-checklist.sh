@@ -184,7 +184,8 @@ define_step() {
   P7-6)
     TITLE="Reminder confirm race"
     INSTR="Ask 'remind me to call mom at 6': HUD Confirm; tick on glasses while tapping X on the phone within 1 s: exactly one outcome. The reminder fires at 18:00 (also after a phone reboot)."
-    MARKERS="P|confirm answered${NL}P|reminder armed" ;;
+    # ReminderExecutor.kt:57 logs "reminder armed; code=NONE" on success (code=<FailCode> when armed with a warning).
+    MARKERS="P|confirm answered${NL}P|reminder armed; code=" ;;
   P7-7)
     TITLE="Shopping auto-add + undo"
     INSTR="Always-confirm off for Shopping: ask to add milk. HUD 'Added - double-tap undo'; double-tap: the item is gone from the Shopping list; capture is NOT paused."
@@ -200,7 +201,8 @@ define_step() {
   P7-10)
     TITLE="Phone Capture now"
     INSTR="Phone 'Capture now': a photo appears in Today with source phone; the button is disabled while paused."
-    MARKERS="P|frame ingested " ;;
+    # Phone captures skip FrameIngestor ("frame ingested" is glasses-only); RokidFrameInbox.kt:192 logs the append.
+    MARKERS="P|append result=true frameId=rokid_phone_" ;;
   P7-11)
     TITLE="Forget fact cited by an Ask"
     INSTR="Forget fact on a memory cited by an Ask: the Ask shows 'Removed - a source was forgotten'; HUD Today drops it on the next frame; 'Reprocess old photos' never brings it back."

@@ -34,6 +34,14 @@ class ReminderExecutorTest {
         assertEquals(1, shadowOf(am).scheduledAlarms.size)
     }
 
+    /** OBS-2 (device run 2026-10-14): tools/device-checklist.sh P7-6 needs a success marker; it carries no user text. */
+    @Test fun successLogsReminderArmedWithoutTheTitle() = runBlocking {
+        org.robolectric.shadows.ShadowLog.clear()
+        assertEquals(ExecResult.Done("alarm:p1"), exec.execute(reminder("p1", due)))
+        val lines = org.robolectric.shadows.ShadowLog.getLogsForTag("ReminderExecutor").map { it.msg }
+        assertEquals(listOf("reminder armed; code=NONE"), lines)
+    }
+
     @Test fun reExecuteDoesNotDuplicateAlarm() = runBlocking {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         val p = reminder("p1", due)
