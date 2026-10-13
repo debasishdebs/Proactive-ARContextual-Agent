@@ -126,27 +126,41 @@ fun RolesScreen(
     SettingsPage("Models by role", onBack, tag = "roles") {
         state.rows.forEach { r ->
             item(key = r.role.name) {
-                SettingsCard {
-                    Text(r.label, style = MaterialTheme.typography.titleMedium)
-                    if (r.choices.isEmpty()) {
-                        NoticeText("No endpoint can do this yet — add one with ${if (r.role == Role.EMBED) "Embeddings" else if (r.role == Role.VISION_EXTRACT) "Vision" else "Chat"}")
-                    } else {
-                        val ids = r.choices.map { it.id }
-                        ChoiceRow("Endpoint", r.choices.map { it.name }, ids.indexOf(r.endpointId), { onEndpoint(r.role, ids[it]) }, tag = "role_${r.role.name}_endpoint")
-                        val models = r.choices.firstOrNull { it.id == r.endpointId }?.models.orEmpty()
-                        if (models.isNotEmpty()) ChoiceRow("Model", models, models.indexOf(r.model), { onModel(r.role, models[it]) }, tag = "role_${r.role.name}_model")
-                        if (r.role != Role.EMBED && r.endpointId != null) {
-                            TextFieldRow("Temperature", r.temperature, { onTemperature(r.role, it) }, tag = "role_${r.role.name}_temperature", number = true, placeholder = "provider default")
-                            TextFieldRow("Max tokens", r.maxTokens, { onMaxTokens(r.role, it) }, tag = "role_${r.role.name}_max_tokens", number = true, placeholder = "provider default")
-                            val fallbacks = listOf<String?>(null) + ids.filter { it != r.endpointId }
-                            ChoiceRow("Fallback", fallbacks.map { id -> r.choices.firstOrNull { it.id == id }?.name ?: "None" }, fallbacks.indexOf(r.fallbackId).coerceAtLeast(0),
-                                { onFallback(r.role, fallbacks[it]) }, tag = "role_${r.role.name}_fallback")
-                        }
-                        if (r.endpointId != null) SecondaryAction("Unset", { onClear(r.role) }, tag = "role_${r.role.name}_clear")
-                    }
-                    r.error?.let { NoticeText(it, error = true, tag = "role_${r.role.name}_error") }
-                }
+                RoleBindingCard(r, onEndpoint, onModel, onFallback, onTemperature, onMaxTokens, onClear)
             }
         }
+    }
+}
+
+/** One role's binding controls (endpoint, model, temperature, max tokens, fallback); Models by role and the flow step sheet share it. */
+@Composable
+fun RoleBindingCard(
+    r: RoleRowUi,
+    onEndpoint: (Role, String) -> Unit,
+    onModel: (Role, String) -> Unit,
+    onFallback: (Role, String?) -> Unit,
+    onTemperature: (Role, String) -> Unit,
+    onMaxTokens: (Role, String) -> Unit,
+    onClear: (Role) -> Unit,
+) {
+    SettingsCard {
+        Text(r.label, style = MaterialTheme.typography.titleMedium)
+        if (r.choices.isEmpty()) {
+            NoticeText("No endpoint can do this yet — add one with ${if (r.role == Role.EMBED) "Embeddings" else if (r.role == Role.VISION_EXTRACT) "Vision" else "Chat"}")
+        } else {
+            val ids = r.choices.map { it.id }
+            ChoiceRow("Endpoint", r.choices.map { it.name }, ids.indexOf(r.endpointId), { onEndpoint(r.role, ids[it]) }, tag = "role_${r.role.name}_endpoint")
+            val models = r.choices.firstOrNull { it.id == r.endpointId }?.models.orEmpty()
+            if (models.isNotEmpty()) ChoiceRow("Model", models, models.indexOf(r.model), { onModel(r.role, models[it]) }, tag = "role_${r.role.name}_model")
+            if (r.role != Role.EMBED && r.endpointId != null) {
+                TextFieldRow("Temperature", r.temperature, { onTemperature(r.role, it) }, tag = "role_${r.role.name}_temperature", number = true, placeholder = "provider default")
+                TextFieldRow("Max tokens", r.maxTokens, { onMaxTokens(r.role, it) }, tag = "role_${r.role.name}_max_tokens", number = true, placeholder = "provider default")
+                val fallbacks = listOf<String?>(null) + ids.filter { it != r.endpointId }
+                ChoiceRow("Fallback", fallbacks.map { id -> r.choices.firstOrNull { it.id == id }?.name ?: "None" }, fallbacks.indexOf(r.fallbackId).coerceAtLeast(0),
+                    { onFallback(r.role, fallbacks[it]) }, tag = "role_${r.role.name}_fallback")
+            }
+            if (r.endpointId != null) SecondaryAction("Unset", { onClear(r.role) }, tag = "role_${r.role.name}_clear")
+        }
+        r.error?.let { NoticeText(it, error = true, tag = "role_${r.role.name}_error") }
     }
 }
