@@ -23,19 +23,21 @@ class NudgeRunGate(
     private val body: suspend () -> NudgeRun,
 ) {
     suspend fun run(): Boolean {
-        if (hud() == null) return false
-        val now = clock()
-        val last = prefs.getLong(KEY_LAST_RUN, 0L)
-        if (last in (now - MIN_GAP_MS + 1)..now) return false
-        prefs.edit().putLong(KEY_LAST_RUN, now).commit()
+        var ran = false
         try {
+            if (hud() == null) return false
+            val now = clock()
+            val last = prefs.getLong(KEY_LAST_RUN, 0L)
+            if (last in (now - MIN_GAP_MS + 1)..now) return false
+            prefs.edit().putLong(KEY_LAST_RUN, now).commit()
+            ran = true
             body()
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
             Log.i(TAG, "nudge run failed: ${SafeLog.describe(e)}") // the next summarizer pass tries again
         }
-        return true
+        return ran
     }
 
     companion object {

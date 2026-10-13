@@ -8,6 +8,10 @@ import java.time.Instant
 enum class Gate { PASS, QUIET_HOURS, CAP_REACHED, DUPLICATE, OFF }
 
 /**
+ * Cap invariant: [check] counts and NudgeEngine inserts in two steps, not one transaction. That is safe only because
+ * every engine run goes through the unique work "nudge_engine" (ExistingWorkPolicy.KEEP), so runs never overlap. A
+ * second caller of NudgeEngine would have to keep that serialisation, or the cap could be exceeded by one.
+ *
  * R-61 gates, in order: a cap of 0 → OFF; local now inside quiet hours → QUIET_HOURS (dropped, not deferred); nudges
  * since local midnight ≥ cap → CAP_REACHED; the same collapsed, lower-cased text in the last 24 h → DUPLICATE.
  */

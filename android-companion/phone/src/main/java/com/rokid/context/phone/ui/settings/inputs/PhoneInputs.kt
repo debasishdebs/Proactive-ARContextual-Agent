@@ -1,6 +1,5 @@
 package com.rokid.context.phone.ui.settings.inputs
 
-import android.content.ActivityNotFoundException
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -18,6 +17,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.capture.CaptureNowControl
+import com.rokid.context.phone.capture.CapturePrepare
+import com.rokid.context.phone.capture.CaptureResult
 import com.rokid.context.phone.ui.settings.ChoiceRow
 import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.PrimaryAction
@@ -92,6 +93,7 @@ class PhoneInputsViewModel(
     /** Opening the screen re-checks the gate (and probes external audio when needed: the app is in front). */
     init {
         voice.recheck()
+        capture.refresh() // the pause set is read on IO, never taken from a stale hub list
         viewModelScope.launch {
             voice.capabilities.collect { c ->
                 local.update { if (it.notice == CHECKING && it.checkingFrom != c) it.copy(notice = null, checkingFrom = null) else it }
@@ -117,25 +119,41 @@ class PhoneInputsViewModel(
     fun onResume() {
         if (!resumedOnce) { resumedOnce = true; return }
         voice.recheck()
+        capture.refresh()
     }
 
     fun openSettings() = voice.openSpeechSettings()
 
-    /** R-66: makes a camera target off Main, then [launch]es TakePicture with it. Ignored while paused or busy. */
+    /** R-66: re-checks the pause set and makes a camera target off Main, then [launch]es TakePicture with it. */
     fun captureNow(launch: (Uri) -> Unit) {
         if (local.value.captureBusy || capture.paused.value) return
         local.update { it.copy(captureBusy = true, captureNotice = null) }
         viewModelScope.launch {
-            val uri = try { capture.prepare() } catch (c: CancellationException) { local.update { it.copy(captureBusy = false) }; throw c } catch (e: Exception) { null }
-            if (uri == null) local.update { it.copy(captureBusy = false, captureNotice = CAPTURE_FAILED) } else launch(uri)
+            val prepared = try { capture.prepare() } catch (c: CancellationException) { local.update { it.copy(captureBusy = false) }; throw c } catch (e: Exception) { CapturePrepare.Failed }
+            when (prepared) {
+                is CapturePrepare.Ready -> try {
+                    launch(prepared.uri)
+                } catch (c: CancellationException) {
+                    local.update { it.copy(captureBusy = false) }; throw c
+                } catch (e: Exception) { // no camera app, a security refusal: the button is free again
+                    onPictureTaken(saved = false, failed = true)
+                }
+                CapturePrepare.Paused -> local.update { it.copy(captureBusy = false, captureNotice = CAPTURE_PAUSED) }
+                CapturePrepare.Failed -> local.update { it.copy(captureBusy = false, captureNotice = CAPTURE_FAILED) }
+            }
         }
     }
 
     /** TakePicture returned. Cancelled: nothing is written and nothing is said. [failed]: the camera couldn't open. */
     fun onPictureTaken(saved: Boolean, failed: Boolean = false) {
         viewModelScope.launch {
-            val ok = try { capture.finish(saved) } catch (c: CancellationException) { local.update { it.copy(captureBusy = false) }; throw c } catch (e: Exception) { false }
-            val notice = when { ok -> CAPTURED; saved || failed -> CAPTURE_FAILED; else -> null }
+            val r = try { capture.finish(saved) } catch (c: CancellationException) { local.update { it.copy(captureBusy = false) }; throw c } catch (e: Exception) { CaptureResult.FAILED }
+            val notice = when (r) {
+                CaptureResult.SAVED -> CAPTURED
+                CaptureResult.PAUSED -> CAPTURE_PAUSED
+                CaptureResult.FAILED -> if (saved || failed) CAPTURE_FAILED else null
+                CaptureResult.CANCELLED -> if (failed) CAPTURE_FAILED else null
+            }
             local.update { it.copy(captureBusy = false, captureNotice = notice) }
         }
     }
@@ -223,7 +241,7 @@ fun PhoneInputsScreen(
                 Text("Phone camera", style = MaterialTheme.typography.titleMedium)
                 PrimaryAction(
                     "Capture now",
-                    { onCaptureNow { uri -> try { camera.launch(uri) } catch (e: ActivityNotFoundException) { onPictureTaken(false, true) } } },
+                    { onCaptureNow { uri -> camera.launch(uri) } },
                     tag = "capture_now", enabled = !state.capturePaused && !state.captureBusy,
                 )
                 if (state.capturePaused) NoticeText(PhoneInputsViewModel.CAPTURE_PAUSED, tag = "capture_paused")
