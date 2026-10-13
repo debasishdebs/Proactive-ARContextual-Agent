@@ -53,20 +53,25 @@ class ActionEngine(
     val events: SharedFlow<Proposed> = _events.asSharedFlow()
 
     private val undoUntil = ConcurrentHashMap<String, Long>()
+    /** Ids whose executor is running in this process: [recover] and a second runner skip them (fix round 1 I-1). */
+    private val inFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /**
      * One proposal per (origin, originId): the id is [idFor], so a repeat call (a re-run ask with the same askId) loses
      * the insert, returns the first proposal (HUD NONE) and executes nothing.
      */
     suspend fun propose(origin: ProposalOrigin, originId: String, a: ProposedAction, nowMs: Long): Proposed? = withContext(work) {
-        val (proposed, run) = store(origin, originId, ActionParams.from(a, zone()), nowMs)
+        val params = ActionParams.from(a, zone())
+        if (params is ActionParams.Shopping && params.items.none { it.name.isNotBlank() }) return@withContext null
+        val (proposed, run) = store(origin, originId, params, nowMs)
             ?: return@withContext repo.byId(idFor(origin, originId))?.let(::existing)
         val out = if (run != null) {
-            val ok = execute(run)
-            if (ok) proposed.copy(state = ProposalState.EXECUTED).also { undoUntil[it.proposalId] = it.undoUntilMs!! }
+            // Claimed in store() before the insert; the window starts when the effect has landed (I-2).
+            val until = executeClaimed(run)
+            if (until != null) proposed.copy(state = ProposalState.EXECUTED, undoUntilMs = until)
             else proposed.copy(state = ProposalState.FAILED, hud = HudSurface.NONE, undoUntilMs = null)
         } else proposed
-        if (out.state == ProposalState.PENDING) scheduleExpiry(out.proposalId, nowMs + ttl(origin) - clock())
+        if (out.state == ProposalState.PENDING) repo.byId(out.proposalId)?.let { scheduleExpiry(it.id, it.expiresAt - clock()) }
         _events.tryEmit(out)
         out
     }
@@ -74,9 +79,7 @@ class ActionEngine(
     /** [by] ∈ hud | phone | notification. A late or second answer gets `Lost(current)`. */
     suspend fun respond(proposalId: String, yes: Boolean, by: String): Resolve = withContext(work) {
         val r = repo.resolve(proposalId, if (yes) Decision.APPROVE else Decision.DECLINE, by, clock())
-        if (r == Resolve.Won(ProposalState.EXECUTING)) {
-            repo.byId(proposalId)?.let { if (execute(it)) undoUntil[proposalId] = clock() + UNDO_MS }
-        }
+        if (r == Resolve.Won(ProposalState.EXECUTING)) repo.byId(proposalId)?.let { if (inFlight.add(it.id)) executeClaimed(it) }
         r
     }
 
@@ -97,7 +100,7 @@ class ActionEngine(
 
     /** At install: re-execute rows left EXECUTING (idempotent executors), expire what is due, re-arm the other timers. */
     suspend fun recover() = withContext(work) {
-        repo.inState(ProposalState.EXECUTING).forEach { execute(it) }
+        repo.inState(ProposalState.EXECUTING).forEach { if (inFlight.add(it.id)) executeClaimed(it) }
         val now = clock()
         repo.expireDue(now)
         repo.inState(ProposalState.PENDING).forEach { scheduleExpiry(it.id, it.expiresAt - now) }
@@ -117,22 +120,26 @@ class ActionEngine(
         val id = idFor(origin, originId)
         val toggle = settings.toggle(params.type)
         val hudWouldConfirm = origin == ProposalOrigin.ASK || verbosity() == Verbosity.MAX
-        val past = params.firesAtMs?.let { it <= nowMs } == true
+        // Handling time, not ask time: a proposal handled late still gets its full answer window (I-2).
+        val handledAt = maxOf(nowMs, clock())
+        val past = params.firesAtMs?.let { it <= handledAt } == true
         val (state, expiresAt) = when {
-            past -> ProposalState.EXPIRED to nowMs
-            !toggle.enabled -> ProposalState.SUPPRESSED to nowMs
-            toggle.alwaysConfirm -> ProposalState.PENDING to nowMs + ttl(origin)
-            else -> ProposalState.EXECUTING to nowMs
+            past -> ProposalState.EXPIRED to handledAt
+            !toggle.enabled -> ProposalState.SUPPRESSED to handledAt
+            toggle.alwaysConfirm -> ProposalState.PENDING to handledAt + ttl(origin)
+            else -> ProposalState.EXECUTING to handledAt
         }
         val row = ProposalEntity(
             id, origin.name, originId, params.type.name, ActionParams.encode(params), state.name, expiresAt,
             resolvedBy = if (state == ProposalState.EXECUTING) AUTO else null, createdRef = null, createdAt = nowMs,
         )
-        if (!repo.create(row, nowMs)) return null
+        if (state == ProposalState.EXECUTING && !inFlight.add(id)) return null
+        val created = try { repo.create(row, nowMs) } catch (t: Throwable) { inFlight.remove(id); throw t }
+        if (!created) { if (state == ProposalState.EXECUTING) inFlight.remove(id); return null }
         if (past) audit(id, PAST, "", nowMs)
         return when (state) {
             ProposalState.PENDING -> Proposed(id, state, if (hudWouldConfirm) HudSurface.CONFIRM else HudSurface.NONE, null) to null
-            ProposalState.EXECUTING -> Proposed(id, state, if (hudWouldConfirm) HudSurface.UNDO_TOAST else HudSurface.NONE, nowMs + UNDO_MS) to row
+            ProposalState.EXECUTING -> Proposed(id, state, if (hudWouldConfirm) HudSurface.UNDO_TOAST else HudSurface.NONE, null) to row
             else -> Proposed(id, state, HudSurface.NONE, null) to null
         }
     }
@@ -140,7 +147,17 @@ class ActionEngine(
     private fun existing(p: ProposalEntity) =
         Proposed(p.id, ProposalState.entries.firstOrNull { it.name == p.state } ?: ProposalState.FAILED, HudSurface.NONE, null)
 
-    /** EXECUTING → EXECUTED / FAILED. True when it ended EXECUTED. Never throws (except cancellation). */
+    /**
+     * EXECUTING → EXECUTED / FAILED for an id the caller already added to [inFlight]; releases it. Returns the undo
+     * deadline (`clock() + UNDO_MS` after the effect landed) when it ended EXECUTED, else null. Never throws (except
+     * cancellation).
+     */
+    private suspend fun executeClaimed(p: ProposalEntity): Long? = try {
+        if (execute(p)) (clock() + UNDO_MS).also { undoUntil[p.id] = it } else null
+    } finally {
+        inFlight.remove(p.id)
+    }
+
     private suspend fun execute(p: ProposalEntity): Boolean {
         val exec = ActionParams.typeOf(p.type)?.let(executors::get)
         val result = try {

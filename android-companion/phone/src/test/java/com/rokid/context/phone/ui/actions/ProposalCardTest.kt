@@ -18,13 +18,15 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
-class FakeCardSource(ui: ProposalUi?, private val answer: Resolve = Resolve.Won(ProposalState.EXECUTING)) : ProposalCardSource {
+class FakeCardSource(
+    ui: ProposalUi?, private val answer: Resolve = Resolve.Won(ProposalState.EXECUTING), private val undoOk: Boolean = true, private val undoMs: Long = 0,
+) : ProposalCardSource {
     val flow = MutableStateFlow(ui)
     val answers = mutableListOf<Boolean>()
     override fun observe(originId: String): Flow<ProposalUi?> = flow
     override suspend fun respond(proposalId: String, yes: Boolean): Resolve { answers += yes; return answer }
-    override suspend fun undo(proposalId: String) = true
-    override fun undoRemainingMs(proposalId: String): Long = 0
+    override suspend fun undo(proposalId: String) = undoOk
+    override fun undoRemainingMs(proposalId: String): Long = undoMs
 }
 
 @RunWith(AndroidJUnit4::class)
@@ -67,5 +69,12 @@ class ProposalCardTest {
         compose.onNodeWithText("Undone").assertIsDisplayed()
         src.flow.value = ui(ProposalState.EXPIRED)
         compose.onNodeWithText("Expired").assertIsDisplayed()
+    }
+
+    @Test fun failedUndoSaysSo() {
+        val src = FakeCardSource(ui(ProposalState.EXECUTED, canUndo = true), undoOk = false, undoMs = 60_000)
+        compose.setContent { PcTheme { ProposalCard("a1", source = src) } }
+        compose.onNodeWithText("Undo").performClick()
+        compose.waitUntil(3_000) { compose.onAllNodes(androidx.compose.ui.test.hasText("Couldn't undo")).fetchSemanticsNodes().isNotEmpty() }
     }
 }

@@ -15,6 +15,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /** The action engine's process-wide graph (R-62). */
 interface ActionsGraphApi {
@@ -36,12 +39,16 @@ object ActionsGraph {
     @Volatile private var verbosity: () -> Verbosity = { Verbosity.MEDIUM }
     @Volatile private var recovered = false
 
-    fun get(context: Context): ActionsGraphApi = instance ?: synchronized(this) {
-        instance ?: Impl(context.applicationContext).also { instance = it }
-    }
+    private val _ready = MutableStateFlow<ActionsGraphApi?>(null)
+    /** Non-null once the graph exists and its settings prefs were read on IO: screens collect this (never read prefs on Main). */
+    val ready: StateFlow<ActionsGraphApi?> = _ready.asStateFlow()
 
-    /** The graph if any caller built it (the hub does at app start); for screens that get no Context (Settings rules). */
-    fun current(): ActionsGraphApi? = instance
+    fun get(context: Context): ActionsGraphApi = instance ?: synchronized(this) {
+        instance ?: Impl(context.applicationContext).also { g ->
+            instance = g
+            g.scope.launch(Dispatchers.IO) { runCatching { g.settings.settings.value }; _ready.value = g }
+        }
+    }
 
     fun install(context: Context, verbosity: () -> Verbosity) {
         this.verbosity = verbosity
@@ -60,7 +67,7 @@ object ActionsGraph {
     private class Impl(app: Context) : ActionsGraphApi {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         private val memory by lazy { MemoryGraph.get(app) }
-        override val settings by lazy { ActionSettingsStore(app.getSharedPreferences(ActionSettingsStore.PREFS, Context.MODE_PRIVATE)) }
+        override val settings = ActionSettingsStore { app.getSharedPreferences(ActionSettingsStore.PREFS, Context.MODE_PRIVATE) }
         override val engine: ActionEngine by lazy {
             ActionEngine(
                 memory.proposals, settings, executors(app, memory), { verbosity() }, scope, Dispatchers.IO, System::currentTimeMillis,

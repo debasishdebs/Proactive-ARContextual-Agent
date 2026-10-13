@@ -37,7 +37,8 @@ import kotlinx.coroutines.launch
 @Suppress("UNUSED_PARAMETER")
 @Composable
 fun ShoppingRoute(deps: SettingsDeps, back: () -> Unit) {
-    val dao = remember { ActionsGraph.current()?.shopping }
+    val graph by ActionsGraph.ready.collectAsStateWithLifecycle()
+    val dao = graph?.shopping
     val items by remember(dao) { dao?.observeAll()?.flowOn(Dispatchers.IO) ?: emptyFlow() }.collectAsStateWithLifecycle(emptyList())
     val scope = rememberCoroutineScope()
     ShoppingListScreen(

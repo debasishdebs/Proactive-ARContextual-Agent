@@ -11,7 +11,7 @@ import java.time.ZoneId
 
 /**
  * Inserts one event tagged `UID_2445 = "pc-<proposalId>"`; an existing tagged event is reused, so a re-run never inserts
- * twice. Calendar = the primary visible calendar with access ≥ CONTRIBUTOR. A revoked permission is NO_PERMISSION.
+ * twice (an event the user deleted, DELETED = 1, is not reused). Calendar = the primary visible calendar with access ≥ CONTRIBUTOR. A revoked permission is NO_PERMISSION.
  */
 class CalendarExecutor(private val resolver: ContentResolver, private val zone: () -> ZoneId = ZoneId::systemDefault) : ActionExecutor {
     override suspend fun execute(p: ProposalEntity): ExecResult = try {
@@ -47,7 +47,7 @@ class CalendarExecutor(private val resolver: ContentResolver, private val zone: 
     }
 
     private fun existing(proposalId: String): Long? = resolver.query(
-        CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), "${CalendarContract.Events.UID_2445} = ?", arrayOf(uid(proposalId)), null,
+        CalendarContract.Events.CONTENT_URI, arrayOf(CalendarContract.Events._ID), "${CalendarContract.Events.UID_2445} = ? AND ${CalendarContract.Events.DELETED} = 0", arrayOf(uid(proposalId)), null,
     )?.use { if (it.moveToFirst()) it.getLong(0) else null }
 
     private fun writableCalendar(): Long? = resolver.query(

@@ -1,8 +1,5 @@
 package com.rokid.context.phone.ui.settings.connectors
 
-import android.Manifest
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,39 +18,40 @@ import com.rokid.context.connectors.actions.ActionToggle
 import com.rokid.context.connectors.actions.ActionType
 import com.rokid.context.connectors.actions.ActionsGraph
 import com.rokid.context.core.ui.theme.PcColors
+import com.rokid.context.phone.ui.actions.CalendarAccess
+import com.rokid.context.phone.ui.actions.rememberCalendarAccess
 import com.rokid.context.phone.ui.settings.NoticeText
+import com.rokid.context.phone.ui.settings.SecondaryAction
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsDeps
 import com.rokid.context.phone.ui.settings.SettingsPage
 import com.rokid.context.phone.ui.settings.SwitchRow
 
 /**
- * Settings › Actions & tools (R-62, R-63). The engine's store comes from the process graph the hub built
- * ([ActionsGraph.current]): SettingsDeps has no actions member yet (see the Stream B report).
+ * Settings › Actions & tools (R-62, R-63). The store comes from [ActionsGraph.ready] (published once its prefs were
+ * read on IO), so "starting" clears by itself; SettingsDeps has no actions member (see the Stream B report).
  */
 @Suppress("UNUSED_PARAMETER")
 @Composable
 fun ActionsRoute(deps: SettingsDeps, back: () -> Unit, openShopping: () -> Unit) {
-    var pendingCallback by remember { mutableStateOf<((Boolean) -> Unit)?>(null) }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { r ->
-        pendingCallback?.invoke(r.isNotEmpty() && r.values.all { it }); pendingCallback = null
-    }
-    val store = remember { ActionsGraph.current()?.settings }
+    val graph by ActionsGraph.ready.collectAsStateWithLifecycle()
+    val access = rememberCalendarAccess()
+    val store = graph?.settings
     if (store == null) {
         SettingsPage("Actions & tools", back, tag = "settings_actions") { item { SettingsCard { NoticeText("Actions are starting \u2014 come back in a moment") } } }
         return
     }
-    ActionsSettings(store, requestCalendar = { cb ->
-        pendingCallback = cb
-        launcher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
-    }, back = back, openShopping = openShopping)
+    ActionsSettings(store, requestCalendar = access.request, back = back, openShopping = openShopping, openAppSettings = access.openAppSettings)
 }
 
 /** Stateless over [store]; [requestCalendar] asks for calendar access and reports the result. */
 @Composable
-fun ActionsSettings(store: ActionSettingsStore, requestCalendar: ((Boolean) -> Unit) -> Unit, back: () -> Unit, openShopping: () -> Unit) {
+fun ActionsSettings(
+    store: ActionSettingsStore, requestCalendar: ((CalendarAccess) -> Unit) -> Unit, back: () -> Unit, openShopping: () -> Unit,
+    openAppSettings: () -> Unit = {},
+) {
     val toggles by store.settings.collectAsStateWithLifecycle()
-    var calendarDenied by remember { mutableStateOf(false) }
+    var calendarDenied by remember { mutableStateOf<CalendarAccess?>(null) }
     SettingsPage("Actions & tools", back, tag = "settings_actions") {
         ActionType.entries.forEach { type ->
             val t = toggles[type] ?: ActionSettingsStore.default(type)
@@ -61,9 +59,9 @@ fun ActionsSettings(store: ActionSettingsStore, requestCalendar: ((Boolean) -> U
                 SettingsCard {
                     SwitchRow(title(type), subtitle(type), t.enabled, onChange = { on ->
                         if (on && type == ActionType.CALENDAR_EVENT) {
-                            requestCalendar { granted ->
-                                calendarDenied = !granted
-                                if (granted) store.set(type, t.copy(enabled = true))
+                            requestCalendar { result ->
+                                calendarDenied = result.takeIf { it != CalendarAccess.GRANTED }
+                                if (result == CalendarAccess.GRANTED) store.set(type, t.copy(enabled = true))
                             }
                         } else {
                             store.set(type, t.copy(enabled = on))
@@ -71,7 +69,10 @@ fun ActionsSettings(store: ActionSettingsStore, requestCalendar: ((Boolean) -> U
                     }, tag = "enabled_${type.name}")
                     SwitchRow("Always confirm", "Ask on the glasses or phone first", t.alwaysConfirm, onChange = { store.set(type, ActionToggle(t.enabled, it)) },
                         tag = "confirm_${type.name}", enabled = t.enabled)
-                    if (type == ActionType.CALENDAR_EVENT && calendarDenied && !t.enabled) NoticeText("Calendar permission needed", error = true, tag = "calendar_denied")
+                    if (type == ActionType.CALENDAR_EVENT && calendarDenied != null && !t.enabled) {
+                        NoticeText("Calendar permission needed", error = true, tag = "calendar_denied")
+                        if (calendarDenied == CalendarAccess.DENIED_FOREVER) SecondaryAction("Open app settings", openAppSettings, tag = "open_app_settings")
+                    }
                 }
             }
         }

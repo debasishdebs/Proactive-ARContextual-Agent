@@ -71,7 +71,9 @@ fun ProposalCard(originId: String, modifier: Modifier = Modifier, source: Propos
                     Text(p.summary, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(stateText(p), style = MaterialTheme.typography.titleSmall, color = PcColors.InkSoft, modifier = Modifier.padding(top = 12.dp))
-                        if (p.state == ProposalState.EXECUTED && undoOffered) TextButton(onClick = { scope.launch { src.undo(p.id) } }) { Text("Undo") }
+                        if (p.state == ProposalState.EXECUTED && undoOffered) TextButton(onClick = {
+                            scope.launch { if (!src.undo(p.id)) snack.showSnackbar(UNDO_FAILED) }
+                        }) { Text("Undo") }
                     }
                 }
             }
@@ -79,6 +81,8 @@ fun ProposalCard(originId: String, modifier: Modifier = Modifier, source: Propos
         }
     }
 }
+
+private const val UNDO_FAILED = "Couldn't undo"
 
 private fun stateText(p: ProposalUi): String = when (p.state) {
     ProposalState.EXECUTING -> "Adding\u2026"
