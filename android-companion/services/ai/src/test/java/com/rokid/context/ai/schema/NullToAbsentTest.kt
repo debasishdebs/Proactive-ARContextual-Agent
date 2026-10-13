@@ -32,4 +32,10 @@ class NullToAbsentTest {
         val rec = SchemaRefs.parse("""{"${'$'}ref":"#/${'$'}defs/A","${'$'}defs":{"A":{"oneOf":[{"${'$'}ref":"#/${'$'}defs/A"}]}}}""")
         assertEquals(j("""{"a":null}"""), NullToAbsent.apply(rec, j("""{"a":null}""")))
     }
+
+    /** Phase 5 T3 carry: properties beside a union apply too. */
+    @Test fun propertiesBesideAUnionAreNormalisedToo() {
+        val s = SchemaRefs.parse("""{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"],"anyOf":[{"required":["a"]}]}""")
+        assertEquals(j("""{"a":"x"}"""), NullToAbsent.apply(s, j("""{"a":"x","b":null}""")))
+    }
 }

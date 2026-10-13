@@ -27,6 +27,18 @@ object JsonSchemaValidator {
         return mutableListOf<String>().also { check(schema, schema, value, "$", it, 0) }
     }
 
+    /** JSON equality with numbers compared by value (JSON Schema `const`/`enum`: 1 == 1.0), recursively. */
+    internal fun same(a: JsonElement, b: JsonElement): Boolean = when {
+        a is JsonPrimitive && b is JsonPrimitive && a != JsonNull && b != JsonNull && !a.isString && !b.isString -> {
+            val x = a.content.toBigDecimalOrNull()
+            val y = b.content.toBigDecimalOrNull()
+            if (x != null && y != null) x.compareTo(y) == 0 else a == b
+        }
+        a is JsonObject && b is JsonObject -> a.keys == b.keys && a.all { (k, e) -> same(e, b.getValue(k)) }
+        a is JsonArray && b is JsonArray -> a.size == b.size && a.indices.all { same(a[it], b[it]) }
+        else -> a == b
+    }
+
     /** Errors of [value] against one branch. The caller has already bounded the value's depth. */
     internal fun errorsOf(root: JsonObject, schema: JsonObject, value: JsonElement, path: String, depth: Int = 0): List<String> =
         mutableListOf<String>().also { check(root, schema, value, path, it, depth) }
@@ -43,8 +55,8 @@ object JsonSchemaValidator {
         val s = SchemaRefs.resolve(root, node)
         val types = SchemaRefs.typeNames(s["type"])
         if (types.isNotEmpty() && types.none { matches(it, v) }) { out.report("$path: must be ${types.joinToString(" or ")}"); return }
-        s["const"]?.let { if (it != v) out.report("$path: must be $it") }
-        (s["enum"] as? JsonArray)?.let { allowed -> if (v !in allowed) out.report("$path: must be one of ${allowed.joinToString(", ")}") }
+        s["const"]?.let { if (!same(it, v)) out.report("$path: must be $it") }
+        (s["enum"] as? JsonArray)?.let { allowed -> if (allowed.none { same(it, v) }) out.report("$path: must be one of ${allowed.joinToString(", ")}") }
         (s["anyOf"] as? JsonArray)?.let { b ->
             if (b.none { errorsOf(root, it.jsonObject, v, path, depth + 1).isEmpty() }) out.report("$path: matches none of the allowed shapes")
         }
@@ -90,7 +102,7 @@ object JsonSchemaValidator {
             val ps = props[k] as? JsonObject
             when {
                 ps != null -> check(root, ps, child, "$path.${key(k)}", out, depth + 1)
-                s["additionalProperties"] is JsonObject -> check(root, s["additionalProperties"]!!.jsonObject, child, "$path.${key(k)}", out, depth + 1)
+                s["additionalProperties"] is JsonObject -> check(root, s["additionalProperties"]!!.jsonObject, child, "$path.*", out, depth + 1)
                 (s["additionalProperties"] as? JsonPrimitive)?.booleanOrNull == false -> out.report("$path: unexpected property '${key(k)}'")
             }
         }
