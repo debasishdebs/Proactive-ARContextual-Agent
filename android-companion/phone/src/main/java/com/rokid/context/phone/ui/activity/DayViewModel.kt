@@ -48,7 +48,7 @@ class DayViewModel(
                     flowOf(notFound)
                 } else {
                     combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r)) { m, f ->
-                        DayUiState(false, true, d, ActivityModel.dayLabel(d, today()), Timeline.sections(m, f, z), f.size)
+                        DayUiState(false, true, d, ActivityModel.dayLabel(d, today()), Timeline.sections(m, Timeline.framesFor(m, f, timeline::framesByIds), z, d), f.size)
                     }
                 }
             }

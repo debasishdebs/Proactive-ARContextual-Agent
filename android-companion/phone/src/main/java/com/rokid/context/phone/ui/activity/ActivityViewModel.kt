@@ -47,7 +47,7 @@ class ActivityViewModel(
         val r = w.millis(z)
         if (p == Period.TODAY) {
             combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r), asks.timesIn(r), nudges.timesIn(r)) { mems, frames, a, n ->
-                ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(frames.size, mems.size, a.size, n.size), sections = Timeline.sections(mems, frames, z), today = d)
+                ActivityUiState(p, ActivityModel.header(w, d), tiles = Tiles(frames.size, mems.size, a.size, n.size), sections = Timeline.sections(mems, Timeline.framesFor(mems, frames, timeline::framesByIds), z, d), today = d)
             }
         } else {
             combine(timeline.frameTimesIn(r), timeline.visibleMemoryTimesIn(r), asks.timesIn(r), nudges.timesIn(r)) { f, m, a, n ->

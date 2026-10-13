@@ -28,6 +28,7 @@ class ReminderExecutor(private val context: Context) : ActionExecutor {
             logCode(FailCode.NOTIFICATIONS_OFF)
             return ExecResult.Done("alarm:${p.id}", FailCode.NOTIFICATIONS_OFF)
         }
+        logCode(null)
         return ExecResult.Done("alarm:${p.id}")
     }
 
@@ -51,8 +52,9 @@ class ReminderExecutor(private val context: Context) : ActionExecutor {
         alarms.setWindow(AlarmManager.RTC_WAKEUP, r.dueAtMs, WINDOW_MS, pi)
     }
 
-    private fun logCode(code: FailCode) {
-        try { Log.i(TAG, "reminder armed; code=${code.name}") } catch (_: RuntimeException) { /* plain JVM */ }
+    /** Success marker for tools/device-checklist.sh (OBS-2): codes only, never the title or due time (log redaction). */
+    private fun logCode(code: FailCode?) {
+        try { Log.i(TAG, "reminder armed; code=${code?.name ?: "NONE"}") } catch (_: RuntimeException) { /* plain JVM */ }
     }
 
     companion object {
