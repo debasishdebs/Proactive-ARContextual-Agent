@@ -52,6 +52,22 @@ class ForgetActionsTest {
         assertEquals(1, WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(ResummarizeWorker.NAME).get().size)
     }
 
+    /** Integration carry 3: Forget cancels the redacted proposal's posted notifications (Add / No thanks, fired reminder). */
+    @Test fun forgetCancelsTheRedactedProposalsNotifications() = runBlocking {
+        mem("A")
+        graph.asks.add(com.rokid.context.memory.db.AskEntity("ask1", 1, "q", "a", "[\"A\"]", null, "phone", false))
+        val pid = "prop_ASK_ask1"
+        graph.proposals.addIgnore(com.rokid.context.memory.db.ProposalEntity(pid, "ASK", "ask1", "REMINDER", "{}", "PENDING", Long.MAX_VALUE, null, null, 1))
+        val nm = ctx.getSystemService(android.app.NotificationManager::class.java)
+        nm.createNotificationChannel(android.app.NotificationChannel("t", "t", android.app.NotificationManager.IMPORTANCE_DEFAULT))
+        fun n() = android.app.Notification.Builder(ctx, "t").setSmallIcon(android.R.drawable.ic_menu_add).setContentTitle("Buy milk").build()
+        nm.notify(pid, com.rokid.context.connectors.actions.ProposalNotifications.PROPOSAL_ID, n())
+        nm.notify(pid.hashCode(), n())
+        nm.notify("other", com.rokid.context.connectors.actions.ProposalNotifications.PROPOSAL_ID, n())
+        assertTrue(ForgetActions.forgetFact(ctx, "A"))
+        assertEquals(listOf("other"), org.robolectric.Shadows.shadowOf(nm).activeNotifications.map { it.tag })
+    }
+
     @Test fun anUnknownIdIsNotAnError() = runBlocking {
         assertTrue(ForgetActions.forgetFact(ctx, "nope"))
         assertTrue(WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(ResummarizeWorker.NAME).get().isEmpty())
