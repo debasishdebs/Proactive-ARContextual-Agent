@@ -10,6 +10,7 @@ import com.rokid.context.ai.contract.AnswerOutput
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.run.RoleCall
 import com.rokid.context.ai.run.RoleRunner
+import com.rokid.context.core.model.TextHygiene
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.MemoryEntity
@@ -39,8 +40,7 @@ class NoMemoriesException : IllegalStateException("Context temporarily unavailab
 /** Shared text hygiene for questions and retrieved memories (Phase 4 rules, moved here). */
 object AskText {
     /** NEL, LS and PS are listed explicitly: the JVM's `\s` and `\p{Cntrl}` miss them (Android ICU may not). */
-    private val WHITESPACE = Regex("[\\s\\p{Cntrl}\\u0085\\u2028\\u2029]+")
-    fun collapse(text: String) = text.replace(WHITESPACE, " ").trim()
+    fun collapse(text: String) = text.replace(TextHygiene.SEPARATORS, " ").trim()
 
     /** Cut at a word boundary (when there is one) and mark the cut with an ellipsis. */
     fun clip(text: String, max: Int): String {

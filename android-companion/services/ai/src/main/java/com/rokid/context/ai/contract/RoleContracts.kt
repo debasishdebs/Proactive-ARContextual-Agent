@@ -66,8 +66,19 @@ object RoleContracts {
         ids.filterNot { it in ctx.inputIds }.takeIf { it.isNotEmpty() }?.let { "sources not in the given memories: ${it.take(3).joinToString(", ")}" }
 
     private fun action(a: ProposedAction?, ctx: SemanticContext): List<String> = when (a) {
-        null, is ProposedAction.ShoppingAdd -> emptyList()
-        is ProposedAction.Reminder -> if (a.dueAt.isAfter(ctx.now)) emptyList() else listOf("proposedAction.dueAt must be in the future")
+        null -> emptyList()
+        // The bounds the schema states are checked again after decoding, so a loosened schema can't pass them (Phase 5 T5 carry).
+        is ProposedAction.ShoppingAdd -> buildList {
+            if (a.items.isEmpty() || a.items.size > 10) add("proposedAction.items must hold 1\u201310 items")
+            a.items.forEachIndexed { i, l ->
+                if (l.name.isBlank()) add("proposedAction.items[$i].name is empty")
+                l.qty?.let { q -> if (!(q > 0) || !q.isFinite()) add("proposedAction.items[$i].qty must be more than 0") }
+            }
+        }
+        is ProposedAction.Reminder -> listOfNotNull(
+            "proposedAction.title is empty".takeIf { a.title.isBlank() },
+            "proposedAction.dueAt must be in the future".takeUnless { a.dueAt.isAfter(ctx.now) },
+        )
         is ProposedAction.CalendarEvent -> listOfNotNull(
             "proposedAction.startAt must be in the future".takeUnless { a.startAt.isAfter(ctx.now) },
             "proposedAction.endAt must be after startAt".takeUnless { a.endAt.isAfter(a.startAt) },

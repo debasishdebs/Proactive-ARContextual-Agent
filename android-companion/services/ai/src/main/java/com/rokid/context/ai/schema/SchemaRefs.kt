@@ -23,13 +23,19 @@ object SchemaRefs {
     fun parse(text: String): JsonObject = runCatching { Json.parseToJsonElement(text).jsonObject }
         .getOrElse { throw SchemaRejected("Schema isn't valid JSON") }
 
+    /** One JSON-pointer reference token, unescaped (RFC 6901: `~1` -> `/`, then `~0` -> `~`). */
+    fun pointerToken(raw: String): String = raw.replace("~1", "/").replace("~0", "~")
+
+    /** A `${'$'}defs` name written as a pointer token (`~` -> `~0`, then `/` -> `~1`). */
+    fun escapeToken(name: String): String = name.replace("~", "~0").replace("/", "~1")
+
     fun resolve(root: JsonObject, node: JsonObject): JsonObject {
         var n = node
         repeat(MAX_HOPS) {
             val ref = (n["\$ref"] as? JsonPrimitive)?.content ?: return n
             val name = when {
-                ref.startsWith("#/\$defs/") -> ref.removePrefix("#/\$defs/") to "\$defs"
-                ref.startsWith("#/definitions/") -> ref.removePrefix("#/definitions/") to "definitions"
+                ref.startsWith("#/\$defs/") -> pointerToken(ref.removePrefix("#/\$defs/")) to "\$defs"
+                ref.startsWith("#/definitions/") -> pointerToken(ref.removePrefix("#/definitions/")) to "definitions"
                 else -> throw SchemaRejected("Only local \$ref is supported: ${clip(ref)}")
             }
             n = (root[name.second] as? JsonObject)?.get(name.first) as? JsonObject
