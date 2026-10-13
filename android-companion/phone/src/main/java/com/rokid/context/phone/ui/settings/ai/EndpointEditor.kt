@@ -23,6 +23,7 @@ import androidx.lifecycle.viewModelScope
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Capability
 import com.rokid.context.ai.Endpoint
+import com.rokid.context.ai.EndpointInUseException
 import com.rokid.context.ai.EndpointKind
 import com.rokid.context.ai.EndpointRules
 import com.rokid.context.ai.Role
@@ -111,8 +112,8 @@ class EndpointEditorViewModel(
     fun onApiVersion(v: String) = retest { it.copy(apiVersion = v.take(40)) }
     fun onModels(v: String) = retest { it.copy(models = v.take(500), testModel = it.testModel.ifEmpty { it.modelList.firstOrNull().orEmpty() }) }
     fun onCapability(c: Capability, on: Boolean) = retest { it.copy(capabilities = if (on) it.capabilities + c else it.capabilities - c) }
-    fun onKey(v: String) = edit { it.copy(keyInput = v.take(400)) }
-    fun clearKey() = edit { it.copy(keyInput = "", keySaved = false, keyRemoved = true) }
+    fun onKey(v: String) = retest { it.copy(keyInput = v.take(400)) }
+    fun clearKey() = retest { it.copy(keyInput = "", keySaved = false, keyRemoved = true) }
     fun onTestModel(m: String) = retest { it.copy(testModel = m) }
 
     fun save() = run { persist()?.let { _state.update { it.copy(notice = "Saved") } } }
@@ -143,11 +144,9 @@ class EndpointEditorViewModel(
             s.keyRemoved -> ""
             else -> null
         }
-        // A role bound here (primary or fallback) must keep the capability it needs (spec §4.2), as with delete.
-        val broken = ai.bindings.usages(endpointId).filter { it.requiredCapability !in s.capabilities }
-        if (broken.isNotEmpty()) { _state.update { it.copy(error = inUse(broken)) }; return null }
         val draft = Endpoint(endpointId, s.name, s.kind, s.baseUrl, s.apiVersion.ifBlank { null }, s.modelList, s.capabilities, createdAt)
-        return ai.endpoints.save(draft, apiKey).fold(
+        // A role bound here (primary or fallback) must keep the capability it needs (spec §4.2): checked under the bindings lock.
+        return ai.bindings.saveEndpoint(draft, apiKey).fold(
             onSuccess = { saved ->
                 val hasKey = ai.endpoints.keyFor(saved) != null
                 _state.update { it.copy(isNew = false, name = saved.name, baseUrl = saved.baseUrl, models = saved.models.joinToString(", "), apiVersion = saved.apiVersion.orEmpty(), keyInput = "", keySaved = hasKey, keyRemoved = false) }
@@ -159,6 +158,7 @@ class EndpointEditorViewModel(
             },
             onFailure = { e ->
                 if (e is CancellationException) throw e
+                if (e is EndpointInUseException) { _state.update { it.copy(error = inUse(e.roles)) }; return null }
                 val msg = (e as? IllegalArgumentException)?.message?.takeIf { it.length <= 120 } ?: "Couldn't save the endpoint"
                 if (e !is IllegalArgumentException) Log.i(TAG, "endpoint save failed (${e.javaClass.simpleName})")
                 _state.update { it.copy(error = msg) }
@@ -194,8 +194,10 @@ fun EndpointEditorScreen(
     onTest: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    SettingsPage(if (state.isNew) "New endpoint" else state.name.ifEmpty { "Endpoint" }, onBack, tag = "endpoint_editor") {
+    val title = if (state.loading) "Endpoint" else if (state.isNew) "New endpoint" else state.name.ifEmpty { "Endpoint" }
+    SettingsPage(title, onBack, tag = "endpoint_editor") {
         if (state.notFound) { item { SettingsCard { NoticeText("This endpoint no longer exists") } }; return@SettingsPage }
+        if (state.loading) { item { SettingsCard { NoticeText("Loading\u2026", tag = "endpoint_loading") } }; return@SettingsPage }
         // One item: the Save/Test card is composed with the form (and reachable by tests) however tall the form grows.
         item {
             Column {

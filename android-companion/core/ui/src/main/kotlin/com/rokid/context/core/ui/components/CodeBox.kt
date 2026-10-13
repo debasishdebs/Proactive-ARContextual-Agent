@@ -56,11 +56,12 @@ fun CodeBox(
             var seen by remember { mutableStateOf(value) }
             if (seen != value) {
                 seen = value
-                val at = emitted.indexOf(value)
-                if (at >= 0) repeat(at + 1) { emitted.removeFirst() }
-                else {
-                    emitted.clear()
-                    if (field.text != value) field = TextFieldValue(value, TextRange(value.length))
+                // Phase 5 T15 carry: the record follows the newest emitted text and clears once the parent has caught up.
+                val at = emitted.lastIndexOf(value)
+                when {
+                    value == field.text -> emitted.clear() // caught up: nothing of ours is still in flight
+                    at >= 0 -> repeat(at + 1) { emitted.removeFirst() } // a lagging echo: everything up to it has arrived
+                    else -> { emitted.clear(); field = TextFieldValue(value, TextRange(value.length)) } // an external change
                 }
             }
             BasicTextField(
