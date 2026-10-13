@@ -118,6 +118,20 @@ class AndroidSpeakerTest {
         assertTrue(done.isEmpty())
     }
 
+    // Fix round 2: "embedded" never overrides a network requirement or a network-synthesis feature.
+    @Test fun anEmbeddedVoiceThatNeedsTheNetworkIsRejected() {
+        val hindi = "\u091A\u093E\u092C\u0940 \u0936\u0947\u0932\u094D\u092B \u092A\u0930 \u0939\u0948"
+        ShadowTextToSpeech.addLanguageAvailability(TtsLocale.HINDI)
+        ShadowTextToSpeech.addVoice(voice("hi-in-embedded-needs-net", TtsLocale.HINDI, true, AndroidSpeaker.EMBEDDED))
+        ShadowTextToSpeech.addVoice(voice("hi-in-embedded-and-net", TtsLocale.HINDI, false, AndroidSpeaker.EMBEDDED, AndroidSpeaker.NETWORK))
+        val (speaker, tts) = ready()
+        shadowOf(tts).clearLastSpokenText()
+        assertFalse(speaker.speak("h1", hindi) { done += "h1" }, "HUD-only: neither voice is on-device only")
+        assertNull(shadowOf(tts).lastSpokenText)
+        assertEquals(listOf(SpeakerEvent.LANG_MISSING), events)
+        assertTrue(done.isEmpty())
+    }
+
     @Test fun anInstalledOnDeviceVoiceIsSelectedBeforeSpeaking() {
         val hindi = "\u091A\u093E\u092C\u0940 \u0936\u0947\u0932\u094D\u092B \u092A\u0930 \u0939\u0948"
         val local = voice("hi-in-local", TtsLocale.HINDI, false, AndroidSpeaker.EMBEDDED)

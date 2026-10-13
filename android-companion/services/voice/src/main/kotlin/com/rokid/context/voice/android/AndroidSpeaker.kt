@@ -112,16 +112,14 @@ class AndroidSpeaker(
 
         /**
          * The best installed on-device voice for [locale]: same language (same country first, then higher quality),
-         * never one marked not-installed, and only one that synthesizes locally: embedded synthesis, or neither
-         * network-required nor network synthesis. Null = HUD-only.
+         * never one marked not-installed, never one that needs the network or lists network synthesis (even when it
+         * also lists embedded synthesis). Null = HUD-only.
          */
         fun onDeviceVoice(voices: Set<Voice>?, locale: Locale): Voice? = voices.orEmpty()
             .filter { it.locale.language == locale.language }
             .filter { v ->
                 val f = v.features.orEmpty()
-                TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in f &&
-                    (EMBEDDED in f ||
-                        (!v.isNetworkConnectionRequired && NETWORK !in f))
+                TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in f && !v.isNetworkConnectionRequired && NETWORK !in f
             }
             .sortedWith(compareByDescending<Voice> { it.locale.country == locale.country }.thenByDescending { it.quality })
             .firstOrNull()
