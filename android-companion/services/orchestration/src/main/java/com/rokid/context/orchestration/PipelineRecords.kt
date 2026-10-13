@@ -79,14 +79,14 @@ object PipelineRecords {
         return PurgeResult(kept = kept.size, dropped = dropped.size, deletedFiles = deleted)
     }
 
-    /** Same rule as the legacy facade (kept verbatim; the "match file name only" refinement is a Phase 2 deferred minor). */
+    /** The legacy facade's rule, with the "synthetic"/"screenshot" test on the file name only (a parent folder never counts). */
     fun isRealPhotoFrame(frame: FrameEntity): Boolean {
         if (!frame.source.startsWith("rokid", ignoreCase = true)) return false
         if (frame.path.isBlank()) return false
         val payload = frame.payload.lowercase()
-        val path = frame.path.lowercase()
-        if (payload.contains("synthetic") || path.contains("synthetic")) return false
-        if (payload.contains("screenshot") || path.contains("screenshot")) return false
+        val name = File(frame.path).name.lowercase()
+        if (payload.contains("synthetic") || name.contains("synthetic")) return false
+        if (payload.contains("screenshot") || name.contains("screenshot")) return false
         return File(frame.path).extension.lowercase() in setOf("jpg", "jpeg", "webp")
     }
 
