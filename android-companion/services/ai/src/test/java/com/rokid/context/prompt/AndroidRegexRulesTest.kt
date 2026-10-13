@@ -9,7 +9,8 @@ import java.io.File
  * although the JVM accepts it, so JVM tests pass and the class fails to load on the phone.
  */
 class AndroidRegexRulesTest {
-    private val root = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
+    private val root = generateSequence(File("").absoluteFile) { it.parentFile }.firstOrNull { File(it, "settings.gradle.kts").exists() }
+        ?: error("Run from inside android-companion: no settings.gradle.kts above ${File("").absolutePath}")
     private val triple = Regex("Regex\\(\"\"\"(.*?)\"\"\"|\"\"\"(.*?)\"\"\"\\.toRegex\\(", RegexOption.DOT_MATCHES_ALL)
     private val plain = Regex("Regex\\((?!\"\"\")\"((?:[^\"\\\\\\n]|\\\\.)*)\"|(?<![\"])\"((?:[^\"\\\\\\n]|\\\\.)*)\"\\.toRegex\\(")
 

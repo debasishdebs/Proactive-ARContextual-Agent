@@ -3,6 +3,7 @@ package com.rokid.context.orchestration
 import android.content.Context
 import android.util.Log
 import androidx.room.withTransaction
+import com.rokid.context.core.model.TextHygiene
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
@@ -33,8 +34,7 @@ object PipelineRecords {
         return MemoryGraph.get(context)
     }
 
-    private val LINE_BREAKS = Regex("[\\s\\p{Cntrl}\\u2028\\u2029\\u0085]+")
-    private fun oneLine(s: String) = s.replace(LINE_BREAKS, " ").trim()
+    private fun oneLine(s: String) = s.replace(TextHygiene.SEPARATORS, " ").trim()
 
     // --- frames -------------------------------------------------------------------------------------------------
 

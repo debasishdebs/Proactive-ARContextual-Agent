@@ -15,6 +15,8 @@ import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.rokid.context.phone.ui.settings.HudSettingsControl
 import kotlinx.coroutines.flow.StateFlow
 import androidx.compose.ui.test.hasTestTag
@@ -24,6 +26,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.core.hud.Hud
 import com.rokid.context.core.model.Gesture
 import com.rokid.context.core.model.GestureAction
 import com.rokid.context.core.model.HudPosition
@@ -40,6 +43,11 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import com.rokid.context.voice.VoiceCapabilities
+import com.rokid.context.voice.VoiceStatus
+import kotlinx.coroutines.flow.flowOf
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -119,5 +127,79 @@ class GlassesSettingsTest {
         val tap = GlassesLabels.ACTIONS.getValue(HudSettings().gestures.getValue(Gesture.TAP))
         page.performScrollToNode(hasTestTag("gesture_TAP"))
         compose.onNodeWithContentDescription("Tap: $tap").assertExists()
+    }
+
+    /** Spec §5.1.1: the gesture map greys out Ask, with the reason, while glasses voice can't work. */
+    @Test fun askIsGreyedOutWithItsReasonWhileGlassesVoiceIsUnavailable() = runBlocking<Unit> {
+        val vm = GlassesSettingsViewModel(FakeGlassesStatusSource(), FakeHudSettings(),
+            voice = flowOf(VoiceCapabilities(VoiceStatus.NEEDS_SPEECH_PACK, VoiceStatus.NEEDS_SPEECH_PACK, canDownloadPack = true))) {}
+        assertEquals("Needs speech pack", withTimeout(5_000) { vm.state.first { it.askUnavailable != null } }.askUnavailable)
+        vm.cancelScope()
+        compose.setContent {
+            PcTheme { GlassesSettingsScreen(GlassesSettingsUiState("Linked", HudSettings(), askUnavailable = "Needs speech pack"), onBack = {}, onVerbosity = {}, onScale = {}, onPosition = {}, onGesture = { _, _ -> }, onReauthorize = {}) }
+        }
+        compose.onNodeWithTag("glasses_settings").performScrollToNode(hasTestTag("ask_unavailable"))
+        compose.onNodeWithText("Ask by voice from the glasses: Needs speech pack — see Phone camera & mic").assertExists()
+        compose.onNodeWithTag("gesture_TAP").performClick()
+        compose.onNodeWithTag("gesture_TAP_${GestureAction.entries.indexOf(GestureAction.ASK)}").assertIsNotEnabled()
+        // Fix round 1: the greyed-out item itself carries the reason for TalkBack.
+        compose.onNodeWithTag("gesture_TAP_${GestureAction.entries.indexOf(GestureAction.ASK)}").assertContentDescriptionEquals("Ask \u2014 Needs speech pack")
+    }
+
+    /** Phase 5 T16 carry: while dragging, the finger's value is shown whatever the stored scale does. */
+    @Test fun theSliderShowsTheFingersValueWhileDragging() {
+        assertEquals(0.7f, ScaleSlider.shown(dragging = 0.7f, stored = 0.5f))
+        assertEquals(0.5f, ScaleSlider.shown(dragging = null, stored = 0.5f))
+    }
+
+    /** Phase 5 T16 carry (preflight F10): a stored-scale re-emit mid-drag does not snap the slider back from under the finger. */
+    @Test fun aStoredScaleChangeMidDragKeepsTheFingersValue() {
+        var hud by mutableStateOf(HudSettings())
+        compose.setContent {
+            PcTheme { GlassesSettingsScreen(GlassesSettingsUiState("Linked", hud), onBack = {}, onVerbosity = {}, onScale = {}, onPosition = {}, onGesture = { _, _ -> }, onReauthorize = {}) }
+        }
+        compose.onNodeWithTag("glasses_settings").performScrollToNode(hasTestTag("hud_scale"))
+        val slider = compose.onNodeWithTag("hud_scale")
+        fun current() = slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current
+        slider.performTouchInput { down(centerLeft + androidx.compose.ui.geometry.Offset(10f, 0f)); moveBy(androidx.compose.ui.geometry.Offset(width * 0.6f, 0f)) } // no up: still dragging
+        compose.waitForIdle()
+        val finger = current()
+        assertTrue("the drag moved the slider", finger > HudSettings().scale)
+        hud = hud.copy(scale = Hud.MIN_SCALE) // the stored scale re-emits while the finger is down
+        compose.waitForIdle()
+        assertEquals(finger, current(), 0.0001f)
+        slider.performTouchInput { up() }
+    }
+
+    /** Fix round 1: after release the dragged value stays until the stored scale catches up; then the store leads again. */
+    @Test fun aReleasedDragKeepsItsValueUntilTheStoredScaleCatchesUp() {
+        var hud by mutableStateOf(HudSettings())
+        var written: Float? = null
+        compose.setContent {
+            PcTheme { GlassesSettingsScreen(GlassesSettingsUiState("Linked", hud), onBack = {}, onVerbosity = {}, onScale = { written = it }, onPosition = {}, onGesture = { _, _ -> }, onReauthorize = {}) }
+        }
+        compose.onNodeWithTag("glasses_settings").performScrollToNode(hasTestTag("hud_scale"))
+        val slider = compose.onNodeWithTag("hud_scale")
+        fun current() = slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current
+        slider.performTouchInput { down(centerLeft + androidx.compose.ui.geometry.Offset(10f, 0f)); moveBy(androidx.compose.ui.geometry.Offset(width * 0.6f, 0f)); up() }
+        compose.waitForIdle()
+        val finger = written!!
+        assertEquals("the write has not landed yet: the finger's value stays", finger, current(), 0.0001f)
+        hud = hud.copy(scale = finger); compose.waitForIdle()
+        assertEquals(finger, current(), 0.0001f)
+        hud = hud.copy(scale = Hud.MIN_SCALE); compose.waitForIdle()
+        assertEquals("caught up: the stored scale leads again", Hud.MIN_SCALE, current(), 0.0001f)
+    }
+
+    /** Fix round 1: a cancelled gesture (no onValueChangeFinished guarantee) drops the dragged value. */
+    @Test fun aCancelledDragShowsTheStoredScale() {
+        compose.setContent {
+            PcTheme { GlassesSettingsScreen(GlassesSettingsUiState("Linked", HudSettings()), onBack = {}, onVerbosity = {}, onScale = {}, onPosition = {}, onGesture = { _, _ -> }, onReauthorize = {}) }
+        }
+        compose.onNodeWithTag("glasses_settings").performScrollToNode(hasTestTag("hud_scale"))
+        val slider = compose.onNodeWithTag("hud_scale")
+        slider.performTouchInput { down(centerLeft + androidx.compose.ui.geometry.Offset(10f, 0f)); moveBy(androidx.compose.ui.geometry.Offset(width * 0.6f, 0f)); cancel() }
+        compose.waitForIdle()
+        assertEquals(HudSettings().scale, slider.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current, 0.0001f)
     }
 }

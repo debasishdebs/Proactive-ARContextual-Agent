@@ -60,8 +60,10 @@ class EndpointTester(
         val provider = providers.create(e, model, key, testClient)
         if (e.kind != EndpointKind.LLAMACPP_LOCAL) return provider.generate(PROMPT)
         val work = nativeScope.async { nativeLock.withLock { provider.generate(PROMPT) } }
+        // A caller that stops waiting (timeout or cancellation) cancels the work: still queued = never runs.
         return try { withTimeout(callTimeoutMs) { work.await() } }
         catch (_: TimeoutCancellationException) { throw SocketTimeoutException("Local test timed out") }
+        finally { work.cancel() }
     }
 
     private fun elapsed(startNs: Long) = (System.nanoTime() - startNs) / 1_000_000
@@ -69,18 +71,22 @@ class EndpointTester(
     companion object {
         private const val PROMPT = "Reply only with OK"
 
+        private const val MAX_CAUSES = 8
+
+        /** The whole cause chain (at most [MAX_CAUSES] levels) decides the message, not just the top two (Phase 5 T1 carry). */
         fun humanize(t: Throwable): String {
-            val code = (t as? ProviderHttpException)?.code ?: (t.cause as? ProviderHttpException)?.code
+            val chain = generateSequence(t) { it.cause }.take(MAX_CAUSES).toList()
+            val code = chain.firstNotNullOfOrNull { (it as? ProviderHttpException)?.code }
             return when {
-                code != null && code in 300..399 -> "Address redirects — enter the final address"
+                code != null && code in 300..399 -> "Address redirects \u2014 enter the final address"
                 code == 401 || code == 403 -> "Key rejected ($code)"
-                code == 404 -> "Not found — check address and model (404)"
+                code == 404 -> "Not found \u2014 check address and model (404)"
                 code != null && code >= 500 -> "Server error ($code)"
                 code != null -> "Request rejected ($code)"
-                t is ProviderConfigException -> "Address or key missing"
-                t is java.net.UnknownServiceException -> "Plain http isn't allowed for that address"
-                t is java.net.UnknownHostException || t is java.net.ConnectException -> "Can't reach that address"
-                t is java.net.SocketTimeoutException || t is java.io.InterruptedIOException -> "Timed out"
+                chain.any { it is ProviderConfigException } -> "Address or key missing"
+                chain.any { it is java.net.UnknownServiceException } -> "Plain http isn't allowed for that address"
+                chain.any { it is java.net.UnknownHostException || it is java.net.ConnectException } -> "Can't reach that address"
+                chain.any { it is java.io.InterruptedIOException } -> "Timed out" // SocketTimeoutException included
                 else -> "Test failed"
             }
         }
