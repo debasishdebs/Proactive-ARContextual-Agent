@@ -38,9 +38,61 @@ class PcmFeederTest {
     }
 
     /** At exactly 2 s fed the 64 KiB pipe isn't full yet, so the test above can't pin "more than"; the meter can. */
-    @Test fun theGuardNeedsMoreThanTwoSecondsFed() {
-        assertFalse(FallbackGuard.suspects(PipeMeter(fedBytes = 64_000, acceptedBytes = 0, lastWriteRefused = true)))
-        assertTrue(FallbackGuard.suspects(PipeMeter(fedBytes = 64_001, acceptedBytes = 0, lastWriteRefused = true)))
+    @Test fun theGuardNeedsMoreThanTwoSecondsFedAndOneSecondFlat() {
+        fun m(fed: Long, flat: Long) = PipeMeter(fed, acceptedBytes = 0, lastWriteRefused = true, capacityBytes = 65_536, flatFedBytes = flat)
+        assertFalse(FallbackGuard.suspects(m(fed = 64_000, flat = 32_000)))
+        assertTrue(FallbackGuard.suspects(m(fed = 64_001, flat = 32_000)))
+        assertFalse(FallbackGuard.suspects(m(fed = 96_000, flat = 31_999)), "accepted grew less than 1 s of feed ago")
+    }
+
+    /** The consumed bound uses the measured capacity, never the 64 KiB default. */
+    @Test fun theGuardSubtractsTheMeasuredCapacity() {
+        val m = PipeMeter(fedBytes = 200_000, acceptedBytes = 110_000, lastWriteRefused = true, capacityBytes = 51_200, flatFedBytes = 40_000)
+        assertFalse(FallbackGuard.suspects(m), "110 000 - 51 200 = 58 800 consumed >= 51 200")
+        assertTrue(FallbackGuard.suspects(m.copy(capacityBytes = 65_536)), "110 000 - 65 536 = 44 464 < 65 536")
+    }
+
+    /** Review Minor 2: a recognizer that loaded slowly and is now draining the backlog is not accused while it catches up. */
+    @Test fun aColdStartingReaderIsNotAccusedWhileItCatchesUp() {
+        val pipe = FakePipe()
+        val feeder = PcmFeeder(pipe)
+        repeat(30) { feeder.offer(chunk()) } // 3 s while the model loads: the pipe filled at 64 000
+        pipe.read = 20_000; feeder.pump() // it starts reading: accepted grows, the pipe is full again
+        val m = feeder.meter()
+        assertTrue(m.lastWriteRefused)
+        assertTrue(m.acceptedBytes - m.capacityBytes < m.capacityBytes, "a single-sample guard would accuse it")
+        assertFalse(FallbackGuard.suspects(m))
+        repeat(9) { feeder.offer(chunk()) }
+        assertFalse(FallbackGuard.suspects(feeder.meter()), "0.9 s flat")
+        feeder.offer(chunk())
+        assertTrue(FallbackGuard.suspects(feeder.meter()), "1 s flat: it stopped reading again")
+    }
+
+    /** Review Minor 1: a recognizer that drops our read end (it listens to the mic instead) before 2 s is suspect. */
+    @Test fun aPeerThatClosesItsReadEndBeforeTwoSecondsIsSuspect() {
+        val pipe = FakePipe()
+        val feeder = PcmFeeder(pipe)
+        repeat(10) { feeder.offer(chunk()) }
+        pipe.closed = true
+        feeder.offer(chunk())
+        val m = feeder.meter()
+        assertTrue(feeder.closed); assertTrue(m.peerClosed)
+        assertTrue(FallbackGuard.suspects(m))
+        assertFalse(FallbackGuard.suspects(PipeMeter(96_000, 96_000, lastWriteRefused = false, peerClosed = true)), "EOF after 3 s read")
+    }
+
+    /** Review Minor 3: a sink that throws (EBADF, EIO) ends the feed like EPIPE and never escapes offer or pump. */
+    @Test fun aThrowingSinkClosesTheFeedAsAPeerClose() {
+        var calls = 0
+        val sink = object : PipeSink {
+            var closed = false
+            override fun tryWrite(bytes: ByteArray): Int { calls++; throw java.io.IOException("EBADF") }
+            override fun close() { closed = true }
+        }
+        val feeder = PcmFeeder(sink)
+        feeder.offer(chunk()); feeder.pump(); feeder.offer(chunk())
+        assertTrue(feeder.closed); assertTrue(sink.closed); assertTrue(feeder.meter().peerClosed)
+        assertEquals(1, calls)
     }
 
     @Test fun aReaderAtRealTimeNeverTripsIt() {
@@ -60,7 +112,7 @@ class PcmFeederTest {
         repeat(60) { feeder.offer(chunk()) }
         val m = feeder.meter()
         assertTrue(m.lastWriteRefused)
-        assertTrue(m.acceptedBytes - PipeLimits.PIPE_CAPACITY_BYTES >= PipeLimits.GUARD_MIN_CONSUMED_BYTES)
+        assertTrue(m.acceptedBytes - m.capacityBytes >= m.capacityBytes)
         assertFalse(FallbackGuard.suspects(m))
     }
 
@@ -91,7 +143,7 @@ class PcmFeederTest {
         val pipe = FakePipe()
         val feeder = PcmFeeder(pipe)
         feeder.offer(chunk()); feeder.finish()
-        assertTrue(pipe.closed); assertTrue(feeder.closed)
+        assertTrue(pipe.closed); assertTrue(feeder.closed); assertFalse(feeder.meter().peerClosed)
         feeder.offer(chunk())
         assertEquals(3_200L, pipe.written, "nothing is written after the end")
 
@@ -109,7 +161,7 @@ class PcmFeederTest {
         val pipe = FakePipe().apply { closed = true }
         val feeder = PcmFeeder(pipe)
         feeder.offer(chunk())
-        assertTrue(feeder.closed)
+        assertTrue(feeder.closed); assertTrue(feeder.meter().peerClosed)
         assertEquals(0L, feeder.meter().acceptedBytes)
     }
 }
