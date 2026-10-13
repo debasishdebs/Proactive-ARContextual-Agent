@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.core.app.ActivityCompat
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -32,6 +33,8 @@ import com.rokid.context.phone.ui.settings.ai.EndpointsListViewModel
 import com.rokid.context.phone.ui.settings.ai.RolesScreen
 import com.rokid.context.phone.ui.settings.ai.RolesViewModel
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsScreen
+import com.rokid.context.phone.ui.settings.flows.DayOneFlowSummaries
+import com.rokid.context.phone.ui.settings.flows.FlowsListRoute
 import com.rokid.context.phone.ui.settings.connectors.ActionsRoute
 import com.rokid.context.phone.ui.settings.connectors.ShoppingRoute
 import com.rokid.context.phone.ui.settings.connectors.SourcesRoute
@@ -116,6 +119,16 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val state by vm.state.collectAsStateWithLifecycle()
         RolesScreen(state, onBack = back, onEndpoint = vm::setEndpoint, onModel = vm::setModel, onFallback = vm::setFallback,
             onTemperature = vm::setTemperature, onMaxTokens = vm::setMaxTokens, onClear = { vm.clear(it) })
+    }
+
+    composable(Routes.SETTINGS_FLOWS) {
+        FlowsListRoute(DayOneFlowSummaries, models = { s.ai.bindings.get(it)?.model }, onBack = back, navigate = { nav.navigate(it) })
+    }
+
+    composable(Routes.SETTINGS_FLOWS_VIEW, arguments = listOf(navArgument("ids") { type = NavType.StringType; defaultValue = "" })) { entry ->
+        // Placeholder until D2's FlowViewScreen.
+        val ids = entry.arguments?.getString("ids").orEmpty()
+        androidx.compose.material3.Text("Flows: $ids", modifier = androidx.compose.ui.Modifier.testTag("flows_view_placeholder"))
     }
 
     composable(Routes.SETTINGS_PROMPTS) {
