@@ -23,9 +23,10 @@ class StatusUiIndexTest {
     }
 
     @Test fun anUnstableIndexAsksForARebuild() = runBlocking {
-        assertEquals(IndexState.UNSTABLE, IndexState.of(IndexHealth.NONE, unstable = true))
-        assertEquals(IndexState.UNSTABLE, IndexState.of(IndexHealth.NEEDED, unstable = true))
-        assertEquals(IndexState.RUNNING, IndexState.of(IndexHealth.RUNNING, unstable = false))
+        assertEquals(IndexState.UNSTABLE, IndexState.of(IndexHealth.NONE, unstable = true, embedBound = true))
+        assertEquals(IndexState.UNSTABLE, IndexState.of(IndexHealth.NEEDED, unstable = true, embedBound = true))
+        assertEquals(IndexState.RUNNING, IndexState.of(IndexHealth.RUNNING, unstable = false, embedBound = true))
+        assertEquals("no embedding model: nothing to rebuild", IndexState.NONE, IndexState.of(IndexHealth.NONE, unstable = true, embedBound = false))
         val glasses = FakeGlassesStatusSource(FakeGlassesStatusSource.connected(Fixtures.stateFrame()))
         val b = StatusUi.flow(glasses, FakePipelineControl(), flowOf(Fixtures.NOW), flowOf(10), flowOf(IndexState.UNSTABLE)).first().banner
         assertEquals(BannerKind.INDEX, b?.kind)

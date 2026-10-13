@@ -12,7 +12,11 @@ import com.rokid.context.orchestration.AnswerService
 import com.rokid.context.orchestration.TestBedInputs
 import com.rokid.context.phone.hub.Hub
 import com.rokid.context.phone.hub.HubGraph
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 /** The HUD settings the phone owns (spec §2.4 Devices / Capture): persisted and pushed by the hub. */
 interface HudSettingsControl {
@@ -46,6 +50,9 @@ class SettingsDeps(
     val spaces: EmbeddingSpaces get() = lazySpaces.value
 
     companion object {
+        /** Process-lifetime work the Settings deps start (a Rebuild commits prefs, so it leaves Main). */
+        private val scope = CoroutineScope(SupervisorJob())
+
         fun create(app: Context): SettingsDeps = SettingsDeps(
             lazyAi = lazy { AiGraph.get(app) },
             hud = HubHudSettings(HubGraph.get(app)),
@@ -54,7 +61,7 @@ class SettingsDeps(
             lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(app), AnswerService.forApp(app)) },
             lazyRetrieval = lazy { RetrievalSettingsStore.get(app) },
             lazySpaces = lazy { MemoryGraph.get(app).spaces },
-            rebuildIndex = { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app, rebuild = true) },
+            rebuildIndex = { scope.launch(Dispatchers.IO) { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app, rebuild = true) } },
         )
     }
 }

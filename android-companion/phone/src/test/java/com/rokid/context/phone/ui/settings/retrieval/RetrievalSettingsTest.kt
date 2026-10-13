@@ -48,7 +48,7 @@ class RetrievalSettingsTest {
         store = RetrievalSettingsStore(ctx.getSharedPreferences("retrieval_vm_test", Context.MODE_PRIVATE))
         MemoryGraph.get(ctx).memories.add(LegacyImporter.toMemory("m1", "short_term", 0.9, 10, "Milk carton and more milk in the fridge"))
         MemoryGraph.get(ctx).memories.add(LegacyImporter.toMemory("m2", "short_term", 0.3, 20, "Milk spilled on the floor"))
-        vm = RetrievalViewModel(store, ai.retriever, MemoryGraph.get(ctx).spaces, ai, { rebuilds++ }, now = { 1_000 })
+        vm = RetrievalViewModel(store, ai.retriever, MemoryGraph.get(ctx).spaces, ai, { rebuilds++ }, now = { 1_000 }, work = main.dispatcher)
     }
 
     @After fun tearDown() { vm.cancelScope(); TestGraph.close(ctx) }
@@ -61,7 +61,7 @@ class RetrievalSettingsTest {
         assertEquals(7.0, s.halfLifeDays, 1e-6); assertEquals(false, s.recencyBoost)
         assertEquals(FusionStrategy.Rrf(42), s.fusion)
         assertEquals(0.25, store.weightedConfig().semanticWeight, 1e-6)
-        vm.setRrfK("abc"); assertEquals("k is a whole number 1–200", vm.state.value.error)
+        vm.setRrfK("abc"); assertEquals("k is a whole number 1–200", vm.state.value.rrfError)
     }
 
     @Test fun tryItRanksHitsWithScoresAndShowsTheFallback() = runBlocking {
@@ -99,7 +99,7 @@ class RetrievalSettingsTest {
         vm.setWeight(Float.NaN); assertEquals(0.6, store.weightedConfig().semanticWeight, 1e-6)
         vm.setHalfLife(100f); assertEquals(30.0, store.settings.value.halfLifeDays, 1e-6)
         vm.setMinConfidence(2f); assertEquals(1.0, store.settings.value.minConfidence, 1e-6)
-        vm.setFusion(1); vm.setRrfK("500"); assertEquals("k is a whole number 1–200", vm.state.value.error)
+        vm.setFusion(1); vm.setRrfK("500"); assertEquals("k is a whole number 1–200", vm.state.value.rrfError)
         vm.setRrfK("0"); assertEquals(FusionStrategy.Rrf(60), store.settings.value.fusion)
         vm.setFusion(7); assertEquals(FusionStrategy.WeightedScore(0.6), store.settings.value.fusion)
     }
@@ -116,12 +116,35 @@ class RetrievalSettingsTest {
     }
 
     @Test fun aFailedSearchShowsFixedTextNeverTheException() = runBlocking {
-        val failing = RetrievalViewModel(store, ai.retriever, MemoryGraph.get(ctx).spaces, ai, {}, now = { throw IllegalStateException("provider said sk-secret-123") })
+        val failing = RetrievalViewModel(store, ai.retriever, MemoryGraph.get(ctx).spaces, ai, {}, now = { throw IllegalStateException("provider said sk-secret-123") }, work = main.dispatcher)
         try {
             failing.onQuery("milk"); failing.tryIt()
-            val s = withTimeout(5_000) { failing.state.first { it.error != null && !it.searching } }
-            assertEquals("Search failed", s.error)
+            val s = withTimeout(5_000) { failing.state.first { it.tryError != null && !it.searching } }
+            assertEquals("Search failed", s.tryError)
             assertTrue(s.toString(), !s.toString().contains("sk-secret") && !s.toString().contains("IllegalState"))
         } finally { failing.cancelScope() }
+    }
+
+    @Test fun aTryItResultNeverClearsTheRrfErrorAndNoMatchesKeepsKInSync() = runBlocking {
+        vm.setFusion(1); vm.setRrfK("abc")
+        vm.onQuery("milk"); vm.tryIt()
+        val s = withTimeout(5_000) { vm.state.first { it.results.isNotEmpty() && !it.searching } }
+        assertEquals("k is a whole number 1–200", s.rrfError); assertEquals(null, s.tryError)
+        vm.setRrfK("42"); assertEquals(null, vm.state.value.rrfError)
+        vm.onQuery("zebra"); vm.tryIt()
+        assertEquals("No matches", withTimeout(5_000) { vm.state.first { it.tryError != null && !it.searching } }.tryError)
+        store.update { it.copy(fusion = FusionStrategy.Rrf(77)) }
+        assertEquals("77", vm.state.value.rrfK)
+    }
+
+    @Test fun rebuildRunsOffMain() = runBlocking {
+        val main = Thread.currentThread()
+        val ranOn = kotlinx.coroutines.CompletableDeferred<Thread>()
+        val offMain = RetrievalViewModel(store, ai.retriever, MemoryGraph.get(ctx).spaces, ai, { ranOn.complete(Thread.currentThread()) }, now = { 1_000 })
+        try {
+            offMain.rebuild()
+            val t = withTimeout(5_000) { ranOn.await() }
+            assertTrue("ran on ${t.name}", t !== main)
+        } finally { offMain.cancelScope() }
     }
 }

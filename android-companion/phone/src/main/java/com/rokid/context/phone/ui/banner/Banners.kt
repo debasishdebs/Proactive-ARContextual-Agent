@@ -16,8 +16,12 @@ enum class IndexState {
             com.rokid.context.memory.IndexHealth.RUNNING -> RUNNING
         }
 
-        /** [unstable] = `PrefsIndexClock.observeUnstable()`; it wins, because no build runs while it holds. */
-        fun of(h: com.rokid.context.memory.IndexHealth, unstable: Boolean): IndexState = if (unstable) UNSTABLE else of(h)
+        /**
+         * [unstable] = `PrefsIndexClock.observeUnstable()`; it wins, because no build runs while it holds. Without an EMBED
+         * model ([embedBound] false) there is nothing to rebuild, so it is not shown (the next index run clears the streak).
+         */
+        fun of(h: com.rokid.context.memory.IndexHealth, unstable: Boolean, embedBound: Boolean): IndexState =
+            if (unstable && embedBound) UNSTABLE else of(h)
     }
 }
 enum class BannerKind { AI_BLOCKED, GLASSES_DISCONNECTED, PROTOCOL_MISMATCH, CAPTURE_DEFERRED, CAPTURE_PAUSED, INDEX, STORAGE }

@@ -102,6 +102,14 @@ class IndexMaintenanceTest {
         assertNull(spaces.current())
     }
 
+    /** T19 fix round 1: unbinding EMBED clears the drift streak, so "index unstable" can't outlive the model. */
+    @Test fun unbindingTheEmbedderClearsTheDriftStreak() = runBlocking {
+        clock.discard = DiscardRecord("A", 0, IndexMaintenance.MAX_DISCARD_STREAK)
+        fake.bound = false
+        assertEquals(Outcome.IDLE, maintenance().run())
+        assertNull(clock.discard); assertTrue(!clock.unstable())
+    }
+
     @Test fun firstRunBuildsAndActivatesAtFullCoverage() = runBlocking {
         mem("m1"); mem("m2"); mem("m3")
         assertEquals(Outcome.DONE, maintenance().run())
