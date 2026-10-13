@@ -49,6 +49,13 @@ class AndroidRegexRulesTest {
         assertEquals(false, hasStrayClosingBrace("q\\}"))
     }
 
+    @Test fun propertyEscapesAreNotQuantifiers() {
+        assertEquals(false, hasStrayClosingBrace("\\p{L}+"))
+        assertEquals(false, hasStrayClosingBrace("a\\P{Lu}b\\p{IsLatin}"))
+        assertEquals(true, hasStrayClosingBrace("\\p{L}}"))
+        assertEquals(true, hasStrayClosingBrace("\\p{L"))
+    }
+
     @Test fun noRegexLiteralHasAnUnescapedClosingBrace() {
         val offenders = root.walkTopDown()
             .onEnter { it.name != "build" && it.name != ".gradle" }
@@ -66,6 +73,12 @@ class AndroidRegexRulesTest {
         while (i < p.length) {
             val c = p[i]
             when {
+                // `\p{Xx}` / `\P{Xx}` is a property escape: its braces are not a quantifier.
+                c == '\\' && i + 2 < p.length && (p[i + 1] == 'p' || p[i + 1] == 'P') && p[i + 2] == '{' -> {
+                    val close = p.indexOf('}', i + 3)
+                    if (close < 0) return true
+                    i = close
+                }
                 c == '\\' -> i++
                 inClass -> if (c == ']') inClass = false
                 c == '[' -> inClass = true
