@@ -38,10 +38,15 @@ class SettingsSourceRulesTest {
         assertTrue("$hits", hits.isEmpty())
     }
 
-    /** Task 16 carry: `AppConfigStore.get` opens the Keystore; only the off-Main legacy-key seed may call it. */
+    /**
+     * Task 16 carry + fix round 1 (m9): `getWithLegacySecret` opens the Keystore; only the off-Main legacy-key seed may
+     * call it, on any receiver (an injected reader too). Its declarations don't count.
+     */
     @Test fun onlyTheLegacyKeySeedReadsTheLegacySecret() {
-        val roots = listOf(File("src/main"), File("../services/orchestration/src/main"))
-        val hits = roots.flatMap { r -> kt(r) }.filter { "AppConfigStore.get(" in it.readText() }.map { it.name }
+        val roots = listOf(File("src/main"), File("../services/orchestration/src/main"), File("../services/ai/src/main"), File("../services/memory/src/main"))
+        val hits = roots.flatMap { r -> kt(r) }.filter { f -> f.readLines().any { "getWithLegacySecret(" in it && "fun getWithLegacySecret(" !in it } }.map { it.name }
         assertTrue("$hits", hits == listOf("LegacyKeySeed.kt"))
+        val oldName = roots.flatMap { r -> kt(r) }.filter { f -> Regex("""AppConfigStore\.get\(|config\.get\(context""").containsMatchIn(f.readText()) }.map { it.name }
+        assertTrue("$oldName", oldName.isEmpty())
     }
 }

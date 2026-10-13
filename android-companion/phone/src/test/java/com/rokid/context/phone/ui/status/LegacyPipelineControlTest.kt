@@ -76,11 +76,11 @@ class LegacyPipelineControlTest {
 
         control.setEnabled(false)
         assertFalse(control.enabled.value)
-        assertFalse(AppConfigStore.get(ctx).pipelineEnabled)
+        assertFalse(AppConfigStore.isPipelineEnabled(ctx))
         assertTrue(drainStates().all { it == WorkInfo.State.CANCELLED })
 
         control.setEnabled(true)
-        assertTrue(AppConfigStore.get(ctx).pipelineEnabled)
+        assertTrue(AppConfigStore.isPipelineEnabled(ctx))
         assertEquals(true, drainStates().any { it == WorkInfo.State.ENQUEUED })
     }
 
@@ -102,7 +102,7 @@ class LegacyPipelineControlTest {
         AppConfigStore.setPipelineEnabled(ctx, false)
         scheduler.pausePipeline()
         control.setEnabled(true)
-        assertTrue(AppConfigStore.get(ctx).pipelineEnabled)
+        assertTrue(AppConfigStore.isPipelineEnabled(ctx))
         assertTrue(control.enabled.value)
         assertEquals(true, drainStates().any { it == WorkInfo.State.ENQUEUED })
     }

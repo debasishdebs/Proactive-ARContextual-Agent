@@ -24,6 +24,6 @@ class NoSecretsInBuildConfigTest {
     @Test fun unsetApiKeyIsBlank() {
         EnvDefaults.init("https://az.example", "gpt-x", "http://o:11434", "llama", "ollama_only", "/m.gguf")
         val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
-        assertEquals("", AppConfigStore.get(ctx).apiKey)
+        assertEquals("", AppConfigStore.getWithLegacySecret(ctx).apiKey)
     }
 }

@@ -23,7 +23,7 @@ data class AppConfig(
  * Only [get] opens the Keystore-backed secrets store; everything that may run on Main uses the other two.
  */
 interface AppConfigReader {
-    fun get(context: Context): AppConfig
+    fun getWithLegacySecret(context: Context): AppConfig
     fun getWithoutSecret(context: Context): AppConfig
     fun isPipelineEnabled(context: Context): Boolean
 }
@@ -51,9 +51,9 @@ object AppConfigStore : AppConfigReader {
      * Also returns the legacy single-provider key, which is read only to seed the endpoint registry (LegacyKeySeed, off
      * Main). Opens the Keystore: never call it on Main.
      */
-    override fun get(context: Context): AppConfig = getWithoutSecret(context).copy(apiKey = legacyApiKey(context))
+    override fun getWithLegacySecret(context: Context): AppConfig = getWithoutSecret(context).copy(apiKey = legacyApiKey(context))
 
-    /** Everything but the API key, from plain prefs only: [get] also opens the Keystore-backed secrets (never on Main). */
+    /** Everything but the API key, from plain prefs only: [getWithLegacySecret] also opens the Keystore-backed secrets (never on Main). */
     override fun getWithoutSecret(context: Context): AppConfig {
         val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
         return AppConfig(
@@ -103,13 +103,10 @@ object AppConfigStore : AppConfigReader {
         p.edit().putBoolean(K_PIPELINE_ENABLED, true).commit()
     }
 
-    /** Just the ⏸ flag ([get] also opens the secrets store). */
+    /** Just the ⏸ flag ([getWithLegacySecret] also opens the secrets store). */
     override fun isPipelineEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(K_PIPELINE_ENABLED, true)
-    fun setEncryptionEnabled(context: Context, enabled: Boolean) = edit(context) { putBoolean(K_ENCRYPTION_ENABLED, enabled) }
-    fun setMemoryWindow(context: Context, value: String) = edit(context) { putString(K_MEMORY_WINDOW, value) }
-    fun setPersona(context: Context, value: String) = edit(context) { putString(K_PERSONA, value) }
-    fun setGlassesSilencyMode(context: Context, mode: String) = edit(context) { putString(K_GLASSES_SILENCY_MODE, normalizeSilencyMode(mode)) }
+    /** Legacy values written by older builds, read-only now (the HUD settings fall back to it; the encryption flag seeds a new DB). */
     fun glassesSilencyMode(context: Context): String {
         val raw = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
             .getString(K_GLASSES_SILENCY_MODE, "hud")
@@ -144,6 +141,9 @@ object AppConfigStore : AppConfigReader {
         val raw = encrypted ?: context.getSharedPreferences(SECRET_PREF, Context.MODE_PRIVATE).getString(K_API_KEY, null)
         return raw.orEmpty().replace("\\s+".toRegex(), "")
     }
+
+    /** Whether the legacy key file is on disk (checked without opening the Keystore, which would recreate it). */
+    fun hasLegacySecretFile(context: Context): Boolean = java.io.File(context.applicationInfo.dataDir, "shared_prefs/$SECRET_PREF.xml").exists()
 
     /** The legacy key is read once, to seed the endpoint registry; afterwards it lives in KeyVault only (F23: caller checks). */
     fun clearLegacySecret(context: Context) {

@@ -71,6 +71,7 @@ class DiagnosticsViewModel(
     exportDiagnostics: (suspend () -> java.io.File)? = null,
     private val share: (java.io.File) -> Unit = {},
     pushSettings: () -> Unit = {},
+    private val glassesConnected: () -> Boolean = { true },
 ) : ViewModel() {
     // F16: plain parameters (named like the test passes them) kept in vals that don't clash with the methods.
     private val exportAction = exportDiagnostics
@@ -88,7 +89,12 @@ class DiagnosticsViewModel(
     }
 
     /** spec §2.4 "manual config sync": re-push the HUD settings to the glasses (ruling, Task 21). */
-    fun pushSettings() { pushAction(); _state.value = DiagnosticsUiState(message = PUSHED) }
+    fun pushSettings() {
+        pushAction() // persisted by the hub, which sends it now or on the next connect
+        val msg = if (glassesConnected()) PUSHED else NOT_CONNECTED
+        // Fix round 1 (m6): an export in flight keeps its busy guard; its own result replaces this message.
+        _state.value = _state.value.copy(message = msg)
+    }
 
     private fun run(requiresPipeline: Boolean, block: suspend () -> String) {
         if (_state.value.busy) return
@@ -107,6 +113,7 @@ class DiagnosticsViewModel(
         const val PAUSED = "Capture is paused — resume it from Home first"
         const val FAILED = "That didn't work — try again"
         const val PUSHED = "Settings sent to the glasses"
+        const val NOT_CONNECTED = "Glasses not connected — settings will sync when they connect"
         private const val TAG = "Diagnostics"
     }
 }

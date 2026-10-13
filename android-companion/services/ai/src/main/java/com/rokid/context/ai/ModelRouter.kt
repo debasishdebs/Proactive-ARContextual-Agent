@@ -111,7 +111,7 @@ class ModelRouter(
         val start = System.nanoTime()
         val reply = if (request.images.isNotEmpty() && Capability.VISION in e.capabilities) {
             try { p.complete(request) } catch (c: CancellationException) { throw c } catch (t: Throwable) {
-                Log.w(TAG, "vision failed on ${e.name}, retrying as text: ${safe(t, key)}")
+                Log.w(TAG, "vision failed on ${e.name}, retrying as text: ${SafeLog.describe(t)}")
                 p.complete(request.copy(images = emptyList()))
             }
         } else {
@@ -120,16 +120,22 @@ class ModelRouter(
         return RoutedReply(reply.text, e, model, (System.nanoTime() - start) / 1_000_000, reply.promptTokens, reply.completionTokens)
     }
 
-    private companion object {
+    internal companion object {
         const val TAG = "ModelRouter"
         const val MAX_PROVIDER_TEXT = 200
 
         /**
-         * Provider text for messages/logs: some servers echo the API key in error bodies, so known keys become "***";
-         * then truncated, keeping the leading "…request failed: <code>". Classification never reads this text.
+         * Failure text for exception messages. Only our own fixed texts are kept ([ModelCallException], whose message is
+         * built here from these parts, and [ProviderConfigException]); a provider throwable becomes class, kind and HTTP
+         * code ([SafeLog.describe]), so no provider body (echoed request text, memory, keys) ever enters a message.
+         * Known [keys] are still masked, then the text is truncated.
          */
         fun safe(t: Throwable?, vararg keys: String?): String {
-            var m = t?.message.orEmpty()
+            var m = when (t) {
+                null -> ""
+                is ModelCallException, is ProviderConfigException -> t.message.orEmpty()
+                else -> SafeLog.describe(t)
+            }
             keys.filterNotNull().map { it.trim() }.filter { it.isNotEmpty() }.forEach { m = m.replace(it, "***") }
             return if (m.length <= MAX_PROVIDER_TEXT) m else m.take(MAX_PROVIDER_TEXT) + "…"
         }

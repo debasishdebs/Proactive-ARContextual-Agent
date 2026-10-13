@@ -20,7 +20,7 @@ class InMemorySeedState : SeedState {
 /**
  * Turns the legacy single-provider config into endpoints + role bindings (spec §4.1 seed).
  * [seedIfNeeded] only creates what is missing and marks done after every binding exists, so a crash at any point
- * is repaired on the next start. [syncFromLegacy] overwrites (legacy Config screen edits, Task 9).
+ * is repaired on the next start. [retireLegacyKey] decides when the legacy key file may go.
  */
 class EndpointSeeder(private val endpoints: EndpointRepository, private val bindings: RoleBindingRepository, private val state: SeedState) {
     /**
@@ -29,62 +29,56 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
      */
     suspend fun seedIfNeeded(settings: ProviderSettings): Result<Unit> = runCatching {
         if (state.isDone()) return@runCatching
-        apply(settings, overwrite = false)
+        apply(settings)
         state.markDone()
-    }.onFailure { Log.w(TAG, "AI seed not finished: ${redact(it.message, settings.apiKey)}") }
+    }.onFailure { Log.w(TAG, "AI seed not finished: ${SafeLog.describe(it)}") }
 
     /**
-     * F23: true only when [settings] carries a non-blank key and KeyVault holds a key for the endpoint this seed
-     * creates, i.e. the legacy copy is no longer the only one. Keyless kinds never take the key, so they are never true.
+     * Whether the legacy key may be deleted (T21 F23 + fix round 1). Only once the seed is done:
+     * - keyless seeded kind: always (that endpoint can never take a key);
+     * - keyed kind, blank read (Keystore unavailable): never, it may be the only copy (F23);
+     * - keyed kind with a key: the seeded endpoint keeps a key it already has; one without a key gets this key first
+     *   (a seed that finished earlier without it); a deleted endpoint needs none. A vault write failure throws.
      */
-    suspend fun legacyKeyInVault(settings: ProviderSettings): Boolean {
+    suspend fun retireLegacyKey(settings: ProviderSettings): Boolean {
+        if (!state.isDone()) return false
+        val desired = desired(settings, 0L)
+        if (desired.kind in EndpointRules.KEYLESS) return true
         if (settings.apiKey.isBlank()) return false
-        val e = endpoints.byId(primaryId(settings)) ?: return false
-        return !endpoints.keyFor(e).isNullOrBlank()
+        val e = endpoints.byId(desired.id) ?: return true
+        if (endpoints.keyFor(e).isNullOrBlank()) endpoints.save(e, apiKey = settings.apiKey).getOrThrow()
+        return true
     }
 
-    suspend fun syncFromLegacy(settings: ProviderSettings): Result<Unit> = runCatching {
-        apply(settings, overwrite = true)
-        state.markDone()
+    /** The endpoint the legacy provider type maps to (one place: [apply] and [retireLegacyKey]). */
+    private fun desired(settings: ProviderSettings, now: Long): Endpoint = when (settings.providerType.lowercase()) {
+        "ollama" -> Endpoint(OLLAMA_ID, "Ollama", EndpointKind.OLLAMA, settings.endpoint.ifBlank { EnvDefaults.ollamaBaseUrl }, null,
+            listOf(settings.deploymentOrModel.ifBlank { EnvDefaults.ollamaModel }), setOf(Capability.CHAT), now)
+        "llama_cpp" -> Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null,
+            listOf("local"), setOf(Capability.CHAT), now)
+        else -> Endpoint(AZURE_ID, "Azure OpenAI", EndpointKind.AZURE_OPENAI, settings.endpoint.ifBlank { EnvDefaults.azureEndpoint }, "2024-10-21",
+            listOf(settings.deploymentOrModel.ifBlank { EnvDefaults.azureDeployment }), setOf(Capability.CHAT, Capability.VISION, Capability.JSON_SCHEMA), now)
     }
 
-    private suspend fun apply(settings: ProviderSettings, overwrite: Boolean) {
+    private suspend fun apply(settings: ProviderSettings) {
         val now = System.currentTimeMillis()
-        val desired = when (settings.providerType.lowercase()) {
-            "ollama" -> Endpoint(OLLAMA_ID, "Ollama", EndpointKind.OLLAMA, settings.endpoint.ifBlank { EnvDefaults.ollamaBaseUrl }, null,
-                listOf(settings.deploymentOrModel.ifBlank { EnvDefaults.ollamaModel }), setOf(Capability.CHAT), now)
-            "llama_cpp" -> Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null,
-                listOf("local"), setOf(Capability.CHAT), now)
-            else -> Endpoint(AZURE_ID, "Azure OpenAI", EndpointKind.AZURE_OPENAI, settings.endpoint.ifBlank { EnvDefaults.azureEndpoint }, "2024-10-21",
-                listOf(settings.deploymentOrModel.ifBlank { EnvDefaults.azureDeployment }), setOf(Capability.CHAT, Capability.VISION, Capability.JSON_SCHEMA), now)
-        }
-        // Seeding: a blank key means "none known yet" (null = keep). Explicit Config edits: pass it through, so a
-        // cleared key ("") removes the stored credential instead of silently keeping the old one.
-        // Keyless kinds never store a key (EndpointRules): an explicit edit clears a key left by an older version; seeding keeps what is there.
-        val apiKey = when {
-            desired.kind in EndpointRules.KEYLESS -> if (overwrite) "" else null
-            overwrite -> settings.apiKey
-            else -> settings.apiKey.ifBlank { null }
-        }
-        val primary = endpoints.byId(desired.id)?.takeUnless { overwrite }
+        val desired = desired(settings, now)
+        // A blank key means "none known yet" (null = keep). Keyless kinds never store a key (EndpointRules).
+        val apiKey = if (desired.kind in EndpointRules.KEYLESS) null else settings.apiKey.ifBlank { null }
+        val primary = endpoints.byId(desired.id)
             ?.also { existing ->
                 // Repair: a crash after the row was written but before the key was stored leaves a keyless endpoint.
                 if (apiKey != null && endpoints.keyFor(existing) == null) endpoints.save(existing, apiKey = apiKey).getOrThrow()
             }
             ?: endpoints.save(desired, apiKey = apiKey).getOrThrow()
         val local = if (settings.localModeEnabled && settings.nativeModelPath.isNotBlank() && primary.id != LOCAL_ID) {
-            endpoints.byId(LOCAL_ID)?.takeUnless { overwrite }
+            endpoints.byId(LOCAL_ID)
                 ?: endpoints.save(Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null, listOf("local"), setOf(Capability.CHAT), now), apiKey = null).getOrThrow()
         } else null
         val model = primary.models.firstOrNull().orEmpty()
         for (role in Role.entries) {
-            if (role == Role.EMBED) continue
-            if (role.requiredCapability !in primary.capabilities) {
-                // Switching the legacy provider to a text-only endpoint must not leave frames on the old vision endpoint.
-                if (overwrite) bindings.clear(role)
-                continue
-            }
-            if (!overwrite && bindings.get(role) != null) continue
+            if (role == Role.EMBED || role.requiredCapability !in primary.capabilities) continue
+            if (bindings.get(role) != null) continue
             // Text roles get the on-device fallback (legacy `localFallback`); VISION_EXTRACT can't, the local endpoint has no VISION.
             val fallback = local?.takeIf { role.requiredCapability in it.capabilities }
             bindings.set(RoleBinding(role, primary.id, model, fallbackEndpointId = fallback?.id, fallbackModel = fallback?.models?.firstOrNull())).getOrThrow()
@@ -93,21 +87,8 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
 
     companion object {
         private const val TAG = "EndpointSeeder"
-
-        /** The id of the endpoint [apply] creates for [settings] (same `when` as there). */
-        private fun primaryId(settings: ProviderSettings): String = when (settings.providerType.lowercase()) {
-            "ollama" -> OLLAMA_ID
-            "llama_cpp" -> LOCAL_ID
-            else -> AZURE_ID
-        }
         const val AZURE_ID = "azure"
         const val OLLAMA_ID = "ollama"
         const val LOCAL_ID = "llamacpp"
-
-        private fun redact(message: String?, key: String): String {
-            val m = message.orEmpty()
-            val k = key.trim()
-            return if (k.isEmpty()) m else m.replace(k, "***")
-        }
     }
 }
