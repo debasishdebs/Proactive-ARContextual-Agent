@@ -117,4 +117,10 @@ class ProtocolTest {
         val s = HudSettings(askBlockedReason = "Voice not supported on this phone")
         assertEquals(s, assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(Wire.encode(s))).value)
     }
+
+    /** Both builds decode with `ignoreUnknownKeys`: a field a newer build adds never breaks an older one. */
+    @Test fun hudSettingsToleratesUnknownKeys() {
+        val newer = """{"v":1,"askBlockedReason":"x","futureField":1}"""
+        assertEquals(HudSettings(askBlockedReason = "x"), assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(newer)).value)
+    }
 }
