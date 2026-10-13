@@ -108,28 +108,12 @@ class OutboundBufferTest {
         assertEquals(1, b.size)
     }
 
-    /** Fix round 1 I5: an earlier-boot frame dated over 1 h ahead is held (skipped, kept), never dropped as unknown age. */
-    @Test fun aFutureDatedFrameFromAnEarlierBootIsHeldUntilNowCatchesUp() {
-        buffer().add("g1", byteArrayOf(1), now + 2 * hour, null, null, null)
-        buffer().add("g0", byteArrayOf(0), now - hour, null, null, null)
-        boot = "boot-b"
-        val b = buffer()
-        assertEquals("the held frame is skipped, the next one is sent", "g0", b.oldest()?.meta?.frameId)
-        b.remove("g0")
-        assertNull(b.oldest())
-        assertEquals(1, b.size)
-        assertEquals(2, dir.list()!!.size)
-        now += 2 * hour
-        assertEquals("g1", b.oldest()?.meta?.frameId)
-    }
-
-    @Test fun aHeldFrameIsReleasedByALaterFrameOfThisBoot() {
+    @Test fun aFutureDatedFrameFromAnEarlierBootIsDropped() {
         buffer().add("g1", byteArrayOf(1), now + 2 * hour, null, null, null)
         boot = "boot-b"
         val b = buffer()
         assertNull(b.oldest())
-        b.add("g2", byteArrayOf(2), now + 3 * hour, null, null, null)
-        assertEquals("a this-boot frame dated after it makes its date plausible", "g1", b.oldest()?.meta?.frameId)
+        assertEquals(0, b.size)
     }
 
     @Test fun reAddingAnExistingKeyDoesNotDoubleCountBytes() {

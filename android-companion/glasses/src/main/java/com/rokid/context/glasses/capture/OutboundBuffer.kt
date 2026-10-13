@@ -82,27 +82,13 @@ class OutboundBuffer(
         return true
     }
 
-    /**
-     * The oldest frame young enough to send; older ones are dropped on the way. A frame from an earlier boot dated over
-     * an hour ahead of the wall clock has no knowable age: it is held (skipped, kept) until its date looks plausible,
-     * i.e. the clock catches up or a frame of this boot is dated after it (fix round 1 I5). Never dropped for that.
-     */
+    /** The oldest frame young enough to send; older ones (and ones of unknowable age) are dropped on the way. */
     @Synchronized fun oldest(): BufferedFrame? {
-        val now = clock()
-        val newestThisBoot = frames.values.filter { sameBoot(it.meta) }.maxOfOrNull { it.meta.capturedAtMs }
-        for (key in frames.keys.toList()) {
-            val f = frames[key] ?: continue
-            val m = f.meta
-            val e = m.elapsedAtCaptureMs
-            val age = if (e != null && sameBoot(m)) {
-                elapsed() - e
-            } else {
-                val held = m.capturedAtMs > now + FUTURE_SLACK_MS && (newestThisBoot == null || newestThisBoot < m.capturedAtMs)
-                if (held) continue
-                now - m.capturedAtMs
-            }
-            if (age <= maxAgeMs) return f
-            log("dropped ${m.frameId}: older than 72 h")
+        while (frames.isNotEmpty()) {
+            val (key, f) = frames.firstEntry()
+            val age = ageMs(f.meta)
+            if (age != null && age <= maxAgeMs) return f
+            log("dropped ${f.meta.frameId}: ${if (age == null) "unknown age" else "older than 72 h"}")
             delete(key)
         }
         return null
@@ -132,6 +118,17 @@ class OutboundBuffer(
     fun readJpeg(f: BufferedFrame): ByteArray = f.jpeg.readBytes()
 
     private fun sameBoot(m: BufferedMeta) = m.elapsedAtCaptureMs != null && !m.bootId.isNullOrEmpty() && m.bootId == boot
+
+    /**
+     * Uptime age within one boot (immune to clock jumps); otherwise wall-clock age. Null when it cannot be known: a frame
+     * from another boot dated over an hour in the future of the wall clock (fail closed, spec 5.5).
+     */
+    private fun ageMs(m: BufferedMeta): Long? {
+        val e = m.elapsedAtCaptureMs
+        if (e != null && sameBoot(m)) return elapsed() - e
+        val now = clock()
+        return if (m.capturedAtMs > now + FUTURE_SLACK_MS) null else now - m.capturedAtMs
+    }
 
     private fun write(j: File, m: File, jpeg: ByteArray, meta: ByteArray): Boolean = try {
         if (!dir.isDirectory && !dir.mkdirs()) throw IOException("cannot create buffer directory")
