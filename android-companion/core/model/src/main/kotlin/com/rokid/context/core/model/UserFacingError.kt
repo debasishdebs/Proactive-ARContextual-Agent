@@ -14,7 +14,7 @@ data class UserFacingError(val title: String, val hint: String, val action: Erro
 
 object UserFacingErrors {
     val GlassesOffline = UserFacingError("Glasses offline", "Bring your glasses near the phone.", ErrorAction.RECONNECT)
-    val ClosedOnGlasses = UserFacingError("Closed on glasses", "Open Proactive Context on your glasses.", ErrorAction.OPEN_ON_GLASSES)
+    val ClosedOnGlasses = UserFacingError("Closed on glasses", "Capture stops until you open Proactive Context on your glasses.", ErrorAction.OPEN_ON_GLASSES)
     val NotAuthorized = UserFacingError("Glasses not authorized", "Authorize Proactive Context in Hi Rokid.", ErrorAction.AUTHORIZE)
     val VersionMismatch = UserFacingError("Update glasses app", "Phone and glasses apps are on different versions.", ErrorAction.UPDATE_GLASSES_APP)
     val StorageFull = UserFacingError("Phone storage full", "Free up space so new frames can be saved.", ErrorAction.FREE_STORAGE)

@@ -49,9 +49,9 @@ Inputs/conditions the spec implies but does not spell out; each is pinned by a t
 | 3 CXR link + glasses app | `2026-10-12-v1-phase3-cxr-link.md` | written | 0, 2 |
 | 4 Phone shell | `2026-10-12-v1-phase4-phone-shell.md` | written | 2 (+3 for live glasses state; fixtures otherwise) |
 | 5 AI + Settings | `2026-10-12-v1-phase5-ai-settings.md` | written | 2, 4 |
-| 6 Voice + answers | to be written after Phase 0 + 5 | — | 0, 3, 5 |
-| 7 Nudges, actions, sources, pause, onboarding | to be written after 6 | — | 3, 5, 6 |
-| 8 Hardening | to be written after 7 | — | all |
+| 6 Voice + answers | `2026-10-12-v1-phase6-voice-answers.md` | written | 0, 3, 5 |
+| 7 Nudges, actions, sources, pause, onboarding | `2026-10-12-v1-phase7-nudges-actions.md` (Stream 0 seams, then 5 parallel streams A pause · B actions · C sources+nudges · F forget+retention · E onboarding) | written | 3, 5, 6 (Phase 6 Tasks 11–16 merged first) |
+| 8 Hardening | `2026-10-12-v1-phase8-hardening.md` (5 parallel streams A–E; E merges after 7) | written | all (A–D parallel with 7) |
 
 Task references are `Phase.Task` (e.g. 2.6 = Phase 2 Task 6); every detailed task also carries a `**Requirements:**` line. Phases 3–8 get their own detailed plan (same header/format, bite-sized TDD steps) when their prerequisites are done, because their concrete values (CXR message limit, TTS route, STT behaviour, final DAO shapes) come from earlier phases. Each later plan MUST cite R-IDs per task and MUST cover the R-IDs assigned to it below.
 
@@ -83,7 +83,7 @@ Task references are `Phase.Task` (e.g. 2.6 = Phase 2 Task 6); every detailed tas
 | R-49, R-50, R-51, R-52, R-53 | 5 | |
 | R-60 | 6 | |
 | R-61, R-62, R-63, R-64, R-65, R-66 | 7 (R-65 `PauseRecord`/`QuietHours` types from 1.3) | |
-| R-67 | 0.4 (probe) · 6 (gate + UX) | |
+| R-67 | 0.4 (probe) · 6 (gate + UX) · onboarding probe → 7 (R-19) | |
 | R-70 | 2.1–2.3 | encryption toggle migration in 5 (Settings → Memory) |
 | R-71 | 2.4–2.5 | |
 | R-72 | 2.8 (typed model errors, short trace messages) · 3 (`UserFacingError` introduced) · all later phases | |

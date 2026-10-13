@@ -10,6 +10,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -33,9 +34,10 @@ class HomeScreenTest {
     private val opened = mutableListOf<String>()
     private var pauses = 0
     private var banner: BannerAction? = null
+    private val nudges = mutableListOf<String>()
 
     private fun show(state: HomeUiState) = compose.setContent {
-        PcTheme { HomeScreen(state, onQuestionChange = {}, onAsk = { asked += it }, onOpenAsk = { opened += it }, onTogglePause = { pauses++ }, onBannerAction = { banner = it }) }
+        PcTheme { HomeScreen(state, onQuestionChange = {}, onAsk = { asked += it }, onOpenAsk = { opened += it }, onTogglePause = { pauses++ }, onBannerAction = { banner = it }, onOpenNudge = { nudges += it }) }
     }
 
     private val live = StatusUi("Capturing · next 4:12", live = true, paused = false, batteryPct = 82, banner = null)
@@ -92,8 +94,24 @@ class HomeScreenTest {
         assertEquals(listOf("a1"), opened)
         compose.onNodeWithTag("home_list").performScrollToNode(hasText("Milk looked almost empty"))
         compose.onNodeWithText("Milk looked almost empty").performClick()
-        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Seen in the fridge at 09:41"))
-        compose.onNodeWithText("Seen in the fridge at 09:41").assertIsDisplayed()
+        assertEquals(listOf("n1"), nudges)
+    }
+
+    // Phase 7 C4
+
+    @Test fun nudgeCardOpensDetail() {
+        show(HomeUiState(status = live, feed = listOf(FeedItem.Nudge("n1", 2, "09:41", "Milk looked almost empty", "why", redacted = false))))
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Milk looked almost empty"))
+        compose.onNodeWithText("Milk looked almost empty").performClick()
+        assertEquals(listOf("n1"), nudges)
+    }
+
+    @Test fun aRedactedNudgeSaysWhyAndDoesNotOpen() {
+        show(HomeUiState(status = live, feed = listOf(FeedItem.Nudge("n1", 2, "09:41", "secret text", "why", redacted = true))))
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("Removed \u2014 a source was forgotten"))
+        compose.onNodeWithText("Removed \u2014 a source was forgotten").performClick()
+        assertEquals(emptyList<String>(), nudges)
+        compose.onAllNodesWithText("secret text").assertCountEquals(0)
     }
 
     @Test fun emptyFeedShowsHint() {
@@ -107,5 +125,93 @@ class HomeScreenTest {
         compose.onNodeWithTag("home_list").performScrollToNode(hasText("Milk is almost empty."))
         compose.onNodeWithText("Milk is almost empty.").performClick()
         assertEquals(listOf("a9"), opened)
+    }
+
+    @Test fun whileListeningTheMicSendsAndShowsWhatWasHeard() {
+        var mics = 0
+        compose.setContent {
+            PcTheme {
+                HomeScreen(
+                    HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, listening = true, partial = "where are my", hint = "Listening\u2026 tap the mic to send")),
+                    onQuestionChange = {}, onAsk = {}, onOpenAsk = {}, onTogglePause = {}, onBannerAction = {}, onMic = { mics++ },
+                )
+            }
+        }
+        compose.onNodeWithText("\u201cwhere are my\u201d").assertIsDisplayed()
+        compose.onNodeWithText("Listening\u2026 tap the mic to send").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Stop and send").performClick()
+        assertEquals(1, mics)
+    }
+
+    @Test fun aMissingPermissionAsksForItInsteadOfListening() {
+        var requests = 0
+        var mics = 0
+        compose.setContent {
+            PcTheme {
+                HomeScreen(
+                    HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, needsPermission = true, hint = "Allow the microphone to ask by voice")),
+                    onQuestionChange = {}, onAsk = {}, onOpenAsk = {}, onTogglePause = {}, onBannerAction = {}, onMic = { mics++ }, onRequestMic = { requests++ },
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Ask by voice").performClick()
+        assertEquals(1, requests); assertEquals(0, mics)
+        compose.onNodeWithText("Allow the microphone to ask by voice").assertIsDisplayed()
+    }
+
+    @Test fun aVoiceProblemShowsItsFixedText() {
+        show(HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, hint = "or tap your glasses", error = "Couldn't hear that \u2014 try again")))
+        compose.onNodeWithText("Couldn't hear that \u2014 try again").assertIsDisplayed()
+    }
+
+    /** Fix 1 #3: while thinking the mic button cancels. */
+    @Test fun whileThinkingTheMicCancels() {
+        var mics = 0
+        compose.setContent {
+            PcTheme {
+                HomeScreen(
+                    HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, thinking = true, hint = HomeVoiceUi.HINT_THINKING)),
+                    onQuestionChange = {}, onAsk = {}, onOpenAsk = {}, onTogglePause = {}, onBannerAction = {}, onMic = { mics++ },
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("Cancel").performClick()
+        assertEquals(1, mics)
+    }
+
+    /** Fix 1 #4: a blocked mic opens the app's settings. */
+    @Test fun aBlockedMicOpensAppSettings() {
+        var opened = 0
+        var requests = 0
+        compose.setContent {
+            PcTheme {
+                HomeScreen(
+                    HomeUiState(status = live, voice = HomeVoiceUi(enabled = true, needsPermission = true, blocked = true, hint = HomeVoiceUi.HINT_BLOCKED)),
+                    onQuestionChange = {}, onAsk = {}, onOpenAsk = {}, onTogglePause = {}, onBannerAction = {},
+                    onRequestMic = { requests++ }, onOpenAppSettings = { opened++ },
+                )
+            }
+        }
+        compose.onNodeWithText(HomeVoiceUi.HINT_BLOCKED).assertIsDisplayed()
+        compose.onNodeWithText("Open app settings").performClick()
+        compose.onNodeWithContentDescription("Ask by voice").performClick()
+        assertEquals(2, opened); assertEquals(0, requests)
+    }
+
+    /** Fix 1 #1: Home leaving the screen tells the caller (which cancels a listen). */
+    @Test fun leavingHomeIsReported() {
+        var left = 0
+        val shown = androidx.compose.runtime.mutableStateOf(true)
+        compose.setContent {
+            PcTheme {
+                if (shown.value) HomeScreen(
+                    HomeUiState(status = live), onQuestionChange = {}, onAsk = {}, onOpenAsk = {}, onTogglePause = {}, onBannerAction = {},
+                    onLeave = { left++ },
+                )
+            }
+        }
+        compose.waitForIdle(); assertEquals(0, left)
+        shown.value = false
+        compose.waitForIdle(); assertEquals(1, left)
     }
 }

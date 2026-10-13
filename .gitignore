@@ -21,3 +21,6 @@ local.properties
 /window-*.xml
 /.tmp_*
 /latest_rokid_frame.jpg
+
+# Legacy dev captures moved out of the repo root (no reference value)
+/docs/screens/legacy/

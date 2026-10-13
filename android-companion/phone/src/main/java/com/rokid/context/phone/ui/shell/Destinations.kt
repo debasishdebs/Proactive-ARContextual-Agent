@@ -13,16 +13,14 @@ import com.rokid.context.phone.ui.activity.ActivityViewModel
 import com.rokid.context.phone.ui.activity.DayScreen
 import com.rokid.context.phone.ui.activity.DayViewModel
 import com.rokid.context.phone.ui.activity.Period
-import com.rokid.context.phone.ui.ask.AskDetailScreen
-import com.rokid.context.phone.ui.ask.AskDetailViewModel
+import com.rokid.context.phone.ui.ask.AskDetailRoute
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.frames.FrameViewerScreen
 import com.rokid.context.phone.ui.frames.FrameViewerViewModel
-import com.rokid.context.phone.ui.home.HomeScreen
-import com.rokid.context.phone.ui.home.HomeViewModel
-import com.rokid.context.phone.ui.memory.MemoryDetailScreen
-import com.rokid.context.phone.ui.memory.MemoryDetailViewModel
-import com.rokid.context.phone.ui.onboarding.WelcomeScreen
+import com.rokid.context.phone.ui.home.HomeRoute
+import com.rokid.context.phone.ui.memory.MemoryDetailRoute
+import com.rokid.context.phone.ui.nudge.NudgeDetailRoute
+import com.rokid.context.phone.ui.onboarding.OnboardingRoute
 import com.rokid.context.phone.ui.settings.QueuesScreen
 import com.rokid.context.phone.ui.settings.QueuesViewModel
 import com.rokid.context.phone.ui.settings.TrackerScreen
@@ -48,27 +46,17 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
     }
 
     composable(Routes.ONBOARDING) {
-        WelcomeScreen(onGetStarted = {
+        OnboardingRoute(deps) {
             deps.onboarding.markComplete()
             nav.navigate(Routes.HOME) { popUpTo(Routes.ONBOARDING) { inclusive = true }; launchSingleTop = true }
-        })
+        }
     }
 
-    composable(Routes.HOME) {
-        val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index) }
-        val state by vm.state.collectAsStateWithLifecycle()
-        HomeScreen(
-            state, onQuestionChange = vm::onQuestionChange, onAsk = { vm.ask(it) }, onOpenAsk = { nav.navigate(Routes.ask(it)) },
-            onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
-        )
-    }
+    composable(Routes.HOME) { HomeRoute(deps, nav, bannerNav) }
 
-    composable(Routes.ASK, arguments = idArg) { entry ->
-        val id = entry.arguments?.getString("id").orEmpty()
-        val vm = viewModel { AskDetailViewModel(id, deps.memory.asks, deps.memory.proposals, deps.memory.timeline, deps.rateAsk, deps.zone) }
-        val state by vm.state.collectAsStateWithLifecycle()
-        AskDetailScreen(state, onBack = back, onRate = vm::rate, onOpenMemory = { nav.navigate(Routes.memory(it)) })
-    }
+    composable(Routes.ASK, arguments = idArg) { entry -> AskDetailRoute(entry.arguments?.getString("id").orEmpty(), deps, nav) }
+
+    composable(Routes.NUDGE, arguments = idArg) { entry -> NudgeDetailRoute(entry.arguments?.getString("id").orEmpty(), deps, nav) }
 
     composable(Routes.ACTIVITY, arguments = listOf(navArgument("period") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
         val period = Period.parse(entry.arguments?.getString("period"))
@@ -88,15 +76,7 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         DayScreen(state, onBack = back, onOpenMemory = { nav.navigate(Routes.memory(it)) }, onOpenFrames = { nav.navigate(Routes.frames(it)) })
     }
 
-    composable(Routes.MEMORY, arguments = idArg) { entry ->
-        val id = entry.arguments?.getString("id").orEmpty()
-        val vm = viewModel { MemoryDetailViewModel(id, deps.memory.timeline, deps.memory.memoryEdits, deps.zone) }
-        val state by vm.state.collectAsStateWithLifecycle()
-        MemoryDetailScreen(
-            state, onBack = back, onTrust = vm::trust, onStartEdit = vm::startEdit, onDraftChange = vm::updateDraft, onSaveEdit = vm::saveEdit,
-            onCancelEdit = vm::cancelEdit, onOpenFrames = { date, frameId -> nav.navigate(Routes.frames(date, frameId)) },
-        )
-    }
+    composable(Routes.MEMORY, arguments = idArg) { entry -> MemoryDetailRoute(entry.arguments?.getString("id").orEmpty(), deps, nav) }
 
     composable(Routes.FRAMES, arguments = listOf(dateArg, navArgument("start") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
         val date = entry.arguments?.getString("date")

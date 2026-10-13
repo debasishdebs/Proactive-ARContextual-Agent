@@ -5,10 +5,17 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.model.Channels
 import com.rokid.context.core.model.Hello
+import com.rokid.context.core.model.HudSettings
+import com.rokid.context.core.model.PauseOrigin
+import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.glasses.link.HudSettingsCache
 import com.rokid.context.glasses.link.FakeBridge
 import com.rokid.context.glasses.link.HudController
 import com.rokid.context.glasses.pause.PauseToggle
+import com.rokid.context.glasses.link.CxrBridge
+import com.rokid.context.glasses.voice.PttProblem
+import kotlin.test.assertNotSame
+import kotlin.test.assertSame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -40,6 +47,21 @@ class GlassesRuntimeTest {
         }
     }
 
+    /** Spec §5.5: a newly merged phone pause active now drops the buffer, like a local pause; an expired one doesn't. */
+    @Test fun newActivePhoneRecordClearsBuffer() = runBlocking {
+        val runtime = GlassesRuntime.get(app)
+        runtime.pauses.ensureLoaded()
+        val now = System.currentTimeMillis()
+        repeat(3) { runtime.bufferCaptured("f$it", ByteArray(1_024), now - 10_000 + it, 90, "0", 80) }
+        assertEquals(3, runtime.buffer.size)
+        runtime.applyPhoneSettings(HudSettings(pauses = listOf(PauseRecord("old", PauseOrigin.PHONE, now - 9_000, now - 1_000)), pausesExact = true))
+        assertEquals(3, runtime.buffer.size, "an expired record keeps the buffer")
+        runtime.applyPhoneSettings(HudSettings(pauses = listOf(PauseRecord("p", PauseOrigin.PHONE, now, null)), pausesExact = true))
+        assertEquals(0, runtime.buffer.size)
+        runtime.togglePause() // resume, so later tests start clear
+        runtime.buffer.clear()
+    }
+
     /** The hello sent when a frame is buffered still carries the trigger that just fired; the phone needs the new one. */
     @Test fun schedulingTheNextCaptureSendsAFreshHello() {
         val runtime = GlassesRuntime.get(app)
@@ -48,5 +70,24 @@ class GlassesRuntimeTest {
         runtime.attach(c)
         runtime.onCaptureScheduled()
         assertEquals(1, bridge.sent.count { it.first == Channels.HELLO })
+    }
+
+    /** Minor 7: an old activity's late detach must not wipe the new activity's push-to-talk toast handler. */
+    @Test fun anOldControllersDetachKeepsTheNewProblemHandler() {
+        GlassesRuntime.bridgeFactory = { FakeBridge() }
+        try {
+            val runtime = GlassesRuntime.get(app)
+            fun controller() = HudController(runtime.scope, FakeBridge(), HudSettingsCache(app.getSharedPreferences("rt_test", 0)), { Hello(glassesBatteryPct = 80, bufferSize = 0, glassesNowMs = 0, pauses = emptyList()) })
+            val old = controller(); val new = controller()
+            runtime.attach(old); runtime.attach(new)
+            val handler: (PttProblem) -> Unit = {}
+            runtime.ptt.onProblem = handler
+            runtime.detach(old)
+            assertSame(handler, runtime.ptt.onProblem)
+            runtime.detach(new)
+            assertNotSame(handler, runtime.ptt.onProblem)
+        } finally {
+            GlassesRuntime.bridgeFactory = { CxrBridge(it) }
+        }
     }
 }

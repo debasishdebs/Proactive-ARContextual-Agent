@@ -82,6 +82,9 @@ class IndexMaintenanceTest {
     }
     private val clock = object : IndexClock {
         var at = 0L; var pending = false; var token: String? = null; var discard: DiscardRecord? = null
+        var pendingTok: String? = null
+        override fun pendingRebuildToken() = pendingTok
+        override fun setPendingRebuildToken(token: String?) { pendingTok = token }
         override fun lastCanaryAt() = at
         override fun markCanary(at: Long) { this.at = at }
         override fun rebuildPending() = pending
@@ -395,5 +398,26 @@ class IndexMaintenanceTest {
             Canaries.decode(space.canaryJson).zip(expected).forEach { (a, b) -> assertArrayEquals(b, a, 1e-6f) }
             assertEquals(3, Canaries.decode(space.canaryJson).size)
         } finally { server.shutdown() }
+    }
+
+    /** Phase 5 T8 carry (ruling): an empty library is fully indexed, so a bound model gets an ACTIVE space at once. */
+    @Test fun anEmptyLibraryActivatesTheSpaceAtOnce() = runBlocking {
+        assertEquals(Outcome.DONE, maintenance().run())
+        val active = spaces.queryable()!!
+        assertEquals(com.rokid.context.memory.Coverage(0, 0), spaces.coverage(active.id))
+    }
+
+    /** Phase 5 T11 carry: a run that honours a pending Rebuild consumes its request, so that request's own run rebuilds nothing. */
+    @Test fun aRebuildHonouredAsPendingIsNotRunAgainByItsOwnRequest() = runBlocking {
+        mem("m1"); maintenance().run()
+        val first = spaces.queryable()!!
+        clock.pending = true; clock.pendingTok = "w2"
+        maintenance().run() // an older, normal run sees the pending Rebuild first
+        val rebuilt = spaces.queryable()!!
+        assertNotEquals(first.id, rebuilt.id)
+        assertEquals("w2", clock.token)
+        assertNull(clock.pendingTok)
+        maintenance().run(rebuild = true, rebuildToken = "w2") // the REPLACE request itself
+        assertEquals(rebuilt.id, spaces.queryable()!!.id)
     }
 }

@@ -1,14 +1,15 @@
 package com.rokid.context.orchestration
 
 import com.rokid.context.ai.contract.PromptKey
+import com.rokid.context.connectors.ContextSourceProvider
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.orchestration.nudge.NudgeInputs
 import com.rokid.context.memory.db.FrameEntity
-import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptVars
 
-/** spec §4.5 test bed inputs: a recent frame, free text, or a canned question (ANSWER/NUDGE use real retrieval). */
+/** spec §4.5 test bed inputs: a recent frame, free text, or a canned question (ANSWER uses real retrieval; NUDGE the engine's own inputs). */
 sealed interface TestInput {
     data class Frame(val frameId: String) : TestInput
     data class Text(val text: String) : TestInput
@@ -16,7 +17,13 @@ sealed interface TestInput {
 }
 
 /** Builds the same delimited variables production uses, so a test run sees what the pipeline would send. */
-class TestBedInputs(private val memory: MemoryGraph, private val answers: AnswerService) {
+class TestBedInputs(
+    private val memory: MemoryGraph,
+    private val answers: AnswerService,
+    /** The production NUDGE inputs (Phase 7 C4 carry): pass the app's sources so the test bed sees what the engine sends. */
+    private val nudges: NudgeInputs = NudgeInputs(memory, ContextSourceProvider.None),
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
     data class Prepared(val vars: PromptVars, val images: List<ModelImageInput>, val inputIds: Set<String>)
 
     suspend fun recentFrames(limit: Int = 12): List<FrameEntity> = memory.frames.recent(limit)
@@ -30,10 +37,9 @@ class TestBedInputs(private val memory: MemoryGraph, private val answers: Answer
                 Prepared(r.vars, emptyList(), r.ids)
             }
             PromptKey.NUDGE -> {
-                val recent = memory.memories.recent(30).filter { it.reviewState == ReviewState.OK }.take(10)
-                val lines = recent.map { "id=${it.id} · ${AskText.clip(AskText.collapse(it.text), 300)}" } + listOfNotNull(text.takeIf { it.isNotBlank() })
-                Prepared(PromptVars(recentContext = PromptComposer.dataBlock("memories", lines), contextSources = PromptComposer.dataBlock("sources", emptyList())),
-                    emptyList(), recent.map { it.id }.toSet())
+                // The same memories, recent_nudges and sources blocks as NudgeEngine, plus the typed line.
+                val p = nudges.build(clock(), extraText = text)
+                Prepared(p.vars, emptyList(), p.inputIds)
             }
             PromptKey.VISION_EXTRACT -> {
                 val frame = frameFor(input)

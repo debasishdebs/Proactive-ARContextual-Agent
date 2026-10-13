@@ -16,6 +16,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -132,5 +133,52 @@ class VectorIndexTest {
         val plan = db.openHelper.readableDatabase.query(sql, arrayOf<Any?>("S", 0L, 0.0, 5)).use { c -> buildList { while (c.moveToNext()) add(c.getString(3)) } }
         assertTrue(plan.toString(), plan.none { "TEMP B-TREE" in it })
         assertTrue(plan.toString(), plan.first().contains("USING INDEX index_memory_vector_spaceId (spaceId=? AND rowid>?)"))
+    }
+
+    /** B3: decoding into a reused buffer yields exactly the floats [VectorCodec.decode] returns. */
+    @Test fun decodeIntoMatchesDecode() {
+        val rnd = java.util.Random(3)
+        val out = FloatArray(64)
+        repeat(50) {
+            val blob = VectorCodec.encode(FloatArray(64) { (rnd.nextGaussian() * 10).toFloat() })
+            assertTrue(VectorCodec.decodeInto(blob, out))
+            assertEquals(VectorCodec.decode(blob).map { it.toRawBits() }, out.map { it.toRawBits() })
+        }
+        assertFalse(VectorCodec.decodeInto(VectorCodec.encode(FloatArray(32)), out)) // wrong dimension
+        assertFalse(VectorCodec.decodeInto(ByteArray(255), out)) // not float32-aligned
+    }
+
+    /** B3 (pin): a vector of another dimension is never a hit. */
+    @Test fun aWrongDimensionBlobIsSkipped() = runBlocking {
+        val rnd = java.util.Random(4)
+        put("small", "S", FloatArray(32) { 1f })
+        put("ok", "S", FloatArray(64) { rnd.nextFloat() })
+        assertEquals(listOf("ok"), index.search("S", FloatArray(64) { 1f }, 10).map { it.id })
+    }
+
+    /** B3: 50 k x 64-d vectors (the spec's brute-force ceiling) rank exactly as a full sort. */
+    @Test fun fiftyThousandVectorsSearchMatchesFullSort() = runBlocking {
+        val rnd = java.util.Random(5)
+        val vectors = ArrayList<Pair<String, FloatArray>>(50_000)
+        val w = db.openHelper.writableDatabase
+        w.beginTransaction()
+        try {
+            val mem = w.compileStatement(
+                "INSERT INTO memory (id, frameId, text, type, tags, tier, confidence, reviewState, trusted, createdAt, derived, searchText) " +
+                    "VALUES (?, NULL, 't', 'note', '', 'SHORT', 0.8, 'OK', 0, 1, 0, 't')",
+            )
+            val vec = w.compileStatement("INSERT INTO memory_vector (memoryId, spaceId, blob) VALUES (?, 'S', ?)")
+            repeat(50_000) { i ->
+                val id = "v${i.toString().padStart(5, '0')}"
+                val v = FloatArray(64) { rnd.nextFloat() - 0.5f }
+                vectors += id to v
+                mem.clearBindings(); mem.bindString(1, id); mem.executeInsert()
+                vec.clearBindings(); vec.bindString(1, id); vec.bindBlob(2, VectorCodec.encode(v)); vec.executeInsert()
+            }
+            w.setTransactionSuccessful()
+        } finally { w.endTransaction() }
+        val q = FloatArray(64) { rnd.nextFloat() - 0.5f }
+        val reference = vectors.map { (id, v) -> Hit(id, VectorMath.cosine(q, v)) }.sortedWith(compareByDescending<Hit> { it.score }.thenBy { it.id }).take(10)
+        assertEquals(reference, index.search("S", q, 10))
     }
 }

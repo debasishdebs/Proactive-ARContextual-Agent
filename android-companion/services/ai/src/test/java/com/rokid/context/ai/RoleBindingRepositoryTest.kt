@@ -56,4 +56,15 @@ class RoleBindingRepositoryTest {
         assertEquals(emptyList<Role>(), bindings.deleteEndpointIfUnused("a"))
         assertEquals(null, endpoints.byId("a"))
     }
+
+    /** Phase 5 T17 carry: the capability check and the endpoint save run together under the bindings' lock. */
+    @Test fun saveEndpointRefusesToDropACapabilityABoundRoleNeeds() = runTest {
+        val e = ep("vision", Capability.CHAT, Capability.VISION)
+        bindings.set(RoleBinding(Role.VISION_EXTRACT, "vision", "m")).getOrThrow()
+        val r = bindings.saveEndpoint(e.copy(capabilities = setOf(Capability.CHAT)), apiKey = null)
+        assertEquals(listOf(Role.VISION_EXTRACT), (r.exceptionOrNull() as EndpointInUseException).roles)
+        assertEquals(setOf(Capability.CHAT, Capability.VISION), endpoints.byId("vision")!!.capabilities)
+        assertTrue(bindings.saveEndpoint(e.copy(name = "Renamed"), apiKey = null).isSuccess)
+        assertEquals("Renamed", endpoints.byId("vision")!!.name)
+    }
 }

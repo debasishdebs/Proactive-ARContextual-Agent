@@ -93,11 +93,24 @@ class HudControllerTest {
     @Test fun phonePausesAreForwardedFromStateAndSettings() = runTest {
         val c = controller()
         val got = mutableListOf<List<PauseRecord>>()
-        c.onPhonePauses = { got += it }
+        val exact = mutableListOf<Boolean>()
+        c.onPhoneSettings = { got += it.pauses; exact += it.pausesExact }
         val p = PauseRecord("p1", PauseOrigin.PHONE, 1, null)
         bridge.phone(Channels.STATE, state(CaptureState.Paused(listOf(p))))
-        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(pauses = listOf(p))))
+        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(pauses = listOf(p), pausesExact = true)))
         assertEquals(listOf(listOf(p), listOf(p)), got)
+        assertEquals("a pc_state list is inexact; pc_settings keeps its flag", listOf(false, true), exact)
+    }
+
+    /** Fix round 1 (M12): a push with out-of-range quiet minutes is kept without them (cached and forwarded). */
+    @Test fun outOfRangeQuietHoursAreDroppedFromAPush() = runTest {
+        val c = controller(prefs = "m12")
+        val got = mutableListOf<HudSettings>()
+        c.onPhoneSettings = { got += it }
+        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(quietHours = com.rokid.context.core.model.QuietHours(0, 5_000))))
+        assertEquals(null, got.single().quietHours)
+        assertEquals(null, c.settings.value.quietHours)
+        assertEquals(null, HudSettingsCache(ctx.getSharedPreferences("m12", 0)).read().quietHours)
     }
 
     @Test fun frameAcksReachTheUplinkAndGarbageDoesNot() = runTest {
@@ -185,5 +198,18 @@ class HudControllerTest {
         assertEquals(HudConnection.OFFLINE, connectionFor(everReceived = true, online = false, outdated = false, sinceStartMs = 1))
         assertEquals(HudConnection.LIVE, connectionFor(everReceived = true, online = true, outdated = false, sinceStartMs = 1))
         assertEquals(HudConnection.OUTDATED, connectionFor(everReceived = true, online = true, outdated = true, sinceStartMs = 1))
+    }
+
+    /** Push-to-talk wire (preflight F3): audio only while the session is open; pc_listen_end too, and it carries `v` like every payload. */
+    @Test fun audioNeedsAnOpenSessionAndListenEndIsVersioned() = runTest {
+        val c = controller()
+        assertFalse(c.sendAudio("AAAA"))
+        assertFalse("a closed session takes no pc_listen_end", c.sendListenEnd())
+        assertEquals(0, bridge.sent.count { it.first == Channels.LISTEN_END })
+        bridge.phone(Channels.STATE, state())
+        assertTrue(c.sendAudio("AAAA"))
+        assertEquals(listOf("AAAA"), bridge.sent.single { it.first == Channels.AUDIO }.second)
+        assertTrue(c.sendListenEnd())
+        assertEquals(listOf("""{"v":$PROTOCOL_VERSION}"""), bridge.sent.single { it.first == Channels.LISTEN_END }.second)
     }
 }

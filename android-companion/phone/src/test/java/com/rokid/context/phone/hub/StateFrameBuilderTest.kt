@@ -5,6 +5,7 @@ import com.rokid.context.core.model.Health
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.LinkState
 import com.rokid.context.core.model.MemoryLine
+import com.rokid.context.core.model.NudgeLine
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.UserFacingErrors
@@ -85,5 +86,20 @@ class StateFrameBuilderTest {
     @Test fun hudCountdownTimesAreOmittedWithoutAnOffset() {
         val f = StateFrameBuilder.build(inputs(offset = null))
         assertEquals(null, f.nextCaptureAtMs); assertEquals(null, f.lastSentAtMs)
+    }
+
+    @Test fun latestNudgeConvertedToGlassesClock() {
+        val n = NudgeLine("Milk low", now - 1_000)
+        assertEquals(NudgeLine("Milk low", now + 4_000), StateFrameBuilder.build(inputs(offset = ClockOffset(5_000)).copy(latestNudge = n)).latestNudge)
+        assertEquals(n, StateFrameBuilder.build(inputs(offset = null).copy(latestNudge = n)).latestNudge)
+        assertEquals(null, StateFrameBuilder.build(inputs()).latestNudge)
+    }
+
+    @Test fun settingsForMarksExactOnlyWithOffset() {
+        val r = PauseRecord("p1", PauseOrigin.PHONE, now, null)
+        val loose = StateFrameBuilder.settingsFor(HudSettings(), listOf(r), null, resumed = listOf("old"), zoneId = "Asia/Kolkata")
+        assertFalse(loose.pausesExact)
+        assertEquals(listOf("old"), loose.resumedPauseIds); assertEquals("Asia/Kolkata", loose.zoneId)
+        assertTrue(StateFrameBuilder.settingsFor(HudSettings(), listOf(r), ClockOffset(0)).pausesExact)
     }
 }

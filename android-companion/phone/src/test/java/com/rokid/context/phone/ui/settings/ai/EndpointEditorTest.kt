@@ -30,6 +30,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -211,5 +212,24 @@ class EndpointEditorTest {
     @Test fun stateToStringRedactsTheTypedKey() {
         val s = EndpointEditorUiState(keyInput = "sk-typed-777").toString()
         assertFalse(s, s.contains("sk-typed-777"))
+    }
+
+    /** Phase 5 T17 carry: a key edit changes what Test exercised, so the old result goes. */
+    @Test fun aKeyEditClearsAStaleTestResult() = runBlocking {
+        val vm = vm(); fillAzure(vm); vm.test()
+        assertNotEquals(EndpointTestText.NOT_TESTED, idle(vm).testResult)
+        vm.onKey("sk-other")
+        assertEquals(EndpointTestText.NOT_TESTED, vm.state.value.testResult)
+        vm.test(); idle(vm); vm.clearKey()
+        assertEquals(EndpointTestText.NOT_TESTED, vm.state.value.testResult)
+    }
+
+    /** Phase 5 T16 carry: nothing (title, "Paste the key") flashes before the stored endpoint is loaded. */
+    @Test fun nothingFlashesWhileTheEndpointLoads() {
+        compose.setContent { PcTheme { EndpointEditorScreen(EndpointEditorUiState(), onBack = {}, onName = {}, onKind = {},
+            onBaseUrl = {}, onApiVersion = {}, onModels = {}, onCapability = { _, _ -> }, onKey = {}, onClearKey = {}, onTestModel = {}, onSave = {}, onTest = {}, onDelete = {}) } }
+        compose.onNodeWithTag("endpoint_loading").assertExists()
+        compose.onNodeWithTag("endpoint_key").assertDoesNotExist()
+        compose.onNodeWithText("New endpoint").assertDoesNotExist()
     }
 }

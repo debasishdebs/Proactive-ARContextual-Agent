@@ -36,4 +36,15 @@ class MemorySettingsStoreTest {
         assertEquals(MemorySettings(48, 14, 30, 300), store.settings.value) // second edit last: its quota wins
         assertEquals(MemorySettings(48, 14, 30, 300), MemorySettingsStore(p).settings.value)
     }
+
+    /** Phase 5 T20 carry: the lock is reentrant, so a nested update would be overwritten; it is refused instead. */
+    @Test fun anUpdateInsideAnUpdateIsRefused() {
+        val store = MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_nested", Context.MODE_PRIVATE))
+        org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+            store.update { s -> store.update { it.copy(quotaMb = 500) }; s.copy(quotaMb = 200) }
+        }
+        assertEquals(100, store.settings.value.quotaMb)
+        store.update { it.copy(quotaMb = 200) }
+        assertEquals(200, store.settings.value.quotaMb)
+    }
 }

@@ -40,7 +40,7 @@ class FeedRepositoriesTest {
     private val edits = MemoryEdits(db.memoryViewDao(), memories)
     private val asks = AskRepository(db.askDao())
     private val nudges = NudgeRepository(db.nudgeDao())
-    private val proposals = ProposalRepository(db.proposalDao())
+    private val proposals = ProposalRepository(db.proposalDao(), db.actionDao(), db)
     private val day = DayBucket.bounds(LocalDate.of(2026, 10, 12), ZoneId.of("Asia/Kolkata"))
 
     @After fun close() = db.close()

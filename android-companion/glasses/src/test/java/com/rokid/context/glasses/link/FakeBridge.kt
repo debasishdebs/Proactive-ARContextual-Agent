@@ -1,9 +1,12 @@
 package com.rokid.context.glasses.link
 
+import java.util.concurrent.CopyOnWriteArrayList
+
 /** Records sends; [phone] plays a phone → glasses message. */
 class FakeBridge : GlassesBridge {
     private val subs = mutableMapOf<String, (String) -> Unit>()
-    val sent = mutableListOf<Pair<String, List<String>>>()
+    /** Thread-safe: the push-to-talk thread appends audio while tests read it (preflight F11). */
+    val sent = CopyOnWriteArrayList<Pair<String, List<String>>>()
     /** Every subscribe call, in order (the real SDK has no unsubscribe). */
     val subscriptions = mutableListOf<String>()
     var rc = 0

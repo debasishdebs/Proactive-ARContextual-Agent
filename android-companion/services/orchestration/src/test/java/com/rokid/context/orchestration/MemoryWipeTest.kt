@@ -10,6 +10,7 @@ import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.legacy.LegacyImporter
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -56,6 +57,26 @@ class MemoryWipeTest {
         assertEquals(listOf("m2"), g.memories.search("keys", 5).map { it.id }) // FTS rebuilt after the vacuum
     }
 
+    /** P7xP8 I1: Delete all redacts every surviving proposal (EXECUTED included), scrubs its log and disarms its reminder alarm. */
+    @Test fun deleteAllRedactsExecutedProposalsAndCancelsTheirReminderAlarms() = runBlocking<Unit> {
+        val g = MemoryGraph.get(ctx)
+        g.asks.add(AskEntity("ask9", 1, "q", "a", "[]", null, "phone", false))
+        val pid = "prop_ASK_ask9"
+        val r = com.rokid.context.connectors.actions.ActionParams.Reminder("Call the clinic", System.currentTimeMillis() + 3_600_000, "about the results")
+        g.proposals.addIgnore(com.rokid.context.memory.db.ProposalEntity(pid, "ASK", "ask9", "REMINDER", com.rokid.context.connectors.actions.ActionParams.encode(r), "EXECUTED", 0, "auto", "alarm:$pid", 1))
+        g.db.actionDao().log(com.rokid.context.memory.db.ActionLogEntity(ts = 1, proposalId = pid, transition = "EXECUTED", detail = "Call the clinic"))
+        com.rokid.context.connectors.actions.executors.ReminderExecutor(ctx).arm(pid, r)
+        val alarms = org.robolectric.Shadows.shadowOf(ctx.getSystemService(android.app.AlarmManager::class.java))
+        assertEquals(1, alarms.scheduledAlarms.size)
+
+        MemoryWipe.deleteAll(ctx)
+
+        assertEquals(0, alarms.scheduledAlarms.size)
+        val p = g.db.actionDao().proposal(pid)
+        assertTrue(p == null || p.paramsJson == com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS)
+        assertTrue(g.db.actionDao().logFor(pid).all { it.detail.isEmpty() })
+    }
+
     /** Final-review I2: cancelling the caller (the Memory screen's ViewModel) right after Delete all starts never stops it part-way. */
     @Test fun cancellingTheCallerRightAfterTheStartStillFinishesTheWipe() = runBlocking<Unit> {
         ctx.deleteDatabase(com.rokid.context.memory.db.DatabaseFactory.NAME)
@@ -82,7 +103,8 @@ class MemoryWipeTest {
         g.memories.add(LegacyImporter.toMemory("m1", "short_term", 0.9, 1, "Milk carton"))
         val active = g.spaces.startBuilding("fp1", "{}", 2, "[]", 1); g.spaces.put("m1", active.id, floatArrayOf(1f, 0f)); assertTrue(g.spaces.swapIfComplete(active.id))
         val other = g.spaces.startBuilding("fp2", "{}", 2, "[]", 2); g.spaces.put("m1", other.id, floatArrayOf(0f, 1f))
-        val waiting = File(ctx.filesDir, "rokid_inbox/w.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(9)) }
+        // Stamped before the wipe (inbox files carry their capture time; one at or after the fence survives, fix round 1 I2).
+        val waiting = File(ctx.filesDir, "rokid_inbox/w.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(9)); setLastModified(System.currentTimeMillis() - 5_000) }
         val unrelated = File(ctx.filesDir, "keep.bin").apply { writeBytes(byteArrayOf(1)) }
 
         assertEquals(1, MemoryWipe.deleteAll(ctx))
@@ -120,7 +142,7 @@ class MemoryWipeTest {
         assertFalse(importer.isDone())
         MemoryWipe.deleteAll(ctx)
         assertTrue(importer.isDone())
-        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx)) // nothing left to import later
+        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx, isMain = { false })) // nothing left to import later
         assertEquals(0, MemoryGraph.get(ctx).db.memoryDao().count())
     }
 
@@ -138,8 +160,50 @@ class MemoryWipeTest {
         MemoryWipe.deleteAll(ctx)
         assertTrue(LegacyImporter(ctx, g()).isDone())
         File(ctx.filesDir, "memory_records.log").writeText("rokid_mem_1\tshort_term\t0.9\t100\tMilk carton nearly empty\n")
-        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx))
+        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx, isMain = { false }))
         assertEquals(0, g().db.memoryDao().count())
+    }
+
+    /** Review Focus 3: the start time lets the phone drop frames captured before the wipe that are still on the glasses. */
+    @Test fun deleteAllMarksTheWipeStart() = runBlocking<Unit> {
+        val before = System.currentTimeMillis()
+        MemoryWipe.deleteAll(ctx)
+        assertTrue((WipeFence.lastStartedAtMs(ctx.filesDir) ?: 0L) >= before)
+        assertFalse(WipeFence.mutex.isLocked)
+    }
+
+    /** Fix round 2 I2: a file already in the inbox when the fence is marked goes, whatever its stamp says. */
+    @Test fun aPreWipeInboxFileWithAFutureStampIsDeleted() = runBlocking<Unit> {
+        val inbox = File(ctx.filesDir, "rokid_inbox").apply { mkdirs() }
+        val future = File(inbox, "rokid_2_b.jpg").apply { writeBytes(byteArrayOf(2)); setLastModified(System.currentTimeMillis() + 60_000) }
+        MemoryWipe.deleteAll(ctx)
+        assertFalse(future.exists())
+    }
+
+    /** Fix round 1/2 I2: a frame stored after the fence mark (outside the snapshot, stamped after it) survives the wipe. */
+    @Test fun aFrameStoredAfterTheFenceMarkSurvives() = runBlocking<Unit> {
+        val inbox = File(ctx.filesDir, "rokid_inbox").apply { mkdirs() }
+        File(ctx.filesDir, WipeFence.FILE).delete()
+        WipeFence.mutex.lock() // the wipe marks its fence, then waits here before deleting files
+        val wipe = launch(Dispatchers.IO) { MemoryWipe.deleteAll(ctx) }
+        while (WipeFence.lastStartedAtMs(ctx.filesDir) == null) Thread.sleep(5)
+        val after = File(inbox, "rokid_3_c.jpg").apply { writeBytes(byteArrayOf(3)); setLastModified(System.currentTimeMillis() + 1_000) }
+        WipeFence.mutex.unlock()
+        wipe.join()
+        assertTrue(after.exists())
+        after.delete()
+    }
+
+    /** Fix round 1 I3: a fence that can't be recorded (even after the frames are gone) fails closed. */
+    @Test fun aFenceThatCannotBeRecordedFailsClosed() = runBlocking<Unit> {
+        val blocker = File(ctx.filesDir, WipeFence.FILE).apply { mkdirs(); File(this, "x").writeText("x") }
+        try {
+            MemoryWipe.deleteAll(ctx)
+            assertTrue(WipeFence.fence(ctx.filesDir) is WipeFence.Fence.Unknown)
+        } finally {
+            blocker.deleteRecursively()
+        }
+        assertTrue("written once possible", WipeFence.fence(ctx.filesDir) is WipeFence.Fence.At)
     }
 
     private fun g() = MemoryGraph.get(ctx)

@@ -26,6 +26,7 @@ fun envOrDefault(key: String, default: String): String = env[key].orEmpty().ifBl
 
 // No API key or other secret may be compiled into the APK; keys live only in the on-device KeyVault.
 val secretName = Regex("(?i)(KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)")
+val secretValue = Regex("(?i)(://[^/@\\s]+@|[?&](key|api[-_]?key|token|sig|code|password)=|(^|[^a-z0-9])(access[-_]?token|subscription[-_]?key|client[-_]?secret)=)")
 
 android {
     namespace = "com.rokid.context"
@@ -41,6 +42,7 @@ android {
 
         fun publicField(name: String, value: String) {
             require(!secretName.containsMatchIn(name)) { "Secret $name must not be compiled into the APK" }
+            require(!secretValue.containsMatchIn(value)) { "$name carries credentials (user:pass@ or a key parameter); it must not be compiled into the APK" }
             buildConfigField("String", name, "\"$value\"")
         }
 
@@ -85,6 +87,8 @@ dependencies {
     implementation(project(":services:ai"))
     implementation(project(":services:memory"))
     implementation(project(":services:orchestration"))
+    implementation(project(":services:connectors"))
+    implementation(project(":services:voice"))
     implementation(project(":core:ui"))
     implementation(project(":core:hud")) // clampHudScale, Hud.MIN_SCALE/MAX_SCALE for the glasses settings (Task 16)
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")

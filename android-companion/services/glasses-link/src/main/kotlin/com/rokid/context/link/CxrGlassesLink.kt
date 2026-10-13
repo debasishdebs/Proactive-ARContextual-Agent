@@ -37,14 +37,15 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     private val app = context.applicationContext
     private val manager = CxrSessionManager.getInstance(app)
     private val policy = GlassesSessionPolicy()
-    private var session: CxrSession? = null
+    private val inbound = SessionInbound() // thread-safe: fed from CXR callback threads, one decoder per session
+    /** The live session; every path that drops one closes it exactly once (Phase 8 C4). */
+    private val slot = SessionSlot<CxrSession>(close = { s -> inbound.close(s); s.close() })
     private val auth = AuthGate()
     private var authJob: Job? = null
     private var authDeclined = false // a real decline (or a failed launch); a timeout is not one
     private var authTimedOut = false
     private var retryJob: Job? = null
     private var connectJob: Job? = null
-    private val inbound = GlassesInbound() // thread-safe: fed from CXR callback threads
     /** Session-less CXRLink kept bound only while "closed on glasses", to notice the wearer reopening our app there. */
     private val watcher = GlassAppWatcher(app, GLASSES_PKG) { post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) } }
 
@@ -108,10 +109,8 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
         retryJob?.cancel(); connectJob?.cancel(); authJob?.cancel()
         auth.cancel() // a late AuthActivity result must not reopen a session after stop
         authTimedOut = false
-        policy.reset() // session is nulled below, so its close callback never reaches the policy
-        val s = session
-        session = null
-        s?.close()
+        policy.reset() // the slot is cleared below, so the session's close callback never reaches the policy
+        slot.replace(null)
         setState(if (token() == null) LinkState.NOT_AUTHORIZED else LinkState.OFFLINE)
     }
 
@@ -153,13 +152,11 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
             return
         }
         connectJob = scope.launch { delay(CONNECT_TIMEOUT_MS); act(policy.onEvent(LinkEvent.ConnectTimeout)) }
+        var created: CxrSession? = null
         try {
             preferGlobalHiRokid()
-            // Detach the old session first so its late close callback cannot clobber the new one.
-            val old = session
-            session = null
-            old?.close()
-            inbound.reset()
+            // Detach and close the old session first so its late close callback cannot clobber the new one.
+            slot.replace(null)
             val s = manager.create(
                 SessionConfig(
                     sessionType = SessionType.CUSTOM_APP,
@@ -173,17 +170,22 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
                     glassesApkPath = "",
                 ),
             )
-            s.addLifecycleCallback(lifecycleFor(s))
-            s.addCustomCmdCallback(object : ICustomCmdSessionCallback {
-                override fun onCustomCmdResult(cmd: String, bytes: ByteArray?) = onGlassesMessage(cmd, bytes)
-            })
-            session = s
-            s.connect(token)
+            created = s
+            slot.replace(s) // tracked from creation: a throw below closes it via slot.fail
+            // A session whose registration or connect throws is closed in [inbound] again, so it can never emit events.
+            inbound.open(s) {
+                s.addLifecycleCallback(lifecycleFor(s))
+                s.addCustomCmdCallback(object : ICustomCmdSessionCallback {
+                    override fun onCustomCmdResult(cmd: String, bytes: ByteArray?) = onGlassesMessage(s, cmd, bytes)
+                })
+                s.connect(token)
+            }
         } catch (e: CancellationException) {
+            created?.let(slot::fail)
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "openSession failed (${e.javaClass.simpleName})")
-            session = null
+            created?.let(slot::fail)
             act(policy.onEvent(LinkEvent.ConnectFailed))
         }
     }
@@ -196,7 +198,7 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     }
 
     /** CXR callback thread. Glasses send text only (phase 0): read up to [MAX_PARTS] Caps strings in order. */
-    private fun onGlassesMessage(cmd: String, bytes: ByteArray?) {
+    private fun onGlassesMessage(s: CxrSession, cmd: String, bytes: ByteArray?) {
         val parts = try {
             val caps = Caps.fromBytes(bytes ?: return)
             val out = ArrayList<String>(MAX_PARTS)
@@ -208,12 +210,12 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
             Log.w(TAG, "bad payload on $cmd: ${e.javaClass.simpleName}")
             return
         }
-        inbound.onMessage(cmd, parts).forEach { _events.tryEmit(it) }
+        inbound.onMessage(s, cmd, parts).forEach { _events.tryEmit(it) }
     }
 
     override suspend fun send(channel: String, json: String): Boolean {
         if (_state.value != LinkState.CONNECTED) return false
-        val s = session ?: return false
+        val s = slot.current ?: return false
         return try {
             val r = s.sendCustomCmd(channel, Caps().apply { write(json) }, ByteArray(0))
             if (!r.isSuccess) Log.w(TAG, "send $channel failed ${r.code}")
@@ -228,21 +230,20 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
 
     /** CXR callbacks arrive on binder threads: hop onto [scope] before touching the policy or session. */
     private fun lifecycleFor(s: CxrSession) = object : ISessionLifecycleCbk {
-        private fun ifCurrent(event: LinkEvent) = post { if (s === session) act(policy.onEvent(event)) }
-        override fun onSessionStarted() = post { if (s === session) { auth.sessionStarted(); act(policy.onEvent(LinkEvent.Started)) } }
-        override fun onSessionPaused(reason: PausedReason) = ifCurrent(LinkEvent.Paused)
+        private fun ifCurrent(event: LinkEvent) = post { if (s === slot.current) act(policy.onEvent(event)) }
+        override fun onSessionStarted() = post { if (s === slot.current) { auth.sessionStarted(); act(policy.onEvent(LinkEvent.Started)) } }
+        override fun onSessionPaused(reason: PausedReason) { inbound.interrupt(s); ifCurrent(LinkEvent.Paused) }
         override fun onSessionResumed() = ifCurrent(LinkEvent.Resumed)
         override fun onSessionTerminating(reason: TerminatingReason, graceMs: Long) = Unit
         override fun onSessionClosed(reason: CloseReason) = post {
-            if (s !== session) return@post
-            session = null
+            inbound.close(s)
+            if (!slot.clearIf(s)) return@post
             val glassesLeft = reason == CloseReason.GLASSES_EXIT || reason == CloseReason.USER_CLOSED
             Log.i(TAG, "session closed $reason")
             act(policy.onEvent(if (glassesLeft) LinkEvent.GlassesExited else LinkEvent.Closed))
         }
         override fun onConnectResult(ok: Boolean, code: SessionErrorCode?) = post {
-            if (ok || s !== session) return@post
-            session = null
+            if (ok || !slot.clearIf(s)) return@post
             Log.w(TAG, "connect failed $code")
             if (code == SessionErrorCode.TOKEN_EXPIRED || code == SessionErrorCode.NOT_AUTHENTICATED) onTokenRejected()
             else act(policy.onEvent(if (isTerminalConnectError(code)) LinkEvent.ConnectRefused else LinkEvent.ConnectFailed))

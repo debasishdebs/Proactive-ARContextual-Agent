@@ -39,7 +39,9 @@ class SettingsRootTest {
 
     @Test fun everyGroupIsListedAndOnlyLiveRowsOpen() {
         val opened = mutableListOf<String>()
-        compose.setContent { PcTheme { SettingsRootScreen(SettingsRootUiState("Linked · 82%", "Every 5 min · burst on change"), live = Routes.LIVE_SETTINGS, onOpen = { opened += it }) } }
+        // Phase 7: every row is live, so a set without Data sources checks that a non-live row stays closed.
+        val live = Routes.LIVE_SETTINGS - Routes.SETTINGS_SOURCES
+        compose.setContent { PcTheme { SettingsRootScreen(SettingsRootUiState("Linked · 82%", "Every 5 min · burst on change"), live = live, onOpen = { opened += it }) } }
         listOf("DEVICES", "CAPTURE & PRIVACY", "AI", "CONNECTORS", "MEMORY & SYSTEM").forEach {
             compose.onNodeWithTag("settings_list").performScrollToNode(hasText(it)); compose.onNodeWithText(it).assertIsDisplayed()
         }
@@ -52,5 +54,26 @@ class SettingsRootTest {
         compose.onNodeWithText("Diagnostics").assertIsEnabled()
         compose.onNodeWithText("Diagnostics").performClick()
         assertEquals(listOf(Routes.SETTINGS_GLASSES, Routes.SETTINGS_DIAGNOSTICS), opened)
+    }
+
+    @Test fun phoneCameraAndMicOpens() {
+        val opened = mutableListOf<String>()
+        compose.setContent { PcTheme { SettingsRootScreen(SettingsRootUiState("Linked", "Every 5 min", "Voice · Supported"), live = Routes.LIVE_SETTINGS, onOpen = { opened += it }) } }
+        compose.onNodeWithTag("settings_list").performScrollToNode(hasText("Phone camera & mic"))
+        compose.onNodeWithText("Voice · Supported").assertIsDisplayed()
+        compose.onNodeWithText("Phone camera & mic").performClick()
+        assertEquals(listOf(Routes.SETTINGS_PHONE_INPUTS), opened)
+    }
+
+    @Test fun connectorsAndPrivacyRowsOpen() {
+        val opened = mutableListOf<String>()
+        compose.setContent { PcTheme { SettingsRootScreen(SettingsRootUiState("Linked", "Every 5 min"), live = Routes.LIVE_SETTINGS, onOpen = { opened += it }) } }
+        listOf("Privacy" to "Pause, quiet hours", "Data sources" to "Calendar, contacts, notes, location", "Actions & tools" to "Reminders, shopping list, calendar")
+            .forEach { (title, subtitle) ->
+                compose.onNodeWithTag("settings_list").performScrollToNode(hasText(title))
+                compose.onNodeWithText(subtitle).assertIsDisplayed()
+                compose.onNodeWithText(title).performClick()
+            }
+        assertEquals(listOf(Routes.SETTINGS_PRIVACY, Routes.SETTINGS_SOURCES, Routes.SETTINGS_ACTIONS), opened)
     }
 }

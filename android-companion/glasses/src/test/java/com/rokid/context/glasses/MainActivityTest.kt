@@ -27,6 +27,7 @@ import com.rokid.context.glasses.capture.CaptureService
 import com.rokid.context.glasses.link.CxrBridge
 import com.rokid.context.glasses.link.FakeBridge
 import com.rokid.context.glasses.link.HudController
+import com.rokid.context.glasses.voice.PcmSource
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
@@ -35,6 +36,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
+import java.util.concurrent.Semaphore
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotSame
@@ -52,15 +55,34 @@ class MainActivityTest {
     private val bridge = FakeBridge()
     private val runtime get() = GlassesRuntime.get(app)
 
+    /** The glasses mic in tests: blocks in read() until a permit (each permit = one loud 100 ms chunk). */
+    private class FakeMic : PcmSource {
+        val permits = Semaphore(0)
+        @Volatile var closed = false
+        override fun start() = Unit
+        override fun read(buf: ByteArray): Int { permits.acquire(); if (closed) return -1; buf.fill(40.toByte()); return buf.size }
+        override fun close() { closed = true; permits.release(100) }
+    }
+    private val mic = FakeMic()
+
     @Before fun setUp() {
-        shadowOf(app).grantPermissions(Manifest.permission.CAMERA)
+        shadowOf(app).grantPermissions(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
         GlassesRuntime.bridgeFactory = { bridge }
+        GlassesRuntime.pcmSourceFactory = { mic }
     }
 
     @After fun tearDown() {
+        mic.permits.release(100)
         GlassesRuntime.resetForTests()
         GlassesRuntime.bridgeFactory = { CxrBridge(it) }
+        GlassesRuntime.pcmSourceFactory = { com.rokid.context.glasses.voice.AudioRecordSource() }
     }
+
+    private fun tap(a: MainActivity) {
+        a.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+        a.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+    }
+    private fun sentOn(channel: String) = bridge.sent.count { it.first == channel }
 
     private fun phoneState() = bridge.phone(
         Channels.STATE,
@@ -127,14 +149,79 @@ class MainActivityTest {
         }
     }
 
-    @Test fun tapWhileLiveSaysAskIsComingSoon() {
+    @Test fun aTapStartsPushToTalkAndASecondTapSendsIt() {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             phoneState()
-            s.onActivity {
-                it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
-                it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
-            }
-            compose.onNodeWithText("Ask coming soon", substring = true).assertExists()
+            s.onActivity { tap(it) }
+            waitUntil { Command.ListenStart in commands() }
+            mic.permits.release(2)
+            waitUntil { sentOn(Channels.AUDIO) == 2 }
+            assertTrue(runtime.listening.value, "frames don't flush while recording")
+            compose.onNodeWithText("tap to send", substring = true).assertExists()
+            s.onActivity { tap(it) }
+            mic.permits.release(1)
+            waitUntil { sentOn(Channels.LISTEN_END) == 1 && !runtime.listening.value }
+        }
+    }
+
+    @Test fun aDoubleTapWhileRecordingCancelsWithoutAListenEnd() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            s.onActivity { tap(it) }
+            waitUntil { Command.ListenStart in commands() }
+            @Suppress("DEPRECATION") s.onActivity { it.onBackPressed() } // BACK = double-tap on this firmware
+            mic.permits.release(1)
+            waitUntil { Command.Cancel in commands() && !runtime.listening.value }
+            assertEquals(0, sentOn(Channels.LISTEN_END))
+        }
+    }
+
+    @Test fun thePhonesReasonBlocksAskWithAToast() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(askBlockedReason = "Voice not supported on this phone")))
+            phoneState()
+            s.onActivity { tap(it) }
+            compose.onNodeWithText("Voice not supported on this phone", substring = true).assertExists() // HudToast prefixes a space
+            assertFalse(Command.ListenStart in commands())
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    @Test fun askWorksWhileCaptureIsPaused() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            s.onActivity { it.onBackPressed() }
+            waitUntil { commands().any { it is Command.Pause } }
+            assertFalse(runtime.pauses.captureAllowed())
+            Thread.sleep(DoubleTapDetector.SETTLE_MS + 100)
+            s.onActivity { tap(it) }
+            waitUntil { Command.ListenStart in commands() }
+        }
+    }
+
+    /**
+     * The session closes synchronously on the disconnect; pc_listen_end is gated on the open session, so whichever of
+     * the ptt thread (the permit) and the runtime's cancel runs first, no pc_listen_end goes out (fix round 1).
+     */
+    @Test fun closingTheSessionStopsRecordingWithoutAListenEnd() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            s.onActivity { tap(it) }
+            waitUntil { runtime.listening.value && Command.ListenStart in commands() }
+            bridge.disconnected()
+            mic.permits.release(1)
+            waitUntil { !runtime.listening.value }
+            assertEquals(0, sentOn(Channels.LISTEN_END))
+        }
+    }
+
+    @Test fun withoutTheMicPermissionATapSaysSo() {
+        shadowOf(app).denyPermissions(Manifest.permission.RECORD_AUDIO)
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            s.onActivity { tap(it) }
+            compose.onNodeWithText("Allow the microphone on the glasses", substring = true).assertExists() // HudToast prefixes a space
+            assertFalse(Command.ListenStart in commands())
         }
     }
 
@@ -214,5 +301,72 @@ class MainActivityTest {
             runtime.onFrameBuffered()
             waitUntil { bridge.sent.any { it.first == Channels.FRAME } }
         }
+    }
+
+    /** Phase 3 carry: before the phone's first message the link is CONNECTING; a tap says so instead of "not connected". */
+    @Test fun tapWhileConnectingSaysConnecting() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            s.onActivity {
+                it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))
+                it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER))
+            }
+            compose.onNodeWithText("Connecting to phone\u2026", substring = true).assertExists()
+            compose.onNodeWithText("Phone not connected", substring = true).assertDoesNotExist()
+        }
+    }
+
+    /** Fix round 1 ruling: leaving the activity mid-recording tells the phone to drop the ask (it would answer it otherwise). */
+    @Test fun leavingTheActivityWhileRecordingCancelsTheAsk() {
+        val s = ActivityScenario.launch(MainActivity::class.java)
+        phoneState()
+        s.onActivity { tap(it) }
+        waitUntil { Command.ListenStart in commands() }
+        s.close()
+        assertTrue(Command.Cancel in commands())
+        mic.permits.release(1)
+        waitUntil { !runtime.listening.value }
+        assertEquals(0, sentOn(Channels.LISTEN_END))
+    }
+
+    /** Spec 1.8 / R-08: no frame chunk goes out while recording; the flush resumes after it. */
+    @Test fun noFrameGoesOutWhileRecordingAndTheFlushResumesAfter() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            s.onActivity { tap(it) }
+            waitUntil { Command.ListenStart in commands() }
+            runBlocking { runtime.pauses.ensureLoaded() }
+            assertEquals(BufferResult.STORED, runtime.bufferCaptured("g9", byteArrayOf(1, 2, 3), System.currentTimeMillis(), 90, "0", 80))
+            runtime.onFrameBuffered()
+            Thread.sleep(GlassesRuntime.FLUSH_AFTER_HELLO_MS + 300); shadowOf(Looper.getMainLooper()).idle()
+            assertEquals(0, sentOn(Channels.FRAME), "no frame while recording")
+            s.onActivity { tap(it) }
+            mic.permits.release(1)
+            waitUntil { sentOn(Channels.LISTEN_END) == 1 && !runtime.listening.value }
+            waitUntil { sentOn(Channels.FRAME) > 0 }
+        }
+    }
+
+    /** Minor 11: a tap while the mic request from onCreate is still pending does not launch a second one. */
+    @Test fun aTapDoesNotRequestTheMicTwice() {
+        shadowOf(app).denyPermissions(Manifest.permission.RECORD_AUDIO)
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            s.onActivity { tap(it) }
+            compose.onNodeWithText("Allow the microphone on the glasses", substring = true).assertExists()
+            // Activity drops a second request with this warning (and answers it empty) instead of asking again.
+            assertFalse(ShadowLog.getLogs().any { it.msg?.contains("only one set of permissions") == true }, "a second request was launched")
+        }
+    }
+
+    /** Phase 8 C3: a force-stop lost the capture alarm; reopening re-arms it and says so, once. */
+    @Test fun aMissedCaptureShowsTheResumeToastOnce() {
+        app.getSharedPreferences("capture_scheduler", 0).edit().putLong("next_trigger_at_ms", System.currentTimeMillis() - 10 * 60_000).commit()
+        ActivityScenario.launch(MainActivity::class.java).use {
+            compose.onNodeWithText(MainActivity.CAPTURE_RESUMED_AFTER_STOP, substring = true).assertExists()
+        }
+        ActivityScenario.launch(MainActivity::class.java).use {
+            compose.onNodeWithText(MainActivity.CAPTURE_RESUMED_AFTER_STOP, substring = true).assertDoesNotExist()
+        }
+        assertEquals("Capture resumed \u2014 it stops while the app is closed", MainActivity.CAPTURE_RESUMED_AFTER_STOP)
     }
 }

@@ -3,6 +3,11 @@ package com.rokid.context.memory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.FrameDao
+import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.MemoryDao
+import com.rokid.context.memory.db.SummaryTraceEntity
+import com.rokid.context.memory.db.TraceDao
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
@@ -65,5 +70,57 @@ class RepositoriesTest {
         assertTrue(memories.addIgnore(m("m1", "first", 1)))
         assertFalse(memories.addIgnore(m("m1", "second", 2)))
         assertEquals("first", memories.recent(1).single().text)
+    }
+
+    private val twoThousand = (0 until 2_000).map { "id${it.toString().padStart(4, '0')}" }
+
+    private class Calls { val sizes = mutableListOf<Int>(); val ids = mutableListOf<String>(); fun record(l: List<String>) { sizes += l.size; ids += l } }
+    private class SpyFrames(real: FrameDao, val byIdsCalls: Calls = Calls(), val deleteCalls: Calls = Calls()) : FrameDao by real {
+        private val r = real
+        override suspend fun byIds(ids: List<String>): List<FrameEntity> { byIdsCalls.record(ids); return r.byIds(ids) }
+        override suspend fun deleteByIds(ids: List<String>) { deleteCalls.record(ids); r.deleteByIds(ids) }
+    }
+    private class SpyMemories(private val r: MemoryDao, val calls: Calls = Calls()) : MemoryDao by r {
+        override suspend fun deleteByIds(ids: List<String>) { calls.record(ids); r.deleteByIds(ids) }
+    }
+    private class SpyTraces(private val r: TraceDao, val calls: Calls = Calls()) : TraceDao by r {
+        override suspend fun deleteByIds(ids: List<String>) { calls.record(ids); r.deleteByIds(ids) }
+    }
+
+    /** B4: API 29 SQLite allows 999 variables; no IN-list DAO call ever gets more than 500 ids, and none for empty input. */
+    @Test fun noDaoCallGetsMoreThanFiveHundredIds() = runTest {
+        val frames = SpyFrames(db.frameDao()); val mems = SpyMemories(db.memoryDao()); val traces = SpyTraces(db.traceDao())
+        FrameRepository(frames).byIds(twoThousand + twoThousand.take(10)) // duplicates are de-duplicated
+        FrameRepository(frames).deleteByIds(twoThousand)
+        MemoryRepository(mems).deleteByIds(twoThousand)
+        TraceRepository(traces).deleteByIds(twoThousand)
+        for ((name, c) in listOf("frame.byIds" to frames.byIdsCalls, "frame.delete" to frames.deleteCalls, "memory.delete" to mems.calls, "trace.delete" to traces.calls)) {
+            assertTrue("$name ${c.sizes}", c.sizes.isNotEmpty() && c.sizes.all { it <= 500 })
+            assertEquals(name, twoThousand, c.ids.sorted())
+        }
+        val empty = SpyFrames(db.frameDao())
+        assertTrue(FrameRepository(empty).byIds(emptyList()).isEmpty()); FrameRepository(empty).deleteByIds(emptyList())
+        assertTrue(empty.byIdsCalls.sizes.isEmpty() && empty.deleteCalls.sizes.isEmpty())
+    }
+
+    /** B4: chunked byIds still returns every frame in ts ASC order across chunk boundaries. */
+    @Test fun byIdsWithTwoThousandIdsReturnsAllInTsOrder() = runTest {
+        val repo = FrameRepository(db.frameDao())
+        // ts runs opposite to id order, so per-chunk results concatenated in id order are not ts-sorted.
+        twoThousand.forEachIndexed { i, id -> repo.add(FrameEntity(id, ts = (2_000 - i).toLong(), path = "/f/$id", source = "glasses")) }
+        val rows = repo.byIds(twoThousand)
+        assertEquals(2_000, rows.size)
+        assertEquals(rows.sortedBy { it.ts }.map { it.id }, rows.map { it.id })
+        assertEquals(twoThousand.toSet(), rows.map { it.id }.toSet())
+    }
+
+    /** B4: chunked deletes remove every one of 2 000 memories and traces. */
+    @Test fun deleteByIdsWithTwoThousandIdsDeletesAll() = runTest {
+        twoThousand.forEach { memories.addIgnore(m(it, "t", 1)) }
+        val traces = TraceRepository(db.traceDao())
+        twoThousand.forEach { traces.addIgnore(SummaryTraceEntity(it, "done", 1, "")) }
+        memories.deleteByIds(twoThousand); traces.deleteByIds(twoThousand)
+        assertEquals(0, db.memoryDao().count())
+        assertTrue(traces.recent(10_000).isEmpty())
     }
 }

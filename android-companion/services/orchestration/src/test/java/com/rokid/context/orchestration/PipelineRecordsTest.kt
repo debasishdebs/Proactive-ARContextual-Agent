@@ -72,8 +72,8 @@ class PipelineRecordsTest {
 
     @Test fun ensureLegacyImportedRunsImportOnlyOnce() = runBlocking {
         File(ctx.filesDir, "memory_records.log").writeText("rokid_mem_9\tshort_term\t0.8\t5\tOnce only\n")
-        assertEquals(1, MemoryGraph.ensureLegacyImported(ctx)?.memories)
-        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx))
+        assertEquals(1, MemoryGraph.ensureLegacyImported(ctx, isMain = { false })?.memories) // P8 D5: the test thread is Main
+        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx, isMain = { false }))
         assertEquals(1, PipelineRecords.recentMemories(ctx, 10).size)
     }
 
@@ -127,8 +127,15 @@ class PipelineRecordsTest {
     @Test fun inboxFramesArchivedInTheSameMillisecondBothStoreWithDistinctFullIds() = runBlocking {
         val a = jpg("1760000000000_rokid_1111_a.jpg")
         val b = jpg("1760000000000_rokid_1111_b.jpg")
-        assertTrue(RokidFrameInbox.ingestSinglePath(ctx, a))
-        assertTrue(RokidFrameInbox.ingestSinglePath(ctx, b))
+        assertTrue(RokidFrameInbox.ingestSinglePath(ctx, a) != null)
+        assertTrue(RokidFrameInbox.ingestSinglePath(ctx, b) != null)
         assertEquals(setOf("1760000000000_rokid_1111_a", "1760000000000_rokid_1111_b"), PipelineRecords.allFrames(ctx).map { it.id }.toSet())
+    }
+
+    @Test fun aParentFolderNamedScreenshotsDoesNotHideRealPhotos() {
+        assertTrue(PipelineRecords.isRealPhotoFrame(frame("f1", 1, "/x/Screenshots/rokid_1_a.jpg")))
+        assertTrue(PipelineRecords.isRealPhotoFrame(frame("f2", 1, "/x/synthetic-data/rokid_1_b.jpg")))
+        assertFalse(PipelineRecords.isRealPhotoFrame(frame("f3", 1, "/x/screenshot_1.jpg")))
+        assertFalse(PipelineRecords.isRealPhotoFrame(frame("f4", 1, "/x/rokid_1_c.jpg", payload = "synthetic test")))
     }
 }

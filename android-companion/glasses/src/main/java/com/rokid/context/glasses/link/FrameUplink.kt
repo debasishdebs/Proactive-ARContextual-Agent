@@ -25,6 +25,8 @@ data class UplinkConfig(
     val retryBackoffMs: Long = 2_000,
     /** `ok=false` acks before a frame is dropped: the first NACK resends once. */
     val maxNacks: Int = 2,
+    /** How often the ack wait checks that the frame is still buffered (a privacy pause clears it). */
+    val ackPollMs: Long = 250,
 )
 
 /**
@@ -41,69 +43,118 @@ class FrameUplink(
     private val canSend: () -> Boolean,
     private val config: UplinkConfig = UplinkConfig(),
     private val log: (String) -> Unit = {},
+    private val onBufferChanged: () -> Unit = {},
 ) {
     private enum class Outcome { DELIVERED, DROPPED, RETAINED, INTERRUPTED, CLEARED }
 
     private val acks = ConcurrentHashMap<String, CompletableDeferred<FrameAck>>()
     private var job: Job? = null
-    /** Consecutive flush crashes per frame; a frame that crashes [MAX_CRASHES] flushes in a row is dropped. */
+    private var running = false
+    /** A kick that arrived while a flush ran: that flush runs once more when it ends (a capture can't be lost). */
+    @Volatile private var pendingKick = false
+    /**
+     * Consecutive flush crashes per frame; a frame that crashes [MAX_CRASHES] flushes in a row is dropped. A count goes
+     * when its frame leaves the buffer by any path, or when the frame gets through an attempt without crashing.
+     */
     private val crashes = HashMap<String, Int>()
     private val _flushing = MutableStateFlow(false)
     val flushing: StateFlow<Boolean> = _flushing
 
-    /** Start a flush unless one is running: on session open, after a capture, when listening ends. */
+    /** Start a flush unless one is running (then that one runs again): on session open, after a capture, when listening ends. */
     @Synchronized fun kick() {
-        if (job?.isActive == true) return
+        if (running) { pendingKick = true; return }
+        running = true
         _flushing.value = true
         job = scope.launch {
-            try { flush() } finally { _flushing.value = false }
+            var more = true
+            try {
+                while (more) { flush(); more = takePendingKick() }
+            } finally {
+                if (more) endFlush()
+            }
         }
     }
+
+    @Synchronized private fun takePendingKick(): Boolean {
+        if (pendingKick) { pendingKick = false; return true }
+        endFlush()
+        return false
+    }
+
+    @Synchronized private fun endFlush() { running = false; _flushing.value = false }
+
+    /** Consecutive crashes charged to [frameId]; null when none. */
+    internal fun crashCount(frameId: String): Int? = synchronized(crashes) { crashes[frameId] }
 
     /** Called on a bridge thread. A late ack for a frame no longer awaited is ignored. */
     fun onAck(ack: FrameAck) { acks[ack.frameId]?.complete(ack) }
 
+    /**
+     * One pass over the backlog, oldest first. A crash is charged to the frame being handled (never to the previous
+     * one); a frame dropped for crashing lets the flush go on, any other crash ends it. Every iteration either removes
+     * a frame or ends the flush, so the loop is bounded by the buffer size.
+     */
     private suspend fun flush() {
-        var current: String? = null
-        try {
-            flushLoop { current = it }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val id = current
-            log("flush crashed: ${e.javaClass.simpleName}")
-            if (id != null) {
-                val n = (crashes[id] ?: 0) + 1
-                if (n >= MAX_CRASHES) { crashes.remove(id); buffer.remove(id); log("dropped $id after $n crashes") } else crashes[id] = n
-            }
-        }
-    }
-
-    private suspend fun flushLoop(onFrame: (String) -> Unit) {
         var sent = 0
         var dropped = 0
+        synchronized(crashes) { crashes.keys.retainAll { buffer.contains(it) } }
         while (canSend()) {
-            val f = buffer.oldest() ?: break
-            onFrame(f.meta.frameId)
-            val jpeg = try {
-                buffer.readJpeg(f)
-            } catch (e: IOException) {
-                log("unreadable ${f.meta.frameId}: dropped")
-                buffer.remove(f.meta.frameId)
-                continue
-            }
-            val chunks = FrameCodec.split(f.meta.frameId, jpeg, f.meta.capturedAtMs, f.meta.luma, f.meta.phash, f.meta.batteryPct, config.chunkChars)
-            val outcome = deliver(f.meta.frameId, chunks)
-            if (outcome != Outcome.INTERRUPTED && outcome != Outcome.CLEARED) crashes.remove(f.meta.frameId)
-            when (outcome) {
-                Outcome.DELIVERED -> { buffer.remove(f.meta.frameId); sent++; log("delivered ${f.meta.frameId}") }
-                Outcome.DROPPED -> { buffer.remove(f.meta.frameId); dropped++; log("dropped ${f.meta.frameId} after ${config.maxNacks} NACKs") }
-                Outcome.RETAINED -> { log("flush stopped after ${config.maxAttempts} timeouts; retained=${buffer.size}"); break }
-                Outcome.CLEARED -> log("${f.meta.frameId} cleared while sending; not sent further")
-                Outcome.INTERRUPTED -> { log("flush interrupted; retained=${buffer.size}"); break }
+            var current: String? = null
+            try {
+                val before = buffer.size
+                val f = buffer.oldest()
+                val aged = before - buffer.size
+                if (aged > 0) { dropped += aged; bufferChanged() }
+                if (f == null) break
+                val id = f.meta.frameId
+                current = id
+                val jpeg = try {
+                    buffer.readJpeg(f)
+                } catch (e: IOException) {
+                    if (f.jpeg.exists()) throw e
+                    log("unreadable $id: dropped")
+                    forget(id); buffer.remove(id); dropped++; bufferChanged()
+                    continue
+                }
+                val chunks = FrameCodec.split(id, jpeg, buffer.sendTimeMs(f), f.meta.luma, f.meta.phash, f.meta.batteryPct, config.chunkChars)
+                val outcome = deliver(id, chunks)
+                if (outcome != Outcome.INTERRUPTED) forget(id)
+                when (outcome) {
+                    Outcome.DELIVERED -> { buffer.remove(id); sent++; log("delivered $id") }
+                    Outcome.DROPPED -> { buffer.remove(id); dropped++; log("dropped $id after ${config.maxNacks} NACKs"); bufferChanged() }
+                    Outcome.RETAINED -> { log("flush stopped after ${config.maxAttempts} timeouts; retained=${buffer.size}"); break }
+                    Outcome.CLEARED -> log("$id cleared while sending; not sent further")
+                    Outcome.INTERRUPTED -> { log("flush interrupted; retained=${buffer.size}"); break }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                log("flush crashed: ${e.javaClass.simpleName}")
+                val id = current ?: break
+                if (!chargeCrash(id)) break
+                dropped++
+                bufferChanged()
             }
         }
         log("flush done sent=$sent dropped=$dropped retained=${buffer.size}")
+        if (sent + dropped > 0) bufferChanged()
+    }
+
+    /** True when [id] reached [MAX_CRASHES] and was dropped. */
+    private fun chargeCrash(id: String): Boolean {
+        val n = synchronized(crashes) { (crashes[id] ?: 0) + 1 }
+        if (n < MAX_CRASHES) { synchronized(crashes) { crashes[id] = n }; return false }
+        forget(id)
+        buffer.remove(id)
+        log("dropped $id after $n crashes")
+        return true
+    }
+
+    private fun forget(id: String) { synchronized(crashes) { crashes.remove(id) } }
+
+    /** The hello that follows corrects the phone's buffered count (no protocol change). Never breaks the flush. */
+    private fun bufferChanged() {
+        try { onBufferChanged() } catch (e: Exception) { log("buffer change notice failed: ${e.javaClass.simpleName}") }
     }
 
     private suspend fun deliver(frameId: String, chunks: List<FrameChunk>): Outcome {
@@ -120,7 +171,7 @@ class FrameUplink(
                     if (!canSend()) return Outcome.INTERRUPTED
                     if (sendChunk(c) != 0) { refused = true; break }
                 }
-                val ack = if (refused) null else withTimeoutOrNull(config.ackTimeoutMs) { waiter.await() }
+                val ack = if (refused) null else awaitAck(frameId, waiter)
                 if (!buffer.contains(frameId)) return Outcome.CLEARED
                 when {
                     ack == null -> {
@@ -141,6 +192,14 @@ class FrameUplink(
             }
         }
     }
+
+    /** The ack, or null on timeout or once the frame left the buffer (checked every [UplinkConfig.ackPollMs]). */
+    private suspend fun awaitAck(frameId: String, waiter: CompletableDeferred<FrameAck>): FrameAck? =
+        withTimeoutOrNull(config.ackTimeoutMs) {
+            var ack: FrameAck? = null
+            while (ack == null && buffer.contains(frameId)) ack = withTimeoutOrNull(config.ackPollMs) { waiter.await() }
+            ack
+        }
 
     private companion object { const val MAX_CRASHES = 3 }
 }

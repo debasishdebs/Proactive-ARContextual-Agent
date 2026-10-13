@@ -3,6 +3,7 @@ package com.rokid.context.phone.ui.status
 import com.rokid.context.core.model.GlassesStatus
 import com.rokid.context.core.model.GlassesStatusSource
 import com.rokid.context.core.model.Health
+import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.phone.ui.banner.BannerAction
 import com.rokid.context.phone.ui.banner.BannerInputs
 import com.rokid.context.phone.ui.banner.BannerResolver
@@ -21,14 +22,17 @@ data class StatusUi(
     val banner: BannerSpec?,
     /** The phone pipeline switch: the only thing the ⏸/▶ control reads and changes. */
     val pipelineEnabled: Boolean = true,
-    /** The glasses paused capture while the pipeline is on: shown, not actionable (phone→glasses Resume is Phase 7). */
+    /** Legacy switch only (see [CaptureLine.pausedOnGlasses]); always false with the Phase 7 pause control. */
     val pausedOnGlasses: Boolean = false,
 ) {
     companion object {
         val Initial = StatusUi("Glasses offline", live = false, paused = false, batteryPct = null, banner = null)
 
-        fun build(s: GlassesStatus, pipelineEnabled: Boolean, storagePct: Int?, nowMs: Long, index: IndexState = IndexState.NONE) = StatusUi(
-            captureText = CaptureLine.text(s, pipelineEnabled, nowMs),
+        fun build(
+            s: GlassesStatus, pipelineEnabled: Boolean, storagePct: Int?, nowMs: Long, index: IndexState = IndexState.NONE,
+            pauses: List<PauseRecord> = emptyList(), lastResumeAtMs: Long? = null,
+        ) = StatusUi(
+            captureText = CaptureLine.text(s, pipelineEnabled, nowMs, pauses),
             live = CaptureLine.live(s, pipelineEnabled),
             paused = CaptureLine.paused(s, pipelineEnabled),
             batteryPct = s.glassesBatteryPct ?: s.frame?.glassesBatteryPct,
@@ -42,12 +46,20 @@ data class StatusUi(
                     pipelineEnabled = pipelineEnabled,
                     index = index,
                     storagePct = storagePct,
+                    pauses = pauses,
+                    lastResumeAtMs = lastResumeAtMs,
+                    nowMs = nowMs,
                 ),
             ),
         )
 
         fun flow(glasses: GlassesStatusSource, pipeline: PipelineControl, clock: Flow<Long>, storagePct: Flow<Int?>, index: Flow<IndexState> = flowOf(IndexState.NONE)): Flow<StatusUi> =
-            combine(glasses.status, pipeline.enabled, clock, storagePct, index) { s, enabled, now, storage, idx -> build(s, enabled, storage, now, idx) }
+            combine(
+                combine(glasses.status, pipeline.enabled, clock, storagePct, index) { s, enabled, now, storage, idx -> Inputs(s, enabled, now, storage, idx) },
+                pipeline.activePauses, pipeline.lastResumeAtMs,
+            ) { i, pauses, resumedAt -> build(i.s, i.enabled, i.storage, i.now, i.index, pauses, resumedAt) }
+
+        private data class Inputs(val s: GlassesStatus, val enabled: Boolean, val now: Long, val storage: Int?, val index: IndexState)
     }
 }
 
@@ -56,7 +68,7 @@ object BannerActions {
     fun apply(action: BannerAction, glasses: GlassesStatusSource, pipeline: PipelineControl) {
         when (action) {
             BannerAction.RECONNECT -> glasses.requestReconnect()
-            BannerAction.RESUME -> pipeline.setEnabled(true)
+            BannerAction.RESUME -> pipeline.setEnabled(true) // resumes the ids active now (spec §5.5)
             BannerAction.FIX_AI, BannerAction.REBUILD_INDEX -> Unit
         }
     }

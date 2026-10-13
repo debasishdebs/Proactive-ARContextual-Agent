@@ -20,6 +20,8 @@ class RoutesTest {
         listOf(Routes.SETTINGS_GLASSES, Routes.SETTINGS_ENDPOINT, Routes.SETTINGS_PROMPT_HISTORY, Routes.DIAGNOSTICS_LOGS)
             .forEach { assertEquals(it, Routes.Tab.SETTINGS, Routes.tabFor(it)) }
         assertTrue(Routes.SETTINGS_GLASSES in Routes.LIVE_SETTINGS)
+        assertTrue(Routes.SETTINGS_PHONE_INPUTS in Routes.LIVE_SETTINGS)
+        assertEquals(Routes.Tab.SETTINGS, Routes.tabFor(Routes.SETTINGS_PHONE_INPUTS))
     }
 
     @Test fun tabsFollowTheRoutePattern() {
@@ -62,5 +64,16 @@ class RoutesTest {
         assertFalse(BluetoothPermission.isMissing(sdkInt = 30, granted = false))
         assertTrue(BluetoothPermission.isMissing(sdkInt = 31, granted = false))
         assertFalse(BluetoothPermission.isMissing(sdkInt = 34, granted = true))
+    }
+
+    @Test fun phase7RoutesLiveAndNudgeTabIsHome() {
+        val p7 = setOf(Routes.SETTINGS_PRIVACY, Routes.SETTINGS_SOURCES, Routes.SETTINGS_ACTIONS, Routes.SETTINGS_SHOPPING)
+        assertEquals(setOf("settings/privacy", "settings/sources", "settings/actions", "settings/shopping"), p7)
+        assertTrue(Routes.LIVE_SETTINGS.containsAll(p7))
+        p7.forEach { assertEquals(it, Routes.Tab.SETTINGS, Routes.tabFor(it)) }
+        assertEquals("nudge/{id}", Routes.NUDGE)
+        assertEquals("nudge/n%201", Routes.nudge("n 1"))
+        assertEquals(Routes.Tab.HOME, Routes.tabFor(Routes.NUDGE))
+        assertTrue(Routes.showsNav(Routes.NUDGE))
     }
 }

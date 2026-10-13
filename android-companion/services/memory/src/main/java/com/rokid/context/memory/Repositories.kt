@@ -15,8 +15,9 @@ class FrameRepository(private val dao: FrameDao) {
     suspend fun add(frame: FrameEntity): Boolean = dao.insertIgnore(frame) != -1L
     suspend fun recent(limit: Int) = dao.recent(limit)
     suspend fun all() = dao.all()
-    suspend fun byIds(ids: List<String>) = if (ids.isEmpty()) emptyList() else dao.byIds(ids)
-    suspend fun deleteByIds(ids: List<String>) { if (ids.isNotEmpty()) dao.deleteByIds(ids) }
+    /** ts ASC across chunks: each chunk is sorted by the DAO, so the merged list is sorted again. */
+    suspend fun byIds(ids: List<String>): List<FrameEntity> = ids.inChunks { dao.byIds(it) }.sortedBy { it.ts }
+    suspend fun deleteByIds(ids: List<String>) = ids.forEachChunk { dao.deleteByIds(it) }
 }
 
 class MemoryRepository(private val dao: MemoryDao) {
@@ -32,7 +33,7 @@ class MemoryRepository(private val dao: MemoryDao) {
         val r = DayBucket.bounds(date, zone)
         return dao.between(r.first, r.last + 1)
     }
-    suspend fun deleteByIds(ids: List<String>) { if (ids.isNotEmpty()) dao.deleteByIds(ids) }
+    suspend fun deleteByIds(ids: List<String>) = ids.forEachChunk { dao.deleteByIds(it) }
     /** Ids starting with [prefix], literally (LIKE wildcards escaped; startsWith re-checks LIKE's ASCII case folding). */
     suspend fun idsWithPrefix(prefix: String): List<String> = dao.idsLike(escapeLike(prefix)).filter { it.startsWith(prefix) }
 
@@ -46,5 +47,5 @@ class TraceRepository(private val dao: TraceDao) {
     suspend fun upsert(trace: SummaryTraceEntity) = dao.upsert(trace)
     suspend fun addIgnore(trace: SummaryTraceEntity): Boolean = dao.insertIgnore(trace) != -1L
     suspend fun recent(limit: Int) = dao.recent(limit)
-    suspend fun deleteByIds(ids: List<String>) { if (ids.isNotEmpty()) dao.deleteByIds(ids) }
+    suspend fun deleteByIds(ids: List<String>) = ids.forEachChunk { dao.deleteByIds(it) }
 }

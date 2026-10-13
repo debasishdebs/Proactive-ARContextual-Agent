@@ -13,6 +13,22 @@ object VectorCodec {
         val buf = ByteBuffer.wrap(b).order(ByteOrder.LITTLE_ENDIAN)
         return FloatArray(b.size / 4) { buf.getFloat() }
     }
+
+    /**
+     * Decodes [blob] into [out] without allocating (Phase 8 B3). False, with [out] unspecified, when the blob is not
+     * exactly `out.size` float32s (another dimension, truncated or corrupt).
+     */
+    fun decodeInto(blob: ByteArray, out: FloatArray): Boolean {
+        if (blob.size != out.size * 4) return false
+        for (i in out.indices) {
+            val o = i * 4
+            out[i] = Float.fromBits(
+                (blob[o].toInt() and 0xFF) or ((blob[o + 1].toInt() and 0xFF) shl 8) or
+                    ((blob[o + 2].toInt() and 0xFF) shl 16) or ((blob[o + 3].toInt() and 0xFF) shl 24),
+            )
+        }
+        return true
+    }
 }
 
 object VectorMath {

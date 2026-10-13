@@ -18,28 +18,41 @@ data class HudView(val page: HudPage?, val overlay: Overlay?)
 /**
  * Verbosity and overlay timing (spec §3.2, §3.4). Silent: no page; overlays only for user flows (a Nudge never shows).
  * Medium: Glance/Today; a Nudge only as the Glance one-liner. Max: also Nudge toasts and the Status page. Nudge hides
- * after 8 s, Confirm after 15 s without voting, Paused splash and toasts after 3 s; Listening and Answer stay until the
+ * after 8 s, Confirm after 15 s without voting, Paused splash and toasts after 3 s (an undo toast after 10 s); Listening and Answer stay until the
  * phone clears them or the wearer dismisses them. A local overlay wins over a phone one, except over Confirm.
+ * While recording, see [present].
  */
 class HudPresenter {
     private var shown: Overlay? = null
     private var shownAtMs = 0L
     private var dismissed: Overlay? = null
+    private var held: Overlay? = null
 
     fun dismiss(o: Overlay?) { dismissed = o }
 
-    fun present(frame: StateFrame?, verbosity: Verbosity, nav: HudNav, local: LocalOverlay?, nowMs: Long): HudView {
+    /**
+     * While [recording], Listening shows at once until the phone's own Listening arrives. Only a phone toast that is not
+     * an undo outranks it (the phone refused or ended the ask); a Confirm waits under it (votes need it on screen, final
+     * review I1) and local toasts wait too.
+     */
+    fun present(frame: StateFrame?, verbosity: Verbosity, nav: HudNav, local: LocalOverlay?, nowMs: Long, recording: Boolean = false): HudView {
         val pages = pagesFor(verbosity)
         val page = if (pages.isEmpty()) null else nav.page.takeIf { it in pages } ?: HudPage.GLANCE
         val phone = frame?.overlay?.takeIf { it != dismissed && allowed(it, verbosity) }
-        if (phone != shown) { shown = phone; shownAtMs = nowMs }
+        if (phone != shown) { shown = phone; shownAtMs = nowMs; held = null }
+        // Final review I1: a live Confirm hidden under the glasses' Listening is held; its window restarts when it shows.
+        if (recording && phone is Overlay.Confirm && held == null && nowMs - shownAtMs < limitMs(phone)) held = phone
+        if (held != null && !recording) { shownAtMs = nowMs; held = null }
         val phoneVisible = phone?.takeIf { nowMs - shownAtMs < limitMs(it) }
         val localVisible = when (local) {
             is LocalOverlay.Toast -> Overlay.Toast(local.text).takeIf { nowMs - local.atMs < TOAST_MS }
             is LocalOverlay.Splash -> Overlay.PausedSplash.takeIf { nowMs - local.atMs < SPLASH_MS }
             null -> null
         }
+        val listening = if (recording && phoneVisible !is Overlay.Listening) Overlay.Listening("") else null
         val overlay = when {
+            listening != null && phoneVisible.isAskFailure() -> phoneVisible // final review I2: the phone refused or ended this ask
+            listening != null -> listening
             phoneVisible is Overlay.Confirm -> phoneVisible
             localVisible != null -> localVisible
             else -> phoneVisible
@@ -52,6 +65,11 @@ class HudPresenter {
         const val CONFIRM_MS = 15_000L
         const val SPLASH_MS = 3_000L
         const val TOAST_MS = 3_000L
+        /** A phone undo toast (`undoProposalId` set) stays for the whole 10 s undo window. */
+        const val UNDO_TOAST_MS = 10_000L
+
+        /** A phone toast with no undo: every one is voice copy for an ask the phone refused or ended. */
+        fun Overlay?.isAskFailure(): Boolean = this is Overlay.Toast && undoProposalId == null
 
         fun allowed(o: Overlay, v: Verbosity): Boolean = !(o is Overlay.Nudge && v != Verbosity.MAX)
 
@@ -59,7 +77,7 @@ class HudPresenter {
             is Overlay.Nudge -> NUDGE_MS
             is Overlay.Confirm -> CONFIRM_MS
             Overlay.PausedSplash -> SPLASH_MS
-            is Overlay.Toast -> TOAST_MS
+            is Overlay.Toast -> if (o.undoProposalId != null) UNDO_TOAST_MS else TOAST_MS
             is Overlay.Listening, is Overlay.Answer -> Long.MAX_VALUE
         }
     }

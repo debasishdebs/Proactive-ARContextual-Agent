@@ -33,4 +33,13 @@ class RetryClassifierTest {
         assertEquals(Outcome.RETRY, RetryClassifier.classify(raw))
         assertEquals(Outcome.FAIL, RetryClassifier.classify(IllegalStateException("Azure OpenAI request failed: 404 not here; connection")))
     }
+
+    /** Carry: typed pipeline failures are FAIL by type, before (and whatever) the legacy wording says. */
+    @Test fun typedFailuresBeatWording() {
+        assertEquals(Outcome.FAIL, RetryClassifier.classify(NoMemoriesException()))
+        assertEquals(Outcome.FAIL, RetryClassifier.classify(EmptyQuestionException()))
+        assertEquals(Outcome.FAIL, RetryClassifier.classify(com.rokid.context.data.runtime.StalePayloadException()))
+        // Subclasses whose message would match the legacy "retry" wording are still FAIL.
+        assertEquals(Outcome.FAIL, RetryClassifier.classify(object : com.rokid.context.data.runtime.StalePayloadException() { override val message: String = "connection timeout" }))
+    }
 }

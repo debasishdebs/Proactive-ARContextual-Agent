@@ -7,6 +7,10 @@ import androidx.room.Transaction
 /**
  * Settings → Memory › Delete all (spec §6.1.1: Forget moment for every frame + all derived memories, asks, nudges,
  * vectors and tombstones). Endpoints, bindings, prompts, pauses, shopping list and notes are settings/user lists: kept.
+ * Proposals (P7xP8 I1): every proposal came from an ask or a nudge, so all of them are memory-derived. Open ones are
+ * deleted; the rest (EXECUTING/EXECUTED/FAILED, kept for undo) get Forget's redaction: params replaced with
+ * [com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS] and action_log details emptied. [wipeMemory]
+ * returns every proposal id it saw, so the caller cancels their alarms and notifications.
  */
 @Dao
 abstract class WipeDao {
@@ -19,9 +23,17 @@ abstract class WipeDao {
     @Query("DELETE FROM ask") protected abstract suspend fun asks()
     @Query("DELETE FROM nudge") protected abstract suspend fun nudges()
     @Query("DELETE FROM proposal WHERE state IN ('PENDING','SUPPRESSED','EXPIRED','DECLINED')") protected abstract suspend fun openProposals()
+    @Query("SELECT id FROM proposal") protected abstract suspend fun proposalIds(): List<String>
+    @Query("UPDATE proposal SET paramsJson = :params") protected abstract suspend fun scrubProposalParams(params: String)
+    @Query("UPDATE action_log SET detail = ''") protected abstract suspend fun scrubActionLog()
     @Query("DELETE FROM summary_trace") protected abstract suspend fun traces()
     @Query("SELECT path FROM frame") abstract suspend fun framePaths(): List<String>
 
     @Transaction
-    open suspend fun wipeMemory() { sources(); vectors(); spaces(); memories(); frames(); tombstones(); asks(); nudges(); openProposals(); traces() }
+    open suspend fun wipeMemory(): List<String> {
+        val proposals = proposalIds()
+        sources(); vectors(); spaces(); memories(); frames(); tombstones(); asks(); nudges(); openProposals(); traces()
+        scrubProposalParams(com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS); scrubActionLog()
+        return proposals
+    }
 }
