@@ -42,9 +42,9 @@ class QueueGenerationTest {
     @Test fun aStaleGenerationEnqueueIsDropped() {
         val read = MemoryWipe.generation.get()
         QueueRuntimeStore.clearAll(ctx) // a Delete all happens between the producer's read and its enqueue
-        assertNull(QueueRuntimeStore.enqueueIfCurrent(ctx, read, QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess("r", "Milk carton"), personaSnapshot = "p"))
+        assertNull(QueueRuntimeStore.enqueueIfCurrent(ctx, read, QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess("r", listOf("m1")), personaSnapshot = "p"))
         assertTrue(QueueRuntimeStore.recent(ctx, 10).isEmpty())
-        assertNotNull(QueueRuntimeStore.enqueueIfCurrent(ctx, MemoryWipe.generation.get(), QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess("r", "Keys"), personaSnapshot = "p"))
+        assertNotNull(QueueRuntimeStore.enqueueIfCurrent(ctx, MemoryWipe.generation.get(), QueuePriority.PRIORITY_REPROCESS, QueuePayloads.reprocess("r", listOf("m2")), personaSnapshot = "p"))
         assertEquals(1, QueueRuntimeStore.recent(ctx, 10).size)
     }
 }

@@ -12,12 +12,14 @@ object RetryClassifier {
 
     fun classify(t: Throwable): Outcome = when (t) {
         is CancellationException -> Outcome.CANCELLED
+        // Typed pipeline failures first (carry): their wording must never decide.
+        is com.rokid.context.data.runtime.StalePayloadException, is EmptyQuestionException, is NoMemoriesException -> Outcome.FAIL
         is ModelCallException -> if (t.retryable) Outcome.RETRY else Outcome.FAIL
         is java.io.IOException -> Outcome.RETRY
         else -> if (legacyRetryable(t)) Outcome.RETRY else Outcome.FAIL
     }
 
-    /** The legacy `QueueDrainWorker.isRetryable` rules, kept for non-model errors. */
+    /** The legacy `QueueDrainWorker.isRetryable` rules, kept only for unknown (untyped) throwables. */
     private fun legacyRetryable(error: Throwable): Boolean {
         val msg = error.message?.lowercase(Locale.US).orEmpty()
         val permanent = listOf("resource not found", "deployment not found", "unsupported parameter",
