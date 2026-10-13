@@ -120,6 +120,20 @@ class RokidFrameInboxTest {
         assertEquals(0, rows())
     }
 
+    /** Fix round 3: an ingest that fails while a Delete all runs deletes the file instead of returning it to the inbox. */
+    @Test fun aFailedIngestDuringAWipeDeletesTheFile() = runBlocking {
+        inboxFile("rokid_1_a.jpg")
+        val n = RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _ ->
+            MemoryWipe.generation.incrementAndGet()
+            throw IllegalStateException("db")
+        }
+        assertEquals(0, n)
+        assertTrue(inbox.list().orEmpty().isEmpty())
+        assertTrue(archive.list().orEmpty().isEmpty())
+        assertEquals("nothing left to store later", 0, RokidFrameInbox.ingestPending(ctx, nowMs = { now + 1 }))
+        assertEquals(0, rows())
+    }
+
     /** Fix round 1: Delete all walks the inbox before the archive, so a file an ingest moves mid-walk is still seen. */
     @Test fun theInboxIsWalkedBeforeTheArchive() {
         assertEquals(listOf("rokid_inbox", "rokid_archive"), RokidFrameInbox.FRAME_DIRS)

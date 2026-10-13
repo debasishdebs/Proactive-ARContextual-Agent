@@ -94,7 +94,13 @@ object RokidFrameInbox {
                     imported += 1
                 }
                 InboxResult.DUPLICATE -> Unit
-                InboxResult.FAILED -> if (moved && !archived.renameTo(file)) Log.w(TAG, "failed ingest not returned to the inbox")
+                // Fix round 3: same rule as a cancelled ingest. A Delete all since it began deletes the file, else it goes back.
+                InboxResult.FAILED -> if (MemoryWipe.generation.get() != generation) {
+                    sourceFile.delete()
+                    Log.i(TAG, "failed frame dropped: Delete all ran during its ingest")
+                } else if (moved && !WipeFence.mutex.withLock { archived.renameTo(file) }) {
+                    Log.w(TAG, "failed ingest not returned to the inbox")
+                }
             }
         }
         return imported
