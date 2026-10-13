@@ -16,11 +16,13 @@ sealed interface Routed {
     /** Listening: a tap sends whatever the tap is mapped to (spec §3.2 "tap to send"). */
     data object FinishListening : Routed
     data object DismissOverlay : Routed
+    /** A double-tap on an undo toast: undo that proposal (never the pause toggle). */
+    data class Undo(val proposalId: String) : Routed
 }
 
 /**
  * Spec §3.5: an overlay's own rules first (Confirm: swipe moves, tap answers, double-tap = No; Listening: double-tap
- * cancels, tap sends; Answer: swipe or double-tap dismisses), otherwise `HudSettings.gestures` (unmapped = default).
+ * cancels, tap sends; Answer: swipe or double-tap dismisses; undo toast: double-tap undoes), otherwise `HudSettings.gestures` (unmapped = default).
  */
 object InputRouter {
     /** While [recording] (the glasses' own push-to-talk), a double-tap is Cancel whatever is shown. */
@@ -41,6 +43,7 @@ object InputRouter {
             is PadInput.Swiped -> mapped(input, gestures)
         }
         is Overlay.Answer -> if (input == PadInput.Tapped) mapped(input, gestures) else Routed.DismissOverlay
+        is Overlay.Toast -> overlay.undoProposalId?.takeIf { input == PadInput.DoubleTapped }?.let(Routed::Undo) ?: mapped(input, gestures)
         else -> mapped(input, gestures)
     }
 

@@ -66,4 +66,14 @@ class InputRouterTest {
         assertEquals(Routed.ConfirmNo, InputRouter.route(PadInput.DoubleTapped, confirm, defaults), "not recording: Confirm's own rule")
         assertEquals(Routed.Mapped(GestureAction.PAUSE_RESUME), InputRouter.route(PadInput.DoubleTapped, null, defaults))
     }
+
+    @Test fun doubleTapOnUndoToastUndoesNotPauses() {
+        val undo = Overlay.Toast("Added \u00b7 double-tap undo", undoProposalId = "p")
+        assertEquals(Routed.Undo("p"), InputRouter.route(PadInput.DoubleTapped, undo, defaults))
+        // Other inputs on an undo toast, and a double-tap on a plain toast, keep today's routing.
+        assertEquals(Routed.Mapped(GestureAction.ASK), InputRouter.route(PadInput.Tapped, undo, defaults))
+        assertEquals(Routed.Mapped(GestureAction.PAUSE_RESUME), InputRouter.route(PadInput.DoubleTapped, Overlay.Toast("Saved"), defaults))
+        // Push-to-talk still cancels first.
+        assertEquals(Routed.CancelListening, InputRouter.route(PadInput.DoubleTapped, undo, defaults, recording = true))
+    }
 }

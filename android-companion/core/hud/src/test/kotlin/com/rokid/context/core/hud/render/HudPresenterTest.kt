@@ -92,4 +92,15 @@ class HudPresenterTest {
         }
         assertEquals(Overlay.Toast("Capture resumed"), HudPresenter().present(frame(null), Verbosity.MEDIUM, HudNav(), LocalOverlay.Toast("Capture resumed", 0), 1).overlay)
     }
+
+    @Test fun undoToastVisibleForTenSeconds() {
+        val undo = Overlay.Toast("Added \u00b7 double-tap undo", undoProposalId = "p")
+        val p = HudPresenter()
+        assertEquals(undo, p.present(frame(undo), Verbosity.SILENT, HudNav(), null, 0).overlay)
+        assertEquals(undo, p.present(frame(undo), Verbosity.SILENT, HudNav(), null, 9_000).overlay)
+        assertEquals(null, p.present(frame(undo), Verbosity.SILENT, HudNav(), null, 11_000).overlay)
+        val plain = HudPresenter()
+        plain.present(frame(Overlay.Toast("Saved")), Verbosity.MEDIUM, HudNav(), null, 0)
+        assertEquals(null, plain.present(frame(Overlay.Toast("Saved")), Verbosity.MEDIUM, HudNav(), null, 4_000).overlay)
+    }
 }
