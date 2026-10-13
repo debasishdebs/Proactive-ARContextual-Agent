@@ -60,7 +60,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     private var attachJob: Job? = null
     /** Process-wide: built once from the application context, never per activity (CXR-S cannot unsubscribe). */
     val bridge: SharedBridge by lazy { SharedBridge(bridgeFactory(app)) }
-    val uplink = FrameUplink(scope, buffer, sendChunk = { c -> controller?.sendFrameChunk(c) ?: -1 }, canSend = ::canSend, log = { Log.i(UPLINK_TAG, it) })
+    val uplink = FrameUplink(scope, buffer, sendChunk = { c -> controller?.sendFrameChunk(c) ?: -1 }, canSend = ::canSend, log = { Log.i(UPLINK_TAG, it) }, onBufferChanged = { controller?.sendHello() })
 
     /** Tap = Ask (spec §5.1). Only an open session takes it; capture pauses don't matter (Ask is a user action). */
     val ptt = PushToTalk(
