@@ -1,24 +1,110 @@
 package com.rokid.context.phone.ui.settings.connectors
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import com.rokid.context.core.ui.components.ScreenHeader
+import androidx.compose.ui.platform.testTag
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.rokid.context.connectors.actions.ActionSettingsStore
+import com.rokid.context.connectors.actions.ActionToggle
+import com.rokid.context.connectors.actions.ActionType
+import com.rokid.context.connectors.actions.ActionsGraph
 import com.rokid.context.core.ui.theme.PcColors
+import com.rokid.context.phone.ui.actions.CalendarAccess
+import com.rokid.context.phone.ui.actions.rememberCalendarAccess
+import com.rokid.context.phone.ui.settings.NoticeText
+import com.rokid.context.phone.ui.settings.SecondaryAction
+import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsDeps
-import com.rokid.context.phone.ui.settings.SettingsModel
+import com.rokid.context.phone.ui.settings.SettingsPage
+import com.rokid.context.phone.ui.settings.SwitchRow
 
-/** Settings › Actions & tools. Placeholder (Stream 0): header and "Coming soon". Stream B fills it. */
+/**
+ * Settings › Actions & tools (R-62, R-63). The store comes from [ActionsGraph.ready] (published once its prefs were
+ * read on IO), so "starting" clears by itself; SettingsDeps has no actions member (see the Stream B report).
+ */
 @Suppress("UNUSED_PARAMETER")
 @Composable
 fun ActionsRoute(deps: SettingsDeps, back: () -> Unit, openShopping: () -> Unit) {
-    Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft)) {
-        ScreenHeader("Actions & tools", onBack = back)
-        Text(SettingsModel.COMING_SOON, color = PcColors.InkSoft, modifier = Modifier.padding(horizontal = 20.dp))
+    val graph by ActionsGraph.ready.collectAsStateWithLifecycle()
+    val access = rememberCalendarAccess()
+    val store = graph?.settings
+    if (store == null) {
+        SettingsPage("Actions & tools", back, tag = "settings_actions") { item { SettingsCard { NoticeText("Actions are starting \u2014 come back in a moment") } } }
+        return
     }
+    ActionsSettings(store, requestCalendar = access.request, back = back, openShopping = openShopping, openAppSettings = access.openAppSettings)
+}
+
+/** Stateless over [store]; [requestCalendar] asks for calendar access and reports the result. */
+@Composable
+fun ActionsSettings(
+    store: ActionSettingsStore, requestCalendar: ((CalendarAccess) -> Unit) -> Unit, back: () -> Unit, openShopping: () -> Unit,
+    openAppSettings: () -> Unit = {},
+) {
+    val toggles by store.settings.collectAsStateWithLifecycle()
+    var calendarDenied by remember { mutableStateOf<CalendarAccess?>(null) }
+    SettingsPage("Actions & tools", back, tag = "settings_actions") {
+        ActionType.entries.forEach { type ->
+            val t = toggles[type] ?: ActionSettingsStore.default(type)
+            item {
+                SettingsCard {
+                    SwitchRow(title(type), subtitle(type), t.enabled, onChange = { on ->
+                        if (on && type == ActionType.CALENDAR_EVENT) {
+                            requestCalendar { result ->
+                                calendarDenied = result.takeIf { it != CalendarAccess.GRANTED }
+                                if (result == CalendarAccess.GRANTED) store.set(type, t.copy(enabled = true))
+                            }
+                        } else {
+                            store.set(type, t.copy(enabled = on))
+                        }
+                    }, tag = "enabled_${type.name}")
+                    SwitchRow("Always confirm", "Ask on the glasses or phone first", t.alwaysConfirm, onChange = { store.set(type, ActionToggle(t.enabled, it)) },
+                        tag = "confirm_${type.name}", enabled = t.enabled)
+                    if (type == ActionType.CALENDAR_EVENT && calendarDenied != null && !t.enabled) {
+                        NoticeText("Calendar permission needed", error = true, tag = "calendar_denied")
+                        if (calendarDenied == CalendarAccess.DENIED_FOREVER) SecondaryAction("Open app settings", openAppSettings, tag = "open_app_settings")
+                    }
+                }
+            }
+        }
+        item {
+            SettingsCard {
+                LinkRow("Shopping list", "Items added by actions", Modifier.clickable(onClick = openShopping).testTag("open_shopping"))
+            }
+        }
+        item {
+            SettingsCard {
+                LinkRow("MCP servers", "Coming in v2", Modifier.clickable(enabled = false) {}.testTag("mcp_servers"))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LinkRow(title: String, subtitle: String, modifier: Modifier) {
+    Column(modifier.fillMaxWidth()) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
+    }
+}
+
+private fun title(t: ActionType) = when (t) {
+    ActionType.REMINDER -> "Reminders"
+    ActionType.SHOPPING_ADD -> "Shopping list"
+    ActionType.CALENDAR_EVENT -> "Calendar events"
+}
+
+private fun subtitle(t: ActionType) = when (t) {
+    ActionType.REMINDER -> "Set a reminder when you ask for one"
+    ActionType.SHOPPING_ADD -> "Add items you mention"
+    ActionType.CALENDAR_EVENT -> "Add events to your calendar"
 }

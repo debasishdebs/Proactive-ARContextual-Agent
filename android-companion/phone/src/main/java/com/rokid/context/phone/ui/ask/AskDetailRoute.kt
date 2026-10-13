@@ -5,6 +5,7 @@ import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.rokid.context.phone.ui.actions.ProposalCard
 import com.rokid.context.phone.ui.shell.PhoneDeps
 import com.rokid.context.phone.ui.shell.Routes
 
@@ -15,5 +16,7 @@ fun AskDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
     val back: () -> Unit = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
     val vm = viewModel { AskDetailViewModel(id, deps.memory.asks, deps.memory.proposals, deps.memory.timeline, deps.rateAsk, deps.zone) }
     val state by vm.state.collectAsStateWithLifecycle()
-    AskDetailScreen(state, onBack = back, onRate = vm::rate, onOpenMemory = { nav.navigate(Routes.memory(it)) })
+    AskDetailScreen(state, onBack = back, onRate = vm::rate, onOpenMemory = { nav.navigate(Routes.memory(it)) }, proposalCard = {
+        ProposalCard(id, onEnable = { nav.navigate(Routes.SETTINGS_ACTIONS) })
+    })
 }
