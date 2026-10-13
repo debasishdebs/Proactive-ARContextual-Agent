@@ -131,11 +131,29 @@ object RokidFrameInbox {
     }
 
     /** The appended frame's id, or null when nothing was appended. */
-    suspend fun ingestSinglePath(context: Context, absolutePath: String, source: String = "rokid_glasses", placeLabel: String? = null): String? {
+    suspend fun ingestSinglePath(
+        context: Context,
+        absolutePath: String,
+        source: String = "rokid_glasses",
+        placeLabel: String? = null,
+        appendFrame: suspend (Context, FrameEntity) -> Boolean = PipelineRecords::appendFrame,
+    ): String? {
         val file = File(absolutePath)
         if (!file.exists() || !file.isFile) return null
         if (extOf(file.name) !in supportedExt) return null
-        return frameIdOf(file).takeIf { ingestFile(context, file, source, placeLabel) == InboxResult.STORED }
+        // P7xP8 I3: same rule as the inbox drain. A Delete all that ran during this ingest takes its row and file.
+        val generation = MemoryWipe.generation.get()
+        val id = frameIdOf(file)
+        if (ingestFile(context, file, source, placeLabel, appendFrame) != InboxResult.STORED) return null
+        if (MemoryWipe.generation.get() != generation) {
+            withContext(NonCancellable) {
+                try { MemoryGraph.get(context).frames.deleteByIds(listOf(id)) } catch (e: Exception) { Log.w(TAG, "row not removed: ${e.javaClass.simpleName}") }
+                file.delete()
+            }
+            Log.i(TAG, "frame dropped: Delete all ran during its ingest")
+            return null
+        }
+        return id
     }
 
     private fun extOf(name: String): String = name.substringAfterLast('.', "").lowercase(Locale.US)
