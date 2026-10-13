@@ -44,7 +44,7 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     private var authTimedOut = false
     private var retryJob: Job? = null
     private var connectJob: Job? = null
-    private val inbound = GlassesInbound() // thread-safe: fed from CXR callback threads
+    private val inbound = SessionInbound() // thread-safe: fed from CXR callback threads, one decoder per session
     /** Session-less CXRLink kept bound only while "closed on glasses", to notice the wearer reopening our app there. */
     private val watcher = GlassAppWatcher(app, GLASSES_PKG) { post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) } }
 
@@ -110,6 +110,7 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
         authTimedOut = false
         policy.reset() // session is nulled below, so its close callback never reaches the policy
         val s = session
+        s?.let(inbound::close)
         session = null
         s?.close()
         setState(if (token() == null) LinkState.NOT_AUTHORIZED else LinkState.OFFLINE)
@@ -159,7 +160,6 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
             val old = session
             session = null
             old?.close()
-            inbound.reset()
             val s = manager.create(
                 SessionConfig(
                     sessionType = SessionType.CUSTOM_APP,
@@ -173,9 +173,10 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
                     glassesApkPath = "",
                 ),
             )
+            inbound.open(s)
             s.addLifecycleCallback(lifecycleFor(s))
             s.addCustomCmdCallback(object : ICustomCmdSessionCallback {
-                override fun onCustomCmdResult(cmd: String, bytes: ByteArray?) = onGlassesMessage(cmd, bytes)
+                override fun onCustomCmdResult(cmd: String, bytes: ByteArray?) = onGlassesMessage(s, cmd, bytes)
             })
             session = s
             s.connect(token)
@@ -196,7 +197,7 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     }
 
     /** CXR callback thread. Glasses send text only (phase 0): read up to [MAX_PARTS] Caps strings in order. */
-    private fun onGlassesMessage(cmd: String, bytes: ByteArray?) {
+    private fun onGlassesMessage(s: CxrSession, cmd: String, bytes: ByteArray?) {
         val parts = try {
             val caps = Caps.fromBytes(bytes ?: return)
             val out = ArrayList<String>(MAX_PARTS)
@@ -208,7 +209,7 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
             Log.w(TAG, "bad payload on $cmd: ${e.javaClass.simpleName}")
             return
         }
-        inbound.onMessage(cmd, parts).forEach { _events.tryEmit(it) }
+        inbound.onMessage(s, cmd, parts).forEach { _events.tryEmit(it) }
     }
 
     override suspend fun send(channel: String, json: String): Boolean {
@@ -230,10 +231,11 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     private fun lifecycleFor(s: CxrSession) = object : ISessionLifecycleCbk {
         private fun ifCurrent(event: LinkEvent) = post { if (s === session) act(policy.onEvent(event)) }
         override fun onSessionStarted() = post { if (s === session) { auth.sessionStarted(); act(policy.onEvent(LinkEvent.Started)) } }
-        override fun onSessionPaused(reason: PausedReason) = ifCurrent(LinkEvent.Paused)
+        override fun onSessionPaused(reason: PausedReason) { inbound.interrupt(s); ifCurrent(LinkEvent.Paused) }
         override fun onSessionResumed() = ifCurrent(LinkEvent.Resumed)
         override fun onSessionTerminating(reason: TerminatingReason, graceMs: Long) = Unit
         override fun onSessionClosed(reason: CloseReason) = post {
+            inbound.close(s)
             if (s !== session) return@post
             session = null
             val glassesLeft = reason == CloseReason.GLASSES_EXIT || reason == CloseReason.USER_CLOSED
@@ -242,6 +244,7 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
         }
         override fun onConnectResult(ok: Boolean, code: SessionErrorCode?) = post {
             if (ok || s !== session) return@post
+            inbound.close(s)
             session = null
             Log.w(TAG, "connect failed $code")
             if (code == SessionErrorCode.TOKEN_EXPIRED || code == SessionErrorCode.NOT_AUTHENTICATED) onTokenRejected()
