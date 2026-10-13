@@ -62,6 +62,10 @@ class SettingsDeps(
     val logs: suspend () -> List<String>,
     /** Diagnostics › Export: a text file in cache/exports (the FileProvider folder), shared through [share]. */
     val exportDiagnostics: suspend () -> File,
+    /** Settings › Phone camera & mic (Phase 6). */
+    val voice: com.rokid.context.phone.voice.VoiceControls = com.rokid.context.phone.voice.VoiceControls.None,
+    /** This app's system settings page (a microphone denied with "don't ask again"). */
+    val openAppSettings: () -> Unit = {},
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -95,6 +99,12 @@ class SettingsDeps(
             exportDiagnostics = {
                 val traces = com.rokid.context.orchestration.PipelineRecords.recentTraces(app, 50).map { "${it.updatedAt} ${it.state} ${it.summaryId} ${it.note}" }
                 DiagnosticsExport.write(app.cacheDir, traces, LogReader.ownLines())
+            },
+            voice = com.rokid.context.phone.voice.VoiceGraph.get(app).controls,
+            openAppSettings = {
+                val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", app.packageName, null))
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                runCatching { app.startActivity(intent) }.onFailure { Log.i("Settings", "app settings unavailable (${it.javaClass.simpleName})") }
             },
         )
     }
