@@ -28,7 +28,7 @@ class ReminderExecutor(private val context: Context) : ActionExecutor {
     }
 
     override suspend fun undo(p: ProposalEntity): Boolean {
-        alarms.cancel(pendingIntent(context, p.id, null))
+        cancelAlarm(context, p.id)
         return true
     }
 
@@ -57,6 +57,11 @@ class ReminderExecutor(private val context: Context) : ActionExecutor {
         const val EXTRA_NOTE = "note"
         const val EXTRA_ID = "proposalId"
         private const val TAG = "ReminderExecutor"
+
+        /** Cancels the alarm armed for [proposalId] (undo, and Forget redaction); a no-op when none is set. */
+        fun cancelAlarm(context: Context, proposalId: String) {
+            context.getSystemService(AlarmManager::class.java)?.cancel(pendingIntent(context, proposalId, null))
+        }
 
         /** Same request code and data URI per proposal, so set/cancel always address the same alarm. */
         fun pendingIntent(context: Context, proposalId: String, r: ActionParams.Reminder?): PendingIntent {

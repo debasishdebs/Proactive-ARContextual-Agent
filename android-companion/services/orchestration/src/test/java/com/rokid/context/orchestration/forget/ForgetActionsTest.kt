@@ -68,6 +68,23 @@ class ForgetActionsTest {
         assertEquals(listOf("other"), org.robolectric.Shadows.shadowOf(nm).activeNotifications.map { it.tag })
     }
 
+    /** Privacy carry: Forget cancels a redacted reminder's armed alarm (its intent still carries the title and note). */
+    @Test fun forgetCancelsTheRedactedRemindersAlarm() = runBlocking {
+        mem("A")
+        graph.asks.add(com.rokid.context.memory.db.AskEntity("ask2", 1, "q", "a", "[\"A\"]", null, "phone", false))
+        val pid = "prop_ASK_ask2"
+        val due = System.currentTimeMillis() + 3_600_000
+        val r = com.rokid.context.connectors.actions.ActionParams.Reminder("Call the clinic", due, "about the results")
+        graph.proposals.addIgnore(
+            com.rokid.context.memory.db.ProposalEntity(pid, "ASK", "ask2", "REMINDER", com.rokid.context.connectors.actions.ActionParams.encode(r), "EXECUTED", 0, "auto", "alarm:$pid", 1),
+        )
+        com.rokid.context.connectors.actions.executors.ReminderExecutor(ctx).arm(pid, r)
+        val alarms = org.robolectric.Shadows.shadowOf(ctx.getSystemService(android.app.AlarmManager::class.java))
+        assertEquals(1, alarms.scheduledAlarms.size)
+        assertTrue(ForgetActions.forgetFact(ctx, "A"))
+        assertEquals(0, alarms.scheduledAlarms.size)
+    }
+
     @Test fun anUnknownIdIsNotAnError() = runBlocking {
         assertTrue(ForgetActions.forgetFact(ctx, "nope"))
         assertTrue(WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(ResummarizeWorker.NAME).get().isEmpty())
