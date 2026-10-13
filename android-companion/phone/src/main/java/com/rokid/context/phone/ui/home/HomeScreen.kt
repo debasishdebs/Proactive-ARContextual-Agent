@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -63,6 +64,8 @@ fun HomeScreen(
     onOpenAsk: (String) -> Unit,
     onTogglePause: () -> Unit,
     onBannerAction: (BannerAction) -> Unit,
+    onMic: () -> Unit = {},
+    onRequestMic: () -> Unit = {},
 ) {
     var expandedNudge by rememberSaveable { mutableStateOf<String?>(null) }
     val glyph = when { state.status.live -> "● "; state.status.paused -> "❚❚ "; else -> "" }
@@ -82,7 +85,7 @@ fun HomeScreen(
             }
         }
         item { BannerHost(state.status.banner, onBannerAction) }
-        item { AskHero(state, onQuestionChange, onAsk, onOpenAsk) }
+        item { AskHero(state, onQuestionChange, onAsk, onOpenAsk, onMic, onRequestMic) }
         item { SectionLabel("For you") }
         if (state.feed.isEmpty()) {
             item {
@@ -111,16 +114,24 @@ fun HomeScreen(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AskHero(state: HomeUiState, onQuestionChange: (String) -> Unit, onAsk: (String) -> Unit, onOpenAsk: (String) -> Unit) {
+private fun AskHero(
+    state: HomeUiState, onQuestionChange: (String) -> Unit, onAsk: (String) -> Unit, onOpenAsk: (String) -> Unit,
+    onMic: () -> Unit, onRequestMic: () -> Unit,
+) {
     SoftCard(Modifier.padding(16.dp).fillMaxWidth()) {
         Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            GradientCircleButton(Icons.Rounded.Mic, contentDescription = "Ask by voice", onClick = {}, enabled = state.voiceAvailable)
+            val v = state.voice
+            GradientCircleButton(
+                if (v.listening) Icons.Rounded.Stop else Icons.Rounded.Mic,
+                contentDescription = if (v.listening) "Stop and send" else "Ask by voice",
+                onClick = { if (v.needsPermission) onRequestMic() else onMic() },
+                enabled = v.enabled,
+            )
             Spacer(Modifier.height(12.dp))
             Text("Ask about your day", style = MaterialTheme.typography.titleLarge, color = PcColors.Ink)
-            Text(
-                if (state.voiceAvailable) "or tap your glasses" else "Type a question below, or tap your glasses",
-                style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft,
-            )
+            Text(v.hint, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
+            if (v.partial.isNotBlank()) Text("\u201c${v.partial}\u201d", style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, modifier = Modifier.padding(top = 6.dp))
+            v.error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.ChipCoral.second, modifier = Modifier.padding(top = 6.dp)) }
             Spacer(Modifier.height(12.dp))
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 state.suggestions.forEach { QuestionPill(it, enabled = !state.asking) { onAsk(it) } }
