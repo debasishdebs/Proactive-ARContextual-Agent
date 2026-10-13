@@ -109,4 +109,12 @@ class ProtocolTest {
         assertEquals(Verbosity.MEDIUM, s.verbosity); assertEquals(0.4f, s.scale); assertEquals(HudPosition.BOTTOM_CENTER, s.position)
         assertEquals(Decoded.Ok(s), Wire.decode<HudSettings>(Wire.encode(s)))
     }
+
+    /** Phase 6: additive, so an older phone's settings decode on newer glasses and the other way round. */
+    @Test fun askBlockedReasonIsAdditive() {
+        val old = """{"v":$PROTOCOL_VERSION,"verbosity":"MEDIUM"}"""
+        assertEquals(null, assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(old)).value.askBlockedReason)
+        val s = HudSettings(askBlockedReason = "Voice not supported on this phone")
+        assertEquals(s, assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(Wire.encode(s))).value)
+    }
 }

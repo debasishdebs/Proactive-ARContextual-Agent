@@ -45,11 +45,11 @@ MCP / custom tool connectors (interface only), background phone-camera capture, 
 |---|---|
 | `:phone` | Phone app (Compose + M3, NavHost, ViewModels + StateFlow). Hosts `ContextHubService` (foreground) owning glasses link, voice, orchestration, state broadcast. Replaces `:app`. |
 | `:glasses` | Glasses APK. Compose **foundation only** (no Material), minSdk 28, targetSdk 32. Renderer + capture + mic + input. Replaces `:glasses-app`. |
-| `:core:model` | Shared protocol: `StateFrame`, `HudPage`, `HudSettings`, `Overlay`, `Command`, channel names, `PROTOCOL_VERSION`. Pure Kotlin + kotlinx-serialization. |
+| `:core:model` | Shared protocol: `StateFrame`, `HudPage`, `HudSettings`, `Overlay`, `Command`, channel names, `PROTOCOL_VERSION`. Also the shared PCM format (`Pcm`) and `EnergyVad`, because `:glasses` may depend only on `:core:*`. Pure Kotlin + kotlinx-serialization. |
 | `:core:ui` | Phone design system (§2.3). |
 | `:core:hud` | Glasses design system + input primitives (§3.3, §3.5). |
 | `:services:glasses-link` | Phone-side CXR-L session (`com.rokid.cxr:client-l`), auth gate, reconnect, `GlassAppWatcher`. |
-| `:services:voice` | Audio intake (glasses PTT chunks + phone mic), on-device STT (`SpeechRecognizer` / `createOnDeviceSpeechRecognizer`), `EnergyVad`, TTS. |
+| `:services:voice` | Audio intake (glasses PTT chunks + phone mic), on-device STT (`SpeechRecognizer` / `createOnDeviceSpeechRecognizer`), TTS. Uses `EnergyVad` from `:core:model`. |
 | `:services:ai` | Endpoint registry, role bindings, providers (ported), prompt/schema store + versions, `StructuredOutput` adapters, test runner. |
 | `:services:memory` | Room DB, memory tiers (ported), FTS, `VectorIndex`, retrievers, `FusionStrategy`. |
 | `:services:orchestration` | Ported workers (ingest, summarizer, critic, queue drain), battery policy, `NudgeEngine`, `LegacyImportWorker`, `ReindexWorker`. |
@@ -315,6 +315,8 @@ Glasses-audio STT feeds our PCM into the recognizer via `RecognizerIntent.EXTRA_
 | `GLASSES_VOICE` | API ≥ 33 **and** `SpeechRecognizer.isOnDeviceRecognitionAvailable` **and** language pack installed **and** external-audio verified | `VoiceCapabilityProbe` |
 | `PHONE_VOICE` | API ≥ 31 **and** `SpeechRecognizer.isOnDeviceRecognitionAvailable` **and** language pack installed; always created via `createOnDeviceSpeechRecognizer`. The ordinary (possibly network-backed) `SpeechRecognizer` is **never** used. | same probe |
 | Pack download | API ≥ 34 (Live Fit `SpeechPacks`); below 34 → deep-link to system speech settings | — |
+
+On API 31–32, where installed packs can't be listed, or when the pack query fails, the speech pack is assumed to be installed; the recognizer then reports `ERROR_LANGUAGE_UNAVAILABLE`, shown as "Needs speech pack".
 
 - **External-audio verification:** the recognizer must not silently fall back to the phone mic. The probe (onboarding + after OS/app updates) streams a paced ≥ 96 KB (≥ 3 s, above the 64 KiB pipe capacity) PCM feed through the `ParcelFileDescriptor` pipe and counts bytes the recognizer reads (writes block near 64 KiB when nobody reads); if it reads < 50 % of the feed, or a session returns results while pipe reads stay ~0, `GLASSES_VOICE` = unsupported. In every production session a guard aborts (never answers from phone-mic audio) and re-probes capability when partials/results arrive while < 64 KiB has been consumed after > 2 s of fed audio; writes to the pipe are non-blocking/timed so a non-reading recognizer cannot hang the feeder. Utterances shorter than ~2 s fit in the pipe buffer and rely on the onboarding probe.
 - **Final result:** on-device `onResults` may return a null/empty `RESULTS_RECOGNITION` after complete partials (phase 0); the transcript is then the last non-empty partial.
