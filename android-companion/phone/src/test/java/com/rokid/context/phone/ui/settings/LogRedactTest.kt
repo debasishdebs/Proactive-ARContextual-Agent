@@ -30,4 +30,28 @@ class LogRedactTest {
         assertEquals(kept, LogReader.redact(kept))
         dropped.forEach { (shape, line) -> assertEquals(shape, emptyList<String>(), LogReader.redact(listOf(line))) }
     }
+
+    // ---- Phase 8 D3 ----
+
+    @Test fun jniDescriptorLinesAreKept() {
+        val lines = listOf(
+            "W/art: Rejecting re-init on previously-failed class Lcom/rokid/cxr/client/extend/listeners/SomeCallbackInterface;",
+            "I/art: Lcom/rokid/cxr/client/extend/listeners/SomeCallbackInterface2;",
+        )
+        assertEquals(lines, LogReader.redact(lines))
+    }
+
+    /** (pin) Real keys still go: Base64 of random bytes, with and without `/`. */
+    @Test fun aRealBase64KeyLineIsDropped() {
+        val rnd = java.util.Random(42)
+        val keys = (1..200).map { java.util.Base64.getEncoder().encodeToString(ByteArray(32).also(rnd::nextBytes)) } +
+            "Zm9vYmFy/QmF6cXV4/aGVsbG8xMjM0NTY3ODkwYWJjZA=="
+        keys.forEach { k -> assertEquals(k, emptyList<String>(), LogReader.redact(listOf("D/Sdk: auth $k"))) }
+    }
+
+    @Test fun isLikelyBase64SecretNeedsMixedClassesAndNoIdentifierPath() {
+        assertEquals(false, LogReader.isLikelyBase64Secret("comrokidcxrclientextendlistenersSomeCallback"))
+        assertEquals(false, LogReader.isLikelyBase64Secret("com/rokid/cxr/client/v2/listeners/SomeCallback2"))
+        assertEquals(true, LogReader.isLikelyBase64Secret("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9w"))
+    }
 }
