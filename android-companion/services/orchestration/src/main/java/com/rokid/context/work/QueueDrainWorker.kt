@@ -176,6 +176,7 @@ class QueueDrainWorker(
         EmbeddingWorker.enqueue(applicationContext)
         if (trusted) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "TRUSTED", "frames=${frames.size} imported=$importedFrames facts=${facts.size} v${result.promptVersion}")
+            com.rokid.context.orchestration.nudge.NudgeTrigger.afterSummarizerPass(applicationContext)
             PipelineStatsStore.incSummarizerSucceeded(applicationContext)
         } else {
             val reason = "Critic low confidence=${"%.2f".format(Locale.US, confidence)}"
@@ -218,6 +219,7 @@ class QueueDrainWorker(
         if (!written) return
         EmbeddingWorker.enqueue(applicationContext)
         PipelineRecords.upsertTrace(applicationContext, job.id, "REPROCESSED", "Re-summarized after critic feedback")
+        com.rokid.context.orchestration.nudge.NudgeTrigger.afterSummarizerPass(applicationContext)
     }
 
     private suspend fun processExplicitWrite(job: QueueJobRecord, generation: Long) {

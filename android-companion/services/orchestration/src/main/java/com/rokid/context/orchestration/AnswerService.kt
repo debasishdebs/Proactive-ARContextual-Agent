@@ -11,7 +11,11 @@ import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.run.RoleCall
 import com.rokid.context.ai.run.RoleRunner
 import com.rokid.context.core.model.TextHygiene
+import com.rokid.context.connectors.ProposalIntake
+import com.rokid.context.connectors.actions.ActionsGraph
+import com.rokid.context.connectors.sources.SourcesGraph
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.ProposalOrigin
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.ReviewState
@@ -75,6 +79,7 @@ class AnswerService(
     private val settings: () -> RetrievalSettings,
     private val sources: ContextSources = ContextSources.None,
     private val zone: () -> ZoneId = ZoneId::systemDefault,
+    private val proposals: ProposalIntake = ProposalIntake.None,
 ) {
     data class Retrieved(val vars: PromptVars, val memories: List<MemoryEntity>) { val ids: Set<String> get() = memories.map { it.id }.toSet() }
 
@@ -140,7 +145,9 @@ class AnswerService(
             true
         }
         if (!saved) throw NoMemoriesException()
-        return AskOutcome.Answered(id, out.proposedAction)
+        // Phase 7 (R-62): only after the ask row commits, so a proposal always has its origin row.
+        val proposalId = out.proposedAction?.let { proposals.onProposed(ProposalOrigin.ASK, id, it, nowMs) }
+        return AskOutcome.Answered(id, out.proposedAction, proposalId)
     }
 
     private fun line(m: MemoryEntity): String =
@@ -158,7 +165,12 @@ class AnswerService(
         fun forApp(context: Context): AnswerService {
             val ai = AiGraph.get(context)
             val store = RetrievalSettingsStore.get(context)
-            return AnswerService(MemoryGraph.get(context), ai.runner, ai.retriever, { store.settings.value })
+            val provider = SourcesGraph.get(context).provider
+            return AnswerService(
+                MemoryGraph.get(context), ai.runner, ai.retriever, { store.settings.value },
+                sources = ContextSources { q -> provider.lines(q, System.currentTimeMillis()) },
+                proposals = ActionsGraph.get(context).intake,
+            )
         }
     }
 }
