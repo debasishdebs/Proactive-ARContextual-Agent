@@ -49,6 +49,13 @@ interface ActionDao {
     @Query("UPDATE action_log SET detail = '' WHERE proposalId IN (SELECT id FROM proposal WHERE originId IN (:originIds))")
     suspend fun scrubLogsForOrigins(originIds: List<String>): Int
 
+    /** Origin fence (P7xP8 I2): the ask / nudge is still there and not redacted. */
+    @Query("SELECT EXISTS(SELECT 1 FROM ask WHERE id = :id AND redacted = 0)")
+    suspend fun askLive(id: String): Boolean
+
+    @Query("SELECT EXISTS(SELECT 1 FROM nudge WHERE id = :id AND redacted = 0)")
+    suspend fun nudgeLive(id: String): Boolean
+
     @Query("SELECT * FROM proposal WHERE state = :state ORDER BY createdAt DESC")
     fun observeInState(state: String): Flow<List<ProposalEntity>>
 }

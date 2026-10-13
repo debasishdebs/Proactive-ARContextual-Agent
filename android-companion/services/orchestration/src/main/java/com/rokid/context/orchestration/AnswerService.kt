@@ -196,7 +196,7 @@ class AnswerService(
             return AnswerService(
                 MemoryGraph.get(context), ai.runner, ai.retriever, { store.settings.value },
                 sources = sourcesFrom(provider),
-                proposals = ActionsGraph.get(context).intake,
+                proposals = OriginFencedIntake(context, MemoryGraph.get(context), ActionsGraph.get(context).intake),
             )
         }
     }
