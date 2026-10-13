@@ -27,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,7 +54,7 @@ import com.rokid.context.core.ui.components.IconChip
 import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.shell.PhoneDeps
 
-/** The onboarding wizard (R-19, spec \u00A72.4): seven steps, every one skippable or optional. */
+/** The onboarding wizard (R-19, spec §2.4): seven steps, every one skippable or optional. */
 @Composable
 fun OnboardingRoute(deps: PhoneDeps, onDone: () -> Unit) {
     val ctx = LocalContext.current
@@ -66,20 +67,17 @@ fun OnboardingRoute(deps: PhoneDeps, onDone: () -> Unit) {
     fun canAskAgain(permission: String) = activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, permission) } ?: true
     val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         vm.onMicResult(granted, canAskAgain(Manifest.permission.RECORD_AUDIO), inFront())
-        if (granted) deps.onMicGranted() // takes the mic FGS type
+        // Not deps.onMicGranted(): it probes, and a grant can land while the app is only STARTED. The VM probes now or on resume.
     }
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         vm.onNotificationsResult(granted, if (Build.VERSION.SDK_INT >= 33) canAskAgain(Manifest.permission.POST_NOTIFICATIONS) else true)
     }
-    // Returning from system settings (or a revoked grant): re-read what the user decided.
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-        if (state.step == Step.PERMISSIONS && ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED && state.mic != PermState.GRANTED) {
-            vm.onMicResult(granted = true, canAskAgain = true, foreground = true)
-        }
-        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED && state.notifications != PermState.GRANTED) {
-            vm.onNotificationsResult(granted = true, canAskAgain = true)
-        }
-    }
+    fun micGranted() = ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    fun notificationsGranted() = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    // Returning from system settings (or a grant that landed while not in front): re-read, then run the deferred probe.
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.onResume(micGranted(), notificationsGranted()) }
+    // Entering the Permissions step with things already granted.
+    LaunchedEffect(state.step) { if (state.step == Step.PERMISSIONS) vm.syncPermissions(micGranted(), notificationsGranted(), inFront()) }
     OnboardingWizard(
         state,
         vm.callbacks(

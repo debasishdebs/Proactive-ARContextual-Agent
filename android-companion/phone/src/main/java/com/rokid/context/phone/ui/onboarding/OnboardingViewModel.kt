@@ -37,7 +37,7 @@ data class OnboardingUiState(
     val step: Step,
     val mic: PermState,
     val notifications: PermState,
-    /** Null until the mic was decided; then the glasses-voice status (the \u00A75.1.1 gate). */
+    /** Null until the mic was decided; then the glasses-voice status (the §5.1.1 gate). */
     val voice: VoiceLine?,
     val glasses: LinkState,
     val ai: AiStepState,
@@ -83,7 +83,8 @@ class OnboardingViewModel(
 
     private fun go(step: Step) {
         saved[K_STEP] = step.ordinal
-        local.update { it.copy(step = step) }
+        // The typed key never outlives the AI step.
+        local.update { if (it.step == Step.AI && step != Step.AI) it.copy(step = step, ai = it.ai.copy(key = "")) else it.copy(step = step) }
     }
 
     fun next() { Step.entries.getOrNull(local.value.step.ordinal + 1)?.let(::go) }
@@ -127,7 +128,26 @@ class OnboardingViewModel(
         local.update {
             it.copy(mic = if (granted) PermState.GRANTED else if (canAskAgain) PermState.DENIED else PermState.DENIED_FOREVER, micDecided = true)
         }
-        if (foreground) deps.voice.recheck()
+        if (granted && !foreground) probePending = true
+        if (foreground) { probePending = false; deps.voice.recheck() }
+    }
+
+    /** A grant that arrived while the app was not in front: the probe waits for the next resume (rule F2). */
+    private var probePending = false
+
+    /** ON_RESUME: re-read what the user decided, then run the deferred probe (on the Permissions step only). */
+    fun onResume(micGranted: Boolean, notificationsGranted: Boolean) {
+        syncPermissions(micGranted, notificationsGranted, foreground = true)
+        if (probePending && local.value.step == Step.PERMISSIONS && local.value.mic == PermState.GRANTED) {
+            probePending = false
+            deps.voice.recheck()
+        }
+    }
+
+    /** Step entry and resume: a grant made in system settings shows without waiting for another tap. */
+    fun syncPermissions(micGranted: Boolean, notificationsGranted: Boolean, foreground: Boolean) {
+        if (micGranted && local.value.mic != PermState.GRANTED) onMicResult(true, true, foreground)
+        if (notificationsGranted && local.value.notifications != PermState.GRANTED) onNotificationsResult(true, true)
     }
 
     fun onNotificationsResult(granted: Boolean, canAskAgain: Boolean) {
@@ -189,9 +209,11 @@ class OnboardingViewModel(
     }
 
     private fun continueAi() {
-        val preset = local.value.ai.preset
+        val ai = local.value.ai
+        val endpointId = ai.preset?.endpointId ?: ai.seed?.id
+        local.update { it.copy(ai = it.ai.copy(key = "")) }
         viewModelScope.launch(work) {
-            if (preset != null) deps.ai.use(preset.endpointId)
+            if (endpointId != null) deps.ai.use(endpointId)
             withContext(main) { go(Step.PERSONA) }
         }
     }

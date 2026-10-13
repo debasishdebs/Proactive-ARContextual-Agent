@@ -5,7 +5,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** The \u00A72.1 gate. Phase 7's wizard writes the same flag (or bumps [K_COMPLETE] to re-run for Phase-4 users). */
+/** The §2.1 gate. Phase 7's wizard writes the same flag (or bumps [K_COMPLETE] to re-run for Phase-4 users). */
 class OnboardingStore(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 

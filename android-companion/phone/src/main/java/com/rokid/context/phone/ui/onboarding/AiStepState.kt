@@ -14,6 +14,11 @@ data class AiStepState(
     val result: TestOutcome? = null,
     val urlError: String? = null,
 ) {
+    /** Never prints the key. */
+    override fun toString() = "AiStepState(preset=$preset, url=$url, model=$model, key=${if (key.isEmpty()) "" else "***"}, testing=$testing, result=$result)"
+
     val useSeed: Boolean get() = seed != null && preset == null
+    /** Test needs something to test: the seed, or a typed endpoint with a model. */
+    val canTest: Boolean get() = !testing && (preset == null && seed != null || preset != null && model.isNotBlank())
     val canContinue: Boolean get() = !testing && (useSeed || (preset != null && result?.ok == true))
 }

@@ -28,7 +28,10 @@ enum class AiPreset(val label: String, val kind: EndpointKind, val hasKey: Boole
 }
 
 /** What the user typed. [baseUrl] is already normalised by [com.rokid.context.ai.UrlNormalizer]. */
-data class EndpointDraft(val preset: AiPreset, val baseUrl: String, val apiVersion: String?, val model: String, val apiKey: String?)
+data class EndpointDraft(val preset: AiPreset, val baseUrl: String, val apiVersion: String?, val model: String, val apiKey: String?) {
+    /** Never prints the key. */
+    override fun toString() = "EndpointDraft(preset=$preset, url=$baseUrl, model=$model, apiKey=${if (apiKey == null) "none" else "***"})"
+}
 
 /** The AI step's seam over [AiGraph]: the key goes straight to the vault, never into Room, state or logs. */
 interface OnboardingAi {
