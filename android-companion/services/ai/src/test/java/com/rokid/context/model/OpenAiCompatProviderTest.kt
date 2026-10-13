@@ -70,4 +70,11 @@ class OpenAiCompatProviderTest {
             assertEquals(302, e.code); assertEquals(0, other.requestCount)
         } finally { other.shutdown() }
     }
+
+    /** Phase 5 T2 carry: a server that reports no usage still answers; the counts are just unknown. */
+    @Test fun aReplyWithoutUsageHasNoTokenCounts() = runTest {
+        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"hi"}}]}"""))
+        val r = OpenAiCompatProvider(url(), "k", "m", style = OpenAiCompatProvider.ApiStyle.OPENAI, client = client).complete(ModelRequest("q"))
+        assertEquals("hi", r.text); assertEquals(null, r.promptTokens); assertEquals(null, r.completionTokens)
+    }
 }

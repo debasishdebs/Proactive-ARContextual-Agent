@@ -29,7 +29,7 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         val rebuild = inputData.getBoolean(KEY_REBUILD, false)
         val clock = PrefsIndexClock(applicationContext)
         if (!AppConfigStore.isPipelineEnabled(applicationContext)) {
-            if (rebuild) clock.setRebuildPending(true)
+            if (rebuild) { clock.setPendingRebuildToken(id.toString()); clock.setRebuildPending(true) }
             Log.i(TAG, "pipeline paused: index work left for resume")
             return Result.success()
         }
@@ -72,8 +72,10 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             // A Rebuild is durable from the moment it is asked for: a pause (which cancels this work) or a process
             // death before it runs leaves it pending, and the first run after resume honours it. It also resets the drift
             // streak now (as the run would), so "index unstable" clears at the user's request, even while paused.
-            if (rebuild) PrefsIndexClock(context).apply { setRebuildPending(true); recordDiscard(null) }
-            WorkManager.getInstance(context).enqueueUniqueWork(NAME, if (rebuild) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, request(rebuild))
+            // The request exists first, so its id is the pending token (token, then flag: a reader of the flag finds the token).
+            val req = request(rebuild)
+            if (rebuild) PrefsIndexClock(context).apply { setPendingRebuildToken(req.id.toString()); setRebuildPending(true); recordDiscard(null) }
+            WorkManager.getInstance(context).enqueueUniqueWork(NAME, if (rebuild) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, req)
         }
 
         private fun continueLater(context: Context) {

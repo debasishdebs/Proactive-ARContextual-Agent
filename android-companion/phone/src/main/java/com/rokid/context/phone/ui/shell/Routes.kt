@@ -19,6 +19,7 @@ object Routes {
     const val DIAGNOSTICS_QUEUES = "settings/diagnostics/queues"
     const val DIAGNOSTICS_TRACKER = "settings/diagnostics/tracker"
     const val SETTINGS_GLASSES = "settings/glasses"
+    const val SETTINGS_PHONE_INPUTS = "settings/phone-inputs"
     const val SETTINGS_CAPTURE = "settings/capture"
     const val SETTINGS_ENDPOINT = "settings/endpoints/{id}"
     const val SETTINGS_ROLES = "settings/roles"
@@ -37,8 +38,8 @@ object Routes {
     fun prompt(id: String) = "settings/prompts/${enc(id)}"
     fun promptHistory(id: String) = "settings/prompts/${enc(id)}/history"
 
-    /** Settings rows that open a screen in this build; Phase 6/7 rows (phone inputs, privacy, sources, actions) stay "Coming soon". */
-    val LIVE_SETTINGS: Set<String> = setOf(SETTINGS_GLASSES, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL, SETTINGS_PERSONA, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS)
+    /** Settings rows that open a screen in this build; Phase 7 rows (privacy, sources, actions) stay "Coming soon". */
+    val LIVE_SETTINGS: Set<String> = setOf(SETTINGS_GLASSES, SETTINGS_PHONE_INPUTS, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL, SETTINGS_PERSONA, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS)
 
     enum class Tab(val route: String, val label: String) { HOME("home", "Home"), ACTIVITY("activity", "Activity"), SETTINGS("settings", "Settings") }
 

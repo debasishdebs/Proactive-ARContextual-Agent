@@ -45,7 +45,8 @@ class EncryptionMigrator(
         var inPlace = false
         return try {
             discardTmp()
-            converter.convert(dbFile, tmp, target, key())
+            val k = key()
+            try { converter.convert(dbFile, tmp, target, k) } finally { k.fill(0) } // P8 D4: our copy, zeroed once used
             store.stage = target
             swap(target) { inPlace = true }
             store.failed = false

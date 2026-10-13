@@ -117,4 +117,40 @@ class WireSchemaCompilerTest {
         val w = compile("""{"type":"object","properties":{"k":{"type":["string","null"],"enum":["a","b"]}}}""").getOrThrow()
         assertEquals(j("""{"type":["string","null"],"enum":["a","b",null]}"""), w["properties"]!!.jsonObject["k"])
     }
+
+    /** Phase 5 T4 carries. */
+    @Test fun grammarBackendsKeepAMapsValueSchemaStrictOnesCannot() {
+        val map = """{"type":"object","properties":{"counts":{"type":"object","additionalProperties":{"type":"integer"}}},"required":["counts"]}"""
+        val ollama = compile(map, EndpointKind.OLLAMA).getOrThrow()["properties"]!!.jsonObject["counts"]!!.jsonObject
+        assertEquals(j("""{"type":"integer"}"""), ollama["additionalProperties"])
+        val azure = compile(map).getOrThrow()["properties"]!!.jsonObject["counts"]!!.jsonObject
+        assertEquals("false", azure["additionalProperties"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun anInlinedRefKeepsTheDescriptionBesideIt() {
+        val s = """{"type":"object","properties":{"when":{"${'$'}ref":"#/${'$'}defs/T","description":"When to remind"}},"required":["when"],"${'$'}defs":{"T":{"type":"string","maxLength":20}}}"""
+        val w = compile(s, EndpointKind.OLLAMA).getOrThrow()["properties"]!!.jsonObject["when"]!!.jsonObject
+        assertEquals("When to remind (at most 20 characters)", w["description"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun azureMovesDefinitionsIntoDefsAndRefusesADoubleName() {
+        val s = """{"type":"object","properties":{"x":{"${'$'}ref":"#/definitions/X"}},"required":["x"],"definitions":{"X":{"type":"string"}}}"""
+        val w = compile(s).getOrThrow()
+        assertEquals("#/\$defs/X", w["properties"]!!.jsonObject["x"]!!.jsonObject["\$ref"]!!.jsonPrimitive.content)
+        assertEquals(j("""{"type":"string"}"""), w["\$defs"]!!.jsonObject["X"])
+        val both = """{"type":"object","properties":{"x":{"${'$'}ref":"#/definitions/X"}},"required":["x"],"definitions":{"X":{"type":"string"}},"${'$'}defs":{"X":{"type":"number"}}}"""
+        assertEquals("'X' is defined in both \$defs and definitions", compile(both).exceptionOrNull()!!.message)
+    }
+
+    @Test fun propertyNameRulesAreDescribedInWords() {
+        val s = """{"type":"object","properties":{"tags":{"type":"object","patternProperties":{"^t_":{"type":"string"}},"propertyNames":{"maxLength":8}}},"required":["tags"]}"""
+        val d = compile(s).getOrThrow()["properties"]!!.jsonObject["tags"]!!.jsonObject["description"]!!.jsonPrimitive.content
+        assertTrue(d, d.contains("other property names match ^t_") && d.contains("property names are restricted"))
+    }
+
+    /** T14 fix round 1: an unreferenced self-recursive `definitions` entry is refused (Azure would send it). */
+    @Test fun anUnreferencedRecursiveDefinitionsEntryIsRefused() {
+        val s = """{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"definitions":{"N":{"type":"object","properties":{"n":{"${'$'}ref":"#/definitions/N"}}}}}"""
+        EndpointKind.entries.forEach { assertEquals("$it", "Recursive \$ref isn't supported", compile(s, it).exceptionOrNull()?.message) }
+    }
 }

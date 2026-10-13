@@ -53,4 +53,13 @@ class SettingsRootTest {
         compose.onNodeWithText("Diagnostics").performClick()
         assertEquals(listOf(Routes.SETTINGS_GLASSES, Routes.SETTINGS_DIAGNOSTICS), opened)
     }
+
+    @Test fun phoneCameraAndMicOpens() {
+        val opened = mutableListOf<String>()
+        compose.setContent { PcTheme { SettingsRootScreen(SettingsRootUiState("Linked", "Every 5 min", "Voice · Supported"), live = Routes.LIVE_SETTINGS, onOpen = { opened += it }) } }
+        compose.onNodeWithTag("settings_list").performScrollToNode(hasText("Phone camera & mic"))
+        compose.onNodeWithText("Voice · Supported").assertIsDisplayed()
+        compose.onNodeWithText("Phone camera & mic").performClick()
+        assertEquals(listOf(Routes.SETTINGS_PHONE_INPUTS), opened)
+    }
 }

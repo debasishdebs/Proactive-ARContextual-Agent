@@ -72,8 +72,8 @@ class PipelineRecordsTest {
 
     @Test fun ensureLegacyImportedRunsImportOnlyOnce() = runBlocking {
         File(ctx.filesDir, "memory_records.log").writeText("rokid_mem_9\tshort_term\t0.8\t5\tOnce only\n")
-        assertEquals(1, MemoryGraph.ensureLegacyImported(ctx)?.memories)
-        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx))
+        assertEquals(1, MemoryGraph.ensureLegacyImported(ctx, isMain = { false })?.memories) // P8 D5: the test thread is Main
+        assertEquals(null, MemoryGraph.ensureLegacyImported(ctx, isMain = { false }))
         assertEquals(1, PipelineRecords.recentMemories(ctx, 10).size)
     }
 

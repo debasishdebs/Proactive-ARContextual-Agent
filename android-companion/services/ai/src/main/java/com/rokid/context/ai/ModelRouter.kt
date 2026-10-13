@@ -54,33 +54,42 @@ class ModelRouter(
     /** Test bed: exactly this endpoint and model, no binding params and no fallback. */
     suspend fun completeOn(endpointId: String, model: String, build: (Endpoint) -> ModelRequest): RoutedReply {
         val e = endpoints.byId(endpointId) ?: throw ModelCallException("That endpoint was deleted", retryable = false, kind = FailureKind.NOT_SET)
+        // P8 D3: the key is read once, before the call; the failure path never reads it again, so a Keystore failure
+        // there can't replace the provider's error.
+        var key: String? = null
         return try {
-            call(e, model, null, build)
+            key = endpoints.keyFor(e)
+            call(e, model, null, build, key)
         } catch (c: CancellationException) {
             throw c
         } catch (m: ModelCallException) {
             throw m
         } catch (t: Throwable) {
-            throw ModelCallException("Test call failed: ${safe(t, endpoints.keyFor(e))}", !ProviderErrors.isPermanent(t), t, ProviderErrors.kindOf(t))
+            throw ModelCallException("Test call failed: ${safe(t, key)}", !ProviderErrors.isPermanent(t), t, ProviderErrors.kindOf(t))
         }
     }
 
     private suspend fun route(b: RoleBinding, build: (Endpoint) -> ModelRequest, skipPrimary: Boolean): RoutedReply {
         val primaryEndpoint = if (skipPrimary) null else
             endpoints.byId(b.endpointId) ?: throw ModelCallException("Endpoint for ${b.role.name} was deleted", retryable = true, kind = FailureKind.NOT_SET)
+        // P8 D3: each key is read once, before its call; a failure path never reads it again (see completeOn).
+        var primaryKey: String? = null
         val first: Throwable? = primaryEndpoint?.let { primary ->
-            try { return call(primary, b.model, b, build) } catch (c: CancellationException) { throw c } catch (t: Throwable) { t }
+            try {
+                primaryKey = endpoints.keyFor(primary)
+                return call(primary, b.model, b, build, primaryKey)
+            } catch (c: CancellationException) { throw c } catch (t: Throwable) { t }
         }
-        val primaryKey = primaryEndpoint?.let { endpoints.keyFor(it) }
         val fallback = b.fallbackEndpointId?.let { endpoints.byId(it) }
             ?: throw ModelCallException(
                 "Primary provider failed: ${safe(first, primaryKey)}",
                 retryable = first == null || !ProviderErrors.isPermanent(first), first,
                 kind = first?.let(ProviderErrors::kindOf) ?: FailureKind.NOT_SET,
             )
-        val fallbackKey = endpoints.keyFor(fallback)
+        var fallbackKey: String? = null
         return try {
-            call(fallback, b.fallbackModel ?: b.model, b, build)
+            fallbackKey = endpoints.keyFor(fallback)
+            call(fallback, b.fallbackModel ?: b.model, b, build, fallbackKey)
         } catch (c: CancellationException) {
             throw c
         } catch (t: Throwable) {
@@ -103,8 +112,7 @@ class ModelRouter(
         if (problem != null) throw ModelCallException(problem, retryable = false, kind = FailureKind.NOT_SET)
     }
 
-    private suspend fun call(e: Endpoint, model: String, b: RoleBinding?, build: (Endpoint) -> ModelRequest): RoutedReply {
-        val key = endpoints.keyFor(e)
+    private suspend fun call(e: Endpoint, model: String, b: RoleBinding?, build: (Endpoint) -> ModelRequest, key: String?): RoutedReply {
         requireConfigured(e, model, key)
         val p = providers.create(e, model, key)
         val request = build(e).let { r -> r.copy(temperature = r.temperature ?: b?.temperature, maxTokens = r.maxTokens ?: b?.maxTokens) }
@@ -128,7 +136,7 @@ class ModelRouter(
          * Failure text for exception messages. Only our own fixed texts are kept ([ModelCallException], whose message is
          * built here from these parts, and [ProviderConfigException]); a provider throwable becomes class, kind and HTTP
          * code ([SafeLog.describe]), so no provider body (echoed request text, memory, keys) ever enters a message.
-         * Known [keys] are still masked, then the text is truncated.
+         * Known [keys] are still masked, each also in its URL-encoded and Base64 forms (P8 D3), then the text is truncated.
          */
         fun safe(t: Throwable?, vararg keys: String?): String {
             var m = when (t) {
@@ -136,8 +144,16 @@ class ModelRouter(
                 is ModelCallException, is ProviderConfigException -> t.message.orEmpty()
                 else -> SafeLog.describe(t)
             }
-            keys.filterNotNull().map { it.trim() }.filter { it.isNotEmpty() }.forEach { m = m.replace(it, "***") }
+            keys.filterNotNull().map { it.trim() }.filter { it.isNotEmpty() }.flatMap(::maskForms).distinct()
+                .sortedByDescending { it.length }.forEach { m = m.replace(it, "***") }
             return if (m.length <= MAX_PROVIDER_TEXT) m else m.take(MAX_PROVIDER_TEXT) + "…"
         }
+
+        /** The key, its URL-encoded form and its Base64 form (padded or not, e.g. inside a Basic-auth header). */
+        private fun maskForms(key: String): List<String> = listOf(
+            key,
+            java.net.URLEncoder.encode(key, "UTF-8"),
+            java.util.Base64.getEncoder().encodeToString(key.toByteArray(Charsets.UTF_8)).trimEnd('='),
+        ).filter { it.isNotEmpty() }
     }
 }

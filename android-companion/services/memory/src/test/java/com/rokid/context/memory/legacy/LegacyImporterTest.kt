@@ -89,4 +89,43 @@ class LegacyImporterTest {
         assertEquals(MemoryTier.MEDIUM, LegacyImporter.legacyTier("medium_term"))
         assertEquals(MemoryTier.SHORT, LegacyImporter.legacyTier("anything_else"))
     }
+
+    // ---- Phase 8 D5 ----
+
+    @Test fun aNonNumericConfidenceImportsWithZero() = runTest {
+        val before = LegacyImporter(ctx, graph).importAll().skipped
+        LegacyImportTestFiles.clear(ctx)
+        File(ctx.filesDir, "memory_records.log").writeText("rokid_mem_9\tshort_term\tabc\t105\tUmbrella by the door\nrokid_mem_10\tshort_term\t\t106\tBlank confidence\n")
+        val report = LegacyImporter(ctx, graph).importAll()
+        assertEquals(0.0, graph.memories.all().single { it.id == "rokid_mem_9" }.confidence, 0.0)
+        assertEquals(0.0, graph.memories.all().single { it.id == "rokid_mem_10" }.confidence, 0.0)
+        assertEquals(2, report.memories); assertEquals(0, report.skipped)
+        assertTrue(before >= 3)
+    }
+
+    @Test fun aLargeLogImportsInBatches() = runTest {
+        LegacyImportTestFiles.clear(ctx)
+        File(ctx.filesDir, "memory_records.log").printWriter().use { w ->
+            repeat(2600) { w.println("rokid_mem_$it\tshort_term\t0.5\t${1000 + it}\tNote number $it") }
+        }
+        var transactions = 0
+        val importer = LegacyImporter(ctx, graph) { block -> transactions++; block() }
+        val report = importer.importAll()
+        assertEquals(6, transactions)
+        assertEquals(2600, report.memories)
+        assertEquals(2600, graph.memories.all().size)
+    }
+
+    @Test fun aParentFolderNamedSyntheticDoesNotHideRealPhotos() = runTest {
+        LegacyImportTestFiles.clear(ctx)
+        val photo = File(ctx.filesDir, "synthetic-tests/rokid_1.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        val shot = File(ctx.filesDir, "synthetic-tests/screenshot_2.jpg").apply { writeBytes(byteArrayOf(1)) }
+        File(ctx.filesDir, "captured_frames.log").writeText("f7\t210\trokid_glasses\tx\t${photo.absolutePath}\nf8\t211\trokid_glasses\tx\t${shot.absolutePath}\n")
+        LegacyImporter(ctx, graph).importAll()
+        assertEquals(listOf("f7"), graph.frames.all().map { it.id })
+    }
+}
+
+internal object LegacyImportTestFiles {
+    fun clear(ctx: Context) = LegacyImporter.LEGACY_FILES.forEach { File(ctx.filesDir, it).delete() }
 }

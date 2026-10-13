@@ -151,4 +151,9 @@ class EmbeddingWorkerTest {
         assertTrue(!PrefsIndexClock(ctx).observeUnstable().first())
         assertTrue("queued, not lost", PrefsIndexClock(ctx).rebuildPending())
     }
+
+    @Test fun aRebuildRequestRecordsItsOwnIdAsThePendingToken() {
+        EmbeddingWorker.enqueue(ctx, rebuild = true)
+        assertEquals(queued().single().id.toString(), PrefsIndexClock(ctx).pendingRebuildToken())
+    }
 }
