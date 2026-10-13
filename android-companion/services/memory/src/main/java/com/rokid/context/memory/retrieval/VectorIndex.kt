@@ -15,7 +15,8 @@ interface VectorIndex {
 
 /**
  * Streams the space in rowid keyset pages of [pageSize] rows (an index range seek per page, no sort) into a bounded
- * [TopHits] heap, so peak memory is O(page + k) whatever the space size. Only live OK memories are scored
+ * [TopHits] heap, decoding each blob into one reused buffer, so peak memory is O(page + k) whatever the space size.
+ * Only live OK memories are scored
  * ([EmbeddingDao.livePage]). The result equals a full sort by score descending, then id ascending. Runs on
  * [Dispatchers.Default], never on Main.
  */
@@ -25,13 +26,13 @@ class BruteForceVectorIndex(private val dao: EmbeddingDao, private val pageSize:
         val page = pageSize.coerceAtLeast(1)
         return withContext(Dispatchers.Default) {
             val top = TopHits(limit)
+            val v = FloatArray(query.size) // reused for every row: no per-vector allocation
             var after = 0L
             while (true) {
                 val rows = dao.livePage(spaceId, after, minConfidence, page)
                 for (r in rows) {
                     // A corrupt blob or a vector of another dimension is skipped, never scored.
-                    val v = runCatching { VectorCodec.decode(r.blob) }.getOrNull()
-                    if (v == null || v.size != query.size) continue
+                    if (!VectorCodec.decodeInto(r.blob, v)) continue
                     top.offer(Hit(r.memoryId, VectorMath.cosine(query, v)))
                 }
                 if (rows.size < page) break
