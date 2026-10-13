@@ -68,6 +68,10 @@ class SettingsDeps(
     val openAppSettings: () -> Unit = {},
     /** Settings › Privacy (Phase 7 Stream A): the shared capture pause control. */
     val pauses: com.rokid.context.phone.ui.status.PipelineControl = com.rokid.context.phone.ui.status.PipelineControl.None,
+    /** Settings › Data sources (Phase 7 C2). */
+    val sources: com.rokid.context.phone.ui.settings.connectors.SourcesControl = com.rokid.context.phone.ui.settings.connectors.SourcesControl.None,
+    /** Settings › Phone camera & mic "Capture now" (Phase 7 C2). */
+    val capture: com.rokid.context.phone.capture.CaptureNowControl = com.rokid.context.phone.capture.CaptureNowControl.None,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -84,7 +88,10 @@ class SettingsDeps(
             hud = HubHudSettings(HubGraph.get(app)),
             reauthorize = { AuthActivity.launch(app).onFailure { Log.i("Settings", "re-authorize failed (${it.javaClass.simpleName})") } },
             onEmbedBindingChanged = { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app) },
-            lazyTestInputs = lazy { TestBedInputs(MemoryGraph.get(app), AnswerService.forApp(app)) },
+            lazyTestInputs = lazy {
+                val mem = MemoryGraph.get(app)
+                TestBedInputs(mem, AnswerService.forApp(app), com.rokid.context.orchestration.nudge.NudgeInputs(mem, com.rokid.context.connectors.sources.SourcesGraph.get(app).provider))
+            },
             lazyRetrieval = lazy { RetrievalSettingsStore.get(app) },
             lazySpaces = lazy { MemoryGraph.get(app).spaces },
             rebuildIndex = { scope.launch(Dispatchers.IO) { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app, rebuild = true) } },
@@ -109,6 +116,22 @@ class SettingsDeps(
                 runCatching { app.startActivity(intent) }.onFailure { Log.i("Settings", "app settings unavailable (${it.javaClass.simpleName})") }
             },
             pauses = com.rokid.context.phone.ui.status.CapturePauses.control(app),
+            sources = AppSources(app),
+            capture = com.rokid.context.phone.capture.PhoneCaptureControl(
+                app, com.rokid.context.phone.capture.PhoneCaptureControl.storedPauses({ MemoryGraph.get(app).db.pauseDao() }) { HubGraph.get(app).hudSettings.value.quietHours },
+            ),
         )
+    }
+}
+
+/** Settings › Data sources over the process-wide sources graph; the store is first read off Main by the ViewModel. */
+private class AppSources(private val app: Context) : com.rokid.context.phone.ui.settings.connectors.SourcesControl {
+    private val graph get() = com.rokid.context.connectors.sources.SourcesGraph.get(app)
+    override val enabled get() = graph.settings.enabled
+    override val nudgesPerDay get() = graph.settings.nudgesPerDay
+    override fun set(k: com.rokid.context.connectors.sources.SourceKind, on: Boolean) = graph.settings.set(k, on)
+    override fun setNudgesPerDay(n: Int) = graph.settings.setNudgesPerDay(n)
+    override fun granted(k: com.rokid.context.connectors.sources.SourceKind) = com.rokid.context.connectors.sources.SourcePermissions.of(k).all {
+        androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }
 }
