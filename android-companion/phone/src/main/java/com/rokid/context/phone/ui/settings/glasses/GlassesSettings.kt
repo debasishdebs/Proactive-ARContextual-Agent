@@ -46,22 +46,29 @@ import com.rokid.context.phone.ui.settings.SecondaryAction
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsModel
 import com.rokid.context.phone.ui.settings.SettingsPage
+import com.rokid.context.voice.VoiceCapabilities
+import com.rokid.context.voice.VoiceStatus
+import com.rokid.context.voice.VoiceStatusText
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import java.util.Locale
 
-data class GlassesSettingsUiState(val linkSummary: String = "Not connected", val settings: HudSettings = HudSettings())
+data class GlassesSettingsUiState(val linkSummary: String = "Not connected", val settings: HudSettings = HudSettings(), val askUnavailable: String? = null)
 
 /** spec §2.4 Devices › Rokid Glasses; every change goes to the hub, which persists and pushes `pc_settings`. */
 class GlassesSettingsViewModel(
     glasses: GlassesStatusSource,
     private val hud: HudSettingsControl,
+    voice: Flow<VoiceCapabilities> = flowOf(GlassesLabels.VOICE_AVAILABLE),
     private val reauthorizeAction: () -> Unit,
 ) : ViewModel() {
-    val state: StateFlow<GlassesSettingsUiState> = combine(glasses.status, hud.settings) { g, h -> GlassesSettingsUiState(SettingsModel.glassesSummary(g), h) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GlassesSettingsUiState(settings = hud.settings.value))
+    val state: StateFlow<GlassesSettingsUiState> = combine(glasses.status, hud.settings, voice) { g, h, v ->
+        GlassesSettingsUiState(SettingsModel.glassesSummary(g), h, GlassesLabels.askUnavailable(v))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GlassesSettingsUiState(settings = hud.settings.value))
 
     fun setVerbosity(v: Verbosity) = hud.update { it.copy(verbosity = v) }
     fun setScale(s: Float) = hud.update { it.copy(scale = clampHudScale(s)) }
@@ -79,6 +86,10 @@ object GlassesLabels {
         GestureAction.ASK to "Ask", GestureAction.PAUSE_RESUME to "Pause / resume", GestureAction.NEXT_PAGE to "Next page",
         GestureAction.PREV_PAGE to "Previous page", GestureAction.DISMISS to "Dismiss", GestureAction.NONE to "Nothing",
     )
+    val VOICE_AVAILABLE = VoiceCapabilities(VoiceStatus.SUPPORTED, VoiceStatus.SUPPORTED, canDownloadPack = true)
+
+    /** Why tap = Ask can't work from the glasses, in phone words (the HUD gets its own short text), or null. */
+    fun askUnavailable(c: VoiceCapabilities): String? = c.glasses.takeUnless { it == VoiceStatus.SUPPORTED }?.let(VoiceStatusText::glasses)
 }
 
 @Composable
@@ -128,10 +139,12 @@ fun GlassesSettingsScreen(
             SettingsCard {
                 Text("Gestures", style = MaterialTheme.typography.titleMedium)
                 val actions = GestureAction.entries
+                val disabled = if (state.askUnavailable != null) setOf(actions.indexOf(GestureAction.ASK)) else emptySet()
                 GlassesLabels.GESTURES.forEach { (g, label) ->
                     val current = s.gestures[g] ?: GestureAction.NONE
-                    ChoiceRow(label, actions.map { GlassesLabels.ACTIONS.getValue(it) }, actions.indexOf(current), { onGesture(g, actions[it]) }, tag = "gesture_${g.name}")
+                    ChoiceRow(label, actions.map { GlassesLabels.ACTIONS.getValue(it) }, actions.indexOf(current), { onGesture(g, actions[it]) }, tag = "gesture_${g.name}", disabled = disabled)
                 }
+                state.askUnavailable?.let { NoticeText("Ask by voice from the glasses: $it — see Phone camera & mic", tag = "ask_unavailable") }
                 NoticeText("Long-press stays reserved for \"Hi Rokid\".")
             }
         }
