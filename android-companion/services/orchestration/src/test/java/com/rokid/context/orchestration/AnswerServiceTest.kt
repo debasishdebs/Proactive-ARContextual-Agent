@@ -52,4 +52,26 @@ class AnswerServiceTest {
         assertEquals(listOf(ProposalOrigin.ASK to r.askId), calls)
         assertEquals("p-fake", r.proposalId)
     }
+
+    @Test fun failingIntakeStillAnswersAndCancellationPropagates() = runBlocking {
+        val mem = MemoryGraph.get(ctx)
+        mem.memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, 10, "Milk carton nearly empty"))
+        val boom = AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() }, proposals = ProposalIntake { _, _, _, _ -> error("db") })
+        val r = boom.answerOrThrow("add milk", "phone_typed", nowMs = 99)
+        assertEquals(null, r.proposalId)
+        assertNotNull(mem.asks.byId(r.askId))
+        val cancel = AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() },
+            proposals = ProposalIntake { _, _, _, _ -> throw kotlinx.coroutines.CancellationException("left") })
+        val thrown = runCatching { cancel.answerOrThrow("add milk", "phone_typed", nowMs = 100) }.exceptionOrNull()
+        org.junit.Assert.assertTrue("$thrown", thrown is kotlinx.coroutines.CancellationException)
+    }
+
+    @Test fun sourceLinesGetTheAsksNow() = runBlocking {
+        val mem = MemoryGraph.get(ctx)
+        mem.memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, 10, "Milk carton nearly empty"))
+        val seen = mutableListOf<Long>()
+        val sources = AnswerService.sourcesFrom(com.rokid.context.connectors.ContextSourceProvider { _, now -> seen += now; emptyList() })
+        AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() }, sources = sources).answerOrThrow("add milk", "phone_typed", nowMs = 1_234)
+        assertEquals(listOf(1_234L), seen)
+    }
 }
