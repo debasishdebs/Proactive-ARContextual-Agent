@@ -3,7 +3,12 @@ package com.rokid.context.phone.ui.shell
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.app.ActivityCompat
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -65,10 +70,16 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     composable(Routes.SETTINGS_PHONE_INPUTS) {
         val vm = viewModel { PhoneInputsViewModel(s.voice) }
         val state by vm.state.collectAsStateWithLifecycle()
-        val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { vm.onMicResult() }
+        val activity = LocalContext.current.findActivity()
+        val mic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            // After a denial, no rationale means "don't ask again" (or a dialog the system no longer shows).
+            val canAskAgain = activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.RECORD_AUDIO) } ?: true
+            vm.onMicResult(granted, canAskAgain)
+        }
         PhoneInputsScreen(
             state, onBack = back, onAllowMic = { mic.launch(Manifest.permission.RECORD_AUDIO) }, onDownload = vm::download,
             onOpenSettings = vm::openSettings, onRecheck = vm::recheck, onLanguage = vm::setLanguage, onPhoneMic = vm::setPhoneMic,
+            onOpenAppSettings = s.openAppSettings, onResume = vm::onResume,
         )
     }
 
@@ -176,4 +187,10 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val state by vm.state.collectAsStateWithLifecycle()
         PersonaScreen(state, onBack = back, onText = vm::onText, onLanguage = vm::onLanguage, onSave = vm::save)
     }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

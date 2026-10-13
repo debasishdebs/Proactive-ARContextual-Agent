@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -76,7 +77,7 @@ fun SwitchRow(title: String, subtitle: String?, checked: Boolean, onChange: (Boo
 
 /** A labelled single choice (announced "<title>: <value>"); the menu items are tagged "<tag>_<index>". */
 @Composable
-fun ChoiceRow(title: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit, tag: String, enabled: Boolean = true, disabled: Set<Int> = emptySet()) {
+fun ChoiceRow(title: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit, tag: String, enabled: Boolean = true, disabled: Set<Int> = emptySet(), disabledReason: String? = null) {
     var open by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
@@ -85,7 +86,10 @@ fun ChoiceRow(title: String, options: List<String>, selected: Int, onSelect: (In
             TextButton(onClick = { open = true }, enabled = enabled, modifier = Modifier.testTag(tag).semantics { contentDescription = "$title: $value" }) { Text(value) }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
                 options.forEachIndexed { i, o ->
-                    DropdownMenuItem(text = { Text(o) }, onClick = { open = false; onSelect(i) }, enabled = i !in disabled, modifier = Modifier.testTag("${tag}_$i"))
+                    val off = i in disabled
+                    // A greyed-out option says why to TalkBack, not just in a notice below the menu.
+                    val why = if (off && disabledReason != null) Modifier.semantics { contentDescription = "$o \u2014 $disabledReason"; stateDescription = "Unavailable" } else Modifier
+                    DropdownMenuItem(text = { Text(o) }, onClick = { open = false; onSelect(i) }, enabled = !off, modifier = Modifier.testTag("${tag}_$i").then(why))
                 }
             }
         }
