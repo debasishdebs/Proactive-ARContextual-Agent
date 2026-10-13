@@ -77,7 +77,7 @@ class PhoneVoiceRulesTest {
     @Test fun aResumeRefreshesTheForegroundTypesOnce() {
         val hook = File(phone, "src/main/java/com/rokid/context/phone/hub/HubActivityHook.kt").readText()
         val graph = File(phone, "src/main/java/com/rokid/context/phone/voice/VoiceGraph.kt").readText()
-        assertTrue("the hook hands the resume to voice", "VoiceGraph.get(it).onForeground()" in hook)
+        assertTrue("the hook hands the resume to voice", "VoiceGraph.get(activity).onForeground(resume)" in hook)
         assertEquals(0, Regex("refreshForegroundTypes\\(").findAll(hook).count())
         assertEquals(1, Regex("ContextHubService\\.refreshForegroundTypes\\(").findAll(graph).count())
     }

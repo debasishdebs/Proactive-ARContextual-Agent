@@ -30,7 +30,9 @@ class VoiceCapabilityServiceTest {
     private val records = InMemoryProbeRecords()
     private var language = SpeechLanguage.ENGLISH
 
-    private fun TestScope.service() = VoiceCapabilityService(platform, records, { language }, backgroundScope, StandardTestDispatcher(testScheduler))
+    private val micHeld = kotlinx.coroutines.flow.MutableStateFlow(true)
+
+    private fun TestScope.service() = VoiceCapabilityService(platform, records, { language }, backgroundScope, micHeld, StandardTestDispatcher(testScheduler))
 
     @Test fun withoutAProbeGlassesVoiceIsNotVerifiedAndThePhoneIsReady() = runTest {
         val s = service()
@@ -162,5 +164,44 @@ class VoiceCapabilityServiceTest {
             assertEquals(VoiceStatus.NOT_VERIFIED, s.capabilities.value.glasses)
             assertNull(records.read())
         }
+    }
+
+    /**
+     * Fix round 2: the hub's FGS holds no microphone type (a sticky background start): glasses asks are blocked with
+     * the "open the app" reason, and the gate clears as soon as the mic is held, without a new evaluation.
+     */
+    @Test fun withoutTheMicHeldGlassesAsksAreBlockedUntilTheAppIsOpened() = runTest {
+        micHeld.value = false
+        val s = service()
+        s.refresh(allowProbe = true).join()
+        testScheduler.runCurrent()
+        assertEquals(VoiceStatus.SUPPORTED, s.capabilities.value.glasses)
+        assertEquals(VoiceStatusText.MIC_NOT_HELD_HUD, s.capabilities.value.askBlockedReason)
+        assertEquals("Open Proactive Context on phone to use voice", VoiceStatusText.MIC_NOT_HELD_HUD)
+        micHeld.value = true
+        testScheduler.runCurrent()
+        assertNull(s.capabilities.value.askBlockedReason)
+    }
+
+    /** A more specific reason (pack, permission, unsupported) still wins over the mic one. */
+    @Test fun aSpecificReasonOutranksTheMicNotHeldReason() = runTest {
+        micHeld.value = false
+        platform.outcome = ProbeOutcome(166_142, 65_536, TestPipes.CAPACITY)
+        val s = service()
+        s.refresh(allowProbe = true).join()
+        testScheduler.runCurrent()
+        assertEquals("Voice not supported on this phone", s.capabilities.value.askBlockedReason)
+    }
+
+    /** Fix round 2: a recognizer without mic access never produces a stored verdict: the guard is skipped. */
+    @Test fun theGuardWritesNothingWhileTheMicIsNotHeld() = runTest {
+        val s = service()
+        s.refresh(allowProbe = true).join()
+        val before = records.read()
+        micHeld.value = false
+        testScheduler.runCurrent()
+        s.onFallbackSuspected().join()
+        assertEquals(before, records.read())
+        assertEquals(VoiceStatus.SUPPORTED, s.capabilities.value.glasses)
     }
 }

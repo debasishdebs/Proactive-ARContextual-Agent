@@ -53,7 +53,7 @@ class VoiceControlsTest {
     private fun TestScope.child() = CoroutineScope(coroutineContext + SupervisorJob(coroutineContext.job))
     private fun TestScope.store(scope: CoroutineScope, work: CoroutineDispatcher = StandardTestDispatcher(testScheduler)) = VoiceSettingsStore({ prefs }, scope, work)
     private fun TestScope.caps(scope: CoroutineScope, store: VoiceSettingsStore) =
-        VoiceCapabilityService(platform, InMemoryProbeRecords(), { store.settings.value.language }, scope, StandardTestDispatcher(testScheduler))
+        VoiceCapabilityService(platform, InMemoryProbeRecords(), { store.settings.value.language }, scope, kotlinx.coroutines.flow.MutableStateFlow(true), StandardTestDispatcher(testScheduler))
 
     /** Runs queued work only when told: a prefs load that lands whenever the test chooses. */
     private class ManualExecutor : Executor {

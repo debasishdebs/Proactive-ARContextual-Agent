@@ -7,6 +7,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -23,6 +24,12 @@ class VoiceCapabilityService(
     private val records: ProbeRecords,
     private val language: () -> SpeechLanguage,
     private val scope: CoroutineScope,
+    /**
+     * Whether the app may use the mic for glasses audio now (the hub's FGS type, fix round 2). While false, glasses
+     * asks are blocked ([VoiceCapabilities.micHeld]) and the guard records nothing: a recognizer without mic access
+     * must never produce a stored verdict.
+     */
+    private val micHeld: StateFlow<Boolean>,
     private val work: CoroutineDispatcher = Dispatchers.Default,
     private val log: (String) -> Unit = {},
 ) {
@@ -30,10 +37,15 @@ class VoiceCapabilityService(
     val capabilities: StateFlow<VoiceCapabilities> = _caps.asStateFlow()
     private val mutex = Mutex()
 
+    init { scope.launch { micHeld.collect { held -> _caps.update { it.copy(micHeld = held) } } } }
+
+    private fun publish(c: VoiceCapabilities) { _caps.value = c.copy(micHeld = micHeld.value) }
+
     fun refresh(allowProbe: Boolean = false): Job = scope.launch(work) { mutex.withLock { evaluate(allowProbe) } }
 
     /** The guard fired: glasses voice is off now (fail closed); the next foreground refresh probes again. */
     fun onFallbackSuspected(): Job = scope.launch(work) {
+        if (!micHeld.value) { log("guard skipped: mic not held"); return@launch }
         mutex.withLock {
             records.write(ProbeRecord(fingerprint(), ProbeVerdict.UNSUPPORTED, fromGuard = true))
             log("guard fired: glasses voice off until the next probe")
@@ -60,11 +72,11 @@ class VoiceCapabilityService(
         fun inputs(probe: ProbeVerdict?, probing: Boolean) =
             VoiceInputs(platform.sdk, platform.onDeviceAvailable(), platform.micGranted(), packInstalled, probe, probing)
         val caps = VoiceGate.decide(inputs(record?.verdict, probing = false))
-        _caps.value = caps
+        publish(caps)
         val wantsProbe = allowProbe && platform.sdk >= VoiceGate.GLASSES_MIN_SDK && caps.phone == VoiceStatus.SUPPORTED &&
             (record == null || record.fromGuard)
         if (!wantsProbe) return
-        _caps.value = VoiceGate.decide(inputs(record?.verdict, probing = true))
+        publish(VoiceGate.decide(inputs(record?.verdict, probing = true)))
         val outcome = try {
             platform.runProbe(tag)
         } catch (c: CancellationException) {
@@ -76,6 +88,6 @@ class VoiceCapabilityService(
         val verdict = outcome?.let(ExternalAudioProbe::verdict)
         if (outcome != null) log("probe fed=${outcome.fedBytes} accepted=${outcome.acceptedBytes} capacity=${outcome.capacityBytes} peerClosed=${outcome.peerClosed} verdict=$verdict")
         if (verdict != null) records.write(ProbeRecord(fp, verdict))
-        _caps.value = VoiceGate.decide(inputs(verdict ?: record?.verdict, probing = false))
+        publish(VoiceGate.decide(inputs(verdict ?: record?.verdict, probing = false)))
     }
 }

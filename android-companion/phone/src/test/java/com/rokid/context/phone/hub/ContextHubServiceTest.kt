@@ -91,4 +91,32 @@ class ContextHubServiceTest {
         assertTrue(ContextHubService.needsReentry(current = device or mic, wanted = device))
         assertTrue(ContextHubService.needsReentry(current = null, wanted = device))
     }
+
+    /** Fix round 2: the voice gate learns whether the FGS holds the microphone type. */
+    @Test fun micHeldOnlyWithTheMicrophoneType() {
+        assertFalse(ContextHubService.holdsMic(null))
+        assertFalse(ContextHubService.holdsMic(device))
+        assertTrue(ContextHubService.holdsMic(device or mic))
+    }
+
+    /** Fix round 2 ruling: after a refused mic type, the mic is retried at most once per resume. */
+    @Test fun aRefusedMicIsRetriedOncePerResume() {
+        val retry = MicRetry()
+        assertEquals(device or mic, retry.toTry(device or mic, resume = 1))
+        retry.entered(tried = device or mic, entered = device)
+        assertEquals("same resume (Settings recheck, language change)", device, retry.toTry(device or mic, resume = null))
+        assertEquals(device, retry.toTry(device or mic, resume = 1))
+        assertEquals("the next resume tries again", device or mic, retry.toTry(device or mic, resume = 2))
+        retry.entered(tried = device or mic, entered = device or mic)
+        assertEquals(device or mic, retry.toTry(device or mic, resume = null))
+        retry.entered(tried = device or mic, entered = null)
+        assertEquals(device, retry.toTry(device or mic, resume = 2))
+    }
+
+    /** Review minor: whether a start came from the front travels in its intent, so no static flag can leak. */
+    @Test fun aStartIsInFrontOnlyWhenItsIntentSaysSo() {
+        assertFalse("a sticky restart has no intent", ContextHubService.startedInFront(null))
+        assertFalse(ContextHubService.startedInFront(android.content.Intent()))
+        assertTrue(ContextHubService.startedInFront(android.content.Intent().putExtra(ContextHubService.EXTRA_IN_FRONT, true)))
+    }
 }

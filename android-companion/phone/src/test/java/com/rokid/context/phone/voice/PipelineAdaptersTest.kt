@@ -137,4 +137,45 @@ class PipelineAdaptersTest {
         caps.value = VoiceCapabilities(VoiceStatus.NEEDS_SPEECH_PACK, VoiceStatus.NEEDS_SPEECH_PACK, false); runCurrent()
         assertEquals("Download speech pack on phone", hub.askBlockedReason.value)
     }
+
+    /**
+     * Fix round 2: after a sticky (background) start the hub's FGS holds no mic: a glasses ask is blocked with the
+     * "open the app" reason and the guard stores nothing. After a resume re-enters with the mic, the ask works.
+     */
+    @Test fun withoutTheMicFgsAGlassesAskIsBlockedAndNothingIsRecorded() = runTest {
+        val device = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        val platform = object : com.rokid.context.voice.VoicePlatform {
+            override val sdk = 34
+            override fun onDeviceAvailable() = true
+            override fun micGranted() = true
+            override suspend fun installedPacks() = setOf("en-US")
+            override suspend fun runProbe(localeTag: String): com.rokid.context.voice.ProbeOutcome? = null
+            override fun fingerprint() = "build-1"
+        }
+        val records = com.rokid.context.voice.InMemoryProbeRecords()
+        records.write(com.rokid.context.voice.ProbeRecord("build-1|en-US", com.rokid.context.voice.ProbeVerdict.SUPPORTED))
+        val sticky = com.rokid.context.phone.hub.ContextHubService.foregroundTypes(sdk = 34, micGranted = true, inFront = false)
+        val micHeld = MutableStateFlow(com.rokid.context.phone.hub.ContextHubService.holdsMic(sticky))
+        val service = com.rokid.context.voice.VoiceCapabilityService(platform, records, { SpeechLanguage.ENGLISH }, backgroundScope, micHeld, kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+        service.refresh().join(); runCurrent()
+        val pipeline = VoicePipeline(backgroundScope, engine, service.capabilities, { SpeechLanguage.ENGLISH }, Answerer { _, _ -> AnswerResult.Failed("x", "y") }, speaker, { false })
+        val hub = PipelineHubVoice(pipeline, service.capabilities, backgroundScope)
+        runCurrent()
+        assertEquals(device, sticky)
+        assertEquals(com.rokid.context.voice.VoiceStatusText.MIC_NOT_HELD_HUD, hub.askBlockedReason.value)
+        hub.onListenStart(); runCurrent()
+        assertEquals(0, sessions)
+        assertEquals(com.rokid.context.core.model.Overlay.Toast(com.rokid.context.voice.VoiceStatusText.MIC_NOT_HELD_HUD), hub.overlay.value)
+        service.onFallbackSuspected().join()
+        assertEquals(com.rokid.context.voice.ProbeVerdict.SUPPORTED, records.read()!!.verdict)
+        assertFalse(records.read()!!.fromGuard)
+
+        micHeld.value = com.rokid.context.phone.hub.ContextHubService.holdsMic(
+            com.rokid.context.phone.hub.ContextHubService.foregroundTypes(sdk = 34, micGranted = true, inFront = true),
+        )
+        runCurrent()
+        assertEquals(null, hub.askBlockedReason.value)
+        hub.onListenStart(); runCurrent()
+        assertEquals(1, sessions)
+    }
 }
