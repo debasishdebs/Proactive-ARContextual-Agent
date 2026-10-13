@@ -5,10 +5,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -19,6 +25,7 @@ import com.rokid.context.ai.Capability
 import com.rokid.context.ai.Endpoint
 import com.rokid.context.ai.EndpointKind
 import com.rokid.context.ai.EndpointRules
+import com.rokid.context.ai.Role
 import com.rokid.context.phone.ui.settings.ChoiceRow
 import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.PrimaryAction
@@ -27,7 +34,6 @@ import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsPage
 import com.rokid.context.phone.ui.settings.TextFieldRow
 import com.rokid.context.phone.ui.shell.Routes
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,6 +55,8 @@ data class EndpointEditorUiState(
     /** Write-only buffer: what was typed this session; cleared once saved. The stored key is never read into state. */
     val keyInput: String = "",
     val keySaved: Boolean = false,
+    /** "Remove key" was chosen: the next save stores no key, whatever is typed and erased meanwhile (a non-blank key replaces it). */
+    val keyRemoved: Boolean = false,
     val testModel: String = "",
     val testResult: String = EndpointTestText.NOT_TESTED,
     val busy: Boolean = false,
@@ -58,26 +66,35 @@ data class EndpointEditorUiState(
 ) {
     val keyless: Boolean get() = kind in EndpointRules.KEYLESS
     val modelList: List<String> get() = models.split(Regex("[,\\s]+")).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+    /** Defence in depth: the typed key never reaches a log or crash report through this state. */
+    override fun toString(): String =
+        "EndpointEditorUiState(loading=$loading, notFound=$notFound, isNew=$isNew, name=$name, kind=$kind, baseUrl=$baseUrl, apiVersion=$apiVersion, " +
+            "models=$models, capabilities=$capabilities, keyInput=${if (keyInput.isEmpty()) "" else "<redacted>"}, keySaved=$keySaved, keyRemoved=$keyRemoved, " +
+            "testModel=$testModel, testResult=$testResult, busy=$busy, error=$error, notice=$notice, deleted=$deleted)"
 }
 
 /** spec §4.1 editor: Save validates through EndpointRules; Test saves pending edits first, then runs EndpointTester. */
 class EndpointEditorViewModel(
     private val id: String,
     private val ai: AiGraph,
+    /** Called when a save changes the space identity (kind, address, API version) of the endpoint EMBED uses (spec §4.6 reindex). */
+    private val onEmbedChanged: () -> Unit = {},
     newId: () -> String = { "ep_" + UUID.randomUUID().toString().replace("-", "").take(8) },
 ) : ViewModel() {
     private val endpointId = if (id == Routes.NEW_ENDPOINT) newId() else id
     private val _state = MutableStateFlow(EndpointEditorUiState())
     val state: StateFlow<EndpointEditorUiState> = _state.asStateFlow()
-    private var clearKey = false
     private var createdAt = System.currentTimeMillis()
-    private var job: Job? = null
+    /** The endpoint as last loaded or saved, to tell when a save changes the EMBED space identity. */
+    private var stored: Endpoint? = null
 
     init {
         viewModelScope.launch {
             if (id == Routes.NEW_ENDPOINT) { _state.update { it.copy(loading = false) }; return@launch }
             val e = ai.endpoints.byId(id) ?: run { _state.update { it.copy(loading = false, notFound = true) }; return@launch }
             createdAt = e.createdAt
+            stored = e
             _state.update {
                 it.copy(loading = false, isNew = false, name = e.name, kind = e.kind, baseUrl = e.baseUrl, apiVersion = e.apiVersion.orEmpty(),
                     models = e.models.joinToString(", "), capabilities = e.capabilities, keySaved = ai.endpoints.keyFor(e) != null, testModel = e.models.firstOrNull().orEmpty())
@@ -87,14 +104,16 @@ class EndpointEditorViewModel(
 
     private fun edit(f: (EndpointEditorUiState) -> EndpointEditorUiState) = _state.update { f(it).copy(error = null, notice = null) }
     fun onName(v: String) = edit { it.copy(name = v.take(80)) }
-    fun onKind(k: EndpointKind) = edit { it.copy(kind = k) }
-    fun onBaseUrl(v: String) = edit { it.copy(baseUrl = v.take(500)) }
-    fun onApiVersion(v: String) = edit { it.copy(apiVersion = v.take(40)) }
-    fun onModels(v: String) = edit { it.copy(models = v.take(500), testModel = it.testModel.ifEmpty { it.modelList.firstOrNull().orEmpty() }) }
-    fun onCapability(c: Capability, on: Boolean) = edit { it.copy(capabilities = if (on) it.capabilities + c else it.capabilities - c) }
-    fun onKey(v: String) { clearKey = false; edit { it.copy(keyInput = v.take(400)) } }
-    fun clearKey() { clearKey = true; edit { it.copy(keyInput = "", keySaved = false) } }
-    fun onTestModel(m: String) = edit { it.copy(testModel = m) }
+    /** An edit to what Test exercised: the old result no longer describes this endpoint. */
+    private fun retest(f: (EndpointEditorUiState) -> EndpointEditorUiState) = edit { f(it).copy(testResult = EndpointTestText.NOT_TESTED) }
+    fun onKind(k: EndpointKind) = retest { it.copy(kind = k) }
+    fun onBaseUrl(v: String) = retest { it.copy(baseUrl = v.take(500)) }
+    fun onApiVersion(v: String) = retest { it.copy(apiVersion = v.take(40)) }
+    fun onModels(v: String) = retest { it.copy(models = v.take(500), testModel = it.testModel.ifEmpty { it.modelList.firstOrNull().orEmpty() }) }
+    fun onCapability(c: Capability, on: Boolean) = retest { it.copy(capabilities = if (on) it.capabilities + c else it.capabilities - c) }
+    fun onKey(v: String) = edit { it.copy(keyInput = v.take(400)) }
+    fun clearKey() = edit { it.copy(keyInput = "", keySaved = false, keyRemoved = true) }
+    fun onTestModel(m: String) = retest { it.copy(testModel = m) }
 
     fun save() = run { persist()?.let { _state.update { it.copy(notice = "Saved") } } }
 
@@ -106,28 +125,36 @@ class EndpointEditorViewModel(
         _state.update { it.copy(testResult = EndpointTestText.of(ai.tester.test(endpointId, model))) }
     }
 
+    /** The screen confirms first; the in-use check and the delete run together under the bindings' write lock. */
     fun delete() = run {
-        val used = ai.bindings.usages(endpointId)
-        if (used.isNotEmpty()) { _state.update { it.copy(error = "Used by ${used.joinToString(", ") { r -> AiLabels.role(r) }} — choose another model there first") }; return@run }
-        ai.endpoints.delete(endpointId)
+        val used = ai.bindings.deleteEndpointIfUnused(endpointId)
+        if (used.isNotEmpty()) { _state.update { it.copy(error = inUse(used)) }; return@run }
         _state.update { it.copy(deleted = true) }
     }
+
+    private fun inUse(roles: List<Role>) = "Used by ${roles.joinToString(", ") { r -> AiLabels.role(r) }} — choose another model there first"
 
     /** Saves the form; returns the stored endpoint, or null with [EndpointEditorUiState.error] set. */
     private suspend fun persist(): Endpoint? {
         val s = _state.value
         val apiKey: String? = when {
             s.keyless -> ""
-            clearKey -> ""
-            s.keyInput.isNotEmpty() -> s.keyInput
+            s.keyInput.isNotBlank() -> s.keyInput // a blank field never replaces or removes the stored key
+            s.keyRemoved -> ""
             else -> null
         }
+        // A role bound here (primary or fallback) must keep the capability it needs (spec §4.2), as with delete.
+        val broken = ai.bindings.usages(endpointId).filter { it.requiredCapability !in s.capabilities }
+        if (broken.isNotEmpty()) { _state.update { it.copy(error = inUse(broken)) }; return null }
         val draft = Endpoint(endpointId, s.name, s.kind, s.baseUrl, s.apiVersion.ifBlank { null }, s.modelList, s.capabilities, createdAt)
         return ai.endpoints.save(draft, apiKey).fold(
             onSuccess = { saved ->
-                clearKey = false
                 val hasKey = ai.endpoints.keyFor(saved) != null
-                _state.update { it.copy(isNew = false, name = saved.name, baseUrl = saved.baseUrl, models = saved.models.joinToString(", "), apiVersion = saved.apiVersion.orEmpty(), keyInput = "", keySaved = hasKey) }
+                _state.update { it.copy(isNew = false, name = saved.name, baseUrl = saved.baseUrl, models = saved.models.joinToString(", "), apiVersion = saved.apiVersion.orEmpty(), keyInput = "", keySaved = hasKey, keyRemoved = false) }
+                val before = stored
+                stored = saved
+                val identityChanged = before != null && (before.kind != saved.kind || before.baseUrl != saved.baseUrl || before.apiVersion != saved.apiVersion)
+                if (identityChanged && ai.bindings.get(Role.EMBED)?.endpointId == endpointId) onEmbedChanged()
                 saved
             },
             onFailure = { e ->
@@ -143,7 +170,7 @@ class EndpointEditorViewModel(
     private fun run(block: suspend () -> Unit) {
         if (_state.value.busy) return
         _state.update { it.copy(busy = true, error = null, notice = null) }
-        job = viewModelScope.launch { try { block() } finally { _state.update { it.copy(busy = false) } } }
+        viewModelScope.launch { try { block() } finally { _state.update { it.copy(busy = false) } } }
     }
 
     private companion object { const val TAG = "EndpointEditor" }
@@ -190,7 +217,7 @@ fun EndpointEditorScreen(
                     if (!state.keyless) {
                         TextFieldRow("API key", state.keyInput, onKey, tag = "endpoint_key", secret = true,
                             placeholder = if (state.keySaved) "Key saved" else "Paste the key",
-                            supporting = if (state.keySaved) "Saved — type to replace" else null)
+                            supporting = when { state.keySaved -> "Saved — type to replace"; state.keyRemoved -> "Will be removed when you save"; else -> null })
                         if (state.keySaved) SecondaryAction("Remove key", onClearKey, tag = "endpoint_clear_key")
                     }
                 }
@@ -202,7 +229,17 @@ fun EndpointEditorScreen(
                     NoticeText(state.testResult, tag = "endpoint_test_result")
                     state.error?.let { NoticeText(it, error = true, tag = "endpoint_error") }
                     state.notice?.let { NoticeText(it, tag = "endpoint_notice") }
-                    if (!state.isNew) SecondaryAction("Delete endpoint", onDelete, tag = "endpoint_delete", enabled = !state.busy)
+                    if (!state.isNew) {
+                        var confirming by remember { mutableStateOf(false) }
+                        SecondaryAction("Delete endpoint", { confirming = true }, tag = "endpoint_delete", enabled = !state.busy)
+                        if (confirming) AlertDialog(
+                            onDismissRequest = { confirming = false },
+                            title = { Text("Delete ${state.name.ifEmpty { "this endpoint" }}?") },
+                            text = { Text("Its saved key is removed too. This can't be undone.") },
+                            confirmButton = { TextButton({ confirming = false; onDelete() }, Modifier.testTag("endpoint_delete_confirm")) { Text("Delete") } },
+                            dismissButton = { TextButton({ confirming = false }) { Text("Cancel") } },
+                        )
+                    }
                 }
             }
         }

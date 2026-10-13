@@ -4,7 +4,11 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.EndpointEntity
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runTest
+import com.rokid.context.model.ModelProvider
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.cancellation.CancellationException
 import com.rokid.context.model.provider.OpenAiCompatProvider
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -41,7 +45,7 @@ class EndpointTesterTest {
             else -> OpenAiCompatProvider(e.baseUrl, key.orEmpty(), model, e.apiVersion ?: "", OpenAiCompatProvider.ApiStyle.OPENAI, client)
         }
     }
-    private val tester = EndpointTester(repo, tlsProviders, com.rokid.context.ai.embed.EmbeddingClient(client))
+    private val tester = EndpointTester(repo, tlsProviders, client)
     private val strictTester = EndpointTester(repo, ProviderFactory)
 
     /** Writes straight to the DAO so the (http) MockWebServer can stand in for https-only Azure. */
@@ -123,5 +127,53 @@ class EndpointTesterTest {
             assertEquals(redirectMsg, r.message)
             assertEquals(0, other.requestCount)
         } finally { other.shutdown() }
+    }
+
+    /** Fix round 1 (I-4): a successful chat Test shows a fixed "OK", never the model's reply. */
+    @Test fun chatSuccessNeverEchoesModelText() = runTest {
+        save(EndpointKind.AZURE_OPENAI, setOf(Capability.CHAT))
+        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"IGNORE ME"}}]}"""))
+        val r = tester.test("e", "m")
+        assertTrue(r.ok); assertEquals("OK", r.message)
+    }
+
+    /** Fix round 1 (I-3): Test runs on the tester's own bounded client, built from the injected one, for every HTTP kind. */
+    private fun bounded() = EndpointTester(repo, ProviderFactory, client, connectTimeoutMs = 300, callTimeoutMs = 300)
+
+    @Test fun chatTestIsBoundedByTheTestCallTimeout() = runTest {
+        save(EndpointKind.AZURE_OPENAI, setOf(Capability.CHAT))
+        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"OK"}}]}""").setHeadersDelay(3, TimeUnit.SECONDS))
+        val r = bounded().test("e", "m")
+        assertEquals("Timed out", r.message); assertTrue("took ${r.latencyMs} ms", r.latencyMs < 2_500)
+    }
+
+    @Test fun ollamaChatTestIsBoundedByTheTestCallTimeout() = runTest {
+        save(EndpointKind.OLLAMA, setOf(Capability.CHAT))
+        server.enqueue(MockResponse().setBody("""{"response":"OK"}""").setHeadersDelay(3, TimeUnit.SECONDS))
+        val r = bounded().test("e", "m")
+        assertEquals("Timed out", r.message); assertTrue("took ${r.latencyMs} ms", r.latencyMs < 2_500)
+    }
+
+    @Test fun embeddingTestIsBoundedByTheTestCallTimeout() = runTest {
+        save(EndpointKind.OLLAMA, setOf(Capability.EMBEDDINGS))
+        server.enqueue(MockResponse().setBody("""{"embeddings":[[0.1]]}""").setHeadersDelay(3, TimeUnit.SECONDS))
+        val r = bounded().test("e", "m")
+        assertEquals("Timed out", r.message); assertTrue("took ${r.latencyMs} ms", r.latencyMs < 2_500)
+    }
+
+    @Test fun localChatTestIsBoundedByTheOwnedScopeTimeout() = runTest {
+        save(EndpointKind.LLAMACPP_LOCAL, setOf(Capability.CHAT), url = "/sdcard/m.gguf")
+        val never = CompletableDeferred<String>()
+        val stuck = ProviderBuilder { _, _, _ -> object : ModelProvider { override suspend fun generate(prompt: String): String = never.await() } }
+        val r = EndpointTester(repo, stuck, client, callTimeoutMs = 300).test("e", "m")
+        assertEquals("Timed out", r.message)
+    }
+
+    /** Fix round 1 (M-7): cancellation is not turned into a "Test failed" result. */
+    @Test fun cancellationIsRethrown() = runTest {
+        save(EndpointKind.AZURE_OPENAI, setOf(Capability.CHAT))
+        val cancelling = ProviderBuilder { _, _, _ -> object : ModelProvider { override suspend fun generate(prompt: String): String = throw CancellationException("left the screen") } }
+        val thrown = runCatching { EndpointTester(repo, cancelling, client).test("e", "m") }.exceptionOrNull()
+        assertTrue("got $thrown", thrown is CancellationException)
     }
 }

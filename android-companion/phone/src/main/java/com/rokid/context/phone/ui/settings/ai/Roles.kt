@@ -64,7 +64,12 @@ class RolesViewModel(private val ai: AiGraph, private val onEmbedChanged: () -> 
 
     fun setEndpoint(role: Role, endpointId: String) = change(role) { b, eps ->
         val e = eps.firstOrNull { it.id == endpointId } ?: return@change null
-        (b ?: RoleBinding(role, endpointId, "")).copy(endpointId = endpointId, model = e.models.firstOrNull().orEmpty())
+        val current = b ?: RoleBinding(role, endpointId, "")
+        if (current.endpointId == endpointId && b != null) return@change current // same endpoint: keep its model (no-op, no reindex)
+        current.copy(endpointId = endpointId, model = e.models.firstOrNull().orEmpty()).let {
+            // The fallback picker never offers the primary, so a fallback equal to the new primary is cleared.
+            if (it.fallbackEndpointId == endpointId) it.copy(fallbackEndpointId = null, fallbackModel = null) else it
+        }
     }
 
     fun setModel(role: Role, model: String) = change(role) { b, _ -> b?.copy(model = model) }
@@ -96,7 +101,9 @@ class RolesViewModel(private val ai: AiGraph, private val onEmbedChanged: () -> 
     /** Serialised read-modify-write, so two quick edits (temperature, then max tokens) never overwrite each other. */
     private fun change(role: Role, f: (RoleBinding?, List<Endpoint>) -> RoleBinding?) = viewModelScope.launch {
         writes.withLock {
-            val next = f(ai.bindings.get(role), ai.bindings.eligibleEndpoints(role)) ?: return@withLock
+            val current = ai.bindings.get(role)
+            val next = f(current, ai.bindings.eligibleEndpoints(role)) ?: return@withLock
+            if (next == current) return@withLock // nothing changed: no write, and no reindex for EMBED
             ai.bindings.set(next).fold(
                 onSuccess = { if (role == Role.EMBED) onEmbedChanged() },
                 onFailure = { e -> draft(role) { it.copy(error = (e as? IllegalArgumentException)?.message ?: "Couldn't save") } },

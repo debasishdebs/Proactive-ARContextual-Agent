@@ -35,11 +35,11 @@ object AiLabels {
     }
 }
 
-/** Test result as shown: `EndpointTester`'s short message (its fixed humanize set) + latency — never provider text. */
+/** Test result as shown: `EndpointTester`'s fixed message ("OK", "OK · N dimensions" or a `humanize` text) + latency. Never the model's reply or provider text. */
 object EndpointTestText {
     const val NOT_TESTED = "Not tested"
     const val TESTING = "Testing…"
-    /** The tester's message already says OK or what failed. */
+    /** The tester's message already says OK or what failed, e.g. "OK · 412 ms" or "Key rejected (401) · 120 ms". */
     fun of(r: TestResult): String = "${r.message} · ${r.latencyMs} ms"
 }
 

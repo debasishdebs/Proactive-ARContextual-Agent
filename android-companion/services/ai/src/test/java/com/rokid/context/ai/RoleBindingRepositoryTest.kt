@@ -45,4 +45,15 @@ class RoleBindingRepositoryTest {
         assertEquals(listOf(Role.ANSWER), bindings.usages("a"))
         assertEquals(2, bindings.observeAll().first().size)
     }
+
+    /** Fix round 1 (M-5): the in-use check and the delete happen together, under the lock every binding write takes. */
+    @Test fun deleteEndpointIfUnusedRefusesWhileBound() = runTest {
+        ep("a", Capability.CHAT)
+        bindings.set(RoleBinding(Role.ANSWER, "a", "m")).getOrThrow()
+        assertEquals(listOf(Role.ANSWER), bindings.deleteEndpointIfUnused("a"))
+        assertTrue(endpoints.byId("a") != null)
+        bindings.clear(Role.ANSWER)
+        assertEquals(emptyList<Role>(), bindings.deleteEndpointIfUnused("a"))
+        assertEquals(null, endpoints.byId("a"))
+    }
 }
