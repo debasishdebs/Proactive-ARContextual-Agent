@@ -7,6 +7,7 @@ import com.rokid.context.ai.ProviderConfigException
 import com.rokid.context.ai.ProviderHttpException
 import com.rokid.context.ai.ProviderResponseException
 import com.rokid.context.ai.Http
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -170,5 +171,19 @@ class EmbeddingClientTest {
         assertTrue(runCatching { client.revision(e(EndpointKind.OLLAMA), "m") }.exceptionOrNull() is ProviderHttpException)
         server.enqueue(MockResponse().setBody("not json"))
         assertTrue(runCatching { client.revision(e(EndpointKind.OLLAMA), "m") }.exceptionOrNull() is ProviderResponseException)
+    }
+
+    /** T14 fix round 1: a caller cancelled while its native call is queued leaves nothing to run. */
+    @Test fun aCancelledQueuedNativeCallNeverRuns() = runBlocking {
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val c = EmbeddingClient(Http.modelClient(60), nativeTimeoutMs = 10_000, native = { _, texts ->
+            calls.incrementAndGet(); Thread.sleep(600); texts.map { floatArrayOf(1f) }
+        })
+        val first = launch(kotlinx.coroutines.Dispatchers.Default) { runCatching { c.embed(local(), "m", null, listOf("a")) } }
+        while (calls.get() == 0) kotlinx.coroutines.delay(10)
+        val second = launch(kotlinx.coroutines.Dispatchers.Default) { c.embed(local(), "m", null, listOf("b")) }
+        kotlinx.coroutines.delay(100); second.cancel(); second.join(); first.join()
+        Thread.sleep(1_000)
+        assertEquals(1, calls.get())
     }
 }

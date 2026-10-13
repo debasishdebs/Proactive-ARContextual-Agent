@@ -27,7 +27,6 @@ object JsonSchemaValidator {
         return mutableListOf<String>().also { check(schema, schema, value, "$", it, 0) }
     }
 
-    /** Errors of [value] against one branch. The caller has already bounded the value's depth. */
     /** JSON equality with numbers compared by value (JSON Schema `const`/`enum`: 1 == 1.0), recursively. */
     internal fun same(a: JsonElement, b: JsonElement): Boolean = when {
         a is JsonPrimitive && b is JsonPrimitive && a != JsonNull && b != JsonNull && !a.isString && !b.isString -> {
@@ -40,6 +39,7 @@ object JsonSchemaValidator {
         else -> a == b
     }
 
+    /** Errors of [value] against one branch. The caller has already bounded the value's depth. */
     internal fun errorsOf(root: JsonObject, schema: JsonObject, value: JsonElement, path: String, depth: Int = 0): List<String> =
         mutableListOf<String>().also { check(root, schema, value, path, it, depth) }
 

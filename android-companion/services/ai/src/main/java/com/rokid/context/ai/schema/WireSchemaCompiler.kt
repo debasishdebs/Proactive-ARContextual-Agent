@@ -67,7 +67,7 @@ object WireSchemaCompiler {
         val top = ArrayList<String>()
         root.forEach { (k, v) -> if (k != DEFS && k != DEFINITIONS) refsIn(v, top) }
         top.forEach { visit(it, emptySet()) }
-        (root[DEFS] as? JsonObject)?.keys?.forEach { visit("#/$DEFS/${SchemaRefs.escapeToken(it)}", emptySet()) }
+        for (section in listOf(DEFS, DEFINITIONS)) (root[section] as? JsonObject)?.keys?.forEach { visit("#/$section/${SchemaRefs.escapeToken(it)}", emptySet()) }
     }
 
     private class Budget { var used = 0; fun spend() { rejectUnless(++used <= MAX_NODES) { "The schema is too large" } } }
