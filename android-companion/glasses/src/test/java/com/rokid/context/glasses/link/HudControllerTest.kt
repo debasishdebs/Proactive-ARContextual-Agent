@@ -1,5 +1,7 @@
 package com.rokid.context.glasses.link
 
+import com.rokid.context.core.hud.render.HudConnection
+
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4

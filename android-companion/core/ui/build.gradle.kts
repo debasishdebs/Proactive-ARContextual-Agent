@@ -17,6 +17,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:hud"))
     implementation(platform("androidx.compose:compose-bom:2024.09.00"))
     api("androidx.compose.ui:ui")
     api("androidx.compose.material3:material3")

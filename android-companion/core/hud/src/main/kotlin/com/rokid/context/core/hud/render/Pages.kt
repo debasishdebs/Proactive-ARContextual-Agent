@@ -1,4 +1,4 @@
-package com.rokid.context.glasses.ui
+package com.rokid.context.core.hud.render
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,8 +23,6 @@ import com.rokid.context.core.hud.Hud
 import com.rokid.context.core.hud.Label
 import com.rokid.context.core.hud.OutlinedBox
 import com.rokid.context.core.model.Health
-import com.rokid.context.glasses.hud.visibleRows
-import com.rokid.context.glasses.link.HudConnection
 
 /** Silent verbosity shows only this (spec §3.4): REC dot, or ❚❚ while paused. */
 @Composable
