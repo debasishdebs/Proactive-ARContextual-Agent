@@ -173,13 +173,15 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
                     glassesApkPath = "",
                 ),
             )
-            inbound.open(s)
-            s.addLifecycleCallback(lifecycleFor(s))
-            s.addCustomCmdCallback(object : ICustomCmdSessionCallback {
-                override fun onCustomCmdResult(cmd: String, bytes: ByteArray?) = onGlassesMessage(s, cmd, bytes)
-            })
-            session = s
-            s.connect(token)
+            // A session whose registration or connect throws is closed in [inbound] again, so it can never emit events.
+            inbound.open(s) {
+                s.addLifecycleCallback(lifecycleFor(s))
+                s.addCustomCmdCallback(object : ICustomCmdSessionCallback {
+                    override fun onCustomCmdResult(cmd: String, bytes: ByteArray?) = onGlassesMessage(s, cmd, bytes)
+                })
+                session = s
+                s.connect(token)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

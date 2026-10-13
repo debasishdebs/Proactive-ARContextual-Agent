@@ -11,6 +11,20 @@ class SessionInbound {
 
     @Synchronized fun open(session: Any) { current = session; inbound = GlassesInbound() }
 
+    /**
+     * Opens [session], then runs [setup] (callback registration, connect) outside the lock. If [setup] throws, the
+     * session is closed again before rethrowing, so a session whose setup failed can never emit events.
+     */
+    fun open(session: Any, setup: () -> Unit) {
+        open(session)
+        try {
+            setup()
+        } catch (e: Throwable) {
+            close(session)
+            throw e
+        }
+    }
+
     /** [session] closed or failed; a session that is no longer current changes nothing. */
     @Synchronized fun close(session: Any) {
         if (current !== session) return
