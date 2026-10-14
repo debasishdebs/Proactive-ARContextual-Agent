@@ -4,13 +4,14 @@ import com.rokid.context.ai.Endpoint
 import com.rokid.context.ai.EndpointRepository
 import com.rokid.context.ai.ModelCallException
 import com.rokid.context.ai.ModelErrorMapper
-import com.rokid.context.ai.ModelRouter
 import com.rokid.context.ai.RoleBindingRepository
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.contract.SchemaCompatibilityChecker
 import com.rokid.context.ai.contract.SemanticContext
 import com.rokid.context.ai.schema.StructuredOutput
 import com.rokid.context.model.ModelImageInput
+import com.rokid.context.model.CallClass
+import com.rokid.context.model.LanguageModel
 import com.rokid.context.model.ModelRequest
 import com.rokid.context.prompt.NowText
 import com.rokid.context.prompt.PersonaSettings
@@ -53,7 +54,7 @@ data class TestBedResult(
 fun interface SchemaCheck { fun check(key: PromptKey, draftSchema: String?, bound: List<Endpoint>): List<String> }
 
 class TestBed(
-    private val router: ModelRouter,
+    private val router: LanguageModel,
     private val prompts: PromptRepository,
     private val persona: PersonaSettings,
     private val bindings: RoleBindingRepository,
@@ -80,7 +81,7 @@ class TestBed(
         }
         var wire: JsonObject? = null
         val reply = try {
-            router.completeOn(request.endpointId, request.model) { e ->
+            router.completeOn(request.endpointId, request.model, CallClass.USER) { e ->
                 val plan = StructuredOutput.plan(e, schema, request.key.name)
                 wire = plan.wireSchema
                 ModelRequest(prompt + plan.promptSuffix, request.images, format = plan.format)

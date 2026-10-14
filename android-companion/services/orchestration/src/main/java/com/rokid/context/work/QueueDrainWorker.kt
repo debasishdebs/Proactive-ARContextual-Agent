@@ -154,7 +154,8 @@ class QueueDrainWorker(
 
     private val ai get() = AiGraph.get(applicationContext)
 
-    private suspend fun processBatchedSummarization(job: QueueJobRecord, generation: Long) {
+    /** [callClassOverride]: an Ask-triggered extraction passes USER (P4); null = EXTRACT. */
+    private suspend fun processBatchedSummarization(job: QueueJobRecord, generation: Long, callClassOverride: com.rokid.context.model.CallClass? = null) {
         val payload = QueuePayloads.parse(job.payload)
         val importedFrames = QueuePayloads.int(payload, "imported_frames", 0)
         val frameIds = QueuePayloads.string(payload, "frame_ids_csv").split(",").map { it.trim() }.filter { it.isNotBlank() }
@@ -177,7 +178,7 @@ class QueueDrainWorker(
         val facts = seen.flatMap { (frame, image) ->
             val r = ai.runner.run(
                 RoleCall(PromptKey.VISION_EXTRACT, PromptVars(recentContext = PromptComposer.dataBlock("frames", listOf(frameLine(frame)))),
-                    images = listOf(image), fromFrames = true),
+                    images = listOf(image), fromFrames = true, callClass = callClassOverride ?: com.rokid.context.model.CallClass.EXTRACT),
             )
             promptVersion = r.promptVersion
             (r.output as ExtractOutput).facts.filter { it.text.isNotBlank() }.map { frame.id to it }
@@ -223,7 +224,7 @@ class QueueDrainWorker(
         val vars = PromptVars(recentContext = PromptComposer.dataBlock("facts", facts.map { "${it.text} (confidence ${"%.2f".format(Locale.US, it.confidence)})" }) +
             "\n" + PromptComposer.dataBlock("source", frameLines))
         return try {
-            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars)).output as CriticOutput).pass
+            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = com.rokid.context.model.CallClass.EXTRACT)).output as CriticOutput).pass
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
@@ -247,7 +248,7 @@ class QueueDrainWorker(
         val frames = PipelineRecords.framesByIds(applicationContext, QueuePayloads.ids(payload, "frame_ids_csv"))
         val vars = PromptVars(recentContext = PromptComposer.dataBlock("memories", sources.map { it.text }) +
             "\n" + PromptComposer.dataBlock("critic_notes", listOf(reason)))
-        val out = ai.runner.run(RoleCall(PromptKey.SUMMARIZE, vars, images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true)).output as SummaryOutput
+        val out = ai.runner.run(RoleCall(PromptKey.SUMMARIZE, vars, images = FrameInputs.fromFrames(frames, maxImages = 3), fromFrames = true, callClass = com.rokid.context.model.CallClass.EXTRACT)).output as SummaryOutput
         // Final review I1: fenced on every frame whose photo was sent (any one forgotten during the call → nothing written).
         val written = PipelineRecords.appendFact(applicationContext, "rokid_mem_${job.id.takeLast(12)}", null, out.summary, "summary", out.entities,
             out.confidence.coerceAtLeast(0.75), if (out.candidateMemoryType == "medium_term") MemoryTier.MEDIUM else MemoryTier.SHORT, ReviewState.OK,
@@ -270,7 +271,7 @@ class QueueDrainWorker(
         val frameLines = frames.map(::frameLine)
         val vars = PromptVars(recentContext = PromptComposer.dataBlock("facts", reviews.map { "${it.text} (confidence ${"%.2f".format(Locale.US, it.confidence)})" }) +
             "\n" + PromptComposer.dataBlock("source", frameLines))
-        val pass = (ai.runner.run(RoleCall(PromptKey.CRITIC, vars)).output as CriticOutput).pass
+        val pass = (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = com.rokid.context.model.CallClass.EXTRACT)).output as CriticOutput).pass
         if (pass) {
             val view = com.rokid.context.memory.MemoryGraph.get(applicationContext).db.memoryViewDao()
             reviews.forEach { view.moveReviewState(it.id, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) }
@@ -284,7 +285,7 @@ class QueueDrainWorker(
         val payload = QueuePayloads.parse(job.payload)
         val rawInput = QueuePayloads.string(payload, "raw_input")
         require(rawInput.isNotBlank()) { "Empty explicit write input" }
-        val extracted = (ai.runner.run(RoleCall(PromptKey.EXPLICIT_REMEMBER, PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(rawInput))))).output as ExtractOutput)
+        val extracted = (ai.runner.run(RoleCall(PromptKey.EXPLICIT_REMEMBER, PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(rawInput))), callClass = com.rokid.context.model.CallClass.USER)).output as ExtractOutput)
             .facts.filter { it.text.isNotBlank() }
         // Fix I1: the user asked to remember this, so an empty reply keeps their own words as one note (no retry: it can
         // come back empty again).
