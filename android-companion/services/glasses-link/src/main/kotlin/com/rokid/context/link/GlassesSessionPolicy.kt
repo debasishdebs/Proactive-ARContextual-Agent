@@ -27,6 +27,10 @@ sealed interface LinkEvent {
      * retried [MAX_AUTH_RETRIES] times with [AUTH_RETRY_STEPS_MS] backoff before it becomes [AuthFailed].
      */
     data object AuthTimedOut : LinkEvent
+    /** Minimised: the glasses answered on the background link (first message since it bound). */
+    data object BackgroundAlive : LinkEvent
+    /** The background link failed to bind, or the glasses sent nothing in time after it bound (a real exit). */
+    data object BackgroundSilent : LinkEvent
 }
 
 sealed interface LinkAction {
@@ -41,6 +45,8 @@ sealed interface LinkAction {
     data object MarkDisconnected : LinkAction
     data object MarkClosedOnGlasses : LinkAction
     data object MarkAuthNeeded : LinkAction
+    /** Our glasses app left the foreground: data goes on the background link, the HUD is never started (Option A). */
+    data object MarkMinimised : LinkAction
 }
 
 /** The [LinkState] a Mark* action sets; null for actions that do not change it. */
@@ -51,6 +57,7 @@ fun LinkAction.linkState(): LinkState? = when (this) {
     LinkAction.MarkDisconnected -> LinkState.OFFLINE
     LinkAction.MarkClosedOnGlasses -> LinkState.CLOSED_ON_GLASSES
     LinkAction.MarkAuthNeeded -> LinkState.NOT_AUTHORIZED
+    LinkAction.MarkMinimised -> LinkState.MINIMISED
     LinkAction.Connect, LinkAction.SendSettings, is LinkAction.ScheduleRetry -> null
 }
 
@@ -60,7 +67,8 @@ class GlassesSessionPolicy(
     private val authBackoff: Backoff = Backoff(AUTH_RETRY_STEPS_MS),
 ) {
     /** ClosedOnGlasses is Idle after the user closed the app on the glasses: only their reopening it reconnects. */
-    private enum class S { Idle, ClosedOnGlasses, Connecting, Open, Paused, WaitingRetry, WaitingAuthRetry }
+    /** Minimised: our app left the glasses' foreground; the background link carries data until the wearer reopens it. */
+    private enum class S { Idle, ClosedOnGlasses, Minimised, Connecting, Open, Paused, WaitingRetry, WaitingAuthRetry }
     private var state = S.Idle
     private var present = false
     private var ceilingRetries = 0 // retries already scheduled at the backoff ceiling
@@ -68,7 +76,14 @@ class GlassesSessionPolicy(
     private val idle get() = state == S.Idle || state == S.ClosedOnGlasses
 
     /** True while the app was closed on the glasses and nothing else has happened since (the link watches for a reopen). */
-    val closedOnGlasses: Boolean get() = state == S.ClosedOnGlasses
+    /**
+     * True while our app is out of the glasses' foreground (minimised or closed there): the link keeps the session-less
+     * background link bound, to carry data while minimised and to notice the wearer reopening the app.
+     */
+    val backgroundLink: Boolean get() = state == S.ClosedOnGlasses || state == S.Minimised
+
+    /** Minimised on the glasses: nothing may run a CUSTOM_APP connect (its appStart pulls the HUD forward, review I2). */
+    val minimised: Boolean get() = state == S.Minimised
 
     /** True while an automatic re-authorization after a timeout is scheduled (BUG-R2-4). */
     val waitingAuthRetry: Boolean get() = state == S.WaitingAuthRetry
@@ -90,9 +105,12 @@ class GlassesSessionPolicy(
         }
         LinkEvent.Paused -> { state = S.Paused; listOf(LinkAction.MarkPaused) }
         LinkEvent.Resumed -> { state = S.Open; listOf(LinkAction.MarkConnected, LinkAction.SendSettings) }
-        LinkEvent.GlassesExited -> { state = S.ClosedOnGlasses; listOf(LinkAction.MarkClosedOnGlasses) }
+        // The SDK reports a minimise and a real exit alike; the background link tells them apart (BackgroundSilent).
+        LinkEvent.GlassesExited -> { state = S.Minimised; listOf(LinkAction.MarkMinimised) }
+        LinkEvent.BackgroundAlive -> if (state == S.ClosedOnGlasses) { state = S.Minimised; listOf(LinkAction.MarkMinimised) } else emptyList()
+        LinkEvent.BackgroundSilent -> if (state == S.Minimised) { state = S.ClosedOnGlasses; listOf(LinkAction.MarkClosedOnGlasses) } else emptyList()
         LinkEvent.GlassesAppOpened ->
-            if (state == S.ClosedOnGlasses) { state = S.Connecting; listOf(LinkAction.MarkConnecting, LinkAction.Connect) } else emptyList()
+            if (backgroundLink) { state = S.Connecting; listOf(LinkAction.MarkConnecting, LinkAction.Connect) } else emptyList()
         LinkEvent.AuthFailed -> { state = S.Idle; listOf(LinkAction.MarkAuthNeeded) }
         LinkEvent.AuthTimedOut ->
             if (authRetries < MAX_AUTH_RETRIES) {
@@ -119,8 +137,12 @@ class GlassesSessionPolicy(
         }
     }
 
-    /** Explicit connect (phone "Open on glasses", after authorization). Replaces a stuck attempt; leaves an Open/Paused session alone. */
+    /**
+     * Explicit connect (phone "Open on glasses", after authorization). Replaces a stuck attempt; leaves an Open/Paused
+     * session alone, and a minimised app too (review I2: the connect's appStart would pull the HUD over Maps).
+     */
     fun manualConnect(): List<LinkAction> {
+        if (state == S.Minimised) return emptyList()
         present = true
         backoff.reset(); ceilingRetries = 0; resetAuthRetries()
         return if (state == S.Open || state == S.Paused) emptyList()
@@ -155,3 +177,13 @@ fun shouldReconnectOnResume(
     link: LinkState, hasToken: Boolean, authDeclined: Boolean, authTimedOut: Boolean = false, authRetryPending: Boolean = false,
 ): Boolean =
     hasToken && !authDeclined && (link == LinkState.OFFLINE || (link == LinkState.NOT_AUTHORIZED && authTimedOut) || authRetryPending)
+
+/** Which transport a phone-to-glasses message takes. */
+enum class SendRoute { SESSION, BACKGROUND, NONE }
+
+/** CONNECTED: the CUSTOM_APP session. MINIMISED: the session-less background link (never appStart). Else nothing. */
+fun sendRoute(state: LinkState): SendRoute = when (state) {
+    LinkState.CONNECTED -> SendRoute.SESSION
+    LinkState.MINIMISED -> SendRoute.BACKGROUND
+    else -> SendRoute.NONE
+}

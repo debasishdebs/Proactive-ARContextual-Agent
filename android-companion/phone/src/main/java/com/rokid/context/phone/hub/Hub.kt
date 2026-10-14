@@ -13,6 +13,7 @@ import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.PROTOCOL_VERSION
 import com.rokid.context.core.model.Wire
+import com.rokid.context.core.model.carriesData
 import com.rokid.context.link.ClockOffset
 import com.rokid.context.link.GlassesEvent
 import com.rokid.context.link.GlassesLink
@@ -21,6 +22,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.drop
@@ -73,6 +75,9 @@ class Hub(
     /** Frames acked ok since the last hello: each left the glasses' buffer once (a resend of a lost ack is not counted again). */
     private val ackedSinceHello = HashSet<String>()
     private var jobs: List<Job> = emptyList()
+    /** Review I2: the pop-up shown instead of opening the HUD while the glasses app is minimised. */
+    private var minimisedHint: Overlay? = null
+    private var hintJob: Job? = null
     private val broadcaster = StateBroadcaster(scope, onError = { Log.w(TAG, "broadcast failed: ${it.javaClass.simpleName}") }) { broadcast() }
 
     init { scope.launch { guarded("pauses") { refreshPauses() } } }
@@ -109,7 +114,18 @@ class Hub(
      * connects once from Idle, so a second connect here would race it.
      */
     override fun requestReconnect() {
+        // Review I2: a CUSTOM_APP connect runs appStart, which would pull the HUD over Maps while minimised. The wearer
+        // gets a pop-up there instead (a Confirm is the only thing that may open the app, glasses side, spec 1.7).
+        if (started && link.state.value == LinkState.MINIMISED) { showMinimisedHint(); return }
         if (started) link.connect() else startService()
+    }
+
+    private fun showMinimisedHint() {
+        Log.i(TAG, "open on glasses while minimised: pop-up, no appStart")
+        minimisedHint = Overlay.Toast(OPEN_WHILE_MINIMISED)
+        broadcaster.markDirty()
+        hintJob?.cancel()
+        hintJob = scope.launch { delay(MINIMISED_HINT_MS); minimisedHint = null; broadcaster.markDirty() }
     }
 
     fun onAppResumed() = link.connectOnResume()
@@ -179,7 +195,9 @@ class Hub(
     }
 
     private fun onLinkState(s: LinkState) {
-        if (s != LinkState.CONNECTED) { newSession(); voice.onLinkLost() }
+        // Minimised keeps the glasses session (and its clock offset) on the background link; push-to-talk needs the HUD.
+        if (s != LinkState.CONNECTED) voice.onLinkLost()
+        if (!s.carriesData) newSession()
         set { it.copy(link = s, offset = offset) }
     }
 
@@ -315,10 +333,10 @@ class Hub(
             ),
         )
         set(markDirty = false) { it.copy(lastFrame = frame) }
-        if (s.link == LinkState.CONNECTED && link.send(Channels.STATE, Wire.encode(frame))) actions.onShown(frame.overlay)
+        if (s.link.carriesData && link.send(Channels.STATE, Wire.encode(frame))) actions.onShown(frame.overlay)
     }
 
-    private fun overlay(): Overlay? = pickOverlay(voice.overlay.value, actions.overlay.value, nudges.overlay.value)
+    private fun overlay(): Overlay? = pickOverlay(voice.overlay.value, actions.overlay.value, minimisedHint ?: nudges.overlay.value)
 
     companion object {
         const val TAG = "ContextHub"
@@ -336,5 +354,8 @@ class Hub(
             return actions ?: voice ?: nudge
         }
         const val HELLO_REQUEST_MIN_INTERVAL_MS = 10_000L
+        /** Glasses pop-up for "Open on glasses" while minimised: the HUD stays in the background. */
+        const val OPEN_WHILE_MINIMISED = "Running in the background \u00b7 open it on your glasses"
+        const val MINIMISED_HINT_MS = 5_000L
     }
 }

@@ -49,7 +49,9 @@ class ContextHubServiceTest {
 
     @Test fun notificationTextIsShortAndHuman() {
         fun text(l: LinkState) = ContextHubService.notificationText(GlassesStatus(l, null, 0, null, null))
-        assertEquals("Glasses connected", text(LinkState.CONNECTED))
+        // Glasses as a nearby device: while linked (in front or minimised) the FGS says so and keeps the link alive.
+        assertEquals("Connected to glasses", text(LinkState.CONNECTED))
+        assertEquals("Connected to glasses", text(LinkState.MINIMISED))
         assertEquals("Connecting to glasses", text(LinkState.CONNECTING))
         assertEquals("Reconnecting to glasses", text(LinkState.PAUSED_BT))
         assertEquals("Glasses offline", text(LinkState.OFFLINE))
