@@ -132,7 +132,23 @@ data class HudSettings(
     val pausesExact: Boolean = false,
     /** Phase 7, additive: the phone's ZoneId.id; the glasses evaluate quiet hours in it. */
     val zoneId: String? = null,
+    /** Spec 2026-10-14 §3, additive: where the minimised icon sits. */
+    val iconCorner: IconCorner = IconCorner.TOP_RIGHT,
+    /** Spec 2026-10-14 §4, additive: how long a minimised pop-up stays, seconds ([POPUP_MIN_SEC]..[POPUP_MAX_SEC], clamped on use). */
+    val popupSeconds: Int = POPUP_DEFAULT_SEC,
 )
+
+/** The corner of the minimised icon on the glasses display. */
+@Serializable enum class IconCorner { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
+
+const val POPUP_MIN_SEC = 3
+const val POPUP_MAX_SEC = 20
+const val POPUP_DEFAULT_SEC = 6
+
+fun clampPopupSeconds(s: Int): Int = s.coerceIn(POPUP_MIN_SEC, POPUP_MAX_SEC)
+
+/** The pop-up duration in ms, clamped: a wild value on the wire never keeps a pop-up up for long. */
+fun HudSettings.popupMs(): Long = clampPopupSeconds(popupSeconds) * 1_000L
 
 @Serializable
 sealed interface Command {
