@@ -186,4 +186,18 @@ class EmbeddingClientTest {
         Thread.sleep(1_000)
         assertEquals(1, calls.get())
     }
+
+    /** Final review I1: a 64-text reindex batch reaches the native layer in small calls, each with its own timeout. */
+    @Test fun nativeBatchesAreSplitAndEachCallIsTimedOnItsOwn() = runBlocking {
+        val sizes = java.util.Collections.synchronizedList(mutableListOf<Int>())
+        val c = EmbeddingClient(Http.modelClient(60), nativeTimeoutMs = 300, native = { _, texts ->
+            sizes += texts.size; Thread.sleep(100); texts.map { floatArrayOf(texts.size.toFloat(), 1f) }
+        })
+        val out = c.embed(local(), "m", null, (0 until 64).map { "t$it" })
+        assertEquals(64, out.size)
+        assertTrue("every native call is at most ${EmbeddingClient.NATIVE_BATCH} texts: $sizes", sizes.all { it <= EmbeddingClient.NATIVE_BATCH })
+        assertEquals(64, sizes.sum())
+        assertEquals((64 + EmbeddingClient.NATIVE_BATCH - 1) / EmbeddingClient.NATIVE_BATCH, sizes.size)
+        // 8 calls of 100 ms each is far past the 300 ms limit in total, yet nothing timed out: the limit is per call.
+    }
 }

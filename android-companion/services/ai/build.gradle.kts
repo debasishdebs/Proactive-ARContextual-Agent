@@ -10,10 +10,9 @@ android {
     defaultConfig {
         minSdk = 29
         ndk { abiFilters += "arm64-v8a" } // on-device models: 64-bit ARM only
-        externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_static" } }
-    }
-    buildTypes {
-        release { externalNativeBuild { cmake { cppFlags += "-O3"; cFlags += "-O3" } } }
+        // -O3 in every variant (debug is the APK used day to day; ggml at -O0 is many times slower). These go into
+        // CMAKE_C/CXX_FLAGS, so they reach llama.cpp/ggml too; debug keeps its -g (stripped from the APK anyway).
+        externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_static"; cFlags += "-O3"; cppFlags += "-O3" } }
     }
     externalNativeBuild {
         cmake {
