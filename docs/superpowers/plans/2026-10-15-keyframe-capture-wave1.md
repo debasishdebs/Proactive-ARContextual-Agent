@@ -51,7 +51,8 @@
   - SEVERE+ or battery ≥ 44 °C → stop, with the "Cooling" HUD icon;
   - resume below MODERATE and battery ≤ 38 °C for 2 min;
   - `getThermalHeadroom` is NaN on these glasses: record it, never depend on it.
-- **Work/rest:** W ∈ {45, 60} min (default 45); R ∈ {15, 20} min (default 15). During rest, a Fixed-mode capture every 60 s.
+- **Work/rest:** W ∈ {30, 40, 45, 50, 60, 75, 90} min (default 45); R ∈ {5, 10, 15, 20} min (default 15); **if W > 45 then R ≥ 15** (enforced in the phone UI, and clamped again on the glasses for safety). During rest, a Fixed-mode capture every 60 s.
+- **Camera LED:** no torch, flash or LED control anywhere (`enableTorch`, `FLASH_MODE`, `/sys/class/leds`, vendor LED APIs).
 - **Not worn:** proximity "far" for > 5 s.
 - **Camera LED:** never disabled or worked around.
 - **Budget:**
@@ -98,8 +99,8 @@ enum class MotionState { STILL, HEAD_MOVING, WALKING, VEHICLE, UNKNOWN }
 // HudSettings, new fields with defaults (add after existing fields):
 val captureMode: CaptureMode = CaptureMode.FIXED      // the phone sends SMART for new installs and the migration default
 val pauseWhenNotWorn: Boolean = true
-val workMinutes: Int = 45                              // 45 | 60
-val restMinutes: Int = 15                              // 15 | 20
+val workMinutes: Int = 45                              // 30 | 40 | 45 | 50 | 60 | 75 | 90
+val restMinutes: Int = 15                              // 5 | 10 | 15 | 20; ≥ 15 when workMinutes > 45
 // pc_frame metadata (the existing frame meta class), new optional fields:
 val motion: MotionState = MotionState.UNKNOWN
 val dwell: Boolean = false
@@ -369,7 +370,7 @@ data class SessionStatus(val running: Boolean, val motion: MotionState, val keyf
 **Tests:**
 - `AnalysisRateTest`: the table rows and halving.
 - `SamplingSessionTest` (fakes for camera, sensors, gate, clock): `startsOnlyWhenAllConditionsHold`, `onsetTriggersImmediateCheck`, `dwellForcesKeyframe`, `notWornStopsCamera`, `modeSwitchReleasesSessionBeforeFixedCapture` (Review Focus 3), `bindFailsThriceFallsBackToFixed`, `keyframeWidthIs640`, `captureNowForcesKeyframe`, `wearCheckOffKeepsSampling`, `restUsesFixedEvery60s`.
-- `OutboundBufferTest`: `dropsOldestNonDwellFirst`.
+- `OutboundBufferTest`: `dropsOldestNonDwellFirst`. `LedSourceRulesTest` (a source scan like `SettingsSourceRulesTest`): `noTorchFlashOrLedControlInGlassesSources`.
 
 - [ ] RED → implement → GREEN. Commit `feat(glasses): bound sampling session (640 px keyframes, Y-plane thumbnails, single camera owner)`.
 
@@ -388,7 +389,7 @@ class WorkRest(private val clock: () -> Long, workMin: () -> Int, restMin: () ->
 }
 ```
 
-**Tests:** `HeatGuardTest`: `moderateSlows`, `battery40Slows`, `severeStops`, `battery44Stops`, `resumeNeedsTwoMinutesCool`, `nanHeadroomIgnored`. `WorkRestTest`: `restsAfter45`, `honours60and20`, `pauseLongerThanRestResetsCycle`.
+**Tests:** `HeatGuardTest`: `moderateSlows`, `battery40Slows`, `severeStops`, `battery44Stops`, `resumeNeedsTwoMinutesCool`, `nanHeadroomIgnored`. `WorkRestTest`: `restsAfter45`, `honours60and20`, `pauseLongerThanRestResetsCycle`, `clampsRestTo15WhenWorkOver45`, `acceptsAllWorkAndRestOptions`.
 
 - [ ] RED → implement → GREEN; then the stream gate. Commit `feat(glasses): heat guard (thermal status + battery temp) and work/rest cycle`.
 
@@ -489,12 +490,12 @@ class NudgeEvaluator(private val clock: () -> Long, settleMs: () -> Long, gapMs:
 **Files:** `phone/.../ui/settings/capture/CaptureSettings.kt`; `phone/.../ui/settings/Diagnostics.kt`; settings inventory doc `docs/superpowers/specs/2026-10-14-settings-inventory.md` (additions).
 
 **Behaviour:**
-- **Capture mode** Smart/Fixed (default Smart on this upgrade). **Interval** shown only in Fixed. **Pause when not worn**. **Work** 45/60, **Rest** 15/20. **AI call pace** 10/12/15 s.
+- **Capture mode** Smart/Fixed (default Smart on this upgrade). **Interval** shown only in Fixed. **Pause when not worn**. **Work** 30/40/45/50/60/75/90 min, **Rest** 5/10/15/20 min; when Work > 45, Rest 5 and 10 are disabled and an existing lower Rest is raised to 15 with a short note. **AI call pace** 10/12/15 s.
 - Remove the "Take an extra photo when the scene changes" switch.
 - The status line uses `SessionStatus` when available.
 - **Diagnostics:** keyframes/h, calls/h by class, backlog by state, p50/p95 latency, dropped-nudge reasons.
 
-**Tests:** `CaptureSettingsTest`: `smartHidesInterval`, `burstSwitchGone`, `workRestOptions`, `pacePersistsToBudget`. `DiagnosticsTest`: `showsBacklogAndLatency`.
+**Tests:** `CaptureSettingsTest`: `smartHidesInterval`, `burstSwitchGone`, `workRestOptions`, `restBelow15DisabledWhenWorkOver45`, `pacePersistsToBudget`. `DiagnosticsTest`: `showsBacklogAndLatency`.
 
 - [ ] RED → implement → GREEN → **full gate**. Commit `feat(settings): capture mode, work/rest, call pace, keyframe diagnostics`.
 
