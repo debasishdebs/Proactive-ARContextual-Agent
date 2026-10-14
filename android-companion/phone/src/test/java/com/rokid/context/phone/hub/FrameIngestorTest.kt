@@ -8,6 +8,7 @@ import com.rokid.context.core.model.FrameAck
 import com.rokid.context.core.model.FrameAckReason
 import com.rokid.context.core.model.FrameCodec
 import com.rokid.context.core.model.UserFacingErrors
+import com.rokid.context.data.frames.DirSync
 import com.rokid.context.link.ClockOffset
 import com.rokid.context.link.FrameAdmission
 import com.rokid.context.link.FrameReassembler
@@ -27,6 +28,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -48,6 +51,9 @@ class FrameIngestorTest {
     private var stored = 0
     private val inbox get() = File(tmp.root, "rokid_inbox")
 
+    @Before fun fakeDirSync() { DirSync.testOverride = DirSync { true } } // Robolectric cannot fsync a directory
+    @After fun realDirSync() { DirSync.testOverride = null }
+
     private val ledger by lazy { ReceivedFrameLedger(File(tmp.root, "ledger.txt")) }
     private fun ingestor(
         writer: JpegWriter = AtomicJpegWriter,
@@ -62,7 +68,7 @@ class FrameIngestorTest {
         val r = ingestor().onChunk(chunk(), offset, now)
         assertEquals(FrameAck(frameId = "g1", ok = true), r.ack)
         assertEquals(now - 60_000, r.ingestedAtMs)
-        val f = File(inbox, "rokid_${now - 60_000}_g1.jpg")
+        val f = File(inbox, "rokid_${now - 60_000}_g1.v2.jpg")
         assertArrayEquals(jpeg, f.readBytes())
         assertTrue("capture time is the file time RokidFrameInbox reads", abs(f.lastModified() - (now - 60_000)) < 1_000)
         assertEquals(1, stored)
@@ -73,7 +79,7 @@ class FrameIngestorTest {
         ing.onChunk(chunk(), offset, now)
         val again = ing.onChunk(chunk(), offset, now + 7_000)
         assertEquals(FrameAck(frameId = "g1", ok = true, reason = FrameAckReason.DUPLICATE), again.ack)
-        assertEquals(1, inbox.listFiles()!!.size)
+        assertEquals("the JPEG and its sidecar", 2, inbox.listFiles()!!.size)
         assertEquals(1, stored)
     }
 
@@ -118,7 +124,7 @@ class FrameIngestorTest {
         val slow = JpegWriter { f, b -> writes.incrementAndGet(); Thread.sleep(200); AtomicJpegWriter.write(f, b) }
         val ing = ingestor(slow)
         val acks = (1..2).map { async(Dispatchers.Default) { ing.onChunk(chunk(), offset, now).ack } }.awaitAll()
-        assertEquals(1, writes.get())
+        assertEquals("one JPEG and one sidecar write", 2, writes.get())
         assertEquals(setOf(FrameAck(frameId = "g1", ok = true), FrameAck(frameId = "g1", ok = true, reason = FrameAckReason.DUPLICATE)), acks.toSet())
         assertEquals(1, stored)
     }
@@ -154,7 +160,7 @@ class FrameIngestorTest {
         val r = ing.onChunk(chunk(), offset, now)
         assertEquals("stored durably in inbox + ledger, so the glasses may delete it", FrameAck(frameId = "g1", ok = true), r.ack)
         assertEquals(UserFacingErrors.StorageFull, r.error)
-        assertNotNull(File(inbox, "rokid_${now - 60_000}_g1.jpg").takeIf { it.isFile })
+        assertNotNull(File(inbox, "rokid_${now - 60_000}_g1.v2.jpg").takeIf { it.isFile })
         assertTrue(ledger.contains("g1"))
         val other = FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, noPauses), ledger) { error("boom") }
         assertEquals(UserFacingErrors.Unknown, other.onChunk(chunk("g2"), offset, now).error)
@@ -196,7 +202,7 @@ class FrameIngestorTest {
     @Test fun aFrameCapturedAfterTheWipeIsStored() = runTest {
         val r = ingestor(wipeAt = now - 90_000).onChunk(chunk(), offset, now)
         assertEquals(FrameAck(frameId = "g1", ok = true), r.ack)
-        assertTrue(File(inbox, "rokid_${now - 60_000}_g1.jpg").isFile)
+        assertTrue(File(inbox, "rokid_${now - 60_000}_g1.v2.jpg").isFile)
         assertEquals(1, stored)
     }
 

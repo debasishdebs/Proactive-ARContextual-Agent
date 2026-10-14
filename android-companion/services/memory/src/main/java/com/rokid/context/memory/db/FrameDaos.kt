@@ -113,3 +113,33 @@ interface FrameClusterDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(row: FrameClusterEntity)
     @Query("SELECT * FROM frame_cluster WHERE closedAt IS NULL ORDER BY openedAt DESC LIMIT 1") suspend fun open(): FrameClusterEntity?
 }
+
+/** A frame row still awaiting extraction when v2 adopts it: its id and the JPEG path (the caller checks the file). */
+data class AwaitingFrame(val id: String, val path: String)
+
+/** One-shot pre-v2 adoption queries (keyframe capture P1). Rows are never changed; only `frame_state` gets inserts. */
+@Dao
+interface FrameAdoptionDao {
+    /**
+     * Keyset page of glasses frames with no `frame_state` row, no tombstone and no memory (or `frame_source` row): those still
+     * await extraction, including frames whose 24 h queue job expired.
+     */
+    @Query(
+        "SELECT f.id AS id, f.path AS path FROM frame f WHERE f.source LIKE 'rokid%' AND f.id > :after " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_state s WHERE s.frameId = f.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = f.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id) ORDER BY f.id LIMIT :limit",
+    )
+    suspend fun awaiting(after: String, limit: Int): List<AwaitingFrame>
+
+    /** Frames that already produced a memory (or a `frame_source` row) and have no tombstone: EXTRACTED, never re-queued. */
+    @Query(
+        "SELECT f.id FROM frame f WHERE f.source LIKE 'rokid%' AND f.id > :after " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_state s WHERE s.frameId = f.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " +
+            "AND (EXISTS (SELECT 1 FROM memory m WHERE m.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id)) " +
+            "ORDER BY f.id LIMIT :limit",
+    )
+    suspend fun extracted(after: String, limit: Int): List<String>
+}
