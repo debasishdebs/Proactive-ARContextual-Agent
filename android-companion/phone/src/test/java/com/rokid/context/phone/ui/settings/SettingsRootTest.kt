@@ -32,6 +32,7 @@ class SettingsRootTest {
     @Test fun summariesFollowTheLinkAndTheCaptureSettings() {
         assertEquals("Linked · 82%", SettingsModel.glassesSummary(FakeGlassesStatusSource.connected(Fixtures.stateFrame())))
         assertEquals("Not connected", SettingsModel.glassesSummary(FakeGlassesStatusSource.OFFLINE))
+        assertEquals("Minimised on glasses \u00b7 capturing", SettingsModel.glassesSummary(GlassesStatus(LinkState.MINIMISED, null, 0, null, null)))
         assertEquals("Update the glasses app", SettingsModel.glassesSummary(GlassesStatus(LinkState.VERSION_MISMATCH, null, 0, null, null)))
         assertEquals("Every 5 min · burst on change", SettingsModel.captureSummary(HudSettings()))
         assertEquals("Every 1 h", SettingsModel.captureSummary(HudSettings(captureIntervalSec = 9_000, burstOnChange = false)))

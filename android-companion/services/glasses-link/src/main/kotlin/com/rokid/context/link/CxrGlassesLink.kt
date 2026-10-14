@@ -51,10 +51,24 @@ class CxrGlassesLink(
     private var authTimedOut = false
     private var retryJob: Job? = null
     private var connectJob: Job? = null
-    /** Session-less CXRLink kept bound only while "closed on glasses", to notice the wearer reopening our app there. */
-    private val watcher = GlassAppWatcher(app, GLASSES_PKG, probe, linkState = { _state.value.name }) {
-        post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) }
-    }
+    /**
+     * Session-less CXRLink kept bound while our app is out of the glasses' foreground: notices the wearer reopening it
+     * and, while minimised, is the data link ([minimised]). SDK callbacks hop onto [scope].
+     */
+    private val watcher: GlassAppWatcher = GlassAppWatcher(
+        app, GLASSES_PKG, probe, linkState = { _state.value.name },
+        onBound = { ok -> post { minimised.onBound(ok) } },
+        onCustomCmd = { cmd, bytes -> decodeParts(cmd, bytes)?.let { parts -> post { onBackgroundMessage(cmd, parts) } } },
+    ) { post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) } }
+    /** Minimised Option A: data on the watcher's CXRLink; never appStart. Its confirm callbacks are posted (no re-entry into [act]). */
+    private val minimised: MinimisedLink = MinimisedLink(
+        scope, watcher, inbound,
+        onAlive = { act(policy.onEvent(LinkEvent.BackgroundAlive)) },
+        onSilent = { post { act(policy.onEvent(LinkEvent.BackgroundSilent)) } },
+        log = { Log.i(TAG, it) },
+    )
+    /** One background bind attempt per stay out of the foreground: a failed bind is not retried in a loop. */
+    private var backgroundTried = false
 
     private val _state = MutableStateFlow(if (token() == null) LinkState.NOT_AUTHORIZED else LinkState.OFFLINE)
     override val state: StateFlow<LinkState> = _state
@@ -124,7 +138,7 @@ class CxrGlassesLink(
     }
 
     override fun close() = post {
-        watcher.stop()
+        minimised.stop()
         retryJob?.cancel(); connectJob?.cancel(); authJob?.cancel()
         auth.cancel() // a late AuthActivity result must not reopen a session after stop
         authTimedOut = false
@@ -144,17 +158,23 @@ class CxrGlassesLink(
         syncWatcher()
     }
 
-    /** Watch the glasses' foreground app only while closed on glasses; any other state releases the extra bind. */
+    /** Keep the background link only while our app is out of the glasses' foreground; any other state releases it. */
     private fun syncWatcher() {
-        if (!policy.closedOnGlasses) { watcher.stop(); return }
-        if (watcher.active) return
+        if (!policy.backgroundLink) { minimised.stop(); backgroundTried = false; return }
+        if (minimised.active || backgroundTried) return
         val t = token() ?: return
+        backgroundTried = true
         preferGlobalHiRokid()
-        watcher.start(t)
+        minimised.start(t)
+    }
+
+    /** On [scope]: a glasses message on the background link (only its current bind's messages are decoded). */
+    private fun onBackgroundMessage(cmd: String, parts: List<String>) {
+        minimised.onMessage(cmd, parts).forEach { _events.tryEmit(it) }
     }
 
     private fun openSession() {
-        watcher.stop() // unbind the watcher before a session binds its own CXRLink
+        minimised.stop() // unbind the background link before a session binds its own CXRLink
         val token = token()
         if (token == null || !auth.authorized) {
             // CXR-L only works after an in-process requestAuthorization, so connect waits for AuthActivity.
@@ -219,22 +239,30 @@ class CxrGlassesLink(
 
     /** CXR callback thread. Glasses send text only (phase 0): read up to [MAX_PARTS] Caps strings in order. */
     private fun onGlassesMessage(s: CxrSession, cmd: String, bytes: ByteArray?) {
-        val parts = try {
-            val caps = Caps.fromBytes(bytes ?: return)
-            val out = ArrayList<String>(MAX_PARTS)
-            for (i in 0 until MAX_PARTS) out.add(runCatching { caps.at(i).string }.getOrNull() ?: break)
-            out
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "bad payload on $cmd: ${e.javaClass.simpleName}")
-            return
-        }
+        val parts = decodeParts(cmd, bytes) ?: return
         inbound.onMessage(s, cmd, parts).forEach { _events.tryEmit(it) }
     }
 
-    override suspend fun send(channel: String, json: String): Boolean {
-        if (_state.value != LinkState.CONNECTED) return false
+    /** Any thread. Read up to [MAX_PARTS] Caps strings in order; null for an unreadable payload (logged by class name). */
+    private fun decodeParts(cmd: String, bytes: ByteArray?): List<String>? = try {
+        val caps = Caps.fromBytes(bytes ?: return null)
+        val out = ArrayList<String>(MAX_PARTS)
+        for (i in 0 until MAX_PARTS) out.add(runCatching { caps.at(i).string }.getOrNull() ?: break)
+        out
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "bad payload on $cmd: ${e.javaClass.simpleName}")
+        null
+    }
+
+    override suspend fun send(channel: String, json: String): Boolean = when (sendRoute(_state.value)) {
+        SendRoute.SESSION -> sendOnSession(channel, json)
+        SendRoute.BACKGROUND -> minimised.send(channel, json) // minimised: never the session, never appStart
+        SendRoute.NONE -> false
+    }
+
+    private fun sendOnSession(channel: String, json: String): Boolean {
         val s = slot.current ?: return false
         return try {
             val r = s.sendCustomCmd(channel, Caps().apply { write(json) }, ByteArray(0))

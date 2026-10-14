@@ -2,6 +2,7 @@ package com.rokid.context.phone.hub
 
 import com.rokid.context.core.model.GlassesStatus
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.carriesData
 import com.rokid.context.core.model.StateFrame
 import com.rokid.context.core.model.UserFacingError
 import com.rokid.context.link.ClockOffset
@@ -21,7 +22,7 @@ data class HubState(
 ) {
     /** Phase 4 contract view. A mismatch matters only while a session is up. */
     fun toGlassesStatus(): GlassesStatus = GlassesStatus(
-        link = if (versionMismatch && link == LinkState.CONNECTED) LinkState.VERSION_MISMATCH else link,
+        link = if (versionMismatch && link.carriesData) LinkState.VERSION_MISMATCH else link,
         glassesBatteryPct = glassesBatteryPct,
         bufferedFrames = bufferedFrames,
         lastFrameAtMs = lastFrameAtMs,
