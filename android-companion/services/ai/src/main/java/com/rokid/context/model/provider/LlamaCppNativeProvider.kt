@@ -18,7 +18,8 @@ import java.util.concurrent.TimeUnit
  */
 internal interface LlamaNative {
     fun isAvailable(): Boolean
-    fun load(modelPath: String): Long
+    /** With [forEmbedding] the embed context is created too; failing that (out of memory) is a failed load, a 0 handle. */
+    fun load(modelPath: String, forEmbedding: Boolean): Long
     fun embed(handle: Long, text: String): FloatArray?
     fun generate(handle: Long, prompt: String): String?
     fun generateWithGrammar(handle: Long, prompt: String, grammar: String): String?
@@ -104,7 +105,7 @@ class LlamaCppNativeProvider internal constructor(private val modelPath: String,
     override suspend fun generate(prompt: String): String = complete(ModelRequest(prompt)).text
 
     override suspend fun complete(request: ModelRequest): ModelReply = withContext(Dispatchers.Default) {
-        withModel(native, modelPath) { handle ->
+        withModel(native, modelPath, forEmbedding = false) { handle ->
             val grammar = (request.format as? WireFormat.Grammar)?.gbnf
             val text = if (grammar == null) native.generate(handle, request.prompt) else native.generateWithGrammar(handle, request.prompt, grammar)
             ModelReply(text ?: throw ProviderConfigException(GENERATE_FAILED))
@@ -136,19 +137,23 @@ class LlamaCppNativeProvider internal constructor(private val modelPath: String,
             val block = { handle: Long ->
                 texts.map { text -> native.embed(handle, text)?.takeIf { it.isNotEmpty() } ?: throw ProviderConfigException(EMBED_FAILED) }
             }
-            return if (cache == null) withModel(native, modelPath, failures, block) else cache.use(native, modelPath, { open(native, modelPath, failures) }, block)
+            return if (cache == null) withModel(native, modelPath, forEmbedding = true, failures, block)
+            else cache.use(native, modelPath, { open(native, modelPath, forEmbedding = true, failures) }, block)
         }
 
-        private inline fun <T> withModel(native: LlamaNative, modelPath: String, failures: LocalLoadFailures? = null, block: (Long) -> T): T {
-            val handle = open(native, modelPath, failures)
+        private inline fun <T> withModel(native: LlamaNative, modelPath: String, forEmbedding: Boolean, failures: LocalLoadFailures? = null, block: (Long) -> T): T {
+            val handle = open(native, modelPath, forEmbedding, failures)
             try { return block(handle) } finally { native.release(handle) }
         }
 
-        /** A loaded handle, never 0. [failures] counts a failed load (no runtime, or a 0 handle) and is reset by one that works. */
-        private fun open(native: LlamaNative, modelPath: String, failures: LocalLoadFailures?): Long {
+        /**
+         * A loaded handle, never 0. [failures] counts a failed load (no runtime, or a 0 handle, which on the embed path
+         * includes an embed context that couldn't be created) and is reset by one that works.
+         */
+        private fun open(native: LlamaNative, modelPath: String, forEmbedding: Boolean, failures: LocalLoadFailures?): Long {
             if (!native.isAvailable()) { failures?.failed(modelPath); throw ProviderConfigException(UNAVAILABLE) }
             if (modelPath.isBlank()) throw ProviderConfigException("Local model path is required for native inference")
-            val handle = native.load(modelPath)
+            val handle = native.load(modelPath, forEmbedding)
             if (handle == 0L) { failures?.failed(modelPath); throw ProviderConfigException(LOAD_FAILED) }
             failures?.reset(modelPath)
             return handle
@@ -157,14 +162,14 @@ class LlamaCppNativeProvider internal constructor(private val modelPath: String,
         /** The real JNI (`Java_com_rokid_context_model_provider_LlamaCppNativeProvider_native...`). */
         private object Jni : LlamaNative {
             override fun isAvailable() = nativeLoaded
-            override fun load(modelPath: String) = nativeLoadModel(modelPath)
+            override fun load(modelPath: String, forEmbedding: Boolean) = nativeLoadModel(modelPath, forEmbedding)
             override fun embed(handle: Long, text: String) = nativeEmbed(handle, text)
             override fun generate(handle: Long, prompt: String) = nativeGenerate(handle, prompt)
             override fun generateWithGrammar(handle: Long, prompt: String, grammar: String) = nativeGenerateWithGrammar(handle, prompt, grammar)
             override fun release(handle: Long) = nativeReleaseModel(handle)
         }
 
-        @JvmStatic private external fun nativeLoadModel(modelPath: String): Long
+        @JvmStatic private external fun nativeLoadModel(modelPath: String, forEmbedding: Boolean): Long
         @JvmStatic private external fun nativeGenerate(handle: Long, prompt: String): String?
         @JvmStatic private external fun nativeGenerateWithGrammar(handle: Long, prompt: String, grammar: String): String?
         @JvmStatic private external fun nativeEmbed(handle: Long, text: String): FloatArray?
