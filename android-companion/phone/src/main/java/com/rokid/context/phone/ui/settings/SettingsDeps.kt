@@ -107,7 +107,11 @@ class SettingsDeps(
             lazyMemorySettings = lazy { MemorySettingsStore.get(app) },
             encryption = object : EncryptionControl {
                 override fun status() = DbEncryption.status(app)
-                override fun request(encrypted: Boolean) = DbEncryption.request(app, encrypted)
+                override fun request(encrypted: Boolean) {
+                    DbEncryption.request(app, encrypted)
+                    // Gaps G1: frame files convert now, in the background (the database follows at the next start).
+                    com.rokid.context.orchestration.FrameCryptoWorker.enqueue(app)
+                }
             },
             usedBytes = { StorageUsage.usedBytes(app) },
             wipe = { MemoryWipe.deleteAll(app) },

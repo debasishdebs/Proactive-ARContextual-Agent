@@ -15,6 +15,10 @@ class ContextApp : Application() {
             localNativeModelPath = BuildConfig.LOCAL_NATIVE_MODEL_PATH,
         )
         com.rokid.context.memory.MemoryGraph.get(this) { com.rokid.context.data.runtime.AppConfigStore.getWithoutSecret(this).encryptionEnabled }
+        // Gaps G1: frame files follow "Encrypt memory"; every reader opens plain and sealed ones. The worker finishes any
+        // conversion a toggle or a process death left part-way (a no-op when every file is already in the wanted form).
+        com.rokid.context.phone.FrameReaders.install(this)
+        com.rokid.context.orchestration.FrameCryptoWorker.enqueue(this)
         // Eager background import so it is normally done before first use; PipelineRecords calls wait only if it is still running.
         kotlin.concurrent.thread(name = "legacy-import") {
             // Never throws (P8 D5): a failure is logged inside and retried by LegacyImportWorker.

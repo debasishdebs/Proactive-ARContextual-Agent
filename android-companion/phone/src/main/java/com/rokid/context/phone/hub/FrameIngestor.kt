@@ -23,6 +23,7 @@ import com.rokid.context.link.ClockOffset
 import com.rokid.context.link.FrameAdmission
 import com.rokid.context.link.FrameReassembler
 import com.rokid.context.link.ReceivedFrameLedger
+import com.rokid.context.memory.frames.FrameImages
 import com.rokid.context.orchestration.WipeFence
 import com.rokid.context.work.OrchestrationScheduler
 import kotlinx.coroutines.sync.Mutex
@@ -158,7 +159,8 @@ class FrameIngestor(
                 Log.i(TAG, "frame $id dropped: captured before Delete all")
                 return@withLock IngestResult(FrameAck(frameId = id, ok = true, reason = FrameAckReason.WIPED))
             }
-            writer.writeStamped(target, jpeg, capturedAtMs) // RokidFrameInbox takes the capture time from lastModified
+            // Gaps G1: sealed while "Encrypt memory" is on; a seal failure is an IOException (no ack, the glasses resend).
+            writer.writeStamped(target, FrameImages.forDisk(jpeg), capturedAtMs) // RokidFrameInbox takes the capture time from lastModified
             ledger.add(id)
         } catch (e: IOException) {
             target.delete()

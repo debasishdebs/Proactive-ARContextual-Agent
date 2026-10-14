@@ -24,6 +24,8 @@ dependencies {
     implementation("net.zetetic:sqlcipher-android:4.6.1@aar")
     implementation("androidx.sqlite:sqlite-ktx:2.4.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // Gaps G1: frame JPEG AEAD. Already on the runtime classpath via security-crypto; named here to compile against it.
+    implementation("com.google.crypto.tink:tink-android:1.8.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("androidx.room:room-testing:2.6.1")
