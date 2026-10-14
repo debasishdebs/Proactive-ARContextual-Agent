@@ -30,7 +30,7 @@ data class StatusUi(
 
         fun build(
             s: GlassesStatus, pipelineEnabled: Boolean, storagePct: Int?, nowMs: Long, index: IndexState = IndexState.NONE,
-            pauses: List<PauseRecord> = emptyList(), lastResumeAtMs: Long? = null,
+            pauses: List<PauseRecord> = emptyList(), lastResumeAtMs: Long? = null, batterySaver: Boolean = false,
         ) = StatusUi(
             captureText = CaptureLine.text(s, pipelineEnabled, nowMs, pauses),
             live = CaptureLine.live(s, pipelineEnabled),
@@ -49,15 +49,20 @@ data class StatusUi(
                     pauses = pauses,
                     lastResumeAtMs = lastResumeAtMs,
                     nowMs = nowMs,
+                    batterySaver = batterySaver,
                 ),
             ),
         )
 
-        fun flow(glasses: GlassesStatusSource, pipeline: PipelineControl, clock: Flow<Long>, storagePct: Flow<Int?>, index: Flow<IndexState> = flowOf(IndexState.NONE)): Flow<StatusUi> =
+        /** [batterySaver]: Home passes Android's Battery Saver (G7); other screens leave it off. */
+        fun flow(
+            glasses: GlassesStatusSource, pipeline: PipelineControl, clock: Flow<Long>, storagePct: Flow<Int?>, index: Flow<IndexState> = flowOf(IndexState.NONE),
+            batterySaver: Flow<Boolean> = flowOf(false),
+        ): Flow<StatusUi> =
             combine(
                 combine(glasses.status, pipeline.enabled, clock, storagePct, index) { s, enabled, now, storage, idx -> Inputs(s, enabled, now, storage, idx) },
-                pipeline.activePauses, pipeline.lastResumeAtMs,
-            ) { i, pauses, resumedAt -> build(i.s, i.enabled, i.storage, i.now, i.index, pauses, resumedAt) }
+                pipeline.activePauses, pipeline.lastResumeAtMs, batterySaver,
+            ) { i, pauses, resumedAt, saver -> build(i.s, i.enabled, i.storage, i.now, i.index, pauses, resumedAt, saver) }
 
         private data class Inputs(val s: GlassesStatus, val enabled: Boolean, val now: Long, val storage: Int?, val index: IndexState)
     }

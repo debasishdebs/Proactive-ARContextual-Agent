@@ -104,6 +104,30 @@ class AskActionsTest {
         assertTrue(MemoryGraph.get(ctx).asks.recent(10).first().isEmpty())
     }
 
+    private fun saver(on: Boolean) =
+        org.robolectric.Shadows.shadowOf(ctx.getSystemService(android.os.PowerManager::class.java)).setIsPowerSaveMode(on)
+
+    /** G7 ruling (2026-10-15): Battery Saver pauses everything, user asks included. Nothing reaches the model. */
+    @Test fun askBlockedWhileBatterySaverOn() = runBlocking {
+        remember("rokid_mem_1", "Milk carton nearly empty in the fridge", 10)
+        saver(true)
+        try {
+            for (source in listOf("phone_typed", "phone_voice", "glasses_voice")) {
+                assertEquals(source, AskOutcome.Failed(AskActions.BATTERY_SAVER), AskActions.askFrom(ctx, "milk?", source))
+            }
+            assertEquals(AskOutcome.Failed(AskActions.BATTERY_SAVER), AskActions.ask(ctx, "milk?"))
+            assertTrue("never sent to the AI", prompts.isEmpty())
+            assertTrue(MemoryGraph.get(ctx).asks.recent(10).first().isEmpty())
+        } finally { saver(false) }
+    }
+
+    @Test fun askAllowedWhenSaverOff() = runBlocking {
+        remember("rokid_mem_1", "Milk carton nearly empty in the fridge", 10)
+        saver(false)
+        assertTrue(AskActions.askFrom(ctx, "milk?", "glasses_voice") is AskOutcome.Answered)
+        assertEquals(1, prompts.size)
+    }
+
     @Test fun emptyQuestionAndNoMemoriesGiveShortMessages() = runBlocking {
         assertEquals(AskOutcome.Failed(AskActions.EMPTY_QUESTION), AskActions.ask(ctx, "   "))
         assertEquals(AskOutcome.Failed(AskActions.NO_MEMORIES), AskActions.ask(ctx, "milk"))

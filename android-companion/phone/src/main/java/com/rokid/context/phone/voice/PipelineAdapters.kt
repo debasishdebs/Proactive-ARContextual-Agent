@@ -1,6 +1,7 @@
 package com.rokid.context.phone.voice
 
 import com.rokid.context.core.model.Overlay
+import com.rokid.context.orchestration.AskActions
 import com.rokid.context.phone.hub.HubVoice
 import com.rokid.context.voice.PhoneVoiceState
 import com.rokid.context.voice.SpeechLanguage
@@ -20,10 +21,16 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-class PipelineHubVoice(private val pipeline: VoicePipeline, capabilities: StateFlow<VoiceCapabilities>, scope: CoroutineScope) : HubVoice {
+/** [batterySaver] (G7): while on, the glasses tap gets the Battery Saver toast, whatever the voice gate says. */
+class PipelineHubVoice(
+    private val pipeline: VoicePipeline, capabilities: StateFlow<VoiceCapabilities>, scope: CoroutineScope,
+    batterySaver: StateFlow<Boolean> = MutableStateFlow(false),
+) : HubVoice {
     override val overlay: StateFlow<Overlay?> = pipeline.overlay
     override val askBlockedReason: StateFlow<String?> =
-        capabilities.map { it.askBlockedReason }.stateIn(scope, SharingStarted.Eagerly, capabilities.value.askBlockedReason)
+        combine(capabilities, batterySaver) { c, saver -> reason(c, saver) }.stateIn(scope, SharingStarted.Eagerly, reason(capabilities.value, batterySaver.value))
+
+    private fun reason(c: VoiceCapabilities, saver: Boolean): String? = if (saver) AskActions.BATTERY_SAVER else c.askBlockedReason
     override fun onListenStart() = pipeline.glassesListenStart()
     override fun onAudio(pcm: ByteArray) = pipeline.glassesAudio(pcm)
     override fun onListenEnd() = pipeline.glassesListenEnd()
