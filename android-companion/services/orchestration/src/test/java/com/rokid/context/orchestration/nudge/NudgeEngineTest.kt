@@ -53,7 +53,7 @@ class NudgeEngineTest {
         val mem = MemoryGraph.get(ctx)
         val sources = ContextSourceProvider { q, _ -> if (q == null) listOf("event \u00b7 Dentist \u00b7 Mon 19:00\u201319:30") else emptyList() }
         return NudgeEngine(
-            NudgeInputs(mem, sources) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao()) { cap }, mem,
+            NudgeInputs(mem, sources) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao(), { 0L }) { cap }, mem,
             ProposalIntake { o, id, _, _ -> proposed += o to id; "p1" }, clock = { now }, hud = { hud },
         )
     }
