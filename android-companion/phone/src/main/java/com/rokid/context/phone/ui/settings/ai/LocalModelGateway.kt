@@ -1,13 +1,14 @@
 package com.rokid.context.phone.ui.settings.ai
 
+import com.rokid.context.ai.local.LocalModel
+import com.rokid.context.data.models.LocalModelState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
 
 /**
- * INTEGRATION SEAM (Stream D): what the On-device models page needs from D2's `LocalModelStore`, member for member
- * (`modelsDir(context)` is the store's own business, so the page never asks for it). At integration, implement this over
- * `LocalModelStore` (or replace it by the store) in `SettingsDeps.create`; tests keep a fake.
+ * What the On-device models page needs from `LocalModelStore`, member for member (`modelsDir(context)` is the store's
+ * own business, so the page never asks for it). The app wires `StoreLocalModels` in `SettingsDeps.create`; tests keep a fake.
  */
 interface LocalModelGateway {
     fun fileFor(model: LocalModel): File
@@ -41,8 +42,8 @@ class InMemoryMobileData(private var on: Boolean = false) : MobileDataSetting {
 data class LoadFailure(val consecutive: Int, val cause: Throwable? = null)
 
 /**
- * INTEGRATION SEAM (Stream N / controller): where the page learns that the on-device model failed to load. Nothing
- * records load failures yet, so the app wires [None]; the runtime's failure counter plugs in here.
+ * Where the page learns that the on-device model failed to load. The app wires `NativeLoadFailures` (the embed path's
+ * `LlamaCppNativeProvider.loadFailures`); tests and previews use a fake or [None].
  */
 fun interface LoadFailures {
     suspend fun of(modelId: String): LoadFailure?

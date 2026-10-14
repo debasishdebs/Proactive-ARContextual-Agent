@@ -70,4 +70,50 @@ class LlamaCppNativeProviderTest {
         val real = failure { LlamaCppNativeProvider.embed("/m.gguf", listOf("a")) }
         assertTrue(real is ProviderConfigException); assertEquals("On-device models need a 64-bit ARM phone.", real.message)
     }
+
+    /** Spec section 6: the page asks for a re-download after two consecutive load failures of one model file. */
+    @Test fun consecutiveLoadFailuresAreCountedPerModelAndResetOnSuccess() {
+        val counter = LocalLoadFailures()
+        val corrupt = FakeNative(handle = 0L)
+        repeat(2) { failure { LlamaCppNativeProvider.embed("/a.gguf", listOf("x"), corrupt, counter) } }
+        failure { LlamaCppNativeProvider.embed("/b.gguf", listOf("x"), FakeNative(available = false), counter) }
+        assertEquals(2, counter.consecutive("/a.gguf"))
+        assertEquals(1, counter.consecutive("/b.gguf"))
+
+        // A load that works resets that model only; an embed failure after a good load is not a load failure.
+        LlamaCppNativeProvider.embed("/a.gguf", listOf("x"), FakeNative(), counter)
+        assertEquals(0, counter.consecutive("/a.gguf"))
+        failure { LlamaCppNativeProvider.embed("/a.gguf", listOf("x"), FakeNative(vector = null), counter) }
+        assertEquals(0, counter.consecutive("/a.gguf"))
+        assertEquals(1, counter.consecutive("/b.gguf"))
+
+        counter.reset("/b.gguf")
+        assertEquals(0, counter.consecutive("/b.gguf"))
+    }
+
+    /** Spec section 6: loaded on first use, kept between calls, released after the idle delay; a failed embed frees it at once. */
+    @Test fun embedModelStaysLoadedUntilIdle() {
+        val timers = mutableListOf<Pair<Long, () -> Unit>>()
+        val cache = EmbedModelCache(idleMs = 60_000) { delay, task -> timers += delay to task; { timers.removeAll { it.second === task } } }
+        val ok = FakeNative()
+        LlamaCppNativeProvider.embed("/m.gguf", listOf("a"), ok, cache = cache)
+        LlamaCppNativeProvider.embed("/m.gguf", listOf("b", "c"), ok, cache = cache)
+        assertEquals("one load for both calls", 1, ok.loads)
+        assertTrue("still loaded between calls", ok.released.isEmpty())
+        assertEquals("one idle timer armed, 60 s", listOf(60_000L), timers.map { it.first })
+
+        timers.single().second()
+        assertEquals("released when idle", listOf(7L), ok.released)
+        LlamaCppNativeProvider.embed("/m.gguf", listOf("d"), ok, cache = cache)
+        assertEquals("loaded again on next use", 2, ok.loads)
+
+        // Another model file replaces the loaded one.
+        LlamaCppNativeProvider.embed("/other.gguf", listOf("e"), ok, cache = cache)
+        assertEquals(3, ok.loads); assertEquals(listOf(7L, 7L), ok.released)
+
+        // A native embed failure releases the model now rather than keep a possibly broken context.
+        val broken = FakeNative(vector = null)
+        assertTrue(failure { LlamaCppNativeProvider.embed("/m.gguf", listOf("x"), broken, cache = cache) } is ProviderConfigException)
+        assertEquals(listOf(7L), broken.released)
+    }
 }

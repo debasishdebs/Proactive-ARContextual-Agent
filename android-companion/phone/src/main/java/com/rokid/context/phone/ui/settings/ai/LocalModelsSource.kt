@@ -1,5 +1,7 @@
 package com.rokid.context.phone.ui.settings.ai
 
+import com.rokid.context.ai.local.LocalModel
+import com.rokid.context.data.models.LocalModelState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
