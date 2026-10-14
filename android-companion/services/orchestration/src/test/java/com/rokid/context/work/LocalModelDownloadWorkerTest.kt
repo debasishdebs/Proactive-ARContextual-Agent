@@ -14,6 +14,7 @@ import com.rokid.context.ai.local.LocalModel
 import com.rokid.context.data.models.LocalModelState
 import com.rokid.context.data.models.LocalModelStore
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -138,5 +139,34 @@ class LocalModelDownloadWorkerTest {
         assertEquals(failure("Not enough space"), runWorker())
         assertEquals(0, server.requestCount)
         assertFalse(part().exists())
+    }
+
+    /**
+     * Final review I4: Cancel, then Download again at once on a slow link. The stopped worker never writes after its
+     * replacement starts, so the replacement resumes a clean .part and the file verifies.
+     */
+    @Test fun cancelThenImmediateRedownloadLeavesAVerifiedFile() = runBlocking {
+        // A resumed download (appending), slow: 32 KB every 400 ms. The replacement's request is answered at once.
+        LocalModelStore.modelsDir(ctx).mkdirs()
+        part().writeBytes(data.copyOfRange(0, 1000))
+        val requests = java.util.concurrent.atomic.AtomicInteger()
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val from = request.getHeader("Range")!!.removePrefix("bytes=").removeSuffix("-").toInt()
+                val response = MockResponse().setResponseCode(206).setHeader("Content-Range", "bytes $from-${data.size - 1}/${data.size}").setBody(body(from))
+                return if (requests.getAndIncrement() == 0) response.throttleBody(32 * 1024, 400, java.util.concurrent.TimeUnit.MILLISECONDS) else response
+            }
+        }
+        val first = TestListenableWorkerBuilder<LocalModelDownloadWorker>(ctx).setInputData(workDataOf(LocalModelDownloadWorker.KEY_MODEL_ID to model.id)).build()
+        val running = launch(kotlinx.coroutines.Dispatchers.Default) { runCatching { first.doWork() } }
+        while (part().length() < 1000 + 32 * 1024) kotlinx.coroutines.delay(5)
+        running.cancel() // what CoroutineWorker does when its work is cancelled or replaced; its read is blocked now
+
+        assertEquals(ListenableWorker.Result.success(), runWorker())
+        kotlinx.coroutines.withTimeout(10_000) { running.join() }
+        Thread.sleep(800) // a stray chunk from the stopped worker would have landed by now
+        assertArrayEquals(data, store.fileFor(model).readBytes())
+        assertFalse("nothing written after the rename", part().exists())
+        assertTrue(com.rokid.context.ai.local.ModelFileVerifier.verify(store.fileFor(model), model.bytes, model.sha256))
     }
 }
