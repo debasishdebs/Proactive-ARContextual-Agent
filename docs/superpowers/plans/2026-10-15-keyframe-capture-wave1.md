@@ -35,16 +35,9 @@
   - **prefixes:** `search_document: ` / `search_query: `.
 - **Query embedding:** once at 768, then shortened for each index. Text and image scores are never compared.
 - **Keyframe:** a 640 px wide JPEG at q75 (requested via `ResolutionSelector`, 4:3, landscape after rotation). The 160 px grey thumbnail is internal to the glasses: never stored, never sent.
-- **Analysis rates:**
-
-  | State | Rate |
-  |---|---|
-  | moving | 3 Hz |
-  | still | 1 Hz |
-  | still, no keyframe for 2 min | 0.5 Hz |
-  | still, no keyframe for 10 min | 0.2 Hz |
-
-  Gyro onset gives an immediate check. A dwell (≥ 1.0 s still after motion) gives an immediate keyframe. Battery Saver or battery ≤ 20 % halves the rates.
+- **Motion-driven camera (spec §P1.1, revision 5):** the IMU runs always. The camera is open while moving and for the hold time H after motion, opening early on deceleration (gyro below 60 % of the peak); it's closed when settled, with a brief open → first usable frame → close check every 5 s (15 s after 10 quiet minutes). 3 Hz analysis while open. A dwell (≥ 1.0 s still) gives an immediate keyframe.
+- **Quick look** (`HudSettings.quickLookMs` ∈ {1000, 1500, 2000, 3000}, default 1500 provisional): H = 4 s / 2 s / 1 s / 0 (bursts every 2 s while moving). Battery Saver or battery ≤ 20 %: checks every 10 s, H halved. The values are confirmed by the Quick-look probe (spec Probe results 2).
+- **Camera LED:** never disabled, suppressed or worked around; it's reduced only by opening the camera less.
 - **Keyframe test:** the smaller Hamming distance of dHash and pHash must be > 10 against each of the last 5 keyframes; ≥ 1.2 s between keyframes; the blur floor uses Laplacian variance; the sharpest of each ≤ 1.5 s window while moving.
 - **Heat:**
   - MODERATE or battery ≥ 40 °C → rates halved;
@@ -52,7 +45,8 @@
   - resume below MODERATE and battery ≤ 38 °C for 2 min;
   - `getThermalHeadroom` is NaN on these glasses: record it, never depend on it.
 - **Work/rest:** W ∈ {30, 40, 45, 50, 60, 75, 90} min (default 45); R ∈ {5, 10, 15, 20} min (default 15); **if W > 45 then R ≥ 15** (enforced in the phone UI, and clamped again on the glasses for safety). During rest, a Fixed-mode capture every 60 s.
-- **Camera LED:** no torch, flash or LED control anywhere (`enableTorch`, `FLASH_MODE`, `/sys/class/leds`, vendor LED APIs).
+- **Camera LED rule test:** no torch, flash or LED control anywhere (`enableTorch`, `FLASH_MODE`, `/sys/class/leds`, vendor LED APIs).
+- **Phone power (spec §P2.5):** no work/rest on the phone. In the background, image vectors are batched every 60 s; at thermal ≥ MODERATE, background work pauses (non-user extraction ≤ 1 per 30 s); at ≥ SEVERE, all background processing pauses until below MODERATE for 2 min.
 - **Not worn:** proximity "far" for > 5 s.
 - **Camera LED:** never disabled or worked around.
 - **Budget:**
@@ -100,6 +94,7 @@ enum class MotionState { STILL, HEAD_MOVING, WALKING, VEHICLE, UNKNOWN }
 val captureMode: CaptureMode = CaptureMode.FIXED      // the phone sends SMART for new installs and the migration default
 val pauseWhenNotWorn: Boolean = true
 val workMinutes: Int = 45                              // 30 | 40 | 45 | 50 | 60 | 75 | 90
+val quickLookMs: Int = 1500                            // 1000 | 1500 | 2000 | 3000
 val restMinutes: Int = 15                              // 5 | 10 | 15 | 20; ≥ 15 when workMinutes > 45
 // pc_frame metadata (the existing frame meta class), new optional fields:
 val motion: MotionState = MotionState.UNKNOWN
@@ -344,7 +339,11 @@ interface GateStore { fun lastKeyframes(): List<Pair<Long, Long>>; fun push(d: L
 
 **Interfaces (Produces):**
 ```kotlin
-object AnalysisRate { fun intervalMs(state: MotionState, msSinceKeyframe: Long, lowPower: Boolean, heatSlow: Boolean): Long } // table from Global Constraints; lowPower and heatSlow each ×2
+object CameraPolicy {   // pure function of motion, time and settings → what the camera should do now
+    data class Decision(val open: Boolean, val analysisIntervalMs: Long, val nextBriefCheckAtMs: Long?)
+    fun decide(state: MotionState, decelerating: Boolean, msSinceMotionEnd: Long?, msSinceKeyframe: Long, quickLookMs: Int,
+               lowPower: Boolean, heatSlow: Boolean, nowMs: Long, lastBriefCheckAtMs: Long): Decision
+}
 class CameraOwner { suspend fun <T> acquire(owner: String, block: suspend () -> T): T; val current: String? }  // a Mutex: exactly one owner ("session" | "fixed")
 class SamplingSession(/* camera provider, CameraOwner, MotionClassifier, WearDetector, KeyframeGate, HeatGuard, WorkRest, sink: (KeyframeOut) -> Unit, clock */) {
     fun start(); fun stop(reason: String); val status: StateFlow<SessionStatus>
@@ -353,7 +352,9 @@ data class KeyframeOut(val jpeg: ByteArray, val width: Int, val motion: MotionSt
     val dhash: String, val phash: String, val sampleSeq: Long, val sessionId: String)
 data class SessionStatus(val running: Boolean, val motion: MotionState, val keyframesLast10Min: Int, val restingUntilMs: Long?, val reason: String?)
 ```
-- **CameraX:**
+- **Camera open/close** follows `CameraPolicy.decide`, evaluated on every motion change and every 250 ms. Brief checks open → take the first frame above the blur floor (or give up after 1.5 s) → close.
+- **Camera API:** use the faster of CameraX and Camera2 according to the Quick-look probe (spec Probe results 2); keep it behind `CameraOwner` so it can be swapped.
+- **CameraX (or the Camera2 equivalent):**
   - `ImageAnalysis` with `ResolutionSelector(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY, ResolutionStrategy(Size(640, 480), FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))` and `STRATEGY_KEEP_ONLY_LATEST`;
   - rotation applied before encoding, so the **output width is 640** (assert it: if it isn't 640 after rotation, scale to 640 wide and log the count);
   - the thumbnail comes from **Y-plane subsampling** (no JPEG, target ≤ 30 ms per sample);
@@ -368,7 +369,7 @@ data class SessionStatus(val running: Boolean, val motion: MotionState, val keyf
 - **Rest periods** (from G4): `stop("rest")`, then one Fixed capture every 60 s through `CameraOwner` until rest ends.
 
 **Tests:**
-- `AnalysisRateTest`: the table rows and halving.
+- `CameraPolicyTest`: `openWhileMoving`, `holdPerQuickLook` (4/2/1/0 s), `opensEarlyOnDeceleration`, `closedWhenSettled`, `briefCheckEvery5sThen15s`, `burstModeAt3s`, `lowPowerHalvesHold`.
 - `SamplingSessionTest` (fakes for camera, sensors, gate, clock): `startsOnlyWhenAllConditionsHold`, `onsetTriggersImmediateCheck`, `dwellForcesKeyframe`, `notWornStopsCamera`, `modeSwitchReleasesSessionBeforeFixedCapture` (Review Focus 3), `bindFailsThriceFallsBackToFixed`, `keyframeWidthIs640`, `captureNowForcesKeyframe`, `wearCheckOffKeepsSampling`, `restUsesFixedEvery60s`.
 - `OutboundBufferTest`: `dropsOldestNonDwellFirst`. `LedSourceRulesTest` (a source scan like `SettingsSourceRulesTest`): `noTorchFlashOrLedControlInGlassesSources`.
 
@@ -490,6 +491,8 @@ class NudgeEvaluator(private val clock: () -> Long, settleMs: () -> Long, gapMs:
 **Files:** `phone/.../ui/settings/capture/CaptureSettings.kt`; `phone/.../ui/settings/Diagnostics.kt`; settings inventory doc `docs/superpowers/specs/2026-10-14-settings-inventory.md` (additions).
 
 **Behaviour:**
+- **Quick look** 1 / 1.5 / 2 / 3 s (default from the probe), with a one-line explanation: "Shorter catches quicker glances; the camera light is on more."
+- **Phone power:** create `services/orchestration/.../work/budget/PhonePowerPolicy.kt` (foreground/background + thermal status → pause flags read by `KeyframePipeline` and the image-vector batching), with `PhonePowerPolicyTest`: `backgroundBatchesVectors60s`, `moderatePausesBackground`, `severePausesAll`, `userAskAlwaysAllowed`.
 - **Capture mode** Smart/Fixed (default Smart on this upgrade). **Interval** shown only in Fixed. **Pause when not worn**. **Work** 30/40/45/50/60/75/90 min, **Rest** 5/10/15/20 min; when Work > 45, Rest 5 and 10 are disabled and an existing lower Rest is raised to 15 with a short note. **AI call pace** 10/12/15 s.
 - Remove the "Take an extra photo when the scene changes" switch.
 - The status line uses `SessionStatus` when available.

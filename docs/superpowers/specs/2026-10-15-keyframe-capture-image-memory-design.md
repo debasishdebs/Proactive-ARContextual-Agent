@@ -178,7 +178,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   - In Smart mode the interval setting is hidden. The dead "extra photo on scene change" (`burstOnChange`) switch is **removed** from the UI; the field stays in the protocol, ignored.
 - **The sampling session (Smart mode):**
   - Start: the HUD is visible (the Android 12 rule that a camera foreground service must start from the foreground), the glasses are worn, capture isn't paused, and battery and heat allow it.
-  - CameraX `ImageAnalysis` stays bound for the whole session, using STRATEGY_KEEP_ONLY_LATEST at a target of 640×480.
+  - **The camera follows head motion (revision 5, user decision 2026-10-15):** the camera is opened only while it can matter (§"Motion-driven camera" below). It is **not** bound for the whole session. The analysis stream uses STRATEGY_KEEP_ONLY_LATEST at a target of 640×480, through CameraX or Camera2, whichever starts faster in the Quick-look probe.
     - Each sample is downscaled to a **160 px grey thumbnail used only inside the glasses**, for the hashes, blur and motion checks. It's never stored or sent.
     - Only a keyframe is encoded: **640 px wide JPEG at q75**.
   - The session lives in the existing keep-alive `CaptureService`. The AlarmManager chain stays only for Fixed mode and as a watchdog that restarts sampling after a process death.
@@ -194,26 +194,34 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 
     Thresholds are constants, tuned from the P1 device run.
   - A hook for P3: if a phone motion hint (§P3) says `VEHICLE` or `WALKING`, the floor is that state's cadence.
-- **Analysis rate (decision B1, relaxed by the user).** With the camera bound, a "sample" is only a 160 px check of a frame the camera already delivers (about 25 fps in the probe). It isn't a new capture.
+- **Motion-driven camera (revision 5).** The IMU runs all the time (cheap, no LED); the camera, and therefore its LED, is on only around motion.
 
-  | Condition | Frames checked |
-  |---|---|
-  | `HEAD_MOVING` or `WALKING` | 3 per second |
-  | `STILL` | 1 per second |
-  | `STILL` and no keyframe for 2 min | 1 every 2 s |
-  | `STILL` and no keyframe for 10 min | 1 every 5 s |
+  | Phase | Camera | Frames checked while open |
+  |---|---|---|
+  | Head moving or walking | **open** | 3 per second |
+  | Just stopped: hold time **H** after motion ends | **open** | 3 per second, with a dwell keyframe at ≥ 1.0 s still |
+  | Settled (after H) | **closed**, LED off | a brief check every 5 s: open → first usable frame → close |
+  | Settled with no keyframe for 10 min | closed | a brief check every 15 s |
 
-  - **Immediate triggers:** the move from still to moving (gyro onset) checks a frame straight away and goes to 3 per second. A dwell (below) takes its keyframe straight away.
-  - Battery Saver or battery ≤ 20 % halves every rate (today's rule).
-- **The promise (user decision):**
-  - **under normal operation**, meaning a sampling session active (worn, not paused, not in a rest period, no heat stop, not at the slowest still rate) and at least one usable frame (above the blur floor, not dark): **anything you turn to look at for ≥ 1.5 s** gets a keyframe;
-  - a change in front of a **still** head is caught within ≤ 5 s (the slowest rate);
-  - quick glances under 1.5 s are best effort, not promised.
-- **Camera LED (user note):** the camera's privacy LED is lit whenever the camera is bound, whatever the resolution, so onlookers can't tell photos from video.
-  - Smart mode keeps the camera bound during a sampling session, so the LED is **on continuously** while sampling. In rest periods and Fixed mode it blinks for each capture.
-  - The app **does not and will not** try to switch the LED off: it's the bystanders' notice that the camera is active.
-  - **Checks:** a source-rule test (no torch, flash or LED control calls: `enableTorch`, `FLASH_MODE`, `/sys/class/leds`, any vendor LED API) and a manual device-checklist item (the LED is lit through a sampling session and blinks for each capture in rest/Fixed mode).
-  - So the relaxed 1–1.5 s numbers stand. They aren't tightened to 0.5–0.6 s, because a tighter promise would only matter if the LED could be avoided.
+  - **Early start:** the camera opens when the head **starts to decelerate** (gyro magnitude falling below 60 % of the movement's peak), not after it stops, to hide the start-up delay.
+  - **Quick look setting** (Settings → Capture; the user decision is minimum 1 s): sets H.
+
+    | Quick look | H (hold) | While moving |
+    |---|---|---|
+    | 1 s | 4 s | camera open |
+    | **1.5 s (provisional default)** | 2 s | camera open |
+    | 2 s | 1 s | camera open |
+    | 3 s | 0 | bursts: one brief check every 2 s |
+
+    The default and the H values are confirmed or adjusted by the Quick-look probe (§Probe results 2).
+  - Battery Saver or battery ≤ 20 %: brief checks every 10 s and H halved.
+- **The promise (user decision; configurable through Quick look):**
+  - **under normal operation**, meaning a sampling session active (worn, not paused, not in a rest period, no heat stop) and at least one usable frame (above the blur floor, not dark): **anything you look at for ≥ the Quick look time (default 1.5 s) right after moving** gets a keyframe;
+  - a change in front of a **settled** head is caught within ≤ 5 s (≤ 15 s after 10 quiet minutes);
+  - shorter glances are best effort.
+- **Camera LED (final, 2026-10-15):** the privacy LED is lit whenever the camera is open. The app **never switches it off, suppresses it or works around it**: it's the only notice bystanders get, and frames are clear enough (640 px) to read faces and text. The user asked to explore disabling it; Claude declined.
+  - LED minimisation comes **only** from opening the camera less (above).
+  - **Checks:** a source-rule test (no torch, flash or LED control calls: `enableTorch`, `FLASH_MODE`, `/sys/class/leds`, any vendor LED API), and a manual device-checklist item (the LED lights while the camera is open and goes dark when settled).
 - **Keyframe test** (`KeyframeGate`, replacing `FrameGuard`'s hash check; the dark-frame and battery skips stay):
   1. **Blur:** variance of the Laplacian on the 160 px thumbnail. While moving, samples are taken in windows of up to 1.5 s (2–3 samples), and only the sharpest one is considered. A sample below the blur floor is dropped.
   2. **Change:** a 64-bit dHash and a 64-bit pHash. The sample is **new** when the smaller of the two Hamming distances is > 10 against **each of the last 5 keyframes** (a ring buffer persisted in `capture_guard` prefs).
@@ -239,7 +247,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   - **Work/rest limits** (§P1.5);
   - the **status line**: "Sampling · walking · 12 keyframes in the last 10 min" or "Resting until 14:20 (heat)".
 
-### P1.5 Heat and work/rest
+### P1.5 Heat and work/rest (glasses only; the phone has no work/rest timings)
 - **Readings every 30 s:** `PowerManager.getCurrentThermalStatus()`, `getThermalHeadroom(30)` (recorded; it may be NaN on this HAL), and battery temperature.
 - **Policy:**
 
@@ -318,6 +326,11 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 
 ### P2.5 Errors and limits
 - **Provider error:** today's retry backoff applies, and the bucket token is refunded on transport errors only.
+- **Phone power and heat (user decision, revision 5; no work/rest timings on the phone):**
+  - the phone pipeline runs continuously;
+  - **app not in the foreground:** image vectors are batched every 60 s instead of on every arrival, while extraction keeps its budget;
+  - **phone thermal status ≥ MODERATE:** background work pauses (image vectors, caption queue, backfill, non-user extraction beyond 1 call per 30 s); user-started asks keep working;
+  - **≥ SEVERE:** all background processing pauses until the status is below MODERATE for 2 min. Frames stay durable in `frame_state`.
 - **Battery Saver, or battery ≤ 30 % and not charging:** today's deferral rules stay. Live nudges pause; the user-started bypass still works.
 - **Offline and backlog durability (review finding 7):** the backlog's source of truth is the new `frame_state` table (§C), not the 24 h-TTL job queue.
   - **Claims (review fix 4):** moving to `EXTRACTING` sets `claimed_at`. A claim older than 5 min (longer than the call timeout) counts as **abandoned**: the frame goes back to `PENDING` and `attempts` increases.
