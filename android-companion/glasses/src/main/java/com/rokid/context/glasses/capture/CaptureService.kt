@@ -64,8 +64,13 @@ class CaptureService : LifecycleService() {
     private val runtime by lazy { GlassesRuntime.get(this) }
     private val inFlight = AtomicBoolean(false)
     @Volatile private var lastStartId = 0
+    @Volatile private var keepAliveMode = false
+    @Volatile internal var capturesStarted = 0
+        private set
+    @Volatile internal var lastOutcome: Outcome? = null
+        private set
 
-    private enum class Outcome { BUFFERED, SKIPPED, FAILED }
+    internal enum class Outcome { BUFFERED, SKIPPED, FAILED }
 
     override fun onCreate() {
         super.onCreate()
@@ -74,6 +79,7 @@ class CaptureService : LifecycleService() {
     }
 
     override fun onDestroy() {
+        if (liveInstance === this) liveInstance = null
         cameraExecutor.shutdown()
         scope.cancel()
         super.onDestroy()
@@ -82,35 +88,69 @@ class CaptureService : LifecycleService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         val action = intent?.action
-        if (action != ACTION_SCHEDULED && action != ACTION_NOW) { stopSelf(startId); return START_NOT_STICKY }
+        if (action == ACTION_KEEP_ALIVE) {
+            // Started while the HUD is in front: this foreground service keeps while-in-use camera access after the
+            // app goes to the background, as long as nothing restarts it from the background (alarms come in-process).
+            val started = startForegroundOrStop(start = { startForeground(NOTIFICATION_ID, notification()) }) { stopSelf(startId) }
+            if (started) { keepAliveMode = true; liveInstance = this; Log.i(TAG, "keep-alive started") }
+            return START_NOT_STICKY
+        }
+        if (action != ACTION_SCHEDULED && action != ACTION_NOW) { if (!keepAliveMode) stopSelf(startId); return START_NOT_STICKY }
         lastStartId = startId
         val started = startForegroundOrStop(start = { startForeground(NOTIFICATION_ID, notification()) }) {
             scheduleNextCapture(failed = true)
-            stopSelf(startId)
+            if (!keepAliveMode) stopSelf(startId)
         }
         if (!started) return START_NOT_STICKY
-        if (!inFlight.compareAndSet(false, true)) return START_NOT_STICKY // the running capture stops the service
-        val skipDedupe = BuildConfig.DEBUG && intent?.getBooleanExtra(EXTRA_SKIP_DEDUPE, false) == true
+        captureNow(BuildConfig.DEBUG && intent?.getBooleanExtra(EXTRA_SKIP_DEDUPE, false) == true)
+        return START_NOT_STICKY
+    }
+
+    /**
+     * Runs one capture in this (already foreground) service. False when one is already in flight (it schedules the next).
+     * Outside keep-alive mode the service stops after the capture, as before.
+     */
+    internal fun captureNow(skipDedupe: Boolean): Boolean {
+        if (!inFlight.compareAndSet(false, true)) return false
+        capturesStarted++
         scope.launch {
             var failed = false
             try {
                 runtime.pauses.ensureLoaded()
-                failed = captureOnce(skipDedupe) == Outcome.FAILED
+                val outcome = captureOnce(skipDedupe)
+                lastOutcome = outcome
+                failed = outcome == Outcome.FAILED
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 failed = true
+                lastOutcome = Outcome.FAILED
                 Log.w(TAG, "capture failed: ${e.javaClass.simpleName}")
             } finally {
                 scheduleNextCapture(failed)
                 inFlight.set(false)
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                // The latest start, so a start that arrived during this capture is not cut off early.
-                stopSelfResult(lastStartId)
+                if (!keepAliveMode) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    // The latest start, so a start that arrived during this capture is not cut off early.
+                    stopSelfResult(lastStartId)
+                }
             }
         }
-        return START_NOT_STICKY
+        return true
     }
+
+    /** The wearer exited the app: leave keep-alive mode and stop (after a capture in flight, which then stops it). */
+    internal fun endKeepAlive() {
+        keepAliveMode = false
+        if (liveInstance === this) liveInstance = null
+        if (!inFlight.get()) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+        Log.i(TAG, "keep-alive stopped")
+    }
+
+    internal val captureInFlight: Boolean get() = inFlight.get()
 
     private fun scheduleNextCapture(failed: Boolean) {
         val s = HudSettingsCache(getSharedPreferences(HudSettingsCache.PREFS, Context.MODE_PRIVATE)).read()
@@ -434,6 +474,7 @@ class CaptureService : LifecycleService() {
         const val TAG = "PcCapture"
         const val ACTION_SCHEDULED = "com.rokid.context.glasses.action.CAPTURE_SCHEDULED"
         const val ACTION_NOW = "com.rokid.context.glasses.action.CAPTURE_SERVICE_NOW"
+        const val ACTION_KEEP_ALIVE = "com.rokid.context.glasses.action.CAPTURE_KEEP_ALIVE"
         /** Debug builds only: ignore dedupe and throttle so adb checks can capture a static scene. */
         const val EXTRA_SKIP_DEDUPE = "skip_dedupe"
         private const val CHANNEL_ID = "pc_capture"
@@ -448,7 +489,22 @@ class CaptureService : LifecycleService() {
         private const val JPEG_QUALITY = 62
         private const val MAX_SEND_WIDTH = 360
 
+        /** The running keep-alive service in this process, if any; alarms and capture-now go to it in-process. */
+        @Volatile internal var liveInstance: CaptureService? = null
+
+        /** Call only while the HUD activity is visible: a foreground start from the background loses the camera. */
+        fun startKeepAlive(context: Context) {
+            if (liveInstance != null) return
+            runCatching { context.startForegroundService(Intent(context, CaptureService::class.java).setAction(ACTION_KEEP_ALIVE)) }
+                .onFailure { Log.w(TAG, "keep-alive start refused: ${it.javaClass.simpleName}") }
+        }
+
+        fun stopKeepAlive(context: Context) {
+            liveInstance?.endKeepAlive()
+        }
+
         fun captureNow(context: Context, skipDedupe: Boolean = false) {
+            liveInstance?.let { if (!it.captureNow(BuildConfig.DEBUG && skipDedupe)) Log.i(TAG, "capture already in flight"); return }
             context.startForegroundService(Intent(context, CaptureService::class.java).setAction(ACTION_NOW).putExtra(EXTRA_SKIP_DEDUPE, skipDedupe))
         }
     }

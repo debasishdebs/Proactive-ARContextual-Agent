@@ -72,7 +72,7 @@ class MainActivity : ComponentActivity() {
     private var permissionPending = false
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         permissionPending = false
-        if (result[Manifest.permission.CAMERA] == true) ensureCaptureScheduled()
+        if (result[Manifest.permission.CAMERA] == true) { ensureCaptureScheduled(); CaptureService.startKeepAlive(this) }
         else if (!granted(Manifest.permission.CAMERA)) Log.w(TAG, "camera permission denied: capture stays off")
     }
 
@@ -107,11 +107,13 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         controller.onActivityStart()
         runtime.hudPresence.onStarted()
+        // In front now: start the keep-alive camera service so captures keep working after the wearer leaves the HUD.
+        if (granted(Manifest.permission.CAMERA)) CaptureService.startKeepAlive(this)
     }
 
     /** Finishing closes the session at once; [onDestroy] may come late. */
     override fun onStop() {
-        if (isFinishing) { cancelAsk(); controller.onActivityExit() }
+        if (isFinishing) { cancelAsk(); controller.onActivityExit(); CaptureService.stopKeepAlive(this) }
         runtime.hudPresence.onStopped(finishing = isFinishing)
         super.onStop()
     }
@@ -302,7 +304,7 @@ class MainActivity : ComponentActivity() {
         swipeTimer.removeCallbacks(closeSwipe)
         cancelAsk()
         controller.onActivityExit()
-        if (isFinishing) runtime.hudPresence.onExited()
+        if (isFinishing) { runtime.hudPresence.onExited(); CaptureService.stopKeepAlive(this) }
         runtime.detach(controller)
         super.onDestroy()
     }
