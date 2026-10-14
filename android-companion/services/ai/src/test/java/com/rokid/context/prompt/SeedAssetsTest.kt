@@ -47,4 +47,13 @@ class SeedAssetsTest {
         assertEquals(true, PromptDefaults.PREVIOUS.getValue(PromptKey.ANSWER).contains("4235a1301a8aad35e73715eef4331716edc854d90159cf64d2a7f0365b40e7a4"))
         assertEquals(false, PromptDefaults.PREVIOUS.getValue(PromptKey.ANSWER).contains(current))
     }
+
+    /** The VISION_EXTRACT default with the provenance contract is pinned; the pre-provenance one (seed + FACTS schema) upgrades. */
+    @Test fun shippedVisionDefaultIsPinnedAndThePreProvenanceOneUpgrades() {
+        val seeds = AssetPromptSeeds(ApplicationProvider.getApplicationContext())
+        val current = PromptDefaults.fingerprint(seeds.template(PromptKey.VISION_EXTRACT).trim(), com.rokid.context.ai.contract.DefaultSchemas.text(PromptKey.VISION_EXTRACT))
+        assertEquals("df262c3711776a9a2a48b6f7b5a433ebceb4b0328b7879533a7b75bac1d4d8da", current)
+        assertEquals(true, PromptDefaults.PREVIOUS.getValue(PromptKey.VISION_EXTRACT).contains("5514441bfd6ef6b92723afb143e91c9d62c4f165387718c36c1b12d77d0c8656"))
+        assertEquals(false, PromptDefaults.PREVIOUS.getValue(PromptKey.VISION_EXTRACT).contains(current))
+    }
 }
