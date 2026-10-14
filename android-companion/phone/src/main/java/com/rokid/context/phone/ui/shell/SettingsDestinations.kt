@@ -150,6 +150,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             LocalModelsSource(
                 LocalModels.all, s.localModels, s.ai, s.onEmbedBindingChanged, s.localModelsMobileData,
                 abiSupported = "arm64-v8a" in android.os.Build.SUPPORTED_ABIS, loadFailures = s.localModelLoadFailures,
+                swap = com.rokid.context.phone.ui.settings.ai.SpacesSwapRollback(s.spaces, s.onEmbedBindingChanged),
             )
         }
         LocalModelsRoute(source, onBack = back)

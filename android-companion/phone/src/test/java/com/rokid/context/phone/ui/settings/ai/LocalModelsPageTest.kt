@@ -265,6 +265,43 @@ class LocalModelsPageTest {
         assertTrue(shown.toString(), shown.none { it.contains("llama.cpp") || it.contains("Exception") || it.contains("APK") })
     }
 
+    /** Spec §F.2: Roll back appears only while a retired index is inside its 7-day grace. */
+    @Test fun rollBackShownOnlyInGrace() {
+        val graph = TestGraph.fresh(ctx)
+        var t = 1_000L
+        val day = 24 * 60 * 60 * 1000L
+        val spaces = com.rokid.context.memory.EmbeddingSpaces(graph.db.embeddingDao(), com.rokid.context.memory.InMemoryRetiredClock(), { t })
+        runBlocking {
+            graph.memories.add(com.rokid.context.memory.db.MemoryEntity("m1", null, "t", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 1, false, ""))
+            val a = spaces.startBuilding("fpA", "{}", 2, "[]", 1); spaces.put("m1", a.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(a.id)
+            val b = spaces.startBuilding("fpB", "{}", 2, "[]", 2); spaces.put("m1", b.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(b.id)
+        }
+        t += 3 * day
+        val inGrace = LocalModelsSource(LocalModels.all, gateway, ai, {}, mobile, abiSupported = true, swap = SpacesSwapRollback(spaces) {})
+        show(inGrace)
+        compose.onNodeWithTag("local_models_roll_back").assertExists()
+        compose.onNodeWithTag("local_models_roll_back").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Rolled back", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("local_models_roll_back").assertDoesNotExist()
+    }
+
+    @Test fun rollBackHiddenAfterGraceAndDialogCarriesTheCounts() {
+        val graph = TestGraph.fresh(ctx)
+        var t = 1_000L
+        val spaces = com.rokid.context.memory.EmbeddingSpaces(graph.db.embeddingDao(), com.rokid.context.memory.InMemoryRetiredClock(), { t })
+        runBlocking {
+            graph.memories.add(com.rokid.context.memory.db.MemoryEntity("m1", null, "t", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 1, false, ""))
+            val a = spaces.startBuilding("fpA", "{}", 2, "[]", 1); spaces.put("m1", a.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(a.id)
+            val b = spaces.startBuilding("fpB", "{}", 2, "[]", 2); spaces.put("m1", b.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(b.id)
+        }
+        t += 8 * 24 * 60 * 60 * 1000L
+        show(LocalModelsSource(LocalModels.all, gateway, ai, {}, mobile, abiSupported = true, swap = SpacesSwapRollback(spaces) {}))
+        compose.onNodeWithTag("local_models_roll_back").assertDoesNotExist()
+        assertEquals("2 photos will be searchable by text only\n1 photos will no longer be findable at all\nBoth can be recovered with Roll back for 7 days.",
+            LocalModelsSource.impactText(com.rokid.context.memory.SwapImpact(2, 1)).trim())
+        assertEquals("", LocalModelsSource.impactText(com.rokid.context.memory.SwapImpact(0, 0)))
+    }
+
     @Test fun settingsAiRowSitsAfterAgentFlows() {
         val opened = mutableListOf<String>()
         compose.setContent { PcTheme { SettingsRootScreen(SettingsRootUiState("Linked", "Every 5 min"), live = Routes.LIVE_SETTINGS, onOpen = { opened += it }) } }
