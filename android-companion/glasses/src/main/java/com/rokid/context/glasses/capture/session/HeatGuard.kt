@@ -10,7 +10,8 @@ data class HeatReading(val thermalStatus: Int, val headroom: Float, val batteryT
 enum class HeatLevel { OK, SLOW, STOP }
 
 /**
- * Heat policy (spec P1.5). The owner calls [poll] every 30 s. MODERATE or battery >= 40 C: SLOW; SEVERE+ or
+ * Heat policy (spec P1.5). The owner calls [poll] every 30 s, STOP included (see [HeatPoller]); [clock] must be
+ * SystemClock.elapsedRealtime (a reading that goes backwards restarts the cool-down). MODERATE or battery >= 40 C: SLOW; SEVERE+ or
  * battery >= 44 C: STOP; STOP lifts only after below MODERATE and battery <= 38 C for 2 min without a break.
  * [headroom][HeatReading.headroom] is never used for a decision (NaN here); the last finite value is kept for diagnostics.
  */
@@ -22,22 +23,29 @@ class HeatGuard(private val read: () -> HeatReading, private val clock: () -> Lo
     @Volatile var lastHeadroom: Float? = null
         private set
 
+    /** The newest reading as the HAL gave it (headroom NaN included), for the Diagnostics line. */
+    @Volatile var lastReading: HeatReading? = null
+        private set
+
     private var coolSinceMs: Long? = null
 
     @Synchronized
     fun poll() {
         val r = read()
+        lastReading = r
         if (!r.headroom.isNaN()) lastHeadroom = r.headroom
-        val temp = r.batteryTempC.takeUnless { it.isNaN() } ?: Float.NEGATIVE_INFINITY // an unreadable battery never heats
+        val tempKnown = !r.batteryTempC.isNaN()
+        val temp = if (tempKnown) r.batteryTempC else Float.NEGATIVE_INFINITY // an unreadable battery never starts a stop
         val stop = r.thermalStatus >= SEVERE || temp >= STOP_C
         val slow = r.thermalStatus >= MODERATE || temp >= SLOW_C
-        val cool = r.thermalStatus < MODERATE && temp <= RESUME_C
+        val cool = r.thermalStatus < MODERATE && tempKnown && temp <= RESUME_C // no battery temperature: a STOP is held
         when {
             stop -> { coolSinceMs = null; _level.value = HeatLevel.STOP }
             _level.value == HeatLevel.STOP -> {
                 if (!cool) { coolSinceMs = null; return }
                 val now = clock()
-                val since = coolSinceMs ?: now.also { coolSinceMs = it }
+                var since = coolSinceMs ?: now.also { coolSinceMs = it }
+                if (now < since) { since = now; coolSinceMs = now } // the clock went back: restart the cool-down
                 if (now - since >= RESUME_AFTER_MS) { coolSinceMs = null; _level.value = if (slow) HeatLevel.SLOW else HeatLevel.OK }
             }
             else -> _level.value = if (slow) HeatLevel.SLOW else HeatLevel.OK

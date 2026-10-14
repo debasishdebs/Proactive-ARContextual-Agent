@@ -132,4 +132,15 @@ class KeyframeGateTest {
         assertTrue(r.dwell)
         assertEquals(0, gate.retainedCount())
     }
+
+    @Test fun forcedOfferBypassesChangeTestAndThrottleButNotBlur() {
+        assertIs<GateResult.Keep>(at(10_000, cand(1)))
+        assertEquals("DUPLICATE", reason(at(14_000, cand(1))))
+        now = 14_100
+        assertIs<GateResult.Keep>(gate.offer(cand(1), MotionState.STILL, false, force = true)) // a duplicate, forced
+        now = 14_200 // inside the 0.5 s gap of that keep
+        assertIs<GateResult.Keep>(gate.offer(cand(1), MotionState.WALKING, false, force = true)) // forced while moving too
+        now = 20_000
+        assertEquals("BLUR", reason(gate.offer(cand(2, soft = 100), MotionState.STILL, false, force = true)))
+    }
 }

@@ -12,7 +12,7 @@ import androidx.compose.ui.unit.sp
 
 /** HUD text for the two capture marks (spec P1.5 "Cooling" icon, P1.6 "capture degraded" mark). */
 object CaptureStatusCopy {
-    const val COOLING = "❄ Cooling"
+    const val COOLING = "Cooling"
     const val DEGRADED = "! capture degraded"
 }
 
