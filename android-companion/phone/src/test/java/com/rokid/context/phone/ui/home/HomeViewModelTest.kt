@@ -57,6 +57,14 @@ class HomeViewModelTest {
 
     @After fun tearDown() { vm.cancelScope(); TestGraph.close(ctx) }
 
+    @Test fun photosTodayUpdatesLive() = runBlocking {
+        graph.frames.add(Fixtures.frame("y", Fixtures.at(Fixtures.TODAY.minusDays(1), 23, 50))) // yesterday: not counted
+        graph.frames.add(Fixtures.frame("t1", Fixtures.at(Fixtures.TODAY, 0, 5)))
+        assertEquals(1, withTimeout(5_000) { vm.state.first { it.photosToday == 1 } }.photosToday)
+        graph.frames.add(Fixtures.frame("t2", Fixtures.at(Fixtures.TODAY, 9, 55)))
+        assertEquals(2, withTimeout(5_000) { vm.state.first { it.photosToday == 2 } }.photosToday)
+    }
+
     @Test fun feedMergesAsksAndNudgesNewestFirst() = runBlocking {
         graph.asks.upsert(Fixtures.ask("a1", Fixtures.at(Fixtures.TODAY, 8)))
         graph.nudges.addIgnore(Fixtures.nudge("n1", Fixtures.at(Fixtures.TODAY, 9)))

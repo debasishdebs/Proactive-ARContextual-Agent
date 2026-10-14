@@ -216,6 +216,7 @@ class MainActivity : ComponentActivity() {
         val connection by controller.connection.collectAsStateWithLifecycle()
         val pauses by runtime.pauses.records.collectAsStateWithLifecycle()
         val recording by runtime.listening.collectAsStateWithLifecycle()
+        val photoCue by runtime.photoCue.active.collectAsStateWithLifecycle()
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
         var battery by remember { mutableStateOf(runtime.batteryPct()) }
         LaunchedEffect(Unit) {
@@ -238,6 +239,7 @@ class MainActivity : ComponentActivity() {
                 view = view, frame = frame, settings = settings,
                 connection = connection, batteryPct = battery, paused = pauses.any { it.isActiveAt(now) },
                 nextCaptureAtMs = nextCaptureAt(), nowMs = now, nav = nav, confirmHighlightYes = highlightYes, recording = recording,
+                photoCue = photoCue,
             ),
         )
     }

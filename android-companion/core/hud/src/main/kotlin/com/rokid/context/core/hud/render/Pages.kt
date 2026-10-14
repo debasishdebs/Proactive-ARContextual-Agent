@@ -61,7 +61,10 @@ fun GlancePage(m: HudModel) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Label(if (m.paused) "PAUSED" else "NEXT", 20.sp, Hud.SECONDARY)
                 if (m.paused) Glyph(Icons.Outlined.Pause, 56.dp, Hud.PRIMARY)
-                else Label(formatCountdown(m.nextCaptureAtMs, m.nowMs), 56.sp, Hud.PRIMARY, FontWeight.Bold)
+                else Row(verticalAlignment = Alignment.CenterVertically) {
+                    Label(formatCountdown(m.nextCaptureAtMs, m.nowMs), 56.sp, Hud.PRIMARY, FontWeight.Bold)
+                    if (m.photoCue) Label(HudCopy.PHOTO_CUE, 36.sp, Hud.PRIMARY, FontWeight.Bold, modifier = Modifier.padding(start = 10.dp))
+                }
             }
         }
         val nudge = m.frame?.latestNudge
