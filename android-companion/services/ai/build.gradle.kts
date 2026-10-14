@@ -6,7 +6,21 @@ plugins {
 android {
     namespace = "com.rokid.context.services.ai"
     compileSdk = 36
-    defaultConfig { minSdk = 29 }
+    ndkVersion = "28.2.13676358"
+    defaultConfig {
+        minSdk = 29
+        ndk { abiFilters += "arm64-v8a" } // on-device models: 64-bit ARM only
+        externalNativeBuild { cmake { arguments += "-DANDROID_STL=c++_static" } }
+    }
+    buildTypes {
+        release { externalNativeBuild { cmake { cppFlags += "-O3"; cFlags += "-O3" } } }
+    }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     testOptions { unitTests.isIncludeAndroidResources = true }
