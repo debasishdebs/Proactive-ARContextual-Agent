@@ -49,7 +49,7 @@ class CameraPolicyTest {
 
     @Test fun immediateCheckAtMotionEndPlusHWhenShorterThanLook() {
         // look 2 s, H 1 s: motion ended 1.5 s ago -> check was due at end+H = now-500
-        val r = d(look = 2000, sinceEnd = 1500, now = 100_000, lastBrief = 90_000)
+        val r = d(look = 2000, sinceEnd = 1500, now = 100_000, lastBrief = 99_000)
         assertEquals(99_500L, r.nextBriefCheckAtMs)
         // already checked since: back to the regular cadence
         assertEquals(105_000L, d(look = 2000, sinceEnd = 1500, lastBrief = 99_800).nextBriefCheckAtMs)
