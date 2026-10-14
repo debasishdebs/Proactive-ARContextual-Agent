@@ -19,6 +19,7 @@ import com.rokid.context.glasses.overlay.MinimisedIcon
 import com.rokid.context.glasses.overlay.PhotoCue
 import com.rokid.context.glasses.overlay.PopupOverlay
 import com.rokid.context.glasses.capture.HudPresence
+import com.rokid.context.glasses.capture.KeyframeOut
 import com.rokid.context.glasses.capture.OutboundBuffer
 import com.rokid.context.glasses.link.CxrBridge
 import com.rokid.context.glasses.link.FrameUplink
@@ -178,6 +179,15 @@ class GlassesRuntime private constructor(private val app: Context) {
         synchronized(captureGate) {
             if (!pauses.captureAllowed()) return BufferResult.PAUSED
             if (!buffer.add(frameId, jpeg, capturedAtMs, luma, phash, batteryPct)) return BufferResult.NOT_STORED
+            if (!pauses.captureAllowed()) { buffer.remove(frameId); return BufferResult.PAUSED }
+            BufferResult.STORED
+        }
+
+    /** A sampled keyframe: buffered with its full metadata so it reaches the phone (and survives a restart) intact. */
+    fun bufferCaptured(frameId: String, keyframe: KeyframeOut, capturedAtMs: Long, luma: Int?, batteryPct: Int?): BufferResult =
+        synchronized(captureGate) {
+            if (!pauses.captureAllowed()) return BufferResult.PAUSED
+            if (!buffer.add(frameId, keyframe.jpeg, capturedAtMs, luma, keyframe.phash, batteryPct, keyframe = keyframe)) return BufferResult.NOT_STORED
             if (!pauses.captureAllowed()) { buffer.remove(frameId); return BufferResult.PAUSED }
             BufferResult.STORED
         }
