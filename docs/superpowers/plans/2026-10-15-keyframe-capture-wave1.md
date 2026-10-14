@@ -21,7 +21,7 @@
 - llama.cpp JNI (existing), ONNX Runtime Android (`com.microsoft.onnxruntime:onnxruntime-android`, MIT);
 - Robolectric `@Config(sdk=[34])`.
 
-**Spec:** `docs/superpowers/specs/2026-10-15-keyframe-capture-image-memory-design.md` (revision 4, `82c97cf`). Read the spec section named in each task before starting it. The spec wins on any conflict.
+**Spec:** `docs/superpowers/specs/2026-10-15-keyframe-capture-image-memory-design.md` (revision 6). Read the spec section named in each task before starting it. The spec wins on any conflict.
 
 ## Global Constraints
 
@@ -77,7 +77,7 @@
 1. **Version skew:** new phone + old glasses, or old phone + new glasses. A `pc_frame` without the new fields is ingested as `motion=UNKNOWN`, not dwell; old `HudSettings` without `captureMode` mean Fixed on new glasses. Owned by T0: `oldFrameMetaParsesWithDefaults`, `oldHudSettingsMeanFixedMode`.
 2. **Upgrading an install with v1 data:** inbox frames and queued 24 h jobs that exist before v2. They are backfilled into `frame_state` as PENDING on first start after the migration, without duplicating already-extracted frames. Owned by P1: `preV2InboxFramesAreAdoptedOnce`.
 3. **Switching Smart → Fixed (or entering rest) while a session holds the camera:** there's exactly one camera owner at any instant, and no "camera in use" error. Owned by G3: `modeSwitchReleasesSessionBeforeFixedCapture`.
-4. **Forgetting one memory from a 3-photo batch whose frames are shared with another memory:** only that memory's `frame_source` rows go, and a frame is tombstoned only when no surviving memory cites it. Owned by P3: `forgetSharedFrameKeepsOtherMemory`.
+4. **Forgetting one memory from a 3-photo batch whose frames are shared with another memory:** that memory's `frame_source` rows go and its frames are tombstoned at once (no re-extraction); the photo stays while another memory cites it. Owned by P3: `forgetSharedFrameKeepsOtherMemory`.
 5. **Clock skew between the glasses and the phone** (seconds to minutes): latency stats and caption aging use phone-receive time plus the existing clock offset, never raw glasses time. Owned by P5: `latencyUsesOffsetCorrectedCaptureTime`.
 
 ---
@@ -122,7 +122,7 @@ val width: Int? = null; val sampleSeq: Long? = null; val sessionId: String? = nu
 ```kotlin
 enum class CallClass { USER, EXTRACT, NUDGE, CAPTION_QUEUE, BACKFILL, OTHER }
 interface LanguageModel { suspend fun complete(request: ModelRequest, callClass: CallClass = CallClass.OTHER): ModelReply }
-fun interface CallGate { suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T }   // default: no-op pass-through
+interface CallGate { suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T }   // a regular interface: Kotlin forbids type parameters on a fun interface's method
 object PassThroughGate : CallGate { override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T) = block() }
 ```
 - `ModelRouter` implements `LanguageModel`. Every provider `complete` call inside it is wrapped in `gate.withPermit(callClass)`, and `gate` is injected (default `PassThroughGate`).
@@ -176,18 +176,20 @@ object NomicText {
 ```kotlin
 object NomicVision {
     const val INPUT = 224
-    fun preprocess(jpeg: ByteArray): FloatArray        // decode → centre crop → 224×224 → RGB, normalised (mean [0.48145466,0.4578275,0.40821073], std [0.26862954,0.26130258,0.27577711]), NCHW
+    fun preprocess(jpeg: ByteArray, cfg: PreprocessConfig): FloatArray   // EXACTLY the pinned processor config's order (resize → crop as the config says), resample mode, rescale, mean/std, RGB, NCHW
+    data class PreprocessConfig(/* copied verbatim from preprocessor_config.json at the pinned commit */ val resize: Int, val crop: Int, val resample: String, val mean: FloatArray, val std: FloatArray, val rescale: Float)
     fun fingerprint(dims: Int): String                 // "nomic-embed-vision-v1.5|cls|l2|d=$dims|l2"
 }
 class OnnxImageEmbedder(modelPath: String, private val dims: Int) : AutoCloseable {
     suspend fun embed(jpegs: List<ByteArray>): List<FloatArray>   // CLS → L2 → shorten(dims) → L2; batches of 8; Dispatchers.Default
 }
 ```
+- **Preprocessing parity (review fix 6):** download `preprocessor_config.json` at the same pinned commit as the ONNX file, and commit it as a test resource. `PreprocessConfig` is built from it, and the reference script uses the same processor class at the same commit. The current official config resizes to 224×224 before cropping, so don't assume crop-then-resize. Reference images are **rectangular** (640×480 and 480×640) so that aspect handling is exercised.
 - **16 KB alignment:** check with `zipalign -c -P 16 -v 4` on the built phone APK, and with `llvm-readelf -l` on the extracted `libonnxruntime.so`: the LOAD segment's `p_align` must be ≥ 0x4000. If the latest stable ORT AAR fails, pick the newest version that passes and record it in the report. If none passes, stop and report: don't ship a misaligned `.so`.
 - One retry on session creation failure. Then mark it unavailable for the process (a `ProviderConfigException` with a safe message), with a count-only log.
 
 **Tests:**
-- `NomicVisionTest`: `preprocessShapeAndRange` (a fixed 640×480 test JPEG gives 3×224×224 in the expected range), `centreCropKeepsAspect`.
+- `NomicVisionTest`: `preprocessShapeAndRange` (a fixed 640×480 test JPEG gives 3×224×224 in the expected range), `followsPinnedConfigOrder`, `matchesPythonPixelsForRectangularImage` (pixel tensor within 1e-3 of the script's dumped tensor, both orientations).
 - `OnnxImageEmbedderTest` (Robolectric, fake session seam): `batchesOfEight`, `failureAfterRetryMarksUnavailable`.
 - Device: `androidTest` `NomicVisionDeviceTest.throughputAtLeast20PerSecond`. It's run by the controller on the phone, and skipped when the model isn't downloaded.
 
@@ -220,12 +222,13 @@ class OnnxImageEmbedder(modelPath: String, private val dims: Int) : AutoCloseabl
 **Files:**
 - create `services/memory/.../memory/db/FrameEntities.kt` and `services/memory/.../memory/db/FrameDaos.kt`;
 - modify `services/memory/.../memory/db/ContextDatabase.kt` (`version = 2`, entities, DAOs, `MIGRATION_1_2`), and add the exported schema `services/memory/schemas/.../2.json`;
+- modify `services/memory/.../memory/db/DatabaseFactory.kt`: **both `build()` and `buildDeferred()` call `.addMigrations(MIGRATION_1_2)`** (review fix 1); no destructive fallback;
 - modify `services/memory/.../memory/db/WipeDao.kt` (Delete all clears the frame tables; notes and shopping are kept);
 - modify `services/memory/.../memory/forget/ForgetService.kt` (the `frame_source` walk).
 
 **Interfaces (Produces):**
 ```kotlin
-@Entity(tableName = "frame_meta") data class FrameMetaEntity(@PrimaryKey val frameId: String, val sessionId: String?, val motion: String, val dwell: Boolean,
+@Entity(tableName = "frame_meta", indices = [Index(value = ["wireFrameId"], unique = true)]) data class FrameMetaEntity(@PrimaryKey val frameId: String, val wireFrameId: String?, val sessionId: String?, val motion: String, val dwell: Boolean,
     val blur: Float?, val dhash: String?, val phash: String?, val width: Int?, val salience: Float?, val salienceTerms: String?,
     val clusterId: String?, val nearDupOf: String?, val imageVectorSpace: String?, val createdAt: Long)
 enum class FrameState { PENDING, EXTRACTING, EXTRACTED, CLUSTERED, NEAR_DUP, FAILED, FAILED_FINAL }
@@ -255,13 +258,14 @@ class FrameVectorEntity(val frameId: String, val spaceId: String, val blob: Byte
 @Dao interface FrameClusterDao { upsert(row); open(): FrameClusterEntity? }   // used in wave 2
 ```
 - **The migration** creates the 5 tables with SQL identical to Room's generated schema (copy the statements from the exported `2.json`). Nothing else.
-- **Forget:** when a memory is forgotten, delete its `frame_source` rows; for each of its frames that no surviving memory cites, apply today's frame tombstone and photo deletion fence. The existing `memory_source` walk is unchanged.
+- **Forget (review fix 3):** forgetting a memory **immediately tombstones every frame it cites** (today's extraction lock, unchanged), so no forgotten fact can be re-extracted, even if other memories still cite the frame. Then delete its `frame_source` rows. The **photo file** is deleted only when no surviving memory cites the frame; until then it's kept for those memories. The existing `memory_source` walk is unchanged.
 
 **Tests:**
 - `Migration1To2Test` (`MigrationTestHelper`, Robolectric): `v1RowsSurvive` (seed every v1 table with one row), `fiveTablesExistAfterMigration`, `noV1TableChanged` (schema diff of v1 tables = none).
+- `DatabaseFactoryUpgradeTest`: `buildUpgradesV1File` and `buildDeferredUpgradesV1File`. Create a v1 database file, then open it through the **production** builders (plain and SQLCipher keyed) and assert the v1 rows plus the 5 new tables.
 - `SqlCipherMigrationDeviceTest` (extend the existing test): `encryptedDbMigratesTo2`.
 - `FrameStateDaoTest`: `claimTakesPendingAndAbandoned`, `casRejectsStaleClaim` (two overlapping claims: the old claim's `completeIfClaimed` returns 0), `fifthFailureIsFinal`, `retryAllFinalResets`.
-- `ForgetFrameSourceTest`: `forgetSharedFrameKeepsOtherMemory` (Review Focus 4), `forgetLastCiterTombstonesFrame`.
+- `ForgetFrameSourceTest`: `forgetSharedFrameKeepsOtherMemory` (Review Focus 4: the other memory and the photo stay, **the frame is tombstoned at once**), `forgottenFactNotReextracted`, `forgetLastCiterDeletesPhoto`.
 - `WipeDaoTest`: `deleteAllClearsFrameTablesKeepsNotes`.
 
 - [ ] RED → implement → GREEN (`:services:memory:test`). Commit `feat(db): Room v2, additive frame tables (meta, state, source, cluster, vector)`.
@@ -271,7 +275,7 @@ class FrameVectorEntity(val frameId: String, val spaceId: String, val blob: Byte
 
 **Behaviour:**
 - `swap`: the old space → RETIRED, **keeping** its `memory_vector` and `frame_vector` rows; `retiredAt = now`.
-- Coverage: 100 % of live memories, plus 100 % of frames with a stored photo.
+- **Coverage:** 100 % of live memories. **In wave 1, image coverage isn't required**, because `frame_vector` backfill ships in wave 2 (review fix 2). The `frame_vector` coverage requirement (100 % of frames with a stored photo) is behind a flag `requireImageCoverage` (false in wave 1) and is switched on in wave 2 with its backfill.
 - `rollback(retiredId)`: allowed within 7 days. The retired space → ACTIVE, and the current one → RETIRED (kept).
 - `purgeRetired(now)`: deletes the vectors of spaces retired more than 7 days ago. It's a daily job.
 - **Dialog before the swap:**
@@ -280,7 +284,7 @@ class FrameVectorEntity(val frameId: String, val spaceId: String, val blob: Byte
   - copy, verbatim from the spec: "N photos will be searchable by text only", "M photos will no longer be findable at all", "Both can be recovered with Roll back for 7 days."
 
 **Tests:**
-- `EmbeddingSwapTest`: update the existing swap tests, plus `swapKeepsRetiredVectors`, `rollbackWithin7Days`, `rollbackRefusedAfter7Days`, `purgeAfter7Days`, `coverageIgnoresDeletedPhotos`.
+- `EmbeddingSwapTest`: update the existing swap tests, plus `swapKeepsRetiredVectors`, `rollbackWithin7Days`, `rollbackRefusedAfter7Days`, `purgeAfter7Days`, `coverageIgnoresDeletedPhotos`, `wave1SwapNeedsTextCoverageOnly`.
 - `SwapDialogCountsTest`: `countsReducedVsLost`.
 - Robolectric `LocalModelsPageTest`: `rollBackShownOnlyInGrace`.
 
@@ -317,10 +321,12 @@ interface SensorFeed { fun start(c: MotionClassifier, w: WearDetector); fun stop
 ```kotlin
 class Thumb(val w: Int, val h: Int, val luma: ByteArray)          // 160 px wide grey, built from the Y plane
 object ImageHashes { fun dHash(t: Thumb): Long; fun pHash(t: Thumb): Long; fun blur(t: Thumb): Float /* Laplacian variance */ }
-sealed interface GateResult { data class Keep(val dhash: Long, val phash: Long, val blur: Float, val dwell: Boolean) : GateResult
+class Candidate(val seq: Long, val thumb: Thumb, val pixels: Nv21Frame)   // pixels = a copy of the camera frame (640×480 NV21, ≈ 460 KB), retained while it's a window candidate
+class Nv21Frame(val w: Int, val h: Int, val rotation: Int, val data: ByteArray)
+sealed interface GateResult { data class Keep(val candidate: Candidate, val dhash: Long, val phash: Long, val blur: Float, val dwell: Boolean) : GateResult
     data class Skip(val reason: String /* BLUR | DUPLICATE | THROTTLED | WINDOW */) : GateResult }
 class KeyframeGate(private val store: GateStore, private val clock: () -> Long) {
-    fun offer(t: Thumb, motion: MotionState, dwellArmed: Boolean): GateResult   // handles the sharpest-of-window logic internally while moving
+    fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean): GateResult   // handles the sharpest-of-window logic internally while moving; keeps ≤ 3 candidates, releasing losers at once
     fun flushWindow(): GateResult?                                            // at window end (≤ 1.5 s): best candidate or null
 }
 interface GateStore { fun lastKeyframes(): List<Pair<Long, Long>>; fun push(d: Long, p: Long); fun lastKeptAt(): Long; fun setLastKeptAt(t: Long) } // SharedPreferences "capture_guard", ring of 5
@@ -329,7 +335,7 @@ interface GateStore { fun lastKeyframes(): List<Pair<Long, Long>>; fun push(d: L
 
 **Tests:**
 - `ImageHashesTest`: `identicalThumbsDistance0`, `shiftedThumbSmallDistance`, `differentSceneLargeDistance`, `blurLowerForBlurred`.
-- `KeyframeGateTest`: `abaPingPongSuppressed` (A, B, A → A kept, B kept, second A skipped), `throttle1200ms`, `sharpestOfWindowWins`, `dwellBypassesLastFive`, `blurryDwellStillSkipped`.
+- `KeyframeGateTest`: `abaPingPongSuppressed` (A, B, A → A kept, B kept, second A skipped), `throttle1200ms`, `sharpestOfWindowWins`, `dwellBypassesLastFive`, `blurryDwellStillSkipped`, `keepCarriesWinningCandidatePixels` (the winner's seq and pixels are those of the sharpest thumb), `losersReleased`.
 - **Glimpse-offset test:** `GlimpseOffsetTest`. Synthetic scene timelines at 3 Hz moving / 1 Hz still analysis; looks of 1.0 / 1.5 / 2.0 s at 10 phase offsets × each motion state. Assert 100 % capture at ≥ 1.5 s, and that a change in front of a still head is caught within ≤ 5 s at the slowest still rate. The 1.0 s rate is printed only.
 
 - [ ] RED → implement → GREEN. Commit `feat(glasses): keyframe gate (dHash + pHash vs last 5, blur, window, dwell)`.
@@ -354,6 +360,7 @@ data class SessionStatus(val running: Boolean, val motion: MotionState, val keyf
 ```
 - **Camera open/close** follows `CameraPolicy.decide`, evaluated on every motion change and every 250 ms. Brief checks open → take the first frame above the blur floor (or give up after 1.5 s) → close.
 - **Camera API:** CameraX (probe: about 300 ms cold p50), kept behind `CameraOwner` so it can be swapped. Tune H and the deceleration start so `GlimpseOffsetTest` reaches ≥ 95 % for 1 s looks at the 1 s setting (the probe got 80 %: misses came from the 5 s settled check).
+- **Winning frame (review fix 5):** each analysed frame is copied into a `Candidate` (thumb plus NV21 pixels) before the `ImageProxy` is closed. `Keep` returns the winning `Candidate`, and G3 encodes **that candidate's pixels**, never the current frame.
 - **CameraX (or the Camera2 equivalent):**
   - `ImageAnalysis` with `ResolutionSelector(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY, ResolutionStrategy(Size(640, 480), FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))` and `STRATEGY_KEEP_ONLY_LATEST`;
   - rotation applied before encoding, so the **output width is 640** (assert it: if it isn't 640 after rotation, scale to 640 wide and log the count);
@@ -370,7 +377,7 @@ data class SessionStatus(val running: Boolean, val motion: MotionState, val keyf
 
 **Tests:**
 - `CameraPolicyTest`: `openWhileMoving`, `holdPerQuickLook` (4/2/1/0 s), `opensEarlyOnDeceleration`, `closedWhenSettled`, `briefCheckEvery5sThen15s`, `burstModeAt3s`, `lowPowerHalvesHold`.
-- `SamplingSessionTest` (fakes for camera, sensors, gate, clock): `startsOnlyWhenAllConditionsHold`, `onsetTriggersImmediateCheck`, `dwellForcesKeyframe`, `notWornStopsCamera`, `modeSwitchReleasesSessionBeforeFixedCapture` (Review Focus 3), `bindFailsThriceFallsBackToFixed`, `keyframeWidthIs640`, `captureNowForcesKeyframe`, `wearCheckOffKeepsSampling`, `restUsesFixedEvery60s`.
+- `SamplingSessionTest` (fakes for camera, sensors, gate, clock): `startsOnlyWhenAllConditionsHold`, `onsetTriggersImmediateCheck`, `dwellForcesKeyframe`, `notWornStopsCamera`, `modeSwitchReleasesSessionBeforeFixedCapture` (Review Focus 3), `bindFailsThriceFallsBackToFixed`, `keyframeWidthIs640`, `captureNowForcesKeyframe`, `emittedJpegMatchesWinningThumb` (decode the emitted JPEG, rebuild its 160 px thumb, and assert dHash distance ≤ 2 to the winning candidate's thumb, never a later frame's), `wearCheckOffKeepsSampling`, `restUsesFixedEvery60s`.
 - `OutboundBufferTest`: `dropsOldestNonDwellFirst`. `LedSourceRulesTest` (a source scan like `SettingsSourceRulesTest`): `noTorchFlashOrLedControlInGlassesSources`.
 
 - [ ] RED → implement → GREEN. Commit `feat(glasses): bound sampling session (640 px keyframes, Y-plane thumbnails, single camera owner)`.
@@ -401,11 +408,22 @@ class WorkRest(private val clock: () -> Long, workMin: () -> Int, restMin: () ->
 ### Task P1: ingest writes `frame_meta` + `frame_state`; adopt pre-v2 frames
 **Files:** `phone/.../hub/FrameIngestor.kt`; `services/orchestration/.../data/frames/RokidFrameInbox.kt` (the ingest transaction); create `services/orchestration/.../work/frames/FrameAdoption.kt`.
 
-**Behaviour:**
-- **Atomic write:** the inbox write plus `frame_meta` (from the T0 metadata; old glasses → UNKNOWN/false) plus `frame_state` PENDING are saved in one transaction.
-- **Adoption:** a one-shot `FrameAdoption.run()` after the migration (a prefs flag `frames_adopted_v2`) inserts PENDING `frame_state` rows (IGNORE) for inbox frames that have no row and no extracted memory. Frames already extracted get `EXTRACTED`.
+**Behaviour (review fix 4):**
+- **Identity:**
+  - `frame_meta.frameId` and `frame_state.frameId` use the **database frame id**: the one derived from the archived file name at ingest, as today, and the one memories already reference.
+  - The glasses' `pc_frame` id is stored in a new `frame_meta.wireFrameId` column (unique index; part of the C1 table, so C1 must add it).
+  - Dedupe of resends uses `wireFrameId`.
+- **Receipt durability, in order:**
+  1. the JPEG and a **sidecar** `<name>.meta.json` (the T0 metadata) are written to temp files, fsynced, and renamed into the inbox. The sidecar is renamed first, the JPEG last, so a JPEG never appears without its sidecar.
+  2. **Ack the glasses only after step 1.** This matches today's "ack after the durable inbox write".
+  3. The existing drain moves the file to the archive and runs **one Room transaction**: the frame row, `frame_meta` from the sidecar (old glasses with no sidecar → UNKNOWN/false), and `frame_state` PENDING. The sidecar is deleted after commit.
+- **Crash cases:**
+  - after step 1, before the ack: the glasses resend; the phone finds `wireFrameId` already in the inbox or DB and acks without duplicating;
+  - after the ack, before step 3: the inbox drain picks the file up on the next run;
+  - during step 3: the transaction rolls back and the file goes back to the inbox (existing FAILED path).
+- **Adoption:** a one-shot `FrameAdoption.run()` after the migration (a prefs flag `frames_adopted_v2`) inserts PENDING `frame_state` rows (IGNORE) for **(a) inbox files and (b) archived frames already in the DB that are still awaiting extraction** (no extracted memory, no tombstone, including those whose 24 h job expired). Frames already extracted get `EXTRACTED`; tombstoned frames get none.
 
-**Tests:** `FrameIngestorMetaTest`: `metaAndStateWrittenAtomically`, `oldGlassesFrameGetsDefaults`. `FrameAdoptionTest`: `preV2InboxFramesAreAdoptedOnce` (Review Focus 2), `extractedFramesNotRequeued`.
+**Tests:** `FrameIngestorMetaTest`: `sidecarBeforeJpegThenAck`, `ackOnlyAfterDurableWrite`, `metaAndStateInOneTransaction`, `resendAfterCrashDedupesByWireId`, `oldGlassesFrameGetsDefaults`, `dbIdMapsToWireId`. `FrameAdoptionTest`: `preV2InboxFramesAreAdoptedOnce` (Review Focus 2), `archivedAwaitingFramesAdopted`, `extractedFramesNotRequeued`, `tombstonedFramesNotAdopted`.
 
 - [ ] RED → implement → GREEN. Commit `feat(intake): per-frame meta and state at ingest; adopt pre-v2 frames`.
 
