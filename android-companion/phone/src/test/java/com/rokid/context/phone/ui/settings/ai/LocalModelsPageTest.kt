@@ -1,5 +1,8 @@
 package com.rokid.context.phone.ui.settings.ai
 
+import com.rokid.context.ai.local.LocalModel
+import com.rokid.context.ai.local.LocalModels
+import com.rokid.context.data.models.LocalModelState
 import android.app.Application
 import android.content.Context
 import androidx.compose.ui.semantics.SemanticsNode

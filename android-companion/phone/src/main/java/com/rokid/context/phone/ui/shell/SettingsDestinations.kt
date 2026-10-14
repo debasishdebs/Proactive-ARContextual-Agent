@@ -1,5 +1,6 @@
 package com.rokid.context.phone.ui.shell
 
+import com.rokid.context.ai.local.LocalModels
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,7 +30,6 @@ import com.rokid.context.phone.ui.settings.ai.EndpointEditorScreen
 import com.rokid.context.phone.ui.settings.ai.EndpointEditorViewModel
 import com.rokid.context.phone.ui.settings.ai.EndpointsListScreen
 import com.rokid.context.phone.ui.settings.ai.EndpointsListViewModel
-import com.rokid.context.phone.ui.settings.ai.LocalModels
 import com.rokid.context.phone.ui.settings.ai.LocalModelsRoute
 import com.rokid.context.phone.ui.settings.ai.LocalModelsSource
 import androidx.compose.runtime.remember
@@ -131,7 +131,6 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_LOCAL_MODELS) {
-        // INTEGRATION SEAM (Stream D): the stand-in catalog becomes com.rokid.context.ai.local.LocalModels.
         val source = remember {
             LocalModelsSource(
                 LocalModels.all, s.localModels, s.ai, s.onEmbedBindingChanged, s.localModelsMobileData,

@@ -74,11 +74,11 @@ class SettingsDeps(
     val capture: com.rokid.context.phone.capture.CaptureNowControl = com.rokid.context.phone.capture.CaptureNowControl.None,
     /** Settings › Actions & tools (Phase 7 B): lazy, so building these deps on Main never builds the actions graph. */
     private val lazyActions: Lazy<com.rokid.context.connectors.actions.ActionsGraphApi>,
-    /** Settings > AI > On-device models (on-device embeddings spec section 5). INTEGRATION SEAM: the real `LocalModelStore`. */
+    /** Settings > AI > On-device models (on-device embeddings spec section 5): the app wires [StoreLocalModels]. */
     val localModels: com.rokid.context.phone.ui.settings.ai.LocalModelGateway = com.rokid.context.phone.ui.settings.ai.LocalModelGateway.None,
     /** The page's "Allow mobile data" switch. */
     val localModelsMobileData: com.rokid.context.phone.ui.settings.ai.MobileDataSetting = com.rokid.context.phone.ui.settings.ai.InMemoryMobileData(),
-    /** INTEGRATION SEAM (Stream N): the runtime's load-failure signal; nothing records one yet. */
+    /** Consecutive on-device load failures per model (spec section 6); the app wires [NativeLoadFailures]. */
     val localModelLoadFailures: com.rokid.context.phone.ui.settings.ai.LoadFailures = com.rokid.context.phone.ui.settings.ai.LoadFailures.None,
 ) {
     val ai: AiGraph get() = lazyAi.value
@@ -130,9 +130,9 @@ class SettingsDeps(
                 app, com.rokid.context.phone.capture.PhoneCaptureControl.storedPauses({ MemoryGraph.get(app).db.pauseDao() }, quietHours = { HubGraph.get(app).hudSettings.value.quietHours }),
             ),
             lazyActions = lazy { com.rokid.context.connectors.actions.ActionsGraph.get(app) },
-            // INTEGRATION SEAM (Stream D): swap PendingLocalModelStore for LocalModelStore.
-            localModels = PendingLocalModelStore(app),
+            localModels = StoreLocalModels(com.rokid.context.data.models.LocalModelStore(app)),
             localModelsMobileData = AppConfigMobileData(app),
+            localModelLoadFailures = NativeLoadFailures(com.rokid.context.data.models.LocalModelStore(app)),
         )
     }
 }
@@ -149,28 +149,30 @@ private class AppSources(private val app: Context) : com.rokid.context.phone.ui.
     }
 }
 
-/**
- * INTEGRATION SEAM (Stream D): TEMPORARY gateway until `LocalModelStore` merges. It reports a file already in
- * `filesDir/models/` as Ready and cannot download (enqueue only logs). Replace it with the real store at integration.
- */
-class PendingLocalModelStore(context: Context) : com.rokid.context.phone.ui.settings.ai.LocalModelGateway {
-    private val dir = File(context.applicationContext.filesDir, "models")
-    private val states = mutableMapOf<String, kotlinx.coroutines.flow.MutableStateFlow<com.rokid.context.phone.ui.settings.ai.LocalModelState>>()
-
-    private fun flow(model: com.rokid.context.phone.ui.settings.ai.LocalModel) = synchronized(states) {
-        states.getOrPut(model.id) { kotlinx.coroutines.flow.MutableStateFlow(if (fileFor(model).isFile) com.rokid.context.phone.ui.settings.ai.LocalModelState.Ready else com.rokid.context.phone.ui.settings.ai.LocalModelState.Absent) }
+/** The page's gateway over the real download store. Deleting or replacing a file clears its load-failure count. */
+class StoreLocalModels(
+    private val store: com.rokid.context.data.models.LocalModelStore,
+    private val failures: com.rokid.context.model.provider.LocalLoadFailures = com.rokid.context.model.provider.LlamaCppNativeProvider.loadFailures,
+) : com.rokid.context.phone.ui.settings.ai.LocalModelGateway {
+    override fun fileFor(model: com.rokid.context.ai.local.LocalModel) = store.fileFor(model)
+    override fun state(model: com.rokid.context.ai.local.LocalModel) = store.state(model)
+    override fun enqueue(model: com.rokid.context.ai.local.LocalModel, allowMetered: Boolean) = store.enqueue(model, allowMetered)
+    override fun cancel(model: com.rokid.context.ai.local.LocalModel) = store.cancel(model)
+    override fun delete(model: com.rokid.context.ai.local.LocalModel) {
+        store.delete(model)
+        failures.reset(store.fileFor(model).absolutePath)
     }
+}
 
-    override fun fileFor(model: com.rokid.context.phone.ui.settings.ai.LocalModel) = File(dir, model.file)
-    override fun state(model: com.rokid.context.phone.ui.settings.ai.LocalModel): kotlinx.coroutines.flow.Flow<com.rokid.context.phone.ui.settings.ai.LocalModelState> = flow(model)
-    override fun enqueue(model: com.rokid.context.phone.ui.settings.ai.LocalModel, allowMetered: Boolean) {
-        Log.i(TAG, "${model.id} download_unavailable")
-        flow(model).value = com.rokid.context.phone.ui.settings.ai.LocalModelState.Failed("Downloads aren't available in this build yet")
+/** The page reads the embed path's consecutive load failures for a catalog model's file (spec section 6). */
+class NativeLoadFailures(
+    private val store: com.rokid.context.data.models.LocalModelStore,
+    private val failures: com.rokid.context.model.provider.LocalLoadFailures = com.rokid.context.model.provider.LlamaCppNativeProvider.loadFailures,
+) : com.rokid.context.phone.ui.settings.ai.LoadFailures {
+    override suspend fun of(modelId: String): com.rokid.context.phone.ui.settings.ai.LoadFailure? {
+        val model = com.rokid.context.ai.local.LocalModels.byId(modelId) ?: return null
+        return failures.consecutive(store.fileFor(model).absolutePath).takeIf { it > 0 }?.let { com.rokid.context.phone.ui.settings.ai.LoadFailure(it) }
     }
-    override fun cancel(model: com.rokid.context.phone.ui.settings.ai.LocalModel) { flow(model).value = if (fileFor(model).isFile) com.rokid.context.phone.ui.settings.ai.LocalModelState.Ready else com.rokid.context.phone.ui.settings.ai.LocalModelState.Absent }
-    override fun delete(model: com.rokid.context.phone.ui.settings.ai.LocalModel) { fileFor(model).delete(); flow(model).value = com.rokid.context.phone.ui.settings.ai.LocalModelState.Absent }
-
-    private companion object { const val TAG = "LocalModels" }
 }
 
 /** Stored in the existing `app_config` prefs (AppConfigStore's file), under its own key. Read off Main by the page. */
