@@ -106,6 +106,19 @@ class HubActionsImplTest {
         assertNull(hub.overlay.value)
     }
 
+    /** "note that…" (user notes): an ask for a turned-off type says so on the HUD for a few seconds, with no undo. */
+    @Test fun offNoticeToastForAnAskOnATurnedOffType() = runBlocking {
+        settings.set(ActionType.NOTE_ADD, ActionToggle(enabled = false))
+        scheduler.runCurrent()
+        engine.propose(ProposalOrigin.ASK, "a3", ProposedAction.NoteAdd("car on level 3"), 0)
+        settle { hub.overlay.value != null }
+        assertEquals(Overlay.Toast("Notes are off. Turn them on in the phone app: Settings \u2192 Actions."), hub.overlay.value)
+        scheduler.advanceTimeBy(HubActionsImpl.OFF_NOTICE_MS - 100); scheduler.runCurrent()
+        assertTrue(hub.overlay.value is Overlay.Toast)
+        scheduler.advanceTimeBy(200); scheduler.runCurrent()
+        assertNull(hub.overlay.value)
+    }
+
     /** BUG-R2-5: the toast hidden under the ask's Thinking still gets its full 10 s once it reaches the glasses. */
     @Test fun undoToastGetsTenSecondsFromWhenItFirstShows() = runBlocking {
         settings.set(ActionType.SHOPPING_ADD, ActionToggle(enabled = true, alwaysConfirm = false))

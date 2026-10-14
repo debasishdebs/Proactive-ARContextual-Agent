@@ -48,6 +48,7 @@ class ActionsSettingsTest {
             override val engine: com.rokid.context.connectors.actions.ActionEngine get() = error("unused")
             override val settings = store
             override val shopping: com.rokid.context.memory.db.ShoppingDao get() = error("unused")
+            override val notes: com.rokid.context.memory.db.NoteDao get() = error("unused")
             override val tools = emptyList<com.rokid.context.connectors.tools.ToolConnector>()
         }
         val deps = com.rokid.context.phone.ui.settings.TestSettings.deps(ctx, actions = fake)
@@ -101,5 +102,17 @@ class ActionsSettingsTest {
         compose.onNodeWithTag("settings_actions").performScrollToNode(hasTestTag("mcp_servers"))
         compose.onNodeWithTag("mcp_servers").assertIsNotEnabled()
         compose.onNodeWithText("Coming in v2").assertIsDisplayed()
+    }
+
+    /** "note that…" (user notes): a Notes toggle (on by default) and a Notes row next to the Shopping list. */
+    @Test fun notesToggleAndRowOpenTheNotesPage() {
+        var opened = 0
+        compose.setContent { PcTheme { ActionsSettings(store, requestCalendar = { cb -> cb(CalendarAccess.GRANTED) }, back = {}, openShopping = {}, openNotes = { opened++ }) } }
+        compose.onNodeWithTag("settings_actions").performScrollToNode(hasTestTag("enabled_NOTE_ADD"))
+        compose.onNodeWithTag("enabled_NOTE_ADD").assertIsOn()
+        compose.onNodeWithText("Save things you ask me to note").assertIsDisplayed()
+        compose.onNodeWithTag("settings_actions").performScrollToNode(hasTestTag("open_notes"))
+        compose.onNodeWithTag("open_notes").performClick()
+        assertEquals(1, opened)
     }
 }

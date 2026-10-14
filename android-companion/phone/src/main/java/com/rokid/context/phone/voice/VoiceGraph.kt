@@ -44,6 +44,12 @@ class VoiceGraph private constructor(private val app: Context) {
         AppAnswerer(
             ask = { q, source -> AskActions.askFrom(app, q, source) },
             answerText = { id -> withContext(Dispatchers.IO) { MemoryGraph.get(app).asks.byId(id)?.takeUnless { it.redacted }?.answer } },
+            offNotice = { id ->
+                withContext(Dispatchers.IO) {
+                    MemoryGraph.get(app).proposals.byId(id)?.takeIf { it.state == com.rokid.context.memory.ProposalState.SUPPRESSED.name }
+                        ?.let { com.rokid.context.connectors.actions.ActionParams.typeOf(it.type) }?.let(com.rokid.context.connectors.actions.ActionCopy::offNotice)
+                }
+            },
         ),
         AndroidSpeaker(app), bluetoothMedia = { AudioRoutes.hasBluetoothMedia(app) },
         onFallbackSuspected = { capabilities.onFallbackSuspected() },

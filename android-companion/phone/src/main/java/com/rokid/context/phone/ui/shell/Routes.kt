@@ -42,6 +42,7 @@ object Routes {
     const val SETTINGS_SOURCES = "settings/sources"
     const val SETTINGS_ACTIONS = "settings/actions"
     const val SETTINGS_SHOPPING = "settings/shopping"
+    const val SETTINGS_NOTES = "settings/notes"
     /** Nudge detail (Phase 7 ruling: the spec names a "nudge detail" without a route). */
     const val NUDGE = "nudge/{id}"
     /** id "new" opens an empty editor. */
@@ -58,6 +59,7 @@ object Routes {
         SETTINGS_GLASSES, SETTINGS_PHONE_INPUTS, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL,
         SETTINGS_FLOWS, SETTINGS_LOCAL_MODELS, SETTINGS_NEARBY,
         SETTINGS_PERSONA, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS, SETTINGS_PRIVACY, SETTINGS_SOURCES, SETTINGS_ACTIONS, SETTINGS_SHOPPING,
+        SETTINGS_NOTES,
     )
 
     enum class Tab(val route: String, val label: String) { HOME("home", "Home"), ACTIVITY("activity", "Activity"), SETTINGS("settings", "Settings") }
