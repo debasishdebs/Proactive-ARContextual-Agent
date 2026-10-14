@@ -106,6 +106,27 @@ class HubActionsImplTest {
         assertNull(hub.overlay.value)
     }
 
+    /** BUG-R2-5: the toast hidden under the ask's Thinking still gets its full 10 s once it reaches the glasses. */
+    @Test fun undoToastGetsTenSecondsFromWhenItFirstShows() = runBlocking {
+        settings.set(ActionType.SHOPPING_ADD, ActionToggle(enabled = true, alwaysConfirm = false))
+        scheduler.runCurrent()
+        val id = engine.propose(ProposalOrigin.ASK, "a5", ProposedAction.ShoppingAdd(listOf(ShoppingLine("milk", null, null))), 0)!!.proposalId
+        settle { hub.overlay.value != null }
+        scheduler.advanceTimeBy(6_000); scheduler.runCurrent()
+        hub.onShown(Overlay.Listening("thinking")) // still under Thinking: not shown
+        scheduler.advanceTimeBy(1_000); scheduler.runCurrent()
+        hub.onShown(Overlay.Answer("q", "a", speaking = false, undoProposalId = id)) // 7 s in: first on the glasses
+        settle { engine.undoUntil(id) == 17_000L }
+        assertEquals(17_000L, engine.undoUntil(id))
+        hub.onShown(Overlay.Toast("Added \u00b7 double-tap undo", undoProposalId = id)) // later frames change nothing
+        settle()
+        assertEquals(17_000L, engine.undoUntil(id))
+        scheduler.advanceTimeBy(9_800); scheduler.runCurrent() // 16.8 s
+        assertTrue(hub.overlay.value is Overlay.Toast)
+        scheduler.advanceTimeBy(400); scheduler.runCurrent() // 17.2 s
+        assertNull(hub.overlay.value)
+    }
+
     @Test fun shoppingDetailShowsTwoNamesPlusCount() = runBlocking {
         scheduler.runCurrent()
         val items = listOf("milk", "eggs", "bread", "jam").map { ShoppingLine(it, null, null) }

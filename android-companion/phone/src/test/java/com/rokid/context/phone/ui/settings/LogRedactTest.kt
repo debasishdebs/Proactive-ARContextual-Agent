@@ -24,6 +24,9 @@ class LogRedactTest {
         "api.key" to "D/Cfg: api.key loaded",
         "JWT" to "D/Auth: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig",
         "base64 run" to "D/Sdk: blob QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9w",
+        // SEC-1: the Rokid CXR SDK's own token lines (fake values) never reach the in-app Logs view or the export.
+        "CXR connect by token" to "I/CXRLink: connect by token: 0123456789abcdef0123456789abcdef",
+        "CXR auth token" to "D/AuthorizationHelper: token: 0123456789abcdef0123456789abcdef",
     )
 
     @Test fun eachCredentialShapeIsDroppedAndOrdinaryLinesStay() {

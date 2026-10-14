@@ -23,7 +23,8 @@ import java.time.ZoneId
 
 /**
  * The hub's actions port (R-62): a HUD Confirm while the newest CONFIRM proposal is PENDING (cleared on any terminal
- * state or expiry), or the undo toast for 10 s after an auto-executed one. HUD votes go through the engine's CAS, so a
+ * state or expiry), or the undo toast for 10 s after an auto-executed one (restarted once when it first reaches the
+ * glasses, BUG-R2-5). HUD votes go through the engine's CAS, so a
  * late or second vote is a no-op.
  */
 class HubActionsImpl(
@@ -35,6 +36,8 @@ class HubActionsImpl(
     private val _overlay = MutableStateFlow<Overlay?>(null)
     override val overlay: StateFlow<Overlay?> = _overlay.asStateFlow()
     private var toastTimer: Job? = null
+    /** The undo toast whose window has not yet been restarted by its first frame on the glasses (BUG-R2-5). */
+    @Volatile private var unshownUndo: String? = null
 
     init {
         scope.launch { engine.events.collect { guarded { onProposed(it) } } }
@@ -49,14 +52,40 @@ class HubActionsImpl(
         scope.launch { guarded { engine.undo(proposalId, HUD) }; clear(proposalId) }
     }
 
+    /**
+     * BUG-R2-5: the first frame that carries the undo (as the toast, or on the Answer) restarts its 10 s, so time spent
+     * under the ask's own Thinking does not eat the window; the toast is then kept for the new deadline.
+     */
+    override fun onShown(overlay: Overlay?) {
+        val id = when (overlay) {
+            is Overlay.Toast -> overlay.undoProposalId
+            is Overlay.Answer -> overlay.undoProposalId
+            else -> null
+        } ?: return
+        if (id != unshownUndo) return
+        unshownUndo = null
+        scope.launch {
+            guarded {
+                val until = engine.restartUndoWindow(id) ?: return@guarded
+                if ((_overlay.value as? Overlay.Toast)?.undoProposalId == id) scheduleClear(id, until)
+            }
+        }
+    }
+
+    private fun scheduleClear(proposalId: String, until: Long) {
+        toastTimer?.cancel()
+        toastTimer = scope.launch { delay((until - engine.now()).coerceAtLeast(0)); clear(proposalId) }
+    }
+
     private suspend fun onProposed(p: Proposed) {
         when (p.hud) {
             HudSurface.CONFIRM -> if (p.state == ProposalState.PENDING) confirmFor(p.proposalId)?.let { toastTimer?.cancel(); _overlay.value = it }
             HudSurface.UNDO_TOAST -> if (p.state == ProposalState.EXECUTED) {
                 toastTimer?.cancel()
+                unshownUndo = p.proposalId
                 _overlay.value = Overlay.Toast(UNDO_TOAST, undoProposalId = p.proposalId)
                 val until = p.undoUntilMs ?: return
-                toastTimer = scope.launch { delay((until - engine.now()).coerceAtLeast(0)); clear(p.proposalId) }
+                scheduleClear(p.proposalId, until)
             }
             HudSurface.NONE -> Unit
         }

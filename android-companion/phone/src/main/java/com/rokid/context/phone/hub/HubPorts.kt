@@ -11,6 +11,8 @@ interface HubActions {
     val overlay: StateFlow<Overlay?>
     fun onConfirm(proposalId: String, yes: Boolean)
     fun onUndo(proposalId: String)
+    /** The overlay of a frame just sent to the glasses (BUG-R2-5: the undo window counts from when it first shows). */
+    fun onShown(overlay: Overlay?) {}
 
     companion object {
         /** No actions (tests and the Stream 0 placeholder): no overlay, commands ignored. */
