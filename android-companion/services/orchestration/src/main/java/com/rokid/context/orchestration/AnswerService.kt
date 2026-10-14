@@ -147,7 +147,7 @@ class AnswerService(
             runCatching(onNoMatch).onFailure { Log.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
             throw NoMemoriesException()
         }
-        val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, inputIds = r.ids)).output as AnswerOutput
+        val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER)).output as AnswerOutput
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
         val id = askId ?: "ask_${UUID.randomUUID()}"

@@ -29,10 +29,12 @@ class AiGraph(
     seeds: PromptSeeds = BuiltInPromptSeeds,
     /** Gaps G6: phone power for the on-device model gate; ungated unless the app passes the real reading. */
     power: () -> com.rokid.context.ai.embed.PowerState = { com.rokid.context.ai.embed.PowerState.UNGATED },
+    /** Wraps every provider call by class (the call budget, P2); pass-through by default. */
+    gate: com.rokid.context.model.CallGate = com.rokid.context.model.PassThroughGate,
 ) {
     val endpoints = EndpointRepository(memory.db.endpointDao(), vault)
     val bindings = RoleBindingRepository(memory.db.roleBindingDao(), endpoints)
-    val router = ModelRouter(bindings, endpoints, providers)
+    val router = ModelRouter(bindings, endpoints, providers, gate)
     val tester = EndpointTester(endpoints, providers)
     val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings, power = power)
     val retriever = com.rokid.context.memory.retrieval.MemoryRetriever(
