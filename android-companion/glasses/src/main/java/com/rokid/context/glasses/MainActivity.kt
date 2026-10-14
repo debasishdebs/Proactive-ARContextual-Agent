@@ -49,6 +49,8 @@ import com.rokid.context.glasses.hud.PhoneAskWatch
 import com.rokid.context.glasses.hud.Routed
 import com.rokid.context.glasses.link.HudController
 import com.rokid.context.glasses.link.HudSettingsCache
+import com.rokid.context.glasses.overlay.PopupOverlay
+import com.rokid.context.core.model.popupMs
 import com.rokid.context.glasses.pause.PauseToggle
 import com.rokid.context.glasses.voice.PttProblem
 import kotlinx.coroutines.CancellationException
@@ -77,6 +79,18 @@ class MainActivity : ComponentActivity() {
     /** The double-tap exit gate (spec 2026-10-14 §2), on the uptime clock; [gateTick] runs while it is armed. */
     private var exitGate: ExitGate = ExitGate.Idle
     private val gateTick = Runnable { tickGate() }
+    /** Spec 2026-10-14 §4: the HUD was opened for a Confirm and goes back to the background after it. */
+    private var returnToMinimised = false
+    private var autoOpenedAtMs = 0L
+    /** The proposal the HUD was opened for (and the last one launched, so a repeat frame never opens it twice). */
+    private var autoConfirmId: String? = null
+    private var launchedConfirmId: String? = null
+    private val confirmTimeout = Runnable { afterConfirm() }
+    /** The last phone overlay seen, so a heartbeat repeat never re-pops. */
+    private var lastOverlay: Overlay? = null
+    /** Minimised when this start began, until the next intent decides why we came forward. */
+    private var wasMinimised = false
+    private var sessionReopenedAtMs = Long.MIN_VALUE / 2
     /** A permission request is on screen: Android drops a second one, so none is launched until it answers. */
     private var permissionPending = false
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -104,6 +118,11 @@ class MainActivity : ComponentActivity() {
                 if (askWatch.shouldEnd(r, o)) runtime.ptt.cancel()
             }
         }
+        // While minimised the composition is stopped: overlays go to the pop-up, a Confirm opens the HUD (spec 2026-10-14 §4).
+        lifecycleScope.launch { controller.frame.collect { onPhoneOverlay(it?.overlay) } }
+        lifecycleScope.launch {
+            controller.sessionOpen.collect { open -> if (open && minimised) sessionReopenedAtMs = SystemClock.uptimeMillis() }
+        }
         if (granted(Manifest.permission.CAMERA)) ensureCaptureScheduled()
         val missing = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO).filterNot(::granted)
         if (missing.isNotEmpty()) requestPermissions(missing)
@@ -116,8 +135,10 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         controller.onActivityStart()
         runtime.hudPresence.onStarted()
+        wasMinimised = minimised
         minimised = false
         runtime.minimisedIcon.hide() // the full HUD is back
+        runtime.popup.hide()
         // In front now: start the keep-alive camera service so captures keep working after the wearer leaves the HUD.
         if (granted(Manifest.permission.CAMERA)) CaptureService.startKeepAlive(this)
     }
@@ -130,10 +151,63 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    override fun onNewIntent(intent: Intent) {
+    public override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleIntent(intent)
+        val cameBack = wasMinimised
+        wasMinimised = false
+        when {
+            intent.getStringExtra(EXTRA_RETURN_TO) == RETURN_TO_MINIMISED -> {
+                returnToMinimised = true
+                autoOpenedAtMs = SystemClock.uptimeMillis()
+                autoConfirmId = launchedConfirmId
+                swipeTimer.removeCallbacks(confirmTimeout)
+                swipeTimer.postDelayed(confirmTimeout, HudPresenter.CONFIRM_MS)
+            }
+            intent.action == ACTION_CAPTURE_NOW -> handleIntent(intent)
+            // Spec §1.7 exception kept narrow: the phone's "Open on glasses" (a relaunch as the session reopens) never
+            // pulls a minimised HUD over the front app; it goes straight back with a pop-up.
+            cameBack && SystemClock.uptimeMillis() - sessionReopenedAtMs < OPEN_ON_GLASS_GRACE_MS -> {
+                minimise()
+                if (Settings.canDrawOverlays(this)) runtime.popup.show(OPENED_FROM_PHONE_POPUP, controller.settings.value.popupMs())
+            }
+            else -> { // the wearer opened the app themselves: the HUD stays in front after any Confirm
+                returnToMinimised = false
+                autoConfirmId = null
+                swipeTimer.removeCallbacks(confirmTimeout)
+            }
+        }
     }
+
+    /** A phone overlay while minimised: pop-up text, or open the HUD for a Confirm (with the overlay permission). */
+    private fun onPhoneOverlay(o: Overlay?) {
+        val auto = autoConfirmId
+        if (returnToMinimised && auto != null && (o as? Overlay.Confirm)?.proposalId != auto) afterConfirm() // answered or withdrawn on the phone
+        if (o == lastOverlay) return
+        lastOverlay = o
+        if (!minimised || !Settings.canDrawOverlays(this)) return
+        if (o is Overlay.Confirm) {
+            if (o.proposalId == launchedConfirmId) return
+            launchedConfirmId = o.proposalId
+            runCatching { applicationContext.startActivity(confirmIntent()) }.onFailure { Log.w(TAG, "confirm open refused: ${it.javaClass.simpleName}") }
+            return
+        }
+        PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let { runtime.popup.show(it, controller.settings.value.popupMs()) }
+    }
+
+    private fun confirmIntent() = Intent(this, MainActivity::class.java).putExtra(EXTRA_RETURN_TO, RETURN_TO_MINIMISED)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+
+    /** The vote went out, the window ended, or the phone cleared it: back where the wearer was. */
+    private fun afterConfirm() {
+        swipeTimer.removeCallbacks(confirmTimeout)
+        autoConfirmId = null
+        if (!returnToMinimised) return
+        returnToMinimised = false
+        minimise()
+    }
+
+    /** Review focus 2: right after an auto-open, a tap meant for the other app must not vote. */
+    private fun voteBlocked(): Boolean = returnToMinimised && SystemClock.uptimeMillis() - autoOpenedAtMs < VOTE_GUARD_MS
 
     @Composable
     private fun Hud() {
@@ -202,9 +276,9 @@ class MainActivity : ComponentActivity() {
             if (r != Routed.ExitGate) cancelGate()
             when (r) {
                 Routed.ExitGate -> onGateDoubleTap()
-                Routed.ConfirmToggle -> { confirm.onSwipe(); highlightYes = confirm.highlightYes }
-                Routed.ConfirmChoose -> confirm.onTap()?.let { controller.send(it); presenter.dismiss(shown) }
-                Routed.ConfirmNo -> confirm.onNo()?.let { controller.send(it); presenter.dismiss(shown) }
+                Routed.ConfirmToggle -> if (!voteBlocked()) { confirm.onSwipe(); highlightYes = confirm.highlightYes }
+                Routed.ConfirmChoose -> if (!voteBlocked()) confirm.onTap()?.let { controller.send(it); presenter.dismiss(shown); afterConfirm() }
+                Routed.ConfirmNo -> if (!voteBlocked()) confirm.onNo()?.let { controller.send(it); presenter.dismiss(shown); afterConfirm() }
                 Routed.FinishListening -> runtime.ptt.stop()
                 Routed.CancelListening -> { runtime.ptt.cancel(); controller.send(Command.Cancel) }
                 Routed.DismissOverlay -> dismiss(shown)
@@ -379,9 +453,10 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         swipeTimer.removeCallbacks(closeSwipe)
         swipeTimer.removeCallbacks(gateTick)
+        swipeTimer.removeCallbacks(confirmTimeout)
         cancelAsk()
         controller.onActivityExit()
-        if (isFinishing) { runtime.hudPresence.onExited(); CaptureService.stopKeepAlive(this); runtime.minimisedIcon.hide() }
+        if (isFinishing) { runtime.hudPresence.onExited(); CaptureService.stopKeepAlive(this); runtime.minimisedIcon.hide(); runtime.popup.hide() }
         runtime.detach(controller)
         super.onDestroy()
     }
@@ -392,6 +467,13 @@ class MainActivity : ComponentActivity() {
         const val MIC_PERMISSION = "Allow the microphone on the glasses"
         /** Minimised without SYSTEM_ALERT_WINDOW: plain moveTaskToBack, no icon (spec 2026-10-14 §3). */
         const val NO_OVERLAY_TOAST = "Allow 'display over other apps' for the icon"
+        const val EXTRA_RETURN_TO = "com.rokid.context.glasses.extra.RETURN_TO"
+        const val RETURN_TO_MINIMISED = "MINIMISED"
+        /** After an auto-open, votes wait this long (the Confirm must have been on screen). */
+        const val VOTE_GUARD_MS = 600L
+        /** A relaunch this soon after the session reopened while minimised is the phone's "Open on glasses". */
+        const val OPEN_ON_GLASS_GRACE_MS = 5_000L
+        const val OPENED_FROM_PHONE_POPUP = "Proactive Context is running"
         /** Phase 8 C3: shown once when reopening finds the capture alarm lost to a force-stop. */
         const val CAPTURE_RESUMED_AFTER_STOP = "Capture resumed \u2014 it stops while the app is closed"
         /** adb and foreground-fallback entry: capture one frame now. */
