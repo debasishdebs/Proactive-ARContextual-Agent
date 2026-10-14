@@ -14,6 +14,8 @@ class ContextApp : Application() {
             localRuntimeMode = BuildConfig.LOCAL_RUNTIME_MODE,
             localNativeModelPath = BuildConfig.LOCAL_NATIVE_MODEL_PATH,
         )
+        // One call budget for every provider call (P2). The period is a constant until P4 reads it from settings.
+        com.rokid.context.ai.AiGraph.gate = com.rokid.context.work.budget.CallBudget(clock = System::currentTimeMillis, periodMs = { 12_000L })
         com.rokid.context.memory.MemoryGraph.get(this) { com.rokid.context.data.runtime.AppConfigStore.getWithoutSecret(this).encryptionEnabled }
         // Gaps G1: frame files follow "Encrypt memory"; every reader opens plain and sealed ones. The worker finishes any
         // conversion a toggle or a process death left part-way (a no-op when every file is already in the wanted form).
