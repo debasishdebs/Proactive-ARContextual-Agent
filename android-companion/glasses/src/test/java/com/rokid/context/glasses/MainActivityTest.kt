@@ -19,12 +19,14 @@ import com.rokid.context.core.model.CommandEnvelope
 import com.rokid.context.core.model.Decoded
 import com.rokid.context.core.model.Health
 import com.rokid.context.core.model.Hello
+import com.rokid.context.core.model.MotionState
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.StateFrame
 import com.rokid.context.core.model.Wire
 import com.rokid.context.glasses.capture.CaptureService
+import com.rokid.context.glasses.capture.SessionStatus
 import com.rokid.context.glasses.link.CxrBridge
 import com.rokid.context.glasses.link.FakeBridge
 import com.rokid.context.glasses.link.HudController
@@ -153,6 +155,21 @@ class MainActivityTest {
             assertEquals(setOf(p.pauseId), (Wire.decode<Hello>(hello) as Decoded.Ok).value.resumedAtMs.keys)
             Thread.sleep(200); shadowOf(Looper.getMainLooper()).idle()
             assertTrue(runtime.pauses.captureAllowed(), "the stale push does not re-pause")
+        }
+    }
+
+    /** G4 carry-over: the capture status reaches the HUD ("Cooling" on a heat stop, "capture degraded" after three failed binds). */
+    @Test fun theHudShowsTheCoolingAndDegradedMarks() {
+        ActivityScenario.launch(MainActivity::class.java).use {
+            compose.onNodeWithText("Cooling", substring = true).assertDoesNotExist()
+            compose.onNodeWithText("capture degraded", substring = true).assertDoesNotExist()
+            runtime.captureStatus.value = SessionStatus(false, MotionState.STILL, 0, null, "heat", cooling = true)
+            shadowOf(Looper.getMainLooper()).idle()
+            compose.onNodeWithText("Cooling", substring = true).assertExists()
+            runtime.captureStatus.value = runtime.captureStatus.value.copy(cooling = false, degraded = true)
+            shadowOf(Looper.getMainLooper()).idle()
+            compose.onNodeWithText("Cooling", substring = true).assertDoesNotExist()
+            compose.onNodeWithText("capture degraded", substring = true).assertExists()
         }
     }
 

@@ -64,14 +64,39 @@ class WorkRestTest {
     }
 
     @Test fun acceptsAllWorkAndRestOptions() {
-        for (w in listOf(30, 40, 45, 50, 60, 75, 90)) for (r in listOf(5, 10, 15, 20)) {
+        // literal expectations (minutes of rest): R as chosen, but at least 15 once W > 45
+        val expected = mapOf(
+            30 to listOf(5, 10, 15, 20), 40 to listOf(5, 10, 15, 20), 45 to listOf(5, 10, 15, 20),
+            50 to listOf(15, 15, 15, 20), 60 to listOf(15, 15, 15, 20), 75 to listOf(15, 15, 15, 20), 90 to listOf(15, 15, 15, 20),
+        )
+        val rests = listOf(5, 10, 15, 20)
+        for ((w, restFor) in expected) for ((i, r) in rests.withIndex()) {
             now = 0L
             val c = WorkRest({ now }, { w }, { r })
             c.onSampling(); now = (w - 1) * min; c.onSampling()
             assertNull(c.resting.value, "w=$w r=$r")
             now = w * min; c.onSampling()
-            val expectedRest = if (w > 45) maxOf(r, 15) else r
+            val expectedRest = restFor[i]
             assertEquals(now + expectedRest * min, c.resting.value, "w=$w r=$r")
         }
+    }
+
+    @Test fun aClockThatWentBackRestartsTheWorkClock() {
+        now = 100 * min; wr.onSampling()
+        now = 120 * min; wr.onSampling() // 20 min worked
+        now = 10 * min; wr.onSampling()  // back: the cycle restarts at the new time
+        now = 54 * min; wr.onSampling()  // 44 min since the restart
+        assertNull(wr.resting.value)
+        now = 55 * min; wr.onSampling()
+        assertEquals(now + 15 * min, wr.resting.value)
+    }
+
+    @Test fun aClockThatWentBackDuringRestDoesNotExtendIt() {
+        sampleFor(45)
+        val until = wr.resting.value!!
+        now -= 600 * min // far back
+        wr.onPaused()
+        assertEquals(true, wr.resting.value!! - now <= 15 * min)
+        assertEquals(true, until > 0)
     }
 }

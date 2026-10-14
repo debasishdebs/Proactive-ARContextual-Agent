@@ -11,6 +11,7 @@ import androidx.work.testing.WorkManagerTestInitHelper
 import androidx.work.workDataOf
 import com.rokid.context.ai.Http
 import com.rokid.context.ai.local.LocalModel
+import com.rokid.context.ai.local.ModelFile
 import com.rokid.context.data.models.LocalModelState
 import com.rokid.context.data.models.LocalModelStore
 import kotlinx.coroutines.flow.first
@@ -171,6 +172,15 @@ class LocalModelDownloadWorkerTest {
         assertEquals(failure("Not enough space"), runWorker())
         assertEquals(0, server.requestCount)
         assertFalse(part().exists())
+    }
+
+    /** The free-space check covers the whole bundle up front: enough for the first file alone is not enough. */
+    @Test fun notEnoughSpaceForTheWholeBundleFailsBeforeDownloading() {
+        val bundle = model.copy(files = listOf(ModelFile(model.file, model.url, sha, model.bytes), ModelFile("second.bin", model.url.replace("test.gguf", "second.bin"), sha, model.bytes)))
+        LocalModelDownloadWorker.resolve = { id -> bundle.takeIf { it.id == id } }
+        LocalModelDownloadWorker.freeBytes = { (data.size * 1.5).toLong() } // fits one file (x1.2), not both
+        assertEquals(failure("Not enough space"), runWorker())
+        assertEquals(0, server.requestCount)
     }
 
     /**

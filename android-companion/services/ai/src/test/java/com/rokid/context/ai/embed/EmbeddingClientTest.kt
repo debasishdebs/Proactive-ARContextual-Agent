@@ -151,7 +151,7 @@ class EmbeddingClientTest {
 
     @Test fun aHungNativeCallTimesOutOnTimeAndNativeCallsNeverOverlap() = runBlocking {
         val running = java.util.concurrent.atomic.AtomicInteger(); val maxRunning = java.util.concurrent.atomic.AtomicInteger(); val calls = java.util.concurrent.atomic.AtomicInteger()
-        val c = EmbeddingClient(Http.modelClient(60), nativeTimeoutMs = 100, native = { _, texts ->
+        val c = EmbeddingClient(Http.modelClient(60), nativeTimeoutMs = 100, native = { _, texts, _ ->
             calls.incrementAndGet(); maxRunning.accumulateAndGet(running.incrementAndGet()) { a, b -> maxOf(a, b) }
             try { Thread.sleep(1_000); texts.map { floatArrayOf(1f) } } finally { running.decrementAndGet() }
         })
@@ -176,7 +176,7 @@ class EmbeddingClientTest {
     /** T14 fix round 1: a caller cancelled while its native call is queued leaves nothing to run. */
     @Test fun aCancelledQueuedNativeCallNeverRuns() = runBlocking {
         val calls = java.util.concurrent.atomic.AtomicInteger()
-        val c = EmbeddingClient(Http.modelClient(60), nativeTimeoutMs = 10_000, native = { _, texts ->
+        val c = EmbeddingClient(Http.modelClient(60), nativeTimeoutMs = 10_000, native = { _, texts, _ ->
             calls.incrementAndGet(); Thread.sleep(600); texts.map { floatArrayOf(1f) }
         })
         val first = launch(kotlinx.coroutines.Dispatchers.Default) { runCatching { c.embed(local(), "m", null, listOf("a")) } }
@@ -190,7 +190,7 @@ class EmbeddingClientTest {
     /** Final review I1: a 64-text reindex batch reaches the native layer in small calls, each with its own timeout. */
     @Test fun nativeBatchesAreSplitAndEachCallIsTimedOnItsOwn() = runBlocking {
         val sizes = java.util.Collections.synchronizedList(mutableListOf<Int>())
-        val c = EmbeddingClient(Http.modelClient(60), nativeTimeoutMs = 300, native = { _, texts ->
+        val c = EmbeddingClient(Http.modelClient(60), nativeTimeoutMs = 300, native = { _, texts, _ ->
             sizes += texts.size; Thread.sleep(100); texts.map { floatArrayOf(texts.size.toFloat(), 1f) }
         })
         val out = c.embed(local(), "m", null, (0 until 64).map { "t$it" })

@@ -98,4 +98,50 @@ class MotionClassifierTest {
         gyro(2000, 1500, 0.02f)
         assertFalse(c.decelerating.value)
     }
+
+    /** Walking accel at [hz] with a constant gyro magnitude [mag] under the head-turn threshold, 50 Hz each. */
+    private fun walkWithGyro(from: Long, ms: Long, hz: Double, mag: Float) {
+        var t = from
+        while (t < from + ms) {
+            now = t
+            c.onLinearAccel(0f, 2.0f * sin(2 * PI * hz * t / 1000.0).toFloat(), 0f, t)
+            c.onGyro(mag, 0f, 0f, t); t += 20
+        }
+    }
+
+    @Test fun deceleratingStaysFalseInAWalk() {
+        // a head turn at the start of a walk leaves a high peak behind, but a walk is not a head turn
+        walkWithGyro(0, 600, 2.0, 0.1f)
+        gyro(600, 100, 2.0f) // spike; accel keeps arriving below
+        var t = 700L
+        while (t < 8_000) {
+            walkWithGyro(t, 20, 2.0, 0.2f)
+            if (t >= 1_500) {
+                assertEquals(MotionState.WALKING, c.state.value, "t=$t")
+                assertFalse(c.decelerating.value, "t=$t")
+            }
+            t += 20
+        }
+    }
+
+    @Test fun deceleratingGoesTrueAtTheEndOfAHeadTurn() {
+        gyro(0, 500, 0.02f)
+        gyro(500, 400, 3.0f)
+        assertFalse(c.decelerating.value)
+        gyro(900, 20, 0.5f) // under the threshold, under 60 % of the peak, still inside the hold
+        assertEquals(MotionState.HEAD_MOVING, c.state.value)
+        assertTrue(c.decelerating.value)
+        gyro(920, 400, 0.02f) // hold over, STILL again
+        assertEquals(MotionState.STILL, c.state.value)
+        assertFalse(c.decelerating.value)
+    }
+
+    @Test fun onsetSampleSeedsThePeak() {
+        gyro(0, 500, 0.02f)
+        now = 500; c.onGyro(2.0f, 0f, 0f, 500) // a one-sample jerk
+        assertEquals(listOf(500L), onsets)
+        now = 520; c.onGyro(0.3f, 0f, 0f, 520)
+        assertEquals(MotionState.HEAD_MOVING, c.state.value)
+        assertTrue(c.decelerating.value)
+    }
 }
