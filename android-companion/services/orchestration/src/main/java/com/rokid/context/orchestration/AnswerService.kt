@@ -142,7 +142,8 @@ class AnswerService(
         val q = AskText.collapse(question).take(MAX_QUESTION)
         if (q.isEmpty()) throw EmptyQuestionException()
         val r = retrieve(q, nowMs)
-        if (r.memories.isEmpty()) {
+        // An action command ("note that…") needs no memory: only other asks stop at "nothing yet" (user notes).
+        if (r.memories.isEmpty() && !ActionTriggers.matches(q)) {
             runCatching(onNoMatch).onFailure { Log.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
             throw NoMemoriesException()
         }
