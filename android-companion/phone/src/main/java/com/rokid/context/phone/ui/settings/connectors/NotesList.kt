@@ -1,7 +1,5 @@
 package com.rokid.context.phone.ui.settings.connectors
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,8 +22,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rokid.context.connectors.actions.ActionsGraph
@@ -53,14 +52,12 @@ fun NotesRoute(back: () -> Unit) {
     val dao = graph?.notes
     val notes by remember(dao) { dao?.observeAll()?.flowOn(Dispatchers.IO) ?: emptyFlow() }.collectAsStateWithLifecycle(emptyList())
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     NotesScreen(
         notes,
         onDelete = { id -> scope.launch(Dispatchers.IO) { runCatching { dao?.delete(id) } } },
         onRestore = { n -> scope.launch(Dispatchers.IO) { runCatching { dao?.insertIgnore(n) } } },
-        onCopy = { text ->
-            runCatching { context.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("Note", text)) }
-        },
+        onCopy = { text -> runCatching { clipboard.setText(AnnotatedString(text)) } },
         back = back,
     )
 }
