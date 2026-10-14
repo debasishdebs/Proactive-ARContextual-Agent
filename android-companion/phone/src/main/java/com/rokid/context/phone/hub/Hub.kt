@@ -306,17 +306,26 @@ class Hub(
             ),
         )
         set(markDirty = false) { it.copy(lastFrame = frame) }
-        if (s.link == LinkState.CONNECTED) link.send(Channels.STATE, Wire.encode(frame))
+        if (s.link == LinkState.CONNECTED && link.send(Channels.STATE, Wire.encode(frame))) actions.onShown(frame.overlay)
     }
 
-    /** Precedence (Phase 7): voice Listening > actions (Confirm/undo toast) > other voice overlays > nudge. */
-    private fun overlay(): Overlay? {
-        val v = voice.overlay.value
-        return (v as? Overlay.Listening) ?: actions.overlay.value ?: v ?: nudges.overlay.value
-    }
+    private fun overlay(): Overlay? = pickOverlay(voice.overlay.value, actions.overlay.value, nudges.overlay.value)
 
     companion object {
         const val TAG = "ContextHub"
+
+        /**
+         * Precedence (Phase 7): voice Listening > actions (Confirm/undo toast) > other voice overlays > nudge.
+         * BUG-R2-5: an undo toast and an Answer at once (either order) become the Answer carrying the undo, so the wearer
+         * sees both and a double-tap undoes while the window is open.
+         */
+        fun pickOverlay(voice: Overlay?, actions: Overlay?, nudge: Overlay?): Overlay? {
+            if (voice is Overlay.Listening) return voice
+            if (voice is Overlay.Answer && actions is Overlay.Toast && actions.undoProposalId != null) {
+                return voice.copy(undoProposalId = actions.undoProposalId)
+            }
+            return actions ?: voice ?: nudge
+        }
         const val HELLO_REQUEST_MIN_INTERVAL_MS = 10_000L
     }
 }

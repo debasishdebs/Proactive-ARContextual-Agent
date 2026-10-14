@@ -48,7 +48,13 @@ sealed interface Health {
 @Serializable
 sealed interface Overlay {
     @Serializable @SerialName("listening") data class Listening(val partial: String) : Overlay
-    @Serializable @SerialName("answer") data class Answer(val question: String, val text: String, val speaking: Boolean) : Overlay
+    /**
+     * [undoProposalId] (BUG-R2-5, additive): an auto-added action's undo window is open; the card shows the undo line
+     * and a glasses double-tap undoes instead of dismissing. Older glasses ignore it and show the plain Answer.
+     */
+    @Serializable @SerialName("answer") data class Answer(
+        val question: String, val text: String, val speaking: Boolean, val undoProposalId: String? = null,
+    ) : Overlay
     @Serializable @SerialName("nudge") data class Nudge(val text: String) : Overlay
     @Serializable @SerialName("confirm") data class Confirm(val proposalId: String, val title: String, val detail: String) : Overlay
     @Serializable @SerialName("paused_splash") data object PausedSplash : Overlay

@@ -109,6 +109,6 @@ fun HudToast(text: String, modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Glyph(Icons.Outlined.Check, 28.dp, Hud.PRIMARY)
-        Label(" $text", 26.sp, Hud.PRIMARY, FontWeight.Bold)
+        Label(" $text", 26.sp, Hud.PRIMARY, FontWeight.Bold, maxLines = 2) // BUG-R2-5: "undo" was clipped at 480 px
     }
 }

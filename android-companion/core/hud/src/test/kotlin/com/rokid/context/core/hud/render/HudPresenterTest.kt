@@ -131,4 +131,36 @@ class HudPresenterTest {
         plain.present(frame(Overlay.Toast("Saved")), Verbosity.MEDIUM, HudNav(), null, 0)
         assertEquals(null, plain.present(frame(Overlay.Toast("Saved")), Verbosity.MEDIUM, HudNav(), null, 4_000).overlay)
     }
+
+    /** BUG-R2-5: an Answer carrying the open undo window shows as is (the card shows the undo line). */
+    @Test fun answerWithUndoShowsAsIs() {
+        val a = Overlay.Answer("add milk", "Added milk.", speaking = false, undoProposalId = "p")
+        assertEquals(a, HudPresenter().present(frame(a), Verbosity.SILENT, HudNav(), null, 60_000).overlay)
+    }
+
+    /** BUG-R2-5: the wearer swiped the answer away, then the auto-add lands: the undo toast still shows for its window. */
+    @Test fun aDismissedAnswerThatGainsAnUndoShowsTheUndoToast() {
+        val p = HudPresenter()
+        val a = Overlay.Answer("add milk", "Added milk.", speaking = false)
+        assertEquals(a, p.present(frame(a), Verbosity.SILENT, HudNav(), null, 0).overlay)
+        p.dismiss(a)
+        assertNull(p.present(frame(a), Verbosity.SILENT, HudNav(), null, 100).overlay)
+        val withUndo = a.copy(undoProposalId = "p")
+        val toast = Overlay.Toast(HudPresenter.UNDO_TOAST_TEXT, undoProposalId = "p")
+        assertEquals(toast, p.present(frame(withUndo), Verbosity.SILENT, HudNav(), null, 200).overlay)
+        assertEquals(toast, p.present(frame(withUndo), Verbosity.SILENT, HudNav(), null, 10_100).overlay)
+        assertNull(p.present(frame(withUndo), Verbosity.SILENT, HudNav(), null, 10_300).overlay)
+    }
+
+    /** BUG-R2-5: an Answer dismissed while it carried the undo line stays dismissed when the window closes. */
+    @Test fun aDismissedAnswerWithUndoStaysDismissedAfterTheWindow() {
+        val p = HudPresenter()
+        val withUndo = Overlay.Answer("add milk", "Added milk.", speaking = false, undoProposalId = "p")
+        p.present(frame(withUndo), Verbosity.SILENT, HudNav(), null, 0)
+        p.dismiss(withUndo)
+        assertNull(p.present(frame(withUndo), Verbosity.SILENT, HudNav(), null, 100).overlay)
+        assertNull(p.present(frame(withUndo.copy(undoProposalId = null)), Verbosity.SILENT, HudNav(), null, 10_000).overlay)
+        val next = Overlay.Answer("other", "Another answer.", speaking = false)
+        assertEquals(next, p.present(frame(next), Verbosity.SILENT, HudNav(), null, 11_000).overlay)
+    }
 }
