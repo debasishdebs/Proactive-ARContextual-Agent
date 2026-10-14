@@ -1,0 +1,51 @@
+package com.rokid.context.phone.ui.settings.ai
+
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import java.io.File
+
+/**
+ * INTEGRATION SEAM (Stream D): what the On-device models page needs from D2's `LocalModelStore`, member for member
+ * (`modelsDir(context)` is the store's own business, so the page never asks for it). At integration, implement this over
+ * `LocalModelStore` (or replace it by the store) in `SettingsDeps.create`; tests keep a fake.
+ */
+interface LocalModelGateway {
+    fun fileFor(model: LocalModel): File
+    fun state(model: LocalModel): Flow<LocalModelState>
+    fun enqueue(model: LocalModel, allowMetered: Boolean)
+    fun cancel(model: LocalModel)
+    fun delete(model: LocalModel)
+
+    /** Nothing downloaded and no downloads (tests and previews). */
+    object None : LocalModelGateway {
+        override fun fileFor(model: LocalModel) = File(model.file)
+        override fun state(model: LocalModel): Flow<LocalModelState> = MutableStateFlow(LocalModelState.Absent)
+        override fun enqueue(model: LocalModel, allowMetered: Boolean) = Unit
+        override fun cancel(model: LocalModel) = Unit
+        override fun delete(model: LocalModel) = Unit
+    }
+}
+
+/** The page's "Allow mobile data" switch (spec section 4: downloads are Wi-Fi only unless this is on). */
+interface MobileDataSetting {
+    fun allowed(): Boolean
+    fun set(allowed: Boolean)
+}
+
+class InMemoryMobileData(private var on: Boolean = false) : MobileDataSetting {
+    override fun allowed() = on
+    override fun set(allowed: Boolean) { on = allowed }
+}
+
+/** A model's run-time load failures (spec section 6). [cause] is never shown: the page maps any failure to fixed text. */
+data class LoadFailure(val consecutive: Int, val cause: Throwable? = null)
+
+/**
+ * INTEGRATION SEAM (Stream N / controller): where the page learns that the on-device model failed to load. Nothing
+ * records load failures yet, so the app wires [None]; the runtime's failure counter plugs in here.
+ */
+fun interface LoadFailures {
+    suspend fun of(modelId: String): LoadFailure?
+
+    companion object { val None = LoadFailures { null } }
+}
