@@ -17,7 +17,18 @@ object Channels {
     const val HELLO = "pc_hello"
     /** Phone → glasses: please send a fresh `pc_hello` (the phone's clock offset looks stale). */
     const val HELLO_REQUEST = "pc_hello_request"
+    /** Glasses to phone: a [MotionHint] (P3 hook; defined in wave 1, unused). */
+    const val MOTION_HINT = "pc_motion_hint"
 }
+
+/** How the glasses decide when to capture: Smart = motion-driven keyframes, Fixed = the interval timer. */
+@Serializable enum class CaptureMode { SMART, FIXED }
+
+/** Coarse head/body motion class from the glasses IMU; an unknown wire value decodes to [UNKNOWN]. */
+@Serializable enum class MotionState { STILL, HEAD_MOVING, WALKING, VEHICLE, UNKNOWN }
+
+/** Glasses → phone on `pc_motion_hint` (P3 hook, unused in wave 1). */
+@Serializable data class MotionHint(val state: MotionState, val atMs: Long)
 
 @Serializable enum class PauseOrigin { GLASSES, PHONE, QUIET_HOURS }
 
@@ -122,6 +133,7 @@ data class HudSettings(
     val position: HudPosition = HudPosition.BOTTOM_CENTER,
     val gestures: Map<Gesture, GestureAction> = GestureDefaults.map,
     val captureIntervalSec: Int = 300,
+    /** Ignored since keyframe capture ([captureMode] supersedes it); kept for wire compatibility. */
     val burstOnChange: Boolean = true,
     val quietHours: QuietHours? = null,
     val pauses: List<PauseRecord> = emptyList(),
@@ -136,7 +148,35 @@ data class HudSettings(
     val iconCorner: IconCorner = IconCorner.TOP_RIGHT,
     /** Spec 2026-10-14 §4, additive: how long a minimised pop-up stays, seconds ([POPUP_MIN_SEC]..[POPUP_MAX_SEC], clamped on use). */
     val popupSeconds: Int = POPUP_DEFAULT_SEC,
+    /** Keyframe capture, additive: absent on the wire = Fixed (old phones). The phone sends SMART for new installs. */
+    val captureMode: CaptureMode = CaptureMode.FIXED,
+    /** Keyframe capture, additive: pause sampling when the glasses are not worn (proximity far > 5 s). */
+    val pauseWhenNotWorn: Boolean = true,
+    /** Work minutes before a rest: 30|40|45|50|60|75|90 (see [normalized]). */
+    val workMinutes: Int = 45,
+    /** Quick look, ms: 1000|1500|2000|3000 (see [normalized]). */
+    val quickLookMs: Int = 1000,
+    /** Rest minutes: 5|10|15|20; at least 15 when [workMinutes] > 45 (see [normalized]). */
+    val restMinutes: Int = 15,
 )
+
+val WORK_MINUTES_ALLOWED = listOf(30, 40, 45, 50, 60, 75, 90)
+val REST_MINUTES_ALLOWED = listOf(5, 10, 15, 20)
+val QUICK_LOOK_MS_ALLOWED = listOf(1000, 1500, 2000, 3000)
+
+private fun List<Int>.nearest(v: Int): Int = minByOrNull { kotlin.math.abs(it - v) } ?: first()
+
+/**
+ * Snaps the keyframe-capture values to their allowed sets (nearest, ties to the smaller) and enforces R >= 15 when
+ * W > 45. Pure; used by the phone UI and again on the glasses so a wild wire value is never trusted.
+ * [burstOnChange] is ignored (superseded by [captureMode]).
+ */
+fun HudSettings.normalized(): HudSettings {
+    val w = WORK_MINUTES_ALLOWED.nearest(workMinutes)
+    var r = REST_MINUTES_ALLOWED.nearest(restMinutes)
+    if (w > 45 && r < 15) r = 15
+    return copy(workMinutes = w, restMinutes = r, quickLookMs = QUICK_LOOK_MS_ALLOWED.nearest(quickLookMs))
+}
 
 /** The corner of the minimised icon on the glasses display. */
 @Serializable enum class IconCorner { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
@@ -201,6 +241,15 @@ data class FrameMeta(
     val luma: Int? = null,
     val phash: String? = null,
     val batteryPct: Int? = null,
+    /** Keyframe capture, additive: absent from an old glasses = [MotionState.UNKNOWN] and not a dwell. */
+    val motion: MotionState = MotionState.UNKNOWN,
+    val dwell: Boolean = false,
+    val blur: Float? = null,
+    /** 16 hex chars (the existing [phash] is also 16 hex chars). */
+    val dhash: String? = null,
+    val width: Int? = null,
+    val sampleSeq: Long? = null,
+    val sessionId: String? = null,
 )
 
 @Serializable data class FrameAck(val v: Int = PROTOCOL_VERSION, val frameId: String, val ok: Boolean, val reason: String? = null)
