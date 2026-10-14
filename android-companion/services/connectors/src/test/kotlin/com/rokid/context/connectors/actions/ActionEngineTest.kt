@@ -124,6 +124,34 @@ class ActionEngineTest {
         assertEquals(0, exec.undone.get())
     }
 
+    /**
+     * BUG-R2-5: the HUD window restarts once, when the undo first reaches the glasses (time under the ask's own
+     * Thinking did not count). Never after the window closed, never twice, never for an unknown id.
+     */
+    @Test fun undoWindowRestartsOnceWhenFirstShown() = runBlocking {
+        settings.set(ActionType.REMINDER, ActionToggle(enabled = true, alwaysConfirm = false))
+        val e = engine()
+        val p = e.propose(ProposalOrigin.ASK, "a1", reminderIn(3_600_000), now)!!
+        now += 7_000
+        assertEquals(now + 10_000, e.restartUndoWindow(p.proposalId))
+        assertEquals(now + 10_000, e.undoUntil(p.proposalId))
+        val first = now + 10_000
+        now += 5_000
+        assertEquals("a second restart changes nothing", first, e.restartUndoWindow(p.proposalId))
+        now += 4_000 // 16 s after execution, 9 s after it showed
+        assertEquals(true, e.undo(p.proposalId, "hud"))
+        assertEquals(null, e.restartUndoWindow("nope"))
+    }
+
+    @Test fun undoWindowNeverReopensOnceClosed() = runBlocking {
+        settings.set(ActionType.REMINDER, ActionToggle(enabled = true, alwaysConfirm = false))
+        val e = engine()
+        val p = e.propose(ProposalOrigin.ASK, "a1", reminderIn(3_600_000), now)!!
+        now += 10_000
+        assertEquals(null, e.restartUndoWindow(p.proposalId))
+        assertEquals(false, e.undo(p.proposalId, "hud"))
+    }
+
     @Test fun pastDueAtStoredExpired() = runBlocking {
         val exec = CountingExecutor()
         val p = engine(exec).propose(ProposalOrigin.ASK, "a1", reminderIn(-5_000), now)!!

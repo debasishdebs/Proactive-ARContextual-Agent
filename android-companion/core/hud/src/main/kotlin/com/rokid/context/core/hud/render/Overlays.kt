@@ -65,6 +65,8 @@ fun AnswerCard(a: Overlay.Answer) {
         Label("YOU ASKED", 18.sp, Hud.SECONDARY)
         Label(a.question, 22.sp, Hud.SECONDARY, maxLines = 1, overflow = TextOverflow.Ellipsis)
         OutlinedBox(highlighted = true, radius = 16.dp) { Label(a.text, 26.sp, Hud.PRIMARY, maxLines = 4, overflow = TextOverflow.Ellipsis) }
+        // BUG-R2-5: while an auto-added action can still be undone, the card says so (a double-tap undoes).
+        if (a.undoProposalId != null) Label(HudPresenter.UNDO_TOAST_TEXT, 20.sp, Hud.PRIMARY, FontWeight.Bold)
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (a.speaking) Glyph(Icons.AutoMirrored.Outlined.VolumeUp, 20.dp, Hud.TERTIARY)
             Label(if (a.speaking) " speaking · swipe to dismiss" else "swipe to dismiss", 18.sp, Hud.TERTIARY)

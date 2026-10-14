@@ -22,7 +22,7 @@ sealed interface Routed {
 
 /**
  * Spec §3.5: an overlay's own rules first (Confirm: swipe moves, tap answers, double-tap = No; Listening: double-tap
- * cancels, tap sends; Answer: swipe or double-tap dismisses; undo toast: double-tap undoes), otherwise `HudSettings.gestures` (unmapped = default).
+ * cancels, tap sends; Answer: swipe or double-tap dismisses, but double-tap undoes while it carries an undo; undo toast: double-tap undoes), otherwise `HudSettings.gestures` (unmapped = default).
  */
 object InputRouter {
     /**
@@ -46,7 +46,11 @@ object InputRouter {
             PadInput.Tapped -> Routed.FinishListening
             is PadInput.Swiped -> mapped(input, gestures)
         }
-        is Overlay.Answer -> if (input == PadInput.Tapped) mapped(input, gestures) else Routed.DismissOverlay
+        is Overlay.Answer -> when {
+            input == PadInput.Tapped -> mapped(input, gestures)
+            input == PadInput.DoubleTapped -> overlay.undoProposalId?.let(Routed::Undo) ?: Routed.DismissOverlay // BUG-R2-5
+            else -> Routed.DismissOverlay
+        }
         is Overlay.Toast -> overlay.undoProposalId?.takeIf { input == PadInput.DoubleTapped }?.let(Routed::Undo) ?: mapped(input, gestures)
         else -> mapped(input, gestures)
     }

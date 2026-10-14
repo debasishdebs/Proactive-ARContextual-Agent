@@ -195,6 +195,19 @@ class FlowViewTest {
         compose.onNodeWithTag("flow_node_wide_n6").performScrollTo().assertIsDisplayed()
     }
 
+    /** BUG-R2-1: the graph opens with the primary INPUT's column in view, not at the far-left lane. */
+    @Test fun graphOpensOnThePrimaryColumn() {
+        val primary = CaptureFlow.nodes.first { it.kind == NodeKind.INPUT }.id
+        val column = com.rokid.context.ai.flow.FlowLayouts.layout(CaptureFlow).cells.getValue(primary).column
+        assertTrue("capture's primary input is not in the first column ($column), so the test means something", column > 0)
+        show(vm("capture"))
+        compose.waitForIdle()
+        val screen = compose.onRoot().getUnclippedBoundsInRoot().right
+        val pill = compose.onNodeWithTag("flow_pill_capture_$primary", useUnmergedTree = true).getUnclippedBoundsInRoot()
+        assertTrue("primary input left ${pill.left} is on screen (0..$screen)", pill.left >= 0.dp && pill.left < screen)
+        assertTrue("primary input right ${pill.right} is on screen ($screen)", pill.right <= screen)
+    }
+
     /** D1 swaps B's stand-in for the registry: the list's counts and roles come from AgentFlows. */
     @Test fun listSummariesComeFromTheRegistry() {
         val all = AgentFlowSummaries.summaries()

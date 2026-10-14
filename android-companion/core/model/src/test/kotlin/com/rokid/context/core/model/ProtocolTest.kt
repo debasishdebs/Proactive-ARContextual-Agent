@@ -140,4 +140,13 @@ class ProtocolTest {
         assertEquals(Decoded.Ok(f), Wire.decode<StateFrame>(Wire.encode(f)))
         assertEquals(null, Overlay.Toast("x").undoProposalId)
     }
+
+    /** BUG-R2-5 (additive): an Answer's undo round-trips, and an Answer without the field still decodes. */
+    @Test fun answerUndoIsAdditive() {
+        val f = frame(Overlay.Answer("q", "a", speaking = false, undoProposalId = "p1"))
+        assertEquals(Decoded.Ok(f), Wire.decode<StateFrame>(Wire.encode(f)))
+        val plain = frame(Overlay.Answer("q", "a", speaking = false))
+        assertFalse(Wire.encode(plain).contains("undoProposalId"))
+        assertEquals(Decoded.Ok(plain), Wire.decode<StateFrame>(Wire.encode(plain)))
+    }
 }

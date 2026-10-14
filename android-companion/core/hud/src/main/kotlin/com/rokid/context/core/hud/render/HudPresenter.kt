@@ -26,9 +26,27 @@ class HudPresenter {
     private var shown: Overlay? = null
     private var shownAtMs = 0L
     private var dismissed: Overlay? = null
+    /** The last Answer the wearer dismissed, without its undo (BUG-R2-5): the undo coming or going does not revive it. */
+    private var dismissedAnswer: Overlay.Answer? = null
     private var held: Overlay? = null
 
-    fun dismiss(o: Overlay?) { dismissed = o }
+    /** Dismissing an Answer that carried the undo also dismisses that undo (the wearer saw it and moved on). */
+    fun dismiss(o: Overlay?) {
+        if (o !is Overlay.Answer) { dismissed = o; return }
+        dismissedAnswer = o.copy(undoProposalId = null)
+        o.undoProposalId?.let { dismissed = Overlay.Toast(UNDO_TOAST_TEXT, undoProposalId = it) }
+    }
+
+    /**
+     * A dismissed Answer stays dismissed whatever its undo does; if it carries an open undo, the wearer still gets the
+     * undo toast for it (BUG-R2-5).
+     */
+    private fun visibleOf(o: Overlay?): Overlay? = when {
+        o == null || o == dismissed -> null
+        o is Overlay.Answer && o.copy(undoProposalId = null) == dismissedAnswer ->
+            o.undoProposalId?.let { Overlay.Toast(UNDO_TOAST_TEXT, undoProposalId = it) }?.takeIf { it != dismissed }
+        else -> o
+    }
 
     /**
      * While [recording], Listening shows at once until the phone's own Listening arrives. Only a phone toast that is not
@@ -38,7 +56,7 @@ class HudPresenter {
     fun present(frame: StateFrame?, verbosity: Verbosity, nav: HudNav, local: LocalOverlay?, nowMs: Long, recording: Boolean = false): HudView {
         val pages = pagesFor(verbosity)
         val page = if (pages.isEmpty()) null else nav.page.takeIf { it in pages } ?: HudPage.GLANCE
-        val phone = frame?.overlay?.takeIf { it != dismissed && allowed(it, verbosity) }
+        val phone = visibleOf(frame?.overlay)?.takeIf { allowed(it, verbosity) }
         if (phone != shown) { shown = phone; shownAtMs = nowMs; held = null }
         // Final review I1: a live Confirm hidden under the glasses' Listening is held; its window restarts when it shows.
         if (recording && phone is Overlay.Confirm && held == null && nowMs - shownAtMs < limitMs(phone)) held = phone
@@ -67,6 +85,8 @@ class HudPresenter {
         const val TOAST_MS = 3_000L
         /** A phone undo toast (`undoProposalId` set) stays for the whole 10 s undo window. */
         const val UNDO_TOAST_MS = 10_000L
+        /** The undo copy the glasses show for an Answer's undo (the phone's toast says the same). */
+        const val UNDO_TOAST_TEXT = "Added \u00b7 double-tap undo"
 
         /** A phone toast with no undo: every one is voice copy for an ask the phone refused or ended. */
         fun Overlay?.isAskFailure(): Boolean = this is Overlay.Toast && undoProposalId == null

@@ -55,6 +55,8 @@ class ActionEngine(
     val events: SharedFlow<Proposed> = _events.asSharedFlow()
 
     private val undoUntil = ConcurrentHashMap<String, Long>()
+    /** Ids whose undo window [restartUndoWindow] already restarted. */
+    private val restarted: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** Ids whose executor is running in this process: [recover] and a second runner skip them (fix round 1 I-1). */
     private val inFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
@@ -107,6 +109,25 @@ class ActionEngine(
     }
 
     fun undoUntil(proposalId: String): Long? = undoUntil[proposalId]
+
+    /**
+     * BUG-R2-5: the HUD shows the undo for the spec's 10 s from when it first reached the glasses, not from when the
+     * effect landed (the toast can wait under the ask's own Thinking). Once per proposal and only while the window is
+     * still open, so the window is never reopened and lasts at most 2 x [UNDO_MS] from execution. Returns the deadline
+     * now in force, or null when there is no open window.
+     */
+    fun restartUndoWindow(proposalId: String): Long? {
+        val now = clock()
+        var out: Long? = null
+        undoUntil.computeIfPresent(proposalId) { _, until ->
+            when {
+                now >= until -> until
+                !restarted.add(proposalId) -> until.also { out = it }
+                else -> (now + UNDO_MS).coerceAtLeast(until).also { out = it }
+            }
+        }
+        return out
+    }
 
     /** The engine's clock (undo windows are measured on it). */
     fun now(): Long = clock()
