@@ -371,6 +371,8 @@ class HubTest {
         val calls = mutableListOf<String>()
         override fun onConfirm(proposalId: String, yes: Boolean) { calls += "confirm:$proposalId:$yes" }
         override fun onUndo(proposalId: String) { calls += "undo:$proposalId" }
+        val shown = mutableListOf<Overlay?>()
+        override fun onShown(overlay: Overlay?) { shown += overlay }
     }
 
     private class FakeNudges : HubNudges {
@@ -404,6 +406,37 @@ class HubTest {
         assertEquals(Overlay.Nudge("Heads up"), link.lastFrame().overlay)
         nudges.latest.value = NudgeLine("Milk low", now); advanceTimeBy(300)
         assertEquals(NudgeLine("Milk low", now), link.lastFrame().latestNudge)
+    }
+
+    /**
+     * BUG-R2-5: while the undo window is open an Answer carries it (the HUD shows the answer with the undo line and a
+     * double-tap undoes), in either order; a phone Listening still wins; once the window closes the plain Answer shows.
+     */
+    @Test fun undoWindowRidesOnTheAnswerInEitherOrder() = runTest {
+        val link = FakeGlassesLink()
+        val voice = FakeHubVoice()
+        val actions = FakeActions()
+        hub(link, voice = voice, actions = actions)
+        val toast = Overlay.Toast("Added \u00b7 double-tap undo", undoProposalId = "p")
+        val answer = Overlay.Answer("add milk", "Added milk.", speaking = true)
+        // Toast, then the answer.
+        actions.overlay.value = toast; advanceTimeBy(300)
+        assertEquals(toast, link.lastFrame().overlay)
+        voice.overlay.value = answer; advanceTimeBy(300)
+        assertEquals(answer.copy(undoProposalId = "p"), link.lastFrame().overlay)
+        actions.overlay.value = null; advanceTimeBy(300)
+        assertEquals(answer, link.lastFrame().overlay)
+        // The answer, then the toast (a typed ask mirrored to the HUD, or a late auto-add).
+        voice.overlay.value = null; advanceTimeBy(300)
+        voice.overlay.value = answer; advanceTimeBy(300)
+        actions.overlay.value = toast.copy(undoProposalId = "q"); advanceTimeBy(300)
+        assertEquals(answer.copy(undoProposalId = "q"), link.lastFrame().overlay)
+        // A phone Listening (a new ask) still outranks it.
+        voice.overlay.value = Overlay.Listening("what"); advanceTimeBy(300)
+        assertEquals(Overlay.Listening("what"), link.lastFrame().overlay)
+        // The port hears what reached the glasses.
+        assertTrue(actions.shown.contains(answer.copy(undoProposalId = "q")))
+        assertTrue(actions.shown.contains(toast))
     }
 
     @Test fun pausePhonePushesSettingsWithNewRecord() = runTest {

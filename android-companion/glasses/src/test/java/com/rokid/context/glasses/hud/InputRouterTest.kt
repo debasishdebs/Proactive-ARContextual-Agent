@@ -76,4 +76,14 @@ class InputRouterTest {
         // Push-to-talk still cancels first.
         assertEquals(Routed.CancelListening, InputRouter.route(PadInput.DoubleTapped, undo, defaults, recording = true))
     }
+
+    /** BUG-R2-5: while the undo window is open the Answer carries it; a double-tap undoes, a swipe still dismisses. */
+    @Test fun doubleTapOnAnAnswerWithUndoUndoes() {
+        val a = Overlay.Answer("add milk", "Added milk.", speaking = false, undoProposalId = "p")
+        assertEquals(Routed.Undo("p"), InputRouter.route(PadInput.DoubleTapped, a, defaults))
+        assertEquals(Routed.DismissOverlay, InputRouter.route(fwd, a, defaults))
+        assertEquals(Routed.Mapped(GestureAction.ASK), InputRouter.route(PadInput.Tapped, a, defaults))
+        assertEquals(Routed.DismissOverlay, InputRouter.route(PadInput.DoubleTapped, a.copy(undoProposalId = null), defaults))
+        assertEquals(Routed.CancelListening, InputRouter.route(PadInput.DoubleTapped, a, defaults, recording = true))
+    }
 }

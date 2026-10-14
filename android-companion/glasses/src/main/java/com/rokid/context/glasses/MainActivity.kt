@@ -190,7 +190,8 @@ class MainActivity : ComponentActivity() {
                 Routed.FinishListening -> runtime.ptt.stop()
                 Routed.CancelListening -> { runtime.ptt.cancel(); controller.send(Command.Cancel) }
                 Routed.DismissOverlay -> dismiss(shown)
-                is Routed.Undo -> { controller.send(Command.Undo(r.proposalId)); presenter.dismiss(shown) }
+                // An Answer that carried the undo stays up (the phone drops the undo line); a toast goes.
+                is Routed.Undo -> { controller.send(Command.Undo(r.proposalId)); if (shown is Overlay.Toast) presenter.dismiss(shown) }
                 is Routed.Mapped -> onAction(r, shown, now)
             }
             nav = nav.touched(now)
