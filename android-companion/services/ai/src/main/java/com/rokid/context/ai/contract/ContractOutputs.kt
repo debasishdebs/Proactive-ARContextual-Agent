@@ -7,6 +7,8 @@ import java.time.LocalDateTime
 sealed interface ProposedAction {
     data class Reminder(val title: String, val dueAt: LocalDateTime, val note: String?) : ProposedAction
     data class ShoppingAdd(val items: List<ShoppingLine>) : ProposedAction
+    /** A user note ("note that…"): the text without the trigger phrase. */
+    data class NoteAdd(val text: String) : ProposedAction
     data class CalendarEvent(val title: String, val startAt: LocalDateTime, val endAt: LocalDateTime, val location: String?) : ProposedAction
 }
 

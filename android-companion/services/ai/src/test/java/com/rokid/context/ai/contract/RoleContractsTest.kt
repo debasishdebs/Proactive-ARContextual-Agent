@@ -23,6 +23,16 @@ class RoleContractsTest {
         assertEquals(0, s.priority)
     }
 
+    /** "note that…" (user notes): NOTE_ADD carries the note text; a blank or over-long text is a semantic problem. */
+    @Test fun noteAddDecodesAndIsChecked() {
+        val r = RoleContracts.decode(PromptKey.ANSWER, j("""{"answer":"Noted","sources":[],"proposedAction":{"type":"NOTE_ADD","text":"the car is on level 3"}}""")).getOrThrow() as AnswerOutput
+        assertEquals(ProposedAction.NoteAdd("the car is on level 3"), r.proposedAction)
+        assertEquals(emptyList<String>(), RoleContracts.semanticProblems(r, ctx))
+        val blank = RoleContracts.decode(PromptKey.ANSWER, j("""{"answer":"Noted","sources":[],"proposedAction":{"type":"NOTE_ADD","text":"  "}}""")).getOrThrow()
+        assertEquals(listOf("proposedAction.text is empty"), RoleContracts.semanticProblems(blank, ctx))
+        assertTrue(RoleContracts.decode(PromptKey.ANSWER, j("""{"answer":"Noted","sources":[],"proposedAction":{"type":"NOTE_ADD"}}""")).isFailure)
+    }
+
     @Test fun decodeFailsOnUnknownActionAndBadDates() {
         assertTrue(RoleContracts.decode(PromptKey.ANSWER, j("""{"answer":"ok","sources":[],"proposedAction":{"type":"EMAIL"}}""")).isFailure)
         assertTrue(RoleContracts.decode(PromptKey.ANSWER, j("""{"answer":"ok","sources":[],"proposedAction":{"type":"REMINDER","title":"t","dueAt":"soon"}}""")).isFailure)
