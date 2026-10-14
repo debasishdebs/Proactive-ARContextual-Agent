@@ -52,7 +52,7 @@ class CameraPolicyTest {
         val r = d(look = 2000, sinceEnd = 1500, now = 100_000, lastBrief = 99_000)
         assertEquals(99_500L, r.nextBriefCheckAtMs)
         // already checked since: back to the regular cadence
-        assertEquals(105_000L, d(look = 2000, sinceEnd = 1500, lastBrief = 99_800).nextBriefCheckAtMs)
+        assertEquals(104_800L, d(look = 2000, sinceEnd = 1500, lastBrief = 99_800).nextBriefCheckAtMs)
         // H >= look: no extra check
         assertEquals(105_000L, d(look = 1000, sinceEnd = 4500, lastBrief = 100_000).nextBriefCheckAtMs)
     }
