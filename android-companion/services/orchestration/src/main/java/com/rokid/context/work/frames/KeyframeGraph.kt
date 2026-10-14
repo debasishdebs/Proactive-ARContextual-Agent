@@ -144,7 +144,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
         val trusted = CriticWorker().validate(claimId, confidence).status == SummaryStatus.TRUSTED
         val sent = photos.map { it.frameId }
         val saved = ExtractSave.saveExtraction(
-            app, "kf_${claimId.take(12)}_", ExtractOutput(facts, captions = batch.output.captions, provenance = true), sent.toSet(),
+            app, "kf_${claimId.take(12)}_", ExtractOutput(facts, captions = batch.output.captions, provenance = batch.output.provenance), sent.toSet(),
             claims = sent.associateWith { claimId }, tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW,
             generation = generation,
         )
@@ -162,7 +162,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
         offerer.onExtracted(frames, memories, places)
     }
 
-    /** What the periodic NudgeWorker does today: one engine pass (its gates apply to showing only). */
+    /** What the periodic backstop does today: one engine pass (its gates apply to showing only). */
     private suspend fun evaluateNudge(): NudgeDecision {
         val run = NudgeEngineFactory.engine(app).runOnce()
         return NudgeDecision(shouldNudge = run is NudgeRun.Shown, reason = run.javaClass.simpleName)

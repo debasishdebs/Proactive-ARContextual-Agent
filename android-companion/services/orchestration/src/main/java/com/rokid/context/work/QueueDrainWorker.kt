@@ -222,16 +222,18 @@ class QueueDrainWorker(
         val frameLines = seen.map { (f, _) -> frameLine(f) }
         // Still one call per photo here (Final review I1); the batch-then-singles fallback is ExtractSave.extract's.
         var promptVersion = 0
+        var provenance = true
         val captions = mutableListOf<com.rokid.context.ai.contract.FrameCaption>()
         val facts = seen.flatMap { (frame, image) ->
             val r = ExtractSave.extract(ai.runner, listOf(ExtractPhoto(frame.id, "ts=${frame.ts} \u00b7 source=${frame.source} \u00b7 ${frame.payload}", image)),
                 callClassOverride ?: com.rokid.context.model.CallClass.EXTRACT)
             promptVersion = r.promptVersion
+            provenance = provenance && r.output.provenance
             captions += r.output.captions
             r.output.facts.filter { it.text.isNotBlank() }
         }
         val factPrefix = factIdPrefix(job)
-        PipelineRecords.dropFactsFrom(applicationContext, factPrefix, keep = facts.size)
+        PipelineRecords.dropFactsFrom(applicationContext, factPrefix, keep = facts.size, keepCaptions = captions.size)
         if (facts.isEmpty() && captions.isEmpty()) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "NO_FACTS", "No facts in ${seen.size} photo(s)")
             val db = MemoryGraph.get(applicationContext).db
@@ -244,7 +246,7 @@ class QueueDrainWorker(
         // Each fact is fenced on the photos it cites only: a photo forgotten during the calls drops just its facts.
         // Memories, frame_source rows (and, for pipeline callers, the claim CAS) are saved by saveExtraction in one transaction.
         val saved = ExtractSave.saveExtraction(
-            applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = true), seen.map { it.first.id }.toSet(), claims = claims.ifEmpty { null },
+            applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = provenance), seen.map { it.first.id }.toSet(), claims = claims.ifEmpty { null },
             tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation,
         )
         val savedAll = (saved as? ExtractSaveResult.Saved)?.memories.orEmpty()
