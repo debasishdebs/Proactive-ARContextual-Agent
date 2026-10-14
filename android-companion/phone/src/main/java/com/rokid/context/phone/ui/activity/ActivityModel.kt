@@ -48,6 +48,8 @@ private val HHMM = DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH)
 object Timeline {
     /** Leading section for memories whose photo was taken on another day (a backlog extracted on this day). */
     const val EARLIER = "Earlier days"
+    /** The one section of an alphabetical order. */
+    const val ALL = "All memories"
     private val ORDER = listOf("Morning", "Afternoon", "Evening")
     private val DAY_HHMM = DateTimeFormatter.ofPattern("EEE d MMM HH:mm", Locale.ENGLISH)
 
@@ -58,12 +60,15 @@ object Timeline {
     }
 
     /**
-     * Sections in day order, rows oldest first (the day reads as a story). [day] is the day the memories were
-     * extracted on (the query window). [frames] must hold each memory's own frame, whatever day it was captured.
+     * Sections and rows in [order]. [day] is the day the memories were extracted on (the query window). [frames] must
+     * hold each memory's own frame, whatever day it was captured.
      * Ruling BUG-1: a row's time is its photo's capture time (the moment the memory is about), falling back to
      * createdAt when it has no frame; a photo from another day goes under [EARLIER] with its date shown.
+     * Sort ruling: the time orders keep the grouping and sort both the sections and the rows within each by time, so
+     * [EARLIER] (photos older than the day) leads under Oldest first and closes the list under Latest first. The
+     * alphabetical orders flatten everything into one [ALL] section (a part-of-day heading would split the A-Z run).
      */
-    fun sections(memories: List<MemoryEntity>, frames: List<FrameEntity>, zone: ZoneId, day: LocalDate): List<TimelineSection> {
+    fun sections(memories: List<MemoryEntity>, frames: List<FrameEntity>, zone: ZoneId, day: LocalDate, order: ActivitySort = ActivitySort.DEFAULT): List<TimelineSection> {
         val byId = frames.associateBy { it.id }
         val rows = memories.map { m ->
             val frame = m.frameId?.let(byId::get)
@@ -72,8 +77,14 @@ object Timeline {
             val label = if (otherDay) EARLIER else partOfDay(at.hour)
             val time = (if (otherDay) DAY_HHMM else HHMM).format(at)
             Triple(label, at.toInstant().toEpochMilli(), TimelineRow(m.id, time, m.text, m.confidence, frame?.path, m.frameId))
-        }.sortedBy { it.second }.groupBy({ it.first }, { it.third })
-        return (listOf(EARLIER) + ORDER).mapNotNull { label -> rows[label]?.let { TimelineSection(label, it) } }
+        }.sortedBy { it.second }
+        order.titleOrder<TimelineRow> { it.text }?.let { cmp ->
+            return if (rows.isEmpty()) emptyList() else listOf(TimelineSection(ALL, rows.map { it.third }.sortedWith(cmp)))
+        }
+        val latest = order == ActivitySort.LATEST_FIRST
+        val grouped = (if (latest) rows.asReversed() else rows).groupBy({ it.first }, { it.third })
+        val labels = listOf(EARLIER) + ORDER
+        return (if (latest) labels.asReversed() else labels).mapNotNull { label -> grouped[label]?.let { TimelineSection(label, it) } }
     }
 
     /** [dayFrames] plus the frames of [memories] captured outside that window (looked up by frameId). */
@@ -103,10 +114,15 @@ object ActivityModel {
         DayBar(d, label, frameCounts[d] ?: 0)
     }
 
-    fun dayRows(window: PeriodWindow, frameCounts: Map<LocalDate, Int>, memoryCounts: Map<LocalDate, Int>, today: LocalDate): List<DayRow> =
-        window.days.filter { (frameCounts[it] ?: 0) + (memoryCounts[it] ?: 0) > 0 }.sortedDescending().map { d ->
-            DayRow(d, dayLabel(d, today), "${plural(frameCounts[d] ?: 0, "frame")} · ${plural(memoryCounts[d] ?: 0, "memory", "memories")}")
+    /** Days with activity in [order]: by date for the time orders, by the row's title for the alphabetical ones. */
+    fun dayRows(
+        window: PeriodWindow, frameCounts: Map<LocalDate, Int>, memoryCounts: Map<LocalDate, Int>, today: LocalDate, order: ActivitySort = ActivitySort.DEFAULT,
+    ): List<DayRow> {
+        val rows = window.days.filter { (frameCounts[it] ?: 0) + (memoryCounts[it] ?: 0) > 0 }.sortedDescending().map { d ->
+            DayRow(d, dayLabel(d, today), "${plural(frameCounts[d] ?: 0, "frame")} \u00b7 ${plural(memoryCounts[d] ?: 0, "memory", "memories")}")
         }
+        return order.titleOrder<DayRow> { it.title }?.let(rows::sortedWith) ?: if (order == ActivitySort.OLDEST_FIRST) rows.asReversed() else rows
+    }
 
     /** Ported from Live Fit `DailyActivity.dayLabel`. */
     fun dayLabel(date: LocalDate, today: LocalDate): String = when (date) {
@@ -135,4 +151,5 @@ data class ActivityUiState(
     val bars: List<DayBar> = emptyList(),
     val dayRows: List<DayRow> = emptyList(),
     val today: LocalDate? = null,
+    val sort: ActivitySort = ActivitySort.DEFAULT,
 )

@@ -107,6 +107,12 @@ fun HomeScreen(
                 }
             }
         }
+        item {
+            Text(
+                "${com.rokid.context.phone.ui.activity.ActivityModel.plural(state.photosToday, "photo")} today", style = MaterialTheme.typography.labelMedium,
+                color = PcColors.InkSoft, modifier = Modifier.padding(start = 20.dp, top = 6.dp, bottom = 2.dp).testTag("photos_today"),
+            )
+        }
         item { BannerHost(state.status.banner, onBannerAction) }
         item { AskHero(state, onQuestionChange, onAsk, onOpenAsk, onMic, onRequestMic, onOpenAppSettings) }
         item { SectionLabel("For you") }

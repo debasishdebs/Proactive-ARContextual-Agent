@@ -16,6 +16,7 @@ import com.rokid.context.glasses.capture.ForegroundFallback
 import com.rokid.context.glasses.overlay.IconRing
 import com.rokid.context.glasses.overlay.IconState
 import com.rokid.context.glasses.overlay.MinimisedIcon
+import com.rokid.context.glasses.overlay.PhotoCue
 import com.rokid.context.glasses.overlay.PopupOverlay
 import com.rokid.context.glasses.capture.HudPresence
 import com.rokid.context.glasses.capture.OutboundBuffer
@@ -70,6 +71,8 @@ class GlassesRuntime private constructor(private val app: Context) {
     /** Our HUD activity's lifecycle, for the capture fallback (spec §1.7: never reopened over another app). */
     val hudPresence = HudPresence()
     val fallback = ForegroundFallback(hudPresence)
+    /** About a second of "photo sent" after a frame is buffered or delivered (Glance check, icon ring pulse). */
+    val photoCue = PhotoCue(scope)
     /** The minimised icon (spec 2026-10-14 §3), one window per process; shown only while the keep-alive service runs. */
     val minimisedIcon: MinimisedIcon by lazy {
         MinimisedIcon(app, app.getSystemService(WindowManager::class.java)) {
@@ -79,6 +82,7 @@ class GlassesRuntime private constructor(private val app: Context) {
                 running = CaptureService.liveInstance != null,
                 fraction = IconRing.fraction(scheduler.nextTriggerAtMs(), scheduler.armedAtMs(), now),
                 paused = pauses.records.value.any { it.isActiveAt(now) },
+                cue = photoCue.active.value,
             )
         }
     }
@@ -92,7 +96,12 @@ class GlassesRuntime private constructor(private val app: Context) {
     private var attachJob: Job? = null
     /** Process-wide: built once from the application context, never per activity (CXR-S cannot unsubscribe). */
     val bridge: SharedBridge by lazy { SharedBridge(bridgeFactory(app)) }
-    val uplink = FrameUplink(scope, buffer, sendChunk = { c -> controller?.sendFrameChunk(c) ?: -1 }, canSend = ::canSend, log = { Log.i(UPLINK_TAG, it) }, onBufferChanged = { controller?.sendHello() })
+    val uplink = FrameUplink(scope, buffer, sendChunk = { c -> controller?.sendFrameChunk(c) ?: -1 }, canSend = ::canSend, log = { Log.i(UPLINK_TAG, it) }, onBufferChanged = { controller?.sendHello() }, onDelivered = { photoCue.pulse() })
+
+    init {
+        // The icon ticks once a second: redraw it as the cue starts and ends, so a 1 s pulse is never missed.
+        scope.launch { photoCue.active.collect { minimisedIcon.refresh() } }
+    }
 
     /** Tap = Ask (spec §5.1). Only an open session takes it; capture pauses don't matter (Ask is a user action). */
     val ptt = PushToTalk(
@@ -173,8 +182,9 @@ class GlassesRuntime private constructor(private val app: Context) {
             BufferResult.STORED
         }
 
-    /** A frame was buffered: report the new buffer size and flush if the session is open. */
+    /** A frame was buffered: cue it, report the new buffer size and flush if the session is open. */
     fun onFrameBuffered() {
+        photoCue.pulse()
         controller?.sendHello()
         uplink.kick()
     }

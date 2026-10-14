@@ -41,6 +41,8 @@ data class HudModel(
     val confirmHighlightYes: Boolean,
     /** The glasses are recording push-to-talk audio (Listening says "tap to send"; after it, "thinking…"). */
     val recording: Boolean = false,
+    /** A frame was just buffered or delivered: Glance shows a brief check beside the countdown (glasses-local). */
+    val photoCue: Boolean = false,
 )
 
 /**
