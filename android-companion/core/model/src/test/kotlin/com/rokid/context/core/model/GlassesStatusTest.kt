@@ -8,7 +8,7 @@ import kotlin.test.assertEquals
 class GlassesStatusTest {
     @Test fun linkStatesAreTheContractSetInOrder() {
         assertEquals(
-            listOf("NOT_AUTHORIZED", "CONNECTING", "CONNECTED", "PAUSED_BT", "CLOSED_ON_GLASSES", "VERSION_MISMATCH", "OFFLINE"),
+            listOf("NOT_AUTHORIZED", "CONNECTING", "CONNECTED", "PAUSED_BT", "CLOSED_ON_GLASSES", "VERSION_MISMATCH", "OFFLINE", "MINIMISED"),
             LinkState.entries.map { it.name },
         )
     }

@@ -4,6 +4,7 @@ import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.Health
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.carriesData
 import com.rokid.context.core.model.MemoryLine
 import com.rokid.context.core.model.NudgeLine
 import com.rokid.context.core.model.Overlay
@@ -46,7 +47,7 @@ object StateFrameBuilder {
             nextCaptureAtMs = i.nextCaptureAtMs?.let { m -> i.offset?.toGlasses(m) }, // HUD countdown: glasses clock, omitted without an offset
             intervalSec = i.settings.captureIntervalSec,
             glassesBatteryPct = i.glassesBatteryPct,
-            phoneLinked = i.link == LinkState.CONNECTED,
+            phoneLinked = i.link.carriesData, // minimised: still linked on the background link
             aiHealth = i.aiHealth,
             queueDepth = i.queueDepth,
             lastSentAtMs = i.lastFrameAtMs?.let { m -> i.offset?.toGlasses(m) },

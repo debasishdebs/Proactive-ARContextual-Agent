@@ -64,8 +64,9 @@ class GlassesSessionPolicyTest {
     @Test fun glassesExitDoesNotAutoRetryUntilManualConnect() {
         val p = GlassesSessionPolicy()
         p.onEvent(LinkEvent.DevicePresent); p.onEvent(LinkEvent.Started)
-        assertEquals(listOf(LinkAction.MarkClosedOnGlasses), p.onEvent(LinkEvent.GlassesExited))
+        assertEquals(listOf(LinkAction.MarkMinimised), p.onEvent(LinkEvent.GlassesExited))
         assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+        p.onEvent(LinkEvent.BackgroundSilent) // a real exit (review I2: a minimised app is never manually connected)
         assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect())
     }
 
@@ -104,9 +105,9 @@ class GlassesSessionPolicyTest {
         p.onEvent(LinkEvent.DevicePresent); p.onEvent(LinkEvent.Started)
         assertTrue(p.onEvent(LinkEvent.GlassesAppOpened).isEmpty(), "session open")
         p.onEvent(LinkEvent.GlassesExited)
-        assertTrue(p.closedOnGlasses)
+        assertTrue(p.backgroundLink)
         assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.onEvent(LinkEvent.GlassesAppOpened))
-        assertFalse(p.closedOnGlasses)
+        assertFalse(p.backgroundLink)
         assertTrue(p.onEvent(LinkEvent.GlassesAppOpened).isEmpty(), "connect already in flight")
     }
 
@@ -114,17 +115,75 @@ class GlassesSessionPolicyTest {
         val p = GlassesSessionPolicy()
         p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited)
         p.onEvent(LinkEvent.DeviceGone)
-        assertFalse(p.closedOnGlasses)
+        assertFalse(p.backgroundLink)
         assertTrue(p.onEvent(LinkEvent.GlassesAppOpened).isEmpty())
-        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited)
+        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited); p.onEvent(LinkEvent.BackgroundSilent)
         p.manualConnect()
-        assertFalse(p.closedOnGlasses)
+        assertFalse(p.backgroundLink)
     }
 
     @Test fun closedOnGlassesStillAllowsAHubStartAttempt() {
         val p = GlassesSessionPolicy()
-        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited)
+        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited); p.onEvent(LinkEvent.BackgroundSilent)
         assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.autoConnect())
+    }
+
+    /** Minimised Option A: GLASSES_EXIT keeps a background data link; nothing automatic may start the HUD (appStart). */
+    @Test fun glassesExitMinimisesOnTheBackgroundLinkAndNeverAutoConnects() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect(); p.onEvent(LinkEvent.Started)
+        assertEquals(listOf(LinkAction.MarkMinimised), p.onEvent(LinkEvent.GlassesExited))
+        assertTrue(p.backgroundLink)
+        assertTrue(p.autoConnect().isEmpty(), "a hub start must not bring the HUD forward")
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+        assertTrue(p.onEvent(LinkEvent.DevicePresent).isEmpty())
+        assertTrue(p.onEvent(LinkEvent.BackgroundAlive).isEmpty(), "already minimised")
+    }
+
+    /** A real exit: the glasses never answer the background link, so the phone says "closed on glasses" and keeps watching. */
+    @Test fun silentBackgroundLinkFallsBackToClosedOnGlassesAndAMessageMinimisesAgain() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited)
+        assertEquals(listOf(LinkAction.MarkClosedOnGlasses), p.onEvent(LinkEvent.BackgroundSilent))
+        assertTrue(p.backgroundLink, "still bound: watches for a reopen and for a late glasses message")
+        assertTrue(p.onEvent(LinkEvent.BackgroundSilent).isEmpty())
+        assertEquals(listOf(LinkAction.MarkMinimised), p.onEvent(LinkEvent.BackgroundAlive))
+    }
+
+    /** Hand-back: our app back in front on the glasses returns to the normal CUSTOM_APP session path. */
+    @Test fun reopeningOurAppWhileMinimisedReconnectsTheSession() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited)
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.onEvent(LinkEvent.GlassesAppOpened))
+        assertFalse(p.backgroundLink)
+        assertTrue(p.onEvent(LinkEvent.BackgroundAlive).isEmpty(), "a late background message changes nothing")
+        assertEquals(listOf(LinkAction.MarkConnected, LinkAction.SendSettings), p.onEvent(LinkEvent.Started))
+    }
+
+    /** Review I2: a CUSTOM_APP connect runs appStart, which would pull the HUD over Maps. While minimised nothing may. */
+    @Test fun manualConnectWhileMinimisedNeverStartsTheGlassesApp() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited)
+        assertTrue(p.manualConnect().isEmpty(), "Open on glasses / an auth result must not appStart")
+        assertTrue(p.minimised)
+        assertTrue(p.backgroundLink, "the background link stays up")
+        p.onEvent(LinkEvent.BackgroundSilent)
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect(), "a real exit may be reopened from the phone")
+    }
+
+    @Test fun backgroundEventsOutsideTheBackgroundLinkAreIgnored() {
+        val p = GlassesSessionPolicy()
+        assertTrue(p.onEvent(LinkEvent.BackgroundAlive).isEmpty())
+        assertTrue(p.onEvent(LinkEvent.BackgroundSilent).isEmpty())
+        p.manualConnect(); p.onEvent(LinkEvent.Started)
+        assertTrue(p.onEvent(LinkEvent.BackgroundAlive).isEmpty())
+        assertTrue(p.onEvent(LinkEvent.BackgroundSilent).isEmpty())
+    }
+
+    @Test fun onlyConnectedUsesTheSessionAndOnlyMinimisedTheBackgroundLink() {
+        assertEquals(SendRoute.SESSION, sendRoute(LinkState.CONNECTED))
+        assertEquals(SendRoute.BACKGROUND, sendRoute(LinkState.MINIMISED))
+        for (s in LinkState.entries - LinkState.CONNECTED - LinkState.MINIMISED) assertEquals(SendRoute.NONE, sendRoute(s), "$s")
     }
 
     /** Spec §1.7: phone-app resume is not an explicit action, so a close on the glasses is never undone by it. */
@@ -144,6 +203,7 @@ class GlassesSessionPolicyTest {
         assertEquals(LinkState.PAUSED_BT, LinkAction.MarkPaused.linkState())
         assertEquals(LinkState.OFFLINE, LinkAction.MarkDisconnected.linkState())
         assertEquals(LinkState.CLOSED_ON_GLASSES, LinkAction.MarkClosedOnGlasses.linkState())
+        assertEquals(LinkState.MINIMISED, LinkAction.MarkMinimised.linkState())
         assertEquals(LinkState.NOT_AUTHORIZED, LinkAction.MarkAuthNeeded.linkState())
         assertNull(LinkAction.Connect.linkState())
         assertNull(LinkAction.ScheduleRetry(1).linkState())
@@ -163,7 +223,7 @@ class GlassesSessionPolicyTest {
         p.manualConnect(); p.onEvent(LinkEvent.Closed)
         p.reset()
         assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
-        assertFalse(p.closedOnGlasses)
+        assertFalse(p.backgroundLink)
     }
 
     @Test fun refusedConnectIsTerminalUntilAnExplicitAction() {

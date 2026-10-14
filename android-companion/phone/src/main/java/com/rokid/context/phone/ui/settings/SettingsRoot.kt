@@ -54,9 +54,11 @@ import kotlinx.coroutines.flow.stateIn
 
 object SettingsModel {
     const val COMING_SOON = "Coming soon"
+    const val MINIMISED_CAPTURING = "Minimised on glasses \u00b7 capturing"
 
     fun glassesSummary(s: GlassesStatus): String = when (s.link) {
         LinkState.CONNECTED -> (s.glassesBatteryPct ?: s.frame?.glassesBatteryPct)?.let { "Linked · $it%" } ?: "Linked"
+        LinkState.MINIMISED -> MINIMISED_CAPTURING
         LinkState.CONNECTING -> "Connecting…"
         LinkState.VERSION_MISMATCH -> "Update the glasses app"
         LinkState.NOT_AUTHORIZED -> "Not authorized"

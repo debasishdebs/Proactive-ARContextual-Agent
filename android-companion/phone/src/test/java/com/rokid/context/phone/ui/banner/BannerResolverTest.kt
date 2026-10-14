@@ -72,6 +72,11 @@ class BannerResolverTest {
         assertEquals(BannerAction.RESUME, both.action)
     }
 
+    /** Minimised Option A: nothing to fix while minimised, so no glasses banner. */
+    @Test fun minimisedOnGlassesNeedsNoBanner() {
+        assertEquals(null, BannerResolver.candidates(BannerInputs(link = LinkState.MINIMISED)).firstOrNull { it.kind == BannerKind.GLASSES_DISCONNECTED })
+    }
+
     /** Phase 8 C3: closing the glasses app force-stops it, which stops capture until it is reopened. */
     @Test fun closedOnGlassesSaysCaptureStopped() {
         val closed = BannerResolver.resolve(BannerInputs(link = LinkState.CLOSED_ON_GLASSES))!!

@@ -24,6 +24,13 @@ class CaptureLineTest {
         assertFalse(CaptureLine.paused(running, true))
     }
 
+    /** Minimised Option A: capture and transfer go on with the HUD in the background. */
+    @Test fun minimisedOnGlassesIsStillLive() {
+        val minimised = running.copy(link = LinkState.MINIMISED)
+        assertEquals("Minimised on glasses \u00b7 capturing", CaptureLine.text(minimised, pipelineEnabled = true, nowMs = NOW))
+        assertTrue(CaptureLine.live(minimised, true))
+    }
+
     @Test fun countdownRoundsUpAndHandlesPastAndHours() {
         assertEquals("0:01", CaptureLine.countdown(NOW + 1, NOW))
         assertEquals("now", CaptureLine.countdown(NOW - 5, NOW))
