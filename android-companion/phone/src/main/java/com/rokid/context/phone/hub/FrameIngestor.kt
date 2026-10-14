@@ -10,8 +10,12 @@ import com.rokid.context.core.model.FrameAck
 import com.rokid.context.core.model.FileDurability
 import com.rokid.context.core.model.FrameAckReason
 import com.rokid.context.core.model.FrameChunk
+import com.rokid.context.core.model.FrameCodec
+import com.rokid.context.core.model.FrameMeta
 import com.rokid.context.core.model.UserFacingError
 import com.rokid.context.core.model.UserFacingErrors
+import com.rokid.context.data.frames.DirSync
+import com.rokid.context.data.frames.ReceiptMeta
 import com.rokid.context.data.runtime.AppConfigReader
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.data.runtime.QueuePayloads
@@ -101,11 +105,14 @@ data class IngestResult(
 )
 
 /**
- * `pc_frame` chunk → reassembly → admission (dedupe, clock offset, pause filter) → atomic inbox write → ledger → queue
- * (spec §1.8). Ack ok=true only after the JPEG is durable and its id is in the ledger, so a crash never loses a frame
- * the glasses already deleted. A failed write sends no ack: the glasses keep the frame and retry on a later flush.
- * Calls are serialized, so a resend arriving while the first copy is being written sees the ledger entry and is not
- * stored twice. Reassembly staleness runs on [monotonicMs]; only admission uses the wall-clock `nowMs`.
+ * `pc_frame` chunk -> reassembly -> admission (dedupe, clock offset, pause filter) -> durable v2 receipt -> ledger -> queue
+ * (spec §1.8, keyframe capture P2). The receipt is `rokid_<rxMs>_<id>.v2` with a `.jpg` and a `.meta.json` sidecar: both are
+ * written temp -> fsync -> rename (sidecar first, JPEG last), then the inbox directory is fsynced ([ReceiptStore]). Ack ok=true
+ * only after ALL of that succeeded, so a crash never loses a frame the glasses already deleted; any failure sends no ack and
+ * the glasses keep the frame and resend. A resend is never acked merely because its id is known: both files must exist and
+ * match, else the receipt is completed from the resend first. A receipt already committed to Room is acked at once.
+ * Calls are serialized, so a resend arriving while the first copy is being written is not stored twice. Reassembly
+ * staleness runs on [monotonicMs]; only admission uses the wall-clock `nowMs`.
  */
 class FrameIngestor(
     private val inboxDir: File,
@@ -116,8 +123,13 @@ class FrameIngestor(
     private val monotonicMs: () -> Long = SystemClock::elapsedRealtime,
     private val wipeFence: () -> WipeFence.Fence = { WipeFence.fence(inboxDir.absoluteFile.parentFile) },
     private val wipeLock: Mutex = WipeFence.mutex,
+    private val archiveDir: File = File(inboxDir.absoluteFile.parentFile, "rokid_archive"),
+    private val dirSync: DirSync = DirSync.Default,
+    /** True when this glasses frame id already has a `frame_meta` row (the receipt is committed to Room). */
+    private val committed: suspend (wireFrameId: String) -> Boolean = { false },
     private val onStored: () -> Unit,
 ) {
+    private val receipts = ReceiptStore(inboxDir, archiveDir, writer, dirSync)
     private val mutex = Mutex()
 
     /** [nowMs] is phone wall clock (admission); reassembly uses [monotonicMs]. */
@@ -131,21 +143,27 @@ class FrameIngestor(
 
     private suspend fun admit(c: Assembly.Complete, offset: ClockOffset?, nowMs: Long): IngestResult {
         val id = c.meta.frameId
+        // Committed to Room: nothing left to make durable, ack at once.
+        if (FrameCodec.isValidFrameId(id) && committed(id)) return IngestResult(FrameAck(frameId = id, ok = true, reason = FrameAckReason.DUPLICATE))
         return when (val d = admission.decide(c.meta, offset, nowMs)) {
             Admission.Hold -> IngestResult(ack = null, held = true)
             is Admission.Reject -> IngestResult(FrameAck(frameId = id, ok = false, reason = d.reason))
-            is Admission.AckOnly -> IngestResult(FrameAck(frameId = id, ok = true, reason = d.reason))
-            is Admission.Ingest -> store(id, c.jpeg, d.capturedAtPhoneMs)
+            // A known id is not enough (review fix 2): when a receipt is on disk it is verified or completed from this resend.
+            is Admission.AckOnly ->
+                if (d.reason == FrameAckReason.DUPLICATE && receipts.exists(id)) store(c.meta, c.jpeg, capturedAtMs = null)
+                else IngestResult(FrameAck(frameId = id, ok = true, reason = d.reason))
+            is Admission.Ingest -> store(c.meta, c.jpeg, d.capturedAtPhoneMs)
         }
     }
 
     /**
      * Under [wipeLock], so a Delete all deleting frame files never races this write. A frame captured before the last
      * Delete all started is acked `ok=true` ([FrameAckReason.WIPED]) and recorded, never written (spec 6.1.1). While
-     * the fence is unknown (it could not be recorded) nothing is stored and no ack is sent.
+     * the fence is unknown (it could not be recorded) nothing is stored and no ack is sent. [capturedAtMs] is null for a
+     * ledger duplicate: the existing receipt's name already carries the time.
      */
-    private suspend fun store(id: String, jpeg: ByteArray, capturedAtMs: Long): IngestResult = wipeLock.withLock {
-        val target = File(inboxDir, "rokid_${capturedAtMs}_$id.jpg")
+    private suspend fun store(meta: FrameMeta, jpeg: ByteArray, capturedAtMs: Long?): IngestResult = wipeLock.withLock {
+        val id = meta.frameId
         val fence = wipeFence()
         if (fence is WipeFence.Fence.Unknown) {
             // Fail closed (fix round 1 I3): no ack, so the glasses keep the frame and resend it once the fence is known.
@@ -153,19 +171,27 @@ class FrameIngestor(
             return@withLock IngestResult(ack = null, error = storageErrorFor(fence.cause ?: IOException("wipe fence unknown")))
         }
         val wipedAt = (fence as? WipeFence.Fence.At)?.ms
-        try {
-            if (wipedAt != null && capturedAtMs < wipedAt) {
+        val done = try {
+            if (wipedAt != null && capturedAtMs != null && capturedAtMs < wipedAt) {
                 ledger.add(id)
                 Log.i(TAG, "frame $id dropped: captured before Delete all")
                 return@withLock IngestResult(FrameAck(frameId = id, ok = true, reason = FrameAckReason.WIPED))
             }
             // Gaps G1: sealed while "Encrypt memory" is on; a seal failure is an IOException (no ack, the glasses resend).
-            writer.writeStamped(target, FrameImages.forDisk(jpeg), capturedAtMs) // RokidFrameInbox takes the capture time from lastModified
+            val disk = FrameImages.forDisk(jpeg)
+            val rx = capturedAtMs ?: 0L
+            // RokidFrameInbox takes the capture time from lastModified; a duplicate keeps the time its receipt already has.
+            val stamp = capturedAtMs ?: System.currentTimeMillis()
+            val d = receipts.ensureDurable(id, rx, disk, receiptMeta(meta, disk.size.toLong()), stamp)
             ledger.add(id)
+            d
         } catch (e: IOException) {
-            target.delete()
             Log.w(TAG, "frame $id not stored: ${e.javaClass.simpleName}")
             return@withLock IngestResult(ack = null, error = storageErrorFor(e))
+        }
+        if (done.outcome == ReceiptStore.Outcome.VERIFIED) {
+            Log.i(TAG, "frame resend verified $id")
+            return@withLock IngestResult(FrameAck(frameId = id, ok = true, reason = FrameAckReason.DUPLICATE))
         }
         // The frame is durable in the inbox and the ledger, so it is acked even if queueing fails: the next queue drain
         // scans the whole inbox and picks it up. A full disk here (queue file, WorkManager DB) must never crash the app.
@@ -177,8 +203,14 @@ class FrameIngestor(
             storageErrorFor(e)
         }
         Log.i(TAG, "frame ingested $id")
-        IngestResult(FrameAck(frameId = id, ok = true), ingestedAtMs = capturedAtMs, error = queueError)
+        IngestResult(FrameAck(frameId = id, ok = true), ingestedAtMs = done.rxMs, error = queueError)
     }
+
+    private fun receiptMeta(m: FrameMeta, size: Long) = ReceiptMeta(
+        wireFrameId = m.frameId, capturedAtMs = m.capturedAtMs, motion = m.motion.name, dwell = m.dwell, blur = m.blur,
+        dhash = m.dhash, phash = m.phash, luma = m.luma, batteryPct = m.batteryPct, width = m.width,
+        sampleSeq = m.sampleSeq, sessionId = m.sessionId, size = size,
+    )
 
     companion object { const val TAG = "ContextHub" }
 }

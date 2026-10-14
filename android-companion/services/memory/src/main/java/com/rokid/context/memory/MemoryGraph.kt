@@ -8,6 +8,7 @@ import java.io.File
 /** Process-wide data graph (no DI framework in v1). The encryption mode is decided at first open (EncryptionMigrator). */
 class MemoryGraph private constructor(val db: ContextDatabase) {
     val frames = FrameRepository(db.frameDao())
+    val intake = FrameIntake(db)
     val memories = MemoryRepository(db.memoryDao())
     val traces = TraceRepository(db.traceDao())
     val timeline = TimelineRepository(db.frameViewDao(), db.memoryViewDao(), db.traceViewDao())

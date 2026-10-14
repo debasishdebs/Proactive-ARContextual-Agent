@@ -38,7 +38,12 @@ object HubGraph {
         val ledger = ReceivedFrameLedger(File(app.filesDir, "cxr_received_frames.txt"))
         val settings = HubSettingsStore(app.getSharedPreferences("hub_settings", Context.MODE_PRIVATE)) { AppConfigStore.glassesSilencyMode(app) }
         val pauses = HubPauses(MemoryGraph.get(app).db.pauseDao(), quietHours = { settings.read().quietHours })
-        val ingestor = FrameIngestor(RokidFrameInbox.inboxDir(app), FrameReassembler(), FrameAdmission(ledger, pauses), ledger) { enqueueInboxIngest(app) }
+        val ingestor = FrameIngestor(
+            RokidFrameInbox.inboxDir(app), FrameReassembler(), FrameAdmission(ledger, pauses), ledger,
+            archiveDir = RokidFrameInbox.archiveDir(app),
+            // A receipt already committed to Room is acked at once (spec P2 receipt durability).
+            committed = { wireId -> MemoryGraph.get(app).db.frameMetaDao().byWireId(wireId) != null },
+        ) { enqueueInboxIngest(app) }
         return Hub(
             scope, CxrGlassesLink(app, scope, probe = com.rokid.context.BuildConfig.DEBUG), pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,

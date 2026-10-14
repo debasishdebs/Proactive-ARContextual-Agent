@@ -34,6 +34,14 @@ class ContextApp : Application() {
                 }
             }.onFailure { android.util.Log.w("ContextApp", "AI seed failed; will retry next start (${it.javaClass.simpleName})") }
         }
+        // Keyframe capture P1: after the v1 -> v2 migration (the first DB use runs it), adopt pre-v2 frames once, then queue a
+        // drain: every drain starts with the receipt reconciliation (startup pass), so half-finished receipts are finished.
+        kotlin.concurrent.thread(name = "frame-adoption") {
+            runCatching {
+                kotlinx.coroutines.runBlocking { com.rokid.context.work.frames.FrameAdoption.run(this@ContextApp) }
+                com.rokid.context.phone.hub.enqueueInboxIngest(this)
+            }.onFailure { android.util.Log.w("ContextApp", "frame adoption failed; retries next start (${it.javaClass.simpleName})") }
+        }
         com.rokid.context.orchestration.LegacyImportWorker.enqueue(this)
         com.rokid.context.orchestration.EmbeddingWorker.enqueue(this) // daily canary check + any backlog
         registerActivityLifecycleCallbacks(com.rokid.context.phone.hub.HubActivityHook)
