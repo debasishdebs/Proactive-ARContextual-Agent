@@ -1,6 +1,6 @@
 # Status and backlog: everything decided and pending (2026-10-14, 22:50)
 
-This is the single place to resume from after the conversation is compacted. Branch: `feat/proactive-mvp-implementation` @ `f82b82e`. Everything is local; **nothing has been pushed**. The last full gate passed on the combined build: 3 281+ tests, 0 failures. Both devices run the `f82b82e` build (phone + glasses, installed 22:40 with data kept; glasses overlay permission granted).
+This is the single place to resume from after the conversation is compacted. Branch: `feat/proactive-mvp-implementation` @ `87846a4`. Everything is local; **nothing has been pushed**. The last full gate passed on the combined build: 3 281+ tests, 0 failures. Both devices run the `f82b82e` build (phone + glasses, installed 22:40 with data kept; glasses overlay permission granted).
 
 **Completeness:** this doc was cross-checked on 2026-10-14 against the conversation since the last compaction and against the device-run, devfix and review reports. Items from before that compaction (Phases 0–8) live in the phase ledgers under `.superpowers/sdd/archive/**/progress.md` (Ruling lines and deferred minors), not here. Treat those ledgers plus this doc as the full record.
 
@@ -37,12 +37,15 @@ This is the single place to resume from after the conversation is compacted. Bra
   - **Device-verified 22:42–22:46:** frames every 30 s with the glasses minimised and the phone backgrounded.
   - Report: `.superpowers/sdd/minimised-link-report.md`.
 
-## 2. In progress right now
+## 2. Recently merged, awaiting a device check
 
-- `feat/activity-sort-cue`, in worktree `../pca-sortcue`:
-  - a sort icon on Activity: Latest first (the new default), Oldest first, A–Z, Z–A; remembered;
-  - a "photo sent" cue: a brief ✓/pulse on the glasses timer and the minimised icon, plus "N photos today" on phone Home.
-  - Report on finishing: `.superpowers/sdd/activity-sort-cue-report.md`. Then gate, merge into feat, and install.
+- `87846a4`, merged:
+  - the Activity sort menu: Latest first (default), Oldest first, A–Z, Z–A. A–Z and Z–A flatten the sections into one; the choice is restorable (`hub_settings` key `activity_sort`);
+  - the glasses ✓ cue on buffered and delivered photos (on the Glance timer and the minimised ring);
+  - "N photos today" on phone Home.
+- **Not yet installed on the devices.** The devices run the `f82b82e` build. Install the current feat tip and check the sort, the cue and the count.
+
+Companion docs: `2026-10-14-session-log.md` (what was done, decisions and why, confidence, deferred develop/improve/decide) and `2026-10-14-decision-log.md` (all rulings, probes and test evidence from Phases 0–8 and this session).
 
 ## 3. Pending device checks (no code needed unless they fail)
 
