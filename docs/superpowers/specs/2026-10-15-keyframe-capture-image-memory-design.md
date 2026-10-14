@@ -1,6 +1,6 @@
 # Motion-aware keyframe capture and image memory: design
 
-Status: revision 6 (four review rounds + user decisions A1/B1/C1/D1, 3, 6a), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
+Status: revision 7 (five review rounds + user decisions A1/B1/C1/D1, 3, 6a), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
 Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes only", §11 step 4b.
 
 ## 0. Intent (agreed with the user, 2026-10-15)
@@ -207,6 +207,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   | Settled (after H) | **closed**, LED off | a brief check every 5 s: open → first usable frame → close |
   | Settled with no keyframe for 10 min | closed | a brief check every 15 s |
 
+  - **Latency rules for the 1 s promise:** sensors are unbatched (`maxReportLatency` 0); onset is detected per sample; a new-scene keyframe may follow the previous one after 0.5 s (1.2 s only for non-new scenes). The promise is verified end to end (plan G3 `GlimpseOffsetTest`) against the measured camera start-up p95 (535 ms), counting saved keyframes.
   - **Early start:** the camera opens when the head **starts to decelerate** (gyro magnitude falling below 60 % of the movement's peak), not after it stops, to hide the start-up delay.
   - **Quick look setting** (Settings → Capture; the user decision is minimum 1 s): sets H.
 
@@ -516,6 +517,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 - **Revision 2 review:** 7 findings, all verified (`memory_source` already exists at `MemoryEntities.kt:47`; `memory_vector` needs a live memory). Fixed in revision 3: the `frame_source` name, the `frame_vector` table, the 5-min extraction claim with an atomic commit, ordinary skipped photos bypassing describe-before-delete and the 3-day extension, caption-queue aging, and the qualified wording.
   - User decisions: **3** separate dimensions, one 768 query shortened for each index, no score merging (fixed shares of 6 text + 2 photos, the answer LLM judges); **6a** 5 s settle window with a 30 s gap, configurable in Settings → Nudges.
 
+- **Plan review 2 (revision 7):** an end-to-end 1 s test through classifier → policy → camera (535 ms p95 start-up) → gate counting saved keyframes; sensors unbatched; new-scene throttle 0.5 s; deceleration produced by the classifier; directory fsync before ack; reconciliation of inbox + archive; a routing-aware `LanguageModel` with an explicit CallClass carried through fallbacks; the metadata transport path owned end to end; cleanup queries count `frame_source` references.
 - **Plan review (revision 6):** migration registration in the production builders, plus adoption of archived frames still awaiting extraction; wave-1 swap needs text coverage only; Forget tombstones at once; frame identity (`wire_frame_id`) and a sidecar-then-ack durability sequence; the winning candidate's pixels are retained for encoding; preprocessing parity with the pinned config; `CallGate` as a regular interface.
 - **Revision 3 review:** a nudge borrowing rule, "next unreserved token" for caption aging, the 45 s target tied to provider latency, the model-switch dialog separating reduced recall from lost recall (recoverable for 7 days), and a claim-id compare-and-set at commit. Fixed in revision 4.
 
