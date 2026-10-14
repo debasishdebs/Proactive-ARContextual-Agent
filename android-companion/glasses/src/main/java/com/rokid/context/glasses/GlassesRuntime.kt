@@ -21,6 +21,9 @@ import com.rokid.context.glasses.overlay.PopupOverlay
 import com.rokid.context.glasses.capture.HudPresence
 import com.rokid.context.glasses.capture.KeyframeOut
 import com.rokid.context.glasses.capture.OutboundBuffer
+import com.rokid.context.glasses.capture.SessionStatus
+import com.rokid.context.glasses.capture.session.CameraOwner
+import com.rokid.context.core.model.MotionState
 import com.rokid.context.glasses.link.CxrBridge
 import com.rokid.context.glasses.link.FrameUplink
 import com.rokid.context.glasses.link.GlassesBridge
@@ -62,12 +65,18 @@ class GlassesRuntime private constructor(private val app: Context) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + errors)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + errors)
     /** The persisted last `pc_settings` (quiet hours and their zone apply offline); HudController writes it on each push. */
-    private val settingsCache = HudSettingsCache(app.getSharedPreferences(HudSettingsCache.PREFS, Context.MODE_PRIVATE))
+    val settingsCache = HudSettingsCache(app.getSharedPreferences(HudSettingsCache.PREFS, Context.MODE_PRIVATE))
     @Volatile private var latestSettings: HudSettings? = null
     val pauses = GlassesPauses(
         PauseStore(File(app.filesDir, "pauses.preferences_pb"), ioScope),
         quiet = QuietHoursClock { latestSettings ?: settingsCache.read().also { latestSettings = it } },
     )
+    /** One camera owner for the process: the sampling session and every Fixed capture take turns through it. */
+    val cameraOwner = CameraOwner()
+    /** The capture service's latest status for the HUD marks (Cooling, capture degraded); idle until the service publishes. */
+    val captureStatus = MutableStateFlow(SessionStatus(running = false, motion = MotionState.STILL, keyframesLast10Min = 0, restingUntilMs = null, reason = null))
+    /** Smart mode is sampling (or about to): the next-capture countdown and the icon ring have nothing to count down to. */
+    val smartCapture = MutableStateFlow(false)
     val buffer = OutboundBuffer(File(app.filesDir, "outbound"), log = { Log.i(UPLINK_TAG, it) })
     /** Our HUD activity's lifecycle, for the capture fallback (spec §1.7: never reopened over another app). */
     val hudPresence = HudPresence()
@@ -81,7 +90,7 @@ class GlassesRuntime private constructor(private val app: Context) {
             val now = System.currentTimeMillis()
             IconState(
                 running = CaptureService.liveInstance != null,
-                fraction = IconRing.fraction(scheduler.nextTriggerAtMs(), scheduler.armedAtMs(), now),
+                fraction = if (smartCapture.value) null else IconRing.fraction(scheduler.nextTriggerAtMs(), scheduler.armedAtMs(), now),
                 paused = pauses.records.value.any { it.isActiveAt(now) },
                 cue = photoCue.active.value,
             )

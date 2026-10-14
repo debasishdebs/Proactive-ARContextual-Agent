@@ -63,7 +63,7 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
     /** Candidates currently held (their pixel copies stay alive). */
     internal fun retainedCount(): Int = window.size
 
-    fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean, force: Boolean = false): GateResult {
+    @Synchronized fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean, force: Boolean = false): GateResult {
         val now = clock()
         val blur = ImageHashes.blur(c.thumb)
         if (blur < BLUR_FLOOR) return Skip(BLUR)
@@ -78,7 +78,7 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
     }
 
     /** At window end: the best pending candidate, or null when nothing is pending. */
-    fun flushWindow(): GateResult? = if (window.isEmpty()) null else finish(dwell = false, clock())
+    @Synchronized fun flushWindow(): GateResult? = if (window.isEmpty()) null else finish(dwell = false, clock())
 
     private fun addToWindow(s: Scored, now: Long) {
         if (window.isEmpty()) windowStart = now
