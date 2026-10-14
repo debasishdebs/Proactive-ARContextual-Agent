@@ -74,6 +74,12 @@ class SettingsDeps(
     val capture: com.rokid.context.phone.capture.CaptureNowControl = com.rokid.context.phone.capture.CaptureNowControl.None,
     /** Settings › Actions & tools (Phase 7 B): lazy, so building these deps on Main never builds the actions graph. */
     private val lazyActions: Lazy<com.rokid.context.connectors.actions.ActionsGraphApi>,
+    /** Settings > AI > On-device models (on-device embeddings spec section 5). INTEGRATION SEAM: the real `LocalModelStore`. */
+    val localModels: com.rokid.context.phone.ui.settings.ai.LocalModelGateway = com.rokid.context.phone.ui.settings.ai.LocalModelGateway.None,
+    /** The page's "Allow mobile data" switch. */
+    val localModelsMobileData: com.rokid.context.phone.ui.settings.ai.MobileDataSetting = com.rokid.context.phone.ui.settings.ai.InMemoryMobileData(),
+    /** INTEGRATION SEAM (Stream N): the runtime's load-failure signal; nothing records one yet. */
+    val localModelLoadFailures: com.rokid.context.phone.ui.settings.ai.LoadFailures = com.rokid.context.phone.ui.settings.ai.LoadFailures.None,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -124,6 +130,9 @@ class SettingsDeps(
                 app, com.rokid.context.phone.capture.PhoneCaptureControl.storedPauses({ MemoryGraph.get(app).db.pauseDao() }, quietHours = { HubGraph.get(app).hudSettings.value.quietHours }),
             ),
             lazyActions = lazy { com.rokid.context.connectors.actions.ActionsGraph.get(app) },
+            // INTEGRATION SEAM (Stream D): swap PendingLocalModelStore for LocalModelStore.
+            localModels = PendingLocalModelStore(app),
+            localModelsMobileData = AppConfigMobileData(app),
         )
     }
 }
@@ -137,5 +146,41 @@ private class AppSources(private val app: Context) : com.rokid.context.phone.ui.
     override fun setNudgesPerDay(n: Int) = graph.settings.setNudgesPerDay(n)
     override fun granted(k: com.rokid.context.connectors.sources.SourceKind) = com.rokid.context.connectors.sources.SourcePermissions.of(k).all {
         androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+}
+
+/**
+ * INTEGRATION SEAM (Stream D): TEMPORARY gateway until `LocalModelStore` merges. It reports a file already in
+ * `filesDir/models/` as Ready and cannot download (enqueue only logs). Replace it with the real store at integration.
+ */
+class PendingLocalModelStore(context: Context) : com.rokid.context.phone.ui.settings.ai.LocalModelGateway {
+    private val dir = File(context.applicationContext.filesDir, "models")
+    private val states = mutableMapOf<String, kotlinx.coroutines.flow.MutableStateFlow<com.rokid.context.phone.ui.settings.ai.LocalModelState>>()
+
+    private fun flow(model: com.rokid.context.phone.ui.settings.ai.LocalModel) = synchronized(states) {
+        states.getOrPut(model.id) { kotlinx.coroutines.flow.MutableStateFlow(if (fileFor(model).isFile) com.rokid.context.phone.ui.settings.ai.LocalModelState.Ready else com.rokid.context.phone.ui.settings.ai.LocalModelState.Absent) }
+    }
+
+    override fun fileFor(model: com.rokid.context.phone.ui.settings.ai.LocalModel) = File(dir, model.file)
+    override fun state(model: com.rokid.context.phone.ui.settings.ai.LocalModel): kotlinx.coroutines.flow.Flow<com.rokid.context.phone.ui.settings.ai.LocalModelState> = flow(model)
+    override fun enqueue(model: com.rokid.context.phone.ui.settings.ai.LocalModel, allowMetered: Boolean) {
+        Log.i(TAG, "${model.id} download_unavailable")
+        flow(model).value = com.rokid.context.phone.ui.settings.ai.LocalModelState.Failed("Downloads aren't available in this build yet")
+    }
+    override fun cancel(model: com.rokid.context.phone.ui.settings.ai.LocalModel) { flow(model).value = if (fileFor(model).isFile) com.rokid.context.phone.ui.settings.ai.LocalModelState.Ready else com.rokid.context.phone.ui.settings.ai.LocalModelState.Absent }
+    override fun delete(model: com.rokid.context.phone.ui.settings.ai.LocalModel) { fileFor(model).delete(); flow(model).value = com.rokid.context.phone.ui.settings.ai.LocalModelState.Absent }
+
+    private companion object { const val TAG = "LocalModels" }
+}
+
+/** Stored in the existing `app_config` prefs (AppConfigStore's file), under its own key. Read off Main by the page. */
+class AppConfigMobileData(context: Context) : com.rokid.context.phone.ui.settings.ai.MobileDataSetting {
+    private val prefs by lazy { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+    override fun allowed() = prefs.getBoolean(KEY, false)
+    override fun set(allowed: Boolean) { prefs.edit().putBoolean(KEY, allowed).apply() }
+
+    companion object {
+        const val PREFS = "app_config"
+        const val KEY = "local_models_allow_metered"
     }
 }

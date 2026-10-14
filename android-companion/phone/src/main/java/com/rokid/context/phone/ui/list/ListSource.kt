@@ -3,6 +3,8 @@ package com.rokid.context.phone.ui.list
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.ui.graphics.vector.ImageVector
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 
 /** One row in the generic list screen (ported from LiveFit `ui/list`). Sources map their domain objects onto this. */
 data class ListItem(
@@ -30,8 +32,13 @@ data class ItemAction(
     val confirmMessage: String = "",
     val confirmLabel: String = "OK",
     val blocking: Boolean = false,
+    /** Non-null adds a Cancel button to the blocking overlay; [run] is expected to return soon after. */
+    val onCancel: (() -> Unit)? = null,
     val run: suspend (onProgress: (Float?) -> Unit) -> ActionResult,
 )
+
+/** A row's secondary action, shown in its overflow menu under [label]. */
+data class NamedAction(val label: String, val action: ItemAction)
 
 sealed interface ActionResult {
     data object Done : ActionResult
@@ -57,6 +64,10 @@ interface ListSource {
     val selectable: Boolean get() = false
     /** The bottom bar's label for n selected rows. */
     val selectLabel: (Int) -> String get() = { "Show selected ($it)" }
+    /** Each emission reloads the rows (e.g. download progress). */
+    val changes: Flow<Unit> get() = emptyFlow()
     suspend fun load(): List<ListItem>
     fun actionFor(item: ListItem): ItemAction?
+    /** Extra actions in the row's overflow menu; empty shows no menu. */
+    fun moreActionsFor(item: ListItem): List<NamedAction> = emptyList()
 }
