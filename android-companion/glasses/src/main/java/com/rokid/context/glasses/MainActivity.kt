@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.annotation.VisibleForTesting
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -22,6 +23,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import com.rokid.context.core.hud.DoubleTapExit
+import com.rokid.context.core.hud.ExitGate
+import com.rokid.context.core.hud.PageAction
 import com.rokid.context.core.hud.render.HudCopy
 import com.rokid.context.core.hud.render.HudModel
 import com.rokid.context.core.hud.render.HudNav
@@ -68,6 +72,9 @@ class MainActivity : ComponentActivity() {
     private var nav by mutableStateOf(HudNav())
     private var highlightYes by mutableStateOf(true)
     private var local by mutableStateOf<LocalOverlay?>(null)
+    /** The double-tap exit gate (spec 2026-10-14 §2), on the uptime clock; [gateTick] runs while it is armed. */
+    private var exitGate: ExitGate = ExitGate.Idle
+    private val gateTick = Runnable { tickGate() }
     /** A permission request is on screen: Android drops a second one, so none is launched until it answers. */
     private var permissionPending = false
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -113,6 +120,7 @@ class MainActivity : ComponentActivity() {
 
     /** Finishing closes the session at once; [onDestroy] may come late. */
     override fun onStop() {
+        cancelGate() // leaving the HUD with the gate armed must never pause later (review focus 1)
         if (isFinishing) { cancelAsk(); controller.onActivityExit(); CaptureService.stopKeepAlive(this) }
         runtime.hudPresence.onStopped(finishing = isFinishing)
         super.onStop()
@@ -182,10 +190,14 @@ class MainActivity : ComponentActivity() {
         for (input in inputs) {
             val now = System.currentTimeMillis()
             val recording = runtime.listening.value
-            val shown = presenter.present(controller.frame.value, controller.settings.value.verbosity, nav, local, now, recording).overlay
+            val view = presenter.present(controller.frame.value, controller.settings.value.verbosity, nav, local, now, recording)
+            val shown = view.overlay
             confirm.onConfirm(shown as? Overlay.Confirm)
             highlightYes = confirm.highlightYes
-            when (val r = InputRouter.route(input, shown, controller.settings.value.gestures, recording)) {
+            val r = InputRouter.route(input, shown, controller.settings.value.gestures, recording, gate = view.page != null)
+            if (r != Routed.ExitGate) cancelGate()
+            when (r) {
+                Routed.ExitGate -> onGateDoubleTap()
                 Routed.ConfirmToggle -> { confirm.onSwipe(); highlightYes = confirm.highlightYes }
                 Routed.ConfirmChoose -> confirm.onTap()?.let { controller.send(it); presenter.dismiss(shown) }
                 Routed.ConfirmNo -> confirm.onNo()?.let { controller.send(it); presenter.dismiss(shown) }
@@ -199,6 +211,57 @@ class MainActivity : ComponentActivity() {
             nav = nav.touched(now)
         }
     }
+
+    /** A page double-tap: arm the gate (countdown shown), or minimise when it was already armed. */
+    private fun onGateDoubleTap() {
+        val (g, a) = DoubleTapExit.onDoubleTap(exitGate, SystemClock.uptimeMillis())
+        exitGate = g
+        swipeTimer.removeCallbacks(gateTick)
+        if (a == PageAction.MINIMISE) { clearCountdown(); minimise(); return }
+        showCountdown()
+        swipeTimer.postDelayed(gateTick, GATE_TICK_MS)
+    }
+
+    private fun tickGate() {
+        // Never armed under an overlay with its own double-tap: one arriving now ends the gate with no pause.
+        val phone = controller.frame.value?.overlay
+        if (runtime.listening.value || phone is Overlay.Confirm || phone is Overlay.Listening || phone is Overlay.Answer) { cancelGate(); return }
+        val (g, a) = DoubleTapExit.onTick(exitGate, SystemClock.uptimeMillis())
+        exitGate = g
+        if (a == PageAction.TOGGLE_PAUSE) {
+            clearCountdown()
+            onAction(Routed.Mapped(GestureAction.PAUSE_RESUME), null, System.currentTimeMillis())
+            return
+        }
+        if (g is ExitGate.Armed) { showCountdown(); swipeTimer.postDelayed(gateTick, GATE_TICK_MS) }
+    }
+
+    private fun showCountdown() {
+        DoubleTapExit.countdownText(exitGate, SystemClock.uptimeMillis())?.let { local = LocalOverlay.Toast(it, System.currentTimeMillis()) }
+    }
+
+    /** A tap, swipe or minimise while armed: no pause; the countdown goes. */
+    private fun cancelGate() {
+        if (exitGate == ExitGate.Idle) return
+        exitGate = DoubleTapExit.onOtherInput(exitGate)
+        swipeTimer.removeCallbacks(gateTick)
+        clearCountdown()
+    }
+
+    private fun clearCountdown() {
+        if ((local as? LocalOverlay.Toast)?.text?.startsWith(DoubleTapExit.COUNTDOWN_PREFIX) == true) local = null
+    }
+
+    /** The second page double-tap: our task goes to the back; capture keeps running in the keep-alive service. */
+    internal fun minimise() {
+        cancelGate()
+        tasksMovedBack++
+        moveTaskToBack(true)
+    }
+
+    /** Tests: how many times our task was sent to the back. */
+    @VisibleForTesting internal var tasksMovedBack = 0
+        private set
 
     /** A dismissed Answer also tells the phone, which stops speaking it (spec §5.1 step 5). */
     private fun dismiss(shown: Overlay?) {
@@ -302,6 +365,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         swipeTimer.removeCallbacks(closeSwipe)
+        swipeTimer.removeCallbacks(gateTick)
         cancelAsk()
         controller.onActivityExit()
         if (isFinishing) { runtime.hudPresence.onExited(); CaptureService.stopKeepAlive(this) }
@@ -311,6 +375,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val TAG = "PcGlasses"
+        private const val GATE_TICK_MS = 250L
         const val MIC_PERMISSION = "Allow the microphone on the glasses"
         /** Phase 8 C3: shown once when reopening finds the capture alarm lost to a force-stop. */
         const val CAPTURE_RESUMED_AFTER_STOP = "Capture resumed \u2014 it stops while the app is closed"
