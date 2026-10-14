@@ -1,6 +1,6 @@
 # Motion-aware keyframe capture and image memory: design
 
-Status: revision 4 (three review rounds + user decisions A1/B1/C1/D1, 3, 6a), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
+Status: revision 6 (four review rounds + user decisions A1/B1/C1/D1, 3, 6a), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
 Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes only", §11 step 4b.
 
 ## 0. Intent (agreed with the user, 2026-10-15)
@@ -100,6 +100,7 @@ Shared rules:
   - **Exact transforms** (from the official model cards; review finding 1):
     - **Text:** mean-pool the token embeddings (768) → **LayerNorm over the full 768 dimensions, no learned weights** → truncate to the first 256 → L2-normalise. Today's JNI does only L2 normalisation, so the plan adds the LayerNorm step in Kotlin (or in the JNI) before truncation.
     - **Vision:** the CLS embedding (768) → L2-normalise (the model card's recipe), then truncate to the stored dimension → L2-normalise again.
+    - **Image preprocessing:** follows the pinned `preprocessor_config.json` exactly: operation order (the current config resizes to 224×224 before cropping), resampling, rescale and mean/std. The Android and Python reference pipelines use the same config, and reference images are rectangular.
   - **Stored dimension:** 256 for text (Matryoshka, documented for the text model). The image dimension is **256 only if the §F.5 photo acceptance test passes at 256; otherwise images are stored at 768**, while text stays at 256 (user decision: separate dimensions, for storage).
   - **Queries with different dimensions (user decision 3):** a question is embedded **once** at 768 with the query prefix. The text index uses it shortened to 256 and L2-normalised; the image index uses it at the image dimension. One model and one call. Text and image scores are **never compared** (see §P5.1). The dimension is part of each space's fingerprint. A later change is a new space, which means a re-index.
   - **Reference-vector test:** the plan fixes 10 texts and 5 images with vectors computed by the official Python pipeline (`sentence-transformers` / `transformers` at a pinned commit). On-device vectors must reach cosine ≥ 0.99 against them for every item.
@@ -110,7 +111,7 @@ Shared rules:
 
 ### F.2 Indexing time: re-index from bge-small to Nomic (and any later model change)
 - This uses the existing re-index flow: the new space is built in the background while the old space keeps answering.
-- **Coverage rule, changed (decision A1):** the swap needs 100 % of text memories and 100 % of photos **still stored**. Image vectors of photos that are already deleted can't be rebuilt. They are dropped at the swap, and those items stay findable by caption only.
+- **Coverage rule, changed (decision A1):** the swap needs 100 % of text memories and 100 % of photos **still stored**. The photo part is **enforced from wave 2**, when `frame_vector` backfill ships. In wave 1 a swap needs text coverage only (plan C2 flag `requireImageCoverage`). Image vectors of photos that are already deleted can't be rebuilt. They are dropped at the swap, and those items stay findable by caption only.
   - Before the swap, the confirmation counts the deleted photos in two groups:
     - **"N photos will be searchable by text only"**: those with their own caption or a surviving linked memory (`frame_source`) or cluster summary. Recall is reduced.
     - **"M photos will no longer be findable at all"**: no caption, no linked memory, vector only, such as ordinary skipped photos whose photo was deleted. Recall is lost.
@@ -155,12 +156,15 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 
 | Table | Columns | Purpose |
 |---|---|---|
-| `frame_meta` | `frame_id` PK, `session_id`, `motion`, `dwell`, `blur`, `dhash`, `phash`, `width`, `salience`, `salience_terms` (JSON), `cluster_id`, `near_dup_of`, `image_vector_space`, `created_at` | metadata from §P1, §P4 for each keyframe, durable after the inbox |
+| `frame_meta` | `frame_id` PK (the database frame id, as memories use), `wire_frame_id` (unique; the glasses' `pc_frame` id, for resend dedupe), `session_id`, `motion`, `dwell`, `blur`, `dhash`, `phash`, `width`, `salience`, `salience_terms` (JSON), `cluster_id`, `near_dup_of`, `image_vector_space`, `created_at` | metadata from §P1, §P4 for each keyframe, durable after the inbox |
 | `frame_state` | `frame_id` PK, `state` (PENDING, EXTRACTING, EXTRACTED, CLUSTERED, NEAR_DUP, FAILED, FAILED_FINAL), `attempts`, `last_error`, `updated_at` | the backlog's source of truth (§P2), no TTL |
 | `frame_source` | (`memory_id`, `frame_id`) PK, `cluster_id` nullable, `role` (FACT, CLUSTER_REP, CLUSTER_MEMBER) | frame → memory provenance (§P2), the Forget walk. **Named `frame_source` because `memory_source` already exists** (memory → memory ancestry, `MemoryEntities.kt:47`). That table and its Forget traversal stay untouched. |
 | `frame_vector` | (`frame_id`, `space_id`) PK, `blob`; index on `space_id` | image vectors for each keyframe. It doesn't need a memory row: skipped photos may have none, and the existing `memory_vector` requires a live memory. It holds the ACTIVE space's rows plus a RETIRED space's rows for the 7-day rollback (§F.2). |
 | `frame_cluster` | `cluster_id` PK, `opened_at`, `closed_at`, `close_reason`, `rep_frame_ids` (JSON), `memory_id` nullable | §P4 clusters |
 
+- The migration is registered in **both** `DatabaseFactory.build()` and `buildDeferred()`, and tested by upgrading a v1 file through those production builders, plain and SQLCipher.
+- **Forget:** forgetting a memory tombstones every frame it cites **at once** (the existing extraction lock). The photo file is kept while another surviving memory cites the frame.
+- **Receipt durability:** the JPEG and a metadata sidecar are made durable in the inbox before the ack. `frame_meta` and `frame_state` are written in the same transaction as the frame row when the inbox is drained (plan P1).
 - **Tests:**
   - a `MigrationTestHelper` test from the v1 schema with real rows, which keeps every v1 row;
   - an encrypted-database migration test, extending `SqlCipherMigrationDeviceTest`;
@@ -512,6 +516,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 - **Revision 2 review:** 7 findings, all verified (`memory_source` already exists at `MemoryEntities.kt:47`; `memory_vector` needs a live memory). Fixed in revision 3: the `frame_source` name, the `frame_vector` table, the 5-min extraction claim with an atomic commit, ordinary skipped photos bypassing describe-before-delete and the 3-day extension, caption-queue aging, and the qualified wording.
   - User decisions: **3** separate dimensions, one 768 query shortened for each index, no score merging (fixed shares of 6 text + 2 photos, the answer LLM judges); **6a** 5 s settle window with a 30 s gap, configurable in Settings → Nudges.
 
+- **Plan review (revision 6):** migration registration in the production builders, plus adoption of archived frames still awaiting extraction; wave-1 swap needs text coverage only; Forget tombstones at once; frame identity (`wire_frame_id`) and a sidecar-then-ack durability sequence; the winning candidate's pixels are retained for encoding; preprocessing parity with the pinned config; `CallGate` as a regular interface.
 - **Revision 3 review:** a nudge borrowing rule, "next unreserved token" for caption aging, the 45 s target tied to provider latency, the model-switch dialog separating reduced recall from lost recall (recoverable for 7 days), and a claim-id compare-and-set at commit. Fixed in revision 4.
 
 ## Open questions for the plan (not blocking the spec)
