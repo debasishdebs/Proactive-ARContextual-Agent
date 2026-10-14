@@ -11,12 +11,16 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.SafeLog
+import com.rokid.context.ai.embed.LocalModelPausedException
+import com.rokid.context.ai.embed.LocalModelPower
+import com.rokid.context.ai.embed.PowerState
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.memory.MemoryGraph
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Keeps the semantic index current (spec §4.6). Runs on battery-not-low; continues itself while work remains.
+ * Keeps the semantic index current (spec §4.6). Runs on battery-not-low; continues itself while work remains. With the
+ * on-device model bound it also needs charging or battery > 70 % ([gated], Gaps G6).
  *
  * No network constraint on purpose: the EMBED binding may be a localhost (Ollama on the device) or on-device llama.cpp
  * endpoint that works offline. An unreachable remote endpoint fails the run, which retries with backoff, capped.
@@ -33,8 +37,11 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             Log.i(TAG, "pipeline paused: index work left for resume")
             return Result.success()
         }
-        val maintenance = IndexMaintenance(MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(AiGraph.get(applicationContext).embedders), clock)
-        return execute(applicationContext, runAttemptCount) { maintenance.run(rebuild, rebuildToken = id.toString()) }
+        val ai = AiGraph.get(applicationContext)
+        val maintenance = IndexMaintenance(MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(ai.embedders), clock)
+        return gated(applicationContext, rebuild, id.toString(), usesLocal = { ai.embedders.bindingIsLocal() }, power = { LocalModelPower.read(applicationContext) }) {
+            execute(applicationContext, runAttemptCount) { maintenance.run(rebuild, rebuildToken = id.toString()) }
+        }
     }
 
     companion object {
@@ -43,6 +50,37 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         private const val MAX_RUNS = 5
         const val NAME = "embedding_index"
         const val KEY_REBUILD = "rebuild"
+
+        /**
+         * Gaps G6 (MVP spec 6): with the on-device model bound, index work runs only when charging or battery > 70 %.
+         * Otherwise nothing is embedded: the run is re-queued to wait for a charger (below 70 % and not charging, the
+         * battery only climbs back on a charger, so "requires charging" is exact) and the banner reason is set. A
+         * Rebuild stays pending (as when paused) and is honoured by the run that follows.
+         */
+        internal suspend fun gated(
+            context: Context,
+            rebuild: Boolean,
+            token: String,
+            usesLocal: suspend () -> Boolean,
+            power: () -> PowerState,
+            run: suspend () -> Result,
+        ): Result {
+            val clock = PrefsIndexClock(context)
+            val local = try { usesLocal() } catch (c: CancellationException) { throw c } catch (e: Exception) { false }
+            if (local && !LocalModelPower.bulkAllowed(power())) {
+                if (rebuild) { clock.setPendingRebuildToken(token); clock.setRebuildPending(true) }
+                deferForBattery(context)
+                return Result.success()
+            }
+            clock.setBatteryPaused(false)
+            return run()
+        }
+
+        private fun deferForBattery(context: Context) {
+            Log.i(TAG, "on-device index work waits for a charger (battery)")
+            PrefsIndexClock(context).setBatteryPaused(true)
+            WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request(false, untilCharging = true))
+        }
 
         /** One run's outcome as a WorkManager result. A config failure is recorded and stops; other failures retry a bounded number of times. */
         internal suspend fun execute(context: Context, attempt: Int, run: suspend () -> IndexMaintenance.Outcome): Result = try {
@@ -53,6 +91,10 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             }
         } catch (c: CancellationException) {
             throw c
+        } catch (e: LocalModelPausedException) {
+            // The battery fell (or an on-device space was reached) mid-run: wait for a charger, never a failure.
+            deferForBattery(context)
+            Result.success()
         } catch (e: IndexConfigException) {
             Log.w(TAG, "index config failure; not retrying until the next trigger: ${SafeLog.describe(e)}")
             Result.failure()
@@ -62,9 +104,9 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         }
 
         private fun retryOrFail(attempt: Int): Result = if (attempt + 1 < MAX_RUNS) Result.retry() else Result.failure()
-        private fun request(rebuild: Boolean) = OneTimeWorkRequestBuilder<EmbeddingWorker>()
+        private fun request(rebuild: Boolean, untilCharging: Boolean = false) = OneTimeWorkRequestBuilder<EmbeddingWorker>()
             .setInputData(workDataOf(KEY_REBUILD to rebuild))
-            .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build())
+            .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).setRequiresCharging(untilCharging).build())
             .build()
 
         /** New memories, app start, binding change: KEEP (a run already queued will see them). Rebuild: REPLACE. */

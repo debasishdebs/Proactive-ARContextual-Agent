@@ -27,12 +27,14 @@ class AiGraph(
     providers: ProviderBuilder = ProviderFactory,
     val settings: AiSettings = AiSettings.inMemory(),
     seeds: PromptSeeds = BuiltInPromptSeeds,
+    /** Gaps G6: phone power for the on-device model gate; ungated unless the app passes the real reading. */
+    power: () -> com.rokid.context.ai.embed.PowerState = { com.rokid.context.ai.embed.PowerState.UNGATED },
 ) {
     val endpoints = EndpointRepository(memory.db.endpointDao(), vault)
     val bindings = RoleBindingRepository(memory.db.roleBindingDao(), endpoints)
     val router = ModelRouter(bindings, endpoints, providers)
     val tester = EndpointTester(endpoints, providers)
-    val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings)
+    val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings, power = power)
     val retriever = com.rokid.context.memory.retrieval.MemoryRetriever(
         com.rokid.context.memory.retrieval.LexicalRetriever(memory.db.retrievalDao()),
         com.rokid.context.memory.retrieval.SemanticRetriever(memory.spaces, memory.vectorIndex, embedders),
@@ -48,7 +50,7 @@ class AiGraph(
         @Volatile private var instance: AiGraph? = null
         fun get(context: Context): AiGraph = instance ?: synchronized(this) {
             val app = context.applicationContext
-            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app))
+            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) })
                 .also { instance = it }
         }
         fun resetForTests(graph: AiGraph?) { synchronized(this) { instance = graph } }

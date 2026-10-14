@@ -8,7 +8,9 @@ import com.rokid.context.core.ui.components.BannerTone
 enum class IndexState {
     NONE, NEEDED, RUNNING,
     /** Auto-rebuild stopped after repeated canary drift (Task 11); only the user's Rebuild resumes it. */
-    UNSTABLE;
+    UNSTABLE,
+    /** Gaps G6: on-device index work waits for a charger (battery 70 % or less, not charging). */
+    BATTERY_PAUSED;
 
     companion object {
         fun of(h: com.rokid.context.memory.IndexHealth): IndexState = when (h) {
@@ -23,6 +25,13 @@ enum class IndexState {
          */
         fun of(h: com.rokid.context.memory.IndexHealth, unstable: Boolean, embedBound: Boolean): IndexState =
             if (unstable && embedBound) UNSTABLE else of(h)
+
+        /** [batteryPaused] = `PrefsIndexClock.observeBatteryPaused()` (Gaps G6): after unstable, before needed/running. */
+        fun of(h: com.rokid.context.memory.IndexHealth, unstable: Boolean, embedBound: Boolean, batteryPaused: Boolean): IndexState = when {
+            unstable && embedBound -> UNSTABLE
+            batteryPaused && embedBound -> BATTERY_PAUSED
+            else -> of(h)
+        }
     }
 }
 enum class BannerKind { AI_BLOCKED, GLASSES_DISCONNECTED, PROTOCOL_MISMATCH, CAPTURE_DEFERRED, CAPTURE_PAUSED, INDEX, STORAGE }
@@ -83,6 +92,7 @@ object BannerResolver {
             IndexState.NEEDED -> BannerSpec(BannerKind.INDEX, BannerTone.SKY, "Memory index needs a rebuild")
             IndexState.RUNNING -> BannerSpec(BannerKind.INDEX, BannerTone.SKY, "Rebuilding memory index…")
             IndexState.UNSTABLE -> BannerSpec(BannerKind.INDEX, BannerTone.AMBER, "Memory index unstable", "Rebuild", BannerAction.REBUILD_INDEX)
+            IndexState.BATTERY_PAUSED -> BannerSpec(BannerKind.INDEX, BannerTone.SKY, "On-device search paused to save battery")
             IndexState.NONE -> null
         },
         i.storagePct?.let { p ->

@@ -95,7 +95,8 @@ class PhoneDeps(
                     MemoryGraph.get(app).spaces.health(),
                     PrefsIndexClock(app).observeUnstable(),
                     flow { emitAll(com.rokid.context.ai.AiGraph.get(app).bindings.observeAll()) }.map { b -> b.any { it.role == com.rokid.context.ai.Role.EMBED } },
-                ) { h, unstable, bound -> IndexState.of(h, unstable, bound) }
+                    PrefsIndexClock(app).observeBatteryPaused(), // Gaps G6
+                ) { h, unstable, bound, battery -> IndexState.of(h, unstable, bound, battery) }
                     .flowOn(Dispatchers.IO), // the clock's first prefs read stays off Main
                 voice = voice.phoneVoice,
                 onMicGranted = voice::onForeground,
