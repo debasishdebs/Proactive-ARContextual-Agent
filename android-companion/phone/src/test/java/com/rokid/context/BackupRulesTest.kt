@@ -19,6 +19,8 @@ class BackupRulesTest {
         // Markers that say "already done in the DB": restored without the DB they would skip re-seeding/re-import.
         "sharedpref:ai_seed.xml", "sharedpref:legacy_import.xml",
         "database:context.db", "database:context.db-wal", "database:context.db-shm",
+        // On-device embeddings spec section 4: downloaded models (large, re-downloadable) are never backed up.
+        "file:models",
     ) + memoryCopies + setupState.map { "sharedpref:$it.xml" }
 
     /**
@@ -125,5 +127,18 @@ class BackupRulesTest {
         val unruled = names - keysAndMarkers - setupState - restorable
         assertEquals("prefs files with no backup ruling", emptySet<String>(), unruled)
         assertTrue("a file is both restorable and excluded", (restorable intersect (setupState + keysAndMarkers)).isEmpty())
+    }
+
+    /**
+     * The On-device models page's "Allow mobile data" key lives in app_config, which BUG-R3-1 excludes: a restore
+     * brings the switch back off (Wi-Fi only), the safe default, and never a stale "on" from another phone.
+     */
+    @Test fun theMobileDataSwitchIsInExcludedAppConfig() {
+        assertEquals("app_config", com.rokid.context.phone.ui.settings.AppConfigMobileData.PREFS)
+        assertEquals("local_models_allow_metered", com.rokid.context.phone.ui.settings.AppConfigMobileData.KEY)
+        assertTrue("app_config" in setupState)
+        val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) +
+            listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
+        for (section in sections) assertTrue(section.tagName, "sharedpref:app_config.xml" in excludes(section))
     }
 }

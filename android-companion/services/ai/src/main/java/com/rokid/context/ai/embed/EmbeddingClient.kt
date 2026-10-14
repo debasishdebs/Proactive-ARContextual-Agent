@@ -93,8 +93,15 @@ class EmbeddingClient(
         return validated(vectors, inputs.size)
     }
 
+    /**
+     * [NATIVE_BATCH] texts per native call, each call timed on its own, so a 64-text reindex batch can't overrun the
+     * limit by size alone and a query waits behind at most one small call (final review I1).
+     */
+    private suspend fun nativeEmbed(path: String, inputs: List<String>): List<FloatArray> =
+        inputs.chunked(NATIVE_BATCH).flatMap { nativeCall(path, it) }
+
     /** The caller stops waiting after [nativeTimeoutMs]; native calls run one at a time, and a call still queued when the caller gives up is cancelled and never runs. */
-    private suspend fun nativeEmbed(path: String, inputs: List<String>): List<FloatArray> {
+    private suspend fun nativeCall(path: String, inputs: List<String>): List<FloatArray> {
         val work = nativeScope.async { nativeLock.withLock { native(path, inputs) } }
         return try { withTimeout(nativeTimeoutMs) { work.await() } }
         catch (_: TimeoutCancellationException) { throw java.net.SocketTimeoutException("Local embedding timed out") }
@@ -130,4 +137,9 @@ class EmbeddingClient(
     }
 
     private fun strings(xs: List<String>) = JsonArray(xs.map { JsonPrimitive(it) })
+
+    companion object {
+        /** Texts per on-device call: 8 of up to 2,000 chars (about 512 tokens each) on bge-small stay well inside 60 s. */
+        const val NATIVE_BATCH = 8
+    }
 }

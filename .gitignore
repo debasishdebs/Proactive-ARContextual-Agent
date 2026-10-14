@@ -24,3 +24,6 @@ local.properties
 
 # Legacy dev captures moved out of the repo root (no reference value)
 /docs/screens/legacy/
+
+# Native (CMake/NDK) build output
+.cxx/

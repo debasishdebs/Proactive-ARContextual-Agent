@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Downloading
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SortByAlpha
@@ -33,6 +34,8 @@ import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -93,6 +96,8 @@ fun ListScreen(
     onOpenSelected: (List<String>) -> Unit = {},
     initiallySelected: Set<String> = emptySet(),
     onSelectionChange: (Set<String>) -> Unit = {},
+    /** Shown between the title bar and the search field (notes, switches, banners). */
+    header: @Composable () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
 
@@ -107,6 +112,7 @@ fun ListScreen(
     var selected by rememberSaveable(saver = SelectionSaver) { mutableStateOf(initiallySelected) }
 
     LaunchedEffect(source, reloadKey) { items = source.load() }
+    LaunchedEffect(source) { source.changes.collect { reloadKey++ } }
     // Reload when returning to the screen (another screen may have changed what the rows show).
     val lifecycle = LocalLifecycleOwner.current
     DisposableEffect(lifecycle) {
@@ -117,9 +123,9 @@ fun ListScreen(
     }
     val grouped = source.statusLabels.isNotEmpty()
     val runAction: (ListItem, ItemAction) -> Unit = { item, action ->
-        if (action.blocking) progress = Progress(item.title, null)
+        if (action.blocking) progress = Progress(item.title, null, action.onCancel)
         scope.launch {
-            val result = action.run { p -> if (action.blocking) progress = Progress(item.title, p) }
+            val result = action.run { p -> if (action.blocking) progress = Progress(item.title, p, action.onCancel) }
             progress = null
             when (result) {
                 ActionResult.Done -> onMessage("${item.title}: done")
@@ -131,9 +137,8 @@ fun ListScreen(
             reloadKey++
         }
     }
-    val onRow: (ListItem) -> Unit = { row ->
-        source.actionFor(row)?.let { action -> if (action.confirmTitle == null) runAction(row, action) else confirming = row to action }
-    }
+    val start: (ListItem, ItemAction) -> Unit = { row, action -> if (action.confirmTitle == null) runAction(row, action) else confirming = row to action }
+    val onRow: (ListItem) -> Unit = { row -> source.actionFor(row)?.let { start(row, it) } }
     val toggle: (ListItem) -> Unit = { row ->
         selected = if (row.id in selected) selected - row.id else selected + row.id
         onSelectionChange(selected)
@@ -146,6 +151,7 @@ fun ListScreen(
     val installed = if (grouped) visible.filter { it.status == ItemStatus.Done || it.status == ItemStatus.InProgress } else emptyList()
     val others = visible - installed.toSet()
     val rowSelection = if (source.selectable) RowSelection(selected, toggle) else null
+    val rowActions = RowActions(onRow, start)
 
     Box(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).testTag("list_screen")) {
         Column(Modifier.fillMaxSize()) {
@@ -160,6 +166,7 @@ fun ListScreen(
                     }
                 }
             }
+            header()
             SearchBar(query, source.searchHint) { query = it }
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -169,11 +176,11 @@ fun ListScreen(
                     else -> LazyColumn(contentPadding = PaddingValues(bottom = 32.dp)) {
                         if (installed.isNotEmpty()) {
                             item { GroupLabel(source.doneSection, installed.size) }
-                            item { RowsCard(installed, source, rowSelection, onRow) }
+                            item { RowsCard(installed, source, rowSelection, rowActions) }
                         }
                         if (others.isNotEmpty()) {
                             item { if (grouped) GroupLabel(source.actionSection, others.size) else Spacer(Modifier.height(12.dp)) }
-                            item { RowsCard(others, source, rowSelection, onRow) }
+                            item { RowsCard(others, source, rowSelection, rowActions) }
                         }
                     }
                 }
@@ -202,7 +209,7 @@ fun ListScreen(
                     TextButton(onClick = {
                         confirming = null
                         runAction(item, action)
-                    }) { Text(action.confirmLabel, fontWeight = FontWeight.SemiBold, color = PcColors.MintDeep) }
+                    }, modifier = Modifier.testTag("list_confirm")) { Text(action.confirmLabel, fontWeight = FontWeight.SemiBold, color = PcColors.MintDeep) }
                 },
                 dismissButton = { TextButton(onClick = { confirming = null }) { Text("Cancel", color = PcColors.InkSoft) } },
                 containerColor = PcColors.Surface,
@@ -226,7 +233,9 @@ fun ListScreen(
     }
 }
 
-private data class Progress(val title: String, val fraction: Float?)
+private data class Progress(val title: String, val fraction: Float?, val onCancel: (() -> Unit)? = null)
+
+private class RowActions(val onRow: (ListItem) -> Unit, val start: (ListItem, ItemAction) -> Unit)
 
 private class RowSelection(val selected: Set<String>, val toggle: (ListItem) -> Unit)
 
@@ -259,11 +268,11 @@ private fun GroupLabel(text: String, count: Int) {
 }
 
 @Composable
-private fun RowsCard(rows: List<ListItem>, source: ListSource, selection: RowSelection?, onClick: (ListItem) -> Unit) {
+private fun RowsCard(rows: List<ListItem>, source: ListSource, selection: RowSelection?, actions: RowActions) {
     SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
         Column {
             rows.forEachIndexed { i, item ->
-                ItemRow(item, source, selection) { onClick(item) }
+                ItemRow(item, source, selection, actions)
                 if (i < rows.lastIndex) Box(Modifier.padding(start = 16.dp).fillMaxWidth().height(1.dp).background(PcColors.Line))
             }
         }
@@ -271,7 +280,7 @@ private fun RowsCard(rows: List<ListItem>, source: ListSource, selection: RowSel
 }
 
 @Composable
-private fun ItemRow(item: ListItem, source: ListSource, selection: RowSelection?, onClick: () -> Unit) {
+private fun ItemRow(item: ListItem, source: ListSource, selection: RowSelection?, actions: RowActions) {
     Row(
         Modifier.fillMaxWidth().padding(start = if (selection != null) 4.dp else 0.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -285,7 +294,7 @@ private fun ItemRow(item: ListItem, source: ListSource, selection: RowSelection?
             )
         }
         Row(
-            Modifier.weight(1f).clickable(onClick = onClick).padding(horizontal = if (selection != null) 4.dp else 16.dp, vertical = 12.dp)
+            Modifier.weight(1f).clickable { actions.onRow(item) }.padding(horizontal = if (selection != null) 4.dp else 16.dp, vertical = 12.dp)
                 .padding(end = if (selection != null) 12.dp else 0.dp).testTag("list_row_${item.id}"),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -302,6 +311,23 @@ private fun ItemRow(item: ListItem, source: ListSource, selection: RowSelection?
             }
             item.toggle?.let { Switch(it, onCheckedChange = null, enabled = source.actionFor(item) != null) }
             StatusBadge(item.status, source)
+        }
+        val more = source.moreActionsFor(item)
+        if (more.isNotEmpty()) MoreMenu(item, more, actions)
+    }
+}
+
+@Composable
+private fun MoreMenu(item: ListItem, more: List<NamedAction>, actions: RowActions) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }, modifier = Modifier.testTag("list_more_${item.id}")) {
+            Icon(Icons.Rounded.MoreVert, contentDescription = "More for ${item.title}")
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            more.forEachIndexed { i, a ->
+                DropdownMenuItem(text = { Text(a.label) }, onClick = { open = false; actions.start(item, a.action) }, modifier = Modifier.testTag("list_more_${item.id}_$i"))
+            }
         }
     }
 }
@@ -358,6 +384,10 @@ private fun ProgressOverlay(p: Progress) {
             Spacer(Modifier.height(16.dp))
             Text(p.title, style = MaterialTheme.typography.titleMedium)
             Text("Keep the app open", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft)
+            p.onCancel?.let { cancel ->
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = cancel, modifier = Modifier.testTag("list_progress_cancel")) { Text("Cancel", color = PcColors.MintDeep) }
+            }
         }
     }
 }

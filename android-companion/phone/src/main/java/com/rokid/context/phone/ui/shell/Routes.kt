@@ -30,6 +30,8 @@ object Routes {
     /** Settings -> AI -> Agent flows (agent flows spec): the list, then the selected flows' view. */
     const val SETTINGS_FLOWS = "settings/flows"
     const val SETTINGS_FLOWS_VIEW = "settings/flows/view?ids={ids}"
+    /** Settings -> AI -> On-device models (on-device embeddings spec section 5). */
+    const val SETTINGS_LOCAL_MODELS = "settings/local-models"
     const val SETTINGS_PERSONA = "settings/persona"
     const val SETTINGS_MEMORY = "settings/memory"
     const val SETTINGS_MEMORY_REVIEW = "settings/memory/review"
@@ -52,7 +54,7 @@ object Routes {
     /** Settings rows that open a screen in this build. */
     val LIVE_SETTINGS: Set<String> = setOf(
         SETTINGS_GLASSES, SETTINGS_PHONE_INPUTS, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL,
-        SETTINGS_FLOWS,
+        SETTINGS_FLOWS, SETTINGS_LOCAL_MODELS,
         SETTINGS_PERSONA, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS, SETTINGS_PRIVACY, SETTINGS_SOURCES, SETTINGS_ACTIONS, SETTINGS_SHOPPING,
     )
 

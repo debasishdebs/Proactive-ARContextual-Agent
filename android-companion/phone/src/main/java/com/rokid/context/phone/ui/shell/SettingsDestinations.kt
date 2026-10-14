@@ -1,5 +1,6 @@
 package com.rokid.context.phone.ui.shell
 
+import com.rokid.context.ai.local.LocalModels
 import android.Manifest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,6 +30,9 @@ import com.rokid.context.phone.ui.settings.ai.EndpointEditorScreen
 import com.rokid.context.phone.ui.settings.ai.EndpointEditorViewModel
 import com.rokid.context.phone.ui.settings.ai.EndpointsListScreen
 import com.rokid.context.phone.ui.settings.ai.EndpointsListViewModel
+import com.rokid.context.phone.ui.settings.ai.LocalModelsRoute
+import com.rokid.context.phone.ui.settings.ai.LocalModelsSource
+import androidx.compose.runtime.remember
 import com.rokid.context.phone.ui.settings.ai.RolesScreen
 import com.rokid.context.phone.ui.settings.ai.RolesViewModel
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsScreen
@@ -124,6 +128,16 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
 
     composable(Routes.SETTINGS_FLOWS) {
         FlowsListRoute(AgentFlowSummaries, models = { s.ai.bindings.get(it)?.model }, onBack = back, navigate = { nav.navigate(it) })
+    }
+
+    composable(Routes.SETTINGS_LOCAL_MODELS) {
+        val source = remember {
+            LocalModelsSource(
+                LocalModels.all, s.localModels, s.ai, s.onEmbedBindingChanged, s.localModelsMobileData,
+                abiSupported = "arm64-v8a" in android.os.Build.SUPPORTED_ABIS, loadFailures = s.localModelLoadFailures,
+            )
+        }
+        LocalModelsRoute(source, onBack = back)
     }
 
     composable(Routes.SETTINGS_FLOWS_VIEW, arguments = listOf(navArgument("ids") { type = NavType.StringType; defaultValue = "" })) { entry ->
