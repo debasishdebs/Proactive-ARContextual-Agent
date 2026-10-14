@@ -36,8 +36,10 @@ class FakeOnboardingAi(var seed: SeedEndpoint? = null) : OnboardingAi {
     val used = mutableListOf<String>()
     val chosen = mutableListOf<Boolean>()
     var seedTests = 0
+    /** The apiKey each seed Test passed (null = none typed). */
+    val seedKeys = mutableListOf<String?>()
     override suspend fun seeded(): SeedEndpoint? = seed
-    override suspend fun testSeed(seed: SeedEndpoint): TestResult { seedTests++; return nextResult.getOrThrow() }
+    override suspend fun testSeed(seed: SeedEndpoint, apiKey: String?): TestResult { seedTests++; seedKeys += apiKey; return nextResult.getOrThrow() }
     override suspend fun testDraft(draft: EndpointDraft): Result<TestResult> { drafts += draft; return nextResult }
     override suspend fun use(endpointId: String, chosen: Boolean) { used += endpointId; this.chosen += chosen }
 }
@@ -48,12 +50,13 @@ class Env(
     val ai: FakeOnboardingAi = FakeOnboardingAi(),
     val persona: InMemoryPersonaSettings = InMemoryPersonaSettings(),
     sdk: Int = 34,
+    presets: (AiPreset) -> PresetDefaults = { PresetDefaults.from(it, "", "") },
 ) {
     var authorized = 0
     var appSettings = 0
     var completed = 0
     val deps = OnboardingDeps(
         link = link, voice = voice, authorize = { authorized++ }, openAppSettings = { appSettings++ },
-        ai = ai, persona = { persona }, markComplete = { completed++ }, sdk = sdk,
+        ai = ai, persona = { persona }, markComplete = { completed++ }, sdk = sdk, presetDefaults = presets,
     )
 }

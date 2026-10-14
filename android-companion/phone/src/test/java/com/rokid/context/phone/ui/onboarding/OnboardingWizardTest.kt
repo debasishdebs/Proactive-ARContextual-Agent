@@ -2,6 +2,7 @@ package com.rokid.context.phone.ui.onboarding
 
 import android.app.Application
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -159,5 +160,20 @@ class OnboardingWizardTest {
         compose.waitForIdle()
         val cfg = compose.onNodeWithTag("ai_result").fetchSemanticsNode().config
         assertEquals(androidx.compose.ui.semantics.LiveRegionMode.Polite, cfg[SemanticsProperties.LiveRegion])
+    }
+
+    /** BUG-R3-2: the keyless seed shows a masked API key field, and Test enables once a key is typed. */
+    @Test fun aKeylessSeedShowsAMaskedKeyField() {
+        env.ai.seed = SeedEndpoint("azure", "Azure OpenAI", "gpt-5.4", needsKey = true)
+        val v = OnboardingViewModel(env.deps, work = UnconfinedTestDispatcher())
+        while (v.state.value.step != Step.AI) v.next()
+        show(v)
+        compose.onNodeWithTag("ai_seed_key").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("ai_test").assertIsNotEnabled()
+        v.onKey("sk-typed-42")
+        compose.waitForIdle()
+        compose.onNodeWithTag("ai_test").assertIsEnabled()
+        val shown = compose.onNodeWithTag("ai_seed_key").fetchSemanticsNode().config.getOrNull(SemanticsProperties.EditableText)?.text.orEmpty()
+        assertEquals(false, shown.contains("sk-typed"))
     }
 }

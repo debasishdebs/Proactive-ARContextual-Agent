@@ -7,6 +7,7 @@ import com.rokid.context.ai.Endpoint
 import com.rokid.context.ai.EndpointKind
 import com.rokid.context.ai.EndpointSeeder
 import com.rokid.context.ai.EndpointRules
+import com.rokid.context.ai.EnvDefaults
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
 import com.rokid.context.ai.TestResult
@@ -18,8 +19,21 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
-/** An endpoint that already exists (seeded from the legacy config or added earlier): offered as "Use <name>". */
-data class SeedEndpoint(val id: String, val name: String, val model: String)
+/**
+ * An endpoint that already exists (seeded from the legacy config or added earlier): offered as "Use <name>".
+ * [needsKey]: a kind that takes a key, with none stored (the build seed: endpoint + deployment, no key; BUG-R3-2).
+ */
+data class SeedEndpoint(val id: String, val name: String, val model: String, val needsKey: Boolean = false)
+
+/** What a preset's form starts with. BUG-R3-2: Azure gets the build's endpoint, API version and deployment. */
+data class PresetDefaults(val url: String = "", val apiVersion: String = "", val model: String = "") {
+    companion object {
+        /** Azure is prefilled only when the build has an endpoint; every other preset starts empty with its model. */
+        fun from(p: AiPreset, azureEndpoint: String = EnvDefaults.azureEndpoint, azureDeployment: String = EnvDefaults.azureDeployment) =
+            if (p == AiPreset.AZURE && azureEndpoint.isNotBlank()) PresetDefaults(azureEndpoint, EnvDefaults.AZURE_API_VERSION, azureDeployment)
+            else PresetDefaults(model = p.defaultModel)
+    }
+}
 
 enum class AiPreset(val label: String, val kind: EndpointKind, val hasKey: Boolean, val defaultModel: String, val urlHint: String) {
     AZURE("Azure OpenAI", EndpointKind.AZURE_OPENAI, true, "", "https://your-resource.openai.azure.com"),
@@ -38,7 +52,8 @@ data class EndpointDraft(val preset: AiPreset, val baseUrl: String, val apiVersi
 /** The AI step's seam over [AiGraph]: the key goes straight to the vault, never into Room, state or logs. */
 interface OnboardingAi {
     suspend fun seeded(): SeedEndpoint?
-    suspend fun testSeed(seed: SeedEndpoint): TestResult
+    /** [apiKey] (typed for a [SeedEndpoint.needsKey] seed) is stored in the vault first, through EndpointRepository.save. */
+    suspend fun testSeed(seed: SeedEndpoint, apiKey: String? = null): TestResult
     /** Saves the draft (validation failure = the failure) and runs Test on it. */
     suspend fun testDraft(draft: EndpointDraft): Result<TestResult>
     /**
@@ -50,11 +65,22 @@ interface OnboardingAi {
 }
 
 class AiGraphOnboardingAi(private val ai: () -> AiGraph) : OnboardingAi {
-    override suspend fun seeded(): SeedEndpoint? =
-        ai().endpoints.all().firstOrNull { Capability.CHAT in it.capabilities && it.models.isNotEmpty() && it.kind != EndpointKind.LLAMACPP_LOCAL }
-            ?.let { SeedEndpoint(it.id, it.name, it.models.first()) }
+    override suspend fun seeded(): SeedEndpoint? {
+        val g = ai()
+        val e = g.endpoints.all().firstOrNull { Capability.CHAT in it.capabilities && it.models.isNotEmpty() && it.kind != EndpointKind.LLAMACPP_LOCAL }
+            ?: return null
+        val needsKey = e.kind !in EndpointRules.KEYLESS && g.endpoints.keyFor(e).isNullOrBlank()
+        return SeedEndpoint(e.id, e.name, e.models.first(), needsKey)
+    }
 
-    override suspend fun testSeed(seed: SeedEndpoint): TestResult = ai().tester.test(seed.id, seed.model)
+    override suspend fun testSeed(seed: SeedEndpoint, apiKey: String?): TestResult {
+        val g = ai()
+        if (!apiKey.isNullOrBlank()) {
+            val e = g.endpoints.byId(seed.id) ?: return TestResult(false, 0, "Endpoint not found")
+            g.endpoints.save(e, apiKey).getOrThrow()
+        }
+        return g.tester.test(seed.id, seed.model)
+    }
 
     override suspend fun testDraft(draft: EndpointDraft): Result<TestResult> = runCatching {
         val g = ai()
@@ -108,6 +134,8 @@ class OnboardingDeps(
     /** Durable and off Main when it is the real one. */
     val markComplete: suspend () -> Unit,
     val sdk: Int = Build.VERSION.SDK_INT,
+    /** What a preset's form starts with (the build defaults in the app). */
+    val presetDefaults: (AiPreset) -> PresetDefaults = { PresetDefaults.from(it) },
 ) {
     companion object {
         fun from(deps: PhoneDeps): OnboardingDeps {
