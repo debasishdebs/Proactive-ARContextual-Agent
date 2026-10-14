@@ -2,6 +2,8 @@
 
 This is the single place to resume from after the conversation is compacted. Branch: `feat/proactive-mvp-implementation` @ `f82b82e`. Everything is local; **nothing has been pushed**. The last full gate passed on the combined build: 3 281+ tests, 0 failures. Both devices run the `f82b82e` build (phone + glasses, installed 22:40 with data kept; glasses overlay permission granted).
 
+**Completeness:** this doc was cross-checked on 2026-10-14 against the conversation since the last compaction and against the device-run, devfix and review reports. Items from before that compaction (Phases 0–8) live in the phase ledgers under `.superpowers/sdd/archive/**/progress.md` (Ruling lines and deferred minors), not here. Treat those ledgers plus this doc as the full record.
+
 ## 1. What is built and merged
 
 - **v1, Phases 0–8:** see `plans/2026-10-12-v1-master-plan.md` and the phase plans.
@@ -92,6 +94,9 @@ This is the single place to resume from after the conversation is compacted. Bra
 | B8 | Debug-only link probe logging (`PcLinkProbe`) is on in debug builds | Decide: keep it as diagnostics, or remove it now that Option A is proven. |
 | B9 | Flaky tests on the watch list | PromptEditorTest, DeleteAllFenceTest, PushToTalkTest, AppShellTest.leavingHome… |
 | B10 | `android-companion/.kotlin/` and the root `window.xml` are untracked | Add `.kotlin/` to .gitignore; move or delete `window.xml`. |
+| B12 | **HIGH, security: legacy secret-config backups are restored from Auto Backup** | Two files are on the phone after today's fresh install: `files/app_config_secret.xml.bak.1780057256` and `files/app_config_secret.xml.bak.manual_reset_1780057830`, about 1.3 KB each, each with 2 key/token/secret-like lines; contents never printed. The `files/` dir isn't excluded for these names, so an old secret config (possibly an API key) goes to cloud backup and comes back. Fix: (a) exclude `file:app_config_secret*` in every backup section; (b) delete these .bak files on startup, after the legacy-key retirement (P8 D1) has read them; (c) check the old Phase 8 D1 code path that created them. Treat the key inside as exposed: rotate it if it's a live key. |
+| B13 | **Rokid AssistServer force-stops our glasses app** | "Force stopping com.rokid.context.glasses … from pid 2000" at 19:41:33; pid 2000 is Rokid's AssistServer. Folding the temples (`glassLegStatusChange spread[false]`) also force-stopped it in round 3. Likely the same mechanism as B1, the call. The keep-alive service doesn't survive a force-stop. Investigate whether Rokid offers a keep-alive or whitelist. |
+| B14 | Delete all's armed-reminder cancel wasn't exercised on the device | The "Call Mom" reminder had already fired before round 3's Delete all. |
 | B11 | Review minors deferred | In `.superpowers/sdd/archive/**/final-review*.md`, `.superpowers/sdd/ode/final-review.md`, `.superpowers/sdd/glasses-minimise/final-review.md`, `.superpowers/sdd/agent-flows/final-review.md`. |
 
 ## 5. Decided features not yet specced or built
@@ -105,6 +110,9 @@ This is the single place to resume from after the conversation is compacted. Bra
 3. **multilingual-e5-small** as a second on-device model, about 120 MB. Add it after RAM is measured with bge-small.
 4. **Connectors brainstorm** (the user's next big topic): Outlook, Slack, Gmail, Amazon, Flipkart, and more, to make the agent personal. Start with superpowers:brainstorming in a fresh chat.
 5. **Release build:** minify and arm64-only to cut the APK size (debug is about 97 MB).
+7. **The LiveFit-style HUD Display screen.** The user asked for "HUD settings like LiveFit". Scale and position already exist in Settings → Glasses, but LiveFit's **live preview** (the 3:4 glasses frame showing the HUD block at its size and position, with an Apply button) wasn't ported. Source: `live-fitness-tracker/phone/.../ui/settings/HudDisplayScreen.kt`.
+8. **"Glasses as a nearby device" UI.** The behaviour is built: the phone foreground service runs while the glasses are connected. LiveFit also has a **Settings → Nearby devices** page ("start when nearby" per paired device). Decide whether the user wants that page too, or whether the behaviour is enough.
+9. **Brief "photo taken" feedback on the glasses** is in progress (§2); confirm on the device that it answers "I feel nothing came".
 6. **Future agent flows:** workout/food, work reminders, groceries and day-to-day tasks. The Agent flows registry is ready for more flows (one file each).
 
 ## 6. Rules to keep (from the user)
