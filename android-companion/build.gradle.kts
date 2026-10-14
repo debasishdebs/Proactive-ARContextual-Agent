@@ -13,6 +13,10 @@ plugins {
 subprojects {
     tasks.withType<Test>().configureEach {
         timeout.set(java.time.Duration.ofMinutes(10))
+        // Gate stall 2026-10-14: the Robolectric worker stopped answering jstack (GC thrash on the 512 MB default heap).
+        // A bigger heap, and an out-of-memory that exits with a dump instead of thrashing, so a stall fails fast and explained.
+        maxHeapSize = "2g"
+        jvmArgs("-XX:+HeapDumpOnOutOfMemoryError", "-XX:HeapDumpPath=${layout.buildDirectory.get().asFile}/test-heap", "-XX:+ExitOnOutOfMemoryError")
         testLogging {
             events("started", "failed", "skipped")
             exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
