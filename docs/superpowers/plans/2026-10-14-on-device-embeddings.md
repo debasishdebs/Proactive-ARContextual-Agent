@@ -18,7 +18,7 @@
 - EMBED binding goes through `ai.bindings.set` → `onEmbedBindingChanged` (reindex, generation swap). There is no new write path and no Room schema change (v1 frozen).
 - No raw error text in the UI. Logs carry only the model id plus a reason code, never user text.
 - Gradle: `./gradlew --no-daemon`. Never `gradlew --stop`. One Gradle run per worktree. Never print secrets, never read .env, never push. Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. No unescaped `}` in a Regex. Grep the diff for accidental non-ASCII in .kt files.
-- Tooling prerequisite (controller, before N starts, with user OK): `sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"` into `$ANDROID_HOME`.
+- Tooling prerequisite (controller, before N starts, with user OK): `sdkmanager "ndk;28.2.13676358" "cmake;3.22.1"` into `$ANDROID_HOME`.
 
 ## Review Focus
 
@@ -37,7 +37,7 @@
 **Files:**
 - Add a git submodule `android-companion/services/ai/src/main/cpp/llama.cpp`, pinned to the latest llama.cpp release tag at build time. Record the tag and commit in the task report.
 - Create `services/ai/src/main/cpp/CMakeLists.txt` and `services/ai/src/main/cpp/llama_jni.cpp`.
-- Modify `services/ai/build.gradle.kts`: `ndkVersion = "27.2.12479018"`, `externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }`, `defaultConfig.ndk { abiFilters += "arm64-v8a" }`, plus release `-O3`. Build llama.cpp with `LLAMA_BUILD_TESTS/EXAMPLES/SERVER=OFF`, `GGML_OPENMP=OFF`, and CPU only.
+- Modify `services/ai/build.gradle.kts`: `ndkVersion = "28.2.13676358"`, `externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }`, `defaultConfig.ndk { abiFilters += "arm64-v8a" }`, plus release `-O3`. Build llama.cpp with `LLAMA_BUILD_TESTS/EXAMPLES/SERVER=OFF`, `GGML_OPENMP=OFF`, and CPU only.
 
 **Interfaces:** implement exactly the externals in `com.rokid.context.model.provider.LlamaCppNativeProvider` (JNI names `Java_com_rokid_context_model_provider_LlamaCppNativeProvider_native…`):
 - `nativeLoadModel(path): Long`, which returns 0 on failure;
