@@ -30,7 +30,12 @@ class UserFacingErrorTest {
         assertEquals(UserFacingErrors.VersionMismatch, UserFacingErrors.forLink(LinkState.VERSION_MISMATCH))
         assertEquals(ErrorAction.RECONNECT, UserFacingErrors.forLink(LinkState.OFFLINE)!!.action)
         // Transient states have no banner: CXR resumes a BT pause by itself (~2 s, phase 0).
-        for (s in listOf(LinkState.CONNECTED, LinkState.CONNECTING, LinkState.PAUSED_BT)) assertNull(UserFacingErrors.forLink(s), "$s")
+        for (s in listOf(LinkState.CONNECTED, LinkState.CONNECTING, LinkState.PAUSED_BT, LinkState.MINIMISED)) assertNull(UserFacingErrors.forLink(s), "$s")
+    }
+
+    /** Minimised Option A: frames still flow on the background link, so only CONNECTED and MINIMISED carry data. */
+    @Test fun onlyConnectedAndMinimisedCarryData() {
+        assertEquals(setOf(LinkState.CONNECTED, LinkState.MINIMISED), LinkState.entries.filter { it.carriesData }.toSet())
     }
 
     /** Phase 8 C3: a closed glasses app is force-stopped, so capture stops until it is reopened. */

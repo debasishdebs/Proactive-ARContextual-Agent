@@ -347,6 +347,57 @@ class HubTest {
         assertEquals(now - 10_000, db.pauseDao().intervalFor("g16")!!.startMs)
     }
 
+    /** Minimised Option A: the background link carries heartbeats and acks, and keeps the session's clock offset. */
+    @Test fun minimisedLinkKeepsHeartbeatingAckingAndTheOffset() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.emit(hello(glassesNowMs = now + 7_200_000)); runCurrent()
+        link.setState(LinkState.MINIMISED); runCurrent()
+        assertEquals("same glasses session: the offset is kept", 7_200_000L, h.state.value.offset!!.glassesMinusPhoneMs)
+        assertEquals(LinkState.MINIMISED, h.status.value.link)
+        link.sent.clear()
+        advanceTimeBy(11_000)
+        val frame = (Wire.decode<StateFrame>(link.lastOn(Channels.STATE)) as Decoded.Ok).value
+        assertTrue("heartbeat keeps the glasses' liveness check open", frame.phoneLinked)
+        link.emit(GlassesEvent.Frame(FrameCodec.split("gm1", ByteArray(2_000) { 3 }, capturedAtMs = now + 7_200_000 - 1_000).single())); runCurrent()
+        assertEquals(FrameAck(frameId = "gm1", ok = true), (Wire.decode<FrameAck>(link.lastOn(Channels.FRAME_ACK)) as Decoded.Ok).value)
+        assertEquals(now - 1_000, h.status.value.lastFrameAtMs)
+    }
+
+    /** Review I2: "Open on glasses" while minimised never connects (appStart); the glasses get a pop-up instead. */
+    @Test fun openOnGlassesWhileMinimisedShowsAPopupAndNeverConnects() = runTest {
+        val link = FakeGlassesLink(LinkState.MINIMISED)
+        val h = hub(link)
+        link.sent.clear()
+        h.requestReconnect(); runCurrent(); advanceTimeBy(300)
+        assertEquals("no CUSTOM_APP connect", 0, link.connectCalls)
+        val shown = (Wire.decode<StateFrame>(link.lastOn(Channels.STATE)) as Decoded.Ok).value.overlay
+        assertEquals(Overlay.Toast(Hub.OPEN_WHILE_MINIMISED), shown)
+        advanceTimeBy(Hub.MINIMISED_HINT_MS + 300)
+        assertNull("the pop-up clears", (Wire.decode<StateFrame>(link.lastOn(Channels.STATE)) as Decoded.Ok).value.overlay)
+        link.setState(LinkState.CLOSED_ON_GLASSES); runCurrent()
+        h.requestReconnect()
+        assertEquals("a real exit still reconnects", 1, link.connectCalls)
+    }
+
+    /** Hand-back: a frame acked on the background link and resent on the new session is acked again, never ingested twice. */
+    @Test fun handBackFromMinimisedNeverIngestsAFrameTwice() = runTest {
+        var stored = 0
+        val link = FakeGlassesLink(LinkState.MINIMISED)
+        val h = hub(link, onStored = { stored++ })
+        link.emit(hello()); runCurrent()
+        val c = FrameCodec.split("gm2", ByteArray(2_000) { 4 }, capturedAtMs = now - 2_000).single()
+        link.emit(GlassesEvent.Frame(c)); runCurrent()
+        assertEquals(1, stored)
+        link.setState(LinkState.CONNECTING); runCurrent()
+        link.setState(LinkState.CONNECTED); link.emitReady(); runCurrent()
+        link.emit(hello()); runCurrent()
+        link.emit(GlassesEvent.Frame(c)); runCurrent()
+        assertEquals(FrameAck(frameId = "gm2", ok = true, reason = "duplicate"), (Wire.decode<FrameAck>(link.lastOn(Channels.FRAME_ACK)) as Decoded.Ok).value)
+        assertEquals("exactly once", 1, stored)
+        assertEquals(now - 2_000, h.status.value.lastFrameAtMs)
+    }
+
     private class TimedLink(val inner: FakeGlassesLink, val time: () -> Long) : GlassesLink by inner {
         val stateAt = mutableListOf<Long>()
         override suspend fun send(channel: String, json: String): Boolean =

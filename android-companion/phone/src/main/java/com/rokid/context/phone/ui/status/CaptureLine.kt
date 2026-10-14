@@ -3,6 +3,7 @@ package com.rokid.context.phone.ui.status
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.GlassesStatus
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.carriesData
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
 import java.util.Locale
@@ -19,13 +20,14 @@ object CaptureLine {
     fun pausedOnGlasses(s: GlassesStatus, pipelineEnabled: Boolean): Boolean = pipelineEnabled && s.frame?.capture is CaptureState.Paused
 
     fun live(s: GlassesStatus, pipelineEnabled: Boolean): Boolean =
-        !paused(s, pipelineEnabled) && s.link == LinkState.CONNECTED && s.frame?.capture == CaptureState.Running
+        !paused(s, pipelineEnabled) && s.link.carriesData && s.frame?.capture == CaptureState.Running
 
     /** [pauses]: the active records (Phase 7); they name the pause when the control reports paused. */
     fun text(s: GlassesStatus, pipelineEnabled: Boolean, nowMs: Long, pauses: List<PauseRecord> = emptyList()): String {
         if (!pipelineEnabled) return pausedText(pauses)
         if (pausedOnGlasses(s, pipelineEnabled)) return "Paused on glasses"
         val frame = s.frame
+        if (s.link == LinkState.MINIMISED && frame?.capture == CaptureState.Running) return "Minimised on glasses \u00b7 capturing"
         if (frame == null || s.link != LinkState.CONNECTED) return when (s.link) {
             LinkState.CONNECTING -> "Connecting to glasses…"
             LinkState.PAUSED_BT -> "Bluetooth paused · reconnecting"

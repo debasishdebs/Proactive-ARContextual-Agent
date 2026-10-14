@@ -36,6 +36,6 @@ object UserFacingErrors {
         LinkState.CLOSED_ON_GLASSES -> ClosedOnGlasses
         LinkState.NOT_AUTHORIZED -> NotAuthorized
         LinkState.VERSION_MISMATCH -> VersionMismatch
-        LinkState.CONNECTING, LinkState.CONNECTED, LinkState.PAUSED_BT -> null
+        LinkState.CONNECTING, LinkState.CONNECTED, LinkState.PAUSED_BT, LinkState.MINIMISED -> null
     }
 }

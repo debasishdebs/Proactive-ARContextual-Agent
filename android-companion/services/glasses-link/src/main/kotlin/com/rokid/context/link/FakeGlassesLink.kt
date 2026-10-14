@@ -1,6 +1,7 @@
 package com.rokid.context.link
 
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.carriesData
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -29,7 +30,7 @@ class FakeGlassesLink(initial: LinkState = LinkState.CONNECTED) : GlassesLink {
     override fun connectOnce() { connectOnceCalls++ }
     override fun connectOnResume() = Unit
     override suspend fun send(channel: String, json: String): Boolean {
-        if (_state.value != LinkState.CONNECTED) return false
+        if (!_state.value.carriesData) return false // as CxrGlassesLink: the session, or the background link while minimised
         sent += channel to json
         return true
     }
