@@ -24,7 +24,8 @@ import java.time.ZoneId
 /**
  * The hub's actions port (R-62): a HUD Confirm while the newest CONFIRM proposal is PENDING (cleared on any terminal
  * state or expiry), or the undo toast for 10 s after an auto-executed one (restarted once when it first reaches the
- * glasses, BUG-R2-5). HUD votes go through the engine's CAS, so a
+ * glasses, BUG-R2-5), or for [OFF_NOTICE_MS] the "<type> is off" notice when an ask proposed a turned-off type. HUD votes
+ * go through the engine's CAS, so a
  * late or second vote is a no-op.
  */
 class HubActionsImpl(
@@ -87,6 +88,13 @@ class HubActionsImpl(
                 val until = p.undoUntilMs ?: return
                 scheduleClear(p.proposalId, until)
             }
+            HudSurface.OFF_NOTICE -> if (p.state == ProposalState.SUPPRESSED) {
+                val type = repo.byId(p.proposalId)?.let { ActionParams.typeOf(it.type) } ?: return
+                val notice = Overlay.Toast(ActionCopy.offNotice(type))
+                toastTimer?.cancel()
+                _overlay.value = notice
+                toastTimer = scope.launch { delay(OFF_NOTICE_MS); _overlay.compareAndSet(notice, null) }
+            }
             HudSurface.NONE -> Unit
         }
     }
@@ -124,6 +132,7 @@ class HubActionsImpl(
     companion object {
         const val HUD = "hud"
         const val UNDO_TOAST = "Added \u00b7 double-tap undo"
+        const val OFF_NOTICE_MS = 6_000L
         private const val TAG = "HubActions"
     }
 }

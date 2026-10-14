@@ -18,6 +18,14 @@ class AppAnswererTest {
         assertEquals(listOf("milk?" to "glasses_voice"), asked)
     }
 
+    /** "note that…" (user notes): an ask whose action is turned off answers (HUD and TTS) with the off notice. */
+    @Test fun aTurnedOffActionAnswersWithTheOffNotice() = runBlocking {
+        val a = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1", proposalId = "p1") }, answerText = { "Noted." }, offNotice = { id -> "Notes are off.".takeIf { id == "p1" } })
+        assertEquals(AnswerResult.Answered("a1", "Notes are off."), a.answer("note that x", VoiceSource.GLASSES))
+        val on = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1", proposalId = "p1") }, answerText = { "Noted." }, offNotice = { null })
+        assertEquals(AnswerResult.Answered("a1", "Noted."), on.answer("note that x", VoiceSource.GLASSES))
+    }
+
     @Test fun failuresBecomeShortHudTextAndThePhonesFixedMessage() = runBlocking {
         assertEquals(AnswerResult.Failed("AI unavailable", AskActions.AI_UNAVAILABLE), answerer(AskOutcome.Failed(AskActions.AI_UNAVAILABLE)).answer("q", VoiceSource.PHONE))
         assertEquals(AnswerResult.Failed("Nothing on that yet \u2014 I'll check your next photos", AskActions.NO_MEMORIES), answerer(AskOutcome.Failed(AskActions.NO_MEMORIES)).answer("q", VoiceSource.PHONE))

@@ -71,6 +71,7 @@ object ActionsUi {
         ActionType.REMINDER -> "Reminder"
         ActionType.SHOPPING_ADD -> "Shopping list"
         ActionType.CALENDAR_EVENT -> "Calendar event"
+        ActionType.NOTE_ADD -> "Note"
     }
 }
 
