@@ -60,10 +60,10 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
 
     composable(Routes.ACTIVITY, arguments = listOf(navArgument("period") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
         val period = Period.parse(entry.arguments?.getString("period"))
-        val vm = viewModel { ActivityViewModel(period, deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.clock, deps.storagePct, deps.zone, index = deps.index) }
+        val vm = viewModel { ActivityViewModel(period, deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.clock, deps.storagePct, deps.zone, index = deps.index, sort = deps.activitySort) }
         val state by vm.state.collectAsStateWithLifecycle()
         ActivityScreen(
-            state, onSelectPeriod = vm::selectPeriod, onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
+            state, onSelectPeriod = vm::selectPeriod, onSelectSort = vm::selectSort, onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
             onOpenMemory = { nav.navigate(Routes.memory(it)) }, onOpenFrames = { nav.navigate(Routes.frames(it)) }, onOpenDay = { nav.navigate(Routes.day(it)) },
         )
     }
@@ -71,7 +71,7 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
     composable(Routes.DAY, arguments = listOf(dateArg)) { entry ->
         val date = entry.arguments?.getString("date")
         // Same clock as Activity, so the day regroups when the zone changes (Task 7 carry).
-        val vm = viewModel { DayViewModel(date, deps.memory.timeline, deps.zone, deps::today, deps.clock) }
+        val vm = viewModel { DayViewModel(date, deps.memory.timeline, deps.zone, deps::today, deps.clock, deps.activitySort.order) }
         val state by vm.state.collectAsStateWithLifecycle()
         DayScreen(state, onBack = back, onOpenMemory = { nav.navigate(Routes.memory(it)) }, onOpenFrames = { nav.navigate(Routes.frames(it)) })
     }

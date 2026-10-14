@@ -55,6 +55,8 @@ class PhoneDeps(
     val voice: com.rokid.context.phone.voice.PhoneVoice = com.rokid.context.phone.voice.PhoneVoice.None,
     /** RECORD_AUDIO was answered: re-check the voice gate. */
     val onMicGranted: () -> Unit = {},
+    /** Activity's sort menu choice (also orders the Day screen); persisted by [create]. */
+    val activitySort: com.rokid.context.phone.ui.activity.ActivitySortStore = com.rokid.context.phone.ui.activity.InMemoryActivitySort(),
 ) {
     fun today(): LocalDate = LocalDate.now(zone())
 
@@ -97,6 +99,7 @@ class PhoneDeps(
                     .flowOn(Dispatchers.IO), // the clock's first prefs read stays off Main
                 voice = voice.phoneVoice,
                 onMicGranted = voice::onForeground,
+                activitySort = com.rokid.context.phone.ui.activity.PrefsActivitySort(app),
             )
         }
     }

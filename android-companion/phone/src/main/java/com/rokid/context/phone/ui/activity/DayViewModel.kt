@@ -33,6 +33,8 @@ data class DayUiState(
 @OptIn(ExperimentalCoroutinesApi::class)
 class DayViewModel(
     dateArg: String?, timeline: TimelineRepository, zone: () -> ZoneId, today: () -> LocalDate, clock: Flow<Long> = flowOf(0L),
+    /** Activity's sort choice: the Day screen opened from Activity lists its rows the same way. */
+    sort: Flow<ActivitySort> = flowOf(ActivitySort.DEFAULT),
 ) : ViewModel() {
     private val date: LocalDate? = dateArg?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
     private val notFound = DayUiState(loading = false, found = false)
@@ -47,8 +49,8 @@ class DayViewModel(
                 if (r == null) {
                     flowOf(notFound)
                 } else {
-                    combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r)) { m, f ->
-                        DayUiState(false, true, d, ActivityModel.dayLabel(d, today()), Timeline.sections(m, Timeline.framesFor(m, f, timeline::framesByIds), z, d), f.size)
+                    combine(timeline.visibleMemoriesIn(r), timeline.framesIn(r), sort) { m, f, o ->
+                        DayUiState(false, true, d, ActivityModel.dayLabel(d, today()), Timeline.sections(m, Timeline.framesFor(m, f, timeline::framesByIds), z, d, o), f.size)
                     }
                 }
             }
