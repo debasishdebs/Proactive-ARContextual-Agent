@@ -14,6 +14,17 @@ object FrameGuard {
     const val DEDUP_HAMMING = 4
     const val MIN_KEEP_INTERVAL_MS = 2_500L
 
+    /**
+     * The skips that stay with FrameGuard: low battery and a dark frame. The change test, throttle and blur floor are
+     * `KeyframeGate`s (spec section P1.1).
+     */
+    fun checkBatteryAndDark(batteryPct: Int, charging: Boolean, meanLuma: Double): SkipReason? = when {
+        lowBattery(batteryPct, charging) -> SkipReason.LOW_BATTERY
+        meanLuma < DARK_MEAN_LUMA -> SkipReason.DARK
+        else -> null
+    }
+
+    /** Legacy single-frame path still used by the Fixed-mode one-shot capture until G3 routes it through the gate. */
     fun check(
         batteryPct: Int, charging: Boolean, meanLuma: Double, hash: Long, lastHash: Long?,
         nowMs: Long, lastKeptAtMs: Long, skipDedupe: Boolean = false,
