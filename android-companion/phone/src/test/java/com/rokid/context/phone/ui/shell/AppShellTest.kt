@@ -78,8 +78,20 @@ class AppShellTest {
     // so the in-memory DB is left open (GC'd) rather than closed under live collectors.
     @After fun tearDown() = MemoryGraph.resetForTests(null)
 
+    private val reonboard = MutableStateFlow(false)
+
     private fun launch(start: String, bluetoothMissing: Boolean = false) = compose.setContent {
-        nav = rememberNavController(); PcTheme { AppShell(deps, start, nav, MutableStateFlow(bluetoothMissing)) }
+        nav = rememberNavController(); PcTheme { AppShell(deps, start, nav, MutableStateFlow(bluetoothMissing), reonboard) }
+    }
+
+    /** BUG-R3-1: the startup check rejected a restored "complete": Home gives way to onboarding, with no way back. */
+    @Test fun aRejectedCompleteFlagOpensOnboarding() {
+        launch(Routes.HOME)
+        compose.onNodeWithText("Home").assertIsDisplayed()
+        reonboard.value = true
+        compose.waitUntil(5_000) { nav.currentDestination?.route == Routes.ONBOARDING }
+        compose.onNodeWithText("Proactive Context").assertIsDisplayed()
+        assertEquals(listOf(Routes.ONBOARDING), nav.currentBackStack.value.mapNotNull { it.destination.route })
     }
 
     /** Room emits on its own threads, which Compose idling does not track — wait for data-driven text explicitly. */

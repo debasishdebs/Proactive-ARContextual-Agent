@@ -1,6 +1,7 @@
 package com.rokid.context
 
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -10,6 +11,7 @@ import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.phone.ui.shell.AppShell
+import com.rokid.context.phone.ui.onboarding.OnboardingGuard
 import com.rokid.context.phone.ui.shell.BluetoothPermission
 import com.rokid.context.phone.ui.shell.PhoneDeps
 import com.rokid.context.phone.ui.shell.Routes
@@ -22,6 +24,7 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     /** Missing BLUETOOTH_CONNECT never blocks the app; the shell shows a hint until it is granted. */
     private val bluetoothMissing = MutableStateFlow(false)
+    private val reonboard = MutableStateFlow(false)
     private val requestBluetooth = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         bluetoothMissing.value = !granted
     }
@@ -48,8 +51,22 @@ class MainActivity : ComponentActivity() {
         if (deps.pipeline.processingEnabled.value) {
             OrchestrationScheduler(this).apply { scheduleFrameIngest(); scheduleQueueDrain(); scheduleCritic() }
         }
-        val start = Routes.startRoute(deps.onboarding.isComplete())
-        setContent { PcTheme { AppShell(deps, start, bluetoothMissing = bluetoothMissing) } }
+        val complete = deps.onboarding.isComplete()
+        val start = Routes.startRoute(complete)
+        // BUG-R3-1: a "complete" restored by Auto Backup onto a fresh install (no key, empty DB) is not believed.
+        if (savedInstanceState == null && complete) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val rerun = runCatching {
+                    OnboardingGuard.of(com.rokid.context.ai.AiGraph.get(applicationContext), deps.memory).mustRerun(complete = true)
+                }.getOrElse { e -> Log.w(TAG, "onboarding check failed (${e.javaClass.simpleName})"); false }
+                if (rerun) {
+                    Log.i(TAG, "onboarding marked complete but no usable AI and no data: showing onboarding")
+                    deps.onboarding.resetDurably()
+                    reonboard.value = true
+                }
+            }
+        }
+        setContent { PcTheme { AppShell(deps, start, bluetoothMissing = bluetoothMissing, reonboard = reonboard) } }
         // Asked once per fresh launch (not on rotation); after a permanent denial the system answers "denied" silently.
         if (savedInstanceState == null && BluetoothPermission.isMissing(this)) {
             runCatching { requestBluetooth.launch(BluetoothPermission.PERMISSION) }.onFailure { bluetoothMissing.value = true }
@@ -61,4 +78,6 @@ class MainActivity : ComponentActivity() {
         // Picks up a grant made in system settings (or a revoke) when the user comes back.
         bluetoothMissing.value = BluetoothPermission.isMissing(this)
     }
+
+    private companion object { const val TAG = "MainActivity" }
 }

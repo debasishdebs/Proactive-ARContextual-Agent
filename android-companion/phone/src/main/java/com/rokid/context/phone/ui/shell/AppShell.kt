@@ -15,6 +15,7 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -56,7 +57,15 @@ fun AppShell(
     startRoute: String,
     nav: NavHostController = rememberNavController(),
     bluetoothMissing: StateFlow<Boolean> = MutableStateFlow(false),
+    /** BUG-R3-1: the startup check found a restored "complete" with no usable AI and an empty DB: show onboarding. */
+    reonboard: StateFlow<Boolean> = MutableStateFlow(false),
 ) {
+    val mustOnboard by reonboard.collectAsStateWithLifecycle()
+    LaunchedEffect(mustOnboard) {
+        if (mustOnboard && nav.currentDestination?.route != Routes.ONBOARDING) {
+            nav.navigate(Routes.ONBOARDING) { popUpTo(nav.graph.id) { inclusive = true }; launchSingleTop = true }
+        }
+    }
     val entry by nav.currentBackStackEntryAsState()
     val route = entry?.destination?.route
     val showNav = Routes.showsNav(route)
