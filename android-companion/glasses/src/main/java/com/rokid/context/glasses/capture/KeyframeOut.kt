@@ -40,6 +40,12 @@ data class SessionStatus(
     val running: Boolean,
     val motion: MotionState,
     val keyframesLast10Min: Int,
+    /** End of the rest on the session clock (SystemClock.elapsedRealtime), or null. */
     val restingUntilMs: Long?,
+    /** Why it is not sampling (hud, mode, paused, not_worn, heat, rest, battery, bind), or null while it samples. */
     val reason: String?,
+    /** Heat STOP: the HUD shows "Cooling". */
+    val cooling: Boolean = false,
+    /** Three failed camera binds: this session fell back to Fixed 30 s ("capture degraded"). */
+    val degraded: Boolean = false,
 )

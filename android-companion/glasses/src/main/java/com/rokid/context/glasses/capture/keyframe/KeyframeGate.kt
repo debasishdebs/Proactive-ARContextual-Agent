@@ -51,7 +51,8 @@ class PrefsGateStore(private val prefs: SharedPreferences) : GateStore {
  * Keyframe test (spec section P1.1): a sample is NEW when min(Hamming dHash, Hamming pHash) > [HAMMING] against each of the
  * last 5 keyframes. A new scene may follow the previous keyframe after 0.5 s, anything else after 1.2 s. While moving,
  * samples are collected in windows of up to 1.5 s (at most 3 kept, losers released at once) and the sharpest wins.
- * A dwell sample compares to the last keyframe only, and still needs blur >= [BLUR_FLOOR].
+ * A dwell sample compares to the last keyframe only, and still needs blur >= [BLUR_FLOOR]. A forced offer ("Capture now")
+ * bypasses the change test and the throttle, never the blur floor.
  */
 class KeyframeGate(private val store: GateStore, private val clock: () -> Long) {
     private class Scored(val c: Candidate, val d: Long, val p: Long, val blur: Float)
@@ -62,7 +63,7 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
     /** Candidates currently held (their pixel copies stay alive). */
     internal fun retainedCount(): Int = window.size
 
-    fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean): GateResult {
+    fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean, force: Boolean = false): GateResult {
         val now = clock()
         val blur = ImageHashes.blur(c.thumb)
         if (blur < BLUR_FLOOR) return Skip(BLUR)
@@ -70,10 +71,10 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         if (motion == MotionState.STILL) {
             // A still sample closes any pending window together with itself, so a settle right after a move is not lost.
             addToWindow(s, now)
-            return finish(dwell = dwellArmed, now)
+            return finish(dwell = dwellArmed, now, force)
         }
         addToWindow(s, now)
-        return if (now - windowStart >= WINDOW_MS) finish(dwell = false, now) else Skip(WINDOW)
+        return if (force || now - windowStart >= WINDOW_MS) finish(dwell = false, now, force) else Skip(WINDOW)
     }
 
     /** At window end: the best pending candidate, or null when nothing is pending. */
@@ -85,18 +86,18 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         if (window.size > MAX_CANDIDATES) window.remove(window.minBy { it.blur })
     }
 
-    private fun finish(dwell: Boolean, now: Long): GateResult {
+    private fun finish(dwell: Boolean, now: Long, force: Boolean = false): GateResult {
         val pool = window.toList()
         window.clear()
         val ring = store.lastKeyframes()
         val against = if (dwell) ring.takeLast(1) else ring
-        val fresh = pool.filter { s -> against.all { (d, p) -> minOf(hamming(s.d, d), hamming(s.p, p)) > HAMMING } }
+        val fresh = if (force) pool else pool.filter { s -> against.all { (d, p) -> minOf(hamming(s.d, d), hamming(s.p, p)) > HAMMING } }
         val gap = now - store.lastKeptAt()
         // A clock that moved back (negative gap) does not throttle, or capture would stop until it caught up.
         fun within(ms: Long) = gap in 0 until ms
         val best = fresh.maxByOrNull { it.blur }
             ?: return Skip(if (within(MIN_GAP_ANY_MS)) THROTTLED else DUPLICATE)
-        if (within(MIN_GAP_NEW_MS)) return Skip(THROTTLED)
+        if (!force && within(MIN_GAP_NEW_MS)) return Skip(THROTTLED)
         store.push(best.d, best.p)
         store.setLastKeptAt(now)
         return GateResult.Keep(best.c, best.d, best.p, best.blur, dwell)
