@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import com.rokid.context.memory.Embedder
+import com.rokid.context.memory.Modality
 
 /** Phone battery as the on-device model gate sees it. [batteryPct] -1 = unknown. */
 data class PowerState(val batteryPct: Int, val charging: Boolean) {
@@ -58,5 +59,12 @@ class PowerGatedEmbedder(private val inner: Embedder, private val power: () -> P
     override suspend fun embedQuery(text: String): FloatArray {
         if (!LocalModelPower.queryAllowed(power(), text)) throw LocalModelPausedException()
         return inner.embedQuery(text)
+    }
+
+    override val modalities: Set<Modality> get() = inner.modalities
+
+    override suspend fun embedQueryFull(text: String): FloatArray {
+        if (!LocalModelPower.queryAllowed(power(), text)) throw LocalModelPausedException()
+        return inner.embedQueryFull(text)
     }
 }
