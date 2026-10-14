@@ -30,6 +30,7 @@ import com.rokid.context.core.hud.Hud
 import com.rokid.context.core.model.Gesture
 import com.rokid.context.core.model.GestureAction
 import com.rokid.context.core.model.HudPosition
+import com.rokid.context.core.model.IconCorner
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.Verbosity
 import com.rokid.context.core.ui.theme.PcTheme
@@ -71,6 +72,42 @@ class GlassesSettingsTest {
         val s = withTimeout(5_000) { vm.state.first { it.linkSummary == "Linked · 82%" } }
         assertEquals(Verbosity.MAX, s.settings.verbosity)
         vm.cancelScope()
+    }
+
+    /** Spec 2026-10-14 §6: icon corner (4 choices) and pop-up time (3-20 s) save through the hub, plus the permission hint. */
+    @Test fun glassesSettingsSavesIconCornerAndPopupTime() {
+        val hud = FakeHudSettings()
+        val vm = GlassesSettingsViewModel(FakeGlassesStatusSource(FakeGlassesStatusSource.connected(Fixtures.stateFrame())), hud) {}
+        vm.setIconCorner(IconCorner.BOTTOM_LEFT)
+        vm.setPopupSeconds(50)
+        assertEquals(IconCorner.BOTTOM_LEFT, hud.settings.value.iconCorner)
+        assertEquals(20, hud.settings.value.popupSeconds)
+        vm.setPopupSeconds(9)
+        assertEquals(9, hud.settings.value.popupSeconds)
+        vm.cancelScope()
+
+        var corner: IconCorner? = null
+        var popup: Int? = null
+        compose.setContent {
+            PcTheme {
+                GlassesSettingsScreen(GlassesSettingsUiState("Linked", HudSettings()), onBack = {}, onVerbosity = {}, onScale = {}, onPosition = {}, onGesture = { _, _ -> }, onReauthorize = {},
+                    onIconCorner = { corner = it }, onPopupSeconds = { popup = it })
+            }
+        }
+        val page = compose.onNodeWithTag("glasses_settings")
+        page.performScrollToNode(hasTestTag("icon_corner"))
+        compose.onNodeWithContentDescription("Icon corner: Top right").assertExists()
+        compose.onNodeWithTag("icon_corner").performClick()
+        compose.onNodeWithTag("icon_corner_${IconCorner.entries.indexOf(IconCorner.BOTTOM_RIGHT)}").performClick()
+        assertEquals(IconCorner.BOTTOM_RIGHT, corner)
+        page.performScrollToNode(hasTestTag("popup_seconds"))
+        compose.onNodeWithText("Pop-up time 6 s").assertExists()
+        compose.onNodeWithTag("popup_seconds").performTouchInput { swipeRight(startX = left + 10f, endX = right + 50f, durationMillis = 300) } // past the end: the drag clamps to 20
+        compose.waitForIdle()
+        assertEquals(20, popup)
+        page.performScrollToNode(hasTestTag("overlay_hint"))
+        compose.onNodeWithText(GlassesLabels.OVERLAY_HINT).assertExists()
+        assertEquals("For the minimised icon, allow 'display over other apps' for Proactive Context on the glasses.", GlassesLabels.OVERLAY_HINT)
     }
 
     @Test fun screenShowsThePreviewAndTheThreeVerbosities() {
