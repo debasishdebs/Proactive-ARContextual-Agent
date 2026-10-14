@@ -75,9 +75,30 @@ class ActionEngineTest {
         settings.set(ActionType.REMINDER, ActionToggle(enabled = false))
         val p = engine(exec).propose(ProposalOrigin.ASK, "a1", reminderIn(3_600_000), now)!!
         assertEquals(ProposalState.SUPPRESSED, p.state)
-        assertEquals(HudSurface.NONE, p.hud)
+        assertEquals(HudSurface.OFF_NOTICE, p.hud)
         assertEquals(0, exec.executed.get())
         assertEquals(ProposalState.SUPPRESSED.name, repo.byId(p.proposalId)!!.state)
+    }
+
+    /** "note that…" (user notes): only an ask tells the wearer the type is off; a suppressed nudge stays silent. */
+    @Test fun aSuppressedNudgeShowsNothing() = runBlocking {
+        settings.set(ActionType.NOTE_ADD, ActionToggle(enabled = false))
+        val nudge = engine(verbosity = Verbosity.MAX).propose(ProposalOrigin.NUDGE, "n1", ProposedAction.NoteAdd("car on level 3"), now)!!
+        assertEquals(ProposalState.SUPPRESSED, nudge.state)
+        assertEquals(HudSurface.NONE, nudge.hud)
+        val ask = engine().propose(ProposalOrigin.ASK, "a1", ProposedAction.NoteAdd("car on level 3"), now)!!
+        assertEquals(HudSurface.OFF_NOTICE, ask.hud)
+    }
+
+    @Test fun notesDefaultOnWithConfirm() = runBlocking {
+        assertEquals(ActionToggle(enabled = true, alwaysConfirm = true), settings.toggle(ActionType.NOTE_ADD))
+        val p = engine().propose(ProposalOrigin.ASK, "a1", ProposedAction.NoteAdd("car on level 3"), now)!!
+        assertEquals(ProposalState.PENDING, p.state)
+        assertEquals(HudSurface.CONFIRM, p.hud)
+    }
+
+    @Test fun aBlankNoteIsNotProposed() = runBlocking {
+        assertNull(engine().propose(ProposalOrigin.ASK, "a1", ProposedAction.NoteAdd("   "), now))
     }
 
     @Test fun askConfirmShowsHudConfirmAtAnyVerbosity() = runBlocking {
