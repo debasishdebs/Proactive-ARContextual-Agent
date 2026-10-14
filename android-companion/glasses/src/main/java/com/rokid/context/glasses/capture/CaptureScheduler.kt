@@ -41,6 +41,7 @@ class CaptureScheduler(private val context: Context) {
      */
     fun ensureScheduled(): Rearm {
         cancelLegacyPulse()
+        cancelLegacyServiceAlarm()
         val next = nextTriggerAtMs()
         val now = System.currentTimeMillis()
         return when {
@@ -56,13 +57,23 @@ class CaptureScheduler(private val context: Context) {
 
     fun cancel() {
         alarms?.cancel(captureIntent())
+        cancelLegacyServiceAlarm()
         prefs.edit().remove(KEY_NEXT).apply()
     }
 
-    private fun captureIntent(): PendingIntent = PendingIntent.getForegroundService(
-        context, REQUEST_CODE, Intent(context, CaptureService::class.java).setAction(CaptureService.ACTION_SCHEDULED),
+    /** A broadcast, so a running keep-alive [CaptureService] takes the capture in-process ([CaptureAlarmReceiver]). */
+    private fun captureIntent(): PendingIntent = PendingIntent.getBroadcast(
+        context, REQUEST_CODE, Intent(context, CaptureAlarmReceiver::class.java).setAction(CaptureService.ACTION_SCHEDULED),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
+
+    /** Before the keep-alive fix the alarm started CaptureService directly; retire it so no duplicate fires. */
+    private fun cancelLegacyServiceAlarm() {
+        val legacy = Intent(context, CaptureService::class.java).setAction(CaptureService.ACTION_SCHEDULED)
+        val pi = PendingIntent.getForegroundService(context, REQUEST_CODE, legacy, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE) ?: return
+        alarms?.cancel(pi)
+        pi.cancel()
+    }
 
     /** Named by string so this keeps working after Task 12 deletes the old service class. */
     private fun cancelLegacyPulse() {

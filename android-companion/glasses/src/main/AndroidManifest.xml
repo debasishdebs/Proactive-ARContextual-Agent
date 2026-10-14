@@ -19,6 +19,9 @@
             android:name=".capture.CaptureService"
             android:exported="false"
             android:foregroundServiceType="camera" />
+        <receiver
+            android:name=".capture.CaptureAlarmReceiver"
+            android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
