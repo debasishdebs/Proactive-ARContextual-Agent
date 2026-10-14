@@ -88,6 +88,8 @@ class AnswerService(
      * runs the capture pipeline now, so photos not processed yet become memories before the next ask. Never fails the ask.
      */
     private val onNoMatch: () -> Unit = {},
+    /** Spec P2.3: with a keyframe backlog, the newest frames are extracted first (user-started, bypassing the budget). Never fails the ask. */
+    private val beforeRetrieve: suspend () -> Unit = {},
 ) {
     data class Retrieved(val vars: PromptVars, val memories: List<MemoryEntity>) { val ids: Set<String> get() = memories.map { it.id }.toSet() }
 
@@ -141,6 +143,13 @@ class AnswerService(
     ): AskOutcome.Answered {
         val q = AskText.collapse(question).take(MAX_QUESTION)
         if (q.isEmpty()) throw EmptyQuestionException()
+        try {
+            beforeRetrieve()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            Log.i(TAG, "backlog extraction before ask failed (${e.javaClass.simpleName})")
+        }
         val r = retrieve(q, nowMs)
         // An action command ("note that…") needs no memory: only other asks stop at "nothing yet" (user notes).
         if (r.memories.isEmpty() && !ActionTriggers.matches(q)) {
@@ -190,6 +199,7 @@ class AnswerService(
         private const val MAX_ANSWER = 2_000
         private const val MAX_MEMORY_CHARS = 500
         private const val FALLBACK = 10
+        private const val ASK_EXTRACT_TIMEOUT_MS = 30_000L
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
 
         /** Adapts the connectors provider: the ask's nowMs reaches it (the one-argument form falls back to the wall clock). */
@@ -206,6 +216,7 @@ class AnswerService(
                 MemoryGraph.get(context), ai.runner, ai.retriever, { store.settings.value },
                 sources = sourcesFrom(provider),
                 proposals = OriginFencedIntake(context, MemoryGraph.get(context), ActionsGraph.get(context).intake),
+                beforeRetrieve = { kotlinx.coroutines.withTimeoutOrNull(ASK_EXTRACT_TIMEOUT_MS) { com.rokid.context.work.frames.KeyframeGraph.get(context).pipeline.extractForAsk() } },
                 onNoMatch = { if (com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(context)) com.rokid.context.work.OrchestrationScheduler(context).enqueueFrameIngestIfIdle() },
             )
         }
