@@ -1,6 +1,6 @@
 # Motion-aware keyframe capture and image memory: design
 
-Status: revision 3 (two review rounds + user decisions A1/B1/C1/D1, 3, 6a), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
+Status: revision 4 (three review rounds + user decisions A1/B1/C1/D1, 3, 6a), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
 Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes only", §11 step 4b.
 
 ## 0. Intent (agreed with the user, 2026-10-15)
@@ -22,7 +22,7 @@ Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes 
 - **No extra captioning (user decision, 2026-10-15):** the whole point of dedupe and clustering is to save vision-LLM calls, so the photos they skip are not captioned later.
   - **A skipped photo** is a near-duplicate (`near_dup_of`) or a non-representative cluster member (`frame_source` role CLUSTER_MEMBER, covered by the cluster summary).
   - **Rule (user decision):** if a skipped photo turns out to be a **key moment**, meaning salience ≥ 0.5 (dwell, text, novelty or watch list, §P4.1), it joins the **caption queue**: a live call under the normal budget, at the lowest priority behind new keyframes and nudge evaluation.
-  - **Aging (review fix 7):** after 10 min of waiting it moves above new non-dwell keyframes; after 30 min it takes the next token.
+  - **Aging (review fix 7):** after 10 min of waiting it moves above new non-dwell keyframes; after 30 min it takes the **next unreserved** token (never a nudge-reserved one).
   - **Promotion** cancels its 1-day skipped-photo deletion; it then follows normal photo retention (7 days).
   - **Otherwise** it is never captioned, and its photo is deleted after **1 day**. Its vector and its links (original or cluster) are kept.
   - **Image vectors** are still made for every keyframe (on-device, no LLM cost), so they stay findable by photo search while the photo is stored.
@@ -111,7 +111,10 @@ Shared rules:
 ### F.2 Indexing time: re-index from bge-small to Nomic (and any later model change)
 - This uses the existing re-index flow: the new space is built in the background while the old space keeps answering.
 - **Coverage rule, changed (decision A1):** the swap needs 100 % of text memories and 100 % of photos **still stored**. Image vectors of photos that are already deleted can't be rebuilt. They are dropped at the swap, and those items stay findable by caption only.
-  - Before the swap, the UI shows "N older photos will be searchable by caption only." and asks for confirmation.
+  - Before the swap, the confirmation counts the deleted photos in two groups:
+    - **"N photos will be searchable by text only"**: those with their own caption or a surviving linked memory (`frame_source`) or cluster summary. Recall is reduced.
+    - **"M photos will no longer be findable at all"**: no caption, no linked memory, vector only, such as ordinary skipped photos whose photo was deleted. Recall is lost.
+    - The dialog says that **both groups can be recovered with Roll back for 7 days**, after which the loss is permanent. M is also shown in Diagnostics after the swap until the grace period ends.
 - **Rollback grace, new:** today `EmbeddingDao.swap` deletes the old space's vectors in the same transaction. That changes:
   - the old space becomes `RETIRED` but **keeps its vectors for 7 days**;
   - Settings → AI → On-device models gets **Roll back** for those 7 days, which reactivates the old space;
@@ -163,7 +166,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   - an encrypted-database migration test, extending `SqlCipherMigrationDeviceTest`;
   - Delete all and Forget cover the new tables (Delete all keeps notes and shopping, as before).
 - That makes **5 new tables**. The earlier "four tables" is superseded.
-- `frame_state` adds `claimed_at` (nullable) for the extraction claim (§P2.5).
+- `frame_state` adds `claimed_at` (nullable) and `claim_id` (nullable, a random id for each attempt) for the extraction claim (§P2.5).
 - Frames ingested before v2 have no `frame_meta` row. They're treated as `motion=UNKNOWN`, not dwell, and salience is computed from the image only.
 
 ---
@@ -293,8 +296,13 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
     - **User settings** (Settings → Nudges, new rows): **Settle window** 3 / 5 / 10 / 15 s (default 5); **Minimum gap between checks** 30 / 60 / 120 s (default 30); **Minimum gap between shown nudges** (today's 30 min: 10 / 30 / 60 min); **Daily nudge cap** (today's value, exposed if it isn't already).
   - **Notify:** the existing 30-minute gap and the daily cap apply **only to showing** a nudge. An evaluation that decides "nudge" while throttled is recorded and dropped, with a reason in Diagnostics.
   - **Budget reservation:** 1 in every 5 budget tokens is reserved for nudge evaluation, so a backlog can't starve live nudges. An unused reservation is released after 60 s.
+  - **Borrowing rule (review fix):** when a nudge evaluation is due and no reserved token is free, it **takes the next extraction token**. That delays extraction by one token, never more, because evaluations are at most 2 per minute.
+    - Caption-queue and backfill calls can never take nudge tokens.
+    - User-started asks bypass the bucket as before.
   - The periodic `NudgeWorker` stays as the backstop, with its 30-minute gate.
-  - Target, at the defaults with no backlog: **p50 ≤ 15 s** and **p100 ≤ 45 s** from keyframe capture to the nudge decision.
+  - **Target**, at the defaults with no backlog, measured from keyframe capture to the nudge decision: **p50 ≤ 15 s** and **≤ 45 s** for 95 % of events.
+    - This holds when the provider's p95 latency is ≤ 8 s per call (the user accepted about 8 s on 2026-10-15) and the uplink is healthy (keyframe at the phone within 3 s).
+    - Slower providers shift the target by their extra latency. Diagnostics shows both numbers.
 - **Diagnostics:** keyframes per hour, AI calls per hour (split by role), backlog size, mean latency from keyframe to memory, and tokens per call when the provider reports them.
 
 ### P2.2 Indexing time
@@ -311,6 +319,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 - **Battery Saver, or battery ≤ 30 % and not charging:** today's deferral rules stay. Live nudges pause; the user-started bypass still works.
 - **Offline and backlog durability (review finding 7):** the backlog's source of truth is the new `frame_state` table (§C), not the 24 h-TTL job queue.
   - **Claims (review fix 4):** moving to `EXTRACTING` sets `claimed_at`. A claim older than 5 min (longer than the call timeout) counts as **abandoned**: the frame goes back to `PENDING` and `attempts` increases.
+  - **Claim check at commit (review requirement, carried into the plan):** the commit transaction first runs a compare-and-set, `UPDATE frame_state SET state=… WHERE frame_id=? AND state='EXTRACTING' AND claim_id=?`. If no row matches, the attempt was abandoned and reclaimed: the whole transaction is rolled back and its output dropped, so an old attempt can never overwrite a newer claim. Tested with two overlapping attempts.
   - **Atomic commit:** the memory rows, the `frame_source` rows and the move to `EXTRACTED` or `CLUSTERED` are saved in **one** database transaction. A crash before commit leaves the claim to expire; a crash after commit leaves nothing to redo.
   - Jobs are rebuilt from `frame_state` rows in `PENDING`, `FAILED` (attempts < 5) or an abandoned `EXTRACTING` claim, at startup, on network return, and by the periodic backstop.
   - A job expiring therefore no longer loses a frame.
@@ -487,6 +496,8 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 - **Revision 1 (`dc97f15`):** reviewed by the user's external reviewer. Findings 1–7, plus the photo-dimension test and the Doze gate, were all verified against the code (`NudgeWorker.kt:47` 30-minute gate, `EmbeddingDao.kt` swap deleting vectors at once, `OrchestrationScheduler.kt` 24 h TTL) and fixed in revision 2.
 - **Revision 2 review:** 7 findings, all verified (`memory_source` already exists at `MemoryEntities.kt:47`; `memory_vector` needs a live memory). Fixed in revision 3: the `frame_source` name, the `frame_vector` table, the 5-min extraction claim with an atomic commit, ordinary skipped photos bypassing describe-before-delete and the 3-day extension, caption-queue aging, and the qualified wording.
   - User decisions: **3** separate dimensions, one 768 query shortened for each index, no score merging (fixed shares of 6 text + 2 photos, the answer LLM judges); **6a** 5 s settle window with a 30 s gap, configurable in Settings → Nudges.
+
+- **Revision 3 review:** a nudge borrowing rule, "next unreserved token" for caption aging, the 45 s target tied to provider latency, the model-switch dialog separating reduced recall from lost recall (recoverable for 7 days), and a claim-id compare-and-set at commit. Fixed in revision 4.
 
 ## Open questions for the plan (not blocking the spec)
 - Exact Hugging Face commits, sizes and SHA-256 for the Nomic text GGUF and the vision ONNX.
