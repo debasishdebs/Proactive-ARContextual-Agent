@@ -302,7 +302,7 @@ Question → retriever (current mode) → ANSWER prompt with top-k memories (+ f
 
 ### 5.1 Ask (push-to-talk)
 1. Tap on glasses → `ListenStart` + `pc_audio` stream; HUD Listening with partials (from phone STT via `StateFrame.overlay`).
-2. End: tap again, or 1.5 s silence (`EnergyVad`) → `pc_listen_end`. Double-tap cancels.
+2. End: tap again, or 2.2 s silence after speech (`EnergyVad`, adaptive noise floor; BUG-R3-3) → `pc_listen_end`; a tap within 1.5 s of that auto-end is the send, not a new ask. Double-tap cancels.
 3. Phone: on-device STT final → answer path (§4.7) → Answer overlay + TTS → `ask` row in Home feed.
 4. Phone hero mic: same path, phone mic.
 5. Swipe dismisses Answer. Errors → short Toast ("Couldn't hear that", "AI unavailable").
