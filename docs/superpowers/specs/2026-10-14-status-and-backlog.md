@@ -210,3 +210,11 @@ Still open (needs info, not a choice): **is the key in the restored `app_config_
 2. **Develop (small):** Battery Saver blocks asks (G7); Nearby devices page; G3 limited-mode banner; G10 no-match ETA; G14 download battery pause; G19 config export without secrets; S1 stale clean-up copy; S2/B12 follow-ups.
 3. **Develop, new chat:** user notes ("note that…"); motion-aware keyframe capture (spec first); connectors brainstorm.
 4. **Device session:** install the latest build; sort/cue; minimised-link steps 5–7; minimise/icon remaining checks; round-3 fixes; on-device models; D-A1 (restore automatic); the other leftovers.
+
+## 11. Progress on the work queue (2026-10-15)
+- **Step 1, B12 + S2:** DONE, merged `9d850d5`. The `.bak` files are hand-made copies from 2026-05-29 (no app code wrote them). **The user must rotate the Azure key**: treat it as exposed, since the same key was also built into old APKs per the decision log P1.
+- **Step 2, G1 + G6:** DONE, merged `b3eb121`. Device checks: the Keystore round trip with "PCAF" headers, toggle migration with a force-stop, Delete all, logs show no paths, and the G6 banner plus the reindex waiting for a charger.
+- **Step 3, small builds:** DONE, merged as feat/small-batch: G7 Battery Saver blocks asks, the Nearby devices page, G3 limited banner, G10 no-match answer, G14 download battery pause, G19 settings export without secrets, S1 copy. Combined gate on `819a513`: BUILD SUCCESSFUL, 3 388 tests, 0 failures.
+- **Remaining:**
+  - **new chat:** user notes, the motion-aware keyframe capture spec, the connectors brainstorm;
+  - **device session:** install the latest build and run every device check in §3, plus those listed above.

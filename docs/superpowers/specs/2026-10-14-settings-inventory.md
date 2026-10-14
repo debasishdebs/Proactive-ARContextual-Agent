@@ -124,3 +124,10 @@ Branch `feat/proactive-mvp-implementation` at `c5060c6`. Read from the code: `CM
 - 6 developer/debug flags that change runtime behaviour: PcLinkProbe, `skip_dedupe`, the adb intents, the hub notification actions, BuildConfig seeds and the SDK log level.
 
 The internal-state rows (§2, other §3 rows and the build-only §4 rows) are listed for completeness but not counted as settings.
+
+## Additions (2026-10-15, feat/small-batch)
+| Screen | Setting | Default | Options | Storage | Synced to glasses | Backup | Decision |
+|---|---|---|---|---|---|---|---|
+| Settings → Glasses → Nearby devices | Keep running when nearby | ON | ON / OFF | `hub_settings` / `keep_running_nearby` | no | restorable | User decision 2026-10-15 (backlog §10). OFF stops ContextHubService when the app is backgrounded |
+| Home banner | "Some features are limited" dismissed | not dismissed | — | `hub_settings` / `limited_mode_dismissed` | no | restorable | G3. Reappears only when a new permission goes missing |
+| Activity | Sort order | Latest first | Latest / Oldest / A–Z / Z–A | `hub_settings` / `activity_sort` | no | restorable | User request 2026-10-14 |
