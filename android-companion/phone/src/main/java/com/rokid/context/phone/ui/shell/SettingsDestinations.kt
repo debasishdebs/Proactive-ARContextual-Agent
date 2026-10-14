@@ -111,9 +111,10 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_CAPTURE) {
-        val vm = viewModel { CaptureSettingsViewModel(s.hud) }
+        val vm = viewModel { CaptureSettingsViewModel(s.hud, s.aiCallPace) }
         val state by vm.state.collectAsStateWithLifecycle()
-        CaptureSettingsScreen(state, onBack = back, onInterval = vm::setInterval, onBurst = vm::setBurst)
+        CaptureSettingsScreen(state, onBack = back, onMode = vm::setMode, onInterval = vm::setInterval, onQuickLook = vm::setQuickLook,
+            onPauseWhenNotWorn = vm::setPauseWhenNotWorn, onWork = vm::setWork, onRest = vm::setRest, onPace = vm::setPace)
     }
 
     composable(Routes.SETTINGS_ENDPOINTS) {
