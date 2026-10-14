@@ -3,6 +3,7 @@ package com.rokid.context.glasses.capture
 import android.os.SystemClock
 import com.rokid.context.core.model.FileDurability
 import com.rokid.context.core.model.FrameCodec
+import com.rokid.context.core.model.MotionState
 import com.rokid.context.core.model.Wire
 import kotlinx.serialization.Serializable
 import java.io.File
@@ -12,7 +13,11 @@ import java.util.Locale
 import java.util.TreeMap
 
 @Serializable
-data class BufferedMeta(val frameId: String, val capturedAtMs: Long, val luma: Int? = null, val phash: String? = null, val batteryPct: Int? = null, val elapsedAtCaptureMs: Long? = null, val bootId: String? = null)
+data class BufferedMeta(val frameId: String, val capturedAtMs: Long, val luma: Int? = null, val phash: String? = null, val batteryPct: Int? = null, val elapsedAtCaptureMs: Long? = null, val bootId: String? = null,
+    // Keyframe metadata (additive: a frame buffered before the sampling session has none and sends with defaults).
+    val motion: MotionState = MotionState.UNKNOWN, val dwell: Boolean = false, val blur: Float? = null, val dhash: String? = null,
+    val width: Int? = null, val sampleSeq: Long? = null, val sessionId: String? = null,
+)
 
 data class BufferedFrame(val meta: BufferedMeta, val jpeg: File)
 
@@ -30,7 +35,7 @@ fun atomicWrite(target: File, bytes: ByteArray) {
 
 /**
  * Frames waiting for the phone (spec §1.7, §3.1): up to [capacity] (200 ≈ 4 MB) and [maxBytes] of JPEG in app storage so a restart keeps
- * them; FIFO, the oldest dropped first when full; frames older than [maxAgeMs] (72 h, spec §5.5) are dropped. Each
+ * them; FIFO, the oldest dropped first when full (a non-dwell keyframe before any dwell one); frames older than [maxAgeMs] (72 h, spec §5.5) are dropped. Each
  * entry is a JPEG plus a meta file, both written atomically; an entry missing either one is a crash leftover and is
  * discarded on load. A frame leaves only through [remove] (positive ack or second NACK) or [clear] (privacy pause).
  */
@@ -61,17 +66,19 @@ class OutboundBuffer(
      * False when the frame could not be stored; nothing is left behind then. When storage is full and the buffer is
      * not empty, the oldest frame makes room (FIFO, like the count cap) and the write is retried once.
      */
-    @Synchronized fun add(frameId: String, jpeg: ByteArray, capturedAtMs: Long, luma: Int?, phash: String?, batteryPct: Int?, elapsedAtCaptureMs: Long = elapsed()): Boolean {
+    @Synchronized fun add(frameId: String, jpeg: ByteArray, capturedAtMs: Long, luma: Int?, phash: String?, batteryPct: Int?, elapsedAtCaptureMs: Long = elapsed(), keyframe: KeyframeOut? = null): Boolean {
         require(FrameCodec.isValidFrameId(frameId)) { "bad frame id" }
         val key = keyOf(capturedAtMs, frameId)
         val j = File(dir, "$key.jpg")
         val m = File(dir, "$key.json")
-        val meta = BufferedMeta(frameId, capturedAtMs, luma, phash, batteryPct, elapsedAtCaptureMs, boot.ifEmpty { null })
+        val meta = BufferedMeta(frameId, capturedAtMs, luma, phash, batteryPct, elapsedAtCaptureMs, boot.ifEmpty { null },
+            keyframe?.motion ?: MotionState.UNKNOWN, keyframe?.dwell ?: false, keyframe?.blur, keyframe?.dhash, keyframe?.width, keyframe?.sampleSeq, keyframe?.sessionId)
         val metaBytes = Wire.json.encodeToString(BufferedMeta.serializer(), meta).toByteArray()
         if (!write(j, m, jpeg, metaBytes)) {
             if (frames.isEmpty()) return false
-            log("storage full: dropped ${frames.firstEntry().value.meta.frameId}")
-            delete(frames.firstKey())
+            val victim = dropVictim()
+            log("storage full: dropped ${frames.getValue(victim).meta.frameId}")
+            delete(victim)
             if (!write(j, m, jpeg, metaBytes)) return false
         }
         if (!fsyncDir(dir) && !fsyncWarned) { fsyncWarned = true; log("buffer directory not fsynced") }
@@ -144,9 +151,16 @@ class OutboundBuffer(
     /** Count and byte caps, oldest first; the newest frame always stays. */
     private fun enforceCaps(logDrops: Boolean = true) {
         while (frames.size > 1 && (frames.size > capacity || totalBytes > maxBytes)) {
-            if (logDrops) log("buffer full: dropped ${frames.firstEntry().value.meta.frameId}")
-            delete(frames.firstKey())
+            val victim = dropVictim()
+            if (logDrops) log("buffer full: dropped ${frames.getValue(victim).meta.frameId}")
+            delete(victim)
         }
+    }
+
+    /** The oldest non-dwell frame (never the newest); when only dwell frames are left, the oldest of those. */
+    private fun dropVictim(): String {
+        val newest = frames.lastKey()
+        return frames.entries.firstOrNull { it.key != newest && !it.value.meta.dwell }?.key ?: frames.firstKey()
     }
 
     private fun delete(key: String) {
