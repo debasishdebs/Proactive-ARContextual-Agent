@@ -136,7 +136,7 @@ class LocalModelsSource(
             is LocalModelState.Failed -> (if (abiSupported) ItemStatus.ActionNeeded else ItemStatus.None) to s.message
         }
         val m = r.model
-        return ListItem(m.id, m.title, subtitle = "${size(m)} \u00b7 ${m.languages} \u00b7 ~${m.ramEstimateMb} MB RAM", icon = Icons.Rounded.Memory, status = status, trailingText = text)
+        return ListItem(m.id, m.title, subtitle = "${size(m)} \u00b7 ${m.languages} \u00b7 ~${m.ramEstimateMb} MB RAM" + (m.note?.let { " \u00b7 $it" } ?: ""), icon = Icons.Rounded.Memory, status = status, trailingText = text)
     }
 
     override fun actionFor(item: ListItem): ItemAction? {
@@ -297,7 +297,7 @@ class LocalModelsSource(
             if (i.lost > 0) append("${i.lost} photos will no longer be findable at all\n")
             append(RECOVERABLE)
         }
-        fun size(m: LocalModel) = "${(m.bytes + 500_000) / 1_000_000} MB"
+        fun size(m: LocalModel) = "${(m.totalBytes + 500_000) / 1_000_000} MB"
     }
 }
 

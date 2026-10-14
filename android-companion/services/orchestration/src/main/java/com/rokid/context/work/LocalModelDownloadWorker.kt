@@ -10,6 +10,7 @@ import androidx.work.workDataOf
 import com.rokid.context.ai.Http
 import com.rokid.context.ai.local.LocalModel
 import com.rokid.context.ai.local.LocalModels
+import com.rokid.context.ai.local.ModelFile
 import com.rokid.context.ai.local.ModelFileVerifier
 import com.rokid.context.data.models.LocalModelStore
 import kotlinx.coroutines.Dispatchers
@@ -46,10 +47,10 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
     override suspend fun doWork(): Result {
         val id = inputData.getString(KEY_MODEL_ID).orEmpty()
         val model = resolve(id) ?: return fail(id, MSG_FAILED, "unknown_model")
-        if (!model.url.startsWith("https://")) return fail(id, MSG_FAILED, "not_https")
+        if (model.files.any { !it.url.startsWith("https://") }) return fail(id, MSG_FAILED, "not_https")
         val outcome = try {
             // One writer per model file: a replacement waits until the stopped worker has let go of the .part.
-            withContext(Dispatchers.IO) { writers.computeIfAbsent(model.file) { Mutex() }.withLock { download(model) } }
+            withContext(Dispatchers.IO) { downloadAll(model) }
         } catch (e: IOException) {
             Outcome.Retry.also { log(id, "io") }
         }
@@ -60,7 +61,20 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         }
     }
 
-    private suspend fun download(model: LocalModel): Outcome {
+    /** Each file of the bundle in turn (existing verified files are skipped); the first non-Done outcome stops the run. */
+    private suspend fun downloadAll(model: LocalModel): Outcome {
+        val total = model.totalBytes
+        var before = 0L
+        for (f in model.files) {
+            // One writer per model file: a replacement waits until the stopped worker has let go of the .part.
+            val outcome = writers.computeIfAbsent(f.file) { Mutex() }.withLock { download(model.id, f, before, total) }
+            if (outcome != Outcome.Done) return outcome
+            before += f.bytes
+        }
+        return Outcome.Done
+    }
+
+    private suspend fun download(id: String, model: ModelFile, before: Long, total: Long): Outcome {
         val dir = LocalModelStore.modelsDir(applicationContext).apply { mkdirs() }
         val target = File(dir, model.file)
         val part = partFile(target)
@@ -72,7 +86,7 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         if (have < model.bytes) {
             val request = Request.Builder().url(model.url).apply { if (have > 0) header("Range", "bytes=$have-") }.build()
             val call = client().newCall(request)
-            cancelOnStop(call) { transfer(call, model, part, have) }?.let { return it }
+            cancelOnStop(call) { transfer(call, id, model, part, have, before, total) }?.let { return it }
         }
 
         if (stopped()) return Outcome.Retry
@@ -94,7 +108,7 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
     }
 
     /** Appends the body to [part]; null when it ended and the .part is ready to verify, else the outcome. */
-    private suspend fun transfer(call: Call, model: LocalModel, part: File, from: Long): Outcome? {
+    private suspend fun transfer(call: Call, id: String, model: ModelFile, part: File, from: Long, before: Long, total: Long): Outcome? {
         var have = from
         call.execute().use { response ->
             if (!response.request.url.isHttps) return Outcome.Fail(MSG_FAILED, "not_https")
@@ -105,7 +119,7 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
                 }
                 200 -> false.also { have = 0 }
                 416 -> null
-                408, 429, in 500..599 -> return Outcome.Retry.also { log(model.id, "http_${response.code}") }
+                408, 429, in 500..599 -> return Outcome.Retry.also { log(id, "http_${response.code}") }
                 else -> return Outcome.Fail(MSG_FAILED, "http_${response.code}")
             }
             if (append != null) {
@@ -123,10 +137,10 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
                             if (have + n > model.bytes) { part.delete(); return Outcome.Fail(MSG_NOT_VERIFIED, "too_long") }
                             out.write(buf, 0, n)
                             have += n
-                            val percent = (have * 100 / model.bytes).toInt()
+                            val percent = ((before + have) * 100 / total).toInt()
                             if (percent != lastReported) {
                                 lastReported = percent
-                                setProgress(workDataOf(KEY_PROGRESS to have.toFloat() / model.bytes))
+                                setProgress(workDataOf(KEY_PROGRESS to (before + have).toFloat() / total))
                             }
                         }
                     }
