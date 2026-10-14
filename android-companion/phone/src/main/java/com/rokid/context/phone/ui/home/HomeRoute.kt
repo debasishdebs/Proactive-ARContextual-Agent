@@ -25,7 +25,8 @@ import com.rokid.context.phone.ui.shell.Routes
 /** Home's wiring (moved from Destinations.kt in Phase 7 Stream 0; Stream C owns it from here). Phase 7 C4: a nudge card opens its detail. */
 @Composable
 fun HomeRoute(deps: PhoneDeps, nav: NavController, onBanner: (BannerAction, (BannerAction) -> Unit) -> Unit) {
-    val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index, voice = deps.voice, batterySaver = deps.batterySaver) }
+    val vm = viewModel { HomeViewModel(deps.glasses, deps.pipeline, deps.memory.timeline, deps.memory.asks, deps.memory.nudges, deps.askService, deps.clock, deps.storagePct, deps.zone, index = deps.index, voice = deps.voice, batterySaver = deps.batterySaver, limitedMode = deps.limitedMode) }
+    androidx.lifecycle.compose.LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { vm.onResume() }
     val state by vm.state.collectAsStateWithLifecycle()
     val activity = LocalContext.current.findActivity()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -45,6 +46,7 @@ fun HomeRoute(deps: PhoneDeps, nav: NavController, onBanner: (BannerAction, (Ban
         },
         onLeave = vm::onLeave,
         onOpenNudge = { nav.navigate(Routes.nudge(it)) },
+        onDismissLimited = vm::dismissLimited,
     )
 }
 
