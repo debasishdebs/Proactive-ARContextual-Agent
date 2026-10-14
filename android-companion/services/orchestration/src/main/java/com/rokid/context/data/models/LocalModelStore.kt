@@ -60,7 +60,8 @@ class LocalModelStore(context: Context) {
     private fun enqueue(model: LocalModel, allowMetered: Boolean, policy: ExistingWorkPolicy) {
         val request = OneTimeWorkRequestBuilder<LocalModelDownloadWorker>()
             .setInputData(workDataOf(LocalModelDownloadWorker.KEY_MODEL_ID to model.id))
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(networkType(allowMetered)).build())
+            // G14 (MVP section 14.1): a download also pauses while the battery is low and resumes from its .part after.
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(networkType(allowMetered)).setRequiresBatteryNotLow(true).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .addTag(TAG)
             .build()
