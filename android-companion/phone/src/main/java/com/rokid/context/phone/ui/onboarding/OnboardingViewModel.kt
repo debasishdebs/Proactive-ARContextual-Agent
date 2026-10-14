@@ -173,8 +173,11 @@ class OnboardingViewModel(
 
     private fun editAi(f: (AiStepState) -> AiStepState) = local.update { it.copy(ai = f(it.ai).let { n -> n.copy(result = null, urlError = null) }) }
 
-    fun selectSeed() = editAi { it.copy(preset = null) }
-    fun selectPreset(p: AiPreset) = editAi { it.copy(preset = p, model = p.defaultModel, apiVersion = "", url = "", key = "") }
+    fun selectSeed() = editAi { it.copy(preset = null, key = "") }
+    fun selectPreset(p: AiPreset) {
+        val d = deps.presetDefaults(p)
+        editAi { it.copy(preset = p, model = d.model, apiVersion = d.apiVersion, url = d.url, key = "") }
+    }
     fun onUrl(v: String) = editAi { it.copy(url = v) }
     fun onApiVersion(v: String) = editAi { it.copy(apiVersion = v) }
     fun onModel(v: String) = editAi { it.copy(model = v) }
@@ -197,14 +200,19 @@ class OnboardingViewModel(
         local.update { it.copy(ai = it.ai.copy(testing = true, result = null, urlError = null)) }
         viewModelScope.launch(work) {
             val outcome = try {
-                val r = if (draft != null) deps.ai.testDraft(draft).getOrThrow() else deps.ai.testSeed(ai.seed!!)
+                val r = if (draft != null) deps.ai.testDraft(draft).getOrThrow()
+                else deps.ai.testSeed(ai.seed!!, ai.key.takeIf { ai.seedNeedsKey && it.isNotBlank() })
                 TestOutcome(r.ok, if (r.ok) "Works \u00B7 ${r.latencyMs} ms" else r.message)
             } catch (c: kotlin.coroutines.cancellation.CancellationException) {
                 throw c
             } catch (e: Exception) {
                 TestOutcome(false, "Check the address, key and model") // never the provider's or the exception's text
             }
-            local.update { it.copy(ai = it.ai.copy(testing = false, result = outcome, key = if (outcome.ok) "" else it.ai.key)) }
+            local.update {
+                // A passed seed Test stored the typed key: the seed has one now, so its key field goes.
+                val seed = it.ai.seed?.let { s -> if (outcome.ok && draft == null) s.copy(needsKey = false) else s }
+                it.copy(ai = it.ai.copy(testing = false, result = outcome, seed = seed, key = if (outcome.ok) "" else it.ai.key))
+            }
         }
     }
 

@@ -127,4 +127,66 @@ class OnboardingAiStepTest {
         assertEquals(1, done)
         assertEquals(1, env.completed)
     }
+
+    // --- BUG-R3-2: the build seed has no key -------------------------------------------------------------------
+
+    private fun keylessSeed() = FakeOnboardingAi(SeedEndpoint("azure", "Azure OpenAI", "gpt-5.4", needsKey = true))
+
+    @Test fun aSeedWithoutAKeyAsksForOneAndTestWaitsForIt() {
+        val env = Env(ai = keylessSeed()); val v = vm(env)
+        assertTrue(v.state.value.ai.seedNeedsKey)
+        assertFalse(v.state.value.ai.canTest)
+        v.onKey("sk-seed-123")
+        assertTrue(v.state.value.ai.canTest)
+        v.testAi()
+        assertEquals(listOf<String?>("sk-seed-123"), env.ai.seedKeys)
+        val ai = v.state.value.ai
+        assertEquals(true, ai.result?.ok)
+        assertEquals("", ai.key) // the typed key never outlives a passed Test
+        assertFalse(ai.seedNeedsKey) // stored: the field goes
+        assertTrue(ai.canContinue)
+        assertFalse(ai.toString().contains("sk-seed"))
+    }
+
+    @Test fun aFailedSeedTestKeepsTheFieldAndTheTypedKey() {
+        val env = Env(ai = keylessSeed()); val v = vm(env)
+        env.ai.nextResult = Result.success(TestResult(false, 10, "Key rejected (401)"))
+        v.onKey("sk-wrong"); v.testAi()
+        assertTrue(v.state.value.ai.seedNeedsKey)
+        assertEquals("sk-wrong", v.state.value.ai.key)
+    }
+
+    @Test fun aSeedThatHasAKeyTestsWithoutOne() {
+        val env = Env(ai = FakeOnboardingAi(SeedEndpoint("azure", "Azure OpenAI", "gpt-4o")))
+        val v = vm(env)
+        assertFalse(v.state.value.ai.seedNeedsKey)
+        v.testAi()
+        assertEquals(listOf<String?>(null), env.ai.seedKeys)
+    }
+
+    @Test fun switchingBackToTheSeedDropsAPresetsTypedKey() {
+        val env = Env(ai = keylessSeed()); val v = vm(env)
+        v.selectPreset(AiPreset.OPENAI); v.onKey("sk-preset")
+        v.selectSeed()
+        assertEquals("", v.state.value.ai.key)
+        assertFalse(v.state.value.ai.canTest)
+    }
+
+    @Test fun theAzureFormIsPrefilledFromTheBuildDefaults() {
+        val env = Env(presets = { p -> if (p == AiPreset.AZURE) PresetDefaults("https://res.openai.azure.com", "2024-10-21", "gpt-5.4") else PresetDefaults.from(p, "", "") })
+        val v = vm(env)
+        v.selectPreset(AiPreset.AZURE)
+        val ai = v.state.value.ai
+        assertEquals("https://res.openai.azure.com", ai.url); assertEquals("2024-10-21", ai.apiVersion); assertEquals("gpt-5.4", ai.model)
+        assertEquals("", ai.key)
+        v.selectPreset(AiPreset.OPENAI)
+        assertEquals("", v.state.value.ai.url); assertEquals(AiPreset.OPENAI.defaultModel, v.state.value.ai.model)
+    }
+
+    @Test fun buildDefaultsFillOnlyWhatTheBuildHas() {
+        assertEquals(PresetDefaults("https://res.openai.azure.com", "2024-10-21", "dep"), PresetDefaults.from(AiPreset.AZURE, "https://res.openai.azure.com", "dep"))
+        // No build endpoint: nothing to prefill (a deployment name alone doesn't make an address).
+        assertEquals(PresetDefaults(model = ""), PresetDefaults.from(AiPreset.AZURE, "", "dep"))
+        assertEquals(PresetDefaults(model = AiPreset.OPENAI.defaultModel), PresetDefaults.from(AiPreset.OPENAI, "https://res.openai.azure.com", "dep"))
+    }
 }

@@ -5,8 +5,14 @@ import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelRequest
 import kotlin.coroutines.cancellation.CancellationException
 
-/** What a routed call returned, and from where (the test bed shows latency + tokens; RoleRunner logs the endpoint). */
-data class RoutedReply(val text: String, val endpoint: Endpoint, val model: String, val latencyMs: Long, val promptTokens: Int?, val completionTokens: Int?)
+/**
+ * What a routed call returned, and from where (the test bed shows latency + tokens; RoleRunner logs the endpoint).
+ * [truncated]: stopped at the token cap; [maxTokens]: the cap that call sent (request, else binding; null = provider default).
+ */
+data class RoutedReply(
+    val text: String, val endpoint: Endpoint, val model: String, val latencyMs: Long, val promptTokens: Int?, val completionTokens: Int?,
+    val truncated: Boolean = false, val maxTokens: Int? = null,
+)
 
 /**
  * Routes a role's call to its bound endpoint. Vision is used only when the endpoint has VISION and images are given;
@@ -125,7 +131,7 @@ class ModelRouter(
         } else {
             p.complete(request.copy(images = emptyList()))
         }
-        return RoutedReply(reply.text, e, model, (System.nanoTime() - start) / 1_000_000, reply.promptTokens, reply.completionTokens)
+        return RoutedReply(reply.text, e, model, (System.nanoTime() - start) / 1_000_000, reply.promptTokens, reply.completionTokens, reply.truncated, request.maxTokens)
     }
 
     internal companion object {

@@ -51,9 +51,26 @@ class OpenAiCompatProviderTest {
         OpenAiCompatProvider(url(), "k", "m", style = OpenAiCompatProvider.ApiStyle.OPENAI, client = client).complete(ModelRequest("q"))
         val body = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
         assertEquals("0.2", body["temperature"]!!.jsonPrimitive.content)
-        assertEquals("500", body["max_completion_tokens"]!!.jsonPrimitive.content)
+        assertEquals(ModelRequest.DEFAULT_MAX_TOKENS.toString(), body["max_completion_tokens"]!!.jsonPrimitive.content)
         assertEquals("m", body["model"]!!.jsonPrimitive.content)
         assertFalse("response_format" in body)
+    }
+
+    /** OBS-R3-1: finish_reason "length" is reported, so RoleRunner can retry with a larger cap. */
+    @Test fun aReplyStoppedAtTheTokenCapIsMarkedTruncated() = runTest {
+        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":""},"finish_reason":"length"}]}"""))
+        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}"""))
+        val p = OpenAiCompatProvider(url(), "k", "m", client = client)
+        val cut = p.complete(ModelRequest("q"))
+        assertEquals("", cut.text); assertTrue(cut.truncated)
+        assertFalse(p.complete(ModelRequest("q")).truncated)
+    }
+
+    /** OBS-R3-1: a refusal has `content: null`; it was read as the text "null" (valid JSON, wrong type). */
+    @Test fun aNullContentRefusalIsEmptyTextNotTheWordNull() = runTest {
+        server.enqueue(MockResponse().setBody("""{"choices":[{"message":{"content":null,"refusal":"I can't help with that"},"finish_reason":"stop"}]}"""))
+        val reply = OpenAiCompatProvider(url(), "k", "m", client = client).complete(ModelRequest("q"))
+        assertEquals("", reply.text)
     }
 
     @Test fun nonSuccessIsTypedWithItsCode() = runTest {
