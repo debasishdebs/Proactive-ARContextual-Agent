@@ -6,7 +6,7 @@ import androidx.room.Transaction
 
 /**
  * Settings → Memory › Delete all (spec §6.1.1: Forget moment for every frame + all derived memories, asks, nudges,
- * vectors and tombstones). Endpoints, bindings, prompts, pauses, shopping list and notes are settings/user lists: kept.
+ * vectors and tombstones, plus the frame_* capture tables: meta, state, source, cluster, vector). Endpoints, bindings, prompts, pauses, shopping list and notes are settings/user lists: kept.
  * Proposals (P7xP8 I1): every proposal came from an ask or a nudge, so all of them are memory-derived. Open ones are
  * deleted; the rest (EXECUTING/EXECUTED/FAILED, kept for undo) get Forget's redaction: params replaced with
  * [com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS] and action_log details emptied. [wipeMemory]
@@ -18,6 +18,11 @@ abstract class WipeDao {
     @Query("DELETE FROM memory_vector") protected abstract suspend fun vectors()
     @Query("DELETE FROM embedding_space") protected abstract suspend fun spaces()
     @Query("DELETE FROM memory") protected abstract suspend fun memories()
+    @Query("DELETE FROM frame_source") protected abstract suspend fun frameSources()
+    @Query("DELETE FROM frame_vector") protected abstract suspend fun frameVectors()
+    @Query("DELETE FROM frame_cluster") protected abstract suspend fun frameClusters()
+    @Query("DELETE FROM frame_state") protected abstract suspend fun frameStates()
+    @Query("DELETE FROM frame_meta") protected abstract suspend fun frameMetas()
     @Query("DELETE FROM frame") protected abstract suspend fun frames()
     @Query("DELETE FROM forget_tombstone") protected abstract suspend fun tombstones()
     @Query("DELETE FROM ask") protected abstract suspend fun asks()
@@ -32,7 +37,7 @@ abstract class WipeDao {
     @Transaction
     open suspend fun wipeMemory(): List<String> {
         val proposals = proposalIds()
-        sources(); vectors(); spaces(); memories(); frames(); tombstones(); asks(); nudges(); openProposals(); traces()
+        sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         scrubProposalParams(com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS); scrubActionLog()
         return proposals
     }
