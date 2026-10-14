@@ -74,6 +74,12 @@ class SettingsDeps(
     val capture: com.rokid.context.phone.capture.CaptureNowControl = com.rokid.context.phone.capture.CaptureNowControl.None,
     /** Settings › Actions & tools (Phase 7 B): lazy, so building these deps on Main never builds the actions graph. */
     private val lazyActions: Lazy<com.rokid.context.connectors.actions.ActionsGraphApi>,
+    /** Settings > AI > On-device models (on-device embeddings spec section 5): the app wires [StoreLocalModels]. */
+    val localModels: com.rokid.context.phone.ui.settings.ai.LocalModelGateway = com.rokid.context.phone.ui.settings.ai.LocalModelGateway.None,
+    /** The page's "Allow mobile data" switch. */
+    val localModelsMobileData: com.rokid.context.phone.ui.settings.ai.MobileDataSetting = com.rokid.context.phone.ui.settings.ai.InMemoryMobileData(),
+    /** Consecutive on-device load failures per model (spec section 6); the app wires [NativeLoadFailures]. */
+    val localModelLoadFailures: com.rokid.context.phone.ui.settings.ai.LoadFailures = com.rokid.context.phone.ui.settings.ai.LoadFailures.None,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -124,6 +130,9 @@ class SettingsDeps(
                 app, com.rokid.context.phone.capture.PhoneCaptureControl.storedPauses({ MemoryGraph.get(app).db.pauseDao() }, quietHours = { HubGraph.get(app).hudSettings.value.quietHours }),
             ),
             lazyActions = lazy { com.rokid.context.connectors.actions.ActionsGraph.get(app) },
+            localModels = StoreLocalModels(com.rokid.context.data.models.LocalModelStore(app)),
+            localModelsMobileData = AppConfigMobileData(app),
+            localModelLoadFailures = NativeLoadFailures(com.rokid.context.data.models.LocalModelStore(app)),
         )
     }
 }
@@ -137,5 +146,44 @@ private class AppSources(private val app: Context) : com.rokid.context.phone.ui.
     override fun setNudgesPerDay(n: Int) = graph.settings.setNudgesPerDay(n)
     override fun granted(k: com.rokid.context.connectors.sources.SourceKind) = com.rokid.context.connectors.sources.SourcePermissions.of(k).all {
         androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+    }
+}
+
+/** The page's gateway over the real download store. Deleting or replacing a file clears its load-failure count. */
+class StoreLocalModels(
+    private val store: com.rokid.context.data.models.LocalModelStore,
+    private val failures: com.rokid.context.model.provider.LocalLoadFailures = com.rokid.context.model.provider.LlamaCppNativeProvider.loadFailures,
+) : com.rokid.context.phone.ui.settings.ai.LocalModelGateway {
+    override fun fileFor(model: com.rokid.context.ai.local.LocalModel) = store.fileFor(model)
+    override fun state(model: com.rokid.context.ai.local.LocalModel) = store.state(model)
+    override fun enqueue(model: com.rokid.context.ai.local.LocalModel, allowMetered: Boolean) = store.enqueue(model, allowMetered)
+    override fun setAllowMetered(model: com.rokid.context.ai.local.LocalModel, allowMetered: Boolean) = store.setAllowMetered(model, allowMetered)
+    override fun cancel(model: com.rokid.context.ai.local.LocalModel) = store.cancel(model)
+    override fun delete(model: com.rokid.context.ai.local.LocalModel) {
+        store.delete(model)
+        failures.reset(store.fileFor(model).absolutePath)
+    }
+}
+
+/** The page reads the embed path's consecutive load failures for a catalog model's file (spec section 6). */
+class NativeLoadFailures(
+    private val store: com.rokid.context.data.models.LocalModelStore,
+    private val failures: com.rokid.context.model.provider.LocalLoadFailures = com.rokid.context.model.provider.LlamaCppNativeProvider.loadFailures,
+) : com.rokid.context.phone.ui.settings.ai.LoadFailures {
+    override suspend fun of(modelId: String): com.rokid.context.phone.ui.settings.ai.LoadFailure? {
+        val model = com.rokid.context.ai.local.LocalModels.byId(modelId) ?: return null
+        return failures.consecutive(store.fileFor(model).absolutePath).takeIf { it > 0 }?.let { com.rokid.context.phone.ui.settings.ai.LoadFailure(it) }
+    }
+}
+
+/** Stored in the existing `app_config` prefs (AppConfigStore's file), under its own key. Read off Main by the page. */
+class AppConfigMobileData(context: Context) : com.rokid.context.phone.ui.settings.ai.MobileDataSetting {
+    private val prefs by lazy { context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+    override fun allowed() = prefs.getBoolean(KEY, false)
+    override fun set(allowed: Boolean) { prefs.edit().putBoolean(KEY, allowed).apply() }
+
+    companion object {
+        const val PREFS = "app_config"
+        const val KEY = "local_models_allow_metered"
     }
 }
