@@ -20,6 +20,7 @@ import com.rokid.context.core.model.NudgeLine
 import com.rokid.context.core.model.Overlay
 import com.rokid.context.core.model.PROTOCOL_VERSION
 import com.rokid.context.core.model.PauseOrigin
+import com.rokid.context.core.model.QuietHours
 import com.rokid.context.core.model.PauseRecord
 import com.rokid.context.core.model.StateFrame
 import com.rokid.context.core.model.Verbosity
@@ -420,6 +421,33 @@ class HubTest {
         h.resume(setOf(r.pauseId)); advanceTimeBy(300)
         assertEquals(emptyList<PauseRecord>(), (Wire.decode<HudSettings>(link.lastOn(Channels.SETTINGS)) as Decoded.Ok).value.pauses)
         assertEquals(emptyList<PauseRecord>(), h.activePauses.value)
+    }
+
+    /** BUG-R2-6a: turning quiet hours off ends the running quiet pause now (every QUIET_HOURS record), nothing else. */
+    @Test fun turningQuietHoursOffEndsTheRunningQuietPause() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        h.updateSettings { it.copy(quietHours = QuietHours(16 * 60 + 45, 17 * 60)) }; advanceTimeBy(300)
+        val store = HubPauses(db.pauseDao()) { now }
+        store.add(PauseRecord("q-phone", PauseOrigin.QUIET_HOURS, now - 60_000, now + 600_000))
+        store.add(PauseRecord("q-glasses", PauseOrigin.QUIET_HOURS, now - 59_000, now + 600_000))
+        val phone = h.pausePhone(untilMs = null); advanceTimeBy(300)
+        assertEquals(3, h.activePauses.value.size)
+        h.updateSettings { it.copy(quietHours = null) }; advanceTimeBy(300)
+        assertEquals(listOf(phone), h.activePauses.value)
+        val pushed = (Wire.decode<HudSettings>(link.lastOn(Channels.SETTINGS)) as Decoded.Ok).value
+        assertEquals(listOf(phone), pushed.pauses)
+        assertTrue(pushed.resumedPauseIds.containsAll(listOf("q-phone", "q-glasses")))
+        assertEquals(listOf(phone), store.stored())
+    }
+
+    @Test fun changingTheQuietWindowKeepsTheRunningQuietPause() = runTest {
+        val h = hub(FakeGlassesLink())
+        h.updateSettings { it.copy(quietHours = QuietHours(16 * 60 + 45, 17 * 60)) }; advanceTimeBy(300)
+        HubPauses(db.pauseDao()) { now }.add(PauseRecord("q", PauseOrigin.QUIET_HOURS, now - 60_000, now + 600_000))
+        h.updateSettings { it.copy(quietHours = QuietHours(16 * 60, 18 * 60)) }; advanceTimeBy(300)
+        h.refresh(); advanceTimeBy(300)
+        assertEquals(listOf("q"), h.activePauses.value.map { it.pauseId })
     }
 
     @Test fun activePausesFollowPausePhoneAndResumeWithoutStart() = runTest {
