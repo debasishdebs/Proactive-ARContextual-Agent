@@ -343,4 +343,21 @@ class SamplingSessionTest {
         assertEquals(k.dhash, ImageHashes.dHash(winner).toULong().toString(16).padStart(16, '0'), "metadata describes the winner")
         r.session.stop("test")
     }
+
+    /** CameraOwner is not reentrant: the session starts Fixed work only after its own acquire block has ended. */
+    @Test fun fallbackAndRestFixedCapturesNeverRunInsideTheSessionBlock() = runTest {
+        val r = rig(this)
+        val ran = ArrayList<String>()
+        r.camera.failOpens = 99
+        r.onFallbackAction = { r.owner.acquire("fixed") { ran += "fallback:${r.owner.current}:camera=${r.camera.isOpen}" } }
+        r.session.start()
+        delay(10_000)
+        assertEquals(listOf("fallback:fixed:camera=false"), ran, "the fallback capture got the owner (no deadlock)")
+        val rest = rig(this) { work = 1; rest = 5 }
+        rest.fixedDuring = { ran += "rest:${rest.owner.current}:camera=${rest.camera.isOpen}" }
+        rest.session.start()
+        delay(61_000 + 61_000)
+        assertTrue(ran.contains("rest:fixed:camera=false"), "$ran")
+        rest.session.stop("test")
+    }
 }
