@@ -10,6 +10,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
 import java.io.File
 import java.io.IOException
 
@@ -133,5 +134,41 @@ class EncryptionMigratorTest {
         store.target = true; fail = true; side.forEach { it.writeText("x") }
         assertFalse(migrator.prepare { false })
         side.forEach { assertFalse("after a failed conversion: ${it.name}", it.exists()) }
+    }
+
+    private fun failureLog(): String = ShadowLog.getLogsForTag("EncryptionMigrator").joinToString("\n") { it.msg }
+
+    /** BUG-R2-2: the failure line names the exception class and a fixed reason code, never the message text. */
+    @Test fun aFailedStepLogsItsClassAndReasonCodeButNoMessage() {
+        ShadowLog.clear()
+        db.writeText("data"); store.current = false; store.target = true
+        val leaky = EncryptionMigrator.DbConverter { _, _, _, _ ->
+            throw EncryptionMigrator.ConversionException(EncryptionMigrator.FailReason.READ_VERSION, IllegalArgumentException("/data/user/0/secret.db"))
+        }
+        assertFalse(EncryptionMigrator(db, store, leaky) { ByteArray(32) }.prepare { false })
+        val log = failureLog()
+        assertTrue(log, log.contains("encryption change failed (IllegalArgumentException, reason=READ_VERSION)"))
+        assertFalse(log, log.contains("/data")); assertFalse(log, log.contains("secret"))
+        assertEquals("data", db.readText()); assertTrue(store.failed)
+    }
+
+    @Test fun anUntaggedConverterFailureLogsTheConvertReasonAndAKeyReadFailureItsOwn() {
+        ShadowLog.clear()
+        db.writeText("data"); store.current = false; store.target = true; fail = true
+        assertFalse(migrator.prepare { false })
+        assertTrue(failureLog(), failureLog().contains("(IOException, reason=CONVERT)")); assertFalse(failureLog().contains("disk full"))
+        ShadowLog.clear()
+        store.target = true
+        assertFalse(EncryptionMigrator(db, store, converter) { throw SecurityException("keystore /x") }.prepare { false })
+        assertTrue(failureLog(), failureLog().contains("(SecurityException, reason=KEY_READ)")); assertFalse(failureLog().contains("/x"))
+        assertEquals("data", db.readText())
+    }
+
+    @Test fun aFailedSwapLogsTheSwapReason() {
+        ShadowLog.clear()
+        db.writeText("data"); store.current = false; store.target = true
+        val m = EncryptionMigrator(db, store, converter, rename = { from, to -> from != tmp && from.renameTo(to) }) { ByteArray(32) }
+        assertFalse(m.prepare { false })
+        assertTrue(failureLog(), failureLog().contains("(IllegalStateException, reason=SWAP)"))
     }
 }
