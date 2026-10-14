@@ -138,7 +138,7 @@ internal class Resummarizer(private val graph: MemoryGraph, private val runner: 
             recentContext = PromptComposer.dataBlock("memories", sources.map { it.text }) + "\n" +
                 PromptComposer.dataBlock("critic_notes", listOf(NOTE)),
         )
-        val out = runner.run(RoleCall(PromptKey.SUMMARIZE, vars)).output as SummaryOutput
+        val out = runner.run(RoleCall(PromptKey.SUMMARIZE, vars, callClass = com.rokid.context.model.CallClass.BACKFILL)).output as SummaryOutput
         val text = out.summary.replace(TextHygiene.SEPARATORS, " ").trim().take(260)
         if (text.isEmpty()) throw IllegalStateException("empty summary")
         val newId = "$PREFIX${UUID.randomUUID()}"
