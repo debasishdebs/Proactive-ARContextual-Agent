@@ -23,6 +23,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -30,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.rokid.context.ai.flow.Facet
+import com.rokid.context.ai.flow.FlowLayout
 import com.rokid.context.ai.flow.FlowNode
 import com.rokid.context.ai.flow.NodeKind
 import com.rokid.context.core.ui.theme.PcColors
@@ -46,6 +48,15 @@ private val PILL_H = EdgeRouting.PILL_H.dp
 private val LABEL_W = EdgeRouting.LABEL_W.dp
 private val LABEL_H = EdgeRouting.LABEL_H.dp
 private val GUTTER = 16.dp
+
+/**
+ * BUG-R2-1: where the section's horizontal scroll starts, in dp: the primary INPUT's (first declared) column at the
+ * left edge, so the main column is in view on open. The scroll state clamps it to the graph's width.
+ */
+internal fun primaryScrollDp(flow: com.rokid.context.ai.flow.AgentFlow, layout: FlowLayout): Float {
+    val primary = flow.nodes.firstOrNull { it.kind == NodeKind.INPUT }?.id ?: return 0f
+    return EdgeRouting.CELL_W * (layout.cells[primary]?.column ?: 0)
+}
 
 internal fun facetName(f: Facet) = when (f) { is Facet.Prompt -> "Prompt"; is Facet.Model -> "Model"; Facet.Retrieval -> "Retrieval"; is Facet.Custom -> "Custom" }
 
@@ -64,7 +75,8 @@ fun FlowSection(section: FlowSectionUi, onNode: (FlowNode) -> Unit, onLink: (Str
     Column(Modifier.fillMaxWidth().padding(vertical = 8.dp).testTag("flow_section_${flow.id}")) {
         Text(flow.title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = GUTTER))
         Text(flow.purpose, style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, modifier = Modifier.padding(horizontal = GUTTER, vertical = 4.dp))
-        Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+        val startPx = with(LocalDensity.current) { primaryScrollDp(flow, layout).dp.roundToPx() }
+        Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState(startPx))) {
             Box(Modifier.padding(horizontal = GUTTER, vertical = 8.dp).size(routed.width.dp, routed.height.dp)) {
                 val ink = PcColors.InkSoft
                 Canvas(Modifier.matchParentSize()) {
