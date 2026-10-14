@@ -140,3 +140,48 @@ Companion docs: `2026-10-14-session-log.md` (what was done, decisions and why, c
 - **Device runs and fixes** (git-ignored): `.superpowers/sdd/device-run-report.md` (round 1), `device-run-2-report.md`, `device-run-3-report.md`, `devfix-*-report.md`, `minimised-link-investigation.md`, `minimised-link-report.md`, `glasses-minimise-report.md`.
 - **Checklist:** `docs/screens/checklist-20261014.txt`; script `tools/device-checklist.sh`; gate watchdog `tools/gate.sh`.
 - **Backups:** `~/Desktop/rokid/backups/pca-phone-20261014-{1551,1649,1812}.tar`. They predate the reinstall and can't be restored onto the current install.
+
+## 8. Spec gaps found by the traceability check (`2026-10-14-traceability.md`, G1–G19)
+
+These are spec requirements with no code, no deferral and no ruling. They were silently dropped. Each needs one of three actions: **Develop** (build it), **Decide** (accept the gap with a recorded ruling), or **Improve**. Full detail, with spec § refs, is in the traceability doc's Gaps section.
+
+| ID | Gap (spec §) | Suggested action |
+|---|---|---|
+| G1 | Frame JPEGs aren't encrypted when encryption is on; only the DB is (v1 §6.1). A Phase 5 carry missing from the Phase 8 triage | **Develop** (privacy). Encrypt JPEGs at rest, e.g. EncryptedFile/Tink, when the encryption switch is on |
+| G2 | User notes can't be created: the `note` table is read-only, so the Notes source only sees shopping | **Decide**: build note capture ("note that…"), or drop the Notes source label |
+| G3 | No limited-mode banner when optional permissions are skipped (v1 §0.1, MVP §12.5) | **Develop** (small) |
+| G4 | Nothing deletes the legacy files "after one release" (v1 §6.2) | **Develop** (small, at the next release). Add a versioned cleanup task |
+| G5 | No CPU or thermal pressure deferral, only battery and Battery Saver (MVP §4.3) | **Decide**, or Develop with PowerManager thermal status |
+| G6 | "Local model only when charging or above 70 %" isn't enforced; on-device embeds run at any battery | **Develop**. Gate the LLAMACPP_LOCAL embed path, matters now that on-device embeddings exist |
+| G7 | The direct Ask path ignores Battery Saver; only queued jobs are gated | **Decide** (asks are user-initiated, so allowing them is reasonable). Record a ruling |
+| G8 | The strict ProviderBlocked global block (block pipelines, cancel jobs, 10-min warm start) isn't wired; only the banner and HUD health exist | **Decide**, or Develop |
+| G9 | The critic runs every 3 h, but the 30-min rolling window with a 15-min step isn't implemented (MVP) | **Decide** (v1 changed the critic flow). Likely SUPERSEDED with a ruling |
+| G10 | When no memories match, the answer gives no ETA and doesn't trigger priority reprocessing | **Develop** (small) |
+| G11 | No automatic promotion to long-term memory and no voice "promote" | **Develop** (memory tiers) |
+| G12 | No quota eviction (short-term first) and no memory-pressure indicator on the glasses | **Develop**. The 100 MB soft quota is in the v1 spec |
+| G13 | No per-memory provenance (persona, model, prompt version) | **Develop**. Useful for Agent flows and debugging |
+| G14 | Model downloads don't pause on low battery | **Improve** (add a WorkManager battery-not-low constraint) |
+| G15 | No A/B model slots with health-check promotion; the class exists but is unused | **Decide** (likely drop; endpoints cover it) |
+| G16 | No quarantine and no encrypted diagnostic export/decrypt; the classes exist but are unused | **Decide**, or Develop |
+| G17 | The MVP latency target p95 ≤ 6 s is missed: about 8 s phone, about 8.5 s glasses, measured on the device | **Decide** the target, then **Improve** (streaming answers, smaller model, retrieval tuning) |
+| G18 | Most MVP observability metrics aren't collected; the telemetry reporter is unused | **Decide** scope (on-device-only metrics in Diagnostics) |
+| G19 | No config export with secrets excluded (MVP §23) | **Develop** (small; pairs with B12) |
+
+**Side findings from the same check:**
+- **S1:** Memory settings still say "Automatic clean-up arrives together with Forget", but retention has been enforced since Phase 7. Stale copy. **Improve.**
+- **S2:** **The glasses APK has no backup rules**, so its prefs and buffered camera photos are backed up by default. **Improve (privacy), alongside B12.**
+- **S3:** The v1 spec's R-07 still says a 20-frame buffer, while the build uses 200. Noted in amendment A-series. **Improve** the docs.
+- **S4:** The Phase 7 carry "purge non-rokid memories on launch" is still open (it's in the decision log).
+
+## 9. Document set (all committed, local only)
+
+| Doc | Use |
+|---|---|
+| `2026-10-14-status-and-backlog.md` (this) | Current state and everything pending. **Start here.** |
+| `2026-10-14-session-log.md` | What was done this session, decisions and why, decision confidence, Develop/Improve/Decide lists |
+| `2026-10-14-decision-log.md` | Every ruling, probe, device result, open minor and needs-user step, Phases 0–8 onward |
+| `2026-10-14-traceability.md` | Every spec requirement (168 rows), its status, where it was built, deviations, device verification, Phase 8 carry triage, and gaps G1–G19 |
+| `2026-10-14-settings-inventory.md` | All 61 settings: default, range, storage, sync, backup, deciding ruling |
+| Specs, each with an "Amendments (as built, 2026-10-14)" section | v1 (23), MVP (9), agent-flows (6), on-device-embeddings (7), glasses-minimise (6) |
+| `docs/runbook.md` | Build, install, devices, log filtering, etiquette, quirks |
+| `docs/rokid-sdk-token-logging.md` | The vendor note for Rokid |
