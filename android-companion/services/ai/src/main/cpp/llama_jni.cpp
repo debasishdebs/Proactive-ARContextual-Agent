@@ -2,6 +2,8 @@
 //
 // Contract with the Kotlin side:
 //   - nativeLoadModel returns 0 on any failure; any other value is a Handle* owned by the caller until nativeReleaseModel.
+//     With forEmbedding it also creates the embed context (the n_ubatch compute buffers, the likeliest out-of-memory
+//     point), so a context that can't be allocated is a failed load the caller counts, not a failed embed.
 //   - nativeEmbed / nativeGenerate* return null on any failure.
 //   - No C++ exception and no pending Java exception ever leaves these functions.
 //   - Calls on one handle are serialised by the caller (EmbeddingClient's nativeLock); there is no other global state
@@ -25,7 +27,7 @@ namespace {
 
 struct Handle {
     llama_model * model = nullptr;
-    llama_context * embed_ctx = nullptr; // created on first embed, freed with the handle
+    llama_context * embed_ctx = nullptr; // created by an embedding load, freed with the handle
 };
 
 constexpr int kMaxGenerateTokens = 256;
@@ -137,7 +139,6 @@ llama_context * make_embed_ctx(llama_model * model) {
 
 jfloatArray embed(JNIEnv * env, Handle * h, jstring jtext) {
     if (h == nullptr || h->model == nullptr) return nullptr;
-    if (h->embed_ctx == nullptr) h->embed_ctx = make_embed_ctx(h->model);
     llama_context * ctx = h->embed_ctx;
     if (ctx == nullptr) return nullptr;
 
@@ -245,7 +246,7 @@ jstring generate(JNIEnv * env, Handle * h, jstring jprompt, jstring jgrammar) {
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_com_rokid_context_model_provider_LlamaCppNativeProvider_nativeLoadModel(JNIEnv * env, jclass, jstring jpath) {
+Java_com_rokid_context_model_provider_LlamaCppNativeProvider_nativeLoadModel(JNIEnv * env, jclass, jstring jpath, jboolean for_embedding) {
     try {
         init_backend_once();
         std::string path;
@@ -254,9 +255,15 @@ Java_com_rokid_context_model_provider_LlamaCppNativeProvider_nativeLoadModel(JNI
         mp.n_gpu_layers = 0;
         llama_model * model = llama_model_load_from_file(path.c_str(), mp);
         if (model == nullptr) return 0;
+        llama_context * ctx = nullptr;
+        if (for_embedding) {
+            ctx = make_embed_ctx(model);
+            if (ctx == nullptr) { llama_model_free(model); return 0; }
+        }
         auto * h = new (std::nothrow) Handle();
-        if (h == nullptr) { llama_model_free(model); return 0; }
+        if (h == nullptr) { if (ctx) llama_free(ctx); llama_model_free(model); return 0; }
         h->model = model;
+        h->embed_ctx = ctx;
         return static_cast<jlong>(reinterpret_cast<intptr_t>(h));
     } catch (...) {
         return 0;

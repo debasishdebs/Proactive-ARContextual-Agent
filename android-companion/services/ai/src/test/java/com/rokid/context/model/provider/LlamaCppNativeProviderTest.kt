@@ -14,11 +14,17 @@ class LlamaCppNativeProviderTest {
         private val handle: Long = 7L,
         private val vector: FloatArray? = floatArrayOf(0.6f, 0.8f),
         private val text: String? = "ok",
+        /** The JNI contract: an embed load also creates the embed context, and a failure there (out of memory) is a 0 handle. */
+        private val embedContextFails: Boolean = false,
     ) : LlamaNative {
         var loads = 0
+        val loadedForEmbedding = mutableListOf<Boolean>()
         val released = mutableListOf<Long>()
         override fun isAvailable() = available
-        override fun load(modelPath: String): Long { loads++; return handle }
+        override fun load(modelPath: String, forEmbedding: Boolean): Long {
+            loads++; loadedForEmbedding += forEmbedding
+            return if (forEmbedding && embedContextFails) 0L else handle
+        }
         override fun embed(handle: Long, text: String) = vector
         override fun generate(handle: Long, prompt: String) = text
         override fun generateWithGrammar(handle: Long, prompt: String, grammar: String) = text
@@ -115,5 +121,28 @@ class LlamaCppNativeProviderTest {
         val broken = FakeNative(vector = null)
         assertTrue(failure { LlamaCppNativeProvider.embed("/m.gguf", listOf("x"), broken, cache = cache) } is ProviderConfigException)
         assertEquals(listOf(7L), broken.released)
+    }
+
+    /** Final review I2: out of memory while creating the embed context is a load failure, so the page's banner and row show. */
+    @Test fun embedContextCreationFailureCountsAsALoadFailure() {
+        val counter = LocalLoadFailures()
+        val oom = FakeNative(embedContextFails = true)
+        repeat(2) {
+            val e = failure { LlamaCppNativeProvider.embed("/a.gguf", listOf("x"), oom, counter) }
+            assertEquals("On-device model couldn't load", e.message)
+        }
+        assertEquals("two in a row: the page asks for a re-download", 2, counter.consecutive("/a.gguf"))
+        assertEquals("the embed path loads with its context", listOf(true, true), oom.loadedForEmbedding)
+        assertTrue("a 0 handle is never released", oom.released.isEmpty())
+
+        // Through the idle cache too.
+        val cache = EmbedModelCache(idleMs = 60_000) { _, _ -> {} }
+        failure { LlamaCppNativeProvider.embed("/c.gguf", listOf("x"), oom, counter, cache) }
+        assertEquals(1, counter.consecutive("/c.gguf"))
+
+        // Generation never needs the embed context.
+        val gen = FakeNative(embedContextFails = true)
+        kotlinx.coroutines.runBlocking { assertEquals("ok", LlamaCppNativeProvider("/a.gguf", gen).generate("q")) }
+        assertEquals(listOf(false), gen.loadedForEmbedding)
     }
 }
