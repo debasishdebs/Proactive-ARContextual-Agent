@@ -139,6 +139,23 @@ class LegacyKeySeedTest {
         assertFalse("ModelGatewayFactory.kt" in names)
     }
 
+    /**
+     * B12: copies of the legacy key file that an Auto Backup restore put in files/ go at start-up. The retirement reads
+     * shared_prefs/app_config_secret.xml only, so they go straight away, and the real legacy key is still seeded.
+     */
+    @Test fun startupDeletesRestoredSecretBakFiles() = runBlocking {
+        legacyKey()
+        val baks = listOf("app_config_secret.xml.bak.1780057256", "app_config_secret.xml.bak.manual_reset_1780057830").map { File(ctx.filesDir, it) }
+        baks.forEach { it.writeText("<map/>") }
+        val other = File(ctx.filesDir, "queue_runtime.log").apply { writeText("x") }
+        assertTrue(LegacyKeySeed.run(ctx, seeder()).isSuccess)
+        assertTrue(baks.none { it.exists() })
+        assertTrue("other files stay", other.exists())
+        assertEquals("sk-legacy-1", azureKey())
+        assertTrue("idempotent", LegacyKeySeed.run(ctx, seeder()).isSuccess)
+        assertTrue(other.delete())
+    }
+
     /** P8 D2: a key left without its endpoint row (a crash mid-save or mid-delete) is swept after seeding. */
     @Test fun runSweepsOrphanKeysAfterSeeding() = runBlocking {
         vault.put(EndpointRepository.keyRef("gone"), "k")

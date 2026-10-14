@@ -6,6 +6,12 @@
     <exclude domain="sharedpref" path="endpoint_keys.xml" />
     <exclude domain="sharedpref" path="db_key.xml" />
     <exclude domain="sharedpref" path="app_config_secret.xml" />
+    <!-- B12: copies of the legacy key file found in files/ after a restore. Rules match a path exactly (or a
+         directory and everything under it), never a wildcard, so the name and the two restored copies are listed;
+         SecretBakCleanup deletes any other app_config_secret.xml.bak.* at start-up. -->
+    <exclude domain="file" path="app_config_secret" />
+    <exclude domain="file" path="app_config_secret.xml.bak.1780057256" />
+    <exclude domain="file" path="app_config_secret.xml.bak.manual_reset_1780057830" />
     <exclude domain="sharedpref" path="ai_seed.xml" />
     <exclude domain="sharedpref" path="legacy_import.xml" />
     <exclude domain="database" path="context.db" />
