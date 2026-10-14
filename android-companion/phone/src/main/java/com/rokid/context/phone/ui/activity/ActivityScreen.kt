@@ -1,6 +1,19 @@
 package com.rokid.context.phone.ui.activity
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.SwapVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -45,9 +58,10 @@ fun ActivityScreen(
     onOpenMemory: (String) -> Unit,
     onOpenFrames: (LocalDate) -> Unit,
     onOpenDay: (LocalDate) -> Unit,
+    onSelectSort: (ActivitySort) -> Unit = {},
 ) {
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("activity_list")) {
-        item { GradientHeader("Activity", "What your glasses noticed") }
+        item { GradientHeader("Activity", "What your glasses noticed") { SortMenu(state.sort, onSelectSort) } }
         item { BannerHost(state.status.banner, onBannerAction) }
         item {
             StatusStrip(
@@ -98,6 +112,26 @@ fun ActivityScreen(
             }
         }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+/** The header's sort button: a small menu of the four orders, the current one checked. */
+@Composable
+private fun SortMenu(current: ActivitySort, onSelect: (ActivitySort) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { open = true }, modifier = Modifier.clip(CircleShape).background(PcColors.Surface)) {
+            Icon(Icons.Outlined.SwapVert, contentDescription = "Sort", tint = PcColors.Ink)
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            ActivitySort.entries.forEach { o ->
+                DropdownMenuItem(
+                    text = { Text(o.label) },
+                    onClick = { open = false; onSelect(o) },
+                    trailingIcon = if (o == current) ({ Icon(Icons.Outlined.Check, contentDescription = "Selected") }) else null,
+                )
+            }
+        }
     }
 }
 

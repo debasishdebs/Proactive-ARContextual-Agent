@@ -42,6 +42,8 @@ class BackupRulesTest {
     private val restorable = setOf(
         "hub_settings", "action_settings", "context_sources", "memory_settings", "retrieval_settings", "prompt_settings",
         "persona_settings", "voice_settings", "nudge_engine",
+        // Activity sort (Latest first / Oldest first / A-Z / Z-A) is a plain UI preference kept in hub_settings: restored.
+        com.rokid.context.phone.ui.activity.PrefsActivitySort.PREFS,
     )
 
     /**
@@ -127,6 +129,16 @@ class BackupRulesTest {
         val unruled = names - keysAndMarkers - setupState - restorable
         assertEquals("prefs files with no backup ruling", emptySet<String>(), unruled)
         assertTrue("a file is both restorable and excluded", (restorable intersect (setupState + keysAndMarkers)).isEmpty())
+    }
+
+    /** The Activity sort choice is a UI preference: it lives in a restorable file, never in an excluded one. */
+    @Test fun activitySortIsRestorable() {
+        val file = com.rokid.context.phone.ui.activity.PrefsActivitySort.PREFS
+        assertEquals("hub_settings", file)
+        assertTrue(file in restorable)
+        val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) +
+            listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
+        for (section in sections) assertTrue(section.tagName, "sharedpref:$file.xml" !in excludes(section))
     }
 
     /**

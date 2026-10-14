@@ -14,8 +14,11 @@ import android.view.View
 import android.view.WindowManager
 import com.rokid.context.core.model.IconCorner
 
-/** What the icon draws: [fraction] of the countdown left (null = unknown, full ring), [paused] = glyph, no ring. */
-data class IconState(val running: Boolean, val fraction: Float?, val paused: Boolean)
+/**
+ * What the icon draws: [fraction] of the countdown left (null = unknown, full ring), [paused] = glyph, no ring,
+ * [cue] = a frame was just sent (PhotoCue): the whole ring lights, bolder, for about a second.
+ */
+data class IconState(val running: Boolean, val fraction: Float?, val paused: Boolean, val cue: Boolean = false)
 
 /** Pure: the ring's share of the wait to the next photo, 1 just after arming, 0 when due. */
 object IconRing {
@@ -42,7 +45,7 @@ class MinimisedIcon(
         override fun run() {
             val s = source()
             if (!s.running) { hide(); return }
-            update(s.fraction, s.paused)
+            update(s.fraction, s.paused, s.cue)
             handler.postDelayed(this, TICK_MS)
         }
     }
@@ -72,8 +75,17 @@ class MinimisedIcon(
         return view != null
     }
 
-    fun update(fractionRemaining: Float?, paused: Boolean) {
-        view?.let { it.fraction = fractionRemaining; it.paused = paused; it.invalidate() }
+    fun update(fractionRemaining: Float?, paused: Boolean, cue: Boolean = false) {
+        view?.let { it.fraction = fractionRemaining; it.paused = paused; it.pulse = cue; it.invalidate() }
+    }
+
+    /** Re-reads [source] now (on Main) instead of at the next 1 s tick; nothing when the icon is hidden. */
+    fun refresh() {
+        handler.post {
+            if (view == null) return@post
+            handler.removeCallbacks(tick)
+            tick.run()
+        }
     }
 
     fun hide() {
@@ -109,6 +121,8 @@ class MinimisedIcon(
     internal class RingView(context: Context) : View(context) {
         var fraction: Float? = null
         var paused: Boolean = false
+        /** The "photo sent" pulse: full ring, thicker stroke, bigger centre dot. */
+        var pulse: Boolean = false
         private val green = Color.rgb(0x3C, 0xFF, 0x6E)
         private val stroke = 3f * context.resources.displayMetrics.density
         private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = stroke; color = green; strokeCap = Paint.Cap.ROUND }
@@ -117,7 +131,7 @@ class MinimisedIcon(
         private val box = RectF()
 
         /** The arc's sweep in degrees (0 when paused); for tests. */
-        val sweepDegrees: Float get() = if (paused) 0f else 360f * (fraction ?: 1f)
+        val sweepDegrees: Float get() = when { paused -> 0f; pulse -> 360f; else -> 360f * (fraction ?: 1f) }
 
         override fun onDraw(canvas: Canvas) {
             val w = width.toFloat(); val h = height.toFloat()
@@ -129,8 +143,9 @@ class MinimisedIcon(
                 return
             }
             canvas.drawOval(box, dim)
+            ring.strokeWidth = if (pulse) stroke * 1.8f else stroke
             canvas.drawArc(box, -90f, sweepDegrees, false, ring)
-            canvas.drawCircle(w / 2, h / 2, w * 0.1f, fill)
+            canvas.drawCircle(w / 2, h / 2, if (pulse) w * 0.18f else w * 0.1f, fill)
         }
     }
 
