@@ -48,8 +48,9 @@ enum class PttProblem { NO_PERMISSION, MIC_UNAVAILABLE, LINK_DOWN }
 
 /**
  * Tap-to-talk on the glasses (spec §5.1), adapted from Live Fit `PushToTalk`: the glasses' own mic, 100 ms chunks of
- * 3 200 bytes (phase 0), ending on a second tap ([stop], which keeps the chunk in flight), 1.5 s of silence, 5 s
- * without speech or 15 s ([EnergyVad]). [cancel] (double-tap) stops without `pc_listen_end` and drops the chunk in
+ * 3 200 bytes (phase 0), ending on a second tap ([stop], which keeps the chunk in flight), 2.2 s of silence after
+ * speech, 5 s without speech or 15 s ([EnergyVad]). A tap within [lateTapGraceMs] of such an auto-end is the "send"
+ * the wearer meant ([takeLateTap]), never a new ask. [cancel] (double-tap) stops without `pc_listen_end` and drops the chunk in
  * flight. A dead link or a mic error sends no `pc_listen_end`; a mic error after the ListenStart asks the phone to drop
  * the ask. A read that does not return within [readTimeoutMs] (a hung HAL) is abandoned and the mic released.
  * [recording] is the runtime's `listening` flag, so frames never flush while it is true (spec §1.8). Audio is never logged.
@@ -62,12 +63,16 @@ class PushToTalk(
     private val vad: () -> EnergyVad = { EnergyVad() },
     private val log: (String) -> Unit = {},
     private val readTimeoutMs: Long = READ_TIMEOUT_MS,
+    private val lateTapGraceMs: Long = LATE_TAP_GRACE_MS,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
     /** NO_PERMISSION comes on the caller's thread (from [start]); the others on the recording or watchdog thread. */
     @Volatile var onProblem: (PttProblem) -> Unit = {}
     private val lock = Any()
     /** The capture in progress; guarded by [lock]. */
     private var current: Capture? = null
+    /** When the VAD last ended a capture (not a tap or a cancel); guarded by [lock]. */
+    private var autoEndedAtMs: Long? = null
 
     /** One capture. The flags are guarded by [lock]; [readSinceMs] is 0 outside a read. */
     private class Capture {
@@ -88,11 +93,22 @@ class PushToTalk(
         synchronized(lock) {
             if (current != null) return false
             current = c
+            autoEndedAtMs = null
             recording.value = true
         }
         thread(name = "ptt", isDaemon = true) { try { capture(c) } finally { finish(c) } }
         thread(name = "ptt-watchdog", isDaemon = true) { watch(c) }
         return true
+    }
+
+    /**
+     * A tap with no capture running: true when it lands within [lateTapGraceMs] of an auto-end, so it is taken as the
+     * send (the listen already ended and sent) and must not start a new listen. One tap is absorbed at most.
+     */
+    fun takeLateTap(): Boolean = synchronized(lock) {
+        val at = autoEndedAtMs ?: return false
+        autoEndedAtMs = null
+        clock() - at <= lateTapGraceMs
     }
 
     /** A second tap: send what was heard, then `pc_listen_end`. */
@@ -125,6 +141,7 @@ class PushToTalk(
         }
         val source = c.source ?: return
         var clean = false
+        var autoEnded = false
         var micFailed = false
         try {
             // ListenStart goes out under the lock, so a cancel() waits for it (and Cancel always follows it). A cancel()
@@ -147,13 +164,15 @@ class PushToTalk(
                 if (n == 0) { clean = true; break }
                 val bytes = chunk.copyOf(n)
                 if (!link.audio(Base64.getEncoder().encodeToString(bytes))) { onProblem(PttProblem.LINK_DOWN); break }
-                if (v.feed(bytes) != VadDecision.CONTINUE) { clean = true; break }
+                val d = v.feed(bytes)
+                if (d != VadDecision.CONTINUE) { clean = true; autoEnded = true; log("auto-end ${d.name}"); break }
             }
         } catch (e: Exception) {
             micFailed = true
             log("capture failed (${e.javaClass.simpleName})"); onProblem(PttProblem.MIC_UNAVAILABLE)
         } finally {
             val (sendEnd, dropAsk) = synchronized(lock) {
+                if (autoEnded && !c.cancelled) autoEndedAtMs = nowMs()
                 (clean && c.started && !c.cancelled) to (micFailed && c.started && !c.cancelled)
             }
             // End before the mic stops: AudioRecord.stop()/release() must not delay the phone's final.
@@ -190,9 +209,11 @@ class PushToTalk(
         }
     }
 
-    private fun nowMs() = System.nanoTime() / 1_000_000
+    private fun nowMs() = clock()
 
     companion object {
         const val READ_TIMEOUT_MS = 2_000L
+        /** A "send" tap a beat after the VAD's auto-end (slow speech; BUG-R3-3) is still the send. */
+        const val LATE_TAP_GRACE_MS = 1_500L
     }
 }
