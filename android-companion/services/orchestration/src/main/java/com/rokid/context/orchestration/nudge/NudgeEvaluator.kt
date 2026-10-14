@@ -1,5 +1,7 @@
 package com.rokid.context.orchestration.nudge
 
+import android.util.Log
+import com.rokid.context.ai.SafeLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,8 +18,8 @@ data class NudgeDecision(val shouldNudge: Boolean, val text: String = "", val re
 /**
  * The evaluate half of the fast path (spec §P2.1): only memories offered as [eligible] (salient or dwell keyframe, or
  * a new place) count. The first one opens a settle window of [settleMs]; anything eligible arriving inside it joins
- * the same evaluation. Evaluations start at least [gapMs] apart: an arrival inside the gap opens the next window
- * when the gap ends. The notify throttle is NOT applied here.
+ * the same evaluation. Evaluations start at least [gapMs] apart and never overlap: an arrival inside the gap, or during a
+ * running check, opens the next window once the gap and the check have ended. The notify throttle is NOT applied here.
  *
  * Latency per decision = decision time minus the earliest capture time in the batch, corrected by the clock offset
  * (phone minus glasses), never raw glasses time.
@@ -54,23 +56,38 @@ class NudgeEvaluator(
         if (open) scope.launch { runWindow(waitMs) }
     }
 
-    private suspend fun runWindow(waitMs: Long) {
-        delay(waitMs)
-        val ids: List<String>
-        val captured: Long
-        synchronized(lock) {
-            ids = pending.toList(); pending.clear()
-            captured = earliestCaptureMs; earliestCaptureMs = Long.MAX_VALUE
-            lastStartMs = clock()
-            windowOpen = false
+    /**
+     * Runs windows back to back while arrivals keep coming. The window stays "open" until the current check ENDS, so two
+     * checks never overlap; arrivals during a check wait for the next window (gap counted from the last check's start).
+     */
+    private suspend fun runWindow(firstWaitMs: Long) {
+        var waitMs = firstWaitMs
+        while (true) {
+            delay(waitMs)
+            val ids: List<String>
+            val captured: Long
+            synchronized(lock) {
+                ids = pending.toList(); pending.clear()
+                captured = earliestCaptureMs; earliestCaptureMs = Long.MAX_VALUE
+                lastStartMs = clock()
+            }
+            val decision = try {
+                evaluate(ids)
+            } catch (c: CancellationException) {
+                synchronized(lock) { windowOpen = false }
+                throw c
+            } catch (e: Exception) {
+                Log.i(TAG, "nudge check failed: ${SafeLog.describe(e)}") // class only, no text; the periodic backstop covers it
+                null
+            }
+            if (decision != null) out.emit(decision to (clock() - captured).coerceAtLeast(0L))
+            synchronized(lock) {
+                if (pending.isEmpty()) { windowOpen = false; return }
+                val now = clock()
+                waitMs = maxOf(lastStartMs + gapMs(), now) + settleMs() - now
+            }
         }
-        val decision = try {
-            evaluate(ids)
-        } catch (c: CancellationException) {
-            throw c
-        } catch (e: Exception) {
-            return // a failed check is dropped; the periodic backstop covers it
-        }
-        out.emit(decision to (clock() - captured).coerceAtLeast(0L))
     }
+
+    private companion object { const val TAG = "PcNudge" }
 }

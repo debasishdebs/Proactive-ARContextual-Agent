@@ -16,6 +16,8 @@ import androidx.activity.ComponentActivity
 import androidx.annotation.VisibleForTesting
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -23,6 +25,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.rokid.context.core.hud.DoubleTapExit
@@ -40,6 +44,7 @@ import com.rokid.context.core.model.GestureAction
 import com.rokid.context.core.model.Overlay
 import com.rokid.context.glasses.capture.CaptureScheduler
 import com.rokid.context.glasses.capture.CaptureService
+import com.rokid.context.glasses.hud.CaptureStatusMarks
 import com.rokid.context.glasses.hud.ConfirmInput
 import com.rokid.context.glasses.hud.InputRouter
 import com.rokid.context.glasses.hud.KeyGestures
@@ -48,7 +53,6 @@ import com.rokid.context.glasses.hud.PadInput
 import com.rokid.context.glasses.hud.PhoneAskWatch
 import com.rokid.context.glasses.hud.Routed
 import com.rokid.context.glasses.link.HudController
-import com.rokid.context.glasses.link.HudSettingsCache
 import com.rokid.context.glasses.overlay.PopupOverlay
 import com.rokid.context.core.model.popupMs
 import com.rokid.context.glasses.pause.PauseToggle
@@ -103,7 +107,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         controller = HudController(
-            lifecycleScope, runtime.bridge, HudSettingsCache(getSharedPreferences(HudSettingsCache.PREFS, MODE_PRIVATE)),
+            lifecycleScope, runtime.bridge, runtime.settingsCache, // the one cache, so the capture service sees each push at once
             hello = { runtime.hello(nextCaptureAt()) },
         )
         runtime.attach(controller)
@@ -217,6 +221,7 @@ class MainActivity : ComponentActivity() {
         val pauses by runtime.pauses.records.collectAsStateWithLifecycle()
         val recording by runtime.listening.collectAsStateWithLifecycle()
         val photoCue by runtime.photoCue.active.collectAsStateWithLifecycle()
+        val capture by runtime.captureStatus.collectAsStateWithLifecycle()
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
         var battery by remember { mutableStateOf(runtime.batteryPct()) }
         LaunchedEffect(Unit) {
@@ -234,14 +239,18 @@ class MainActivity : ComponentActivity() {
         // Votes follow the presented overlay: an expired, hidden or dismissed Confirm can never be answered unseen.
         val shownConfirm = view.overlay as? Overlay.Confirm
         LaunchedEffect(shownConfirm?.proposalId) { confirm.onConfirm(shownConfirm); highlightYes = confirm.highlightYes }
-        HudRoot(
-            HudModel(
-                view = view, frame = frame, settings = settings,
-                connection = connection, batteryPct = battery, paused = pauses.any { it.isActiveAt(now) },
-                nextCaptureAtMs = nextCaptureAt(), nowMs = now, nav = nav, confirmHighlightYes = highlightYes, recording = recording,
-                photoCue = photoCue,
-            ),
-        )
+        Box(Modifier.fillMaxSize()) {
+            HudRoot(
+                HudModel(
+                    view = view, frame = frame, settings = settings,
+                    connection = connection, batteryPct = battery, paused = pauses.any { it.isActiveAt(now) },
+                    nextCaptureAtMs = nextCaptureAt(), nowMs = now, nav = nav, confirmHighlightYes = highlightYes, recording = recording,
+                    photoCue = photoCue,
+                ),
+            )
+            // Heat stop and a capture that fell back to Fixed (spec P1.5, P1.6): small marks over the HUD, nothing when fine.
+            CaptureStatusMarks(cooling = capture.cooling, degraded = capture.degraded, modifier = Modifier.align(Alignment.TopStart))
+        }
     }
 
     /** Touchpad keys are ours: KEYCODE_NOTIFICATION must never reach the system, or it moves our task to the back. */
@@ -443,7 +452,8 @@ class MainActivity : ComponentActivity() {
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     // CaptureService is the only capture path (spec §3.1); its scheduler drives the Glance countdown.
-    private fun nextCaptureAt(): Long? = CaptureScheduler(this).nextTriggerAtMs()
+    // Smart mode samples on motion, with only a watchdog alarm: there is no next capture to count down to.
+    private fun nextCaptureAt(): Long? = if (runtime.smartCapture.value) null else CaptureScheduler(this).nextTriggerAtMs()
 
     private fun ensureCaptureScheduled() { if (CaptureScheduler(this).ensureScheduled() == com.rokid.context.glasses.capture.Rearm.MISSED) local = LocalOverlay.Toast(CAPTURE_RESUMED_AFTER_STOP, System.currentTimeMillis()) }
 

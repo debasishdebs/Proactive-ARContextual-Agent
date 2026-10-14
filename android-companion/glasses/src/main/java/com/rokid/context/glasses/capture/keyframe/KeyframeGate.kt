@@ -56,28 +56,56 @@ class PrefsGateStore(private val prefs: SharedPreferences) : GateStore {
 class KeyframeGate(private val store: GateStore, private val clock: () -> Long) {
     private class Scored(val c: Candidate, val d: Long, val p: Long, val blur: Float)
 
+    // Thread safety: offer() runs on the camera analysis executor, flushWindow() on the session timer or dwell
+    // coroutine, recordKeep() on whichever thread handles "Capture now". They all share the window and the store, so each
+    // public entry point is @Synchronized (cheap: hashing is the only real work and it is a few ms).
     private val window = ArrayList<Scored>(MAX_CANDIDATES + 1)
     private var windowStart = 0L
 
     /** Candidates currently held (their pixel copies stay alive). */
-    internal fun retainedCount(): Int = window.size
+    @Synchronized internal fun retainedCount(): Int = window.size
 
-    fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean): GateResult {
+    /**
+     * [force] is "Capture now": the frame is kept whatever the ring and throttle say (the blur floor still applies),
+     * recorded like any keep so the next sample of the same scene is a duplicate, and any pending window is released.
+     * A STILL sample first closes the pending moving window (its winner is never a dwell keep); if that window keeps a
+     * frame, that is the result (the still sample could not be kept in the same instant anyway: 0.5 s throttle).
+     * Otherwise the still sample is judged on its own, as a dwell when [dwellArmed].
+     */
+    @Synchronized
+    fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean, force: Boolean = false): GateResult {
         val now = clock()
         val blur = ImageHashes.blur(c.thumb)
         if (blur < BLUR_FLOOR) return Skip(BLUR)
         val s = Scored(c, ImageHashes.dHash(c.thumb), ImageHashes.pHash(c.thumb), blur)
+        if (force) {
+            window.clear()
+            recordKeep(c, s.d, s.p, now)
+            return GateResult.Keep(c, s.d, s.p, blur, dwell = false)
+        }
         if (motion == MotionState.STILL) {
-            // A still sample closes any pending window together with itself, so a settle right after a move is not lost.
-            addToWindow(s, now)
-            return finish(dwell = dwellArmed, now)
+            if (window.isNotEmpty()) {
+                val closed = finish(window.toList().also { window.clear() }, dwell = false, now)
+                if (closed is GateResult.Keep) return closed
+            }
+            return finish(listOf(s), dwell = dwellArmed, now)
         }
         addToWindow(s, now)
-        return if (now - windowStart >= WINDOW_MS) finish(dwell = false, now) else Skip(WINDOW)
+        return if (now - windowStart >= WINDOW_MS) finish(window.toList().also { window.clear() }, dwell = false, now) else Skip(WINDOW)
     }
 
     /** At window end: the best pending candidate, or null when nothing is pending. */
-    fun flushWindow(): GateResult? = if (window.isEmpty()) null else finish(dwell = false, clock())
+    @Synchronized
+    fun flushWindow(): GateResult? =
+        if (window.isEmpty()) null else finish(window.toList().also { window.clear() }, dwell = false, clock())
+
+    /** Records a keep decided elsewhere (forced capture): pushes the ring and the last keep time. */
+    @Synchronized
+    @Suppress("UNUSED_PARAMETER")
+    fun recordKeep(candidate: Candidate, dhash: Long, phash: Long, nowMs: Long) {
+        store.push(dhash, phash)
+        store.setLastKeptAt(nowMs)
+    }
 
     private fun addToWindow(s: Scored, now: Long) {
         if (window.isEmpty()) windowStart = now
@@ -85,9 +113,7 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         if (window.size > MAX_CANDIDATES) window.remove(window.minBy { it.blur })
     }
 
-    private fun finish(dwell: Boolean, now: Long): GateResult {
-        val pool = window.toList()
-        window.clear()
+    private fun finish(pool: List<Scored>, dwell: Boolean, now: Long): GateResult {
         val ring = store.lastKeyframes()
         val against = if (dwell) ring.takeLast(1) else ring
         val fresh = pool.filter { s -> against.all { (d, p) -> minOf(hamming(s.d, d), hamming(s.p, p)) > HAMMING } }

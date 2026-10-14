@@ -16,6 +16,7 @@ import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.forget.ForgetFence
 import com.rokid.context.orchestration.AskSources
 import com.rokid.context.orchestration.AskText
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -44,7 +45,10 @@ class NudgeEngine(
     private val clock: () -> Long = System::currentTimeMillis,
     private val hud: () -> NudgeHud? = { NudgeEnvironment.hud?.invoke() },
 ) {
-    suspend fun runOnce(): NudgeRun {
+    /** Serialized with every other run through [NudgeRunLock] (the daily cap is read-then-write). */
+    suspend fun runOnce(): NudgeRun = NudgeRunLock.mutex.withLock { runLocked() }
+
+    private suspend fun runLocked(): NudgeRun {
         val now = clock()
         val h = hud() ?: return NudgeRun.NoHud
         gates.precheck(h, now).takeIf { it != Gate.PASS }?.let { return NudgeRun.Dropped(it) }
