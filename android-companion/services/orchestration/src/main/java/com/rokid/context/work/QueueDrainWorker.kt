@@ -29,6 +29,7 @@ import com.rokid.context.data.runtime.StalePayloadException
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.domain.summary.SummaryStatus
+import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.orchestration.AnswerService
@@ -43,7 +44,13 @@ import com.rokid.context.orchestration.RetryClassifier
 import com.rokid.context.orchestration.RetryPolicy
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptVars
+import com.rokid.context.work.budget.BackgroundWork
+import com.rokid.context.work.frames.FrameRecovery
+import com.rokid.context.work.frames.KeyframeGraph
 import java.util.Locale
+import java.util.UUID
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.pow
 
@@ -115,7 +122,7 @@ class QueueDrainWorker(
     private suspend fun processJob(job: QueueJobRecord, generation: Long) {
         when (job.queue) {
             QueuePriority.FRAME_INGEST -> processFrameIngest(job)
-            QueuePriority.SUMMARIZER -> processBatchedSummarization(job, generation)
+            QueuePriority.SUMMARIZER -> claimAndSummarize(job, generation)
             QueuePriority.PRIORITY_REPROCESS -> processPriorityReprocess(job, generation)
             QueuePriority.EXPLICIT_WRITE -> processExplicitWrite(job, generation)
             QueuePriority.READ -> processReadContext(job, generation)
@@ -127,6 +134,7 @@ class QueueDrainWorker(
         val payload = QueuePayloads.parse(job.payload)
         val source = QueuePayloads.string(payload, "source", "scheduled")
         val imported = RokidFrameInbox.ingestPending(applicationContext, maxItems = 16)
+        if (imported > 0) KeyframeGraph.get(applicationContext).signal() // the pipeline owns new frames (spec P2.1); this job is the backstop
         val manualLiveRequest = source.equals("manual_live", ignoreCase = true)
         PipelineRecords.upsertTrace(applicationContext, job.id, "FRAME_INGEST_DONE", "source=$source imported=$imported")
         if (imported > 0 || manualLiveRequest) {
@@ -158,7 +166,7 @@ class QueueDrainWorker(
     private val ai get() = AiGraph.get(applicationContext)
 
     /** [callClassOverride]: an Ask-triggered extraction passes USER (P4); null = EXTRACT. */
-    private suspend fun processBatchedSummarization(job: QueueJobRecord, generation: Long, callClassOverride: com.rokid.context.model.CallClass? = null) {
+    private suspend fun claimAndSummarize(job: QueueJobRecord, generation: Long, callClassOverride: com.rokid.context.model.CallClass? = null) {
         val payload = QueuePayloads.parse(job.payload)
         val importedFrames = QueuePayloads.int(payload, "imported_frames", 0)
         val frameIds = QueuePayloads.string(payload, "frame_ids_csv").split(",").map { it.trim() }.filter { it.isNotBlank() }
@@ -167,15 +175,50 @@ class QueueDrainWorker(
         // Final review I1: one VISION_EXTRACT call per photo (up to MAX_VISION_FRAMES readable ones, oldest first, as
         // before), each listing only its own frame. Every fact is then stored on, and fenced by, the frame whose photo
         // the model saw, so Forget moment on that photo reaches it and Forget fact locks that photo.
-        val seen = mutableListOf<Pair<com.rokid.context.memory.db.FrameEntity, com.rokid.context.model.ModelImageInput>>()
+        val seenAll = mutableListOf<Pair<com.rokid.context.memory.db.FrameEntity, com.rokid.context.model.ModelImageInput>>()
         for (f in frames.sortedBy { it.ts }) {
-            if (seen.size >= MAX_VISION_FRAMES) break
-            FrameInputs.fromFrames(listOf(f), maxImages = 1).singleOrNull()?.let { seen += f to it }
+            if (seenAll.size >= MAX_VISION_FRAMES) break
+            FrameInputs.fromFrames(listOf(f), maxImages = 1).singleOrNull()?.let { seenAll += f to it }
         }
-        if (seen.isEmpty()) {
+        if (seenAll.isEmpty()) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "NO_FACTS", "No readable photo in ${frames.size} frame(s)")
             return
         }
+        // The keyframe pipeline owns frames with a frame_state row (spec P2.1): this backstop takes only what it can claim, and
+        // leaves frames the pipeline got to recently to it. Legacy frames (no row) go as before; EXTRACTED, NEAR_DUP and live-claimed frames are skipped, manual runs included.
+        val manual = QueuePayloads.bool(payload, "manual", default = false)
+        val claimId = UUID.randomUUID().toString()
+        val (owned, tracked) = claimBackstop(seenAll.map { it.first.id }, claimId, if (manual) 0L else PIPELINE_GRACE_MS)
+        val seen = seenAll.filter { it.first.id in owned || it.first.id !in tracked }
+        if (seen.isEmpty()) {
+            PipelineRecords.upsertTrace(applicationContext, job.id, "NO_FACTS", "Frames belong to the keyframe pipeline")
+            return
+        }
+        val claims = owned.associateWith { claimId }
+        try {
+            processBatchedSummarization(job, generation, callClassOverride, seen, claims, importedFrames)
+        } catch (t: Throwable) {
+            withContext(NonCancellable) { owned.forEach { MemoryGraph.get(applicationContext).db.frameStateDao().release(it, claimId, System.currentTimeMillis()) } }
+            throw t
+        }
+    }
+
+    /** Claims the frames the pipeline has not touched for [PIPELINE_GRACE_MS]; returns (ids this job now holds, ids that have a frame_state row). */
+    private suspend fun claimBackstop(ids: List<String>, claimId: String, graceMs: Long): Pair<Set<String>, Set<String>> {
+        val dao = MemoryGraph.get(applicationContext).db.frameStateDao()
+        val now = System.currentTimeMillis()
+        val rows = dao.byIds(ids)
+        // Not EXTRACTING (a live claim is the pipeline's), and idle for the grace period; abandoned claims are claim()'s to take.
+        val mine = rows.filter { it.state == "EXTRACTING" || now - it.updatedAt >= graceMs }.map { it.frameId }
+        val got = dao.claim(mine, claimId, now, now - FrameRecovery.CLAIM_TIMEOUT_MS).map { it.frameId }.toSet()
+        return got to rows.map { it.frameId }.toSet()
+    }
+
+    private suspend fun processBatchedSummarization(
+        job: QueueJobRecord, generation: Long, callClassOverride: com.rokid.context.model.CallClass?,
+        seen: List<Pair<com.rokid.context.memory.db.FrameEntity, com.rokid.context.model.ModelImageInput>>,
+        claims: Map<String, String>, importedFrames: Int,
+    ) {
         val frameLines = seen.map { (f, _) -> frameLine(f) }
         // Still one call per photo here (Final review I1); the batch-then-singles fallback is ExtractSave.extract's.
         var promptVersion = 0
@@ -191,6 +234,8 @@ class QueueDrainWorker(
         PipelineRecords.dropFactsFrom(applicationContext, factPrefix, keep = facts.size)
         if (facts.isEmpty() && captions.isEmpty()) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "NO_FACTS", "No facts in ${seen.size} photo(s)")
+            val db = MemoryGraph.get(applicationContext).db
+            claims.forEach { (id, c) -> db.frameStateDao().completeIfClaimed(id, c, "EXTRACTED", System.currentTimeMillis()) } // nothing in them to extract
             return
         }
         // No facts but captions (a photo with nothing durable in it): the captions are saved, with nothing to critique.
@@ -199,7 +244,7 @@ class QueueDrainWorker(
         // Each fact is fenced on the photos it cites only: a photo forgotten during the calls drops just its facts.
         // Memories, frame_source rows (and, for pipeline callers, the claim CAS) are saved by saveExtraction in one transaction.
         val saved = ExtractSave.saveExtraction(
-            applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = true), seen.map { it.first.id }.toSet(), claims = null,
+            applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = true), seen.map { it.first.id }.toSet(), claims = claims.ifEmpty { null },
             tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation,
         )
         val savedAll = (saved as? ExtractSaveResult.Saved)?.memories.orEmpty()
@@ -339,6 +384,12 @@ class QueueDrainWorker(
             return "Battery saver is ON. Deferred to TTL queue (24h)."
         }
 
+        // Phone heat (spec P2.5): at MODERATE the caption queue and backfill pause, at SEVERE all background work does.
+        if (!manual && job.queue != QueuePriority.READ && job.queue != QueuePriority.EXPLICIT_WRITE &&
+            !KeyframeGraph.get(applicationContext).power.mayRunBackground(BackgroundWork.CAPTION_QUEUE)) {
+            return "Phone is hot. Deferred until it cools down."
+        }
+
         if (!manual) {
             val battery = batteryPercent()
             val charging = isCharging()
@@ -368,6 +419,8 @@ class QueueDrainWorker(
     companion object {
         private const val TAG = "QueueDrainWorker"
         private const val MAX_JOBS_PER_RUN = 8
+        /** The pipeline gets this long to claim a new frame before the backstop worker may take it. */
+        private const val PIPELINE_GRACE_MS = 2 * 60_000L
         private const val POLICY_DEFER_MS = 15 * 60 * 1000L
         private const val RAW_NOTE_CONFIDENCE = 0.5
         /** Photos per batch sent to VISION_EXTRACT, one call each (final review I1; the batch sent 3 before). */

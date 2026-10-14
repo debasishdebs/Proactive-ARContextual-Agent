@@ -25,6 +25,11 @@ class FrameIngestWorker(
         }
         ids += RokidFrameInbox.ingestPendingIds(applicationContext, maxItems = 16, placeLabel = place)
 
+        // Periodic backstop (spec P2.5): abandoned claims go back to PENDING and the pipeline is woken for anything claimable.
+        val keyframes = com.rokid.context.work.frames.KeyframeGraph.get(applicationContext)
+        runCatching { keyframes.pipeline.recover() }
+        keyframes.signal()
+
         val imported = ids.size
         if (imported > 0) {
             val config = AppConfigStore.getWithoutSecret(applicationContext)

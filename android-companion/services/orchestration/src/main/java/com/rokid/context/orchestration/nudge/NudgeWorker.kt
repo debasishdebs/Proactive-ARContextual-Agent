@@ -54,16 +54,7 @@ class NudgeWorker(appContext: Context, params: WorkerParameters) : CoroutineWork
     override suspend fun doWork(): Result {
         val app = applicationContext
         val prefs = app.getSharedPreferences(NudgeRunGate.PREFS, Context.MODE_PRIVATE)
-        NudgeRunGate(prefs, System::currentTimeMillis, { NudgeEnvironment.hud?.invoke() }) { engine(app).runOnce() }.run()
+        NudgeRunGate(prefs, System::currentTimeMillis, { NudgeEnvironment.hud?.invoke() }) { NudgeEngineFactory.engine(app).runOnce() }.run()
         return Result.success()
-    }
-
-    private fun engine(app: Context): NudgeEngine {
-        val memory = MemoryGraph.get(app)
-        val sources = SourcesGraph.get(app)
-        return NudgeEngine(
-            NudgeInputs(memory, sources.provider), AiGraph.get(app).runner, NudgeGates(memory.db.nudgeGateDao(), { sources.settings.shownGapMin.value * 60_000L }) { sources.settings.nudgesPerDay.value },
-            memory, com.rokid.context.orchestration.OriginFencedIntake(app, memory, ActionsGraph.get(app).intake),
-        )
     }
 }
