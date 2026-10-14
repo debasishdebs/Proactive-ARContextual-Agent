@@ -9,7 +9,14 @@ import androidx.annotation.VisibleForTesting
 import com.rokid.context.core.model.Command
 import com.rokid.context.core.model.Hello
 import com.rokid.context.core.model.Overlay
+import android.view.WindowManager
+import com.rokid.context.glasses.capture.CaptureScheduler
+import com.rokid.context.glasses.capture.CaptureService
 import com.rokid.context.glasses.capture.ForegroundFallback
+import com.rokid.context.glasses.overlay.IconRing
+import com.rokid.context.glasses.overlay.IconState
+import com.rokid.context.glasses.overlay.MinimisedIcon
+import com.rokid.context.glasses.overlay.PopupOverlay
 import com.rokid.context.glasses.capture.HudPresence
 import com.rokid.context.glasses.capture.OutboundBuffer
 import com.rokid.context.glasses.link.CxrBridge
@@ -63,6 +70,20 @@ class GlassesRuntime private constructor(private val app: Context) {
     /** Our HUD activity's lifecycle, for the capture fallback (spec §1.7: never reopened over another app). */
     val hudPresence = HudPresence()
     val fallback = ForegroundFallback(hudPresence)
+    /** The minimised icon (spec 2026-10-14 §3), one window per process; shown only while the keep-alive service runs. */
+    val minimisedIcon: MinimisedIcon by lazy {
+        MinimisedIcon(app, app.getSystemService(WindowManager::class.java)) {
+            val scheduler = CaptureScheduler(app)
+            val now = System.currentTimeMillis()
+            IconState(
+                running = CaptureService.liveInstance != null,
+                fraction = IconRing.fraction(scheduler.nextTriggerAtMs(), scheduler.armedAtMs(), now),
+                paused = pauses.records.value.any { it.isActiveAt(now) },
+            )
+        }
+    }
+    /** The minimised pop-up (spec 2026-10-14 §4), one window per process. */
+    val popup: PopupOverlay by lazy { PopupOverlay(app, app.getSystemService(WindowManager::class.java)) }
     /** Push-to-talk recording ([ptt] sets it); frames never flush while true (spec §1.8). */
     val listening = MutableStateFlow(false)
     /** The attached controller (tests check that exactly one is live). */
@@ -202,7 +223,7 @@ class GlassesRuntime private constructor(private val app: Context) {
 
         /** Drops the singleton and stops its jobs (so the next test's PauseStore owns its file alone). */
         internal fun resetForTests() = synchronized(this) {
-            instance?.let { it.ptt.cancel(); it.scope.cancel(); it.ioScope.cancel() }
+            instance?.let { it.ptt.cancel(); it.scope.cancel(); it.ioScope.cancel(); it.minimisedIcon.hide(); it.popup.hide() }
             instance = null
         }
     }
