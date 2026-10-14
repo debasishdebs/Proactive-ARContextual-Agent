@@ -25,6 +25,8 @@ import com.rokid.context.ai.Endpoint
 import com.rokid.context.ai.EndpointKind
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
+import com.rokid.context.memory.EmbeddingSpaces
+import com.rokid.context.memory.SwapImpact
 import com.rokid.context.phone.ui.list.ActionResult
 import com.rokid.context.phone.ui.list.ItemAction
 import com.rokid.context.phone.ui.list.ItemStatus
@@ -33,6 +35,7 @@ import com.rokid.context.phone.ui.list.ListScreen
 import com.rokid.context.phone.ui.list.ListSource
 import com.rokid.context.phone.ui.list.NamedAction
 import com.rokid.context.phone.ui.settings.NoticeText
+import com.rokid.context.phone.ui.settings.SecondaryAction
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SwitchRow
 import kotlinx.coroutines.CoroutineDispatcher
@@ -49,7 +52,35 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** What the page header shows besides the rows. */
-data class LocalModelsHeader(val allowMetered: Boolean = false, val loadFailed: Boolean = false)
+data class LocalModelsHeader(
+    val allowMetered: Boolean = false,
+    val loadFailed: Boolean = false,
+    /** A retired index is still inside its 7-day grace: Roll back is offered (spec §F.2). */
+    val rollbackAvailable: Boolean = false,
+    val impact: SwapImpact = SwapImpact(0, 0),
+)
+
+/** What the page needs from the embedding spaces for the swap confirmation and Roll back. */
+interface SwapRollback {
+    suspend fun available(): Boolean
+    suspend fun impact(): SwapImpact
+    suspend fun rollBack(): Boolean
+
+    object None : SwapRollback {
+        override suspend fun available() = false
+        override suspend fun impact() = SwapImpact(0, 0)
+        override suspend fun rollBack() = false
+    }
+}
+
+class SpacesSwapRollback(private val spaces: EmbeddingSpaces, private val onRolledBack: () -> Unit) : SwapRollback {
+    override suspend fun available() = spaces.rollbackTarget() != null
+    override suspend fun impact() = spaces.swapImpact()
+    override suspend fun rollBack(): Boolean {
+        val target = spaces.rollbackTarget() ?: return false
+        return spaces.rollback(target.id).also { if (it) onRolledBack() }
+    }
+}
 
 /**
  * Settings -> AI -> On-device models (spec section 5): one row per catalog model with Download / Use for Embeddings /
@@ -63,6 +94,7 @@ class LocalModelsSource(
     private val mobileData: MobileDataSetting,
     val abiSupported: Boolean,
     private val loadFailures: LoadFailures = LoadFailures.None,
+    private val swap: SwapRollback = SwapRollback.None,
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) : ListSource {
     override val title = "On-device models"
@@ -86,8 +118,9 @@ class LocalModelsSource(
             catalog.map { m -> Row(m, gateway.state(m).first(), embed == endpointIdFor(m), loadFailures.of(m.id)?.consecutive ?: 0) }
         }
         val metered = withContext(io) { mobileData.allowed() }
+        val (rollback, impact) = withContext(io) { swap.available() to swap.impact() }
         rows = loaded.associateBy { it.model.id }
-        headerState.value = LocalModelsHeader(metered, loaded.any { it.state == LocalModelState.Ready && it.failures > 0 })
+        headerState.value = LocalModelsHeader(metered, loaded.any { it.state == LocalModelState.Ready && it.failures > 0 }, rollback, impact)
         return loaded.map(::item)
     }
 
@@ -174,7 +207,7 @@ class LocalModelsSource(
 
     private fun useAction(m: LocalModel) = ItemAction(
         confirmTitle = "Use ${m.title} for Embeddings?",
-        confirmMessage = "Search rebuilds its index with this model in the background, with no network. Search keeps working meanwhile.",
+        confirmMessage = "Search rebuilds its index with this model in the background, with no network. Search keeps working meanwhile." + impactText(headerState.value.impact),
         confirmLabel = "Use for Embeddings",
     ) { useForEmbeddings(m) }
 
@@ -215,6 +248,13 @@ class LocalModelsSource(
         }
     }
 
+    /** Brings the retired index back (within 7 days of the swap); the page reloads through [changes]-driven refresh by the caller. */
+    suspend fun rollBack(): ActionResult {
+        val ok = withContext(io) { swap.rollBack() }
+        if (ok) headerState.value = headerState.value.copy(rollbackAvailable = false)
+        return if (ok) ActionResult.Message("Rolled back to the previous search index") else ActionResult.Failed("The previous search index is no longer available")
+    }
+
     private enum class UseOutcome { CHANGED, UNCHANGED, FAILED }
 
     /** Unbinds EMBED first (search goes lexical), then deletes the endpoint, then the file (spec section 5). */
@@ -247,6 +287,16 @@ class LocalModelsSource(
 
         /** `local_<id>`, with characters an endpoint id can't hold (EndpointRules: `[A-Za-z0-9_-]`, e.g. the `.` in `v1.5`) as `_`. */
         fun endpointIdFor(m: LocalModel) = "local_" + m.id.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        const val ROLL_BACK = "Roll back"
+        const val RECOVERABLE = "Both can be recovered with Roll back for 7 days."
+
+        /** The recall-loss counts before a swap (spec §F.2); empty when no deleted photo is affected. */
+        fun impactText(i: SwapImpact): String = if (!i.any) "" else buildString {
+            append("\n\n")
+            if (i.reduced > 0) append("${i.reduced} photos will be searchable by text only\n")
+            if (i.lost > 0) append("${i.lost} photos will no longer be findable at all\n")
+            append(RECOVERABLE)
+        }
         fun size(m: LocalModel) = "${(m.bytes + 500_000) / 1_000_000} MB"
     }
 }
@@ -263,6 +313,7 @@ fun LocalModelsRoute(source: LocalModelsSource, onBack: () -> Unit) {
                 if (!source.abiSupported) NoticeText(LocalModelsSource.NOT_ARM64, error = true, tag = "local_models_abi")
                 if (header.loadFailed) NoticeText(LocalModelsSource.LOAD_BANNER, error = true, tag = "local_models_load_failed")
                 NoticeText(if (header.allowMetered) "Downloads can use mobile data" else "Downloads use Wi-Fi only", tag = "local_models_network")
+                if (header.rollbackAvailable) SecondaryAction(LocalModelsSource.ROLL_BACK, { scope.launch { snack.showSnackbar(source.rollBack().let { (it as? ActionResult.Message)?.text ?: (it as ActionResult.Failed).message }) } }, tag = "local_models_roll_back")
                 SwitchRow("Allow mobile data", "Models are large; mobile data may cost you", header.allowMetered, source::setAllowMetered, tag = "local_models_mobile_data")
             }
         })

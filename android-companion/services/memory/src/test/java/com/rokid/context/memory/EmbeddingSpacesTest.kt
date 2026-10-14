@@ -44,7 +44,7 @@ class EmbeddingSpacesTest {
         assertTrue(spaces.swapIfComplete(b.id))
         assertEquals(b.id, spaces.queryable()!!.id)
         assertEquals(SpaceState.RETIRED, db.embeddingDao().space(a.id)!!.state)
-        assertTrue(db.embeddingDao().vectors(a.id).isEmpty())
+        assertEquals(2, db.embeddingDao().vectors(a.id).size) // kept for the 7-day rollback
         assertEquals(1, db.embeddingDao().observeSpaces().first().count { it.state == SpaceState.ACTIVE })
     }
 
@@ -82,7 +82,7 @@ class EmbeddingSpacesTest {
         spaces.put("m1", a.id, v); assertTrue(spaces.swapIfComplete(a.id))
         val b = start("fpB"); spaces.put("m1", b.id, v); assertTrue(spaces.swapIfComplete(b.id))
         spaces.put("m1", a.id, v) // a late write from a worker that still holds the retired space
-        assertTrue(db.embeddingDao().vectors(a.id).isEmpty())
+        assertEquals(1, db.embeddingDao().vectors(a.id).size) // only the vector it already had
         val c = start("fpC"); spaces.discard(c.id)
         spaces.put("m1", c.id, v) // a late write after discard
         assertTrue(db.embeddingDao().vectors(c.id).isEmpty())
@@ -96,7 +96,7 @@ class EmbeddingSpacesTest {
         val c = start("fpC"); spaces.put("m1", c.id, v); assertTrue(spaces.swapIfComplete(c.id))
         val states = db.embeddingDao().observeSpaces().first().associate { it.id to it.state }
         assertEquals(mapOf(a.id to SpaceState.RETIRED, b.id to SpaceState.RETIRED, c.id to SpaceState.ACTIVE), states)
-        assertTrue(db.embeddingDao().vectors(a.id).isEmpty() && db.embeddingDao().vectors(b.id).isEmpty())
+        assertTrue(db.embeddingDao().vectors(a.id).isNotEmpty() && db.embeddingDao().vectors(b.id).isNotEmpty()) // retired spaces keep their vectors
     }
 
     @Test fun swapRefusesANonBuildingSpaceAndKeepsTheActiveOne() = runBlocking {

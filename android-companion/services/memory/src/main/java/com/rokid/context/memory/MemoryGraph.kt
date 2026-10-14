@@ -6,7 +6,7 @@ import com.rokid.context.memory.db.DatabaseFactory
 import java.io.File
 
 /** Process-wide data graph (no DI framework in v1). The encryption mode is decided at first open (EncryptionMigrator). */
-class MemoryGraph private constructor(val db: ContextDatabase) {
+class MemoryGraph private constructor(val db: ContextDatabase, retired: RetiredClock = InMemoryRetiredClock()) {
     val frames = FrameRepository(db.frameDao())
     val memories = MemoryRepository(db.memoryDao())
     val traces = TraceRepository(db.traceDao())
@@ -17,7 +17,7 @@ class MemoryGraph private constructor(val db: ContextDatabase) {
     val proposals = ProposalRepository(db.proposalDao(), db.actionDao(), db)
     val shopping = db.shoppingDao()
     val notes = db.noteDao()
-    val spaces = EmbeddingSpaces(db.embeddingDao())
+    val spaces = EmbeddingSpaces(db.embeddingDao(), retired)
     val vectorIndex: com.rokid.context.memory.retrieval.VectorIndex = com.rokid.context.memory.retrieval.BruteForceVectorIndex(db.embeddingDao())
 
     companion object {
@@ -36,7 +36,7 @@ class MemoryGraph private constructor(val db: ContextDatabase) {
                         app.getDatabasePath(DatabaseFactory.NAME), com.rokid.context.memory.db.PrefsModeStore(app),
                         com.rokid.context.memory.db.SqlCipherConverter,
                     ) { DbKeyStore.passphrase(app) }
-                    MemoryGraph(DatabaseFactory.buildDeferred(app, { migrator.prepare(encryptionRequested) }) { DbKeyStore.passphrase(app) })
+                    MemoryGraph(DatabaseFactory.buildDeferred(app, { migrator.prepare(encryptionRequested) }) { DbKeyStore.passphrase(app) }, PrefsRetiredClock(app))
                 }.also { instance = it }
             }
 
