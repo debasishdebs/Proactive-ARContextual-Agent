@@ -21,7 +21,17 @@ object RoleContracts {
         val o = value.jsonObject
         when (key) {
             PromptKey.SYSTEM -> throw IllegalArgumentException("SYSTEM has no output")
-            PromptKey.VISION_EXTRACT, PromptKey.EXPLICIT_REMEMBER -> ExtractOutput(
+            PromptKey.VISION_EXTRACT -> ExtractOutput(
+                o.getValue("facts").jsonArray.map { f ->
+                    val fo = f.jsonObject
+                    Fact(str(fo, "text"), str(fo, "type"), fo.getValue("confidence").let { (it as JsonPrimitive).double }, strings(fo, "tags"),
+                        strings(fo, "source_frame_ids"))
+                },
+                extras(o, "facts", "captions"),
+                o.getValue("captions").jsonArray.map { c -> c.jsonObject.let { FrameCaption(str(it, "frame_id"), str(it, "caption")) } },
+                provenance = true,
+            )
+            PromptKey.EXPLICIT_REMEMBER -> ExtractOutput(
                 o.getValue("facts").jsonArray.map { f ->
                     val fo = f.jsonObject
                     Fact(str(fo, "text"), str(fo, "type"), fo.getValue("confidence").let { (it as JsonPrimitive).double }, strings(fo, "tags"))
@@ -47,9 +57,12 @@ object RoleContracts {
 
     fun semanticProblems(output: ContractOutput, ctx: SemanticContext): List<String> = buildList {
         when (output) {
-            is ExtractOutput -> output.facts.forEachIndexed { i, f ->
-                if (f.text.isBlank()) add("facts[$i].text is empty")
-                if (f.confidence !in 0.0..1.0) add("facts[$i].confidence must be 0–1")
+            is ExtractOutput -> {
+                output.facts.forEachIndexed { i, f ->
+                    if (f.text.isBlank()) add("facts[$i].text is empty")
+                    if (f.confidence !in 0.0..1.0) add("facts[$i].confidence must be 0–1")
+                }
+                if (output.provenance) addAll(provenance(output, ctx.inputIds))
             }
             is SummaryOutput -> if (output.confidence !in 0.0..1.0) add("confidence must be 0–1")
             is CriticOutput -> Unit
@@ -65,6 +78,20 @@ object RoleContracts {
                 addAll(action(output.proposedAction, ctx))
             }
         }
+    }
+
+    /** Spec P2.1: ids must be photos that were sent, every fact cites one, every sent photo has a caption. */
+    private fun provenance(o: ExtractOutput, sent: Set<String>): List<String> = buildList {
+        o.facts.forEachIndexed { i, f ->
+            if (f.sourceFrameIds.isEmpty()) add("facts[$i].source_frame_ids is empty")
+            f.sourceFrameIds.filterNot { it in sent }.takeIf { it.isNotEmpty() }
+                ?.let { add("facts[$i].source_frame_ids not among the sent photos: ${it.take(3).joinToString(", ")}") }
+        }
+        o.captions.filterNot { it.frameId in sent }.takeIf { it.isNotEmpty() }
+            ?.let { add("captions for photos that were not sent: ${it.take(3).joinToString(", ") { c -> c.frameId }}") }
+        o.captions.filter { it.caption.isBlank() }.takeIf { it.isNotEmpty() }?.let { add("captions with an empty caption: ${it.size}") }
+        val captioned = o.captions.filter { it.caption.isNotBlank() }.map { it.frameId }.toSet()
+        sent.filterNot { it in captioned }.takeIf { it.isNotEmpty() }?.let { add("no caption for sent photos: ${it.take(3).joinToString(", ")}") }
     }
 
     private fun sources(ids: List<String>, ctx: SemanticContext): String? =

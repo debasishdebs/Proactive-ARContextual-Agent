@@ -52,22 +52,29 @@ class QueueDrainWorkerContractsTest {
     private fun saved() = runBlocking { MemoryGraph.get(ctx).memories.recent(20) }
 
     /** Final review I1: one VISION_EXTRACT call per photo; each fact is stored on the frame that call showed. */
+    /** A VISION_EXTRACT reply for the photo [p] labels (the provenance contract: source_frame_ids and a caption). */
+    private fun vision(p: String, text: String, confidence: Double = 0.9, tags: String = "") =
+        Regex("- frame_id: (\\S+) ").find(p)!!.groupValues[1].let { id ->
+            """{"facts":[{"text":"$text","type":"object","confidence":$confidence,"tags":[$tags],"source_frame_ids":["$id"]}],"captions":[{"frame_id":"$id","caption":"A photo"}]}"""
+        }
+
     @Test fun frameFactsAreStoredOnTheFrameTheModelSaw() {
         replies = { p ->
-            val text = if ("id=f_old" in p) "Keys by the door" else "Milk carton on the counter"
-            """{"facts":[{"text":"$text","type":"object","confidence":0.9,"tags":["kitchen"]}]}"""
+            vision(p, if ("frame_id: f_old" in p) "Keys by the door" else "Milk carton on the counter", tags = "\"kitchen\"")
         }
         run()
-        assertEquals(mapOf("Keys by the door" to "f_old", "Milk carton on the counter" to "f_new"), saved().associate { it.text to it.frameId })
+        assertEquals(mapOf("Keys by the door" to "f_old", "Milk carton on the counter" to "f_new"), saved().filter { it.type != "caption" }.associate { it.text to it.frameId })
+        // each photo also gets a caption memory on its own frame
+        assertEquals(setOf("f_old", "f_new"), saved().filter { it.type == "caption" }.map { it.frameId }.toSet())
         assertTrue(saved().all { it.reviewState == ReviewState.OK })
         assertEquals(2, prompts.size)
-        prompts.forEach { p -> assertTrue(p.contains("BEGIN_DATA frames")); assertTrue(("id=f_old" in p) != ("id=f_new" in p)) }
+        prompts.forEach { p -> assertTrue(p.contains("BEGIN_DATA frames")); assertTrue(("frame_id: f_old" in p) != ("frame_id: f_new" in p)) }
     }
 
     @Test fun lowConfidenceFactsTheCriticRejectsGoToTheReviewQueue() {
-        replies = { p -> if ("verdict" in p) """{"verdict":"fail","reasons":["not visible"]}""" else """{"facts":[{"text":"Maybe a cat","type":"object","confidence":0.3,"tags":[]}]}""" }
+        replies = { p -> if ("verdict" in p) """{"verdict":"fail","reasons":["not visible"]}""" else vision(p, "Maybe a cat", 0.3) }
         run()
-        assertTrue(saved().isNotEmpty() && saved().all { it.reviewState == ReviewState.NEEDS_REVIEW })
+        assertTrue(saved().any { it.type != "caption" } && saved().filter { it.type != "caption" }.all { it.reviewState == ReviewState.NEEDS_REVIEW })
         assertTrue(QueueRuntimeStore.recent(ctx, 10).any { it.queue == QueuePriority.PRIORITY_REPROCESS })
     }
 
@@ -85,7 +92,7 @@ class QueueDrainWorkerContractsTest {
     }
 
     @Test fun lowConfidenceFactsTheCriticPassesAreTrusted() {
-        replies = { p -> if ("verdict" in p) """{"verdict":"pass","reasons":[]}""" else """{"facts":[{"text":"A red mug","type":"object","confidence":0.5,"tags":[]}]}""" }
+        replies = { p -> if ("verdict" in p) """{"verdict":"pass","reasons":[]}""" else vision(p, "A red mug", 0.5) }
         run()
         assertTrue(saved().isNotEmpty() && saved().all { it.reviewState == ReviewState.OK })
         assertTrue(QueueRuntimeStore.recent(ctx, 10).none { it.queue == QueuePriority.PRIORITY_REPROCESS })
