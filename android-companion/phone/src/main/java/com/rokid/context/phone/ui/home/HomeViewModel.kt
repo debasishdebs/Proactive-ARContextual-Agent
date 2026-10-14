@@ -38,7 +38,7 @@ import kotlin.coroutines.cancellation.CancellationException
 class HomeViewModel(
     private val glasses: GlassesStatusSource,
     private val pipeline: PipelineControl,
-    timeline: TimelineRepository,
+    private val timeline: TimelineRepository,
     private val asks: AskRepository,
     nudges: NudgeRepository,
     private val askService: AskService,
@@ -82,7 +82,11 @@ class HomeViewModel(
         HomeUiState(status, suggestions, items, l.question, l.asking, l.error, last)
     }
 
-    val state: StateFlow<HomeUiState> = combine(base, voice.state, micBlocked) { s, v, blocked -> s.copy(voice = HomeVoiceUi.from(v, blocked)) }
+    /** Live: Room re-emits on every frame insert; a new local day (or zone) re-queries. */
+    private val photosToday: Flow<Int> = clock.map { DayBucket.dayOf(it, zone()) to zone() }.distinctUntilChanged()
+        .flatMapLatest { (d, z) -> timeline.frameTimesIn(DayBucket.bounds(d, z)).map { it.size } }.distinctUntilChanged()
+
+    val state: StateFlow<HomeUiState> = combine(base, voice.state, micBlocked, photosToday) { s, v, blocked, n -> s.copy(voice = HomeVoiceUi.from(v, blocked), photosToday = n) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
     fun onQuestionChange(text: String) = local.update { it.copy(question = text.take(500), error = null) }

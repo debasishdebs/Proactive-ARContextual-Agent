@@ -42,6 +42,12 @@ class HomeScreenTest {
 
     private val live = StatusUi("Capturing · next 4:12", live = true, paused = false, batteryPct = 82, banner = null)
 
+    @Test fun homeShowsPhotosTodayCount() {
+        show(HomeUiState(status = live, photosToday = 3))
+        compose.onNodeWithTag("photos_today").assertIsDisplayed()
+        compose.onNodeWithText("3 photos today").assertIsDisplayed()
+    }
+
     @Test fun headerShowsCaptureLineAndPauseToggles() {
         show(HomeUiState(status = live))
         compose.onNodeWithText("Proactive Context").assertIsDisplayed()
@@ -80,6 +86,8 @@ class HomeScreenTest {
         show(HomeUiState(status = live, question = "where are my keys", askError = "AI unavailable — check Settings › Model endpoints"))
         compose.onNodeWithContentDescription("Send question").performClick()
         assertEquals(listOf("where are my keys"), asked)
+        // Home's "N photos today" line moved the hero down a little: scroll to the error before checking it.
+        compose.onNodeWithTag("home_list").performScrollToNode(hasText("AI unavailable", substring = true))
         compose.onNodeWithText("AI unavailable — check Settings › Model endpoints").assertIsDisplayed()
     }
 

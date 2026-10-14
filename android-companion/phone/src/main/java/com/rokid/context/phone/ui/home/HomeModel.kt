@@ -72,6 +72,8 @@ data class HomeUiState(
     val lastAnswer: FeedItem.Ask? = null,
     /** The hero mic (spec §2.4, §5.1.1): phone voice through the on-device recognizer only. */
     val voice: HomeVoiceUi = HomeVoiceUi(),
+    /** Frames captured on today's local day (the frames table), so the wearer can see captures happening. */
+    val photosToday: Int = 0,
 )
 
 /**

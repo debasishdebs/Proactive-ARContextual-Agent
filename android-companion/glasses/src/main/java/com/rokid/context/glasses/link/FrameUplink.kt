@@ -44,6 +44,8 @@ class FrameUplink(
     private val config: UplinkConfig = UplinkConfig(),
     private val log: (String) -> Unit = {},
     private val onBufferChanged: () -> Unit = {},
+    /** A frame was acked ok and left the buffer (the glasses' "photo sent" cue). Never breaks the flush. */
+    private val onDelivered: (String) -> Unit = {},
 ) {
     private enum class Outcome { DELIVERED, DROPPED, RETAINED, INTERRUPTED, CLEARED }
 
@@ -120,7 +122,10 @@ class FrameUplink(
                 val outcome = deliver(id, chunks)
                 if (outcome != Outcome.INTERRUPTED) forget(id)
                 when (outcome) {
-                    Outcome.DELIVERED -> { buffer.remove(id); sent++; log("delivered $id") }
+                    Outcome.DELIVERED -> {
+                        buffer.remove(id); sent++; log("delivered $id")
+                        try { onDelivered(id) } catch (e: Exception) { log("delivered notice failed: ${e.javaClass.simpleName}") }
+                    }
                     Outcome.DROPPED -> { buffer.remove(id); dropped++; log("dropped $id after ${config.maxNacks} NACKs"); bufferChanged() }
                     Outcome.RETAINED -> { log("flush stopped after ${config.maxAttempts} timeouts; retained=${buffer.size}"); break }
                     Outcome.CLEARED -> log("$id cleared while sending; not sent further")

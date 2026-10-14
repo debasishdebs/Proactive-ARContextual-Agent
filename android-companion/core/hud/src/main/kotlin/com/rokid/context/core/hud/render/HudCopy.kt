@@ -5,6 +5,8 @@ object HudCopy {
     const val CONNECTING = "Connecting to phone\u2026"
     const val OFFLINE = "Phone not connected"
     const val OUTDATED = "Update Proactive Context"
+    /** The "photo sent" cue beside the Glance countdown (about a second after a frame is buffered or delivered). */
+    const val PHOTO_CUE = "\u2713"
     private const val MAX_REASON = 60
 
     /** The Status page "Phone" value: "connecting" during the start-up window, never "offline" (Phase 3 carry). */
