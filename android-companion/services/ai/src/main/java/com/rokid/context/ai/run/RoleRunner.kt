@@ -34,6 +34,8 @@ data class RoleResult(val output: ContractOutput, val raw: String, val reply: Ro
  * Every production model call with an output contract (spec §4.4, §4.4.1): the active prompt version + SYSTEM
  * preamble, the endpoint's structured format, then [OutputCheck]. One retry carries the problems back to the model;
  * a second failure is a retryable [FailureKind.INVALID_OUTPUT] (→ the existing retry queue).
+ * OBS-R3-1: when the rejected reply stopped at the token cap, the retry also gets twice that cap (at most
+ * [ModelRequest.MAX_TOKENS_LIMIT]): the same cap would cut it again.
  */
 class RoleRunner(
     private val router: ModelRouter,
@@ -50,11 +52,13 @@ class RoleRunner(
         val prompt = PromptComposer.compose(system.template, version.template, call.vars.toMap(persona.persona.value, NowText.of(at)))
         val ctx = SemanticContext(call.inputIds, at)
         var rejected: OutputEvaluation? = null
+        var cutCap: Int? = null
         for (attempt in 1..2) {
-            val text = rejected?.let { prompt + retryNote(it) } ?: prompt
+            val text = rejected?.let { prompt + retryNote(it, cut = cutCap != null) } ?: prompt
+            val cap = cutCap
             val build: (com.rokid.context.ai.Endpoint) -> ModelRequest = { e ->
                 val plan = StructuredOutput.plan(e, schema, call.key.name)
-                ModelRequest(text + plan.promptSuffix, call.images, format = plan.format)
+                ModelRequest(text + plan.promptSuffix, call.images, maxTokens = cap, format = plan.format)
             }
             val reply = if (call.fromFrames) router.completeFromFrames(build) else router.complete(role, build)
             val eval = OutputCheck.evaluate(call.key, schema, reply.text, ctx)
@@ -65,7 +69,9 @@ class RoleRunner(
                 throw ModelCallException("${call.key.name} v${version.version} output schema can't be applied", retryable = true, kind = FailureKind.INVALID_OUTPUT)
             }
             rejected = eval
-            Log.i(TAG, "${call.key.name} v${version.version} reply rejected (attempt $attempt, ${eval.problems().size} problem(s)) from ${reply.endpoint.name}")
+            cutCap = if (reply.truncated) ((reply.maxTokens ?: ModelRequest.DEFAULT_MAX_TOKENS) * 2).coerceAtMost(ModelRequest.MAX_TOKENS_LIMIT) else null
+            // Fixed words only: the stage and whether the provider cut the reply tell the failure classes apart in a device log.
+            Log.i(TAG, "${call.key.name} v${version.version} reply rejected (attempt $attempt, stage=${stage(eval)}, ${eval.problems().size} problem(s), cut=${reply.truncated}) from ${reply.endpoint.name}")
         }
         val last = checkNotNull(rejected)
         throw ModelCallException("${call.key.name} reply didn't match its schema: ${failureSummary(last)}", retryable = true, kind = FailureKind.INVALID_OUTPUT)
@@ -83,11 +89,20 @@ class RoleRunner(
          * The corrective note. Its instruction text is fixed; problem lines can carry model-controlled text (keys, cited
          * ids), so they go in a data block, at most [MAX_ECHO] characters in all.
          */
-        fun retryNote(e: OutputEvaluation): String {
+        fun retryNote(e: OutputEvaluation, cut: Boolean = false): String {
             val problems = e.problems()
             val detail = if (fixedText(e)) problems.joinToString("; ")
             else "${problems.size} problem(s), listed in the validation_errors data below.\n" + PromptComposer.dataBlock("validation_errors", bounded(problems))
-            return "\n\nYour previous reply was rejected: $detail\nReply again with corrected JSON only."
+            val why = if (cut) "\nIt was cut off at the length limit: keep the reply short and complete." else ""
+            return "\n\nYour previous reply was rejected: $detail$why\nReply again with corrected JSON only."
+        }
+
+        /** Where the decode path stopped (spec 4.4 order), as a fixed word for the log. */
+        fun stage(e: OutputEvaluation): String = when {
+            !e.parsed -> "NOT_JSON"
+            !e.schemaValid -> "SCHEMA"
+            !e.decoded -> "CONTRACT"
+            else -> "SEMANTIC"
         }
 
         fun bounded(lines: List<String>): List<String> {

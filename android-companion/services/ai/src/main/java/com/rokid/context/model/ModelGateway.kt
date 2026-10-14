@@ -26,9 +26,21 @@ data class ModelRequest(
     val temperature: Double? = null,
     val maxTokens: Int? = null,
     val format: WireFormat = WireFormat.None,
-)
+) {
+    companion object {
+        /**
+         * The cap a provider sends when neither the request nor the binding sets one. OBS-R3-1: reasoning deployments
+         * (the gpt-5.x build default) count reasoning tokens against `max_completion_tokens`, so the old 500 could
+         * be spent before any JSON was written. It is a cap, not a reservation.
+         */
+        const val DEFAULT_MAX_TOKENS = 4_096
+        /** The largest cap Settings accepts for a binding (and the most a cut-reply retry asks for). */
+        const val MAX_TOKENS_LIMIT = 8_192
+    }
+}
 
-data class ModelReply(val text: String, val promptTokens: Int? = null, val completionTokens: Int? = null)
+/** [truncated]: the provider said it stopped at the token cap (OpenAI `finish_reason: "length"`). */
+data class ModelReply(val text: String, val promptTokens: Int? = null, val completionTokens: Int? = null, val truncated: Boolean = false)
 
 interface ModelProvider {
     suspend fun generate(prompt: String): String
