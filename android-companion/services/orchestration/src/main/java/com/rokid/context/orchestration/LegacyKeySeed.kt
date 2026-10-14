@@ -5,6 +5,7 @@ import kotlinx.coroutines.CancellationException
 import com.rokid.context.ai.EndpointSeeder
 import com.rokid.context.data.runtime.AppConfigReader
 import com.rokid.context.data.runtime.AppConfigStore
+import com.rokid.context.data.runtime.SecretBakCleanup
 import com.rokid.context.data.runtime.toProviderSettings
 
 /**
@@ -12,8 +13,11 @@ import com.rokid.context.data.runtime.toProviderSettings
  * Reads the Keystore-backed secrets, so it runs off Main only (ContextApp's `ai-seed` thread).
  */
 object LegacyKeySeed {
-    suspend fun run(context: Context, seeder: EndpointSeeder, config: AppConfigReader = AppConfigStore): Result<Unit> =
-        seed(context, seeder, config).also { seeder.sweepOrphanKeys() } // P8 D2: keys left without a row go
+    suspend fun run(context: Context, seeder: EndpointSeeder, config: AppConfigReader = AppConfigStore): Result<Unit> {
+        // B12: restored copies of the legacy key file in files/; the seed below never reads them, so they go first.
+        SecretBakCleanup.run(context)
+        return seed(context, seeder, config).also { seeder.sweepOrphanKeys() } // P8 D2: keys left without a row go
+    }
 
     private suspend fun seed(context: Context, seeder: EndpointSeeder, config: AppConfigReader): Result<Unit> {
         // Fix round 1 (m5): no legacy key file (new install, or already retired) → no Keystore open on each cold start.
