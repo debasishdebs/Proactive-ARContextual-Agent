@@ -78,23 +78,39 @@ class NudgeEvaluatorTest {
         assertEquals(5_000L, decisions.single().second) // not 125 s from the raw glasses time
     }
 
-    /** A "nudge" decision while the shown-nudge gap holds is dropped with a reason and leaves no nudge row. */
-    @Test fun throttledDecisionRecordedDropped() = runBlocking {
-        val ctx = ApplicationProvider.getApplicationContext<Context>()
-        MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
-        try {
-            val mem = MemoryGraph.get(ctx)
-            val now = 10_000_000L
-            mem.nudges.addIgnore(NudgeEntity("n0", now - 5 * 60_000L, "old", "", "[]", 0, "h0", "phone", false))
-            val gates = NudgeGates(mem.db.nudgeGateDao(), { 30 * 60_000L }) { 6 }
-            val hud = NudgeHud(null, Verbosity.MEDIUM, ZoneId.of("UTC"))
-            val gate = gates.check("Milk", hud, now)
-            assertEquals(Gate.SHOWN_GAP, gate)
-            NudgeEngine.recordDropped(mem, gate, now)
-            assertEquals("SHOWN_GAP", mem.traces.recent(5).single { it.state == "NUDGE_DROPPED" }.note)
-            assertEquals(1, mem.db.nudgeGateDao().countSince(0))
-        } finally {
-            MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null)
-        }
+    /** A check slower than gap + settle must not overlap the next one: the next window opens only after the check ends. */
+    @Test fun slowCheckDoesNotOverlapNextWindow() = kotlinx.coroutines.test.runTest {
+        var running = 0; var maxRunning = 0
+        val starts = mutableListOf<Pair<Long, List<String>>>()
+        val e = NudgeEvaluator(
+            clock = { testScheduler.currentTime }, settleMs = { 5_000 }, gapMs = { 30_000 },
+            evaluate = { ids ->
+                running++; maxRunning = maxOf(maxRunning, running); starts += testScheduler.currentTime to ids
+                kotlinx.coroutines.delay(50_000) // longer than gap + settle
+                running--; NudgeDecision(false)
+            },
+            scope = backgroundScope,
+        )
+        e.offer("a", true)
+        advanceTimeBy(5_001); runCurrent()          // check 1 runs 5 s..55 s
+        advanceTimeBy(5_000); e.offer("b", true)    // t=10 s, during the check
+        advanceTimeBy(60_000); runCurrent()         // t=70 s
+        assertEquals(listOf(5_000L to listOf("a"), 60_000L to listOf("b")), starts) // next settle starts when the check ended (55 s)
+        assertEquals(1, maxRunning)
+    }
+
+    @Test fun failedCheckIsSurvivedAndNextWindowRuns() = kotlinx.coroutines.test.runTest {
+        var n = 0
+        val e = NudgeEvaluator(
+            clock = { testScheduler.currentTime }, settleMs = { 5_000 }, gapMs = { 30_000 },
+            evaluate = { n++; if (n == 1) throw java.io.IOException("secret text") else NudgeDecision(false) },
+            scope = backgroundScope,
+        )
+        e.offer("a", true)
+        advanceTimeBy(5_001); runCurrent()
+        assertEquals(1, n)
+        advanceTimeBy(40_000); e.offer("b", true)
+        advanceTimeBy(5_001); runCurrent()
+        assertEquals(2, n)
     }
 }

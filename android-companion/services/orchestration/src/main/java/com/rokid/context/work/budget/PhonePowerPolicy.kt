@@ -30,19 +30,20 @@ class PhonePowerPolicy(
     /** 0 = process each arrival; otherwise batch image vectors on this period. */
     fun vectorBatchIntervalMs(): Long = if (foreground()) 0L else VECTOR_BATCH_MS
 
-    /** True while background work of this kind may run right now (extraction at MODERATE is metered by [tryExtraction]). */
-    fun mayRunBackground(work: BackgroundWork): Boolean {
+    /** True while background work of this kind may run right now (extraction at MODERATE honours the 30 s allowance; [tryExtraction] takes it). Thread-safe. */
+    @Synchronized fun mayRunBackground(work: BackgroundWork): Boolean {
         if (work == BackgroundWork.USER_ASK) return true
         refresh()
         if (severe) return false
         return when {
             thermal.status() < PhoneThermal.MODERATE -> true
-            else -> work == BackgroundWork.EXTRACTION
+            // At MODERATE extraction is allowed only while the 30 s allowance is free (a query: [tryExtraction] takes it).
+            else -> work == BackgroundWork.EXTRACTION && clock() - lastModerateExtractionMs >= MODERATE_EXTRACTION_GAP_MS
         }
     }
 
     /** Asks to start one non-user extraction call; at MODERATE it takes the 1-per-30-s allowance. */
-    fun tryExtraction(): Boolean {
+    @Synchronized fun tryExtraction(): Boolean {
         if (!mayRunBackground(BackgroundWork.EXTRACTION)) return false
         if (thermal.status() < PhoneThermal.MODERATE) return true
         val now = clock()

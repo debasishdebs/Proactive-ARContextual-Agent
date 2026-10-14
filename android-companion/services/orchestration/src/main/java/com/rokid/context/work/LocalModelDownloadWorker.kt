@@ -64,6 +64,14 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
     /** Each file of the bundle in turn (existing verified files are skipped); the first non-Done outcome stops the run. */
     private suspend fun downloadAll(model: LocalModel): Outcome {
         val total = model.totalBytes
+        // Space for the WHOLE bundle before the first byte: what is still missing (verified files and kept .part bytes excluded).
+        val dir = LocalModelStore.modelsDir(applicationContext).apply { mkdirs() }
+        val missing = model.files.sumOf { f ->
+            val target = File(dir, f.file)
+            if (target.isFile && ModelFileVerifier.verify(target, f.bytes, f.sha256)) 0L
+            else (f.bytes - partFile(target).length().coerceAtMost(f.bytes)).coerceAtLeast(0L)
+        }
+        if (missing > 0 && freeBytes(dir) < (missing * SPACE_FACTOR).toLong()) return Outcome.Fail(MSG_NO_SPACE, "no_space")
         var before = 0L
         for (f in model.files) {
             // One writer per model file: a replacement waits until the stopped worker has let go of the .part.
@@ -79,7 +87,6 @@ class LocalModelDownloadWorker(appContext: Context, params: WorkerParameters) : 
         val target = File(dir, model.file)
         val part = partFile(target)
         if (target.isFile && ModelFileVerifier.verify(target, model.bytes, model.sha256)) return Outcome.Done
-        if (freeBytes(dir) < (model.bytes * SPACE_FACTOR).toLong()) return Outcome.Fail(MSG_NO_SPACE, "no_space")
         if (part.length() > model.bytes) part.delete()
 
         val have = part.length()

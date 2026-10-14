@@ -17,6 +17,7 @@ import com.rokid.context.model.ModelImageInput
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -104,5 +105,62 @@ class ExtractSaveTest {
         assertEquals(ExtractSaveResult.StaleClaim, mixed)
         assertEquals(listOf("EXTRACTING", "EXTRACTING"), db.frameStateDao().byIds(listOf("ex2", "ex3")).map { it.state })
         assertTrue(MemoryGraph.get(ctx).memories.all().none { it.id.startsWith("mix_") })
+    }
+
+    private suspend fun useOldFactsSchema(ai: AiGraph) {
+        val v = ai.prompts.active(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT)
+        ai.prompts.save(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT,
+            com.rokid.context.prompt.PromptDraft(v.template, com.rokid.context.ai.contract.DefaultSchemas.text(com.rokid.context.ai.contract.PromptKey.EXPLICIT_REMEMBER)), "old", false)
+    }
+
+    /** An edited prompt that kept the facts-only schema still extracts: single photos only, facts attributed to the photo sent. */
+    @Test fun oldSchemaPromptStillSavesFactsForSinglePhotos() = runBlocking<Unit> {
+        val ai = TestAi.graph(ctx) { p ->
+            prompts += p
+            val id = sentIds(p).first()
+            """{"facts":[{"text":"Mug in $id","type":"object","confidence":0.9,"tags":[]}]}"""
+        }
+        TestAi.bindAll(ai)
+        useOldFactsSchema(ai)
+        assertFalse(ExtractSave.promptIsCurrent(ai.runner.activeSchema(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT)))
+        val batch = ExtractSave.extract(ai.runner, listOf(photo("ex1"), photo("ex2")), CallClass.EXTRACT)
+        assertEquals(2, prompts.size) // never a batch call
+        assertTrue(prompts.all { sentIds(it).distinct().size == 1 })
+        assertEquals(listOf(listOf("ex1"), listOf("ex2")), batch.output.facts.map { it.sourceFrameIds })
+        assertTrue(batch.output.captions.isEmpty())
+        val r = ExtractSave.saveExtraction(ctx, "old_", batch.output, setOf("ex1", "ex2"), null, MemoryTier.SHORT, ReviewState.OK)
+        assertEquals(2, (r as ExtractSaveResult.Saved).memories.size)
+        assertEquals(listOf("ex2"), db.frameSourceDao().forMemory("old_1").map { it.frameId })
+    }
+
+    @Test fun promptIsCurrentOnlyForTheProvenanceSchema() {
+        assertTrue(ExtractSave.promptIsCurrent(com.rokid.context.ai.contract.DefaultSchemas.text(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT)))
+        assertFalse(ExtractSave.promptIsCurrent(com.rokid.context.ai.contract.DefaultSchemas.text(com.rokid.context.ai.contract.PromptKey.EXPLICIT_REMEMBER)))
+        assertFalse(ExtractSave.promptIsCurrent(null))
+        assertFalse(ExtractSave.promptIsCurrent("not json"))
+    }
+
+    /** More than 3 photos are split into batches of at most 3 (the schema caps captions at 3). */
+    @Test fun moreThanThreePhotosSplitIntoBatches() = runBlocking<Unit> {
+        val ai = TestAi.graph(ctx) { p ->
+            prompts += p
+            val ids = sentIds(p).distinct()
+            val facts = ids.joinToString(",") { """{"text":"Mug in $it","type":"object","confidence":0.9,"tags":[],"source_frame_ids":["$it"]}""" }
+            val caps = ids.joinToString(",") { """{"frame_id":"$it","caption":"Counter $it"}""" }
+            """{"facts":[$facts],"captions":[$caps]}"""
+        }
+        TestAi.bindAll(ai)
+        val batch = ExtractSave.extract(ai.runner, (1..5).map { photo("ex$it") }, CallClass.EXTRACT)
+        assertEquals(listOf(listOf("ex1", "ex2", "ex3"), listOf("ex4", "ex5")), prompts.map { sentIds(it).distinct() })
+        assertEquals(5, batch.output.captions.size)
+        assertTrue(batch.output.provenance)
+    }
+
+    /** Captions are the only text left once a photo is deleted: they are saved LONG-term whatever tier the facts get. */
+    @Test fun captionsAreSavedLongTerm() = runBlocking<Unit> {
+        ExtractSave.saveExtraction(ctx, "t_", output("ex1"), setOf("ex1"), null, MemoryTier.SHORT, ReviewState.OK)
+        val byId = MemoryGraph.get(ctx).memories.all().associateBy { it.id }
+        assertEquals(MemoryTier.SHORT, byId.getValue("t_0").tier)
+        assertEquals(MemoryTier.LONG, byId.getValue("t_c0").tier)
     }
 }
