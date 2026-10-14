@@ -9,6 +9,7 @@ android {
     namespace = "com.rokid.context.glasses"
     lint { disable += "ExpiredTargetSdkVersion" }
     compileSdk = 36
+    ndkVersion = "28.2.13676358" // lets AGP strip native libs (llama_jni, cxr, sqlcipher); same NDK as :services:ai
 
     defaultConfig {
         applicationId = "com.rokid.context.glasses"

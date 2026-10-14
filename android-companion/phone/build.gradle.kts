@@ -31,6 +31,7 @@ val secretValue = Regex("(?i)(://[^/@\\s]+@|[?&](key|api[-_]?key|token|sig|code|
 android {
     namespace = "com.rokid.context"
     compileSdk = 36
+    ndkVersion = "28.2.13676358" // lets AGP strip native libs (llama_jni, cxr, sqlcipher); same NDK as :services:ai
 
     defaultConfig {
         applicationId = "com.rokid.context"
