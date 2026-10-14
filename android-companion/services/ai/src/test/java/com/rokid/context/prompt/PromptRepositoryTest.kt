@@ -114,4 +114,46 @@ class PromptRepositoryTest {
         assertEquals(v1, r.active(PromptKey.ANSWER).template)
         assertTrue(LineDiff.diff(v1, r.active(PromptKey.ANSWER).template).all { it.kind == LineDiff.Kind.SAME })
     }
+
+    /** A pristine earlier default (user notes: the ANSWER seed gained NOTE_ADD) becomes the new default as a new version. */
+    @Test fun anUneditedPreviousDefaultIsUpgradedAsANewVersion() = runBlocking {
+        db.promptDao().seedIfAbsent(PromptKey.ANSWER.name, "old answer seed", "{\"old\":true}", 1)
+        val upgrading = PromptRepository(db.promptDao(), BuiltInPromptSeeds, settings, now = { clock++ },
+            previousDefaults = mapOf(PromptKey.ANSWER to setOf(PromptDefaults.fingerprint("old answer seed", "{\"old\":true}"))))
+        upgrading.ensureSeeded()
+        val active = upgrading.active(PromptKey.ANSWER)
+        assertEquals(2, active.version)
+        assertEquals(BuiltInPromptSeeds.template(PromptKey.ANSWER).trim(), active.template)
+        assertEquals(DefaultSchemas.text(PromptKey.ANSWER), active.outputSchema)
+        assertEquals(PromptDefaults.UPDATED_NOTE, active.note)
+        assertEquals("the old default stays in history", listOf(2, 1), upgrading.history(PromptKey.ANSWER).first().map { it.version })
+        upgrading.active(PromptKey.ANSWER)
+        assertEquals("upgraded once", 2, upgrading.history(PromptKey.ANSWER).first().size)
+    }
+
+    @Test fun anEditedPromptIsLeftAlone() = runBlocking {
+        db.promptDao().seedIfAbsent(PromptKey.ANSWER.name, "old answer seed", "{\"old\":true}", 1)
+        db.promptDao().appendAndActivate(PromptKey.ANSWER.name, "old answer seed, edited", "{\"old\":true}", "mine", true, 2)
+        val upgrading = PromptRepository(db.promptDao(), BuiltInPromptSeeds, settings, now = { clock++ },
+            previousDefaults = mapOf(PromptKey.ANSWER to setOf(PromptDefaults.fingerprint("old answer seed", "{\"old\":true}"))))
+        upgrading.ensureSeeded()
+        val active = upgrading.active(PromptKey.ANSWER)
+        assertEquals(2, active.version)
+        assertEquals("old answer seed, edited", active.template)
+        // An edited schema alone also counts as an edit.
+        db.promptDao().appendAndActivate(PromptKey.ANSWER.name, "old answer seed", "{\"old\":false}", "mine", true, 3)
+        val again = PromptRepository(db.promptDao(), BuiltInPromptSeeds, settings, now = { clock++ },
+            previousDefaults = mapOf(PromptKey.ANSWER to setOf(PromptDefaults.fingerprint("old answer seed", "{\"old\":true}"))))
+        assertEquals("{\"old\":false}", again.active(PromptKey.ANSWER).outputSchema)
+    }
+
+    @Test fun versioningOffUpgradesInPlace() = runBlocking {
+        db.promptDao().seedIfAbsent(PromptKey.ANSWER.name, "old answer seed", "{\"old\":true}", 1)
+        settings.setKeepVersions(false)
+        val upgrading = PromptRepository(db.promptDao(), BuiltInPromptSeeds, settings, now = { clock++ },
+            previousDefaults = mapOf(PromptKey.ANSWER to setOf(PromptDefaults.fingerprint("old answer seed", "{\"old\":true}"))))
+        val active = upgrading.active(PromptKey.ANSWER)
+        assertEquals(1, active.version)
+        assertEquals(BuiltInPromptSeeds.template(PromptKey.ANSWER).trim(), active.template)
+    }
 }

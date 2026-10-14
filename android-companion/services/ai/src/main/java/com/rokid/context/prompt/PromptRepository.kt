@@ -6,21 +6,48 @@ import com.rokid.context.memory.db.PromptDao
 import com.rokid.context.memory.db.PromptVersionEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 data class PromptDraft(val template: String, val outputSchema: String?)
 
 /**
  * spec §4.3 prompt store. Versioning on: Save appends v(N+1) and activates it. Off: Save rewrites the active version in
- * place and older versions stay read-only. Restore copies an old version through the same rule.
+ * place and older versions stay read-only. Restore copies an old version through the same rule. A key still on an earlier
+ * shipped default ([previousDefaults], never edited) moves to the current one once per process, by the same rule.
  */
 class PromptRepository(
     private val dao: PromptDao,
     private val seeds: PromptSeeds,
     val settings: PromptSettings,
+    private val previousDefaults: Map<PromptKey, Set<String>> = PromptDefaults.PREVIOUS,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    suspend fun ensureSeeded() { PromptKey.entries.forEach { seed(it) } }
+    private val upgradeLock = Mutex()
+    private val upgradeChecked = java.util.concurrent.ConcurrentHashMap.newKeySet<PromptKey>()
+
+    suspend fun ensureSeeded() { PromptKey.entries.forEach { seed(it); upgradeOnce(it) } }
+
+    /**
+     * An install whose active [key] is byte-identical (template and schema) to an earlier shipped default gets the
+     * current default: a new version when versioning is on (the old one stays in history), else in place. Edited
+     * prompts are left alone.
+     */
+    private suspend fun upgradeOnce(key: PromptKey) {
+        val known = previousDefaults[key].orEmpty()
+        if (known.isEmpty() || key in upgradeChecked) return
+        upgradeLock.withLock {
+            if (!upgradeChecked.add(key)) return
+            val active = dao.active(key.name) ?: return
+            if (PromptDefaults.fingerprint(active.template, active.outputSchema) !in known) return
+            val template = withContext(Dispatchers.IO) { seeds.template(key) }.trim()
+            val schema = DefaultSchemas.text(key)
+            if (template == active.template && schema == active.outputSchema) return
+            if (settings.keepVersions.value) dao.appendAndActivate(key.name, template, schema, PromptDefaults.UPDATED_NOTE, false, now())
+            else dao.overwriteActive(key.name, template, schema, PromptDefaults.UPDATED_NOTE, false, now())
+        }
+    }
 
     /** Reads the seed (an asset file for [AssetPromptSeeds]) on IO, and only for a key that has no prompt row yet. */
     private suspend fun seed(key: PromptKey): Boolean {
@@ -29,7 +56,10 @@ class PromptRepository(
         return dao.seedIfAbsent(key.name, text, DefaultSchemas.text(key), now())
     }
 
-    suspend fun active(key: PromptKey): PromptVersionEntity = dao.active(key.name) ?: run { seed(key); checkNotNull(dao.active(key.name)) }
+    suspend fun active(key: PromptKey): PromptVersionEntity {
+        upgradeOnce(key)
+        return dao.active(key.name) ?: run { seed(key); checkNotNull(dao.active(key.name)) }
+    }
     fun observeActive(key: PromptKey): Flow<PromptVersionEntity?> = dao.observeActive(key.name)
     fun observeAllActive(): Flow<List<PromptVersionEntity>> = dao.observeAllActive()
     fun history(key: PromptKey): Flow<List<PromptVersionEntity>> = dao.observeVersions(key.name)
