@@ -32,7 +32,7 @@ interface IndexEmbedders : SpaceEmbedderProvider {
 }
 
 class AiIndexEmbedders(private val embedders: Embedders) : IndexEmbedders {
-    override suspend fun bound(): BoundEmbedder? = embedders.forBinding()?.let { BoundEmbedder(it, it.spec.configJson(), it.spec.dim) }
+    override suspend fun bound(): BoundEmbedder? = embedders.forBinding()?.let { BoundEmbedder(embedders.gated(it), it.spec.configJson(), it.spec.dim) }
     override suspend fun forSpace(space: EmbeddingSpaceEntity): Embedder? = embedders.forSpace(space)
 }
 
@@ -80,6 +80,17 @@ class PrefsIndexClock(context: Context) : IndexClock {
         }.commit()
     }
 
+    /** Gaps G6: on-device index work is waiting for a charger (banner "On-device search paused to save battery"). */
+    fun batteryPaused(): Boolean = prefs.getBoolean(K_BATTERY_PAUSED, false)
+    fun setBatteryPaused(paused: Boolean) { if (batteryPaused() != paused) prefs.edit().putBoolean(K_BATTERY_PAUSED, paused).commit() }
+
+    fun observeBatteryPaused(): Flow<Boolean> = callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> trySend(batteryPaused()) }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        trySend(batteryPaused())
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.distinctUntilChanged()
+
     /** For the T19 banner: true while the index is unstable (see [IndexClock.unstable]). */
     fun observeUnstable(): Flow<Boolean> = callbackFlow {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> trySend(unstable()) }
@@ -97,6 +108,7 @@ class PrefsIndexClock(context: Context) : IndexClock {
         const val K_DISCARD_FP = "discard_fingerprint"
         const val K_DISCARD_AT = "discard_at"
         const val K_DISCARD_STREAK = "discard_streak"
+        const val K_BATTERY_PAUSED = "battery_paused"
     }
 }
 
