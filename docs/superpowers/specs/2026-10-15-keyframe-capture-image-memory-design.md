@@ -1,6 +1,6 @@
 # Motion-aware keyframe capture and image memory: design
 
-Status: draft for user review, 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
+Status: revision 2 (review findings 1–7 + user decisions A1/B1/C1/D1), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
 Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes only", §11 step 4b.
 
 ## 0. Intent (agreed with the user, 2026-10-15)
@@ -11,6 +11,15 @@ Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes 
 - **Privacy and storage:** full-resolution originals never leave the glasses. Each kind of stored data has its own retention setting. Eventually only vectors and text remain.
 - **Simplicity this run (user decision):** a single embedding model family, **Nomic Embed v1.5** (text and vision share one vector space), replaces bge-small, with a re-index. There is no SigLIP and no second vision interface. A vision-model chooser comes in v1.5; see §F.3.
 - **Agents (user rule):** Opus writes specs, plans and reviews; Sonnet writes code. Never Haiku.
+- **Versioning (user decision C1):** the build at `b2fc43a` is tagged **`v1-beta`** (local tag only). This feature set ships as app **v1.0.0** (`versionName "1.0.0"`, `versionCode 2`, on both apps). Room moves from version 1 to **version 2** with **additive tables only** (§C). Room versions must be integers, so "v1.0" is the app name and "2" is the DB number. PROTOCOL_VERSION stays 1 and additive.
+
+### Captions vs embeddings (user question, answered)
+- **Captions** are text written by the **vision LLM**: the VISION_EXTRACT role, Azure today or an on-device vision model later.
+- **Nomic** writes no text. It turns photos and text into **vectors** for search, clustering and dedupe.
+- Captioning happens at two times:
+  1. **Live:** every keyframe sent in an extraction call gets its **own caption** in that call's output (§P2.1 provenance). Cluster representatives are captioned live the same way.
+  2. **Night (charging):** keyframes that never went to the LLM (non-representative cluster members and near-duplicates) get a caption in a bulk job. This needs the setting **Caption every photo** (default **on**; it costs about 1 call per 3 photos at night). "Describe before deleting" (§P6) is the minimum that always runs, even with the setting off.
+- **Re-indexing**, after a change of embedding model, re-makes **vectors only**; it never re-captions. Captions are kept because they feed future personality dimensions and evaluation datasets (user intent).
 
 ### What exists today (facts, 2026-10-15)
 - **Glasses capture:**
@@ -40,6 +49,7 @@ Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes 
 | Phase | Topic | Devices | Order |
 |---|---|---|---|
 | F | Shared foundation: `LanguageModel`, `EmbeddingService`, Nomic, re-index | phone | 1 |
+| C | Database v2: additive tables `frame_meta`, `frame_state`, `memory_source`, `frame_cluster` | phone | 1 (together with F) |
 | P1 | Glasses capture: motion, keyframes, 640 px, heat, work/rest | glasses | 2 (together with P2) |
 | P2 | Phone keyframe intake: process on arrival, call budget, fast path | phone | 2 |
 | P4 | Image index (indexing time): image vectors, semantic dedupe, clusters, salience, cluster-batch AI calls | phone | 3 (together with P6) |
@@ -50,7 +60,7 @@ Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes 
 Each phase below has the same sections: **New**, **Indexing time**, **Ask time**, **Per device**, **Errors and limits**, **Tests**.
 
 Shared rules:
-- Room schema v1 is frozen. New tables or columns need an explicit migration decision recorded in the decision log.
+- Room goes from v1 to v2 **only through §C** (additive tables, decision C1). Any further schema change needs its own recorded decision.
 - PROTOCOL_VERSION 1 is additive only: new optional fields and new message types.
 
 ---
@@ -80,16 +90,25 @@ Shared rules:
     - Document and query prefixes are required: `search_document: ` and `search_query: `.
     - Captions sent for embedding use `search_document: `.
   - **Vision:** the `nomic-embed-vision-v1.5` ONNX export, run with ONNX Runtime Android (MIT licence). Input is 224 px, centre-cropped from the 640 px keyframe. Images are embedded straight into the same space.
-  - **Dimension:** 768, stored at **256 dimensions** using the model's Matryoshka truncation, then L2-renormalised. That's 1 KB per vector as float32.
-    - The dimension is part of the fingerprint.
-    - A later "full 768" option is a new space, which means a re-index.
+  - **Exact transforms** (from the official model cards; review finding 1):
+    - **Text:** mean-pool the token embeddings (768) → **LayerNorm over the full 768 dimensions, no learned weights** → truncate to the first 256 → L2-normalise. Today's JNI does only L2 normalisation, so the plan adds the LayerNorm step in Kotlin (or in the JNI) before truncation.
+    - **Vision:** the CLS embedding (768) → L2-normalise (the model card's recipe), then truncate to the stored dimension → L2-normalise again.
+  - **Stored dimension:** 256 for text (Matryoshka, documented for the text model). The image dimension is **256 only if the §F.5 photo acceptance test passes at 256; otherwise images are stored at 768.** The dimension is part of each space's fingerprint. A later change is a new space, which means a re-index.
+  - **Reference-vector test:** the plan fixes 10 texts and 5 images with vectors computed by the official Python pipeline (`sentence-transformers` / `transformers` at a pinned commit). On-device vectors must reach cosine ≥ 0.99 against them for every item.
   - **Download:** both files go through the existing `LocalModelDownloadWorker`: https only, Range resume, SHA-256 verify, pinned to a Hugging Face commit. Exact URLs, sizes and hashes are pinned in the plan.
   - **Catalog entry:** "Nomic Embed v1.5 (text + images)". It replaces bge-small as the recommended entry. bge-small stays in the catalog so older spaces can still answer.
   - **Battery gate:** unchanged (the G6 rule, charging or above 70 %, applies to bulk embedding).
 - **Licences:** Nomic text and vision v1.5 are Apache 2.0 (vision since 2025-01-17); ONNX Runtime is MIT. Each is recorded in the decision log with its source link.
 
-### F.2 Indexing time: re-index from bge-small to Nomic
-- This uses the existing re-index flow: the new space is built in the background while the old space keeps answering. When the build completes, the new space becomes active and the old one is dropped after the existing grace period.
+### F.2 Indexing time: re-index from bge-small to Nomic (and any later model change)
+- This uses the existing re-index flow: the new space is built in the background while the old space keeps answering.
+- **Coverage rule, changed (decision A1):** the swap needs 100 % of text memories and 100 % of photos **still stored**. Image vectors of photos that are already deleted can't be rebuilt. They are dropped at the swap, and those items stay findable by caption only.
+  - Before the swap, the UI shows "N older photos will be searchable by caption only." and asks for confirmation.
+- **Rollback grace, new:** today `EmbeddingDao.swap` deletes the old space's vectors in the same transaction. That changes:
+  - the old space becomes `RETIRED` but **keeps its vectors for 7 days**;
+  - Settings → AI → On-device models gets **Roll back** for those 7 days, which reactivates the old space;
+  - a daily job deletes retired vectors after 7 days.
+  - The existing swap tests are updated, and a rollback test is added.
 - Text memories are re-embedded with the document prefix.
 - Photo keyframes that still have a stored photo get image vectors in the same space; this is P4's backfill.
 - Progress shows in Settings → AI → On-device models, using the existing progress bar.
@@ -108,7 +127,33 @@ Shared rules:
 - `LanguageModel`: tests on the adapter around the existing providers; all existing role tests must pass unchanged.
 - `EmbeddingService`: tests for the fingerprint covering family, dimension and Matryoshka truncation, for the prefixes, and for `embedImages` rejecting a text-only service.
 - **Text check:** a JVM test with fake vectors covers the plumbing. A device test (`androidTest`) on the phone checks that Nomic text gets recall@5 ≥ bge-small on the existing fixture of 30 queries over memories.
+- **Reference vectors:** the cosine ≥ 0.99 test from §F.1, for both text and images.
+- **Photo acceptance test (words to photo, review addition):**
+  - a fixture of ≥ 60 of the user's 640 px keyframes and ≥ 40 text queries;
+  - ≥ 15 of the queries target **small or edge-of-frame objects** (keys on a table edge, a sign in a corner, a cup at the frame border);
+  - measured: recall@3 at **768 and at 256** dimensions;
+  - rule: store images at 256 only if recall@3 drops by ≤ 3 points versus 768 overall **and** by ≤ 5 points on the small/edge subset; otherwise store 768;
+  - the result is recorded in the decision log.
 - Re-index: the existing re-index tests are extended to a bge → Nomic space switch.
+
+---
+
+## C. Database v2 (decision C1; additive only)
+
+Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that **only adds tables**. Existing tables are untouched. The exported schema JSON goes in `schemas/`.
+
+| Table | Columns | Purpose |
+|---|---|---|
+| `frame_meta` | `frame_id` PK, `session_id`, `motion`, `dwell`, `blur`, `dhash`, `phash`, `width`, `salience`, `salience_terms` (JSON), `cluster_id`, `near_dup_of`, `image_vector_space`, `created_at` | metadata from §P1, §P4 for each keyframe, durable after the inbox |
+| `frame_state` | `frame_id` PK, `state` (PENDING, EXTRACTING, EXTRACTED, CLUSTERED, NEAR_DUP, FAILED, FAILED_FINAL), `attempts`, `last_error`, `updated_at` | the backlog's source of truth (§P2), no TTL |
+| `memory_source` | (`memory_id`, `frame_id`) PK, `cluster_id` nullable, `role` (FACT, CLUSTER_REP, CLUSTER_MEMBER) | provenance (§P2), the Forget walk |
+| `frame_cluster` | `cluster_id` PK, `opened_at`, `closed_at`, `close_reason`, `rep_frame_ids` (JSON), `memory_id` nullable | §P4 clusters |
+
+- **Tests:**
+  - a `MigrationTestHelper` test from the v1 schema with real rows, which keeps every v1 row;
+  - an encrypted-database migration test, extending `SqlCipherMigrationDeviceTest`;
+  - Delete all and Forget cover the new tables (Delete all keeps notes and shopping, as before).
+- Frames ingested before v2 have no `frame_meta` row. They're treated as `motion=UNKNOWN`, not dwell, and salience is computed from the image only.
 
 ---
 
@@ -135,21 +180,30 @@ Shared rules:
 
     Thresholds are constants, tuned from the P1 device run.
   - A hook for P3: if a phone motion hint (§P3) says `VEHICLE` or `WALKING`, the floor is that state's cadence.
-- **Cadence** (time between samples):
+- **Analysis rate (decision B1, relaxed by the user).** With the camera bound, a "sample" is only a 160 px check of a frame the camera already delivers (about 25 fps in the probe). It isn't a new capture.
 
-  | Condition | Sample every |
+  | Condition | Frames checked |
   |---|---|
-  | `HEAD_MOVING` or `WALKING` | 1.5 s |
-  | `STILL` | 4 s |
-  | `STILL` and no keyframe for 2 min | 10 s |
-  | `STILL` and no keyframe for 10 min | 30 s |
+  | `HEAD_MOVING` or `WALKING` | 3 per second |
+  | `STILL` | 1 per second |
+  | `STILL` and no keyframe for 2 min | 1 every 2 s |
+  | `STILL` and no keyframe for 10 min | 1 every 5 s |
 
-  Any state change to moving, or a keyframe, resets to the matching fast rate. Battery Saver or battery ≤ 20 % doubles every value (today's rule).
+  - **Immediate triggers:** the move from still to moving (gyro onset) checks a frame straight away and goes to 3 per second. A dwell (below) takes its keyframe straight away.
+  - Battery Saver or battery ≤ 20 % halves every rate (today's rule).
+- **The promise (user decision):**
+  - **anything you turn to look at for ≥ 1.5 s** gets a keyframe;
+  - a change in front of a **still** head is caught within ≤ 5 s (the slowest rate);
+  - quick glances under 1.5 s are best effort, not promised.
+- **Camera LED (user note):** the camera's privacy LED is lit whenever the camera is bound, whatever the resolution, so onlookers can't tell photos from video.
+  - Smart mode keeps the camera bound during a sampling session, so the LED is **on continuously** while sampling. In rest periods and Fixed mode it blinks for each capture.
+  - The app **does not and will not** try to switch the LED off: it's the bystanders' notice that the camera is active.
+  - So the relaxed 1–1.5 s numbers stand. They aren't tightened to 0.5–0.6 s, because a tighter promise would only matter if the LED could be avoided.
 - **Keyframe test** (`KeyframeGate`, replacing `FrameGuard`'s hash check; the dark-frame and battery skips stay):
   1. **Blur:** variance of the Laplacian on the 160 px thumbnail. While moving, samples are taken in windows of up to 1.5 s (2–3 samples), and only the sharpest one is considered. A sample below the blur floor is dropped.
   2. **Change:** a 64-bit dHash and a 64-bit pHash. The sample is **new** when the smaller of the two Hamming distances is > 10 against **each of the last 5 keyframes** (a ring buffer persisted in `capture_guard` prefs).
   3. **Throttle:** at least 1.2 s between keyframes. That replaces today's 2.5 s, which was tuned for 30 s capture.
-- **Dwell marker:** when the state goes from `HEAD_MOVING` or `WALKING` to `STILL` and stays `STILL` for ≥ 1.0 s, the next keyframe, or the current sample if it passes the change test against the last keyframe only, is flagged `dwell=true`.
+- **Dwell marker:** when the state goes from `HEAD_MOVING` or `WALKING` to `STILL` and stays `STILL` for ≥ 1.0 s (immediate keyframe, which meets the ≥ 1.5 s promise with margin), the next keyframe, or the current sample if it passes the change test against the last keyframe only, is flagged `dwell=true`.
   - This is the "looked at something" signal: the keys, a sign.
   - A dwell sample skips the last-5 rule, so looking back at something counts again, but it still needs blur ≥ floor.
 - **Wear check:** proximity "far" for > 5 s means **not worn**. The session pauses: the camera unbinds and the sensors switch to low rate. It resumes on "near".
@@ -193,6 +247,9 @@ Shared rules:
 ### P1.7 Tests
 - **Unit:** `MotionClassifier` on recorded and synthetic IMU traces; the cadence table; `KeyframeGate` (blur picking, last-5 rule, dwell exception, throttle); the heat policy table; the work/rest timer; the wear check.
 - **Replay test (JVM):** a recorded sequence of thumbnails and IMU data, captured on the glasses by a debug command, must produce the expected keyframe ids.
+- **Glimpse-offset test (review addition):** synthetic sequences where a new scene is looked at for 1.0, 1.5 and 2.0 s, starting at 10 different phase offsets against the analysis clock, for each motion state.
+  - Required: 100 % keyframe capture at ≥ 1.5 s, and a change in front of a still head caught within 5 s;
+  - reported only: the 1.0 s capture rate.
 - **Device run:** 10 min each of desk-still, walking indoors, and glancing at 5 placed objects (each must yield one dwell keyframe), then a minimised stretch.
   - Record keyframes per minute, the battery temperature curve and the heat status.
 - **Heat probe (2026-10-15, throwaway branch `probe/camera-heat`):** results are added below as "Probe results" before the plan is written.
@@ -207,11 +264,22 @@ Shared rules:
   - rate: 1 token per 12 s, burst 2;
   - user setting **AI call pace**: 10 s, 12 s (default) or 15 s;
   - calls the user started (Ask, the test bed) bypass the bucket but count towards it.
+- **Provenance contract (review finding 4, decision C1):**
+  - every image in a multi-photo VISION_EXTRACT call is labelled in the prompt with its `frame_id`;
+  - the output schema requires, per fact, **`source_frame_ids` (non-empty)** and, per photo, `captions[{frame_id, caption}]`;
+  - the validator rejects any id that wasn't sent, and any sent photo without a caption: the whole call counts as INVALID_OUTPUT and the frames are retried as single-photo calls;
+  - each saved memory gets `memory_source` rows (§C);
+  - Forget and redaction walk `memory_source`, so forgetting a frame also handles every memory that cites it, under the existing fences;
+  - single-photo calls use the same schema.
 - **Batching:** each VISION_EXTRACT call takes up to 3 pending keyframes, choosing **dwell keyframes first, then newest first**. The backlog drains in order as tokens allow, and nothing is dropped.
   - A backlog > 30 keyframes switches to **cluster mode** (P4) for the excess.
   - Until P4 ships, the excess just waits.
-- **Fast path:** after each VISION_EXTRACT, the existing nudge flow runs on the new memories.
-  - Target: **p50 ≤ 15 s** from the keyframe being captured to the nudge decision, under a 1-call-per-12 s budget with no backlog.
+- **Fast path (decision D1; review finding 2):** today `NudgeRunGate.MIN_GAP_MS` (30 min) gates **evaluation** itself, so the fast path can't reuse it. Split it:
+  - **Evaluate:** a new `NudgeEvaluator` runs straight after each extraction, only for memories from **salient or dwell** keyframes or a **new place**. At most 1 evaluation call per 60 s; anything that arrives in between joins the next evaluation.
+  - **Notify:** the existing 30-minute gap and the daily cap apply **only to showing** a nudge. An evaluation that decides "nudge" while throttled is recorded and dropped, with a reason in Diagnostics.
+  - **Budget reservation:** 1 in every 5 budget tokens is reserved for nudge evaluation, so a backlog can't starve live nudges. An unused reservation is released after 60 s.
+  - The periodic `NudgeWorker` stays as the backstop, with its 30-minute gate.
+  - Target: **p50 ≤ 15 s** from keyframe capture to the nudge decision, with no backlog.
 - **Diagnostics:** keyframes per hour, AI calls per hour (split by role), backlog size, mean latency from keyframe to memory, and tokens per call when the provider reports them.
 
 ### P2.2 Indexing time
@@ -226,12 +294,19 @@ Shared rules:
 ### P2.5 Errors and limits
 - **Provider error:** today's retry backoff applies, and the bucket token is refunded on transport errors only.
 - **Battery Saver, or battery ≤ 30 % and not charging:** today's deferral rules stay. Live nudges pause; the user-started bypass still works.
-- **Offline:** the backlog persists in the existing queue and drains when the network returns.
+- **Offline and backlog durability (review finding 7):** the backlog's source of truth is the new `frame_state` table (§C), not the 24 h-TTL job queue.
+  - Jobs are rebuilt from `frame_state` rows in `PENDING` or `FAILED` (attempts < 5) at startup, on network return, and by the periodic backstop.
+  - A job expiring therefore no longer loses a frame.
+  - Frames stuck after 5 attempts become `FAILED_FINAL` and appear in Diagnostics, with a "Retry all" action.
 
 ### P2.6 Tests
 - Unit tests for the token bucket (rate, burst, bypass, refund), the batch picking order, and the backlog threshold.
 - A Robolectric test: ingest → pipeline → fake `LanguageModel` → memory saved, under the budget.
 - A latency test with a fake clock.
+- Provenance: the validator rejects unknown ids and missing captions; INVALID_OUTPUT falls back to single-photo calls; `memory_source` is written; Forget follows `memory_source`.
+- Nudge split: evaluation timing, notification throttling, reservation release.
+- Recovery: kill mid-backlog, then restart, and every frame ends `EXTRACTED`, `CLUSTERED` or `FAILED_FINAL`, none lost; also a 25 h offline simulation.
+- **Doze device check (review addition):** phone screen off, unplugged, in Doze (`adb shell dumpsys deviceidle force-idle`), with keyframes arriving for 20 min. Record arrival-to-memory latency and whether expedited work was deferred or ran out of quota. If the in-service path is deferred, the plan's fallback (expedited work) must be shown to keep frames durable (no loss), even if it's slower.
 
 ---
 
@@ -240,6 +315,7 @@ Shared rules:
 ### P4.1 New
 - **Image vector for each keyframe:** `EmbeddingService.embedImages` (Nomic vision) on the 640 px keyframe, centre-cropped to 224 px, at ingest, batched in 8s.
   - Stored in the image's own row, linked to the frame id, in the same space as text.
+- **All per-frame fields** (motion, dwell, blur, hashes, salience, cluster id, near-dup link) live in `frame_meta` (§C), so they survive the move out of the inbox.
 - **Semantic dedupe:** if a keyframe's cosine similarity to any keyframe of the last 10 minutes is ≥ 0.93 (tunable), and it isn't a dwell keyframe, it's marked `near_dup_of=<id>`. It isn't sent to the AI on its own. Its photo is kept subject to P6.
 - **Salience score** (0–1) for each keyframe, the sum of capped terms:
 
@@ -262,7 +338,7 @@ Shared rules:
 
 ### P4.2 Indexing time: backfill and re-index
 - Existing photos with stored images get image vectors, salience and clusters retroactively, in time order. This runs under the G6 battery gate.
-- An embedding-space change re-runs the vectors and salience. Cluster memories are not re-summarised; they keep their text.
+- An embedding-space change re-runs the vectors and salience **for photos still stored**. Deleted photos keep their captions only (A1). Cluster memories are not re-summarised; they keep their text.
 
 ### P4.3 Ask time
 - None (P5).
@@ -301,7 +377,10 @@ Shared rules:
 - **Describe before deleting:** a photo due for deletion that has no caption memory (such as a salient one waiting, or a near-dup representative) gets a caption first.
   - These calls are batched at night, while charging, under the budget.
   - If the budget or network isn't available, the deletion waits up to 3 more days, then the photo is deleted anyway and its vector kept. That's recorded in Diagnostics.
-- **Night job:** a WorkManager job that needs a charger and an idle device, running nightly. It applies retention, describes before deleting, and runs the backfill.
+- **Two jobs (review finding 6):**
+  - **Retention job:** daily, **no charging or idle constraint** (it makes no AI calls). It deletes every photo past its deadline. A photo that's past its deadline and still uncaptioned is kept until **deadline + 3 days**, then deleted anyway with its vector kept. Every deletion goes through the Forget file-and-row fence.
+  - **Night captioning job:** needs a charger and an idle device. It does describe-before-delete first (sorted by deadline), then "Caption every photo" (§0), then the P4 backfill, all under the budget.
+  - The 3-day promise therefore depends only on the unconstrained retention job.
 
 ### P6.2 Ask time
 - Search results whose photo has been deleted show the caption and a "photo expired" placeholder.
@@ -311,7 +390,7 @@ Shared rules:
 - Retention deletion uses the same file-and-row fence.
 
 ### P6.4 Tests
-- Retention edges for each kind of data, describe-before-delete with a budget refusal, the 3-day grace period, and the fence with Forget.
+- Retention edges for each kind of data, describe-before-delete with a budget refusal, the 3-day grace period **with the charger never connected** (the photo is still deleted on day 3), and the fence with Forget.
 
 ---
 
@@ -374,14 +453,24 @@ Shared rules:
 | Work/rest W 45/60 min, R 15/20 min, user-configurable | user | H |
 | Heat thresholds 40/44/38 °C battery | Claude, defaults pending the probe | M |
 | Keyframe thresholds (Hamming > 10, last 5, 1.2 s throttle) | Claude | M (tune on device) |
+| A1: a model change drops image vectors of expired photos (caption-only); 7-day rollback grace | user | H |
+| B1 relaxed: 3/s moving, 1/s still, back-off to 1 per 5 s; promise ≥ 1.5 s look, ≤ 5 s for a change in front of a still head; LED never disabled | user | H |
+| C1: Room v2 additive tables; current build tagged `v1-beta`, this ships as app v1.0.0 | user | H |
+| D1: evaluate straight away (≤ 1 per 60 s, salient/dwell/new place) vs notify throttle; 1 in 5 budget tokens reserved | user | H |
+| Nomic transforms (text LayerNorm → truncate → L2; vision L2 → truncate → L2); reference vectors at cosine ≥ 0.99 | review + model cards | H |
+| Image storage dimension decided by the 256-vs-768 photo test (≤ 3 / ≤ 5 point drop) | Claude | M |
+| "Caption every photo" at night, default on | Claude, from the user's dataset intent | M |
 | Salience weights, 0.5 cut-off, cluster drift 0.25, dedupe 0.93 | Claude | L (tune with the debug view) |
 | 256-dimension Matryoshka storage | Claude | M |
 | Opus for specs, Sonnet for code | user | H |
 
+## Review log
+- **Revision 1 (`dc97f15`):** reviewed by the user's external reviewer. Findings 1–7, plus the photo-dimension test and the Doze gate, were all verified against the code (`NudgeWorker.kt:47` 30-minute gate, `EmbeddingDao.kt` swap deleting vectors at once, `OrchestrationScheduler.kt` 24 h TTL) and fixed in revision 2.
+
 ## Open questions for the plan (not blocking the spec)
 - Exact Hugging Face commits, sizes and SHA-256 for the Nomic text GGUF and the vision ONNX.
 - The ONNX Runtime version, and its 16 KB page-alignment compatibility (needed, as for llama.cpp).
-- Whether the foreground hub service is allowed to hold the `KeyframePipeline` during Doze; if not, an expedited WorkManager job.
+- Whether the foreground hub service is allowed to hold the `KeyframePipeline` during Doze; if not, an expedited WorkManager job. The §P2.6 Doze device check decides this.
 
 ## Probe results (2026-10-15, throwaway `probe/camera-heat` @ `e591c27`, not merged)
 Setup:
