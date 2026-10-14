@@ -319,6 +319,9 @@ class CxrGlassesLink(
         /** `pc_frame` carries two strings (meta + chunk); every other channel one. */
         private const val MAX_PARTS = 2
         internal const val PREFS = "rokid_link"
+
+        /** Hi Rokid has authorized this app (a pairing is stored). Never exposes the stored value. */
+        fun isPaired(context: Context): Boolean = context.getSharedPreferences(PREFS, 0).getString(KEY_TOKEN, null) != null
         internal const val KEY_TOKEN = "token"
         @Volatile var instance: CxrGlassesLink? = null
     }
