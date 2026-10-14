@@ -64,12 +64,16 @@ class ModelRouterGateTest {
         assertEquals("b", r.endpoint.id)
         assertEquals(listOf(CallClass.NUDGE, CallClass.NUDGE), permits)
         // the frames chain (vision, then summarize) keeps it too
+        assertEquals(listOf("a:text", "b:text"), providerCalls) // the primary failed, the fallback answered
         permits.clear(); ep("v", Capability.CHAT, Capability.VISION)
+        providerCalls.clear()
         bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
         failures += "v:text"; failures -= "a:text"
         bindings.set(RoleBinding(Role.SUMMARIZE, "a", "m1")).getOrThrow()
         router.completeFromFrames(CallClass.CAPTION_QUEUE) { ModelRequest("q") }
-        assertEquals(setOf(CallClass.CAPTION_QUEUE), permits.toSet())
+        // Exactly one gated call per provider call, every one with the caller's class (a set would pass on a single call).
+        assertEquals(listOf("v:text", "a:text"), providerCalls)
+        assertEquals(List(providerCalls.size) { CallClass.CAPTION_QUEUE }, permits)
     }
 
     @Test fun routedReplyMetadataUnchanged() = runTest {

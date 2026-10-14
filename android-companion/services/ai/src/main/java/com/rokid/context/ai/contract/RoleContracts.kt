@@ -21,6 +21,8 @@ object RoleContracts {
         val o = value.jsonObject
         when (key) {
             PromptKey.SYSTEM -> throw IllegalArgumentException("SYSTEM has no output")
+            // An edited prompt that kept the pre-provenance facts schema has no captions / source_frame_ids: it decodes as a
+            // legacy (non-provenance) output, so it still extracts instead of failing for ever (see ExtractSave.promptIsCurrent).
             PromptKey.VISION_EXTRACT -> ExtractOutput(
                 o.getValue("facts").jsonArray.map { f ->
                     val fo = f.jsonObject
@@ -28,8 +30,8 @@ object RoleContracts {
                         strings(fo, "source_frame_ids"))
                 },
                 extras(o, "facts", "captions"),
-                o.getValue("captions").jsonArray.map { c -> c.jsonObject.let { FrameCaption(str(it, "frame_id"), str(it, "caption")) } },
-                provenance = true,
+                (o["captions"] as? JsonArray).orEmpty().map { c -> c.jsonObject.let { FrameCaption(str(it, "frame_id"), str(it, "caption")) } },
+                provenance = o["captions"] is JsonArray,
             )
             PromptKey.EXPLICIT_REMEMBER -> ExtractOutput(
                 o.getValue("facts").jsonArray.map { f ->

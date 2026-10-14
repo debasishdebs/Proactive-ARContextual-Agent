@@ -124,6 +124,18 @@ class PipelineRecordsTest {
         assertEquals(setOf("rokid_mem_ab_c_0", "rokid_mem_abxc_1", "rokid_mem_ab_cx2", "rokid_mem_ab_c"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
     }
 
+    /** A re-run with fewer photos drops the stale caption memories (and their frame_source rows) too. */
+    @Test fun dropFactsFromAlsoDropsCaptionIds() = runBlocking {
+        listOf("rokid_x_0", "rokid_x_1", "rokid_x_c0", "rokid_x_c1", "rokid_xc0", "rokid_x_cache").forEachIndexed { i, id ->
+            PipelineRecords.appendFact(ctx, id, null, "fact $i", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK, createdAt = i.toLong())
+        }
+        val dao = MemoryGraph.get(ctx).db.frameSourceDao()
+        dao.insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("rokid_x_c1", "f1", null, "FACT")))
+        PipelineRecords.dropFactsFrom(ctx, "rokid_x_", keep = 1, keepCaptions = 1)
+        assertEquals(setOf("rokid_x_0", "rokid_x_c0", "rokid_xc0", "rokid_x_cache"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
+        assertTrue(dao.forMemory("rokid_x_c1").isEmpty())
+    }
+
     @Test fun inboxFramesArchivedInTheSameMillisecondBothStoreWithDistinctFullIds() = runBlocking {
         val a = jpg("1760000000000_rokid_1111_a.jpg")
         val b = jpg("1760000000000_rokid_1111_b.jpg")

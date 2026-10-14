@@ -18,6 +18,8 @@ import com.rokid.context.model.CallClass
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptVars
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 
 /** One photo of a VISION_EXTRACT call: its [frameId] labels the image in the prompt, [description] is the metadata line. */
 data class ExtractPhoto(val frameId: String, val description: String, val image: ModelImageInput)
@@ -41,24 +43,52 @@ object ExtractSave {
 
     private class Rollback(val result: ExtractSaveResult) : RuntimeException(null, null, false, false)
 
+    /** The most photos one VISION_EXTRACT call carries (the schema caps captions at 3). */
+    const val MAX_BATCH = 3
+
     /**
-     * One VISION_EXTRACT call over [photos] (labelled `frame_id: <id>`, in order). More than one photo whose reply is
-     * INVALID_OUTPUT (an id not sent, a missing caption) is retried one photo per call; any other failure is thrown as is.
-     * A single-photo call uses the same schema.
+     * True when the stored VISION_EXTRACT output [schema] is the provenance one (per-photo `captions` and per-fact
+     * `source_frame_ids`). An older or edited prompt that kept the facts-only schema is out of date: it still extracts,
+     * single photos only (Diagnostics shows "VISION_EXTRACT prompt is out of date - reset to default").
+     */
+    fun promptIsCurrent(schema: String?): Boolean {
+        val root = schema?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: return false
+        val props = root["properties"] as? JsonObject ?: return false
+        val captions = props["captions"] as? JsonObject ?: return false
+        if ((captions["items"] as? JsonObject)?.get("properties") == null) return false
+        val factProps = ((props["facts"] as? JsonObject)?.get("items") as? JsonObject)?.get("properties") as? JsonObject ?: return false
+        return factProps.containsKey("source_frame_ids")
+    }
+
+    /**
+     * VISION_EXTRACT over [photos] (labelled `frame_id: <id>`, in order), at most [MAX_BATCH] per call (more are split
+     * into batches). A multi-photo batch whose reply is INVALID_OUTPUT (an id not sent, a missing caption) is retried one
+     * photo per call; any other failure is thrown as is. When the stored prompt schema is not current
+     * ([promptIsCurrent]) every photo is a single call and its facts are attributed to that one photo (captions optional).
      */
     suspend fun extract(runner: RoleRunner, photos: List<ExtractPhoto>, callClass: CallClass): ExtractedBatch {
         require(photos.isNotEmpty()) { "no photos" }
-        if (photos.size > 1) {
-            try {
-                return call(runner, photos, callClass)
-            } catch (e: ModelCallException) {
-                if (e.kind != FailureKind.INVALID_OUTPUT) throw e
-                Log.i(TAG, "batch of ${photos.size} rejected as INVALID_OUTPUT; retrying one photo per call")
+        val current = promptIsCurrent(runner.activeSchema(PromptKey.VISION_EXTRACT))
+        val parts = mutableListOf<ExtractedBatch>()
+        for (chunk in if (current) photos.chunked(MAX_BATCH) else photos.map { listOf(it) }) {
+            if (chunk.size > 1) {
+                try {
+                    parts += call(runner, chunk, callClass); continue
+                } catch (e: ModelCallException) {
+                    if (e.kind != FailureKind.INVALID_OUTPUT) throw e
+                    Log.i(TAG, "batch of ${chunk.size} rejected as INVALID_OUTPUT; retrying one photo per call")
+                }
+            }
+            chunk.forEach { p ->
+                val r = call(runner, listOf(p), callClass)
+                // Legacy reply (no source_frame_ids): the one photo sent is trivially the provenance.
+                parts += if (r.output.provenance) r else r.copy(output = r.output.copy(facts = r.output.facts.map {
+                    if (it.sourceFrameIds.isEmpty()) it.copy(sourceFrameIds = listOf(p.frameId)) else it
+                }))
             }
         }
-        val parts = photos.map { call(runner, listOf(it), callClass) }
         return ExtractedBatch(
-            ExtractOutput(parts.flatMap { it.output.facts }, captions = parts.flatMap { it.output.captions }, provenance = true),
+            ExtractOutput(parts.flatMap { it.output.facts }, captions = parts.flatMap { it.output.captions }, provenance = current),
             parts.last().promptVersion,
         )
     }
@@ -77,7 +107,7 @@ object ExtractSave {
      * as memories, then their `frame_source` rows (role FACT), all in ONE transaction. A CAS that updates 0 rows, or a
      * Delete all since [generation], rolls the whole transaction back and the output is dropped. A null [claims] (the
      * legacy queue path, whose frames have no `frame_state` claim) skips the CAS only.
-     * Facts get ids `<idPrefix><n>`, captions `<idPrefix>c<n>`; a fact whose source photo was forgotten meanwhile is
+     * Facts get ids `<idPrefix><n>`, captions `<idPrefix>c<n>` (always the LONG tier: a caption is the only text left once its photo is deleted); a fact whose source photo was forgotten meanwhile is
      * skipped (the Forget fence in [PipelineRecords.appendFact], over every photo it cites).
      */
     suspend fun saveExtraction(
@@ -107,7 +137,7 @@ object ExtractSave {
                 }
                 output.captions.filter { it.caption.isNotBlank() && it.frameId in sentFrameIds }.distinctBy(FrameCaption::frameId).forEachIndexed { i, c ->
                     val id = "${idPrefix}c$i"
-                    if (PipelineRecords.appendFact(context, id, c.frameId, c.caption, "caption", listOf("caption"), 1.0, tier, ReviewState.OK,
+                    if (PipelineRecords.appendFact(context, id, c.frameId, c.caption, "caption", listOf("caption"), 1.0, MemoryTier.LONG, ReviewState.OK,
                             generation = generation, fenceFrameIds = listOf(c.frameId))) {
                         saved += SavedMemory(id, listOf(c.frameId), null)
                     }
