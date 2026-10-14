@@ -1,5 +1,6 @@
 package com.rokid.context.work
 
+import com.rokid.context.data.frames.DirSync
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -37,6 +38,7 @@ class FrameIngestWorkerTest {
     private var lookups = 0
 
     @Before fun setUp() {
+        DirSync.testOverride = DirSync { true } // Robolectric cannot fsync a directory
         WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         com.rokid.context.data.runtime.QueueRuntimeStore.clearAll(ctx)
@@ -45,7 +47,7 @@ class FrameIngestWorkerTest {
         SourcesGraph.resetForTests(SourcesRuntime({ settings }, listOf(location), granted = { true }))
     }
 
-    @After fun tearDown() { SourcesGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
+    @After fun tearDown() { DirSync.testOverride = null; SourcesGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
     private fun inboxFrame(name: String) = File(RokidFrameInbox.inboxDir(ctx).apply { mkdirs() }, name).apply { writeBytes(byteArrayOf(1, 2, 3)) }
 

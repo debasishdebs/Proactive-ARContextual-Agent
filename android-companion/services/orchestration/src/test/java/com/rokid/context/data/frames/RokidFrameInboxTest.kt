@@ -33,11 +33,12 @@ class RokidFrameInboxTest {
     private val archive get() = RokidFrameInbox.archiveDir(ctx)
 
     @Before fun setUp() {
+        DirSync.testOverride = DirSync { true } // Robolectric cannot fsync a directory
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         inbox.deleteRecursively(); archive.deleteRecursively()
         inbox.mkdirs()
     }
-    @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
+    @After fun tearDown() { DirSync.testOverride = null; MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
     private fun inboxFile(name: String, ageMs: Long = 0) = File(inbox, name).apply { writeBytes(byteArrayOf(1, 2)); setLastModified(now - ageMs) }
     private suspend fun rows() = MemoryGraph.get(ctx).db.frameDao().count()
@@ -62,7 +63,7 @@ class RokidFrameInboxTest {
 
     @Test fun aFailedIngestReturnsTheFileToTheInbox() = runBlocking {
         inboxFile("rokid_1_a.jpg")
-        val n = RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _ -> throw IllegalStateException("db") }
+        val n = RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _, _ -> throw IllegalStateException("db") }
         assertEquals(0, n)
         assertTrue(File(inbox, "rokid_1_a.jpg").isFile)
         assertTrue(archive.list().orEmpty().isEmpty())
@@ -82,7 +83,7 @@ class RokidFrameInboxTest {
     /** Review Focus 3: a Delete all that starts while a frame is being ingested leaves no row and no JPEG. */
     @Test fun aWipeDuringIngestLeavesNoRowAndNoFile() = runBlocking {
         inboxFile("rokid_1_a.jpg")
-        val n = RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { c, f ->
+        val n = RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { c, f, _ ->
             PipelineRecords.appendFrame(c, f).also { MemoryWipe.generation.incrementAndGet() }
         }
         assertEquals(0, n)
@@ -94,7 +95,7 @@ class RokidFrameInboxTest {
     /** P7xP8 I3: a phone capture (single-path ingest) racing Delete all leaves no row and no file either. */
     @Test fun aWipeDuringASinglePathIngestLeavesNoRowAndNoFile() = runBlocking {
         val shot = File(archive.apply { mkdirs() }, "rokid_phone_1.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
-        val id = RokidFrameInbox.ingestSinglePath(ctx, shot.absolutePath, source = "rokid_phone", placeLabel = "home") { c, f ->
+        val id = RokidFrameInbox.ingestSinglePath(ctx, shot.absolutePath, source = "rokid_phone", placeLabel = "home") { c, f, _ ->
             PipelineRecords.appendFrame(c, f).also { MemoryWipe.generation.incrementAndGet() }
         }
         assertEquals(null, id)
@@ -107,7 +108,7 @@ class RokidFrameInboxTest {
         inboxFile("rokid_1_a.jpg")
         val entered = CompletableDeferred<Unit>()
         val job = launch(Dispatchers.IO) {
-            RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _ -> entered.complete(Unit); awaitCancellation() }
+            RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _, _ -> entered.complete(Unit); awaitCancellation() }
         }
         entered.await()
         job.cancelAndJoin()
@@ -121,7 +122,7 @@ class RokidFrameInboxTest {
         inboxFile("rokid_1_a.jpg")
         val entered = CompletableDeferred<Unit>()
         val job = launch(Dispatchers.IO) {
-            RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _ -> entered.complete(Unit); awaitCancellation() }
+            RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _, _ -> entered.complete(Unit); awaitCancellation() }
         }
         entered.await()
         MemoryWipe.generation.incrementAndGet()
@@ -134,7 +135,7 @@ class RokidFrameInboxTest {
     /** Fix round 3: an ingest that fails while a Delete all runs deletes the file instead of returning it to the inbox. */
     @Test fun aFailedIngestDuringAWipeDeletesTheFile() = runBlocking {
         inboxFile("rokid_1_a.jpg")
-        val n = RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _ ->
+        val n = RokidFrameInbox.ingestPending(ctx, nowMs = { now }) { _, _, _ ->
             MemoryWipe.generation.incrementAndGet()
             throw IllegalStateException("db")
         }
