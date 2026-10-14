@@ -49,6 +49,8 @@ class HomeViewModel(
     private val voice: PhoneVoice = PhoneVoice.None,
     /** G7: Android Battery Saver; while on, Home's banner says asks are paused (the ask path refuses them). */
     batterySaver: Flow<Boolean> = flowOf(false),
+    /** G3: the "Some features are limited" banner. */
+    private val limitedMode: LimitedModeControl = LimitedModeControl.None,
 ) : ViewModel() {
     private data class Local(val question: String = "", val asking: Boolean = false, val error: String? = null, val lastAskId: String? = null)
 
@@ -88,7 +90,9 @@ class HomeViewModel(
     private val photosToday: Flow<Int> = clock.map { DayBucket.dayOf(it, zone()) to zone() }.distinctUntilChanged()
         .flatMapLatest { (d, z) -> timeline.frameTimesIn(DayBucket.bounds(d, z)).map { it.size } }.distinctUntilChanged()
 
-    val state: StateFlow<HomeUiState> = combine(base, voice.state, micBlocked, photosToday) { s, v, blocked, n -> s.copy(voice = HomeVoiceUi.from(v, blocked), photosToday = n) }
+    val state: StateFlow<HomeUiState> = combine(base, voice.state, micBlocked, photosToday, limitedMode.show) { s, v, blocked, n, limited ->
+        s.copy(voice = HomeVoiceUi.from(v, blocked), photosToday = n, limited = limited)
+    }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), HomeUiState())
 
     fun onQuestionChange(text: String) = local.update { it.copy(question = text.take(500), error = null) }
@@ -130,6 +134,11 @@ class HomeViewModel(
     fun onLeave() { if (voice.state.value.listening) voice.cancel() }
 
     override fun onCleared() = onLeave()
+
+    /** Home resumed (back from the system's permission page): re-read what is limited. */
+    fun onResume() { viewModelScope.launch { limitedMode.refresh() } }
+
+    fun dismissLimited() = limitedMode.dismiss()
 
     fun togglePause() = pipeline.toggle()
 

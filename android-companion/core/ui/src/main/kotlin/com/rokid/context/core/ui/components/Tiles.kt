@@ -1,6 +1,8 @@
 package com.rokid.context.core.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -68,9 +70,12 @@ enum class BannerTone(val colors: Pair<Color, Color>) {
     CORAL(PcColors.ChipCoral), AMBER(PcColors.ChipAmber), SLATE(PcColors.ChipSlate), SKY(PcColors.ChipSky)
 }
 
-/** One-line status banner with an optional action (spec §2.2). */
+/** One-line status banner with an optional action (spec section 2.2) and, with [onDismiss], a close button (G3). */
 @Composable
-fun Banner(tone: BannerTone, title: String, modifier: Modifier = Modifier, actionLabel: String? = null, onAction: (() -> Unit)? = null) {
+fun Banner(
+    tone: BannerTone, title: String, modifier: Modifier = Modifier, actionLabel: String? = null, onAction: (() -> Unit)? = null,
+    onDismiss: (() -> Unit)? = null,
+) {
     Row(
         modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(tone.colors.first).padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -78,6 +83,11 @@ fun Banner(tone: BannerTone, title: String, modifier: Modifier = Modifier, actio
         Text(title, style = MaterialTheme.typography.bodyMedium, color = tone.colors.second, modifier = Modifier.weight(1f).padding(vertical = 10.dp))
         if (actionLabel != null && onAction != null) {
             TextButton(onClick = onAction) { Text(actionLabel, color = tone.colors.second, fontWeight = FontWeight.SemiBold) }
+        }
+        if (onDismiss != null) {
+            androidx.compose.material3.IconButton(onClick = onDismiss) {
+                androidx.compose.material3.Icon(Icons.Rounded.Close, contentDescription = "Dismiss", tint = tone.colors.second)
+            }
         }
     }
 }
