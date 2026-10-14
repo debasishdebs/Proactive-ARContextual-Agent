@@ -1,6 +1,7 @@
 package com.rokid.context.phone.hub
 
 import android.content.SharedPreferences
+import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.Decoded
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.Verbosity
@@ -8,8 +9,10 @@ import com.rokid.context.core.model.Wire
 
 /** The phone's copy of [HudSettings] (`pc_settings`). Pauses are not stored here: the hub adds them at push time. */
 class HubSettingsStore(private val prefs: SharedPreferences, private val legacyMode: () -> String) {
-    fun read(): HudSettings = (prefs.getString(KEY, null)?.let { (Wire.decode<HudSettings>(it) as? Decoded.Ok)?.value }
-        ?: HudSettings(verbosity = verbosityFor(legacyMode()))).let(::validQuiet)
+    /** Smart is the default for new installs and for settings stored before keyframe capture (no `captureMode` key). */
+    fun read(): HudSettings = (prefs.getString(KEY, null)?.let { raw ->
+        (Wire.decode<HudSettings>(raw) as? Decoded.Ok)?.value?.let { if ("\"captureMode\"" in raw) it else it.copy(captureMode = CaptureMode.SMART) }
+    } ?: HudSettings(verbosity = verbosityFor(legacyMode()), captureMode = CaptureMode.SMART)).let(::validQuiet)
 
     fun write(s: HudSettings) { prefs.edit().putString(KEY, Wire.encode(validQuiet(s).copy(pauses = emptyList()))).apply() }
 
