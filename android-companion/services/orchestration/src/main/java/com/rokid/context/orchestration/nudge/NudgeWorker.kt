@@ -13,7 +13,8 @@ import com.rokid.context.memory.MemoryGraph
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * The run gate around [NudgeEngine]: skips when the HUD settings are unknown (fail-closed, not stamped) or the last run
+ * The run gate around [NudgeEngine] for the periodic backstop only (the fast path's [NudgeEvaluator] has its own gap; showing
+ * is throttled by [NudgeGates]): skips when the HUD settings are unknown (fail-closed, not stamped) or the last run
  * started < 30 min ago; otherwise stamps `nudge_last_run_ms` at run start and runs. Returns whether it ran.
  */
 class NudgeRunGate(
@@ -61,7 +62,7 @@ class NudgeWorker(appContext: Context, params: WorkerParameters) : CoroutineWork
         val memory = MemoryGraph.get(app)
         val sources = SourcesGraph.get(app)
         return NudgeEngine(
-            NudgeInputs(memory, sources.provider), AiGraph.get(app).runner, NudgeGates(memory.db.nudgeGateDao()) { sources.settings.nudgesPerDay.value },
+            NudgeInputs(memory, sources.provider), AiGraph.get(app).runner, NudgeGates(memory.db.nudgeGateDao(), { sources.settings.shownGapMin.value * 60_000L }) { sources.settings.nudgesPerDay.value },
             memory, com.rokid.context.orchestration.OriginFencedIntake(app, memory, ActionsGraph.get(app).intake),
         )
     }
