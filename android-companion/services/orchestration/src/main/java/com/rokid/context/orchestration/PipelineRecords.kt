@@ -157,12 +157,19 @@ object PipelineRecords {
         }
     }
 
-    /** Fix M5: before a job (re)writes facts `<prefix>0..keep-1`, drop its rows `<prefix>keep…` left by an earlier run. */
-    suspend fun dropFactsFrom(context: Context, prefix: String, keep: Int) {
+    /**
+     * Fix M5: before a job (re)writes facts `<prefix>0..keep-1`, drop its rows `<prefix>keep…` left by an earlier run.
+     * Caption ids `<prefix>c<n>` go too: [keepCaptions] (default 0, i.e. all of them, since a re-run rewrites the ones it still has).
+     */
+    suspend fun dropFactsFrom(context: Context, prefix: String, keep: Int, keepCaptions: Int = 0) {
         val g = graph(context)
-        g.memories.deleteByIds(
-            g.memories.idsWithPrefix(prefix).filter { id -> id.removePrefix(prefix).toIntOrNull()?.let { it >= keep } == true },
-        )
+        val stale = g.memories.idsWithPrefix(prefix).filter { id ->
+            val rest = id.removePrefix(prefix)
+            rest.toIntOrNull()?.let { it >= keep } == true ||
+                (rest.startsWith("c") && rest.drop(1).toIntOrNull()?.let { it >= keepCaptions } == true)
+        }
+        g.memories.deleteByIds(stale)
+        stale.forEach { g.db.frameSourceDao().deleteForMemory(it) } // their frame_source rows go with them
     }
 
     suspend fun recentMemories(context: Context, limit: Int): List<MemoryEntity> = graph(context).memories.recent(limit)

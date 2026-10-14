@@ -29,6 +29,14 @@ class PhonePowerPolicyTest {
         now = 30_000; assertTrue(policy.tryExtraction())
     }
 
+    @Test fun moderateMayRunBackgroundHonoursThe30sLimit() {
+        thermal = PhoneThermal.MODERATE
+        assertTrue(policy.mayRunBackground(BackgroundWork.EXTRACTION)) // allowance free
+        assertTrue(policy.tryExtraction())
+        now = 29_999; assertFalse(policy.mayRunBackground(BackgroundWork.EXTRACTION))
+        now = 30_000; assertTrue(policy.mayRunBackground(BackgroundWork.EXTRACTION))
+    }
+
     @Test fun severePausesAll() {
         thermal = PhoneThermal.SEVERE
         assertFalse(policy.tryExtraction())

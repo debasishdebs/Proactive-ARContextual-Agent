@@ -8,6 +8,9 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.TimeoutCancellationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -130,5 +133,34 @@ class CallBudgetTest {
         period = 10_000
         call(b, CallClass.EXTRACT, log); advanceTimeBy(10_000); runCurrent()
         assertEquals(25_000L, log[3].second)
+    }
+
+    @Test fun userDebtFloorsAtMinusBurst() = runTest {
+        val b = budget(); val log = mutableListOf<Pair<String, Long>>()
+        repeat(10) { call(b, CallClass.USER, log) }; runCurrent()
+        assertEquals(10, log.size)
+        assertEquals(10, b.stats.value.callsLastHour[CallClass.USER]) // all counted in stats
+        call(b, CallClass.EXTRACT, log, "x"); runCurrent()
+        advanceTimeBy(30_000); runCurrent() // floor is -2: three mints reach +1, not eight
+        assertEquals(30_000L, log.first { it.first == "x" }.second)
+    }
+
+    @Test fun callerTimeoutDoesNotRefund() = runTest {
+        val b = budget(); val log = mutableListOf<Pair<String, Long>>()
+        repeat(2) {
+            try { withTimeout(1_000) { b.withPermit(CallClass.EXTRACT) { delay(5_000) } } } catch (_: TimeoutCancellationException) {}
+        }
+        call(b, CallClass.EXTRACT, log); runCurrent()
+        assertEquals(0, log.size) // both tokens stayed spent
+    }
+
+    @Test fun refundNeverExceedsBurst() = runTest {
+        val b = budget(); val log = mutableListOf<Pair<String, Long>>()
+        // Hold a call open, let the bucket refill to burst meanwhile, then refund it: still only 2 banked.
+        val held = launch { try { b.withPermit(CallClass.EXTRACT) { delay(100_000); throw IOException("late") } } catch (_: IOException) {} }
+        runCurrent(); advanceTimeBy(50_000); runCurrent(); held.cancel()
+        advanceTimeBy(60_000); runCurrent()
+        repeat(3) { call(b, CallClass.EXTRACT, log) }; runCurrent()
+        assertEquals(2, log.size)
     }
 }

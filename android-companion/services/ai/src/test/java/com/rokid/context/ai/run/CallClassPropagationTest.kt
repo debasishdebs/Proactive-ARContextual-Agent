@@ -88,7 +88,8 @@ class CallClassPropagationTest {
         assertEquals(listOf(CallClass.USER), permits)
     }
 
-    @Test fun userBypassesWhenBackgroundTokensExhausted() = runBlocking {
+    /** Still the gate-level check: the fallback attempt carries the caller's class too (the real-budget bypass is in UserBypassRealBudgetTest). */
+    @Test fun userFallbackKeepsClass() = runBlocking {
         failFirst = true
         ai.runner.run(extract(CallClass.USER)) // primary fails, the fallback still runs
         assertEquals(listOf(CallClass.USER, CallClass.USER), permits)
