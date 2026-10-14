@@ -17,6 +17,11 @@ class OnboardingStore(context: Context) {
         withContext(io) { prefs.edit().putBoolean(K_COMPLETE, true).commit() }
     }
 
+    /** BUG-R3-1: a restored "complete" that [OnboardingGuard] rejected; committed on [io], never on Main. */
+    suspend fun resetDurably(io: CoroutineDispatcher = Dispatchers.IO) {
+        withContext(io) { prefs.edit().remove(K_COMPLETE).commit() }
+    }
+
     companion object {
         private const val PREFS = "onboarding"
         const val K_COMPLETE = "v1_complete"

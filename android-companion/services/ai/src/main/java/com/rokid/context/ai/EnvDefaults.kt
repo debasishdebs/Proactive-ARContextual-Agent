@@ -5,6 +5,8 @@ package com.rokid.context.ai
  * before any provider or worker runs. Initial values equal the Gradle fallbacks in `phone/build.gradle.kts`.
  */
 object EnvDefaults {
+    /** The Azure OpenAI API version the seed and the wizard's Azure form use. */
+    const val AZURE_API_VERSION = "2024-10-21"
     @Volatile var azureEndpoint: String = ""; private set
     @Volatile var azureDeployment: String = "gpt-5.4"; private set
     @Volatile var ollamaBaseUrl: String = "http://10.0.2.2:11434"; private set
