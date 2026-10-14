@@ -57,7 +57,7 @@ class ProtocolTest {
 
     @Test fun malformedTextIsReported() {
         assertIs<Decoded.Malformed>(Wire.decode<StateFrame>("not json"))
-        assertIs<Decoded.Malformed>(Wire.decode<StateFrame>("""{"v":$PROTOCOL_VERSION,"seq":"x"}"""))
+        assertIs<Decoded.Malformed>(Wire.decode<StateFrame>(Wire.encode(frame(null)).replace("\"seq\":7", "\"seq\":\"x\"")))
     }
 
     /** Privacy: a decode error must never quote the payload (it can hold `today` memory text), only a class name. */
@@ -218,5 +218,29 @@ class ProtocolTest {
         assertEquals(20, HudSettings(workMinutes = 90, restMinutes = 20).normalized().restMinutes)
         assertEquals(30, HudSettings(workMinutes = 0).normalized().workMinutes)
         assertEquals(10, HudSettings(restMinutes = 11).normalized().restMinutes)
+    }
+
+    // Pins Wire.json coerceInputValues = true (global effects, see review A item 5).
+    @Test fun coerceInputValuesFallsBackToDefaultsOnly() {
+        fun settings(extra: String) = Wire.decode<HudSettings>("""{"v":$PROTOCOL_VERSION,$extra}""")
+        // unknown enum strings on defaulted fields become the default instead of rejecting the whole message
+        assertEquals(Decoded.Ok(HudSettings()), settings(""""verbosity":"LOUD","position":"NOWHERE","iconCorner":"MIDDLE""""))
+        assertEquals(Verbosity.MEDIUM, (settings(""""verbosity":"LOUD"""") as Decoded.Ok).value.verbosity)
+        assertEquals(HudPosition.BOTTOM_CENTER, (settings(""""position":"NOWHERE"""") as Decoded.Ok).value.position)
+        assertEquals(IconCorner.TOP_RIGHT, (settings(""""iconCorner":"MIDDLE"""") as Decoded.Ok).value.iconCorner)
+        // an explicit null for a defaulted non-null field takes the default
+        assertEquals(Decoded.Ok(HudSettings()), settings(""""verbosity":null,"scale":null,"popupSeconds":null,"workMinutes":null"""))
+        // a valid value still wins
+        assertEquals(Verbosity.MAX, (settings(""""verbosity":"MAX"""") as Decoded.Ok).value.verbosity)
+        // type errors are still Malformed
+        assertIs<Decoded.Malformed>(settings(""""popupSeconds":"x""""))
+        assertIs<Decoded.Malformed>(Wire.decode<StateFrame>(Wire.encode(frame(null)).replace("\"seq\":7", "\"seq\":\"x\"")))
+        // enums without a default stay Malformed
+        assertIs<Decoded.Malformed>(Wire.decode<CommandEnvelope>(
+            """{"v":$PROTOCOL_VERSION,"command":{"kind":"page_changed","page":"NOPE"}}""",
+        ))
+        assertIs<Decoded.Malformed>(Wire.decode<CommandEnvelope>(
+            """{"v":$PROTOCOL_VERSION,"command":{"kind":"pause","pause":{"pauseId":"p","origin":"NOPE","createdAtMs":1}}}""",
+        ))
     }
 }

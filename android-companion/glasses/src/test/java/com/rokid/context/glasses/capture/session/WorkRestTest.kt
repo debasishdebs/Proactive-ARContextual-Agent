@@ -64,13 +64,19 @@ class WorkRestTest {
     }
 
     @Test fun acceptsAllWorkAndRestOptions() {
-        for (w in listOf(30, 40, 45, 50, 60, 75, 90)) for (r in listOf(5, 10, 15, 20)) {
+        // literal expectations (minutes of rest): R as chosen, but at least 15 once W > 45
+        val expected = mapOf(
+            30 to listOf(5, 10, 15, 20), 40 to listOf(5, 10, 15, 20), 45 to listOf(5, 10, 15, 20),
+            50 to listOf(15, 15, 15, 20), 60 to listOf(15, 15, 15, 20), 75 to listOf(15, 15, 15, 20), 90 to listOf(15, 15, 15, 20),
+        )
+        val rests = listOf(5, 10, 15, 20)
+        for ((w, restFor) in expected) for ((i, r) in rests.withIndex()) {
             now = 0L
             val c = WorkRest({ now }, { w }, { r })
             c.onSampling(); now = (w - 1) * min; c.onSampling()
             assertNull(c.resting.value, "w=$w r=$r")
             now = w * min; c.onSampling()
-            val expectedRest = if (w > 45) maxOf(r, 15) else r
+            val expectedRest = restFor[i]
             assertEquals(now + expectedRest * min, c.resting.value, "w=$w r=$r")
         }
     }

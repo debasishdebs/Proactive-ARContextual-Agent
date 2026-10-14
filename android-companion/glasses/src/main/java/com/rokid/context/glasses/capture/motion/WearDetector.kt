@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Proximity wear check: "far" for more than [NOT_WORN_AFTER_MS] means not worn; "near" means worn at once.
  * The proximity sensor only reports changes, so the far timeout needs [tick] (SensorFeed calls it every second).
+ * One clock only: [clock] must be SystemClock.elapsedRealtime in production, for the far start and for [tick] alike.
  */
 class WearDetector(private val clock: () -> Long) {
     private val _worn = MutableStateFlow(true)
@@ -13,9 +14,10 @@ class WearDetector(private val clock: () -> Long) {
 
     private var farSinceMs: Long? = null
 
-    fun onProximity(near: Boolean, tMs: Long) {
+    /** [tMs] is ignored (kept for source compatibility): sensor timestamps never mix with [clock]. */
+    fun onProximity(near: Boolean, @Suppress("UNUSED_PARAMETER") tMs: Long = 0L) {
         if (near) { farSinceMs = null; _worn.value = true }
-        else { if (farSinceMs == null) farSinceMs = tMs; tick() }
+        else { if (farSinceMs == null) farSinceMs = clock(); tick() }
     }
 
     fun tick() {
