@@ -25,6 +25,12 @@ class FrameGuardTest {
         assertNull(check(luma = 8.0))
     }
 
+    @Test fun batteryAndDarkSkipsStandAlone() {
+        assertEquals(SkipReason.LOW_BATTERY, FrameGuard.checkBatteryAndDark(10, false, 90.0))
+        assertEquals(SkipReason.DARK, FrameGuard.checkBatteryAndDark(80, false, 7.9))
+        assertNull(FrameGuard.checkBatteryAndDark(80, false, 8.0))
+    }
+
     @Test fun nearDuplicatesAreSkipped() {
         assertEquals(SkipReason.DUPLICATE, check(hash = 0b1111L, last = 0L)) // 4 bits apart
         assertNull(check(hash = 0b11111L, last = 0L)) // 5 bits apart
