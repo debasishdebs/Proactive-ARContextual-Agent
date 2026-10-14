@@ -33,6 +33,7 @@ dependencies {
     api(project(":services:memory"))
     api(project(":core:model"))
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0") // Nomic vision; MIT; arm64 only via abiFilters
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
