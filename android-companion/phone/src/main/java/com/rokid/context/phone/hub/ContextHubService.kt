@@ -39,8 +39,9 @@ import kotlinx.coroutines.launch
  * [micHeld] stays false (glasses asks blocked) until the next resume re-enters with it.
  *
  * Glasses as a nearby device: this is also the keep-alive that lets the phone app work in the background while the
- * glasses are linked (CONNECTED, or MINIMISED on the background link). START_STICKY, never stopped by the UI, and
- * not stopped with the task, so backgrounding or swiping the phone app keeps the process and the link. The
+ * glasses are linked (CONNECTED, or MINIMISED on the background link). START_STICKY and not stopped with the task, so
+ * backgrounding or swiping the phone app keeps the process and the link, unless Settings > Rokid Glasses > Nearby
+ * devices "Keep running when nearby" is off ([KeepRunningNearby]): then leaving the app stops it ([HubResumeHook]). The
  * low-importance notification reads "Connected to glasses" while linked; otherwise it shows the link state as before.
  */
 class ContextHubService : Service() {
@@ -65,6 +66,8 @@ class ContextHubService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val resume = intent?.takeIf { it.hasExtra(EXTRA_RESUME) }?.getLongExtra(EXTRA_RESUME, 0)
         if (!running) {
+            // Nearby devices switch off: a sticky restart in the background does not bring the hub back.
+            if (stopsOnBackgroundStart(startedInFront(intent), KeepRunningNearby.of(this).enabled())) { stopSelf(); return START_NOT_STICKY }
             if (!enterForeground(READY, micRetry.toTry(wantedTypes(startedInFront(intent)), resume))) { stopSelf(); return START_NOT_STICKY }
             running = true
             val nm = getSystemService(NotificationManager::class.java)
@@ -192,6 +195,9 @@ class ContextHubService : Service() {
         }
 
         fun stop(context: Context) { context.stopService(Intent(context, ContextHubService::class.java)) }
+
+        /** "Keep running when nearby" off: only a start from the front runs the hub. */
+        internal fun stopsOnBackgroundStart(inFront: Boolean, keepRunning: Boolean) = !inFront && !keepRunning
 
         internal fun canStart(sdk: Int, bluetoothGranted: Boolean) = sdk < 31 || bluetoothGranted
         internal fun shouldStart(running: Boolean, canStart: Boolean) = !running && canStart

@@ -123,6 +123,7 @@ fun GlassesSettingsScreen(
     onReauthorize: () -> Unit,
     onIconCorner: (IconCorner) -> Unit = {},
     onPopupSeconds: (Int) -> Unit = {},
+    onOpenNearby: () -> Unit = {},
 ) {
     val s = state.settings
     SettingsPage("Rokid Glasses", onBack, tag = "glasses_settings") {
@@ -130,6 +131,12 @@ fun GlassesSettingsScreen(
             SettingsCard {
                 Text(state.linkSummary, style = MaterialTheme.typography.titleMedium)
                 SecondaryAction("Re-authorize", onReauthorize, tag = "reauthorize")
+            }
+        }
+        item {
+            SettingsCard {
+                SecondaryAction("Nearby devices", onOpenNearby, tag = "open_nearby")
+                NoticeText("Paired glasses, and whether the app keeps running near them", tag = "nearby_hint")
             }
         }
         item {
