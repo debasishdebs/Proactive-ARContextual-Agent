@@ -34,15 +34,15 @@ import okhttp3.RequestBody.Companion.toRequestBody
 class EmbeddingClient(
     private val http: OkHttpClient = Http.modelClient(60),
     private val nativeTimeoutMs: Long = 60_000,
-    private val native: (String, List<String>) -> List<FloatArray> = LlamaCppNativeProvider::embed,
+    private val native: (String, List<String>, Boolean) -> List<FloatArray> = { path, texts, normalize -> LlamaCppNativeProvider.embed(path, texts, normalize) },
 ) {
     /** Owns native work so a timed-out, uninterruptible call keeps running here without blocking or overlapping anyone. */
     private val nativeScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val nativeLock = Mutex()
 
-    suspend fun embed(e: Endpoint, model: String, key: String?, inputs: List<String>, dimensions: Int? = null): List<FloatArray> {
+    suspend fun embed(e: Endpoint, model: String, key: String?, inputs: List<String>, dimensions: Int? = null, normalize: Boolean = true): List<FloatArray> {
         if (inputs.isEmpty()) return emptyList()
-        if (e.kind == EndpointKind.LLAMACPP_LOCAL) return validated(nativeEmbed(e.baseUrl, inputs), inputs.size)
+        if (e.kind == EndpointKind.LLAMACPP_LOCAL) return validated(nativeEmbed(e.baseUrl, inputs, normalize), inputs.size)
         val base = e.baseUrl.trimEnd('/')
         val (url, body) = when (e.kind) {
             EndpointKind.OLLAMA -> "$base/api/embed" to buildJsonObject { put("model", JsonPrimitive(model)); put("input", strings(inputs)) }
@@ -97,12 +97,12 @@ class EmbeddingClient(
      * [NATIVE_BATCH] texts per native call, each call timed on its own, so a 64-text reindex batch can't overrun the
      * limit by size alone and a query waits behind at most one small call (final review I1).
      */
-    private suspend fun nativeEmbed(path: String, inputs: List<String>): List<FloatArray> =
-        inputs.chunked(NATIVE_BATCH).flatMap { nativeCall(path, it) }
+    private suspend fun nativeEmbed(path: String, inputs: List<String>, normalize: Boolean): List<FloatArray> =
+        inputs.chunked(NATIVE_BATCH).flatMap { nativeCall(path, it, normalize) }
 
     /** The caller stops waiting after [nativeTimeoutMs]; native calls run one at a time, and a call still queued when the caller gives up is cancelled and never runs. */
-    private suspend fun nativeCall(path: String, inputs: List<String>): List<FloatArray> {
-        val work = nativeScope.async { nativeLock.withLock { native(path, inputs) } }
+    private suspend fun nativeCall(path: String, inputs: List<String>, normalize: Boolean): List<FloatArray> {
+        val work = nativeScope.async { nativeLock.withLock { native(path, inputs, normalize) } }
         return try { withTimeout(nativeTimeoutMs) { work.await() } }
         catch (_: TimeoutCancellationException) { throw java.net.SocketTimeoutException("Local embedding timed out") }
         finally { work.cancel() } // timeout or caller cancellation: a call still queued never runs
