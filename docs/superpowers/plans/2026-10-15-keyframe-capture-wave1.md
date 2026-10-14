@@ -36,7 +36,7 @@
 - **Query embedding:** once at 768, then shortened for each index. Text and image scores are never compared.
 - **Keyframe:** a 640 px wide JPEG at q75 (requested via `ResolutionSelector`, 4:3, landscape after rotation). The 160 px grey thumbnail is internal to the glasses: never stored, never sent.
 - **Motion-driven camera (spec §P1.1, revision 5):** the IMU runs always. The camera is open while moving and for the hold time H after motion, opening early on deceleration (gyro below 60 % of the peak); it's closed when settled, with a brief open → first usable frame → close check every 5 s (15 s after 10 quiet minutes). 3 Hz analysis while open. A dwell (≥ 1.0 s still) gives an immediate keyframe.
-- **Quick look** (`HudSettings.quickLookMs` ∈ {1000, 1500, 2000, 3000}, default 1500 provisional): H = 4 s / 2 s / 1 s / 0 (bursts every 2 s while moving). Battery Saver or battery ≤ 20 %: checks every 10 s, H halved. The values are confirmed by the Quick-look probe (spec Probe results 2).
+- **Quick look** (`HudSettings.quickLookMs` ∈ {1000, 1500, 2000, 3000}, **default 1000** (probe-confirmed)): H = 4 s / 2 s / 1 s / 0 (bursts every 2 s while moving). Battery Saver or battery ≤ 20 %: checks every 10 s, H halved. The values are confirmed by the Quick-look probe (spec Probe results 2).
 - **Camera LED:** never disabled, suppressed or worked around; it's reduced only by opening the camera less.
 - **Keyframe test:** the smaller Hamming distance of dHash and pHash must be > 10 against each of the last 5 keyframes; ≥ 1.2 s between keyframes; the blur floor uses Laplacian variance; the sharpest of each ≤ 1.5 s window while moving.
 - **Heat:**
@@ -94,7 +94,7 @@ enum class MotionState { STILL, HEAD_MOVING, WALKING, VEHICLE, UNKNOWN }
 val captureMode: CaptureMode = CaptureMode.FIXED      // the phone sends SMART for new installs and the migration default
 val pauseWhenNotWorn: Boolean = true
 val workMinutes: Int = 45                              // 30 | 40 | 45 | 50 | 60 | 75 | 90
-val quickLookMs: Int = 1500                            // 1000 | 1500 | 2000 | 3000
+val quickLookMs: Int = 1000                            // 1000 | 1500 | 2000 | 3000
 val restMinutes: Int = 15                              // 5 | 10 | 15 | 20; ≥ 15 when workMinutes > 45
 // pc_frame metadata (the existing frame meta class), new optional fields:
 val motion: MotionState = MotionState.UNKNOWN
@@ -353,7 +353,7 @@ data class KeyframeOut(val jpeg: ByteArray, val width: Int, val motion: MotionSt
 data class SessionStatus(val running: Boolean, val motion: MotionState, val keyframesLast10Min: Int, val restingUntilMs: Long?, val reason: String?)
 ```
 - **Camera open/close** follows `CameraPolicy.decide`, evaluated on every motion change and every 250 ms. Brief checks open → take the first frame above the blur floor (or give up after 1.5 s) → close.
-- **Camera API:** use the faster of CameraX and Camera2 according to the Quick-look probe (spec Probe results 2); keep it behind `CameraOwner` so it can be swapped.
+- **Camera API:** CameraX (probe: about 300 ms cold p50), kept behind `CameraOwner` so it can be swapped. Tune H and the deceleration start so `GlimpseOffsetTest` reaches ≥ 95 % for 1 s looks at the 1 s setting (the probe got 80 %: misses came from the 5 s settled check).
 - **CameraX (or the Camera2 equivalent):**
   - `ImageAnalysis` with `ResolutionSelector(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY, ResolutionStrategy(Size(640, 480), FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))` and `STRATEGY_KEEP_ONLY_LATEST`;
   - rotation applied before encoding, so the **output width is 640** (assert it: if it isn't 640 after rotation, scale to 640 wide and log the count);
