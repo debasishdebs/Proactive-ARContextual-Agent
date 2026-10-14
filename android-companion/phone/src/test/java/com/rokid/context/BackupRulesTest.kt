@@ -19,6 +19,8 @@ class BackupRulesTest {
         // Markers that say "already done in the DB": restored without the DB they would skip re-seeding/re-import.
         "sharedpref:ai_seed.xml", "sharedpref:legacy_import.xml",
         "database:context.db", "database:context.db-wal", "database:context.db-shm",
+        // On-device embeddings spec section 4: downloaded models (large, re-downloadable) are never backed up.
+        "file:models",
     ) + memoryCopies
 
     /**
