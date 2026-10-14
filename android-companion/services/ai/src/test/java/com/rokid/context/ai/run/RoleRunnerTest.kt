@@ -43,6 +43,8 @@ class RoleRunnerTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private val replies = ArrayDeque<String>()
     private val requests = mutableListOf<ModelRequest>()
+    /** OBS-R3-1: per reply, whether the provider said it stopped at the token cap (finish_reason "length"). */
+    private val cut = ArrayDeque<Boolean>()
     private lateinit var ai: AiGraph
 
     @Before fun setUp() {
@@ -50,7 +52,7 @@ class RoleRunnerTest {
         ai = AiGraph(MemoryGraph.get(ctx), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { _, _, _ ->
             object : ModelProvider {
                 override suspend fun generate(prompt: String) = error("unused")
-                override suspend fun complete(request: ModelRequest): ModelReply { requests += request; return ModelReply(replies.removeFirst(), 10, 2) }
+                override suspend fun complete(request: ModelRequest): ModelReply { requests += request; return ModelReply(replies.removeFirst(), 10, 2, truncated = cut.removeFirstOrNull() ?: false) }
             }
         })
         bind(setOf(Capability.CHAT, Capability.JSON_SCHEMA))
@@ -58,9 +60,9 @@ class RoleRunnerTest {
 
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
-    private fun bind(caps: Set<Capability>) = runBlocking {
+    private fun bind(caps: Set<Capability>, maxTokens: Int? = null) = runBlocking {
         ai.endpoints.save(Endpoint("az", "Azure", EndpointKind.AZURE_OPENAI, "https://az.example", "2024-10-21", listOf("gpt"), caps, 1), apiKey = "k").getOrThrow()
-        ai.bindings.set(RoleBinding(Role.ANSWER, "az", "gpt")).getOrThrow()
+        ai.bindings.set(RoleBinding(Role.ANSWER, "az", "gpt", maxTokens = maxTokens)).getOrThrow()
     }
 
     private val call = RoleCall(PromptKey.ANSWER, PromptVars(question = "Where is the milk?", retrievedMemories = PromptComposer.dataBlock("memories", listOf("id=m1 · milk in fridge"))), inputIds = setOf("m1"))
@@ -155,5 +157,48 @@ class RoleRunnerTest {
             assertTrue(e.message!!, e.message!!.contains("1 problem"))
             assertTrue(e.message!!, !e.message!!.contains(marker))
         }
+    }
+
+    /**
+     * OBS-R3-1: a reply cut at the token cap (reasoning models spend the cap on reasoning first) is empty or half JSON.
+     * The one retry gets twice the cap the cut call had, and a note saying it was cut, instead of the same cap again.
+     */
+    @Test fun aReplyCutAtTheTokenCapIsRetriedWithTwiceTheCap() = runBlocking {
+        replies += """{"answer":"In the fri"""; cut += true
+        replies += """{"answer":"In the fridge","sources":["m1"]}"""; cut += false
+        assertEquals("In the fridge", (ai.runner.run(call).output as AnswerOutput).answer)
+        assertEquals(null, requests[0].maxTokens) // the binding's cap, else the provider default
+        assertEquals(2 * ModelRequest.DEFAULT_MAX_TOKENS, requests[1].maxTokens)
+        assertTrue(requests[1].prompt.contains("cut off at the length limit"))
+    }
+
+    @Test fun theCutRetryDoublesTheBindingsCapUpToTheSettingsLimit() = runBlocking {
+        bind(setOf(Capability.CHAT, Capability.JSON_SCHEMA), maxTokens = 1_000)
+        replies += ""; cut += true
+        replies += """{"answer":"ok","sources":[]}"""
+        ai.runner.run(call)
+        assertEquals(2_000, requests[1].maxTokens)
+        requests.clear()
+        bind(setOf(Capability.CHAT, Capability.JSON_SCHEMA), maxTokens = 6_000)
+        replies += ""; cut += true
+        replies += """{"answer":"ok","sources":[]}"""
+        ai.runner.run(call)
+        assertEquals(ModelRequest.MAX_TOKENS_LIMIT, requests[1].maxTokens)
+    }
+
+    /** A rejected reply that wasn't cut keeps the binding's cap on its retry (only the note changes). */
+    @Test fun anUncutRejectionKeepsTheCap() = runBlocking {
+        replies += """{"answer":"x","sources":["nope"]}"""
+        replies += """{"answer":"x","sources":["m1"]}"""
+        ai.runner.run(call)
+        assertEquals(null, requests[1].maxTokens)
+    }
+
+    /** OBS-R3-1: a whitespace-only answer was an INVALID_OUTPUT with no retry (AnswerService); now it is a rejected reply. */
+    @Test fun aBlankAnswerIsRejectedAndRetried() = runBlocking {
+        replies += """{"answer":"   ","sources":[]}"""
+        replies += """{"answer":"In the fridge","sources":["m1"]}"""
+        assertEquals("In the fridge", (ai.runner.run(call).output as AnswerOutput).answer)
+        assertTrue(requests[1].prompt.contains("answer is empty"))
     }
 }

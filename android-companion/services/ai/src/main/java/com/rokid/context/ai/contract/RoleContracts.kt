@@ -53,7 +53,12 @@ object RoleContracts {
             }
             is SummaryOutput -> if (output.confidence !in 0.0..1.0) add("confidence must be 0–1")
             is CriticOutput -> Unit
-            is AnswerOutput -> { sources(output.sources, ctx)?.let { add(it) }; addAll(action(output.proposedAction, ctx)) }
+            is AnswerOutput -> {
+                // OBS-R3-1: minLength 1 lets "   " through, and AnswerService then failed it with no retry.
+                if (output.answer.isBlank()) add("answer is empty")
+                sources(output.sources, ctx)?.let { add(it) }
+                addAll(action(output.proposedAction, ctx))
+            }
             is NudgeOutput -> {
                 sources(output.sourceIds, ctx)?.let { add(it) }
                 if (output.shouldNudge && output.text.isBlank()) add("text is empty but shouldNudge is true")

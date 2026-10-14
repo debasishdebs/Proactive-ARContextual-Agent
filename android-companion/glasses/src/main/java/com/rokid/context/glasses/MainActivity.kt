@@ -230,11 +230,14 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Tap = Ask (spec §5.1): starts push-to-talk; a tap while recording sends. Not while the phone is offline, still
-     * connecting or outdated, or says voice can't work (spec §3.6, §5.1.1). Capture pauses don't matter: Ask is a user action.
+     * Tap = Ask (spec §5.1): starts push-to-talk; a tap while recording, or just after an auto-end, sends. Not while the
+     * phone is offline, still connecting or outdated, or says voice can't work (spec §3.6, §5.1.1). Capture pauses don't
+     * matter: Ask is a user action.
      */
     private fun onAsk(now: Long) {
         if (runtime.listening.value) { runtime.ptt.stop(); return }
+        // BUG-R3-3: the VAD ended the listen a beat before this tap; the tap was the send, the ask is already on its way.
+        if (runtime.ptt.takeLateTap()) { Log.i(TAG, "ptt: tap after auto-end taken as send"); return }
         HudCopy.askUnavailable(controller.connection.value, controller.settings.value.askBlockedReason)?.let { local = LocalOverlay.Toast(it, now); return }
         if (!granted(Manifest.permission.RECORD_AUDIO)) {
             local = LocalOverlay.Toast(MIC_PERMISSION, now)
