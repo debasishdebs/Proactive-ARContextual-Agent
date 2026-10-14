@@ -56,7 +56,19 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     private val _ready = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     override val ready: SharedFlow<Unit> = _ready
 
-    init { instance = this }
+    init {
+        instance = this
+        quietSdkLogs()
+    }
+
+    /**
+     * SEC-1: the SDK's only log knob, in every build type. In client-l 1.1.2 nothing calls LogUtil, and the token lines
+     * (`CXRLink: connect by token`, AuthorizationHelper `token:`) go straight to android.util.Log, so this cannot silence
+     * them (docs/rokid-sdk-token-logging.md); it keeps any LogUtil-routed line a later SDK adds at ERROR only.
+     */
+    private fun quietSdkLogs() {
+        try { com.rokid.cxr.link.utils.LogUtil.setLogLevel(com.rokid.cxr.link.utils.LogUtil.ERROR) } catch (_: Throwable) { }
+    }
 
     private fun post(block: () -> Unit) { scope.launch { block() } }
     private fun token(): String? = app.getSharedPreferences(PREFS, 0).getString(KEY_TOKEN, null)
