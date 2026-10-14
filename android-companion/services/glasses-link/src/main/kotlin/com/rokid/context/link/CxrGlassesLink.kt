@@ -97,7 +97,7 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     override fun connectOnce() = post { auth.clearStale(now()); act(policy.autoConnect()) }
 
     override fun connectOnResume() = post {
-        if (!shouldReconnectOnResume(_state.value, token() != null, authDeclined, authTimedOut)) return@post
+        if (!shouldReconnectOnResume(_state.value, token() != null, authDeclined, authTimedOut, policy.waitingAuthRetry)) return@post
         Log.i(TAG, "phone app resumed: reconnecting")
         authTimedOut = false
         auth.clearStale(now())
@@ -146,7 +146,8 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
                 delay(AuthGate.AUTH_TIMEOUT_MS)
                 auth.expire()
                 authTimedOut = true // not a decline: with a token, the next phone-app resume retries
-                act(policy.onEvent(LinkEvent.AuthFailed))
+                Log.i(TAG, "authorization timed out")
+                act(policy.onEvent(LinkEvent.AuthTimedOut)) // BUG-R2-4: bounded automatic retry, then NOT_AUTHORIZED
             }
             if (AuthActivity.launch(app).isFailure) onAuthResult(false)
             return
