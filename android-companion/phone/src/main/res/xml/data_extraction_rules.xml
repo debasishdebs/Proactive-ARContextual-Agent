@@ -17,6 +17,7 @@
         <exclude domain="file" path="captured_frames.log" />
         <exclude domain="file" path="summary_trace.log" />
         <exclude domain="root" path="cache/exports" />
+        <exclude domain="file" path="models" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="endpoint_keys.xml" />
@@ -34,5 +35,6 @@
         <exclude domain="file" path="captured_frames.log" />
         <exclude domain="file" path="summary_trace.log" />
         <exclude domain="root" path="cache/exports" />
+        <exclude domain="file" path="models" />
     </device-transfer>
 </data-extraction-rules>

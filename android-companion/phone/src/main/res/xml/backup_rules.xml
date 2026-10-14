@@ -19,4 +19,6 @@
     <exclude domain="file" path="captured_frames.log" />
     <exclude domain="file" path="summary_trace.log" />
     <exclude domain="root" path="cache/exports" />
+    <!-- Downloaded on-device models: large and re-downloadable. -->
+    <exclude domain="file" path="models" />
 </full-backup-content>
