@@ -110,3 +110,50 @@ Agent flows' *Embed* and *Search memories* cards then show the model.
   - a meaning-only query matches;
   - force-stop mid-download, then resume;
   - check phone RAM (`dumpsys meminfo com.rokid.context`) while embedding.
+
+---
+
+## Amendments (as built, 2026-10-14)
+
+These entries are appended; the body above is unchanged.
+
+**E1. §2: native toolchain and build.**
+- *Now:*
+  - NDK **28.2.13676358** is pinned in `:services:ai`, `:phone` and `:glasses`, with CMake 3.22.1. NDK 27.2 isn't in the SDK channel, and 28.2 gives 16 KB page alignment.
+  - llama.cpp is a submodule at tag b11618 (`4dd6dd4`): CPU-only, statically built, with the `c++_static` STL and a baseline armv8-a target (no dotprod/i8mm).
+  - `-O3` applies to every variant, not only release.
+  - Pinning `ndkVersion` in the apps lets AGP strip native libraries, so `libllama_jni.so` is about 4.5 MB in the APK.
+- *Why:*
+  - `c++_static` avoids a clash with the CXR SDK's `libc++_shared`;
+  - armv8-a runs on A53/A55;
+  - the debug ggml build was -O0.
+- *Commits:* `9fed70d`, `818c196`, `93ed4ea`, `c3d6966`. *Date:* 2026-10-14.
+
+**E2. §2: JNI load.**
+- *Now:* `nativeLoadModel(path, forEmbedding)` also creates the embedding context and returns 0 on failure, including out of memory. That counts as a load failure. Native functions return null, and Kotlin maps that to `ProviderConfigException`.
+- *Why:* an OOM at context creation never raised the load-failure UI (review I2).
+- *Commits:* `818c196`, `af208fc`. *Date:* 2026-10-14.
+
+**E3. §6: embeds batched 8 per call.**
+- *Now:* on-device embeds go **8 texts per timed native call** (`NATIVE_BATCH`), each call with its own timeout, instead of one call for a whole 64-text batch.
+- *Why:* a 64-text batch could pass the 60 s timeout (review I1). Cost: about 8× more JNI round trips. A query embed can still wait behind a running reindex batch (final review M6).
+- *Commit:* `c3d6966`. *Date:* 2026-10-14. Not measured on the device.
+
+**E4. §4: download client and worker.**
+- *Now:* the download client is https-only and follows redirects, but never from https to http. It has a 20 s connect timeout, a 60 s read timeout and no call timeout. WorkManager input is the catalog `model_id` only, never a URL.
+- IO errors and 408/429/5xx retry with exponential backoff from 30 s, up to 6 attempts. A cancelled download keeps its `.part`; Delete removes it.
+- Each model file has an in-process mutex, and the HTTP call is cancelled with the coroutine.
+- *Why:* the pinned Hugging Face URL redirects to a CDN; a stopped worker had appended to its replacement's `.part` (review I4).
+- *Commits:* `eab2656`, `bd91105`. *Date:* 2026-10-14.
+
+**E5. §5: endpoint id and mobile-data switch.**
+- *Now:* the endpoint id is `local_<id>` with characters outside `[A-Za-z0-9_-]` replaced, so it reads `local_bge-small-en-v1_5-q8`.
+- "Allow mobile data" is stored in `app_config` under the key `local_models_allow_metered`. That file is excluded from backups, so a restore brings the switch back to off. Changing the switch re-enqueues any queued or running download with REPLACE, keeping the `.part`.
+- *Why:* `EndpointRules` rejects '.'; the switch didn't reach live work (review I3).
+- *Commits:* `cad5287`, `b7a5e9b`, `6439310`. *Date:* 2026-10-14.
+
+**E6. §6: model cache and failure count.**
+- *Now:* a process-wide `EmbedModelCache` loads on first use, releases after 60 s idle, reloads when the file's path, size or mtime changes, and releases at once on an embed failure. The consecutive load-failure count is kept in memory per model path and isn't persisted.
+- *Commit:* `867fe9c`. *Date:* 2026-10-14.
+
+**E7. Status.** Merged as `7d37580`. The §7 device check (download, use, reindex, semantic scores, resume, meminfo) is still pending. Open minors include the free-space check ignoring `.part` bytes and the overlay text "Keep the app open" (decision log §4 ODE).

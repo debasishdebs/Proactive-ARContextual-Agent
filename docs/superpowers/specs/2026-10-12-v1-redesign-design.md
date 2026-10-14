@@ -497,3 +497,159 @@ Every plan task cites the R-IDs it satisfies. All must be covered.
 - R-74 Screenshot references + legacy screenshot relocation.
 - R-75 On-device checklist script.
 - R-76 Phase 0 spikes (CXR G→P JPEG incl. chunking/ack/interrupt/PTT concurrency; TTS; STT probe) executed and recorded in `docs/spikes/` before phase 3.
+
+---
+
+## Amendments (as built, 2026-10-14)
+
+These entries are appended. The body above is unchanged, so its history stays readable. Where an entry and the body disagree, the entry describes what was built. Evidence: `2026-10-14-decision-log.md` (DL), `2026-10-14-session-log.md` (SL), `2026-10-14-status-and-backlog.md` (SB) and `2026-10-14-traceability.md`.
+
+**Already in the body.** These edits were made in place earlier, so they are noted here rather than repeated:
+- §1.7: the buffer went from 20 to 200 frames (`ef8fadd`, 2026-10-12). R-07's "20-frame" wording is stale; read it as 200 frames plus an 8 MiB cap (Phase 8 A1, `8b13193`).
+- §1.1: `EnergyVad`/`Pcm` live in `:core:model` (Phase 6 F16).
+- §5.1.1: a pack is assumed installed on API 31–32 or when the query fails (Phase 6 F17).
+- §5.1 step 2 (VAD; `754d201`, 2026-10-14 19:05). The body already gives 2.2 s silence, an adaptive floor and the 1.5 s late tap. The exact values are speech ≥ max(80, 3 × floor), where the floor is the median RMS of the first 300 ms capped at 400 and is re-judged when the floor drops. No speech gives up at 5 s; the cap is 15 s. Source: DL §1 devfix/r3b; `CM/audio/EnergyVad.kt`, `GL/voice/PushToTalk.kt` `LATE_TAP_GRACE_MS`.
+
+**A1. §1.7, §3.1, R-07, R-30: capture path.**
+- *Now:* `MainActivity` starts `CaptureService` once with `ACTION_KEEP_ALIVE`, and the service stays in the foreground. The capture alarm is a broadcast to `CaptureAlarmReceiver`, which calls the live service in-process. Only when no service is live does the fallback start it the old way.
+- *Why:* on Android 12 (glasses API 32), a foreground service started from the background gets no camera access, so every alarm-started capture was denied while the HUD wasn't in front (glasses logcat, SL §11).
+- *Commit:* `1f09708`, merged `a75ae2d`. *Date:* 2026-10-14. Device-verified during the drive and while minimised.
+
+**A2. §1.7, §3.1, §3.6, R-05, R-07: minimised link.**
+- *Now:* frames may be sent while the CUSTOM_APP session is open, **or** while the session-less `CXRLink` (bound by `GlassAppWatcher`) is up and the glasses app has not exited. On `GLASSES_EXIT` the phone goes to `MINIMISED` at once. It keeps the clock offset and `pc_state` heartbeats (`phoneLinked = true`) and acks frames. If no glasses message arrives within 10 s of binding, it moves to `CLOSED_ON_GLASSES`.
+- While `MINIMISED`, the phone never calls `appStart`: "Open on glasses" sends a 5 s pop-up instead. Push-to-talk stays foreground-only.
+- `ContextHubService` (connectedDevice FGS, START_STICKY) is the "Connected to glasses" foreground service.
+- *Why:* the phone SDK ends the session about 5 s after any other glasses package comes to the front, and no flag prevents it.
+- *Commits:* `2eb401d` (probe), `043eca5`, `9e02467`, merged `f82b82e`. *Date:* 2026-10-14. Device-verified 22:42–22:46 (DL Controller corrections). Steps 5–7 of the minimised-link script are still pending.
+- *Open:* SB B7 (a phone process restart while minimised may `appStart` once).
+
+**A3. §1.7: the Confirm auto-open exception.**
+- *Now:* auto-opening the HUD for an action Confirm is the one case where the app may come over another glasses app. It needs SYSTEM_ALERT_WINDOW, which exempts it from the background-activity-start block. After the vote or the 15 s timeout, the app re-minimises. Everything else still never pulls the HUD forward: capture fallback, reconnect, and "Open on glasses" while minimised.
+- *Why:* the user's explicit choice (glasses-minimise spec §1).
+- *Commit:* `5f9c720`, merged `d1bf157`. *Date:* 2026-10-14. Not yet device-verified.
+
+**A4. §3.5, R-34: double-tap.**
+- *Now:* on a page with the default mapping, a double-tap arms a 3 s exit gate ("Double-tap again to exit · N"). A second double-tap inside the window minimises the app. Otherwise the pause/resume toggle runs when the window ends, so a pause is applied about 3 s late.
+- A tap or swipe while armed cancels the gate. The transient overlays keep their own double-tap (Listening cancel, Answer dismiss, undo toast). A remapped DOUBLE_TAP bypasses the gate. A fast 4-tap minimises.
+- *Why:* the user wanted double-tap to exit (drive feedback, SL §12).
+- *Commits:* `0235b1d`, `d74e54b`. *Date:* 2026-10-14.
+
+**A5. §3.1, §3.2, R-31: minimised surfaces.**
+- *Now:* when minimised, a 48 dp corner icon with a countdown ring sits over the front app (`HudSettings.iconCorner`, default TOP_RIGHT). Answers, nudges and toasts show as a pop-up (`HudSettings.popupSeconds`, 3–20 s, default 6). A ✓ photo-sent cue appears on the Glance timer and on the ring.
+- Both settings fields are additive under PROTOCOL_VERSION 1.
+- *Why:* glasses-minimise spec. The photo-sent cue answers "nothing came" (SL §13).
+- *Commits:* `0cac4d9`, `a9c2480`, `5f9c720`, `d53e76e`. *Date:* 2026-10-14.
+
+**A6. §3.1, §2.4 Capture schedule: cadence.**
+- *Now:* the capture interval is clamped to **30 s minimum** and 1 h maximum (`CaptureCadence`). Phone presets are 30 s, 1, 2, 5, 10, 15 and 30 min, and 1 h; the default is 5 min. The interval doubles when the glasses battery is low.
+- *Why:* the 1 h cap bounds the stale-schedule rule (DL §1 P3/T11 cadence). The faster, motion-aware cadence the user recalled (1–2 s moving, 3–5 s idle) is deferred (SL §16 Develop 1).
+- *Commit:* `b61f9b2`. *Date:* 2026-10-12.
+
+**A7. §3.6, R-35: TTS.**
+- *Now:* answers are spoken only with an embedded/offline voice whose engine doesn't need the network. A glasses ask is spoken only when an A2DP output exists (any A2DP device counts; SCO doesn't). Audio focus is taken; becoming-noisy stops speech.
+- *Why:* answer text must never go to a network voice, and the glasses have no TTS engine (Phase 0).
+- *Commits:* `2dc524d`, `3259382`, `d54e93d`. *Date:* 2026-10-13.
+
+**A8. §4.1, R-40: seeding.**
+- *Now:* no API key or other secret is compiled into the APK. A build-time guard fails on secret-looking BuildConfig names and on values that carry credentials. The first-launch seed creates the endpoint with address and deployment only. The key is entered in the app (onboarding's masked key field, or the endpoint editor) and lives only in the encrypted vault.
+- *Why:* a key in the APK can be extracted (user request, Phase 3 T2b).
+- *Commits:* `8ad064a` (2026-10-12), `0ab2e4d` (2026-10-13), `cd1324d` (2026-10-14).
+
+**A9. §4.3, §4.4, R-77: VISION_EXTRACT.**
+- *Now:* the batched prompt runs **once per photo**, up to 3 calls per batch. Each fact is stored on, and fenced by, the frame that produced it, and reprocessing is fenced on its frames.
+- *Why:* Forget moment missed facts that had been attributed to the batch's newest frame (Phase 8 final review, fix-data I1).
+- *Cost:* up to 3× the vision calls. Revisit only with per-photo attribution (SL §16 Improve 8).
+- *Commit:* `139090e`. *Date:* 2026-10-14.
+
+**A10. §4.4, R-46: answer token cap.**
+- *Now:* the default `maxTokens` is 4096 (`ModelGateway.DEFAULT_MAX_TOKENS`). A reply cut at the cap (`finish_reason = length`) is retried once at twice the cap, up to 8192. A null-content refusal and a blank answer are also retried, and the rejection log names the stage and the cut flag.
+- *Why:* reasoning tokens on the deployment counted against a 500-token cap, which likely caused INVALID_OUTPUT on about a third of answers (R3 OBS-R3-1).
+- *Commit:* `5120a2d`. *Date:* 2026-10-14. Not yet device-verified.
+
+**A11. §4.6, R-41: embedding batches.**
+- *Now:* endpoint embedding requests are chunked at 64 inputs for every kind. On-device (llama.cpp) embeds go 8 texts per timed native call; see the on-device embeddings spec amendments.
+- *Commits:* `06a1bed` (2026-10-13), `c3d6966` (2026-10-14).
+
+**A12. §5.3, R-62: undo, notifications and alarms.**
+- *Now:*
+  - an auto-added action's HUD undo travels on the Answer overlay (`undoProposalId`), and its window restarts once when first shown (≤ 20 s in total);
+  - phone-typed asks get the HUD undo too, because the matrix keys on origin ASK;
+  - with notifications off, an accepted reminder is kept and its card says "Added, but notifications are off" with **Turn on**;
+  - reminders use an exact alarm when allowed, otherwise `setWindow` with a 10-min window.
+- *Why:* R2 BUG-R2-5; P8 final fix-actions I2; OS limits.
+- *Commits:* `7579bd7`, `0a15f7e`, `f2e95d5`. *Dates:* 2026-10-13/14.
+- *Open:* exact-time reminders (SB B2).
+
+**A13. §5.4, R-64: data source defaults.**
+- *Now:*
+  - every source is off by default;
+  - context lines are capped at 1 500 chars;
+  - contacts are used only for a question, ≤ 3 lines, with no numbers or emails;
+  - location uses a fix ≤ 30 min old, with a 3 s geocoder bound and a 10-min label cache;
+  - "Nudges per day" is 0/3/6/10, default 6.
+- *Why:* privacy and bounds (DL §1 P7/C1).
+- *Commit:* `84db78e`. *Date:* 2026-10-13.
+
+**A14. §5.5, R-65: pause semantics.**
+- *Now:*
+  - capture pauses stop capture only; processing of captured frames continues;
+  - resumed intervals older than 7 d collapse to zero-length tombstones kept 90 days;
+  - turning quiet hours off resumes every stored QUIET_HOURS record by id, and Privacy lists each occurrence once.
+- *Why:* scope (DL §1 P7/A M2); a resumed id came back after 7 days (P7/A I2); R2 BUG-R2-6.
+- *Commits:* `abe8f49` (2026-10-13), `8f74377` (2026-10-14).
+
+**A15. §5.6, R-66: phone capture source.**
+- *Now:* the frame source is `rokid_phone` (file `rokid_phone_<ts>.jpg`), not `phone`.
+- *Why:* `PipelineRecords` rejects and purges sources that don't start with `rokid`.
+- *Commit:* `517f453`. *Date:* 2026-10-13.
+
+**A16. §6.1.1, R-77: retention ruling.**
+- *Now:*
+  - retention expiry (`RetentionWorker` → `ForgetService.expire`) deletes only the expired rows; it doesn't invalidate descendants (a user Forget still cascades);
+  - re-summarised rows keep their original `createdAt`;
+  - retention never touches EXECUTING/EXECUTED proposals, their params, alarms or notifications; PENDING ones still expire;
+  - a `forget_tombstone` is pruned only when there is no frame row, no memory and no JPEG, and it is older than 8 days (the 7-day glasses resend window + 1 day of queue TTL).
+- *Why:* the cascade gave derived summaries about 24 h of life (P7/F C1); retention silently cancelled accepted reminders (P8 final fix-data C1); tombstones were unbounded (fix-data I2).
+- *Commits:* `a337d0b` (2026-10-13), `9beea71`, `3e0a88c` (2026-10-14).
+
+**A17. §6.1.1: Delete all scope.**
+- *Now:* Delete all **redacts** (doesn't delete) EXECUTED/EXECUTING/FAILED proposals, empties every action_log detail (transitions kept), and cancels their alarms and notifications. Shopping items and notes are **kept**. A proposal stored after its ask or nudge was wiped or forgotten is redacted at once (`OriginFencedIntake`).
+- *Why:* calendar undo keeps working; mirrors Forget; shopping items and notes are user-owned outputs (SL §1). Decide: SL §16 Decide 2.
+- *Commits:* `6fa7d07`, `52cc0f9`. *Date:* 2026-10-14.
+
+**A18. §6.1 and the secrets constraint: backup exclusions.**
+- *Now:* excluded from Auto Backup and device transfer:
+  - the encrypted key files (`endpoint_keys`, `db_key`, `app_config_secret`);
+  - the DB (`context.db` + `-wal`/`-shm`);
+  - the seed/import markers;
+  - frame dirs, the queue log, legacy logs, exports and `models/`;
+  - set-up/device state (`onboarding`, `app_config`, `memory_graph`, `index_maintenance`, `pipeline_stats`, `rokid_link`, `rokid_bridge`, `voice_probe`).
+- Plain user preference files stay restorable. `BackupRulesTest` fails the build when a prefs file has no ruling. `OnboardingGuard` re-runs onboarding when a restored "complete" has no usable ANSWER endpoint and an empty DB.
+- *Why:* a restore has no Keystore master key; set-up state restored onto a fresh install skipped onboarding (R3 BUG-R3-1).
+- *Commits:* `03376c5`, `b3d092c` (2026-10-13), `6439310`, `909ccf8` (2026-10-14).
+- *Open:* SB B12 (HIGH). `files/app_config_secret.xml.bak.*` copies aren't excluded. The glasses APK has no backup rules (DL §4 P8 device M3).
+
+**A19. §6.1, R-70: encryption.**
+- *Now:* the toggle records a target mode, and the conversion runs at the next DB open: `sqlcipher_export` into `context.db.migrating`, then renames under a crash-safe stage flag. The FTS index is rebuilt on a **fresh second connection** that reads the schema from disk, because the exporting connection doesn't register the FTS4 table.
+- Frame JPEGs are **not** encrypted (traceability Gap G1).
+- *Why:* R2 failed on bind args; R3 failed at REBUILD_INDEX.
+- *Commits:* `9dd246e` (2026-10-13), `8800b56`, `df13ae4` (2026-10-14). Not yet device-verified.
+
+**A20. §5.1.1, R-67: probe.**
+- *Now:* the pipe capacity is measured on the device, and the thresholds are relative to it rather than a fixed 64 KiB; a phone with 4 KiB pages measured 51 200 bytes. An undecidable probe is NOT_VERIFIED, never UNSUPPORTED.
+- The probe clip is the public-domain LJSpeech LJ001-0013, resampled to 16 kHz mono PCM16 and padded to the same 134 142 bytes.
+- *Why:* page-slot pipes made the 64 KiB rule wrong (DL §1 P6/T5); the earlier clip's licence was personal and non-commercial (SL §2).
+- *Commits:* `73a4739`, `d4f7ea2` (2026-10-13), `64de2b0` (2026-10-14).
+
+**A21. §2.4 Activity, R-15.**
+- *Now:* a timeline row shows its photo's capture time, falling back to `createdAt`, and earlier-day photos go in an "Earlier days" section. A sort menu offers Latest first (default), Oldest first, A–Z and Z–A; A–Z and Z–A flatten the sections. The choice is stored in `hub_settings/activity_sort` (restorable).
+- *Why:* R1 BUG-1; the drive confusion (SL §13).
+- *Commits:* `6433f7a`, `5db3a64`. *Date:* 2026-10-14.
+
+**A22. §2.4 Settings → AI.**
+- *Now:* two more rows, **Agent flows** and **On-device models**, each specified in its own 2026-10-14 spec.
+- *Commits:* `2197701`, `cad5287`. *Date:* 2026-10-14.
+
+**A23. §1.8: retry backoff wording.**
+- *Now:* the glasses wait about 2 s between frame retry attempts. §1.8 doesn't state this.
+- *Why:* behaviour intended (Phase 8 Won't fix #2); recorded here so the spec matches.

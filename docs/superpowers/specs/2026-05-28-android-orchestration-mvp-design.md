@@ -502,3 +502,54 @@ Minimum metrics/events:
 - Full shortcut action-intent customization (later phase).
 - Phone-side voice fallback (v1.1).
 - Config import (post-MVP).
+
+---
+
+## Amendments (as built, 2026-10-14)
+
+These entries are appended; the body above is unchanged. `2026-10-12-v1-redesign-design.md` supersedes this spec's UI and transport parts. The entries below record v1 decisions that changed what this spec says. Requirements that were never built and have no ruling are listed as Gaps in `2026-10-14-traceability.md` §7; they are not amended here.
+
+**M1. §11.4: language scope.**
+- *Now:* English is primary and Hindi is the only other target; Oriya is dropped. Input language is the recognizer's speech language (Settings → Phone camera & mic). Output is Persona & language "Reply language": Same as the question (default), English or Hindi.
+- *Why:* v1 §0.1 scope decision.
+- *Commit:* `46f223e`. *Date:* 2026-10-12.
+
+**M2. §5.2: glasses disconnect buffer.**
+- *Now:* 200 frames plus an 8 MiB byte cap, persisted in app storage. FIFO drops the oldest first, the newest is kept on a full disk, and frames older than 72 h of uptime are dropped. There is no auto-throttle or hysteresis.
+- *Why:* CXR-only transport with no RFCOMM fallback (Phase 0 user decision); Phase 8 A1 storage edges.
+- *Commits:* `ef8fadd` (2026-10-12), `8b13193` (2026-10-13).
+
+**M3. §5.3: capture cadence.**
+- *Now:* the user sets the interval, clamped 30 s–1 h (default 5 min), with burst-on-change. The glasses double the interval when their battery is low and stop capturing at ≤ 10 %. Activity Recognition and Health Connect are not used.
+- *Why:* v1 §2.4 capture schedule. A motion-aware cadence is deferred (session log §16 Develop 1).
+- *Commit:* `b61f9b2`. *Date:* 2026-10-12.
+
+**M4. §9.3: raw-frame lifecycle.**
+- *Now:* frame JPEGs stay on disk, because they back the timeline, Memory detail and the Frame viewer. They are removed by tier retention, Forget moment or Delete all, not by critic success or a 24 h cap.
+- *Why:* v1 §6.1 and §6.1.1.
+- *Commit:* `a0f4ab7` (retention enforcement). *Date:* 2026-10-13.
+
+**M5. §13.4, §24: phone-mic voice.**
+- *Now:* built in v1, on-device only (`createOnDeviceSpeechRecognizer`), as the Home hero mic.
+- *Why:* v1 §5.1 and §5.1.1.
+- *Commit:* `d1e0f5f`. *Date:* 2026-10-13.
+
+**M6. §15.2–15.4: encryption migration.**
+- *Now:* the toggle (default OFF) records a target. The whole database is converted at the next open with `sqlcipher_export`, under a crash-safe stage flag, and the FTS index is rebuilt on a fresh connection. There is no partial or unmigrated state, no Migration card and no popups.
+- *Why:* v1 §1.4 removed the Migration card; Phase 5 Task 14 design.
+- *Commits:* `9dd246e` (2026-10-13), `df13ae4` (2026-10-14). D-D4 device check not yet passing.
+
+**M7. §6, §7.3: routing.**
+- *Now:* the model is chosen by role bindings (endpoint, model and optional fallback per role). There is no battery or network policy routing. The queued-job battery and saver rules in §6 still apply in `QueueDrainWorker`. "Local model only when charging or > 70 %" is not enforced (traceability Gap G6).
+- *Why:* v1 §4.2.
+- *Commits:* `4220c47`, `001ea95`. *Date:* 2026-10-12/13.
+
+**M8. §14: model lifecycle.**
+- *Now:* the download manager exists only for on-device **embedding** models. It is Wi-Fi-only by default with an "Allow mobile data" switch, resumes over HTTP Range, verifies size and SHA-256 before an atomic rename, and keeps a cancelled `.part` so the download can resume. No A/B slots exist.
+- *Why:* on-device embeddings spec, 2026-10-14.
+- *Commits:* `460fdfa`, `eab2656`, `cad5287`. *Date:* 2026-10-14.
+
+**M9. §17: config sync.**
+- *Now:* the phone is the single source of truth. It pushes `HudSettings` on change and on connect, and Diagnostics → "Push settings to glasses" is the manual trigger. There is no timestamp conflict policy.
+- *Why:* v1 §1.6.
+- *Commit:* `0ea9804`. *Date:* 2026-10-13.
