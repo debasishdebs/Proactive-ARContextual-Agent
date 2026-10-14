@@ -62,7 +62,7 @@ class NudgeEngine(
         val text = AskText.collapse(out.text).take(MAX_TEXT)
         if (!out.shouldNudge || text.isEmpty()) return NudgeRun.NotNeeded
         val gate = gates.check(text, h, now)
-        if (gate != Gate.PASS) return NudgeRun.Dropped(gate)
+        if (gate != Gate.PASS) { recordDropped(memory, gate, now); return NudgeRun.Dropped(gate) }
         val id = "nudge_${UUID.randomUUID()}"
         // Forget fence (integration carry 1): a memory in the prompt or cited forgotten while the model ran means the
         // text may hold forgotten content, so the nudge is dropped (no row, no proposal). Checked in the insert transaction.
@@ -85,6 +85,11 @@ class NudgeEngine(
         private const val TAG = "NudgeEngine"
         private const val MAX_TEXT = 200
         private const val MAX_WHY = 300
+
+        /** A "nudge" decision the notify throttle held back: recorded with its reason (Diagnostics), no row, no text. */
+        suspend fun recordDropped(memory: MemoryGraph, gate: Gate, now: Long) {
+            memory.traces.upsert(SummaryTraceEntity("nudge_drop_$now", "NUDGE_DROPPED", now, gate.name))
+        }
 
         fun shownOn(v: Verbosity): String = when (v) {
             Verbosity.SILENT -> "phone"

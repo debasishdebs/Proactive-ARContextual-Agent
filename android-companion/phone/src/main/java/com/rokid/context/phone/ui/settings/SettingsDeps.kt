@@ -151,6 +151,12 @@ private class AppSources(private val app: Context) : com.rokid.context.phone.ui.
     override val nudgesPerDay get() = graph.settings.nudgesPerDay
     override fun set(k: com.rokid.context.connectors.sources.SourceKind, on: Boolean) = graph.settings.set(k, on)
     override fun setNudgesPerDay(n: Int) = graph.settings.setNudgesPerDay(n)
+    override val settleSec get() = graph.settings.settleSec
+    override val checkGapSec get() = graph.settings.checkGapSec
+    override val shownGapMin get() = graph.settings.shownGapMin
+    override fun setSettleSec(n: Int) = graph.settings.setSettleSec(n)
+    override fun setCheckGapSec(n: Int) = graph.settings.setCheckGapSec(n)
+    override fun setShownGapMin(n: Int) = graph.settings.setShownGapMin(n)
     override fun granted(k: com.rokid.context.connectors.sources.SourceKind) = com.rokid.context.connectors.sources.SourcePermissions.of(k).all {
         androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }

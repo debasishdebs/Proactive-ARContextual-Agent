@@ -38,6 +38,12 @@ interface SourcesControl {
     val nudgesPerDay: StateFlow<Int>
     fun set(k: SourceKind, on: Boolean)
     fun setNudgesPerDay(n: Int)
+    val settleSec: StateFlow<Int> get() = MutableStateFlow(SourceSettingsStore.DEFAULT_SETTLE_SEC)
+    val checkGapSec: StateFlow<Int> get() = MutableStateFlow(SourceSettingsStore.DEFAULT_CHECK_GAP_SEC)
+    val shownGapMin: StateFlow<Int> get() = MutableStateFlow(SourceSettingsStore.DEFAULT_SHOWN_GAP_MIN)
+    fun setSettleSec(n: Int) = Unit
+    fun setCheckGapSec(n: Int) = Unit
+    fun setShownGapMin(n: Int) = Unit
     /** Every permission [k] needs is granted right now. */
     fun granted(k: SourceKind): Boolean
 
@@ -58,6 +64,9 @@ data class SourcesUiState(
     /** On but revoked, or denied with "don't ask again": the row offers Open settings. */
     val needsPermission: Set<SourceKind> = emptySet(),
     val nudgesPerDay: Int = SourceSettingsStore.DEFAULT_CAP,
+    val settleSec: Int = SourceSettingsStore.DEFAULT_SETTLE_SEC,
+    val checkGapSec: Int = SourceSettingsStore.DEFAULT_CHECK_GAP_SEC,
+    val shownGapMin: Int = SourceSettingsStore.DEFAULT_SHOWN_GAP_MIN,
 )
 
 /**
@@ -73,7 +82,9 @@ class SourcesViewModel(private val control: SourcesControl, private val work: Co
     init {
         viewModelScope.launch {
             val (enabled, cap) = withContext(work) { control.enabled to control.nudgesPerDay } // first touch reads prefs
-            combine(enabled, cap, local) { e, n, l -> SourcesUiState(false, e, (l.blocked - e) + (l.revoked intersect e), n) }
+            val timing = withContext(work) { Triple(control.settleSec, control.checkGapSec, control.shownGapMin) }
+            combine(enabled, cap, local, timing.first, timing.second) { e, n, l, s, g -> SourcesUiState(false, e, (l.blocked - e) + (l.revoked intersect e), n, s, g) }
+                .combine(timing.third) { st, m -> st.copy(shownGapMin = m) }
                 .collect { ui.value = it }
         }
         onResume()
@@ -106,6 +117,9 @@ class SourcesViewModel(private val control: SourcesControl, private val work: Co
     }
 
     fun setNudgesPerDay(n: Int) = control.setNudgesPerDay(n)
+    fun setSettleSec(n: Int) = control.setSettleSec(n)
+    fun setCheckGapSec(n: Int) = control.setCheckGapSec(n)
+    fun setShownGapMin(n: Int) = control.setShownGapMin(n)
 }
 
 private data class SourceRow(val kind: SourceKind, val title: String, val subtitle: String)
@@ -124,6 +138,9 @@ fun SourcesScreen(
     onToggle: (SourceKind, Boolean) -> Unit,
     onNudgesPerDay: (Int) -> Unit,
     onOpenAppSettings: () -> Unit,
+    onSettleSec: (Int) -> Unit = {},
+    onCheckGapSec: (Int) -> Unit = {},
+    onShownGapMin: (Int) -> Unit = {},
 ) {
     SettingsPage("Data sources", onBack, tag = "sources") {
         item {
@@ -144,6 +161,21 @@ fun SourcesScreen(
                 ChoiceRow(
                     "Nudges per day", caps.map { if (it == 0) "Off" else it.toString() }, caps.indexOf(state.nudgesPerDay).coerceAtLeast(0),
                     { onNudgesPerDay(caps[it]) }, tag = "nudges_per_day", enabled = !state.loading,
+                )
+                val settle = SourceSettingsStore.SETTLE_SEC
+                ChoiceRow(
+                    "Settle window", settle.map { "$it s" }, settle.indexOf(state.settleSec).coerceAtLeast(0),
+                    { onSettleSec(settle[it]) }, tag = "nudge_settle", enabled = !state.loading,
+                )
+                val gap = SourceSettingsStore.CHECK_GAP_SEC
+                ChoiceRow(
+                    "Minimum gap between checks", gap.map { "$it s" }, gap.indexOf(state.checkGapSec).coerceAtLeast(0),
+                    { onCheckGapSec(gap[it]) }, tag = "nudge_check_gap", enabled = !state.loading,
+                )
+                val shown = SourceSettingsStore.SHOWN_GAP_MIN
+                ChoiceRow(
+                    "Minimum gap between shown nudges", shown.map { "$it min" }, shown.indexOf(state.shownGapMin).coerceAtLeast(0),
+                    { onShownGapMin(shown[it]) }, tag = "nudge_shown_gap", enabled = !state.loading,
                 )
             }
         }
@@ -171,5 +203,6 @@ fun SourcesRoute(deps: SettingsDeps, back: () -> Unit, canAskAgain: (String) -> 
         state, onBack = back,
         onToggle = { k, on -> vm.onToggle(k, on) { perms -> launcher.launch(perms.toTypedArray()) } },
         onNudgesPerDay = vm::setNudgesPerDay, onOpenAppSettings = deps.openAppSettings,
+        onSettleSec = vm::setSettleSec, onCheckGapSec = vm::setCheckGapSec, onShownGapMin = vm::setShownGapMin,
     )
 }
