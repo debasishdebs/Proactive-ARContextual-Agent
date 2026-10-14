@@ -13,6 +13,7 @@ import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.DownloadForOffline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Event
 import androidx.compose.material.icons.outlined.Face
@@ -98,6 +99,7 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
         ),
         "AI" to listOf(
             SettingRow(Icons.Outlined.AccountTree, PcColors.ChipViolet, "Agent flows", "See and tune each step of every agent", Routes.SETTINGS_FLOWS),
+            SettingRow(Icons.Outlined.DownloadForOffline, PcColors.ChipMint, "On-device models", "Run search models on your phone", Routes.SETTINGS_LOCAL_MODELS),
             SettingRow(Icons.Outlined.Cloud, PcColors.ChipSky, "Model endpoints", "Provider, address, key and Test", Routes.SETTINGS_ENDPOINTS),
             SettingRow(Icons.Outlined.AutoAwesome, PcColors.ChipViolet, "Models by role", "Which model does what", Routes.SETTINGS_ROLES),
             SettingRow(Icons.Outlined.Edit, PcColors.ChipRose, "Prompts", "Templates, schemas, versions and test bed", Routes.SETTINGS_PROMPTS),
