@@ -33,6 +33,9 @@ import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.orchestration.AnswerService
 import com.rokid.context.orchestration.EmbeddingWorker
+import com.rokid.context.orchestration.ExtractPhoto
+import com.rokid.context.orchestration.ExtractSave
+import com.rokid.context.orchestration.ExtractSaveResult
 import com.rokid.context.orchestration.FrameInputs
 import com.rokid.context.orchestration.NoMemoriesException
 import com.rokid.context.orchestration.PipelineRecords
@@ -174,41 +177,46 @@ class QueueDrainWorker(
             return
         }
         val frameLines = seen.map { (f, _) -> frameLine(f) }
+        // Still one call per photo here (Final review I1); the batch-then-singles fallback is ExtractSave.extract's.
         var promptVersion = 0
+        val captions = mutableListOf<com.rokid.context.ai.contract.FrameCaption>()
         val facts = seen.flatMap { (frame, image) ->
-            val r = ai.runner.run(
-                RoleCall(PromptKey.VISION_EXTRACT, PromptVars(recentContext = PromptComposer.dataBlock("frames", listOf(frameLine(frame)))),
-                    images = listOf(image), fromFrames = true, callClass = callClassOverride ?: com.rokid.context.model.CallClass.EXTRACT),
-            )
+            val r = ExtractSave.extract(ai.runner, listOf(ExtractPhoto(frame.id, "ts=${frame.ts} \u00b7 source=${frame.source} \u00b7 ${frame.payload}", image)),
+                callClassOverride ?: com.rokid.context.model.CallClass.EXTRACT)
             promptVersion = r.promptVersion
-            (r.output as ExtractOutput).facts.filter { it.text.isNotBlank() }.map { frame.id to it }
+            captions += r.output.captions
+            r.output.facts.filter { it.text.isNotBlank() }
         }
         val factPrefix = factIdPrefix(job)
         PipelineRecords.dropFactsFrom(applicationContext, factPrefix, keep = facts.size)
-        if (facts.isEmpty()) {
+        if (facts.isEmpty() && captions.isEmpty()) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "NO_FACTS", "No facts in ${seen.size} photo(s)")
             return
         }
-        val confidence = facts.map { it.second.confidence }.average()
-        val trusted = criticWorker.validate(job.id, confidence).status == SummaryStatus.TRUSTED || modelCriticPasses(facts.map { it.second }, frameLines)
-        // Each fact is fenced on its own frame only: a photo forgotten during the calls drops just its facts.
-        val written = facts.withIndex().filter { (i, pf) ->
-            val (frameId, f) = pf
-            PipelineRecords.appendFact(applicationContext, "$factPrefix$i", frameId, f.text, f.type, f.tags, f.confidence,
-                MemoryTier.SHORT, if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation)
-        }
+        // No facts but captions (a photo with nothing durable in it): the captions are saved, with nothing to critique.
+        val confidence = if (facts.isEmpty()) 1.0 else facts.map { it.confidence }.average()
+        val trusted = facts.isEmpty() || criticWorker.validate(job.id, confidence).status == SummaryStatus.TRUSTED || modelCriticPasses(facts, frameLines)
+        // Each fact is fenced on the photos it cites only: a photo forgotten during the calls drops just its facts.
+        // Memories, frame_source rows (and, for pipeline callers, the claim CAS) are saved by saveExtraction in one transaction.
+        val saved = ExtractSave.saveExtraction(
+            applicationContext, factPrefix, ExtractOutput(facts, captions = captions, provenance = true), seen.map { it.first.id }.toSet(), claims = null,
+            tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation,
+        )
+        val savedAll = (saved as? ExtractSaveResult.Saved)?.memories.orEmpty()
+        val written = savedAll.filter { it.index != null }
         // Delete all ran meanwhile (or every photo was forgotten): no reprocess job (it would carry the fact text).
-        if (written.isEmpty() || com.rokid.context.orchestration.MemoryWipe.generation.get() != generation) return
+        if (savedAll.isEmpty() || com.rokid.context.orchestration.MemoryWipe.generation.get() != generation) return
         EmbeddingWorker.enqueue(applicationContext)
         if (trusted) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "TRUSTED", "frames=${seen.size} imported=$importedFrames facts=${facts.size} v$promptVersion")
             com.rokid.context.orchestration.nudge.NudgeTrigger.afterSummarizerPass(applicationContext)
             PipelineStatsStore.incSummarizerSucceeded(applicationContext)
         } else {
+            if (written.isEmpty()) return // every fact's photo was forgotten: the captions stay, nothing to review
             val reason = "Critic low confidence=${"%.2f".format(Locale.US, confidence)}"
             QueueRuntimeStore.enqueueIfCurrent(
                 context = applicationContext, generation = generation, queue = QueuePriority.PRIORITY_REPROCESS,
-                payload = QueuePayloads.reprocess(reason = reason, sourceIds = written.map { "$factPrefix${it.index}" }, frameIds = written.map { it.value.first }.distinct()),
+                payload = QueuePayloads.reprocess(reason = reason, sourceIds = written.map { it.memoryId }, frameIds = written.flatMap { it.frameIds }.distinct()),
                 personaSnapshot = job.personaSnapshot, ttlHours = 24,
             )
             PipelineRecords.upsertTrace(applicationContext, job.id, "NEEDS_REVIEW", "Reprocess queued: $reason")

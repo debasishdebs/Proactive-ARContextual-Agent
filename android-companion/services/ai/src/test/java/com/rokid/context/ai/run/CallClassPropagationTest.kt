@@ -58,7 +58,7 @@ class CallClassPropagationTest {
                 override suspend fun complete(request: ModelRequest): ModelReply {
                     providerRuns++
                     if (failFirst && providerRuns == 1) error("primary down")
-                    return ModelReply("""{"facts":[]}""", 1, 1)
+                    return ModelReply("""{"facts":[],"captions":[]}""", 1, 1)
                 }
             }
         }, gate = gate)

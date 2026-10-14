@@ -49,7 +49,7 @@ class RoleContractsTest {
             RoleContracts.semanticProblems(answer("""{"answer":"ok","sources":[],"proposedAction":{"type":"CALENDAR_EVENT","title":"t","startAt":"2026-10-13T09:00","endAt":"2026-10-13T08:00"}}"""), ctx))
         val nudge = RoleContracts.decode(PromptKey.NUDGE, j("""{"shouldNudge":true,"text":" ","why":"w","sourceIds":[],"priority":"normal"}""")).getOrThrow()
         assertEquals(listOf("text is empty but shouldNudge is true"), RoleContracts.semanticProblems(nudge, ctx))
-        val facts = RoleContracts.decode(PromptKey.VISION_EXTRACT, j("""{"facts":[{"text":"Milk","type":"object","confidence":1.4,"tags":[]}]}""")).getOrThrow()
+        val facts = RoleContracts.decode(PromptKey.EXPLICIT_REMEMBER, j("""{"facts":[{"text":"Milk","type":"object","confidence":1.4,"tags":[]}]}""")).getOrThrow()
         assertEquals(listOf("facts[0].confidence must be 0–1"), RoleContracts.semanticProblems(facts, ctx))
     }
 }
