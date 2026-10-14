@@ -53,7 +53,11 @@ class SeedAssetsTest {
         val seeds = AssetPromptSeeds(ApplicationProvider.getApplicationContext())
         val current = PromptDefaults.fingerprint(seeds.template(PromptKey.VISION_EXTRACT).trim(), com.rokid.context.ai.contract.DefaultSchemas.text(PromptKey.VISION_EXTRACT))
         assertEquals("df262c3711776a9a2a48b6f7b5a433ebceb4b0328b7879533a7b75bac1d4d8da", current)
-        assertEquals(true, PromptDefaults.PREVIOUS.getValue(PromptKey.VISION_EXTRACT).contains("5514441bfd6ef6b92723afb143e91c9d62c4f165387718c36c1b12d77d0c8656"))
+        // The old hash is recomputed from a committed copy of the OLD seed + OLD facts schema text, not re-asserted as a constant.
+        fun res(name: String) = checkNotNull(javaClass.classLoader!!.getResourceAsStream("prompts_old/$name")).bufferedReader().readText()
+        val old = PromptDefaults.fingerprint(res("vision_extract_seed.txt").trim(), res("vision_extract_facts_schema.json").trimEnd('\n'))
+        assertEquals(true, PromptDefaults.PREVIOUS.getValue(PromptKey.VISION_EXTRACT).contains(old))
+        assertEquals(false, old == current)
         assertEquals(false, PromptDefaults.PREVIOUS.getValue(PromptKey.VISION_EXTRACT).contains(current))
     }
 }

@@ -3,7 +3,6 @@ package com.rokid.context.work.budget
 import com.rokid.context.model.CallClass
 import com.rokid.context.model.CallGate
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,18 +18,21 @@ data class BudgetStats(val callsLastHour: Map<CallClass, Int> = emptyMap(), val 
  * Every 5th minted token is reserved for [CallClass.NUDGE]; a reservation unused for [RESERVATION_MS] becomes an ordinary
  * token. A nudge with no reserved token borrows the next ordinary one (ahead of extraction, so it delays it by one token).
  * CAPTION_QUEUE and BACKFILL take ordinary tokens only, after every NUDGE/EXTRACT waiter. USER calls never wait but spend
- * a token (the bucket may go into debt, which delays everyone else). Transport errors refund the token.
+ * a token (the bucket may go into debt down to -[burst], which delays everyone else; calls beyond that are only counted in
+ * the stats). Transport errors (IOException, which includes the provider's own timeouts) refund the token; a caller-side
+ * timeout or cancellation does not, as the server may already have billed the call.
  */
 class CallBudget(
     private val clock: () -> Long,
     private val periodMs: () -> Long,
     private val burst: Int = 2,
 ) : CallGate {
-    private enum class Kind { NORMAL, RESERVED }
+    private enum class Kind { NORMAL, RESERVED, FREE }
+    private class Taken(val kind: Kind, val mintedAt: Long = 0L)
     private class Waiter(val priority: Int, val seq: Long)
 
     private val lock = Any()
-    private var normal = burst            // may go negative: USER calls in debt
+    private var normal = burst            // may go negative (floor -burst): USER calls in debt
     private val reserved = ArrayList<Long>() // mint times of reserved tokens
     private var minted = 0L
     private var lastMint = clock()
@@ -42,24 +44,24 @@ class CallBudget(
     val stats: StateFlow<BudgetStats> = _stats.asStateFlow()
 
     override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T {
-        val kind = acquire(callClass)
+        val taken = acquire(callClass)
         try {
             return block()
         } catch (c: CancellationException) {
-            if (c is TimeoutCancellationException) refund(kind)
-            throw c
+            throw c // caller-side timeout or cancel: not a transport error, the call may already be billed
         } catch (e: IOException) {
-            refund(kind)
+            refund(taken)
             throw e
         }
     }
 
-    private suspend fun acquire(callClass: CallClass): Kind {
+    private suspend fun acquire(callClass: CallClass): Taken {
         if (callClass == CallClass.USER) return synchronized(lock) {
             val now = refill()
-            normal-- // spends a token, or goes into debt
+            val charged = normal > -burst
+            if (charged) normal-- // spends a token, or goes into debt (floor -burst; beyond it only the stats count)
             record(callClass, now)
-            Kind.NORMAL
+            Taken(if (charged) Kind.NORMAL else Kind.FREE)
         }
         val w = synchronized(lock) { Waiter(priority(callClass), seq++).also { waiters.add(it); publish(clock()) } }
         try {
@@ -69,7 +71,7 @@ class CallBudget(
                 val got = synchronized(lock) {
                     val now = refill()
                     seen = version.value
-                    val k = if (waiters.none { it.priority < w.priority || (it.priority == w.priority && it.seq < w.seq) }) take(callClass) else null
+                    val k: Taken? = if (waiters.none { it.priority < w.priority || (it.priority == w.priority && it.seq < w.seq) }) take(callClass) else null
                     if (k != null) { waiters.remove(w); record(callClass, now) } else wait = untilNextEvent(now)
                     k
                 }
@@ -90,27 +92,35 @@ class CallBudget(
         CallClass.CAPTION_QUEUE, CallClass.BACKFILL -> 2
     }
 
-    private fun take(c: CallClass): Kind? {
-        if (c == CallClass.NUDGE && reserved.isNotEmpty()) { reserved.removeAt(0); return Kind.RESERVED }
-        if (normal > 0) { normal--; return Kind.NORMAL }
+    private fun take(c: CallClass): Taken? {
+        if (c == CallClass.NUDGE && reserved.isNotEmpty()) return Taken(Kind.RESERVED, reserved.removeAt(0))
+        if (normal > 0) { normal--; return Taken(Kind.NORMAL) }
         return null
     }
 
-    private fun refund(kind: Kind) {
+    private fun refund(t: Taken) {
         synchronized(lock) {
             val now = clock()
-            if (kind == Kind.RESERVED) reserved.add(now) else normal++
+            when (t.kind) {
+                Kind.FREE -> Unit
+                // A refunded reservation keeps its original mint time (no fresh 60 s) and never lifts the balance above burst.
+                Kind.RESERVED -> if (now - t.mintedAt >= RESERVATION_MS) bank() else reserved.add(0, t.mintedAt)
+                Kind.NORMAL -> bank()
+            }
             publish(now)
         }
         version.value++
     }
+
+    /** Returns one token to the ordinary balance, never beyond [burst] (counting reservations). */
+    private fun bank() { if (normal + reserved.size < burst) normal++ }
 
     /** Mints due tokens and releases stale reservations. Call under [lock]; returns now. */
     private fun refill(): Long {
         val now = clock()
         val period = periodMs().coerceAtLeast(1L)
         val iter = reserved.iterator()
-        while (iter.hasNext()) if (now - iter.next() >= RESERVATION_MS) { iter.remove(); normal++ }
+        while (iter.hasNext()) if (now - iter.next() >= RESERVATION_MS) { iter.remove(); bank() }
         if (now < lastMint) lastMint = now
         while (now - lastMint >= period) {
             lastMint += period

@@ -54,6 +54,9 @@ class RoleRunner(
     private val persona: PersonaSettings,
     private val now: () -> LocalDateTime = LocalDateTime::now,
 ) {
+    /** The active output schema text of [key] (what a call would be validated against). */
+    suspend fun activeSchema(key: PromptKey): String? = prompts.active(key).outputSchema
+
     suspend fun run(call: RoleCall): RoleResult {
         val role = requireNotNull(call.key.role) { "SYSTEM has no model call" }
         val version = prompts.active(call.key)
