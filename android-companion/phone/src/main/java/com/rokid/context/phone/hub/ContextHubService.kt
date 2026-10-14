@@ -37,6 +37,11 @@ import kotlinx.coroutines.launch
  * from the front (a resumed activity, [HubActivityHook]), it takes the microphone type, which lets the on-device
  * recognizer take glasses audio while the phone is locked. A sticky restart starts in the background without it, and
  * [micHeld] stays false (glasses asks blocked) until the next resume re-enters with it.
+ *
+ * Glasses as a nearby device: this is also the keep-alive that lets the phone app work in the background while the
+ * glasses are linked (CONNECTED, or MINIMISED on the background link). START_STICKY, never stopped by the UI, and
+ * not stopped with the task, so backgrounding or swiping the phone app keeps the process and the link. The
+ * low-importance notification reads "Connected to glasses" while linked; otherwise it shows the link state as before.
  */
 class ContextHubService : Service() {
     private var watcher: Job? = null
@@ -117,6 +122,8 @@ class ContextHubService : Service() {
         private const val CHANNEL = "hub"
         private const val ID = 31
         private const val READY = "Glasses link ready"
+        /** Glasses as a nearby device (LiveFit's pattern): linked in front or minimised, the low-importance FGS says so. */
+        internal const val CONNECTED_TEXT = "Connected to glasses"
         private const val ACTION_REFRESH_TYPES = "com.rokid.context.hub.REFRESH_FOREGROUND_TYPES"
         const val EXTRA_IN_FRONT = "com.rokid.context.hub.IN_FRONT"
         private const val EXTRA_RESUME = "com.rokid.context.hub.RESUME"
@@ -214,7 +221,7 @@ class ContextHubService : Service() {
         internal fun needsReentry(current: Int?, wanted: Int): Boolean = current != wanted
 
         internal fun notificationText(s: GlassesStatus): String = UserFacingErrors.forLink(s.link)?.title ?: when (s.link) {
-            LinkState.CONNECTED -> "Glasses connected"
+            LinkState.CONNECTED, LinkState.MINIMISED -> CONNECTED_TEXT
             LinkState.PAUSED_BT -> "Reconnecting to glasses"
             else -> "Connecting to glasses"
         }
