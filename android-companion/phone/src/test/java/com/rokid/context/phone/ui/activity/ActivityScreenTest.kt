@@ -32,6 +32,7 @@ class ActivityScreenTest {
     private val frameDays = mutableListOf<LocalDate>()
     private val days = mutableListOf<LocalDate>()
     private var pauses = 0
+    private val sorts = mutableListOf<ActivitySort>()
     private val status = StatusUi("Capturing · next 4:12", live = true, paused = false, batteryPct = 82, banner = null)
 
     private fun show(state: ActivityUiState) = compose.setContent {
@@ -39,8 +40,21 @@ class ActivityScreenTest {
             ActivityScreen(
                 state, onSelectPeriod = { periods += it }, onTogglePause = { pauses++ }, onBannerAction = {},
                 onOpenMemory = { memories += it }, onOpenFrames = { frameDays += it }, onOpenDay = { days += it },
+                onSelectSort = { sorts += it },
             )
         }
+    }
+
+    @Test fun sortMenuOffersFourOrders() {
+        show(ActivityUiState(period = Period.TODAY, header = "Mon 12 Oct", status = status, today = TODAY, sort = ActivitySort.LATEST_FIRST))
+        compose.onNodeWithContentDescription("Sort").performClick()
+        val labels = listOf("Latest first", "Oldest first", "A\u2013Z", "Z\u2013A")
+        assertEquals(labels, ActivitySort.entries.map { it.label })
+        labels.forEach { compose.onNodeWithText(it).assertIsDisplayed() }
+        compose.onNodeWithContentDescription("Selected").assertIsDisplayed() // the current order is checked
+        compose.onNodeWithText("A\u2013Z").performClick()
+        assertEquals(listOf(ActivitySort.A_Z), sorts)
+        compose.onNodeWithText("Oldest first").assertDoesNotExist() // the menu closed
     }
 
     @Test fun todayShowsStripTilesAndTimeline() {
