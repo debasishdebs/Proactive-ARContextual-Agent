@@ -66,7 +66,8 @@ object SettingsModel {
     }
 
     fun captureSummary(s: HudSettings): String =
-        "Every ${CaptureIntervals.label(CaptureIntervals.clamp(s.captureIntervalSec))}" + if (s.burstOnChange) " · burst on change" else ""
+        if (s.captureMode == com.rokid.context.core.model.CaptureMode.SMART) "Smart"
+        else "Every ${CaptureIntervals.label(CaptureIntervals.clamp(s.captureIntervalSec))}"
 
     fun voiceSummary(c: VoiceCapabilities): String = "Voice · ${VoiceStatusText.glasses(c.glasses)}"
 }

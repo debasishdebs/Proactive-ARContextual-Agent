@@ -82,6 +82,8 @@ class SettingsDeps(
     val localModelLoadFailures: com.rokid.context.phone.ui.settings.ai.LoadFailures = com.rokid.context.phone.ui.settings.ai.LoadFailures.None,
     /** Diagnostics > Export settings (G19): the settings JSON in cache/exports, every secret excluded. */
     val exportSettings: (suspend () -> File)? = null,
+    /** Settings > Capture > AI call pace (prefs key `ai_call_pace_ms`, read by the call budget). */
+    val aiCallPace: com.rokid.context.phone.ui.settings.capture.AiCallPaceStore = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore(),
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -140,6 +142,7 @@ class SettingsDeps(
             localModelsMobileData = AppConfigMobileData(app),
             localModelLoadFailures = NativeLoadFailures(com.rokid.context.data.models.LocalModelStore(app)),
             exportSettings = { com.rokid.context.orchestration.ConfigExport.write(app) },
+            aiCallPace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(app),
         )
     }
 }
