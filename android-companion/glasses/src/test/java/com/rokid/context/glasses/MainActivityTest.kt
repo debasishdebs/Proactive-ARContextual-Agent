@@ -11,6 +11,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.hud.DoubleTapDetector
+import com.rokid.context.core.hud.DoubleTapExit
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.Channels
 import com.rokid.context.core.model.Command
@@ -102,6 +103,9 @@ class MainActivityTest {
         fail("condition not reached")
     }
 
+    /** Spec 2026-10-14 §2: a page double-tap pauses only when the 3 s exit gate ends (uptime clock). */
+    private fun gateExpires() = shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(DoubleTapExit.WINDOW_MS + 300))
+
     /** Capture requests sent to [CaptureService], the only capture path (Task 11). */
     private fun captureStarts(): Int {
         var n = 0
@@ -116,12 +120,14 @@ class MainActivityTest {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             assertTrue(runtime.buffer.add("f1", byteArrayOf(1), System.currentTimeMillis(), null, null, null))
             s.onActivity { it.onBackPressed() }
+            gateExpires()
             waitUntil { commands().any { it is Command.Pause } }
             val pause = commands().filterIsInstance<Command.Pause>().single()
             assertEquals(0, runtime.buffer.size)
 
             Thread.sleep(DoubleTapDetector.SETTLE_MS + 100) // the detector runs on the wall clock, which Robolectric leaves real
             s.onActivity { it.onBackPressed() }
+            gateExpires()
             waitUntil { commands().any { it is Command.Resume } }
             assertEquals(setOf(pause.pause.pauseId), commands().filterIsInstance<Command.Resume>().single().clears)
         }
@@ -137,6 +143,7 @@ class MainActivityTest {
             waitUntil { runtime.pauses.records.value.any { it.pauseId == p.pauseId } }
             bridge.disconnected()
             s.onActivity { it.onBackPressed() } // the wearer resumes offline
+            gateExpires()
             waitUntil { commands().any { it is Command.Resume } }
             assertTrue(runtime.pauses.captureAllowed())
 
@@ -191,6 +198,7 @@ class MainActivityTest {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             phoneState()
             s.onActivity { it.onBackPressed() }
+            gateExpires()
             waitUntil { commands().any { it is Command.Pause } }
             assertFalse(runtime.pauses.captureAllowed())
             Thread.sleep(DoubleTapDetector.SETTLE_MS + 100)

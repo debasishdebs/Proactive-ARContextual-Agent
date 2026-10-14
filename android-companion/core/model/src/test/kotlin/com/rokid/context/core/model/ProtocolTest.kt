@@ -133,6 +133,31 @@ class ProtocolTest {
         assertEquals(s, assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(Wire.encode(s))).value)
     }
 
+    /** Spec 2026-10-14 §3/§4, additive under v1: an older phone's settings decode with the icon and pop-up defaults. */
+    @Test fun oldJsonDecodesWithIconAndPopupDefaults() {
+        val old = """{"v":$PROTOCOL_VERSION,"verbosity":"MEDIUM","pauses":[]}"""
+        val d = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(old)).value
+        assertEquals(IconCorner.TOP_RIGHT, d.iconCorner)
+        assertEquals(6, d.popupSeconds)
+    }
+
+    @Test fun iconAndPopupRoundTrip() {
+        for (c in IconCorner.entries) {
+            val s = HudSettings(iconCorner = c, popupSeconds = 12)
+            assertEquals(s, assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(Wire.encode(s))).value)
+        }
+        assertEquals(listOf("TOP_LEFT", "TOP_RIGHT", "BOTTOM_LEFT", "BOTTOM_RIGHT"), IconCorner.entries.map { it.name })
+    }
+
+    @Test fun popupSecondsClamped() {
+        assertEquals(3, clampPopupSeconds(0)); assertEquals(3, clampPopupSeconds(-5)); assertEquals(20, clampPopupSeconds(99))
+        assertEquals(6, clampPopupSeconds(6))
+        // A value outside the range on the wire (an older or buggy phone) is clamped where it is used.
+        val wild = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1,"popupSeconds":900}""")).value
+        assertEquals(20_000L, wild.popupMs())
+        assertEquals(3_000L, HudSettings(popupSeconds = 1).popupMs())
+    }
+
     @Test fun undoCommandAndUndoToastRoundTrip() {
         val env = CommandEnvelope(command = Command.Undo("p1"))
         assertEquals(Decoded.Ok(env), Wire.decode<CommandEnvelope>(Wire.encode(env)))

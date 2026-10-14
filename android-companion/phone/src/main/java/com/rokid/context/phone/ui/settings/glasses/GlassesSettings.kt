@@ -39,6 +39,10 @@ import com.rokid.context.core.model.GestureAction
 import com.rokid.context.core.model.GlassesStatusSource
 import com.rokid.context.core.model.HudPosition
 import com.rokid.context.core.model.HudSettings
+import com.rokid.context.core.model.IconCorner
+import com.rokid.context.core.model.POPUP_MAX_SEC
+import com.rokid.context.core.model.POPUP_MIN_SEC
+import com.rokid.context.core.model.clampPopupSeconds
 import com.rokid.context.core.model.Verbosity
 import com.rokid.context.core.ui.components.HudPreview
 import com.rokid.context.core.ui.components.SegmentedSwitch
@@ -60,6 +64,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import java.util.Locale
+import kotlin.math.roundToInt
 
 data class GlassesSettingsUiState(val linkSummary: String = "Not connected", val settings: HudSettings = HudSettings(), val askUnavailable: String? = null)
 
@@ -78,6 +83,8 @@ class GlassesSettingsViewModel(
     fun setScale(s: Float) = hud.update { it.copy(scale = clampHudScale(s)) }
     fun setPosition(p: HudPosition) = hud.update { it.copy(position = p) }
     fun setGesture(g: Gesture, a: GestureAction) = hud.update { it.copy(gestures = it.gestures + (g to a)) }
+    fun setIconCorner(c: IconCorner) = hud.update { it.copy(iconCorner = c) }
+    fun setPopupSeconds(s: Int) = hud.update { it.copy(popupSeconds = clampPopupSeconds(s)) }
     fun reauthorize() = reauthorizeAction()
 }
 
@@ -90,6 +97,11 @@ object GlassesLabels {
         GestureAction.ASK to "Ask", GestureAction.PAUSE_RESUME to "Pause / resume", GestureAction.NEXT_PAGE to "Next page",
         GestureAction.PREV_PAGE to "Previous page", GestureAction.DISMISS to "Dismiss", GestureAction.NONE to "Nothing",
     )
+    val ICON_CORNERS = mapOf(
+        IconCorner.TOP_LEFT to "Top left", IconCorner.TOP_RIGHT to "Top right",
+        IconCorner.BOTTOM_LEFT to "Bottom left", IconCorner.BOTTOM_RIGHT to "Bottom right",
+    )
+    const val OVERLAY_HINT = "For the minimised icon, allow 'display over other apps' for Proactive Context on the glasses."
     val VOICE_AVAILABLE = VoiceCapabilities(VoiceStatus.SUPPORTED, VoiceStatus.SUPPORTED, canDownloadPack = true)
 
     /**
@@ -109,6 +121,8 @@ fun GlassesSettingsScreen(
     onPosition: (HudPosition) -> Unit,
     onGesture: (Gesture, GestureAction) -> Unit,
     onReauthorize: () -> Unit,
+    onIconCorner: (IconCorner) -> Unit = {},
+    onPopupSeconds: (Int) -> Unit = {},
 ) {
     val s = state.settings
     SettingsPage("Rokid Glasses", onBack, tag = "glasses_settings") {
@@ -166,6 +180,25 @@ fun GlassesSettingsScreen(
                 }
                 state.askUnavailable?.let { NoticeText("Ask by voice from the glasses: $it — see Phone camera & mic", tag = "ask_unavailable") }
                 NoticeText("Long-press stays reserved for \"Hi Rokid\".")
+            }
+        }
+        item {
+            SettingsCard {
+                Text("Minimised", style = MaterialTheme.typography.titleMedium)
+                val corners = IconCorner.entries
+                ChoiceRow("Icon corner", corners.map { GlassesLabels.ICON_CORNERS.getValue(it) }, corners.indexOf(s.iconCorner), { onIconCorner(corners[it]) }, tag = "icon_corner")
+                // One write per release, like the HUD size: the drag stays local.
+                var dragging by remember { mutableStateOf<Float?>(null) }
+                LaunchedEffect(s.popupSeconds) { dragging = null }
+                val shownSec = dragging?.roundToInt() ?: clampPopupSeconds(s.popupSeconds)
+                Text("Pop-up time $shownSec s", style = MaterialTheme.typography.bodyMedium)
+                Slider(
+                    value = dragging ?: clampPopupSeconds(s.popupSeconds).toFloat(), onValueChange = { dragging = it },
+                    onValueChangeFinished = { dragging?.let { onPopupSeconds(clampPopupSeconds(it.roundToInt())) } },
+                    valueRange = POPUP_MIN_SEC.toFloat()..POPUP_MAX_SEC.toFloat(), steps = POPUP_MAX_SEC - POPUP_MIN_SEC - 1,
+                    modifier = Modifier.testTag("popup_seconds").semantics { contentDescription = "Pop-up time" },
+                )
+                NoticeText(GlassesLabels.OVERLAY_HINT, tag = "overlay_hint")
             }
         }
     }
