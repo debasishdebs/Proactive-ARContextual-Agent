@@ -212,6 +212,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 - **Camera LED (user note):** the camera's privacy LED is lit whenever the camera is bound, whatever the resolution, so onlookers can't tell photos from video.
   - Smart mode keeps the camera bound during a sampling session, so the LED is **on continuously** while sampling. In rest periods and Fixed mode it blinks for each capture.
   - The app **does not and will not** try to switch the LED off: it's the bystanders' notice that the camera is active.
+  - **Checks:** a source-rule test (no torch, flash or LED control calls: `enableTorch`, `FLASH_MODE`, `/sys/class/leds`, any vendor LED API) and a manual device-checklist item (the LED is lit through a sampling session and blinks for each capture in rest/Fixed mode).
   - So the relaxed 1–1.5 s numbers stand. They aren't tightened to 0.5–0.6 s, because a tighter promise would only matter if the LED could be avoided.
 - **Keyframe test** (`KeyframeGate`, replacing `FrameGuard`'s hash check; the dark-frame and battery skips stay):
   1. **Blur:** variance of the Laplacian on the 160 px thumbnail. While moving, samples are taken in windows of up to 1.5 s (2–3 samples), and only the sharpest one is considered. A sample below the blur floor is dropped.
@@ -249,7 +250,8 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 
   The 40, 44 and 38 °C values are defaults. The P1 heat probe can lower them; see §P1.7.
 - **Work/rest cycle** (user decision): after **W** minutes of continuous sampling, rest **R** minutes. During rest, Smart mode falls back to a single Fixed-mode capture every 60 s, with the camera bound per capture as today.
-  - Settings: **W ∈ {45, 60}**, default 45; **R ∈ {15, 20}**, default 15.
+  - Settings (user decision, 2026-10-15): **Work W ∈ {30, 40, 45, 50, 60, 75, 90} min**, default 45; **Rest R ∈ {5, 10, 15, 20} min**, default 15.
+  - **Constraint:** if W > 45, then R ≥ 15. The UI disables 5 and 10 in that case; choosing W > 45 while R < 15 raises R to 15, with a short note.
   - The cycle restarts after any rest of ≥ R, including a not-worn pause.
 
 ### P1.6 Errors and limits
@@ -478,7 +480,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 | Nomic Embed v1.5 (text + vision, one space) replaces bge-small, with a re-index; no SigLIP now | user | H |
 | MobileCLIP rejected: Apple research-only licence (`apple-amlr`) bans product use | Claude, from the licence text | H |
 | Retention set separately for each kind of data | user | H |
-| Work/rest W 45/60 min, R 15/20 min, user-configurable | user | H |
+| Work/rest: W 30/40/45/50/60/75/90 min, R 5/10/15/20 min, R ≥ 15 when W > 45; defaults 45/15 | user | H |
 | Heat thresholds 40/44/38 °C battery | Claude, defaults pending the probe | M |
 | Keyframe thresholds (Hamming > 10, last 5, 1.2 s throttle) | Claude | M (tune on device) |
 | A1: a model change drops image vectors of expired photos (caption-only); 7-day rollback grace | user | H |
