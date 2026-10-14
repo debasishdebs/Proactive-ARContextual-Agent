@@ -35,8 +35,8 @@ class KeyframeGateTest {
     private fun cand(scene: Int, soft: Int = 1) =
         Candidate(seq++, thumb(scene, soft), Nv21Frame(640, 480, 90, ByteArray(16) { scene.toByte() }))
 
-    private fun at(t: Long, c: Candidate, m: MotionState = MotionState.STILL, dwell: Boolean = false): GateResult {
-        now = t; return gate.offer(c, m, dwell)
+    private fun at(t: Long, c: Candidate, m: MotionState = MotionState.STILL, dwell: Boolean = false, force: Boolean = false): GateResult {
+        now = t; return gate.offer(c, m, dwell, force)
     }
 
     private fun reason(r: GateResult) = assertIs<GateResult.Skip>(r).reason
@@ -49,9 +49,17 @@ class KeyframeGateTest {
 
     @Test fun throttle1200ms() {
         assertIs<GateResult.Keep>(at(10_000, cand(1)))
-        // not a new scene: 1.2 s minimum gap
+        // not a new scene: skipped inside 1.2 s as THROTTLED, and never kept
         assertEquals("THROTTLED", reason(at(11_199, cand(1))))
+        assertEquals(1, store.ring.size)
+        assertEquals(10_000L, store.kept)
+        // the same frame after 1.2 s is a DUPLICATE (the ring, not the clock, rejects it)
         assertEquals("DUPLICATE", reason(at(11_200, cand(1))))
+        assertEquals(1, store.ring.size)
+        // a NEW scene is kept at 0.6 s, well inside the 1.2 s that applies to non-new frames
+        assertIs<GateResult.Keep>(at(11_800, cand(2)))
+        assertIs<GateResult.Keep>(at(12_400, cand(3)))
+        assertEquals(3, store.ring.size)
     }
 
     @Test fun newSceneMayFollowAfter500ms() {
@@ -123,13 +131,83 @@ class KeyframeGateTest {
         assertNull(gate.flushWindow())
     }
 
-    @Test fun stillSampleClosesPendingWindowAsDwell() {
+    @Test fun stillSampleClosesPendingWindowFirstWithoutDwell() {
         val moving = cand(6, soft = 8)
         at(10_000, moving, MotionState.WALKING)
         val still = cand(6)
         val r = assertIs<GateResult.Keep>(at(10_600, still, MotionState.STILL, dwell = true))
+        assertSame(moving, r.candidate)
+        assertEquals(false, r.dwell)
+        assertEquals(0, gate.retainedCount())
+    }
+
+    @Test fun sharpMidTurnFrameDoesNotStealTheDwellFlag() {
+        at(10_000, cand(1))
+        val midTurn = cand(2) // sharp, but a duplicate-free new scene seen only while moving
+        assertEquals("WINDOW", reason(at(11_300, midTurn, MotionState.HEAD_MOVING)))
+        val settled = cand(3, soft = 8) // softer, but it is what the user settled on
+        // the window closes on its own terms (its winner is not a dwell); throttle keeps the settled frame out here
+        val closed = assertIs<GateResult.Keep>(at(11_800, settled, MotionState.STILL, dwell = true))
+        assertSame(midTurn, closed.candidate)
+        assertEquals(false, closed.dwell)
+        // the settled view is judged on its own at the next still sample and carries the dwell flag
+        val next = cand(3, soft = 8)
+        val r = assertIs<GateResult.Keep>(at(13_000, next, MotionState.STILL, dwell = true))
+        assertSame(next, r.candidate)
+        assertTrue(r.dwell)
+    }
+
+    @Test fun stillSampleIsJudgedOnItsOwnWhenTheWindowKeepsNothing() {
+        at(10_000, cand(1))
+        assertEquals("WINDOW", reason(at(12_000, cand(1), MotionState.WALKING))) // same scene as the last keyframe
+        val still = cand(2)
+        val r = assertIs<GateResult.Keep>(at(12_600, still, MotionState.STILL, dwell = true))
         assertSame(still, r.candidate)
         assertTrue(r.dwell)
+    }
+
+    @Test fun forcedKeepIsRecordedAndSuppressesTheSameScene() {
+        at(10_000, cand(1))
+        val forced = cand(2)
+        // forced: kept inside the 0.5 s throttle, never a dwell
+        val r = assertIs<GateResult.Keep>(at(10_100, forced, MotionState.WALKING, force = true))
+        assertSame(forced, r.candidate)
+        assertEquals(false, r.dwell)
+        assertEquals(r.dhash to r.phash, store.ring.last())
+        assertEquals(10_100L, store.kept)
+        assertEquals(0, gate.retainedCount())
+        assertEquals("THROTTLED", reason(at(10_300, cand(2))))
+        assertEquals("DUPLICATE", reason(at(12_000, cand(2))))
+    }
+
+    @Test fun forcedKeepStillNeedsTheBlurFloor() {
+        assertEquals("BLUR", reason(at(10_000, cand(1, soft = 100), force = true)))
+        assertEquals(0, store.ring.size)
+    }
+
+    @Test fun recordKeepUpdatesRingAndLastKept() {
+        val c = cand(1)
+        gate.recordKeep(c, 0x1234L, 0x5678L, 10_050L)
+        assertEquals(listOf(0x1234L to 0x5678L), store.ring.toList())
+        assertEquals(10_050L, store.kept)
+    }
+
+    @Test fun concurrentOffersAndFlushesStayConsistent() {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+        val keeps = java.util.concurrent.ConcurrentLinkedQueue<Long>()
+        val cands = (0 until 200).map { cand(it % 7 + 20, soft = 1 + it % 3) }
+        val jobs = (0 until 4).map { t ->
+            pool.submit {
+                for (i in t until cands.size step 4) {
+                    val r = if (i % 5 == 0) gate.flushWindow() else gate.offer(cands[i], MotionState.WALKING, false)
+                    if (r is GateResult.Keep) keeps += r.candidate.seq
+                }
+            }
+        }
+        jobs.forEach { it.get() }
+        pool.shutdown()
+        gate.flushWindow()?.let { if (it is GateResult.Keep) keeps += it.candidate.seq }
+        assertEquals(keeps.size, keeps.toSet().size, "a candidate was emitted twice")
         assertEquals(0, gate.retainedCount())
     }
 }
