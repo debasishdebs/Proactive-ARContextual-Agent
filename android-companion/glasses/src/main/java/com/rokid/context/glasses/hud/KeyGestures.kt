@@ -32,13 +32,14 @@ class KeyGestures(
     /** When [onTimer] must run (uptime ms) to close an open swipe; null = none open. */
     val deadlineMs: Long? get() = swipes.deadlineMs
 
-    fun onKeyDown(keyCode: Int, repeatCount: Int, uptimeMs: Long, wallMs: Long): KeyResult {
+    /** [gateArmed] = the exit gate is armed: a quick second 83 pair still counts ([DoubleTapDetector]). */
+    fun onKeyDown(keyCode: Int, repeatCount: Int, uptimeMs: Long, wallMs: Long, gateArmed: Boolean = false): KeyResult {
         val first = repeatCount == 0
         if (keyCode == KEY_NOTIFICATION) {
             if (!first) return KeyResult(true)
             val out = mutableListOf<PadInput>()
             swipes.onTouch(uptimeMs)?.let { out += PadInput.Swiped(it) } // a new touch closes the previous swipe
-            if (doubleTap.onNotificationKey(wallMs)) out += PadInput.DoubleTapped
+            if (doubleTap.onNotificationKey(wallMs, gateArmed)) out += PadInput.DoubleTapped
             return KeyResult(true, out)
         }
         if (keyCode == KEY_ENTER || keyCode == KEY_DPAD_CENTER) {
@@ -68,7 +69,7 @@ class KeyGestures(
         else -> KeyResult(false)
     }
 
-    fun onBack(wallMs: Long): List<PadInput> = if (doubleTap.onBack(wallMs)) listOf(PadInput.DoubleTapped) else emptyList()
+    fun onBack(wallMs: Long, gateArmed: Boolean = false): List<PadInput> = if (doubleTap.onBack(wallMs, gateArmed)) listOf(PadInput.DoubleTapped) else emptyList()
 
     fun onTimer(uptimeMs: Long): List<PadInput> = listOfNotNull(swipes.onTimer(uptimeMs)?.let { PadInput.Swiped(it) })
 
