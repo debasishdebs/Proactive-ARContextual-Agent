@@ -383,5 +383,23 @@ Shared rules:
 - The ONNX Runtime version, and its 16 KB page-alignment compatibility (needed, as for llama.cpp).
 - Whether the foreground hub service is allowed to hold the `KeyframePipeline` during Doze; if not, an expedited WorkManager job.
 
-## Probe results (2026-10-15)
-Filled in from the throwaway `probe/camera-heat` run before the plan is written.
+## Probe results (2026-10-15, throwaway `probe/camera-heat` @ `e591c27`, not merged)
+Setup:
+- the glasses were on a desk, not worn, on USB: charging and at 100 % throughout, so heat readings are pessimistic and drain was **not** measured;
+- 2 min idle baseline, then 30 min of CameraX `ImageAnalysis` bound continuously, a sample every 1.5 s (JPEG q75 + dHash), and accelerometer + gyroscope at SENSOR_DELAY_GAME;
+- minimised (HOME) from about 11 to 21 min, then relaunched.
+
+Results:
+- **Sensors (Q1):** accelerometer and gyroscope ran at a steady 50.1–50.3 Hz from the keep-alive `CaptureService`, in the foreground and while minimised.
+- **Heat (Q2):** battery temperature 30.5 → peak 31.0 °C, **+0.5 °C** (one sensor step) over 30 min. Thermal status stayed 0 (NONE).
+  - `getThermalHeadroom(30)` is **NaN on every reading**, and the HAL has no temperature sensors, so **battery temperature plus thermal status are the only heat signals**.
+  - The §P1.5 defaults stand. They may only be lowered after an unplugged, worn run.
+- **Cost per sample:** 1 180 samples, about 20 per 30 s as intended. Convert + encode + hash took about 47 ms per sample early on and 56–67 ms from about 11 min, for an unknown reason (not heat). The camera stream ran at about 24.8 fps.
+- **While minimised (Q3):** sampling and sensors kept running at full rate after HOME (process importance went 100 → 125, the foreground-service level) and after the relaunch. The camera was **not** denied.
+- **Resolution:** the camera reports 480×640 (portrait), so the probe's JPEG was 480 px wide (43 KB).
+
+Spec consequences (binding on the plan):
+1. P1 must request resolution explicitly with `ResolutionSelector` (4:3, 640×480 in landscape after rotation), then assert the keyframe width is 640. A device test checks it.
+2. The 160 px thumbnail should come from Y-plane subsampling, not via the JPEG encoder, to keep each sample under about 30 ms. Only keyframes are JPEG-encoded.
+3. **Still to measure:** battery drain per hour unplugged, and heat while worn. This is a device check in the P1 run, for example by wireless adb, or by reading the level before and after a 30 min unplugged session.
+4. Only one capture path may own the camera: Smart mode replaces the per-capture bind, and Fixed mode/rest captures must not run while a sampling session is bound. The probe needed a "probe owns the camera" guard.
