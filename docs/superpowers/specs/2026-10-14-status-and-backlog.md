@@ -185,3 +185,28 @@ These are spec requirements with no code, no deferral and no ruling. They were s
 | Specs, each with an "Amendments (as built, 2026-10-14)" section | v1 (23), MVP (9), agent-flows (6), on-device-embeddings (7), glasses-minimise (6) |
 | `docs/runbook.md` | Build, install, devices, log filtering, etiquette, quirks |
 | `docs/rokid-sdk-token-logging.md` | The vendor note for Rokid |
+
+## 10. Decisions taken by the user (2026-10-15, about 00:10). These supersede the "Decide" items above
+
+| Topic | Decision | Effect |
+|---|---|---|
+| Delete all scope | **Keep shopping and notes** (current). The user clarified: nothing is to be deleted now; this is only what the button does | No change. Ruling confirmed |
+| Answer latency (G17) | **Accept about 8 s for now**; improve later (streaming, faster model) | G17 → DONE-CHANGED with a ruling. Improve item stays |
+| User notes (G2) | **Build "note that…" plus a Notes list, in a NEW chat after compaction**, not immediately | → Develop, queued for the next session |
+| PcLinkProbe logs | **Keep, debug builds only** | No change |
+| Activity row time | **Photo time** (current) | No change |
+| Notifications-off reminder | **Save and warn** (current) | No change |
+| Faster capture | **Keyframes only**: capture fast on the glasses, but send only changed scenes to the AI (dedupe + motion), capped at about 1 AI call per 10–15 s | → Develop: spec "motion-aware keyframe capture" with this cost model |
+| MVP gaps G5, G8, G9, G15, G16, G18 | **Mark superseded** by v1 (critic flow, endpoints + fallback, Diagnostics); revisit if a need appears | → SUPERSEDED with a ruling |
+| Battery Saver and asks (G7) | **Block asks too**: Battery Saver pauses everything, including user asks | → Develop (small): gate the direct Ask path (phone and glasses) with a friendly "Battery Saver is on — asks are paused" on Home and the HUD |
+| Nearby devices page | **Yes, add the page** (LiveFit-style: paired glasses, plus a "keep running when nearby" switch) on top of the automatic service | → Develop: port LiveFit `NearbyDevicesSource` / `ListSource` (the generic ListScreen already exists) |
+| D-A1 glasses clock | **Restore to automatic time** after the test (+2 days, then back to automatic) | Device check when the devices are available |
+| Reinstall retest after B12 | **Not now**: only before a release | Pre-release checklist item |
+
+Still open (needs info, not a choice): **is the key in the restored `app_config_secret.xml.bak` files live?** The fix/b12 agent will report what kind of key the code writes there. If it's a live provider key, rotate it.
+
+### Updated work queue (in order)
+1. **In progress:** fix/b12 (B12 + S2 glasses backup rules) and fix/g1g6 (JPEG encryption at rest + on-device embed battery gate). Then gate, merge, and install at the next device session.
+2. **Develop (small):** Battery Saver blocks asks (G7); Nearby devices page; G3 limited-mode banner; G10 no-match ETA; G14 download battery pause; G19 config export without secrets; S1 stale clean-up copy; S2/B12 follow-ups.
+3. **Develop, new chat:** user notes ("note that…"); motion-aware keyframe capture (spec first); connectors brainstorm.
+4. **Device session:** install the latest build; sort/cue; minimised-link steps 5–7; minimise/icon remaining checks; round-3 fixes; on-device models; D-A1 (restore automatic); the other leftovers.
