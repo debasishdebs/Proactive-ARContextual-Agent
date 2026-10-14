@@ -80,6 +80,23 @@ class LocalModelDownloadWorkerTest {
         assertEquals(LocalModelState.Ready, store.state(model).first())
     }
 
+    @Test fun bundleDownloadsEveryFileAndReadyNeedsAll() = runBlocking {
+        val data2 = ByteArray(1000) { (it * 7 % 251).toByte() }
+        val sha2 = MessageDigest.getInstance("SHA-256").digest(data2).joinToString("") { "%02x".format(it) }
+        val second = com.rokid.context.ai.local.ModelFile("second.onnx", "https://localhost:${server.port}/resolve/abc/onnx/second.onnx", sha2, data2.size.toLong())
+        val bundle = model.copy(files = model.files + second)
+        LocalModelDownloadWorker.resolve = { id -> bundle.takeIf { it.id == id } }
+        server.enqueue(MockResponse().setBody(body()))
+        assertEquals(LocalModelState.Absent, store.state(bundle).first())
+        server.enqueue(MockResponse().setBody(Buffer().write(data2)))
+        assertEquals(ListenableWorker.Result.success(), runWorker())
+        assertArrayEquals(data, store.fileFor(model).readBytes())
+        assertArrayEquals(data2, File(LocalModelStore.modelsDir(ctx), "second.onnx").readBytes())
+        assertEquals(LocalModelState.Ready, store.state(bundle).first())
+        File(LocalModelStore.modelsDir(ctx), "second.onnx").delete()
+        assertEquals(LocalModelState.Absent, store.state(bundle).first())
+    }
+
     @Test fun interruptedDownloadResumesWithRangeHeader() {
         server.enqueue(MockResponse().setBody(body()).setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
         assertEquals(ListenableWorker.Result.retry(), runWorker())

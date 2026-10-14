@@ -76,7 +76,7 @@ private class FakeMobileData(var on: Boolean = false) : MobileDataSetting {
 class LocalModelsPageTest {
     @get:Rule val compose = createComposeRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
-    private val bge = LocalModels.all.single()
+    private val bge = LocalModels.byId("bge-small-en-v1.5-q8")!!
     private val endpointId = LocalModelsSource.endpointIdFor(bge)
     private lateinit var ai: AiGraph
     private lateinit var gateway: FakeGateway
@@ -91,7 +91,7 @@ class LocalModelsPageTest {
     @After fun tearDown() = TestGraph.close(ctx)
 
     private fun source(abi: Boolean = true, failures: LoadFailures = LoadFailures.None) =
-        LocalModelsSource(LocalModels.all, gateway, ai, { reindexes++ }, mobile, abiSupported = abi, loadFailures = failures)
+        LocalModelsSource(listOf(bge), gateway, ai, { reindexes++ }, mobile, abiSupported = abi, loadFailures = failures)
 
     private fun row(s: LocalModelsSource) = runBlocking { s.load() }.single()
 
@@ -277,7 +277,7 @@ class LocalModelsPageTest {
             val b = spaces.startBuilding("fpB", "{}", 2, "[]", 2); spaces.put("m1", b.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(b.id)
         }
         t += 3 * day
-        val inGrace = LocalModelsSource(LocalModels.all, gateway, ai, {}, mobile, abiSupported = true, swap = SpacesSwapRollback(spaces) {})
+        val inGrace = LocalModelsSource(listOf(bge), gateway, ai, {}, mobile, abiSupported = true, swap = SpacesSwapRollback(spaces) {})
         show(inGrace)
         compose.onNodeWithTag("local_models_roll_back").assertExists()
         compose.onNodeWithTag("local_models_roll_back").performClick()
@@ -295,7 +295,7 @@ class LocalModelsPageTest {
             val b = spaces.startBuilding("fpB", "{}", 2, "[]", 2); spaces.put("m1", b.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(b.id)
         }
         t += 8 * 24 * 60 * 60 * 1000L
-        show(LocalModelsSource(LocalModels.all, gateway, ai, {}, mobile, abiSupported = true, swap = SpacesSwapRollback(spaces) {}))
+        show(LocalModelsSource(listOf(bge), gateway, ai, {}, mobile, abiSupported = true, swap = SpacesSwapRollback(spaces) {}))
         compose.onNodeWithTag("local_models_roll_back").assertDoesNotExist()
         assertEquals("2 photos will be searchable by text only\n1 photos will no longer be findable at all\nBoth can be recovered with Roll back for 7 days.",
             LocalModelsSource.impactText(com.rokid.context.memory.SwapImpact(2, 1)).trim())
