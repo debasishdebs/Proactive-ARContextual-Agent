@@ -51,6 +51,7 @@ object AskDetailModel {
             "REMINDER" -> "Reminder"
             "SHOPPING_ADD" -> "Add to shopping list"
             "CALENDAR_EVENT" -> "Calendar event"
+            "NOTE_ADD" -> "Save note"
             else -> "Suggested action"
         },
         state = when (p.state) {

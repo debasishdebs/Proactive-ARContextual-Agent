@@ -20,26 +20,30 @@ import java.time.ZoneId
 /**
  * A proposal's normalised params (`proposal.paramsJson`, canonical key order). Local times from the model are resolved to
  * instants in the phone's zone at receipt: a DST-gap time shifts forward (java.time's gap rule), an overlap takes the
- * earlier offset. A calendar end that is not after the start becomes start + 30 min; shopping names dedupe per proposal.
+ * earlier offset. A calendar end that is not after the start becomes start + 30 min; shopping names dedupe per proposal;
+ * a note is trimmed and capped at [MAX_NOTE] chars.
  */
 sealed interface ActionParams {
     val type: ActionType
 
     data class Reminder(val title: String, val dueAtMs: Long, val note: String?) : ActionParams { override val type get() = ActionType.REMINDER }
     data class Shopping(val items: List<ShoppingLine>) : ActionParams { override val type get() = ActionType.SHOPPING_ADD }
+    data class Note(val text: String) : ActionParams { override val type get() = ActionType.NOTE_ADD }
     data class Calendar(val title: String, val startAtMs: Long, val endAtMs: Long, val location: String?) : ActionParams {
         override val type get() = ActionType.CALENDAR_EVENT
     }
 
     /** The instant that must still be in the future at receipt, if any. */
-    val firesAtMs: Long? get() = when (this) { is Reminder -> dueAtMs; is Calendar -> startAtMs; is Shopping -> null }
+    val firesAtMs: Long? get() = when (this) { is Reminder -> dueAtMs; is Calendar -> startAtMs; is Shopping, is Note -> null }
 
     companion object {
         const val DEFAULT_EVENT_MS = 30 * 60_000L
+        const val MAX_NOTE = 500
 
         fun from(a: ProposedAction, zone: ZoneId): ActionParams = when (a) {
             is ProposedAction.Reminder -> Reminder(a.title, instant(a.dueAt, zone), a.note)
             is ProposedAction.ShoppingAdd -> Shopping(a.items.distinctBy { it.name.trim().lowercase() })
+            is ProposedAction.NoteAdd -> Note(a.text.trim().take(MAX_NOTE).trimEnd())
             is ProposedAction.CalendarEvent -> {
                 val start = instant(a.startAt, zone)
                 val end = instant(a.endAt, zone).takeIf { it > start } ?: (start + DEFAULT_EVENT_MS)
@@ -54,6 +58,7 @@ sealed interface ActionParams {
                     p.items.forEach { add(buildJsonObject { put("name", it.name); put("qty", it.qty); put("unit", it.unit) }) }
                 })
             }
+            is Note -> buildJsonObject { put("text", p.text) }
             is Calendar -> buildJsonObject {
                 put("title", p.title); put("startAtMs", p.startAtMs); put("endAtMs", p.endAtMs); put("location", p.location)
             }
@@ -68,6 +73,7 @@ sealed interface ActionParams {
                     val i = it.jsonObject
                     ShoppingLine(i.str("name")!!, (i["qty"] as? JsonPrimitive)?.doubleOrNull, i.str("unit"))
                 })
+                ActionType.NOTE_ADD -> Note(o.str("text")!!)
                 ActionType.CALENDAR_EVENT -> Calendar(
                     o.str("title")!!, o.getValue("startAtMs").jsonPrimitive.long, o.getValue("endAtMs").jsonPrimitive.long, o.str("location"),
                 )

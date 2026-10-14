@@ -42,6 +42,7 @@ import com.rokid.context.phone.ui.settings.flows.FlowViewModel
 import com.rokid.context.phone.ui.settings.flows.FlowViewRoute
 import com.rokid.context.phone.ui.settings.flows.FlowsListRoute
 import com.rokid.context.phone.ui.settings.connectors.ActionsRoute
+import com.rokid.context.phone.ui.settings.connectors.NotesRoute
 import com.rokid.context.phone.ui.settings.connectors.ShoppingRoute
 import com.rokid.context.phone.ui.settings.connectors.SourcesRoute
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsViewModel
@@ -240,8 +241,11 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val activity = LocalContext.current.findActivity()
         SourcesRoute(s, back) { p -> activity?.let { ActivityCompat.shouldShowRequestPermissionRationale(it, p) } ?: true }
     }
-    composable(Routes.SETTINGS_ACTIONS) { ActionsRoute(s, back, openShopping = { nav.navigate(Routes.SETTINGS_SHOPPING) }) }
+    composable(Routes.SETTINGS_ACTIONS) {
+        ActionsRoute(s, back, openShopping = { nav.navigate(Routes.SETTINGS_SHOPPING) }, openNotes = { nav.navigate(Routes.SETTINGS_NOTES) })
+    }
     composable(Routes.SETTINGS_SHOPPING) { ShoppingRoute(s, back) }
+    composable(Routes.SETTINGS_NOTES) { NotesRoute(back) }
 
     composable(Routes.SETTINGS_PERSONA) {
         val vm = viewModel { PersonaViewModel(s.ai.persona) }

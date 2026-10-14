@@ -37,7 +37,7 @@ import com.rokid.context.phone.ui.settings.SwitchRow
  * first read on IO, so "starting" clears by itself and Main never reads its prefs.
  */
 @Composable
-fun ActionsRoute(deps: SettingsDeps, back: () -> Unit, openShopping: () -> Unit) {
+fun ActionsRoute(deps: SettingsDeps, back: () -> Unit, openShopping: () -> Unit, openNotes: () -> Unit = {}) {
     val loaded by produceState<ActionSettingsStore?>(null, deps) {
         value = try {
             withContext(Dispatchers.IO) { deps.actions.settings.also { it.settings.value } }
@@ -54,14 +54,14 @@ fun ActionsRoute(deps: SettingsDeps, back: () -> Unit, openShopping: () -> Unit)
         SettingsPage("Actions & tools", back, tag = "settings_actions") { item { SettingsCard { NoticeText("Actions are starting \u2014 come back in a moment") } } }
         return
     }
-    ActionsSettings(store, requestCalendar = access.request, back = back, openShopping = openShopping, openAppSettings = access.openAppSettings)
+    ActionsSettings(store, requestCalendar = access.request, back = back, openShopping = openShopping, openAppSettings = access.openAppSettings, openNotes = openNotes)
 }
 
 /** Stateless over [store]; [requestCalendar] asks for calendar access and reports the result. */
 @Composable
 fun ActionsSettings(
     store: ActionSettingsStore, requestCalendar: ((CalendarAccess) -> Unit) -> Unit, back: () -> Unit, openShopping: () -> Unit,
-    openAppSettings: () -> Unit = {},
+    openAppSettings: () -> Unit = {}, openNotes: () -> Unit = {},
 ) {
     val toggles by store.settings.collectAsStateWithLifecycle()
     var calendarDenied by remember { mutableStateOf<CalendarAccess?>(null) }
@@ -96,6 +96,11 @@ fun ActionsSettings(
         }
         item {
             SettingsCard {
+                LinkRow("Notes", "Things you asked me to note", Modifier.clickable(onClick = openNotes).testTag("open_notes"))
+            }
+        }
+        item {
+            SettingsCard {
                 LinkRow("MCP servers", "Coming in v2", Modifier.clickable(enabled = false) {}.testTag("mcp_servers"))
             }
         }
@@ -114,10 +119,12 @@ private fun title(t: ActionType) = when (t) {
     ActionType.REMINDER -> "Reminders"
     ActionType.SHOPPING_ADD -> "Shopping list"
     ActionType.CALENDAR_EVENT -> "Calendar events"
+    ActionType.NOTE_ADD -> "Notes"
 }
 
 private fun subtitle(t: ActionType) = when (t) {
     ActionType.REMINDER -> "Set a reminder when you ask for one"
     ActionType.SHOPPING_ADD -> "Add items you mention"
     ActionType.CALENDAR_EVENT -> "Add events to your calendar"
+    ActionType.NOTE_ADD -> "Save things you ask me to note"
 }

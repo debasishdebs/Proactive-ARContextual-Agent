@@ -5,13 +5,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** The three v1 action types (spec §4.4); stored as `proposal.type` by name. */
-enum class ActionType { REMINDER, SHOPPING_ADD, CALENDAR_EVENT }
+/** The v1 action types (spec §4.4) plus NOTE_ADD ("note that…"); stored as `proposal.type` by name. */
+enum class ActionType { REMINDER, SHOPPING_ADD, CALENDAR_EVENT, NOTE_ADD }
 
 data class ActionToggle(val enabled: Boolean, val alwaysConfirm: Boolean = true)
 
 /**
- * Settings › Actions & tools. Defaults: Reminder on, Shopping on, Calendar off (needs WRITE_CALENDAR); always-confirm on.
+ * Settings › Actions & tools. Defaults: Reminder on, Shopping on, Notes on, Calendar off (needs WRITE_CALENDAR); always-confirm on.
  * The prefs are opened and read on first use, never at construction (the graph may be built on Main).
  */
 class ActionSettingsStore(prefsProvider: () -> SharedPreferences) {

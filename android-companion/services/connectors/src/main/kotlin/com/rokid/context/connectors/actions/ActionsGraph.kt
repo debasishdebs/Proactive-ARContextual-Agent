@@ -4,11 +4,13 @@ import android.content.Context
 import com.rokid.context.connectors.ProposalIntake
 import com.rokid.context.connectors.actions.executors.ActionExecutor
 import com.rokid.context.connectors.actions.executors.CalendarExecutor
+import com.rokid.context.connectors.actions.executors.NoteExecutor
 import com.rokid.context.connectors.actions.executors.ReminderExecutor
 import com.rokid.context.connectors.actions.executors.ShoppingExecutor
 import com.rokid.context.core.model.Verbosity
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.ActionLogEntity
+import com.rokid.context.memory.db.NoteDao
 import com.rokid.context.memory.db.ShoppingDao
 import com.rokid.context.connectors.tools.ToolConnector
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +27,8 @@ interface ActionsGraphApi {
     val engine: ActionEngine
     val settings: ActionSettingsStore
     val shopping: ShoppingDao
+    /** User notes (Settings › Actions & tools › Notes). */
+    val notes: NoteDao
     /** Registered tool connectors (R-63): none in v1. */
     val tools: List<ToolConnector>
 }
@@ -62,6 +66,7 @@ object ActionsGraph {
         ActionType.REMINDER to ReminderExecutor(app),
         ActionType.SHOPPING_ADD to ShoppingExecutor(memory.shopping),
         ActionType.CALENDAR_EVENT to CalendarExecutor(app.contentResolver),
+        ActionType.NOTE_ADD to NoteExecutor(memory.notes),
     )
 
     private class Impl(app: Context) : ActionsGraphApi {
@@ -76,6 +81,7 @@ object ActionsGraph {
             )
         }
         override val shopping: ShoppingDao get() = memory.shopping
+        override val notes: NoteDao get() = memory.notes
         override val tools: List<ToolConnector> = emptyList()
         override val intake: ProposalIntake = ProposalIntake { o, id, a, now -> engine.onProposed(o, id, a, now) }
     }

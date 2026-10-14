@@ -29,14 +29,17 @@ object HudAskText {
 
 /**
  * The voice [Answerer] on the phone: `AskActions.askFrom` (Phase 5 answer path, question hygiene included), then the
- * stored answer text for the HUD and TTS. Failures come back as fixed copy only.
+ * stored answer text for the HUD and TTS. Failures come back as fixed copy only. [offNotice] is the fixed "<type> is off"
+ * copy when the ask's proposal was suppressed (its type is turned off): it replaces the model's answer ("Noted."), so the
+ * wearer hears and sees why nothing happened.
  */
 class AppAnswerer(
     private val ask: suspend (question: String, source: String) -> AskOutcome,
     private val answerText: suspend (askId: String) -> String?,
+    private val offNotice: suspend (proposalId: String) -> String? = { null },
 ) : Answerer {
     override suspend fun answer(question: String, source: VoiceSource): AnswerResult = when (val r = ask(question, source.askSource)) {
-        is AskOutcome.Answered -> answerText(r.askId)?.takeIf { it.isNotBlank() }?.let { AnswerResult.Answered(r.askId, it) }
+        is AskOutcome.Answered -> (r.proposalId?.let { offNotice(it) } ?: answerText(r.askId))?.takeIf { it.isNotBlank() }?.let { AnswerResult.Answered(r.askId, it) }
             ?: AnswerResult.Failed(VoiceCopy.FAILED_HUD, AskActions.FAILED)
         is AskOutcome.Failed -> AnswerResult.Failed(HudAskText.forFailure(r.message), HudAskText.forPhone(r.message))
     }
