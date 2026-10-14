@@ -93,6 +93,19 @@ class OrchestrationScheduler(
         )
     }
 
+    /**
+     * G10 priority reprocess after an ask found nothing: the same one-off ingest as [enqueueFrameIngestNow], but KEEP, so
+     * repeated no-match asks never cancel an ingest already running. [pausePipeline] cancels it like the others.
+     */
+    fun enqueueFrameIngestIfIdle() {
+        val request = OneTimeWorkRequestBuilder<FrameIngestWorker>()
+            .addTag(TAG_FRAME_INGEST)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+            .setInputData(workDataOf(FrameIngestWorker.KEY_SOURCE_IMAGE_PATH to ""))
+            .build()
+        workManager.enqueueUniqueWork("frame-ingest-now", ExistingWorkPolicy.KEEP, request)
+    }
+
     suspend fun enqueueSummarizer(summaryId: String, confidence: Double, createdAt: Long): UUID {
         val config = this.config.getWithoutSecret(context)
         val payload = buildString {

@@ -83,6 +83,11 @@ class AnswerService(
     private val sources: ContextSources = ContextSources.None,
     private val zone: () -> ZoneId = ZoneId::systemDefault,
     private val proposals: ProposalIntake = ProposalIntake.None,
+    /**
+     * G10 (MVP section 9.5 "trigger immediate priority reprocessing"): retrieval found nothing to answer from. The app
+     * runs the capture pipeline now, so photos not processed yet become memories before the next ask. Never fails the ask.
+     */
+    private val onNoMatch: () -> Unit = {},
 ) {
     data class Retrieved(val vars: PromptVars, val memories: List<MemoryEntity>) { val ids: Set<String> get() = memories.map { it.id }.toSet() }
 
@@ -137,7 +142,10 @@ class AnswerService(
         val q = AskText.collapse(question).take(MAX_QUESTION)
         if (q.isEmpty()) throw EmptyQuestionException()
         val r = retrieve(q, nowMs)
-        if (r.memories.isEmpty()) throw NoMemoriesException()
+        if (r.memories.isEmpty()) {
+            runCatching(onNoMatch).onFailure { Log.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
+            throw NoMemoriesException()
+        }
         val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, inputIds = r.ids)).output as AnswerOutput
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
@@ -197,6 +205,7 @@ class AnswerService(
                 MemoryGraph.get(context), ai.runner, ai.retriever, { store.settings.value },
                 sources = sourcesFrom(provider),
                 proposals = OriginFencedIntake(context, MemoryGraph.get(context), ActionsGraph.get(context).intake),
+                onNoMatch = { if (com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(context)) com.rokid.context.work.OrchestrationScheduler(context).enqueueFrameIngestIfIdle() },
             )
         }
     }

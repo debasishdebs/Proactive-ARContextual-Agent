@@ -128,6 +128,25 @@ class AskActionsTest {
         assertEquals(1, prompts.size)
     }
 
+    /** G10: the app's no-match reprocess runs the capture pipeline now (KEEP: a running ingest is never replaced). */
+    @Test fun noMatchRunsTheCapturePipelineNowUnlessPaused() = runBlocking {
+        val wm = androidx.work.WorkManager.getInstance(ctx)
+        AppConfigStore.setPipelineEnabled(ctx, false)
+        assertEquals(AskOutcome.Failed(AskActions.NO_MEMORIES), AskActions.ask(ctx, "milk"))
+        assertTrue("paused: nothing queued", wm.getWorkInfosForUniqueWork("frame-ingest-now").get().isEmpty())
+        AppConfigStore.setPipelineEnabled(ctx, true)
+        assertEquals(AskOutcome.Failed(AskActions.NO_MEMORIES), AskActions.ask(ctx, "milk"))
+        assertEquals(1, wm.getWorkInfosForUniqueWork("frame-ingest-now").get().size)
+        // An ingest still waiting (held here by a charging constraint) is kept, never cancelled by another no-match ask.
+        val waiting = androidx.work.OneTimeWorkRequestBuilder<com.rokid.context.work.FrameIngestWorker>()
+            .setConstraints(androidx.work.Constraints.Builder().setRequiresCharging(true).build()).build()
+        wm.enqueueUniqueWork("frame-ingest-now", androidx.work.ExistingWorkPolicy.REPLACE, waiting).result.get()
+        AskActions.ask(ctx, "keys")
+        val infos = wm.getWorkInfosForUniqueWork("frame-ingest-now").get()
+        assertEquals("kept, not replaced", listOf(waiting.id), infos.map { it.id })
+        assertEquals(androidx.work.WorkInfo.State.ENQUEUED, infos.single().state)
+    }
+
     @Test fun emptyQuestionAndNoMemoriesGiveShortMessages() = runBlocking {
         assertEquals(AskOutcome.Failed(AskActions.EMPTY_QUESTION), AskActions.ask(ctx, "   "))
         assertEquals(AskOutcome.Failed(AskActions.NO_MEMORIES), AskActions.ask(ctx, "milk"))
