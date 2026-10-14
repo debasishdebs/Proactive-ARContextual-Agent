@@ -84,6 +84,7 @@ object RoleContracts {
             "proposedAction.title is empty".takeIf { a.title.isBlank() },
             "proposedAction.dueAt must be in the future".takeUnless { a.dueAt.isAfter(ctx.now) },
         )
+        is ProposedAction.NoteAdd -> listOfNotNull("proposedAction.text is empty".takeIf { a.text.isBlank() })
         is ProposedAction.CalendarEvent -> listOfNotNull(
             "proposedAction.startAt must be in the future".takeUnless { a.startAt.isAfter(ctx.now) },
             "proposedAction.endAt must be after startAt".takeUnless { a.endAt.isAfter(a.startAt) },
@@ -98,6 +99,7 @@ object RoleContracts {
                 val io = i.jsonObject
                 ShoppingLine(str(io, "name"), (io["qty"] as? JsonPrimitive)?.takeUnless { it == JsonNull }?.double, opt(io, "unit"))
             })
+            "NOTE_ADD" -> ProposedAction.NoteAdd(str(a, "text"))
             "CALENDAR_EVENT" -> {
                 val start = LocalDateTime.parse(str(a, "startAt"))
                 ProposedAction.CalendarEvent(str(a, "title"), start, opt(a, "endAt")?.let(LocalDateTime::parse) ?: start.plusMinutes(30), opt(a, "location"))

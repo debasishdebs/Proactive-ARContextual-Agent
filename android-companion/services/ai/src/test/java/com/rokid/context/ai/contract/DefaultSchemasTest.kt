@@ -23,6 +23,10 @@ class DefaultSchemasTest {
         val nudge = Json.parseToJsonElement("""{"shouldNudge":true,"text":"Buy milk","why":"Seen empty","sourceIds":["m1"],"priority":"high",
             "proposedAction":{"type":"REMINDER","title":"Buy milk","dueAt":"2026-10-12T18:30"}}""")
         assertEquals(emptyList<String>(), JsonSchemaValidator.validate(DefaultSchemas.forKey(PromptKey.NUDGE)!!, nudge))
+        val note = Json.parseToJsonElement("""{"answer":"Noted","sources":[],"proposedAction":{"type":"NOTE_ADD","text":"car on level 3"}}""")
+        assertEquals(emptyList<String>(), JsonSchemaValidator.validate(DefaultSchemas.forKey(PromptKey.ANSWER)!!, note))
+        val longNote = Json.parseToJsonElement("""{"answer":"Noted","sources":[],"proposedAction":{"type":"NOTE_ADD","text":"${"x".repeat(501)}"}}""")
+        assertTrue(JsonSchemaValidator.validate(DefaultSchemas.forKey(PromptKey.ANSWER)!!, longNote).isNotEmpty())
         val bad = Json.parseToJsonElement("""{"answer":"x","sources":[],"proposedAction":{"type":"REMINDER","title":"","dueAt":"tomorrow"}}""")
         assertTrue(JsonSchemaValidator.validate(DefaultSchemas.forKey(PromptKey.ANSWER)!!, bad).isNotEmpty())
     }
