@@ -1,0 +1,115 @@
+package com.rokid.context.memory.db
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.MapColumn
+import androidx.room.OnConflictStrategy
+import androidx.room.Query
+import androidx.room.Transaction
+import kotlinx.coroutines.flow.Flow
+
+/**
+ * Per-frame processing state (keyframe capture, spec §P2). A claim moves a frame to EXTRACTING with a random claim id;
+ * the commit transaction starts with [completeIfClaimed], and zero rows means the claim was abandoned and retaken.
+ * Callers chunk `IN (…)` lists (≤ 500).
+ */
+@Dao
+abstract class FrameStateDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertIgnore(rows: List<FrameStateEntity>)
+
+    @Query("SELECT * FROM frame_state WHERE frameId IN (:frameIds)") abstract suspend fun byIds(frameIds: List<String>): List<FrameStateEntity>
+    @Query("SELECT * FROM frame_state WHERE frameId = :frameId") abstract suspend fun get(frameId: String): FrameStateEntity?
+
+    /** Claimable now: PENDING, FAILED, or an EXTRACTING claim taken before [abandonBeforeMs]. */
+    @Query(
+        "UPDATE frame_state SET state = 'EXTRACTING', claimedAt = :nowMs, claimId = :claimId, updatedAt = :nowMs " +
+            "WHERE frameId IN (:frameIds) AND (state IN ('PENDING','FAILED') OR (state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs))",
+    )
+    protected abstract suspend fun claimRows(frameIds: List<String>, claimId: String, nowMs: Long, abandonBeforeMs: Long): Int
+
+    /** An abandoned claim counts as an attempt (spec §P2): bump it, and the fifth ends in FAILED_FINAL. */
+    @Query(
+        "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'PENDING' END, " +
+            "lastError = 'abandoned', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE frameId IN (:frameIds) AND state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs",
+    )
+    protected abstract suspend fun abandonRows(frameIds: List<String>, nowMs: Long, abandonBeforeMs: Long, maxAttempts: Int): Int
+
+    @Query("SELECT * FROM frame_state WHERE frameId IN (:frameIds) AND state = 'EXTRACTING' AND claimId = :claimId")
+    protected abstract suspend fun claimedBy(frameIds: List<String>, claimId: String): List<FrameStateEntity>
+
+    /** PENDING/FAILED(attempts<5)/abandoned EXTRACTING → EXTRACTING; returns the rows it claimed. */
+    @Transaction
+    open suspend fun claim(frameIds: List<String>, claimId: String, nowMs: Long, abandonBeforeMs: Long): List<FrameStateEntity> {
+        if (frameIds.isEmpty()) return emptyList()
+        abandonRows(frameIds, nowMs, abandonBeforeMs, MAX_ATTEMPTS)
+        claimRows(frameIds, claimId, nowMs, abandonBeforeMs)
+        return claimedBy(frameIds, claimId)
+    }
+
+    /** The CAS; returns 1 when the claim still holds and the row moved to [to]. Used inside the caller's transaction. */
+    @Query(
+        "UPDATE frame_state SET state = :to, claimedAt = NULL, claimId = NULL, lastError = NULL, updatedAt = :nowMs " +
+            "WHERE frameId = :frameId AND state = 'EXTRACTING' AND claimId = :claimId",
+    )
+    abstract suspend fun completeIfClaimed(frameId: String, claimId: String, to: String, nowMs: Long): Int
+
+    /** → FAILED, or FAILED_FINAL on the [maxAttempts]th failure. Returns 0 when the claim no longer holds. */
+    @Query(
+        "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'FAILED' END, " +
+            "lastError = :error, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE frameId = :frameId AND state = 'EXTRACTING' AND claimId = :claimId",
+    )
+    abstract suspend fun fail(frameId: String, claimId: String, error: String, nowMs: Long, maxAttempts: Int = MAX_ATTEMPTS): Int
+
+    @Query(
+        "SELECT * FROM frame_state WHERE state IN ('PENDING','FAILED') OR (state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs) " +
+            "ORDER BY updatedAt LIMIT :limit",
+    )
+    protected abstract suspend fun recoverableRows(abandonBeforeMs: Long, limit: Int): List<FrameStateEntity>
+
+    /** PENDING, FAILED (attempts < 5 by construction: the fifth is FAILED_FINAL) and abandoned EXTRACTING rows, oldest first. */
+    open suspend fun recoverable(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameStateEntity> = recoverableRows(abandonBeforeMs, limit)
+
+    @Query("SELECT state AS k, COUNT(*) AS v FROM frame_state GROUP BY state")
+    abstract fun counts(): Flow<Map<@MapColumn("k") String, @MapColumn("v") Int>>
+
+    @Query("UPDATE frame_state SET state = 'PENDING', attempts = 0, lastError = NULL, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'FAILED_FINAL'")
+    abstract suspend fun retryAllFinal(nowMs: Long): Int
+
+    @Query("DELETE FROM frame_state WHERE frameId IN (:frameIds)") abstract suspend fun deleteFor(frameIds: List<String>): Int
+
+    companion object { const val MAX_ATTEMPTS = 5 }
+}
+
+@Dao
+interface FrameMetaDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(row: FrameMetaEntity)
+    @Query("SELECT * FROM frame_meta WHERE frameId = :frameId") suspend fun get(frameId: String): FrameMetaEntity?
+    @Query("SELECT * FROM frame_meta WHERE wireFrameId = :wireFrameId") suspend fun byWireId(wireFrameId: String): FrameMetaEntity?
+    @Query("DELETE FROM frame_meta WHERE frameId IN (:frameIds)") suspend fun deleteFor(frameIds: List<String>): Int
+}
+
+@Dao
+interface FrameSourceDao {
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertAll(rows: List<FrameSourceEntity>)
+    @Query("SELECT * FROM frame_source WHERE memoryId = :memoryId") suspend fun forMemory(memoryId: String): List<FrameSourceEntity>
+    @Query("SELECT memoryId FROM frame_source WHERE frameId = :frameId") suspend fun memoriesForFrame(frameId: String): List<String>
+    @Query("DELETE FROM frame_source WHERE memoryId = :memoryId") suspend fun deleteForMemory(memoryId: String): Int
+}
+
+@Dao
+interface FrameVectorDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(rows: List<FrameVectorEntity>)
+    @Query("SELECT * FROM frame_vector WHERE spaceId = :spaceId ORDER BY frameId LIMIT :limit OFFSET :offset")
+    suspend fun forSpace(spaceId: String, limit: Int, offset: Int): List<FrameVectorEntity>
+    @Query("DELETE FROM frame_vector WHERE spaceId = :spaceId") suspend fun deleteSpace(spaceId: String): Int
+    @Query("SELECT COUNT(*) FROM frame_vector WHERE spaceId = :spaceId") suspend fun countForSpace(spaceId: String): Int
+    @Query("DELETE FROM frame_vector WHERE frameId IN (:frameIds)") suspend fun deleteFor(frameIds: List<String>): Int
+}
+
+@Dao
+interface FrameClusterDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(row: FrameClusterEntity)
+    @Query("SELECT * FROM frame_cluster WHERE closedAt IS NULL ORDER BY openedAt DESC LIMIT 1") suspend fun open(): FrameClusterEntity?
+}
