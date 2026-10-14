@@ -169,4 +169,32 @@ class LocalModelDownloadWorkerTest {
         assertFalse("nothing written after the rename", part().exists())
         assertTrue(com.rokid.context.ai.local.ModelFileVerifier.verify(store.fileFor(model), model.bytes, model.sha256))
     }
+
+    /** Final review I3: the "Allow mobile data" switch reaches a download already queued, both ways; the .part stays. */
+    @Test fun mobileDataSwitchReachesAQueuedDownload() {
+        val wm = WorkManager.getInstance(ctx)
+        LocalModelStore.modelsDir(ctx).mkdirs()
+        part().writeBytes(data.copyOfRange(0, 1000))
+        fun live() = wm.getWorkInfosForUniqueWork("local_model_test-model").get().single { !it.state.isFinished }
+        store.enqueue(model, allowMetered = false)
+        val first = live().id
+
+        store.setAllowMetered(model, true)
+        assertEquals(NetworkType.CONNECTED, live().constraints.requiredNetworkType)
+        assertTrue("replaced, not a second download", live().id != first)
+        val second = live().id
+
+        store.setAllowMetered(model, false)
+        assertEquals(NetworkType.UNMETERED, live().constraints.requiredNetworkType)
+        assertTrue(live().id != second)
+        assertEquals("the .part is kept, so the new work resumes it", 1000L, part().length())
+
+        // The same setting again leaves the work alone; with nothing queued the switch starts nothing.
+        val third = live().id
+        store.setAllowMetered(model, false)
+        assertEquals(third, live().id)
+        store.setAllowMetered(model.copy(id = "other"), true)
+        assertTrue(wm.getWorkInfosForUniqueWork("local_model_other").get().isEmpty())
+        assertEquals(0, server.requestCount)
+    }
 }

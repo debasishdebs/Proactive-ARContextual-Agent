@@ -41,15 +41,33 @@ class LocalModelStore(context: Context) {
         }.distinctUntilChanged()
 
     /** One download per model: a second request while one is queued or running is a no-op (KEEP). */
-    fun enqueue(model: LocalModel, allowMetered: Boolean) {
+    fun enqueue(model: LocalModel, allowMetered: Boolean) = enqueue(model, allowMetered, ExistingWorkPolicy.KEEP)
+
+    /**
+     * The "Allow mobile data" switch for a download already queued or running: it is replaced by one with the new
+     * network constraint (the stopped worker lets go of the .part first, and the new one resumes it). With nothing
+     * queued, or the same constraint already, nothing happens. Never blocks the caller.
+     */
+    fun setAllowMetered(model: LocalModel, allowMetered: Boolean) {
+        val infos = workManager.getWorkInfosForUniqueWork(LocalModelDownloadWorker.uniqueName(model.id))
+        infos.addListener({
+            val wanted = networkType(allowMetered)
+            val live = runCatching { infos.get() }.getOrNull().orEmpty().filter { !it.state.isFinished }
+            if (live.isNotEmpty() && live.any { it.constraints.requiredNetworkType != wanted }) enqueue(model, allowMetered, ExistingWorkPolicy.REPLACE)
+        }, Runnable::run)
+    }
+
+    private fun enqueue(model: LocalModel, allowMetered: Boolean, policy: ExistingWorkPolicy) {
         val request = OneTimeWorkRequestBuilder<LocalModelDownloadWorker>()
             .setInputData(workDataOf(LocalModelDownloadWorker.KEY_MODEL_ID to model.id))
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(if (allowMetered) NetworkType.CONNECTED else NetworkType.UNMETERED).build())
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(networkType(allowMetered)).build())
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .addTag(TAG)
             .build()
-        workManager.enqueueUniqueWork(LocalModelDownloadWorker.uniqueName(model.id), ExistingWorkPolicy.KEEP, request)
+        workManager.enqueueUniqueWork(LocalModelDownloadWorker.uniqueName(model.id), policy, request)
     }
+
+    private fun networkType(allowMetered: Boolean) = if (allowMetered) NetworkType.CONNECTED else NetworkType.UNMETERED
 
     /** Stops the download; the .part stays so a later Download resumes it. */
     fun cancel(model: LocalModel) {
