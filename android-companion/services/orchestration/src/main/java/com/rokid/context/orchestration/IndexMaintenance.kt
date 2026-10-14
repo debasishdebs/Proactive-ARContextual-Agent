@@ -113,7 +113,7 @@ class PrefsIndexClock(context: Context) : IndexClock {
 }
 
 /**
- * spec §4.6 generations, one bounded run at a time: canary-check the ACTIVE space (≤ once per 24 h, or on Rebuild);
+ * spec §4.6 generations, one bounded run at a time: purge the vectors of spaces retired over 7 days ago; canary-check the ACTIVE space (≤ once per 24 h, or on Rebuild);
  * start or resume a BUILDING space when the binding's fingerprint differs from the current space or it is STALE;
  * embed missing memories into the ACTIVE space (when it still answers) and into the BUILDING one; swap at 100 %
  * coverage after the new space's canaries still match.
@@ -141,6 +141,7 @@ class IndexMaintenance(
      * normal run. A Rebuild left pending by a pause ([IndexClock.rebuildPending]) counts as one.
      */
     suspend fun run(rebuild: Boolean = false, rebuildToken: String? = null): Outcome {
+        spaces.purgeRetired(now()) // spec §F.2: retired spaces keep their vectors 7 days for Roll back, then go (cheap; runs with the daily job)
         val bound = embedders.bound() ?: run {
             // No EMBED model: a drift streak (and "index unstable") belonged to a model that is gone.
             if (clock.lastDiscard() != null) clock.recordDiscard(null)
