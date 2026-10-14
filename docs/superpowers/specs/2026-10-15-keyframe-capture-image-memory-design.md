@@ -1,6 +1,6 @@
 # Motion-aware keyframe capture and image memory: design
 
-Status: revision 2 (review findings 1–7 + user decisions A1/B1/C1/D1), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
+Status: revision 3 (two review rounds + user decisions A1/B1/C1/D1, 3, 6a), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
 Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes only", §11 step 4b.
 
 ## 0. Intent (agreed with the user, 2026-10-15)
@@ -20,8 +20,10 @@ Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes 
   1. **Live:** every keyframe sent in an extraction call gets its **own caption** in that call's output (§P2.1 provenance). Cluster representatives are captioned live the same way.
   2. **Night (charging):** only **describe before deleting** (§P6). It covers a photo that is about to expire and is linked to **no memory at all**, such as a salient keyframe that never got its live call.
 - **No extra captioning (user decision, 2026-10-15):** the whole point of dedupe and clustering is to save vision-LLM calls, so the photos they skip are not captioned later.
-  - **A skipped photo** is a near-duplicate (`near_dup_of`) or a non-representative cluster member (`memory_source` role CLUSTER_MEMBER, covered by the cluster summary).
+  - **A skipped photo** is a near-duplicate (`near_dup_of`) or a non-representative cluster member (`frame_source` role CLUSTER_MEMBER, covered by the cluster summary).
   - **Rule (user decision):** if a skipped photo turns out to be a **key moment**, meaning salience ≥ 0.5 (dwell, text, novelty or watch list, §P4.1), it joins the **caption queue**: a live call under the normal budget, at the lowest priority behind new keyframes and nudge evaluation.
+  - **Aging (review fix 7):** after 10 min of waiting it moves above new non-dwell keyframes; after 30 min it takes the next token.
+  - **Promotion** cancels its 1-day skipped-photo deletion; it then follows normal photo retention (7 days).
   - **Otherwise** it is never captioned, and its photo is deleted after **1 day**. Its vector and its links (original or cluster) are kept.
   - **Image vectors** are still made for every keyframe (on-device, no LLM cost), so they stay findable by photo search while the photo is stored.
 - **Re-indexing**, after a change of embedding model, re-makes **vectors only**; it never re-captions. Captions are kept because they feed future personality dimensions and evaluation datasets (user intent).
@@ -54,7 +56,7 @@ Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes 
 | Phase | Topic | Devices | Order |
 |---|---|---|---|
 | F | Shared foundation: `LanguageModel`, `EmbeddingService`, Nomic, re-index | phone | 1 |
-| C | Database v2: additive tables `frame_meta`, `frame_state`, `memory_source`, `frame_cluster` | phone | 1 (together with F) |
+| C | Database v2: additive tables `frame_meta`, `frame_state`, `frame_source`, `frame_cluster`, `frame_vector` | phone | 1 (together with F) |
 | P1 | Glasses capture: motion, keyframes, 640 px, heat, work/rest | glasses | 2 (together with P2) |
 | P2 | Phone keyframe intake: process on arrival, call budget, fast path | phone | 2 |
 | P4 | Image index (indexing time): image vectors, semantic dedupe, clusters, salience, cluster-batch AI calls | phone | 3 (together with P6) |
@@ -98,7 +100,8 @@ Shared rules:
   - **Exact transforms** (from the official model cards; review finding 1):
     - **Text:** mean-pool the token embeddings (768) → **LayerNorm over the full 768 dimensions, no learned weights** → truncate to the first 256 → L2-normalise. Today's JNI does only L2 normalisation, so the plan adds the LayerNorm step in Kotlin (or in the JNI) before truncation.
     - **Vision:** the CLS embedding (768) → L2-normalise (the model card's recipe), then truncate to the stored dimension → L2-normalise again.
-  - **Stored dimension:** 256 for text (Matryoshka, documented for the text model). The image dimension is **256 only if the §F.5 photo acceptance test passes at 256; otherwise images are stored at 768.** The dimension is part of each space's fingerprint. A later change is a new space, which means a re-index.
+  - **Stored dimension:** 256 for text (Matryoshka, documented for the text model). The image dimension is **256 only if the §F.5 photo acceptance test passes at 256; otherwise images are stored at 768**, while text stays at 256 (user decision: separate dimensions, for storage).
+  - **Queries with different dimensions (user decision 3):** a question is embedded **once** at 768 with the query prefix. The text index uses it shortened to 256 and L2-normalised; the image index uses it at the image dimension. One model and one call. Text and image scores are **never compared** (see §P5.1). The dimension is part of each space's fingerprint. A later change is a new space, which means a re-index.
   - **Reference-vector test:** the plan fixes 10 texts and 5 images with vectors computed by the official Python pipeline (`sentence-transformers` / `transformers` at a pinned commit). On-device vectors must reach cosine ≥ 0.99 against them for every item.
   - **Download:** both files go through the existing `LocalModelDownloadWorker`: https only, Range resume, SHA-256 verify, pinned to a Hugging Face commit. Exact URLs, sizes and hashes are pinned in the plan.
   - **Catalog entry:** "Nomic Embed v1.5 (text + images)". It replaces bge-small as the recommended entry. bge-small stays in the catalog so older spaces can still answer.
@@ -151,13 +154,16 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 |---|---|---|
 | `frame_meta` | `frame_id` PK, `session_id`, `motion`, `dwell`, `blur`, `dhash`, `phash`, `width`, `salience`, `salience_terms` (JSON), `cluster_id`, `near_dup_of`, `image_vector_space`, `created_at` | metadata from §P1, §P4 for each keyframe, durable after the inbox |
 | `frame_state` | `frame_id` PK, `state` (PENDING, EXTRACTING, EXTRACTED, CLUSTERED, NEAR_DUP, FAILED, FAILED_FINAL), `attempts`, `last_error`, `updated_at` | the backlog's source of truth (§P2), no TTL |
-| `memory_source` | (`memory_id`, `frame_id`) PK, `cluster_id` nullable, `role` (FACT, CLUSTER_REP, CLUSTER_MEMBER) | provenance (§P2), the Forget walk |
+| `frame_source` | (`memory_id`, `frame_id`) PK, `cluster_id` nullable, `role` (FACT, CLUSTER_REP, CLUSTER_MEMBER) | frame → memory provenance (§P2), the Forget walk. **Named `frame_source` because `memory_source` already exists** (memory → memory ancestry, `MemoryEntities.kt:47`). That table and its Forget traversal stay untouched. |
+| `frame_vector` | (`frame_id`, `space_id`) PK, `blob`; index on `space_id` | image vectors for each keyframe. It doesn't need a memory row: skipped photos may have none, and the existing `memory_vector` requires a live memory. It holds the ACTIVE space's rows plus a RETIRED space's rows for the 7-day rollback (§F.2). |
 | `frame_cluster` | `cluster_id` PK, `opened_at`, `closed_at`, `close_reason`, `rep_frame_ids` (JSON), `memory_id` nullable | §P4 clusters |
 
 - **Tests:**
   - a `MigrationTestHelper` test from the v1 schema with real rows, which keeps every v1 row;
   - an encrypted-database migration test, extending `SqlCipherMigrationDeviceTest`;
   - Delete all and Forget cover the new tables (Delete all keeps notes and shopping, as before).
+- That makes **5 new tables**. The earlier "four tables" is superseded.
+- `frame_state` adds `claimed_at` (nullable) for the extraction claim (§P2.5).
 - Frames ingested before v2 have no `frame_meta` row. They're treated as `motion=UNKNOWN`, not dwell, and salience is computed from the image only.
 
 ---
@@ -197,7 +203,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   - **Immediate triggers:** the move from still to moving (gyro onset) checks a frame straight away and goes to 3 per second. A dwell (below) takes its keyframe straight away.
   - Battery Saver or battery ≤ 20 % halves every rate (today's rule).
 - **The promise (user decision):**
-  - **anything you turn to look at for ≥ 1.5 s** gets a keyframe;
+  - **under normal operation**, meaning a sampling session active (worn, not paused, not in a rest period, no heat stop, not at the slowest still rate) and at least one usable frame (above the blur floor, not dark): **anything you turn to look at for ≥ 1.5 s** gets a keyframe;
   - a change in front of a **still** head is caught within ≤ 5 s (the slowest rate);
   - quick glances under 1.5 s are best effort, not promised.
 - **Camera LED (user note):** the camera's privacy LED is lit whenever the camera is bound, whatever the resolution, so onlookers can't tell photos from video.
@@ -273,18 +279,22 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   - every image in a multi-photo VISION_EXTRACT call is labelled in the prompt with its `frame_id`;
   - the output schema requires, per fact, **`source_frame_ids` (non-empty)** and, per photo, `captions[{frame_id, caption}]`;
   - the validator rejects any id that wasn't sent, and any sent photo without a caption: the whole call counts as INVALID_OUTPUT and the frames are retried as single-photo calls;
-  - each saved memory gets `memory_source` rows (§C);
-  - Forget and redaction walk `memory_source`, so forgetting a frame also handles every memory that cites it, under the existing fences;
+  - each saved memory gets `frame_source` rows (§C);
+  - Forget and redaction walk `frame_source`, so forgetting a frame also handles every memory that cites it, under the existing fences;
   - single-photo calls use the same schema.
 - **Batching:** each VISION_EXTRACT call takes up to 3 pending keyframes, choosing **dwell keyframes first, then newest first**. The backlog drains in order as tokens allow, and nothing is dropped.
   - A backlog > 30 keyframes switches to **cluster mode** (P4) for the excess.
   - Until P4 ships, the excess just waits.
 - **Fast path (decision D1; review finding 2):** today `NudgeRunGate.MIN_GAP_MS` (30 min) gates **evaluation** itself, so the fast path can't reuse it. Split it:
-  - **Evaluate:** a new `NudgeEvaluator` runs straight after each extraction, only for memories from **salient or dwell** keyframes or a **new place**. At most 1 evaluation call per 60 s; anything that arrives in between joins the next evaluation.
+  - **Evaluate (decision 6a):** a new `NudgeEvaluator` considers only memories from **salient or dwell** keyframes or a **new place**.
+    - The first eligible memory starts a **settle window of 5 s**; anything eligible that arrives in that window joins the same evaluation.
+    - There are at least **30 s** between evaluations. Something that arrives inside the gap starts the next settle window when the gap ends.
+    - Timing: about 15 s typical and about 45 s worst, from capture to decision. Cost: at most 2 evaluation calls per minute while busy.
+    - **User settings** (Settings → Nudges, new rows): **Settle window** 3 / 5 / 10 / 15 s (default 5); **Minimum gap between checks** 30 / 60 / 120 s (default 30); **Minimum gap between shown nudges** (today's 30 min: 10 / 30 / 60 min); **Daily nudge cap** (today's value, exposed if it isn't already).
   - **Notify:** the existing 30-minute gap and the daily cap apply **only to showing** a nudge. An evaluation that decides "nudge" while throttled is recorded and dropped, with a reason in Diagnostics.
   - **Budget reservation:** 1 in every 5 budget tokens is reserved for nudge evaluation, so a backlog can't starve live nudges. An unused reservation is released after 60 s.
   - The periodic `NudgeWorker` stays as the backstop, with its 30-minute gate.
-  - Target: **p50 ≤ 15 s** from keyframe capture to the nudge decision, with no backlog.
+  - Target, at the defaults with no backlog: **p50 ≤ 15 s** and **p100 ≤ 45 s** from keyframe capture to the nudge decision.
 - **Diagnostics:** keyframes per hour, AI calls per hour (split by role), backlog size, mean latency from keyframe to memory, and tokens per call when the provider reports them.
 
 ### P2.2 Indexing time
@@ -300,7 +310,9 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 - **Provider error:** today's retry backoff applies, and the bucket token is refunded on transport errors only.
 - **Battery Saver, or battery ≤ 30 % and not charging:** today's deferral rules stay. Live nudges pause; the user-started bypass still works.
 - **Offline and backlog durability (review finding 7):** the backlog's source of truth is the new `frame_state` table (§C), not the 24 h-TTL job queue.
-  - Jobs are rebuilt from `frame_state` rows in `PENDING` or `FAILED` (attempts < 5) at startup, on network return, and by the periodic backstop.
+  - **Claims (review fix 4):** moving to `EXTRACTING` sets `claimed_at`. A claim older than 5 min (longer than the call timeout) counts as **abandoned**: the frame goes back to `PENDING` and `attempts` increases.
+  - **Atomic commit:** the memory rows, the `frame_source` rows and the move to `EXTRACTED` or `CLUSTERED` are saved in **one** database transaction. A crash before commit leaves the claim to expire; a crash after commit leaves nothing to redo.
+  - Jobs are rebuilt from `frame_state` rows in `PENDING`, `FAILED` (attempts < 5) or an abandoned `EXTRACTING` claim, at startup, on network return, and by the periodic backstop.
   - A job expiring therefore no longer loses a frame.
   - Frames stuck after 5 attempts become `FAILED_FINAL` and appear in Diagnostics, with a "Retry all" action.
 
@@ -308,7 +320,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 - Unit tests for the token bucket (rate, burst, bypass, refund), the batch picking order, and the backlog threshold.
 - A Robolectric test: ingest → pipeline → fake `LanguageModel` → memory saved, under the budget.
 - A latency test with a fake clock.
-- Provenance: the validator rejects unknown ids and missing captions; INVALID_OUTPUT falls back to single-photo calls; `memory_source` is written; Forget follows `memory_source`.
+- Provenance: the validator rejects unknown ids and missing captions; INVALID_OUTPUT falls back to single-photo calls; `frame_source` is written; Forget follows `frame_source`.
 - Nudge split: evaluation timing, notification throttling, reservation release.
 - Recovery: kill mid-backlog, then restart, and every frame ends `EXTRACTED`, `CLUSTERED` or `FAILED_FINAL`, none lost; also a 25 h offline simulation.
 - **Doze device check (review addition):** phone screen off, unplugged, in Doze (`adb shell dumpsys deviceidle force-idle`), with keyframes arriving for 20 min. Record arrival-to-memory latency and whether expedited work was deferred or ran out of quota. If the in-service path is deferred, the plan's fallback (expedited work) must be shown to keep frames durable (no loss), even if it's slower.
@@ -319,7 +331,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 
 ### P4.1 New
 - **Image vector for each keyframe:** `EmbeddingService.embedImages` (Nomic vision) on the 640 px keyframe, centre-cropped to 224 px, at ingest, batched in 8s.
-  - Stored in the image's own row, linked to the frame id, in the same space as text.
+  - Stored in `frame_vector` (§C), in the same Nomic family as text.
 - **All per-frame fields** (motion, dwell, blur, hashes, salience, cluster id, near-dup link) live in `frame_meta` (§C), so they survive the move out of the inbox.
 - **Semantic dedupe:** if a keyframe's cosine similarity to any keyframe of the last 10 minutes is ≥ 0.93 (tunable), and it isn't a dwell keyframe, it's marked `near_dup_of=<id>`. It isn't sent to the AI on its own. Its photo is kept subject to P6.
 - **Salience score** (0–1) for each keyframe, the sum of capped terms:
@@ -383,7 +395,9 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   - These calls are batched at night, while charging, under the budget.
   - If the budget or network isn't available, the deletion waits up to 3 more days, then the photo is deleted anyway and its vector kept. That's recorded in Diagnostics.
 - **Two jobs (review finding 6):**
-  - **Retention job:** daily, **no charging or idle constraint** (it makes no AI calls). It deletes every photo past its deadline. A photo that's past its deadline and still uncaptioned is kept until **deadline + 3 days**, then deleted anyway with its vector kept. Every deletion goes through the Forget file-and-row fence.
+  - **Retention job:** daily, **no charging or idle constraint** (it makes no AI calls). It deletes every photo past its deadline.
+    - **Ordinary skipped photos** (not key moments) are deleted at 1 day and **bypass** describe-before-delete and the 3-day extension.
+    - Any **other** photo that's past its deadline and linked to no memory is kept until **deadline + 3 days**, then deleted anyway with its vector kept. Every deletion goes through the Forget file-and-row fence.
   - **Night job:** needs a charger and an idle device. It does describe-before-delete (sorted by deadline, only for photos linked to no memory), then the P4 backfill (vectors, no LLM), under the budget.
   - The 3-day promise therefore depends only on the unconstrained retention job.
 
@@ -403,7 +417,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 
 ### P5.1 New
 - **Words-to-photo search:** `embedQuery(text)` in the shared space searches text memories, captions and image vectors together.
-  - Results are merged, with salient keyframes ranked higher (+0.05).
+  - **No score merging (user decision 3):** each index returns its own top results, **6 text items and 2 photos** (constants). The salience boost (+0.05) applies only inside the photo index. The **answer LLM**, which already reads every candidate, judges relevance. No extra call and no score calibration.
   - The top photo hits feed ANSWER as images: up to 2, with a "describe on demand" call through `LanguageModel`, using the user-started bypass.
 - **Answer card on the glasses:** answer text plus "📷 14:02" when a photo backed it. The phone's Ask detail shows the photo.
 - **Debug view** (debug builds, plus a Diagnostics switch in release). Each memory row shows:
@@ -469,8 +483,10 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 | 256-dimension Matryoshka storage | Claude | M |
 | Opus for specs, Sonnet for code | user | H |
 
-## Review log
+## Review log (continued below)
 - **Revision 1 (`dc97f15`):** reviewed by the user's external reviewer. Findings 1–7, plus the photo-dimension test and the Doze gate, were all verified against the code (`NudgeWorker.kt:47` 30-minute gate, `EmbeddingDao.kt` swap deleting vectors at once, `OrchestrationScheduler.kt` 24 h TTL) and fixed in revision 2.
+- **Revision 2 review:** 7 findings, all verified (`memory_source` already exists at `MemoryEntities.kt:47`; `memory_vector` needs a live memory). Fixed in revision 3: the `frame_source` name, the `frame_vector` table, the 5-min extraction claim with an atomic commit, ordinary skipped photos bypassing describe-before-delete and the 3-day extension, caption-queue aging, and the qualified wording.
+  - User decisions: **3** separate dimensions, one 768 query shortened for each index, no score merging (fixed shares of 6 text + 2 photos, the answer LLM judges); **6a** 5 s settle window with a 30 s gap, configurable in Settings → Nudges.
 
 ## Open questions for the plan (not blocking the spec)
 - Exact Hugging Face commits, sizes and SHA-256 for the Nomic text GGUF and the vision ONNX.
