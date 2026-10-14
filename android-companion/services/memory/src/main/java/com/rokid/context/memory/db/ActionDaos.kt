@@ -81,7 +81,11 @@ interface ShoppingDao {
     @Query("DELETE FROM shopping_item WHERE id = :id") suspend fun delete(id: String): Int
 }
 
+/** User notes ("note that…"). Rows from NoteExecutor are `"<proposalId>#0"`, so a retry inserts nothing and undo finds its row. */
 @Dao
 interface NoteDao {
     @Query("SELECT * FROM note ORDER BY createdAt DESC LIMIT :limit") suspend fun recent(limit: Int): List<NoteEntity>
+    @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertIgnore(note: NoteEntity): Long
+    @Query("DELETE FROM note WHERE id = :id") suspend fun delete(id: String): Int
+    @Query("SELECT * FROM note ORDER BY createdAt DESC, id DESC") fun observeAll(): Flow<List<NoteEntity>>
 }

@@ -16,6 +16,7 @@ object ActionCopy {
         is ActionParams.Reminder -> "${p.title} \u00b7 ${whenText(p.dueAtMs, zone)}"
         is ActionParams.Calendar -> "${p.title} \u00b7 ${whenText(p.startAtMs, zone)}"
         is ActionParams.Shopping -> shoppingDetail(p)
+        is ActionParams.Note -> p.text
     }
 
     /** The first two names, then "+N" for the rest. */
@@ -29,7 +30,16 @@ object ActionCopy {
         ActionType.REMINDER -> "Remind me?"
         ActionType.SHOPPING_ADD -> "Add to shopping list?"
         ActionType.CALENDAR_EVENT -> "Add to calendar?"
+        ActionType.NOTE_ADD -> "Save note?"
     }
+
+    /** HUD (and spoken) notice when an ask proposes a type that is turned off (HudSurface.OFF_NOTICE). */
+    fun offNotice(t: ActionType): String = when (t) {
+        ActionType.REMINDER -> "Reminders are off. Turn them on"
+        ActionType.SHOPPING_ADD -> "Shopping list is off. Turn it on"
+        ActionType.CALENDAR_EVENT -> "Calendar is off. Turn it on"
+        ActionType.NOTE_ADD -> "Notes are off. Turn them on"
+    } + " in the phone app: Settings \u2192 Actions."
 
     fun failureTitle(code: String?): String = when (FailCode.entries.firstOrNull { it.name == code }) {
         FailCode.NO_PERMISSION -> "Calendar permission needed"

@@ -29,7 +29,8 @@ import kotlinx.coroutines.withContext
 import java.time.ZoneId
 import java.util.concurrent.ConcurrentHashMap
 
-enum class HudSurface { CONFIRM, UNDO_TOAST, NONE }
+/** [OFF_NOTICE]: an ask proposed a type that is turned off; the HUD says so (ActionCopy.offNotice) instead of staying silent. */
+enum class HudSurface { CONFIRM, UNDO_TOAST, OFF_NOTICE, NONE }
 
 /** What [ActionEngine.propose] stored, and which HUD surface it asks for. [undoUntilMs] is set only for an auto-executed action. */
 data class Proposed(val proposalId: String, val state: ProposalState, val hud: HudSurface, val undoUntilMs: Long?)
@@ -67,6 +68,7 @@ class ActionEngine(
     suspend fun propose(origin: ProposalOrigin, originId: String, a: ProposedAction, nowMs: Long): Proposed? = withContext(work) {
         val params = ActionParams.from(a, zone())
         if (params is ActionParams.Shopping && params.items.none { it.name.isNotBlank() }) return@withContext null
+        if (params is ActionParams.Note && params.text.isBlank()) return@withContext null
         // From the insert on, the run must outlive the caller (final review I1): a row inserted EXECUTING whose caller
         // is cancelled (NudgeWorker stopped) would otherwise stay EXECUTING until the next process start.
         withContext(NonCancellable) { proposeStored(origin, originId, params, nowMs) }
@@ -174,6 +176,7 @@ class ActionEngine(
         return when (state) {
             ProposalState.PENDING -> Proposed(id, state, if (hudWouldConfirm) HudSurface.CONFIRM else HudSurface.NONE, null) to null
             ProposalState.EXECUTING -> Proposed(id, state, if (hudWouldConfirm) HudSurface.UNDO_TOAST else HudSurface.NONE, null) to row
+            ProposalState.SUPPRESSED -> Proposed(id, state, if (origin == ProposalOrigin.ASK) HudSurface.OFF_NOTICE else HudSurface.NONE, null) to null
             else -> Proposed(id, state, HudSurface.NONE, null) to null
         }
     }
