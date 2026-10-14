@@ -23,7 +23,8 @@ class CalendarSourceTest {
         )
         var range: Pair<Long, Long>? = null
         val lines = CalendarSource(zone) { from, to -> range = from to to; events }.lines(null, now)
-        assertEquals(now to now + 24 * 3_600_000L, range)
+        // A day of slack each side, so an all-day event (UTC dates) is found in any zone; timed events are cut in code.
+        assertEquals(now - 24 * 3_600_000L to now + 48 * 3_600_000L, range)
         assertEquals(
             listOf(
                 "event \u00b7 One \u00b7 Mon 09:30\u201310:00",
@@ -42,5 +43,48 @@ class CalendarSourceTest {
         val parts = line.split(" \u00b7 ")
         assertEquals(80, parts[1].length)
         assertEquals(60, parts[3].length)
+    }
+
+    /** An all-day event as CalendarContract stores it: UTC midnight to UTC midnight (end exclusive). */
+    private fun allDay(title: String, y: Int, mo: Int, d: Int, days: Long = 1): CalendarEvent {
+        val begin = java.time.LocalDate.of(y, mo, d).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        return CalendarEvent(title, begin, begin + days * 24 * 3_600_000L, null, allDay = true)
+    }
+
+    /** BUG-R2-3: an all-day event is a date (UTC, as CalendarContract defines it) with no time, never "05:30". */
+    @Test fun allDayEventShowsItsDateWithNoTime() = runBlocking {
+        val lines = CalendarSource(zone) { _, _ -> listOf(allDay("Diwali", 2026, 10, 12), allDay("Trip", 2026, 10, 12, days = 3)) }.lines(null, at(9))
+        assertEquals(listOf("event \u00b7 Diwali \u00b7 all day Mon 12 Oct", "event \u00b7 Trip \u00b7 all day Mon 12 Oct\u2013Wed 14 Oct"), lines)
+    }
+
+    /** BUG-R2-3 ruling: while a timed event remains today, all-day events come after every timed one (never the "next"). */
+    @Test fun allDayEventsComeAfterTimedEventsWhileOneRemainsToday() = runBlocking {
+        val events = listOf(allDay("Diwali", 2026, 10, 12), CalendarEvent("Standup", at(17), at(17, 30), null), CalendarEvent("Gym", at(7, plusDays = 1), at(8, plusDays = 1), null))
+        val lines = CalendarSource(zone) { _, _ -> events }.lines(null, at(16, 24))
+        assertEquals(
+            listOf("event \u00b7 Standup \u00b7 Mon 17:00\u201317:30", "event \u00b7 Gym \u00b7 Tue 07:00\u201308:00", "event \u00b7 Diwali \u00b7 all day Mon 12 Oct"),
+            lines,
+        )
+    }
+
+    /** BUG-R2-3 ruling: with no timed event left today, today's all-day event leads; tomorrow's all-day ones still follow. */
+    @Test fun todaysAllDayEventLeadsWhenNoTimedEventRemainsToday() = runBlocking {
+        val events = listOf(
+            allDay("Holiday tomorrow", 2026, 10, 13), CalendarEvent("Gym", at(7, plusDays = 1), at(8, plusDays = 1), null),
+            allDay("Diwali", 2026, 10, 12), CalendarEvent("Done", at(9), at(10), null),
+        )
+        val lines = CalendarSource(zone) { _, _ -> events }.lines(null, at(16, 24))
+        assertEquals(
+            listOf("event \u00b7 Diwali \u00b7 all day Mon 12 Oct", "event \u00b7 Gym \u00b7 Tue 07:00\u201308:00", "event \u00b7 Holiday tomorrow \u00b7 all day Tue 13 Oct"),
+            lines,
+        )
+    }
+
+    /** BUG-R2-3: the dates are UTC whatever the zone: in New York a 12 Oct all-day event is still "12 Oct", all of 12 Oct. */
+    @Test fun allDayDatesAreUtcInAnyZone() = runBlocking {
+        val ny = ZoneId.of("America/New_York")
+        val now = LocalDateTime.of(2026, 10, 12, 21, 0).atZone(ny).toInstant().toEpochMilli() // 01:00 UTC on the 13th
+        val lines = CalendarSource(ny) { _, _ -> listOf(allDay("Diwali", 2026, 10, 12), allDay("Old", 2026, 10, 10)) }.lines(null, now)
+        assertEquals(listOf("event \u00b7 Diwali \u00b7 all day Mon 12 Oct"), lines)
     }
 }
