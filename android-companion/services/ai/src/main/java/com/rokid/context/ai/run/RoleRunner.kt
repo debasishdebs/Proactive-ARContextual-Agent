@@ -27,7 +27,7 @@ data class RoleCall(
     val inputIds: Set<String> = emptySet(),
     /** VISION_EXTRACT/SUMMARIZE over frames: the vision → summarize chain (ModelRouter.completeFromFrames). */
     val fromFrames: Boolean = false,
-    /** Who the call is for (budget class). Null = the key's default: VISION_EXTRACT → EXTRACT, NUDGE → NUDGE, ANSWER → USER, else OTHER. Ask-triggered extraction passes USER. */
+    /** Who the call is for (budget class). Null = the key's default: VISION_EXTRACT -> EXTRACT, NUDGE -> NUDGE, ANSWER -> USER, else OTHER. Ask-triggered extraction passes USER. */
     val callClass: CallClass? = null,
 ) {
     val effectiveClass: CallClass
