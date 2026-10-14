@@ -174,4 +174,49 @@ class ProtocolTest {
         assertFalse(Wire.encode(plain).contains("undoProposalId"))
         assertEquals(Decoded.Ok(plain), Wire.decode<StateFrame>(Wire.encode(plain)))
     }
+
+    private val oldFrameJson = """{"v":1,"frameId":"f1","chunkIdx":0,"chunkCount":1,"crc32":5,"capturedAtMs":9}"""
+
+    @Test fun oldFrameMetaParsesWithDefaults() {
+        val m = assertIs<Decoded.Ok<FrameMeta>>(Wire.decode<FrameMeta>(oldFrameJson)).value
+        assertEquals(MotionState.UNKNOWN, m.motion)
+        assertFalse(m.dwell)
+        assertEquals(null, m.blur); assertEquals(null, m.dhash); assertEquals(null, m.width)
+        assertEquals(null, m.sampleSeq); assertEquals(null, m.sessionId)
+    }
+
+    @Test fun oldHudSettingsMeanFixedMode() {
+        val s = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1}""")).value
+        assertEquals(CaptureMode.FIXED, s.captureMode)
+        assertTrue(s.pauseWhenNotWorn)
+        assertEquals(45, s.workMinutes); assertEquals(15, s.restMinutes); assertEquals(1000, s.quickLookMs)
+    }
+
+    @Test fun newFieldsRoundTrip() {
+        val m = FrameMeta(frameId = "f", chunkIdx = 0, chunkCount = 1, crc32 = 1, capturedAtMs = 2, phash = "0123456789abcdef",
+            motion = MotionState.WALKING, dwell = true, blur = 12.5f, dhash = "fedcba9876543210", width = 640, sampleSeq = 7L, sessionId = "s1")
+        assertEquals(Decoded.Ok(m), Wire.decode<FrameMeta>(Wire.encode(m)))
+        val s = HudSettings(captureMode = CaptureMode.SMART, pauseWhenNotWorn = false, workMinutes = 60, quickLookMs = 2000, restMinutes = 20)
+        assertEquals(Decoded.Ok(s), Wire.decode<HudSettings>(Wire.encode(s)))
+        val h = MotionHint(MotionState.VEHICLE, 99)
+        assertEquals(h, Wire.json.decodeFromString<MotionHint>("""{"state":"VEHICLE","atMs":99}"""))
+        assertEquals("pc_motion_hint", Channels.MOTION_HINT)
+    }
+
+    @Test fun unknownEnumValueFallsBackToUnknown() {
+        val m = assertIs<Decoded.Ok<FrameMeta>>(Wire.decode<FrameMeta>("""{"v":1,"frameId":"f1","chunkIdx":0,"chunkCount":1,"crc32":5,"capturedAtMs":9,"motion":"FLYING"}""")).value
+        assertEquals(MotionState.UNKNOWN, m.motion)
+        val s = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1,"captureMode":"TELEPATHY"}""")).value
+        assertEquals(CaptureMode.FIXED, s.captureMode)
+    }
+
+    @Test fun normalizedSnapsAndEnforcesRestAfterLongWork() {
+        assertEquals(HudSettings(), HudSettings().normalized())
+        val n = HudSettings(workMinutes = 77, restMinutes = 5, quickLookMs = 1600).normalized()
+        assertEquals(75, n.workMinutes); assertEquals(15, n.restMinutes); assertEquals(1500, n.quickLookMs)
+        assertEquals(5, HudSettings(workMinutes = 45, restMinutes = 5).normalized().restMinutes)
+        assertEquals(20, HudSettings(workMinutes = 90, restMinutes = 20).normalized().restMinutes)
+        assertEquals(30, HudSettings(workMinutes = 0).normalized().workMinutes)
+        assertEquals(10, HudSettings(restMinutes = 11).normalized().restMinutes)
+    }
 }
