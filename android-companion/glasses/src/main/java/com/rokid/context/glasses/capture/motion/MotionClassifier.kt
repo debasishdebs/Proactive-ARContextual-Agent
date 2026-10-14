@@ -48,9 +48,12 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
             hadMotion = true
             if (mag > peak) peak = mag
         }
+        // Under the threshold for HEAD_HOLD_MS the turn is over: a stale peak must not outlive it (a walk lasts minutes).
+        if (!above && tMs - lastAboveGyroMs >= HEAD_HOLD_MS) peak = 0f
         update(tMs)
-        _decelerating.value = _state.value != MotionState.STILL && peak > 0f && mag < DECEL_FRACTION * peak
-        if (_state.value == MotionState.STILL) peak = 0f
+        // Only a head turn has a peak to decelerate from; never while walking.
+        _decelerating.value = _state.value == MotionState.HEAD_MOVING && peak > 0f && mag < DECEL_FRACTION * peak
+        if (_state.value != MotionState.HEAD_MOVING) peak = 0f
         checkDwell(tMs)
     }
 
@@ -71,7 +74,7 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
         val prev = _state.value
         if (next == prev) return
         if (prev == MotionState.STILL) {
-            peak = 0f
+            // peak is not reset here: the onset sample's own magnitude is already in it, so a one-sample jerk arms decelerating
             _onset.tryEmit(tMs); onsetListener?.invoke(tMs)
         }
         _state.value = next

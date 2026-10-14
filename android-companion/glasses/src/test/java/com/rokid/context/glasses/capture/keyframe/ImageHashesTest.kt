@@ -50,7 +50,7 @@ class ImageHashesTest {
     }
 
     @Test fun differentSceneLargeDistance() {
-        val a = noise(1); val b = noise(2)
+        val a = scene(1); val b = scene(2)
         assertTrue(hamming(ImageHashes.dHash(a), ImageHashes.dHash(b)) > 10)
         assertTrue(hamming(ImageHashes.pHash(a), ImageHashes.pHash(b)) > 10)
     }
