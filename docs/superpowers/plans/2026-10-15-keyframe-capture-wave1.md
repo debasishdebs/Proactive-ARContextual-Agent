@@ -21,7 +21,7 @@
 - llama.cpp JNI (existing), ONNX Runtime Android (`com.microsoft.onnxruntime:onnxruntime-android`, MIT);
 - Robolectric `@Config(sdk=[34])`.
 
-**Spec:** `docs/superpowers/specs/2026-10-15-keyframe-capture-image-memory-design.md` (revision 6). Read the spec section named in each task before starting it. The spec wins on any conflict.
+**Spec:** `docs/superpowers/specs/2026-10-15-keyframe-capture-image-memory-design.md` (revision 7). Read the spec section named in each task before starting it. The spec wins on any conflict.
 
 ## Global Constraints
 
@@ -78,13 +78,15 @@
 2. **Upgrading an install with v1 data:** inbox frames and queued 24 h jobs that exist before v2. They are backfilled into `frame_state` as PENDING on first start after the migration, without duplicating already-extracted frames. Owned by P1: `preV2InboxFramesAreAdoptedOnce`.
 3. **Switching Smart → Fixed (or entering rest) while a session holds the camera:** there's exactly one camera owner at any instant, and no "camera in use" error. Owned by G3: `modeSwitchReleasesSessionBeforeFixedCapture`.
 4. **Forgetting one memory from a 3-photo batch whose frames are shared with another memory:** that memory's `frame_source` rows go and its frames are tombstoned at once (no re-extraction); the photo stays while another memory cites it. Owned by P3: `forgetSharedFrameKeepsOtherMemory`.
+6. **Shared-photo cleanup after restart:** the orphan sweep and tombstone prune never delete a photo still cited only through `frame_source`. Owned by C1: `sweepAfterRestartKeepsSharedPhoto`.
+7. **Keyframe metadata actually reaches the phone** (not UNKNOWN/defaults). Owned by G3 `uplinkSendsAllKeyframeFields` plus T0 `codecSplitJoinPreservesKeyframeMeta`.
 5. **Clock skew between the glasses and the phone** (seconds to minutes): latency stats and caption aging use phone-receive time plus the existing clock offset, never raw glasses time. Owned by P5: `latencyUsesOffsetCorrectedCaptureTime`.
 
 ---
 
 ## T0 (controller, before the streams): shared protocol + versions
 
-**Files:** `core/model/src/main/kotlin/com/rokid/context/core/model/Protocol.kt`; `phone/build.gradle.kts`, `glasses/build.gradle.kts` (versionName/versionCode); tests in `core/model/src/test/...`.
+**Files:** `core/model/src/main/kotlin/com/rokid/context/core/model/Protocol.kt`; `core/model/.../FrameCodec.kt` (**`split`/`join` carry every new `FrameMeta` field**, review fix 6); `phone/build.gradle.kts`, `glasses/build.gradle.kts` (versionName/versionCode); tests in `core/model/src/test/...`.
 
 **Interfaces (Produces):**
 ```kotlin
@@ -107,7 +109,7 @@ val width: Int? = null; val sampleSeq: Long? = null; val sessionId: String? = nu
 ```
 - `burstOnChange` stays in `HudSettings`, documented as ignored.
 
-**Tests:** `oldFrameMetaParsesWithDefaults`, `oldHudSettingsMeanFixedMode`, `newFieldsRoundTrip`, `unknownEnumValueFallsBackToUnknown` (an unknown `motion` string → UNKNOWN, using the existing lenient Json).
+**Tests:** `oldFrameMetaParsesWithDefaults`, `oldHudSettingsMeanFixedMode`, `newFieldsRoundTrip`, `codecSplitJoinPreservesKeyframeMeta` (every new field survives `FrameCodec.split` → `join`), `unknownEnumValueFallsBackToUnknown` (an unknown `motion` string → UNKNOWN, using the existing lenient Json).
 
 - [ ] Write the tests → RED → add the fields and versions → GREEN with `./gradlew --no-daemon :core:model:test`. Commit `feat(protocol): additive capture-mode, work/rest and keyframe metadata fields; app 1.0.0`.
 
@@ -121,14 +123,24 @@ val width: Int? = null; val sampleSeq: Long? = null; val sessionId: String? = nu
 **Interfaces (Produces):**
 ```kotlin
 enum class CallClass { USER, EXTRACT, NUDGE, CAPTION_QUEUE, BACKFILL, OTHER }
-interface LanguageModel { suspend fun complete(request: ModelRequest, callClass: CallClass = CallClass.OTHER): ModelReply }
+/** Routing-aware (review fix 4): the router's existing public API plus an explicit CallClass. Role routing, endpoint-specific
+ *  request building, structured formats, fallbacks and RoutedReply metadata all stay inside ModelRouter. */
+interface LanguageModel {
+    suspend fun complete(role: Role, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply
+    suspend fun completeFromFrames(callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply
+    suspend fun completeOn(endpointId: String, model: String, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply
+}
 interface CallGate { suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T }   // a regular interface: Kotlin forbids type parameters on a fun interface's method
 object PassThroughGate : CallGate { override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T) = block() }
 ```
-- `ModelRouter` implements `LanguageModel`. Every provider `complete` call inside it is wrapped in `gate.withPermit(callClass)`, and `gate` is injected (default `PassThroughGate`).
-- `RoleRunner` passes a `CallClass`: VISION_EXTRACT → EXTRACT, NUDGE → NUDGE, ANSWER → USER, others → OTHER.
+- `ModelRouter` implements `LanguageModel`. **The seam sits beneath the routing:** each individual provider call inside `complete`/`completeFromFrames`/`completeOn`, **including every fallback and retry** (`ModelRouter.kt:127-132`), is wrapped in `gate.withPermit(callClass)` with the **same** `callClass` the caller passed. `gate` is injected (default `PassThroughGate`).
+- The existing router methods without `callClass` stay as deprecated overloads passing `CallClass.OTHER`, so untouched callers compile. **Every caller in this wave passes the class explicitly** (review fix 5):
+  - `RoleRunner` takes `callClass` from its caller: the default for VISION_EXTRACT is EXTRACT, but **Ask-triggered extraction (P4) passes USER**;
+  - NUDGE → NUDGE, ANSWER → USER;
+  - the **test bed** (`ai/run/TestBed.kt`) → USER;
+  - caption queue → CAPTION_QUEUE.
 
-**Tests:** `ModelRouterGateTest`: `everyProviderCallPassesThroughTheGate`, `fallbackRetryWithoutImagesIsAlsoGated` (`ModelRouter.kt:127-132` retries), `defaultGateChangesNothing`. All existing role tests pass unchanged.
+**Tests:** `ModelRouterGateTest`: `everyProviderCallPassesThroughTheGate`, `fallbackRetryWithoutImagesIsAlsoGated` (`ModelRouter.kt:127-132` retries), `fallbackKeepsCallersClass`, `routedReplyMetadataUnchanged`, `defaultGateChangesNothing`. `CallClassPropagationTest`: `askTriggeredExtractionIsUser`, `testBedIsUser`, `userBypassesWhenBackgroundTokensExhausted` (a fake gate with zero EXTRACT tokens: the USER call and its fallback still run). All existing role tests pass unchanged.
 
 - [ ] RED → implement → GREEN (`:services:ai:test`). Commit `feat(ai): LanguageModel seam with an injectable CallGate over ModelRouter`.
 
@@ -258,6 +270,7 @@ class FrameVectorEntity(val frameId: String, val spaceId: String, val blob: Byte
 @Dao interface FrameClusterDao { upsert(row); open(): FrameClusterEntity? }   // used in wave 2
 ```
 - **The migration** creates the 5 tables with SQL identical to Room's generated schema (copy the statements from the exported `2.json`). Nothing else.
+- **Cleanup queries (review fix 7):** every reference count, orphan selection and tombstone prune in `ForgetDao.kt` (e.g. `memoryIdsOfFrame`, and the swept-path query at line 41: `NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = t.frameId)`) must **also** check `frame_source`: a photo is unreferenced only if no live memory has `memory.frameId = frame` **and** no `frame_source` row cites it. Check retention expiry and Delete-all sweeps the same way.
 - **Forget (review fix 3):** forgetting a memory **immediately tombstones every frame it cites** (today's extraction lock, unchanged), so no forgotten fact can be re-extracted, even if other memories still cite the frame. Then delete its `frame_source` rows. The **photo file** is deleted only when no surviving memory cites the frame; until then it's kept for those memories. The existing `memory_source` walk is unchanged.
 
 **Tests:**
@@ -265,7 +278,7 @@ class FrameVectorEntity(val frameId: String, val spaceId: String, val blob: Byte
 - `DatabaseFactoryUpgradeTest`: `buildUpgradesV1File` and `buildDeferredUpgradesV1File`. Create a v1 database file, then open it through the **production** builders (plain and SQLCipher keyed) and assert the v1 rows plus the 5 new tables.
 - `SqlCipherMigrationDeviceTest` (extend the existing test): `encryptedDbMigratesTo2`.
 - `FrameStateDaoTest`: `claimTakesPendingAndAbandoned`, `casRejectsStaleClaim` (two overlapping claims: the old claim's `completeIfClaimed` returns 0), `fifthFailureIsFinal`, `retryAllFinalResets`.
-- `ForgetFrameSourceTest`: `forgetSharedFrameKeepsOtherMemory` (Review Focus 4: the other memory and the photo stay, **the frame is tombstoned at once**), `forgottenFactNotReextracted`, `forgetLastCiterDeletesPhoto`.
+- `ForgetFrameSourceTest`: `forgetSharedFrameKeepsOtherMemory` (Review Focus 4: the other memory and the photo stay, **the frame is tombstoned at once**), `forgottenFactNotReextracted`, `forgetLastCiterDeletesPhoto`, `sweepAfterRestartKeepsSharedPhoto` (Forget memory A from a shared frame, restart, run the orphan sweep and tombstone prune: the photo still exists for memory B, cited only via `frame_source`), `orphanQueriesCheckFrameSource`.
 - `WipeDaoTest`: `deleteAllClearsFrameTablesKeepsNotes`.
 
 - [ ] RED → implement → GREEN (`:services:memory:test`). Commit `feat(db): Room v2, additive frame tables (meta, state, source, cluster, vector)`.
@@ -304,13 +317,14 @@ class MotionClassifier(private val clock: () -> Long) {
     fun onLinearAccel(x: Float, y: Float, z: Float, tMs: Long)
     val state: StateFlow<MotionState>                 // 1 s sliding window; HEAD_MOVING if |gyro| > 0.6 rad/s; WALKING if var(linacc) > 0.5 and a 1.5–2.5 Hz periodicity; else STILL
     val dwell: SharedFlow<Long>                       // emits tMs when moving → STILL held ≥ 1000 ms
-    val onset: SharedFlow<Long>                       // emits on STILL → moving
+    val onset: SharedFlow<Long>                       // emits on STILL → moving — per sample, NOT after the 1 s window (≤ 1 sensor sample of delay)
+    val decelerating: StateFlow<Boolean>              // review fix 1: produced HERE; true while |gyro| has fallen below 60 % of the current movement's peak
 }
 class WearDetector(clock: () -> Long) { fun onProximity(near: Boolean, tMs: Long); val worn: StateFlow<Boolean> }  // far > 5 s → false; near → true at once
-interface SensorFeed { fun start(c: MotionClassifier, w: WearDetector); fun stop() }  // SENSOR_DELAY_GAME, maxReportLatency 1 s, non-wakeup sensors
+interface SensorFeed { fun start(c: MotionClassifier, w: WearDetector); fun stop() }  // SENSOR_DELAY_GAME, **maxReportLatency 0** (no batching: the 1 s promise can't absorb a 1 s FIFO delay), non-wakeup sensors
 ```
 
-**Tests:** `MotionClassifierTest`: `stillTrace`, `headTurnTrace`, `walkingTraceAt2Hz`, `dwellAfterOneSecondStill`, `noDwellWithoutPriorMotion`, `onsetEmitsOnce`. `WearDetectorTest`: `farFor5sMeansNotWorn`, `briefFarIgnored`, `nearRestoresAtOnce`. Use synthetic traces generated in the test.
+**Tests:** `MotionClassifierTest`: `stillTrace`, `headTurnTrace`, `walkingTraceAt2Hz`, `dwellAfterOneSecondStill`, `noDwellWithoutPriorMotion`, `onsetEmitsOnce`, `onsetWithinOneSample`, `deceleratingTracksPeak`. `WearDetectorTest`: `farFor5sMeansNotWorn`, `briefFarIgnored`, `nearRestoresAtOnce`. Use synthetic traces generated in the test.
 
 - [ ] RED → implement → GREEN (`:glasses:testDebugUnitTest`). Commit `feat(glasses): motion classifier (gyro + linear accel) and proximity wear check`.
 
@@ -336,7 +350,8 @@ interface GateStore { fun lastKeyframes(): List<Pair<Long, Long>>; fun push(d: L
 **Tests:**
 - `ImageHashesTest`: `identicalThumbsDistance0`, `shiftedThumbSmallDistance`, `differentSceneLargeDistance`, `blurLowerForBlurred`.
 - `KeyframeGateTest`: `abaPingPongSuppressed` (A, B, A → A kept, B kept, second A skipped), `throttle1200ms`, `sharpestOfWindowWins`, `dwellBypassesLastFive`, `blurryDwellStillSkipped`, `keepCarriesWinningCandidatePixels` (the winner's seq and pixels are those of the sharpest thumb), `losersReleased`.
-- **Glimpse-offset test:** `GlimpseOffsetTest`. Synthetic scene timelines at 3 Hz moving / 1 Hz still analysis; looks of 1.0 / 1.5 / 2.0 s at 10 phase offsets × each motion state. Assert 100 % capture at ≥ 1.5 s, and that a change in front of a still head is caught within ≤ 5 s at the slowest still rate. The 1.0 s rate is printed only.
+- **Throttle (review fix 1):** the 1.2 s minimum gap applies only to frames that are *not* a new scene. A frame that passes the change test against the last keyframe may be kept **0.5 s** after the previous keyframe, so distinct 1 s looks separated by 100 ms turns are each kept.
+- (`GlimpseOffsetTest` moved to G3, where the full classifier → policy → camera → gate path exists.)
 
 - [ ] RED → implement → GREEN. Commit `feat(glasses): keyframe gate (dHash + pHash vs last 5, blur, window, dwell)`.
 
@@ -369,6 +384,7 @@ data class SessionStatus(val running: Boolean, val motion: MotionState, val keyf
 - **Start conditions:** HUD visible (the Android 12 rule), worn, not paused, `captureMode == SMART`, heat and work/rest allow it.
 - **Immediate checks:** `onset` triggers one; `dwell` triggers a forced `offer(dwellArmed = true)`.
 - **Mode switch or rest:** `stop()` releases the `CameraOwner` before any Fixed capture runs.
+- **Metadata transport (review fix 6), owned here:** `GlassesRuntime.bufferCaptured` → `OutboundBuffer` persists the full `KeyframeOut` metadata next to each JPEG (survives a restart) → `FrameUplink` builds `FrameMeta` with every new field → `FrameCodec.split`. The phone side (P1) reads it into the sidecar.
 - **Outbound buffer full:** drop the oldest non-dwell keyframe first (modify `OutboundBuffer.kt`).
 - **Camera bind fails 3×:** fall back to Fixed at 30 s for the session, with a "capture degraded" HUD mark.
 - **"Capture now"** from the phone forces one keyframe, bypassing the change test (blur floor still applies; debug `skipDedupe` stays debug-only).
@@ -376,9 +392,16 @@ data class SessionStatus(val running: Boolean, val motion: MotionState, val keyf
 - **Rest periods** (from G4): `stop("rest")`, then one Fixed capture every 60 s through `CameraOwner` until rest ends.
 
 **Tests:**
+- **End-to-end `GlimpseOffsetTest` (review fix 1):** a virtual-time simulation of the **real** `MotionClassifier` → `CameraPolicy` → `SamplingSession` → `KeyframeGate`, with a fake camera that has an injectable start-up latency (**p95 535 ms**, from the probe) and frame interval (40 ms), a sensor delivery delay of 20 ms, and the real blur/hash code on synthetic scenes.
+  - It counts **saved keyframes**, not raw frames (the probe's 80 % counted raw callbacks).
+  - **Scenario A:** settled → 100 ms turn → a 1.0 s look at a new scene, at 20 phase offsets against the 5 s check. Required: **≥ 95 %** saved at the 1 s setting.
+  - **Scenario B:** sequences of 5 distinct 1.0 s looks separated by 100 ms turns. Required: ≥ 95 % of the looks saved.
+  - **Scenario C:** a change in front of a settled head is saved within ≤ 5 s (≤ 15 s after 10 quiet minutes).
+  - Reported only: the 1.5 / 2 / 3 s settings.
+  - If A or B fail at the camera start-up p95, the fixes allowed are: an earlier start (deceleration threshold), a longer H, or keeping the camera open for H after any onset. Never the LED.
 - `CameraPolicyTest`: `openWhileMoving`, `holdPerQuickLook` (4/2/1/0 s), `opensEarlyOnDeceleration`, `closedWhenSettled`, `briefCheckEvery5sThen15s`, `burstModeAt3s`, `lowPowerHalvesHold`.
 - `SamplingSessionTest` (fakes for camera, sensors, gate, clock): `startsOnlyWhenAllConditionsHold`, `onsetTriggersImmediateCheck`, `dwellForcesKeyframe`, `notWornStopsCamera`, `modeSwitchReleasesSessionBeforeFixedCapture` (Review Focus 3), `bindFailsThriceFallsBackToFixed`, `keyframeWidthIs640`, `captureNowForcesKeyframe`, `emittedJpegMatchesWinningThumb` (decode the emitted JPEG, rebuild its 160 px thumb, and assert dHash distance ≤ 2 to the winning candidate's thumb, never a later frame's), `wearCheckOffKeepsSampling`, `restUsesFixedEvery60s`.
-- `OutboundBufferTest`: `dropsOldestNonDwellFirst`. `LedSourceRulesTest` (a source scan like `SettingsSourceRulesTest`): `noTorchFlashOrLedControlInGlassesSources`.
+- `OutboundBufferTest`: `dropsOldestNonDwellFirst`, `metadataSurvivesRestart`. `FrameUplinkMetaTest`: `uplinkSendsAllKeyframeFields` (buffer → uplink → captured `FrameChunk.meta` has motion, dwell, blur, hashes, width, seq, session). `LedSourceRulesTest` (a source scan like `SettingsSourceRulesTest`): `noTorchFlashOrLedControlInGlassesSources`.
 
 - [ ] RED → implement → GREEN. Commit `feat(glasses): bound sampling session (640 px keyframes, Y-plane thumbnails, single camera owner)`.
 
@@ -413,17 +436,19 @@ class WorkRest(private val clock: () -> Long, workMin: () -> Int, restMin: () ->
   - `frame_meta.frameId` and `frame_state.frameId` use the **database frame id**: the one derived from the archived file name at ingest, as today, and the one memories already reference.
   - The glasses' `pc_frame` id is stored in a new `frame_meta.wireFrameId` column (unique index; part of the C1 table, so C1 must add it).
   - Dedupe of resends uses `wireFrameId`.
-- **Receipt durability, in order:**
-  1. the JPEG and a **sidecar** `<name>.meta.json` (the T0 metadata) are written to temp files, fsynced, and renamed into the inbox. The sidecar is renamed first, the JPEG last, so a JPEG never appears without its sidecar.
-  2. **Ack the glasses only after step 1.** This matches today's "ack after the durable inbox write".
-  3. The existing drain moves the file to the archive and runs **one Room transaction**: the frame row, `frame_meta` from the sidecar (old glasses with no sidecar → UNKNOWN/false), and `frame_state` PENDING. The sidecar is deleted after commit.
+- **Receipt durability, in order (review fixes 2 and 3):**
+  1. the JPEG and a **sidecar** `<name>.meta.json` (the T0 metadata) are written to temp files and file-fsynced, then renamed into the inbox (sidecar first, JPEG last), then the **inbox directory is fsynced** (`Os.open(dir, O_RDONLY)` + `Os.fsync`, behind an injectable `DirSync`).
+  2. **Ack the glasses only if every fsync, including the directory one, succeeded.** On any failure: no ack, the temp files are deleted, and the glasses resend. Today's writer only logs a failure and continues; that changes.
+  3. **Drain:** rename the JPEG **and its sidecar** to the archive, fsync the archive directory, then run **one Room transaction**: the frame row, `frame_meta` from the sidecar (old glasses with no sidecar → UNKNOWN/false), and `frame_state` PENDING. After the commit, delete the sidecar, then fsync the archive directory.
+  4. **Reconciliation (recurring, at startup and on every drain run):** scan **both** inbox and archive for complete receipts (a JPEG, with or without its sidecar) whose `wireFrameId` / database id has no frame row, and ingest them with their sidecar. A JPEG whose sidecar is missing because the receipt predates v2 gets defaults. The sidecar stays associated (same base name) until its commit.
 - **Crash cases:**
-  - after step 1, before the ack: the glasses resend; the phone finds `wireFrameId` already in the inbox or DB and acks without duplicating;
-  - after the ack, before step 3: the inbox drain picks the file up on the next run;
-  - during step 3: the transaction rolls back and the file goes back to the inbox (existing FAILED path).
+  - after step 1, before the ack: the glasses resend; the phone finds `wireFrameId` already in the inbox, archive or DB and acks without duplicating;
+  - after the ack, before step 3: the next drain picks it up;
+  - **death right after the archive rename, before the commit:** reconciliation finds the archived JPEG and sidecar with no row and ingests them;
+  - transaction failure without death: the existing FAILED path returns the file to the inbox.
 - **Adoption:** a one-shot `FrameAdoption.run()` after the migration (a prefs flag `frames_adopted_v2`) inserts PENDING `frame_state` rows (IGNORE) for **(a) inbox files and (b) archived frames already in the DB that are still awaiting extraction** (no extracted memory, no tombstone, including those whose 24 h job expired). Frames already extracted get `EXTRACTED`; tombstoned frames get none.
 
-**Tests:** `FrameIngestorMetaTest`: `sidecarBeforeJpegThenAck`, `ackOnlyAfterDurableWrite`, `metaAndStateInOneTransaction`, `resendAfterCrashDedupesByWireId`, `oldGlassesFrameGetsDefaults`, `dbIdMapsToWireId`. `FrameAdoptionTest`: `preV2InboxFramesAreAdoptedOnce` (Review Focus 2), `archivedAwaitingFramesAdopted`, `extractedFramesNotRequeued`, `tombstonedFramesNotAdopted`.
+**Tests:** `FrameIngestorMetaTest`: `sidecarBeforeJpegThenAck`, `ackOnlyAfterDurableWrite`, `dirSyncFailureMeansNoAck` (inject a `DirSync` failure on the inbox: no ack, temp files gone), `archiveDirSyncFailureKeepsSidecar`, `deathAfterArchiveRenameReconciled` (simulate death between the archive rename and the commit, restart: exactly one frame row, with the sidecar's metadata), `reconcileScansInboxAndArchive`, `metaAndStateInOneTransaction`, `resendAfterCrashDedupesByWireId`, `oldGlassesFrameGetsDefaults`, `dbIdMapsToWireId`. `FrameAdoptionTest`: `preV2InboxFramesAreAdoptedOnce` (Review Focus 2), `archivedAwaitingFramesAdopted`, `extractedFramesNotRequeued`, `tombstonedFramesNotAdopted`.
 
 - [ ] RED → implement → GREEN. Commit `feat(intake): per-frame meta and state at ingest; adopt pre-v2 frames`.
 
