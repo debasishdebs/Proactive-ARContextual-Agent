@@ -116,9 +116,18 @@ class Hub(
 
     /** A settings change from the phone: persisted, pushed now (when linked) and reflected in the next frame. */
     fun updateSettings(transform: (HudSettings) -> HudSettings) {
-        settings.write(transform(settings.read()))
+        val before = settings.read()
+        settings.write(transform(before))
         _hudSettings.value = settings.read()
-        scope.launch { guarded("settings") { pushSettings(); broadcaster.markDirty() } }
+        // BUG-R2-6: quiet hours off ends tonight's running quiet pause now (written first, so it is never re-minted).
+        val quietOff = before.quietHours != null && _hudSettings.value.quietHours == null
+        scope.launch {
+            guarded("settings") {
+                if (quietOff) withContext(io) { pauses.endQuietHours() }.also { Log.i(TAG, "quiet hours off: ended ${it.size} pause(s)") }
+                pushSettings(); broadcaster.markDirty()
+                if (quietOff) refreshPauses()
+            }
+        }
     }
 
     /** A phone pause (capture only): a new PHONE record from now until [untilMs] (null = until resumed), pushed now (on [scope]). */

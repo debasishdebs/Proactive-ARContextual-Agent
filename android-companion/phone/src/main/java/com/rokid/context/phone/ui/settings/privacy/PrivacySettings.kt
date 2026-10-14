@@ -47,7 +47,8 @@ object BatteryPolicy {
     val text = "Processing defers at or below $PHONE_DEFER_PCT % phone battery · glasses stop capture at or below $GLASSES_STOP_PCT %"
 }
 
-data class PauseRow(val id: String, val label: String)
+/** One line on screen; [ids] = every record it stands for (all are resumed by "Resume all shown"). */
+data class PauseRow(val id: String, val label: String, val ids: Set<String> = setOf(id))
 
 data class PrivacyUiState(
     val rows: List<PauseRow> = emptyList(),
@@ -74,6 +75,22 @@ object PrivacyModel {
         PauseOrigin.QUIET_HOURS -> "Quiet hours"
     }
 
+    /**
+     * One row per record, except that all QUIET_HOURS records (the phone's and the glasses' copy of one occurrence,
+     * BUG-R2-6) share one row at the first one's place, labelled with the latest end.
+     */
+    fun rows(pauses: List<PauseRecord>, zone: ZoneId = ZoneId.systemDefault()): List<PauseRow> {
+        val quiet = pauses.filter { it.origin == PauseOrigin.QUIET_HOURS }
+        val latest = quiet.maxByOrNull { it.untilMs ?: Long.MAX_VALUE }
+        return pauses.mapNotNull { r ->
+            when {
+                r.origin != PauseOrigin.QUIET_HOURS -> PauseRow(r.pauseId, row(r, zone))
+                r !== quiet.first() -> null
+                else -> PauseRow(r.pauseId, row(latest!!, zone), quiet.map { it.pauseId }.toSet())
+            }
+        }
+    }
+
     /** "On glasses · until you resume" / "Quiet hours · until 14:30" (local time, phone clock). */
     fun row(r: PauseRecord, zone: ZoneId = ZoneId.systemDefault()): String {
         val until = r.untilMs?.let { val t = Instant.ofEpochMilli(it).atZone(zone); "until " + hhmm(t.hour * 60 + t.minute) } ?: "until you resume"
@@ -98,7 +115,7 @@ class PrivacyViewModel(
     )
 
     val state: StateFlow<PrivacyUiState> = combine(control.activePauses, draft) { pauses, d ->
-        PrivacyUiState(pauses.map { PauseRow(it.pauseId, PrivacyModel.row(it)) }, d.enabled, d.from, d.to)
+        PrivacyUiState(PrivacyModel.rows(pauses), d.enabled, d.from, d.to)
     }.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5_000),
         PrivacyUiState(quietEnabled = draft.value.enabled, fromMinute = draft.value.from, toMinute = draft.value.to),
@@ -108,7 +125,7 @@ class PrivacyViewModel(
 
     /** Exactly the ids on screen (spec §5.5: a Resume never clears pauses its sender did not know). */
     fun resumeShown() {
-        val ids = state.value.rows.map { it.id }.toSet()
+        val ids = state.value.rows.flatMap { it.ids }.toSet()
         if (ids.isNotEmpty()) control.resumeIds(ids)
     }
 

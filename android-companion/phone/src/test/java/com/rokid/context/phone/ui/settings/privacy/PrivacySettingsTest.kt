@@ -106,6 +106,22 @@ class PrivacySettingsTest {
         assertEquals(listOf(setOf("g", "p")), control.resumed)
     }
 
+    /** BUG-R2-6b: the phone's and the glasses' records for one quiet occurrence show as one row; Resume ends both. */
+    @Test fun oneQuietOccurrenceIsListedOnceAndResumeEndsEveryCopy() {
+        val until = java.time.LocalDateTime.of(2026, 10, 14, 17, 0).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        control.active.value = listOf(
+            PauseRecord("q-phone", PauseOrigin.QUIET_HOURS, now, until),
+            PauseRecord("p", PauseOrigin.PHONE, now, null),
+            PauseRecord("q-glasses", PauseOrigin.QUIET_HOURS, now + 1, until - 300),
+        )
+        val vm = show()
+        compose.waitForIdle()
+        assertEquals(listOf("Quiet hours · until 17:00", "On phone · until you resume"), vm.state.value.rows.map { it.label })
+        compose.onNodeWithTag("privacy_settings").performScrollToNode(hasText("Resume all shown"))
+        compose.onNodeWithText("Resume all shown").performClick()
+        assertEquals(listOf(setOf("q-phone", "q-glasses", "p")), control.resumed)
+    }
+
     @Test fun timedRowShowsItsEndInLocalTime() {
         val until = java.time.LocalDateTime.of(2026, 10, 13, 14, 30).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
         assertEquals("Quiet hours · until 14:30", PrivacyModel.row(PauseRecord("q", PauseOrigin.QUIET_HOURS, now, until)))
