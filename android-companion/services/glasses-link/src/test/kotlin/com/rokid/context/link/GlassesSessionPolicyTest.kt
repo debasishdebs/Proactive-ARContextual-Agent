@@ -211,4 +211,60 @@ class GlassesSessionPolicyTest {
         assertFalse(shouldReconnectOnResume(LinkState.NOT_AUTHORIZED, hasToken = false, authDeclined = false, authTimedOut = true))
         assertFalse(shouldReconnectOnResume(LinkState.NOT_AUTHORIZED, hasToken = true, authDeclined = false, authTimedOut = false))
     }
+
+    /**
+     * BUG-R2-4: a cold start whose Hi Rokid authorization never reported back (timeout, not a decline) retries
+     * automatically 2 / 5 / 10 s later, showing Connecting, then gives up as NOT_AUTHORIZED.
+     */
+    @Test fun authTimeoutRetriesWithBackoffThenGivesUp() {
+        val p = GlassesSessionPolicy()
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.autoConnect())
+        for (delay in listOf(2_000L, 5_000L, 10_000L)) {
+            assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.ScheduleRetry(delay)), p.onEvent(LinkEvent.AuthTimedOut))
+            assertTrue(p.waitingAuthRetry)
+            assertEquals(listOf(LinkAction.Connect), p.onEvent(LinkEvent.RetryTimer))
+            assertFalse(p.waitingAuthRetry)
+        }
+        assertEquals(listOf(LinkAction.MarkAuthNeeded), p.onEvent(LinkEvent.AuthTimedOut))
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty(), "gave up: no further attempt")
+    }
+
+    /** BUG-R2-4: a real verdict from the SDK (declined / failed) is never retried, even mid-backoff. */
+    @Test fun aRealAuthFailureStopsTheRetries() {
+        val p = GlassesSessionPolicy()
+        p.autoConnect()
+        p.onEvent(LinkEvent.AuthTimedOut)
+        assertEquals(listOf(LinkAction.MarkAuthNeeded), p.onEvent(LinkEvent.AuthFailed))
+        assertFalse(p.waitingAuthRetry)
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+    }
+
+    /** BUG-R2-4: a session that starts, or a manual Reconnect, gives the next cold start its full retry budget. */
+    @Test fun theAuthRetryBudgetResetsOnSuccessAndOnManualConnect() {
+        val p = GlassesSessionPolicy()
+        p.autoConnect()
+        p.onEvent(LinkEvent.AuthTimedOut); p.onEvent(LinkEvent.RetryTimer)
+        p.onEvent(LinkEvent.AuthTimedOut); p.onEvent(LinkEvent.RetryTimer)
+        p.onEvent(LinkEvent.Started)
+        p.reset(); p.autoConnect()
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.AuthTimedOut))
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect(), "a manual connect replaces the wait")
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.AuthTimedOut))
+    }
+
+    /** BUG-R2-4: the glasses going away cancels a pending auth retry. */
+    @Test fun deviceGoneCancelsAPendingAuthRetry() {
+        val p = GlassesSessionPolicy()
+        p.autoConnect()
+        p.onEvent(LinkEvent.AuthTimedOut)
+        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.DeviceGone))
+        assertTrue(p.onEvent(LinkEvent.RetryTimer).isEmpty())
+    }
+
+    /** BUG-R2-4: bringing the phone app forward during the wait retries at once (a foreground launch is allowed). */
+    @Test fun resumeRetriesAtOnceWhileAnAuthRetryIsPending() {
+        assertTrue(shouldReconnectOnResume(LinkState.CONNECTING, hasToken = true, authDeclined = false, authRetryPending = true))
+        assertFalse(shouldReconnectOnResume(LinkState.CONNECTING, hasToken = true, authDeclined = false))
+        assertFalse(shouldReconnectOnResume(LinkState.CONNECTING, hasToken = true, authDeclined = true, authRetryPending = true))
+    }
 }
