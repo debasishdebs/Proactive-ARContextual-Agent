@@ -72,6 +72,16 @@ class HubPauses(
         dao.resumeNamed(clears, atMs?.coerceAtMost(t) ?: t)
     }
 
+    /**
+     * Quiet hours were turned off (BUG-R2-6): ends every stored QUIET_HOURS record now (the phone's and any union'd from
+     * the glasses), by name like any Resume, so the glasses get the ids in `resumedPauseIds`. Returns the ids ended.
+     */
+    suspend fun endQuietHours(): Set<String> {
+        val ids = stored().filter { it.origin == PauseOrigin.QUIET_HOURS }.map { it.pauseId }.toSet()
+        resume(ids)
+        return ids
+    }
+
     /** Ids the phone resumed (closed intervals <= 7 d, no live record, newest 200), sent as `HudSettings.resumedPauseIds`. */
     suspend fun recentlyResumedIds(): List<String> {
         active() // expire first, so the list reflects now
