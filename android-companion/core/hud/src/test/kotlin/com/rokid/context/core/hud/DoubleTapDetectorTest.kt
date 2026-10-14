@@ -49,5 +49,42 @@ class DoubleTapDetectorTest {
         d.onNotificationKey(0); assertTrue(d.onNotificationKey(150))
         assertFalse(d.onNotificationKey(DoubleTapDetector.SETTLE_MS + 200), "pair consumed; a new first key")
     }
+
+    /** Feeds 83 presses through the detector and the exit gate as MainActivity does; returns the gate actions. */
+    private fun fourTap(vararg atMs: Long): List<PageAction?> {
+        val d = DoubleTapDetector()
+        var gate: ExitGate = ExitGate.Idle
+        val out = mutableListOf<PageAction?>()
+        for (t in atMs) {
+            if (d.onNotificationKey(t, armed = gate is ExitGate.Armed)) {
+                val (g, a) = DoubleTapExit.onDoubleTap(gate, t); gate = g; out += a
+            }
+        }
+        return out
+    }
+
+    @Test fun fastFourTapWithin1sMinimises() =
+        assertEquals(listOf(null, PageAction.MINIMISE), fourTap(0, 120, 300, 420))
+
+    @Test fun fourTapWithNormalGapMinimises() =
+        assertEquals(listOf(null, PageAction.MINIMISE), fourTap(0, 150, 500, 650))
+
+    @Test fun tripleTapOutsideGateStillOneDoubleTap() {
+        // Not armed: the third press is the pair's tail, so it cannot pair with a later lone touch.
+        val d = DoubleTapDetector()
+        val fired = listOf(0L, 150L, 300L, 600L).count { d.onNotificationKey(it) }
+        assertEquals(1, fired)
+    }
+
+    @Test fun armedStillDropsTheOtherKindTwin() {
+        // Firmware sending both the 83 pair and a BACK: the BACK twin must not minimise while armed.
+        val d = DoubleTapDetector()
+        d.onNotificationKey(0); assertTrue(d.onNotificationKey(150))
+        assertFalse(d.onBack(300, armed = true))
+        val b = DoubleTapDetector()
+        assertTrue(b.onBack(0))
+        assertFalse(b.onNotificationKey(100, armed = true)); assertFalse(b.onNotificationKey(250, armed = true))
+        assertTrue(b.onBack(400, armed = true), "BACK-only firmware: a fast second double-tap counts while armed")
+    }
 }
 

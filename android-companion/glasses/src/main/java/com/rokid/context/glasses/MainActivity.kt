@@ -245,7 +245,7 @@ class MainActivity : ComponentActivity() {
     /** Touchpad keys are ours: KEYCODE_NOTIFICATION must never reach the system, or it moves our task to the back. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val r = when (event.action) {
-            KeyEvent.ACTION_DOWN -> keys.onKeyDown(event.keyCode, event.repeatCount, event.eventTime, System.currentTimeMillis())
+            KeyEvent.ACTION_DOWN -> keys.onKeyDown(event.keyCode, event.repeatCount, event.eventTime, System.currentTimeMillis(), exitGate is ExitGate.Armed)
             KeyEvent.ACTION_UP -> keys.onKeyUp(event.keyCode, event.eventTime)
             else -> KeyResult(consumed = false)
         }
@@ -257,7 +257,7 @@ class MainActivity : ComponentActivity() {
 
     /** BACK is a double-tap on some firmware (Live Fit); never page navigation, never "exit". */
     @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
-    override fun onBackPressed() = handle(keys.onBack(System.currentTimeMillis()))
+    override fun onBackPressed() = handle(keys.onBack(System.currentTimeMillis(), exitGate is ExitGate.Armed))
 
     private fun scheduleSwipeClose() {
         swipeTimer.removeCallbacks(closeSwipe)
