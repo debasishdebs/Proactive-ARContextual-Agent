@@ -21,9 +21,9 @@ class CaptureSchedulerTest {
     private val am get() = ctx.getSystemService(AlarmManager::class.java)
     private fun alarmIntents() = shadowOf(am).scheduledAlarms.map { shadowOf(it.operation).savedIntent }
 
-    @Test fun ensureScheduledArmsOneAlarmForCaptureService() {
+    @Test fun ensureScheduledArmsOneAlarmForTheCaptureReceiver() {
         CaptureScheduler(ctx).ensureScheduled()
-        assertEquals(CaptureService::class.java.name, alarmIntents().single().component!!.className)
+        assertEquals(CaptureAlarmReceiver::class.java.name, alarmIntents().single().component!!.className)
         assertNotNull(CaptureScheduler(ctx).nextTriggerAtMs())
     }
 
@@ -45,13 +45,13 @@ class CaptureSchedulerTest {
         val s = CaptureScheduler(ctx)
         s.scheduleNext(60_000)
         val at = s.nextTriggerAtMs()
-        val intent = Intent(ctx, CaptureService::class.java).setAction(CaptureService.ACTION_SCHEDULED)
-        am.cancel(PendingIntent.getForegroundService(ctx, 30_101, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)!!)
+        val intent = Intent(ctx, CaptureAlarmReceiver::class.java).setAction(CaptureService.ACTION_SCHEDULED)
+        am.cancel(PendingIntent.getBroadcast(ctx, 30_101, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)!!)
         assertEquals(0, alarmIntents().size)
 
         s.ensureScheduled()
         val alarm = shadowOf(am).scheduledAlarms.single()
-        assertEquals(CaptureService::class.java.name, alarmIntents().single().component!!.className)
+        assertEquals(CaptureAlarmReceiver::class.java.name, alarmIntents().single().component!!.className)
         assertEquals(at, alarm.getTriggerAtMs())
         assertEquals(at, s.nextTriggerAtMs())
     }
@@ -62,6 +62,14 @@ class CaptureSchedulerTest {
         am.set(AlarmManager.RTC_WAKEUP, 1_000_000, PendingIntent.getForegroundService(ctx, 30_071, legacy, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         CaptureScheduler(ctx).ensureScheduled()
         assertTrue(alarmIntents().none { it.action == "com.rokid.context.glasses.action.PULSE_SERVICE" })
+    }
+
+    /** Before the keep-alive fix the alarm started CaptureService directly; that alarm must not fire beside the new one. */
+    @Test fun theOldServiceAlarmIsRetired() {
+        val old = Intent(ctx, CaptureService::class.java).setAction(CaptureService.ACTION_SCHEDULED)
+        am.set(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 60_000, PendingIntent.getForegroundService(ctx, 30_101, old, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+        CaptureScheduler(ctx).ensureScheduled()
+        assertEquals(CaptureAlarmReceiver::class.java.name, alarmIntents().single().component!!.className)
     }
 
     private fun storeNext(at: Long) = ctx.getSharedPreferences("capture_scheduler", 0).edit().putLong("next_trigger_at_ms", at).commit()
