@@ -80,6 +80,8 @@ class SettingsDeps(
     val localModelsMobileData: com.rokid.context.phone.ui.settings.ai.MobileDataSetting = com.rokid.context.phone.ui.settings.ai.InMemoryMobileData(),
     /** Consecutive on-device load failures per model (spec section 6); the app wires [NativeLoadFailures]. */
     val localModelLoadFailures: com.rokid.context.phone.ui.settings.ai.LoadFailures = com.rokid.context.phone.ui.settings.ai.LoadFailures.None,
+    /** Diagnostics > Export settings (G19): the settings JSON in cache/exports, every secret excluded. */
+    val exportSettings: (suspend () -> File)? = null,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -133,6 +135,7 @@ class SettingsDeps(
             localModels = StoreLocalModels(com.rokid.context.data.models.LocalModelStore(app)),
             localModelsMobileData = AppConfigMobileData(app),
             localModelLoadFailures = NativeLoadFailures(com.rokid.context.data.models.LocalModelStore(app)),
+            exportSettings = { com.rokid.context.orchestration.ConfigExport.write(app) },
         )
     }
 }
