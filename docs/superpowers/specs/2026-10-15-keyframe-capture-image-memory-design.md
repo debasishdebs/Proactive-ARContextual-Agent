@@ -1,6 +1,6 @@
 # Motion-aware keyframe capture and image memory: design
 
-Status: revision 7 (five review rounds + user decisions A1/B1/C1/D1, 3, 6a), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
+Status: revision 8 (six review rounds + user decisions A1/B1/C1/D1, 3, 6a), 2026-10-15. Branch base: `feat/proactive-mvp-implementation` @ `8da5bf1`.
 Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes only", §11 step 4b.
 
 ## 0. Intent (agreed with the user, 2026-10-15)
@@ -77,7 +77,17 @@ Shared rules:
 ### F.1 New
 - **`LanguageModel`** (`:services:ai`). A single interface for every chat and vision call, cloud or on-device.
   - It wraps today's `ModelProvider` and `ModelGateway`; callers stop depending on provider classes.
-  - Shape: `suspend fun complete(request: ModelRequest): ModelResult`. `ModelRequest` carries the messages, any images (JPEG bytes), the schema and a timeout. `ModelResult` carries the text, the parsed JSON, usage and latency.
+  - **Shape (routing-aware, revision 8; plan review):** it mirrors `ModelRouter`'s public API, so role routing, endpoint-specific request building, structured formats, fallbacks and `RoutedReply` metadata stay inside the router:
+    ```kotlin
+    enum class CallClass { USER, EXTRACT, NUDGE, CAPTION_QUEUE, BACKFILL, OTHER }
+    interface LanguageModel {
+        suspend fun complete(role: Role, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply
+        suspend fun completeFromFrames(callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply
+        suspend fun completeOn(endpointId: String, model: String, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply
+    }
+    interface CallGate { suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T }
+    ```
+  - The `CallGate` (P2's budget) wraps **each provider call beneath the routing**, including fallbacks and retries, with the caller's `CallClass`. Every caller passes its class explicitly: Ask-triggered extraction and the test bed are USER.
   - Existing roles (VISION_EXTRACT, ANSWER, NUDGE, critic) call through it.
   - No behaviour change: this is a seam only, so that P2's budget and the v3 router have one place to hook into.
 - **`EmbeddingService`**. Replaces `Embedder`, and keeps today's per-space fingerprint rule.
@@ -517,6 +527,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 - **Revision 2 review:** 7 findings, all verified (`memory_source` already exists at `MemoryEntities.kt:47`; `memory_vector` needs a live memory). Fixed in revision 3: the `frame_source` name, the `frame_vector` table, the 5-min extraction claim with an atomic commit, ordinary skipped photos bypassing describe-before-delete and the 3-day extension, caption-queue aging, and the qualified wording.
   - User decisions: **3** separate dimensions, one 768 query shortened for each index, no score merging (fixed shares of 6 text + 2 photos, the answer LLM judges); **6a** 5 s settle window with a 30 s gap, configurable in Settings → Nudges.
 
+- **Plan review 3 (revision 8):** the `.v2` receipt marker with split-pair reunion (never defaulting a v2 JPEG); duplicate-resend acks re-run the directory sync; the drain syncs both inbox and archive; the spec's F.1 now holds the routing-aware `LanguageModel`.
 - **Plan review 2 (revision 7):** an end-to-end 1 s test through classifier → policy → camera (535 ms p95 start-up) → gate counting saved keyframes; sensors unbatched; new-scene throttle 0.5 s; deceleration produced by the classifier; directory fsync before ack; reconciliation of inbox + archive; a routing-aware `LanguageModel` with an explicit CallClass carried through fallbacks; the metadata transport path owned end to end; cleanup queries count `frame_source` references.
 - **Plan review (revision 6):** migration registration in the production builders, plus adoption of archived frames still awaiting extraction; wave-1 swap needs text coverage only; Forget tombstones at once; frame identity (`wire_frame_id`) and a sidecar-then-ack durability sequence; the winning candidate's pixels are retained for encoding; preprocessing parity with the pinned config; `CallGate` as a regular interface.
 - **Revision 3 review:** a nudge borrowing rule, "next unreserved token" for caption aging, the 45 s target tied to provider latency, the model-switch dialog separating reduced recall from lost recall (recoverable for 7 days), and a claim-id compare-and-set at commit. Fixed in revision 4.

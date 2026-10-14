@@ -77,7 +77,7 @@
 1. **Version skew:** new phone + old glasses, or old phone + new glasses. A `pc_frame` without the new fields is ingested as `motion=UNKNOWN`, not dwell; old `HudSettings` without `captureMode` mean Fixed on new glasses. Owned by T0: `oldFrameMetaParsesWithDefaults`, `oldHudSettingsMeanFixedMode`.
 2. **Upgrading an install with v1 data:** inbox frames and queued 24 h jobs that exist before v2. They are backfilled into `frame_state` as PENDING on first start after the migration, without duplicating already-extracted frames. Owned by P1: `preV2InboxFramesAreAdoptedOnce`.
 3. **Switching Smart → Fixed (or entering rest) while a session holds the camera:** there's exactly one camera owner at any instant, and no "camera in use" error. Owned by G3: `modeSwitchReleasesSessionBeforeFixedCapture`.
-4. **Forgetting one memory from a 3-photo batch whose frames are shared with another memory:** that memory's `frame_source` rows go and its frames are tombstoned at once (no re-extraction); the photo stays while another memory cites it. Owned by P3: `forgetSharedFrameKeepsOtherMemory`.
+4. **Forgetting one memory from a 3-photo batch whose frames are shared with another memory:** that memory's `frame_source` rows go and its frames are tombstoned at once (no re-extraction); the photo stays while another memory cites it. Owned by C1: `forgetSharedFrameKeepsOtherMemory`.
 5. **Shared-photo cleanup after restart:** the orphan sweep and tombstone prune never delete a photo still cited only through `frame_source`. Owned by C1: `sweepAfterRestartKeepsSharedPhoto`.
 6. **Keyframe metadata actually reaches the phone** (not UNKNOWN/defaults). Owned by G3 `uplinkSendsAllKeyframeFields` plus T0 `codecSplitJoinPreservesKeyframeMeta`.
 7. **Clock skew between the glasses and the phone** (seconds to minutes): latency stats and caption aging use phone-receive time plus the existing clock offset, never raw glasses time. Owned by P5: `latencyUsesOffsetCorrectedCaptureTime`.
@@ -437,10 +437,15 @@ class WorkRest(private val clock: () -> Long, workMin: () -> Int, restMin: () ->
   - The glasses' `pc_frame` id is stored in a new `frame_meta.wireFrameId` column (unique index; part of the C1 table, so C1 must add it).
   - Dedupe of resends uses `wireFrameId`.
 - **Receipt durability, in order (review fixes 2 and 3):**
+  0. **Naming:** a v2 receipt's base name carries a marker, `rokid_<rxMs>_<id>.v2`, giving `<base>.jpg` and `<base>.meta.json`. A `.v2` JPEG **must** have a sidecar. Only a JPEG without the marker is a genuine legacy (pre-v2) receipt and gets defaults.
   1. the JPEG and a **sidecar** `<name>.meta.json` (the T0 metadata) are written to temp files and file-fsynced, then renamed into the inbox (sidecar first, JPEG last), then the **inbox directory is fsynced** (`Os.open(dir, O_RDONLY)` + `Os.fsync`, behind an injectable `DirSync`).
   2. **Ack the glasses only if every fsync, including the directory one, succeeded.** On any failure: no ack, the temp files are deleted, and the glasses resend. Today's writer only logs a failure and continues; that changes.
-  3. **Drain:** rename the JPEG **and its sidecar** to the archive, fsync the archive directory, then run **one Room transaction**: the frame row, `frame_meta` from the sidecar (old glasses with no sidecar → UNKNOWN/false), and `frame_state` PENDING. After the commit, delete the sidecar, then fsync the archive directory.
-  4. **Reconciliation (recurring, at startup and on every drain run):** scan **both** inbox and archive for complete receipts (a JPEG, with or without its sidecar) whose `wireFrameId` / database id has no frame row, and ingest them with their sidecar. A JPEG whose sidecar is missing because the receipt predates v2 gets defaults. The sidecar stays associated (same base name) until its commit.
+     - **Duplicate resend (review fix 2):** when a resend's `wireFrameId` is already present as files, the phone **re-runs the directory fsync** of every directory holding that receipt (inbox and/or archive) and acks **only if it succeeds**; otherwise no ack. A receipt already committed to Room is acked straight away.
+  3. **Drain:** rename the sidecar to the archive, then the JPEG. Then fsync **both** the archive and the inbox directory (review fix 3), so a power loss can't bring back the inbox entries. Then run **one Room transaction**: the frame row, `frame_meta` from the sidecar (a legacy receipt without the marker → UNKNOWN/false), and `frame_state` PENDING. After the commit, delete the sidecar, then fsync the archive directory. If either directory fsync fails, stop before the commit; reconciliation retries.
+  4. **Reconciliation (recurring, at startup and on every drain run):** scan **both** inbox and archive for receipts whose `wireFrameId` / database id has no frame row.
+     - **Reunite split pairs first (review fix 1):** a death between the two renames leaves the sidecar in the archive and the JPEG in the inbox. Match by base name across both directories, move the missing half next to the other (into the archive), and fsync both directories before ingesting.
+     - A `.v2` JPEG whose sidecar can't be found in either directory is **not** ingested with defaults: it's held and retried, and after 24 h it's ingested with defaults with a count-only Diagnostics entry (`v2_sidecar_lost`).
+     - Unmarked (legacy) JPEGs get defaults at once.
 - **Crash cases:**
   - after step 1, before the ack: the glasses resend; the phone finds `wireFrameId` already in the inbox, archive or DB and acks without duplicating;
   - after the ack, before step 3: the next drain picks it up;
@@ -448,7 +453,7 @@ class WorkRest(private val clock: () -> Long, workMin: () -> Int, restMin: () ->
   - transaction failure without death: the existing FAILED path returns the file to the inbox.
 - **Adoption:** a one-shot `FrameAdoption.run()` after the migration (a prefs flag `frames_adopted_v2`) inserts PENDING `frame_state` rows (IGNORE) for **(a) inbox files and (b) archived frames already in the DB that are still awaiting extraction** (no extracted memory, no tombstone, including those whose 24 h job expired). Frames already extracted get `EXTRACTED`; tombstoned frames get none.
 
-**Tests:** `FrameIngestorMetaTest`: `sidecarBeforeJpegThenAck`, `ackOnlyAfterDurableWrite`, `dirSyncFailureMeansNoAck` (inject a `DirSync` failure on the inbox: no ack, temp files gone), `archiveDirSyncFailureKeepsSidecar`, `deathAfterArchiveRenameReconciled` (simulate death between the archive rename and the commit, restart: exactly one frame row, with the sidecar's metadata), `reconcileScansInboxAndArchive`, `metaAndStateInOneTransaction`, `resendAfterCrashDedupesByWireId`, `oldGlassesFrameGetsDefaults`, `dbIdMapsToWireId`. `FrameAdoptionTest`: `preV2InboxFramesAreAdoptedOnce` (Review Focus 2), `archivedAwaitingFramesAdopted`, `extractedFramesNotRequeued`, `tombstonedFramesNotAdopted`.
+**Tests:** `FrameIngestorMetaTest`: `sidecarBeforeJpegThenAck`, `ackOnlyAfterDurableWrite`, `dirSyncFailureMeansNoAck` (inject a `DirSync` failure on the inbox: no ack, temp files gone), `archiveDirSyncFailureKeepsSidecar`, `deathAfterArchiveRenameReconciled` (simulate death between the archive rename and the commit, restart: exactly one frame row, with the sidecar's metadata), `deathBetweenTheTwoRenamesReunitesPair` (sidecar archived, JPEG still in the inbox; restart: one row with **every** metadata field preserved, never defaults), `v2JpegWithoutSidecarHeldNotDefaulted`, `legacyJpegGetsDefaults`, `resendWhileDirSyncFailsNoAckThenOneReceipt` (sync fails → resend while still failing → no ack → sync recovers → resend acked → exactly one receipt), `drainSyncsInboxAndArchive` (an injected inbox-dir sync failure stops before the commit), `reconcileScansInboxAndArchive`, `metaAndStateInOneTransaction`, `resendAfterCrashDedupesByWireId`, `oldGlassesFrameGetsDefaults`, `dbIdMapsToWireId`. `FrameAdoptionTest`: `preV2InboxFramesAreAdoptedOnce` (Review Focus 2), `archivedAwaitingFramesAdopted`, `extractedFramesNotRequeued`, `tombstonedFramesNotAdopted`.
 
 - [ ] RED → implement → GREEN. Commit `feat(intake): per-frame meta and state at ingest; adopt pre-v2 frames`.
 
@@ -525,7 +530,7 @@ class NudgeEvaluator(private val clock: () -> Long, settleMs: () -> Long, gapMs:
 - **Latency:** measured from capture time corrected by the existing clock offset.
 
 **Tests:**
-- `NudgeEvaluatorTest`: `settleWindowCoalesces`, `gapEnforced`, `arrivalInGapStartsNextWindowAtGapEnd`, `throttledDecisionRecordedDropped`, `latencyUsesOffsetCorrectedCaptureTime` (Review Focus 5).
+- `NudgeEvaluatorTest`: `settleWindowCoalesces`, `gapEnforced`, `arrivalInGapStartsNextWindowAtGapEnd`, `throttledDecisionRecordedDropped`, `latencyUsesOffsetCorrectedCaptureTime` (Review Focus 7).
 - Settings Robolectric: `nudgeTimingRowsPersist`.
 
 - [ ] RED → implement → GREEN. Commit `feat(nudge): immediate evaluation with settle window and gap; notify throttle separate; settings`.
