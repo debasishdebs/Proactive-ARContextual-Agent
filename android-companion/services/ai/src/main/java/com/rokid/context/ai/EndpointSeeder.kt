@@ -116,7 +116,7 @@ class EndpointSeeder(private val endpoints: EndpointRepository, private val bind
             listOf(settings.deploymentOrModel.ifBlank { EnvDefaults.ollamaModel }), setOf(Capability.CHAT), now)
         "llama_cpp" -> Endpoint(LOCAL_ID, "On-device (llama.cpp)", EndpointKind.LLAMACPP_LOCAL, settings.nativeModelPath, null,
             listOf("local"), setOf(Capability.CHAT), now)
-        else -> Endpoint(AZURE_ID, "Azure OpenAI", EndpointKind.AZURE_OPENAI, settings.endpoint.ifBlank { EnvDefaults.azureEndpoint }, "2024-10-21",
+        else -> Endpoint(AZURE_ID, "Azure OpenAI", EndpointKind.AZURE_OPENAI, settings.endpoint.ifBlank { EnvDefaults.azureEndpoint }, EnvDefaults.AZURE_API_VERSION,
             listOf(settings.deploymentOrModel.ifBlank { EnvDefaults.azureDeployment }), setOf(Capability.CHAT, Capability.VISION, Capability.JSON_SCHEMA), now)
     }
 

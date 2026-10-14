@@ -124,4 +124,21 @@ class OnboardingKeyAndStoreTest {
         OnboardingStore(ctx).markCompleteDurably()
         assertTrue(ctx.getSharedPreferences("onboarding", Context.MODE_PRIVATE).getBoolean("v1_complete", false))
     }
+
+    /** BUG-R3-2: the build seed (endpoint + deployment, no key) takes its key in the wizard, through the vault only. */
+    @Test fun aKeylessSeedTakesItsKeyThroughTheVaultOnly() = runBlocking {
+        ai.seeder.seedIfNeeded(ProviderSettings("azure", "https://seed.openai.azure.com", "", "dep", "", false)).getOrThrow()
+        val port = AiGraphOnboardingAi { ai }
+        val seed = port.seeded()!!
+        assertTrue(seed.needsKey)
+        val secret = "sk-SEED-0123456789"
+        assertTrue(port.testSeed(seed, secret).ok)
+        assertEquals(secret, vault.get(EndpointRepository.keyRef(EndpointSeeder.AZURE_ID)))
+        assertFalse(port.seeded()!!.needsKey)
+        assertFalse(MemoryGraph.get(ctx).db.endpointDao().all().toString().contains(secret))
+        assertFalse(ShadowLog.getLogs().any { it.msg.orEmpty().contains(secret) })
+        // A seed Test without a typed key keeps the stored one.
+        assertTrue(port.testSeed(seed.copy(needsKey = false), null).ok)
+        assertEquals(secret, vault.get(EndpointRepository.keyRef(EndpointSeeder.AZURE_ID)))
+    }
 }
