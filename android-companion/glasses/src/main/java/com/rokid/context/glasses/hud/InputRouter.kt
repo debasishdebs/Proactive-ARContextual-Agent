@@ -18,6 +18,8 @@ sealed interface Routed {
     data object DismissOverlay : Routed
     /** A double-tap on an undo toast: undo that proposal (never the pause toggle). */
     data class Undo(val proposalId: String) : Routed
+    /** A default double-tap on a page: the exit gate decides (spec 2026-10-14 §2: second one minimises, else pause). */
+    data object ExitGate : Routed
 }
 
 /**
@@ -28,11 +30,17 @@ object InputRouter {
     /**
      * While [recording] (the glasses' own push-to-talk), a double-tap is Cancel and a tap is send whatever is shown: a
      * tap meant as "send" can never vote on a Confirm (final review I1).
+     * [gate]: a page is showing, so a double-tap that would be the default pause/resume goes to the exit gate instead
+     * ([Routed.ExitGate]); a remapped DOUBLE_TAP, and every overlay's own double-tap, are unchanged.
      */
-    fun route(input: PadInput, overlay: Overlay?, gestures: Map<Gesture, GestureAction>, recording: Boolean = false): Routed = when {
-        recording && input == PadInput.DoubleTapped -> Routed.CancelListening
-        recording && input == PadInput.Tapped -> Routed.FinishListening
-        else -> routeShown(input, overlay, gestures)
+    fun route(input: PadInput, overlay: Overlay?, gestures: Map<Gesture, GestureAction>, recording: Boolean = false, gate: Boolean = false): Routed {
+        val r = when {
+            recording && input == PadInput.DoubleTapped -> Routed.CancelListening
+            recording && input == PadInput.Tapped -> Routed.FinishListening
+            else -> routeShown(input, overlay, gestures)
+        }
+        val isDefault = action(gestures, Gesture.DOUBLE_TAP) == GestureDefaults.map[Gesture.DOUBLE_TAP]
+        return if (gate && input == PadInput.DoubleTapped && isDefault && r == Routed.Mapped(GestureAction.PAUSE_RESUME)) Routed.ExitGate else r
     }
 
     private fun routeShown(input: PadInput, overlay: Overlay?, gestures: Map<Gesture, GestureAction>): Routed = when (overlay) {
