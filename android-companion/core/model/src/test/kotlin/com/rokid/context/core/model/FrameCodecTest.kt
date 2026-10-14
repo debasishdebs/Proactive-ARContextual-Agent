@@ -63,4 +63,19 @@ class FrameCodecTest {
         val old = """{"v":$PROTOCOL_VERSION,"glassesBatteryPct":80,"bufferSize":2,"glassesNowMs":9,"pauses":[]}"""
         assertEquals(Decoded.Ok(Hello(glassesBatteryPct = 80, bufferSize = 2, glassesNowMs = 9, pauses = emptyList())), Wire.decode<Hello>(old))
     }
+
+    @Test fun codecSplitJoinPreservesKeyframeMeta() {
+        val data = jpeg(60_000)
+        val chunks = FrameCodec.split("k1", data, capturedAtMs = 5, luma = 90, phash = "0123456789abcdef", batteryPct = 80,
+            motion = MotionState.HEAD_MOVING, dwell = true, blur = 33.25f, dhash = "fedcba9876543210", width = 640, sampleSeq = 42L, sessionId = "sess")
+        assertEquals(3, chunks.size)
+        for (c in chunks) {
+            val m = c.meta
+            assertEquals(MotionState.HEAD_MOVING, m.motion); assertTrue(m.dwell); assertEquals(33.25f, m.blur)
+            assertEquals("fedcba9876543210", m.dhash); assertEquals("0123456789abcdef", m.phash); assertEquals(640, m.width)
+            assertEquals(42L, m.sampleSeq); assertEquals("sess", m.sessionId); assertEquals(90, m.luma); assertEquals(80, m.batteryPct)
+            assertEquals(m, assertIs<Decoded.Ok<FrameMeta>>(Wire.decode<FrameMeta>(Wire.encode(m))).value)
+        }
+        assertContentEquals(data, assertIs<JoinResult.Ok>(FrameCodec.join(chunks[0].meta, chunks.map { it.chunk })).jpeg)
+    }
 }
