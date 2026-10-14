@@ -51,7 +51,7 @@ class NudgeEngine(
         val prepared = inputs.build(now)
         if (prepared.inputIds.isEmpty()) return NudgeRun.NoMemories
         val out = try {
-            runner.run(RoleCall(PromptKey.NUDGE, prepared.vars, inputIds = prepared.inputIds)).output as NudgeOutput
+            runner.run(RoleCall(PromptKey.NUDGE, prepared.vars, inputIds = prepared.inputIds, callClass = com.rokid.context.model.CallClass.NUDGE)).output as NudgeOutput
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
