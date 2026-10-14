@@ -119,3 +119,36 @@ Glasses asks while minimised:
   - a Confirm opens our app, Yes then returns to Maps with the icon back;
   - 2-tap then wait toggles pause;
   - a notification or call shows over the full HUD (§5).
+
+---
+
+## Amendments (as built, 2026-10-14)
+
+These entries are appended; the body above is unchanged.
+
+**I1. §2: when the gate arms, and the fast 4-tap.**
+- *Now:* the exit gate also arms under a plain toast, the pause splash or a nudge. It doesn't arm under overlays that have their own double-tap, or while recording. A Confirm, Listening or Answer that arrives mid-window cancels the gate with no pause.
+- While the gate is armed, a second double-tap of the same kind passes the detector's 600 ms settle guard, so a fast 4-tap minimises instead of pausing.
+- *Why:* to avoid an instant accidental pause; final review I1.
+- *Commits:* `0235b1d`, `d74e54b`. *Date:* 2026-10-14.
+
+**I2. §3: icon ring and manifest.**
+- *Now:* the ring runs from `armed_at_ms` (CaptureScheduler) to the next capture, and stays full until the first arm. A ✓ photo-sent cue shows on the ring when a photo is buffered or delivered.
+- The glasses manifest **declares** SYSTEM_ALERT_WINDOW: an appops grant alone had no effect on the device.
+- *Commits:* `a9c2480`, `d53e76e`. *Date:* 2026-10-14.
+
+**I3. §4: pop-ups and Confirm.**
+- *Now:* while minimised, a nudge pops up unless verbosity is Silent. Confirm inputs are ignored for 600 ms after an auto-open, and the app re-minimises when the phone clears or replaces the Confirm. The icon and pop-ups are Android Views.
+- The "Confirm on your phone" pop-up for a device without the overlay permission is **not built** (open minor).
+- *Why:* the gesture tail must not vote; there is no lifecycle owner for Compose in an overlay window.
+- *Commit:* `5f9c720`. *Date:* 2026-10-14.
+
+**I4. §1 and §4: "Open on glass" while minimised.**
+- *Now:* the phone decides. While its link state is `MINIMISED`, the phone never calls `appStart`; "Open on glasses" sends a 5 s pop-up "Running in the background · open it on your glasses". The glasses-side 5 s relaunch heuristic is superseded on the phone side.
+- Data keeps flowing while minimised over the session-less CXRLink (v1 spec Amendment A2).
+- *Why:* final review I2; minimised-link I2.
+- *Commits:* `043eca5`, `9e02467`, merged `f82b82e`. *Date:* 2026-10-14. Device-verified 22:42–22:46 (frames, acks, settings, heartbeats). Script steps 5–7 are still pending.
+
+**I5. §5: notifications and calls over the full HUD.** Not investigated yet. A call did show during the drive; notifications are unconfirmed (status and backlog §3).
+
+**I6. §8: tests.** Task 3's tests were written right after the code (the coordinator allowed it once because of the user's drive). The §8 device list is not recorded as run.

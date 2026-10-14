@@ -139,3 +139,40 @@ Lean plan, three parallel streams over disjoint files:
 - **C:** the full-screen editor in `PromptEditor`.
 
 Then **D**, the flow view + step sheet. D depends on A, and on B's route.
+
+---
+
+## Amendments (as built, 2026-10-14)
+
+These entries are appended; the body above is unchanged.
+
+**Already in the body:**
+- §4's paragraph on prompts shared by several steps ("Prompt <label> · shared by N steps" + "Used by") was edited in place by the review fix `8152476` (2026-10-14).
+- §2's "Facts from frames … (one call per photo)" already matches the Phase 8 per-photo VISION_EXTRACT ruling (`139090e`).
+
+**F1. §2 Nudge flow: edge label.**
+- *Now:* the Nudge → Propose action edge is labelled "if shouldNudge and proposedAction", not "if proposedAction".
+- *Why:* `NudgeEngine` returns NotNeeded before it proposes anything, so the label states the real condition (DL §1 AF/A).
+- *Commit:* `b258e67`. *Date:* 2026-10-14.
+
+**F2. §3: layout additions.**
+- *Now:* edges that skip a layer are routed down free lanes (`EdgeRouting`, adding a detour lane if needed). Labels are placed clear of nodes and drawn after them. The Capture grid grows to 5 columns.
+- The horizontal scroll starts at the primary input's column.
+- *Why:* the graph had shown the trusted path as linear (final review I1); the view opened scrolled to the right (R2 BUG-R2-1).
+- *Commits:* `9343dd9`, `2c4f657`. *Date:* 2026-10-14.
+
+**F3. §4: full-screen editor Back.**
+- *Now:* when the text has changed, Back asks "Discard changes?". Unchanged, Back acts as Cancel.
+- *Why:* never lose a full-screen draft (DL §1 AF/C).
+- *Commit:* `5509d3e`. *Date:* 2026-10-14. Device-verified in R2.
+
+**F4. §4: facet lines and the sheet.**
+- *Now:* the Retrieval facet line names the fusion strategy only in Hybrid mode. "Open editor" closes the sheet before navigating. The System chip opens a Prompt-only sheet.
+- *Why:* spec wording and Robolectric limits (DL §1 AF/D).
+- *Commit:* `a08d4d5`. *Date:* 2026-10-14.
+
+**F5. §4: flows list.**
+- *Now:* "Not set" counts toward the subtitle's model-name cap, and the singular reads "1 AI step". Show selected uses load order.
+- *Commit:* `2197701`. *Date:* 2026-10-14.
+
+**F6. §2: known gap.** The Capture flow has no "Save memory (needs review)" → Embed edge (final-review M6, open). It is recorded so the next flow edit adds it or rules on it.
