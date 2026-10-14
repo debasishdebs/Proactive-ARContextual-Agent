@@ -20,12 +20,13 @@ class LlamaCppNativeProviderTest {
         var loads = 0
         val loadedForEmbedding = mutableListOf<Boolean>()
         val released = mutableListOf<Long>()
+        val normalizeSeen = mutableListOf<Boolean>()
         override fun isAvailable() = available
         override fun load(modelPath: String, forEmbedding: Boolean): Long {
             loads++; loadedForEmbedding += forEmbedding
             return if (forEmbedding && embedContextFails) 0L else handle
         }
-        override fun embed(handle: Long, text: String) = vector
+        override fun embed(handle: Long, text: String, normalize: Boolean) = vector.also { normalizeSeen += normalize }
         override fun generate(handle: Long, prompt: String) = text
         override fun generateWithGrammar(handle: Long, prompt: String, grammar: String) = text
         override fun release(handle: Long) { released += handle }
@@ -65,6 +66,13 @@ class LlamaCppNativeProviderTest {
         val out = LlamaCppNativeProvider.embed("/m.gguf", listOf("a", "b"), ok)
         assertEquals(2, out.size); assertEquals(1, ok.loads); assertEquals(listOf(7L), ok.released)
         assertEquals("ok", LlamaCppNativeProvider("/m.gguf", ok).generate("q"))
+    }
+
+    @Test fun normalizeFlagPassedThrough() {
+        val bge = FakeNative(); LlamaCppNativeProvider.embed("/m.gguf", listOf("a", "b"), bge)
+        assertEquals(listOf(true, true), bge.normalizeSeen) // the default stays L2-normalised
+        val nomic = FakeNative(); LlamaCppNativeProvider.embed("/m.gguf", listOf("a"), nomic, normalize = false)
+        assertEquals(listOf(false), nomic.normalizeSeen)
     }
 
     @Test fun nativeUnavailableMessageIsUserSafe() {
