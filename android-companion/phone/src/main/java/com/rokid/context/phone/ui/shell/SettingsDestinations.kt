@@ -219,12 +219,13 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
 
     composable(Routes.SETTINGS_DIAGNOSTICS) {
         val vm = viewModel { DiagnosticsViewModel(deps.diagnostics, deps.pipeline, s.exportDiagnostics, { f -> s.share(f) }, { s.hud.update { it } },
-            glassesConnected = { deps.glasses.status.value.link.carriesData }) }
+            glassesConnected = { deps.glasses.status.value.link.carriesData }, exportSettings = s.exportSettings) }
         val state by vm.state.collectAsStateWithLifecycle()
         DiagnosticsScreen(
             state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },
             onSummarizeNow = vm::summarizeNow, onCaptureNow = vm::captureNow, onReprocess = vm::reprocess,
             onOpenLogs = { nav.navigate(Routes.DIAGNOSTICS_LOGS) }, onExport = vm::exportDiagnostics, onPushSettings = vm::pushSettings,
+            onExportSettings = vm::exportSettings,
         )
     }
 
