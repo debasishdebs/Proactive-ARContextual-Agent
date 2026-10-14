@@ -9,7 +9,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.rokid.context.core.hud.DoubleTapDetector
 import com.rokid.context.core.hud.DoubleTapExit
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.Channels
@@ -100,13 +99,28 @@ class ExitGateActivityTest {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             phoneState()
             doubleTap(s)
-            Thread.sleep(DoubleTapDetector.SETTLE_MS + 100) // the detector's tail guard runs on the wall clock
-            doubleTap(s)
+            doubleTap(s) // no pause between the pairs: the settle guard does not swallow a second double-tap while armed
             s.onActivity { assertEquals(1, it.tasksMovedBack, "the second double-tap minimises") }
             advance(DoubleTapExit.WINDOW_MS * 3)
             Thread.sleep(300); shadowOf(Looper.getMainLooper()).idle()
             assertTrue(commands().none { it is Command.Pause || it is Command.Resume }, "no late pause")
             compose.onNodeWithText(DoubleTapExit.COUNTDOWN_PREFIX, substring = true).assertDoesNotExist()
+        }
+    }
+
+    private fun press83(a: MainActivity) {
+        a.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_NOTIFICATION))
+        a.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_NOTIFICATION))
+    }
+
+    @Test fun fastFourTapOf83KeysMinimisesWithNoPause() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            s.onActivity { a -> repeat(4) { press83(a) } }
+            s.onActivity { assertEquals(1, it.tasksMovedBack, "a quick 4-tap minimises") }
+            advance(DoubleTapExit.WINDOW_MS * 3)
+            Thread.sleep(300); shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(commands().none { it is Command.Pause || it is Command.Resume }, "no pause")
         }
     }
 
