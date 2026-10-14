@@ -57,6 +57,10 @@ class PhoneDeps(
     val onMicGranted: () -> Unit = {},
     /** Activity's sort menu choice (also orders the Day screen); persisted by [create]. */
     val activitySort: com.rokid.context.phone.ui.activity.ActivitySortStore = com.rokid.context.phone.ui.activity.InMemoryActivitySort(),
+    /** G7: Android Battery Saver (asks are paused while it is on). */
+    val batterySaver: Flow<Boolean> = flowOf(false),
+    /** G3: Home's limited-mode banner. */
+    val limitedMode: com.rokid.context.phone.ui.home.LimitedModeControl = com.rokid.context.phone.ui.home.LimitedModeControl.None,
 ) {
     fun today(): LocalDate = LocalDate.now(zone())
 
@@ -101,6 +105,8 @@ class PhoneDeps(
                 voice = voice.phoneVoice,
                 onMicGranted = voice::onForeground,
                 activitySort = com.rokid.context.phone.ui.activity.PrefsActivitySort(app),
+                batterySaver = com.rokid.context.orchestration.BatterySaver.observe(app),
+                limitedMode = com.rokid.context.phone.ui.home.PrefsLimitedMode.forApp(app),
             )
         }
     }

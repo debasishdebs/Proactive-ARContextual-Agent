@@ -19,6 +19,8 @@ object Routes {
     const val DIAGNOSTICS_QUEUES = "settings/diagnostics/queues"
     const val DIAGNOSTICS_TRACKER = "settings/diagnostics/tracker"
     const val SETTINGS_GLASSES = "settings/glasses"
+    /** Settings > Rokid Glasses > Nearby devices (user decision 2026-10-15). */
+    const val SETTINGS_NEARBY = "settings/glasses/nearby"
     const val SETTINGS_PHONE_INPUTS = "settings/phone-inputs"
     const val SETTINGS_CAPTURE = "settings/capture"
     const val SETTINGS_ENDPOINT = "settings/endpoints/{id}"
@@ -54,7 +56,7 @@ object Routes {
     /** Settings rows that open a screen in this build. */
     val LIVE_SETTINGS: Set<String> = setOf(
         SETTINGS_GLASSES, SETTINGS_PHONE_INPUTS, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL,
-        SETTINGS_FLOWS, SETTINGS_LOCAL_MODELS,
+        SETTINGS_FLOWS, SETTINGS_LOCAL_MODELS, SETTINGS_NEARBY,
         SETTINGS_PERSONA, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS, SETTINGS_PRIVACY, SETTINGS_SOURCES, SETTINGS_ACTIONS, SETTINGS_SHOPPING,
     )
 

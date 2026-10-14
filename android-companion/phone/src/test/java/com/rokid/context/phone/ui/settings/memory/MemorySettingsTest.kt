@@ -70,6 +70,20 @@ class MemorySettingsTest {
         vm.cancelScope()
     }
 
+    /** S1: retention runs daily since Phase 7; the note describes the windows in force, not "arrives with Forget". */
+    @Test fun retentionNoteDescribesTheActiveWindows() {
+        assertEquals(
+            "Once a day, short-term memories older than 24 h, medium-term older than 7 days and long-term older than 30 days are removed, with their photos.",
+            MemorySettingsViewModel.retentionNote(com.rokid.context.memory.MemorySettings()),
+        )
+        val s = com.rokid.context.memory.MemorySettings(shortHours = 48, mediumDays = 14, longDays = 365)
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(settings = s), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+            onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = {}, onCancelDeleteAll = {}, onOpenReview = {}) } }
+        compose.onNodeWithText(MemorySettingsViewModel.retentionNote(s)).assertExists()
+        compose.onNodeWithText("older than 365 days", substring = true).assertExists()
+        compose.onNodeWithText("Automatic clean-up arrives together with Forget.").assertDoesNotExist()
+    }
+
     @Test fun screenShowsTheSecondConfirm() {
         var confirmed = 0
         compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 2), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},

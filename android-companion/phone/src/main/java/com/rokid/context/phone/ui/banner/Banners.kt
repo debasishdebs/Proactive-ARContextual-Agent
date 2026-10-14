@@ -34,7 +34,7 @@ enum class IndexState {
         }
     }
 }
-enum class BannerKind { AI_BLOCKED, GLASSES_DISCONNECTED, PROTOCOL_MISMATCH, CAPTURE_DEFERRED, CAPTURE_PAUSED, INDEX, STORAGE }
+enum class BannerKind { AI_BLOCKED, BATTERY_SAVER, GLASSES_DISCONNECTED, PROTOCOL_MISMATCH, CAPTURE_DEFERRED, CAPTURE_PAUSED, INDEX, STORAGE }
 enum class BannerAction { FIX_AI, RECONNECT, RESUME, REBUILD_INDEX }
 
 /** Everything the banner needs; [aiBlockedText] is the hub's short `Health.Blocked` text, never an exception message. */
@@ -49,6 +49,8 @@ data class BannerInputs(
     val pauses: List<PauseRecord> = emptyList(),
     val lastResumeAtMs: Long? = null,
     val nowMs: Long = 0,
+    /** G7: Android Battery Saver is on, so asks are paused. */
+    val batterySaver: Boolean = false,
 )
 
 data class BannerSpec(
@@ -69,6 +71,7 @@ object BannerResolver {
 
     fun candidates(i: BannerInputs): List<BannerSpec> = listOfNotNull(
         i.aiBlockedText?.let { BannerSpec(BannerKind.AI_BLOCKED, BannerTone.CORAL, "AI unavailable · ${short(it)}", "Fix now", BannerAction.FIX_AI) },
+        if (i.batterySaver) BannerSpec(BannerKind.BATTERY_SAVER, BannerTone.AMBER, com.rokid.context.orchestration.AskActions.BATTERY_SAVER) else null,
         when (i.link) {
             LinkState.OFFLINE -> BannerSpec(BannerKind.GLASSES_DISCONNECTED, BannerTone.SKY, "Glasses disconnected", "Reconnect", BannerAction.RECONNECT)
             LinkState.CLOSED_ON_GLASSES -> BannerSpec(BannerKind.GLASSES_DISCONNECTED, BannerTone.SKY, "Closed on glasses \u00b7 capture stopped", "Open on glasses", BannerAction.RECONNECT)

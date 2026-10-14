@@ -16,6 +16,7 @@ import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -72,6 +73,8 @@ class DiagnosticsViewModel(
     private val share: (java.io.File) -> Unit = {},
     pushSettings: () -> Unit = {},
     private val glassesConnected: () -> Boolean = { true },
+    /** G19: writes the settings JSON (every secret excluded), shared through [share]. */
+    private val exportSettings: (suspend () -> java.io.File)? = null,
 ) : ViewModel() {
     // F16: plain parameters (named like the test passes them) kept in vals that don't clash with the methods.
     private val exportAction = exportDiagnostics
@@ -86,6 +89,11 @@ class DiagnosticsViewModel(
     fun exportDiagnostics() = run(requiresPipeline = false) {
         val f = exportAction?.invoke() ?: return@run FAILED
         share(f); "Diagnostics ready to share"
+    }
+
+    fun exportSettings() = run(requiresPipeline = false) {
+        val f = exportSettings?.invoke() ?: return@run FAILED
+        share(f); SETTINGS_READY
     }
 
     /** spec §2.4 "manual config sync": re-push the HUD settings to the glasses (ruling, Task 21). */
@@ -113,6 +121,7 @@ class DiagnosticsViewModel(
         const val PAUSED = "Capture is paused — resume it from Home first"
         const val FAILED = "That didn't work — try again"
         const val PUSHED = "Settings sent to the glasses"
+        const val SETTINGS_READY = "Settings ready to share (no keys included)"
         const val NOT_CONNECTED = "Glasses not connected — settings will sync when they connect"
         private const val TAG = "Diagnostics"
     }
@@ -130,6 +139,7 @@ fun DiagnosticsScreen(
     onOpenLogs: () -> Unit,
     onExport: () -> Unit,
     onPushSettings: () -> Unit,
+    onExportSettings: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState())) {
         ScreenHeader("Diagnostics", onBack)
@@ -140,6 +150,7 @@ fun DiagnosticsScreen(
                 ChipRow(Icons.Outlined.Article, PcColors.ChipSlate, "Logs", "Recent app log lines", onClick = onOpenLogs)
                 ChipRow(Icons.Outlined.IosShare, PcColors.ChipMint, "Export diagnostics", "Logs and recent jobs as a text file", onClick = onExport, enabled = !state.busy)
                 ChipRow(Icons.Outlined.Sync, PcColors.ChipSky, "Push settings to glasses", "Re-send HUD settings now", onClick = onPushSettings)
+                ChipRow(Icons.Outlined.Tune, PcColors.ChipViolet, "Export settings", "All settings as a JSON file, without keys", onClick = onExportSettings, enabled = !state.busy)
             }
         }
         SectionLabel("Manual runs")

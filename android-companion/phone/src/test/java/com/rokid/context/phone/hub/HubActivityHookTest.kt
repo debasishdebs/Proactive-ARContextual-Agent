@@ -56,4 +56,30 @@ class HubActivityHookTest {
         assertEquals("each resume has its own number", listOf(1L, 2L), resumes)
         assertFalse("the hook doesn't build the hub", HubGraph.isBuilt)
     }
+
+    /**
+     * Nearby devices page: with "Keep running when nearby" OFF the hub stops once the last activity leaves the front,
+     * even while connected. ON (the default) keeps today's behaviour. A sticky background restart then stops too.
+     */
+    @Test fun switchOffStopsServiceInBackground() {
+        HubGraph.resetForTests(null)
+        var keep = false
+        var stops = 0
+        val hook = HubResumeHook(voiceForeground = { _, _ -> }, keepRunning = { keep }, stopHub = { stops++ })
+        val a = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val b = Robolectric.buildActivity(Activity::class.java).setup().get()
+        hook.onActivityStarted(a); hook.onActivityStarted(b)
+        hook.onActivityStopped(a)
+        assertEquals("another activity is still in front", 0, stops)
+        hook.onActivityStopped(b)
+        assertEquals("backgrounded with the switch off", 1, stops)
+
+        keep = true
+        hook.onActivityStarted(a); hook.onActivityStopped(a)
+        assertEquals("switch on: keeps running in the background", 1, stops)
+
+        assertTrue(ContextHubService.stopsOnBackgroundStart(inFront = false, keepRunning = false))
+        assertFalse(ContextHubService.stopsOnBackgroundStart(inFront = true, keepRunning = false))
+        assertFalse(ContextHubService.stopsOnBackgroundStart(inFront = false, keepRunning = true))
+    }
 }

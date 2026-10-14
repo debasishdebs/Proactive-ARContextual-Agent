@@ -20,7 +20,7 @@ class AppAnswererTest {
 
     @Test fun failuresBecomeShortHudTextAndThePhonesFixedMessage() = runBlocking {
         assertEquals(AnswerResult.Failed("AI unavailable", AskActions.AI_UNAVAILABLE), answerer(AskOutcome.Failed(AskActions.AI_UNAVAILABLE)).answer("q", VoiceSource.PHONE))
-        assertEquals(AnswerResult.Failed("Nothing saved yet", AskActions.NO_MEMORIES), answerer(AskOutcome.Failed(AskActions.NO_MEMORIES)).answer("q", VoiceSource.PHONE))
+        assertEquals(AnswerResult.Failed("Nothing on that yet \u2014 I'll check your next photos", AskActions.NO_MEMORIES), answerer(AskOutcome.Failed(AskActions.NO_MEMORIES)).answer("q", VoiceSource.PHONE))
         assertEquals(AnswerResult.Failed("Couldn't hear that", "Couldn't hear that \u2014 try again"), answerer(AskOutcome.Failed(AskActions.EMPTY_QUESTION)).answer("q", VoiceSource.PHONE))
         assertEquals(AnswerResult.Failed("Couldn't answer that", AskActions.FAILED), answerer(AskOutcome.Failed(AskActions.FAILED)).answer("q", VoiceSource.PHONE))
         assertEquals(AnswerResult.Failed("Couldn't answer that", AskActions.FAILED), answerer(AskOutcome.Answered("a1"), text = null).answer("q", VoiceSource.PHONE))

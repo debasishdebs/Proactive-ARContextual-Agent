@@ -143,6 +143,11 @@ class MemorySettingsViewModel(
         private const val RESTART_HINT = "Restart the app to apply: Android Settings › Apps › Proactive Context › Force stop, then open it again."
         const val ENCRYPTION_ON_NOTE = "Turns on after Proactive Context restarts. $RESTART_HINT"
         const val ENCRYPTION_OFF_NOTE = "Turns off after Proactive Context restarts. $RESTART_HINT"
+
+        /** S1: the daily RetentionWorker enforces these windows (by creation time), deleting the photos with them. */
+        fun retentionNote(s: com.rokid.context.memory.MemorySettings): String =
+            "Once a day, short-term memories older than ${s.shortHours} h, medium-term older than ${s.mediumDays} days and " +
+                "long-term older than ${s.longDays} days are removed, with their photos."
     }
 }
 
@@ -170,7 +175,7 @@ fun MemorySettingsScreen(
                 ChoiceRow("Short-term", short.map { "$it h" }, short.indexOf(s.shortHours), { onShort(short[it]) }, tag = "retention_short")
                 ChoiceRow("Medium-term", medium.map { "$it days" }, medium.indexOf(s.mediumDays), { onMedium(medium[it]) }, tag = "retention_medium")
                 ChoiceRow("Long-term", long.map { "$it days" }, long.indexOf(s.longDays), { onLong(long[it]) }, tag = "retention_long")
-                NoticeText("Automatic clean-up arrives together with Forget.")
+                NoticeText(MemorySettingsViewModel.retentionNote(s), tag = "retention_note")
             }
         }
         item {

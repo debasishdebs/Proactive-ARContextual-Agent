@@ -37,6 +37,21 @@ class AnswerServiceTest {
 
     @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
+    /** G10 (MVP section 9.5): no match says so with an ETA and triggers a priority reprocess, once per no-match ask. */
+    @Test fun noMatchSaysSoAndQueuesAPriorityReprocess() = runBlocking {
+        val mem = MemoryGraph.get(ctx)
+        var reprocess = 0
+        val service = AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() }, onNoMatch = { reprocess++ })
+        assertEquals(AskOutcome.Failed(AskActions.NO_MEMORIES), service.answer("where are my keys", "phone_typed"))
+        assertEquals("I don't have anything on that yet \u2014 I'll look again in your next photos", AskActions.NO_MEMORIES)
+        assertEquals(1, reprocess)
+        assertEquals("an empty question is not a no-match", AskOutcome.Failed(AskActions.EMPTY_QUESTION), service.answer("  ", "phone_typed"))
+        assertEquals(1, reprocess)
+        mem.memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, 10, "Milk carton nearly empty"))
+        service.answer("milk?", "phone_typed")
+        assertEquals("a match triggers nothing", 1, reprocess)
+    }
+
     @Test fun proposedActionGoesToIntakeAfterCommit() = runBlocking {
         val mem = MemoryGraph.get(ctx)
         mem.memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, 10, "Milk carton nearly empty"))

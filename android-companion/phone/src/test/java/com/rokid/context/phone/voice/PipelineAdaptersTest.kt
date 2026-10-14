@@ -131,6 +131,27 @@ class PipelineAdaptersTest {
         assertEquals(0, cancels)
     }
 
+    /** G7: Battery Saver blocks a glasses tap with the friendly toast, over whatever the voice gate says. */
+    @Test fun glassesAskGetsBlockedReason() = runTest {
+        val pipeline = VoicePipeline(backgroundScope, engine, caps, { SpeechLanguage.ENGLISH }, Answerer { _, _ -> AnswerResult.Failed("x", "y") }, speaker, { false })
+        val saver = MutableStateFlow(false)
+        val hub = PipelineHubVoice(pipeline, caps, backgroundScope, batterySaver = saver)
+        runCurrent()
+        assertEquals(null, hub.askBlockedReason.value)
+        saver.value = true; runCurrent()
+        assertEquals(com.rokid.context.orchestration.AskActions.BATTERY_SAVER, hub.askBlockedReason.value)
+        caps.value = VoiceCapabilities(VoiceStatus.NEEDS_SPEECH_PACK, VoiceStatus.NEEDS_SPEECH_PACK, false); runCurrent()
+        assertEquals(com.rokid.context.orchestration.AskActions.BATTERY_SAVER, hub.askBlockedReason.value)
+        saver.value = false; runCurrent()
+        assertEquals("Download speech pack on phone", hub.askBlockedReason.value)
+    }
+
+    @Test fun batterySaverFailureKeepsItsCopyOnTheHudAndHome() {
+        val s = com.rokid.context.orchestration.AskActions.BATTERY_SAVER
+        assertEquals(s, HudAskText.forFailure(s))
+        assertEquals(s, HudAskText.forPhone(s))
+    }
+
     @Test fun theHubSeesTheGatesReason() = runTest {
         val pipeline = VoicePipeline(backgroundScope, engine, caps, { SpeechLanguage.ENGLISH }, Answerer { _, _ -> AnswerResult.Failed("x", "y") }, speaker, { false })
         val hub = PipelineHubVoice(pipeline, caps, backgroundScope)

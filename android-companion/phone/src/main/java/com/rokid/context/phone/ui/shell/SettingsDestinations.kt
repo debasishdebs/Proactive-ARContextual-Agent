@@ -77,7 +77,19 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val vm = viewModel { GlassesSettingsViewModel(deps.glasses, s.hud, voice = s.voice.capabilities, reauthorizeAction = s.reauthorize) }
         val state by vm.state.collectAsStateWithLifecycle()
         GlassesSettingsScreen(state, onBack = back, onVerbosity = vm::setVerbosity, onScale = vm::setScale, onPosition = vm::setPosition,
-            onGesture = vm::setGesture, onReauthorize = vm::reauthorize, onIconCorner = vm::setIconCorner, onPopupSeconds = vm::setPopupSeconds)
+            onGesture = vm::setGesture, onReauthorize = vm::reauthorize, onIconCorner = vm::setIconCorner, onPopupSeconds = vm::setPopupSeconds,
+            onOpenNearby = { nav.navigate(Routes.SETTINGS_NEARBY) })
+    }
+
+    composable(Routes.SETTINGS_NEARBY) {
+        val app = LocalContext.current.applicationContext
+        val source = remember {
+            com.rokid.context.phone.ui.settings.glasses.NearbyDevicesSource(
+                paired = { com.rokid.context.link.CxrGlassesLink.isPaired(app) }, link = { deps.glasses.status.value.link },
+                keepRunning = com.rokid.context.phone.hub.KeepRunningNearby.of(app), openGlassesSettings = back,
+            )
+        }
+        com.rokid.context.phone.ui.settings.glasses.NearbyDevicesRoute(source, onBack = back)
     }
 
     composable(Routes.SETTINGS_PHONE_INPUTS) {
@@ -207,12 +219,13 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
 
     composable(Routes.SETTINGS_DIAGNOSTICS) {
         val vm = viewModel { DiagnosticsViewModel(deps.diagnostics, deps.pipeline, s.exportDiagnostics, { f -> s.share(f) }, { s.hud.update { it } },
-            glassesConnected = { deps.glasses.status.value.link.carriesData }) }
+            glassesConnected = { deps.glasses.status.value.link.carriesData }, exportSettings = s.exportSettings) }
         val state by vm.state.collectAsStateWithLifecycle()
         DiagnosticsScreen(
             state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },
             onSummarizeNow = vm::summarizeNow, onCaptureNow = vm::captureNow, onReprocess = vm::reprocess,
             onOpenLogs = { nav.navigate(Routes.DIAGNOSTICS_LOGS) }, onExport = vm::exportDiagnostics, onPushSettings = vm::pushSettings,
+            onExportSettings = vm::exportSettings,
         )
     }
 

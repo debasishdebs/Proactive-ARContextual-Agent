@@ -124,6 +124,21 @@ class LocalModelDownloadWorkerTest {
         assertEquals(0, server.requestCount)
     }
 
+    /** G14 (MVP section 14.1): downloads pause on low battery, on every network choice and after the mobile-data switch. */
+    @Test fun downloadsPauseOnLowBattery() {
+        val wm = WorkManager.getInstance(ctx)
+        fun live(id: String) = wm.getWorkInfosForUniqueWork("local_model_$id").get().single { !it.state.isFinished }
+        store.enqueue(model, allowMetered = false)
+        assertTrue(live(model.id).constraints.requiresBatteryNotLow())
+        assertEquals(NetworkType.UNMETERED, live(model.id).constraints.requiredNetworkType)
+        val other = model.copy(id = "other")
+        store.enqueue(other, allowMetered = true)
+        assertTrue(live(other.id).constraints.requiresBatteryNotLow())
+        store.setAllowMetered(model, true)
+        assertEquals(NetworkType.CONNECTED, live(model.id).constraints.requiredNetworkType)
+        assertTrue("the replacement keeps it", live(model.id).constraints.requiresBatteryNotLow())
+    }
+
     /** Review Focus 3: two quick taps make one download. */
     @Test fun secondDownloadRequestIsANoOp() = runBlocking {
         val wm = WorkManager.getInstance(ctx)

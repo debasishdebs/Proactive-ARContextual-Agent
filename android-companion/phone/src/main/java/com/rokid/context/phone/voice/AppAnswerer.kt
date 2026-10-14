@@ -14,14 +14,15 @@ import com.rokid.context.voice.VoiceSource
 object HudAskText {
     fun forFailure(phoneMessage: String): String = when (phoneMessage) {
         AskActions.EMPTY_QUESTION -> VoiceCopy.COULDNT_HEAR_HUD
-        AskActions.NO_MEMORIES -> "Nothing saved yet"
+        AskActions.NO_MEMORIES -> "Nothing on that yet \u2014 I'll check your next photos"
         AskActions.AI_UNAVAILABLE -> "AI unavailable"
+        AskActions.BATTERY_SAVER -> AskActions.BATTERY_SAVER
         else -> VoiceCopy.FAILED_HUD
     }
 
     fun forPhone(phoneMessage: String): String = when (phoneMessage) {
         AskActions.EMPTY_QUESTION -> VoiceCopy.COULDNT_HEAR_PHONE
-        AskActions.NO_MEMORIES, AskActions.AI_UNAVAILABLE, AskActions.FAILED -> phoneMessage
+        AskActions.NO_MEMORIES, AskActions.AI_UNAVAILABLE, AskActions.FAILED, AskActions.BATTERY_SAVER -> phoneMessage
         else -> AskActions.FAILED
     }
 }
