@@ -45,6 +45,7 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun frameSourceDao(): FrameSourceDao
     abstract fun frameVectorDao(): FrameVectorDao
     abstract fun frameClusterDao(): FrameClusterDao
+    abstract fun frameAdoptionDao(): FrameAdoptionDao
 }
 
 /**

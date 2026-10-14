@@ -1,5 +1,6 @@
 package com.rokid.context.phone.hub
 
+import com.rokid.context.data.frames.DirSync
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -60,7 +61,8 @@ class HubTest {
     @get:Rule val tmp = TemporaryFolder()
     private val ctx = ApplicationProvider.getApplicationContext<Application>()
     private val db = testDb(ctx)
-    @After fun close() = db.close()
+    init { DirSync.testOverride = DirSync { true } } // Robolectric cannot fsync a directory
+    @After fun close() { DirSync.testOverride = null; db.close() }
     private val now = 1_793_000_000_000L
     private val sources = object : HubSources {
         override suspend fun today() = listOf(MemoryLine("m1", now, "Keys on the hallway shelf"))

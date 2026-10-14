@@ -41,11 +41,14 @@ object PipelineRecords {
     // --- frames -------------------------------------------------------------------------------------------------
 
     /** Only `rokid*` sources with a JPEG that exists; payload kept to one line (≤ 220 chars). False = rejected or duplicate id. */
-    suspend fun appendFrame(context: Context, frame: FrameEntity): Boolean {
+    suspend fun appendFrame(context: Context, frame: FrameEntity, rows: com.rokid.context.memory.FrameRows? = null): Boolean {
         if (!frame.source.startsWith("rokid", ignoreCase = true)) { Log.w(TAG, "append rejected non-rokid source=${frame.source}"); return false }
         val file = frame.path.takeIf { it.isNotBlank() }?.let(::File)
         if (file == null || !withContext(Dispatchers.IO) { file.exists() }) { Log.w(TAG, "append rejected preview missing frameId=${frame.id}"); return false }
-        val ok = graph(context).frames.add(frame.copy(path = file.absolutePath, payload = oneLine(frame.payload).take(220)))
+        val stored = frame.copy(path = file.absolutePath, payload = oneLine(frame.payload).take(220))
+        // With [rows] the frame, its frame_meta and its PENDING frame_state land in one transaction (keyframe capture P1).
+        val ok = if (rows == null) graph(context).frames.add(stored)
+        else graph(context).intake.commit(stored, rows) == com.rokid.context.memory.FrameIntake.Outcome.ADDED
         Log.i(TAG, "append ok=$ok frameId=${frame.id}")
         return ok
     }
