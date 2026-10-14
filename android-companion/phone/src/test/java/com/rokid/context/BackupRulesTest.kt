@@ -1,6 +1,7 @@
 package com.rokid.context
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.w3c.dom.Element
@@ -21,7 +22,19 @@ class BackupRulesTest {
         "database:context.db", "database:context.db-wal", "database:context.db-shm",
         // On-device embeddings spec section 4: downloaded models (large, re-downloadable) are never backed up.
         "file:models",
-    ) + memoryCopies + setupState.map { "sharedpref:$it.xml" }
+    ) + secretBaks + memoryCopies + setupState.map { "sharedpref:$it.xml" }
+
+    /**
+     * B12 ruling: copies of the legacy key file found in files/ after a restore. Backup rules match a path exactly, or
+     * a directory and everything under it: no wildcards. So the name itself is excluded (in case it is ever a file or a
+     * directory), the two restored copies by their exact names (so the existing cloud backup can't put them back), and
+     * SecretBakCleanup deletes any other app_config_secret.xml.bak.* at start-up.
+     */
+    private val secretBaks: Set<String> get() = setOf(
+        "file:app_config_secret",
+        "file:app_config_secret.xml.bak.1780057256",
+        "file:app_config_secret.xml.bak.manual_reset_1780057830",
+    )
 
     /**
      * BUG-R3-1 ruling: prefs that describe the set-up, the DB or this device. Restored onto a fresh install (no keys,
@@ -129,6 +142,31 @@ class BackupRulesTest {
         val unruled = names - keysAndMarkers - setupState - restorable
         assertEquals("prefs files with no backup ruling", emptySet<String>(), unruled)
         assertTrue("a file is both restorable and excluded", (restorable intersect (setupState + keysAndMarkers)).isEmpty())
+    }
+
+    @Test fun secretBakFilesAreExcludedFromEveryBackupSection() {
+        val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) +
+            listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
+        assertEquals(3, sections.size)
+        for (section in sections) {
+            val ex = excludes(section)
+            for (n in secretBaks + "sharedpref:app_config_secret.xml") assertTrue("${section.tagName}: $n", n in ex)
+        }
+    }
+
+    /**
+     * B12: no main code (any module, Kotlin or Java) writes a .bak copy of a secret. The only main source that names
+     * ".bak" or "manual_reset" is the start-up cleanup, and it only lists and deletes.
+     */
+    @Test fun noCodePathWritesSecretBak() {
+        val roots = listOf("src/main", "../services", "../glasses/src/main").map(::File)
+        val sources = roots.flatMap { it.walkTopDown().filter { f -> f.isFile && (f.name.endsWith(".kt") || f.name.endsWith(".java")) && "/build/" !in f.path && "/src/main/" in f.path } }
+        assertTrue("scan is broken", sources.size > 50)
+        val mentions = sources.filter { f -> val t = f.readText(); ".bak" in t || "manual_reset" in t }.map { it.name }
+        assertEquals(listOf("SecretBakCleanup.kt"), mentions)
+        val cleanup = sources.single { it.name == "SecretBakCleanup.kt" }.readText()
+        for (w in listOf("writeText", "writeBytes", "copyTo", "renameTo", "FileOutputStream", "outputStream", "createNewFile", "Files.copy"))
+            assertFalse("SecretBakCleanup uses $w", w in cleanup)
     }
 
     /** The Activity sort choice is a UI preference: it lives in a restorable file, never in an excluded one. */
