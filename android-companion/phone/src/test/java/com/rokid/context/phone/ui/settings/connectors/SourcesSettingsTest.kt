@@ -1,11 +1,13 @@
 package com.rokid.context.phone.ui.settings.connectors
 
 import android.app.Application
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.connectors.sources.SourceKind
@@ -87,5 +89,31 @@ class SourcesSettingsTest {
             PcTheme { SourcesScreen(SourcesUiState(loading = false, needsPermission = setOf(SourceKind.CONTACTS)), onBack = {}, onToggle = { _, _ -> }, onNudgesPerDay = {}, onOpenAppSettings = {}) }
         }
         compose.onNodeWithText("Permission needed \u00b7 Open settings").assertIsDisplayed()
+    }
+
+    /** The three timing rows show their defaults, report a pick, and the store keeps it across a restart. */
+    @Test fun nudgeTimingRowsPersist() {
+        val ctx = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val prefs = ctx.getSharedPreferences("nudge_timing_test", android.content.Context.MODE_PRIVATE)
+        val store = com.rokid.context.connectors.sources.SourceSettingsStore(prefs)
+        assertEquals(listOf(5, 30, 30), listOf(store.settleSec.value, store.checkGapSec.value, store.shownGapMin.value))
+
+        val state = mutableStateOf(SourcesUiState(loading = false))
+        compose.setContent {
+            PcTheme {
+                SourcesScreen(
+                    state.value, onBack = {}, onToggle = { _, _ -> }, onNudgesPerDay = {}, onOpenAppSettings = {},
+                    onSettleSec = { store.setSettleSec(it) }, onCheckGapSec = { store.setCheckGapSec(it) }, onShownGapMin = { store.setShownGapMin(it) },
+                )
+            }
+        }
+        for ((row, idx) in listOf("nudge_settle" to 2, "nudge_check_gap" to 1, "nudge_shown_gap" to 2)) {
+            compose.onNodeWithTag("sources").performScrollToNode(hasTestTag(row))
+            compose.onNodeWithTag(row).assertIsDisplayed().performClick()
+            compose.onNodeWithTag("${row}_$idx").performClick()
+        }
+        store.setSettleSec(7) // not an offered value: ignored
+        val reopened = com.rokid.context.connectors.sources.SourceSettingsStore(prefs)
+        assertEquals(listOf(10, 60, 60), listOf(reopened.settleSec.value, reopened.checkGapSec.value, reopened.shownGapMin.value))
     }
 }
