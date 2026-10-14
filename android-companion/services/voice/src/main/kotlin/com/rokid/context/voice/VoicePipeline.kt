@@ -19,6 +19,9 @@ import kotlin.coroutines.cancellation.CancellationException
  * Bounds: [VoiceTimings.maxListenMs] (20 s) caps audio intake for any listen; the [VoiceTimings.finalTimeoutMs] (6 s)
  * final wait sits on top of it (worst case 26 s), and a recognizer that never sends a final is then cancelled.
  * Thinking is bounded by [VoiceTimings.answerTimeoutMs] (60 s).
+ *
+ * Every ask ends in exactly one `outcome=<[VoiceOutcome]> source=<[VoiceSource]>` log line (BUG-R3-3: a "couldn't
+ * hear" must never look like a hang); the code is the reason, the text stays out.
  */
 class VoicePipeline(
     private val scope: CoroutineScope,
@@ -54,8 +57,10 @@ class VoicePipeline(
     init { scope.launch { capabilities.collect { publish() } } }
 
     fun glassesListenStart() {
-        capabilities.value.askBlockedReason?.let { reason -> log("glasses ask blocked"); toastHud(reason); return }
-        if (busyWith(VoiceSource.PHONE)) { toastHud(VoiceCopy.PHONE_BUSY_HUD); return }
+        capabilities.value.askBlockedReason?.let { reason ->
+            log("glasses ask blocked"); outcome(VoiceOutcome.BLOCKED, VoiceSource.GLASSES); toastHud(reason); return
+        }
+        if (busyWith(VoiceSource.PHONE)) { outcome(VoiceOutcome.BUSY, VoiceSource.GLASSES); toastHud(VoiceCopy.PHONE_BUSY_HUD); return }
         begin(VoiceSource.GLASSES)
     }
 
@@ -68,26 +73,30 @@ class VoicePipeline(
 
     fun glassesListenEnd() {
         val s = _state.value
-        if (s is VoiceState.Listening && s.source == VoiceSource.GLASSES) endListening(gen)
+        if (s is VoiceState.Listening && s.source == VoiceSource.GLASSES) { log("listen end GLASSES"); endListening(gen) }
     }
 
     /** Double-tap while listening or thinking, or a dismissed Answer: stop everything, answer and say nothing. */
     fun glassesCancel() {
         val s = _state.value
-        if (s.source == VoiceSource.GLASSES || s is VoiceState.Answer) reset("glasses cancel")
+        if (s.source == VoiceSource.GLASSES || s is VoiceState.Answer) reset("glasses cancel", VoiceOutcome.CANCELLED)
     }
 
     /** The glasses link dropped: an open utterance can't complete. A question already asked still lands in the feed. */
     fun linkLost() {
         val s = _state.value
-        if (s is VoiceState.Listening && s.source == VoiceSource.GLASSES) reset("link lost")
+        if (s is VoiceState.Listening && s.source == VoiceSource.GLASSES) reset("link lost", VoiceOutcome.LINK_LOST)
     }
 
     fun phoneStart() {
         showPhoneError(null)
         val status = capabilities.value.phone
-        if (status != VoiceStatus.SUPPORTED) { showPhoneError(VoiceCopy.phoneHint(status)); publish(); return }
-        if (busyWith(VoiceSource.GLASSES)) { showPhoneError(VoiceCopy.GLASSES_BUSY_PHONE); publish(); return }
+        if (status != VoiceStatus.SUPPORTED) {
+            outcome(VoiceOutcome.BLOCKED, VoiceSource.PHONE); showPhoneError(VoiceCopy.phoneHint(status)); publish(); return
+        }
+        if (busyWith(VoiceSource.GLASSES)) {
+            outcome(VoiceOutcome.BUSY, VoiceSource.PHONE); showPhoneError(VoiceCopy.GLASSES_BUSY_PHONE); publish(); return
+        }
         begin(VoiceSource.PHONE)
     }
 
@@ -96,7 +105,7 @@ class VoicePipeline(
         if (s is VoiceState.Listening && s.source == VoiceSource.PHONE) endListening(gen)
     }
 
-    fun phoneCancel() { if (_state.value.source == VoiceSource.PHONE) reset("phone cancel") }
+    fun phoneCancel() { if (_state.value.source == VoiceSource.PHONE) reset("phone cancel", VoiceOutcome.CANCELLED) }
 
     /** A typed Ask's answer, mirrored to the HUD (spec §2.4) and not spoken; never over a voice ask in progress. */
     fun showTypedAnswer(askId: String, question: String, text: String) {
@@ -113,6 +122,8 @@ class VoicePipeline(
     }
 
     private fun begin(source: VoiceSource) {
+        val prev = _state.value
+        if (prev is VoiceState.Listening || prev is VoiceState.Thinking) prev.source?.let { outcome(VoiceOutcome.SUPERSEDED, it) }
         val g = newGeneration()
         hudToast = null
         hudToastJob?.cancel()
@@ -126,7 +137,7 @@ class VoicePipeline(
             if (source == VoiceSource.GLASSES) engine.startExternal(tag, listener) else engine.startPhoneMic(tag, listener)
         } catch (e: Exception) {
             log("recognizer did not start (${e.javaClass.simpleName})")
-            problem(g, source, VoiceCopy.COULDNT_HEAR_HUD, VoiceCopy.COULDNT_HEAR_PHONE)
+            problem(g, source, VoiceOutcome.RECOGNIZER_FAILED, VoiceCopy.COULDNT_HEAR_HUD, VoiceCopy.COULDNT_HEAR_PHONE)
             return
         }
         log("listening ${source.name}")
@@ -162,7 +173,7 @@ class VoicePipeline(
             delay(timings.finalTimeoutMs)
             val heard = (_state.value as? VoiceState.Listening)?.partial.orEmpty()
             val silent = session
-            onFinal(g, if (heard.isNotEmpty()) SttResult.Text(heard) else SttResult.NoSpeech)
+            onFinal(g, if (heard.isNotEmpty()) SttResult.Text(heard) else SttResult.NoSpeech, finalTimedOut = true)
             // No final came: release the recognizer, its pipe and pump. After onFinal, so a late final it may send is inert.
             log("no final: session cancelled")
             silent?.cancel()
@@ -175,27 +186,35 @@ class VoicePipeline(
         set(s.copy(partial = VoiceText.clean(text)))
     }
 
-    private fun onFinal(g: Long, result: SttResult) {
+    /** [finalTimedOut]: no final came within [VoiceTimings.finalTimeoutMs]; nothing heard is then NO_FINAL. */
+    private fun onFinal(g: Long, result: SttResult, finalTimedOut: Boolean = false) {
         if (g != gen) return
         val s = _state.value as? VoiceState.Listening ?: return
         session = null
         timer?.cancel(); maxTimer?.cancel()
         when (result) {
             is SttResult.Text -> think(g, s.source, result.text)
-            SttResult.NoSpeech, SttResult.Failed -> problem(g, s.source, VoiceCopy.COULDNT_HEAR_HUD, VoiceCopy.COULDNT_HEAR_PHONE)
+            SttResult.NoSpeech, SttResult.Failed -> {
+                val why = when {
+                    finalTimedOut -> VoiceOutcome.NO_FINAL
+                    result == SttResult.Failed -> VoiceOutcome.STT_FAILED
+                    else -> VoiceOutcome.NO_SPEECH
+                }
+                problem(g, s.source, why, VoiceCopy.COULDNT_HEAR_HUD, VoiceCopy.COULDNT_HEAR_PHONE)
+            }
             SttResult.FallbackSuspected -> {
                 log("fallback suspected: session aborted")
-                problem(g, s.source, VoiceCopy.NOT_SUPPORTED_HUD, VoiceCopy.NOT_SUPPORTED_PHONE)
+                problem(g, s.source, VoiceOutcome.FALLBACK_SUSPECTED, VoiceCopy.NOT_SUPPORTED_HUD, VoiceCopy.NOT_SUPPORTED_PHONE)
                 onFallbackSuspected()
             }
-            SttResult.PackMissing -> problem(g, s.source, VoiceCopy.PACK_HUD, VoiceCopy.PACK_PHONE)
-            SttResult.NoPermission -> problem(g, s.source, VoiceCopy.MIC_HUD, VoiceCopy.MIC_PHONE)
+            SttResult.PackMissing -> problem(g, s.source, VoiceOutcome.PACK_MISSING, VoiceCopy.PACK_HUD, VoiceCopy.PACK_PHONE)
+            SttResult.NoPermission -> problem(g, s.source, VoiceOutcome.NO_PERMISSION, VoiceCopy.MIC_HUD, VoiceCopy.MIC_PHONE)
         }
     }
 
     private fun think(g: Long, source: VoiceSource, transcript: String) {
         val question = VoiceText.clean(transcript)
-        if (question.isEmpty()) { problem(g, source, VoiceCopy.COULDNT_HEAR_HUD, VoiceCopy.COULDNT_HEAR_PHONE); return }
+        if (question.isEmpty()) { problem(g, source, VoiceOutcome.NO_SPEECH, VoiceCopy.COULDNT_HEAR_HUD, VoiceCopy.COULDNT_HEAR_PHONE); return }
         set(VoiceState.Thinking(source, question))
         work = scope.launch {
             val r = try {
@@ -210,7 +229,7 @@ class VoicePipeline(
             timer?.cancel() // the Thinking bound
             when (r) {
                 is AnswerResult.Answered -> answered(g, source, question, r)
-                is AnswerResult.Failed -> problem(g, source, r.hudText, r.phoneText)
+                is AnswerResult.Failed -> problem(g, source, VoiceOutcome.ANSWER_FAILED, r.hudText, r.phoneText)
             }
         }
         // A timer, not withTimeout: an answer path that ignores cancellation (a NonCancellable write) can't hold Thinking.
@@ -218,7 +237,8 @@ class VoicePipeline(
             delay(timings.answerTimeoutMs)
             if (g != gen) return@launch
             log("answer timed out")
-            problem(newGeneration(), source, VoiceCopy.TOO_LONG, VoiceCopy.TOO_LONG) // new generation: a late answer is ignored
+            // New generation: a late answer is ignored.
+            problem(newGeneration(), source, VoiceOutcome.ANSWER_TIMEOUT, VoiceCopy.TOO_LONG, VoiceCopy.TOO_LONG)
         }
     }
 
@@ -228,6 +248,7 @@ class VoicePipeline(
         val speak = source == VoiceSource.PHONE || bluetoothMedia()
         set(VoiceState.Answer(source, r.askId, question, text, speaking = speak))
         log("answered ${source.name} spoken=$speak")
+        outcome(VoiceOutcome.ANSWERED, source)
         if (!speak || !speaker.speak(r.askId, text) { speechDone(g) }) speechDone(g)
     }
 
@@ -243,18 +264,24 @@ class VoicePipeline(
         timer = scope.launch { delay(timings.answerHoldMs); if (g == gen) set(VoiceState.Idle) }
     }
 
-    private fun problem(g: Long, source: VoiceSource, hud: String, phoneText: String) {
+    private fun problem(g: Long, source: VoiceSource, why: VoiceOutcome, hud: String, phoneText: String) {
+        outcome(why, source)
         if (source == VoiceSource.PHONE) showPhoneError(phoneText)
         set(VoiceState.Problem(source, hud, phoneText))
         timer?.cancel()
         timer = scope.launch { delay(timings.toastMs); if (g == gen) set(VoiceState.Idle) }
     }
 
-    private fun reset(why: String) {
+    private fun reset(why: String, code: VoiceOutcome) {
+        val s = _state.value
         newGeneration()
         log(why)
+        // A dismissed Answer is not a new end: its ask already logged ANSWERED.
+        if (s is VoiceState.Listening || s is VoiceState.Thinking) s.source?.let { outcome(code, it) }
         set(VoiceState.Idle)
     }
+
+    private fun outcome(code: VoiceOutcome, source: VoiceSource) = log("outcome=${code.name} source=${source.name}")
 
     /** Home's voice error clears after [VoiceTimings.toastMs], like the glasses toast. */
     private fun showPhoneError(text: String?) {
@@ -302,4 +329,28 @@ class VoicePipeline(
         const val HUD_ANSWER = 300
         const val MAX_SPOKEN = 2_000
     }
+}
+
+/** How one voice ask ended, for the `outcome=` log line (codes only, never user text). */
+enum class VoiceOutcome {
+    ANSWERED,
+    /** The recognizer's final had no speech, or the transcript was empty after cleaning. */
+    NO_SPEECH,
+    /** Audio ended but no final arrived within [VoiceTimings.finalTimeoutMs] and no partial was heard. */
+    NO_FINAL,
+    STT_FAILED,
+    RECOGNIZER_FAILED,
+    FALLBACK_SUSPECTED,
+    PACK_MISSING,
+    NO_PERMISSION,
+    ANSWER_FAILED,
+    ANSWER_TIMEOUT,
+    CANCELLED,
+    LINK_LOST,
+    /** Voice can't work here (capability gate): no listen started. */
+    BLOCKED,
+    /** The other source was listening or thinking: no listen started. */
+    BUSY,
+    /** A new listen replaced one still listening or thinking. */
+    SUPERSEDED,
 }

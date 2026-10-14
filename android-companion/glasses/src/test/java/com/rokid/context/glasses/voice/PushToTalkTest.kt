@@ -59,12 +59,49 @@ class PushToTalkTest {
         assertEquals(listOf("start"), link.sent.take(1))
     }
 
-    @Test fun oneAndAHalfSecondsOfSilenceEndsTheUtterance() {
+    @Test fun twoPointTwoSecondsOfSilenceEndsTheUtterance() {
         val link = FakeLink()
         val ptt = PushToTalk(link, sourceFactory = { ScriptedPcm(speechChunks = 5) })
         ptt.start()
         awaitUntil { !ptt.recording.value }
-        assertEquals(listOf("start") + List(20) { "audio" } + "end", link.sent.toList())
+        assertEquals(listOf("start") + List(27) { "audio" } + "end", link.sent.toList())
+    }
+
+    /** BUG-R3-3: the VAD ended the listen just before the wearer's "send" tap, and that tap opened a second listen. */
+    @Test fun aTapJustAfterAnAutoEndIsTheSendNotANewAsk() {
+        val link = FakeLink()
+        var now = 10_000L
+        val ptt = PushToTalk(link, sourceFactory = { ScriptedPcm(speechChunks = 5) }, clock = { now })
+        ptt.start()
+        awaitUntil { !ptt.recording.value }
+        now += 1_400
+        assertTrue(ptt.takeLateTap(), "within 1.5 s of the auto-end: the tap was the send")
+        assertFalse(ptt.takeLateTap(), "one tap is absorbed, the next one asks again")
+        assertEquals(1, link.sent.count { it == "start" })
+    }
+
+    @Test fun aTapAfterTheGraceWindowAsksAgain() {
+        var now = 10_000L
+        val ptt = PushToTalk(FakeLink(), sourceFactory = { ScriptedPcm(speechChunks = 5) }, clock = { now })
+        ptt.start()
+        awaitUntil { !ptt.recording.value }
+        now += 1_501
+        assertFalse(ptt.takeLateTap())
+    }
+
+    /** Only an auto-end opens the window: a tap-ended or cancelled listen leaves the next tap a new ask. */
+    @Test fun aTapEndedOrCancelledListenHasNoGraceWindow() {
+        val pcm = BlockingPcm()
+        val ptt = PushToTalk(FakeLink(), sourceFactory = { pcm }, clock = { 10_000L })
+        ptt.start(); pcm.permits.release(2)
+        ptt.stop(); pcm.permits.release(1)
+        awaitUntil { !ptt.recording.value }
+        assertFalse(ptt.takeLateTap())
+        val pcm2 = BlockingPcm()
+        val cancelled = PushToTalk(FakeLink(), sourceFactory = { pcm2 }, clock = { 10_000L })
+        cancelled.start(); cancelled.cancel(); pcm2.permits.release(1)
+        awaitUntil { !cancelled.recording.value }
+        assertFalse(cancelled.takeLateTap())
     }
 
     @Test fun cancelStopsWithoutAListenEnd() {
