@@ -18,7 +18,11 @@ Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes 
 - **Nomic** writes no text. It turns photos and text into **vectors** for search, clustering and dedupe.
 - Captioning happens at two times:
   1. **Live:** every keyframe sent in an extraction call gets its **own caption** in that call's output (§P2.1 provenance). Cluster representatives are captioned live the same way.
-  2. **Night (charging):** keyframes that never went to the LLM (non-representative cluster members and near-duplicates) get a caption in a bulk job. This needs the setting **Caption every photo** (default **on**; it costs about 1 call per 3 photos at night). "Describe before deleting" (§P6) is the minimum that always runs, even with the setting off.
+  2. **Night (charging):** only **describe before deleting** (§P6). It covers a photo that is about to expire and is linked to **no memory at all**, such as a salient keyframe that never got its live call.
+- **No extra captioning (user decision, 2026-10-15):** the whole point of dedupe and clustering is to save vision-LLM calls, so the photos they skip are not captioned later.
+  - **Near-duplicates** link to their original (`near_dup_of`), get no caption, and are deleted under their own 1-day retention.
+  - **Non-representative cluster members** are covered by the cluster summary (`memory_source` role CLUSTER_MEMBER) and get no caption of their own.
+  - **Image vectors** are still made for every keyframe (on-device, no LLM cost), so they stay findable by photo search while the photo is stored.
 - **Re-indexing**, after a change of embedding model, re-makes **vectors only**; it never re-captions. Captions are kept because they feed future personality dimensions and evaluation datasets (user intent).
 
 ### What exists today (facts, 2026-10-15)
@@ -379,7 +383,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   - If the budget or network isn't available, the deletion waits up to 3 more days, then the photo is deleted anyway and its vector kept. That's recorded in Diagnostics.
 - **Two jobs (review finding 6):**
   - **Retention job:** daily, **no charging or idle constraint** (it makes no AI calls). It deletes every photo past its deadline. A photo that's past its deadline and still uncaptioned is kept until **deadline + 3 days**, then deleted anyway with its vector kept. Every deletion goes through the Forget file-and-row fence.
-  - **Night captioning job:** needs a charger and an idle device. It does describe-before-delete first (sorted by deadline), then "Caption every photo" (§0), then the P4 backfill, all under the budget.
+  - **Night job:** needs a charger and an idle device. It does describe-before-delete (sorted by deadline, only for photos linked to no memory), then the P4 backfill (vectors, no LLM), under the budget.
   - The 3-day promise therefore depends only on the unconstrained retention job.
 
 ### P6.2 Ask time
@@ -459,7 +463,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 | D1: evaluate straight away (≤ 1 per 60 s, salient/dwell/new place) vs notify throttle; 1 in 5 budget tokens reserved | user | H |
 | Nomic transforms (text LayerNorm → truncate → L2; vision L2 → truncate → L2); reference vectors at cosine ≥ 0.99 | review + model cards | H |
 | Image storage dimension decided by the 256-vs-768 photo test (≤ 3 / ≤ 5 point drop) | Claude | M |
-| "Caption every photo" at night, default on | Claude, from the user's dataset intent | M |
+| No extra captioning of near-duplicates or cluster members; night LLM work is only describe-before-delete for photos with no memory | user | H |
 | Salience weights, 0.5 cut-off, cluster drift 0.25, dedupe 0.93 | Claude | L (tune with the debug view) |
 | 256-dimension Matryoshka storage | Claude | M |
 | Opus for specs, Sonnet for code | user | H |
