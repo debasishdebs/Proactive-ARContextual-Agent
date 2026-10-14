@@ -14,8 +14,12 @@ class HudPresence(private val clock: () -> Long = System::currentTimeMillis) {
     private enum class State { NEVER_STARTED, STARTED, STOPPED, EXITED }
     @Volatile private var state = State.NEVER_STARTED
     @Volatile private var leftAtMs = 0L
+    /** The wearer minimised the HUD (spec 2026-10-14 §1.7 exception): only a Confirm may bring it forward. */
+    @Volatile private var minimised = false
 
-    fun onStarted() { state = State.STARTED }
+    fun onStarted() { state = State.STARTED; minimised = false }
+
+    fun onMinimised() { minimised = true }
 
     /** [finishing]: the wearer exited (the activity is finishing), not merely backgrounded. */
     fun onStopped(finishing: Boolean) {
@@ -26,14 +30,14 @@ class HudPresence(private val clock: () -> Long = System::currentTimeMillis) {
 
     fun onExited() { state = State.EXITED }
 
-    fun fallbackAllowed(nowMs: Long = clock()): Boolean = when (state) {
+    fun fallbackAllowed(nowMs: Long = clock()): Boolean = !minimised && when (state) {
         State.STARTED -> true
         State.STOPPED -> nowMs - leftAtMs in 0 until RECENT_MS
         State.NEVER_STARTED, State.EXITED -> false
     }
 
     /** For logs: the state name only. */
-    fun describe(): String = state.name.lowercase()
+    fun describe(): String = if (minimised) "minimised" else state.name.lowercase()
 
     companion object { const val RECENT_MS = 60_000L }
 }
