@@ -45,7 +45,8 @@ object AskSources {
  */
 object AskActions {
     const val EMPTY_QUESTION = "Type a question first"
-    const val NO_MEMORIES = "Nothing saved yet — ask again once a few moments are captured"
+    /** G10 (MVP section 9.5): no match says so, with when it will look again (the ask queued a priority reprocess). */
+    const val NO_MEMORIES = "I don't have anything on that yet \u2014 I'll look again in your next photos"
     const val AI_UNAVAILABLE = "AI unavailable — check Settings › Model endpoints"
     const val FAILED = "Couldn't answer that — try again"
     const val REVIEW_REASON = "User marked an answer unhelpful"
