@@ -10,6 +10,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.rokid.context.data.frames.RokidFrameInbox
+import com.rokid.context.memory.frames.FrameImages
+import com.rokid.context.phone.hub.AtomicJpegWriter
 import com.rokid.context.work.FrameIngestWorker
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -82,10 +85,13 @@ class PhoneCapture(
             val scaled = if (decoded.width <= MAX_WIDTH) decoded else
                 Bitmap.createScaledBitmap(decoded, MAX_WIDTH, (decoded.height.toLong() * MAX_WIDTH / decoded.width).toInt().coerceAtLeast(1), true)
             val out = File(RokidFrameInbox.archiveDir(app).apply { mkdirs() }, "${SOURCE}_${clock()}.jpg")
-            val ok = out.outputStream().use { scaled.compress(Bitmap.CompressFormat.JPEG, QUALITY, it) }
+            val buf = ByteArrayOutputStream()
+            val ok = scaled.compress(Bitmap.CompressFormat.JPEG, QUALITY, buf)
             if (scaled !== decoded) scaled.recycle()
             decoded.recycle()
-            if (!ok) { out.delete(); return@withContext false }
+            if (!ok) return@withContext false
+            // Gaps G1: sealed while "Encrypt memory" is on; written whole (temp, fsync, rename) so no reader sees half a file.
+            AtomicJpegWriter.write(out, FrameImages.forDisk(buf.toByteArray()))
             enqueue(out, SOURCE)
             true
         } catch (c: CancellationException) {

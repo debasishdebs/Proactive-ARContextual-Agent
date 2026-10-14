@@ -4,7 +4,9 @@ import android.content.Context
 import android.util.Log
 import com.rokid.context.data.frames.RokidFrameInbox
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.orchestration.WipeFence
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -20,13 +22,17 @@ object FrameSweep {
 
     /** Deletes [paths]; each failure is logged (class only) and left for [sweep]. Returns how many were deleted. */
     suspend fun delete(paths: Collection<String>): Int = withContext(Dispatchers.IO) {
+        // Under the fence lock (Gaps G1): an encryption swap in progress can never bring a forgotten photo back.
+        WipeFence.mutex.withLock { deleteNow(paths) }
+    }
+
+    private fun deleteNow(paths: Collection<String>): Int =
         paths.distinct().count { p ->
             val f = File(p)
             val ok = !f.exists() || runCatching { f.delete() }.getOrDefault(false)
             if (!ok) Log.w(TAG, "a forgotten photo could not be deleted yet; the sweep retries")
             ok && f.exists().not()
         }
-    }
 
     /**
      * Final review I2 ruling (spec §6.1.1): a tombstone is pruned once nothing can need it: no frame row (a kept row is

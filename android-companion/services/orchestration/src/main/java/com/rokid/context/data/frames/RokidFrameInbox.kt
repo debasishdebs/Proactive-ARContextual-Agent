@@ -86,7 +86,8 @@ object RokidFrameInbox {
             // Review Focus 3: a Delete all that starts while this file is ingested bumps the generation; its row and file go.
             val generation = MemoryWipe.generation.get()
             val archived = File(archive, "${nowMs()}_${file.name}")
-            val moved = runCatching { file.renameTo(archived) }.getOrDefault(false)
+            // Under the fence lock (Gaps G1): an encryption swap of this inbox file never lands after the move.
+            val moved = WipeFence.mutex.withLock { runCatching { file.renameTo(archived) }.getOrDefault(false) }
             val sourceFile = if (moved) archived else file
             val result = try {
                 ingestFile(context, sourceFile, source = "rokid_glasses", placeLabel, appendFrame)
