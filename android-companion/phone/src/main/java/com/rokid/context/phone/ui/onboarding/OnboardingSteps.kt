@@ -167,6 +167,8 @@ private fun ChoiceCard(text: String, selected: Boolean, tag: String, onClick: ()
 private fun AiBody(ai: AiStepState, cb: StepCallbacks) {
     Card {
         ai.seed?.let { ChoiceCard("Use ${it.name}", ai.useSeed, "ai_seed", cb.selectSeed) }
+        // BUG-R3-2: the build seed has an address and deployment but no key; masked like Settings, stored via the vault.
+        if (ai.seedNeedsKey) Field("API key", ai.key, "ai_seed_key", cb.onKey, secret = true)
         AiPreset.entries.forEach { p -> ChoiceCard(p.label, ai.preset == p, "ai_preset_${p.name}") { cb.selectPreset(p) } }
         ai.preset?.let { p ->
             Field("Address", ai.url, "ai_url", cb.onUrl, error = ai.urlError, hint = p.urlHint, uri = true)

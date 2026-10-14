@@ -21,4 +21,15 @@
     <exclude domain="root" path="cache/exports" />
     <!-- Downloaded on-device models: large and re-downloadable. -->
     <exclude domain="file" path="models" />
+    <!-- BUG-R3-1: set-up, DB and device state. Restored onto a fresh install (no keys, no DB) these said
+         onboarding was done, pointed into the missing DB, or carried another phone's pairing / voice probe.
+         Ruling and the restorable list: BackupRulesTest. -->
+    <exclude domain="sharedpref" path="onboarding.xml" />
+    <exclude domain="sharedpref" path="app_config.xml" />
+    <exclude domain="sharedpref" path="memory_graph.xml" />
+    <exclude domain="sharedpref" path="index_maintenance.xml" />
+    <exclude domain="sharedpref" path="pipeline_stats.xml" />
+    <exclude domain="sharedpref" path="rokid_link.xml" />
+    <exclude domain="sharedpref" path="rokid_bridge.xml" />
+    <exclude domain="sharedpref" path="voice_probe.xml" />
 </full-backup-content>
