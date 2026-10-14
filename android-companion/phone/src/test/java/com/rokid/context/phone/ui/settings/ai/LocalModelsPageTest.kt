@@ -61,6 +61,7 @@ private class FakeGateway(private val dir: File) : LocalModelGateway {
     override fun fileFor(model: LocalModel) = File(dir, fileName(model))
     override fun state(model: LocalModel): Flow<LocalModelState> = flow(model)
     override fun enqueue(model: LocalModel, allowMetered: Boolean) { events += "enqueue:${model.id}:metered=$allowMetered"; flow(model).value = LocalModelState.Downloading(0f) }
+    override fun setAllowMetered(model: LocalModel, allowMetered: Boolean) { events += "network:${model.id}:metered=$allowMetered" }
     override fun cancel(model: LocalModel) { events += "cancel:${model.id}"; flow(model).value = LocalModelState.Absent }
     override fun delete(model: LocalModel) { onDelete(); events += "delete:${model.id}"; fileFor(model).delete(); flow(model).value = LocalModelState.Absent }
 }
@@ -153,6 +154,23 @@ class LocalModelsPageTest {
         assertEquals(listOf("enqueue:${bge.id}:metered=true"), gateway.events)
         compose.onNodeWithTag("list_progress_cancel").performClick()
         compose.waitUntil(5_000) { "cancel:${bge.id}" in gateway.events }
+    }
+
+    /** Final review I3: flipping the switch reaches a download already queued or running, both ways; other rows are untouched. */
+    @Test fun mobileDataSwitchReachesARunningDownload() = runBlocking {
+        val s = source()
+        gateway.set(bge, LocalModelState.Downloading(0.4f))
+        s.load()
+        s.setAllowMetered(true)
+        s.setAllowMetered(false)
+        assertEquals(listOf("network:${bge.id}:metered=true", "network:${bge.id}:metered=false"), gateway.events)
+        assertEquals(false, mobile.on)
+
+        gateway.events.clear()
+        gateway.set(bge, LocalModelState.Ready)
+        s.load()
+        s.setAllowMetered(true)
+        assertTrue("a downloaded model has no download to change", gateway.events.isEmpty())
     }
 
     @Test fun useForEmbeddingsCreatesEndpointAndBindsEmbed() = runBlocking {

@@ -126,9 +126,11 @@ class LocalModelsSource(
         return if (primaryIsDelete) emptyList() else listOf(NamedAction("Delete", deleteAction(r)))
     }
 
+    /** Saved for later downloads, and applied to any download already queued or running (spec section 4). */
     fun setAllowMetered(allowed: Boolean) {
         headerState.value = headerState.value.copy(allowMetered = allowed)
         mobileData.set(allowed)
+        rows.values.filter { it.state is LocalModelState.Downloading }.forEach { gateway.setAllowMetered(it.model, allowed) }
     }
 
     private fun downloadAction(m: LocalModel, again: Boolean): ItemAction {

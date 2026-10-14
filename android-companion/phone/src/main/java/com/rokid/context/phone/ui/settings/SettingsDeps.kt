@@ -157,6 +157,7 @@ class StoreLocalModels(
     override fun fileFor(model: com.rokid.context.ai.local.LocalModel) = store.fileFor(model)
     override fun state(model: com.rokid.context.ai.local.LocalModel) = store.state(model)
     override fun enqueue(model: com.rokid.context.ai.local.LocalModel, allowMetered: Boolean) = store.enqueue(model, allowMetered)
+    override fun setAllowMetered(model: com.rokid.context.ai.local.LocalModel, allowMetered: Boolean) = store.setAllowMetered(model, allowMetered)
     override fun cancel(model: com.rokid.context.ai.local.LocalModel) = store.cancel(model)
     override fun delete(model: com.rokid.context.ai.local.LocalModel) {
         store.delete(model)

@@ -14,6 +14,8 @@ interface LocalModelGateway {
     fun fileFor(model: LocalModel): File
     fun state(model: LocalModel): Flow<LocalModelState>
     fun enqueue(model: LocalModel, allowMetered: Boolean)
+    /** Applies the mobile-data switch to a download already queued or running (no-op otherwise). */
+    fun setAllowMetered(model: LocalModel, allowMetered: Boolean)
     fun cancel(model: LocalModel)
     fun delete(model: LocalModel)
 
@@ -22,6 +24,7 @@ interface LocalModelGateway {
         override fun fileFor(model: LocalModel) = File(model.file)
         override fun state(model: LocalModel): Flow<LocalModelState> = MutableStateFlow(LocalModelState.Absent)
         override fun enqueue(model: LocalModel, allowMetered: Boolean) = Unit
+        override fun setAllowMetered(model: LocalModel, allowMetered: Boolean) = Unit
         override fun cancel(model: LocalModel) = Unit
         override fun delete(model: LocalModel) = Unit
     }
