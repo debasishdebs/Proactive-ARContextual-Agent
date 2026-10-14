@@ -26,12 +26,11 @@ import org.robolectric.annotation.Config
 class AnswerServiceTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     private lateinit var ai: AiGraph
+    private var reply = """{"answer":"Added milk.","sources":["rokid_mem_1"],"proposedAction":{"type":"SHOPPING_ADD","items":[{"name":"milk"}]}}"""
 
     @Before fun setUp() {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
-        ai = TestAi.graph(ctx) {
-            """{"answer":"Added milk.","sources":["rokid_mem_1"],"proposedAction":{"type":"SHOPPING_ADD","items":[{"name":"milk"}]}}"""
-        }
+        ai = TestAi.graph(ctx) { reply }
         TestAi.bindAll(ai)
     }
 
@@ -50,6 +49,22 @@ class AnswerServiceTest {
         mem.memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, 10, "Milk carton nearly empty"))
         service.answer("milk?", "phone_typed")
         assertEquals("a match triggers nothing", 1, reprocess)
+    }
+
+    /** "note that…" (user notes): an action command still reaches the model when there is no memory to answer from. */
+    @Test fun anActionCommandWithNoMemoriesStillReachesTheModel() = runBlocking {
+        val mem = MemoryGraph.get(ctx)
+        reply = """{"answer":"Noted.","sources":[],"proposedAction":{"type":"NOTE_ADD","text":"the car is on level 3"}}"""
+        var reprocess = 0
+        val actions = mutableListOf<ProposedAction>()
+        val service = AnswerService(mem, ai.runner, ai.retriever, { RetrievalSettings() }, onNoMatch = { reprocess++ },
+            proposals = ProposalIntake { _, _, a, _ -> actions += a; "p-note" })
+        val r = service.answer("Note that the car is on level 3", "glasses_voice") as AskOutcome.Answered
+        assertEquals(ProposedAction.NoteAdd("the car is on level 3"), r.proposedAction)
+        assertEquals("p-note", r.proposalId)
+        assertEquals(listOf<ProposedAction>(ProposedAction.NoteAdd("the car is on level 3")), actions)
+        assertEquals("Noted.", mem.asks.byId(r.askId)!!.answer)
+        assertEquals("an action command is not a no-match", 0, reprocess)
     }
 
     @Test fun proposedActionGoesToIntakeAfterCommit() = runBlocking {
