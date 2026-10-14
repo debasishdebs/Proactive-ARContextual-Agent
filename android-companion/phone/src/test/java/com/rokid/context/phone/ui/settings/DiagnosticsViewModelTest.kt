@@ -83,6 +83,17 @@ class DiagnosticsViewModelTest {
         assertEquals(1, pushed); assertEquals("Settings sent to the glasses", v.state.value.message)
     }
 
+    /** G19: Export settings writes the JSON and shares it through the same share path. */
+    @Test fun exportSettingsSharesTheJson() = runBlocking {
+        val shared = mutableListOf<java.io.File>()
+        val json = java.io.File.createTempFile("settings", ".json")
+        val v = DiagnosticsViewModel(actions, pipeline, share = { shared += it }, exportSettings = { json })
+        v.exportSettings()
+        assertEquals(DiagnosticsViewModel.SETTINGS_READY, withTimeout(5_000) { v.state.first { !it.busy && it.message != null } }.message)
+        assertEquals(listOf(json), shared)
+        v.cancelScope()
+    }
+
     /** Fix round 1 (m6): Push during an export keeps the busy guard; the export's own result still lands. */
     @Test fun pushDuringAnExportKeepsItBusy() = runBlocking {
         val gate = kotlinx.coroutines.CompletableDeferred<Unit>(); var pushed = 0

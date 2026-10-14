@@ -12,6 +12,8 @@ import com.rokid.context.phone.voice.VoiceGraph
  */
 object HubActivityHook : Application.ActivityLifecycleCallbacks by HubResumeHook(
     voiceForeground = { activity, resume -> VoiceGraph.get(activity).onForeground(resume) },
+    keepRunning = { activity -> KeepRunningNearby.of(activity).enabled() },
+    stopHub = { activity -> ContextHubService.stop(activity.applicationContext) },
 )
 
 /**
@@ -20,8 +22,17 @@ object HubActivityHook : Application.ActivityLifecycleCallbacks by HubResumeHook
  * the app is in front. It also takes the mic FGS type when the service runs (preflight F12: the only refresh call).
  * Each resume gets the next number, so the service retries a refused mic type at most once per resume (fix round 2).
  */
-class HubResumeHook(private val voiceForeground: (Activity, Long) -> Unit) : Application.ActivityLifecycleCallbacks {
+/**
+ * Nearby devices: with "Keep running when nearby" off ([keepRunning] false), the last of our activities leaving the
+ * front stops the hub ([stopHub]), even while the glasses are connected. On (the default) it keeps running.
+ */
+class HubResumeHook(
+    private val voiceForeground: (Activity, Long) -> Unit,
+    private val keepRunning: (Activity) -> Boolean = { true },
+    private val stopHub: (Activity) -> Unit = {},
+) : Application.ActivityLifecycleCallbacks {
     private var resumes = 0L
+    private var started = 0
 
     override fun onActivityResumed(activity: Activity) {
         val resume = ++resumes
@@ -30,9 +41,13 @@ class HubResumeHook(private val voiceForeground: (Activity, Long) -> Unit) : App
         voiceForeground(activity, resume)
     }
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
-    override fun onActivityStarted(activity: Activity) = Unit
+    override fun onActivityStarted(activity: Activity) { started++ }
     override fun onActivityPaused(activity: Activity) = Unit
-    override fun onActivityStopped(activity: Activity) = Unit
+    override fun onActivityStopped(activity: Activity) {
+        started = (started - 1).coerceAtLeast(0)
+        // A configuration change stops and restarts the activity: it is not the app leaving the front.
+        if (started == 0 && !activity.isChangingConfigurations && !keepRunning(activity)) stopHub(activity)
+    }
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
     override fun onActivityDestroyed(activity: Activity) = Unit
 }

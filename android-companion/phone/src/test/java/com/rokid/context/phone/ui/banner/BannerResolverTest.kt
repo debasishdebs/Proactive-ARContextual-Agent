@@ -29,6 +29,18 @@ class BannerResolverTest {
         )
     }
 
+    /** G7: Home says asks are paused while Battery Saver is on; it ranks right after AI unavailable. */
+    @Test fun batterySaverBannerSaysAsksArePaused() {
+        val b = BannerResolver.resolve(BannerInputs(batterySaver = true))!!
+        assertEquals(BannerKind.BATTERY_SAVER, b.kind)
+        assertEquals("Battery Saver is on \u2014 asks are paused", b.title)
+        assertEquals(BannerTone.AMBER, b.tone)
+        assertEquals(
+            listOf(BannerKind.AI_BLOCKED, BannerKind.BATTERY_SAVER, BannerKind.GLASSES_DISCONNECTED),
+            BannerResolver.candidates(BannerInputs(aiBlockedText = "x", batterySaver = true, link = LinkState.OFFLINE)).map { it.kind },
+        )
+    }
+
     @Test fun disconnectedVariantsOfferReconnect() {
         val offline = BannerResolver.resolve(BannerInputs(link = LinkState.OFFLINE))!!
         assertEquals("Glasses disconnected", offline.title); assertEquals("Reconnect", offline.actionLabel); assertEquals(BannerAction.RECONNECT, offline.action)

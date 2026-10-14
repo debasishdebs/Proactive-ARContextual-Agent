@@ -34,4 +34,10 @@ class StatusUiIndexTest {
         assertEquals("Rebuild", b?.actionLabel)
         assertEquals(BannerAction.REBUILD_INDEX, b?.action)
     }
+
+    @Test fun batterySaverReachesHomesBanner() = runBlocking {
+        val glasses = FakeGlassesStatusSource(FakeGlassesStatusSource.connected(Fixtures.stateFrame()))
+        val s = StatusUi.flow(glasses, FakePipelineControl(), flowOf(Fixtures.NOW), flowOf(10), batterySaver = flowOf(true)).first()
+        assertEquals(BannerKind.BATTERY_SAVER, s.banner?.kind)
+    }
 }

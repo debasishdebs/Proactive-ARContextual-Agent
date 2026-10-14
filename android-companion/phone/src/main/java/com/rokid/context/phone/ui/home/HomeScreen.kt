@@ -83,6 +83,8 @@ fun HomeScreen(
     onLeave: () -> Unit = {},
     /** A nudge card opens its detail (`nudge/{id}`); a redacted one is not tappable. */
     onOpenNudge: (String) -> Unit = {},
+    /** G3: closes the limited-mode banner ("Review" opens the app's system settings, where its permissions are). */
+    onDismissLimited: () -> Unit = {},
 ) {
     val leave by rememberUpdatedState(onLeave)
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -114,6 +116,13 @@ fun HomeScreen(
             )
         }
         item { BannerHost(state.status.banner, onBannerAction) }
+        if (state.limited) item {
+            com.rokid.context.core.ui.components.Banner(
+                tone = com.rokid.context.core.ui.components.BannerTone.SLATE, title = LimitedMode.TITLE,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp).testTag("limited_banner"),
+                actionLabel = "Review", onAction = onOpenAppSettings, onDismiss = onDismissLimited,
+            )
+        }
         item { AskHero(state, onQuestionChange, onAsk, onOpenAsk, onMic, onRequestMic, onOpenAppSettings) }
         item { SectionLabel("For you") }
         if (state.feed.isEmpty()) {

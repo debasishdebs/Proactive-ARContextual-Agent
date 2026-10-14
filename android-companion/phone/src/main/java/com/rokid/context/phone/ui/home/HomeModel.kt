@@ -74,6 +74,8 @@ data class HomeUiState(
     val voice: HomeVoiceUi = HomeVoiceUi(),
     /** Frames captured on today's local day (the frames table), so the wearer can see captures happening. */
     val photosToday: Int = 0,
+    /** G3: optional permissions were skipped and the user has not dismissed the limited-mode banner. */
+    val limited: Boolean = false,
 )
 
 /**

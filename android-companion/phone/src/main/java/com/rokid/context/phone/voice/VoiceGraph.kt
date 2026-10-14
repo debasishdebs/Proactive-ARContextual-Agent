@@ -22,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.withContext
 
 /**
@@ -48,7 +49,10 @@ class VoiceGraph private constructor(private val app: Context) {
         onFallbackSuspected = { capabilities.onFallbackSuspected() },
         log = { Log.i(TAG, it) },
     )
-    val hubVoice: HubVoice = PipelineHubVoice(pipeline, capabilities.capabilities, scope)
+    /** G7: Battery Saver, for the glasses tap's blocked reason (the ask path refuses the ask itself). */
+    private val batterySaver = com.rokid.context.orchestration.BatterySaver.observe(app)
+        .stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, com.rokid.context.orchestration.BatterySaver.isOn(app))
+    val hubVoice: HubVoice = PipelineHubVoice(pipeline, capabilities.capabilities, scope, batterySaver)
     val phoneVoice: PhoneVoice = PipelinePhoneVoice(pipeline, settings.loadedSettings(scope), scope)
     val controls: VoiceControls = StoreVoiceControls(
         settings, capabilities, scope, onForeground = { onForeground() },

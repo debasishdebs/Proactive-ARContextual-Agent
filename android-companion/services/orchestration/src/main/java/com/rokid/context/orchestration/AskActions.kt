@@ -45,10 +45,13 @@ object AskSources {
  */
 object AskActions {
     const val EMPTY_QUESTION = "Type a question first"
-    const val NO_MEMORIES = "Nothing saved yet — ask again once a few moments are captured"
+    /** G10 (MVP section 9.5): no match says so, with when it will look again (the ask queued a priority reprocess). */
+    const val NO_MEMORIES = "I don't have anything on that yet \u2014 I'll look again in your next photos"
     const val AI_UNAVAILABLE = "AI unavailable — check Settings › Model endpoints"
     const val FAILED = "Couldn't answer that — try again"
     const val REVIEW_REASON = "User marked an answer unhelpful"
+    /** G7 ruling (2026-10-15): Battery Saver pauses user asks too. Home shows it, and so does the HUD toast. */
+    const val BATTERY_SAVER = "Battery Saver is on \u2014 asks are paused"
 
     /** Built on IO: the first ask reads SharedPreferences (RetrievalSettingsStore) and the key store, never on Main. */
     suspend fun ask(context: Context, question: String, nowMs: Long = System.currentTimeMillis()): AskOutcome =
@@ -60,8 +63,11 @@ object AskActions {
      * Cancelled before the reply is stored, it saves nothing: the ask row is written in one transaction after the model
      * answered, so only a cancel that lands after that commit leaves one (a complete, answered ask in the feed).
      */
-    suspend fun askFrom(context: Context, question: String, source: String, nowMs: Long = System.currentTimeMillis()): AskOutcome =
-        withContext(Dispatchers.IO) { AnswerService.forApp(context).answer(question, source, nowMs) }
+    suspend fun askFrom(context: Context, question: String, source: String, nowMs: Long = System.currentTimeMillis()): AskOutcome {
+        // G7: every direct ask (typed, phone mic, glasses tap) passes here; with Battery Saver on, nothing reaches the model.
+        if (BatterySaver.isOn(context)) return AskOutcome.Failed(BATTERY_SAVER)
+        return withContext(Dispatchers.IO) { AnswerService.forApp(context).answer(question, source, nowMs) }
+    }
 
     /**
      * 👍 = 1, 👎 = −1 (spec §2.4 Ask detail). Repeating the same rating is a no-op. Redacted or unknown asks → false.
