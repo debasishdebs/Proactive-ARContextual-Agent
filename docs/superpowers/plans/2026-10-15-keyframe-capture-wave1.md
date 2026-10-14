@@ -78,9 +78,9 @@
 2. **Upgrading an install with v1 data:** inbox frames and queued 24 h jobs that exist before v2. They are backfilled into `frame_state` as PENDING on first start after the migration, without duplicating already-extracted frames. Owned by P1: `preV2InboxFramesAreAdoptedOnce`.
 3. **Switching Smart → Fixed (or entering rest) while a session holds the camera:** there's exactly one camera owner at any instant, and no "camera in use" error. Owned by G3: `modeSwitchReleasesSessionBeforeFixedCapture`.
 4. **Forgetting one memory from a 3-photo batch whose frames are shared with another memory:** that memory's `frame_source` rows go and its frames are tombstoned at once (no re-extraction); the photo stays while another memory cites it. Owned by P3: `forgetSharedFrameKeepsOtherMemory`.
-6. **Shared-photo cleanup after restart:** the orphan sweep and tombstone prune never delete a photo still cited only through `frame_source`. Owned by C1: `sweepAfterRestartKeepsSharedPhoto`.
-7. **Keyframe metadata actually reaches the phone** (not UNKNOWN/defaults). Owned by G3 `uplinkSendsAllKeyframeFields` plus T0 `codecSplitJoinPreservesKeyframeMeta`.
-5. **Clock skew between the glasses and the phone** (seconds to minutes): latency stats and caption aging use phone-receive time plus the existing clock offset, never raw glasses time. Owned by P5: `latencyUsesOffsetCorrectedCaptureTime`.
+5. **Shared-photo cleanup after restart:** the orphan sweep and tombstone prune never delete a photo still cited only through `frame_source`. Owned by C1: `sweepAfterRestartKeepsSharedPhoto`.
+6. **Keyframe metadata actually reaches the phone** (not UNKNOWN/defaults). Owned by G3 `uplinkSendsAllKeyframeFields` plus T0 `codecSplitJoinPreservesKeyframeMeta`.
+7. **Clock skew between the glasses and the phone** (seconds to minutes): latency stats and caption aging use phone-receive time plus the existing clock offset, never raw glasses time. Owned by P5: `latencyUsesOffsetCorrectedCaptureTime`.
 
 ---
 
