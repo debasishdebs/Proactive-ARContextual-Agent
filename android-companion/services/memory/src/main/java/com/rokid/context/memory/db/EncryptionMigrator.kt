@@ -28,6 +28,12 @@ class EncryptionMigrator(
 
     fun interface DbConverter { fun convert(src: File, dst: File, toEncrypted: Boolean, key: ByteArray) }
 
+    /** Fixed, key-free codes for where an encryption change failed; the only failure detail ever logged with the class. */
+    enum class FailReason { KEY_READ, LOAD_LIBRARY, OPEN, ATTACH, READ_VERSION, EXPORT, WRITE_VERSION, REBUILD_INDEX, DETACH, CONVERT, SWAP }
+
+    /** A failed conversion step. Carries no message: the cause's text may hold a path or SQL, so it is never logged. */
+    class ConversionException(val reason: FailReason, cause: Throwable) : Exception(null as String?, cause)
+
     private val tmp = File(dbFile.path + ".migrating")
     private val old = File(dbFile.path + ".old")
 
@@ -43,10 +49,13 @@ class EncryptionMigrator(
         val target = store.target ?: return current
         if (target == current) { store.target = null; return current }
         var inPlace = false
+        var phase = FailReason.KEY_READ
         return try {
             discardTmp()
             val k = key()
+            phase = FailReason.CONVERT
             try { converter.convert(dbFile, tmp, target, k) } finally { k.fill(0) } // P8 D4: our copy, zeroed once used
+            phase = FailReason.SWAP
             store.stage = target
             swap(target) { inPlace = true }
             store.failed = false
@@ -59,7 +68,10 @@ class EncryptionMigrator(
                 runCatching { recover() }
                 return target
             }
-            Log.w(TAG, "encryption change failed (${e.javaClass.simpleName}); keeping the current database")
+            // BUG-R2-2: class + fixed reason code only; a message may carry a path or SQL, so it is never logged.
+            val reason = (e as? ConversionException)?.reason ?: phase
+            val cls = ((e as? ConversionException)?.cause ?: e).javaClass.simpleName
+            Log.w(TAG, "encryption change failed ($cls, reason=$reason); keeping the current database")
             if (!dbFile.exists() && old.exists()) rename(old, dbFile) // a failed swap rename: put the old database back
             discardTmp()
             store.stage = null; store.target = null; store.failed = true
