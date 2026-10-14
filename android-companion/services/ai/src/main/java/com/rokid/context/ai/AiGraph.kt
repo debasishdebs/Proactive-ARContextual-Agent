@@ -50,9 +50,11 @@ class AiGraph(
 
     companion object {
         @Volatile private var instance: AiGraph? = null
+        /** The call budget the app installs at startup (P2), before the first [get]; pass-through until then. */
+        @Volatile var gate: com.rokid.context.model.CallGate = com.rokid.context.model.PassThroughGate
         fun get(context: Context): AiGraph = instance ?: synchronized(this) {
             val app = context.applicationContext
-            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) })
+            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) }, gate = gate)
                 .also { instance = it }
         }
         fun resetForTests(graph: AiGraph?) { synchronized(this) { instance = graph } }
