@@ -14,7 +14,14 @@ class CaptureScheduler(private val context: Context) {
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val alarms: AlarmManager? get() = context.getSystemService(AlarmManager::class.java)
 
-    fun scheduleNext(delayMs: Long) = armAt(System.currentTimeMillis() + delayMs.coerceAtLeast(1_000L))
+    fun scheduleNext(delayMs: Long) {
+        val now = System.currentTimeMillis()
+        prefs.edit().putLong(KEY_ARMED_AT, now).apply()
+        armAt(now + delayMs.coerceAtLeast(1_000L))
+    }
+
+    /** When the pending capture was armed (glasses clock); the minimised icon's ring runs from here to [nextTriggerAtMs]. */
+    fun armedAtMs(): Long? = prefs.getLong(KEY_ARMED_AT, -1L).takeIf { it > 0 }
 
     private fun armAt(at: Long) {
         val am = alarms ?: return
@@ -86,6 +93,7 @@ class CaptureScheduler(private val context: Context) {
     companion object {
         private const val PREFS = "capture_scheduler"
         private const val KEY_NEXT = "next_trigger_at_ms"
+        private const val KEY_ARMED_AT = "armed_at_ms"
         private const val REQUEST_CODE = 30_101
         private const val LEGACY_REQUEST_CODE = 30_071
         private const val LEGACY_SERVICE = "com.rokid.context.glasses.PulseKeepAliveService"

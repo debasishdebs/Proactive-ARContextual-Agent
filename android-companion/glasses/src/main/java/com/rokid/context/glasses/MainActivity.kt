@@ -7,6 +7,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
+import android.widget.Toast
 import android.util.Log
 import android.view.KeyEvent
 import android.view.WindowManager
@@ -114,6 +116,8 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         controller.onActivityStart()
         runtime.hudPresence.onStarted()
+        minimised = false
+        runtime.minimisedIcon.hide() // the full HUD is back
         // In front now: start the keep-alive camera service so captures keep working after the wearer leaves the HUD.
         if (granted(Manifest.permission.CAMERA)) CaptureService.startKeepAlive(this)
     }
@@ -257,7 +261,16 @@ class MainActivity : ComponentActivity() {
         cancelGate()
         tasksMovedBack++
         moveTaskToBack(true)
+        minimised = true
+        runtime.hudPresence.onMinimised()
+        if (!Settings.canDrawOverlays(this)) { Toast.makeText(this, NO_OVERLAY_TOAST, Toast.LENGTH_SHORT).show(); return }
+        // The icon means "capture is running": only while the keep-alive service holds the camera.
+        if (CaptureService.liveInstance != null) runtime.minimisedIcon.show(controller.settings.value.iconCorner)
     }
+
+    /** Our task is in the back after [minimise], until the activity starts again. */
+    @VisibleForTesting internal var minimised = false
+        private set
 
     /** Tests: how many times our task was sent to the back. */
     @VisibleForTesting internal var tasksMovedBack = 0
@@ -368,7 +381,7 @@ class MainActivity : ComponentActivity() {
         swipeTimer.removeCallbacks(gateTick)
         cancelAsk()
         controller.onActivityExit()
-        if (isFinishing) { runtime.hudPresence.onExited(); CaptureService.stopKeepAlive(this) }
+        if (isFinishing) { runtime.hudPresence.onExited(); CaptureService.stopKeepAlive(this); runtime.minimisedIcon.hide() }
         runtime.detach(controller)
         super.onDestroy()
     }
@@ -377,6 +390,8 @@ class MainActivity : ComponentActivity() {
         const val TAG = "PcGlasses"
         private const val GATE_TICK_MS = 250L
         const val MIC_PERMISSION = "Allow the microphone on the glasses"
+        /** Minimised without SYSTEM_ALERT_WINDOW: plain moveTaskToBack, no icon (spec 2026-10-14 §3). */
+        const val NO_OVERLAY_TOAST = "Allow 'display over other apps' for the icon"
         /** Phase 8 C3: shown once when reopening finds the capture alarm lost to a force-stop. */
         const val CAPTURE_RESUMED_AFTER_STOP = "Capture resumed \u2014 it stops while the app is closed"
         /** adb and foreground-fallback entry: capture one frame now. */
