@@ -43,7 +43,11 @@ object HubGraph {
             archiveDir = RokidFrameInbox.archiveDir(app),
             // A receipt already committed to Room is acked at once (spec P2 receipt durability).
             committed = { wireId -> MemoryGraph.get(app).db.frameMetaDao().byWireId(wireId) != null },
-        ) { enqueueInboxIngest(app) }
+        ) {
+            enqueueInboxIngest(app)
+            // The pipeline is woken too (spec P2.1): anything already committed and pending is claimed at once.
+            com.rokid.context.work.frames.KeyframeGraph.get(app).signal()
+        }
         return Hub(
             scope, CxrGlassesLink(app, scope, probe = com.rokid.context.BuildConfig.DEBUG), pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,

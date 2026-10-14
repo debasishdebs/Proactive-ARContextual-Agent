@@ -71,6 +71,21 @@ abstract class FrameStateDao {
     /** PENDING, FAILED (attempts < 5 by construction: the fifth is FAILED_FINAL) and abandoned EXTRACTING rows, oldest first. */
     open suspend fun recoverable(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameStateEntity> = recoverableRows(abandonBeforeMs, limit)
 
+    /** An abandoned claim goes back to PENDING and counts as an attempt (spec §P2.5); the fifth ends in FAILED_FINAL. */
+    @Query(
+        "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'PENDING' END, " +
+            "lastError = 'abandoned', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs",
+    )
+    abstract suspend fun requeueAbandoned(nowMs: Long, abandonBeforeMs: Long, maxAttempts: Int = MAX_ATTEMPTS): Int
+
+    /** Gives a claim back without an attempt (offline, no provider set up, cancelled): the frame is not at fault. */
+    @Query(
+        "UPDATE frame_state SET state = 'PENDING', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE frameId = :frameId AND state = 'EXTRACTING' AND claimId = :claimId",
+    )
+    abstract suspend fun release(frameId: String, claimId: String, nowMs: Long): Int
+
     @Query("SELECT state AS k, COUNT(*) AS v FROM frame_state GROUP BY state")
     abstract fun counts(): Flow<Map<@MapColumn("k") String, @MapColumn("v") Int>>
 
@@ -86,6 +101,8 @@ abstract class FrameStateDao {
 interface FrameMetaDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(row: FrameMetaEntity)
     @Query("SELECT * FROM frame_meta WHERE frameId = :frameId") suspend fun get(frameId: String): FrameMetaEntity?
+    @Query("SELECT * FROM frame_meta WHERE frameId IN (:frameIds)") suspend fun byIds(frameIds: List<String>): List<FrameMetaEntity>
+    @Query("SELECT COUNT(*) FROM frame_meta WHERE createdAt >= :sinceMs") suspend fun countSince(sinceMs: Long): Int
     @Query("SELECT * FROM frame_meta WHERE wireFrameId = :wireFrameId") suspend fun byWireId(wireFrameId: String): FrameMetaEntity?
     @Query("DELETE FROM frame_meta WHERE frameId IN (:frameIds)") suspend fun deleteFor(frameIds: List<String>): Int
 }
