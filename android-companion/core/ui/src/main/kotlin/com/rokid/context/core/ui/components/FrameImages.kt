@@ -31,9 +31,19 @@ import com.rokid.context.core.ui.theme.PcColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.InputStream
+
+/** Opens a frame file's image bytes; null when there is nothing to show. The app installs one that opens sealed frames. */
+fun interface FrameOpener { fun open(path: String): InputStream? }
 
 /** Downsampled JPEG decoding for frame thumbnails; never throws, never runs on the main thread (callers use IO). */
 object FrameDecode {
+    /** Plain files only: the default until the app installs its reader (Gaps G1: `FrameImages.open`, plain or sealed). */
+    val PlainFiles = FrameOpener { p -> File(p).takeIf { it.isFile && it.length() > 0L }?.inputStream() }
+
+    /** Every Activity/Ask/Nudge thumbnail, Memory detail and Frames viewer image is read through this. */
+    @Volatile var opener: FrameOpener = PlainFiles
+
     /** Largest power-of-two sample size that keeps both sides ≥ [targetPx]. */
     fun sampleSize(width: Int, height: Int, targetPx: Int): Int {
         if (width <= 0 || height <= 0 || targetPx <= 0) return 1
@@ -42,15 +52,14 @@ object FrameDecode {
         return s
     }
 
-    /** Null when the path is blank, the file is missing/empty, or it is not a decodable image. */
+    /** Null when the path is blank, the file is missing/empty/unopenable, or it is not a decodable image. */
     fun decode(path: String?, targetPx: Int): Bitmap? {
         if (path.isNullOrBlank()) return null
-        val file = File(path)
-        if (!file.isFile || file.length() == 0L) return null
         return runCatching {
+            val bytes = opener.open(path)?.use { it.readBytes() }?.takeIf { it.isNotEmpty() } ?: return null
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
-            BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, targetPx) })
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, targetPx) })
         }.getOrNull()
     }
 }
