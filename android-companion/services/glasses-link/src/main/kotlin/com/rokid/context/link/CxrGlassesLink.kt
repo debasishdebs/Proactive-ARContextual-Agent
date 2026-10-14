@@ -33,7 +33,12 @@ import kotlinx.coroutines.launch
  * Lifecycle decisions come from [GlassesSessionPolicy]; this class only performs actions. Everything below is touched
  * only on [scope] (Main): CXR callbacks are posted there first, and callers use [send] from that scope.
  */
-class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : GlassesLink {
+class CxrGlassesLink(
+    context: Context,
+    private val scope: CoroutineScope,
+    /** Debug builds: PcLinkProbe lines for the minimised-link check (counts and codes only, never payloads). */
+    private val probe: Boolean = false,
+) : GlassesLink {
     private val app = context.applicationContext
     private val manager = CxrSessionManager.getInstance(app)
     private val policy = GlassesSessionPolicy()
@@ -47,7 +52,9 @@ class CxrGlassesLink(context: Context, private val scope: CoroutineScope) : Glas
     private var retryJob: Job? = null
     private var connectJob: Job? = null
     /** Session-less CXRLink kept bound only while "closed on glasses", to notice the wearer reopening our app there. */
-    private val watcher = GlassAppWatcher(app, GLASSES_PKG) { post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) } }
+    private val watcher = GlassAppWatcher(app, GLASSES_PKG, probe, linkState = { _state.value.name }) {
+        post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) }
+    }
 
     private val _state = MutableStateFlow(if (token() == null) LinkState.NOT_AUTHORIZED else LinkState.OFFLINE)
     override val state: StateFlow<LinkState> = _state
