@@ -178,7 +178,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   - In Smart mode the interval setting is hidden. The dead "extra photo on scene change" (`burstOnChange`) switch is **removed** from the UI; the field stays in the protocol, ignored.
 - **The sampling session (Smart mode):**
   - Start: the HUD is visible (the Android 12 rule that a camera foreground service must start from the foreground), the glasses are worn, capture isn't paused, and battery and heat allow it.
-  - **The camera follows head motion (revision 5, user decision 2026-10-15):** the camera is opened only while it can matter (§"Motion-driven camera" below). It is **not** bound for the whole session. The analysis stream uses STRATEGY_KEEP_ONLY_LATEST at a target of 640×480, through CameraX or Camera2, whichever starts faster in the Quick-look probe.
+  - **The camera follows head motion (revision 5, user decision 2026-10-15):** the camera is opened only while it can matter (§"Motion-driven camera" below). It is **not** bound for the whole session. The analysis stream uses STRATEGY_KEEP_ONLY_LATEST at a target of 640×480, through **CameraX** (the faster in the Quick-look probe: about 300 ms cold p50).
     - Each sample is downscaled to a **160 px grey thumbnail used only inside the glasses**, for the hashes, blur and motion checks. It's never stored or sent.
     - Only a keyframe is encoded: **640 px wide JPEG at q75**.
   - The session lives in the existing keep-alive `CaptureService`. The AlarmManager chain stays only for Fixed mode and as a watchdog that restarts sampling after a process death.
@@ -208,15 +208,15 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 
     | Quick look | H (hold) | While moving |
     |---|---|---|
-    | 1 s | 4 s | camera open |
-    | **1.5 s (provisional default)** | 2 s | camera open |
+    | **1 s (default, from the probe)** | 4 s | camera open |
+    | 1.5 s | 2 s | camera open |
     | 2 s | 1 s | camera open |
     | 3 s | 0 | bursts: one brief check every 2 s |
 
     The default and the H values are confirmed or adjusted by the Quick-look probe (§Probe results 2).
   - Battery Saver or battery ≤ 20 %: brief checks every 10 s and H halved.
 - **The promise (user decision; configurable through Quick look):**
-  - **under normal operation**, meaning a sampling session active (worn, not paused, not in a rest period, no heat stop) and at least one usable frame (above the blur floor, not dark): **anything you look at for ≥ the Quick look time (default 1.5 s) right after moving** gets a keyframe;
+  - **under normal operation**, meaning a sampling session active (worn, not paused, not in a rest period, no heat stop) and at least one usable frame (above the blur floor, not dark): **anything you look at for ≥ the Quick look time (default 1 s) right after moving** gets a keyframe;
   - a change in front of a **settled** head is caught within ≤ 5 s (≤ 15 s after 10 quiet minutes);
   - shorter glances are best effort.
 - **Camera LED (final, 2026-10-15):** the privacy LED is lit whenever the camera is open. The app **never switches it off, suppresses it or works around it**: it's the only notice bystanders get, and frames are clear enough (640 px) to read faces and text. The user asked to explore disabling it; Claude declined.
@@ -539,3 +539,29 @@ Spec consequences (binding on the plan):
 2. The 160 px thumbnail should come from Y-plane subsampling, not via the JPEG encoder, to keep each sample under about 30 ms. Only keyframes are JPEG-encoded.
 3. **Still to measure:** battery drain per hour unplugged, and heat while worn. This is a device check in the P1 run, for example by wireless adb, or by reading the level before and after a 30 min unplugged session.
 4. Only one capture path may own the camera: Smart mode replaces the per-capture bind, and Fixed mode/rest captures must not run while a sampling session is bound. The probe needed a "probe owns the camera" guard.
+
+## Probe results 2: Quick look (2026-10-15, throwaway `probe/camera-heat` @ `bac8467`, not merged)
+Setup: glasses on a desk on USB, not worn; a synthetic motion timeline (2 min desk with one 1.5 s movement every 20 s, plus 1 min walking) driving the motion-driven camera policy.
+
+**Start-up, 8 trials, 640×480:**
+
+| API | Cold p50 / p95 | Warm p50 / p95 |
+|---|---|---|
+| CameraX | 315 / 535 ms | 292 / 322 ms |
+| Camera2 | 352 / 364 ms | 346 / 366 ms |
+
+No failures; immediate reopen works. **CameraX chosen.**
+
+**Duty cycle per setting** (camera open % = LED-lit proxy; catch rate = test looks caught out of 60):
+
+| Quick look | Hold | Camera open | Catch, 1.0 / 1.5 / 2.0 s looks |
+|---|---|---|---|
+| 1 s | 4 s | 51 % | 80 / 80 / 80 % |
+| 1.5 s | 2 s | 46 % | 42 / 42 / 42 % |
+| 2 s | 1 s | 42 % | 22 / 22 / 32 % |
+| 3 s | bursts | 9 % | 20 / 30 / 40 % |
+
+- **Decision: default Quick look = 1 s.** A shorter hold saves little LED time, because walking keeps the camera open anyway, but loses most glances.
+- **Plan follow-up (G3):** the misses come mainly from the 5 s settled check landing outside the look. G3 must tune the hold and the early start on deceleration so the 1 s setting reaches ≥ 95 % in `GlimpseOffsetTest`. Add one immediate brief check at motion end + H when H < the look time.
+- **Power:** not separable on USB (power-model camera mAh is proportional to open time, about 0.003 mAh per 3 min; `current_now` too coarse). Unplugged drain, plus phone heat, is measured in the worn device session.
+- **Temperature:** no change over the short runs.
