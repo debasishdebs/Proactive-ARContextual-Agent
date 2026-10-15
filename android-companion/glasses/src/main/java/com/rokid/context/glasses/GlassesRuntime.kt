@@ -73,6 +73,10 @@ class GlassesRuntime private constructor(private val app: Context) {
     )
     /** One camera owner for the process: the sampling session and every Fixed capture take turns through it. */
     val cameraOwner = CameraOwner()
+    /** One work/rest clock for the process (spec P1.5): leaving and re-entering the HUD or toggling the mode must not restart it. */
+    val workRest = com.rokid.context.glasses.capture.session.WorkRest(
+        android.os.SystemClock::elapsedRealtime, { settingsCache.capture().workMinutes }, { settingsCache.capture().restMinutes },
+    )
     /** The capture service's latest status for the HUD marks (Cooling, capture degraded); idle until the service publishes. */
     val captureStatus = MutableStateFlow(SessionStatus(running = false, motion = MotionState.STILL, keyframesLast10Min = 0, restingUntilMs = null, reason = null))
     /** Smart mode is sampling (or about to): the next-capture countdown and the icon ring have nothing to count down to. */

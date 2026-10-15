@@ -42,6 +42,9 @@ object Scenes {
     fun sceneOf(jpeg: ByteArray): Int = ByteBuffer.wrap(jpeg).int
     fun capturedAtOf(jpeg: ByteArray): Long = ByteBuffer.wrap(jpeg).getLong(4)
 
+    /** A frame below the dark floor (mean luma 8). */
+    fun dark(atMs: Long) = FrameCopy(Thumb(160, 120, ByteArray(160 * 120) { 3 }), Nv21Frame(640, 480, 0, tag(0, atMs)))
+
     fun frame(scene: Int, soft: Int, atMs: Long) = FrameCopy(thumb(scene, soft), Nv21Frame(640, 480, 0, tag(scene, atMs)))
 }
 
@@ -65,6 +68,17 @@ class FakeCamera(
     private val frameIntervalMs: Long = 40L,
     var frames: (Long) -> FrameCopy?,
 ) : SamplingCamera {
+    /** open() takes this long before returning (a slow bind on the main thread), then the first frame comes [startupMs] later. */
+    var bindDelayMs = 0L
+    /** The first this-many frames after each open are too dark to use (auto-exposure still ramping). */
+    var darkFrames = 0
+    /** open() fails because another app holds the camera. */
+    var busyOpens = false
+    override val busy: Boolean get() = busyOpens
+    /** open() never returns (a hung provider future). */
+    var hangOpens = false
+    /** Frames stop after this many have been delivered per open (null = never). */
+    var stallAfterFrames: Int? = null
     var isOpen = false; private set
     var opens = 0; private set
     var closes = 0; private set
@@ -75,14 +89,22 @@ class FakeCamera(
     override suspend fun open(onFrame: (FrameSource) -> Unit): Boolean {
         opens++
         events += "open@${now()}"
+        if (hangOpens) delay(1_000_000L)
+        if (bindDelayMs > 0) delay(bindDelayMs)
+        if (busyOpens) return false
         if (failOpens > 0) { failOpens--; return false }
         isOpen = true
         val startup = startupMs()
         gen = scope.launch {
             delay(startup)
+            var n = 0
             while (isActive) {
                 val t = now()
-                onFrame(object : FrameSource { override fun copy(): FrameCopy? = frames(t) })
+                val dark = n < darkFrames
+                if (stallAfterFrames?.let { n >= it } != true) {
+                    onFrame(object : FrameSource { override fun copy(): FrameCopy? = if (dark) Scenes.dark(t) else frames(t) })
+                }
+                n++
                 delay(frameIntervalMs)
             }
         }
@@ -109,6 +131,7 @@ class Rig(
     var soft: Int = 1,
     val encoder: KeyframeEncoder = TagEncoder(),
     var work: Int = 90, var rest: Int = 15,
+    val workRest: WorkRest? = null,
 ) {
     val sched = test.testScheduler
     val clock: () -> Long = { sched.currentTime }
@@ -118,11 +141,10 @@ class Rig(
     val gate = KeyframeGate(store, clock)
     var heatReading = HeatReading(0, Float.NaN, 30f)
     val heat = HeatGuard({ heatReading }, clock)
-    val workRest = WorkRest(clock, { work }, { rest })
+    val sessionWorkRest = workRest ?: WorkRest(clock, { work }, { rest })
     val owner = CameraOwner()
     val camera = FakeCamera(test.backgroundScope, clock, startupMs) { t -> Scenes.frame(scene, soft, t) }
     val keyframes = ArrayList<Pair<Long, KeyframeOut>>()
-    var hud = true
     var paused = false
     var fallbacks = 0
     var onFallbackAction: suspend () -> Unit = {}
@@ -133,8 +155,8 @@ class Rig(
 
     val session = SamplingSession(
         scope = test.backgroundScope, camera = camera, owner = owner, motion = motion, wear = wear, gate = gate, heat = heat,
-        workRest = workRest, encoder = encoder, sink = { k, _ -> keyframes += clock() to k }, clock = clock, settings = { settings },
-        hudVisible = { hud }, capturePaused = { paused }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it },
+        workRest = sessionWorkRest, encoder = encoder, sink = { k, _ -> keyframes += clock() to k }, clock = clock, settings = { settings },
+        capturePaused = { paused }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it },
         fixedCapture = { owner.acquire("fixed") { fixedCaptures += clock(); fixedDuring() } },
     )
 

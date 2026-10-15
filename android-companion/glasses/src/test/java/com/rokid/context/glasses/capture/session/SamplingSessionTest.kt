@@ -19,12 +19,11 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class SamplingSessionTest {
-    private fun rig(t: TestScope, settings: HudSettings = HudSettings(captureMode = CaptureMode.SMART), configure: Rig.() -> Unit = {}) =
-        Rig(t, settings).apply(configure)
+    private fun rig(t: TestScope, settings: HudSettings = HudSettings(captureMode = CaptureMode.SMART), workRest: WorkRest? = null, configure: Rig.() -> Unit = {}) =
+        Rig(t, settings, workRest = workRest).apply(configure)
 
     @Test fun startsOnlyWhenAllConditionsHold() = runTest {
         val blockers: List<Pair<String, Rig.() -> Unit>> = listOf(
-            "hud" to { hud = false },
             "paused" to { paused = true },
             "mode" to { settings = settings.copy(captureMode = CaptureMode.FIXED) },
             "heat" to { heatReading = HeatReading(4, Float.NaN, 30f); heat.poll() },
@@ -32,8 +31,9 @@ class SamplingSessionTest {
         )
         for ((why, block) in blockers) {
             val r = rig(this) { block() }
+            delay(6_000) // far for more than the 5 s not-worn timeout BEFORE the session starts (one clock, no tMs)
             r.session.start()
-            delay(7_000) // past the 5 s not-worn timeout
+            delay(1_000)
             assertEquals(0, r.camera.opens, "$why: the camera must stay closed")
             assertFalse(r.session.status.value.running, why)
             assertEquals(why, r.session.status.value.reason)
@@ -46,21 +46,6 @@ class SamplingSessionTest {
         assertEquals(1, ok.keyframes.size) // the start-up brief check saved the first scene
         assertNull(ok.session.status.value.reason)
         ok.session.stop("test")
-    }
-
-    @Test fun theHudIsOnlyNeededToStart() = runTest {
-        val r = rig(this)
-        r.hud = false
-        r.session.start()
-        delay(1_000)
-        assertEquals(0, r.camera.opens)
-        r.hud = true
-        delay(1_000)
-        r.hud = false // minimised: sampling continues
-        delay(8_000)
-        assertTrue(r.session.status.value.running)
-        assertTrue(r.camera.opens >= 2)
-        r.session.stop("test")
     }
 
     @Test fun onsetTriggersImmediateCheck() = runTest {
@@ -265,19 +250,114 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
-    @Test fun briefChecksFollowThe5sBeatAndGiveUpAfter1500ms() = runTest {
+    @Test fun briefChecksFollowThe5sBeatAndEndAfterTheSettle() = runTest {
         val r = rig(this)
         r.session.start()
         delay(30_000)
         // first check at start, then one about every 5 s (each opens 535 ms early, closing on its first frame)
         assertTrue(r.camera.opens in 6..7, "opens=${r.camera.opens}")
-        // a scene that never gets sharp: the check gives up after 1.5 s and closes
+        // a scene that never gets sharp: the check ends once the exposure has settled (about 0.2 s after the first frame)
         val b = rig(this) { soft = 100 }
         b.session.start()
-        delay(2_800)
+        delay(1_200)
         assertEquals(1, b.camera.opens); assertFalse(b.camera.isOpen)
         assertEquals(0, b.keyframes.size)
         r.session.stop("test"); b.session.stop("test")
+    }
+
+    /** Total ms the fake camera was open, from its open/close events. */
+    private fun openMs(r: Rig, until: Long): Long {
+        var total = 0L; var since: Long? = null
+        for (e in r.camera.events) {
+            val t = e.substringAfter('@').toLong()
+            if (e.startsWith("open")) since = t else since?.let { total += t - it; since = null }
+        }
+        since?.let { total += until - it }
+        return total
+    }
+
+    @Test fun aDarkSceneDoesNotHoldTheCameraOpen() = runTest {
+        // face-down or in a dark room with the wear check off: a brief check ends after the settle, then the cadence backs off
+        val r = rig(this, HudSettings(captureMode = CaptureMode.SMART, pauseWhenNotWorn = false)) { camera.frames = { t -> Scenes.dark(t) } }
+        r.session.start()
+        delay(60_000)
+        val open = openMs(r, 60_000)
+        assertTrue(open < 60_000 * 0.12, "camera open $open ms of 60 s (was about 40 % with the 1.5 s give-up)")
+        assertTrue(r.camera.opens <= 8, "opens=${r.camera.opens}: 3 checks on the 5 s beat, then 15 s")
+        assertEquals(0, r.keyframes.size)
+        r.session.stop("test")
+    }
+
+    @Test fun aBriefCheckEndsOnAnUnusableFrameAfterTheSettle() = runTest {
+        val r = rig(this) { soft = 100 }
+        r.session.start()
+        delay(1_200)
+        assertFalse(r.camera.isOpen)
+        val closedAt = r.camera.events.last { it.startsWith("close") }.substringAfter('@').toLong()
+        assertTrue(closedAt - 535 <= 400, "closed at $closedAt, first frame about 535")
+        r.session.stop("test")
+    }
+
+    @Test fun aBusyCameraIsNotABindFailure() = runTest {
+        val r = rig(this)
+        r.camera.busyOpens = true
+        r.session.start()
+        delay(95_000)
+        assertEquals(0, r.fallbacks, "another app holding the camera must not latch the Fixed fallback")
+        assertFalse(r.session.status.value.degraded)
+        assertTrue(r.camera.opens in 3..5, "retries about every 30 s, opens=${r.camera.opens}")
+        r.camera.busyOpens = false
+        delay(35_000)
+        assertTrue(r.keyframes.isNotEmpty(), "Smart works again once the camera is free")
+        r.session.stop("test")
+    }
+
+    @Test fun aHungOpenTimesOutAndCountsAsAFailedBind() = runTest {
+        val r = rig(this)
+        r.camera.hangOpens = true
+        r.session.start()
+        delay(30_000)
+        assertEquals(1, r.fallbacks)
+        assertTrue(r.logs.any { it.contains("timed out") })
+        assertFalse(r.camera.isOpen)
+    }
+
+    @Test fun aFrameStallClosesTheEpisode() = runTest {
+        val r = rig(this)
+        r.startSensors()
+        r.gyroMag = 2f // the camera stays open while walking
+        r.camera.stallAfterFrames = 5
+        r.session.start()
+        delay(6_000)
+        assertTrue(r.logs.any { it.contains("stalled") })
+        assertTrue(r.camera.closes >= 1)
+        r.session.stop("test")
+    }
+
+    @Test fun theLeadFollowsTheMeasuredStartup() = runTest {
+        val r = rig(this) { camera.startupMs = { 900L } }
+        r.session.start()
+        delay(25_000)
+        val stats = r.session.startupStats()
+        assertTrue(stats.contains("p95=900") && stats.contains("lead=900"), stats)
+        r.session.stop("test")
+    }
+
+    @Test fun oneWorkRestSurvivesASessionRestart() = runTest {
+        val shared = WorkRest({ testScheduler.currentTime }, { 2 }, { 5 })
+        val a = rig(this, workRest = shared)
+        a.session.start()
+        delay(90_000)
+        a.session.stop("exit")
+        shared.onPaused() // what the service does when a session ends
+        val b = rig(this, workRest = shared)
+        b.session.start()
+        delay(10_000)
+        assertNull(shared.resting.value, "work 100 s of 120 s: no rest yet")
+        delay(30_000)
+        assertNotNull(shared.resting.value, "the work clock kept running across the restart: rest after 2 min in total")
+        assertEquals("rest", b.session.status.value.reason)
+        b.session.stop("test")
     }
 
     @Test fun lowBatteryOrHeatSlowStillSamples() = runTest {
