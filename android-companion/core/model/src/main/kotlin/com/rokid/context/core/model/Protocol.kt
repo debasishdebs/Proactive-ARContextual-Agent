@@ -19,6 +19,10 @@ object Channels {
     const val HELLO_REQUEST = "pc_hello_request"
     /** Glasses to phone: a [MotionHint] (P3 hook; defined in wave 1, unused). */
     const val MOTION_HINT = "pc_motion_hint"
+    /** Fix wave H, phone to glasses: a [WearMessage] (the real wear signal from the Rokid SDK). Additive. */
+    const val WEAR = "pc_wear"
+    /** Fix wave H, glasses to phone: a [UserExit] (the wearer exited the app on purpose; do not reopen it). Additive. */
+    const val USER_EXIT = "pc_user_exit"
 }
 
 /** How the glasses decide when to capture: Smart = motion-driven keyframes, Fixed = the interval timer. */
@@ -29,6 +33,12 @@ object Channels {
 
 /** Glasses → phone on `pc_motion_hint` (P3 hook, unused in wave 1). */
 @Serializable data class MotionHint(val state: MotionState, val atMs: Long)
+
+/** Phone to glasses on `pc_wear`: the Rokid SDK's `wearingStatus` (true = worn) and when the phone saw it (phone clock). */
+@Serializable data class WearMessage(val v: Int = PROTOCOL_VERSION, val worn: Boolean, val atMs: Long)
+
+/** Glasses to phone on `pc_user_exit`: the wearer exited the glasses app completely (triple double-tap). */
+@Serializable data class UserExit(val v: Int = PROTOCOL_VERSION)
 
 @Serializable enum class PauseOrigin { GLASSES, PHONE, QUIET_HOURS }
 
@@ -150,8 +160,10 @@ data class HudSettings(
     val popupSeconds: Int = POPUP_DEFAULT_SEC,
     /** Keyframe capture, additive: absent on the wire = Fixed (old phones). The phone sends SMART for new installs. */
     val captureMode: CaptureMode = CaptureMode.FIXED,
-    /** Keyframe capture, additive: pause sampling when the glasses are not worn (proximity far > 5 s). */
+    /** Keyframe capture, additive. Fix wave H: gated by the real wear signal (`pc_wear`) only; never when the wear state is unknown. */
     val pauseWhenNotWorn: Boolean = true,
+    /** Fix wave H, additive: blink a small mark on the HUD for ~600 ms per saved keyframe. Old glasses ignore it. */
+    val captureCue: Boolean = true,
     /** Work minutes before a rest: 30|40|45|50|60|75|90 (see [normalized]). */
     val workMinutes: Int = 45,
     /** Quick look, ms: 1000|1500|2000|3000 (see [normalized]). */
@@ -224,6 +236,10 @@ data class Hello(
     val pauses: List<PauseRecord>,
     val nextCaptureAtMs: Long? = null,
     val resumedAtMs: Map<String, Long> = emptyMap(),
+    /** Fix wave H4, additive: how many times Rokid force-stopped the glasses app (counts only; diagnostics). */
+    val rokidCloses: Int = 0,
+    /** Fix wave H4, additive: seconds between the last heartbeat and the latest restart after such a stop. */
+    val lastRestartGapSec: Int? = null,
 )
 
 /** Phone → glasses on `pc_hello_request`: the glasses answer with [Hello]. Sent rate-limited when a frame is held. */

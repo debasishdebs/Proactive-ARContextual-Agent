@@ -207,6 +207,8 @@ fun DiagnosticsScreen(
     keyframes: KeyframeRows = KeyframeRows(),
     onRetryAll: () -> Unit = {},
     onOpenPrompts: () -> Unit = {},
+    /** Fix wave H4: "Rokid closed the app N times (last gap Xs)"; shown only once the glasses report one. */
+    glassesRestarts: String? = null,
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState())) {
         ScreenHeader("Diagnostics", onBack)
@@ -231,6 +233,12 @@ fun DiagnosticsScreen(
                     Icons.Outlined.Replay, PcColors.ChipSky, "Retry all", "Photos that failed for good: ${keyframes.stats.counts["FAILED_FINAL"] ?: 0}",
                     onClick = onRetryAll, enabled = !state.busy && (keyframes.stats.counts["FAILED_FINAL"] ?: 0) > 0,
                 )
+            }
+        }
+        if (glassesRestarts != null) {
+            SectionLabel("Glasses")
+            SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) { NoticeText(glassesRestarts, tag = "glasses_restarts") }
             }
         }
         SectionLabel("Manual runs")

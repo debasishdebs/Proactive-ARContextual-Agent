@@ -53,6 +53,7 @@ class AndroidSensorFeed internal constructor(private val sm: SensorRegistry) : S
         val h = Handler(ht.looper)
         val prox = sm.nonWakeUp(Sensor.TYPE_PROXIMITY) ?: sm.default(Sensor.TYPE_PROXIMITY)
         val proxMax = prox?.maximumRange ?: 5f
+        var lastRaw = Float.NaN // diagnostics only: the raw proximity reading, logged once a minute
         val l = object : SensorEventListener {
             override fun onSensorChanged(e: SensorEvent) {
                 val t = e.timestamp / 1_000_000L
@@ -60,7 +61,7 @@ class AndroidSensorFeed internal constructor(private val sm: SensorRegistry) : S
                 when (e.sensor.type) {
                     Sensor.TYPE_GYROSCOPE -> c.onGyro(v[0], v[1], v[2], t)
                     Sensor.TYPE_LINEAR_ACCELERATION -> c.onLinearAccel(v[0], v[1], v[2], t)
-                    Sensor.TYPE_PROXIMITY -> w.onProximity(v[0] < proxMax)
+                    Sensor.TYPE_PROXIMITY -> { lastRaw = v[0]; w.onProximity(v[0] < proxMax) }
                 }
             }
             override fun onAccuracyChanged(s: Sensor?, accuracy: Int) = Unit
@@ -74,7 +75,15 @@ class AndroidSensorFeed internal constructor(private val sm: SensorRegistry) : S
             Log.w(TAG, "no proximity sensor: wear detection off, treating the glasses as worn")
             w.onProximity(true)
         }
-        val t = object : Runnable { override fun run() { w.tick(); h.postDelayed(this, 1000) } }
+        var ticks = 0
+        val t = object : Runnable {
+            override fun run() {
+                w.tick()
+                // Fix wave H: the proximity sensor never gates capture; one count-only line a minute shows what it reads.
+                if (++ticks % 60 == 0) Log.i(TAG, proximityDiagLine(lastRaw, proxMax, prox != null, w.worn.value))
+                h.postDelayed(this, 1000)
+            }
+        }
         h.postDelayed(t, 1000)
         thread = ht; handler = h; listener = l; tick = t
     }
@@ -88,3 +97,7 @@ class AndroidSensorFeed internal constructor(private val sm: SensorRegistry) : S
 
     private companion object { const val TAG = "PcCapture" }
 }
+
+/** Count-only diagnostics line for the proximity sensor (raw reading, its max range, the detector's verdict). */
+internal fun proximityDiagLine(raw: Float, max: Float, present: Boolean, worn: Boolean): String =
+    if (!present) "proximity absent" else "proximity raw=${if (raw.isNaN()) "none" else raw.toString()} max=$max worn=$worn (diagnostic only)"

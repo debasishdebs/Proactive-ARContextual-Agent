@@ -27,6 +27,9 @@ class FakeGlassesLink(initial: LinkState = LinkState.CONNECTED) : GlassesLink {
     fun emitReady() { _ready.tryEmit(Unit) }
 
     override fun connect() { connectCalls++ }
+    /** Tests: the wear state the SDK reports (fix wave H). */
+    val wearingFlow = kotlinx.coroutines.flow.MutableStateFlow<Boolean?>(null)
+    override val wearing: kotlinx.coroutines.flow.StateFlow<Boolean?> get() = wearingFlow
     override fun connectOnce() { connectOnceCalls++ }
     override fun connectOnResume() = Unit
     override suspend fun send(channel: String, json: String): Boolean {

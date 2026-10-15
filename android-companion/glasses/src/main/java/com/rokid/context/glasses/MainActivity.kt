@@ -44,6 +44,7 @@ import com.rokid.context.core.model.GestureAction
 import com.rokid.context.core.model.Overlay
 import com.rokid.context.glasses.capture.CaptureScheduler
 import com.rokid.context.glasses.capture.CaptureService
+import com.rokid.context.glasses.hud.CaptureCueMark
 import com.rokid.context.glasses.hud.CaptureStatusMarks
 import com.rokid.context.glasses.hud.ConfirmInput
 import com.rokid.context.glasses.hud.InputRouter
@@ -144,13 +145,19 @@ class MainActivity : ComponentActivity() {
         runtime.minimisedIcon.hide() // the full HUD is back
         runtime.popup.hide()
         // In front now: start the keep-alive camera service so captures keep working after the wearer leaves the HUD.
+        runtime.uiMode.set(UiModeStore.FULL)
         if (granted(Manifest.permission.CAMERA)) CaptureService.startKeepAlive(this)
+        // Fix wave H: back after Rokid closed us while minimised (or an explicit extra): straight to icon mode, no HUD.
+        if (intent?.getBooleanExtra(EXTRA_START_MINIMISED, false) == true || runtime.restarts.takeStartMinimised()) {
+            Log.i(TAG, "starting minimised (icon mode)")
+            swipeTimer.post { minimise() }
+        }
     }
 
     /** Finishing closes the session at once; [onDestroy] may come late. */
     override fun onStop() {
         cancelGate() // leaving the HUD with the gate armed must never pause later (review focus 1)
-        if (isFinishing) { cancelAsk(); controller.onActivityExit(); CaptureService.stopKeepAlive(this) }
+        if (isFinishing) { runtime.uiMode.set(UiModeStore.HOME); cancelAsk(); controller.onActivityExit(); CaptureService.stopKeepAlive(this) }
         runtime.hudPresence.onStopped(finishing = isFinishing)
         super.onStop()
     }
@@ -222,6 +229,7 @@ class MainActivity : ComponentActivity() {
         val recording by runtime.listening.collectAsStateWithLifecycle()
         val photoCue by runtime.photoCue.active.collectAsStateWithLifecycle()
         val capture by runtime.captureStatus.collectAsStateWithLifecycle()
+        val blink by runtime.captureBlink.active.collectAsStateWithLifecycle()
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
         var battery by remember { mutableStateOf(runtime.batteryPct()) }
         LaunchedEffect(Unit) {
@@ -250,13 +258,14 @@ class MainActivity : ComponentActivity() {
             )
             // Heat stop and a capture that fell back to Fixed (spec P1.5, P1.6): small marks over the HUD, nothing when fine.
             CaptureStatusMarks(cooling = capture.cooling, degraded = capture.degraded, modifier = Modifier.align(Alignment.TopStart))
+            CaptureCueMark(active = blink, modifier = Modifier.align(Alignment.TopEnd))
         }
     }
 
     /** Touchpad keys are ours: KEYCODE_NOTIFICATION must never reach the system, or it moves our task to the back. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val r = when (event.action) {
-            KeyEvent.ACTION_DOWN -> keys.onKeyDown(event.keyCode, event.repeatCount, event.eventTime, System.currentTimeMillis(), exitGate is ExitGate.Armed)
+            KeyEvent.ACTION_DOWN -> keys.onKeyDown(event.keyCode, event.repeatCount, event.eventTime, System.currentTimeMillis(), exitGate !is ExitGate.Idle)
             KeyEvent.ACTION_UP -> keys.onKeyUp(event.keyCode, event.eventTime)
             else -> KeyResult(consumed = false)
         }
@@ -268,7 +277,7 @@ class MainActivity : ComponentActivity() {
 
     /** BACK is a double-tap on some firmware (Live Fit); never page navigation, never "exit". */
     @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
-    override fun onBackPressed() = handle(keys.onBack(System.currentTimeMillis(), exitGate is ExitGate.Armed))
+    override fun onBackPressed() = handle(keys.onBack(System.currentTimeMillis(), exitGate !is ExitGate.Idle))
 
     private fun scheduleSwipeClose() {
         swipeTimer.removeCallbacks(closeSwipe)
@@ -306,7 +315,7 @@ class MainActivity : ComponentActivity() {
         val (g, a) = DoubleTapExit.onDoubleTap(exitGate, SystemClock.uptimeMillis())
         exitGate = g
         swipeTimer.removeCallbacks(gateTick)
-        if (a == PageAction.MINIMISE) { clearCountdown(); minimise(); return }
+        if (a == PageAction.EXIT) { clearCountdown(); exitApp(); return }
         showCountdown()
         swipeTimer.postDelayed(gateTick, GATE_TICK_MS)
     }
@@ -317,12 +326,13 @@ class MainActivity : ComponentActivity() {
         if (runtime.listening.value || phone is Overlay.Confirm || phone is Overlay.Listening || phone is Overlay.Answer) { cancelGate(); return }
         val (g, a) = DoubleTapExit.onTick(exitGate, SystemClock.uptimeMillis())
         exitGate = g
+        if (a == PageAction.MINIMISE) { clearCountdown(); minimise(); return }
         if (a == PageAction.TOGGLE_PAUSE) {
             clearCountdown()
             onAction(Routed.Mapped(GestureAction.PAUSE_RESUME), null, System.currentTimeMillis())
             return
         }
-        if (g is ExitGate.Armed) { showCountdown(); swipeTimer.postDelayed(gateTick, GATE_TICK_MS) }
+        if (g !is ExitGate.Idle) { showCountdown(); swipeTimer.postDelayed(gateTick, GATE_TICK_MS) }
     }
 
     private fun showCountdown() {
@@ -338,13 +348,29 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun clearCountdown() {
-        if ((local as? LocalOverlay.Toast)?.text?.startsWith(DoubleTapExit.COUNTDOWN_PREFIX) == true) local = null
+        if (DoubleTapExit.isGateText((local as? LocalOverlay.Toast)?.text)) local = null
     }
 
-    /** The second page double-tap: our task goes to the back; capture keeps running in the keep-alive service. */
+    /**
+     * The third page double-tap (fix wave H): leave completely. Tell the phone first (`pc_user_exit`, so it does not reopen the
+     * app), then finish: onStop/onDestroy stop the keep-alive service, and with it the sampling session and the icon.
+     */
+    internal fun exitApp() {
+        cancelGate()
+        controller.sendUserExit()
+        exitedByUser = true
+        finish()
+    }
+
+    /** Tests: the wearer exited with the third double-tap. */
+    @VisibleForTesting internal var exitedByUser = false
+        private set
+
+    /** The exit window after the second page double-tap ended: our task goes to the back; capture keeps running in the keep-alive service. */
     internal fun minimise() {
         cancelGate()
         tasksMovedBack++
+        runtime.uiMode.set(UiModeStore.ICON)
         moveTaskToBack(true)
         minimised = true
         runtime.hudPresence.onMinimised()
@@ -475,6 +501,8 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val TAG = "PcGlasses"
+        /** Start straight into icon mode (no HUD, no focus taken); also what a restart after a force-stop in icon mode does. */
+        const val EXTRA_START_MINIMISED = "com.rokid.context.glasses.START_MINIMISED"
         private const val GATE_TICK_MS = 250L
         const val MIC_PERMISSION = "Allow the microphone on the glasses"
         /** Minimised without SYSTEM_ALERT_WINDOW: plain moveTaskToBack, no icon (spec 2026-10-14 §3). */

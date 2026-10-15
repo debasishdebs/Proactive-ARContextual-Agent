@@ -27,12 +27,11 @@ class SamplingSessionTest {
             "paused" to { paused = true },
             "mode" to { settings = settings.copy(captureMode = CaptureMode.FIXED) },
             "heat" to { heatReading = HeatReading(4, Float.NaN, 30f); heat.poll() },
-            "not_worn" to { wear.onProximity(false, 0) },
+            "not_worn" to { wear.onRemote(false) },
         )
         for ((why, block) in blockers) {
             val r = rig(this) { block() }
-            delay(6_000) // far for more than the 5 s not-worn timeout BEFORE the session starts (one clock, no tMs)
-            r.session.start()
+                        r.session.start()
             delay(1_000)
             assertEquals(0, r.camera.opens, "$why: the camera must stay closed")
             assertFalse(r.session.status.value.running, why)
@@ -91,22 +90,39 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
-    @Test fun notWornStopsCamera() = runTest {
-        val r = rig(this)
+    /** Fix wave H: the Android proximity sensor is diagnostic only (it read a constant "far" while worn); it never stops a session. */
+    @Test fun proximityNoiseNeverStopsASession() = runTest {
+        val r = rig(this, HudSettings(captureMode = CaptureMode.SMART, pauseWhenNotWorn = true)) { wear.onProximity(false, 0) }
         r.startSensors()
         r.gyroMag = 2f // walking about: the camera is open
         r.session.start()
+        delay(12_000)
+        assertTrue(r.wear.worn.value, "proximity never changes the wear state")
+        assertTrue(r.camera.isOpen)
+        assertTrue(r.session.status.value.running)
+        assertNull(r.session.status.value.reason)
+        r.session.stop("test")
+    }
+
+    /** A real pc_wear=false stops the camera; true (or a session reset to unknown) lets it run again; the setting off ignores it. */
+    @Test fun realNotWornStopsCameraAndUnknownNeverGates() = runTest {
+        val r = rig(this)
+        r.startSensors()
+        r.gyroMag = 2f
+        r.session.start()
         delay(2_000)
         assertTrue(r.camera.isOpen)
-        r.wear.onProximity(false, r.clock())
-        delay(4_000)
-        assertTrue(r.camera.isOpen, "far for under 5 s is still worn")
-        delay(2_500)
+        r.wear.onRemote(false)
+        delay(1_500)
         assertFalse(r.camera.isOpen)
         assertEquals("not_worn", r.session.status.value.reason)
-        r.wear.onProximity(true, r.clock())
-        delay(1_000)
+        r.wear.reset() // the session closed: unknown counts as worn
+        delay(1_500)
         assertTrue(r.camera.isOpen)
+        r.wear.onRemote(false); delay(1_500); assertFalse(r.camera.isOpen)
+        r.settings = r.settings.copy(pauseWhenNotWorn = false)
+        delay(1_500)
+        assertTrue(r.camera.isOpen, "the setting off ignores a real not-worn")
         r.session.stop("test")
     }
 
@@ -223,19 +239,6 @@ class SamplingSessionTest {
         r.session.start()
         delay(1_000)
         assertFalse(r.session.captureNow())
-        r.session.stop("test")
-    }
-
-    @Test fun wearCheckOffKeepsSampling() = runTest {
-        val r = rig(this, HudSettings(captureMode = CaptureMode.SMART, pauseWhenNotWorn = false))
-        r.startSensors()
-        r.gyroMag = 2f
-        r.wear.onProximity(false, 0)
-        r.session.start()
-        delay(12_000)
-        assertFalse(r.wear.worn.value)
-        assertTrue(r.camera.isOpen)
-        assertTrue(r.session.status.value.running)
         r.session.stop("test")
     }
 
