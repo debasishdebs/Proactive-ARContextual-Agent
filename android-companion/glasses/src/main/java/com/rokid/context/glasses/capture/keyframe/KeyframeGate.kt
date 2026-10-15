@@ -11,7 +11,7 @@ class Candidate(val seq: Long, val thumb: Thumb, val pixels: Nv21Frame)
 
 sealed interface GateResult {
     /** [candidate] is the winner: G3 encodes its pixels, never a later frame. */
-    data class Keep(val candidate: Candidate, val dhash: Long, val phash: Long, val blur: Float, val dwell: Boolean) : GateResult
+    data class Keep(val candidate: Candidate, val dhash: Long, val phash: Long, val blur: Float, val dwell: Boolean, val motion: MotionState = MotionState.STILL) : GateResult
     /** [reason] is BLUR | DUPLICATE | THROTTLED | WINDOW. */
     data class Skip(val reason: String) : GateResult
 }
@@ -54,7 +54,7 @@ class PrefsGateStore(private val prefs: SharedPreferences) : GateStore {
  * A dwell sample compares to the last keyframe only, and still needs blur >= [BLUR_FLOOR].
  */
 class KeyframeGate(private val store: GateStore, private val clock: () -> Long) {
-    private class Scored(val c: Candidate, val d: Long, val p: Long, val blur: Float)
+    private class Scored(val c: Candidate, val d: Long, val p: Long, val blur: Float, val motion: MotionState)
 
     // Thread safety: offer() runs on the camera analysis executor, flushWindow() on the session timer or dwell
     // coroutine, recordKeep() on whichever thread handles "Capture now". They all share the window and the store, so each
@@ -77,11 +77,11 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         val now = clock()
         val blur = ImageHashes.blur(c.thumb)
         if (blur < BLUR_FLOOR) return Skip(BLUR)
-        val s = Scored(c, ImageHashes.dHash(c.thumb), ImageHashes.pHash(c.thumb), blur)
+        val s = Scored(c, ImageHashes.dHash(c.thumb), ImageHashes.pHash(c.thumb), blur, motion)
         if (force) {
             window.clear()
             recordKeep(c, s.d, s.p, now)
-            return GateResult.Keep(c, s.d, s.p, blur, dwell = false)
+            return GateResult.Keep(c, s.d, s.p, blur, dwell = false, motion)
         }
         if (motion == MotionState.STILL) {
             if (window.isNotEmpty()) {
@@ -117,15 +117,18 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         val ring = store.lastKeyframes()
         val against = if (dwell) ring.takeLast(1) else ring
         val fresh = pool.filter { s -> against.all { (d, p) -> minOf(hamming(s.d, d), hamming(s.p, p)) > HAMMING } }
-        val gap = now - store.lastKeptAt()
+        val last = store.lastKeptAt()
+        val gap = if (last <= 0L) Long.MAX_VALUE else now - last // never kept (a fresh store): nothing to throttle against
         // A clock that moved back (negative gap) does not throttle, or capture would stop until it caught up.
         fun within(ms: Long) = gap in 0 until ms
         val best = fresh.maxByOrNull { it.blur }
             ?: return Skip(if (within(MIN_GAP_ANY_MS)) THROTTLED else DUPLICATE)
-        if (within(MIN_GAP_NEW_MS)) return Skip(THROTTLED)
+        // Fix wave K1: a dwell keyframe (head settled) keeps the short gap; any other keep is rate-capped, wider while moving.
+        val moving = best.motion == MotionState.WALKING || best.motion == MotionState.HEAD_MOVING
+        if (within(if (dwell) MIN_GAP_NEW_MS else if (moving) NON_DWELL_MOVING_GAP_MS else NON_DWELL_GAP_MS)) return Skip(THROTTLED)
         store.push(best.d, best.p)
         store.setLastKeptAt(now)
-        return GateResult.Keep(best.c, best.d, best.p, best.blur, dwell)
+        return GateResult.Keep(best.c, best.d, best.p, best.blur, dwell, best.motion)
     }
 
     private fun hamming(a: Long, b: Long) = java.lang.Long.bitCount(a xor b)
@@ -139,6 +142,9 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         const val MAX_CANDIDATES = 3
         const val MIN_GAP_NEW_MS = 500L
         const val MIN_GAP_ANY_MS = 1_200L
+        /** The non-dwell keyframe rate cap (fix wave K1): at most one per 3 s, one per 6 s while WALKING / HEAD_MOVING. Dwell and forced keeps are exempt. */
+        const val NON_DWELL_GAP_MS = 3_000L
+        const val NON_DWELL_MOVING_GAP_MS = 6_000L
         const val BLUR = "BLUR"; const val DUPLICATE = "DUPLICATE"; const val THROTTLED = "THROTTLED"; const val WINDOW = "WINDOW"
     }
 }

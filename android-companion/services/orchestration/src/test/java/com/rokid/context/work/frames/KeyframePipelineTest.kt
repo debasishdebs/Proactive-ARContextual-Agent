@@ -70,6 +70,26 @@ class KeyframePipelineTest {
         assertEquals(listOf("f2", "f1", "f5"), calls.single().first)
     }
 
+    @Test fun backlogOver40ShedsOldestNonDwellBeyondTheNewest20() = runBlocking {
+        for (i in 1..50) seed("f$i", i * 1000L, dwell = i == 3 || i == 10)
+        assertEquals(3, pipeline().drainOnce())
+        // shed: everything non-dwell older than the newest 20 (f31..f50), oldest first being f1; the dwell frames and the newest 20 stay
+        assertEquals("NEAR_DUP", state("f1")); assertEquals("shed_backlog", db.frameStateDao().get("f1")!!.lastError)
+        assertEquals("NEAR_DUP", state("f30")); assertEquals("NEAR_DUP", state("f4"))
+        assertEquals("EXTRACTED", state("f3")); assertEquals("EXTRACTED", state("f10")) // dwell first, never shed
+        assertEquals("EXTRACTED", state("f50")); assertEquals("PENDING", state("f31"))
+        assertEquals(listOf("f10", "f3", "f50"), calls.single().first)
+        assertEquals(28, db.frameStateDao().shedCount().first()) // 30 older frames minus the 2 dwell ones
+        assertEquals(19, db.frameStateDao().pendingCount()) // f31..f49
+    }
+
+    @Test fun backlogOf40OrLessIsNotShed() = runBlocking {
+        for (i in 1..40) seed("f$i", i * 1000L)
+        pipeline().drainOnce()
+        assertEquals(0, db.frameStateDao().shedCount().first())
+        assertEquals("PENDING", state("f1"))
+    }
+
     @Test fun maxThreePerCall() = runBlocking {
         for (i in 1..7) seed("f$i", i * 1000L)
         val p = pipeline()

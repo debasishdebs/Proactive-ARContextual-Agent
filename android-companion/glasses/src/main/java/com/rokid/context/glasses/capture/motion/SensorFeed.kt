@@ -7,7 +7,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Handler
 import android.os.HandlerThread
-import android.util.Log
+import com.rokid.context.glasses.capture.diag.DiagLog
 
 /** Wires the IMU and proximity sensors into the pure classifiers. Fakeable in tests. */
 interface SensorFeed {
@@ -72,15 +72,17 @@ class AndroidSensorFeed internal constructor(private val sm: SensorRegistry) : S
         }
         if (prox != null) sm.register(l, prox, SensorManager.SENSOR_DELAY_GAME, 0, h)
         else {
-            Log.w(TAG, "no proximity sensor: wear detection off, treating the glasses as worn")
+            DiagLog.w(TAG, "no proximity sensor: wear detection off, treating the glasses as worn")
             w.onProximity(true)
         }
         var ticks = 0
+        val features = FeatureLogger(c) { DiagLog.i(TAG, it) } // K3: one count-only line a second for tuning
         val t = object : Runnable {
             override fun run() {
                 w.tick()
+                features.tick()
                 // Fix wave H: the proximity sensor never gates capture; one count-only line a minute shows what it reads.
-                if (++ticks % 60 == 0) Log.i(TAG, proximityDiagLine(lastRaw, proxMax, prox != null, w.worn.value))
+                if (++ticks % 60 == 0) DiagLog.i(TAG, proximityDiagLine(lastRaw, proxMax, prox != null, w.worn.value))
                 h.postDelayed(this, 1000)
             }
         }

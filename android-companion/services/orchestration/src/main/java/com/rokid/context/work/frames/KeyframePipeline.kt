@@ -242,6 +242,7 @@ class KeyframePipeline(
             }
             if (wait != null) return if (states.newestClaimable(now, abandonBefore, Long.MIN_VALUE, 0, 1).isEmpty()) Step.Idle(null) else Step.Idle(wait, blocked = true)
         }
+        if (!user) shedBacklog(now)
         val rows = if (user) {
             states.newestClaimable(now, abandonBefore, sinceMs ?: Long.MIN_VALUE, 1, MAX_BATCH)
         } else {
@@ -274,6 +275,13 @@ class KeyframePipeline(
             ExtractOutcome.classify(e, online())
         }
         return Step.Done(settle(frames, claimId, outcome, user))
+    }
+
+    /** Fix wave K5: the AI budget describes about 15 photos a minute; a bigger backlog is thinned (see [FrameStateDao.shedOldestNonDwell]). */
+    private suspend fun shedBacklog(now: Long) {
+        if (states.pendingCount() <= SHED_ABOVE) return
+        val n = states.shedOldestNonDwell(SHED_KEEP_NEWEST, now)
+        if (n > 0) Log.i(PIPE_TAG, "shed=$n")
     }
 
     private suspend fun settle(frames: List<KeyframeCandidate>, claimId: String, o: ExtractOutcome, user: Boolean): Int {
@@ -326,6 +334,9 @@ class KeyframePipeline(
         /** Count-only audit log tag (ids, counts, class names; never captions, text or paths). */
         private const val PIPE_TAG = "PcPipeline"
         const val MAX_BATCH = 3
+        /** Above this many PENDING frames the oldest non-dwell ones beyond the newest [SHED_KEEP_NEWEST] are skipped (fix wave K5). */
+        const val SHED_ABOVE = 40
+        const val SHED_KEEP_NEWEST = 20
         const val ASK_WINDOW_MS = 60_000L
         /** An ask waits this long for frames the loop holds (the caller's own cap is 30 s as well). */
         const val ASK_WAIT_MS = 30_000L
