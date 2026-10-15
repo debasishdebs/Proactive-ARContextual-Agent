@@ -102,4 +102,43 @@ class FrameStoredWiringTest {
         awaitRunning()
         assertTrue(KeyframeGraph.get(app).pipeline.isRunning())
     }
+
+    private fun signalOnlyScope(handled: MutableList<Throwable>) =
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.CoroutineExceptionHandler { _, t -> handled += t })
+
+    /** Final review N1: a throwing signal() or commit never escapes the commit coroutine (it would crash the process on IO). */
+    @Test fun aThrowingSignalOrCommitDoesNotPropagate() {
+        val escaped = mutableListOf<Throwable>()
+        val done = java.util.concurrent.CountDownLatch(2)
+        HubGraph.onFrameStored(app, enqueue = {}, scope = signalOnlyScope(escaped), commit = { throw IOException("disk") },
+            coalescer = HubGraph.DrainCoalescer(), signal = { done.countDown(); throw IllegalStateException("signal") })
+        HubGraph.onFrameStored(app, enqueue = {}, scope = signalOnlyScope(escaped), commit = { done.countDown() },
+            coalescer = HubGraph.DrainCoalescer(), signal = { done.countDown(); throw IllegalStateException("signal") })
+        assertTrue(done.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        Thread.sleep(200)
+        assertTrue("nothing reached the scope's handler: $escaped", escaped.isEmpty())
+    }
+
+    /** Final review N2: a burst of arrivals while a drain runs costs one more drain, not one per frame. */
+    @Test fun aBurstOfFramesCoalescesIntoAtMostTwoDrains() {
+        val runs = java.util.concurrent.atomic.AtomicInteger()
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val started = java.util.concurrent.CountDownLatch(1)
+        val finished = java.util.concurrent.CountDownLatch(1)
+        val coalescer = HubGraph.DrainCoalescer()
+        val committed = java.util.concurrent.atomic.AtomicInteger()
+        val commit: suspend (android.content.Context) -> Unit = {
+            if (runs.incrementAndGet() == 1) { started.countDown(); gate.await() }
+            committed.set(10) // every frame stored before this run began is drained by it
+            if (runs.get() >= 2) finished.countDown()
+        }
+        HubGraph.onFrameStored(app, enqueue = {}, scope = scope, commit = commit, coalescer = coalescer, signal = {})
+        assertTrue(started.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        repeat(9) { HubGraph.onFrameStored(app, enqueue = {}, scope = scope, commit = commit, coalescer = coalescer, signal = {}) }
+        gate.countDown()
+        assertTrue("the dirty flag forced one more drain", finished.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        Thread.sleep(300)
+        assertEquals(2, runs.get())
+        assertEquals(10, committed.get())
+    }
 }
