@@ -410,6 +410,7 @@ class SamplingSession(
         var dwellArmed: Boolean
         var forced: Boolean
         val sequence: Long
+        val sampleMotion: MotionState
         synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
             ep.frames++
@@ -429,6 +430,7 @@ class SamplingSession(
             dwellArmed = pendingDwellAt != null
             forced = pendingNowAt != null
             sequence = ++seq
+            sampleMotion = motion.state.value // K2: the label is the state at SAMPLE time, not when the winner is encoded
         }
         val copy = src.copy()
         if (copy == null) { synchronized(lock) { if (ep === episode) unusable(ep, now) }; return }
@@ -440,7 +442,7 @@ class SamplingSession(
         val result: GateResult? = if (FrameGuard.checkBatteryAndDark(batteryPct(), charging(), luma.toDouble()) != null) null
         else synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
-            gate.offer(cand, motion.state.value, dwellArmed, forced)
+            gate.offer(cand, sampleMotion, dwellArmed, forced)
         }
         val usable = result != null && !(result is GateResult.Skip && result.reason == KeyframeGate.BLUR)
         if (result is GateResult.Keep) emit(result, now)
@@ -472,7 +474,7 @@ class SamplingSession(
         val enc = encoder.encode(keep.candidate.pixels)
         if (enc == null) { log("encode failed for sample ${keep.candidate.seq}"); return }
         val out = KeyframeOut(
-            enc.jpeg, enc.width, motion.state.value, keep.dwell, keep.blur,
+            enc.jpeg, enc.width, keep.motion, keep.dwell, keep.blur,
             hex(keep.dhash), hex(keep.phash), keep.candidate.seq, sessionId,
         )
         synchronized(lock) { lastKeyframeAt = now; keptAt.addLast(now) }
