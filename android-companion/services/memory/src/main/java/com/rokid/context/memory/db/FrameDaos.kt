@@ -132,6 +132,20 @@ abstract class FrameStateDao {
     @Query("UPDATE frame_state SET state = 'PENDING', attempts = 0, lastError = NULL, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'FAILED_FINAL'")
     abstract suspend fun retryAllFinal(nowMs: Long): Int
 
+    /**
+     * "Reprocess old photos": EXTRACTED / FAILED / FAILED_FINAL frames back to PENDING (attempts 0, claim cleared) so the pipeline
+     * extracts them again. Only frames with no live memory left (nothing to duplicate), never a tombstoned (forgotten) frame, and
+     * never a frame being worked on. Returns how many rows moved.
+     */
+    @Query(
+        "UPDATE frame_state SET state = 'PENDING', attempts = 0, lastError = NULL, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE frameId IN (:frameIds) AND state IN ('EXTRACTED','FAILED','FAILED_FINAL') " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame_state.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame_state.frameId)",
+    )
+    abstract suspend fun resetForReprocess(frameIds: List<String>, nowMs: Long): Int
+
     @Query("DELETE FROM frame_state WHERE frameId IN (:frameIds)") abstract suspend fun deleteFor(frameIds: List<String>): Int
 
     companion object { const val MAX_ATTEMPTS = 5 }
@@ -153,6 +167,8 @@ interface FrameSourceDao {
     @Query("SELECT * FROM frame_source WHERE memoryId = :memoryId") suspend fun forMemory(memoryId: String): List<FrameSourceEntity>
     @Query("SELECT memoryId FROM frame_source WHERE frameId = :frameId") suspend fun memoriesForFrame(frameId: String): List<String>
     @Query("DELETE FROM frame_source WHERE memoryId = :memoryId") suspend fun deleteForMemory(memoryId: String): Int
+    @Query("DELETE FROM frame_source WHERE memoryId IN (:memoryIds)") suspend fun deleteForMemories(memoryIds: List<String>): Int
+    @Query("DELETE FROM frame_source WHERE frameId IN (:frameIds)") suspend fun deleteForFrames(frameIds: List<String>): Int
 }
 
 @Dao

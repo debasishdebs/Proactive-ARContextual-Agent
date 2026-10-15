@@ -133,7 +133,9 @@ class QueueDrainWorker(
     private suspend fun processFrameIngest(job: QueueJobRecord) {
         val payload = QueuePayloads.parse(job.payload)
         val source = QueuePayloads.string(payload, "source", "scheduled")
-        val imported = RokidFrameInbox.ingestPending(applicationContext, maxItems = 16)
+        // The same place lookup as FrameIngestWorker (null unless Location is on and granted): a "new place" nudge needs it on the frame.
+        val place = com.rokid.context.connectors.sources.SourcesGraph.get(applicationContext).placeLabel(System.currentTimeMillis())
+        val imported = RokidFrameInbox.ingestPending(applicationContext, maxItems = 16, placeLabel = place)
         if (imported > 0) KeyframeGraph.get(applicationContext).signal() // the pipeline owns new frames (spec P2.1); this job is the backstop
         val manualLiveRequest = source.equals("manual_live", ignoreCase = true)
         PipelineRecords.upsertTrace(applicationContext, job.id, "FRAME_INGEST_DONE", "source=$source imported=$imported")
@@ -211,7 +213,11 @@ class QueueDrainWorker(
         val now = System.currentTimeMillis()
         val rows = dao.byIds(ids)
         // Not EXTRACTING (a live claim is the pipeline's), and idle for the grace period; abandoned claims are claim()'s to take.
-        val mine = rows.filter { it.state == "EXTRACTING" || now - it.updatedAt >= graceMs }.map { it.frameId }
+        // A FAILED frame still inside its own backoff is left alone, except on a manual run (graceMs 0: the user asked now).
+        val mine = rows.filter {
+            (it.state == "EXTRACTING" || now - it.updatedAt >= graceMs) &&
+                (graceMs == 0L || it.state != "FAILED" || now >= it.updatedAt + com.rokid.context.work.frames.KeyframePipeline.failureBackoffMs(it.attempts))
+        }.map { it.frameId }
         val got = dao.claim(mine, claimId, now, now - FrameRecovery.CLAIM_TIMEOUT_MS).map { it.frameId }.toSet()
         return got to rows.map { it.frameId }.toSet()
     }
@@ -244,7 +250,7 @@ class QueueDrainWorker(
         }
         // No facts but captions (a photo with nothing durable in it): the captions are saved, with nothing to critique.
         val confidence = ExtractFollowUp.confidence(facts)
-        val trusted = ExtractFollowUp.trusted(ai, criticWorker, job.id, facts, frameLines)
+        val trusted = ExtractFollowUp.trusted(ai, criticWorker, job.id, facts, frameLines, callClassOverride ?: com.rokid.context.model.CallClass.EXTRACT)
         // Each fact is fenced on the photos it cites only: a photo forgotten during the calls drops just its facts.
         // Memories, frame_source rows (and, for pipeline callers, the claim CAS) are saved by saveExtraction in one transaction.
         val saved = ExtractSave.saveExtraction(

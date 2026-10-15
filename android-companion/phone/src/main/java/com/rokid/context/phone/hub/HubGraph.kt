@@ -13,9 +13,11 @@ import com.rokid.context.phone.actions.PhoneActions
 import com.rokid.context.phone.nudge.PhoneNudges
 import android.util.Log
 import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
 
 /** Process-wide hub (no DI in v1). `ContextApp` has already initialised [MemoryGraph]. */
@@ -31,12 +33,35 @@ object HubGraph {
 
     fun resetForTests(h: Hub?) { synchronized(this) { hub = h } }
 
+    /** Off the main thread: the receipt commit does Room and file I/O. The process-wide hub outlives it. */
+    private val commitScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     /**
-     * A frame is durable in the inbox: queue the legacy ingest, and wake the pipeline too (spec P2.1) so anything committed and
-     * pending is claimed at once, even when queueing fails (the signal runs in `finally`; the failure still reaches the caller).
+     * A frame is durable in the inbox: queue the legacy ingest (the backstop), then commit its receipt (frame row, frame_meta and
+     * PENDING frame_state, serialized by the inbox's drain lock) on [scope] and only then wake the pipeline (spec P2.1), so a
+     * frame is processed on arrival with no WorkManager in between. The ack does not wait for the commit. The signal runs even
+     * when queueing or the commit fails (the failure still reaches the caller / the log); the backstop picks the frame up later.
      */
-    internal fun onFrameStored(app: Context, enqueue: (Context) -> Unit = ::enqueueInboxIngest) {
-        try { enqueue(app) } finally { com.rokid.context.work.frames.KeyframeGraph.get(app).signal() }
+    internal fun onFrameStored(
+        app: Context,
+        enqueue: (Context) -> Unit = ::enqueueInboxIngest,
+        scope: CoroutineScope = commitScope,
+        commit: suspend (Context) -> Unit = ::commitReceipts,
+    ) {
+        try { enqueue(app) } finally {
+            scope.launch {
+                try { commit(app) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                    Log.w(Hub.TAG, "receipt commit failed: ${e.javaClass.simpleName}")
+                } finally { com.rokid.context.work.frames.KeyframeGraph.get(app).signal() }
+            }
+        }
+    }
+
+    /** Commits the receipts waiting in the inbox (nothing while the pipeline is paused: frames then only wait there). */
+    internal suspend fun commitReceipts(app: Context) {
+        if (!AppConfigStore.isPipelineEnabled(app)) return
+        val place = com.rokid.context.connectors.sources.SourcesGraph.get(app).placeLabel(System.currentTimeMillis())
+        RokidFrameInbox.ingestPending(app, maxItems = 16, placeLabel = place)
     }
 
     private fun build(app: Context): Hub {

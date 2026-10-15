@@ -51,12 +51,25 @@ class KeyframeIntegrationTest {
     /** Runs inside the first provider call (a Forget or Delete all landing mid-call). */
     @Volatile private var midCall: (suspend () -> Unit)? = null
 
+    /** Records the CallClass of every model call; [stallFrom] = the n-th call (1-based) and later ones never get a permit (an ask's cap lands there). */
+    private class RecordingGate(private val inner: com.rokid.context.model.CallGate) : com.rokid.context.model.CallGate {
+        val classes = Collections.synchronizedList(mutableListOf<CallClass>())
+        @Volatile var stallFrom = Int.MAX_VALUE
+        override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T {
+            classes += callClass
+            if (classes.size >= stallFrom) kotlinx.coroutines.awaitCancellation()
+            return inner.withPermit(callClass, block)
+        }
+    }
+    private lateinit var recorder: RecordingGate
+
     @Before fun setUp() {
         WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         KeyframeGraph.resetForTests()
         val budget = CallBudget(System::currentTimeMillis, { 150L })
         AiGraph.gate = budget
+        recorder = RecordingGate(budget)
         val ai = AiGraph(MemoryGraph.get(ctx), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { _, _, _ ->
             object : ModelProvider {
                 override suspend fun generate(prompt: String): String {
@@ -69,7 +82,7 @@ class KeyframeIntegrationTest {
                 }
                 override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>) = generate(prompt)
             }
-        }, gate = budget).also { AiGraph.resetForTests(it) }
+        }, gate = recorder).also { AiGraph.resetForTests(it) }
         TestAi.bindAll(ai)
         AppConfigStore.setPipelineEnabled(ctx, true)
         QueueRuntimeStore.clearAll(ctx)
@@ -142,6 +155,7 @@ class KeyframeIntegrationTest {
         assertTrue(!nudgeEnqueued())
         KeyframeGraph.get(ctx).signal()
         waitExtracted("n1")
+        withTimeout(10_000) { while (!nudgeEnqueued()) delay(25) }
         assertTrue("NudgeWorker enqueued for a trusted pipeline save", nudgeEnqueued())
     }
 
@@ -151,6 +165,8 @@ class KeyframeIntegrationTest {
         seed("r1", "PENDING", System.currentTimeMillis())
         KeyframeGraph.get(ctx).signal()
         waitExtracted("r1")
+        // the save comes before the critic now, so the follow-up (the reprocess job) lands a moment later
+        withTimeout(10_000) { while ((QueueRuntimeStore.snapshot(ctx).pendingByQueue[QueuePriority.PRIORITY_REPROCESS] ?: 0) == 0) delay(25) }
         val facts = memories()
         assertEquals(1, facts.size)
         assertEquals(com.rokid.context.memory.db.ReviewState.NEEDS_REVIEW, facts.single().reviewState)
@@ -191,6 +207,18 @@ class KeyframeIntegrationTest {
         seed("w2", "PENDING", now - 3 * 60_000)
         legacyJob("w2")
         assertEquals("past the grace", 2, prompts.size); assertEquals("EXTRACTED", db.frameStateDao().get("w2")!!.state)
+    }
+
+    /** Final review minor 5: the backstop leaves a FAILED frame inside its own backoff alone (manual runs do not wait). */
+    @Test fun backstopRespectsAFailedFramesBackoff() = runBlocking {
+        val now = System.currentTimeMillis()
+        seed("b1", "FAILED", now - 3 * 60_000); seed("b2", "FAILED", now - 5 * 60_000)
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET attempts = 4") // 4th failure: backoff 4 min, past the 2 min grace for both
+        legacyJob("b1", "b2")
+        assertEquals("b1 still waits", "FAILED", db.frameStateDao().get("b1")!!.state)
+        assertEquals("b2 is past its backoff", "EXTRACTED", db.frameStateDao().get("b2")!!.state)
+        legacyJob("b1", manual = true)
+        assertEquals("EXTRACTED", db.frameStateDao().get("b1")!!.state)
     }
 
     /** Review M3: FRAME_INGEST makes no AI call, so heat and a low battery never defer it. */
@@ -250,5 +278,28 @@ class KeyframeIntegrationTest {
         val a = "0123456789ab-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; val b = "0123456789ab-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
         assertTrue(KeyframeHandle.factPrefix(a) != KeyframeHandle.factPrefix(b))
         assertTrue(KeyframeHandle.factPrefix(a).contains(a))
+        assertTrue("survives purgeNonRokidMemories, is no rokid_review_ id", KeyframeHandle.factPrefix(a).startsWith("rokid_") && !KeyframeHandle.factPrefix(a).startsWith("rokid_review_"))
+    }
+
+    /** Final review I2: an ask's extraction runs its model critic as USER too, so it never queues behind the EXTRACT backlog. */
+    @Test fun i2AsksCriticRunsAsUser() = runBlocking {
+        confidence = 0.3
+        seed("a1", "PENDING", System.currentTimeMillis())
+        assertEquals(1, KeyframeGraph.get(ctx).pipeline.extractForAsk())
+        assertTrue("vision and critic both ran", recorder.classes.size >= 2)
+        assertEquals("no call fell back to EXTRACT", setOf(CallClass.USER), recorder.classes.toSet())
+    }
+
+    /** Final review I2: when the cap lands while the critic waits for its permit, the paid extraction is already saved. */
+    @Test fun i2ExtractionIsSavedBeforeTheCriticSoACapCannotLoseIt() = runBlocking {
+        confidence = 0.3
+        recorder.stallFrom = 2 // the critic never gets a permit
+        seed("a2", "PENDING", System.currentTimeMillis())
+        assertEquals(null, kotlinx.coroutines.withTimeoutOrNull(1_500) { KeyframeGraph.get(ctx).pipeline.extractForAsk() })
+        assertEquals("EXTRACTED", db.frameStateDao().get("a2")!!.state)
+        val m = memories().single()
+        assertEquals(com.rokid.context.memory.db.ReviewState.NEEDS_REVIEW, m.reviewState)
+        assertTrue(m.id.startsWith("rokid_kf_"))
+        assertEquals("the review follow-up still ran", 1, QueueRuntimeStore.snapshot(ctx).pendingByQueue[QueuePriority.PRIORITY_REPROCESS])
     }
 }

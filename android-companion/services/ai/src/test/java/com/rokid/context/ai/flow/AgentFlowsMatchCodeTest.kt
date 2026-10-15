@@ -31,8 +31,8 @@ class AgentFlowsMatchCodeTest {
 
     @Test fun confidenceToCriticIsConditional() {
         anchor("capture confidence->critic (drain job)", "ExtractFollowUp.trusted(" in body(drain, "processBatchedSummarization"))
-        anchor("capture confidence->critic (keyframe pipeline)", "ExtractFollowUp.trusted(" in body(keyframes, "extract"))
-        anchor("capture confidence->critic \"low confidence\"", "critic.validate(" in body(followUp, "trusted") && "|| modelCriticPasses(" in body(followUp, "trusted"))
+        anchor("capture confidence->critic (keyframe pipeline)", "ExtractFollowUp.modelCriticPasses(" in body(keyframes, "extract"))
+        anchor("capture confidence->critic \"low confidence\"", "critic.validate(" in body(followUp, "locallyTrusted") && "locallyTrusted(" in body(followUp, "trusted") && "|| modelCriticPasses(" in body(followUp, "trusted"))
         anchor("capture critic->save_review \"fail / unbound\"", "ai.bindings.get(Role.CRITIC) == null) return false" in body(followUp, "modelCriticPasses"))
     }
 

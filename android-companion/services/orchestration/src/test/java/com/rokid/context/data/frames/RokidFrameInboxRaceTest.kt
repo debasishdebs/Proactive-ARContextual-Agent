@@ -149,4 +149,23 @@ class RokidFrameInboxRaceTest {
         assertEquals(1, RokidFrameInbox.sweepOrphanParts(ctx, nowMs = now))
         assertFalse(part.exists()); assertTrue(fresh.exists())
     }
+
+    private suspend fun tombstone(id: String) = db.openHelper.writableDatabase.execSQL("INSERT INTO forget_tombstone(frameId, createdAt) VALUES ('$id', 1)")
+
+    /** Final review minor 3: a forgotten frame's sidecar goes too, whether the drain or the sweep finds it first. */
+    @Test fun aForgottenFramesSidecarDoesNotOutliveIt() = runBlocking {
+        DirSync.testOverride = DirSync { true }
+        val a = receipt(archive, "g1", now - hour, prefix = "${now - 10}_")
+        tombstone(a.nameWithoutExtension)
+        drain()
+        assertFalse("reconcile removes the sidecar of a tombstoned pair", ReceiptNames.sidecarBeside(a).exists())
+        assertEquals(0, rows())
+        // a sidecar left alone (its photo already swept) is the FrameSweep's
+        val b = receipt(archive, "g2", now - hour, prefix = "${now - 20}_")
+        tombstone(b.nameWithoutExtension)
+        b.delete()
+        assertTrue(ReceiptNames.sidecarBeside(b).exists())
+        com.rokid.context.orchestration.forget.FrameSweep.sweep(ctx, now)
+        assertFalse(ReceiptNames.sidecarBeside(b).exists())
+    }
 }

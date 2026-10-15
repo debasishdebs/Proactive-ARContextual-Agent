@@ -402,7 +402,7 @@ object RokidFrameInbox {
             // Held 24 h from RECEIPT (the stem's rx time), not from the file's mtime, which is the capture time (review B M-2).
             if (nowMs() - r.rxMs < SIDECAR_LOST_AFTER_MS) continue // held, not defaulted
             try {
-                writeDurably(ReceiptNames.sidecarBeside(jpeg), ReceiptMeta(wireFrameId = r.wireId, capturedAtMs = r.rxMs, size = jpeg.length()).toJson())
+                writeDurably(ReceiptNames.sidecarBeside(jpeg), ReceiptMeta(wireFrameId = r.wireId, capturedAtMs = jpeg.lastModified().takeIf { it > 0 } ?: r.rxMs, size = jpeg.length()).toJson())
                 if (!dirSync.sync(jpeg.parentFile!!)) { Log.w(TAG, "defaults sidecar not synced"); continue }
                 wroteSidecar = true
                 PipelineStatsStore.incSidecarLost(context)
@@ -424,7 +424,10 @@ object RokidFrameInbox {
             val jpeg = r.jpeg!!
             val sidecar = r.sidecar!!
             val id = frameIdOf(jpeg)
-            if (id in tombstoned) continue
+            if (id in tombstoned) { // forgotten: the sidecar (hashes, wire id) must not outlive the photo, even after a crash between commit and cleanup
+                sidecar.delete()
+                continue
+            }
             if (id in rowIds) { // committed; only the post-commit cleanup died
                 sidecar.delete()
                 if (!dirSync.sync(archive)) Log.w(TAG, "archive directory not synced after the cleanup")

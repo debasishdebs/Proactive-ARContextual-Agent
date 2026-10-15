@@ -53,7 +53,8 @@ object FrameSweep {
         val dao = MemoryGraph.get(context).db.forgetDao()
         val paths = dao.orphanTombstonedFramePaths().toMutableList()
         val onDisk = RokidFrameInbox.FRAME_DIRS.flatMap { dir -> File(context.filesDir, dir).listFiles()?.filter { it.isFile }.orEmpty() }
-        val byId = onDisk.groupBy { it.nameWithoutExtension }
+        // A v2 sidecar `<id>.meta.json` belongs to frame `<id>` (its JPEG's name without extension).
+        val byId = onDisk.groupBy { it.nameWithoutExtension.removeSuffix(".meta") }
         val rowless = byId.keys.toList().chunked(CHUNK).flatMap { dao.rowlessTombstones(it) }
         rowless.forEach { id -> byId[id]?.forEach { paths += it.absolutePath } }
         val deleted = delete(paths.filter { File(it).exists() })
