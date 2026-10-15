@@ -414,7 +414,7 @@ class SamplingSessionTest {
         r.camera.frames = { _ -> FrameCopy(Scenes.thumb(scene, soft), frames.getOrPut("$scene/$soft") { nv21Of(scene, soft) }) }
         r.startSensors()
         r.session.start()
-        delay(2_000) // settled scene 1 kept by the start-up check
+        delay(7_000) // settled scene 1 kept by the start-up check; the 6 s moving cap (K1) must have passed
         // move: the first samples are scene 2 and sharp, later ones show scene 3 and are softer; the window's winner is the first
         r.gyroMag = 3f
         scene = 2; soft = 1
