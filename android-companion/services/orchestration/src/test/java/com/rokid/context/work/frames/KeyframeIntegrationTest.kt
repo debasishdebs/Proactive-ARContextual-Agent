@@ -47,6 +47,9 @@ class KeyframeIntegrationTest {
     private val db get() = MemoryGraph.get(ctx).db
     private val prompts = Collections.synchronizedList(mutableListOf<String>())
     private val callTimes = Collections.synchronizedList(mutableListOf<Long>())
+    @Volatile private var confidence = 0.9
+    /** Runs inside the first provider call (a Forget or Delete all landing mid-call). */
+    @Volatile private var midCall: (suspend () -> Unit)? = null
 
     @Before fun setUp() {
         WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
@@ -58,8 +61,9 @@ class KeyframeIntegrationTest {
             object : ModelProvider {
                 override suspend fun generate(prompt: String): String {
                     prompts += prompt; callTimes += System.currentTimeMillis()
+                    midCall?.let { hook -> midCall = null; hook() }
                     val ids = Regex("frame_id: (\\S+) ").findAll(prompt).map { it.groupValues[1] }.toList()
-                    val facts = ids.joinToString(",") { """{"text":"A mug $it","type":"object","confidence":0.9,"tags":[],"source_frame_ids":["$it"]}""" }
+                    val facts = ids.joinToString(",") { """{"text":"A mug $it","type":"object","confidence":$confidence,"tags":[],"source_frame_ids":["$it"]}""" }
                     val caps = ids.joinToString(",") { """{"frame_id":"$it","caption":"A photo"}""" }
                     return """{"facts":[$facts],"captions":[$caps]}"""
                 }
@@ -85,8 +89,8 @@ class KeyframeIntegrationTest {
         db.frameStateDao().insertIgnore(listOf(FrameStateEntity(id, state, 0, null, claimedAt, claimedAt?.let { "pipeline" }, updatedAt)))
     }
 
-    private fun legacyJob(vararg ids: String) {
-        QueueRuntimeStore.enqueue(ctx, QueuePriority.SUMMARIZER, QueuePayloads.batchedWrite("test", ids.size, manual = false, frameIdsCsv = ids.joinToString(",")), personaSnapshot = "p")
+    private fun legacyJob(vararg ids: String, manual: Boolean = false) {
+        QueueRuntimeStore.enqueue(ctx, QueuePriority.SUMMARIZER, QueuePayloads.batchedWrite("test", ids.size, manual = manual, frameIdsCsv = ids.joinToString(",")), personaSnapshot = "p")
         runBlocking { TestListenableWorkerBuilder<QueueDrainWorker>(ctx).build().doWork() }
     }
 
@@ -120,7 +124,131 @@ class KeyframeIntegrationTest {
         assertEquals(7, memories().size)
         assertEquals("3 + 3 + 1 frames, one call each", 3, prompts.size)
         assertEquals(3, (AiGraph.gate as CallBudget).stats.value.callsLastHour[CallClass.EXTRACT])
+        // the real budget spaces the calls: burst 2, then one token per 150 ms
+        val t = callTimes.sorted()
+        assertTrue("third call waited for a token (${t[2] - t[0]} ms)", t[2] - t[0] >= 100)
         withTimeout(5_000) { while ((handle.stats.value.counts["EXTRACTED"] ?: 0) != 7) delay(25) }
         assertEquals(0, handle.stats.value.backlog)
+    }
+
+    private suspend fun waitExtracted(vararg ids: String) =
+        withTimeout(15_000) { while (ids.any { db.frameStateDao().get(it)?.state != "EXTRACTED" }) delay(25) }
+
+    private fun nudgeEnqueued() = androidx.work.WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(com.rokid.context.orchestration.nudge.NudgeTrigger.WORK).get().isNotEmpty()
+
+    /** Review C1: the pipeline owns the frame (no dwell: Fixed mode or old glasses), yet the nudge backstop still gets scheduled. */
+    @Test fun c1PipelineSavesStillScheduleTheNudgeBackstop() = runBlocking {
+        seed("n1", "PENDING", System.currentTimeMillis()) // frame_meta.dwell = false
+        assertTrue(!nudgeEnqueued())
+        KeyframeGraph.get(ctx).signal()
+        waitExtracted("n1")
+        assertTrue("NudgeWorker enqueued for a trusted pipeline save", nudgeEnqueued())
+    }
+
+    /** Review I6: low confidence -> NEEDS_REVIEW memories and a PRIORITY_REPROCESS job, as the legacy path did. */
+    @Test fun i6LowConfidencePipelineSaveQueuesTheReprocess() = runBlocking {
+        confidence = 0.3
+        seed("r1", "PENDING", System.currentTimeMillis())
+        KeyframeGraph.get(ctx).signal()
+        waitExtracted("r1")
+        val facts = memories()
+        assertEquals(1, facts.size)
+        assertEquals(com.rokid.context.memory.db.ReviewState.NEEDS_REVIEW, facts.single().reviewState)
+        assertEquals(1, QueueRuntimeStore.snapshot(ctx).pendingByQueue[QueuePriority.PRIORITY_REPROCESS])
+        assertTrue("no nudge backstop for a review-pending save", !nudgeEnqueued())
+    }
+
+    /** Review I2 (pipeline): a photo forgotten mid-call leaves the other two PENDING with no attempt used, then they are extracted. */
+    @Test fun i2ForgettingOnePhotoMidCallKeepsTheOthersWithoutAnAttempt() = runBlocking {
+        val now = System.currentTimeMillis()
+        for (i in 1..3) seed("k$i", "PENDING", now)
+        midCall = { db.frameStateDao().deleteFor(listOf("k2")) } // Delete/forget lands while the model is answering
+        KeyframeGraph.get(ctx).signal()
+        waitExtracted("k1", "k3")
+        assertEquals(0, db.frameStateDao().get("k1")!!.attempts); assertEquals(0, db.frameStateDao().get("k3")!!.attempts)
+        assertEquals(null, db.frameStateDao().get("k2"))
+        assertEquals("the first call was dropped, the rest went in a second call", 2, prompts.size)
+    }
+
+    /** Review I2 (legacy job). */
+    @Test fun i2LegacyJobReleasesTheBatchOnAStaleSave() = runBlocking {
+        val old = System.currentTimeMillis() - 10 * 60_000L
+        for (i in 1..3) seed("l$i", "PENDING", old)
+        midCall = { db.frameStateDao().deleteFor(listOf("l2")) }
+        legacyJob("l1", "l2", "l3")
+        for (id in listOf("l1", "l3")) { assertEquals("PENDING", db.frameStateDao().get(id)!!.state); assertEquals(0, db.frameStateDao().get(id)!!.attempts); assertEquals(null, db.frameStateDao().get(id)!!.claimId) }
+        assertEquals(0, memories().size)
+    }
+
+    /** Review M8: the legacy backstop leaves a frame alone for 2 minutes after the pipeline last touched it (manual runs do not wait). */
+    @Test fun legacyBackstopWaitsTwoMinutesButManualRunsDoNot() = runBlocking {
+        val now = System.currentTimeMillis()
+        seed("w1", "PENDING", now - 30_000)
+        legacyJob("w1")
+        assertTrue("inside the grace: the pipeline's", prompts.isEmpty()); assertEquals("PENDING", db.frameStateDao().get("w1")!!.state)
+        legacyJob("w1", manual = true)
+        assertEquals(1, prompts.size); assertEquals("EXTRACTED", db.frameStateDao().get("w1")!!.state)
+        seed("w2", "PENDING", now - 3 * 60_000)
+        legacyJob("w2")
+        assertEquals("past the grace", 2, prompts.size); assertEquals("EXTRACTED", db.frameStateDao().get("w2")!!.state)
+    }
+
+    /** Review M3: FRAME_INGEST makes no AI call, so heat and a low battery never defer it. */
+    @Test fun m3FrameIngestIsNotDeferredByHeatOrBattery() = runBlocking {
+        KeyframeGraph.thermal = com.rokid.context.work.budget.ThermalStatusProvider { com.rokid.context.work.budget.PhoneThermal.SEVERE }
+        shadowOf(ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager).setIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY, 10)
+        try {
+            QueueRuntimeStore.enqueue(ctx, QueuePriority.FRAME_INGEST, QueuePayloads.frameIngest(source = "test"), personaSnapshot = "p")
+            TestListenableWorkerBuilder<QueueDrainWorker>(ctx).build().doWork()
+            val traces = com.rokid.context.orchestration.PipelineRecords.recentTraces(ctx, 20)
+            assertTrue("ingest ran: ${traces.map { it.state }}", traces.any { it.state == "FRAME_INGEST_DONE" })
+            assertTrue(traces.none { it.state == "DEFERRED" })
+        } finally { KeyframeGraph.thermal = com.rokid.context.work.budget.ThermalStatusProvider { com.rokid.context.work.budget.PhoneThermal.NONE } }
+    }
+
+    /** Review M5: the fast-path evaluation pauses under Battery Saver and at thermal SEVERE. */
+    @Test fun m5LiveNudgesPauseUnderBatterySaverAndSevereHeat() = runBlocking {
+        val handle = KeyframeGraph.get(ctx)
+        assertTrue("normal: the engine runs (no HUD here)", handle.evaluateNudge().reason != "Paused")
+        shadowOf(ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).setIsPowerSaveMode(true)
+        assertEquals("Paused", handle.evaluateNudge().reason)
+        shadowOf(ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).setIsPowerSaveMode(false)
+        KeyframeGraph.thermal = com.rokid.context.work.budget.ThermalStatusProvider { com.rokid.context.work.budget.PhoneThermal.SEVERE }
+        try { assertEquals("Paused", handle.evaluateNudge().reason) }
+        finally { KeyframeGraph.thermal = com.rokid.context.work.budget.ThermalStatusProvider { com.rokid.context.work.budget.PhoneThermal.NONE } }
+    }
+
+    /** Review M6: a queued READ ask that is no longer fresh does not extract the last minute's frames as USER. */
+    @Test fun m6StaleQueuedAskDoesNotExtractFirstButAFreshOneDoes() = runBlocking {
+        seed("q1", "PENDING", System.currentTimeMillis())
+        try { com.rokid.context.orchestration.AnswerService.forApp(ctx, extractFirst = false).answerOrThrow("what is on the shelf", "queue") } catch (_: Exception) {}
+        assertEquals("PENDING", db.frameStateDao().get("q1")!!.state); assertTrue(prompts.isEmpty())
+        try { com.rokid.context.orchestration.AnswerService.forApp(ctx).answerOrThrow("what is on the shelf", "queue") } catch (_: Exception) {}
+        assertEquals("EXTRACTED", db.frameStateDao().get("q1")!!.state)
+    }
+
+    /** Review M1: start() is idempotent and registers one network callback. */
+    @Test fun m1StartTwiceWatchesTheNetworkOnce() {
+        val handle = KeyframeGraph.get(ctx)
+        handle.start(); handle.start(); handle.signal(); handle.signal()
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        assertEquals(1, shadowOf(cm).networkCallbacks.size)
+    }
+
+    /** Review I5: the extraction holds a bounded PARTIAL wake lock and gives it back, whatever the block does. */
+    @Test fun i5ExtractionHoldsAWakeLockAndReleasesIt() = runBlocking {
+        fun latest() = org.robolectric.shadows.ShadowPowerManager.getLatestWakeLock()
+        val lock = ExtractWakeLock(ctx, timeoutMs = 60_000)
+        lock.hold { assertTrue(latest().isHeld) }
+        assertTrue(!latest().isHeld)
+        try { lock.hold { error("boom") } } catch (_: IllegalStateException) {}
+        assertTrue("released after a failure", !latest().isHeld)
+    }
+
+    /** Review M2: the memory id prefix carries the whole claim id. */
+    @Test fun m2FactPrefixUsesTheFullClaimId() {
+        val a = "0123456789ab-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; val b = "0123456789ab-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        assertTrue(KeyframeHandle.factPrefix(a) != KeyframeHandle.factPrefix(b))
+        assertTrue(KeyframeHandle.factPrefix(a).contains(a))
     }
 }

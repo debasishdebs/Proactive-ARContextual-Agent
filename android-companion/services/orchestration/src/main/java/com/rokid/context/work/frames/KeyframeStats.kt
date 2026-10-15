@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 
 /** What Settings > Diagnostics shows for the keyframe pipeline (spec §P2.1 Diagnostics); the UI is P6b. */
 data class KeyframeStats(
@@ -30,7 +31,7 @@ class LatencyTracker(private val max: Int = 200) {
     private val state = MutableStateFlow<List<Long>>(emptyList())
     val samples: StateFlow<List<Long>> = state.asStateFlow()
 
-    fun record(ms: Long) { state.value = (state.value + ms.coerceAtLeast(0L)).takeLast(max) }
+    fun record(ms: Long) { state.update { (it + ms.coerceAtLeast(0L)).takeLast(max) } } // atomic: the ask and the loop record at once
 
     companion object {
         fun percentile(values: List<Long>, p: Int): Long? {
