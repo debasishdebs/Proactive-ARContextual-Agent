@@ -28,3 +28,10 @@ We found these by reading the bytecode (`javap -c`). Both calls go straight to `
 3. Ship this in a client-l release after 1.1.2 and add it to the changelog, so integrators know to rotate tokens.
 
 Workaround on our side, until then: `CxrGlassesLink` calls `LogUtil.setLogLevel(LogUtil.ERROR)` at start in every build type, in case a later SDK routes these lines through it. Our own code never logs the token.
+
+
+## Addendum 2026-10-15: AssistServer also logs the device key and secret
+The Rokid system process `com.rokid.os.sprite.assistserver` (pid varies, uid system) writes `DevCmdHelper -> jsonObject: {...}` lines to the glasses' logcat containing `deviceKey` and `deviceSecret` (and phone numbers/contact names from `PhoneCallManager`/`TelephoneManager` lines). Any `adb logcat` read of the glasses can therefore leak them.
+- Always filter glasses logcat with: `grep -v -i -E "token|AuthorizationHelper|deviceSecret|deviceKey|secret|password|DevCmdHelper|PhoneCallManager|TelephoneManager|BluetoothPBAPManager|MobileMsgDialog"`.
+- Never save a full unfiltered glasses logcat; filter by our own tags (PcCapture, PcUplink, PcGlasses, PcHud) or scrub before saving.
+- Incident: on 2026-10-15 a diagnostic grep printed one `DevCmdHelper` line (device key in full, the start of the device secret) into the chat transcript. Scrubbed from local copies; recorded in the decision log.
