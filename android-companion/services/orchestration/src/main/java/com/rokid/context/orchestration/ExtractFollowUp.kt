@@ -38,16 +38,25 @@ object ExtractFollowUp {
     fun confidence(facts: List<Fact>): Double = if (facts.isEmpty()) 1.0 else facts.map { it.confidence }.average()
 
     /** True when nothing needs review: no facts, a local TRUSTED verdict, or the model critic passing. [id] only seeds the local critic. */
-    suspend fun trusted(ai: AiGraph, critic: CriticWorker, id: String, facts: List<Fact>, frameLines: List<String>): Boolean =
-        facts.isEmpty() || critic.validate(id, confidence(facts)).status == SummaryStatus.TRUSTED || modelCriticPasses(ai, facts, frameLines)
+    suspend fun trusted(
+        ai: AiGraph, critic: CriticWorker, id: String, facts: List<Fact>, frameLines: List<String>, callClass: CallClass = CallClass.EXTRACT,
+    ): Boolean = locallyTrusted(critic, id, facts) || modelCriticPasses(ai, facts, frameLines, callClass)
 
-    /** spec §4.2 CRITIC as a second opinion on low-confidence facts. Unbound or failing → keep the local verdict. */
-    private suspend fun modelCriticPasses(ai: AiGraph, facts: List<Fact>, frameLines: List<String>): Boolean {
+    /** No facts, or the local critic's TRUSTED verdict: needs no model call. */
+    fun locallyTrusted(critic: CriticWorker, id: String, facts: List<Fact>): Boolean =
+        facts.isEmpty() || critic.validate(id, confidence(facts)).status == SummaryStatus.TRUSTED
+
+    /**
+     * spec §4.2 CRITIC as a second opinion on low-confidence facts. Unbound or failing → keep the local verdict. It runs under the
+     * CALLER's [callClass]: an ask's extraction (USER) must not queue its critic behind the EXTRACT backlog, where the ask's cap
+     * would strand it (final review I2).
+     */
+    suspend fun modelCriticPasses(ai: AiGraph, facts: List<Fact>, frameLines: List<String>, callClass: CallClass = CallClass.EXTRACT): Boolean {
         if (ai.bindings.get(Role.CRITIC) == null) return false
         val vars = PromptVars(recentContext = PromptComposer.dataBlock("facts", facts.map { "${it.text} (confidence ${"%.2f".format(Locale.US, it.confidence)})" }) +
             "\n" + PromptComposer.dataBlock("source", frameLines))
         return try {
-            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = CallClass.EXTRACT)).output as CriticOutput).pass
+            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = callClass)).output as CriticOutput).pass
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {

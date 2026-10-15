@@ -150,9 +150,9 @@ class FrameIngestor(
             is Admission.Reject -> IngestResult(FrameAck(frameId = id, ok = false, reason = d.reason))
             // A known id is not enough (review fix 2): when a receipt is on disk it is verified or completed from this resend.
             is Admission.AckOnly ->
-                if (d.reason == FrameAckReason.DUPLICATE && receipts.exists(id)) store(c.meta, c.jpeg, capturedAtMs = null)
+                if (d.reason == FrameAckReason.DUPLICATE && receipts.exists(id)) store(c.meta, c.jpeg, capturedAtMs = null, nowMs = nowMs)
                 else IngestResult(FrameAck(frameId = id, ok = true, reason = d.reason))
-            is Admission.Ingest -> store(c.meta, c.jpeg, d.capturedAtPhoneMs)
+            is Admission.Ingest -> store(c.meta, c.jpeg, d.capturedAtPhoneMs, nowMs)
         }
     }
 
@@ -162,7 +162,7 @@ class FrameIngestor(
      * the fence is unknown (it could not be recorded) nothing is stored and no ack is sent. [capturedAtMs] is null for a
      * ledger duplicate: the existing receipt's name already carries the time.
      */
-    private suspend fun store(meta: FrameMeta, jpeg: ByteArray, capturedAtMs: Long?): IngestResult = wipeLock.withLock {
+    private suspend fun store(meta: FrameMeta, jpeg: ByteArray, capturedAtMs: Long?, nowMs: Long): IngestResult = wipeLock.withLock {
         val id = meta.frameId
         val fence = wipeFence()
         if (fence is WipeFence.Fence.Unknown) {
@@ -179,10 +179,9 @@ class FrameIngestor(
             }
             // Gaps G1: sealed while "Encrypt memory" is on; a seal failure is an IOException (no ack, the glasses resend).
             val disk = FrameImages.forDisk(jpeg)
-            val rx = capturedAtMs ?: 0L
-            // RokidFrameInbox takes the capture time from lastModified; a duplicate keeps the time its receipt already has.
-            val stamp = capturedAtMs ?: System.currentTimeMillis()
-            val d = receipts.ensureDurable(id, rx, disk, receiptMeta(meta, disk.size.toLong()), stamp)
+            // The stem's time is the RECEIPT time (RokidFrameInbox's sidecar hold counts from it); the capture time is the file's
+            // mtime, which RokidFrameInbox reads. A duplicate rewrite (null) keeps the mtime its receipt already has.
+            val d = receipts.ensureDurable(id, nowMs, disk, receiptMeta(meta, disk.size.toLong()), capturedAtMs, includeArchive = capturedAtMs == null)
             ledger.add(id)
             d
         } catch (e: IOException) {
@@ -203,7 +202,7 @@ class FrameIngestor(
             storageErrorFor(e)
         }
         Log.i(TAG, "frame ingested $id")
-        IngestResult(FrameAck(frameId = id, ok = true), ingestedAtMs = done.rxMs, error = queueError)
+        IngestResult(FrameAck(frameId = id, ok = true), ingestedAtMs = capturedAtMs ?: done.rxMs, error = queueError)
     }
 
     private fun receiptMeta(m: FrameMeta, size: Long) = ReceiptMeta(
