@@ -34,7 +34,31 @@ object HubGraph {
     fun resetForTests(h: Hub?) { synchronized(this) { hub = h } }
 
     /** Off the main thread: the receipt commit does Room and file I/O. The process-wide hub outlives it. */
-    private val commitScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val commitScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> Log.w(Hub.TAG, "receipt commit scope failed: ${t.javaClass.simpleName}") },
+    )
+
+    /** Single-flight + dirty flag for the arrival drain: a burst of frames costs at most two full drains (final review N2). */
+    internal class DrainCoalescer {
+        private var running = false
+        private var dirty = false
+
+        /** Runs [drain] on [scope]; if one is already running it is marked dirty and loops once more instead of a second start. */
+        fun request(scope: CoroutineScope, drain: suspend () -> Unit) {
+            synchronized(this) { if (running) { dirty = true; return }; running = true }
+            scope.launch {
+                try {
+                    while (true) {
+                        synchronized(this@DrainCoalescer) { dirty = false }
+                        drain()
+                        synchronized(this@DrainCoalescer) { if (!dirty) { running = false; return@launch } }
+                    }
+                } finally { synchronized(this@DrainCoalescer) { if (running && !dirty) running = false } }
+            }
+        }
+    }
+
+    private val arrivalDrain = DrainCoalescer()
 
     /**
      * A frame is durable in the inbox: queue the legacy ingest (the backstop), then commit its receipt (frame row, frame_meta and
@@ -47,12 +71,18 @@ object HubGraph {
         enqueue: (Context) -> Unit = ::enqueueInboxIngest,
         scope: CoroutineScope = commitScope,
         commit: suspend (Context) -> Unit = ::commitReceipts,
+        coalescer: DrainCoalescer = arrivalDrain,
+        signal: (Context) -> Unit = { com.rokid.context.work.frames.KeyframeGraph.get(it).signal() },
     ) {
         try { enqueue(app) } finally {
-            scope.launch {
+            coalescer.request(scope) {
                 try { commit(app) } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     Log.w(Hub.TAG, "receipt commit failed: ${e.javaClass.simpleName}")
-                } finally { com.rokid.context.work.frames.KeyframeGraph.get(app).signal() }
+                } finally {
+                    try { signal(app) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                        Log.w(Hub.TAG, "keyframe signal failed: ${e.javaClass.simpleName}")
+                    }
+                }
             }
         }
     }

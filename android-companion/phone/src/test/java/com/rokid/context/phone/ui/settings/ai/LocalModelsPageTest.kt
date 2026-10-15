@@ -88,7 +88,11 @@ class LocalModelsPageTest {
         gateway = FakeGateway(File(ctx.filesDir, "models_test").apply { deleteRecursively() })
     }
 
-    @After fun tearDown() = TestGraph.close(ctx)
+    /** Dispose the composition first so no flow collector in it still reads Room when the DB is closed (a flaky closed-pool failure). */
+    @After fun tearDown() {
+        runCatching { compose.runOnIdle { }; compose.setContent { }; compose.waitForIdle() }
+        TestGraph.close(ctx)
+    }
 
     private fun source(abi: Boolean = true, failures: LoadFailures = LoadFailures.None) =
         LocalModelsSource(listOf(bge), gateway, ai, { reindexes++ }, mobile, abiSupported = abi, loadFailures = failures)
