@@ -233,6 +233,15 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
+    @Test fun diagStatsCountsKeyframesAndCameraShare() = runTest {
+        val r = rig(this)
+        r.session.start()
+        delay(3_000)
+        val line = r.session.diagStats()
+        assertTrue(Regex("""kf1m=1 camOpen=\d+%""").matches(line), line)
+        r.session.stop("test")
+    }
+
     @Test fun captureNowIsRefusedWhileNotSampling() = runTest {
         val r = rig(this)
         r.paused = true

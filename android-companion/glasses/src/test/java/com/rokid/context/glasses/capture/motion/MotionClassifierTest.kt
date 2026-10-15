@@ -144,4 +144,42 @@ class MotionClassifierTest {
         assertEquals(MotionState.HEAD_MOVING, c.state.value)
         assertTrue(c.decelerating.value)
     }
+
+    // ---- fix wave K3: provisional relaxed walking rule and the per-second feature line ----
+
+    @Test fun softerStrideNeedsTwoSecondsOfSustainedPeriodicity() {
+        walk(0, 1500, 1.4, 0.9f) // variance 0.405: under the 0.5 strict rule, over the relaxed 0.25
+        assertEquals(MotionState.STILL, c.state.value)
+        walk(1500, 2500, 1.4, 0.9f)
+        assertEquals(MotionState.WALKING, c.state.value)
+    }
+
+    @Test fun relaxedRuleStillWantsAStepFrequencyAndEnoughVariance() {
+        walk(0, 5000, 0.5, 2.0f) // a slow sway
+        assertEquals(MotionState.STILL, c.state.value)
+        walk(5000, 5000, 1.4, 0.4f) // variance 0.08
+        assertEquals(MotionState.STILL, c.state.value)
+        walk(10_000, 5000, 3.5, 1.0f) // too fast for steps
+        assertEquals(MotionState.STILL, c.state.value)
+    }
+
+    @Test fun featureSnapshotReportsGyroPeakVarianceFrequencyAndResetsThePeak() {
+        gyro(0, 400, 0.9f)
+        walk(400, 2000, 2.0, 2.0f)
+        val f = c.features()
+        assertEquals(0.9f, f.gyroMax, 0.01f)
+        assertEquals(2.0f, f.accVariance, 0.2f)
+        assertEquals(2.0, f.stepHz, 0.3)
+        assertEquals(MotionState.WALKING, f.state)
+        assertEquals(0f, c.features().gyroMax)
+    }
+
+    @Test fun featureLoggerWritesOneCountOnlyLinePerTick() {
+        walk(0, 2000, 2.0, 2.0f)
+        val lines = mutableListOf<String>()
+        val l = FeatureLogger(c) { lines += it }
+        l.tick(); l.tick()
+        assertEquals(2, lines.size)
+        assertTrue(Regex("""features gyroMax=\d+\.\d+ accVar=\d+\.\d+ stepHz=\d+\.\d+ state=WALKING""").matches(lines[0]), lines[0])
+    }
 }

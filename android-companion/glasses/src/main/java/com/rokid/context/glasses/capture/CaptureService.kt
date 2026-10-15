@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import com.rokid.context.glasses.capture.diag.DiagLog
 import androidx.camera.core.ImageProxy
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
@@ -66,7 +67,7 @@ import kotlin.random.Random
  */
 class CaptureService : LifecycleService() {
     /** A throw in a launched job must never crash the process on Main; only the exception's simple name is logged. */
-    private val errors = CoroutineExceptionHandler { _, e -> Log.w(TAG, "capture job failed: ${e.javaClass.simpleName}") }
+    private val errors = CoroutineExceptionHandler { _, e -> DiagLog.w(TAG, "capture job failed: ${e.javaClass.simpleName}") }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + errors)
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val scheduler by lazy { CaptureScheduler(this) }
@@ -118,7 +119,7 @@ class CaptureService : LifecycleService() {
             // Started while the HUD is in front: this foreground service keeps while-in-use camera access after the
             // app goes to the background, as long as nothing restarts it from the background (alarms come in-process).
             val started = startForegroundOrStop(start = { startForeground(NOTIFICATION_ID, notification()) }) { stopSelf(startId) }
-            if (started) { keepAliveMode = true; liveInstance = this; startSupervisor(); Log.i(TAG, "keep-alive started") }
+            if (started) { keepAliveMode = true; liveInstance = this; startSupervisor(); DiagLog.i(TAG, "keep-alive started") }
             return START_NOT_STICKY
         }
         if (action != ACTION_SCHEDULED && action != ACTION_NOW) { if (!keepAliveMode) stopSelf(startId); return START_NOT_STICKY }
@@ -145,12 +146,12 @@ class CaptureService : LifecycleService() {
                 // Smart sampling needs the pause set loaded and quiet hours turned into pauses (it never goes through captureNow).
                 // Off Main, so a holder of the pause lock never waits on the main thread.
                 if (runtime.settingsCache.capture().captureMode == CaptureMode.SMART) {
-                    try { withContext(Dispatchers.Default) { runtime.pauses.ensureLoaded() } } catch (e: CancellationException) { throw e } catch (e: Exception) { Log.w(TAG, "pause load failed: ${e.javaClass.simpleName}") }
+                    try { withContext(Dispatchers.Default) { runtime.pauses.ensureLoaded() } } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "pause load failed: ${e.javaClass.simpleName}") }
                 }
                 if (heatPoller.tick()) logHeat()
                 reconcile()
                 publishStatus(tick++)
-              } catch (e: CancellationException) { throw e } catch (e: Exception) { Log.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
+              } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
                 delay(SUPERVISE_MS)
             }
         }
@@ -163,7 +164,7 @@ class CaptureService : LifecycleService() {
             if (lastMode != null) { degradedLatch.reset(); scheduleNextCapture(failed = false) } // a switch re-arms the alarm for the new mode
             lastMode = s.captureMode
         }
-        if (degradedLatch.retryDue()) { Log.i(TAG, "watchdog: retrying Smart after the camera fallback"); scheduleNextCapture(failed = false) }
+        if (degradedLatch.retryDue()) { DiagLog.i(TAG, "watchdog: retrying Smart after the camera fallback"); scheduleNextCapture(failed = false) }
         val wantSmart = s.captureMode == CaptureMode.SMART && keepAliveMode && !degraded
         if (wantSmart && smart == null) startSmart()
         else if (!wantSmart && smart != null) stopSmart(if (degraded) "bind" else "mode")
@@ -179,14 +180,14 @@ class CaptureService : LifecycleService() {
             settings = { runtime.settingsCache.readNormalized() },
             capturePaused = { !runtime.pauses.captureAllowed() },
             batteryPct = ::batteryPercent, charging = ::isCharging, batterySaver = ::isBatterySaverOn,
-            fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { Log.i(TAG, it) }, workContext = Dispatchers.Default,
+            fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default,
         )
         val feed = AndroidSensorFeed(this).also { it.start(motion, wear) }
         smart = Smart(session, feed)
         runtime.smartCapture.value = true
         session.start()
         scheduleNextCapture(failed = false) // the watchdog
-        Log.i(TAG, "smart session started")
+        DiagLog.i(TAG, "smart session started")
     }
 
     /** Releases the camera (through the owner) and the sensors. Idempotent. */
@@ -200,7 +201,7 @@ class CaptureService : LifecycleService() {
     }
 
     private fun onSessionFallback() {
-        Log.w(TAG, "capture degraded: three camera binds failed, Fixed ${CaptureCadence.FALLBACK_INTERVAL_SEC} s for this session")
+        DiagLog.w(TAG, "capture degraded: three camera binds failed, Fixed ${CaptureCadence.FALLBACK_INTERVAL_SEC} s for this session")
         degradedLatch.trip()
         stopSmart("bind")
         scheduleNextCapture(failed = false)
@@ -212,8 +213,8 @@ class CaptureService : LifecycleService() {
         val frameId = newFrameId(nowMs)
         when (runtime.bufferCaptured(frameId, k, nowMs, luma, batteryPercent().takeIf { it in 0..100 })) {
             BufferResult.STORED -> scope.launch { runtime.onFrameBuffered(); runtime.fallback.onCaptureSucceeded() }
-            BufferResult.PAUSED -> Log.i(TAG, "keyframe dropped: paused")
-            BufferResult.NOT_STORED -> Log.w(TAG, "keyframe not buffered")
+            BufferResult.PAUSED -> DiagLog.i(TAG, "keyframe dropped: paused")
+            BufferResult.NOT_STORED -> DiagLog.w(TAG, "keyframe not buffered")
         }
     }
 
@@ -226,13 +227,15 @@ class CaptureService : LifecycleService() {
         runtime.captureStatus.value = shown
         // Counts and states only. One line when it changes, and a heartbeat every minute.
         val line = "status running=${shown.running} reason=${shown.reason} motion=${shown.motion} keyframes10m=${shown.keyframesLast10Min} resting=${shown.restingUntilMs != null} heat=${heat.level.value} degraded=$degraded ${smart?.session?.startupStats() ?: ""}"
-        if (line != lastLogged || tick % 60 == 0) { lastLogged = line; Log.i(TAG, line) }
+        // Fix wave K3/K4: the heartbeat (every minute) adds what the retest could not show: ui mode, rate, camera share, battery temp, wear, restart gap.
+        if (tick % 60 == 0) DiagLog.i(TAG, "heartbeat running=${shown.running} reason=${shown.reason} ui_mode=${runtime.uiMode.get()} ${smart?.session?.diagStats() ?: ""} heat=${heat.level.value} batteryC=${heat.lastReading?.batteryTempC} wear=${runtime.wear.worn.value} restartGapSec=${runtime.restarts.lastGapSec}")
+        if (line != lastLogged || tick % 60 == 0) { lastLogged = line; DiagLog.i(TAG, line) }
     }
 
     /** The raw reading, headroom NaN included: Diagnostics must show that this HAL gives none. */
     private fun logHeat() {
         val r = heat.lastReading ?: return
-        Log.i(TAG, "heat level=${heat.level.value} thermal=${r.thermalStatus} headroom=${r.headroom} batteryC=${r.batteryTempC} lastFiniteHeadroom=${heat.lastHeadroom}")
+        DiagLog.i(TAG, "heat level=${heat.level.value} thermal=${r.thermalStatus} headroom=${r.headroom} batteryC=${r.batteryTempC} lastFiniteHeadroom=${heat.lastHeadroom}")
     }
 
     private fun readHeat(): HeatReading {
@@ -255,7 +258,7 @@ class CaptureService : LifecycleService() {
             if (smart?.session?.alive == false) stopSmart("dead") // a session whose loop died is replaced by reconcile()
             reconcile()
             scheduleNextCapture(failed = false)
-            Log.i(TAG, "watchdog: smart session ${if (smart?.session?.alive == true) "alive" else "not running"}")
+            DiagLog.i(TAG, "watchdog: smart session ${if (smart?.session?.alive == true) "alive" else "not running"}")
             return true
         }
         return captureNow(false)
@@ -282,7 +285,7 @@ class CaptureService : LifecycleService() {
             } catch (e: Exception) {
                 failed = true
                 lastOutcome = Outcome.FAILED
-                Log.w(TAG, "capture failed: ${e.javaClass.simpleName}")
+                DiagLog.w(TAG, "capture failed: ${e.javaClass.simpleName}")
             } finally {
                 scheduleNextCapture(failed)
                 inFlight.set(false)
@@ -318,7 +321,7 @@ class CaptureService : LifecycleService() {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
-        Log.i(TAG, "keep-alive stopped")
+        DiagLog.i(TAG, "keep-alive stopped")
     }
 
     internal val captureInFlight: Boolean get() = inFlight.get()
@@ -336,11 +339,11 @@ class CaptureService : LifecycleService() {
 
     /** [force]: past the change test and the throttle (a user request or the debug skip); the alarm never forces. */
     private suspend fun captureOnce(force: Boolean): Outcome {
-        if (!runtime.pauses.captureAllowed()) { Log.i(TAG, "capture skipped: paused"); return Outcome.SKIPPED }
-        if (isBatterySaverOn()) { Log.i(TAG, "capture skipped: battery saver"); return Outcome.SKIPPED }
-        if (heat.level.value == HeatLevel.STOP) { Log.i(TAG, "capture skipped: heat"); return Outcome.SKIPPED }
+        if (!runtime.pauses.captureAllowed()) { DiagLog.i(TAG, "capture skipped: paused"); return Outcome.SKIPPED }
+        if (isBatterySaverOn()) { DiagLog.i(TAG, "capture skipped: battery saver"); return Outcome.SKIPPED }
+        if (heat.level.value == HeatLevel.STOP) { DiagLog.i(TAG, "capture skipped: heat"); return Outcome.SKIPPED }
         // Low battery skips before the camera opens; FrameGuard checks again per frame. Unknown battery fails open.
-        if (FrameGuard.lowBattery(batteryPercent(), isCharging())) { Log.i(TAG, "capture skipped: ${SkipReason.LOW_BATTERY}"); return Outcome.SKIPPED }
+        if (FrameGuard.lowBattery(batteryPercent(), isCharging())) { DiagLog.i(TAG, "capture skipped: ${SkipReason.LOW_BATTERY}"); return Outcome.SKIPPED }
         val provider = CameraXBind.provider(this) ?: return Outcome.FAILED
         val analysis = CameraXBind.analysis()
         val result = CompletableDeferred<Outcome>()
@@ -350,21 +353,21 @@ class CaptureService : LifecycleService() {
             try {
                 if (result.isCompleted) return@setAnalyzer
                 // Paused mid-window: stop now so the camera unbinds promptly (spec §5.5).
-                if (!runtime.pauses.captureAllowed()) { Log.i(TAG, "capture skipped: paused"); result.complete(Outcome.SKIPPED); return@setAnalyzer }
+                if (!runtime.pauses.captureAllowed()) { DiagLog.i(TAG, "capture skipped: paused"); result.complete(Outcome.SKIPPED); return@setAnalyzer }
                 analyzed.incrementAndGet()
                 val now = System.currentTimeMillis()
                 if (now - lastAnalyzeAtMs < ANALYZE_INTERVAL_MS) return@setAnalyzer
                 lastAnalyzeAtMs = now
                 evaluate(image, now, force)?.let { result.complete(it) }
             } catch (e: Exception) {
-                Log.w(TAG, "analyze failed: ${e.javaClass.simpleName}")
+                DiagLog.w(TAG, "analyze failed: ${e.javaClass.simpleName}")
                 result.complete(Outcome.FAILED)
             } finally {
                 image.close()
             }
         }
         val bound = CameraXBind.bind(this, provider, analysis, cameraExecutor)
-        if (bound == null) { Log.w(TAG, "camera bind failed"); return Outcome.FAILED }
+        if (bound == null) { DiagLog.w(TAG, "camera bind failed"); return Outcome.FAILED }
         return bound.use {
             withTimeoutOrNull(WINDOW_MS) { result.await() } ?: run {
                 if (analyzed.get() == 0 || isBackgroundRestricted()) runtime.fallback.maybeLaunch(this)
@@ -380,11 +383,11 @@ class CaptureService : LifecycleService() {
         for (i in copy.thumb.luma.indices step 4) sum += copy.thumb.luma[i].toInt() and 0xFF
         val luma = (sum / ((copy.thumb.luma.size + 3) / 4).coerceAtLeast(1)).toInt()
         val battery = batteryPercent()
-        FrameGuard.checkBatteryAndDark(battery, isCharging(), luma.toDouble())?.let { Log.i(TAG, "capture skipped: $it"); return Outcome.SKIPPED }
+        FrameGuard.checkBatteryAndDark(battery, isCharging(), luma.toDouble())?.let { DiagLog.i(TAG, "capture skipped: $it"); return Outcome.SKIPPED }
         // One frame, a still scene as far as the gate goes; the user's "Capture now" and the debug skip force it past the change test.
         val keep = when (val r = gate.offer(Candidate(++fixedSeq, copy.thumb, copy.pixels), MotionState.STILL, dwellArmed = false, force = force)) {
             is GateResult.Keep -> r
-            is GateResult.Skip -> { if (r.reason == KeyframeGate.BLUR) return null; Log.i(TAG, "capture skipped: ${r.reason}"); return Outcome.SKIPPED }
+            is GateResult.Skip -> { if (r.reason == KeyframeGate.BLUR) return null; DiagLog.i(TAG, "capture skipped: ${r.reason}"); return Outcome.SKIPPED }
         }
         val enc = AndroidKeyframeEncoder.encode(keep.candidate.pixels) ?: return null
         val out = KeyframeOut(
@@ -394,11 +397,11 @@ class CaptureService : LifecycleService() {
         val frameId = newFrameId(nowMs)
         when (runtime.bufferCaptured(frameId, out, nowMs, luma, battery.takeIf { it in 0..100 })) {
             BufferResult.STORED -> Unit
-            BufferResult.PAUSED -> { Log.i(TAG, "capture skipped: paused"); return Outcome.SKIPPED }
+            BufferResult.PAUSED -> { DiagLog.i(TAG, "capture skipped: paused"); return Outcome.SKIPPED }
             // OutboundBuffer logged the exception class; the capture fails and retries in 15 s (CaptureCadence.RETRY_MS).
-            BufferResult.NOT_STORED -> { Log.w(TAG, "capture failed: frame $frameId not buffered"); return Outcome.FAILED }
+            BufferResult.NOT_STORED -> { DiagLog.w(TAG, "capture failed: frame $frameId not buffered"); return Outcome.FAILED }
         }
-        Log.i(TAG, "buffered $frameId (${out.jpeg.size / 1024} KB, w=${out.width}) buffer=${runtime.buffer.size}")
+        DiagLog.i(TAG, "buffered $frameId (${out.jpeg.size / 1024} KB, w=${out.width}) buffer=${runtime.buffer.size}")
         runtime.onFrameBuffered()
         runtime.fallback.onCaptureSucceeded()
         return Outcome.BUFFERED
@@ -458,7 +461,7 @@ class CaptureService : LifecycleService() {
         fun startKeepAlive(context: Context) {
             if (liveInstance != null) return
             runCatching { context.startForegroundService(Intent(context, CaptureService::class.java).setAction(ACTION_KEEP_ALIVE)) }
-                .onFailure { Log.w(TAG, "keep-alive start refused: ${it.javaClass.simpleName}") }
+                .onFailure { DiagLog.w(TAG, "keep-alive start refused: ${it.javaClass.simpleName}") }
         }
 
         fun stopKeepAlive(context: Context) {
@@ -466,7 +469,7 @@ class CaptureService : LifecycleService() {
         }
 
         fun captureNow(context: Context, skipDedupe: Boolean = false) {
-            liveInstance?.let { if (!it.captureNow(BuildConfig.DEBUG && skipDedupe, userRequest = true)) Log.i(TAG, "capture already in flight"); return }
+            liveInstance?.let { if (!it.captureNow(BuildConfig.DEBUG && skipDedupe, userRequest = true)) DiagLog.i(TAG, "capture already in flight"); return }
             context.startForegroundService(Intent(context, CaptureService::class.java).setAction(ACTION_NOW).putExtra(EXTRA_SKIP_DEDUPE, skipDedupe))
         }
     }
