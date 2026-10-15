@@ -119,8 +119,8 @@ class FakeCamera(
 }
 
 /** Keeps the pixel payload as the "JPEG" so a test can see which candidate was encoded. */
-class TagEncoder(var width: Int = 640, var scaled: Boolean = false) : KeyframeEncoder {
-    override fun encode(frame: Nv21Frame) = EncodedKeyframe(frame.data.copyOf(), width, scaled)
+class TagEncoder(var width: Int = 640, var height: Int = 480) : KeyframeEncoder {
+    override fun encode(frame: Nv21Frame) = EncodedKeyframe(frame.data.copyOf(), width, height)
 }
 
 class Rig(

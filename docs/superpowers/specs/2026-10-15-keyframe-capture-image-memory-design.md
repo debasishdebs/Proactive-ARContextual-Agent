@@ -7,7 +7,7 @@ Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes 
 
 - **Goal: both recall and live awareness, equally.** Keep every distinct scene, including 1–2 s moments ("where did I leave my keys", "what was on that whiteboard"), and react to what the user is looking at within seconds.
 - **Cost model (user decision):** capture fast on the glasses but send only changed scenes, and cap AI calls at about 1 per 10–15 s.
-- **Verifiability:** in debug, the user must be able to compare each saved caption, cluster and retrieval against the photo it came from. That's why stored keyframes are 640 px, not 160 px. It also supports the v3 agent canvas, where a router triggers subagents per task.
+- **Verifiability:** in debug, the user must be able to compare each saved caption, cluster and retrieval against the photo it came from. That's why stored keyframes are up to 640 px on the long side, not 160 px. It also supports the v3 agent canvas, where a router triggers subagents per task.
 - **Privacy and storage:** full-resolution originals never leave the glasses. Each kind of stored data has its own retention setting. Eventually only vectors and text remain.
 - **Simplicity this run (user decision):** a single embedding model family, **Nomic Embed v1.5** (text and vision share one vector space), replaces bge-small, with a re-index. There is no SigLIP and no second vision interface. A vision-model chooser comes in v1.5; see §F.3.
 - **Agents (user rule):** Opus writes specs, plans and reviews; Sonnet writes code. Never Haiku.
@@ -194,7 +194,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   - Start: the HUD is visible (the Android 12 rule that a camera foreground service must start from the foreground), the glasses are worn, capture isn't paused, and battery and heat allow it.
   - **The camera follows head motion (revision 5, user decision 2026-10-15):** the camera is opened only while it can matter (§"Motion-driven camera" below). It is **not** bound for the whole session. The analysis stream uses STRATEGY_KEEP_ONLY_LATEST at a target of 640×480, through **CameraX** (the faster in the Quick-look probe: about 300 ms cold p50).
     - Each sample is downscaled to a **160 px grey thumbnail used only inside the glasses**, for the hashes, blur and motion checks. It's never stored or sent.
-    - Only a keyframe is encoded: **640 px wide JPEG at q75**.
+    - Only a keyframe is encoded: **JPEG at q75, long side ≤ 640 px, never upscaled** (portrait 480×640 and landscape 640×480 are both fine; a larger source is scaled down).
   - The session lives in the existing keep-alive `CaptureService`. The AlarmManager chain stays only for Fixed mode and as a watchdog that restarts sampling after a process death.
 - **Motion state** (`MotionClassifier`, glasses):
   - Inputs: gyroscope and linear acceleration at SENSOR_DELAY_GAME (about 50 Hz), batched with `maxReportLatency` 1 s.
@@ -553,7 +553,7 @@ Results:
 - **Resolution:** the camera reports 480×640 (portrait), so the probe's JPEG was 480 px wide (43 KB).
 
 Spec consequences (binding on the plan):
-1. P1 must request resolution explicitly with `ResolutionSelector` (4:3, 640×480 in landscape after rotation), then assert the keyframe width is 640. A device test checks it.
+1. P1 must request resolution explicitly with `ResolutionSelector` (4:3, 640×480 in landscape after rotation), then keep the keyframe's long side at most 640 (the camera's 480×640 is kept as is, never upscaled; revision 9 after the first desk run). A device test checks it.
 2. The 160 px thumbnail should come from Y-plane subsampling, not via the JPEG encoder, to keep each sample under about 30 ms. Only keyframes are JPEG-encoded.
 3. **Still to measure:** battery drain per hour unplugged, and heat while worn. This is a device check in the P1 run, for example by wireless adb, or by reading the level before and after a 30 min unplugged session.
 4. Only one capture path may own the camera: Smart mode replaces the per-capture bind, and Fixed mode/rest captures must not run while a sampling session is bound. The probe needed a "probe owns the camera" guard.

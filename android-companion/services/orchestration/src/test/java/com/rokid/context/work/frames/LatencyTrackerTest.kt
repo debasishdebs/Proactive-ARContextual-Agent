@@ -16,4 +16,13 @@ class LatencyTrackerTest {
         (1L..5L).forEach(t::record)
         assertEquals(listOf(3L, 4L, 5L), t.samples.value)
     }
+
+    @Test fun onlyFramesReceivedWithinTenMinutesOfCaptureAreRecorded() {
+        val t = LatencyTracker()
+        t.record(12_000L, receiptLagMs = 1_000L)                       // a live keyframe
+        t.record(10 * 60_000L, receiptLagMs = LatencyTracker.MAX_RECEIPT_LAG_MS) // on the line: kept
+        t.record(442 * 60_000L, receiptLagMs = 442 * 60_000L)          // a backfilled legacy frame
+        t.record(5_000L, receiptLagMs = null)                          // adopted: no receipt time
+        assertEquals(listOf(12_000L, 10 * 60_000L), t.samples.value)
+    }
 }

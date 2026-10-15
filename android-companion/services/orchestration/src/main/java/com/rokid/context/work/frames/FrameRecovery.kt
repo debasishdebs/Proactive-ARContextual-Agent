@@ -15,6 +15,12 @@ object FrameRecovery {
      */
     const val CLAIM_TIMEOUT_MS = 15 * 60_000L
 
+    /**
+     * First thing in a new process, before the first drain: every EXTRACTING row is released with no attempt (see
+     * [FrameStateDao.releaseAllExtracting]); the [CLAIM_TIMEOUT_MS] sweep stays only as a backstop. Returns the rows released.
+     */
+    suspend fun releaseAtProcessStart(dao: FrameStateDao, nowMs: Long): Int = dao.releaseAllExtracting(nowMs)
+
     /** Returns how many abandoned claims were requeued; [signal] is called afterwards so the pipeline drains what is claimable. */
     suspend fun run(dao: FrameStateDao, nowMs: Long, signal: () -> Unit = {}): Int {
         val n = dao.requeueAbandoned(nowMs, nowMs - CLAIM_TIMEOUT_MS)
