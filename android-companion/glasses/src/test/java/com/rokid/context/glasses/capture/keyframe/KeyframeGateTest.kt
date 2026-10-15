@@ -43,8 +43,8 @@ class KeyframeGateTest {
 
     @Test fun abaPingPongSuppressed() {
         assertIs<GateResult.Keep>(at(10_000, cand(1)))
-        assertIs<GateResult.Keep>(at(12_000, cand(2)))
-        assertEquals("DUPLICATE", reason(at(14_000, cand(1))))
+        assertIs<GateResult.Keep>(at(13_000, cand(2)))
+        assertEquals("DUPLICATE", reason(at(16_000, cand(1))))
     }
 
     @Test fun throttle1200ms() {
@@ -56,17 +56,17 @@ class KeyframeGateTest {
         // the same frame after 1.2 s is a DUPLICATE (the ring, not the clock, rejects it)
         assertEquals("DUPLICATE", reason(at(11_200, cand(1))))
         assertEquals(1, store.ring.size)
-        // a NEW scene is kept at 0.6 s, well inside the 1.2 s that applies to non-new frames
-        assertIs<GateResult.Keep>(at(11_800, cand(2)))
-        assertIs<GateResult.Keep>(at(12_400, cand(3)))
+        // a NEW scene is kept once the 3 s non-dwell cap has passed (K1; it was 0.5 s before)
+        assertIs<GateResult.Keep>(at(13_000, cand(2)))
+        assertIs<GateResult.Keep>(at(16_000, cand(3)))
         assertEquals(3, store.ring.size)
     }
 
-    @Test fun newSceneMayFollowAfter500ms() {
+    @Test fun newDwellSceneMayFollowAfter500ms() {
         assertIs<GateResult.Keep>(at(10_000, cand(1)))
-        assertEquals("THROTTLED", reason(at(10_499, cand(2))))
-        assertIs<GateResult.Keep>(at(10_500, cand(2)))
-        assertIs<GateResult.Keep>(at(11_000, cand(3)))
+        assertEquals("THROTTLED", reason(at(10_499, cand(2), dwell = true)))
+        assertIs<GateResult.Keep>(at(10_500, cand(2), dwell = true))
+        assertIs<GateResult.Keep>(at(11_000, cand(3), dwell = true))
     }
 
     @Test fun sharpestOfWindowWins() {
@@ -142,7 +142,7 @@ class KeyframeGateTest {
     }
 
     @Test fun sharpMidTurnFrameDoesNotStealTheDwellFlag() {
-        at(10_000, cand(1))
+        at(3_000, cand(1)) // far enough back that the K1 6 s moving cap is open at 11.8 s
         val midTurn = cand(2) // sharp, but a duplicate-free new scene seen only while moving
         assertEquals("WINDOW", reason(at(11_300, midTurn, MotionState.HEAD_MOVING)))
         val settled = cand(3, soft = 8) // softer, but it is what the user settled on
@@ -220,5 +220,39 @@ class KeyframeGateTest {
         assertIs<GateResult.Keep>(gate.offer(cand(1), MotionState.WALKING, false, force = true)) // forced while moving too
         now = 20_000
         assertEquals("BLUR", reason(gate.offer(cand(2, soft = 100), MotionState.STILL, false, force = true)))
+    }
+
+    // ---- fix wave K1/K2: non-dwell rate cap and sample-time motion ----
+
+    @Test fun nonDwellKeepsAreCappedAtOnePer3s() {
+        assertIs<GateResult.Keep>(at(10_000, cand(1)))
+        assertEquals("THROTTLED", reason(at(12_999, cand(2))))
+        assertIs<GateResult.Keep>(at(13_000, cand(2)))
+    }
+
+    @Test fun movingKeepsAreCappedAtOnePer6s() {
+        assertIs<GateResult.Keep>(at(10_000, cand(1), MotionState.STILL))
+        // a walking window closing 2 s, 4 s and 5.9 s later keeps nothing; the first one past 6 s does
+        for (t in listOf(12_000L, 14_000L, 15_999L)) {
+            at(t - 1_500, cand(2), MotionState.WALKING)
+            assertEquals("THROTTLED", reason(at(t, cand(2), MotionState.WALKING)))
+        }
+        at(16_000 - 1_500, cand(3), MotionState.HEAD_MOVING)
+        assertIs<GateResult.Keep>(at(16_000, cand(3), MotionState.HEAD_MOVING))
+    }
+
+    @Test fun dwellAndForcedAreExemptFromTheCap() {
+        assertIs<GateResult.Keep>(at(10_000, cand(1), MotionState.WALKING, force = true))
+        assertIs<GateResult.Keep>(at(10_600, cand(2), MotionState.STILL, dwell = true))
+        assertIs<GateResult.Keep>(at(10_700, cand(3), MotionState.STILL, force = true))
+    }
+
+    @Test fun keepCarriesTheMotionOfTheWinningSample() {
+        val first = cand(1, soft = 8); val sharp = cand(1)
+        at(10_000, first, MotionState.WALKING)
+        at(10_500, sharp, MotionState.HEAD_MOVING)
+        val r = assertIs<GateResult.Keep>(at(11_600, cand(1, soft = 4), MotionState.STILL))
+        assertSame(sharp, r.candidate)
+        assertEquals(MotionState.HEAD_MOVING, r.motion)
     }
 }

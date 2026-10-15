@@ -36,7 +36,7 @@ class DiagnosticsTest {
 
     private val stats = KeyframeStats(
         counts = mapOf("PENDING" to 3, "EXTRACTED" to 40, "FAILED_FINAL" to 2), callsPerHour = mapOf(CallClass.USER to 1, CallClass.EXTRACT to 7, CallClass.BACKFILL to 2),
-        keyframesPerHour = 55, backlog = 3, latencyP50Ms = 4_000, latencyP95Ms = 12_000,
+        keyframesPerHour = 55, backlog = 3, latencyP50Ms = 4_000, latencyP95Ms = 12_000, shed = 28,
     )
 
     private fun show(rows: KeyframeRows, onRetry: () -> Unit = {}) {
@@ -47,6 +47,7 @@ class DiagnosticsTest {
         show(KeyframeRows(stats, droppedNudges = mapOf("SHOWN_GAP" to 2), sidecarLost = 4))
         compose.onNodeWithTag("kf_backlog").assertTextContains("Backlog 3", substring = true).assertTextContains("PENDING 3", substring = true).assertTextContains("FAILED_FINAL 2", substring = true)
         compose.onNodeWithTag("kf_rate").assertTextContains("55", substring = true)
+        compose.onNodeWithTag("kf_shed").assertTextContains("Skipped to keep up: 28")
         compose.onNodeWithTag("kf_calls").assertTextContains("USER 1", substring = true).assertTextContains("EXTRACT 7", substring = true).assertTextContains("OTHER 2", substring = true)
         compose.onNodeWithTag("kf_latency").assertTextContains("p50 4 s", substring = true).assertTextContains("p95 12 s", substring = true)
         compose.onNodeWithTag("kf_dropped").assertTextContains("SHOWN_GAP 2", substring = true)

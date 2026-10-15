@@ -139,6 +139,28 @@ abstract class FrameStateDao {
     )
     abstract suspend fun release(frameId: String, claimId: String, nowMs: Long): Int
 
+    @Query("SELECT COUNT(*) FROM frame_state WHERE state = 'PENDING'")
+    abstract suspend fun pendingCount(): Int
+
+    /**
+     * Fix wave K5, backlog shedding: PENDING frames beyond the NEWEST [keepNewest] (by capture time) that are not dwell keyframes
+     * go to NEAR_DUP with lastError 'shed_backlog' (no schema change): they are never extracted, and their photos then follow the
+     * normal retention of skipped photos. Dwell keyframes and tombstoned frames are left alone. Returns how many rows moved.
+     */
+    @Query(
+        "UPDATE frame_state SET state = 'NEAR_DUP', lastError = 'shed_backlog', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE state = 'PENDING' AND frameId IN (" +
+            "SELECT p.frameId FROM frame_state p LEFT JOIN frame f ON f.id = p.frameId WHERE p.state = 'PENDING' " +
+            "ORDER BY COALESCE(f.ts, p.updatedAt) DESC LIMIT -1 OFFSET :keepNewest) " +
+            "AND frameId NOT IN (SELECT frameId FROM frame_meta WHERE dwell = 1) " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)",
+    )
+    abstract suspend fun shedOldestNonDwell(keepNewest: Int, nowMs: Long): Int
+
+    /** Frames skipped by [shedOldestNonDwell] (still counted until retention deletes them). */
+    @Query("SELECT COUNT(*) FROM frame_state WHERE state = 'NEAR_DUP' AND lastError = 'shed_backlog'")
+    abstract fun shedCount(): Flow<Int>
+
     @Query("SELECT state AS k, COUNT(*) AS v FROM frame_state GROUP BY state")
     abstract fun counts(): Flow<Map<@MapColumn("k") String, @MapColumn("v") Int>>
 
