@@ -25,6 +25,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -123,6 +125,19 @@ class CaptureSettingsTest {
         assertEquals(15_000L, AiCallPaceStore(prefs).paceMs.value)
         assertEquals(15_000L, withTimeout(5_000) { vm.state.first { it.paceMs == 15_000L } }.paceMs)
         store.set(11_000); assertEquals(10_000L, store.paceMs.value)
+        vm.cancelScope()
+    }
+
+    /** Fix wave H: the wear switch is back (real signal, default on), and the capture blink is a synced setting, default on. */
+    @Test fun wearSwitchAndCaptureBlinkSync() = runBlocking {
+        show(CaptureSettingsUiState())
+        compose.onNodeWithTag("pause_not_worn").assertExists()
+        val hud = FakeHudSettings()
+        val vm = CaptureSettingsViewModel(hud)
+        assertTrue(hud.settings.value.captureCue); assertTrue(hud.settings.value.pauseWhenNotWorn)
+        vm.setCaptureCue(false); assertFalse(hud.settings.value.captureCue)
+        vm.setPauseWhenNotWorn(false); assertFalse(hud.settings.value.pauseWhenNotWorn)
+        assertFalse(withTimeout(5_000) { vm.state.first { !it.captureCue && !it.pauseWhenNotWorn } }.captureCue)
         vm.cancelScope()
     }
 

@@ -70,6 +70,22 @@ class ProtocolTest {
         assertFalse(d.reason.contains("today"), d.reason)
     }
 
+    /** Fix wave H4: the Rokid-closed counters are additive on the hello; an old hello reads 0 / null. */
+    @Test fun helloRokidClosedCountersAreAdditive() {
+        val old = """{"v":$PROTOCOL_VERSION,"glassesBatteryPct":80,"bufferSize":0,"glassesNowMs":5,"pauses":[]}"""
+        val d = assertIs<Decoded.Ok<Hello>>(Wire.decode<Hello>(old)).value
+        assertEquals(0, d.rokidCloses); assertEquals(null, d.lastRestartGapSec)
+        val h = Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = 5, pauses = emptyList(), rokidCloses = 3, lastRestartGapSec = 38)
+        assertEquals(Decoded.Ok(h), Wire.decode<Hello>(Wire.encode(h)))
+    }
+
+    /** Fix wave H3: `captureCue` is additive, default on; old phones' settings (no field) keep the blink on. */
+    @Test fun captureCueIsAdditiveDefaultOn() {
+        assertTrue(assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1}""")).value.captureCue)
+        val s = HudSettings(captureCue = false)
+        assertEquals(Decoded.Ok(s), Wire.decode<HudSettings>(Wire.encode(s)))
+    }
+
     /** `resumedAtMs` is additive: a v1 hello without it still decodes (no PROTOCOL_VERSION bump). */
     @Test fun helloWithoutResumedStillDecodes() {
         val old = """{"v":$PROTOCOL_VERSION,"glassesBatteryPct":80,"bufferSize":0,"glassesNowMs":5,"pauses":[]}"""
@@ -188,7 +204,7 @@ class ProtocolTest {
     @Test fun oldHudSettingsMeanFixedMode() {
         val s = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1}""")).value
         assertEquals(CaptureMode.FIXED, s.captureMode)
-        assertTrue(s.pauseWhenNotWorn)
+        assertTrue(s.pauseWhenNotWorn); assertTrue(s.captureCue)
         assertEquals(45, s.workMinutes); assertEquals(15, s.restMinutes); assertEquals(1000, s.quickLookMs)
     }
 

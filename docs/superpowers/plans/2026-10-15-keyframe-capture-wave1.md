@@ -47,7 +47,7 @@
 - **Work/rest:** W ∈ {30, 40, 45, 50, 60, 75, 90} min (default 45); R ∈ {5, 10, 15, 20} min (default 15); **if W > 45 then R ≥ 15** (enforced in the phone UI, and clamped again on the glasses for safety). During rest, a Fixed-mode capture every 60 s.
 - **Camera LED rule test:** no torch, flash or LED control anywhere (`enableTorch`, `FLASH_MODE`, `/sys/class/leds`, vendor LED APIs).
 - **Phone power (spec §P2.5):** no work/rest on the phone. In the background, image vectors are batched every 60 s; at thermal ≥ MODERATE, background work pauses (non-user extraction ≤ 1 per 30 s); at ≥ SEVERE, all background processing pauses until below MODERATE for 2 min.
-- **Not worn:** proximity "far" for > 5 s.
+- **Not worn:** (fix wave H) only a real `pc_wear=false` from the phone (Rokid SDK wearingStatus); removal is otherwise handled by Rokid closing our app.
 - **Camera LED:** never disabled or worked around.
 - **Budget:**
   - a token bucket of 1 per 12 s (setting 10 / 12 / 15 s), burst 2;

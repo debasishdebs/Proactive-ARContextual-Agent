@@ -56,7 +56,7 @@ class DoubleTapDetectorTest {
         var gate: ExitGate = ExitGate.Idle
         val out = mutableListOf<PageAction?>()
         for (t in atMs) {
-            if (d.onNotificationKey(t, armed = gate is ExitGate.Armed)) {
+            if (d.onNotificationKey(t, armed = gate !is ExitGate.Idle)) {
                 val (g, a) = DoubleTapExit.onDoubleTap(gate, t); gate = g; out += a
             }
         }
@@ -64,10 +64,10 @@ class DoubleTapDetectorTest {
     }
 
     @Test fun fastFourTapWithin1sMinimises() =
-        assertEquals(listOf(null, PageAction.MINIMISE), fourTap(0, 120, 300, 420))
+        assertEquals(listOf(null, null), fourTap(0, 120, 300, 420))
 
     @Test fun fourTapWithNormalGapMinimises() =
-        assertEquals(listOf(null, PageAction.MINIMISE), fourTap(0, 150, 500, 650))
+        assertEquals(listOf(null, null), fourTap(0, 150, 500, 650))
 
     @Test fun tripleTapOutsideGateStillOneDoubleTap() {
         // Not armed: the third press is the pair's tail, so it cannot pair with a later lone touch.

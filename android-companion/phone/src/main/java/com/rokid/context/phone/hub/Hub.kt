@@ -55,7 +55,14 @@ class Hub(
     private val actions: HubActions = HubActions.None,
     /** Nudges (Phase 7): the latest nudge line and the HUD nudge overlay. */
     private val nudges: HubNudges = HubNudges.None,
+    /** Fix wave H2: guards for reopening the glasses app after Rokid closes it; null = never reopen (tests, no phone services). */
+    private val reopenGuards: RelaunchGuards? = null,
+    /** "Reopen after Rokid closes it" (the same switch as "Keep running when nearby"). */
+    private val reopenEnabled: () -> Boolean = { true },
 ) : GlassesStatusSource {
+    private val relauncher: GlassesRelauncher? = reopenGuards?.let {
+        GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connect() }, now = clock, log = { m -> Log.i(GlassesRelauncher.TAG, m) })
+    }
     private val _state = MutableStateFlow(HubState())
     val state: StateFlow<HubState> = _state
     private val _status = MutableStateFlow(_state.value.toGlassesStatus())
@@ -90,6 +97,7 @@ class Hub(
             scope.launch { link.state.collect { s -> onLinkState(s) } },
             scope.launch { link.events.collect { guarded("event ${it::class.simpleName}") { onEvent(it) } } },
             scope.launch { link.ready.collect { guarded("ready") { onReady() } } },
+            scope.launch { link.wearing.collect { w -> if (w != null) { lastWorn = w; lastWornAtMs = clock(); Log.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } } },
             scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
             scope.launch { voice.overlay.drop(1).collect { broadcaster.markDirty() } },
             scope.launch { actions.overlay.drop(1).collect { broadcaster.markDirty() } },
@@ -98,7 +106,7 @@ class Hub(
             // The gate's reason travels in pc_settings (the glasses toast it on tap = Ask, spec §5.1.1).
             scope.launch { voice.askBlockedReason.drop(1).collect { guarded("settings") { pushSettings() } } },
             broadcaster.start(),
-        )
+        ) + listOfNotNull(relauncher?.start())
         link.connectOnce()
     }
 
@@ -106,6 +114,7 @@ class Hub(
         voice.onLinkLost() // first (preflight F15): the link is closing, so an open glasses listen can't complete
         jobs.forEach { it.cancel() }
         jobs = emptyList()
+        relauncher?.stop()
         link.close()
     }
 
@@ -116,6 +125,8 @@ class Hub(
     override fun requestReconnect() {
         // Review I2: a CUSTOM_APP connect runs appStart, which would pull the HUD over Maps while minimised. The wearer
         // gets a pop-up there instead (a Confirm is the only thing that may open the app, glasses side, spec 1.7).
+        relauncher?.onExplicitOpen()
+        set { it.copy(closedByUser = false) }
         if (started && link.state.value == LinkState.MINIMISED) { showMinimisedHint(); return }
         if (started) link.connect() else startService()
     }
@@ -198,7 +209,16 @@ class Hub(
         // Minimised keeps the glasses session (and its clock offset) on the background link; push-to-talk needs the HUD.
         if (s != LinkState.CONNECTED) voice.onLinkLost()
         if (!s.carriesData) newSession()
-        set { it.copy(link = s, offset = offset) }
+        set { it.copy(link = s, offset = offset, closedByUser = if (s == LinkState.CONNECTED) false else it.closedByUser) }
+    }
+
+    /** The Rokid SDK's wear state, newest first seen on this phone; forwarded to the glasses as `pc_wear` (they gate on it). */
+    private var lastWorn: Boolean? = null
+    private var lastWornAtMs = 0L
+
+    private suspend fun sendWear() {
+        val w = lastWorn ?: return
+        link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = lastWornAtMs)))
     }
 
     /**
@@ -223,6 +243,7 @@ class Hub(
         newSession()
         set(markDirty = false) { it.copy(versionMismatch = false, offset = null) }
         pushSettings()
+        sendWear()
         broadcaster.markDirty()
     }
 
@@ -255,11 +276,17 @@ class Hub(
                     it.copy(
                         versionMismatch = false, offset = measured, glassesBatteryPct = h.glassesBatteryPct ?: it.glassesBatteryPct,
                         bufferedFrames = h.bufferSize, nextCaptureAtMs = h.nextCaptureAtMs?.let(measured::toPhone),
+                        rokidCloses = h.rokidCloses, lastRestartGapSec = h.lastRestartGapSec,
                     )
                 }
                 pushSettings()
+                sendWear()
             }
             is GlassesEvent.Cmd -> onCommand(e.command, now)
+            GlassesEvent.UserExit -> {
+                Log.i(TAG, "wearer exited the glasses app on purpose: not reopening")
+                relauncher?.onUserExit(); set { it.copy(closedByUser = true) }
+            }
             is GlassesEvent.Frame -> {
                 val r = withContext(io) { ingestor.onChunk(e.chunk, offset, now) }
                 r.ack?.let { link.send(Channels.FRAME_ACK, Wire.encode(it)) }

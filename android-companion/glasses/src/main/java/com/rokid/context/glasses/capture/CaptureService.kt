@@ -27,7 +27,6 @@ import com.rokid.context.glasses.capture.keyframe.PrefsGateStore
 import com.rokid.context.glasses.capture.motion.AndroidSensorFeed
 import com.rokid.context.glasses.capture.motion.MotionClassifier
 import com.rokid.context.glasses.capture.motion.SensorFeed
-import com.rokid.context.glasses.capture.motion.WearDetector
 import com.rokid.context.glasses.capture.session.AndroidKeyframeEncoder
 import com.rokid.context.glasses.capture.session.CameraXBind
 import com.rokid.context.glasses.capture.session.CameraXSamplingCamera
@@ -89,6 +88,8 @@ class CaptureService : LifecycleService() {
     private var fixedSeq = 0L
     @Volatile private var lastStartId = 0
     @Volatile private var keepAliveMode = false
+    /** 1 while a Smart session is held, else 0 (a test seam: a restart must never leave two). */
+    internal val smartSessionCount: Int get() = if (smart != null) 1 else 0
     @Volatile internal var capturesStarted = 0
         private set
     @Volatile internal var lastOutcome: Outcome? = null
@@ -171,7 +172,7 @@ class CaptureService : LifecycleService() {
     private fun startSmart() {
         val clock: () -> Long = SystemClock::elapsedRealtime
         val motion = MotionClassifier(clock)
-        val wear = WearDetector(clock)
+        val wear = runtime.wear
         val session = SamplingSession(
             scope = scope, camera = CameraXSamplingCamera(this, this, cameraExecutor), owner = runtime.cameraOwner, motion = motion,
             wear = wear, gate = gate, heat = heat, workRest = runtime.workRest, encoder = AndroidKeyframeEncoder, sink = ::onKeyframe, clock = clock,

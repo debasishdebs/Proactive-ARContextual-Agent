@@ -88,6 +88,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             com.rokid.context.phone.ui.settings.glasses.NearbyDevicesSource(
                 paired = { com.rokid.context.link.CxrGlassesLink.isPaired(app) }, link = { deps.glasses.status.value.link },
                 keepRunning = com.rokid.context.phone.hub.KeepRunningNearby.of(app), openGlassesSettings = back,
+                closedByUser = { com.rokid.context.phone.hub.HubGraph.get(app).state.value.closedByUser },
             )
         }
         com.rokid.context.phone.ui.settings.glasses.NearbyDevicesRoute(source, onBack = back)
@@ -114,7 +115,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val vm = viewModel { CaptureSettingsViewModel(s.hud, s.aiCallPace, s.keyframes.stats) }
         val state by vm.state.collectAsStateWithLifecycle()
         CaptureSettingsScreen(state, onBack = back, onMode = vm::setMode, onInterval = vm::setInterval, onQuickLook = vm::setQuickLook,
-            onPauseWhenNotWorn = vm::setPauseWhenNotWorn, onWork = vm::setWork, onRest = vm::setRest, onPace = vm::setPace)
+            onPauseWhenNotWorn = vm::setPauseWhenNotWorn, onCaptureCue = vm::setCaptureCue, onWork = vm::setWork, onRest = vm::setRest, onPace = vm::setPace)
     }
 
     composable(Routes.SETTINGS_ENDPOINTS) {
@@ -225,12 +226,13 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             glassesConnected = { deps.glasses.status.value.link.carriesData }, exportSettings = s.exportSettings, keyframes = s.keyframes) }
         val state by vm.state.collectAsStateWithLifecycle()
         val keyframes by vm.keyframeRows.collectAsStateWithLifecycle()
+        val glassesRestarts by s.glassesRestarts.collectAsStateWithLifecycle()
         DiagnosticsScreen(
             state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },
             onSummarizeNow = vm::summarizeNow, onCaptureNow = vm::captureNow, onReprocess = vm::reprocess,
             onOpenLogs = { nav.navigate(Routes.DIAGNOSTICS_LOGS) }, onExport = vm::exportDiagnostics, onPushSettings = vm::pushSettings,
             onExportSettings = vm::exportSettings, keyframes = keyframes, onRetryAll = vm::retryAll,
-            onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) },
+            onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) }, glassesRestarts = glassesRestarts,
         )
     }
 

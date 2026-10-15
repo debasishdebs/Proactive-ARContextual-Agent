@@ -51,6 +51,8 @@ data class CaptureSettingsUiState(
     val intervalSec: Int = 300,
     val quickLookMs: Int = 1_000,
     val pauseWhenNotWorn: Boolean = true,
+    /** Fix wave H: blink a mark on the HUD for each saved keyframe. */
+    val captureCue: Boolean = true,
     val workMinutes: Int = 45,
     val restMinutes: Int = 15,
     val paceMs: Long = AiCallPaceStore.DEFAULT_MS,
@@ -71,7 +73,7 @@ class CaptureSettingsViewModel(
 ) : ViewModel() {
     private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats): CaptureSettingsUiState {
         val n = h.normalized()
-        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour)
+        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour)
     }
     val state: StateFlow<CaptureSettingsUiState> = combine(hud.settings, pace.paceMs, keyframes, ::of)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value))
@@ -82,6 +84,7 @@ class CaptureSettingsViewModel(
     fun setBurst(on: Boolean) = hud.update { it.copy(burstOnChange = on) }
     fun setQuickLook(ms: Int) = hud.update { it.copy(quickLookMs = ms).normalized() }
     fun setPauseWhenNotWorn(on: Boolean) = hud.update { it.copy(pauseWhenNotWorn = on) }
+    fun setCaptureCue(on: Boolean) = hud.update { it.copy(captureCue = on) }
     /** A Work over 45 min raises a lower Rest to 15 ([normalized]). */
     fun setWork(min: Int) = hud.update { it.copy(workMinutes = min).normalized() }
     fun setRest(min: Int) = hud.update { it.copy(restMinutes = min).normalized() }
@@ -92,7 +95,7 @@ class CaptureSettingsViewModel(
 fun CaptureSettingsScreen(
     state: CaptureSettingsUiState, onBack: () -> Unit,
     onMode: (CaptureMode) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {},
-    onPauseWhenNotWorn: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {},
+    onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {},
 ) {
     val options = CaptureIntervals.options(state.intervalSec)
     val modes = listOf(CaptureMode.SMART, CaptureMode.FIXED)
@@ -122,6 +125,7 @@ fun CaptureSettingsScreen(
                 ChoiceRow("Rest", REST_MINUTES_ALLOWED.map { "$it min" }, REST_MINUTES_ALLOWED.indexOf(state.restMinutes), { onRest(REST_MINUTES_ALLOWED[it]) }, tag = "rest",
                     disabled = locked, disabledReason = "needs Work of 45 min or less")
                 if (longWork) NoticeText("Rest is at least 15 min when Work is over 45 min.", tag = "rest_note")
+                SwitchRow("Capture blink on HUD", null, state.captureCue, onCaptureCue, tag = "capture_cue")
             }
         }
         item {
