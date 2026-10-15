@@ -111,7 +111,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_CAPTURE) {
-        val vm = viewModel { CaptureSettingsViewModel(s.hud, s.aiCallPace) }
+        val vm = viewModel { CaptureSettingsViewModel(s.hud, s.aiCallPace, s.keyframes.stats) }
         val state by vm.state.collectAsStateWithLifecycle()
         CaptureSettingsScreen(state, onBack = back, onMode = vm::setMode, onInterval = vm::setInterval, onQuickLook = vm::setQuickLook,
             onPauseWhenNotWorn = vm::setPauseWhenNotWorn, onWork = vm::setWork, onRest = vm::setRest, onPace = vm::setPace)
@@ -222,13 +222,15 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
 
     composable(Routes.SETTINGS_DIAGNOSTICS) {
         val vm = viewModel { DiagnosticsViewModel(deps.diagnostics, deps.pipeline, s.exportDiagnostics, { f -> s.share(f) }, { s.hud.update { it } },
-            glassesConnected = { deps.glasses.status.value.link.carriesData }, exportSettings = s.exportSettings) }
+            glassesConnected = { deps.glasses.status.value.link.carriesData }, exportSettings = s.exportSettings, keyframes = s.keyframes) }
         val state by vm.state.collectAsStateWithLifecycle()
+        val keyframes by vm.keyframeRows.collectAsStateWithLifecycle()
         DiagnosticsScreen(
             state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },
             onSummarizeNow = vm::summarizeNow, onCaptureNow = vm::captureNow, onReprocess = vm::reprocess,
             onOpenLogs = { nav.navigate(Routes.DIAGNOSTICS_LOGS) }, onExport = vm::exportDiagnostics, onPushSettings = vm::pushSettings,
-            onExportSettings = vm::exportSettings,
+            onExportSettings = vm::exportSettings, keyframes = keyframes, onRetryAll = vm::retryAll,
+            onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) },
         )
     }
 

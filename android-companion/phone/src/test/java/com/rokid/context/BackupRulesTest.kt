@@ -44,6 +44,8 @@ class BackupRulesTest {
      */
     private val setupState: Set<String> get() = setOf(
         "onboarding", "app_config", "memory_graph", "index_maintenance", "pipeline_stats", "rokid_link", "rokid_bridge", "voice_probe",
+        // Derived state: restored, they would say adoption / retirement already happened on an install that never did it.
+        "frame_adoption", "space_retired_at",
     )
 
     /**
@@ -55,6 +57,8 @@ class BackupRulesTest {
     private val restorable = setOf(
         "hub_settings", "action_settings", "context_sources", "memory_settings", "retrieval_settings", "prompt_settings",
         "persona_settings", "voice_settings", "nudge_engine",
+        // AI call pace (10 / 12 / 15 s) is a plain user setting.
+        com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.PREFS,
         // Activity sort (Latest first / Oldest first / A-Z / Z-A) is a plain UI preference kept in hub_settings: restored.
         com.rokid.context.phone.ui.activity.PrefsActivitySort.PREFS,
     )
