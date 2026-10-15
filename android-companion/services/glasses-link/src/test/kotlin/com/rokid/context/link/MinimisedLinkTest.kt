@@ -140,15 +140,6 @@ class MinimisedLinkTest {
         l.stop()
     }
 
-    @Test fun anUnboundLinkCountsAsSilence() {
-        val l = probing()
-        l.start("t"); l.onBound(true); l.onMessage(Channels.HELLO, hello)
-        l.onBound(false)
-        scope.advanceTimeBy(60_001); scope.runCurrent()
-        assertEquals(1, silent)
-        l.stop()
-    }
-
     @Test fun probeNowIsSilentWhenNothingAnswersAndQuietWhenSomethingDoes() {
         val l = probing()
         l.start("t"); l.onBound(true); l.onMessage(Channels.HELLO, hello)
@@ -172,6 +163,31 @@ class MinimisedLinkTest {
         scope.advanceTimeBy(70_000); scope.runCurrent()
         assertTrue(actions.contains(LinkAction.MarkClosedOnGlasses), "the relauncher's trigger")
         assertTrue(policy.backgroundLink && !policy.minimised)
+        l.stop()
+    }
+
+    /** Fix wave I N1: a false silence is undone by the next glasses message: back to MINIMISED, nothing reopened. */
+    @Test fun aMessageAfterAFalseSilenceMovesBackToMinimised() {
+        val policy = GlassesSessionPolicy()
+        policy.manualConnect(); policy.onEvent(LinkEvent.Started); policy.onEvent(LinkEvent.GlassesExited)
+        val actions = mutableListOf<LinkAction>()
+        val l = MinimisedLink(scope, transport, inbound, onAlive = { actions += policy.onEvent(LinkEvent.BackgroundAlive) }, onSilent = { actions += policy.onEvent(LinkEvent.BackgroundSilent) }, log = {}, confirmMs = 10_000, probeMs = 20_000, maxMisses = 2)
+        l.start("t"); l.onBound(true); l.onMessage(Channels.HELLO, hello)
+        scope.advanceTimeBy(70_000); scope.runCurrent()
+        assertTrue(actions.contains(LinkAction.MarkClosedOnGlasses))
+        actions.clear()
+        l.onMessage(Channels.HELLO, hello) // it was only slow
+        assertEquals(listOf(LinkAction.MarkMinimised), actions)
+        assertTrue(policy.minimised)
+        l.stop()
+    }
+
+    @Test fun anUnboundServiceIsNotAMissedProbe() {
+        val l = probing()
+        l.start("t"); l.onBound(true); l.onMessage(Channels.HELLO, hello)
+        l.onBound(false)
+        scope.advanceTimeBy(200_000); scope.runCurrent()
+        assertEquals(0, silent)
         l.stop()
     }
 }
