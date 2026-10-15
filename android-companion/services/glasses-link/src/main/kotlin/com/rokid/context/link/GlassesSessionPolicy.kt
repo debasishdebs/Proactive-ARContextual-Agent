@@ -154,6 +154,13 @@ class GlassesSessionPolicy(
         else { state = S.Connecting; listOf(LinkAction.MarkConnecting, LinkAction.Connect) }
     }
 
+    /**
+     * Fix wave I N4: the hub starts while the wearer's exit stands (no connect): keep only the background watch, so the
+     * wearer's own reopen of the app is noticed ([LinkEvent.GlassesAppOpened] connects) with no appStart from here.
+     */
+    fun watchOnly(): List<LinkAction> =
+        if (idle) { state = S.ClosedOnGlasses; listOf(LinkAction.MarkClosedOnGlasses) } else emptyList()
+
     /** Hub (re)start: one attempt from Idle; a failure ends Idle instead of entering the retry loop. */
     fun autoConnect(): List<LinkAction> =
         if (idle) { state = S.Connecting; listOf(LinkAction.MarkConnecting, LinkAction.Connect) } else emptyList()

@@ -346,4 +346,12 @@ class GlassesSessionPolicyTest {
         p.manualConnect()
         assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.ConnectFailed))
     }
+
+    /** Fix wave I N4: during a stand-down the policy only watches; the wearer reopening the app connects, nothing else does. */
+    @Test fun watchOnlyWaitsForTheWearerToReopenTheApp() {
+        val p = GlassesSessionPolicy()
+        assertEquals(listOf(LinkAction.MarkClosedOnGlasses), p.watchOnly())
+        assertTrue(p.backgroundLink)
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.onEvent(LinkEvent.GlassesAppOpened))
+    }
 }

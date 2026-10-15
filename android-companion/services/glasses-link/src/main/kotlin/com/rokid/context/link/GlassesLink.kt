@@ -25,6 +25,8 @@ interface GlassesLink {
      * the link to CLOSED_ON_GLASSES and then opens it (an explicit connect); an answer leaves everything as it was.
      */
     fun probeAlive() = Unit
+    /** Fix wave I N4: the wearer exited the app earlier: do not connect, only watch for the wearer opening it again. */
+    fun watchForReopen() = Unit
     /** Hub start: one attempt, no retry loop when the glasses are away. */
     fun connectOnce()
     /** Phone app resumed: reconnects only an OFFLINE, authorized link ([shouldReconnectOnResume]). */

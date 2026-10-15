@@ -142,6 +142,8 @@ class CxrGlassesLink(
 
     override fun connectAutomatic() = post { auth.clearStale(now()); authDeclined = false; authTimedOut = false; act(policy.manualConnect(auto = true)) }
 
+    override fun watchForReopen() = post { act(policy.watchOnly()) }
+
     override fun probeAlive() = post {
         if (!policy.minimised) return@post
         openAfterSilence = true

@@ -112,7 +112,11 @@ class Hub(
             broadcaster.start(),
         ) + listOfNotNull(relauncher?.start())
         // Fix wave I2: after a phone restart the wearer's exit still stands; only an explicit open ends it.
-        if (standDown.active) { Log.i(TAG, "wearer exited the glasses app earlier: not connecting"); set { it.copy(closedByUser = true) } }
+        if (standDown.active) {
+            Log.i(TAG, "wearer exited the glasses app earlier: not connecting, watching for a reopen")
+            set { it.copy(closedByUser = true) }
+            link.watchForReopen() // N4: the wearer's own reopen must still be noticed
+        }
         else link.connectOnce()
     }
 
@@ -221,6 +225,7 @@ class Hub(
         if (s != LinkState.CONNECTED) voice.onLinkLost()
         if (!s.carriesData) newSession()
         if (s == LinkState.CONNECTED) standDown.connected()
+        if (!s.carriesData) set(markDirty = false) { it.copy(iconBlocked = false) } // a stale "no icon" row must not outlive the link
         set { it.copy(link = s, offset = offset, closedByUser = if (s == LinkState.CONNECTED) false else it.closedByUser) }
     }
 
@@ -304,6 +309,11 @@ class Hub(
                     )
                 }
                 // Fix wave I2: the glasses repeat the wearer's exit in every hello, in case `pc_user_exit` was lost with the session.
+                // N4: a hello that does not repeat a fresh exit means the app is running again (the wearer opened it): the stand-down is over.
+                if (standDown.active && h.userExitAtMs?.let { now - measured.toPhone(it) in 0..EXIT_STAMP_FRESH_MS } != true) {
+                    Log.i(TAG, "glasses app is running again: stand-down over")
+                    standDown.connected(); set { it.copy(closedByUser = false) }
+                }
                 h.userExitAtMs?.let { at ->
                     val exitAt = measured.toPhone(at)
                     // A recent exit only: an old stamp the glasses still carry is not news (and an explicit open since then wins).
