@@ -132,4 +132,11 @@ class CaptureSettingsTest {
         vm.setMode(CaptureMode.FIXED); assertEquals(CaptureMode.FIXED, hud.settings.value.captureMode)
         vm.cancelScope()
     }
+
+    @Test fun statusLineCountsKeyframesInTheLastTenMinutes() {
+        assertEquals("Smart \u00b7 5 keyframes in the last 10 min", CaptureSettingsUiState(keyframesPerHour = 30).statusLine)
+        assertEquals("Smart \u00b7 1 keyframe in the last 10 min", CaptureSettingsUiState(keyframesPerHour = 6).statusLine)
+        show(CaptureSettingsUiState(mode = CaptureMode.SMART, keyframesPerHour = 30))
+        compose.onNodeWithTag("capture_status").assertExists()
+    }
 }

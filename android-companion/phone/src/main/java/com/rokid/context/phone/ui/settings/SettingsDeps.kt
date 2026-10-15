@@ -84,6 +84,8 @@ class SettingsDeps(
     val exportSettings: (suspend () -> File)? = null,
     /** Settings > Capture > AI call pace (prefs key `ai_call_pace_ms`, read by the call budget). */
     val aiCallPace: com.rokid.context.phone.ui.settings.capture.AiCallPaceStore = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore(),
+    /** Diagnostics > Keyframes and the Capture status line (counts only). */
+    val keyframes: KeyframeDiagnostics = KeyframeDiagnostics.None,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -143,8 +145,21 @@ class SettingsDeps(
             localModelLoadFailures = NativeLoadFailures(com.rokid.context.data.models.LocalModelStore(app)),
             exportSettings = { com.rokid.context.orchestration.ConfigExport.write(app) },
             aiCallPace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(app),
+            keyframes = AppKeyframeDiagnostics(app),
         )
     }
+}
+
+/** Keyframe stats over the process-wide graphs; built lazily so the shell's Main-thread deps never start the pipeline. */
+private class AppKeyframeDiagnostics(private val app: Context) : KeyframeDiagnostics {
+    private val handle by lazy { com.rokid.context.work.frames.KeyframeGraph.get(app) }
+    override val stats get() = handle.stats
+    override suspend fun droppedNudges(): Map<String, Int> =
+        com.rokid.context.orchestration.PipelineRecords.recentTraces(app, 500).filter { it.state == "NUDGE_DROPPED" }.groupingBy { it.note }.eachCount()
+    override suspend fun sidecarLost() = com.rokid.context.data.runtime.PipelineStatsStore.sidecarLost(app)
+    override suspend fun promptIsCurrent() =
+        com.rokid.context.orchestration.ExtractSave.promptIsCurrent(AiGraph.get(app).runner.activeSchema(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT))
+    override suspend fun retryAllFinal() = MemoryGraph.get(app).db.frameStateDao().retryAllFinal(System.currentTimeMillis())
 }
 
 /** Settings › Data sources over the process-wide sources graph; the store is first read off Main by the ViewModel. */

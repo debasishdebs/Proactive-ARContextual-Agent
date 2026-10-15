@@ -17,6 +17,8 @@ import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsPage
 import com.rokid.context.phone.ui.settings.SwitchRow
+import com.rokid.context.work.frames.KeyframeStats
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -52,15 +54,27 @@ data class CaptureSettingsUiState(
     val workMinutes: Int = 45,
     val restMinutes: Int = 15,
     val paceMs: Long = AiCallPaceStore.DEFAULT_MS,
-)
-
-class CaptureSettingsViewModel(private val hud: HudSettingsControl, private val pace: AiCallPaceStore = AiCallPaceStore()) : ViewModel() {
-    private fun of(h: HudSettings, paceMs: Long): CaptureSettingsUiState {
-        val n = h.normalized()
-        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.workMinutes, n.restMinutes, paceMs)
+    /** Keyframes stored in the last hour (the glasses send no SessionStatus, so the phone counts its own). */
+    val keyframesPerHour: Int = 0,
+) {
+    /** "Smart · N keyframes in the last 10 min": the hourly count scaled to 10 min. */
+    val statusLine: String get() {
+        val n = Math.round(keyframesPerHour / 6.0).toInt()
+        return "${if (mode == CaptureMode.SMART) "Smart" else "Fixed"} \u00b7 $n keyframe${if (n == 1) "" else "s"} in the last 10 min"
     }
-    val state: StateFlow<CaptureSettingsUiState> = combine(hud.settings, pace.paceMs, ::of)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value))
+}
+
+class CaptureSettingsViewModel(
+    private val hud: HudSettingsControl,
+    private val pace: AiCallPaceStore = AiCallPaceStore(),
+    private val keyframes: StateFlow<KeyframeStats> = MutableStateFlow(KeyframeStats()),
+) : ViewModel() {
+    private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats): CaptureSettingsUiState {
+        val n = h.normalized()
+        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour)
+    }
+    val state: StateFlow<CaptureSettingsUiState> = combine(hud.settings, pace.paceMs, keyframes, ::of)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value))
 
     fun setMode(m: CaptureMode) = hud.update { it.copy(captureMode = m) }
     fun setInterval(sec: Int) = hud.update { it.copy(captureIntervalSec = CaptureIntervals.clamp(sec)) }
@@ -87,6 +101,7 @@ fun CaptureSettingsScreen(
         item {
             SettingsCard {
                 Text("How the glasses take photos", style = MaterialTheme.typography.titleMedium)
+                NoticeText(state.statusLine, tag = "capture_status")
                 ChoiceRow("Capture mode", listOf("Smart", "Fixed"), modes.indexOf(state.mode), { onMode(modes[it]) }, tag = "mode")
                 if (state.mode == CaptureMode.FIXED) {
                     ChoiceRow("Every", options.map(CaptureIntervals::label), options.indexOf(state.intervalSec), { onInterval(options[it]) }, tag = "interval")
