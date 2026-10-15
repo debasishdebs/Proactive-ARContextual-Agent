@@ -49,13 +49,24 @@ class FrameRecoveryTest {
         row("forgotten", "EXTRACTING", now - 60_000L)
         row("pend", "PENDING", null)
         db.openHelper.writableDatabase.execSQL("INSERT INTO forget_tombstone(frameId, createdAt) VALUES ('forgotten', 1)")
-        assertEquals(2, FrameRecovery.releaseAtProcessStart(db.frameStateDao(), now))
+        assertEquals(2, FrameRecovery.releaseAtProcessStart(db.frameStateDao(), now, processStartMs = now))
         for ((id, attempts) in listOf("fresh" to 2, "old" to 4)) {
             val r = db.frameStateDao().get(id)!!
             assertEquals("PENDING", r.state); assertEquals(attempts, r.attempts); assertNull(r.claimId); assertNull(r.claimedAt)
         }
         assertEquals("EXTRACTING", db.frameStateDao().get("forgotten")!!.state) // a tombstoned frame is never extracted again
         assertEquals("PENDING", db.frameStateDao().get("pend")!!.state)
+    }
+
+    /** Fix wave I5: the legacy backstop claims without the pipeline; its live claim in this process must survive the start release. */
+    @Test fun aClaimMadeInThisProcessIsNotReleasedByTheStartRelease() = runBlocking {
+        val processStart = now
+        row("dead", "EXTRACTING", processStart - 60_000L)       // claimed by the process that died
+        row("live", "EXTRACTING", processStart + 2_000L)        // claimed by a legacy worker of this process before the first release
+        assertEquals(1, FrameRecovery.releaseAtProcessStart(db.frameStateDao(), processStart + 5_000L, processStart))
+        assertEquals("PENDING", db.frameStateDao().get("dead")!!.state)
+        assertEquals("EXTRACTING", db.frameStateDao().get("live")!!.state)
+        assertEquals("c-live", db.frameStateDao().get("live")!!.claimId)
     }
 
     @Test fun aNewProcessPipelineReleasesBeforeItsFirstDrain() = runBlocking {
@@ -66,7 +77,7 @@ class FrameRecoveryTest {
             calls += ids
             ids.forEach { db.frameStateDao().completeIfClaimed(it, claim, "EXTRACTED", now) }
             ExtractOutcome.Saved(emptyList())
-        }, { now }, releaseAtStart = true)
+        }, { now }, releaseAtStart = true, processStartMs = { now })
         assertEquals(1, p.drainOnce())
         assertEquals(listOf(listOf("dead")), calls)
         assertEquals(0, db.frameStateDao().get("dead")!!.attempts)

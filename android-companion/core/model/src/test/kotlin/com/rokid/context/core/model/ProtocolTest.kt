@@ -79,6 +79,18 @@ class ProtocolTest {
         assertEquals(Decoded.Ok(h), Wire.decode<Hello>(Wire.encode(h)))
     }
 
+    /** Fix wave I: the exit stamp, icon-blocked flag, wear session start and `pc_auto_open` are additive. */
+    @Test fun waveIFieldsAreAdditive() {
+        val old = """{"v":$PROTOCOL_VERSION,"glassesBatteryPct":80,"bufferSize":0,"glassesNowMs":5,"pauses":[]}"""
+        val d = assertIs<Decoded.Ok<Hello>>(Wire.decode<Hello>(old)).value
+        assertEquals(null, d.userExitAtMs); assertFalse(d.iconBlocked)
+        val h = Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = 5, pauses = emptyList(), userExitAtMs = 9, iconBlocked = true)
+        assertEquals(Decoded.Ok(h), Wire.decode<Hello>(Wire.encode(h)))
+        assertEquals(0L, assertIs<Decoded.Ok<WearMessage>>(Wire.decode<WearMessage>("""{"v":$PROTOCOL_VERSION,"worn":false,"atMs":5}""")).value.sessionStartMs)
+        val a = AutoOpen(atMs = 7)
+        assertEquals(Decoded.Ok(a), Wire.decode<AutoOpen>(Wire.encode(a)))
+    }
+
     /** Fix wave H3: `captureCue` is additive, default on; old phones' settings (no field) keep the blink on. */
     @Test fun captureCueIsAdditiveDefaultOn() {
         assertTrue(assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1}""")).value.captureCue)

@@ -11,6 +11,11 @@ import android.content.SharedPreferences
  *
  * reason: install = the package was updated after the last heartbeat; forcestop = the system's last exit record for
  * this package says "user requested" (what `forceStopPackage` leaves); anything else (or no record) = unknown.
+ *
+ * Honesty (fix wave I): REASON_USER_REQUESTED is also what a force-stop from Settings or adb leaves, so "forcestop" is the
+ * best Android offers, not proof that Rokid did it. Only a forcestop exit is counted as "Rokid closed"; an update, a
+ * deliberate exit by the wearer (the alive stamp is cleared then) and any other death are not. The heartbeat is written
+ * only while the app is meant to be running (ui_mode full or icon), so the gap never includes time the wearer had it closed.
  */
 class RestartDiagnostics(
     private val prefs: SharedPreferences,
@@ -23,19 +28,32 @@ class RestartDiagnostics(
     /** What the wearer last saw before this process started: [UiModeStore] full | icon | home. */
     private val uiMode: () -> String = { UiModeStore.HOME },
 ) {
-    /** True after a force-stop that hit us in icon mode: the app should come back into icon mode, not full screen. */
-    @Volatile var restartedFromIcon = false
+    /**
+     * True after a restart that follows a death while the app was meant to be running (a heartbeat was stored, no update and
+     * no wearer exit since, ui_mode full or icon): the app comes back into icon mode, never full screen over a call or scene.
+     */
+    @Volatile var killedWhileRunning = false
         private set
 
     /** One-shot: the activity asks once per process whether to go straight back to icon mode. */
-    fun takeStartMinimised(): Boolean = restartedFromIcon.also { restartedFromIcon = false }
+    fun takeStartMinimised(): Boolean = killedWhileRunning.also { killedWhileRunning = false }
 
     /** Times the system force-stopped us (reason forcestop) since the app data was last cleared. */
     val closes: Int get() = prefs.getInt(KEY_CLOSES, 0)
     /** Seconds between the last heartbeat and the latest restart that followed a force-stop, or null. */
     val lastGapSec: Int? get() = if (prefs.contains(KEY_LAST_GAP)) prefs.getInt(KEY_LAST_GAP, 0) else null
 
-    fun heartbeat() { prefs.edit().putLong(KEY_ALIVE, wallClock()).apply() }
+    /** Not while the app is deliberately closed (ui_mode home): a stamp then would make the next start read a gap the wearer chose. */
+    fun heartbeat() { if (uiMode() != UiModeStore.HOME) prefs.edit().putLong(KEY_ALIVE, wallClock()).apply() }
+
+    /** The wearer's exit (or any finish of the activity): forget the stamp; the next start is a fresh one, not a restart. */
+    fun onExit() { prefs.edit().remove(KEY_ALIVE).apply() }
+
+    /** The wearer exited on purpose at [atMs] (glasses clock): repeated in every hello until the phone has heard it. */
+    fun onUserExit(atMs: Long) { prefs.edit().remove(KEY_ALIVE).putLong(KEY_EXIT_AT, atMs).apply() }
+
+    /** Glasses clock of the wearer's last deliberate exit, or null. */
+    val userExitAtMs: Long? get() = prefs.getLong(KEY_EXIT_AT, 0L).takeIf { it > 0L }
 
     fun onProcessStart() {
         val lastAlive = prefs.getLong(KEY_ALIVE, 0L)
@@ -48,10 +66,10 @@ class RestartDiagnostics(
             else -> "unknown"
         }
         val mode = uiMode()
-        restartedFromIcon = reason == "forcestop" && mode == UiModeStore.ICON
+        killedWhileRunning = lastAlive > 0L && reason != "install" && mode != UiModeStore.HOME
         log("restart gap=$gap reason=$reason ui_mode=$mode")
         if (reason == "forcestop") prefs.edit().putInt(KEY_CLOSES, closes + 1).putInt(KEY_LAST_GAP, gap).apply()
-        heartbeat() // a start is alive too: a second start right away must not read the old gap again
+        if (mode == UiModeStore.HOME) onExit() else heartbeat() // a start is alive too: a second start right away must not read the old gap again
     }
 
     /** "Rokid closed the app N times (last gap Xs)", or null before the first one. */
@@ -65,6 +83,7 @@ class RestartDiagnostics(
         const val KEY_ALIVE = "last_alive_ms"
         const val KEY_CLOSES = "rokid_closes"
         const val KEY_LAST_GAP = "last_gap_sec"
+        const val KEY_EXIT_AT = "user_exit_at_ms"
     }
 }
 

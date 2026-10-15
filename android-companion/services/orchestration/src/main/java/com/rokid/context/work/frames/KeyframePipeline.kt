@@ -112,6 +112,8 @@ class KeyframePipeline(
     private val deferPollMs: Long = 60_000L,
     /** True for the process-wide pipeline: before its first claim or recovery, every leftover EXTRACTING row is released (no live claim can exist yet). */
     private val releaseAtStart: Boolean = false,
+    /** Wall clock of this process's start: only claims older than it belong to a dead process (fix wave I5). */
+    private val processStartMs: () -> Long = { ProcessStart.wallMs },
 ) {
     private sealed interface Step {
         data class Done(val frames: Int) : Step
@@ -133,7 +135,7 @@ class KeyframePipeline(
         if (!releaseAtStart) return
         startRelease.withLock {
             if (startReleased) return
-            val n = FrameRecovery.releaseAtProcessStart(states, clock())
+            val n = FrameRecovery.releaseAtProcessStart(states, clock(), processStartMs())
             startReleased = true
             Log.i(PIPE_TAG, "released=$n at process start")
         }

@@ -112,7 +112,8 @@ object HubGraph {
             scope, link, pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
             actions = PhoneActions.hubPort(app) { settings.read() }, nudges = PhoneNudges.hubPort(app) { settings.read() },
-            reopenGuards = AndroidRelaunchGuards(app) { link.wearing.value }, reopenEnabled = { KeepRunningNearby.of(app).enabled() },
+            reopenGuards = AndroidRelaunchGuards(app, { link.wearing.value }), reopenEnabled = { KeepRunningNearby.of(app).enabled() },
+            standDown = PrefsStandDown(app.getSharedPreferences(PrefsStandDown.PREFS, Context.MODE_PRIVATE)),
         )
     }
 }

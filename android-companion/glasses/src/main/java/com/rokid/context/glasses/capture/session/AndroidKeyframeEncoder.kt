@@ -20,7 +20,7 @@ object AndroidKeyframeEncoder : KeyframeEncoder {
     override fun encode(frame: Nv21Frame): EncodedKeyframe? {
         val yuv = YuvImage(frame.data, ImageFormat.NV21, frame.w, frame.h, null)
         val (ow, oh) = YuvCopy.outputSize(frame.w, frame.h, frame.rotation)
-        val shrink = ow != YuvCopy.rotatedWidth(frame.w, frame.h, frame.rotation)
+        val shrink = YuvCopy.needsShrink(frame.w, frame.h, frame.rotation)
         if (frame.rotation % 360 == 0 && !shrink) {
             val jpeg = compress(yuv, Rect(0, 0, frame.w, frame.h), QUALITY) ?: return null
             return EncodedKeyframe(jpeg, frame.w, frame.h)

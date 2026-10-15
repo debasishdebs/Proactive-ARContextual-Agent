@@ -133,6 +133,10 @@ class GlassesRuntime private constructor(private val app: Context) {
         },
         log = { Log.i(CAPTURE_TAG, it) },
     )
+    /** Fix wave I: when a start goes straight to icon mode (after a kill, or on the phone's automatic reopen). */
+    val startGate = AutoStartGate(takePending = { restarts.takeStartMinimised() }, uptimeMs = { android.os.SystemClock.uptimeMillis() })
+    /** Fix wave I: the app is minimised but "display over other apps" is off, so no icon shows; reported to the phone's Diagnostics. */
+    @Volatile var iconBlocked = false
 
     init {
         runCatching { restarts.onProcessStart() }
@@ -186,6 +190,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     fun detach(c: HudController) {
         c.onFrameAck = {}
         c.onWear = {}
+        c.onAutoOpen = {}
         c.onSessionOpened = {}
         c.onPhoneSettings = {}
         if (controller !== c) return
@@ -206,6 +211,8 @@ class GlassesRuntime private constructor(private val app: Context) {
         resumedAtMs = pauses.resumedAtMs(),
         rokidCloses = restarts.closes,
         lastRestartGapSec = restarts.lastGapSec,
+        userExitAtMs = restarts.userExitAtMs,
+        iconBlocked = iconBlocked && uiMode.get() == UiModeStore.ICON,
     )
 
     /** Serialises a captured frame's write with the pause toggle's buffer clear (spec §5.5). */

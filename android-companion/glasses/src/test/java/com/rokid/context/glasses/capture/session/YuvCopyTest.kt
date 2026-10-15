@@ -46,4 +46,11 @@ class YuvCopyTest {
         assertEquals(640, YuvCopy.rotatedWidth(640, 480, 0)); assertEquals(640, YuvCopy.rotatedWidth(480, 640, 90))
         assertEquals(640, YuvCopy.rotatedWidth(480, 640, 270)); assertEquals(480, YuvCopy.rotatedWidth(480, 640, 0))
     }
+
+    /** Fix wave I: the shrink decision looks at both sides (a tall frame whose width is already within the cap still shrinks). */
+    @Test fun needsShrinkComparesBothSides() {
+        assertEquals(false, YuvCopy.needsShrink(640, 480, 0)); assertEquals(false, YuvCopy.needsShrink(480, 640, 90)); assertEquals(false, YuvCopy.needsShrink(320, 240, 0))
+        assertEquals(true, YuvCopy.needsShrink(480, 1280, 0)); assertEquals(true, YuvCopy.needsShrink(1280, 480, 90))
+        assertEquals(true, YuvCopy.needsShrink(1280, 960, 0))
+    }
 }

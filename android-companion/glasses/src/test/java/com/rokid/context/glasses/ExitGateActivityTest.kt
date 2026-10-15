@@ -116,20 +116,41 @@ class ExitGateActivityTest {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             phoneState()
             doubleTap(s); doubleTap(s); doubleTap(s)
-            s.onActivity { assertTrue(it.exitedByUser); assertTrue(it.isFinishing); assertEquals(0, it.tasksMovedBack) }
+            s.onActivity { assertTrue(it.exitedByUser); assertFalse(it.isFinishing, "waits for the message to leave first"); assertEquals(0, it.tasksMovedBack) }
             assertTrue(bridge.sent.any { it.first == Channels.USER_EXIT }, "pc_user_exit sent")
+            advance(400)
+            s.onActivity { assertTrue(it.isFinishing) }
+            // the next hello repeats the exit (a lost message must not become a reopen), and no heartbeat stamp is left
+            assertTrue(runtime.hello(null).userExitAtMs != null)
+            assertEquals(null, runtime.restarts.takeStartMinimised().takeIf { it })
             advance(DoubleTapExit.WINDOW_MS * 3)
             assertTrue(commands().none { it is Command.Pause || it is Command.Resume })
         }
     }
 
-    /** Fix wave H (A): started with the minimised extra (what a restart after a force-stop in icon mode does), no HUD stays in front. */
-    @Test fun startMinimisedExtraGoesStraightToIconMode() {
+    /** Fix wave I: the extra minimises that start only; it is removed from the intent so a later return to the front is not minimised again. */
+    @Test fun startMinimisedExtraGoesStraightToIconModeOnlyOnce() {
         val i = android.content.Intent(ApplicationProvider.getApplicationContext<android.app.Application>(), MainActivity::class.java)
             .putExtra(MainActivity.EXTRA_START_MINIMISED, true)
         ActivityScenario.launch<MainActivity>(i).use { s ->
             advance(500)
-            s.onActivity { assertEquals(1, it.tasksMovedBack); assertEquals("icon", GlassesRuntime.get(it).uiMode.get()) }
+            s.onActivity { assertEquals(1, it.tasksMovedBack); assertEquals("icon", GlassesRuntime.get(it).uiMode.get()); assertFalse(it.intent.hasExtra(MainActivity.EXTRA_START_MINIMISED)) }
+            s.moveToState(androidx.lifecycle.Lifecycle.State.CREATED); s.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED)
+            advance(500)
+            s.onActivity { assertEquals(1, it.tasksMovedBack, "not minimised again") }
+        }
+    }
+
+    /** Fix wave I: a Confirm/Answer from the phone inside the Minimising window must not cancel the minimise. */
+    @Test fun aPhoneConfirmInTheMinimisingWindowStillMinimises() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            doubleTap(s); doubleTap(s)
+            bridge.phone(Channels.STATE, Wire.encode(StateFrame(seq = 2, capture = CaptureState.Running, intervalSec = 300, phoneLinked = true, aiHealth = Health.Ok,
+                overlay = com.rokid.context.core.model.Overlay.Answer(question = "q", text = "ok", speaking = false))))
+            shadowOf(Looper.getMainLooper()).idle()
+            advance(DoubleTapExit.MINIMISE_WINDOW_MS + 400)
+            s.onActivity { assertEquals(1, it.tasksMovedBack) }
         }
     }
 
