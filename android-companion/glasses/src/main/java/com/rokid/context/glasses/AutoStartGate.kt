@@ -24,20 +24,29 @@ object StartSources {
  *    [MARKER_WINDOW_MS] of that start the HUD goes back to icon mode.
  */
 class AutoStartGate(private val takePending: () -> Boolean, private val uptimeMs: () -> Long) {
-    private var launcherStartAt: Long? = null
+    /** The last start that put the HUD in front and may have been the phone's reopen (a kill restart, a non-launcher start, or a return from icon mode). */
+    private var frontAt: Long? = null
+    private var markerAt: Long? = null
 
-    /** True = minimise now. [extraMinimised]: the START_MINIMISED extra was present (and is consumed by the caller). */
-    @Synchronized fun onStart(source: StartSource, extraMinimised: Boolean): Boolean {
+    /**
+     * True = minimise now. [extraMinimised]: the START_MINIMISED extra was present (and is consumed by the caller).
+     * [fromMinimised]: the task was in icon mode when this start came (a live process). Fix wave I N2: a non-launcher start
+     * (or any start from icon mode) within [MARKER_WINDOW_MS] of the phone's `pc_auto_open` marker is minimised whether or not
+     * the process restarted; when the marker comes after the start, [onAutoOpenMarker] does it.
+     */
+    @Synchronized fun onStart(source: StartSource, extraMinimised: Boolean, fromMinimised: Boolean = false): Boolean {
         val pending = takePending()
-        val minimise = extraMinimised || (pending && source != StartSource.LAUNCHER)
-        if (pending && source == StartSource.LAUNCHER) launcherStartAt = uptimeMs()
+        val markerRecent = markerAt?.let { uptimeMs() - it <= MARKER_WINDOW_MS } == true
+        val minimise = extraMinimised || (pending && source != StartSource.LAUNCHER) || (markerRecent && (source != StartSource.LAUNCHER || fromMinimised))
+        if (!minimise && (pending || source != StartSource.LAUNCHER || fromMinimised)) frontAt = uptimeMs()
         return minimise
     }
 
-    /** `pc_auto_open` arrived: true = the HUD showing from a launcher-looking start must go to icon mode. */
+    /** `pc_auto_open` arrived: true = the HUD that came to front a moment ago was the phone's reopen and must go to icon mode. */
     @Synchronized fun onAutoOpenMarker(): Boolean {
-        val at = launcherStartAt ?: return false
-        launcherStartAt = null
+        markerAt = uptimeMs()
+        val at = frontAt ?: return false
+        frontAt = null
         return uptimeMs() - at <= MARKER_WINDOW_MS
     }
 

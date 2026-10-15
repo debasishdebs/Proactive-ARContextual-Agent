@@ -475,6 +475,7 @@ class HubTest {
         val second = FakeGlassesLink(LinkState.OFFLINE)
         val h2 = hub(second, standDown = PrefsStandDown(prefs))
         assertEquals("no connectOnce after a restart", 0, second.connectOnceCalls)
+        assertEquals("but the wearer's own reopen is still watched for (N4)", 1, second.watchCalls)
         assertTrue(h2.state.value.closedByUser)
         h2.requestReconnect(); runCurrent()
         assertFalse(PrefsStandDown(prefs).active)
@@ -502,6 +503,25 @@ class HubTest {
         assertFalse("an old stamp is not news", sd.active)
         link.emit(hello(t - 2_000)); runCurrent()
         assertTrue("a stamp newer than the explicit open counts", sd.active)
+    }
+
+    /** Fix wave I N4: a plain hello (no fresh exit) during a stand-down means the wearer reopened the app: the stand-down ends. */
+    @Test fun aHelloFromARunningAppEndsTheStandDown() = runTest {
+        val sd = InMemoryStandDown().also { it.enter(0) }
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        val h = hub(link, standDown = sd)
+        assertTrue(sd.active)
+        link.emit(hello()); runCurrent()
+        assertFalse(sd.active); assertFalse(h.state.value.closedByUser)
+    }
+
+    @Test fun theIconBlockedRowGoesWhenTheLinkIsLost() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.emit(GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = now, pauses = emptyList(), iconBlocked = true))); runCurrent()
+        assertTrue(h.state.value.iconBlocked)
+        link.setState(LinkState.OFFLINE); runCurrent()
+        assertFalse(h.state.value.iconBlocked)
     }
 
     @Test fun anIconlessMinimiseFromTheGlassesShowsADiagnosticsLine() = runTest {

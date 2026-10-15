@@ -42,4 +42,21 @@ class AutoStartGateTest {
         assertEquals(false, gate.onAutoOpenMarker(), "too late: the wearer is already looking at the HUD")
         assertEquals(false, AutoStartGate({ false }, { 0L }).onAutoOpenMarker(), "no launcher start to correct")
     }
+
+    /** Fix wave I N2: a reopen of a LIVE process (no pending kill) is minimised too, by the marker either way round. */
+    @Test fun aLiveProcessReopenIsMinimisedWhateverComesFirst() {
+        // start first, marker after
+        assertEquals(false, gate.onStart(StartSource.OTHER, extraMinimised = false, fromMinimised = true))
+        uptime += 3_000
+        assertEquals(true, gate.onAutoOpenMarker())
+        // marker first, start after (even one that looks like the launcher, coming from icon mode)
+        uptime += 60_000
+        gate.onAutoOpenMarker()
+        uptime += 1_000
+        assertEquals(true, gate.onStart(StartSource.LAUNCHER, false, fromMinimised = true))
+        assertEquals(true, gate.onStart(StartSource.OTHER, false))
+        uptime += 60_000
+        assertEquals(false, gate.onStart(StartSource.LAUNCHER, false, fromMinimised = true), "long after the marker the wearer's open shows the HUD")
+        assertEquals(false, AutoStartGate({ false }, { uptime }).also { it.onStart(StartSource.LAUNCHER, false) }.onAutoOpenMarker(), "the wearer's own launcher open of a live app is no candidate")
+    }
 }

@@ -155,7 +155,8 @@ class MainActivity : ComponentActivity() {
         val extra = intent?.getBooleanExtra(EXTRA_START_MINIMISED, false) == true
         if (extra) intent?.removeExtra(EXTRA_START_MINIMISED)
         val source = StartSources.classify(intent?.action, intent?.categories, referrer?.host)
-        if (runtime.startGate.onStart(source, extra)) {
+        if (source == StartSource.LAUNCHER) runtime.restarts.clearUserExit() // the wearer opened it: an earlier exit is over
+        if (runtime.startGate.onStart(source, extra, fromMinimised = wasMinimised)) {
             Log.i(TAG, "starting minimised (icon mode) source=$source")
             swipeTimer.post { minimise() }
         } else if (source == StartSource.LAUNCHER) Log.i(TAG, "opened from the launcher: showing the HUD")
@@ -171,6 +172,7 @@ class MainActivity : ComponentActivity() {
 
     public override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent) // onStart classifies the start that brought us forward, not the first one of the process
         val cameBack = wasMinimised
         wasMinimised = false
         when {
@@ -189,6 +191,7 @@ class MainActivity : ComponentActivity() {
                 if (Settings.canDrawOverlays(this)) runtime.popup.show(OPENED_FROM_PHONE_POPUP, controller.settings.value.popupMs())
             }
             else -> { // the wearer opened the app themselves: the HUD stays in front after any Confirm
+                runtime.restarts.clearUserExit()
                 returnToMinimised = false
                 autoConfirmId = null
                 swipeTimer.removeCallbacks(confirmTimeout)
