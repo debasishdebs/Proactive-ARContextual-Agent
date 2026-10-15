@@ -208,7 +208,8 @@ class AnswerService(
             override suspend fun lines(question: String, nowMs: Long): List<String> = provider.lines(question, nowMs)
         }
 
-        fun forApp(context: Context): AnswerService {
+        /** [extractFirst] false: no backlog extraction before retrieving (a queued ask that is no longer fresh, review M6). */
+        fun forApp(context: Context, extractFirst: Boolean = true): AnswerService {
             val ai = AiGraph.get(context)
             val store = RetrievalSettingsStore.get(context)
             val provider = SourcesGraph.get(context).provider
@@ -216,7 +217,7 @@ class AnswerService(
                 MemoryGraph.get(context), ai.runner, ai.retriever, { store.settings.value },
                 sources = sourcesFrom(provider),
                 proposals = OriginFencedIntake(context, MemoryGraph.get(context), ActionsGraph.get(context).intake),
-                beforeRetrieve = { kotlinx.coroutines.withTimeoutOrNull(ASK_EXTRACT_TIMEOUT_MS) { com.rokid.context.work.frames.KeyframeGraph.get(context).pipeline.extractForAsk() } },
+                beforeRetrieve = { if (extractFirst) kotlinx.coroutines.withTimeoutOrNull(ASK_EXTRACT_TIMEOUT_MS) { com.rokid.context.work.frames.KeyframeGraph.get(context).pipeline.extractForAsk() } },
                 onNoMatch = { if (com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(context)) com.rokid.context.work.OrchestrationScheduler(context).enqueueFrameIngestIfIdle() },
             )
         }

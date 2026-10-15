@@ -10,7 +10,6 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.ModelErrorMapper
-import com.rokid.context.ai.Role
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.ai.contract.CriticOutput
 import com.rokid.context.ai.contract.ExtractOutput
@@ -28,12 +27,12 @@ import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.data.runtime.StalePayloadException
 import com.rokid.context.domain.queue.QueuePriority
 import com.rokid.context.domain.summary.CriticWorker
-import com.rokid.context.domain.summary.SummaryStatus
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.orchestration.AnswerService
 import com.rokid.context.orchestration.EmbeddingWorker
+import com.rokid.context.orchestration.ExtractFollowUp
 import com.rokid.context.orchestration.ExtractPhoto
 import com.rokid.context.orchestration.ExtractSave
 import com.rokid.context.orchestration.ExtractSaveResult
@@ -47,6 +46,7 @@ import com.rokid.context.prompt.PromptVars
 import com.rokid.context.work.budget.BackgroundWork
 import com.rokid.context.work.frames.FrameRecovery
 import com.rokid.context.work.frames.KeyframeGraph
+import com.rokid.context.work.frames.KeyframePipeline
 import java.util.Locale
 import java.util.UUID
 import kotlinx.coroutines.NonCancellable
@@ -197,9 +197,11 @@ class QueueDrainWorker(
         val claims = owned.associateWith { claimId }
         try {
             processBatchedSummarization(job, generation, callClassOverride, seen, claims, importedFrames)
-        } catch (t: Throwable) {
+        } finally {
+            // Whatever ended the run (an exception, a stale save after a photo was forgotten mid-call, Delete all, a text-only no-op):
+            // every claim still held goes back to PENDING with no attempt used. release() is claim-guarded, so frames the save
+            // completed are untouched and the one stale frame is left alone (review I2).
             withContext(NonCancellable) { owned.forEach { MemoryGraph.get(applicationContext).db.frameStateDao().release(it, claimId, System.currentTimeMillis()) } }
-            throw t
         }
     }
 
@@ -219,7 +221,7 @@ class QueueDrainWorker(
         seen: List<Pair<com.rokid.context.memory.db.FrameEntity, com.rokid.context.model.ModelImageInput>>,
         claims: Map<String, String>, importedFrames: Int,
     ) {
-        val frameLines = seen.map { (f, _) -> frameLine(f) }
+        val frameLines = seen.map { (f, _) -> ExtractFollowUp.frameLine(f) }
         // Still one call per photo here (Final review I1); the batch-then-singles fallback is ExtractSave.extract's.
         var promptVersion = 0
         var provenance = true
@@ -241,8 +243,8 @@ class QueueDrainWorker(
             return
         }
         // No facts but captions (a photo with nothing durable in it): the captions are saved, with nothing to critique.
-        val confidence = if (facts.isEmpty()) 1.0 else facts.map { it.confidence }.average()
-        val trusted = facts.isEmpty() || criticWorker.validate(job.id, confidence).status == SummaryStatus.TRUSTED || modelCriticPasses(facts, frameLines)
+        val confidence = ExtractFollowUp.confidence(facts)
+        val trusted = ExtractFollowUp.trusted(ai, criticWorker, job.id, facts, frameLines)
         // Each fact is fenced on the photos it cites only: a photo forgotten during the calls drops just its facts.
         // Memories, frame_source rows (and, for pipeline callers, the claim CAS) are saved by saveExtraction in one transaction.
         val saved = ExtractSave.saveExtraction(
@@ -250,41 +252,16 @@ class QueueDrainWorker(
             tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW, generation = generation,
         )
         val savedAll = (saved as? ExtractSaveResult.Saved)?.memories.orEmpty()
-        val written = savedAll.filter { it.index != null }
-        // Delete all ran meanwhile (or every photo was forgotten): no reprocess job (it would carry the fact text).
-        if (savedAll.isEmpty() || com.rokid.context.orchestration.MemoryWipe.generation.get() != generation) return
-        EmbeddingWorker.enqueue(applicationContext)
-        if (trusted) {
-            PipelineRecords.upsertTrace(applicationContext, job.id, "TRUSTED", "frames=${seen.size} imported=$importedFrames facts=${facts.size} v$promptVersion")
-            com.rokid.context.orchestration.nudge.NudgeTrigger.afterSummarizerPass(applicationContext)
-            PipelineStatsStore.incSummarizerSucceeded(applicationContext)
-        } else {
-            if (written.isEmpty()) return // every fact's photo was forgotten: the captions stay, nothing to review
-            val reason = "Critic low confidence=${"%.2f".format(Locale.US, confidence)}"
-            QueueRuntimeStore.enqueueIfCurrent(
-                context = applicationContext, generation = generation, queue = QueuePriority.PRIORITY_REPROCESS,
-                payload = QueuePayloads.reprocess(reason = reason, sourceIds = written.map { it.memoryId }, frameIds = written.flatMap { it.frameIds }.distinct()),
-                personaSnapshot = job.personaSnapshot, ttlHours = 24,
-            )
-            PipelineRecords.upsertTrace(applicationContext, job.id, "NEEDS_REVIEW", "Reprocess queued: $reason")
-            PipelineStatsStore.incSummarizerFailed(applicationContext)
-        }
-    }
-
-    private fun frameLine(f: com.rokid.context.memory.db.FrameEntity) = "id=${f.id} · ts=${f.ts} · source=${f.source} · ${f.payload}"
-
-    /** spec §4.2 CRITIC as a second opinion on low-confidence facts. Unbound or failing → keep the local verdict. */
-    private suspend fun modelCriticPasses(facts: List<Fact>, frameLines: List<String>): Boolean {
-        if (ai.bindings.get(Role.CRITIC) == null) return false
-        val vars = PromptVars(recentContext = PromptComposer.dataBlock("facts", facts.map { "${it.text} (confidence ${"%.2f".format(Locale.US, it.confidence)})" }) +
-            "\n" + PromptComposer.dataBlock("source", frameLines))
-        return try {
-            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = com.rokid.context.model.CallClass.EXTRACT)).output as CriticOutput).pass
-        } catch (c: CancellationException) {
-            throw c
-        } catch (e: Exception) {
-            Log.i(TAG, "critic unavailable, keeping the local verdict: ${SafeLog.describe(e)}")
-            false
+        when (ExtractFollowUp.afterSave(applicationContext, generation, savedAll, trusted, confidence, job.personaSnapshot)) {
+            ExtractFollowUp.Result.SKIPPED, ExtractFollowUp.Result.REVIEW_ONLY -> Unit
+            ExtractFollowUp.Result.TRUSTED -> {
+                PipelineRecords.upsertTrace(applicationContext, job.id, "TRUSTED", "frames=${seen.size} imported=$importedFrames facts=${facts.size} v$promptVersion")
+                PipelineStatsStore.incSummarizerSucceeded(applicationContext)
+            }
+            ExtractFollowUp.Result.REVIEW_QUEUED -> {
+                PipelineRecords.upsertTrace(applicationContext, job.id, "NEEDS_REVIEW", "Reprocess queued: Critic low confidence=${"%.2f".format(Locale.US, confidence)}")
+                PipelineStatsStore.incSummarizerFailed(applicationContext)
+            }
         }
     }
 
@@ -323,7 +300,7 @@ class QueueDrainWorker(
             .filter { it.reviewState == ReviewState.NEEDS_REVIEW }
         if (reviews.isEmpty()) throw StalePayloadException()
         val frames = PipelineRecords.framesByIds(applicationContext, reviews.mapNotNull { it.frameId })
-        val frameLines = frames.map(::frameLine)
+        val frameLines = frames.map(ExtractFollowUp::frameLine)
         val vars = PromptVars(recentContext = PromptComposer.dataBlock("facts", reviews.map { "${it.text} (confidence ${"%.2f".format(Locale.US, it.confidence)})" }) +
             "\n" + PromptComposer.dataBlock("source", frameLines))
         val pass = (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = com.rokid.context.model.CallClass.EXTRACT)).output as CriticOutput).pass
@@ -360,7 +337,10 @@ class QueueDrainWorker(
         val query = QueuePayloads.string(QueuePayloads.parse(job.payload), "query")
         require(query.isNotBlank()) { "Empty read context query" }
         val answered = try {
-            AnswerService.forApp(applicationContext).answerOrThrow(query, source = "queue", askId = "ask_queue_${job.id}", generation = generation)
+            // An ask queued long ago (offline, deferred) is not "just asked": the frames of the last minute are unrelated to it, and
+            // extracting them as USER would only run up budget debt. Only a young ask extracts first (review M6).
+            val young = System.currentTimeMillis() - job.originalEnqueuedAtEpochMs <= KeyframePipeline.ASK_WINDOW_MS
+            AnswerService.forApp(applicationContext, extractFirst = young).answerOrThrow(query, source = "queue", askId = "ask_queue_${job.id}", generation = generation)
         } catch (e: NoMemoriesException) {
             PipelineRecords.upsertTrace(applicationContext, job.id, "CONTEXT_TEMP_UNAVAILABLE", "No trusted memory found; queue status can be checked from Queue card")
             throw e
@@ -380,6 +360,9 @@ class QueueDrainWorker(
     private fun policyDeferralReason(job: QueueJobRecord): String? {
         val payload = QueuePayloads.parse(job.payload)
         val manual = QueuePayloads.bool(payload, "manual", default = false)
+
+        // FRAME_INGEST makes no AI call (it files the inbox and wakes the pipeline): heat and battery never defer it (review M3).
+        if (job.queue == QueuePriority.FRAME_INGEST) return null
 
         val saver = isBatterySaverEnabled()
         if (saver && (job.queue == QueuePriority.READ || job.queue == QueuePriority.EXPLICIT_WRITE || job.queue == QueuePriority.SUMMARIZER || job.queue == QueuePriority.PRIORITY_REPROCESS)) {

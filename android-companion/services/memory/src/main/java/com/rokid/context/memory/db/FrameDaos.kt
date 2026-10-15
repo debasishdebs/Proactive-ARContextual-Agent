@@ -72,6 +72,45 @@ abstract class FrameStateDao {
     /** PENDING, FAILED (attempts < 5 by construction: the fifth is FAILED_FINAL) and abandoned EXTRACTING rows, oldest first. */
     open suspend fun recoverable(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameStateEntity> = recoverableRows(abandonBeforeMs, limit)
 
+    /**
+     * Claimable rows, NEWEST capture first (frame.ts, else the row's updatedAt), at most [limit], capture >= [sinceMs]. A FAILED row
+     * inside its backoff (30 s doubling, capped at 30 min, from its last failure) is left out unless [ignoreBackoff] is 1. The
+     * limit is applied after the ordering, so a backlog of any size still yields its newest rows (review I4).
+     */
+    @Query(
+        "SELECT s.* FROM frame_state s LEFT JOIN frame f ON f.id = s.frameId " +
+            "WHERE (s.state IN ('PENDING','FAILED') OR (s.state = 'EXTRACTING' AND s.claimedAt < :abandonBeforeMs)) " +
+            "AND (:ignoreBackoff = 1 OR s.state != 'FAILED' OR s.updatedAt + MIN(30000 << MAX(s.attempts - 1, 0), 1800000) <= :nowMs) " +
+            "AND COALESCE(f.ts, s.updatedAt) >= :sinceMs " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) " +
+            "ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
+    )
+    abstract suspend fun newestClaimable(nowMs: Long, abandonBeforeMs: Long, sinceMs: Long, ignoreBackoff: Int, limit: Int): List<FrameStateEntity>
+
+    /** [newestClaimable] for dwell keyframes only (frame_meta.dwell), so a dwell frame is found however large the backlog. */
+    @Query(
+        "SELECT s.* FROM frame_state s JOIN frame_meta m ON m.frameId = s.frameId LEFT JOIN frame f ON f.id = s.frameId " +
+            "WHERE m.dwell = 1 AND (s.state IN ('PENDING','FAILED') OR (s.state = 'EXTRACTING' AND s.claimedAt < :abandonBeforeMs)) " +
+            "AND (s.state != 'FAILED' OR s.updatedAt + MIN(30000 << MAX(s.attempts - 1, 0), 1800000) <= :nowMs) " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) " +
+            "ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
+    )
+    abstract suspend fun newestDwellClaimable(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameStateEntity>
+
+    /** When the earliest FAILED row leaves its backoff (null: none is waiting). */
+    @Query(
+        "SELECT MIN(updatedAt + MIN(30000 << MAX(attempts - 1, 0), 1800000)) FROM frame_state WHERE state = 'FAILED' " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)",
+    )
+    abstract suspend fun nextRetryAt(): Long?
+
+    /** Live claims (EXTRACTING, not abandoned) on frames captured at or after [sinceMs]: an ask waits for these (review I4). */
+    @Query(
+        "SELECT COUNT(*) FROM frame_state s LEFT JOIN frame f ON f.id = s.frameId WHERE s.state = 'EXTRACTING' AND s.claimedAt >= :abandonBeforeMs " +
+            "AND COALESCE(f.ts, s.updatedAt) >= :sinceMs",
+    )
+    abstract suspend fun liveClaimsSince(abandonBeforeMs: Long, sinceMs: Long): Int
+
     /** An abandoned claim goes back to PENDING and counts as an attempt (spec §P2.5); the fifth ends in FAILED_FINAL. */
     @Query(
         "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'PENDING' END, " +

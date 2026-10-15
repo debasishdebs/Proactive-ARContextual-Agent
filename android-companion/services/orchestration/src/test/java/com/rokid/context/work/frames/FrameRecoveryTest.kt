@@ -29,9 +29,9 @@ class FrameRecoveryTest {
         db.frameStateDao().insertIgnore(listOf(FrameStateEntity(id, state, attempts, null, claimedAt, claimedAt?.let { "c-$id" }, 0)))
 
     @Test fun abandonedClaimsRequeued() = runBlocking {
-        row("old", "EXTRACTING", now - 6 * 60_000L)
-        row("fresh", "EXTRACTING", now - 60_000L)
-        row("last", "EXTRACTING", now - 10 * 60_000L, attempts = 4)
+        row("old", "EXTRACTING", now - FrameRecovery.CLAIM_TIMEOUT_MS - 60_000L)
+        row("fresh", "EXTRACTING", now - FrameRecovery.CLAIM_TIMEOUT_MS + 60_000L)
+        row("last", "EXTRACTING", now - FrameRecovery.CLAIM_TIMEOUT_MS - 5 * 60_000L, attempts = 4)
         row("pend", "PENDING", null)
         var signalled = 0
         assertEquals(2, FrameRecovery.run(db.frameStateDao(), now) { signalled++ })
