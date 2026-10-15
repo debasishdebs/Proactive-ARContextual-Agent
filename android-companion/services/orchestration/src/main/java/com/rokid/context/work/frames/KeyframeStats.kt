@@ -24,6 +24,8 @@ data class KeyframeStats(
     /** Capture time (offset-corrected) to memory saved. Null until a frame has been processed. */
     val latencyP50Ms: Long? = null,
     val latencyP95Ms: Long? = null,
+    /** Photos skipped to keep up with the backlog (frame_state NEAR_DUP, lastError shed_backlog). */
+    val shed: Int = 0,
 )
 
 /** The last [max] capture-to-memory latencies; percentiles are nearest-rank. */
@@ -53,7 +55,7 @@ class LatencyTracker(private val max: Int = 200) {
 
 object KeyframeStatsReporter {
     fun create(scope: CoroutineScope, db: ContextDatabase, budget: StateFlow<BudgetStats>, latency: LatencyTracker, clock: () -> Long): StateFlow<KeyframeStats> =
-        combine(db.frameStateDao().counts(), budget, latency.samples) { counts, b, lat ->
+        combine(db.frameStateDao().counts(), budget, latency.samples, db.frameStateDao().shedCount()) { counts, b, lat, shed ->
             KeyframeStats(
                 counts = counts,
                 callsPerHour = b.callsLastHour,
@@ -61,6 +63,7 @@ object KeyframeStatsReporter {
                 backlog = listOf("PENDING", "FAILED", "EXTRACTING").sumOf { counts[it] ?: 0 },
                 latencyP50Ms = LatencyTracker.percentile(lat, 50),
                 latencyP95Ms = LatencyTracker.percentile(lat, 95),
+                shed = shed,
             )
         }.stateIn(scope, SharingStarted.Eagerly, KeyframeStats())
 }

@@ -278,6 +278,7 @@ object KeyframeLines {
         return listOf(
             Line("kf_backlog", "Backlog ${st.backlog} \u2014 $states"),
             Line("kf_rate", "Keyframes per hour: ${st.keyframesPerHour}"),
+            Line("kf_shed", "Skipped to keep up: ${st.shed}"),
             Line("kf_calls", "AI calls per hour: $calls"),
             Line("kf_latency", "Capture to memory: p50 ${ms(st.latencyP50Ms)} \u00b7 p95 ${ms(st.latencyP95Ms)}"),
             Line("kf_dropped", "Dropped nudges: $dropped"),
