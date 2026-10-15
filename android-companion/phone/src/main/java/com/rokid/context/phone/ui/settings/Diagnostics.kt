@@ -15,12 +15,15 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.Replay
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -30,12 +33,18 @@ import com.rokid.context.core.ui.components.ScreenHeader
 import com.rokid.context.core.ui.components.SectionLabel
 import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
+import com.rokid.context.model.CallClass
 import com.rokid.context.phone.ui.status.PipelineControl
+import com.rokid.context.work.frames.KeyframeStats
 import com.rokid.context.work.OrchestrationScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -64,6 +73,35 @@ class SchedulerDiagnosticsActions(private val scheduler: OrchestrationScheduler)
     }
 }
 
+/** What the keyframe rows read: the pipeline's stats plus three count-only extras. Never captions or user text. */
+interface KeyframeDiagnostics {
+    val stats: StateFlow<KeyframeStats>
+    /** Dropped-nudge reason (gate name) to count. */
+    suspend fun droppedNudges(): Map<String, Int>
+    /** v2 frames ingested with defaults after their sidecar stayed lost. */
+    suspend fun sidecarLost(): Int
+    /** False when the stored VISION_EXTRACT prompt still has the facts-only schema. */
+    suspend fun promptIsCurrent(): Boolean
+    /** Puts every FAILED_FINAL frame back to PENDING; returns how many. */
+    suspend fun retryAllFinal(): Int
+
+    object None : KeyframeDiagnostics {
+        override val stats: StateFlow<KeyframeStats> = MutableStateFlow(KeyframeStats())
+        override suspend fun droppedNudges() = emptyMap<String, Int>()
+        override suspend fun sidecarLost() = 0
+        override suspend fun promptIsCurrent() = true
+        override suspend fun retryAllFinal() = 0
+    }
+}
+
+/** The Keyframes block of Diagnostics: the stats plus the loaded extras. */
+data class KeyframeRows(
+    val stats: KeyframeStats = KeyframeStats(),
+    val droppedNudges: Map<String, Int> = emptyMap(),
+    val sidecarLost: Int = 0,
+    val promptCurrent: Boolean = true,
+)
+
 data class DiagnosticsUiState(val busy: Boolean = false, val message: String? = null)
 
 class DiagnosticsViewModel(
@@ -75,7 +113,33 @@ class DiagnosticsViewModel(
     private val glassesConnected: () -> Boolean = { true },
     /** G19: writes the settings JSON (every secret excluded), shared through [share]. */
     private val exportSettings: (suspend () -> java.io.File)? = null,
+    private val keyframes: KeyframeDiagnostics = KeyframeDiagnostics.None,
 ) : ViewModel() {
+    private val extras = MutableStateFlow(KeyframeRows())
+    /** Live stats combined with the extras loaded at open and after each Retry all. */
+    // Lazy: the constructor must not touch viewModelScope (it would bind to Main before a test installs its dispatcher).
+    val keyframeRows: StateFlow<KeyframeRows> by lazy {
+        combine(keyframes.stats, extras) { st, ex -> ex.copy(stats = st) }
+            .onStart { refreshKeyframes() }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), KeyframeRows(keyframes.stats.value))
+    }
+
+    private fun refreshKeyframes() {
+        viewModelScope.launch {
+            val loaded = try {
+                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), promptCurrent = keyframes.promptIsCurrent()) }
+            } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.i(TAG, "keyframe extras failed (${e.javaClass.simpleName})"); return@launch }
+            extras.value = loaded
+        }
+    }
+
+    /** "Retry all": FAILED_FINAL frames go back to PENDING (the pipeline picks them up). */
+    fun retryAll() = run(requiresPipeline = false) {
+        val n = keyframes.retryAllFinal()
+        refreshKeyframes()
+        if (n == 0) "Nothing to retry" else "$n photos queued to retry"
+    }
+
     // F16: plain parameters (named like the test passes them) kept in vals that don't clash with the methods.
     private val exportAction = exportDiagnostics
     private val pushAction = pushSettings
@@ -140,6 +204,9 @@ fun DiagnosticsScreen(
     onExport: () -> Unit,
     onPushSettings: () -> Unit,
     onExportSettings: () -> Unit = {},
+    keyframes: KeyframeRows = KeyframeRows(),
+    onRetryAll: () -> Unit = {},
+    onOpenPrompts: () -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState())) {
         ScreenHeader("Diagnostics", onBack)
@@ -153,6 +220,19 @@ fun DiagnosticsScreen(
                 ChipRow(Icons.Outlined.Tune, PcColors.ChipViolet, "Export settings", "All settings as a JSON file, without keys", onClick = onExportSettings, enabled = !state.busy)
             }
         }
+        SectionLabel("Keyframes")
+        SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                for (line in KeyframeLines.of(keyframes)) NoticeText(line.text, tag = line.tag)
+                if (!keyframes.promptCurrent) {
+                    ChipRow(Icons.Outlined.WarningAmber, PcColors.ChipAmber, KeyframeLines.PROMPT_OUT_OF_DATE, "Open Settings > Prompts", onClick = onOpenPrompts)
+                }
+                ChipRow(
+                    Icons.Outlined.Replay, PcColors.ChipSky, "Retry all", "Photos that failed for good: ${keyframes.stats.counts["FAILED_FINAL"] ?: 0}",
+                    onClick = onRetryAll, enabled = !state.busy && (keyframes.stats.counts["FAILED_FINAL"] ?: 0) > 0,
+                )
+            }
+        }
         SectionLabel("Manual runs")
         SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
             Column {
@@ -162,5 +242,38 @@ fun DiagnosticsScreen(
             }
         }
         state.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, modifier = Modifier.padding(20.dp)) }
+    }
+}
+
+/** The count-only text lines of the Keyframes block. */
+object KeyframeLines {
+    const val PROMPT_OUT_OF_DATE = "VISION_EXTRACT prompt is out of date \u2014 reset to default"
+    class Line(val tag: String, val text: String)
+
+    private val ORDER = listOf("PENDING", "EXTRACTING", "EXTRACTED", "FAILED", "FAILED_FINAL")
+
+    fun ms(v: Long?): String = when {
+        v == null -> "\u2014"
+        v < 1_000 -> "$v ms"
+        v < 120_000 -> "${v / 1_000} s"
+        else -> "${v / 60_000} min"
+    }
+
+    fun of(k: KeyframeRows): List<Line> {
+        val st = k.stats
+        val states = (ORDER + (st.counts.keys - ORDER.toSet()).sorted()).filter { (st.counts[it] ?: 0) > 0 }
+            .joinToString(" \u00b7 ") { "$it ${st.counts[it]}" }.ifEmpty { "none" }
+        val named = listOf(CallClass.USER, CallClass.EXTRACT, CallClass.NUDGE)
+        val other = st.callsPerHour.filterKeys { it !in named }.values.sum() // OTHER, CAPTION_QUEUE, BACKFILL
+        val calls = named.joinToString(" \u00b7 ") { "${it.name} ${st.callsPerHour[it] ?: 0}" } + " \u00b7 OTHER $other"
+        val dropped = k.droppedNudges.entries.sortedBy { it.key }.joinToString(" \u00b7 ") { "${it.key} ${it.value}" }.ifEmpty { "none" }
+        return listOf(
+            Line("kf_backlog", "Backlog ${st.backlog} \u2014 $states"),
+            Line("kf_rate", "Keyframes per hour: ${st.keyframesPerHour}"),
+            Line("kf_calls", "AI calls per hour: $calls"),
+            Line("kf_latency", "Capture to memory: p50 ${ms(st.latencyP50Ms)} \u00b7 p95 ${ms(st.latencyP95Ms)}"),
+            Line("kf_dropped", "Dropped nudges: $dropped"),
+            Line("kf_sidecar", "Lost sidecars: ${k.sidecarLost}"),
+        )
     }
 }
