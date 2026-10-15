@@ -31,6 +31,14 @@ object HubGraph {
 
     fun resetForTests(h: Hub?) { synchronized(this) { hub = h } }
 
+    /**
+     * A frame is durable in the inbox: queue the legacy ingest, and wake the pipeline too (spec P2.1) so anything committed and
+     * pending is claimed at once, even when queueing fails (the signal runs in `finally`; the failure still reaches the caller).
+     */
+    internal fun onFrameStored(app: Context, enqueue: (Context) -> Unit = ::enqueueInboxIngest) {
+        try { enqueue(app) } finally { com.rokid.context.work.frames.KeyframeGraph.get(app).signal() }
+    }
+
     private fun build(app: Context): Hub {
         // Last line of defence: Hub guards every event, but nothing on this scope may ever kill the process.
         val guard = CoroutineExceptionHandler { _, t -> Log.w(Hub.TAG, "hub coroutine failed: ${t.javaClass.simpleName}") }
@@ -43,11 +51,7 @@ object HubGraph {
             archiveDir = RokidFrameInbox.archiveDir(app),
             // A receipt already committed to Room is acked at once (spec P2 receipt durability).
             committed = { wireId -> MemoryGraph.get(app).db.frameMetaDao().byWireId(wireId) != null },
-        ) {
-            enqueueInboxIngest(app)
-            // The pipeline is woken too (spec P2.1): anything already committed and pending is claimed at once.
-            com.rokid.context.work.frames.KeyframeGraph.get(app).signal()
-        }
+        ) { onFrameStored(app) }
         return Hub(
             scope, CxrGlassesLink(app, scope, probe = com.rokid.context.BuildConfig.DEBUG), pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,

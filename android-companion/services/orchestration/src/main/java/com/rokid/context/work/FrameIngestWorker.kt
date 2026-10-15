@@ -1,6 +1,7 @@
 package com.rokid.context.work
 
 import android.content.Context
+import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.rokid.context.connectors.sources.SourcesGraph
@@ -44,10 +45,23 @@ class FrameIngestWorker(
             OrchestrationScheduler(applicationContext).enqueueQueueDrainNow()
         }
 
+        // Review I5: with no foreground service the process is frozen as soon as this worker returns, and a detached loop would stall
+        // mid-call. WorkManager keeps the process awake while doWork runs, so drain here (bounded, power rules apply) and the frames
+        // are extracted, not just claimed. With the hub running the loop is already at it; claims keep the two from doubling up.
+        try {
+            keyframes.pipeline.drainUntilIdle(DRAIN_MAX_MS)
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            throw c // the pipeline already gave its claims back
+        } catch (e: Exception) {
+            Log.w(TAG, "drain failed: ${e.javaClass.simpleName}")
+        }
         return Result.success()
     }
 
     companion object {
+        private const val TAG = "FrameIngestWorker"
+        /** WorkManager stops a worker after 10 minutes. */
+        const val DRAIN_MAX_MS = 8 * 60_000L
         const val KEY_SOURCE_IMAGE_PATH = "source_image_path"
         /** The frame source for [KEY_SOURCE_IMAGE_PATH] (phone "Capture now": "rokid_phone"); it must keep the rokid prefix. */
         const val KEY_SOURCE = "source"

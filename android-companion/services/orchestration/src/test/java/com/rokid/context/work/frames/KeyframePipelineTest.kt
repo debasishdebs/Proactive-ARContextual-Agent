@@ -16,6 +16,7 @@ import com.rokid.context.work.budget.ThermalStatusProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -104,7 +105,7 @@ class KeyframePipelineTest {
         val restarted = pipeline()
         now += 60_000
         assertEquals("a live claim is not abandoned yet", 0, restarted.recover())
-        now += 5 * 60_000
+        now += FrameRecovery.CLAIM_TIMEOUT_MS
         assertEquals(2, restarted.recover())
         assertEquals(2, restarted.drainOnce())
         assertEquals(setOf("EXTRACTED"), (1..5).map { state("f$it") }.toSet())
@@ -126,7 +127,7 @@ class KeyframePipelineTest {
     @Test fun failuresCountAttemptsUntilFinal() = runBlocking {
         seed("f1", 1000)
         val failing = pipeline({ ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("INVALID_OUTPUT") })
-        repeat(5) { assertEquals(0, failing.drainOnce()); now += 10 * 60_000L }
+        repeat(5) { assertEquals(0, failing.drainOnce()); now += 20 * 60_000L }
         assertEquals("FAILED_FINAL", state("f1"))
         assertEquals(5, db.frameStateDao().get("f1")!!.attempts)
         assertEquals(0, failing.drainOnce()) // final frames are not retried automatically
@@ -191,5 +192,148 @@ class KeyframePipelineTest {
         // the old worker's claim (same DAO call) gets nothing while the pipeline's claim is live
         assertEquals(0, dao.claim(listOf("f1"), "worker", now + 1000, now - 300_000 + 1000).size)
         assertEquals(0, pipeline().drainOnce())
+    }
+
+    // ---- review fixes (fixP) ----
+
+    private fun modelFailure(kind: com.rokid.context.ai.FailureKind, cause: Throwable? = null, retryable: Boolean = kind == com.rokid.context.ai.FailureKind.TRANSIENT) =
+        com.rokid.context.ai.ModelCallException("boom", retryable, cause, kind)
+
+    @Test fun i1OfflineWalksTheWholeCauseChain() {
+        // VISION_EXTRACT falling back to SUMMARIZE wraps the failure in a second ModelCallException
+        val wrapped = modelFailure(com.rokid.context.ai.FailureKind.TRANSIENT, modelFailure(com.rokid.context.ai.FailureKind.TRANSIENT, java.net.UnknownHostException("h")))
+        val o = ExtractOutcome.classify(wrapped)
+        assertEquals("offline", o.error); assertEquals(false, o.countsAttempt)
+        assertEquals(false, ExtractOutcome.classify(java.io.IOException("x")).countsAttempt)
+    }
+
+    @Test fun i1TimeoutIsAnAttemptNotOffline() {
+        for (t in listOf<Throwable>(
+            modelFailure(com.rokid.context.ai.FailureKind.TRANSIENT, java.net.SocketTimeoutException("slow")),
+            modelFailure(com.rokid.context.ai.FailureKind.TRANSIENT, modelFailure(com.rokid.context.ai.FailureKind.TRANSIENT, java.io.InterruptedIOException("timeout"))),
+            java.net.SocketTimeoutException("slow"),
+        )) {
+            val o = ExtractOutcome.classify(t)
+            assertEquals("timeout", o.error); assertEquals(true, o.countsAttempt)
+            assertEquals(com.rokid.context.orchestration.RetryPolicy.MAX_ATTEMPTS, o.maxAttempts)
+        }
+    }
+
+    @Test fun i1NoValidatedNetworkIsOfflineForTransientFailures() {
+        val http = modelFailure(com.rokid.context.ai.FailureKind.TRANSIENT, IllegalStateException("p request failed: 503 x"))
+        assertEquals(true, ExtractOutcome.classify(http, online = true).countsAttempt)
+        assertEquals(false, ExtractOutcome.classify(http, online = false).countsAttempt)
+        // a frame's own failure is not the network's, whatever ConnectivityManager says
+        assertEquals(true, ExtractOutcome.classify(modelFailure(com.rokid.context.ai.FailureKind.REJECTED, retryable = false), online = false).countsAttempt)
+    }
+
+    @Test fun i1SettingsFailuresNeverCountAndOthersUseTheShortSchedule() {
+        assertEquals(false, ExtractOutcome.classify(modelFailure(com.rokid.context.ai.FailureKind.NOT_SET, retryable = false)).countsAttempt)
+        assertEquals(false, ExtractOutcome.classify(modelFailure(com.rokid.context.ai.FailureKind.TRANSIENT, modelFailure(com.rokid.context.ai.FailureKind.AUTH, retryable = false))).countsAttempt)
+        val o = ExtractOutcome.classify(modelFailure(com.rokid.context.ai.FailureKind.REJECTED, retryable = false))
+        assertEquals(5, o.maxAttempts)
+    }
+
+    @Test fun i1TransientFailuresFollowTodaysRetrySchedule() = runBlocking {
+        seed("f1", 1000)
+        val failing = pipeline({ ids, _, cls -> calls += ids to cls; ExtractOutcome.classify(modelFailure(com.rokid.context.ai.FailureKind.TRANSIENT, IllegalStateException("429"))) })
+        var waited = 0L
+        for (attempt in 1..8) {
+            assertEquals(0, failing.drainOnce())
+            val row = db.frameStateDao().get("f1")!!
+            assertEquals(attempt, row.attempts)
+            assertEquals(if (attempt < 8) "FAILED" else "FAILED_FINAL", row.state)
+            if (attempt < 8) {
+                val gap = KeyframePipeline.failureBackoffMs(attempt)
+                assertEquals("not due 1 ms early", 0, failing.drainOnce()); assertEquals(attempt, calls.size)
+                now += gap - 1; assertEquals(0, failing.drainOnce()); assertEquals(attempt, calls.size)
+                now += 1; waited += gap
+            }
+        }
+        assertEquals(8, calls.size)
+        assertTrue("the schedule spans about an hour", waited in 55 * 60_000L..65 * 60_000L)
+    }
+
+    @Test fun i2StaleSaveGivesTheRestOfTheBatchBackWithNoAttempt() = runBlocking {
+        for (i in 1..3) seed("f$i", i * 1000L)
+        val dao = db.frameStateDao()
+        val p = pipeline({ ids, claim, cls ->
+            calls += ids to cls
+            // the user forgot / another worker retook f2 mid-call: its claim no longer holds
+            dao.release("f2", claim, now); dao.claim(listOf("f2"), "other", now, now - 1)
+            ExtractOutcome.Stale()
+        })
+        assertEquals(0, p.drainOnce())
+        for (id in listOf("f1", "f3")) { assertEquals("PENDING", state(id)); assertEquals(0, dao.get(id)!!.attempts); assertEquals(null, dao.get(id)!!.claimId) }
+        assertEquals("EXTRACTING", state("f2")); assertEquals("other", dao.get("f2")!!.claimId) // the stale frame is left alone
+    }
+
+    @Test fun i3UnseenFramesTakeANormalFailureNotFinal() = runBlocking {
+        seed("f1", 1000); seed("f2", 2000)
+        val p = pipeline({ ids, c, _ ->
+            calls += ids to CallClass.EXTRACT
+            db.frameStateDao().completeIfClaimed("f2", c, "EXTRACTED", now)
+            ExtractOutcome.Saved(emptyList(), unseen = setOf("f1"))
+        })
+        assertEquals(1, p.drainOnce())
+        val f1 = db.frameStateDao().get("f1")!!
+        assertEquals("FAILED", f1.state); assertEquals(1, f1.attempts) // retried after its backoff
+        assertEquals("EXTRACTED", state("f2"))
+    }
+
+    @Test fun i4AskFindsTheNewestFramesBehindAHugeBacklog() = runBlocking {
+        db.frameStateDao().insertIgnore((1..650).map { FrameStateEntity("old$it", "PENDING", 0, null, null, null, now - 3_600_000L + it) })
+        seed("n1", now - 50_000); seed("n2", now - 30_000); seed("n3", now - 10_000); seed("n4", now - 5_000)
+        val p = pipeline()
+        assertEquals(3, p.extractForAsk())
+        assertEquals(listOf("n4", "n3", "n2") to CallClass.USER, calls.single())
+        assertEquals("PENDING", state("old1"))
+    }
+
+    @Test fun i4BackgroundPickIsNewestFirstWhateverTheBacklogSize() = runBlocking {
+        db.frameStateDao().insertIgnore((1..650).map { FrameStateEntity("old$it", "PENDING", 0, null, null, null, now - 3_600_000L + it) })
+        seed("n1", now - 3_000); seed("n2", now - 2_000); seed("d", now - 1_000_000, dwell = true)
+        pipeline().drainOnce()
+        assertEquals(listOf("d", "n2", "n1"), calls.single().first)
+    }
+
+    @Test fun i4AskWaitsForTheLoopsLiveClaimsInItsWindow() = runBlocking {
+        for (i in 1..3) seed("f$i", now - i * 1000L)
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val loop = pipeline({ ids, c, cls -> release.await(); completing()(ids, c, cls) })
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            loop.start(scope)
+            withTimeout(5_000) { while (db.frameStateDao().get("f1")!!.state != "EXTRACTING") delay(10) } // the loop holds all three, waiting (for a budget token)
+            val ask = scope.async { loop.extractForAsk() }
+            delay(300)
+            assertTrue("the ask waits for the live claims", ask.isActive)
+            release.complete(Unit)
+            withTimeout(5_000) { ask.await() }
+            assertEquals(setOf("EXTRACTED"), (1..3).map { state("f$it") }.toSet())
+            assertEquals(1, calls.size) // no second call for the same frames
+        } finally { scope.cancel() }
+    }
+
+    @Test fun drainUntilIdleExtractsTheWholeBacklogInTheCallersCoroutine() = runBlocking {
+        for (i in 1..7) seed("f$i", i * 1000L)
+        assertEquals(7, pipeline().drainUntilIdle(10_000))
+        assertEquals(3, calls.size)
+        assertEquals(setOf("EXTRACTED"), (1..7).map { state("f$it") }.toSet())
+    }
+
+    @Test fun drainUntilIdleStopsWhenBlockedByBattery() = runBlocking {
+        seed("f1", 1000)
+        val p = KeyframePipeline(db, completing(), { now }, deferred = { true }, pollMs = 50, deferPollMs = 50)
+        assertEquals(0, p.drainUntilIdle(10_000)); assertTrue(calls.isEmpty())
+        assertEquals("PENDING", state("f1"))
+    }
+
+    @Test fun failedFramesRetryAfterTheirBackoffEvenWhenQuiet() = runBlocking {
+        seed("f1", 1000)
+        val p = pipeline({ ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("REJECTED") })
+        p.drainOnce()
+        assertEquals(0, p.drainUntilIdle(200)) // the next retry is 30 s away: not worth holding the worker
+        assertEquals(1, calls.size)
     }
 }
