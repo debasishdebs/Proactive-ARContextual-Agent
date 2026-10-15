@@ -23,6 +23,8 @@ object Channels {
     const val WEAR = "pc_wear"
     /** Fix wave H, glasses to phone: a [UserExit] (the wearer exited the app on purpose; do not reopen it). Additive. */
     const val USER_EXIT = "pc_user_exit"
+    /** Fix wave I, phone to glasses: an [AutoOpen] (this start of the glasses app was the phone's automatic reopen: keep it minimised). Additive. */
+    const val AUTO_OPEN = "pc_auto_open"
 }
 
 /** How the glasses decide when to capture: Smart = motion-driven keyframes, Fixed = the interval timer. */
@@ -35,7 +37,16 @@ object Channels {
 @Serializable data class MotionHint(val state: MotionState, val atMs: Long)
 
 /** Phone to glasses on `pc_wear`: the Rokid SDK's `wearingStatus` (true = worn) and when the phone saw it (phone clock). */
-@Serializable data class WearMessage(val v: Int = PROTOCOL_VERSION, val worn: Boolean, val atMs: Long)
+@Serializable data class WearMessage(
+    val v: Int = PROTOCOL_VERSION,
+    val worn: Boolean,
+    val atMs: Long,
+    /** Fix wave I, additive: when the phone's current glasses session began (phone clock). A value seen before it is stale and ignored; 0 = not sent (old phone). */
+    val sessionStartMs: Long = 0L,
+)
+
+/** Phone to glasses on `pc_auto_open` (fix wave I): the phone reopened the app by itself a moment ago; it must stay in icon mode. */
+@Serializable data class AutoOpen(val v: Int = PROTOCOL_VERSION, val atMs: Long)
 
 /** Glasses to phone on `pc_user_exit`: the wearer exited the glasses app completely (triple double-tap). */
 @Serializable data class UserExit(val v: Int = PROTOCOL_VERSION)
@@ -240,6 +251,10 @@ data class Hello(
     val rokidCloses: Int = 0,
     /** Fix wave H4, additive: seconds between the last heartbeat and the latest restart after such a stop. */
     val lastRestartGapSec: Int? = null,
+    /** Fix wave I, additive: glasses clock of the wearer's last deliberate exit (the third double-tap); repeats a `pc_user_exit` that may have been lost. */
+    val userExitAtMs: Long? = null,
+    /** Fix wave I, additive: the app went to icon mode but "display over other apps" is off, so no icon shows (capture runs unseen). */
+    val iconBlocked: Boolean = false,
 )
 
 /** Phone → glasses on `pc_hello_request`: the glasses answer with [Hello]. Sent rate-limited when a frame is held. */

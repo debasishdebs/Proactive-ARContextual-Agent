@@ -6,6 +6,8 @@ import com.rokid.context.ai.EnvDefaults
 class ContextApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        // Fix wave I5: stamp the process start before any worker can claim a frame (the start release spares newer claims).
+        com.rokid.context.work.frames.ProcessStart.wallMs
         EnvDefaults.init(
             azureEndpoint = BuildConfig.AZURE_KG_ENDPOINT,
             azureDeployment = BuildConfig.AZURE_KG_DEPLOYMENT,

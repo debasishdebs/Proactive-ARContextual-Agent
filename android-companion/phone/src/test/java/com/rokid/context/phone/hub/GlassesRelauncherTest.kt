@@ -23,16 +23,19 @@ class GlassesRelauncherTest {
         override fun worn() = wornNow
     }
 
-    private class Rig(val t: TestScope, val guards: Guards = Guards(), var on: Boolean = true) {
-        val state = MutableStateFlow(LinkState.CONNECTED)
+    private class Rig(val t: TestScope, val guards: Guards = Guards(), var on: Boolean = true, val standDown: StandDown = InMemoryStandDown(), var fullScreen: Boolean = false, initial: LinkState = LinkState.CONNECTED) {
+        val state = MutableStateFlow(initial)
         var reopens = 0
         val logs = ArrayList<String>()
-        val r = GlassesRelauncher(t.backgroundScope, state, { on }, guards, { reopens++; state.value = LinkState.CONNECTING }, { t.currentTime }, { logs += it })
-            .also { r -> r.start() }
+        val r = GlassesRelauncher(
+            t.backgroundScope, state, { on }, guards, { reopens++; state.value = LinkState.CONNECTING }, { t.currentTime }, { logs += it },
+            standDown = standDown, reopenIsFullScreen = { fullScreen },
+        ).also { r -> r.start() }
         fun close() { state.value = LinkState.MINIMISED; state.value = LinkState.CLOSED_ON_GLASSES }
     }
 
-    private fun TestScope.rig(g: Guards = Guards(), on: Boolean = true) = Rig(this, g, on).also { runCurrent() }
+    private fun TestScope.rig(g: Guards = Guards(), on: Boolean = true, standDown: StandDown = InMemoryStandDown(), fullScreen: Boolean = false, initial: LinkState = LinkState.CONNECTED) =
+        Rig(this, g, on, standDown, fullScreen, initial).also { runCurrent() }
 
     @Test fun reopensEightSecondsAfterTheClose() = runTest {
         val r = rig()
@@ -50,12 +53,21 @@ class GlassesRelauncherTest {
         advanceTimeBy(10_100); assertEquals("the attempt goes ahead when the call ended", 1, r.reopens)
     }
 
-    @Test fun neverWhileMediaPlaysOrWhenKnownNotWorn() = runTest {
-        val g = Guards().apply { media = false }
+    /** Fix wave I: the reopen goes to icon mode, so music alone never blocks it; a (hypothetical) full-screen reopen still waits for it. */
+    @Test fun mediaBlocksOnlyAFullScreenReopen() = runTest {
+        val iconRig = rig(Guards().apply { media = false })
+        iconRig.close(); runCurrent(); advanceTimeBy(8_100); assertEquals("icon-mode reopen proceeds while music plays", 1, iconRig.reopens)
+        val full = rig(Guards().apply { media = false }, fullScreen = true)
+        full.close(); runCurrent(); advanceTimeBy(60_000); assertEquals(0, full.reopens)
+        full.guards.media = true; advanceTimeBy(10_100); assertEquals(1, full.reopens)
+    }
+
+    @Test fun neverWhenKnownNotWorn() = runTest {
+        val g = Guards()
         val r = rig(g)
-        r.close(); runCurrent(); advanceTimeBy(60_000); assertEquals(0, r.reopens)
-        g.media = true; g.wornNow = false
-        advanceTimeBy(30_000); assertEquals("known not worn blocks", 0, r.reopens)
+        r.close(); runCurrent()
+        g.wornNow = false
+        advanceTimeBy(60_000); assertEquals("known not worn blocks", 0, r.reopens)
         g.wornNow = true
         advanceTimeBy(10_100); assertEquals(1, r.reopens)
     }
@@ -121,5 +133,57 @@ class GlassesRelauncherTest {
         r.state.value = LinkState.CONNECTED; runCurrent()
         r.guards.call = true; advanceTimeBy(60_000)
         assertEquals(0, r.reopens)
+    }
+
+    /** Fix wave I2: the stand-down survives a phone restart (a new relauncher on the same store). */
+    @Test fun theStandDownSurvivesANewRelauncher() = runTest {
+        val store = InMemoryStandDown()
+        rig(standDown = store).r.onUserExit()
+        val again = rig(standDown = store, initial = LinkState.OFFLINE) // a restarted phone starts offline
+        again.close(); runCurrent(); advanceTimeBy(3_600_000)
+        assertEquals("a restarted phone does not reopen what the wearer exited", 0, again.reopens)
+        again.r.onExplicitOpen(); again.state.value = LinkState.CONNECTED; runCurrent()
+        again.close(); runCurrent(); advanceTimeBy(8_100); assertEquals(1, again.reopens)
+    }
+
+    /** Fix wave I4: our own reopen that fails (the link is OFFLINE again) is retried by the relauncher with backoff and the cap, nothing else. */
+    @Test fun aFailedReopenIsRetriedByTheRelauncherWithBackoffAndTheCap() = runTest {
+        val r = rig()
+        r.close(); runCurrent(); advanceTimeBy(8_100); assertEquals(1, r.reopens)
+        r.state.value = LinkState.OFFLINE; runCurrent()
+        advanceTimeBy(29_000); assertEquals(1, r.reopens)
+        advanceTimeBy(1_500); assertEquals("second step", 2, r.reopens)
+        r.state.value = LinkState.OFFLINE; runCurrent()
+        advanceTimeBy(121_000); assertEquals("third step 2 min", 3, r.reopens)
+        repeat(3) { r.state.value = LinkState.OFFLINE; runCurrent(); advanceTimeBy(600_100) } // 5 min then 10 min steps
+        assertTrue("never more than 6 per hour", r.reopens <= 6)
+        assertTrue(r.logs.any { it.contains("trying again later") })
+    }
+
+    @Test fun anOfflineLinkThatIsNotOurFailedReopenIsLeftAlone() = runTest {
+        val r = rig()
+        r.state.value = LinkState.OFFLINE; runCurrent(); advanceTimeBy(600_000)
+        assertEquals(0, r.reopens)
+        r.close(); runCurrent(); advanceTimeBy(8_100); assertEquals(1, r.reopens)
+        r.state.value = LinkState.CONNECTED; runCurrent(); r.state.value = LinkState.OFFLINE; runCurrent() // it connected, then BT dropped much later
+        advanceTimeBy(600_000); assertEquals(1, r.reopens)
+    }
+
+    @Test fun theAutoOpenWindowFollowsOurReopen() = runTest {
+        val r = rig()
+        assertFalse(r.r.reopenedRecently())
+        r.close(); runCurrent(); advanceTimeBy(8_100)
+        assertTrue(r.r.reopenedRecently())
+        advanceTimeBy(GlassesRelauncher.AUTO_OPEN_WINDOW_MS + 1_000); assertFalse(r.r.reopenedRecently())
+    }
+
+    @Test fun theCallGuardFailsClosedWithoutThePhoneStatePermissionForAWhileAfterAScene() {
+        val normal = android.media.AudioManager.MODE_NORMAL
+        val idle = android.telephony.TelephonyManager.CALL_STATE_IDLE
+        assertTrue(AndroidRelaunchGuards.callIdle(normal, idle, 0))
+        assertFalse(AndroidRelaunchGuards.callIdle(normal, android.telephony.TelephonyManager.CALL_STATE_RINGING, 60_000))
+        assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_IN_COMMUNICATION, idle, 60_000))
+        assertFalse("unknown call state right after the scene counts as a call", AndroidRelaunchGuards.callIdle(normal, null, 5_000))
+        assertTrue(AndroidRelaunchGuards.callIdle(normal, null, AndroidRelaunchGuards.UNKNOWN_CALL_HOLD_MS))
     }
 }

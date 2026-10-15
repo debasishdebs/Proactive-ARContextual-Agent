@@ -21,6 +21,10 @@ class FakeGlassesLink(initial: LinkState = LinkState.CONNECTED) : GlassesLink {
         private set
     var connectOnceCalls = 0
         private set
+    var automaticCalls = 0
+        private set
+    var probeCalls = 0
+        private set
 
     fun setState(s: LinkState) { _state.value = s }
     suspend fun emit(e: GlassesEvent) = _events.emit(e)
@@ -31,6 +35,8 @@ class FakeGlassesLink(initial: LinkState = LinkState.CONNECTED) : GlassesLink {
     val wearingFlow = kotlinx.coroutines.flow.MutableStateFlow<Boolean?>(null)
     override val wearing: kotlinx.coroutines.flow.StateFlow<Boolean?> get() = wearingFlow
     override fun connectOnce() { connectOnceCalls++ }
+    override fun connectAutomatic() { automaticCalls++ }
+    override fun probeAlive() { probeCalls++ }
     override fun connectOnResume() = Unit
     override suspend fun send(channel: String, json: String): Boolean {
         if (!_state.value.carriesData) return false // as CxrGlassesLink: the session, or the background link while minimised

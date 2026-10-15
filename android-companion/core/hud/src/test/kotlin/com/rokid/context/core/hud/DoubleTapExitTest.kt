@@ -65,4 +65,12 @@ class DoubleTapExitTest {
         assertEquals("Minimising... double-tap again to EXIT", DoubleTapExit.countdownText(ExitGate.Minimising(1_500), 0))
         assertNull(DoubleTapExit.countdownText(ExitGate.Idle, 0))
     }
+
+    /** Fix wave I: a phone Confirm/Answer in the Minimising window must not cancel the minimise the wearer asked for. */
+    @Test fun aPhoneOverlayDoesNotCancelTheMinimisingWindowButStillCancelsArmed() {
+        assertEquals(false, DoubleTapExit.cancelsFor(ExitGate.Minimising(1_000), listening = false, phoneBusy = true))
+        assertEquals(true, DoubleTapExit.cancelsFor(ExitGate.Armed(1_000), listening = false, phoneBusy = true))
+        assertEquals(true, DoubleTapExit.cancelsFor(ExitGate.Minimising(1_000), listening = true, phoneBusy = false), "own microphone still cancels")
+        assertEquals(false, DoubleTapExit.cancelsFor(ExitGate.Armed(1_000), listening = false, phoneBusy = false))
+    }
 }

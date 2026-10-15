@@ -107,4 +107,71 @@ class MinimisedLinkTest {
         assertFalse(link.active)
         assertFalse(link.send(Channels.STATE, "{}"))
     }
+
+    private fun probing(probeMs: Long = 20_000, confirmMs: Long = 10_000) =
+        MinimisedLink(scope, transport, inbound, onAlive = { alive++ }, onSilent = { silent++ }, log = {}, confirmMs = confirmMs, probeMs = probeMs, maxMisses = 2)
+    private fun probes() = transport.sent.count { it.first == Channels.HELLO_REQUEST }
+
+    /** Fix wave I C1: a kill while minimised is noticed by the liveness probe, after two unanswered probes in a row. */
+    @Test fun twoUnansweredProbesInARowMeanTheAppIsGone() {
+        val l = probing()
+        l.start("t"); l.onBound(true)
+        l.onMessage(Channels.HELLO, hello) // alive; the app is then killed and never speaks again
+        assertEquals(1, probes())
+        scope.advanceTimeBy(20_001); scope.runCurrent(); assertEquals(2, probes(), "first probe")
+        scope.advanceTimeBy(10_001); scope.runCurrent(); assertEquals(0, silent, "one miss is not enough")
+        scope.advanceTimeBy(20_001); scope.runCurrent(); assertEquals(3, probes(), "second probe")
+        scope.advanceTimeBy(10_001); scope.runCurrent(); assertEquals(1, silent)
+        scope.advanceTimeBy(120_000); scope.runCurrent()
+        assertEquals(3, probes(), "no more probes once the app is declared gone"); assertEquals(1, silent)
+        l.stop()
+    }
+
+    @Test fun anAnswerToAProbeResetsTheMissesAndProbesStayRateLimited() {
+        val l = probing()
+        l.start("t"); l.onBound(true); l.onMessage(Channels.HELLO, hello)
+        repeat(6) {
+            scope.advanceTimeBy(20_001); scope.runCurrent()
+            l.onMessage(Channels.HELLO, hello) // the glasses answer every probe
+            scope.advanceTimeBy(10_001); scope.runCurrent()
+        }
+        assertEquals(0, silent)
+        assertEquals(7, probes(), "one on bind and one per cycle: at most one per 20 s")
+        l.stop()
+    }
+
+    @Test fun anUnboundLinkCountsAsSilence() {
+        val l = probing()
+        l.start("t"); l.onBound(true); l.onMessage(Channels.HELLO, hello)
+        l.onBound(false)
+        scope.advanceTimeBy(60_001); scope.runCurrent()
+        assertEquals(1, silent)
+        l.stop()
+    }
+
+    @Test fun probeNowIsSilentWhenNothingAnswersAndQuietWhenSomethingDoes() {
+        val l = probing()
+        l.start("t"); l.onBound(true); l.onMessage(Channels.HELLO, hello)
+        l.probeNow(); scope.advanceTimeBy(10_001); scope.runCurrent()
+        assertEquals(1, silent)
+        silent = 0
+        l.probeNow(); l.onMessage(Channels.HELLO, hello); scope.advanceTimeBy(10_001); scope.runCurrent()
+        assertEquals(0, silent)
+        l.stop()
+    }
+
+    /** Fix wave I C1: the chain on the link side. Minimised, the glasses go silent, the probes find it, the policy says CLOSED_ON_GLASSES. */
+    @Test fun anIconModeKillMovesThePolicyToClosedOnGlasses() {
+        val policy = GlassesSessionPolicy()
+        policy.manualConnect(); policy.onEvent(LinkEvent.Started); policy.onEvent(LinkEvent.GlassesExited)
+        assertTrue(policy.minimised)
+        val actions = mutableListOf<LinkAction>()
+        val l = MinimisedLink(scope, transport, inbound, onAlive = { actions += policy.onEvent(LinkEvent.BackgroundAlive) }, onSilent = { actions += policy.onEvent(LinkEvent.BackgroundSilent) }, log = {}, confirmMs = 10_000, probeMs = 20_000, maxMisses = 2)
+        l.start("t"); l.onBound(true)
+        l.onMessage(Channels.HELLO, hello) // the app is up and minimised; then Rokid kills it
+        scope.advanceTimeBy(70_000); scope.runCurrent()
+        assertTrue(actions.contains(LinkAction.MarkClosedOnGlasses), "the relauncher's trigger")
+        assertTrue(policy.backgroundLink && !policy.minimised)
+        l.stop()
+    }
 }

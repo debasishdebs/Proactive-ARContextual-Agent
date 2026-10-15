@@ -115,6 +115,8 @@ class MainActivity : ComponentActivity() {
         runtime.ptt.onProblem = { p -> runOnUiThread { local = LocalOverlay.Toast(pttText(p), System.currentTimeMillis()) } }
         controller.onActivityStart()
         controller.start()
+        // A launcher-looking start that was really the phone's automatic reopen: back to icon mode (never the HUD over a call).
+        controller.onAutoOpen = { runOnUiThread { if (runtime.startGate.onAutoOpenMarker() && !minimised) { Log.i(TAG, "automatic reopen: icon mode"); minimise() } } }
         lifecycleScope.launch { runtime.pauses.ensureLoaded() }
         // Final review I2: a phone toast during our recording means the phone refused or ended the ask. Stop recording
         // (no Cancel: the phone already dropped it) so the wearer sees the toast instead of "tap to send".
@@ -146,18 +148,23 @@ class MainActivity : ComponentActivity() {
         runtime.popup.hide()
         // In front now: start the keep-alive camera service so captures keep working after the wearer leaves the HUD.
         runtime.uiMode.set(UiModeStore.FULL)
+        runtime.iconBlocked = false
+        runtime.restarts.heartbeat() // alive and meant to be running (the stamp is not written while closed)
         if (granted(Manifest.permission.CAMERA)) CaptureService.startKeepAlive(this)
-        // Fix wave H: back after Rokid closed us while minimised (or an explicit extra): straight to icon mode, no HUD.
-        if (intent?.getBooleanExtra(EXTRA_START_MINIMISED, false) == true || runtime.restarts.takeStartMinimised()) {
-            Log.i(TAG, "starting minimised (icon mode)")
+        // Fix wave I: back after a kill (or an explicit extra, consumed once): straight to icon mode, no HUD, unless the wearer opened it from the launcher.
+        val extra = intent?.getBooleanExtra(EXTRA_START_MINIMISED, false) == true
+        if (extra) intent?.removeExtra(EXTRA_START_MINIMISED)
+        val source = StartSources.classify(intent?.action, intent?.categories, referrer?.host)
+        if (runtime.startGate.onStart(source, extra)) {
+            Log.i(TAG, "starting minimised (icon mode) source=$source")
             swipeTimer.post { minimise() }
-        }
+        } else if (source == StartSource.LAUNCHER) Log.i(TAG, "opened from the launcher: showing the HUD")
     }
 
     /** Finishing closes the session at once; [onDestroy] may come late. */
     override fun onStop() {
         cancelGate() // leaving the HUD with the gate armed must never pause later (review focus 1)
-        if (isFinishing) { runtime.uiMode.set(UiModeStore.HOME); cancelAsk(); controller.onActivityExit(); CaptureService.stopKeepAlive(this) }
+        if (isFinishing) { runtime.uiMode.set(UiModeStore.HOME); runtime.restarts.onExit(); cancelAsk(); controller.onActivityExit(); CaptureService.stopKeepAlive(this) }
         runtime.hudPresence.onStopped(finishing = isFinishing)
         super.onStop()
     }
@@ -323,7 +330,9 @@ class MainActivity : ComponentActivity() {
     private fun tickGate() {
         // Never armed under an overlay with its own double-tap: one arriving now ends the gate with no pause.
         val phone = controller.frame.value?.overlay
-        if (runtime.listening.value || phone is Overlay.Confirm || phone is Overlay.Listening || phone is Overlay.Answer) { cancelGate(); return }
+        // A Confirm/Answer in the 1.5 s "Minimising" window must not cancel the minimise the wearer asked for (fix wave I).
+        val phoneBusy = phone is Overlay.Confirm || phone is Overlay.Listening || phone is Overlay.Answer
+        if (DoubleTapExit.cancelsFor(exitGate, runtime.listening.value, phoneBusy)) { cancelGate(); return }
         val (g, a) = DoubleTapExit.onTick(exitGate, SystemClock.uptimeMillis())
         exitGate = g
         if (a == PageAction.MINIMISE) { clearCountdown(); minimise(); return }
@@ -357,9 +366,19 @@ class MainActivity : ComponentActivity() {
      */
     internal fun exitApp() {
         cancelGate()
-        controller.sendUserExit()
         exitedByUser = true
-        finish()
+        runtime.restarts.onUserExit(System.currentTimeMillis()) // repeated in every hello, in case this message is lost with the session
+        // Finishing closes the CXR session at once and drops a message still in flight: wait for the hand-over (or ~300 ms) first.
+        var tries = 0
+        val sendAndFinish = object : Runnable {
+            override fun run() {
+                val handedOver = controller.sendUserExit()
+                tries++
+                if (handedOver || tries * EXIT_RETRY_MS >= EXIT_WAIT_MS) swipeTimer.postDelayed({ finish() }, EXIT_FLUSH_MS)
+                else swipeTimer.postDelayed(this, EXIT_RETRY_MS)
+            }
+        }
+        sendAndFinish.run()
     }
 
     /** Tests: the wearer exited with the third double-tap. */
@@ -374,7 +393,13 @@ class MainActivity : ComponentActivity() {
         moveTaskToBack(true)
         minimised = true
         runtime.hudPresence.onMinimised()
-        if (!Settings.canDrawOverlays(this)) { Toast.makeText(this, NO_OVERLAY_TOAST, Toast.LENGTH_SHORT).show(); return }
+        if (!Settings.canDrawOverlays(this)) {
+            // Capture runs but nothing shows it: count-only warning here, a Diagnostics row on the phone (via the hello).
+            Log.w(TAG, "minimised without the overlay permission: no icon")
+            runtime.iconBlocked = true; controller.sendHello()
+            Toast.makeText(this, NO_OVERLAY_TOAST, Toast.LENGTH_SHORT).show(); return
+        }
+        runtime.iconBlocked = false
         // The icon means "capture is running": only while the keep-alive service holds the camera.
         if (CaptureService.liveInstance != null) runtime.minimisedIcon.show(controller.settings.value.iconCorner)
     }
@@ -504,6 +529,10 @@ class MainActivity : ComponentActivity() {
         /** Start straight into icon mode (no HUD, no focus taken); also what a restart after a force-stop in icon mode does. */
         const val EXTRA_START_MINIMISED = "com.rokid.context.glasses.START_MINIMISED"
         private const val GATE_TICK_MS = 250L
+        /** The exit message gets this long to leave before the activity finishes (retried every [EXIT_RETRY_MS] while CXR refuses it). */
+        private const val EXIT_WAIT_MS = 300L
+        private const val EXIT_RETRY_MS = 60L
+        private const val EXIT_FLUSH_MS = 120L
         const val MIC_PERMISSION = "Allow the microphone on the glasses"
         /** Minimised without SYSTEM_ALERT_WINDOW: plain moveTaskToBack, no icon (spec 2026-10-14 §3). */
         const val NO_OVERLAY_TOAST = "Allow 'display over other apps' for the icon"

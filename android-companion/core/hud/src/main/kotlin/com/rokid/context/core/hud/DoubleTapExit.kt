@@ -41,6 +41,13 @@ object DoubleTapExit {
     /** A tap or swipe while armed: no pause, no minimise; the input is then handled normally. */
     fun onOtherInput(@Suppress("UNUSED_PARAMETER") gate: ExitGate): ExitGate = ExitGate.Idle
 
+    /**
+     * Whether a busy input cancels the gate (fix wave I): the local microphone always does; a phone Confirm/Listening/Answer
+     * does too, except in the [ExitGate.Minimising] window: the minimise the wearer already asked for stands.
+     */
+    fun cancelsFor(gate: ExitGate, listening: Boolean, phoneBusy: Boolean): Boolean =
+        listening || (phoneBusy && gate !is ExitGate.Minimising)
+
     /** The toast for the gate's state; null when idle. */
     fun countdownText(gate: ExitGate, @Suppress("UNUSED_PARAMETER") nowMs: Long): String? = when (gate) {
         is ExitGate.Armed -> ARMED_TEXT
