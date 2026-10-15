@@ -9,6 +9,7 @@ import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.memory.db.SpaceState
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -90,6 +91,32 @@ class EmbeddingSwapTest {
         assertEquals(0, db.frameVectorDao().countForSpace(a))
         assertEquals(1, dao.vectors(b).size) // the ACTIVE space is never purged
         assertEquals(SpaceState.RETIRED, dao.space(a)!!.state)
+    }
+
+    /** Review B M-1: a crash between the swap commit and markRetired leaves no stamp; that must start the grace, not end it. */
+    @Test fun unstampedRetiredSpaceGetsStampedNotPurged() = runBlocking {
+        val (a, _) = twoSpaces()
+        clock.forget(a)
+        val s = spaces()
+        s.purgeRetired()
+        assertEquals(1, dao.vectors(a).size)
+        assertEquals(t, clock.retiredAt(a))
+        t += 8 * day; s.purgeRetired()
+        assertTrue(dao.vectors(a).isEmpty())
+    }
+
+    /** Review B M-4: the availability flow re-reads the clock, and it needs the retained vectors (a COUNT, not a load). */
+    @Test fun rollbackAvailableChecksGraceAndVectorsOnEachRead() = runBlocking {
+        val (a, _) = twoSpaces()
+        val s = spaces()
+        assertTrue(s.rollbackAvailable().first())
+        t += 8 * day
+        assertFalse(s.rollbackAvailable().first())
+        t = 1_000L
+        assertTrue(s.rollbackAvailable().first())
+        db.openHelper.writableDatabase.execSQL("DELETE FROM memory_vector WHERE spaceId = '$a'")
+        assertFalse(s.rollbackAvailable().first())
+        assertEquals(null, s.rollbackTarget())
     }
 
     @Test fun coverageIgnoresDeletedPhotos() = runBlocking {

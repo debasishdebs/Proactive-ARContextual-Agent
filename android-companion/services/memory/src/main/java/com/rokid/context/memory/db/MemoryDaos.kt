@@ -15,6 +15,8 @@ interface FrameDao {
     @Query("SELECT * FROM frame WHERE id IN (:ids) ORDER BY ts ASC") suspend fun byIds(ids: List<String>): List<FrameEntity>
     @Query("SELECT * FROM frame WHERE ts >= :fromMs AND ts < :toMs ORDER BY ts DESC") suspend fun between(fromMs: Long, toMs: Long): List<FrameEntity>
     @Query("DELETE FROM frame WHERE id IN (:ids)") suspend fun deleteByIds(ids: List<String>)
+    /** Points a row at a surviving copy of its photo (a wire-id duplicate whose first file is gone). */
+    @Query("UPDATE frame SET path = :path WHERE id = :id") suspend fun updatePath(id: String, path: String): Int
     @Query("SELECT COUNT(*) FROM frame") suspend fun count(): Int
 }
 

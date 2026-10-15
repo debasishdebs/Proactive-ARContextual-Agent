@@ -285,6 +285,31 @@ class LocalModelsPageTest {
         compose.onNodeWithTag("local_models_roll_back").assertDoesNotExist()
     }
 
+    /** Review B I-1: EMBED is rebound to the target space's model BEFORE the reindex callback; unavailable model = no Roll back. */
+    @Test fun rollBackRebindsBeforeTheReindexAndNeedsTheModel() {
+        val graph = TestGraph.fresh(ctx)
+        val spaces = com.rokid.context.memory.EmbeddingSpaces(graph.db.embeddingDao(), com.rokid.context.memory.InMemoryRetiredClock(), { 1_000L })
+        runBlocking {
+            graph.memories.add(com.rokid.context.memory.db.MemoryEntity("m1", null, "t", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 1, false, ""))
+            val a = spaces.startBuilding("fpA", "{}", 2, "[]", 1); spaces.put("m1", a.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(a.id)
+            val b = spaces.startBuilding("fpB", "{}", 2, "[]", 2); spaces.put("m1", b.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(b.id)
+            val events = mutableListOf<String>()
+            var available = false
+            val rebinder = object : EmbedRebinder {
+                override suspend fun available(space: com.rokid.context.memory.db.EmbeddingSpaceEntity) = available
+                override suspend fun rebind(space: com.rokid.context.memory.db.EmbeddingSpaceEntity): Boolean { events += "rebind:${space.fingerprint}"; return true }
+            }
+            val swap = SpacesSwapRollback(spaces, rebinder) { events += "reindex" }
+            assertFalse(swap.available())
+            assertFalse(swap.rollBack())
+            assertTrue(events.isEmpty())
+            available = true
+            assertTrue(swap.available())
+            assertTrue(swap.rollBack())
+            assertEquals(listOf("rebind:fpA", "reindex"), events)
+        }
+    }
+
     @Test fun rollBackHiddenAfterGraceAndDialogCarriesTheCounts() {
         val graph = TestGraph.fresh(ctx)
         var t = 1_000L

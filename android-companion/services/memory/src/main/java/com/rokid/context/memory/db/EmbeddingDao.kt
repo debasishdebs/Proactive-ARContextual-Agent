@@ -24,6 +24,7 @@ abstract class EmbeddingDao {
     @Query("SELECT * FROM embedding_space WHERE state = 'BUILDING' LIMIT 1") abstract suspend fun building(): EmbeddingSpaceEntity?
     @Query("SELECT * FROM embedding_space WHERE id = :id") abstract suspend fun space(id: String): EmbeddingSpaceEntity?
     @Query("SELECT * FROM embedding_space ORDER BY createdAt ASC") abstract fun observeSpaces(): Flow<List<EmbeddingSpaceEntity>>
+    @Query("SELECT COUNT(*) FROM memory_vector WHERE spaceId = :spaceId") abstract suspend fun vectorCount(spaceId: String): Int
     @Query("SELECT * FROM memory_vector WHERE spaceId = :spaceId") abstract suspend fun vectors(spaceId: String): List<MemoryVectorEntity>
 
     /**
