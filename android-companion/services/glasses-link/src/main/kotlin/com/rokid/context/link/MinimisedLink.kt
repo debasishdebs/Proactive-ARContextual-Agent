@@ -41,7 +41,7 @@ internal class MinimisedLink(
     private val transport: BackgroundTransport,
     private val inbound: SessionInbound,
     private val onAlive: () -> Unit,
-    private val onSilent: () -> Unit,
+    onSilent: () -> Unit,
     private val log: (String) -> Unit,
     private val confirmMs: Long = CONFIRM_MS,
     private val probeMs: Long = PROBE_MS,
@@ -50,27 +50,31 @@ internal class MinimisedLink(
     private var key: Any? = null
     private var bound = false
     private var heard = false
+    /** [onSilent] fired and no message has come since: the next message undoes it (fix wave I N1). */
+    private var silent = false
     private var confirmJob: Job? = null
     private var probeJob: Job? = null
     private var checkJob: Job? = null
     private var rx = 0
     private var tx = 0
 
+    private val reportSilent: () -> Unit = { silent = true; onSilent() }
+
     val active: Boolean get() = transport.active
 
     fun start(token: String): Boolean {
         if (transport.active) return true
         val k = Any()
-        key = k; bound = false; heard = false; rx = 0; tx = 0
+        key = k; bound = false; heard = false; silent = false; rx = 0; tx = 0
         inbound.open(k)
         if (!transport.start(token)) {
             inbound.close(k); key = null
             log("bg bind failed")
-            onSilent()
+            reportSilent()
             return false
         }
         confirmJob?.cancel()
-        confirmJob = scope.launch { delay(confirmMs); if (!heard) { log("bg silent after ${confirmMs}ms"); onSilent() } }
+        confirmJob = scope.launch { delay(confirmMs); if (!heard) { log("bg silent after ${confirmMs}ms"); reportSilent() } }
         log("bg bind requested")
         return true
     }
@@ -80,11 +84,11 @@ internal class MinimisedLink(
      * nothing at all comes back within [confirmMs]; [onAlive] is not called here (the first message of a start does that).
      */
     fun probeNow() {
-        if (key == null) { onSilent(); return }
+        if (key == null) { reportSilent(); return }
         val mark = rx
-        if (!sendProbe()) { log("bg probe now: not sent"); onSilent(); return }
+        if (!sendProbe()) { log("bg probe now: not sent"); reportSilent(); return }
         checkJob?.cancel()
-        checkJob = scope.launch { delay(confirmMs); if (rx == mark) { log("bg probe now: silent"); onSilent() } }
+        checkJob = scope.launch { delay(confirmMs); if (rx == mark) { log("bg probe now: silent"); reportSilent() } }
     }
 
     private fun sendProbe(): Boolean {
@@ -100,12 +104,13 @@ internal class MinimisedLink(
             while (true) {
                 delay(probeMs)
                 val mark = rx
+                if (!bound) continue // the Hi Rokid service is unbound: nothing was asked, so nothing was missed
                 val sent = sendProbe()
                 delay(confirmMs)
                 if (sent && rx != mark) { misses = 0; continue }
                 misses++
                 log("bg probe unanswered $misses/$maxMisses")
-                if (misses >= maxMisses) { onSilent(); return@launch }
+                if (misses >= maxMisses) { reportSilent(); return@launch }
             }
         }
     }
@@ -126,7 +131,7 @@ internal class MinimisedLink(
     fun onMessage(channel: String, parts: List<String>): List<GlassesEvent> {
         val k = key ?: return emptyList()
         rx++
-        if (!heard) { heard = true; confirmJob?.cancel(); confirmJob = null; onAlive() }
+        if (!heard || silent) { heard = true; silent = false; confirmJob?.cancel(); confirmJob = null; onAlive() } // a message after a (false) silence undoes it
         if (probeJob?.isActive != true) startProbing() // also after a silence that a late message undid
         return inbound.onMessage(k, channel, parts)
     }
