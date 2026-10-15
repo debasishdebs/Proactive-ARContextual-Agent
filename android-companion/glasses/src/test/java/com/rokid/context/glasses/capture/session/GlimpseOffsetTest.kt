@@ -28,6 +28,9 @@ import kotlin.test.assertTrue
 class GlimpseOffsetTest {
     private val turnMs = 100L
 
+    /** Camera realism knobs for the review's variants: a slow bind on the main thread and dark first frames (AE ramp). */
+    private class Cam(val bindDelayMs: Long = 0, val darkFrames: Int = 0)
+
     /** The world: the head turns [turnMs] toward a new scene at each entry of [turns] (start time, scene); a scene change in front of a still head is a turn of length 0 with no head motion. */
     private class World(val first: Int, val turns: List<Pair<Long, Int>>, val still: List<Pair<Long, Int>> = emptyList(), val turn: Long) {
         fun scene(t: Long): Pair<Int, Boolean> { // scene id, in transition
@@ -46,7 +49,7 @@ class GlimpseOffsetTest {
     private class Run(val keyframes: List<Triple<Long, Int, Long>>) // emitted at, scene shown, captured at
 
     private suspend fun simulate(
-        test: TestScope, world: World, quickLookMs: Int, startup: () -> Long, endAt: Long, workMin: Int = 600,
+        test: TestScope, world: World, quickLookMs: Int, startup: () -> Long, endAt: Long, workMin: Int = 600, cam: Cam = Cam(),
     ): Run {
         val sched = test.testScheduler
         val clock: () -> Long = { sched.currentTime }
@@ -59,7 +62,7 @@ class GlimpseOffsetTest {
         val camera = FakeCamera(test.backgroundScope, clock, startup) { t ->
             val (scene, moving) = world.scene(t)
             Scenes.frame(scene, if (moving) 100 else 1, t)
-        }
+        }.also { it.bindDelayMs = cam.bindDelayMs; it.darkFrames = cam.darkFrames }
         val session = SamplingSession(
             scope = test.backgroundScope, camera = camera, owner = CameraOwner(), motion = motion, wear = wear, gate = gate,
             heat = heat, workRest = workRest, encoder = TagEncoder(),
@@ -81,27 +84,27 @@ class GlimpseOffsetTest {
     private data class Result(val saved: Int, val total: Int) { val pct get() = 100.0 * saved / total; override fun toString() = "%.1f%% (%d/%d)".format(pct, saved, total) }
 
     /** Scenario A: settled, a [turnMs] turn, then a [lookMs] look at a new scene; [offsets] phases against the brief-check beat. */
-    private fun scenarioA(lookMs: Long, quickLook: Int, startup: () -> Long, offsets: Int = 20): Result {
+    private fun scenarioA(lookMs: Long, quickLook: Int, startup: () -> Long, offsets: Int = 20, turn: Long = turnMs, cam: Cam = Cam()): Result {
         var saved = 0
         for (i in 0 until offsets) runTest {
             val t0 = 12_000L + i * (5_000L / offsets)
             // the look: scene 1 for lookMs after the turn; then the head moves on to scene 2 and stays
-            val world = World(0, listOf(t0 to 1, t0 + turnMs + lookMs to 2), turn = turnMs)
-            val run = simulate(this, world, quickLook, startup, t0 + turnMs + lookMs + 8_000)
-            if (run.keyframes.any { it.second == 1 && it.third in (t0 + turnMs)..(t0 + turnMs + lookMs) }) saved++
+            val world = World(0, listOf(t0 to 1, t0 + turn + lookMs to 2), turn = turn)
+            val run = simulate(this, world, quickLook, startup, t0 + turn + lookMs + 8_000, cam = cam)
+            if (run.keyframes.any { it.second == 1 && it.third in (t0 + turn)..(t0 + turn + lookMs) }) saved++
         }
         return Result(saved, offsets)
     }
 
     /** Scenario B: five distinct [lookMs] looks separated by [turnMs] turns; counts looks. */
-    private fun scenarioB(lookMs: Long, quickLook: Int, startup: () -> Long, offsets: Int = 20): Result {
+    private fun scenarioB(lookMs: Long, quickLook: Int, startup: () -> Long, offsets: Int = 20, turn: Long = turnMs, cam: Cam = Cam()): Result {
         var saved = 0
         for (i in 0 until offsets) runTest {
             val t0 = 12_000L + i * (5_000L / offsets)
-            val turns = (0 until 5).map { k -> (t0 + k * (turnMs + lookMs)) to (k + 1) } + ((t0 + 5 * (turnMs + lookMs)) to 6)
-            val run = simulate(this, World(0, turns, turn = turnMs), quickLook, startup, t0 + 5 * (turnMs + lookMs) + 8_000)
+            val turns = (0 until 5).map { k -> (t0 + k * (turn + lookMs)) to (k + 1) } + ((t0 + 5 * (turn + lookMs)) to 6)
+            val run = simulate(this, World(0, turns, turn = turn), quickLook, startup, t0 + 5 * (turn + lookMs) + 8_000, cam = cam)
             for (k in 0 until 5) {
-                val from = t0 + k * (turnMs + lookMs) + turnMs
+                val from = t0 + k * (turn + lookMs) + turn
                 if (run.keyframes.any { it.second == k + 1 && it.third in from..(from + lookMs) }) saved++
             }
         }
@@ -146,6 +149,32 @@ class GlimpseOffsetTest {
         println("GLIMPSE B  quickLook=1s look=1.0s  p95-latency=$worst  latency 292..535 ms=$spread")
         assertTrue(worst.pct >= 95.0, "B at the start-up p95: $worst")
         assertTrue(spread.pct >= 95.0, "B with start-up 292..535 ms: $spread")
+    }
+
+    /** The measured lead (rolling p95 of the real start-up) keeps 1 s looks at 95 % when the camera is slower than the 535 ms probe. */
+    @Test fun scenariosAandB_at700msStartup_atLeast95Percent() {
+        val a = scenarioA(1_000, 1000, { 700L })
+        val b = scenarioB(1_000, 1000, { 700L })
+        println("GLIMPSE start-up 700 ms  A=$a  B=$b")
+        assertTrue(a.pct >= 95.0, "A at 700 ms start-up: $a")
+        assertTrue(b.pct >= 95.0, "B at 700 ms start-up: $b")
+    }
+
+    /** Reported, not asserted (review of G3b): a 200 ms bind on Main, two dark frames while the exposure ramps, and 300 / 600 ms turns. */
+    @Test fun reportRealisticCameraAndSlowTurns() {
+        val sb = StringBuilder("GLIMPSE REALISM (quickLook=1000 ms, 1.0 s looks, 20 phases)\n")
+        val variants = listOf(
+            "ideal camera, 100 ms turn" to Triple(100L, Cam(), 535L),
+            "bind 200 ms + 2 dark frames" to Triple(100L, Cam(bindDelayMs = 200, darkFrames = 2), 535L),
+            "ideal camera, 300 ms turn" to Triple(300L, Cam(), 535L),
+            "ideal camera, 600 ms turn" to Triple(600L, Cam(), 535L),
+            "bind 200 + 2 dark frames, 600 ms turn" to Triple(600L, Cam(bindDelayMs = 200, darkFrames = 2), 535L),
+        )
+        for ((name, v) in variants) {
+            val (turn, cam, lat) = v
+            sb.append("  %-40s A=%s  B=%s\n".format(name, scenarioA(1_000, 1000, { lat }, turn = turn, cam = cam), scenarioB(1_000, 1000, { lat }, turn = turn, cam = cam)))
+        }
+        println(sb)
     }
 
     @Test fun scenarioC_aChangeInFrontOfASettledHead_within5s() {

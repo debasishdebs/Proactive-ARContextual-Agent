@@ -30,7 +30,7 @@ object CameraPolicy {
 
     fun decide(
         state: MotionState, decelerating: Boolean, msSinceMotionEnd: Long?, msSinceKeyframe: Long, quickLookMs: Int,
-        lowPower: Boolean, heatSlow: Boolean, nowMs: Long, lastBriefCheckAtMs: Long,
+        lowPower: Boolean, heatSlow: Boolean, nowMs: Long, lastBriefCheckAtMs: Long, quiet: Boolean = false,
     ): Decision {
         val slow = if (heatSlow) 2L else 1L
         val interval = ANALYSIS_MS * slow
@@ -50,7 +50,8 @@ object CameraPolicy {
             lowPower -> LOW_POWER_CHECK_MS
             else -> SETTLED_CHECK_MS
         }
-        if (msSinceKeyframe > QUIET_AFTER_KEYFRAME_MS) checkMs = maxOf(checkMs, QUIET_CHECK_MS)
+        // [quiet]: several brief checks in a row found nothing usable (dark, face-down): the 15 s cadence
+        if (msSinceKeyframe > QUIET_AFTER_KEYFRAME_MS || quiet) checkMs = maxOf(checkMs, QUIET_CHECK_MS)
         var next = lastBriefCheckAtMs + checkMs * slow
         // One immediate check at motion end + H when the hold is shorter than the look time.
         if (msSinceMotionEnd != null && hold < quickLookMs) {
