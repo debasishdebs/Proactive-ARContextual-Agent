@@ -44,8 +44,8 @@ interface SamplingCamera {
     fun close()
 }
 
-/** [width] is the final width (640 after rotation); [scaled] says the frame did not come out 640 wide and was scaled. */
-class EncodedKeyframe(val jpeg: ByteArray, val width: Int, val scaled: Boolean)
+/** [width] x [height] is the final size after rotation (long side at most 640, never upscaled). */
+class EncodedKeyframe(val jpeg: ByteArray, val width: Int, val height: Int)
 
 fun interface KeyframeEncoder { fun encode(frame: Nv21Frame): EncodedKeyframe? }
 
@@ -123,6 +123,8 @@ class SamplingSession(
     private var analysisIntervalMs = ANALYSIS_MS
     private var bindFailures = 0
     private var bindBackoffUntil = 0L
+    /** The first failed bind after start (the previous process may not have released the camera yet) is retried at once and not counted. */
+    private var coldStartGrace = true
     private var seq = 0L
     private var forceAnalyse = false
     private var forceBrief = false
@@ -131,9 +133,6 @@ class SamplingSession(
     private var nextRestCaptureAt: Long? = null
     private val keptAt = ArrayDeque<Long>()
 
-    /** Frames that did not come out 640 px wide and were scaled (the encoder reports each). */
-    private val scaledCount = AtomicInteger()
-    val scaledFrames: Int get() = scaledCount.get()
     /** Samples whose copy took longer than [COPY_BUDGET_MS] (the thumbnail target is 30 ms). */
     private val slowCount = AtomicInteger()
     val slowCopies: Int get() = slowCount.get()
@@ -349,7 +348,11 @@ class SamplingSession(
             lastBriefAt = now
             if (ep.openFailed || ep.noFrames) {
                 lastBriefAt = now - DUE_NOW_MS // retry after the back-off, not on the 5 s beat
-                if (camera.busy) onBusy(now) else onBindFailed(now)
+                if (coldStartGrace) {
+                    coldStartGrace = false
+                    bindBackoffUntil = now + COLD_START_RETRY_MS
+                    log("camera not ready on the first bind: retrying in $COLD_START_RETRY_MS ms (not counted)")
+                } else if (camera.busy) onBusy(now) else onBindFailed(now)
             }
             if (!stopped) flushed = gate.flushWindow()
         }
@@ -411,7 +414,7 @@ class SamplingSession(
             ep.frames++
             ep.lastFrameAt = now
             if (ep.firstFrameAt < 0) {
-                ep.firstFrameAt = now; bindFailures = 0
+                ep.firstFrameAt = now; bindFailures = 0; coldStartGrace = false
                 if (ep.openedAt > 0) { startups.addLast(now - ep.openedAt); while (startups.size > STARTUP_WINDOW) startups.removeFirst() }
             }
             val must = forceAnalyse || pendingDwellAt != null || pendingNowAt != null
@@ -467,13 +470,14 @@ class SamplingSession(
     private fun emit(keep: GateResult.Keep, now: Long) {
         val enc = encoder.encode(keep.candidate.pixels)
         if (enc == null) { log("encode failed for sample ${keep.candidate.seq}"); return }
-        if (enc.scaled) { val n = scaledCount.incrementAndGet(); log("keyframe was not 640 wide: scaled (count $n)") }
         val out = KeyframeOut(
             enc.jpeg, enc.width, motion.state.value, keep.dwell, keep.blur,
             hex(keep.dhash), hex(keep.phash), keep.candidate.seq, sessionId,
         )
         synchronized(lock) { lastKeyframeAt = now; keptAt.addLast(now) }
-        log("keyframe seq=${out.sampleSeq} motion=${out.motion} dwell=${out.dwell} blur=${out.blur.toInt()} bytes=${out.jpeg.size}")
+        val px = keep.candidate.pixels
+        val srcW = YuvCopy.rotatedWidth(px.w, px.h, px.rotation); val srcH = YuvCopy.rotatedHeight(px.w, px.h, px.rotation)
+        log("keyframe seq=${out.sampleSeq} src=${srcW}x$srcH out=${enc.width}x${enc.height} motion=${out.motion} dwell=${out.dwell} blur=${out.blur.toInt()} bytes=${out.jpeg.size}")
         sink(out, meanLuma(keep.candidate.thumb))
     }
 
@@ -515,6 +519,7 @@ class SamplingSession(
         const val LOW_BATTERY_PCT = 20
         const val MAX_BIND_FAILURES = 3
         const val BIND_BACKOFF_MS = 1_000L
+        const val COLD_START_RETRY_MS = 500L
         const val COPY_BUDGET_MS = 30L
         const val FORCED_GAP_MS = 120L
     }
