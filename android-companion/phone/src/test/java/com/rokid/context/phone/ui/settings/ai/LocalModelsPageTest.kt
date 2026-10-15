@@ -76,7 +76,7 @@ private class FakeMobileData(var on: Boolean = false) : MobileDataSetting {
 class LocalModelsPageTest {
     @get:Rule val compose = createComposeRule()
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
-    private val bge = LocalModels.all.single()
+    private val bge = LocalModels.byId("bge-small-en-v1.5-q8")!!
     private val endpointId = LocalModelsSource.endpointIdFor(bge)
     private lateinit var ai: AiGraph
     private lateinit var gateway: FakeGateway
@@ -88,10 +88,14 @@ class LocalModelsPageTest {
         gateway = FakeGateway(File(ctx.filesDir, "models_test").apply { deleteRecursively() })
     }
 
-    @After fun tearDown() = TestGraph.close(ctx)
+    /** Dispose the composition first so no flow collector in it still reads Room when the DB is closed (a flaky closed-pool failure). */
+    @After fun tearDown() {
+        runCatching { compose.runOnIdle { }; compose.setContent { }; compose.waitForIdle() }
+        TestGraph.close(ctx)
+    }
 
     private fun source(abi: Boolean = true, failures: LoadFailures = LoadFailures.None) =
-        LocalModelsSource(LocalModels.all, gateway, ai, { reindexes++ }, mobile, abiSupported = abi, loadFailures = failures)
+        LocalModelsSource(listOf(bge), gateway, ai, { reindexes++ }, mobile, abiSupported = abi, loadFailures = failures)
 
     private fun row(s: LocalModelsSource) = runBlocking { s.load() }.single()
 
@@ -263,6 +267,68 @@ class LocalModelsPageTest {
         compose.waitUntil(5_000) { compose.onAllNodes(hasText("On-device model couldn't load", substring = true)).fetchSemanticsNodes().isNotEmpty() }
         val shown = compose.onAllNodes(isRoot(), useUnmergedTree = true).fetchSemanticsNodes().flatMap(::texts)
         assertTrue(shown.toString(), shown.none { it.contains("llama.cpp") || it.contains("Exception") || it.contains("APK") })
+    }
+
+    /** Spec §F.2: Roll back appears only while a retired index is inside its 7-day grace. */
+    @Test fun rollBackShownOnlyInGrace() {
+        val graph = TestGraph.fresh(ctx)
+        var t = 1_000L
+        val day = 24 * 60 * 60 * 1000L
+        val spaces = com.rokid.context.memory.EmbeddingSpaces(graph.db.embeddingDao(), com.rokid.context.memory.InMemoryRetiredClock(), { t })
+        runBlocking {
+            graph.memories.add(com.rokid.context.memory.db.MemoryEntity("m1", null, "t", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 1, false, ""))
+            val a = spaces.startBuilding("fpA", "{}", 2, "[]", 1); spaces.put("m1", a.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(a.id)
+            val b = spaces.startBuilding("fpB", "{}", 2, "[]", 2); spaces.put("m1", b.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(b.id)
+        }
+        t += 3 * day
+        val inGrace = LocalModelsSource(listOf(bge), gateway, ai, {}, mobile, abiSupported = true, swap = SpacesSwapRollback(spaces) {})
+        show(inGrace)
+        compose.onNodeWithTag("local_models_roll_back").assertExists()
+        compose.onNodeWithTag("local_models_roll_back").performClick()
+        compose.waitUntil(5_000) { compose.onAllNodes(hasText("Rolled back", substring = true)).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("local_models_roll_back").assertDoesNotExist()
+    }
+
+    /** Review B I-1: EMBED is rebound to the target space's model BEFORE the reindex callback; unavailable model = no Roll back. */
+    @Test fun rollBackRebindsBeforeTheReindexAndNeedsTheModel() {
+        val graph = TestGraph.fresh(ctx)
+        val spaces = com.rokid.context.memory.EmbeddingSpaces(graph.db.embeddingDao(), com.rokid.context.memory.InMemoryRetiredClock(), { 1_000L })
+        runBlocking {
+            graph.memories.add(com.rokid.context.memory.db.MemoryEntity("m1", null, "t", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 1, false, ""))
+            val a = spaces.startBuilding("fpA", "{}", 2, "[]", 1); spaces.put("m1", a.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(a.id)
+            val b = spaces.startBuilding("fpB", "{}", 2, "[]", 2); spaces.put("m1", b.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(b.id)
+            val events = mutableListOf<String>()
+            var available = false
+            val rebinder = object : EmbedRebinder {
+                override suspend fun available(space: com.rokid.context.memory.db.EmbeddingSpaceEntity) = available
+                override suspend fun rebind(space: com.rokid.context.memory.db.EmbeddingSpaceEntity): Boolean { events += "rebind:${space.fingerprint}"; return true }
+            }
+            val swap = SpacesSwapRollback(spaces, rebinder) { events += "reindex" }
+            assertFalse(swap.available())
+            assertFalse(swap.rollBack())
+            assertTrue(events.isEmpty())
+            available = true
+            assertTrue(swap.available())
+            assertTrue(swap.rollBack())
+            assertEquals(listOf("rebind:fpA", "reindex"), events)
+        }
+    }
+
+    @Test fun rollBackHiddenAfterGraceAndDialogCarriesTheCounts() {
+        val graph = TestGraph.fresh(ctx)
+        var t = 1_000L
+        val spaces = com.rokid.context.memory.EmbeddingSpaces(graph.db.embeddingDao(), com.rokid.context.memory.InMemoryRetiredClock(), { t })
+        runBlocking {
+            graph.memories.add(com.rokid.context.memory.db.MemoryEntity("m1", null, "t", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 1, false, ""))
+            val a = spaces.startBuilding("fpA", "{}", 2, "[]", 1); spaces.put("m1", a.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(a.id)
+            val b = spaces.startBuilding("fpB", "{}", 2, "[]", 2); spaces.put("m1", b.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(b.id)
+        }
+        t += 8 * 24 * 60 * 60 * 1000L
+        show(LocalModelsSource(listOf(bge), gateway, ai, {}, mobile, abiSupported = true, swap = SpacesSwapRollback(spaces) {}))
+        compose.onNodeWithTag("local_models_roll_back").assertDoesNotExist()
+        assertEquals("2 photos will be searchable by text only\n1 photos will no longer be findable at all\nBoth can be recovered with Roll back for 7 days.",
+            LocalModelsSource.impactText(com.rokid.context.memory.SwapImpact(2, 1)).trim())
+        assertEquals("", LocalModelsSource.impactText(com.rokid.context.memory.SwapImpact(0, 0)))
     }
 
     @Test fun settingsAiRowSitsAfterAgentFlows() {

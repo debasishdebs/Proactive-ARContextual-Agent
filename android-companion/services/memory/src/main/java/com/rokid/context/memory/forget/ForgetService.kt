@@ -48,6 +48,7 @@ class ForgetService(
         val r = cascade(ids, lockFrames = true)
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
         dao.deleteFrame(frameId)
+        listOf(frameId).let { dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
         r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() })).distinct())
     }
 
@@ -73,13 +74,14 @@ class ForgetService(
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
-        val frames = found.mapNotNull { it.frameId }.distinct()
+        // Frames cited by F: memory.frameId plus frame_source rows (a 3-photo batch cites 3). Each is locked at once.
+        val frames = (found.mapNotNull { it.frameId } + forgotten.toList().chunked(CHUNK).flatMap { dao.sourceFramesOf(it) }).distinct()
         // 1. Closure, before any edge goes.
         val invalidated = if (!invalidateDescendants) emptySet() else forgotten.chunked(CHUNK).flatMap { dao.descendants(it) }.toSet() - forgotten
         val f = forgotten.toList()
         val d = invalidated.toList()
         // 2. F: rows, vectors (all spaces), every edge touching F.
-        f.chunked(CHUNK).forEach { c -> dao.deleteEdgesFrom(c); dao.deleteEdgesTo(c); dao.deleteVectorsFor(c); dao.deleteMemories(c) }
+        f.chunked(CHUNK).forEach { c -> dao.deleteFrameSourcesFor(c); dao.deleteEdgesFrom(c); dao.deleteEdgesTo(c); dao.deleteVectorsFor(c); dao.deleteMemories(c) }
         // 3. D: hidden, vectors gone.
         d.chunked(CHUNK).forEach { c -> dao.invalidate(c); dao.deleteVectorsFor(c) }
         // 4. Extraction lock.
@@ -107,7 +109,10 @@ class ForgetService(
                 redactedProposals.chunked(CHUNK).forEach { c -> actions.scrubLogs(c); actions.scrubParams(c, REDACTED_PARAMS) }
             }
         }
-        val files = frames.filter { dao.remainingRefs(it) == 0 }.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
+        // The photo goes only when no surviving memory cites it (memory.frameId or frame_source); its image vector goes with it.
+        val uncited = frames.filter { dao.remainingRefs(it) == 0 }
+        uncited.chunked(CHUNK).forEach { dao.deleteFrameVectorsFor(it) }
+        val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
         return Result(forgotten, invalidated, asks.size, nudges.size, files, redactedProposals)
     }
 

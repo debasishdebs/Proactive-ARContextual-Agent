@@ -24,6 +24,7 @@ abstract class EmbeddingDao {
     @Query("SELECT * FROM embedding_space WHERE state = 'BUILDING' LIMIT 1") abstract suspend fun building(): EmbeddingSpaceEntity?
     @Query("SELECT * FROM embedding_space WHERE id = :id") abstract suspend fun space(id: String): EmbeddingSpaceEntity?
     @Query("SELECT * FROM embedding_space ORDER BY createdAt ASC") abstract fun observeSpaces(): Flow<List<EmbeddingSpaceEntity>>
+    @Query("SELECT COUNT(*) FROM memory_vector WHERE spaceId = :spaceId") abstract suspend fun vectorCount(spaceId: String): Int
     @Query("SELECT * FROM memory_vector WHERE spaceId = :spaceId") abstract suspend fun vectors(spaceId: String): List<MemoryVectorEntity>
 
     /**
@@ -85,19 +86,64 @@ abstract class EmbeddingDao {
         return space
     }
 
-    /** spec §4.6: only at 100 % coverage; the old current space becomes RETIRED and loses its vectors, all in one transaction. */
+    @Query("SELECT COUNT(*) FROM frame f WHERE NOT EXISTS (SELECT 1 FROM frame_vector v WHERE v.frameId = f.id AND v.spaceId = :spaceId)")
+    abstract suspend fun missingImageCount(spaceId: String): Int
+
+    @Query("SELECT id FROM embedding_space WHERE state = 'RETIRED'") abstract suspend fun retiredIds(): List<String>
+    @Query("DELETE FROM frame_vector WHERE spaceId = :spaceId") protected abstract suspend fun deleteFrameVectors(spaceId: String)
+
+    /** Photos already deleted whose image vector sits in [spaceId]: they can't be rebuilt in a new space (spec §F.2). */
+    @Query("SELECT COUNT(DISTINCT v.frameId) FROM frame_vector v WHERE v.spaceId = :spaceId AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = v.frameId)")
+    abstract suspend fun deletedPhotoCount(spaceId: String): Int
+
+    /** Of those, the ones that stay findable by text: an own caption, a surviving frame_source memory, or a cluster summary. */
+    @Query(
+        "SELECT COUNT(DISTINCT v.frameId) FROM frame_vector v WHERE v.spaceId = :spaceId AND NOT EXISTS (SELECT 1 FROM frame f WHERE f.id = v.frameId) AND (" +
+            "EXISTS (SELECT 1 FROM memory m WHERE m.frameId = v.frameId AND m.reviewState != 'INVALIDATED') OR " +
+            "EXISTS (SELECT 1 FROM frame_source s JOIN memory m ON m.id = s.memoryId WHERE s.frameId = v.frameId AND m.reviewState != 'INVALIDATED') OR " +
+            "EXISTS (SELECT 1 FROM frame_meta fm JOIN frame_cluster c ON c.clusterId = fm.clusterId JOIN memory m ON m.id = c.memoryId " +
+            "WHERE fm.frameId = v.frameId AND m.reviewState != 'INVALIDATED'))",
+    )
+    abstract suspend fun deletedPhotoReducedCount(spaceId: String): Int
+
+    /**
+     * spec §4.6 / §F.2: only at 100 % coverage of live memories (and, with [requireImageCoverage], of the frames that still
+     * have a stored photo: off in wave 1, on with the wave-2 backfill). The old serving spaces become RETIRED but KEEP their
+     * `memory_vector` and `frame_vector` rows for the 7-day rollback, all in one transaction. Returns the ids retired
+     * (the caller stamps `retiredAt`), or null when the swap is refused.
+     */
     @Transaction
-    open suspend fun swap(buildingId: String): Boolean {
-        val b = space(buildingId)?.takeIf { it.state == SpaceState.BUILDING } ?: return false
-        if (missingCount(buildingId) > 0) return false
+    open suspend fun swapRetiring(buildingId: String, requireImageCoverage: Boolean = false): List<String>? {
+        val b = space(buildingId)?.takeIf { it.state == SpaceState.BUILDING } ?: return null
+        if (missingCount(buildingId) > 0) return null
+        if (requireImageCoverage && missingImageCount(buildingId) > 0) return null
         // Every other ACTIVE/STALE row goes, not just the newest: exactly one ACTIVE afterwards, never two.
-        servingExcept(b.id).forEach { old -> setState(old, SpaceState.RETIRED.name); deleteVectors(old) }
+        val old = servingExcept(b.id)
+        old.forEach { setState(it, SpaceState.RETIRED.name) }
         setState(b.id, SpaceState.ACTIVE.name)
-        return true
+        return old
+    }
+
+    open suspend fun swap(buildingId: String, requireImageCoverage: Boolean = false): Boolean = swapRetiring(buildingId, requireImageCoverage) != null
+
+    /** A RETIRED space becomes ACTIVE again and whatever served meanwhile becomes RETIRED (kept). Returns those ids, or null if [retiredId] isn't RETIRED. */
+    @Transaction
+    open suspend fun rollback(retiredId: String): List<String>? {
+        space(retiredId)?.takeIf { it.state == SpaceState.RETIRED } ?: return null
+        val current = servingExcept(retiredId)
+        current.forEach { setState(it, SpaceState.RETIRED.name) }
+        setState(retiredId, SpaceState.ACTIVE.name)
+        return current
+    }
+
+    /** Drops the vectors (memory and image) of the RETIRED spaces in [expiredIds]; the space rows stay. */
+    @Transaction
+    open suspend fun purgeVectors(expiredIds: List<String>) {
+        expiredIds.forEach { id -> if (space(id)?.state == SpaceState.RETIRED) { deleteVectors(id); deleteFrameVectors(id) } }
     }
 
     @Transaction
-    open suspend fun discard(spaceId: String) { deleteVectors(spaceId); deleteSpace(spaceId) }
+    open suspend fun discard(spaceId: String) { deleteVectors(spaceId); deleteFrameVectors(spaceId); deleteSpace(spaceId) }
 
     companion object {
         const val LIVE_PAGE_SQL = "SELECT v.rowid AS rowid, v.memoryId AS memoryId, v.blob AS blob FROM memory_vector v " +

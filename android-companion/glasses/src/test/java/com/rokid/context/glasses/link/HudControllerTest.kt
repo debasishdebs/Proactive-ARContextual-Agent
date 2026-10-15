@@ -212,4 +212,24 @@ class HudControllerTest {
         assertTrue(c.sendListenEnd())
         assertEquals(listOf("""{"v":$PROTOCOL_VERSION}"""), bridge.sent.single { it.first == Channels.LISTEN_END }.second)
     }
+
+    /** Fix wave I1: a pc_wear stamped before the phone's current session began is stale and never applied. */
+    @Test fun aStaleWearMessageIsIgnoredAndAFreshOneApplies() = runTest {
+        val c = controller()
+        val seen = ArrayList<Boolean?>()
+        c.onWear = { seen += it }
+        bridge.phone(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = false, atMs = 1_000, sessionStartMs = 5_000)))
+        assertTrue(seen.isEmpty())
+        bridge.phone(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = false, atMs = 6_000, sessionStartMs = 5_000)))
+        bridge.phone(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = true, atMs = 1, sessionStartMs = 0)))
+        assertEquals("an old phone (no session start) is never ignored", listOf<Boolean?>(false, true), seen)
+    }
+
+    @Test fun theAutoOpenMarkerReachesTheActivity() = runTest {
+        val c = controller()
+        var n = 0
+        c.onAutoOpen = { n++ }
+        bridge.phone(Channels.AUTO_OPEN, Wire.encode(com.rokid.context.core.model.AutoOpen(atMs = 5)))
+        assertEquals(1, n)
+    }
 }

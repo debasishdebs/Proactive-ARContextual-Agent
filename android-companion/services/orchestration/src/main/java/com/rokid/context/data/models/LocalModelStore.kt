@@ -33,7 +33,10 @@ class LocalModelStore(context: Context) {
     private val app = context.applicationContext
     private val workManager get() = WorkManager.getInstance(app)
 
+    /** The primary file (the one a llama.cpp endpoint loads); bundles carry more in [LocalModel.files]. */
     fun fileFor(model: LocalModel): File = File(modelsDir(app), model.file)
+
+    private fun allFiles(model: LocalModel): List<File> = model.files.map { File(modelsDir(app), it.file) }
 
     fun state(model: LocalModel): Flow<LocalModelState> =
         combine(workManager.getWorkInfosForUniqueWorkFlow(LocalModelDownloadWorker.uniqueName(model.id)), fileChanges) { infos, _ ->
@@ -78,13 +81,15 @@ class LocalModelStore(context: Context) {
     /** Cancels any download, then removes the model file and its .part. Callers unbind EMBED first. */
     fun delete(model: LocalModel) {
         cancel(model)
-        fileFor(model).delete()
-        LocalModelDownloadWorker.partFile(fileFor(model)).delete()
+        for (f in allFiles(model)) {
+            f.delete()
+            LocalModelDownloadWorker.partFile(f).delete()
+        }
         fileChanges.update { it + 1 }
     }
 
     private fun stateOf(model: LocalModel, info: WorkInfo?): LocalModelState {
-        if (fileFor(model).isFile) return LocalModelState.Ready
+        if (allFiles(model).all { it.isFile }) return LocalModelState.Ready
         return when (info?.state) {
             WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING, WorkInfo.State.BLOCKED ->
                 LocalModelState.Downloading(info.progress.getFloat(LocalModelDownloadWorker.KEY_PROGRESS, -1f).takeIf { it >= 0f })

@@ -1,5 +1,6 @@
 package com.rokid.context.phone
 
+import com.rokid.context.data.frames.DirSync
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -51,10 +52,11 @@ class FrameEncryptionPhoneTest {
     private val jpeg: ByteArray = ByteArrayOutputStream().also { Bitmap.createBitmap(64, 48, Bitmap.Config.ARGB_8888).compress(Bitmap.CompressFormat.JPEG, 80, it) }.toByteArray()
 
     @Before fun setUp() {
+        DirSync.testOverride = DirSync { true } // Robolectric cannot fsync a directory
         FrameReaders.install(ctx)
         FrameImages.configureForTests(TinkFrameCipher.inMemoryForTests()) { wanted }
     }
-    @After fun tearDown() { FrameImages.configureForTests(null) { false }; FrameDecode.opener = FrameDecode.PlainFiles }
+    @After fun tearDown() { DirSync.testOverride = null; FrameImages.configureForTests(null) { false }; FrameDecode.opener = FrameDecode.PlainFiles }
 
     private val ledger by lazy { ReceivedFrameLedger(File(tmp.root, "ledger.txt")) }
     private fun ingestor(stored: () -> Unit = {}) = FrameIngestor(
@@ -67,7 +69,7 @@ class FrameEncryptionPhoneTest {
         // Glasses frame: sealed in the inbox, acked as usual.
         val r = ingestor().onChunk(FrameCodec.split("g1", jpeg, capturedAtMs = now - 60_000 + 140).single(), ClockOffset(140), now)
         assertEquals(FrameAck(frameId = "g1", ok = true), r.ack)
-        val f = File(tmp.root, "rokid_inbox/rokid_${now - 60_000}_g1.jpg")
+        val f = File(tmp.root, "rokid_inbox/rokid_${now}_g1.v2.jpg")
         assertTrue(FrameImages.isSealed(f))
         assertArrayEquals(jpeg, FrameImages.readBytes(f.path))
         // Phone camera capture: sealed in the archive.

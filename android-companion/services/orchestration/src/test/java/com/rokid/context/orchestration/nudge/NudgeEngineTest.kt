@@ -15,6 +15,7 @@ import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.legacy.LegacyImporter
 import com.rokid.context.orchestration.TestAi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -49,11 +50,11 @@ class NudgeEngineTest {
 
     @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
 
-    private fun engine(): NudgeEngine {
+    private fun engine(gapMs: Long = 0L): NudgeEngine {
         val mem = MemoryGraph.get(ctx)
         val sources = ContextSourceProvider { q, _ -> if (q == null) listOf("event \u00b7 Dentist \u00b7 Mon 19:00\u201319:30") else emptyList() }
         return NudgeEngine(
-            NudgeInputs(mem, sources) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao()) { cap }, mem,
+            NudgeInputs(mem, sources) { zone }, ai.runner, NudgeGates(mem.db.nudgeGateDao(), { gapMs }) { cap }, mem,
             ProposalIntake { o, id, _, _ -> proposed += o to id; "p1" }, clock = { now }, hud = { hud },
         )
     }
@@ -154,5 +155,26 @@ class NudgeEngineTest {
         assertEquals(NudgeRun.Failed, engine().runOnce())
         assertEquals("NUDGE_FAILED", MemoryGraph.get(ctx).traces.recent(5).single().state)
         assertTrue(rows().isEmpty())
+    }
+
+    /** A "nudge" decision while the shown-nudge gap holds is dropped through the engine: reason traced, no new row, no text. */
+    @Test fun throttledDecisionRecordedDropped() = runBlocking {
+        memory()
+        MemoryGraph.get(ctx).nudges.addIgnore(com.rokid.context.memory.db.NudgeEntity("n0", now - 5 * 60_000L, "old", "", "[]", 0, "h0", "phone", false))
+        assertEquals(NudgeRun.Dropped(Gate.SHOWN_GAP), engine(gapMs = 30 * 60_000L).runOnce())
+        assertEquals("SHOWN_GAP", MemoryGraph.get(ctx).traces.recent(5).single { it.state == "NUDGE_DROPPED" }.note)
+        assertEquals(listOf("n0"), rows().map { it.id })
+    }
+
+    /** One lock for every run: a run waits while another (the worker or the fast path) holds [NudgeRunLock]. */
+    @Test fun runsAreSerializedByTheSharedLock() = runBlocking {
+        memory()
+        NudgeRunLock.mutex.lock()
+        val run = async { engine().runOnce() }
+        kotlinx.coroutines.delay(200)
+        assertEquals(0, calls)
+        NudgeRunLock.mutex.unlock()
+        assertTrue(run.await() is NudgeRun.Shown)
+        assertEquals(1, calls)
     }
 }

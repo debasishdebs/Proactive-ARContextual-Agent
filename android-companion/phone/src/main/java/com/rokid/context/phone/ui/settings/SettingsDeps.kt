@@ -15,6 +15,8 @@ import com.rokid.context.orchestration.MemoryExport
 import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.TestBedInputs
 import com.rokid.context.phone.hub.Hub
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import com.rokid.context.phone.hub.HubGraph
 import com.rokid.context.phone.ui.settings.memory.EncryptionControl
 import com.rokid.context.phone.ui.settings.memory.ShareFile
@@ -82,6 +84,12 @@ class SettingsDeps(
     val localModelLoadFailures: com.rokid.context.phone.ui.settings.ai.LoadFailures = com.rokid.context.phone.ui.settings.ai.LoadFailures.None,
     /** Diagnostics > Export settings (G19): the settings JSON in cache/exports, every secret excluded. */
     val exportSettings: (suspend () -> File)? = null,
+    /** Settings > Capture > AI call pace (prefs key `ai_call_pace_ms`, read by the call budget). */
+    val aiCallPace: com.rokid.context.phone.ui.settings.capture.AiCallPaceStore = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore(),
+    /** Diagnostics > Keyframes and the Capture status line (counts only). */
+    val keyframes: KeyframeDiagnostics = KeyframeDiagnostics.None,
+    /** Diagnostics: "Rokid closed the app N times (last gap Xs)" from the glasses' hello; null until reported. */
+    val glassesRestarts: kotlinx.coroutines.flow.StateFlow<String?> = kotlinx.coroutines.flow.MutableStateFlow(null),
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -140,8 +148,23 @@ class SettingsDeps(
             localModelsMobileData = AppConfigMobileData(app),
             localModelLoadFailures = NativeLoadFailures(com.rokid.context.data.models.LocalModelStore(app)),
             exportSettings = { com.rokid.context.orchestration.ConfigExport.write(app) },
+            aiCallPace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(app),
+            keyframes = AppKeyframeDiagnostics(app),
+            glassesRestarts = HubGraph.get(app).state.map { it.glassesDiagnostics() }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null),
         )
     }
+}
+
+/** Keyframe stats over the process-wide graphs; built lazily so the shell's Main-thread deps never start the pipeline. */
+private class AppKeyframeDiagnostics(private val app: Context) : KeyframeDiagnostics {
+    private val handle by lazy { com.rokid.context.work.frames.KeyframeGraph.get(app) }
+    override val stats get() = handle.stats
+    override suspend fun droppedNudges(): Map<String, Int> =
+        com.rokid.context.orchestration.PipelineRecords.recentTraces(app, 500).filter { it.state == "NUDGE_DROPPED" }.groupingBy { it.note }.eachCount()
+    override suspend fun sidecarLost() = com.rokid.context.data.runtime.PipelineStatsStore.sidecarLost(app)
+    override suspend fun promptIsCurrent() =
+        com.rokid.context.orchestration.ExtractSave.promptIsCurrent(AiGraph.get(app).runner.activeSchema(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT))
+    override suspend fun retryAllFinal() = MemoryGraph.get(app).db.frameStateDao().retryAllFinal(System.currentTimeMillis())
 }
 
 /** Settings › Data sources over the process-wide sources graph; the store is first read off Main by the ViewModel. */
@@ -151,6 +174,12 @@ private class AppSources(private val app: Context) : com.rokid.context.phone.ui.
     override val nudgesPerDay get() = graph.settings.nudgesPerDay
     override fun set(k: com.rokid.context.connectors.sources.SourceKind, on: Boolean) = graph.settings.set(k, on)
     override fun setNudgesPerDay(n: Int) = graph.settings.setNudgesPerDay(n)
+    override val settleSec get() = graph.settings.settleSec
+    override val checkGapSec get() = graph.settings.checkGapSec
+    override val shownGapMin get() = graph.settings.shownGapMin
+    override fun setSettleSec(n: Int) = graph.settings.setSettleSec(n)
+    override fun setCheckGapSec(n: Int) = graph.settings.setCheckGapSec(n)
+    override fun setShownGapMin(n: Int) = graph.settings.setShownGapMin(n)
     override fun granted(k: com.rokid.context.connectors.sources.SourceKind) = com.rokid.context.connectors.sources.SourcePermissions.of(k).all {
         androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
     }

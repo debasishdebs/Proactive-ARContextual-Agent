@@ -13,9 +13,11 @@ import com.rokid.context.phone.actions.PhoneActions
 import com.rokid.context.phone.nudge.PhoneNudges
 import android.util.Log
 import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.io.File
 
 /** Process-wide hub (no DI in v1). `ContextApp` has already initialised [MemoryGraph]. */
@@ -31,6 +33,67 @@ object HubGraph {
 
     fun resetForTests(h: Hub?) { synchronized(this) { hub = h } }
 
+    /** Off the main thread: the receipt commit does Room and file I/O. The process-wide hub outlives it. */
+    private val commitScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> Log.w(Hub.TAG, "receipt commit scope failed: ${t.javaClass.simpleName}") },
+    )
+
+    /** Single-flight + dirty flag for the arrival drain: a burst of frames costs at most two full drains (final review N2). */
+    internal class DrainCoalescer {
+        private var running = false
+        private var dirty = false
+
+        /** Runs [drain] on [scope]; if one is already running it is marked dirty and loops once more instead of a second start. */
+        fun request(scope: CoroutineScope, drain: suspend () -> Unit) {
+            synchronized(this) { if (running) { dirty = true; return }; running = true }
+            scope.launch {
+                try {
+                    while (true) {
+                        synchronized(this@DrainCoalescer) { dirty = false }
+                        drain()
+                        synchronized(this@DrainCoalescer) { if (!dirty) { running = false; return@launch } }
+                    }
+                } finally { synchronized(this@DrainCoalescer) { if (running && !dirty) running = false } }
+            }
+        }
+    }
+
+    private val arrivalDrain = DrainCoalescer()
+
+    /**
+     * A frame is durable in the inbox: queue the legacy ingest (the backstop), then commit its receipt (frame row, frame_meta and
+     * PENDING frame_state, serialized by the inbox's drain lock) on [scope] and only then wake the pipeline (spec P2.1), so a
+     * frame is processed on arrival with no WorkManager in between. The ack does not wait for the commit. The signal runs even
+     * when queueing or the commit fails (the failure still reaches the caller / the log); the backstop picks the frame up later.
+     */
+    internal fun onFrameStored(
+        app: Context,
+        enqueue: (Context) -> Unit = ::enqueueInboxIngest,
+        scope: CoroutineScope = commitScope,
+        commit: suspend (Context) -> Unit = ::commitReceipts,
+        coalescer: DrainCoalescer = arrivalDrain,
+        signal: (Context) -> Unit = { com.rokid.context.work.frames.KeyframeGraph.get(it).signal() },
+    ) {
+        try { enqueue(app) } finally {
+            coalescer.request(scope) {
+                try { commit(app) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                    Log.w(Hub.TAG, "receipt commit failed: ${e.javaClass.simpleName}")
+                } finally {
+                    try { signal(app) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                        Log.w(Hub.TAG, "keyframe signal failed: ${e.javaClass.simpleName}")
+                    }
+                }
+            }
+        }
+    }
+
+    /** Commits the receipts waiting in the inbox (nothing while the pipeline is paused: frames then only wait there). */
+    internal suspend fun commitReceipts(app: Context) {
+        if (!AppConfigStore.isPipelineEnabled(app)) return
+        val place = com.rokid.context.connectors.sources.SourcesGraph.get(app).placeLabel(System.currentTimeMillis())
+        RokidFrameInbox.ingestPending(app, maxItems = 16, placeLabel = place)
+    }
+
     private fun build(app: Context): Hub {
         // Last line of defence: Hub guards every event, but nothing on this scope may ever kill the process.
         val guard = CoroutineExceptionHandler { _, t -> Log.w(Hub.TAG, "hub coroutine failed: ${t.javaClass.simpleName}") }
@@ -38,11 +101,19 @@ object HubGraph {
         val ledger = ReceivedFrameLedger(File(app.filesDir, "cxr_received_frames.txt"))
         val settings = HubSettingsStore(app.getSharedPreferences("hub_settings", Context.MODE_PRIVATE)) { AppConfigStore.glassesSilencyMode(app) }
         val pauses = HubPauses(MemoryGraph.get(app).db.pauseDao(), quietHours = { settings.read().quietHours })
-        val ingestor = FrameIngestor(RokidFrameInbox.inboxDir(app), FrameReassembler(), FrameAdmission(ledger, pauses), ledger) { enqueueInboxIngest(app) }
+        val ingestor = FrameIngestor(
+            RokidFrameInbox.inboxDir(app), FrameReassembler(), FrameAdmission(ledger, pauses), ledger,
+            archiveDir = RokidFrameInbox.archiveDir(app),
+            // A receipt already committed to Room is acked at once (spec P2 receipt durability).
+            committed = { wireId -> MemoryGraph.get(app).db.frameMetaDao().byWireId(wireId) != null },
+        ) { onFrameStored(app) }
+        val link = CxrGlassesLink(app, scope, probe = com.rokid.context.BuildConfig.DEBUG)
         return Hub(
-            scope, CxrGlassesLink(app, scope, probe = com.rokid.context.BuildConfig.DEBUG), pauses, settings, ingestor, LegacyHubSources(app),
+            scope, link, pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
             actions = PhoneActions.hubPort(app) { settings.read() }, nudges = PhoneNudges.hubPort(app) { settings.read() },
+            reopenGuards = AndroidRelaunchGuards(app, { link.wearing.value }), reopenEnabled = { KeepRunningNearby.of(app).enabled() },
+            standDown = PrefsStandDown(app.getSharedPreferences(PrefsStandDown.PREFS, Context.MODE_PRIVATE)),
         )
     }
 }

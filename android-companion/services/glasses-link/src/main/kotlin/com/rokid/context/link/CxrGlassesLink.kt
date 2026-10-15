@@ -59,14 +59,19 @@ class CxrGlassesLink(
         app, GLASSES_PKG, probe, linkState = { _state.value.name },
         onBound = { ok -> post { minimised.onBound(ok) } },
         onCustomCmd = { cmd, bytes -> decodeParts(cmd, bytes)?.let { parts -> post { onBackgroundMessage(cmd, parts) } } },
+        onWearing = { w -> Log.i(TAG, "watcher: wearing=$w"); _wearing.value = w },
+        // Fix wave I1: the SDK reports only changes, so the device-info snapshot on each bind is what refreshes a value we dropped.
+        onWearingSnapshot = { w -> Log.i(TAG, "watcher: wearing snapshot known=${w != null}"); if (w != null) _wearing.value = w },
     ) { post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) } }
     /** Minimised Option A: data on the watcher's CXRLink; never appStart. Its confirm callbacks are posted (no re-entry into [act]). */
     private val minimised: MinimisedLink = MinimisedLink(
         scope, watcher, inbound,
-        onAlive = { act(policy.onEvent(LinkEvent.BackgroundAlive)) },
-        onSilent = { post { act(policy.onEvent(LinkEvent.BackgroundSilent)) } },
+        onAlive = { openAfterSilence = false; act(policy.onEvent(LinkEvent.BackgroundAlive)) },
+        onSilent = { post { onBackgroundSilent() } },
         log = { Log.i(TAG, it) },
     )
+    /** The wearer asked to open the app while minimised and a liveness probe is out: if the glasses are silent, open it for real. */
+    private var openAfterSilence = false
     /** One background bind attempt per stay out of the foreground: a failed bind is not retried in a loop. */
     private var backgroundTried = false
 
@@ -74,6 +79,8 @@ class CxrGlassesLink(
     override val state: StateFlow<LinkState> = _state
     private val _events = MutableSharedFlow<GlassesEvent>(extraBufferCapacity = 256) // audio arrives as ~10 chunks/s
     override val events: SharedFlow<GlassesEvent> = _events
+    private val _wearing = MutableStateFlow<Boolean?>(null)
+    override val wearing: StateFlow<Boolean?> = _wearing
     private val _ready = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     override val ready: SharedFlow<Unit> = _ready
 
@@ -94,7 +101,13 @@ class CxrGlassesLink(
     private fun post(block: () -> Unit) { scope.launch { block() } }
     private fun token(): String? = app.getSharedPreferences(PREFS, 0).getString(KEY_TOKEN, null)
     private fun now() = System.currentTimeMillis()
-    private fun setState(s: LinkState) { if (_state.value != s) { _state.value = s; Log.i(TAG, "link=$s") } }
+    private fun setState(s: LinkState) {
+        if (_state.value != s) {
+            _state.value = s; Log.i(TAG, "link=$s")
+            // Fix wave I1: a wear value from before a link loss must never come back; the next bind's snapshot or change refreshes it.
+            if (s == LinkState.OFFLINE || s == LinkState.PAUSED_BT || s == LinkState.NOT_AUTHORIZED) _wearing.value = null
+        }
+    }
 
     /** Silent when already authorized in Hi Rokid; sets CXR-L's in-memory flags (Live Fit quirk 2.1.1). */
     fun authorize(activity: Activity, onDone: (Boolean) -> Unit) {
@@ -127,6 +140,21 @@ class CxrGlassesLink(
 
     override fun connect() = post { auth.clearStale(now()); authDeclined = false; authTimedOut = false; act(policy.manualConnect()) }
 
+    override fun connectAutomatic() = post { auth.clearStale(now()); authDeclined = false; authTimedOut = false; act(policy.manualConnect(auto = true)) }
+
+    override fun watchForReopen() = post { act(policy.watchOnly()) }
+
+    override fun probeAlive() = post {
+        if (!policy.minimised) return@post
+        openAfterSilence = true
+        minimised.probeNow()
+    }
+
+    private fun onBackgroundSilent() {
+        act(policy.onEvent(LinkEvent.BackgroundSilent))
+        if (openAfterSilence && !policy.minimised) { openAfterSilence = false; Log.i(TAG, "minimised app is gone: opening it on request"); act(policy.manualConnect()) }
+    }
+
     override fun connectOnce() = post { auth.clearStale(now()); act(policy.autoConnect()) }
 
     override fun connectOnResume() = post {
@@ -138,6 +166,7 @@ class CxrGlassesLink(
     }
 
     override fun close() = post {
+        openAfterSilence = false
         minimised.stop()
         retryJob?.cancel(); connectJob?.cancel(); authJob?.cancel()
         auth.cancel() // a late AuthActivity result must not reopen a session after stop
@@ -170,6 +199,7 @@ class CxrGlassesLink(
 
     /** On [scope]: a glasses message on the background link (only its current bind's messages are decoded). */
     private fun onBackgroundMessage(cmd: String, parts: List<String>) {
+        openAfterSilence = false
         minimised.onMessage(cmd, parts).forEach { _events.tryEmit(it) }
     }
 
@@ -215,6 +245,17 @@ class CxrGlassesLink(
             // A session whose registration or connect throws is closed in [inbound] again, so it can never emit events.
             inbound.open(s) {
                 s.addLifecycleCallback(lifecycleFor(s))
+                s.addGlassesEventListener(object : com.rokid.cxr.session.IGlassesEventListener {
+                    override fun onWearingStatusChanged(wearing: Boolean) { Log.i(TAG, "session: wearing=$wearing"); _wearing.value = wearing }
+                    override fun onGlassesAppResumed() = Unit
+                    override fun onGlassesAppPaused() = Unit
+                    override fun onDeviceInfoChanged(info: com.rokid.cxr.session.GlassesInfo) = Unit
+                    override fun onScreenOff() = Unit
+                    override fun onScreenOn() = Unit
+                    override fun onLauncherResumed() = Unit
+                    override fun onAiWake() = Unit
+                    override fun onAiInterruptChanged(interrupted: Boolean) = Unit
+                })
                 s.addCustomCmdCallback(object : ICustomCmdSessionCallback {
                     override fun onCustomCmdResult(cmd: String, bytes: ByteArray?) = onGlassesMessage(s, cmd, bytes)
                 })
@@ -288,6 +329,7 @@ class CxrGlassesLink(
             if (!slot.clearIf(s)) return@post
             val glassesLeft = reason == CloseReason.GLASSES_EXIT || reason == CloseReason.USER_CLOSED
             Log.i(TAG, "session closed $reason")
+            _wearing.value = null // fix wave I1: the next bind re-reads it
             act(policy.onEvent(if (glassesLeft) LinkEvent.GlassesExited else LinkEvent.Closed))
         }
         override fun onConnectResult(ok: Boolean, code: SessionErrorCode?) = post {

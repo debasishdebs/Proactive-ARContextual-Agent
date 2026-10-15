@@ -25,6 +25,10 @@ internal class GlassAppWatcher(
     private val linkState: () -> String = { "?" },
     private val onBound: (Boolean) -> Unit = {},
     private val onCustomCmd: (String, ByteArray?) -> Unit = { _, _ -> },
+    /** Fix wave H2: CXR `wearingStatus` (true = worn), reported by the SDK on a SDK thread. */
+    private val onWearing: (Boolean) -> Unit = {},
+    /** Fix wave I1: a device-info snapshot's `wearingStatus` (parsed: null = unreadable); reported on connect and on every change. */
+    private val onWearingSnapshot: (Boolean?) -> Unit = {},
     private val onOurAppResumed: () -> Unit,
 ) : BackgroundTransport {
     @Volatile private var link: CXRLink? = null
@@ -38,7 +42,7 @@ internal class GlassAppWatcher(
             val l = CXRLink(app)
             built = l
             l.configCXRSession(CxrDefs.CXRSession(CxrDefs.CXRSessionType.CUSTOMAPP, glassesPkg))
-            l.setCXRLinkCbk(LinkCbk(onBound)) // CXRLink dereferences it on every service callback
+            l.setCXRLinkCbk(LinkCbk(onBound, onWearing, onWearingSnapshot)) // CXRLink dereferences it on every service callback
             l.setCXRCustomCmdCbk(ICustomCmdCbk { cmd, bytes ->
                 // Counts only: the payload can carry a photo or the wearer's voice.
                 if (probe) Log.i(PROBE_TAG, "rx cmd=$cmd bytes=${bytes?.size ?: 0} state=${linkState()}")
@@ -90,11 +94,15 @@ internal class GlassAppWatcher(
     }
 
     /** Reports the Hi Rokid service bind (onServiceConnected / onServiceDisconnected); everything else is ignored. */
-    private class LinkCbk(private val onBound: (Boolean) -> Unit) : ICXRLinkCbk {
+    private class LinkCbk(
+        private val onBound: (Boolean) -> Unit,
+        private val onWearing: (Boolean) -> Unit,
+        private val onSnapshot: (Boolean?) -> Unit,
+    ) : ICXRLinkCbk {
         override fun onCXRLConnected(connected: Boolean) = onBound(connected)
         override fun onGlassBtConnected(connected: Boolean) = Unit
-        override fun onGlassDeviceInfo(info: GlassInfo) = Unit
-        override fun onGlassWearingStatus(wearing: Boolean) = Unit
+        override fun onGlassDeviceInfo(info: GlassInfo) = onSnapshot(WearingStatus.parse(info.wearingStatus))
+        override fun onGlassWearingStatus(wearing: Boolean) = onWearing(wearing)
         override fun onGlassAiAssistStart() = Unit
         override fun onGlassAiAssistStop() = Unit
         override fun onGlassAiInterrupt(interrupted: Boolean) = Unit

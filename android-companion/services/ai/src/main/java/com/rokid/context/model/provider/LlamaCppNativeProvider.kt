@@ -20,7 +20,8 @@ internal interface LlamaNative {
     fun isAvailable(): Boolean
     /** With [forEmbedding] the embed context is created too; failing that (out of memory) is a failed load, a 0 handle. */
     fun load(modelPath: String, forEmbedding: Boolean): Long
-    fun embed(handle: Long, text: String): FloatArray?
+    /** [normalize] true: L2-normalised (bge); false: the raw pooled vector (Nomic, which is LayerNormed in Kotlin). */
+    fun embed(handle: Long, text: String, normalize: Boolean): FloatArray?
     fun generate(handle: Long, prompt: String): String?
     fun generateWithGrammar(handle: Long, prompt: String, grammar: String): String?
     fun release(handle: Long)
@@ -127,15 +128,15 @@ class LlamaCppNativeProvider internal constructor(private val modelPath: String,
 
         private val embedModels = EmbedModelCache()
 
-        /** One vector per text, in order: L2-normalised, pooled as the model's metadata says. The model stays loaded until 60 s idle. */
-        fun embed(modelPath: String, texts: List<String>): List<FloatArray> = embed(modelPath, texts, Jni, loadFailures, embedModels)
+        /** One vector per text, in order: L2-normalised unless [normalize] is false (raw pooled), pooled as the model's metadata says. The model stays loaded until 60 s idle. */
+        fun embed(modelPath: String, texts: List<String>, normalize: Boolean = true): List<FloatArray> = embed(modelPath, texts, Jni, loadFailures, embedModels, normalize)
 
         /** Without a [cache], one load and one release per call. */
         internal fun embed(
-            modelPath: String, texts: List<String>, native: LlamaNative, failures: LocalLoadFailures? = null, cache: EmbedModelCache? = null,
+            modelPath: String, texts: List<String>, native: LlamaNative, failures: LocalLoadFailures? = null, cache: EmbedModelCache? = null, normalize: Boolean = true,
         ): List<FloatArray> {
             val block = { handle: Long ->
-                texts.map { text -> native.embed(handle, text)?.takeIf { it.isNotEmpty() } ?: throw ProviderConfigException(EMBED_FAILED) }
+                texts.map { text -> native.embed(handle, text, normalize)?.takeIf { it.isNotEmpty() } ?: throw ProviderConfigException(EMBED_FAILED) }
             }
             return if (cache == null) withModel(native, modelPath, forEmbedding = true, failures, block)
             else cache.use(native, modelPath, { open(native, modelPath, forEmbedding = true, failures) }, block)
@@ -163,7 +164,7 @@ class LlamaCppNativeProvider internal constructor(private val modelPath: String,
         private object Jni : LlamaNative {
             override fun isAvailable() = nativeLoaded
             override fun load(modelPath: String, forEmbedding: Boolean) = nativeLoadModel(modelPath, forEmbedding)
-            override fun embed(handle: Long, text: String) = nativeEmbed(handle, text)
+            override fun embed(handle: Long, text: String, normalize: Boolean) = nativeEmbed(handle, text, normalize)
             override fun generate(handle: Long, prompt: String) = nativeGenerate(handle, prompt)
             override fun generateWithGrammar(handle: Long, prompt: String, grammar: String) = nativeGenerateWithGrammar(handle, prompt, grammar)
             override fun release(handle: Long) = nativeReleaseModel(handle)
@@ -172,7 +173,7 @@ class LlamaCppNativeProvider internal constructor(private val modelPath: String,
         @JvmStatic private external fun nativeLoadModel(modelPath: String, forEmbedding: Boolean): Long
         @JvmStatic private external fun nativeGenerate(handle: Long, prompt: String): String?
         @JvmStatic private external fun nativeGenerateWithGrammar(handle: Long, prompt: String, grammar: String): String?
-        @JvmStatic private external fun nativeEmbed(handle: Long, text: String): FloatArray?
+        @JvmStatic private external fun nativeEmbed(handle: Long, text: String, normalize: Boolean): FloatArray?
         @JvmStatic private external fun nativeReleaseModel(handle: Long)
     }
 }

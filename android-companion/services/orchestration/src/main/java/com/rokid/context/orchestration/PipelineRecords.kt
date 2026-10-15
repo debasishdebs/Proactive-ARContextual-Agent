@@ -41,11 +41,14 @@ object PipelineRecords {
     // --- frames -------------------------------------------------------------------------------------------------
 
     /** Only `rokid*` sources with a JPEG that exists; payload kept to one line (≤ 220 chars). False = rejected or duplicate id. */
-    suspend fun appendFrame(context: Context, frame: FrameEntity): Boolean {
+    suspend fun appendFrame(context: Context, frame: FrameEntity, rows: com.rokid.context.memory.FrameRows? = null): Boolean {
         if (!frame.source.startsWith("rokid", ignoreCase = true)) { Log.w(TAG, "append rejected non-rokid source=${frame.source}"); return false }
         val file = frame.path.takeIf { it.isNotBlank() }?.let(::File)
         if (file == null || !withContext(Dispatchers.IO) { file.exists() }) { Log.w(TAG, "append rejected preview missing frameId=${frame.id}"); return false }
-        val ok = graph(context).frames.add(frame.copy(path = file.absolutePath, payload = oneLine(frame.payload).take(220)))
+        val stored = frame.copy(path = file.absolutePath, payload = oneLine(frame.payload).take(220))
+        // With [rows] the frame, its frame_meta and its PENDING frame_state land in one transaction (keyframe capture P1).
+        val ok = if (rows == null) graph(context).frames.add(stored)
+        else graph(context).intake.commit(stored, rows) == com.rokid.context.memory.FrameIntake.Outcome.ADDED
         Log.i(TAG, "append ok=$ok frameId=${frame.id}")
         return ok
     }
@@ -75,13 +78,13 @@ object PipelineRecords {
 
     suspend fun purgeNonRokidFrames(context: Context) {
         val g = graph(context)
-        g.frames.deleteByIds(g.frames.all().filter { !it.source.startsWith("rokid", ignoreCase = true) || it.path.isBlank() }.map { it.id })
+        deleteFrames(g, g.frames.all().filter { !it.source.startsWith("rokid", ignoreCase = true) || it.path.isBlank() }.map { it.id })
     }
 
     suspend fun purgeNonPhotoAndSynthetic(context: Context): PurgeResult {
         val g = graph(context)
         val (kept, dropped) = g.frames.all().partition(::isRealPhotoFrame)
-        g.frames.deleteByIds(dropped.map { it.id })
+        deleteFrames(g, dropped.map { it.id })
         val deleted = withContext(Dispatchers.IO) {
             dropped.map { it.path }.filter { it.isNotBlank() }.distinct().count { File(it).let { f -> f.exists() && f.delete() } }
         }
@@ -108,7 +111,8 @@ object PipelineRecords {
     /**
      * One extracted fact (spec §4.4 VISION_EXTRACT / EXPLICIT_REMEMBER) or a summary, indexed for search. False (nothing
      * written) when Delete all ran after [generation] was read: a queue job passes the value it read before its claim.
-     * Ids must keep the `rokid_` prefix (and not `rokid_review_`) or [purgeNonRokidMemories] / [purgeLowSignalMemories] drop them.
+     * Ids must keep the `rokid_` prefix (and not `rokid_review_`) or [purgeNonRokidMemories] / [purgeLowSignalMemories] drop them
+     * (the keyframe pipeline's are `rokid_kf_<claimId>_<n>`; the earlier `kf_` ones are still kept, see [isPipelineMemoryId]).
      * [sourceIds] (Phase 7): the memories this one was derived from. Their `memory_source` edges are written in the
      * same transaction, so a later Forget of a source cascades here. When any source was forgotten (missing or
      * INVALIDATED) since the caller read it, nothing is written: the output may hold forgotten text (the Forget fence).
@@ -154,12 +158,19 @@ object PipelineRecords {
         }
     }
 
-    /** Fix M5: before a job (re)writes facts `<prefix>0..keep-1`, drop its rows `<prefix>keep…` left by an earlier run. */
-    suspend fun dropFactsFrom(context: Context, prefix: String, keep: Int) {
+    /**
+     * Fix M5: before a job (re)writes facts `<prefix>0..keep-1`, drop its rows `<prefix>keep…` left by an earlier run.
+     * Caption ids `<prefix>c<n>` go too: [keepCaptions] (default 0, i.e. all of them, since a re-run rewrites the ones it still has).
+     */
+    suspend fun dropFactsFrom(context: Context, prefix: String, keep: Int, keepCaptions: Int = 0) {
         val g = graph(context)
-        g.memories.deleteByIds(
-            g.memories.idsWithPrefix(prefix).filter { id -> id.removePrefix(prefix).toIntOrNull()?.let { it >= keep } == true },
-        )
+        val stale = g.memories.idsWithPrefix(prefix).filter { id ->
+            val rest = id.removePrefix(prefix)
+            rest.toIntOrNull()?.let { it >= keep } == true ||
+                (rest.startsWith("c") && rest.drop(1).toIntOrNull()?.let { it >= keepCaptions } == true)
+        }
+        g.memories.deleteByIds(stale)
+        stale.forEach { g.db.frameSourceDao().deleteForMemory(it) } // their frame_source rows go with them
     }
 
     suspend fun recentMemories(context: Context, limit: Int): List<MemoryEntity> = graph(context).memories.recent(limit)
@@ -170,18 +181,51 @@ object PipelineRecords {
         return ids.distinct().mapNotNull { byId[it] }
     }
 
+    /** Memory ids this app writes: `rokid_*`, plus the `kf_<claimId>_` ids an earlier build gave pipeline facts (final review C1). */
+    fun isPipelineMemoryId(id: String) = id.startsWith("rokid_", ignoreCase = true) || id.startsWith("kf_", ignoreCase = true)
+
     suspend fun purgeNonRokidMemories(context: Context) {
         val g = graph(context)
-        g.memories.deleteByIds(g.memories.all().filterNot { it.id.startsWith("rokid_", ignoreCase = true) }.map { it.id })
+        deleteMemories(g, g.memories.all().filterNot { isPipelineMemoryId(it.id) }.map { it.id })
+    }
+
+    /** Memories and their `frame_source` rows (a leftover one would pin a photo for ever). */
+    private suspend fun deleteMemories(g: MemoryGraph, ids: List<String>) {
+        if (ids.isEmpty()) return
+        g.memories.deleteByIds(ids)
+        ids.chunked(MAX_IN).forEach {
+            g.db.frameSourceDao().deleteForMemories(it)
+            g.db.forgetDao().deleteEdgesFrom(it)
+            g.db.forgetDao().deleteEdgesTo(it)
+        }
+    }
+
+    /** Frames and the frame_state / frame_meta / frame_vector / frame_source rows that belong to them (no orphan left to end FAILED_FINAL). */
+    private suspend fun deleteFrames(g: MemoryGraph, ids: List<String>) {
+        if (ids.isEmpty()) return
+        g.frames.deleteByIds(ids)
+        ids.chunked(MAX_IN).forEach {
+            g.db.frameStateDao().deleteFor(it)
+            g.db.frameMetaDao().deleteFor(it)
+            g.db.frameVectorDao().deleteFor(it)
+            g.db.frameSourceDao().deleteForFrames(it)
+        }
     }
 
     suspend fun purgeLowSignalMemories(context: Context) {
         val g = graph(context)
-        g.memories.deleteByIds(
+        deleteMemories(
+            g,
             g.memories.all().filter { m ->
                 m.id.startsWith("rokid_review_", ignoreCase = true) || LOW_SIGNAL.any { m.text.lowercase().contains(it) }
             }.map { it.id },
         )
+    }
+
+    /** Final review I3: puts these frames back to PENDING when no memory of theirs is left, so the pipeline extracts them again. Returns how many moved. */
+    suspend fun requeueFramesWithoutMemories(context: Context, frameIds: List<String>, nowMs: Long = System.currentTimeMillis()): Int {
+        val g = graph(context)
+        return frameIds.distinct().chunked(MAX_IN).sumOf { g.db.frameStateDao().resetForReprocess(it, nowMs) }
     }
 
     // --- summary traces -----------------------------------------------------------------------------------------

@@ -124,6 +124,18 @@ class PipelineRecordsTest {
         assertEquals(setOf("rokid_mem_ab_c_0", "rokid_mem_abxc_1", "rokid_mem_ab_cx2", "rokid_mem_ab_c"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
     }
 
+    /** A re-run with fewer photos drops the stale caption memories (and their frame_source rows) too. */
+    @Test fun dropFactsFromAlsoDropsCaptionIds() = runBlocking {
+        listOf("rokid_x_0", "rokid_x_1", "rokid_x_c0", "rokid_x_c1", "rokid_xc0", "rokid_x_cache").forEachIndexed { i, id ->
+            PipelineRecords.appendFact(ctx, id, null, "fact $i", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK, createdAt = i.toLong())
+        }
+        val dao = MemoryGraph.get(ctx).db.frameSourceDao()
+        dao.insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("rokid_x_c1", "f1", null, "FACT")))
+        PipelineRecords.dropFactsFrom(ctx, "rokid_x_", keep = 1, keepCaptions = 1)
+        assertEquals(setOf("rokid_x_0", "rokid_x_c0", "rokid_xc0", "rokid_x_cache"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
+        assertTrue(dao.forMemory("rokid_x_c1").isEmpty())
+    }
+
     @Test fun inboxFramesArchivedInTheSameMillisecondBothStoreWithDistinctFullIds() = runBlocking {
         val a = jpg("1760000000000_rokid_1111_a.jpg")
         val b = jpg("1760000000000_rokid_1111_b.jpg")
@@ -137,5 +149,80 @@ class PipelineRecordsTest {
         assertTrue(PipelineRecords.isRealPhotoFrame(frame("f2", 1, "/x/synthetic-data/rokid_1_b.jpg")))
         assertFalse(PipelineRecords.isRealPhotoFrame(frame("f3", 1, "/x/screenshot_1.jpg")))
         assertFalse(PipelineRecords.isRealPhotoFrame(frame("f4", 1, "/x/rokid_1_c.jpg", payload = "synthetic test")))
+    }
+
+    private suspend fun seedPipelineFrame(id: String, state: String = "EXTRACTED") {
+        val db = MemoryGraph.get(ctx).db
+        db.frameDao().insertIgnore(frame(id, 10, jpg("$id.jpg")))
+        db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity(id, id, null, "STILL", false, null, null, null, null, null, null, null, null, null, 1))
+        db.frameStateDao().insertIgnore(listOf(com.rokid.context.memory.db.FrameStateEntity(id, state, 0, null, null, null, 1)))
+    }
+
+    /** Final review C1: exactly what MainActivity runs at start-up, over memories the keyframe pipeline saved. */
+    @Test fun pipelineSavedFactsAndCaptionsSurviveTheStartupPurges() = runBlocking {
+        seedPipelineFrame("f1")
+        val prefix = com.rokid.context.work.frames.KeyframeHandle.factPrefix("0123456789ab-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        val saved = ExtractSave.saveExtraction(
+            ctx, prefix,
+            com.rokid.context.ai.contract.ExtractOutput(
+                listOf(com.rokid.context.ai.contract.Fact("A mug on the desk", "object", 0.9, emptyList(), listOf("f1"))),
+                captions = listOf(com.rokid.context.ai.contract.FrameCaption("f1", "A desk with a mug")),
+            ),
+            setOf("f1"), claims = null, tier = MemoryTier.SHORT, reviewState = ReviewState.OK,
+        )
+        assertEquals(2, (saved as ExtractSaveResult.Saved).memories.size)
+        // an earlier build's ids (kf_<claimId>_n) are kept too
+        PipelineRecords.appendFact(ctx, "kf_old_0", "f1", "Keys by the door", "object", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK, createdAt = 5)
+
+        com.rokid.context.data.runtime.QueueRuntimeStore.purgeSynthetic(ctx)
+        PipelineRecords.purgeNonRokidFrames(ctx)
+        PipelineRecords.purgeSyntheticTraces(ctx)
+        PipelineRecords.purgeNonRokidMemories(ctx)
+        com.rokid.context.orchestration.forget.FrameSweep.sweep(ctx)
+
+        assertEquals(setOf(prefix + "0", prefix + "c0", "kf_old_0"), PipelineRecords.recentMemories(ctx, 10).map { it.id }.toSet())
+        val g = MemoryGraph.get(ctx).db
+        assertEquals(listOf("f1"), g.frameSourceDao().forMemory(prefix + "0").map { it.frameId })
+        assertEquals("EXTRACTED", g.frameStateDao().get("f1")!!.state)
+        assertEquals(listOf("f1"), PipelineRecords.allFrames(ctx).map { it.id })
+        // and the low-signal purge (used by Reprocess) keeps them too
+        PipelineRecords.purgeLowSignalMemories(ctx)
+        assertEquals(3, PipelineRecords.recentMemories(ctx, 10).size)
+        assertTrue(PipelineRecords.isPipelineMemoryId(prefix + "c0") && !prefix.startsWith("rokid_review_"))
+        // dropFactsFrom still sees `<prefix><n>` and `<prefix>c<n>`
+        PipelineRecords.dropFactsFrom(ctx, prefix, keep = 0, keepCaptions = 0)
+        assertEquals(listOf("kf_old_0"), PipelineRecords.recentMemories(ctx, 10).map { it.id })
+    }
+
+    /** Final review I3: the legacy purges take the frame_state / frame_meta / frame_source rows with them (no orphan ends FAILED_FINAL). */
+    @Test fun legacyPurgesLeaveNoFrameOrphans() = runBlocking {
+        val db = MemoryGraph.get(ctx).db
+        db.frameDao().insertIgnore(frame("s1", 10, jpg("synthetic_s1.jpg"), payload = "synthetic"))
+        db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity("s1", "s1", null, "STILL", false, null, null, null, null, null, null, null, null, null, 1))
+        db.frameStateDao().insertIgnore(listOf(com.rokid.context.memory.db.FrameStateEntity("s1", "PENDING", 0, null, null, null, 1)))
+        db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("m1", "s1", null, "FACT")))
+        PipelineRecords.purgeNonPhotoAndSynthetic(ctx)
+        assertEquals(null, db.frameStateDao().get("s1")); assertEquals(null, db.frameMetaDao().get("s1"))
+        assertTrue(db.frameSourceDao().forMemory("m1").isEmpty())
+
+        PipelineRecords.appendFact(ctx, "rokid_review_1", "f9", "needs review", "note", emptyList(), 0.1, MemoryTier.SHORT, ReviewState.NEEDS_REVIEW, createdAt = 1)
+        db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("rokid_review_1", "f9", null, "FACT")))
+        PipelineRecords.purgeLowSignalMemories(ctx)
+        assertTrue("a purged memory no longer pins a photo", db.frameSourceDao().forMemory("rokid_review_1").isEmpty())
+    }
+
+    /** Final review I3: Reprocess puts a frame back to PENDING only when it has no memory left and was not forgotten. */
+    @Test fun requeueMovesOnlyEmptyUnforgottenFramesToPending() = runBlocking {
+        val db = MemoryGraph.get(ctx).db
+        for (id in listOf("e1", "e2", "e3", "e4")) seedPipelineFrame(id)
+        PipelineRecords.appendFact(ctx, "rokid_kf_c_0", "e2", "Keeps", "note", emptyList(), 0.9, MemoryTier.SHORT, ReviewState.OK, createdAt = 1)
+        db.openHelper.writableDatabase.execSQL("INSERT INTO forget_tombstone(frameId, createdAt) VALUES ('e3', 1)")
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_state SET attempts = 3, state = 'FAILED_FINAL' WHERE frameId = 'e4'")
+        assertEquals(2, PipelineRecords.requeueFramesWithoutMemories(ctx, listOf("e1", "e2", "e3", "e4"), nowMs = 99))
+        assertEquals("PENDING", db.frameStateDao().get("e1")!!.state)
+        assertEquals("EXTRACTED", db.frameStateDao().get("e2")!!.state)
+        assertEquals("EXTRACTED", db.frameStateDao().get("e3")!!.state)
+        assertEquals(0, db.frameStateDao().get("e4")!!.attempts)
+        assertEquals("PENDING", db.frameStateDao().get("e4")!!.state)
     }
 }

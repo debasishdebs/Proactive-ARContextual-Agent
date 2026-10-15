@@ -1,5 +1,6 @@
 package com.rokid.context.glasses.capture
 
+import com.rokid.context.core.model.MotionState
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -178,5 +179,43 @@ class OutboundBufferTest {
         b.add("g1", byteArrayOf(1), now - 1, null, null, null)
         b.add("g2", byteArrayOf(2), now, null, null, null)
         assertEquals(listOf(dir, dir), fsyncs)
+    }
+
+    private fun kf(seq: Long, dwell: Boolean) = KeyframeOut(byteArrayOf(seq.toByte()), 640, MotionState.HEAD_MOVING, dwell, 42.5f, "d1d1d1d1d1d1d1d1", "p2p2p2p2p2p2p2p2".replace('p', 'a').replace('2', 'b'), seq, "sess-1")
+
+    @Test fun dropsOldestNonDwellFirst() {
+        val b = buffer(capacity = 3)
+        b.add("d1", byteArrayOf(1), now - 40, null, null, null, keyframe = kf(1, true))
+        b.add("n1", byteArrayOf(2), now - 30, null, null, null, keyframe = kf(2, false))
+        b.add("n2", byteArrayOf(3), now - 20, null, null, null, keyframe = kf(3, false))
+        b.add("n3", byteArrayOf(4), now - 10, null, null, null, keyframe = kf(4, false))
+        assertEquals(listOf("d1", "n2", "n3"), (1..3).map { b.oldest()!!.also { f -> b.remove(f.meta.frameId) }.meta.frameId })
+        // only dwell frames left: the oldest of those goes
+        val c = OutboundBuffer(File(tmp.root, "dw"), 2, clock = { now }, elapsed = { up }, bootId = { boot })
+        c.add("a", byteArrayOf(1), now - 30, null, null, null, keyframe = kf(1, true))
+        c.add("b", byteArrayOf(2), now - 20, null, null, null, keyframe = kf(2, true))
+        c.add("c", byteArrayOf(3), now - 10, null, null, null, keyframe = kf(3, true))
+        assertEquals("b", c.oldest()!!.meta.frameId)
+    }
+
+    @Test fun metadataSurvivesRestart() {
+        buffer().add("g1", byteArrayOf(1), now - 5, 7, "abababababababab", 80, keyframe = kf(9, true))
+        val m = buffer().oldest()!!.meta
+        assertEquals(MotionState.HEAD_MOVING, m.motion)
+        assertTrue(m.dwell)
+        assertEquals(42.5f, m.blur)
+        assertEquals("d1d1d1d1d1d1d1d1", m.dhash)
+        assertEquals(640, m.width)
+        assertEquals(9L, m.sampleSeq)
+        assertEquals("sess-1", m.sessionId)
+    }
+
+    @Test fun framesBufferedBeforeKeyframeMetadataLoadWithDefaults() {
+        buffer().add("old", byteArrayOf(1), now - 5, null, null, null)
+        File(dir, dir.list()!!.first { it.endsWith(".json") }).writeText("""{"frameId":"old","capturedAtMs":${now - 5},"elapsedAtCaptureMs":$up,"bootId":"boot-a"}""")
+        val m = buffer().oldest()!!.meta
+        assertEquals(MotionState.UNKNOWN, m.motion)
+        assertFalse(m.dwell)
+        assertNull(m.sessionId)
     }
 }

@@ -16,6 +16,7 @@ import com.rokid.context.memory.db.SummaryTraceEntity
 import com.rokid.context.memory.forget.ForgetFence
 import com.rokid.context.orchestration.AskSources
 import com.rokid.context.orchestration.AskText
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -44,14 +45,17 @@ class NudgeEngine(
     private val clock: () -> Long = System::currentTimeMillis,
     private val hud: () -> NudgeHud? = { NudgeEnvironment.hud?.invoke() },
 ) {
-    suspend fun runOnce(): NudgeRun {
+    /** Serialized with every other run through [NudgeRunLock] (the daily cap is read-then-write). */
+    suspend fun runOnce(): NudgeRun = NudgeRunLock.mutex.withLock { runLocked() }
+
+    private suspend fun runLocked(): NudgeRun {
         val now = clock()
         val h = hud() ?: return NudgeRun.NoHud
         gates.precheck(h, now).takeIf { it != Gate.PASS }?.let { return NudgeRun.Dropped(it) }
         val prepared = inputs.build(now)
         if (prepared.inputIds.isEmpty()) return NudgeRun.NoMemories
         val out = try {
-            runner.run(RoleCall(PromptKey.NUDGE, prepared.vars, inputIds = prepared.inputIds)).output as NudgeOutput
+            runner.run(RoleCall(PromptKey.NUDGE, prepared.vars, inputIds = prepared.inputIds, callClass = com.rokid.context.model.CallClass.NUDGE)).output as NudgeOutput
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
@@ -62,7 +66,7 @@ class NudgeEngine(
         val text = AskText.collapse(out.text).take(MAX_TEXT)
         if (!out.shouldNudge || text.isEmpty()) return NudgeRun.NotNeeded
         val gate = gates.check(text, h, now)
-        if (gate != Gate.PASS) return NudgeRun.Dropped(gate)
+        if (gate != Gate.PASS) { recordDropped(memory, gate, now); return NudgeRun.Dropped(gate) }
         val id = "nudge_${UUID.randomUUID()}"
         // Forget fence (integration carry 1): a memory in the prompt or cited forgotten while the model ran means the
         // text may hold forgotten content, so the nudge is dropped (no row, no proposal). Checked in the insert transaction.
@@ -85,6 +89,11 @@ class NudgeEngine(
         private const val TAG = "NudgeEngine"
         private const val MAX_TEXT = 200
         private const val MAX_WHY = 300
+
+        /** A "nudge" decision the notify throttle held back: recorded with its reason (Diagnostics), no row, no text. */
+        suspend fun recordDropped(memory: MemoryGraph, gate: Gate, now: Long) {
+            memory.traces.upsert(SummaryTraceEntity("nudge_drop_$now", "NUDGE_DROPPED", now, gate.name))
+        }
 
         fun shownOn(v: Verbosity): String = when (v) {
             Verbosity.SILENT -> "phone"

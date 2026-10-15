@@ -17,7 +17,39 @@ object Channels {
     const val HELLO = "pc_hello"
     /** Phone → glasses: please send a fresh `pc_hello` (the phone's clock offset looks stale). */
     const val HELLO_REQUEST = "pc_hello_request"
+    /** Glasses to phone: a [MotionHint] (P3 hook; defined in wave 1, unused). */
+    const val MOTION_HINT = "pc_motion_hint"
+    /** Fix wave H, phone to glasses: a [WearMessage] (the real wear signal from the Rokid SDK). Additive. */
+    const val WEAR = "pc_wear"
+    /** Fix wave H, glasses to phone: a [UserExit] (the wearer exited the app on purpose; do not reopen it). Additive. */
+    const val USER_EXIT = "pc_user_exit"
+    /** Fix wave I, phone to glasses: an [AutoOpen] (this start of the glasses app was the phone's automatic reopen: keep it minimised). Additive. */
+    const val AUTO_OPEN = "pc_auto_open"
 }
+
+/** How the glasses decide when to capture: Smart = motion-driven keyframes, Fixed = the interval timer. */
+@Serializable enum class CaptureMode { SMART, FIXED }
+
+/** Coarse head/body motion class from the glasses IMU; an unknown wire value decodes to [UNKNOWN]. */
+@Serializable enum class MotionState { STILL, HEAD_MOVING, WALKING, VEHICLE, UNKNOWN }
+
+/** Glasses → phone on `pc_motion_hint` (P3 hook, unused in wave 1). */
+@Serializable data class MotionHint(val state: MotionState, val atMs: Long)
+
+/** Phone to glasses on `pc_wear`: the Rokid SDK's `wearingStatus` (true = worn) and when the phone saw it (phone clock). */
+@Serializable data class WearMessage(
+    val v: Int = PROTOCOL_VERSION,
+    val worn: Boolean,
+    val atMs: Long,
+    /** Fix wave I, additive: when the phone's current glasses session began (phone clock). A value seen before it is stale and ignored; 0 = not sent (old phone). */
+    val sessionStartMs: Long = 0L,
+)
+
+/** Phone to glasses on `pc_auto_open` (fix wave I): the phone reopened the app by itself a moment ago; it must stay in icon mode. */
+@Serializable data class AutoOpen(val v: Int = PROTOCOL_VERSION, val atMs: Long)
+
+/** Glasses to phone on `pc_user_exit`: the wearer exited the glasses app completely (triple double-tap). */
+@Serializable data class UserExit(val v: Int = PROTOCOL_VERSION)
 
 @Serializable enum class PauseOrigin { GLASSES, PHONE, QUIET_HOURS }
 
@@ -122,6 +154,7 @@ data class HudSettings(
     val position: HudPosition = HudPosition.BOTTOM_CENTER,
     val gestures: Map<Gesture, GestureAction> = GestureDefaults.map,
     val captureIntervalSec: Int = 300,
+    /** Ignored since keyframe capture ([captureMode] supersedes it); kept for wire compatibility. */
     val burstOnChange: Boolean = true,
     val quietHours: QuietHours? = null,
     val pauses: List<PauseRecord> = emptyList(),
@@ -136,7 +169,37 @@ data class HudSettings(
     val iconCorner: IconCorner = IconCorner.TOP_RIGHT,
     /** Spec 2026-10-14 §4, additive: how long a minimised pop-up stays, seconds ([POPUP_MIN_SEC]..[POPUP_MAX_SEC], clamped on use). */
     val popupSeconds: Int = POPUP_DEFAULT_SEC,
+    /** Keyframe capture, additive: absent on the wire = Fixed (old phones). The phone sends SMART for new installs. */
+    val captureMode: CaptureMode = CaptureMode.FIXED,
+    /** Keyframe capture, additive. Fix wave H: gated by the real wear signal (`pc_wear`) only; never when the wear state is unknown. */
+    val pauseWhenNotWorn: Boolean = true,
+    /** Fix wave H, additive: blink a small mark on the HUD for ~600 ms per saved keyframe. Old glasses ignore it. */
+    val captureCue: Boolean = true,
+    /** Work minutes before a rest: 30|40|45|50|60|75|90 (see [normalized]). */
+    val workMinutes: Int = 45,
+    /** Quick look, ms: 1000|1500|2000|3000 (see [normalized]). */
+    val quickLookMs: Int = 1000,
+    /** Rest minutes: 5|10|15|20; at least 15 when [workMinutes] > 45 (see [normalized]). */
+    val restMinutes: Int = 15,
 )
+
+val WORK_MINUTES_ALLOWED = listOf(30, 40, 45, 50, 60, 75, 90)
+val REST_MINUTES_ALLOWED = listOf(5, 10, 15, 20)
+val QUICK_LOOK_MS_ALLOWED = listOf(1000, 1500, 2000, 3000)
+
+private fun List<Int>.nearest(v: Int): Int = minByOrNull { kotlin.math.abs(it - v) } ?: first()
+
+/**
+ * Snaps the keyframe-capture values to their allowed sets (nearest, ties to the smaller) and enforces R >= 15 when
+ * W > 45. Pure; used by the phone UI and again on the glasses so a wild wire value is never trusted.
+ * [burstOnChange] is ignored (superseded by [captureMode]).
+ */
+fun HudSettings.normalized(): HudSettings {
+    val w = WORK_MINUTES_ALLOWED.nearest(workMinutes)
+    var r = REST_MINUTES_ALLOWED.nearest(restMinutes)
+    if (w > 45 && r < 15) r = 15
+    return copy(workMinutes = w, restMinutes = r, quickLookMs = QUICK_LOOK_MS_ALLOWED.nearest(quickLookMs))
+}
 
 /** The corner of the minimised icon on the glasses display. */
 @Serializable enum class IconCorner { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
@@ -184,6 +247,14 @@ data class Hello(
     val pauses: List<PauseRecord>,
     val nextCaptureAtMs: Long? = null,
     val resumedAtMs: Map<String, Long> = emptyMap(),
+    /** Fix wave H4, additive: how many times Rokid force-stopped the glasses app (counts only; diagnostics). */
+    val rokidCloses: Int = 0,
+    /** Fix wave H4, additive: seconds between the last heartbeat and the latest restart after such a stop. */
+    val lastRestartGapSec: Int? = null,
+    /** Fix wave I, additive: glasses clock of the wearer's last deliberate exit (the third double-tap); repeats a `pc_user_exit` that may have been lost. */
+    val userExitAtMs: Long? = null,
+    /** Fix wave I, additive: the app went to icon mode but "display over other apps" is off, so no icon shows (capture runs unseen). */
+    val iconBlocked: Boolean = false,
 )
 
 /** Phone → glasses on `pc_hello_request`: the glasses answer with [Hello]. Sent rate-limited when a frame is held. */
@@ -201,6 +272,15 @@ data class FrameMeta(
     val luma: Int? = null,
     val phash: String? = null,
     val batteryPct: Int? = null,
+    /** Keyframe capture, additive: absent from an old glasses = [MotionState.UNKNOWN] and not a dwell. */
+    val motion: MotionState = MotionState.UNKNOWN,
+    val dwell: Boolean = false,
+    val blur: Float? = null,
+    /** 16 hex chars (the existing [phash] is also 16 hex chars). */
+    val dhash: String? = null,
+    val width: Int? = null,
+    val sampleSeq: Long? = null,
+    val sessionId: String? = null,
 )
 
 @Serializable data class FrameAck(val v: Int = PROTOCOL_VERSION, val frameId: String, val ok: Boolean, val reason: String? = null)

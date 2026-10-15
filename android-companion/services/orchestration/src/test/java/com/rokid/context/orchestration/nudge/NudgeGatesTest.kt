@@ -31,7 +31,7 @@ class NudgeGatesTest {
 
     @Before fun setUp() {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
-        gates = NudgeGates(MemoryGraph.get(ctx).db.nudgeGateDao()) { cap }
+        gates = NudgeGates(MemoryGraph.get(ctx).db.nudgeGateDao(), { 0L }) { cap }
     }
 
     @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }

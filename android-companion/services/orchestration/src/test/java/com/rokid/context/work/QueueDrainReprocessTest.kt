@@ -49,7 +49,10 @@ class QueueDrainReprocessTest {
     /** The facts reply for one VISION_EXTRACT call, given the images it carried (Base64). */
     private var factsFor: (List<String>) -> String = { facts }
     private var lastImages: List<String> = emptyList()
-    private val facts = """{"facts":[{"text":"A red mug","type":"object","confidence":0.9,"tags":[]}]}"""
+    /** `__FRAME__` becomes the frame_id the call's prompt labels (the provenance contract needs it in the reply). */
+    private fun vision(text: String) =
+        """{"facts":[{"text":"$text","type":"object","confidence":0.9,"tags":[],"source_frame_ids":["__FRAME__"]}],"captions":[{"frame_id":"__FRAME__","caption":"A photo"}]}"""
+    private val facts = vision("A red mug")
     private val summary = """{"summary":"Fruit bowl on the table","events":[],"entities":["fruit"],"confidence":0.9,"candidate_memory_type":"short_term"}"""
 
     @Before fun setUp() {
@@ -59,7 +62,7 @@ class QueueDrainReprocessTest {
             object : ModelProvider {
                 override suspend fun generate(prompt: String): String {
                     prompts += prompt
-                    return if ("BEGIN_DATA frames" in prompt) { extract(); factsFor(lastImages) } else { summarizeHook(); summary }
+                    return if ("BEGIN_DATA frames" in prompt) { extract(); factsFor(lastImages).replace("__FRAME__", Regex("- frame_id: (\\S+) ").find(prompt)!!.groupValues[1]) } else { summarizeHook(); summary }
                 }
                 override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String {
                     lastImages = images.map { it.base64Data }
@@ -177,15 +180,15 @@ class QueueDrainReprocessTest {
         frames("p1", "p2", "p3", "p4")
         factsFor = { imgs ->
             val id = listOf("p1", "p2", "p3", "p4").single { b64(it) in imgs }
-            """{"facts":[{"text":"Seen in $id","type":"object","confidence":0.9,"tags":[]}]}"""
+            vision("Seen in $id")
         }
         QueueRuntimeStore.enqueue(ctx, QueuePriority.SUMMARIZER, QueuePayloads.batchedWrite("test", 4, manual = true, frameIdsCsv = "p1,p2,p3,p4"), personaSnapshot = "p")
         drain()
-        val byText = memories().associate { it.text to it.frameId }
+        val byText = memories().filter { it.type != "caption" }.associate { it.text to it.frameId }
         assertTrue(byText.isNotEmpty())
         byText.forEach { (text, frameId) -> assertEquals("Seen in $frameId", text) }
         // each prompt lists only the frame whose photo it carries
-        prompts.filter { "BEGIN_DATA frames" in it }.forEach { p -> assertEquals(1, Regex("id=p[0-9]").findAll(p).count()) }
+        prompts.filter { "BEGIN_DATA frames" in it }.forEach { p -> assertEquals(1, Regex("frame_id: p[0-9]").findAll(p).count()) }
         // Forget moment of the photo the first fact came from removes that fact
         assertTrue(runBlocking { com.rokid.context.orchestration.forget.ForgetActions.forgetMoment(ctx, "p1") })
         assertTrue(memories().none { it.text == "Seen in p1" })
@@ -206,11 +209,11 @@ class QueueDrainReprocessTest {
         frames("b1", "b2")
         factsFor = { imgs ->
             val id = listOf("b1", "b2").single { b64(it) in imgs }
-            """{"facts":[{"text":"Seen in $id","type":"object","confidence":0.9,"tags":[]}]}"""
+            vision("Seen in $id")
         }
         QueueRuntimeStore.enqueue(ctx, QueuePriority.SUMMARIZER, QueuePayloads.batchedWrite("test", 2, manual = true, frameIdsCsv = "b1,b2"), personaSnapshot = "p")
         extract = { runBlocking { MemoryGraph.get(ctx).db.forgetDao().insertTombstone(ForgetTombstoneEntity("b1", 1)) } }
         drain()
-        assertEquals(mapOf("Seen in b2" to "b2"), memories().associate { it.text to it.frameId })
+        assertEquals(mapOf("Seen in b2" to "b2"), memories().filter { it.type != "caption" }.associate { it.text to it.frameId })
     }
 }

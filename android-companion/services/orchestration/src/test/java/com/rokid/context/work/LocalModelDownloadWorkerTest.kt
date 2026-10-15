@@ -11,6 +11,7 @@ import androidx.work.testing.WorkManagerTestInitHelper
 import androidx.work.workDataOf
 import com.rokid.context.ai.Http
 import com.rokid.context.ai.local.LocalModel
+import com.rokid.context.ai.local.ModelFile
 import com.rokid.context.data.models.LocalModelState
 import com.rokid.context.data.models.LocalModelStore
 import kotlinx.coroutines.flow.first
@@ -78,6 +79,23 @@ class LocalModelDownloadWorkerTest {
         assertArrayEquals(data, store.fileFor(model).readBytes())
         assertFalse(part().exists())
         assertEquals(LocalModelState.Ready, store.state(model).first())
+    }
+
+    @Test fun bundleDownloadsEveryFileAndReadyNeedsAll() = runBlocking {
+        val data2 = ByteArray(1000) { (it * 7 % 251).toByte() }
+        val sha2 = MessageDigest.getInstance("SHA-256").digest(data2).joinToString("") { "%02x".format(it) }
+        val second = com.rokid.context.ai.local.ModelFile("second.onnx", "https://localhost:${server.port}/resolve/abc/onnx/second.onnx", sha2, data2.size.toLong())
+        val bundle = model.copy(files = model.files + second)
+        LocalModelDownloadWorker.resolve = { id -> bundle.takeIf { it.id == id } }
+        server.enqueue(MockResponse().setBody(body()))
+        assertEquals(LocalModelState.Absent, store.state(bundle).first())
+        server.enqueue(MockResponse().setBody(Buffer().write(data2)))
+        assertEquals(ListenableWorker.Result.success(), runWorker())
+        assertArrayEquals(data, store.fileFor(model).readBytes())
+        assertArrayEquals(data2, File(LocalModelStore.modelsDir(ctx), "second.onnx").readBytes())
+        assertEquals(LocalModelState.Ready, store.state(bundle).first())
+        File(LocalModelStore.modelsDir(ctx), "second.onnx").delete()
+        assertEquals(LocalModelState.Absent, store.state(bundle).first())
     }
 
     @Test fun interruptedDownloadResumesWithRangeHeader() {
@@ -154,6 +172,15 @@ class LocalModelDownloadWorkerTest {
         assertEquals(failure("Not enough space"), runWorker())
         assertEquals(0, server.requestCount)
         assertFalse(part().exists())
+    }
+
+    /** The free-space check covers the whole bundle up front: enough for the first file alone is not enough. */
+    @Test fun notEnoughSpaceForTheWholeBundleFailsBeforeDownloading() {
+        val bundle = model.copy(files = listOf(ModelFile(model.file, model.url, sha, model.bytes), ModelFile("second.bin", model.url.replace("test.gguf", "second.bin"), sha, model.bytes)))
+        LocalModelDownloadWorker.resolve = { id -> bundle.takeIf { it.id == id } }
+        LocalModelDownloadWorker.freeBytes = { (data.size * 1.5).toLong() } // fits one file (x1.2), not both
+        assertEquals(failure("Not enough space"), runWorker())
+        assertEquals(0, server.requestCount)
     }
 
     /**

@@ -45,6 +45,21 @@ object DefaultSchemas {
          "required":["facts"],"additionalProperties":false}
     """.trimIndent()
 
+    /** VISION_EXTRACT (spec P2.1 provenance): every fact cites the photos it came from, every sent photo gets a caption. */
+    private val VISION_FACTS = """
+        {"type":"object","properties":{"facts":{"type":"array","maxItems":12,"items":{"type":"object","properties":{
+          "text":{"type":"string","minLength":1,"maxLength":200,"description":"One short, specific fact"},
+          "type":{"type":"string","maxLength":20,"description":"object, place, person, event or note"},
+          "confidence":{"type":"number","minimum":0,"maximum":1},
+          "tags":{"type":"array","maxItems":5,"items":{"type":"string","maxLength":30}},
+          "source_frame_ids":{"type":"array","minItems":1,"maxItems":3,"items":{"type":"string","minLength":1},"description":"The frame_id of every photo this fact is visible in"}},
+          "required":["text","type","confidence","tags","source_frame_ids"],"additionalProperties":false}},
+         "captions":{"type":"array","maxItems":3,"items":{"type":"object","properties":{
+          "frame_id":{"type":"string","minLength":1},"caption":{"type":"string","minLength":1,"maxLength":300,"description":"One sentence describing the whole photo"}},
+          "required":["frame_id","caption"],"additionalProperties":false},"description":"Exactly one caption per photo sent"}},
+         "required":["facts","captions"],"additionalProperties":false}
+    """.trimIndent()
+
     private val SUMMARY = """
         {"type":"object","properties":{"summary":{"type":"string","minLength":1,"maxLength":1000},
           "events":{"type":"array","items":{"type":"string"}},"entities":{"type":"array","items":{"type":"string"}},
@@ -77,7 +92,8 @@ object DefaultSchemas {
 
     fun text(key: PromptKey): String? = when (key) {
         PromptKey.SYSTEM -> null
-        PromptKey.VISION_EXTRACT, PromptKey.EXPLICIT_REMEMBER -> FACTS
+        PromptKey.VISION_EXTRACT -> VISION_FACTS
+        PromptKey.EXPLICIT_REMEMBER -> FACTS
         PromptKey.SUMMARIZE -> SUMMARY
         PromptKey.CRITIC -> CRITIC
         PromptKey.ANSWER -> ANSWER

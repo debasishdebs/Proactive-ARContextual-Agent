@@ -57,7 +57,7 @@ class ProtocolTest {
 
     @Test fun malformedTextIsReported() {
         assertIs<Decoded.Malformed>(Wire.decode<StateFrame>("not json"))
-        assertIs<Decoded.Malformed>(Wire.decode<StateFrame>("""{"v":$PROTOCOL_VERSION,"seq":"x"}"""))
+        assertIs<Decoded.Malformed>(Wire.decode<StateFrame>(Wire.encode(frame(null)).replace("\"seq\":7", "\"seq\":\"x\"")))
     }
 
     /** Privacy: a decode error must never quote the payload (it can hold `today` memory text), only a class name. */
@@ -68,6 +68,34 @@ class ProtocolTest {
         val d = assertIs<Decoded.Malformed>(Wire.decode<StateFrame>(bad))
         assertFalse(d.reason.contains(marker), d.reason)
         assertFalse(d.reason.contains("today"), d.reason)
+    }
+
+    /** Fix wave H4: the Rokid-closed counters are additive on the hello; an old hello reads 0 / null. */
+    @Test fun helloRokidClosedCountersAreAdditive() {
+        val old = """{"v":$PROTOCOL_VERSION,"glassesBatteryPct":80,"bufferSize":0,"glassesNowMs":5,"pauses":[]}"""
+        val d = assertIs<Decoded.Ok<Hello>>(Wire.decode<Hello>(old)).value
+        assertEquals(0, d.rokidCloses); assertEquals(null, d.lastRestartGapSec)
+        val h = Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = 5, pauses = emptyList(), rokidCloses = 3, lastRestartGapSec = 38)
+        assertEquals(Decoded.Ok(h), Wire.decode<Hello>(Wire.encode(h)))
+    }
+
+    /** Fix wave I: the exit stamp, icon-blocked flag, wear session start and `pc_auto_open` are additive. */
+    @Test fun waveIFieldsAreAdditive() {
+        val old = """{"v":$PROTOCOL_VERSION,"glassesBatteryPct":80,"bufferSize":0,"glassesNowMs":5,"pauses":[]}"""
+        val d = assertIs<Decoded.Ok<Hello>>(Wire.decode<Hello>(old)).value
+        assertEquals(null, d.userExitAtMs); assertFalse(d.iconBlocked)
+        val h = Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = 5, pauses = emptyList(), userExitAtMs = 9, iconBlocked = true)
+        assertEquals(Decoded.Ok(h), Wire.decode<Hello>(Wire.encode(h)))
+        assertEquals(0L, assertIs<Decoded.Ok<WearMessage>>(Wire.decode<WearMessage>("""{"v":$PROTOCOL_VERSION,"worn":false,"atMs":5}""")).value.sessionStartMs)
+        val a = AutoOpen(atMs = 7)
+        assertEquals(Decoded.Ok(a), Wire.decode<AutoOpen>(Wire.encode(a)))
+    }
+
+    /** Fix wave H3: `captureCue` is additive, default on; old phones' settings (no field) keep the blink on. */
+    @Test fun captureCueIsAdditiveDefaultOn() {
+        assertTrue(assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1}""")).value.captureCue)
+        val s = HudSettings(captureCue = false)
+        assertEquals(Decoded.Ok(s), Wire.decode<HudSettings>(Wire.encode(s)))
     }
 
     /** `resumedAtMs` is additive: a v1 hello without it still decodes (no PROTOCOL_VERSION bump). */
@@ -173,5 +201,74 @@ class ProtocolTest {
         val plain = frame(Overlay.Answer("q", "a", speaking = false))
         assertFalse(Wire.encode(plain).contains("undoProposalId"))
         assertEquals(Decoded.Ok(plain), Wire.decode<StateFrame>(Wire.encode(plain)))
+    }
+
+    private val oldFrameJson = """{"v":1,"frameId":"f1","chunkIdx":0,"chunkCount":1,"crc32":5,"capturedAtMs":9}"""
+
+    @Test fun oldFrameMetaParsesWithDefaults() {
+        val m = assertIs<Decoded.Ok<FrameMeta>>(Wire.decode<FrameMeta>(oldFrameJson)).value
+        assertEquals(MotionState.UNKNOWN, m.motion)
+        assertFalse(m.dwell)
+        assertEquals(null, m.blur); assertEquals(null, m.dhash); assertEquals(null, m.width)
+        assertEquals(null, m.sampleSeq); assertEquals(null, m.sessionId)
+    }
+
+    @Test fun oldHudSettingsMeanFixedMode() {
+        val s = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1}""")).value
+        assertEquals(CaptureMode.FIXED, s.captureMode)
+        assertTrue(s.pauseWhenNotWorn); assertTrue(s.captureCue)
+        assertEquals(45, s.workMinutes); assertEquals(15, s.restMinutes); assertEquals(1000, s.quickLookMs)
+    }
+
+    @Test fun newFieldsRoundTrip() {
+        val m = FrameMeta(frameId = "f", chunkIdx = 0, chunkCount = 1, crc32 = 1, capturedAtMs = 2, phash = "0123456789abcdef",
+            motion = MotionState.WALKING, dwell = true, blur = 12.5f, dhash = "fedcba9876543210", width = 640, sampleSeq = 7L, sessionId = "s1")
+        assertEquals(Decoded.Ok(m), Wire.decode<FrameMeta>(Wire.encode(m)))
+        val s = HudSettings(captureMode = CaptureMode.SMART, pauseWhenNotWorn = false, workMinutes = 60, quickLookMs = 2000, restMinutes = 20)
+        assertEquals(Decoded.Ok(s), Wire.decode<HudSettings>(Wire.encode(s)))
+        val h = MotionHint(MotionState.VEHICLE, 99)
+        assertEquals(h, Wire.json.decodeFromString<MotionHint>("""{"state":"VEHICLE","atMs":99}"""))
+        assertEquals("pc_motion_hint", Channels.MOTION_HINT)
+    }
+
+    @Test fun unknownEnumValueFallsBackToUnknown() {
+        val m = assertIs<Decoded.Ok<FrameMeta>>(Wire.decode<FrameMeta>("""{"v":1,"frameId":"f1","chunkIdx":0,"chunkCount":1,"crc32":5,"capturedAtMs":9,"motion":"FLYING"}""")).value
+        assertEquals(MotionState.UNKNOWN, m.motion)
+        val s = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1,"captureMode":"TELEPATHY"}""")).value
+        assertEquals(CaptureMode.FIXED, s.captureMode)
+    }
+
+    @Test fun normalizedSnapsAndEnforcesRestAfterLongWork() {
+        assertEquals(HudSettings(), HudSettings().normalized())
+        val n = HudSettings(workMinutes = 77, restMinutes = 5, quickLookMs = 1600).normalized()
+        assertEquals(75, n.workMinutes); assertEquals(15, n.restMinutes); assertEquals(1500, n.quickLookMs)
+        assertEquals(5, HudSettings(workMinutes = 45, restMinutes = 5).normalized().restMinutes)
+        assertEquals(20, HudSettings(workMinutes = 90, restMinutes = 20).normalized().restMinutes)
+        assertEquals(30, HudSettings(workMinutes = 0).normalized().workMinutes)
+        assertEquals(10, HudSettings(restMinutes = 11).normalized().restMinutes)
+    }
+
+    // Pins Wire.json coerceInputValues = true (global effects, see review A item 5).
+    @Test fun coerceInputValuesFallsBackToDefaultsOnly() {
+        fun settings(extra: String) = Wire.decode<HudSettings>("""{"v":$PROTOCOL_VERSION,$extra}""")
+        // unknown enum strings on defaulted fields become the default instead of rejecting the whole message
+        assertEquals(Decoded.Ok(HudSettings()), settings(""""verbosity":"LOUD","position":"NOWHERE","iconCorner":"MIDDLE""""))
+        assertEquals(Verbosity.MEDIUM, (settings(""""verbosity":"LOUD"""") as Decoded.Ok).value.verbosity)
+        assertEquals(HudPosition.BOTTOM_CENTER, (settings(""""position":"NOWHERE"""") as Decoded.Ok).value.position)
+        assertEquals(IconCorner.TOP_RIGHT, (settings(""""iconCorner":"MIDDLE"""") as Decoded.Ok).value.iconCorner)
+        // an explicit null for a defaulted non-null field takes the default
+        assertEquals(Decoded.Ok(HudSettings()), settings(""""verbosity":null,"scale":null,"popupSeconds":null,"workMinutes":null"""))
+        // a valid value still wins
+        assertEquals(Verbosity.MAX, (settings(""""verbosity":"MAX"""") as Decoded.Ok).value.verbosity)
+        // type errors are still Malformed
+        assertIs<Decoded.Malformed>(settings(""""popupSeconds":"x""""))
+        assertIs<Decoded.Malformed>(Wire.decode<StateFrame>(Wire.encode(frame(null)).replace("\"seq\":7", "\"seq\":\"x\"")))
+        // enums without a default stay Malformed
+        assertIs<Decoded.Malformed>(Wire.decode<CommandEnvelope>(
+            """{"v":$PROTOCOL_VERSION,"command":{"kind":"page_changed","page":"NOPE"}}""",
+        ))
+        assertIs<Decoded.Malformed>(Wire.decode<CommandEnvelope>(
+            """{"v":$PROTOCOL_VERSION,"command":{"kind":"pause","pause":{"pauseId":"p","origin":"NOPE","createdAtMs":1}}}""",
+        ))
     }
 }
