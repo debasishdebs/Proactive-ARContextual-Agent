@@ -18,8 +18,11 @@ object FrameRecovery {
     /**
      * First thing in a new process, before the first drain: every EXTRACTING row is released with no attempt (see
      * [FrameStateDao.releaseAllExtracting]); the [CLAIM_TIMEOUT_MS] sweep stays only as a backstop. Returns the rows released.
+     * Fix wave I5: only claims older than [processStartMs] are a dead process's; a claim made since by a worker of this process
+     * (the legacy backstop claims without the pipeline) is live and stays.
      */
-    suspend fun releaseAtProcessStart(dao: FrameStateDao, nowMs: Long): Int = dao.releaseAllExtracting(nowMs)
+    suspend fun releaseAtProcessStart(dao: FrameStateDao, nowMs: Long, processStartMs: Long = ProcessStart.wallMs): Int =
+        dao.releaseAllExtracting(nowMs, claimedBeforeMs = processStartMs)
 
     /** Returns how many abandoned claims were requeued; [signal] is called afterwards so the pipeline drains what is claimable. */
     suspend fun run(dao: FrameStateDao, nowMs: Long, signal: () -> Unit = {}): Int {
@@ -27,4 +30,9 @@ object FrameRecovery {
         signal()
         return n
     }
+}
+
+/** Wall clock at which this process began (the first touch is [com.rokid.context.ContextApp.onCreate], before any worker can claim). */
+object ProcessStart {
+    val wallMs: Long = System.currentTimeMillis()
 }

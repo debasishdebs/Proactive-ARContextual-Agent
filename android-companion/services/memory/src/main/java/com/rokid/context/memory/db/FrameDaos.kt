@@ -122,12 +122,15 @@ abstract class FrameStateDao {
     /**
      * Process start: no live worker can own a claim (claims never survive the process), so every EXTRACTING row goes back to
      * PENDING at once, attempts unchanged. A forgotten (tombstoned) frame is left alone: it is never extracted again.
+     * Fix wave I5: only claims made before [claimedBeforeMs] (the process start): a worker of THIS process may already have
+     * claimed (the legacy backstop claims without the pipeline), and that claim is live.
      */
     @Query(
         "UPDATE frame_state SET state = 'PENDING', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'EXTRACTING' " +
+            "AND (claimedAt IS NULL OR claimedAt < :claimedBeforeMs) " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)",
     )
-    abstract suspend fun releaseAllExtracting(nowMs: Long): Int
+    abstract suspend fun releaseAllExtracting(nowMs: Long, claimedBeforeMs: Long = Long.MAX_VALUE): Int
 
     /** Gives a claim back without an attempt (offline, no provider set up, cancelled): the frame is not at fault. */
     @Query(

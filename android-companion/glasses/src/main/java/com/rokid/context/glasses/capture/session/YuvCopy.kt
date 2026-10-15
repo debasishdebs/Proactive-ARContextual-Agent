@@ -75,6 +75,10 @@ object YuvCopy {
     /** Height of the frame after [rotation]. */
     fun rotatedHeight(w: Int, h: Int, rotation: Int): Int = if (rotation % 180 == 0) h else w
 
+    /** True when the keyframe must be scaled down: either side differs from the rotated size (long side over the cap; fix wave I compares both sides, not the width alone). */
+    fun needsShrink(w: Int, h: Int, rotation: Int): Boolean =
+        outputSize(w, h, rotation) != (rotatedWidth(w, h, rotation) to rotatedHeight(w, h, rotation))
+
     /** Keyframe size (width, height) after [rotation]: the long side capped at [KEYFRAME_MAX_SIDE], never scaled up. */
     fun outputSize(w: Int, h: Int, rotation: Int): Pair<Int, Int> {
         val rw = rotatedWidth(w, h, rotation); val rh = rotatedHeight(w, h, rotation)

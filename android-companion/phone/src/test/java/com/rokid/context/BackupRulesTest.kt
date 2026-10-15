@@ -44,6 +44,8 @@ class BackupRulesTest {
      */
     private val setupState: Set<String> get() = setOf(
         "onboarding", "app_config", "memory_graph", "index_maintenance", "pipeline_stats", "rokid_link", "rokid_bridge", "voice_probe",
+        // Fix wave I2: the wearer's "I exited the glasses app" (device state of this pairing): never restored onto another phone.
+        com.rokid.context.phone.hub.PrefsStandDown.PREFS,
         // Derived state: restored, they would say adoption / retirement already happened on an install that never did it.
         "frame_adoption", "space_retired_at",
     )

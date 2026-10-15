@@ -5,6 +5,7 @@ import com.rokid.context.core.hud.render.HudConnection
 import com.rokid.context.core.model.CaptureState
 import com.rokid.context.core.model.Channels
 import com.rokid.context.core.model.Command
+import com.rokid.context.core.model.AutoOpen
 import com.rokid.context.core.model.UserExit
 import com.rokid.context.core.model.WearMessage
 import com.rokid.context.core.model.CommandEnvelope
@@ -67,6 +68,8 @@ class HudController(
     @Volatile var onSessionOpened: () -> Unit = {}
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
     @Volatile var onWear: (Boolean?) -> Unit = {}
+    /** `pc_auto_open` (fix wave I): the phone reopened the app by itself; a launcher-looking start of the last seconds was really that. */
+    @Volatile var onAutoOpen: () -> Unit = {}
     /**
      * Each phone push: `pc_settings` as sent; a `pc_state` pause list as the last settings with those pauses, inexact
      * (a frame carries no clock flag) and with no resumes.
@@ -78,9 +81,16 @@ class HudController(
         bridge.subscribe(Channels.SETTINGS) { onSettings(it) }
         bridge.subscribe(Channels.FRAME_ACK) { onAck(it) }
         bridge.subscribe(Channels.HELLO_REQUEST) { onHelloRequest(it) }
-        bridge.subscribe(Channels.WEAR) { text -> (Wire.decode<WearMessage>(text) as? Decoded.Ok)?.value?.let { onWear(it.worn) } }
+        bridge.subscribe(Channels.WEAR) { text -> (Wire.decode<WearMessage>(text) as? Decoded.Ok)?.value?.let(::onWearMessage) }
+        bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { Log.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
         bridge.setConnectionListener(connected = { Log.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
         scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }
+    }
+
+    /** Fix wave I1: a wear value the phone saw before its current session began is stale (a reconnect must never resurrect it). */
+    private fun onWearMessage(m: WearMessage) {
+        if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_wear ignored"); return }
+        onWear(m.worn)
     }
 
     private fun onState(text: String) {

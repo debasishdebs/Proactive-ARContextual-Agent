@@ -15,6 +15,16 @@ interface GlassesLink {
     val wearing: StateFlow<Boolean?> get() = NO_WEARING
     /** Explicit user action (e.g. "Open on glasses"): connects even after a close on the glasses. */
     fun connect()
+    /**
+     * Fix wave I4: the phone's own reopen after Rokid closed the app (GlassesRelauncher). Like [connect], but a failure is not
+     * retried by the link: the relauncher owns the retries (guards, backoff, hourly cap).
+     */
+    fun connectAutomatic() = connect()
+    /**
+     * Fix wave I1: while MINIMISED the wearer asked to open the app: check that it is alive (a liveness probe). Silence moves
+     * the link to CLOSED_ON_GLASSES and then opens it (an explicit connect); an answer leaves everything as it was.
+     */
+    fun probeAlive() = Unit
     /** Hub start: one attempt, no retry loop when the glasses are away. */
     fun connectOnce()
     /** Phone app resumed: reconnects only an OFFLINE, authorized link ([shouldReconnectOnResume]). */

@@ -150,7 +150,7 @@ class SettingsDeps(
             exportSettings = { com.rokid.context.orchestration.ConfigExport.write(app) },
             aiCallPace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(app),
             keyframes = AppKeyframeDiagnostics(app),
-            glassesRestarts = HubGraph.get(app).state.map { it.rokidClosesLine() }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null),
+            glassesRestarts = HubGraph.get(app).state.map { it.glassesDiagnostics() }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null),
         )
     }
 }
