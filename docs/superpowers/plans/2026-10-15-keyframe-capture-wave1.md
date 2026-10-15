@@ -61,7 +61,7 @@
   - settle window 5 s (setting 3 / 5 / 10 / 15), gap between checks ≥ 30 s (setting 30 / 60 / 120);
   - notify throttle: the shown-nudge gap (today's 30 min; setting 10 / 30 / 60 min) plus the daily cap;
   - target p50 ≤ 15 s and p95 ≤ 45 s, when the provider's p95 ≤ 8 s and the keyframe is at the phone within 3 s.
-- **Claims:** `EXTRACTING` sets `claimed_at` and a random `claim_id`; a claim older than 5 min is abandoned. The commit is one transaction, starting with the CAS `UPDATE frame_state … WHERE frame_id=? AND state='EXTRACTING' AND claim_id=?`; zero rows → roll back and drop the output. 5 attempts → `FAILED_FINAL`.
+- **Claims:** `EXTRACTING` sets `claimed_at` and a random `claim_id`; a claim older than 15 min (call timeout + batch fallbacks + critic + budget waits) is abandoned. The commit is one transaction, starting with the CAS `UPDATE frame_state … WHERE frame_id=? AND state='EXTRACTING' AND claim_id=?`; zero rows → roll back and drop the output. 5 attempts → `FAILED_FINAL`.
 - **Repo rules:**
   - Gradle: `./gradlew --no-daemon`; never `gradlew --stop`; one Gradle run per worktree.
   - Never print secrets or read `.env` (copy it without printing). Never push.
@@ -506,7 +506,7 @@ class KeyframePipeline(/* FrameStateDao, FrameMetaDao, extractor: suspend (List<
     fun signal()                      // a new frame committed
     suspend fun drainOnce(): Int      // claims ≤ 3 (dwell first, then newest), extracts, returns frames done
 }
-object FrameRecovery { suspend fun run(dao: FrameStateDao, nowMs: Long): Int }  // abandoned claims (> 5 min) → PENDING (attempts+1); then signal
+object FrameRecovery { suspend fun run(dao: FrameStateDao, nowMs: Long): Int }  // abandoned claims (> 15 min) → PENDING (attempts+1); then signal
 ```
 - **Ask with a backlog:** the newest ≤ 3 frames from the last 60 s are extracted first as `CallClass.USER` (spec §P2.3). Hook into the Ask path (grep `AnswerService`).
 - **Diagnostics:** `frame_state` counts, plus "Retry all" for `FAILED_FINAL` (Settings → Diagnostics).

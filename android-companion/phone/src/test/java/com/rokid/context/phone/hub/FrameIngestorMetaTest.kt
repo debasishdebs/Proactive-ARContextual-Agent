@@ -96,7 +96,8 @@ class FrameIngestorMetaTest {
     private fun oldChunk(id: String = "g1"): FrameChunk = FrameCodec.split(id, jpeg, capturedAtMs = rx + 140).single()
 
     private suspend fun ingest(id: String = "g1", ing: FrameIngestor = ingestor()) = ing.onChunk(chunk(id), offset, now)
-    private fun stem(id: String = "g1") = "rokid_${rx}_$id.v2"
+    /** The stem carries the RECEIPT time (the ingest's nowMs), the file mtime the capture time. */
+    private fun stem(id: String = "g1") = "rokid_${now}_$id.v2"
     private fun finals(dir: File) = dir.list().orEmpty().filter { !it.endsWith(".part") }.sorted()
     private suspend fun drain(sync: DirSync = DirSync { true }, nowMs: Long = now, appender: com.rokid.context.data.frames.FrameAppender = PipelineRecords::appendFrame) =
         RokidFrameInbox.ingestPendingIds(ctx, nowMs = { nowMs }, dirSync = sync, appendFrame = appender)
@@ -286,5 +287,51 @@ class FrameIngestorMetaTest {
         assertEquals(id, db.frameMetaDao().byWireId("g1")!!.frameId)
         assertEquals(id, db.frameStateDao().get(id)!!.frameId)
         assertEquals(id, db.frameDao().byIds(listOf(id)).single().id)
+    }
+
+    /** Counts directory listings (what ReceiptScan does), whatever the archive's size. */
+    private class CountingDir(path: File) : File(path.path) {
+        var listings = 0
+        override fun listFiles(): Array<File>? { listings++; return super.listFiles() }
+    }
+
+    private fun bigArchive(n: Int): CountingDir {
+        for (i in 0 until n) {
+            val base = "${1_000 + i}_rokid_${1_000 + i}_old$i.v2"
+            File(archive, "$base.jpg").writeBytes(byteArrayOf(1)); File(archive, "$base.meta.json").writeBytes(byteArrayOf(2))
+        }
+        archive.setLastModified(System.currentTimeMillis() - 3_600_000) // quiet for a while: its listing may be trusted
+        return CountingDir(archive)
+    }
+
+    private fun countingIngestor(arch: File, inb: File) = FrameIngestor(
+        inb, FrameReassembler(), FrameAdmission(ledger, noPauses), ledger, AtomicJpegWriter,
+        wipeFence = { WipeFence.Fence.None }, wipeLock = Mutex(), archiveDir = arch, dirSync = RecordingSync(),
+        committed = { false },
+    ) { stored++ }
+
+    /** Final review I4: per-frame cost must not grow with the archive. New frames never list it; resends list it once. */
+    @Test fun aLargeArchiveIsNotListedPerFrame() = runBlocking {
+        val arch = bigArchive(1_500)
+        val inb = CountingDir(inbox)
+        val ing = countingIngestor(arch, inb)
+        for (i in 1..6) assertEquals(true, ing.onChunk(chunk("n$i"), offset, now).ack!!.ok)
+        assertEquals("new frames: no archive listing", 0, arch.listings)
+        assertTrue("one inbox listing per frame at most (${inb.listings})", inb.listings <= 6)
+        // glasses resend everything (acks lost): the archive is listed once for all of them while it stays quiet
+        for (i in 1..6) assertEquals(FrameAckReason.DUPLICATE, ing.onChunk(chunk("n$i"), offset, now + 1).ack!!.reason)
+        assertTrue("archive listings for 6 resends: ${arch.listings}", arch.listings <= 1)
+    }
+
+    /** Final review minor 1: the stem is the receipt time; a duplicate rewrite keeps the mtime (capture time) its receipt has. */
+    @Test fun duplicateRewriteKeepsTheReceiptsCaptureTime() = runBlocking {
+        val ing = ingestor()
+        ingest(ing = ing)
+        val captured = File(inbox, "${stem()}.jpg").lastModified()
+        assertTrue("capture time, not receipt time", captured != now)
+        File(inbox, "${stem()}.meta.json").delete() // a missing half is rewritten from the resend
+        ing.onChunk(chunk(), offset, now + 5_000)
+        assertEquals(captured, File(inbox, "${stem()}.jpg").lastModified())
+        assertEquals(captured, File(inbox, "${stem()}.meta.json").lastModified())
     }
 }

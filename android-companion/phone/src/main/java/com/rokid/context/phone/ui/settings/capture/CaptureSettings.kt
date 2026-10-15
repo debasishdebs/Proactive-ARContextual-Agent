@@ -107,7 +107,7 @@ fun CaptureSettingsScreen(
                     ChoiceRow("Every", options.map(CaptureIntervals::label), options.indexOf(state.intervalSec), { onInterval(options[it]) }, tag = "interval")
                     NoticeText("Doubled automatically when the glasses battery is low.")
                 } else {
-                    NoticeText("Smart takes photos when you look at something new.")
+                    NoticeText("Smart takes photos when you look at something new. Needs the latest glasses app; older glasses keep taking photos at a fixed interval.", tag = "smart_note")
                     ChoiceRow("Quick look", QUICK_LOOK_MS_ALLOWED.map(CaptureLabels::quickLook), QUICK_LOOK_MS_ALLOWED.indexOf(state.quickLookMs), { onQuickLook(QUICK_LOOK_MS_ALLOWED[it]) }, tag = "quick_look")
                     NoticeText("Shorter catches quicker glances; the camera light is on more.", tag = "quick_look_note")
                 }

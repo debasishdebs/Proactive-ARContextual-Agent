@@ -68,7 +68,7 @@ class FrameIngestorTest {
         val r = ingestor().onChunk(chunk(), offset, now)
         assertEquals(FrameAck(frameId = "g1", ok = true), r.ack)
         assertEquals(now - 60_000, r.ingestedAtMs)
-        val f = File(inbox, "rokid_${now - 60_000}_g1.v2.jpg")
+        val f = File(inbox, "rokid_${now}_g1.v2.jpg")
         assertArrayEquals(jpeg, f.readBytes())
         assertTrue("capture time is the file time RokidFrameInbox reads", abs(f.lastModified() - (now - 60_000)) < 1_000)
         assertEquals(1, stored)
@@ -160,7 +160,7 @@ class FrameIngestorTest {
         val r = ing.onChunk(chunk(), offset, now)
         assertEquals("stored durably in inbox + ledger, so the glasses may delete it", FrameAck(frameId = "g1", ok = true), r.ack)
         assertEquals(UserFacingErrors.StorageFull, r.error)
-        assertNotNull(File(inbox, "rokid_${now - 60_000}_g1.v2.jpg").takeIf { it.isFile })
+        assertNotNull(File(inbox, "rokid_${now}_g1.v2.jpg").takeIf { it.isFile })
         assertTrue(ledger.contains("g1"))
         val other = FrameIngestor(inbox, FrameReassembler(), FrameAdmission(ledger, noPauses), ledger) { error("boom") }
         assertEquals(UserFacingErrors.Unknown, other.onChunk(chunk("g2"), offset, now).error)
@@ -202,7 +202,7 @@ class FrameIngestorTest {
     @Test fun aFrameCapturedAfterTheWipeIsStored() = runTest {
         val r = ingestor(wipeAt = now - 90_000).onChunk(chunk(), offset, now)
         assertEquals(FrameAck(frameId = "g1", ok = true), r.ack)
-        assertTrue(File(inbox, "rokid_${now - 60_000}_g1.v2.jpg").isFile)
+        assertTrue(File(inbox, "rokid_${now}_g1.v2.jpg").isFile)
         assertEquals(1, stored)
     }
 

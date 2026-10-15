@@ -69,7 +69,7 @@ class FrameEncryptionPhoneTest {
         // Glasses frame: sealed in the inbox, acked as usual.
         val r = ingestor().onChunk(FrameCodec.split("g1", jpeg, capturedAtMs = now - 60_000 + 140).single(), ClockOffset(140), now)
         assertEquals(FrameAck(frameId = "g1", ok = true), r.ack)
-        val f = File(tmp.root, "rokid_inbox/rokid_${now - 60_000}_g1.v2.jpg")
+        val f = File(tmp.root, "rokid_inbox/rokid_${now}_g1.v2.jpg")
         assertTrue(FrameImages.isSealed(f))
         assertArrayEquals(jpeg, FrameImages.readBytes(f.path))
         // Phone camera capture: sealed in the archive.
