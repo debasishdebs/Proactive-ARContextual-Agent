@@ -15,6 +15,8 @@ import com.rokid.context.orchestration.MemoryExport
 import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.TestBedInputs
 import com.rokid.context.phone.hub.Hub
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import com.rokid.context.phone.hub.HubGraph
 import com.rokid.context.phone.ui.settings.memory.EncryptionControl
 import com.rokid.context.phone.ui.settings.memory.ShareFile
@@ -86,6 +88,8 @@ class SettingsDeps(
     val aiCallPace: com.rokid.context.phone.ui.settings.capture.AiCallPaceStore = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore(),
     /** Diagnostics > Keyframes and the Capture status line (counts only). */
     val keyframes: KeyframeDiagnostics = KeyframeDiagnostics.None,
+    /** Diagnostics: "Rokid closed the app N times (last gap Xs)" from the glasses' hello; null until reported. */
+    val glassesRestarts: kotlinx.coroutines.flow.StateFlow<String?> = kotlinx.coroutines.flow.MutableStateFlow(null),
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -146,6 +150,7 @@ class SettingsDeps(
             exportSettings = { com.rokid.context.orchestration.ConfigExport.write(app) },
             aiCallPace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(app),
             keyframes = AppKeyframeDiagnostics(app),
+            glassesRestarts = HubGraph.get(app).state.map { it.rokidClosesLine() }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null),
         )
     }
 }

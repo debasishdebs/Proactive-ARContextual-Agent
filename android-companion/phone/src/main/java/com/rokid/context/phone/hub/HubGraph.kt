@@ -107,10 +107,12 @@ object HubGraph {
             // A receipt already committed to Room is acked at once (spec P2 receipt durability).
             committed = { wireId -> MemoryGraph.get(app).db.frameMetaDao().byWireId(wireId) != null },
         ) { onFrameStored(app) }
+        val link = CxrGlassesLink(app, scope, probe = com.rokid.context.BuildConfig.DEBUG)
         return Hub(
-            scope, CxrGlassesLink(app, scope, probe = com.rokid.context.BuildConfig.DEBUG), pauses, settings, ingestor, LegacyHubSources(app),
+            scope, link, pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
             actions = PhoneActions.hubPort(app) { settings.read() }, nudges = PhoneNudges.hubPort(app) { settings.read() },
+            reopenGuards = AndroidRelaunchGuards(app) { link.wearing.value }, reopenEnabled = { KeepRunningNearby.of(app).enabled() },
         )
     }
 }

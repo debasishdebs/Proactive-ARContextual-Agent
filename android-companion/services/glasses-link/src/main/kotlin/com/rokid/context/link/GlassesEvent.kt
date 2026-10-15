@@ -12,6 +12,8 @@ sealed interface GlassesEvent {
     /** PCM 16 kHz mono (consumed in Phase 6). */
     class Audio(val pcm: ByteArray) : GlassesEvent
     data object ListenEnd : GlassesEvent
+    /** Fix wave H: the wearer exited the glasses app on purpose (`pc_user_exit`). */
+    data object UserExit : GlassesEvent
     /** The glasses app speaks another protocol version ([remote] = its `v`, null when absent). */
     data class Outdated(val remote: Int?) : GlassesEvent
 }

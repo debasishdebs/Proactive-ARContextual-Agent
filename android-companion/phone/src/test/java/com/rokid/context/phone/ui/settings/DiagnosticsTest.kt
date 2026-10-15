@@ -53,6 +53,11 @@ class DiagnosticsTest {
         compose.onNodeWithTag("kf_sidecar").assertTextContains("4", substring = true)
     }
 
+    @Test fun showsRokidClosedLineOnlyWhenReported() {
+        compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(), {}, {}, {}, {}, {}, {}, {}, {}, {}, glassesRestarts = "Rokid closed the app 2 times (last gap 38s)") } }
+        compose.onNodeWithTag("glasses_restarts").assertTextContains("Rokid closed the app 2 times (last gap 38s)")
+    }
+
     @Test fun retryAllCallsDao() = runBlocking {
         var retried = 0
         val kf = object : KeyframeDiagnostics by KeyframeDiagnostics.None {

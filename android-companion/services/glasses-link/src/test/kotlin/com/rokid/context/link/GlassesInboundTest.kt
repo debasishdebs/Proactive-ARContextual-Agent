@@ -17,6 +17,9 @@ class GlassesInboundTest {
     private fun cmd(c: Command) = Wire.encode(CommandEnvelope(command = c))
     private val hello = Hello(glassesBatteryPct = 80, bufferSize = 3, glassesNowMs = 1_000, pauses = emptyList())
 
+    @Test fun userExitIsDecoded() =
+        assertEquals(listOf<GlassesEvent>(GlassesEvent.UserExit), inbound.onMessage(Channels.USER_EXIT, listOf(Wire.encode(com.rokid.context.core.model.UserExit()))))
+
     @Test fun helloIsDecoded() =
         assertEquals(listOf<GlassesEvent>(GlassesEvent.HelloReceived(hello)), inbound.onMessage(Channels.HELLO, listOf(Wire.encode(hello))))
 

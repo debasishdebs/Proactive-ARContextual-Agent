@@ -37,8 +37,15 @@ class NearbyDevicesSourceTest {
     private val keep = KeepRunningNearby(prefs)
     private val opened = mutableListOf<String>()
 
+    private var userClosed = false
     private fun source(paired: Boolean, link: LinkState = LinkState.CONNECTED) =
-        NearbyDevicesSource(paired = { paired }, link = { link }, keepRunning = keep, openGlassesSettings = { opened += "glasses" })
+        NearbyDevicesSource(paired = { paired }, link = { link }, keepRunning = keep, openGlassesSettings = { opened += "glasses" }, closedByUser = { userClosed })
+
+    @Test fun closedByYouShowsTheReopenHint() = runBlocking {
+        userClosed = true
+        assertEquals("Glasses app closed by you; reopen from Settings \u2192 Glasses", source(paired = true, link = LinkState.CLOSED_ON_GLASSES).load().single().subtitle)
+        userClosed = false
+    }
 
     @Test fun pageListsPairedGlasses() = runBlocking {
         val rows = source(paired = true).load()
@@ -48,10 +55,10 @@ class NearbyDevicesSourceTest {
         assertEquals("Rokid glasses", r.title)
         assertEquals(true, r.toggle)
         assertEquals(ItemStatus.None, r.status)
-        assertEquals("Connected \u00b7 keeps running when nearby", r.subtitle)
+        assertEquals("Connected \u00b7 keeps running \u00b7 reopens after Rokid closes it", r.subtitle)
 
         val off = source(paired = true, link = LinkState.OFFLINE).load().single()
-        assertEquals("Paired \u00b7 keeps running when nearby", off.subtitle)
+        assertEquals("Paired \u00b7 keeps running \u00b7 reopens after Rokid closes it", off.subtitle)
 
         val unpaired = source(paired = false).load().single()
         assertNull("no switch until the glasses are paired", unpaired.toggle)

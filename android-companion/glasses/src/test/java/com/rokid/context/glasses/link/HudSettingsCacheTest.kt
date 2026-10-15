@@ -20,7 +20,7 @@ class HudSettingsCacheTest {
     @Test fun neverPushedMeansFixedWithDefaults() {
         val c = cache("hud-never").capture()
         assertEquals(CaptureMode.FIXED, c.captureMode)
-        assertEquals(1000, c.quickLookMs); assertEquals(45, c.workMinutes); assertEquals(15, c.restMinutes); assertTrue(c.pauseWhenNotWorn)
+        assertEquals(1000, c.quickLookMs); assertEquals(45, c.workMinutes); assertEquals(15, c.restMinutes); assertTrue(c.pauseWhenNotWorn); assertTrue(c.captureCue)
     }
 
     @Test fun phonePushExposesTheCaptureSettingsAfterARestart() {
