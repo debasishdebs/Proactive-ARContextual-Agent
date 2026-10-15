@@ -76,9 +76,14 @@ abstract class ForgetDao {
     @Query("SELECT * FROM frame WHERE id = :id") abstract suspend fun frame(id: String): FrameEntity?
     @Query("DELETE FROM frame WHERE id = :id") abstract suspend fun deleteFrame(id: String): Int
 
-    /** Retention: frames older than [beforeMs] that no memory points at. */
+    /**
+     * Retention: frames older than [beforeMs] that no memory points at. A frame not yet extracted (frame_state PENDING,
+     * EXTRACTING or FAILED) is kept: retention must not forget a photo the pipeline still owes a memory (review B M-6).
+     */
     @Query("SELECT id FROM frame WHERE ts < :beforeMs AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame.id) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame.id) ORDER BY ts LIMIT :limit")
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_state s WHERE s.frameId = frame.id AND s.state IN ('PENDING','EXTRACTING','FAILED')) " +
+            "ORDER BY ts LIMIT :limit")
     abstract suspend fun orphanFramesBefore(beforeMs: Long, limit: Int): List<String>
     /** Retention: memories of [tier] created before [beforeMs], in any review state. */
     @Query("SELECT id FROM memory WHERE tier = :tier AND createdAt < :beforeMs ORDER BY createdAt LIMIT :limit")
