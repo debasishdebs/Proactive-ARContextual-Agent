@@ -34,10 +34,12 @@ import com.rokid.context.work.budget.PhonePowerPolicy
 import com.rokid.context.work.budget.ThermalStatusProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -150,18 +152,35 @@ class KeyframeHandle internal constructor(private val app: Context) {
         }
         val facts = batch.output.facts.filter { it.text.isNotBlank() }
         val sent = photos.map { it.frameId }
-        // The same trust verdict (local critic, then the model critic) and follow-up as the legacy job (review I6).
+        // The same trust verdict (local critic, then the model critic) and follow-up as the legacy job (review I6). Final review I2: the
+        // paid extraction is SAVED first (NEEDS_REVIEW when the local critic is unsure); the model critic runs after, under the caller's
+        // own CallClass, and only upgrades the memories. An ask's cap that lands during the critic therefore cannot lose the extraction.
         val sentFrames = PipelineRecords.framesByIds(app, sent)
-        val trusted = ExtractFollowUp.trusted(ai, CriticWorker(), claimId, facts, sentFrames.map(ExtractFollowUp::frameLine))
+        val critic = CriticWorker()
+        val localTrusted = ExtractFollowUp.locallyTrusted(critic, claimId, facts)
         val saved = ExtractSave.saveExtraction(
             app, factPrefix(claimId), ExtractOutput(facts, captions = batch.output.captions, provenance = batch.output.provenance), sent.toSet(),
-            claims = sent.associateWith { claimId }, tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW,
+            claims = sent.associateWith { claimId }, tier = MemoryTier.SHORT, reviewState = if (localTrusted) ReviewState.OK else ReviewState.NEEDS_REVIEW,
             generation = generation,
         )
         return when (saved) {
             is ExtractSaveResult.Saved -> {
-                // Embeddings, the nudge backstop (trusted) or a PRIORITY_REPROCESS job (low confidence), exactly as the legacy job did.
-                ExtractFollowUp.afterSave(app, generation, saved.memories, trusted, ExtractFollowUp.confidence(facts), AppConfigStore.getWithoutSecret(app).persona)
+                var trusted = localTrusted
+                try {
+                    if (!localTrusted) {
+                        trusted = ExtractFollowUp.modelCriticPasses(ai, facts, sentFrames.map(ExtractFollowUp::frameLine), callClass)
+                        if (trusted) {
+                            val view = MemoryGraph.get(app).db.memoryViewDao()
+                            saved.memories.filter { it.index != null }.forEach { view.moveReviewState(it.memoryId, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) }
+                        }
+                    }
+                } finally {
+                    // Embeddings, the nudge backstop (trusted) or a PRIORITY_REPROCESS job (low confidence), exactly as the legacy job did;
+                    // also when the critic was cancelled (the memories are saved and the claim is done).
+                    withContext(NonCancellable) {
+                        ExtractFollowUp.afterSave(app, generation, saved.memories, trusted, ExtractFollowUp.confidence(facts), AppConfigStore.getWithoutSecret(app).persona)
+                    }
+                }
                 ExtractOutcome.Saved(saved.memories, loaded.gone, loaded.unseen)
             }
             else -> ExtractOutcome.Stale(loaded.gone, loaded.unseen)
@@ -189,6 +208,13 @@ class KeyframeHandle internal constructor(private val app: Context) {
         private const val TAG = "KeyframeGraph"
 
         /** The memory id prefix of one extraction: the WHOLE claim id (a 12-char prefix collided, and a collision replaced another batch's memories). */
-        fun factPrefix(claimId: String) = "kf_${claimId}_"
+        fun factPrefix(claimId: String) = "$ID_ROOT${claimId}_"
+
+        /**
+         * Must start with `rokid_` (PipelineRecords.purgeNonRokidMemories deletes everything else on every launch) and must not start
+         * with `rokid_review_`. Builds before the final review saved `kf_<claimId>_<n>`; the purges still treat [LEGACY_ID_ROOT] as theirs.
+         */
+        const val ID_ROOT = "rokid_kf_"
+        const val LEGACY_ID_ROOT = "kf_"
     }
 }

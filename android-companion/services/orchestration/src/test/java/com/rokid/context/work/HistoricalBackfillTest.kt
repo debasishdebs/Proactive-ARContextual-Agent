@@ -44,4 +44,23 @@ class HistoricalBackfillTest {
         assertEquals(0, QueueRuntimeStore.snapshot(ctx).pendingByQueue[QueuePriority.SUMMARIZER] ?: 0)
         assertEquals(1, OrchestrationScheduler(ctx).enqueueHistoricalPhotoBackfill().queuedJobs)
     }
+
+    /** Final review I3: "Reprocess old photos" rebuilds what its purge emptied: such frames go back to PENDING, good ones stay as they are. */
+    @Test fun reprocessRequeuesFramesWhoseLowSignalMemoriesWerePurged() = runBlocking {
+        val g = MemoryGraph.get(ctx); val db = g.db
+        for (id in listOf("bad", "good")) {
+            val jpeg = File(ctx.filesDir, "$id.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+            g.frames.add(FrameEntity(id, id.length.toLong(), jpeg.path, "rokid_glasses"))
+            db.frameStateDao().insertIgnore(listOf(com.rokid.context.memory.db.FrameStateEntity(id, "EXTRACTED", 2, "x", null, null, 1)))
+        }
+        com.rokid.context.orchestration.PipelineRecords.appendFact(ctx, "rokid_kf_a_0", "bad", "Metadata only frame", "note", emptyList(), 0.5,
+            com.rokid.context.memory.db.MemoryTier.SHORT, com.rokid.context.memory.db.ReviewState.OK)
+        com.rokid.context.orchestration.PipelineRecords.appendFact(ctx, "rokid_kf_b_0", "good", "A red mug on the desk", "object", emptyList(), 0.9,
+            com.rokid.context.memory.db.MemoryTier.SHORT, com.rokid.context.memory.db.ReviewState.OK)
+        db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("rokid_kf_a_0", "bad", null, "FACT"), com.rokid.context.memory.db.FrameSourceEntity("rokid_kf_b_0", "good", null, "FACT")))
+        OrchestrationScheduler(ctx).enqueueHistoricalPhotoBackfill()
+        assertEquals("PENDING", db.frameStateDao().get("bad")!!.state); assertEquals(0, db.frameStateDao().get("bad")!!.attempts)
+        assertEquals("EXTRACTED", db.frameStateDao().get("good")!!.state)
+        assertEquals(setOf("rokid_kf_b_0"), g.memories.all().map { it.id }.toSet())
+    }
 }
