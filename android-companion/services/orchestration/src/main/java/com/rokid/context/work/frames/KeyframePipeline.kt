@@ -16,6 +16,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import com.rokid.context.orchestration.RetryClassifier
@@ -26,7 +28,7 @@ import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 
 /** A frame picked for extraction: [ts] is the offset-corrected capture time, [dwell] a dwell keyframe (frame_meta). */
-data class KeyframeCandidate(val frameId: String, val dwell: Boolean, val ts: Long)
+data class KeyframeCandidate(val frameId: String, val dwell: Boolean, val ts: Long, val receivedAt: Long? = null)
 
 /**
  * What one extraction call concluded. [unreadable] frames (row gone, file gone, forgotten) are failed for good, whatever the rest
@@ -108,6 +110,8 @@ class KeyframePipeline(
     private val newClaimId: () -> String = { UUID.randomUUID().toString() },
     private val pollMs: Long = 30_000L,
     private val deferPollMs: Long = 60_000L,
+    /** True for the process-wide pipeline: before its first claim or recovery, every leftover EXTRACTING row is released (no live claim can exist yet). */
+    private val releaseAtStart: Boolean = false,
 ) {
     private sealed interface Step {
         data class Done(val frames: Int) : Step
@@ -121,6 +125,19 @@ class KeyframePipeline(
     @Volatile private var pauseStepMs = 0L
     @Volatile private var forced = false
     private var loop: Job? = null
+    private val startRelease = Mutex()
+    private var startReleased = false
+
+    /** Once per pipeline (= per process): leftover claims of a dead process go back to PENDING now, not after the 15-minute timeout. */
+    private suspend fun ensureStartRelease() {
+        if (!releaseAtStart) return
+        startRelease.withLock {
+            if (startReleased) return
+            val n = FrameRecovery.releaseAtProcessStart(states, clock())
+            startReleased = true
+            Log.i(PIPE_TAG, "released=$n at process start")
+        }
+    }
 
     /** A new frame committed (or something became claimable): wakes the loop. Cheap, any thread. */
     fun signal() { wake.trySend(Unit) }
@@ -135,6 +152,7 @@ class KeyframePipeline(
             loop = scope.launch {
                 while (isActive) {
                     wake.receive()
+                    ensureStartRelease()
                     process()
                 }
             }
@@ -148,10 +166,10 @@ class KeyframePipeline(
     fun stop() { synchronized(this) { loop?.cancel(); loop = null } }
 
     /** Abandoned claims back to PENDING, then wake the loop. */
-    suspend fun recover(): Int = FrameRecovery.run(states, clock(), ::signal)
+    suspend fun recover(): Int { ensureStartRelease(); return FrameRecovery.run(states, clock(), ::signal) }
 
     /** One pass: claims up to 3 frames (dwell first, then newest) and extracts them. Returns the frames that reached EXTRACTED. */
-    suspend fun drainOnce(): Int = (drain(CallClass.EXTRACT, sinceMs = null) as? Step.Done)?.frames ?: 0
+    suspend fun drainOnce(): Int = (drainStarted(CallClass.EXTRACT, sinceMs = null) as? Step.Done)?.frames ?: 0
 
     /**
      * Drains the backlog from the caller's own coroutine (the 15-minute worker, review I5: WorkManager keeps its process awake, a
@@ -162,6 +180,7 @@ class KeyframePipeline(
         val start = System.nanoTime()
         fun left() = maxMs - (System.nanoTime() - start) / 1_000_000L
         var total = 0
+        ensureStartRelease()
         while (left() > 0) {
             if (pausedUntilMs - clock() > 0 && !forced) break
             forced = false
@@ -183,6 +202,7 @@ class KeyframePipeline(
      * caller's own cap, so the ask still sees their memories (review I4).
      */
     suspend fun extractForAsk(windowMs: Long = ASK_WINDOW_MS, waitMs: Long = ASK_WAIT_MS): Int {
+        ensureStartRelease()
         val since = clock() - windowMs
         val done = (drain(CallClass.USER, sinceMs = since) as? Step.Done)?.frames ?: 0
         withTimeoutOrNull(waitMs) {
@@ -204,6 +224,8 @@ class KeyframePipeline(
     }
 
     private suspend fun sleepOrWake(ms: Long) { withTimeoutOrNull(ms) { wake.receive() } }
+
+    private suspend fun drainStarted(callClass: CallClass, sinceMs: Long?): Step { ensureStartRelease(); return drain(callClass, sinceMs) }
 
     private suspend fun drain(callClass: CallClass, sinceMs: Long?): Step {
         val user = callClass == CallClass.USER
@@ -238,10 +260,12 @@ class KeyframePipeline(
         val claimed = states.claim(picked.map { it.frameId }, claimId, now, abandonBefore).map { it.frameId }.toSet()
         if (claimed.isEmpty()) return Step.Idle(CONTENTION_MS) // the old worker or an ask took them
         val frames = picked.filter { it.frameId in claimed }
+        Log.i(PIPE_TAG, "claimed=${frames.size} batch=${picked.size} class=${callClass.name}")
         val outcome = try {
             extractor(frames.map { it.frameId }, claimId, callClass)
         } catch (c: CancellationException) {
             withContext(NonCancellable) { frames.forEach { states.release(it.frameId, claimId, clock()) } }
+            Log.i(PIPE_TAG, "released=${frames.size} cancelled")
             throw c
         } catch (e: Exception) {
             Log.i(TAG, "extraction failed: ${e.javaClass.simpleName}")
@@ -258,7 +282,12 @@ class KeyframePipeline(
         return when (o) {
             is ExtractOutcome.Saved -> {
                 pauseStepMs = 0L; pausedUntilMs = 0L
-                rest.forEach { latency.record(now - it.ts) }
+                rest.forEach {
+                    val lag = it.receivedAt?.let { r -> r - it.ts }
+                    latency.record(now - it.ts, lag)
+                    if (lag != null && lag <= LatencyTracker.MAX_RECEIPT_LAG_MS) Log.i(PIPE_TAG, "latencyMs=${(now - it.ts).coerceAtLeast(0L)}")
+                }
+                Log.i(PIPE_TAG, "extracted=${rest.size}")
                 runCatching { onExtracted(rest, o.memories) }.onFailure { Log.w(TAG, "post-extraction hook failed: ${it.javaClass.simpleName}") }
                 rest.size
             }
@@ -266,10 +295,15 @@ class KeyframePipeline(
                 // One claim failed the CAS and rolled the whole save back: give back every other claim of the batch with no attempt.
                 // release() is claim-guarded, so the stale frame itself (retaken, forgotten) is left alone.
                 withContext(NonCancellable) { rest.forEach { states.release(it.frameId, claimId, clock()) } }
+                Log.i(PIPE_TAG, "released=${rest.size} stale")
                 0
             }
             is ExtractOutcome.Failed -> {
                 rest.forEach { if (o.countsAttempt) states.fail(it.frameId, claimId, o.error, now, o.maxAttempts) else states.release(it.frameId, claimId, now) }
+                if (o.countsAttempt) {
+                    val attempts = rest.maxOfOrNull { states.get(it.frameId)?.attempts ?: 0 } ?: 0
+                    Log.i(PIPE_TAG, "failed class=${o.error} frames=${rest.size} attempts=$attempts")
+                } else Log.i(PIPE_TAG, "released=${rest.size} reason=${o.error}")
                 if (!o.countsAttempt && !user) {
                     pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
                     pausedUntilMs = now + pauseStepMs
@@ -282,11 +316,13 @@ class KeyframePipeline(
     private suspend fun candidates(ids: List<String>, updatedAt: Map<String, Long>): List<KeyframeCandidate> {
         val metas = ids.chunked(CHUNK).flatMap { db.frameMetaDao().byIds(it) }.associateBy { it.frameId }
         val ts = ids.chunked(CHUNK).flatMap { db.frameDao().byIds(it) }.associate { it.id to it.ts }
-        return ids.map { KeyframeCandidate(it, metas[it]?.dwell ?: false, ts[it] ?: metas[it]?.createdAt ?: updatedAt[it] ?: 0L) }
+        return ids.map { KeyframeCandidate(it, metas[it]?.dwell ?: false, ts[it] ?: metas[it]?.createdAt ?: updatedAt[it] ?: 0L, metas[it]?.createdAt) }
     }
 
     companion object {
         private const val TAG = "KeyframePipeline"
+        /** Count-only audit log tag (ids, counts, class names; never captions, text or paths). */
+        private const val PIPE_TAG = "PcPipeline"
         const val MAX_BATCH = 3
         const val ASK_WINDOW_MS = 60_000L
         /** An ask waits this long for frames the loop holds (the caller's own cap is 30 s as well). */

@@ -119,6 +119,16 @@ abstract class FrameStateDao {
     )
     abstract suspend fun requeueAbandoned(nowMs: Long, abandonBeforeMs: Long, maxAttempts: Int = MAX_ATTEMPTS): Int
 
+    /**
+     * Process start: no live worker can own a claim (claims never survive the process), so every EXTRACTING row goes back to
+     * PENDING at once, attempts unchanged. A forgotten (tombstoned) frame is left alone: it is never extracted again.
+     */
+    @Query(
+        "UPDATE frame_state SET state = 'PENDING', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'EXTRACTING' " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)",
+    )
+    abstract suspend fun releaseAllExtracting(nowMs: Long): Int
+
     /** Gives a claim back without an attempt (offline, no provider set up, cancelled): the frame is not at fault. */
     @Query(
         "UPDATE frame_state SET state = 'PENDING', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +

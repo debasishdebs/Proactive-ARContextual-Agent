@@ -10,9 +10,8 @@ import com.rokid.context.glasses.capture.keyframe.Nv21Frame
 import java.io.ByteArrayOutputStream
 
 /**
- * NV21 copy to a 640 px wide JPEG at q75 (spec P1.1). A frame that is already 640 wide after rotation and needs none
- * goes straight through [YuvImage]; anything else is rotated, then scaled to 640 wide ([EncodedKeyframe.scaled] = true so
- * the session counts it). Only keyframes are encoded.
+ * NV21 copy to a q75 JPEG whose long side is at most 640 px (spec P1.1). Never upscaled: a frame already within the cap goes
+ * straight through [YuvImage] (rotated first when needed); a larger one is rotated, then scaled down. Only keyframes are encoded.
  */
 object AndroidKeyframeEncoder : KeyframeEncoder {
     const val QUALITY = 75
@@ -20,24 +19,22 @@ object AndroidKeyframeEncoder : KeyframeEncoder {
 
     override fun encode(frame: Nv21Frame): EncodedKeyframe? {
         val yuv = YuvImage(frame.data, ImageFormat.NV21, frame.w, frame.h, null)
-        val scaled = YuvCopy.needsScale(frame.w, frame.h, frame.rotation)
-        if (frame.rotation % 360 == 0 && !scaled) {
+        val (ow, oh) = YuvCopy.outputSize(frame.w, frame.h, frame.rotation)
+        val shrink = ow != YuvCopy.rotatedWidth(frame.w, frame.h, frame.rotation)
+        if (frame.rotation % 360 == 0 && !shrink) {
             val jpeg = compress(yuv, Rect(0, 0, frame.w, frame.h), QUALITY) ?: return null
-            return EncodedKeyframe(jpeg, frame.w, false)
+            return EncodedKeyframe(jpeg, frame.w, frame.h)
         }
         val raw = compress(yuv, Rect(0, 0, frame.w, frame.h), INTERMEDIATE_QUALITY) ?: return null
         val decoded = BitmapFactory.decodeByteArray(raw, 0, raw.size) ?: return null
         val rotated = if (frame.rotation % 360 != 0) Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, Matrix().apply { postRotate(frame.rotation.toFloat()) }, true) else decoded
-        val out = if (rotated.width != YuvCopy.KEYFRAME_WIDTH) {
-            val h = (rotated.height * (YuvCopy.KEYFRAME_WIDTH.toFloat() / rotated.width)).toInt().coerceAtLeast(1)
-            Bitmap.createScaledBitmap(rotated, YuvCopy.KEYFRAME_WIDTH, h, true)
-        } else rotated
+        val out = if (shrink) Bitmap.createScaledBitmap(rotated, ow, oh, true) else rotated
         val bytes = ByteArrayOutputStream().use { s -> out.compress(Bitmap.CompressFormat.JPEG, QUALITY, s); s.toByteArray() }
-        val width = out.width
+        val width = out.width; val height = out.height
         if (out !== rotated) out.recycle()
         if (rotated !== decoded) rotated.recycle()
         decoded.recycle()
-        return if (bytes.isEmpty()) null else EncodedKeyframe(bytes, width, scaled)
+        return if (bytes.isEmpty()) null else EncodedKeyframe(bytes, width, height)
     }
 
     private fun compress(yuv: YuvImage, r: Rect, q: Int): ByteArray? =

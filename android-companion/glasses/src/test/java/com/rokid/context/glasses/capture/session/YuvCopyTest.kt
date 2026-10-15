@@ -42,7 +42,7 @@ class YuvCopyTest {
         assertEquals(100.toByte(), f.data[w * h + 1])
     }
 
-    @Test fun rotatedWidthAndScaling() {
+    @Test fun rotatedWidth() {
         assertEquals(640, YuvCopy.rotatedWidth(640, 480, 0)); assertEquals(640, YuvCopy.rotatedWidth(480, 640, 90))
         assertEquals(640, YuvCopy.rotatedWidth(480, 640, 270)); assertEquals(480, YuvCopy.rotatedWidth(480, 640, 0))
     }
