@@ -10,7 +10,8 @@ import java.nio.ByteBuffer
  */
 object YuvCopy {
     const val THUMB_WIDTH = 160
-    const val KEYFRAME_WIDTH = 640
+    /** The keyframe's LONG side is capped here; smaller frames are never upscaled (no detail gained, only bytes). */
+    const val KEYFRAME_MAX_SIDE = 640
 
     /**
      * Grey thumbnail by Y-plane subsampling (no JPEG, no bitmap): about [THUMB_WIDTH] px wide, each cell the mean of four
@@ -68,9 +69,18 @@ object YuvCopy {
         return Nv21Frame(w, h, rotation, out)
     }
 
-    /** True when the keyframe is not [KEYFRAME_WIDTH] wide after rotation (the encoder then scales it and the session counts it). */
-    fun needsScale(w: Int, h: Int, rotation: Int): Boolean = rotatedWidth(w, h, rotation) != KEYFRAME_WIDTH
-
-    /** Width of the frame after [rotation] (what the keyframe's 640 is measured on). */
+    /** Width of the frame after [rotation]. */
     fun rotatedWidth(w: Int, h: Int, rotation: Int): Int = if (rotation % 180 == 0) w else h
+
+    /** Height of the frame after [rotation]. */
+    fun rotatedHeight(w: Int, h: Int, rotation: Int): Int = if (rotation % 180 == 0) h else w
+
+    /** Keyframe size (width, height) after [rotation]: the long side capped at [KEYFRAME_MAX_SIDE], never scaled up. */
+    fun outputSize(w: Int, h: Int, rotation: Int): Pair<Int, Int> {
+        val rw = rotatedWidth(w, h, rotation); val rh = rotatedHeight(w, h, rotation)
+        val long = maxOf(rw, rh)
+        if (long <= KEYFRAME_MAX_SIDE) return rw to rh
+        val f = KEYFRAME_MAX_SIDE.toFloat() / long
+        return maxOf(1, (rw * f).toInt()) to maxOf(1, (rh * f).toInt())
+    }
 }

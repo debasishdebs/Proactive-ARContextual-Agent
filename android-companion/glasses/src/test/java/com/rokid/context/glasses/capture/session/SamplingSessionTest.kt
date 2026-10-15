@@ -147,13 +147,24 @@ class SamplingSessionTest {
         r.camera.failOpens = 99
         r.session.start()
         delay(10_000)
-        assertEquals(3, r.camera.opens)
+        assertEquals(4, r.camera.opens, "the first open is the free cold-start retry")
         assertEquals(1, r.fallbacks)
         assertTrue(r.session.status.value.degraded)
         assertFalse(r.session.status.value.running)
         assertEquals("bind", r.session.status.value.reason)
         delay(20_000)
-        assertEquals(3, r.camera.opens)
+        assertEquals(4, r.camera.opens)
+    }
+
+    @Test fun firstBindFailureRetriesAfter500msAndIsNotCounted() = runTest {
+        val r = rig(this)
+        r.camera.failOpens = 1
+        r.session.start()
+        delay(2_000)
+        assertTrue(r.logs.any { it.contains("not counted") })
+        assertFalse(r.logs.any { it.contains("camera bind failed") }, "the cold-start retry must not count")
+        assertEquals(2, r.camera.opens)
+        r.session.stop("test")
     }
 
     @Test fun aBindThatWorksAgainResetsTheFailureCount() = runTest {
@@ -170,22 +181,22 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
-    @Test fun keyframeWidthIs640() = runTest {
-        // the encoder reports what it had to do: a 480x640 frame turned 90 degrees is already 640 wide, a 320x240 one is scaled
-        assertFalse(YuvCopy.needsScale(480, 640, 90)); assertTrue(YuvCopy.needsScale(320, 240, 0)); assertFalse(YuvCopy.needsScale(640, 480, 0))
+    @Test fun keyframeLongSideAtMost640NoUpscale() = runTest {
+        // portrait 480x640 and landscape 640x480 keep their size, a 320x240 is NOT upscaled, a 1280x960 comes down to 640x480
+        assertEquals(480 to 640, YuvCopy.outputSize(480, 640, 0)); assertEquals(640 to 480, YuvCopy.outputSize(640, 480, 0))
+        assertEquals(480 to 640, YuvCopy.outputSize(640, 480, 90)); assertEquals(320 to 240, YuvCopy.outputSize(320, 240, 0))
+        assertEquals(640 to 480, YuvCopy.outputSize(1280, 960, 0)); assertEquals(480 to 640, YuvCopy.outputSize(1280, 960, 90))
         val enc = KeyframeEncoder { f ->
-            val scaled = YuvCopy.needsScale(f.w, f.h, f.rotation)
-            EncodedKeyframe(f.data.copyOf(), YuvCopy.KEYFRAME_WIDTH, scaled)
+            val (w, h) = YuvCopy.outputSize(f.w, f.h, f.rotation)
+            EncodedKeyframe(f.data.copyOf(), w, h)
         }
-        val r = rig(this) { }
         val small = Rig(this, encoder = enc)
         small.camera.frames = { t -> Scenes.frame(small.scene, 1, t).let { FrameCopy(it.thumb, Nv21Frame(320, 240, 0, it.pixels.data)) } }
         small.session.start()
         delay(2_000)
-        assertEquals(640, small.keyframes.single().second.width)
-        assertEquals(1, small.session.scaledFrames)
+        assertEquals(320, small.keyframes.single().second.width)
         small.session.stop("test")
-        assertEquals(0, r.session.scaledFrames)
+        assertTrue(small.logs.any { Regex("keyframe seq=\\d+ src=320x240 out=320x240").containsMatchIn(it) })
     }
 
     @Test fun captureNowForcesKeyframe() = runTest {
@@ -394,7 +405,7 @@ class SamplingSessionTest {
     }
 
     @Test fun emittedJpegMatchesWinningThumb() = runTest {
-        val r = Rig(this, encoder = KeyframeEncoder { f -> EncodedKeyframe(encodeY(f), 640, false) })
+        val r = Rig(this, encoder = KeyframeEncoder { f -> EncodedKeyframe(encodeY(f), 640, 480) })
         val frames = HashMap<String, Nv21Frame>()
         var scene = 1; var soft = 1
         r.camera.frames = { _ -> FrameCopy(Scenes.thumb(scene, soft), frames.getOrPut("$scene/$soft") { nv21Of(scene, soft) }) }

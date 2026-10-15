@@ -84,7 +84,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
     private val wakeLock by lazy { ExtractWakeLock(app) }
 
     val pipeline: KeyframePipeline by lazy {
-        KeyframePipeline(db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated, onExtracted = ::afterExtraction)
+        KeyframePipeline(db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated, onExtracted = ::afterExtraction, releaseAtStart = true)
     }
 
     val stats: StateFlow<KeyframeStats> by lazy {

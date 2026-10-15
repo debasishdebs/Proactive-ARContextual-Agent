@@ -31,9 +31,18 @@ class LatencyTracker(private val max: Int = 200) {
     private val state = MutableStateFlow<List<Long>>(emptyList())
     val samples: StateFlow<List<Long>> = state.asStateFlow()
 
-    fun record(ms: Long) { state.update { (it + ms.coerceAtLeast(0L)).takeLast(max) } } // atomic: the ask and the loop record at once
+    /**
+     * [receiptLagMs] = receipt time minus capture time. A frame that reached the phone long after it was taken (an adopted or
+     * backfilled legacy frame) says nothing about capture-to-memory latency and is left out; null (no receipt time) is left out too.
+     */
+    fun record(ms: Long, receiptLagMs: Long? = 0L) {
+        if (receiptLagMs == null || receiptLagMs > MAX_RECEIPT_LAG_MS) return
+        state.update { (it + ms.coerceAtLeast(0L)).takeLast(max) } // atomic: the ask and the loop record at once
+    }
 
     companion object {
+        const val MAX_RECEIPT_LAG_MS = 10 * 60_000L
+
         fun percentile(values: List<Long>, p: Int): Long? {
             if (values.isEmpty()) return null
             val sorted = values.sorted()
