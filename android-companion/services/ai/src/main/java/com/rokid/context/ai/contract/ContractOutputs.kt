@@ -17,8 +17,14 @@ data class ShoppingLine(val name: String, val qty: Double?, val unit: String?)
 /** A role's contract type (spec §4.4.1). [extras] = optional properties a refined schema added; the pipeline ignores them. */
 sealed interface ContractOutput { val extras: JsonObject }
 
-data class Fact(val text: String, val type: String, val confidence: Double, val tags: List<String>)
-data class ExtractOutput(val facts: List<Fact>, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput
+/** [sourceFrameIds]: the photos a VISION_EXTRACT fact is visible in (empty for EXPLICIT_REMEMBER). */
+data class Fact(val text: String, val type: String, val confidence: Double, val tags: List<String>, val sourceFrameIds: List<String> = emptyList())
+data class FrameCaption(val frameId: String, val caption: String)
+/** [provenance]: a VISION_EXTRACT output, whose ids and captions the validator checks against the photos sent. */
+data class ExtractOutput(
+    val facts: List<Fact>, override val extras: JsonObject = JsonObject(emptyMap()),
+    val captions: List<FrameCaption> = emptyList(), val provenance: Boolean = false,
+) : ContractOutput
 data class SummaryOutput(
     val summary: String, val events: List<String>, val entities: List<String>, val confidence: Double, val candidateMemoryType: String,
     override val extras: JsonObject = JsonObject(emptyMap()),

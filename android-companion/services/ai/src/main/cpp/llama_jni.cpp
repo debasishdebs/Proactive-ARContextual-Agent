@@ -137,7 +137,7 @@ llama_context * make_embed_ctx(llama_model * model) {
     return llama_init_from_model(model, p);
 }
 
-jfloatArray embed(JNIEnv * env, Handle * h, jstring jtext) {
+jfloatArray embed(JNIEnv * env, Handle * h, jstring jtext, bool normalize) {
     if (h == nullptr || h->model == nullptr) return nullptr;
     llama_context * ctx = h->embed_ctx;
     if (ctx == nullptr) return nullptr;
@@ -180,7 +180,7 @@ jfloatArray embed(JNIEnv * env, Handle * h, jstring jtext) {
     norm = std::sqrt(norm);
     if (!(norm > 0.0) || !std::isfinite(norm)) return nullptr;
     std::vector<float> out(acc.size());
-    for (size_t i = 0; i < acc.size(); ++i) out[i] = static_cast<float>(acc[i] / norm);
+    for (size_t i = 0; i < acc.size(); ++i) out[i] = static_cast<float>(normalize ? acc[i] / norm : acc[i]); // normalize=false: the raw pooled vector (Nomic: LayerNorm happens in Kotlin)
 
     jfloatArray arr = env->NewFloatArray(n_embd);
     if (clear_pending(env) || arr == nullptr) return nullptr;
@@ -271,8 +271,8 @@ Java_com_rokid_context_model_provider_LlamaCppNativeProvider_nativeLoadModel(JNI
 }
 
 JNIEXPORT jfloatArray JNICALL
-Java_com_rokid_context_model_provider_LlamaCppNativeProvider_nativeEmbed(JNIEnv * env, jclass, jlong handle, jstring text) {
-    try { return embed(env, from(handle), text); } catch (...) { clear_pending(env); return nullptr; }
+Java_com_rokid_context_model_provider_LlamaCppNativeProvider_nativeEmbed(JNIEnv * env, jclass, jlong handle, jstring text, jboolean normalize) {
+    try { return embed(env, from(handle), text, normalize == JNI_TRUE); } catch (...) { clear_pending(env); return nullptr; }
 }
 
 JNIEXPORT jstring JNICALL

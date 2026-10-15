@@ -66,7 +66,7 @@ class DeleteAllFenceTest {
 
     @Test fun aSummaryJobClaimedBeforeTheWipeWritesNothingWhenItsReplyLandsAfter() {
         QueueRuntimeStore.enqueue(ctx, QueuePriority.SUMMARIZER, QueuePayloads.batchedWrite(source = "test", importedFrames = 1, manual = true), personaSnapshot = "p")
-        reply = { MemoryWipe.deleteAll(ctx); """{"facts":[{"text":"Maybe a cat","type":"object","confidence":0.3,"tags":[]}]}""" }
+        reply = { MemoryWipe.deleteAll(ctx); """{"facts":[{"text":"Maybe a cat","type":"object","confidence":0.3,"tags":[],"source_frame_ids":["f1"]}],"captions":[{"frame_id":"f1","caption":"A cat"}]}""" }
         drain()
         assertTrue(memories().isEmpty())
         // The low-confidence path would queue a reprocess carrying the fact text: not after a wipe.

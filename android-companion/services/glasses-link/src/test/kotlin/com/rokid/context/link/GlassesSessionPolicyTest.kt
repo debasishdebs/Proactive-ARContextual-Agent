@@ -327,4 +327,31 @@ class GlassesSessionPolicyTest {
         assertFalse(shouldReconnectOnResume(LinkState.CONNECTING, hasToken = true, authDeclined = false))
         assertFalse(shouldReconnectOnResume(LinkState.CONNECTING, hasToken = true, authDeclined = true, authRetryPending = true))
     }
+
+    /** Fix wave I C1: silence while minimised moves to CLOSED_ON_GLASSES (the relauncher's trigger). */
+    @Test fun silenceWhileMinimisedClosesOnGlasses() {
+        val p = GlassesSessionPolicy()
+        p.manualConnect(); p.onEvent(LinkEvent.Started); p.onEvent(LinkEvent.GlassesExited)
+        assertEquals(listOf(LinkAction.MarkClosedOnGlasses), p.onEvent(LinkEvent.BackgroundSilent))
+        // the reopen (guarded, automatic) connects; a failure does not enter the 2/5/10/30 s retry loop (fix wave I4)
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.manualConnect(auto = true))
+        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.ConnectFailed))
+    }
+
+    @Test fun anAutomaticConnectNeverRetriesOnItsOwnButAnExplicitOneStillDoes() {
+        val p = GlassesSessionPolicy()
+        p.onEvent(LinkEvent.DevicePresent) // a nearby device makes the explicit path retry
+        p.manualConnect(auto = true)
+        assertEquals(listOf(LinkAction.MarkDisconnected), p.onEvent(LinkEvent.Closed))
+        p.manualConnect()
+        assertEquals(listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(2_000)), p.onEvent(LinkEvent.ConnectFailed))
+    }
+
+    /** Fix wave I N4: during a stand-down the policy only watches; the wearer reopening the app connects, nothing else does. */
+    @Test fun watchOnlyWaitsForTheWearerToReopenTheApp() {
+        val p = GlassesSessionPolicy()
+        assertEquals(listOf(LinkAction.MarkClosedOnGlasses), p.watchOnly())
+        assertTrue(p.backgroundLink)
+        assertEquals(listOf(LinkAction.MarkConnecting, LinkAction.Connect), p.onEvent(LinkEvent.GlassesAppOpened))
+    }
 }

@@ -8,6 +8,8 @@ object PipelineStatsStore {
     private const val K_SUMM_SUCCEEDED = "summ_succeeded"
     private const val K_SUMM_FAILED = "summ_failed"
     private const val K_FRAME_CAPTURED = "frame_captured"
+    /** Count-only Diagnostics entry: a v2 JPEG ingested with defaults after its sidecar stayed lost for 24 h. */
+    const val K_V2_SIDECAR_LOST = "v2_sidecar_lost"
 
     data class Stats(
         val summarizerTriggered: Int,
@@ -20,6 +22,8 @@ object PipelineStatsStore {
     fun incSummarizerSucceeded(context: Context) = inc(context, K_SUMM_SUCCEEDED)
     fun incSummarizerFailed(context: Context) = inc(context, K_SUMM_FAILED)
     fun incFrameCaptured(context: Context) = inc(context, K_FRAME_CAPTURED)
+    fun incSidecarLost(context: Context) = inc(context, K_V2_SIDECAR_LOST)
+    fun sidecarLost(context: Context): Int = context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getInt(K_V2_SIDECAR_LOST, 0)
 
     fun get(context: Context): Stats {
         val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)

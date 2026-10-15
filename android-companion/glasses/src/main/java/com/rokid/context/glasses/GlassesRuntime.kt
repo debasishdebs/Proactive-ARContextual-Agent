@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.BatteryManager
 import android.util.Log
+import com.rokid.context.glasses.capture.diag.DiagLog
 import androidx.annotation.VisibleForTesting
 import com.rokid.context.core.model.Command
 import com.rokid.context.core.model.Hello
@@ -19,7 +20,11 @@ import com.rokid.context.glasses.overlay.MinimisedIcon
 import com.rokid.context.glasses.overlay.PhotoCue
 import com.rokid.context.glasses.overlay.PopupOverlay
 import com.rokid.context.glasses.capture.HudPresence
+import com.rokid.context.glasses.capture.KeyframeOut
 import com.rokid.context.glasses.capture.OutboundBuffer
+import com.rokid.context.glasses.capture.SessionStatus
+import com.rokid.context.glasses.capture.session.CameraOwner
+import com.rokid.context.core.model.MotionState
 import com.rokid.context.glasses.link.CxrBridge
 import com.rokid.context.glasses.link.FrameUplink
 import com.rokid.context.glasses.link.GlassesBridge
@@ -56,23 +61,39 @@ import java.io.File
  * session can be open (spec §1.7), so nothing is sent without one.
  */
 class GlassesRuntime private constructor(private val app: Context) {
+    /** Fix wave K4: PcCapture / PcUplink lines also go to files/capture_diag.log; first, so every later log line lands there. */
+    private val diagInstalled = DiagLog.install(app.filesDir)
     /** Nothing launched here may crash the glasses app; only the exception's simple name is logged. */
     private val errors = CoroutineExceptionHandler { _, e -> Log.w(TAG, "runtime job failed: ${e.javaClass.simpleName}") }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + errors)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + errors)
     /** The persisted last `pc_settings` (quiet hours and their zone apply offline); HudController writes it on each push. */
-    private val settingsCache = HudSettingsCache(app.getSharedPreferences(HudSettingsCache.PREFS, Context.MODE_PRIVATE))
+    val settingsCache = HudSettingsCache(app.getSharedPreferences(HudSettingsCache.PREFS, Context.MODE_PRIVATE))
     @Volatile private var latestSettings: HudSettings? = null
     val pauses = GlassesPauses(
         PauseStore(File(app.filesDir, "pauses.preferences_pb"), ioScope),
         quiet = QuietHoursClock { latestSettings ?: settingsCache.read().also { latestSettings = it } },
     )
-    val buffer = OutboundBuffer(File(app.filesDir, "outbound"), log = { Log.i(UPLINK_TAG, it) })
+    /** One camera owner for the process: the sampling session and every Fixed capture take turns through it. */
+    val cameraOwner = CameraOwner()
+    /** One work/rest clock for the process (spec P1.5): leaving and re-entering the HUD or toggling the mode must not restart it. */
+    val workRest = com.rokid.context.glasses.capture.session.WorkRest(
+        android.os.SystemClock::elapsedRealtime, { settingsCache.capture().workMinutes }, { settingsCache.capture().restMinutes },
+    )
+    /** The capture service's latest status for the HUD marks (Cooling, capture degraded); idle until the service publishes. */
+    val captureStatus = MutableStateFlow(SessionStatus(running = false, motion = MotionState.STILL, keyframesLast10Min = 0, restingUntilMs = null, reason = null))
+    /** Smart mode is sampling (or about to): the next-capture countdown and the icon ring have nothing to count down to. */
+    val smartCapture = MutableStateFlow(false)
+    val buffer = OutboundBuffer(File(app.filesDir, "outbound"), log = { DiagLog.i(UPLINK_TAG, it) })
     /** Our HUD activity's lifecycle, for the capture fallback (spec §1.7: never reopened over another app). */
     val hudPresence = HudPresence()
     val fallback = ForegroundFallback(hudPresence)
     /** About a second of "photo sent" after a frame is buffered or delivered (Glance check, icon ring pulse). */
     val photoCue = PhotoCue(scope)
+    /** One wear state for the process, fed by the phone's `pc_wear` (see [WearDetector]); the sampling session gates on it. */
+    val wear = com.rokid.context.glasses.capture.motion.WearDetector()
+    /** Fix wave H3: a ~600 ms HUD mark per saved keyframe ("Capture blink on HUD", synced `captureCue`). */
+    val captureBlink = com.rokid.context.glasses.hud.CaptureBlink(scope, { settingsCache.read().captureCue })
     /** The minimised icon (spec 2026-10-14 §3), one window per process; shown only while the keep-alive service runs. */
     val minimisedIcon: MinimisedIcon by lazy {
         MinimisedIcon(app, app.getSystemService(WindowManager::class.java)) {
@@ -80,9 +101,9 @@ class GlassesRuntime private constructor(private val app: Context) {
             val now = System.currentTimeMillis()
             IconState(
                 running = CaptureService.liveInstance != null,
-                fraction = IconRing.fraction(scheduler.nextTriggerAtMs(), scheduler.armedAtMs(), now),
+                fraction = if (smartCapture.value) null else IconRing.fraction(scheduler.nextTriggerAtMs(), scheduler.armedAtMs(), now),
                 paused = pauses.records.value.any { it.isActiveAt(now) },
-                cue = photoCue.active.value,
+                cue = photoCue.active.value || captureBlink.active.value, // fix wave H3: the icon blinks too
             )
         }
     }
@@ -96,11 +117,36 @@ class GlassesRuntime private constructor(private val app: Context) {
     private var attachJob: Job? = null
     /** Process-wide: built once from the application context, never per activity (CXR-S cannot unsubscribe). */
     val bridge: SharedBridge by lazy { SharedBridge(bridgeFactory(app)) }
-    val uplink = FrameUplink(scope, buffer, sendChunk = { c -> controller?.sendFrameChunk(c) ?: -1 }, canSend = ::canSend, log = { Log.i(UPLINK_TAG, it) }, onBufferChanged = { controller?.sendHello() }, onDelivered = { photoCue.pulse() })
+    val uplink = FrameUplink(scope, buffer, sendChunk = { c -> controller?.sendFrameChunk(c) ?: -1 }, canSend = ::canSend, log = { DiagLog.i(UPLINK_TAG, it) }, onBufferChanged = { controller?.sendHello() }, onDelivered = { photoCue.pulse() })
+
+    /** Fix wave H4: last-alive heartbeat and the "restart gap" log (Rokid force-stops us on a scene change). */
+    private val diagPrefs = app.getSharedPreferences("restart_diag", Context.MODE_PRIVATE)
+    /** Fix wave H: full | icon | home, persisted on change; read at the next process start (see [restarts]). */
+    val uiMode = UiModeStore(diagPrefs)
+    val restarts = RestartDiagnostics(
+        diagPrefs,
+        uiMode = { uiMode.get() },
+        installedAtMs = { runCatching { app.packageManager.getPackageInfo(app.packageName, 0).lastUpdateTime }.getOrDefault(0L) },
+        lastExitWasUserRequested = {
+            if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) null
+            else runCatching {
+                app.getSystemService(android.app.ActivityManager::class.java)
+                    .getHistoricalProcessExitReasons(app.packageName, 0, 1).firstOrNull()?.reason == android.app.ApplicationExitInfo.REASON_USER_REQUESTED
+            }.getOrNull()
+        },
+        log = { DiagLog.i(CAPTURE_TAG, it) },
+    )
+    /** Fix wave I: when a start goes straight to icon mode (after a kill, or on the phone's automatic reopen). */
+    val startGate = AutoStartGate(takePending = { restarts.takeStartMinimised() }, uptimeMs = { android.os.SystemClock.uptimeMillis() })
+    /** Fix wave I: the app is minimised but "display over other apps" is off, so no icon shows; reported to the phone's Diagnostics. */
+    @Volatile var iconBlocked = false
 
     init {
+        runCatching { restarts.onProcessStart() }
+        scope.launch { while (true) { delay(HEARTBEAT_MS); runCatching { restarts.heartbeat() } } }
         // The icon ticks once a second: redraw it as the cue starts and ends, so a 1 s pulse is never missed.
         scope.launch { photoCue.active.collect { minimisedIcon.refresh() } }
+        scope.launch { captureBlink.active.collect { minimisedIcon.refresh() } }
     }
 
     /** Tap = Ask (spec §5.1). Only an open session takes it; capture pauses don't matter (Ask is a user action). */
@@ -127,6 +173,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     fun attach(c: HudController) {
         controller = c
         c.onFrameAck = uplink::onAck
+        c.onWear = { w -> if (w == null) wear.reset() else { wear.onRemote(w); Log.i(TAG, "wear=$w (from the phone)") } }
         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
         c.onPhoneSettings = { s -> ioScope.launch { applyPhoneSettings(s) } }
@@ -145,6 +192,8 @@ class GlassesRuntime private constructor(private val app: Context) {
     /** [c]'s activity is gone: its callbacks go quiet; if it is current, the bridge stops calling it too. */
     fun detach(c: HudController) {
         c.onFrameAck = {}
+        c.onWear = {}
+        c.onAutoOpen = {}
         c.onSessionOpened = {}
         c.onPhoneSettings = {}
         if (controller !== c) return
@@ -163,6 +212,10 @@ class GlassesRuntime private constructor(private val app: Context) {
         pauses = pauses.helloRecords(),
         nextCaptureAtMs = nextCaptureAtMs,
         resumedAtMs = pauses.resumedAtMs(),
+        rokidCloses = restarts.closes,
+        lastRestartGapSec = restarts.lastGapSec,
+        userExitAtMs = restarts.userExitAtMs,
+        iconBlocked = iconBlocked && uiMode.get() == UiModeStore.ICON,
     )
 
     /** Serialises a captured frame's write with the pause toggle's buffer clear (spec §5.5). */
@@ -182,8 +235,18 @@ class GlassesRuntime private constructor(private val app: Context) {
             BufferResult.STORED
         }
 
+    /** A sampled keyframe: buffered with its full metadata so it reaches the phone (and survives a restart) intact. */
+    fun bufferCaptured(frameId: String, keyframe: KeyframeOut, capturedAtMs: Long, luma: Int?, batteryPct: Int?): BufferResult =
+        synchronized(captureGate) {
+            if (!pauses.captureAllowed()) return BufferResult.PAUSED
+            if (!buffer.add(frameId, keyframe.jpeg, capturedAtMs, luma, keyframe.phash, batteryPct, keyframe = keyframe)) return BufferResult.NOT_STORED
+            if (!pauses.captureAllowed()) { buffer.remove(frameId); return BufferResult.PAUSED }
+            BufferResult.STORED
+        }
+
     /** A frame was buffered: cue it, report the new buffer size and flush if the session is open. */
     fun onFrameBuffered() {
+        captureBlink.onKeyframeSaved() // first: nothing below may delay or break it
         photoCue.pulse()
         controller?.sendHello()
         uplink.kick()
@@ -219,6 +282,8 @@ class GlassesRuntime private constructor(private val app: Context) {
     companion object {
         const val TAG = "PcGlasses"
         const val UPLINK_TAG = "PcUplink"
+        const val CAPTURE_TAG = "PcCapture"
+        const val HEARTBEAT_MS = 30_000L
         const val FLUSH_AFTER_HELLO_MS = 500L
         @Volatile private var instance: GlassesRuntime? = null
         fun get(context: Context): GlassesRuntime =

@@ -114,4 +114,27 @@ class CaptureKeepAliveTest {
         assertEquals(before, runtime.buffer.size)
         assertEquals(CaptureService.Outcome.SKIPPED, svc.lastOutcome)
     }
+
+    /**
+     * Fix wave H5: Rokid force-stops the package and the HUD later brings the keep-alive back. A repeated start on the live
+     * service, and a brand-new service after the old one was destroyed, each leave exactly one sampling session (the old
+     * one is stopped on destroy), and the process-wide camera owner is never shared by two.
+     */
+    @Test fun restartAfterAStopNeverCreatesTwoSessions() {
+        runtime.settingsCache.write(com.rokid.context.core.model.HudSettings(captureMode = com.rokid.context.core.model.CaptureMode.SMART))
+        val first = startKeepAlive()
+        // the same service started again (HUD resumed twice): still one session
+        controller!!.startCommand(0, 2)
+        waitUntil { first.smartSessionCount == 1 }
+        assertEquals(1, first.smartSessionCount)
+        // force-stop: onDestroy releases the session; the next HUD start builds a fresh service
+        controller!!.destroy()
+        assertEquals(0, first.smartSessionCount)
+        assertNull(CaptureService.liveInstance)
+        val second = startKeepAlive()
+        waitUntil { second.smartSessionCount == 1 }
+        assertEquals(1, second.smartSessionCount)
+        assertEquals(0, first.smartSessionCount)
+        assertTrue(CaptureService.liveInstance === second)
+    }
 }

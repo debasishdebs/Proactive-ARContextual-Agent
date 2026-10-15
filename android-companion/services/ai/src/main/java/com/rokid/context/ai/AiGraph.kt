@@ -29,10 +29,12 @@ class AiGraph(
     seeds: PromptSeeds = BuiltInPromptSeeds,
     /** Gaps G6: phone power for the on-device model gate; ungated unless the app passes the real reading. */
     power: () -> com.rokid.context.ai.embed.PowerState = { com.rokid.context.ai.embed.PowerState.UNGATED },
+    /** Wraps every provider call by class (the call budget, P2); pass-through by default. */
+    gate: com.rokid.context.model.CallGate = com.rokid.context.model.PassThroughGate,
 ) {
     val endpoints = EndpointRepository(memory.db.endpointDao(), vault)
     val bindings = RoleBindingRepository(memory.db.roleBindingDao(), endpoints)
-    val router = ModelRouter(bindings, endpoints, providers)
+    val router = ModelRouter(bindings, endpoints, providers, gate)
     val tester = EndpointTester(endpoints, providers)
     val embedders = com.rokid.context.ai.embed.Embedders(endpoints, bindings, power = power)
     val retriever = com.rokid.context.memory.retrieval.MemoryRetriever(
@@ -48,9 +50,11 @@ class AiGraph(
 
     companion object {
         @Volatile private var instance: AiGraph? = null
+        /** The call budget the app installs at startup (P2), before the first [get]; pass-through until then. */
+        @Volatile var gate: com.rokid.context.model.CallGate = com.rokid.context.model.PassThroughGate
         fun get(context: Context): AiGraph = instance ?: synchronized(this) {
             val app = context.applicationContext
-            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) })
+            instance ?: AiGraph(MemoryGraph.get(app), EncryptedKeyVault(app), PrefsSeedState(app), ProviderFactory, AiSettings.prefs(app), AssetPromptSeeds(app), power = { com.rokid.context.ai.embed.LocalModelPower.read(app) }, gate = gate)
                 .also { instance = it }
         }
         fun resetForTests(graph: AiGraph?) { synchronized(this) { instance = graph } }

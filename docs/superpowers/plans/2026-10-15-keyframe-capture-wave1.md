@@ -34,7 +34,7 @@
   - D is 256 or 768, decided by the photo acceptance test (spec §F.5);
   - **prefixes:** `search_document: ` / `search_query: `.
 - **Query embedding:** once at 768, then shortened for each index. Text and image scores are never compared.
-- **Keyframe:** a 640 px wide JPEG at q75 (requested via `ResolutionSelector`, 4:3, landscape after rotation). The 160 px grey thumbnail is internal to the glasses: never stored, never sent.
+- **Keyframe:** a JPEG at q75 with long side ≤ 640 px, never upscaled (requested via `ResolutionSelector`, 4:3; the camera returns 480×640 portrait, kept as is). The 160 px grey thumbnail is internal to the glasses: never stored, never sent.
 - **Motion-driven camera (spec §P1.1, revision 5):** the IMU runs always. The camera is open while moving and for the hold time H after motion, opening early on deceleration (gyro below 60 % of the peak); it's closed when settled, with a brief open → first usable frame → close check every 5 s (15 s after 10 quiet minutes). 3 Hz analysis while open. A dwell (≥ 1.0 s still) gives an immediate keyframe.
 - **Quick look** (`HudSettings.quickLookMs` ∈ {1000, 1500, 2000, 3000}, **default 1000** (probe-confirmed)): H = 4 s / 2 s / 1 s / 0 (bursts every 2 s while moving). Battery Saver or battery ≤ 20 %: checks every 10 s, H halved. The values are confirmed by the Quick-look probe (spec Probe results 2).
 - **Camera LED:** never disabled, suppressed or worked around; it's reduced only by opening the camera less.
@@ -47,7 +47,7 @@
 - **Work/rest:** W ∈ {30, 40, 45, 50, 60, 75, 90} min (default 45); R ∈ {5, 10, 15, 20} min (default 15); **if W > 45 then R ≥ 15** (enforced in the phone UI, and clamped again on the glasses for safety). During rest, a Fixed-mode capture every 60 s.
 - **Camera LED rule test:** no torch, flash or LED control anywhere (`enableTorch`, `FLASH_MODE`, `/sys/class/leds`, vendor LED APIs).
 - **Phone power (spec §P2.5):** no work/rest on the phone. In the background, image vectors are batched every 60 s; at thermal ≥ MODERATE, background work pauses (non-user extraction ≤ 1 per 30 s); at ≥ SEVERE, all background processing pauses until below MODERATE for 2 min.
-- **Not worn:** proximity "far" for > 5 s.
+- **Not worn:** (fix wave H) only a real `pc_wear=false` from the phone (Rokid SDK wearingStatus); removal is otherwise handled by Rokid closing our app.
 - **Camera LED:** never disabled or worked around.
 - **Budget:**
   - a token bucket of 1 per 12 s (setting 10 / 12 / 15 s), burst 2;
@@ -61,7 +61,7 @@
   - settle window 5 s (setting 3 / 5 / 10 / 15), gap between checks ≥ 30 s (setting 30 / 60 / 120);
   - notify throttle: the shown-nudge gap (today's 30 min; setting 10 / 30 / 60 min) plus the daily cap;
   - target p50 ≤ 15 s and p95 ≤ 45 s, when the provider's p95 ≤ 8 s and the keyframe is at the phone within 3 s.
-- **Claims:** `EXTRACTING` sets `claimed_at` and a random `claim_id`; a claim older than 5 min is abandoned. The commit is one transaction, starting with the CAS `UPDATE frame_state … WHERE frame_id=? AND state='EXTRACTING' AND claim_id=?`; zero rows → roll back and drop the output. 5 attempts → `FAILED_FINAL`.
+- **Claims:** `EXTRACTING` sets `claimed_at` and a random `claim_id`; a claim older than 15 min (call timeout + batch fallbacks + critic + budget waits) is abandoned. The commit is one transaction, starting with the CAS `UPDATE frame_state … WHERE frame_id=? AND state='EXTRACTING' AND claim_id=?`; zero rows → roll back and drop the output. 5 attempts → `FAILED_FINAL`.
 - **Repo rules:**
   - Gradle: `./gradlew --no-daemon`; never `gradlew --stop`; one Gradle run per worktree.
   - Never print secrets or read `.env` (copy it without printing). Never push.
@@ -378,7 +378,7 @@ data class SessionStatus(val running: Boolean, val motion: MotionState, val keyf
 - **Winning frame (review fix 5):** each analysed frame is copied into a `Candidate` (thumb plus NV21 pixels) before the `ImageProxy` is closed. `Keep` returns the winning `Candidate`, and G3 encodes **that candidate's pixels**, never the current frame.
 - **CameraX (or the Camera2 equivalent):**
   - `ImageAnalysis` with `ResolutionSelector(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY, ResolutionStrategy(Size(640, 480), FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER))` and `STRATEGY_KEEP_ONLY_LATEST`;
-  - rotation applied before encoding, so the **output width is 640** (assert it: if it isn't 640 after rotation, scale to 640 wide and log the count);
+  - rotation applied before encoding, so the **output long side is ≤ 640** (never upscale; scale down only when the source long side > 640; log `keyframe seq=N src=WxH out=WxH` each time, tag PcCapture);
   - the thumbnail comes from **Y-plane subsampling** (no JPEG, target ≤ 30 ms per sample);
   - JPEG q75 only on `Keep`.
 - **Start conditions:** HUD visible (the Android 12 rule), worn, not paused, `captureMode == SMART`, heat and work/rest allow it.
@@ -400,7 +400,7 @@ data class SessionStatus(val running: Boolean, val motion: MotionState, val keyf
   - Reported only: the 1.5 / 2 / 3 s settings.
   - If A or B fail at the camera start-up p95, the fixes allowed are: an earlier start (deceleration threshold), a longer H, or keeping the camera open for H after any onset. Never the LED.
 - `CameraPolicyTest`: `openWhileMoving`, `holdPerQuickLook` (4/2/1/0 s), `opensEarlyOnDeceleration`, `closedWhenSettled`, `briefCheckEvery5sThen15s`, `burstModeAt3s`, `lowPowerHalvesHold`.
-- `SamplingSessionTest` (fakes for camera, sensors, gate, clock): `startsOnlyWhenAllConditionsHold`, `onsetTriggersImmediateCheck`, `dwellForcesKeyframe`, `notWornStopsCamera`, `modeSwitchReleasesSessionBeforeFixedCapture` (Review Focus 3), `bindFailsThriceFallsBackToFixed`, `keyframeWidthIs640`, `captureNowForcesKeyframe`, `emittedJpegMatchesWinningThumb` (decode the emitted JPEG, rebuild its 160 px thumb, and assert dHash distance ≤ 2 to the winning candidate's thumb, never a later frame's), `wearCheckOffKeepsSampling`, `restUsesFixedEvery60s`.
+- `SamplingSessionTest` (fakes for camera, sensors, gate, clock): `startsOnlyWhenAllConditionsHold`, `onsetTriggersImmediateCheck`, `dwellForcesKeyframe`, `notWornStopsCamera`, `modeSwitchReleasesSessionBeforeFixedCapture` (Review Focus 3), `bindFailsThriceFallsBackToFixed`, `keyframeLongSideAtMost640NoUpscale`, `captureNowForcesKeyframe`, `emittedJpegMatchesWinningThumb` (decode the emitted JPEG, rebuild its 160 px thumb, and assert dHash distance ≤ 2 to the winning candidate's thumb, never a later frame's), `wearCheckOffKeepsSampling`, `restUsesFixedEvery60s`.
 - `OutboundBufferTest`: `dropsOldestNonDwellFirst`, `metadataSurvivesRestart`. `FrameUplinkMetaTest`: `uplinkSendsAllKeyframeFields` (buffer → uplink → captured `FrameChunk.meta` has motion, dwell, blur, hashes, width, seq, session). `LedSourceRulesTest` (a source scan like `SettingsSourceRulesTest`): `noTorchFlashOrLedControlInGlassesSources`.
 
 - [ ] RED → implement → GREEN. Commit `feat(glasses): bound sampling session (640 px keyframes, Y-plane thumbnails, single camera owner)`.
@@ -506,7 +506,7 @@ class KeyframePipeline(/* FrameStateDao, FrameMetaDao, extractor: suspend (List<
     fun signal()                      // a new frame committed
     suspend fun drainOnce(): Int      // claims ≤ 3 (dwell first, then newest), extracts, returns frames done
 }
-object FrameRecovery { suspend fun run(dao: FrameStateDao, nowMs: Long): Int }  // abandoned claims (> 5 min) → PENDING (attempts+1); then signal
+object FrameRecovery { suspend fun run(dao: FrameStateDao, nowMs: Long): Int }  // abandoned claims (> 15 min) → PENDING (attempts+1); then signal
 ```
 - **Ask with a backlog:** the newest ≤ 3 frames from the last 60 s are extracted first as `CallClass.USER` (spec §P2.3). Hook into the Ask path (grep `AnswerService`).
 - **Diagnostics:** `frame_state` counts, plus "Retry all" for `FAILED_FINAL` (Settings → Diagnostics).

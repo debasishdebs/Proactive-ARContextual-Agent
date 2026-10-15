@@ -27,4 +27,15 @@ class HubSettingsStoreTest {
         store.write(HudSettings(quietHours = QuietHours(0, 1_439)))
         assertEquals(QuietHours(0, 1_439), store.read().quietHours)
     }
+
+    /** Existing installs upgrade to Smart (no stored captureMode); an explicit Fixed choice survives. */
+    @Test fun upgradedInstallsDefaultToSmartAndFixedSticks() {
+        prefs.edit().clear().commit()
+        val store = HubSettingsStore(prefs) { "hud" }
+        assertEquals(com.rokid.context.core.model.CaptureMode.SMART, store.read().captureMode)
+        prefs.edit().putString("hud_settings", """{"v":1,"captureIntervalSec":600}""").commit()
+        assertEquals(com.rokid.context.core.model.CaptureMode.SMART, store.read().captureMode)
+        store.write(HudSettings(captureMode = com.rokid.context.core.model.CaptureMode.FIXED))
+        assertEquals(com.rokid.context.core.model.CaptureMode.FIXED, store.read().captureMode)
+    }
 }

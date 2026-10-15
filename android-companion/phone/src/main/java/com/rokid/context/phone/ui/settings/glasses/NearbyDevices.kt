@@ -35,6 +35,8 @@ class NearbyDevicesSource(
     private val link: () -> LinkState,
     private val keepRunning: KeepRunningNearby,
     private val openGlassesSettings: () -> Unit,
+    /** The wearer exited the glasses app on purpose (`pc_user_exit`): the phone stands down until they reopen it. */
+    private val closedByUser: () -> Boolean = { false },
 ) : ListSource {
     override val title = "Nearby devices"
     override val searchHint = "Search devices"
@@ -45,7 +47,7 @@ class NearbyDevicesSource(
         val on = keepRunning.enabled()
         return listOf(
             ListItem(
-                id = GLASSES_ID, title = "Rokid glasses", subtitle = subtitle(isPaired, link(), on), icon = GlassesIcon,
+                id = GLASSES_ID, title = "Rokid glasses", subtitle = if (isPaired && closedByUser()) CLOSED_BY_USER else subtitle(isPaired, link(), on), icon = GlassesIcon,
                 status = if (isPaired) ItemStatus.None else ItemStatus.ActionNeeded, toggle = on.takeIf { isPaired },
             ),
         )
@@ -58,12 +60,13 @@ class NearbyDevicesSource(
 
     companion object {
         const val GLASSES_ID = "rokid_glasses"
-        const val NOTE = "When off, Proactive Context stops in the background once you leave the app, even while the glasses are connected."
+        const val CLOSED_BY_USER = "Glasses app closed by you; reopen from Settings \u2192 Glasses"
+        const val NOTE = "Keep running when nearby, and reopen the glasses app after Rokid closes it (for a call, message or music). When off, Proactive Context stops in the background once you leave the app, even while the glasses are connected, and does not reopen it."
 
         fun subtitle(paired: Boolean, link: LinkState, keepRunning: Boolean): String {
             if (!paired) return "Not paired \u00b7 authorize in Rokid Glasses settings"
             val state = if (link.carriesData) "Connected" else "Paired"
-            return "$state \u00b7 " + if (keepRunning) "keeps running when nearby" else "stops when the app is closed"
+            return "$state \u00b7 " + if (keepRunning) "keeps running \u00b7 reopens after Rokid closes it" else "stops when the app is closed"
         }
     }
 }

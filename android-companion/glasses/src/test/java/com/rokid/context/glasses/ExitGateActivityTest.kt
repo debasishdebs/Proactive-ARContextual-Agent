@@ -84,7 +84,7 @@ class ExitGateActivityTest {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             phoneState()
             doubleTap(s)
-            compose.onNodeWithText("Double-tap again to exit \u00b7 3", substring = true).assertExists()
+            compose.onNodeWithText(DoubleTapExit.ARMED_TEXT, substring = true).assertExists()
             advance(DoubleTapExit.WINDOW_MS - 500)
             Thread.sleep(200); shadowOf(Looper.getMainLooper()).idle()
             assertTrue(commands().none { it is Command.Pause }, "no pause inside the window")
@@ -100,11 +100,57 @@ class ExitGateActivityTest {
             phoneState()
             doubleTap(s)
             doubleTap(s) // no pause between the pairs: the settle guard does not swallow a second double-tap while armed
-            s.onActivity { assertEquals(1, it.tasksMovedBack, "the second double-tap minimises") }
+            compose.onNodeWithText(DoubleTapExit.MINIMISING_TEXT, substring = true).assertExists()
+            s.onActivity { assertEquals(0, it.tasksMovedBack, "the second double-tap only opens the exit window") }
+            advance(DoubleTapExit.MINIMISE_WINDOW_MS + 400)
+            s.onActivity { assertEquals(1, it.tasksMovedBack, "the window ending minimises") }
             advance(DoubleTapExit.WINDOW_MS * 3)
             Thread.sleep(300); shadowOf(Looper.getMainLooper()).idle()
             assertTrue(commands().none { it is Command.Pause || it is Command.Resume }, "no late pause")
-            compose.onNodeWithText(DoubleTapExit.COUNTDOWN_PREFIX, substring = true).assertDoesNotExist()
+            compose.onNodeWithText(DoubleTapExit.ARMED_TEXT, substring = true).assertDoesNotExist(); compose.onNodeWithText(DoubleTapExit.MINIMISING_TEXT, substring = true).assertDoesNotExist()
+        }
+    }
+
+    /** Fix wave H: a third double-tap inside the window exits for good and tells the phone; no minimise, no pause. */
+    @Test fun aThirdDoubleTapExitsAndTellsThePhone() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            doubleTap(s); doubleTap(s); doubleTap(s)
+            s.onActivity { assertTrue(it.exitedByUser); assertFalse(it.isFinishing, "waits for the message to leave first"); assertEquals(0, it.tasksMovedBack) }
+            assertTrue(bridge.sent.any { it.first == Channels.USER_EXIT }, "pc_user_exit sent")
+            advance(400)
+            s.onActivity { assertTrue(it.isFinishing) }
+            // the next hello repeats the exit (a lost message must not become a reopen), and no heartbeat stamp is left
+            assertTrue(runtime.hello(null).userExitAtMs != null)
+            assertEquals(null, runtime.restarts.takeStartMinimised().takeIf { it })
+            advance(DoubleTapExit.WINDOW_MS * 3)
+            assertTrue(commands().none { it is Command.Pause || it is Command.Resume })
+        }
+    }
+
+    /** Fix wave I: the extra minimises that start only; it is removed from the intent so a later return to the front is not minimised again. */
+    @Test fun startMinimisedExtraGoesStraightToIconModeOnlyOnce() {
+        val i = android.content.Intent(ApplicationProvider.getApplicationContext<android.app.Application>(), MainActivity::class.java)
+            .putExtra(MainActivity.EXTRA_START_MINIMISED, true)
+        ActivityScenario.launch<MainActivity>(i).use { s ->
+            advance(500)
+            s.onActivity { assertEquals(1, it.tasksMovedBack); assertEquals("icon", GlassesRuntime.get(it).uiMode.get()); assertFalse(it.intent.hasExtra(MainActivity.EXTRA_START_MINIMISED)) }
+            s.moveToState(androidx.lifecycle.Lifecycle.State.CREATED); s.moveToState(androidx.lifecycle.Lifecycle.State.RESUMED)
+            advance(500)
+            s.onActivity { assertEquals(1, it.tasksMovedBack, "not minimised again") }
+        }
+    }
+
+    /** Fix wave I: a Confirm/Answer from the phone inside the Minimising window must not cancel the minimise. */
+    @Test fun aPhoneConfirmInTheMinimisingWindowStillMinimises() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            doubleTap(s); doubleTap(s)
+            bridge.phone(Channels.STATE, Wire.encode(StateFrame(seq = 2, capture = CaptureState.Running, intervalSec = 300, phoneLinked = true, aiHealth = Health.Ok,
+                overlay = com.rokid.context.core.model.Overlay.Answer(question = "q", text = "ok", speaking = false))))
+            shadowOf(Looper.getMainLooper()).idle()
+            advance(DoubleTapExit.MINIMISE_WINDOW_MS + 400)
+            s.onActivity { assertEquals(1, it.tasksMovedBack) }
         }
     }
 
@@ -117,7 +163,8 @@ class ExitGateActivityTest {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             phoneState()
             s.onActivity { a -> repeat(4) { press83(a) } }
-            s.onActivity { assertEquals(1, it.tasksMovedBack, "a quick 4-tap minimises") }
+            advance(DoubleTapExit.MINIMISE_WINDOW_MS + 400)
+            s.onActivity { assertEquals(1, it.tasksMovedBack, "a quick 4-tap minimises once the exit window ends") }
             advance(DoubleTapExit.WINDOW_MS * 3)
             Thread.sleep(300); shadowOf(Looper.getMainLooper()).idle()
             assertTrue(commands().none { it is Command.Pause || it is Command.Resume }, "no pause")

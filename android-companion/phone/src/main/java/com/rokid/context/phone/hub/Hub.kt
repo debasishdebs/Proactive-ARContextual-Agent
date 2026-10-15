@@ -55,7 +55,17 @@ class Hub(
     private val actions: HubActions = HubActions.None,
     /** Nudges (Phase 7): the latest nudge line and the HUD nudge overlay. */
     private val nudges: HubNudges = HubNudges.None,
+    /** Fix wave H2: guards for reopening the glasses app after Rokid closes it; null = never reopen (tests, no phone services). */
+    private val reopenGuards: RelaunchGuards? = null,
+    /** "Reopen after Rokid closes it" (the same switch as "Keep running when nearby"). */
+    private val reopenEnabled: () -> Boolean = { true },
+    /** Fix wave I2: the wearer's exit, persisted: a phone restart must never reopen an app the wearer exited. */
+    private val standDown: StandDown = InMemoryStandDown(),
 ) : GlassesStatusSource {
+    private val relauncher: GlassesRelauncher? = reopenGuards?.let {
+        // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
+        GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connectAutomatic() }, now = clock, log = { m -> Log.i(GlassesRelauncher.TAG, m) }, standDown = standDown)
+    }
     private val _state = MutableStateFlow(HubState())
     val state: StateFlow<HubState> = _state
     private val _status = MutableStateFlow(_state.value.toGlassesStatus())
@@ -90,6 +100,8 @@ class Hub(
             scope.launch { link.state.collect { s -> onLinkState(s) } },
             scope.launch { link.events.collect { guarded("event ${it::class.simpleName}") { onEvent(it) } } },
             scope.launch { link.ready.collect { guarded("ready") { onReady() } } },
+            // null = unknown again (session closed, offline, BT lost): the stale value is dropped, never re-sent (fix wave I1).
+            scope.launch { link.wearing.collect { w -> lastWorn = w; if (w != null) { lastWornAtMs = clock(); Log.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else Log.i(TAG, "wear unknown") } },
             scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
             scope.launch { voice.overlay.drop(1).collect { broadcaster.markDirty() } },
             scope.launch { actions.overlay.drop(1).collect { broadcaster.markDirty() } },
@@ -98,14 +110,21 @@ class Hub(
             // The gate's reason travels in pc_settings (the glasses toast it on tap = Ask, spec §5.1.1).
             scope.launch { voice.askBlockedReason.drop(1).collect { guarded("settings") { pushSettings() } } },
             broadcaster.start(),
-        )
-        link.connectOnce()
+        ) + listOfNotNull(relauncher?.start())
+        // Fix wave I2: after a phone restart the wearer's exit still stands; only an explicit open ends it.
+        if (standDown.active) {
+            Log.i(TAG, "wearer exited the glasses app earlier: not connecting, watching for a reopen")
+            set { it.copy(closedByUser = true) }
+            link.watchForReopen() // N4: the wearer's own reopen must still be noticed
+        }
+        else link.connectOnce()
     }
 
     fun stop() {
         voice.onLinkLost() // first (preflight F15): the link is closing, so an open glasses listen can't complete
         jobs.forEach { it.cancel() }
         jobs = emptyList()
+        relauncher?.stop()
         link.close()
     }
 
@@ -116,7 +135,14 @@ class Hub(
     override fun requestReconnect() {
         // Review I2: a CUSTOM_APP connect runs appStart, which would pull the HUD over Maps while minimised. The wearer
         // gets a pop-up there instead (a Confirm is the only thing that may open the app, glasses side, spec 1.7).
-        if (started && link.state.value == LinkState.MINIMISED) { showMinimisedHint(); return }
+        relauncher?.onExplicitOpen()
+        standDown.clear(clock())
+        set { it.copy(closedByUser = false) }
+        if (started && link.state.value == LinkState.MINIMISED) {
+            showMinimisedHint()
+            link.probeAlive() // fix wave I1: if the glasses are dead the link says so and opens the app for real
+            return
+        }
         if (started) link.connect() else startService()
     }
 
@@ -128,7 +154,7 @@ class Hub(
         hintJob = scope.launch { delay(MINIMISED_HINT_MS); minimisedHint = null; broadcaster.markDirty() }
     }
 
-    fun onAppResumed() = link.connectOnResume()
+    fun onAppResumed() { if (!standDown.active) link.connectOnResume() }
 
     /** A settings change from the phone: persisted, pushed now (when linked) and reflected in the next frame. */
     fun updateSettings(transform: (HudSettings) -> HudSettings) {
@@ -198,7 +224,27 @@ class Hub(
         // Minimised keeps the glasses session (and its clock offset) on the background link; push-to-talk needs the HUD.
         if (s != LinkState.CONNECTED) voice.onLinkLost()
         if (!s.carriesData) newSession()
-        set { it.copy(link = s, offset = offset) }
+        if (s == LinkState.CONNECTED) standDown.connected()
+        if (!s.carriesData) set(markDirty = false) { it.copy(iconBlocked = false) } // a stale "no icon" row must not outlive the link
+        set { it.copy(link = s, offset = offset, closedByUser = if (s == LinkState.CONNECTED) false else it.closedByUser) }
+    }
+
+    /** The Rokid SDK's wear state, newest first seen on this phone; forwarded to the glasses as `pc_wear` (they gate on it). */
+    private var lastWorn: Boolean? = null
+    private var lastWornAtMs = 0L
+
+    private suspend fun sendWear() {
+        val w = lastWorn ?: return
+        link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = lastWornAtMs, sessionStartMs = sessionStartMs)))
+    }
+
+    /** Phone clock when the current glasses session began (a `pc_wear` stamped before it is stale; the glasses ignore it). */
+    private var sessionStartMs = 0L
+
+    /** `pc_auto_open` while our own reopen is fresh: the glasses keep that start in icon mode. */
+    private suspend fun sendAutoOpen() {
+        if (relauncher?.reopenedRecently() != true) return
+        link.send(Channels.AUTO_OPEN, Wire.encode(com.rokid.context.core.model.AutoOpen(atMs = clock())))
     }
 
     /**
@@ -206,6 +252,7 @@ class Hub(
      * session's hello, pauses are anchored at receipt. Anchored originals of the old session are in its clock: dropped.
      */
     private fun newSession() {
+        sessionStartMs = clock()
         offset = null
         anchoredBeforeOffset.clear()
         lastHelloRequestAtMs = null
@@ -223,6 +270,9 @@ class Hub(
         newSession()
         set(markDirty = false) { it.copy(versionMismatch = false, offset = null) }
         pushSettings()
+        if (lastWorn != null) lastWornAtMs = clock() // the SDK's value is current for this session (it is dropped on every loss)
+        sendWear()
+        sendAutoOpen()
         broadcaster.markDirty()
     }
 
@@ -255,11 +305,26 @@ class Hub(
                     it.copy(
                         versionMismatch = false, offset = measured, glassesBatteryPct = h.glassesBatteryPct ?: it.glassesBatteryPct,
                         bufferedFrames = h.bufferSize, nextCaptureAtMs = h.nextCaptureAtMs?.let(measured::toPhone),
+                        rokidCloses = h.rokidCloses, lastRestartGapSec = h.lastRestartGapSec, iconBlocked = h.iconBlocked,
                     )
                 }
+                // Fix wave I2: the glasses repeat the wearer's exit in every hello, in case `pc_user_exit` was lost with the session.
+                // N4: a hello that does not repeat a fresh exit means the app is running again (the wearer opened it): the stand-down is over.
+                if (standDown.active && h.userExitAtMs?.let { now - measured.toPhone(it) in 0..EXIT_STAMP_FRESH_MS } != true) {
+                    Log.i(TAG, "glasses app is running again: stand-down over")
+                    standDown.connected(); set { it.copy(closedByUser = false) }
+                }
+                h.userExitAtMs?.let { at ->
+                    val exitAt = measured.toPhone(at)
+                    // A recent exit only: an old stamp the glasses still carry is not news (and an explicit open since then wins).
+                    if (exitAt > standDown.clearedAtMs && now - exitAt in 0..EXIT_STAMP_FRESH_MS && !standDown.active) onUserExit("hello")
+                }
                 pushSettings()
+                sendWear()
+                sendAutoOpen()
             }
             is GlassesEvent.Cmd -> onCommand(e.command, now)
+            GlassesEvent.UserExit -> onUserExit("message")
             is GlassesEvent.Frame -> {
                 val r = withContext(io) { ingestor.onChunk(e.chunk, offset, now) }
                 r.ack?.let { link.send(Channels.FRAME_ACK, Wire.encode(it)) }
@@ -281,6 +346,12 @@ class Hub(
             is GlassesEvent.Audio -> voice.onAudio(e.pcm) // never logged: it is the wearer's voice
             GlassesEvent.ListenEnd -> voice.onListenEnd()
         }
+    }
+
+    private fun onUserExit(how: String) {
+        Log.i(TAG, "wearer exited the glasses app on purpose ($how): not reopening")
+        standDown.enter(clock())
+        relauncher?.onUserExit(); set { it.copy(closedByUser = true) }
     }
 
     private suspend fun onCommand(c: Command, now: Long) {
@@ -357,5 +428,7 @@ class Hub(
         /** Glasses pop-up for "Open on glasses" while minimised: the HUD stays in the background. */
         const val OPEN_WHILE_MINIMISED = "Running in the background \u00b7 open it on your glasses"
         const val MINIMISED_HINT_MS = 5_000L
+        /** A hello's repeated wearer-exit stamp counts only this long: the lost-message case ends in a reopen about 30 s after the exit. */
+        const val EXIT_STAMP_FRESH_MS = 90_000L
     }
 }

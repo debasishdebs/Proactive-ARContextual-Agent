@@ -3,12 +3,13 @@ package com.rokid.context.ai.run
 import android.util.Log
 import com.rokid.context.ai.FailureKind
 import com.rokid.context.ai.ModelCallException
-import com.rokid.context.ai.ModelRouter
 import com.rokid.context.ai.RoutedReply
 import com.rokid.context.ai.contract.ContractOutput
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.contract.SemanticContext
 import com.rokid.context.ai.schema.StructuredOutput
+import com.rokid.context.model.CallClass
+import com.rokid.context.model.LanguageModel
 import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelRequest
 import com.rokid.context.prompt.NowText
@@ -26,7 +27,17 @@ data class RoleCall(
     val inputIds: Set<String> = emptySet(),
     /** VISION_EXTRACT/SUMMARIZE over frames: the vision → summarize chain (ModelRouter.completeFromFrames). */
     val fromFrames: Boolean = false,
-)
+    /** Who the call is for (budget class). Null = the key's default: VISION_EXTRACT -> EXTRACT, NUDGE -> NUDGE, ANSWER -> USER, else OTHER. Ask-triggered extraction passes USER. */
+    val callClass: CallClass? = null,
+) {
+    val effectiveClass: CallClass
+        get() = callClass ?: when (key) {
+            PromptKey.VISION_EXTRACT -> CallClass.EXTRACT
+            PromptKey.NUDGE -> CallClass.NUDGE
+            PromptKey.ANSWER -> CallClass.USER
+            else -> CallClass.OTHER
+        }
+}
 
 data class RoleResult(val output: ContractOutput, val raw: String, val reply: RoutedReply, val promptVersion: Int)
 
@@ -38,11 +49,14 @@ data class RoleResult(val output: ContractOutput, val raw: String, val reply: Ro
  * [ModelRequest.MAX_TOKENS_LIMIT]): the same cap would cut it again.
  */
 class RoleRunner(
-    private val router: ModelRouter,
+    private val router: LanguageModel,
     private val prompts: PromptRepository,
     private val persona: PersonaSettings,
     private val now: () -> LocalDateTime = LocalDateTime::now,
 ) {
+    /** The active output schema text of [key] (what a call would be validated against). */
+    suspend fun activeSchema(key: PromptKey): String? = prompts.active(key).outputSchema
+
     suspend fun run(call: RoleCall): RoleResult {
         val role = requireNotNull(call.key.role) { "SYSTEM has no model call" }
         val version = prompts.active(call.key)
@@ -60,7 +74,7 @@ class RoleRunner(
                 val plan = StructuredOutput.plan(e, schema, call.key.name)
                 ModelRequest(text + plan.promptSuffix, call.images, maxTokens = cap, format = plan.format)
             }
-            val reply = if (call.fromFrames) router.completeFromFrames(build) else router.complete(role, build)
+            val reply = if (call.fromFrames) router.completeFromFrames(call.effectiveClass, build) else router.complete(role, call.effectiveClass, build)
             val eval = OutputCheck.evaluate(call.key, schema, reply.text, ctx)
             if (eval.ok) return RoleResult(checkNotNull(eval.output), reply.text, reply, version.version)
             if (eval.schemaUnusable) {

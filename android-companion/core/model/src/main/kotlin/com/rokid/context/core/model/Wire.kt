@@ -20,6 +20,7 @@ object Wire {
         ignoreUnknownKeys = true
         encodeDefaults = true
         explicitNulls = false
+        coerceInputValues = true // an unknown enum string falls back to the property default (MotionState.UNKNOWN, CaptureMode.FIXED)
         classDiscriminator = "kind"
     }
 

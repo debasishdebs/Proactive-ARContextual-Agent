@@ -16,6 +16,8 @@ import androidx.activity.ComponentActivity
 import androidx.annotation.VisibleForTesting
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -23,6 +25,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.rokid.context.core.hud.DoubleTapExit
@@ -40,6 +44,8 @@ import com.rokid.context.core.model.GestureAction
 import com.rokid.context.core.model.Overlay
 import com.rokid.context.glasses.capture.CaptureScheduler
 import com.rokid.context.glasses.capture.CaptureService
+import com.rokid.context.glasses.hud.CaptureCueMark
+import com.rokid.context.glasses.hud.CaptureStatusMarks
 import com.rokid.context.glasses.hud.ConfirmInput
 import com.rokid.context.glasses.hud.InputRouter
 import com.rokid.context.glasses.hud.KeyGestures
@@ -48,7 +54,6 @@ import com.rokid.context.glasses.hud.PadInput
 import com.rokid.context.glasses.hud.PhoneAskWatch
 import com.rokid.context.glasses.hud.Routed
 import com.rokid.context.glasses.link.HudController
-import com.rokid.context.glasses.link.HudSettingsCache
 import com.rokid.context.glasses.overlay.PopupOverlay
 import com.rokid.context.core.model.popupMs
 import com.rokid.context.glasses.pause.PauseToggle
@@ -82,6 +87,9 @@ class MainActivity : ComponentActivity() {
     /** Spec 2026-10-14 §4: the HUD was opened for a Confirm and goes back to the background after it. */
     private var returnToMinimised = false
     private var autoOpenedAtMs = 0L
+    /** The newest intent delivered by onNewIntent. Not setIntent(): androidx ActivityScenario matches its activity by getIntent() and never reaches DESTROYED if it changes. */
+    private var startIntent: Intent? = null
+    private val minimisedHello = Runnable { if (minimised) controller.sendHello() }
     /** The proposal the HUD was opened for (and the last one launched, so a repeat frame never opens it twice). */
     private var autoConfirmId: String? = null
     private var launchedConfirmId: String? = null
@@ -103,13 +111,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         controller = HudController(
-            lifecycleScope, runtime.bridge, HudSettingsCache(getSharedPreferences(HudSettingsCache.PREFS, MODE_PRIVATE)),
+            lifecycleScope, runtime.bridge, runtime.settingsCache, // the one cache, so the capture service sees each push at once
             hello = { runtime.hello(nextCaptureAt()) },
         )
         runtime.attach(controller)
         runtime.ptt.onProblem = { p -> runOnUiThread { local = LocalOverlay.Toast(pttText(p), System.currentTimeMillis()) } }
         controller.onActivityStart()
         controller.start()
+        // A launcher-looking start that was really the phone's automatic reopen: back to icon mode (never the HUD over a call).
+        controller.onAutoOpen = { runOnUiThread { if (runtime.startGate.onAutoOpenMarker() && !minimised) { Log.i(TAG, "automatic reopen: icon mode"); minimise() } } }
         lifecycleScope.launch { runtime.pauses.ensureLoaded() }
         // Final review I2: a phone toast during our recording means the phone refused or ended the ask. Stop recording
         // (no Cancel: the phone already dropped it) so the wearer sees the toast instead of "tap to send".
@@ -140,19 +150,33 @@ class MainActivity : ComponentActivity() {
         runtime.minimisedIcon.hide() // the full HUD is back
         runtime.popup.hide()
         // In front now: start the keep-alive camera service so captures keep working after the wearer leaves the HUD.
+        runtime.uiMode.set(UiModeStore.FULL)
+        runtime.iconBlocked = false
+        runtime.restarts.heartbeat() // alive and meant to be running (the stamp is not written while closed)
         if (granted(Manifest.permission.CAMERA)) CaptureService.startKeepAlive(this)
+        // Fix wave I: back after a kill (or an explicit extra, consumed once): straight to icon mode, no HUD, unless the wearer opened it from the launcher.
+        val si = startIntent ?: intent
+        val extra = si?.getBooleanExtra(EXTRA_START_MINIMISED, false) == true
+        if (extra) si?.removeExtra(EXTRA_START_MINIMISED)
+        val source = StartSources.classify(si?.action, si?.categories, referrer?.host)
+        if (source == StartSource.LAUNCHER) runtime.restarts.clearUserExit() // the wearer opened it: an earlier exit is over
+        if (runtime.startGate.onStart(source, extra, fromMinimised = wasMinimised)) {
+            Log.i(TAG, "starting minimised (icon mode) source=$source")
+            swipeTimer.post { minimise() }
+        } else if (source == StartSource.LAUNCHER) Log.i(TAG, "opened from the launcher: showing the HUD")
     }
 
     /** Finishing closes the session at once; [onDestroy] may come late. */
     override fun onStop() {
         cancelGate() // leaving the HUD with the gate armed must never pause later (review focus 1)
-        if (isFinishing) { cancelAsk(); controller.onActivityExit(); CaptureService.stopKeepAlive(this) }
+        if (isFinishing) { runtime.uiMode.set(UiModeStore.HOME); runtime.restarts.onExit(); cancelAsk(); controller.onActivityExit(); CaptureService.stopKeepAlive(this) }
         runtime.hudPresence.onStopped(finishing = isFinishing)
         super.onStop()
     }
 
     public override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        startIntent = intent // onStart classifies the start that brought us forward, not the first one of the process
         val cameBack = wasMinimised
         wasMinimised = false
         when {
@@ -171,6 +195,7 @@ class MainActivity : ComponentActivity() {
                 if (Settings.canDrawOverlays(this)) runtime.popup.show(OPENED_FROM_PHONE_POPUP, controller.settings.value.popupMs())
             }
             else -> { // the wearer opened the app themselves: the HUD stays in front after any Confirm
+                runtime.restarts.clearUserExit()
                 returnToMinimised = false
                 autoConfirmId = null
                 swipeTimer.removeCallbacks(confirmTimeout)
@@ -217,6 +242,8 @@ class MainActivity : ComponentActivity() {
         val pauses by runtime.pauses.records.collectAsStateWithLifecycle()
         val recording by runtime.listening.collectAsStateWithLifecycle()
         val photoCue by runtime.photoCue.active.collectAsStateWithLifecycle()
+        val capture by runtime.captureStatus.collectAsStateWithLifecycle()
+        val blink by runtime.captureBlink.active.collectAsStateWithLifecycle()
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
         var battery by remember { mutableStateOf(runtime.batteryPct()) }
         LaunchedEffect(Unit) {
@@ -234,20 +261,25 @@ class MainActivity : ComponentActivity() {
         // Votes follow the presented overlay: an expired, hidden or dismissed Confirm can never be answered unseen.
         val shownConfirm = view.overlay as? Overlay.Confirm
         LaunchedEffect(shownConfirm?.proposalId) { confirm.onConfirm(shownConfirm); highlightYes = confirm.highlightYes }
-        HudRoot(
-            HudModel(
-                view = view, frame = frame, settings = settings,
-                connection = connection, batteryPct = battery, paused = pauses.any { it.isActiveAt(now) },
-                nextCaptureAtMs = nextCaptureAt(), nowMs = now, nav = nav, confirmHighlightYes = highlightYes, recording = recording,
-                photoCue = photoCue,
-            ),
-        )
+        Box(Modifier.fillMaxSize()) {
+            HudRoot(
+                HudModel(
+                    view = view, frame = frame, settings = settings,
+                    connection = connection, batteryPct = battery, paused = pauses.any { it.isActiveAt(now) },
+                    nextCaptureAtMs = nextCaptureAt(), nowMs = now, nav = nav, confirmHighlightYes = highlightYes, recording = recording,
+                    photoCue = photoCue,
+                ),
+            )
+            // Heat stop and a capture that fell back to Fixed (spec P1.5, P1.6): small marks over the HUD, nothing when fine.
+            CaptureStatusMarks(cooling = capture.cooling, degraded = capture.degraded, modifier = Modifier.align(Alignment.TopStart))
+            CaptureCueMark(active = blink, modifier = Modifier.align(Alignment.TopEnd))
+        }
     }
 
     /** Touchpad keys are ours: KEYCODE_NOTIFICATION must never reach the system, or it moves our task to the back. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val r = when (event.action) {
-            KeyEvent.ACTION_DOWN -> keys.onKeyDown(event.keyCode, event.repeatCount, event.eventTime, System.currentTimeMillis(), exitGate is ExitGate.Armed)
+            KeyEvent.ACTION_DOWN -> keys.onKeyDown(event.keyCode, event.repeatCount, event.eventTime, System.currentTimeMillis(), exitGate !is ExitGate.Idle)
             KeyEvent.ACTION_UP -> keys.onKeyUp(event.keyCode, event.eventTime)
             else -> KeyResult(consumed = false)
         }
@@ -259,7 +291,7 @@ class MainActivity : ComponentActivity() {
 
     /** BACK is a double-tap on some firmware (Live Fit); never page navigation, never "exit". */
     @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
-    override fun onBackPressed() = handle(keys.onBack(System.currentTimeMillis(), exitGate is ExitGate.Armed))
+    override fun onBackPressed() = handle(keys.onBack(System.currentTimeMillis(), exitGate !is ExitGate.Idle))
 
     private fun scheduleSwipeClose() {
         swipeTimer.removeCallbacks(closeSwipe)
@@ -297,7 +329,7 @@ class MainActivity : ComponentActivity() {
         val (g, a) = DoubleTapExit.onDoubleTap(exitGate, SystemClock.uptimeMillis())
         exitGate = g
         swipeTimer.removeCallbacks(gateTick)
-        if (a == PageAction.MINIMISE) { clearCountdown(); minimise(); return }
+        if (a == PageAction.EXIT) { clearCountdown(); exitApp(); return }
         showCountdown()
         swipeTimer.postDelayed(gateTick, GATE_TICK_MS)
     }
@@ -305,15 +337,18 @@ class MainActivity : ComponentActivity() {
     private fun tickGate() {
         // Never armed under an overlay with its own double-tap: one arriving now ends the gate with no pause.
         val phone = controller.frame.value?.overlay
-        if (runtime.listening.value || phone is Overlay.Confirm || phone is Overlay.Listening || phone is Overlay.Answer) { cancelGate(); return }
+        // A Confirm/Answer in the 1.5 s "Minimising" window must not cancel the minimise the wearer asked for (fix wave I).
+        val phoneBusy = phone is Overlay.Confirm || phone is Overlay.Listening || phone is Overlay.Answer
+        if (DoubleTapExit.cancelsFor(exitGate, runtime.listening.value, phoneBusy)) { cancelGate(); return }
         val (g, a) = DoubleTapExit.onTick(exitGate, SystemClock.uptimeMillis())
         exitGate = g
+        if (a == PageAction.MINIMISE) { clearCountdown(); minimise(); return }
         if (a == PageAction.TOGGLE_PAUSE) {
             clearCountdown()
             onAction(Routed.Mapped(GestureAction.PAUSE_RESUME), null, System.currentTimeMillis())
             return
         }
-        if (g is ExitGate.Armed) { showCountdown(); swipeTimer.postDelayed(gateTick, GATE_TICK_MS) }
+        if (g !is ExitGate.Idle) { showCountdown(); swipeTimer.postDelayed(gateTick, GATE_TICK_MS) }
     }
 
     private fun showCountdown() {
@@ -329,17 +364,51 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun clearCountdown() {
-        if ((local as? LocalOverlay.Toast)?.text?.startsWith(DoubleTapExit.COUNTDOWN_PREFIX) == true) local = null
+        if (DoubleTapExit.isGateText((local as? LocalOverlay.Toast)?.text)) local = null
     }
 
-    /** The second page double-tap: our task goes to the back; capture keeps running in the keep-alive service. */
+    /**
+     * The third page double-tap (fix wave H): leave completely. Tell the phone first (`pc_user_exit`, so it does not reopen the
+     * app), then finish: onStop/onDestroy stop the keep-alive service, and with it the sampling session and the icon.
+     */
+    internal fun exitApp() {
+        cancelGate()
+        exitedByUser = true
+        runtime.restarts.onUserExit(System.currentTimeMillis()) // repeated in every hello, in case this message is lost with the session
+        // Finishing closes the CXR session at once and drops a message still in flight: wait for the hand-over (or ~300 ms) first.
+        var tries = 0
+        val sendAndFinish = object : Runnable {
+            override fun run() {
+                val handedOver = controller.sendUserExit()
+                tries++
+                if (handedOver || tries * EXIT_RETRY_MS >= EXIT_WAIT_MS) swipeTimer.postDelayed({ finish() }, EXIT_FLUSH_MS)
+                else swipeTimer.postDelayed(this, EXIT_RETRY_MS)
+            }
+        }
+        sendAndFinish.run()
+    }
+
+    /** Tests: the wearer exited with the third double-tap. */
+    @VisibleForTesting internal var exitedByUser = false
+        private set
+
+    /** The exit window after the second page double-tap ended: our task goes to the back; capture keeps running in the keep-alive service. */
     internal fun minimise() {
         cancelGate()
         tasksMovedBack++
+        runtime.uiMode.set(UiModeStore.ICON)
         moveTaskToBack(true)
         minimised = true
         runtime.hudPresence.onMinimised()
-        if (!Settings.canDrawOverlays(this)) { Toast.makeText(this, NO_OVERLAY_TOAST, Toast.LENGTH_SHORT).show(); return }
+        // The phone only hears a minimised app when it speaks: say hello at once so it never takes the quiet for a closed app.
+        swipeTimer.removeCallbacks(minimisedHello); swipeTimer.postDelayed(minimisedHello, MINIMISED_HELLO_MS)
+        if (!Settings.canDrawOverlays(this)) {
+            // Capture runs but nothing shows it: count-only warning here, a Diagnostics row on the phone (via the hello).
+            Log.w(TAG, "minimised without the overlay permission: no icon")
+            runtime.iconBlocked = true; controller.sendHello()
+            Toast.makeText(this, NO_OVERLAY_TOAST, Toast.LENGTH_SHORT).show(); return
+        }
+        runtime.iconBlocked = false
         // The icon means "capture is running": only while the keep-alive service holds the camera.
         if (CaptureService.liveInstance != null) runtime.minimisedIcon.show(controller.settings.value.iconCorner)
     }
@@ -443,7 +512,8 @@ class MainActivity : ComponentActivity() {
     private fun granted(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     // CaptureService is the only capture path (spec §3.1); its scheduler drives the Glance countdown.
-    private fun nextCaptureAt(): Long? = CaptureScheduler(this).nextTriggerAtMs()
+    // Smart mode samples on motion, with only a watchdog alarm: there is no next capture to count down to.
+    private fun nextCaptureAt(): Long? = if (runtime.smartCapture.value) null else CaptureScheduler(this).nextTriggerAtMs()
 
     private fun ensureCaptureScheduled() { if (CaptureScheduler(this).ensureScheduled() == com.rokid.context.glasses.capture.Rearm.MISSED) local = LocalOverlay.Toast(CAPTURE_RESUMED_AFTER_STOP, System.currentTimeMillis()) }
 
@@ -465,7 +535,13 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val TAG = "PcGlasses"
+        /** Start straight into icon mode (no HUD, no focus taken); also what a restart after a force-stop in icon mode does. */
+        const val EXTRA_START_MINIMISED = "com.rokid.context.glasses.START_MINIMISED"
         private const val GATE_TICK_MS = 250L
+        /** The exit message gets this long to leave before the activity finishes (retried every [EXIT_RETRY_MS] while CXR refuses it). */
+        private const val EXIT_WAIT_MS = 300L
+        private const val EXIT_RETRY_MS = 60L
+        private const val EXIT_FLUSH_MS = 120L
         const val MIC_PERMISSION = "Allow the microphone on the glasses"
         /** Minimised without SYSTEM_ALERT_WINDOW: plain moveTaskToBack, no icon (spec 2026-10-14 §3). */
         const val NO_OVERLAY_TOAST = "Allow 'display over other apps' for the icon"
@@ -473,6 +549,7 @@ class MainActivity : ComponentActivity() {
         const val RETURN_TO_MINIMISED = "MINIMISED"
         /** After an auto-open, votes wait this long (the Confirm must have been on screen). */
         const val VOTE_GUARD_MS = 600L
+        const val MINIMISED_HELLO_MS = 700L
         /** A relaunch this soon after the session reopened while minimised is the phone's "Open on glasses". */
         const val OPEN_ON_GLASS_GRACE_MS = 5_000L
         const val OPENED_FROM_PHONE_POPUP = "Proactive Context is running"

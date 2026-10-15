@@ -1,5 +1,6 @@
 package com.rokid.context.phone.hub
 
+import com.rokid.context.data.frames.DirSync
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -42,6 +43,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -60,7 +62,8 @@ class HubTest {
     @get:Rule val tmp = TemporaryFolder()
     private val ctx = ApplicationProvider.getApplicationContext<Application>()
     private val db = testDb(ctx)
-    @After fun close() = db.close()
+    init { DirSync.testOverride = DirSync { true } } // Robolectric cannot fsync a directory
+    @After fun close() { DirSync.testOverride = null; db.close() }
     private val now = 1_793_000_000_000L
     private val sources = object : HubSources {
         override suspend fun today() = listOf(MemoryLine("m1", now, "Keys on the hallway shelf"))
@@ -78,6 +81,8 @@ class HubTest {
         voice: HubVoice = HubVoice.None,
         actions: HubActions = HubActions.None,
         nudges: HubNudges = HubNudges.None,
+        reopenGuards: RelaunchGuards? = null,
+        standDown: StandDown = InMemoryStandDown(),
     ): Hub {
         val pauses = HubPauses(dao, now = clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
@@ -85,7 +90,7 @@ class HubTest {
         val settings = HubSettingsStore(ctx.getSharedPreferences("hub_test_${tmp.root.name}", 0)) { "hud" }
         return Hub(
             backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler),
-            startService = startService, voice = voice, actions = actions, nudges = nudges,
+            startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, standDown = standDown,
         )
             .also { if (start) { it.start(); runCurrent() } }
     }
@@ -220,6 +225,37 @@ class HubTest {
         hub(link, startService = { starts++ }).requestReconnect()
         assertEquals(0, starts)
         assertEquals(1, link.connectCalls)
+    }
+
+    /** Fix wave H: the SDK's wear state is forwarded as pc_wear (on change and again when the session opens). */
+    @Test fun wearIsForwardedToTheGlasses() = runTest {
+        val link = FakeGlassesLink()
+        hub(link)
+        link.sent.clear()
+        link.wearingFlow.value = false; runCurrent()
+        val m = (Wire.decode<com.rokid.context.core.model.WearMessage>(link.lastOn(Channels.WEAR)) as Decoded.Ok).value
+        assertEquals(false, m.worn)
+        link.sent.clear(); link.emitReady(); advanceTimeBy(300)
+        assertTrue("re-sent on ready", link.sent.any { it.first == Channels.WEAR })
+    }
+
+    /** Fix wave H (D): the glasses' pc_user_exit marks the state; an explicit open clears it at once. */
+    @Test fun userExitIsRememberedUntilAnExplicitOpen() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.emit(GlassesEvent.UserExit); runCurrent()
+        assertTrue(h.state.value.closedByUser)
+        h.requestReconnect(); runCurrent()
+        assertFalse(h.state.value.closedByUser)
+    }
+
+    /** Fix wave H4: the glasses' Rokid-closed counters reach the hub state (Diagnostics line), counts only. */
+    @Test fun helloCarriesTheRokidClosedCounters() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        assertEquals(null, h.state.value.rokidClosesLine())
+        link.emit(GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 77, bufferSize = 0, glassesNowMs = now, pauses = emptyList(), rokidCloses = 5, lastRestartGapSec = 38))); runCurrent()
+        assertEquals("Rokid closed the app 5 times (last gap 38s)", h.state.value.rokidClosesLine())
     }
 
     /** Carry (Phase 3 review): each frame the glasses deliver leaves their buffer, so the count drops without a new hello. */
@@ -378,6 +414,122 @@ class HubTest {
         link.setState(LinkState.CLOSED_ON_GLASSES); runCurrent()
         h.requestReconnect()
         assertEquals("a real exit still reconnects", 1, link.connectCalls)
+    }
+
+    private val openGuards = object : RelaunchGuards { override fun callIdle() = true; override fun mediaIdle() = true; override fun worn(): Boolean? = null }
+
+    /** Fix wave I C1: the whole chain on the phone. Icon-mode kill -> silence -> CLOSED_ON_GLASSES -> guarded automatic reopen (8 s, then backoff), told to the glasses as automatic. */
+    @Test fun anIconModeKillIsReopenedAutomaticallyAfterTheGuardsAndTheGlassesAreTold() = runTest {
+        val link = FakeGlassesLink(LinkState.MINIMISED)
+        hub(link, clock = { now + testScheduler.currentTime }, reopenGuards = openGuards)
+        link.setState(LinkState.CLOSED_ON_GLASSES); runCurrent()          // the liveness probe went unanswered twice
+        advanceTimeBy(7_900); assertEquals(0, link.automaticCalls)
+        advanceTimeBy(300); assertEquals("reopened once, as an automatic connect", 1, link.automaticCalls)
+        assertEquals("never an explicit connect", 0, link.connectCalls)
+        link.setState(LinkState.CONNECTING); link.setState(LinkState.CONNECTED); link.sent.clear()
+        link.emitReady(); advanceTimeBy(300)
+        assertTrue("the glasses learn this start was automatic", link.sent.any { it.first == Channels.AUTO_OPEN })
+        link.sent.clear(); advanceTimeBy(60_000)
+        link.emitReady(); advanceTimeBy(300)
+        assertTrue("no marker long after the reopen", link.sent.none { it.first == Channels.AUTO_OPEN })
+    }
+
+    /** Fix wave I C1: "Open on glasses" while minimised checks that the glasses are alive (the link opens the app if they are dead). */
+    @Test fun openOnGlassesWhileMinimisedProbesTheGlasses() = runTest {
+        val link = FakeGlassesLink(LinkState.MINIMISED)
+        val h = hub(link)
+        h.requestReconnect(); runCurrent()
+        assertEquals(1, link.probeCalls); assertEquals(0, link.connectCalls)
+    }
+
+    /** Fix wave I1: a worn=false from before a link loss never comes back; the glasses are never sent a value the phone dropped. */
+    @Test fun aStaleNotWornNeverReturnsAfterAReconnect() = runTest {
+        val link = FakeGlassesLink()
+        hub(link)
+        link.wearingFlow.value = false; runCurrent()
+        link.setState(LinkState.OFFLINE); link.wearingFlow.value = null; runCurrent() // BT lost: the link drops it
+        link.setState(LinkState.CONNECTED); link.sent.clear()
+        link.emitReady(); advanceTimeBy(300)
+        assertTrue("nothing to say about wear", link.sent.none { it.first == Channels.WEAR })
+        link.emit(hello()); runCurrent()
+        assertTrue(link.sent.none { it.first == Channels.WEAR })
+        link.wearingFlow.value = true; runCurrent()
+        assertEquals(true, (Wire.decode<com.rokid.context.core.model.WearMessage>(link.lastOn(Channels.WEAR)) as Decoded.Ok).value.worn)
+    }
+
+    @Test fun aWearMessageNeverPredatesItsSession() = runTest {
+        var t = now
+        val link = FakeGlassesLink()
+        hub(link, clock = { t })
+        link.wearingFlow.value = true; runCurrent()
+        t += 5_000; link.sent.clear(); link.emitReady(); advanceTimeBy(300)
+        val m = (Wire.decode<com.rokid.context.core.model.WearMessage>(link.lastOn(Channels.WEAR)) as Decoded.Ok).value
+        assertTrue("the value is current for this session", m.atMs >= m.sessionStartMs && m.sessionStartMs == now + 5_000)
+    }
+
+    /** Fix wave I2: the stand-down is persisted: a restarted phone neither connects nor resumes into an app the wearer exited. */
+    @Test fun aPhoneRestartNeverReopensWhatTheWearerExited() = runTest {
+        val prefs = ctx.getSharedPreferences("stand_down_${tmp.root.name}", 0)
+        val first = FakeGlassesLink()
+        hub(first, standDown = PrefsStandDown(prefs)).also { first.emit(GlassesEvent.UserExit); runCurrent() }
+        val second = FakeGlassesLink(LinkState.OFFLINE)
+        val h2 = hub(second, standDown = PrefsStandDown(prefs))
+        assertEquals("no connectOnce after a restart", 0, second.connectOnceCalls)
+        assertEquals("but the wearer's own reopen is still watched for (N4)", 1, second.watchCalls)
+        assertTrue(h2.state.value.closedByUser)
+        h2.requestReconnect(); runCurrent()
+        assertFalse(PrefsStandDown(prefs).active)
+        val third = FakeGlassesLink(LinkState.OFFLINE)
+        hub(third, standDown = PrefsStandDown(prefs))
+        assertEquals("an explicit open ended it", 1, third.connectOnceCalls)
+    }
+
+    /** Fix wave I2: a lost pc_user_exit is repeated in the next hello, but an old stamp or one before an explicit open is not news. */
+    @Test fun aHelloRepeatsTheWearerExitOnlyWhenItIsRecentAndNotAnsweredByAnOpen() = runTest {
+        var t = now
+        val sd = InMemoryStandDown()
+        val link = FakeGlassesLink()
+        val h = hub(link, clock = { t }, standDown = sd)
+        fun hello(exitAt: Long) = GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = t, pauses = emptyList(), userExitAtMs = exitAt))
+        t += 30_000
+        link.emit(hello(t - 25_000)); runCurrent() // the exit message was lost with the session; the session connected 30 s ago
+        assertTrue(sd.active); assertTrue(h.state.value.closedByUser)
+        h.requestReconnect(); runCurrent(); assertFalse(sd.active)
+        t += 1_000
+        link.emit(hello(t - 20_000)); runCurrent()
+        assertFalse("that exit is older than the explicit open", sd.active)
+        t += 5_000
+        link.emit(hello(t - Hub.EXIT_STAMP_FRESH_MS - 1)); runCurrent()
+        assertFalse("an old stamp is not news", sd.active)
+        link.emit(hello(t - 2_000)); runCurrent()
+        assertTrue("a stamp newer than the explicit open counts", sd.active)
+    }
+
+    /** Fix wave I N4: a plain hello (no fresh exit) during a stand-down means the wearer reopened the app: the stand-down ends. */
+    @Test fun aHelloFromARunningAppEndsTheStandDown() = runTest {
+        val sd = InMemoryStandDown().also { it.enter(0) }
+        val link = FakeGlassesLink(LinkState.OFFLINE)
+        val h = hub(link, standDown = sd)
+        assertTrue(sd.active)
+        link.emit(hello()); runCurrent()
+        assertFalse(sd.active); assertFalse(h.state.value.closedByUser)
+    }
+
+    @Test fun theIconBlockedRowGoesWhenTheLinkIsLost() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.emit(GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = now, pauses = emptyList(), iconBlocked = true))); runCurrent()
+        assertTrue(h.state.value.iconBlocked)
+        link.setState(LinkState.OFFLINE); runCurrent()
+        assertFalse(h.state.value.iconBlocked)
+    }
+
+    @Test fun anIconlessMinimiseFromTheGlassesShowsADiagnosticsLine() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        assertEquals(null, h.state.value.glassesDiagnostics())
+        link.emit(GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = now, pauses = emptyList(), iconBlocked = true))); runCurrent()
+        assertEquals(com.rokid.context.phone.hub.ICON_BLOCKED_LINE, h.state.value.glassesDiagnostics())
     }
 
     /** Hand-back: a frame acked on the background link and resent on the new session is acked again, never ingested twice. */

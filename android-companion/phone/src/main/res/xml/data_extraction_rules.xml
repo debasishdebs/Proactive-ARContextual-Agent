@@ -34,7 +34,11 @@
         <exclude domain="sharedpref" path="pipeline_stats.xml" />
         <exclude domain="sharedpref" path="rokid_link.xml" />
         <exclude domain="sharedpref" path="rokid_bridge.xml" />
+        <exclude domain="sharedpref" path="relaunch_state.xml" />
         <exclude domain="sharedpref" path="voice_probe.xml" />
+        <!-- Derived state: a restore must not claim adoption or retirement already happened. -->
+        <exclude domain="sharedpref" path="frame_adoption.xml" />
+        <exclude domain="sharedpref" path="space_retired_at.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="endpoint_keys.xml" />
@@ -69,6 +73,10 @@
         <exclude domain="sharedpref" path="pipeline_stats.xml" />
         <exclude domain="sharedpref" path="rokid_link.xml" />
         <exclude domain="sharedpref" path="rokid_bridge.xml" />
+        <exclude domain="sharedpref" path="relaunch_state.xml" />
         <exclude domain="sharedpref" path="voice_probe.xml" />
+        <!-- Derived state: a restore must not claim adoption or retirement already happened. -->
+        <exclude domain="sharedpref" path="frame_adoption.xml" />
+        <exclude domain="sharedpref" path="space_retired_at.xml" />
     </device-transfer>
 </data-extraction-rules>

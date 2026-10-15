@@ -180,6 +180,16 @@ class MinimisedOverlaysTest {
         }
     }
 
+    @Test fun minimisingSaysHelloWithinASecondSoThePhoneHearsSomething() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            frame(null)
+            val before = bridge.sent.count { it.first == Channels.HELLO }
+            s.onActivity { it.minimise() }
+            advance(MainActivity.MINIMISED_HELLO_MS + 100)
+            assertTrue(bridge.sent.count { it.first == Channels.HELLO } > before, "a hello after minimising")
+        }
+    }
+
     @Test fun confirmWhileInFrontDoesNotReminimise() {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             frame(null)

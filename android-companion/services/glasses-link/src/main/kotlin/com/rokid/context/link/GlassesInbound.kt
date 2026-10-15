@@ -39,6 +39,7 @@ class GlassesInbound {
             Channels.AUDIO -> if (!listenAccepted) emptyList() else listOfNotNull(
                 runCatching { Base64.getDecoder().decode(first) }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { GlassesEvent.Audio(it) },
             )
+            Channels.USER_EXIT -> gate(Wire.decode<com.rokid.context.core.model.UserExit>(first)) { GlassesEvent.UserExit }
             Channels.LISTEN_END -> if (!listenAccepted) emptyList() else { listenAccepted = false; listOf(GlassesEvent.ListenEnd) }
             else -> emptyList()
         }

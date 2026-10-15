@@ -45,6 +45,13 @@ object FrameCodec {
         luma: Int? = null,
         phash: String? = null,
         batteryPct: Int? = null,
+        motion: MotionState = MotionState.UNKNOWN,
+        dwell: Boolean = false,
+        blur: Float? = null,
+        dhash: String? = null,
+        width: Int? = null,
+        sampleSeq: Long? = null,
+        sessionId: String? = null,
         chunkChars: Int = SAFE_CHUNK_CHARS,
     ): List<FrameChunk> {
         require(isValidFrameId(frameId)) { "bad frame id" }
@@ -54,7 +61,8 @@ object FrameCodec {
         val crc = crc32(jpeg)
         return parts.mapIndexed { i, part ->
             FrameChunk(
-                FrameMeta(frameId = frameId, chunkIdx = i, chunkCount = parts.size, crc32 = crc, capturedAtMs = capturedAtMs, luma = luma, phash = phash, batteryPct = batteryPct),
+                FrameMeta(frameId = frameId, chunkIdx = i, chunkCount = parts.size, crc32 = crc, capturedAtMs = capturedAtMs, luma = luma, phash = phash, batteryPct = batteryPct,
+                    motion = motion, dwell = dwell, blur = blur, dhash = dhash, width = width, sampleSeq = sampleSeq, sessionId = sessionId),
                 part,
             )
         }

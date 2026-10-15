@@ -8,14 +8,29 @@ import kotlin.test.assertNull
 class DoubleTapExitTest {
     private val w = DoubleTapExit.WINDOW_MS
 
-    @Test fun twoDoubleTapsInWindowMinimiseNoPause() {
+    @Test fun secondDoubleTapStartsMinimisingThenWindowEndMinimisesNoPause() {
         val (armed, first) = DoubleTapExit.onDoubleTap(ExitGate.Idle, 1_000)
         assertNull(first)
         assertEquals(ExitGate.Armed(1_000 + w), armed)
-        val (after, second) = DoubleTapExit.onDoubleTap(armed, 1_000 + w - 1)
-        assertEquals(PageAction.MINIMISE, second)
-        assertEquals(ExitGate.Idle, after)
-        assertNull(DoubleTapExit.onTick(after, 1_000 + w + 5_000).second, "no pause after a minimise")
+        val (mini, second) = DoubleTapExit.onDoubleTap(armed, 1_000 + w - 1)
+        assertNull(second)
+        val m = DoubleTapExit.MINIMISE_WINDOW_MS
+        assertEquals(ExitGate.Minimising(1_000 + w - 1 + m), mini)
+        assertNull(DoubleTapExit.onTick(mini, 1_000 + w - 2 + m).second, "still inside the exit window")
+        val (after, action) = DoubleTapExit.onTick(mini, 1_000 + w - 1 + m)
+        assertEquals(PageAction.MINIMISE, action); assertEquals(ExitGate.Idle, after)
+        assertNull(DoubleTapExit.onTick(after, 100_000).second, "no pause after a minimise")
+    }
+
+    @Test fun thirdDoubleTapInTheWindowExits() {
+        val (armed, _) = DoubleTapExit.onDoubleTap(ExitGate.Idle, 0)
+        val (mini, _) = DoubleTapExit.onDoubleTap(armed, 500)
+        val (after, action) = DoubleTapExit.onDoubleTap(mini, 500 + DoubleTapExit.MINIMISE_WINDOW_MS - 1)
+        assertEquals(PageAction.EXIT, action); assertEquals(ExitGate.Idle, after)
+        assertNull(DoubleTapExit.onTick(after, 60_000).second, "an exit leaves no late minimise or pause")
+        // too late: a fresh arm instead
+        val (late, a2) = DoubleTapExit.onDoubleTap(mini, 500 + DoubleTapExit.MINIMISE_WINDOW_MS)
+        assertNull(a2); assertEquals(ExitGate.Armed(500 + DoubleTapExit.MINIMISE_WINDOW_MS + w), late)
     }
 
     @Test fun singleDoubleTapThenExpiryTogglesPauseOnce() {
@@ -38,19 +53,24 @@ class DoubleTapExitTest {
         assertNull(DoubleTapExit.onTick(cancelled, w * 2).second)
     }
 
-    @Test fun minimiseClearsGateNoLatePause() {
+    @Test fun cancelWhileMinimisingNeverMinimises() {
         val (armed, _) = DoubleTapExit.onDoubleTap(ExitGate.Idle, 0)
-        val (gate, a) = DoubleTapExit.onDoubleTap(armed, 500)
-        assertEquals(PageAction.MINIMISE, a)
-        // Returning to the HUD later: every tick from here is silent.
-        for (t in listOf(w, w + 1, 60_000L)) assertNull(DoubleTapExit.onTick(gate, t).second)
+        val (mini, _) = DoubleTapExit.onDoubleTap(armed, 500)
+        val cancelled = DoubleTapExit.onOtherInput(mini)
+        for (t in listOf(w, 60_000L)) assertNull(DoubleTapExit.onTick(cancelled, t).second)
     }
 
-    @Test fun countdownShowsWholeSeconds() {
-        val armed = ExitGate.Armed(3_000)
-        assertEquals("Double-tap again to exit \u00b7 3", DoubleTapExit.countdownText(armed, 0))
-        assertEquals("Double-tap again to exit \u00b7 3", DoubleTapExit.countdownText(armed, 1))
-        assertEquals("Double-tap again to exit \u00b7 1", DoubleTapExit.countdownText(armed, 2_500))
+    @Test fun textsFollowTheGate() {
+        assertEquals("Double-tap again to minimise", DoubleTapExit.countdownText(ExitGate.Armed(3_000), 0))
+        assertEquals("Minimising... double-tap again to EXIT", DoubleTapExit.countdownText(ExitGate.Minimising(1_500), 0))
         assertNull(DoubleTapExit.countdownText(ExitGate.Idle, 0))
+    }
+
+    /** Fix wave I: a phone Confirm/Answer in the Minimising window must not cancel the minimise the wearer asked for. */
+    @Test fun aPhoneOverlayDoesNotCancelTheMinimisingWindowButStillCancelsArmed() {
+        assertEquals(false, DoubleTapExit.cancelsFor(ExitGate.Minimising(1_000), listening = false, phoneBusy = true))
+        assertEquals(true, DoubleTapExit.cancelsFor(ExitGate.Armed(1_000), listening = false, phoneBusy = true))
+        assertEquals(true, DoubleTapExit.cancelsFor(ExitGate.Minimising(1_000), listening = true, phoneBusy = false), "own microphone still cancels")
+        assertEquals(false, DoubleTapExit.cancelsFor(ExitGate.Armed(1_000), listening = false, phoneBusy = false))
     }
 }
