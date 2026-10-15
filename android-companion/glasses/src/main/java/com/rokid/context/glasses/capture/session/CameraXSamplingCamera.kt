@@ -59,7 +59,10 @@ internal object CameraXBind {
      * Binds [analysis] (and a preview onto a throwaway texture, which this camera HAL needs to deliver frames) to [owner].
      * Main thread only. The result unbinds and releases the texture exactly once; null when the bind threw.
      */
-    fun bind(owner: LifecycleOwner, provider: ProcessCameraProvider, analysis: ImageAnalysis, executor: Executor): CaptureSession? {
+    fun bind(
+        owner: LifecycleOwner, provider: ProcessCameraProvider, analysis: ImageAnalysis, executor: Executor,
+        onBound: ((androidx.camera.core.Camera) -> Unit)? = null,
+    ): CaptureSession? {
         lateinit var texture: SurfaceTexture
         val session = CaptureSession(unbind = { provider.unbindAll() }, release = { texture.release() }).also { texture = SurfaceTexture(0) }
         val preview = Preview.Builder().setResolutionSelector(resolution).build().also { p ->
@@ -71,7 +74,8 @@ internal object CameraXBind {
         }
         return try {
             provider.unbindAll()
-            provider.bindToLifecycle(owner, selector(provider), analysis, preview)
+            val camera = provider.bindToLifecycle(owner, selector(provider), analysis, preview)
+            onBound?.invoke(camera)
             session
         } catch (e: Exception) {
             Log.w(TAG, "camera bind failed: ${e.javaClass.simpleName}")
@@ -102,6 +106,9 @@ internal class ImageProxyFrame(private val image: ImageProxy) : FrameSource {
 internal class CameraXSamplingCamera(private val context: Context, private val owner: LifecycleOwner, private val executor: Executor) : SamplingCamera {
     private var provider: ProcessCameraProvider? = null
     @Volatile private var held: CaptureSession? = null
+    @Volatile override var busy = false
+        private set
+    private var watch: Pair<androidx.lifecycle.LiveData<androidx.camera.core.CameraState>, androidx.lifecycle.Observer<androidx.camera.core.CameraState>>? = null
 
     override suspend fun open(onFrame: (FrameSource) -> Unit): Boolean {
         val p = provider ?: CameraXBind.provider(context)?.also { provider = it } ?: return false
@@ -109,14 +116,27 @@ internal class CameraXSamplingCamera(private val context: Context, private val o
         analysis.setAnalyzer(executor) { image ->
             try { onFrame(ImageProxyFrame(image)) } catch (e: Exception) { Log.w(TAG, "analyze failed: ${e.javaClass.simpleName}") } finally { image.close() }
         }
-        held = CameraXBind.bind(owner, p, analysis, executor)
+        busy = false
+        held = CameraXBind.bind(owner, p, analysis, executor) { cam ->
+            // Another app holding the camera shows as a CameraState error, not as a frame: remember it (main thread).
+            val live = cam.cameraInfo.cameraState
+            val obs = androidx.lifecycle.Observer<androidx.camera.core.CameraState> { st ->
+                val code = st.error?.code
+                if (code == androidx.camera.core.CameraState.ERROR_CAMERA_IN_USE || code == androidx.camera.core.CameraState.ERROR_MAX_CAMERAS_IN_USE) busy = true
+            }
+            live.observeForever(obs)
+            watch = live to obs
+        }
         return held != null
     }
 
     override fun close() {
         val h = held ?: return
         held = null
-        if (Looper.myLooper() == Looper.getMainLooper()) h.close() else Handler(Looper.getMainLooper()).post { h.close() }
+        val w = watch
+        watch = null
+        val release = { w?.let { (live, obs) -> live.removeObserver(obs) }; h.close() }
+        if (Looper.myLooper() == Looper.getMainLooper()) release() else Handler(Looper.getMainLooper()).post { release() }
     }
 
     private companion object { const val TAG = "PcCapture" }

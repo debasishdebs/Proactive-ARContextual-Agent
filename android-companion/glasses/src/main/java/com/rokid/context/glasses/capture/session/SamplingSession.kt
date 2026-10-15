@@ -23,6 +23,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlin.random.Random
 
 /** One camera frame as the analyzer sees it. [copy] is valid only inside the callback (the ImageProxy closes after it). */
@@ -35,6 +38,8 @@ class FrameCopy(val thumb: Thumb, val pixels: Nv21Frame)
 interface SamplingCamera {
     /** False (or a throw) = the bind failed. Frames arrive on the camera's own thread. */
     suspend fun open(onFrame: (FrameSource) -> Unit): Boolean
+    /** True when the last [open] failed because another app holds the camera (in use / too many cameras): not a bind fault. */
+    val busy: Boolean get() = false
     /** Unbinds. Safe to call twice, from any thread. */
     fun close()
 }
@@ -69,8 +74,6 @@ class SamplingSession(
     private val sink: (KeyframeOut, Int) -> Unit,
     private val clock: () -> Long,
     private val settings: () -> HudSettings,
-    /** Android 12: a camera foreground service must start from a visible HUD. Checked until the session starts, then latched. */
-    private val hudVisible: () -> Boolean = { true },
     private val capturePaused: () -> Boolean = { false },
     private val batteryPct: () -> Int = { -1 },
     private val charging: () -> Boolean = { false },
@@ -81,6 +84,8 @@ class SamplingSession(
     private val onFallback: () -> Unit = {},
     private val log: (String) -> Unit = {},
     private val newSessionId: () -> String = { Random.nextLong().toULong().toString(16).padStart(16, '0') },
+    /** Where a flushed keyframe is encoded (the service passes Dispatchers.Default so the main thread never encodes). */
+    private val workContext: CoroutineContext = EmptyCoroutineContext,
 ) {
     private class Episode(val continuous0: Boolean) {
         @Volatile var continuous = continuous0
@@ -92,6 +97,9 @@ class SamplingSession(
         @Volatile var analysed = 0
         @Volatile var openFailed = false
         @Volatile var noFrames = false
+        @Volatile var frames = 0
+        @Volatile var lastFrameAt = 0L
+        @Volatile var lastUnusable = false
     }
 
     private val lock = Any()
@@ -124,16 +132,24 @@ class SamplingSession(
     private val keptAt = ArrayDeque<Long>()
 
     /** Frames that did not come out 640 px wide and were scaled (the encoder reports each). */
-    @Volatile var scaledFrames = 0
-        private set
+    private val scaledCount = AtomicInteger()
+    val scaledFrames: Int get() = scaledCount.get()
     /** Samples whose copy took longer than [COPY_BUDGET_MS] (the thumbnail target is 30 ms). */
-    @Volatile var slowCopies = 0
-        private set
-    @Volatile var camerasOpened = 0
-        private set
+    private val slowCount = AtomicInteger()
+    val slowCopies: Int get() = slowCount.get()
+    private val openedCount = AtomicInteger()
+    val camerasOpened: Int get() = openedCount.get()
     /** Frames copied and offered to the gate (for logs and tests). */
-    @Volatile var analysedFrames = 0
-        private set
+    private val analysedCount = AtomicInteger()
+    val analysedFrames: Int get() = analysedCount.get()
+
+    /** True while the session loop runs (the watchdog reports "alive" only then). */
+    val alive: Boolean get() = job?.isActive == true && !stopped
+
+    // Measured camera start-up (open -> first frame), the lead of a brief check. Guarded by [lock].
+    private val startups = ArrayDeque<Long>()
+    private var darkStreak = 0
+    private var busyCount = 0
 
     fun start() {
         synchronized(lock) {
@@ -149,7 +165,7 @@ class SamplingSession(
             launch { motion.onset.collect { onOnset() } }
             launch { motion.dwell.collect { onDwell() } }
             while (isActive) {
-                val wait = tick()
+                val wait = try { tick() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("tick failed: ${e.javaClass.simpleName}"); TICK_MS }
                 withTimeoutOrNull(wait) { kick.receive() }
             }
         }
@@ -225,7 +241,7 @@ class SamplingSession(
             pendingNowAt?.let { if (now - it > PENDING_MS) pendingNowAt = null }
             d = CameraPolicy.decide(
                 st, motion.decelerating.value, motionEndAt?.let { now - it }, now - lastKeyframeAt, s.quickLookMs,
-                lowPower(), heat.level.value == HeatLevel.SLOW, now, lastBriefAt,
+                lowPower(), heat.level.value == HeatLevel.SLOW, now, lastBriefAt, quiet = darkStreak >= DARK_BACKOFF_AFTER,
             )
             analysisIntervalMs = d.analysisIntervalMs
             val cur = episode
@@ -239,13 +255,15 @@ class SamplingSession(
                 else if (cur == null && canBind) {
                     val dueAt = d.nextBriefCheckAtMs
                     val forced = forceBrief || pendingDwellAt != null || pendingNowAt != null
-                    if (forced || (dueAt != null && now + BRIEF_LEAD_MS >= dueAt)) startEpisode(continuous = false, now)
-                    else if (dueAt != null) wait = (dueAt - BRIEF_LEAD_MS - now).coerceIn(1L, TICK_MS)
+                    val lead = briefLeadMs()
+                    if (forced || (dueAt != null && now + lead >= dueAt)) startEpisode(continuous = false, now)
+                    else if (dueAt != null) wait = (dueAt - lead - now).coerceIn(1L, TICK_MS)
                 }
             }
             episode?.let { e ->
                 if (e.openedAt > 0 && e.firstFrameAt < 0 && now - e.openedAt > NO_FRAME_MS) { e.noFrames = true; closeEpisode(e) }
                 if (!e.continuous && e.firstFrameAt >= 0 && now - e.firstFrameAt > BRIEF_GIVE_UP_MS) closeEpisode(e)
+                if (!e.closing && e.firstFrameAt >= 0 && now - e.lastFrameAt > STALL_MS) { e.noFrames = true; log("camera frames stalled"); closeEpisode(e) }
             }
         }
         publish(now, null)
@@ -256,10 +274,7 @@ class SamplingSession(
     private fun blockReason(s: HudSettings, now: Long): String? {
         if (stopped) return "stopped"
         if (s.captureMode != CaptureMode.SMART) return "mode"
-        if (!started) {
-            if (!hudVisible()) return "hud"
-            started = true
-        }
+        started = true
         if (capturePaused()) return "paused"
         if (s.pauseWhenNotWorn && !wear.worn.value) return "not_worn"
         if (heat.level.value == HeatLevel.STOP) return "heat"
@@ -301,9 +316,10 @@ class SamplingSession(
                 owner.acquire(OWNER) {
                     if (ep.closing) return@acquire
                     ep.openedAt = clock()
-                    camerasOpened++
+                    openedCount.incrementAndGet()
                     val ok = try {
-                        camera.open { src -> onFrame(ep, src) }
+                        withTimeoutOrNull(OPEN_TIMEOUT_MS) { camera.open { src -> onFrame(ep, src) } }
+                            ?: false.also { log("camera open timed out") }
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -331,11 +347,40 @@ class SamplingSession(
         synchronized(lock) {
             if (episode === ep) episode = null
             lastBriefAt = now
-            if (ep.openFailed || ep.noFrames) { lastBriefAt = now - DUE_NOW_MS; onBindFailed(now) } // retry after the back-off, not on the 5 s beat
+            if (ep.openFailed || ep.noFrames) {
+                lastBriefAt = now - DUE_NOW_MS // retry after the back-off, not on the 5 s beat
+                if (camera.busy) onBusy(now) else onBindFailed(now)
+            }
             if (!stopped) flushed = gate.flushWindow()
         }
-        (flushed as? GateResult.Keep)?.let { emit(it, now) }
+        (flushed as? GateResult.Keep)?.let { k ->
+            scope.launch(workContext) { try { emit(k, now) } catch (e: CancellationException) { throw e } catch (e: Exception) { log("emit failed: ${e.javaClass.simpleName}") } }
+        }
         kick.trySend(Unit)
+    }
+
+    /** Another app holds the camera: wait and retry, never a bind failure (it must not latch the Fixed fallback). Caller holds [lock]. */
+    private fun onBusy(now: Long) {
+        busyCount++
+        bindBackoffUntil = now + BUSY_BACKOFF_MS
+        log("camera busy ($busyCount): retrying in ${BUSY_BACKOFF_MS / 1000} s")
+    }
+
+    /** The lead of a brief check: the rolling p95 of the measured start-up, clamped; 535 ms until enough samples. Caller holds [lock]. */
+    private fun briefLeadMs(): Long {
+        if (startups.size < MIN_LEAD_SAMPLES) return BRIEF_LEAD_MS
+        return percentile(0.95).coerceIn(MIN_LEAD_MS, MAX_LEAD_MS)
+    }
+
+    private fun percentile(q: Double): Long {
+        val sorted = startups.sorted()
+        return sorted[(Math.ceil(q * sorted.size).toInt() - 1).coerceIn(0, sorted.size - 1)]
+    }
+
+    /** "startup n=.. p50=.. p95=.. lead=.. ms" for the status heartbeat. */
+    fun startupStats(): String = synchronized(lock) {
+        if (startups.isEmpty()) "startup n=0 lead=$BRIEF_LEAD_MS ms"
+        else "startup n=${startups.size} p50=${percentile(0.5)} p95=${percentile(0.95)} lead=${briefLeadMs()} ms busy=$busyCount"
     }
 
     /** Caller holds [lock]. */
@@ -363,11 +408,17 @@ class SamplingSession(
         val sequence: Long
         synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
-            if (ep.firstFrameAt < 0) { ep.firstFrameAt = now; bindFailures = 0 }
+            ep.frames++
+            ep.lastFrameAt = now
+            if (ep.firstFrameAt < 0) {
+                ep.firstFrameAt = now; bindFailures = 0
+                if (ep.openedAt > 0) { startups.addLast(now - ep.openedAt); while (startups.size > STARTUP_WINDOW) startups.removeFirst() }
+            }
             val must = forceAnalyse || pendingDwellAt != null || pendingNowAt != null
-            // The first frame, an onset, a dwell and "Capture now" are analysed at once (at most every FORCED_GAP_MS).
+            // The first frame, an onset, a dwell and "Capture now" are analysed at once (at most every FORCED_GAP_MS);
+            // so is the frame after an unusable one (exposure still settling).
             val gap = now - ep.lastAnalysedAt
-            if (ep.analysed > 0 && gap < (if (must) FORCED_GAP_MS else analysisIntervalMs)) return
+            if (ep.analysed > 0 && gap < (if (must || ep.lastUnusable) FORCED_GAP_MS else analysisIntervalMs)) return
             ep.lastAnalysedAt = now
             ep.analysed++
             forceAnalyse = false
@@ -375,9 +426,10 @@ class SamplingSession(
             forced = pendingNowAt != null
             sequence = ++seq
         }
-        val copy = src.copy() ?: return
-        analysedFrames++
-        if (clock() - now > COPY_BUDGET_MS) slowCopies++
+        val copy = src.copy()
+        if (copy == null) { synchronized(lock) { if (ep === episode) unusable(ep, now) }; return }
+        analysedCount.incrementAndGet()
+        if (clock() - now > COPY_BUDGET_MS) slowCount.incrementAndGet()
         val luma = meanLuma(copy.thumb)
         val cand = Candidate(sequence, copy.thumb, copy.pixels)
         // A dark frame is unusable like a blurred one: the camera stays open for the next.
@@ -390,10 +442,24 @@ class SamplingSession(
         if (result is GateResult.Keep) emit(result, now)
         synchronized(lock) {
             if (usable) {
+                ep.lastUnusable = false
                 if (dwellArmed) pendingDwellAt = null
                 if (forced) pendingNowAt = null
-                if (!ep.continuous) closeEpisode(ep) // a brief check ends at its first usable frame
-            }
+                if (!ep.continuous) { darkStreak = 0; closeEpisode(ep) } // a brief check ends at its first usable frame
+            } else unusable(ep, now)
+        }
+    }
+
+    /**
+     * A frame that cannot be judged (dark, blurred, no pixels). A brief check does not hold the camera open for a better
+     * one: once the exposure has had a moment to settle (a few frames or SETTLE_MS) it ends, usable or not, and a run of
+     * such checks backs the cadence off. Caller holds [lock].
+     */
+    private fun unusable(ep: Episode, now: Long) {
+        ep.lastUnusable = true
+        if (!ep.continuous && !ep.closing && (ep.frames >= SETTLE_FRAMES || now - ep.firstFrameAt >= SETTLE_MS)) {
+            darkStreak++
+            closeEpisode(ep)
         }
     }
 
@@ -401,7 +467,7 @@ class SamplingSession(
     private fun emit(keep: GateResult.Keep, now: Long) {
         val enc = encoder.encode(keep.candidate.pixels)
         if (enc == null) { log("encode failed for sample ${keep.candidate.seq}"); return }
-        if (enc.scaled) { scaledFrames++; log("keyframe was not 640 wide: scaled (count $scaledFrames)") }
+        if (enc.scaled) { val n = scaledCount.incrementAndGet(); log("keyframe was not 640 wide: scaled (count $n)") }
         val out = KeyframeOut(
             enc.jpeg, enc.width, motion.state.value, keep.dwell, keep.blur,
             hex(keep.dhash), hex(keep.phash), keep.candidate.seq, sessionId,
@@ -430,6 +496,18 @@ class SamplingSession(
         /** Cold camera start-up p95 (probe). A brief check opens this early so its first frame lands on the 5 s / 15 s beat. */
         const val BRIEF_LEAD_MS = 535L
         const val BRIEF_GIVE_UP_MS = 1_500L
+        /** A brief check ends on a frame it cannot use after this many frames or ms of exposure settling. */
+        const val SETTLE_FRAMES = 3
+        const val SETTLE_MS = 200L
+        /** Brief checks in a row that found nothing usable before the cadence drops to the quiet 15 s. */
+        const val DARK_BACKOFF_AFTER = 3
+        const val STALL_MS = 3_000L
+        const val OPEN_TIMEOUT_MS = 3_000L
+        const val BUSY_BACKOFF_MS = 30_000L
+        const val STARTUP_WINDOW = 20
+        const val MIN_LEAD_SAMPLES = 3
+        const val MIN_LEAD_MS = 250L
+        const val MAX_LEAD_MS = 1_500L
         const val NO_FRAME_MS = 3_000L
         const val PENDING_MS = 3_000L
         const val REST_CAPTURE_MS = 60_000L

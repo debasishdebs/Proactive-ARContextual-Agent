@@ -98,3 +98,24 @@ class CaptureServiceModeTest {
         assertEquals("exit", runtime.captureStatus.value.reason)
     }
 }
+
+/** The Fixed capture forcing rule and the Smart fallback latch (review of G3b, important 2 and 5). */
+class CaptureForceAndLatchTest {
+    @Test fun aUserCaptureNowIsForcedButTheAlarmAndRestAreNot() {
+        assertTrue(gateForce(skipDedupe = false, userRequest = true))
+        assertTrue(gateForce(skipDedupe = true, userRequest = false))
+        assertFalse(gateForce(skipDedupe = false, userRequest = false))
+    }
+
+    @Test fun theFallbackIsClearedByTheWatchdogAfterFiveMinutes() {
+        var now = 0L
+        val latch = DegradedLatch({ now }, 5 * 60_000L)
+        assertFalse(latch.tripped)
+        latch.trip()
+        now = 4 * 60_000L
+        assertFalse(latch.retryDue()); assertTrue(latch.tripped)
+        now = 5 * 60_000L
+        assertTrue(latch.retryDue()); assertFalse(latch.tripped)
+        assertFalse(latch.retryDue())
+    }
+}
