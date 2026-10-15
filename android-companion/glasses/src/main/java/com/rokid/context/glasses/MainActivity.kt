@@ -87,6 +87,9 @@ class MainActivity : ComponentActivity() {
     /** Spec 2026-10-14 §4: the HUD was opened for a Confirm and goes back to the background after it. */
     private var returnToMinimised = false
     private var autoOpenedAtMs = 0L
+    /** The newest intent delivered by onNewIntent. Not setIntent(): androidx ActivityScenario matches its activity by getIntent() and never reaches DESTROYED if it changes. */
+    private var startIntent: Intent? = null
+    private val minimisedHello = Runnable { if (minimised) controller.sendHello() }
     /** The proposal the HUD was opened for (and the last one launched, so a repeat frame never opens it twice). */
     private var autoConfirmId: String? = null
     private var launchedConfirmId: String? = null
@@ -152,10 +155,12 @@ class MainActivity : ComponentActivity() {
         runtime.restarts.heartbeat() // alive and meant to be running (the stamp is not written while closed)
         if (granted(Manifest.permission.CAMERA)) CaptureService.startKeepAlive(this)
         // Fix wave I: back after a kill (or an explicit extra, consumed once): straight to icon mode, no HUD, unless the wearer opened it from the launcher.
-        val extra = intent?.getBooleanExtra(EXTRA_START_MINIMISED, false) == true
-        if (extra) intent?.removeExtra(EXTRA_START_MINIMISED)
-        val source = StartSources.classify(intent?.action, intent?.categories, referrer?.host)
-        if (runtime.startGate.onStart(source, extra)) {
+        val si = startIntent ?: intent
+        val extra = si?.getBooleanExtra(EXTRA_START_MINIMISED, false) == true
+        if (extra) si?.removeExtra(EXTRA_START_MINIMISED)
+        val source = StartSources.classify(si?.action, si?.categories, referrer?.host)
+        if (source == StartSource.LAUNCHER) runtime.restarts.clearUserExit() // the wearer opened it: an earlier exit is over
+        if (runtime.startGate.onStart(source, extra, fromMinimised = wasMinimised)) {
             Log.i(TAG, "starting minimised (icon mode) source=$source")
             swipeTimer.post { minimise() }
         } else if (source == StartSource.LAUNCHER) Log.i(TAG, "opened from the launcher: showing the HUD")
@@ -171,6 +176,7 @@ class MainActivity : ComponentActivity() {
 
     public override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        startIntent = intent // onStart classifies the start that brought us forward, not the first one of the process
         val cameBack = wasMinimised
         wasMinimised = false
         when {
@@ -189,6 +195,7 @@ class MainActivity : ComponentActivity() {
                 if (Settings.canDrawOverlays(this)) runtime.popup.show(OPENED_FROM_PHONE_POPUP, controller.settings.value.popupMs())
             }
             else -> { // the wearer opened the app themselves: the HUD stays in front after any Confirm
+                runtime.restarts.clearUserExit()
                 returnToMinimised = false
                 autoConfirmId = null
                 swipeTimer.removeCallbacks(confirmTimeout)
@@ -393,6 +400,8 @@ class MainActivity : ComponentActivity() {
         moveTaskToBack(true)
         minimised = true
         runtime.hudPresence.onMinimised()
+        // The phone only hears a minimised app when it speaks: say hello at once so it never takes the quiet for a closed app.
+        swipeTimer.removeCallbacks(minimisedHello); swipeTimer.postDelayed(minimisedHello, MINIMISED_HELLO_MS)
         if (!Settings.canDrawOverlays(this)) {
             // Capture runs but nothing shows it: count-only warning here, a Diagnostics row on the phone (via the hello).
             Log.w(TAG, "minimised without the overlay permission: no icon")
@@ -540,6 +549,7 @@ class MainActivity : ComponentActivity() {
         const val RETURN_TO_MINIMISED = "MINIMISED"
         /** After an auto-open, votes wait this long (the Confirm must have been on screen). */
         const val VOTE_GUARD_MS = 600L
+        const val MINIMISED_HELLO_MS = 700L
         /** A relaunch this soon after the session reopened while minimised is the phone's "Open on glasses". */
         const val OPEN_ON_GLASS_GRACE_MS = 5_000L
         const val OPENED_FROM_PHONE_POPUP = "Proactive Context is running"

@@ -95,6 +95,8 @@ class RestartDiagnosticsTest {
         modes.set(UiModeStore.HOME); val d = mk(); d.onUserExit(wall); wall += 3_600_000
         d.heartbeat() // the runtime's timer keeps ticking after the exit
         assertEquals(wall - 3_600_000, d.userExitAtMs)
+        d.clearUserExit(); assertNull(d.userExitAtMs) // the wearer opened it again (fix wave I N3)
+        d.onUserExit(5)
         userRequestedExit = true
         val d2 = mk(); d2.onProcessStart()
         assertEquals("restart gap=-1 reason=unknown ui_mode=home", logs.last())

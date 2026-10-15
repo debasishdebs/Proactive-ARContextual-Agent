@@ -52,6 +52,9 @@ class RestartDiagnostics(
     /** The wearer exited on purpose at [atMs] (glasses clock): repeated in every hello until the phone has heard it. */
     fun onUserExit(atMs: Long) { prefs.edit().remove(KEY_ALIVE).putLong(KEY_EXIT_AT, atMs).apply() }
 
+    /** The wearer opened the app themselves: the exit they made is over and must never be repeated in a hello again. */
+    fun clearUserExit() { if (userExitAtMs != null) prefs.edit().remove(KEY_EXIT_AT).apply() }
+
     /** Glasses clock of the wearer's last deliberate exit, or null. */
     val userExitAtMs: Long? get() = prefs.getLong(KEY_EXIT_AT, 0L).takeIf { it > 0L }
 
