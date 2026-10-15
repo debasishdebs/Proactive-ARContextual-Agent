@@ -73,6 +73,8 @@ class GlassesSessionPolicy(
     private var present = false
     private var ceilingRetries = 0 // retries already scheduled at the backoff ceiling
     private var authRetries = 0 // automatic re-authorizations after a timeout since the last success or explicit action
+    /** Fix wave I4: the current connect is the phone's automatic reopen; a failure ends it (the relauncher owns the retries and the hourly cap). */
+    private var automatic = false
     private val idle get() = state == S.Idle || state == S.ClosedOnGlasses
 
     /** True while the app was closed on the glasses and nothing else has happened since (the link watches for a reopen). */
@@ -89,7 +91,7 @@ class GlassesSessionPolicy(
     val waitingAuthRetry: Boolean get() = state == S.WaitingAuthRetry
 
     /** The link was closed by its owner: forget everything, so the next [autoConnect] / [manualConnect] starts clean. */
-    fun reset() { state = S.Idle; present = false; backoff.reset(); ceilingRetries = 0; resetAuthRetries() }
+    fun reset() { state = S.Idle; present = false; automatic = false; backoff.reset(); ceilingRetries = 0; resetAuthRetries() }
 
     private fun resetAuthRetries() { authBackoff.reset(); authRetries = 0 }
 
@@ -100,7 +102,7 @@ class GlassesSessionPolicy(
         }
         LinkEvent.DeviceGone -> { present = false; state = S.Idle; listOf(LinkAction.MarkDisconnected) }
         LinkEvent.Started -> {
-            state = S.Open; backoff.reset(); ceilingRetries = 0; resetAuthRetries()
+            state = S.Open; automatic = false; backoff.reset(); ceilingRetries = 0; resetAuthRetries()
             listOf(LinkAction.MarkConnected, LinkAction.SendSettings)
         }
         LinkEvent.Paused -> { state = S.Paused; listOf(LinkAction.MarkPaused) }
@@ -122,12 +124,12 @@ class GlassesSessionPolicy(
         LinkEvent.ConnectRefused -> { state = S.Idle; listOf(LinkAction.MarkDisconnected) }
         LinkEvent.Closed, LinkEvent.ConnectFailed -> {
             // Transient failures retry 2/5/10/30 s, then at most [MAX_CEILING_RETRIES] more 30 s retries, then wait for the user.
-            if (present && ceilingRetries < MAX_CEILING_RETRIES) {
+            if (present && !automatic && ceilingRetries < MAX_CEILING_RETRIES) {
                 val delay = backoff.next()
                 if (delay >= backoff.ceilingMs) ceilingRetries++
                 state = S.WaitingRetry
                 listOf(LinkAction.MarkDisconnected, LinkAction.ScheduleRetry(delay))
-            } else { state = S.Idle; listOf(LinkAction.MarkDisconnected) }
+            } else { state = S.Idle; automatic = false; listOf(LinkAction.MarkDisconnected) }
         }
         LinkEvent.RetryTimer -> when {
             present && state == S.WaitingRetry -> { state = S.Connecting; listOf(LinkAction.Connect) }
@@ -140,10 +142,13 @@ class GlassesSessionPolicy(
     /**
      * Explicit connect (phone "Open on glasses", after authorization). Replaces a stuck attempt; leaves an Open/Paused
      * session alone, and a minimised app too (review I2: the connect's appStart would pull the HUD over Maps).
+     * [auto] (fix wave I4): the phone's own reopen after Rokid closed the app; it does not mark the device present and a
+     * failure is not retried here (no 2/5/10/30 s appStart loop that would bypass the relauncher's guards).
      */
-    fun manualConnect(): List<LinkAction> {
+    fun manualConnect(auto: Boolean = false): List<LinkAction> {
         if (state == S.Minimised) return emptyList()
-        present = true
+        automatic = auto
+        if (!auto) present = true
         backoff.reset(); ceilingRetries = 0; resetAuthRetries()
         return if (state == S.Open || state == S.Paused) emptyList()
         else { state = S.Connecting; listOf(LinkAction.MarkConnecting, LinkAction.Connect) }
