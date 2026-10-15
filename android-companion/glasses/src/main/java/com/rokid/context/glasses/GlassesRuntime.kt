@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.BatteryManager
 import android.util.Log
+import com.rokid.context.glasses.capture.diag.DiagLog
 import androidx.annotation.VisibleForTesting
 import com.rokid.context.core.model.Command
 import com.rokid.context.core.model.Hello
@@ -60,6 +61,8 @@ import java.io.File
  * session can be open (spec §1.7), so nothing is sent without one.
  */
 class GlassesRuntime private constructor(private val app: Context) {
+    /** Fix wave K4: PcCapture / PcUplink lines also go to files/capture_diag.log; first, so every later log line lands there. */
+    private val diagInstalled = DiagLog.install(app.filesDir)
     /** Nothing launched here may crash the glasses app; only the exception's simple name is logged. */
     private val errors = CoroutineExceptionHandler { _, e -> Log.w(TAG, "runtime job failed: ${e.javaClass.simpleName}") }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + errors)
@@ -81,7 +84,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     val captureStatus = MutableStateFlow(SessionStatus(running = false, motion = MotionState.STILL, keyframesLast10Min = 0, restingUntilMs = null, reason = null))
     /** Smart mode is sampling (or about to): the next-capture countdown and the icon ring have nothing to count down to. */
     val smartCapture = MutableStateFlow(false)
-    val buffer = OutboundBuffer(File(app.filesDir, "outbound"), log = { Log.i(UPLINK_TAG, it) })
+    val buffer = OutboundBuffer(File(app.filesDir, "outbound"), log = { DiagLog.i(UPLINK_TAG, it) })
     /** Our HUD activity's lifecycle, for the capture fallback (spec §1.7: never reopened over another app). */
     val hudPresence = HudPresence()
     val fallback = ForegroundFallback(hudPresence)
@@ -114,7 +117,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     private var attachJob: Job? = null
     /** Process-wide: built once from the application context, never per activity (CXR-S cannot unsubscribe). */
     val bridge: SharedBridge by lazy { SharedBridge(bridgeFactory(app)) }
-    val uplink = FrameUplink(scope, buffer, sendChunk = { c -> controller?.sendFrameChunk(c) ?: -1 }, canSend = ::canSend, log = { Log.i(UPLINK_TAG, it) }, onBufferChanged = { controller?.sendHello() }, onDelivered = { photoCue.pulse() })
+    val uplink = FrameUplink(scope, buffer, sendChunk = { c -> controller?.sendFrameChunk(c) ?: -1 }, canSend = ::canSend, log = { DiagLog.i(UPLINK_TAG, it) }, onBufferChanged = { controller?.sendHello() }, onDelivered = { photoCue.pulse() })
 
     /** Fix wave H4: last-alive heartbeat and the "restart gap" log (Rokid force-stops us on a scene change). */
     private val diagPrefs = app.getSharedPreferences("restart_diag", Context.MODE_PRIVATE)
@@ -131,7 +134,7 @@ class GlassesRuntime private constructor(private val app: Context) {
                     .getHistoricalProcessExitReasons(app.packageName, 0, 1).firstOrNull()?.reason == android.app.ApplicationExitInfo.REASON_USER_REQUESTED
             }.getOrNull()
         },
-        log = { Log.i(CAPTURE_TAG, it) },
+        log = { DiagLog.i(CAPTURE_TAG, it) },
     )
     /** Fix wave I: when a start goes straight to icon mode (after a kill, or on the phone's automatic reopen). */
     val startGate = AutoStartGate(takePending = { restarts.takeStartMinimised() }, uptimeMs = { android.os.SystemClock.uptimeMillis() })
