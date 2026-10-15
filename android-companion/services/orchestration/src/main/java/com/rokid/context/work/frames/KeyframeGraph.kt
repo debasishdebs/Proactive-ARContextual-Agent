@@ -5,23 +5,22 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.PowerManager
 import android.util.Log
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.contract.ExtractOutput
 import com.rokid.context.connectors.sources.SourcesGraph
+import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.domain.summary.CriticWorker
-import com.rokid.context.domain.summary.SummaryStatus
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.model.CallClass
-import com.rokid.context.orchestration.EmbeddingWorker
-import com.rokid.context.orchestration.ExtractPhoto
+import com.rokid.context.orchestration.ExtractFollowUp
 import com.rokid.context.orchestration.ExtractSave
 import com.rokid.context.orchestration.ExtractSaveResult
-import com.rokid.context.orchestration.FrameInputs
 import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.orchestration.SavedMemory
 import com.rokid.context.orchestration.nudge.NudgeDecision
@@ -39,6 +38,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -79,8 +79,10 @@ class KeyframeHandle internal constructor(private val app: Context) {
         NudgeEvaluator(clock, { settings.settleSec.value * 1000L }, { settings.checkGapSec.value * 1000L }, { evaluateNudge() }, scope)
     }
 
+    private val wakeLock by lazy { ExtractWakeLock(app) }
+
     val pipeline: KeyframePipeline by lazy {
-        KeyframePipeline(db, ::extract, clock, power, deferred = ::batteryDeferral, onExtracted = ::afterExtraction)
+        KeyframePipeline(db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated, onExtracted = ::afterExtraction)
     }
 
     val stats: StateFlow<KeyframeStats> by lazy {
@@ -89,18 +91,20 @@ class KeyframeHandle internal constructor(private val app: Context) {
     }
 
     private var networkWatch: ConnectivityManager.NetworkCallback? = null
+    private val started = AtomicBoolean(false)
 
-    /** Starts the loop, requeues abandoned claims (startup recovery) and watches for the network coming back. */
+    /** Starts the loop, requeues abandoned claims (startup recovery) and watches for the network coming back. Idempotent: recovery runs once. */
     fun start() {
         pipeline.start(scope)
+        if (!started.compareAndSet(false, true)) return
         scope.launch { runCatching { pipeline.recover() }.onFailure { Log.w(TAG, "recovery failed: ${it.javaClass.simpleName}") } }
         watchNetwork()
     }
 
-    /** A frame committed to Room (the drain, or the hub after storing a receipt). */
-    fun signal() { start(); pipeline.signal() }
+    /** A frame committed to Room (the drain, or the hub after storing a receipt). Starts the loop if needed but never scans (review M1). */
+    fun signal() { pipeline.start(scope); pipeline.signal() }
 
-    private fun watchNetwork() {
+    @Synchronized private fun watchNetwork() {
         if (networkWatch != null) return
         val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
         val cb = object : ConnectivityManager.NetworkCallback() {
@@ -111,6 +115,13 @@ class KeyframeHandle internal constructor(private val app: Context) {
         }
         try { cm.registerDefaultNetworkCallback(cb); networkWatch = cb } catch (e: Exception) { Log.w(TAG, "network watch unavailable: ${e.javaClass.simpleName}") }
     }
+
+    /** Whether the active network has validated internet access (ConnectivityManager). Unknown counts as online: only a clear "no" means offline. */
+    private fun networkValidated(): Boolean = try {
+        val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val caps = cm?.activeNetwork?.let(cm::getNetworkCapabilities)
+        cm == null || (caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED))
+    } catch (e: Exception) { true }
 
     /** Battery saver, or battery <= 30% and not charging: today's deferral rules (spec §P2.5). */
     private fun batteryDeferral(): Boolean {
@@ -126,47 +137,58 @@ class KeyframeHandle internal constructor(private val app: Context) {
     /** One VISION_EXTRACT over [frameIds] (<= 3, labelled with their ids), saved with the claim CAS inside the transaction. */
     private suspend fun extract(frameIds: List<String>, claimId: String, callClass: CallClass): ExtractOutcome {
         val generation = com.rokid.context.orchestration.MemoryWipe.generation.get()
-        val frames = PipelineRecords.framesByIds(app, frameIds) // forgotten and missing files drop out
-        val photos = frames.mapNotNull { f ->
-            FrameInputs.fromFrames(listOf(f), maxImages = 1).singleOrNull()?.let { ExtractPhoto(f.id, "ts=${f.ts} · source=${f.source} · ${f.payload}", it) }
-        }
-        val unreadable = frameIds.toSet() - photos.map { it.frameId }.toSet()
-        if (photos.isEmpty()) return ExtractOutcome.Failed("unreadable", unreadable = unreadable)
+        val loaded = FramePhotos.load(app, frameIds)
+        val photos = loaded.photos
+        if (photos.isEmpty()) return ExtractOutcome.Failed("unreadable", unreadable = loaded.gone, unseen = loaded.unseen)
+        val ai = AiGraph.get(app)
         val batch = try {
-            ExtractSave.extract(AiGraph.get(app).runner, photos, callClass)
+            ExtractSave.extract(ai.runner, photos, callClass)
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            return ExtractOutcome.classify(e).copy(unreadable = unreadable)
+            return ExtractOutcome.classify(e, online = networkValidated()).copy(unreadable = loaded.gone, unseen = loaded.unseen)
         }
         val facts = batch.output.facts.filter { it.text.isNotBlank() }
-        val confidence = if (facts.isEmpty()) 1.0 else facts.map { it.confidence }.average()
-        val trusted = CriticWorker().validate(claimId, confidence).status == SummaryStatus.TRUSTED
         val sent = photos.map { it.frameId }
+        // The same trust verdict (local critic, then the model critic) and follow-up as the legacy job (review I6).
+        val sentFrames = PipelineRecords.framesByIds(app, sent)
+        val trusted = ExtractFollowUp.trusted(ai, CriticWorker(), claimId, facts, sentFrames.map(ExtractFollowUp::frameLine))
         val saved = ExtractSave.saveExtraction(
-            app, "kf_${claimId.take(12)}_", ExtractOutput(facts, captions = batch.output.captions, provenance = batch.output.provenance), sent.toSet(),
+            app, factPrefix(claimId), ExtractOutput(facts, captions = batch.output.captions, provenance = batch.output.provenance), sent.toSet(),
             claims = sent.associateWith { claimId }, tier = MemoryTier.SHORT, reviewState = if (trusted) ReviewState.OK else ReviewState.NEEDS_REVIEW,
             generation = generation,
         )
         return when (saved) {
-            is ExtractSaveResult.Saved -> ExtractOutcome.Saved(saved.memories, unreadable)
-            else -> ExtractOutcome.Stale(unreadable)
+            is ExtractSaveResult.Saved -> {
+                // Embeddings, the nudge backstop (trusted) or a PRIORITY_REPROCESS job (low confidence), exactly as the legacy job did.
+                ExtractFollowUp.afterSave(app, generation, saved.memories, trusted, ExtractFollowUp.confidence(facts), AppConfigStore.getWithoutSecret(app).persona)
+                ExtractOutcome.Saved(saved.memories, loaded.gone, loaded.unseen)
+            }
+            else -> ExtractOutcome.Stale(loaded.gone, loaded.unseen)
         }
     }
 
-    /** After a save: embeddings, and an offer to the nudge evaluator for memories from dwell keyframes or a new place. */
+    /** After a save (embeddings and the nudge backstop were done by [ExtractFollowUp]): an offer to the nudge evaluator for memories from dwell keyframes or a new place. */
     private suspend fun afterExtraction(frames: List<KeyframeCandidate>, memories: List<SavedMemory>) {
         if (memories.isEmpty()) return
-        EmbeddingWorker.enqueue(app)
         val places = PipelineRecords.framesByIds(app, frames.map { it.frameId }).associate { it.id to it.placeLabel }
         offerer.onExtracted(frames, memories, places)
     }
 
+    /** Live nudges pause under Battery Saver and at thermal SEVERE (spec §P2.5), for asks' extractions too. */
+    internal fun nudgesPaused(): Boolean = (app.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isPowerSaveMode == true || power.severe()
+
     /** What the periodic backstop does today: one engine pass (its gates apply to showing only). */
-    private suspend fun evaluateNudge(): NudgeDecision {
+    internal suspend fun evaluateNudge(): NudgeDecision {
+        if (nudgesPaused()) return NudgeDecision(shouldNudge = false, reason = "Paused")
         val run = NudgeEngineFactory.engine(app).runOnce()
         return NudgeDecision(shouldNudge = run is NudgeRun.Shown, reason = run.javaClass.simpleName)
     }
 
-    private companion object { const val TAG = "KeyframeGraph" }
+    internal companion object {
+        private const val TAG = "KeyframeGraph"
+
+        /** The memory id prefix of one extraction: the WHOLE claim id (a 12-char prefix collided, and a collision replaced another batch's memories). */
+        fun factPrefix(claimId: String) = "kf_${claimId}_"
+    }
 }

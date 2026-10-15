@@ -15,6 +15,9 @@ class AgentFlowsMatchCodeTest {
     private val orchMain = File(root, "services/orchestration/src/main/java/com/rokid/context")
     private fun src(rel: String) = File(orchMain, rel).readText()
     private val drain by lazy { src("work/QueueDrainWorker.kt") }
+    /** The trust verdict, critic pass, reprocess job and nudge backstop shared by the drain job and the keyframe pipeline. */
+    private val followUp by lazy { src("orchestration/ExtractFollowUp.kt") }
+    private val keyframes by lazy { src("work/frames/KeyframeGraph.kt") }
 
     /** The body of `fun <name>(` up to the next member declaration at class indentation. */
     private fun body(source: String, name: String): String {
@@ -27,17 +30,19 @@ class AgentFlowsMatchCodeTest {
     private fun anchor(edge: String, ok: Boolean) = assertTrue("Re-check edge $edge against the code: its source anchor moved", ok)
 
     @Test fun confidenceToCriticIsConditional() {
-        val b = body(drain, "processBatchedSummarization")
-        anchor("capture confidence->critic \"low confidence\"", "criticWorker.validate(" in b && "|| modelCriticPasses(" in b)
-        anchor("capture critic->save_review \"fail / unbound\"", "ai.bindings.get(Role.CRITIC) == null) return false" in body(drain, "modelCriticPasses"))
+        anchor("capture confidence->critic (drain job)", "ExtractFollowUp.trusted(" in body(drain, "processBatchedSummarization"))
+        anchor("capture confidence->critic (keyframe pipeline)", "ExtractFollowUp.trusted(" in body(keyframes, "extract"))
+        anchor("capture confidence->critic \"low confidence\"", "critic.validate(" in body(followUp, "trusted") && "|| modelCriticPasses(" in body(followUp, "trusted"))
+        anchor("capture critic->save_review \"fail / unbound\"", "ai.bindings.get(Role.CRITIC) == null) return false" in body(followUp, "modelCriticPasses"))
     }
 
     @Test fun notTrustedBranchQueuesReprocess() {
-        val b = body(drain, "processBatchedSummarization")
+        val b = body(followUp, "afterSave")
         val branch = b.indexOf("if (trusted)")
-        val els = b.indexOf("} else {", branch)
-        val reprocess = b.indexOf("QueuePriority.PRIORITY_REPROCESS", els)
-        anchor("capture save_review->reprocess", branch >= 0 && els > branch && reprocess > els)
+        val reprocess = b.indexOf("QueuePriority.PRIORITY_REPROCESS", branch)
+        anchor("capture save_review->reprocess", branch >= 0 && reprocess > branch)
+        anchor("capture save_review->reprocess (drain job)", "ExtractFollowUp.afterSave(" in body(drain, "processBatchedSummarization"))
+        anchor("capture save_review->reprocess (keyframe pipeline)", "ExtractFollowUp.afterSave(" in body(keyframes, "extract"))
     }
 
     @Test fun reprocessUsesSummarize() {
@@ -45,9 +50,9 @@ class AgentFlowsMatchCodeTest {
     }
 
     @Test fun summarizerPassesTriggerNudge() {
-        val calls = Regex("NudgeTrigger\\.afterSummarizerPass\\(").findAll(drain).count()
+        val calls = Regex("NudgeTrigger\\.afterSummarizerPass\\(").findAll(drain + followUp).count()
         anchor("capture save->to_nudge \"after a trusted pass or reprocess\"", calls >= 2)
-        anchor("capture save->to_nudge (trusted pass)", "NudgeTrigger.afterSummarizerPass(" in body(drain, "processBatchedSummarization"))
+        anchor("capture save->to_nudge (trusted pass)", "NudgeTrigger.afterSummarizerPass(" in body(followUp, "afterSave"))
         anchor("capture save->to_nudge (reprocess)", "NudgeTrigger.afterSummarizerPass(" in body(drain, "processPriorityReprocess"))
     }
 

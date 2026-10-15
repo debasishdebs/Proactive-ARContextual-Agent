@@ -42,6 +42,9 @@ class PhonePowerPolicy(
         }
     }
 
+    /** Whether heat has latched SEVERE: live nudges pause with the background work (spec §P2.5). */
+    @Synchronized fun severe(): Boolean { refresh(); return severe }
+
     /** Asks to start one non-user extraction call; at MODERATE it takes the 1-per-30-s allowance. */
     @Synchronized fun tryExtraction(): Boolean {
         if (!mayRunBackground(BackgroundWork.EXTRACTION)) return false
