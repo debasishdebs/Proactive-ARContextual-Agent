@@ -177,7 +177,7 @@ class MinimisedLinkTest {
         assertTrue(actions.contains(LinkAction.MarkClosedOnGlasses))
         actions.clear()
         l.onMessage(Channels.HELLO, hello) // it was only slow
-        assertEquals(listOf(LinkAction.MarkMinimised), actions)
+        assertEquals(listOf<LinkAction>(LinkAction.MarkMinimised), actions.toList())
         assertTrue(policy.minimised)
         l.stop()
     }
