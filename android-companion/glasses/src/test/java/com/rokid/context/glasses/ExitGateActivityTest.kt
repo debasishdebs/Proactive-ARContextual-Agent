@@ -84,7 +84,7 @@ class ExitGateActivityTest {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             phoneState()
             doubleTap(s)
-            compose.onNodeWithText("Double-tap again to exit \u00b7 3", substring = true).assertExists()
+            compose.onNodeWithText(DoubleTapExit.ARMED_TEXT, substring = true).assertExists()
             advance(DoubleTapExit.WINDOW_MS - 500)
             Thread.sleep(200); shadowOf(Looper.getMainLooper()).idle()
             assertTrue(commands().none { it is Command.Pause }, "no pause inside the window")
@@ -100,11 +100,36 @@ class ExitGateActivityTest {
             phoneState()
             doubleTap(s)
             doubleTap(s) // no pause between the pairs: the settle guard does not swallow a second double-tap while armed
-            s.onActivity { assertEquals(1, it.tasksMovedBack, "the second double-tap minimises") }
+            compose.onNodeWithText(DoubleTapExit.MINIMISING_TEXT, substring = true).assertExists()
+            s.onActivity { assertEquals(0, it.tasksMovedBack, "the second double-tap only opens the exit window") }
+            advance(DoubleTapExit.MINIMISE_WINDOW_MS + 400)
+            s.onActivity { assertEquals(1, it.tasksMovedBack, "the window ending minimises") }
             advance(DoubleTapExit.WINDOW_MS * 3)
             Thread.sleep(300); shadowOf(Looper.getMainLooper()).idle()
             assertTrue(commands().none { it is Command.Pause || it is Command.Resume }, "no late pause")
-            compose.onNodeWithText(DoubleTapExit.COUNTDOWN_PREFIX, substring = true).assertDoesNotExist()
+            compose.onNodeWithText(DoubleTapExit.ARMED_TEXT, substring = true).assertDoesNotExist(); compose.onNodeWithText(DoubleTapExit.MINIMISING_TEXT, substring = true).assertDoesNotExist()
+        }
+    }
+
+    /** Fix wave H: a third double-tap inside the window exits for good and tells the phone; no minimise, no pause. */
+    @Test fun aThirdDoubleTapExitsAndTellsThePhone() {
+        ActivityScenario.launch(MainActivity::class.java).use { s ->
+            phoneState()
+            doubleTap(s); doubleTap(s); doubleTap(s)
+            s.onActivity { assertTrue(it.exitedByUser); assertTrue(it.isFinishing); assertEquals(0, it.tasksMovedBack) }
+            assertTrue(bridge.sent.any { it.first == Channels.USER_EXIT }, "pc_user_exit sent")
+            advance(DoubleTapExit.WINDOW_MS * 3)
+            assertTrue(commands().none { it is Command.Pause || it is Command.Resume })
+        }
+    }
+
+    /** Fix wave H (A): started with the minimised extra (what a restart after a force-stop in icon mode does), no HUD stays in front. */
+    @Test fun startMinimisedExtraGoesStraightToIconMode() {
+        val i = android.content.Intent(ApplicationProvider.getApplicationContext<android.app.Application>(), MainActivity::class.java)
+            .putExtra(MainActivity.EXTRA_START_MINIMISED, true)
+        ActivityScenario.launch<MainActivity>(i).use { s ->
+            advance(500)
+            s.onActivity { assertEquals(1, it.tasksMovedBack); assertEquals("icon", GlassesRuntime.get(it).uiMode.get()) }
         }
     }
 
@@ -117,7 +142,8 @@ class ExitGateActivityTest {
         ActivityScenario.launch(MainActivity::class.java).use { s ->
             phoneState()
             s.onActivity { a -> repeat(4) { press83(a) } }
-            s.onActivity { assertEquals(1, it.tasksMovedBack, "a quick 4-tap minimises") }
+            advance(DoubleTapExit.MINIMISE_WINDOW_MS + 400)
+            s.onActivity { assertEquals(1, it.tasksMovedBack, "a quick 4-tap minimises once the exit window ends") }
             advance(DoubleTapExit.WINDOW_MS * 3)
             Thread.sleep(300); shadowOf(Looper.getMainLooper()).idle()
             assertTrue(commands().none { it is Command.Pause || it is Command.Resume }, "no pause")

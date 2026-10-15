@@ -43,6 +43,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -222,6 +223,37 @@ class HubTest {
         hub(link, startService = { starts++ }).requestReconnect()
         assertEquals(0, starts)
         assertEquals(1, link.connectCalls)
+    }
+
+    /** Fix wave H: the SDK's wear state is forwarded as pc_wear (on change and again when the session opens). */
+    @Test fun wearIsForwardedToTheGlasses() = runTest {
+        val link = FakeGlassesLink()
+        hub(link)
+        link.sent.clear()
+        link.wearingFlow.value = false; runCurrent()
+        val m = (Wire.decode<com.rokid.context.core.model.WearMessage>(link.lastOn(Channels.WEAR)) as Decoded.Ok).value
+        assertEquals(false, m.worn)
+        link.sent.clear(); link.emitReady(); advanceTimeBy(300)
+        assertTrue("re-sent on ready", link.sent.any { it.first == Channels.WEAR })
+    }
+
+    /** Fix wave H (D): the glasses' pc_user_exit marks the state; an explicit open clears it at once. */
+    @Test fun userExitIsRememberedUntilAnExplicitOpen() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.emit(GlassesEvent.UserExit); runCurrent()
+        assertTrue(h.state.value.closedByUser)
+        h.requestReconnect(); runCurrent()
+        assertFalse(h.state.value.closedByUser)
+    }
+
+    /** Fix wave H4: the glasses' Rokid-closed counters reach the hub state (Diagnostics line), counts only. */
+    @Test fun helloCarriesTheRokidClosedCounters() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        assertEquals(null, h.state.value.rokidClosesLine())
+        link.emit(GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 77, bufferSize = 0, glassesNowMs = now, pauses = emptyList(), rokidCloses = 5, lastRestartGapSec = 38))); runCurrent()
+        assertEquals("Rokid closed the app 5 times (last gap 38s)", h.state.value.rokidClosesLine())
     }
 
     /** Carry (Phase 3 review): each frame the glasses deliver leaves their buffer, so the count drops without a new hello. */

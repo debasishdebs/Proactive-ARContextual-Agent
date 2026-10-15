@@ -65,6 +65,7 @@ class SamplingSession(
     private val camera: SamplingCamera,
     private val owner: CameraOwner,
     private val motion: MotionClassifier,
+    /** Gates on the real `pc_wear` state only (unknown = worn); the Android proximity sensor never reaches it. */
     private val wear: WearDetector,
     private val gate: KeyframeGate,
     private val heat: HeatGuard,
@@ -275,7 +276,7 @@ class SamplingSession(
         if (s.captureMode != CaptureMode.SMART) return "mode"
         started = true
         if (capturePaused()) return "paused"
-        if (s.pauseWhenNotWorn && !wear.worn.value) return "not_worn"
+        if (s.pauseWhenNotWorn && !wear.worn.value) return "not_worn" // only a real pc_wear=false makes it false
         if (heat.level.value == HeatLevel.STOP) return "heat"
         if (FrameGuard.lowBattery(batteryPct(), charging())) return "battery"
         return null

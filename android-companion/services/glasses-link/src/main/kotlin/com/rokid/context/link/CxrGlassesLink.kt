@@ -59,6 +59,7 @@ class CxrGlassesLink(
         app, GLASSES_PKG, probe, linkState = { _state.value.name },
         onBound = { ok -> post { minimised.onBound(ok) } },
         onCustomCmd = { cmd, bytes -> decodeParts(cmd, bytes)?.let { parts -> post { onBackgroundMessage(cmd, parts) } } },
+        onWearing = { w -> Log.i(TAG, "watcher: wearing=$w"); _wearing.value = w },
     ) { post { act(policy.onEvent(LinkEvent.GlassesAppOpened)) } }
     /** Minimised Option A: data on the watcher's CXRLink; never appStart. Its confirm callbacks are posted (no re-entry into [act]). */
     private val minimised: MinimisedLink = MinimisedLink(
@@ -74,6 +75,8 @@ class CxrGlassesLink(
     override val state: StateFlow<LinkState> = _state
     private val _events = MutableSharedFlow<GlassesEvent>(extraBufferCapacity = 256) // audio arrives as ~10 chunks/s
     override val events: SharedFlow<GlassesEvent> = _events
+    private val _wearing = MutableStateFlow<Boolean?>(null)
+    override val wearing: StateFlow<Boolean?> = _wearing
     private val _ready = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
     override val ready: SharedFlow<Unit> = _ready
 
@@ -215,6 +218,17 @@ class CxrGlassesLink(
             // A session whose registration or connect throws is closed in [inbound] again, so it can never emit events.
             inbound.open(s) {
                 s.addLifecycleCallback(lifecycleFor(s))
+                s.addGlassesEventListener(object : com.rokid.cxr.session.IGlassesEventListener {
+                    override fun onWearingStatusChanged(wearing: Boolean) { Log.i(TAG, "session: wearing=$wearing"); _wearing.value = wearing }
+                    override fun onGlassesAppResumed() = Unit
+                    override fun onGlassesAppPaused() = Unit
+                    override fun onDeviceInfoChanged(info: com.rokid.cxr.session.GlassesInfo) = Unit
+                    override fun onScreenOff() = Unit
+                    override fun onScreenOn() = Unit
+                    override fun onLauncherResumed() = Unit
+                    override fun onAiWake() = Unit
+                    override fun onAiInterruptChanged(interrupted: Boolean) = Unit
+                })
                 s.addCustomCmdCallback(object : ICustomCmdSessionCallback {
                     override fun onCustomCmdResult(cmd: String, bytes: ByteArray?) = onGlassesMessage(s, cmd, bytes)
                 })

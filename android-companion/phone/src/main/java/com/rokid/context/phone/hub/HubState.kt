@@ -19,7 +19,18 @@ data class HubState(
     val offset: ClockOffset? = null,
     val error: UserFacingError? = null,
     val lastFrame: StateFrame? = null,
+    /** Fix wave H4 (counts only): how often Rokid force-stopped the glasses app, and the latest restart gap, from the hello. */
+    val rokidCloses: Int = 0,
+    /** The wearer exited the glasses app on purpose (`pc_user_exit`); cleared when it connects again. */
+    val closedByUser: Boolean = false,
+    val lastRestartGapSec: Int? = null,
 ) {
+    /** Diagnostics line "Rokid closed the app N times (last gap Xs)"; null until the glasses report one. */
+    fun rokidClosesLine(): String? {
+        if (rokidCloses <= 0) return null
+        return "Rokid closed the app $rokidCloses time${if (rokidCloses == 1) "" else "s"} (last gap ${lastRestartGapSec ?: 0}s)"
+    }
+
     /** Phase 4 contract view. A mismatch matters only while a session is up. */
     fun toGlassesStatus(): GlassesStatus = GlassesStatus(
         link = if (versionMismatch && link.carriesData) LinkState.VERSION_MISMATCH else link,

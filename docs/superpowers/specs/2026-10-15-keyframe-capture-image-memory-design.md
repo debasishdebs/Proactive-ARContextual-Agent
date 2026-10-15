@@ -44,7 +44,7 @@ Backlog link: status-and-backlog §5 item 1, §10 "Faster capture → keyframes 
 - **Text embeddings:** bge-small-en-v1.5 q8 through llama.cpp JNI (`llama_jni`), behind `Embedder` (`services/memory/.../Embedder.kt`), with one fingerprinted space per config.
 
 ### Glasses hardware (read on device, 2026-10-15; RG-glasses, platform "neo", Android 12)
-- **Sensors:** accelerometer and gyroscope (TDK icm4x6xx, wakeup and non-wakeup), linear acceleration, gravity, game rotation vector, and **proximity**, used as a wear check.
+- **Sensors:** accelerometer and gyroscope (TDK icm4x6xx, wakeup and non-wakeup), linear acceleration, gravity, game rotation vector, and **proximity** (diagnostic only: it reads a constant "far" on these glasses).
 - **Heat:**
   - `dumpsys thermalservice` shows Thermal HAL 2.0, and the thermal status is readable (0 at the time).
   - The HAL exposes **no temperature sensors**.
@@ -244,7 +244,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 - **Dwell marker:** when the state goes from `HEAD_MOVING` or `WALKING` to `STILL` and stays `STILL` for ≥ 1.0 s (immediate keyframe, which meets the ≥ 1.5 s promise with margin), the next keyframe, or the current sample if it passes the change test against the last keyframe only, is flagged `dwell=true`.
   - This is the "looked at something" signal: the keys, a sign.
   - A dwell sample skips the last-5 rule, so looking back at something counts again, but it still needs blur ≥ floor.
-- **Wear check:** proximity "far" for > 5 s means **not worn**. The session pauses: the camera unbinds and the sensors switch to low rate. It resumes on "near".
+- **Wear check (fix wave H):** the Android proximity sensor is not the wear sensor. The real signal is the Rokid SDK `wearingStatus`, seen by the phone and forwarded as `pc_wear`; only a real `worn=false` pauses the session (unknown = worn). Removal also makes Rokid close our app, which the phone reopens (guarded) as the wearer puts the glasses back on.
 - **Keyframe metadata**, as additive `pc_frame` fields: `motion` (the state name), `dwell` (bool), `blur` (float), `dhash`, `phash` (hex), `sampleSeq`, `width`, `sessionId`.
 
 ### P1.2 Indexing time

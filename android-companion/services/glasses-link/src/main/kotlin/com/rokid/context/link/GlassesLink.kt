@@ -11,6 +11,8 @@ interface GlassesLink {
     val events: SharedFlow<GlassesEvent>
     /** A session opened or resumed: push `pc_settings` then `pc_state` now. */
     val ready: SharedFlow<Unit>
+    /** Fix wave H2: the glasses' last CXR `wearingStatus` (true = worn) seen on the background link; null when none yet. */
+    val wearing: StateFlow<Boolean?> get() = NO_WEARING
     /** Explicit user action (e.g. "Open on glasses"): connects even after a close on the glasses. */
     fun connect()
     /** Hub start: one attempt, no retry loop when the glasses are away. */
@@ -21,3 +23,5 @@ interface GlassesLink {
     suspend fun send(channel: String, json: String): Boolean
     fun close()
 }
+
+private val NO_WEARING: StateFlow<Boolean?> = kotlinx.coroutines.flow.MutableStateFlow(null)

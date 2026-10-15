@@ -14,7 +14,12 @@ import androidx.compose.ui.unit.sp
 object CaptureStatusCopy {
     const val COOLING = "Cooling"
     const val DEGRADED = "! capture degraded"
+    /** Fix wave H3: the per-keyframe blink; plain ASCII (no emoji on the HUD font). */
+    const val CUE = "(o)"
 }
+
+/** Pure: the blink's text while a keyframe was just saved, else null. */
+fun captureCueMark(active: Boolean): String? = if (active) CaptureStatusCopy.CUE else null
 
 /** Pure: which marks to show, in draw order. */
 fun captureStatusMarks(cooling: Boolean, degraded: Boolean): List<String> = buildList {
@@ -34,4 +39,11 @@ fun CaptureStatusMarks(cooling: Boolean, degraded: Boolean, modifier: Modifier =
     Row(modifier.padding(4.dp)) {
         marks.forEach { BasicText(it, modifier = Modifier.padding(end = 8.dp), style = TextStyle(color = Color.White, fontSize = 12.sp)) }
     }
+}
+
+/** The per-keyframe blink ([CaptureBlink]): a small bright mark in the corner it is placed in; nothing when idle. */
+@Composable
+fun CaptureCueMark(active: Boolean, modifier: Modifier = Modifier) {
+    val mark = captureCueMark(active) ?: return
+    BasicText(mark, modifier = modifier.padding(4.dp), style = TextStyle(color = Color.White, fontSize = 14.sp))
 }
