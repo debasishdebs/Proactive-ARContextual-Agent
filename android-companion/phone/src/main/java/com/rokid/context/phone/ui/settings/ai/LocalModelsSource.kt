@@ -25,7 +25,9 @@ import com.rokid.context.ai.Endpoint
 import com.rokid.context.ai.EndpointKind
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
+import com.rokid.context.ai.embed.EmbeddingSpec
 import com.rokid.context.memory.EmbeddingSpaces
+import com.rokid.context.memory.db.EmbeddingSpaceEntity
 import com.rokid.context.memory.SwapImpact
 import com.rokid.context.phone.ui.list.ActionResult
 import com.rokid.context.phone.ui.list.ItemAction
@@ -73,11 +75,47 @@ interface SwapRollback {
     }
 }
 
-class SpacesSwapRollback(private val spaces: EmbeddingSpaces, private val onRolledBack: () -> Unit) : SwapRollback {
-    override suspend fun available() = spaces.rollbackTarget() != null
+/** Puts EMBED back on the model a retired space was built with (review B I-1). */
+interface EmbedRebinder {
+    /** True when that model can serve the space now (its endpoint still points where the space was built). */
+    suspend fun available(space: EmbeddingSpaceEntity): Boolean
+    /** Binds EMBED to the space's endpoint and model; false when that failed. */
+    suspend fun rebind(space: EmbeddingSpaceEntity): Boolean
+
+    object None : EmbedRebinder {
+        override suspend fun available(space: EmbeddingSpaceEntity) = true
+        override suspend fun rebind(space: EmbeddingSpaceEntity) = true
+    }
+}
+
+/** [EmbedRebinder] over the AI graph: the model is the one `embedders.forSpace` resolves for the space. */
+class AiEmbedRebinder(private val ai: AiGraph) : EmbedRebinder {
+    override suspend fun available(space: EmbeddingSpaceEntity) = ai.embedders.forSpace(space) != null
+    override suspend fun rebind(space: EmbeddingSpaceEntity): Boolean {
+        val spec = EmbeddingSpec.fromConfig(space.configJson) ?: return false
+        val current = ai.bindings.get(Role.EMBED)
+        if (current?.endpointId == spec.endpointId && current.model == spec.model) return true
+        val keepFallback = current?.fallbackEndpointId?.takeIf { it != spec.endpointId }
+        val next = RoleBinding(Role.EMBED, spec.endpointId, spec.model, current?.temperature, current?.maxTokens, keepFallback, current?.fallbackModel.takeIf { keepFallback != null })
+        return ai.bindings.set(next).isSuccess
+    }
+}
+
+/**
+ * Roll back reactivates the retired space AND rebinds EMBED to its model first, so the reindex that [onRolledBack] starts
+ * sees the bound fingerprint equal to the restored space and does not rebuild (and discard) the space just left (review B I-1).
+ * Offered only while that model is available.
+ */
+class SpacesSwapRollback(
+    private val spaces: EmbeddingSpaces,
+    private val rebinder: EmbedRebinder = EmbedRebinder.None,
+    private val onRolledBack: () -> Unit,
+) : SwapRollback {
+    override suspend fun available(): Boolean = spaces.rollbackTarget()?.let { rebinder.available(it) } == true
     override suspend fun impact() = spaces.swapImpact()
     override suspend fun rollBack(): Boolean {
         val target = spaces.rollbackTarget() ?: return false
+        if (!rebinder.available(target) || !rebinder.rebind(target)) return false
         return spaces.rollback(target.id).also { if (it) onRolledBack() }
     }
 }

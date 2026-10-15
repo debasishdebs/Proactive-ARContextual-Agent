@@ -55,9 +55,34 @@ class ForgetFrameSourceTest {
 
     @Test fun forgottenFactNotReextracted() = runBlocking {
         frame("f1"); batchMem("A", "f1")
-        db.frameStateDao().insertIgnore(listOf(FrameStateEntity("f1", "EXTRACTED", 1, null, null, null, 0)))
+        db.frameStateDao().insertIgnore(listOf(FrameStateEntity("f1", "FAILED", 1, "boom", null, null, 0))) // claimable, were it not forgotten
         service.forgetFact("A")
         assertEquals(listOf("f1"), dao.tombstoned(listOf("f1")))
+        // review B: the frame must not be claimable again, whatever state it was in
+        val states = db.frameStateDao()
+        assertTrue(states.claim(listOf("f1"), "c1", 10, 0).isEmpty())
+        assertTrue(states.recoverable(10, 0, 10).none { it.frameId == "f1" })
+    }
+
+    @Test fun forgottenPendingFrameCannotBeClaimed() = runBlocking {
+        frame("f2"); batchMem("B", "f2")
+        db.frameStateDao().insertIgnore(listOf(FrameStateEntity("f2", "PENDING", 0, null, null, null, 0)))
+        service.forgetFact("B")
+        assertEquals(listOf("f2"), dao.tombstoned(listOf("f2")))
+        assertNotNull("the row stays with its tombstone", dao.frame("f2"))
+        assertTrue(db.frameStateDao().recoverable(10, 0, 10).none { it.frameId == "f2" })
+        assertTrue(db.frameStateDao().claim(listOf("f2"), "c1", 10, 0).isEmpty())
+    }
+
+    /** Review B M-6: retention never forgets a frame the pipeline still has to extract. */
+    @Test fun retentionKeepsFramesNotYetExtracted() = runBlocking {
+        listOf("p", "e", "x", "fl", "ff", "none").forEach { frame(it) }
+        db.frameStateDao().insertIgnore(listOf(
+            FrameStateEntity("p", "PENDING", 0, null, null, null, 0), FrameStateEntity("e", "EXTRACTED", 1, null, null, null, 0),
+            FrameStateEntity("x", "EXTRACTING", 1, null, 1L, "c", 0), FrameStateEntity("fl", "FAILED", 1, "e", null, null, 0),
+            FrameStateEntity("ff", "FAILED_FINAL", 5, "e", null, null, 0),
+        ))
+        assertEquals(setOf("e", "ff", "none"), dao.orphanFramesBefore(Long.MAX_VALUE, 10).toSet())
     }
 
     @Test fun forgetLastCiterDeletesPhoto() = runBlocking {
@@ -69,6 +94,12 @@ class ForgetFrameSourceTest {
     @Test fun sweepAfterRestartKeepsSharedPhoto() = runBlocking {
         frame("f1"); batchMem("A", "f1"); batchMem("B", "f1")
         service.forgetFact("A")
+        // B cites f1 ONLY through frame_source (batchMem sets no memory.frameId): drop the frame row, as if it were rowless,
+        // and the tombstone prune must still keep it because of that citation alone.
+        dao.deleteFrame("f1")
+        assertEquals(0, dao.pruneTombstones(Long.MAX_VALUE, listOf("")))
+        assertEquals(listOf("f1"), dao.allTombstones())
+        frame("f1")
         // "restart": a fresh pass over the same data runs the sweep queries
         assertEquals(emptyList<String>(), dao.orphanTombstonedFramePaths())
         assertEquals(0, dao.pruneTombstones(Long.MAX_VALUE, listOf("")))
@@ -88,6 +119,10 @@ class ForgetFrameSourceTest {
         // a tombstone with no frame row but a frame_source citation is not pruned
         dao.deleteFrame("f1")
         assertEquals(0, dao.pruneTombstones(Long.MAX_VALUE, listOf("")))
-        assertEquals(emptyList<String>(), dao.rowlessTombstones(listOf("none")))
+        // a real rowless tombstone: f1's row is gone, so it is returned; f2 (row present, no tombstone) is not
+        assertEquals(listOf("f1"), dao.rowlessTombstones(listOf("f1", "f2")))
+        // once its last citation goes too, the prune drops it
+        db.frameSourceDao().deleteForMemory("B")
+        assertEquals(1, dao.pruneTombstones(Long.MAX_VALUE, listOf("")))
     }
 }

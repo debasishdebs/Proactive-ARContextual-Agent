@@ -6,7 +6,10 @@ import com.rokid.context.memory.db.EmbeddingSpaceEntity
 import com.rokid.context.memory.db.MemoryVectorEntity
 import com.rokid.context.memory.db.SpaceState
 import com.rokid.context.memory.retrieval.VectorCodec
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -68,9 +71,16 @@ class EmbeddingSpaces(
     /** The RETIRED space a Roll back would reactivate: the newest one still inside its 7-day grace and still holding vectors. */
     suspend fun rollbackTarget(): EmbeddingSpaceEntity? = dao.observeSpaces().first()
         .filter { it.state == SpaceState.RETIRED && inGrace(it.id) }.maxByOrNull { retired.retiredAt(it.id) ?: 0L }
-        ?.takeIf { dao.vectors(it.id).isNotEmpty() }
+        ?.takeIf { dao.vectorCount(it.id) > 0 }
 
-    fun rollbackAvailable(): Flow<Boolean> = dao.observeSpaces().map { l -> l.any { it.state == SpaceState.RETIRED && inGrace(it.id) } }.distinctUntilChanged()
+    /**
+     * The 7-day window is checked against the clock on every read ([TICK_MS] ticks), not only when the database changes, so
+     * Roll back disappears when the grace ends; it also needs the retained vectors (as [rollbackTarget] does).
+     */
+    fun rollbackAvailable(): Flow<Boolean> = combine(dao.observeSpaces(), ticker()) { l, _ -> l }
+        .map { l -> l.any { it.state == SpaceState.RETIRED && inGrace(it.id) && dao.vectorCount(it.id) > 0 } }.distinctUntilChanged()
+
+    private fun ticker(): Flow<Unit> = flow { while (true) { emit(Unit); delay(TICK_MS) } }
 
     private fun inGrace(id: String): Boolean = retired.retiredAt(id)?.let { now() - it <= GRACE_MS } ?: false // no stamp = retired before this build (no vectors kept)
 
@@ -83,11 +93,12 @@ class EmbeddingSpaces(
         return true
     }
 
-    /** The daily purge: vectors of spaces retired more than 7 days ago go. A RETIRED space with no stamp has no grace. */
+    /** The daily purge: vectors of spaces retired more than 7 days ago go. */
     suspend fun purgeRetired(at: Long = now()) {
+        // An unstamped RETIRED space (a crash between the swap commit and markRetired) gets its grace from now, never an instant purge.
         val expired = dao.retiredIds().filter { id ->
             val t = retired.retiredAt(id)
-            t == null || at - t > GRACE_MS
+            if (t == null) { retired.markRetired(id, at); false } else at - t > GRACE_MS
         }
         if (expired.isNotEmpty()) dao.purgeVectors(expired)
         expired.forEach(retired::forget)
@@ -104,5 +115,8 @@ class EmbeddingSpaces(
     suspend fun discard(id: String) = dao.discard(id)
     fun health(): Flow<IndexHealth> = dao.observeSpaces().map(IndexHealth::of).distinctUntilChanged()
 
-    companion object { const val GRACE_MS = 7 * 24 * 60 * 60 * 1000L }
+    companion object {
+        const val GRACE_MS = 7 * 24 * 60 * 60 * 1000L
+        private const val TICK_MS = 60_000L
+    }
 }

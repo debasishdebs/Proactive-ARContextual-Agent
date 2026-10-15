@@ -227,6 +227,26 @@ class IndexMaintenanceTest {
         assertEquals(1, clock.discard!!.streak)
     }
 
+    /**
+     * Review B I-1: Roll back rebinds EMBED to the restored space's model, so the reindex that follows finds the bound
+     * fingerprint equal to the active space: no build starts, and the retired newer space keeps its vectors.
+     */
+    @Test fun rollBackThenReindexDoesNotRebuildOrDiscardTheRetiredSpace() = runBlocking {
+        mem("m1"); maintenance().run()
+        val a = spaces.queryable()!!
+        fake.fp = "B"
+        while (maintenance().run() == Outcome.MORE) Unit
+        val b = spaces.queryable()!!
+        assertEquals("B", b.fingerprint)
+        assertTrue(spaces.rollback(a.id))
+        fake.fp = "A" // the rollback rebound EMBED to A's model before the reindex
+        assertEquals(Outcome.DONE, maintenance().run())
+        assertEquals(a.id, spaces.queryable()!!.id)
+        assertNull(spaces.building())
+        assertEquals(SpaceState.RETIRED, db.embeddingDao().space(b.id)!!.state)
+        assertEquals(1, db.embeddingDao().vectorCount(b.id))
+    }
+
     @Test fun aNewModelClearsTheUnstableState() = runBlocking {
         mem("m1")
         repeat(3) { fake.canaryTilts += listOf(0.0, far, far); maintenance().run(); now += 25 * 3_600_000L }
