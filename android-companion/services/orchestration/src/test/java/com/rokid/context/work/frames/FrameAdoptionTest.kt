@@ -95,4 +95,19 @@ class FrameAdoptionTest {
         adoption().run()
         assertNull(state("t1")); assertNull(state("t2"))
     }
+
+    /** Review B M-5: a Delete all that lands between the page read and its write leaves no frame_state row for a wiped frame. */
+    @Test fun adoptionRacingDeleteAllLeavesNoStateRows() = runBlocking {
+        frame("w1"); frame("w2")
+        var gen = 0L
+        val racing = FrameAdoption(db, prefs, { now }, fileExists = {
+            // the wipe starts after the page was read: generation first, rows deleted next
+            gen++
+            runBlocking { db.frameDao().deleteByIds(listOf("w1", "w2")) }
+            true
+        }, generation = { gen })
+        val r = racing.run()
+        assertEquals(0, r.pending)
+        assertEquals(0, db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM frame_state").use { it.moveToFirst(); it.getInt(0) })
+    }
 }

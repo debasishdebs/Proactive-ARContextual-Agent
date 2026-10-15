@@ -23,7 +23,8 @@ abstract class FrameStateDao {
     /** Claimable now: PENDING, FAILED, or an EXTRACTING claim taken before [abandonBeforeMs]. */
     @Query(
         "UPDATE frame_state SET state = 'EXTRACTING', claimedAt = :nowMs, claimId = :claimId, updatedAt = :nowMs " +
-            "WHERE frameId IN (:frameIds) AND (state IN ('PENDING','FAILED') OR (state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs))",
+            "WHERE frameId IN (:frameIds) AND (state IN ('PENDING','FAILED') OR (state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs)) " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)", // a forgotten frame is never extracted again
     )
     protected abstract suspend fun claimRows(frameIds: List<String>, claimId: String, nowMs: Long, abandonBeforeMs: Long): Int
 
@@ -63,8 +64,8 @@ abstract class FrameStateDao {
     abstract suspend fun fail(frameId: String, claimId: String, error: String, nowMs: Long, maxAttempts: Int = MAX_ATTEMPTS): Int
 
     @Query(
-        "SELECT * FROM frame_state WHERE state IN ('PENDING','FAILED') OR (state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs) " +
-            "ORDER BY updatedAt LIMIT :limit",
+        "SELECT * FROM frame_state WHERE (state IN ('PENDING','FAILED') OR (state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs)) " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) ORDER BY updatedAt LIMIT :limit",
     )
     protected abstract suspend fun recoverableRows(abandonBeforeMs: Long, limit: Int): List<FrameStateEntity>
 

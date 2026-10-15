@@ -13,6 +13,7 @@ import com.rokid.context.orchestration.WipeFence
 import com.rokid.context.orchestration.PipelineRecords
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -53,9 +54,18 @@ object RokidFrameInbox {
      * progress. Returns how many went.
      */
     fun sweepOrphanParts(context: Context, nowMs: Long = System.currentTimeMillis(), minAgeMs: Long = 60_000): Int =
-        inboxDir(context).listFiles().orEmpty().count { f ->
-            f.isFile && f.name.endsWith(".part") && nowMs - f.lastModified() >= minAgeMs && f.delete()
+        // The archive too: ReceiptStore and writeDurably temps (the sidecar rewrite) leak there after a crash.
+        listOf(inboxDir(context), archiveDir(context)).sumOf { dir ->
+            dir.listFiles().orEmpty().count { f ->
+                f.isFile && f.name.endsWith(".part") && nowMs - f.lastModified() >= minAgeMs && f.delete()
+            }
         }
+
+    /**
+     * One drain at a time, process-wide (review B C-1): `QueueDrainWorker` and `FrameIngestWorker` both drain, and two
+     * interleaved drains could commit a pair under one another's feet and lose the photo.
+     */
+    private val drainLock = Mutex()
 
     /** [placeLabel]: a rough place for every frame of this run (Phase 7 C2; null unless Location is on and granted). */
     suspend fun ingestPending(
@@ -78,6 +88,15 @@ object RokidFrameInbox {
         nowMs: () -> Long = System::currentTimeMillis,
         dirSync: DirSync = DirSync.Default,
         appendFrame: FrameAppender = PipelineRecords::appendFrame,
+    ): List<String> = drainLock.withLock { drain(context, maxItems, placeLabel, nowMs, dirSync, appendFrame) }
+
+    private suspend fun drain(
+        context: Context,
+        maxItems: Int,
+        placeLabel: String?,
+        nowMs: () -> Long,
+        dirSync: DirSync,
+        appendFrame: FrameAppender,
     ): List<String> {
         val swept = sweepOrphanParts(context, nowMs())
         if (swept > 0) Log.i(TAG, "swept orphan parts=$swept")
@@ -192,6 +211,10 @@ object RokidFrameInbox {
         val file = File(absolutePath)
         if (!file.exists() || !file.isFile) return null
         if (extOf(file.name) !in supportedExt) return null
+        return drainLock.withLock { ingestSingleLocked(context, file, source, placeLabel, appendFrame) }
+    }
+
+    private suspend fun ingestSingleLocked(context: Context, file: File, source: String, placeLabel: String?, appendFrame: FrameAppender): String? {
         // P7xP8 I3: same rule as the inbox drain. A Delete all that ran during this ingest takes its row and file.
         val generation = MemoryWipe.generation.get()
         val id = frameIdOf(file)
@@ -234,7 +257,9 @@ object RokidFrameInbox {
             return InboxResult.SYNC_FAILED
         }
         // A legacy receipt (no .v2 marker) has no sidecar: UNKNOWN/false defaults. A v2 one is only ever committed with its meta.
-        val meta = if (ReceiptNames.isV2Jpeg(jpeg)) (sidecar?.let(ReceiptMeta::read) ?: return InboxResult.FAILED) else null
+        val meta = if (ReceiptNames.isV2Jpeg(jpeg)) {
+            sidecar?.let(ReceiptMeta::read) ?: return if (hasRow(context, frameIdOf(jpeg))) InboxResult.DUPLICATE else InboxResult.FAILED
+        } else null
         val result = ingestFile(context, jpeg, source, placeLabel, appendFrame, meta, nowMs)
         if (result != InboxResult.FAILED && sidecar != null) {
             sidecar.delete()
@@ -286,23 +311,52 @@ object RokidFrameInbox {
         }
         Log.i(TAG, "append result=$appended frameId=$frameId")
         if (appended) PipelineStatsStore.incFrameCaptured(context)
-        else if (receipt != null && isWireDuplicate(context, receipt.wireFrameId, frameId)) {
-            // The same glasses frame is already stored under another database id: this copy is redundant.
-            file.delete()
-            Log.i(TAG, "redundant receipt dropped (wire id already stored)")
-        }
+        else if (receipt != null) dropRedundantCopy(context, file, receipt.wireFrameId, frameId)
         // appendFrame's false is a duplicate id or a file that vanished: neither is worth a retry.
         return if (appended) InboxResult.STORED else InboxResult.DUPLICATE
     }
 
-    private suspend fun isWireDuplicate(context: Context, wireId: String, frameId: String): Boolean = try {
-        MemoryGraph.get(context).db.frameMetaDao().byWireId(wireId)?.let { it.frameId != frameId } == true
+    /** A sidecar that is gone with a row present means another path already committed this receipt. */
+    private suspend fun hasRow(context: Context, id: String): Boolean = try {
+        MemoryGraph.get(context).frames.byIds(listOf(id)).isNotEmpty()
     } catch (e: Exception) { false }
+
+    /**
+     * The same glasses frame is already stored under another database id. The new copy is redundant only while that row's
+     * photo still exists; if its file is gone (review B C-1) the row is repointed at this copy instead, so no photo is lost.
+     */
+    private suspend fun dropRedundantCopy(context: Context, file: File, wireId: String, frameId: String) {
+        try {
+            val g = MemoryGraph.get(context)
+            val other = g.db.frameMetaDao().byWireId(wireId)?.takeIf { it.frameId != frameId } ?: return
+            val row = g.frames.byIds(listOf(other.frameId)).firstOrNull()
+            when {
+                row == null -> Unit // meta without a frame row: nothing to keep this copy for
+                row.path == file.absolutePath -> return // the row already points at this very file
+                row.path.isNotBlank() && File(row.path).exists() -> {
+                    file.delete()
+                    Log.i(TAG, "redundant receipt dropped (wire id already stored)")
+                    return
+                }
+                else -> {
+                    g.db.frameDao().updatePath(row.id, file.absolutePath)
+                    Log.i(TAG, "stored frame repointed at the surviving copy")
+                    return
+                }
+            }
+            file.delete()
+        } catch (e: CancellationException) { throw e } catch (e: Exception) {
+            Log.w(TAG, "redundant copy kept: ${e.javaClass.simpleName}") // a throwing check keeps the file
+        }
+    }
 
     // --- reconciliation ------------------------------------------------------------------------------------------
 
     /** A `.v2` JPEG whose sidecar stays lost this long is ingested with defaults (count-only Diagnostics entry). */
     internal const val SIDECAR_LOST_AFTER_MS = 24 * 3_600_000L
+
+    /** Archived JPEGs are re-checked for a lost sidecar only this long after receipt (the 24 h hold plus an hour of drains). */
+    internal const val SIDECAR_SCAN_WINDOW_MS = SIDECAR_LOST_AFTER_MS + 3_600_000L
 
     /**
      * Startup and every drain run (spec P2 receipt durability, step 4). Scans the inbox AND the archive for v2 receipts with
@@ -328,21 +382,29 @@ object RokidFrameInbox {
 
         for (r in ReceiptScan.scan(inbox, archive).values) reunite(r, inbox, archive, dirSync)
 
-        // Lost sidecars. An archived JPEG without a sidecar is normally a committed frame, so only rowless ones count.
-        val bare = ReceiptScan.scan(inbox, archive).values.filter { r ->
-            r.jpeg != null && (r.sidecar == null || ReceiptMeta.read(r.sidecar) == null)
+        // Lost sidecars. An archived JPEG without a sidecar is normally a committed frame (its sidecar goes after the commit),
+        // so only the inbox and archived JPEGs received within [SIDECAR_SCAN_WINDOW_MS] are looked at (review B I-2): a v2
+        // JPEG older than that was either committed or defaulted long ago, and checking the whole archive on every drain is
+        // O(archive) I/O per stored frame.
+        val scanned = ReceiptScan.scan(inbox, archive).values
+        val bare = scanned.filter { r ->
+            r.jpeg != null && (r.sidecar == null || ReceiptMeta.read(r.sidecar) == null) &&
+                (r.jpeg.parentFile != archive || nowMs() - r.rxMs < SIDECAR_SCAN_WINDOW_MS)
         }
         val archivedIds = bare.filter { it.jpeg!!.parentFile == archive }.map { frameIdOf(it.jpeg!!) }
         val withRow = archivedIds.chunked(MAX_IN).flatMap { g.frames.byIds(it) }.map { it.id }.toSet()
         val tombs = archivedIds.chunked(MAX_IN).flatMap { g.db.forgetDao().tombstoned(it) }.toSet()
+        var wroteSidecar = false
         for (r in bare) {
             val jpeg = r.jpeg!!
             val id = frameIdOf(jpeg)
             if (id in withRow || id in tombs) continue
-            if (nowMs() - jpeg.lastModified() < SIDECAR_LOST_AFTER_MS) continue // held, not defaulted
+            // Held 24 h from RECEIPT (the stem's rx time), not from the file's mtime, which is the capture time (review B M-2).
+            if (nowMs() - r.rxMs < SIDECAR_LOST_AFTER_MS) continue // held, not defaulted
             try {
                 writeDurably(ReceiptNames.sidecarBeside(jpeg), ReceiptMeta(wireFrameId = r.wireId, capturedAtMs = r.rxMs, size = jpeg.length()).toJson())
                 if (!dirSync.sync(jpeg.parentFile!!)) { Log.w(TAG, "defaults sidecar not synced"); continue }
+                wroteSidecar = true
                 PipelineStatsStore.incSidecarLost(context)
                 Log.i(TAG, "${PipelineStatsStore.K_V2_SIDECAR_LOST} count=1")
             } catch (e: java.io.IOException) {
@@ -352,7 +414,7 @@ object RokidFrameInbox {
 
         // Archived receipts with no row.
         val committed = mutableListOf<String>()
-        val inArchive = ReceiptScan.scan(inbox, archive).values.filter { r ->
+        val inArchive = (if (wroteSidecar) ReceiptScan.scan(inbox, archive).values else scanned).filter { r ->
             r.jpeg?.parentFile == archive && r.sidecar?.parentFile == archive && ReceiptMeta.read(r.sidecar) != null
         }
         val ids = inArchive.map { frameIdOf(it.jpeg!!) }
