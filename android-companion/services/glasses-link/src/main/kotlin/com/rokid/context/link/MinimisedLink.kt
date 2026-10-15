@@ -46,6 +46,7 @@ internal class MinimisedLink(
     private val confirmMs: Long = CONFIRM_MS,
     private val probeMs: Long = PROBE_MS,
     private val maxMisses: Int = MAX_MISSES,
+    private val lastChanceMs: Long = LAST_CHANCE_MS,
 ) {
     private var key: Any? = null
     private var bound = false
@@ -74,7 +75,16 @@ internal class MinimisedLink(
             return false
         }
         confirmJob?.cancel()
-        confirmJob = scope.launch { delay(confirmMs); if (!heard) { log("bg silent after ${confirmMs}ms"); reportSilent() } }
+        confirmJob = scope.launch {
+            delay(confirmMs)
+            if (heard) return@launch
+            // A healthy minimised app sends nothing by itself: ask once more and give it [lastChanceMs] before declaring it closed.
+            val mark = rx
+            val sent = sendProbe()
+            log("bg quiet after ${confirmMs}ms, liveness probe sent=$sent")
+            if (sent) delay(lastChanceMs)
+            if (!heard && rx == mark) { log("bg silent after probe"); reportSilent() }
+        }
         log("bg bind requested")
         return true
     }
@@ -159,5 +169,7 @@ internal class MinimisedLink(
         /** Fix wave I: the quiet time before each liveness probe while minimised, and how many unanswered ones mean "gone". */
         const val PROBE_MS = 20_000L
         const val MAX_MISSES = 2
+        /** The wait for any glasses message after the probe that follows the first [CONFIRM_MS] of silence. */
+        const val LAST_CHANCE_MS = 8_000L
     }
 }

@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
     private var autoOpenedAtMs = 0L
     /** The newest intent delivered by onNewIntent. Not setIntent(): androidx ActivityScenario matches its activity by getIntent() and never reaches DESTROYED if it changes. */
     private var startIntent: Intent? = null
+    private val minimisedHello = Runnable { if (minimised) controller.sendHello() }
     /** The proposal the HUD was opened for (and the last one launched, so a repeat frame never opens it twice). */
     private var autoConfirmId: String? = null
     private var launchedConfirmId: String? = null
@@ -399,6 +400,8 @@ class MainActivity : ComponentActivity() {
         moveTaskToBack(true)
         minimised = true
         runtime.hudPresence.onMinimised()
+        // The phone only hears a minimised app when it speaks: say hello at once so it never takes the quiet for a closed app.
+        swipeTimer.removeCallbacks(minimisedHello); swipeTimer.postDelayed(minimisedHello, MINIMISED_HELLO_MS)
         if (!Settings.canDrawOverlays(this)) {
             // Capture runs but nothing shows it: count-only warning here, a Diagnostics row on the phone (via the hello).
             Log.w(TAG, "minimised without the overlay permission: no icon")
@@ -546,6 +549,7 @@ class MainActivity : ComponentActivity() {
         const val RETURN_TO_MINIMISED = "MINIMISED"
         /** After an auto-open, votes wait this long (the Confirm must have been on screen). */
         const val VOTE_GUARD_MS = 600L
+        const val MINIMISED_HELLO_MS = 700L
         /** A relaunch this soon after the session reopened while minimised is the phone's "Open on glasses". */
         const val OPEN_ON_GLASS_GRACE_MS = 5_000L
         const val OPENED_FROM_PHONE_POPUP = "Proactive Context is running"

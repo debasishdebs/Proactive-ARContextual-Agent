@@ -82,14 +82,29 @@ class MinimisedLinkTest {
         assertEquals(0, silent)
     }
 
-    @Test fun noGlassesMessageAfterBindMeansTheAppReallyExited() {
+    @Test fun noGlassesMessageAfterBindAndAfterTheProbeMeansTheAppReallyExited() {
         link.start("t"); link.onBound(true)
+        assertEquals(1, transport.sent.size)
         scope.advanceTimeBy(MinimisedLink.CONFIRM_MS - 1); scope.runCurrent()
+        assertEquals(0, silent)
+        scope.advanceTimeBy(2); scope.runCurrent()
+        assertEquals(0, silent, "quiet is not dead: one more probe first")
+        assertEquals(2, transport.sent.count { it.first == Channels.HELLO_REQUEST })
+        scope.advanceTimeBy(MinimisedLink.LAST_CHANCE_MS - 3); scope.runCurrent()
         assertEquals(0, silent)
         scope.advanceTimeBy(2); scope.runCurrent()
         assertEquals(1, silent)
         link.onMessage(Channels.HELLO, hello)
         assertEquals(1, alive, "a late message minimises again")
+    }
+
+    @Test fun aHealthyQuietMinimisedAppAnsweringTheProbeStaysMinimised() {
+        link.start("t"); link.onBound(true)
+        scope.advanceTimeBy(MinimisedLink.CONFIRM_MS + 1); scope.runCurrent()
+        link.onMessage(Channels.HELLO, hello) // the answer to the probe
+        scope.advanceTimeBy(MinimisedLink.LAST_CHANCE_MS + 1); scope.runCurrent()
+        assertEquals(0, silent)
+        assertEquals(1, alive)
     }
 
     @Test fun aFailedBindIsSilentAtOnce() {
