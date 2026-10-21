@@ -56,6 +56,8 @@ class CallBudget(
     }
 
     private suspend fun acquire(callClass: CallClass): Taken {
+        // EXPERIMENT (canvas runs) never waits and never spends a token: live extraction, captions and nudges keep their budget.
+        if (callClass == CallClass.EXPERIMENT) return synchronized(lock) { record(callClass, refill()); Taken(Kind.FREE) }
         if (callClass == CallClass.USER) return synchronized(lock) {
             val now = refill()
             val charged = normal > -burst
@@ -88,7 +90,7 @@ class CallBudget(
     /** NUDGE (0) borrows ahead of EXTRACT/OTHER (1), which go ahead of CAPTION_QUEUE/BACKFILL (2). */
     private fun priority(c: CallClass) = when (c) {
         CallClass.NUDGE -> 0
-        CallClass.EXTRACT, CallClass.OTHER, CallClass.USER -> 1
+        CallClass.EXTRACT, CallClass.OTHER, CallClass.USER, CallClass.EXPERIMENT -> 1
         CallClass.CAPTION_QUEUE, CallClass.BACKFILL -> 2
     }
 

@@ -34,6 +34,10 @@ object Routes {
     const val SETTINGS_FLOWS_VIEW = "settings/flows/view?ids={ids}"
     /** Settings -> AI -> On-device models (on-device embeddings spec section 5). */
     const val SETTINGS_LOCAL_MODELS = "settings/local-models"
+    /** Settings -> AI -> Experiment canvas (Developer mode only): home, the in-app editor, and a read-only pipeline DAG. */
+    const val SETTINGS_CANVAS = "settings/canvas"
+    const val SETTINGS_CANVAS_WEB = "settings/canvas/web"
+    const val SETTINGS_CANVAS_PIPELINE = "settings/canvas/pipeline?id={id}"
     const val SETTINGS_PERSONA = "settings/persona"
     const val SETTINGS_MEMORY = "settings/memory"
     const val SETTINGS_MEMORY_REVIEW = "settings/memory/review"
@@ -50,6 +54,7 @@ object Routes {
 
     fun endpoint(id: String) = "settings/endpoints/${enc(id)}"
     fun prompt(id: String) = "settings/prompts/${enc(id)}"
+    fun canvasPipeline(id: String) = "settings/canvas/pipeline?id=${enc(id)}"
     fun promptHistory(id: String) = "settings/prompts/${enc(id)}/history"
     /** Flow ids are registry constants (no commas or reserved characters). */
     fun flowsView(ids: List<String>) = "settings/flows/view?ids=" + ids.joinToString(",")
@@ -57,7 +62,7 @@ object Routes {
     /** Settings rows that open a screen in this build. */
     val LIVE_SETTINGS: Set<String> = setOf(
         SETTINGS_GLASSES, SETTINGS_PHONE_INPUTS, SETTINGS_CAPTURE, SETTINGS_ENDPOINTS, SETTINGS_ROLES, SETTINGS_PROMPTS, SETTINGS_RETRIEVAL,
-        SETTINGS_FLOWS, SETTINGS_LOCAL_MODELS, SETTINGS_NEARBY,
+        SETTINGS_FLOWS, SETTINGS_LOCAL_MODELS, SETTINGS_NEARBY, SETTINGS_CANVAS,
         SETTINGS_PERSONA, SETTINGS_MEMORY, SETTINGS_DIAGNOSTICS, SETTINGS_PRIVACY, SETTINGS_SOURCES, SETTINGS_ACTIONS, SETTINGS_SHOPPING,
         SETTINGS_NOTES,
     )

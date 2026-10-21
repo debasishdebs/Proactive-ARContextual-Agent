@@ -34,6 +34,14 @@ internal object V1Fixture {
         }
     }
 
+    /** One row in every table of schema [version] (FTS shadow tables excluded), values derived from the column affinity. */
+    fun seedVersion(db: SupportSQLiteDatabase, version: Int) {
+        tables(version).forEach { (t, cols) ->
+            val vals = cols.joinToString(",") { (_, aff) -> when (aff) { "INTEGER" -> "1"; "REAL" -> "1.5"; "BLOB" -> "x'0102'"; else -> "'v$version'" } }
+            db.execSQL("INSERT INTO `$t` (${cols.joinToString(",") { "`${it.first}`" }}) VALUES ($vals)")
+        }
+    }
+
     fun create(name: String): Unit = helper().createDatabase(name, 1).use { seed(it) }
 
     fun tableNames(db: SupportSQLiteDatabase): Set<String> = db.query("SELECT name FROM sqlite_master WHERE type='table'").use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }

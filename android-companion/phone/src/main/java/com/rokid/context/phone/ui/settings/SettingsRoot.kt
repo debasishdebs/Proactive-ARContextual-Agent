@@ -21,6 +21,7 @@ import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.MonitorHeart
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Science
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.runtime.Composable
@@ -89,7 +90,7 @@ private data class SettingRow(val icon: ImageVector, val colors: Pair<Color, Col
 
 /** Settings root (spec §2.4, mock settings.html): five groups; rows open only when [live] contains their route. */
 @Composable
-fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (String) -> Unit) {
+fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (String) -> Unit, developerMode: Boolean = false) {
     val soon = SettingsModel.COMING_SOON
     val groups = listOf(
         "Devices" to listOf(
@@ -108,7 +109,9 @@ fun SettingsRootScreen(state: SettingsRootUiState, live: Set<String>, onOpen: (S
             SettingRow(Icons.Outlined.Edit, PcColors.ChipRose, "Prompts", "Templates, schemas, versions and test bed", Routes.SETTINGS_PROMPTS),
             SettingRow(Icons.Outlined.Search, PcColors.ChipMint, "Retrieval", "Lexical, semantic or hybrid search", Routes.SETTINGS_RETRIEVAL),
             SettingRow(Icons.Outlined.Face, PcColors.ChipAmber, "Persona & language", "How answers sound", Routes.SETTINGS_PERSONA),
-        ),
+        ) + if (developerMode) listOf(
+            SettingRow(Icons.Outlined.Science, PcColors.ChipSlate, "Experiment canvas", "Build, run and compare pipelines on your photos", Routes.SETTINGS_CANVAS),
+        ) else emptyList(),
         "Connectors" to listOf(
             SettingRow(Icons.Outlined.Event, PcColors.ChipSky, "Data sources", "Calendar, contacts, notes, location", Routes.SETTINGS_SOURCES),
             SettingRow(Icons.Outlined.Bolt, PcColors.ChipAmber, "Actions & tools", "Reminders, shopping list, calendar", Routes.SETTINGS_ACTIONS),
