@@ -146,6 +146,8 @@ class SamplingSession(
     private var openAccumMs = 0L
     private var shareFromAt = 0L
     private var analysedAtSnapshot = 0
+    private var opensAccum = 0
+    private val wakeAccum = linkedMapOf("timer" to 0, "dwell" to 0, "onset" to 0, "now" to 0, "stream" to 0)
 
     /** Samples whose copy took longer than [COPY_BUDGET_MS] (the thumbnail target is 30 ms). */
     private val slowCount = AtomicInteger()
@@ -362,6 +364,7 @@ class SamplingSession(
                     if (ep.closing) return@acquire
                     ep.openedAt = clock()
                     openedCount.incrementAndGet()
+                    synchronized(lock) { opensAccum++; wakeAccum[ep.why] = (wakeAccum[ep.why] ?: 0) + 1 }
                     val ok = try {
                         withTimeoutOrNull(OPEN_TIMEOUT_MS) { camera.open { src -> onFrame(ep, src) } }
                             ?: false.also { log("camera open timed out") }
@@ -439,7 +442,9 @@ class SamplingSession(
         val delta = analysed - analysedAtSnapshot
         analysedAtSnapshot = analysed
         openAccumMs = 0; shareFromAt = now
-        DiagStats(kf, open, span, delta)
+        val opens = opensAccum; val wakes = LinkedHashMap(wakeAccum)
+        opensAccum = 0; wakeAccum.keys.forEach { wakeAccum[it] = 0 }
+        DiagStats(kf, open, span, delta, opens, wakes)
     }
 
     /** "startup n=.. p50=.. p95=.. lead=.. ms" for the status heartbeat. */
@@ -607,4 +612,4 @@ class SamplingSession(
 }
 
 /** One heartbeat interval of camera counters: keyframes in the last minute, camera-open ms, the span they cover, and frames analysed in it. */
-data class DiagStats(val kf1m: Int, val openMs: Long, val spanMs: Long, val analysed: Int)
+data class DiagStats(val kf1m: Int, val openMs: Long, val spanMs: Long, val analysed: Int, val opens: Int = 0, val wakes: Map<String, Int> = emptyMap())

@@ -281,7 +281,7 @@ class CaptureService : LifecycleService() {
                 heat = heat.level.value.toString(), batteryC = heat.lastReading?.batteryTempC,
                 wear = runtime.wear.worn.value, known = runtime.wear.known, parked = runtime.wear.parked.value,
                 sensors = ((smart?.feed as? AndroidSensorFeed)?.rate ?: SensorRate.FULL).name.lowercase(), phoneUse = runtime.phoneUse.active(now),
-                restartGapSec = runtime.restarts.lastGapSec,
+                restartGapSec = runtime.restarts.lastGapSec, stillGapMs = smart?.session?.stillGapMs() ?: 0L,
             ).format())
         }
         val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"

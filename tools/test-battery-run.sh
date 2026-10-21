@@ -12,7 +12,7 @@ expect() {
   esac
 }
 expect "duration_min=20.0 batt_start=90 batt_end=80 pct_per_min=0.50 proj_h=3.3 hb_lines=3 "
-expect "camOpenMs1m_mean=6000.0 analysed1m_mean=20.0 kf1m_mean=2.0 upBytes1m_mean=2000.0 batteryC_max=33.0"
+expect "camOpenMs1m_mean=6000.0 analysed1m_mean=20.0 kf1m_mean=2.0 upBytes1m_mean=2000.0 batteryC_max=33.0 opens1m_mean=6.0"
 expect "wake=MOTION:3"
 expect "tier=T0:2,T1:1"
 expect "reason=parked:1,sampling:2"

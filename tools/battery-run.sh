@@ -80,6 +80,7 @@ cmd_summary() {
         else if (k == "kf1m") kf += v
         else if (k == "upBytes1m") up += v
         else if (k == "batteryC") { if (v != "null" && v + 0 > bc) bc = v + 0 }
+        else if (k == "opens1m") op += v
         else if (k == "wake") w[v]++
         else if (k == "tier") ti[v]++
         else if (k == "reason") re[v]++
@@ -100,7 +101,7 @@ cmd_summary() {
       ppm = (dur > 0 && bs != "") ? (bs - be) / dur : 0
       proj = ppm > 0 ? 100 / ppm / 60 : 0
       printf "duration_min=%.1f batt_start=%s batt_end=%s pct_per_min=%.2f proj_h=%.1f hb_lines=%d", dur, bs, be, ppm, proj, n
-      printf " camOpenMs1m_mean=%.1f analysed1m_mean=%.1f kf1m_mean=%.1f upBytes1m_mean=%.1f batteryC_max=%.1f\n", (n ? cam/n : 0), (n ? an/n : 0), (n ? kf/n : 0), (n ? up/n : 0), bc
+      printf " camOpenMs1m_mean=%.1f analysed1m_mean=%.1f kf1m_mean=%.1f upBytes1m_mean=%.1f batteryC_max=%.1f opens1m_mean=%.1f\n", (n ? cam/n : 0), (n ? an/n : 0), (n ? kf/n : 0), (n ? up/n : 0), bc, (n ? op/n : 0)
       print "wake=" list(w)
       print "tier=" list(ti)
       print "reason=" list(re)
