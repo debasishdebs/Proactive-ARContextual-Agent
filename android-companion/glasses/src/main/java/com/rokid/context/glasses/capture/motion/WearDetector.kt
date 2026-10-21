@@ -20,6 +20,25 @@ class WearDetector(@Suppress("UNUSED_PARAMETER") clock: () -> Long = { 0L }) {
     @Volatile var lastProximityNear: Boolean? = null
         private set
 
+    private val _parked = MutableStateFlow(false)
+    /** True after a long still run (W1 fallback when no `pc_wear` is trusted). Untouched by [reset] and [onRemote]. */
+    val parked: StateFlow<Boolean> = _parked
+    private var stillSinceMs = -1L
+
+    /** One call per second with that second's gyro peak and linear-acceleration variance. */
+    fun onSecond(gyroMax: Float, accVariance: Float, tMs: Long) {
+        if (gyroMax < STILL_GYRO && accVariance < STILL_ACC_VAR) {
+            if (stillSinceMs < 0) stillSinceMs = tMs
+            val run = tMs - stillSinceMs + 1000L // the run includes the second just ended
+            _parked.value = run >= (if (known && _worn.value) PARK_WORN_MS else PARK_UNKNOWN_MS)
+        } else {
+            stillSinceMs = -1L
+            _parked.value = false
+        }
+    }
+
+    fun verdictLine(): String = "wear=${_worn.value} known=$known parked=${_parked.value}"
+
     fun onRemote(worn: Boolean) { known = true; _worn.value = worn }
 
     fun reset() { known = false; _worn.value = true }
@@ -29,4 +48,11 @@ class WearDetector(@Suppress("UNUSED_PARAMETER") clock: () -> Long = { 0L }) {
 
     /** Kept for the sensor feed's once-a-second call; nothing to age any more. */
     fun tick() = Unit
+
+    companion object {
+        const val STILL_GYRO = 0.05f
+        const val STILL_ACC_VAR = 0.01f
+        const val PARK_UNKNOWN_MS = 120_000L
+        const val PARK_WORN_MS = 600_000L
+    }
 }

@@ -63,4 +63,48 @@ class AndroidSensorFeedTest {
         assertTrue(wear.worn.value)
         assertEquals(1, reg.unregistered)
     }
+
+    @Test fun setRateLowReRegistersWithLowPeriodAndLatency() {
+        val reg = Reg(nonWakeUpProx = true)
+        val feed = AndroidSensorFeed(reg)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        reg.calls.clear()
+        feed.setRate(SensorRate.LOW)
+        assertEquals(SensorRate.LOW, feed.rate)
+        assertEquals(1, reg.unregistered)
+        assertEquals(3, reg.calls.size)
+        assertTrue(reg.calls.all { it.period == 100_000 && it.maxLatencyUs == 1_000_000 })
+        feed.stop()
+    }
+
+    @Test fun setRateLowTwiceReRegistersOnce() {
+        val reg = Reg(nonWakeUpProx = true)
+        val feed = AndroidSensorFeed(reg)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        reg.calls.clear()
+        feed.setRate(SensorRate.LOW); feed.setRate(SensorRate.LOW)
+        assertEquals(3, reg.calls.size)
+        feed.stop()
+    }
+
+    @Test fun setRateFullGoesBackToGameUnbatched() {
+        val reg = Reg(nonWakeUpProx = true)
+        val feed = AndroidSensorFeed(reg)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        feed.setRate(SensorRate.LOW)
+        reg.calls.clear()
+        feed.setRate(SensorRate.FULL)
+        assertEquals(SensorRate.FULL, feed.rate)
+        assertEquals(3, reg.calls.size)
+        assertTrue(reg.calls.all { it.period == SensorManager.SENSOR_DELAY_GAME && it.maxLatencyUs == 0 })
+        feed.stop()
+    }
+
+    @Test fun setRateWhileStoppedOnlyRemembers() {
+        val reg = Reg(nonWakeUpProx = true)
+        val feed = AndroidSensorFeed(reg)
+        feed.setRate(SensorRate.LOW)
+        assertTrue(reg.calls.isEmpty())
+        assertEquals(0, reg.unregistered)
+    }
 }
