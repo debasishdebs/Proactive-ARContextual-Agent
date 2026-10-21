@@ -18,6 +18,7 @@ import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.model.CallClass
 import com.rokid.context.orchestration.nudge.NudgeTrigger
 import com.rokid.context.prompt.PromptComposer
+import com.rokid.context.prompt.PromptDraft
 import com.rokid.context.prompt.PromptVars
 import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
@@ -46,17 +47,23 @@ object ExtractFollowUp {
     fun locallyTrusted(critic: CriticWorker, id: String, facts: List<Fact>): Boolean =
         facts.isEmpty() || critic.validate(id, confidence(facts)).status == SummaryStatus.TRUSTED
 
+    /** The CRITIC prompt variables for [facts] against [frameLines] (shared with the canvas runner). */
+    fun criticVars(facts: List<Fact>, frameLines: List<String>): PromptVars =
+        PromptVars(recentContext = PromptComposer.dataBlock("facts", facts.map { "${it.text} (confidence ${"%.2f".format(Locale.US, it.confidence)})" }) +
+            "\n" + PromptComposer.dataBlock("source", frameLines))
+
     /**
      * spec §4.2 CRITIC as a second opinion on low-confidence facts. Unbound or failing → keep the local verdict. It runs under the
      * CALLER's [callClass]: an ask's extraction (USER) must not queue its critic behind the EXTRACT backlog, where the ask's cap
      * would strand it (final review I2).
      */
-    suspend fun modelCriticPasses(ai: AiGraph, facts: List<Fact>, frameLines: List<String>, callClass: CallClass = CallClass.EXTRACT): Boolean {
+    suspend fun modelCriticPasses(
+        ai: AiGraph, facts: List<Fact>, frameLines: List<String>, callClass: CallClass = CallClass.EXTRACT, override: PromptDraft? = null,
+    ): Boolean {
         if (ai.bindings.get(Role.CRITIC) == null) return false
-        val vars = PromptVars(recentContext = PromptComposer.dataBlock("facts", facts.map { "${it.text} (confidence ${"%.2f".format(Locale.US, it.confidence)})" }) +
-            "\n" + PromptComposer.dataBlock("source", frameLines))
+        val vars = criticVars(facts, frameLines)
         return try {
-            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = callClass)).output as CriticOutput).pass
+            (ai.runner.run(RoleCall(PromptKey.CRITIC, vars, callClass = callClass, override = override)).output as CriticOutput).pass
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {

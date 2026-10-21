@@ -14,6 +14,7 @@ import com.rokid.context.model.ModelImageInput
 import com.rokid.context.model.ModelRequest
 import com.rokid.context.prompt.NowText
 import com.rokid.context.prompt.PersonaSettings
+import com.rokid.context.prompt.PromptDraft
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptRepository
 import com.rokid.context.prompt.PromptVars
@@ -29,6 +30,8 @@ data class RoleCall(
     val fromFrames: Boolean = false,
     /** Who the call is for (budget class). Null = the key's default: VISION_EXTRACT -> EXTRACT, NUDGE -> NUDGE, ANSWER -> USER, else OTHER. Ask-triggered extraction passes USER. */
     val callClass: CallClass? = null,
+    /** Canvas seam: an in-memory draft used in place of the active template and schema of [key] (never stored). The result's promptVersion is 0. */
+    val override: PromptDraft? = null,
 ) {
     val effectiveClass: CallClass
         get() = callClass ?: when (key) {
@@ -59,11 +62,15 @@ class RoleRunner(
 
     suspend fun run(call: RoleCall): RoleResult {
         val role = requireNotNull(call.key.role) { "SYSTEM has no model call" }
-        val version = prompts.active(call.key)
+        val draft = call.override
+        val active = if (draft == null) prompts.active(call.key) else null
+        val template = draft?.template ?: active!!.template
+        val outputSchema = if (draft != null) draft.outputSchema else active!!.outputSchema
+        val versionNo = active?.version ?: 0
         val system = prompts.active(PromptKey.SYSTEM)
-        val schema = OutputCheck.schemaFor(call.key, version.outputSchema)
+        val schema = OutputCheck.schemaFor(call.key, outputSchema)
         val at = now()
-        val prompt = PromptComposer.compose(system.template, version.template, call.vars.toMap(persona.persona.value, NowText.of(at)))
+        val prompt = PromptComposer.compose(system.template, template, call.vars.toMap(persona.persona.value, NowText.of(at)))
         val ctx = SemanticContext(call.inputIds, at)
         var rejected: OutputEvaluation? = null
         var cutCap: Int? = null
@@ -76,16 +83,16 @@ class RoleRunner(
             }
             val reply = if (call.fromFrames) router.completeFromFrames(call.effectiveClass, build) else router.complete(role, call.effectiveClass, build)
             val eval = OutputCheck.evaluate(call.key, schema, reply.text, ctx)
-            if (eval.ok) return RoleResult(checkNotNull(eval.output), reply.text, reply, version.version)
+            if (eval.ok) return RoleResult(checkNotNull(eval.output), reply.text, reply, versionNo)
             if (eval.schemaUnusable) {
                 // A corrected reply can't help; the job stays retryable so it succeeds once the prompt's schema is fixed.
-                Log.w(TAG, "${call.key.name} v${version.version} output schema can't be applied")
-                throw ModelCallException("${call.key.name} v${version.version} output schema can't be applied", retryable = true, kind = FailureKind.INVALID_OUTPUT)
+                Log.w(TAG, "${call.key.name} v$versionNo output schema can't be applied")
+                throw ModelCallException("${call.key.name} v$versionNo output schema can't be applied", retryable = true, kind = FailureKind.INVALID_OUTPUT)
             }
             rejected = eval
             cutCap = if (reply.truncated) ((reply.maxTokens ?: ModelRequest.DEFAULT_MAX_TOKENS) * 2).coerceAtMost(ModelRequest.MAX_TOKENS_LIMIT) else null
             // Fixed words only: the stage and whether the provider cut the reply tell the failure classes apart in a device log.
-            Log.i(TAG, "${call.key.name} v${version.version} reply rejected (attempt $attempt, stage=${stage(eval)}, ${eval.problems().size} problem(s), cut=${reply.truncated}) from ${reply.endpoint.name}")
+            Log.i(TAG, "${call.key.name} v$versionNo reply rejected (attempt $attempt, stage=${stage(eval)}, ${eval.problems().size} problem(s), cut=${reply.truncated}) from ${reply.endpoint.name}")
         }
         val last = checkNotNull(rejected)
         throw ModelCallException("${call.key.name} reply didn't match its schema: ${failureSummary(last)}", retryable = true, kind = FailureKind.INVALID_OUTPUT)
