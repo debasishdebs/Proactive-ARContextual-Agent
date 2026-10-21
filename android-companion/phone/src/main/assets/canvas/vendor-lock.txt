@@ -1,0 +1,6 @@
+# served-name npm-spec url bytes sha256 licence
+vendor-react.js react@18.3.1/umd/react.production.min.js https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js 10751 d949f1c3687aedadcedac85261865f29b17cd273997e7f6b2bfc53b2f9d4c4dd MIT
+vendor-react-dom.js react-dom@18.3.1/umd/react-dom.production.min.js https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js 131835 35f4f974f4b2bcd44da73963347f8952e341f83909e4498227d4e26b98f66f0d MIT
+vendor-xyflow.js @xyflow/react@12.12.0/dist/umd/index.js https://cdn.jsdelivr.net/npm/@xyflow/react@12.12.0/dist/umd/index.js 188484 c418896c3d0cc63498e724df7ed9698532c58523c04d30ebcd3ff7fa0bf3ecff MIT
+vendor-xyflow.css @xyflow/react@12.12.0/dist/style.css https://cdn.jsdelivr.net/npm/@xyflow/react@12.12.0/dist/style.css 18596 7ed5ae87a6c9bd664fce1802ce33fbe84faaefe33e21c82be35529df06e0c686 MIT
+vendor-htm.js htm@3.1.1/dist/htm.umd.js https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js 1364 7a31776e04bd4afde0d4308177d26f377716fcf7e4bd70be590746d6aa594f08 Apache-2.0

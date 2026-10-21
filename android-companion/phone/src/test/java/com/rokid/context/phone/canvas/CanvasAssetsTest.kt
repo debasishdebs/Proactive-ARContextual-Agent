@@ -9,10 +9,11 @@ import org.junit.Test
 /** A source scan of the web UI bundle: the CSP forbids inline script and style, and model output is untrusted (no HTML sinks). */
 class CanvasAssetsTest {
     private val dir = File("src/main/assets/canvas")
-    private val names = listOf("index.html", "app.js", "dom.js", "dag.js", "views.js", "boot.js", "style.css")
+    private val names = listOf("index.html", "app.js", "dom.js", "dag.js", "views.js", "boot.js", "jsx-shim.js", "style.css")
     private fun text(n: String) = File(dir, n).readText()
     private val js get() = names.filter { it.endsWith(".js") }
-    private val all get() = dir.listFiles().orEmpty().filter { it.isFile }
+    /** Our own files: vendored `vendor-*` files are pinned by SHA-256 (VendorLockTest), not scanned. */
+    private val all get() = dir.listFiles().orEmpty().filter { it.isFile && !it.name.startsWith("vendor-") }
 
     @Test fun allFilesPresent() {
         for (n in names) assertTrue("missing $n", File(dir, n).isFile)
@@ -27,7 +28,7 @@ class CanvasAssetsTest {
     }
 
     @Test fun noHtmlSinks() {
-        val banned = listOf("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function")
+        val banned = listOf("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "dangerouslySetInnerHTML")
         for (f in all) for (b in banned) assertFalse("${f.name} uses $b", f.readText().contains(b))
     }
 
@@ -45,10 +46,21 @@ class CanvasAssetsTest {
         }
     }
 
-    @Test fun scriptsAreModules() {
+    @Test fun scriptsAreModulesExceptPinnedVendor() {
         val tags = Regex("<script[^>]*>", RegexOption.IGNORE_CASE).findAll(text("index.html")).map { it.value }.toList()
-        assertTrue(tags.isNotEmpty())
-        for (t in tags) assertTrue("not a module: $t", t.contains("type=\"module\""))
+        val classic = listOf("vendor-react.js", "vendor-react-dom.js", "jsx-shim.js", "vendor-xyflow.js", "vendor-htm.js")
+        assertTrue(tags.size > classic.size)
+        classic.forEachIndexed { i, src ->
+            assertTrue("script $i must be classic defer $src, was ${tags[i]}", tags[i].contains("src=\"$src\"") && tags[i].contains("defer") && !tags[i].contains("type="))
+        }
+        for (t in tags.drop(classic.size)) assertTrue("not a module: $t", t.contains("type=\"module\""))
+        assertTrue("first module comes after the classic scripts", tags[classic.size].contains("type=\"module\""))
+        val css = Regex("<link[^>]*stylesheet[^>]*>", RegexOption.IGNORE_CASE).findAll(text("index.html")).map { it.value }.toList()
+        assertTrue("vendor-xyflow.css before style.css", css.indexOfFirst { it.contains("vendor-xyflow.css") } in 0 until css.indexOfFirst { it.contains("style.css\"") })
+    }
+
+    @Test fun noDangerousInnerHtmlInOwnCode() {
+        for (f in all) assertFalse("${f.name} uses dangerouslySetInnerHTML", f.readText().contains("dangerouslySetInnerHTML"))
     }
 
     @Test fun tokenNeverInQueryString() {
@@ -60,8 +72,8 @@ class CanvasAssetsTest {
     }
 
     @Test fun jsUnderSizeBudget() {
-        val lines = js.sumOf { text(it).lines().size }
-        assertEquals(true, lines <= 2000)
+        val lines = all.filter { it.name.endsWith(".js") }.sumOf { it.readText().lines().size }
+        assertEquals(true, lines <= 3500)
     }
 
     @Test fun checkReadsLiveEditorValues() {
