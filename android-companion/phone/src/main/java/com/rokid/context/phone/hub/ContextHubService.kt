@@ -14,6 +14,7 @@ import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
@@ -27,7 +28,6 @@ import com.rokid.context.phone.ui.status.CapturePauses
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -53,7 +53,7 @@ class ContextHubService : Service() {
     private var watcher: Job? = null
     private var closedWatcher: Job? = null
     /** NOT1: when to show the "Open on glasses" notice (in memory only). */
-    private val closedNotice = ClosedOnGlassesNotice(System::currentTimeMillis)
+    private val closedNotice = ClosedOnGlassesNotice(SystemClock::elapsedRealtime)
     /** The types the service is in the foreground with now (null before the first start). */
     private var currentTypes: Int? = null
     private val micRetry = MicRetry()
@@ -88,10 +88,11 @@ class ContextHubService : Service() {
                     .distinctUntilChanged()
                     .collect { (text, paused) -> lastText = text; lastPaused = paused; nm.notify(ID, notification(text, paused)) }
             }
-            // NOT1: the link state and a 5 s tick feed the notice; a state change answers at once, the tick catches the 45 s mark.
+            // NOT1: one delayed 45 s job per closed episode (no repeating tick); the receiver reaches the notice through this holder.
+            ClosedNoticeReceiver.notice = closedNotice
             closedWatcher = CoroutineScope(Dispatchers.Main.immediate).launch {
-                launch { hub.status.map { it.link }.distinctUntilChanged().collect { applyClosedAction(this@ContextHubService, closedNotice.onState(it)) } }
-                while (true) { delay(CLOSED_TICK_MS); applyClosedAction(this@ContextHubService, closedNotice.onTick()) }
+                val driver = ClosedNoticeDriver(this, closedNotice, { applyClosedAction(this@ContextHubService, it) })
+                hub.status.map { it.link }.distinctUntilChanged().collect { driver.onLink(it) }
             }
         } else if (intent?.action == ACTION_REFRESH_TYPES) {
             val wanted = micRetry.toTry(wantedTypes(inFront = true), resume)
@@ -102,8 +103,6 @@ class ContextHubService : Service() {
         when (intent?.action) {
             ACTION_PAUSE -> CapturePauses.control(this).setEnabled(false)
             ACTION_RESUME -> CapturePauses.control(this).resumeLoaded()
-            ACTION_OPEN_GLASSES -> handleOpenGlasses(this, closedNotice) { HubGraph.get(this).requestReconnect() }
-            ACTION_CLOSED_DISMISSED -> closedNotice.onDismissed()
         }
         return START_STICKY
     }
@@ -130,6 +129,7 @@ class ContextHubService : Service() {
         if (running) {
             running = false
             watcher?.cancel(); closedWatcher?.cancel()
+            ClosedNoticeReceiver.notice = null
             cancelClosedNotice(this)
             HubGraph.get(this).stop()
         }
@@ -142,7 +142,6 @@ class ContextHubService : Service() {
         const val TAG = "ContextHub"
         private const val CHANNEL = "hub"
         private const val ID = 31
-        private const val CLOSED_TICK_MS = 5_000L
         private const val READY = "Glasses link ready"
         /** Glasses as a nearby device (LiveFit's pattern): linked in front or minimised, the low-importance FGS says so. */
         internal const val CONNECTED_TEXT = "Connected to glasses"
@@ -193,8 +192,8 @@ class ContextHubService : Service() {
 
         internal fun closedNotification(context: Context): Notification {
             val open = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: Intent()
-            fun service(code: Int, action: String) = PendingIntent.getService(
-                context, code, Intent(context, ContextHubService::class.java).setAction(action), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            fun broadcast(code: Int, action: String) = PendingIntent.getBroadcast(
+                context, code, Intent(context, ClosedNoticeReceiver::class.java).setAction(action), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             return NotificationCompat.Builder(context, CLOSED_CHANNEL)
                 .setContentTitle("Closed on glasses \u00b7 capture stopped")
@@ -204,8 +203,8 @@ class ContextHubService : Service() {
                 .setSilent(true)
                 .setAutoCancel(false)
                 .setContentIntent(PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_IMMUTABLE))
-                .setDeleteIntent(service(4, ACTION_CLOSED_DISMISSED))
-                .addAction(NotificationCompat.Action.Builder(android.R.drawable.ic_menu_view, "Open on glasses", service(3, ACTION_OPEN_GLASSES)).build())
+                .setDeleteIntent(broadcast(4, ACTION_CLOSED_DISMISSED))
+                .addAction(NotificationCompat.Action.Builder(android.R.drawable.ic_menu_view, "Open on glasses", broadcast(3, ACTION_OPEN_GLASSES)).build())
                 .build()
         }
 

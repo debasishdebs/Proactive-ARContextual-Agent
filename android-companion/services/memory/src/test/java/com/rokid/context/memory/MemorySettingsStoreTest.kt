@@ -148,4 +148,27 @@ class MemorySettingsStoreTest {
         prefs.edit().putInt("quota_mb", 500).commit()
         assertEquals(500, MemorySettingsStore(prefs).settings.value.quotaMb)
     }
+
+    /** R16 on existing installs: retention's stamp (every run) must not materialise the default 250 as a stored value. */
+    @Test fun stampPerKindSinceDoesNotStoreAQuota() {
+        val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_stamp_no_quota", Context.MODE_PRIVATE)
+        prefs.edit().clear().commit()
+        val store = MemorySettingsStore(prefs)
+        store.stampPerKindSince(1_000_000L); store.stampPerKindSince(2_000_000L)
+        assertEquals(false, prefs.contains("quota_mb"))
+        assertEquals(250, MemorySettingsStore(prefs).settings.value.quotaMb)
+        store.update { it.copy(shortHours = 48) } // editing another setting does not store it either
+        assertEquals(false, prefs.contains("quota_mb")); assertEquals(250, MemorySettingsStore(prefs).settings.value.quotaMb)
+    }
+
+    @Test fun storedQuotaSurvivesTheStampAndAUserChangeIsStored() {
+        val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_stamp_stored", Context.MODE_PRIVATE)
+        prefs.edit().clear().putInt("quota_mb", 100).commit()
+        val store = MemorySettingsStore(prefs)
+        store.stampPerKindSince(1_000_000L)
+        assertEquals(100, MemorySettingsStore(prefs).settings.value.quotaMb)
+        val fresh = MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_user_choice", Context.MODE_PRIVATE).also { it.edit().clear().commit() })
+        fresh.update { it.copy(quotaMb = 100) } // the user picks 100 on a 250 default: that choice is stored
+        assertEquals(100, MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_user_choice", Context.MODE_PRIVATE)).settings.value.quotaMb)
+    }
 }

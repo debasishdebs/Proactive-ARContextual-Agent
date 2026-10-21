@@ -1,6 +1,8 @@
 package com.rokid.context.phone.hub
 
 import com.rokid.context.core.model.LinkState
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * NOT1 (R11): decides when the phone posts its one silent "Open on glasses" notification. Pure: feed every link state change and a tick every 5 s.
@@ -35,4 +37,21 @@ class ClosedOnGlassesNotice(private val clock: () -> Long) {
     fun onOpened() { episodeDone = true }
 
     companion object { const val DELAY_MS = 45_000L }
+}
+
+/**
+ * Runs a [ClosedOnGlassesNotice] from link changes with ONE delayed job per closed episode (no repeating tick: the hub service lives all day). The job starts on
+ * the closed edge, waits [delayMs] and asks the notice once; any other link state cancels it. A repeated CLOSED state does not start a second job.
+ */
+class ClosedNoticeDriver(
+    private val scope: kotlinx.coroutines.CoroutineScope, private val notice: ClosedOnGlassesNotice, private val apply: (ClosedOnGlassesNotice.Action) -> Unit,
+    private val delayMs: Long = ClosedOnGlassesNotice.DELAY_MS,
+) {
+    private var job: kotlinx.coroutines.Job? = null
+
+    fun onLink(state: LinkState) {
+        apply(notice.onState(state))
+        if (state != LinkState.CLOSED_ON_GLASSES) { job?.cancel(); job = null; return }
+        if (job?.isActive != true) job = scope.launch { delay(delayMs); apply(notice.onTick()) }
+    }
 }

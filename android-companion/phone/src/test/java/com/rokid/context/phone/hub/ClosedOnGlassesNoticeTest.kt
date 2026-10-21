@@ -58,4 +58,29 @@ class ClosedOnGlassesNoticeTest {
         n.onState(LinkState.CLOSED_ON_GLASSES); t += 15_000
         assertEquals(Action.Show, n.onTick())
     }
+
+    /** One delayed job on the closed edge, cancelled by any other state: no repeating tick while the service lives. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun driverUsesOneDelayedJobNotATick() = kotlinx.coroutines.test.runTest {
+        val actions = mutableListOf<Action>()
+        val d = ClosedNoticeDriver(this, ClosedOnGlassesNotice { testScheduler.currentTime }, { if (it != Action.None) actions += it })
+        d.onLink(LinkState.CONNECTED); testScheduler.advanceTimeBy(600_000); assertEquals("nothing runs while connected", listOf(Action.Cancel), actions)
+        actions.clear()
+        d.onLink(LinkState.CLOSED_ON_GLASSES)
+        testScheduler.advanceTimeBy(ClosedOnGlassesNotice.DELAY_MS - 1); testScheduler.runCurrent(); assertEquals(emptyList<Action>(), actions)
+        testScheduler.advanceTimeBy(2); testScheduler.runCurrent(); assertEquals(listOf(Action.Show), actions)
+        testScheduler.advanceUntilIdle() // nothing left scheduled: the job ended with the Show
+        assertEquals(listOf(Action.Show), actions)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun driverCancelsTheJobWhenTheLinkLeavesClosed() = kotlinx.coroutines.test.runTest {
+        val actions = mutableListOf<Action>()
+        val d = ClosedNoticeDriver(this, ClosedOnGlassesNotice { testScheduler.currentTime }, { if (it != Action.None) actions += it })
+        d.onLink(LinkState.CLOSED_ON_GLASSES); testScheduler.advanceTimeBy(8_000); d.onLink(LinkState.CONNECTED)
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf(Action.Cancel), actions)
+        d.onLink(LinkState.CLOSED_ON_GLASSES); d.onLink(LinkState.CLOSED_ON_GLASSES) // a repeated state does not start a second job
+        testScheduler.advanceUntilIdle(); assertEquals(listOf(Action.Cancel, Action.Show), actions)
+    }
 }
