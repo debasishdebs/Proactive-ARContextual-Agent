@@ -6,7 +6,7 @@ import androidx.room.Transaction
 
 /**
  * Settings → Memory › Delete all (spec §6.1.1: Forget moment for every frame + all derived memories, asks, nudges,
- * vectors and tombstones, plus the frame_* capture tables: meta, state, source, cluster, vector). Endpoints, bindings, prompts, pauses, shopping list and notes are settings/user lists: kept.
+ * vectors and tombstones, plus the frame_* capture tables: meta, state, source, cluster, vector, and the canvas run outputs: canvas_run, canvas_run_item, canvas_score). Endpoints, bindings, prompts, pauses, shopping list and notes are settings/user lists: kept.
  * Proposals (P7xP8 I1): every proposal came from an ask or a nudge, so all of them are memory-derived. Open ones are
  * deleted; the rest (EXECUTING/EXECUTED/FAILED, kept for undo) get Forget's redaction: params replaced with
  * [com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS] and action_log details emptied. [wipeMemory]
@@ -32,12 +32,16 @@ abstract class WipeDao {
     @Query("UPDATE proposal SET paramsJson = :params") protected abstract suspend fun scrubProposalParams(params: String)
     @Query("UPDATE action_log SET detail = ''") protected abstract suspend fun scrubActionLog()
     @Query("DELETE FROM summary_trace") protected abstract suspend fun traces()
+    @Query("DELETE FROM canvas_run_item") protected abstract suspend fun canvasItems()
+    @Query("DELETE FROM canvas_score") protected abstract suspend fun canvasScores()
+    @Query("DELETE FROM canvas_run") protected abstract suspend fun canvasRuns()
     @Query("SELECT path FROM frame") abstract suspend fun framePaths(): List<String>
 
     @Transaction
     open suspend fun wipeMemory(): List<String> {
         val proposals = proposalIds()
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
+        canvasItems(); canvasScores(); canvasRuns() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
         scrubProposalParams(com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS); scrubActionLog()
         return proposals
     }

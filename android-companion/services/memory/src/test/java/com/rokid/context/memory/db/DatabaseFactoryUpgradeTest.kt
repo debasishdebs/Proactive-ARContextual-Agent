@@ -23,7 +23,7 @@ class DatabaseFactoryUpgradeTest {
 
     private fun assertUpgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(2, raw.version)
+        assertEquals(3, raw.version)
         V1Fixture.tables(1).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertTrue(V1Fixture.tableNames(raw).containsAll(V1Fixture.FRAME_TABLES))
     }
