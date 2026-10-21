@@ -100,6 +100,14 @@ class QueueDrainReprocessTest {
         assertFalse(p.contains("secret diary"))
     }
 
+    /** Fix round 2: `nudge` is additive: absent (a job queued by an older build) means true, today's behaviour; only a describe / night save writes false. */
+    @Test fun reprocessPayloadNudgeFlagIsAdditive() {
+        val old = QueuePayloads.parse(QueuePayloads.reprocess("low", listOf("a")))
+        assertFalse(old.containsKey("nudge")); assertTrue(QueuePayloads.bool(old, "nudge", true))
+        assertFalse(QueuePayloads.bool(QueuePayloads.parse(QueuePayloads.reprocess("low", listOf("a"), nudge = false)), "nudge", true))
+        assertTrue(QueuePayloads.bool(QueuePayloads.parse("""{"kind":"priority_reprocess","v":2,"reason":"low","source_ids_csv":"a"}"""), "nudge", true))
+    }
+
     @Test fun legacyTextPayloadSkipped() {
         fact("rokid_mem_s_0", "Milk carton")
         val job = enqueue("""{"kind":"priority_reprocess","reason":"low","source_context":"Milk carton","manual":false}""")

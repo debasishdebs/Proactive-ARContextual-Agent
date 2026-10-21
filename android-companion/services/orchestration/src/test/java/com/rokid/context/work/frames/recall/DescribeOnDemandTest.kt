@@ -51,8 +51,10 @@ class DescribeOnDemandTest {
     private val db get() = MemoryGraph.get(ctx).db
     private val prompts = Collections.synchronizedList(mutableListOf<String>())
     private val classes = Collections.synchronizedList(mutableListOf<CallClass>())
+    @Volatile private var confidence = 0.9
     @Volatile private var midCall: (suspend () -> Unit)? = null
     private val now = System.currentTimeMillis()
+    private lateinit var ai: AiGraph
 
     private val gate = object : CallGate {
         override suspend fun <T> withPermit(callClass: CallClass, block: suspend () -> T): T { classes += callClass; return block() }
@@ -68,14 +70,15 @@ class DescribeOnDemandTest {
                     prompts += prompt
                     midCall?.let { hook -> midCall = null; hook() }
                     val ids = Regex("frame_id: (\\S+) ").findAll(prompt).map { it.groupValues[1] }.toList()
-                    val facts = ids.joinToString(",") { """{"text":"A mug $it","type":"object","confidence":0.9,"tags":[],"source_frame_ids":["$it"]}""" }
+                    if (ids.isEmpty()) return """{"summary":"A summary","events":[],"entities":[],"confidence":0.9,"candidate_memory_type":"short_term"}""" // the reprocess SUMMARIZE call
+                    val facts = ids.joinToString(",") { """{"text":"A mug $it","type":"object","confidence":$confidence,"tags":[],"source_frame_ids":["$it"]}""" }
                     val caps = ids.joinToString(",") { """{"frame_id":"$it","caption":"A photo of $it"}""" }
                     return """{"facts":[$facts],"captions":[$caps]}"""
                 }
                 override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>) = generate(prompt)
             }
         }, gate = gate).also { AiGraph.resetForTests(it) }
-        TestAi.bindAll(ai)
+        TestAi.bindAll(ai); this.ai = ai
         AppConfigStore.setPipelineEnabled(ctx, true)
     }
 
@@ -338,5 +341,23 @@ class DescribeOnDemandTest {
         describe.describePhotos(listOf("s1"))
         val rows = db.frameSourceDao().memoriesForFrame("s1")
         assertEquals(2, rows.size)
+    }
+
+    /** Fix round 2: a LOW-confidence describe queues a PRIORITY_REPROCESS; running it must not wake the nudge engine (no NUDGE token, no nudge about an old scene). */
+    @Test fun lowConfidenceDescribeReprocessNeverWakesTheNudgeEngine() = runBlocking {
+        fun nudgeEnqueued() = androidx.work.WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(com.rokid.context.orchestration.nudge.NudgeTrigger.WORK).get().isNotEmpty()
+        confidence = 0.3
+        ai.bindings.clear(com.rokid.context.ai.Role.CRITIC) // unbound critic: the local verdict stands
+        seed("lc1", "PENDING"); seed("lc2", "EXTRACTED")
+        assertTrue(describe.describePhotos(listOf("lc1")) is DescribeResult.Saved); assertTrue(describe.describePhotos(listOf("lc2")) is DescribeResult.Saved)
+        val jobs = com.rokid.context.data.runtime.QueueRuntimeStore.recent(ctx, 10).filter { it.queue == com.rokid.context.domain.queue.QueuePriority.PRIORITY_REPROCESS }
+        assertEquals("low confidence queued a review", 2, jobs.size)
+        androidx.test.core.app.ApplicationProvider.getApplicationContext<Context>().let {
+            org.robolectric.Shadows.shadowOf(it.getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager).setIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY, 80)
+        }
+        androidx.work.testing.TestListenableWorkerBuilder<com.rokid.context.work.QueueDrainWorker>(ctx).build().doWork()
+        assertTrue("the reprocess ran (a SUMMARIZE call)", prompts.any { "BEGIN_DATA memories" in it })
+        assertFalse("the reprocess never wakes the nudge engine", nudgeEnqueued())
+        assertFalse(classes.contains(CallClass.NUDGE))
     }
 }
