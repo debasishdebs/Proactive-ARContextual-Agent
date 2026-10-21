@@ -63,7 +63,7 @@ class PhotoRecall(
         var scanned = 0
         var truncated = false
         if (imageK > 0) {
-            val scan = imageScan(query, imageK, budgetMs)
+            val scan = imageScan(query, imageK, budgetMs, t0)
             state = scan.state; imageIds = scan.hits; scanned = scan.scanned; truncated = scan.truncated
         }
         val imageSet = imageIds.map { it.first }.toSet()
@@ -89,7 +89,7 @@ class PhotoRecall(
 
     private class ImageScanOutcome(val state: ImageSearchState, val hits: List<Pair<String, Double>>, val scanned: Int, val truncated: Boolean)
 
-    private suspend fun imageScan(query: String, k: Int, budgetMs: Long): ImageScanOutcome {
+    private suspend fun imageScan(query: String, k: Int, budgetMs: Long, startMs: Long): ImageScanOutcome {
         fun failed() = ImageScanOutcome(ImageSearchState.FAILED, emptyList(), 0, false)
         val target: ImageSpaceTarget = try {
             images.targets().firstOrNull { it.active } // S7: the ACTIVE one by flag, never "the first"
@@ -100,10 +100,13 @@ class PhotoRecall(
         val embed = CoroutineScope(SupervisorJob() + Dispatchers.Default).async { target.embedQueryFull(query) }
         val full = try { withTimeoutOrNull(budgetMs) { embed.await() } } catch (c: CancellationException) { embed.cancel(); throw c } catch (_: Exception) { return failed() }
         if (full == null) { embed.cancel(); return ImageScanOutcome(ImageSearchState.TIMED_OUT, emptyList(), 0, false) }
+        // One deadline for the embed and the scan: what the embed used is not given to the scan again.
+        val remaining = budgetMs - (clock() - startMs)
+        if (remaining <= 0) { embed.cancel(); return ImageScanOutcome(ImageSearchState.TIMED_OUT, emptyList(), 0, false) }
         val q = (if (full.size < target.imageDims) null else VectorMath.l2(full.copyOf(target.imageDims)).takeIf { VectorMath.usable(it) }) ?: return failed()
         return try {
             val r = withContext(Dispatchers.Default) {
-                ImageScan.topK(q, k, { before -> db.frameVectorDao().pageDesc(target.spaceId, before, ImageScan.PAGE).map { it.rowid to (it.frameId to it.blob) } }, clock, budgetMs = budgetMs)
+                ImageScan.topK(q, k, { before -> db.frameVectorDao().pageDesc(target.spaceId, before, ImageScan.PAGE).map { it.rowid to (it.frameId to it.blob) } }, clock, budgetMs = remaining)
             }
             ImageScanOutcome(if (r.timedOut) ImageSearchState.TIMED_OUT else ImageSearchState.RAN, r.hits, r.scanned, r.truncated)
         } catch (c: CancellationException) { throw c } catch (_: Exception) { failed() }

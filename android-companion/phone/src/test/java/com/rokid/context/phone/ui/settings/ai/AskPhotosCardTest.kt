@@ -25,7 +25,8 @@ class AskPhotosCardTest {
     private fun show(state: AskPhotosUi) = compose.setContent { PcTheme { AskPhotosCard(state) { changes += it } } }
 
     @Test fun offByDefaultAndNamesTheEndpoint() {
-        show(AskPhotosUi(enabled = false, endpointName = "Azure OpenAI", visionOk = true))
+        // The card is driven from the store's real default, not a literal.
+        show(AskPhotosUi(enabled = com.rokid.context.orchestration.AskPhotoPolicy.enabled(androidx.test.core.app.ApplicationProvider.getApplicationContext()), endpointName = "Azure OpenAI", visionOk = true))
         compose.onNodeWithTag("ask_photos_switch").assertIsOff()
         compose.onNodeWithText("Send matching photos with questions").assertExists()
         compose.onNodeWithText("Up to 2 photos that match a question are sent to Azure OpenAI with it. Captions are always sent.", substring = true).assertExists()
