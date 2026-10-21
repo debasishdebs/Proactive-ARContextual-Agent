@@ -21,6 +21,7 @@ import com.rokid.context.phone.ui.home.HomeRoute
 import com.rokid.context.phone.ui.memory.MemoryDetailRoute
 import com.rokid.context.phone.ui.nudge.NudgeDetailRoute
 import com.rokid.context.phone.ui.onboarding.OnboardingRoute
+import com.rokid.context.phone.ui.photos.PhotoSearchRoute
 import com.rokid.context.phone.ui.settings.QueuesScreen
 import com.rokid.context.phone.ui.settings.QueuesViewModel
 import com.rokid.context.phone.ui.settings.TrackerScreen
@@ -65,6 +66,7 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         ActivityScreen(
             state, onSelectPeriod = vm::selectPeriod, onSelectSort = vm::selectSort, onTogglePause = vm::togglePause, onBannerAction = { a -> bannerNav(a, vm::onBannerAction) },
             onOpenMemory = { nav.navigate(Routes.memory(it)) }, onOpenFrames = { nav.navigate(Routes.frames(it)) }, onOpenDay = { nav.navigate(Routes.day(it)) },
+            onSearchPhotos = { nav.navigate(Routes.photos()) },
         )
     }
 
@@ -74,6 +76,10 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         val vm = viewModel { DayViewModel(date, deps.memory.timeline, deps.zone, deps::today, deps.clock, deps.activitySort.order) }
         val state by vm.state.collectAsStateWithLifecycle()
         DayScreen(state, onBack = back, onOpenMemory = { nav.navigate(Routes.memory(it)) }, onOpenFrames = { nav.navigate(Routes.frames(it)) })
+    }
+
+    composable(Routes.PHOTOS, arguments = listOf(navArgument("q") { type = NavType.StringType; nullable = true; defaultValue = null })) { entry ->
+        PhotoSearchRoute(entry.arguments?.getString("q"), deps, nav)
     }
 
     composable(Routes.MEMORY, arguments = idArg) { entry -> MemoryDetailRoute(entry.arguments?.getString("id").orEmpty(), deps, nav) }

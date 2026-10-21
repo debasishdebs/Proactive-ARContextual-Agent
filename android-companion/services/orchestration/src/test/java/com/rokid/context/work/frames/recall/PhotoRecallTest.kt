@@ -214,4 +214,19 @@ class PhotoRecallTest {
         photo("a", floatArrayOf(1f, 0f)); queryVec = floatArrayOf(Float.NaN, 1f)
         assertEquals(ImageSearchState.FAILED, recall().search("milk").imageState)
     }
+
+    /** Wave 3 Task 4 (S11): the open search screen re-reads its visible frames: forgotten ones vanish, a new caption turns the check on, order and scores stay. */
+    @Test fun reenrichDropsForgottenAndRefreshesDescribed() = runBlocking {
+        photo("a", floatArrayOf(1f, 0f)); photo("b", floatArrayOf(0.9f, 0.1f)); photo("c", floatArrayOf(0.5f, 0.5f), stored = true)
+        val r = recall().search("milk")
+        assertEquals(listOf("a", "b", "c"), r.image.map { it.frameId })
+        assertFalse(r.image.first { it.frameId == "b" }.described)
+        caption("b"); db.frameMetaDao().deleteFor(listOf("a")); db.frameDao().deleteByIds(listOf("c"))
+        val again = recall().reenrich(r)
+        assertEquals(listOf("b", "c"), again.image.map { it.frameId })
+        assertTrue(again.image.first { it.frameId == "b" }.described); assertEquals("cap_b", again.image.first { it.frameId == "b" }.captionMemoryId)
+        assertFalse(again.image.first { it.frameId == "c" }.photoStored)
+        assertEquals(r.image.first { it.frameId == "b" }.score, again.image.first { it.frameId == "b" }.score, 0.0)
+        assertEquals(r.imageState, again.imageState); assertEquals(r.scanned, again.scanned)
+    }
 }

@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,9 +60,16 @@ fun ActivityScreen(
     onOpenFrames: (LocalDate) -> Unit,
     onOpenDay: (LocalDate) -> Unit,
     onSelectSort: (ActivitySort) -> Unit = {},
+    /** Opens "Find a photo" (wave 3). */
+    onSearchPhotos: () -> Unit = {},
 ) {
     LazyColumn(Modifier.fillMaxSize().background(PcColors.Surface).testTag("activity_list")) {
-        item { GradientHeader("Activity", "What your glasses noticed") { SortMenu(state.sort, onSelectSort) } }
+        item { GradientHeader("Activity", "What your glasses noticed") {
+            IconButton(onClick = onSearchPhotos, modifier = Modifier.clip(CircleShape).background(PcColors.Surface).testTag("photo_search")) {
+                Icon(Icons.Outlined.Search, contentDescription = "Find a photo", tint = PcColors.Ink)
+            }
+            SortMenu(state.sort, onSelectSort)
+        } }
         item { BannerHost(state.status.banner, onBannerAction) }
         item {
             StatusStrip(
