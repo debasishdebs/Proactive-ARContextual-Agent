@@ -246,7 +246,7 @@ class VoicePipeline(
         if (source == VoiceSource.PHONE) lastPhoneAskId = r.askId
         val text = VoiceText.clean(r.text, MAX_SPOKEN)
         val speak = source == VoiceSource.PHONE || bluetoothMedia()
-        set(VoiceState.Answer(source, r.askId, question, text, speaking = speak))
+        set(VoiceState.Answer(source, r.askId, question, text, speaking = speak, photoLabel = r.photoLabel))
         log("answered ${source.name} spoken=$speak")
         outcome(VoiceOutcome.ANSWERED, source)
         if (!speak || !speaker.speak(r.askId, text) { speechDone(g) }) speechDone(g)
@@ -320,8 +320,14 @@ class VoicePipeline(
         VoiceState.Idle -> null
         is VoiceState.Listening -> if (s.source == VoiceSource.GLASSES) Overlay.Listening(VoiceText.clip(s.partial, HUD_TEXT)) else null
         is VoiceState.Thinking -> if (s.source == VoiceSource.GLASSES) Overlay.Listening(VoiceText.clip(s.question, HUD_TEXT)) else null
-        is VoiceState.Answer -> Overlay.Answer(VoiceText.clip(s.question, HUD_TEXT), VoiceText.clip(s.text, HUD_ANSWER), s.speaking)
+        is VoiceState.Answer -> Overlay.Answer(VoiceText.clip(s.question, HUD_TEXT), hudAnswer(s), s.speaking)
         is VoiceState.Problem -> if (s.source == VoiceSource.GLASSES) Overlay.Toast(VoiceText.clip(s.hudText, HUD_TEXT)) else null
+    }
+
+    /** The HUD text only (TTS speaks [VoiceState.Answer.text]): the answer clipped to leave room for " · <label>". */
+    private fun hudAnswer(s: VoiceState.Answer): String {
+        val label = s.photoLabel?.takeIf { it.isNotBlank() } ?: return VoiceText.clip(s.text, HUD_ANSWER)
+        return VoiceText.clip(s.text, HUD_ANSWER - label.length - 3) + " \u00b7 " + label
     }
 
     private companion object {

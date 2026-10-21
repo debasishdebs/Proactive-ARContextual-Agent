@@ -20,11 +20,16 @@ import com.rokid.context.memory.ProposalOrigin
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.ReviewState
+import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
 import com.rokid.context.memory.retrieval.MemoryRetriever
 import com.rokid.context.memory.retrieval.RetrievalSettings
 import com.rokid.context.memory.retrieval.RetrievalSettingsStore
+import com.rokid.context.model.ModelImageInput
 import com.rokid.context.prompt.PromptComposer
 import com.rokid.context.prompt.PromptVars
+import com.rokid.context.work.frames.FramePhotos
+import com.rokid.context.work.frames.recall.PhotoHit
+import com.rokid.context.work.frames.recall.PhotoRecall
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -90,28 +95,73 @@ class AnswerService(
     private val onNoMatch: () -> Unit = {},
     /** Spec P2.3: with a keyframe backlog, the newest frames are extracted first (user-started, bypassing the budget). Never fails the ask. */
     private val beforeRetrieve: suspend () -> Unit = {},
+    /** Wave 3 (R4): the photos that match the question by image vector, at most 2 are used. Never fails the ask: an error or a timeout is "none". */
+    private val photos: suspend (question: String, nowMs: Long) -> List<PhotoHit> = { _, _ -> emptyList() },
+    /** Decrypted in memory only (`FramePhotos.load`); a missing key = unreadable photo, which is skipped. */
+    private val photoImages: suspend (frameIds: List<String>) -> Map<String, ModelImageInput> = { emptyMap() },
 ) {
-    data class Retrieved(val vars: PromptVars, val memories: List<MemoryEntity>) { val ids: Set<String> get() = memories.map { it.id }.toSet() }
+    /** [photos]: the photo lines of the prompt, in order; [images]: the attached images (`image=<n>` is a 1-based index into it, S10). */
+    data class Retrieved(
+        val vars: PromptVars, val memories: List<MemoryEntity>, val photos: List<PhotoCite> = emptyList(), val images: List<ModelImageInput> = emptyList(),
+    ) {
+        val ids: Set<String> get() = memories.map { it.id }.toSet() + photos.map { it.citeId }
+    }
+
+    /** [citeId] = the caption memory's id, else `frame:<frameId>`. [ts] is the capture time (the stored `frame.ts`, or `frame_meta.capturedAtMs` once expired). */
+    data class PhotoCite(val citeId: String, val frameId: String, val ts: Long?, val stored: Boolean, val receivedAt: Long? = null)
 
     suspend fun retrieve(question: String, nowMs: Long): Retrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
         val s = settings().clamped()
         val hits = retriever.retrieve(q, s, nowMs).hits.map { it.memory }
         // No hits: the newest trusted memories, under the same minConfidence and top-k the retriever applies.
-        val pool = hits.ifEmpty {
+        val poolAll = hits.ifEmpty {
             memory.memories.recent(30).filter { it.reviewState == ReviewState.OK && it.confidence >= s.minConfidence }.take(minOf(FALLBACK, s.topK))
         }
-        val lines = AskText.bounded(pool.map(::line))
+        val recalled = recalledPhotos(q, nowMs)
+        // A photo whose caption is already a retrieved memory is listed once, as the photo line.
+        val citeIds = recalled.map { it.second }.toSet()
+        val pool = poolAll.filter { it.id !in citeIds }
+        val images = mutableListOf<ModelImageInput>()
+        val imageNo = HashMap<String, Int>()
+        for ((hit, citeId) in recalled) {
+            if (images.size >= MAX_PHOTO_IMAGES || !hit.photoStored) continue
+            val image = try { photoImages(listOf(hit.frameId))[hit.frameId] } catch (c: CancellationException) { throw c } catch (e: Exception) { null }
+            if (image != null) { images += image; imageNo[citeId] = images.size }
+        }
+        val photoLines = recalled.map { (hit, citeId) -> photoLine(hit, citeId, imageNo[citeId]) }
+            .let { if (images.isEmpty()) it else listOf(IMAGE_NOTE) + it }
+        val lines = AskText.bounded(pool.map(::line), 5_000 - photoLines.sumOf { it.length + 1 })
         val kept = pool.take(lines.size)
         return Retrieved(
             PromptVars(
                 // The question is user (later ASR) text: a data block folds look-alike markers as for memories.
                 question = PromptComposer.dataBlock("question", listOf(q)),
-                retrievedMemories = PromptComposer.dataBlock("memories", lines),
+                retrievedMemories = PromptComposer.dataBlock("memories", lines + photoLines),
                 contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
             ),
             kept,
+            recalled.map { (hit, citeId) -> PhotoCite(citeId, hit.frameId, hit.ts, hit.photoStored, hit.receivedAt) },
+            images,
         )
+    }
+
+    private suspend fun recalledPhotos(q: String, nowMs: Long): List<Pair<PhotoHit, String>> {
+        val hits = try { photos(q, nowMs) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            Log.i(TAG, "photo recall failed (${e.javaClass.simpleName})"); emptyList()
+        }
+        return hits.distinctBy { it.frameId }.take(MAX_PHOTOS).map { it to (it.captionMemoryId ?: (PHOTO_CITE_PREFIX + it.frameId)) }
+    }
+
+    /**
+     * `id=<cite> · <time> · photo[ · image=<n>] · <caption | no caption yet>`. The time is the capture time; an expired photo without one falls back to
+     * the receive time and says so ("received", user ruling 2026-10-22 over S9).
+     */
+    private fun photoLine(hit: PhotoHit, citeId: String, imageNo: Int?): String {
+        val fmt = TIME.withZone(zone())
+        val at = hit.ts?.let { fmt.format(Instant.ofEpochMilli(it)) } ?: hit.receivedAt?.let { "received " + fmt.format(Instant.ofEpochMilli(it)) } ?: "time unknown"
+        val caption = hit.captionText?.let { AskText.collapse(it) }?.takeIf { it.isNotEmpty() }?.let { AskText.clip(it, MAX_PHOTO_CAPTION) } ?: "no caption yet"
+        return "id=$citeId · $at · photo" + (imageNo?.let { " · image=$it" } ?: "") + " · $caption"
     }
 
     /** Phone/HUD asks: every failure becomes one of the fixed short messages. */
@@ -152,11 +202,11 @@ class AnswerService(
         }
         val r = retrieve(q, nowMs)
         // An action command ("note that…") needs no memory: only other asks stop at "nothing yet" (user notes).
-        if (r.memories.isEmpty() && !ActionTriggers.matches(q)) {
+        if (r.memories.isEmpty() && r.photos.isEmpty() && !ActionTriggers.matches(q)) {
             runCatching(onNoMatch).onFailure { Log.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
             throw NoMemoriesException()
         }
-        val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER)).output as AnswerOutput
+        val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER)).output as AnswerOutput
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
         val id = askId ?: "ask_${UUID.randomUUID()}"
@@ -174,6 +224,7 @@ class AnswerService(
         }
         if (!saved) throw NoMemoriesException()
         if (redacted) return AskOutcome.Answered(id)
+        val photo = firstCitedPhoto(r, out.sources)
         // Phase 7 (R-62): only after the ask row commits, so a proposal always has its origin row.
         // The ask is saved: a failing intake must not fail it (nor make a queue job retry it). Cancellation still propagates.
         val proposalId = out.proposedAction?.let { action ->
@@ -186,7 +237,20 @@ class AnswerService(
                 null
             }
         }
-        return AskOutcome.Answered(id, out.proposedAction, proposalId)
+        return AskOutcome.Answered(id, out.proposedAction, proposalId, photo?.first, photo?.second)
+    }
+
+    /** The first cited source that is a photo still in storage: (frame id, capture time). An expired photo gives no HUD label (S9). */
+    private suspend fun firstCitedPhoto(r: Retrieved, cited: List<String>): Pair<String, Long>? {
+        val cites = r.photos.associateBy { it.citeId }
+        val memories = r.memories.associateBy { it.id }
+        for (id in cited) {
+            val cite = cites[id]
+            if (cite != null) { if (cite.stored && cite.ts != null) return cite.frameId to cite.ts; continue }
+            val frameId = memories[id]?.frameId ?: continue
+            memory.db.frameDao().byIds(listOf(frameId)).firstOrNull()?.let { return it.id to it.ts }
+        }
+        return null
     }
 
     private fun line(m: MemoryEntity): String =
@@ -199,6 +263,11 @@ class AnswerService(
         private const val MAX_ANSWER = 2_000
         private const val MAX_MEMORY_CHARS = 500
         private const val FALLBACK = 10
+        private const val MAX_PHOTOS = 2
+        private const val MAX_PHOTO_IMAGES = 2
+        private const val MAX_PHOTO_CAPTION = 300
+        private const val PHOTO_TIMEOUT_MS = 1_500L
+        private const val IMAGE_NOTE = "note: image=N on a photo line is the Nth attached image"
         private const val ASK_EXTRACT_TIMEOUT_MS = 30_000L
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
 
@@ -217,6 +286,8 @@ class AnswerService(
                 MemoryGraph.get(context), ai.runner, ai.retriever, { store.settings.value },
                 sources = sourcesFrom(provider),
                 proposals = OriginFencedIntake(context, MemoryGraph.get(context), ActionsGraph.get(context).intake),
+                photos = { q, _ -> kotlinx.coroutines.withTimeoutOrNull(PHOTO_TIMEOUT_MS) { PhotoRecall.forApp(context).search(q, imageK = MAX_PHOTOS, captionK = 0).image }.orEmpty() },
+                photoImages = { ids -> FramePhotos.load(context, ids).photos.associate { it.frameId to it.image } },
                 beforeRetrieve = { if (extractFirst) kotlinx.coroutines.withTimeoutOrNull(ASK_EXTRACT_TIMEOUT_MS) { com.rokid.context.work.frames.KeyframeGraph.get(context).pipeline.extractForAsk() } },
                 onNoMatch = { if (com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(context)) com.rokid.context.work.OrchestrationScheduler(context).enqueueFrameIngestIfIdle() },
             )

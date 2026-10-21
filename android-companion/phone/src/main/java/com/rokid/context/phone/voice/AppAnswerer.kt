@@ -6,6 +6,10 @@ import com.rokid.context.voice.AnswerResult
 import com.rokid.context.voice.Answerer
 import com.rokid.context.voice.VoiceCopy
 import com.rokid.context.voice.VoiceSource
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /**
  * Short HUD versions (spec §5.1 step 5: "AI unavailable") and Home versions of the answer path's fixed messages. Any
@@ -37,10 +41,16 @@ class AppAnswerer(
     private val ask: suspend (question: String, source: String) -> AskOutcome,
     private val answerText: suspend (askId: String) -> String?,
     private val offNotice: suspend (proposalId: String) -> String? = { null },
+    private val zone: () -> ZoneId = ZoneId::systemDefault,
 ) : Answerer {
     override suspend fun answer(question: String, source: VoiceSource): AnswerResult = when (val r = ask(question, source.askSource)) {
-        is AskOutcome.Answered -> (r.proposalId?.let { offNotice(it) } ?: answerText(r.askId))?.takeIf { it.isNotBlank() }?.let { AnswerResult.Answered(r.askId, it) }
+        is AskOutcome.Answered -> (r.proposalId?.let { offNotice(it) } ?: answerText(r.askId))?.takeIf { it.isNotBlank() }?.let { AnswerResult.Answered(r.askId, it, photoLabel = r.photoAtMs?.let(::photoLabel)) }
             ?: AnswerResult.Failed(VoiceCopy.FAILED_HUD, AskActions.FAILED)
         is AskOutcome.Failed -> AnswerResult.Failed(HudAskText.forFailure(r.message), HudAskText.forPhone(r.message))
     }
+
+    /** "Photo HH:mm" in the system zone: the capture time of the first cited stored photo (fixed copy plus a time, never provider text). */
+    private fun photoLabel(atMs: Long) = "Photo " + LABEL_TIME.withZone(zone()).format(Instant.ofEpochMilli(atMs))
+
+    private companion object { val LABEL_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.US) }
 }

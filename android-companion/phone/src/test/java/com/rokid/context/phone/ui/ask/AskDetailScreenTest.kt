@@ -5,6 +5,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
@@ -60,5 +61,45 @@ class AskDetailScreenTest {
     @Test fun unknownAskShowsNotFound() {
         show(AskDetailModel.NOT_FOUND)
         compose.onNodeWithText("This answer is no longer available").assertIsDisplayed()
+    }
+
+    private val photoState = found.copy(
+        sources = listOf(
+            SourceCard("frame:f1", "Photo", 1.0, "/frames/f1.jpg", photoFrameId = "f1", photoDate = "2026-10-12"),
+            SourceCard("frame:f9", "Photo", 1.0, null, expired = true),
+        ),
+        missingSources = 0,
+    )
+    private val photos = mutableListOf<Pair<String, String>>()
+    private val more = mutableListOf<String>()
+
+    private fun showPhotos(state: AskDetailUiState, onMore: ((String) -> Unit)? = { more += it }) = compose.setContent {
+        PcTheme { AskDetailScreen(state, onBack = {}, onRate = {}, onOpenMemory = { opened += it }, onOpenPhoto = { id, date -> photos += id to date }, onMorePhotos = onMore) }
+    }
+
+    @Test fun photoCardOpensTheViewerAndAnExpiredCardShowsThePlaceholderOnly() {
+        showPhotos(photoState)
+        compose.onNodeWithTag("photo_source_f1").performScrollTo().performClick()
+        assertEquals(listOf("f1" to "2026-10-12"), photos)
+        assertEquals(emptyList<String>(), opened)
+        compose.onNodeWithText("Photo expired").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("photo_source_f9").performClick() // inert: nothing opens
+        assertEquals(1, photos.size); assertEquals(emptyList<String>(), opened)
+    }
+
+    @Test fun morePhotosButtonReportsTheQuestionAndHidesWithoutACallbackOrWhenRedacted() {
+        showPhotos(photoState)
+        compose.onNodeWithTag("more_photos").performScrollTo().performClick()
+        assertEquals(listOf("Where are my keys?"), more)
+    }
+
+    @Test fun morePhotosAbsentWhenNotWired() {
+        showPhotos(photoState, onMore = null)
+        compose.onNodeWithTag("more_photos").assertDoesNotExist()
+    }
+
+    @Test fun morePhotosAbsentWhenRedacted() {
+        showPhotos(photoState.copy(redacted = true, sources = emptyList()))
+        compose.onNodeWithTag("more_photos").assertDoesNotExist()
     }
 }
