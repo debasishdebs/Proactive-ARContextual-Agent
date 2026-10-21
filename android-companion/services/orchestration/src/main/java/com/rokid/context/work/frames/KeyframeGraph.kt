@@ -68,6 +68,12 @@ object KeyframeGraph {
     /** Whether the app is in the foreground (the app installs ProcessLifecycleOwner). */
     @Volatile var foreground: () -> Boolean = { true }
 
+    /**
+     * Wave B: the image-intent sampler, installed by the `image_intent` context source while its switch is on and nulled when it
+     * stops. [KeyframeHandle.signal] pokes it (a failure there never reaches the pipeline).
+     */
+    @Volatile var intentSampler: com.rokid.context.work.frames.intent.IntentSampler? = null
+
     @Volatile private var handle: KeyframeHandle? = null
 
     fun get(context: Context): KeyframeHandle = handle ?: synchronized(this) { handle ?: KeyframeHandle(context.applicationContext).also { handle = it } }
@@ -159,7 +165,17 @@ class KeyframeHandle internal constructor(private val app: Context) {
     }
 
     /** A frame committed to Room (the drain, or the hub after storing a receipt). Starts the loop if needed but never scans (review M1). */
-    fun signal() { pipeline.start(scope); pipeline.signal() }
+    fun signal() {
+        pipeline.start(scope); pipeline.signal()
+        try { KeyframeGraph.intentSampler?.poke() } catch (e: Exception) { Log.w(TAG, "intent poke failed: ${e.javaClass.simpleName}") }
+    }
+
+    /**
+     * Admission for optional background model calls that share the pipeline's gates (image intent): not under Battery Saver or a low
+     * battery, a validated network, and the phone's power/thermal policy (SEVERE pauses; at MODERATE it takes the shared
+     * one-per-30-s extraction allowance, so intent and extraction cannot together exceed it).
+     */
+    fun admitBackgroundCall(): Boolean = !batteryDeferral() && networkValidated() && power.tryExtraction()
 
     @Synchronized private fun watchNetwork() {
         if (networkWatch != null) return
