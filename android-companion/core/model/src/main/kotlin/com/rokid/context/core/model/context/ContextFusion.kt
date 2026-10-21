@@ -149,7 +149,9 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
         val hintFresh = g != null && age(g.atMs) <= p.hintStillTtlMs
         val fracOk = hintFresh && (g!!.stillFrac5m >= p.stillFrac || (idleImage && g.stillFrac5m >= p.stillFracWithImage))
         val moving = actFresh && (act == PhoneActivity.WALKING || act == PhoneActivity.RUNNING || act == PhoneActivity.ON_BICYCLE)
-        val asleep = watchFresh && w!!.state == WatchState.ASLEEP
+        // a watch ASLEEP/REST is ignored while a FRESH glasses hint says the wearer is moving (stale ASLEEP, e.g. watch off the wrist)
+        val glassesMoving = hintFresh && g!!.stillFrac5m in 0f..<p.stillFrac   // negative = unknown fraction: says nothing
+        val asleep = watchFresh && w!!.state == WatchState.ASLEEP && !glassesMoving
         val still = (fracOk && !moving && newest?.label != IntentLabel.WORKOUT) || asleep
 
         // --- driver probability (only meaningful with a vehicle fact)
