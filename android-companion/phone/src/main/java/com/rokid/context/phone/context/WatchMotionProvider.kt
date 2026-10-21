@@ -17,16 +17,15 @@ class WatchMotionProvider : ContentProvider() {
 
     override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
         if (method != METHOD) return null
+        // Caller first (spec §8): a stranger learns nothing about the source's state and its extras are never unparcelled.
         val pkg = callingPackage
-        val r = WatchMotionIntake.current?.accept(pkg, { sha -> certMatches(pkg, sha) }, extras?.getString("json"))
-            ?: WatchMotionIntake.Result(false, "not_enabled")
-        return Bundle().apply { putBoolean("ok", r.ok); putString("reason", r.reason) }
+        if (pkg != WatchMotionIntake.LIVEFIT_PACKAGE) return reply(false, "bad_caller")
+        return decide(pkg, extras?.getString("json")) { p, d -> hasCert(p, d) }
     }
 
-    private fun certMatches(pkg: String?, sha: String): Boolean {
+    private fun hasCert(pkg: String, digest: ByteArray): Boolean {
         val pm = context?.packageManager ?: return false
-        val digest = hexToBytes(sha) ?: return false
-        return try { pm.hasSigningCertificate(pkg ?: return false, digest, PackageManager.CERT_INPUT_SHA256) } catch (e: Exception) { false }
+        return try { pm.hasSigningCertificate(pkg, digest, PackageManager.CERT_INPUT_SHA256) } catch (e: Exception) { false }
     }
 
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?): Cursor? = null
@@ -38,6 +37,16 @@ class WatchMotionProvider : ContentProvider() {
     companion object {
         const val METHOD = "motion_state"
         const val AUTHORITY = "com.rokid.context.motionsource"
+
+        private fun reply(ok: Boolean, reason: String?) = Bundle().apply { putBoolean("ok", ok); putString("reason", reason) }
+
+        /** The whole decision, with the platform certificate check behind [hasCert] (package, digest bytes) so it can be faked. */
+        internal fun decide(pkg: String?, json: String?, hasCert: (String, ByteArray) -> Boolean): Bundle {
+            if (pkg != WatchMotionIntake.LIVEFIT_PACKAGE) return reply(false, "bad_caller")
+            val intake = WatchMotionIntake.current ?: return reply(false, "not_enabled")
+            val r = intake.accept(pkg, { sha -> hexToBytes(sha)?.let { hasCert(pkg, it) } ?: false }, json)
+            return reply(r.ok, r.reason)
+        }
 
         /** "AB:cd:…" or plain hex → bytes; null when not a whole number of hex pairs. */
         fun hexToBytes(s: String): ByteArray? {

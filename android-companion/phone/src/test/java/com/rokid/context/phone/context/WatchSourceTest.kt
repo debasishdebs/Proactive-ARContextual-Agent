@@ -124,13 +124,44 @@ class WatchSourceTest {
         assertTrue(q.providers!!.any { it.name == "com.rokid.context.phone.context.WatchMotionProvider" })
     }
 
-    @Test fun providerAnswersNotEnabledWithoutIntakeAndNullForOtherMethods() {
+    @Test fun providerAnswersBadCallerFirstEvenWithoutIntake() {
+        WatchMotionIntake.current = null
         val p = Robolectric.buildContentProvider(WatchMotionProvider::class.java).create("com.rokid.context.motionsource").get()
         assertNull(p.call("other", null, null))
         val r = p.call("motion_state", null, Bundle().apply { putString("json", "{}") })!!
-        assertFalse(r.getBoolean("ok")); assertEquals("not_enabled", r.getString("reason"))
+        assertFalse(r.getBoolean("ok")); assertEquals("bad_caller", r.getString("reason"))
         assertNull(p.query(android.net.Uri.parse("content://com.rokid.context.motionsource"), null, null, null, null))
         assertEquals(0, p.delete(android.net.Uri.parse("content://com.rokid.context.motionsource"), null, null))
+    }
+
+    @Test fun decideChecksCallerBeforeIntakeAndExtras() {
+        WatchMotionIntake.current = null
+        assertEquals("bad_caller", WatchMotionProvider.decide("com.evil", null) { _, _ -> true }.getString("reason"))
+        assertEquals("bad_caller", WatchMotionProvider.decide(null, "{}") { _, _ -> true }.getString("reason"))
+        assertEquals("not_enabled", WatchMotionProvider.decide("com.livear.fit", "{}") { _, _ -> true }.getString("reason"))
+    }
+
+    @Test fun decideCertPinSeamPassesDigestBytesAndHonoursTheAnswer() {
+        val i = WatchMotionIntake({ true }, { "AB:01" }, { 1L }, { }); WatchMotionIntake.current = i
+        var seenPkg: String? = null; var seenDigest: ByteArray? = null
+        val no = WatchMotionProvider.decide("com.livear.fit", FakeLiveFit(i).json()) { p, d -> seenPkg = p; seenDigest = d; false }
+        assertEquals("bad_cert", no.getString("reason")); assertEquals("com.livear.fit", seenPkg)
+        assertArrayEquals(byteArrayOf(0xAB.toByte(), 0x01), seenDigest)
+        val yes = WatchMotionProvider.decide("com.livear.fit", FakeLiveFit(i).json()) { _, _ -> true }
+        assertTrue(yes.getBoolean("ok"))
+        val badHex = WatchMotionIntake({ true }, { "zz" }, { 1L }, { }); WatchMotionIntake.current = badHex
+        assertEquals("bad_cert", WatchMotionProvider.decide("com.livear.fit", "{}") { _, _ -> true }.getString("reason"))
+    }
+
+    @Test fun epochResetIsCountedThroughTheSource() {
+        settings.liveFitCertSha256 = "ab"; settings.setEnabled("watch_livefit", true)
+        var resets = 0; var t = 0L
+        val s = WatchSource(settings, { true }, { EvidenceSink { } }, onEpochReset = { resets++ }, mono = { t }); s.start()
+        val i = WatchMotionIntake.current!!; val f = FakeLiveFit(i)
+        f.send(seq = 1); assertEquals(0, resets)
+        t += 2000; assertTrue(i.accept("com.livear.fit", { true }, f.json(seq = 1, epoch = 9L)).ok)
+        assertEquals(1, resets)
+        s.stop()
     }
 
     @Test fun providerWithIntakeButNoCallerIsBadCaller() {

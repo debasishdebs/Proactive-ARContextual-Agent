@@ -15,6 +15,7 @@ class WatchSource(
     private val installed: () -> Boolean,
     private val sinkFor: (String) -> EvidenceSink,
     private val onRejected: () -> Unit = {},
+    private val onEpochReset: () -> Unit = {},
     private val clock: () -> Long = System::currentTimeMillis,
     private val mono: () -> Long = { System.nanoTime() / 1_000_000L },
     private val schedule: ((Long, () -> Unit) -> Unit)? = null,
@@ -40,7 +41,7 @@ class WatchSource(
             sink = { e -> count.incrementAndGet(); sink.accept(e) },
             initialEpoch = settings.watchEpoch, initialSeq = settings.watchLastSeq,
             persist = settings::setWatchSeq, schedule = sched, mono = mono,
-            onReject = { onRejected() },
+            onReject = { onRejected() }, onEpochReset = onEpochReset,
         )
         timer = ses; intake = i; WatchMotionIntake.current = i
         return true

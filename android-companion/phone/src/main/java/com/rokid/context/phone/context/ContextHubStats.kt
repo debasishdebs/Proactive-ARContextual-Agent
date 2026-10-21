@@ -36,6 +36,7 @@ class ContextHubStats(private val clock: () -> Long = System::currentTimeMillis)
     fun onIntentSkip() = add("intentSkip")
     fun onDropped() = add("dropped")
     fun onWatchRejected() = add("watchRej")
+    fun onWatchEpoch() = add("watchEpoch")
     fun addLocOnSeconds(s: Long) = add("locOnS", s)
     fun addStateTime(state: ContextState, ms: Long) { if (ms > 0) stateMs.getOrPut(state) { AtomicLong() }.addAndGet(ms) }
 
@@ -59,6 +60,6 @@ class ContextHubStats(private val clock: () -> Long = System::currentTimeMillis)
     }
 
     private companion object {
-        val KEYS = listOf("ar", "steps", "loc", "locOnS", "bt", "aa", "air", "hints", "watch", "watchRej", "intent", "intentFail", "intentSkip", "sends", "changes", "dropped")
+        val KEYS = listOf("ar", "steps", "loc", "locOnS", "bt", "aa", "air", "hints", "watch", "watchRej", "watchEpoch", "intent", "intentFail", "intentSkip", "sends", "changes", "dropped")
     }
 }

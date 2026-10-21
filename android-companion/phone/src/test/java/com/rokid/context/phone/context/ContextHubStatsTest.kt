@@ -48,4 +48,10 @@ class ContextHubStatsTest {
         val m = s.snapshot()
         assertEquals(2L, m["sends"]); assertEquals(90L, m["state_REST_s"]); assertEquals(0L, m["hints"])
     }
+
+    @Test fun watchEpochIsCountedAndInTheSnapshot() {
+        val s = ContextHubStats { 0L }
+        s.onWatchEpoch(); s.onWatchEpoch()
+        org.junit.Assert.assertEquals(2L, s.snapshot()["watchEpoch"])
+    }
 }
