@@ -81,6 +81,11 @@ class MemorySettingsViewModel(
     fun setMedium(d: Int) = edit { it.copy(mediumDays = d) }
     fun setLong(d: Int) = edit { it.copy(longDays = d) }
     fun setQuota(mb: Int) = edit { it.copy(quotaMb = mb) }
+    fun setPhotoDays(d: Int) = edit { it.copy(photoDays = d) }
+    fun setSkippedPhotoDays(d: Int) = edit { it.copy(skippedPhotoDays = d) }
+    fun setCaptionDays(d: Int) = edit { it.copy(captionDays = d) }
+    fun setClusterSummaryDays(d: Int) = edit { it.copy(clusterSummaryDays = d) }
+    fun setImageVectorDays(d: Int) = edit { it.copy(imageVectorDays = d) }
 
     private fun edit(transform: (MemorySettings) -> MemorySettings) { viewModelScope.launch(work) { store().update(transform) } }
 
@@ -150,10 +155,28 @@ class MemorySettingsViewModel(
         const val ENCRYPTION_ON_NOTE = "Turns on after Proactive Context restarts. $RESTART_HINT"
         const val ENCRYPTION_OFF_NOTE = "Turns off after Proactive Context restarts. $RESTART_HINT"
 
-        /** S1: the daily RetentionWorker enforces these windows (by creation time), deleting the photos with them. */
+        /** S1: the daily RetentionWorker enforces these windows (by creation time) and the per-kind ones below (spec §P6.1). */
         fun retentionNote(s: com.rokid.context.memory.MemorySettings): String =
             "Once a day, short-term memories older than ${s.shortHours} h, medium-term older than ${s.mediumDays} days and " +
-                "long-term older than ${s.longDays} days are removed, with their photos."
+                "long-term older than ${s.longDays} days are removed. " +
+                (if (s.photoDays == MemorySettings.FOREVER) "Photos are kept" else "Photos are removed ${s.photoDays} days after they were taken") +
+                " (skipped photos ${when (s.skippedPhotoDays) { 0 -> "at the next clean-up"; 1 -> "after 1 day"; else -> "after ${s.skippedPhotoDays} days" }}); " +
+                "captions and scene summaries stay until their own setting says otherwise."
+
+        /** Ruling 13: photos taken before this update keep their full window from the first clean-up of this build. */
+        fun upgradeNote(s: MemorySettings): String? =
+            if (s.photoDays == MemorySettings.FOREVER) null else "Photos you already have are kept at least ${s.photoDays} days from this update."
+
+        /** Image vectors drive photo search: shorter than captions, old photos are findable only by their text. */
+        fun vectorsShorterThanCaptions(s: MemorySettings): Boolean =
+            s.imageVectorDays != MemorySettings.FOREVER && (s.captionDays == MemorySettings.FOREVER || s.imageVectorDays < s.captionDays)
+
+        const val VECTOR_WARNING = "Image vectors expire before captions: older photos can then only be found by their caption text."
+
+        /** "7 days", "Forever", and "Next clean-up" for a skipped-photo window of 0. */
+        fun keepLabel(days: Int, zeroLabel: String = "0 days"): String = when (days) {
+            MemorySettings.FOREVER -> "Forever"; 0 -> zeroLabel; 1 -> "1 day"; else -> "$days days"
+        }
     }
 }
 
@@ -171,6 +194,11 @@ fun MemorySettingsScreen(
     onConfirmDeleteAll: () -> Unit,
     onCancelDeleteAll: () -> Unit,
     onOpenReview: () -> Unit,
+    onPhotoDays: (Int) -> Unit = {},
+    onSkippedPhotoDays: (Int) -> Unit = {},
+    onCaptionDays: (Int) -> Unit = {},
+    onClusterSummaryDays: (Int) -> Unit = {},
+    onImageVectorDays: (Int) -> Unit = {},
     watchList: List<String> = WatchListStore.DEFAULTS,
     onWatchListSave: (List<String>) -> Unit = {},
     onWatchListReset: () -> Unit = {},
@@ -185,6 +213,20 @@ fun MemorySettingsScreen(
                 ChoiceRow("Medium-term", medium.map { "$it days" }, medium.indexOf(s.mediumDays), { onMedium(medium[it]) }, tag = "retention_medium")
                 ChoiceRow("Long-term", long.map { "$it days" }, long.indexOf(s.longDays), { onLong(long[it]) }, tag = "retention_long")
                 NoticeText(MemorySettingsViewModel.retentionNote(s), tag = "retention_note")
+            }
+        }
+        item {
+            SettingsCard {
+                Text("Keep by kind", style = MaterialTheme.typography.titleMedium)
+                val photo = MemorySettingsStore.PHOTO_DAYS; val skipped = MemorySettingsStore.SKIPPED_DAYS; val kind = MemorySettingsStore.LONG_KIND_DAYS
+                fun label(d: Int, zero: String = "0 days") = MemorySettingsViewModel.keepLabel(d, zero)
+                ChoiceRow("Photos", photo.map { label(it) }, photo.indexOf(s.photoDays), { onPhotoDays(photo[it]) }, tag = "retention_photo")
+                ChoiceRow("Skipped photos", skipped.map { label(it, "Next clean-up") }, skipped.indexOf(s.skippedPhotoDays), { onSkippedPhotoDays(skipped[it]) }, tag = "retention_skipped")
+                ChoiceRow("Captions", kind.map { label(it) }, kind.indexOf(s.captionDays), { onCaptionDays(kind[it]) }, tag = "retention_caption")
+                ChoiceRow("Scene summaries", kind.map { label(it) }, kind.indexOf(s.clusterSummaryDays), { onClusterSummaryDays(kind[it]) }, tag = "retention_summary")
+                ChoiceRow("Image vectors", kind.map { label(it) }, kind.indexOf(s.imageVectorDays), { onImageVectorDays(kind[it]) }, tag = "retention_vector")
+                if (MemorySettingsViewModel.vectorsShorterThanCaptions(s)) NoticeText(MemorySettingsViewModel.VECTOR_WARNING, tag = "retention_vector_warning")
+                MemorySettingsViewModel.upgradeNote(s)?.let { NoticeText(it, tag = "retention_upgrade_note") }
             }
         }
         item {

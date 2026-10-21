@@ -24,6 +24,8 @@ data class FrameViewerUiState(
     val title: String = "",
     val frames: List<ViewerFrame> = emptyList(),
     val startIndex: Int = 0,
+    /** The photo the viewer was opened on was removed by retention (Ruling 11): its memory stays, the screen says "Photo expired". */
+    val startExpired: Boolean = false,
 )
 
 /** `frames/{date}?start={frameId}` — the day's frames oldest first; unknown start → first frame; bad date → not found. */
@@ -44,6 +46,7 @@ class FrameViewerViewModel(dateArg: String?, startId: String?, timeline: Timelin
                     loading = false, found = true, title = ActivityModel.dayLabel(d, today()),
                     frames = frames.map { ViewerFrame(it.id, it.path, time.format(Instant.ofEpochMilli(it.ts).atZone(z))) },
                     startIndex = frames.indexOfFirst { it.id == startId }.coerceAtLeast(0),
+                    startExpired = startId != null && frames.none { it.id == startId },
                 )
             }
         }

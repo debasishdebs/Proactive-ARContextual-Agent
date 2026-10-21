@@ -60,6 +60,18 @@ class MemoryDetailTest {
         assertEquals(1f, Zoom.clamp(0.2f)); assertEquals(5f, Zoom.clamp(9f)); assertEquals(1f, Zoom.clamp(Float.NaN)); assertEquals(2.5f, Zoom.clamp(2.5f))
     }
 
+    /** Ruling 11: retention deletes the photo but keeps the memory; the screen says so instead of showing a hole. */
+    @Test fun expiredPhotoShowsPlaceholder() {
+        val m = Fixtures.memory("m1", "Keys on shelf", Fixtures.at(TODAY, 8, 5), frameId = "f1")
+        val expired = MemoryDetailModel.build(m, null, Fixtures.ZONE)
+        assertEquals(true, expired.photoExpired)
+        assertEquals(null, expired.framePath)
+        assertEquals("Photo expired", MemoryDetailModel.PHOTO_EXPIRED)
+        val present = MemoryDetailModel.build(m, Fixtures.frame("f1", Fixtures.at(TODAY, 8), path = "/f1.jpg"), Fixtures.ZONE)
+        assertEquals(false, present.photoExpired)
+        assertEquals(false, MemoryDetailModel.build(Fixtures.memory("m2", "No photo", 1), null, Fixtures.ZONE).photoExpired) // never had one
+    }
+
     @Test fun trustPersists() = runBlocking {
         graph.memories.add(Fixtures.memory("m1", "Keys on shelf", 1))
         val model = vm("m1")

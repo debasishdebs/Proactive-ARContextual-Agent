@@ -23,6 +23,35 @@ class MemorySettingsStoreTest {
         assertEquals(24, store.settings.value.shortHours) // not one of the offered windows → default
     }
 
+    /** Task 8 (spec P6.1): per-kind defaults, the offered choices, FOREVER = -1, and the first-run stamp. */
+    @Test fun perKindDefaultsChoicesAndStamp() {
+        val p = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_kinds", Context.MODE_PRIVATE)
+        val store = MemorySettingsStore(p)
+        val d = store.settings.value
+        assertEquals(listOf(7, 1, -1, -1, -1), listOf(d.photoDays, d.skippedPhotoDays, d.captionDays, d.clusterSummaryDays, d.imageVectorDays))
+        assertEquals(0L, d.perKindSince)
+        assertEquals(-1, MemorySettings.FOREVER)
+        assertEquals(listOf(1, 3, 7, 30, 90, -1), MemorySettingsStore.PHOTO_DAYS)
+        assertEquals(listOf(0, 1, 7), MemorySettingsStore.SKIPPED_DAYS)
+        assertEquals(listOf(30, 90, 365, -1), MemorySettingsStore.LONG_KIND_DAYS)
+        store.update { it.copy(photoDays = 90, skippedPhotoDays = 7, captionDays = 30, clusterSummaryDays = 365, imageVectorDays = 90, perKindSince = 123L) }
+        val r = MemorySettingsStore(p).settings.value
+        assertEquals(listOf(90, 7, 30, 365, 90), listOf(r.photoDays, r.skippedPhotoDays, r.captionDays, r.clusterSummaryDays, r.imageVectorDays))
+        assertEquals(123L, r.perKindSince)
+        store.update { it.copy(photoDays = 2, skippedPhotoDays = 2, captionDays = 7, clusterSummaryDays = 0, imageVectorDays = 5, perKindSince = -5L) }
+        val c = store.settings.value // not offered → default; a negative stamp is not a stamp
+        assertEquals(listOf(7, 1, -1, -1, -1), listOf(c.photoDays, c.skippedPhotoDays, c.captionDays, c.clusterSummaryDays, c.imageVectorDays))
+        assertEquals(0L, c.perKindSince)
+    }
+
+    /** The stamp is set once, by the first retention run, and only while it is still 0. */
+    @Test fun stampOnceStampsOnlyWhenUnset() {
+        val store = MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_stamp", Context.MODE_PRIVATE))
+        assertEquals(1_000L, store.stampPerKindSince(1_000L).perKindSince)
+        assertEquals(1_000L, store.stampPerKindSince(9_000L).perKindSince)
+        assertEquals(1_000L, MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_stamp", Context.MODE_PRIVATE)).settings.value.perKindSince)
+    }
+
     /** Fix round 2 N4: an edit that starts while another is mid-update is applied after it, not lost. */
     @Test fun twoQuickEditsBothPersistInOrder() {
         val p = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_race", Context.MODE_PRIVATE)
