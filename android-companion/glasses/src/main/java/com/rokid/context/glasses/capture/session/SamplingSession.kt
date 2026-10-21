@@ -164,6 +164,7 @@ class SamplingSession(
             sessionId = newSessionId()
             val now = clock()
             lastKeyframeAt = now
+            shareFromAt = now // the first heartbeat snapshot spans the session, not the whole clock
             lastBriefAt = now - DUE_NOW_MS // the first brief check is due at once, at any cadence
         }
         job = scope.launch {
