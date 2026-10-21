@@ -85,6 +85,12 @@ class MemorySettingsTest {
         compose.onNodeWithText("Automatic clean-up arrives together with Forget.").assertDoesNotExist()
     }
 
+    @Test fun firstConfirmSaysMyCarIsCleared() {
+        compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 1), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},
+            onEncryption = {}, onExport = {}, onAskDeleteAll = {}, onConfirmDeleteAll = {}, onCancelDeleteAll = {}, onOpenReview = {}) } }
+        compose.onNodeWithText("My car list is cleared", substring = true).assertExists()
+    }
+
     @Test fun screenShowsTheSecondConfirm() {
         var confirmed = 0
         compose.setContent { PcTheme { MemorySettingsScreen(MemorySettingsUiState(confirmStep = 2), onBack = {}, onShort = {}, onMedium = {}, onLong = {}, onQuota = {},

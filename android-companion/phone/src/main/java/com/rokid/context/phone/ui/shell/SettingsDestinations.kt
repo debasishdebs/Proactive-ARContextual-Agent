@@ -12,6 +12,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.ActivityCompat
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraphBuilder
@@ -44,7 +45,7 @@ import com.rokid.context.phone.ui.settings.ai.EndpointsListScreen
 import com.rokid.context.phone.ui.settings.ai.EndpointsListViewModel
 import com.rokid.context.phone.ui.settings.ai.LocalModelsRoute
 import com.rokid.context.phone.ui.settings.ai.LocalModelsSource
-import androidx.compose.runtime.produceState
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.remember
 import kotlinx.coroutines.delay
 import com.rokid.context.phone.ui.settings.ai.RolesScreen
@@ -147,9 +148,10 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
                     granted = { androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED },
                     bonded = { com.rokid.context.phone.context.CarSource.bondedDevicesForPicker(app) },
                     tick = kotlinx.coroutines.flow.flow { while (true) { emit(Unit); kotlinx.coroutines.delay(5_000) } },
+                    bluetoothOn = { (app.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter?.isEnabled != false },
                 )
             }
-            ContextSourcesRoute(vm, onBack = back)
+            ContextSourcesRoute(vm, onBack = back, onOpenAppSettings = s.openAppSettings)
         }
     }
 
@@ -271,7 +273,9 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val devOn by dev.enabled.collectAsStateWithLifecycle()
         val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
         val ctxStats = s.contextSources.stats
-        val ctxTick by produceState(0) { while (true) { delay(5_000); value += 1 } }
+        var ctxTick by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+        val ctxLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+        LaunchedEffect(ctxLifecycle) { ctxLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) { while (true) { delay(5_000); ctxTick += 1 } } }
         val contextHub = ctxStats?.let { remember(ctxDecision.state, ctxTick) { com.rokid.context.phone.ui.settings.ContextHubCardData(ctxDecision.state, it.snapshot()) } }
         DiagnosticsScreen(
             state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },

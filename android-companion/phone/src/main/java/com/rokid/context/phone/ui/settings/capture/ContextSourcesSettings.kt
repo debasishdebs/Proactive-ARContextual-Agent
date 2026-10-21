@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -84,6 +85,8 @@ data class ContextSourcesUiState(
     val rows: Map<String, SourceRow> = emptyMap(),
     val speedApproximate: Boolean = false,
     val cars: List<CarRow> = emptyList(),
+    val myCarListed: Boolean = false,
+    val bluetoothOff: Boolean = false,
 ) {
     fun row(id: String) = rows[id] ?: SourceRow()
 
@@ -116,6 +119,8 @@ class ContextSourcesViewModel(
     private val bonded: () -> List<Pair<String, String>> = { emptyList() },
     /** Re-reads the counters while the screen is shown (they are not part of any flow). */
     tick: Flow<Unit> = emptyFlow(),
+    /** Bluetooth adapter on. Default true (unknown). */
+    private val bluetoothOn: () -> Boolean = { true },
 ) : ViewModel() {
     private data class Local(val missing: Boolean = false, val multiSigner: Boolean = false, val denied: Set<String> = emptySet(), val bonded: List<Pair<String, String>> = emptyList())
     private val local = MutableStateFlow(Local())
@@ -130,7 +135,8 @@ class ContextSourcesViewModel(
         val approximate = settings.enabled(SPEED) && !granted(Manifest.permission.ACCESS_FINE_LOCATION)
         val mine = settings.myCars
         val cars = l.bonded.map { (addr, name) -> CarRow(addr, if (name == addr || name.isBlank()) "Unnamed device" else name, mine.any { it.equals(addr, ignoreCase = true) }) }
-        return ContextSourcesUiState(settings.applyToCapture, on, l.missing, l.multiSigner, hint, line, rows, approximate, cars)
+        val btOff = settings.enabled(CAR) && PermissionPlan.accepted(CAR, granted = granted) && !bluetoothOn()
+        return ContextSourcesUiState(settings.applyToCapture, on, l.missing, l.multiSigner, hint, line, rows, approximate, cars, mine.isNotEmpty(), btOff)
     }
 
     val state: StateFlow<ContextSourcesUiState> = combine(decision, status, local, settings.changes, tick.onStart { emit(Unit) }) { d, s, l, _, _ -> of(d, s, l) }
@@ -194,13 +200,13 @@ class ContextSourcesViewModel(
 
 /** Binds the system permission dialog (the platform contract) to the view model. */
 @Composable
-fun ContextSourcesRoute(vm: ContextSourcesViewModel, onBack: () -> Unit) {
+fun ContextSourcesRoute(vm: ContextSourcesViewModel, onBack: () -> Unit, onOpenAppSettings: () -> Unit = {}) {
     val state by vm.state.collectAsStateWithLifecycle()
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { vm.onPermissionResult(it) }
     ContextSourcesScreen(
         state, onBack, onApply = vm::setApply,
         onSource = { id, on -> vm.setSource(id, on) { launcher.launch(it) } },
-        onToggleCar = vm::setMyCar, onRefreshCars = vm::refreshCars,
+        onToggleCar = vm::setMyCar, onRefreshCars = vm::refreshCars, onOpenAppSettings = onOpenAppSettings,
     )
 }
 
@@ -209,7 +215,7 @@ private class SwitchSpec(val id: String, val title: String, val subtitle: String
 private val PHONE_SWITCHES = listOf(
     SwitchSpec("phone_activity", "Phone activity (walking, in a vehicle)", "Uses the phone's activity recognition."),
     SwitchSpec("phone_steps", "Phone step counter", "Counts steps on the phone to tell standing from walking."),
-    SwitchSpec("phone_speed", "Speed, only while in a vehicle (location stays on the phone)", "Used only while a vehicle is suspected and the app is open. Background location is never used or requested. Location is not stored or sent."),
+    SwitchSpec("phone_speed", "Speed, only while in a vehicle (location stays on the phone)", "Asks for location only while a vehicle is suspected, also with the phone in your pocket while the app's service runs (its notification shows). The background-location permission is never requested. Location is not stored or sent."),
     SwitchSpec("phone_car", "Car Bluetooth and Android Auto", "Notices when the phone connects to a car."),
 )
 
@@ -221,10 +227,13 @@ private fun deniedReason(id: String) = when (id) {
 }
 
 @Composable
-private fun SourceNotes(id: String, row: SourceRow) {
-    if (row.denied) NoticeText("${deniedReason(id)} Turn it on again to ask, or allow it in the phone's app settings.", tag = "ctx_denied_$id")
+private fun SourceNotes(id: String, row: SourceRow, onOpenAppSettings: () -> Unit = {}) {
+    if (row.denied) {
+        NoticeText("${deniedReason(id)} Turn it on again to ask, or allow it in the phone's app settings.", tag = "ctx_denied_$id")
+        TextButton(onClick = onOpenAppSettings, modifier = Modifier.testTag("ctx_open_settings_$id")) { Text("Open app settings") }
+    }
     if (row.permissionMissing && !row.denied) NoticeText(
-        if (id == "phone_car") "Bluetooth permission is missing (or Bluetooth is off), so a car connection cannot be seen. Turn it off and on again to allow it."
+        if (id == "phone_car") "Bluetooth permission is missing, so a car connection cannot be seen. Turn it off and on again to allow it."
         else "The permission was removed, so this cannot read anything. Turn it off and on again to allow it.",
         tag = "ctx_perm_missing_$id",
     )
@@ -240,6 +249,7 @@ fun ContextSourcesScreen(
     onSource: (String, Boolean) -> Unit,
     onToggleCar: (String, Boolean) -> Unit = { _, _ -> },
     onRefreshCars: () -> Unit = {},
+    onOpenAppSettings: () -> Unit = {},
 ) {
     val carOn = state.row("phone_car").on
     LaunchedEffect(carOn) { if (carOn) onRefreshCars() }
@@ -257,7 +267,8 @@ fun ContextSourcesScreen(
                 for (sw in PHONE_SWITCHES) {
                     val row = state.row(sw.id)
                     SwitchRow(sw.title, sw.subtitle, row.on, { onSource(sw.id, it) }, tag = "ctx_${sw.id}")
-                    SourceNotes(sw.id, row)
+                    SourceNotes(sw.id, row, onOpenAppSettings)
+                    if (sw.id == "phone_car" && state.bluetoothOff) NoticeText("Bluetooth is off, so a car connection cannot be seen until you turn it on.", tag = "ctx_bt_off_phone_car")
                     if (sw.id == "phone_speed" && state.speedApproximate) NoticeText("Approximate location: only long fast trips are detected", tag = "ctx_speed_note")
                 }
             }
@@ -293,7 +304,8 @@ fun ContextSourcesScreen(
                     "Photos are sent to the vision model only inside a vehicle episode (a car you listed under My car is connected), at most one a minute, and only while this is on. It never changes how often photos are taken.",
                     tag = "ctx_image_intent_note",
                 )
-                SourceNotes("image_intent", img)
+                if (img.on && (!carOn || !state.myCarListed)) NoticeText("No car listed yet: nothing is sent. Turn on Car Bluetooth and pick your car under My car.", tag = "ctx_image_intent_nocar")
+                SourceNotes("image_intent", img, onOpenAppSettings)
             }
         }
     }
