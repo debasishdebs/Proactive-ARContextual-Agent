@@ -79,6 +79,23 @@ class CanvasApiTest {
     private fun HttpResponse.obj() = Json.parseToJsonElement(String(body)).jsonObject
     private fun HttpResponse.err() = obj()["error"]!!.jsonPrimitive.content
 
+    @Test fun deeplyNestedJsonIs400NotAStackOverflow() {
+        val deep = "{\"json\":" + "{\"a\":".repeat(20_000) + "1" + "}".repeat(20_000) + ",\"draftRev\":0}"
+        val r = call("PUT", "/api/pipelines/p1", deep)
+        assertEquals(400, r.status)
+        assertEquals("bad_request", r.err())
+        assertFalse(be.calls.any { it.startsWith("save") })
+    }
+
+    @Test fun anErrorFromTheBackendIsAFixed500() {
+        val boom = object : CanvasBackend by be {
+            override suspend fun pipelines(): JsonArray = throw StackOverflowError()
+        }
+        val r = CanvasApi(boom, callTimeoutMs = 2_000).handle(HttpRequest("GET", "/api/pipelines", emptyMap(), mapOf("authorization" to "Bearer abc"), ByteArray(0)))
+        assertEquals(500, r.status)
+        assertEquals("internal", r.err())
+    }
+
     @Test fun sessionAndLogout() {
         val r = call("GET", "/api/session")
         assertEquals(200, r.status)

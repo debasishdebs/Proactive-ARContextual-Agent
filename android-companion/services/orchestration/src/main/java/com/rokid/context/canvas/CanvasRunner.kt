@@ -124,6 +124,10 @@ class CanvasRunner(
             scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
                     execute(runId, p, ids)
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    Log.w(TAG, "run aborted: ${t.javaClass.simpleName}") // never let a canvas error reach the process (it hosts the glasses link)
                 } finally {
                     _active.value = null
                     lock.unlock()
@@ -201,13 +205,17 @@ class CanvasRunner(
                 outputs[node.id] = produced
             }
         } catch (c: CancellationException) {
-            withContext(NonCancellable) { dao.updateRun(runId, "CANCELLED", calls, failures, clock()) }
+            withContext(NonCancellable) { runCatching { dao.updateRun(runId, "CANCELLED", calls, failures, clock()) } }
             throw c
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.w(TAG, "run failed: ${e.javaClass.simpleName}")
             status = "FAILED"
         }
-        withContext(NonCancellable) { dao.updateRun(runId, status, calls, failures, clock()) }
+        withContext(NonCancellable) {
+            val ok = runCatching { dao.updateRun(runId, status, calls, failures, clock()) }.isSuccess
+            // The row must reach a terminal state even when the DB threw once: retry as FAILED, then give up quietly (recoverAtStart sweeps it).
+            if (!ok) runCatching { dao.updateRun(runId, "FAILED", calls, failures, clock()) }
+        }
     }
 
     /** Kahn's algorithm; ties go to the node that comes first in the JSON. */

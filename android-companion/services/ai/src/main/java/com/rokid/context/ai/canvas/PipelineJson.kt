@@ -11,6 +11,8 @@ import kotlinx.serialization.json.intOrNull
 object PipelineJson {
     const val SCHEMA = 1
     const val MAX_BYTES = 64 * 1024
+    /** Nesting deeper than this is refused before any recursive walk (toString, canonical, hash). */
+    const val MAX_DEPTH = 32
 
     private val pretty = Json { prettyPrint = true }
 
@@ -18,6 +20,7 @@ object PipelineJson {
     fun decode(text: String): Result<Pipeline> {
         if (text.toByteArray(Charsets.UTF_8).size > MAX_BYTES) return fail("too large")
         val root = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return fail("not JSON")
+        if (tooDeep(root)) return fail("too deep")
         val schema = (root["schema"] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull
         if (schema != SCHEMA) return fail("unsupported schema")
         val id = str(root["id"]) ?: return fail("missing id")
@@ -47,6 +50,19 @@ object PipelineJson {
     fun encode(p: Pipeline, pretty: Boolean = false): String {
         val el = toElement(p)
         return if (pretty) this.pretty.encodeToString(JsonElement.serializer(), el) else el.toString()
+    }
+
+    /** True when [e] nests deeper than [max] levels of objects/arrays. Iterative, so it is safe on any input. */
+    fun tooDeep(e: JsonElement, max: Int = MAX_DEPTH): Boolean {
+        val stack = ArrayDeque<Pair<JsonElement, Int>>()
+        stack.addLast(e to 1)
+        while (stack.isNotEmpty()) {
+            val (el, d) = stack.removeLast()
+            val kids = when (el) { is JsonObject -> el.values; is JsonArray -> el; else -> continue }
+            if (kids.isNotEmpty() && d >= max) return true
+            for (k in kids) stack.addLast(k to d + 1)
+        }
+        return false
     }
 
     /** Keys sorted at every level, no whitespace. Array order is kept. */

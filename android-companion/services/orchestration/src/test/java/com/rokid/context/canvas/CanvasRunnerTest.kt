@@ -192,6 +192,46 @@ class CanvasRunnerTest {
         assertNotNull(begin(r, p, frames(1))); finish(r)
     }
 
+    // ---- crash containment ----
+
+    private fun sql(q: String) = MemoryGraph.get(app).db.openHelper.writableDatabase.execSQL(q)
+    private val failFinalTrigger = "CREATE TRIGGER fail_final BEFORE UPDATE ON canvas_run WHEN NEW.finishedAt IS NOT NULL BEGIN SELECT RAISE(ABORT, 'full'); END"
+
+    /** Arms a DB trigger (once the run is going) that makes every final updateRun throw; [dropAtFinalCall] drops it again at that call of the clock. */
+    private fun flakyRunner(dropAtFinalCall: Int?): CanvasRunner {
+        var armed = false
+        var finals = 0
+        val ex = liveFakes() + (NodeTypes.MEMORY_WRITE to fake(NodeTypes.MEMORY_WRITE, onChunk = { if (!armed) { armed = true; sql(failFinalTrigger) } }) { _, it -> NodeResult(it.frameId, CanvasValue.Preview(emptyList())) })
+        return CanvasRunner(
+            dao, { f -> PhotoLoad(f.map(::photo), emptySet()) }, ex, ::idleContext, tokens, { hotNow() },
+            { if (armed && ++finals == dropAtFinalCall) sql("DROP TRIGGER fail_final"); now }, { "run${++ids}" },
+        )
+    }
+
+    @Test fun throwingFinalUpdateDoesNotCrashAndRowReachesTerminalState() = runBlocking<Unit> {
+        val r = flakyRunner(dropAtFinalCall = 2) // the first final update throws, the retry (clock call 2) succeeds
+        val run = runAll(r, DefaultPipelines.liveExtract(), frames(1))
+        assertEquals("FAILED", run.status) // the retry wrote a terminal status
+        assertNotNull(run.finishedAt)
+        assertNull(r.active.value)
+    }
+
+    @Test fun updateRunThatKeepsThrowingStillReleasesTheRunner() = runBlocking<Unit> {
+        val r = flakyRunner(dropAtFinalCall = null)
+        val p = DefaultPipelines.liveExtract()
+        val id = begin(r, p, frames(1))
+        finish(r) // no exception escapes and the lock is released
+        sql("DROP TRIGGER fail_final")
+        assertEquals("RUNNING", dao.run(id)?.status) // left for recoverAtStart to sweep
+        assertEquals(1, r.recoverAtStart())
+    }
+
+    @Test fun errorInsideAnExecutorFailsTheRunWithoutEscaping() = runBlocking<Unit> {
+        val boom = liveFakes() + (NodeTypes.VISION_EXTRACT to fake(NodeTypes.VISION_EXTRACT) { _, _ -> throw StackOverflowError() })
+        val run = runAll(runner(boom), DefaultPipelines.liveExtract(), frames(1))
+        assertEquals("FAILED", run.status)
+    }
+
     // ---- walking the graph ----
 
     @Test fun topoOrderAndBranchRouting() = runBlocking<Unit> {

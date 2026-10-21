@@ -117,6 +117,8 @@ class CanvasHomeTest {
         assertEquals(listOf("revoke"), host.calls)
     }
 
+    private var cancelled = 0
+
     @Test fun devModeOffStopsServer() {
         val auth = CanvasAuth({ 1_000L })
         val dev = MutableStateFlow(true)
@@ -124,6 +126,7 @@ class CanvasHomeTest {
             override val api = ApiHandler { HttpResponse.error(404, "not_found", "x") }
             override suspend fun start() {}
             override fun runActive() = false
+            override suspend fun cancelActive() { cancelled++ }
             override suspend fun home() = HomeData(emptyList(), emptyList(), false)
             override suspend fun rollback(): CanvasPublisher.Outcome = CanvasPublisher.Outcome.Blocked(emptyList())
             override suspend fun pipeline(id: String): Pipeline? = null
@@ -140,6 +143,7 @@ class CanvasHomeTest {
             assertFalse(graph.status.value.on)
             assertNull(graph.status.value.port)
             assertEquals(0, auth.sessionCount())
+            assertEquals("an active run is cancelled", 1, cancelled)
             graph.start(false) // dev mode off: the canvas never runs
             assertFalse(graph.status.value.on)
         } finally { graph.stop() }
@@ -151,6 +155,7 @@ class CanvasHomeTest {
             override val api = ApiHandler { HttpResponse.error(404, "not_found", "x") }
             override suspend fun start() {}
             override fun runActive() = false
+            override suspend fun cancelActive() { cancelled++ }
             override suspend fun home() = HomeData(emptyList(), emptyList(), false)
             override suspend fun rollback(): CanvasPublisher.Outcome = CanvasPublisher.Outcome.Blocked(emptyList())
             override suspend fun pipeline(id: String): Pipeline? = null

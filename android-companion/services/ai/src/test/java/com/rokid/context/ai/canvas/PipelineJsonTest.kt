@@ -28,6 +28,14 @@ class PipelineJsonTest {
         assertEquals(sample, PipelineJson.decode(PipelineJson.encode(sample, pretty = true)).getOrThrow())
     }
 
+    @Test fun decodeRejectsDeepNestingWithoutOverflow() {
+        val deep = "{\"schema\":1,\"id\":\"a\",\"name\":\"b\",\"nodes\":[],\"edges\":[],\"x\":" + "[".repeat(20_000) + "]".repeat(20_000) + "}"
+        assertTrue(PipelineJson.decode(deep).isFailure)
+        val mid = "{\"schema\":1,\"id\":\"a\",\"name\":\"b\",\"nodes\":[],\"edges\":[],\"x\":" + "[".repeat(40) + "]".repeat(40) + "}"
+        assertEquals("too deep", PipelineJson.decode(mid).exceptionOrNull()?.message)
+        assertTrue(PipelineJson.decode(PipelineJson.encode(sample)).isSuccess)
+    }
+
     @Test fun decodeRejectsOversize() {
         val big = PipelineJson.encode(sample).dropLast(1) + ",\"pad\":\"" + "x".repeat(PipelineJson.MAX_BYTES) + "\"}"
         assertEquals("too large", PipelineJson.decode(big).exceptionOrNull()?.message)
