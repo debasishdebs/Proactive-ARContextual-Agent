@@ -84,7 +84,7 @@ class CaptureService : LifecycleService() {
     private val gate by lazy { KeyframeGate(PrefsGateStore(prefs), SystemClock::elapsedRealtime) }
     private val heat = HeatGuard(::readHeat, SystemClock::elapsedRealtime)
     private val heatPoller = HeatPoller(heat, SystemClock::elapsedRealtime)
-    private class Smart(val session: SamplingSession, val feed: SensorFeed)
+    private class Smart(val session: SamplingSession, val feed: SensorFeed, val motion: MotionClassifier) { var rateJob: Job? = null }
     private var smart: Smart? = null
     private val budget = BatteryBudget(SystemClock::elapsedRealtime).also { it.onChange = { l -> DiagLog.i(TAG, l) } }
     private val ratePolicy = SensorRatePolicy()
@@ -164,7 +164,7 @@ class CaptureService : LifecycleService() {
                 // Own guard: a throw here must not stop the status or the tick.
                 try {
                     if (tick % 60 == 0) budget.onSample(batteryPercent(), isCharging(), runtime.settingsCache.readNormalized().batteryTargetHours)
-                    smart?.feed?.setRate(ratePolicy.update(runtime.captureStatus.value.reason, SystemClock.elapsedRealtime()))
+                    applyRate()
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "budget/rate update failed: ${e.javaClass.simpleName}") }
                 publishStatus(tick++)
               } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
@@ -186,6 +186,11 @@ class CaptureService : LifecycleService() {
         else if (!wantSmart && smart != null) stopSmart(if (degraded) "bind" else "mode")
     }
 
+    /** Feed `setRate` is @Synchronized and idempotent, so the supervisor and the rateJob may both call this. */
+    private fun applyRate() {
+        smart?.let { it.feed.setRate(ratePolicy.update(runtime.captureStatus.value.reason, SystemClock.elapsedRealtime(), it.motion.state.value)) }
+    }
+
     private fun startSmart() {
         val clock: () -> Long = SystemClock::elapsedRealtime
         val motion = MotionClassifier(clock)
@@ -202,7 +207,10 @@ class CaptureService : LifecycleService() {
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default,
         )
         val feed = AndroidSensorFeed(this).also { it.start(motion, wear) }
-        smart = Smart(session, feed)
+        val sm = Smart(session, feed, motion)
+        smart = sm
+        // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
+        sm.rateJob = scope.launch { motion.state.collect { if (it != MotionState.STILL) applyRate() } }
         runtime.smartCapture.value = true
         session.start()
         scheduleNextCapture(failed = false) // the watchdog
@@ -213,6 +221,7 @@ class CaptureService : LifecycleService() {
     private fun stopSmart(reason: String) {
         val cur = smart ?: return
         smart = null
+        cur.rateJob?.cancel()
         cur.session.stop(reason)
         runtime.workRest.onPaused() // leaving counts as a pause: only one of R minutes or more restarts the work clock
         cur.feed.stop()

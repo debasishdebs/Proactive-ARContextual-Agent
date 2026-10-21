@@ -34,6 +34,12 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
     private val accT = ArrayDeque<Long>()
     private val accAxes = ArrayDeque<FloatArray>()
 
+    /**
+     * Newest sample time seen. Batched delivery (STILL rate) hands over a batch's gyro samples before its accel ones, so a
+     * later call can carry an older timestamp; every decision runs on this clamped clock so state and events never go back.
+     */
+    private var newestMs = Long.MIN_VALUE
+
     private var lastAboveGyroMs = -1_000_000_000L // newest gyro sample over the threshold
     private var stillSinceMs = 0L                // last time movement was seen (dwell clock)
     private var hadMotion = false                // moved since the last dwell
@@ -48,31 +54,33 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
     private var lastHz = 0.0
 
     @Synchronized fun onGyro(x: Float, y: Float, z: Float, tMs: Long) {
+        newestMs = maxOf(newestMs, tMs); val t = newestMs
         val mag = sqrt(x * x + y * y + z * z)
         val above = mag > HEAD_MOVING_RAD_S
         if (mag > featGyroMax) featGyroMax = mag
         if (above) {
-            lastAboveGyroMs = tMs
-            stillSinceMs = tMs
+            lastAboveGyroMs = maxOf(lastAboveGyroMs, tMs)
+            stillSinceMs = maxOf(stillSinceMs, tMs)
             hadMotion = true
             if (mag > peak) peak = mag
         }
         // Under the threshold for HEAD_HOLD_MS the turn is over: a stale peak must not outlive it (a walk lasts minutes).
-        if (!above && tMs - lastAboveGyroMs >= HEAD_HOLD_MS) peak = 0f
-        update(tMs)
+        if (!above && t - lastAboveGyroMs >= HEAD_HOLD_MS) peak = 0f
+        update(t)
         // Only a head turn has a peak to decelerate from; never while walking.
         _decelerating.value = _state.value == MotionState.HEAD_MOVING && peak > 0f && mag < DECEL_FRACTION * peak
         if (_state.value != MotionState.HEAD_MOVING) peak = 0f
-        checkDwell(tMs)
+        checkDwell(t)
     }
 
     @Synchronized fun onLinearAccel(x: Float, y: Float, z: Float, tMs: Long) {
+        newestMs = maxOf(newestMs, tMs); val t = newestMs
         accT.addLast(tMs); accAxes.addLast(floatArrayOf(x, y, z))
         while (accT.isNotEmpty() && tMs - accT.first() > WINDOW_MS) { accT.removeFirst(); accAxes.removeFirst() }
         analyseWindow(tMs)
-        if (_state.value == MotionState.WALKING || walking()) { stillSinceMs = tMs; hadMotion = true }
-        update(tMs)
-        checkDwell(tMs)
+        if (_state.value == MotionState.WALKING || walking()) { stillSinceMs = maxOf(stillSinceMs, tMs); hadMotion = true }
+        update(t)
+        checkDwell(t)
     }
 
     private fun update(tMs: Long) {

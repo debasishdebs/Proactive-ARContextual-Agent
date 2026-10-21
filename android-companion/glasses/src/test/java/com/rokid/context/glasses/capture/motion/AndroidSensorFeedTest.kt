@@ -124,4 +124,50 @@ class AndroidSensorFeedTest {
         feed.setRate(SensorRate.LOW)
         assertEquals(callsAtStop, reg.calls.size, "a stopped feed registers nothing")
     }
+
+    @Test fun setRateStillRegistersFiftyMsPeriodAndHalfSecondLatency() {
+        val reg = Reg(nonWakeUpProx = true)
+        val feed = AndroidSensorFeed(reg)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        reg.calls.clear()
+        feed.setRate(SensorRate.STILL)
+        assertEquals(SensorRate.STILL, feed.rate)
+        assertEquals(3, reg.calls.size)
+        assertTrue(reg.calls.all { it.period == 50_000 && it.maxLatencyUs == 500_000 })
+        feed.stop()
+    }
+
+    @Test fun stillToFullGivesGameUnbatched() {
+        val reg = Reg(nonWakeUpProx = true)
+        val feed = AndroidSensorFeed(reg)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        feed.setRate(SensorRate.STILL)
+        reg.calls.clear()
+        feed.setRate(SensorRate.FULL)
+        assertEquals(3, reg.calls.size)
+        assertTrue(reg.calls.all { it.period == SensorManager.SENSOR_DELAY_GAME && it.maxLatencyUs == 0 })
+        feed.stop()
+    }
+
+    @Test fun stillToLowGivesTenHzOneSecond() {
+        val reg = Reg(nonWakeUpProx = true)
+        val feed = AndroidSensorFeed(reg)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        feed.setRate(SensorRate.STILL)
+        reg.calls.clear()
+        feed.setRate(SensorRate.LOW)
+        assertEquals(3, reg.calls.size)
+        assertTrue(reg.calls.all { it.period == 100_000 && it.maxLatencyUs == 1_000_000 })
+        feed.stop()
+    }
+
+    @Test fun setRateStillTwiceReRegistersOnce() {
+        val reg = Reg(nonWakeUpProx = true)
+        val feed = AndroidSensorFeed(reg)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        reg.calls.clear()
+        feed.setRate(SensorRate.STILL); feed.setRate(SensorRate.STILL)
+        assertEquals(3, reg.calls.size)
+        feed.stop()
+    }
 }
