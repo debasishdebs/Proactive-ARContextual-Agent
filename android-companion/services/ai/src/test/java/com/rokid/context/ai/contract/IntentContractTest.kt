@@ -12,7 +12,6 @@ import com.rokid.context.prompt.TemplateVariables
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -64,6 +63,5 @@ class IntentContractTest {
         assertTrue(t.startsWith("You see one photo from smart glasses, from the wearer's point of view. Classify what the wearer is doing. Labels: SITTING_IDLE (sitting or standing still, not using a screen)"))
         assertTrue(t.endsWith("""Reply only with JSON: {"label": "<one label>", "confidence": <0 to 1>}."""))
         assertEquals(emptySet<String>(), TemplateVariables.missing(PromptKey.INTENT_CLASSIFY, t))
-        assertNotNull(t)
     }
 }

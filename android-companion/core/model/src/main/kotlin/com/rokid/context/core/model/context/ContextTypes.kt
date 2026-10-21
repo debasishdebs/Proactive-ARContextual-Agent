@@ -19,8 +19,8 @@ enum class IntentLabel {
     SITTING_IDLE, WORKOUT, COMPUTER_WORK, DRIVING, VEHICLE_PASSENGER, FLIGHT_CABIN, WALKING, OTHER;
 
     companion object {
-        /** Exact enum names only; null or anything else is [OTHER]. */
-        fun parse(s: String?): IntentLabel = entries.firstOrNull { it.name == s } ?: OTHER
+        /** Enum names, ignoring case and surrounding spaces (a model that ignores the schema still gives a real vote); null or anything else is [OTHER]. */
+        fun parse(s: String?): IntentLabel { val t = s?.trim(); return entries.firstOrNull { it.name.equals(t, ignoreCase = true) } ?: OTHER }
     }
 }
 

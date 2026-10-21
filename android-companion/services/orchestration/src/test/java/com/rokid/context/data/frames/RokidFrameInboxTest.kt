@@ -69,6 +69,14 @@ class RokidFrameInboxTest {
         assertNull("a file without a receipt has no known capture time", meta.get("b")!!.capturedAtMs)
     }
 
+    @Test fun aReceiptMtimeOutsideOneToNowIsNotACaptureTime() = runBlocking {
+        archive.mkdirs()
+        val future = File(archive, "f.jpg").apply { writeBytes(byteArrayOf(1, 2)); setLastModified(now + 3_600_000) }
+        val receipt = ReceiptMeta(wireFrameId = "w-f", capturedAtMs = 7, size = 2)
+        assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, future, "rokid_glasses", receipt = receipt, nowMs = { now }, sceneActive = { false }))
+        assertNull("a capture time after the receive time is a clock error: unknown", MemoryGraph.get(ctx).db.frameMetaDao().get("f")!!.capturedAtMs)
+    }
+
     @Test fun orphanPartsOlderThanAMinuteAreSwept() {
         val old = inboxFile("rokid_1_a.jpg.part", ageMs = 120_000)
         assertEquals(1, RokidFrameInbox.sweepOrphanParts(ctx, nowMs = now))
