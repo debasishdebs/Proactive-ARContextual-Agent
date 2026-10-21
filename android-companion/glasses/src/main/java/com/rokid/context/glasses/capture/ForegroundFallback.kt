@@ -53,6 +53,8 @@ class ForegroundFallback(
     private val clock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = { Log.w(CaptureService.TAG, it) },
     private val maxConsecutive: Int = 3,
+    /** Called just before the HUD is started (screen-wake attribution). */
+    private val onLaunch: () -> Unit = {},
 ) {
     @Volatile private var lastAtMs: Long? = null
     @Volatile private var launchesSinceCapture = 0
@@ -80,6 +82,7 @@ class ForegroundFallback(
         lastAtMs = now
         launchesSinceCapture++
         log("camera restricted in background; opening the HUD to capture")
+        onLaunch()
         return runCatching {
             context.startActivity(
                 Intent(context, MainActivity::class.java).setAction(MainActivity.ACTION_CAPTURE_NOW)

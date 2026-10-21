@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
@@ -44,6 +45,7 @@ import com.rokid.context.core.model.GestureAction
 import com.rokid.context.core.model.Overlay
 import com.rokid.context.glasses.capture.CaptureScheduler
 import com.rokid.context.glasses.capture.CaptureService
+import com.rokid.context.glasses.capture.diag.PopupGate
 import com.rokid.context.glasses.hud.CaptureCueMark
 import com.rokid.context.glasses.hud.CaptureStatusMarks
 import com.rokid.context.glasses.hud.ConfirmInput
@@ -192,7 +194,7 @@ class MainActivity : ComponentActivity() {
             // pulls a minimised HUD over the front app; it goes straight back with a pop-up.
             cameBack && SystemClock.uptimeMillis() - sessionReopenedAtMs < OPEN_ON_GLASS_GRACE_MS -> {
                 minimise()
-                if (Settings.canDrawOverlays(this)) runtime.popup.show(OPENED_FROM_PHONE_POPUP, controller.settings.value.popupMs())
+                if (Settings.canDrawOverlays(this)) { runtime.screenWakes.onOurUi(); runtime.popup.show(OPENED_FROM_PHONE_POPUP, controller.settings.value.popupMs()) }
             }
             else -> { // the wearer opened the app themselves: the HUD stays in front after any Confirm
                 runtime.restarts.clearUserExit()
@@ -213,10 +215,13 @@ class MainActivity : ComponentActivity() {
         if (o is Overlay.Confirm) {
             if (o.proposalId == launchedConfirmId) return
             launchedConfirmId = o.proposalId
+            runtime.screenWakes.onOurUi()
             runCatching { applicationContext.startActivity(confirmIntent()) }.onFailure { Log.w(TAG, "confirm open refused: ${it.javaClass.simpleName}") }
             return
         }
-        PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let { runtime.popup.show(it, controller.settings.value.popupMs()) }
+        val pm = getSystemService(PowerManager::class.java)
+        if (!PopupGate.show(o, pm?.isInteractive ?: true)) { runtime.screenWakes.onNudgeSkipped(); return }
+        PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let { runtime.screenWakes.onOurUi(); runtime.popup.show(it, controller.settings.value.popupMs()) }
     }
 
     private fun confirmIntent() = Intent(this, MainActivity::class.java).putExtra(EXTRA_RETURN_TO, RETURN_TO_MINIMISED)

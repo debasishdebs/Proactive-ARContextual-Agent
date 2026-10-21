@@ -97,13 +97,14 @@ class KeyframeGateTest {
         assertSame(first, assertIs<GateResult.Keep>(r).candidate)
     }
 
-    @Test fun dwellBypassesLastFive() {
-        at(10_000, cand(1)); at(12_000, cand(2)); at(14_000, cand(3))
-        // scene 1 is in the ring but not the last keyframe: a dwell on it counts again
-        val r = at(16_000, cand(1), MotionState.STILL, dwell = true)
-        assertTrue(assertIs<GateResult.Keep>(r).dwell)
-        // ...but not against the last keyframe itself
-        assertEquals("DUPLICATE", reason(at(18_000, cand(1), MotionState.STILL, dwell = true)))
+    @Test fun dwellComparesToTheWholeRing() {
+        for (i in 1..5) at(10_000L + i * 3_000, cand(i))
+        // scene 3 is ring entry 3 of 5 (not the last keyframe): a dwell on it is a duplicate now (battery wave A3, intentional)
+        assertEquals("DUPLICATE", reason(at(30_000, cand(3), MotionState.STILL, dwell = true)))
+        // ...and so is one on the last keyframe
+        assertEquals("DUPLICATE", reason(at(32_000, cand(5), MotionState.STILL, dwell = true)))
+        assertEquals(2, gate.takeSkipCounts().first)
+        assertEquals(0 to 0, gate.takeSkipCounts())
     }
 
     @Test fun blurryDwellStillSkipped() {
@@ -263,5 +264,90 @@ class KeyframeGateTest {
         val r = assertIs<GateResult.Keep>(at(11_600, cand(1, soft = 4), MotionState.STILL))
         assertSame(sharp, r.candidate)
         assertEquals(MotionState.HEAD_MOVING, r.motion)
+    }
+
+    // ---- battery wave A3: keep cap per rolling minute ----
+
+    /** The ring with one entry [bits] hash bits away from [c] (both hashes), so min(Hamming d, Hamming p) to [c] is exactly [bits]. */
+    private fun ringAt(c: Candidate, vararg bits: Int) {
+        store.ring.clear()
+        val d = ImageHashes.dHash(c.thumb); val p = ImageHashes.pHash(c.thumb)
+        for (b in bits) { val mask = (1L shl b) - 1; store.ring.addLast((d xor mask) to (p xor mask)) }
+    }
+
+    /** A dwell keep at [t] of scene [scene] with an empty ring (a big change) under cap 4. */
+    private fun bigKeep(t: Long, scene: Int): GateResult { store.ring.clear(); return capped(t, cand(scene)) }
+
+    private fun capped(t: Long, c: Candidate, cap: Int = 4, force: Boolean = false): GateResult {
+        now = t; return gate.offer(c, MotionState.STILL, dwellArmed = true, force = force, capPerMin = cap)
+    }
+
+    @Test fun fifthKeepInAMinuteIsCappedUnlessBigChange() {
+        for ((i, t) in listOf(10_000L, 15_000L, 20_000L, 25_000L).withIndex()) assertIs<GateResult.Keep>(bigKeep(t, i + 1))
+        val near = cand(10)
+        ringAt(near, 15, 30) // nearest ring entry is 15 bits away: a related view
+        assertEquals("CAPPED", reason(capped(30_000, near)))
+        assertEquals(1, gate.takeSkipCounts().second)
+        val far = cand(11)
+        ringAt(far, 22, 30) // every ring entry >= 22 bits away
+        assertIs<GateResult.Keep>(capped(30_000, far))
+        val almost = cand(12)
+        ringAt(almost, 21, 30) // 21 < BIG_CHANGE
+        assertEquals("CAPPED", reason(capped(35_000, almost)))
+    }
+
+    @Test fun hardCeilingIsTwiceTheCap() {
+        for (i in 0 until 8) assertIs<GateResult.Keep>(bigKeep(10_000L + i * 5_000, i + 1), "keep $i")
+        val ninth = cand(20)
+        ringAt(ninth, 30)
+        assertEquals("CAPPED", reason(capped(50_000, ninth)))
+    }
+
+    @Test fun capWindowRolls() {
+        for ((i, t) in listOf(10_000L, 15_000L, 20_000L, 25_000L).withIndex()) assertIs<GateResult.Keep>(bigKeep(t, i + 1))
+        val c = cand(10)
+        ringAt(c, 15)
+        assertEquals("CAPPED", reason(capped(69_999, c))) // the keep at 10 s is 59.999 s old
+        assertIs<GateResult.Keep>(capped(70_000, c))     // 60 s old: out of the window, k = 3
+    }
+
+    @Test fun forcedIsExemptFromTheCap() {
+        for ((i, t) in listOf(10_000L, 15_000L, 20_000L, 25_000L).withIndex()) assertIs<GateResult.Keep>(bigKeep(t, i + 1))
+        val c = cand(10)
+        ringAt(c, 15)
+        assertIs<GateResult.Keep>(capped(26_000, c, force = true))
+        // a forced keep counts toward the minute: two more dwell keeps of unrelated scenes are still allowed up to 2x, the cap itself is not exempt after
+        val d = cand(11)
+        ringAt(d, 15)
+        assertEquals("CAPPED", reason(capped(40_000, d)))
+    }
+
+    @Test fun defaultCapIsUnlimited() {
+        for (i in 0 until 12) assertIs<GateResult.Keep>(at(10_000L + i * 4_000, cand(i + 1)), "keep $i")
+        assertEquals(0 to 0, gate.takeSkipCounts())
+    }
+
+    // ---- battery wave A3 final review I3: non-glance keeps leave one glance slot a minute ----
+
+    private fun timerKeep(t: Long, scene: Int, cap: Int = 4, hard: Boolean = false): GateResult {
+        store.ring.clear(); now = t; return gate.offer(cand(scene), MotionState.STILL, dwellArmed = false, capPerMin = cap, hardCap = hard)
+    }
+
+    @Test fun nonGlanceKeepsStopAtCapMinusOneEvenOnABigChange() {
+        for ((i, t) in listOf(10_000L, 15_000L, 20_000L).withIndex()) assertIs<GateResult.Keep>(timerKeep(t, i + 1), "keep $i")
+        assertEquals("CAPPED", reason(timerKeep(25_000, 4))) // an empty ring is a big change, and still no bonus for a timer keep
+        assertEquals(1, gate.takeSkipCounts().second)
+    }
+
+    @Test fun aGlanceStillGetsTheLastSlotAfterTimerKeeps() {
+        for ((i, t) in listOf(10_000L, 15_000L, 20_000L).withIndex()) assertIs<GateResult.Keep>(timerKeep(t, i + 1))
+        assertEquals("CAPPED", reason(timerKeep(25_000, 4)))
+        store.ring.clear()
+        assertIs<GateResult.Keep>(capped(26_000, cand(5))) // a glance: k = 3 < 4
+    }
+
+    @Test fun restingTimerKeepsAreCappedAtOne() {
+        assertIs<GateResult.Keep>(timerKeep(10_000, 1, cap = 2, hard = true))
+        assertEquals("CAPPED", reason(timerKeep(15_000, 2, cap = 2, hard = true)))
     }
 }

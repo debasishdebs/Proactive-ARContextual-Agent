@@ -2,6 +2,7 @@ package com.rokid.context.glasses.capture.session
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 class WorkRestTest {
@@ -98,5 +99,24 @@ class WorkRestTest {
         wr.onPaused()
         assertEquals(true, wr.resting.value!! - now <= 15 * min)
         assertEquals(true, until > 0)
+    }
+
+    @Test fun disabledNeverRests() {
+        var on = false
+        val d = WorkRest({ now }, { work }, { rest }, enabled = { on })
+        repeat(180) { d.onSampling(); now += min; assertNull(d.resting.value) } // 3 h
+    }
+
+    @Test fun disablingMidRestClears() {
+        var on = true
+        val d = WorkRest({ now }, { work }, { rest }, enabled = { on })
+        repeat(46) { d.onSampling(); now += min }
+        assertNotNull(d.resting.value)
+        on = false
+        d.onPaused()
+        assertNull(d.resting.value)
+        on = true
+        now += min; d.onSampling()
+        assertNull(d.resting.value, "the work clock restarted")
     }
 }
