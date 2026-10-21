@@ -89,12 +89,13 @@ class SamplingSessionTest {
         r.session.start()
         while (r.session.stillStep < 2) r.gyro(250, 0f)
         val step = r.session.stillStep
-        val now = r.clock()
-        repeat(4) { r.gate.recordKeep(Candidate(0, Scenes.thumb(99), Nv21Frame(640, 480, 0, ByteArray(4))), 0L, 0L, now) } // the minute's cap is used up
         r.session.diagSnapshot()
         r.scene = 77
         val opens = r.camera.opens
-        while (r.camera.opens == opens) r.gyro(250, 0f)
+        while (r.camera.opens == opens) r.gyro(20, 0f)
+        // the camera is open (its first frame is ~0.5 s away): the minute's cap is used up now, as if keeps landed since the timer decided (task 9 no longer opens into a used cap)
+        val now = r.clock()
+        repeat(4) { r.gate.recordKeep(Candidate(0, Scenes.thumb(99), Nv21Frame(640, 480, 0, ByteArray(4))), 0L, 0L, now) }
         r.gyro(2_000, 0f)
         val d = r.session.diagSnapshot()
         assertTrue(d.capped >= 1, "capped=${d.capped}")
@@ -846,6 +847,57 @@ class SamplingSessionTest {
         val d = r.session.diagSnapshot()
         assertEquals(1, dwellOpens(d), "the look opens, wakes=${d.wakes} capped=${d.capped}")
         assertEquals(kept + 1, r.scenesKept.size, "the look is kept")
+        r.session.stop("test")
+    }
+
+    // Wave A3 task 9: a timer check does not power up the camera when its frame would only be capped.
+    private suspend fun Rig.tvFor(untilMs: Long) { while (clock() < untilMs) { gyro(1_000, 0f); scene++ } }
+
+    @Test fun timerChecksStopOpeningOnceTheKeepBudgetIsUsedAndResumeWhenItAgesOut() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        while (r.keyframes.size < 3 && r.clock() < 59_000) { r.gyro(1_000, 0f); r.scene++ } // timer keeps of a changing screen: the budget is cap - 1 = 3
+        assertEquals(3, r.keyframes.size, "keeps=${r.keyframes.map { it.first }}")
+        val first = r.keyframes[0].first
+        val third = r.keyframes[2].first
+        r.tvFor(first + 57_000)
+        assertTrue(third + 60_000 > first + 57_000 && r.camera.openTimes.none { it > third + 2_000 }, "no opens while the budget is used: ${r.camera.openTimes} third=$third")
+        r.tvFor(first + 70_000)
+        assertTrue(r.camera.openTimes.any { it >= first + 59_000 }, "timer checks resume once the oldest keep ages out: ${r.camera.openTimes}")
+        r.session.stop("test")
+    }
+
+    @Test fun aGlanceInTheDeferredWindowStillOpensAndKeeps() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        while (r.keyframes.size < 3 && r.clock() < 59_000) { r.gyro(1_000, 0f); r.scene++ }
+        assertEquals(3, r.keyframes.size)
+        val first = r.keyframes[0].first
+        r.tvFor(r.clock() + 12_000)
+        r.session.diagSnapshot()
+        val kept = r.keyframes.size
+        val opens = r.camera.opens
+        r.scene = 900
+        r.gyro(500, 1f); r.gyro(3_000, 0f)
+        assertTrue(r.clock() < first + 59_000, "still inside the deferred window")
+        val d = r.session.diagSnapshot()
+        assertEquals(1, dwellOpens(d), "wakes=${d.wakes}")
+        assertTrue(r.camera.opens > opens)
+        assertEquals(kept + 1, r.keyframes.size, "the glance is kept")
+        r.session.stop("test")
+    }
+
+    @Test fun restAtCapTwoHoldsTimerChecksAfterOneKeep() = runTest {
+        val r = glanceRig(this) { work = 1; rest = 5; settings = HudSettings(captureMode = CaptureMode.SMART, workRestEnabled = true) }
+        r.session.start()
+        r.gyro(61_000, 0f)
+        assertNotNull(r.session.status.value.restingUntilMs, "resting")
+        val restStart = r.clock()
+        r.tvFor(restStart + 150_000)
+        val keeps = r.keyframes.map { it.first }.filter { it >= restStart }
+        assertTrue(keeps.size >= 2, "rest still keeps: $keeps")
+        val opens = r.camera.openTimes.filter { it >= restStart }
+        for (k in keeps) assertTrue(opens.none { it > k + 2_000 && it < k + 58_000 }, "no timer open within the minute after a rest keep at $k: $opens")
         r.session.stop("test")
     }
 }

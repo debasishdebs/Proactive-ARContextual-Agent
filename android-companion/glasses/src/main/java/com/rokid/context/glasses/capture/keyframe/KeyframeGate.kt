@@ -75,6 +75,17 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
     /** (dHash, pHash) of the last frame that passed the blur check, or null before any. */
     @Synchronized fun lastHashes(): Pair<Long, Long>? = lastScoredHashes
 
+    /**
+     * When a timer check may power up the camera again: the time the oldest keep leaves the rolling minute, once the minute
+     * already holds the non-glance keep budget (max(1, cap - 1), the same limit [finish] applies); null while budget remains.
+     */
+    @Synchronized
+    fun timerHoldUntil(capPerMin: Int, now: Long): Long? {
+        if (capPerMin == Int.MAX_VALUE) return null
+        val live = keptTimes.filter { now - it in 0 until CAP_WINDOW_MS }
+        return if (live.size >= maxOf(1, capPerMin - 1)) live.min() + CAP_WINDOW_MS else null
+    }
+
     /** Candidates currently held (their pixel copies stay alive). */
     @Synchronized internal fun retainedCount(): Int = window.size
 

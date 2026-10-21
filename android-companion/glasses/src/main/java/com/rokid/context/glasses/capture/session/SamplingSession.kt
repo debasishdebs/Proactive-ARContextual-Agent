@@ -317,7 +317,10 @@ class SamplingSession(
                     val dueAt = d.nextBriefCheckAtMs
                     val forced = forceBrief || pendingDwellAt != null || pendingNowAt != null
                     val lead = briefLeadMs()
-                    if (forced || (dueAt != null && now + lead >= dueAt)) startEpisode(continuous = false, now)
+                    // A timer check whose frame the cap would drop anyway does not power up the camera (battery wave A3, task 9).
+                    val hold = if (!forced && dueAt != null && now + lead >= dueAt) gate.timerHoldUntil(capNow(), now)?.takeIf { it > now } else null
+                    if (hold != null) wait = (hold - lead - now).coerceIn(1L, TICK_MS)
+                    else if (forced || (dueAt != null && now + lead >= dueAt)) startEpisode(continuous = false, now)
                     else if (dueAt != null) wait = (dueAt - lead - now).coerceIn(1L, TICK_MS)
                 }
             }
