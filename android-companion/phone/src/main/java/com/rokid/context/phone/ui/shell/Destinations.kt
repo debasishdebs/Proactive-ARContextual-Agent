@@ -83,7 +83,13 @@ fun NavGraphBuilder.phoneDestinations(deps: PhoneDeps, nav: NavHostController) {
         val start = entry.arguments?.getString("start")
         val vm = viewModel { FrameViewerViewModel(date, start, deps.memory.timeline, deps.zone, deps::today) }
         val state by vm.state.collectAsStateWithLifecycle()
-        FrameViewerScreen(state, onBack = back)
+        val app = androidx.compose.ui.platform.LocalContext.current.applicationContext
+        val devOn by com.rokid.context.phone.canvas.DeveloperModeStore.get(app).enabled.collectAsStateWithLifecycle()
+        // Debug builds with Developer mode on only: the labelling action for the photo 256-vs-768 test.
+        val labels = if (com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEval.rowVisible(com.rokid.context.BuildConfig.DEBUG, devOn)) {
+            androidx.compose.runtime.remember { com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalFactory.labels(app) }
+        } else null
+        FrameViewerScreen(state, onBack = back, onAddToPhotoTest = labels?.let { l -> { q, id, small -> l.add(q, id, small) } })
     }
 
     composable(Routes.DIAGNOSTICS_QUEUES) {
