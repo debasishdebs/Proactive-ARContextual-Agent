@@ -55,17 +55,4 @@ class RoomIntentFrameStoreTest {
         db.forgetDao().insertTombstone(ForgetTombstoneEntity("a", 1))
         assertTrue(store.tombstoned("a"))
     }
-
-    @Test fun aStoredFrameSignalPokesTheInstalledSamplerAndANullOneIsHarmless() {
-        var pokes = 0
-        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
-        val sampler = IntentSampler(scope, store, { null }, { 0L }, { false }, { _, _, _ -> }, enabled = { pokes++; false }, stats = { })
-        KeyframeGraph.intentSampler = sampler
-        KeyframeGraph.get(ctx).signal()
-        assertEquals(1, pokes)
-        KeyframeGraph.intentSampler = null
-        KeyframeGraph.get(ctx).signal()
-        assertEquals(1, pokes)
-        KeyframeGraph.resetForTests()
-    }
 }

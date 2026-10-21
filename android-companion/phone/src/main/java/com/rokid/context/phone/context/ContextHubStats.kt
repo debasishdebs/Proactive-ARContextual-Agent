@@ -35,8 +35,9 @@ class ContextHubStats(private val clock: () -> Long = System::currentTimeMillis)
     fun onChange() = add("changes")
     fun onIntent(ok: Boolean) = add(if (ok) "intent" else "intentFail")
     fun onIntentSkip() = add("intentSkip")
-    /** The newest result as an enum name and a percent (never a photo or a caption); shown in the log line and Diagnostics. */
+    /** The newest result as an enum name and a percent (never a photo or a caption); shown in the log line (also the Diagnostics line); cleared when the source stops. */
     fun onIntentResult(label: IntentLabel, confidence: Float) { lastIntent = "${label.name}@${(confidence.coerceIn(0f, 1f) * 100).toInt()}" }
+    fun clearIntentLast() { lastIntent = null }
     @Volatile private var lastIntent: String? = null
     fun onDropped() = add("dropped")
     fun onWatchRejected() = add("watchRej")

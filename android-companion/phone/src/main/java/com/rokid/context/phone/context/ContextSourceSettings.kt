@@ -41,9 +41,9 @@ class ContextSourceSettings(private val prefs: SharedPreferences) {
     val watchLastSeq: Long get() = prefs.getLong(WATCH_SEQ, 0L)
     fun setWatchSeq(epoch: Long, seq: Long) { prefs.edit().putLong(WATCH_EPOCH, epoch).putLong(WATCH_SEQ, seq).apply() }
 
-    /** Delete all: personal data goes and the watch source turns off (its pin is gone); the apply switch stays. */
+    /** Delete all: personal data goes, the watch source turns off (its pin is gone) and image intent turns off (the hub then drops its in-memory votes); the apply switch stays. */
     fun clearPersonal() {
-        prefs.edit().putBoolean(SRC + "watch_livefit", false).remove(MY_CARS).remove(LIVEFIT_CERT).remove(WATCH_EPOCH).remove(WATCH_SEQ).apply()
+        prefs.edit().putBoolean(SRC + "watch_livefit", false).putBoolean(SRC + "image_intent", false).remove(MY_CARS).remove(LIVEFIT_CERT).remove(WATCH_EPOCH).remove(WATCH_SEQ).apply()
     }
 
     /** Delete all: run the wipe, then clear personal state. */

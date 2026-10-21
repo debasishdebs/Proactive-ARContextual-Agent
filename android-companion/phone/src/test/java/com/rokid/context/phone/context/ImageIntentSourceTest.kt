@@ -51,6 +51,7 @@ class ImageIntentSourceTest {
         var stats: ((Boolean?) -> Unit)? = null
         var sampler: IntentSampler? = null
         var creates = 0
+        var enabledCalls = 0
     }
 
     private fun newSource(scope: CoroutineScope, sink: (Evidence) -> Unit, cap: Captured, slot: Slot, d: () -> ContextDecision = { dec(ContextState.UNKNOWN) }, stats: ContextHubStats = ContextHubStats { 0L }) =
@@ -62,7 +63,7 @@ class ImageIntentSourceTest {
                     override suspend fun newestUnlabelled(sinceReceivedMs: Long): IntentFrame? = null
                     override suspend fun setIntent(frameId: String, label: String, conf: Float, at: Long) = 1
                     override suspend fun tombstoned(frameId: String) = false
-                }, { null }, { 0L }, ep, res, en, st).also { cap.sampler = it }
+                }, { null }, { 0L }, ep, res, { cap.enabledCalls++; en() }, st).also { cap.sampler = it }
             },
             install = { slot.sampler = it }, installed = { slot.sampler },
         )
@@ -83,13 +84,31 @@ class ImageIntentSourceTest {
         assertNull(slot.sampler)
     }
 
-    @Test fun stopLeavesAnotherSourceRunsSamplerAlone() {
-        val cap = Captured(); val slot = Slot()
-        val s = newSource(kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined), {}, cap, slot)
+    @Test fun stopLeavesAnotherSourceRunsSamplerAloneAndClosesItsOwn() {
+        val cap = Captured(); val slot = Slot(); val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
+        val s = newSource(scope, {}, cap, slot)
         s.start()
-        val other = cap.sampler; slot.sampler = null            // someone else owns the slot now
+        val mine = cap.sampler!!
+        val other = IntentSampler(scope, object : IntentFrameStore {
+            override suspend fun newestUnlabelled(sinceReceivedMs: Long): IntentFrame? = null
+            override suspend fun setIntent(frameId: String, label: String, conf: Float, at: Long) = 1
+            override suspend fun tombstoned(frameId: String) = false
+        }, { null }, { 0L }, { false }, { _, _, _ -> }, { true }, { })
+        slot.sampler = other                                    // someone else owns the slot now
         s.stop()
-        assertNull(slot.sampler); assertNotNull(other)
+        assertSame("a different sampler in the slot is left alone", other, slot.sampler)
+        val before = cap.enabledCalls
+        mine.poke()
+        assertEquals("the stopped sampler is closed: a poke does nothing", before, cap.enabledCalls)
+    }
+
+    @Test fun stoppingTheSourceClearsTheShownLastIntent() {
+        val cap = Captured(); val st = ContextHubStats { 0L }
+        val s = newSource(kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined), {}, cap, Slot(), stats = st)
+        s.start(); cap.onResult!!("f", 1L, IntentOutput(IntentLabel.DRIVING, 0.9f))
+        assertTrue(st.line(ContextState.UNKNOWN).contains("intentLast="))
+        s.stop()
+        assertFalse(st.line(ContextState.UNKNOWN).contains("intentLast"))
     }
 
     @Test fun aResultIsFedAsEvidenceStampedWithTheCaptureTimeAndRecordedInTheStats() {

@@ -611,7 +611,7 @@ class ContextFusionTest {
         r.advance(5 * MIN); assertTrue(r.d.state == PAX || r.d.state == DRV)
     }
 
-    @Test fun nonVehicleImagesDoNotRaiseVehicleSuspected() {
+    @Test fun drivingImagesAloneDoNotRaiseVehicleSuspected() {
         val r = Rig(); r.intent(IntentLabel.DRIVING, 0.9f); r.advance(10_000); r.intent(IntentLabel.DRIVING, 0.9f)
         assertFalse(r.d.vehicleSuspected)
     }

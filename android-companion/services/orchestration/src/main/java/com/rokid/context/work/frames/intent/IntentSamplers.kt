@@ -31,6 +31,9 @@ class RoomIntentFrameStore(private val db: () -> ContextDatabase) : IntentFrameS
 
 /** The production [IntentSampler]: one photo per call through INTENT_CLASSIFY, gated like the extraction pipeline. */
 object IntentSamplers {
+    /** One per process: a new sampler (source off->on, hub restart) must not start a second upload or reset the minute. */
+    private val flight = IntentFlight()
+
     fun create(
         app: Context,
         scope: CoroutineScope,
@@ -44,7 +47,8 @@ object IntentSamplers {
             scope = scope, store = RoomIntentFrameStore { MemoryGraph.get(app).db }, classify = { id -> classify(app, id) },
             clock = System::currentTimeMillis, episode = episode, onResult = onResult, enabled = enabled, stats = stats,
             admit = keyframes::admitBackgroundCall, pipelineOn = { AppConfigStore.isPipelineEnabled(app) },
-            generation = { MemoryWipe.generation.get() },
+            generation = { MemoryWipe.generation.get() }, flight = flight,
+            preflight = { id -> FramePhotos.load(app, listOf(id)).photos.isNotEmpty() },
         )
     }
 
