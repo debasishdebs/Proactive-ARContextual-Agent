@@ -19,6 +19,7 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.ui.theme.PcTheme
 import com.rokid.context.core.model.HudSettings
+import com.rokid.context.core.model.MotionLabel
 import com.rokid.context.phone.ui.MainDispatcherRule
 import com.rokid.context.phone.ui.cancelScope
 import com.rokid.context.phone.ui.settings.FakeHudSettings
@@ -56,7 +57,7 @@ class CaptureSettingsTest {
     }
 
     private fun show(state: CaptureSettingsUiState, vm: CaptureSettingsViewModel? = null) {
-        compose.setContent { PcTheme { CaptureSettingsScreen(state, onBack = {}, onModeChoice = { vm?.setModeChoice(it) }, onBatteryTarget = { vm?.setBatteryTarget(it) }, onPauseWhenPhoneInUse = { vm?.setPauseWhenPhoneInUse(it) }, onWork = { vm?.setWork(it) }, onRest = { vm?.setRest(it) }) } }
+        compose.setContent { PcTheme { CaptureSettingsScreen(state, onBack = {}, onModeChoice = { vm?.setModeChoice(it) }, onBatteryTarget = { vm?.setBatteryTarget(it) }, onPauseWhenPhoneInUse = { vm?.setPauseWhenPhoneInUse(it) }, onWork = { vm?.setWork(it) }, onRest = { vm?.setRest(it) }, onWorkRestEnabled = { vm?.setWorkRestEnabled(it) }, onMotionLabel = { vm?.setMotionLabel(it) }) } }
     }
 
     @Test fun smartHidesInterval() {
@@ -100,7 +101,7 @@ class CaptureSettingsTest {
     }
 
     @Test fun restBelow15DisabledWhenWorkOver45() {
-        show(CaptureSettingsUiState(workMinutes = 60, restMinutes = 15))
+        show(CaptureSettingsUiState(workRestEnabled = true, workMinutes = 60, restMinutes = 15))
         compose.onNodeWithText("Rest is at least 15 min when Work is over 45 min.").assertExists()
         compose.onNodeWithTag("rest").performSemanticsAction(SemanticsActions.OnClick); compose.waitForIdle()
         compose.onNodeWithTag("rest_0").assertIsNotEnabled()
@@ -110,7 +111,7 @@ class CaptureSettingsTest {
     }
 
     @Test fun restOptionsEnabledWhenWorkIs45OrLess() {
-        show(CaptureSettingsUiState(workMinutes = 45))
+        show(CaptureSettingsUiState(workRestEnabled = true, workMinutes = 45))
         compose.onNodeWithTag("rest").performSemanticsAction(SemanticsActions.OnClick); compose.waitForIdle()
         compose.onNodeWithTag("rest_0").assertIsEnabled()
         compose.onNodeWithTag("rest_note").assertDoesNotExist()
@@ -231,5 +232,45 @@ class CaptureSettingsTest {
     @Test fun statusLineReadsSettle() {
         assertEquals("Settle \u00b7 5 keyframes in the last 10 min", CaptureSettingsUiState(wake = CameraWake.SETTLE, keyframesPerHour = 30).statusLine)
         assertEquals("Fixed \u00b7 0 keyframes in the last 10 min", CaptureSettingsUiState(mode = CaptureMode.FIXED, wake = CameraWake.SETTLE).statusLine)
+    }
+
+    @Test fun workRestSwitchDefaultsOffAndGatesRows() = runBlocking {
+        val hud = FakeHudSettings()
+        val vm = CaptureSettingsViewModel(hud)
+        show(CaptureSettingsUiState(), vm)
+        compose.onNodeWithTag("work_rest").assertExists()
+        compose.onNodeWithTag("work").assertDoesNotExist(); compose.onNodeWithTag("rest").assertDoesNotExist()
+        compose.onNodeWithTag("work_rest").performClick(); compose.waitForIdle()
+        assertTrue(hud.settings.value.workRestEnabled)
+        vm.cancelScope()
+    }
+
+    @Test fun workRowShownWhenWorkRestOn() {
+        show(CaptureSettingsUiState(workRestEnabled = true))
+        compose.onNodeWithTag("work").assertExists()
+    }
+
+    @Test fun motionSourcesAndLabels() = runBlocking {
+        val hud = FakeHudSettings()
+        val vm = CaptureSettingsViewModel(hud)
+        show(CaptureSettingsUiState(), vm)
+        compose.onNodeWithTag("motion_sources").assertExists()
+        compose.onNodeWithTag("source_glasses_imu").assertIsNotEnabled()
+        compose.onNodeWithTag("source_phone_motion").assertIsNotEnabled()
+        compose.onNodeWithTag("source_watch_livefit").assertIsNotEnabled()
+        compose.onNodeWithTag("motion_label_note").assertDoesNotExist()
+        pick("motion_label", 4)
+        assertEquals(MotionLabel.EATING, hud.settings.value.motionLabel)
+        vm.setMotionSource("phone_motion", false)
+        assertEquals(listOf("phone_motion"), hud.settings.value.motionSourcesOff)
+        vm.setMotionSource("phone_motion", true)
+        assertEquals(emptyList<String>(), hud.settings.value.motionSourcesOff)
+        vm.setMotionSource("glasses_imu", false); assertEquals(emptyList<String>(), hud.settings.value.motionSourcesOff)
+        vm.cancelScope()
+    }
+
+    @Test fun motionLabelNoteShownWhenLabelSet() {
+        show(CaptureSettingsUiState(motionLabel = MotionLabel.EATING))
+        compose.onNodeWithTag("motion_label_note").assertExists()
     }
 }
