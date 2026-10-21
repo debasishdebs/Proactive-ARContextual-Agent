@@ -21,6 +21,9 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- /P7-C sources -->
 
+    <!-- Wave B: LiveFit (Galaxy Watch forwarder) must be visible to the provider's caller check. -->
+    <queries><package android:name="com.livear.fit" /></queries>
+
     <application
         android:name=".ContextApp"
         android:allowBackup="true"
@@ -61,6 +64,12 @@
             android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Wave B: LiveFit forwards the Galaxy Watch motion state here (caller package + pinned signing certificate checked in the provider). -->
+        <provider
+            android:name="com.rokid.context.phone.context.WatchMotionProvider"
+            android:authorities="com.rokid.context.motionsource"
+            android:exported="true" />
 
         <!-- P7-B proposals -->
         <receiver android:name=".phone.actions.ProposalActionReceiver" android:exported="false" />
