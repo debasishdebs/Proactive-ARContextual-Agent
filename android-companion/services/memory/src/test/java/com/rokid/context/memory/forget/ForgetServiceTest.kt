@@ -219,4 +219,59 @@ class ForgetServiceTest {
             assertTrue(db.actionDao().logFor(id).none { "Call mom" in it.detail })
         }
     }
+
+    // --- wave 3 Task 11 (S1, S2): photo cites and metadata-only moments -----------------------------------------------
+
+    private suspend fun keyframe(id: String, withFrame: Boolean = true, vector: Boolean = true) {
+        if (withFrame) db.frameDao().insertIgnore(FrameEntity(id, 1, "/$id.jpg", "rokid_glasses"))
+        db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity(id, null, null, "STILL", false, null, null, null, 640, 0.3f, null, null, null, "s1", 1))
+        db.frameStateDao().insertIgnore(listOf(com.rokid.context.memory.db.FrameStateEntity(id, "NEAR_DUP", 0, null, null, null, 1)))
+        if (vector) db.frameVectorDao().upsert(listOf(com.rokid.context.memory.db.FrameVectorEntity(id, "s1", byteArrayOf(1, 2, 3, 4))))
+    }
+
+    @Test fun forgetMomentRedactsSavedAnswerCitingPhoto() = runBlocking {
+        keyframe("f1"); mem("m1", frameId = "f1")
+        db.askDao().upsert(AskEntity("q1", 1, "where?", "On the desk (photo)", """["${PHOTO_CITE_PREFIX}f1"]""", null, "phone_typed", false))
+        db.askDao().upsert(AskEntity("q2", 1, "q", "unrelated", """["${PHOTO_CITE_PREFIX}f10"]""", null, "phone_typed", false)) // "f10" never matches "f1"
+        proposals.create(ProposalEntity("p1", ProposalOrigin.ASK.name, "q1", "REMINDER", """{"title":"Call mom","dueAt":5}""", ProposalState.EXECUTED.name, 99_999, null, null, 1), 1)
+        db.actionDao().log(com.rokid.context.memory.db.ActionLogEntity(ts = 2, proposalId = "p1", transition = "X", detail = "Call mom"))
+        val r = service.forgetMoment("f1")
+        assertEquals(1, r.redactedAsks)
+        assertTrue("alarm owner listed for cancellation", "p1" in r.redactedProposals)
+        val q1 = db.askDao().byId("q1")!!
+        assertTrue(q1.redacted); assertEquals(ForgetService.REDACTED, q1.answer); assertEquals("[]", q1.sourcesJson)
+        assertFalse(db.askDao().byId("q2")!!.redacted)
+        assertEquals(ForgetService.REDACTED_PARAMS, proposals.byId("p1")!!.paramsJson)
+        assertTrue(db.actionDao().logFor("p1").none { "Call mom" in it.detail })
+        // export reads the redacted row
+        assertTrue(db.exportDao().askPage(0, 10).filter { it.id == "q1" }.all { it.answer == ForgetService.REDACTED })
+    }
+
+    @Test fun expiredUncaptionedSkippedPhotoCanBeForgotten() = runBlocking {
+        keyframe("f1"); db.askDao().upsert(AskEntity("q1", 1, "q", "a skipped photo", """["${PHOTO_CITE_PREFIX}f1"]""", null, "phone_typed", false))
+        service.expirePhotos(listOf("f1")) // retention: frame row gone, no memory, meta and vector kept
+        assertNull(db.forgetDao().frame("f1")); assertEquals(1, db.frameMetaDao().byIds(listOf("f1")).size)
+        val r = service.forgetMoment("f1")
+        assertEquals(1, r.redactedAsks)
+        assertTrue(db.frameMetaDao().byIds(listOf("f1")).isEmpty()); assertNull(db.frameStateDao().get("f1"))
+        assertTrue(db.frameVectorDao().forFrames("s1", listOf("f1")).isEmpty())
+        assertEquals(listOf("f1"), db.forgetDao().tombstoned(listOf("f1")))
+    }
+
+    @Test fun forgetMomentOfMetaOnlyAndVectorOnlyMoments() = runBlocking {
+        keyframe("meta", withFrame = false, vector = false)
+        service.forgetMoment("meta")
+        assertTrue(db.frameMetaDao().byIds(listOf("meta")).isEmpty())
+        db.frameVectorDao().upsert(listOf(com.rokid.context.memory.db.FrameVectorEntity("vec", "s1", byteArrayOf(1, 2, 3, 4))))
+        service.forgetMoment("vec")
+        assertTrue(db.frameVectorDao().forFrames("s1", listOf("vec")).isEmpty())
+    }
+
+    @Test fun forgetMomentEmptyOnlyWhenNothingExists() = runBlocking {
+        assertEquals(ForgetService.Result.EMPTY, service.forgetMoment("nothing"))
+        assertTrue(db.forgetDao().tombstoned(listOf("nothing")).isEmpty())
+        db.askDao().upsert(AskEntity("q1", 1, "q", "a", """["${PHOTO_CITE_PREFIX}nothing"]""", null, "phone_typed", false))
+        assertEquals(ForgetService.Result.EMPTY, service.forgetMoment("nothing"))
+        assertFalse(db.askDao().byId("q1")!!.redacted) // nothing existed: an unrelated stray cite is not our business
+    }
 }

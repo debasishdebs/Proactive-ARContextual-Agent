@@ -166,4 +166,15 @@ class PhotoExpiryTest {
         assertEquals(listOf(jpg.absolutePath), r.framesToDelete)
         assertEquals(listOf("leg"), graph.db.forgetDao().tombstoned(listOf("leg")))
     }
+
+    /** S1: retention is storage hygiene. The photo's metadata lives on, so a saved answer's cite stays live. */
+    @Test fun photoExpiryDoesNotRedactCites() = runBlocking {
+        seed("f1")
+        graph.db.askDao().upsert(com.rokid.context.memory.db.AskEntity("q1", 1, "q", "answer", """["mem_f1","${com.rokid.context.memory.forget.PHOTO_CITE_PREFIX}f1"]""", null, "phone_typed", false))
+        service.expirePhotos(listOf("f1"))
+        service.expirePhotos(listOf("f1"), requireLinked = true)
+        val q = graph.db.askDao().byId("q1")!!
+        assertFalse(q.redacted); assertEquals("answer", q.answer)
+        assertNotNull(graph.db.frameMetaDao().get("f1"))
+    }
 }
