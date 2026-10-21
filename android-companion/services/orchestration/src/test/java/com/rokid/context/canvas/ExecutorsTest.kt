@@ -92,7 +92,7 @@ class ExecutorsTest {
             assertEquals(listOf(res.frameId), v.captions.map { it.frameId })
             assertNull(res.error)
         }
-        assertEquals(listOf("run1:extract:0", "run1:extract:0", "run1:extract:1"), r.map { it.meta?.batchId })
+        assertEquals(listOf("run1:extract:ex1", "run1:extract:ex1", "run1:extract:ex3"), r.map { it.meta?.batchId })
         assertTrue((r[0].meta?.promptVersion ?: 0) >= 1) // live prompt: the stored version
         assertEquals(2, r.sumOf { it.calls })
     }

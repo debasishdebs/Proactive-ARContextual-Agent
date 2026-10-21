@@ -332,7 +332,7 @@ class PipelineInterpreterTest {
             run(DefaultPipelines.liveExtract(), photos("ex1"))
             fail("expected the transient failure to propagate")
         } catch (e: Exception) {
-            assertTrue(e !is CancellationException)
+            assertTrue(generateSequence<Throwable>(e) { it.cause }.any { it is IOException })
         }
     }
 
@@ -354,7 +354,7 @@ class PipelineInterpreterTest {
     @Test fun labelsCollected() = runBlocking<Unit> {
         intentGraph()
         val o = extracted(run(intentPipeline(), photos("ex1", "ex2", "ex3")))
-        assertEquals(mapOf("ex1" to ("driving" to 0.8f), "ex2" to ("computer_work" to null), "ex3" to ("sleeping" to 0.4f)), o.labels)
+        assertEquals(mapOf("ex1" to ("driving" to 0.8f), "ex2" to ("computer_work" to null), "ex3" to ("other" to 0.4f)), o.labels)
     }
 
     @Test fun noSwitchNoLabels() = runBlocking<Unit> {
@@ -419,7 +419,69 @@ class PipelineInterpreterTest {
     }
 
     @Test fun sinkNoneDoesNothing() = runBlocking<Unit> {
-        FrameIntentSink.None.record("a", "driving", 0.5f, 1L)
-        assertNotNull(FrameIntentSink.None)
+        val seen = mutableListOf<String>()
+        val sink = FrameIntentSink { f, l, _, _ -> seen += "$f:$l" }
+        sink.record("a", "driving", 0.5f, 1L)
+        assertEquals(listOf("a:driving"), seen)
+        FrameIntentSink.None.record("a", "driving", 0.5f, 1L) // returns without effect
+        assertTrue(seen.size == 1)
+    }
+
+    // ---- fix round 1 ----
+
+    @Test fun intentBatchIdsDistinctPerPhotoAndExtractCallSharedOnlyByItsFrames() = runBlocking<Unit> {
+        graph { p -> intentReply(p) ?: extractReply(*sentIds(p).toTypedArray()) }
+        val o = extracted(run(intentPipeline(), photos("ex1", "ex2", "ex3")))
+        val intent = o.traces.filter { it.nodeId == "intent" }.map { it.batchId }
+        assertEquals(3, intent.toSet().size)
+        assertTrue(intent.none { it == null })
+        val extractRows = o.traces.filter { it.nodeId.startsWith("ex_") }
+        assertEquals(3, extractRows.map { it.batchId }.toSet().size) // three labels, three single-photo calls
+        assertTrue(extractRows.map { it.batchId }.toSet().intersect(intent.toSet()).isEmpty())
+    }
+
+    @Test fun oneExtractCallOfThreePhotosSharesOneBatchId() = runBlocking<Unit> {
+        graph { extractReply(*sentIds(it).toTypedArray()) }
+        val o = extracted(run(DefaultPipelines.liveExtract(), photos("ex1", "ex2", "ex3")))
+        val ids = o.traces.filter { it.nodeId == "extract" }
+        assertEquals(setOf("ex1", "ex2", "ex3"), ids.map { it.frameId }.toSet())
+        assertEquals(1, ids.map { it.batchId }.toSet().size)
+    }
+
+    @Test fun labelIsNormalisedToSwitchCasesOrOther() = runBlocking<Unit> {
+        graph { p ->
+            when {
+                "INTENT" !in p -> extractReply(*sentIds(p).toTypedArray())
+                "ex1" in p -> """{"activity":"  DRIVING ","confidence":2}"""
+                "ex2" in p -> """{"activity":"${"x".repeat(200)}"}"""
+                else -> """{"activity":"Computer_Work"}"""
+            }
+        }
+        val o = extracted(run(intentPipeline(), photos("ex1", "ex2", "ex3")))
+        assertEquals(mapOf("ex1" to ("driving" to 1f), "ex2" to ("other" to null), "ex3" to ("computer_work" to null)), o.labels)
+    }
+
+    @Test fun nodeResultToStringNeverPrintsTheCause() {
+        val r = NodeResult("f", null, error = "X", cause = ModelCallException("provider said hunter2", true))
+        assertFalse(r.toString().contains("hunter2"))
+    }
+
+    @Test fun traceCapDoesNotSplitASurrogatePair() = runBlocking<Unit> {
+        graph { "" }
+        for (prefix in listOf("", "x")) {
+            val big = CanvasValue.Extraction(listOf(Fact(prefix + "\uD83D\uDE00".repeat(10_000), "object", 0.9, emptyList(), listOf("ex1"))), emptyList())
+            val ex = mapOf(NodeTypes.VISION_EXTRACT to fake(NodeTypes.VISION_EXTRACT) { _, items -> items.map { NodeResult(it.frameId, big) } })
+            val out = extracted(run(DefaultPipelines.liveExtract(), photos("ex1"), i = interpreter(ex))).traces.single { it.nodeId == "extract" }.outputJson!!
+            assertTrue(out.length <= PipelineInterpreter.OUTPUT_CAP && out.endsWith(PipelineInterpreter.TRUNCATED))
+            val body = out.dropLast(PipelineInterpreter.TRUNCATED.length)
+            assertFalse(Character.isHighSurrogate(body.last()))
+        }
+    }
+
+    @Test fun criticExecutorUsesTheContextCallClass() = runBlocking<Unit> {
+        graph { """{"verdict":"pass","reasons":[]}""" }
+        val v = CanvasValue.Extraction(listOf(Fact("Mug", "object", 0.9, emptyList(), listOf("ex1"))), emptyList())
+        CriticExecutor.run(node(NodeTypes.CRITIC, "critic"), listOf(CanvasItem("ex1", photo("ex1"), v)), ctx(CallClass.EXTRACT))
+        assertEquals(listOf(CallClass.EXTRACT), classes)
     }
 }

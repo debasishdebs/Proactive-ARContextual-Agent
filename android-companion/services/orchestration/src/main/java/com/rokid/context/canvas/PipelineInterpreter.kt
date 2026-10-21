@@ -12,7 +12,6 @@ import com.rokid.context.ai.contract.FrameCaption
 import com.rokid.context.memory.db.CanvasLiveTraceEntity
 import com.rokid.context.orchestration.ExtractPhoto
 import com.rokid.context.orchestration.ExtractedBatch
-import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.floatOrNull
@@ -101,7 +100,7 @@ class PipelineInterpreter(
                     if (r.error != null) { failure = failure ?: reasonOf(r); continue }
                     val v = r.value ?: continue
                     produced[item.frameId] = ItemFlow.Out(v, r.branch)
-                    if (node.type == NodeTypes.SWITCH) labelOf(node.params["field"], v)?.let { labels.putIfAbsent(item.frameId, it) }
+                    if (node.type == NodeTypes.SWITCH) labelOf(node, v)?.let { labels.putIfAbsent(item.frameId, it) }
                     if (isExtract) {
                         extractedFrames += item.frameId
                         val b = r.extracted
@@ -145,10 +144,13 @@ class PipelineInterpreter(
         }
     }
 
-    private fun labelOf(field: JsonElement?, v: CanvasValue): Pair<String, Float?>? {
-        val key = (field as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+    /** The label that reaches the sink: trimmed, lower case, at most 64 characters, and only one of the switch's cases or `other` (anything else is `other`). */
+    private fun labelOf(node: PipelineNode, v: CanvasValue): Pair<String, Float?>? {
+        val key = (node.params["field"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
         val obj = (v as? CanvasValue.Json)?.value as? JsonObject ?: return null
-        val label = (obj[key] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        val raw = (obj[key] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        val cleaned = raw.trim().lowercase().take(MAX_LABEL)
+        val label = if (cleaned == NodeTypes.OTHER || cleaned in NodeTypes.switchCases(node.params).map { it.trim().lowercase() }) cleaned else NodeTypes.OTHER
         val conf = (obj["confidence"] as? JsonPrimitive)?.takeIf { !it.isString }?.floatOrNull?.coerceIn(0f, 1f)
         return label to conf
     }
@@ -157,12 +159,19 @@ class PipelineInterpreter(
 
     private fun nameOf(e: Throwable): String = if (e is ModelCallException) e.kind.name else e.javaClass.simpleName
 
-    private fun cap(s: String) = if (s.length <= OUTPUT_CAP) s else s.take(OUTPUT_CAP - TRUNCATED.length) + TRUNCATED
+    /** Cut on a code point boundary (never between the halves of a surrogate pair); the trailing marker says the text is cut. */
+    private fun cap(s: String): String {
+        if (s.length <= OUTPUT_CAP) return s
+        var end = OUTPUT_CAP - TRUNCATED.length
+        if (Character.isHighSurrogate(s[end - 1])) end--
+        return s.substring(0, end) + TRUNCATED
+    }
 
     companion object {
         const val OUTPUT_CAP = 8_000
         const val TRUNCATED = "...[truncated]"
         const val BATCH = "_batch"
+        const val MAX_LABEL = 64
         private const val CHAIN_DEPTH = 8
 
         /** The failures the live fallback would hit too (S23): an I/O failure anywhere in the chain (as `ExtractOutcome.classify` reads it), or a retryable TRANSIENT model failure. */

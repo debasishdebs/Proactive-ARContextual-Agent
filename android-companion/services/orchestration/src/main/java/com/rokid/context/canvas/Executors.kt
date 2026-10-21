@@ -57,8 +57,8 @@ object VisionExtractExecutor : NodeExecutor {
     override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
         val override = node.draft()
         val out = ArrayList<NodeResult>(items.size)
-        items.chunked(batch(node)).forEachIndexed { index, chunk ->
-            val batchId = "${ctx.runId}:${node.id}:$index"
+        items.chunked(batch(node)).forEach { chunk ->
+            val batchId = "${ctx.runId}:${node.id}:${chunk.first().frameId}" // one model call: shared by exactly its frames (S25)
             val upstream = chunk.mapNotNull { (it.value as? CanvasValue.Json)?.value?.toString() }
             val sources = if (upstream.isEmpty()) "" else PromptComposer.dataBlock("upstream", upstream)
             val started = System.nanoTime()
@@ -111,13 +111,13 @@ object CriticExecutor : NodeExecutor {
             try {
                 val r = ctx.runner.run(RoleCall(PromptKey.CRITIC, ExtractFollowUp.criticVars(v.facts, listOf(it.photo.description)), callClass = ctx.callClass, override = override))
                 val pass = (r.output as CriticOutput).pass
-                val meta = CallMeta(r.reply.latencyMs, r.reply.promptTokens, r.reply.completionTokens, r.reply.model, r.promptVersion, "${ctx.runId}:${node.id}:$i")
+                val meta = CallMeta(r.reply.latencyMs, r.reply.promptTokens, r.reply.completionTokens, r.reply.model, r.promptVersion, "${ctx.runId}:${node.id}:${it.frameId}")
                 NodeResult(it.frameId, v.copy(trusted = pass), branch = if (pass) "pass" else "fail", meta = meta, calls = 1)
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
                 // Live keeps the local verdict (not trusted) when the critic fails.
-                NodeResult(it.frameId, v.copy(trusted = false), branch = "fail", error = failure(e), meta = CallMeta(ms(), null, null, null, null, "${ctx.runId}:${node.id}:$i"), calls = 1, cause = e)
+                NodeResult(it.frameId, v.copy(trusted = false), branch = "fail", error = failure(e), meta = CallMeta(ms(), null, null, null, null, "${ctx.runId}:${node.id}:${it.frameId}"), calls = 1, cause = e)
             }
         }
     }
@@ -151,7 +151,7 @@ object PromptExecutor : NodeExecutor {
                 contextSources = upstream?.let { u -> PromptComposer.dataBlock("upstream", listOf(u)) }.orEmpty(),
             )
             val prompt = PromptComposer.compose(system, template, vars.toMap(ctx.persona.persona.value, NowText.of(ctx.now())))
-            val batchId = "${ctx.runId}:${node.id}:$i"
+            val batchId = "${ctx.runId}:${node.id}:${it.frameId}" // per photo (S25)
             val started = System.nanoTime()
             try {
                 val reply = ctx.model.complete(role, ctx.callClass) { e ->
