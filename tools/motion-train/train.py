@@ -110,7 +110,9 @@ def main(argv=None):
         folds = blocks(list(y))
     pred = np.full(len(y), -1)
     for te in folds:
-        tr = [i for i in range(len(y)) if i not in set(te)]
+        mask = np.ones(len(y), dtype=bool)
+        mask[te] = False
+        tr = np.flatnonzero(mask)
         if len(set(y[tr])) < 2:
             continue
         m = make().fit(X[tr], y[tr])

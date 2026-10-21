@@ -213,13 +213,13 @@ summary_cpu() {
 # One line per in-window heartbeat minute: counters plus CPU s/min from the sample in that minute and the one before it (gap <= 5 min, same pid).
 summary_minutes() {
   local d="$1" start="$2" end="$3" clk="$4" diag="$5" cpu=""
-  [ -f "$d/cpu.log" ] && cpu="$d/cpu.log"
-  [ -n "$cpu" ] || cpu=/dev/null
-  awk -v S="$start" -v E="$end" -v CLK="$clk" '
+  [ -s "$d/cpu.log" ] && cpu="$d/cpu.log"
+  [ -n "$cpu" ] || echo "no cpu.log (cpu columns are na)"
+  # Files are told apart by name (CPU), never by order: a missing or empty cpu.log must not turn a diag file into the CPU file.
+  awk -v S="$start" -v E="$end" -v CLK="$clk" -v CPU="$cpu" '
     function secs(t,   a) { split(substr(t, 7), a, ":"); return a[1]*3600 + a[2]*60 + a[3] }
     function stamp(t) { sub(/_/, " ", t); return t }
-    FNR == 1 { fileno++ }
-    fileno == 1 {
+    CPU != "" && FILENAME == CPU {
       if ($2 != "cpu") next
       split($4, a, "="); split($5, b, "=")
       l = $3; ts = $1
@@ -246,7 +246,7 @@ summary_minutes() {
       }
       print line
     }
-  ' "$cpu" $diag
+  ' $cpu $diag
 }
 
 case "${1:-}" in

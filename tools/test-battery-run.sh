@@ -29,6 +29,14 @@ mexpect() {
 }
 mexpect "10:05 opens1m=12 kf1m=1 glances1m=6 app=na ss=na cam=na camprov=na"
 mexpect "10:10 opens1m=6 kf1m=2 glances1m=4 app=3.00 ss=12.00 cam=4.50 camprov=1.20"
+# Missing and empty cpu.log must still print the heartbeat table (cpu columns na).
+for variant in missing empty; do
+  tmpd="$(mktemp -d)"; cp "$HERE"/testdata/battery-run/* "$tmpd"/
+  if [ "$variant" = missing ]; then rm -f "$tmpd/cpu.log"; else : > "$tmpd/cpu.log"; fi
+  vout="$("$HERE/battery-run.sh" summary "$tmpd" minutes)"; rm -rf "$tmpd"
+  case "$vout" in *"no cpu.log"*) ;; *) echo "FAIL: $variant cpu.log: no 'no cpu.log' note"; fail=1 ;; esac
+  case "$vout" in *"10:10 opens1m=6 kf1m=2 glances1m=4 app=na ss=na cam=na camprov=na"*) ;; *) echo "FAIL: $variant cpu.log: heartbeat table missing"; fail=1 ;; esac
+done
 # The CPU logger script that runs on the device must stay count-only too.
 if ! sh -n <("$HERE/battery-run.sh" print-cpu-logger); then echo "FAIL: cpu logger has a syntax error"; fail=1; fi
 if "$HERE/battery-run.sh" print-cpu-logger | grep -q -i -E "logcat|dumpsys"; then echo "FAIL: cpu logger reads logcat/dumpsys"; fail=1; fi
