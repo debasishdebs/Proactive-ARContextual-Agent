@@ -71,7 +71,10 @@ class DescribeOnDemand(
         val live = ids.filter { it in stored }
         if (live.isEmpty()) { Log.i(TAG, "PcDescribe frames=${ids.size} result=Expired"); return DescribeResult.Expired }
         val states = db.frameStateDao().byIds(live).associate { it.frameId to it.state }
-        val claimable = live.filter { states[it] in CLAIMABLE }
+        val openClusters = db.frameClusterDao().let { dao -> live.filter { states[it] == FrameState.IN_CLUSTER.name }.let { ids ->
+            if (ids.isEmpty()) emptySet() else db.frameMetaDao().byIds(ids).filter { m -> m.clusterId?.let { c -> dao.get(c)?.state in OPEN_CLUSTER } == true }.map { it.frameId }.toSet()
+        } }
+        val claimable = live.filter { states[it] in CLAIMABLE || it in openClusters }
         var memories = 0; var described = 0; var expired = ids.size - live.size
         var busy = live.count { states[it] == FrameState.EXTRACTING.name }
         var unavailable = false; var wiped = false
@@ -82,14 +85,18 @@ class DescribeOnDemand(
                 is ExtractNowOutcome.Extracted -> { memories += o.memories; described++ }
                 ExtractNowOutcome.ExtractedEmpty -> described++
                 // Only a lost claim is re-read (S5): another extractor holds it now (Busy), or nobody does (the no-claim path).
-                ExtractNowOutcome.LostClaim -> if (db.frameStateDao().get(id)?.state == FrameState.EXTRACTING.name) busy++ else direct += id
+                // Never claimed by us: re-read the state (S5). Someone else's claim, or a frame that is claimable again, is not ours to describe (no second call).
+                ExtractNowOutcome.LostClaim ->
+                    if (db.frameStateDao().get(id)?.state in HELD) busy++ else direct += id
+                // The call ran and was paid for, but the claim no longer held: never a second call; the pipeline owns the frame again.
+                ExtractNowOutcome.Stale -> busy++
                 is ExtractNowOutcome.Failed -> if (o.kind == "unreadable") expired++ else unavailable = true // never retried in the no-claim path: that would be a second, uncounted call
                 ExtractNowOutcome.Wiped -> wiped = true
             }
         }
         if (direct.isNotEmpty() && !wiped) {
             val prefix = "$ID_ROOT${idSource()}_"
-            when (val o = KeyframeExtract.run(context, direct, null, CallClass.USER, prefix, online) { sent, _ -> markDescribed(sent) }) {
+            when (val o = KeyframeExtract.run(context, direct, null, CallClass.USER, prefix, online, nudge = false) { sent, _ -> markDescribed(sent) }) {
                 is ExtractOutcome.Saved -> {
                     memories += o.memories.size; described += direct.size - o.unreadable.size - o.unseen.size
                     expired += o.unreadable.size; if (o.unseen.isNotEmpty()) unavailable = true
@@ -151,7 +158,10 @@ class DescribeOnDemand(
         /** Must start with `rokid_` and never with `rokid_review_`; the uuid is the full 36 characters (S6). */
         const val ID_ROOT = "rokid_desc_"
         const val DESCRIBED = "described_on_demand"
-        private val CLAIMABLE = setOf(FrameState.PENDING.name, FrameState.IN_CLUSTER.name, FrameState.CAPTION_QUEUED.name)
+        private val CLAIMABLE = setOf(FrameState.PENDING.name, FrameState.CAPTION_QUEUED.name)
+        /** Another extractor holds it, or it is waiting for its own (a describe must not make a second call for it). IN_CLUSTER is checked per cluster state. */
+        private val HELD = setOf(FrameState.EXTRACTING.name, FrameState.PENDING.name, FrameState.CAPTION_QUEUED.name)
+        private val OPEN_CLUSTER = setOf("OPEN", "CLOSED")
         private val MOVE_FROM = listOf(FrameState.NEAR_DUP.name, FrameState.CLUSTERED.name, FrameState.FAILED.name, FrameState.FAILED_FINAL.name)
     }
 }
