@@ -102,7 +102,8 @@ Input: `onEvidence(e)`; output: `evaluate(nowMs): ContextDecision(state, confide
 
 **Review rulings (fix round 1, safe direction):**
 - Car-link, airplane and activity events apply in **arrival order**; expiry and the hold use the engine's own monotonic arrival clock, the event stamp is informational (a disconnect after a small backwards clock step is never dropped).
-- **fast** is `fastConfirmed` = two readings >= 25 km/h within 15 s of each other (both <= 120 s old). The walking veto is lifted and `SPEED` is emitted only then; a single reading is recorded and changes nothing.
+- **fast** is `fastConfirmed` = two CONSECUTIVE readings >= 25 km/h at most 45 s apart (`fastConfirmGapMs`; the speed source samples every 30 s, min 15 s), both <= 120 s old; a slower reading between them resets the pair (60, 10, 60 does not confirm). The walking veto is lifted and `SPEED` is emitted only then; a single reading is recorded and changes nothing.
+- Task 4 (deferred, no code now): after a reading >= 25 km/h the speed source requests ONE quick follow-up fix (about 10-15 s later) so confirmation comes sooner.
 - The 180 s **hold** counts only while the committed state is already a vehicle state; a held-only vehicle fact never starts a new vehicle episode.
 
 ### 6.2 Candidate (first match wins)

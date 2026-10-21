@@ -3,7 +3,7 @@ package com.rokid.context.core.model.context
 data class FusionParams(
     val hintWalkTtlMs: Long = 90_000, val arTtlMs: Long = 1_800_000, val stepsTtlMs: Long = 90_000,
     val stepsWalkPerMin: Int = 60, val watchTtlMs: Long = 1_800_000, val fastKmh: Float = 25f,
-    val fastTtlMs: Long = 120_000, val fastConfirmGapMs: Long = 15_000, val vehicleHoldMs: Long = 180_000, val imageMinConf: Float = 0.7f,
+    val fastTtlMs: Long = 120_000, val fastConfirmGapMs: Long = 45_000, val vehicleHoldMs: Long = 180_000, val imageMinConf: Float = 0.7f,
     val imageNewestMaxAgeMs: Long = 300_000, val imagePairMaxGapMs: Long = 180_000,
     val airplaneMinMs: Long = 120_000, val flightKmh: Float = 150f, val flightAnyKmh: Float = 350f,
     val flightWindowMs: Long = 600_000, val flightImageConf: Float = 0.6f, val hintStillTtlMs: Long = 120_000,
@@ -263,10 +263,15 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
             (CarLinkKind.CAR_CLASS_BT in carSince && CarLinkKind.CAR_CLASS_BT !in btContradicted)) btHeldAt = at
     }
 
-    /** Two readings >= fastKmh within fastConfirmGapMs of each other, both fresh: one spike never counts. */
+    /**
+     * Two CONSECUTIVE readings >= fastKmh at most fastConfirmGapMs apart (the source samples every 30 s), both fresh
+     * (<= fastTtlMs). A slower reading in between resets the pair, so one spike never counts.
+     */
     private fun fastConfirmed(now: Long): Boolean {
-        val f = speeds.filter { (now - it.atMs).coerceAtLeast(0) <= p.fastTtlMs && it.kmh >= p.fastKmh }.map { it.atMs }.sorted()
-        return f.zipWithNext().any { (a, b) -> b - a <= p.fastConfirmGapMs }
+        val fresh = speeds.filter { (now - it.atMs).coerceAtLeast(0) <= p.fastTtlMs }.sortedBy { it.atMs }
+        return fresh.zipWithNext().any { (a, b) ->
+            a.kmh >= p.fastKmh && b.kmh >= p.fastKmh && b.atMs - a.atMs <= p.fastConfirmGapMs
+        }
     }
 
     private fun heldWithin(t: Long?, now: Long) = t != null && (now - t).coerceAtLeast(0) <= p.vehicleHoldMs

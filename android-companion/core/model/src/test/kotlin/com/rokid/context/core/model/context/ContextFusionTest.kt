@@ -511,8 +511,8 @@ class ContextFusionTest {
         assertTrue(ContextReason.SPEED in r.d.reasons)
         assertNotEquals(ContextState.WALKING, r.d.candidate)
         val r2 = Rig()
-        r2.hint(MotionState.WALKING); r2.speed(60f); r2.advance(30_000); r2.hint(MotionState.WALKING); r2.speed(60f)
-        assertEquals(ContextState.WALKING, r2.d.state)       // 30 s apart: not confirmed
+        r2.hint(MotionState.WALKING); r2.speed(60f); r2.advance(50_000); r2.hint(MotionState.WALKING); r2.speed(60f)
+        assertEquals(ContextState.WALKING, r2.d.state)       // 50 s apart: not confirmed
         assertFalse(ContextReason.SPEED in r2.d.reasons)
     }
 
@@ -537,5 +537,22 @@ class ContextFusionTest {
             assertFalse(r.d.state == DRV || r.d.state == PAX, "state ${r.d.state}")
             assertFalse(r.d.candidate == DRV || r.d.candidate == PAX, "cand ${r.d.candidate}")
         }
+    }
+
+    @Test fun consecutiveFastReadings30sApartConfirm() {
+        val r = Rig()
+        r.hint(MotionState.WALKING); r.speed(60f); r.advance(30_000); r.hint(MotionState.WALKING); r.speed(60f)
+        assertTrue(ContextReason.SPEED in r.d.reasons)
+        assertNotEquals(ContextState.WALKING, r.d.candidate)
+    }
+
+    @Test fun aSlowReadingBetweenTwoFastOnesResetsThePair() {
+        val r = Rig()
+        r.hint(MotionState.WALKING); r.speed(60f); r.advance(20_000); r.speed(10f); r.advance(20_000)
+        r.hint(MotionState.WALKING); r.speed(60f)
+        assertFalse(ContextReason.SPEED in r.d.reasons)
+        assertEquals(ContextState.WALKING, r.d.state)
+        r.advance(20_000); r.hint(MotionState.WALKING); r.speed(60f)      // now two consecutive fast ones
+        assertTrue(ContextReason.SPEED in r.d.reasons)
     }
 }
