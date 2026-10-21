@@ -9,12 +9,18 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlin.math.abs
 import kotlin.math.sqrt
 
+/** Glances and micro-motion bouts counted since the previous take. */
+data class GlanceCounts(val glances: Int, val micro: Int)
+
 /**
  * Gyro + linear-acceleration motion state over a 1 s sliding window (spec P1.1).
  * Everything is decided per sample, so [onset] lags the movement by at most one sensor sample.
  * Thresholds are constants for now; they are expected to be tuned on device.
  */
-class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
+class MotionClassifier(@Suppress("unused") private val clock: () -> Long, private val params: GlanceParams = GlanceParams()) {
+    /** Keeps the trailing-lambda form `MotionClassifier { now }` (default [GlanceParams]). */
+    constructor(clock: () -> Long) : this(clock, GlanceParams())
+
     private val _state = MutableStateFlow(MotionState.STILL)
     val state: StateFlow<MotionState> = _state
 
@@ -43,10 +49,28 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
     private var accelNewestMs = 0L
 
     private var lastAboveGyroMs = -1_000_000_000L // newest gyro sample over the threshold
-    private var stillSinceMs = 0L                // last time movement was seen (dwell clock)
-    private var hadMotion = false                // moved since the last dwell
+    private val detector = GlanceDetector(params)
+    private var lastGyroMs = -1L                 // previous gyro sample time (dt source), -1 before the first
     private var peak = 0f
     private var featGyroMax = 0f                 // diagnostics: the largest gyro magnitude since the last [features]
+
+    // Per-second accumulators since the last [features]
+    private var featN = 0
+    private var featSum = 0f
+    private var featSumSq = 0f
+    private var featAbove = 0
+    private var featTravelled = 0f
+    private var featGlances = 0
+    private var featMicro = 0
+    // Per-heartbeat glance counters ([takeGlanceCounts])
+    private var hbGlances = 0
+    private var hbMicro = 0
+
+    // Head pose since the last [markPose]: integrated angular velocity (rad) and whether we walked
+    private var rx = 0f
+    private var ry = 0f
+    private var rz = 0f
+    private var walked = false
 
     // Cached per accel sample (the window only changes then): the strict rule, and the K3 relaxed rule's run.
     private var strictWalk = false
@@ -60,10 +84,14 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
         val mag = sqrt(x * x + y * y + z * z)
         val above = mag > HEAD_MOVING_RAD_S
         if (mag > featGyroMax) featGyroMax = mag
+        val dt = if (lastGyroMs < 0) 0L else maxOf(0L, tMs - lastGyroMs)
+        lastGyroMs = maxOf(lastGyroMs, tMs)
+        val dtS = dt.coerceAtMost(params.maxDtMs) / 1000f
+        featN++; featSum += mag; featSumSq += mag * mag; featTravelled += mag * dtS
+        if (mag > params.onsetRadS) featAbove++
+        if (mag >= params.deadbandRadS) { rx += x * dtS; ry += y * dtS; rz += z * dtS }
         if (above) {
             lastAboveGyroMs = maxOf(lastAboveGyroMs, tMs)
-            stillSinceMs = maxOf(stillSinceMs, tMs)
-            hadMotion = true
             if (mag > peak) peak = mag
         }
         // Under the threshold for HEAD_HOLD_MS the turn is over: a stale peak must not outlive it (a walk lasts minutes).
@@ -72,7 +100,10 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
         // Only a head turn has a peak to decelerate from; never while walking.
         _decelerating.value = _state.value == MotionState.HEAD_MOVING && peak > 0f && mag < DECEL_FRACTION * peak
         if (_state.value != MotionState.HEAD_MOVING) peak = 0f
-        checkDwell(t)
+        if (_state.value == MotionState.WALKING) walked = true
+        val fired = detector.onGyro(mag, t, dt, _state.value == MotionState.STILL)
+        drainDetector()
+        if (fired) emitDwell(t)
     }
 
     @Synchronized fun onLinearAccel(x: Float, y: Float, z: Float, tMs: Long) {
@@ -80,9 +111,11 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
         accT.addLast(tMs); accAxes.addLast(floatArrayOf(x, y, z))
         while (accT.isNotEmpty() && tMs - accT.first() > WINDOW_MS) { accT.removeFirst(); accAxes.removeFirst() }
         analyseWindow(tMs)
-        if (_state.value == MotionState.WALKING || walking()) { stillSinceMs = maxOf(stillSinceMs, tMs); hadMotion = true }
         update(t)
-        checkDwell(gyroNewestMs)
+        if (_state.value == MotionState.WALKING) { walked = true; detector.onWalking(tMs) }
+        val fired = detector.onTime(gyroNewestMs, _state.value == MotionState.STILL)
+        drainDetector()
+        if (fired) emitDwell(gyroNewestMs)
     }
 
     /** [tMs] stamps an onset: the own time of the sample that caused it. The head-hold test always runs on gyro time. */
@@ -101,11 +134,27 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
         _state.value = next
     }
 
-    private fun checkDwell(tMs: Long) {
-        if (hadMotion && _state.value == MotionState.STILL && tMs - stillSinceMs >= DWELL_MS) {
-            hadMotion = false
-            _dwell.tryEmit(tMs); dwellListener?.invoke(tMs)
-        }
+    private fun emitDwell(tMs: Long) {
+        _dwell.tryEmit(tMs); dwellListener?.invoke(tMs)
+    }
+
+    private fun drainDetector() {
+        featGlances += detector.glances; hbGlances += detector.glances
+        featMicro += detector.micro; hbMicro += detector.micro
+        detector.glances = 0; detector.micro = 0
+    }
+
+    /** Net head turn (rad) since the last [markPose]: a look away and back cancels. */
+    @Synchronized fun rotationSinceMarkRad(): Float = sqrt(rx * rx + ry * ry + rz * rz)
+
+    @Synchronized fun walkedSinceMark(): Boolean = walked
+
+    @Synchronized fun markPose() { rx = 0f; ry = 0f; rz = 0f; walked = false }
+
+    /** Glances and micro bouts since the last call (the heartbeat). */
+    @Synchronized fun takeGlanceCounts(): GlanceCounts {
+        val c = GlanceCounts(hbGlances, hbMicro); hbGlances = 0; hbMicro = 0
+        return c
     }
 
     /** WALKING by the strict rule or by the provisional relaxed one (see [analyseWindow]). */
@@ -143,11 +192,23 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
     }
 
     /** What the classifier saw since the last call (gyro peak) and now (window variance, step frequency, state). */
-    class Features(val gyroMax: Float, val accVariance: Float, val stepHz: Double, val state: MotionState)
+    class Features(
+        val gyroMax: Float, val accVariance: Float, val stepHz: Double, val state: MotionState,
+        val gyroMean: Float = 0f, val gyroRms: Float = 0f, val aboveOnFrac: Float = 0f, val rotRad: Float = 0f,
+        val glances: Int = 0, val micro: Int = 0,
+    )
 
     @Synchronized fun features(): Features {
-        val f = Features(featGyroMax, lastVariance, lastHz, _state.value)
-        featGyroMax = 0f
+        val n = featN
+        val f = Features(
+            featGyroMax, lastVariance, lastHz, _state.value,
+            gyroMean = if (n > 0) featSum / n else 0f,
+            gyroRms = if (n > 0) sqrt(featSumSq / n) else 0f,
+            aboveOnFrac = if (n > 0) featAbove.toFloat() / n else 0f,
+            rotRad = featTravelled, glances = featGlances, micro = featMicro,
+        )
+        featGyroMax = 0f; featN = 0; featSum = 0f; featSumSq = 0f; featAbove = 0; featTravelled = 0f
+        featGlances = 0; featMicro = 0
         return f
     }
 
@@ -164,6 +225,7 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
         const val WINDOW_MS = 1000L
         const val MIN_SPAN_MS = 800L
         const val HEAD_HOLD_MS = 250L   // bridges the zero crossings inside one head turn
+        /** Legacy; see [GlanceParams.LEGACY]. */
         const val DWELL_MS = 1000L
         const val DECEL_FRACTION = 0.6f
     }

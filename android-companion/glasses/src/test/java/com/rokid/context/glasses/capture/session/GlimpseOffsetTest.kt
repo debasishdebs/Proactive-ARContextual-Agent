@@ -5,6 +5,7 @@ import com.rokid.context.core.model.HudSettings
 import com.rokid.context.glasses.capture.KeyframeOut
 import com.rokid.context.glasses.capture.keyframe.ImageHashes
 import com.rokid.context.glasses.capture.keyframe.KeyframeGate
+import com.rokid.context.glasses.capture.motion.GlanceParams
 import com.rokid.context.glasses.capture.motion.MotionClassifier
 import com.rokid.context.glasses.capture.motion.WearDetector
 import kotlinx.coroutines.delay
@@ -53,7 +54,7 @@ class GlimpseOffsetTest {
     ): Run {
         val sched = test.testScheduler
         val clock: () -> Long = { sched.currentTime }
-        val motion = MotionClassifier(clock)
+        val motion = MotionClassifier(clock, GlanceParams.LEGACY)
         val wear = WearDetector(clock)
         val gate = KeyframeGate(MemStore(), clock)
         val heat = HeatGuard({ HeatReading(0, Float.NaN, 30f) }, clock)

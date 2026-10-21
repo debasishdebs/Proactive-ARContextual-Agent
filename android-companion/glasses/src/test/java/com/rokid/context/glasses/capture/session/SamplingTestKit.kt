@@ -7,6 +7,7 @@ import com.rokid.context.glasses.capture.keyframe.GateStore
 import com.rokid.context.glasses.capture.keyframe.KeyframeGate
 import com.rokid.context.glasses.capture.keyframe.Nv21Frame
 import com.rokid.context.glasses.capture.keyframe.Thumb
+import com.rokid.context.glasses.capture.motion.GlanceParams
 import com.rokid.context.glasses.capture.motion.MotionClassifier
 import com.rokid.context.glasses.capture.motion.WearDetector
 import kotlinx.coroutines.CoroutineScope
@@ -134,10 +135,11 @@ class Rig(
     val encoder: KeyframeEncoder = TagEncoder(),
     var work: Int = 90, var rest: Int = 15,
     val workRest: WorkRest? = null,
+    val glance: GlanceParams = GlanceParams.LEGACY,
 ) {
     val sched = test.testScheduler
     val clock: () -> Long = { sched.currentTime }
-    val motion = MotionClassifier(clock)
+    val motion = MotionClassifier(clock, glance)
     val wear = WearDetector(clock)
     val store = MemStore()
     val gate = KeyframeGate(store, clock)
