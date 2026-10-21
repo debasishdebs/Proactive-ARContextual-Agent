@@ -228,6 +228,8 @@ fun DiagnosticsScreen(
     /** The Developer mode switch at the bottom: shows Settings > AI > Experiment canvas when on. */
     developerMode: Boolean = false,
     onDeveloperMode: (Boolean) -> Unit = {},
+    /** Debug builds with Developer mode on only (the caller passes null otherwise): the photo 256-vs-768 decision test. */
+    onOpenPhotoDimTest: (() -> Unit)? = null,
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState())) {
         ScreenHeader("Diagnostics", onBack)
@@ -280,6 +282,11 @@ fun DiagnosticsScreen(
                     Text("Shows Experiment canvas in Settings. Turning it off stops the canvas server.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                 }
                 Switch(checked = developerMode, onCheckedChange = onDeveloperMode, modifier = Modifier.testTag("developer_mode_switch"))
+            }
+            if (onOpenPhotoDimTest != null) {
+                androidx.compose.foundation.layout.Box(Modifier.testTag("photo_dim_row")) {
+                    ChipRow(Icons.Outlined.PhotoCamera, PcColors.ChipAmber, "Photo search dimension test (debug)", "Compare image search at 768 and 256 dimensions on your photos", onClick = onOpenPhotoDimTest)
+                }
             }
         }
     }

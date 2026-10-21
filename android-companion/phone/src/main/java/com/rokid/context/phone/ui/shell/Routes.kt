@@ -18,6 +18,8 @@ object Routes {
     const val SETTINGS_DIAGNOSTICS = "settings/diagnostics"
     const val DIAGNOSTICS_QUEUES = "settings/diagnostics/queues"
     const val DIAGNOSTICS_TRACKER = "settings/diagnostics/tracker"
+    /** Debug builds with Developer mode only (not in [LIVE_SETTINGS]; reached from Diagnostics). */
+    const val DIAGNOSTICS_PHOTO_DIM = "settings/diagnostics/photo-dim"
     const val SETTINGS_GLASSES = "settings/glasses"
     /** Settings > Rokid Glasses > Nearby devices (user decision 2026-10-15). */
     const val SETTINGS_NEARBY = "settings/glasses/nearby"
