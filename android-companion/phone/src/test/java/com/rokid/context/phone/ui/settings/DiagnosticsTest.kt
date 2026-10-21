@@ -95,4 +95,15 @@ class DiagnosticsTest {
         show(KeyframeRows(stats, promptCurrent = true))
         compose.onNodeWithText(KeyframeLines.PROMPT_OUT_OF_DATE).assertDoesNotExist()
     }
+
+    @Test fun outdatedClusterPromptWarningShown() {
+        show(KeyframeRows(stats, clusterPromptCurrent = false))
+        compose.onNodeWithText(KeyframeLines.CLUSTER_PROMPT_OUT_OF_DATE).assertExists()
+        compose.onNodeWithText(KeyframeLines.PROMPT_OUT_OF_DATE).assertDoesNotExist()
+    }
+
+    @Test fun currentClusterPromptShowsNoWarning() {
+        show(KeyframeRows(stats))
+        compose.onNodeWithText(KeyframeLines.CLUSTER_PROMPT_OUT_OF_DATE).assertDoesNotExist()
+    }
 }

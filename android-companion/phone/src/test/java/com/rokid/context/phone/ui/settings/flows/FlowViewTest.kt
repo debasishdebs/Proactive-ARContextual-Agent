@@ -213,7 +213,7 @@ class FlowViewTest {
         val all = AgentFlowSummaries.summaries()
         assertEquals(listOf("capture", "ask", "nudge"), all.map { it.id })
         val byId = all.associateBy { it.id }
-        assertEquals(7, byId.getValue("capture").aiSteps)
+        assertEquals(8, byId.getValue("capture").aiSteps)
         assertEquals(listOf(Role.VISION_EXTRACT, Role.CRITIC, Role.SUMMARIZE, Role.EMBED, Role.EXPLICIT_REMEMBER), byId.getValue("capture").roles)
         assertEquals(2, byId.getValue("ask").aiSteps)
         assertEquals(listOf(Role.EMBED, Role.ANSWER), byId.getValue("ask").roles)

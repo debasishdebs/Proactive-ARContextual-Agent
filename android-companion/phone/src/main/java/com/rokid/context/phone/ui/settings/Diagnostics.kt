@@ -85,6 +85,8 @@ interface KeyframeDiagnostics {
     suspend fun sidecarLost(): Int
     /** False when the stored VISION_EXTRACT prompt still has the facts-only schema. */
     suspend fun promptIsCurrent(): Boolean
+    /** False when the stored CLUSTER_SUMMARY prompt lacks `cluster_id` / `source_frame_ids` (then one cluster per call). */
+    suspend fun clusterPromptIsCurrent(): Boolean = true
     /** Puts every FAILED_FINAL frame back to PENDING; returns how many. */
     suspend fun retryAllFinal(): Int
 
@@ -103,6 +105,7 @@ data class KeyframeRows(
     val droppedNudges: Map<String, Int> = emptyMap(),
     val sidecarLost: Int = 0,
     val promptCurrent: Boolean = true,
+    val clusterPromptCurrent: Boolean = true,
 )
 
 data class DiagnosticsUiState(val busy: Boolean = false, val message: String? = null)
@@ -130,7 +133,7 @@ class DiagnosticsViewModel(
     private fun refreshKeyframes() {
         viewModelScope.launch {
             val loaded = try {
-                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), promptCurrent = keyframes.promptIsCurrent()) }
+                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent()) }
             } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.i(TAG, "keyframe extras failed (${e.javaClass.simpleName})"); return@launch }
             extras.value = loaded
         }
@@ -235,6 +238,9 @@ fun DiagnosticsScreen(
                 if (!keyframes.promptCurrent) {
                     ChipRow(Icons.Outlined.WarningAmber, PcColors.ChipAmber, KeyframeLines.PROMPT_OUT_OF_DATE, "Open Settings > Prompts", onClick = onOpenPrompts)
                 }
+                if (!keyframes.clusterPromptCurrent) {
+                    ChipRow(Icons.Outlined.WarningAmber, PcColors.ChipAmber, KeyframeLines.CLUSTER_PROMPT_OUT_OF_DATE, "Open Settings > Prompts", onClick = onOpenPrompts)
+                }
                 ChipRow(
                     Icons.Outlined.Replay, PcColors.ChipSky, "Retry all", "Photos that failed for good: ${keyframes.stats.counts["FAILED_FINAL"] ?: 0}",
                     onClick = onRetryAll, enabled = !state.busy && (keyframes.stats.counts["FAILED_FINAL"] ?: 0) > 0,
@@ -271,6 +277,7 @@ fun DiagnosticsScreen(
 
 /** The count-only text lines of the Keyframes block. */
 object KeyframeLines {
+    const val CLUSTER_PROMPT_OUT_OF_DATE = "Scene summary prompt is out of date \u2014 reset to default"
     const val PROMPT_OUT_OF_DATE = "VISION_EXTRACT prompt is out of date \u2014 reset to default"
     class Line(val tag: String, val text: String)
 

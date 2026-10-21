@@ -168,6 +168,8 @@ private class AppKeyframeDiagnostics(private val app: Context) : KeyframeDiagnos
     override suspend fun sidecarLost() = com.rokid.context.data.runtime.PipelineStatsStore.sidecarLost(app)
     override suspend fun promptIsCurrent() =
         com.rokid.context.orchestration.ExtractSave.promptIsCurrent(AiGraph.get(app).runner.activeSchema(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT))
+    override suspend fun clusterPromptIsCurrent() =
+        com.rokid.context.ai.contract.ClusterContract.promptIsCurrent(AiGraph.get(app).runner.activeSchema(com.rokid.context.ai.contract.PromptKey.CLUSTER_SUMMARY))
     override suspend fun retryAllFinal() = MemoryGraph.get(app).db.frameStateDao().retryAllFinal(System.currentTimeMillis())
 }
 

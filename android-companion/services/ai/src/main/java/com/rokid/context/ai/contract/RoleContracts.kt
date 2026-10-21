@@ -33,6 +33,18 @@ object RoleContracts {
                 (o["captions"] as? JsonArray).orEmpty().map { c -> c.jsonObject.let { FrameCaption(str(it, "frame_id"), str(it, "caption")) } },
                 provenance = o["captions"] is JsonArray,
             )
+            // Lenient on purpose, like VISION_EXTRACT: an edited prompt may drop cluster_id, source_frame_ids or captions (ClusterContract copes).
+            PromptKey.CLUSTER_SUMMARY -> ClusterOutput(
+                o.getValue("clusters").jsonArray.map { c ->
+                    val co = c.jsonObject
+                    ClusterResult(opt(co, "cluster_id").orEmpty(), str(co, "summary"), (co["facts"] as? JsonArray).orEmpty().map { f ->
+                        val fo = f.jsonObject
+                        Fact(str(fo, "text"), str(fo, "type"), fo.getValue("confidence").let { (it as JsonPrimitive).double }, strings(fo, "tags"), strings(fo, "source_frame_ids"))
+                    })
+                },
+                (o["captions"] as? JsonArray).orEmpty().map { c -> c.jsonObject.let { FrameCaption(str(it, "frame_id"), str(it, "caption")) } },
+                extras(o, "clusters", "captions"),
+            )
             PromptKey.EXPLICIT_REMEMBER -> ExtractOutput(
                 o.getValue("facts").jsonArray.map { f ->
                     val fo = f.jsonObject
@@ -65,6 +77,20 @@ object RoleContracts {
                     if (f.confidence !in 0.0..1.0) add("facts[$i].confidence must be 0–1")
                 }
                 if (output.provenance) addAll(provenance(output, ctx.inputIds))
+            }
+            is ClusterOutput -> {
+                output.clusters.forEachIndexed { i, c ->
+                    if (c.summary.isBlank()) add("clusters[$i].summary is empty")
+                    if (c.clusterId.isNotEmpty() && c.clusterId !in ctx.inputIds) add("clusters[$i].cluster_id was not sent")
+                    c.facts.forEachIndexed { j, f ->
+                        if (f.text.isBlank()) add("clusters[$i].facts[$j].text is empty")
+                        if (f.confidence !in 0.0..1.0) add("clusters[$i].facts[$j].confidence must be 0–1")
+                        f.sourceFrameIds.filterNot { it in ctx.inputIds }.takeIf { it.isNotEmpty() }
+                            ?.let { add("clusters[$i].facts[$j].source_frame_ids not among the sent photos: ${it.take(3).joinToString(", ")}") }
+                    }
+                }
+                output.captions.filterNot { it.frameId in ctx.inputIds }.takeIf { it.isNotEmpty() }
+                    ?.let { add("captions for photos that were not sent: ${it.take(3).joinToString(", ") { c -> c.frameId }}") }
             }
             is SummaryOutput -> if (output.confidence !in 0.0..1.0) add("confidence must be 0–1")
             is CriticOutput -> Unit
