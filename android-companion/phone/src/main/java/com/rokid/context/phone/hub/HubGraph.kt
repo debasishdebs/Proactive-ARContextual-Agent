@@ -108,12 +108,14 @@ object HubGraph {
             committed = { wireId -> MemoryGraph.get(app).db.frameMetaDao().byWireId(wireId) != null },
         ) { onFrameStored(app) }
         val link = CxrGlassesLink(app, scope, probe = com.rokid.context.BuildConfig.DEBUG)
+        val phoneUse = PhoneUseSignal().also { it.start(app) }
         return Hub(
             scope, link, pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
             actions = PhoneActions.hubPort(app) { settings.read() }, nudges = PhoneNudges.hubPort(app) { settings.read() },
             reopenGuards = AndroidRelaunchGuards(app, { link.wearing.value }), reopenEnabled = { KeepRunningNearby.of(app).enabled() },
             standDown = PrefsStandDown(app.getSharedPreferences(PrefsStandDown.PREFS, Context.MODE_PRIVATE)),
+            phoneUse = phoneUse.inUse,
         )
     }
 }

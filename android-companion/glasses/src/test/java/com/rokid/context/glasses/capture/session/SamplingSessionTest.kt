@@ -125,6 +125,24 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
+    @Test fun phoneInUseBlocksOnlyWithThePauseSetting() = runTest {
+        val r = rig(this, HudSettings(captureMode = CaptureMode.SMART, pauseWhenPhoneInUse = true))
+        r.startSensors()
+        r.gyroMag = 2f
+        r.session.start()
+        delay(2_000)
+        assertTrue(r.camera.isOpen)
+        r.phoneInUse = true
+        delay(1_000)
+        assertFalse(r.camera.isOpen)
+        assertEquals("phone_in_use", r.session.status.value.reason)
+        r.settings = r.settings.copy(pauseWhenPhoneInUse = false)
+        delay(1_000)
+        assertTrue(r.camera.isOpen)
+        assertNull(r.session.status.value.reason)
+        r.session.stop("test")
+    }
+
     @Test fun onsetInBurstModeForcesOneBriefCheck() = runTest {
         val r = rig(this, HudSettings(captureMode = CaptureMode.SMART, quickLookMs = 3000))
         r.session.start()

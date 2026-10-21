@@ -7,6 +7,7 @@ import com.rokid.context.core.model.Channels
 import com.rokid.context.core.model.Command
 import com.rokid.context.core.model.AutoOpen
 import com.rokid.context.core.model.UserExit
+import com.rokid.context.core.model.PhoneContextMessage
 import com.rokid.context.core.model.WearMessage
 import com.rokid.context.core.model.CommandEnvelope
 import com.rokid.context.core.model.Decoded
@@ -68,6 +69,8 @@ class HudController(
     @Volatile var onSessionOpened: () -> Unit = {}
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
     @Volatile var onWear: (Boolean?) -> Unit = {}
+    /** `pc_phone_ctx`: whether the phone is in use (screen on, unlocked); null = the session closed (unknown again). */
+    @Volatile var onPhoneUse: (Boolean?) -> Unit = {}
     /** `pc_auto_open` (fix wave I): the phone reopened the app by itself; a launcher-looking start of the last seconds was really that. */
     @Volatile var onAutoOpen: () -> Unit = {}
     /**
@@ -82,9 +85,15 @@ class HudController(
         bridge.subscribe(Channels.FRAME_ACK) { onAck(it) }
         bridge.subscribe(Channels.HELLO_REQUEST) { onHelloRequest(it) }
         bridge.subscribe(Channels.WEAR) { text -> (Wire.decode<WearMessage>(text) as? Decoded.Ok)?.value?.let(::onWearMessage) }
+        bridge.subscribe(Channels.PHONE_CONTEXT) { text -> (Wire.decode<PhoneContextMessage>(text) as? Decoded.Ok)?.value?.let(::onPhoneContextMessage) }
         bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { Log.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
         bridge.setConnectionListener(connected = { Log.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
         scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }
+    }
+
+    private fun onPhoneContextMessage(m: PhoneContextMessage) {
+        if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_phone_ctx ignored"); return }
+        onPhoneUse(m.inUse)
     }
 
     /** Fix wave I1: a wear value the phone saw before its current session began is stale (a reconnect must never resurrect it). */
@@ -158,7 +167,7 @@ class HudController(
 
     private fun closeSession(why: String) {
         liveness.onTransportDisconnected()
-        if (_sessionOpen.compareAndSet(true, false)) { Log.i(TAG, "session closed: $why"); onWear(null) }
+        if (_sessionOpen.compareAndSet(true, false)) { Log.i(TAG, "session closed: $why"); onWear(null); onPhoneUse(null) }
         refreshConnection()
     }
 
