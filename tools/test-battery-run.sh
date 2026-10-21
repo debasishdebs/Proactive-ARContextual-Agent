@@ -18,5 +18,6 @@ expect "tier=T0:2,T1:1"
 expect "reason=parked:1,sampling:2"
 expect "sensors=full:2,low:1"
 if grep -q logcat "$HERE/battery-run.sh"; then echo "FAIL: battery-run.sh mentions logcat"; fail=1; fi
+if ! grep -q "AssistServer" "$HERE/battery-run.sh"; then echo "FAIL: battery-run.sh deny-list lacks AssistServer"; fail=1; fi
 [ $fail -eq 0 ] && echo "PASS"
 exit $fail

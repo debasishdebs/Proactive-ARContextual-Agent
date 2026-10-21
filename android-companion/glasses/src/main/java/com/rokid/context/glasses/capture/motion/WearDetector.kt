@@ -37,6 +37,9 @@ class WearDetector(@Suppress("UNUSED_PARAMETER") clock: () -> Long = { 0L }) {
         }
     }
 
+    /** Forget a still run carried over from before a session restart (an unbroken run must be seen by this session). */
+    fun resetStillRun() { stillSinceMs = -1L; _parked.value = false }
+
     fun verdictLine(): String = "wear=${_worn.value} known=$known parked=${_parked.value}"
 
     fun onRemote(worn: Boolean) { known = true; _worn.value = worn }
