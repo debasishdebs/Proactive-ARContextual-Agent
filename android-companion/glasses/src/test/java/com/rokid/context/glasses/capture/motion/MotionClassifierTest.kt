@@ -177,7 +177,7 @@ class MotionClassifierTest {
     @Test fun featureLoggerWritesOneCountOnlyLinePerTick() {
         walk(0, 2000, 2.0, 2.0f)
         val lines = mutableListOf<String>()
-        val l = FeatureLogger(c) { lines += it }
+        val l = FeatureLogger(c, { lines += it }, verbose = true)
         l.tick(); l.tick()
         assertEquals(2, lines.size)
         assertTrue(Regex("""features gyroMax=\d+\.\d+ accVar=\d+\.\d+ stepHz=\d+\.\d+ state=WALKING""").matches(lines[0]), lines[0])

@@ -12,7 +12,9 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import com.rokid.context.glasses.capture.diag.DiagFlags
 import com.rokid.context.glasses.capture.diag.DiagLog
+import com.rokid.context.glasses.capture.diag.StatusLogThrottle
 import androidx.camera.core.ImageProxy
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
@@ -96,7 +98,7 @@ class CaptureService : LifecycleService() {
     /** Three failed binds: Fixed 30 s, until the mode setting changes, the service restarts or the watchdog retries Smart (5 min). */
     private val degradedLatch = DegradedLatch(SystemClock::elapsedRealtime, DEGRADED_RETRY_MS)
     private val degraded: Boolean get() = degradedLatch.tripped
-    private var lastLogged = ""
+    private val statusThrottle = StatusLogThrottle()
     private var fixedSeq = 0L
     @Volatile private var lastStartId = 0
     @Volatile private var keepAliveMode = false
@@ -208,7 +210,9 @@ class CaptureService : LifecycleService() {
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default,
         )
-        val feed = AndroidSensorFeed(this).also { it.start(motion, wear) }
+        val verbose = DiagFlags.verboseFeatures(filesDir)
+        DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
+        val feed = AndroidSensorFeed(this, verbose).also { it.start(motion, wear) }
         val sm = Smart(session, feed, motion)
         smart = sm
         // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
@@ -280,7 +284,8 @@ class CaptureService : LifecycleService() {
                 restartGapSec = runtime.restarts.lastGapSec,
             ).format())
         }
-        if (line != lastLogged || tick % 60 == 0) { lastLogged = line; DiagLog.i(TAG, line) }
+        val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"
+        if (statusThrottle.shouldLog(key, line, tick, force = tick % 60 == 0)) DiagLog.i(TAG, line)
     }
 
     /** The raw reading, headroom NaN included: Diagnostics must show that this HAL gives none. */

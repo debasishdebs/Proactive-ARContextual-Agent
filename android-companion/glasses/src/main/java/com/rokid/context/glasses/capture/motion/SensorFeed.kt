@@ -51,8 +51,11 @@ private class ManagerRegistry(private val sm: SensorManager) : SensorRegistry {
 class AndroidSensorFeed internal constructor(
     private val sm: SensorRegistry,
     private val now: () -> Long = SystemClock::elapsedRealtime,
+    private val verboseFeatures: Boolean = false,
 ) : SensorFeed {
-    constructor(context: Context) : this(ManagerRegistry(context.getSystemService(Context.SENSOR_SERVICE) as SensorManager))
+    constructor(context: Context, verboseFeatures: Boolean = false) : this(
+        ManagerRegistry(context.getSystemService(Context.SENSOR_SERVICE) as SensorManager), verboseFeatures = verboseFeatures,
+    )
 
     private var thread: HandlerThread? = null
     private var listener: SensorEventListener? = null
@@ -110,7 +113,7 @@ class AndroidSensorFeed internal constructor(
             w.onProximity(true)
         }
         var ticks = 0
-        val features = FeatureLogger(c) { DiagLog.i(TAG, it) } // K3: one count-only line a second for tuning
+        val features = FeatureLogger(c, { DiagLog.i(TAG, it) }, now, verboseFeatures) // K3: count-only tuning line, throttled in wave A2
         val t = object : Runnable {
             override fun run() {
                 w.tick()
