@@ -48,11 +48,15 @@ abstract class ForgetDao {
     @Query("SELECT frameId FROM forget_tombstone") abstract suspend fun allTombstones(): List<String>
 
     // --- FrameSweep (final review I2): set-based, so a pass costs the same however many tombstones there are -------
-    /** Paths of tombstoned frames whose row is kept but that no memory points at any more (their JPEG may go). */
+    /**
+     * Paths of tombstoned frames whose row is kept but that no memory points at any more (their JPEG may go). A wave-1+ keyframe (a
+     * `frame_meta` row) never qualifies: it is deleted only by the photo rules (`expirePhotos`) or an explicit Forget / Delete all.
+     */
     @Query(
         "SELECT f.path FROM forget_tombstone t JOIN frame f ON f.id = t.frameId " +
             "WHERE f.path != '' AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = t.frameId) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = t.frameId)",
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = t.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_meta fm WHERE fm.frameId = t.frameId)",
     )
     abstract suspend fun orphanTombstonedFramePaths(): List<String>
 
@@ -129,7 +133,8 @@ abstract class ForgetDao {
      */
     @Query(
         "UPDATE frame_state SET state = 'NEAR_DUP', lastError = 'caption_expired', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
-            "WHERE state = 'CAPTION_QUEUED' AND frameId IN (SELECT frameId FROM frame_meta) AND MAX(updatedAt, :since) + :ageMs <= :nowMs",
+            "WHERE state = 'CAPTION_QUEUED' AND MAX(updatedAt, :since) + :ageMs <= :nowMs " +
+            "AND frameId IN (SELECT m.frameId FROM frame_meta m WHERE NOT EXISTS (SELECT 1 FROM frame_cluster c WHERE c.clusterId = m.clusterId AND c.state NOT IN ('SUMMARIZED','FAILED_FINAL')))",
     )
     abstract suspend fun expireCaptionQueued(since: Long, ageMs: Long, nowMs: Long): Int
 
