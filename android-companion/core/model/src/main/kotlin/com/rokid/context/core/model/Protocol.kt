@@ -294,6 +294,10 @@ data class Hello(
     val rokidCloses: Int = 0,
     /** Fix wave H4, additive: seconds between the last heartbeat and the latest restart after such a stop. */
     val lastRestartGapSec: Int? = null,
+    /** Wave 3, additive (counts only): force-stops whose caller could not be verified (not counted in [rokidCloses]). */
+    val unverifiedCloses: Int = 0,
+    /** Wave 3, additive (counts only): force-stops by a verified non-Rokid caller (Settings, adb). */
+    val otherCloses: Int = 0,
     /** Fix wave I, additive: glasses clock of the wearer's last deliberate exit (the third double-tap); repeats a `pc_user_exit` that may have been lost. */
     val userExitAtMs: Long? = null,
     /** Fix wave I, additive: the app went to icon mode but "display over other apps" is off, so no icon shows (capture runs unseen). */

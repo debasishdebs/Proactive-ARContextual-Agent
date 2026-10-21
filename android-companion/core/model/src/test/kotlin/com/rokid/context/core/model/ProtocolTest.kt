@@ -79,6 +79,22 @@ class ProtocolTest {
         assertEquals(Decoded.Ok(h), Wire.decode<Hello>(Wire.encode(h)))
     }
 
+    /** Wave 3: the unverified and other force-stop counts are additive on the hello. */
+    @Test fun helloUnverifiedAndOtherClosesAreAdditive() {
+        val old = """{"v":$PROTOCOL_VERSION,"glassesBatteryPct":80,"bufferSize":0,"glassesNowMs":5,"pauses":[]}"""
+        val d = assertIs<Decoded.Ok<Hello>>(Wire.decode<Hello>(old)).value
+        assertEquals(0, d.unverifiedCloses); assertEquals(0, d.otherCloses)
+        val h = Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = 5, pauses = emptyList(), rokidCloses = 3, unverifiedCloses = 2, otherCloses = 4)
+        assertEquals(Decoded.Ok(h), Wire.decode<Hello>(Wire.encode(h)))
+    }
+
+    @Test fun closesSummaryWording() {
+        assertEquals(null, closesSummary(0, null, 0, 0))
+        assertEquals("Rokid closed the app 1 time (last gap 38s)", closesSummary(1, 38, 0, 0))
+        assertEquals("Rokid closed the app 5 times (last gap 38s; 2 unverified; 1 other force-stop)", closesSummary(5, 38, 2, 1))
+        assertEquals("Rokid closed the app 0 times (3 other force-stops)", closesSummary(0, null, 0, 3))
+    }
+
     /** Fix wave I: the exit stamp, icon-blocked flag, wear session start and `pc_auto_open` are additive. */
     @Test fun waveIFieldsAreAdditive() {
         val old = """{"v":$PROTOCOL_VERSION,"glassesBatteryPct":80,"bufferSize":0,"glassesNowMs":5,"pauses":[]}"""

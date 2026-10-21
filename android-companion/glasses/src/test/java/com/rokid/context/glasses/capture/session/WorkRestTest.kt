@@ -4,6 +4,11 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import org.junit.runner.RunWith
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.core.app.ApplicationProvider
+import android.content.Context
 
 class WorkRestTest {
     private val min = 60_000L
@@ -118,5 +123,126 @@ class WorkRestTest {
         on = true
         now += min; d.onSampling()
         assertNull(d.resting.value, "the work clock restarted")
+    }
+
+    private class FakeStore : WorkRestStore {
+        var snap: WorkRestSnapshot? = null
+        var saves = 0
+        var clears = 0
+        override fun load() = snap
+        override fun save(s: WorkRestSnapshot) { snap = s; saves++ }
+        override fun clear() { snap = null; clears++ }
+    }
+
+    private fun persisted(store: WorkRestStore, boot: () -> Int = { 7 }, on: () -> Boolean = { true }) =
+        WorkRest({ now }, { work }, { rest }, enabled = on, store = store, bootCount = boot)
+
+    @Test fun killDuringRestResumesRest() {
+        val store = FakeStore()
+        val a = persisted(store)
+        repeat(46) { a.onSampling(); now += min }
+        val until = a.resting.value!!
+        now += 2 * min
+        val b = persisted(store) // process death: a fresh instance, same clock and store
+        b.onPaused()
+        assertEquals(until, b.resting.value)
+    }
+
+    @Test fun killDuringWorkKeepsWorkStart() {
+        val store = FakeStore()
+        val a = persisted(store)
+        repeat(30) { a.onSampling(); now += min }
+        now += 1 * min // a short gap, less than R
+        val b = persisted(store)
+        b.onSampling()
+        now += 13 * min; b.onSampling()
+        assertNull(b.resting.value)
+        now += 1 * min; b.onSampling() // 45 min since the first tick
+        assertNotNull(b.resting.value)
+    }
+
+    @Test fun rebootDiscardsState() {
+        val store = FakeStore()
+        val a = persisted(store, boot = { -1 })
+        repeat(46) { a.onSampling(); now += min }
+        assertNotNull(a.resting.value)
+        now = 0 // uptime restarted below savedAt
+        val b = persisted(store, boot = { -1 })
+        b.onPaused()
+        assertNull(b.resting.value)
+        assertEquals(null, store.snap?.restUntilMs, "the stale rest is not carried over")
+    }
+
+    @Test fun rebootWithLongerUptimeDiscards() {
+        val store = FakeStore()
+        val a = persisted(store, boot = { 7 })
+        repeat(46) { a.onSampling(); now += min }
+        assertNotNull(a.resting.value)
+        now += 600 * min // the new boot's uptime is already past savedAt
+        val b = persisted(store, boot = { 8 })
+        b.onPaused()
+        assertNull(b.resting.value)
+    }
+
+    @Test fun unknownBootCountFallsBackToUptime() {
+        val store = FakeStore()
+        val a = persisted(store, boot = { -1 })
+        repeat(46) { a.onSampling(); now += min }
+        val until = a.resting.value!!
+        val b = persisted(store, boot = { 7 }) // either count unknown: only the uptime test applies, which passes
+        b.onPaused()
+        assertEquals(until, b.resting.value)
+    }
+
+    @Test fun savedKnownCurrentUnknownFallsBackToUptime() {
+        val store = FakeStore()
+        val a = persisted(store, boot = { 7 })
+        repeat(46) { a.onSampling(); now += min }
+        val until = a.resting.value!!
+        assertEquals(until, persisted(store, boot = { -1 }).also { it.onPaused() }.resting.value, "uptime still ahead of savedAt: kept")
+        now = 0 // uptime restarted
+        val b = persisted(store, boot = { -1 }); b.onPaused()
+        assertNull(b.resting.value, "saved=7 / current=-1 and savedAt > now: discarded")
+    }
+
+    @Test fun sameBootCountButUptimeWentBackDiscards() {
+        val store = FakeStore()
+        val a = persisted(store, boot = { 7 })
+        repeat(46) { a.onSampling(); now += min }
+        assertNotNull(a.resting.value)
+        now = 0 // BOOT_COUNT read before the system incremented it: same count, smaller uptime
+        val b = persisted(store, boot = { 7 }); b.onPaused()
+        assertNull(b.resting.value)
+    }
+
+    @Test fun noWritePerTick() {
+        val store = FakeStore()
+        val a = persisted(store)
+        repeat(600) { a.onSampling(); now += 10_000L }
+        assertTrue(store.saves <= 3, "saves=${store.saves}")
+    }
+
+    @Test fun disabledClearsStore() {
+        val store = FakeStore()
+        store.snap = WorkRestSnapshot(0, null, null, 0, 7)
+        var on = false
+        val d = persisted(store, on = { on })
+        repeat(5) { d.onSampling(); now += min }
+        assertEquals(1, store.clears)
+        assertEquals(0, store.saves)
+        assertNull(store.snap)
+    }
+}
+
+@RunWith(AndroidJUnit4::class)
+class PrefsWorkRestStoreTest {
+    @Test fun prefsStoreRoundTrip() {
+        val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("work_rest_test", Context.MODE_PRIVATE)
+        val store = PrefsWorkRestStore(prefs)
+        assertNull(store.load())
+        store.save(WorkRestSnapshot(1L, null, 3L, 4L, 9))
+        assertEquals(WorkRestSnapshot(1L, null, 3L, 4L, 9), store.load())
+        store.clear()
+        assertNull(store.load())
     }
 }

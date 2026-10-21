@@ -75,4 +75,20 @@ class HeartbeatTest {
         val s = hb().copy(ctx = "REST", ctxAgeS = 42, ctxApplied = "UNKNOWN", ctxVeto = 3).format()
         assertTrue(s, s.endsWith(" nudgeOff=1 ctx=REST ctxAgeS=42 ctxApplied=UNKNOWN ctxVeto=3"))
     }
+
+    /** A19: no sampling session means the sensors are off, not "full". */
+    @Test fun sensorsOffWithoutSession() {
+        assertEquals("off", Heartbeat.sensorsLabel(hasSession = false, rate = "low"))
+        assertEquals("low", Heartbeat.sensorsLabel(hasSession = true, rate = "low"))
+        assertEquals("full", Heartbeat.sensorsLabel(hasSession = true, rate = null))
+    }
+
+    /** A20: a throw while building the heartbeat is logged by class name only and returns null, so the caller still publishes. */
+    @Test fun heartbeatThrowStillPublishesStatus() {
+        val logs = ArrayList<String>()
+        assertEquals(null, Heartbeat.guarded({ logs += it }) { throw IllegalStateException("secret text here") })
+        assertEquals(listOf("heartbeat failed: IllegalStateException"), logs)
+        assertEquals("ok", Heartbeat.guarded({ logs += it }) { "ok" })
+        assertEquals(1, logs.size)
+    }
 }
