@@ -5,6 +5,7 @@ import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.MotionState
 import com.rokid.context.glasses.capture.keyframe.ImageHashes
+import com.rokid.context.glasses.capture.motion.GlanceParams
 import com.rokid.context.glasses.capture.keyframe.Nv21Frame
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -238,13 +239,13 @@ class SamplingSessionTest {
         r.session.start()
         for (s in 1..3) { r.scene = s; while (r.scenesKept.size < s) delay(250) } // three settled scenes, one brief check each (a still scene backs the checks off)
         assertEquals(listOf(1, 2, 3), r.scenesKept)
-        // look back at scene 1: not new against the last five, so only a dwell can save it
+        // turn to a new scene 4: the dwell right after the head settles keeps it (a look back at a ring scene is a duplicate since A3)
         val turnAt = r.clock()
-        r.gyroMag = 3f; r.scene = 1
+        r.gyroMag = 3f; r.scene = 4
         delay(100); r.gyroMag = 0f
         delay(2_000)
         val (at, last) = r.keyframes.last()
-        assertEquals(1, Scenes.sceneOf(last.jpeg)); assertTrue(last.dwell)
+        assertEquals(4, Scenes.sceneOf(last.jpeg)); assertTrue(last.dwell)
         assertTrue(at - turnAt in 1_000..1_400, "dwell keyframe right after 1.0 s still, was ${at - turnAt}")
         assertEquals(4, r.keyframes.size)
         r.session.stop("test")
@@ -642,5 +643,105 @@ class SamplingSessionTest {
         delay(61_000 + 61_000)
         assertTrue(ran.contains("rest:fixed:camera=false"), "$ran")
         rest.session.stop("test")
+    }
+
+    // ---- battery wave A3 task 3: novelty gate and keep cap with the DEFAULT glance parameters ----
+
+    private fun glanceRig(t: TestScope, configure: Rig.() -> Unit = {}) =
+        Rig(t, HudSettings(captureMode = CaptureMode.SMART), glance = GlanceParams())
+            .apply { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }.apply(configure)
+
+    /** Gyro at 50 Hz for [ms]: rotation [z] rad/s about the vertical axis (0 = still). Feeds the classifier directly. */
+    private suspend fun Rig.gyro(ms: Long, z: Float) {
+        val end = clock() + ms
+        while (clock() < end) { motion.onGyro(0f, 0f, z, clock()); delay(20) }
+    }
+
+    /** Dwell-triggered opens since the last snapshot. */
+    private fun dwellOpens(d: DiagStats) = d.wakes["dwell"] ?: 0
+
+    @Test fun glanceWithoutHeadTurnSoonAfterAKeepDoesNotOpen() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        r.gyro(5_000, 0f)               // the start-up keep, then 5 s of stillness
+        r.session.diagSnapshot()
+        r.gyro(300, 1f); r.gyro(300, -1f) // a real look away and straight back: net rotation about 0
+        r.gyro(3_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, d.glances); assertEquals(1, d.novelSkips); assertEquals(0, dwellOpens(d), "no open for the glance, wakes=${d.wakes}")
+        r.session.stop("test")
+    }
+
+    @Test fun glanceAfterTwentyOneSecondsOpens() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        r.gyro(21_500, 0f)              // the keep was at about 0.6 s: 21 s ago when the look starts
+        r.session.diagSnapshot()
+        r.gyro(300, 1f); r.gyro(300, -1f)
+        r.gyro(3_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, d.glances); assertEquals(0, d.novelSkips); assertEquals(1, dwellOpens(d), "wakes=${d.wakes}")
+        r.session.stop("test")
+    }
+
+    @Test fun glanceWithSeventeenDegreeTurnOpens() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        r.gyro(5_000, 0f)
+        r.session.diagSnapshot()
+        r.gyro(400, 1f)                 // 0.4 rad net (23 deg)
+        r.gyro(3_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, d.glances); assertEquals(0, d.novelSkips); assertEquals(1, dwellOpens(d), "wakes=${d.wakes}")
+        r.session.stop("test")
+    }
+
+    @Test fun microMotionNeverOpensAndIsCounted() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        r.gyro(25_000, 0f)
+        r.session.diagSnapshot()
+        r.gyro(60, 1.5f)                // a jerk: 60 ms
+        r.gyro(4_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(0, d.glances); assertEquals(1, d.micro); assertEquals(0, d.novelSkips); assertEquals(0, dwellOpens(d))
+        r.session.stop("test")
+    }
+
+    @Test fun overCapGlanceIsDroppedBeforeOpening() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        for (s in 1..4) { r.scene = s; while (r.scenesKept.size < s) r.gyro(250, 0f) } // four keeps, one scene change each
+        assertTrue(r.clock() < 55_000, "four keeps inside a minute, at ${r.clock()}")
+        r.gyro(2_000, 0f)
+        r.session.diagSnapshot()
+        r.gyro(500, 1f)                 // 0.5 rad: novel enough (>= 0.30), under the 0.8 big turn
+        r.gyro(3_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, d.glances); assertTrue(d.capped >= 1, "capped=${d.capped}"); assertEquals(0, dwellOpens(d), "wakes=${d.wakes}")
+        r.gyro(1_000, 1f)               // 1.0 rad more: the net turn since the last keep is now past 0.8
+        r.gyro(3_000, 0f)
+        val e = r.session.diagSnapshot()
+        assertEquals(1, dwellOpens(e), "a big turn opens, wakes=${e.wakes}")
+        r.session.stop("test")
+    }
+
+    @Test fun walkedGlanceOpensEvenInsideTheNoveltyWindow() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        r.gyro(3_000, 0f)
+        r.session.diagSnapshot()
+        // a 3 s walk (2 Hz stride on the accelerometer), then 6 s of stillness on both sensors: the arrival glance is novel by the walk
+        val start = r.clock()
+        while (r.clock() < start + 9_000) {
+            val t = r.clock()
+            r.motion.onGyro(0f, 0f, 0f, t)
+            val stride = if (t < start + 3_000) 2.0f * kotlin.math.sin(2 * Math.PI * 2.0 * t / 1000.0).toFloat() else 0f
+            r.motion.onLinearAccel(0f, stride, 0f, t)
+            delay(20)
+        }
+        val d = r.session.diagSnapshot()
+        assertEquals(0, d.novelSkips, "walked: not a novelty skip"); assertTrue(dwellOpens(d) >= 1, "wakes=${d.wakes} glances=${d.glances} micro=${d.micro} capped=${d.capped}")
+        r.session.stop("test")
     }
 }

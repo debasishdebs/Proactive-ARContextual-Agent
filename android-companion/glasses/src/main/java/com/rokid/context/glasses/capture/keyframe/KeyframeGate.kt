@@ -12,7 +12,7 @@ class Candidate(val seq: Long, val thumb: Thumb, val pixels: Nv21Frame)
 sealed interface GateResult {
     /** [candidate] is the winner: G3 encodes its pixels, never a later frame. */
     data class Keep(val candidate: Candidate, val dhash: Long, val phash: Long, val blur: Float, val dwell: Boolean, val motion: MotionState = MotionState.STILL) : GateResult
-    /** [reason] is BLUR | DUPLICATE | THROTTLED | WINDOW. */
+    /** [reason] is BLUR | DUPLICATE | THROTTLED | WINDOW | CAPPED. */
     data class Skip(val reason: String) : GateResult
 }
 
@@ -51,7 +51,9 @@ class PrefsGateStore(private val prefs: SharedPreferences) : GateStore {
  * Keyframe test (spec section P1.1): a sample is NEW when min(Hamming dHash, Hamming pHash) > [HAMMING] against each of the
  * last 5 keyframes. A new scene may follow the previous keyframe after 0.5 s, anything else after 1.2 s. While moving,
  * samples are collected in windows of up to 1.5 s (at most 3 kept, losers released at once) and the sharpest wins.
- * A dwell sample compares to the last keyframe only, and still needs blur >= [BLUR_FLOOR].
+ * A dwell (glance) sample compares to the whole ring like any other, and still needs blur >= [BLUR_FLOOR].
+ * Rate cap (battery wave A3, spec section 5): with a `capPerMin`, at most that many keeps per rolling minute, up to twice
+ * that many only when the frame differs from every ring keyframe by at least [BIG_CHANGE] of 64 bits; forced keeps are exempt.
  */
 class KeyframeGate(private val store: GateStore, private val clock: () -> Long) {
     private class Scored(val c: Candidate, val d: Long, val p: Long, val blur: Float, val motion: MotionState)
@@ -62,6 +64,13 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
     private val window = ArrayList<Scored>(MAX_CANDIDATES + 1)
     private var windowStart = 0L
     private var lastScoredHashes: Pair<Long, Long>? = null
+    /** Times of every keep (forced included) in the last 60 s. */
+    private val keptTimes = ArrayDeque<Long>()
+    @Volatile private var duplicates = 0
+    @Volatile private var capped = 0
+
+    /** DUPLICATE and CAPPED skips since the previous call (the heartbeat); resets both. */
+    @Synchronized fun takeSkipCounts(): Pair<Int, Int> = (duplicates to capped).also { duplicates = 0; capped = 0 }
 
     /** (dHash, pHash) of the last frame that passed the blur check, or null before any. */
     @Synchronized fun lastHashes(): Pair<Long, Long>? = lastScoredHashes
@@ -77,7 +86,7 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
      * Otherwise the still sample is judged on its own, as a dwell when [dwellArmed].
      */
     @Synchronized
-    fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean, force: Boolean = false): GateResult {
+    fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean, force: Boolean = false, capPerMin: Int = Int.MAX_VALUE): GateResult {
         val now = clock()
         val blur = ImageHashes.blur(c.thumb)
         if (blur < BLUR_FLOOR) return Skip(BLUR)
@@ -90,19 +99,19 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         }
         if (motion == MotionState.STILL) {
             if (window.isNotEmpty()) {
-                val closed = finish(window.toList().also { window.clear() }, dwell = false, now)
+                val closed = finish(window.toList().also { window.clear() }, dwell = false, now, capPerMin)
                 if (closed is GateResult.Keep) return closed
             }
-            return finish(listOf(s), dwell = dwellArmed, now)
+            return finish(listOf(s), dwell = dwellArmed, now, capPerMin)
         }
         addToWindow(s, now)
-        return if (now - windowStart >= WINDOW_MS) finish(window.toList().also { window.clear() }, dwell = false, now) else Skip(WINDOW)
+        return if (now - windowStart >= WINDOW_MS) finish(window.toList().also { window.clear() }, dwell = false, now, capPerMin) else Skip(WINDOW)
     }
 
     /** At window end: the best pending candidate, or null when nothing is pending. */
     @Synchronized
-    fun flushWindow(): GateResult? =
-        if (window.isEmpty()) null else finish(window.toList().also { window.clear() }, dwell = false, clock())
+    fun flushWindow(capPerMin: Int = Int.MAX_VALUE): GateResult? =
+        if (window.isEmpty()) null else finish(window.toList().also { window.clear() }, dwell = false, clock(), capPerMin)
 
     /** Records a keep decided elsewhere (forced capture): pushes the ring and the last keep time. */
     @Synchronized
@@ -110,6 +119,12 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
     fun recordKeep(candidate: Candidate, dhash: Long, phash: Long, nowMs: Long) {
         store.push(dhash, phash)
         store.setLastKeptAt(nowMs)
+        noteKept(nowMs)
+    }
+
+    private fun noteKept(now: Long) {
+        keptTimes.addLast(now)
+        while (keptTimes.isNotEmpty() && now - keptTimes.first() >= CAP_WINDOW_MS) keptTimes.removeFirst()
     }
 
     private fun addToWindow(s: Scored, now: Long) {
@@ -118,21 +133,26 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         if (window.size > MAX_CANDIDATES) window.remove(window.minBy { it.blur })
     }
 
-    private fun finish(pool: List<Scored>, dwell: Boolean, now: Long): GateResult {
+    private fun finish(pool: List<Scored>, dwell: Boolean, now: Long, capPerMin: Int): GateResult {
         val ring = store.lastKeyframes()
-        val against = if (dwell) ring.takeLast(1) else ring
-        val fresh = pool.filter { s -> against.all { (d, p) -> minOf(hamming(s.d, d), hamming(s.p, p)) > HAMMING } }
+        val fresh = pool.filter { s -> ring.all { (d, p) -> minOf(hamming(s.d, d), hamming(s.p, p)) > HAMMING } }
         val last = store.lastKeptAt()
         val gap = if (last <= 0L) Long.MAX_VALUE else now - last // never kept (a fresh store): nothing to throttle against
         // A clock that moved back (negative gap) does not throttle, or capture would stop until it caught up.
         fun within(ms: Long) = gap in 0 until ms
         val best = fresh.maxByOrNull { it.blur }
-            ?: return Skip(if (within(MIN_GAP_ANY_MS)) THROTTLED else DUPLICATE)
+            ?: return if (within(MIN_GAP_ANY_MS)) Skip(THROTTLED) else { duplicates++; Skip(DUPLICATE) }
+        if (capPerMin != Int.MAX_VALUE) {
+            val k = keptTimes.count { now - it < CAP_WINDOW_MS }
+            val dMin = ring.minOfOrNull { (d, p) -> minOf(hamming(best.d, d), hamming(best.p, p)) } ?: 64
+            if (k.toLong() >= 2L * capPerMin || (k >= capPerMin && dMin < BIG_CHANGE)) { capped++; return Skip(CAPPED) }
+        }
         // Fix wave K1: a dwell keyframe (head settled) keeps the short gap; any other keep is rate-capped, wider while moving.
         val moving = best.motion == MotionState.WALKING || best.motion == MotionState.HEAD_MOVING
         if (within(if (dwell) MIN_GAP_NEW_MS else if (moving) NON_DWELL_MOVING_GAP_MS else NON_DWELL_GAP_MS)) return Skip(THROTTLED)
         store.push(best.d, best.p)
         store.setLastKeptAt(now)
+        noteKept(now)
         return GateResult.Keep(best.c, best.d, best.p, best.blur, dwell, best.motion)
     }
 
@@ -150,6 +170,10 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         /** The non-dwell keyframe rate cap (fix wave K1): at most one per 3 s, one per 6 s while WALKING / HEAD_MOVING. Dwell and forced keeps are exempt. */
         const val NON_DWELL_GAP_MS = 3_000L
         const val NON_DWELL_MOVING_GAP_MS = 6_000L
+        /** Hash distance (of 64 bits) from every ring keyframe above which a frame may exceed the per-minute cap, up to twice it. */
+        const val BIG_CHANGE = 22
+        const val CAP_WINDOW_MS = 60_000L
+        const val CAPPED = "CAPPED"
         const val BLUR = "BLUR"; const val DUPLICATE = "DUPLICATE"; const val THROTTLED = "THROTTLED"; const val WINDOW = "WINDOW"
     }
 }

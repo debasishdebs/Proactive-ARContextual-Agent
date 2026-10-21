@@ -74,6 +74,35 @@ class GlanceDetectorTest {
         assertTrue(d.onGyro(0f, t, 20, true))
     }
 
+    /** A [lookMs] bout of 1.2 rad/s at [hz], then stillness; the detector's view of the same look at either sample rate. */
+    private fun lookAt(hz: Int, lookMs: Long): GlanceDetector {
+        val d = GlanceDetector(GlanceParams())
+        val dt = 1000L / hz
+        var t = 0L
+        while (t < 1000) { d.onGyro(0f, t, dt, true); t += dt }
+        val end = t + lookMs
+        while (t < end) { d.onGyro(1.2f, t, dt, true); t += dt }
+        while (t < end + 4000) { if (d.onGyro(0f, t, dt, true)) fired += t; t += dt }
+        return d
+    }
+
+    @Test fun boutLengthDoesNotDependOnTheSampleRate() {
+        for (hz in listOf(20, 50)) for (look in listOf(300L, 320L, 349L)) {
+            fired.clear()
+            val d = lookAt(hz, look)
+            assertEquals(1, fired.size, "hz=$hz look=$look fired=$fired")
+            assertEquals(0, d.micro, "hz=$hz look=$look")
+        }
+    }
+
+    @Test fun aShortLookIsMicroAtEitherSampleRate() {
+        for (hz in listOf(20, 50)) {
+            fired.clear()
+            val d = lookAt(hz, 240)
+            assertTrue(fired.isEmpty(), "hz=$hz fired=$fired"); assertEquals(1, d.micro, "hz=$hz")
+        }
+    }
+
     @Test fun legacyMatchesOldDwell() {
         val d = GlanceDetector(GlanceParams.LEGACY)
         run(d, 0, 1000L to 0f, 20L to 2f, 3000L to 0f)

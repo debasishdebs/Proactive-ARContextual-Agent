@@ -340,4 +340,73 @@ class MotionClassifierTest {
             assertEquals(listOf(3850L), d, "gyroFirst=$first")
         }
     }
+
+    // ---- battery wave A3 task 3: default-params classifier paths ----
+
+    private fun accelWalk(k: MotionClassifier, t: Long) = k.onLinearAccel(0f, 2.0f * sin(2 * PI * 2.0 * t / 1000.0).toFloat(), 0f, t)
+
+    @Test fun defaultsWalkEndThenStillIsADwell() {
+        val k = defaults()
+        // 50 Hz gyro (quiet) and accel (a 2 Hz stride for 3 s, then none) on one clock, gyro first within each tick
+        var t = 0L
+        while (t < 9_000) {
+            now = t
+            k.onGyro(0f, 0f, 0f, t)
+            if (t < 3_000) accelWalk(k, t) else k.onLinearAccel(0f, 0f, 0f, t)
+            t += 20
+        }
+        assertEquals(1, dwells.size, "dwells=$dwells")
+        assertTrue(dwells[0] in 4_000..7_500, "arrived-glance after the walk, was ${dwells[0]}")
+        assertTrue(k.walkedSinceMark())
+    }
+
+    @Test fun defaultsFullRateGyroMixedWithAccelDoesNotChangeTheGlance() {
+        val k = defaults()
+        var t = 0L
+        while (t < 6_000) {
+            now = t
+            k.onGyro(if (t in 1_000 until 1_400) 1.5f else 0f, 0f, 0f, t)
+            k.onLinearAccel(0f, 0f, 0f, t)
+            t += 20
+        }
+        assertEquals(listOf(1_380L + 1_500), dwells)
+        assertEquals(GlanceCounts(1, 0), k.takeGlanceCounts())
+    }
+
+    @Test fun defaultsAMicroBoutPostponesAPendingGlance() {
+        val k = defaults()
+        gyroOn(k, 0, 400, 1.5f)       // real bout, last above 380
+        gyroOn(k, 400, 800, 0f)
+        gyroOn(k, 1_200, 60, 1.5f)    // micro jerk, last above 1 240 (< 1 500 since the bout: still pending)
+        gyroOn(k, 1_260, 4_000, 0f)
+        assertEquals(listOf(1_240L + 1_500), dwells, "dwells=$dwells")
+        assertEquals(GlanceCounts(1, 1), k.takeGlanceCounts())
+    }
+
+    @Test fun aRealLookAt20HzCountsAsABout() {
+        for (lookMs in listOf(300L, 349L)) {
+            dwells.clear()
+            val k = defaults()
+            var t = 0L
+            while (t < 8_000) { now = t; k.onGyro(if (t in 1_000 until 1_000 + lookMs) 1.2f else 0f, 0f, 0f, t); t += 50 }
+            assertEquals(1, dwells.size, "look=$lookMs dwells=$dwells")
+            assertEquals(GlanceCounts(1, 0), k.takeGlanceCounts())
+        }
+    }
+
+    @Test fun biasAboveTheDeadbandCannotGrowThePoseWhileStill() {
+        val k = defaults()
+        var maxPose = 0f
+        var t = 0L
+        while (t < 120_000) { now = t; k.onGyro(0f, 0f, 0.07f, t); maxPose = maxOf(maxPose, k.rotationSinceMarkRad()); t += 20 }
+        assertTrue(maxPose < 0.30f, "bias drift stays under the novelty threshold, max=$maxPose")
+    }
+
+    @Test fun aRealTurnSurvivesTheStillnessResetOfALaterBias() {
+        val k = defaults()
+        gyroOn(k, 0, 1_000, 0f, z = 1f)               // a 1 rad turn
+        gyroOn(k, 1_000, 60_000, 0f, z = 0.07f)       // then bias only
+        val r = k.rotationSinceMarkRad()
+        assertTrue(r in 0.95f..1.35f, "turn kept, drift bounded, was $r")
+    }
 }

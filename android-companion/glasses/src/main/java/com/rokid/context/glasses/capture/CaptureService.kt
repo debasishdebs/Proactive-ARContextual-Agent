@@ -28,6 +28,7 @@ import com.rokid.context.glasses.capture.keyframe.GateResult
 import com.rokid.context.glasses.capture.keyframe.KeyframeGate
 import com.rokid.context.glasses.capture.keyframe.PrefsGateStore
 import com.rokid.context.glasses.capture.motion.AndroidSensorFeed
+import com.rokid.context.glasses.capture.motion.GlanceParams
 import com.rokid.context.glasses.capture.motion.MotionClassifier
 import com.rokid.context.glasses.capture.session.movementSignals
 import com.rokid.context.glasses.capture.motion.SensorFeed
@@ -196,7 +197,8 @@ class CaptureService : LifecycleService() {
 
     private fun startSmart() {
         val clock: () -> Long = SystemClock::elapsedRealtime
-        val motion = MotionClassifier(clock)
+        val glance = GlanceParams() // one instance: the classifier's detector and the session's novelty / cap rules
+        val motion = MotionClassifier(clock, glance)
         ratePolicy.reset()
         val wear = runtime.wear
         wear.resetStillRun() // a still run from before a session restart must not park the glasses at once
@@ -208,7 +210,7 @@ class CaptureService : LifecycleService() {
             batteryPct = ::batteryPercent, charging = ::isCharging, batterySaver = ::isBatterySaverOn,
             profile = { val s = runtime.settingsCache.readNormalized(); CaptureProfile.of(s.cameraWake, budget.tier.value) },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
-            fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default,
+            fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance,
         )
         val verbose = DiagFlags.verboseFeatures(filesDir)
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
