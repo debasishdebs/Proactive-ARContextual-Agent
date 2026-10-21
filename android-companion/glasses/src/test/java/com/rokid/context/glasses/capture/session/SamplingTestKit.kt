@@ -154,6 +154,7 @@ class Rig(
     var onFallbackAction: suspend () -> Unit = {}
     var gyroMag = 0f
     var profile: CaptureProfile = CaptureProfile.DEFAULT
+    var profileReads = 0 // one read per policy tick: counts loop wake-ups
     var phoneInUse = false
     var fixedCaptures = ArrayList<Long>()
     var fixedDuring: suspend () -> Unit = {}
@@ -162,7 +163,7 @@ class Rig(
     val session = SamplingSession(
         scope = test.backgroundScope, camera = camera, owner = owner, motion = motion, wear = wear, gate = gate, heat = heat,
         workRest = sessionWorkRest, encoder = encoder, sink = { k, _ -> keyframes += clock() to k }, clock = clock, settings = { settings },
-        capturePaused = { paused }, profile = { profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance,
+        capturePaused = { paused }, profile = { profileReads++; profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance,
         fixedCapture = { owner.acquire("fixed") { fixedCaptures += clock(); fixedDuring() } },
     )
 

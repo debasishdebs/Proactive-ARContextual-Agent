@@ -900,4 +900,24 @@ class SamplingSessionTest {
         for (k in keeps) assertTrue(opens.none { it > k + 2_000 && it < k + 58_000 }, "no timer open within the minute after a rest keep at $k: $opens")
         r.session.stop("test")
     }
+
+    @Test fun theHoldDoesNotSpinTheTickLoopAndTheCheckOpensAtHoldEndMinusLead() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        while (r.keyframes.size < 3 && r.clock() < 59_000) { r.gyro(1_000, 0f); r.scene++ }
+        assertEquals(3, r.keyframes.size)
+        val first = r.keyframes[0].first
+        val holdEnd = first + 60_000
+        r.tvFor(holdEnd - 3_000)
+        val reads = r.profileReads
+        val opens = r.camera.opens
+        while (r.clock() < holdEnd - 1_600) { r.gyro(20, 0f); r.scene++ }
+        assertEquals(opens, r.camera.opens, "no open before the hold end minus the longest lead")
+        while (r.clock() < holdEnd + 300) { r.gyro(20, 0f); r.scene++ }
+        assertTrue(r.camera.opens > opens, "the deferred check opened by the hold end: ${r.camera.openTimes}")
+        assertTrue(r.camera.openTimes.last() >= holdEnd - 1_600, "${r.camera.openTimes}")
+        val wakeups = r.profileReads - reads
+        assertTrue(wakeups < 60, "tick wake-ups over ~4.9 s: $wakeups (a spin is ~1 per ms)")
+        r.session.stop("test")
+    }
 }
