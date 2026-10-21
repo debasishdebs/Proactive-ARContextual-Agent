@@ -86,7 +86,8 @@ class WatchMotionIntakeTest {
     @Test fun pendingAppliedOnceOnly() {
         val i = intake(); val f = FakeLiveFit(i)
         f.send(); now += 300; f.send("STILL"); f.send("RUNNING")
-        now += 800; fire(); fire()
+        val actions = timers.map { it.second }; assertEquals(1, actions.size)
+        now += 800; actions[0](); actions[0]()
         assertEquals(2, got.size)
     }
 
@@ -139,7 +140,9 @@ class WatchMotionIntakeTest {
     }
 
     @Test fun versionTwo() {
-        val i = intake(); assertEquals("version", FakeLiveFit(i).send().let { i.accept("com.livear.fit", { true }, FakeLiveFit(i).json(v = 2)) }.reason)
+        val i = intake()
+        assertEquals("version", i.accept("com.livear.fit", { true }, FakeLiveFit(i).json(v = 2)).reason)
+        assertTrue(got.isEmpty())
     }
 
     @Test fun garbage() {
@@ -155,10 +158,11 @@ class WatchMotionIntakeTest {
         assertTrue(r.ok); assertEquals(WatchState.UNKNOWN, (got.single() as Evidence.WatchMotion).state)
     }
 
-    @Test fun refreshedUnchangedStateIsAcceptedEveryTenMinutes() {
+    @Test fun refreshedUnchangedStateGetsFreshEvidenceEveryTenMinutes() {
         val i = intake(); val f = FakeLiveFit(i)
         repeat(5) { assertTrue(f.send("WALKING").ok); now += 10 * 60_000L }
         assertEquals(5, got.size)
+        assertEquals(listOf(10_000L, 610_000L, 1_210_000L, 1_810_000L, 2_410_000L), got.map { it.atMs })
     }
 
     @Test fun concurrentDeliveryAcceptsEachSeqOnce() {
@@ -181,5 +185,31 @@ class WatchMotionIntakeTest {
         }
         go.countDown(); done.await(); pool.shutdown()
         assertEquals(100, ok.get()); assertEquals(100, got.size)
+    }
+
+    @Test fun concurrentDeliveryWithFrozenClockAcceptsExactlyOne() {
+        val i = WatchMotionIntake(
+            enabled = { true }, pinnedSha256 = { "ab" }, clock = { 5_000L },
+            sink = { synchronized(got) { got += it } }, schedule = { _, _ -> },
+        )
+        val f = FakeLiveFit(i)
+        val msgs = (1L..100L).map { f.json(seq = it) }
+        val ok = AtomicInteger(); val bad = AtomicInteger(); val pool = Executors.newFixedThreadPool(16); val go = CountDownLatch(1); val done = CountDownLatch(16)
+        repeat(16) {
+            pool.execute {
+                go.await()
+                for (m in msgs) { val r = i.accept("com.livear.fit", { true }, m); if (r.ok) ok.incrementAndGet() else if (r.reason != "rate" && r.reason != "stale_seq") bad.incrementAndGet() }
+                done.countDown()
+            }
+        }
+        go.countDown(); done.await(); pool.shutdown()
+        assertEquals(1, ok.get()); assertEquals(0, bad.get()); assertEquals(1, got.size)
+    }
+
+    @Test fun epochResetHookFiresOnlyWhenPreviousEpochWasNonZero() {
+        val i = intake(); val f = FakeLiveFit(i)
+        f.send(seq = 1); assertEquals(0, epochResets); now += 2000
+        f.send(seq = 1, epoch = 5L); assertEquals(1, epochResets)
+        val j = intake(epoch = 0, seq = 0); FakeLiveFit(j).send(seq = 1); assertEquals(1, epochResets)
     }
 }

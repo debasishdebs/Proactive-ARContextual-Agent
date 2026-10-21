@@ -125,7 +125,7 @@ object HubGraph {
         ctxRegistry.register(com.rokid.context.phone.context.WatchSource(
             settings = com.rokid.context.phone.context.ContextSourceSettings.of(app),
             installed = { runCatching { app.packageManager.getPackageInfo(com.rokid.context.phone.context.WatchMotionIntake.LIVEFIT_PACKAGE, 0) }.isSuccess },
-            sinkFor = ctxHub::sinkFor, onRejected = ctxHub.stats::onWatchRejected,
+            sinkFor = ctxHub::sinkFor, onRejected = ctxHub.stats::onWatchRejected, onEpochReset = ctxHub.stats::onWatchEpoch,
         ))
         contextRegistry = ctxRegistry; contextHub = ctxHub
         return Hub(

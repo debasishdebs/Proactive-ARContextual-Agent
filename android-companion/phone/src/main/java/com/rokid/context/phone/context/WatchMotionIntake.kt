@@ -11,6 +11,8 @@ import kotlinx.serialization.json.intOrNull
 /**
  * The LiveFit watch message gate (spec §8). Pure: the provider passes the caller and a certificate check.
  * Checks, in order: caller, pinned certificate, source on, payload size, decode (malformed / version), `(epoch, seq)`, rate.
+ * Documented choice: seq is checked BEFORE rate (spec §8 lists rate first), so a stale message never becomes the pending state
+ * and gets a terminal `stale_seq`. A JSON without `"v"` is `malformed` (stricter than the codec; the sender always sends `v`).
  * [accept] is one critical section (check and advance of epoch, seq and the rate window together), so concurrent Binder
  * threads each see a consistent state. Accepted evidence goes to [sink], which only enqueues.
  *
