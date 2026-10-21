@@ -80,6 +80,8 @@ class GlassesRuntime private constructor(private val app: Context) {
     val workRest = com.rokid.context.glasses.capture.session.WorkRest(
         android.os.SystemClock::elapsedRealtime, { settingsCache.capture().workMinutes }, { settingsCache.capture().restMinutes },
         enabled = { settingsCache.capture().workRestEnabled },
+        store = com.rokid.context.glasses.capture.session.PrefsWorkRestStore(app.getSharedPreferences("work_rest", Context.MODE_PRIVATE)),
+        bootCount = { android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1) },
     )
     /** The capture service's latest status for the HUD marks (Cooling, capture degraded); idle until the service publishes. */
     val captureStatus = MutableStateFlow(SessionStatus(running = false, motion = MotionState.STILL, keyframesLast10Min = 0, restingUntilMs = null, reason = null))

@@ -15,6 +15,10 @@ class WorkRest(
     private val clock: () -> Long, private val workMin: () -> Int, private val restMin: () -> Int,
     /** Off: never rests, schedules nothing, and a rest in progress clears. */
     private val enabled: () -> Boolean = { true },
+    /** Survives process death (R13); the default keeps nothing. */
+    private val store: WorkRestStore = WorkRestStore.None,
+    /** `Settings.Global.BOOT_COUNT`, -1 when unreadable (S13): a snapshot from another boot is discarded. */
+    private val bootCount: () -> Int = { -1 },
 ) {
     private val _resting = MutableStateFlow<Long?>(null)
     val resting: StateFlow<Long?> = _resting
@@ -22,7 +26,37 @@ class WorkRest(
     private var workStartMs: Long? = null
     private var pausedAtMs: Long? = null
 
-    private fun disable() { _resting.value = null; workStartMs = null; pausedAtMs = null }
+    private var loaded = false
+    private var lastSaved: Triple<Long?, Long?, Long?>? = null
+    private var storeCleared = false
+
+    private fun disable() {
+        _resting.value = null; workStartMs = null; pausedAtMs = null
+        loaded = false; lastSaved = null
+        if (!storeCleared) { store.clear(); storeCleared = true }
+    }
+
+    /** Lazily, on the first call while enabled: restore the saved cycle unless it belongs to another boot. */
+    private fun restore() {
+        if (loaded) return
+        loaded = true
+        storeCleared = false
+        val saved = store.load() ?: return
+        val now = clock()
+        val current = bootCount()
+        val stale = if (saved.bootCount != -1 && current != -1) saved.bootCount != current else saved.savedAtElapsedMs > now
+        if (stale) { store.clear(); return }
+        workStartMs = saved.workStartMs; pausedAtMs = saved.pausedAtMs; _resting.value = saved.restUntilMs
+        lastSaved = Triple(saved.workStartMs, saved.pausedAtMs, saved.restUntilMs)
+    }
+
+    /** Writes only when one of the three fields changed since the last write: no write per tick. */
+    private fun persist() {
+        val t = Triple(workStartMs, pausedAtMs, _resting.value)
+        if (t == lastSaved) return
+        lastSaved = t
+        store.save(WorkRestSnapshot(t.first, t.second, t.third, clock(), bootCount()))
+    }
 
     private fun workMs() = workMin().coerceAtLeast(1) * MIN_MS
     private fun restMs(): Long {
@@ -34,6 +68,11 @@ class WorkRest(
     @Synchronized
     fun onSampling() {
         if (!enabled()) { disable(); return }
+        restore()
+        try { sampling() } finally { persist() }
+    }
+
+    private fun sampling() {
         val now = clock()
         _resting.value?.let { until ->
             if (until - now > restMs()) _resting.value = now + restMs() // the clock went back
@@ -58,6 +97,11 @@ class WorkRest(
     @Synchronized
     fun onPaused() {
         if (!enabled()) { disable(); return }
+        restore()
+        try { paused() } finally { persist() }
+    }
+
+    private fun paused() {
         val now = clock()
         _resting.value?.let { if (now >= it || it - now > restMs()) _resting.value = if (now >= it) null else now + restMs() }
         if (pausedAtMs == null || now < pausedAtMs!!) pausedAtMs = now
