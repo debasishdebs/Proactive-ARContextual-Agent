@@ -10,7 +10,7 @@ object DatabaseFactory {
 
     /** Fixed mode, for instrumented tests and tools; the app uses [buildDeferred]. */
     fun build(context: Context, encrypted: Boolean, passphrase: () -> ByteArray): ContextDatabase {
-        val builder = Room.databaseBuilder(context.applicationContext, ContextDatabase::class.java, NAME).addCallback(MemoryMaintenance.openCheck).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        val builder = Room.databaseBuilder(context.applicationContext, ContextDatabase::class.java, NAME).addCallback(MemoryMaintenance.openCheck).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
         if (encrypted) builder.openHelperFactory(ensureOpenParams(passphrase))
         return builder.build()
     }
@@ -20,7 +20,7 @@ object DatabaseFactory {
         Room.databaseBuilder(context.applicationContext, ContextDatabase::class.java, NAME)
             .openHelperFactory(DeferredOpenHelperFactory(encryptedAtOpen, passphrase))
             .addCallback(MemoryMaintenance.openCheck)
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .build()
 
     /**

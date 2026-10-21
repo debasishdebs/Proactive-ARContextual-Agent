@@ -84,7 +84,7 @@ class SqlCipherMigrationDeviceTest {
                 assertEquals(listOf("m1"), searchIds(db, "shelf"))
                 db.frameStateDao().insertIgnore(listOf(FrameStateEntity("f1", "PENDING", 0, null, null, null, 1)))
                 assertEquals(1, db.frameStateDao().get("f1")?.let { 1 })
-                assertEquals(4, db.openHelper.writableDatabase.version)
+                assertEquals(5, db.openHelper.writableDatabase.version)
                 assertCanvasTables(db)
             } finally { db.close() }
             assertFalse(EncryptionMigrator.isPlaintextSqlite(file))
@@ -122,7 +122,7 @@ class SqlCipherMigrationDeviceTest {
             }
             val db = if (deferred) DatabaseFactory.buildDeferred(ctx, { true }) { key.copyOf() } else DatabaseFactory.build(ctx, encrypted = true) { key.copyOf() }
             try {
-                assertEquals(4, db.openHelper.writableDatabase.version)
+                assertEquals(5, db.openHelper.writableDatabase.version)
                 assertEquals(listOf("m1"), searchIds(db, "shelf"))
                 assertEquals(1, db.frameStateDao().get("f1")?.let { 1 })
                 assertCanvasTables(db)
@@ -151,7 +151,7 @@ class SqlCipherMigrationDeviceTest {
             }
             val db = if (deferred) DatabaseFactory.buildDeferred(ctx, { true }) { key.copyOf() } else DatabaseFactory.build(ctx, encrypted = true) { key.copyOf() }
             try {
-                assertEquals(4, db.openHelper.writableDatabase.version)
+                assertEquals(5, db.openHelper.writableDatabase.version)
                 assertEquals(listOf("m1"), searchIds(db, "shelf"))
                 assertEquals("CLOSED", db.frameClusterDao().get("closed-c")?.state)
                 assertEquals("OPEN", db.frameClusterDao().get("open-c")?.state)

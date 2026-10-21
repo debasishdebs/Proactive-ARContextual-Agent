@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         FrameMetaEntity::class, FrameStateEntity::class, FrameSourceEntity::class, FrameClusterEntity::class, FrameVectorEntity::class,
         CanvasPipelineEntity::class, CanvasPipelineVersionEntity::class, CanvasRunEntity::class, CanvasRunItemEntity::class, CanvasScoreEntity::class, CanvasPublishEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -103,5 +103,18 @@ val MIGRATION_3_4: Migration = object : Migration(3, 4) {
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_frame_cluster_state` ON `frame_cluster` (`state`)")
         db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `routedAt` INTEGER")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_frame_meta_clusterId` ON `frame_meta` (`clusterId`)")
+    }
+}
+
+/**
+ * v4 → v5 (wave B image intent + wave 3 capture time): four nullable columns on `frame_meta`, additive only. No table is created,
+ * dropped or rewritten, and no index changes.
+ */
+val MIGRATION_4_5: Migration = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `intentLabel` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `intentConf` REAL DEFAULT NULL")
+        db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `intentAt` INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `capturedAtMs` INTEGER DEFAULT NULL")
     }
 }
