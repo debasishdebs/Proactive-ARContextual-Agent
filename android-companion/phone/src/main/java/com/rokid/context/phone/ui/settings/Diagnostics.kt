@@ -21,6 +21,9 @@ import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Timeline
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.Alignment
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.testTag
@@ -209,6 +212,9 @@ fun DiagnosticsScreen(
     onOpenPrompts: () -> Unit = {},
     /** Fix wave H4: "Rokid closed the app N times (last gap Xs)"; shown only once the glasses report one. */
     glassesRestarts: String? = null,
+    /** The Developer mode switch at the bottom: shows Settings > AI > Experiment canvas when on. */
+    developerMode: Boolean = false,
+    onDeveloperMode: (Boolean) -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState())) {
         ScreenHeader("Diagnostics", onBack)
@@ -250,6 +256,16 @@ fun DiagnosticsScreen(
             }
         }
         state.message?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, modifier = Modifier.padding(20.dp)) }
+        SectionLabel("Developer")
+        SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Developer mode", style = MaterialTheme.typography.titleSmall)
+                    Text("Shows Experiment canvas in Settings. Turning it off stops the canvas server.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                }
+                Switch(checked = developerMode, onCheckedChange = onDeveloperMode, modifier = Modifier.testTag("developer_mode_switch"))
+            }
+        }
     }
 }
 

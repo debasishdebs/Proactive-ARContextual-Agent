@@ -68,12 +68,19 @@ class AllRoutesSmokeTest {
     )
 
     @Before fun setUp() {
+        // The canvas routes exist only in Developer mode, and run over a fake host (no server, no AI graph).
+        com.rokid.context.phone.canvas.DeveloperModeStore.get(ctx).set(true)
+        com.rokid.context.phone.canvas.CanvasGraph.installForTests(com.rokid.context.phone.canvas.FakeCanvasHost())
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         deps = deps()
     }
 
     // As AppShellTest: ViewModels are cleared after @After, so the in-memory DB is left open (GC'd), not closed under collectors.
-    @After fun tearDown() = MemoryGraph.resetForTests(null)
+    @After fun tearDown() {
+        com.rokid.context.phone.canvas.CanvasGraph.installForTests(null)
+        com.rokid.context.phone.canvas.DeveloperModeStore.get(ctx).set(false)
+        MemoryGraph.resetForTests(null)
+    }
 
     /** One row of every kind a `{id}`/`{start}` route opens, all on [today]. */
     private fun seed() = runBlocking {
@@ -168,7 +175,7 @@ class AllRoutesSmokeTest {
         /** The seeded row each `{id}` route opens. */
         val ID_FOR_ROUTE: Map<String, String> = mapOf(
             Routes.ASK to ASK_ID, Routes.MEMORY to MEMORY_ID, Routes.NUDGE to NUDGE_ID, Routes.SETTINGS_ENDPOINT to ENDPOINT_ID,
-            Routes.SETTINGS_PROMPT to PROMPT_ID, Routes.SETTINGS_PROMPT_HISTORY to PROMPT_ID,
+            Routes.SETTINGS_PROMPT to PROMPT_ID, Routes.SETTINGS_PROMPT_HISTORY to PROMPT_ID, Routes.SETTINGS_CANVAS_PIPELINE to "live-extract",
         )
 
         /** Reflected `const val` name to route pattern. */

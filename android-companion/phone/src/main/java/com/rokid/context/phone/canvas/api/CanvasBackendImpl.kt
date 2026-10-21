@@ -96,6 +96,9 @@ class CanvasBackendImpl(
         }
     }
 
+    /** True while an experiment run is executing (the service's idle rule never stops the server then). */
+    fun runActive(): Boolean = runner.active.value != null
+
     private val startLock = Mutex()
     @Volatile private var started = false
 
