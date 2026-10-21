@@ -333,4 +333,11 @@ class SceneIndexerTest {
         // nothing else leaks through other tags either
         assertTrue(ShadowLog.getLogs().none { it.msg.contains("/x/") })
     }
+
+    @Test fun closeAgedAsksNoSpacesWhenNothingIsOpen() = runBlocking {
+        var asked = 0
+        val ix = SceneIndexer(db, { asked++; targets }, texts, WatchVectors(watchStore), power, { emptyMap() }, { now }, { tuning }, { fg })
+        assertEquals(false, ix.closeAged())
+        assertEquals(0, asked)
+    }
 }

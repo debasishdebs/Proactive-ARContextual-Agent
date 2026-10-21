@@ -37,6 +37,7 @@ import com.rokid.context.work.budget.CallBudget
 import com.rokid.context.work.budget.PhoneThermal
 import com.rokid.context.work.budget.PhonePowerPolicy
 import com.rokid.context.work.budget.ThermalStatusProvider
+import com.rokid.context.work.frames.scene.ClusterReview
 import com.rokid.context.work.frames.scene.ClusterSave
 import com.rokid.context.work.frames.scene.ClusterSaveResult
 import com.rokid.context.work.frames.scene.MlKitTextPresence
@@ -255,10 +256,13 @@ class KeyframeHandle internal constructor(private val app: Context) {
         val out = ClusterContract.call(AiGraph.get(app).runner, photos, callClass)
         val sent = out.clusters.associate { c -> c.clusterId to photos.filter { it.clusterId == c.clusterId }.map { it.frameId } }
         val leftOut = unseen + (withPhotos - sent.keys)
-        return when (val saved = ClusterSave.save(app, claimId, out, sent, generation, clock(), ReviewState.OK)) {
+        // Wave 1's free local critic (no AI call) decides the facts' review state; no model critic per cluster (cost). An unsure
+        // verdict saves the facts NEEDS_REVIEW and afterSave(trusted = false) queues the PRIORITY_REPROCESS wave 1 uses.
+        val verdict = ClusterReview.of(out, claimId)
+        return when (val saved = ClusterSave.save(app, claimId, out, sent, generation, clock(), verdict.factReview)) {
             is ClusterSaveResult.Saved -> {
                 withContext(NonCancellable) {
-                    ExtractFollowUp.afterSave(app, generation, saved.memories, true, 1.0, AppConfigStore.getWithoutSecret(app).persona)
+                    ExtractFollowUp.afterSave(app, generation, saved.memories, verdict.trusted, verdict.confidence, AppConfigStore.getWithoutSecret(app).persona)
                 }
                 ClusterOutcome.Saved(saved.memories, saved.failedClusters.toSet(), leftOut, gone)
             }

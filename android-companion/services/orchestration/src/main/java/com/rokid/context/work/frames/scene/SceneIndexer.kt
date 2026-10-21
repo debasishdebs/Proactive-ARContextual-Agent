@@ -120,8 +120,12 @@ class SceneIndexer(
 
     /** Closes the open cluster on age (5 min) or gap (2 min); called on every pipeline pass and by the backstop. */
     suspend fun closeAged(): Boolean = lock.withLock {
-        val active = try { images.targets().firstOrNull { it.active } } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
-        val cur = validOpen() ?: loadOpen(active) ?: return false
+        // Nothing open: nothing to close, and images.targets() (it may build an embedder) is not worth asking.
+        val cur = validOpen() ?: run {
+            if (db.frameClusterDao().open() == null) return false
+            val active = try { images.targets().firstOrNull { it.active } } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+            loadOpen(active)
+        } ?: return false
         open = cur
         val reason = SceneRules.closeByTime(cur.view(), clock(), tuning()) ?: return false
         db.withTransaction { closeRow(cur, reason, emptySet(), clock(), tuning()) }

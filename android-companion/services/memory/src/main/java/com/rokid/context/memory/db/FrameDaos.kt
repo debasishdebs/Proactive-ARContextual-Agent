@@ -396,6 +396,13 @@ abstract class FrameClusterDao {
     @Query("SELECT state AS k, COUNT(*) AS v FROM frame_cluster GROUP BY state")
     abstract fun counts(): Flow<Map<@MapColumn("k") String, @MapColumn("v") Int>>
 
+    /** FAILED_FINAL clusters that still have IN_CLUSTER members (the Ruling-10 split has not run for them). */
+    @Query(
+        "SELECT clusterId FROM frame_cluster WHERE state = 'FAILED_FINAL' AND EXISTS (" +
+            "SELECT 1 FROM frame_meta m JOIN frame_state s ON s.frameId = m.frameId WHERE m.clusterId = frame_cluster.clusterId AND s.state = 'IN_CLUSTER')",
+    )
+    abstract suspend fun finalWithOpenMembers(): List<String>
+
     /** When the earliest FAILED cluster leaves its backoff (null: none is waiting). */
     @Query("SELECT MIN(updatedAt + MIN(30000 << MAX(attempts - 1, 0), 1800000)) FROM frame_cluster WHERE state = 'FAILED'")
     abstract suspend fun nextRetryAt(): Long?

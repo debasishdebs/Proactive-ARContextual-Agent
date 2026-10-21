@@ -166,4 +166,12 @@ class ClusterSaveTest {
         save()
         assertTrue(memoryIds().all { it.startsWith("rokid_cl_k1_") && !it.startsWith("rokid_review_") })
     }
+
+    @Test fun unsureFactsAreSavedNeedsReviewWhileSummaryAndCaptionsStayOk() = runBlocking<Unit> {
+        ClusterSave.save(ctx, claim, output(), sent, MemoryWipe.generation.get(), 1_000, ReviewState.NEEDS_REVIEW)
+        val m = MemoryGraph.get(ctx).memories.all().associateBy { it.id }
+        assertEquals(ReviewState.NEEDS_REVIEW, m.getValue("rokid_cl_k1_0f0").reviewState)
+        assertEquals(ReviewState.OK, m.getValue("rokid_cl_k1_0").reviewState)
+        assertEquals(ReviewState.OK, m.getValue("rokid_cl_k1_c0").reviewState)
+    }
 }

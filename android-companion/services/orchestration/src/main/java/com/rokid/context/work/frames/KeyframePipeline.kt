@@ -170,6 +170,7 @@ class KeyframePipeline(
             val n = FrameRecovery.releaseAtProcessStart(states, clock(), processStartMs(), clusters)
             startReleased = true
             Log.i(PIPE_TAG, "released=$n at process start")
+            sweepFinalClusters(clock())
         }
     }
 
@@ -200,7 +201,7 @@ class KeyframePipeline(
     fun stop() { synchronized(this) { loop?.cancel(); loop = null } }
 
     /** Abandoned claims back to PENDING, then wake the loop. */
-    suspend fun recover(): Int { ensureStartRelease(); return FrameRecovery.run(states, clock(), clusters, ::signal) }
+    suspend fun recover(): Int { ensureStartRelease(); val n = FrameRecovery.run(states, clock(), clusters, ::signal); sweepFinalClusters(clock()); return n }
 
     /** One pass: claims up to 3 frames (dwell first, then newest) and extracts them. Returns the frames that reached EXTRACTED. */
     suspend fun drainOnce(): Int = (drainStarted(CallClass.EXTRACT, sinceMs = null) as? Step.Done)?.frames ?: 0
@@ -386,6 +387,7 @@ class KeyframePipeline(
         if (power?.tryExtraction() == false) return Step.Idle(pollMs, blocked = true)
         val claimId = newClaimId()
         val claimed = clusters.claim(ready.map { it.clusterId }, claimId, now, abandonBefore)
+        sweepFinalClusters(now) // a claim found abandoned for the fifth time went to FAILED_FINAL in SQL
         if (claimed.isEmpty()) return Step.Idle(CONTENTION_MS)
         val live = HashMap<String, List<String>>()   // cluster id -> representatives still IN_CLUSTER, medoid first
         for (c in claimed) {
@@ -424,7 +426,12 @@ class KeyframePipeline(
         if (clusters.fail(id, claimId, error, now, maxAttempts) > 0) splitIfFinal(id, now)
     }
 
-    /** Ruling 10: a cluster at FAILED_FINAL: its representatives become FAILED_FINAL (describe-before-delete), its other members are skipped. */
+    /** Every FAILED_FINAL cluster that still has IN_CLUSTER members gets the Ruling-10 split (abandoned claims fail in SQL, with no caller). */
+    private suspend fun sweepFinalClusters(now: Long) {
+        for (id in clusters.finalWithOpenMembers()) splitIfFinal(id, now)
+    }
+
+    /** The one place a FAILED_FINAL cluster is settled. Ruling 10: a cluster at FAILED_FINAL: its representatives become FAILED_FINAL (describe-before-delete), its other members are skipped. */
     private suspend fun splitIfFinal(id: String, now: Long) {
         val c = clusters.get(id)?.takeIf { it.state == "FAILED_FINAL" } ?: return
         repIdsOf(c).chunked(CHUNK).forEach { states.move(it, FrameState.IN_CLUSTER.name, FrameState.FAILED_FINAL.name, "cluster_failed", now) }
