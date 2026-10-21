@@ -147,13 +147,15 @@ class GlassesRuntime private constructor(private val app: Context) {
         diagPrefs,
         uiMode = { uiMode.get() },
         installedAtMs = { runCatching { app.packageManager.getPackageInfo(app.packageName, 0).lastUpdateTime }.getOrDefault(0L) },
-        lastExitWasUserRequested = {
+        lastExit = {
             if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) null
             else runCatching {
                 app.getSystemService(android.app.ActivityManager::class.java)
-                    .getHistoricalProcessExitReasons(app.packageName, 0, 1).firstOrNull()?.reason == android.app.ApplicationExitInfo.REASON_USER_REQUESTED
+                    .getHistoricalProcessExitReasons(app.packageName, 0, 1).firstOrNull()
+                    ?.let { ExitFacts(it.reason == android.app.ApplicationExitInfo.REASON_USER_REQUESTED, it.description, it.timestamp) }
             }.getOrNull()
         },
+        classify = { f, lastAlive, now -> ExitClassifier.classify(f, lastAlive, now) { pid -> ProcCaller.read(pid, f.timestampMs) } },
         log = { DiagLog.i(CAPTURE_TAG, it) },
     )
     /** Fix wave I: when a start goes straight to icon mode (after a kill, or on the phone's automatic reopen). */
@@ -237,6 +239,8 @@ class GlassesRuntime private constructor(private val app: Context) {
         nextCaptureAtMs = nextCaptureAtMs,
         resumedAtMs = pauses.resumedAtMs(),
         rokidCloses = restarts.closes,
+        unverifiedCloses = restarts.unverifiedCloses,
+        otherCloses = restarts.otherCloses,
         lastRestartGapSec = restarts.lastGapSec,
         userExitAtMs = restarts.userExitAtMs,
         iconBlocked = iconBlocked && uiMode.get() == UiModeStore.ICON,
