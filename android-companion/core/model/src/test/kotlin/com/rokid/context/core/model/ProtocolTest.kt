@@ -304,4 +304,15 @@ class ProtocolTest {
     }
 
     @Test fun protocolVersionStaysOne() = assertEquals(1, PROTOCOL_VERSION)
+
+    @Test fun waveA3SettingsDefaultsAndRoundTrip() {
+        val old = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1}""")).value
+        assertFalse(old.workRestEnabled); assertEquals(MotionLabel.NONE, old.motionLabel); assertEquals(emptyList(), old.motionSourcesOff)
+        val unknown = assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1,"motionLabel":"DANCING"}""")).value
+        assertEquals(MotionLabel.NONE, unknown.motionLabel)
+        val s = HudSettings(workRestEnabled = true, motionLabel = MotionLabel.EATING, motionSourcesOff = listOf("phone_motion"))
+        assertEquals(s, assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>(Wire.encode(s))).value)
+        assertEquals(listOf("phone_motion"), HudSettings(motionSourcesOff = listOf("glasses_imu", "phone_motion")).normalized().motionSourcesOff)
+        assertEquals(1, PROTOCOL_VERSION)
+    }
 }

@@ -7,6 +7,7 @@ import com.rokid.context.glasses.capture.keyframe.GateStore
 import com.rokid.context.glasses.capture.keyframe.KeyframeGate
 import com.rokid.context.glasses.capture.keyframe.Nv21Frame
 import com.rokid.context.glasses.capture.keyframe.Thumb
+import com.rokid.context.glasses.capture.motion.GlanceParams
 import com.rokid.context.glasses.capture.motion.MotionClassifier
 import com.rokid.context.glasses.capture.motion.WearDetector
 import kotlinx.coroutines.CoroutineScope
@@ -134,16 +135,17 @@ class Rig(
     val encoder: KeyframeEncoder = TagEncoder(),
     var work: Int = 90, var rest: Int = 15,
     val workRest: WorkRest? = null,
+    val glance: GlanceParams = GlanceParams.LEGACY,
 ) {
     val sched = test.testScheduler
     val clock: () -> Long = { sched.currentTime }
-    val motion = MotionClassifier(clock)
+    val motion = MotionClassifier(clock, glance)
     val wear = WearDetector(clock)
     val store = MemStore()
     val gate = KeyframeGate(store, clock)
     var heatReading = HeatReading(0, Float.NaN, 30f)
     val heat = HeatGuard({ heatReading }, clock)
-    val sessionWorkRest = workRest ?: WorkRest(clock, { work }, { rest })
+    val sessionWorkRest = workRest ?: WorkRest(clock, { work }, { rest }, enabled = { settings.workRestEnabled })
     val owner = CameraOwner()
     val camera = FakeCamera(test.backgroundScope, clock, startupMs) { t -> Scenes.frame(scene, soft, t) }
     val keyframes = ArrayList<Pair<Long, KeyframeOut>>()
@@ -152,6 +154,7 @@ class Rig(
     var onFallbackAction: suspend () -> Unit = {}
     var gyroMag = 0f
     var profile: CaptureProfile = CaptureProfile.DEFAULT
+    var profileReads = 0 // one read per policy tick: counts loop wake-ups
     var phoneInUse = false
     var fixedCaptures = ArrayList<Long>()
     var fixedDuring: suspend () -> Unit = {}
@@ -160,7 +163,7 @@ class Rig(
     val session = SamplingSession(
         scope = test.backgroundScope, camera = camera, owner = owner, motion = motion, wear = wear, gate = gate, heat = heat,
         workRest = sessionWorkRest, encoder = encoder, sink = { k, _ -> keyframes += clock() to k }, clock = clock, settings = { settings },
-        capturePaused = { paused }, profile = { profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it },
+        capturePaused = { paused }, profile = { profileReads++; profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance,
         fixedCapture = { owner.acquire("fixed") { fixedCaptures += clock(); fixedDuring() } },
     )
 

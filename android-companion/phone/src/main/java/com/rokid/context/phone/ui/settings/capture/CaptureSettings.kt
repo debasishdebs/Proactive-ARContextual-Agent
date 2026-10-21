@@ -3,12 +3,15 @@ package com.rokid.context.phone.ui.settings.capture
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.rokid.context.core.model.BATTERY_TARGET_HOURS_ALLOWED
 import com.rokid.context.core.model.CameraWake
 import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.HudSettings
+import com.rokid.context.core.model.MotionLabel
 import com.rokid.context.core.model.QUICK_LOOK_MS_ALLOWED
 import com.rokid.context.core.model.REST_MINUTES_ALLOWED
 import com.rokid.context.core.model.WORK_MINUTES_ALLOWED
@@ -63,6 +66,9 @@ data class CaptureSettingsUiState(
     val wake: CameraWake = CameraWake.SETTLE,
     val batteryTargetHours: Int = 0,
     val pauseWhenPhoneInUse: Boolean = false,
+    val workRestEnabled: Boolean = false,
+    val motionLabel: MotionLabel = MotionLabel.NONE,
+    val motionSourcesOff: List<String> = emptyList(),
 ) {
     /** 0 Smart, 1 Settle, 2 Fixed. */
     val modeIndex: Int get() = when {
@@ -85,7 +91,7 @@ class CaptureSettingsViewModel(
 ) : ViewModel() {
     private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats): CaptureSettingsUiState {
         val n = h.normalized()
-        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse)
+        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff)
     }
     val state: StateFlow<CaptureSettingsUiState> = combine(hud.settings, pace.paceMs, keyframes, ::of)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value))
@@ -110,6 +116,13 @@ class CaptureSettingsViewModel(
     /** A Work over 45 min raises a lower Rest to 15 ([normalized]). */
     fun setWork(min: Int) = hud.update { it.copy(workMinutes = min).normalized() }
     fun setRest(min: Int) = hud.update { it.copy(restMinutes = min).normalized() }
+    fun setWorkRestEnabled(on: Boolean) = hud.update { it.copy(workRestEnabled = on).normalized() }
+    fun setMotionLabel(l: MotionLabel) = hud.update { it.copy(motionLabel = l).normalized() }
+    /** [on] = the source is used; off ids are stored. glasses_imu is always on (no-op). */
+    fun setMotionSource(id: String, on: Boolean) {
+        if (id == "glasses_imu") return
+        hud.update { it.copy(motionSourcesOff = (it.motionSourcesOff.filter { s -> s != id } + if (on) emptyList() else listOf(id))).normalized() }
+    }
     fun setPace(ms: Long) = pace.set(ms)
 }
 
@@ -118,6 +131,7 @@ fun CaptureSettingsScreen(
     state: CaptureSettingsUiState, onBack: () -> Unit,
     onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {},
     onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {},
+    onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {},
 ) {
     val options = CaptureIntervals.options(state.intervalSec)
     val longWork = state.workMinutes > 45
@@ -146,12 +160,27 @@ fun CaptureSettingsScreen(
         item {
             SettingsCard {
                 Text("Work and rest", style = MaterialTheme.typography.titleMedium)
-                ChoiceRow("Work", WORK_MINUTES_ALLOWED.map { "$it min" }, WORK_MINUTES_ALLOWED.indexOf(state.workMinutes), { onWork(WORK_MINUTES_ALLOWED[it]) }, tag = "work")
-                val locked = if (longWork) REST_MINUTES_ALLOWED.indices.filter { REST_MINUTES_ALLOWED[it] < 15 }.toSet() else emptySet()
-                ChoiceRow("Rest", REST_MINUTES_ALLOWED.map { "$it min" }, REST_MINUTES_ALLOWED.indexOf(state.restMinutes), { onRest(REST_MINUTES_ALLOWED[it]) }, tag = "rest",
-                    disabled = locked, disabledReason = "needs Work of 45 min or less")
-                if (longWork) NoticeText("Rest is at least 15 min when Work is over 45 min.", tag = "rest_note")
+                SwitchRow("Work and rest", "Off: capture never rests. On: rest captures glances only, at most 2 photos a minute.", state.workRestEnabled, onWorkRestEnabled, tag = "work_rest")
+                if (state.workRestEnabled) {
+                    ChoiceRow("Work", WORK_MINUTES_ALLOWED.map { "$it min" }, WORK_MINUTES_ALLOWED.indexOf(state.workMinutes), { onWork(WORK_MINUTES_ALLOWED[it]) }, tag = "work")
+                    val locked = if (longWork) REST_MINUTES_ALLOWED.indices.filter { REST_MINUTES_ALLOWED[it] < 15 }.toSet() else emptySet()
+                    ChoiceRow("Rest", REST_MINUTES_ALLOWED.map { "$it min" }, REST_MINUTES_ALLOWED.indexOf(state.restMinutes), { onRest(REST_MINUTES_ALLOWED[it]) }, tag = "rest",
+                        disabled = locked, disabledReason = "needs Work of 45 min or less")
+                    if (longWork) NoticeText("Rest is at least 15 min when Work is over 45 min.", tag = "rest_note")
+                }
                 SwitchRow("Capture blink on HUD", null, state.captureCue, onCaptureCue, tag = "capture_cue")
+            }
+        }
+        item {
+            SettingsCard(Modifier.testTag("motion_sources")) {
+                Text("Motion sources", style = MaterialTheme.typography.titleMedium)
+                SwitchRow("Glasses motion sensor", "Always on", true, {}, tag = "source_glasses_imu", enabled = false)
+                SwitchRow("Phone motion", "Coming later", false, {}, tag = "source_phone_motion", enabled = false)
+                SwitchRow("Watch live fit", "Coming later", false, {}, tag = "source_watch_livefit", enabled = false)
+                Text("Motion labels (training)", style = MaterialTheme.typography.titleMedium)
+                val labels = listOf("None", "Sitting", "Glancing", "Chores", "Eating", "Walking", "Not worn")
+                ChoiceRow("Motion label", labels, MotionLabel.entries.indexOf(state.motionLabel), { onMotionLabel(MotionLabel.entries[it]) }, tag = "motion_label")
+                if (state.motionLabel != MotionLabel.NONE) NoticeText("Recording motion features on the glasses. Set back to None when done.", tag = "motion_label_note")
             }
         }
         item {

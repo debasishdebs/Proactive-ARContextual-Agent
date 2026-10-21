@@ -5,6 +5,8 @@ import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.MotionState
 import com.rokid.context.glasses.capture.keyframe.ImageHashes
+import com.rokid.context.glasses.capture.motion.GlanceParams
+import com.rokid.context.glasses.capture.keyframe.Candidate
 import com.rokid.context.glasses.capture.keyframe.Nv21Frame
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -60,13 +62,44 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
-    @Test fun onsetResetsTheBackoff() = runTest {
+    // Wave A3 final review I2: in SETTLE mode a head-motion onset (micro-motion) no longer resets the backoff; MOTION keeps the A2 reset.
+    @Test fun onsetResetsTheBackoffInMotionMode() = runTest {
         val r = rig(this)
         r.session.start()
         while (r.session.stillStep < 2) delay(250)
         r.motion.onGyro(2f, 0f, 0f, r.clock())
         runCurrent()
         assertEquals(0, r.session.stillStep)
+        r.session.stop("test")
+    }
+
+    @Test fun onsetLeavesTheBackoffInSettleMode() = runTest {
+        val r = rig(this) { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }
+        r.session.start()
+        while (r.session.stillStep < 2) delay(250)
+        val before = r.session.stillStep
+        r.motion.onGyro(2f, 0f, 0f, r.clock())
+        runCurrent()
+        assertEquals(before, r.session.stillStep)
+        r.session.stop("test")
+    }
+
+    @Test fun aCappedChangedFrameDoesNotResetTheBackoff() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        while (r.session.stillStep < 2) r.gyro(250, 0f)
+        val step = r.session.stillStep
+        r.session.diagSnapshot()
+        r.scene = 77
+        val opens = r.camera.opens
+        while (r.camera.opens == opens) r.gyro(20, 0f)
+        // the camera is open (its first frame is ~0.5 s away): the minute's cap is used up now, as if keeps landed since the timer decided (task 9 no longer opens into a used cap)
+        val now = r.clock()
+        repeat(4) { r.gate.recordKeep(Candidate(0, Scenes.thumb(99), Nv21Frame(640, 480, 0, ByteArray(4))), 0L, 0L, now) }
+        r.gyro(2_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertTrue(d.capped >= 1, "capped=${d.capped}")
+        assertTrue(r.session.stillStep >= step, "step ${r.session.stillStep} < $step")
         r.session.stop("test")
     }
 
@@ -238,13 +271,13 @@ class SamplingSessionTest {
         r.session.start()
         for (s in 1..3) { r.scene = s; while (r.scenesKept.size < s) delay(250) } // three settled scenes, one brief check each (a still scene backs the checks off)
         assertEquals(listOf(1, 2, 3), r.scenesKept)
-        // look back at scene 1: not new against the last five, so only a dwell can save it
+        // turn to a new scene 4: the dwell right after the head settles keeps it (a look back at a ring scene is a duplicate since A3)
         val turnAt = r.clock()
-        r.gyroMag = 3f; r.scene = 1
+        r.gyroMag = 3f; r.scene = 4
         delay(100); r.gyroMag = 0f
         delay(2_000)
         val (at, last) = r.keyframes.last()
-        assertEquals(1, Scenes.sceneOf(last.jpeg)); assertTrue(last.dwell)
+        assertEquals(4, Scenes.sceneOf(last.jpeg)); assertTrue(last.dwell)
         assertTrue(at - turnAt in 1_000..1_400, "dwell keyframe right after 1.0 s still, was ${at - turnAt}")
         assertEquals(4, r.keyframes.size)
         r.session.stop("test")
@@ -431,25 +464,84 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
-    @Test fun restUsesFixedEvery60s() = runTest {
-        val r = rig(this) { work = 1; rest = 5 }
-        r.fixedDuring = { assertFalse(r.camera.isOpen); assertEquals("fixed", r.owner.current) }
+    @Test fun restKeepsSamplingAtTwoPerMinute() = runTest {
+        val r = glanceRig(this) { work = 1; rest = 5; settings = HudSettings(captureMode = CaptureMode.SMART, workRestEnabled = true) }
         r.session.start()
-        delay(61_000) // one minute of work, then rest
-        assertEquals("rest", r.session.status.value.reason)
-        assertNotNull(r.session.status.value.restingUntilMs)
-        assertFalse(r.camera.isOpen)
+        r.gyro(61_000, 0f) // one minute of work, then rest
+        assertNotNull(r.session.status.value.restingUntilMs, "resting")
+        assertTrue(r.session.status.value.running, "rest keeps the session running")
         val restStart = r.clock()
-        val opensAtRest = r.camera.opens
-        delay(4 * 60_000L + 30_000)
-        assertEquals(opensAtRest, r.camera.opens, "no sampling during rest")
-        assertEquals(4, r.fixedCaptures.size)
-        r.fixedCaptures.zipWithNext { a, b -> assertEquals(60_000L, b - a) }
-        assertTrue(r.fixedCaptures.first() - restStart in 0..61_000)
-        delay(60_000) // rest over: sampling resumes
-        assertEquals(4, r.fixedCaptures.size)
+        for (i in 1..6) { r.scene = 10 + i; r.gyro(400, 1f); r.gyro(9_600, 0f) } // six real glances, 10 s apart, each on a new scene
+        assertTrue(r.session.status.value.running)
+        assertNotNull(r.session.status.value.restingUntilMs)
+        val inRest = r.keyframes.map { it.first }.filter { it >= restStart }
+        for (t in inRest) assertTrue(inRest.count { it in t until t + 60_000 } <= 2, "rolling minute from $t: $inRest")
+        assertTrue(inRest.isNotEmpty(), "rest still captures glances")
+        assertEquals(0, r.fixedCaptures.size)
+        r.session.stop("test")
+    }
+
+    private fun motionRestRig(t: TestScope) = glanceRig(t) {
+        work = 1; rest = 5; profile = CaptureProfile.DEFAULT // MOTION wake, T0
+        settings = HudSettings(captureMode = CaptureMode.SMART, workRestEnabled = true)
+    }
+
+    @Test fun restWithMotionProfileOnsetOpensNothingAndTimerChecksAreSpaced() = runTest {
+        val r = motionRestRig(this)
+        r.session.start()
+        r.gyro(61_000, 0f)
+        assertNotNull(r.session.status.value.restingUntilMs)
+        r.gyro(5_000, 0f)
+        val before = r.camera.opens
+        r.gyro(200, 1f) // an onset (no completed glance yet)
+        assertEquals(before, r.camera.opens, "an onset opens nothing in rest")
+        r.gyro(120_000, 0f)
+        val opens = r.camera.openTimes
+        val inRest = opens.filter { it > 66_000 }
+        inRest.zipWithNext { a, b -> assertTrue(b - a >= 29_000, "timer checks at least 30 s apart: $inRest") }
+        r.session.stop("test")
+    }
+
+    @Test fun restWithMotionProfileStillOpensForAGlanceAtTwoPerMin() = runTest {
+        val r = motionRestRig(this)
+        r.session.start()
+        r.gyro(61_000, 0f)
+        val restStart = r.clock()
+        for (i in 1..6) { r.scene = 20 + i; r.gyro(400, 1f); r.gyro(9_600, 0f) }
+        val inRest = r.keyframes.map { it.first }.filter { it >= restStart }
+        assertTrue(inRest.isNotEmpty())
+        for (t in inRest) assertTrue(inRest.count { it in t until t + 60_000 } <= 2, "$inRest")
+        r.session.stop("test")
+    }
+
+    @Test fun motionOnsetOutsideRestStillOpensImmediately() = runTest {
+        val r = glanceRig(this) { profile = CaptureProfile.DEFAULT }
+        r.session.start()
+        r.gyro(8_000, 0f)
+        val before = r.camera.opens
+        r.gyro(300, 1f)
+        assertTrue(r.camera.opens > before, "onset opens in work")
+        r.session.stop("test")
+    }
+
+    @Test fun workRestDisabledByDefaultNeverRests() = runTest {
+        val r = glanceRig(this) { work = 1; rest = 5 }
+        r.session.start()
+        var t = 0
+        while (t < 120) { r.gyro(60_000, 0f); t += 60; assertNull(r.session.status.value.restingUntilMs); assertTrue(r.session.status.value.running) }
+        assertNull(r.sessionWorkRest.resting.value)
+        r.session.stop("test")
+    }
+
+    @Test fun restingFlagIsClearedWhenTheSwitchTurnsOffMidRest() = runTest {
+        val r = glanceRig(this) { work = 1; rest = 5; settings = HudSettings(captureMode = CaptureMode.SMART, workRestEnabled = true) }
+        r.session.start()
+        r.gyro(61_000, 0f)
+        assertNotNull(r.session.status.value.restingUntilMs)
+        r.settings = r.settings.copy(workRestEnabled = false)
+        r.gyro(2_000, 0f)
         assertNull(r.session.status.value.restingUntilMs)
-        assertTrue(r.camera.opens > opensAtRest)
+        assertTrue(r.session.status.value.running)
         r.session.stop("test")
     }
 
@@ -559,7 +651,8 @@ class SamplingSessionTest {
         assertNull(shared.resting.value, "work 100 s of 120 s: no rest yet")
         delay(30_000)
         assertNotNull(shared.resting.value, "the work clock kept running across the restart: rest after 2 min in total")
-        assertEquals("rest", b.session.status.value.reason)
+        assertNotNull(b.session.status.value.restingUntilMs)
+        assertTrue(b.session.status.value.running, "rest no longer blocks")
         b.session.stop("test")
     }
 
@@ -628,7 +721,7 @@ class SamplingSessionTest {
     }
 
     /** CameraOwner is not reentrant: the session starts Fixed work only after its own acquire block has ended. */
-    @Test fun fallbackAndRestFixedCapturesNeverRunInsideTheSessionBlock() = runTest {
+    @Test fun fallbackFixedCapturesNeverRunInsideTheSessionBlock() = runTest {
         val r = rig(this)
         val ran = ArrayList<String>()
         r.camera.failOpens = 99
@@ -636,11 +729,210 @@ class SamplingSessionTest {
         r.session.start()
         delay(10_000)
         assertEquals(listOf("fallback:fixed:camera=false"), ran, "the fallback capture got the owner (no deadlock)")
-        val rest = rig(this) { work = 1; rest = 5 }
-        rest.fixedDuring = { ran += "rest:${rest.owner.current}:camera=${rest.camera.isOpen}" }
-        rest.session.start()
-        delay(61_000 + 61_000)
-        assertTrue(ran.contains("rest:fixed:camera=false"), "$ran")
-        rest.session.stop("test")
     }
+
+    // ---- battery wave A3 task 3: novelty gate and keep cap with the DEFAULT glance parameters ----
+
+    private fun glanceRig(t: TestScope, configure: Rig.() -> Unit = {}) =
+        Rig(t, HudSettings(captureMode = CaptureMode.SMART), glance = GlanceParams())
+            .apply { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }.apply(configure)
+
+    /** Gyro at 50 Hz for [ms]: rotation [z] rad/s about the vertical axis (0 = still). Feeds the classifier directly. */
+    private suspend fun Rig.gyro(ms: Long, z: Float) {
+        val end = clock() + ms
+        while (clock() < end) { motion.onGyro(0f, 0f, z, clock()); delay(20) }
+    }
+
+    /** Dwell-triggered opens since the last snapshot. */
+    private fun dwellOpens(d: DiagStats) = d.wakes["dwell"] ?: 0
+
+    @Test fun glanceWithoutHeadTurnSoonAfterAKeepDoesNotOpen() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        r.gyro(5_000, 0f)               // the start-up keep, then 5 s of stillness
+        r.session.diagSnapshot()
+        r.gyro(300, 1f); r.gyro(300, -1f) // a real look away and straight back: net rotation about 0
+        r.gyro(3_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, d.glances); assertEquals(1, d.novelSkips); assertEquals(0, dwellOpens(d), "no open for the glance, wakes=${d.wakes}")
+        r.session.stop("test")
+    }
+
+    @Test fun glanceAfterTwentyOneSecondsOpens() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        r.gyro(21_500, 0f)              // the keep was at about 0.6 s: 21 s ago when the look starts
+        r.session.diagSnapshot()
+        r.gyro(300, 1f); r.gyro(300, -1f)
+        r.gyro(3_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, d.glances); assertEquals(0, d.novelSkips); assertEquals(1, dwellOpens(d), "wakes=${d.wakes}")
+        r.session.stop("test")
+    }
+
+    @Test fun glanceWithSeventeenDegreeTurnOpens() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        r.gyro(5_000, 0f)
+        r.session.diagSnapshot()
+        r.gyro(400, 1f)                 // 0.4 rad net (23 deg)
+        r.gyro(3_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, d.glances); assertEquals(0, d.novelSkips); assertEquals(1, dwellOpens(d), "wakes=${d.wakes}")
+        r.session.stop("test")
+    }
+
+    @Test fun microMotionNeverOpensAndIsCounted() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        r.gyro(25_000, 0f)
+        r.session.diagSnapshot()
+        r.gyro(60, 1.5f)                // a jerk: 60 ms
+        r.gyro(4_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(0, d.glances); assertEquals(1, d.micro); assertEquals(0, d.novelSkips); assertEquals(0, dwellOpens(d))
+        r.session.stop("test")
+    }
+
+    @Test fun overCapGlanceIsDroppedBeforeOpening() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        for (s in 1..3) { r.scene = s; while (r.scenesKept.size < s) r.gyro(250, 0f) } // three timer keeps, one scene change each (timer keeps stop at cap - 1)
+        r.scene = 4; r.gyro(400, 1f); r.gyro(3_000, 0f)  // the fourth keep is a glance (0.4 rad, novel)
+        assertEquals(4, r.scenesKept.size)
+        assertTrue(r.clock() < 55_000, "four keeps inside a minute, at ${r.clock()}")
+        r.gyro(2_000, 0f)
+        r.session.diagSnapshot()
+        r.gyro(500, 1f)                 // 0.5 rad: novel enough (>= 0.30), under the 0.8 big turn
+        r.gyro(3_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, d.glances); assertTrue(d.capped >= 1, "capped=${d.capped}"); assertEquals(0, dwellOpens(d), "wakes=${d.wakes}")
+        r.gyro(1_000, 1f)               // 1.0 rad more: the net turn since the last keep is now past 0.8
+        r.gyro(3_000, 0f)
+        val e = r.session.diagSnapshot()
+        assertEquals(1, dwellOpens(e), "a big turn opens, wakes=${e.wakes}")
+        r.session.stop("test")
+    }
+
+    @Test fun walkedGlanceOpensEvenInsideTheNoveltyWindow() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        r.gyro(3_000, 0f)
+        r.session.diagSnapshot()
+        // a 3 s walk (2 Hz stride on the accelerometer), then 6 s of stillness on both sensors: the arrival glance is novel by the walk
+        val start = r.clock()
+        while (r.clock() < start + 9_000) {
+            val t = r.clock()
+            r.motion.onGyro(0f, 0f, 0f, t)
+            val stride = if (t < start + 3_000) 2.0f * kotlin.math.sin(2 * Math.PI * 2.0 * t / 1000.0).toFloat() else 0f
+            r.motion.onLinearAccel(0f, stride, 0f, t)
+            delay(20)
+        }
+        val d = r.session.diagSnapshot()
+        assertEquals(0, d.novelSkips, "walked: not a novelty skip"); assertTrue(dwellOpens(d) >= 1, "wakes=${d.wakes} glances=${d.glances} micro=${d.micro} capped=${d.capped}")
+        r.session.stop("test")
+    }
+
+    // Wave A3 final review I3: timer keeps in front of changing content leave a slot for a real look.
+    @Test fun aLookAtAPersonStillKeptAfterTimerKeepsOfAChangingScreen() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        while (r.clock() < 50_000) { r.gyro(5_000, 0f); r.scene++ } // timer checks all minute see new TV content
+        r.gyro(2_000, 0f)
+        r.session.diagSnapshot()
+        val kept = r.scenesKept.size
+        r.scene = 500
+        r.gyro(500, 1f)                 // 0.5 rad (about 29 deg): novel by turn, under the big turn
+        r.gyro(3_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, dwellOpens(d), "the look opens, wakes=${d.wakes} capped=${d.capped}")
+        assertEquals(kept + 1, r.scenesKept.size, "the look is kept")
+        r.session.stop("test")
+    }
+
+    // Wave A3 task 9: a timer check does not power up the camera when its frame would only be capped.
+    private suspend fun Rig.tvFor(untilMs: Long) { while (clock() < untilMs) { gyro(1_000, 0f); scene++ } }
+
+    @Test fun timerChecksStopOpeningOnceTheKeepBudgetIsUsedAndResumeWhenItAgesOut() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        while (r.keyframes.size < 3 && r.clock() < 59_000) { r.gyro(1_000, 0f); r.scene++ } // timer keeps of a changing screen: the budget is cap - 1 = 3
+        assertEquals(3, r.keyframes.size, "keeps=${r.keyframes.map { it.first }}")
+        val first = r.keyframes[0].first
+        val third = r.keyframes[2].first
+        r.tvFor(first + 57_000)
+        assertTrue(third + 60_000 > first + 57_000 && r.camera.openTimes.none { it > third + 2_000 }, "no opens while the budget is used: ${r.camera.openTimes} third=$third")
+        r.tvFor(first + 70_000)
+        assertTrue(r.camera.openTimes.any { it >= first + 59_000 }, "timer checks resume once the oldest keep ages out: ${r.camera.openTimes}")
+        r.session.stop("test")
+    }
+
+    @Test fun aGlanceInTheDeferredWindowStillOpensAndKeeps() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        while (r.keyframes.size < 3 && r.clock() < 59_000) { r.gyro(1_000, 0f); r.scene++ }
+        assertEquals(3, r.keyframes.size)
+        val first = r.keyframes[0].first
+        r.tvFor(r.clock() + 12_000)
+        r.session.diagSnapshot()
+        val kept = r.keyframes.size
+        val opens = r.camera.opens
+        r.scene = 900
+        r.gyro(500, 1f); r.gyro(3_000, 0f)
+        assertTrue(r.clock() < first + 59_000, "still inside the deferred window")
+        val d = r.session.diagSnapshot()
+        assertEquals(1, dwellOpens(d), "wakes=${d.wakes}")
+        assertTrue(r.camera.opens > opens)
+        assertEquals(kept + 1, r.keyframes.size, "the glance is kept")
+        r.session.stop("test")
+    }
+
+    @Test fun restAtCapTwoHoldsTimerChecksAfterOneKeep() = runTest {
+        val r = glanceRig(this) { work = 1; rest = 5; settings = HudSettings(captureMode = CaptureMode.SMART, workRestEnabled = true) }
+        r.session.start()
+        r.gyro(61_000, 0f)
+        assertNotNull(r.session.status.value.restingUntilMs, "resting")
+        val restStart = r.clock()
+        r.tvFor(restStart + 150_000)
+        val keeps = r.keyframes.map { it.first }.filter { it >= restStart }
+        assertTrue(keeps.size >= 2, "rest still keeps: $keeps")
+        val opens = r.camera.openTimes.filter { it >= restStart }
+        for (k in keeps) assertTrue(opens.none { it > k + 2_000 && it < k + 58_000 }, "no timer open within the minute after a rest keep at $k: $opens")
+        r.session.stop("test")
+    }
+
+    @Test fun theHoldDoesNotSpinTheTickLoopAndTheCheckOpensAtHoldEnd() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        while (r.keyframes.size < 3 && r.clock() < 59_000) { r.gyro(1_000, 0f); r.scene++ }
+        assertEquals(3, r.keyframes.size)
+        val holdEnd = r.keyframes[0].first + 60_000
+        r.tvFor(holdEnd - 3_000)
+        val reads = r.profileReads
+        val opens = r.camera.opens
+        while (r.clock() < holdEnd - 20) { r.gyro(20, 0f); r.scene++ }
+        assertEquals(opens, r.camera.opens, "no open before the hold end")
+        while (r.clock() < holdEnd + 300) { r.gyro(20, 0f); r.scene++ }
+        assertTrue(r.camera.opens > opens, "the deferred check opened at the hold end: ${r.camera.openTimes}")
+        assertTrue(r.profileReads - reads < 80, "tick wake-ups over ~3.3 s: ${r.profileReads - reads} (a spin is ~1 per ms)")
+        r.session.stop("test")
+    }
+
+    /** Task 9 re-review: the deferred open lands its frame after the oldest keep has aged out, whatever the camera's start-up time. */
+    private suspend fun TestScope.deferredCheckKeeps(startupMs: Long) {
+        val r = Rig(this, HudSettings(captureMode = CaptureMode.SMART), startupMs = { startupMs }, glance = GlanceParams())
+            .apply { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }
+        r.session.start()
+        while (r.keyframes.size < 3 && r.clock() < 59_000) { r.gyro(1_000, 0f); r.scene++ }
+        assertEquals(3, r.keyframes.size, "keeps=${r.keyframes.map { it.first }}")
+        val holdEnd = r.keyframes[0].first + 60_000
+        r.tvFor(holdEnd + 4_000)
+        val after = r.keyframes.filter { it.first >= holdEnd }
+        assertTrue(after.isNotEmpty(), "the deferred check ended in a keep (not a capped frame): opens=${r.camera.openTimes} keeps=${r.keyframes.map { it.first }} holdEnd=$holdEnd")
+        r.session.stop("test")
+    }
+
+    @Test fun deferredCheckKeepsWhenStartupIsShorterThanTheLead() = runTest { deferredCheckKeeps(300) }
+
+    @Test fun deferredCheckKeepsWhenStartupIsLongerThanTheLead() = runTest { deferredCheckKeeps(900) }
 }

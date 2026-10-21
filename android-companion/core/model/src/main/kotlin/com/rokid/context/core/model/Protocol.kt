@@ -189,7 +189,16 @@ data class HudSettings(
     val batteryTargetHours: Int = 0,
     /** Battery wave A, additive: pause capture while the phone is in use (see [PhoneContextMessage]). */
     val pauseWhenPhoneInUse: Boolean = false,
+    /** Wave A3: WorkRest default Off. */
+    val workRestEnabled: Boolean = false,
+    /** Wave A3: training label, enum only. Unknown wire value = NONE. */
+    val motionLabel: MotionLabel = MotionLabel.NONE,
+    /** Wave A3: source ids the user turned off; glasses_imu is ignored here (see [normalized]). */
+    val motionSourcesOff: List<String> = emptyList(),
 )
+
+/** Wave A3, additive: training label for the motion feature log. */
+@Serializable enum class MotionLabel { NONE, SITTING, GLANCING, CHORES, EATING, WALKING, NOT_WORN }
 
 /** Battery wave A, additive: what wakes the camera. */
 @Serializable enum class CameraWake { MOTION, SETTLE }
@@ -224,6 +233,7 @@ fun HudSettings.normalized(): HudSettings {
     return copy(
         workMinutes = w, restMinutes = r, quickLookMs = QUICK_LOOK_MS_ALLOWED.nearest(quickLookMs),
         batteryTargetHours = BATTERY_TARGET_HOURS_ALLOWED.nearest(batteryTargetHours),
+        motionSourcesOff = motionSourcesOff.filter { it != "glasses_imu" },
     )
 }
 

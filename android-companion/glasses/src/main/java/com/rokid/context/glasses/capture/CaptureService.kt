@@ -28,6 +28,7 @@ import com.rokid.context.glasses.capture.keyframe.GateResult
 import com.rokid.context.glasses.capture.keyframe.KeyframeGate
 import com.rokid.context.glasses.capture.keyframe.PrefsGateStore
 import com.rokid.context.glasses.capture.motion.AndroidSensorFeed
+import com.rokid.context.glasses.capture.motion.GlanceParams
 import com.rokid.context.glasses.capture.motion.MotionClassifier
 import com.rokid.context.glasses.capture.session.movementSignals
 import com.rokid.context.glasses.capture.motion.SensorFeed
@@ -111,8 +112,13 @@ class CaptureService : LifecycleService() {
 
     internal enum class Outcome { BUFFERED, SKIPPED, FAILED }
 
+    private val screenOnReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) { runtime.screenWakes.onScreenOn() }
+    }
+
     override fun onCreate() {
         super.onCreate()
+        runCatching { registerReceiver(screenOnReceiver, IntentFilter(Intent.ACTION_SCREEN_ON)) }
         lastUpBytes = runtime.uplink.bytesSent; lastUpAt = SystemClock.elapsedRealtime() // the first heartbeat must not count pre-restart bytes
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel(CHANNEL_ID, "Capture", NotificationManager.IMPORTANCE_LOW))
@@ -120,6 +126,7 @@ class CaptureService : LifecycleService() {
 
     override fun onDestroy() {
         if (liveInstance === this) liveInstance = null
+        runCatching { unregisterReceiver(screenOnReceiver) }
         stopSmart("destroyed")
         cameraExecutor.shutdown()
         scope.cancel()
@@ -196,7 +203,8 @@ class CaptureService : LifecycleService() {
 
     private fun startSmart() {
         val clock: () -> Long = SystemClock::elapsedRealtime
-        val motion = MotionClassifier(clock)
+        val glance = GlanceParams() // one instance: the classifier's detector and the session's novelty / cap rules
+        val motion = MotionClassifier(clock, glance)
         ratePolicy.reset()
         val wear = runtime.wear
         wear.resetStillRun() // a still run from before a session restart must not park the glasses at once
@@ -208,11 +216,11 @@ class CaptureService : LifecycleService() {
             batteryPct = ::batteryPercent, charging = ::isCharging, batterySaver = ::isBatterySaverOn,
             profile = { val s = runtime.settingsCache.readNormalized(); CaptureProfile.of(s.cameraWake, budget.tier.value) },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
-            fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default,
+            fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance,
         )
         val verbose = DiagFlags.verboseFeatures(filesDir)
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
-        val feed = AndroidSensorFeed(this, verbose).also { it.start(motion, wear) }
+        val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir).also { it.start(motion, wear) }
         val sm = Smart(session, feed, motion)
         smart = sm
         // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
@@ -273,6 +281,7 @@ class CaptureService : LifecycleService() {
             val upDelta = (upTotal - lastUpBytes).coerceAtLeast(0)
             val upSpan = if (lastUpAt < 0) 60_000L else now - lastUpAt
             lastUpBytes = upTotal; lastUpAt = now
+            val (scrOn, scrOurs, nudgeOff) = runtime.screenWakes.take()
             DiagLog.i(TAG, Heartbeat(
                 running = shown.running, reason = shown.reason.toString(), uiMode = runtime.uiMode.get(),
                 wake = settings.cameraWake.name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
@@ -282,6 +291,7 @@ class CaptureService : LifecycleService() {
                 wear = runtime.wear.worn.value, known = runtime.wear.known, parked = runtime.wear.parked.value,
                 sensors = ((smart?.feed as? AndroidSensorFeed)?.rate ?: SensorRate.FULL).name.lowercase(), phoneUse = runtime.phoneUse.active(now),
                 restartGapSec = runtime.restarts.lastGapSec, stillGapMs = smart?.session?.stillGapMs() ?: 0L,
+                scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, csvFail = (smart?.feed as? AndroidSensorFeed)?.csvFailures ?: 0,
             ).format())
         }
         val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"

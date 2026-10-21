@@ -142,4 +142,14 @@ class CameraPolicyTest {
         assertTrue(d(low = true, sinceEnd = 1999).open)
         assertFalse(d(low = true, sinceEnd = 2000).open)
     }
+
+    @Test fun forRestSlowsTheTimerChecksAndKeepsGlanceCapture() {
+        val r = CaptureProfile.DEFAULT.forRest()
+        assertEquals(CameraWake.SETTLE, r.wake)
+        assertEquals(30_000L, r.settledCheckMs); assertEquals(60_000L, r.quietCheckMs)
+        assertEquals(30_000L, r.walkCheckMs); assertEquals(120_000L, r.stillCapMs)
+        val t2 = settleT2.forRest()
+        assertEquals(30_000L, t2.settledCheckMs); assertEquals(60_000L, t2.quietCheckMs)
+        assertEquals(30_000L, t2.walkCheckMs); assertEquals(120_000L, t2.stillCapMs)
+    }
 }

@@ -11,12 +11,18 @@ import kotlinx.coroutines.flow.StateFlow
  * would otherwise outlast R). A rest only clears on a call, so the owner calls [onSampling] or [onPaused] at least
  * every second or so and wakes itself at the end of [resting]. Settings are read live; the phone UI already enforces "W > 45 means R >= 15", and it is clamped again here.
  */
-class WorkRest(private val clock: () -> Long, private val workMin: () -> Int, private val restMin: () -> Int) {
+class WorkRest(
+    private val clock: () -> Long, private val workMin: () -> Int, private val restMin: () -> Int,
+    /** Off: never rests, schedules nothing, and a rest in progress clears. */
+    private val enabled: () -> Boolean = { true },
+) {
     private val _resting = MutableStateFlow<Long?>(null)
     val resting: StateFlow<Long?> = _resting
 
     private var workStartMs: Long? = null
     private var pausedAtMs: Long? = null
+
+    private fun disable() { _resting.value = null; workStartMs = null; pausedAtMs = null }
 
     private fun workMs() = workMin().coerceAtLeast(1) * MIN_MS
     private fun restMs(): Long {
@@ -27,6 +33,7 @@ class WorkRest(private val clock: () -> Long, private val workMin: () -> Int, pr
 
     @Synchronized
     fun onSampling() {
+        if (!enabled()) { disable(); return }
         val now = clock()
         _resting.value?.let { until ->
             if (until - now > restMs()) _resting.value = now + restMs() // the clock went back
@@ -50,6 +57,7 @@ class WorkRest(private val clock: () -> Long, private val workMin: () -> Int, pr
 
     @Synchronized
     fun onPaused() {
+        if (!enabled()) { disable(); return }
         val now = clock()
         _resting.value?.let { if (now >= it || it - now > restMs()) _resting.value = if (now >= it) null else now + restMs() }
         if (pausedAtMs == null || now < pausedAtMs!!) pausedAtMs = now

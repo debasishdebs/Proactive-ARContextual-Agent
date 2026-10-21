@@ -6,17 +6,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HeartbeatTest {
-    private fun hb(stats: DiagStats = DiagStats(kf1m = 3, openMs = 6_000, spanMs = 60_000, analysed = 30, opens = 3, wakes = mapOf("timer" to 2, "dwell" to 1)), up: Long = 12_345, upSpan: Long = 60_000, drain: Double? = 0.5, proj: Double? = 3.33, gap: Long = 20_000L) = Heartbeat(
+    private fun hb(stats: DiagStats = DiagStats(kf1m = 3, openMs = 6_000, spanMs = 60_000, analysed = 30, opens = 3, wakes = mapOf("timer" to 2, "dwell" to 1), glances = 6, micro = 20, novelSkips = 3, capped = 2, same = 1), up: Long = 12_345, upSpan: Long = 60_000, drain: Double? = 0.5, proj: Double? = 3.33, gap: Long = 20_000L, csvFail: Int = 0) = Heartbeat(
         running = true, reason = "sampling", uiMode = "HUD", wake = "MOTION", tier = "T1", targetH = 4, batt = 80, charging = false,
         drainPctPerMin = drain, projectedHours = proj, stats = stats, upBytes = up, upSpanMs = upSpan, heat = "NORMAL", batteryC = 31.5,
         wear = true, known = true, parked = false, sensors = "full", phoneUse = false, restartGapSec = 42, stillGapMs = gap,
+        scrOn = 2, scrOurs = 0, nudgeOff = 1, csvFail = csvFail,
     )
 
     @Test fun fullSampleKeepsTheSpecKeyOrder() {
         assertEquals(
             "heartbeat v=2 running=true reason=sampling ui_mode=HUD wake=MOTION tier=T1 target_h=4 batt=80 chg=false drain=0.50 proj_h=3.3 " +
                 "kf1m=3 camOpen=10% camOpenMs1m=6000 analysed1m=30 upBytes1m=12345 heat=NORMAL batteryC=31.5 wear=true known=true parked=false " +
-                "sensors=full phoneUse=false restartGapSec=42 opens1m=3 wk=timer:2,dwell:1,onset:0,now:0,stream:0 stillGapMs=20000",
+                "sensors=full phoneUse=false restartGapSec=42 opens1m=3 wk=timer:2,dwell:1,onset:0,now:0,stream:0 stillGapMs=20000 glances1m=6 micro1m=20 novelSkip1m=3 capped1m=2 same1m=1 scrOn=2 scrOurs=0 nudgeOff=1",
             hb().format(),
         )
     }
@@ -49,5 +50,24 @@ class HeartbeatTest {
     @Test fun emptyWakesPrintZeros() {
         val s = hb(DiagStats(0, 0, 60_000, 0)).format()
         assertTrue(s, s.contains(" wk=timer:0,dwell:0,onset:0,now:0,stream:0 "))
+    }
+
+    @Test fun glanceCountersAreNormalisedToAMinute() {
+        val s = hb(DiagStats(0, 0, 120_000, 0, glances = 6)).format()
+        assertTrue(s, s.contains(" glances1m=3 "))
+    }
+
+    @Test fun defaultsPrintZeros() {
+        val s = Heartbeat(
+            running = true, reason = "r", uiMode = null, wake = "w", tier = "T1", targetH = 4, batt = 1, charging = false, drainPctPerMin = null,
+            projectedHours = null, stats = DiagStats(0, 0, 60_000, 0), upBytes = 0, heat = "NORMAL", batteryC = null, wear = true, known = true,
+            parked = false, sensors = "full", phoneUse = false, restartGapSec = null,
+        ).format()
+        assertTrue(s, s.endsWith(" stillGapMs=0 glances1m=0 micro1m=0 novelSkip1m=0 capped1m=0 same1m=0 scrOn=0 scrOurs=0 nudgeOff=0"))
+    }
+
+    @Test fun csvFailuresAreAppendedOnlyWhenNonZero() {
+        assertTrue(hb(csvFail = 2).format().endsWith(" nudgeOff=1 csvFail=2"))
+        assertTrue(!hb().format().contains("csvFail"))
     }
 }
