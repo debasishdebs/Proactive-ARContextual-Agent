@@ -57,7 +57,9 @@ class SceneIndexerTest {
     private val photosCalled = mutableListOf<List<String>>()
     private var beforePhotos: suspend (List<String>) -> Unit = {}
 
+    private var duringEmbed: suspend () -> Unit = {}
     private fun embed(target: String): suspend (List<ByteArray>) -> List<FloatArray> = { jpegs ->
+        duringEmbed()
         jpegs.map { b ->
             val c = b[0].toInt()
             if (c in failing) throw com.rokid.context.memory.ImageDecodeException("decode failed")
@@ -363,5 +365,15 @@ class SceneIndexerTest {
         val ix = SceneIndexer(db, { asked++; targets }, texts, WatchVectors(watchStore), power, { emptyMap() }, { now }, { tuning }, { fg })
         assertEquals(false, ix.closeAged())
         assertEquals(0, asked)
+    }
+
+    /** Data safety: a Forget that commits while the batch is being embedded must not be followed by a vector write of that photo. */
+    @Test fun forgetCommittingMidEmbedLeavesNoVector() = runBlocking {
+        seed("gone", T, code(1, plane(0, 0.0))); seed("kept", T + 1000, code(2, plane(2, 0.0)))
+        val proposals = com.rokid.context.memory.ProposalRepository(db.proposalDao(), db.actionDao(), db)
+        duringEmbed = { com.rokid.context.memory.forget.ForgetService(db, proposals) { 5 }.forgetMoment("gone"); duringEmbed = {} }
+        indexer().routeBatch()
+        assertTrue(db.frameVectorDao().forFrames("sA", listOf("gone")).isEmpty())
+        assertEquals(1, db.frameVectorDao().forFrames("sA", listOf("kept")).size)
     }
 }

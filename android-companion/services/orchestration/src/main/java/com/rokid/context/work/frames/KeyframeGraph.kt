@@ -135,6 +135,11 @@ class KeyframeHandle internal constructor(private val app: Context) {
         )
     }
 
+    /** Describe on demand (wave 3): the user's own VISION_EXTRACT over chosen photos or a scene; the claim path is [KeyframePipeline.extractNow]. */
+    val describe: com.rokid.context.work.frames.recall.DescribeOnDemand by lazy {
+        com.rokid.context.work.frames.recall.DescribeOnDemand(app, pipeline, db, clock, online = ::networkValidated, activeSpaceId = { imageSpaces.targets().firstOrNull { it.active }?.spaceId })
+    }
+
     /** The JPEG bytes of [ids] (decrypted when sealed); a frame whose file is gone is left out. */
     internal suspend fun photoBytes(ids: List<String>): Map<String, ByteArray> =
         PipelineRecords.framesByIds(app, ids).mapNotNull { f -> FrameImages.readBytes(f.path)?.let { f.id to it } }.toMap()
@@ -208,55 +213,9 @@ class KeyframeHandle internal constructor(private val app: Context) {
     }
 
     /** One VISION_EXTRACT over [frameIds] (<= 3, labelled with their ids), saved with the claim CAS inside the transaction. */
-    private suspend fun extract(frameIds: List<String>, claimId: String, callClass: CallClass): ExtractOutcome {
-        val generation = com.rokid.context.orchestration.MemoryWipe.generation.get()
-        val loaded = FramePhotos.load(app, frameIds)
-        val photos = loaded.photos
-        if (photos.isEmpty()) return ExtractOutcome.Failed("unreadable", unreadable = loaded.gone, unseen = loaded.unseen)
-        val ai = AiGraph.get(app)
-        val batch = try {
-            ExtractSave.extract(ai.runner, photos, callClass)
-        } catch (c: CancellationException) {
-            throw c
-        } catch (e: Exception) {
-            return ExtractOutcome.classify(e, online = networkValidated()).copy(unreadable = loaded.gone, unseen = loaded.unseen)
-        }
-        val facts = batch.output.facts.filter { it.text.isNotBlank() }
-        val sent = photos.map { it.frameId }
-        // The same trust verdict (local critic, then the model critic) and follow-up as the legacy job (review I6). Final review I2: the
-        // paid extraction is SAVED first (NEEDS_REVIEW when the local critic is unsure); the model critic runs after, under the caller's
-        // own CallClass, and only upgrades the memories. An ask's cap that lands during the critic therefore cannot lose the extraction.
-        val sentFrames = PipelineRecords.framesByIds(app, sent)
-        val critic = CriticWorker()
-        val localTrusted = ExtractFollowUp.locallyTrusted(critic, claimId, facts)
-        val saved = ExtractSave.saveExtraction(
-            app, factPrefix(claimId), ExtractOutput(facts, captions = batch.output.captions, provenance = batch.output.provenance), sent.toSet(),
-            claims = sent.associateWith { claimId }, tier = MemoryTier.SHORT, reviewState = if (localTrusted) ReviewState.OK else ReviewState.NEEDS_REVIEW,
-            generation = generation,
-        )
-        return when (saved) {
-            is ExtractSaveResult.Saved -> {
-                var trusted = localTrusted
-                try {
-                    if (!localTrusted) {
-                        trusted = ExtractFollowUp.modelCriticPasses(ai, facts, sentFrames.map(ExtractFollowUp::frameLine), callClass)
-                        if (trusted) {
-                            val view = MemoryGraph.get(app).db.memoryViewDao()
-                            saved.memories.filter { it.index != null }.forEach { view.moveReviewState(it.memoryId, ReviewState.NEEDS_REVIEW.name, ReviewState.OK.name) }
-                        }
-                    }
-                } finally {
-                    // Embeddings, the nudge backstop (trusted) or a PRIORITY_REPROCESS job (low confidence), exactly as the legacy job did;
-                    // also when the critic was cancelled (the memories are saved and the claim is done).
-                    withContext(NonCancellable) {
-                        ExtractFollowUp.afterSave(app, generation, saved.memories, trusted, ExtractFollowUp.confidence(facts), AppConfigStore.getWithoutSecret(app).persona, nudge = callClass != CallClass.BACKFILL)
-                    }
-                }
-                ExtractOutcome.Saved(saved.memories, loaded.gone, loaded.unseen)
-            }
-            else -> ExtractOutcome.Stale(loaded.gone, loaded.unseen)
-        }
-    }
+    private suspend fun extract(frameIds: List<String>, claimId: String, callClass: CallClass): ExtractOutcome =
+        KeyframeExtract.run(app, frameIds, claimId, callClass, factPrefix(claimId), ::networkValidated, nudge = callClass != CallClass.BACKFILL && kotlin.coroutines.coroutineContext[NoNudge.Key] == null,
+            quiet = kotlin.coroutines.coroutineContext[NoNudge.Key] != null)
 
     /**
      * One CLUSTER_SUMMARY call over the representatives [reps] of [clusters] (wave 2). The cluster CAS is inside [ClusterSave]; the follow-up

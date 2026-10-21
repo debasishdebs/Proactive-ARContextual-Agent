@@ -71,6 +71,8 @@ internal class Retention(
     private val graph: MemoryGraph,
     private val service: ForgetService,
     private val describeBeforeDeleteReady: Boolean = DESCRIBE_BEFORE_DELETE_READY,
+    /** Test seam: runs after the skipped-photo selection and before its expiry (a describe can commit in between). */
+    private val beforeSkippedExpiry: suspend (List<String>) -> Unit = {},
 ) {
     /** [deletedUndescribed] is 0 by construction (expiry requires a citing memory); it is kept as the Diagnostics counter that proves it. */
     data class Summary(val skippedDeleted: Int = 0, val deletedUndescribed: Int = 0)
@@ -108,8 +110,10 @@ internal class Retention(
         for (round in 0 until MAX_ROUNDS) {
             val ids = dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, PROTECT_MS, CHUNK)
             if (ids.isEmpty()) break
-            skipped += ids.size
-            onChunk(service.expirePhotos(ids))
+            beforeSkippedExpiry(ids)
+            val r = service.expirePhotos(ids, recheckSkipped = true) // S4: a photo described since the selection is kept
+            skipped += r.expiredFrames
+            onChunk(r)
         }
         // 5. Other keyframe photos, deleted only while a memory cites them. An undescribed photo is never deleted: the night job (NightIndexWorker)
         // describes it first, and the photo then waits [GRACE_DAYS] past its deadline (describe-before-delete). A failed describe or an
@@ -135,7 +139,7 @@ internal class Retention(
         for (round in 0 until MAX_ROUNDS) {
             val frames = dao.orphanFramesBefore(nowMs - s.longDays * DAY, CHUNK)
             if (frames.isEmpty()) break
-            frames.forEach { onChunk(service.forgetMoment(it)) }
+            frames.forEach { onChunk(service.forgetMoment(it, redactCites = false)) }
         }
         return Summary(skipped, 0)
     }

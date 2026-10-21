@@ -51,9 +51,9 @@ object QueuePayloads {
     /**
      * PRIORITY_REPROCESS v2: ids only, never memory or frame text (spec §6.1.1, R-77). The drain re-reads the memories
      * when it runs and drops forgotten (missing or INVALIDATED) ones and tombstoned frames, so text forgotten after the
-     * enqueue never reaches a model.
+     * enqueue never reaches a model. [nudge] false (a describe on demand): the drain does not wake the nudge engine after the re-summary.
      */
-    fun reprocess(reason: String, sourceIds: List<String>, frameIds: List<String> = emptyList()): String {
+    fun reprocess(reason: String, sourceIds: List<String>, frameIds: List<String> = emptyList(), nudge: Boolean = true): String {
         return buildJsonObject {
             put("kind", JsonPrimitive(KIND_REPROCESS))
             put("v", JsonPrimitive(2))
@@ -61,6 +61,7 @@ object QueuePayloads {
             put("source_ids_csv", JsonPrimitive(csv(sourceIds)))
             put("frame_ids_csv", JsonPrimitive(csv(frameIds)))
             put("manual", JsonPrimitive(false))
+            if (!nudge) put("nudge", JsonPrimitive(false)) // additive: absent (an older build's job) = true, the drain wakes the nudge engine after it
         }.toString()
     }
 

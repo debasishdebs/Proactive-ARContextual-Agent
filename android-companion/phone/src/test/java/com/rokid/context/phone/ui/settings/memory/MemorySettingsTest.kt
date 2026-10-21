@@ -54,7 +54,7 @@ class MemorySettingsTest {
     @Test fun settingsEncryptionExportAndTheDoubleConfirm() = runBlocking {
         val vm = vm()
         val s0 = withTimeout(5_000) { vm.state.first { it.storage.isNotEmpty() } }
-        assertEquals("42 MB of 100 MB", s0.storage); assertEquals(3, s0.reviewCount)
+        assertEquals("42 MB of 250 MB", s0.storage); assertEquals(3, s0.reviewCount)
         vm.setShort(48); vm.setQuota(200)
         assertEquals(48, vm.state.value.settings.shortHours); assertEquals(200, vm.state.value.settings.quotaMb)
         vm.setEncryption(true)

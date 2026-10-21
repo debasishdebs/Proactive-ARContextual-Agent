@@ -119,6 +119,8 @@ object ExtractSave {
     suspend fun saveExtraction(
         context: Context, idPrefix: String, output: ExtractOutput, sentFrameIds: Set<String>, claims: Map<String, String>?,
         tier: MemoryTier, reviewState: ReviewState, generation: Long = MemoryWipe.generation.get(), nowMs: Long = System.currentTimeMillis(),
+        /** Runs inside the save transaction after the memories and their provenance are written (describe-on-demand moves the photo's state here, S4); a throw rolls everything back. */
+        inTransaction: (suspend (saved: List<SavedMemory>) -> Unit)? = null,
     ): ExtractSaveResult {
         val db = com.rokid.context.memory.MemoryGraph.get(context).db
         val facts = output.facts.filter { it.text.isNotBlank() }
@@ -151,6 +153,7 @@ object ExtractSave {
                 // A re-run replaces the memory by id, so its earlier provenance goes first.
                 saved.forEach { db.frameSourceDao().deleteForMemory(it.memoryId) }
                 db.frameSourceDao().insertAll(saved.flatMap { m -> m.frameIds.map { FrameSourceEntity(m.memoryId, it, null, "FACT") } })
+                inTransaction?.invoke(saved)
                 ExtractSaveResult.Saved(saved)
             }
         } catch (r: Rollback) {

@@ -1,6 +1,7 @@
 package com.rokid.context.phone.hub
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -13,7 +14,11 @@ import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
+import androidx.core.app.NotificationChannelCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.rokid.context.core.model.GlassesStatus
@@ -46,6 +51,9 @@ import kotlinx.coroutines.launch
  */
 class ContextHubService : Service() {
     private var watcher: Job? = null
+    private var closedWatcher: Job? = null
+    /** NOT1: when to show the "Open on glasses" notice (in memory only). */
+    private val closedNotice = ClosedOnGlassesNotice(SystemClock::elapsedRealtime)
     /** The types the service is in the foreground with now (null before the first start). */
     private var currentTypes: Int? = null
     private val micRetry = MicRetry()
@@ -56,6 +64,7 @@ class ContextHubService : Service() {
         super.onCreate()
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Glasses link", NotificationManager.IMPORTANCE_LOW))
+        closedChannel(this)
     }
 
     /**
@@ -78,6 +87,12 @@ class ContextHubService : Service() {
                 combine(hub.status.map(::notificationText), hub.activePauses.map { it.isNotEmpty() }) { t, p -> t to p }
                     .distinctUntilChanged()
                     .collect { (text, paused) -> lastText = text; lastPaused = paused; nm.notify(ID, notification(text, paused)) }
+            }
+            // NOT1: one delayed 45 s job per closed episode (no repeating tick); the receiver reaches the notice through this holder.
+            ClosedNoticeReceiver.notice = closedNotice
+            closedWatcher = CoroutineScope(Dispatchers.Main.immediate).launch {
+                val driver = ClosedNoticeDriver(this, closedNotice, { applyClosedAction(this@ContextHubService, it) })
+                hub.status.map { it.link }.distinctUntilChanged().collect { driver.onLink(it) }
             }
         } else if (intent?.action == ACTION_REFRESH_TYPES) {
             val wanted = micRetry.toTry(wantedTypes(inFront = true), resume)
@@ -113,7 +128,9 @@ class ContextHubService : Service() {
         _micHeld.value = false
         if (running) {
             running = false
-            watcher?.cancel()
+            watcher?.cancel(); closedWatcher?.cancel()
+            ClosedNoticeReceiver.notice = null
+            cancelClosedNotice(this)
             HubGraph.get(this).stop()
         }
         super.onDestroy()
@@ -155,6 +172,66 @@ class ContextHubService : Service() {
                 .setContentIntent(PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_IMMUTABLE))
                 .addAction(Notification.Action.Builder(icon, label, tap).build())
                 .build()
+        }
+
+        const val CLOSED_CHANNEL = "glasses_closed"
+        const val CLOSED_NOTIFICATION_ID = 32
+        const val ACTION_OPEN_GLASSES = "com.rokid.context.hub.OPEN_GLASSES"
+        const val ACTION_CLOSED_DISMISSED = "com.rokid.context.hub.CLOSED_DISMISSED"
+
+        private fun closedChannel(context: Context) {
+            NotificationManagerCompat.from(context).createNotificationChannel(
+                NotificationChannelCompat.Builder(CLOSED_CHANNEL, NotificationManagerCompat.IMPORTANCE_LOW).setName("Closed on glasses").build(),
+            )
+        }
+
+        /** True when a notification may be posted: POST_NOTIFICATIONS granted (Android 13+) and notifications not switched off. Otherwise the notice is skipped silently. */
+        private fun canPost(context: Context): Boolean =
+            (Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) &&
+                NotificationManagerCompat.from(context).areNotificationsEnabled()
+
+        internal fun closedNotification(context: Context): Notification {
+            val open = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: Intent()
+            fun broadcast(code: Int, action: String) = PendingIntent.getBroadcast(
+                context, code, Intent(context, ClosedNoticeReceiver::class.java).setAction(action), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            return NotificationCompat.Builder(context, CLOSED_CHANNEL)
+                .setContentTitle("Closed on glasses \u00b7 capture stopped")
+                .setContentText("Tap Open on glasses to start it again.")
+                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setSilent(true)
+                .setAutoCancel(false)
+                .setContentIntent(PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_IMMUTABLE))
+                .setDeleteIntent(broadcast(4, ACTION_CLOSED_DISMISSED))
+                .addAction(NotificationCompat.Action.Builder(android.R.drawable.ic_menu_view, "Open on glasses", broadcast(3, ACTION_OPEN_GLASSES)).build())
+                .build()
+        }
+
+        /** Posts the silent "Open on glasses" notification; false (nothing posted) without the permission. */
+        @SuppressLint("MissingPermission") // canPost checks it
+        internal fun postClosedNotice(context: Context): Boolean {
+            if (!canPost(context)) return false
+            closedChannel(context)
+            NotificationManagerCompat.from(context).notify(CLOSED_NOTIFICATION_ID, closedNotification(context))
+            return true
+        }
+
+        internal fun cancelClosedNotice(context: Context) { NotificationManagerCompat.from(context).cancel(CLOSED_NOTIFICATION_ID) }
+
+        internal fun applyClosedAction(context: Context, action: ClosedOnGlassesNotice.Action) {
+            when (action) {
+                ClosedOnGlassesNotice.Action.Show -> postClosedNotice(context)
+                ClosedOnGlassesNotice.Action.Cancel -> cancelClosedNotice(context)
+                ClosedOnGlassesNotice.Action.None -> {}
+            }
+        }
+
+        /** The notification's action: the same call as the banner's "Open on glasses" (`requestReconnect`), then this episode is over and the notice goes. */
+        internal fun handleOpenGlasses(context: Context, notice: ClosedOnGlassesNotice, reconnect: () -> Unit) {
+            reconnect()
+            notice.onOpened()
+            cancelClosedNotice(context)
         }
 
         fun isRunning(): Boolean = running
