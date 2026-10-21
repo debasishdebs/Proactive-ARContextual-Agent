@@ -4,7 +4,9 @@ import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.run.RoleRunner
+import com.rokid.context.model.CallClass
 import com.rokid.context.model.LanguageModel
+import com.rokid.context.orchestration.ExtractedBatch
 import com.rokid.context.orchestration.ExtractPhoto
 import com.rokid.context.prompt.PersonaSettings
 import com.rokid.context.prompt.PromptRepository
@@ -16,9 +18,14 @@ data class CallMeta(
     val latencyMs: Long, val promptTokens: Int?, val completionTokens: Int?, val model: String?, val promptVersion: Int?, val batchId: String?,
 )
 
-/** [error] is a fixed short text (a failure kind or a canvas code), never provider text. */
+/**
+ * [error] is a fixed short text (a failure kind or a canvas code), never provider text.
+ * [cause] is the throwable an executor caught (never a cancellation); it is not stored. The interpreter reads it to tell a transient failure (rethrown) from the rest (fallback).
+ * [extracted] is the whole [ExtractedBatch] of the call that produced this item's value (the vision executor sets it; every item of a chunk shares one instance).
+ */
 data class NodeResult(
     val frameId: String, val value: CanvasValue?, val branch: String? = null, val error: String? = null, val meta: CallMeta? = null, val calls: Int = 0,
+    val cause: Throwable? = null, val extracted: ExtractedBatch? = null,
 )
 
 class RunContext(
@@ -29,6 +36,8 @@ class RunContext(
     val persona: PersonaSettings,
     val bindings: suspend (Role) -> RoleBinding?,
     val now: () -> LocalDateTime = LocalDateTime::now,
+    /** The class of every model call the executors make: EXPERIMENT for runs and Shadow, the live class when the interpreter replaces extraction. */
+    val callClass: CallClass = CallClass.EXPERIMENT,
 )
 
 interface NodeExecutor {

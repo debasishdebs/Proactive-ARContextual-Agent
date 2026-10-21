@@ -139,8 +139,6 @@ class CanvasRunner(
         }
     }
 
-    private class Out(val value: CanvasValue, val branch: String?)
-
     private suspend fun execute(runId: String, p: Pipeline, ids: List<String>) {
         var calls = 0
         var failures = 0
@@ -150,7 +148,7 @@ class CanvasRunner(
             val load = photos.load(ids)
             val photoById: Map<String, ExtractPhoto> = load.photos.associateBy { it.frameId }
             val order = ids.withIndex().associate { it.value to it.index }
-            val outputs = HashMap<String, Map<String, Out>>()
+            val outputs = HashMap<String, Map<String, ItemFlow.Out>>()
 
             suspend fun write(nodeId: String, frameId: String, r: NodeResult) {
                 val m = r.meta
@@ -164,7 +162,7 @@ class CanvasRunner(
                 calls += r.calls
             }
 
-            stop@ for (node in topological(p)) {
+            stop@ for (node in ItemFlow.topological(p)) {
                 val incoming = p.edges.filter { it.to == node.id }
                 val inputs = LinkedHashMap<String, CanvasValue>()
                 if (node.type == NodeTypes.INPUT_PHOTOS) {
@@ -176,21 +174,17 @@ class CanvasRunner(
                             write(node.id, id, NodeResult(id, null, error = "unreadable"))
                         }
                     }
-                    outputs[node.id] = inputs.mapValues { Out(it.value, null) }
+                    outputs[node.id] = inputs.mapValues { ItemFlow.Out(it.value, null) }
                     dao.updateRun(runId, "RUNNING", calls, failures, null)
                     continue
                 }
-                val conflicts = LinkedHashSet<String>()
-                for (e in incoming) {
-                    for ((id, o) in outputs[e.from].orEmpty()) {
-                        if (e.`when` != null && e.`when` != o.branch) continue
-                        if (inputs.containsKey(id) || id in conflicts) { inputs.remove(id); conflicts += id } else inputs[id] = o.value
-                    }
-                }
+                val gathered = ItemFlow.gather(incoming, outputs)
+                inputs.putAll(gathered.inputs)
+                val conflicts = gathered.conflicts
                 for (id in conflicts.sortedBy { order[it] }) write(node.id, id, NodeResult(id, null, error = "merge_conflict"))
                 val ex = executors[node.type]
                 val queue = inputs.entries.sortedBy { order[it.key] }.map { CanvasItem(it.key, photoById.getValue(it.key), it.value) }
-                val produced = LinkedHashMap<String, Out>()
+                val produced = LinkedHashMap<String, ItemFlow.Out>()
                 for (chunk in queue.chunked(ex?.chunkSize(node)?.coerceAtLeast(1) ?: Int.MAX_VALUE)) {
                     if (cancelled.get() == runId) { status = "CANCELLED"; break@stop }
                     if (hot()) { status = "STOPPED_HOT"; break@stop }
@@ -198,7 +192,7 @@ class CanvasRunner(
                     for (item in chunk) {
                         val r = results[item.frameId] ?: NodeResult(item.frameId, null, error = if (ex == null) "no_executor" else "no_result")
                         write(node.id, item.frameId, r)
-                        r.value?.let { produced[item.frameId] = Out(it, r.branch) }
+                        r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch) }
                     }
                     dao.updateRun(runId, "RUNNING", calls, failures, null)
                 }
@@ -216,17 +210,5 @@ class CanvasRunner(
             // The row must reach a terminal state even when the DB threw once: retry as FAILED, then give up quietly (recoverAtStart sweeps it).
             if (!ok) runCatching { dao.updateRun(runId, "FAILED", calls, failures, clock()) }
         }
-    }
-
-    /** Kahn's algorithm; ties go to the node that comes first in the JSON. */
-    private fun topological(p: Pipeline): List<PipelineNode> {
-        val remaining = p.nodes.toMutableList()
-        val done = HashSet<String>()
-        val out = ArrayList<PipelineNode>()
-        while (remaining.isNotEmpty()) {
-            val next = remaining.firstOrNull { n -> p.edges.none { it.to == n.id && it.from !in done } } ?: remaining.first()
-            remaining.remove(next); done += next.id; out += next
-        }
-        return out
     }
 }

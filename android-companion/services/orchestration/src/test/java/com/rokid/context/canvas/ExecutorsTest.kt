@@ -42,6 +42,7 @@ class ExecutorsTest {
     private val app = ApplicationProvider.getApplicationContext<Context>()
     private val prompts = mutableListOf<String>()
     private val requests = mutableListOf<ModelRequest>()
+    private val classes = mutableListOf<CallClass>()
     private var unbound = emptySet<Role>()
 
     @Before fun setUp() { MemoryGraph.resetForTests(DatabaseFactory.inMemory(app)) }
@@ -63,17 +64,17 @@ class ExecutorsTest {
         (prompt ?: buildJsonObject { putJsonObject("prompt") { put("source", "live") } }).forEach { (k, v) -> put(k, v) }
     }, id = "extract")
 
-    private fun ctx(reply: (String) -> String): RunContext {
+    private fun ctx(callClass: CallClass = CallClass.EXPERIMENT, reply: (String) -> String): RunContext {
         val ai = TestAi.graph(app) { p -> prompts += p; reply(p) }.also { TestAi.bindAll(it) }
         val recording = object : LanguageModel {
             override suspend fun complete(role: Role, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply =
-                ai.router.complete(role, callClass) { e -> build(e).also { requests += it } }
+                ai.router.complete(role, callClass.also { classes += it }) { e -> build(e).also { requests += it } }
             override suspend fun completeFromFrames(callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply =
                 ai.router.completeFromFrames(callClass) { e -> build(e).also { requests += it } }
             override suspend fun completeOn(endpointId: String, model: String, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply =
                 ai.router.completeOn(endpointId, model, callClass, build)
         }
-        return RunContext("run1", ai.runner, recording, ai.prompts, ai.persona, { r -> if (r in unbound) null else ai.bindings.get(r) })
+        return RunContext("run1", ai.runner, recording, ai.prompts, ai.persona, { r -> if (r in unbound) null else ai.bindings.get(r) }, callClass = callClass)
     }
 
     private fun exec(type: String) = checkNotNull(Executors.all()[type])
@@ -122,6 +123,36 @@ class ExecutorsTest {
         assertEquals(listOf("INVALID_OUTPUT", "INVALID_OUTPUT", null), r.map { it.error })
         assertNull(r[0].value); assertNull(r[1].value)
         assertNotNull(r[2].value)
+    }
+
+    @Test fun extractSetsExtractedBatchSharedByTheChunkAndCauseOnFailure() = runBlocking<Unit> {
+        val c = ctx { p -> if ("ex3" in p) "not json at all" else extractReply(*sentIds(p).toTypedArray()) }
+        val r = exec(NodeTypes.VISION_EXTRACT).run(extractNode(2), listOf(item("ex1"), item("ex2"), item("ex3")), c)
+        assertNotNull(r[0].extracted)
+        assertTrue(r[0].extracted === r[1].extracted)
+        assertEquals(listOf("Mug in ex1", "Mug in ex2"), r[0].extracted!!.output.facts.map { it.text })
+        assertNull(r[0].cause)
+        assertNull(r[2].extracted)
+        assertTrue(r[2].cause is com.rokid.context.ai.ModelCallException)
+        assertEquals(com.rokid.context.ai.FailureKind.INVALID_OUTPUT, (r[2].cause as com.rokid.context.ai.ModelCallException).kind)
+    }
+
+    @Test fun promptFailureCarriesCauseAndCallClassComesFromContext() = runBlocking<Unit> {
+        val c = ctx(CallClass.EXTRACT) { """{"activity":"workout"}""" }
+        exec(NodeTypes.PROMPT).run(promptNode(), listOf(item("ex1")), c)
+        assertEquals(listOf(CallClass.EXTRACT), classes)
+        val io = java.io.IOException("net")
+        val boom = object : LanguageModel {
+            override suspend fun complete(role: Role, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply = throw io
+            override suspend fun completeFromFrames(callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply = throw io
+            override suspend fun completeOn(endpointId: String, model: String, callClass: CallClass, build: (Endpoint) -> ModelRequest): RoutedReply = throw io
+        }
+        val base = ctx { "" }
+        val withBoom = RunContext(base.runId, base.runner, boom, base.prompts, base.persona, base.bindings)
+        val res = exec(NodeTypes.PROMPT).run(promptNode(), listOf(item("ex1")), withBoom).single()
+        assertTrue(res.cause === io)
+        assertEquals("IOException", res.error)
+        assertEquals(CallClass.EXPERIMENT, withBoom.callClass) // the default stays EXPERIMENT
     }
 
     // ---- critics ----
