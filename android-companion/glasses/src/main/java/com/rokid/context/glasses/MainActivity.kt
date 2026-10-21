@@ -220,7 +220,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         val pm = getSystemService(PowerManager::class.java)
-        if (!PopupGate.show(o, pm?.isInteractive ?: true)) { runtime.screenWakes.onNudgeSkipped(); return }
+        if (!PopupGate.show(o, pm?.isInteractive ?: true, com.rokid.context.core.model.context.ContextPolicies.of(runtime.contextApplied()).nudges)) { runtime.screenWakes.onNudgeSkipped(); return }
         PopupOverlay.textFor(o, controller.settings.value.verbosity)?.let { runtime.screenWakes.onOurUi(); runtime.popup.show(it, controller.settings.value.popupMs()) }
     }
 

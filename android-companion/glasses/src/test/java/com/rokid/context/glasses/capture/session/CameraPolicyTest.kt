@@ -152,4 +152,24 @@ class CameraPolicyTest {
         assertEquals(30_000L, t2.settledCheckMs); assertEquals(60_000L, t2.quietCheckMs)
         assertEquals(30_000L, t2.walkCheckMs); assertEquals(120_000L, t2.stillCapMs)
     }
+
+    @Test fun withContextUnknownRowIsIdentityAndWalkingToo() {
+        val p = com.rokid.context.core.model.context.ContextPolicies
+        assertEquals(CaptureProfile.DEFAULT, CaptureProfile.DEFAULT.withContext(p.of(com.rokid.context.core.model.context.ContextState.UNKNOWN)))
+        assertEquals(CaptureProfile.DEFAULT, CaptureProfile.DEFAULT.withContext(p.of(com.rokid.context.core.model.context.ContextState.WALKING)))
+    }
+
+    @Test fun withContextPassengerSettlesAndWidensGaps() {
+        val pol = com.rokid.context.core.model.context.ContextPolicies.of(com.rokid.context.core.model.context.ContextState.VEHICLE_PASSENGER)
+        val r = CaptureProfile.DEFAULT.withContext(pol)
+        assertEquals(CameraWake.SETTLE, r.wake)
+        assertEquals(60_000L, r.settledCheckMs); assertEquals(120_000L, r.quietCheckMs); assertEquals(60_000L, r.walkCheckMs); assertEquals(180_000L, r.stillCapMs)
+        assertFalse("context never pauses by itself", r.paused)
+    }
+
+    @Test fun withContextRestKeepsTheLargerT2Gaps() {
+        val pol = com.rokid.context.core.model.context.ContextPolicies.of(com.rokid.context.core.model.context.ContextState.REST)
+        val r = settleT2.forRest().withContext(pol)
+        assertEquals(settleT2.forRest(), r)
+    }
 }

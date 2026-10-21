@@ -33,6 +33,11 @@ data class Heartbeat(
     val nudgeOff: Int = 0,
     /** Motion CSV write failures (count only); printed only when non-zero so the key order above stays pinned. */
     val csvFail: Int = 0,
+    /** Wave B: the last `pc_motion_ctx` state name or "none", its age in seconds, the state applied to capture, vetoes in the span. */
+    val ctx: String = "none",
+    val ctxAgeS: Long? = null,
+    val ctxApplied: String = "UNKNOWN",
+    val ctxVeto: Int = 0,
 ) {
     private fun perMin(v: Long, spanMs: Long = stats.spanMs): Long = v * 60_000L / spanMs.coerceAtLeast(1)
 
@@ -48,6 +53,7 @@ data class Heartbeat(
             "opens1m=${perMin(stats.opens.toLong())} wk=${listOf("timer", "dwell", "onset", "now", "stream").joinToString(",") { "$it:${stats.wakes[it] ?: 0}" }} stillGapMs=$stillGapMs " +
             "glances1m=${perMin(stats.glances.toLong())} micro1m=${perMin(stats.micro.toLong())} novelSkip1m=${perMin(stats.novelSkips.toLong())} " +
             "capped1m=${perMin(stats.capped.toLong())} same1m=${perMin(stats.same.toLong())} scrOn=$scrOn scrOurs=$scrOurs nudgeOff=$nudgeOff" +
+            " ctx=$ctx ctxAgeS=${ctxAgeS ?: "na"} ctxApplied=$ctxApplied ctxVeto=$ctxVeto" +
             if (csvFail > 0) " csvFail=$csvFail" else ""
     }
 }

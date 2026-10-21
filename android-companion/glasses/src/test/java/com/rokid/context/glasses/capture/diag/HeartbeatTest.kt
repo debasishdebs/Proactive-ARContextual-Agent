@@ -17,7 +17,7 @@ class HeartbeatTest {
         assertEquals(
             "heartbeat v=2 running=true reason=sampling ui_mode=HUD wake=MOTION tier=T1 target_h=4 batt=80 chg=false drain=0.50 proj_h=3.3 " +
                 "kf1m=3 camOpen=10% camOpenMs1m=6000 analysed1m=30 upBytes1m=12345 heat=NORMAL batteryC=31.5 wear=true known=true parked=false " +
-                "sensors=full phoneUse=false restartGapSec=42 opens1m=3 wk=timer:2,dwell:1,onset:0,now:0,stream:0 stillGapMs=20000 glances1m=6 micro1m=20 novelSkip1m=3 capped1m=2 same1m=1 scrOn=2 scrOurs=0 nudgeOff=1",
+                "sensors=full phoneUse=false restartGapSec=42 opens1m=3 wk=timer:2,dwell:1,onset:0,now:0,stream:0 stillGapMs=20000 glances1m=6 micro1m=20 novelSkip1m=3 capped1m=2 same1m=1 scrOn=2 scrOurs=0 nudgeOff=1 ctx=none ctxAgeS=na ctxApplied=UNKNOWN ctxVeto=0",
             hb().format(),
         )
     }
@@ -63,11 +63,16 @@ class HeartbeatTest {
             projectedHours = null, stats = DiagStats(0, 0, 60_000, 0), upBytes = 0, heat = "NORMAL", batteryC = null, wear = true, known = true,
             parked = false, sensors = "full", phoneUse = false, restartGapSec = null,
         ).format()
-        assertTrue(s, s.endsWith(" stillGapMs=0 glances1m=0 micro1m=0 novelSkip1m=0 capped1m=0 same1m=0 scrOn=0 scrOurs=0 nudgeOff=0"))
+        assertTrue(s, s.endsWith(" stillGapMs=0 glances1m=0 micro1m=0 novelSkip1m=0 capped1m=0 same1m=0 scrOn=0 scrOurs=0 nudgeOff=0 ctx=none ctxAgeS=na ctxApplied=UNKNOWN ctxVeto=0"))
     }
 
     @Test fun csvFailuresAreAppendedOnlyWhenNonZero() {
-        assertTrue(hb(csvFail = 2).format().endsWith(" nudgeOff=1 csvFail=2"))
+        assertTrue(hb(csvFail = 2).format().endsWith(" ctxVeto=0 csvFail=2"))
         assertTrue(!hb().format().contains("csvFail"))
+    }
+
+    @Test fun contextKeysFollowNudgeOffInOrder() {
+        val s = hb().copy(ctx = "REST", ctxAgeS = 42, ctxApplied = "UNKNOWN", ctxVeto = 3).format()
+        assertTrue(s, s.endsWith(" nudgeOff=1 ctx=REST ctxAgeS=42 ctxApplied=UNKNOWN ctxVeto=3"))
     }
 }

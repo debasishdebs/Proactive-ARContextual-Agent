@@ -13,4 +13,11 @@ class PopupGateTest {
         assertTrue(PopupGate.show(Overlay.Toast("t"), interactive = false))
         assertTrue(PopupGate.show(Overlay.Confirm("p", "t", "d"), interactive = false))
     }
+
+    @Test fun nudgeNeedsNudgesAllowedToo() {
+        assertFalse(PopupGate.show(Overlay.Nudge("x"), interactive = true, nudgesAllowed = false))
+        assertTrue(PopupGate.show(Overlay.Nudge("x"), interactive = true, nudgesAllowed = true))
+        assertTrue(PopupGate.show(Overlay.Answer("q", "a", false), interactive = true, nudgesAllowed = false))
+        assertTrue(PopupGate.show(Overlay.Answer("q", "a", false), interactive = false, nudgesAllowed = false))
+    }
 }
