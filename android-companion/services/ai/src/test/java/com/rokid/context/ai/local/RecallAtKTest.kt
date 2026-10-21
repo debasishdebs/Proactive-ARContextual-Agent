@@ -35,6 +35,7 @@ class RecallAtKTest {
         val r = RecallAtK.evaluate(images, qs, dims = 8, k = 1)
         assertEquals(0.75, r.overall, 1e-9); assertEquals(0.5, r.small, 1e-9)
         assertEquals(4, r.queries); assertEquals(2, r.smallQueries)
+        assertEquals(3, r.hits); assertEquals(1, r.smallHits)
     }
 
     @Test fun shortenThenRenormalise() {

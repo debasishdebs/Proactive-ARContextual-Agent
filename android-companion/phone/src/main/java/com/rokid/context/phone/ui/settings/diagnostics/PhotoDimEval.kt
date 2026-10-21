@@ -21,11 +21,17 @@ import kotlin.coroutines.cancellation.CancellationException
  * the live vector space) and bounded, cancellable and gated. Logs and the result file carry counts and numbers only, never query
  * text, frame ids or photo content.
  *
- * Input: `<dir>/queries.json` = `[{"query": "...", "frameIds": ["..."], "small": true}]`. Output: `<dir>/result.json`.
+ * The corpus is the labelled photos plus up to [MAX_DISTRACTORS] other stored keyframes (seeded sample, newest first, none within
+ * [EXCLUDE_MS] of a labelled frame) so the score is not a trivial ceiling. Truncating the VISION vector to 256 is not a documented
+ * Nomic property (only the text model is Matryoshka-trained): this test is the only evidence there is.
+ *
+ * Input: `<dir>/queries.json` = `[{"query": "...", "frameIds": ["..."], "small": true}]`, built in-app by [PhotoLabels] (or pushed
+ * with run-as). Output: `<dir>/result.json`.
  */
 class PhotoDimEval(
     private val dir: File,
     private val photos: PhotoLoader,
+    private val catalog: FrameCatalog,
     private val embedder: Embedder,
     /** True while bulk work may run (thermal and battery, as for backfill); checked before every batch. */
     private val gate: () -> Boolean = { true },
@@ -35,7 +41,18 @@ class PhotoDimEval(
     interface Embedder {
         suspend fun images(jpegs: List<ByteArray>): List<FloatArray>
         suspend fun queries(prefixed: List<String>): List<FloatArray>
+        /** Called once when a run ends (done, refused, blocked, failed or cancelled): release private sessions. */
+        fun close() {}
     }
+
+    /** A stored keyframe that still has a photo: id and capture time. */
+    data class FrameRef(val id: String, val ts: Long)
+
+    /** Every stored keyframe whose photo exists and is not forgotten (the distractor pool and the labelled frames' times). */
+    fun interface FrameCatalog { suspend fun frames(): List<FrameRef> }
+
+    /** What a run would use right now, counts only (the screen shows it before the user starts). */
+    data class Preview(val queries: Int, val small: Int, val labelledPhotos: Int, val distractors: Int)
 
     /** JPEG bytes by frame id; ids that can't be read (gone, tombstoned, unreadable) are simply absent. Photos never leave the phone. */
     fun interface PhotoLoader { suspend fun load(ids: List<String>): Map<String, ByteArray> }
@@ -48,27 +65,48 @@ class PhotoDimEval(
         /** Heat or battery gate closed; nothing was written. */
         data class Blocked(val message: String) : Outcome
         data class Failed(val message: String) : Outcome
-        data class Done(val r768: RecallAtK.Result, val r256: RecallAtK.Result, val pass256: Boolean) : Outcome {
-            val verdict: String get() = if (pass256) VERDICT_PASS else VERDICT_KEEP
+        /** [inconclusive]: 768 already scores >= 0.95 overall and on the small subset, so the corpus can't tell the widths apart: keep 768. */
+        data class Done(
+            val r768: RecallAtK.Result, val r256: RecallAtK.Result, val pass256: Boolean, val labelled: Int, val distractors: Int, val inconclusive: Boolean = false,
+        ) : Outcome {
+            val verdict: String get() = when { inconclusive -> VERDICT_INCONCLUSIVE; pass256 -> VERDICT_PASS; else -> VERDICT_KEEP }
         }
     }
 
-    suspend fun run(onProgress: (Progress) -> Unit = {}): Outcome = withContext(dispatcher) {
-        val fixture = try { parse(File(dir, QUERIES_FILE).readText()) } catch (c: CancellationException) { throw c } catch (e: Exception) {
-            return@withContext Outcome.Failed("Couldn't read $QUERIES_FILE (${e.javaClass.simpleName})")
-        }
-        refusal(fixture.photoIds.size, fixture.queries)?.let { return@withContext Outcome.Refused(it) }
-        val done = withTimeoutOrNull(TIME_LIMIT_MS) { runBounded(fixture, onProgress) }
-        done ?: Outcome.Failed("Stopped: the test took longer than ${TIME_LIMIT_MS / 60_000} minutes")
+    suspend fun preview(): Preview = withContext(dispatcher) {
+        val f = try { parse(File(dir, QUERIES_FILE).readText()) } catch (c: CancellationException) { throw c } catch (_: Exception) { return@withContext Preview(0, 0, 0, 0) }
+        val frames = catalog.frames()
+        val present = f.photoIds.filter { id -> frames.any { it.id == id } }.toSet()
+        val judgeable = judged(f.queries, present)
+        Preview(judgeable.size, judgeable.count { it.small }, present.size, pickDistractors(frames, present).size)
     }
 
-    private suspend fun runBounded(f: Fixture, onProgress: (Progress) -> Unit): Outcome {
+    suspend fun run(onProgress: (Progress) -> Unit = {}): Outcome = try {
+        withContext(dispatcher) {
+            val fixture = try { parse(File(dir, QUERIES_FILE).readText()) } catch (c: CancellationException) { throw c } catch (e: Exception) {
+                return@withContext Outcome.Failed("Couldn't read $QUERIES_FILE (${e.javaClass.simpleName})")
+            }
+            val frames = try { catalog.frames() } catch (c: CancellationException) { throw c } catch (e: Exception) {
+                return@withContext Outcome.Failed("The test failed (${e.javaClass.simpleName}) \u2014 try again")
+            }
+            val ids = frames.map { it.id }.toSet()
+            val labelled = fixture.photoIds.filter { it in ids }.toSet()
+            refusal(labelled.size, judged(fixture.queries, labelled))?.let { return@withContext Outcome.Refused(it) }
+            val distractors = pickDistractors(frames, labelled)
+            distractorRefusal(labelled.size, distractors.size)?.let { return@withContext Outcome.Refused(it) }
+            val done = withTimeoutOrNull(TIME_LIMIT_MS) { runBounded(fixture, labelled, distractors.map { it.id }, onProgress) }
+            done ?: Outcome.Failed("Stopped: the test took longer than ${TIME_LIMIT_MS / 60_000} minutes")
+        }
+    } finally {
+        try { embedder.close() } catch (_: Exception) { }
+    }
+
+    private suspend fun runBounded(f: Fixture, labelled: Set<String>, distractorIds: List<String>, onProgress: (Progress) -> Unit): Outcome {
         try {
-            val ids = f.photoIds.toList()
-            val total = ids.size + f.queries.size
+            val total = labelled.size + distractorIds.size + f.queries.size
             var processed = 0
             val images = LinkedHashMap<String, FloatArray>()
-            for (chunk in ids.chunked(BATCH)) {
+            for (chunk in (labelled.toList() + distractorIds).chunked(BATCH)) {
                 gateOrBlock()?.let { return it }
                 currentCoroutineContext().ensureActive()
                 val bytes = photos.load(chunk)
@@ -76,7 +114,11 @@ class PhotoDimEval(
                 embedImages(present, bytes).forEach { (id, v) -> images[id] = v }
                 processed += chunk.size; onProgress(Progress(processed, total))
             }
-            refusal(images.size, f.queries)?.let { return Outcome.Refused(it) }
+            val loadedLabelled = images.keys.filter { it in labelled }.toSet()
+            val loadedDistractors = images.size - loadedLabelled.size
+            // The minimums hold on what can really be judged now (photos expire, some don't decode).
+            refusal(loadedLabelled.size, judged(f.queries, loadedLabelled))?.let { return Outcome.Refused(it) }
+            distractorRefusal(loadedLabelled.size, loadedDistractors)?.let { return Outcome.Refused(it) }
             val vectors = ArrayList<Pair<RecallAtK.Query, FloatArray>>(f.queries.size)
             for (chunk in f.queries.chunked(BATCH)) {
                 gateOrBlock()?.let { return it }
@@ -88,15 +130,17 @@ class PhotoDimEval(
             }
             val r768 = RecallAtK.evaluate(images, vectors, 768)
             val r256 = RecallAtK.evaluate(images, vectors, 256)
-            val pass = RecallAtK.choose256(r768, r256)
-            writeResult(r768, r256, pass)
-            Log.i(TAG, "done photos=${images.size} queries=${r768.queries} small=${r768.smallQueries} verdict=${if (pass) VERDICT_PASS else VERDICT_KEEP}")
-            return Outcome.Done(r768, r256, pass)
+            val ceiling = r768.overall >= CEILING && r768.small >= CEILING
+            val pass = !ceiling && RecallAtK.choose256(r768, r256)
+            val done = Outcome.Done(r768, r256, pass, loadedLabelled.size, loadedDistractors, inconclusive = ceiling)
+            writeResult(done)
+            Log.i(TAG, "done labelled=${loadedLabelled.size} distractors=$loadedDistractors queries=${r768.queries} small=${r768.smallQueries} verdict=${done.verdict}")
+            return done
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
             Log.i(TAG, "failed class=${e.javaClass.simpleName}")
-            return Outcome.Failed("The test failed (${e.javaClass.simpleName}) — try again")
+            return Outcome.Failed("The test failed (${e.javaClass.simpleName}) \u2014 try again")
         }
     }
 
@@ -116,14 +160,18 @@ class PhotoDimEval(
         }
     }
 
-    private fun writeResult(r768: RecallAtK.Result, r256: RecallAtK.Result, pass: Boolean) {
+    private fun writeResult(d: Outcome.Done) {
         dir.mkdirs()
         val json = JSONObject()
-            .put("version", 1)
-            .put("verdict", if (pass) VERDICT_PASS else VERDICT_KEEP)
-            .put("r768", numbers(r768)).put("r256", numbers(r256))
-            .put("overallDropPoints", (r768.overall - r256.overall) * 100.0)
-            .put("smallDropPoints", (r768.small - r256.small) * 100.0)
+            .put("version", 2)
+            .put("verdict", d.verdict)
+            .put("labelledPhotos", d.labelled).put("distractors", d.distractors).put("corpusSize", d.r768.photos)
+            .put("queries", d.r768.queries).put("smallQueries", d.r768.smallQueries)
+            .put("hits768", d.r768.hits).put("hits256", d.r256.hits)
+            .put("smallHits768", d.r768.smallHits).put("smallHits256", d.r256.smallHits)
+            .put("r768", numbers(d.r768)).put("r256", numbers(d.r256))
+            .put("overallDropPoints", (d.r768.overall - d.r256.overall) * 100.0)
+            .put("smallDropPoints", (d.r768.small - d.r256.small) * 100.0)
         val tmp = File(dir, "$RESULT_FILE.tmp")
         tmp.writeText(json.toString())
         if (!tmp.renameTo(File(dir, RESULT_FILE))) { File(dir, RESULT_FILE).writeText(json.toString()); tmp.delete() }
@@ -131,7 +179,7 @@ class PhotoDimEval(
 
     private fun numbers(r: RecallAtK.Result) = JSONObject()
         .put("dims", r.dims).put("overall", r.overall).put("small", r.small)
-        .put("queries", r.queries).put("smallQueries", r.smallQueries).put("photos", r.photos)
+        .put("queries", r.queries).put("smallQueries", r.smallQueries).put("photos", r.photos).put("hits", r.hits).put("smallHits", r.smallHits)
 
     class Fixture(val queries: List<RecallAtK.Query>, val photoIds: Set<String>)
 
@@ -141,6 +189,13 @@ class PhotoDimEval(
         const val RESULT_FILE = "result.json"
         const val VERDICT_PASS = "PASS_256"
         const val VERDICT_KEEP = "KEEP_768"
+        const val VERDICT_INCONCLUSIVE = "INCONCLUSIVE"
+        const val CEILING = 0.95
+        const val MAX_DISTRACTORS = 1500
+        const val MIN_DISTRACTORS = 300
+        const val DISTRACTOR_FACTOR = 5
+        const val EXCLUDE_MS = 60_000L
+        const val SEED = 20261021L
         const val MIN_PHOTOS = 60
         const val MIN_QUERIES = 40
         const val MIN_SMALL = 15
@@ -168,6 +223,33 @@ class PhotoDimEval(
             return Fixture(queries, ids.take(MAX_PHOTOS).toSet())
         }
 
+        /** The queries that can be judged: at least one of their photos is in [present]. */
+        fun judged(queries: List<RecallAtK.Query>, present: Set<String>): List<RecallAtK.Query> = queries.filter { q -> q.relevant.any { it in present } }
+
+        /**
+         * Other stored keyframes to hide the labelled ones among: none within [EXCLUDE_MS] of a labelled frame (probable unlabelled
+         * true positives), a seeded random sample when there are more than [MAX_DISTRACTORS], returned newest first.
+         */
+        fun pickDistractors(all: List<FrameRef>, labelled: Set<String>): List<FrameRef> {
+            val labelledTs = all.filter { it.id in labelled }.map { it.ts }.sorted().toLongArray()
+            fun nearLabelled(ts: Long): Boolean {
+                var i = java.util.Arrays.binarySearch(labelledTs, ts)
+                if (i < 0) i = -i - 1
+                return (i < labelledTs.size && labelledTs[i] - ts <= EXCLUDE_MS) || (i > 0 && ts - labelledTs[i - 1] <= EXCLUDE_MS)
+            }
+            val eligible = all.filter { it.id !in labelled && !nearLabelled(it.ts) }
+                .sortedWith(compareByDescending<FrameRef> { it.ts }.thenBy { it.id })
+            if (eligible.size <= MAX_DISTRACTORS) return eligible
+            val picked = (eligible.indices).toMutableList().also { it.shuffle(java.util.Random(SEED)) }.take(MAX_DISTRACTORS).sorted()
+            return picked.map { eligible[it] }
+        }
+
+        fun distractorRefusal(labelledPhotos: Int, distractors: Int): String? {
+            val need = maxOf(MIN_DISTRACTORS, DISTRACTOR_FACTOR * labelledPhotos)
+            if (distractors >= need) return null
+            return "Need at least $need other stored photos to search among for $labelledPhotos labelled photos; found $distractors other photos."
+        }
+
         fun refusal(photos: Int, queries: List<RecallAtK.Query>): String? {
             val small = queries.count { it.small }
             if (photos >= MIN_PHOTOS && queries.size >= MIN_QUERIES && small >= MIN_SMALL) return null
@@ -177,8 +259,14 @@ class PhotoDimEval(
         /** On-screen summary lines: numbers only. */
         fun lines(d: Outcome.Done): List<String> = listOf(
             line(d.r768), line(d.r256),
+            "Corpus: ${d.labelled} labelled + ${d.distractors} other photos",
             "Drop at 256: overall ${fmt((d.r768.overall - d.r256.overall) * 100)} points (limit 3), small ${fmt((d.r768.small - d.r256.small) * 100)} points (limit 5)",
-            if (d.pass256) "PASS 256 — store images at 256" else "KEEP 768 — leave the image width at 768",
+            when {
+                d.inconclusive -> "INCONCLUSIVE \u2014 768 already scores 95% or more, so this set can't tell the widths apart. Keep 768; add harder queries or more photos"
+                d.pass256 -> "PASS 256 \u2014 store images at 256"
+                else -> "KEEP 768 \u2014 leave the image width at 768"
+            },
+            "Cutting the image vector to 256 is not a documented Nomic property (only the text side is); this is evidence from your own photos only.",
         )
 
         private fun line(r: RecallAtK.Result) =

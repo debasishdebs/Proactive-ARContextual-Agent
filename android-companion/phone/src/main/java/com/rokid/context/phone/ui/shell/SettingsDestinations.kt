@@ -28,6 +28,7 @@ import com.rokid.context.phone.canvas.ui.CanvasWebRoute
 import com.rokid.context.phone.ui.settings.DiagnosticsScreen
 import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEval
 import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalFactory
+import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalGate
 import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalScreen
 import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalViewModel
 import com.rokid.context.phone.ui.settings.DiagnosticsViewModel
@@ -297,10 +298,11 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val app = LocalContext.current.applicationContext
         val devOn by remember { DeveloperModeStore.get(app) }.enabled.collectAsStateWithLifecycle()
         // Same gate as the row: a release build or Developer mode off never shows the screen (a deep link or a stale back stack falls back).
-        if (!PhotoDimEval.rowVisible(com.rokid.context.BuildConfig.DEBUG, devOn)) { LaunchedEffect(Unit) { back() }; return@composable }
-        val vm = viewModel { PhotoDimEvalViewModel(PhotoDimEvalFactory.create(app), bundleReady = { PhotoDimEvalFactory.bundleReady(app) }) }
-        val state by vm.state.collectAsStateWithLifecycle()
-        PhotoDimEvalScreen(state, onBack = back, onRun = vm::start, onCancel = vm::cancel)
+        PhotoDimEvalGate(com.rokid.context.BuildConfig.DEBUG, devOn, back) {
+            val vm = viewModel { PhotoDimEvalViewModel(PhotoDimEvalFactory.create(app), PhotoDimEvalFactory.labels(app), bundleReady = { PhotoDimEvalFactory.bundleReady(app) }) }
+            val state by vm.state.collectAsStateWithLifecycle()
+            PhotoDimEvalScreen(state, onBack = back, onRun = vm::start, onCancel = vm::cancel, onClear = vm::clearLabels)
+        }
     }
 
     composable(Routes.DIAGNOSTICS_LOGS) {

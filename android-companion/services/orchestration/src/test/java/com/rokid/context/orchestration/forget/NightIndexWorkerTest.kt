@@ -118,29 +118,29 @@ class NightIndexWorkerTest {
     // --- the night job ---------------------------------------------------------------------------------------------------
 
     @Test fun describesOnlyUnlinkedNonSkippedDuePhotos() = runBlocking {
-        cluster("cSum", "SUMMARIZED"); cluster("cOpen", "CLOSED")
+        db.frameClusterDao().upsert(FrameClusterEntity("cSum", 1, 2, "gap", "[\"rep\"]", null, state = "SUMMARIZED")); cluster("cOpen", "CLOSED")
         val dueTs = now - 6 * day - 12 * hour // due in 12 h
         photo("due", dueTs)
         photo("dueFailedFinal", dueTs, "FAILED_FINAL", lastError = "cluster_failed")
         photo("dueKeyMoment", dueTs, "NEAR_DUP", salience = 0.8f)
         photo("linked", dueTs, linked = true)
         photo("skipped", dueTs, "NEAR_DUP", salience = 0.1f)
-        photo("shed", dueTs, "NEAR_DUP", lastError = "shed_backlog")
+        photo("shed", dueTs, "NEAR_DUP", salience = 0.0f, lastError = "shed_backlog")
         photo("notDue", now - 2 * day)
         photo("dwellNotDue", now - day, dwell = true)
         photo("inCluster", dueTs, "IN_CLUSTER", salience = 0.9f, clusterId = "cOpen")
         photo("unsettled", dueTs, "CLUSTERED", salience = 0.9f, clusterId = "cOpen")
         photo("pending", dueTs, "PENDING")
-        photo("rep", dueTs, "CLUSTERED", clusterId = "cSum", linked = true)
+        photo("rep", dueTs, "CLUSTERED", salience = 0.1f, clusterId = "cSum") // scored low but a representative (repFrameIds), unlinked: not skipped, so described
         val ids = mutableListOf<Int>()
         val r = night(described = ids).run()
-        assertEquals(setOf("due", "dueFailedFinal", "dueKeyMoment"), calls.flatMap { it.first }.toSet())
-        assertEquals(3, r.queued); assertEquals(3, r.described); assertEquals(0, r.left); assertEquals(listOf(3), ids)
-        for (id in listOf("due", "dueFailedFinal", "dueKeyMoment")) {
+        assertEquals(setOf("due", "dueFailedFinal", "dueKeyMoment", "rep"), calls.flatMap { it.first }.toSet())
+        assertEquals(4, r.queued); assertEquals(4, r.described); assertEquals(0, r.left); assertEquals(listOf(4), ids)
+        for (id in listOf("due", "dueFailedFinal", "dueKeyMoment", "rep")) {
             assertTrue("$id described", cited(id)); assertEquals("EXTRACTED", state(id).state)
             assertEquals("the marker survives the save", "describe_before_delete", state(id).lastError)
         }
-        for (id in listOf("linked", "skipped", "shed", "notDue", "dwellNotDue", "rep")) assertFalse("$id untouched", calls.any { id in it.first })
+        for (id in listOf("linked", "skipped", "shed", "notDue", "dwellNotDue")) assertFalse("$id untouched", calls.any { id in it.first })
         for (id in listOf("inCluster", "unsettled", "pending")) assertFalse("$id untouched", calls.any { id in it.first })
         assertEquals("IN_CLUSTER", state("inCluster").state); assertEquals("PENDING", state("pending").state)
         assertEquals("CLUSTERED", state("unsettled").state)
@@ -150,8 +150,8 @@ class NightIndexWorkerTest {
         cluster("cSum", "SUMMARIZED")
         val old = now - 20 * day
         photo("dup", old, "NEAR_DUP", salience = 0.2f)
-        photo("shed", old, "NEAR_DUP", lastError = "shed_backlog")
-        photo("member", old, "CLUSTERED", clusterId = "cSum")
+        photo("shed", old, "NEAR_DUP", salience = 0.0f, lastError = "shed_backlog")
+        photo("member", old, "CLUSTERED", salience = 0.1f, clusterId = "cSum")
         photo("expiredKey", old, "NEAR_DUP", salience = 0.9f, lastError = "caption_expired")
         night().run()
         assertTrue(calls.isEmpty())
@@ -307,7 +307,7 @@ class NightIndexWorkerTest {
         val old = now - 20 * day
         val open = photo("open", old, "IN_CLUSTER", salience = 0.9f, clusterId = "cOpen")
         val retried = photo("retried", old, "CLUSTERED", salience = 0.9f, clusterId = "cFailed")
-        val rep = photo("rep", now - 6 * day - 12 * hour, "CLUSTERED", clusterId = "cSum")
+        val rep = photo("rep", now - 6 * day - 12 * hour, "CLUSTERED", salience = 0.1f, clusterId = "cSum")
         db.memoryDao().insert(MemoryEntity("m_sum", "rep", "t", "cluster_summary", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, now, false, "t"))
         db.frameSourceDao().insertAll(listOf(FrameSourceEntity("m_sum", "rep", "cSum", "CLUSTER_REP"))) // the summary cites it as a representative
         val dwell = photo("dwell", now - day, dwell = true, linked = true)
@@ -526,5 +526,58 @@ class NightIndexWorkerTest {
         night(pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("offline", countsAttempt = false) }).run()
         clockMs += 5 * day; night().run()
         assertTrue(calls.isNotEmpty()); assertEquals(setOf(CallClass.BACKFILL), calls.map { it.second }.toSet())
+    }
+
+    // --- final review I1: wave-1 shed / near-dup photos were never scored (salience NULL): not "skipped", described first ---------
+
+    /**
+     * The ~800-photo trip as wave 1 left it: shed (`shed_backlog`) and dhash near-dup frames in NEAR_DUP with NO salience. Installed at day 0:
+     * nothing is deleted at day 0 or day 7 undescribed; the night job describes them (5 nights at 60 batches of 3); each goes at
+     * max(deadline, describedAt) + 3 days; the ones never described survive.
+     */
+    @Test fun legacyUnscoredTripPhotosAreDescribedBeforeAnyDelete() = runBlocking {
+        val install = now
+        val s = MemorySettings(photoDays = 7, perKindSince = install)
+        val jpgs = (0 until 800).map { i ->
+            photo("t$i", install - 3 * day - i * 60_000L, "NEAR_DUP", salience = null, lastError = if (i % 2 == 0) "shed_backlog" else null)
+        }
+        assertEquals("day 0", 0, retention(install, ready = true, s = s).deletedUndescribed)
+        for (at in listOf(install + 7 * day + hour, install + 30 * day, install + 400 * day)) {
+            retention(at, ready = true, s = s) // before any describe, however late
+            assertTrue("kept undescribed at +${(at - install) / day} d", jpgs.all { it.exists() } && db.forgetDao().frame("t0") != null)
+        }
+        clockMs = install + 6 * day
+        val described = mutableListOf<Int>()
+        repeat(5) { night(s = s, described = described).run(); clockMs += day }
+        assertEquals("all 800 described within five nights (60 batches of 3 each)", 800, (0 until 800).count { cited("t$it") })
+        // night 1 ran at +6 d (deadline +7 d), night 5 at +10 d: deletion at max(deadline, describedAt) + 3 d
+        retention(install + 9 * day, ready = true, s = s); assertTrue("inside every grace", jpgs.all { it.exists() })
+        retention(install + 10 * day + hour, ready = true, s = s)
+        assertFalse("night-1 photo is gone", jpgs[0].exists()); assertTrue("night-5 photo waits for its own 3 days", jpgs[799].exists())
+        retention(install + 14 * day, ready = true, s = s)
+        assertTrue("every described photo is gone", jpgs.none { it.exists() })
+        assertEquals("800 captions outlive their photos", 800, db.memoryDao().count())
+    }
+
+    /** An unscored legacy photo the night job cannot describe (offline, failing) is never deleted. */
+    @Test fun legacyUnscoredPhotoThatCannotBeDescribedSurvives() = runBlocking {
+        val s = MemorySettings(photoDays = 7, perKindSince = now - 30 * day)
+        val jpg = photo("legacy", now - 20 * day, "NEAR_DUP", salience = null, lastError = "shed_backlog")
+        night(pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("offline", countsAttempt = false) }, s = s).run()
+        for (at in listOf(now, now + 40 * day, now + 4000 * day)) {
+            assertEquals(0, retention(at, ready = true, s = s).deletedUndescribed)
+            assertTrue("kept at +${(at - now) / day} d", jpg.exists() && db.forgetDao().frame("legacy") != null)
+        }
+    }
+
+    /** A real salience below 0.5 recorded by this wave's scene indexer still makes a skipped photo (1 day), described never. */
+    @Test fun scoredLowSalienceNearDupIsStillAnOrdinarySkippedPhoto() = runBlocking {
+        val s = MemorySettings(photoDays = 7, perKindSince = now - 30 * day)
+        val scored = photo("scored", now - 20 * day, "NEAR_DUP", salience = 0.0f)
+        val unscored = photo("unscored", now - 20 * day, "NEAR_DUP", salience = null)
+        retention(now, ready = true, s = s)
+        assertFalse("scored low salience goes at the skipped window", scored.exists()); assertTrue("unscored is kept", unscored.exists())
+        night(s = s).run()
+        assertEquals(listOf("unscored"), calls.flatMap { it.first })
     }
 }
