@@ -74,6 +74,8 @@
         <!-- P7-B proposals -->
         <receiver android:name=".phone.actions.ProposalActionReceiver" android:exported="false" />
         <receiver android:name=".phone.hub.ClosedNoticeReceiver" android:exported="false" />
+        <!-- Wave B: Play services Activity Recognition transitions (PendingIntent target; not exported). -->
+        <receiver android:name="com.rokid.context.phone.context.ActivityTransitionReceiver" android:exported="false" />
         <!-- /P7-B proposals -->
 
         <!-- P7-C sources (application) -->

@@ -106,6 +106,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.5")
     implementation("androidx.lifecycle:lifecycle-process:2.8.5")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+    // Wave B context sources: activity-transition + (Task 4) fused location speed; Android Auto CarConnection (Task 5).
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("androidx.car.app:app:1.4.0")
 
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
