@@ -101,6 +101,26 @@ class LocalModelPowerTest {
         assertEquals("the model was never asked", 0, queryCalls)
     }
 
+    @Test fun gatedForwardsImagesWithoutBulkGate() = runBlocking {
+        var imageCalls = 0
+        val imaging = object : Embedder by inner {
+            override val modalities = setOf(com.rokid.context.memory.Modality.TEXT, com.rokid.context.memory.Modality.IMAGE)
+            override val imageDims: Int? = 768
+            override suspend fun embedImages(jpegs: List<ByteArray>): List<FloatArray> { imageCalls++; return jpegs.map { floatArrayOf(1f) } }
+        }
+        val gated = PowerGatedEmbedder(imaging) { low }
+        assertEquals(1, gated.embedImages(listOf(byteArrayOf(1))).size) // live embedding at low battery (Ruling 18)
+        assertEquals(1, imageCalls)
+        assertEquals(768, gated.imageDims)
+        try { gated.embedDocuments(listOf("a")); fail("text bulk stays gated") } catch (e: LocalModelPausedException) { /* expected */ }
+    }
+
+    @Test fun gatedForwardsModalities() {
+        val imaging = object : Embedder by inner { override val modalities = setOf(com.rokid.context.memory.Modality.TEXT, com.rokid.context.memory.Modality.IMAGE) }
+        assertEquals(imaging.modalities, PowerGatedEmbedder(imaging) { low }.modalities)
+        assertEquals(setOf(com.rokid.context.memory.Modality.TEXT), PowerGatedEmbedder(inner) { low }.modalities)
+    }
+
     @Test fun powerIsReadFromTheBatteryService() {
         val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         shadowOf(bm).setIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY, 55); shadowOf(bm).setIsCharging(false)

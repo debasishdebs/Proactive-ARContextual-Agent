@@ -52,6 +52,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /** What the page header shows besides the rows. */
 data class LocalModelsHeader(
@@ -261,6 +262,8 @@ class LocalModelsSource(
      */
     suspend fun useForEmbeddings(m: LocalModel): ActionResult {
         val outcome = withContext(io) {
+            // A bundle (Nomic: text GGUF + vision ONNX) is never bound with a file missing: the swap could not start without both.
+            if (m.files.size > 1 && !m.files.all { File(gateway.fileFor(m).parentFile, it.file).isFile }) return@withContext UseOutcome.FAILED
             val id = endpointIdFor(m)
             val before = ai.endpoints.byId(id)
             val endpoint = Endpoint(id, "On-device \u00b7 ${m.title}", EndpointKind.LLAMACPP_LOCAL, gateway.fileFor(m).absolutePath, null,

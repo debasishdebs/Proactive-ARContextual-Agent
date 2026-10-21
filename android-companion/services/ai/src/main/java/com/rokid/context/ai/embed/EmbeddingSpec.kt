@@ -28,6 +28,8 @@ data class EmbeddingSpec(
     val docPrefix: String,
     val queryPrefix: String,
     val maxInputChars: Int,
+    /** The image-vector width of an IMAGE-capable space (Nomic bundle); null for text-only specs, and for configs written before images. */
+    val imageDim: Int? = null,
 ) {
     /** Canonical JSON, keys sorted, no endpoint id, display name or key. */
     fun identityJson(): String = JsonObject(sortedMapOf<String, JsonElement>(
@@ -35,7 +37,7 @@ data class EmbeddingSpec(
         "dimensions" to (dimensions?.let { JsonPrimitive(it) } ?: JsonNull), "docPrefix" to JsonPrimitive(docPrefix), "kind" to JsonPrimitive(kind.name),
         "l2" to JsonPrimitive(l2), "maxInputChars" to JsonPrimitive(maxInputChars), "model" to JsonPrimitive(model),
         "queryPrefix" to JsonPrimitive(queryPrefix), "revision" to (revision?.let { JsonPrimitive(it) } ?: JsonNull),
-    )).toString()
+    ).also { m -> imageDim?.let { m["imageDim"] = JsonPrimitive(it) } }).toString() // absent when null: every text-only fingerprint is unchanged
 
     val fingerprint: String get() = MessageDigest.getInstance("SHA-256").digest(identityJson().toByteArray()).joinToString("") { "%02x".format(it) }
 
@@ -51,6 +53,7 @@ data class EmbeddingSpec(
                 model = s("model")!!, revision = s("revision"), dimensions = (o["dimensions"] as? JsonPrimitive)?.intOrNull,
                 dim = (o["dim"] as JsonPrimitive).intOrNull!!, l2 = (o["l2"] as JsonPrimitive).booleanOrNull!!,
                 docPrefix = s("docPrefix").orEmpty(), queryPrefix = s("queryPrefix").orEmpty(), maxInputChars = (o["maxInputChars"] as JsonPrimitive).intOrNull!!,
+                imageDim = (o["imageDim"] as? JsonPrimitive)?.intOrNull,
             )
         }.getOrNull()
     }

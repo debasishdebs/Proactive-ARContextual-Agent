@@ -64,10 +64,8 @@ class PowerGatedEmbedder(private val inner: Embedder, private val power: () -> P
     override val modalities: Set<Modality> get() = inner.modalities
     override val imageDims: Int? get() = inner.imageDims
 
-    override suspend fun embedImages(jpegs: List<ByteArray>): List<FloatArray> {
-        if (!LocalModelPower.bulkAllowed(power())) throw LocalModelPausedException()
-        return inner.embedImages(jpegs)
-    }
+    /** No G6 check (Ruling 18): live per-keyframe embedding is ordinary live work, gated by PhonePowerPolicy IMAGE_VECTORS; only backfill is battery-gated (by its caller). */
+    override suspend fun embedImages(jpegs: List<ByteArray>): List<FloatArray> = inner.embedImages(jpegs)
 
     override suspend fun embedQueryFull(text: String): FloatArray {
         if (!LocalModelPower.queryAllowed(power(), text)) throw LocalModelPausedException()

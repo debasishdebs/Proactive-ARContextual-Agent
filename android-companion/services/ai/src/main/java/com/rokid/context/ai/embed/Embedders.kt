@@ -6,6 +6,7 @@ import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBindingRepository
 import com.rokid.context.ai.UrlNormalizer
 import com.rokid.context.ai.local.NomicText
+import com.rokid.context.ai.local.NomicVision
 import com.rokid.context.memory.Embedder
 import com.rokid.context.memory.SpaceEmbedderProvider
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
@@ -36,7 +37,7 @@ class Embedders(
         // The on-device Nomic bundle is stored at 256 after LayerNorm (NomicText); its native vectors are raw pooled 768.
         val nomic = e.kind == EndpointKind.LLAMACPP_LOCAL && NomicText.isNomic(b.model)
         val probe = client.embed(e, b.model, key, listOf(query + Canaries.TEXTS[0]), normalize = !nomic).single()
-        val spec = EmbeddingSpec(e.id, e.kind, e.baseUrl, e.apiVersion, b.model, revision, null, if (nomic) NomicText.TEXT_DIMS else probe.size, true, doc, query, MAX_INPUT_CHARS)
+        val spec = EmbeddingSpec(e.id, e.kind, e.baseUrl, e.apiVersion, b.model, revision, null, if (nomic) NomicText.TEXT_DIMS else probe.size, true, doc, query, MAX_INPUT_CHARS, imageDim = if (nomic) NomicVision.STORED_DIMS else null)
         return EndpointEmbedder(spec, e, key, client)
     }
 

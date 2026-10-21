@@ -119,4 +119,25 @@ class EmbeddersTest {
             assertNull(req?.getHeader("Authorization")); assertNull(req?.getHeader("api-key"))
         } finally { old.shutdown() }
     }
+
+    @Test fun bindingWritesImageDim() = runTest {
+        val dir = java.io.File(System.getProperty("java.io.tmpdir"), "nomic_binding_test").apply { mkdirs() }
+        val gguf = java.io.File(dir, "nomic-embed-text-v1.5.Q8_0.gguf").path
+        db.endpointDao().upsert(com.rokid.context.memory.db.EndpointEntity("local_nomic", "Nomic", "LLAMACPP_LOCAL", gguf, null,
+            com.rokid.context.ai.local.NomicText.CATALOG_ID, EndpointRepository.keyRef("local_nomic"), "EMBEDDINGS", 1))
+        bindings.set(RoleBinding(Role.EMBED, "local_nomic", com.rokid.context.ai.local.NomicText.CATALOG_ID)).getOrThrow()
+        val nomic = Embedders(endpoints, bindings, EmbeddingClient(native = { _, t, _ -> t.map { FloatArray(768) { i -> i + 1f } } })).forBinding()!!
+        assertEquals(com.rokid.context.ai.local.NomicVision.STORED_DIMS, nomic.spec.imageDim)
+        assertEquals(com.rokid.context.ai.local.NomicBundle.fingerprint(768), nomic.fingerprint)
+        assertEquals(768, EmbeddingSpec.fromConfig(nomic.spec.configJson())!!.imageDim)
+        val text = com.rokid.context.ai.local.NomicBundle.visionPath(gguf)
+        assertEquals("sibling of the GGUF", java.io.File(dir, com.rokid.context.ai.local.NomicBundle.VISION_FILE), text)
+    }
+
+    @Test fun oldConfigWithoutImageDimParses() {
+        val old = """{"apiVersion":null,"baseUrl":"/m/n.gguf","dim":256,"dimensions":null,"docPrefix":"search_document: ","kind":"LLAMACPP_LOCAL","l2":true,"maxInputChars":2000,"model":"nomic-embed-v1.5","queryPrefix":"search_query: ","revision":null,"endpointId":"l"}"""
+        val spec = EmbeddingSpec.fromConfig(old)!!
+        assertNull(spec.imageDim)
+        assertEquals("a null imageDim leaves the identity json (and every text-only fingerprint) unchanged", false, "imageDim" in spec.identityJson())
+    }
 }
