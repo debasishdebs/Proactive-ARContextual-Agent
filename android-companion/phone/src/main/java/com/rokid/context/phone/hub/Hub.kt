@@ -350,7 +350,8 @@ class Hub(
                     it.copy(
                         versionMismatch = false, offset = measured, glassesBatteryPct = h.glassesBatteryPct ?: it.glassesBatteryPct,
                         bufferedFrames = h.bufferSize, nextCaptureAtMs = h.nextCaptureAtMs?.let(measured::toPhone),
-                        rokidCloses = h.rokidCloses, lastRestartGapSec = h.lastRestartGapSec, iconBlocked = h.iconBlocked,
+                        rokidCloses = h.rokidCloses, lastRestartGapSec = h.lastRestartGapSec,
+                        unverifiedCloses = h.unverifiedCloses, otherCloses = h.otherCloses, iconBlocked = h.iconBlocked,
                     )
                 }
                 // Fix wave I2: the glasses repeat the wearer's exit in every hello, in case `pc_user_exit` was lost with the session.

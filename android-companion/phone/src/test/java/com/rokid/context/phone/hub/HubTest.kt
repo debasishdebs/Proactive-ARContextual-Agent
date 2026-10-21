@@ -354,6 +354,15 @@ class HubTest {
         assertEquals("Rokid closed the app 5 times (last gap 38s)", h.state.value.rokidClosesLine())
     }
 
+    /** Wave 3: unverified and other force-stops reach the Diagnostics line on the phone. */
+    @Test fun helloCarriesTheUnverifiedAndOtherForceStopCounts() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        link.emit(GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 77, bufferSize = 0, glassesNowMs = now, pauses = emptyList(), rokidCloses = 5, lastRestartGapSec = 38, unverifiedCloses = 2, otherCloses = 3))); runCatching { runCurrent() }
+        assertEquals("Rokid closed the app 5 times (last gap 38s; 2 unverified; 3 other force-stops)", h.state.value.rokidClosesLine())
+        assertEquals(true, h.state.value.glassesDiagnostics()!!.contains("3 other force-stops"))
+    }
+
     /** Carry (Phase 3 review): each frame the glasses deliver leaves their buffer, so the count drops without a new hello. */
     @Test fun bufferedFramesCountDownAsTheFlushIsAcked() = runTest {
         val link = FakeGlassesLink()

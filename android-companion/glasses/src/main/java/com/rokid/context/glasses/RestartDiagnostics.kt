@@ -22,11 +22,13 @@ class RestartDiagnostics(
     private val wallClock: () -> Long = System::currentTimeMillis,
     /** PackageInfo.lastUpdateTime. */
     private val installedAtMs: () -> Long = { 0L },
-    /** The newest ApplicationExitInfo of the previous process: true = REASON_USER_REQUESTED; null = unavailable. */
-    private val lastExitWasUserRequested: () -> Boolean? = { null },
+    /** The newest ApplicationExitInfo of the previous process; null = unavailable. */
+    private val lastExit: () -> ExitFacts? = { null },
     private val log: (String) -> Unit,
     /** What the wearer last saw before this process started: [UiModeStore] full | icon | home. */
     private val uiMode: () -> String = { UiModeStore.HOME },
+    /** (exit, lastAliveMs, nowMs) -> its kind, or null when it is not a counted force-stop (see [ExitClassifier]). */
+    private val classify: (ExitFacts, Long, Long) -> ExitKind? = { f, _, _ -> if (f.userRequested) ExitKind.UNKNOWN else null },
 ) {
     /**
      * True after a restart that follows a death while the app was meant to be running (a heartbeat was stored, no update and
@@ -40,6 +42,10 @@ class RestartDiagnostics(
 
     /** Times the system force-stopped us (reason forcestop) since the app data was last cleared. */
     val closes: Int get() = prefs.getInt(KEY_CLOSES, 0)
+    /** Force-stops whose caller could not be verified (hidden or reused pid): their own category, not added to [closes]. */
+    val unverifiedCloses: Int get() = prefs.getInt(KEY_UNVERIFIED, 0)
+    /** Force-stops by a verified non-Rokid caller (Settings, adb). */
+    val otherCloses: Int get() = prefs.getInt(KEY_OTHER, 0)
     /** Seconds between the last heartbeat and the latest restart that followed a force-stop, or null. */
     val lastGapSec: Int? get() = if (prefs.contains(KEY_LAST_GAP)) prefs.getInt(KEY_LAST_GAP, 0) else null
 
@@ -61,30 +67,45 @@ class RestartDiagnostics(
     fun onProcessStart() {
         val lastAlive = prefs.getLong(KEY_ALIVE, 0L)
         val now = wallClock()
-        val gap = if (lastAlive > 0L) ((now - lastAlive).coerceAtLeast(0L) / 1_000L).toInt() else -1
+        val exit = lastExit()
+        // The exit's own timestamp is exact; the heartbeat overstates the gap by up to 30 s.
+        val gap = when {
+            lastAlive <= 0L -> -1
+            exit != null && exit.timestampMs in (lastAlive + 1)..now -> ((now - exit.timestampMs) / 1_000L).toInt()
+            else -> ((now - lastAlive).coerceAtLeast(0L) / 1_000L).toInt()
+        }
+        val kind = if (lastAlive > 0L && installedAtMs() <= lastAlive && exit != null) classify(exit, lastAlive, now) else null
         val reason = when {
             lastAlive <= 0L -> "unknown"
             installedAtMs() > lastAlive -> "install"
-            lastExitWasUserRequested() == true -> "forcestop"
+            kind == ExitKind.ROKID -> "forcestop_rokid"
+            kind == ExitKind.UNKNOWN -> "forcestop_unverified"
+            kind == ExitKind.OTHER -> "forcestop_other"
             else -> "unknown"
         }
         val mode = uiMode()
         killedWhileRunning = lastAlive > 0L && reason != "install" && mode != UiModeStore.HOME
-        log("restart gap=$gap reason=$reason ui_mode=$mode")
-        if (reason == "forcestop") prefs.edit().putInt(KEY_CLOSES, closes + 1).putInt(KEY_LAST_GAP, gap).apply()
+        val e = prefs.edit()
+        when (kind) {
+            ExitKind.ROKID -> if (reason == "forcestop_rokid") e.putInt(KEY_CLOSES, closes + 1).putInt(KEY_LAST_GAP, gap)
+            ExitKind.UNKNOWN -> if (reason == "forcestop_unverified") e.putInt(KEY_UNVERIFIED, unverifiedCloses + 1)
+            ExitKind.OTHER -> if (reason == "forcestop_other") e.putInt(KEY_OTHER, otherCloses + 1)
+            null -> {}
+        }
+        e.apply()
+        // Counts only (S20): never the exit description, a pid or a package name.
+        log("restart rokid=$closes unknown=$unverifiedCloses other=$otherCloses gap=$gap reason=$reason ui_mode=$mode")
         if (mode == UiModeStore.HOME) onExit() else heartbeat() // a start is alive too: a second start right away must not read the old gap again
     }
 
-    /** "Rokid closed the app N times (last gap Xs)", or null before the first one. */
-    fun summary(): String? {
-        val n = closes
-        if (n == 0) return null
-        return "Rokid closed the app $n time${if (n == 1) "" else "s"} (last gap ${lastGapSec ?: 0}s)"
-    }
+    /** "Rokid closed the app N times (last gap Xs; M unverified; K other force-stops)", or null before the first force-stop of any kind. */
+    fun summary(): String? = com.rokid.context.core.model.closesSummary(closes, lastGapSec, unverifiedCloses, otherCloses)
 
     private companion object {
         const val KEY_ALIVE = "last_alive_ms"
         const val KEY_CLOSES = "rokid_closes"
+        const val KEY_UNVERIFIED = "unknown_closes"
+        const val KEY_OTHER = "other_closes"
         const val KEY_LAST_GAP = "last_gap_sec"
         const val KEY_EXIT_AT = "user_exit_at_ms"
     }
