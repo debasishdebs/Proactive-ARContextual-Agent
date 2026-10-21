@@ -27,6 +27,9 @@ const val SYSTEMIC_MIN_PHOTOS = 20
 enum class ImagePut { STORED, DROPPED, WIDTH_MISMATCH }
 
 /** Unrouted PENDING frames: the scene indexer owns them (it embeds them into every target when it routes them), so backfill and the swap count leave them out. */
+/** A Forget-tombstoned photo is never backfilled: its vector must not come back (Forget fact keeps the frame row and meta). */
+private const val NOT_FORGOTTEN = "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) "
+
 private const val INDEXER_OWNS = "AND NOT EXISTS (SELECT 1 FROM frame_meta m2 JOIN frame_state s ON s.frameId = m2.frameId WHERE m2.frameId = f.id AND m2.routedAt IS NULL AND s.state = 'PENDING')"
 
 @Dao
@@ -104,14 +107,14 @@ abstract class EmbeddingDao {
     /** Stored photos with no image vector in [spaceId]; a photo marked `unembeddable` (failed to decode twice) is not counted: it never blocks a swap (Ruling 15). Unrouted PENDING frames are not counted either: the scene indexer owns them and writes their vectors into every target at routing time. */
     @Query(
         "SELECT COUNT(*) FROM frame f WHERE NOT EXISTS (SELECT 1 FROM frame_vector v WHERE v.frameId = f.id AND v.spaceId = :spaceId) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_meta m WHERE m.frameId = f.id AND m.imageVectorSpace IN ('unembeddable','expired')) " + INDEXER_OWNS,
+            "AND NOT EXISTS (SELECT 1 FROM frame_meta m WHERE m.frameId = f.id AND m.imageVectorSpace IN ('unembeddable','expired')) " + NOT_FORGOTTEN + INDEXER_OWNS,
     )
     abstract suspend fun missingImageCount(spaceId: String): Int
 
     /** The backfill's work list, newest first: exactly the photos [missingImageCount] counts. */
     @Query(
         "SELECT f.id FROM frame f WHERE NOT EXISTS (SELECT 1 FROM frame_vector v WHERE v.frameId = f.id AND v.spaceId = :spaceId) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_meta m WHERE m.frameId = f.id AND m.imageVectorSpace IN ('unembeddable','expired')) " + INDEXER_OWNS +
+            "AND NOT EXISTS (SELECT 1 FROM frame_meta m WHERE m.frameId = f.id AND m.imageVectorSpace IN ('unembeddable','expired')) " + NOT_FORGOTTEN + INDEXER_OWNS +
             " ORDER BY f.ts DESC, f.id LIMIT :limit",
     )
     abstract suspend fun missingImageIds(spaceId: String, limit: Int): List<String>
@@ -175,11 +178,11 @@ abstract class EmbeddingDao {
     open suspend fun putImageVectorsForLiveFrames(rows: List<FrameVectorEntity>, expectedDims: Int): Int =
         rows.count { metaRows(it.frameId) > 0 && tombstoneRows(it.frameId) == 0 && putImageVector(it.frameId, it.spaceId, it.blob, expectedDims) == ImagePut.STORED }
 
-    /** [putImageVector], only into a BUILDING or ACTIVE space and only for a photo that still exists (a late write after expiry or Forget is dropped). */
+    /** [putImageVector], only into a BUILDING or ACTIVE space and only for a photo that still exists and is not tombstoned (a late write after expiry or Forget is dropped). */
     @Transaction
     open suspend fun putImageChecked(frameId: String, spaceId: String, blob: ByteArray, expectedDims: Int): ImagePut {
         space(spaceId)?.takeIf { it.state == SpaceState.BUILDING || it.state == SpaceState.ACTIVE } ?: return ImagePut.DROPPED
-        if (frameRows(frameId) == 0) return ImagePut.DROPPED
+        if (frameRows(frameId) == 0 || tombstoneRows(frameId) > 0) return ImagePut.DROPPED
         return putImageVector(frameId, spaceId, blob, expectedDims)
     }
 
