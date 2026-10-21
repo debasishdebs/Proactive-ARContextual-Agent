@@ -149,8 +149,12 @@ class ModelRouter(
         // Each provider call (the vision attempt and its text retry are two) takes its own permit.
         val start = System.nanoTime()
         suspend fun gated(r: ModelRequest) = gate.withPermit(callClass) { p.complete(r) }
+        if (request.requireImages && (request.images.isEmpty() || Capability.VISION !in e.capabilities)) {
+            throw ModelCallException("This call needs a vision endpoint and its photo", retryable = false, kind = FailureKind.NOT_SET)
+        }
         val reply = if (request.images.isNotEmpty() && Capability.VISION in e.capabilities) {
             try { gated(request) } catch (c: CancellationException) { throw c } catch (t: Throwable) {
+                if (request.requireImages) throw t   // a text-only retry would guess without the photo
                 Log.w(TAG, "vision failed on ${e.name}, retrying as text: ${SafeLog.describe(t)}")
                 gated(request.copy(images = emptyList()))
             }

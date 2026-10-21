@@ -79,7 +79,7 @@ class RoleRunner(
             val cap = cutCap
             val build: (com.rokid.context.ai.Endpoint) -> ModelRequest = { e ->
                 val plan = StructuredOutput.plan(e, schema, call.key.name)
-                ModelRequest(text + plan.promptSuffix, call.images, maxTokens = cap, format = plan.format)
+                ModelRequest(text + plan.promptSuffix, call.images, maxTokens = cap, format = plan.format, requireImages = call.key == PromptKey.INTENT_CLASSIFY)
             }
             val reply = if (call.fromFrames) router.completeFromFrames(call.effectiveClass, build) else router.complete(role, call.effectiveClass, build)
             val eval = OutputCheck.evaluate(call.key, schema, reply.text, ctx)

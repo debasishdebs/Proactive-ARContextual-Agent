@@ -257,4 +257,25 @@ class ModelRouterTest {
         assertTrue(e.toString(), e is ModelCallException)
         assertTrue(e.message!!.contains("ProviderHttpException"))
     }
+
+    // ---- Task 9 re-review: a photo-less reply to an image-only question is a failure, never a guessed label
+    @Test fun requireImagesFailsOnAnEndpointWithoutVision() = runTest {
+        ep("t", Capability.CHAT); bindings.set(RoleBinding(Role.SUMMARIZE, "t", "m")).getOrThrow()
+        val e = err { router.complete(Role.SUMMARIZE) { ModelRequest("q", img, requireImages = true) } }
+        assertTrue(e is ModelCallException); assertTrue("no text call was made", calls.isEmpty())
+    }
+
+    @Test fun requireImagesDoesNotRetryAsTextAfterAVisionFailure() = runTest {
+        ep("v", Capability.CHAT, Capability.VISION); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        failures["v:vision"] = http(500)
+        err { router.complete(Role.VISION_EXTRACT) { ModelRequest("q", img, requireImages = true) } }
+        assertEquals(listOf("v:vision"), calls.filter { it.endsWith("vision") || it.endsWith("text") }.take(1))
+        assertFalse("never a text retry", calls.contains("v:text"))
+    }
+
+    @Test fun otherRequestsStillRetryAsText() = runTest {
+        ep("v", Capability.CHAT, Capability.VISION); bindings.set(RoleBinding(Role.VISION_EXTRACT, "v", "m")).getOrThrow()
+        failures["v:vision"] = http(500)
+        assertEquals("v/m", router.complete(Role.VISION_EXTRACT) { ModelRequest("q", img) }.text)
+    }
 }
