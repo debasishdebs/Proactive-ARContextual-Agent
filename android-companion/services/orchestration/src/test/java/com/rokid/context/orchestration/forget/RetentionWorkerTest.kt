@@ -1,6 +1,7 @@
 package com.rokid.context.orchestration.forget
 
 import android.content.Context
+import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.ListenableWorker
@@ -228,6 +229,26 @@ class RetentionWorkerTest {
         assertEquals(3, graph.db.frameVectorDao().countForSpace("sp"))
         assertEquals(listOf("shed", "dup", "mem").sorted(), graph.db.forgetDao().tombstoned(listOf("shed", "dup", "mem")).sorted())
         assertTrue(exists("m_sum"))
+    }
+
+    /** S4: retention selected the skipped photos, then the user's describe committed, then retention resumes: the described photo is kept. */
+    @Test fun retentionPausedAfterSelectionKeepsJustDescribedPhoto() = runBlocking {
+        val old = t0 + 30 * 60_000L
+        val a = photo("a", old, "NEAR_DUP", salience = 0.1f); val b = photo("b", old, "NEAR_DUP", salience = 0.1f)
+        val at = t0 + 25 * hour
+        val summary = Retention(graph, ForgetService(graph.db, graph.proposals) { at }, describeBeforeDeleteReady = false, beforeSkippedExpiry = { selected ->
+            assertEquals(listOf("a", "b"), selected.sorted())
+            // describe on demand commits: FACT provenance plus the move to EXTRACTED, in one transaction
+            graph.db.withTransaction {
+                mem("m_a", MemoryTier.LONG, day, frameId = "a")
+                graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("m_a", "a", null, "FACT")))
+                graph.db.frameStateDao().move(listOf("a"), "NEAR_DUP", "EXTRACTED", "described_on_demand", at)
+            }
+        }).run(settings(), at) { r -> FrameSweep.delete(r.framesToDelete) }
+        assertTrue("the described photo is kept", a.exists() && frameRow("a") != null)
+        assertNull(frameRow("b")); assertFalse(b.exists())
+        assertTrue(graph.db.forgetDao().tombstoned(listOf("a")).isEmpty())
+        assertEquals(1, summary.skippedDeleted)
     }
 
     @Test fun clusterRepNotTreatedAsSkipped() = runBlocking {

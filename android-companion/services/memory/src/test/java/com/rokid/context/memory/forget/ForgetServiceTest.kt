@@ -305,4 +305,39 @@ class ForgetServiceTest {
         service.forgetMoment("ghost", redactCites = false)
         assertFalse(db.askDao().byId("q2")!!.redacted)
     }
+
+    // --- wave 3 Task 2 (S3, S4): a photo the user described leaves the skipped-photo rule ---------------------------------
+
+    private suspend fun skippedDue() = db.forgetDao().skippedPhotosDue(0, 0, 1_000, 0, 10)
+    private suspend fun linkedDue() = db.forgetDao().linkedPhotosDue(0, 0, 1_000, 0, 0, 0, 10)
+    private suspend fun described(frameId: String) {
+        mem("d_$frameId", frameId = frameId)
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("d_$frameId", frameId, null, "FACT")))
+    }
+
+    @Test fun describedFactRowTakesAPhotoOutOfTheSkippedRule() = runBlocking {
+        keyframe("f1"); keyframe("f2"); keyframe("f3")
+        assertEquals(listOf("f1", "f2", "f3"), skippedDue())
+        described("f1")
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("cluster_summary", "f2", "c1", "CLUSTER_MEMBER"))) // a cluster summary citing it is not a describe
+        assertEquals("only a FACT row exempts", listOf("f2", "f3"), skippedDue())
+        assertTrue("it follows the photo window now", "f1" in linkedDue())
+    }
+
+    @Test fun expirePhotosRecheckSkippedKeepsAPhotoDescribedAfterSelection() = runBlocking {
+        keyframe("f1"); keyframe("f2")
+        val selected = skippedDue()
+        assertEquals(listOf("f1", "f2"), selected)
+        described("f1") // the user's describe commits after retention selected the ids
+        val kept = service.expirePhotos(selected, recheckSkipped = true)
+        assertEquals(setOf("/f2.jpg", "/f2.meta.json"), kept.framesToDelete.toSet())
+        assertTrue("described photo kept", db.forgetDao().frame("f1") != null); assertTrue(db.forgetDao().tombstoned(listOf("f1")).isEmpty())
+        assertNull(db.forgetDao().frame("f2"))
+    }
+
+    @Test fun expirePhotosWithoutRecheckStillExpiresWhatItIsGiven() = runBlocking {
+        keyframe("f1"); described("f1")
+        service.expirePhotos(listOf("f1"))
+        assertNull(db.forgetDao().frame("f1"))
+    }
 }
