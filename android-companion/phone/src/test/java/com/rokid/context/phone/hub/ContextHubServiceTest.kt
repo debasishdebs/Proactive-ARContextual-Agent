@@ -149,10 +149,12 @@ class ContextHubServiceTest {
         assertEquals("Closed on glasses", channel.name.toString()); assertEquals(android.app.NotificationManager.IMPORTANCE_LOW, channel.importance)
         assertEquals("Closed on glasses \u00b7 capture stopped", n.extras.getString(android.app.Notification.EXTRA_TITLE))
         assertEquals("Tap Open on glasses to start it again.", n.extras.getString(android.app.Notification.EXTRA_TEXT))
-        assertEquals("silent", n.group) // NotificationCompat's setSilent
+        assertEquals("low importance and no sound of its own", null, n.sound)
         assertEquals("Open on glasses", n.actions.single().title.toString())
-        assertEquals(ContextHubService.ACTION_OPEN_GLASSES, org.robolectric.Shadows.shadowOf(n.actions.single().actionIntent).savedIntent.action)
-        assertEquals(ContextHubService.ACTION_CLOSED_DISMISSED, org.robolectric.Shadows.shadowOf(n.deleteIntent).savedIntent.action)
+        val open = org.robolectric.Shadows.shadowOf(n.actions.single().actionIntent); val dismiss = org.robolectric.Shadows.shadowOf(n.deleteIntent)
+        assertEquals(ContextHubService.ACTION_OPEN_GLASSES, open.savedIntent.action); assertEquals(ContextHubService.ACTION_CLOSED_DISMISSED, dismiss.savedIntent.action)
+        assertTrue("broadcasts to a receiver, never a service start", open.isBroadcastIntent && dismiss.isBroadcastIntent)
+        assertEquals(ClosedNoticeReceiver::class.java.name, open.savedIntent.component?.className)
         assertTrue(n.contentIntent != null)
         assertEquals(32, ContextHubService.CLOSED_NOTIFICATION_ID)
     }
@@ -181,5 +183,40 @@ class ContextHubServiceTest {
         org.robolectric.Shadows.shadowOf(app).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
         assertFalse(ContextHubService.postClosedNotice(app))
         assertTrue(closedNotices().isEmpty())
+    }
+
+    @Test fun receiverOpenActionRequestsReconnectAndCancels() {
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        var t = 0L
+        val notice = ClosedOnGlassesNotice { t }; notice.onState(LinkState.CLOSED_ON_GLASSES)
+        ClosedNoticeReceiver.notice = notice
+        var reconnects = 0
+        ClosedNoticeReceiver.reconnect = { reconnects++ }
+        try {
+            ContextHubService.postClosedNotice(app)
+            ClosedNoticeReceiver().onReceive(app, android.content.Intent(ContextHubService.ACTION_OPEN_GLASSES))
+            assertEquals(1, reconnects); assertTrue(closedNotices().isEmpty())
+            t += ClosedOnGlassesNotice.DELAY_MS * 2; assertEquals(ClosedOnGlassesNotice.Action.None, notice.onTick())
+        } finally { ClosedNoticeReceiver.notice = null; ClosedNoticeReceiver.reconnect = {} }
+    }
+
+    @Test fun receiverDismissEndsTheEpisode() {
+        var t = 0L
+        val notice = ClosedOnGlassesNotice { t }; notice.onState(LinkState.CLOSED_ON_GLASSES)
+        ClosedNoticeReceiver.notice = notice
+        try {
+            ClosedNoticeReceiver().onReceive(app, android.content.Intent(ContextHubService.ACTION_CLOSED_DISMISSED))
+            t += ClosedOnGlassesNotice.DELAY_MS * 2; assertEquals(ClosedOnGlassesNotice.Action.None, notice.onTick())
+            // a dismiss after the process died (no service, no notice) is harmless
+            ClosedNoticeReceiver.notice = null
+            ClosedNoticeReceiver().onReceive(app, android.content.Intent(ContextHubService.ACTION_CLOSED_DISMISSED))
+        } finally { ClosedNoticeReceiver.notice = null }
+    }
+
+    @Test fun receiverIsDeclaredNotExported() {
+        val doc = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(java.io.File("src/main/AndroidManifest.xml"))
+        val receivers = doc.getElementsByTagName("receiver")
+        val r = (0 until receivers.getLength()).map { receivers.item(it) as org.w3c.dom.Element }.single { it.getAttribute("android:name") == ".phone.hub.ClosedNoticeReceiver" }
+        assertEquals("false", r.getAttribute("android:exported"))
     }
 }

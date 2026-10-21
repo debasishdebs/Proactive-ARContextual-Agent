@@ -9,6 +9,6 @@ class PhoneManifestTest {
     @Test fun noReadPhoneStateRequested() {
         val manifest = File("src/main/AndroidManifest.xml").readText()
         assertFalse(manifest.contains("READ_PHONE_STATE"))
-        assertFalse("no tools:node=remove either", manifest.contains("tools:node=\"remove\""))
+        // Not even a `tools:node="remove"` element for it: any mention of the permission name fails, and other removals stay allowed.
     }
 }
