@@ -191,13 +191,14 @@ class ContextHubServiceTest {
         val notice = ClosedOnGlassesNotice { t }; notice.onState(LinkState.CLOSED_ON_GLASSES)
         ClosedNoticeReceiver.notice = notice
         var reconnects = 0
+        val originalReconnect = ClosedNoticeReceiver.reconnect
         ClosedNoticeReceiver.reconnect = { reconnects++ }
         try {
             ContextHubService.postClosedNotice(app)
             ClosedNoticeReceiver().onReceive(app, android.content.Intent(ContextHubService.ACTION_OPEN_GLASSES))
             assertEquals(1, reconnects); assertTrue(closedNotices().isEmpty())
             t += ClosedOnGlassesNotice.DELAY_MS * 2; assertEquals(ClosedOnGlassesNotice.Action.None, notice.onTick())
-        } finally { ClosedNoticeReceiver.notice = null; ClosedNoticeReceiver.reconnect = {} }
+        } finally { ClosedNoticeReceiver.notice = null; ClosedNoticeReceiver.reconnect = originalReconnect }
     }
 
     @Test fun receiverDismissEndsTheEpisode() {
