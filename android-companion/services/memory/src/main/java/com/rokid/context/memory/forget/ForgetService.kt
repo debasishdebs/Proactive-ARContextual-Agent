@@ -46,17 +46,19 @@ class ForgetService(
     /**
      * All memories of the frame, the frame row and its JPEG (always listed). A photo that retention already expired without a description
      * (`frame_meta`, `frame_vector`, state, no `frame` row, no memory) is still a moment (S2). Saved answers that cited it (`frame:<id>`) are
-     * redacted with their proposals and alarms (S1). Empty only when no frame, metadata, vector, state or memory exists.
+     * redacted with their proposals and alarms (S1), unless [redactCites] is false (retention's legacy-frame expiry never redacts). Empty only when no frame, metadata, vector, state or memory exists.
      */
-    suspend fun forgetMoment(frameId: String): Result = db.withTransaction {
+    suspend fun forgetMoment(frameId: String, redactCites: Boolean = true): Result = db.withTransaction {
+        val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
         if (frame == null && ids.isEmpty() && dao.photoRowCount(frameId) == 0) {
-            // Nothing left of the moment: still redact stray `frame:<id>` cites and drop orphan provenance and canvas rows (safer default).
-            dropCanvasOutputs(listOf(frameId)); dao.deleteFrameSourcesOfFrames(listOf(frameId))
-            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = setOf(PHOTO_CITE_PREFIX + frameId))
+            // Nothing left of the moment: still redact stray `frame:<id>` cites and drop orphan canvas rows (safer default). No frame_source row
+            // can exist here: memoryIdsOfFrame already lists them, so an orphan one takes the main path below.
+            dropCanvasOutputs(listOf(frameId))
+            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = cites)
         }
-        val r = cascade(ids, lockFrames = true, extraCited = setOf(PHOTO_CITE_PREFIX + frameId))
+        val r = cascade(ids, lockFrames = true, extraCited = cites)
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
         dropCanvasOutputs(listOf(frameId))
         dao.deleteFrame(frameId)

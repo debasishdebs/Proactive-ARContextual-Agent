@@ -367,8 +367,10 @@ class RetentionWorkerTest {
         graph.db.frameStateDao().insertIgnore(listOf(FrameStateEntity("incl", "IN_CLUSTER", 0, null, null, null, 1), FrameStateEntity("cq", "CAPTION_QUEUED", 0, null, null, null, 1)))
         val cq = File(ctx.filesDir, "rokid_archive/cq.jpg").apply { writeBytes(byteArrayOf(1)) }
         graph.db.frameDao().insertIgnore(FrameEntity("cq", now - 31 * day, cq.absolutePath, "rokid_glasses"))
+        graph.db.askDao().upsert(AskEntity("qcite", 1, "q", "answer", """["${com.rokid.context.memory.forget.PHOTO_CITE_PREFIX}legacy"]""", null, "phone_typed", false))
         assertTrue(work() is ListenableWorker.Result.Success)
         assertFalse(legacy.exists()); assertNull(frameRow("legacy")) // the old rule still applies to legacy frames
+        assertFalse("expiry never redacts photo cites", graph.db.askDao().byId("qcite")!!.redacted)
         assertTrue(key.exists() && frameRow("kf") != null)
         assertTrue(inCl.exists() && cq.exists())
     }
