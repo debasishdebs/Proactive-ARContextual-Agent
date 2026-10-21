@@ -17,8 +17,10 @@ object Channels {
     const val HELLO = "pc_hello"
     /** Phone → glasses: please send a fresh `pc_hello` (the phone's clock offset looks stale). */
     const val HELLO_REQUEST = "pc_hello_request"
-    /** Glasses to phone: a [MotionHint] (P3 hook; defined in wave 1, unused). */
+    /** Glasses to phone: a [MotionHint] (wave B: sent on WALKING changes and every 60 s). */
     const val MOTION_HINT = "pc_motion_hint"
+    /** Wave B, phone to glasses: a [com.rokid.context.core.model.context.MotionContextMessage]. Additive. */
+    const val MOTION_CONTEXT = "pc_motion_ctx"
     /** Fix wave H, phone to glasses: a [WearMessage] (the real wear signal from the Rokid SDK). Additive. */
     const val WEAR = "pc_wear"
     /** Fix wave H, glasses to phone: a [UserExit] (the wearer exited the app on purpose; do not reopen it). Additive. */
@@ -35,8 +37,13 @@ object Channels {
 /** Coarse head/body motion class from the glasses IMU; an unknown wire value decodes to [UNKNOWN]. */
 @Serializable enum class MotionState { STILL, HEAD_MOVING, WALKING, VEHICLE, UNKNOWN }
 
-/** Glasses → phone on `pc_motion_hint` (P3 hook, unused in wave 1). */
-@Serializable data class MotionHint(val state: MotionState, val atMs: Long)
+/** Glasses → phone on `pc_motion_hint`. [stillFrac5m]: share of the last 300 s the classifier was STILL; -1 = not yet known. */
+@Serializable data class MotionHint(
+    val state: MotionState = MotionState.UNKNOWN,
+    val atMs: Long,
+    val v: Int = PROTOCOL_VERSION,
+    val stillFrac5m: Float = -1f,
+)
 
 /** Phone to glasses on `pc_wear`: the Rokid SDK's `wearingStatus` (true = worn) and when the phone saw it (phone clock). */
 @Serializable data class WearMessage(

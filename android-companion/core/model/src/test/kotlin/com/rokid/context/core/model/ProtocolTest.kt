@@ -315,4 +315,29 @@ class ProtocolTest {
         assertEquals(listOf("phone_motion"), HudSettings(motionSourcesOff = listOf("glasses_imu", "phone_motion")).normalized().motionSourcesOff)
         assertEquals(1, PROTOCOL_VERSION)
     }
+
+    @Test fun waveBMotionContextMessage() {
+        assertEquals("pc_motion_ctx", Channels.MOTION_CONTEXT)
+        assertEquals(1, PROTOCOL_VERSION)
+        val m = com.rokid.context.core.model.context.MotionContextMessage(
+            state = com.rokid.context.core.model.context.ContextState.VEHICLE_DRIVING, confidence = 0.8f, sinceMs = 1, atMs = 9,
+            validForMs = 1000, apply = false, reasons = listOf("SPEED"), sessionStartMs = 3,
+        )
+        assertEquals(m, assertIs<Decoded.Ok<com.rokid.context.core.model.context.MotionContextMessage>>(Wire.decode<com.rokid.context.core.model.context.MotionContextMessage>(Wire.encode(m))).value)
+        val old = assertIs<Decoded.Ok<com.rokid.context.core.model.context.MotionContextMessage>>(Wire.decode<com.rokid.context.core.model.context.MotionContextMessage>("""{"v":1,"atMs":5}""")).value
+        assertEquals(com.rokid.context.core.model.context.ContextState.UNKNOWN, old.state)
+        assertEquals(180_000L, old.validForMs); assertTrue(old.apply); assertEquals(emptyList(), old.reasons)
+        val tele = assertIs<Decoded.Ok<com.rokid.context.core.model.context.MotionContextMessage>>(Wire.decode<com.rokid.context.core.model.context.MotionContextMessage>("""{"v":1,"atMs":5,"state":"TELEPORTING"}""")).value
+        assertEquals(com.rokid.context.core.model.context.ContextState.UNKNOWN, tele.state)
+        val r = assertIs<Decoded.Ok<com.rokid.context.core.model.context.MotionContextMessage>>(Wire.decode<com.rokid.context.core.model.context.MotionContextMessage>("""{"v":1,"atMs":5,"reasons":["SPEED","NEW_REASON"]}""")).value
+        assertEquals(listOf("SPEED", "NEW_REASON"), r.reasons)
+    }
+
+    @Test fun waveBMotionHint() {
+        val h = MotionHint(MotionState.WALKING, 3)
+        assertTrue(Wire.encode(h).contains("\"v\":1"))
+        assertEquals(h, assertIs<Decoded.Ok<MotionHint>>(Wire.decode<MotionHint>(Wire.encode(h))).value)
+        val old = assertIs<Decoded.Ok<MotionHint>>(Wire.decode<MotionHint>("""{"state":"STILL","atMs":3,"v":1}""")).value
+        assertEquals(-1f, old.stillFrac5m); assertEquals(MotionState.STILL, old.state)
+    }
 }
