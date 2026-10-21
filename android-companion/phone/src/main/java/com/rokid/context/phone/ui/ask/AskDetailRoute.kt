@@ -17,6 +17,7 @@ fun AskDetailRoute(id: String, deps: PhoneDeps, nav: NavController) {
     val vm = viewModel { AskDetailViewModel(id, deps.memory.asks, deps.memory.proposals, deps.memory.timeline, deps.rateAsk, deps.zone) }
     val state by vm.state.collectAsStateWithLifecycle()
     AskDetailScreen(state, onBack = back, onRate = vm::rate, onOpenMemory = { nav.navigate(Routes.memory(it)) },
+        onMorePhotos = { q -> nav.navigate(Routes.photos(q)) },
         onOpenPhoto = { frameId, date -> nav.navigate(Routes.frames(java.time.LocalDate.parse(date), frameId)) }, proposalCard = {
         ProposalCard(id, onEnable = { nav.navigate(Routes.SETTINGS_ACTIONS) })
     })

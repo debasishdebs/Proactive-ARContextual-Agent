@@ -71,6 +71,18 @@ class PhotoRecall(
         return RecallResult(image, cap, state, scanned, truncated, captionState)
     }
 
+    /**
+     * Re-reads the stored/described/caption state of the frames in [r] (same order and scores), dropping frames whose `frame_meta` is gone (a Forget). The open
+     * photo screen calls it on a database change instead of re-scanning (S11). Never throws, except for cancellation.
+     */
+    suspend fun reenrich(r: RecallResult): RecallResult = try {
+        RecallResult(
+            enrich(r.image.map { it.frameId to it.score }, PhotoSource.IMAGE),
+            enrich(r.captions.map { it.frameId to it.score }, PhotoSource.CAPTION),
+            r.imageState, r.scanned, r.truncated, r.captionState,
+        )
+    } catch (c: CancellationException) { throw c } catch (_: Exception) { r }
+
     private class ImageScanOutcome(val state: ImageSearchState, val hits: List<Pair<String, Double>>, val scanned: Int, val truncated: Boolean)
 
     private suspend fun imageScan(query: String, k: Int, budgetMs: Long): ImageScanOutcome {
