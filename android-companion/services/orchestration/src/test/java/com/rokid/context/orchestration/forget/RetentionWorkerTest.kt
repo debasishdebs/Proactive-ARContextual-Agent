@@ -233,7 +233,7 @@ class RetentionWorkerTest {
     @Test fun clusterRepNotTreatedAsSkipped() = runBlocking {
         cluster("c1", "SUMMARIZED")
         val old = t0 - 10 * day
-        val rep = photo("rep", old, "CLUSTERED", clusterId = "c1")
+        val rep = photo("rep", old, "CLUSTERED", salience = 0.1f, clusterId = "c1")
         mem("m_sum", MemoryTier.LONG, day, frameId = "rep")
         graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("m_sum", "rep", "c1", "CLUSTER_REP")))
         pass(settings(), t0 + 3 * day)
@@ -349,7 +349,7 @@ class RetentionWorkerTest {
         val files = listOf(
             photo("a", old, "IN_CLUSTER", clusterId = "cOpen"),
             photo("b", old, "CLUSTERED", clusterId = "cFail", salience = 0.0f),
-            photo("c", old, "NEAR_DUP", clusterId = "cSum"),
+            photo("c", old, "NEAR_DUP", clusterId = "cSum", salience = 0.0f),
             photo("d", old, "CAPTION_QUEUED", salience = 0.9f),
             photo("e", old, "EXTRACTING"), photo("f", old, "PENDING"), photo("g", old, "FAILED"),
         )
@@ -426,7 +426,7 @@ class RetentionWorkerTest {
     /** A cluster summary expiring takes its CLUSTER_REP rows with it; the representative must not become a skipped photo. */
     @Test fun summaryExpiryDoesNotMakeRepresentativesSkipped() = runBlocking {
         graph.db.frameClusterDao().upsert(FrameClusterEntity("cr", 1, 2, "gap", "[\"rep\"]", null, state = "SUMMARIZED"))
-        val rep = photo("rep", t0 + hour, "CLUSTERED", clusterId = "cr")
+        val rep = photo("rep", t0 + hour, "CLUSTERED", salience = 0.1f, clusterId = "cr")
         val member = photo("mb", t0 + hour, "CLUSTERED", salience = 0.1f, clusterId = "cr")
         graph.db.memoryDao().insert(MemoryEntity("sumx", "rep", "t", "cluster_summary", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, t0 - 40 * day, false, "t"))
         graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("sumx", "rep", "cr", "CLUSTER_REP"), FrameSourceEntity("sumx", "mb", "cr", "CLUSTER_MEMBER")))
