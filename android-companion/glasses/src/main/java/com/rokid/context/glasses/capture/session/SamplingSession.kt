@@ -93,6 +93,12 @@ class SamplingSession(
     private val workContext: CoroutineContext = EmptyCoroutineContext,
     /** Glance novelty window, turn thresholds and keep caps (one instance shared with the [MotionClassifier]). */
     private val glance: GlanceParams = GlanceParams(),
+    /**
+     * Wave B context cap (keyframes per minute) from the motion hub, or null for none. When non-null it is a hard cap
+     * (no dwell bonus: [hardNow]) and [capNow] is the smaller of it and the A3 cap. Forced keeps (a manual "Capture now")
+     * stay exempt: [KeyframeGate.offer] never applies the cap to them.
+     */
+    private val contextCap: () -> Int? = { null },
 ) {
     private class Episode(val continuous0: Boolean, val why: String) {
         @Volatile var continuous = continuous0
@@ -149,7 +155,12 @@ class SamplingSession(
     private var cappedAccum = 0
     /** In a rest span the cap is [GlanceParams.restCapPerMin] (set by [tick]). Guarded by [lock]. */
     private var resting = false
-    private fun capNow() = if (resting) glance.restCapPerMin else glance.capPerMin
+    private fun capNow(): Int {
+        val a3 = if (resting) glance.restCapPerMin else glance.capPerMin
+        return minOf(a3, contextCap() ?: Int.MAX_VALUE)
+    }
+    /** Hard cap (no dwell bonus) while resting or while a context cap is active. */
+    private fun hardNow() = resting || contextCap() != null
     // Camera-open time since the last [diagSnapshot] read (guarded by [lock]), for the "camera-open share" heartbeat field.
     private var openAccumMs = 0L
     private var shareFromAt = 0L
@@ -253,7 +264,7 @@ class SamplingSession(
         val cap = capNow()
         if (now - lastKeyframeAt < glance.noveltyWindowMs && turned < glance.noveltyMinRad && !walked) {
             novelSkipAccum++
-        } else if (k >= cap && (resting || turned < glance.bigTurnRad && !walked) || k.toLong() >= 2L * cap) {
+        } else if (k >= cap && (hardNow() || turned < glance.bigTurnRad && !walked) || k.toLong() >= 2L * cap) {
             cappedAccum++
         } else {
             pendingDwellAt = now
@@ -423,7 +434,7 @@ class SamplingSession(
                     log("camera not ready on the first bind: retrying in $COLD_START_RETRY_MS ms (not counted)")
                 } else if (camera.busy) onBusy(now) else onBindFailed(now)
             }
-            if (!stopped) flushed = gate.flushWindow(capNow(), resting)
+            if (!stopped) flushed = gate.flushWindow(capNow(), hardNow())
         }
         (flushed as? GateResult.Keep)?.let { k ->
             scope.launch(workContext) { try { emit(k, now) } catch (e: CancellationException) { throw e } catch (e: Exception) { log("emit failed: ${e.javaClass.simpleName}") } }
@@ -531,7 +542,7 @@ class SamplingSession(
         val result: GateResult? = if (FrameGuard.checkBatteryAndDark(batteryPct(), charging(), luma.toDouble()) != null) null
         else synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
-            gate.offer(cand, sampleMotion, dwellArmed, forced, capNow(), resting).also { h = gate.lastHashes() }
+            gate.offer(cand, sampleMotion, dwellArmed, forced, capNow(), hardNow()).also { h = gate.lastHashes() }
         }
         val usable = result != null && !(result is GateResult.Skip && result.reason == KeyframeGate.BLUR)
         if (result is GateResult.Keep) emit(result, now)

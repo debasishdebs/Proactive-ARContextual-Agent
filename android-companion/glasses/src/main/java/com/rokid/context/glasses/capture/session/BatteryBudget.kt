@@ -23,6 +23,19 @@ data class CaptureProfile(
         walkCheckMs = maxOf(walkCheckMs ?: settledCheckMs, 30_000), stillCapMs = maxOf(stillCapMs, 120_000),
     )
 
+    /**
+     * Wave B: applies a context policy on top (never shortens a gap, never turns pause off). An all-zero policy (UNKNOWN,
+     * WALKING) returns an equal profile. Context and intent alone never pause capture (the policy table has no pause row).
+     */
+    fun withContext(p: com.rokid.context.core.model.context.ContextCapturePolicy): CaptureProfile = copy(
+        wake = if (p.forceSettle) CameraWake.SETTLE else wake,
+        settledCheckMs = maxOf(settledCheckMs, p.minSettledCheckMs),
+        quietCheckMs = maxOf(quietCheckMs, p.minQuietCheckMs),
+        walkCheckMs = if (p.minWalkCheckMs > 0) maxOf(walkCheckMs ?: settledCheckMs, p.minWalkCheckMs) else walkCheckMs,
+        stillCapMs = maxOf(stillCapMs, p.minStillCapMs),
+        paused = paused || p.pause,
+    )
+
     companion object {
         fun of(wake: CameraWake, tier: BudgetTier): CaptureProfile = when (tier) {
             BudgetTier.T0 -> when (wake) {

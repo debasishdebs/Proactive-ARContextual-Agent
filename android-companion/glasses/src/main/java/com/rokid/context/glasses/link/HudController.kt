@@ -8,6 +8,8 @@ import com.rokid.context.core.model.Command
 import com.rokid.context.core.model.AutoOpen
 import com.rokid.context.core.model.UserExit
 import com.rokid.context.core.model.PhoneContextMessage
+import com.rokid.context.core.model.MotionHint
+import com.rokid.context.core.model.context.MotionContextMessage
 import com.rokid.context.core.model.WearMessage
 import com.rokid.context.core.model.CommandEnvelope
 import com.rokid.context.core.model.Decoded
@@ -79,6 +81,11 @@ class HudController(
      */
     @Volatile var onPhoneSettings: (HudSettings) -> Unit = {}
 
+    /** `pc_motion_ctx` (wave B): a fresh message of this session; null = the session closed (the gate resets). */
+    @Volatile var onMotionContext: (MotionContextMessage?) -> Unit = {}
+    /** The newest accepted `atMs` of this session (phone clock); an older message is a late arrival and is dropped. */
+    @Volatile private var lastCtxAtMs = Long.MIN_VALUE
+
     fun start() {
         bridge.subscribe(Channels.STATE) { onState(it) }
         bridge.subscribe(Channels.SETTINGS) { onSettings(it) }
@@ -86,6 +93,7 @@ class HudController(
         bridge.subscribe(Channels.HELLO_REQUEST) { onHelloRequest(it) }
         bridge.subscribe(Channels.WEAR) { text -> (Wire.decode<WearMessage>(text) as? Decoded.Ok)?.value?.let(::onWearMessage) }
         bridge.subscribe(Channels.PHONE_CONTEXT) { text -> (Wire.decode<PhoneContextMessage>(text) as? Decoded.Ok)?.value?.let(::onPhoneContextMessage) }
+        bridge.subscribe(Channels.MOTION_CONTEXT) { text -> (Wire.decode<MotionContextMessage>(text) as? Decoded.Ok)?.value?.let(::onMotionContextMessage) }
         bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { Log.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
         bridge.setConnectionListener(connected = { Log.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
         scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }
@@ -94,6 +102,15 @@ class HudController(
     private fun onPhoneContextMessage(m: PhoneContextMessage) {
         if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_phone_ctx ignored"); return }
         onPhoneUse(m.inUse)
+    }
+
+    private fun onMotionContextMessage(m: MotionContextMessage) {
+        if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_motion_ctx ignored"); return }
+        synchronized(this) {
+            if (m.atMs < lastCtxAtMs) { Log.i(TAG, "older pc_motion_ctx ignored"); return }
+            lastCtxAtMs = m.atMs
+        }
+        onMotionContext(m)
     }
 
     /** Fix wave I1: a wear value the phone saw before its current session began is stale (a reconnect must never resurrect it). */
@@ -167,7 +184,7 @@ class HudController(
 
     private fun closeSession(why: String) {
         liveness.onTransportDisconnected()
-        if (_sessionOpen.compareAndSet(true, false)) { Log.i(TAG, "session closed: $why"); onWear(null); onPhoneUse(null) }
+        if (_sessionOpen.compareAndSet(true, false)) { Log.i(TAG, "session closed: $why"); onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
         refreshConnection()
     }
 
@@ -178,6 +195,9 @@ class HudController(
     fun onActivityStart() { exited = false }
 
     fun send(command: Command): Boolean = bridge.send(Channels.CMD, Wire.encode(CommandEnvelope(command = command))) == 0
+
+    /** `pc_motion_hint`: the glasses classifier state for the phone's hub, only while the session is open. */
+    fun sendMotionHint(h: MotionHint): Boolean = _sessionOpen.value && bridge.send(Channels.MOTION_HINT, Wire.encode(h)) == 0
 
     /** `pc_user_exit`: the wearer exited the app on purpose; the phone must not reopen it. */
     fun sendUserExit(): Boolean = bridge.send(Channels.USER_EXIT, Wire.encode(UserExit())) == 0

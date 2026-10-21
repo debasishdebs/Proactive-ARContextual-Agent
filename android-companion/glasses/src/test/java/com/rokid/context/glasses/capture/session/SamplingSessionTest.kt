@@ -935,4 +935,51 @@ class SamplingSessionTest {
     @Test fun deferredCheckKeepsWhenStartupIsShorterThanTheLead() = runTest { deferredCheckKeeps(300) }
 
     @Test fun deferredCheckKeepsWhenStartupIsLongerThanTheLead() = runTest { deferredCheckKeeps(900) }
+
+    private fun rollingMax(times: List<Long>) = times.maxOfOrNull { t -> times.count { it in t until t + 60_000 } } ?: 0
+
+    /** Changing scenes for [n] steps of [stepMs], with a glance (0.5 rad turn, then still) every step. */
+    private suspend fun Rig.changingScenes(n: Int, stepMs: Long, turnMs: Long = 500) {
+        for (i in 1..n) { scene = 100 + i; gyro(turnMs, 1f); gyro(stepMs - turnMs, 0f) }
+    }
+
+    @Test fun contextCapOneKeepsAtMostOneKeyframePerRollingMinute() = runTest {
+        val r = glanceRig(this) { contextCap = 1 }
+        r.session.start()
+        r.changingScenes(18, 10_000)
+        val t = r.keyframes.map { it.first }
+        assertTrue(t.isNotEmpty(), "still captures")
+        assertTrue(rollingMax(t) <= 1, "times=$t")
+        r.session.stop("test")
+    }
+
+    @Test fun contextCapIsHardEvenForABigTurnAndAChangedScene() = runTest {
+        val r = glanceRig(this) { contextCap = 1 }
+        r.session.start()
+        for (i in 1..6) { r.scene = 200 + 7 * i; r.gyro(1_200, 1f); r.gyro(8_800, 0f) } // 1.2 rad turns: past the 0.8 big turn
+        val t = r.keyframes.map { it.first }
+        assertTrue(rollingMax(t) <= 1, "times=$t")
+        r.session.stop("test")
+    }
+
+    @Test fun nullContextCapLeavesA3Alone() = runTest {
+        val a = glanceRig(this) { contextCap = null }
+        a.session.start(); a.changingScenes(18, 10_000)
+        val base = a.keyframes.size
+        a.session.stop("test")
+        assertTrue(base > 3, "A3 default keeps more than 3 in 3 min: $base")
+        assertTrue(rollingMax(a.keyframes.map { it.first }) > 1, "A3 default is not held to one a minute")
+    }
+
+    @Test fun aForcedKeepIsAdmittedOverTheContextCap() = runTest {
+        val r = glanceRig(this) { contextCap = 1 }
+        r.session.start()
+        delay(3_000)
+        val before = r.keyframes.size
+        assertTrue(before >= 1)
+        assertTrue(r.session.captureNow())
+        delay(2_000)
+        assertEquals(before + 1, r.keyframes.size, "manual capture exempt from the cap")
+        r.session.stop("test")
+    }
 }

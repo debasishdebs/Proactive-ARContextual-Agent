@@ -251,4 +251,46 @@ class HudControllerTest {
         bridge.phone(Channels.AUTO_OPEN, Wire.encode(com.rokid.context.core.model.AutoOpen(atMs = 5)))
         assertEquals(1, n)
     }
+
+    private fun ctxMsg(atMs: Long, sessionStartMs: Long = 0, state: com.rokid.context.core.model.context.ContextState = com.rokid.context.core.model.context.ContextState.REST) =
+        Wire.encode(com.rokid.context.core.model.context.MotionContextMessage(state = state, sinceMs = 100, atMs = atMs, sessionStartMs = sessionStartMs))
+
+    @Test fun motionContextStaleAndOlderMessagesAreIgnoredAndFreshOnesReach() = runTest {
+        val c = controller()
+        val seen = ArrayList<com.rokid.context.core.model.context.MotionContextMessage?>()
+        c.onMotionContext = { seen += it }
+        bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 1_000, sessionStartMs = 5_000))
+        assertTrue("before the session start", seen.isEmpty())
+        bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 6_000, sessionStartMs = 5_000))
+        assertEquals(1, seen.size)
+        bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 5_500, sessionStartMs = 5_000))
+        assertEquals("older than the last accepted", 1, seen.size)
+        bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 6_000, sessionStartMs = 5_000))
+        bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 7_000, sessionStartMs = 5_000))
+        assertEquals("equal and newer are accepted", 3, seen.size)
+    }
+
+    @Test fun motionContextSessionCloseResetsAndAReconnectEnvelopeIsAccepted() = runTest {
+        val c = controller()
+        val seen = ArrayList<com.rokid.context.core.model.context.MotionContextMessage?>()
+        c.onMotionContext = { seen += it }
+        bridge.phone(Channels.STATE, state())
+        bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 9_000, sessionStartMs = 5_000))
+        bridge.disconnected()
+        assertEquals(listOf(true, false), seen.map { it != null })
+        // reconnect: a new session start, the phone's fresh envelope has an old sinceMs but atMs >= sessionStartMs
+        bridge.phone(Channels.STATE, state())
+        bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 2_000, sessionStartMs = 1_500))
+        assertEquals(3, seen.size)
+        assertEquals(100L, seen.last()?.sinceMs)
+    }
+
+    @Test fun sendMotionHintOnlyWhileTheSessionIsOpen() = runTest {
+        val c = controller()
+        val h = com.rokid.context.core.model.MotionHint(state = com.rokid.context.core.model.MotionState.WALKING, atMs = 5)
+        assertFalse(c.sendMotionHint(h))
+        bridge.phone(Channels.STATE, state())
+        assertTrue(c.sendMotionHint(h))
+        assertEquals(1, bridge.sent.count { it.first == Channels.MOTION_HINT })
+    }
 }

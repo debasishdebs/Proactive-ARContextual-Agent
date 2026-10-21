@@ -97,6 +97,12 @@ class GlassesRuntime private constructor(private val app: Context) {
     val wear = com.rokid.context.glasses.capture.motion.WearDetector()
     /** The phone's `pc_phone_ctx` (in use = screen on and unlocked), debounced; the sampling session gates on it. */
     val phoneUse = com.rokid.context.glasses.capture.session.PhoneUse()
+    /** Wave B: the phone motion hub's state (`pc_motion_ctx`) with its TTL and the local walking veto (spec 2026-10-21 §9.1). */
+    val contextGate = com.rokid.context.glasses.capture.session.ContextGate()
+    @Volatile private var appliedContext = com.rokid.context.core.model.context.ContextState.UNKNOWN
+    /** The context state last applied to capture (the service publishes it); MainActivity reads it for the nudge policy. */
+    fun contextApplied(): com.rokid.context.core.model.context.ContextState = appliedContext
+    internal fun setContextApplied(s: com.rokid.context.core.model.context.ContextState) { appliedContext = s }
     /** Fix wave H3: a ~600 ms HUD mark per saved keyframe ("Capture blink on HUD", synced `captureCue`). */
     val captureBlink = com.rokid.context.glasses.hud.CaptureBlink(scope, { settingsCache.read().captureCue })
     /** The minimised icon (spec 2026-10-14 §3), one window per process; shown only while the keep-alive service runs. */
@@ -179,6 +185,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         controller = c
         c.onFrameAck = uplink::onAck
         c.onWear = { w -> if (w == null) wear.reset() else { wear.onRemote(w); Log.i(TAG, "wear=$w (from the phone)") } }
+        c.onMotionContext = { m -> contextGate.onMessage(m, android.os.SystemClock.elapsedRealtime()) }
         c.onPhoneUse = { u -> if (u == null) phoneUse.reset() else phoneUse.onRemote(u, android.os.SystemClock.elapsedRealtime()) }
         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
@@ -200,6 +207,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onFrameAck = {}
         c.onWear = {}
         c.onPhoneUse = {}
+        c.onMotionContext = {}
         c.onAutoOpen = {}
         c.onSessionOpened = {}
         c.onPhoneSettings = {}

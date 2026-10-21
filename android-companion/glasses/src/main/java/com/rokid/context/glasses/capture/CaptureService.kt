@@ -12,6 +12,9 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import com.rokid.context.core.model.context.ContextPolicies
+import com.rokid.context.core.model.context.ContextState
+import com.rokid.context.glasses.capture.motion.MotionHintSender
 import com.rokid.context.glasses.capture.diag.DiagFlags
 import com.rokid.context.glasses.capture.diag.DiagLog
 import com.rokid.context.glasses.capture.diag.StatusLogThrottle
@@ -90,6 +93,22 @@ class CaptureService : LifecycleService() {
     private val heatPoller = HeatPoller(heat, SystemClock::elapsedRealtime)
     private class Smart(val session: SamplingSession, val feed: SensorFeed, val motion: MotionClassifier) { var rateJob: Job? = null }
     private var smart: Smart? = null
+    /** Wave B: elapsedRealtime of the last second the local classifier said WALKING (the gate's 15 s veto window). */
+    @Volatile private var lastWalkAt: Long? = null
+    private var hintSender: MotionHintSender? = null
+
+    /**
+     * The context state applied to capture right now: the phone hub's message after its TTL and the unconditional local
+     * walking veto. Evaluated per call so a step never waits for the next supervisor tick.
+     */
+    private fun appliedContext(): ContextState {
+        val now = SystemClock.elapsedRealtime()
+        val local = smart?.motion?.state?.value ?: MotionState.STILL
+        if (local == MotionState.WALKING) lastWalkAt = now
+        val a = runtime.contextGate.effective(now, local, lastWalkAt, runtime.settingsCache.readNormalized().motionSourcesOff)
+        runtime.setContextApplied(a)
+        return a
+    }
     private val budget = BatteryBudget(SystemClock::elapsedRealtime).also { it.onChange = { l -> DiagLog.i(TAG, l) } }
     private val ratePolicy = SensorRatePolicy()
     private var lastUpBytes = 0L
@@ -169,6 +188,8 @@ class CaptureService : LifecycleService() {
                 if (runtime.settingsCache.capture().captureMode == CaptureMode.SMART) {
                     try { withContext(Dispatchers.Default) { runtime.pauses.ensureLoaded() } } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "pause load failed: ${e.javaClass.simpleName}") }
                 }
+                smart?.let { sm -> hintSender?.onSecond(sm.motion.state.value, SystemClock.elapsedRealtime()) }
+                appliedContext()
                 if (heatPoller.tick()) logHeat()
                 reconcile()
                 // Own guard: a throw here must not stop the status or the tick.
@@ -214,10 +235,13 @@ class CaptureService : LifecycleService() {
             settings = { runtime.settingsCache.readNormalized() },
             capturePaused = { !runtime.pauses.captureAllowed() },
             batteryPct = ::batteryPercent, charging = ::isCharging, batterySaver = ::isBatterySaverOn,
-            profile = { val s = runtime.settingsCache.readNormalized(); CaptureProfile.of(s.cameraWake, budget.tier.value) },
+            profile = { val s = runtime.settingsCache.readNormalized(); CaptureProfile.of(s.cameraWake, budget.tier.value).withContext(ContextPolicies.of(appliedContext())) },
+            // A hard cap (no dwell bonus); a manual "Capture now" is forced and stays exempt (see SamplingSession.contextCap).
+            contextCap = { ContextPolicies.of(appliedContext()).capPerMin },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance,
         )
+        hintSender = MotionHintSender(clock) { h -> runtime.controller?.sendMotionHint(h) == true }
         val verbose = DiagFlags.verboseFeatures(filesDir)
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
         val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir).also { it.start(motion, wear) }
@@ -239,6 +263,7 @@ class CaptureService : LifecycleService() {
     private fun stopSmart(reason: String) {
         val cur = smart ?: return
         smart = null
+        hintSender = null
         cur.rateJob?.cancel()
         cur.session.stop(reason)
         runtime.workRest.onPaused() // leaving counts as a pause: only one of R minutes or more restarts the work clock
@@ -292,6 +317,8 @@ class CaptureService : LifecycleService() {
                 sensors = ((smart?.feed as? AndroidSensorFeed)?.rate ?: SensorRate.FULL).name.lowercase(), phoneUse = runtime.phoneUse.active(now),
                 restartGapSec = runtime.restarts.lastGapSec, stillGapMs = smart?.session?.stillGapMs() ?: 0L,
                 scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, csvFail = (smart?.feed as? AndroidSensorFeed)?.csvFailures ?: 0,
+                ctx = runtime.contextGate.raw()?.name ?: "none", ctxAgeS = runtime.contextGate.ageMs(now)?.div(1000),
+                ctxApplied = runtime.contextApplied().name, ctxVeto = runtime.contextGate.takeVetoes(),
             ).format())
         }
         val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"
