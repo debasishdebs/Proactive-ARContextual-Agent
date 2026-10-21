@@ -18,14 +18,11 @@ object WearingStatus {
     }
 
     /**
-     * Wave A I1: a device-info snapshot saying NOT worn is trusted only while the glasses' wear check is on
-     * (otherwise "0" may just mean "not evaluated"); a snapshot saying worn is always applied. Null = ignore it.
+     * A device-info snapshot is meaningful only while the glasses' wear check is on (device-found: with the check off
+     * the SDK reports "worn" for glasses lying on a desk). Check not confirmed on -> ignore it (null); on -> apply the
+     * parsed value (null if unparseable).
      */
-    fun snapshotToApply(parsed: Boolean?, wearCheckOn: Boolean?): Boolean? = when (parsed) {
-        true -> true
-        false -> if (wearCheckOn == true) false else null
-        null -> null
-    }
+    fun snapshotToApply(parsed: Boolean?, wearCheckOn: Boolean?): Boolean? = if (wearCheckOn == true) parsed else null
 
     private val SAFE = Regex("^[A-Za-z0-9_ -]{1,24}$")
 
