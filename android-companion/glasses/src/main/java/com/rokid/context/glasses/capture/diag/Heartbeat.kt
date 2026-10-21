@@ -28,6 +28,11 @@ data class Heartbeat(
     val phoneUse: Boolean,
     val restartGapSec: Any?,
     val stillGapMs: Long = 0L,
+    val scrOn: Int = 0,
+    val scrOurs: Int = 0,
+    val nudgeOff: Int = 0,
+    /** Motion CSV write failures (count only); printed only when non-zero so the key order above stays pinned. */
+    val csvFail: Int = 0,
 ) {
     private fun perMin(v: Long, spanMs: Long = stats.spanMs): Long = v * 60_000L / spanMs.coerceAtLeast(1)
 
@@ -40,6 +45,9 @@ data class Heartbeat(
             "drain=$drain proj_h=$proj kf1m=${stats.kf1m} camOpen=$openPct% camOpenMs1m=${perMin(stats.openMs)} " +
             "analysed1m=${perMin(stats.analysed.toLong())} upBytes1m=${perMin(upBytes, upSpanMs)} heat=$heat batteryC=$batteryC " +
             "wear=$wear known=$known parked=$parked sensors=$sensors phoneUse=$phoneUse restartGapSec=$restartGapSec " +
-            "opens1m=${perMin(stats.opens.toLong())} wk=${listOf("timer", "dwell", "onset", "now", "stream").joinToString(",") { "$it:${stats.wakes[it] ?: 0}" }} stillGapMs=$stillGapMs"
+            "opens1m=${perMin(stats.opens.toLong())} wk=${listOf("timer", "dwell", "onset", "now", "stream").joinToString(",") { "$it:${stats.wakes[it] ?: 0}" }} stillGapMs=$stillGapMs " +
+            "glances1m=${perMin(stats.glances.toLong())} micro1m=${perMin(stats.micro.toLong())} novelSkip1m=${perMin(stats.novelSkips.toLong())} " +
+            "capped1m=${perMin(stats.capped.toLong())} same1m=${perMin(stats.same.toLong())} scrOn=$scrOn scrOurs=$scrOurs nudgeOff=$nudgeOff" +
+            if (csvFail > 0) " csvFail=$csvFail" else ""
     }
 }

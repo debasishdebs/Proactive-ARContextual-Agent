@@ -1,3 +1,4 @@
 label=fixture
 start=10-21_10:00:00
 end=10-21_10:20:00
+clk_tck=100
