@@ -33,6 +33,10 @@ abstract class ForgetDao {
     @Query("DELETE FROM frame_vector WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameVectorsFor(frameIds: List<String>): Int
     @Query("DELETE FROM frame_meta WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameMetaFor(frameIds: List<String>): Int
     @Query("DELETE FROM frame_state WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameStateFor(frameIds: List<String>): Int
+    /** Wave 3 (S2): how many per-photo rows (metadata, image vector, state) exist for [frameId]; a moment with no `frame` row and no memory still counts. */
+    @Query("SELECT (SELECT COUNT(*) FROM frame_meta WHERE frameId = :frameId) + (SELECT COUNT(*) FROM frame_vector WHERE frameId = :frameId) + (SELECT COUNT(*) FROM frame_state WHERE frameId = :frameId)")
+    abstract suspend fun photoRowCount(frameId: String): Int
+    @Query("DELETE FROM frame_source WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameSourcesOfFrames(frameIds: List<String>): Int
     @Query("DELETE FROM memory WHERE id IN (:ids)") abstract suspend fun deleteMemories(ids: List<String>): Int
     /** Every embedding space, not only the current one. */
     @Query("DELETE FROM memory_vector WHERE memoryId IN (:ids)") abstract suspend fun deleteVectorsFor(ids: List<String>): Int

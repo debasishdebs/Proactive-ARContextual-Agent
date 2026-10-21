@@ -7,6 +7,9 @@ import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.ForgetTombstoneEntity
 import org.json.JSONArray
 
+/** Wave 3: a saved answer cites a photo as `frame:<frameId>` in its sources. Forget on the photo redacts those answers (S1). */
+const val PHOTO_CITE_PREFIX = "frame:"
+
 /**
  * Forget fact / Forget moment (spec §6.1.1, R-77, R-16), one transaction each:
  * 1. D = everything derived from the forgotten set F over `memory_source`, minus F.
@@ -40,16 +43,20 @@ class ForgetService(
 
     suspend fun forgetFact(memoryId: String): Result = forgetFacts(listOf(memoryId))
 
-    /** All memories of the frame, the frame row and its JPEG (always listed). Unknown frame and no memories → empty. */
+    /**
+     * All memories of the frame, the frame row and its JPEG (always listed). A photo that retention already expired without a description
+     * (`frame_meta`, `frame_vector`, state, no `frame` row, no memory) is still a moment (S2). Saved answers that cited it (`frame:<id>`) are
+     * redacted with their proposals and alarms (S1). Empty only when no frame, metadata, vector, state or memory exists.
+     */
     suspend fun forgetMoment(frameId: String): Result = db.withTransaction {
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
-        if (frame == null && ids.isEmpty()) return@withTransaction Result.EMPTY
-        val r = cascade(ids, lockFrames = true)
+        if (frame == null && ids.isEmpty() && dao.photoRowCount(frameId) == 0) return@withTransaction Result.EMPTY
+        val r = cascade(ids, lockFrames = true, extraCited = setOf(PHOTO_CITE_PREFIX + frameId))
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
         dropCanvasOutputs(listOf(frameId))
         dao.deleteFrame(frameId)
-        listOf(frameId).let { dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
+        listOf(frameId).let { dao.deleteFrameSourcesOfFrames(it); dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
         r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() })).distinct())
     }
 
@@ -95,9 +102,9 @@ class ForgetService(
 
     private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
 
-    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false): Result {
+    private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true, keepKeyframes: Boolean = false, extraCited: Set<String> = emptySet()): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
-        if (found.isEmpty()) return Result.EMPTY
+        if (found.isEmpty() && extraCited.isEmpty()) return Result.EMPTY
         val forgotten = found.map { it.id }.toSet()
         // Frames cited by F: memory.frameId plus frame_source rows (a 3-photo batch cites 3). Each is locked at once.
         val citedFrames = (found.mapNotNull { it.frameId } + forgotten.toList().chunked(CHUNK).flatMap { dao.sourceFramesOf(it) }).distinct()
@@ -116,7 +123,7 @@ class ForgetService(
         val now = clock()
         if (lockFrames) { frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; dropCanvasOutputs(frames) }
         // 5. Redaction (exact JSON match after a LIKE prefilter: "A1" never matches "A").
-        val cited = forgotten + invalidated
+        val cited = forgotten + invalidated + extraCited // extraCited: `frame:<id>` photo cites (S1)
         val asks = cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }
         val nudges = cited.flatMap { id -> dao.nudgesCiting(likeFor(id)) }.distinctBy { it.id }.filter { n -> parseIds(n.sourceIdsJson).any { it in cited } }
         asks.forEach { dao.redactAsk(it.id, REDACTED) }
