@@ -118,7 +118,7 @@ class NightIndexWorkerTest {
     // --- the night job ---------------------------------------------------------------------------------------------------
 
     @Test fun describesOnlyUnlinkedNonSkippedDuePhotos() = runBlocking {
-        cluster("cSum", "SUMMARIZED"); cluster("cOpen", "CLOSED")
+        db.frameClusterDao().upsert(FrameClusterEntity("cSum", 1, 2, "gap", "[\"rep\"]", null, state = "SUMMARIZED")); cluster("cOpen", "CLOSED")
         val dueTs = now - 6 * day - 12 * hour // due in 12 h
         photo("due", dueTs)
         photo("dueFailedFinal", dueTs, "FAILED_FINAL", lastError = "cluster_failed")
@@ -131,16 +131,16 @@ class NightIndexWorkerTest {
         photo("inCluster", dueTs, "IN_CLUSTER", salience = 0.9f, clusterId = "cOpen")
         photo("unsettled", dueTs, "CLUSTERED", salience = 0.9f, clusterId = "cOpen")
         photo("pending", dueTs, "PENDING")
-        photo("rep", dueTs, "CLUSTERED", clusterId = "cSum", linked = true)
+        photo("rep", dueTs, "CLUSTERED", salience = 0.1f, clusterId = "cSum") // scored low but a representative (repFrameIds), unlinked: not skipped, so described
         val ids = mutableListOf<Int>()
         val r = night(described = ids).run()
-        assertEquals(setOf("due", "dueFailedFinal", "dueKeyMoment"), calls.flatMap { it.first }.toSet())
-        assertEquals(3, r.queued); assertEquals(3, r.described); assertEquals(0, r.left); assertEquals(listOf(3), ids)
-        for (id in listOf("due", "dueFailedFinal", "dueKeyMoment")) {
+        assertEquals(setOf("due", "dueFailedFinal", "dueKeyMoment", "rep"), calls.flatMap { it.first }.toSet())
+        assertEquals(4, r.queued); assertEquals(4, r.described); assertEquals(0, r.left); assertEquals(listOf(4), ids)
+        for (id in listOf("due", "dueFailedFinal", "dueKeyMoment", "rep")) {
             assertTrue("$id described", cited(id)); assertEquals("EXTRACTED", state(id).state)
             assertEquals("the marker survives the save", "describe_before_delete", state(id).lastError)
         }
-        for (id in listOf("linked", "skipped", "shed", "notDue", "dwellNotDue", "rep")) assertFalse("$id untouched", calls.any { id in it.first })
+        for (id in listOf("linked", "skipped", "shed", "notDue", "dwellNotDue")) assertFalse("$id untouched", calls.any { id in it.first })
         for (id in listOf("inCluster", "unsettled", "pending")) assertFalse("$id untouched", calls.any { id in it.first })
         assertEquals("IN_CLUSTER", state("inCluster").state); assertEquals("PENDING", state("pending").state)
         assertEquals("CLUSTERED", state("unsettled").state)
@@ -307,7 +307,7 @@ class NightIndexWorkerTest {
         val old = now - 20 * day
         val open = photo("open", old, "IN_CLUSTER", salience = 0.9f, clusterId = "cOpen")
         val retried = photo("retried", old, "CLUSTERED", salience = 0.9f, clusterId = "cFailed")
-        val rep = photo("rep", now - 6 * day - 12 * hour, "CLUSTERED", clusterId = "cSum")
+        val rep = photo("rep", now - 6 * day - 12 * hour, "CLUSTERED", salience = 0.1f, clusterId = "cSum")
         db.memoryDao().insert(MemoryEntity("m_sum", "rep", "t", "cluster_summary", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, now, false, "t"))
         db.frameSourceDao().insertAll(listOf(FrameSourceEntity("m_sum", "rep", "cSum", "CLUSTER_REP"))) // the summary cites it as a representative
         val dwell = photo("dwell", now - day, dwell = true, linked = true)
