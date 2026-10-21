@@ -105,8 +105,8 @@ object CriticExecutor : NodeExecutor {
         val bound = ctx.bindings(Role.CRITIC) != null
         return items.mapIndexed { i, it ->
             val v = it.value as? CanvasValue.Extraction ?: return@mapIndexed NodeResult(it.frameId, null, error = "BAD_INPUT")
-            if (!bound) return@mapIndexed NodeResult(it.frameId, v.copy(trusted = false, note = "unbound"), branch = "fail")
             if (v.facts.isEmpty()) return@mapIndexed NodeResult(it.frameId, v.copy(trusted = true), branch = "pass") // nothing to review: no model call
+            if (!bound) return@mapIndexed NodeResult(it.frameId, v.copy(trusted = false, note = "unbound"), branch = "fail")
             val started = System.nanoTime()
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {

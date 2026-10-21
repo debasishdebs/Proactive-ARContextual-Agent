@@ -26,7 +26,7 @@ sealed interface DescribeResult {
     data class Saved(val memories: Int, val frames: Int) : DescribeResult
     /** Every chosen photo has no `frame` row or no readable file any more. */
     data object Expired : DescribeResult
-    /** Every chosen photo is being extracted under someone else's claim. */
+    /** Nothing was described and some photo is owned by the pipeline: held under someone else's claim, still queued for it, or its claim was lost after the call (S5: never a second call). Retry later. */
     data object Busy : DescribeResult
     /** Offline, no provider set up, or the model call failed. */
     data object Unavailable : DescribeResult
@@ -84,7 +84,6 @@ class DescribeOnDemand(
             for ((id, o) in extractNow(claimable)) when (o) {
                 is ExtractNowOutcome.Extracted -> { memories += o.memories; described++ }
                 ExtractNowOutcome.ExtractedEmpty -> described++
-                // Only a lost claim is re-read (S5): another extractor holds it now (Busy), or nobody does (the no-claim path).
                 // Never claimed by us: re-read the state (S5). Someone else's claim, or a frame that is claimable again, is not ours to describe (no second call).
                 ExtractNowOutcome.LostClaim ->
                     if (db.frameStateDao().get(id)?.state in HELD) busy++ else direct += id
@@ -96,7 +95,7 @@ class DescribeOnDemand(
         }
         if (direct.isNotEmpty() && !wiped) {
             val prefix = "$ID_ROOT${idSource()}_"
-            when (val o = KeyframeExtract.run(context, direct, null, CallClass.USER, prefix, online, nudge = false) { sent, _ -> markDescribed(sent) }) {
+            when (val o = KeyframeExtract.run(context, direct, null, CallClass.USER, prefix, online, nudge = false, quiet = true) { sent, _ -> markDescribed(sent) }) {
                 is ExtractOutcome.Saved -> {
                     memories += o.memories.size; described += direct.size - o.unreadable.size - o.unseen.size
                     expired += o.unreadable.size; if (o.unseen.isNotEmpty()) unavailable = true

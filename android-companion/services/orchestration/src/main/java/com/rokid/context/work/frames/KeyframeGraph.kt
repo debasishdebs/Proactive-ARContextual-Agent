@@ -198,7 +198,8 @@ class KeyframeHandle internal constructor(private val app: Context) {
 
     /** One VISION_EXTRACT over [frameIds] (<= 3, labelled with their ids), saved with the claim CAS inside the transaction. */
     private suspend fun extract(frameIds: List<String>, claimId: String, callClass: CallClass): ExtractOutcome =
-        KeyframeExtract.run(app, frameIds, claimId, callClass, factPrefix(claimId), ::networkValidated, nudge = callClass != CallClass.BACKFILL && kotlin.coroutines.coroutineContext[NoNudge.Key] == null)
+        KeyframeExtract.run(app, frameIds, claimId, callClass, factPrefix(claimId), ::networkValidated, nudge = callClass != CallClass.BACKFILL && kotlin.coroutines.coroutineContext[NoNudge.Key] == null,
+            quiet = kotlin.coroutines.coroutineContext[NoNudge.Key] != null)
 
     /**
      * One CLUSTER_SUMMARY call over the representatives [reps] of [clusters] (wave 2). The cluster CAS is inside [ClusterSave]; the follow-up
