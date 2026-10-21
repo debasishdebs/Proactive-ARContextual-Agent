@@ -63,4 +63,17 @@ class CanvasAssetsTest {
         val lines = js.sumOf { text(it).lines().size }
         assertEquals(true, lines <= 2000)
     }
+
+    @Test fun checkReadsLiveEditorValues() {
+        val v = text("views.js")
+        assertTrue(v.contains("tplArea.value"))
+        assertTrue(v.contains("schArea.value"))
+    }
+
+    @Test fun pollStopsOnlyOnRunState() {
+        val v = text("views.js")
+        val line = v.lines().first { it.contains("setTimeout(tick") }
+        assertTrue(line.contains("drawnStatus !== String(run.status)"))
+        assertFalse(line.contains("editing"))
+    }
 }
