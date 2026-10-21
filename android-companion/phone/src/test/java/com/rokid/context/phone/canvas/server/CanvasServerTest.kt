@@ -150,4 +150,52 @@ class CanvasServerTest {
         ServerSocket().use { it.reuseAddress = true; it.bind(InetSocketAddress("127.0.0.1", port)) }
         assertFalse(runCatching { Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 300) } }.isSuccess)
     }
+
+    private fun awaitTrue(ms: Long = 5000, c: () -> Boolean): Boolean {
+        val end = System.currentTimeMillis() + ms
+        while (System.currentTimeMillis() < end) { if (c()) return true; Thread.sleep(25) }
+        return c()
+    }
+
+    /** True when the peer closed (EOF or reset) within [ms]. */
+    private fun closedByPeer(sock: Socket, ms: Int): Boolean {
+        sock.soTimeout = ms
+        return try { sock.getInputStream().read() == -1 } catch (e: java.net.SocketTimeoutException) { false } catch (e: java.io.IOException) { true }
+    }
+
+    @Test fun seventeenthConcurrentConnectionIsClosedAndThreadsAreReleased() {
+        val logs = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val s = CanvasServer(CanvasRouter(auth, hosts, api, assets), false, log = { logs += it }).also { servers += it }
+        port = s.start()
+        val held = (1..CanvasServer.MAX_CLIENTS).map { Socket("127.0.0.1", port) }
+        try {
+            assertTrue(awaitTrue { s.activeClients == CanvasServer.MAX_CLIENTS })
+            Socket("127.0.0.1", port).use { extra -> assertTrue("17th stayed open", closedByPeer(extra, 2000)) }
+            assertEquals(CanvasServer.MAX_CLIENTS, s.activeClients)
+            assertTrue(logs.toString(), logs.any { it == "CONN over-cap" })
+        } finally { held.forEach { it.close() } }
+        assertTrue("threads not released: ${s.activeClients}", awaitTrue { s.activeClients == 0 })
+        client.newCall(Request.Builder().url("http://127.0.0.1:$port/").build()).execute().use { assertEquals(200, it.code) }
+    }
+
+    @Test fun slowDripClientIsClosedAfterTheDeadline() {
+        val s = CanvasServer(CanvasRouter(auth, hosts, api, assets), false, deadlineMs = 800).also { servers += it }
+        port = s.start()
+        val drip = Socket("127.0.0.1", port)
+        val out = drip.getOutputStream()
+        out.write("GET / HTTP/1.1\r\nHost: 127.0.0.1:$port\r\nX-A: ".toByteArray()); out.flush()
+        val started = System.currentTimeMillis()
+        var closed = false
+        try {
+            while (System.currentTimeMillis() - started < 4000 && !closed) {
+                try { out.write('a'.code); out.flush() } catch (e: java.io.IOException) { closed = true }
+                Thread.sleep(150)
+            }
+        } finally { drip.close() }
+        assertTrue("slow client was not cut off", closed)
+        assertTrue(System.currentTimeMillis() - started < 3500)
+        assertTrue(awaitTrue { s.activeClients == 0 })
+        // a normal, fast request still works and keep-alive reuse is within the deadline
+        client.newCall(Request.Builder().url("http://127.0.0.1:$port/").build()).execute().use { assertEquals(200, it.code) }
+    }
 }
