@@ -1,6 +1,7 @@
 package com.rokid.context.ai.local
 
 import android.graphics.BitmapFactory
+import com.rokid.context.memory.ImageDecodeException
 import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.floor
@@ -14,7 +15,10 @@ object NomicVision {
     const val INPUT = 224
     const val CLS_DIMS = 768
 
-    /** The stored image-vector width (Ruling 17), part of the space fingerprint; the image embedder declares it as `imageDims`. */
+    /**
+     * The stored image-vector width (Ruling 17), part of the space fingerprint; the image embedder declares it as `imageDims`.
+     * 256 only after the §F.5 photo test passes; changing it is a new space and a re-index.
+     */
     const val STORED_DIMS = 768
 
     /** [resample] is the PIL code from the config (3 = bicubic). [resizeShortestEdge] false = stretch to [resize] x [resize]. */
@@ -59,7 +63,7 @@ object NomicVision {
 
     /** JPEG -> 3x224x224 floats (NCHW, RGB). */
     fun preprocess(jpeg: ByteArray, cfg: PreprocessConfig = PreprocessConfig.PINNED): FloatArray {
-        val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: throw IllegalArgumentException("undecodable image")
+        val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: throw ImageDecodeException("undecodable image")
         try {
             val w = bmp.width
             val h = bmp.height

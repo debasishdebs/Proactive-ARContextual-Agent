@@ -44,7 +44,7 @@ class NomicLocalEmbedderTest {
         assertArrayEquals(NomicText.shorten(NomicText.layerNorm(raw), 256), doc, 1e-6f)
         assertEquals(256, doc.size)
         assertEquals(1.0, sqrt(doc.sumOf { (it * it).toDouble() }), 1e-5)
-        assertEquals(NomicText.fingerprint(256), emb.fingerprint)
+        assertEquals(com.rokid.context.ai.local.NomicBundle.fingerprint(), emb.fingerprint)
         val q = emb.embedQuery("milk"); assertEquals(256, q.size)
         assertEquals("search_query: milk", calls.texts.last())
         val full = emb.embedQueryFull("milk")

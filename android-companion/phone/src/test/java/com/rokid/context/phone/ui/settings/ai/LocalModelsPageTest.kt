@@ -196,6 +196,52 @@ class LocalModelsPageTest {
         assertEquals(1, reindexes)
     }
 
+    private val nomic = LocalModels.byId("nomic-embed-v1.5")!!
+
+    private fun nomicSource() = LocalModelsSource(listOf(bge, nomic), gateway, ai, { reindexes++ }, mobile, abiSupported = true)
+
+    @Test fun useForEmbeddingsNeedsBothBundleFiles() = runBlocking {
+        val s = nomicSource()
+        gateway.set(nomic, LocalModelState.Ready) // writes the text GGUF only
+        val vision = File(gateway.fileFor(nomic).parentFile, nomic.files[1].file)
+        assertFalse(vision.exists())
+        assertTrue(s.useForEmbeddings(nomic) is ActionResult.Failed)
+        assertNull("no binding without the vision file", ai.bindings.get(Role.EMBED))
+        assertEquals(0, reindexes)
+        vision.writeBytes(byteArrayOf(1))
+        assertTrue(s.useForEmbeddings(nomic) !is ActionResult.Failed)
+        assertEquals(nomic.id, ai.bindings.get(Role.EMBED)!!.model)
+        assertEquals(1, reindexes)
+    }
+
+    /** Roll back after a Nomic swap: bge is rebound and reactivated, the Nomic space is retired (its vectors kept for the grace). */
+    @Test fun rollbackAfterNomicSwapRebindsBge() = runBlocking {
+        val graph = TestGraph.fresh(ctx); ai = TestSettings.ai(ctx)
+        val s = nomicSource()
+        gateway.set(bge, LocalModelState.Ready); gateway.set(nomic, LocalModelState.Ready)
+        File(gateway.fileFor(nomic).parentFile, nomic.files[1].file).writeBytes(byteArrayOf(1))
+        s.useForEmbeddings(bge)
+        val bgeSpec = com.rokid.context.ai.embed.EmbeddingSpec(endpointId, EndpointKind.LLAMACPP_LOCAL, gateway.fileFor(bge).absolutePath, null, bge.id, null, null, 384, true, "", "", 2_000)
+        val nomicId = LocalModelsSource.endpointIdFor(nomic)
+        val nomicSpec = com.rokid.context.ai.embed.EmbeddingSpec(nomicId, EndpointKind.LLAMACPP_LOCAL, gateway.fileFor(nomic).absolutePath, null, nomic.id, null, null, 256, true, "search_document: ", "search_query: ", 2_000, 768)
+        val spaces = com.rokid.context.memory.EmbeddingSpaces(graph.db.embeddingDao(), com.rokid.context.memory.InMemoryRetiredClock(), { 1_000L })
+        graph.memories.add(com.rokid.context.memory.db.MemoryEntity("m1", null, "t", "note", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.8, com.rokid.context.memory.db.ReviewState.OK, false, 1, false, ""))
+        val a = spaces.startBuilding(bgeSpec.fingerprint, bgeSpec.configJson(), 384, "[]", 1); spaces.put("m1", a.id, FloatArray(384) { 1f }); assertTrue(spaces.swapIfComplete(a.id))
+        s.useForEmbeddings(nomic)
+        assertEquals(nomic.id, ai.bindings.get(Role.EMBED)!!.model)
+        val b = spaces.startBuilding(NomicBundleFp, nomicSpec.configJson(), 256, "[]", 2, imageDims = 768); spaces.put("m1", b.id, FloatArray(256) { 1f }); assertTrue(spaces.swapIfComplete(b.id))
+        var reindexed = false
+        val swap = SpacesSwapRollback(spaces, AiEmbedRebinder(ai)) { reindexed = true }
+        assertTrue(swap.available())
+        assertTrue(swap.rollBack())
+        assertEquals("EMBED is back on bge", bge.id, ai.bindings.get(Role.EMBED)!!.model)
+        assertTrue(reindexed)
+        assertEquals(a.id, spaces.current()?.id)
+        assertEquals("the Nomic space is retired, not deleted", com.rokid.context.memory.db.SpaceState.RETIRED, graph.db.embeddingDao().space(b.id)?.state)
+    }
+
+    private val NomicBundleFp get() = com.rokid.context.ai.local.NomicBundle.fingerprint()
+
     @Test fun rebindDuringReindexStartsANewGeneration() = runBlocking {
         // EMBED already on a cloud endpoint, its reindex still running (the callback only enqueues the swap).
         ai.endpoints.save(Endpoint("ol", "Ollama", EndpointKind.OLLAMA, "http://localhost:11434", null, listOf("nomic-embed-text"), setOf(Capability.EMBEDDINGS), 2), null).getOrThrow()
