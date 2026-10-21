@@ -19,6 +19,10 @@ import com.rokid.context.orchestration.TestAi
 import com.rokid.context.prompt.PromptDraft
 import com.rokid.context.prompt.PromptRepository
 import com.rokid.context.prompt.PromptVars
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -184,4 +188,30 @@ class CanvasPublisherTest {
         assertEquals(before.template, activeText())
         assertEquals(before.version, prompts.active(PromptKey.VISION_EXTRACT).version)
     }
+
+    @Test fun concurrentPublishesKeepOneRollbackChain() = both { coroutineScope {
+        val original = activeText()
+        val (id1, v1) = frozen("FIRST {{recent_context}}")
+        val (id2, v2) = frozen("SECOND {{recent_context}}")
+        val p = publisher()
+        val outs = listOf(async(Dispatchers.Default) { p.publish(id1, v1) }, async(Dispatchers.Default) { p.publish(id2, v2) }).awaitAll()
+        assertTrue(outs.all { it is CanvasPublisher.Outcome.Published })
+        assertEquals(2, dao.activePublishes().size)
+        assertTrue(p.rollback() is CanvasPublisher.Outcome.Published)
+        assertTrue(p.rollback() is CanvasPublisher.Outcome.Published)
+        assertEquals(original, activeText())
+        assertEquals(CanvasPublisher.Outcome.Blocked(listOf("Nothing to roll back")), p.rollback())
+    } }
+
+    @Test fun rollbackAfterConcurrentOutsideEditNeverClobbers() = both { coroutineScope {
+        val (id, v) = frozen("EDITED {{recent_context}}")
+        val p = publisher()
+        p.publish(id, v)
+        val edit = async(Dispatchers.Default) { prompts.save(PromptKey.VISION_EXTRACT, PromptDraft("MANUAL {{recent_context}}", schema()), "by hand", true) }
+        val back = async(Dispatchers.Default) { p.rollback() }
+        edit.await(); val out = back.await()
+        // the manual edit is either made before the rollback (refused) or after it (applied last): it is never lost
+        assertEquals("MANUAL {{recent_context}}", activeText())
+        if (out is CanvasPublisher.Outcome.Blocked) assertEquals(1, dao.activePublishes().size)
+    } }
 }
