@@ -7,6 +7,7 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.core.app.ApplicationProvider
+import com.rokid.context.core.model.CameraWake
 import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.QUICK_LOOK_MS_ALLOWED
 import com.rokid.context.core.model.REST_MINUTES_ALLOWED
@@ -33,7 +34,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 @RunWith(AndroidJUnit4::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [34], application = Application::class, qualifiers = "w411dp-h2400dp")
 class CaptureSettingsTest {
     @get:Rule val main = MainDispatcherRule()
     @get:Rule val compose = createComposeRule()
@@ -55,7 +56,7 @@ class CaptureSettingsTest {
     }
 
     private fun show(state: CaptureSettingsUiState, vm: CaptureSettingsViewModel? = null) {
-        compose.setContent { PcTheme { CaptureSettingsScreen(state, onBack = {}, onMode = { vm?.setMode(it) }, onWork = { vm?.setWork(it) }, onRest = { vm?.setRest(it) }) } }
+        compose.setContent { PcTheme { CaptureSettingsScreen(state, onBack = {}, onModeChoice = { vm?.setModeChoice(it) }, onBatteryTarget = { vm?.setBatteryTarget(it) }, onPauseWhenPhoneInUse = { vm?.setPauseWhenPhoneInUse(it) }, onWork = { vm?.setWork(it) }, onRest = { vm?.setRest(it) }) } }
     }
 
     @Test fun smartHidesInterval() {
@@ -153,5 +154,77 @@ class CaptureSettingsTest {
         assertEquals("Smart \u00b7 1 keyframe in the last 10 min", CaptureSettingsUiState(keyframesPerHour = 6).statusLine)
         show(CaptureSettingsUiState(mode = CaptureMode.SMART, keyframesPerHour = 30))
         compose.onNodeWithTag("capture_status").assertExists()
+    }
+
+    private fun pick(tag: String, index: Int) {
+        compose.onNodeWithTag(tag).performSemanticsAction(SemanticsActions.OnClick); compose.waitForIdle()
+        compose.onNodeWithTag("${tag}_$index").performClick(); compose.waitForIdle()
+    }
+
+    @Test fun modeHasThreeOptionsAndSettleWritesSmartSettle() = runBlocking {
+        val hud = FakeHudSettings(HudSettings(captureMode = CaptureMode.FIXED))
+        val vm = CaptureSettingsViewModel(hud)
+        show(CaptureSettingsUiState(mode = CaptureMode.FIXED), vm)
+        compose.onNodeWithTag("mode").performSemanticsAction(SemanticsActions.OnClick); compose.waitForIdle()
+        compose.onNodeWithTag("mode_0").assertExists(); compose.onNodeWithTag("mode_1").assertExists(); compose.onNodeWithTag("mode_2").assertExists()
+        compose.onNodeWithTag("mode_3").assertDoesNotExist()
+        compose.onNodeWithText("Settle").assertExists()
+        compose.onNodeWithTag("mode_1").performClick(); compose.waitForIdle()
+        assertEquals(CaptureMode.SMART, hud.settings.value.captureMode); assertEquals(CameraWake.SETTLE, hud.settings.value.cameraWake)
+        vm.cancelScope()
+    }
+
+    @Test fun fixedKeepsWakeAndSmartResetsToMotion() = runBlocking {
+        val hud = FakeHudSettings(HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.SETTLE))
+        val vm = CaptureSettingsViewModel(hud)
+        vm.setModeChoice(2)
+        assertEquals(CaptureMode.FIXED, hud.settings.value.captureMode); assertEquals(CameraWake.SETTLE, hud.settings.value.cameraWake)
+        vm.setModeChoice(0)
+        assertEquals(CaptureMode.SMART, hud.settings.value.captureMode); assertEquals(CameraWake.MOTION, hud.settings.value.cameraWake)
+        vm.cancelScope()
+    }
+
+    @Test fun settleShowsItsNoteAndHidesQuickLook() {
+        show(CaptureSettingsUiState(mode = CaptureMode.SMART, wake = CameraWake.SETTLE))
+        compose.onNodeWithTag("settle_note").assertExists()
+        compose.onNodeWithText("Photos only when your head settles on something (about 1.5\u20132 s). Uses much less battery.").assertExists()
+        compose.onNodeWithTag("quick_look").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Capture mode: Settle").assertExists()
+    }
+
+    @Test fun smartMotionShowsQuickLookNotSettleNote() {
+        show(CaptureSettingsUiState())
+        compose.onNodeWithTag("quick_look").assertExists(); compose.onNodeWithTag("settle_note").assertDoesNotExist()
+    }
+
+    @Test fun batteryTargetDefaultsTo4hAndOffWritesZero() = runBlocking {
+        val hud = FakeHudSettings()
+        val vm = CaptureSettingsViewModel(hud)
+        show(CaptureSettingsUiState(), vm)
+        compose.onNodeWithContentDescription("Battery target: 4 h").assertExists()
+        compose.onNodeWithText("Takes fewer photos when the glasses battery would not last this long.").assertExists()
+        pick("battery_target", 0)
+        assertEquals(0, hud.settings.value.batteryTargetHours)
+        vm.setBatteryTarget(5); assertEquals(5, hud.settings.value.batteryTargetHours)
+        vm.setBatteryTarget(7); assertEquals(6, hud.settings.value.batteryTargetHours)
+        vm.cancelScope()
+    }
+
+    @Test fun phoneUseSwitchDefaultsOffAndToggles() = runBlocking {
+        val hud = FakeHudSettings()
+        val vm = CaptureSettingsViewModel(hud)
+        show(CaptureSettingsUiState(), vm)
+        compose.onNodeWithTag("pause_phone_use").assertExists()
+        compose.onNodeWithText("Pause while I use my phone").assertExists()
+        assertFalse(hud.settings.value.pauseWhenPhoneInUse)
+        compose.onNodeWithTag("pause_phone_use").performClick(); compose.waitForIdle()
+        assertTrue(hud.settings.value.pauseWhenPhoneInUse)
+        assertTrue(withTimeout(5_000) { vm.state.first { it.pauseWhenPhoneInUse } }.pauseWhenPhoneInUse)
+        vm.cancelScope()
+    }
+
+    @Test fun statusLineReadsSettle() {
+        assertEquals("Settle \u00b7 5 keyframes in the last 10 min", CaptureSettingsUiState(wake = CameraWake.SETTLE, keyframesPerHour = 30).statusLine)
+        assertEquals("Fixed \u00b7 0 keyframes in the last 10 min", CaptureSettingsUiState(mode = CaptureMode.FIXED, wake = CameraWake.SETTLE).statusLine)
     }
 }
