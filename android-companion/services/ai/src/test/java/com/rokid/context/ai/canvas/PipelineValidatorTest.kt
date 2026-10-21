@@ -165,18 +165,14 @@ class PipelineValidatorTest {
     }
 
     @Test fun validateTextsUnchanged() {
-        val bad = listOf(
-            pipe(listOf(photos(), extract(), extract()), listOf(PipelineEdge("photos", "extract"))),
-            pipe(listOf(photos(), extract()), listOf(PipelineEdge("photos", "extract", "x"))),
-            pipe(listOf(photos(), extract(), extract("lonely")), listOf(PipelineEdge("photos", "extract"))),
-            pipe(listOf(photos(), aiPrompt()), listOf(PipelineEdge("photos", "intent"))),
-            pipe(listOf(extract()), emptyList()),
-        )
-        bad.forEach { p -> assertEquals(PipelineValidator.validate(p), PipelineValidator.problems(p).map { it.text }); assertTrue(PipelineValidator.validate(p).isNotEmpty()) }
-        assertEquals(
-            listOf("duplicate node id extract"),
-            PipelineValidator.validate(pipe(listOf(photos(), extract(), extract()), listOf(PipelineEdge("photos", "extract")))),
-        )
-        assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.liveExtract()))
+        // frozen golden texts: a rewording of any rule fails here
+        assertEquals(listOf("duplicate node id extract"), problems(pipe(listOf(photos(), extract(), extract()), listOf(PipelineEdge("photos", "extract")))))
+        assertEquals(listOf("edge photos->extract: when not allowed"), problems(pipe(listOf(photos(), extract()), listOf(PipelineEdge("photos", "extract", "x")))))
+        assertEquals(listOf("node lonely: unreachable"), problems(pipe(listOf(photos(), extract(), extract("lonely")), listOf(PipelineEdge("photos", "extract")))))
+        assertEquals(listOf("node intent: schema required"), problems(pipe(listOf(photos(), aiPrompt()), listOf(PipelineEdge("photos", "intent")))))
+        assertEquals(listOf("exactly one input.photos required"), problems(pipe(listOf(extract()), emptyList())))
+        assertEquals(listOf("edge photos->x: unknown node x"), problems(pipe(listOf(photos(), extract()), listOf(PipelineEdge("photos", "extract"), PipelineEdge("photos", "x")))))
+        assertEquals(emptyList<String>(), problems(DefaultPipelines.liveExtract()))
+        assertEquals(problems(minimal()), PipelineValidator.problems(minimal()).map { it.text })
     }
 }
