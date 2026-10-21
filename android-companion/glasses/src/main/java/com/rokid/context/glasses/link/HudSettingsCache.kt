@@ -16,6 +16,7 @@ data class CaptureSettings(
     val pauseWhenNotWorn: Boolean,
     val captureIntervalSec: Int,
     val captureCue: Boolean = true,
+    val workRestEnabled: Boolean = false,
 )
 
 /** Last `pc_settings`, kept across restarts: verbosity, gestures and cadence apply offline (spec §5.5). */
@@ -30,7 +31,7 @@ class HudSettingsCache(private val prefs: SharedPreferences) {
     fun readNormalized(): HudSettings = read().normalized()
 
     fun capture(): CaptureSettings = readNormalized().let {
-        CaptureSettings(it.captureMode, it.quickLookMs, it.workMinutes, it.restMinutes, it.pauseWhenNotWorn, it.captureIntervalSec, it.captureCue)
+        CaptureSettings(it.captureMode, it.quickLookMs, it.workMinutes, it.restMinutes, it.pauseWhenNotWorn, it.captureIntervalSec, it.captureCue, it.workRestEnabled)
     }
 
     fun write(s: HudSettings) {

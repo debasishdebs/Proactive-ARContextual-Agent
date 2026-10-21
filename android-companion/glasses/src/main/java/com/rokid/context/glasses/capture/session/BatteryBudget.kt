@@ -17,6 +17,12 @@ data class CaptureProfile(
     /** A still scene backs the brief checks off (doubling) up to this gap; a changed scene, motion or a settle resets it. */
     val stillCapMs: Long = 60_000L,
 ) {
+    /** The profile while resting (WorkRest on): glance captures only, timer checks at least 30 s apart, backing off to 2 min. */
+    fun forRest(): CaptureProfile = copy(
+        wake = CameraWake.SETTLE, settledCheckMs = maxOf(settledCheckMs, 30_000), quietCheckMs = maxOf(quietCheckMs, 60_000),
+        walkCheckMs = maxOf(walkCheckMs ?: settledCheckMs, 30_000), stillCapMs = maxOf(stillCapMs, 120_000),
+    )
+
     companion object {
         fun of(wake: CameraWake, tier: BudgetTier): CaptureProfile = when (tier) {
             BudgetTier.T0 -> when (wake) {
