@@ -27,6 +27,7 @@ import com.rokid.context.glasses.capture.keyframe.KeyframeGate
 import com.rokid.context.glasses.capture.keyframe.PrefsGateStore
 import com.rokid.context.glasses.capture.motion.AndroidSensorFeed
 import com.rokid.context.glasses.capture.motion.MotionClassifier
+import com.rokid.context.glasses.capture.session.movementSignals
 import com.rokid.context.glasses.capture.motion.SensorFeed
 import com.rokid.context.glasses.capture.session.AndroidKeyframeEncoder
 import com.rokid.context.glasses.capture.session.BatteryBudget
@@ -187,13 +188,14 @@ class CaptureService : LifecycleService() {
     }
 
     /** Feed `setRate` is @Synchronized and idempotent, so the supervisor and the rateJob may both call this. */
-    private fun applyRate() {
-        smart?.let { it.feed.setRate(ratePolicy.update(runtime.captureStatus.value.reason, SystemClock.elapsedRealtime(), it.motion.state.value)) }
+    private fun applyRate(state: MotionState? = null) {
+        smart?.let { it.feed.setRate(ratePolicy.update(runtime.captureStatus.value.reason, SystemClock.elapsedRealtime(), state ?: it.motion.state.value)) }
     }
 
     private fun startSmart() {
         val clock: () -> Long = SystemClock::elapsedRealtime
         val motion = MotionClassifier(clock)
+        ratePolicy.reset()
         val wear = runtime.wear
         wear.resetStillRun() // a still run from before a session restart must not park the glasses at once
         val session = SamplingSession(
@@ -210,7 +212,11 @@ class CaptureService : LifecycleService() {
         val sm = Smart(session, feed, motion)
         smart = sm
         // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
-        sm.rateJob = scope.launch { motion.state.collect { if (it != MotionState.STILL) applyRate() } }
+        sm.rateJob = scope.launch {
+            motion.movementSignals().collect { // the collected state, not state.value: a glance may already be over
+                try { applyRate(it) } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "rate update failed: ${e.javaClass.simpleName}") }
+            }
+        }
         runtime.smartCapture.value = true
         session.start()
         scheduleNextCapture(failed = false) // the watchdog
