@@ -12,6 +12,8 @@ import com.rokid.context.ai.embed.Embedders
 import com.rokid.context.memory.EmbeddingSpaces
 import com.rokid.context.memory.Embedder
 import com.rokid.context.memory.MemoryRepository
+import com.rokid.context.memory.Modality
+import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
 import com.rokid.context.memory.db.EndpointEntity
@@ -38,6 +40,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import org.junit.Assert.assertFalse
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import kotlin.math.acos
@@ -47,6 +50,7 @@ import kotlin.math.sin
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class IndexMaintenanceTest {
+    private companion object { const val BAD: Byte = 99 }
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     private val spaces = EmbeddingSpaces(db.embeddingDao())
     private val memories = MemoryRepository(db.memoryDao())
@@ -61,6 +65,7 @@ class IndexMaintenanceTest {
      */
     private val fake = object : IndexEmbedders {
         var fp = "A"; var dim = 2; var drift = false; var bound = true; var calls = 0; var tilt = 0.0; var docDim: Int? = null
+        var imageCapable = false; var imageCalls = 0; var imageNetworkDown = false
         var canaryCalls = 0; val canaryTilts = ArrayDeque<Double>(); var failCanaries = false; var spaceGone = false
         fun embedder(fingerprint: String = fp, d: Int = dim) = object : Embedder {
             override val fingerprint = fingerprint
@@ -76,6 +81,12 @@ class IndexMaintenanceTest {
                 }
             }
             override suspend fun embedQuery(text: String) = embedDocuments(listOf(text)).single()
+            override val modalities get() = if (imageCapable) setOf(Modality.TEXT, Modality.IMAGE) else setOf(Modality.TEXT)
+            override suspend fun embedImages(jpegs: List<ByteArray>): List<FloatArray> {
+                imageCalls++
+                if (imageNetworkDown) throw java.io.IOException("endpoint unreachable")
+                return jpegs.map { b -> if (b[0] == BAD) throw IllegalArgumentException("cannot decode") else floatArrayOf(b[0].toFloat(), 1f, 0f) }
+            }
         }
         override suspend fun bound() = if (!bound) null else BoundEmbedder(embedder(), "{\"fp\":\"$fp\"}", dim)
         override suspend fun forSpace(space: EmbeddingSpaceEntity): Embedder? = if (spaceGone) null else embedder(space.fingerprint, space.dim)
@@ -94,10 +105,104 @@ class IndexMaintenanceTest {
         override fun lastDiscard() = discard
         override fun recordDiscard(record: DiscardRecord?) { discard = record }
     }
-    private fun maintenance(maxPerRun: Int = 256) = IndexMaintenance(spaces, fake, clock, { now }, batch = 2, maxPerRun = maxPerRun)
+    private val photoBytes = mutableMapOf<String, ByteArray>()
+    private var bulk = true
+    private val photoLoads = mutableListOf<List<String>>()
+    private fun maintenance(maxPerRun: Int = 256, imageMaxPerRun: Int = 200) = IndexMaintenance(
+        spaces, fake, clock, { now }, batch = 2, maxPerRun = maxPerRun,
+        photos = { ids -> photoLoads += ids; ids.mapNotNull { id -> photoBytes[id]?.let { id to it } }.toMap() },
+        bulkAllowed = { bulk }, imageBatch = 2, imageMaxPerRun = imageMaxPerRun,
+    )
+    private suspend fun photo(id: String, ts: Long, code: Byte? = 1) {
+        db.frameDao().insertIgnore(FrameEntity(id, ts, "/p/$id", "rokid_glasses"))
+        if (code != null) photoBytes[id] = byteArrayOf(code)
+    }
+    private suspend fun imageVectors(spaceId: String) = db.frameVectorDao().forSpace(spaceId, 100, 0).map { it.frameId }.sorted()
     @After fun close() = db.close()
 
     private suspend fun mem(id: String) = memories.add(MemoryEntity(id, null, "text $id", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, ""))
+
+    // ---- Task 7: image backfill and the per-space image-coverage gate (Rulings 15, 18) ----
+
+    @Test fun imageBackfillFillsStoredPhotosOnly() = runBlocking {
+        mem("m1"); fake.imageCapable = true
+        photo("p1", 10); photo("p2", 20)
+        db.frameVectorDao().upsert(listOf(com.rokid.context.memory.db.FrameVectorEntity("expired", "space_old", byteArrayOf(1)))) // photo already deleted: no frame row
+        assertEquals(Outcome.DONE, maintenance().run())
+        val active = spaces.queryable()!!
+        assertEquals(listOf("p1", "p2"), imageVectors(active.id))
+        assertEquals("backfill writes vectors only: no routing, no salience", null, db.frameMetaDao().get("p1"))
+        assertEquals(listOf("p2", "p1"), photoLoads.flatten()) // newest first
+    }
+
+    @Test fun activeSpaceCatchesUpOnImagesAfterDowntime() = runBlocking {
+        mem("m1"); fake.imageCapable = true
+        assertEquals(Outcome.DONE, maintenance().run())
+        photo("late1", 10); photo("late2", 20); photo("late3", 30)
+        assertEquals(Outcome.MORE, maintenance(imageMaxPerRun = 2).run())
+        assertEquals(2, imageVectors(spaces.queryable()!!.id).size)
+        assertEquals(Outcome.DONE, maintenance(imageMaxPerRun = 2).run())
+        assertEquals(listOf("late1", "late2", "late3"), imageVectors(spaces.queryable()!!.id))
+    }
+
+    @Test fun swapWaitsForImageCoverageWhenImageCapable() = runBlocking {
+        mem("m1"); fake.imageCapable = true
+        photo("p1", 10); photo("p2", 20); photo("p3", 30)
+        assertEquals(Outcome.MORE, maintenance(imageMaxPerRun = 2).run())
+        assertNull("text is complete but one photo has no vector yet", spaces.queryable())
+        assertEquals(2, imageVectors(spaces.building()!!.id).size)
+        assertEquals(Outcome.DONE, maintenance(imageMaxPerRun = 2).run())
+        assertEquals(listOf("p1", "p2", "p3"), imageVectors(spaces.queryable()!!.id))
+    }
+
+    @Test fun textOnlySpaceSwapsWithoutImages() = runBlocking {
+        mem("m1"); photo("p1", 10); photo("p2", 20) // embedder declares TEXT only
+        assertEquals(Outcome.DONE, maintenance().run())
+        assertEquals("A", spaces.queryable()!!.fingerprint)
+        assertEquals(0, fake.imageCalls); assertTrue("no photo is even opened", photoLoads.isEmpty())
+    }
+
+    @Test fun unembeddableDoesNotBlockSwap() = runBlocking {
+        mem("m1"); fake.imageCapable = true
+        photo("ok", 10); photo("bad", 20, BAD); photo("noFile", 30, code = null)
+        assertEquals(Outcome.DONE, maintenance().run())
+        val active = spaces.queryable()!!
+        assertEquals(listOf("ok"), imageVectors(active.id))
+        assertEquals("unembeddable", db.frameMetaDao().get("bad")!!.imageVectorSpace)
+        assertEquals("unembeddable", db.frameMetaDao().get("noFile")!!.imageVectorSpace)
+        assertEquals(0, spaces.missingImageCount(active.id))
+    }
+
+    @Test fun endpointOutageNeverMarksPhotosUnembeddable() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("p1", 10); photo("p2", 20)
+        fake.imageNetworkDown = true
+        try { maintenance().run(); fail("an unreachable endpoint must surface so the worker retries") } catch (_: java.io.IOException) { }
+        assertNull(db.frameMetaDao().get("p1")); assertNull(spaces.queryable())
+        fake.imageNetworkDown = false
+        assertEquals(Outcome.DONE, maintenance().run())
+        assertEquals(listOf("p1", "p2"), imageVectors(spaces.queryable()!!.id))
+    }
+
+    @Test fun backfillPausedByBulkGate() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("p1", 10); photo("p2", 20)
+        bulk = false
+        assertEquals("text is done, images wait: no spin", Outcome.DONE, maintenance().run())
+        assertEquals(0, fake.imageCalls); assertTrue(photoLoads.isEmpty())
+        assertNull("the swap waits for the images", spaces.queryable()); assertTrue(spaces.coverage(spaces.building()!!.id).complete)
+        bulk = true
+        assertEquals(Outcome.DONE, maintenance().run())
+        assertEquals(listOf("p1", "p2"), imageVectors(spaces.queryable()!!.id))
+    }
+
+    @Test fun backfillRunsInBatchesOfTheConfiguredSizeAndIsResumable() = runBlocking {
+        mem("m1"); fake.imageCapable = true
+        repeat(5) { photo("p$it", it.toLong()) }
+        assertEquals(Outcome.MORE, maintenance(imageMaxPerRun = 3).run())
+        assertEquals(listOf(2, 1), photoLoads.map { it.size }) // batches of 2, bounded to 3 per run
+        while (maintenance(imageMaxPerRun = 3).run() == Outcome.MORE) Unit
+        assertEquals(5, imageVectors(spaces.queryable()!!.id).size)
+        assertFalse(photoLoads.flatten().groupBy { it }.any { it.value.size > 1 })
+    }
 
     @Test fun noBindingIsIdle() = runBlocking {
         fake.bound = false

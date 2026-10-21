@@ -6,8 +6,10 @@ import android.util.Log
 import com.rokid.context.ai.SafeLog
 import com.rokid.context.ai.embed.Canaries
 import com.rokid.context.ai.embed.Embedders
+import com.rokid.context.ai.embed.LocalModelPausedException
 import com.rokid.context.memory.EmbeddingSpaces
 import com.rokid.context.memory.Embedder
+import com.rokid.context.memory.Modality
 import com.rokid.context.memory.SpaceEmbedderProvider
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
 import com.rokid.context.memory.db.SpaceState
@@ -15,6 +17,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.yield
 import kotlin.coroutines.cancellation.CancellationException
 
 data class BoundEmbedder(val embedder: Embedder, val configJson: String, val dim: Int)
@@ -130,6 +133,12 @@ class IndexMaintenance(
     private val now: () -> Long = System::currentTimeMillis,
     private val batch: Int = 16,
     private val maxPerRun: Int = 256,
+    /** The stored JPEG bytes of the given photo ids (sealed "PCAF" ones decrypted in memory only); a photo that cannot be read is left out. */
+    private val photos: suspend (List<String>) -> Map<String, ByteArray> = { emptyMap() },
+    /** Ruling 18: image backfill is bulk work (charging or battery above 70 %, thermal below MODERATE). Live per-frame embedding is not gated here. */
+    private val bulkAllowed: () -> Boolean = { true },
+    private val imageBatch: Int = 8,
+    private val imageMaxPerRun: Int = 160,
 ) {
     /** RETRY: a pre-swap canary check could not run; the worker retries with backoff (bounded) and never swaps unchecked. */
     enum class Outcome { IDLE, DONE, MORE, RETRY }
@@ -181,13 +190,16 @@ class IndexMaintenance(
         val building = if (needsBuild) start(bound, fp) else null
 
         var budget = maxPerRun
+        val images = ImageProgress(imageMaxPerRun)
         var activeLeft = false
         if (current != null && current.state == SpaceState.ACTIVE) {
             val e = if (current.fingerprint == fp) bound.embedder else embedders.forSpace(current)
             if (e != null) {
                 try {
                     budget = fill(current, e, budget)
-                    activeLeft = spaces.missing(current.id, 1).isNotEmpty() // re-checked so a memory written meanwhile is not left behind
+                    fillImages(current, e, images) // catch-up after downtime; the ACTIVE space is read for routing, so its photos come first
+                    activeLeft = spaces.missing(current.id, 1).isNotEmpty() || // re-checked so a memory written meanwhile is not left behind
+                        (Modality.IMAGE in e.modalities && !images.paused && spaces.missingImages(current.id, 1).isNotEmpty())
                 } catch (c: CancellationException) { throw c } catch (c: IndexConfigException) { throw c } catch (t: Exception) {
                     if (building == null) throw t // nothing else to do: let the worker retry with backoff
                     Log.i(TAG, "old space not reachable; it keeps its vectors: ${SafeLog.describe(t)}")
@@ -197,6 +209,7 @@ class IndexMaintenance(
         if (building == null) return if (activeLeft) Outcome.MORE else Outcome.DONE
 
         fill(building, bound.embedder, budget)
+        fillImages(building, bound.embedder, images)
         if (!spaces.coverage(building.id).complete) return Outcome.MORE
         when (check(building, bound.embedder)) {
             Check.UNCHECKED -> { Log.i(TAG, "pre-swap canary check could not run; not swapping"); return Outcome.RETRY }
@@ -211,7 +224,10 @@ class IndexMaintenance(
             Check.NOISY -> Log.i(TAG, "canaries are noisy, not drifted: swapping")
             Check.MATCH -> Unit
         }
-        if (!spaces.swapIfComplete(building.id)) return Outcome.MORE
+        // Ruling 15: image coverage is required per space, iff the building embedder declares IMAGE. Paused backfill waits for the next trigger (no spin).
+        if (!spaces.swapIfComplete(building.id, requireImages = Modality.IMAGE in bound.embedder.modalities)) {
+            return if (images.paused) Outcome.DONE else Outcome.MORE
+        }
         clock.markCanary(now())
         clock.recordDiscard(null)
         return if (spaces.missing(building.id, 1).isNotEmpty()) Outcome.MORE else Outcome.DONE
@@ -247,6 +263,44 @@ class IndexMaintenance(
         }
         return left
     }
+
+    private class ImageProgress(var budget: Int, var paused: Boolean = false)
+
+    /**
+     * Image backfill into [space]: stored photos with no vector, newest first, in batches of [imageBatch] with a yield between
+     * them, at most [ImageProgress.budget] per run. Vectors only: no salience, no clusters, no AI calls (Ruling 1 covers new frames).
+     * Gated per batch by [bulkAllowed]. Does nothing for a TEXT-only embedder.
+     */
+    private suspend fun fillImages(space: EmbeddingSpaceEntity, embedder: Embedder, p: ImageProgress) {
+        if (Modality.IMAGE !in embedder.modalities) return
+        while (p.budget > 0) {
+            if (!bulkAllowed()) { p.paused = true; Log.i(TAG, "image backfill paused by the bulk gate"); return }
+            val ids = spaces.missingImages(space.id, minOf(imageBatch, p.budget))
+            if (ids.isEmpty()) return
+            yield()
+            p.budget -= ids.size
+            val first = photos(ids)
+            val batch = ids.filter { it in first }.takeIf { it.isNotEmpty() }?.let { r -> tryImages(embedder, r.map { first.getValue(it) })?.takeIf { it.size == r.size }?.let { r.zip(it).toMap() } }
+            var unembeddable = 0
+            for (id in ids) {
+                val v = batch?.get(id) ?: embedOne(embedder, id, first[id])
+                if (v == null) { spaces.markUnembeddable(id); unembeddable++; continue }
+                if (!spaces.putImage(id, space.id, v) && spaces.queryable()?.id != space.id && spaces.building()?.id != space.id) return // discarded, retired or marked stale meanwhile
+            }
+            Log.i(TAG, "image backfill: ${ids.size} photos, $unembeddable unembeddable")
+        }
+    }
+
+    /** Two attempts (the second re-reads the photo); null = unreadable or undecodable twice. An unreachable endpoint is not a decode failure and propagates. */
+    private suspend fun embedOne(embedder: Embedder, id: String, firstBytes: ByteArray?): FloatArray? {
+        firstBytes?.let { b -> tryImages(embedder, listOf(b))?.singleOrNull()?.let { return it } }
+        val again = photos(listOf(id))[id] ?: return null
+        return tryImages(embedder, listOf(again))?.singleOrNull()
+    }
+
+    private suspend fun tryImages(embedder: Embedder, jpegs: List<ByteArray>): List<FloatArray>? = try {
+        embedder.embedImages(jpegs)
+    } catch (c: CancellationException) { throw c } catch (e: java.io.IOException) { throw e } catch (e: LocalModelPausedException) { throw e } catch (_: Exception) { null }
 
     /**
      * Re-embeds the canaries (the embedder applies the space's document prefix) against the stored set. A mismatch is

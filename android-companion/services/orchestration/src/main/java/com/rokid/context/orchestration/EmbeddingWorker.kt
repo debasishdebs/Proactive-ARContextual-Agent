@@ -16,6 +16,8 @@ import com.rokid.context.ai.embed.LocalModelPower
 import com.rokid.context.ai.embed.PowerState
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.work.budget.BackgroundWork
+import com.rokid.context.work.frames.KeyframeGraph
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -38,7 +40,13 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             return Result.success()
         }
         val ai = AiGraph.get(applicationContext)
-        val maintenance = IndexMaintenance(MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(ai.embedders), clock)
+        val keyframes = KeyframeGraph.get(applicationContext)
+        val maintenance = IndexMaintenance(
+            MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(ai.embedders), clock,
+            // Ruling 18: only the backfill is bulk (G6: charging or > 70 %; thermal MODERATE+ pauses); live per-frame embedding is not gated here.
+            photos = keyframes::photoBytes,
+            bulkAllowed = { LocalModelPower.bulkAllowed(LocalModelPower.read(applicationContext)) && keyframes.power.mayRunBackground(BackgroundWork.BACKFILL) },
+        )
         return gated(applicationContext, rebuild, id.toString(), usesLocal = { ai.embedders.bindingIsLocal() }, power = { LocalModelPower.read(applicationContext) }) {
             execute(applicationContext, runAttemptCount) { maintenance.run(rebuild, rebuildToken = id.toString()) }
         }

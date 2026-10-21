@@ -129,7 +129,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
     }
 
     /** The JPEG bytes of [ids] (decrypted when sealed); a frame whose file is gone is left out. */
-    private suspend fun photoBytes(ids: List<String>): Map<String, ByteArray> =
+    internal suspend fun photoBytes(ids: List<String>): Map<String, ByteArray> =
         PipelineRecords.framesByIds(app, ids).mapNotNull { f -> FrameImages.readBytes(f.path)?.let { f.id to it } }.toMap()
 
     val stats: StateFlow<KeyframeStats> by lazy {

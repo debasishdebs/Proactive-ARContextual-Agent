@@ -4,6 +4,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.FrameMetaEntity
+import com.rokid.context.memory.db.FrameStateEntity
 import com.rokid.context.memory.db.FrameVectorEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemoryTier
@@ -32,7 +34,7 @@ class EmbeddingSwapTest {
     private val v = floatArrayOf(1f, 0f)
     @After fun close() = db.close()
 
-    private fun spaces(requireImage: Boolean = false) = EmbeddingSpaces(dao, clock, { t }, requireImage)
+    private fun spaces() = EmbeddingSpaces(dao, clock, { t })
     private suspend fun mem(id: String) = memories.add(MemoryEntity(id, null, "text $id", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, ""))
     private suspend fun EmbeddingSpaces.build(fp: String) = startBuilding(fp, "{}", 2, "[]", 10).also { put("m1", it.id, v) }
     private suspend fun frame(id: String) = db.frameDao().insertIgnore(FrameEntity(id, 1, "/p/$id", "glasses"))
@@ -121,22 +123,87 @@ class EmbeddingSwapTest {
 
     @Test fun coverageIgnoresDeletedPhotos() = runBlocking {
         mem("m1")
-        val s = spaces(requireImage = true)
-        val a = s.build("fpA"); assertTrue(s.swapIfComplete(a.id)) // no photos at all: nothing to cover
+        val s = spaces()
+        val a = s.build("fpA"); assertTrue(s.swapIfComplete(a.id, requireImages = true)) // no photos at all: nothing to cover
         frame("kept"); fvec("kept", a.id); fvec("deleted", a.id) // "deleted" has a vector but no stored photo
         val b = s.build("fpB")
-        assertFalse("a stored photo without an image vector blocks the swap", s.swapIfComplete(b.id))
+        assertFalse("a stored photo without an image vector blocks the swap", s.swapIfComplete(b.id, requireImages = true))
         fvec("kept", b.id) // no vector is needed (or possible) for the deleted photo
-        assertTrue(s.swapIfComplete(b.id))
+        assertTrue(s.swapIfComplete(b.id, requireImages = true))
     }
 
     @Test fun wave1SwapNeedsTextCoverageOnly() = runBlocking {
         mem("m1")
-        val s = spaces() // requireImageCoverage defaults to false
+        val s = spaces() // requireImages defaults to false: a text-only building embedder
         val a = s.build("fpA"); s.swapIfComplete(a.id)
         frame("f1"); fvec("f1", a.id)
         val b = s.build("fpB")
         assertTrue(s.swapIfComplete(b.id))
         assertEquals(b.id, s.queryable()!!.id)
+    }
+
+    @Test fun rollbackKeepsRetiredFrameVectorsSevenDays() = runBlocking {
+        mem("m1")
+        val s = spaces()
+        val a = s.build("fpA"); s.swapIfComplete(a.id); frame("f1"); fvec("f1", a.id)
+        val b = s.build("fpB"); assertTrue(s.swapIfComplete(b.id, requireImages = false))
+        t += 6 * day
+        s.purgeRetired(t)
+        assertEquals("inside the grace the retired image vectors stay", 1, db.frameVectorDao().countForSpace(a.id))
+        assertTrue(s.rollback(a.id))
+        assertEquals(a.id, s.queryable()!!.id)
+        assertEquals(1, db.frameVectorDao().countForSpace(a.id))
+    }
+
+    @Test fun purgeAfterGraceDropsFrameVectors() = runBlocking {
+        mem("m1")
+        val s = spaces()
+        val a = s.build("fpA"); s.swapIfComplete(a.id); frame("f1"); fvec("f1", a.id)
+        val b = s.build("fpB"); fvec("f1", b.id); assertTrue(s.swapIfComplete(b.id, requireImages = true))
+        t += 8 * day
+        s.purgeRetired(t)
+        assertEquals(0, db.frameVectorDao().countForSpace(a.id))
+        assertEquals("the serving space keeps its image vectors", 1, db.frameVectorDao().countForSpace(b.id))
+    }
+
+    @Test fun missingImagesListsStoredPhotosWithoutAVectorNewestFirst() = runBlocking {
+        mem("m1")
+        val s = spaces()
+        val a = s.build("fpA"); s.swapIfComplete(a.id)
+        db.frameDao().insertIgnore(FrameEntity("old", 1, "/p/old", "glasses"))
+        db.frameDao().insertIgnore(FrameEntity("new", 5, "/p/new", "glasses"))
+        db.frameDao().insertIgnore(FrameEntity("have", 3, "/p/have", "glasses")); fvec("have", a.id)
+        assertEquals(listOf("new", "old"), s.missingImages(a.id, 10))
+        assertEquals(listOf("new"), s.missingImages(a.id, 1))
+        assertEquals(2, s.missingImageCount(a.id))
+        assertTrue(s.putImage("new", a.id, floatArrayOf(1f, 0f, 0f)))
+        assertEquals(listOf("old"), s.missingImages(a.id, 10))
+        assertFalse("a vector for a photo that is gone is dropped", s.putImage("ghost", a.id, floatArrayOf(1f)))
+    }
+
+    @Test fun unembeddablePhotoIsNeitherListedNorCountedAndDoesNotBlockTheSwap() = runBlocking {
+        mem("m1")
+        val s = spaces()
+        val a = s.build("fpA"); s.swapIfComplete(a.id)
+        frame("bad"); frame("legacy")
+        db.frameMetaDao().upsert(FrameMetaEntity("bad", null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, null, 1))
+        s.markUnembeddable("bad"); s.markUnembeddable("legacy") // legacy: no frame_meta row yet
+        val b = s.build("fpB")
+        assertEquals(emptyList<String>(), s.missingImages(b.id, 10))
+        assertEquals(0, s.missingImageCount(b.id))
+        assertEquals("unembeddable", db.frameMetaDao().get("bad")!!.imageVectorSpace)
+        assertEquals("unembeddable", db.frameMetaDao().get("legacy")!!.imageVectorSpace)
+        assertTrue(s.swapIfComplete(b.id, requireImages = true))
+    }
+
+    @Test fun unroutedPendingFramesAreLeftToTheIndexer() = runBlocking {
+        mem("m1")
+        val s = spaces()
+        val a = s.build("fpA"); s.swapIfComplete(a.id)
+        frame("fresh"); frame("stuck")
+        db.frameMetaDao().upsert(FrameMetaEntity("fresh", null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, null, 1))
+        db.frameMetaDao().upsert(FrameMetaEntity("stuck", null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, null, 1))
+        db.frameStateDao().insertIgnore(listOf(FrameStateEntity("fresh", "PENDING", 0, null, null, null, 1), FrameStateEntity("stuck", "EXTRACTED", 0, null, null, null, 1)))
+        assertEquals(listOf("stuck"), s.missingImages(a.id, 10)) // fresh: PENDING and unrouted
     }
 }

@@ -43,4 +43,19 @@ class SwapDialogCountsTest {
         mem("gone", frameId = "invalidated", review = ReviewState.INVALIDATED) // a forgotten caption doesn't keep the photo findable
         assertEquals(SwapImpact(reduced = 3, lost = 2), spaces.swapImpact())
     }
+
+    /** Task 8 expiry: the frame row, JPEG and sidecar go; frame_meta and frame_vector stay, so "photo deleted" = a vector with no frame row. */
+    @Test fun expiredPhotoCountsUseFrameRowAbsence() = runBlocking {
+        val a = spaces.startBuilding("fpA", "{}", 2, "[]", 10); mem("m0")
+        spaces.put("m0", a.id, floatArrayOf(1f, 0f)); spaces.swapIfComplete(a.id)
+        val fv = db.frameVectorDao()
+        listOf("live", "expired", "expiredWithCaption").forEach { fv.upsert(listOf(FrameVectorEntity(it, a.id, byteArrayOf(1)))) }
+        db.frameDao().insertIgnore(FrameEntity("live", 1, "/p", "glasses"))
+        // the two expired ones keep their meta, vector and (for one) the caption memory; only the frame row is gone
+        listOf("expired", "expiredWithCaption").forEach {
+            db.frameMetaDao().upsert(FrameMetaEntity(it, null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, a.id, 1))
+        }
+        mem("cap", frameId = "expiredWithCaption")
+        assertEquals(SwapImpact(reduced = 1, lost = 1), spaces.swapImpact())
+    }
 }

@@ -86,8 +86,45 @@ abstract class EmbeddingDao {
         return space
     }
 
-    @Query("SELECT COUNT(*) FROM frame f WHERE NOT EXISTS (SELECT 1 FROM frame_vector v WHERE v.frameId = f.id AND v.spaceId = :spaceId)")
+    /** Stored photos with no image vector in [spaceId]; a photo marked `unembeddable` (failed to decode twice) is not counted: it never blocks a swap (Ruling 15). */
+    @Query(
+        "SELECT COUNT(*) FROM frame f WHERE NOT EXISTS (SELECT 1 FROM frame_vector v WHERE v.frameId = f.id AND v.spaceId = :spaceId) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_meta m WHERE m.frameId = f.id AND m.imageVectorSpace = 'unembeddable')",
+    )
     abstract suspend fun missingImageCount(spaceId: String): Int
+
+    /**
+     * The backfill's work list, newest first: the photos [missingImageCount] counts, minus frames the scene router has yet to
+     * see (PENDING and unrouted: the indexer embeds those itself).
+     */
+    @Query(
+        "SELECT f.id FROM frame f WHERE NOT EXISTS (SELECT 1 FROM frame_vector v WHERE v.frameId = f.id AND v.spaceId = :spaceId) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_meta m WHERE m.frameId = f.id AND m.imageVectorSpace = 'unembeddable') " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_meta m JOIN frame_state s ON s.frameId = m.frameId WHERE m.frameId = f.id AND m.routedAt IS NULL AND s.state = 'PENDING') " +
+            "ORDER BY f.ts DESC, f.id LIMIT :limit",
+    )
+    abstract suspend fun missingImageIds(spaceId: String, limit: Int): List<String>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE) protected abstract suspend fun putFrameVector(v: FrameVectorEntity)
+    @Query("SELECT COUNT(*) FROM frame WHERE id = :frameId") protected abstract suspend fun frameRows(frameId: String): Int
+    @Insert(onConflict = OnConflictStrategy.IGNORE) protected abstract suspend fun insertMetaIfAbsent(m: FrameMetaEntity)
+    @Query("UPDATE frame_meta SET imageVectorSpace = 'unembeddable' WHERE frameId = :frameId") protected abstract suspend fun setUnembeddable(frameId: String)
+
+    /** One image vector, only into a BUILDING or ACTIVE space and only for a photo that still exists (a late write after expiry or Forget is dropped). */
+    @Transaction
+    open suspend fun putImageChecked(frameId: String, spaceId: String, blob: ByteArray): Boolean {
+        space(spaceId)?.takeIf { it.state == SpaceState.BUILDING || it.state == SpaceState.ACTIVE } ?: return false
+        if (frameRows(frameId) == 0) return false
+        putFrameVector(FrameVectorEntity(frameId, spaceId, blob))
+        return true
+    }
+
+    /** Marks a photo that cannot be decoded; a legacy frame without a `frame_meta` row gets a minimal one. */
+    @Transaction
+    open suspend fun markUnembeddable(frameId: String, at: Long) {
+        insertMetaIfAbsent(FrameMetaEntity(frameId, null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, null, at, at))
+        setUnembeddable(frameId)
+    }
 
     @Query("SELECT id FROM embedding_space WHERE state = 'RETIRED'") abstract suspend fun retiredIds(): List<String>
     @Query("DELETE FROM frame_vector WHERE spaceId = :spaceId") protected abstract suspend fun deleteFrameVectors(spaceId: String)
@@ -108,7 +145,7 @@ abstract class EmbeddingDao {
 
     /**
      * spec §4.6 / §F.2: only at 100 % coverage of live memories (and, with [requireImageCoverage], of the frames that still
-     * have a stored photo: off in wave 1, on with the wave-2 backfill). The old serving spaces become RETIRED but KEEP their
+     * have a stored photo and are not `unembeddable`: required per space, iff the building embedder declares IMAGE). The old serving spaces become RETIRED but KEEP their
      * `memory_vector` and `frame_vector` rows for the 7-day rollback, all in one transaction. Returns the ids retired
      * (the caller stamps `retiredAt`), or null when the swap is refused.
      */
