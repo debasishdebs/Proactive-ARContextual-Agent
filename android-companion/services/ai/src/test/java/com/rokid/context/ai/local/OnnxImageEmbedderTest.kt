@@ -63,6 +63,22 @@ class OnnxImageEmbedderTest {
         assertEquals(2, attempts)
     }
 
+    @Test fun nativeLoadErrorsMarkUnavailableInsteadOfEscaping() = runBlocking {
+        for (err in listOf<() -> Throwable>({ UnsatisfiedLinkError("no ort") }, { NoClassDefFoundError("ai/onnxruntime/OrtEnvironment") },
+            { ExceptionInInitializerError("init") }, { OutOfMemoryError("session") })) {
+            OnnxImageEmbedder.resetUnavailableForTest()
+            val e = OnnxImageEmbedder("m.onnx", 256, sessionFactory = { throw err() }, preprocess = fakePre)
+            try { e.embed(listOf(byteArrayOf(1))); fail() } catch (x: ProviderConfigException) { assertTrue(!x.message!!.contains("ort")) }
+            assertTrue(OnnxImageEmbedder.isUnavailable)
+        }
+    }
+
+    @Test fun cancellationDuringSessionCreationPropagates() = runBlocking {
+        val e = OnnxImageEmbedder("m.onnx", 256, sessionFactory = { throw kotlinx.coroutines.CancellationException("c") }, preprocess = fakePre)
+        try { e.embed(listOf(byteArrayOf(1))); fail() } catch (_: kotlinx.coroutines.CancellationException) { /* expected */ }
+        assertTrue(!OnnxImageEmbedder.isUnavailable)
+    }
+
     @Test fun retrySucceedsOnSecondAttempt() = runBlocking {
         var attempts = 0
         val e = OnnxImageEmbedder("m.onnx", 768, sessionFactory = { if (attempts++ == 0) error("x") else Fake() }, preprocess = fakePre)
