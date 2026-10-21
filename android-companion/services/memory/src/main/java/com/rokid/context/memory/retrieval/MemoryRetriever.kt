@@ -18,9 +18,11 @@ class MemoryRetriever(
     private val semantic: SemanticRetriever,
     private val memories: MemoryViewDao,
 ) {
-    /** All work (BM25, the embedder lookup and query, the vector scan, fusion) runs off the caller's thread. */
-    suspend fun retrieve(query: String, settings: RetrievalSettings, nowMs: Long): RetrievalResult =
-        withContext(Dispatchers.Default) { retrieveNow(query, settings.clamped(), nowMs) }
+    /**
+     * [poolOverride] (recall only, <= [MAX_POOL_OVERRIDE]) replaces the clamped `topK`; null keeps today's behaviour.
+     * All work (BM25, the embedder lookup and query, the vector scan, fusion) runs off the caller's thread. */
+    suspend fun retrieve(query: String, settings: RetrievalSettings, nowMs: Long, poolOverride: Int? = null): RetrievalResult =
+        withContext(Dispatchers.Default) { retrieveNow(query, settings.clamped().let { if (poolOverride == null) it else it.copy(topK = poolOverride.coerceIn(1, MAX_POOL_OVERRIDE)) }, nowMs) }
 
     private suspend fun retrieveNow(query: String, s: RetrievalSettings, nowMs: Long): RetrievalResult {
         val pool = maxOf(s.topK * 5, 40)
@@ -49,6 +51,8 @@ class MemoryRetriever(
     }
 
     companion object {
+        /** Wave 3 (S8): the cap of `poolOverride`, which bypasses the `topK <= 20` clamp for the photo-recall caller only. UI settings are unchanged. */
+        const val MAX_POOL_OVERRIDE = 200
         private const val CHUNK = 900 // below SQLite's 999 bound-parameter limit
 
         /** Recency boost: weight 1.0 now, 0.75 after one half-life, tending to 0.5 — it reorders, never drops. */
