@@ -60,8 +60,8 @@ data class CaptureSettingsUiState(
     val paceMs: Long = AiCallPaceStore.DEFAULT_MS,
     /** Keyframes stored in the last hour (the glasses send no SessionStatus, so the phone counts its own). */
     val keyframesPerHour: Int = 0,
-    val wake: CameraWake = CameraWake.MOTION,
-    val batteryTargetHours: Int = 4,
+    val wake: CameraWake = CameraWake.SETTLE,
+    val batteryTargetHours: Int = 0,
     val pauseWhenPhoneInUse: Boolean = false,
 ) {
     /** 0 Smart, 1 Settle, 2 Fixed. */
