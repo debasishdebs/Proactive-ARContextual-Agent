@@ -137,14 +137,14 @@ object ExtractSave {
                     val ids = f.sourceFrameIds.filter { it in sentFrameIds }.distinct().ifEmpty { sentFrameIds.take(1) }
                     val id = "$idPrefix$i"
                     if (PipelineRecords.appendFact(context, id, ids.firstOrNull(), f.text, f.type, f.tags, f.confidence, tier, reviewState,
-                            generation = generation, fenceFrameIds = ids)) {
+                            generation = generation, fenceFrameIds = ids, createdAt = nowMs)) {
                         saved += SavedMemory(id, ids, i)
                     }
                 }
                 output.captions.filter { it.caption.isNotBlank() && it.frameId in sentFrameIds }.distinctBy(FrameCaption::frameId).forEachIndexed { i, c ->
                     val id = "${idPrefix}c$i"
                     if (PipelineRecords.appendFact(context, id, c.frameId, c.caption, "caption", listOf("caption"), 1.0, MemoryTier.LONG, ReviewState.OK,
-                            generation = generation, fenceFrameIds = listOf(c.frameId))) {
+                            generation = generation, fenceFrameIds = listOf(c.frameId), createdAt = nowMs)) {
                         saved += SavedMemory(id, listOf(c.frameId), null)
                     }
                 }

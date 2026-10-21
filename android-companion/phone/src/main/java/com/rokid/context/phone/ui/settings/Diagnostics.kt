@@ -102,7 +102,11 @@ interface KeyframeDiagnostics {
 }
 
 /** Task 8/9 counters. [deletedUndescribed] is a guarantee: it must stay 0. */
-data class RetentionCounters(val skippedDeleted: Int = 0, val describedBeforeDelete: Int = 0, val deletedUndescribed: Int = 0)
+data class RetentionCounters(
+    val skippedDeleted: Int = 0, val describedBeforeDelete: Int = 0, val deletedUndescribed: Int = 0,
+    /** Photos waiting in the night queue, and photos parked after five failed describes (never deleted). */
+    val describeWaiting: Int = 0, val describeFailed: Int = 0,
+)
 
 /** The Keyframes block of Diagnostics: the stats plus the loaded extras. */
 data class KeyframeRows(
@@ -318,7 +322,7 @@ object KeyframeLines {
             Line("kf_latency", "Capture to memory: p50 ${ms(st.latencyP50Ms)} \u00b7 p95 ${ms(st.latencyP95Ms)}"),
             Line("kf_dropped", "Dropped nudges: $dropped"),
             Line("kf_sidecar", "Lost sidecars: ${k.sidecarLost}"),
-            Line("kf_retention", "Photos deleted: skipped ${k.retention.skippedDeleted} \u00b7 described first ${k.retention.describedBeforeDelete} \u00b7 undescribed ${k.retention.deletedUndescribed}"),
+            Line("kf_retention", "Photos deleted: skipped ${k.retention.skippedDeleted} \u00b7 described first ${k.retention.describedBeforeDelete} \u00b7 undescribed ${k.retention.deletedUndescribed} \u00b7 waiting ${k.retention.describeWaiting} \u00b7 describeFailed ${k.retention.describeFailed}"),
         )
     }
 }
