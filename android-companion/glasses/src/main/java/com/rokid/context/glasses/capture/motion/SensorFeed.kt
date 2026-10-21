@@ -7,13 +7,19 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import com.rokid.context.glasses.capture.diag.DiagLog
 
 /** Wires the IMU and proximity sensors into the pure classifiers. Fakeable in tests. */
 interface SensorFeed {
     fun start(c: MotionClassifier, w: WearDetector)
     fun stop()
+    /** Switches the IMU/proximity sampling rate; fakes may ignore it. */
+    fun setRate(r: SensorRate) = Unit
 }
+
+/** FULL = SENSOR_DELAY_GAME unbatched; LOW = 10 Hz with a 1 s report latency. */
+enum class SensorRate { FULL, LOW }
 
 /** The slice of [SensorManager] the feed uses; a seam so tests can pin what gets registered and how. */
 interface SensorRegistry {
@@ -39,13 +45,34 @@ private class ManagerRegistry(private val sm: SensorManager) : SensorRegistry {
  * sensor at all the glasses count as worn. Sensor timestamps are elapsed-realtime based, which is also the clock the
  * motion classifier is given; [WearDetector] uses its own injected clock (SystemClock.elapsedRealtime in production).
  */
-class AndroidSensorFeed internal constructor(private val sm: SensorRegistry) : SensorFeed {
+class AndroidSensorFeed internal constructor(
+    private val sm: SensorRegistry,
+    private val now: () -> Long = SystemClock::elapsedRealtime,
+) : SensorFeed {
     constructor(context: Context) : this(ManagerRegistry(context.getSystemService(Context.SENSOR_SERVICE) as SensorManager))
 
     private var thread: HandlerThread? = null
     private var listener: SensorEventListener? = null
     private var handler: Handler? = null
     private var tick: Runnable? = null
+    private var sensors: List<Sensor> = emptyList()
+    @Volatile var rate: SensorRate = SensorRate.FULL
+        private set
+
+    private fun registerAll(l: SensorEventListener, h: Handler, list: List<Sensor>, r: SensorRate) {
+        val period = if (r == SensorRate.LOW) LOW_PERIOD_US else SensorManager.SENSOR_DELAY_GAME
+        val latency = if (r == SensorRate.LOW) LOW_LATENCY_US else 0
+        for (s in list) sm.register(l, s, period, latency, h)
+    }
+
+    override fun setRate(r: SensorRate) {
+        if (r == rate) return
+        rate = r
+        val l = listener ?: return
+        val h = handler ?: return
+        sm.unregister(l)
+        registerAll(l, h, sensors, r)
+    }
 
     override fun start(c: MotionClassifier, w: WearDetector) {
         if (listener != null) return
@@ -66,12 +93,12 @@ class AndroidSensorFeed internal constructor(private val sm: SensorRegistry) : S
             }
             override fun onAccuracyChanged(s: Sensor?, accuracy: Int) = Unit
         }
-        for (type in intArrayOf(Sensor.TYPE_GYROSCOPE, Sensor.TYPE_LINEAR_ACCELERATION)) {
-            val s = sm.nonWakeUp(type) ?: continue
-            sm.register(l, s, SensorManager.SENSOR_DELAY_GAME, 0, h)
-        }
-        if (prox != null) sm.register(l, prox, SensorManager.SENSOR_DELAY_GAME, 0, h)
-        else {
+        val list = listOfNotNull(
+            sm.nonWakeUp(Sensor.TYPE_GYROSCOPE), sm.nonWakeUp(Sensor.TYPE_LINEAR_ACCELERATION), prox,
+        )
+        sensors = list
+        registerAll(l, h, list, rate)
+        if (prox == null) {
             DiagLog.w(TAG, "no proximity sensor: wear detection off, treating the glasses as worn")
             w.onProximity(true)
         }
@@ -80,7 +107,9 @@ class AndroidSensorFeed internal constructor(private val sm: SensorRegistry) : S
         val t = object : Runnable {
             override fun run() {
                 w.tick()
-                features.tick()
+                val f = c.features()
+                features.log(f)
+                w.onSecond(f.gyroMax, f.accVariance, now())
                 // Fix wave H: the proximity sensor never gates capture; one count-only line a minute shows what it reads.
                 if (++ticks % 60 == 0) DiagLog.i(TAG, proximityDiagLine(lastRaw, proxMax, prox != null, w.worn.value))
                 h.postDelayed(this, 1000)
@@ -94,10 +123,14 @@ class AndroidSensorFeed internal constructor(private val sm: SensorRegistry) : S
         listener?.let { sm.unregister(it) }
         tick?.let { handler?.removeCallbacks(it) }
         thread?.quitSafely()
-        thread = null; handler = null; listener = null; tick = null
+        thread = null; handler = null; listener = null; tick = null; sensors = emptyList()
     }
 
-    private companion object { const val TAG = "PcCapture" }
+    private companion object {
+        const val TAG = "PcCapture"
+        const val LOW_PERIOD_US = 100_000
+        const val LOW_LATENCY_US = 1_000_000
+    }
 }
 
 /** Count-only diagnostics line for the proximity sensor (raw reading, its max range, the detector's verdict). */

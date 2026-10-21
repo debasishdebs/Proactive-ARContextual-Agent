@@ -8,8 +8,9 @@ import java.util.Locale
  * run can tune the thresholds from `files/capture_diag.log`. Numbers only, never sensor traces.
  */
 class FeatureLogger(private val classifier: MotionClassifier, private val sink: (String) -> Unit) {
-    fun tick() {
-        val f = classifier.features()
+    fun tick() = log(classifier.features())
+
+    fun log(f: MotionClassifier.Features) {
         sink(String.format(Locale.US, "features gyroMax=%.2f accVar=%.2f stepHz=%.2f state=%s", f.gyroMax, f.accVariance, f.stepHz, f.state))
     }
 }
