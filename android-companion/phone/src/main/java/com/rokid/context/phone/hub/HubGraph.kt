@@ -131,6 +131,12 @@ object HubGraph {
         ctxRegistry.register(com.rokid.context.phone.context.ActivitySource.create(app, ctxHub::sinkFor))
         ctxRegistry.register(com.rokid.context.phone.context.StepSource.create(app, ctxHub::sinkFor))
         ctxRegistry.register(com.rokid.context.phone.context.AirplaneSource.create(app, ctxHub::sinkFor))
+        // phone_car: A "My car" list change while a device is connected re-derives its kind.
+        ctxRegistry.register(com.rokid.context.phone.context.CarSource.create(
+            app, ctxHub::sinkFor,
+            myCars = { com.rokid.context.phone.context.ContextSourceSettings.of(app).myCars },
+            changes = com.rokid.context.phone.context.ContextSourceSettings.of(app).changes, scope = ctxScope,
+        ))
         // Opt-in, default off. Calls only inside a vehicle episode a listed Bluetooth device started; never pauses or throttles capture.
         ctxRegistry.register(com.rokid.context.phone.context.ImageIntentSource(
             sinkFor = ctxHub::sinkFor, decision = { ctxHub.decision.value }, stats = ctxHub.stats,
