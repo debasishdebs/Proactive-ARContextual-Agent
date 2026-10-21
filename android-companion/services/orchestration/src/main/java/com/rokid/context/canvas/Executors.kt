@@ -14,7 +14,6 @@ import com.rokid.context.ai.schema.JsonSchemaValidator
 import com.rokid.context.ai.schema.ModelJson
 import com.rokid.context.ai.schema.StructuredOutput
 import com.rokid.context.domain.summary.CriticWorker
-import com.rokid.context.model.CallClass
 import com.rokid.context.model.ModelRequest
 import com.rokid.context.orchestration.ExtractFollowUp
 import com.rokid.context.orchestration.ExtractSave
@@ -65,18 +64,18 @@ object VisionExtractExecutor : NodeExecutor {
             val started = System.nanoTime()
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {
-                val b = ExtractSave.extract(ctx.runner, chunk.map { it.photo }, CallClass.EXPERIMENT, override, sources)
+                val b = ExtractSave.extract(ctx.runner, chunk.map { it.photo }, ctx.callClass, override, sources)
                 val meta = CallMeta(ms(), null, null, null, b.promptVersion, batchId)
                 chunk.forEachIndexed { i, it ->
                     val facts = b.output.facts.filter { f -> it.frameId in f.sourceFrameIds }
                     val captions = b.output.captions.filter { c -> c.frameId == it.frameId }.take(1)
-                    out += NodeResult(it.frameId, CanvasValue.Extraction(facts, captions), meta = meta, calls = if (i == 0) 1 else 0)
+                    out += NodeResult(it.frameId, CanvasValue.Extraction(facts, captions), meta = meta, calls = if (i == 0) 1 else 0, extracted = b)
                 }
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
                 val meta = CallMeta(ms(), null, null, null, null, batchId)
-                chunk.forEachIndexed { i, it -> out += NodeResult(it.frameId, null, error = failure(e), meta = meta, calls = if (i == 0) 1 else 0) }
+                chunk.forEachIndexed { i, it -> out += NodeResult(it.frameId, null, error = failure(e), meta = meta, calls = if (i == 0) 1 else 0, cause = e) }
             }
         }
         return out
@@ -110,7 +109,7 @@ object CriticExecutor : NodeExecutor {
             val started = System.nanoTime()
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {
-                val r = ctx.runner.run(RoleCall(PromptKey.CRITIC, ExtractFollowUp.criticVars(v.facts, listOf(it.photo.description)), callClass = CallClass.EXPERIMENT, override = override))
+                val r = ctx.runner.run(RoleCall(PromptKey.CRITIC, ExtractFollowUp.criticVars(v.facts, listOf(it.photo.description)), callClass = ctx.callClass, override = override))
                 val pass = (r.output as CriticOutput).pass
                 val meta = CallMeta(r.reply.latencyMs, r.reply.promptTokens, r.reply.completionTokens, r.reply.model, r.promptVersion, "${ctx.runId}:${node.id}:$i")
                 NodeResult(it.frameId, v.copy(trusted = pass), branch = if (pass) "pass" else "fail", meta = meta, calls = 1)
@@ -118,7 +117,7 @@ object CriticExecutor : NodeExecutor {
                 throw c
             } catch (e: Exception) {
                 // Live keeps the local verdict (not trusted) when the critic fails.
-                NodeResult(it.frameId, v.copy(trusted = false), branch = "fail", error = failure(e), meta = CallMeta(ms(), null, null, null, null, "${ctx.runId}:${node.id}:$i"), calls = 1)
+                NodeResult(it.frameId, v.copy(trusted = false), branch = "fail", error = failure(e), meta = CallMeta(ms(), null, null, null, null, "${ctx.runId}:${node.id}:$i"), calls = 1, cause = e)
             }
         }
     }
@@ -155,7 +154,7 @@ object PromptExecutor : NodeExecutor {
             val batchId = "${ctx.runId}:${node.id}:$i"
             val started = System.nanoTime()
             try {
-                val reply = ctx.model.complete(role, CallClass.EXPERIMENT) { e ->
+                val reply = ctx.model.complete(role, ctx.callClass) { e ->
                     val plan = StructuredOutput.plan(e, schemaObj, name)
                     ModelRequest(prompt + plan.promptSuffix, if (images) listOf(it.photo.image) else emptyList(), format = plan.format)
                 }
@@ -166,7 +165,7 @@ object PromptExecutor : NodeExecutor {
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                NodeResult(it.frameId, null, error = failure(e), meta = CallMeta((System.nanoTime() - started) / 1_000_000, null, null, null, null, batchId), calls = 1)
+                NodeResult(it.frameId, null, error = failure(e), meta = CallMeta((System.nanoTime() - started) / 1_000_000, null, null, null, null, batchId), calls = 1, cause = e)
             }
         }
     }
