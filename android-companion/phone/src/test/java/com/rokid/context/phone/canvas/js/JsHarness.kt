@@ -114,6 +114,7 @@ object JsHarness {
 
     fun assertAllPass(testFile: String) {
         val results = run(testFile)
+        if (results.isEmpty()) throw AssertionError("$testFile produced no tests")
         val failed = results.filter { !it.ok }
         if (failed.isNotEmpty()) {
             throw AssertionError(failed.joinToString("\n") { "FAILED ${it.name}: ${it.message}" } + "\n(${results.size - failed.size}/${results.size} passed in $testFile)")

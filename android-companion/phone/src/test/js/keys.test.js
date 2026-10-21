@@ -9,6 +9,14 @@ const cells = {
 };
 
 export const tests = {
+  protoKeyIdsDontCrash() {
+    const c = JSON.parse('{"constructor":{"layer":0,"column":0},"__proto__":{"layer":1,"column":0},"x":{"layer":2,"column":0}}');
+    eq(move(c, 'constructor', 'ArrowDown'), '__proto__');
+    eq(move(c, '__proto__', 'ArrowDown'), 'x');
+    eq(move(cells, 'toString', 'ArrowDown'), 'toString', 'an id that is not a cell stays');
+    eq(move(cells, 'constructor', 'ArrowDown'), 'constructor');
+    eq(reduce(idle, 'ArrowDown', { cells, current: 'hasOwnProperty' }).action, undefined);
+  },
   arrowMovesByLayerAndColumn() {
     eq(move(cells, 'a0', 'ArrowDown'), 'b0');
     eq(move(cells, 'a1', 'ArrowDown'), 'b0', 'nearest column in the next layer');

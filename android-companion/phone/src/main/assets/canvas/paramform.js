@@ -1,6 +1,7 @@
 // The inspector's field model: node-type param descriptors → form fields, and raw input → coerced values. Pure.
 // No JSON Schema library: a schema is only checked to be valid JSON here; the server is the authority.
 
+const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
 const ID = /^[a-z][a-z0-9_]{0,31}$/;
 
 const label = (name) => {
@@ -18,7 +19,7 @@ const options = (list) => (Array.isArray(list) ? list : []).map((o) => (typeof o
 export function fields(descriptors, params, ctx) {
   const ps = params || {};
   return (descriptors || []).map((d) => {
-    const cur = ps[d.name];
+    const cur = own(ps, d.name) ? ps[d.name] : undefined;
     const f = { name: d.name, kind: d.kind, label: label(d.name), current: cur };
     switch (d.kind) {
       case 'int':
@@ -88,7 +89,10 @@ export function coerce(f, raw) {
     }
     case 'schema': {
       const s = String(raw == null ? '' : raw);
-      try { JSON.parse(s); } catch (e) { return { error: 'Must be valid JSON' }; }
+      if (s.trim() === '') return { value: undefined }; // clears the param
+      let parsed;
+      try { parsed = JSON.parse(s); } catch (e) { return { error: 'Must be valid JSON' }; }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { error: 'Must be a JSON object' };
       return { value: s };
     }
     case 'labels': {

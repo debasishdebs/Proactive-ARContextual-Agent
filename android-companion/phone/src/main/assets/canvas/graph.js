@@ -2,7 +2,6 @@
 // every operation returns { pipe, error? } (on error, pipe is the unchanged input).
 import { portCheck, typeOf } from './validate.js';
 
-const ID = /^[a-z][a-z0-9_]{0,31}$/;
 const clone = (p) => JSON.parse(JSON.stringify(p));
 const fail = (pipe, error) => ({ pipe, error });
 const nodeOf = (pipe, id) => (pipe.nodes || []).find((n) => n.id === id) || null;
@@ -53,15 +52,16 @@ function defaultParams(nodeType) {
 
 /**
  * Adds a node of nodeType; an edge after → new when the types fit (a branching source: its first unused branch).
- * nodeTypes (the /api/node-types list) is needed to know the source's output and branches; without it no edge is made.
+ * nodeTypes (the /api/node-types list) is required: the source's output and branches decide the auto edge.
  */
 export function addNode(pipe, nodeType, after, nodeTypes) {
+  if (!nodeTypes) throw new TypeError('addNode needs nodeTypes (the source port decides the auto edge)');
   if (nodeType.type === 'input.photos') return fail(pipe, 'There is already a Photo input');
   const next = clone(pipe);
   next.nodes = next.nodes || []; next.edges = next.edges || [];
   const id = nextId(next, nodeType.short || String(nodeType.type).split('.').pop());
   next.nodes.push({ id, type: nodeType.type, title: nodeType.label, params: defaultParams(nodeType) });
-  const src = after && nodeTypes ? nodeOf(next, after) : null;
+  const src = after ? nodeOf(next, after) : null;
   if (src) {
     if (portCheck(next, src.id, id, nodeTypes) === null) {
       if (branchesOf(src, nodeTypes).length === 0) next.edges.push({ from: src.id, to: id });
@@ -137,7 +137,8 @@ export function setParam(pipe, nodeId, key, value) {
   const next = clone(pipe);
   const n = nodeOf(next, nodeId);
   n.params = n.params || {};
-  if (value === undefined) delete n.params[key]; else n.params[key] = value;
+  if (value === undefined) delete n.params[key];
+  else Object.defineProperty(n.params, key, { value, enumerable: true, writable: true, configurable: true }); // key may be "__proto__"
   return { pipe: next };
 }
 

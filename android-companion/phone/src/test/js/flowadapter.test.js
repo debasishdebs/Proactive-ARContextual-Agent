@@ -6,6 +6,25 @@ const flow = (pipe, problems, opts, lay) => toFlow(pipe || livePipe(), lay === u
 const node = (f, id) => f.nodes.find((n) => n.id === id);
 
 export const tests = {
+  protoKeyIdsDontCrash() {
+    for (const id of ['constructor', '__proto__', 'hasOwnProperty', 'toString']) {
+      const pipe = { schema: 1, id: 'p', name: 'p', nodes: [{ id: 'photos', type: 'input.photos', title: 'Photo', params: {} }, { id, type: 'ai.vision_extract', title: 'X', params: {} }], edges: [{ from: 'photos', to: id }] };
+      const lay = JSON.parse('{"layers":2,"columns":1,"cells":{"photos":{"layer":0,"column":0},"' + id + '":{"layer":1,"column":0}}}');
+      const f = toFlow(pipe, lay, [], nodeTypes, {});
+      eq(f.nodes.find((n) => n.id === id).position, { x: 0, y: CELL_H });
+      eq(f.nodes.find((n) => n.id === id).data.pending, false);
+      eq(f.nodes.find((n) => n.id === id).data.problems, []);
+      const g = toFlow(pipe, { layers: 0, columns: 0, cells: {} }, [{ text: 'p', nodeId: id }], nodeTypes, {});
+      eq(g.nodes.find((n) => n.id === id).data.problems, ['p']);
+      eq(g.nodes.find((n) => n.id === id).data.pending, true);
+      eq(g.edges[0].className, undefined);
+      const h = toFlow(pipe, lay, [{ text: 'e', edge: { from: 'photos', to: id } }], nodeTypes, {});
+      eq(h.edges[0].className, 'has-problem');
+      ok(!canConnect({ source: 'photos', target: id }, pipe, nodeTypes).ok, 'duplicate refused');
+      const a = applyChange(pipe, { kind: 'param', nodeId: id, key: 'batch', value: 2 }, nodeTypes);
+      eq(a.pipe.nodes[1].params.batch, 2);
+    }
+  },
   positionsFromLayoutCells() {
     const p = livePipe();
     const lay = { layers: 3, columns: 2, cells: Object.assign({}, liveCells, { critic: { layer: 2, column: 1 } }) };

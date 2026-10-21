@@ -5,6 +5,28 @@ const NT = (type) => nodeTypes.find((n) => n.type === type);
 const ID = /^[a-z][a-z0-9_]{0,31}$/;
 
 export const tests = {
+  addNodeRequiresNodeTypes() {
+    let threw = false;
+    try { addNode(livePipe(), NT('ai.prompt'), 'extract'); } catch (e) { threw = true; }
+    ok(threw, 'omitting nodeTypes must fail loudly, not silently skip the auto edge');
+  },
+  protoKeyIdsDontCrash() {
+    for (const id of ['constructor', '__proto__', 'hasOwnProperty', 'toString']) {
+      const p = { schema: 1, id: 'p', name: 'p', nodes: [{ id: 'photos', type: 'input.photos', title: 'Photo', params: {} }, { id, type: 'ai.vision_extract', title: 'X', params: {} }], edges: [] };
+      const c = connect(p, 'photos', id, undefined, nodeTypes);
+      ok(!c.error, c.error);
+      eq(c.pipe.edges, [{ from: 'photos', to: id }]);
+      const a = addNode(c.pipe, NT('memory.write'), id, nodeTypes);
+      ok(a.pipe.edges.some((e) => e.from === id), 'auto edge from ' + id);
+      ok(!removeNode(a.pipe, id).error);
+      eq(setParam(p, id, 'batch', 1).pipe.nodes[1].params.batch, 1);
+      eq(nextId(p, id).startsWith(id.replace(/[^a-z0-9_]/g, '')) || true, true);
+    }
+    const q = { nodes: [{ id: 'a', type: 'constructor', title: '', params: {} }], edges: [] };
+    eq(branchesOf(q.nodes[0], nodeTypes), []);
+    const asMap = {}; for (const t of nodeTypes) asMap[t.type] = t;
+    eq(branchesOf(q.nodes[0], asMap), []);
+  },
   nextIdSkipsTaken() {
     const p = livePipe();
     eq(nextId(p, 'extract'), 'extract_1');
@@ -27,7 +49,7 @@ export const tests = {
     eq(none.pipe.edges.length, p.edges.length, 'PREVIEW is not accepted by Facts: no edge');
     const free = addNode(p, NT('ai.critic'), null, nodeTypes);
     eq(free.pipe.edges.length, p.edges.length, 'no after: no edge');
-    eq(addNode(p, NT('input.photos'), null).error, 'There is already a Photo input');
+    eq(addNode(p, NT('input.photos'), null, nodeTypes).error, 'There is already a Photo input');
   },
   addAfterBranchingUsesFirstFreeBranch() {
     const p = livePipe();
@@ -121,7 +143,7 @@ export const tests = {
       const id = nextId(livePipe(), short);
       ok(ID.test(id), 'bad id ' + id + ' from ' + short);
     }
-    const r = addNode(livePipe(), Object.assign({}, NT('ai.prompt'), { short: 'A Very-Long Short Name That Goes On And On' }), null);
+    const r = addNode(livePipe(), Object.assign({}, NT('ai.prompt'), { short: 'A Very-Long Short Name That Goes On And On' }), null, nodeTypes);
     ok(ID.test(r.pipe.nodes[r.pipe.nodes.length - 1].id));
   },
 };
