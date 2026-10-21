@@ -9,9 +9,11 @@ import com.rokid.context.ai.embed.Embedders
 import com.rokid.context.ai.embed.LocalModelPausedException
 import com.rokid.context.memory.EmbeddingSpaces
 import com.rokid.context.memory.Embedder
+import com.rokid.context.memory.ImageDecodeException
 import com.rokid.context.memory.Modality
 import com.rokid.context.memory.SpaceEmbedderProvider
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
+import com.rokid.context.memory.db.ImagePut
 import com.rokid.context.memory.db.SpaceState
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -37,6 +39,39 @@ interface IndexEmbedders : SpaceEmbedderProvider {
 class AiIndexEmbedders(private val embedders: Embedders) : IndexEmbedders {
     override suspend fun bound(): BoundEmbedder? = embedders.forBinding()?.let { BoundEmbedder(embedders.gated(it), it.spec.configJson(), it.spec.dim) }
     override suspend fun forSpace(space: EmbeddingSpaceEntity): Embedder? = embedders.forSpace(space)
+}
+
+/** One photo as the backfill sees it: the bytes, a file that is gone (the frame row or JPEG is missing), or one that could not be opened just now (read or Keystore-unseal failure). */
+sealed interface PhotoRead {
+    class Bytes(val data: ByteArray) : PhotoRead
+    object Missing : PhotoRead
+    object Unreadable : PhotoRead
+}
+
+/** Counts failed reads per photo; attempts less than [IndexMaintenance.READ_RETRY_GAP_MS] apart count once. */
+interface ReadAttempts {
+    /** Records a failed read at [at]; returns how many attempts (spaced apart) the photo has now. */
+    fun record(frameId: String, at: Long): Int
+    fun forget(frameId: String)
+}
+
+class InMemoryReadAttempts : ReadAttempts {
+    private val map = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, Long>>()
+    override fun record(frameId: String, at: Long): Int = map.compute(frameId) { _, v ->
+        if (v == null) 1 to at else if (at - v.second >= IndexMaintenance.READ_RETRY_GAP_MS) (v.first + 1) to at else v
+    }!!.first
+    override fun forget(frameId: String) { map.remove(frameId) }
+}
+
+class PrefsReadAttempts(context: Context) : ReadAttempts {
+    private val prefs = context.applicationContext.getSharedPreferences("image_read_attempts", Context.MODE_PRIVATE)
+    @Synchronized override fun record(frameId: String, at: Long): Int {
+        val v = prefs.getString(frameId, null)?.split(',')?.takeIf { it.size == 2 }?.let { (it[0].toIntOrNull() ?: 0) to (it[1].toLongOrNull() ?: 0L) }
+        val next = if (v == null) 1 to at else if (at - v.second >= IndexMaintenance.READ_RETRY_GAP_MS) (v.first + 1) to at else v
+        prefs.edit().putString(frameId, "${next.first},${next.second}").commit()
+        return next.first
+    }
+    @Synchronized override fun forget(frameId: String) { prefs.edit().remove(frameId).commit() }
 }
 
 /** The last pre-swap drift discard: which model, when, and how many in a row for that model. */
@@ -83,6 +118,10 @@ class PrefsIndexClock(context: Context) : IndexClock {
         }.commit()
     }
 
+    /** Consecutive runs that ended with work left (MORE); the worker's continuation delay grows with it. */
+    fun moreStreak(): Int = prefs.getInt(K_MORE_STREAK, 0)
+    fun setMoreStreak(n: Int) { if (moreStreak() != n) prefs.edit().putInt(K_MORE_STREAK, n).apply() }
+
     /** Gaps G6: on-device index work is waiting for a charger (banner "On-device search paused to save battery"). */
     fun batteryPaused(): Boolean = prefs.getBoolean(K_BATTERY_PAUSED, false)
     fun setBatteryPaused(paused: Boolean) { if (batteryPaused() != paused) prefs.edit().putBoolean(K_BATTERY_PAUSED, paused).commit() }
@@ -112,6 +151,7 @@ class PrefsIndexClock(context: Context) : IndexClock {
         const val K_DISCARD_AT = "discard_at"
         const val K_DISCARD_STREAK = "discard_streak"
         const val K_BATTERY_PAUSED = "battery_paused"
+        const val K_MORE_STREAK = "more_streak"
     }
 }
 
@@ -134,7 +174,9 @@ class IndexMaintenance(
     private val batch: Int = 16,
     private val maxPerRun: Int = 256,
     /** The stored JPEG bytes of the given photo ids (sealed "PCAF" ones decrypted in memory only); a photo that cannot be read is left out. */
-    private val photos: suspend (List<String>) -> Map<String, ByteArray> = { emptyMap() },
+    private val photos: suspend (List<String>) -> Map<String, PhotoRead> = { emptyMap() },
+    /** Persisted across runs: how often a photo could not be read (transient Keystore or I/O faults); only repeated failures hours apart mark it. */
+    private val readAttempts: ReadAttempts = InMemoryReadAttempts(),
     /** Ruling 18: image backfill is bulk work (charging or battery above 70 %, thermal below MODERATE). Live per-frame embedding is not gated here. */
     private val bulkAllowed: () -> Boolean = { true },
     private val imageBatch: Int = 8,
@@ -270,37 +312,69 @@ class IndexMaintenance(
      * Image backfill into [space]: stored photos with no vector, newest first, in batches of [imageBatch] with a yield between
      * them, at most [ImageProgress.budget] per run. Vectors only: no salience, no clusters, no AI calls (Ruling 1 covers new frames).
      * Gated per batch by [bulkAllowed]. Does nothing for a TEXT-only embedder.
+     *
+     * A photo is marked `unembeddable` only for a definite failure: its file is gone (confirmed by a second look), it fails to decode
+     * ([ImageDecodeException]) twice, or it was unreadable on [UNREADABLE_MARK_AFTER] attempts at least [READ_RETRY_GAP_MS] apart.
+     * Every other embedder exception (model, runtime, endpoint, battery) propagates and marks nothing; a photo skipped this run (transient
+     * read fault, wrong-width vector) stays on the list for a later run.
      */
     private suspend fun fillImages(space: EmbeddingSpaceEntity, embedder: Embedder, p: ImageProgress) {
         if (Modality.IMAGE !in embedder.modalities) return
+        val skip = HashSet<String>() // skipped this run: not re-listed, or they would starve the photos behind them
         while (p.budget > 0) {
             if (!bulkAllowed()) { p.paused = true; Log.i(TAG, "image backfill paused by the bulk gate"); return }
-            val ids = spaces.missingImages(space.id, minOf(imageBatch, p.budget))
+            val want = minOf(imageBatch, p.budget)
+            val ids = spaces.missingImages(space.id, want + skip.size).filter { it !in skip }.take(want)
             if (ids.isEmpty()) return
             yield()
             p.budget -= ids.size
             val first = photos(ids)
-            val batch = ids.filter { it in first }.takeIf { it.isNotEmpty() }?.let { r -> tryImages(embedder, r.map { first.getValue(it) })?.takeIf { it.size == r.size }?.let { r.zip(it).toMap() } }
-            var unembeddable = 0
+            val readable = ids.filter { first[it] is PhotoRead.Bytes }
+            val batch = readable.takeIf { it.isNotEmpty() }
+                ?.let { r -> tryImages(embedder, r.map { (first.getValue(it) as PhotoRead.Bytes).data })?.takeIf { it.size == r.size }?.let { r.zip(it).toMap() } }
+            var marked = 0; var transient = 0; var rejected = 0; var stored = 0
             for (id in ids) {
-                val v = batch?.get(id) ?: embedOne(embedder, id, first[id])
-                if (v == null) { spaces.markUnembeddable(id); unembeddable++; continue }
-                if (!spaces.putImage(id, space.id, v) && spaces.queryable()?.id != space.id && spaces.building()?.id != space.id) return // discarded, retired or marked stale meanwhile
+                val v = batch?.get(id) ?: when (val r = embedOne(embedder, id, first[id])) {
+                    is One.Vector -> r.v
+                    One.Skip -> { skip += id; transient++; continue }
+                    One.Unembeddable -> { spaces.markUnembeddable(id); readAttempts.forget(id); marked++; continue }
+                }
+                when (spaces.putImage(id, space.id, v, embedder.imageDims)) {
+                    ImagePut.STORED -> { stored++; readAttempts.forget(id) }
+                    ImagePut.WIDTH_MISMATCH -> { skip += id; rejected++ } // never stored, never marked
+                    ImagePut.DROPPED -> if (spaces.queryable()?.id != space.id && spaces.building()?.id != space.id) return // discarded, retired or marked stale meanwhile
+                }
             }
-            Log.i(TAG, "image backfill: ${ids.size} photos, $unembeddable unembeddable")
+            Log.i(TAG, "image backfill: ${ids.size} photos, $stored stored, $marked unembeddable, $transient deferred, $rejected wrong width")
+            if (rejected > 0 && stored == 0 && batch != null && rejected == batch.size) {
+                throw IndexConfigException("space ${space.id}: image vectors have the wrong width")
+            }
         }
     }
 
-    /** Two attempts (the second re-reads the photo); null = unreadable or undecodable twice. An unreachable endpoint is not a decode failure and propagates. */
-    private suspend fun embedOne(embedder: Embedder, id: String, firstBytes: ByteArray?): FloatArray? {
-        firstBytes?.let { b -> tryImages(embedder, listOf(b))?.singleOrNull()?.let { return it } }
-        val again = photos(listOf(id))[id] ?: return null
-        return tryImages(embedder, listOf(again))?.singleOrNull()
+    private sealed interface One {
+        class Vector(val v: FloatArray) : One
+        object Skip : One
+        object Unembeddable : One
     }
 
+    /** The photo on its own after a failed batch (or one that could not be read for the batch): see [fillImages] for what marks it. */
+    private suspend fun embedOne(embedder: Embedder, id: String, read: PhotoRead?): One {
+        var r: PhotoRead = read ?: photos(listOf(id))[id] ?: return One.Skip
+        if (r === PhotoRead.Missing) r = photos(listOf(id))[id] ?: return One.Skip // a gone file is confirmed by a second look
+        if (r === PhotoRead.Missing) return One.Unembeddable
+        if (r === PhotoRead.Unreadable) return if (readAttempts.record(id, now()) >= UNREADABLE_MARK_AFTER) One.Unembeddable else One.Skip
+        val bytes = (r as PhotoRead.Bytes).data
+        tryImages(embedder, listOf(bytes))?.singleOrNull()?.let { return One.Vector(it) }
+        // Failed to decode once: a second attempt on a fresh read.
+        val again = (photos(listOf(id))[id] as? PhotoRead.Bytes)?.data ?: return One.Skip
+        return tryImages(embedder, listOf(again))?.singleOrNull()?.let { One.Vector(it) } ?: One.Unembeddable
+    }
+
+    /** null = a definite decode failure; any other exception is the embedder's, not the photo's, and propagates. */
     private suspend fun tryImages(embedder: Embedder, jpegs: List<ByteArray>): List<FloatArray>? = try {
         embedder.embedImages(jpegs)
-    } catch (c: CancellationException) { throw c } catch (e: java.io.IOException) { throw e } catch (e: LocalModelPausedException) { throw e } catch (_: Exception) { null }
+    } catch (_: ImageDecodeException) { null }
 
     /**
      * Re-embeds the canaries (the embedder applies the space's document prefix) against the stored set. A mismatch is
@@ -320,6 +394,9 @@ class IndexMaintenance(
 
     companion object {
         const val MAX_DISCARD_STREAK = 3
+        /** An unreadable photo (Keystore, I/O) is marked only after this many failed reads, each at least [READ_RETRY_GAP_MS] after the last. */
+        const val UNREADABLE_MARK_AFTER = 3
+        const val READ_RETRY_GAP_MS = 60 * 60 * 1000L
         private const val TAG = "IndexMaintenance"
         private const val DAY_MS = 24 * 60 * 60 * 1000L
     }

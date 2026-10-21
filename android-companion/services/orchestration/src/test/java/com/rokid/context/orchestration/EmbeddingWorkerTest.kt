@@ -51,6 +51,20 @@ class EmbeddingWorkerTest {
         assertTrue(infos.single().constraints.requiresBatteryNotLow()) // F5
     }
 
+    /** Review C2: a run with work left is continued after 30 s, doubling per consecutive MORE up to 15 min, never at once. */
+    @Test fun moreContinuesWithAnExponentialBackoff() = runBlocking {
+        assertEquals(30_000L, EmbeddingWorker.moreDelayMs(0))
+        assertEquals(60_000L, EmbeddingWorker.moreDelayMs(1))
+        assertEquals(15 * 60_000L, EmbeddingWorker.moreDelayMs(9))
+        assertEquals(15 * 60_000L, EmbeddingWorker.moreDelayMs(50))
+        EmbeddingWorker.execute(ctx, attempt = 0) { IndexMaintenance.Outcome.MORE }
+        val first = queued().single()
+        assertTrue("delayed, not immediate", first.state == WorkInfo.State.ENQUEUED)
+        assertEquals(1, PrefsIndexClock(ctx).moreStreak())
+        EmbeddingWorker.execute(ctx, attempt = 0) { IndexMaintenance.Outcome.DONE }
+        assertEquals(0, PrefsIndexClock(ctx).moreStreak())
+    }
+
     /** Carried from Task 8: a dimension mismatch is a config failure. It is recorded and the work stops: no retry, no continuation. */
     @Test fun aConfigFailureStopsWithoutRetryOrContinuation() = runBlocking {
         var runs = 0

@@ -12,6 +12,7 @@ import com.rokid.context.ai.embed.Embedders
 import com.rokid.context.memory.EmbeddingSpaces
 import com.rokid.context.memory.Embedder
 import com.rokid.context.memory.MemoryRepository
+import com.rokid.context.memory.ImageDecodeException
 import com.rokid.context.memory.Modality
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.DatabaseFactory
@@ -50,7 +51,7 @@ import kotlin.math.sin
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class IndexMaintenanceTest {
-    private companion object { const val BAD: Byte = 99 }
+    private companion object { const val BAD: Byte = 99; const val IMG_DIMS = 3 }
     private val db = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     private val spaces = EmbeddingSpaces(db.embeddingDao())
     private val memories = MemoryRepository(db.memoryDao())
@@ -65,7 +66,7 @@ class IndexMaintenanceTest {
      */
     private val fake = object : IndexEmbedders {
         var fp = "A"; var dim = 2; var drift = false; var bound = true; var calls = 0; var tilt = 0.0; var docDim: Int? = null
-        var imageCapable = false; var imageCalls = 0; var imageNetworkDown = false
+        var imageCapable = false; var imageCalls = 0; var imageNetworkDown = false; var imageBroken: Exception? = null; var imageWidth = IMG_DIMS
         var canaryCalls = 0; val canaryTilts = ArrayDeque<Double>(); var failCanaries = false; var spaceGone = false
         fun embedder(fingerprint: String = fp, d: Int = dim) = object : Embedder {
             override val fingerprint = fingerprint
@@ -81,11 +82,13 @@ class IndexMaintenanceTest {
                 }
             }
             override suspend fun embedQuery(text: String) = embedDocuments(listOf(text)).single()
+            override val imageDims: Int? get() = IMG_DIMS
             override val modalities get() = if (imageCapable) setOf(Modality.TEXT, Modality.IMAGE) else setOf(Modality.TEXT)
             override suspend fun embedImages(jpegs: List<ByteArray>): List<FloatArray> {
                 imageCalls++
                 if (imageNetworkDown) throw java.io.IOException("endpoint unreachable")
-                return jpegs.map { b -> if (b[0] == BAD) throw IllegalArgumentException("cannot decode") else floatArrayOf(b[0].toFloat(), 1f, 0f) }
+                imageBroken?.let { throw it }
+                return jpegs.map { b -> if (b[0] == BAD) throw ImageDecodeException("cannot decode") else FloatArray(imageWidth) { i -> if (i == 0) b[0].toFloat() else 1f } }
             }
         }
         override suspend fun bound() = if (!bound) null else BoundEmbedder(embedder(), "{\"fp\":\"$fp\"}", dim)
@@ -106,11 +109,14 @@ class IndexMaintenanceTest {
         override fun recordDiscard(record: DiscardRecord?) { discard = record }
     }
     private val photoBytes = mutableMapOf<String, ByteArray>()
+    private val unreadable = mutableSetOf<String>()
+    private val attempts = InMemoryReadAttempts()
     private var bulk = true
     private val photoLoads = mutableListOf<List<String>>()
     private fun maintenance(maxPerRun: Int = 256, imageMaxPerRun: Int = 200) = IndexMaintenance(
         spaces, fake, clock, { now }, batch = 2, maxPerRun = maxPerRun,
-        photos = { ids -> photoLoads += ids; ids.mapNotNull { id -> photoBytes[id]?.let { id to it } }.toMap() },
+        photos = { ids -> photoLoads += ids; ids.associateWith { id -> if (id in unreadable) PhotoRead.Unreadable else photoBytes[id]?.let { PhotoRead.Bytes(it) } ?: PhotoRead.Missing } },
+        readAttempts = attempts,
         bulkAllowed = { bulk }, imageBatch = 2, imageMaxPerRun = imageMaxPerRun,
     )
     private suspend fun photo(id: String, ts: Long, code: Byte? = 1) {
@@ -202,6 +208,55 @@ class IndexMaintenanceTest {
         while (maintenance(imageMaxPerRun = 3).run() == Outcome.MORE) Unit
         assertEquals(5, imageVectors(spaces.queryable()!!.id).size)
         assertFalse(photoLoads.flatten().groupBy { it }.any { it.value.size > 1 })
+    }
+
+    @Test fun brokenEmbedderMarksNothingAndNeverSwaps() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("p1", 10); photo("p2", 20)
+        fake.imageBroken = IllegalStateException("model not loaded")
+        try { maintenance().run(); fail("a broken model is a retryable failure") } catch (_: IllegalStateException) { }
+        assertNull(db.frameMetaDao().get("p1")); assertNull(db.frameMetaDao().get("p2"))
+        assertNull(spaces.queryable()); assertEquals(2, spaces.missingImageCount(spaces.building()!!.id))
+        fake.imageBroken = null
+        assertEquals(Outcome.DONE, maintenance().run())
+        assertEquals(listOf("p1", "p2"), imageVectors(spaces.queryable()!!.id))
+    }
+
+    @Test fun transientReadFaultIsMarkedOnlyAfterThreeSpacedAttempts() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("ok", 10); photo("locked", 20); unreadable += "locked"
+        assertEquals("one photo is still waiting: more later", Outcome.MORE, maintenance().run())
+        assertNull(db.frameMetaDao().get("locked"))
+        assertEquals(Outcome.MORE, maintenance().run()) // same hour: counts once
+        assertNull(db.frameMetaDao().get("locked"))
+        now += IndexMaintenance.READ_RETRY_GAP_MS; assertEquals(Outcome.MORE, maintenance().run())
+        assertNull("two attempts are not enough", db.frameMetaDao().get("locked"))
+        now += IndexMaintenance.READ_RETRY_GAP_MS; assertEquals(Outcome.DONE, maintenance().run())
+        assertEquals("unembeddable", db.frameMetaDao().get("locked")!!.imageVectorSpace)
+        assertEquals(listOf("ok"), imageVectors(spaces.queryable()!!.id))
+    }
+
+    @Test fun aReadFaultThatClearsLeavesThePhotoEmbeddable() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("locked", 20); unreadable += "locked"
+        assertEquals(Outcome.MORE, maintenance().run())
+        unreadable.clear()
+        assertEquals(Outcome.DONE, maintenance().run())
+        assertEquals(listOf("locked"), imageVectors(spaces.queryable()!!.id)); assertNull(db.frameMetaDao().get("locked"))
+    }
+
+    @Test fun wrongWidthVectorsAreRejectedNotStoredNorMarked() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("p1", 10); photo("p2", 20)
+        fake.imageWidth = IMG_DIMS + 1
+        try { maintenance().run(); fail("a width the embedder does not declare is a config failure") } catch (_: IndexConfigException) { }
+        assertEquals(0, db.frameVectorDao().countForSpace(spaces.building()!!.id))
+        assertNull(db.frameMetaDao().get("p1")); assertNull(spaces.queryable())
+    }
+
+    @Test fun unroutedPendingFramesDoNotSpinTheRunOrBlockTheSwap() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("p1", 10); photo("fresh", 20)
+        db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity("fresh", null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, null, 1))
+        db.frameStateDao().insertIgnore(listOf(com.rokid.context.memory.db.FrameStateEntity("fresh", "PENDING", 0, null, null, null, 1)))
+        assertEquals("no un-delayed MORE while the indexer still owns a frame", Outcome.DONE, maintenance().run())
+        assertEquals(listOf("p1"), imageVectors(spaces.queryable()!!.id))
+        assertEquals(1, photoLoads.flatten().count { it == "p1" }); assertFalse("fresh" in photoLoads.flatten())
     }
 
     @Test fun noBindingIsIdle() = runBlocking {

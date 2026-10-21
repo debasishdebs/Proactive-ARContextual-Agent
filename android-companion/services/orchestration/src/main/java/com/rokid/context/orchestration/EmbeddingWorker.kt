@@ -44,7 +44,8 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         val maintenance = IndexMaintenance(
             MemoryGraph.get(applicationContext).spaces, AiIndexEmbedders(ai.embedders), clock,
             // Ruling 18: only the backfill is bulk (G6: charging or > 70 %; thermal MODERATE+ pauses); live per-frame embedding is not gated here.
-            photos = keyframes::photoBytes,
+            photos = keyframes::photoReads,
+            readAttempts = PrefsReadAttempts(applicationContext),
             bulkAllowed = { LocalModelPower.bulkAllowed(LocalModelPower.read(applicationContext)) && keyframes.power.mayRunBackground(BackgroundWork.BACKFILL) },
         )
         return gated(applicationContext, rebuild, id.toString(), usesLocal = { ai.embedders.bindingIsLocal() }, power = { LocalModelPower.read(applicationContext) }) {
@@ -92,7 +93,9 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
 
         /** One run's outcome as a WorkManager result. A config failure is recorded and stops; other failures retry a bounded number of times. */
         internal suspend fun execute(context: Context, attempt: Int, run: suspend () -> IndexMaintenance.Outcome): Result = try {
-            when (run()) {
+            val outcome = run()
+            if (outcome != IndexMaintenance.Outcome.MORE) PrefsIndexClock(context).setMoreStreak(0)
+            when (outcome) {
                 IndexMaintenance.Outcome.MORE -> { continueLater(context); Result.success() }
                 IndexMaintenance.Outcome.RETRY -> retryOrFail(attempt)
                 else -> Result.success()
@@ -128,8 +131,24 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             WorkManager.getInstance(context).enqueueUniqueWork(NAME, if (rebuild) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, req)
         }
 
+        /** The wait before the next run of a long backlog: 30 s, doubling per consecutive MORE, at most 15 min (never a tight loop). */
+        internal fun moreDelayMs(streak: Int): Long = minOf(MORE_MAX_DELAY_MS, MORE_BASE_DELAY_MS shl streak.coerceIn(0, 10))
+
         private fun continueLater(context: Context) {
-            WorkManager.getInstance(context).enqueueUniqueWork(NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request(false))
+            val clock = PrefsIndexClock(context)
+            val streak = clock.moreStreak()
+            clock.setMoreStreak(streak + 1)
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                NAME, ExistingWorkPolicy.APPEND_OR_REPLACE,
+                OneTimeWorkRequestBuilder<EmbeddingWorker>()
+                    .setInputData(workDataOf(KEY_REBUILD to false))
+                    .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build())
+                    .setInitialDelay(moreDelayMs(streak), java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .build(),
+            )
         }
+
+        private const val MORE_BASE_DELAY_MS = 30_000L
+        private const val MORE_MAX_DELAY_MS = 15 * 60_000L
     }
 }

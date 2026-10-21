@@ -4,6 +4,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.ImagePut
 import com.rokid.context.memory.db.FrameMetaEntity
 import com.rokid.context.memory.db.FrameStateEntity
 import com.rokid.context.memory.db.FrameVectorEntity
@@ -176,9 +177,10 @@ class EmbeddingSwapTest {
         assertEquals(listOf("new", "old"), s.missingImages(a.id, 10))
         assertEquals(listOf("new"), s.missingImages(a.id, 1))
         assertEquals(2, s.missingImageCount(a.id))
-        assertTrue(s.putImage("new", a.id, floatArrayOf(1f, 0f, 0f)))
+        assertEquals(s.missingImageCount(a.id), s.missingImages(a.id, 10).size)
+        assertEquals(ImagePut.STORED, s.putImage("new", a.id, floatArrayOf(1f, 0f, 0f), expectedDims = 3))
         assertEquals(listOf("old"), s.missingImages(a.id, 10))
-        assertFalse("a vector for a photo that is gone is dropped", s.putImage("ghost", a.id, floatArrayOf(1f)))
+        assertEquals("a vector for a photo that is gone is dropped", ImagePut.DROPPED, s.putImage("ghost", a.id, floatArrayOf(1f, 0f, 0f), expectedDims = 3))
     }
 
     @Test fun unembeddablePhotoIsNeitherListedNorCountedAndDoesNotBlockTheSwap() = runBlocking {
@@ -205,5 +207,23 @@ class EmbeddingSwapTest {
         db.frameMetaDao().upsert(FrameMetaEntity("stuck", null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, null, 1))
         db.frameStateDao().insertIgnore(listOf(FrameStateEntity("fresh", "PENDING", 0, null, null, null, 1), FrameStateEntity("stuck", "EXTRACTED", 0, null, null, null, 1)))
         assertEquals(listOf("stuck"), s.missingImages(a.id, 10)) // fresh: PENDING and unrouted
+        assertEquals("the swap does not wait for a frame the indexer owns", 1, s.missingImageCount(a.id))
+        val b = s.build("fpB"); db.frameVectorDao().upsert(listOf(FrameVectorEntity("stuck", b.id, byteArrayOf(1))))
+        assertTrue(s.swapIfComplete(b.id, requireImages = true))
+    }
+
+    @Test fun wrongWidthImageVectorIsRejectedAndNeverStored() = runBlocking {
+        mem("m1")
+        val s = spaces()
+        val a = s.build("fpA"); s.swapIfComplete(a.id)
+        frame("f1"); frame("f2"); frame("f3")
+        assertEquals(ImagePut.WIDTH_MISMATCH, s.putImage("f1", a.id, floatArrayOf(1f, 0f), expectedDims = 3))
+        assertEquals(0, db.frameVectorDao().countForSpace(a.id))
+        // no declared width: the first stored vector fixes it
+        assertEquals(ImagePut.STORED, s.putImage("f2", a.id, floatArrayOf(1f, 0f, 0f, 0f)))
+        assertEquals(ImagePut.WIDTH_MISMATCH, s.putImage("f3", a.id, floatArrayOf(1f, 0f, 0f)))
+        assertEquals(1, db.frameVectorDao().countForSpace(a.id))
+        assertEquals(listOf("f3", "f1").sorted(), s.missingImages(a.id, 10).sorted()) // still missing, not marked
+        assertEquals(null, db.frameMetaDao().get("f1"))
     }
 }
