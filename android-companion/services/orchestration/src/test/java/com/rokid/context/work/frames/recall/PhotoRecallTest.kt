@@ -75,7 +75,7 @@ class PhotoRecallTest {
     @Test fun imageHitsFromActiveSpaceOnly() = runBlocking {
         photo("a", floatArrayOf(1f, 0f)); photo("b", floatArrayOf(0f, 1f))
         photo("building", floatArrayOf(1f, 0f), space = "s2")
-        val r = recall(listOf(target("s1", true), target("s2", false))).search("milk")
+        val r = recall(listOf(target("s2", false), target("s1", true))).search("milk") // the ACTIVE target is not first
         assertEquals(ImageSearchState.RAN, r.imageState)
         assertEquals(listOf("a", "b"), r.image.map { it.frameId })
         assertTrue(r.image.all { it.source == PhotoSource.IMAGE })
@@ -114,7 +114,7 @@ class PhotoRecallTest {
         assertFalse(h.photoStored); assertEquals("cap_old", h.captionMemoryId); assertEquals("caption of old", h.captionText)
     }
 
-    @Test fun expiredPhotoHasReceivedAtNotTs() = runBlocking {
+    @Test fun expiredPhotoHasCaptureTsAndReceivedAt() = runBlocking {
         // captured at 5 h, received at 10 h (delivery was late)
         photo("withCapture", floatArrayOf(1f, 0f), stored = false, createdAt = 10 * hour, capturedAt = 5 * hour)
         photo("preV5", floatArrayOf(0.9f, 0.1f), stored = false, createdAt = 10 * hour, capturedAt = null)
@@ -193,5 +193,25 @@ class PhotoRecallTest {
         assertEquals(1, lines.size)
         assertTrue(lines.single().msg.startsWith("img=1 cap=0 scanned=1"))
         assertTrue(ShadowLog.getLogs().none { it.msg.contains("secret-query-words") })
+    }
+
+    @Test fun captionRetrieverFailureIsAStateNotEmpty() = runBlocking {
+        photo("a", floatArrayOf(1f, 0f))
+        val r = PhotoRecall(db, ImageSpaces { listOf(target("s1", true)) }, { _, _, _ -> throw IllegalStateException("index") }, { 10_000L }).search("milk")
+        assertEquals(CaptionSearchState.FAILED, r.captionState); assertEquals(listOf("a"), r.image.map { it.frameId })
+        assertEquals(CaptionSearchState.RAN, recall().search("milk").captionState)
+    }
+
+    @Test fun captionCutHappensAfterDroppingFramesWithoutMeta() = runBlocking {
+        photo("a"); photo("b"); caption("a"); caption("b")
+        db.memoryDao().insert(MemoryEntity("legacy", "nometa", "x", "caption", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, "x"))
+        captionHits = listOf(scoredOf("legacy", 0.99), scoredOf("cap_a", 0.9), scoredOf("cap_b", 0.8))
+        val r = recall(emptyList()).search("milk", captionK = 1)
+        assertEquals(listOf("a"), r.captions.map { it.frameId })
+    }
+
+    @Test fun nonFiniteQueryVectorIsFailed() = runBlocking {
+        photo("a", floatArrayOf(1f, 0f)); queryVec = floatArrayOf(Float.NaN, 1f)
+        assertEquals(ImageSearchState.FAILED, recall().search("milk").imageState)
     }
 }

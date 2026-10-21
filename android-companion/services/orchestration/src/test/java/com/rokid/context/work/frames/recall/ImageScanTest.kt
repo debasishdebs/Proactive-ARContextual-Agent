@@ -68,4 +68,29 @@ class ImageScanTest {
         // keyset: first page from MAX, then from the lowest rowid of the previous page; the short second page ends the scan
         assertEquals(listOf(Long.MAX_VALUE, n - ImageScan.PAGE + 1), pager.cursors)
     }
+
+    @Test fun nonFiniteScoresAreSkipped() = runBlocking {
+        val rows = listOf(row(1, "nan", floatArrayOf(Float.NaN, 0f)), row(2, "inf", floatArrayOf(Float.POSITIVE_INFINITY, 0f)), row(3, "ok", floatArrayOf(0.5f, 0f)))
+        val r = ImageScan.topK(q, 10, Pager(rows).fn, { 0L })
+        assertEquals(listOf("ok"), r.hits.map { it.first })
+    }
+
+    @Test fun tieEvictionAtTheBoundKeepsTheSmallerId() = runBlocking {
+        val rows = listOf(row(1, "b", floatArrayOf(0.5f, 0f)), row(2, "a", floatArrayOf(0.5f, 0f)), row(3, "c", floatArrayOf(0.5f, 0f)))
+        assertEquals(listOf("a"), ImageScan.topK(q, 1, Pager(rows).fn, { 0L }).hits.map { it.first })
+        assertEquals(listOf("a", "b"), ImageScan.topK(q, 2, Pager(rows).fn, { 0L }).hits.map { it.first })
+    }
+
+    @Test fun hugeKDoesNotOverflowTheHeap() = runBlocking {
+        val r = ImageScan.topK(q, Int.MAX_VALUE, Pager(listOf(row(1, "a", floatArrayOf(1f, 0f)))).fn, { 0L })
+        assertEquals(listOf("a"), r.hits.map { it.first })
+    }
+
+    @Test fun budgetExpiredWithNoRowsLeftIsNotTruncated() = runBlocking {
+        val rows = (1L..ImageScan.PAGE.toLong()).map { row(it, "f$it", floatArrayOf(1f, 0f)) }
+        var now = 0L
+        val pager = Pager(rows)
+        val r = ImageScan.topK(q, 5, { b -> pager.fn(b).also { now += 5_000 } }, { now }, budgetMs = 1_000)
+        assertEquals(ImageScan.PAGE, r.scanned); assertFalse(r.truncated); assertFalse(r.timedOut)
+    }
 }

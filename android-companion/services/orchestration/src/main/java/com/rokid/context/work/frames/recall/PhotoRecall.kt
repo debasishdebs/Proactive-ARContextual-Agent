@@ -7,16 +7,18 @@ import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.retrieval.RetrievalSettingsStore
 import com.rokid.context.memory.retrieval.ScoredMemory
+import com.rokid.context.memory.retrieval.VectorMath
 import com.rokid.context.work.frames.scene.ImageSpaceTarget
 import com.rokid.context.work.frames.scene.ImageSpaces
 import com.rokid.context.work.frames.scene.SpaceImageSpaces
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlin.math.sqrt
 
 enum class PhotoSource { IMAGE, CAPTION }
 enum class ImageSearchState { RAN, NO_IMAGE_SPACE, FAILED, TIMED_OUT }
+/** RAN also covers "skipped" ([PhotoRecall.search] with captionK = 0); FAILED = the caption retriever threw, so an empty list is not "no matches". */
+enum class CaptionSearchState { RAN, FAILED }
 
 /**
  * One recalled photo. [ts] is the capture time: `frame.ts` while the photo is stored, else `frame_meta.capturedAtMs` (null on a pre-v5 row).
@@ -36,7 +38,7 @@ data class PhotoHit(
     val clusterId: String?,
 )
 
-data class RecallResult(val image: List<PhotoHit>, val captions: List<PhotoHit>, val imageState: ImageSearchState, val scanned: Int, val truncated: Boolean)
+data class RecallResult(val image: List<PhotoHit>, val captions: List<PhotoHit>, val imageState: ImageSearchState, val scanned: Int, val truncated: Boolean, val captionState: CaptionSearchState = CaptionSearchState.RAN)
 
 /**
  * Words to photos (wave 3, spec §3.1): a brute-force cosine scan of the ACTIVE space's image vectors (R1) next to a caption fallback through the
@@ -61,14 +63,15 @@ class PhotoRecall(
             state = scan.state; imageIds = scan.hits; scanned = scan.scanned; truncated = scan.truncated
         }
         val imageSet = imageIds.map { it.first }.toSet()
-        val captionHits = if (captionK > 0) captionScores(query, imageSet, captionK) else emptyList()
+        var captionState = CaptionSearchState.RAN
+        val captionHits = if (captionK > 0) captionScores(query, imageSet) ?: run { captionState = CaptionSearchState.FAILED; emptyList() } else emptyList()
         val image = enrich(imageIds, PhotoSource.IMAGE)
-        val cap = enrich(captionHits, PhotoSource.CAPTION)
+        val cap = enrich(captionHits, PhotoSource.CAPTION).take(captionK) // cut AFTER frames without frame_meta are dropped
         Log.i("PcRecall", "img=${image.size} cap=${cap.size} scanned=$scanned ms=${clock() - t0} state=$state")
-        return RecallResult(image, cap, state, scanned, truncated)
+        return RecallResult(image, cap, state, scanned, truncated, captionState)
     }
 
-    private class ImageScanOutcome(val state: ImageSearchState, val hits: List<Pair<String, Double>>, val scanned: Int, val truncated: Boolean)
+    private class ImageScanOutcome(val state: ImageSearchState, val hits: List<Pair<String, Double>>, val scanned: Int, val truncated: Boolean, val captionState: CaptionSearchState = CaptionSearchState.RAN)
 
     private suspend fun imageScan(query: String, k: Int, budgetMs: Long): ImageScanOutcome {
         fun failed() = ImageScanOutcome(ImageSearchState.FAILED, emptyList(), 0, false)
@@ -78,7 +81,7 @@ class PhotoRecall(
             ?: return ImageScanOutcome(ImageSearchState.NO_IMAGE_SPACE, emptyList(), 0, false)
         val q = try {
             val full = target.embedQueryFull(query)
-            if (full.size < target.imageDims) null else unit(full.copyOf(target.imageDims))
+            if (full.size < target.imageDims) null else usable(VectorMath.l2(full.copyOf(target.imageDims)))
         } catch (c: CancellationException) { throw c } catch (_: Exception) { null } ?: return failed()
         return try {
             val r = withContext(Dispatchers.Default) {
@@ -88,11 +91,12 @@ class PhotoRecall(
         } catch (c: CancellationException) { throw c } catch (_: Exception) { failed() }
     }
 
-    private suspend fun captionScores(query: String, skip: Set<String>, k: Int): List<Pair<String, Double>> {
-        val hits = try { captions(query, CAPTION_POOL, clock()) } catch (c: CancellationException) { throw c } catch (_: Exception) { return emptyList() }
+    /** Null = the retriever failed. */
+    private suspend fun captionScores(query: String, skip: Set<String>): List<Pair<String, Double>>? {
+        val hits = try { captions(query, CAPTION_POOL, clock()) } catch (c: CancellationException) { throw c } catch (_: Exception) { return null }
         val best = HashMap<String, Double>()
         for (h in hits) { val f = h.memory.frameId ?: continue; if (f !in skip) best.merge(f, h.score, ::maxOf) }
-        return best.entries.sortedWith(compareByDescending<Map.Entry<String, Double>> { it.value }.thenBy { it.key }).take(k).map { it.key to it.value }
+        return best.entries.sortedWith(compareByDescending<Map.Entry<String, Double>> { it.value }.thenBy { it.key }).map { it.key to it.value }
     }
 
     private suspend fun enrich(hits: List<Pair<String, Double>>, source: PhotoSource): List<PhotoHit> {
@@ -111,12 +115,8 @@ class PhotoRecall(
         }
     }
 
-    private fun unit(v: FloatArray): FloatArray? {
-        var s = 0.0
-        for (x in v) { if (x.isNaN() || x.isInfinite()) return null; s += x * x }
-        val n = sqrt(s).toFloat()
-        return if (n == 0f) null else FloatArray(v.size) { v[it] / n }
-    }
+    /** The shared truncate + L2 helper leaves a zero vector alone and passes NaN through, so an unusable query is rejected here. */
+    private fun usable(v: FloatArray): FloatArray? = v.takeIf { x -> x.all { it.isFinite() } && x.any { it != 0f } }
 
     companion object {
         private const val CAPTION_POOL = 60
