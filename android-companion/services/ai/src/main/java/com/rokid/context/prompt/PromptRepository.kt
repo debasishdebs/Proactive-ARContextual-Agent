@@ -93,7 +93,7 @@ class PromptRepository(
             val expS = normSchema(e.key, e.expected.outputSchema)
             // A seeded schema is stored as shipped (not trimmed), so an expectation that equals the stored text after
             // normalisation is pinned to the exact stored bytes; the DAO then compares those exactly, inside its transaction.
-            val same = a.template == expT && normSchema(e.key, a.outputSchema) == expS
+            val same = a.template.trim() == expT && normSchema(e.key, a.outputSchema) == expS
             CasWrite(
                 e.key.name, if (same) a.template else expT, if (same) a.outputSchema else expS,
                 t, normSchema(e.key, e.draft.outputSchema), e.note.replace(Regex("\\s+"), " ").trim().take(80), e.testedOk,
@@ -101,6 +101,9 @@ class PromptRepository(
         }
         return dao.casSaveAll(writes, settings.keepVersions.value, now())
     }
+
+    /** The text [save] would store for [draft]. */
+    fun normalise(key: PromptKey, draft: PromptDraft) = PromptDraft(draft.template.trim(), normSchema(key, draft.outputSchema))
 
     private fun normSchema(key: PromptKey, s: String?): String? = if (key == PromptKey.SYSTEM) null else s?.trim()?.ifEmpty { null }
 

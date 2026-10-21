@@ -64,6 +64,7 @@ abstract class PromptDao {
      */
     @Transaction
     open suspend fun casSaveAll(writes: List<CasWrite>, keepVersions: Boolean, now: Long): CasOutcome {
+        require(writes.map { it.id }.distinct().size == writes.size) { "Duplicate prompt ids" }
         val bad = writes.filter { w ->
             val a = active(w.id)
             a == null || a.template != w.expectTemplate || a.outputSchema != w.expectSchema
