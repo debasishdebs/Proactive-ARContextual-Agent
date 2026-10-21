@@ -184,12 +184,13 @@ class GlimpseOffsetTest {
         println(sb)
     }
 
-    @Test fun scenarioC_aChangeInFrontOfASettledHead_within5s() {
+    @Test fun scenarioC_aChangeInFrontOfASettledHead_withinTheStillCap() {
         val d = scenarioC(30_000, 20, 5_000, { 535L })
         println("GLIMPSE C  settled: max ${d.max()} ms, mean ${d.average().toInt()} ms")
-        assertTrue(d.all { it <= 5_000 }, "slowest ${d.max()} ms")
+        // Wave A2: a still scene backs the brief checks off (5 -> 60 s), so a change in front of a settled head is seen within the cap.
+        assertTrue(d.all { it <= 60_000 }, "slowest ${d.max()} ms")
         val v = scenarioC(30_000, 10, 5_000, latency(3, 292, 535))
-        assertTrue(v.all { it <= 5_000 }, "slowest with 292..535 ms start-up: ${v.max()} ms")
+        assertTrue(v.all { it <= 60_000 }, "slowest with 292..535 ms start-up: ${v.max()} ms")
     }
 
     @Test fun scenarioC_after10QuietMinutes_within15s() {

@@ -14,6 +14,8 @@ data class CaptureProfile(
     val walkCheckMs: Long?,
     val analysisMs: Long,
     val paused: Boolean,
+    /** A still scene backs the brief checks off (doubling) up to this gap; a changed scene, motion or a settle resets it. */
+    val stillCapMs: Long = 60_000L,
 ) {
     companion object {
         fun of(wake: CameraWake, tier: BudgetTier): CaptureProfile = when (tier) {

@@ -84,11 +84,13 @@ class FakeCamera(
     var closes = 0; private set
     var failOpens = 0
     val events = ArrayList<String>()
+    val openTimes = ArrayList<Long>()
     private var gen: Job? = null
 
     override suspend fun open(onFrame: (FrameSource) -> Unit): Boolean {
         opens++
         events += "open@${now()}"
+        openTimes += now()
         if (hangOpens) delay(1_000_000L)
         if (bindDelayMs > 0) delay(bindDelayMs)
         if (busyOpens) return false
