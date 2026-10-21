@@ -44,7 +44,7 @@ class AppAnswererTest {
     /** Wave 3 Task 3: a stored photo's capture time becomes the HUD label, in the system zone. */
     @Test fun photoLabelFormatsTime() = runBlocking {
         val at = java.time.LocalDateTime.of(2026, 10, 9, 8, 53).atZone(java.time.ZoneOffset.ofHours(2)).toInstant().toEpochMilli()
-        val a = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1", photoFrameId = "f1", photoAtMs = at) }, answerText = { "On the desk." }, zone = { java.time.ZoneOffset.ofHours(2) })
+        val a = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1", photoFrameId = "f1", photoAtMs = at) }, answerText = { "On the desk." }, zone = { java.time.ZoneOffset.ofHours(2) }, now = { at + 3_600_000L })
         assertEquals(AnswerResult.Answered("a1", "On the desk.", photoLabel = "Photo 08:53"), a.answer("keys?", VoiceSource.GLASSES))
         assertEquals(AnswerResult.Answered("a1", "Milk and eggs."), answerer(AskOutcome.Answered("a1")).answer("milk?", VoiceSource.GLASSES))
     }
