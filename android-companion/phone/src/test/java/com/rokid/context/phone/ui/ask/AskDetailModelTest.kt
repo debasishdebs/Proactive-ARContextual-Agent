@@ -45,4 +45,34 @@ class AskDetailModelTest {
         assertEquals("Turned off in Settings", AskDetailModel.proposalLine(Fixtures.proposal("p", "a1", state = "SUPPRESSED")).state)
         assertEquals(ProposalLine("Suggested action", ""), AskDetailModel.proposalLine(Fixtures.proposal("p", "a1", type = "??", state = "??")))
     }
+
+    @Test fun frameSourceRendersPhotoCard() {
+        val a = ask.copy(sourcesJson = """["frame:f1","m2"]""")
+        val s = AskDetailModel.build(a, memories, frames, emptyList(), ZONE, photoFrames = mapOf("f1" to frames[0]))
+        assertEquals(listOf("frame:f1", "m2"), s.sources.map { it.memoryId })
+        val card = s.sources[0]
+        assertEquals("Photo", card.text); assertEquals(1.0, card.confidence, 0.0); assertEquals("/frames/f1.jpg", card.framePath)
+        assertEquals(false, card.expired); assertEquals("f1", card.photoFrameId)
+        assertEquals(0, s.missingSources)
+    }
+
+    @Test fun expiredFrameSourceShowsPlaceholderAndIsNotMissing() {
+        val a = ask.copy(sourcesJson = """["frame:f9"]""")
+        val s = AskDetailModel.build(a, memories, frames, emptyList(), ZONE, photoFrames = mapOf("f9" to null))
+        assertEquals(1, s.sources.size)
+        assertEquals(true, s.sources[0].expired); assertEquals(null, s.sources[0].framePath); assertEquals(null, s.sources[0].photoFrameId)
+        assertEquals(0, s.missingSources)
+        val unknown = AskDetailModel.build(a, memories, frames, emptyList(), ZONE) // frame never looked up: still a photo cite, shown expired
+        assertEquals(true, unknown.sources.single().expired)
+        assertEquals(0, unknown.missingSources)
+    }
+
+    /** Fix round 1 (M1, spec 3.4): a captioned photo's card (the common cite) shows the large 96 dp thumbnail; a plain memory keeps 52 dp. */
+    @Test fun captionMemoryOfAStoredPhotoGetsTheLargeThumbnail() {
+        val cap = Fixtures.memory("cap", "Keys on a desk", 3, frameId = "f1").copy(type = "caption")
+        val a = ask.copy(sourcesJson = """["cap","m1","m2"]""")
+        val s = AskDetailModel.build(a, memories + cap, frames, emptyList(), ZONE)
+        assertEquals(listOf(true, false, false), s.sources.map { it.largeThumb })
+        assertEquals("/frames/f1.jpg", s.sources[0].framePath)
+    }
 }

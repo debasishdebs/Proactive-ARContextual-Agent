@@ -32,6 +32,7 @@ class ActivityScreenTest {
     private val frameDays = mutableListOf<LocalDate>()
     private val days = mutableListOf<LocalDate>()
     private var pauses = 0
+    private var photoSearches = 0
     private val sorts = mutableListOf<ActivitySort>()
     private val status = StatusUi("Capturing · next 4:12", live = true, paused = false, batteryPct = 82, banner = null)
 
@@ -40,7 +41,7 @@ class ActivityScreenTest {
             ActivityScreen(
                 state, onSelectPeriod = { periods += it }, onTogglePause = { pauses++ }, onBannerAction = {},
                 onOpenMemory = { memories += it }, onOpenFrames = { frameDays += it }, onOpenDay = { days += it },
-                onSelectSort = { sorts += it },
+                onSelectSort = { sorts += it }, onSearchPhotos = { photoSearches++ },
             )
         }
     }
@@ -116,5 +117,12 @@ class ActivityScreenTest {
         assertEquals(listOf(Period.MONTH), periods)
         compose.onNodeWithTag("activity_list").performScrollToNode(hasText("No activity this week"))
         compose.onNodeWithText("No activity this week").assertIsDisplayed()
+    }
+
+    @Test fun searchIconOpensPhotos() {
+        show(ActivityUiState(period = Period.TODAY, header = "Mon 12 Oct", status = status, today = TODAY))
+        compose.onNodeWithContentDescription("Find a photo").assertIsDisplayed()
+        compose.onNodeWithTag("photo_search").performClick()
+        assertEquals(1, photoSearches)
     }
 }

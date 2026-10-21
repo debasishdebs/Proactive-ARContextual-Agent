@@ -21,9 +21,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 
 sealed interface AskOutcome {
-    /** [proposalId]: the stored proposal for [proposedAction] (Phase 7), null when none was stored. */
+    /**
+     * [proposalId]: the stored proposal for [proposedAction] (Phase 7), null when none was stored.
+     * [photoFrameId] / [photoAtMs] (wave 3): the first cited photo that is still stored, and its capture time; the HUD label "Photo HH:mm". Null for a redacted ask.
+     */
     data class Answered(
         val askId: String, val proposedAction: com.rokid.context.ai.contract.ProposedAction? = null, val proposalId: String? = null,
+        val photoFrameId: String? = null, val photoAtMs: Long? = null,
     ) : AskOutcome
     data class Failed(val message: String) : AskOutcome
 }

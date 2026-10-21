@@ -110,4 +110,9 @@ class ConfigExportTest {
     @Test fun ctxHubStateIsNotExported() {
         assertFalse("ctx_hub_state" in ConfigExport.PREFS_FILES)
     }
+
+    /** Fix round 2 (m7): the opt-in photo switch never enters the settings export (an allowlist today; pinned against a switch to a denylist). */
+    @Test fun askPhotosSwitchIsNotExported() {
+        assertFalse("ask_photos" in ConfigExport.PREFS_FILES)
+    }
 }
