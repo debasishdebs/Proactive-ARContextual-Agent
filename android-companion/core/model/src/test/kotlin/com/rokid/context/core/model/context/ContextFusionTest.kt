@@ -321,6 +321,24 @@ class ContextFusionTest {
         assertEquals(ContextState.REST, r.d.state); assertTrue(ContextReason.WATCH_ASLEEP in r.d.reasons)
     }
 
+    @Test fun staleAsleepIgnoredWhileFreshMovingHint() {
+        val r = Rig(); r.watch(WatchState.ASLEEP)
+        repeat(6) { r.hint(MotionState.STILL, 0.4f); r.advance(30_000) }
+        assertEquals(ContextState.UNKNOWN, r.d.state); assertFalse(ContextReason.WATCH_ASLEEP in r.d.reasons)
+    }
+
+    @Test fun asleepWithStillHintStillRest() {
+        val r = Rig(); r.watch(WatchState.ASLEEP)
+        repeat(6) { r.hint(MotionState.STILL, 0.95f); r.advance(30_000) }
+        assertEquals(ContextState.REST, r.d.state); assertTrue(ContextReason.WATCH_ASLEEP in r.d.reasons)
+    }
+
+    @Test fun asleepWithStaleHintStillRest() {
+        // a hint older than hintStillTtlMs says nothing: the watch alone decides
+        val r = Rig(); r.hint(MotionState.STILL, 0.2f); r.advance(3 * MIN); r.watch(WatchState.ASLEEP); r.advance(2 * MIN)
+        assertEquals(ContextState.REST, r.d.state)
+    }
+
     @Test fun walkingExitNeeds60s() {
         val r = Rig()
         r.hint(MotionState.WALKING)
