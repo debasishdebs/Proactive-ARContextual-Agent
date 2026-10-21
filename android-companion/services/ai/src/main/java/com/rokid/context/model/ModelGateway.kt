@@ -26,6 +26,8 @@ data class ModelRequest(
     val temperature: Double? = null,
     val maxTokens: Int? = null,
     val format: WireFormat = WireFormat.None,
+    /** The answer is meaningless without the images (image intent): never drop them for a text-only endpoint or retry as text. */
+    val requireImages: Boolean = false,
 ) {
     companion object {
         /**

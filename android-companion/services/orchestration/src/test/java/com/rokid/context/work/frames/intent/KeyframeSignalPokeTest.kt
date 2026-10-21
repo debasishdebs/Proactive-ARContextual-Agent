@@ -67,11 +67,24 @@ class KeyframeSignalPokeTest {
         assertFalse(KeyframeGraph.get(ctx).admitBackgroundCall())
     }
 
-    @Test fun moderateHeatGivesOneSharedExtractionSlotPer30Seconds() {
+    @Test fun moderateHeatAdmitsOneCallThenRefusesUntilThirtySecondsPass() {
         network(true)
         KeyframeGraph.thermal = ThermalStatusProvider { PhoneThermal.MODERATE }
         val h = KeyframeGraph.get(ctx)
         assertTrue(h.admitBackgroundCall())
         assertFalse("the allowance is shared with extraction", h.admitBackgroundCall())
+    }
+
+    @Test fun aLowBatteryNotChargingDefersIt() {
+        network(true)
+        ctx.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))   // ensure sticky lookup works
+        ctx.sendStickyBroadcast(android.content.Intent(android.content.Intent.ACTION_BATTERY_CHANGED)
+            .putExtra(android.os.BatteryManager.EXTRA_LEVEL, 30).putExtra(android.os.BatteryManager.EXTRA_SCALE, 100)
+            .putExtra(android.os.BatteryManager.EXTRA_STATUS, android.os.BatteryManager.BATTERY_STATUS_DISCHARGING))
+        assertFalse("<= 30 % and not charging", KeyframeGraph.get(ctx).admitBackgroundCall())
+        ctx.sendStickyBroadcast(android.content.Intent(android.content.Intent.ACTION_BATTERY_CHANGED)
+            .putExtra(android.os.BatteryManager.EXTRA_LEVEL, 30).putExtra(android.os.BatteryManager.EXTRA_SCALE, 100)
+            .putExtra(android.os.BatteryManager.EXTRA_STATUS, android.os.BatteryManager.BATTERY_STATUS_CHARGING))
+        assertTrue("charging lifts it", KeyframeGraph.get(ctx).admitBackgroundCall())
     }
 }
