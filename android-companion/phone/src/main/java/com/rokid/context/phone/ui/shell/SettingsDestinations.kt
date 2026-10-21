@@ -19,6 +19,12 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.composable
 import androidx.navigation.navArgument
+import com.rokid.context.phone.canvas.CanvasGraph
+import com.rokid.context.phone.canvas.CanvasService
+import com.rokid.context.phone.canvas.DeveloperModeStore
+import com.rokid.context.phone.canvas.ui.CanvasHomeRoute
+import com.rokid.context.phone.canvas.ui.CanvasPipelineRoute
+import com.rokid.context.phone.canvas.ui.CanvasWebRoute
 import com.rokid.context.phone.ui.settings.DiagnosticsScreen
 import com.rokid.context.phone.ui.settings.DiagnosticsViewModel
 import com.rokid.context.phone.ui.settings.LogsScreen
@@ -71,7 +77,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     composable(Routes.SETTINGS) {
         val vm = viewModel { SettingsRootViewModel(deps.glasses, s.hud, s.voice.capabilities) }
         val state by vm.state.collectAsStateWithLifecycle()
-        SettingsRootScreen(state, live = Routes.LIVE_SETTINGS, onOpen = { nav.navigate(it) })
+        val devOn by DeveloperModeStore.get(LocalContext.current.applicationContext).enabled.collectAsStateWithLifecycle()
+        SettingsRootScreen(state, live = Routes.LIVE_SETTINGS, onOpen = { nav.navigate(it) }, developerMode = devOn)
     }
 
     composable(Routes.SETTINGS_GLASSES) {
@@ -227,13 +234,37 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val state by vm.state.collectAsStateWithLifecycle()
         val keyframes by vm.keyframeRows.collectAsStateWithLifecycle()
         val glassesRestarts by s.glassesRestarts.collectAsStateWithLifecycle()
+        val app = LocalContext.current.applicationContext
+        val dev = remember { DeveloperModeStore.get(app) }
+        val devOn by dev.enabled.collectAsStateWithLifecycle()
         DiagnosticsScreen(
             state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },
             onSummarizeNow = vm::summarizeNow, onCaptureNow = vm::captureNow, onReprocess = vm::reprocess,
             onOpenLogs = { nav.navigate(Routes.DIAGNOSTICS_LOGS) }, onExport = vm::exportDiagnostics, onPushSettings = vm::pushSettings,
             onExportSettings = vm::exportSettings, keyframes = keyframes, onRetryAll = vm::retryAll,
             onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) }, glassesRestarts = glassesRestarts,
+            developerMode = devOn,
+            onDeveloperMode = { on ->
+                dev.set(on)
+                if (!on) { // off: the server stops and every browser session ends, now
+                    CanvasGraph.get(app).let { it.stop(); it.revokeAll() }
+                    CanvasService.stop(app)
+                }
+            },
         )
+    }
+
+    composable(Routes.SETTINGS_CANVAS) {
+        CanvasDeveloperGate(back) { host ->
+            CanvasHomeRoute(host, onBack = back, onOpenEditor = { nav.navigate(Routes.SETTINGS_CANVAS_WEB) }, onOpenPipeline = { nav.navigate(Routes.canvasPipeline(it)) })
+        }
+    }
+
+    composable(Routes.SETTINGS_CANVAS_WEB) { CanvasDeveloperGate(back) { host -> CanvasWebRoute(host, onBack = back) } }
+
+    composable(Routes.SETTINGS_CANVAS_PIPELINE, arguments = listOf(navArgument("id") { type = NavType.StringType; defaultValue = "" })) { entry ->
+        val id = entry.arguments?.getString("id").orEmpty()
+        CanvasDeveloperGate(back) { host -> CanvasPipelineRoute(id, host, s.ai, s.retrieval, onBack = back) }
     }
 
     composable(Routes.DIAGNOSTICS_LOGS) {
@@ -264,4 +295,12 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+/** The canvas screens exist only while Developer mode is on; with it off they close at once. */
+@androidx.compose.runtime.Composable
+private fun CanvasDeveloperGate(back: () -> Unit, content: @androidx.compose.runtime.Composable (com.rokid.context.phone.canvas.CanvasHost) -> Unit) {
+    val app = LocalContext.current.applicationContext
+    val devOn by DeveloperModeStore.get(app).enabled.collectAsStateWithLifecycle()
+    if (devOn) content(remember { CanvasGraph.host(app) }) else LaunchedEffect(Unit) { back() }
 }
