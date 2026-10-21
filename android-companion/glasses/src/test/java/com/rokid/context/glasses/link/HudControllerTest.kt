@@ -30,6 +30,8 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLog
 
+private typealias CS = com.rokid.context.core.model.context.ContextState
+
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -259,6 +261,7 @@ class HudControllerTest {
         val c = controller()
         val seen = ArrayList<com.rokid.context.core.model.context.MotionContextMessage?>()
         c.onMotionContext = { seen += it }
+        bridge.phone(Channels.STATE, state())
         bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 1_000, sessionStartMs = 5_000))
         assertTrue("before the session start", seen.isEmpty())
         bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 6_000, sessionStartMs = 5_000))
@@ -268,6 +271,47 @@ class HudControllerTest {
         bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 6_000, sessionStartMs = 5_000))
         bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 7_000, sessionStartMs = 5_000))
         assertEquals("equal and newer are accepted", 3, seen.size)
+    }
+
+
+    /** A REST callback stalled inside the handler while a newer UNKNOWN revoke arrives: REST must never land after it. */
+    @Test fun aDelayedRestCallbackNeverOverwritesANewerRevoke() = runTest {
+        val c = controller()
+        bridge.phone(Channels.STATE, state())
+        val seen = java.util.concurrent.CopyOnWriteArrayList<CS?>()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        c.onMotionContext = { m ->
+            if (m?.state == CS.REST) { entered.countDown(); release.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+            seen += m?.state
+        }
+        val a = Thread { bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 1_000, state = CS.REST)) }.also { it.start() }
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val b = Thread { bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 2_000, state = CS.UNKNOWN)) }.also { it.start() }
+        Thread.sleep(150)
+        release.countDown(); a.join(5_000); b.join(5_000)
+        assertEquals("the revoke is the last gate update", listOf<CS?>(CS.REST, CS.UNKNOWN), seen.toList())
+    }
+
+    /** A stalled callback while the session closes: the close reset is the last update, and a later message is dropped. */
+    @Test fun aDelayedMessageNeverSurvivesSessionCloseAndALateOneIsDropped() = runTest {
+        val c = controller()
+        bridge.phone(Channels.STATE, state())
+        val seen = java.util.concurrent.CopyOnWriteArrayList<CS?>()
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        c.onMotionContext = { m ->
+            if (m?.state == CS.REST) { entered.countDown(); release.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+            seen += m?.state
+        }
+        val a = Thread { bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 1_000, state = CS.REST)) }.also { it.start() }
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val b = Thread { bridge.disconnected() }.also { it.start() }
+        Thread.sleep(150)
+        release.countDown(); a.join(5_000); b.join(5_000)
+        assertEquals(listOf<CS?>(CS.REST, null), seen.toList())
+        bridge.phone(Channels.MOTION_CONTEXT, ctxMsg(atMs = 9_000, state = CS.WALKING))
+        assertEquals("a message of a closed session is dropped", 2, seen.size)
     }
 
     @Test fun motionContextSessionCloseResetsAndAReconnectEnvelopeIsAccepted() = runTest {

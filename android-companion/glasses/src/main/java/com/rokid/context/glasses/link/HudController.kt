@@ -84,7 +84,8 @@ class HudController(
     /** `pc_motion_ctx` (wave B): a fresh message of this session; null = the session closed (the gate resets). */
     @Volatile var onMotionContext: (MotionContextMessage?) -> Unit = {}
     /** The newest accepted `atMs` of this session (phone clock); an older message is a late arrival and is dropped. */
-    @Volatile private var lastCtxAtMs = Long.MIN_VALUE
+    private var lastCtxAtMs = Long.MIN_VALUE // guarded by ctxLock
+    private val ctxLock = Any()
 
     fun start() {
         bridge.subscribe(Channels.STATE) { onState(it) }
@@ -106,11 +107,15 @@ class HudController(
 
     private fun onMotionContextMessage(m: MotionContextMessage) {
         if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_motion_ctx ignored"); return }
-        synchronized(this) {
+        // One lock for the session check, the ordering check, the gate update and the close reset: a delayed older
+        // message can neither pass before a newer revoke and land after it, nor outlive the session close. The gate
+        // callback is non-blocking, so holding the lock across it is safe.
+        synchronized(ctxLock) {
+            if (!_sessionOpen.value) { Log.i(TAG, "pc_motion_ctx of a closed session ignored"); return }
             if (m.atMs < lastCtxAtMs) { Log.i(TAG, "older pc_motion_ctx ignored"); return }
             lastCtxAtMs = m.atMs
+            onMotionContext(m)
         }
-        onMotionContext(m)
     }
 
     /** Fix wave I1: a wear value the phone saw before its current session began is stale (a reconnect must never resurrect it). */
@@ -184,7 +189,9 @@ class HudController(
 
     private fun closeSession(why: String) {
         liveness.onTransportDisconnected()
-        if (_sessionOpen.compareAndSet(true, false)) { Log.i(TAG, "session closed: $why"); onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
+        synchronized(ctxLock) {
+            if (_sessionOpen.compareAndSet(true, false)) { Log.i(TAG, "session closed: $why"); onWear(null); onPhoneUse(null); lastCtxAtMs = Long.MIN_VALUE; onMotionContext(null) }
+        }
         refreshConnection()
     }
 
