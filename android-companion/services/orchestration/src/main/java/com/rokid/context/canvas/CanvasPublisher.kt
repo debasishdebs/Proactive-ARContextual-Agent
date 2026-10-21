@@ -13,6 +13,10 @@ import com.rokid.context.prompt.CasEdit
 import com.rokid.context.prompt.PromptDefaults
 import com.rokid.context.prompt.PromptDraft
 import com.rokid.context.prompt.PromptRepository
+import android.util.Log
+import androidx.room.RoomDatabase
+import androidx.room.withTransaction
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonArray
@@ -38,13 +42,22 @@ class CanvasPublisher(
     private val prompts: PromptRepository,
     private val compatibility: suspend (PromptKey, PromptDraft) -> List<String>,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val transact: suspend (suspend () -> Unit) -> Unit,
 ) {
+    companion object {
+        /** The production transaction runner: both DAOs live in one Room database, and Room nests transactions. */
+        fun inTransaction(db: RoomDatabase): suspend (suspend () -> Unit) -> Unit = { body -> db.withTransaction { body() } }
+    }
+
     sealed interface Outcome {
         data class Published(val publishId: Long, val keys: List<PromptKey>) : Outcome
         data class Blocked(val reasons: List<String>) : Outcome
     }
 
     private val lock = Mutex()
+    private val TAG = "CanvasPublisher"
+    private val PUBLISH_FAILED = "Publishing failed. Nothing was changed."
+    private val ROLLBACK_FAILED = "Rolling back failed. Nothing was changed."
 
     suspend fun publish(pipelineId: String, version: Int): Outcome = lock.withLock { publishLocked(pipelineId, version) }
 
@@ -75,18 +88,31 @@ class CanvasPublisher(
         val casEdits = edits.mapIndexed { i, (_, key, draft) ->
             CasEdit(key, PromptDraft(before[i].template, before[i].outputSchema), draft, "Canvas: ${p.name.take(50)} v$version", testedOk = true)
         }
-        when (val r = prompts.saveAllIfUnchanged(casEdits)) {
-            is CasOutcome.Mismatch -> return Outcome.Blocked(r.ids.map { "${labelOf(it)} was changed during publish. Try again." })
-            is CasOutcome.Saved -> Unit
-        }
-        // fingerprint what this CAS wrote (the normalised draft), never a later re-read that could be an outside edit
+        // fingerprint what the CAS writes (the normalised draft), never a later re-read that could be an outside edit
         val published = edits.map { (_, key, draft) ->
             val w = prompts.normalise(key, draft)
             buildJsonObject { put("key", key.name); put("fp", PromptDefaults.fingerprint(w.template, w.outputSchema)) }
         }
         val snapshot = buildJsonObject { put("prev", JsonArray(prev)); put("published", JsonArray(published)) }.toString()
-        val id = dao.insertPublish(CanvasPublishEntity(pipelineId = pipelineId, version = version, hash = v.hash, publishedAt = clock(), rolledBackAt = null, snapshotJson = snapshot))
-        return Outcome.Published(id, edits.map { it.second })
+        // S27: the prompt CAS and the journal row commit together; a throw anywhere rolls both back
+        var result: Outcome = Outcome.Blocked(listOf(PUBLISH_FAILED))
+        try {
+            transact {
+                when (val r = prompts.saveAllIfUnchanged(casEdits)) {
+                    is CasOutcome.Mismatch -> result = Outcome.Blocked(r.ids.map { "${labelOf(it)} was changed during publish. Try again." })
+                    is CasOutcome.Saved -> {
+                        val id = dao.insertPublish(CanvasPublishEntity(pipelineId = pipelineId, version = version, hash = v.hash, publishedAt = clock(), rolledBackAt = null, snapshotJson = snapshot))
+                        result = Outcome.Published(id, edits.map { it.second })
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "publish failed: ${e.javaClass.simpleName}")
+            return Outcome.Blocked(listOf(PUBLISH_FAILED))
+        }
+        return result
     }
 
     /** Undoes the newest active publish, unless any of its prompts was edited since. */
@@ -107,25 +133,38 @@ class CanvasPublisher(
             val t = (o["template"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
             key to PromptDraft(t, (o["schema"] as? JsonPrimitive)?.takeIf { it.isString }?.content)
         }
-        // ONE read per key: the fingerprint check and the compare-and-set expectation use this same object, so an
-        // outside edit landing after the read can only make the CAS refuse, never be overwritten.
-        val current = published.associate { (key, _) -> key to prompts.active(key) }
-        val fps = published.toMap()
-        val changed = (published.map { it.first } + prev.map { it.first }).distinct().filter { key ->
-            val a = current[key]
-            a == null || PromptDefaults.fingerprint(a.template, a.outputSchema) != fps[key]
-        }.map { "${it.label} was changed after the publish. Use Settings \u2192 Prompts \u2192 History instead." }
-        if (changed.isNotEmpty()) return Outcome.Blocked(changed)
-        val casEdits = prev.map { (key, draft) ->
-            val a = current.getValue(key)
-            CasEdit(key, PromptDraft(a.template, a.outputSchema), draft, "Canvas rollback", testedOk = true)
+        val stale = "was changed after the publish. Use Settings \u2192 Prompts \u2192 History instead."
+        var result: Outcome = Outcome.Blocked(listOf(ROLLBACK_FAILED))
+        try {
+            transact {
+                // ONE read per key, inside the transaction: the fingerprint check and the compare-and-set expectation
+                // use this same object, so an outside edit landing after the read can only make the CAS refuse.
+                val current = published.associate { (key, _) -> key to prompts.active(key) }
+                val fps = published.toMap()
+                val changed = (published.map { it.first } + prev.map { it.first }).distinct().filter { key ->
+                    val a = current[key]
+                    a == null || PromptDefaults.fingerprint(a.template, a.outputSchema) != fps[key]
+                }.map { "${it.label} $stale" }
+                if (changed.isNotEmpty()) { result = Outcome.Blocked(changed); return@transact }
+                val casEdits = prev.map { (key, draft) ->
+                    val a = current.getValue(key)
+                    CasEdit(key, PromptDraft(a.template, a.outputSchema), draft, "Canvas rollback", testedOk = true)
+                }
+                when (val r = prompts.saveAllIfUnchanged(casEdits)) {
+                    is CasOutcome.Mismatch -> result = Outcome.Blocked(r.ids.map { "${labelOf(it)} $stale" })
+                    is CasOutcome.Saved -> {
+                        dao.markRolledBack(pub.id, clock())
+                        result = Outcome.Published(pub.id, prev.map { it.first })
+                    }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "rollback failed: ${e.javaClass.simpleName}")
+            return Outcome.Blocked(listOf(ROLLBACK_FAILED))
         }
-        when (val r = prompts.saveAllIfUnchanged(casEdits)) {
-            is CasOutcome.Mismatch -> return Outcome.Blocked(r.ids.map { "${labelOf(it)} was changed after the publish. Use Settings \u2192 Prompts \u2192 History instead." })
-            is CasOutcome.Saved -> Unit
-        }
-        dao.markRolledBack(pub.id, clock())
-        return Outcome.Published(pub.id, prev.map { it.first })
+        return result
     }
 
     private fun labelOf(id: String): String = PromptKey.parse(id)?.label ?: id

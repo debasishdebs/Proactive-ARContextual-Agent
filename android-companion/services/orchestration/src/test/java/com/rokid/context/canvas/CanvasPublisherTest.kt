@@ -62,7 +62,10 @@ class CanvasPublisherTest {
     @After fun tearDown() { AiGraph.resetForTests(null); MemoryGraph.get(app).db.close(); MemoryGraph.resetForTests(null) }
 
     private val prompts: PromptRepository get() = ai.prompts
-    private fun publisher() = CanvasPublisher(dao, prompts, { k, d -> compat(k, d) }, { now++ })
+    private var inTx = false
+    private val db get() = MemoryGraph.get(app).db
+    private val txRunner: suspend (suspend () -> Unit) -> Unit = { body -> CanvasPublisher.inTransaction(db)({ inTx = true; try { body() } finally { inTx = false } }) }
+    private fun publisher() = CanvasPublisher(dao, prompts, { k, d -> compat(k, d) }, { now++ }, txRunner)
     private fun schema() = DefaultSchemas.text(PromptKey.VISION_EXTRACT)
 
     private fun draftParams(template: String) = buildJsonObject {
@@ -289,11 +292,54 @@ class CanvasPublisherTest {
         val firstBefore = prompts.active(PromptKey.VISION_EXTRACT)
         val firstHistory = prompts.history(PromptKey.VISION_EXTRACT).first().size
         armed = true
-        val out = CanvasPublisher(dao, hooked, { _, _ -> emptyList() }, { now++ }).rollback()
+        val out = // no transaction here on purpose: inside one an outside writer waits for the commit, so this test would deadlock.
+        // It checks the CAS alone; the transaction closes the window anyway (legacyFingerprintCheckedInTransaction).
+        CanvasPublisher(dao, hooked, { _, _ -> emptyList() }, { now++ }, { body -> body() }).rollback()
         assertEquals(CanvasPublisher.Outcome.Blocked(listOf("Critic was changed after the publish. Use Settings \u2192 Prompts \u2192 History instead.")), out)
         assertEquals("Y {{recent_context}}", prompts.active(PromptKey.CRITIC).template) // the outside edit survives
         assertEquals(firstBefore, prompts.active(PromptKey.VISION_EXTRACT)) // all-or-nothing: first key untouched
         assertEquals(firstHistory, prompts.history(PromptKey.VISION_EXTRACT).first().size)
         assertEquals(1, dao.activePublishes().size)
+    }
+
+    private fun failOn(sql: String) = db.openHelper.writableDatabase.execSQL(sql)
+
+    @Test fun insertPublishFailureRollsBackPrompts() = both {
+        val before = prompts.active(PromptKey.VISION_EXTRACT)
+        val historyBefore = prompts.history(PromptKey.VISION_EXTRACT).first().size
+        val (id, v) = frozen("EDITED {{recent_context}}")
+        failOn("CREATE TRIGGER no_publish BEFORE INSERT ON canvas_publish BEGIN SELECT RAISE(ABORT, 'boom'); END")
+        val out = publisher().publish(id, v)
+        assertEquals(CanvasPublisher.Outcome.Blocked(listOf("Publishing failed. Nothing was changed.")), out)
+        assertEquals(before, prompts.active(PromptKey.VISION_EXTRACT))
+        assertEquals(historyBefore, prompts.history(PromptKey.VISION_EXTRACT).first().size)
+        assertTrue(dao.activePublishes().isEmpty())
+    }
+
+    @Test fun markRolledBackFailureRestoresNothing() = both {
+        val (id, v) = frozen("EDITED {{recent_context}}")
+        publisher().publish(id, v)
+        val published = prompts.active(PromptKey.VISION_EXTRACT)
+        val historyBefore = prompts.history(PromptKey.VISION_EXTRACT).first().size
+        failOn("CREATE TRIGGER no_mark BEFORE UPDATE ON canvas_publish BEGIN SELECT RAISE(ABORT, 'boom'); END")
+        val out = publisher().rollback()
+        assertEquals(CanvasPublisher.Outcome.Blocked(listOf("Rolling back failed. Nothing was changed.")), out)
+        assertEquals(published, prompts.active(PromptKey.VISION_EXTRACT))
+        assertEquals(historyBefore, prompts.history(PromptKey.VISION_EXTRACT).first().size)
+        assertEquals(1, dao.activePublishes().size)
+    }
+
+    @Test fun legacyFingerprintCheckedInTransaction() = both {
+        val (id, v) = frozen("EDITED {{recent_context}}")
+        publisher().publish(id, v)
+        var armed = false; val reads = mutableListOf<Boolean>()
+        val spy = object : AbstractMap<PromptKey, Set<String>>() {
+            override val entries: Set<Map.Entry<PromptKey, Set<String>>> = emptySet()
+            override fun get(key: PromptKey): Set<String>? { if (armed) reads += inTx; return null }
+        }
+        val hooked = PromptRepository(MemoryGraph.get(app).db.promptDao(), com.rokid.context.prompt.BuiltInPromptSeeds, ai.settings.prompts, spy) { now++ }
+        armed = true
+        assertTrue(CanvasPublisher(dao, hooked, { _, _ -> emptyList() }, { now++ }, txRunner).rollback() is CanvasPublisher.Outcome.Published)
+        assertTrue(reads.isNotEmpty() && reads.all { it })
     }
 }
