@@ -137,6 +137,14 @@ object HubGraph {
             myCars = { com.rokid.context.phone.context.ContextSourceSettings.of(app).myCars },
             changes = com.rokid.context.phone.context.ContextSourceSettings.of(app).changes, scope = ctxScope,
         ))
+        // phone_speed: on demand only (the hub calls registry.speed.setWanted while a vehicle is suspected); the service adds the
+        // `location` type only while that is wanted, from the front.
+        com.rokid.context.phone.hub.ContextHubService.wantLocation = { ctxHub.speedWanted }
+        val speed = com.rokid.context.phone.context.SpeedSource.create(
+            app, ctxHub::sinkFor, foreground = ContextHubService::appInForeground,
+            locationHeld = { ContextHubService.locationHeld.value }, onChange = { ContextHubService.refreshLocationType(app) },
+        )
+        ctxRegistry.register(speed); ctxRegistry.speed = speed
         // Opt-in, default off. Calls only inside a vehicle episode a listed Bluetooth device started; never pauses or throttles capture.
         ctxRegistry.register(com.rokid.context.phone.context.ImageIntentSource(
             sinkFor = ctxHub::sinkFor, decision = { ctxHub.decision.value }, stats = ctxHub.stats,

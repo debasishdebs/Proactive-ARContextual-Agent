@@ -19,6 +19,9 @@
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Wave B speed source (phone_speed, default off): FINE is requested, approximate is accepted; no background location. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <!-- /P7-C sources -->
 
     <!-- Wave B: LiveFit (Galaxy Watch forwarder) must be visible to the provider's caller check. -->
@@ -48,7 +51,7 @@
         <service
             android:name=".phone.hub.ContextHubService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|microphone" />
+            android:foregroundServiceType="connectedDevice|microphone|location" />
 
         <!-- Experiment canvas server (Developer mode only; started by the canvas screen, LAN on or a run). -->
         <service

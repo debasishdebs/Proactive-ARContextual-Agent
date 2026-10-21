@@ -94,6 +94,14 @@ class ContextHubService : Service() {
                 val driver = ClosedNoticeDriver(this, closedNotice, { applyClosedAction(this@ContextHubService, it) })
                 hub.status.map { it.link }.distinctUntilChanged().collect { driver.onLink(it) }
             }
+        } else if (intent?.action == ACTION_REFRESH_LOCATION) {
+            // Only the location bit changes, only from the front (a location type cannot be taken from the background on API 34+), and
+            // everything else (the microphone included) stays as currently held.
+            val cur = currentTypes
+            if (cur != null && appInForeground()) {
+                val wanted = withLocation(cur, wantLocation(), inFront = true, permitted = hasLocationAccess(), sdk = Build.VERSION.SDK_INT)
+                if (needsReentry(cur, wanted)) enterForeground(lastText, wanted)
+            }
         } else if (intent?.action == ACTION_REFRESH_TYPES) {
             val wanted = micRetry.toTry(wantedTypes(inFront = true), resume)
             if (needsReentry(currentTypes, wanted)) enterForeground(lastText, wanted)
@@ -109,8 +117,12 @@ class ContextHubService : Service() {
 
     private fun wantedTypes(inFront: Boolean): Int {
         val mic = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        return foregroundTypes(Build.VERSION.SDK_INT, mic, inFront)
+        return withLocation(foregroundTypes(Build.VERSION.SDK_INT, mic, inFront), wantLocation(), inFront, hasLocationAccess(), Build.VERSION.SDK_INT)
     }
+
+    private fun hasLocationAccess(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     /** startForeground with [wanted], falling back to connectedDevice alone if the mic type is refused. */
     private fun enterForeground(text: String, wanted: Int): Boolean {
@@ -119,13 +131,13 @@ class ContextHubService : Service() {
                 .onFailure { Log.w(TAG, "foreground ($types) refused: ${it.javaClass.simpleName}") }.getOrThrow()
         }
         micRetry.entered(tried = wanted, entered = entered)
-        if (entered != null) { currentTypes = entered; _micHeld.value = holdsMic(entered) }
+        if (entered != null) { currentTypes = entered; _micHeld.value = holdsMic(entered); _locationHeld.value = holdsLocation(entered) }
         return entered != null
     }
 
     override fun onDestroy() {
         // A service that never reached the foreground never started the hub: do not build one just to close it.
-        _micHeld.value = false
+        _micHeld.value = false; _locationHeld.value = false
         if (running) {
             running = false
             watcher?.cancel(); closedWatcher?.cancel()
@@ -146,6 +158,7 @@ class ContextHubService : Service() {
         /** Glasses as a nearby device (LiveFit's pattern): linked in front or minimised, the low-importance FGS says so. */
         internal const val CONNECTED_TEXT = "Connected to glasses"
         private const val ACTION_REFRESH_TYPES = "com.rokid.context.hub.REFRESH_FOREGROUND_TYPES"
+        private const val ACTION_REFRESH_LOCATION = "com.rokid.context.hub.REFRESH_LOCATION_TYPE"
         const val EXTRA_IN_FRONT = "com.rokid.context.hub.IN_FRONT"
         private const val EXTRA_RESUME = "com.rokid.context.hub.RESUME"
         @Volatile private var running = false
@@ -240,6 +253,31 @@ class ContextHubService : Service() {
         /** True while the FGS holds the microphone type: the voice gate blocks glasses asks without it (fix round 2). */
         val micHeld: StateFlow<Boolean> = _micHeld.asStateFlow()
 
+        /**
+         * Whether the context hub wants location (the speed source is requested). Set by `HubGraph.build` to `ctxHub.speedWanted`;
+         * the `location` type is added to the foreground types only while this is true, from the front, with a location permission.
+         */
+        @Volatile var wantLocation: () -> Boolean = { false }
+
+        private val _locationHeld = MutableStateFlow(false)
+        /** True while the FGS holds the `location` type: only then may fixes be requested from the background. */
+        val locationHeld: StateFlow<Boolean> = _locationHeld.asStateFlow()
+
+        /** True while the app is visible (a started process lifecycle). */
+        fun appInForeground(): Boolean =
+            runCatching { androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED) }.getOrDefault(false)
+
+        /**
+         * Asks the running service to add or drop the `location` type after [wantLocation] changed. It acts only from the front
+         * (the service checks); from the background the hub simply has no location access until the next resume re-enters
+         * ([refreshForegroundTypes]), and nothing else changes (the microphone type is never touched).
+         */
+        fun refreshLocationType(context: Context) {
+            if (!running) return
+            runCatching { context.startService(Intent(context, ContextHubService::class.java).setAction(ACTION_REFRESH_LOCATION)) }
+                .onFailure { Log.w(TAG, "location refresh refused: ${it.javaClass.simpleName}") }
+        }
+
         /** One line for the legacy Live screen (Task 12 shows it in place of the RFCOMM bridge message). */
         fun statusLine(): String = lastText
 
@@ -256,6 +294,17 @@ class ContextHubService : Service() {
 
         /** A start is in front only when its intent says so; a sticky restart's null intent is the background. */
         internal fun startedInFront(intent: Intent?): Boolean = intent?.getBooleanExtra(EXTRA_IN_FRONT, false) == true
+
+        internal fun holdsLocation(types: Int?): Boolean = types != null && types and ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION != 0
+
+        /**
+         * [types] plus the `location` type only when it is wanted, the app is in front (the only place API 34+ lets a location
+         * service be entered) and a location permission is granted; otherwise [types] without it. Other bits are untouched.
+         */
+        internal fun withLocation(types: Int, want: Boolean, inFront: Boolean, permitted: Boolean, sdk: Int): Int {
+            val loc = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            return if (sdk >= 29 && want && inFront && permitted) types or loc else types and loc.inv()
+        }
 
         internal fun holdsMic(types: Int?): Boolean = types != null && types and ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE != 0
 
@@ -291,14 +340,17 @@ class ContextHubService : Service() {
                 (if (sdk >= 30 && micGranted && inFront) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
 
         /**
-         * Enters with [wanted] through [start] (which throws when refused). A refused mic type retries once with
-         * connectedDevice alone; a refused connectedDevice does not retry. Returns the types entered, or null.
+         * Enters with [wanted] through [start] (which throws when refused). A refusal drops one optional type at a time, never more
+         * than needed: first location (the microphone stays), then the microphone (location stays), then connectedDevice alone.
+         * A refused connectedDevice does not retry. Returns the types entered, or null.
          */
         internal fun enterWithFallback(wanted: Int, start: (Int) -> Unit): Int? {
             val device = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            if (runCatching { start(wanted) }.isSuccess) return wanted
-            if (wanted == device) return null
-            return if (runCatching { start(device) }.isSuccess) device else null
+            val loc = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            val mic = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            val tries = listOf(wanted, wanted and loc.inv(), wanted and mic.inv(), device).distinct()
+            for (t in tries) if (runCatching { start(t) }.isSuccess) return t
+            return null
         }
 
         /** A resume re-enters the foreground only when the types it wants differ from the current ones. */
