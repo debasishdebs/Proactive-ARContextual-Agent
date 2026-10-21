@@ -48,6 +48,20 @@ class CanvasServerTest {
         sockets.forEach { runCatching { it.close() } }
     }
 
+    /** Drives Daemon.serve() with a session that throws during request conversion (D26, S16). */
+    @Test fun serveCatchPathHasSecurityHeaders() {
+        val session = java.lang.reflect.Proxy.newProxyInstance(
+            javaClass.classLoader, arrayOf(fi.iki.elonen.NanoHTTPD.IHTTPSession::class.java),
+        ) { _, _, _ -> throw IllegalStateException("boom") } as fi.iki.elonen.NanoHTTPD.IHTTPSession
+        val s = server()
+        val res = s.Daemon(null, 0).serve(session)
+        assertEquals(500, res.status.requestStatus)
+        assertEquals("nosniff", res.getHeader("X-Content-Type-Options"))
+        assertEquals("no-store", res.getHeader("Cache-Control"))
+        assertEquals("no-referrer", res.getHeader("Referrer-Policy"))
+        assertNotNull(res.getHeader("Content-Security-Policy"))
+    }
+
     @Test fun servesIndexAndApi() {
         val s = server()
         port = s.start()

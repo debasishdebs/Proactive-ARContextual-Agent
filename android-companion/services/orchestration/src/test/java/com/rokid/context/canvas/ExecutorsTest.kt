@@ -148,6 +148,17 @@ class ExecutorsTest {
         assertTrue(prompts.isEmpty())
     }
 
+    @Test fun criticSkipsCallOnEmptyFacts() = runBlocking<Unit> {
+        val c = ctx { """{"verdict":"fail","reasons":["x"]}""" }
+        val empty = CanvasValue.Extraction(emptyList(), emptyList())
+        val r = exec(NodeTypes.CRITIC).run(node(NodeTypes.CRITIC), listOf(item("a", empty)), c).single()
+        assertEquals("pass", r.branch)
+        assertEquals(true, (r.value as CanvasValue.Extraction).trusted)
+        assertEquals(0, r.calls)
+        assertNull(r.error)
+        assertTrue(prompts.isEmpty())
+    }
+
     @Test fun criticOverrideUsed() = runBlocking<Unit> {
         val c = ctx { """{"verdict":"pass","reasons":[]}""" }
         val n = node(NodeTypes.CRITIC, draftPrompt("CRITICX {{recent_context}}"))

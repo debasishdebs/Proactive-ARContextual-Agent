@@ -57,8 +57,12 @@ class CanvasRouter(
         val ms = (System.nanoTime() - start) / 1_000_000
         val method = req.method.uppercase().takeIf { it in METHODS } ?: "OTHER"
         log("$method ${template(req.path)} ${res.status} ${ms}ms")
-        return res.copy(headers = res.headers.filterKeys { k -> SECURITY_HEADERS.keys.none { it.equals(k, true) } && !k.startsWith("Access-Control-", true) } + SECURITY_HEADERS)
+        return withSecurityHeaders(res)
     }
+
+    /** The one place security headers are applied; the server's catch path uses it too. */
+    fun withSecurityHeaders(res: HttpResponse): HttpResponse =
+        res.copy(headers = res.headers.filterKeys { k -> SECURITY_HEADERS.keys.none { it.equals(k, true) } && !k.startsWith("Access-Control-", true) } + SECURITY_HEADERS)
 
     private fun HttpResponse.copy(headers: Map<String, String>) = HttpResponse(status, contentType, body, headers)
 
