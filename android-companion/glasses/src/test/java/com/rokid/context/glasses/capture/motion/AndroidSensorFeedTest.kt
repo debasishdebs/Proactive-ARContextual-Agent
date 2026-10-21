@@ -5,7 +5,13 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Handler
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.core.model.MotionLabel
 import org.junit.runner.RunWith
+import org.robolectric.Shadows.shadowOf
+import android.os.HandlerThread
+import java.io.File
+import java.util.concurrent.TimeUnit
+import kotlin.test.assertFalse
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowSensor
 import kotlin.test.Test
@@ -169,5 +175,48 @@ class AndroidSensorFeedTest {
         feed.setRate(SensorRate.STILL); feed.setRate(SensorRate.STILL)
         assertEquals(3, reg.calls.size)
         feed.stop()
+    }
+
+    private fun tickOnce() {
+        val ht = Thread.getAllStackTraces().keys.filterIsInstance<HandlerThread>().first { it.name == "motion-sensors" }
+        shadowOf(ht.looper).idleFor(1_100, TimeUnit.MILLISECONDS)
+    }
+
+    private fun dir() = java.nio.file.Files.createTempDirectory("feed").toFile()
+
+    @Test fun noCsvWhenLabelNoneAndNotVerbose() {
+        val d = dir()
+        val feed = AndroidSensorFeed(Reg(true), csvDir = d)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        tickOnce(); feed.stop()
+        assertFalse(File(d, "motion_features.csv").exists())
+    }
+
+    @Test fun labelEatingWritesOneRowPerTick() {
+        val d = dir()
+        val feed = AndroidSensorFeed(Reg(true), label = { MotionLabel.EATING }, csvDir = d)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        tickOnce(); feed.stop()
+        val lines = File(d, "motion_features.csv").readLines()
+        assertEquals(2, lines.size)
+        assertTrue(lines[1].contains(",EATING,"))
+        assertEquals(15, lines[1].split(",").size)
+        assertTrue(lines[1].endsWith(",full"))
+    }
+
+    @Test fun shadowModelDoesNotChangeCaptureObservables() {
+        fun run(csv: File?, label: MotionLabel): List<Any> {
+            val c = MotionClassifier { 0L }
+            val w = WearDetector { 0L }
+            for (i in 0 until 40) c.onGyro(if (i % 2 == 0) 1.5f else -1.5f, 0f, 0f, i * 20L)
+            val feed = AndroidSensorFeed(Reg(true), label = { label }, csvDir = csv)
+            feed.start(c, w)
+            tickOnce(); feed.stop()
+            val f = c.features()
+            return listOf(c.state.value, w.worn.value, f.gyroMax, f.accVariance, f.stepHz, f.state, f.glances, f.micro, c.rotationSinceMarkRad())
+        }
+        val off = run(null, MotionLabel.NONE)
+        val on = run(dir(), MotionLabel.WALKING)
+        assertEquals(off, on)
     }
 }
