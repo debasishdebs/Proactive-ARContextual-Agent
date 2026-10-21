@@ -9,7 +9,7 @@ import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-/** Fix wave H4: last-alive heartbeat, "restart gap=<s> reason=<...>" at process start, and the Rokid-closed counter. */
+/** Fix wave H4: last-alive heartbeat, "restart rokid=N unknown=M other=K gap=<s> reason=<...>" at process start, and the Rokid-closed counter. */
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class RestartDiagnosticsTest {
@@ -17,27 +17,30 @@ class RestartDiagnosticsTest {
     private var wall = 1_000_000_000L
     private var installedAt = 0L
     private var userRequestedExit: Boolean? = null
+    private var kind: ExitKind? = ExitKind.ROKID
+    private var exitAt = 0L
+    private fun exit() = userRequestedExit?.let { ExitFacts(it, "force stop from pid 4242", exitAt) }
 
     private fun diag(name: String) = RestartDiagnostics(
         ApplicationProvider.getApplicationContext<Context>().getSharedPreferences(name, Context.MODE_PRIVATE).also { it.edit().clear().commit() },
-        wallClock = { wall }, installedAtMs = { installedAt }, lastExitWasUserRequested = { userRequestedExit }, log = { logs += it },
+        wallClock = { wall }, installedAtMs = { installedAt }, lastExit = ::exit, log = { logs += it }, classify = { f, _, _ -> if (f.userRequested) kind else null },
     )
 
 
     @Test fun firstEverStartIsUnknownWithNoGap() {
         val d = diag("rd1")
         d.onProcessStart()
-        assertEquals(listOf("restart gap=-1 reason=unknown ui_mode=home"), logs)
+        assertEquals(listOf("restart rokid=0 unknown=0 other=0 gap=-1 reason=unknown ui_mode=home"), logs)
         assertEquals(0, d.closes); assertNull(d.lastGapSec)
     }
 
     @Test fun forceStopAfterAHeartbeatCountsAsRokidClosingTheApp() {
         val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("rd2", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
-        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, { userRequestedExit }, { logs += it }, uiMode = { UiModeStore.FULL })
+        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind else null })
         mk().heartbeat()
         wall += 38_400; userRequestedExit = true
         val d = mk(); d.onProcessStart()
-        assertEquals("restart gap=38 reason=forcestop ui_mode=full", logs.last())
+        assertEquals("restart rokid=1 unknown=0 other=0 gap=38 reason=forcestop_rokid ui_mode=full", logs.last())
         assertEquals(1, d.closes); assertEquals(38, d.lastGapSec)
         assertEquals("Rokid closed the app 1 time (last gap 38s)", d.summary())
         wall += 120_000; mk().heartbeat(); wall += 5_000
@@ -47,20 +50,20 @@ class RestartDiagnosticsTest {
 
     @Test fun anInstallAfterTheLastHeartbeatIsNotRokidClosingIt() {
         val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("rd3", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
-        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, { userRequestedExit }, { logs += it }, uiMode = { UiModeStore.FULL })
+        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind else null })
         mk().heartbeat()
         wall += 60_000; installedAt = wall - 10_000; userRequestedExit = true
         val d = mk(); d.onProcessStart()
-        assertEquals("restart gap=60 reason=install ui_mode=full", logs.last())
+        assertEquals("restart rokid=0 unknown=0 other=0 gap=60 reason=install ui_mode=full", logs.last())
         assertEquals(0, d.closes); assertNull(d.summary())
     }
 
     @Test fun otherExitsAreUnknownAndLogsAreCountOnly() {
         val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("rd4", Context.MODE_PRIVATE).also { it.edit().clear().commit() }
-        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, { userRequestedExit }, { logs += it }, uiMode = { UiModeStore.FULL })
+        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind else null })
         mk().heartbeat(); wall += 90_000; userRequestedExit = false
         mk().onProcessStart()
-        assertEquals("restart gap=90 reason=unknown ui_mode=full", logs.last())
+        assertEquals("restart rokid=0 unknown=0 other=0 gap=90 reason=unknown ui_mode=full", logs.last())
         assertEquals(0, mk().closes)
     }
 
@@ -70,10 +73,10 @@ class RestartDiagnosticsTest {
     @Test fun aKillInIconOrFullModeRestartsMinimisedOnceButNeverFromHome() {
         val prefs = prefs("rd5")
         val modes = UiModeStore(prefs)
-        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, { userRequestedExit }, { logs += it }, uiMode = { modes.get() })
+        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { modes.get() }, classify = { f, _, _ -> if (f.userRequested) kind else null })
         modes.set(UiModeStore.ICON); mk().heartbeat(); wall += 20_000; userRequestedExit = true
         val d = mk(); d.onProcessStart()
-        assertEquals("restart gap=20 reason=forcestop ui_mode=icon", logs.last())
+        assertEquals("restart rokid=1 unknown=0 other=0 gap=20 reason=forcestop_rokid ui_mode=icon", logs.last())
         assertEquals(true, d.takeStartMinimised()); assertEquals(false, d.takeStartMinimised())
         modes.set(UiModeStore.FULL); mk().heartbeat(); wall += 1_000; userRequestedExit = true
         val d2 = mk(); d2.onProcessStart()
@@ -90,7 +93,7 @@ class RestartDiagnosticsTest {
     @Test fun aDeliberateCloseLeavesNoGapAndNoCount() {
         val prefs = prefs("rd6")
         val modes = UiModeStore(prefs)
-        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, { userRequestedExit }, { logs += it }, uiMode = { modes.get() })
+        fun mk() = RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { modes.get() }, classify = { f, _, _ -> if (f.userRequested) kind else null })
         modes.set(UiModeStore.FULL); mk().heartbeat()
         modes.set(UiModeStore.HOME); val d = mk(); d.onUserExit(wall); wall += 3_600_000
         d.heartbeat() // the runtime's timer keeps ticking after the exit
@@ -99,7 +102,78 @@ class RestartDiagnosticsTest {
         d.onUserExit(5)
         userRequestedExit = true
         val d2 = mk(); d2.onProcessStart()
-        assertEquals("restart gap=-1 reason=unknown ui_mode=home", logs.last())
+        assertEquals("restart rokid=0 unknown=0 other=0 gap=-1 reason=unknown ui_mode=home", logs.last())
         assertEquals(0, d2.closes); assertEquals(false, d2.takeStartMinimised())
+    }
+
+    private fun cumulative(name: String): Pair<android.content.SharedPreferences, () -> RestartDiagnostics> {
+        val prefs = prefs(name)
+        return prefs to { RestartDiagnostics(prefs, { wall }, { installedAt }, ::exit, { logs += it }, uiMode = { UiModeStore.FULL }, classify = { f, _, _ -> if (f.userRequested) kind else null }) }
+    }
+
+    @Test fun otherForceStopNotCountedAsRokid() {
+        val (_, mk) = cumulative("rd7")
+        mk().heartbeat(); wall += 30_000; userRequestedExit = true; kind = ExitKind.OTHER
+        val d = mk(); d.onProcessStart()
+        assertEquals(0, d.closes); assertEquals(1, d.otherCloses); assertEquals(0, d.unverifiedCloses)
+        assertEquals("restart rokid=0 unknown=0 other=1 gap=30 reason=forcestop_other ui_mode=full", logs.last())
+        assertNull(d.lastGapSec, "the gap of a non-Rokid stop is not stored")
+        assertEquals(true, d.takeStartMinimised(), "any force-stop while running still restarts in icon mode")
+    }
+
+    @Test fun unknownNotAddedToRokid() {
+        val (_, mk) = cumulative("rd8")
+        mk().heartbeat(); wall += 30_000; userRequestedExit = true; kind = ExitKind.UNKNOWN
+        val d = mk(); d.onProcessStart()
+        assertEquals(0, d.closes); assertEquals(1, d.unverifiedCloses); assertEquals(0, d.otherCloses)
+        assertEquals("restart rokid=0 unknown=1 other=0 gap=30 reason=forcestop_unverified ui_mode=full", logs.last())
+    }
+
+    @Test fun gapUsesExitTimestamp() {
+        val (_, mk) = cumulative("rd9")
+        mk().heartbeat(); wall += 30_000; userRequestedExit = true; kind = ExitKind.ROKID; exitAt = wall - 8_000
+        val d = mk(); d.onProcessStart()
+        assertEquals(8, d.lastGapSec)
+    }
+
+    @Test fun gapFallsBackToHeartbeat() {
+        val (_, mk) = cumulative("rd10")
+        mk().heartbeat(); wall += 30_000; userRequestedExit = true; kind = ExitKind.ROKID; exitAt = 0L // before the heartbeat
+        val d = mk(); d.onProcessStart()
+        assertEquals(30, d.lastGapSec)
+    }
+
+    @Test fun summaryMentionsUnverifiedAndOtherCounts() {
+        val (_, mk) = cumulative("rd11")
+        fun kill(k: ExitKind) { mk().heartbeat(); wall += 10_000; userRequestedExit = true; kind = k; mk().onProcessStart(); wall += 1_000 }
+        kill(ExitKind.ROKID); kill(ExitKind.UNKNOWN); kill(ExitKind.OTHER); kill(ExitKind.OTHER)
+        assertEquals("Rokid closed the app 1 time (last gap 10s; 1 unverified; 2 other force-stops)", mk().summary())
+    }
+
+    @Test fun summaryWhenOnlyOtherStops() {
+        val (_, mk) = cumulative("rd12")
+        mk().heartbeat(); wall += 10_000; userRequestedExit = true; kind = ExitKind.OTHER; mk().onProcessStart()
+        assertEquals("Rokid closed the app 0 times (1 other force-stop)", mk().summary())
+    }
+
+    @Test fun restartCountsLineWrittenAndHasNoDescription() {
+        val (_, mk) = cumulative("rd13")
+        mk().heartbeat(); wall += 10_000; userRequestedExit = true; kind = ExitKind.ROKID
+        mk().onProcessStart()
+        val line = logs.last()
+        assertEquals(true, line.startsWith("restart rokid=1 unknown=0 other=0 gap="), line)
+        assertEquals(false, line.contains("pid") || line.contains("4242"))
+    }
+
+    /** M9: a pre-wave-3 `rokid_closes` counted every force-stop; it is reset once on the first start of the new version. */
+    @Test fun legacyRokidClosesResetOnceOnUpgrade() {
+        val (prefs, mk) = cumulative("rd14")
+        prefs.edit().putInt("rokid_closes", 5).putInt("last_gap_sec", 12).commit()
+        mk().heartbeat(); wall += 10_000; userRequestedExit = true; kind = ExitKind.ROKID
+        val d = mk(); d.onProcessStart()
+        assertEquals(1, d.closes, "the old 5 is gone; only this new Rokid stop counts")
+        mk().heartbeat(); wall += 10_000
+        val d2 = mk(); d2.onProcessStart()
+        assertEquals(2, d2.closes, "no second reset")
     }
 }

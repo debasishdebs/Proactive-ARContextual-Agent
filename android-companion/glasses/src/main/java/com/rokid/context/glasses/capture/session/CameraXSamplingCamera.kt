@@ -61,22 +61,26 @@ internal object CameraXBind {
         return b.build()
     }
 
-    private var fpsResolved = false
-    private var fpsCached: IntRange? = null
+    private var fpsProvider: ProcessCameraProvider? = null
+    private val fpsCache = FpsRangePick.Cache {
+        val provider = fpsProvider ?: return@Cache null
+        runCatching { readFpsRanges(provider) }.getOrNull()
+    }
 
-    /** The capped fps range for the selected camera, read once per process (main thread, before building the use cases). */
     @OptIn(ExperimentalCamera2Interop::class)
+    private fun readFpsRanges(provider: ProcessCameraProvider): List<IntRange>? {
+        val info = selector(provider).filter(provider.availableCameraInfos).firstOrNull() ?: return null
+        return Camera2CameraInfo.from(info).getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.map { it.lower..it.upper }
+    }
+
+    /** The capped fps range for the selected camera, read once per process (main thread, before building the use cases); a failed or empty read is not cached (A23). */
     fun fpsRange(provider: ProcessCameraProvider): IntRange? {
-        if (fpsResolved) return fpsCached
-        val ranges = runCatching {
-            val info = selector(provider).filter(provider.availableCameraInfos).firstOrNull() ?: return@runCatching emptyList()
-            Camera2CameraInfo.from(info).getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-                ?.map { it.lower..it.upper }.orEmpty()
-        }.getOrDefault(emptyList())
-        fpsCached = FpsRangePick.pick(ranges)
-        fpsResolved = true
-        DiagLog.i(TAG, "camera fps range=" + (fpsCached?.let { "${it.first}-${it.last}" } ?: "default"))
-        return fpsCached
+        fpsProvider = provider
+        val was = fpsCache.isResolved
+        val r = fpsCache.get()
+        if (!was && fpsCache.isResolved) DiagLog.i(TAG, "camera fps range=" + (r?.let { "${it.first}-${it.last}" } ?: "default"))
+        return r
     }
 
     fun selector(provider: ProcessCameraProvider): CameraSelector {

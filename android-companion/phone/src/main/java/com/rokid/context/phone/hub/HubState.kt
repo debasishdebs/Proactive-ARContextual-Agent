@@ -24,18 +24,18 @@ data class HubState(
     /** The wearer exited the glasses app on purpose (`pc_user_exit`); cleared when it connects again. */
     val closedByUser: Boolean = false,
     val lastRestartGapSec: Int? = null,
+    /** Wave 3 (counts only): force-stops with an unverifiable caller, and by a verified non-Rokid caller. */
+    val unverifiedCloses: Int = 0,
+    val otherCloses: Int = 0,
     /** Fix wave I: the glasses app is minimised without "display over other apps": capture runs but no icon shows. */
     val iconBlocked: Boolean = false,
 ) {
     /**
-     * Diagnostics line "Rokid closed the app N times (last gap Xs)"; null until the glasses report one. Honest about what it
-     * counts: a process that the system ended with REASON_USER_REQUESTED, which Rokid's scene switch causes but a force-stop
-     * from Settings or adb also does (Android cannot tell them apart); a wearer exit or an app update is never counted.
+     * Diagnostics line "Rokid closed the app N times (last gap Xs; M unverified; K other force-stops)"; null until the glasses
+     * report a count. Rokid = a force-stop whose caller the glasses verified as a com.rokid process; unverified = the caller was
+     * hidden or could not be checked; other = a verified non-Rokid caller (Settings, adb). A wearer exit or an update is never counted.
      */
-    fun rokidClosesLine(): String? {
-        if (rokidCloses <= 0) return null
-        return "Rokid closed the app $rokidCloses time${if (rokidCloses == 1) "" else "s"} (last gap ${lastRestartGapSec ?: 0}s)"
-    }
+    fun rokidClosesLine(): String? = com.rokid.context.core.model.closesSummary(rokidCloses, lastRestartGapSec, unverifiedCloses, otherCloses)
 
     /** Fix wave I: every Diagnostics > Glasses line (restarts, missing overlay permission), or null when there is nothing to say. */
     fun glassesDiagnostics(): String? = listOfNotNull(

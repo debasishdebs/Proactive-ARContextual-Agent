@@ -35,6 +35,7 @@ class CaptureServiceModeTest {
     @Before fun setUp() { shadowOf(app).grantPermissions(Manifest.permission.CAMERA) }
 
     @After fun tearDown() {
+        CaptureService.heartbeatFault = null
         controller?.destroy()
         GlassesRuntime.resetForTests()
     }
@@ -58,6 +59,20 @@ class CaptureServiceModeTest {
     }
 
     private fun alarmIn(): Long? = shadowOf(app.getSystemService(AlarmManager::class.java)).scheduledAlarms.singleOrNull()?.triggerAtTime?.let { it - System.currentTimeMillis() }
+
+    /** A20: a throw while building the heartbeat must not skip the status line, and must not consume the reset-on-read counters. */
+    @Test fun heartbeatThrowStillPublishesStatus() {
+        org.robolectric.shadows.ShadowLog.clear()
+        runtime.screenWakes.onScreenOn()
+        CaptureService.heartbeatFault = { throw IllegalStateException("boom") }
+        startKeepAlive()
+        idle(2_500)
+        val msgs = org.robolectric.shadows.ShadowLog.getLogs().filter { it.tag == "PcCapture" }.map { it.msg }
+        assertTrue(msgs.any { it == "heartbeat failed: IllegalStateException" }, msgs.toString())
+        assertTrue(msgs.any { it.startsWith("status running=") }, "the status line is still published: $msgs")
+        assertTrue(msgs.none { it.startsWith("heartbeat v=2") })
+        assertEquals(1, runtime.screenWakes.take().first, "the screen-wake counter was not reset by the failed heartbeat")
+    }
 
     @Test fun fixedModeRunsNoSession() {
         startKeepAlive()
