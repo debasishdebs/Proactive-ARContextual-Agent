@@ -5,12 +5,11 @@ import com.rokid.context.memory.Modality
 import com.rokid.context.memory.SpaceEmbedderProvider
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
 import kotlinx.coroutines.CancellationException
-import java.util.concurrent.ConcurrentHashMap
+import com.rokid.context.orchestration.IndexConfigException
 
 /**
  * A space that can hold image vectors: the ACTIVE one, plus the BUILDING one during a re-index (both are written; only the
- * [active] one is read for routing). [imageDims] is the stored image vector width; NOTE: [SpaceImageSpaces] only probes the TEXT embedder
- * for it, so a consumer that needs the real width should prefer the size of the first image vector it has.
+ * [active] one is read for routing). [imageDims] is the stored image vector width, as the embedder declares it.
  */
 class ImageSpaceTarget(
     val spaceId: String,
@@ -28,8 +27,6 @@ fun interface ImageSpaces {
 
 /** Real one: [EmbeddingSpaces.queryable]/[EmbeddingSpaces.building] with [SpaceEmbedderProvider.forSpace]; the width is probed once per space. */
 class SpaceImageSpaces(private val spaces: EmbeddingSpaces, private val provider: SpaceEmbedderProvider) : ImageSpaces {
-    private val dims = ConcurrentHashMap<String, Int>()
-
     override suspend fun targets(): List<ImageSpaceTarget> =
         listOfNotNull(target(spaces.queryable(), active = true), target(spaces.building(), active = false))
 
@@ -37,10 +34,8 @@ class SpaceImageSpaces(private val spaces: EmbeddingSpaces, private val provider
         space ?: return null
         val e = try { provider.forSpace(space) } catch (c: CancellationException) { throw c } catch (_: Exception) { null } ?: return null
         if (Modality.IMAGE !in e.modalities) return null
-        val d = e.imageDims ?: dims[space.id] ?: probe(e, space).also { dims[space.id] = it } // the embedder's declared width wins; the probe is a fallback
+        // One width source: what the embedder declares. No probe and no text-width fallback (the text dim can be shorter than the image width).
+        val d = e.imageDims ?: throw IndexConfigException("image embedder must declare imageDims")
         return ImageSpaceTarget(space.id, space.fingerprint, d, e::embedImages, e::embedQueryFull, active)
     }
-
-    private suspend fun probe(e: com.rokid.context.memory.Embedder, space: EmbeddingSpaceEntity): Int =
-        try { e.embedQueryFull("probe").size } catch (c: CancellationException) { throw c } catch (_: Exception) { space.dim }
 }

@@ -31,7 +31,7 @@ data class BoundEmbedder(val embedder: Embedder, val configJson: String, val dim
  */
 class IndexConfigException(message: String) : Exception(message)
 
-/** The image embedder misbehaved (a wrong-count result, a whole batch failing to decode): retryable, and never a reason to mark a photo. */
+/** The image embedder misbehaved (a wrong-count result): retryable, and never a reason to mark a photo. */
 class ImageEmbedderException(message: String) : Exception(message)
 
 /** What [IndexMaintenance] needs from `:services:ai`. */
@@ -204,6 +204,9 @@ class IndexMaintenance(
             if (clock.lastDiscard() != null) clock.recordDiscard(null)
             return Outcome.IDLE
         }
+        if (Modality.IMAGE in bound.embedder.modalities && bound.embedder.imageDims == null) {
+            throw IndexConfigException("image embedder must declare imageDims") // before anything is purged or written
+        }
         val fp = bound.embedder.fingerprint
         // The drift streak (and so "index unstable") belongs to one model: binding another one starts afresh.
         clock.lastDiscard()?.takeIf { it.fingerprint != fp }?.let { clock.recordDiscard(null) }
@@ -336,8 +339,8 @@ class IndexMaintenance(
      */
     private suspend fun fillImages(space: EmbeddingSpaceEntity, embedder: Embedder, p: ImageProgress) {
         if (Modality.IMAGE !in embedder.modalities) return
-        // The width comes from the embedder (never from a stored vector, which a bad write could have poisoned); rows of another width are dropped.
-        val dims = embedder.imageDims ?: space.dim
+        // The width comes only from the embedder (never from a stored vector or the text dim); rows of another width are dropped.
+        val dims = embedder.imageDims ?: throw IndexConfigException("image embedder must declare imageDims") // no purge, no write
         val purged = spaces.purgeWrongWidthImages(space.id, dims)
         if (purged > 0) Log.w(TAG, "image backfill: dropped $purged vectors of the wrong width")
         val skip = HashSet<String>() // skipped this run: not re-listed, or they would starve the photos behind them
@@ -353,13 +356,13 @@ class IndexMaintenance(
             val batch = readable.takeIf { it.isNotEmpty() }
                 ?.let { r -> tryImages(embedder, r.map { (first.getValue(it) as PhotoRead.Bytes).data })?.let { r.zip(it).toMap() } }
             var transient = 0; var rejected = 0; var stored = 0
-            val toMark = ArrayList<String>(); var decodeFailed = 0
+            val toMark = ArrayList<String>()
             for (id in ids) {
                 val v = batch?.get(id) ?: when (val r = embedOne(embedder, id, first[id])) {
                     is One.Vector -> r.v
                     One.Skip -> { skip += id; transient++; continue }
                     One.Unembeddable -> { toMark += id; continue }
-                    One.DecodeFailed -> { toMark += id; decodeFailed++; continue }
+                    One.DecodeFailed -> { toMark += id; continue }
                 }
                 when (spaces.putImage(id, space.id, v, dims)) {
                     ImagePut.STORED -> { stored++; readAttempts.forget(id) }
@@ -367,8 +370,7 @@ class IndexMaintenance(
                     ImagePut.DROPPED -> if (spaces.queryable()?.id != space.id && spaces.building()?.id != space.id) return // discarded, retired or marked stale meanwhile
                 }
             }
-            // Every photo of a batch of 2+ failing to decode is a broken decoder or model, not 2+ bad photos: mark none, retry later.
-            if (ids.size >= 2 && decodeFailed == ids.size) throw ImageEmbedderException("every photo of a batch failed to decode")
+            // A decoder that fails everything shows as no image vector at all: the swap refuses (see imageSwapHealth) and a new build clears the marks.
             toMark.forEach { spaces.markUnembeddable(it); readAttempts.forget(it) }
             Log.i(TAG, "image backfill: ${ids.size} photos, $stored stored, ${toMark.size} unembeddable, $transient deferred, $rejected wrong width")
             if (rejected > 0 && stored == 0 && rejected == ids.size - toMark.size - transient) {

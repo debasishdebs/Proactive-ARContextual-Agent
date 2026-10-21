@@ -92,9 +92,9 @@ class SceneIndexer(
             val embedded = embedAll(work.filter { it.frameId in bytes }, bytes, targets, deferred)   // frameId -> per-target vectors (null where failed)
             // The single checked write point of image vectors (shared with the backfill): a wrong width is never stored.
             val vectorWrites = db.embeddingDao()
-            for (m in work) {
-                val vs = embedded[m.frameId] ?: continue
-                targets.forEachIndexed { i, tg -> vs[i]?.let { v -> vectorWrites.putImageVector(m.frameId, tg.spaceId, VectorCodec.encode(v), tg.imageDims) } }
+            targets.forEachIndexed { i, tg ->
+                val rows = work.mapNotNull { m -> embedded[m.frameId]?.get(i)?.let { v -> FrameVectorEntity(m.frameId, tg.spaceId, VectorCodec.encode(v)) } }
+                if (rows.isNotEmpty()) vectorWrites.putImageVectors(rows, tg.imageDims) // one batched, width-checked transaction per target
             }
 
             for (m in work) {
