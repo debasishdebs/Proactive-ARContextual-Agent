@@ -36,6 +36,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * connected while any device is. The kind of a connected device is recomputed whenever the "My car" list changes ([recompute]).
  * Addresses live in memory only and are never logged. Link changes are current-state notifications (no observation time), so they
  * are stamped now; the initial profile-proxy snapshot never overrides a broadcast already seen in this run ([onBtSnapshot]).
+ * Known residual risk (accepted): without the Android Auto app installed, another app could claim the `androidx.car.app.connection`
+ * provider authority and report PROJECTION, faking an ANDROID_AUTO link (prior 0.85 = DRIVING = nudges off; capture is never changed by it).
  * [start]/[stop] may run on a Looper-less thread; the shell hops to the main thread where Android needs it.
  */
 class CarSource(
@@ -164,6 +166,22 @@ class CarSource(
         emitted = now
     }
 
+    /**
+     * The profile proxies of Bluetooth runs. A run token says which run a proxy belongs to: a proxy that connects after a stop, or
+     * after a quick stop/start began a newer run, is refused ([add] false) and the caller closes it, so no binding leaks.
+     */
+    internal class ProxyHolder<T> {
+        private var token = 0
+        private var open = false
+        private val proxies = HashMap<Int, T>()
+
+        @Synchronized fun beginRun(): Int { token++; open = true; proxies.clear(); return token }
+        @Synchronized fun add(run: Int, profile: Int, proxy: T): Boolean { if (!open || run != token) return false; proxies[profile] = proxy; return true }
+        @Synchronized fun remove(run: Int, profile: Int) { if (run == token) proxies.remove(profile) }
+        /** Ends the run and returns the proxies to close. */
+        @Synchronized fun endRun(): List<Pair<Int, T>> { open = false; val r = proxies.toList(); proxies.clear(); return r }
+    }
+
     companion object {
         const val ID = "phone_car"
 
@@ -194,8 +212,7 @@ class CarSource(
         private val main = Handler(Looper.getMainLooper())
         private var receiver: BroadcastReceiver? = null
         private var adapter: BluetoothAdapter? = null
-        private val proxies = HashMap<Int, BluetoothProfile>()
-        private var active = false
+        private val holder = ProxyHolder<BluetoothProfile>()
         private var observer: Observer<Int>? = null
         private var connection: CarConnection? = null
 
@@ -203,7 +220,7 @@ class CarSource(
         override fun startBluetooth(): Boolean {
             if (!hasBluetoothPermission(ctx)) return false
             val a = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter ?: return false
-            adapter = a; active = true
+            adapter = a; val token = holder.beginRun()
             val r = object : BroadcastReceiver() {
                 override fun onReceive(c: Context, i: Intent) {
                     if (i.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
@@ -231,13 +248,11 @@ class CarSource(
             for (p in listOf(BluetoothProfile.A2DP, BluetoothProfile.HEADSET)) {
                 a.getProfileProxy(ctx, object : BluetoothProfile.ServiceListener {
                     override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-                        synchronized(this@AndroidPlatform) {
-                            if (!active) { runCatching { a.closeProfileProxy(profile, proxy) }; return } // connected after stop(): release it
-                            proxies[profile] = proxy
-                        }
+                        // connected after stop() or after a newer run began: release it, it belongs to no run
+                        if (!holder.add(token, profile, proxy)) { runCatching { a.closeProfileProxy(profile, proxy) }; return }
                         runCatching { source().onBtSnapshot(profile, proxy.connectedDevices.map { it.address to it.bluetoothClass?.deviceClass }) }
                     }
-                    override fun onServiceDisconnected(profile: Int) { synchronized(this@AndroidPlatform) { proxies.remove(profile) } }
+                    override fun onServiceDisconnected(profile: Int) { holder.remove(token, profile) }
                 }, p)
             }
             return true
@@ -245,11 +260,9 @@ class CarSource(
 
         @Synchronized
         override fun stopBluetooth() {
-            active = false
             receiver?.let { runCatching { ctx.unregisterReceiver(it) } }; receiver = null
             val a = adapter; adapter = null
-            for ((p, proxy) in proxies.toMap()) runCatching { a?.closeProfileProxy(p, proxy) }
-            proxies.clear()
+            for ((p, proxy) in holder.endRun()) runCatching { a?.closeProfileProxy(p, proxy) }
         }
 
         override fun startAndroidAuto() {

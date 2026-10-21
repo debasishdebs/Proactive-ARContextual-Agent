@@ -158,12 +158,12 @@ class ActivitySourceTest {
     }
 
     @Test fun firstResultAdmitsTheCurrentActivityUpToFifteenMinutesOld() {
-        val s = started(); clock.el += 20 * 60_000L
-        // Play services answers a new registration with the current activity, stamped when it began (before start())
-        s.onResult(listOf(ActivitySource.Transition(DetectedActivity.IN_VEHICLE, ActivityTransition.ACTIVITY_TRANSITION_ENTER, 500_000L + 20 * 60_000L - 600_000L)))
-        assertEquals(1, got.size); assertEquals(clock.wall() - 600_000L, got.single().atMs)
-        // later results keep the strict gate: nothing from before the run
-        s.onResult(listOf(ActivitySource.Transition(DetectedActivity.WALKING, ActivityTransition.ACTIVITY_TRANSITION_ENTER, 400_000L)))
+        val s = started(); clock.el += 60_000
+        val beforeStart = 500_000L - 5 * 60_000L // Play services stamps the current activity when it began: 5 min BEFORE start()
+        s.onResult(listOf(ActivitySource.Transition(DetectedActivity.IN_VEHICLE, ActivityTransition.ACTIVITY_TRANSITION_ENTER, beforeStart)))
+        assertEquals(1, got.size); assertEquals(clock.wall() - (clock.el - beforeStart), got.single().atMs)
+        // later results keep the strict gate: the very same stamp is stale now
+        s.onResult(listOf(ActivitySource.Transition(DetectedActivity.IN_VEHICLE, ActivityTransition.ACTIVITY_TRANSITION_ENTER, beforeStart)))
         assertEquals(1, got.size); assertEquals(1, s.stale)
     }
 

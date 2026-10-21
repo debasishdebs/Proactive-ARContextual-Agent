@@ -95,4 +95,10 @@ class ContextHubServiceLocationTest {
         r.entered(tried = DEV or MIC or LOC, entered = DEV or LOC) // mic refused, location held
         assertEquals(DEV or LOC, r.toTry(DEV or MIC or LOC, 0L))
     }
+
+    @Test fun refreshTypesOnlyReEntersFromTheFront() {
+        assertEquals(DEV or MIC or LOC, ContextHubService.refreshTypesTarget(DEV or MIC, DEV or MIC or LOC, inFront = true))
+        assertNull(ContextHubService.refreshTypesTarget(DEV or MIC, DEV or MIC or LOC, inFront = false))
+        assertNull(ContextHubService.refreshTypesTarget(DEV or MIC, DEV or MIC, inFront = true))
+    }
 }
