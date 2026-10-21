@@ -61,7 +61,7 @@ Ruling: `reasons` is `List<String>` — `coerceInputValues` does not cover enums
 **`pc_motion_hint`** (glasses → phone, existing channel, first use): `MotionHint` gains trailing fields `v: Int = PROTOCOL_VERSION`, `stillFrac5m: Float = -1f` (share of the last 300 s the classifier was STILL; −1 = not yet known), and `state` gets the default `MotionState.UNKNOWN`. Sent on every change into or out of WALKING (at most one per 5 s) and every 60 s with the current state.
 
 ## 5. Sources (phone)
-Every source is **opt-in, default off** (`ContextSourceSettings`, phone-only SharedPreferences `context_sources`). Ids: `phone_activity`, `phone_steps`, `phone_speed`, `phone_car`, `watch_livefit`, `image_intent`. A3's glasses-side `motionSourcesOff` is unchanged (`glasses_imu` is always on); the glasses additionally ignore `pc_motion_ctx` when `"phone_motion"` is in `motionSourcesOff` (a kill switch, kept from A3's id). A phone switch **"Adjust capture to context"** (`applyToCapture`, default on) sets `apply`.
+Every source is **opt-in, default off** (`ContextSourceSettings`, phone-only SharedPreferences ~~`context_sources`~~ `ctx_hub_state` — [amended r2] `context_sources` already belongs to the connectors' `SourceSettingsStore` and is exported/backed up; `ctx_hub_state` is excluded from backup, both data-extraction sections and the settings export). Ids: `phone_activity`, `phone_steps`, `phone_speed`, `phone_car`, `watch_livefit`, `image_intent`. A3's glasses-side `motionSourcesOff` is unchanged (`glasses_imu` is always on); the glasses additionally ignore `pc_motion_ctx` when `"phone_motion"` is in `motionSourcesOff` (a kill switch, kept from A3's id). A phone switch **"Adjust capture to context"** (`applyToCapture`, default on) sets `apply`.
 
 | Source | API | Evidence | Cost control |
 |---|---|---|---|
@@ -153,6 +153,11 @@ Output confidence: WALKING 0.9; FLIGHT 0.9; VEHICLE = `max(pDriver, 1 − pDrive
 
 Reasons (`ContextReason` names): `GLASSES_WALK, PHONE_WALK, STEPS, WATCH_WALK, SPEED, ANDROID_AUTO, MY_CAR_BT, CAR_BT, AR_VEHICLE, WATCH_VEHICLE, IMAGE_VEHICLE, IMAGE_DRIVER, IMAGE_PASSENGER, BT_CONTRADICTED, AIRPLANE, IMAGE_FLIGHT, GLASSES_STILL, IMAGE_IDLE, WATCH_ASLEEP`.
 
+### 6.5 User direction — car rule (2026-10-21 evening; contract for Tasks 5/8/9)
+- A phone connected to a **user-listed Bluetooth device** ("My car" / listed devices) **is** a vehicle episode (the deterministic trigger).
+- The image-intent driver-vs-passenger step runs **only while a vehicle episode is on** — no intent calls otherwise (replaces §7.3's 1/5-min background probe) — and also classifies the **vehicle type**: two-wheeler, three-wheeler (auto-rickshaw), four-wheeler (car/taxi), bus/train/other (an additive field next to `IntentLabel`; deferred to Tasks 8/9).
+- Open: a two-wheeler driver (no phone glance, helmet) — proposed: the DRIVING policy (cap 1/min, nudges off), pause for the user to decide. Open: the reviewed engine (§6.1) also starts vehicles from activity IN_VEHICLE, speed, the watch and two images; proposed to keep these as additional vehicle evidence while gating the image sampler on the episode. Task 2 is unchanged in this pass.
+
 ## 7. Image intent (INTENT_CLASSIFY)
 ### 7.1 Prompt and contract
 `PromptKey.INTENT_CLASSIFY(Role.VISION_EXTRACT, "Activity from a photo")`, appended **after** `CLUSTER_SUMMARY`; editable in the prompt editor (and so later from the canvas). One photo per call; output schema `{"label": <IntentLabel name>, "confidence": <0..1>}`.
@@ -178,15 +183,15 @@ Runs only while `image_intent` is on and the pipeline is enabled. Triggered on e
 At most one call in flight. A result is written to `frame_meta` and fed to fusion as `Intent(atMs = the frame row's ts, …)`; a result whose frame is older than 10 min is stored but not fed.
 
 ## 8. Galaxy Watch via LiveFit (contract; LiveFit changes are out of this repo)
-**Transport:** the LiveFit phone app calls `contentResolver.call(Uri.parse("content://com.rokid.context.motionsource"), "motion_state", null, bundleOf("json" to <message>))`. Our exported provider `WatchMotionProvider` checks, in order: `callingPackage == "com.livear.fit"`; the caller's signing certificate SHA-256 equals the digest **pinned when the user turned the Watch source on** (`PackageManager.hasSigningCertificate(pkg, digest, CERT_INPUT_SHA256)`); the source is on; payload ≤ 2 048 bytes; at most 1 message per second (extras dropped); `seq` greater than the last accepted. It returns `bundleOf("ok" to Boolean, "reason" to String?)` with reason one of `not_enabled, bad_caller, bad_cert, too_big, rate, stale_seq, malformed, version`. The manifest adds `<queries><package android:name="com.livear.fit"/></queries>`.
+**Transport:** the LiveFit phone app calls `contentResolver.call(Uri.parse("content://com.rokid.context.motionsource"), "motion_state", null, bundleOf("json" to <message>))`. Our exported provider `WatchMotionProvider` checks, in order: `callingPackage == "com.livear.fit"`; the caller's signing certificate SHA-256 equals the digest **pinned when the user turned the Watch source on** (`PackageManager.hasSigningCertificate(pkg, digest, CERT_INPUT_SHA256)`); the source is on; payload ≤ 2 048 bytes; at most 1 message per second (extras dropped); `seq` greater than the last accepted **within the same `epoch`** [amended r2: the message carries `epoch` (random non-zero per sender install/process start, default 0); a new epoch resets the sequence; the last `(epoch, seq)` is persisted; a message refused only for `rate` is kept as the pending latest state and applied when the 1 s window opens]. It returns `bundleOf("ok" to Boolean, "reason" to String?)` with reason one of `not_enabled, bad_caller, bad_cert, too_big, rate, stale_seq, malformed, version`. The manifest adds `<queries><package android:name="com.livear.fit"/></queries>`.
 
 **Message (v1)**:
 ```json
-{"v":1,"seq":42,"state":"WALKING","confidence":0.9,"changedAtMs":1761012345678,"sentAtMs":1761012345900,"source":"galaxy_watch"}
+{"v":1,"epoch":7193856231,"seq":42,"state":"WALKING","confidence":0.9,"changedAtMs":1761012345678,"sentAtMs":1761012345900,"source":"galaxy_watch"}
 ```
 `state` ∈ `STILL, WALKING, RUNNING, CYCLING, IN_VEHICLE, EXERCISE, ASLEEP, UNKNOWN` (unknown string → UNKNOWN). No heart rate, steps, GPS or any health value. The phone uses its own receipt time (the watch clock is not trusted).
 
-**LiveFit side (for its own repo):** the watch derives the state from Health Services (`PassiveMonitoringClient` user activity state ASLEEP/EXERCISE/PASSIVE, the exercise type when a workout runs, step cadence ≥ 60/min = WALKING, ≥ 140/min = RUNNING), holds a new state for 30 s (`AutoTypeDetector`-style) and sends **changes only** over its Data Layer path; the LiveFit phone app forwards each change to the call above and re-sends the current state once after it reconnects. A state is current on our side until a change, for at most 30 min.
+**LiveFit side (for its own repo):** the watch derives the state from Health Services (`PassiveMonitoringClient` user activity state ASLEEP/EXERCISE/PASSIVE, the exercise type when a workout runs, step cadence ≥ 60/min = WALKING, ≥ 140/min = RUNNING), holds a new state for 30 s (`AutoTypeDetector`-style) and sends **changes only** over its Data Layer path; the LiveFit phone app forwards each change to the call above and re-sends the current state once after it reconnects **and every 10 min while unchanged** [amended r2]. A state is current on our side until a change, for at most 25 min (the hub's `watchTtlMs`).
 
 Ruling: `ContentResolver.call` with a package check and a trust-on-first-use certificate pin — a broadcast cannot identify its sender on API < 34 and a custom signature permission needs both apps on one signing key, which is not known — cost if wrong: LiveFit needs about 20 lines more than a broadcast; a LiveFit re-sign needs the user to toggle the source off and on.
 
@@ -216,9 +221,9 @@ Ruling: DRIVING keeps capturing at 1/min and suppresses nudge pop-ups — a pop-
 ### 9.1 Glasses `ContextGate` (pure)
 `effective(now, localState, lastLocalWalkAtMs)`:
 1. No message, or `now − receivedAt > validForMs`, or `!apply`, or `"phone_motion"` in `motionSourcesOff` → UNKNOWN.
-2. **Local walking veto:** local classifier WALKING now or within the last 15 s, the message state is REST, VEHICLE_* or FLIGHT, and `"SPEED"` is not in `reasons` → UNKNOWN, counted `ctxVeto`.
+2. **Local walking veto:** local classifier WALKING now or within the last 15 s and the message state is REST, VEHICLE_* or FLIGHT → UNKNOWN, counted `ctxVeto`. [amended r2] No exception for `"SPEED"` or any other reason: the glasses never reduce capture within 15 s of locally seen walking (the phone's own `fastConfirmed` rule, §6.1, still decides the phone state).
 3. Else the message state.
-A message with `atMs < sessionStartMs` is ignored (stale, as `pc_wear`); a session close resets the gate.
+A message with `atMs < sessionStartMs` is ignored (stale, as `pc_wear`), and within a session a message older than the last accepted one is ignored; the phone resends on reconnect as a fresh envelope (new `atMs`, same `sinceMs`); a session close resets the gate. [amended r2] The phone revokes explicitly: disabling a source, the master switch or shadow mode sends an UNKNOWN / `apply=false` message before it goes silent. Context caps are hard caps (no dwell bonus); a manual "Capture now" stays exempt.
 
 ## 10. Measurement
 - **Glasses heartbeat** (stays `v=2`) appends after A3's `nudgeOff`: ` ctx=<message state|none> ctxAgeS=<n|na> ctxApplied=<effective state> ctxVeto=<n in span>`.
@@ -227,7 +232,7 @@ A message with `atMs < sessionStartMs` is ignored (stale, as `pc_wear`); a sessi
 
 ## 11. Privacy
 - Location: one fix in memory in the speed adapter; never persisted, logged, exported or sent; only `kmh` leaves it, and only a `ContextState` + reason names leave the phone.
-- "My car" addresses and the LiveFit certificate digest live in the `context_sources` prefs; they are excluded from the settings export and cleared by Delete all. Device names show in the picker UI only.
+- "My car" addresses and the LiveFit certificate digest live in the `ctx_hub_state` prefs (not `context_sources`, which the connectors own); they are excluded from the settings export and cleared by Delete all. Device names show in the picker UI only.
 - Every source is opt-in and asks for its permission when turned on (ACTIVITY_RECOGNITION for activity and steps; FINE+COARSE location for speed, approximate accepted; BLUETOOTH_CONNECT for car). A denied permission leaves the switch off with a short note.
 - Intent labels are enum names on `frame_meta`; they are deleted with their frame.
 
@@ -245,3 +250,4 @@ A message with `atMs < sessionStartMs` is ignored (stale, as `pc_wear`); a sessi
 
 ## 13. Review log
 - r1 (2026-10-21, Opus planner): first draft from the handoff §9.1/§10.0, the A3 spec and plan, the phone hub, and LiveFit.
+- r2 (2026-10-21 evening, Opus planner): watch-first fast path; Codex plan review folded with controller rulings (prefs `ctx_hub_state`, unconditional glasses walking veto, explicit revocation, reconnect envelope, hard caps, watch epoch/refresh/coalescing); user car rule §6.5.
