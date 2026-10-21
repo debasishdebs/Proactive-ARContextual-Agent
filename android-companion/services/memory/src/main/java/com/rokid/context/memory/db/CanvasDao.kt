@@ -74,14 +74,14 @@ abstract class CanvasDao {
      * [frameIds] is tombstoned. [currentGeneration] is read inside the transaction (the app passes `MemoryWipe.generation::get`).
      */
     @Transaction open suspend fun commitTracesFenced(rows: List<CanvasLiveTraceEntity>, generation: Long, frameIds: Set<String>, currentGeneration: () -> Long): Boolean {
-        if (!fenceHolds(generation, frameIds, currentGeneration)) return false
+        if (!fenceHolds(generation, frameIds + rows.map { it.frameId }, currentGeneration)) return false
         upsertTrace(rows)
         return true
     }
 
     /** Fenced run-item (and score) commit of the experiment runner (S24): same fence as [commitTracesFenced]. */
     @Transaction open suspend fun insertRunItemsFenced(rows: List<CanvasRunItemEntity>, scores: List<CanvasScoreEntity>, generation: Long, frameIds: Set<String>, currentGeneration: () -> Long): Boolean {
-        if (!fenceHolds(generation, frameIds, currentGeneration)) return false
+        if (!fenceHolds(generation, frameIds + rows.map { it.frameId } + scores.map { it.frameId }, currentGeneration)) return false
         rows.forEach { upsertItem(it) }
         scores.forEach { upsertScore(it) }
         return true

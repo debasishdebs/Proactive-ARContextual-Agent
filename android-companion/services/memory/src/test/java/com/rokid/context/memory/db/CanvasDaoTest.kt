@@ -234,4 +234,11 @@ class CanvasDaoTest {
         assertFalse(dao.insertRunItemsFenced(listOf(item("r", "f3")), emptyList(), 7, setOf("f3")) { 7 })
         assertEquals(1, dao.items("r").size)
     }
+
+    @Test fun fenceAlsoChecksRowFrameIds() = runBlocking {
+        db.forgetDao().insertTombstone(ForgetTombstoneEntity("f2", 1))
+        assertFalse(dao.commitTracesFenced(listOf(trace(1, "f2")), 7, emptySet()) { 7 })
+        assertFalse(dao.insertRunItemsFenced(listOf(item("r", "f2")), emptyList(), 7, emptySet()) { 7 })
+        assertEquals(0, dao.traces(1, 10).size); assertEquals(0, dao.items("r").size)
+    }
 }

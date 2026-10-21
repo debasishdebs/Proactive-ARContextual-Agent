@@ -27,7 +27,25 @@ class SqlCipherMigrationDeviceTest {
         override var current: Boolean? = false; override var target: Boolean? = null; override var stage: Boolean? = null; override var failed = false
     }
 
-    @Before @After fun clean() { listOf("", "-wal", "-shm", "-journal", ".migrating", ".old").forEach { File(file.path + it).delete() } }
+    /** The file DatabaseFactory.build/buildDeferred open (`context.db`) inside THIS test APK's own sandbox. */
+    private val prodNamed: File get() = ctx.getDatabasePath(DatabaseFactory.NAME)
+    private val marker: File get() = File(ctx.filesDir, "migration-gate.marker")
+    private val suffixes = listOf("", "-wal", "-shm", "-journal", ".migrating", ".old")
+
+    /**
+     * Safety gate: this test deletes and rewrites `context.db`. It only ever runs in the androidTest APK, whose application id is the module
+     * namespace + ".test" (com.rokid.context.services.memory.test) with its own data dir, never the app's. It refuses to run if it is not in
+     * such a package, or if a `context.db` exists that this test did not create (no marker file): that would be user data.
+     */
+    @Before fun guardAndClean() {
+        check(ctx.packageName.endsWith(".test")) { "refusing to run outside the androidTest APK sandbox" }
+        check(!prodNamed.exists() || marker.exists()) { "refusing to run: a context.db exists that this test did not create" }
+        marker.writeText("created by SqlCipherMigrationDeviceTest")
+        clean()
+    }
+    @After fun cleanAndUnmark() { clean(); marker.delete() }
+
+    private fun clean() { suffixes.forEach { File(file.path + it).delete(); File(prodNamed.path + it).delete() } }
 
     private fun room(encrypted: Boolean): ContextDatabase = Room.databaseBuilder(ctx, ContextDatabase::class.java, name).apply {
         if (encrypted) { System.loadLibrary("sqlcipher"); openHelperFactory(SupportOpenHelperFactory(key)) }
@@ -69,7 +87,7 @@ class SqlCipherMigrationDeviceTest {
     private val canvasTables = listOf("canvas_pipeline", "canvas_pipeline_version", "canvas_run", "canvas_run_item", "canvas_score", "canvas_publish", "canvas_live_trace")
     private val v6Tables = listOf("canvas_live_trace")
 
-    private fun open() = net.zetetic.database.sqlcipher.SQLiteDatabase.openDatabase(file.path, key.copyOf(), null, net.zetetic.database.sqlcipher.SQLiteDatabase.OPEN_READWRITE, null, null)
+    private fun open() = net.zetetic.database.sqlcipher.SQLiteDatabase.openDatabase(prodNamed.path, key.copyOf(), null, net.zetetic.database.sqlcipher.SQLiteDatabase.OPEN_READWRITE, null, null)
 
     /** v6 → v5 shape: the live trace table and the five slice-2 columns (SQLite DROP COLUMN). */
     private fun dropV6(raw: net.zetetic.database.sqlcipher.SQLiteDatabase) {
@@ -125,7 +143,7 @@ class SqlCipherMigrationDeviceTest {
                 assertEquals(0, db.openHelper.writableDatabase.query("SELECT COUNT(*) FROM canvas_live_trace").use { it.moveToFirst(); it.getInt(0) })
                 assertAfter(db)
             } finally { db.close() }
-            assertFalse(EncryptionMigrator.isPlaintextSqlite(file))
+            assertFalse(EncryptionMigrator.isPlaintextSqlite(prodNamed))
         }
     }
 
