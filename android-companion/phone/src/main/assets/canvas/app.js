@@ -1,5 +1,6 @@
 // Bootstrap: token handling, API client, hash router, shared UI services (banner, modal, images).
 import { h, clear, btn } from './dom.js';
+import { parseBootHash } from './boot.js';
 import { pipelinesView, pipelineView, runNewView, runView, compareView } from './views.js';
 
 const TOKEN_KEY = 'pcToken';
@@ -190,15 +191,13 @@ async function route() {
 }
 
 function boot() {
-  const hash = location.hash;
-  let prefill = '';
-  if (hash.startsWith('#t=')) {
-    setToken(decodeURIComponent(hash.slice(3)));
+  const b = parseBootHash(location.hash);
+  if (b.token !== undefined) {
+    setToken(b.token);
     history.replaceState(null, '', '/#/');
-  } else if (hash.startsWith('#pair=')) {
-    prefill = decodeURIComponent(hash.slice(6)).replace(/[^0-9]/g, '').slice(0, 6);
+  } else if (b.pair !== undefined) {
     history.replaceState(null, '', '/#/');
-    if (!token) { showPairing(prefill); window.addEventListener('hashchange', route); return; }
+    if (!token) { showPairing(b.pair); window.addEventListener('hashchange', route); return; }
   }
   window.addEventListener('hashchange', route);
   route();

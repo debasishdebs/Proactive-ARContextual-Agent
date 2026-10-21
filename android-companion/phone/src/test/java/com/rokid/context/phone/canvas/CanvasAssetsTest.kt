@@ -9,7 +9,7 @@ import org.junit.Test
 /** A source scan of the web UI bundle: the CSP forbids inline script and style, and model output is untrusted (no HTML sinks). */
 class CanvasAssetsTest {
     private val dir = File("src/main/assets/canvas")
-    private val names = listOf("index.html", "app.js", "dom.js", "dag.js", "views.js", "style.css")
+    private val names = listOf("index.html", "app.js", "dom.js", "dag.js", "views.js", "boot.js", "style.css")
     private fun text(n: String) = File(dir, n).readText()
     private val js get() = names.filter { it.endsWith(".js") }
     private val all get() = dir.listFiles().orEmpty().filter { it.isFile }
