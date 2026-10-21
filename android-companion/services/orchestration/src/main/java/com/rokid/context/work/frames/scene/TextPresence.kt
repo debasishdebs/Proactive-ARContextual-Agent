@@ -42,15 +42,29 @@ class MlKitTextPresence(
 
         private suspend fun recognizeWithMlKit(jpeg: ByteArray): String? {
             val bmp = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return null
-            try {
-                return suspendCancellableCoroutine { cont ->
-                    recognizer.process(InputImage.fromBitmap(bmp, 0))
-                        .addOnSuccessListener { if (cont.isActive) cont.resume(it.text) }
-                        .addOnFailureListener { if (cont.isActive) cont.resume(null) }
-                }
-            } finally {
-                bmp.recycle()
-            }
+            // The bitmap is released only when ML Kit is done with it, never on timeout/cancel (it may still be reading it).
+            return awaitThenRelease(start = { done ->
+                recognizer.process(InputImage.fromBitmap(bmp, 0))
+                    .addOnSuccessListener { done(it.text) }
+                    .addOnFailureListener { done(null) }
+            }, release = { bmp.recycle() })
         }
+
+        /** Runs [start]; [release] fires exactly when the callback does, even if the waiting coroutine was cancelled by then. */
+        internal suspend fun awaitThenRelease(start: ((String?) -> Unit) -> Unit, release: () -> Unit): String? =
+            suspendCancellableCoroutine { cont ->
+                val once = java.util.concurrent.atomic.AtomicBoolean(false)
+                try {
+                    start { text ->
+                        if (once.compareAndSet(false, true)) {
+                            release()
+                            if (cont.isActive) cont.resume(text)
+                        }
+                    }
+                } catch (t: Throwable) {
+                    if (once.compareAndSet(false, true)) release()
+                    if (cont.isActive) cont.resume(null)
+                }
+            }
     }
 }

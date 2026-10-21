@@ -31,6 +31,13 @@ class WatchListStore(private val prefs: SharedPreferences) {
 
     companion object {
         private const val KEY = "watch_items"
+        @Volatile private var instance: WatchListStore? = null
+
+        /** The one process-wide store: Settings edits it and the scene indexer reads the same flow. */
+        fun get(context: android.content.Context): WatchListStore = instance ?: synchronized(this) {
+            instance ?: WatchListStore(context.applicationContext.getSharedPreferences("watch_list", android.content.Context.MODE_PRIVATE)).also { instance = it }
+        }
+
         const val MAX_ITEMS = 20
         const val MAX_LEN = 40
         val DEFAULTS = listOf("keys", "car", "parking sign", "receipt", "whiteboard", "document", "a person's face")

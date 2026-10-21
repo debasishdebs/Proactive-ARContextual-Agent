@@ -215,10 +215,12 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             MemorySettingsViewModel({ s.memorySettings }, s.encryption, s.usedBytes, s.wipe, s.export, s.share, deps.memory.memoryEdits.needsReviewCount())
         }
         val state by vm.state.collectAsStateWithLifecycle()
+        val watchList by s.watchList.items.collectAsStateWithLifecycle()
         MemorySettingsScreen(
             state, onBack = back, onShort = vm::setShort, onMedium = vm::setMedium, onLong = vm::setLong, onQuota = vm::setQuota,
             onEncryption = { vm.setEncryption(it) }, onExport = vm::export, onAskDeleteAll = vm::askDeleteAll, onConfirmDeleteAll = vm::confirmDeleteAll,
             onCancelDeleteAll = vm::cancelDeleteAll, onOpenReview = { nav.navigate(Routes.SETTINGS_MEMORY_REVIEW) },
+            watchList = watchList, onWatchListSave = s.watchList::set, onWatchListReset = s.watchList::reset,
         )
     }
 
