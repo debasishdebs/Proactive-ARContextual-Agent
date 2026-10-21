@@ -117,8 +117,8 @@ internal class GlassAppWatcher(
             val raw = info.wearingStatus
             val parsed = WearingStatus.parse(raw)
             Log.i(CxrGlassesLink.TAG, "watcher: wearing snapshot raw=${WearingStatus.describe(raw)} parsed=$parsed")
-            val apply = WearingStatus.snapshotToApply(parsed, if (parsed == false) wearCheckOn() else null)
-            if (parsed == false && apply == null) Log.i(CxrGlassesLink.TAG, "watcher: not-worn snapshot ignored (wear check not confirmed on)")
+            val apply = WearingStatus.snapshotToApply(parsed, wearCheckOn())
+            if (parsed != null && apply == null) Log.i(CxrGlassesLink.TAG, "watcher: wearing snapshot ignored (wear check off) raw=${WearingStatus.describe(raw)}")
             onSnapshot(apply)
         }
         override fun onGlassWearingStatus(wearing: Boolean) = onWearing(wearing)

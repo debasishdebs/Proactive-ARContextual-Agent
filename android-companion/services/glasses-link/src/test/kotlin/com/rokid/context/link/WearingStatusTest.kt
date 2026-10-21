@@ -21,12 +21,15 @@ class WearingStatusTest {
         assertEquals("<other len=0>", WearingStatus.describe(""))
     }
 
-    @Test fun snapshotNotWornIsAppliedOnlyWhenTheWearCheckIsOn() {
+    @Test fun snapshotIsAppliedOnlyWhenTheWearCheckIsOn() {
+        assertEquals(true, WearingStatus.snapshotToApply(true, true))
         assertEquals(false, WearingStatus.snapshotToApply(false, true))
-        assertEquals(null, WearingStatus.snapshotToApply(false, false))
-        assertEquals(null, WearingStatus.snapshotToApply(false, null))
-        assertEquals(true, WearingStatus.snapshotToApply(true, false))
-        assertEquals(true, WearingStatus.snapshotToApply(true, null))
         assertEquals(null, WearingStatus.snapshotToApply(null, true))
+        assertEquals(null, WearingStatus.snapshotToApply(true, false))
+        assertEquals(null, WearingStatus.snapshotToApply(false, false))
+        assertEquals(null, WearingStatus.snapshotToApply(null, false))
+        assertEquals(null, WearingStatus.snapshotToApply(true, null))
+        assertEquals(null, WearingStatus.snapshotToApply(false, null))
+        assertEquals(null, WearingStatus.snapshotToApply(null, null))
     }
 }
