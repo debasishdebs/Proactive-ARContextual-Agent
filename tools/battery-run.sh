@@ -84,7 +84,7 @@ cmd_stop() {
 }
 
 # stdin -> stdout without any line that names a secret, a device key or the AssistServer service.
-filter_diag() { grep -v -i -E "$DENY|AssistServer"; true; }
+filter_diag() { grep -a -v -i -E "$DENY|AssistServer"; }
 
 cmd_pull() {
   local d="${1:-}"
@@ -95,7 +95,7 @@ cmd_pull() {
   # cpu.log: only "<ts> cpu|thr ..." lines, through the deny list before it is kept (AssistServer is never written; only the label "assist" is).
   adb -s "$G" pull "$CPUFILE" "$d/cpu.raw" >/dev/null 2>&1
   if [ -f "$d/cpu.raw" ]; then
-    grep -v -i -E "$DENY" "$d/cpu.raw" | grep -E '^[0-9][0-9]-[0-9][0-9]_[0-9:]+ (cpu|thr) ' > "$d/cpu.log"
+    grep -a -v -i -E "$DENY" "$d/cpu.raw" | grep -E '^[0-9][0-9]-[0-9][0-9]_[0-9:]+ (cpu|thr) ' > "$d/cpu.log"
     rm -f "$d/cpu.raw"
   fi
   # Diag logs go through the same deny list as the other pulls (A22); run-as errors are dropped.

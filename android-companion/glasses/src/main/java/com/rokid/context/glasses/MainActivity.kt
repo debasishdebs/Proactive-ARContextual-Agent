@@ -145,7 +145,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /** True from a start that is about to minimise until the next start that shows the HUD: [Hud] then draws only black (UI1). */
-    private val hudHidden = androidx.compose.runtime.mutableStateOf(false)
+    @VisibleForTesting internal val hudHidden = androidx.compose.runtime.mutableStateOf(false)
 
     /** (Re)started: phone messages may open the CXR session again (spec §1.7 send gate). */
     override fun onStart() {
@@ -297,6 +297,7 @@ class MainActivity : ComponentActivity() {
 
     /** Touchpad keys are ours: KEYCODE_NOTIFICATION must never reach the system, or it moves our task to the back. */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (hudHidden.value) return super.dispatchKeyEvent(event) // M3: nothing is visible, so no key may answer a Confirm
         val r = when (event.action) {
             KeyEvent.ACTION_DOWN -> keys.onKeyDown(event.keyCode, event.repeatCount, event.eventTime, System.currentTimeMillis(), exitGate !is ExitGate.Idle)
             KeyEvent.ACTION_UP -> keys.onKeyUp(event.keyCode, event.eventTime)
@@ -416,7 +417,11 @@ class MainActivity : ComponentActivity() {
         cancelGate()
         tasksMovedBack++
         runtime.uiMode.set(UiModeStore.ICON)
-        moveTaskToBack(true)
+        if (!moveToBack(this)) { // M4: never leave the app in front and black
+            hudHidden.value = false
+            runtime.uiMode.set(UiModeStore.FULL)
+            return
+        }
         minimised = true
         runtime.hudPresence.onMinimised()
         // The phone only hears a minimised app when it speaks: say hello at once so it never takes the quiet for a closed app.
@@ -553,6 +558,8 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        /** Tests only: lets a test make the task move fail. */
+        @VisibleForTesting internal var moveToBack: (MainActivity) -> Boolean = { it.moveTaskToBack(true) }
         const val TAG = "PcGlasses"
         /** Start straight into icon mode (no HUD, no focus taken); also what a restart after a force-stop in icon mode does. */
         const val EXTRA_START_MINIMISED = "com.rokid.context.glasses.START_MINIMISED"

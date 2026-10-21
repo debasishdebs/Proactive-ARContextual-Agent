@@ -6,3 +6,7 @@
 - RED: compile failures in :core:model tests and :glasses tests with the implementation stashed. GREEN: :core:model:test, `*RestartDiagnostics* *ExitClassifier* *GlassesRuntime*`, `:phone *HubTest*`.
 - killedWhileRunning is unchanged by the kind (any force-stop while running restarts in icon mode).
 - Phone Diagnostics screen reads glassesDiagnostics(), which now includes the new line; no separate UI file edit.
+
+## Fix round 1
+M7 dead reason guards removed; M8 KDoc fixed (RestartDiagnostics, HubState). M9: `closes_v2` marker; the first `onProcessStart` of this version removes the legacy `rokid_closes` and `last_gap_sec` once (test `legacyRokidClosesResetOnceOnUpgrade`).
+M10 for the Task 10 device checklist (the plan file in the main checkout has uncommitted edits, so recorded here): on the device, Rokid's AssistServer is likely to read as hidden, so Rokid stops will probably show as `unknown=` / "unverified" with `rokid=0`. Do not read `rokid=0` as "Rokid never closed it". An adb force-stop should also read as unverified, not other, unless its pid is readable.
