@@ -5,6 +5,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.rokid.context.core.model.BATTERY_TARGET_HOURS_ALLOWED
+import com.rokid.context.core.model.CameraWake
 import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.QUICK_LOOK_MS_ALLOWED
@@ -58,11 +60,21 @@ data class CaptureSettingsUiState(
     val paceMs: Long = AiCallPaceStore.DEFAULT_MS,
     /** Keyframes stored in the last hour (the glasses send no SessionStatus, so the phone counts its own). */
     val keyframesPerHour: Int = 0,
+    val wake: CameraWake = CameraWake.MOTION,
+    val batteryTargetHours: Int = 4,
+    val pauseWhenPhoneInUse: Boolean = false,
 ) {
+    /** 0 Smart, 1 Settle, 2 Fixed. */
+    val modeIndex: Int get() = when {
+        mode == CaptureMode.FIXED -> 2
+        wake == CameraWake.SETTLE -> 1
+        else -> 0
+    }
+
     /** "Smart · N keyframes in the last 10 min": the hourly count scaled to 10 min. */
     val statusLine: String get() {
         val n = Math.round(keyframesPerHour / 6.0).toInt()
-        return "${if (mode == CaptureMode.SMART) "Smart" else "Fixed"} \u00b7 $n keyframe${if (n == 1) "" else "s"} in the last 10 min"
+        return "${listOf("Smart", "Settle", "Fixed")[modeIndex]} \u00b7 $n keyframe${if (n == 1) "" else "s"} in the last 10 min"
     }
 }
 
@@ -73,12 +85,22 @@ class CaptureSettingsViewModel(
 ) : ViewModel() {
     private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats): CaptureSettingsUiState {
         val n = h.normalized()
-        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour)
+        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse)
     }
     val state: StateFlow<CaptureSettingsUiState> = combine(hud.settings, pace.paceMs, keyframes, ::of)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value))
 
     fun setMode(m: CaptureMode) = hud.update { it.copy(captureMode = m) }
+    /** 0 Smart (motion wake), 1 Settle, 2 Fixed (wake untouched). */
+    fun setModeChoice(i: Int) = hud.update {
+        when (i) {
+            0 -> it.copy(captureMode = CaptureMode.SMART, cameraWake = CameraWake.MOTION)
+            1 -> it.copy(captureMode = CaptureMode.SMART, cameraWake = CameraWake.SETTLE)
+            else -> it.copy(captureMode = CaptureMode.FIXED)
+        }
+    }
+    fun setBatteryTarget(h: Int) = hud.update { it.copy(batteryTargetHours = h).normalized() }
+    fun setPauseWhenPhoneInUse(on: Boolean) = hud.update { it.copy(pauseWhenPhoneInUse = on) }
     fun setInterval(sec: Int) = hud.update { it.copy(captureIntervalSec = CaptureIntervals.clamp(sec)) }
     /** Kept for callers that still toggle the legacy field; the protocol ignores it. */
     fun setBurst(on: Boolean) = hud.update { it.copy(burstOnChange = on) }
@@ -94,27 +116,31 @@ class CaptureSettingsViewModel(
 @Composable
 fun CaptureSettingsScreen(
     state: CaptureSettingsUiState, onBack: () -> Unit,
-    onMode: (CaptureMode) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {},
+    onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {},
     onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {},
 ) {
     val options = CaptureIntervals.options(state.intervalSec)
-    val modes = listOf(CaptureMode.SMART, CaptureMode.FIXED)
     val longWork = state.workMinutes > 45
     SettingsPage("Capture schedule", onBack, tag = "capture_settings") {
         item {
             SettingsCard {
                 Text("How the glasses take photos", style = MaterialTheme.typography.titleMedium)
                 NoticeText(state.statusLine, tag = "capture_status")
-                ChoiceRow("Capture mode", listOf("Smart", "Fixed"), modes.indexOf(state.mode), { onMode(modes[it]) }, tag = "mode")
+                ChoiceRow("Capture mode", listOf("Smart", "Settle", "Fixed"), state.modeIndex, onModeChoice, tag = "mode")
                 if (state.mode == CaptureMode.FIXED) {
                     ChoiceRow("Every", options.map(CaptureIntervals::label), options.indexOf(state.intervalSec), { onInterval(options[it]) }, tag = "interval")
                     NoticeText("Doubled automatically when the glasses battery is low.")
+                } else if (state.wake == CameraWake.SETTLE) {
+                    NoticeText("Photos only when your head settles on something (about 1.5\u20132 s). Uses much less battery.", tag = "settle_note")
                 } else {
                     NoticeText("Smart takes photos when you look at something new. Needs the latest glasses app; older glasses keep taking photos at a fixed interval.", tag = "smart_note")
                     ChoiceRow("Quick look", QUICK_LOOK_MS_ALLOWED.map(CaptureLabels::quickLook), QUICK_LOOK_MS_ALLOWED.indexOf(state.quickLookMs), { onQuickLook(QUICK_LOOK_MS_ALLOWED[it]) }, tag = "quick_look")
                     NoticeText("Shorter catches quicker glances; the camera light is on more.", tag = "quick_look_note")
                 }
+                ChoiceRow("Battery target", BATTERY_TARGET_HOURS_ALLOWED.map { if (it == 0) "Off" else "$it h" }, BATTERY_TARGET_HOURS_ALLOWED.indexOf(state.batteryTargetHours), { onBatteryTarget(BATTERY_TARGET_HOURS_ALLOWED[it]) }, tag = "battery_target")
+                NoticeText("Takes fewer photos when the glasses battery would not last this long.")
                 SwitchRow("Pause when not worn", null, state.pauseWhenNotWorn, onPauseWhenNotWorn, tag = "pause_not_worn")
+                SwitchRow("Pause while I use my phone", null, state.pauseWhenPhoneInUse, onPauseWhenPhoneInUse, tag = "pause_phone_use")
             }
         }
         item {
