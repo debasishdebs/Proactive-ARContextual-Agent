@@ -71,7 +71,7 @@ class Migration4To5Test {
     }
 
     // ---- DAO over the migrated shape ----
-    private val mem = DatabaseFactory.inMemory(androidx.test.core.app.ApplicationProvider.getApplicationContext())
+    private val mem by lazy { DatabaseFactory.inMemory(androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()) }
 
     private suspend fun meta(id: String, createdAt: Long, intentLabel: String? = null) =
         mem.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", false, null, null, null, null, null, null, null, null, null, createdAt, intentLabel = intentLabel))

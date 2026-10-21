@@ -174,7 +174,7 @@ Ruling: reuse the VISION_EXTRACT binding (no new `Role`) — the same pattern as
 Ruling: CallClass **EXTRACT** (charged), not a "counted not charged" class — no such class exists, and an uncharged class would let intent calls exceed the user's AI call pace; at ≤ 1 call/5 min (≤ 1/min in a vehicle, where capture is capped at 1/min anyway) it takes ≤ 20 % of the 12 s pace only in vehicles — cost if wrong: extraction waits a little longer during car rides.
 
 ### 7.2 Storage (Room v5)
-`frame_meta` gains nullable columns `intentLabel TEXT`, `intentConf REAL`, `intentAt INTEGER` through `MIGRATION_4_5` (additive `ALTER TABLE ADD COLUMN`, both builders, exported `5.json`, `Migration4To5Test`). Wave 2 owns v4; this migration is written on a base that already has `MIGRATION_3_4` and is never renumbered over it.
+`frame_meta` gains four nullable columns `intentLabel TEXT`, `intentConf REAL`, `intentAt INTEGER` and (wave 3, same migration) `capturedAtMs INTEGER` (the glasses' capture time on the phone clock; `FrameMetaDao.setCapturedAt`) through `MIGRATION_4_5` (additive `ALTER TABLE ADD COLUMN`, both builders, exported `5.json`, `Migration4To5Test`). Wave 2 owns v4; this migration is written on a base that already has `MIGRATION_3_4` and is never renumbered over it.
 
 ### 7.3 Sampler (`IntentSampler`, orchestration)
 Runs only while `image_intent` is on and the pipeline is enabled. Triggered on every frame receipt (the existing `KeyframeGraph.signal()` path) and picks the newest `frame_meta` row received ≤ 2 min ago with `intentLabel IS NULL`. It calls when, since the last call (success or failure):

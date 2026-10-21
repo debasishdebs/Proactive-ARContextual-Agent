@@ -293,7 +293,7 @@ object RokidFrameInbox {
                 clusterId = null, nearDupOf = null, imageVectorSpace = null, createdAt = now, routedAt = if (routeFirst) null else now,
                 // The glasses' capture time on the phone clock: a receipt's file mtime is set from the wire capturedAtMs (offset-adjusted) by
                 // ReceiptStore. Without a receipt the mtime is not a capture time, so it stays unknown.
-                capturedAtMs = if (receipt != null) file.lastModified().takeIf { it > 0 } else null,
+                capturedAtMs = if (receipt != null) file.lastModified().takeIf { it in 1..now } else null,   // a time after the receive time is a clock error
             ),
             FrameStateEntity(frameId = frameId, state = "PENDING", attempts = 0, lastError = null, claimedAt = null, claimId = null, updatedAt = now),
         )
