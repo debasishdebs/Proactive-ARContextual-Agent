@@ -186,27 +186,62 @@ class MotionClassifierTest {
     // ---- battery wave A2: STILL IMU rate delivers 20 Hz in 500 ms batches ----
 
     /**
-     * Delivers a 20 Hz trace (50 ms step) the way the batched sensor FIFO does: per 500 ms batch, every gyro sample
-     * first, then every accel sample (all zero). Accel samples therefore arrive with timestamps older than the newest
-     * gyro one. Without the classifier's newest-timestamp clamp, the batch with the turn would see the gyro samples
-     * push the state to STILL (newest t = batch end) and then the older accel samples (t - lastAboveGyro < HEAD_HOLD_MS)
-     * flip it back to HEAD_MOVING: a second, false onset at 2500.
+     * 20 Hz traces (50 ms step) delivered the way the batched sensor FIFO does: per 500 ms batch, all gyro samples then
+     * all accel samples, or the reverse (there is no cross-sensor order). A single shared newest-timestamp clock would
+     * give a false second onset (gyro-first) or lose a short glance (accel-first); the classifier keeps one clock per
+     * sensor, so both orders give the same onset and dwell times.
      */
-    private fun deliverBatched(gyroMag: (Long) -> Float, toMs: Long) {
-        var batch = 0L
-        while (batch < toMs) {
-            val ts = (batch until minOf(batch + 500, toMs) step 50).toList()
-            for (t in ts) { now = t; c.onGyro(gyroMag(t), 0f, 0f, t) }
-            for (t in ts) { now = t; c.onLinearAccel(0f, 0f, 0f, t) }
-            batch += 500
+    @Test fun batchedHeadTurnEmitsOneOnsetAndAnExactDwell() {
+        for (first in listOf(true, false)) {
+            onsets.clear(); dwells.clear()
+            val k = MotionClassifier { 0L }
+            k.onsetListener = { onsets += it }; k.dwellListener = { dwells += it }
+            var batch = 0L
+            while (batch < 4000) {
+                val ts = (batch until batch + 500 step 50).toList()
+                val g = { for (t in ts) k.onGyro(if (t in 2000..2350) 2f else 0f, 0f, 0f, t) }
+                val a = { for (t in ts) k.onLinearAccel(0f, 0f, 0f, t) }
+                if (first) { g(); a() } else { a(); g() }
+                batch += 500
+            }
+            assertEquals(listOf(2000L), onsets, "gyroFirst=$first")
+            assertEquals(listOf(3350L), dwells, "gyroFirst=$first")
+            assertEquals(MotionState.STILL, k.state.value, "gyroFirst=$first")
         }
     }
 
-    @Test fun batchedHeadTurnEmitsOneOnsetAndAnExactDwell() {
-        deliverBatched({ t -> if (t in 2000..2350) 2f else 0f }, 4000)
-        assertEquals(listOf(2000L), onsets)
-        assertEquals(listOf(3350L), dwells)
-        assertEquals(MotionState.STILL, c.state.value)
+    @Test fun batchedShortGlanceIsDetectedInEitherOrder() {
+        for (first in listOf(true, false)) {
+            onsets.clear(); dwells.clear()
+            val k = MotionClassifier { 0L }
+            k.onsetListener = { onsets += it }; k.dwellListener = { dwells += it }
+            var batch = 0L
+            while (batch < 4000) {
+                val ts = (batch until batch + 500 step 50).toList()
+                val g = { for (t in ts) k.onGyro(if (t in 2000..2100) 2f else 0f, 0f, 0f, t) } // 150 ms glance
+                val a = { for (t in ts) k.onLinearAccel(0f, 0f, 0f, t) }
+                if (first) { g(); a() } else { a(); g() }
+                batch += 500
+            }
+            assertEquals(listOf(2000L), onsets, "gyroFirst=$first")
+            assertEquals(1, dwells.size, "gyroFirst=$first")
+        }
+    }
+
+    @Test fun walkingDetectedAt20HzInBatchesInEitherOrder() {
+        for (first in listOf(true, false)) {
+            val k = MotionClassifier { 0L }
+            var detectedAt = -1L
+            var batch = 0L
+            while (batch < 4000 && detectedAt < 0) {
+                val ts = (batch until batch + 500 step 50).toList()
+                val g = { for (t in ts) k.onGyro(0f, 0f, 0f, t) }
+                val a = { for (t in ts) { k.onLinearAccel(0f, 2.0f * sin(2 * PI * 2.0 * t / 1000.0).toFloat(), 0f, t); if (detectedAt < 0 && k.state.value == MotionState.WALKING) detectedAt = t } }
+                if (first) { g(); a() } else { a(); g() }
+                batch += 500
+            }
+            assertTrue(detectedAt in 0..3000, "gyroFirst=$first walking detected at $detectedAt")
+        }
     }
 
     @Test fun walkingDetectedAt20Hz() {

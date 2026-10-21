@@ -35,10 +35,12 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
     private val accAxes = ArrayDeque<FloatArray>()
 
     /**
-     * Newest sample time seen. Batched delivery (STILL rate) hands over a batch's gyro samples before its accel ones, so a
-     * later call can carry an older timestamp; every decision runs on this clamped clock so state and events never go back.
+     * Newest sample time per sensor. Batched delivery (STILL rate) gives no cross-sensor order, so the two streams are
+     * never mixed on one clock: head-turn onset/hold and the dwell run on gyro time, the walking window on accel time.
+     * The result is the same whichever sensor's batch arrives first.
      */
-    private var newestMs = Long.MIN_VALUE
+    private var gyroNewestMs = 0L
+    private var accelNewestMs = 0L
 
     private var lastAboveGyroMs = -1_000_000_000L // newest gyro sample over the threshold
     private var stillSinceMs = 0L                // last time movement was seen (dwell clock)
@@ -54,7 +56,7 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
     private var lastHz = 0.0
 
     @Synchronized fun onGyro(x: Float, y: Float, z: Float, tMs: Long) {
-        newestMs = maxOf(newestMs, tMs); val t = newestMs
+        gyroNewestMs = maxOf(gyroNewestMs, tMs); val t = gyroNewestMs
         val mag = sqrt(x * x + y * y + z * z)
         val above = mag > HEAD_MOVING_RAD_S
         if (mag > featGyroMax) featGyroMax = mag
@@ -74,19 +76,20 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long) {
     }
 
     @Synchronized fun onLinearAccel(x: Float, y: Float, z: Float, tMs: Long) {
-        newestMs = maxOf(newestMs, tMs); val t = newestMs
+        accelNewestMs = maxOf(accelNewestMs, tMs); val t = accelNewestMs
         accT.addLast(tMs); accAxes.addLast(floatArrayOf(x, y, z))
         while (accT.isNotEmpty() && tMs - accT.first() > WINDOW_MS) { accT.removeFirst(); accAxes.removeFirst() }
         analyseWindow(tMs)
         if (_state.value == MotionState.WALKING || walking()) { stillSinceMs = maxOf(stillSinceMs, tMs); hadMotion = true }
         update(t)
-        checkDwell(t)
+        checkDwell(gyroNewestMs)
     }
 
+    /** [tMs] stamps an onset: the own time of the sample that caused it. The head-hold test always runs on gyro time. */
     private fun update(tMs: Long) {
         val next = when {
             walking() -> MotionState.WALKING
-            tMs - lastAboveGyroMs <= HEAD_HOLD_MS -> MotionState.HEAD_MOVING
+            gyroNewestMs - lastAboveGyroMs <= HEAD_HOLD_MS -> MotionState.HEAD_MOVING
             else -> MotionState.STILL
         }
         val prev = _state.value
