@@ -42,7 +42,7 @@ internal class GlassAppWatcher(
             val l = CXRLink(app)
             built = l
             l.configCXRSession(CxrDefs.CXRSession(CxrDefs.CXRSessionType.CUSTOMAPP, glassesPkg))
-            l.setCXRLinkCbk(LinkCbk(onBound, onWearing, onWearingSnapshot)) // CXRLink dereferences it on every service callback
+            l.setCXRLinkCbk(LinkCbk(onBound, onWearing, onWearingSnapshot) { askWearSnapshot(this.link ?: l) }) // CXRLink dereferences it on every service callback
             l.setCXRCustomCmdCbk(ICustomCmdCbk { cmd, bytes ->
                 // Counts only: the payload can carry a photo or the wearer's voice.
                 if (probe) Log.i(PROBE_TAG, "rx cmd=$cmd bytes=${bytes?.size ?: 0} state=${linkState()}")
@@ -74,6 +74,12 @@ internal class GlassAppWatcher(
         }
     }
 
+    /** W1: ask the glasses for a device-info snapshot on every bind, so the wear state is known without waiting for a change. */
+    private fun askWearSnapshot(l: CXRLink) {
+        runCatching { l.getGlassDeviceInfo() }
+        Log.i(CxrGlassesLink.TAG, "watcher: wear check on=${runCatching { l.isWearingCheckOn() }.getOrNull()}")
+    }
+
     override fun send(channel: String, json: String): Int? {
         val l = link ?: return null
         val code = try {
@@ -98,10 +104,19 @@ internal class GlassAppWatcher(
         private val onBound: (Boolean) -> Unit,
         private val onWearing: (Boolean) -> Unit,
         private val onSnapshot: (Boolean?) -> Unit,
+        private val onBoundHook: () -> Unit,
     ) : ICXRLinkCbk {
-        override fun onCXRLConnected(connected: Boolean) = onBound(connected)
+        override fun onCXRLConnected(connected: Boolean) {
+            onBound(connected)
+            if (connected) onBoundHook()
+        }
         override fun onGlassBtConnected(connected: Boolean) = Unit
-        override fun onGlassDeviceInfo(info: GlassInfo) = onSnapshot(WearingStatus.parse(info.wearingStatus))
+        override fun onGlassDeviceInfo(info: GlassInfo) {
+            val raw = info.wearingStatus
+            val parsed = WearingStatus.parse(raw)
+            Log.i(CxrGlassesLink.TAG, "watcher: wearing snapshot raw=${WearingStatus.describe(raw)} parsed=$parsed")
+            onSnapshot(parsed)
+        }
         override fun onGlassWearingStatus(wearing: Boolean) = onWearing(wearing)
         override fun onGlassAiAssistStart() = Unit
         override fun onGlassAiAssistStop() = Unit
