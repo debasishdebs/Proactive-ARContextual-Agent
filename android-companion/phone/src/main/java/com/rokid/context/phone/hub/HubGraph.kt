@@ -128,7 +128,7 @@ object HubGraph {
             sinkFor = ctxHub::sinkFor, onRejected = ctxHub.stats::onWatchRejected, onEpochReset = ctxHub.stats::onWatchEpoch,
         ))
         // Wave B phone sources (opt-in, default off): each takes ctxHub.sinkFor(id) inside start(); nothing runs until switched on.
-        ctxRegistry.register(com.rokid.context.phone.context.ActivitySource.create(app, ctxHub::sinkFor))
+        ctxRegistry.register(com.rokid.context.phone.context.ActivitySource.create(app, ctxHub::sinkFor, ctxHub::failFor))
         ctxRegistry.register(com.rokid.context.phone.context.StepSource.create(app, ctxHub::sinkFor))
         ctxRegistry.register(com.rokid.context.phone.context.AirplaneSource.create(app, ctxHub::sinkFor))
         // phone_car: A "My car" list change while a device is connected re-derives its kind.
@@ -137,9 +137,11 @@ object HubGraph {
             myCars = { com.rokid.context.phone.context.ContextSourceSettings.of(app).myCars },
             changes = com.rokid.context.phone.context.ContextSourceSettings.of(app).changes, scope = ctxScope,
         ))
-        // phone_speed: on demand only (the hub calls registry.speed.setWanted while a vehicle is suspected); the service adds the
-        // `location` type only while that is wanted, from the front.
-        com.rokid.context.phone.hub.ContextHubService.wantLocation = { ctxHub.speedWanted }
+        // phone_speed: the service takes the `location` type at any open/resume from the front while the switch is on and a location
+        // permission is granted (spec §5); fix REQUESTS still follow ctxHub.speedWanted (vehicle suspected) and valid access.
+        val ctxSettings = com.rokid.context.phone.context.ContextSourceSettings.of(app)
+        com.rokid.context.phone.hub.ContextHubService.wantLocation = { ctxSettings.enabled(com.rokid.context.phone.context.SpeedSource.ID) }
+        ctxScope.launch { ctxSettings.changes.collect { ContextHubService.refreshLocationType(app) } }
         val speed = com.rokid.context.phone.context.SpeedSource.create(
             app, ctxHub::sinkFor, foreground = ContextHubService::appInForeground,
             locationHeld = { ContextHubService.locationHeld.value }, onChange = { ContextHubService.refreshLocationType(app) },

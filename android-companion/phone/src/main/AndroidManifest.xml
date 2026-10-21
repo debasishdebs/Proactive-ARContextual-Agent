@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -77,6 +77,9 @@
         <!-- P7-B proposals -->
         <receiver android:name=".phone.actions.ProposalActionReceiver" android:exported="false" />
         <receiver android:name=".phone.hub.ClosedNoticeReceiver" android:exported="false" />
+        <!-- Wave B: the car-app library's unused permission activity and notification receiver are not needed (only CarConnection is). -->
+        <activity android:name="androidx.car.app.CarAppPermissionActivity" tools:node="remove" />
+        <receiver android:name="androidx.car.app.notification.CarAppNotificationBroadcastReceiver" tools:node="remove" />
         <!-- Wave B: Play services Activity Recognition transitions (PendingIntent target; not exported). -->
         <receiver android:name="com.rokid.context.phone.context.ActivityTransitionReceiver" android:exported="false" />
         <!-- /P7-B proposals -->

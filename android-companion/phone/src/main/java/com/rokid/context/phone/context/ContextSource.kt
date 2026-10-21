@@ -21,7 +21,11 @@ interface ContextSource {
 }
 
 /** The speed adapter's on/off (Task 4); the hub asks for it only while a vehicle is suspected. */
-fun interface SpeedControl { fun setWanted(on: Boolean) }
+fun interface SpeedControl {
+    fun setWanted(on: Boolean)
+    /** True while location updates are actually requested (the hub's `locOnS` counts this, not "wanted"). */
+    val requesting: Boolean get() = false
+}
 
 /** UNAVAILABLE = switched on but not registered, or `available()` is false. */
 enum class SourceStatus { OFF, ON, UNAVAILABLE, FAILED }

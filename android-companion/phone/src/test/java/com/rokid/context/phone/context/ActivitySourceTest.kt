@@ -30,17 +30,20 @@ class ActivitySourceTest {
     private var permitted = true
     private var play = true
     private var registerOk = true
+    private var failed = 0
+    private var failCb: (() -> Unit)? = null
 
     @org.junit.After fun clearHolder() { ActivitySource.current = null }
     @org.junit.Before fun resetHolder() { ActivitySource.current = null }
 
     private fun src() = ActivitySource(
         sinkFor = { id -> assertEquals("phone_activity", id); sinkTaken++; EvidenceSink { got += it } },
+        failFor = { id -> assertEquals("phone_activity", id); { failed++ } },
         time = clock.time(),
         platform = object : ActivitySource.Platform {
             override fun playServices() = play
             override fun permitted() = permitted
-            override fun register(): Boolean { registered++; return registerOk }
+            override fun register(onFailed: () -> Unit): Boolean { registered++; failCb = onFailed; return registerOk }
             override fun unregister() { unregistered++ }
         },
     )
@@ -152,6 +155,43 @@ class ActivitySourceTest {
         val s = started()
         s.onTransition(DetectedActivity.WALKING, ActivityTransition.ACTIVITY_TRANSITION_ENTER, obsElapsedMs = clock.el + 5_000)
         assertEquals(clock.wall(), got.single().atMs)
+    }
+
+    @Test fun firstResultAdmitsTheCurrentActivityUpToFifteenMinutesOld() {
+        val s = started(); clock.el += 20 * 60_000L
+        // Play services answers a new registration with the current activity, stamped when it began (before start())
+        s.onResult(listOf(ActivitySource.Transition(DetectedActivity.IN_VEHICLE, ActivityTransition.ACTIVITY_TRANSITION_ENTER, 500_000L + 20 * 60_000L - 600_000L)))
+        assertEquals(1, got.size); assertEquals(clock.wall() - 600_000L, got.single().atMs)
+        // later results keep the strict gate: nothing from before the run
+        s.onResult(listOf(ActivitySource.Transition(DetectedActivity.WALKING, ActivityTransition.ACTIVITY_TRANSITION_ENTER, 400_000L)))
+        assertEquals(1, got.size); assertEquals(1, s.stale)
+    }
+
+    @Test fun firstResultStillDropsWhatIsOlderThanFifteenMinutes() {
+        val s = started(); clock.el += 40 * 60_000L
+        s.onResult(listOf(ActivitySource.Transition(DetectedActivity.IN_VEHICLE, ActivityTransition.ACTIVITY_TRANSITION_ENTER, clock.el - 16 * 60_000L)))
+        assertTrue(got.isEmpty())
+    }
+
+    @Test fun aFutureStampDoesNotMakeLaterRealEventsOutOfOrder() {
+        val s = started(); clock.el += 60_000
+        s.onResult(listOf(
+            ActivitySource.Transition(DetectedActivity.STILL, ActivityTransition.ACTIVITY_TRANSITION_ENTER, clock.el - 30_000),
+            ActivitySource.Transition(DetectedActivity.WALKING, ActivityTransition.ACTIVITY_TRANSITION_ENTER, clock.el + 5_000), // clock skew: future
+            ActivitySource.Transition(DetectedActivity.IN_VEHICLE, ActivityTransition.ACTIVITY_TRANSITION_ENTER, clock.el - 10_000),
+        ))
+        assertEquals(3, got.size); assertEquals(0, s.stale)
+    }
+
+    @Test fun anAsyncRequestFailureIsReportedToTheHub() {
+        started(); assertEquals(0, failed)
+        failCb!!.invoke(); assertEquals(1, failed)
+    }
+
+    @Test fun receiverUnregistersOnlyWhenTheSourceIsOffAndNotRunning() {
+        assertTrue(ActivityTransitionReceiver.shouldUnregister(current = null, enabled = false))
+        assertFalse(ActivityTransitionReceiver.shouldUnregister(current = null, enabled = true))
+        assertFalse(ActivityTransitionReceiver.shouldUnregister(current = src(), enabled = false))
     }
 
     @Test fun restartTakesAFreshSinkAndResetsTheWindow() {

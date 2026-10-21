@@ -21,16 +21,27 @@ class ObsTime(
  */
 class ObsGate(private val time: ObsTime, private val maxAgeMs: Long) {
     var startMs = 0L; private set
+    private var runStartMs = 0L
     private var lastMs = 0L
 
-    fun begin() { startMs = time.nowElapsed(); lastMs = startMs }
+    fun begin() { runStartMs = time.nowElapsed(); startMs = runStartMs; lastMs = startMs }
 
-    /** The accepted observation time (elapsed ms), or null when stale. */
+    /** Admits observations up to [lookbackMs] before the run began (until [tighten]): the current state a fresh registration reports. */
+    fun relax(lookbackMs: Long) { startMs = runStartMs - lookbackMs; lastMs = startMs }
+
+    /** Back to the strict rule: nothing from before the run. */
+    fun tighten() { startMs = runStartMs; lastMs = maxOf(lastMs, startMs) }
+
+    /**
+     * The accepted observation time (elapsed ms), or null when stale. A future stamp (clock skew) is clamped to now and does not
+     * advance the order check, so the real, slightly older events after it in the same batch are not taken for out of order.
+     */
     fun admit(obsElapsedMs: Long?): Long? {
         val now = time.nowElapsed()
-        val obs = minOf(obsElapsedMs ?: now, now)
+        val raw = obsElapsedMs ?: now
+        val obs = minOf(raw, now)
         if (obs < startMs || obs < lastMs || now - obs > maxAgeMs) return null
-        lastMs = obs
+        if (raw <= now) lastMs = obs
         return obs
     }
 }

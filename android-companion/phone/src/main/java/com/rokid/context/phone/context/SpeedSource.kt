@@ -53,14 +53,27 @@ class SpeedSource(
     private var sink: EvidenceSink? = null
     @Volatile var wanted = false; private set
     private var quick = false
-    private var onSince = 0L
-    private var onAccum = 0L
+    private var desired = false          // setWanted before start() is remembered and applied by start()
+    private var lastFast = false
+    private var reqSince = -1L           // elapsed ms when the shell began requesting; -1 = not requesting
+    private var reqAccum = 0L
 
     private class Base(val atMs: Long, val lat: Double, val lon: Double, val acc: Float)
     private var base: Base? = null
 
-    /** Milliseconds this source has been requested (accumulates only while wanted). */
-    val onMs: Long @Synchronized get() = onAccum + if (wanted) time.nowElapsed() - onSince else 0L
+    /** Milliseconds location was actually requested (spec §10 `locOnS`): wanted but without access counts nothing. */
+    val onMs: Long @Synchronized get() = reqAccum + if (reqSince >= 0) time.nowElapsed() - reqSince else 0L
+
+    override val requesting: Boolean @Synchronized get() = reqSince >= 0
+
+    /** The shell reports whether it has location updates registered right now. */
+    @Synchronized
+    fun onRequesting(on: Boolean) {
+        if (on && reqSince < 0 && wanted) reqSince = time.nowElapsed()
+        else if (!on) endRequest()
+    }
+
+    private fun endRequest() { if (reqSince >= 0) { reqAccum += time.nowElapsed() - reqSince; reqSince = -1 } }
 
     /** Location is a runtime permission the hub only asks for once granted; no Play services check beyond the client itself. */
     override fun available(): Boolean = true
@@ -70,6 +83,7 @@ class SpeedSource(
         stopLocked()
         if (!platform.permitted()) return false
         sink = sinkFor(ID)
+        if (desired) setWanted(true)
         return true
     }
 
@@ -78,11 +92,12 @@ class SpeedSource(
     private fun stopLocked() {
         if (sink == null) return
         applyWanted(false)
-        sink = null
+        sink = null; desired = false
     }
 
     @Synchronized
     override fun setWanted(wanted: Boolean) {
+        desired = wanted
         if (sink == null) return
         if (wanted && !platform.permitted()) { applyWanted(false); return }
         applyWanted(wanted)
@@ -90,9 +105,8 @@ class SpeedSource(
 
     private fun applyWanted(on: Boolean) {
         if (on == wanted) return
-        val now = time.nowElapsed()
-        if (on) { onSince = now; gate.begin() } else onAccum += now - onSince
-        wanted = on; base = null; quick = false
+        if (on) gate.begin() else endRequest()
+        wanted = on; base = null; quick = false; lastFast = false
         platform.setUpdates(on, false)
     }
 
@@ -126,7 +140,10 @@ class SpeedSource(
     private fun emit(out: EvidenceSink, at: Long, kmh: Float, precise: Boolean) {
         accepted.incrementAndGet()
         out.accept(Evidence.Speed(at, kmh, precise))
-        val q = kmh >= FAST_KMH
+        // One quick follow-up after a fast reading (rising edge), then back to the normal interval: no sticky 15 s mode.
+        val fast = kmh >= FAST_KMH
+        val q = fast && !lastFast
+        lastFast = fast
         if (q != quick) { quick = q; platform.setUpdates(true, q) }
     }
 
@@ -199,7 +216,7 @@ class SpeedSource(
         private fun ensure() {
             val client = LocationServices.getFusedLocationProviderClient(ctx)
             if (!wanted || !accessValid()) {
-                if (requesting != null) { requesting = null; runCatching { client.removeLocationUpdates(callback) } }
+                if (requesting != null) { requesting = null; runCatching { client.removeLocationUpdates(callback) }; source().onRequesting(false) }
                 return
             }
             if (requesting == quick) return
@@ -207,6 +224,7 @@ class SpeedSource(
             val request = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, interval)
                 .setMinUpdateIntervalMillis(QUICK_INTERVAL_MS).build()
             requesting = if (runCatching { client.requestLocationUpdates(request, callback, Looper.getMainLooper()) }.isSuccess) quick else null
+            source().onRequesting(requesting != null)
         }
     }
 }

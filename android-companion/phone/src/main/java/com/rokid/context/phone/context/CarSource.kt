@@ -133,6 +133,16 @@ class CarSource(
         publish()
     }
 
+    /**
+     * `BluetoothAdapter.ACTION_STATE_CHANGED`: when Bluetooth turns off, every Bluetooth link is gone whether or not the profile
+     * broadcasts said so (some OEMs skip them). The profile proxies rebind when it turns back on and report again ([onBtSnapshot]).
+     */
+    @Synchronized
+    fun onBluetoothState(state: Int) {
+        if (sink == null) return
+        if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) { up.clear(); touched.clear(); publish() }
+    }
+
     /** [CarConnection] type: PROJECTION or NATIVE = connected, anything else = disconnected. */
     @Synchronized
     fun onAndroidAuto(type: Int) {
@@ -185,15 +195,21 @@ class CarSource(
         private var receiver: BroadcastReceiver? = null
         private var adapter: BluetoothAdapter? = null
         private val proxies = HashMap<Int, BluetoothProfile>()
+        private var active = false
         private var observer: Observer<Int>? = null
         private var connection: CarConnection? = null
 
+        @Synchronized
         override fun startBluetooth(): Boolean {
             if (!hasBluetoothPermission(ctx)) return false
             val a = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter ?: return false
-            adapter = a
+            adapter = a; active = true
             val r = object : BroadcastReceiver() {
                 override fun onReceive(c: Context, i: Intent) {
+                    if (i.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                        runCatching { source().onBluetoothState(i.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) }
+                        return
+                    }
                     val profile = if (i.action == BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED) BluetoothProfile.HEADSET else BluetoothProfile.A2DP
                     val state = i.getIntExtra(BluetoothProfile.EXTRA_STATE, -1)
                     val connected = when (state) { BluetoothProfile.STATE_CONNECTED -> true; BluetoothProfile.STATE_DISCONNECTED -> false; else -> return }
@@ -201,25 +217,35 @@ class CarSource(
                     runCatching { source().onBtDevice(d.address, d.bluetoothClass?.deviceClass, connected, profile) }
                 }
             }
-            // Both are protected system broadcasts: NOT_EXPORTED still receives them and no other app can send one to us.
+            // RECEIVER_EXPORTED on purpose: these are protected broadcasts sent by the Bluetooth app (uid 1002), not by system_server, so a
+            // NOT_EXPORTED receiver would never be delivered them. No other app can send a protected action, so exporting is safe.
             ContextCompat.registerReceiver(
-                ctx, r, IntentFilter().apply { addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED); addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED) },
-                ContextCompat.RECEIVER_NOT_EXPORTED,
+                ctx, r,
+                IntentFilter().apply {
+                    addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED); addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+                    addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+                },
+                ContextCompat.RECEIVER_EXPORTED,
             )
             receiver = r
             for (p in listOf(BluetoothProfile.A2DP, BluetoothProfile.HEADSET)) {
                 a.getProfileProxy(ctx, object : BluetoothProfile.ServiceListener {
                     override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
-                        proxies[profile] = proxy
+                        synchronized(this@AndroidPlatform) {
+                            if (!active) { runCatching { a.closeProfileProxy(profile, proxy) }; return } // connected after stop(): release it
+                            proxies[profile] = proxy
+                        }
                         runCatching { source().onBtSnapshot(profile, proxy.connectedDevices.map { it.address to it.bluetoothClass?.deviceClass }) }
                     }
-                    override fun onServiceDisconnected(profile: Int) { proxies.remove(profile) }
+                    override fun onServiceDisconnected(profile: Int) { synchronized(this@AndroidPlatform) { proxies.remove(profile) } }
                 }, p)
             }
             return true
         }
 
+        @Synchronized
         override fun stopBluetooth() {
+            active = false
             receiver?.let { runCatching { ctx.unregisterReceiver(it) } }; receiver = null
             val a = adapter; adapter = null
             for ((p, proxy) in proxies.toMap()) runCatching { a?.closeProfileProxy(p, proxy) }
