@@ -12,7 +12,7 @@ enum class BackgroundWork { EXTRACTION, IMAGE_VECTORS, CAPTION_QUEUE, BACKFILL, 
  * Phone power and heat policy (spec §P2.5; no work/rest on the phone). Pure: the clock, the foreground flag and the
  * thermal status are injected; the pipeline and the image-vector batching read the flags.
  *
- * - app not in the foreground: image vectors are batched every 60 s ([vectorBatchIntervalMs]);
+ * - app not in the foreground: image vectors are batched every 15 s ([vectorBatchIntervalMs]);
  * - thermal >= MODERATE: image vectors, caption queue and backfill pause; non-user extraction is allowed once per 30 s
  *   ([tryExtraction]);
  * - thermal >= SEVERE: everything in the background pauses until the status has been below MODERATE for 2 min;
@@ -67,7 +67,7 @@ class PhonePowerPolicy(
     }
 
     companion object {
-        const val VECTOR_BATCH_MS = 60_000L
+        const val VECTOR_BATCH_MS = 15_000L
         const val MODERATE_EXTRACTION_GAP_MS = 30_000L
         const val RECOVERY_MS = 2 * 60_000L
     }
