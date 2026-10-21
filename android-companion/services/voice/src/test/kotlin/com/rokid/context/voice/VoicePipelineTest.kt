@@ -225,6 +225,26 @@ class VoicePipelineTest {
         assertTrue(a.question.length <= 120); assertTrue(a.text.length <= 300)
         assertTrue(speaker.spoken.single().length > 300, "the whole answer is spoken")
     }
+    /** Wave 3 Task 3: the HUD gets "· Photo HH:mm"; the spoken text stays the bare answer. */
+    @Test fun photoLabelAppendedToHudNotSpoken() = runTest {
+        answer = { AnswerResult.Answered("ask_1", "Keys on the desk.", photoLabel = "Photo 08:53") }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("where are my keys")); runCurrent()
+        assertEquals(Overlay.Answer("where are my keys", "Keys on the desk. \u00b7 Photo 08:53", speaking = true), p.overlay.value)
+        assertEquals(listOf("Keys on the desk."), speaker.spoken)
+        assertEquals("Keys on the desk.", (p.state.value as VoiceState.Answer).text)
+    }
+
+    @Test fun longAnswerClippedToFitLabel() = runTest {
+        answer = { AnswerResult.Answered("ask_1", "word ".repeat(200), photoLabel = "Photo 08:53") }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("q")); runCurrent()
+        val a = p.overlay.value as Overlay.Answer
+        assertTrue(a.text.length <= 300, "${a.text.length}")
+        assertTrue(a.text.endsWith(" \u00b7 Photo 08:53"), a.text)
+        assertTrue(speaker.spoken.single().length > 300)
+    }
+
     @Test fun thinkingIsBoundedAndALateAnswerIsIgnored() = runTest {
         val gate = CompletableDeferred<AnswerResult>()
         answer = { withContext(NonCancellable) { gate.await() } }
