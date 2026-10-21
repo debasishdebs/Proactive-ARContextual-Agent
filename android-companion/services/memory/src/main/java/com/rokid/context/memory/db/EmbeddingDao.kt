@@ -18,6 +18,12 @@ class VectorRow(val rowid: Long, val memoryId: String, val blob: ByteArray)
  * Embedding generations (spec §4.6). "Current" = the newest ACTIVE or STALE space (STALE is never read). At most one
  * BUILDING. Eligible memories = every memory not INVALIDATED. Schema v1 unchanged.
  */
+/** What [EmbeddingDao.putImageChecked] did with one image vector. */
+enum class ImagePut { STORED, DROPPED, WIDTH_MISMATCH }
+
+/** Unrouted PENDING frames: the scene indexer owns them (it embeds them into every target when it routes them), so backfill and the swap count leave them out. */
+private const val INDEXER_OWNS = "AND NOT EXISTS (SELECT 1 FROM frame_meta m2 JOIN frame_state s ON s.frameId = m2.frameId WHERE m2.frameId = f.id AND m2.routedAt IS NULL AND s.state = 'PENDING')"
+
 @Dao
 abstract class EmbeddingDao {
     @Query("SELECT * FROM embedding_space WHERE state IN ('ACTIVE','STALE') ORDER BY createdAt DESC LIMIT 1") abstract suspend fun current(): EmbeddingSpaceEntity?
@@ -86,37 +92,43 @@ abstract class EmbeddingDao {
         return space
     }
 
-    /** Stored photos with no image vector in [spaceId]; a photo marked `unembeddable` (failed to decode twice) is not counted: it never blocks a swap (Ruling 15). */
+    /** Stored photos with no image vector in [spaceId]; a photo marked `unembeddable` (failed to decode twice) is not counted: it never blocks a swap (Ruling 15). Unrouted PENDING frames are not counted either: the scene indexer owns them and writes their vectors into every target at routing time. */
     @Query(
         "SELECT COUNT(*) FROM frame f WHERE NOT EXISTS (SELECT 1 FROM frame_vector v WHERE v.frameId = f.id AND v.spaceId = :spaceId) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_meta m WHERE m.frameId = f.id AND m.imageVectorSpace = 'unembeddable')",
+            "AND NOT EXISTS (SELECT 1 FROM frame_meta m WHERE m.frameId = f.id AND m.imageVectorSpace = 'unembeddable') " + INDEXER_OWNS,
     )
     abstract suspend fun missingImageCount(spaceId: String): Int
 
-    /**
-     * The backfill's work list, newest first: the photos [missingImageCount] counts, minus frames the scene router has yet to
-     * see (PENDING and unrouted: the indexer embeds those itself).
-     */
+    /** The backfill's work list, newest first: exactly the photos [missingImageCount] counts. */
     @Query(
         "SELECT f.id FROM frame f WHERE NOT EXISTS (SELECT 1 FROM frame_vector v WHERE v.frameId = f.id AND v.spaceId = :spaceId) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_meta m WHERE m.frameId = f.id AND m.imageVectorSpace = 'unembeddable') " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_meta m JOIN frame_state s ON s.frameId = m.frameId WHERE m.frameId = f.id AND m.routedAt IS NULL AND s.state = 'PENDING') " +
-            "ORDER BY f.ts DESC, f.id LIMIT :limit",
+            "AND NOT EXISTS (SELECT 1 FROM frame_meta m WHERE m.frameId = f.id AND m.imageVectorSpace = 'unembeddable') " + INDEXER_OWNS +
+            " ORDER BY f.ts DESC, f.id LIMIT :limit",
     )
     abstract suspend fun missingImageIds(spaceId: String, limit: Int): List<String>
+
+    /** The width of an image vector already stored in [spaceId], or null when there is none. */
+    @Query("SELECT length(blob) / 4 FROM frame_vector WHERE spaceId = :spaceId AND length(blob) >= 4 LIMIT 1")
+    abstract suspend fun storedImageWidth(spaceId: String): Int?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE) protected abstract suspend fun putFrameVector(v: FrameVectorEntity)
     @Query("SELECT COUNT(*) FROM frame WHERE id = :frameId") protected abstract suspend fun frameRows(frameId: String): Int
     @Insert(onConflict = OnConflictStrategy.IGNORE) protected abstract suspend fun insertMetaIfAbsent(m: FrameMetaEntity)
     @Query("UPDATE frame_meta SET imageVectorSpace = 'unembeddable' WHERE frameId = :frameId") protected abstract suspend fun setUnembeddable(frameId: String)
 
-    /** One image vector, only into a BUILDING or ACTIVE space and only for a photo that still exists (a late write after expiry or Forget is dropped). */
+    /**
+     * One image vector, only into a BUILDING or ACTIVE space and only for a photo that still exists (a late write after expiry or Forget is
+     * dropped). The width must equal [expectedDims] (declared by the embedder) or, when none is declared, the width already stored in the
+     * space (the first vector fixes it): a mismatch is never stored (cosine over different widths is wrong).
+     */
     @Transaction
-    open suspend fun putImageChecked(frameId: String, spaceId: String, blob: ByteArray): Boolean {
-        space(spaceId)?.takeIf { it.state == SpaceState.BUILDING || it.state == SpaceState.ACTIVE } ?: return false
-        if (frameRows(frameId) == 0) return false
+    open suspend fun putImageChecked(frameId: String, spaceId: String, blob: ByteArray, expectedDims: Int?): ImagePut {
+        space(spaceId)?.takeIf { it.state == SpaceState.BUILDING || it.state == SpaceState.ACTIVE } ?: return ImagePut.DROPPED
+        if (frameRows(frameId) == 0) return ImagePut.DROPPED
+        val want = expectedDims ?: storedImageWidth(spaceId)
+        if (want != null && blob.size / 4 != want) return ImagePut.WIDTH_MISMATCH
         putFrameVector(FrameVectorEntity(frameId, spaceId, blob))
-        return true
+        return ImagePut.STORED
     }
 
     /** Marks a photo that cannot be decoded; a legacy frame without a `frame_meta` row gets a minimal one. */

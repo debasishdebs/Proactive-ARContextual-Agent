@@ -11,8 +11,14 @@ interface EmbeddingService {
     suspend fun embedQuery(text: String): FloatArray
     /** The un-shortened query vector (768 for Nomic), for shortening per index; the same as [embedQuery] when there's nothing to shorten. */
     suspend fun embedQueryFull(text: String): FloatArray = embedQuery(text)
+    /** The width of the image vectors [embedImages] returns (Nomic: 768), or null when the embedder doesn't say (then the space's existing image vectors decide). */
+    val imageDims: Int? get() = null
+    /** Throws [ImageDecodeException] for a photo that cannot be decoded; any other exception is an embedder failure. */
     suspend fun embedImages(jpegs: List<ByteArray>): List<FloatArray> = throw UnsupportedOperationException("text-only space")
 }
+
+/** The only embedder failure that counts against a photo (it will not decode); everything else (model, runtime, memory) is retryable. */
+class ImageDecodeException(message: String? = null, cause: Throwable? = null) : Exception(message, cause)
 
 /** Every existing call site keeps saying `Embedder`. */
 typealias Embedder = EmbeddingService

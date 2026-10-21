@@ -181,4 +181,9 @@ class VectorIndexTest {
         val reference = vectors.map { (id, v) -> Hit(id, VectorMath.cosine(q, v)) }.sortedWith(compareByDescending<Hit> { it.score }.thenBy { it.id }).take(10)
         assertEquals(reference, index.search("S", q, 10))
     }
+
+    @Test fun cosineOfDifferentWidthsIsZeroNeverThrows() {
+        assertEquals(0.0, VectorMath.cosine(floatArrayOf(1f, 0f, 0f), floatArrayOf(1f, 0f)), 0.0)
+        assertEquals(0.0, VectorMath.cosine(floatArrayOf(1f, 0f), floatArrayOf(1f, 0f, 0f)), 0.0)
+    }
 }

@@ -37,8 +37,9 @@ object VectorMath {
     /** True when [v] has a usable direction: a finite, non-zero norm. */
     fun usable(v: FloatArray): Boolean = norm(v).let { it != 0.0 && it.isFinite() }
 
-    /** 0 for a zero or non-finite vector (never NaN); callers ensure equal sizes. */
+    /** 0 for a zero or non-finite vector (never NaN) and for vectors of different widths (never throws, never a truncated result). */
     fun cosine(a: FloatArray, b: FloatArray): Double {
+        if (a.size != b.size) return 0.0
         val na = norm(a); val nb = norm(b)
         if (na == 0.0 || nb == 0.0 || !na.isFinite() || !nb.isFinite()) return 0.0
         var dot = 0.0

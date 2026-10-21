@@ -42,4 +42,5 @@
     <!-- Derived state: a restore must not claim adoption or retirement already happened. -->
     <exclude domain="sharedpref" path="frame_adoption.xml" />
     <exclude domain="sharedpref" path="space_retired_at.xml" />
+    <exclude domain="sharedpref" path="image_read_attempts.xml" />
 </full-backup-content>

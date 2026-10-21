@@ -42,6 +42,7 @@ import com.rokid.context.work.frames.scene.ClusterSave
 import com.rokid.context.work.frames.scene.ClusterSaveResult
 import com.rokid.context.work.frames.scene.MlKitTextPresence
 import com.rokid.context.work.frames.scene.SceneIndexer
+import com.rokid.context.orchestration.PhotoRead
 import com.rokid.context.work.frames.scene.SpaceImageSpaces
 import com.rokid.context.work.frames.scene.WatchListStore
 import com.rokid.context.work.frames.scene.WatchVectors
@@ -131,6 +132,15 @@ class KeyframeHandle internal constructor(private val app: Context) {
     /** The JPEG bytes of [ids] (decrypted when sealed); a frame whose file is gone is left out. */
     internal suspend fun photoBytes(ids: List<String>): Map<String, ByteArray> =
         PipelineRecords.framesByIds(app, ids).mapNotNull { f -> FrameImages.readBytes(f.path)?.let { f.id to it } }.toMap()
+
+    /**
+     * [photoBytes] for the backfill, with the reason a photo is missing: a frame row or file that is gone is [PhotoRead.Missing]; a file that is
+     * there but cannot be read or unsealed just now (I/O, Keystore) is [PhotoRead.Unreadable], which is retried later and never final at once.
+     */
+    internal suspend fun photoReads(ids: List<String>): Map<String, PhotoRead> {
+        val frames = PipelineRecords.framesByIds(app, ids).associateBy { it.id }
+        return ids.associateWith { id -> frames[id]?.let { f -> FrameImages.readBytes(f.path)?.let { PhotoRead.Bytes(it) } ?: PhotoRead.Unreadable } ?: PhotoRead.Missing }
+    }
 
     val stats: StateFlow<KeyframeStats> by lazy {
         val budget = (AiGraph.gate as? CallBudget)?.stats ?: MutableStateFlow(BudgetStats())

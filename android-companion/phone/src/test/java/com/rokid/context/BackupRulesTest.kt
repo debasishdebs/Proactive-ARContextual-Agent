@@ -47,7 +47,7 @@ class BackupRulesTest {
         // Fix wave I2: the wearer's "I exited the glasses app" (device state of this pairing): never restored onto another phone.
         com.rokid.context.phone.hub.PrefsStandDown.PREFS,
         // Derived state: restored, they would say adoption / retirement already happened on an install that never did it.
-        "frame_adoption", "space_retired_at",
+        "frame_adoption", "space_retired_at", "image_read_attempts",
     )
 
     /**

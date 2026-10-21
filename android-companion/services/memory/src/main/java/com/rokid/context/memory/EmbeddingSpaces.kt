@@ -3,6 +3,7 @@ package com.rokid.context.memory
 import com.rokid.context.memory.db.EmbedInput
 import com.rokid.context.memory.db.EmbeddingDao
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
+import com.rokid.context.memory.db.ImagePut
 import com.rokid.context.memory.db.MemoryVectorEntity
 import com.rokid.context.memory.db.SpaceState
 import com.rokid.context.memory.retrieval.VectorCodec
@@ -62,8 +63,9 @@ class EmbeddingSpaces(
     /** Stored photos with no image vector in [spaceId], newest first, `unembeddable` ones excluded. */
     suspend fun missingImages(spaceId: String, limit: Int): List<String> = dao.missingImageIds(spaceId, limit)
     suspend fun missingImageCount(spaceId: String): Int = dao.missingImageCount(spaceId)
-    /** False when the space is no longer writable or the photo is gone. */
-    suspend fun putImage(frameId: String, spaceId: String, vector: FloatArray): Boolean = dao.putImageChecked(frameId, spaceId, VectorCodec.encode(vector))
+    /** [ImagePut.DROPPED] when the space is no longer writable or the photo is gone; [ImagePut.WIDTH_MISMATCH] (never stored) when the width differs from [expectedDims] or the space's stored image width. */
+    suspend fun putImage(frameId: String, spaceId: String, vector: FloatArray, expectedDims: Int? = null): ImagePut =
+        dao.putImageChecked(frameId, spaceId, VectorCodec.encode(vector), expectedDims)
     suspend fun markUnembeddable(frameId: String) = dao.markUnembeddable(frameId, now())
     suspend fun coverage(spaceId: String): Coverage = Coverage(dao.coveredCount(spaceId), dao.eligibleCount())
     /** [requireImages]: the building embedder declares IMAGE, so every stored photo (bar `unembeddable` ones) needs a vector in [buildingId] (Ruling 15). */
