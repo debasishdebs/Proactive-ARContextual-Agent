@@ -11,7 +11,14 @@ import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.memory.db.FrameClusterEntity
 import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.FrameMetaEntity
+import com.rokid.context.memory.db.FrameSourceEntity
+import com.rokid.context.memory.db.FrameStateEntity
+import com.rokid.context.memory.db.FrameVectorEntity
+import com.rokid.context.memory.MemorySettings
+import com.rokid.context.memory.MemorySettingsStore
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
@@ -21,6 +28,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -162,5 +170,218 @@ class RetentionWorkerTest {
         assertTrue(ForgetActions.forgetFact(ctx, "s_young"))
         assertEquals(0, alarms.scheduledAlarms.size)
         assertEquals(ForgetService.REDACTED_PARAMS, graph.proposals.byId(pid)!!.paramsJson)
+    }
+
+    // --- Task 8: per-kind retention (spec P6; Rulings 8, 11-14) --------------------------------------------------------
+    private val day = 24 * hour
+    private val t0 = now // perKindSince in the per-kind tests: the first run of this build
+
+    private fun settings(since: Long = t0, photo: Int = 7, skipped: Int = 1, caption: Int = MemorySettings.FOREVER, summary: Int = MemorySettings.FOREVER, vec: Int = MemorySettings.FOREVER) =
+        MemorySettings(photoDays = photo, skippedPhotoDays = skipped, captionDays = caption, clusterSummaryDays = summary, imageVectorDays = vec, perKindSince = since)
+
+    /** One retention pass at [at], deleting the listed files like the worker does. */
+    private fun pass(s: MemorySettings, at: Long) = runBlocking {
+        Retention(graph, ForgetService(graph.db, graph.proposals) { at }).run(s, at) { r -> FrameSweep.delete(r.framesToDelete) }
+    }
+
+    private suspend fun photo(
+        id: String, ts: Long, state: String, salience: Float? = null, dwell: Boolean = false, clusterId: String? = null,
+        updatedAt: Long = ts, lastError: String? = null, linked: Boolean = false, space: String? = "sp",
+    ): File {
+        val dir = File(ctx.filesDir, "rokid_archive").apply { mkdirs() }
+        val jpg = File(dir, "$id.jpg").apply { writeBytes(byteArrayOf(1)) }
+        File(dir, "$id.meta.json").writeText("{}")
+        val db = graph.db
+        db.frameDao().insertIgnore(FrameEntity(id, ts, jpg.absolutePath, "rokid_glasses"))
+        db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", dwell, null, null, null, 640, salience, null, clusterId, null, space, ts))
+        db.frameStateDao().insertIgnore(listOf(FrameStateEntity(id, state, 0, lastError, null, null, updatedAt)))
+        db.frameVectorDao().upsert(listOf(FrameVectorEntity(id, "sp", byteArrayOf(1, 2))))
+        if (linked) {
+            db.memoryDao().insert(MemoryEntity("m_$id", id, "t", "caption", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, ts, false, "t"))
+            db.frameSourceDao().insertAll(listOf(FrameSourceEntity("m_$id", id, clusterId, "FACT")))
+        }
+        return jpg
+    }
+
+    private suspend fun cluster(id: String, state: String) =
+        graph.db.frameClusterDao().upsert(FrameClusterEntity(id, 1, 2, "gap", "[]", null, state = state))
+    private suspend fun frameRow(id: String) = graph.db.forgetDao().frame(id)
+
+    @Test fun skippedPhotoDeletedAfterOneDay() = runBlocking {
+        cluster("c1", "SUMMARIZED")
+        val old = t0 - 10 * day
+        val shed = photo("shed", old, "NEAR_DUP", lastError = "shed_backlog", updatedAt = old)
+        val dup = photo("dup", old, "NEAR_DUP", salience = 0.1f)
+        val member = photo("mem", old, "CLUSTERED", clusterId = "c1").also {
+            graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("m_sum", "mem", "c1", "CLUSTER_MEMBER")))
+        }
+        mem("m_sum", MemoryTier.LONG, day)
+        pass(settings(), t0 + 12 * hour)
+        assertTrue(shed.exists() && dup.exists() && member.exists())
+        val summary = pass(settings(), t0 + 25 * hour)
+        assertNull(frameRow("shed")); assertNull(frameRow("dup")); assertNull(frameRow("mem"))
+        assertFalse(shed.exists() || dup.exists() || member.exists())
+        assertFalse(File(shed.parentFile, "shed.meta.json").exists()) // the sidecar goes too
+        assertEquals(3, summary.skippedDeleted)
+        // meta, vector and state stay; the tombstone blocks re-extraction
+        assertNotNull(graph.db.frameMetaDao().get("shed")); assertNotNull(graph.db.frameStateDao().get("dup"))
+        assertEquals(3, graph.db.frameVectorDao().countForSpace("sp"))
+        assertEquals(listOf("shed", "dup", "mem").sorted(), graph.db.forgetDao().tombstoned(listOf("shed", "dup", "mem")).sorted())
+        assertTrue(exists("m_sum"))
+    }
+
+    @Test fun clusterRepNotTreatedAsSkipped() = runBlocking {
+        cluster("c1", "SUMMARIZED")
+        val old = t0 - 10 * day
+        val rep = photo("rep", old, "CLUSTERED", clusterId = "c1")
+        mem("m_sum", MemoryTier.LONG, day, frameId = "rep")
+        graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("m_sum", "rep", "c1", "CLUSTER_REP")))
+        pass(settings(), t0 + 3 * day)
+        assertTrue(rep.exists() && frameRow("rep") != null)
+        pass(settings(), t0 + 8 * day) // follows the 7-day photo rule instead
+        assertNull(frameRow("rep")); assertTrue(exists("m_sum"))
+    }
+
+    @Test fun promotedKeyMomentFollowsPhotoRetention() = runBlocking {
+        val ts = t0 - day
+        val salient = photo("salient", ts, "NEAR_DUP", salience = 0.7f, linked = true)
+        val dwell = photo("dwell", ts, "NEAR_DUP", dwell = true, linked = true)
+        pass(settings(), t0 + 3 * day)
+        assertTrue(salient.exists() && dwell.exists())
+        pass(settings(), t0 + 8 * day)
+        assertNull(frameRow("salient")); assertNull(frameRow("dwell"))
+        assertTrue(exists("m_salient") && exists("m_dwell"))
+    }
+
+    @Test fun zeroDaySkippedDeletesThisRun() = runBlocking {
+        val dup = photo("dup", t0 - day, "NEAR_DUP", salience = 0.0f)
+        val kept = photo("ex", t0 - day, "EXTRACTED", linked = true)
+        pass(settings(skipped = 0), t0)
+        assertFalse(dup.exists()); assertNull(frameRow("dup"))
+        assertTrue(kept.exists())
+    }
+
+    @Test fun linkedPhotoDeletedAtSevenDays() = runBlocking {
+        val f = photo("f", t0 + hour, "EXTRACTED", linked = true)
+        pass(settings(), t0 + 6 * day)
+        assertTrue(f.exists())
+        pass(settings(), t0 + 8 * day + hour)
+        assertFalse(f.exists()); assertNull(frameRow("f"))
+        assertTrue(exists("m_f"))
+        assertEquals(1, graph.db.frameVectorDao().countForSpace("sp"))
+        assertEquals("m_f", graph.db.frameSourceDao().memoriesForFrame("f").single())
+    }
+
+    /** Spec P6.4: with the charger never connected, an unlinked photo is still deleted on day 3 of its grace. */
+    @Test fun unlinkedPhotoGetsThreeDayGraceWithChargerNeverConnected() = runBlocking {
+        val f = photo("u", t0 + hour, "EXTRACTED")
+        pass(settings(), t0 + 8 * day) // past 7 days, inside the grace
+        assertTrue(f.exists())
+        pass(settings(), t0 + 9 * day + 12 * hour)
+        assertTrue(f.exists())
+        val s = pass(settings(), t0 + 10 * day + 2 * hour)
+        assertFalse(f.exists()); assertNull(frameRow("u"))
+        assertEquals(1, s.deletedUndescribed)
+    }
+
+    @Test fun captionsAndSummariesOutliveTierWindows() = runBlocking {
+        graph.db.memoryDao().insert(MemoryEntity("cap", null, "t", "caption", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, now - 400 * day, false, "t"))
+        graph.db.memoryDao().insert(MemoryEntity("sum", null, "t", "cluster_summary", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, now - 400 * day, false, "t"))
+        graph.db.memoryDao().insert(MemoryEntity("capS", null, "t", "caption", "", MemoryTier.SHORT, 1.0, ReviewState.OK, false, now - 400 * day, false, "t"))
+        mem("plain", MemoryTier.LONG, 31 * day)
+        assertTrue(work() is ListenableWorker.Result.Success)
+        assertTrue(exists("cap") && exists("sum") && exists("capS"))
+        assertFalse(exists("plain"))
+    }
+
+    @Test fun captionRetentionHonoured() = runBlocking {
+        fun m(id: String, type: String, age: Long) = MemoryEntity(id, null, "t", type, "", MemoryTier.LONG, 1.0, ReviewState.OK, false, t0 - age, false, "t")
+        graph.db.memoryDao().insert(m("c_old", "caption", 31 * day)); graph.db.memoryDao().insert(m("c_new", "caption", 29 * day))
+        graph.db.memoryDao().insert(m("s_old", "cluster_summary", 91 * day)); graph.db.memoryDao().insert(m("s_new", "cluster_summary", 89 * day))
+        pass(settings(caption = 30, summary = 90), t0)
+        assertFalse(exists("c_old")); assertTrue(exists("c_new"))
+        assertFalse(exists("s_old")); assertTrue(exists("s_new"))
+        pass(settings(), t0 + 1000 * day) // FOREVER: never
+        assertTrue(exists("c_new") && exists("s_new"))
+    }
+
+    @Test fun imageVectorRetention() = runBlocking {
+        val old = photo("old", t0 - 40 * day, "EXTRACTED", linked = true)
+        photo("new", t0 - 5 * day, "EXTRACTED", linked = true)
+        pass(settings(vec = 30), t0)
+        assertNull(graph.db.frameVectorDao().get("old", "sp")); assertNotNull(graph.db.frameVectorDao().get("new", "sp"))
+        assertTrue(old.exists() && frameRow("old") != null) // the photo itself is not touched by the vector knob
+        // the backfill must not re-embed what retention removed
+        assertFalse("old" in graph.db.embeddingDao().missingImageIds("sp", 10))
+        pass(settings(), t0 + 1000 * day) // FOREVER
+        assertNotNull(graph.db.frameVectorDao().get("new", "sp"))
+    }
+
+    /** Ruling 13: the ~800 trip photos survive the first run; their deadlines count from the first run. */
+    @Test fun upgradeGraceProtectsOldPhotos() = runBlocking {
+        val trip = t0 - 20 * day
+        cluster("cs", "SUMMARIZED")
+        repeat(300) { photo("lk$it", trip, "EXTRACTED", linked = true) }
+        repeat(300) { photo("sk$it", trip, "NEAR_DUP", salience = 0.1f) }
+        repeat(200) { photo("ul$it", trip, "EXTRACTED") }
+        // first run of this build, through the worker: nothing at all is deleted, the stamp is recorded
+        val store = MemorySettingsStore.get(ctx)
+        store.update { it.copy(perKindSince = 0L) } // the store is a process singleton: an earlier test's run may have stamped it
+        assertEquals(0L, store.settings.value.perKindSince)
+        assertTrue(work() is ListenableWorker.Result.Success)
+        assertEquals(800, graph.db.frameDao().count())
+        assertTrue(store.settings.value.perKindSince >= t0)
+        val since = store.settings.value.perKindSince
+        val s = store.settings.value
+        pass(s, since + 6 * hour); assertEquals(800, graph.db.frameDao().count())
+        pass(s, since + 25 * hour); assertEquals(500, graph.db.frameDao().count()) // skipped ones, 1 day after the stamp
+        pass(s, since + 6 * day); assertEquals(500, graph.db.frameDao().count())
+        pass(s, since + 7 * day + hour); assertEquals(200, graph.db.frameDao().count()) // linked ones; unlinked still in their grace
+        pass(s, since + 10 * day + hour); assertEquals(0, graph.db.frameDao().count())
+        assertEquals(300, graph.db.memoryViewDao().let { dao -> (0 until 300).count { dao.byId("m_lk$it") != null } })
+        // the stamp is written once
+        work(); assertEquals(since, store.settings.value.perKindSince)
+    }
+
+    /** A frame whose cluster is not summarised yet (or is being retried) is never expired, however old. */
+    @Test fun unsummarisedClusterFrameNeverExpired() = runBlocking {
+        cluster("cOpen", "CLOSED"); cluster("cFail", "FAILED"); cluster("cSum", "SUMMARIZING")
+        val old = t0 - 100 * day
+        val files = listOf(
+            photo("a", old, "IN_CLUSTER", clusterId = "cOpen"),
+            photo("b", old, "CLUSTERED", clusterId = "cFail", salience = 0.0f),
+            photo("c", old, "NEAR_DUP", clusterId = "cSum"),
+            photo("d", old, "CAPTION_QUEUED", salience = 0.9f),
+            photo("e", old, "EXTRACTING"), photo("f", old, "PENDING"), photo("g", old, "FAILED"),
+        )
+        pass(settings(since = old), t0 + 400 * day)
+        files.forEach { assertTrue(it.exists()) }
+        assertEquals(7, graph.db.frameDao().count())
+    }
+
+    @Test fun legacyOrphanPassSkipsKeyframes() = runBlocking {
+        val legacy = File(ctx.filesDir, "rokid_archive/legacy.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("legacy", now - 31 * day, legacy.absolutePath, "rokid_glasses"))
+        val key = photo("kf", now - 31 * day, "EXTRACTED") // has frame_meta
+        val inCl = File(ctx.filesDir, "rokid_archive/incl.jpg").apply { writeBytes(byteArrayOf(1)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("incl", now - 31 * day, inCl.absolutePath, "rokid_glasses"))
+        graph.db.frameStateDao().insertIgnore(listOf(FrameStateEntity("incl", "IN_CLUSTER", 0, null, null, null, 1), FrameStateEntity("cq", "CAPTION_QUEUED", 0, null, null, null, 1)))
+        val cq = File(ctx.filesDir, "rokid_archive/cq.jpg").apply { writeBytes(byteArrayOf(1)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("cq", now - 31 * day, cq.absolutePath, "rokid_glasses"))
+        assertTrue(work() is ListenableWorker.Result.Success)
+        assertFalse(legacy.exists()); assertNull(frameRow("legacy")) // the old rule still applies to legacy frames
+        assertTrue(key.exists() && frameRow("kf") != null)
+        assertTrue(inCl.exists() && cq.exists())
+    }
+
+    @Test fun orphanQueryExcludesInClusterCaptionQueuedAndOpenClusters() = runBlocking {
+        cluster("cOpen", "CLOSED")
+        val dao = graph.db.forgetDao()
+        for ((id, st) in listOf("x1" to "IN_CLUSTER", "x2" to "CAPTION_QUEUED", "x3" to "CLUSTERED", "x4" to "EXTRACTED")) {
+            graph.db.frameDao().insertIgnore(FrameEntity(id, 1, "/$id.jpg", "rokid_glasses"))
+            graph.db.frameStateDao().insertIgnore(listOf(FrameStateEntity(id, st, 0, null, null, null, 1)))
+        }
+        graph.db.frameMetaDao().upsert(FrameMetaEntity("x3", null, null, "STILL", false, null, null, null, 640, null, null, "cOpen", null, null, 1))
+        assertEquals(listOf("x4"), dao.orphanFramesBefore(now, 10))
     }
 }

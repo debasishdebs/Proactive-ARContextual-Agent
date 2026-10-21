@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -81,6 +82,12 @@ fun MemoryDetailScreen(
             if (date != null && id != null) {
                 TextButton(onClick = { onOpenFrames(date, id) }, modifier = Modifier.padding(start = 8.dp)) { Text("Open this day's photos", color = PcColors.MintDeep) }
             }
+        }
+        if (state.photoExpired) {
+            Text(
+                MemoryDetailModel.PHOTO_EXPIRED, style = MaterialTheme.typography.labelLarge, color = PcColors.InkSoft,
+                modifier = Modifier.padding(start = 20.dp, top = 8.dp).testTag("photo_expired"),
+            )
         }
         SoftCard(Modifier.padding(16.dp).fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

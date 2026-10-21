@@ -77,16 +77,65 @@ abstract class ForgetDao {
     @Query("DELETE FROM frame WHERE id = :id") abstract suspend fun deleteFrame(id: String): Int
 
     /**
-     * Retention: frames older than [beforeMs] that no memory points at. A frame not yet extracted (frame_state PENDING,
-     * EXTRACTING or FAILED) is kept: retention must not forget a photo the pipeline still owes a memory (review B M-6).
+     * Retention (legacy pass): frames older than [beforeMs] that no memory points at. A frame not yet extracted or still owed work
+     * (frame_state PENDING, EXTRACTING, FAILED, IN_CLUSTER or CAPTION_QUEUED) is kept: retention must not forget a photo the pipeline
+     * still owes a memory (review B M-6). Wave-1+ keyframes (a `frame_meta` row; Ruling 14) follow the per-kind rules instead, and so
+     * does any frame whose cluster is not yet SUMMARIZED or FAILED_FINAL.
      */
     @Query("SELECT id FROM frame WHERE ts < :beforeMs AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame.id) " +
             "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame.id) " +
-            "AND NOT EXISTS (SELECT 1 FROM frame_state s WHERE s.frameId = frame.id AND s.state IN ('PENDING','EXTRACTING','FAILED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_meta fm WHERE fm.frameId = frame.id) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_state s WHERE s.frameId = frame.id AND s.state IN ('PENDING','EXTRACTING','FAILED','IN_CLUSTER','CAPTION_QUEUED')) " +
             "ORDER BY ts LIMIT :limit")
     abstract suspend fun orphanFramesBefore(beforeMs: Long, limit: Int): List<String>
-    /** Retention: memories of [tier] created before [beforeMs], in any review state. */
-    @Query("SELECT id FROM memory WHERE tier = :tier AND createdAt < :beforeMs ORDER BY createdAt LIMIT :limit")
+
+    /**
+     * Retention, ordinary skipped photos (spec §P6.1): a keyframe (has `frame_meta`, not tombstoned) that was shed, a semantic near-dup
+     * (NEAR_DUP) or a non-representative member of a summarised cluster (CLUSTERED, no CLUSTER_REP `frame_source` row), with salience below
+     * 0.5 (or none) and no dwell: never a key moment, never a representative. A frame in a cluster that is not SUMMARIZED or FAILED_FINAL is
+     * never returned. Deadline: `max(frame_state.updatedAt, [since]) + [windowMs] <= [nowMs]`. Callers expire in chunks; the same frames
+     * come back until their row is gone, so a failed chunk is retried by the next pass.
+     */
+    @Query(
+        "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
+            "WHERE s.state IN ('NEAR_DUP','CLUSTERED') " + SKIPPED_PHOTO +
+            "AND MAX(s.updatedAt, :since) + :windowMs <= :nowMs ORDER BY s.updatedAt, f.id LIMIT :limit",
+    )
+    abstract suspend fun skippedPhotosDue(since: Long, windowMs: Long, nowMs: Long, limit: Int): List<String>
+
+    /** Per-kind photo retention: keyframes past `max(frame.ts, [since]) + [windowMs]` that a memory cites (`memory.frameId` or `frame_source`). */
+    @Query(
+        "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
+            "WHERE " + PHOTO_ELIGIBLE +
+            "AND (EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id)) " +
+            "AND MAX(f.ts, :since) + :windowMs <= :nowMs ORDER BY f.ts, f.id LIMIT :limit",
+    )
+    abstract suspend fun linkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, limit: Int): List<String>
+
+    /** The same for keyframes no memory cites: [windowMs] already includes the describe-before-delete grace. */
+    @Query(
+        "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
+            "WHERE " + PHOTO_ELIGIBLE +
+            "AND NOT EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id) " +
+            "AND MAX(f.ts, :since) + :windowMs <= :nowMs ORDER BY f.ts, f.id LIMIT :limit",
+    )
+    abstract suspend fun unlinkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, limit: Int): List<String>
+
+    /** Memories of [type] created before [beforeMs], in any review state. */
+    @Query("SELECT id FROM memory WHERE type = :type AND createdAt < :beforeMs ORDER BY createdAt LIMIT :limit")
+    abstract suspend fun expiredIdsOfType(type: String, beforeMs: Long, limit: Int): List<String>
+
+    /**
+     * Image vectors of keyframes created before [beforeMs] (by `frame_meta.createdAt`), all spaces. Returns the frame ids whose vectors were
+     * deleted; [markVectorsExpired] then stops the backfill from re-embedding them.
+     */
+    @Query("SELECT DISTINCT v.frameId FROM frame_vector v JOIN frame_meta m ON m.frameId = v.frameId WHERE m.createdAt < :beforeMs ORDER BY v.frameId LIMIT :limit")
+    abstract suspend fun vectorFramesBefore(beforeMs: Long, limit: Int): List<String>
+    @Query("UPDATE frame_meta SET imageVectorSpace = 'expired' WHERE frameId IN (:frameIds) AND (imageVectorSpace IS NULL OR imageVectorSpace != 'unembeddable')")
+    abstract suspend fun markVectorsExpired(frameIds: List<String>): Int
+
+    /** Retention: memories of [tier] created before [beforeMs], in any review state. Captions and cluster summaries have their own kinds (Ruling 12). */
+    @Query("SELECT id FROM memory WHERE tier = :tier AND type NOT IN ('caption','cluster_summary') AND createdAt < :beforeMs ORDER BY createdAt LIMIT :limit")
     abstract suspend fun expiredIds(tier: String, beforeMs: Long, limit: Int): List<String>
 
     /** [likePattern] escapes `\`, `%` and `_` with `\`. It is only a prefilter: the caller parses the JSON exactly. */
@@ -101,4 +150,21 @@ abstract class ForgetDao {
     @Query("SELECT * FROM memory_source WHERE sourceMemoryId IN (:ids)") abstract suspend fun edgesTo(ids: List<String>): List<MemorySourceEntity>
     @Query("SELECT * FROM memory WHERE reviewState = 'INVALIDATED' AND derived = 1 ORDER BY createdAt LIMIT :limit")
     abstract suspend fun invalidatedDerived(limit: Int): List<MemoryEntity>
+
+    companion object {
+        /** A frame whose cluster is still being built, summarised or retried is never expired. */
+        const val CLUSTER_SETTLED =
+            "AND NOT EXISTS (SELECT 1 FROM frame_cluster c WHERE c.clusterId = m.clusterId AND c.state NOT IN ('SUMMARIZED','FAILED_FINAL')) "
+        /** Skipped-photo guard, shared by [skippedPhotosDue] and the photo query that must leave those frames to it. */
+        const val SKIPPED_PHOTO =
+            "AND COALESCE(m.salience, 0) < 0.5 AND m.dwell = 0 " +
+                "AND NOT EXISTS (SELECT 1 FROM frame_source r WHERE r.frameId = f.id AND r.role = 'CLUSTER_REP') " +
+                "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " + CLUSTER_SETTLED
+        /** Photo retention applies to every keyframe not owed work, not forgotten, not a skipped photo (those follow [SKIPPED_PHOTO]'s window). */
+        const val PHOTO_ELIGIBLE =
+            "s.state NOT IN ('PENDING','EXTRACTING','FAILED','IN_CLUSTER','CAPTION_QUEUED') " +
+                "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " + CLUSTER_SETTLED +
+                "AND NOT (s.state IN ('NEAR_DUP','CLUSTERED') AND COALESCE(m.salience, 0) < 0.5 AND m.dwell = 0 " +
+                "AND NOT EXISTS (SELECT 1 FROM frame_source r WHERE r.frameId = f.id AND r.role = 'CLUSTER_REP')) "
+    }
 }

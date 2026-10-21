@@ -220,6 +220,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             state, onBack = back, onShort = vm::setShort, onMedium = vm::setMedium, onLong = vm::setLong, onQuota = vm::setQuota,
             onEncryption = { vm.setEncryption(it) }, onExport = vm::export, onAskDeleteAll = vm::askDeleteAll, onConfirmDeleteAll = vm::confirmDeleteAll,
             onCancelDeleteAll = vm::cancelDeleteAll, onOpenReview = { nav.navigate(Routes.SETTINGS_MEMORY_REVIEW) },
+            onPhotoDays = vm::setPhotoDays, onSkippedPhotoDays = vm::setSkippedPhotoDays, onCaptionDays = vm::setCaptionDays,
+            onClusterSummaryDays = vm::setClusterSummaryDays, onImageVectorDays = vm::setImageVectorDays,
             watchList = watchList, onWatchListSave = s.watchList::set, onWatchListReset = s.watchList::reset,
         )
     }

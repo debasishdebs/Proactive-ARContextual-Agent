@@ -73,7 +73,8 @@ class MemorySettingsTest {
     /** S1: retention runs daily since Phase 7; the note describes the windows in force, not "arrives with Forget". */
     @Test fun retentionNoteDescribesTheActiveWindows() {
         assertEquals(
-            "Once a day, short-term memories older than 24 h, medium-term older than 7 days and long-term older than 30 days are removed, with their photos.",
+            "Once a day, short-term memories older than 24 h, medium-term older than 7 days and long-term older than 30 days are removed. " +
+                "Photos are removed 7 days after they were taken (skipped photos after 1 day); captions and scene summaries stay until their own setting says otherwise.",
             MemorySettingsViewModel.retentionNote(com.rokid.context.memory.MemorySettings()),
         )
         val s = com.rokid.context.memory.MemorySettings(shortHours = 48, mediumDays = 14, longDays = 365)

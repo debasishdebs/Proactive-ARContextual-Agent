@@ -71,6 +71,27 @@ class ForgetService(
         cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false)
     }
 
+    /**
+     * Photo expiry (Ruling 11), one transaction: each of [frameIds] that still has a `frame` row is tombstoned (the extraction lock, and the
+     * marker the sweep retries a failed delete from) and loses its `frame` row. `frame_meta`, `frame_vector`, `frame_state`, `frame_source`,
+     * the memories and everything derived from them stay. [Result.framesToDelete] lists each photo's JPEG and its `.meta.json` sidecar for
+     * the caller to delete (on IO, under the WipeFence, through `FrameSweep.delete`). An unknown or already expired frame is skipped.
+     * UI that assumes `memory.frameId` has a row shows "Photo expired".
+     */
+    suspend fun expirePhotos(frameIds: List<String>): Result = db.withTransaction {
+        val paths = mutableListOf<String>()
+        val now = clock()
+        for (id in frameIds.distinct()) {
+            val frame = dao.frame(id) ?: continue
+            dao.insertTombstone(ForgetTombstoneEntity(id, now))
+            dao.deleteFrame(id)
+            frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
+        }
+        Result.EMPTY.copy(framesToDelete = paths.distinct())
+    }
+
+    private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
+
     private suspend fun cascade(ids: List<String>, lockFrames: Boolean, invalidateDescendants: Boolean = true, scrubAccepted: Boolean = true): Result {
         val found = ids.chunked(CHUNK).flatMap { dao.memories(it) }
         if (found.isEmpty()) return Result.EMPTY

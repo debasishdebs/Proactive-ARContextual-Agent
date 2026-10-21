@@ -24,6 +24,8 @@ data class MemoryDetailUiState(
     val editable: Boolean = true,
     val createdLabel: String = "",
     val framePath: String? = null,
+    /** Retention deleted the photo but kept the memory (Ruling 11): [MemoryDetailModel.PHOTO_EXPIRED] is shown in its place. */
+    val photoExpired: Boolean = false,
     val frameId: String? = null,
     val frameDate: LocalDate? = null,
     /** Non-null while editing. */
@@ -38,6 +40,7 @@ data class MemoryDetailUiState(
 )
 
 object MemoryDetailModel {
+    const val PHOTO_EXPIRED = "Photo expired"
     val NOT_FOUND = MemoryDetailUiState(loading = false, found = false)
     private val CREATED = DateTimeFormatter.ofPattern("EEE d MMM · HH:mm", Locale.ENGLISH)
 
@@ -53,6 +56,7 @@ object MemoryDetailModel {
         editable = m.reviewState != ReviewState.INVALIDATED,
         createdLabel = CREATED.format(Instant.ofEpochMilli(m.createdAt).atZone(zone)),
         framePath = frame?.path,
+        photoExpired = m.frameId != null && frame == null,
         frameId = m.frameId,
         frameDate = frame?.let { DayBucket.dayOf(it.ts, zone) },
     )

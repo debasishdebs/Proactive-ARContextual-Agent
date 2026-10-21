@@ -44,6 +44,10 @@ fun FrameViewerScreen(state: FrameViewerUiState, onBack: () -> Unit) {
             IconButton(onClick = onBack) { Icon(Icons.Outlined.Close, contentDescription = "Close", tint = Color.White) }
             Text(state.title, style = MaterialTheme.typography.titleMedium, color = Color.White)
         }
+        if (state.startExpired) {
+            Text(com.rokid.context.phone.ui.memory.MemoryDetailModel.PHOTO_EXPIRED, color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = 16.dp).testTag("photo_expired"))
+        }
         when {
             state.loading -> Unit
             !state.found -> Message("Day not found")
