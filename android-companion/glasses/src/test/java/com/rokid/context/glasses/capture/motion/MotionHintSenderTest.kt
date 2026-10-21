@@ -49,4 +49,19 @@ class MotionHintSenderTest {
         t.forceNext(); now = 9_000; t.onSecond(MotionState.WALKING, now)
         assertEquals(4, sent2.size)
     }
+
+    @Test fun aLongSamplingGapExpiresTheStillWindow() {
+        run(1, 300, MotionState.STILL); sent.clear()
+        now = 900_000L // ten minutes without a call, then a moving second
+        s.onSecond(MotionState.HEAD_MOVING, now)
+        assertEquals(1, sent.size)
+        assertEquals(-1f, sent[0].stillFrac5m, "no recent coverage: unknown, not 1.0")
+    }
+
+    @Test fun samplesOlderThanFiveMinutesDoNotCount() {
+        run(1, 300, MotionState.STILL); sent.clear()
+        run(301, 420, MotionState.HEAD_MOVING)
+        // the window at 420 s is 121..419 s: 180 still (121..300) of 299
+        assertEquals(180f / 299f, sent.last().stillFrac5m)
+    }
 }
