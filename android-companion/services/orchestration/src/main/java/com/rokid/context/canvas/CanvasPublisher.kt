@@ -133,6 +133,10 @@ class CanvasPublisher(
             val t = (o["template"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
             key to PromptDraft(t, (o["schema"] as? JsonPrimitive)?.takeIf { it.isString }?.content)
         }
+        // Warm every key BEFORE the transaction: PromptRepository.active() may take its app-wide upgradeLock on the first
+        // read of a key, and the live path takes that lock and then the database, so taking it inside the transaction
+        // (database, then lock) could deadlock. Once warmed, the reads below never touch the lock.
+        (published.map { it.first } + prev.map { it.first }).distinct().forEach { prompts.active(it) }
         val stale = "was changed after the publish. Use Settings \u2192 Prompts \u2192 History instead."
         var result: Outcome = Outcome.Blocked(listOf(ROLLBACK_FAILED))
         try {
