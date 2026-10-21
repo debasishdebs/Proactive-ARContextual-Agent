@@ -12,6 +12,7 @@ import com.rokid.context.memory.db.CanvasRunEntity
 import com.rokid.context.memory.db.CanvasRunItemEntity
 import com.rokid.context.orchestration.ExtractPhoto
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -119,7 +120,8 @@ class CanvasRunner(
             cancelled.set(null)
             _active.value = runId
             launched = true
-            scope.launch {
+            // ATOMIC: the body runs (and its finally releases the runner) even if the scope is cancelled before the job starts.
+            scope.launch(start = CoroutineStart.ATOMIC) {
                 try {
                     execute(runId, p, ids)
                 } finally {
