@@ -33,6 +33,8 @@ private class Rig(val f: ContextFusion = ContextFusion()) {
     fun intent(l: IntentLabel, c: Float = 0.8f) = send(Evidence.Intent(now, l, c))
 }
 
+private fun assisted() = ContextFusion(FusionParams(imageAssist = true))
+
 class ContextFusionTest {
     private val DRV = ContextState.VEHICLE_DRIVING
     private val PAX = ContextState.VEHICLE_PASSENGER
@@ -223,10 +225,10 @@ class ContextFusionTest {
     }
 
     @Test fun imageOnlyVehicle() {
-        val r = Rig()
+        val r = Rig(assisted())
         r.intent(IntentLabel.VEHICLE_PASSENGER); r.advance(5 * MIN)
         assertEquals(ContextState.UNKNOWN, r.d.state); assertFalse(r.d.vehicleSuspected)
-        val r2 = Rig()
+        val r2 = Rig(assisted())
         r2.intent(IntentLabel.VEHICLE_PASSENGER); r2.advance(2 * MIN); r2.intent(IntentLabel.VEHICLE_PASSENGER)
         assertTrue(r2.d.vehicleSuspected)
         r2.advance(30_000)
@@ -236,7 +238,7 @@ class ContextFusionTest {
     }
 
     @Test fun twoImagesTooFarApartAreNotAVehicle() {
-        val r = Rig()
+        val r = Rig(assisted())
         r.intent(IntentLabel.VEHICLE_PASSENGER); r.advance(4 * MIN); r.intent(IntentLabel.VEHICLE_PASSENGER)
         r.advance(2 * MIN)
         assertEquals(ContextState.UNKNOWN, r.d.state)
@@ -267,7 +269,7 @@ class ContextFusionTest {
         r.advance(1_000); assertEquals(ContextState.FLIGHT, r.d.state)
         assertEquals(0.9f, r.d.confidence)
 
-        val r2 = Rig(); r2.air(); r2.advance(3 * MIN); r2.intent(IntentLabel.FLIGHT_CABIN, 0.7f)
+        val r2 = Rig(assisted()); r2.air(); r2.advance(3 * MIN); r2.intent(IntentLabel.FLIGHT_CABIN, 0.7f)
         r2.advance(2 * MIN); assertEquals(ContextState.FLIGHT, r2.d.state)
         assertTrue(ContextReason.IMAGE_FLIGHT in r2.d.reasons)
 
@@ -304,7 +306,7 @@ class ContextFusionTest {
         val r2 = Rig(); r2.hint(MotionState.STILL, 0.75f); r2.advance(110_000); r2.hint(MotionState.STILL, 0.75f); r2.advance(60_000)
         assertNotEquals(ContextState.REST, r2.d.state)
 
-        val r3 = Rig(); r3.hint(MotionState.STILL, 0.75f); r3.intent(IntentLabel.SITTING_IDLE, 0.8f); r3.advance(60_000)
+        val r3 = Rig(assisted()); r3.hint(MotionState.STILL, 0.75f); r3.intent(IntentLabel.SITTING_IDLE, 0.8f); r3.advance(60_000)
         r3.hint(MotionState.STILL, 0.75f); r3.intent(IntentLabel.SITTING_IDLE, 0.8f); r3.advance(61_000)
         assertEquals(ContextState.REST, r3.d.state); assertTrue(ContextReason.IMAGE_IDLE in r3.d.reasons)
 
@@ -572,5 +574,45 @@ class ContextFusionTest {
         assertEquals(ContextState.WALKING, r.d.state)
         r.advance(20_000); r.hint(MotionState.WALKING); r.speed(60f)      // now two consecutive fast ones
         assertTrue(ContextReason.SPEED in r.d.reasons)
+    }
+
+    // ---- Task 9 user ruling: image intent alone never starts a vehicle, never lowers REST, never makes a FLIGHT
+    @Test fun imageEvidenceAloneNeverStartsAVehicleEpisode() {
+        val r = Rig()
+        r.twoImages(IntentLabel.VEHICLE_PASSENGER, 0.95f); r.advance(5 * MIN)
+        r.twoImages(IntentLabel.DRIVING, 0.95f); r.advance(5 * MIN)
+        assertEquals(ContextState.UNKNOWN, r.d.state); assertEquals(ContextState.UNKNOWN, r.d.candidate)
+        assertFalse(r.d.vehicleSuspected); assertEquals(null, r.d.pDriver)
+        assertFalse(ContextReason.IMAGE_VEHICLE in r.d.reasons)
+    }
+
+    @Test fun imageEvidenceAloneNeverCapsRest() {
+        val r = Rig()
+        r.hint(MotionState.STILL, 0.75f); r.intent(IntentLabel.SITTING_IDLE, 0.9f); r.advance(60_000)
+        r.hint(MotionState.STILL, 0.75f); r.intent(IntentLabel.COMPUTER_WORK, 0.9f); r.advance(5 * MIN)
+        assertNotEquals(ContextState.REST, r.d.state); assertNotEquals(ContextState.REST, r.d.candidate)
+        assertFalse(ContextReason.IMAGE_IDLE in r.d.reasons)
+        // the plain glasses stillness path is unchanged
+        val r2 = Rig(); r2.hint(MotionState.STILL, 0.9f); r2.advance(2 * MIN); assertEquals(ContextState.REST, r2.d.state)
+    }
+
+    @Test fun cabinImageWithAirplaneModeIsNotAFlight() {
+        val r = Rig(); r.air(); r.advance(3 * MIN); r.intent(IntentLabel.FLIGHT_CABIN, 0.9f); r.advance(5 * MIN)
+        assertNotEquals(ContextState.FLIGHT, r.d.state); assertNotEquals(ContextState.FLIGHT, r.d.candidate)
+        assertFalse(ContextReason.IMAGE_FLIGHT in r.d.reasons)
+    }
+
+    @Test fun imagesStillVoteDriverVsPassengerInsideAnEpisodeAMotionFactStarted() {
+        val r = settled(CarLinkKind.MY_CAR_BT)
+        r.twoImages(IntentLabel.VEHICLE_PASSENGER, 0.9f)
+        assertTrue(ContextReason.IMAGE_PASSENGER in r.d.reasons)
+        r.advance(65_000); assertEquals(PAX, r.d.state)
+        // ...and a vote never ends the episode or changes capture: the state stays a vehicle state
+        r.advance(5 * MIN); assertTrue(r.d.state == PAX || r.d.state == DRV)
+    }
+
+    @Test fun nonVehicleImagesDoNotRaiseVehicleSuspected() {
+        val r = Rig(); r.intent(IntentLabel.DRIVING, 0.9f); r.advance(10_000); r.intent(IntentLabel.DRIVING, 0.9f)
+        assertFalse(r.d.vehicleSuspected)
     }
 }

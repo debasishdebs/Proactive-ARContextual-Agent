@@ -12,6 +12,12 @@ data class FusionParams(
     val confLo: Double = 0.55, val confHi: Double = 0.95, val driverHi: Double = 0.6, val driverLo: Double = 0.4,
     val enterVehicleMs: Long = 30_000, val switchDriverMs: Long = 60_000, val enterFlightMs: Long = 120_000,
     val enterRestMs: Long = 120_000, val enterUnknownMs: Long = 60_000,
+    /**
+     * User ruling 2026-10-22: image intent never starts a vehicle episode, never lowers the REST threshold and never makes a FLIGHT
+     * by itself (those reduce or change capture). false = intent is only a driver/passenger vote inside an episode that a
+     * non-image fact started. true restores the old image-assisted behaviour (tests only).
+     */
+    val imageAssist: Boolean = false,
 )
 
 data class ContextDecision(
@@ -117,7 +123,8 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
         val i1 = intents.getOrNull(1)
         val pairOk = i0 != null && i1 != null && age(i0.atMs) <= p.imageNewestMaxAgeMs &&
             (i0.atMs - i1.atMs) <= p.imagePairMaxGapMs && i0.confidence >= p.imageMinConf && i1.confidence >= p.imageMinConf
-        val vehicleImage = pairOk && i0!!.label.isVehicleLabel() && i1!!.label.isVehicleLabel()
+        // Image intent alone never starts a vehicle episode (user ruling 2026-10-22): only with the explicit imageAssist flag.
+        val vehicleImage = p.imageAssist && pairOk && i0!!.label.isVehicleLabel() && i1!!.label.isVehicleLabel()
 
         // car BT contradicted by two indoor/non-vehicle images (latched until that link disconnects)
         if (pairOk && !strong && i0!!.label.isNonVehicleLabel() && i1!!.label.isNonVehicleLabel()) {
@@ -140,11 +147,11 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
         val speedFlight = speeds.any { it.kmh >= p.flightKmh }
         val speedAny = speeds.any { it.kmh >= p.flightAnyKmh }
         val newest = i0?.takeIf { age(it.atMs) <= p.intentWindowMs }
-        val cabin = newest != null && newest.label == IntentLabel.FLIGHT_CABIN && newest.confidence >= p.flightImageConf
+        val cabin = p.imageAssist && newest != null && newest.label == IntentLabel.FLIGHT_CABIN && newest.confidence >= p.flightImageConf
         val flight = (airplaneLong && (speedFlight || cabin)) || speedAny
 
         // --- rest
-        val idleImage = newest != null && newest.confidence >= p.imageMinConf &&
+        val idleImage = p.imageAssist && newest != null && newest.confidence >= p.imageMinConf &&
             (newest.label == IntentLabel.SITTING_IDLE || newest.label == IntentLabel.COMPUTER_WORK)
         val hintFresh = g != null && age(g.atMs) <= p.hintStillTtlMs
         val fracOk = hintFresh && (g!!.stillFrac5m >= p.stillFrac || (idleImage && g.stillFrac5m >= p.stillFracWithImage))
