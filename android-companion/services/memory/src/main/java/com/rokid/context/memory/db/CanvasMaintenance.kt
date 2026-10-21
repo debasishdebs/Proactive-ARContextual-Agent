@@ -13,7 +13,10 @@ class CanvasMaintenance(
 ) {
     private val lastPrune = AtomicLong(NEVER)
 
-    /** Prunes unless a pass ran within the last hour. Returns the rows deleted, or -1 when skipped. */
+    /**
+     * Prunes unless a pass ran within the last hour. The stamp is set BEFORE the prune, so a failing prune is not retried until the next hour
+     * (debug data: a skipped pass only keeps history a little longer).
+     * Returns the rows deleted, or -1 when skipped. */
     suspend fun pruneTraces(now: Long = clock()): Int {
         while (true) {
             val last = lastPrune.get()

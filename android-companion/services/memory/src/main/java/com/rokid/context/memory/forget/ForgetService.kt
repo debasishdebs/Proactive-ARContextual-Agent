@@ -100,17 +100,19 @@ class ForgetService(
     suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = db.withTransaction {
         val paths = mutableListOf<String>()
         var expired = 0
+        val expiredIds = mutableListOf<String>()
         val now = clock()
         for (id in frameIds.distinct()) {
             val frame = dao.frame(id) ?: continue
             if (requireLinked && dao.remainingRefs(id) == 0) continue
             if (recheckSkipped && dao.stillSkippedPhoto(id) == 0) continue
             expired++
+            expiredIds += id
             dao.insertTombstone(ForgetTombstoneEntity(id, now))
-            dropCanvasOutputs(listOf(id)) // S25: frame retention uses the same cascade
             dao.deleteFrame(id)
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
+        dropCanvasOutputs(expiredIds) // S25: frame retention uses the same cascade, once for the whole set
         Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
     }
 
