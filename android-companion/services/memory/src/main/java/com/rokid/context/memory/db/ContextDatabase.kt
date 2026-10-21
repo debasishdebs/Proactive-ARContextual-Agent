@@ -13,9 +13,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         NudgeEntity::class, ProposalEntity::class, ActionLogEntity::class, PauseRecordEntity::class, PauseIntervalEntity::class,
         ShoppingItemEntity::class, NoteEntity::class,
         FrameMetaEntity::class, FrameStateEntity::class, FrameSourceEntity::class, FrameClusterEntity::class, FrameVectorEntity::class,
-        CanvasPipelineEntity::class, CanvasPipelineVersionEntity::class, CanvasRunEntity::class, CanvasRunItemEntity::class, CanvasScoreEntity::class, CanvasPublishEntity::class,
+        CanvasPipelineEntity::class, CanvasPipelineVersionEntity::class, CanvasRunEntity::class, CanvasRunItemEntity::class, CanvasScoreEntity::class, CanvasPublishEntity::class, CanvasLiveTraceEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -116,5 +116,24 @@ val MIGRATION_4_5: Migration = object : Migration(4, 5) {
         db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `intentConf` REAL DEFAULT NULL")
         db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `intentAt` INTEGER DEFAULT NULL")
         db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `capturedAtMs` INTEGER DEFAULT NULL")
+    }
+}
+
+/**
+ * v5 → v6 (canvas slice 2): additive only. Three columns on `canvas_publish`, one on `canvas_run`, one on `canvas_run_item`, and the new
+ * `canvas_live_trace` table with its three indices. No existing column is changed, no table dropped or rewritten, nothing is copied. The
+ * statements are the ones Room generated for `6.json`. Existing publishes read `kind = 'prompts'`.
+ */
+val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `canvas_publish` ADD COLUMN `kind` TEXT NOT NULL DEFAULT 'prompts'")
+        db.execSQL("ALTER TABLE `canvas_publish` ADD COLUMN `mode` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_publish` ADD COLUMN `rollbackReason` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_run` ADD COLUMN `abGroup` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_run_item` ADD COLUMN `calls` INTEGER DEFAULT NULL")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_live_trace` (`publishId` INTEGER NOT NULL, `frameId` TEXT NOT NULL, `nodeId` TEXT NOT NULL, `mode` TEXT NOT NULL, `status` TEXT NOT NULL, `branch` TEXT, `outputJson` TEXT, `error` TEXT, `batchId` TEXT, `at` INTEGER NOT NULL, PRIMARY KEY(`publishId`, `frameId`, `nodeId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_live_trace_frameId` ON `canvas_live_trace` (`frameId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_live_trace_batchId` ON `canvas_live_trace` (`batchId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_live_trace_at` ON `canvas_live_trace` (`at`)")
     }
 }

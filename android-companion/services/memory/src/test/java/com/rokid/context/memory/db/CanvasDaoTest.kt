@@ -5,6 +5,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -114,5 +116,122 @@ class CanvasDaoTest {
         db.frameSourceDao().insertAll(listOf(FrameSourceEntity("m2", "f1", null, "FACT")))
         assertEquals(listOf("m2", "m1"), dao.liveMemories("f1").map { it.id })
         assertEquals("tm2", dao.liveMemories("f1").first().text)
+    }
+
+    // ---- Room v6 ----
+    private fun trace(publish: Long, frame: String, node: String = "_batch", status: String = "OK", at: Long = 1, batch: String? = null, mode: String = "LIVE") =
+        CanvasLiveTraceEntity(publish, frame, node, mode, status, null, "{}", null, batch, at)
+    private fun pub(kind: String = "interpreter", mode: String? = "LIVE", v: Int = 1) =
+        CanvasPublishEntity(pipelineId = "p", version = v, hash = "h", publishedAt = v.toLong(), rolledBackAt = null, snapshotJson = "{}", kind = kind, mode = mode)
+
+    @Test fun activeInterpreterNewestNotRolledBack() = runBlocking {
+        val prompts = dao.insertPublish(pub("prompts", null, 1))
+        val i1 = dao.insertPublish(pub(v = 2)); val i2 = dao.insertPublish(pub(v = 3))
+        assertEquals(i2, dao.activeInterpreter()!!.id)
+        dao.markRolledBack(i2, 5)
+        assertEquals(i1, dao.activeInterpreter()!!.id)
+        dao.markRolledBack(i1, 6)
+        assertNull(dao.activeInterpreter())
+        assertEquals(prompts, dao.activePublishes().single().id)
+    }
+
+    @Test fun rollbackReasonStored() = runBlocking {
+        val id = dao.insertPublish(pub())
+        assertEquals(1, dao.markRolledBackWithReason(id, 9, "fallbacks"))
+        assertEquals(0, dao.markRolledBackWithReason(id, 10, "other"))
+        val row = dao.publishHistory(10).single()
+        assertEquals("fallbacks", row.rollbackReason); assertEquals(9L, row.rolledBackAt); assertEquals("interpreter", row.kind); assertEquals("LIVE", row.mode)
+    }
+
+    @Test fun recentFallbacksWindow() = runBlocking {
+        val rows = (1..35).map { i -> trace(1, "f$i", at = i.toLong(), status = if (i <= 5 || i % 5 == 0 || i % 5 == 1) "ERROR" else "OK") }
+        // the 30 newest (6..35) hold exactly 12 errors; the 5 oldest are errors too but fall outside the window
+        val newest = rows.filter { it.at > 5 }
+        assertEquals(12, newest.count { it.status == "ERROR" })
+        dao.upsertTrace(rows + trace(1, "f1", node = "n1", status = "ERROR", at = 99) + trace(2, "x", status = "ERROR", at = 100))
+        assertEquals(12, dao.recentFallbacks(1, 30))
+        assertEquals(17, dao.recentFallbacks(1, 35))
+        assertEquals(35, dao.interpretedCount(1))
+    }
+
+    @Test fun pruneTracesByAgeAndCount() = runBlocking {
+        dao.upsertTrace((1..10).map { trace(1, "f$it", at = it.toLong()) })
+        assertEquals(3, dao.pruneTraces(4, 100))
+        assertEquals(7, dao.traces(1, 100).size)
+        assertEquals(4, dao.pruneTraces(0, 3))
+        assertEquals(listOf(10L, 9L, 8L), dao.traces(1, 100).map { it.at })
+    }
+
+    @Test fun maintenancePrunesAtMostHourly() = runBlocking {
+        var now = 10L * 24 * 3600 * 1000
+        val m = CanvasMaintenance(dao) { now }
+        dao.upsertTrace(listOf(trace(1, "old", at = 1), trace(1, "new", at = now)))
+        assertEquals(1, m.pruneTraces())
+        dao.upsertTrace(listOf(trace(1, "old2", at = 2)))
+        now += 59 * 60 * 1000; assertEquals(-1, m.pruneTraces()); assertEquals(2, dao.traces(1, 10).size)
+        now += 2 * 60 * 1000; assertEquals(1, m.pruneTraces()); assertEquals(1, dao.traces(1, 10).size)
+    }
+
+    @Test fun runsInGroupOrdered() = runBlocking {
+        dao.insertRun(run("b", at = 20).copy(abGroup = "g")); dao.insertRun(run("a", at = 10).copy(abGroup = "g")); dao.insertRun(run("c", at = 5).copy(abGroup = "other")); dao.insertRun(run("d", at = 1))
+        assertEquals(listOf("a", "b"), dao.runsInGroup("g").map { it.runId })
+    }
+
+    @Test fun tokenMeansOnlyOk() = runBlocking {
+        dao.upsertItem(item("r", "f1", "n1").copy(promptTokens = 100, completionTokens = 10))
+        dao.upsertItem(item("r", "f2", "n1").copy(promptTokens = 200, completionTokens = 30))
+        dao.upsertItem(item("r", "f3", "n1", status = "ERROR").copy(promptTokens = 9999, completionTokens = 9999))
+        dao.upsertItem(item("r", "f4", "n1")) // no usage recorded
+        dao.upsertItem(item("r", "f5", "other").copy(promptTokens = 5000, completionTokens = 5000))
+        val m = dao.tokenMeans(listOf("n1"), 10)
+        assertEquals(2, m.n); assertEquals(150.0, m.p!!, 0.0); assertEquals(20.0, m.c!!, 0.0)
+        assertEquals(1, dao.tokenMeans(listOf("n1"), 1).n)
+        assertEquals(0, dao.tokenMeans(listOf("none"), 10).n); assertNull(dao.tokenMeans(listOf("none"), 10).p)
+    }
+
+    @Test fun recentFramesBetweenBounds() = runBlocking {
+        listOf("f1" to 10L, "f2" to 20L, "f3" to 30L, "f4" to 40L).forEach { (id, ts) -> db.frameDao().insertIgnore(FrameEntity(id, ts, "/$id.jpg", "rokid_glasses")) }
+        assertEquals(listOf("f3", "f2"), dao.recentFramesBetween(20, 40, false, 10).map { it.id })
+        assertEquals(listOf("f2"), dao.recentFramesBetween(20, 30, false, 10).map { it.id })
+        assertEquals(listOf("f4"), dao.recentFramesBetween(0, 100, false, 1).map { it.id })
+    }
+
+    @Test fun pruneRunsTiebreak() = runBlocking {
+        listOf("a", "b", "c").forEach { dao.insertRun(run(it, at = 5)) }
+        dao.pruneRuns(2)
+        assertEquals(listOf("c", "b"), dao.runs(10).map { it.runId }.sortedDescending())
+        assertNull(dao.run("a"))
+    }
+
+    @Test fun recentAsksNewestFirst() = runBlocking {
+        listOf(1L, 3L, 2L).forEach { db.askDao().upsert(AskEntity("a$it", it, "q", "a", "[]", null, "app", false)) }
+        assertEquals(listOf("a3", "a2"), dao.recentAsks(2).map { it.id })
+    }
+
+    // ---- S24 fences ----
+    @Test fun fencedTraceCommitsWhenFenceHolds() = runBlocking {
+        assertTrue(dao.commitTracesFenced(listOf(trace(1, "f1")), 7, setOf("f1")) { 7 })
+        assertEquals(1, dao.traces(1, 10).size)
+    }
+
+    @Test fun fencedTraceDroppedAfterWipe() = runBlocking {
+        assertFalse(dao.commitTracesFenced(listOf(trace(1, "f1")), 7, setOf("f1")) { 8 })
+        assertEquals(0, dao.traces(1, 10).size)
+    }
+
+    @Test fun fencedTraceDroppedForTombstone() = runBlocking {
+        db.forgetDao().insertTombstone(ForgetTombstoneEntity("f2", 1))
+        assertFalse(dao.commitTracesFenced(listOf(trace(1, "f1"), trace(1, "f2")), 7, setOf("f1", "f2")) { 7 })
+        assertEquals("nothing written, f1 included", 0, dao.traces(1, 10).size)
+    }
+
+    @Test fun fencedItemsDroppedAfterWipe() = runBlocking {
+        assertFalse(dao.insertRunItemsFenced(listOf(item("r", "f1")), listOf(score("r", "f1")), 7, setOf("f1")) { 9 })
+        assertEquals(0, dao.items("r").size); assertEquals(0, dao.scores("r").size)
+        assertTrue(dao.insertRunItemsFenced(listOf(item("r", "f1")), listOf(score("r", "f1")), 7, setOf("f1")) { 7 })
+        assertEquals(1, dao.items("r").size); assertEquals(1, dao.scores("r").size)
+        db.forgetDao().insertTombstone(ForgetTombstoneEntity("f3", 1))
+        assertFalse(dao.insertRunItemsFenced(listOf(item("r", "f3")), emptyList(), 7, setOf("f3")) { 7 })
+        assertEquals(1, dao.items("r").size)
     }
 }

@@ -1,5 +1,6 @@
 package com.rokid.context.memory.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -41,6 +42,8 @@ data class CanvasRunEntity(
     val startedAt: Long,
     val finishedAt: Long?,
     val modelsJson: String,
+    /** Room v6: the A/B group this run belongs to (null = a plain run). */
+    val abGroup: String? = null,
 )
 
 /** Photo-derived output of one node for one photo: deleted by Delete all and by Forget of that photo. */
@@ -59,6 +62,8 @@ data class CanvasRunItemEntity(
     val model: String?,
     val promptVersion: Int?,
     val batchId: String?,
+    /** Room v6: provider calls made for this item (null = not recorded). */
+    val calls: Int? = null,
 )
 
 @Entity(tableName = "canvas_score", primaryKeys = ["runId", "frameId", "nodeId"], indices = [Index("frameId")])
@@ -80,4 +85,29 @@ data class CanvasPublishEntity(
     val publishedAt: Long,
     val rolledBackAt: Long?,
     val snapshotJson: String,
+    /** Room v6: `prompts` (the MVP prompt publish) or `interpreter`. */
+    @ColumnInfo(defaultValue = "prompts") val kind: String = "prompts",
+    /** Room v6: SHADOW or LIVE for an interpreter publish; null for prompts. */
+    val mode: String? = null,
+    /** Room v6: fixed short reason a publish was rolled back (auto-rollback), never provider text. */
+    val rollbackReason: String? = null,
+)
+
+/**
+ * Room v6: one row per (publish, photo, node) of an interpreter publish (Live or Shadow). `nodeId = "_batch"` is the per-photo outcome row
+ * (OK when the interpreter's extraction was used, ERROR with a fixed text when the batch fell back). Photo-derived debug data: deleted by Delete all
+ * and by Forget (batch-wide through [batchId]), pruned by retention, never exported or backed up.
+ */
+@Entity(tableName = "canvas_live_trace", primaryKeys = ["publishId", "frameId", "nodeId"], indices = [Index("frameId"), Index("batchId"), Index("at")])
+data class CanvasLiveTraceEntity(
+    val publishId: Long,
+    val frameId: String,
+    val nodeId: String,
+    val mode: String,
+    val status: String,
+    val branch: String?,
+    val outputJson: String?,
+    val error: String?,
+    val batchId: String?,
+    val at: Long,
 )

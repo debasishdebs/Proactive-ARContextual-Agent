@@ -43,5 +43,15 @@ class WipeDaoTest {
         listOf("canvas_pipeline", "canvas_pipeline_version", "canvas_publish").forEach { assertEquals(it, 1, rowCount(raw, it)) }
     }
 
+    @Test fun wipeClearsLiveTrace() = runBlocking {
+        val c = db.canvasDao()
+        c.upsertTrace(listOf(CanvasLiveTraceEntity(1, "f", "_batch", "LIVE", "OK", null, "{}", null, "b", 1), CanvasLiveTraceEntity(1, "g", "n", "SHADOW", "OK", null, null, null, null, 2)))
+        c.insertPublish(CanvasPublishEntity(pipelineId = "p", version = 1, hash = "h", publishedAt = 1, rolledBackAt = null, snapshotJson = "{}", kind = "interpreter", mode = "LIVE"))
+        db.wipeDao().wipeMemory()
+        val raw = db.openHelper.writableDatabase
+        assertEquals(0, rowCount(raw, "canvas_live_trace"))
+        assertEquals("the publish itself holds no photo data and stays", 1, rowCount(raw, "canvas_publish"))
+    }
+
     private fun rowCount(raw: androidx.sqlite.db.SupportSQLiteDatabase, t: String) = raw.query("SELECT COUNT(*) FROM `$t`").use { it.moveToFirst(); it.getInt(0) }
 }

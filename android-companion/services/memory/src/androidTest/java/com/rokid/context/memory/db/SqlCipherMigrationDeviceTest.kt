@@ -66,38 +66,39 @@ class SqlCipherMigrationDeviceTest {
         assertFalse(EncryptionMigrator.isPlaintextSqlite(file))
     }
 
-    /** A keyed v1-shaped file (v2 file minus the five frame tables, user_version 1) opens through both production builders and migrates v1 → v4. */
-    @Test fun encryptedDbMigratesTo4FromV1Shape() = runBlocking(Dispatchers.IO) {
-        System.loadLibrary("sqlcipher")
-        // Create a keyed v2 database through the production builder, step it back to a v1 shape, and reopen through build() and buildDeferred().
-        listOf(true, false).forEach { deferred ->
-            clean()
-            val first = DatabaseFactory.build(ctx, encrypted = true) { key.copyOf() }
-            try { MemoryRepository(first.memoryDao()).add(mem("m1", "keys on the shelf")) } finally { first.close() }
-            // Drop the five frame tables and set user_version = 1 to emulate a v1 file (same key, same file).
-            net.zetetic.database.sqlcipher.SQLiteDatabase.openDatabase(file.path, key.copyOf(), null, net.zetetic.database.sqlcipher.SQLiteDatabase.OPEN_READWRITE, null, null).use { raw ->
-                listOf("frame_meta", "frame_state", "frame_source", "frame_cluster", "frame_vector").forEach { raw.execSQL("DROP TABLE IF EXISTS `$it`") }
-                raw.execSQL("PRAGMA user_version = 1")
-            }
-            val db = if (deferred) DatabaseFactory.buildDeferred(ctx, { true }) { key.copyOf() } else DatabaseFactory.build(ctx, encrypted = true) { key.copyOf() }
-            try {
-                assertEquals(listOf("m1"), searchIds(db, "shelf"))
-                db.frameStateDao().insertIgnore(listOf(FrameStateEntity("f1", "PENDING", 0, null, null, null, 1)))
-                assertEquals(1, db.frameStateDao().get("f1")?.let { 1 })
-                assertEquals(5, db.openHelper.writableDatabase.version)
-                assertCanvasTables(db)
-            } finally { db.close() }
-            assertFalse(EncryptionMigrator.isPlaintextSqlite(file))
-        }
+    private val canvasTables = listOf("canvas_pipeline", "canvas_pipeline_version", "canvas_run", "canvas_run_item", "canvas_score", "canvas_publish", "canvas_live_trace")
+    private val v6Tables = listOf("canvas_live_trace")
+
+    private fun open() = net.zetetic.database.sqlcipher.SQLiteDatabase.openDatabase(file.path, key.copyOf(), null, net.zetetic.database.sqlcipher.SQLiteDatabase.OPEN_READWRITE, null, null)
+
+    /** v6 → v5 shape: the live trace table and the five slice-2 columns (SQLite DROP COLUMN). */
+    private fun dropV6(raw: net.zetetic.database.sqlcipher.SQLiteDatabase) {
+        raw.execSQL("DROP TABLE IF EXISTS `canvas_live_trace`")
+        listOf("kind", "mode", "rollbackReason").forEach { raw.execSQL("ALTER TABLE `canvas_publish` DROP COLUMN `$it`") }
+        raw.execSQL("ALTER TABLE `canvas_run` DROP COLUMN `abGroup`")
+        raw.execSQL("ALTER TABLE `canvas_run_item` DROP COLUMN `calls`")
     }
 
-    private val canvasTables = listOf("canvas_pipeline", "canvas_pipeline_version", "canvas_run", "canvas_run_item", "canvas_score", "canvas_publish")
+    /** v5 → v4 shape: the four frame_meta columns of wave B and wave 3. */
+    private fun dropV5(raw: net.zetetic.database.sqlcipher.SQLiteDatabase) {
+        listOf("intentLabel", "intentConf", "intentAt", "capturedAtMs").forEach { raw.execSQL("ALTER TABLE `frame_meta` DROP COLUMN `$it`") }
+    }
 
-    /** Takes a freshly created v4 file back to the v3 shape of frame_cluster / frame_meta (SQLite DROP COLUMN needs the indices gone first). */
-    private fun dropV4Columns(raw: net.zetetic.database.sqlcipher.SQLiteDatabase) {
+    /** v4 → v3 shape of frame_cluster / frame_meta (SQLite DROP COLUMN needs the indices gone first). */
+    private fun dropV4(raw: net.zetetic.database.sqlcipher.SQLiteDatabase) {
         raw.execSQL("DROP INDEX IF EXISTS `index_frame_cluster_state`"); raw.execSQL("DROP INDEX IF EXISTS `index_frame_meta_clusterId`")
         listOf("state", "attempts", "claimId", "claimedAt", "lastError", "updatedAt", "motionClass", "memberCount", "lastTs").forEach { raw.execSQL("ALTER TABLE `frame_cluster` DROP COLUMN `$it`") }
         raw.execSQL("ALTER TABLE `frame_meta` DROP COLUMN `routedAt`")
+    }
+
+    /** Takes a freshly created current-version (v6) file down to the shape of canonical [version] (1..5) and sets user_version. Own fixture file and key: never the production database. */
+    private fun shapeAs(raw: net.zetetic.database.sqlcipher.SQLiteDatabase, version: Int) {
+        if (version <= 5) dropV6(raw)
+        if (version <= 4) dropV5(raw)
+        if (version <= 3) dropV4(raw)
+        if (version <= 2) canvasTables.forEach { raw.execSQL("DROP TABLE IF EXISTS `$it`") }
+        if (version <= 1) listOf("frame_meta", "frame_state", "frame_source", "frame_cluster", "frame_vector").forEach { raw.execSQL("DROP TABLE IF EXISTS `$it`") }
+        raw.execSQL("PRAGMA user_version = $version")
     }
 
     private fun assertCanvasTables(db: ContextDatabase) {
@@ -105,8 +106,8 @@ class SqlCipherMigrationDeviceTest {
         assertTrue(names.containsAll(canvasTables))
     }
 
-    /** A keyed v2-shaped file (current file minus the six canvas tables, user_version 2) migrates to v4 through both builders, keeping its v2 rows. */
-    @Test fun encryptedDbMigratesTo4FromV2Shape() = runBlocking(Dispatchers.IO) {
+    /** One keyed fixture at canonical [version], migrated to v6 through both production builders, own key, never the production file (S41). */
+    private fun migratesToV6From(version: Int, seed: (net.zetetic.database.sqlcipher.SQLiteDatabase) -> Unit = {}, assertAfter: suspend (ContextDatabase) -> Unit = {}) = runBlocking(Dispatchers.IO) {
         System.loadLibrary("sqlcipher")
         listOf(true, false).forEach { deferred ->
             clean()
@@ -115,52 +116,62 @@ class SqlCipherMigrationDeviceTest {
                 MemoryRepository(first.memoryDao()).add(mem("m1", "keys on the shelf"))
                 first.frameStateDao().insertIgnore(listOf(FrameStateEntity("f1", "PENDING", 0, null, null, null, 1)))
             } finally { first.close() }
-            net.zetetic.database.sqlcipher.SQLiteDatabase.openDatabase(file.path, key.copyOf(), null, net.zetetic.database.sqlcipher.SQLiteDatabase.OPEN_READWRITE, null, null).use { raw ->
-                canvasTables.forEach { raw.execSQL("DROP TABLE IF EXISTS `$it`") }
-                dropV4Columns(raw) // the file was just created at v4; v3 → v4 must find the v3 shape
-                raw.execSQL("PRAGMA user_version = 2")
-            }
+            open().use { raw -> shapeAs(raw, version); seed(raw) }
             val db = if (deferred) DatabaseFactory.buildDeferred(ctx, { true }) { key.copyOf() } else DatabaseFactory.build(ctx, encrypted = true) { key.copyOf() }
             try {
-                assertEquals(5, db.openHelper.writableDatabase.version)
+                assertEquals(6, db.openHelper.writableDatabase.version)
                 assertEquals(listOf("m1"), searchIds(db, "shelf"))
-                assertEquals(1, db.frameStateDao().get("f1")?.let { 1 })
                 assertCanvasTables(db)
-                assertEquals(0, db.canvasDao().runs(5).size)
+                assertEquals(0, db.openHelper.writableDatabase.query("SELECT COUNT(*) FROM canvas_live_trace").use { it.moveToFirst(); it.getInt(0) })
+                assertAfter(db)
             } finally { db.close() }
             assertFalse(EncryptionMigrator.isPlaintextSqlite(file))
         }
     }
 
-    /**
-     * A keyed v3-shaped file (the wave-2 columns and indices removed, user_version 3) with a closed and an open cluster, a frame_meta row and
-     * a canvas pipeline row migrates v3 → v4 through both builders: cluster states derive from closedAt, the canvas row survives.
-     */
-    @Test fun encryptedDbMigratesTo4FromV3Shape() = runBlocking(Dispatchers.IO) {
-        System.loadLibrary("sqlcipher")
-        listOf(true, false).forEach { deferred ->
-            clean()
-            val first = DatabaseFactory.build(ctx, encrypted = true) { key.copyOf() }
-            try { MemoryRepository(first.memoryDao()).add(mem("m1", "keys on the shelf")) } finally { first.close() }
-            net.zetetic.database.sqlcipher.SQLiteDatabase.openDatabase(file.path, key.copyOf(), null, net.zetetic.database.sqlcipher.SQLiteDatabase.OPEN_READWRITE, null, null).use { raw ->
-                dropV4Columns(raw)
-                raw.execSQL("INSERT INTO frame_cluster (clusterId, openedAt, closedAt, closeReason, repFrameIds, memoryId) VALUES ('closed-c', 1, 2, 'gap', '[]', NULL), ('open-c', 3, NULL, NULL, '[]', NULL)")
-                raw.execSQL("INSERT INTO frame_meta (frameId, wireFrameId, sessionId, motion, dwell, createdAt) VALUES ('f1', 'w1', 's', 'STILL', 0, 1)")
-                raw.execSQL("INSERT INTO canvas_pipeline (id, name, draftJson, draftRev, builtIn, createdAt, updatedAt) VALUES ('p1', 'kept', '{}', 1, 0, 1, 1)")
-                raw.execSQL("PRAGMA user_version = 3")
-            }
-            val db = if (deferred) DatabaseFactory.buildDeferred(ctx, { true }) { key.copyOf() } else DatabaseFactory.build(ctx, encrypted = true) { key.copyOf() }
-            try {
-                assertEquals(5, db.openHelper.writableDatabase.version)
-                assertEquals(listOf("m1"), searchIds(db, "shelf"))
-                assertEquals("CLOSED", db.frameClusterDao().get("closed-c")?.state)
-                assertEquals("OPEN", db.frameClusterDao().get("open-c")?.state)
-                assertEquals(null, db.frameMetaDao().get("f1")?.routedAt)
-                assertEquals("f1", db.frameMetaDao().get("f1")?.frameId)
-                assertCanvasTables(db)
-                assertEquals("kept", db.openHelper.writableDatabase.query("SELECT name FROM canvas_pipeline WHERE id = 'p1'").use { it.moveToFirst(); it.getString(0) })
-            } finally { db.close() }
-            assertFalse(EncryptionMigrator.isPlaintextSqlite(file))
-        }
-    }
+    /** A keyed v1-shaped file (no frame or canvas tables, user_version 1) migrates v1 → v6. */
+    @Test fun encryptedDbMigratesTo6FromV1Shape() = migratesToV6From(1, assertAfter = { db ->
+        db.frameStateDao().insertIgnore(listOf(FrameStateEntity("f9", "PENDING", 0, null, null, null, 1)))
+        assertEquals(1, db.frameStateDao().get("f9")?.let { 1 })
+    })
+
+    /** A keyed v2-shaped file (no canvas tables) migrates v2 → v6, keeping its v2 rows. */
+    @Test fun encryptedDbMigratesTo6FromV2Shape() = migratesToV6From(2, assertAfter = { db ->
+        assertEquals(1, db.frameStateDao().get("f1")?.let { 1 })
+        assertEquals(0, db.canvasDao().runs(5).size)
+    })
+
+    /** A keyed v3 file with a closed and an open cluster, a frame_meta row and a canvas pipeline + publish row migrates v3 → v6. */
+    @Test fun encryptedDbMigratesTo6FromV3Shape() = migratesToV6From(3, seed = { raw ->
+        raw.execSQL("INSERT INTO frame_cluster (clusterId, openedAt, closedAt, closeReason, repFrameIds, memoryId) VALUES ('closed-c', 1, 2, 'gap', '[]', NULL), ('open-c', 3, NULL, NULL, '[]', NULL)")
+        raw.execSQL("INSERT INTO frame_meta (frameId, wireFrameId, sessionId, motion, dwell, createdAt) VALUES ('fm1', 'w1', 's', 'STILL', 0, 1)")
+        raw.execSQL("INSERT INTO canvas_pipeline (id, name, draftJson, draftRev, builtIn, createdAt, updatedAt) VALUES ('p1', 'kept', '{}', 1, 0, 1, 1)")
+        raw.execSQL("INSERT INTO canvas_publish (pipelineId, version, hash, publishedAt, rolledBackAt, snapshotJson) VALUES ('p1', 1, 'h', 1, NULL, '{}')")
+    }, assertAfter = { db ->
+        assertEquals("CLOSED", db.frameClusterDao().get("closed-c")?.state)
+        assertEquals("OPEN", db.frameClusterDao().get("open-c")?.state)
+        assertEquals(null, db.frameMetaDao().get("fm1")?.routedAt)
+        assertEquals("kept", db.openHelper.writableDatabase.query("SELECT name FROM canvas_pipeline WHERE id = 'p1'").use { it.moveToFirst(); it.getString(0) })
+        assertEquals("prompts", db.canvasDao().activePublishes().single().kind)
+    })
+
+    /** A keyed v4 file (no intent columns) migrates v4 → v6. */
+    @Test fun encryptedDbMigratesTo6FromV4Shape() = migratesToV6From(4, seed = { raw ->
+        raw.execSQL("INSERT INTO frame_meta (frameId, wireFrameId, sessionId, motion, dwell, createdAt) VALUES ('fm1', 'w1', 's', 'STILL', 0, 1)")
+    }, assertAfter = { db ->
+        val m = db.frameMetaDao().get("fm1")!!
+        assertEquals(null, m.intentLabel); assertEquals(null, m.capturedAtMs)
+    })
+
+    /** A keyed v5 file with a canvas publish, run and item migrates v5 → v6: old rows keep their values, new columns take defaults. */
+    @Test fun encryptedDbMigratesTo6FromV5Shape() = migratesToV6From(5, seed = { raw ->
+        raw.execSQL("INSERT INTO canvas_publish (pipelineId, version, hash, publishedAt, rolledBackAt, snapshotJson) VALUES ('p1', 1, 'h', 1, NULL, '{}')")
+        raw.execSQL("INSERT INTO canvas_run (runId, pipelineId, version, pipelineHash, pipelineJson, status, frameCount, estCalls, calls, failures, startedAt, finishedAt, modelsJson) VALUES ('r1', 'p1', 1, 'h', '{}', 'DONE', 1, 1, 1, 0, 1, 2, '[]')")
+        raw.execSQL("INSERT INTO canvas_run_item (runId, frameId, nodeId, status) VALUES ('r1', 'fm1', 'n', 'OK')")
+    }, assertAfter = { db ->
+        val pub = db.canvasDao().activePublishes().single()
+        assertEquals("prompts", pub.kind); assertEquals(null, pub.mode); assertEquals(null, pub.rollbackReason)
+        assertEquals(null, db.canvasDao().run("r1")?.abGroup)
+        assertEquals(null, db.canvasDao().items("r1").single().calls)
+    })
 }
