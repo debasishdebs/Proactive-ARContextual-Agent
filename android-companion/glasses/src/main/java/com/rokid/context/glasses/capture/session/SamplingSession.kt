@@ -234,7 +234,8 @@ class SamplingSession(
     }
 
     private fun onOnset() = synchronized(lock) {
-        stillStepV = 0
+        // Micro-motion flips STILL -> HEAD_MOVING every few seconds: in SETTLE it must not defeat the still-scene backoff (a real look resets it in onDwell).
+        if (profile().wake == CameraWake.MOTION) stillStepV = 0
         if (!resting && profile().wake == CameraWake.MOTION) { // never an immediate open in rest
             forceAnalyse = true // the immediate check at the first sign of movement
             forceBrief = true
@@ -547,7 +548,8 @@ class SamplingSession(
      */
     private fun updateBackoff(ep: Episode, h: Pair<Long, Long>?, result: GateResult?, sampleMotion: MotionState) {
         val prev = lastCheckHash
-        if (result is GateResult.Keep) stillStepV = 0
+        if (result is GateResult.Skip && result.reason == KeyframeGate.CAPPED) { /* a capped frame is no evidence either way */ }
+        else if (result is GateResult.Keep) stillStepV = 0
         else if (ep.why == "timer" && sampleMotion == MotionState.STILL && h != null && prev != null) {
             val same = minOf(java.lang.Long.bitCount(h.first xor prev.first), java.lang.Long.bitCount(h.second xor prev.second)) <= KeyframeGate.HAMMING
             if (!same) stillStepV = 0

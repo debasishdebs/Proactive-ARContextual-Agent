@@ -6,6 +6,7 @@ import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.MotionState
 import com.rokid.context.glasses.capture.keyframe.ImageHashes
 import com.rokid.context.glasses.capture.motion.GlanceParams
+import com.rokid.context.glasses.capture.keyframe.Candidate
 import com.rokid.context.glasses.capture.keyframe.Nv21Frame
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -61,13 +62,43 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
-    @Test fun onsetResetsTheBackoff() = runTest {
+    // Wave A3 final review I2: in SETTLE mode a head-motion onset (micro-motion) no longer resets the backoff; MOTION keeps the A2 reset.
+    @Test fun onsetResetsTheBackoffInMotionMode() = runTest {
         val r = rig(this)
         r.session.start()
         while (r.session.stillStep < 2) delay(250)
         r.motion.onGyro(2f, 0f, 0f, r.clock())
         runCurrent()
         assertEquals(0, r.session.stillStep)
+        r.session.stop("test")
+    }
+
+    @Test fun onsetLeavesTheBackoffInSettleMode() = runTest {
+        val r = rig(this) { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }
+        r.session.start()
+        while (r.session.stillStep < 2) delay(250)
+        val before = r.session.stillStep
+        r.motion.onGyro(2f, 0f, 0f, r.clock())
+        runCurrent()
+        assertEquals(before, r.session.stillStep)
+        r.session.stop("test")
+    }
+
+    @Test fun aCappedChangedFrameDoesNotResetTheBackoff() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        while (r.session.stillStep < 2) r.gyro(250, 0f)
+        val step = r.session.stillStep
+        val now = r.clock()
+        repeat(4) { r.gate.recordKeep(Candidate(0, Scenes.thumb(99), Nv21Frame(640, 480, 0, ByteArray(4))), 0L, 0L, now) } // the minute's cap is used up
+        r.session.diagSnapshot()
+        r.scene = 77
+        val opens = r.camera.opens
+        while (r.camera.opens == opens) r.gyro(250, 0f)
+        r.gyro(2_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertTrue(d.capped >= 1, "capped=${d.capped}")
+        assertTrue(r.session.stillStep >= step, "step ${r.session.stillStep} < $step")
         r.session.stop("test")
     }
 
@@ -765,7 +796,9 @@ class SamplingSessionTest {
     @Test fun overCapGlanceIsDroppedBeforeOpening() = runTest {
         val r = glanceRig(this)
         r.session.start()
-        for (s in 1..4) { r.scene = s; while (r.scenesKept.size < s) r.gyro(250, 0f) } // four keeps, one scene change each
+        for (s in 1..3) { r.scene = s; while (r.scenesKept.size < s) r.gyro(250, 0f) } // three timer keeps, one scene change each (timer keeps stop at cap - 1)
+        r.scene = 4; r.gyro(400, 1f); r.gyro(3_000, 0f)  // the fourth keep is a glance (0.4 rad, novel)
+        assertEquals(4, r.scenesKept.size)
         assertTrue(r.clock() < 55_000, "four keeps inside a minute, at ${r.clock()}")
         r.gyro(2_000, 0f)
         r.session.diagSnapshot()
@@ -796,6 +829,23 @@ class SamplingSessionTest {
         }
         val d = r.session.diagSnapshot()
         assertEquals(0, d.novelSkips, "walked: not a novelty skip"); assertTrue(dwellOpens(d) >= 1, "wakes=${d.wakes} glances=${d.glances} micro=${d.micro} capped=${d.capped}")
+        r.session.stop("test")
+    }
+
+    // Wave A3 final review I3: timer keeps in front of changing content leave a slot for a real look.
+    @Test fun aLookAtAPersonStillKeptAfterTimerKeepsOfAChangingScreen() = runTest {
+        val r = glanceRig(this)
+        r.session.start()
+        while (r.clock() < 50_000) { r.gyro(5_000, 0f); r.scene++ } // timer checks all minute see new TV content
+        r.gyro(2_000, 0f)
+        r.session.diagSnapshot()
+        val kept = r.scenesKept.size
+        r.scene = 500
+        r.gyro(500, 1f)                 // 0.5 rad (about 29 deg): novel by turn, under the big turn
+        r.gyro(3_000, 0f)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, dwellOpens(d), "the look opens, wakes=${d.wakes} capped=${d.capped}")
+        assertEquals(kept + 1, r.scenesKept.size, "the look is kept")
         r.session.stop("test")
     }
 }
