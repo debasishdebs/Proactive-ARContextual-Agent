@@ -275,14 +275,16 @@ class ProtocolTest {
     @Test fun oldSettingsJsonDecodesToBatteryDefaults() {
         val d = Wire.decode<HudSettings>("""{"v":$PROTOCOL_VERSION}""")
         val s = (d as Decoded.Ok).value
-        assertEquals(CameraWake.MOTION, s.cameraWake)
-        assertEquals(4, s.batteryTargetHours)
+        assertEquals(CameraWake.SETTLE, s.cameraWake)
+        assertEquals(0, s.batteryTargetHours)
         assertFalse(s.pauseWhenPhoneInUse)
+        assertEquals(0, HudSettings().batteryTargetHours)
+        assertEquals(1, PROTOCOL_VERSION)
     }
 
-    @Test fun unknownCameraWakeDecodesToMotion() {
+    @Test fun unknownCameraWakeDecodesToSettle() {
         val d = Wire.decode<HudSettings>("""{"v":$PROTOCOL_VERSION,"cameraWake":"WARP"}""")
-        assertEquals(CameraWake.MOTION, (d as Decoded.Ok).value.cameraWake)
+        assertEquals(CameraWake.SETTLE, (d as Decoded.Ok).value.cameraWake)
     }
 
     @Test fun phoneContextMessageRoundTrips() {

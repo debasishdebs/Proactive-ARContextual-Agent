@@ -183,10 +183,10 @@ data class HudSettings(
     val quickLookMs: Int = 1000,
     /** Rest minutes: 5|10|15|20; at least 15 when [workMinutes] > 45 (see [normalized]). */
     val restMinutes: Int = 15,
-    /** Battery wave A, additive: what wakes the camera from a quiet spell. Unknown wire value = MOTION. */
-    val cameraWake: CameraWake = CameraWake.MOTION,
-    /** Battery wave A, additive: target battery life in hours, 0 = Off (see [BATTERY_TARGET_HOURS_ALLOWED], [normalized]). */
-    val batteryTargetHours: Int = 4,
+    /** Battery wave A, additive: what wakes the camera from a quiet spell; default SETTLE (wave A2). Unknown wire value = SETTLE. */
+    val cameraWake: CameraWake = CameraWake.SETTLE,
+    /** Battery wave A, additive: target battery life in hours, 0 = Off, default Off (wave A2: last-resort lever) (see [BATTERY_TARGET_HOURS_ALLOWED], [normalized]). */
+    val batteryTargetHours: Int = 0,
     /** Battery wave A, additive: pause capture while the phone is in use (see [PhoneContextMessage]). */
     val pauseWhenPhoneInUse: Boolean = false,
 )

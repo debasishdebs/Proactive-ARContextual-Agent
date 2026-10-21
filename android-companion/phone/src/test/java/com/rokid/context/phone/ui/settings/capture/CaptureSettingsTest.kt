@@ -60,7 +60,7 @@ class CaptureSettingsTest {
     }
 
     @Test fun smartHidesInterval() {
-        show(CaptureSettingsUiState(mode = CaptureMode.SMART))
+        show(CaptureSettingsUiState(mode = CaptureMode.SMART, wake = CameraWake.MOTION))
         compose.onNodeWithTag("interval").assertDoesNotExist()
         compose.onNodeWithContentDescription("Capture mode: Smart").assertExists()
     }
@@ -80,7 +80,7 @@ class CaptureSettingsTest {
     @Test fun quickLookOptionsAndDefault() {
         assertEquals(1_000, HudSettings().quickLookMs)
         assertEquals(listOf("1 s", "1.5 s", "2 s", "3 s"), QUICK_LOOK_MS_ALLOWED.map(CaptureLabels::quickLook))
-        show(CaptureSettingsUiState())
+        show(CaptureSettingsUiState(wake = CameraWake.MOTION))
         compose.onNodeWithContentDescription("Quick look: 1 s").assertExists()
         compose.onNodeWithText("Shorter catches quicker glances; the camera light is on more.").assertExists()
     }
@@ -150,9 +150,9 @@ class CaptureSettingsTest {
     }
 
     @Test fun statusLineCountsKeyframesInTheLastTenMinutes() {
-        assertEquals("Smart \u00b7 5 keyframes in the last 10 min", CaptureSettingsUiState(keyframesPerHour = 30).statusLine)
-        assertEquals("Smart \u00b7 1 keyframe in the last 10 min", CaptureSettingsUiState(keyframesPerHour = 6).statusLine)
-        show(CaptureSettingsUiState(mode = CaptureMode.SMART, keyframesPerHour = 30))
+        assertEquals("Smart \u00b7 5 keyframes in the last 10 min", CaptureSettingsUiState(wake = CameraWake.MOTION, keyframesPerHour = 30).statusLine)
+        assertEquals("Smart \u00b7 1 keyframe in the last 10 min", CaptureSettingsUiState(wake = CameraWake.MOTION, keyframesPerHour = 6).statusLine)
+        show(CaptureSettingsUiState(mode = CaptureMode.SMART, wake = CameraWake.MOTION, keyframesPerHour = 30))
         compose.onNodeWithTag("capture_status").assertExists()
     }
 
@@ -193,18 +193,23 @@ class CaptureSettingsTest {
     }
 
     @Test fun smartMotionShowsQuickLookNotSettleNote() {
-        show(CaptureSettingsUiState())
+        show(CaptureSettingsUiState(wake = CameraWake.MOTION))
         compose.onNodeWithTag("quick_look").assertExists(); compose.onNodeWithTag("settle_note").assertDoesNotExist()
     }
 
-    @Test fun batteryTargetDefaultsTo4hAndOffWritesZero() = runBlocking {
+    @Test fun defaultStateShowsSettleNoteAndHidesQuickLook() {
+        show(CaptureSettingsUiState())
+        compose.onNodeWithTag("settle_note").assertExists(); compose.onNodeWithTag("quick_look").assertDoesNotExist()
+    }
+
+    @Test fun batteryTargetDefaultsToOffAndPickingFourWritesFour() = runBlocking {
         val hud = FakeHudSettings()
         val vm = CaptureSettingsViewModel(hud)
         show(CaptureSettingsUiState(), vm)
-        compose.onNodeWithContentDescription("Battery target: 4 h").assertExists()
+        compose.onNodeWithContentDescription("Battery target: Off").assertExists()
         compose.onNodeWithText("Takes fewer photos when the glasses battery would not last this long.").assertExists()
-        pick("battery_target", 0)
-        assertEquals(0, hud.settings.value.batteryTargetHours)
+        pick("battery_target", 2)
+        assertEquals(4, hud.settings.value.batteryTargetHours)
         vm.setBatteryTarget(5); assertEquals(5, hud.settings.value.batteryTargetHours)
         vm.setBatteryTarget(7); assertEquals(6, hud.settings.value.batteryTargetHours)
         vm.cancelScope()
