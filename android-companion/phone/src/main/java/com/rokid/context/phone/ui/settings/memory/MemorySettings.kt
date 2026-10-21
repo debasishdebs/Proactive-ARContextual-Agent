@@ -3,9 +3,15 @@ package com.rokid.context.phone.ui.settings.memory
 import android.util.Log
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.rokid.context.work.frames.scene.WatchListStore
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.ViewModel
@@ -165,6 +171,9 @@ fun MemorySettingsScreen(
     onConfirmDeleteAll: () -> Unit,
     onCancelDeleteAll: () -> Unit,
     onOpenReview: () -> Unit,
+    watchList: List<String> = WatchListStore.DEFAULTS,
+    onWatchListSave: (List<String>) -> Unit = {},
+    onWatchListReset: () -> Unit = {},
 ) {
     val s = state.settings
     SettingsPage("Memory", onBack, tag = "memory_settings") {
@@ -189,6 +198,7 @@ fun MemorySettingsScreen(
                 state.encryptionNote?.let { NoticeText(it, tag = "encryption_note") }
             }
         }
+        item { SettingsCard { WatchListRow(watchList, onWatchListSave, onWatchListReset) } }
         item {
             SettingsCard {
                 SecondaryAction(if (state.reviewCount > 0) "Needs review (${state.reviewCount})" else "Needs review", onOpenReview, tag = "open_review")
@@ -207,4 +217,15 @@ fun MemorySettingsScreen(
             dismissButton = { TextButton(onClick = onCancelDeleteAll, modifier = Modifier.testTag("delete_cancel")) { Text("Cancel") } },
         )
     }
+}
+
+/** "Watch list": things worth a photo, as one comma-separated field. Save normalises (trim, dedupe, caps); Reset restores the defaults. */
+@Composable
+fun WatchListRow(items: List<String>, onSave: (List<String>) -> Unit, onReset: () -> Unit) {
+    var text by remember(items) { mutableStateOf(items.joinToString(", ")) }
+    Text("Watch list", style = MaterialTheme.typography.titleMedium)
+    NoticeText("Photos of these things are kept as important. Separate items with commas.", tag = "watch_list_note")
+    OutlinedTextField(value = text, onValueChange = { text = it }, modifier = Modifier.testTag("watch_list_field"))
+    SecondaryAction("Save", { onSave(text.split(',')) }, tag = "watch_list_save")
+    SecondaryAction("Reset to defaults", onReset, tag = "watch_list_reset")
 }
