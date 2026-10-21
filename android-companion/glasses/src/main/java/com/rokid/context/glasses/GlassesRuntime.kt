@@ -99,10 +99,17 @@ class GlassesRuntime private constructor(private val app: Context) {
     val phoneUse = com.rokid.context.glasses.capture.session.PhoneUse()
     /** Wave B: the phone motion hub's state (`pc_motion_ctx`) with its TTL and the local walking veto (spec 2026-10-21 §9.1). */
     val contextGate = com.rokid.context.glasses.capture.session.ContextGate()
-    @Volatile private var appliedContext = com.rokid.context.core.model.context.ContextState.UNKNOWN
-    /** The context state last applied to capture (the service publishes it); MainActivity reads it for the nudge policy. */
-    fun contextApplied(): com.rokid.context.core.model.context.ContextState = appliedContext
-    internal fun setContextApplied(s: com.rokid.context.core.model.context.ContextState) { appliedContext = s }
+    @Volatile private var localMotion = MotionState.STILL
+    @Volatile private var lastWalkAtMs: Long? = null
+    /** The capture service reports the local classifier state (and null-resets it on stop) for the walking veto. */
+    internal fun noteLocalMotion(s: MotionState, nowMs: Long) { localMotion = s; if (s == MotionState.WALKING) lastWalkAtMs = nowMs }
+    internal fun resetLocalMotion() { localMotion = MotionState.STILL }
+    /**
+     * The context state to apply right now, computed on demand from the gate (TTL, apply flag, kill switch, local walking
+     * veto), so it never outlives a message, a session close or a stopped capture service. Used by capture and nudges.
+     */
+    fun contextApplied(nowMs: Long = android.os.SystemClock.elapsedRealtime()): com.rokid.context.core.model.context.ContextState =
+        contextGate.effective(nowMs, localMotion, lastWalkAtMs, settingsCache.readNormalized().motionSourcesOff)
     /** Fix wave H3: a ~600 ms HUD mark per saved keyframe ("Capture blink on HUD", synced `captureCue`). */
     val captureBlink = com.rokid.context.glasses.hud.CaptureBlink(scope, { settingsCache.read().captureCue })
     /** The minimised icon (spec 2026-10-14 §3), one window per process; shown only while the keep-alive service runs. */

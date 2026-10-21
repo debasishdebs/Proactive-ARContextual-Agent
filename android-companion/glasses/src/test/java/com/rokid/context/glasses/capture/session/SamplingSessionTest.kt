@@ -962,6 +962,16 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
+    @Test fun contextCapTwoIsHardLikeRest() = runTest {
+        val r = glanceRig(this) { contextCap = 2 }
+        r.session.start()
+        for (i in 1..9) { r.scene = 300 + 11 * i; r.gyro(1_200, 1f); r.gyro(6_800, 0f) } // 8 s apart, big turns, new scenes
+        val t = r.keyframes.map { it.first }
+        assertTrue(t.size >= 2, "times=$t")
+        assertTrue(rollingMax(t) <= 2, "times=$t")
+        r.session.stop("test")
+    }
+
     @Test fun nullContextCapLeavesA3Alone() = runTest {
         val a = glanceRig(this) { contextCap = null }
         a.session.start(); a.changingScenes(18, 10_000)

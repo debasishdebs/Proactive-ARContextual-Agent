@@ -93,22 +93,17 @@ class CaptureService : LifecycleService() {
     private val heatPoller = HeatPoller(heat, SystemClock::elapsedRealtime)
     private class Smart(val session: SamplingSession, val feed: SensorFeed, val motion: MotionClassifier) { var rateJob: Job? = null }
     private var smart: Smart? = null
-    /** Wave B: elapsedRealtime of the last second the local classifier said WALKING (the gate's 15 s veto window). */
-    @Volatile private var lastWalkAt: Long? = null
     private var hintSender: MotionHintSender? = null
 
-    /**
-     * The context state applied to capture right now: the phone hub's message after its TTL and the unconditional local
-     * walking veto. Evaluated per call so a step never waits for the next supervisor tick.
-     */
+    private var wasSessionOpen = false
+
+    /** The context state applied to capture right now (see [GlassesRuntime.contextApplied]); also feeds it the local motion. */
     private fun appliedContext(): ContextState {
         val now = SystemClock.elapsedRealtime()
-        val local = smart?.motion?.state?.value ?: MotionState.STILL
-        if (local == MotionState.WALKING) lastWalkAt = now
-        val a = runtime.contextGate.effective(now, local, lastWalkAt, runtime.settingsCache.readNormalized().motionSourcesOff)
-        runtime.setContextApplied(a)
-        return a
+        runtime.noteLocalMotion(smart?.motion?.state?.value ?: MotionState.STILL, now)
+        return runtime.contextApplied(now)
     }
+
     private val budget = BatteryBudget(SystemClock::elapsedRealtime).also { it.onChange = { l -> DiagLog.i(TAG, l) } }
     private val ratePolicy = SensorRatePolicy()
     private var lastUpBytes = 0L
@@ -188,6 +183,9 @@ class CaptureService : LifecycleService() {
                 if (runtime.settingsCache.capture().captureMode == CaptureMode.SMART) {
                     try { withContext(Dispatchers.Default) { runtime.pauses.ensureLoaded() } } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "pause load failed: ${e.javaClass.simpleName}") }
                 }
+                val open = runtime.controller?.sessionOpen?.value == true
+                if (open && !wasSessionOpen) hintSender?.forceNext() // the phone has no hint until the session opens
+                wasSessionOpen = open
                 smart?.let { sm -> hintSender?.onSecond(sm.motion.state.value, SystemClock.elapsedRealtime()) }
                 appliedContext()
                 if (heatPoller.tick()) logHeat()
@@ -264,6 +262,7 @@ class CaptureService : LifecycleService() {
         val cur = smart ?: return
         smart = null
         hintSender = null
+        runtime.resetLocalMotion()
         cur.rateJob?.cancel()
         cur.session.stop(reason)
         runtime.workRest.onPaused() // leaving counts as a pause: only one of R minutes or more restarts the work clock
@@ -318,7 +317,7 @@ class CaptureService : LifecycleService() {
                 restartGapSec = runtime.restarts.lastGapSec, stillGapMs = smart?.session?.stillGapMs() ?: 0L,
                 scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, csvFail = (smart?.feed as? AndroidSensorFeed)?.csvFailures ?: 0,
                 ctx = runtime.contextGate.raw()?.name ?: "none", ctxAgeS = runtime.contextGate.ageMs(now)?.div(1000),
-                ctxApplied = runtime.contextApplied().name, ctxVeto = runtime.contextGate.takeVetoes(),
+                ctxApplied = appliedContext().name, ctxVeto = runtime.contextGate.takeVetoes(),
             ).format())
         }
         val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"
