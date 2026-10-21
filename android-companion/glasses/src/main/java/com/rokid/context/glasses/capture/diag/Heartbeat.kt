@@ -27,6 +27,7 @@ data class Heartbeat(
     val sensors: String,
     val phoneUse: Boolean,
     val restartGapSec: Any?,
+    val stillGapMs: Long = 0L,
 ) {
     private fun perMin(v: Long, spanMs: Long = stats.spanMs): Long = v * 60_000L / spanMs.coerceAtLeast(1)
 
@@ -38,6 +39,7 @@ data class Heartbeat(
         return "heartbeat v=2 running=$running reason=$reason ui_mode=$uiMode wake=$wake tier=$tier target_h=$targetH batt=$batt chg=$charging " +
             "drain=$drain proj_h=$proj kf1m=${stats.kf1m} camOpen=$openPct% camOpenMs1m=${perMin(stats.openMs)} " +
             "analysed1m=${perMin(stats.analysed.toLong())} upBytes1m=${perMin(upBytes, upSpanMs)} heat=$heat batteryC=$batteryC " +
-            "wear=$wear known=$known parked=$parked sensors=$sensors phoneUse=$phoneUse restartGapSec=$restartGapSec"
+            "wear=$wear known=$known parked=$parked sensors=$sensors phoneUse=$phoneUse restartGapSec=$restartGapSec " +
+            "opens1m=${perMin(stats.opens.toLong())} wk=${listOf("timer", "dwell", "onset", "now", "stream").joinToString(",") { "$it:${stats.wakes[it] ?: 0}" }} stillGapMs=$stillGapMs"
     }
 }

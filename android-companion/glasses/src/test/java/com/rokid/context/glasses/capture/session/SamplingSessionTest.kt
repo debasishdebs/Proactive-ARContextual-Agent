@@ -405,6 +405,23 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
+    @Test fun diagSnapshotCountsOpensAndWakeReasons() = runTest {
+        val r = rig(this) { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }
+        r.startSensors()
+        r.session.start()
+        delay(1_000)
+        r.gyroMag = 3f
+        delay(300)
+        r.gyroMag = 0f
+        delay(2_500)
+        val d = r.session.diagSnapshot()
+        assertTrue(d.opens >= 2, "opens=${d.opens}")
+        assertTrue(d.wakes["timer"]!! >= 1, "wakes=${d.wakes}")
+        assertTrue(d.wakes["dwell"]!! >= 1, "wakes=${d.wakes}")
+        assertEquals(0, r.session.diagSnapshot().opens)
+        r.session.stop("test")
+    }
+
     @Test fun captureNowIsRefusedWhileNotSampling() = runTest {
         val r = rig(this)
         r.paused = true
