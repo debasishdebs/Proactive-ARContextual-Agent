@@ -182,4 +182,42 @@ class MotionClassifierTest {
         assertEquals(2, lines.size)
         assertTrue(Regex("""features gyroMax=\d+\.\d+ accVar=\d+\.\d+ stepHz=\d+\.\d+ state=WALKING""").matches(lines[0]), lines[0])
     }
+
+    // ---- battery wave A2: STILL IMU rate delivers 20 Hz in 500 ms batches ----
+
+    /**
+     * Delivers a 20 Hz trace (50 ms step) the way the batched sensor FIFO does: per 500 ms batch, every gyro sample
+     * first, then every accel sample (all zero). Accel samples therefore arrive with timestamps older than the newest
+     * gyro one. Without the classifier's newest-timestamp clamp, the batch with the turn would see the gyro samples
+     * push the state to STILL (newest t = batch end) and then the older accel samples (t - lastAboveGyro < HEAD_HOLD_MS)
+     * flip it back to HEAD_MOVING: a second, false onset at 2500.
+     */
+    private fun deliverBatched(gyroMag: (Long) -> Float, toMs: Long) {
+        var batch = 0L
+        while (batch < toMs) {
+            val ts = (batch until minOf(batch + 500, toMs) step 50).toList()
+            for (t in ts) { now = t; c.onGyro(gyroMag(t), 0f, 0f, t) }
+            for (t in ts) { now = t; c.onLinearAccel(0f, 0f, 0f, t) }
+            batch += 500
+        }
+    }
+
+    @Test fun batchedHeadTurnEmitsOneOnsetAndAnExactDwell() {
+        deliverBatched({ t -> if (t in 2000..2350) 2f else 0f }, 4000)
+        assertEquals(listOf(2000L), onsets)
+        assertEquals(listOf(3350L), dwells)
+        assertEquals(MotionState.STILL, c.state.value)
+    }
+
+    @Test fun walkingDetectedAt20Hz() {
+        var t = 0L
+        var detectedAt = -1L
+        while (t < 4000 && detectedAt < 0) {
+            now = t
+            c.onLinearAccel(0f, 2.0f * sin(2 * PI * 2.0 * t / 1000.0).toFloat(), 0f, t)
+            if (c.state.value == MotionState.WALKING) detectedAt = t
+            t += 50
+        }
+        assertTrue(detectedAt in 0..3000, "walking detected at $detectedAt")
+    }
 }

@@ -18,8 +18,11 @@ interface SensorFeed {
     fun setRate(r: SensorRate) = Unit
 }
 
-/** FULL = SENSOR_DELAY_GAME unbatched; LOW = 10 Hz with a 1 s report latency. */
-enum class SensorRate { FULL, LOW }
+/**
+ * FULL = SENSOR_DELAY_GAME unbatched; STILL = 20 Hz with a 0.5 s report latency (the classifier is batch-safe);
+ * LOW = 10 Hz with a 1 s report latency.
+ */
+enum class SensorRate { FULL, STILL, LOW }
 
 /** The slice of [SensorManager] the feed uses; a seam so tests can pin what gets registered and how. */
 interface SensorRegistry {
@@ -60,8 +63,11 @@ class AndroidSensorFeed internal constructor(
         private set
 
     private fun registerAll(l: SensorEventListener, h: Handler, list: List<Sensor>, r: SensorRate) {
-        val period = if (r == SensorRate.LOW) LOW_PERIOD_US else SensorManager.SENSOR_DELAY_GAME
-        val latency = if (r == SensorRate.LOW) LOW_LATENCY_US else 0
+        val (period, latency) = when (r) {
+            SensorRate.FULL -> SensorManager.SENSOR_DELAY_GAME to 0
+            SensorRate.STILL -> STILL_PERIOD_US to STILL_LATENCY_US
+            SensorRate.LOW -> LOW_PERIOD_US to LOW_LATENCY_US
+        }
         for (s in list) sm.register(l, s, period, latency, h)
     }
 
@@ -93,9 +99,10 @@ class AndroidSensorFeed internal constructor(
             }
             override fun onAccuracyChanged(s: Sensor?, accuracy: Int) = Unit
         }
-        val list = listOfNotNull(
-            sm.nonWakeUp(Sensor.TYPE_GYROSCOPE), sm.nonWakeUp(Sensor.TYPE_LINEAR_ACCELERATION), prox,
-        )
+        val gyro = sm.nonWakeUp(Sensor.TYPE_GYROSCOPE)
+        val acc = sm.nonWakeUp(Sensor.TYPE_LINEAR_ACCELERATION)
+        val list = listOfNotNull(gyro, acc, prox)
+        runCatching { DiagLog.i(TAG, "sensors fifo gyro=${gyro?.fifoMaxEventCount ?: -1} acc=${acc?.fifoMaxEventCount ?: -1}") }
         sensors = list
         registerAll(l, h, list, rate)
         if (prox == null) {
@@ -128,6 +135,8 @@ class AndroidSensorFeed internal constructor(
 
     private companion object {
         const val TAG = "PcCapture"
+        const val STILL_PERIOD_US = 50_000
+        const val STILL_LATENCY_US = 500_000
         const val LOW_PERIOD_US = 100_000
         const val LOW_LATENCY_US = 1_000_000
     }
