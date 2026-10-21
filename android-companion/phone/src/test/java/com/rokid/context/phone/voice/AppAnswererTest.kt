@@ -48,4 +48,13 @@ class AppAnswererTest {
         assertEquals(AnswerResult.Answered("a1", "On the desk.", photoLabel = "Photo 08:53"), a.answer("keys?", VoiceSource.GLASSES))
         assertEquals(AnswerResult.Answered("a1", "Milk and eggs."), answerer(AskOutcome.Answered("a1")).answer("milk?", VoiceSource.GLASSES))
     }
+
+    /** Fix round 1 (M3): a photo from another day names the day, so "Photo 14:02" never reads as today. */
+    @Test fun photoLabelNamesTheDayWhenNotToday() = runBlocking {
+        val zone = java.time.ZoneOffset.UTC
+        val now = java.time.LocalDateTime.of(2026, 10, 12, 10, 0).toInstant(zone).toEpochMilli()
+        val old = java.time.LocalDateTime.of(2026, 10, 9, 14, 2).toInstant(zone).toEpochMilli() // a Friday
+        val a = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1", photoFrameId = "f1", photoAtMs = old) }, answerText = { "On the desk." }, zone = { zone }, now = { now })
+        assertEquals("Photo Fri 14:02", (a.answer("keys?", VoiceSource.GLASSES) as AnswerResult.Answered).photoLabel)
+    }
 }

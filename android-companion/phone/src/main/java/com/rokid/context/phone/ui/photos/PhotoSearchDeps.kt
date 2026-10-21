@@ -13,6 +13,8 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.debounce
@@ -46,7 +48,7 @@ class PhotoSearchDeps(
                 describePhotos = { KeyframeGraph.get(app).describe.describePhotos(it) },
                 describeScene = { KeyframeGraph.get(app).describe.describeScene(it) },
                 framePaths = { ids -> memory.timeline.framesByIds(ids).associate { it.id to it.path } },
-                changes = flow { emitAll(invalidations(MemoryGraph.get(app).db, "frame", "frame_meta", "memory", "frame_source")) }.debounce(400),
+                changes = flow { emitAll(invalidations(MemoryGraph.get(app).db, "frame", "frame_meta", "memory", "frame_source")) }.debounce(400).flowOn(Dispatchers.IO), // the graphs open off Main (M5)
             )
         }
 

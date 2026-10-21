@@ -19,6 +19,8 @@ import java.util.Locale
 data class SourceCard(
     val memoryId: String, val text: String, val confidence: Double, val framePath: String?,
     val expired: Boolean = false, val photoFrameId: String? = null, val photoDate: String? = null,
+    /** A captioned photo's memory (the usual cite of a photo): its card shows the large thumbnail (spec 3.4). */
+    val largeThumb: Boolean = false,
 ) {
     val isPhotoCite: Boolean get() = memoryId.startsWith(PHOTO_CITE_PREFIX)
     /** The frame id of a photo cite (null for a memory). */
@@ -54,7 +56,7 @@ object AskDetailModel {
         val paths = frames.associate { it.id to it.path }
         val cards = ids.mapNotNull { id ->
             if (id.startsWith(PHOTO_CITE_PREFIX)) return@mapNotNull photoCard(id, photoFrames[id.removePrefix(PHOTO_CITE_PREFIX)], zone)
-            byId[id]?.takeIf { it.reviewState != ReviewState.INVALIDATED }?.let { m -> SourceCard(m.id, m.text, m.confidence, m.frameId?.let(paths::get)) }
+            byId[id]?.takeIf { it.reviewState != ReviewState.INVALIDATED }?.let { m -> SourceCard(m.id, m.text, m.confidence, m.frameId?.let(paths::get), largeThumb = m.frameId != null && m.type == "caption") }
         }
         return AskDetailUiState(
             loading = false, found = true, question = ask.question, answer = ask.answer,

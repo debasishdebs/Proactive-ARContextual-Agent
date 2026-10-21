@@ -37,7 +37,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -71,6 +73,10 @@ fun PhotoSearchScreen(
             )
             IconButton(onClick = onSubmit, modifier = Modifier.testTag("photo_submit")) { Icon(Icons.Outlined.Search, contentDescription = "Search photos", tint = PcColors.Ink) }
         }
+        // Pinned above the grid, so a status or failure is never scrolled away (M6).
+        state.banner?.let { Note(it, Modifier.padding(horizontal = 12.dp).testTag("photo_banner")) }
+        state.note?.let { Note(it, Modifier.padding(horizontal = 12.dp).testTag("photo_note")) }
+        state.status?.let { Note(it, Modifier.padding(horizontal = 12.dp).testTag("photo_status").semantics { liveRegion = LiveRegionMode.Polite }) }
         LazyVerticalGrid(
             columns = GridCells.Fixed(3), modifier = Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -78,9 +84,6 @@ fun PhotoSearchScreen(
             if (state.searching) item(span = { GridItemSpan(maxLineSpan) }) {
                 CircularProgressIndicator(Modifier.padding(16.dp).semantics { contentDescription = "Searching" })
             }
-            state.banner?.let { b -> item(span = { GridItemSpan(maxLineSpan) }) { Note(b, Modifier.testTag("photo_banner")) } }
-            state.note?.let { n -> item(span = { GridItemSpan(maxLineSpan) }) { Note(n, Modifier.testTag("photo_note")) } }
-            state.status?.let { s -> item(span = { GridItemSpan(maxLineSpan) }) { Note(s, Modifier.testTag("photo_status")) } }
             items(state.tiles, key = { it.frameId }) { t -> TileCell(t) { selectedId = t.frameId } }
         }
     }

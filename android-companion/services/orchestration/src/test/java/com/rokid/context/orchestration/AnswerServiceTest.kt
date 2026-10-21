@@ -147,11 +147,11 @@ class AnswerServiceTest {
 
     private fun service(
         photos: List<PhotoHit> = emptyList(), images: Map<String, ModelImageInput> = emptyMap(), imageCalls: MutableList<List<String>> = mutableListOf(),
-        photoFn: (suspend (String, Long) -> List<PhotoHit>)? = null,
+        photoFn: (suspend (String, Long) -> List<PhotoHit>)? = null, allowed: Boolean = true,
     ): AnswerService {
         val fn: suspend (String, Long) -> List<PhotoHit> = photoFn ?: { _, _ -> photos }
         return AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() }, zone = { ZoneOffset.UTC },
-        photos = fn, photoImages = { ids: List<String> -> imageCalls += ids; ids.mapNotNull { id -> images[id]?.let { id to it } }.toMap() })
+        photosAllowed = { allowed }, photos = fn, photoImages = { ids: List<String> -> imageCalls += ids; ids.mapNotNull { id -> images[id]?.let { id to it } }.toMap() })
     }
 
     @Test fun twoPhotoLinesAndImagesReachAnswer() = runBlocking {
@@ -277,5 +277,52 @@ class AnswerServiceTest {
         assertEquals(1, Regex("id=rokid_cap1 ").findAll(seen.prompt).count())
         assertTrue(seen.prompt, "id=rokid_cap1 · 2025-10-09 08:53 · photo · image=1 · Keys on a desk" in seen.prompt)
         assertTrue("no confidence text line for it", "confidence 0.90 · frame=f1" !in seen.prompt)
+    }
+
+    // ---- Fix round 1 (C1): the privacy switch and the relevance floor ------------------------------------------------------------------
+
+    @Test fun photosOffSkipsTheScanAndSendsNoImage() = runBlocking {
+        val seen = Seen(); recording(seen) { """{"answer":"Milk is low.","sources":["rokid_mem_1"]}""" }
+        MemoryGraph.get(ctx).memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, 10, "Milk carton nearly empty"))
+        moment("f1")
+        var scans = 0; val calls = mutableListOf<List<String>>()
+        val r = service(photoFn = { _, _ -> scans++; listOf(hit("f1")) }, images = mapOf("f1" to img("A")), imageCalls = calls, allowed = false).answerOrThrow("milk?", "phone_typed", nowMs = 5)
+        assertEquals(0, scans); assertEquals(emptyList<List<String>>(), calls); assertEquals(emptyList<ModelImageInput>(), seen.images)
+        assertTrue(seen.prompt, "photo \u00b7" !in seen.prompt && "image=" !in seen.prompt)
+        assertEquals(null, r.photoFrameId)
+    }
+
+    @Test fun floorKeepsOnlyPhotosNearTheTopHitAndAboveTheMinimum() = runBlocking {
+        val seen = Seen(); recording(seen) { """{"answer":"x","sources":["frame:a"]}""" }
+        moment("a"); moment("b"); moment("c")
+        val hits = listOf(hit("a").copy(score = 0.50), hit("b").copy(score = 0.50 - AskPhotoPolicy.MARGIN + 0.001), hit("c").copy(score = 0.50 - AskPhotoPolicy.MARGIN - 0.05))
+        val calls = mutableListOf<List<String>>()
+        service(hits, mapOf("a" to img("A"), "b" to img("B"), "c" to img("C")), calls).answerOrThrow("q", "phone_typed", nowMs = 5)
+        assertTrue(seen.prompt, "id=frame:a" in seen.prompt && "id=frame:b" in seen.prompt && "frame:c" !in seen.prompt)
+        assertEquals(listOf(listOf("a"), listOf("b")), calls)
+    }
+
+    @Test fun nothingAboveTheMinimumMeansNoPhotoLineNoImageAndNoPhotoOnlyAnswer() = runBlocking {
+        recording(Seen()) { """{"answer":"x","sources":[]}""" }
+        moment("a")
+        val calls = mutableListOf<List<String>>()
+        val low = listOf(hit("a").copy(score = AskPhotoPolicy.MIN_SCORE - 0.01))
+        val thrown = runCatching { service(low, mapOf("a" to img("A")), calls).answerOrThrow("q", "phone_typed", nowMs = 5) }.exceptionOrNull()
+        assertTrue("$thrown", thrown is NoMemoriesException); assertEquals(emptyList<List<String>>(), calls)
+    }
+
+    @Test fun policyAllowsPhotosOnlyWhenEveryConditionHolds() {
+        assertTrue(AskPhotoPolicy.allowed(enabled = true, pipelineOn = true, quietNow = false, answerHasVision = true))
+        assertTrue(!AskPhotoPolicy.allowed(enabled = false, pipelineOn = true, quietNow = false, answerHasVision = true))
+        assertTrue(!AskPhotoPolicy.allowed(enabled = true, pipelineOn = false, quietNow = false, answerHasVision = true))
+        assertTrue(!AskPhotoPolicy.allowed(enabled = true, pipelineOn = true, quietNow = true, answerHasVision = true))
+        assertTrue(!AskPhotoPolicy.allowed(enabled = true, pipelineOn = true, quietNow = false, answerHasVision = false))
+        assertTrue("the scan budget leaves room under the 1.5 s ask timeout", AskPhotoPolicy.SCAN_BUDGET_MS < AskPhotoPolicy.ASK_TIMEOUT_MS)
+    }
+
+    @Test fun switchDefaultsOffAndPersists() {
+        assertTrue(!AskPhotoPolicy.enabled(ctx))
+        AskPhotoPolicy.set(ctx, true); assertTrue(AskPhotoPolicy.enabled(ctx))
+        AskPhotoPolicy.set(ctx, false); assertTrue(!AskPhotoPolicy.enabled(ctx))
     }
 }

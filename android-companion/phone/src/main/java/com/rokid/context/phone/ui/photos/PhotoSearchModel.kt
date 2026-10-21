@@ -34,6 +34,7 @@ data class PhotoSearchUiState(
 
 object PhotoSearchModel {
     const val CAPTIONS_ONLY = "Searching captions only. For photo search, turn on Nomic in Settings → AI → On-device models."
+    const val SEARCH_FAILED = "Couldn't search \u2014 try again"
     private val CLOCK = DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH)
     private val DAY_CLOCK = DateTimeFormatter.ofPattern("d MMM · HH:mm", Locale.ENGLISH)
 

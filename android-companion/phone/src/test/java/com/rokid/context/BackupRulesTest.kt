@@ -52,6 +52,8 @@ class BackupRulesTest {
         "frame_adoption", "space_retired_at", "image_read_attempts",
         // Wave B: opt-in context sources, my-car addresses, the LiveFit digest, the watch epoch/seq: every source off after a restore.
         com.rokid.context.phone.context.ContextSourceSettings.PREFS,
+        // Fix round 1: "Send matching photos with questions" is an opt-in privacy switch: off after a restore.
+        com.rokid.context.orchestration.AskPhotoPolicy.PREFS,
     )
 
     /**

@@ -52,6 +52,7 @@ class PhotoSearchViewModel(
         if (q.isEmpty()) return
         val g = ++generation
         refreshJob?.cancel()
+        last = null // a refresh that starts while this search runs has nothing of the old query to write back (I3)
         _state.update { it.copy(searching = true, status = null) }
         viewModelScope.launch {
             val r = try { search(q) } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
@@ -60,7 +61,7 @@ class PhotoSearchViewModel(
             if (g != generation) return@launch
             last = r
             _state.update { s ->
-                if (r == null || tiles == null) s.copy(searching = false, tiles = emptyList(), banner = null, note = null)
+                if (r == null || tiles == null) s.copy(searching = false, tiles = emptyList(), banner = null, note = PhotoSearchModel.SEARCH_FAILED)
                 else s.copy(searching = false, tiles = tiles, banner = PhotoSearchModel.banner(r), note = PhotoSearchModel.note(r))
             }
         }
@@ -74,7 +75,7 @@ class PhotoSearchViewModel(
         refreshJob = viewModelScope.launch {
             val fresh = try { reenrich(r) } catch (c: CancellationException) { throw c } catch (_: Exception) { return@launch }
             val tiles = build(fresh)
-            if (g != generation) return@launch
+            if (g != generation || last !== r) return@launch // a newer search began, or finished, since this refresh started
             last = fresh
             _state.update { it.copy(tiles = tiles, note = PhotoSearchModel.note(fresh)) }
         }

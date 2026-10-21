@@ -248,6 +248,16 @@ class ForgetServiceTest {
         assertTrue(db.exportDao().askPage(0, 10).filter { it.id == "q1" }.all { it.answer == ForgetService.REDACTED })
     }
 
+    /** Wave 3 Task 3 cites the CAPTION MEMORY id (not `frame:<id>`) for every captioned photo: Forget of the moment must redact those answers too. */
+    @Test fun forgetMomentRedactsAskCitingTheCaptionMemoryId() = runBlocking {
+        keyframe("f1"); mem("cap1", frameId = "f1")
+        db.askDao().upsert(AskEntity("q1", 1, "where?", "On the desk", """["cap1"]""", null, "phone_typed", false))
+        db.askDao().upsert(AskEntity("q2", 1, "q", "unrelated", """["cap10"]""", null, "phone_typed", false))
+        val r = service.forgetMoment("f1")
+        assertEquals(1, r.redactedAsks)
+        assertTrue(db.askDao().byId("q1")!!.redacted); assertFalse(db.askDao().byId("q2")!!.redacted)
+    }
+
     @Test fun expiredUncaptionedSkippedPhotoCanBeForgotten() = runBlocking {
         keyframe("f1"); db.askDao().upsert(AskEntity("q1", 1, "q", "a skipped photo", """["${PHOTO_CITE_PREFIX}f1"]""", null, "phone_typed", false))
         service.expirePhotos(listOf("f1")) // retention: frame row gone, no memory, meta and vector kept
