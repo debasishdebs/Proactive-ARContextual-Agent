@@ -433,4 +433,31 @@ class MainActivityTest {
             assertFalse(line.contains("rokid"))
         }
     }
+
+    /** M3: while the HUD is hidden for an automatic minimise, keys are not ours: no Confirm vote can be cast unseen. */
+    @Test fun keysAreIgnoredWhileTheHudIsHidden() {
+        seedKilledWhileRunning()
+        ActivityScenario.launch<MainActivity>(Intent(app, MainActivity::class.java)).use { s ->
+            s.onActivity { assertFalse(it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))) }
+        }
+    }
+
+    @Test fun keysAreOursWhenTheHudIsShown() {
+        ActivityScenario.launch<MainActivity>(launcherIntent()).use { s ->
+            s.onActivity { assertTrue(it.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER))) }
+        }
+    }
+
+    /** M4: if the task cannot be moved to the back, the HUD must not be left black. */
+    @Test fun failedMoveToBackClearsTheHiddenHud() {
+        seedKilledWhileRunning()
+        MainActivity.moveToBack = { false }
+        try {
+            ActivityScenario.launch<MainActivity>(Intent(app, MainActivity::class.java)).use { s ->
+                compose.onNodeWithTag("hud_root").assertExists()
+                compose.onNodeWithTag("hud_hidden").assertDoesNotExist()
+                s.onActivity { assertFalse(it.minimised) }
+            }
+        } finally { MainActivity.moveToBack = { it.moveTaskToBack(true) } }
+    }
 }

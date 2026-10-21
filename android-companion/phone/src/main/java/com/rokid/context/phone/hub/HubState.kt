@@ -31,9 +31,9 @@ data class HubState(
     val iconBlocked: Boolean = false,
 ) {
     /**
-     * Diagnostics line "Rokid closed the app N times (last gap Xs)"; null until the glasses report one. Honest about what it
-     * counts: a process that the system ended with REASON_USER_REQUESTED, which Rokid's scene switch causes but a force-stop
-     * from Settings or adb also does (Android cannot tell them apart); a wearer exit or an app update is never counted.
+     * Diagnostics line "Rokid closed the app N times (last gap Xs; M unverified; K other force-stops)"; null until the glasses
+     * report a count. Rokid = a force-stop whose caller the glasses verified as a com.rokid process; unverified = the caller was
+     * hidden or could not be checked; other = a verified non-Rokid caller (Settings, adb). A wearer exit or an update is never counted.
      */
     fun rokidClosesLine(): String? = com.rokid.context.core.model.closesSummary(rokidCloses, lastRestartGapSec, unverifiedCloses, otherCloses)
 

@@ -44,7 +44,8 @@ class WorkRest(
         val saved = store.load() ?: return
         val now = clock()
         val current = bootCount()
-        val stale = if (saved.bootCount != -1 && current != -1) saved.bootCount != current else saved.savedAtElapsedMs > now
+        // Another boot is always stale. The uptime check also applies on the same boot count (defence in depth: BOOT_COUNT read before it was incremented).
+        val stale = (saved.bootCount != -1 && current != -1 && saved.bootCount != current) || saved.savedAtElapsedMs > now
         if (stale) { store.clear(); return }
         workStartMs = saved.workStartMs; pausedAtMs = saved.pausedAtMs; _resting.value = saved.restUntilMs
         lastSaved = Triple(saved.workStartMs, saved.pausedAtMs, saved.restUntilMs)

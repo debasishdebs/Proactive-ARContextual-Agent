@@ -299,26 +299,32 @@ class CaptureService : LifecycleService() {
         val line = "status running=${shown.running} reason=${shown.reason} motion=${shown.motion} keyframes10m=${shown.keyframesLast10Min} resting=${shown.restingUntilMs != null} heat=${heat.level.value} degraded=$degraded ${smart?.session?.startupStats() ?: ""}"
         // Fix wave K3/K4: the heartbeat (every minute) adds what the retest could not show: ui mode, rate, camera share, battery temp, wear, restart gap.
         if (tick % 60 == 0) {
-            val now = SystemClock.elapsedRealtime()
-            val settings = runtime.settingsCache.readNormalized()
-            val upTotal = runtime.uplink.bytesSent
-            val upDelta = (upTotal - lastUpBytes).coerceAtLeast(0)
-            val upSpan = if (lastUpAt < 0) 60_000L else now - lastUpAt
-            lastUpBytes = upTotal; lastUpAt = now
-            val (scrOn, scrOurs, nudgeOff) = runtime.screenWakes.take()
-            Heartbeat.guarded({ DiagLog.w(TAG, it) }) { Heartbeat(
-                running = shown.running, reason = shown.reason.toString(), uiMode = runtime.uiMode.get(),
-                wake = settings.cameraWake.name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
-                batt = batteryPercent(), charging = isCharging(), drainPctPerMin = budget.drainPctPerMin, projectedHours = budget.projectedHours,
-                stats = smart?.session?.diagSnapshot() ?: DiagStats(0, 0, 0, 0), upBytes = upDelta, upSpanMs = upSpan,
-                heat = heat.level.value.toString(), batteryC = heat.lastReading?.batteryTempC,
-                wear = runtime.wear.worn.value, known = runtime.wear.known, parked = runtime.wear.parked.value,
-                sensors = Heartbeat.sensorsLabel(smart != null, (smart?.feed as? AndroidSensorFeed)?.rate?.name?.lowercase()), phoneUse = runtime.phoneUse.active(now),
-                restartGapSec = runtime.restarts.lastGapSec, stillGapMs = smart?.session?.stillGapMs() ?: 0L,
-                scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, csvFail = (smart?.feed as? AndroidSensorFeed)?.csvFailures ?: 0,
-                ctx = runtime.contextGate.raw()?.name ?: "none", ctxAgeS = runtime.contextGate.ageMs(now)?.div(1000),
-                ctxApplied = appliedContext().name, ctxVeto = runtime.contextGate.takeVetoes(),
-            ).format() }?.let { DiagLog.i(TAG, it) }
+            // A20: everything that builds the heartbeat is inside the guard, so a throw never skips the status line below.
+            // The counters that reset on read (screen wakes, context vetoes, uplink baseline) are taken last, after nothing can throw.
+            Heartbeat.guarded({ DiagLog.w(TAG, it) }) {
+                heartbeatFault?.invoke()
+                val now = SystemClock.elapsedRealtime()
+                val settings = runtime.settingsCache.readNormalized()
+                val upTotal = runtime.uplink.bytesSent
+                val upDelta = (upTotal - lastUpBytes).coerceAtLeast(0)
+                val upSpan = if (lastUpAt < 0) 60_000L else now - lastUpAt
+                val hb = Heartbeat(
+                    running = shown.running, reason = shown.reason.toString(), uiMode = runtime.uiMode.get(),
+                    wake = settings.cameraWake.name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
+                    batt = batteryPercent(), charging = isCharging(), drainPctPerMin = budget.drainPctPerMin, projectedHours = budget.projectedHours,
+                    stats = smart?.session?.diagSnapshot() ?: DiagStats(0, 0, 0, 0), upBytes = upDelta, upSpanMs = upSpan,
+                    heat = heat.level.value.toString(), batteryC = heat.lastReading?.batteryTempC,
+                    wear = runtime.wear.worn.value, known = runtime.wear.known, parked = runtime.wear.parked.value,
+                    sensors = Heartbeat.sensorsLabel(smart != null, (smart?.feed as? AndroidSensorFeed)?.rate?.name?.lowercase()), phoneUse = runtime.phoneUse.active(now),
+                    restartGapSec = runtime.restarts.lastGapSec, stillGapMs = smart?.session?.stillGapMs() ?: 0L,
+                    csvFail = (smart?.feed as? AndroidSensorFeed)?.csvFailures ?: 0,
+                    ctx = runtime.contextGate.raw()?.name ?: "none", ctxAgeS = runtime.contextGate.ageMs(now)?.div(1000),
+                    ctxApplied = appliedContext().name,
+                )
+                lastUpBytes = upTotal; lastUpAt = now
+                val (scrOn, scrOurs, nudgeOff) = runtime.screenWakes.take()
+                hb.copy(scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, ctxVeto = runtime.contextGate.takeVetoes()).format()
+            }?.let { DiagLog.i(TAG, it) }
         }
         val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"
         if (statusThrottle.shouldLog(key, line, tick, force = tick % 60 == 0)) DiagLog.i(TAG, line)
@@ -531,6 +537,8 @@ class CaptureService : LifecycleService() {
     }
 
     companion object {
+        /** Tests only: runs first inside the heartbeat guard (A20). */
+        @androidx.annotation.VisibleForTesting @Volatile internal var heartbeatFault: (() -> Unit)? = null
         const val TAG = "PcCapture"
         const val ACTION_SCHEDULED = "com.rokid.context.glasses.action.CAPTURE_SCHEDULED"
         const val ACTION_NOW = "com.rokid.context.glasses.action.CAPTURE_SERVICE_NOW"

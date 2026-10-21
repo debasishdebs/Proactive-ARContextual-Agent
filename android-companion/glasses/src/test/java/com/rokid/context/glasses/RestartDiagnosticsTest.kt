@@ -164,4 +164,16 @@ class RestartDiagnosticsTest {
         assertEquals(true, line.startsWith("restart rokid=1 unknown=0 other=0 gap="), line)
         assertEquals(false, line.contains("pid") || line.contains("4242"))
     }
+
+    /** M9: a pre-wave-3 `rokid_closes` counted every force-stop; it is reset once on the first start of the new version. */
+    @Test fun legacyRokidClosesResetOnceOnUpgrade() {
+        val (prefs, mk) = cumulative("rd14")
+        prefs.edit().putInt("rokid_closes", 5).putInt("last_gap_sec", 12).commit()
+        mk().heartbeat(); wall += 10_000; userRequestedExit = true; kind = ExitKind.ROKID
+        val d = mk(); d.onProcessStart()
+        assertEquals(1, d.closes, "the old 5 is gone; only this new Rokid stop counts")
+        mk().heartbeat(); wall += 10_000
+        val d2 = mk(); d2.onProcessStart()
+        assertEquals(2, d2.closes, "no second reset")
+    }
 }

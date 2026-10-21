@@ -69,6 +69,10 @@ case "$eout" in *"hb_lines=3 "*) ;; *) echo "FAIL: empty batt.log misroutes the 
 fout="$(printf '10-21 10:00:00.000 I PcCapture status ok\n10-21 10:00:01.000 I x deviceSecret=abc123\n10-21 10:00:02.000 I AssistServer foo\n10-21 10:00:03.000 I y DevCmdHelper z\n10-21 10:00:04.000 I PcCapture heartbeat v=2\n' | "$HERE/battery-run.sh" filter-diag)"
 case "$fout" in *deviceSecret*|*AssistServer*|*DevCmdHelper*|*abc123*) echo "FAIL: filter-diag leaked a denied line"; fail=1 ;; esac
 case "$fout" in *"status ok"*"heartbeat v=2"*) ;; *) echo "FAIL: filter-diag dropped good lines"; fail=1 ;; esac
+# M13: a NUL byte (a tail cut by a kill) must not turn the output into "Binary file matches".
+bout="$(printf '10-21 10:00:00.000 I PcCapture status ok\n10-21 10:00:01.000 I tail\000cut\n' | "$HERE/battery-run.sh" filter-diag)"
+case "$bout" in *"status ok"*) ;; *) echo "FAIL: filter-diag lost lines on a binary byte"; fail=1 ;; esac
+case "$bout" in *"Binary file"*) echo "FAIL: filter-diag printed Binary file matches"; fail=1 ;; esac
 for d in capture_diag.log capture_diag.log.1; do
   grep -q "files/$d 2>/dev/null | filter_diag > " "$HERE/battery-run.sh" || { echo "FAIL: pull of $d does not go through filter_diag"; fail=1; }
 done

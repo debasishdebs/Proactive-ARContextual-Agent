@@ -194,6 +194,27 @@ class WorkRestTest {
         assertEquals(until, b.resting.value)
     }
 
+    @Test fun savedKnownCurrentUnknownFallsBackToUptime() {
+        val store = FakeStore()
+        val a = persisted(store, boot = { 7 })
+        repeat(46) { a.onSampling(); now += min }
+        val until = a.resting.value!!
+        assertEquals(until, persisted(store, boot = { -1 }).also { it.onPaused() }.resting.value, "uptime still ahead of savedAt: kept")
+        now = 0 // uptime restarted
+        val b = persisted(store, boot = { -1 }); b.onPaused()
+        assertNull(b.resting.value, "saved=7 / current=-1 and savedAt > now: discarded")
+    }
+
+    @Test fun sameBootCountButUptimeWentBackDiscards() {
+        val store = FakeStore()
+        val a = persisted(store, boot = { 7 })
+        repeat(46) { a.onSampling(); now += min }
+        assertNotNull(a.resting.value)
+        now = 0 // BOOT_COUNT read before the system incremented it: same count, smaller uptime
+        val b = persisted(store, boot = { 7 }); b.onPaused()
+        assertNull(b.resting.value)
+    }
+
     @Test fun noWritePerTick() {
         val store = FakeStore()
         val a = persisted(store)

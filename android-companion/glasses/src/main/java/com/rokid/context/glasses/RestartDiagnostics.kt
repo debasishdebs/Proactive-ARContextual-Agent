@@ -6,14 +6,16 @@ import android.content.SharedPreferences
  * Fix wave H4. Rokid's AssistServer force-stops this app whenever it opens another scene, and nothing survives a
  * force-stop, so the process cannot report its own death. Instead [heartbeat] (every 30 s, wall clock: elapsedRealtime
  * restarts nothing but is easy to misread across a reboot) stores "last alive"; at the next process start
- * [onProcessStart] logs `restart gap=<seconds> reason=<unknown|install|forcestop>` and counts the force-stops.
+ * [onProcessStart] logs `restart rokid=N unknown=M other=K gap=<seconds> reason=<unknown|install|forcestop_rokid|forcestop_unverified|forcestop_other>`
+ * and counts the force-stops by who made them (see [ExitClassifier]).
  * The gap is at most one heartbeat (30 s) longer than the real downtime. Counts only, never content.
  *
- * reason: install = the package was updated after the last heartbeat; forcestop = the system's last exit record for
- * this package says "user requested" (what `forceStopPackage` leaves); anything else (or no record) = unknown.
+ * reason: install = the package was updated after the last heartbeat; forcestop_* = a fresh "user requested" exit record
+ * (what `forceStopPackage` leaves), by caller: rokid, other (a verified non-Rokid process) or unverified (caller hidden or reused);
+ * anything else (or no record, or a stale one) = unknown.
  *
  * Honesty (fix wave I): REASON_USER_REQUESTED is also what a force-stop from Settings or adb leaves, so "forcestop" is the
- * best Android offers, not proof that Rokid did it. Only a forcestop exit is counted as "Rokid closed"; an update, a
+ * best Android offers, not proof that Rokid did it. Only a forcestop_rokid exit is counted as "Rokid closed"; an update, a
  * deliberate exit by the wearer (the alive stamp is cleared then) and any other death are not. The heartbeat is written
  * only while the app is meant to be running (ui_mode full or icon), so the gap never includes time the wearer had it closed.
  */
@@ -65,6 +67,8 @@ class RestartDiagnostics(
     val userExitAtMs: Long? get() = prefs.getLong(KEY_EXIT_AT, 0L).takeIf { it > 0L }
 
     fun onProcessStart() {
+        // Before wave 3 `rokid_closes` counted every force-stop, whoever made it: drop that mixed count once (diagnostics only).
+        if (!prefs.contains(KEY_COUNTS_V2)) prefs.edit().remove(KEY_CLOSES).remove(KEY_LAST_GAP).putBoolean(KEY_COUNTS_V2, true).apply()
         val lastAlive = prefs.getLong(KEY_ALIVE, 0L)
         val now = wallClock()
         val exit = lastExit()
@@ -87,9 +91,9 @@ class RestartDiagnostics(
         killedWhileRunning = lastAlive > 0L && reason != "install" && mode != UiModeStore.HOME
         val e = prefs.edit()
         when (kind) {
-            ExitKind.ROKID -> if (reason == "forcestop_rokid") e.putInt(KEY_CLOSES, closes + 1).putInt(KEY_LAST_GAP, gap)
-            ExitKind.UNKNOWN -> if (reason == "forcestop_unverified") e.putInt(KEY_UNVERIFIED, unverifiedCloses + 1)
-            ExitKind.OTHER -> if (reason == "forcestop_other") e.putInt(KEY_OTHER, otherCloses + 1)
+            ExitKind.ROKID -> e.putInt(KEY_CLOSES, closes + 1).putInt(KEY_LAST_GAP, gap)
+            ExitKind.UNKNOWN -> e.putInt(KEY_UNVERIFIED, unverifiedCloses + 1)
+            ExitKind.OTHER -> e.putInt(KEY_OTHER, otherCloses + 1)
             null -> {}
         }
         e.apply()
@@ -104,6 +108,7 @@ class RestartDiagnostics(
     private companion object {
         const val KEY_ALIVE = "last_alive_ms"
         const val KEY_CLOSES = "rokid_closes"
+        const val KEY_COUNTS_V2 = "closes_v2"
         const val KEY_UNVERIFIED = "unknown_closes"
         const val KEY_OTHER = "other_closes"
         const val KEY_LAST_GAP = "last_gap_sec"
