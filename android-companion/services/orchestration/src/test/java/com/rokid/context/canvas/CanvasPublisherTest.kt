@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -214,4 +215,85 @@ class CanvasPublisherTest {
         assertEquals("MANUAL {{recent_context}}", activeText())
         if (out is CanvasPublisher.Outcome.Blocked) assertEquals(1, dao.activePublishes().size)
     } }
+
+    @Test fun rollbackMultiKeyAllOrNothing() = both {
+        val criticSchema = DefaultSchemas.text(PromptKey.CRITIC)
+        val id = repo.duplicate("live-extract", null, "Two")
+        val base = DefaultPipelines.liveExtract()
+        val edited = base.copy(id = id, name = "Two", nodes = base.nodes.map {
+            when (it.id) {
+                "extract" -> it.copy(params = draftParams("EDITED {{recent_context}}"))
+                "critic" -> it.copy(params = buildJsonObject { putJsonObject("prompt") { put("source", "draft"); put("template", "CRITIC-EDIT {{recent_context}}"); put("schema", criticSchema) } })
+                else -> it
+            }
+        })
+        repo.saveDraft(id, PipelineJson.encode(edited), 0)
+        val v = repo.freeze(id, "n")
+        recordRun(v.hash, "extract"); recordRun(v.hash, "critic")
+        val out = publisher().publish(id, v.version) as CanvasPublisher.Outcome.Published
+        assertEquals(2, out.keys.size)
+        // the SECOND key (critic) is edited by hand after the publish
+        val second = PromptKey.CRITIC
+        prompts.save(second, PromptDraft("MANUAL {{recent_context}}", prompts.active(second).outputSchema), "by hand", true)
+        val firstKey = PromptKey.VISION_EXTRACT
+        assertEquals(listOf(firstKey, second), out.keys)
+        val firstBefore = prompts.active(firstKey)
+        val firstHistory = prompts.history(firstKey).first().size
+        val res = publisher().rollback()
+        assertTrue(res is CanvasPublisher.Outcome.Blocked)
+        assertEquals("MANUAL {{recent_context}}", prompts.active(second).template)
+        assertEquals(firstBefore, prompts.active(firstKey)) // the first key was not rolled back
+        assertEquals(firstHistory, prompts.history(firstKey).first().size)
+        assertEquals(1, dao.activePublishes().size)
+    }
+
+    @Test fun publishBlockedWhenEditedDuringPublish() = both {
+        val (id, v) = frozen("EDITED {{recent_context}}")
+        compat = { k, d ->
+            runBlocking { prompts.save(k, PromptDraft("RACE {{recent_context}}", d.outputSchema), "race", true) }
+            emptyList()
+        }
+        val out = publisher().publish(id, v)
+        assertEquals(CanvasPublisher.Outcome.Blocked(listOf("Facts from frames was changed during publish. Try again.")), out)
+        assertEquals("RACE {{recent_context}}", activeText())
+        assertTrue(dao.activePublishes().isEmpty())
+    }
+
+    @Test fun rollbackRefusesEditLandingBetweenCheckAndCas() = both {
+        val criticSchema = DefaultSchemas.text(PromptKey.CRITIC)
+        val id = repo.duplicate("live-extract", null, "Two")
+        val base = DefaultPipelines.liveExtract()
+        val edited = base.copy(id = id, name = "Two", nodes = base.nodes.map {
+            when (it.id) {
+                "extract" -> it.copy(params = draftParams("EDITED {{recent_context}}"))
+                "critic" -> it.copy(params = buildJsonObject { putJsonObject("prompt") { put("source", "draft"); put("template", "CRITIC-EDIT {{recent_context}}"); put("schema", criticSchema) } })
+                else -> it
+            }
+        })
+        repo.saveDraft(id, PipelineJson.encode(edited), 0)
+        val v = repo.freeze(id, "n")
+        recordRun(v.hash, "extract"); recordRun(v.hash, "critic")
+        publisher().publish(id, v.version)
+        var armed = false; var criticReads = 0
+        // PromptRepository.active() consults previousDefaults[key] on every read: counting those reads lets an outside
+        // edit land exactly after the rollback's fingerprint-check read (read 1) and before whatever reads next (read 2)
+        val reads = object : AbstractMap<PromptKey, Set<String>>() {
+            override val entries: Set<Map.Entry<PromptKey, Set<String>>> = emptySet()
+            override fun get(key: PromptKey): Set<String>? {
+                if (armed && key == PromptKey.CRITIC && ++criticReads == 2)
+                    runBlocking { prompts.save(PromptKey.CRITIC, PromptDraft("Y {{recent_context}}", prompts.active(PromptKey.CRITIC).outputSchema), "outside", true) }
+                return null
+            }
+        }
+        val hooked = PromptRepository(MemoryGraph.get(app).db.promptDao(), com.rokid.context.prompt.BuiltInPromptSeeds, ai.settings.prompts, reads) { now++ }
+        val firstBefore = prompts.active(PromptKey.VISION_EXTRACT)
+        val firstHistory = prompts.history(PromptKey.VISION_EXTRACT).first().size
+        armed = true
+        val out = CanvasPublisher(dao, hooked, { _, _ -> emptyList() }, { now++ }).rollback()
+        assertEquals(CanvasPublisher.Outcome.Blocked(listOf("Critic was changed after the publish. Use Settings \u2192 Prompts \u2192 History instead.")), out)
+        assertEquals("Y {{recent_context}}", prompts.active(PromptKey.CRITIC).template) // the outside edit survives
+        assertEquals(firstBefore, prompts.active(PromptKey.VISION_EXTRACT)) // all-or-nothing: first key untouched
+        assertEquals(firstHistory, prompts.history(PromptKey.VISION_EXTRACT).first().size)
+        assertEquals(1, dao.activePublishes().size)
+    }
 }

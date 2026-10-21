@@ -8,6 +8,16 @@ import androidx.room.Transaction
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
+data class CasWrite(
+    val id: String, val expectTemplate: String, val expectSchema: String?,
+    val template: String, val schema: String?, val note: String, val testedOk: Boolean,
+)
+
+sealed interface CasOutcome {
+    data class Saved(val versions: Map<String, Int>) : CasOutcome
+    data class Mismatch(val ids: List<String>) : CasOutcome
+}
+
 /** spec §4.3: one `prompt` row per key points at exactly one `prompt_version` (the active one). Schema v1 unchanged. */
 @Dao
 abstract class PromptDao {
@@ -45,6 +55,25 @@ abstract class PromptDao {
         val p = prompt(id) ?: return appendAndActivate(id, template, schema, note, testedOk, now)
         rewrite(id, p.activeVersion, template, schema, note, testedOk, now)
         return p.activeVersion
+    }
+
+    /**
+     * Compare-and-set over several keys in one transaction. Each key's ACTIVE template and schema must equal the expected
+     * text exactly (null == null); on any mismatch nothing is written and the mismatching ids come back. A key with no
+     * row counts as a mismatch. Otherwise each write appends ([keepVersions]) or overwrites the active version in place.
+     */
+    @Transaction
+    open suspend fun casSaveAll(writes: List<CasWrite>, keepVersions: Boolean, now: Long): CasOutcome {
+        require(writes.map { it.id }.distinct().size == writes.size) { "Duplicate prompt ids" }
+        val bad = writes.filter { w ->
+            val a = active(w.id)
+            a == null || a.template != w.expectTemplate || a.outputSchema != w.expectSchema
+        }.map { it.id }
+        if (bad.isNotEmpty()) return CasOutcome.Mismatch(bad)
+        return CasOutcome.Saved(writes.associate { w ->
+            w.id to if (keepVersions) appendAndActivate(w.id, w.template, w.schema, w.note, w.testedOk, now)
+            else overwriteActive(w.id, w.template, w.schema, w.note, w.testedOk, now)
+        })
     }
 
     @Transaction
