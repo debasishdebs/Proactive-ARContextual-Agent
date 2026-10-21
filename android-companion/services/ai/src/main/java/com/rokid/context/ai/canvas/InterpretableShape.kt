@@ -53,7 +53,8 @@ object InterpretableShape {
 
         // exclusive and complete routing (S28)
         p.nodes.filter { it.type in PRE_OR_EXTRACT_SINGLE }.forEach { n ->
-            if (out1[n.id].orEmpty().size > 1) out += "node ${n.id}: only a switch can send photos down two paths"
+            if (out1[n.id].orEmpty().size > 1) out += if (n.type == NodeTypes.VISION_EXTRACT) "node ${n.id}: extraction can only continue to one node"
+                else "node ${n.id}: only a switch can send photos down two paths"
         }
         p.nodes.filter { it.type == NodeTypes.SWITCH }.forEach { n ->
             val branches = NodeTypes.byType(n.type)?.branches?.invoke(n.params).orEmpty()
@@ -118,12 +119,20 @@ object InterpretableShape {
         fun cost(assign: List<Pair<Int, String>>): Int =
             assign.sumOf { it.first } + assign.groupBy { it.second }.values.sumOf { g -> ceil(g.size.toDouble() / batch(g.first().second)).toInt() }
         val min = all.minOf { cost(List(n) { _ -> it }) }
-        var max = 0
-        fun spread(from: Int, chosen: List<Pair<Int, String>>) {
-            if (chosen.size == n) { max = maxOf(max, cost(chosen)); return }
-            for (i in from until all.size) spread(i, chosen + all[i])
+        // max: per extractor the best path is its most expensive one (every photo sent there costs its prompts); then a
+        // knapsack over the extractors decides how many photos each gets (f_e(k) = k * prompts + ceil(k / batch))
+        val perExtractor = all.groupBy({ it.second }, { it.first }).mapValues { (_, c) -> c.max() }
+        val best = IntArray(n + 1) { Int.MIN_VALUE }; best[0] = 0
+        perExtractor.forEach { (e, prompts) ->
+            val b = batch(e)
+            val next = best.copyOf()
+            for (used in 0..n) if (best[used] != Int.MIN_VALUE) for (k in 1..(n - used)) {
+                val v = best[used] + k * prompts + ceil(k.toDouble() / b).toInt()
+                if (v > next[used + k]) next[used + k] = v
+            }
+            for (i in 0..n) best[i] = next[i]
         }
-        spread(0, emptyList())
+        val max = best[n]
         val base = ceil(n / 3.0)
         fun r(v: Double) = Math.round(v / base * 10.0) / 10.0
         return r(min.toDouble()) to r(max.toDouble())

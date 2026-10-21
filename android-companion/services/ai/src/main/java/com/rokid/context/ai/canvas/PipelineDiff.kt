@@ -30,7 +30,7 @@ object PipelineDiff {
                     val changed = (x.params.keys + y.params.keys).filter { x.params[it] != y.params[it] }.sorted().toMutableList()
                     if (x.type != y.type) changed += "@type"
                     if (x.title != y.title) changed += "@title"
-                    if (changed.isNotEmpty()) nodes += NodeChange(id, "changed", changed)
+                    if (changed.isNotEmpty()) nodes += NodeChange(id, "changed", changed.sorted())
                     val (tx, sx) = promptParts(x); val (ty, sy) = promptParts(y)
                     if (tx != ty) prompts += PromptDiff(id, "template", LineDiff.diff(tx, ty))
                     if (sx != sy) prompts += PromptDiff(id, "schema", LineDiff.diff(sx, sy))

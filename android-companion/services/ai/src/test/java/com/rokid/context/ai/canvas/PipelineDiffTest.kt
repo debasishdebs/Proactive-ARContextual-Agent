@@ -66,4 +66,11 @@ class PipelineDiffTest {
         assertTrue(PipelineDiff.of(live, live.copy(name = "Other")).renamed)
         assertTrue(!PipelineDiff.of(live, live.copy(id = "zzz")).renamed)
     }
+
+    @Test fun changedParamNamesSortedIncludingTypeAndTitle() {
+        val a = PipelineNode("n", NodeTypes.VISION_EXTRACT, "A", buildJsonObject { put("batch", 1); put("zeta", 1) })
+        val b = PipelineNode("n", NodeTypes.PROMPT, "B", buildJsonObject { put("batch", 2); put("alpha", 1) })
+        fun p(n: PipelineNode) = Pipeline(1, "p", "P", listOf(n), emptyList())
+        assertEquals(listOf("@title", "@type", "alpha", "batch", "zeta"), PipelineDiff.of(p(a), p(b)).nodes.single().params)
+    }
 }

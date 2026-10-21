@@ -117,4 +117,41 @@ class InterpretableShapeTest {
         assertEquals(listOf("Live always runs the confidence check and the critic after extraction"), InterpretableShape.warnings(minimal))
         assertEquals(emptyList<String>(), InterpretableShape.warnings(DefaultPipelines.liveExtract()))
     }
+
+    @Test fun extractorFanOutHasItsOwnWording() {
+        val p = pipe(
+            listOf(photos(), extract(), PipelineNode("t1", NodeTypes.LOCAL_CRITIC, "t1", none), PipelineNode("w", NodeTypes.MEMORY_WRITE, "w", none)),
+            listOf(e("photos", "extract"), e("extract", "t1"), e("extract", "w"), e("t1", "w", "trusted"), e("t1", "w", "unsure")),
+        )
+        assertHas(p, "node extract: extraction can only continue to one node")
+        assertTrue("node extract: only a switch can send photos down two paths" !in InterpretableShape.problems(p))
+    }
+
+    @Test fun branchWiredTwiceBlocked() {
+        val p = pipe(
+            listOf(photos(), prompt("intent"), sw("a"), extract("e1"), extract("e2"), extract("e3")),
+            listOf(e("photos", "intent"), e("intent", "sw"), e("sw", "e1", "a"), e("sw", "e2", "a"), e("sw", "e3", "other")),
+        )
+        assertEquals(emptyList<String>(), PipelineValidator.validate(p))
+        assertEquals(listOf("node sw: branch a goes to more than one node"), InterpretableShape.problems(p))
+    }
+
+    @Test fun onlyPhotoAndJsonConsumersCanRunBeforeExtraction() {
+        // "node <id>: <type> can't run before extraction" is defence in depth: the port types already keep every other
+        // type behind an extractor. This fails the day a type that accepts PHOTOS or JSON is added, so the rule gets a real test then.
+        val early = NodeTypes.all.filter { PortType.PHOTOS in it.inputs || PortType.JSON in it.inputs }.map { it.type }.toSet()
+        assertEquals(setOf(NodeTypes.VISION_EXTRACT, NodeTypes.PROMPT, NodeTypes.SWITCH), early)
+    }
+
+    @Test fun rangeAtTwelvePhotosIsExactAndFast() {
+        // intent-draft: 6 extractors (batch 3), 1 prompt on every path. min = 12 + ceil(12/3) = 16 -> 4.0 of Live's 4 calls;
+        // max = 12 + 8 (six extractors, 6 photos make one call each, the other 6 add two more) = 20 -> 5.0
+        assertEquals(4.0 to 5.0, InterpretableShape.callRange(DefaultPipelines.intentDraft(seed), photos = 12))
+        // a wide switch (12 cases + other = 13 extractors) must not blow up
+        val cases = (1..12).map { "c$it" }
+        val nodes = listOf(photos(), prompt("intent"), sw(*cases.toTypedArray())) + (cases + "other").map { extract("e_$it", 1) }
+        val edges = listOf(e("photos", "intent"), e("intent", "sw")) + (cases + "other").map { e("sw", "e_$it", it) }
+        val r = InterpretableShape.callRange(pipe(nodes, edges), photos = 12)
+        assertTrue(r.first > 0 && r.first <= r.second)
+    }
 }
