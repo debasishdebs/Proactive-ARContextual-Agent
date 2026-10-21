@@ -3,7 +3,10 @@ package com.rokid.context.phone.ui.settings.capture
 import android.app.Application
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.assertTextEquals
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.unit.dp
@@ -51,19 +54,21 @@ class ContextSourcesSettingsTest {
 
     private val grantedPerms = mutableSetOf<String>()
     private var bonded = listOf("AA:BB:CC:00:00:01" to "Civic", "AA:BB:CC:00:00:02" to "Van")
+    private var btOn = true
+    private var settingsOpened = 0
     private val asked = mutableListOf<List<String>>()
     private val bt = "android.permission.BLUETOOTH_CONNECT"
     private val activityPerm = "android.permission.ACTIVITY_RECOGNITION"
     private val finePerm = "android.permission.ACCESS_FINE_LOCATION"
     private val coarsePerm = "android.permission.ACCESS_COARSE_LOCATION"
 
-    private fun vm(cert: String? = digest) = ContextSourcesViewModel(settings, LiveFitCertLookup { cert }, decision, status, stats, granted = { it in grantedPerms }, bonded = { bonded })
+    private fun vm(cert: String? = digest) = ContextSourcesViewModel(settings, LiveFitCertLookup { cert }, decision, status, stats, granted = { it in grantedPerms }, bonded = { bonded }, bluetoothOn = { btOn })
 
     private fun show(vm: ContextSourcesViewModel) {
         compose.setContent {
             PcTheme {
                 val s = vm.state.collectAsState().value
-                ContextSourcesScreen(s, onBack = {}, onApply = vm::setApply, onSource = { id, on -> vm.setSource(id, on) { asked += it.toList() } }, onToggleCar = vm::setMyCar, onRefreshCars = vm::refreshCars)
+                ContextSourcesScreen(s, onBack = {}, onApply = vm::setApply, onSource = { id, on -> vm.setSource(id, on) { asked += it.toList() } }, onToggleCar = vm::setMyCar, onRefreshCars = vm::refreshCars, onOpenAppSettings = { settingsOpened++ })
             }
         }
         compose.waitForIdle()
@@ -311,7 +316,7 @@ class ContextSourcesSettingsTest {
         v.cancelScope()
     }
 
-    @Test fun deleteAllClearsMyCarsAndTheSwitchesFollow() {
+    @Test fun clearPersonalClearsMyCarsAndTheSwitchesFollow() {
         grantedPerms += bt
         val v = vm(); show(v)
         compose.onNodeWithTag("ctx_phone_car").performClick(); compose.waitForIdle()
@@ -334,9 +339,55 @@ class ContextSourcesSettingsTest {
         v.cancelScope()
     }
 
-    @Test fun speedExplainsForegroundOnlyAndNoBackgroundLocation() {
+    @Test fun speedSubtitleSaysLocationRunsInThePocketAndBackgroundPermissionIsNeverAsked() {
         val v = vm(); show(v)
-        compose.onNodeWithTag("ctx_phone_speed").assertTextContains("Background location is never used or requested", substring = true)
+        compose.onNodeWithTag("ctx_phone_speed").assertTextContains("with the phone in your pocket", substring = true)
+            .assertTextContains("background-location permission is never requested", substring = true)
+        compose.onNodeWithTag("ctx_phone_speed").assertTextDoesNotContain("only while the app is open")
+        v.cancelScope()
+    }
+
+    private fun androidx.compose.ui.test.SemanticsNodeInteraction.assertTextDoesNotContain(t: String) {
+        val texts = fetchSemanticsNode().config.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.Text).orEmpty().joinToString { it.text }
+        assertFalse(texts, texts.contains(t))
+    }
+
+    @Test fun deleteAllPathClearsMyCarsEvenWhenTheWipeThrows() = runBlocking {
+        settings.addMyCar("AA:BB:CC:00:00:01"); settings.setEnabled("image_intent", true)
+        val r = runCatching { settings.wipeThenClear { error("disk") } }
+        assertTrue(r.isFailure); assertTrue(settings.myCars.isEmpty()); assertFalse(settings.enabled("image_intent"))
+    }
+
+    @Test fun imageIntentOnWithNoCarListedSaysNothingIsSent() {
+        settings.setEnabled("image_intent", true)
+        val v = vm(); show(v)
+        compose.onNodeWithTag("ctx_image_intent_nocar").assertTextContains("No car listed yet", substring = true)
+        settings.setEnabled("phone_car", true); settings.addMyCar("AA:BB:CC:00:00:01"); compose.waitForIdle()
+        compose.onNodeWithTag("ctx_image_intent_nocar").assertDoesNotExist()
+        v.cancelScope()
+    }
+
+    @Test fun noCarNoteHiddenWhileImageIntentIsOff() {
+        val v = vm(); show(v)
+        compose.onNodeWithTag("ctx_image_intent_nocar").assertDoesNotExist()
+        v.cancelScope()
+    }
+
+    @Test fun carOnWithPermissionButBluetoothOffSaysSo() {
+        grantedPerms += bt; btOn = false
+        settings.setEnabled("phone_car", true)
+        val v = vm(); show(v)
+        compose.onNodeWithTag("ctx_bt_off_phone_car").assertTextContains("Bluetooth is off", substring = true)
+        compose.onNodeWithTag("ctx_perm_missing_phone_car").assertDoesNotExist()
+        v.cancelScope()
+    }
+
+    @Test fun deniedNoteOffersOpenAppSettings() {
+        val v = vm(); show(v)
+        compose.onNodeWithTag("ctx_phone_car").performClick(); compose.waitForIdle()
+        v.onPermissionResult(mapOf(bt to false)); compose.waitForIdle()
+        compose.onNodeWithTag("ctx_open_settings_phone_car").performClick()
+        assertEquals(1, settingsOpened)
         v.cancelScope()
     }
 }

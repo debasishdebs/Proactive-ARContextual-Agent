@@ -57,11 +57,17 @@ class DiagnosticsTest {
         compose.onNodeWithTag("diag_ctx_time").assertTextContains("WALKING 125", substring = true)
     }
 
-    @Test fun contextCardHoldsOnlyNumbersAndEnumNames() {
+    @Test fun contextCardRendersOnlyKnownKeysNumbersAndEnumNames() {
         val st = com.rokid.context.phone.context.ContextHubStats { 0L }
-        val rows = ContextHubCardData(com.rokid.context.core.model.context.ContextState.VEHICLE_DRIVING, st.snapshot()).rows()
+        repeat(3) { st.onSend() }
+        val snap = st.snapshot() + mapOf("AA:BB:CC:00:00:01" to 7L, "Civic" to 9L, "lat=12.97" to 1L, "state_Civic_s" to 4L)
+        val rows = ContextHubCardData(com.rokid.context.core.model.context.ContextState.VEHICLE_DRIVING, snap).rows()
         val text = rows.joinToString("\n") { it.second }
-        org.junit.Assert.assertTrue(text, Regex("[A-Za-z0-9 :>·\\n_.,%-]*").matches(text))
+        listOf("AA:BB", "Civic", "12.97", "lat").forEach { org.junit.Assert.assertFalse(it, text.contains(it)) }
+        // strict allow-list: every line is a known label followed by numbers, or an enum name
+        val allowed = Regex("(State [A-Z_]+|((sends|changes|ar|steps|locFixes|locOnS|bt|aa|air|hints|watch|watchRej) \\d+( · )?)+|intent \\d+ · intentFail \\d+ · intentSkip \\d+|Phone battery (na|\\d+%) -> (na|\\d+%)|Seconds per state: ([A-Z_]+ \\d+( · )?)+)")
+        rows.forEach { org.junit.Assert.assertTrue(it.second, allowed.matches(it.second)) }
+        org.junit.Assert.assertTrue(text.contains("sends 3"))
         org.junit.Assert.assertEquals(listOf("diag_ctx_state", "diag_ctx_counts", "diag_ctx_intent", "diag_ctx_batt", "diag_ctx_time"), rows.map { it.first })
     }
 
