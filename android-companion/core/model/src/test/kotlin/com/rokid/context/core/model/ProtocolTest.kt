@@ -271,4 +271,35 @@ class ProtocolTest {
             """{"v":$PROTOCOL_VERSION,"command":{"kind":"pause","pause":{"pauseId":"p","origin":"NOPE","createdAtMs":1}}}""",
         ))
     }
+
+    @Test fun oldSettingsJsonDecodesToBatteryDefaults() {
+        val d = Wire.decode<HudSettings>("""{"v":$PROTOCOL_VERSION}""")
+        val s = (d as Decoded.Ok).value
+        assertEquals(CameraWake.MOTION, s.cameraWake)
+        assertEquals(4, s.batteryTargetHours)
+        assertFalse(s.pauseWhenPhoneInUse)
+    }
+
+    @Test fun unknownCameraWakeDecodesToMotion() {
+        val d = Wire.decode<HudSettings>("""{"v":$PROTOCOL_VERSION,"cameraWake":"WARP"}""")
+        assertEquals(CameraWake.MOTION, (d as Decoded.Ok).value.cameraWake)
+    }
+
+    @Test fun phoneContextMessageRoundTrips() {
+        val m = PhoneContextMessage(inUse = true, atMs = 123L, sessionStartMs = 99L)
+        assertEquals(Decoded.Ok(m), Wire.decode<PhoneContextMessage>(Wire.encode(m)))
+        assertEquals(0L, PhoneContextMessage(inUse = false, atMs = 1L).sessionStartMs)
+        assertEquals("pc_phone_ctx", Channels.PHONE_CONTEXT)
+    }
+
+    @Test fun batteryTargetHoursSnapsToAllowedSet() {
+        fun snap(h: Int) = HudSettings(batteryTargetHours = h).normalized().batteryTargetHours
+        assertEquals(0, snap(1))
+        assertEquals(3, snap(2))
+        assertEquals(6, snap(9))
+        assertEquals(0, snap(0))
+        assertEquals(5, snap(5))
+    }
+
+    @Test fun protocolVersionStaysOne() = assertEquals(1, PROTOCOL_VERSION)
 }

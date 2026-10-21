@@ -25,6 +25,8 @@ object Channels {
     const val USER_EXIT = "pc_user_exit"
     /** Fix wave I, phone to glasses: an [AutoOpen] (this start of the glasses app was the phone's automatic reopen: keep it minimised). Additive. */
     const val AUTO_OPEN = "pc_auto_open"
+    /** Battery wave A, phone to glasses: a [PhoneContextMessage] (the phone is in use). Additive. */
+    const val PHONE_CONTEXT = "pc_phone_ctx"
 }
 
 /** How the glasses decide when to capture: Smart = motion-driven keyframes, Fixed = the interval timer. */
@@ -181,7 +183,28 @@ data class HudSettings(
     val quickLookMs: Int = 1000,
     /** Rest minutes: 5|10|15|20; at least 15 when [workMinutes] > 45 (see [normalized]). */
     val restMinutes: Int = 15,
+    /** Battery wave A, additive: what wakes the camera from a quiet spell. Unknown wire value = MOTION. */
+    val cameraWake: CameraWake = CameraWake.MOTION,
+    /** Battery wave A, additive: target battery life in hours, 0 = Off (see [BATTERY_TARGET_HOURS_ALLOWED], [normalized]). */
+    val batteryTargetHours: Int = 4,
+    /** Battery wave A, additive: pause capture while the phone is in use (see [PhoneContextMessage]). */
+    val pauseWhenPhoneInUse: Boolean = false,
 )
+
+/** Battery wave A, additive: what wakes the camera. */
+@Serializable enum class CameraWake { MOTION, SETTLE }
+
+/** Battery wave A, additive: phone to glasses on [Channels.PHONE_CONTEXT]; [inUse] = the phone is being used right now. */
+@Serializable
+data class PhoneContextMessage(
+    val v: Int = PROTOCOL_VERSION,
+    val inUse: Boolean,
+    val atMs: Long,
+    val sessionStartMs: Long = 0L,
+)
+
+/** Battery target hours; 0 = Off. */
+val BATTERY_TARGET_HOURS_ALLOWED = listOf(0, 3, 4, 5, 6)
 
 val WORK_MINUTES_ALLOWED = listOf(30, 40, 45, 50, 60, 75, 90)
 val REST_MINUTES_ALLOWED = listOf(5, 10, 15, 20)
@@ -198,7 +221,10 @@ fun HudSettings.normalized(): HudSettings {
     val w = WORK_MINUTES_ALLOWED.nearest(workMinutes)
     var r = REST_MINUTES_ALLOWED.nearest(restMinutes)
     if (w > 45 && r < 15) r = 15
-    return copy(workMinutes = w, restMinutes = r, quickLookMs = QUICK_LOOK_MS_ALLOWED.nearest(quickLookMs))
+    return copy(
+        workMinutes = w, restMinutes = r, quickLookMs = QUICK_LOOK_MS_ALLOWED.nearest(quickLookMs),
+        batteryTargetHours = BATTERY_TARGET_HOURS_ALLOWED.nearest(batteryTargetHours),
+    )
 }
 
 /** The corner of the minimised icon on the glasses display. */
