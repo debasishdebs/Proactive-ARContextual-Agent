@@ -71,7 +71,7 @@ class PhotoRecall(
         return RecallResult(image, cap, state, scanned, truncated, captionState)
     }
 
-    private class ImageScanOutcome(val state: ImageSearchState, val hits: List<Pair<String, Double>>, val scanned: Int, val truncated: Boolean, val captionState: CaptionSearchState = CaptionSearchState.RAN)
+    private class ImageScanOutcome(val state: ImageSearchState, val hits: List<Pair<String, Double>>, val scanned: Int, val truncated: Boolean)
 
     private suspend fun imageScan(query: String, k: Int, budgetMs: Long): ImageScanOutcome {
         fun failed() = ImageScanOutcome(ImageSearchState.FAILED, emptyList(), 0, false)
@@ -81,7 +81,7 @@ class PhotoRecall(
             ?: return ImageScanOutcome(ImageSearchState.NO_IMAGE_SPACE, emptyList(), 0, false)
         val q = try {
             val full = target.embedQueryFull(query)
-            if (full.size < target.imageDims) null else usable(VectorMath.l2(full.copyOf(target.imageDims)))
+            if (full.size < target.imageDims) null else VectorMath.l2(full.copyOf(target.imageDims)).takeIf { VectorMath.usable(it) }
         } catch (c: CancellationException) { throw c } catch (_: Exception) { null } ?: return failed()
         return try {
             val r = withContext(Dispatchers.Default) {
@@ -114,9 +114,6 @@ class PhotoRecall(
                 described = id in described, captionMemoryId = cap?.memoryId, captionText = cap?.text, clusterId = meta.clusterId)
         }
     }
-
-    /** The shared truncate + L2 helper leaves a zero vector alone and passes NaN through, so an unusable query is rejected here. */
-    private fun usable(v: FloatArray): FloatArray? = v.takeIf { x -> x.all { it.isFinite() } && x.any { it != 0f } }
 
     companion object {
         private const val CAPTION_POOL = 60

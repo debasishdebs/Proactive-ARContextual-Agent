@@ -135,7 +135,7 @@ internal class Retention(
         for (round in 0 until MAX_ROUNDS) {
             val frames = dao.orphanFramesBefore(nowMs - s.longDays * DAY, CHUNK)
             if (frames.isEmpty()) break
-            frames.forEach { onChunk(service.forgetMoment(it)) }
+            frames.forEach { onChunk(service.forgetMoment(it, redactCites = false)) }
         }
         return Summary(skipped, 0)
     }

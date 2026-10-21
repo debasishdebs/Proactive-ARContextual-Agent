@@ -293,4 +293,16 @@ class ForgetServiceTest {
         service.forgetMoment("f1")
         assertTrue(db.frameSourceDao().memoriesForFrame("f1").isEmpty())
     }
+
+    @Test fun expiryVariantOfForgetMomentNeverRedactsPhotoCites() = runBlocking {
+        db.frameDao().insertIgnore(FrameEntity("legacy", 1, "/legacy.jpg", "rokid_glasses"))
+        db.askDao().upsert(AskEntity("q1", 1, "q", "answer", """["${PHOTO_CITE_PREFIX}legacy"]""", null, "phone_typed", false))
+        val r = service.forgetMoment("legacy", redactCites = false)
+        assertEquals(listOf("/legacy.jpg", "/legacy.meta.json"), r.framesToDelete.sorted())
+        assertFalse(db.askDao().byId("q1")!!.redacted)
+        // the nothing-left branch too: cites stay
+        db.askDao().upsert(AskEntity("q2", 1, "q", "answer", """["${PHOTO_CITE_PREFIX}ghost"]""", null, "phone_typed", false))
+        service.forgetMoment("ghost", redactCites = false)
+        assertFalse(db.askDao().byId("q2")!!.redacted)
+    }
 }

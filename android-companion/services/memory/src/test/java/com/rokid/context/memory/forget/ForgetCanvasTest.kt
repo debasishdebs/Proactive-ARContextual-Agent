@@ -56,4 +56,10 @@ class ForgetCanvasTest {
         service.forgetFacts(listOf("m2"), lockFrames = false)
         assertEquals("no lock, no canvas delete", 2, left("r", "f2"))
     }
+
+    @Test fun orphanCanvasRowsOfAnIdWithNothingElseAreDropped() = runBlocking {
+        canvasRows("r", "ghost"); canvasRows("r", "other")
+        service.forgetMoment("ghost")
+        assertEquals(0, left("r", "ghost")); assertEquals(2, left("r", "other"))
+    }
 }
