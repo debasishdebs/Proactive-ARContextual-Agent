@@ -15,6 +15,8 @@ data class MemorySettings(
     val shortHours: Int = 24, val mediumDays: Int = 7, val longDays: Int = 30, val quotaMb: Int = 100,
     val photoDays: Int = 7, val skippedPhotoDays: Int = 1, val captionDays: Int = FOREVER, val clusterSummaryDays: Int = FOREVER,
     val imageVectorDays: Int = FOREVER, val perKindSince: Long = 0L,
+    /** When the last retention run started: a long gap, or a clock behind it, renews [perKindSince] (fix round 1, I3). */
+    val perKindLastRun: Long = 0L,
 ) {
     val quotaBytes: Long get() = quotaMb.toLong() * 1024 * 1024
     companion object { const val FOREVER = -1 }
@@ -39,16 +41,24 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
             val n = clean(transform(state.value))
             prefs.edit().putInt("short_hours", n.shortHours).putInt("medium_days", n.mediumDays).putInt("long_days", n.longDays).putInt("quota_mb", n.quotaMb)
                 .putInt("photo_days", n.photoDays).putInt("skipped_photo_days", n.skippedPhotoDays).putInt("caption_days", n.captionDays)
-                .putInt("cluster_summary_days", n.clusterSummaryDays).putInt("image_vector_days", n.imageVectorDays).putLong("per_kind_since", n.perKindSince).apply()
+                .putInt("cluster_summary_days", n.clusterSummaryDays).putInt("image_vector_days", n.imageVectorDays).putLong("per_kind_since", n.perKindSince).putLong("per_kind_last_run", n.perKindLastRun).apply()
             state.value = n
         } finally {
             updating.remove()
         }
     }
 
-    /** The first retention run stamps [MemorySettings.perKindSince] (only while it is unset) and returns the settings in force. */
+    /**
+     * Called at the start of each retention run: returns the settings in force. [MemorySettings.perKindSince] is stamped on the first run and
+     * renewed (to [nowMs], so deadlines only move later) when the stamp can no longer be trusted: the clock is behind it or behind the last
+     * run, the last run was more than 7 days ago (a build switch or restore), or the stamp has no run record. Records the run.
+     */
     fun stampPerKindSince(nowMs: Long): MemorySettings {
-        update { if (it.perKindSince == 0L) it.copy(perKindSince = nowMs) else it }
+        update {
+            val stale = it.perKindSince == 0L || nowMs < it.perKindSince || it.perKindLastRun == 0L ||
+                nowMs < it.perKindLastRun || nowMs - it.perKindLastRun > MAX_RUN_GAP_MS
+            it.copy(perKindSince = if (stale) nowMs else it.perKindSince, perKindLastRun = nowMs)
+        }
         return state.value
     }
 
@@ -57,7 +67,7 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
         return clean(MemorySettings(
             prefs.getInt("short_hours", d.shortHours), prefs.getInt("medium_days", d.mediumDays), prefs.getInt("long_days", d.longDays), prefs.getInt("quota_mb", d.quotaMb),
             prefs.getInt("photo_days", d.photoDays), prefs.getInt("skipped_photo_days", d.skippedPhotoDays), prefs.getInt("caption_days", d.captionDays),
-            prefs.getInt("cluster_summary_days", d.clusterSummaryDays), prefs.getInt("image_vector_days", d.imageVectorDays), prefs.getLong("per_kind_since", 0L),
+            prefs.getInt("cluster_summary_days", d.clusterSummaryDays), prefs.getInt("image_vector_days", d.imageVectorDays), prefs.getLong("per_kind_since", 0L), prefs.getLong("per_kind_last_run", 0L),
         ))
     }
 
@@ -72,6 +82,7 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
         clusterSummaryDays = s.clusterSummaryDays.takeIf { it in LONG_KIND_DAYS } ?: MemorySettings.FOREVER,
         imageVectorDays = s.imageVectorDays.takeIf { it in LONG_KIND_DAYS } ?: MemorySettings.FOREVER,
         perKindSince = s.perKindSince.coerceAtLeast(0L),
+        perKindLastRun = s.perKindLastRun.coerceAtLeast(0L),
     )
 
     companion object {
@@ -79,6 +90,7 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
         val MEDIUM_DAYS = listOf(3, 7, 14)
         val LONG_DAYS = listOf(30, 90, 365)
         val QUOTA_MB = 10..2_000
+        private const val MAX_RUN_GAP_MS = 7 * 24 * 3_600_000L
         /** Per-kind choices (spec §P6.1); [MemorySettings.FOREVER] = -1 means never. */
         val PHOTO_DAYS = listOf(1, 3, 7, 30, 90, MemorySettings.FOREVER)
         val SKIPPED_DAYS = listOf(0, 1, 7)

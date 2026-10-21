@@ -52,6 +52,26 @@ class MemorySettingsStoreTest {
         assertEquals(1_000L, MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_stamp", Context.MODE_PRIVATE)).settings.value.perKindSince)
     }
 
+    private val day7 = 7 * 24 * 3_600_000L
+
+    /** I3: the stamp is renewed by anything that could bring the bulk delete back; only ever later, never earlier. */
+    @Test fun stampIsRenewedWhenStaleOrClockMovesBack() {
+        fun store(n: String) = MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("stamp_$n", Context.MODE_PRIVATE))
+        val day = 24 * 3_600_000L
+        // normal daily run: the stamp stays, last run advances
+        store("a").apply { stampPerKindSince(1_000 * day) ; assertEquals(1_000 * day, settings.value.perKindSince)
+            assertEquals(1_000 * day + day, stampPerKindSince(1_000 * day + day).perKindLastRun); assertEquals(1_000 * day, settings.value.perKindSince) }
+        // restored / build-switch stamp, 30-day gap
+        store("b").apply { update { it.copy(perKindSince = 100 * day, perKindLastRun = 100 * day) }; assertEquals(130 * day, stampPerKindSince(130 * day).perKindSince) }
+        // exactly 7 days is still fine, more is not
+        store("c").apply { update { it.copy(perKindSince = 100 * day, perKindLastRun = 100 * day) }; assertEquals(100 * day, stampPerKindSince(107 * day).perKindSince) }
+        store("c2").apply { update { it.copy(perKindSince = 100 * day, perKindLastRun = 100 * day) }; assertEquals(108 * day, stampPerKindSince(108 * day).perKindSince) }
+        // clock behind the stamp / the last run
+        store("d").apply { update { it.copy(perKindSince = 100 * day, perKindLastRun = 100 * day) }; assertEquals(50 * day, stampPerKindSince(50 * day).perKindSince) }
+        // a stamp with no run record (an older build's, or restored) is not trusted
+        store("e").apply { update { it.copy(perKindSince = 100 * day) }; assertEquals(101 * day, stampPerKindSince(101 * day).perKindSince) }
+    }
+
     /** Fix round 2 N4: an edit that starts while another is mid-update is applied after it, not lost. */
     @Test fun twoQuickEditsBothPersistInOrder() {
         val p = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_race", Context.MODE_PRIVATE)

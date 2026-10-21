@@ -180,8 +180,8 @@ class RetentionWorkerTest {
         MemorySettings(photoDays = photo, skippedPhotoDays = skipped, captionDays = caption, clusterSummaryDays = summary, imageVectorDays = vec, perKindSince = since)
 
     /** One retention pass at [at], deleting the listed files like the worker does. */
-    private fun pass(s: MemorySettings, at: Long) = runBlocking {
-        Retention(graph, ForgetService(graph.db, graph.proposals) { at }).run(s, at) { r -> FrameSweep.delete(r.framesToDelete) }
+    private fun pass(s: MemorySettings, at: Long, gate: Boolean = false) = runBlocking {
+        Retention(graph, ForgetService(graph.db, graph.proposals) { at }, describeBeforeDeleteReady = gate).run(s, at) { r -> FrameSweep.delete(r.framesToDelete) }
     }
 
     private suspend fun photo(
@@ -209,7 +209,7 @@ class RetentionWorkerTest {
 
     @Test fun skippedPhotoDeletedAfterOneDay() = runBlocking {
         cluster("c1", "SUMMARIZED")
-        val old = t0 - 10 * day
+        val old = t0 + 30 * 60_000L // captured after the stamp: the 7-day protection of pre-existing photos does not apply
         val shed = photo("shed", old, "NEAR_DUP", lastError = "shed_backlog", updatedAt = old)
         val dup = photo("dup", old, "NEAR_DUP", salience = 0.1f)
         val member = photo("mem", old, "CLUSTERED", clusterId = "c1").also {
@@ -254,7 +254,7 @@ class RetentionWorkerTest {
     }
 
     @Test fun zeroDaySkippedDeletesThisRun() = runBlocking {
-        val dup = photo("dup", t0 - day, "NEAR_DUP", salience = 0.0f)
+        val dup = photo("dup", t0, "NEAR_DUP", salience = 0.0f)
         val kept = photo("ex", t0 - day, "EXTRACTED", linked = true)
         pass(settings(skipped = 0), t0)
         assertFalse(dup.exists()); assertNull(frameRow("dup"))
@@ -275,11 +275,11 @@ class RetentionWorkerTest {
     /** Spec P6.4: with the charger never connected, an unlinked photo is still deleted on day 3 of its grace. */
     @Test fun unlinkedPhotoGetsThreeDayGraceWithChargerNeverConnected() = runBlocking {
         val f = photo("u", t0 + hour, "EXTRACTED")
-        pass(settings(), t0 + 8 * day) // past 7 days, inside the grace
+        pass(settings(), t0 + 8 * day, gate = true) // past 7 days, inside the grace
         assertTrue(f.exists())
-        pass(settings(), t0 + 9 * day + 12 * hour)
+        pass(settings(), t0 + 9 * day + 12 * hour, gate = true)
         assertTrue(f.exists())
-        val s = pass(settings(), t0 + 10 * day + 2 * hour)
+        val s = pass(settings(), t0 + 10 * day + 2 * hour, gate = true)
         assertFalse(f.exists()); assertNull(frameRow("u"))
         assertEquals(1, s.deletedUndescribed)
     }
@@ -334,10 +334,11 @@ class RetentionWorkerTest {
         val since = store.settings.value.perKindSince
         val s = store.settings.value
         pass(s, since + 6 * hour); assertEquals(800, graph.db.frameDao().count())
-        pass(s, since + 25 * hour); assertEquals(500, graph.db.frameDao().count()) // skipped ones, 1 day after the stamp
-        pass(s, since + 6 * day); assertEquals(500, graph.db.frameDao().count())
-        pass(s, since + 7 * day + hour); assertEquals(200, graph.db.frameDao().count()) // linked ones; unlinked still in their grace
-        pass(s, since + 10 * day + hour); assertEquals(0, graph.db.frameDao().count())
+        pass(s, since + 25 * hour); assertEquals(800, graph.db.frameDao().count()) // pre-existing photos: 7 days of protection, skipped ones too
+        pass(s, since + 6 * day); assertEquals(800, graph.db.frameDao().count())
+        pass(s, since + 7 * day + hour); assertEquals(200, graph.db.frameDao().count()) // skipped and linked go; unlinked wait for describe-before-delete
+        pass(s, since + 30 * day); assertEquals(200, graph.db.frameDao().count()) // gate off: undescribed photos are never deleted
+        pass(s, since + 10 * day + hour, gate = true); assertEquals(0, graph.db.frameDao().count())
         assertEquals(300, graph.db.memoryViewDao().let { dao -> (0 until 300).count { dao.byId("m_lk$it") != null } })
         // the stamp is written once
         work(); assertEquals(since, store.settings.value.perKindSince)
@@ -383,5 +384,111 @@ class RetentionWorkerTest {
         }
         graph.db.frameMetaDao().upsert(FrameMetaEntity("x3", null, null, "STILL", false, null, null, null, 640, null, null, "cOpen", null, null, 1))
         assertEquals(listOf("x4"), dao.orphanFramesBefore(now, 10))
+    }
+
+    // --- Fix round 1: data-loss audit -----------------------------------------------------------------------------------
+    private suspend fun fact(id: String, frameId: String, ageMs: Long, at: Long = now) =
+        graph.db.memoryDao().insert(MemoryEntity(id, frameId, "t", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, at - ageMs, false, "t"))
+            .also { graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity(id, frameId, null, "FACT"))) }
+
+    /** C1: a SHORT fact expiring at 24 h must not tombstone the photo, delete its JPEG or its vectors; the photo rule then runs. */
+    @Test fun memoryExpiryNeverTouchesKeyframePhoto() = runBlocking {
+        val jpg = photo("kf", now - 2 * hour, "EXTRACTED", linked = true) // has a caption (LONG, forever)
+        fact("fact_kf", "kf", 25 * hour)
+        assertTrue(work() is ListenableWorker.Result.Success)
+        assertFalse(exists("fact_kf")); assertTrue(exists("m_kf"))
+        assertTrue(jpg.exists()); assertNotNull(frameRow("kf"))
+        assertNotNull(graph.db.frameVectorDao().get("kf", "sp")); assertNotNull(graph.db.frameMetaDao().get("kf")); assertNotNull(graph.db.frameStateDao().get("kf"))
+        assertTrue(graph.db.forgetDao().tombstoned(listOf("kf")).isEmpty())
+        val since = MemorySettingsStore.get(ctx).settings.value.perKindSince
+        pass(MemorySettingsStore.get(ctx).settings.value, since + 8 * day)
+        assertNull(frameRow("kf")); assertFalse(jpg.exists()) // photoDays, through expirePhotos
+        assertNotNull(graph.db.frameVectorDao().get("kf", "sp")); assertNotNull(graph.db.frameMetaDao().get("kf")); assertTrue(exists("m_kf"))
+    }
+
+    /** C1(b): the last citing memory expiring must not delete the photo or its vectors. */
+    @Test fun lastCitingMemoryExpiringKeepsPhotoAndVectors() = runBlocking {
+        val jpg = photo("only", now - 2 * hour, "EXTRACTED")
+        fact("fact_only", "only", 25 * hour)
+        work()
+        assertFalse(exists("fact_only"))
+        assertTrue(jpg.exists()); assertNotNull(frameRow("only")); assertNotNull(graph.db.frameVectorDao().get("only", "sp"))
+        assertTrue(graph.db.forgetDao().tombstoned(listOf("only")).isEmpty())
+    }
+
+    @Test fun captionExpiryBeforePhotoExpiryKeepsPhotoAndVector() = runBlocking {
+        val ts = t0 + hour
+        val jpg = photo("cp", ts, "EXTRACTED", linked = true)
+        pass(settings(photo = 90, caption = 30), t0 + 31 * day)
+        assertFalse(exists("m_cp")) // the caption's own rule
+        assertTrue(jpg.exists()); assertNotNull(frameRow("cp")); assertNotNull(graph.db.frameVectorDao().get("cp", "sp"))
+        assertTrue(graph.db.forgetDao().tombstoned(listOf("cp")).isEmpty())
+    }
+
+    /** A cluster summary expiring takes its CLUSTER_REP rows with it; the representative must not become a skipped photo. */
+    @Test fun summaryExpiryDoesNotMakeRepresentativesSkipped() = runBlocking {
+        graph.db.frameClusterDao().upsert(FrameClusterEntity("cr", 1, 2, "gap", "[\"rep\"]", null, state = "SUMMARIZED"))
+        val rep = photo("rep", t0 + hour, "CLUSTERED", clusterId = "cr")
+        val member = photo("mb", t0 + hour, "CLUSTERED", clusterId = "cr")
+        graph.db.memoryDao().insert(MemoryEntity("sumx", "rep", "t", "cluster_summary", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, t0 - 40 * day, false, "t"))
+        graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("sumx", "rep", "cr", "CLUSTER_REP"), FrameSourceEntity("sumx", "mb", "cr", "CLUSTER_MEMBER")))
+        pass(settings(summary = 30), t0 + 12 * hour)
+        assertFalse(exists("sumx"))
+        assertTrue(rep.exists() && frameRow("rep") != null) // a representative, not a skipped photo
+        assertTrue(graph.db.forgetDao().tombstoned(listOf("rep", "mb")).isEmpty())
+        pass(settings(summary = 30), t0 + 26 * hour)
+        assertTrue(rep.exists())
+        assertNull(frameRow("mb")); assertFalse(member.exists()) // the non-representative member is skipped
+    }
+
+    /** I1: while describe-before-delete is not shipped, an undescribed non-skipped photo is never deleted. */
+    @Test fun describeGateBothWays() = runBlocking {
+        val und = photo("und", t0 + hour, "EXTRACTED")
+        val lnk = photo("lnk", t0 + hour, "EXTRACTED", linked = true)
+        val skp = photo("skp", t0 + hour, "NEAR_DUP", salience = 0.1f)
+        assertEquals(false, Retention.DESCRIBE_BEFORE_DELETE_READY)
+        pass(settings(), t0 + 60 * day) // gate off (the build's constant)
+        assertTrue(und.exists()); assertFalse(lnk.exists()); assertFalse(skp.exists())
+        val on = pass(settings(), t0 + 60 * day, gate = true)
+        assertFalse(und.exists()); assertEquals(1, on.deletedUndescribed)
+    }
+
+    /** I2: every pre-existing photo is protected for 7 days after the stamp, whatever its kind or setting. */
+    @Test fun preExistingPhotosProtectedSevenDaysForEveryKind() = runBlocking {
+        for (skipped in listOf(0, 1, 7)) for (photoDays in listOf(1, 3, 7)) {
+            val tag = "s${skipped}p$photoDays"
+            val trip = t0 - 20 * day
+            val sk = photo("sk$tag", trip, "NEAR_DUP", lastError = "shed_backlog")
+            val lk = photo("lk$tag", trip, "EXTRACTED", linked = true)
+            val st = settings(photo = photoDays, skipped = skipped)
+            pass(st, t0); pass(st, t0 + day); pass(st, t0 + 6 * day + 23 * hour)
+            assertTrue("$tag skipped kept", sk.exists() && frameRow("sk$tag") != null)
+            assertTrue("$tag linked kept", lk.exists() && frameRow("lk$tag") != null)
+            pass(st, t0 + 7 * day + hour)
+            assertNull("$tag skipped gone", frameRow("sk$tag")); assertNull("$tag linked gone", frameRow("lk$tag"))
+        }
+    }
+
+    /** I3: a stale / restored stamp, a clock moved backwards or a long gap since the last run never brings the bulk delete back. */
+    @Test fun staleStampDoesNotBulkDelete() = runBlocking {
+        val store = MemorySettingsStore.get(ctx)
+        val trip = t0 - 20 * day
+        repeat(50) { photo("lk$it", trip, "EXTRACTED", linked = true); photo("sk$it", trip, "NEAR_DUP", salience = 0.1f) }
+        store.update { it.copy(perKindSince = t0 - 30 * day, perKindLastRun = t0 - 30 * day) } // restored from an old build switch
+        assertTrue(work() is ListenableWorker.Result.Success)
+        assertEquals(100, graph.db.frameDao().count())
+        assertTrue(store.settings.value.perKindSince >= t0)
+    }
+
+    /** M2 / ruling: a CAPTION_QUEUED frame still queued after 14 days becomes a skipped photo (never before the protection ends). */
+    @Test fun captionQueuedBecomesSkippedAfterFourteenDays() = runBlocking {
+        val q = photo("cq1", t0 - 20 * day, "CAPTION_QUEUED", salience = 0.9f)
+        pass(settings(), t0 + 13 * day)
+        assertEquals("CAPTION_QUEUED", graph.db.frameStateDao().get("cq1")!!.state); assertTrue(q.exists())
+        pass(settings(), t0 + 15 * day)
+        val st = graph.db.frameStateDao().get("cq1")!!
+        assertEquals("NEAR_DUP", st.state); assertEquals("caption_expired", st.lastError); assertTrue(q.exists())
+        pass(settings(), t0 + 15 * day + 25 * hour)
+        assertNull(frameRow("cq1")); assertFalse(q.exists())
     }
 }

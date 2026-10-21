@@ -159,13 +159,15 @@ class MemorySettingsViewModel(
         fun retentionNote(s: com.rokid.context.memory.MemorySettings): String =
             "Once a day, short-term memories older than ${s.shortHours} h, medium-term older than ${s.mediumDays} days and " +
                 "long-term older than ${s.longDays} days are removed. " +
-                (if (s.photoDays == MemorySettings.FOREVER) "Photos are kept" else "Photos are removed ${s.photoDays} days after they were taken") +
+                (if (s.photoDays == MemorySettings.FOREVER) "Photos are kept" else "Photos are removed ${keepLabel(s.photoDays)} after they were taken") +
                 " (skipped photos ${when (s.skippedPhotoDays) { 0 -> "at the next clean-up"; 1 -> "after 1 day"; else -> "after ${s.skippedPhotoDays} days" }}); " +
                 "captions and scene summaries stay until their own setting says otherwise."
 
-        /** Ruling 13: photos taken before this update keep their full window from the first clean-up of this build. */
-        fun upgradeNote(s: MemorySettings): String? =
-            if (s.photoDays == MemorySettings.FOREVER) null else "Photos you already have are kept at least ${s.photoDays} days from this update."
+        const val UPGRADE_NOTE = "Photos you already have are kept at least 7 days from this update."
+
+        /** Ruling 13 / fix round 1 I2: every photo taken before the update is kept 7 days from the stamp, whatever its kind; shown while that holds. */
+        fun upgradeNote(s: MemorySettings, nowMs: Long = System.currentTimeMillis()): String? =
+            if (s.perKindSince == 0L || nowMs < s.perKindSince + 7 * 24 * 3_600_000L) UPGRADE_NOTE else null
 
         /** Image vectors drive photo search: shorter than captions, old photos are findable only by their text. */
         fun vectorsShorterThanCaptions(s: MemorySettings): Boolean =

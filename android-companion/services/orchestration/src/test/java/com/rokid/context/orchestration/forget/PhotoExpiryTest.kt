@@ -125,4 +125,45 @@ class PhotoExpiryTest {
         seed("f2"); service.forgetMoment("f2")
         assertTrue(service.expirePhotos(listOf("f2")).framesToDelete.isEmpty())
     }
+
+    /** Explicit user actions keep their full-delete semantics, even for keyframes. */
+    @Test fun forgetMomentStillDeletesEverythingOfAKeyframe() = runBlocking {
+        val (jpg, _) = seed("k1")
+        val r = service.forgetMoment("k1")
+        FrameSweep.delete(r.framesToDelete)
+        assertFalse(jpg.exists()); assertNull(graph.db.forgetDao().frame("k1"))
+        assertNull(graph.db.frameMetaDao().get("k1")); assertNull(graph.db.frameStateDao().get("k1"))
+        assertEquals(0, graph.db.frameVectorDao().countForSpace("space1"))
+        assertNull(graph.db.memoryViewDao().byId("mem_k1"))
+    }
+
+    @Test fun forgetFactStillLocksAndDeletesAnUncitedKeyframe() = runBlocking {
+        val (jpg, _) = seed("k2")
+        val r = service.forgetFact("mem_k2")
+        assertEquals(listOf("k2"), graph.db.forgetDao().tombstoned(listOf("k2")))
+        assertTrue(r.framesToDelete.contains(jpg.absolutePath))
+        assertEquals(0, graph.db.frameVectorDao().countForSpace("space1"))
+    }
+
+    /** Retention expiry of a memory (any tier or kind) leaves the keyframe, its vectors, meta and state alone. */
+    @Test fun expireOfAMemoryLeavesKeyframeAlone() = runBlocking {
+        val (jpg, _) = seed("k3")
+        val r = service.expire(listOf("mem_k3"))
+        assertEquals(setOf("mem_k3"), r.forgotten); assertTrue(r.framesToDelete.isEmpty())
+        assertTrue(jpg.exists()); assertNotNull(graph.db.forgetDao().frame("k3"))
+        assertTrue(graph.db.forgetDao().tombstoned(listOf("k3")).isEmpty())
+        assertEquals(1, graph.db.frameVectorDao().countForSpace("space1"))
+        assertNotNull(graph.db.frameMetaDao().get("k3")); assertNotNull(graph.db.frameStateDao().get("k3"))
+        assertTrue(graph.db.frameSourceDao().memoriesForFrame("k3").isEmpty()) // the citation link goes with the memory
+    }
+
+    /** A legacy frame (no frame_meta) keeps wave-1 behaviour on expiry. */
+    @Test fun expireOfALegacyFrameMemoryStillLocksIt() = runBlocking {
+        val jpg = File(ctx.filesDir, "rokid_archive/leg.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("leg", 1, jpg.absolutePath, "rokid_glasses"))
+        graph.db.memoryDao().insert(MemoryEntity("mem_leg", "leg", "t", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, "t"))
+        val r = service.expire(listOf("mem_leg"))
+        assertEquals(listOf(jpg.absolutePath), r.framesToDelete)
+        assertEquals(listOf("leg"), graph.db.forgetDao().tombstoned(listOf("leg")))
+    }
 }
