@@ -16,8 +16,8 @@ class MemorySettingsStoreTest {
 
     @Test fun defaultsAreTheSpecsAndChoicesPersistClamped() {
         val store = MemorySettingsStore(prefs)
-        assertEquals(MemorySettings(24, 7, 30, 100), store.settings.value)
-        assertEquals(100L * 1024 * 1024, store.settings.value.quotaBytes)
+        assertEquals(MemorySettings(24, 7, 30, 250), store.settings.value)
+        assertEquals(250L * 1024 * 1024, store.settings.value.quotaBytes)
         store.update { it.copy(shortHours = 48, mediumDays = 14, longDays = 90, quotaMb = 5_000) }
         assertEquals(MemorySettings(48, 14, 90, 2_000), MemorySettingsStore(prefs).settings.value)
         store.update { it.copy(shortHours = 3) }
@@ -128,8 +128,24 @@ class MemorySettingsStoreTest {
         org.junit.Assert.assertThrows(IllegalStateException::class.java) {
             store.update { s -> store.update { it.copy(quotaMb = 500) }; s.copy(quotaMb = 200) }
         }
-        assertEquals(100, store.settings.value.quotaMb)
+        assertEquals(250, store.settings.value.quotaMb)
         store.update { it.copy(quotaMb = 200) }
         assertEquals(200, store.settings.value.quotaMb)
+    }
+
+    /** R16: the soft limit defaults to 250 MB (the data class and the prefs read agree). */
+    @Test fun defaultQuotaIs250() {
+        assertEquals(250, MemorySettings().quotaMb)
+        val store = MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_default_quota", Context.MODE_PRIVATE))
+        assertEquals(250, store.settings.value.quotaMb)
+    }
+
+    /** A limit the user set (even the old default of 100) is kept; only an absent key reads 250. */
+    @Test fun storedQuotaKept() {
+        val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("memory_settings_stored_quota", Context.MODE_PRIVATE)
+        prefs.edit().putInt("quota_mb", 100).commit()
+        assertEquals(100, MemorySettingsStore(prefs).settings.value.quotaMb)
+        prefs.edit().putInt("quota_mb", 500).commit()
+        assertEquals(500, MemorySettingsStore(prefs).settings.value.quotaMb)
     }
 }

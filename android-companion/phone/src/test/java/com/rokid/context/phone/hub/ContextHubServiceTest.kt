@@ -133,4 +133,53 @@ class ContextHubServiceTest {
         assertFalse(ContextHubService.startedInFront(android.content.Intent()))
         assertTrue(ContextHubService.startedInFront(android.content.Intent().putExtra(ContextHubService.EXTRA_IN_FRONT, true)))
     }
+
+    // --- NOT1 (R11): the silent "Open on glasses" notification --------------------------------------------------------------
+
+    private val app get() = androidx.test.core.app.ApplicationProvider.getApplicationContext<Application>()
+    private val nm get() = org.robolectric.Shadows.shadowOf(app.getSystemService(android.app.NotificationManager::class.java))
+    private fun closedNotices() = nm.allNotifications
+
+    @Test fun closedNoticePostedOnClosedChannelSilent() {
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        assertTrue(ContextHubService.postClosedNotice(app))
+        val n = closedNotices().single()
+        assertEquals("glasses_closed", n.channelId)
+        val channel = app.getSystemService(android.app.NotificationManager::class.java).getNotificationChannel("glasses_closed")!!
+        assertEquals("Closed on glasses", channel.name.toString()); assertEquals(android.app.NotificationManager.IMPORTANCE_LOW, channel.importance)
+        assertEquals("Closed on glasses \u00b7 capture stopped", n.extras.getString(android.app.Notification.EXTRA_TITLE))
+        assertEquals("Tap Open on glasses to start it again.", n.extras.getString(android.app.Notification.EXTRA_TEXT))
+        assertEquals("silent", n.group) // NotificationCompat's setSilent
+        assertEquals("Open on glasses", n.actions.single().title.toString())
+        assertEquals(ContextHubService.ACTION_OPEN_GLASSES, org.robolectric.Shadows.shadowOf(n.actions.single().actionIntent).savedIntent.action)
+        assertEquals(ContextHubService.ACTION_CLOSED_DISMISSED, org.robolectric.Shadows.shadowOf(n.deleteIntent).savedIntent.action)
+        assertTrue(n.contentIntent != null)
+        assertEquals(32, ContextHubService.CLOSED_NOTIFICATION_ID)
+    }
+
+    @Test fun openActionRequestsReconnectAndCancels() {
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        var t = 1_000L
+        val notice = ClosedOnGlassesNotice { t }
+        notice.onState(LinkState.CLOSED_ON_GLASSES)
+        ContextHubService.postClosedNotice(app); assertEquals(1, closedNotices().size)
+        var reconnects = 0
+        ContextHubService.handleOpenGlasses(app, notice) { reconnects++ }
+        assertEquals(1, reconnects); assertTrue(closedNotices().isEmpty())
+        t += ClosedOnGlassesNotice.DELAY_MS * 2
+        assertEquals("the tap ended this episode", ClosedOnGlassesNotice.Action.None, notice.onTick())
+    }
+
+    @Test fun applyActionPostsAndCancels() {
+        org.robolectric.Shadows.shadowOf(app).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        ContextHubService.applyClosedAction(app, ClosedOnGlassesNotice.Action.Show); assertEquals(1, closedNotices().size)
+        ContextHubService.applyClosedAction(app, ClosedOnGlassesNotice.Action.None); assertEquals(1, closedNotices().size)
+        ContextHubService.applyClosedAction(app, ClosedOnGlassesNotice.Action.Cancel); assertTrue(closedNotices().isEmpty())
+    }
+
+    @Test fun noPostWithoutNotificationPermission() {
+        org.robolectric.Shadows.shadowOf(app).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        assertFalse(ContextHubService.postClosedNotice(app))
+        assertTrue(closedNotices().isEmpty())
+    }
 }
