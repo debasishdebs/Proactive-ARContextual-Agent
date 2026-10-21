@@ -13,6 +13,8 @@ data class WatchMotionMessage(
     val changedAtMs: Long = 0,
     val sentAtMs: Long = 0,
     val source: String = "galaxy_watch",
+    /** Random non-zero per sender install/process start (additive, default 0): a new epoch resets [seq]. */
+    val epoch: Long = 0,
 )
 
 object WatchMotionCodec {
