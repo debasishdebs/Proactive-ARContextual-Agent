@@ -100,6 +100,11 @@ Input: `onEvidence(e)`; output: `evaluate(nowMs): ContextDecision(state, confide
 - **flight** = (airplane mode on for ≥ 120 s and (a `Speed ≥ 150` within 10 min, or the newest intent ≤ 10 min old is FLIGHT_CABIN with confidence ≥ 0.6)) or a `Speed ≥ 350` within 10 min.
 - **still** = the glasses hint (≤ 120 s old) has `stillFrac5m ≥ 0.85`, or `≥ 0.70` when the newest intent (≤ 10 min) is SITTING_IDLE or COMPUTER_WORK with confidence ≥ 0.7; and activity is not WALKING/RUNNING/ON_BICYCLE; and the newest intent is not WORKOUT. Or watch ASLEEP.
 
+**Review rulings (fix round 1, safe direction):**
+- Car-link, airplane and activity events apply in **arrival order**; expiry and the hold use the engine's own monotonic arrival clock, the event stamp is informational (a disconnect after a small backwards clock step is never dropped).
+- **fast** is `fastConfirmed` = two readings >= 25 km/h within 15 s of each other (both <= 120 s old). The walking veto is lifted and `SPEED` is emitted only then; a single reading is recorded and changes nothing.
+- The 180 s **hold** counts only while the committed state is already a vehicle state; a held-only vehicle fact never starts a new vehicle episode.
+
 ### 6.2 Candidate (first match wins)
 1. walkingVeto → **WALKING**
 2. flight → **FLIGHT**

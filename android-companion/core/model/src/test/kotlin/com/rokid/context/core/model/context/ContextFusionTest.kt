@@ -65,8 +65,8 @@ class ContextFusionTest {
 
     @Test fun fastSpeedLiftsTheVeto() {
         val r = Rig()
-        r.ar(PhoneActivity.IN_VEHICLE); r.speed(60f); r.hint(MotionState.WALKING)
-        r.advance(29_000)
+        r.ar(PhoneActivity.IN_VEHICLE); r.speed(60f); r.advance(5_000); r.speed(60f); r.hint(MotionState.WALKING)
+        r.advance(24_000)
         assertNotEquals(DRV, r.d.state); assertEquals(ContextState.UNKNOWN, r.d.state)
         assertNotEquals(ContextState.WALKING, r.d.candidate)
         r.advance(1_000)
@@ -363,7 +363,8 @@ class ContextFusionTest {
 
     @Test fun walkingInATrainAisleIsWalkingOnlyBelowSpeed() {
         val r = Rig()
-        r.ar(PhoneActivity.IN_VEHICLE); r.speed(90f); r.advance(MIN)
+        r.ar(PhoneActivity.IN_VEHICLE); r.speed(90f); r.advance(5_000); r.speed(90f); r.advance(MIN)
+        r.speed(90f); r.advance(5_000); r.speed(90f)
         r.hint(MotionState.WALKING)
         assertEquals(PAX, r.d.state)                     // fast lifts the veto
         r.advance(3 * MIN); r.hint(MotionState.WALKING) // speed expired (120 s): the veto returns
@@ -451,5 +452,90 @@ class ContextFusionTest {
         f.onEvidence(Evidence.CarLink(T0, CarLinkKind.ANDROID_AUTO, true))
         assertEquals(ContextState.UNKNOWN, f.evaluate(T0).state)
         assertEquals(DRV, f.evaluate(T0 + 30_000).state)
+    }
+
+    // ---- fix round 1
+    private fun Rig.old(e: Evidence) { f.onEvidence(e); d = f.evaluate(now) }
+
+    @Test fun disconnectAfterBackwardsClockStepIsApplied() {
+        val r = Rig()
+        r.car(CarLinkKind.ANDROID_AUTO); r.advance(MIN)
+        assertEquals(DRV, r.d.state)
+        r.d = r.f.evaluate(r.now - 20_000)                                   // small backwards step
+        r.old(Evidence.CarLink(T0 - 5_000, CarLinkKind.ANDROID_AUTO, false)) // stamped before the connect
+        assertFalse(ContextReason.ANDROID_AUTO in r.d.reasons)
+        r.advance(5 * MIN)
+        assertEquals(ContextState.UNKNOWN, r.d.state)
+    }
+
+    @Test fun airplaneOffAfterBackwardsClockStepIsApplied() {
+        val r = Rig()
+        r.air(); r.advance(MIN)
+        r.old(Evidence.Airplane(T0 - 5_000, false))
+        assertFalse(r.d.vehicleSuspected)
+    }
+
+    @Test fun activityExitAfterBackwardsClockStepIsApplied() {
+        val r = Rig()
+        r.ar(PhoneActivity.IN_VEHICLE); r.advance(MIN)
+        r.old(Evidence.ActivityTransition(T0 - 5_000, PhoneActivity.IN_VEHICLE, false))
+        r.advance(5 * MIN)
+        assertEquals(ContextState.UNKNOWN, r.d.state)
+    }
+
+    @Test fun staleDuplicatesDoNotRetrigger() {
+        val r = Rig()
+        r.air(); r.advance(3 * MIN)
+        r.old(Evidence.Airplane(T0 - 50_000, true))          // duplicate "on": the airplane-on clock is kept
+        r.speed(200f)
+        assertEquals(ContextState.FLIGHT, r.d.candidate)
+        val r2 = Rig()
+        r2.car(CarLinkKind.ANDROID_AUTO, false); r2.old(Evidence.CarLink(T0 - 9_000, CarLinkKind.ANDROID_AUTO, false))
+        assertFalse(r2.d.vehicleSuspected)
+    }
+
+    @Test fun singleFastSpeedSpikeChangesNothing() {
+        val r = Rig()
+        r.hint(MotionState.WALKING); r.speed(60f)
+        assertEquals(ContextState.WALKING, r.d.state)
+        assertFalse(ContextReason.SPEED in r.d.reasons)
+        r.advance(2 * MIN); r.hint(MotionState.WALKING)
+        assertEquals(ContextState.WALKING, r.d.state)
+        val r2 = Rig(); r2.speed(60f); r2.advance(3 * MIN)
+        assertEquals(ContextState.UNKNOWN, r2.d.state); assertFalse(r2.d.vehicleSuspected)
+    }
+
+    @Test fun twoFastReadingsWithin15sLiftTheVeto() {
+        val r = Rig()
+        r.hint(MotionState.WALKING); r.speed(60f); r.advance(10_000); r.speed(55f)
+        assertTrue(ContextReason.SPEED in r.d.reasons)
+        assertNotEquals(ContextState.WALKING, r.d.candidate)
+        val r2 = Rig()
+        r2.hint(MotionState.WALKING); r2.speed(60f); r2.advance(30_000); r2.hint(MotionState.WALKING); r2.speed(60f)
+        assertEquals(ContextState.WALKING, r2.d.state)       // 30 s apart: not confirmed
+        assertFalse(ContextReason.SPEED in r2.d.reasons)
+    }
+
+    @Test fun spikeThenWalkingActivityStaysWalking() {
+        val r = Rig()
+        r.speed(60f); r.ar(PhoneActivity.WALKING)
+        assertEquals(ContextState.WALKING, r.d.state)
+        r.advance(2 * MIN)
+        assertEquals(ContextState.WALKING, r.d.state)
+    }
+
+    @Test fun heldVehicleNeverStartsANewEpisode() {
+        val r = settled(CarLinkKind.ANDROID_AUTO)
+        assertEquals(DRV, r.d.state)
+        r.car(CarLinkKind.ANDROID_AUTO, false)
+        r.hint(MotionState.WALKING)
+        assertEquals(ContextState.WALKING, r.d.state)
+        r.advance(30_000)
+        r.hint(MotionState.STILL, 0.1f)                      // stops walking, still inside the 180 s hold
+        repeat(24) {
+            r.advance(5_000)
+            assertFalse(r.d.state == DRV || r.d.state == PAX, "state ${r.d.state}")
+            assertFalse(r.d.candidate == DRV || r.d.candidate == PAX, "cand ${r.d.candidate}")
+        }
     }
 }

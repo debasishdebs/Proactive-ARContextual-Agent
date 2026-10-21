@@ -3,7 +3,7 @@ package com.rokid.context.core.model.context
 data class FusionParams(
     val hintWalkTtlMs: Long = 90_000, val arTtlMs: Long = 1_800_000, val stepsTtlMs: Long = 90_000,
     val stepsWalkPerMin: Int = 60, val watchTtlMs: Long = 1_800_000, val fastKmh: Float = 25f,
-    val fastTtlMs: Long = 120_000, val vehicleHoldMs: Long = 180_000, val imageMinConf: Float = 0.7f,
+    val fastTtlMs: Long = 120_000, val fastConfirmGapMs: Long = 15_000, val vehicleHoldMs: Long = 180_000, val imageMinConf: Float = 0.7f,
     val imageNewestMaxAgeMs: Long = 300_000, val imagePairMaxGapMs: Long = 180_000,
     val airplaneMinMs: Long = 120_000, val flightKmh: Float = 150f, val flightAnyKmh: Float = 350f,
     val flightWindowMs: Long = 600_000, val flightImageConf: Float = 0.6f, val hintStillTtlMs: Long = 120_000,
@@ -36,10 +36,8 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
     private var steps: Evidence.Steps? = null
     private val speeds = ArrayList<Evidence.Speed>()
     private val carSince = HashMap<CarLinkKind, Long>()      // connected kinds -> connect time
-    private val carLastEvt = HashMap<CarLinkKind, Long>()
     private val btContradicted = HashSet<CarLinkKind>()
     private var airplaneSince: Long? = null
-    private var airplaneAt = Long.MIN_VALUE
     private var watch: Evidence.WatchMotion? = null
     private var intents: List<Evidence.Intent> = emptyList()   // newest first, at most 3
 
@@ -58,25 +56,25 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
         when (e) {
             is Evidence.GlassesMotion -> if (glasses == null || e.atMs >= glasses!!.atMs) glasses = e
             is Evidence.ActivityTransition ->
-                if (e.atMs >= activityAt) {
-                    if (e.enter) { activity = e.activity; activityAt = e.atMs }
-                    else if (activity == e.activity) { activity = null; activityAt = e.atMs }
-                }
+                // arrival order: the event stamp is informational, the engine's monotonic clock times expiry
+                if (e.enter) { activity = e.activity; activityAt = arrival(e) }
+                else if (activity == e.activity) { activity = null; activityAt = arrival(e) }
             is Evidence.Steps -> if (steps == null || e.atMs >= steps!!.atMs) steps = e
             is Evidence.Speed -> { speeds.add(e); pruneSpeeds(maxOf(e.atMs, lastNow)) }
-            is Evidence.CarLink -> if (e.atMs >= (carLastEvt[e.kind] ?: Long.MIN_VALUE)) {
-                carLastEvt[e.kind] = e.atMs
-                if (e.connected) { if (e.kind !in carSince) carSince[e.kind] = e.atMs }
+            is Evidence.CarLink -> {
+                if (e.connected) { if (e.kind !in carSince) carSince[e.kind] = arrival(e) }
                 else { carSince.remove(e.kind); btContradicted.remove(e.kind) }
             }
-            is Evidence.Airplane -> if (e.atMs >= airplaneAt) {
-                airplaneAt = e.atMs
-                if (e.on) { if (airplaneSince == null) airplaneSince = e.atMs } else airplaneSince = null
+            is Evidence.Airplane -> {
+                if (e.on) { if (airplaneSince == null) airplaneSince = arrival(e) } else airplaneSince = null
             }
             is Evidence.WatchMotion -> if (watch == null || e.atMs >= watch!!.atMs) watch = e
             is Evidence.Intent -> intents = (intents + e).sortedByDescending { it.atMs }.take(3)
         }
     }
+
+    /** Arrival time on the engine's monotonic clock: never earlier than the last evaluation. */
+    private fun arrival(e: Evidence) = maxOf(e.atMs, lastNow)
 
     fun evaluate(nowMs: Long): ContextDecision {
         var now = nowMs
@@ -102,7 +100,7 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
         val watchFresh = w != null && age(w.atMs) <= p.watchTtlMs
         val watchWalk = watchFresh && (w!!.state == WatchState.WALKING || w.state == WatchState.RUNNING)
         val walking = hintWalk || phoneWalk || stepsWalk || watchWalk
-        val fast = speeds.any { age(it.atMs) <= p.fastTtlMs && it.kmh >= p.fastKmh }
+        val fast = fastConfirmed(now)
         val walkingVeto = walking && !fast
 
         // --- vehicle
@@ -111,7 +109,8 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
         val watchVehicle = watchFresh && w!!.state == WatchState.IN_VEHICLE
         val strongLive = aa || arVehicle || fast || watchVehicle
         if (strongLive) strongHeldAt = now
-        val strong = strongLive || heldWithin(strongHeldAt, now)
+        // a held-only fact only bridges a stop while already in a vehicle state; it never starts an episode
+        val strong = strongLive || (committed.isVehicle() && heldWithin(strongHeldAt, now))
 
         // two newest intents consistent? (newest fresh, close together, confident)
         val i0 = intents.getOrNull(0)
@@ -131,7 +130,7 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
         val carBt = CarLinkKind.CAR_CLASS_BT in carSince && CarLinkKind.CAR_CLASS_BT !in btContradicted
         val btLive = myCar || carBt
         if (btLive) btHeldAt = now
-        val bt = btLive || heldWithin(btHeldAt, now)
+        val bt = btLive || (committed.isVehicle() && heldWithin(btHeldAt, now))
         val vehicleDet = strong || bt
         val vehicleLive = strongLive || btLive || vehicleImage
 
@@ -258,10 +257,16 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
         val actFresh = act != null && age(activityAt) <= p.arTtlMs
         val w = watch
         val watchVeh = w != null && age(w.atMs) <= p.watchTtlMs && w.state == WatchState.IN_VEHICLE
-        val fast = speeds.any { age(it.atMs) <= p.fastTtlMs && it.kmh >= p.fastKmh }
+        val fast = fastConfirmed(at)
         if (CarLinkKind.ANDROID_AUTO in carSince || (actFresh && act == PhoneActivity.IN_VEHICLE) || watchVeh || fast) strongHeldAt = at
         if ((CarLinkKind.MY_CAR_BT in carSince && CarLinkKind.MY_CAR_BT !in btContradicted) ||
             (CarLinkKind.CAR_CLASS_BT in carSince && CarLinkKind.CAR_CLASS_BT !in btContradicted)) btHeldAt = at
+    }
+
+    /** Two readings >= fastKmh within fastConfirmGapMs of each other, both fresh: one spike never counts. */
+    private fun fastConfirmed(now: Long): Boolean {
+        val f = speeds.filter { (now - it.atMs).coerceAtLeast(0) <= p.fastTtlMs && it.kmh >= p.fastKmh }.map { it.atMs }.sorted()
+        return f.zipWithNext().any { (a, b) -> b - a <= p.fastConfirmGapMs }
     }
 
     private fun heldWithin(t: Long?, now: Long) = t != null && (now - t).coerceAtLeast(0) <= p.vehicleHoldMs
@@ -273,8 +278,8 @@ class ContextFusion(private val p: FusionParams = FusionParams()) {
 
     /** A large backwards clock jump: stale evidence cannot be aged correctly, so forget it (UNKNOWN = today's behaviour). */
     private fun reset() {
-        glasses = null; activity = null; activityAt = 0L; steps = null; speeds.clear(); carSince.clear(); carLastEvt.clear()
-        btContradicted.clear(); airplaneSince = null; airplaneAt = Long.MIN_VALUE; watch = null; intents = emptyList()
+        glasses = null; activity = null; activityAt = 0L; steps = null; speeds.clear(); carSince.clear()
+        btContradicted.clear(); airplaneSince = null; watch = null; intents = emptyList()
         strongHeldAt = null; btHeldAt = null
         committed = ContextState.UNKNOWN; committedSince = null; prevCandidate = ContextState.UNKNOWN; candidateSince = 0L
     }
