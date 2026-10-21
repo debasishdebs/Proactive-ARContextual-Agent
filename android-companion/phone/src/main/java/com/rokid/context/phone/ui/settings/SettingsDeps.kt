@@ -92,6 +92,8 @@ class SettingsDeps(
     val keyframes: KeyframeDiagnostics = KeyframeDiagnostics.None,
     /** Diagnostics: "Rokid closed the app N times (last gap Xs)" from the glasses' hello; null until reported. */
     val glassesRestarts: kotlinx.coroutines.flow.StateFlow<String?> = kotlinx.coroutines.flow.MutableStateFlow(null),
+    /** Wave B: the process-wide context hub's read side and the settings it observes (None when no hub exists). */
+    val contextSources: ContextSourcesControl = ContextSourcesControl.None,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
@@ -128,7 +130,7 @@ class SettingsDeps(
                 }
             },
             usedBytes = { StorageUsage.usedBytes(app) },
-            wipe = { MemoryWipe.deleteAll(app) },
+            wipe = { MemoryWipe.deleteAll(app); com.rokid.context.phone.context.ContextSourceSettings.of(app).clearPersonal() },
             export = { MemoryExport.write(app) },
             share = { f -> ShareFile.share(app, f) },
             logs = { LogReader.ownLines() },
@@ -155,8 +157,37 @@ class SettingsDeps(
             aiCallPace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(app),
             keyframes = AppKeyframeDiagnostics(app),
             glassesRestarts = HubGraph.get(app).state.map { it.glassesDiagnostics() }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null),
+            contextSources = AppContextSources(app),
         )
     }
+}
+
+/** Wave B: what the Context sources screen, the Capture row and Diagnostics read. The UI only writes [settings]; the hub observes them. */
+interface ContextSourcesControl {
+    val settings: com.rokid.context.phone.context.ContextSourceSettings?
+    val certLookup: com.rokid.context.phone.ui.settings.capture.LiveFitCertLookup
+    val decision: StateFlow<com.rokid.context.core.model.context.ContextDecision>
+    val status: StateFlow<Map<String, com.rokid.context.phone.context.SourceStatus>>
+    val stats: com.rokid.context.phone.context.ContextHubStats?
+
+    object None : ContextSourcesControl {
+        override val settings = null
+        override val certLookup = com.rokid.context.phone.ui.settings.capture.LiveFitCertLookup { null }
+        override val decision: StateFlow<com.rokid.context.core.model.context.ContextDecision> = kotlinx.coroutines.flow.MutableStateFlow(
+            com.rokid.context.core.model.context.ContextDecision(com.rokid.context.core.model.context.ContextState.UNKNOWN, 0f, 0L, emptySet(), null, com.rokid.context.core.model.context.ContextState.UNKNOWN, false))
+        override val status: StateFlow<Map<String, com.rokid.context.phone.context.SourceStatus>> = kotlinx.coroutines.flow.MutableStateFlow(emptyMap())
+        override val stats = null
+    }
+}
+
+/** Over [HubGraph.contextHub] (built with the hub, so created lazily on first read). Settings are the process-wide prefs either way. */
+private class AppContextSources(private val app: Context) : ContextSourcesControl {
+    private val hub get() = HubGraph.get(app).let { HubGraph.contextHub }
+    override val settings get() = com.rokid.context.phone.context.ContextSourceSettings.of(app)
+    override val certLookup = com.rokid.context.phone.ui.settings.capture.PackageLiveFitCertLookup(app.packageManager)
+    override val decision get() = hub?.decision ?: ContextSourcesControl.None.decision
+    override val status get() = hub?.status ?: ContextSourcesControl.None.status
+    override val stats get() = hub?.stats
 }
 
 /** Keyframe stats over the process-wide graphs; built lazily so the shell's Main-thread deps never start the pipeline. */

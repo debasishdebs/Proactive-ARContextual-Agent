@@ -230,6 +230,8 @@ fun DiagnosticsScreen(
     onDeveloperMode: (Boolean) -> Unit = {},
     /** Debug builds with Developer mode on only (the caller passes null otherwise): the photo 256-vs-768 decision test. */
     onOpenPhotoDimTest: (() -> Unit)? = null,
+    /** Wave B: `ContextHubStats.line(state)` (enum names and numbers only); null while no hub exists. */
+    contextLine: String? = null,
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState())) {
         ScreenHeader("Diagnostics", onBack)
@@ -257,6 +259,12 @@ fun DiagnosticsScreen(
                     Icons.Outlined.Replay, PcColors.ChipSky, "Retry all", "Photos that failed for good: ${keyframes.stats.counts["FAILED_FINAL"] ?: 0}",
                     onClick = onRetryAll, enabled = !state.busy && (keyframes.stats.counts["FAILED_FINAL"] ?: 0) > 0,
                 )
+            }
+        }
+        if (contextLine != null) {
+            SectionLabel("Context")
+            SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
+                Column(Modifier.padding(16.dp)) { NoticeText(contextLine, tag = "diag_ctx") }
             }
         }
         if (glassesRestarts != null) {
