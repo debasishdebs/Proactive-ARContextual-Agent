@@ -8,6 +8,8 @@ import com.rokid.context.ai.canvas.promptSource
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.memory.db.CanvasDao
 import com.rokid.context.memory.db.CanvasPublishEntity
+import com.rokid.context.memory.db.CasOutcome
+import com.rokid.context.prompt.CasEdit
 import com.rokid.context.prompt.PromptDefaults
 import com.rokid.context.prompt.PromptDraft
 import com.rokid.context.prompt.PromptRepository
@@ -28,8 +30,8 @@ import kotlinx.serialization.json.put
  * Publishes a frozen, tested, live-shaped pipeline version by writing its edited prompts through [PromptRepository],
  * and rolls the newest publish back only while those prompts are still exactly what the publish wrote.
  * Publish and rollback are serialised by one [Mutex], so exactly one instance must serve the app. A prompt edit from
- * another writer (Settings) is not under that lock: rollback re-checks each fingerprint right before writing that key,
- * which narrows but cannot close the window without a compare-and-set in PromptRepository.
+ * another writer (Settings) is not under that lock, so every prompt write is a multi-key compare-and-set
+ * ([PromptRepository.saveAllIfUnchanged]): a changed prompt writes nothing, for any key.
  */
 class CanvasPublisher(
     private val dao: CanvasDao,
@@ -57,20 +59,27 @@ class CanvasPublisher(
             val d = n.promptSource() as? PromptSource.Draft ?: return@mapNotNull null
             Triple(n.id, key, PromptDraft(d.template, d.schema))
         }
+        // snapshot first: every check below is then inside the compare-and-set window
+        val before = edits.map { (_, key, _) -> prompts.active(key) }
         val compat = edits.flatMap { (_, key, draft) -> compatibility(key, draft).map { "${key.label}: $it" } }
         if (compat.isNotEmpty()) return Outcome.Blocked(compat)
         val untested = edits.map { it.first }.filter { dao.testedNodeCount(v.hash, listOf(it)) == 0 }
         if (untested.isNotEmpty()) return Outcome.Blocked(listOf("Run this version first: ${untested.joinToString(", ")} have no successful run"))
 
-        val prev = edits.map { (_, key, _) ->
-            val a = prompts.active(key)
+        val prev = before.mapIndexed { i, a ->
             buildJsonObject {
-                put("key", key.name); put("version", a.version); put("template", a.template)
+                put("key", edits[i].second.name); put("version", a.version); put("template", a.template)
                 put("schema", a.outputSchema?.let { JsonPrimitive(it) } ?: JsonNull)
             }
         }
-        val published = edits.map { (_, key, draft) ->
-            prompts.save(key, draft, note = "Canvas: ${p.name.take(50)} v$version", testedOk = true)
+        val casEdits = edits.mapIndexed { i, (_, key, draft) ->
+            CasEdit(key, PromptDraft(before[i].template, before[i].outputSchema), draft, "Canvas: ${p.name.take(50)} v$version", testedOk = true)
+        }
+        when (val r = prompts.saveAllIfUnchanged(casEdits)) {
+            is CasOutcome.Mismatch -> return Outcome.Blocked(r.ids.map { "${labelOf(it)} was changed during publish. Try again." })
+            is CasOutcome.Saved -> Unit
+        }
+        val published = edits.map { (_, key, _) ->
             val a = prompts.active(key)
             buildJsonObject { put("key", key.name); put("fp", PromptDefaults.fingerprint(a.template, a.outputSchema)) }
         }
@@ -102,14 +111,20 @@ class CanvasPublisher(
             val t = (o["template"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
             key to PromptDraft(t, (o["schema"] as? JsonPrimitive)?.takeIf { it.isString }?.content)
         }
-        val expected = published.toMap()
-        for ((key, draft) in prev) {
-            val a = prompts.active(key)
-            if (PromptDefaults.fingerprint(a.template, a.outputSchema) != expected[key]) // an outside edit landed since the check above
-                return Outcome.Blocked(listOf("${key.label} was changed after the publish. Use Settings \u2192 Prompts \u2192 History instead."))
-            prompts.save(key, draft, note = "Canvas rollback", testedOk = true)
+        // Expected text = the active text the fingerprint check above just accepted; the compare-and-set below
+        // re-verifies it inside the write transaction, so an outside edit landing in between writes nothing at all.
+        val current = prev.associate { (key, _) -> key to prompts.active(key) }
+        val casEdits = prev.map { (key, draft) ->
+            val a = current.getValue(key)
+            CasEdit(key, PromptDraft(a.template, a.outputSchema), draft, "Canvas rollback", testedOk = true)
+        }
+        when (val r = prompts.saveAllIfUnchanged(casEdits)) {
+            is CasOutcome.Mismatch -> return Outcome.Blocked(r.ids.map { "${labelOf(it)} was changed after the publish. Use Settings \u2192 Prompts \u2192 History instead." })
+            is CasOutcome.Saved -> Unit
         }
         dao.markRolledBack(pub.id, clock())
         return Outcome.Published(pub.id, prev.map { it.first })
     }
+
+    private fun labelOf(id: String): String = PromptKey.parse(id)?.label ?: id
 }
