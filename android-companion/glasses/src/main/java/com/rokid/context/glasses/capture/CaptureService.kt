@@ -110,6 +110,7 @@ class CaptureService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
+        lastUpBytes = runtime.uplink.bytesSent; lastUpAt = SystemClock.elapsedRealtime() // the first heartbeat must not count pre-restart bytes
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel(CHANNEL_ID, "Capture", NotificationManager.IMPORTANCE_LOW))
     }
@@ -189,6 +190,7 @@ class CaptureService : LifecycleService() {
         val clock: () -> Long = SystemClock::elapsedRealtime
         val motion = MotionClassifier(clock)
         val wear = runtime.wear
+        wear.resetStillRun() // a still run from before a session restart must not park the glasses at once
         val session = SamplingSession(
             scope = scope, camera = CameraXSamplingCamera(this, this, cameraExecutor), owner = runtime.cameraOwner, motion = motion,
             wear = wear, gate = gate, heat = heat, workRest = runtime.workRest, encoder = AndroidKeyframeEncoder, sink = ::onKeyframe, clock = clock,

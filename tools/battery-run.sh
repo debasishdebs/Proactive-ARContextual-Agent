@@ -37,7 +37,7 @@ cmd_pull() {
   adb -s "$G" exec-out run-as "$PKG" cat files/capture_diag.log > "$d/capture_diag.log" 2>/dev/null
   adb -s "$G" exec-out run-as "$PKG" cat files/capture_diag.log.1 > "$d/capture_diag.log.1" 2>/dev/null
   adb -s "$G" shell dumpsys batterystats --charged "$PKG" 2>/dev/null \
-    | grep -v -i -E "token|AuthorizationHelper|deviceSecret|deviceKey|secret|password|DevCmdHelper|PhoneCallManager|TelephoneManager|BluetoothPBAPManager|MobileMsgDialog" \
+    | grep -v -i -E "token|AuthorizationHelper|deviceSecret|deviceKey|secret|password|DevCmdHelper|PhoneCallManager|TelephoneManager|BluetoothPBAPManager|MobileMsgDialog|AssistServer" \
     | grep -i -E "Estimated power use|camera|cpu|wake|bluetooth|screen" > "$d/batterystats.txt"
   local f
   for f in batt.log batt_run.txt capture_diag.log capture_diag.log.1 batterystats.txt; do

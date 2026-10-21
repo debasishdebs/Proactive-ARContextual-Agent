@@ -35,6 +35,14 @@ class WearDetectorTest {
 
     private fun still(n: Int, from: Long = 0L) { for (i in 0 until n) w.onSecond(0f, 0f, from + i * 1000L) }
 
+    @Test fun resetStillRunDropsACarriedOverRunAndTheParkedFlag() {
+        still(130); assertTrue(w.parked.value)
+        w.resetStillRun(); assertFalse(w.parked.value)
+        w.onSecond(0f, 0f, 200_000L); assertFalse(w.parked.value) // a fresh run starts here, not at 0
+        still(118, 201_000L); assertFalse(w.parked.value)
+        w.onSecond(0f, 0f, 319_000L); assertTrue(w.parked.value)
+    }
+
     @Test fun parksAfter120StillSecondsWhenUnknown() {
         still(119); assertFalse(w.parked.value)
         w.onSecond(0f, 0f, 119_000L); assertTrue(w.parked.value)
