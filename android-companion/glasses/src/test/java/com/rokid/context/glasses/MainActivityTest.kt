@@ -7,6 +7,7 @@ import android.os.Looper
 import android.view.KeyEvent
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -393,5 +394,43 @@ class MainActivityTest {
             compose.onNodeWithText(MainActivity.CAPTURE_RESUMED_AFTER_STOP, substring = true).assertDoesNotExist()
         }
         assertEquals("Capture resumed \u2014 it stops while the app is closed", MainActivity.CAPTURE_RESUMED_AFTER_STOP)
+    }
+
+    /** A process restart after a kill while the app was in front: the next start is "pending". Seeded before the runtime exists. */
+    private fun seedKilledWhileRunning() {
+        app.getSharedPreferences("restart_diag", android.content.Context.MODE_PRIVATE).edit()
+            .putLong("last_alive_ms", System.currentTimeMillis() - 5_000).putString("ui_mode", "full").commit()
+    }
+
+    private fun launcherIntent() = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        .setClassName(app, MainActivity::class.java.name)
+        .putExtra(Intent.EXTRA_REFERRER_NAME, "android-app://com.rokid.os.launcher")
+
+    @Test fun killRestartStartDrawsHiddenHudBeforeMinimise() {
+        seedKilledWhileRunning()
+        val intent = Intent(app, MainActivity::class.java)
+        ActivityScenario.launch<MainActivity>(intent).use { s ->
+            compose.onNodeWithTag("hud_hidden").assertExists()
+            compose.onNodeWithTag("hud_root").assertDoesNotExist()
+            s.onActivity { assertTrue(it.minimised) }
+        }
+    }
+
+    @Test fun launcherOpenShowsHud() {
+        seedKilledWhileRunning()
+        ActivityScenario.launch<MainActivity>(launcherIntent()).use { s ->
+            compose.onNodeWithTag("hud_root").assertExists()
+            compose.onNodeWithTag("hud_hidden").assertDoesNotExist()
+            s.onActivity { assertFalse(it.minimised) }
+        }
+    }
+
+    @Test fun startLineWrittenToDiagLog() {
+        ShadowLog.clear()
+        ActivityScenario.launch<MainActivity>(launcherIntent()).use {
+            val line = ShadowLog.getLogs().filter { it.tag == "PcCapture" && it.msg.startsWith("start src=") }.map { it.msg }.single()
+            assertEquals("start src=LAUNCHER ref=LAUNCHER pending=0 marker=0 fromMin=0 extra=0 minimise=0", line)
+            assertFalse(line.contains("rokid"))
+        }
     }
 }
