@@ -43,15 +43,29 @@ class DiagnosticsTest {
         compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(), {}, {}, {}, {}, {}, {}, {}, {}, {}, keyframes = rows, onRetryAll = onRetry) } }
     }
 
-    @Test fun showsTheContextHubLineFromStats() {
+    @Test fun showsTheContextHubCardFromAFakeSnapshot() {
         val st = com.rokid.context.phone.context.ContextHubStats { 0L }
-        st.onWatchRejected(); st.onSend()
-        val line = st.line(com.rokid.context.core.model.context.ContextState.WALKING)
-        compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(), {}, {}, {}, {}, {}, {}, {}, {}, {}, contextLine = line) } }
-        compose.onNodeWithTag("diag_ctx").assertTextContains("ctxhub v=1 state=WALKING", substring = true).assertTextContains("watchRej=1", substring = true).assertTextContains("sends=1", substring = true)
+        repeat(2) { st.onWatchRejected() }; st.onSend(); st.onChange()
+        st.addStateTime(com.rokid.context.core.model.context.ContextState.WALKING, 125_000); st.addLocOnSeconds(40)
+        st.phoneBatteryStart = 80; st.phoneBatteryNow = 77
+        val card = ContextHubCardData(com.rokid.context.core.model.context.ContextState.WALKING, st.snapshot())
+        compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(), {}, {}, {}, {}, {}, {}, {}, {}, {}, contextHub = card) } }
+        compose.onNodeWithTag("diag_ctx").assertExists()
+        compose.onNodeWithTag("diag_ctx_state").assertTextContains("WALKING", substring = true)
+        compose.onNodeWithTag("diag_ctx_counts").assertTextContains("watchRej 2", substring = true).assertTextContains("sends 1", substring = true).assertTextContains("changes 1", substring = true).assertTextContains("locOnS 40", substring = true)
+        compose.onNodeWithTag("diag_ctx_batt").assertTextContains("80", substring = true).assertTextContains("77", substring = true)
+        compose.onNodeWithTag("diag_ctx_time").assertTextContains("WALKING 125", substring = true)
     }
 
-    @Test fun noContextLineWithoutAHub() {
+    @Test fun contextCardHoldsOnlyNumbersAndEnumNames() {
+        val st = com.rokid.context.phone.context.ContextHubStats { 0L }
+        val rows = ContextHubCardData(com.rokid.context.core.model.context.ContextState.VEHICLE_DRIVING, st.snapshot()).rows()
+        val text = rows.joinToString("\n") { it.second }
+        org.junit.Assert.assertTrue(text, Regex("[A-Za-z0-9 :>·\\n_.,%-]*").matches(text))
+        org.junit.Assert.assertEquals(listOf("diag_ctx_state", "diag_ctx_counts", "diag_ctx_intent", "diag_ctx_batt", "diag_ctx_time"), rows.map { it.first })
+    }
+
+    @Test fun noContextCardWithoutAHub() {
         compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(), {}, {}, {}, {}, {}, {}, {}, {}, {}) } }
         compose.onNodeWithTag("diag_ctx").assertDoesNotExist()
     }

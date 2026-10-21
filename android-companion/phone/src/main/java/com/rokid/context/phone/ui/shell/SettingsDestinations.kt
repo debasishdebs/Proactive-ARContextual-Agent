@@ -44,7 +44,9 @@ import com.rokid.context.phone.ui.settings.ai.EndpointsListScreen
 import com.rokid.context.phone.ui.settings.ai.EndpointsListViewModel
 import com.rokid.context.phone.ui.settings.ai.LocalModelsRoute
 import com.rokid.context.phone.ui.settings.ai.LocalModelsSource
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.delay
 import com.rokid.context.phone.ui.settings.ai.RolesScreen
 import com.rokid.context.phone.ui.settings.ai.RolesViewModel
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsScreen
@@ -58,7 +60,7 @@ import com.rokid.context.phone.ui.settings.connectors.ShoppingRoute
 import com.rokid.context.phone.ui.settings.connectors.SourcesRoute
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsViewModel
 import kotlinx.coroutines.flow.map
-import com.rokid.context.phone.ui.settings.capture.ContextSourcesScreen
+import com.rokid.context.phone.ui.settings.capture.ContextSourcesRoute
 import com.rokid.context.phone.ui.settings.capture.ContextSourcesViewModel
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsScreen
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsViewModel
@@ -138,9 +140,16 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val c = s.contextSources
         val settings = c.settings
         if (settings != null) {
-            val vm = viewModel { ContextSourcesViewModel(settings, c.certLookup, c.decision, c.status, c.stats) }
-            val state by vm.state.collectAsStateWithLifecycle()
-            ContextSourcesScreen(state, onBack = back, onApply = vm::setApply, onWatch = vm::setWatch)
+            val app = LocalContext.current.applicationContext
+            val vm = viewModel {
+                ContextSourcesViewModel(
+                    settings, c.certLookup, c.decision, c.status, c.stats,
+                    granted = { androidx.core.content.ContextCompat.checkSelfPermission(app, it) == android.content.pm.PackageManager.PERMISSION_GRANTED },
+                    bonded = { com.rokid.context.phone.context.CarSource.bondedDevicesForPicker(app) },
+                    tick = kotlinx.coroutines.flow.flow { while (true) { emit(Unit); kotlinx.coroutines.delay(5_000) } },
+                )
+            }
+            ContextSourcesRoute(vm, onBack = back)
         }
     }
 
@@ -261,7 +270,9 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val dev = remember { DeveloperModeStore.get(app) }
         val devOn by dev.enabled.collectAsStateWithLifecycle()
         val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
-        val contextLine = s.contextSources.stats?.line(ctxDecision.state)
+        val ctxStats = s.contextSources.stats
+        val ctxTick by produceState(0) { while (true) { delay(5_000); value += 1 } }
+        val contextHub = ctxStats?.let { remember(ctxDecision.state, ctxTick) { com.rokid.context.phone.ui.settings.ContextHubCardData(ctxDecision.state, it.snapshot()) } }
         DiagnosticsScreen(
             state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },
             onSummarizeNow = vm::summarizeNow, onCaptureNow = vm::captureNow, onReprocess = vm::reprocess,
@@ -269,7 +280,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onExportSettings = vm::exportSettings, keyframes = keyframes, onRetryAll = vm::retryAll,
             onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) }, glassesRestarts = glassesRestarts,
             developerMode = devOn,
-            contextLine = contextLine,
+            contextHub = contextHub,
             onOpenPhotoDimTest = if (PhotoDimEval.rowVisible(com.rokid.context.BuildConfig.DEBUG, devOn)) ({ nav.navigate(Routes.DIAGNOSTICS_PHOTO_DIM) }) else null,
             onDeveloperMode = { on ->
                 dev.set(on)

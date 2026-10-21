@@ -230,8 +230,8 @@ fun DiagnosticsScreen(
     onDeveloperMode: (Boolean) -> Unit = {},
     /** Debug builds with Developer mode on only (the caller passes null otherwise): the photo 256-vs-768 decision test. */
     onOpenPhotoDimTest: (() -> Unit)? = null,
-    /** Wave B: `ContextHubStats.line(state)` (enum names and numbers only); null while no hub exists. */
-    contextLine: String? = null,
+    /** Wave B: the Context hub card (enum names and numbers only); null while no hub exists. */
+    contextHub: ContextHubCardData? = null,
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.SurfaceSoft).verticalScroll(rememberScrollState())) {
         ScreenHeader("Diagnostics", onBack)
@@ -261,11 +261,9 @@ fun DiagnosticsScreen(
                 )
             }
         }
-        if (contextLine != null) {
-            SectionLabel("Context")
-            SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) { NoticeText(contextLine, tag = "diag_ctx") }
-            }
+        if (contextHub != null) {
+            SectionLabel("Context hub")
+            ContextHubCard(contextHub)
         }
         if (glassesRestarts != null) {
             SectionLabel("Glasses")
