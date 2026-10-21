@@ -149,6 +149,7 @@ class Rig(
     var fallbacks = 0
     var onFallbackAction: suspend () -> Unit = {}
     var gyroMag = 0f
+    var profile: CaptureProfile = CaptureProfile.DEFAULT
     var fixedCaptures = ArrayList<Long>()
     var fixedDuring: suspend () -> Unit = {}
     val logs = ArrayList<String>()
@@ -156,7 +157,7 @@ class Rig(
     val session = SamplingSession(
         scope = test.backgroundScope, camera = camera, owner = owner, motion = motion, wear = wear, gate = gate, heat = heat,
         workRest = sessionWorkRest, encoder = encoder, sink = { k, _ -> keyframes += clock() to k }, clock = clock, settings = { settings },
-        capturePaused = { paused }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it },
+        capturePaused = { paused }, profile = { profile }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it },
         fixedCapture = { owner.acquire("fixed") { fixedCaptures += clock(); fixedDuring() } },
     )
 

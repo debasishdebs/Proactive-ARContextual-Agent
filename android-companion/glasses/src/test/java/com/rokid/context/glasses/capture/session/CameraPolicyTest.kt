@@ -1,5 +1,6 @@
 package com.rokid.context.glasses.capture.session
 
+import com.rokid.context.core.model.CameraWake
 import com.rokid.context.core.model.MotionState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -11,7 +12,53 @@ class CameraPolicyTest {
     private fun d(
         state: MotionState = MotionState.STILL, decel: Boolean = false, sinceEnd: Long? = null, sinceKf: Long = 0,
         look: Int = 1000, low: Boolean = false, heat: Boolean = false, now: Long = 100_000, lastBrief: Long = 100_000,
-    ) = CameraPolicy.decide(state, decel, sinceEnd, sinceKf, look, low, heat, now, lastBrief)
+        profile: CaptureProfile = CaptureProfile.DEFAULT,
+    ) = CameraPolicy.decide(state, decel, sinceEnd, sinceKf, look, low, heat, now, lastBrief, profile = profile)
+
+    private val settleT0 = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0)
+    private val settleT2 = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T2)
+
+    @Test fun motionWithDefaultProfileEqualsToday() {
+        val r = d(sinceEnd = 4000)
+        assertFalse(r.open); assertEquals(105_000L, r.nextBriefCheckAtMs); assertEquals(333L, r.analysisIntervalMs)
+        assertEquals(115_000L, d(sinceKf = 10 * 60_000L + 1).nextBriefCheckAtMs)
+        assertTrue(d(state = MotionState.WALKING).open)
+    }
+
+    @Test fun settleMovingClosesWithNoCheck() {
+        val r = d(state = MotionState.HEAD_MOVING, profile = settleT0)
+        assertFalse(r.open); assertNull(r.nextBriefCheckAtMs); assertEquals(333L, r.analysisIntervalMs)
+    }
+
+    @Test fun settleWalkingChecksEvery10s() {
+        val r = d(state = MotionState.WALKING, profile = settleT0)
+        assertFalse(r.open); assertEquals(110_000L, r.nextBriefCheckAtMs)
+    }
+
+    @Test fun settleSettledChecksEvery10sQuietEvery30s() {
+        assertEquals(110_000L, d(profile = settleT0, sinceEnd = 500).nextBriefCheckAtMs)
+        assertEquals(130_000L, d(profile = settleT0, sinceKf = 10 * 60_000L + 1).nextBriefCheckAtMs)
+        val r = d(profile = settleT0, sinceEnd = 500)
+        assertFalse("no hold and no motion-end check", r.open)
+    }
+
+    @Test fun settleIgnoresDeceleration() {
+        val r = d(decel = true, state = MotionState.HEAD_MOVING, profile = settleT0)
+        assertFalse(r.open); assertNull(r.nextBriefCheckAtMs)
+        assertFalse(d(decel = true, profile = settleT0).open)
+    }
+
+    @Test fun settleLowPowerTier2Is20s() {
+        assertEquals(120_000L, d(low = true, profile = settleT2).nextBriefCheckAtMs)
+        assertEquals(110_000L, d(low = true, profile = settleT0).nextBriefCheckAtMs)
+        assertEquals(666L, d(profile = settleT2).analysisIntervalMs)
+    }
+
+    @Test fun settleHeatSlowDoubles() {
+        assertEquals(120_000L, d(heat = true, profile = settleT0).nextBriefCheckAtMs)
+        assertEquals(120_000L, d(heat = true, state = MotionState.WALKING, profile = settleT0).nextBriefCheckAtMs)
+        assertEquals(666L, d(heat = true, profile = settleT0).analysisIntervalMs)
+    }
 
     @Test fun openWhileMoving() {
         for (s in listOf(MotionState.HEAD_MOVING, MotionState.WALKING)) {

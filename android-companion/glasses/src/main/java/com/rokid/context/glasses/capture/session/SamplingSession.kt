@@ -1,5 +1,6 @@
 package com.rokid.context.glasses.capture.session
 
+import com.rokid.context.core.model.CameraWake
 import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.MotionState
@@ -79,6 +80,7 @@ class SamplingSession(
     private val batteryPct: () -> Int = { -1 },
     private val charging: () -> Boolean = { false },
     private val batterySaver: () -> Boolean = { false },
+    private val profile: () -> CaptureProfile = { CaptureProfile.DEFAULT },
     /** One Fixed-mode capture (through [owner]); the session calls it every 60 s while resting. */
     private val fixedCapture: suspend () -> Unit = {},
     /** Three failed binds: the owner runs Fixed 30 s for the rest of this session. */
@@ -200,8 +202,10 @@ class SamplingSession(
     }
 
     private fun onOnset() = synchronized(lock) {
-        forceAnalyse = true // the immediate check at the first sign of movement
-        forceBrief = true
+        if (profile().wake == CameraWake.MOTION) {
+            forceAnalyse = true // the immediate check at the first sign of movement
+            forceBrief = true
+        }
         kick.trySend(Unit)
     }
 
@@ -216,11 +220,12 @@ class SamplingSession(
         val now = clock()
         wear.tick()
         val s = settings()
+        val prof = profile()
         var wait = TICK_MS
         var ep: Episode?
         var why: String?
         synchronized(lock) {
-            why = blockReason(s, now)
+            why = blockReason(s, prof)
             if (why == null) workRest.onSampling() else workRest.onPaused()
             if (why == null && workRest.resting.value != null) why = "rest"
             blocked = why
@@ -244,7 +249,7 @@ class SamplingSession(
             pendingNowAt?.let { if (now - it > PENDING_MS) pendingNowAt = null }
             d = CameraPolicy.decide(
                 st, motion.decelerating.value, motionEndAt?.let { now - it }, now - lastKeyframeAt, s.quickLookMs,
-                lowPower(), heat.level.value == HeatLevel.SLOW, now, lastBriefAt, quiet = darkStreak >= DARK_BACKOFF_AFTER,
+                lowPower(), heat.level.value == HeatLevel.SLOW, now, lastBriefAt, quiet = darkStreak >= DARK_BACKOFF_AFTER, profile = prof,
             )
             analysisIntervalMs = d.analysisIntervalMs
             val cur = episode
@@ -274,14 +279,16 @@ class SamplingSession(
     }
 
     /** The first reason sampling may not run now, in the order the HUD cares about; null = go. Caller holds [lock]. */
-    private fun blockReason(s: HudSettings, now: Long): String? {
+    private fun blockReason(s: HudSettings, prof: CaptureProfile): String? {
         if (stopped) return "stopped"
         if (s.captureMode != CaptureMode.SMART) return "mode"
         started = true
         if (capturePaused()) return "paused"
         if (s.pauseWhenNotWorn && !wear.worn.value) return "not_worn" // only a real pc_wear=false makes it false
+        if (s.pauseWhenNotWorn && wear.parked.value) return "parked"
         if (heat.level.value == HeatLevel.STOP) return "heat"
         if (FrameGuard.lowBattery(batteryPct(), charging())) return "battery"
+        if (prof.paused) return "battery_budget"
         return null
     }
 
