@@ -45,3 +45,4 @@ Task 9: implemented dd2bac5..71c6f25 (fusion imageAssist default off; IntentSamp
 Task 9: fix round 1 fed7504; re-review dispatched
 - 2026-10-22 merged w3g/int (db92d80) into ctx/int, merge 85c4a90: no conflicts, glasses/glasses-link/core-model/phone unit tests green, Room still v5, PROTOCOL_VERSION still 1.
 Tasks 3,5,4 implemented a9059202..cc5e2c44 (3fec93e8, 45d8c57f, cc5e2c44); review dispatched; Task 7b dispatched
+- 2026-10-22 merged w3b/int (8540c9f2) into ctx/int, merge 976c4d5d: conflicts only MemorySettings.kt (Delete all text combined) and SettingsDestinations.kt (imports union); Room v5, PROTOCOL_VERSION 1; gate-wave-b-6 EXIT=0, 4115 tests 0 failures; build 6 APKs in handoff-waveb-6.
