@@ -5,6 +5,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -13,14 +14,22 @@ import kotlin.math.sqrt
 /**
  * Controller-run device parity test (not part of the JVM suite): the on-device Nomic text (GGUF) and vision (ONNX) outputs
  * must match tools/nomic_reference.py (PyTorch) with cosine >= 0.99 for every text and image, after the same transforms.
- * Skips when the model bundle isn't downloaded, or when no runtime is wired in [NomicDeviceRuntime.provider] yet
- * (the F2/F3 implementations plug in there at integration).
+ * Skips when the model bundle isn't downloaded; [RealNomicDeviceRuntime] is installed in [NomicDeviceRuntime.provider] when nothing else is.
  */
 @RunWith(AndroidJUnit4::class)
 class NomicReferenceDeviceTest {
+    /** `-e modelsDir <path>` on the instrumentation run overrides the models directory (default `filesDir/models`). */
+    private fun modelsDir(): File {
+        val inst = InstrumentationRegistry.getInstrumentation()
+        return InstrumentationRegistry.getArguments().getString("modelsDir")?.takeIf { it.isNotBlank() }?.let(::File) ?: File(inst.targetContext.filesDir, "models")
+    }
+
+    @Before fun installRealRuntime() {
+        if (NomicDeviceRuntime.provider == null) NomicDeviceRuntime.provider = { models -> RealNomicDeviceRuntime(models) }
+    }
+
     @Test fun deviceOutputsMatchPyTorchReference() {
-        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
-        val models = File(ctx.filesDir, "models")
+        val models = modelsDir()
         assumeTrue("Nomic bundle not downloaded", File(models, "nomic-embed-text-v1.5.Q8_0.gguf").isFile && File(models, "nomic-embed-vision-v1.5.model_quantized.onnx").isFile)
         val runtime = NomicDeviceRuntime.provider?.invoke(models)
         assumeTrue("Nomic runtime not wired", runtime != null)

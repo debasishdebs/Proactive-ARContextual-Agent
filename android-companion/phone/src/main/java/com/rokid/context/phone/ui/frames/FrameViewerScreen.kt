@@ -66,6 +66,13 @@ fun FrameViewerScreen(state: FrameViewerUiState, onBack: () -> Unit) {
                 val current = state.frames[pager.currentPage.coerceIn(0, state.frames.lastIndex)]
                 Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("${pager.currentPage + 1} / ${state.frames.size} · ${current.time}", color = Color.White, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    if (com.rokid.context.BuildConfig.DEBUG) {
+                        // Debug builds: copy the id to label photos for the photo 256-vs-768 test (ids are not shown or logged anywhere).
+                        val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+                        androidx.compose.material3.TextButton(onClick = { clipboard.setText(androidx.compose.ui.text.AnnotatedString(current.id)) }, modifier = Modifier.testTag("copy_frame_id")) {
+                            Text("Copy frame id", color = Color.White)
+                        }
+                    }
                     IconButton(onClick = { playing = !playing }) {
                         Icon(if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow, contentDescription = if (playing) "Pause" else "Play", tint = Color.White)
                     }

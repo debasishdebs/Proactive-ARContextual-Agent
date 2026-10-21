@@ -26,6 +26,10 @@ import com.rokid.context.phone.canvas.ui.CanvasHomeRoute
 import com.rokid.context.phone.canvas.ui.CanvasPipelineRoute
 import com.rokid.context.phone.canvas.ui.CanvasWebRoute
 import com.rokid.context.phone.ui.settings.DiagnosticsScreen
+import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEval
+import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalFactory
+import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalScreen
+import com.rokid.context.phone.ui.settings.diagnostics.PhotoDimEvalViewModel
 import com.rokid.context.phone.ui.settings.DiagnosticsViewModel
 import com.rokid.context.phone.ui.settings.LogsScreen
 import com.rokid.context.phone.ui.settings.LogsViewModel
@@ -248,6 +252,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onExportSettings = vm::exportSettings, keyframes = keyframes, onRetryAll = vm::retryAll,
             onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) }, glassesRestarts = glassesRestarts,
             developerMode = devOn,
+            onOpenPhotoDimTest = if (PhotoDimEval.rowVisible(com.rokid.context.BuildConfig.DEBUG, devOn)) ({ nav.navigate(Routes.DIAGNOSTICS_PHOTO_DIM) }) else null,
             onDeveloperMode = { on ->
                 dev.set(on)
                 if (!on) { // off: the server stops and every browser session ends, now
@@ -269,6 +274,16 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     composable(Routes.SETTINGS_CANVAS_PIPELINE, arguments = listOf(navArgument("id") { type = NavType.StringType; defaultValue = "" })) { entry ->
         val id = entry.arguments?.getString("id").orEmpty()
         CanvasDeveloperGate(back) { host -> CanvasPipelineRoute(id, host, s.ai, s.retrieval, onBack = back) }
+    }
+
+    composable(Routes.DIAGNOSTICS_PHOTO_DIM) {
+        val app = LocalContext.current.applicationContext
+        val devOn by remember { DeveloperModeStore.get(app) }.enabled.collectAsStateWithLifecycle()
+        // Same gate as the row: a release build or Developer mode off never shows the screen (a deep link or a stale back stack falls back).
+        if (!PhotoDimEval.rowVisible(com.rokid.context.BuildConfig.DEBUG, devOn)) { LaunchedEffect(Unit) { back() }; return@composable }
+        val vm = viewModel { PhotoDimEvalViewModel(PhotoDimEvalFactory.create(app), bundleReady = { PhotoDimEvalFactory.bundleReady(app) }) }
+        val state by vm.state.collectAsStateWithLifecycle()
+        PhotoDimEvalScreen(state, onBack = back, onRun = vm::start, onCancel = vm::cancel)
     }
 
     composable(Routes.DIAGNOSTICS_LOGS) {
