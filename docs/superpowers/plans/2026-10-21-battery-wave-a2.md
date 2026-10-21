@@ -322,3 +322,7 @@ Do not run this without the user. Bluetooth toggles, uninstalls and permission r
 7. **Worn run, 20 min, A2 defaults, music on:** use `battery-run.sh` as above (label `A2w`). Compare its `pct_per_min` with the 1.6 %/min of 2026-10-21.
 8. **WALK tuning (only if requested):** `adb -s <dev> shell run-as com.rokid.context.glasses touch files/diag_verbose_features`, then restart the session → `diag verbose features=on` and per-second features. Remove the file afterwards.
 9. **Write the results** into handoff §6 (a D1–D4 / A2w table), and revisit the spec §4 ruling (Settle default) and §5 (STILL rate) with the user.
+
+**Final-review additions to Task 6 (2026-10-21):**
+- **I1, can the SoC sleep through a glance?** STILL batching with non-wake-up sensors and no wakelock may let the SoC suspend while capture runs. Check: display off, glasses still for ≥ 3 min, then a deliberate head turn and a 2 s look at a new object → a dwell keyframe within about 3 s (`wk=dwell` in the heartbeat). In D3, read the suspend share from batterystats (uptime vs realtime). If the glance is missed, decide with the user: a wake-up gyro sensor, a partial wakelock only while capture runs, or FULL rate while worn.
+- **I2, D2 has no `opens1m`** (wave-A heartbeat). Take D2's opens per minute from the batterystats camera count (124 opens in 11 min ≈ 11/min on the old build, 2026-10-21) or compare against D4.
