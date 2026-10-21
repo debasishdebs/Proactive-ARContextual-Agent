@@ -24,6 +24,7 @@
         <exclude domain="file" path="summary_trace.log" />
         <exclude domain="root" path="cache/exports" />
         <exclude domain="file" path="models" />
+        <exclude domain="file" path="photo-eval" />
         <!-- BUG-R3-1: set-up, DB and device state. Restored onto a fresh install (no keys, no DB) these said
              onboarding was done, pointed into the missing DB, or carried another phone's pairing / voice probe.
              Ruling and the restorable list: BackupRulesTest. -->
@@ -66,6 +67,7 @@
         <exclude domain="file" path="summary_trace.log" />
         <exclude domain="root" path="cache/exports" />
         <exclude domain="file" path="models" />
+        <exclude domain="file" path="photo-eval" />
         <!-- BUG-R3-1: set-up, DB and device state. Restored onto a fresh install (no keys, no DB) these said
              onboarding was done, pointed into the missing DB, or carried another phone's pairing / voice probe.
              Ruling and the restorable list: BackupRulesTest. -->

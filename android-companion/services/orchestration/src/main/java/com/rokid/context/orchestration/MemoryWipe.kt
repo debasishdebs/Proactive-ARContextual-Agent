@@ -23,6 +23,9 @@ import java.util.concurrent.atomic.AtomicLong
 
 /** Settings → Memory › Delete all (spec §6.1.1). Endpoints, keys, prompts, settings and user lists are kept. */
 object MemoryWipe {
+    /** `files/photo-eval`: the debug photo test's labels and results (also excluded from backup). */
+    const val PHOTO_EVAL_DIR = "photo-eval"
+
     /**
      * Bumped first by every Delete all. A writer that read it before its work began (a queue job before its claim, an
      * ask before retrieval) re-checks it inside the transaction that writes, and drops the write if it moved
@@ -86,6 +89,8 @@ object MemoryWipe {
             }
             LegacyImporter.LEGACY_FILES.forEach { File(context.filesDir, it).delete() }
             MemoryExport.dir(context).listFiles()?.filter { it.isFile }?.forEach { it.delete() }
+            // Final review I3: the debug photo test's labels (queries.json, the user's free text about their photos) and results.
+            File(context.filesDir, PHOTO_EVAL_DIR).deleteRecursively()
             MemoryMaintenance.vacuum(db)
             MemoryMaintenance.checkpoint(db)
             deleted

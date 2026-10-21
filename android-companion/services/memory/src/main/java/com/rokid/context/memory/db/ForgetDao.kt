@@ -97,8 +97,8 @@ abstract class ForgetDao {
 
     /**
      * Retention, ordinary skipped photos (spec §P6.1): a keyframe (has `frame_meta`, not tombstoned) that was shed, a semantic near-dup
-     * (NEAR_DUP) or a non-representative member of a summarised cluster (CLUSTERED, no CLUSTER_REP `frame_source` row), with salience below
-     * 0.5 (or none) and no dwell: never a key moment, never a representative. A frame in a cluster that is not SUMMARIZED or FAILED_FINAL is
+     * (NEAR_DUP) or a non-representative member of a summarised cluster (CLUSTERED, no CLUSTER_REP `frame_source` row), with a recorded salience below
+     * 0.5 (never an unscored wave-1 frame: final review I1) and no dwell: never a key moment, never a representative. A frame in a cluster that is not SUMMARIZED or FAILED_FINAL is
      * never returned. Deadline: `max(frame_state.updatedAt, [since]) + [windowMs] <= [nowMs]`. Callers expire in chunks; the same frames
      * come back until their row is gone, so a failed chunk is retried by the next pass.
      */
@@ -158,7 +158,7 @@ abstract class ForgetDao {
         "UPDATE frame_state SET state = 'NEAR_DUP', lastError = 'caption_expired', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
             "WHERE state = 'CAPTION_QUEUED' AND COALESCE(lastError, '') != 'describe_before_delete' AND MAX(updatedAt, :since) + :ageMs <= :nowMs " +
             // a key moment (dwell or salience >= 0.5) is never converted: it waits for its caption (the night job's bounded retry parks it, nothing deletes it)
-            "AND frameId IN (SELECT k.frameId FROM frame_meta k WHERE k.dwell = 0 AND COALESCE(k.salience, 0) < 0.5) " +
+            "AND frameId IN (SELECT k.frameId FROM frame_meta k WHERE k.dwell = 0 AND k.salience IS NOT NULL AND k.salience < 0.5) " +
             "AND frameId IN (SELECT m.frameId FROM frame_meta m WHERE NOT EXISTS (SELECT 1 FROM frame_cluster c WHERE c.clusterId = m.clusterId AND c.state NOT IN ('SUMMARIZED','FAILED_FINAL')))",
     )
     abstract suspend fun expireCaptionQueued(since: Long, ageMs: Long, nowMs: Long): Int
@@ -204,13 +204,19 @@ abstract class ForgetDao {
                 "AND NOT EXISTS (SELECT 1 FROM frame_cluster rc WHERE rc.clusterId = m.clusterId AND rc.repFrameIds LIKE '%\"' || f.id || '\"%') "
         const val CLUSTER_SETTLED =
             "AND NOT EXISTS (SELECT 1 FROM frame_cluster c WHERE c.clusterId = m.clusterId AND c.state NOT IN ('SUMMARIZED','FAILED_FINAL')) "
+        /**
+         * Final review I1: a skipped photo needs a REAL salience below 0.5, recorded by the scene indexer. Wave 1 never scored salience
+         * (`frame_meta.salience IS NULL` means "never scored", not "non-salient"), so its shed and near-dup trip photos are not skipped: they
+         * follow the photo path, and the night job describes them before any delete.
+         */
+        const val SCORED_LOW = "(m.salience IS NOT NULL AND m.salience < 0.5)"
         /** Skipped-photo guard, shared by [skippedPhotosDue] and the photo query that must leave those frames to it. */
         const val SKIPPED_PHOTO =
-            "AND (COALESCE(m.salience, 0) < 0.5 OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " +
+            "AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " +
                 NOT_A_REP + CLUSTER_SETTLED
         /** Photo retention applies to every keyframe not owed work, not forgotten, not a skipped photo (those follow [SKIPPED_PHOTO]'s window). */
         const val PHOTO_ELIGIBLE =
             "s.state NOT IN ('PENDING','EXTRACTING','FAILED','IN_CLUSTER','CAPTION_QUEUED') " + CLUSTER_SETTLED +
-                "AND NOT (s.state IN ('NEAR_DUP','CLUSTERED') AND (COALESCE(m.salience, 0) < 0.5 OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " + NOT_A_REP + ") "
+                "AND NOT (s.state IN ('NEAR_DUP','CLUSTERED') AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " + NOT_A_REP + ") "
     }
 }

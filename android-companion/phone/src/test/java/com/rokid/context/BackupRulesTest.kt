@@ -22,6 +22,8 @@ class BackupRulesTest {
         "database:context.db", "database:context.db-wal", "database:context.db-shm",
         // On-device embeddings spec section 4: downloaded models (large, re-downloadable) are never backed up.
         "file:models",
+        // Final review I4: the photo test's labels (queries.json holds the user's free text about their photos) never leave the phone.
+        "file:photo-eval",
     ) + secretBaks + memoryCopies + setupState.map { "sharedpref:$it.xml" }
 
     /**
