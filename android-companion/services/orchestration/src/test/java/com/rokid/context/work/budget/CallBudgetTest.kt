@@ -145,6 +145,18 @@ class CallBudgetTest {
         assertEquals(30_000L, log.first { it.first == "x" }.second)
     }
 
+    @Test fun experimentCallsAreCountedButLeaveTheLiveBudgetUntouched() = runTest {
+        val b = budget(); val log = mutableListOf<Pair<String, Long>>()
+        repeat(50) { call(b, CallClass.EXPERIMENT, log) }; runCurrent()
+        assertEquals(50, log.size) // never waits
+        assertEquals(50, b.stats.value.callsLastHour[CallClass.EXPERIMENT])
+        repeat(2) { call(b, CallClass.EXTRACT, log) }; runCurrent() // the burst of 2 is still there, at time 0
+        assertEquals(listOf(0L, 0L), log.filter { it.first == "EXTRACT" }.map { it.second })
+        call(b, CallClass.EXTRACT, log, "x"); runCurrent()
+        advanceTimeBy(10_000); runCurrent() // exactly one mint later: no experiment debt delayed it
+        assertEquals(10_000L, log.first { it.first == "x" }.second)
+    }
+
     @Test fun callerTimeoutDoesNotRefund() = runTest {
         val b = budget(); val log = mutableListOf<Pair<String, Long>>()
         repeat(2) {

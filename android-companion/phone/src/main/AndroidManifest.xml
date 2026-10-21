@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Voice (Phase 6): on-device recognition only; the hub keeps the mic while the phone is locked. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
@@ -44,6 +45,12 @@
             android:name=".phone.hub.ContextHubService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice|microphone" />
+
+        <!-- Experiment canvas server (Developer mode only; started by the canvas screen, LAN on or a run). -->
+        <service
+            android:name=".phone.canvas.CanvasService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- Settings → Memory › Export: shares cache/exports only (res/xml/file_paths.xml), read grant per share. -->
         <provider

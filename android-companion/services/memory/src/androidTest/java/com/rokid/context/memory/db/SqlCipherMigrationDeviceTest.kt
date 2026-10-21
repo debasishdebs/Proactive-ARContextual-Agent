@@ -67,7 +67,7 @@ class SqlCipherMigrationDeviceTest {
     }
 
     /** A keyed v1-shaped file (v2 file minus the five frame tables, user_version 1) opens through both production builders and migrates. */
-    @Test fun encryptedDbMigratesTo2() = runBlocking(Dispatchers.IO) {
+    @Test fun encryptedDbMigratesTo3FromV1Shape() = runBlocking(Dispatchers.IO) {
         System.loadLibrary("sqlcipher")
         // Create a keyed v2 database through the production builder, step it back to a v1 shape, and reopen through build() and buildDeferred().
         listOf(true, false).forEach { deferred ->
@@ -84,7 +84,41 @@ class SqlCipherMigrationDeviceTest {
                 assertEquals(listOf("m1"), searchIds(db, "shelf"))
                 db.frameStateDao().insertIgnore(listOf(FrameStateEntity("f1", "PENDING", 0, null, null, null, 1)))
                 assertEquals(1, db.frameStateDao().get("f1")?.let { 1 })
-                assertEquals(2, db.openHelper.writableDatabase.version)
+                assertEquals(3, db.openHelper.writableDatabase.version)
+                assertCanvasTables(db)
+            } finally { db.close() }
+            assertFalse(EncryptionMigrator.isPlaintextSqlite(file))
+        }
+    }
+
+    private val canvasTables = listOf("canvas_pipeline", "canvas_pipeline_version", "canvas_run", "canvas_run_item", "canvas_score", "canvas_publish")
+
+    private fun assertCanvasTables(db: ContextDatabase) {
+        val names = db.openHelper.writableDatabase.query("SELECT name FROM sqlite_master WHERE type='table'").use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
+        assertTrue(names.containsAll(canvasTables))
+    }
+
+    /** A keyed v2-shaped file (current file minus the six canvas tables, user_version 2) migrates to v3 through both builders, keeping its v2 rows. */
+    @Test fun encryptedDbMigratesTo3FromV2Shape() = runBlocking(Dispatchers.IO) {
+        System.loadLibrary("sqlcipher")
+        listOf(true, false).forEach { deferred ->
+            clean()
+            val first = DatabaseFactory.build(ctx, encrypted = true) { key.copyOf() }
+            try {
+                MemoryRepository(first.memoryDao()).add(mem("m1", "keys on the shelf"))
+                first.frameStateDao().insertIgnore(listOf(FrameStateEntity("f1", "PENDING", 0, null, null, null, 1)))
+            } finally { first.close() }
+            net.zetetic.database.sqlcipher.SQLiteDatabase.openDatabase(file.path, key.copyOf(), null, net.zetetic.database.sqlcipher.SQLiteDatabase.OPEN_READWRITE, null, null).use { raw ->
+                canvasTables.forEach { raw.execSQL("DROP TABLE IF EXISTS `$it`") }
+                raw.execSQL("PRAGMA user_version = 2")
+            }
+            val db = if (deferred) DatabaseFactory.buildDeferred(ctx, { true }) { key.copyOf() } else DatabaseFactory.build(ctx, encrypted = true) { key.copyOf() }
+            try {
+                assertEquals(3, db.openHelper.writableDatabase.version)
+                assertEquals(listOf("m1"), searchIds(db, "shelf"))
+                assertEquals(1, db.frameStateDao().get("f1")?.let { 1 })
+                assertCanvasTables(db)
+                assertEquals(0, db.canvasDao().runs(5).size)
             } finally { db.close() }
             assertFalse(EncryptionMigrator.isPlaintextSqlite(file))
         }
