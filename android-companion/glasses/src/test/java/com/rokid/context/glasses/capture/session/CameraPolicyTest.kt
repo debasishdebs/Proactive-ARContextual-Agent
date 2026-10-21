@@ -12,8 +12,8 @@ class CameraPolicyTest {
     private fun d(
         state: MotionState = MotionState.STILL, decel: Boolean = false, sinceEnd: Long? = null, sinceKf: Long = 0,
         look: Int = 1000, low: Boolean = false, heat: Boolean = false, now: Long = 100_000, lastBrief: Long = 100_000,
-        profile: CaptureProfile = CaptureProfile.DEFAULT,
-    ) = CameraPolicy.decide(state, decel, sinceEnd, sinceKf, look, low, heat, now, lastBrief, profile = profile)
+        profile: CaptureProfile = CaptureProfile.DEFAULT, quiet: Boolean = false, step: Int = 0,
+    ) = CameraPolicy.decide(state, decel, sinceEnd, sinceKf, look, low, heat, now, lastBrief, quiet = quiet, profile = profile, stillStep = step)
 
     private val settleT0 = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0)
     private val settleT2 = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T2)
@@ -23,6 +23,34 @@ class CameraPolicyTest {
         assertFalse(r.open); assertEquals(105_000L, r.nextBriefCheckAtMs); assertEquals(333L, r.analysisIntervalMs)
         assertEquals(115_000L, d(sinceKf = 10 * 60_000L + 1).nextBriefCheckAtMs)
         assertTrue(d(state = MotionState.WALKING).open)
+    }
+
+    @Test fun stillGapDoublesToTheCap() {
+        val exp = listOf(5_000L, 10_000L, 20_000L, 40_000L, 60_000L, 60_000L)
+        for (i in 0..5) assertEquals(exp[i], CameraPolicy.stillGap(5_000, i, 60_000))
+        assertEquals(60_000L, CameraPolicy.stillGap(20_000, 2, 60_000))
+        assertEquals(90_000L, CameraPolicy.stillGap(90_000, 3, 60_000))
+    }
+
+    @Test fun motionSettledBacksOff() {
+        assertEquals(105_000L, d(lastBrief = 100_000, step = 0).nextBriefCheckAtMs)
+        assertEquals(140_000L, d(lastBrief = 100_000, step = 3).nextBriefCheckAtMs)
+        assertEquals(160_000L, d(lastBrief = 100_000, step = 5).nextBriefCheckAtMs)
+        assertEquals(120_000L, d(lastBrief = 100_000, low = true, step = 1).nextBriefCheckAtMs)
+        assertEquals(115_000L, d(lastBrief = 100_000, quiet = true, step = 0).nextBriefCheckAtMs)
+        assertEquals(120_000L, d(lastBrief = 100_000, quiet = true, step = 2).nextBriefCheckAtMs)
+        assertEquals(220_000L, d(lastBrief = 100_000, heat = true, step = 4).nextBriefCheckAtMs)
+    }
+
+    @Test fun settleSettledBacksOff() {
+        val exp = listOf(10_000L, 20_000L, 40_000L, 60_000L, 60_000L)
+        for (i in 0..4) assertEquals(100_000L + exp[i], d(lastBrief = 100_000, profile = settleT0, step = i).nextBriefCheckAtMs)
+        assertEquals(140_000L, d(lastBrief = 100_000, profile = settleT2, step = 1).nextBriefCheckAtMs)
+    }
+
+    @Test fun settleWalkingAndHeadMovingIgnoreTheBackoff() {
+        assertEquals(110_000L, d(lastBrief = 100_000, state = MotionState.WALKING, profile = settleT0, step = 3).nextBriefCheckAtMs)
+        assertNull(d(state = MotionState.HEAD_MOVING, profile = settleT0, step = 3).nextBriefCheckAtMs)
     }
 
     @Test fun settleMovingClosesWithNoCheck() {

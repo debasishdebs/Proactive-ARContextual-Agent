@@ -61,6 +61,10 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
     // public entry point is @Synchronized (cheap: hashing is the only real work and it is a few ms).
     private val window = ArrayList<Scored>(MAX_CANDIDATES + 1)
     private var windowStart = 0L
+    private var lastScoredHashes: Pair<Long, Long>? = null
+
+    /** (dHash, pHash) of the last frame that passed the blur check, or null before any. */
+    @Synchronized fun lastHashes(): Pair<Long, Long>? = lastScoredHashes
 
     /** Candidates currently held (their pixel copies stay alive). */
     @Synchronized internal fun retainedCount(): Int = window.size
@@ -78,6 +82,7 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         val blur = ImageHashes.blur(c.thumb)
         if (blur < BLUR_FLOOR) return Skip(BLUR)
         val s = Scored(c, ImageHashes.dHash(c.thumb), ImageHashes.pHash(c.thumb), blur, motion)
+        lastScoredHashes = s.d to s.p
         if (force) {
             window.clear()
             recordKeep(c, s.d, s.p, now)

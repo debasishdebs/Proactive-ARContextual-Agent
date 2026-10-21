@@ -26,10 +26,14 @@ object CameraPolicy {
         return if (lowPower) h / 2 else h
     }
 
+    /** The brief-check gap after [step] unchanged checks: [baseMs] doubled [step] times, capped at [capMs] (a base at or over the cap is kept). */
+    fun stillGap(baseMs: Long, step: Int, capMs: Long): Long =
+        if (baseMs >= capMs) baseMs else minOf(baseMs shl step.coerceIn(0, 20), capMs)
+
     fun decide(
         state: MotionState, decelerating: Boolean, msSinceMotionEnd: Long?, msSinceKeyframe: Long, quickLookMs: Int,
         lowPower: Boolean, heatSlow: Boolean, nowMs: Long, lastBriefCheckAtMs: Long, quiet: Boolean = false,
-        profile: CaptureProfile = CaptureProfile.DEFAULT,
+        profile: CaptureProfile = CaptureProfile.DEFAULT, stillStep: Int = 0,
     ): Decision {
         val slow = if (heatSlow) 2L else 1L
         val interval = profile.analysisMs * slow
@@ -41,7 +45,7 @@ object CameraPolicy {
             if (state == MotionState.WALKING) {
                 return Decision(false, interval, lastBriefCheckAtMs + (profile.walkCheckMs ?: profile.settledCheckMs) * slow)
             }
-            var settleMs = maxOf(if (lowPower) LOW_POWER_CHECK_MS else 0L, profile.settledCheckMs)
+            var settleMs = stillGap(maxOf(if (lowPower) LOW_POWER_CHECK_MS else 0L, profile.settledCheckMs), stillStep, profile.stillCapMs)
             if (msSinceKeyframe > QUIET_AFTER_KEYFRAME_MS || quiet) settleMs = maxOf(settleMs, profile.quietCheckMs)
             return Decision(false, interval, lastBriefCheckAtMs + settleMs * slow)
         }
@@ -54,10 +58,7 @@ object CameraPolicy {
         }
         if (msSinceMotionEnd != null && msSinceMotionEnd in 0 until hold) return Decision(true, interval, null)
 
-        var checkMs = when {
-            lowPower -> LOW_POWER_CHECK_MS
-            else -> profile.settledCheckMs
-        }
+        var checkMs = stillGap(if (lowPower) LOW_POWER_CHECK_MS else profile.settledCheckMs, stillStep, profile.stillCapMs)
         // [quiet]: several brief checks in a row found nothing usable (dark, face-down): the 15 s cadence
         if (msSinceKeyframe > QUIET_AFTER_KEYFRAME_MS || quiet) checkMs = maxOf(checkMs, profile.quietCheckMs)
         var next = lastBriefCheckAtMs + checkMs * slow

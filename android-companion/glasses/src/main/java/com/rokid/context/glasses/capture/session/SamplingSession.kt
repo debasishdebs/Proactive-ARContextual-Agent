@@ -91,7 +91,7 @@ class SamplingSession(
     /** Where a flushed keyframe is encoded (the service passes Dispatchers.Default so the main thread never encodes). */
     private val workContext: CoroutineContext = EmptyCoroutineContext,
 ) {
-    private class Episode(val continuous0: Boolean) {
+    private class Episode(val continuous0: Boolean, val why: String) {
         @Volatile var continuous = continuous0
         val done = CompletableDeferred<Unit>()
         @Volatile var closing = false
@@ -129,6 +129,12 @@ class SamplingSession(
     private var bindBackoffUntil = 0L
     /** The first failed bind after start (the previous process may not have released the camera yet) is retried at once and not counted. */
     private var coldStartGrace = true
+    // Still-scene backoff of the brief checks (guarded by [lock]): the step doubles the gap while consecutive timer checks find the same scene.
+    private var stillStepV = 0
+    private var lastCheckHash: Pair<Long, Long>? = null
+    private var lastProfile = CaptureProfile.DEFAULT
+    private var lastLowPower = false
+    private var wasBlocked = true
     private var seq = 0L
     private var forceAnalyse = false
     private var forceBrief = false
@@ -149,6 +155,18 @@ class SamplingSession(
     /** Frames copied and offered to the gate (for logs and tests). */
     private val analysedCount = AtomicInteger()
     val analysedFrames: Int get() = analysedCount.get()
+
+    val stillStep: Int get() = synchronized(lock) { stillStepV }
+
+    /** The current gap between brief checks of a still scene (after the backoff), for the heartbeat. */
+    fun stillGapMs(): Long = synchronized(lock) { CameraPolicy.stillGap(backoffBase(), stillStepV, lastProfile.stillCapMs) }
+
+    /** The gap the policy starts from before doubling. Caller holds [lock]. */
+    private fun backoffBase(): Long {
+        val low = if (lastLowPower) 10_000L else 0L
+        return if (lastProfile.wake == CameraWake.SETTLE) maxOf(low, lastProfile.settledCheckMs)
+        else if (lastLowPower) low else lastProfile.settledCheckMs
+    }
 
     /** True while the session loop runs (the watchdog reports "alive" only then). */
     val alive: Boolean get() = job?.isActive == true && !stopped
@@ -205,6 +223,7 @@ class SamplingSession(
     }
 
     private fun onOnset() = synchronized(lock) {
+        stillStepV = 0
         if (profile().wake == CameraWake.MOTION) {
             forceAnalyse = true // the immediate check at the first sign of movement
             forceBrief = true
@@ -214,6 +233,7 @@ class SamplingSession(
 
     private fun onDwell() = synchronized(lock) {
         pendingDwellAt = clock()
+        stillStepV = 0
         kick.trySend(Unit)
         Unit
     }
@@ -232,6 +252,10 @@ class SamplingSession(
             if (why == null) workRest.onSampling() else workRest.onPaused()
             if (why == null && workRest.resting.value != null) why = "rest"
             blocked = why
+            if (wasBlocked && why == null) stillStepV = 0
+            wasBlocked = why != null
+            lastProfile = prof
+            lastLowPower = lowPower()
             ep = episode
             if (why != null) { pendingDwellAt = null; pendingNowAt = null; forceBrief = false }
         }
@@ -252,7 +276,7 @@ class SamplingSession(
             pendingNowAt?.let { if (now - it > PENDING_MS) pendingNowAt = null }
             d = CameraPolicy.decide(
                 st, motion.decelerating.value, motionEndAt?.let { now - it }, now - lastKeyframeAt, s.quickLookMs,
-                lowPower(), heat.level.value == HeatLevel.SLOW, now, lastBriefAt, quiet = darkStreak >= DARK_BACKOFF_AFTER, profile = prof,
+                lowPower(), heat.level.value == HeatLevel.SLOW, now, lastBriefAt, quiet = darkStreak >= DARK_BACKOFF_AFTER, profile = prof, stillStep = stillStepV,
             )
             analysisIntervalMs = d.analysisIntervalMs
             val cur = episode
@@ -322,7 +346,14 @@ class SamplingSession(
 
     /** Caller holds [lock]. */
     private fun startEpisode(continuous: Boolean, now: Long) {
-        val ep = Episode(continuous)
+        val why = when {
+            continuous -> "stream"
+            pendingNowAt != null -> "now"
+            pendingDwellAt != null -> "dwell"
+            forceBrief -> "onset"
+            else -> "timer"
+        }
+        val ep = Episode(continuous, why)
         episode = ep
         forceBrief = false
         scope.launch {
@@ -360,6 +391,7 @@ class SamplingSession(
         var flushed: GateResult? = null
         synchronized(lock) {
             if (episode === ep) episode = null
+            if (ep.continuous) lastCheckHash = null
             if (ep.openedAt > 0) openAccumMs += (now - maxOf(ep.openedAt, shareFromAt)).coerceAtLeast(0)
             lastBriefAt = now
             if (ep.openFailed || ep.noFrames) {
@@ -440,6 +472,7 @@ class SamplingSession(
         var forced: Boolean
         val sequence: Long
         val sampleMotion: MotionState
+        var h: Pair<Long, Long>? = null
         synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
             ep.frames++
@@ -471,18 +504,34 @@ class SamplingSession(
         val result: GateResult? = if (FrameGuard.checkBatteryAndDark(batteryPct(), charging(), luma.toDouble()) != null) null
         else synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
-            gate.offer(cand, sampleMotion, dwellArmed, forced)
+            gate.offer(cand, sampleMotion, dwellArmed, forced).also { h = gate.lastHashes() }
         }
         val usable = result != null && !(result is GateResult.Skip && result.reason == KeyframeGate.BLUR)
         if (result is GateResult.Keep) emit(result, now)
         synchronized(lock) {
             if (usable) {
+                if (!ep.continuous) updateBackoff(ep, h, result, sampleMotion)
                 ep.lastUnusable = false
                 if (dwellArmed) pendingDwellAt = null
                 if (forced) pendingNowAt = null
                 if (!ep.continuous) { darkStreak = 0; closeEpisode(ep) } // a brief check ends at its first usable frame
             } else unusable(ep, now)
         }
+    }
+
+    /**
+     * Still-scene backoff after a usable brief-check frame: a keep or a changed scene resets it; an unchanged scene on a
+     * timer check while STILL doubles the next gap (until the cap). Caller holds [lock].
+     */
+    private fun updateBackoff(ep: Episode, h: Pair<Long, Long>?, result: GateResult?, sampleMotion: MotionState) {
+        val prev = lastCheckHash
+        if (result is GateResult.Keep) stillStepV = 0
+        else if (ep.why == "timer" && sampleMotion == MotionState.STILL && h != null && prev != null) {
+            val same = minOf(java.lang.Long.bitCount(h.first xor prev.first), java.lang.Long.bitCount(h.second xor prev.second)) <= KeyframeGate.HAMMING
+            if (!same) stillStepV = 0
+            else if ((backoffBase() shl stillStepV) < lastProfile.stillCapMs) stillStepV++
+        }
+        if (h != null) lastCheckHash = h
     }
 
     /**

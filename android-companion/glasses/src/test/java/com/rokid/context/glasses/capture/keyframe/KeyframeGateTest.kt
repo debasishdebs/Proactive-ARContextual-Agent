@@ -41,6 +41,15 @@ class KeyframeGateTest {
 
     private fun reason(r: GateResult) = assertIs<GateResult.Skip>(r).reason
 
+    @Test fun lastHashesTracksTheLastScoredFrameAndSkipsBlur() {
+        assertNull(gate.lastHashes())
+        val c = cand(1)
+        at(10_000, c)
+        assertEquals(ImageHashes.dHash(c.thumb) to ImageHashes.pHash(c.thumb), gate.lastHashes())
+        at(20_000, cand(2, soft = 100)) // BLUR skip
+        assertEquals(ImageHashes.dHash(c.thumb) to ImageHashes.pHash(c.thumb), gate.lastHashes())
+    }
+
     @Test fun abaPingPongSuppressed() {
         assertIs<GateResult.Keep>(at(10_000, cand(1)))
         assertIs<GateResult.Keep>(at(13_000, cand(2)))

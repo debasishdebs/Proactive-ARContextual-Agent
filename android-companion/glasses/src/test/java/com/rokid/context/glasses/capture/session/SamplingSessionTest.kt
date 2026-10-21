@@ -23,6 +23,84 @@ class SamplingSessionTest {
     private fun rig(t: TestScope, settings: HudSettings = HudSettings(captureMode = CaptureMode.SMART), workRest: WorkRest? = null, configure: Rig.() -> Unit = {}) =
         Rig(t, settings, workRest = workRest).apply(configure)
 
+    private fun gaps(r: Rig) = r.camera.openTimes.zipWithNext { a, b -> b - a }
+    private fun assertGaps(expected: List<Long>, actual: List<Long>) {
+        assertTrue(actual.size >= expected.size, "gaps=$actual")
+        expected.forEachIndexed { i, e -> assertTrue(kotlin.math.abs(actual[i] - e) <= 1_000, "gap $i expected ~$e: $actual") }
+    }
+
+    @Test fun stillSceneBacksOffToSixtySeconds() = runTest {
+        val r = rig(this)
+        r.session.start()
+        delay(200_000)
+        assertGaps(listOf(5_000, 10_000, 20_000, 40_000, 60_000, 60_000), gaps(r))
+        assertEquals(60_000L, r.session.stillGapMs())
+        r.session.stop("test")
+    }
+
+    @Test fun settleStillSceneBacksOff() = runTest {
+        val r = rig(this) { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }
+        r.session.start()
+        delay(200_000)
+        assertGaps(listOf(10_000, 20_000, 40_000, 60_000), gaps(r))
+        r.session.stop("test")
+    }
+
+    @Test fun changedSceneResetsTheBackoff() = runTest {
+        val r = rig(this)
+        r.session.start()
+        while (r.session.stillStep < 2) delay(250)
+        r.scene = 2
+        while (r.session.stillStep >= 2) delay(250)
+        assertEquals(0, r.session.stillStep)
+        val opens = r.camera.openTimes.size
+        delay(8_000)
+        val g = r.camera.openTimes.drop(opens - 1).zipWithNext { a, b -> b - a }
+        assertTrue(g.isNotEmpty() && kotlin.math.abs(g[0] - 5_000) <= 1_000, "gap after the reset: $g")
+        r.session.stop("test")
+    }
+
+    @Test fun onsetResetsTheBackoff() = runTest {
+        val r = rig(this)
+        r.session.start()
+        while (r.session.stillStep < 2) delay(250)
+        r.motion.onGyro(2f, 0f, 0f, r.clock())
+        runCurrent()
+        assertEquals(0, r.session.stillStep)
+        r.session.stop("test")
+    }
+
+    @Test fun dwellResetsTheBackoff() = runTest {
+        val r = rig(this) { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }
+        r.startSensors()
+        r.session.start()
+        while (r.session.stillStep < 2) delay(250)
+        r.gyroMag = 3f
+        delay(300)
+        val moving = r.camera.opens
+        r.gyroMag = 0f
+        delay(2_500) // the dwell forces a brief check: the glance promise is unchanged
+        assertTrue(r.camera.opens > moving, "dwell opened a brief check")
+        assertTrue(r.session.stillStep <= 1, "step=${r.session.stillStep}")
+        val last = r.camera.openTimes.last()
+        delay(15_000)
+        val next = r.camera.openTimes.first { it > last }
+        assertTrue(kotlin.math.abs(next - last - 10_000) <= 1_500, "next gap ${next - last}")
+        r.session.stop("test")
+    }
+
+    @Test fun unblockResetsTheBackoff() = runTest {
+        val r = rig(this)
+        r.session.start()
+        while (r.session.stillStep < 2) delay(250)
+        r.paused = true
+        delay(2_000)
+        r.paused = false
+        delay(300)
+        assertEquals(0, r.session.stillStep)
+        r.session.stop("test")
+    }
+
     @Test fun startsOnlyWhenAllConditionsHold() = runTest {
         val blockers: List<Pair<String, Rig.() -> Unit>> = listOf(
             "paused" to { paused = true },
@@ -158,7 +236,7 @@ class SamplingSessionTest {
         val r = rig(this)
         r.startSensors()
         r.session.start()
-        for (s in 1..3) { r.scene = s; delay(6_000) } // three settled scenes, one brief check each
+        for (s in 1..3) { r.scene = s; while (r.scenesKept.size < s) delay(250) } // three settled scenes, one brief check each (a still scene backs the checks off)
         assertEquals(listOf(1, 2, 3), r.scenesKept)
         // look back at scene 1: not new against the last five, so only a dwell can save it
         val turnAt = r.clock()
@@ -361,8 +439,8 @@ class SamplingSessionTest {
     @Test fun briefChecksFollowThe5sBeatAndEndAfterTheSettle() = runTest {
         val r = rig(this)
         r.session.start()
-        delay(30_000)
-        // first check at start, then one about every 5 s (each opens 535 ms early, closing on its first frame)
+        // a scene that changes every 5 s keeps the beat: first check at start, then one about every 5 s (each opens 535 ms early, closing on its first frame)
+        for (s in 1..6) { r.scene = s; delay(5_000) }
         assertTrue(r.camera.opens in 6..7, "opens=${r.camera.opens}")
         // a scene that never gets sharp: the check ends once the exposure has settled (about 0.2 s after the first frame)
         val b = rig(this) { soft = 100 }
@@ -445,7 +523,7 @@ class SamplingSessionTest {
     @Test fun theLeadFollowsTheMeasuredStartup() = runTest {
         val r = rig(this) { camera.startupMs = { 900L } }
         r.session.start()
-        delay(25_000)
+        delay(60_000) // the checks back off on a still scene: 0, 5, 15, 35 s
         val stats = r.session.startupStats()
         assertTrue(stats.contains("p95=900") && stats.contains("lead=900"), stats)
         r.session.stop("test")
@@ -480,7 +558,7 @@ class SamplingSessionTest {
     @Test fun keyframesLast10MinCountsKeeps() = runTest {
         val r = rig(this)
         r.session.start()
-        for (s in 1..3) { r.scene = s; delay(6_000) }
+        for (s in 1..3) { r.scene = s; while (r.scenesKept.size < s) delay(250) }
         assertEquals(3, r.session.status.value.keyframesLast10Min)
         delay(11 * 60_000L)
         assertEquals(0, r.session.status.value.keyframesLast10Min)
