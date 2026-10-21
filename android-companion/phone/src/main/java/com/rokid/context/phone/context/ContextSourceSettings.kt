@@ -41,10 +41,13 @@ class ContextSourceSettings(private val prefs: SharedPreferences) {
     val watchLastSeq: Long get() = prefs.getLong(WATCH_SEQ, 0L)
     fun setWatchSeq(epoch: Long, seq: Long) { prefs.edit().putLong(WATCH_EPOCH, epoch).putLong(WATCH_SEQ, seq).apply() }
 
-    /** Delete all: personal data goes, the switches stay. */
+    /** Delete all: personal data goes and the watch source turns off (its pin is gone); the apply switch stays. */
     fun clearPersonal() {
-        prefs.edit().remove(MY_CARS).remove(LIVEFIT_CERT).remove(WATCH_EPOCH).remove(WATCH_SEQ).apply()
+        prefs.edit().putBoolean(SRC + "watch_livefit", false).remove(MY_CARS).remove(LIVEFIT_CERT).remove(WATCH_EPOCH).remove(WATCH_SEQ).apply()
     }
+
+    /** Delete all: run the wipe, then clear personal state. */
+    suspend fun wipeThenClear(wipe: suspend () -> Unit) { try { wipe() } finally { clearPersonal() } }
 
     companion object {
         const val PREFS = "ctx_hub_state"

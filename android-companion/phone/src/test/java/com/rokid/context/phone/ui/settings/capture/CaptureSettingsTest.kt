@@ -275,7 +275,7 @@ class CaptureSettingsTest {
         compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(contextWord = "Walking"), onBack = {}, onOpenContext = { opened++ }) } }
         compose.onNodeWithTag("context_sources_link").assertExists()
         compose.onNodeWithText("Phone, car, watch and photo context").assertExists()
-        compose.onNodeWithText("Walking").assertExists()
+        compose.onNode(androidx.compose.ui.test.hasText("Walking") and androidx.compose.ui.test.hasAnyAncestor(androidx.compose.ui.test.hasTestTag("context_sources_link"))).assertExists()
         compose.onNodeWithTag("context_sources_link").performClick(); compose.waitForIdle()
         assertEquals(1, opened)
     }
