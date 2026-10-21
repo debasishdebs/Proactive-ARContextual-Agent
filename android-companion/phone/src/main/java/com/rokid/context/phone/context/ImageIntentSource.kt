@@ -56,12 +56,17 @@ class ImageIntentSource(
         current = null
         if (installed() === s) install(null)
         s.close()
+        stats.clearIntentLast()
     }
 
     companion object {
         const val ID = "image_intent"
 
-        /** A vehicle state that a listed Bluetooth device ("My car") started; a watch/activity ride, an unlisted device or images alone are not one. */
+        /**
+         * A vehicle state while a listed Bluetooth device ("My car") is connected now; a watch/activity ride, an unlisted device or
+         * images alone are not one. The result is a vote: it may flip DRIVING <-> PASSENGER, which only changes nudge suppression
+         * (PASSENGER and DRIVING both keep capture unchanged), never capture.
+         */
         fun episode(d: ContextDecision): Boolean =
             (d.state == ContextState.VEHICLE_DRIVING || d.state == ContextState.VEHICLE_PASSENGER) && ContextReason.MY_CAR_BT in d.reasons
     }

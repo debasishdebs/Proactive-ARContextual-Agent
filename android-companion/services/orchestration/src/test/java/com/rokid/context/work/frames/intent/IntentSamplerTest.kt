@@ -25,7 +25,8 @@ class IntentSamplerTest {
         val stored = mutableListOf<Triple<String, String, Float>>()
         var lastSince = -1L
         override suspend fun newestUnlabelled(sinceReceivedMs: Long): IntentFrame? { lastSince = sinceReceivedMs; return frame }
-        override suspend fun setIntent(frameId: String, label: String, conf: Float, at: Long): Int { stored += Triple(frameId, label, conf); return rows }
+        var tombAfterSet = false
+        override suspend fun setIntent(frameId: String, label: String, conf: Float, at: Long): Int { stored += Triple(frameId, label, conf); if (tombAfterSet) tomb = true; return rows }
         override suspend fun tombstoned(frameId: String) = tomb
     }
 
@@ -40,10 +41,15 @@ class IntentSamplerTest {
     private val results = mutableListOf<Triple<String, Long, IntentOutput>>()
     private val stats = mutableListOf<Boolean?>()
 
+    private val flight = IntentFlight()
+    private var preflight = true
+    private var admitCalls = 0
+
     private fun sampler(scope: TestScope) = IntentSampler(
         scope = scope, store = store, classify = { id -> calls++; reply(id) }, clock = { now },
         episode = { episode }, onResult = { id, ts, o -> results += Triple(id, ts, o) }, enabled = { enabled },
-        stats = { stats += it }, admit = { admit }, pipelineOn = { pipeline }, generation = { gen },
+        stats = { stats += it }, admit = { admitCalls++; admit }, pipelineOn = { pipeline }, generation = { gen },
+        flight = flight, preflight = { preflight },
     )
 
     private fun fresh(id: String = "f", ageMs: Long = 10_000) { store.frame = IntentFrame(id, now - ageMs) }
@@ -205,5 +211,54 @@ class IntentSamplerTest {
     @Test fun theCandidateQueryLooksAtMostTwoMinutesBack() = runTest {
         val s = sampler(this); fresh(); poke(s)
         assertEquals(now - 120_000, store.lastSince)
+    }
+
+    // ---- fix round 1
+    @Test fun offThenOnDuringACallCannotStartASecondUploadOrResetTheMinute() = runTest {
+        val gate = CompletableDeferred<IntentOutput?>()
+        reply = { kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { gate.await() } }   // an HTTP call that ignores cancellation
+        val first = sampler(this); fresh(); first.poke(); runCurrent()
+        first.close()                              // the source went off ...
+        val second = sampler(this)                 // ... and on again: a new instance
+        second.poke(); runCurrent()
+        assertEquals("no second upload while the first still runs", 1, calls)
+        gate.complete(null); advanceUntilIdle()
+        now += 30_000; fresh(); second.poke(); runCurrent()
+        assertEquals("the minute is measured from the first call, not reset by the new instance", 1, calls)
+        now += 31_000; fresh(); second.poke(); runCurrent()
+        assertEquals(2, calls)
+    }
+
+    @Test fun everyModelCallIsCountedEvenWhenTheResultIsDropped() = runTest {
+        // fenced drop
+        val gate = CompletableDeferred<IntentOutput?>(); reply = { gate.await() }
+        val s = sampler(this); fresh(); s.poke(); runCurrent(); gen++
+        gate.complete(IntentOutput(IntentLabel.DRIVING, 0.9f)); advanceUntilIdle()
+        assertEquals(listOf<Boolean?>(false), stats)
+    }
+
+    @Test fun aZeroRowWriteIsCountedAsAFailedCall() = runTest {
+        store.rows = 0
+        val s = sampler(this); fresh(); poke(s)
+        assertEquals(listOf<Boolean?>(false), stats)
+    }
+
+    @Test fun aCancelledCallIsCounted() = runTest {
+        val gate = CompletableDeferred<IntentOutput?>(); reply = { gate.await() }
+        val s = sampler(this); fresh(); s.poke(); runCurrent()
+        s.close(); advanceUntilIdle()
+        assertEquals(listOf<Boolean?>(false), stats)
+    }
+
+    @Test fun aForgetBetweenTheWriteAndTheVoteSendsNoVote() = runTest {
+        store.tombAfterSet = true
+        val s = sampler(this); fresh(); poke(s)
+        assertEquals(1, store.stored.size); assertTrue(results.isEmpty())
+    }
+
+    @Test fun anUnreadablePhotoNeverTakesTheSharedSlot() = runTest {
+        preflight = false
+        val s = sampler(this); fresh(); poke(s)
+        assertEquals(0, admitCalls); assertEquals(0, calls)
     }
 }

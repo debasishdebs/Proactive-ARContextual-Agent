@@ -4,7 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 class ContextTypesTest {
-    @Test fun parsesExactNamesOnly() {
+    @Test fun parsesNamesIgnoringCaseAndSpaces() {
         assertEquals(IntentLabel.DRIVING, IntentLabel.parse("DRIVING"))
         assertEquals(IntentLabel.DRIVING, IntentLabel.parse("driving"))
         assertEquals(IntentLabel.VEHICLE_PASSENGER, IntentLabel.parse(" Vehicle_Passenger "))

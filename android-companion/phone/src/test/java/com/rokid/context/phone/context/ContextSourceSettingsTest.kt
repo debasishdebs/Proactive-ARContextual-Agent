@@ -54,6 +54,12 @@ class ContextSourceSettingsTest {
         assertEquals(0L, s.watchEpoch); assertEquals(0L, s.watchLastSeq)
     }
 
+    @Test fun clearPersonalTurnsImageIntentOffSoTheHubDropsItsVotes() {
+        val s = settings(); s.setEnabled("image_intent", true)
+        s.clearPersonal()
+        assertFalse(s.enabled("image_intent"))
+    }
+
     @Test fun wipeThenClearStillClearsPersonalWhenTheWipeThrows() {
         val s = settings()
         s.setEnabled("watch_livefit", true); s.addMyCar("AA:BB"); s.liveFitCertSha256 = "digest"
