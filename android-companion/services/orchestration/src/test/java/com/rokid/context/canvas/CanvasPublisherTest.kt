@@ -279,11 +279,11 @@ class CanvasPublisherTest {
         publisher().publish(id, v.version)
         var armed = false; var criticReads = 0
         // PromptRepository.active() consults previousDefaults[key] on every read: counting those reads lets an outside
-        // edit land exactly after the rollback's fingerprint-check read (read 1) and before whatever reads next (read 2)
+        // edit land exactly after the rollback's fingerprint-check read (read 2, after the warm-up read 1) and before the CAS's read (read 3)
         val reads = object : AbstractMap<PromptKey, Set<String>>() {
             override val entries: Set<Map.Entry<PromptKey, Set<String>>> = emptySet()
             override fun get(key: PromptKey): Set<String>? {
-                if (armed && key == PromptKey.CRITIC && ++criticReads == 2)
+                if (armed && key == PromptKey.CRITIC && ++criticReads == 3)
                     runBlocking { prompts.save(PromptKey.CRITIC, PromptDraft("Y {{recent_context}}", prompts.active(PromptKey.CRITIC).outputSchema), "outside", true) }
                 return null
             }
@@ -292,9 +292,9 @@ class CanvasPublisherTest {
         val firstBefore = prompts.active(PromptKey.VISION_EXTRACT)
         val firstHistory = prompts.history(PromptKey.VISION_EXTRACT).first().size
         armed = true
-        val out = // no transaction here on purpose: inside one an outside writer waits for the commit, so this test would deadlock.
-        // It checks the CAS alone; the transaction closes the window anyway (legacyFingerprintCheckedInTransaction).
-        CanvasPublisher(dao, hooked, { _, _ -> emptyList() }, { now++ }, { body -> body() }).rollback()
+        // no transaction here on purpose: inside one an outside writer waits for the commit, so this test would deadlock.
+        // It checks the CAS alone; the transaction closes the window (outsideWriterWaitsForTransactionCommit).
+        val out = CanvasPublisher(dao, hooked, { _, _ -> emptyList() }, { now++ }, { body -> body() }).rollback()
         assertEquals(CanvasPublisher.Outcome.Blocked(listOf("Critic was changed after the publish. Use Settings \u2192 Prompts \u2192 History instead.")), out)
         assertEquals("Y {{recent_context}}", prompts.active(PromptKey.CRITIC).template) // the outside edit survives
         assertEquals(firstBefore, prompts.active(PromptKey.VISION_EXTRACT)) // all-or-nothing: first key untouched
@@ -329,17 +329,53 @@ class CanvasPublisherTest {
         assertEquals(1, dao.activePublishes().size)
     }
 
-    @Test fun legacyFingerprintCheckedInTransaction() = both {
+    /** Spy over previousDefaults: [get] runs on every PromptRepository.active(); the first read of a key takes upgradeLock. */
+    private fun upgradeSpy(firstRead: MutableMap<PromptKey, Boolean>, armed: () -> Boolean) = object : AbstractMap<PromptKey, Set<String>>() {
+        override val entries: Set<Map.Entry<PromptKey, Set<String>>> = emptySet()
+        override fun get(key: PromptKey): Set<String>? { if (armed()) firstRead.putIfAbsent(key, inTx); return setOf("no-such-fingerprint") }
+    }
+
+    @Test fun upgradeCheckWarmedBeforeTransaction() = both {
         val (id, v) = frozen("EDITED {{recent_context}}")
         publisher().publish(id, v)
-        var armed = false; val reads = mutableListOf<Boolean>()
-        val spy = object : AbstractMap<PromptKey, Set<String>>() {
-            override val entries: Set<Map.Entry<PromptKey, Set<String>>> = emptySet()
-            override fun get(key: PromptKey): Set<String>? { if (armed) reads += inTx; return null }
-        }
-        val hooked = PromptRepository(MemoryGraph.get(app).db.promptDao(), com.rokid.context.prompt.BuiltInPromptSeeds, ai.settings.prompts, spy) { now++ }
+        var armed = false; val first = mutableMapOf<PromptKey, Boolean>()
+        val hooked = PromptRepository(MemoryGraph.get(app).db.promptDao(), com.rokid.context.prompt.BuiltInPromptSeeds, ai.settings.prompts, upgradeSpy(first) { armed }) { now++ }
         armed = true
         assertTrue(CanvasPublisher(dao, hooked, { _, _ -> emptyList() }, { now++ }, txRunner).rollback() is CanvasPublisher.Outcome.Published)
-        assertTrue(reads.isNotEmpty() && reads.all { it })
+        // each key's FIRST upgrade lookup (the one that takes the app-wide upgradeLock) happens before the transaction opens
+        assertTrue(first.isNotEmpty() && first.values.none { it })
+    }
+
+    @Test fun concurrentActiveDuringRollbackDoesNotDeadlock() = both {
+        val (id, v) = frozen("EDITED {{recent_context}}")
+        publisher().publish(id, v)
+        val fresh = PromptRepository(MemoryGraph.get(app).db.promptDao(), com.rokid.context.prompt.BuiltInPromptSeeds, ai.settings.prompts, mapOf(PromptKey.VISION_EXTRACT to setOf("no-such-fingerprint"))) { now++ }
+        val out = kotlinx.coroutines.withTimeout(30_000) { coroutineScope {
+            val back = async(Dispatchers.Default) { CanvasPublisher(dao, fresh, { _, _ -> emptyList() }, { now++ }, txRunner).rollback() }
+            val reads = (1..20).map { async(Dispatchers.Default) { fresh.active(PromptKey.VISION_EXTRACT) } }
+            reads.awaitAll(); back.await()
+        } }
+        assertTrue(out is CanvasPublisher.Outcome.Published)
+    }
+
+    @Test fun outsideWriterWaitsForTransactionCommit() = both {
+        val (id, v) = frozen("EDITED {{recent_context}}")
+        publisher().publish(id, v)
+        val real = CanvasPublisher.inTransaction(db)
+        var outside: kotlinx.coroutines.Deferred<Int>? = null
+        val delaying: suspend (suspend () -> Unit) -> Unit = { body -> real {
+            run {
+                // a fresh scope: a child of the transaction's coroutine would inherit its context and JOIN the transaction
+                outside = kotlinx.coroutines.CoroutineScope(Dispatchers.Default).async { prompts.save(PromptKey.VISION_EXTRACT, PromptDraft("MANUAL {{recent_context}}", schema()), "by hand", true) }
+                kotlinx.coroutines.delay(400) // long enough for an unblocked writer to land first
+                body()
+            }
+        } }
+        val out = CanvasPublisher(dao, prompts, { _, _ -> emptyList() }, { now++ }, delaying).rollback()
+        // the writer was held back until the commit: the rollback saw the published text, and the hand edit landed after it
+        assertTrue("got $out", out is CanvasPublisher.Outcome.Published)
+        outside!!.await()
+        assertEquals("MANUAL {{recent_context}}", activeText())
+        assertTrue(dao.activePublishes().isEmpty())
     }
 }
