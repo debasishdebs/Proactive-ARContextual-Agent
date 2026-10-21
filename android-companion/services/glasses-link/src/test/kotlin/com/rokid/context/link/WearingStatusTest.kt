@@ -10,15 +10,19 @@ class WearingStatusTest {
         assertEquals(null, WearingStatus.parse(null)); assertEquals(null, WearingStatus.parse("")); assertEquals(null, WearingStatus.parse("weird"))
     }
 
-    @Test fun describeShowsShortSafeTokensAndOnlyTheLengthOfAnythingElse() {
-        assertEquals("<null>", WearingStatus.describe(null))
-        assertEquals("1", WearingStatus.describe("1"))
-        assertEquals("wearing_on", WearingStatus.describe("wearing_on"))
-        assertEquals("a".repeat(24), WearingStatus.describe("a".repeat(24)))
-        assertEquals("<other len=25>", WearingStatus.describe("a".repeat(25)))
-        assertEquals("<other len=9>", WearingStatus.describe("{\"a\":1,2}"))
-        assertEquals("<other len=3>", WearingStatus.describe("a:b"))
-        assertEquals("<other len=0>", WearingStatus.describe(""))
+    /** The log carries one token from a fixed list, never the SDK's free text (S15 / A3-minor). */
+    @Test fun logTokenAllowListOnly() {
+        val allowed = setOf("worn", "not_worn", "unknown", "off", "other")
+        assertEquals("unknown", WearingStatus.describe(null))
+        assertEquals("worn", WearingStatus.describe("1")); assertEquals("worn", WearingStatus.describe(" Wearing_On "))
+        assertEquals("not_worn", WearingStatus.describe("0")); assertEquals("not_worn", WearingStatus.describe("take off"))
+        assertEquals("off", WearingStatus.describe("off")); assertEquals("unknown", WearingStatus.describe("unknown"))
+        for (raw in listOf("", "a".repeat(24), "a".repeat(25), "{\"a\":1,2}", "a:b", "weird", "serial ABC123", "worn by someone")) {
+            val t = WearingStatus.describe(raw)
+            assertEquals(true, t in allowed, "token=$t")
+            assertEquals(false, raw.length > 2 && t.contains(raw), "free text leaked: $t")
+        }
+        assertEquals("other", WearingStatus.describe("serial ABC123"))
     }
 
     @Test fun snapshotIsAppliedOnlyWhenTheWearCheckIsOn() {

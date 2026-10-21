@@ -306,19 +306,19 @@ class CaptureService : LifecycleService() {
             val upSpan = if (lastUpAt < 0) 60_000L else now - lastUpAt
             lastUpBytes = upTotal; lastUpAt = now
             val (scrOn, scrOurs, nudgeOff) = runtime.screenWakes.take()
-            DiagLog.i(TAG, Heartbeat(
+            Heartbeat.guarded({ DiagLog.w(TAG, it) }) { Heartbeat(
                 running = shown.running, reason = shown.reason.toString(), uiMode = runtime.uiMode.get(),
                 wake = settings.cameraWake.name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
                 batt = batteryPercent(), charging = isCharging(), drainPctPerMin = budget.drainPctPerMin, projectedHours = budget.projectedHours,
                 stats = smart?.session?.diagSnapshot() ?: DiagStats(0, 0, 0, 0), upBytes = upDelta, upSpanMs = upSpan,
                 heat = heat.level.value.toString(), batteryC = heat.lastReading?.batteryTempC,
                 wear = runtime.wear.worn.value, known = runtime.wear.known, parked = runtime.wear.parked.value,
-                sensors = ((smart?.feed as? AndroidSensorFeed)?.rate ?: SensorRate.FULL).name.lowercase(), phoneUse = runtime.phoneUse.active(now),
+                sensors = Heartbeat.sensorsLabel(smart != null, (smart?.feed as? AndroidSensorFeed)?.rate?.name?.lowercase()), phoneUse = runtime.phoneUse.active(now),
                 restartGapSec = runtime.restarts.lastGapSec, stillGapMs = smart?.session?.stillGapMs() ?: 0L,
                 scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, csvFail = (smart?.feed as? AndroidSensorFeed)?.csvFailures ?: 0,
                 ctx = runtime.contextGate.raw()?.name ?: "none", ctxAgeS = runtime.contextGate.ageMs(now)?.div(1000),
                 ctxApplied = appliedContext().name, ctxVeto = runtime.contextGate.takeVetoes(),
-            ).format())
+            ).format() }?.let { DiagLog.i(TAG, it) }
         }
         val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"
         if (statusThrottle.shouldLog(key, line, tick, force = tick % 60 == 0)) DiagLog.i(TAG, line)

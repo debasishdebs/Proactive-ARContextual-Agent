@@ -56,4 +56,13 @@ data class Heartbeat(
             " ctx=$ctx ctxAgeS=${ctxAgeS ?: "na"} ctxApplied=$ctxApplied ctxVeto=$ctxVeto" +
             if (csvFail > 0) " csvFail=$csvFail" else ""
     }
+
+    companion object {
+        /** A19: "off" when there is no sampling session (the sensors are not running), else the feed's rate. */
+        fun sensorsLabel(hasSession: Boolean, rate: String?): String = if (!hasSession) "off" else rate ?: "full"
+
+        /** A20: builds the line, or logs the exception class only (never its message) and returns null so the caller carries on. */
+        fun guarded(log: (String) -> Unit, build: () -> String): String? =
+            try { build() } catch (e: Exception) { log("heartbeat failed: ${e.javaClass.simpleName}"); null }
+    }
 }
