@@ -20,11 +20,12 @@ class ContextPoliciesTest {
     }
 
     @Test fun vehicleAndFlightRows() {
+        // user ruling: vehicle classification never pauses or throttles capture; only DRIVING suppresses nudges
+        val u = ContextPolicies.of(ContextState.UNKNOWN)
         val pa = ContextPolicies.of(ContextState.VEHICLE_PASSENGER)
-        assertEquals(1, pa.capPerMin); assertEquals(60_000L, pa.minSettledCheckMs); assertEquals(180_000L, pa.minStillCapMs)
-        assertTrue(pa.nudges)
+        assertEquals(u, pa); assertNull(pa.capPerMin); assertFalse(pa.forceSettle); assertTrue(pa.nudges)
         val dr = ContextPolicies.of(ContextState.VEHICLE_DRIVING)
-        assertFalse(dr.nudges); assertEquals(120_000L, dr.minQuietCheckMs)
+        assertEquals(u.copy(nudges = false), dr); assertNull(dr.capPerMin); assertFalse(dr.nudges)
         val f = ContextPolicies.of(ContextState.FLIGHT)
         assertEquals(1, f.capPerMin); assertEquals(120_000L, f.minSettledCheckMs); assertEquals(300_000L, f.minQuietCheckMs)
         assertEquals(120_000L, f.minWalkCheckMs); assertEquals(300_000L, f.minStillCapMs)
