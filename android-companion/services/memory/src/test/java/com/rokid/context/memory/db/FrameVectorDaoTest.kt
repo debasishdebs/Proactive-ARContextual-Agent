@@ -19,7 +19,7 @@ class FrameVectorDaoTest {
         db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", false, null, null, null, 640, 0.9f, null, null, null, "s1", 1_000))
     private fun vec(id: String, space: String) = FrameVectorEntity(id, space, byteArrayOf(1, 2, 3, 4))
 
-    @Test fun pageDescNewestFirstBySpace() = runBlocking {
+    @Test fun pageDescByRowidDescBySpace() = runBlocking {
         listOf("a", "b", "c").forEach { meta(it) }
         db.frameVectorDao().upsert(listOf(vec("a", "s1"), vec("b", "s1"), vec("c", "s1"), vec("a", "other")))
         val dao = db.frameVectorDao()
