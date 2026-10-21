@@ -92,6 +92,7 @@ class HubTest {
         onMotionHint: (MotionHint) -> Unit = {},
         ctxStart: () -> Unit = {},
         ctxStop: () -> Unit = {},
+        applyToCapture: (() -> Boolean)? = null,
     ): Hub {
         val pauses = HubPauses(dao, now = clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
@@ -100,7 +101,7 @@ class HubTest {
         return Hub(
             backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler),
             startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, standDown = standDown, phoneUse = phoneUse,
-            motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop,
+            motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
         )
             .also { if (start) { it.start(); runCurrent() } }
     }
@@ -143,6 +144,26 @@ class HubTest {
         flow.value = null; runCurrent()
         val m = (Wire.decode<MotionContextMessage>(link.lastOn(Channels.MOTION_CONTEXT)) as Decoded.Ok).value
         assertEquals(ContextState.UNKNOWN, m.state); assertTrue(m.reasons.isEmpty())
+    }
+
+    @Test fun hubStopSendsUnknownBeforeTheCollectorGoes() = runTest {
+        val link = FakeGlassesLink(); val flow = MutableStateFlow<MotionContextMessage?>(null)
+        val h = hub(link, motionContext = flow)
+        flow.value = ctxMsg(); runCurrent(); link.sent.clear()
+        h.stop()
+        val m = (Wire.decode<MotionContextMessage>(link.lastOn(Channels.MOTION_CONTEXT)) as Decoded.Ok).value
+        assertEquals(ContextState.UNKNOWN, m.state)
+    }
+
+    @Test fun theFallbackRevokeUsesTheCurrentApplySetting() = runTest {
+        val link = FakeGlassesLink(); val flow = MutableStateFlow<MotionContextMessage?>(null)
+        var apply = true
+        hub(link, motionContext = flow, applyToCapture = { apply })
+        flow.value = ctxMsg(); runCurrent(); link.sent.clear()
+        apply = false
+        flow.value = null; runCurrent()
+        val m = (Wire.decode<MotionContextMessage>(link.lastOn(Channels.MOTION_CONTEXT)) as Decoded.Ok).value
+        assertFalse(m.apply)
     }
 
     @Test fun motionHintEventReachesTheHubCallback() = runTest {

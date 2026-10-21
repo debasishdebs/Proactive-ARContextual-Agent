@@ -37,12 +37,15 @@ class ContextHub(
     private sealed interface Cmd {
         class Ev(val e: Evidence, val sourceId: String?, val gen: Int) : Cmd
         data object Reconcile : Cmd
+        data object Drain : Cmd
         data object Tick : Cmd
         data object Stop : Cmd
     }
 
     private val inbox = Channel<Cmd>(Channel.UNLIMITED)
     private val lock = Any()
+    private val evq = ArrayDeque<Cmd.Ev>()
+    private val drainSignalled = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var started = false
     private var actor: Job? = null
     private var feeders: List<Job> = emptyList()
@@ -101,12 +104,24 @@ class ContextHub(
     }
 
     /** The shared sink: any thread. Evidence of a source that is not running is dropped on the executor. */
-    override fun accept(e: Evidence) { if (started) inbox.trySend(Cmd.Ev(e, null, 0)) }
+    override fun accept(e: Evidence) { if (started) offer(Cmd.Ev(e, null, 0)) }
 
-    /** A sink for one source: evidence is also dropped when that source has been stopped since it was handed out (stale generation). */
-    fun sinkFor(id: String): EvidenceSink = EvidenceSink { e ->
-        val gen = live[id] ?: return@EvidenceSink
-        inbox.trySend(Cmd.Ev(e, id, gen))
+    /** Evidence waits in a bounded queue (drop-oldest, counted); the actor drains it on a [Cmd.Drain] signal. */
+    private fun offer(c: Cmd.Ev) {
+        var dropped = false
+        synchronized(evq) { evq.addLast(c); if (evq.size > MAX_PENDING) { evq.removeFirst(); dropped = true } }
+        if (dropped) stats.onDropped()
+        if (drainSignalled.compareAndSet(false, true)) inbox.trySend(Cmd.Drain)
+    }
+
+    /**
+     * The sink for one run of source [id]: a source calls this **inside its `start()`** and uses the result for that run only.
+     * The generation is captured here, so after a stop (and a restart) the old run's sink is dropped. Taken while the source is
+     * not being started or running, the sink is a no-op. [accept] is for the glasses hint and tests (kind-based check only).
+     */
+    fun sinkFor(id: String): EvidenceSink {
+        val gen = live[id] ?: return EvidenceSink { }
+        return EvidenceSink { e -> if (started) offer(Cmd.Ev(e, id, gen)) }
     }
 
     fun onMotionHint(h: MotionHint) { accept(Evidence.GlassesMotion(clock(), h.state, h.stillFrac5m)) }
@@ -116,12 +131,21 @@ class ContextHub(
             try {
                 when (c) {
                     is Cmd.Ev -> onEvidence(c)
+                    Cmd.Drain -> drain()
                     Cmd.Reconcile -> { reconcile(); publish(clock()) }
                     Cmd.Tick -> onTick()
                     Cmd.Stop -> { shutdown(); return }
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) { log("ctx hub ${c::class.simpleName} failed: ${e.javaClass.simpleName}") }
+        }
+    }
+
+    private fun drain() {
+        drainSignalled.set(false)
+        while (true) {
+            val c = synchronized(evq) { evq.removeFirstOrNull() } ?: return
+            try { onEvidence(c) } catch (e: CancellationException) { throw e } catch (e: Exception) { log("ctx hub evidence failed: ${e.javaClass.simpleName}") }
         }
     }
 
@@ -160,8 +184,12 @@ class ContextHub(
                 running.containsKey(id) -> SourceStatus.ON
                 id in failed -> SourceStatus.FAILED
                 s == null || !safe(false) { s.available() } -> SourceStatus.UNAVAILABLE
-                safe(false) { s.start() } -> { running[id] = ++nextGen; live[id] = nextGen; SourceStatus.ON }
-                else -> { failed.add(id); SourceStatus.FAILED }
+                else -> {
+                    // The generation exists before start(): a sink taken inside start() carries it, and evidence sent during start() is accepted.
+                    running[id] = ++nextGen; live[id] = nextGen
+                    if (safe(false) { s.start() }) SourceStatus.ON
+                    else { running.remove(id); live.remove(id); failed.add(id); SourceStatus.FAILED }
+                }
             }
         }
         _status.value = next
@@ -250,7 +278,7 @@ class ContextHub(
 
     private fun shutdown() {
         for (id in running.keys.toList()) stopSource(id, registry.get(id))
-        failed.clear()
+        failed.clear(); synchronized(evq) { evq.clear() }
         _status.value = ALL_IDS.associateWith { SourceStatus.OFF }
         fusion = ContextFusion(params); committed = ContextState.UNKNOWN; retained.clear()
         applySpeed(false)
@@ -265,6 +293,8 @@ class ContextHub(
         const val TICK_MS = 10_000L
         const val RESEND_MS = 60_000L
         const val STATS_LOG_MS = 600_000L
+        /** Evidence waiting for the executor; beyond this the oldest is dropped and counted (`dropped` in the stats snapshot). */
+        const val MAX_PENDING = 1024
         private const val MAX_SPEEDS = 8
         private const val MAX_INTENTS = 3
 

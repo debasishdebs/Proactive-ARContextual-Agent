@@ -39,9 +39,10 @@ class ContextHubTest {
     private class FakeSource(override val id: String, var avail: Boolean = true, var startOk: Boolean = true) : ContextSource {
         var starts = 0; var stops = 0
         override fun available() = avail
-        override fun start(): Boolean { starts++; return startOk }
+        override fun start(): Boolean { starts++; onStart?.invoke(); return startOk }
         override fun stop() { stops++ }
         override var events = 0
+        var onStart: (() -> Unit)? = null
     }
 
     private class FakeSpeed : SpeedControl {
@@ -249,14 +250,33 @@ class ContextHubTest {
         assertFalse("ANDROID_AUTO" in f.hub.message.value!!.reasons)
     }
 
-    @Test fun staleGenerationSinkIsDropped() = runTest {
-        val f = Fx(this); f.reg("phone_car"); f.on("phone_car"); f.start()
-        val sink = f.hub.sinkFor("phone_car")
-        sink.accept(Evidence.CarLink(f.clock(), CarLinkKind.ANDROID_AUTO, true)); f.ts.runCurrent()
+    @Test fun aRunOneSinkIsDroppedAfterARestartAndRunTwoIsAccepted() = runTest {
+        val f = Fx(this); val car = f.reg("phone_car")
+        val sinks = ArrayList<EvidenceSink>()
+        car.onStart = { sinks += f.hub.sinkFor("phone_car") }
+        f.on("phone_car"); f.start()
+        assertEquals(1, sinks.size)
+        f.off("phone_car"); f.on("phone_car")
+        assertEquals(2, sinks.size)
+        sinks[0].accept(Evidence.CarLink(f.clock(), CarLinkKind.ANDROID_AUTO, true)); f.ts.runCurrent()
+        assertEquals("the old run's callback is dropped", 0L, f.stats.snapshot()["aa"])
+        sinks[1].accept(Evidence.CarLink(f.clock(), CarLinkKind.ANDROID_AUTO, true)); f.ts.runCurrent()
         assertEquals(1L, f.stats.snapshot()["aa"])
-        f.off("phone_car")
-        sink.accept(Evidence.CarLink(f.clock(), CarLinkKind.ANDROID_AUTO, true)); f.ts.runCurrent()
-        assertEquals(1L, f.stats.snapshot()["aa"])
+    }
+
+    @Test fun aSinkTakenWhileTheSourceIsNotRunningIsANoOp() = runTest {
+        val f = Fx(this); f.reg("phone_car"); f.start()
+        f.hub.sinkFor("phone_car").accept(Evidence.CarLink(f.clock(), CarLinkKind.ANDROID_AUTO, true)); f.ts.runCurrent()
+        f.on("phone_car"); f.adv(1_000)
+        assertEquals(0L, f.stats.snapshot()["aa"])
+    }
+
+    @Test fun evidenceEmittedInsideStartIsAccepted() = runTest {
+        val f = Fx(this); val w = f.reg("watch_livefit")
+        w.onStart = { f.hub.sinkFor("watch_livefit").accept(Evidence.WatchMotion(f.clock(), WatchState.WALKING, 0.9f)) }
+        f.on("watch_livefit"); f.start()
+        assertEquals(1L, f.stats.snapshot()["watch"])
+        assertEquals(ContextState.WALKING, f.hub.message.value!!.state)
     }
 
     @Test fun startIsIdempotentAndStopStopsEverythingThenRestartRestarts() = runTest {
@@ -276,27 +296,40 @@ class ContextHubTest {
         assertEquals(SourceStatus.ON, f.hub.status.value["phone_car"])
     }
 
-    @Test fun statsLineIsLoggedEveryTenMinutesWithoutPrivateData() = runTest {
+    @Test fun statsLineIsLoggedEveryTenMinutesAndCarriesOnlyCountsAndEnumNames() = runTest {
         val f = Fx(this); f.start(); f.adv(601_000)
-        assertTrue(f.logs.any { it.startsWith("ctxhub v=1 state=") })
+        val line = f.logs.single { it.startsWith("ctxhub v=1 state=") }
+        assertTrue(line, Regex("""^ctxhub v=1( \w+=[\w>-]+)+$""").matches(line))
     }
 
-    @Test fun concurrentIntakeWithSettingsTogglesIsExactAndMatchesSerialReplay() = runTest {
+    @Test fun aFloodIsBoundedDropOldestAndCounted() = runTest {
+        val f = Fx(this); f.start()
+        repeat(2_000) { f.hub.onMotionHint(MotionHint(MotionState.WALKING, f.clock())) }
+        f.ts.runCurrent()
+        val snap = f.stats.snapshot()
+        assertEquals(2_000L - ContextHub.MAX_PENDING, snap["dropped"])
+        assertEquals(ContextHub.MAX_PENDING.toLong(), snap["hints"])
+        assertEquals(ContextState.WALKING, f.hub.decision.value.state)
+    }
+
+    @Test fun concurrentIntakeWithSettingsTogglesMatchesAReorderedSerialReplay() = runTest {
         val f = Fx(this); f.reg("phone_car"); f.reg("watch_livefit"); f.on("watch_livefit"); f.start()
         val at = f.clock()
-        val threads = (1..8).map {
-            Thread { repeat(500) { f.hub.accept(Evidence.WatchMotion(at, WatchState.WALKING, 0.9f)); f.hub.onMotionHint(MotionHint(MotionState.WALKING, at)) } }
-        }
+        // Thread i sends states of its own with distinct stamps: the engine keeps the newest stamp, whatever the arrival order.
+        fun ev(i: Int, k: Int) = Evidence.WatchMotion(at + i * 1_000L + k, if (i % 2 == 0) WatchState.WALKING else WatchState.IN_VEHICLE, 0.9f)
+        val threads = (1..8).map { i -> Thread { repeat(100) { k -> f.hub.accept(ev(i, k)) } } }
         threads.forEach { it.start() }
         repeat(100) { f.settings.setEnabled("phone_car", it % 2 == 0); Thread.yield() }
         threads.forEach { it.join() }
         f.settings.setEnabled("phone_car", false)
-        f.ts.runCurrent(); f.adv(10_000)
-        assertEquals(4000L, f.stats.snapshot()["watch"])
-        assertEquals(4000L, f.stats.snapshot()["hints"])
+        f.ts.runCurrent(); f.adv(40_000)
         val ref = ContextFusion(FusionParams(watchTtlMs = 1_500_000))
-        repeat(4000) { ref.onEvidence(Evidence.WatchMotion(at, WatchState.WALKING, 0.9f)); ref.onEvidence(Evidence.GlassesMotion(at, MotionState.WALKING, -1f)) }
-        assertEquals(ref.evaluate(f.clock()).state, f.hub.decision.value.state)
-        assertNotNull(f.hub.message.value)
+        val all = (1..8).flatMap { i -> (0 until 100).map { k -> ev(i, k) } }.reversed()
+        all.forEach { ref.onEvidence(it) }
+        ref.evaluate(at); val expected = ref.evaluate(f.clock())
+        assertEquals("800 < MAX_PENDING: nothing dropped", 800L, f.stats.snapshot()["watch"])
+        assertEquals(expected.state, f.hub.decision.value.state)
+        assertEquals(expected.reasons, f.hub.decision.value.reasons)
+        assertEquals(ContextState.WALKING, f.hub.decision.value.state)
     }
 }
