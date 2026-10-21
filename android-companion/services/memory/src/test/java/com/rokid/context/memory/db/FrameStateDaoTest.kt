@@ -180,7 +180,7 @@ class FrameStateDaoTest {
             row("n1", "CAPTION_QUEUED").copy(updatedAt = 100, lastError = m),
         ))
         assertEquals(listOf("live"), dao.captionQueued(10).map { it.frameId }) // the live loop never takes a describe-before-delete photo
-        assertEquals(listOf("n1", "n2", "live"), dao.describeQueued(10).map { it.frameId }) // the night job: deadline order, then the rest
+        assertEquals(listOf("n1", "n2", "live"), dao.describeQueued(1_000, 10).map { it.frameId }) // the night job: deadline order, then the rest
         val got = dao.claimCaptionQueued(listOf("n1"), "night", 1_000)
         assertEquals(1, got.size)
         assertEquals(1, dao.completeIfClaimed("n1", "night", "EXTRACTED", 2_000))
@@ -201,9 +201,64 @@ class FrameStateDaoTest {
         for (id in listOf("pend", "cited", "forgot", "run", "nope")) assertEquals(id, 0, dao.queueForDescribe(id, 5))
         dao.get("ok")!!.let { assertEquals("CAPTION_QUEUED", it.state); assertEquals(0, it.attempts); assertEquals("describe_before_delete", it.lastError); assertEquals(777L, it.updatedAt) }
         assertEquals("CAPTION_QUEUED", dao.get("fin")!!.state)
-        // an offline night call released the claim to PENDING: it goes back to the night queue, an unrelated PENDING does not
+        // an offline night call gives the claim back: a describe-before-delete photo returns to the night queue (never PENDING), an ordinary one to PENDING
         dao.claimCaptionQueued(listOf("ok"), "n", 1_000); dao.release("ok", "n", 1_100)
-        assertEquals("PENDING", dao.get("ok")!!.state)
-        assertEquals(1, dao.requeueDescribe(listOf("ok", "pend"), 1_200)); assertEquals("CAPTION_QUEUED", dao.get("ok")!!.state); assertEquals("PENDING", dao.get("pend")!!.state)
+        assertEquals("CAPTION_QUEUED", dao.get("ok")!!.state); assertEquals("describe_before_delete", dao.get("ok")!!.lastError)
+    }
+
+    private val marker = "describe_before_delete"
+    private val dayMs = 86_400_000L
+
+    /** Fix I2: neither a failure, an abandoned claim, a release nor a process start takes a night photo out of the night queue or off its marker. */
+    @Test fun markerSurvivesEveryExitAndTheLiveLoopNeverClaimsIt() = runBlocking {
+        for (id in listOf("f", "ab", "rel", "start")) dao.insertIgnore(listOf(row(id, "CAPTION_QUEUED").copy(lastError = marker)))
+        for (id in listOf("f", "ab", "rel", "start")) dao.claimCaptionQueued(listOf(id), "c$id", 1_000)
+        assertEquals(1, dao.fail("f", "cf", "boom", 5_000))
+        dao.get("f")!!.let { assertEquals("CAPTION_QUEUED", it.state); assertEquals(marker, it.lastError); assertEquals(1, it.attempts); assertEquals(5_000 + dayMs, it.claimedAt) }
+        assertEquals(1, dao.release("rel", "crel", 6_000)); assertEquals("CAPTION_QUEUED", dao.get("rel")!!.state)
+        assertEquals(2, dao.requeueAbandoned(20_000, 10_000)); // ab and start were claimed at 1_000: abandoned
+        for (id in listOf("ab", "start")) dao.get(id)!!.let { assertEquals("CAPTION_QUEUED", it.state); assertEquals(marker, it.lastError); assertEquals(1, it.attempts) }
+        // the live loop (claim, newestClaimable, newestDwellClaimable, recoverable) never sees a marker row, whatever state it is in
+        dao.insertIgnore(listOf(row("stuckFailed", "FAILED", 1).copy(lastError = marker), row("stuckPending").copy(lastError = marker)))
+        assertEquals(emptyList<FrameStateEntity>(), dao.newestClaimable(1_000_000, 0, Long.MIN_VALUE, 1, 10))
+        assertEquals(emptyList<FrameStateEntity>(), dao.newestDwellClaimable(1_000_000, 0, 10))
+        assertEquals(emptyList<FrameStateEntity>(), dao.recoverable(1_000_000, 0, 10))
+        assertEquals(emptyList<FrameStateEntity>(), dao.claim(listOf("stuckFailed", "stuckPending"), "live", 1_000_000, 0))
+        // process start: an EXTRACTING night row goes back to the night queue
+        dao.claimCaptionQueued(listOf("rel"), "again", 7_000)
+        assertEquals(1, dao.releaseAllExtracting(8_000, Long.MAX_VALUE)); assertEquals("CAPTION_QUEUED", dao.get("rel")!!.state)
+    }
+
+    /** Fix I1: 1, 2, 4, 8 days of cooldown, five failures park the photo; cooldown rows are skipped by the queue; Retry all leaves parked photos alone. */
+    @Test fun failuresBackOffThenPark() = runBlocking {
+        dao.insertIgnore(listOf(row("a", "CAPTION_QUEUED").copy(lastError = marker, updatedAt = 1), row("b", "CAPTION_QUEUED").copy(lastError = marker, updatedAt = 2)))
+        var t = 1_000L
+        val expected = listOf(1L, 2L, 4L, 8L)
+        for ((i, d) in expected.withIndex()) {
+            dao.claimCaptionQueued(listOf("a"), "c$i", t)
+            assertEquals(1, dao.fail("a", "c$i", "boom", t))
+            assertEquals(t + d * dayMs, dao.get("a")!!.claimedAt)
+            assertEquals("cooldown: only b is offered", listOf("b"), dao.describeQueued(t + d * dayMs - 1, 10).map { it.frameId })
+            t += d * dayMs
+            assertEquals(setOf("a", "b"), dao.describeQueued(t, 10).map { it.frameId }.toSet())
+        }
+        dao.claimCaptionQueued(listOf("a"), "c5", t); assertEquals(1, dao.fail("a", "c5", "boom", t))
+        dao.get("a")!!.let { assertEquals("FAILED_FINAL", it.state); assertEquals("describe_failed", it.lastError); assertEquals(5, it.attempts) }
+        assertEquals(1, dao.describeFailed()); assertEquals(1, dao.describeWaiting())
+        assertEquals(0, dao.retryAllFinal(t)); assertEquals("FAILED_FINAL", dao.get("a")!!.state)
+        assertEquals(0, dao.queueForDescribe("a", t)) // parked: never queued by the night job on its own
+        assertEquals(1, dao.retryDescribeFailed(t)); assertEquals(null, dao.get("a")!!.lastError); assertEquals(0, dao.get("a")!!.attempts)
+        assertEquals(1, dao.queueForDescribe("a", t))
+    }
+
+    /** Fix I1: a describe that saves no memory is a failed attempt too; the attempts survive being queued again. */
+    @Test fun noMemorySavedCountsAsAnAttempt() = runBlocking {
+        dao.insertIgnore(listOf(row("a", "EXTRACTED").copy(lastError = marker, attempts = 4)))
+        assertEquals(1, dao.noteUncitedDescribed(1_000)); dao.get("a")!!.let { assertEquals("FAILED_FINAL", it.state); assertEquals("describe_failed", it.lastError) }
+        dao.insertIgnore(listOf(row("b", "EXTRACTED").copy(lastError = marker, attempts = 1)))
+        assertEquals(1, dao.noteUncitedDescribed(1_000)); dao.get("b")!!.let { assertEquals("EXTRACTED", it.state); assertEquals(2, it.attempts); assertEquals(1_000 + 2 * dayMs, it.claimedAt) }
+        assertEquals(0, dao.noteUncitedDescribed(2_000)) // already noted (claimedAt set)
+        assertEquals(0, dao.queueForDescribe("b", 1_000)) // in its cooldown
+        assertEquals(1, dao.queueForDescribe("b", 1_000 + 2 * dayMs)); assertEquals(2, dao.get("b")!!.attempts) // the count is kept
     }
 }

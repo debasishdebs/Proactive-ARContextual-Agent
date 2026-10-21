@@ -80,6 +80,8 @@ internal class NightIndex(
     private val clock: () -> Long = System::currentTimeMillis,
     private val onDescribed: (Int) -> Unit = {},
     private val drainMs: Long = DRAIN_MS,
+    /** At most this many model calls a night: ~1,000 trip photos drain over several nights, not one. */
+    private val maxCalls: Int = MAX_CALLS,
     private val callClass: CallClass = CallClass.BACKFILL,
 ) {
     data class Result(val queued: Int, val described: Int, val left: Int, val backfill: String)
@@ -88,18 +90,21 @@ internal class NightIndex(
         if (!bulkAllowed()) { Log.i(TAG, "PcNight gate closed: nothing described, nothing deleted"); return Result(0, 0, 0, "gate") }
         val queued = queue()
         var described = 0
-        if (queued.isNotEmpty() || db.frameStateDao().describeQueued(1).isNotEmpty()) {
+        if (queued.isNotEmpty() || db.frameStateDao().describeQueued(clock(), 1).isNotEmpty()) {
             // Not during an active capture burst: the live loop owns the budget then. A burst that starts mid-drain stops the drain.
-            pipeline.drainCaptionQueue(drainMs, callClass) { bulkAllowed() && !captureBurst() }
-            described = queued.chunked(CHUNK).sumOf { db.forgetDao().citedCount(it) }
+            val before = db.frameStateDao().describedCount()
+            pipeline.drainCaptionQueue(drainMs, callClass, { bulkAllowed() && !captureBurst() }, maxCalls)
+            described = (db.frameStateDao().describedCount() - before).coerceAtLeast(0)
             onDescribed(described)
+            // A describe that saved no memory is a failed attempt too: cooldown 1, 2, 4, 8 days, then parked as describe_failed (never deleted).
+            db.frameStateDao().noteUncitedDescribed(clock())
         }
         val backfill = try {
             maintenance()?.name ?: "none"
         } catch (c: CancellationException) { throw c } catch (e: Exception) {
             Log.w(TAG, "backfill failed: ${SafeLog.describe(e)}"); "failed"
         }
-        val left = queued.size - described
+        val left = db.frameStateDao().describeWaiting()
         Log.i(TAG, "PcNight described=$described left=$left backfilled=$backfill")
         return Result(queued.size, described, left, backfill)
     }
@@ -124,6 +129,7 @@ internal class NightIndex(
     companion object {
         private const val TAG = "NightIndex"
         const val DRAIN_MS = 9 * 60_000L
+        const val MAX_CALLS = 60
         private const val DAY = 24 * 3_600_000L
         private const val AHEAD_MS = DAY
         private const val PROTECT_MS = 7 * DAY

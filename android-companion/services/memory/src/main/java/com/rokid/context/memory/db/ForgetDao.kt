@@ -118,7 +118,11 @@ abstract class ForgetDao {
         "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
             "WHERE " + PHOTO_ELIGIBLE +
             "AND (EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id)) " +
-            "AND (COALESCE(s.lastError, '') != 'describe_before_delete' OR (:describeReady = 1 AND MAX(f.ts, :since) + :windowMs + :graceMs <= :nowMs)) " +
+            "AND (COALESCE(s.lastError, '') != 'describe_before_delete' OR (:describeReady = 1 AND MAX(MAX(f.ts, :since) + :windowMs, " +
+            // the grace counts from the later of the deadline and the describe (the earliest citing memory's creation), so a photo described
+            // after offline nights is kept 3 days from its caption, not deleted within hours of it
+            "(SELECT MIN(c) FROM (SELECT x.createdAt AS c FROM memory x WHERE x.frameId = f.id UNION ALL " +
+            "SELECT y.createdAt FROM frame_source fs2 JOIN memory y ON y.id = fs2.memoryId WHERE fs2.frameId = f.id))) + :graceMs <= :nowMs)) " +
             "AND MAX(f.ts, :since) + :windowMs <= :nowMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs) ORDER BY f.ts, f.id LIMIT :limit",
     )
     abstract suspend fun linkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, protectMs: Long, describeReady: Int, graceMs: Long, limit: Int): List<String>
@@ -132,6 +136,7 @@ abstract class ForgetDao {
         "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
             "WHERE s.state IN ('FAILED_FINAL','EXTRACTED','NEAR_DUP','CLUSTERED') AND " + PHOTO_ELIGIBLE +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " +
+            "AND COALESCE(s.lastError, '') != 'describe_failed' AND NOT (s.lastError = 'describe_before_delete' AND COALESCE(s.claimedAt, 0) > :nowMs) " + // parked, or in its cooldown
             "AND NOT EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id) " +
             "AND MAX(f.ts, :since) + :windowMs <= :nowMs + :aheadMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs + :aheadMs) " +
             "ORDER BY MAX(f.ts, :since), f.id LIMIT :limit",
@@ -152,6 +157,8 @@ abstract class ForgetDao {
     @Query(
         "UPDATE frame_state SET state = 'NEAR_DUP', lastError = 'caption_expired', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
             "WHERE state = 'CAPTION_QUEUED' AND COALESCE(lastError, '') != 'describe_before_delete' AND MAX(updatedAt, :since) + :ageMs <= :nowMs " +
+            // a key moment (dwell or salience >= 0.5) is never converted: it waits for its caption (the night job's bounded retry parks it, nothing deletes it)
+            "AND frameId IN (SELECT k.frameId FROM frame_meta k WHERE k.dwell = 0 AND COALESCE(k.salience, 0) < 0.5) " +
             "AND frameId IN (SELECT m.frameId FROM frame_meta m WHERE NOT EXISTS (SELECT 1 FROM frame_cluster c WHERE c.clusterId = m.clusterId AND c.state NOT IN ('SUMMARIZED','FAILED_FINAL')))",
     )
     abstract suspend fun expireCaptionQueued(since: Long, ageMs: Long, nowMs: Long): Int

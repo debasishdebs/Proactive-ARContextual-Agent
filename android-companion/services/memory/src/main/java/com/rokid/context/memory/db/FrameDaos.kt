@@ -24,14 +24,16 @@ abstract class FrameStateDao {
     @Query(
         "UPDATE frame_state SET state = 'EXTRACTING', claimedAt = :nowMs, claimId = :claimId, updatedAt = :nowMs " +
             "WHERE frameId IN (:frameIds) AND (state IN ('PENDING','FAILED') OR (state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs)) " +
+            "AND COALESCE(lastError, '') != 'describe_before_delete' " + // a describe-before-delete photo is the night job's only (Task 9 fix I2)
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)", // a forgotten frame is never extracted again
     )
     protected abstract suspend fun claimRows(frameIds: List<String>, claimId: String, nowMs: Long, abandonBeforeMs: Long): Int
 
     /** An abandoned claim counts as an attempt (spec §P2): bump it, and the fifth ends in FAILED_FINAL. */
     @Query(
-        "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'PENDING' END, " +
-            "lastError = 'abandoned', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+        "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN lastError = 'describe_before_delete' THEN CASE WHEN attempts + 1 >= 5 THEN 'FAILED_FINAL' ELSE 'CAPTION_QUEUED' END " +
+            "ELSE CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'PENDING' END END, " +
+            "lastError = CASE WHEN lastError = 'describe_before_delete' THEN CASE WHEN attempts + 1 >= 5 THEN 'describe_failed' ELSE lastError END ELSE 'abandoned' END, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
             "WHERE frameId IN (:frameIds) AND state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs",
     )
     protected abstract suspend fun abandonRows(frameIds: List<String>, nowMs: Long, abandonBeforeMs: Long, maxAttempts: Int): Int
@@ -59,8 +61,13 @@ abstract class FrameStateDao {
 
     /** → FAILED, or FAILED_FINAL on the [maxAttempts]th failure. Returns 0 when the claim no longer holds. */
     @Query(
-        "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'FAILED' END, " +
-            "lastError = :error, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+        "UPDATE frame_state SET attempts = attempts + 1, " +
+            // A describe-before-delete photo never goes to FAILED (the live loop would take it): it keeps its marker, waits 1, 2, 4, 8 days
+            // (claimedAt = not-before) and after 5 attempts is parked as describe_failed (never deleted, never retried by itself).
+            "state = CASE WHEN lastError = 'describe_before_delete' THEN CASE WHEN attempts + 1 >= 5 THEN 'FAILED_FINAL' ELSE 'CAPTION_QUEUED' END " +
+            "ELSE CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'FAILED' END END, " +
+            "lastError = CASE WHEN lastError = 'describe_before_delete' THEN CASE WHEN attempts + 1 >= 5 THEN 'describe_failed' ELSE lastError END ELSE :error END, " +
+            "claimedAt = CASE WHEN lastError = 'describe_before_delete' AND attempts + 1 < 5 THEN :nowMs + (86400000 << attempts) ELSE NULL END, claimId = NULL, updatedAt = :nowMs " +
             "WHERE frameId = :frameId AND state = 'EXTRACTING' AND claimId = :claimId",
     )
     abstract suspend fun fail(frameId: String, claimId: String, error: String, nowMs: Long, maxAttempts: Int = MAX_ATTEMPTS): Int
@@ -68,7 +75,7 @@ abstract class FrameStateDao {
     @Query(
         "SELECT s.* FROM frame_state s WHERE (s.state IN ('PENDING','FAILED') OR (s.state = 'EXTRACTING' AND s.claimedAt < :abandonBeforeMs)) " +
             "AND (s.state != 'PENDING' OR NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " + // wave 2: an unrouted frame is the scene router's for 10 min
-            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) ORDER BY s.updatedAt LIMIT :limit",
+            "AND COALESCE(s.lastError, '') != 'describe_before_delete' AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) ORDER BY s.updatedAt LIMIT :limit",
     )
     protected abstract suspend fun recoverableRows(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameStateEntity>
 
@@ -86,7 +93,7 @@ abstract class FrameStateDao {
             "AND (:ignoreBackoff = 1 OR s.state != 'FAILED' OR s.updatedAt + MIN(30000 << MAX(s.attempts - 1, 0), 1800000) <= :nowMs) " +
             "AND COALESCE(f.ts, s.updatedAt) >= :sinceMs " +
             "AND (s.state != 'PENDING' OR NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " + // wave 2: unrouted frames wait 10 min for the scene router
-            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) " +
+            "AND COALESCE(s.lastError, '') != 'describe_before_delete' AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) " +
             "ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
     )
     abstract suspend fun newestClaimable(nowMs: Long, abandonBeforeMs: Long, sinceMs: Long, ignoreBackoff: Int, limit: Int): List<FrameStateEntity>
@@ -97,7 +104,7 @@ abstract class FrameStateDao {
             "WHERE m.dwell = 1 AND (s.state IN ('PENDING','FAILED') OR (s.state = 'EXTRACTING' AND s.claimedAt < :abandonBeforeMs)) " +
             "AND (s.state != 'FAILED' OR s.updatedAt + MIN(30000 << MAX(s.attempts - 1, 0), 1800000) <= :nowMs) " +
             "AND (s.state != 'PENDING' OR NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " +
-            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) " +
+            "AND COALESCE(s.lastError, '') != 'describe_before_delete' AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) " +
             "ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
     )
     abstract suspend fun newestDwellClaimable(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameStateEntity>
@@ -118,8 +125,9 @@ abstract class FrameStateDao {
 
     /** An abandoned claim goes back to PENDING and counts as an attempt (spec §P2.5); the fifth ends in FAILED_FINAL. */
     @Query(
-        "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'PENDING' END, " +
-            "lastError = 'abandoned', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+        "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN lastError = 'describe_before_delete' THEN CASE WHEN attempts + 1 >= 5 THEN 'FAILED_FINAL' ELSE 'CAPTION_QUEUED' END " +
+            "ELSE CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'PENDING' END END, " +
+            "lastError = CASE WHEN lastError = 'describe_before_delete' THEN CASE WHEN attempts + 1 >= 5 THEN 'describe_failed' ELSE lastError END ELSE 'abandoned' END, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
             "WHERE state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs",
     )
     abstract suspend fun requeueAbandoned(nowMs: Long, abandonBeforeMs: Long, maxAttempts: Int = MAX_ATTEMPTS): Int
@@ -131,7 +139,7 @@ abstract class FrameStateDao {
      * claimed (the legacy backstop claims without the pipeline), and that claim is live.
      */
     @Query(
-        "UPDATE frame_state SET state = 'PENDING', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'EXTRACTING' " +
+        "UPDATE frame_state SET state = CASE WHEN lastError = 'describe_before_delete' THEN 'CAPTION_QUEUED' ELSE 'PENDING' END, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'EXTRACTING' " +
             "AND (claimedAt IS NULL OR claimedAt < :claimedBeforeMs) " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)",
     )
@@ -139,7 +147,7 @@ abstract class FrameStateDao {
 
     /** Gives a claim back without an attempt (offline, no provider set up, cancelled): the frame is not at fault. */
     @Query(
-        "UPDATE frame_state SET state = 'PENDING', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+        "UPDATE frame_state SET state = CASE WHEN lastError = 'describe_before_delete' THEN 'CAPTION_QUEUED' ELSE 'PENDING' END, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
             "WHERE frameId = :frameId AND state = 'EXTRACTING' AND claimId = :claimId",
     )
     abstract suspend fun release(frameId: String, claimId: String, nowMs: Long): Int
@@ -170,8 +178,24 @@ abstract class FrameStateDao {
     @Query("SELECT state AS k, COUNT(*) AS v FROM frame_state GROUP BY state")
     abstract fun counts(): Flow<Map<@MapColumn("k") String, @MapColumn("v") Int>>
 
-    @Query("UPDATE frame_state SET state = 'PENDING', attempts = 0, lastError = NULL, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'FAILED_FINAL'")
+    @Query("UPDATE frame_state SET state = 'PENDING', attempts = 0, lastError = NULL, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'FAILED_FINAL' AND COALESCE(lastError, '') != 'describe_failed'")
     abstract suspend fun retryAllFinal(nowMs: Long): Int
+
+    /** Photos parked as `describe_failed` (5 failed night describes): they go back into the night queue's reach (never to the live loop). Returns how many. */
+    @Query("UPDATE frame_state SET state = 'FAILED_FINAL', attempts = 0, lastError = NULL, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs WHERE state = 'FAILED_FINAL' AND lastError = 'describe_failed'")
+    abstract suspend fun retryDescribeFailed(nowMs: Long): Int
+
+    /** Diagnostics: photos waiting in the night queue / parked after five failed describes. */
+    @Query("SELECT COUNT(*) FROM frame_state WHERE state = 'CAPTION_QUEUED' AND lastError = 'describe_before_delete'")
+    abstract suspend fun describeWaiting(): Int
+    @Query("SELECT COUNT(*) FROM frame_state WHERE state = 'FAILED_FINAL' AND lastError = 'describe_failed'")
+    abstract suspend fun describeFailed(): Int
+    /** Photos described by the night job so far that a memory still cites (the night job logs the difference before and after its drain). */
+    @Query(
+        "SELECT COUNT(*) FROM frame_state s WHERE s.state = 'EXTRACTED' AND s.lastError = 'describe_before_delete' AND " +
+            "(EXISTS (SELECT 1 FROM memory m WHERE m.frameId = s.frameId) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = s.frameId))",
+    )
+    abstract suspend fun describedCount(): Int
 
     /**
      * "Reprocess old photos": EXTRACTED / FAILED / FAILED_FINAL frames back to PENDING (attempts 0, claim cleared) so the pipeline
@@ -227,7 +251,7 @@ abstract class FrameStateDao {
     @Query(
         "SELECT s.* FROM frame_state s LEFT JOIN frame f ON f.id = s.frameId WHERE COALESCE(f.ts, s.updatedAt) >= :sinceMs AND (s.state = 'PENDING' OR (s.state = 'IN_CLUSTER' AND EXISTS (" +
             "SELECT 1 FROM frame_meta m JOIN frame_cluster c ON c.clusterId = m.clusterId WHERE m.frameId = s.frameId AND c.state IN ('OPEN','CLOSED')))) " +
-            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
+            "AND COALESCE(s.lastError, '') != 'describe_before_delete' AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
     )
     abstract suspend fun askCandidates(sinceMs: Long, limit: Int): List<FrameStateEntity>
 
@@ -245,9 +269,12 @@ abstract class FrameStateDao {
     @Query(
         "SELECT * FROM frame_state WHERE state = 'CAPTION_QUEUED' " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) " +
-            "ORDER BY CASE WHEN lastError = 'describe_before_delete' THEN 0 ELSE 1 END, updatedAt LIMIT :limit",
+            // a describe-before-delete photo in its cooldown (claimedAt = not-before after a failure) is skipped, so failures never starve the rest
+            "AND (COALESCE(lastError, '') != 'describe_before_delete' OR claimedAt IS NULL OR claimedAt <= :nowMs) " +
+            // fresh photos before retries (fewest failed attempts first), then deadline order: a failing photo never starves the ones behind it
+            "ORDER BY CASE WHEN lastError = 'describe_before_delete' THEN 0 ELSE 1 END, attempts, updatedAt LIMIT :limit",
     )
-    abstract suspend fun describeQueued(limit: Int): List<FrameStateEntity>
+    abstract suspend fun describeQueued(nowMs: Long, limit: Int): List<FrameStateEntity>
 
     /**
      * Night job (Task 9): [frameId] (a settled, undescribed, non-skipped keyframe that is due soon) → CAPTION_QUEUED with attempts 0 and
@@ -255,20 +282,27 @@ abstract class FrameStateDao {
      * not forgotten, and still cited by no memory (`memory.frameId` or `frame_source`). Returns 1 when it moved.
      */
     @Query(
-        "UPDATE frame_state SET state = 'CAPTION_QUEUED', attempts = 0, lastError = 'describe_before_delete', claimedAt = NULL, claimId = NULL, updatedAt = :orderMs " +
-            "WHERE frameId = :frameId AND state IN ('FAILED_FINAL','EXTRACTED','NEAR_DUP','CLUSTERED') " +
+        "UPDATE frame_state SET state = 'CAPTION_QUEUED', attempts = CASE WHEN lastError = 'describe_before_delete' THEN attempts ELSE 0 END, lastError = 'describe_before_delete', claimedAt = NULL, claimId = NULL, updatedAt = :orderMs " +
+            "WHERE frameId = :frameId AND state IN ('FAILED_FINAL','EXTRACTED','NEAR_DUP','CLUSTERED') AND COALESCE(lastError, '') != 'describe_failed' " +
+            "AND (COALESCE(lastError, '') != 'describe_before_delete' OR claimedAt IS NULL OR claimedAt <= :orderMs) " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) " +
             "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame_state.frameId) " +
             "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame_state.frameId)",
     )
     abstract suspend fun queueForDescribe(frameId: String, orderMs: Long): Int
 
-    /** A night describe whose claim was given back (offline: PENDING, marker kept) goes back to the night queue. */
+    /**
+     * A night describe that saved no memory (a legacy prompt, an empty caption) counts as a failed attempt: the marker photo that is EXTRACTED,
+     * cited by nothing and not yet noted (claimedAt NULL) gets attempts + 1 and its cooldown (1, 2, 4, 8 days), or `describe_failed` at five.
+     */
     @Query(
-        "UPDATE frame_state SET state = 'CAPTION_QUEUED', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
-            "WHERE frameId IN (:frameIds) AND state = 'PENDING' AND lastError = 'describe_before_delete'",
+        "UPDATE frame_state SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= 5 THEN 'FAILED_FINAL' ELSE state END, " +
+            "lastError = CASE WHEN attempts + 1 >= 5 THEN 'describe_failed' ELSE lastError END, " +
+            "claimedAt = CASE WHEN attempts + 1 < 5 THEN :nowMs + (86400000 << attempts) ELSE NULL END, updatedAt = :nowMs " +
+            "WHERE state = 'EXTRACTED' AND lastError = 'describe_before_delete' AND claimedAt IS NULL " +
+            "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame_state.frameId) AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame_state.frameId)",
     )
-    abstract suspend fun requeueDescribe(frameIds: List<String>, nowMs: Long): Int
+    abstract suspend fun noteUncitedDescribed(nowMs: Long): Int
 
     @Query(
         "UPDATE frame_state SET state = 'EXTRACTING', claimedAt = :nowMs, claimId = :claimId, updatedAt = :nowMs " +

@@ -54,6 +54,8 @@ class NightIndexWorkerTest {
     private val hour = 3_600_000L
     private val day = 24 * hour
     private val now = 1_793_000_000_000L
+    /** The pipeline's and the night job's clock: a test moves it to run several nights. */
+    private var clockMs = now
     private val since = now - 30 * day // the per-kind clock was stamped long ago: no upgrade protection
     private val calls = mutableListOf<Pair<List<String>, CallClass>>()
     private var claimN = 0
@@ -93,7 +95,7 @@ class NightIndexWorkerTest {
         calls += ids to cls
         when (val r = ExtractSave.saveExtraction(
             ctx, "rokid_kf_${claim}_", ExtractOutput(emptyList(), captions = ids.map { FrameCaption(it, "caption of $it") }, provenance = true),
-            ids.toSet(), ids.associateWith { claim }, MemoryTier.SHORT, ReviewState.OK, nowMs = now,
+            ids.toSet(), ids.associateWith { claim }, MemoryTier.SHORT, ReviewState.OK, nowMs = clockMs,
         )) {
             is ExtractSaveResult.Saved -> ExtractOutcome.Saved(r.memories)
             else -> ExtractOutcome.Stale()
@@ -101,12 +103,12 @@ class NightIndexWorkerTest {
     }
 
     private fun pipeline(extractor: suspend (List<String>, String, CallClass) -> ExtractOutcome = describing()) =
-        KeyframePipeline(db, extractor, { now }, null, newClaimId = { "c${claimN++}" }, pollMs = 50)
+        KeyframePipeline(db, extractor, { clockMs }, null, newClaimId = { "c${claimN++}" }, pollMs = 50)
 
     private fun night(
         p: KeyframePipeline = pipeline(), s: MemorySettings = settings(), gate: () -> Boolean = { true },
         maintenance: suspend () -> IndexMaintenance.Outcome? = { null }, described: MutableList<Int>? = null,
-    ) = NightIndex(db, p, { s }, gate, maintenance, { now }, { described?.add(it) }, drainMs = 30_000L)
+    ) = NightIndex(db, p, { s }, gate, maintenance, { clockMs }, { described?.add(it) }, drainMs = 30_000L)
 
     /** One retention pass at [at] deleting the listed files like the worker does. */
     private fun retention(at: Long, ready: Boolean, s: MemorySettings = settings()) = runBlocking {
@@ -173,7 +175,7 @@ class NightIndexWorkerTest {
         val failing = night(pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("INVALID_OUTPUT") })
         val r = failing.run()
         assertEquals(0, r.described); assertEquals(1, r.left)
-        assertFalse(cited("a")); assertEquals("FAILED", state("a").state)
+        assertFalse(cited("a")); assertEquals("CAPTION_QUEUED", state("a").state); assertEquals(1, state("a").attempts) // the night queue keeps it: never FAILED, never the live loop's
         // offline: the claim goes back (no attempt) to the night queue, not to the live loop
         photo("b", now - 7 * day)
         val offline = night(pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("offline", countsAttempt = false) })
@@ -292,11 +294,10 @@ class NightIndexWorkerTest {
             assertEquals(0, retention(at, ready = true).deletedUndescribed)
             assertTrue("kept at +${(at - now) / day} d", jpg.exists() && db.forgetDao().frame("p") != null)
         }
-        night(pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("timeout") }).run() // online but failing: an attempt, FAILED
-        assertEquals("FAILED", state("p").state)
+        night(pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("timeout") }).run() // online but failing: an attempt, then a cooldown
+        assertEquals("CAPTION_QUEUED", state("p").state)
         assertEquals(0, retention(now + 400 * day, ready = true).deletedUndescribed); assertTrue(jpg.exists())
-        // the live loop gives up again (FAILED_FINAL); the next night that works describes it
-        db.frameStateDao().move(listOf("p"), "FAILED", "FAILED_FINAL", "timeout", now)
+        clockMs = now + 2 * day // the cooldown (1 day) is over; the next night that works describes it
         val r = night().run()
         assertEquals(1, r.described); assertTrue(cited("p"))
     }
@@ -386,5 +387,144 @@ class NightIndexWorkerTest {
         assertNotNull(db.forgetDao().frame("synthetic_kf")); assertTrue(keyframe.exists())
         assertNull(db.forgetDao().frame("legacy")); assertFalse(legacy.exists())
         assertEquals(1, r.dropped)
+    }
+
+    // --- fix round 1: bounded retries (I1), no leak to the live loop (I2), grace from the describe (I3), key moments (I4) ---
+
+    private suspend fun nights(n: Int, extractor: suspend (List<String>, String, CallClass) -> ExtractOutcome) = repeat(n) {
+        night(pipeline(extractor)).run(); clockMs += day
+    }
+
+    private val failing: suspend (List<String>, String, CallClass) -> ExtractOutcome = { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("INVALID_OUTPUT") }
+
+    @Test fun aPhotoThatFailsEveryNightCostsAtMostFiveCallsThenIsParked() = runBlocking {
+        val jpg = photo("bad", now - 7 * day)
+        nights(40, failing)
+        assertEquals("1, 2, 4, 8 days of cooldown then parked: 5 calls in 40 nights", 5, calls.size)
+        assertEquals(setOf(CallClass.BACKFILL), calls.map { it.second }.toSet())
+        state("bad").let { assertEquals("FAILED_FINAL", it.state); assertEquals("describe_failed", it.lastError) }
+        assertEquals(1, db.frameStateDao().describeFailed())
+        assertEquals(0, retention(now + 4000 * day, ready = true).deletedUndescribed); assertTrue("never deleted", jpg.exists())
+        // a manual retry puts it back in the night queue's reach
+        db.frameStateDao().retryDescribeFailed(clockMs); calls.clear()
+        night().run(); assertTrue(cited("bad"))
+    }
+
+    @Test fun aDescribeThatSavesNothingIsBoundedToo() = runBlocking {
+        photo("empty", now - 7 * day)
+        val saveNothing: suspend (List<String>, String, CallClass) -> ExtractOutcome = { ids, claim, cls ->
+            calls += ids to cls
+            ids.forEach { check(db.frameStateDao().completeIfClaimed(it, claim, "EXTRACTED", clockMs) == 1) }
+            ExtractOutcome.Saved(emptyList())
+        }
+        nights(40, saveNothing)
+        assertEquals(5, calls.size); assertEquals("describe_failed", state("empty").lastError); assertFalse(cited("empty"))
+    }
+
+    @Test fun tenBadPhotosAtTheFrontDoNotBlockOneHundredGoodOnes() = runBlocking {
+        val bad = (0 until 10).map { "bad$it" }.toSet()
+        bad.forEach { photo(it, now - 40 * day) } // the oldest deadlines come first
+        (0 until 100).forEach { photo("good$it", now - 7 * day) }
+        val selective: suspend (List<String>, String, CallClass) -> ExtractOutcome = { ids, claim, cls ->
+            if (ids.any { it in bad }) { calls += ids to cls; ExtractOutcome.Failed("INVALID_OUTPUT") } else describing()(ids, claim, cls)
+        }
+        nights(4, selective)
+        assertEquals("every good photo described within four nights", 100, (0 until 100).count { cited("good$it") })
+        assertTrue(calls.all { it.second == CallClass.BACKFILL })
+    }
+
+    @Test fun perNightCallCapDrainsAThousandPhotosOverSeveralNights() = runBlocking {
+        (0 until 400).forEach { photo("t$it", now - 7 * day - it * hour) }
+        night(pipeline(), s = settings()).run()
+        assertEquals("one night = at most 60 calls (3 photos each)", 60, calls.size)
+        val firstNight = (0 until 400).count { cited("t$it") }
+        assertEquals(180, firstNight)
+        clockMs += day; night().run(); clockMs += day; night().run()
+        assertEquals(400, (0 until 400).count { cited("t$it") })
+    }
+
+    @Test fun failedBatchesDoNotStopTheNightWhenASuccessFollows() = runBlocking {
+        (0 until 18).forEach { photo("p$it", now - 7 * day - it * hour) } // six batches of three
+        var n = 0
+        val pattern = listOf(false, false, true, false, false, true) // F F S F F S: four failures, never three in a row
+        val flaky: suspend (List<String>, String, CallClass) -> ExtractOutcome = { ids, claim, cls ->
+            if (pattern[n++]) describing()(ids, claim, cls) else { calls += ids to cls; ExtractOutcome.Failed("INVALID_OUTPUT") }
+        }
+        night(pipeline(flaky)).run()
+        assertEquals("a success resets the consecutive-failure count: all six batches ran", 6, n)
+        assertEquals(6, (0 until 18).count { cited("p$it") })
+    }
+
+    /** I2 (a): a failed night photo goes back to the night queue with its marker; the live loop never claims it and makes no EXTRACT call. */
+    @Test fun failedNightPhotoIsNeverClaimedByTheLiveLoop() = runBlocking {
+        photo("a", now - 7 * day)
+        night(pipeline(failing)).run()
+        state("a").let { assertEquals("CAPTION_QUEUED", it.state); assertEquals("describe_before_delete", it.lastError) }
+        val live = pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("x") }
+        calls.clear()
+        assertEquals(0, live.drainOnce()); assertTrue("no EXTRACT call for a night photo", calls.isEmpty())
+        clockMs += 400 * day
+        assertEquals(0, live.drainOnce()); assertTrue(calls.isEmpty())
+    }
+
+    /** I2 (b): a drain cancelled mid-call (idle ends, the 10-minute cap) leaves the row in the night queue. */
+    @Test fun cancelledDrainLeavesTheRowInTheNightQueue() = runBlocking {
+        photo("a", now - 7 * day)
+        val cancelling = pipeline { ids, _, cls -> calls += ids to cls; throw kotlinx.coroutines.CancellationException("idle ended") }
+        try { night(cancelling).run(); error("expected the cancellation") } catch (_: kotlinx.coroutines.CancellationException) {}
+        state("a").let { assertEquals("CAPTION_QUEUED", it.state); assertEquals("describe_before_delete", it.lastError); assertEquals(0, it.attempts) }
+        calls.clear()
+        val live = pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("x") }
+        assertEquals(0, live.drainOnce()); assertTrue(calls.isEmpty())
+    }
+
+    /** I2 (c): an abandoned night claim (process death) and the process-start release also go back to the night queue. */
+    @Test fun abandonedAndReleasedNightClaimsGoBackToTheNightQueue() = runBlocking {
+        photo("a", now - 7 * day); photo("b", now - 7 * day)
+        db.frameStateDao().queueForDescribe("a", clockMs); db.frameStateDao().queueForDescribe("b", clockMs)
+        db.frameStateDao().claimCaptionQueued(listOf("a", "b"), "dead", clockMs - 20 * 60_000L)
+        val live = pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("x") }
+        assertEquals(2, live.recover()) // the abandoned claims: recovery requeues them, with their marker
+        for (id in listOf("a", "b")) state(id).let { assertEquals("CAPTION_QUEUED", it.state); assertEquals("describe_before_delete", it.lastError) }
+        assertEquals(0, live.drainOnce()); assertTrue(calls.isEmpty())
+        db.frameStateDao().claimCaptionQueued(listOf("a"), "dead2", clockMs)
+        db.frameStateDao().releaseAllExtracting(clockMs)
+        assertEquals("CAPTION_QUEUED", state("a").state)
+        assertEquals(0, live.drainOnce()); assertTrue(calls.isEmpty())
+    }
+
+    /** I3: described tonight after a 20-day backlog: kept 3 more days from the describe, then deleted. */
+    @Test fun lateDescribedPhotoKeepsItsThreeDaysFromTheDescribe() = runBlocking {
+        val jpg = photo("late", now - 27 * day) // due 20 days ago
+        night().run()
+        assertTrue(cited("late"))
+        retention(now + hour, ready = true); assertTrue("deleted within hours of its caption", jpg.exists())
+        retention(now + 3 * day - hour, ready = true); assertTrue(jpg.exists())
+        retention(now + 3 * day + hour, ready = false); assertTrue("the flag still gates it", jpg.exists())
+        retention(now + 3 * day + hour, ready = true); assertFalse(jpg.exists())
+        assertEquals(1, db.memoryDao().count())
+    }
+
+    /** I4: a key moment waiting in the live caption queue is never converted to a skipped photo; an ordinary frame still is. */
+    @Test fun keyMomentsNeverBecomeSkippedThroughCaptionExpiry() = runBlocking {
+        val key = photo("key", now - 20 * day, "CAPTION_QUEUED", salience = 0.9f)
+        val dwell = photo("dwell", now - 20 * day, "CAPTION_QUEUED", dwell = true)
+        val plain = photo("plain", now - 20 * day, "CAPTION_QUEUED", salience = 0.1f)
+        retention(now + 40 * day, ready = true)
+        assertEquals("CAPTION_QUEUED", state("key").state); assertEquals("CAPTION_QUEUED", state("dwell").state)
+        assertEquals("NEAR_DUP", state("plain").state)
+        retention(now + 400 * day, ready = true)
+        assertTrue(key.exists() && dwell.exists()); assertFalse(plain.exists())
+        // the night drain describes them (live caption queue rows, BACKFILL), nothing deletes them before
+        night().run()
+        assertTrue(cited("key") && cited("dwell")); assertTrue(calls.all { it.second == CallClass.BACKFILL })
+    }
+
+    @Test fun everyNightDescribePathUsesBackfill() = runBlocking {
+        photo("a", now - 7 * day); photo("b", now - 7 * day); photo("c", now - 7 * day, "CAPTION_QUEUED", salience = 0.9f)
+        nights(2, failing)
+        night(pipeline { ids, _, cls -> calls += ids to cls; ExtractOutcome.Failed("offline", countsAttempt = false) }).run()
+        clockMs += 5 * day; night().run()
+        assertTrue(calls.isNotEmpty()); assertEquals(setOf(CallClass.BACKFILL), calls.map { it.second }.toSet())
     }
 }

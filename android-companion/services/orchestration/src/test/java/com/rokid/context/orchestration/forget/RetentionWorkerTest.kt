@@ -482,7 +482,7 @@ class RetentionWorkerTest {
 
     /** M2 / ruling: a CAPTION_QUEUED frame still queued after 14 days becomes a skipped photo (never before the protection ends). */
     @Test fun captionQueuedBecomesSkippedAfterFourteenDays() = runBlocking {
-        val q = photo("cq1", t0 - 20 * day, "CAPTION_QUEUED", salience = 0.9f)
+        val q = photo("cq1", t0 - 20 * day, "CAPTION_QUEUED", salience = 0.1f) // an ordinary frame; key moments are never converted (Task 9 fix I4)
         pass(settings(), t0 + 13 * day)
         assertEquals("CAPTION_QUEUED", graph.db.frameStateDao().get("cq1")!!.state); assertTrue(q.exists())
         pass(settings(), t0 + 15 * day)
@@ -535,7 +535,7 @@ class RetentionWorkerTest {
     /** Minor: a CAPTION_QUEUED frame in an unsummarised cluster is not converted. */
     @Test fun captionQueuedInUnsettledClusterIsNotConverted() = runBlocking {
         cluster("cu", "CLOSED")
-        photo("cq2", t0 - 20 * day, "CAPTION_QUEUED", salience = 0.9f, clusterId = "cu")
+        photo("cq2", t0 - 20 * day, "CAPTION_QUEUED", salience = 0.1f, clusterId = "cu") // an ordinary frame (key moments are never converted)
         pass(settings(), t0 + 30 * day)
         assertEquals("CAPTION_QUEUED", graph.db.frameStateDao().get("cq2")!!.state)
         graph.db.frameClusterDao().upsert(FrameClusterEntity("cu", 1, 2, "gap", "[]", null, state = "SUMMARIZED"))

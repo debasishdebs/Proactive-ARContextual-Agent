@@ -233,31 +233,32 @@ class KeyframePipeline(
 
     /**
      * The night job's drain (Task 9), from the caller's own coroutine: the caption queue (describe-before-delete photos first) through the
-     * ordinary claim / CAS extraction path with [callClass] (BACKFILL: never takes a nudge token), for at most [maxMs]. [allowed] is the bulk
+     * ordinary claim / CAS extraction path with [callClass] (BACKFILL: never takes a nudge token), for at most [maxMs] and [maxCalls] batches. [allowed] is the bulk
      * gate (charging or > 70 %, no capture burst), asked before every call; heat and battery saver stop it too. Stops when the queue is empty,
      * the gate closes, a call could not run (offline: the claims are given back, nothing is lost) or a failure paused the loop. A photo whose
      * call failed keeps its attempts; it is never deleted by a failure. Returns the frames that reached EXTRACTED.
      */
-    suspend fun drainCaptionQueue(maxMs: Long, callClass: CallClass = CallClass.BACKFILL, allowed: suspend () -> Boolean = { true }): Int {
+    suspend fun drainCaptionQueue(maxMs: Long, callClass: CallClass = CallClass.BACKFILL, allowed: suspend () -> Boolean = { true }, maxCalls: Int = Int.MAX_VALUE): Int {
         val start = System.nanoTime()
         fun left() = maxMs - (System.nanoTime() - start) / 1_000_000L
         var total = 0
-        var fruitless = 0
+        var failedInARow = 0
+        var calls = 0
         ensureStartRelease()
-        while (left() > 0) {
+        while (left() > 0 && calls < maxCalls) {
             if (!allowed() || deferred() || power?.mayRunBackground(BackgroundWork.BACKFILL) == false) break
             if (pausedUntilMs - clock() > 0 && !forced) break
             forced = false
-            val rows = states.describeQueued(MAX_BATCH)
+            val now = clock()
+            val rows = states.describeQueued(now, MAX_BATCH) // photos in their failure cooldown are left out, so they cannot starve the rest
             if (rows.isEmpty()) break
             val picked = candidates(rows.map { it.frameId }, rows.associate { it.frameId to it.updatedAt })
-            val now = clock()
+            calls++
+            // A claim given back (offline, cancelled, stale) returns a describe-before-delete photo to CAPTION_QUEUED in SQL (release keeps the marker).
             when (val s = runBatch(picked, callClass, user = false) { ids, claimId -> states.claimCaptionQueued(ids, claimId, now).map { it.frameId } }) {
-                is Step.Done -> { total += s.frames; if (s.frames == 0 && ++fruitless >= MAX_FRUITLESS) break }
+                is Step.Done -> { total += s.frames; if (s.frames > 0) failedInARow = 0 else if (++failedInARow >= MAX_FRUITLESS) break } // consecutive failed batches: an outage, stop for tonight
                 is Step.Idle -> break
             }
-            // A failure that did not count an attempt (offline) released the claims to PENDING: they wait for the next night, not for the live loop.
-            states.requeueDescribe(picked.map { it.frameId }, clock())
         }
         return total
     }
@@ -559,7 +560,7 @@ class KeyframePipeline(
         /** Count-only audit log tag (ids, counts, class names; never captions, text or paths). */
         private const val PIPE_TAG = "PcPipeline"
         const val MAX_BATCH = 3
-        /** The night drain stops after this many batches in a row that settled nothing (a stale claim cannot spin it). */
+        /** The night drain stops after this many consecutive batches that settled nothing (a provider outage, a stale claim); a success resets the count. */
         private const val MAX_FRUITLESS = 3
         /** Above this many PENDING frames the oldest non-dwell ones beyond the newest [SHED_KEEP_NEWEST] are skipped (fix wave K5). */
         const val SHED_ABOVE = 40

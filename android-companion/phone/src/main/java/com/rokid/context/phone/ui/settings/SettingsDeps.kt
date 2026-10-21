@@ -167,7 +167,8 @@ private class AppKeyframeDiagnostics(private val app: Context) : KeyframeDiagnos
         com.rokid.context.orchestration.PipelineRecords.recentTraces(app, 500).filter { it.state == "NUDGE_DROPPED" }.groupingBy { it.note }.eachCount()
     override suspend fun sidecarLost() = com.rokid.context.data.runtime.PipelineStatsStore.sidecarLost(app)
     override suspend fun retentionCounters() = com.rokid.context.data.runtime.PipelineStatsStore.let {
-        com.rokid.context.phone.ui.settings.RetentionCounters(it.skippedPhotosDeleted(app), it.describedBeforeDelete(app), it.deletedUndescribed(app))
+        val dao = MemoryGraph.get(app).db.frameStateDao()
+        com.rokid.context.phone.ui.settings.RetentionCounters(it.skippedPhotosDeleted(app), it.describedBeforeDelete(app), it.deletedUndescribed(app), dao.describeWaiting(), dao.describeFailed())
     }
     override suspend fun promptIsCurrent() =
         com.rokid.context.orchestration.ExtractSave.promptIsCurrent(AiGraph.get(app).runner.activeSchema(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT))

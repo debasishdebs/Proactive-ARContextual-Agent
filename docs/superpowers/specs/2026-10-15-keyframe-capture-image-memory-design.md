@@ -432,13 +432,13 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
   - **Constraint:** a vector can't outlive its last searchable text unless "photo search without text" is wanted. The UI warns if image vectors are set shorter than captions.
 - **Describe before deleting:** a photo due for deletion that has no caption memory (such as a salient one waiting, or a near-dup representative) gets a caption first.
   - These calls are batched at night, while charging, under the budget.
-  - If the budget or network isn't available, the deletion waits up to 3 more days, then the photo is deleted anyway and its vector kept. That's recorded in Diagnostics.
+  - **An undescribed photo is never deleted** (amended in wave 2, Task 9). If the budget or network isn't available, or the call fails, the photo stays and the night job tries again: each failure backs off 1, 2, 4, 8 days, and after 5 failed attempts the photo is parked (`describe_failed`: kept, not retried by itself, counted in Diagnostics, reset by a manual retry). A described photo is deleted at `max(deadline, describe time) + 3 days`, and its caption and vector stay. A key moment (dwell or salience ≥ 0.5) is never turned into a skipped photo.
 - **Two jobs (review finding 6):**
   - **Retention job:** daily, **no charging or idle constraint** (it makes no AI calls). It deletes every photo past its deadline.
     - **Ordinary skipped photos** (not key moments) are deleted at 1 day and **bypass** describe-before-delete and the 3-day extension.
-    - Any **other** photo that's past its deadline and linked to no memory is kept until **deadline + 3 days**, then deleted anyway with its vector kept. Every deletion goes through the Forget file-and-row fence.
+    - Any **other** photo that's past its deadline is deleted only while a memory cites it (a night-described one at `max(deadline, describe time) + 3 days`); a photo linked to no memory is **never** deleted (amended in wave 2, Task 9). Every deletion goes through the Forget file-and-row fence.
   - **Night job:** needs a charger and an idle device. It does describe-before-delete (sorted by deadline, only for photos linked to no memory), then the P4 backfill (vectors, no LLM), under the budget.
-  - The 3-day promise therefore depends only on the unconstrained retention job.
+  - The 3-day grace is kept by the unconstrained retention job; describing depends on the night job, and a photo it cannot describe is kept.
 
 ### P6.2 Ask time
 - Search results whose photo has been deleted show the caption and a "photo expired" placeholder.
@@ -448,7 +448,7 @@ Room version 1 → **2**, with SQLCipher kept. This is a `Migration(1, 2)` that 
 - Retention deletion uses the same file-and-row fence.
 
 ### P6.4 Tests
-- Retention edges for each kind of data, describe-before-delete with a budget refusal, the 3-day grace period **with the charger never connected** (the photo is still deleted on day 3), and the fence with Forget.
+- Retention edges for each kind of data, describe-before-delete with a budget refusal, the **charger never connected** (the photo is kept, never deleted undescribed), and the fence with Forget.
 
 ---
 
