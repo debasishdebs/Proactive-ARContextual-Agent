@@ -242,8 +242,20 @@ class OrchestrationScheduler(
         workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.RetentionWorker.NAME, ExistingPeriodicWorkPolicy.KEEP, request)
     }
 
+    /**
+     * The night job (Task 9): one unique periodic 24 h job, KEEP, that needs a charger and an idle device. It describes the photos about to
+     * expire (BACKFILL calls), then runs the index backfill. Unlike retention it makes AI calls, so [pausePipeline] cancels it.
+     */
+    fun ensureNightIndex() {
+        val request = PeriodicWorkRequestBuilder<com.rokid.context.orchestration.forget.NightIndexWorker>(24, TimeUnit.HOURS)
+            .setConstraints(Constraints.Builder().setRequiresCharging(true).setRequiresDeviceIdle(true).build()) // WorkManager forbids a backoff on an idle-mode job
+            .build()
+        workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.NightIndexWorker.NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+    }
+
     fun scheduleCritic() {
         ensureRetention()
+        ensureNightIndex()
         val request = PeriodicWorkRequestBuilder<CriticWorkerJob>(3, TimeUnit.HOURS)
             .addTag(TAG_CRITIC)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
@@ -263,6 +275,7 @@ class OrchestrationScheduler(
         workManager.cancelUniqueWork(QUEUE_DRAIN_WORK)
         // Paused: no embedding calls either. A requested Rebuild is already persisted as pending (EmbeddingWorker.enqueue).
         workManager.cancelUniqueWork(com.rokid.context.orchestration.EmbeddingWorker.NAME)
+        workManager.cancelUniqueWork(com.rokid.context.orchestration.forget.NightIndexWorker.NAME) // it makes AI calls; resume re-ensures it
         workManager.cancelAllWorkByTag(TAG_SUMMARIZER)
         workManager.cancelAllWorkByTag(TAG_FRAME_INGEST)
         workManager.cancelAllWorkByTag(TAG_CRITIC)

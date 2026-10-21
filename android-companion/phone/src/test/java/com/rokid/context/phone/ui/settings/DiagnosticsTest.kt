@@ -54,6 +54,11 @@ class DiagnosticsTest {
         compose.onNodeWithTag("kf_sidecar").assertTextContains("4", substring = true)
     }
 
+    @Test fun showsRetentionCounters() {
+        show(KeyframeRows(stats, retention = RetentionCounters(skippedDeleted = 12, describedBeforeDelete = 5, deletedUndescribed = 0)))
+        compose.onNodeWithTag("kf_retention").assertTextContains("skipped 12", substring = true).assertTextContains("described first 5", substring = true).assertTextContains("undescribed 0", substring = true)
+    }
+
     @Test fun showsRokidClosedLineOnlyWhenReported() {
         compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(), {}, {}, {}, {}, {}, {}, {}, {}, {}, glassesRestarts = "Rokid closed the app 2 times (last gap 38s)") } }
         compose.onNodeWithTag("glasses_restarts").assertTextContains("Rokid closed the app 2 times (last gap 38s)")

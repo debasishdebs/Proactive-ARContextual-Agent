@@ -197,11 +197,12 @@ class PipelineRecordsTest {
     /** Final review I3: the legacy purges take the frame_state / frame_meta / frame_source rows with them (no orphan ends FAILED_FINAL). */
     @Test fun legacyPurgesLeaveNoFrameOrphans() = runBlocking {
         val db = MemoryGraph.get(ctx).db
-        db.frameDao().insertIgnore(frame("s1", 10, jpg("synthetic_s1.jpg"), payload = "synthetic"))
+        db.frameDao().insertIgnore(frame("s1", 10, jpg("synthetic_s1.jpg"), source = "other_source"))
         db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity("s1", "s1", null, "STILL", false, null, null, null, null, null, null, null, null, null, 1))
         db.frameStateDao().insertIgnore(listOf(com.rokid.context.memory.db.FrameStateEntity("s1", "PENDING", 0, null, null, null, 1)))
         db.frameSourceDao().insertAll(listOf(com.rokid.context.memory.db.FrameSourceEntity("m1", "s1", null, "FACT")))
-        PipelineRecords.purgeNonPhotoAndSynthetic(ctx)
+        // Task 9: the manual photo purge leaves keyframes (frame_meta) alone, so the orphan cleanup is shown with the non-Rokid purge.
+        PipelineRecords.purgeNonRokidFrames(ctx)
         assertEquals(null, db.frameStateDao().get("s1")); assertEquals(null, db.frameMetaDao().get("s1"))
         assertTrue(db.frameSourceDao().forMemory("m1").isEmpty())
 

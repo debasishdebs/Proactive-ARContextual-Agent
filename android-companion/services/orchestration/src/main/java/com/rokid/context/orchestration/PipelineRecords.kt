@@ -83,7 +83,10 @@ object PipelineRecords {
 
     suspend fun purgeNonPhotoAndSynthetic(context: Context): PurgeResult {
         val g = graph(context)
-        val (kept, dropped) = g.frames.all().partition(::isRealPhotoFrame)
+        // A wave-1+ keyframe (a frame_meta row) follows the per-kind photo rules (Task 8/9), never this manual purge.
+        val all = g.frames.all()
+        val keyframes = all.map { it.id }.chunked(MAX_IN).flatMap { g.db.forgetDao().keyframeIds(it) }.toSet()
+        val (kept, dropped) = all.filter { it.id !in keyframes }.partition(::isRealPhotoFrame).let { (k, d) -> (k + all.filter { it.id in keyframes }) to d }
         deleteFrames(g, dropped.map { it.id })
         val deleted = withContext(Dispatchers.IO) {
             dropped.map { it.path }.filter { it.isNotBlank() }.distinct().count { File(it).let { f -> f.exists() && f.delete() } }

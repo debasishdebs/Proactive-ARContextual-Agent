@@ -73,6 +73,24 @@ class MemorySettingsStoreTest {
         store("e").apply { update { it.copy(perKindSince = 100 * day) }; assertEquals(101 * day, stampPerKindSince(101 * day).perKindSince) }
     }
 
+    /**
+     * Task 9 carry: `memory_settings` is in cloud backup and in the settings export (export only: there is no import). A restored stamp
+     * can only be older (an old backup), newer (a phone with a fast clock) or recent; none of them shortens the protection of photos.
+     */
+    @Test fun restoredStampNeverShortensProtection() {
+        fun store(n: String) = MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("restore_$n", Context.MODE_PRIVATE))
+        val day = 24 * 3_600_000L
+        // an old backup (stamp and run 40 days ago): renewed to now, so the photos of this install get a fresh 7 days
+        store("old").apply { update { it.copy(perKindSince = 60 * day, perKindLastRun = 60 * day) }; assertEquals(100 * day, stampPerKindSince(100 * day).perKindSince) }
+        // a stamp from the future (the source phone's clock ran ahead): kept, deletion only comes later
+        store("future").apply { update { it.copy(perKindSince = 500 * day, perKindLastRun = 500 * day) }; assertEquals(500 * day, stampPerKindSince(100 * day).perKindSince) }
+        // a restore that carries a stamp but no run record, or a zero stamp: never earlier than now
+        store("norun").apply { update { it.copy(perKindSince = 90 * day, perKindLastRun = 0L) }; assertEquals(100 * day, stampPerKindSince(100 * day).perKindSince) }
+        store("zero").apply { update { it.copy(perKindSince = 0L, perKindLastRun = 99 * day) }; assertEquals(100 * day, stampPerKindSince(100 * day).perKindSince) }
+        // a run record AHEAD of now with an older stamp: the stamp is renewed to now, never to an earlier value
+        store("ahead").apply { update { it.copy(perKindSince = 50 * day, perKindLastRun = 200 * day) }; assertEquals(100 * day, stampPerKindSince(100 * day).perKindSince) }
+    }
+
     /** N2: whatever the clock does, the stamp is monotonic: a re-stamp can only delay deletion. */
     @Test fun stampIsMonotonicForAnyClockSequence() {
         val day = 24 * 3_600_000L
