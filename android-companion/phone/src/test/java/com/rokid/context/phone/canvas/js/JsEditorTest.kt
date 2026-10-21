@@ -7,4 +7,5 @@ class JsEditorTest {
     @Test fun graphTests() = JsHarness.assertAllPass("graph.test.js")
     @Test fun validateTests() = JsHarness.assertAllPass("validate.test.js")
     @Test fun keysTests() = JsHarness.assertAllPass("keys.test.js")
+    @Test fun flowAdapterTests() = JsHarness.assertAllPass("flowadapter.test.js")
 }
