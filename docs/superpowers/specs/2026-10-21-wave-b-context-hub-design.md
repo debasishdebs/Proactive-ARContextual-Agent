@@ -70,7 +70,7 @@ Every source is **opt-in, default off** (`ContextSourceSettings`, phone-only Sha
 | Speed (`phone_speed`) | `FusedLocationProviderClient`, `PRIORITY_BALANCED_POWER_ACCURACY`, interval 30 s, min 15 s; **only while** a vehicle or flight is suspected (car link, activity IN_VEHICLE/ON_BICYCLE, airplane mode, an image vehicle label) | `Speed(kmh, precise)` | on demand; off otherwise |
 | Car (`phone_car`) | A2DP and HEADSET `ACTION_CONNECTION_STATE_CHANGED` + profile proxies at start; device class `AUDIO_VIDEO_CAR_AUDIO`, or an address in the user's **"My car"** list; Android Auto via `androidx.car.app.connection.CarConnection` (`PROJECTION` or `NATIVE`) | `CarLink(kind, connected)` with kind `MY_CAR_BT`, `CAR_CLASS_BT`, `ANDROID_AUTO` | event-driven |
 | Airplane (with `phone_speed` or `phone_activity`) | `ACTION_AIRPLANE_MODE_CHANGED` + `Settings.Global.AIRPLANE_MODE_ON` | `Airplane(on)` | event-driven |
-| Watch (`watch_livefit`) | §8 | `WatchMotion(state, confidence)` | changes only |
+| Watch (`watch_livefit`) | §8; the watch sends WALKING/RUNNING, STILL, ASLEEP, EXERCISE, CYCLING, UNKNOWN but **never IN_VEHICLE**, so the fast path cannot reach a vehicle state | `WatchMotion(state, confidence)` | changes only |
 | Image intent (`image_intent`) | §7 | `Intent(label, confidence)` | ≤ 1/min in a vehicle, else 1/5 min |
 
 **Speed**: `location.hasSpeed()` → `Speed(speed × 3.6, precise = true)`. Otherwise derived from the previous fix: `d / Δt` when `Δt ≥ 30 s` and `d > 3 × (acc₁ + acc₂)`, `precise = false` (with approximate location only large moves — highways over minutes, flights — pass this test, which is the intent). Fixes live in memory only (the last one), are never stored, logged or sent; only `kmh` leaves the adapter.
@@ -98,7 +98,7 @@ Input: `onEvidence(e)`; output: `evaluate(nowMs): ContextDecision(state, confide
 - **vehicleImage** = the two newest intents (newest ≤ 5 min old, ≤ 3 min apart) are both DRIVING or VEHICLE_PASSENGER with confidence ≥ 0.7.
 - **btContradicted** = car BT is the only vehicle signal (no strong one) and the two newest intents (newest ≤ 5 min) are both non-vehicle (SITTING_IDLE, COMPUTER_WORK, WORKOUT, WALKING) with confidence ≥ 0.7. Lasts until that car link disconnects.
 - **flight** = (airplane mode on for ≥ 120 s and (a `Speed ≥ 150` within 10 min, or the newest intent ≤ 10 min old is FLIGHT_CABIN with confidence ≥ 0.6)) or a `Speed ≥ 350` within 10 min.
-- **still** = the glasses hint (≤ 120 s old) has `stillFrac5m ≥ 0.85`, or `≥ 0.70` when the newest intent (≤ 10 min) is SITTING_IDLE or COMPUTER_WORK with confidence ≥ 0.7; and activity is not WALKING/RUNNING/ON_BICYCLE; and the newest intent is not WORKOUT. Or watch ASLEEP.
+- **still** = the glasses hint (≤ 120 s old) has `stillFrac5m ≥ 0.85`, or `≥ 0.70` when the newest intent (≤ 10 min) is SITTING_IDLE or COMPUTER_WORK with confidence ≥ 0.7; and activity is not WALKING/RUNNING/ON_BICYCLE; and the newest intent is not WORKOUT. Or watch ASLEEP — **ignored while a fresh glasses hint (≤ 120 s) has `0 ≤ stillFrac5m < 0.85`** [AMENDED, final review I2: awake and moving glasses beat a stale ASLEEP; a negative `stillFrac5m` means unknown and says nothing].
 
 **Review rulings (fix round 1, safe direction):**
 - Car-link, airplane and activity events apply in **arrival order**; expiry and the hold use the engine's own monotonic arrival clock, the event stamp is informational (a disconnect after a small backwards clock step is never dropped).
@@ -156,7 +156,7 @@ Reasons (`ContextReason` names): `GLASSES_WALK, PHONE_WALK, STEPS, WATCH_WALK, S
 ### 6.5 User direction — car rule (2026-10-21 evening; contract for Tasks 5/8/9)
 - A phone connected to a **user-listed Bluetooth device** ("My car" / listed devices) **is** a vehicle episode (the deterministic trigger).
 - The image-intent driver-vs-passenger step runs **only while a vehicle episode is on** — no intent calls otherwise (replaces §7.3's 1/5-min background probe) — and also classifies the **vehicle type**: two-wheeler, three-wheeler (auto-rickshaw), four-wheeler (car/taxi), bus/train/other (an additive field next to `IntentLabel`; deferred to Tasks 8/9).
-- Open: a two-wheeler driver (no phone glance, helmet) — proposed: the DRIVING policy (cap 1/min, nudges off), pause for the user to decide. Open: the reviewed engine (§6.1) also starts vehicles from activity IN_VEHICLE, speed, the watch and two images; proposed to keep these as additional vehicle evidence while gating the image sampler on the episode. Task 2 is unchanged in this pass.
+- Open: a two-wheeler driver (no phone glance, helmet) — proposed: the DRIVING policy (cap 1/min, nudges off), pause for the user to decide. Open: the reviewed engine (§6.1) also starts vehicles from activity IN_VEHICLE, speed, the watch and two images; proposed to keep these as additional vehicle evidence while gating the image sampler on the episode. Task 2 is unchanged in this pass. [LEDGER, I3] Task 2's image-assisted vehicle start (`vehicleImage`) and image-assisted REST (0.70 threshold) are intent-alone reductions; they must be gated or removed before Task 9 lands (not done now).
 
 ## 7. Image intent (INTENT_CLASSIFY)
 ### 7.1 Prompt and contract
@@ -191,7 +191,7 @@ At most one call in flight. A result is written to `frame_meta` and fed to fusio
 ```
 `state` ∈ `STILL, WALKING, RUNNING, CYCLING, IN_VEHICLE, EXERCISE, ASLEEP, UNKNOWN` (unknown string → UNKNOWN). No heart rate, steps, GPS or any health value. The phone uses its own receipt time (the watch clock is not trusted).
 
-**LiveFit side (for its own repo):** the watch derives the state from Health Services (`PassiveMonitoringClient` user activity state ASLEEP/EXERCISE/PASSIVE, the exercise type when a workout runs, step cadence ≥ 60/min = WALKING, ≥ 140/min = RUNNING), holds a new state for 30 s (`AutoTypeDetector`-style) and sends **changes only** over its Data Layer path; the LiveFit phone app forwards each change to the call above and re-sends the current state once after it reconnects **and every 10 min while unchanged** [amended r2]. A state is current on our side until a change, for at most 25 min (the hub's `watchTtlMs`).
+**LiveFit side (for its own repo):** the watch derives the state from Health Services (`PassiveMonitoringClient` user activity state ASLEEP/EXERCISE/PASSIVE, the exercise type when a workout runs, step cadence ≥ 60/min = WALKING, ≥ 140/min = RUNNING), holds a new state for 30 s (`AutoTypeDetector`-style) and sends **changes only** over its Data Layer path; the LiveFit phone app forwards each change to the call above and re-sends the current state once after it reconnects **and every 10 min while unchanged** [amended r2]. A state is current on our side until a change, for at most 25 min (the hub's `watchTtlMs`). [AMENDED, final review I1/I2] **The watch never sends `IN_VEHICLE`** (CYCLING only during a biking workout), so VEHICLE_PASSENGER cannot occur from the watch on hardware; the fast path yields only UNKNOWN, WALKING and REST. The LiveFit phone re-sends a state it last heard at most **15 min** ago (`MAX_AGE_MS`, lowered from 30 min), each re-send is re-stamped at receipt on our side; and a watch ASLEEP is ignored while a fresh glasses hint reports `stillFrac5m < 0.85` (§6.1), so a stale ASLEEP cannot hold REST while the wearer is awake and moving.
 
 Ruling: `ContentResolver.call` with a package check and a trust-on-first-use certificate pin — a broadcast cannot identify its sender on API < 34 and a custom signature permission needs both apps on one signing key, which is not known — cost if wrong: LiveFit needs about 20 lines more than a broadcast; a LiveFit re-sign needs the user to toggle the source off and on.
 
@@ -208,15 +208,15 @@ data class ContextCapturePolicy(
 | UNKNOWN | — | 0 | 0 | 0 | 0 | no | no | yes |
 | WALKING | — | 0 | 0 | 0 | 0 | no | no | yes |
 | REST | 2 | 30 s | 60 s | 30 s | 120 s | yes | no | yes |
-| VEHICLE_PASSENGER | 1 | 60 s | 120 s | 60 s | 180 s | yes | no | yes |
-| VEHICLE_DRIVING | 1 | 60 s | 120 s | 60 s | 180 s | yes | no | **no** |
+| VEHICLE_PASSENGER | — | 0 | 0 | 0 | 0 | no | no | yes |
+| VEHICLE_DRIVING | — | 0 | 0 | 0 | 0 | no | no | **no** |
 | FLIGHT | 1 | 120 s | 300 s | 120 s | 300 s | yes | no | yes |
 
 Applied on the glasses as `profile.withContext(policy)` (each check gap = max(current, minimum); `wake = SETTLE` when `forceSettle`; `paused ||= pause`) and `capNow() = min(A3 cap, policy.capPerMin)`. A3's WorkRest rest and the context REST combine by taking the stricter value. `nudges = false` makes `PopupGate` drop Nudge pop-ups (counted `nudgeOff`). The table is a constant (`ContextPolicies.DEFAULT`); a later canvas edit replaces it through an additive `HudSettings` field (not in Wave B).
 
 Ruling: FLIGHT keeps capturing at 1/min with 2–5 min checks instead of stopping — the user's question "stop capture entirely while flying?" is still open (handoff §10.0) and stopping is the irreversible choice — cost if wrong: about 4 photos per 10 flight minutes the user may not want (pause remains one tap).
 
-Ruling: DRIVING keeps capturing at 1/min and suppresses nudge pop-ups — a pop-up in the driver's view is a safety risk; a photo is not — cost if wrong: a driver misses a nudge until the car stops (they stay in the phone list).
+Ruling [AMENDED, user ruling 2026-10-21 night, I3]: vehicle/intent classification never pauses or throttles capture by itself (the user wants to glance at shops while riding). The VEHICLE_PASSENGER and VEHICLE_DRIVING rows are therefore the UNKNOWN row (full A3 rate); DRIVING alone suppresses nudge pop-ups — a pop-up in the driver's view is a safety risk; a photo is not — cost if wrong: a driver misses a nudge until the car stops (they stay in the phone list). REST and FLIGHT are unchanged by this ruling.
 
 ### 9.1 Glasses `ContextGate` (pure)
 `effective(now, localState, lastLocalWalkAtMs)`:
@@ -240,7 +240,7 @@ A message with `atMs < sessionStartMs` is ignored (stale, as `pc_wear`), and wit
 1. **Fusion rule**: walking veto > flight > vehicle > rest > unknown; driver vs passenger = log-odds of a car-link prior (AA 0.85, my car 0.75, car-class BT 0.5, none 0.15) plus up to 3 image votes, band 0.4–0.6 (§6.3).
 2. Ambiguous new vehicle episodes start as DRIVING (nudges off ~1 min until the first image).
 3. FLIGHT does **not** stop capture (1/min). Your §10.0 question stays open.
-4. DRIVING keeps 1 photo/min and suppresses nudge pop-ups.
+4. [AMENDED] DRIVING and PASSENGER keep full capture rate (user ruling); DRIVING suppresses nudge pop-ups.
 5. Intent labels add VEHICLE_PASSENGER and FLIGHT_CABIN to your six.
 6. Intent cadence 1/5 min, 1/min in vehicles; CallClass EXTRACT (charged); reuses the VISION_EXTRACT model binding.
 7. Every source default off; "Adjust capture to context" default on once a source is on.
