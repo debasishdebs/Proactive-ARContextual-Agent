@@ -57,6 +57,17 @@ class MemoryWipeTest {
         assertEquals(listOf("m2"), g.memories.search("keys", 5).map { it.id }) // FTS rebuilt after the vacuum
     }
 
+    /** Final review I3: the photo test's labels (the user's own free text about their photos) and results go with Delete all. */
+    @Test fun deleteAllRemovesThePhotoEvalDirectory() = runBlocking {
+        val dir = File(ctx.filesDir, "photo-eval").apply { mkdirs() }
+        File(dir, "queries.json").writeText("[{\"frameId\":\"f1\",\"query\":\"private words\"}]")
+        File(dir, "result.json").writeText("{}")
+        File(ctx.filesDir, "keep_me.txt").writeText("x")
+        MemoryWipe.deleteAll(ctx)
+        assertFalse(File(dir, "queries.json").exists()); assertFalse(File(dir, "result.json").exists()); assertFalse(dir.exists())
+        assertTrue("other files are untouched", File(ctx.filesDir, "keep_me.txt").exists())
+    }
+
     /** P7xP8 I1: Delete all redacts every surviving proposal (EXECUTED included), scrubs its log and disarms its reminder alarm. */
     @Test fun deleteAllRedactsExecutedProposalsAndCancelsTheirReminderAlarms() = runBlocking<Unit> {
         val g = MemoryGraph.get(ctx)

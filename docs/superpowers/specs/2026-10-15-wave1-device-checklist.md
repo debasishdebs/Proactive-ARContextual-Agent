@@ -46,6 +46,9 @@ Legend: **U** = needs the user (wear, tap, speak); **A** = I can run it over adb
    - The app adds up to 1,500 of your other stored photos as distractors (none within 60 s of a labelled one) and refuses with fewer than max(300, 5 x labelled).
    - Diagnostics -> "Photo search dimension test (debug)" -> Run test. Read `files/photo-eval/result.json` (numbers only: verdict, counts, hits). Verdicts: PASS_256, KEEP_768, INCONCLUSIVE (768 already >= 95% overall and on the small subset: keep 768).
    - Truncating the vision vector to 256 is not a documented Nomic property (only the text model is Matryoshka); this test is the only evidence. Record "decided on N labelled + M distractor photos" in the decision log.
+   - **Before the 7th day after install** (the default Photos retention is 7 days): set Settings -> Memory -> Photos to 30, 90 or Forever, or run the photo test within the first week. The test needs >= 60 labelled photos + >= 300 distractors still on disk.
+   - Label **every** near-identical photo of a scene with the same query when building the photo test (otherwise a near-duplicate counts as a distractor and a wrong hit).
+   - **Before installing the wave-2 build:** run `SqlCipherMigrationDeviceTest` on the phone, and copy `databases/` and `shared_prefs/` with `run-as` (backup for rollback).
 4. Only if the reference test passed: set the chosen width (`NomicVision.STORED_DIMS`, rebuild if 256), then "Use for Embeddings" -> re-index with progress; asks still work; **Roll back** appears for 7 days and returns the old space without rebuilding.
 
 ## 6. Carried from earlier device rounds (A + U, as time allows)
