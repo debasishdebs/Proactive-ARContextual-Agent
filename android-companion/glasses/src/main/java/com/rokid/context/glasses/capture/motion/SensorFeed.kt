@@ -70,6 +70,8 @@ class AndroidSensorFeed internal constructor(
     // Shadow only: the model and fusion are logged to the CSV and never read by capture.
     private val imuSource = GlassesImuSource(HeuristicMotionModel())
     private val csv: MotionCsv? = csvDir?.let { MotionCsv(it) }
+    /** Motion CSV write failures so far (count only, for the heartbeat). */
+    val csvFailures: Int get() = csv?.failures ?: 0
 
     private var thread: HandlerThread? = null
     private var listener: SensorEventListener? = null
