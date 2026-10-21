@@ -33,6 +33,10 @@ abstract class ForgetDao {
     @Query("DELETE FROM frame_vector WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameVectorsFor(frameIds: List<String>): Int
     @Query("DELETE FROM frame_meta WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameMetaFor(frameIds: List<String>): Int
     @Query("DELETE FROM frame_state WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameStateFor(frameIds: List<String>): Int
+    /** Wave 3 (S2): how many per-photo rows (metadata, image vector, state) exist for [frameId]; a moment with no `frame` row and no memory still counts. */
+    @Query("SELECT (SELECT COUNT(*) FROM frame_meta WHERE frameId = :frameId) + (SELECT COUNT(*) FROM frame_vector WHERE frameId = :frameId) + (SELECT COUNT(*) FROM frame_state WHERE frameId = :frameId)")
+    abstract suspend fun photoRowCount(frameId: String): Int
+    @Query("DELETE FROM frame_source WHERE frameId IN (:frameIds)") abstract suspend fun deleteFrameSourcesOfFrames(frameIds: List<String>): Int
     @Query("DELETE FROM memory WHERE id IN (:ids)") abstract suspend fun deleteMemories(ids: List<String>): Int
     /** Every embedding space, not only the current one. */
     @Query("DELETE FROM memory_vector WHERE memoryId IN (:ids)") abstract suspend fun deleteVectorsFor(ids: List<String>): Int
@@ -108,6 +112,13 @@ abstract class ForgetDao {
             "AND MAX(s.updatedAt, :since) + :windowMs <= :nowMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs) ORDER BY s.updatedAt, f.id LIMIT :limit",
     )
     abstract suspend fun skippedPhotosDue(since: Long, windowMs: Long, nowMs: Long, protectMs: Long, limit: Int): List<String>
+
+    /** S4: 1 when [frameId] (it has a `frame` row) is still an ordinary skipped photo right now (the [SKIPPED_PHOTO] rule, without the deadline). */
+    @Query(
+        "SELECT COUNT(*) FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
+            "WHERE f.id = :frameId AND s.state IN ('NEAR_DUP','CLUSTERED') " + SKIPPED_PHOTO,
+    )
+    abstract suspend fun stillSkippedPhoto(frameId: String): Int
 
     /**
      * Per-kind photo retention: keyframes past `max(frame.ts, [since]) + [windowMs]` that a memory cites (`memory.frameId` or `frame_source`).
@@ -210,13 +221,18 @@ abstract class ForgetDao {
          * follow the photo path, and the night job describes them before any delete.
          */
         const val SCORED_LOW = "(m.salience IS NOT NULL AND m.salience < 0.5)"
+        /**
+         * S3: a photo the user described on demand carries `frame_source` FACT rows (a skipped photo was never extracted, and cluster facts cite only
+         * representatives). That durable mark takes it out of the skipped-photo rule for good, so a cluster settling later cannot put it back under 1 day.
+         */
+        const val NOT_DESCRIBED = "AND NOT EXISTS (SELECT 1 FROM frame_source d WHERE d.frameId = f.id AND d.role = 'FACT') "
         /** Skipped-photo guard, shared by [skippedPhotosDue] and the photo query that must leave those frames to it. */
         const val SKIPPED_PHOTO =
             "AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " +
-                NOT_A_REP + CLUSTER_SETTLED
+                NOT_A_REP + NOT_DESCRIBED + CLUSTER_SETTLED
         /** Photo retention applies to every keyframe not owed work, not forgotten, not a skipped photo (those follow [SKIPPED_PHOTO]'s window). */
         const val PHOTO_ELIGIBLE =
             "s.state NOT IN ('PENDING','EXTRACTING','FAILED','IN_CLUSTER','CAPTION_QUEUED') " + CLUSTER_SETTLED +
-                "AND NOT (s.state IN ('NEAR_DUP','CLUSTERED') AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " + NOT_A_REP + ") "
+                "AND NOT (s.state IN ('NEAR_DUP','CLUSTERED') AND ($SCORED_LOW OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " + NOT_A_REP + NOT_DESCRIBED + ") "
     }
 }

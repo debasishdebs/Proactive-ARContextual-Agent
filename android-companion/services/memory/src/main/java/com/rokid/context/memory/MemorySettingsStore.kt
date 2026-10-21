@@ -8,11 +8,11 @@ import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Settings → Memory (spec §2.4, §P6.1): retention per tier (24 h / 7 d / 30 d defaults), per kind of data (photo 7 d, skipped photo 1 d,
- * caption / scene summary / image vector forever = [FOREVER]) and the soft storage quota (100 MB). [perKindSince] is stamped by the first
+ * caption / scene summary / image vector forever = [FOREVER]) and the soft storage quota (250 MB). [perKindSince] is stamped by the first
  * retention run of the build that has per-kind retention (Ruling 13): photo deadlines count from `max(capture time, perKindSince)`.
  */
 data class MemorySettings(
-    val shortHours: Int = 24, val mediumDays: Int = 7, val longDays: Int = 30, val quotaMb: Int = 100,
+    val shortHours: Int = 24, val mediumDays: Int = 7, val longDays: Int = 30, val quotaMb: Int = 250,
     val photoDays: Int = 7, val skippedPhotoDays: Int = 1, val captionDays: Int = FOREVER, val clusterSummaryDays: Int = FOREVER,
     val imageVectorDays: Int = FOREVER, val perKindSince: Long = 0L,
     /** When the last retention run started: a long gap, or a clock behind it, renews [perKindSince] (fix round 1, I3). */
@@ -39,9 +39,16 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
         updating.set(true)
         try {
             val n = clean(transform(state.value))
-            prefs.edit().putInt("short_hours", n.shortHours).putInt("medium_days", n.mediumDays).putInt("long_days", n.longDays).putInt("quota_mb", n.quotaMb)
-                .putInt("photo_days", n.photoDays).putInt("skipped_photo_days", n.skippedPhotoDays).putInt("caption_days", n.captionDays)
-                .putInt("cluster_summary_days", n.clusterSummaryDays).putInt("image_vector_days", n.imageVectorDays).putLong("per_kind_since", n.perKindSince).putLong("per_kind_last_run", n.perKindLastRun).apply()
+            // R16: a key is written only when it is already stored or the transform changed it. Retention's stamp (every run) and an edit of another setting
+            // therefore never freeze a default as if the user had chosen it: an absent quota_mb keeps reading the current default.
+            val old = state.value
+            val e = prefs.edit()
+            fun put(key: String, new: Int, was: Int) { if (prefs.contains(key) || new != was) e.putInt(key, new) }
+            put("short_hours", n.shortHours, old.shortHours); put("medium_days", n.mediumDays, old.mediumDays); put("long_days", n.longDays, old.longDays)
+            put("quota_mb", n.quotaMb, old.quotaMb); put("photo_days", n.photoDays, old.photoDays); put("skipped_photo_days", n.skippedPhotoDays, old.skippedPhotoDays)
+            put("caption_days", n.captionDays, old.captionDays); put("cluster_summary_days", n.clusterSummaryDays, old.clusterSummaryDays)
+            put("image_vector_days", n.imageVectorDays, old.imageVectorDays)
+            e.putLong("per_kind_since", n.perKindSince).putLong("per_kind_last_run", n.perKindLastRun).apply()
             state.value = n
         } finally {
             updating.remove()

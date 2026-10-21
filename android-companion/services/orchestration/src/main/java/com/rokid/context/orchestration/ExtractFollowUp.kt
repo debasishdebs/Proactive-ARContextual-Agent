@@ -76,9 +76,10 @@ object ExtractFollowUp {
      * After [saved] (everything the transaction wrote, captions included). Nothing saved, or Delete all ran since [generation]:
      * SKIPPED (no reprocess job, it would carry fact text). Trusted: embeddings and the nudge backstop. Not trusted: embeddings and a
      * reprocess job for the facts that were written (captions alone need no review). [nudge] false (the night describe job's BACKFILL saves):
-     * embeddings still run, the nudge backstop does not.
+     * embeddings still run, the nudge backstop does not. [reprocessNudge] false (describe on demand): the reprocess job it queues for low confidence
+     * does not wake the nudge engine either (the night BACKFILL path keeps today's behaviour: true).
      */
-    suspend fun afterSave(context: Context, generation: Long, saved: List<SavedMemory>, trusted: Boolean, confidence: Double, personaSnapshot: String, nudge: Boolean = true): Result {
+    suspend fun afterSave(context: Context, generation: Long, saved: List<SavedMemory>, trusted: Boolean, confidence: Double, personaSnapshot: String, nudge: Boolean = true, reprocessNudge: Boolean = true): Result {
         if (saved.isEmpty() || MemoryWipe.generation.get() != generation) return Result.SKIPPED
         EmbeddingWorker.enqueue(context)
         if (trusted) {
@@ -90,7 +91,7 @@ object ExtractFollowUp {
         val reason = "Critic low confidence=${"%.2f".format(Locale.US, confidence)}"
         QueueRuntimeStore.enqueueIfCurrent(
             context = context, generation = generation, queue = QueuePriority.PRIORITY_REPROCESS,
-            payload = QueuePayloads.reprocess(reason = reason, sourceIds = written.map { it.memoryId }, frameIds = written.flatMap { it.frameIds }.distinct()),
+            payload = QueuePayloads.reprocess(reason = reason, sourceIds = written.map { it.memoryId }, frameIds = written.flatMap { it.frameIds }.distinct(), nudge = reprocessNudge),
             personaSnapshot = personaSnapshot, ttlHours = 24,
         )
         return Result.REVIEW_QUEUED

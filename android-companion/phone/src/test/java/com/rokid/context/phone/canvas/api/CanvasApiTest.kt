@@ -150,6 +150,14 @@ class CanvasApiTest {
         assertEquals(400, call("PUT", "/api/pipelines/p-1", """{"json":"{}","draftRev":-1}""").status)
     }
 
+    @Test fun saveDraftErrorIsFixedText() {
+        be.saveResult = CanvasRepository.SaveResult.Unreadable("secret reason")
+        val bad = call("PUT", "/api/pipelines/p-1", """{"json":"{}","draftRev":3}""")
+        assertEquals(400, bad.status)
+        assertEquals("Pipeline JSON is not valid.", bad.obj()["message"]!!.jsonPrimitive.content)
+        assertFalse(bad.body.toString(Charsets.UTF_8).contains("secret reason"))
+    }
+
     @Test fun deletePipeline() {
         assertEquals(200, call("DELETE", "/api/pipelines/p-1").status)
         be.deleteResult = false

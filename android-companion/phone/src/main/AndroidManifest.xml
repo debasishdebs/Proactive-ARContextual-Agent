@@ -73,6 +73,7 @@
 
         <!-- P7-B proposals -->
         <receiver android:name=".phone.actions.ProposalActionReceiver" android:exported="false" />
+        <receiver android:name=".phone.hub.ClosedNoticeReceiver" android:exported="false" />
         <!-- /P7-B proposals -->
 
         <!-- P7-C sources (application) -->

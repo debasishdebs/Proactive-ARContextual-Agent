@@ -1,6 +1,7 @@
 package com.rokid.context.orchestration.forget
 
 import android.content.Context
+import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.ListenableWorker
@@ -230,6 +231,26 @@ class RetentionWorkerTest {
         assertTrue(exists("m_sum"))
     }
 
+    /** S4: retention selected the skipped photos, then the user's describe committed, then retention resumes: the described photo is kept. */
+    @Test fun retentionPausedAfterSelectionKeepsJustDescribedPhoto() = runBlocking {
+        val old = t0 + 30 * 60_000L
+        val a = photo("a", old, "NEAR_DUP", salience = 0.1f); val b = photo("b", old, "NEAR_DUP", salience = 0.1f)
+        val at = t0 + 25 * hour
+        val summary = Retention(graph, ForgetService(graph.db, graph.proposals) { at }, describeBeforeDeleteReady = false, beforeSkippedExpiry = { selected ->
+            assertEquals(listOf("a", "b"), selected.sorted())
+            // describe on demand commits: FACT provenance plus the move to EXTRACTED, in one transaction
+            graph.db.withTransaction {
+                mem("m_a", MemoryTier.LONG, day, frameId = "a")
+                graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("m_a", "a", null, "FACT")))
+                graph.db.frameStateDao().move(listOf("a"), "NEAR_DUP", "EXTRACTED", "described_on_demand", at)
+            }
+        }).run(settings(), at) { r -> FrameSweep.delete(r.framesToDelete) }
+        assertTrue("the described photo is kept", a.exists() && frameRow("a") != null)
+        assertNull(frameRow("b")); assertFalse(b.exists())
+        assertTrue(graph.db.forgetDao().tombstoned(listOf("a")).isEmpty())
+        assertEquals(1, summary.skippedDeleted)
+    }
+
     @Test fun clusterRepNotTreatedAsSkipped() = runBlocking {
         cluster("c1", "SUMMARIZED")
         val old = t0 - 10 * day
@@ -367,8 +388,10 @@ class RetentionWorkerTest {
         graph.db.frameStateDao().insertIgnore(listOf(FrameStateEntity("incl", "IN_CLUSTER", 0, null, null, null, 1), FrameStateEntity("cq", "CAPTION_QUEUED", 0, null, null, null, 1)))
         val cq = File(ctx.filesDir, "rokid_archive/cq.jpg").apply { writeBytes(byteArrayOf(1)) }
         graph.db.frameDao().insertIgnore(FrameEntity("cq", now - 31 * day, cq.absolutePath, "rokid_glasses"))
+        graph.db.askDao().upsert(AskEntity("qcite", 1, "q", "answer", """["${com.rokid.context.memory.forget.PHOTO_CITE_PREFIX}legacy"]""", null, "phone_typed", false))
         assertTrue(work() is ListenableWorker.Result.Success)
         assertFalse(legacy.exists()); assertNull(frameRow("legacy")) // the old rule still applies to legacy frames
+        assertFalse("expiry never redacts photo cites", graph.db.askDao().byId("qcite")!!.redacted)
         assertTrue(key.exists() && frameRow("kf") != null)
         assertTrue(inCl.exists() && cq.exists())
     }

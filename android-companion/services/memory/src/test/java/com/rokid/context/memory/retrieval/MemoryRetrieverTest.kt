@@ -87,4 +87,20 @@ class MemoryRetrieverTest {
         assertEquals(0.75, MemoryRetriever.recency(now - 3 * day, now, RetrievalSettings()), 1e-9)
         assertFalse(r.semanticUnavailable)
     }
+
+    @Test fun poolOverrideGoesPastTheTopKClampOfTwenty() = runBlocking {
+        (0 until 30).forEach { mem("m$it", "milk", at = now - it * day) }
+        val s = RetrievalSettings(mode = RetrievalMode.LEXICAL, topK = 50)
+        assertEquals(20, retriever.retrieve("milk", s, now).hits.size) // UI settings stay clamped
+        val wide = retriever.retrieve("milk", s, now, poolOverride = 60)
+        assertEquals(30, wide.hits.size)
+        assertEquals("m24", wide.hits[24].memory.id) // ranked 25th by recency
+    }
+
+    @Test fun poolOverrideIsBoundedAt200() = runBlocking {
+        (0 until 250).forEach { mem("n$it", "milk $it", at = now - it * 60_000L) }
+        val s = RetrievalSettings(mode = RetrievalMode.LEXICAL, topK = 8)
+        assertEquals(200, retriever.retrieve("milk", s, now, poolOverride = 9_999).hits.size)
+        assertEquals(MemoryRetriever.MAX_POOL_OVERRIDE, 200)
+    }
 }

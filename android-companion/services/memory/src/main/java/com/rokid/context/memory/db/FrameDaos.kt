@@ -1,5 +1,6 @@
 package com.rokid.context.memory.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.MapColumn
@@ -382,7 +383,29 @@ interface FrameSourceDao {
     @Query("DELETE FROM frame_source WHERE memoryId = :memoryId") suspend fun deleteForMemory(memoryId: String): Int
     @Query("DELETE FROM frame_source WHERE memoryId IN (:memoryIds)") suspend fun deleteForMemories(memoryIds: List<String>): Int
     @Query("DELETE FROM frame_source WHERE frameId IN (:frameIds)") suspend fun deleteForFrames(frameIds: List<String>): Int
+
+    /** Those of [frameIds] that are described: a live (not INVALIDATED) memory cites them, or a FACT / CLUSTER_REP `frame_source` row. Callers chunk (≤ 500). */
+    @Query(
+        "SELECT frameId FROM memory WHERE frameId IN (:frameIds) AND reviewState != 'INVALIDATED' " +
+            "UNION SELECT frameId FROM frame_source WHERE frameId IN (:frameIds) AND role IN ('FACT','CLUSTER_REP')",
+    )
+    suspend fun describedAmong(frameIds: List<String>): List<String>
+
+    /** Per frame, its newest live `caption` memory (one row per frame). Callers chunk (≤ 500). */
+    @Query(
+        "SELECT m.frameId AS frameId, m.id AS memoryId, m.text AS text, m.createdAt AS createdAt FROM memory m " +
+            "WHERE m.frameId IN (:frameIds) AND m.type = 'caption' AND m.reviewState != 'INVALIDATED' " +
+            "AND m.id = (SELECT x.id FROM memory x WHERE x.frameId = m.frameId AND x.type = 'caption' AND x.reviewState != 'INVALIDATED' " +
+            "ORDER BY x.createdAt DESC, x.id DESC LIMIT 1)",
+    )
+    suspend fun newestCaptions(frameIds: List<String>): List<FrameCaptionRow>
 }
+
+/** One stored image vector with its insertion rowid (the scan's keyset). */
+data class FrameVectorRow(@ColumnInfo(name = "rowid") val rowid: Long, val frameId: String, val blob: ByteArray)
+
+/** The newest live caption memory of a frame. */
+data class FrameCaptionRow(val frameId: String, val memoryId: String, val text: String, val createdAt: Long)
 
 @Dao
 interface FrameVectorDao {
@@ -397,6 +420,16 @@ interface FrameVectorDao {
     /** Vectors of [spaceId] for frames captured in [fromTs, toTs] (by frame.ts). */
     @Query("SELECT v.* FROM frame_vector v JOIN frame f ON f.id = v.frameId WHERE v.spaceId = :spaceId AND f.ts BETWEEN :fromTs AND :toTs ORDER BY f.ts")
     suspend fun window(spaceId: String, fromTs: Long, toTs: Long): List<FrameVectorEntity>
+
+    /**
+     * Recall scan page: rowid keyset, most recently indexed first. Forgotten frames have no `frame_meta`, so the JOIN drops them.
+     * First page: [beforeRowid] = Long.MAX_VALUE.
+     */
+    @Query(
+        "SELECT v.rowid AS rowid, v.frameId AS frameId, v.blob AS blob FROM frame_vector v JOIN frame_meta m ON m.frameId = v.frameId " +
+            "WHERE v.spaceId = :spaceId AND v.rowid < :beforeRowid ORDER BY v.rowid DESC LIMIT :limit",
+    )
+    suspend fun pageDesc(spaceId: String, beforeRowid: Long, limit: Int): List<FrameVectorRow>
 
     @Query("SELECT * FROM frame_vector WHERE spaceId = :spaceId AND frameId IN (:frameIds)") suspend fun forFrames(spaceId: String, frameIds: List<String>): List<FrameVectorEntity>
 }

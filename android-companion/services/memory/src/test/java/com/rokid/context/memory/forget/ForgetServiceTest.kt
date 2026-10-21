@@ -9,6 +9,7 @@ import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
 import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.FrameSourceEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemorySourceEntity
 import com.rokid.context.memory.db.MemoryTier
@@ -104,7 +105,7 @@ class ForgetServiceTest {
         mem("m1", frameId = "f1"); mem("m2", frameId = "f1"); mem("other")
         val r = service.forgetMoment("f1")
         assertEquals(setOf("m1", "m2"), r.forgotten)
-        assertEquals(listOf("/f1.jpg"), r.framesToDelete)
+        assertEquals(setOf("/f1.jpg", "/f1.meta.json"), r.framesToDelete.toSet())
         assertNull(db.forgetDao().frame("f1"))
         assertEquals(0, db.forgetDao().memoryIdsOfFrame("f1").size)
         assertEquals(listOf("f1"), db.forgetDao().tombstoned(listOf("f1")))
@@ -218,5 +219,125 @@ class ForgetServiceTest {
             assertEquals(ForgetService.REDACTED_PARAMS, proposals.byId(id)!!.paramsJson)
             assertTrue(db.actionDao().logFor(id).none { "Call mom" in it.detail })
         }
+    }
+
+    // --- wave 3 Task 11 (S1, S2): photo cites and metadata-only moments -----------------------------------------------
+
+    private suspend fun keyframe(id: String, withFrame: Boolean = true, vector: Boolean = true) {
+        if (withFrame) db.frameDao().insertIgnore(FrameEntity(id, 1, "/$id.jpg", "rokid_glasses"))
+        db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity(id, null, null, "STILL", false, null, null, null, 640, 0.3f, null, null, null, "s1", 1))
+        db.frameStateDao().insertIgnore(listOf(com.rokid.context.memory.db.FrameStateEntity(id, "NEAR_DUP", 0, null, null, null, 1)))
+        if (vector) db.frameVectorDao().upsert(listOf(com.rokid.context.memory.db.FrameVectorEntity(id, "s1", byteArrayOf(1, 2, 3, 4))))
+    }
+
+    @Test fun forgetMomentRedactsSavedAnswerCitingPhoto() = runBlocking {
+        keyframe("f1"); mem("m1", frameId = "f1")
+        db.askDao().upsert(AskEntity("q1", 1, "where?", "On the desk (photo)", """["${PHOTO_CITE_PREFIX}f1"]""", null, "phone_typed", false))
+        db.askDao().upsert(AskEntity("q2", 1, "q", "unrelated", """["${PHOTO_CITE_PREFIX}f10"]""", null, "phone_typed", false)) // "f10" never matches "f1"
+        proposals.create(ProposalEntity("p1", ProposalOrigin.ASK.name, "q1", "REMINDER", """{"title":"Call mom","dueAt":5}""", ProposalState.EXECUTED.name, 99_999, null, null, 1), 1)
+        db.actionDao().log(com.rokid.context.memory.db.ActionLogEntity(ts = 2, proposalId = "p1", transition = "X", detail = "Call mom"))
+        val r = service.forgetMoment("f1")
+        assertEquals(1, r.redactedAsks)
+        assertTrue("alarm owner listed for cancellation", "p1" in r.redactedProposals)
+        val q1 = db.askDao().byId("q1")!!
+        assertTrue(q1.redacted); assertEquals(ForgetService.REDACTED, q1.answer); assertEquals("[]", q1.sourcesJson)
+        assertFalse(db.askDao().byId("q2")!!.redacted)
+        assertEquals(ForgetService.REDACTED_PARAMS, proposals.byId("p1")!!.paramsJson)
+        assertTrue(db.actionDao().logFor("p1").none { "Call mom" in it.detail })
+        // export reads the redacted row
+        assertTrue(db.exportDao().askPage(0, 10).filter { it.id == "q1" }.all { it.answer == ForgetService.REDACTED })
+    }
+
+    @Test fun expiredUncaptionedSkippedPhotoCanBeForgotten() = runBlocking {
+        keyframe("f1"); db.askDao().upsert(AskEntity("q1", 1, "q", "a skipped photo", """["${PHOTO_CITE_PREFIX}f1"]""", null, "phone_typed", false))
+        service.expirePhotos(listOf("f1")) // retention: frame row gone, no memory, meta and vector kept
+        assertNull(db.forgetDao().frame("f1")); assertEquals(1, db.frameMetaDao().byIds(listOf("f1")).size)
+        val r = service.forgetMoment("f1")
+        assertEquals(1, r.redactedAsks)
+        assertTrue(db.frameMetaDao().byIds(listOf("f1")).isEmpty()); assertNull(db.frameStateDao().get("f1"))
+        assertTrue(db.frameVectorDao().forFrames("s1", listOf("f1")).isEmpty())
+        assertEquals(listOf("f1"), db.forgetDao().tombstoned(listOf("f1")))
+    }
+
+    @Test fun forgetMomentOfMetaOnlyAndVectorOnlyMoments() = runBlocking {
+        keyframe("meta", withFrame = false, vector = false)
+        service.forgetMoment("meta")
+        assertTrue(db.frameMetaDao().byIds(listOf("meta")).isEmpty())
+        db.frameVectorDao().upsert(listOf(com.rokid.context.memory.db.FrameVectorEntity("vec", "s1", byteArrayOf(1, 2, 3, 4))))
+        service.forgetMoment("vec")
+        assertTrue(db.frameVectorDao().forFrames("s1", listOf("vec")).isEmpty())
+    }
+
+    @Test fun forgetMomentEmptyOnlyWhenNothingExists() = runBlocking {
+        assertEquals(ForgetService.Result.EMPTY, service.forgetMoment("nothing"))
+        assertTrue(db.forgetDao().tombstoned(listOf("nothing")).isEmpty())
+        db.askDao().upsert(AskEntity("q1", 1, "q", "a", """["${PHOTO_CITE_PREFIX}nothing"]""", null, "phone_typed", false))
+        // user ruling (safer default): a stray cite of an id with nothing left is still redacted, no EMPTY short-circuit before redaction
+        val r = service.forgetMoment("nothing")
+        assertEquals(1, r.redactedAsks); assertTrue(db.askDao().byId("q1")!!.redacted)
+        assertEquals(ForgetService.Result.EMPTY, service.forgetMoment("nothing")) // and nothing is left to do the second time
+    }
+
+    @Test fun forgetMomentListsTheSidecarToo() = runBlocking {
+        keyframe("f1")
+        assertEquals(setOf("/f1.jpg", "/f1.meta.json"), service.forgetMoment("f1").framesToDelete.toSet())
+    }
+
+    @Test fun forgetMomentDeletesFrameSourceRowsByFrame() = runBlocking {
+        // an orphan provenance row (its memory is already gone) and an orphan canvas row of a moment that has nothing else left
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("gone_memory", "f9", null, "FACT"), FrameSourceEntity("gone_memory", "other", null, "FACT")))
+        service.forgetMoment("f9")
+        assertTrue(db.frameSourceDao().memoriesForFrame("f9").isEmpty())
+        assertEquals(listOf("gone_memory"), db.frameSourceDao().memoriesForFrame("other"))
+        keyframe("f1"); db.frameSourceDao().insertAll(listOf(FrameSourceEntity("gone2", "f1", null, "CLUSTER_MEMBER")))
+        service.forgetMoment("f1")
+        assertTrue(db.frameSourceDao().memoriesForFrame("f1").isEmpty())
+    }
+
+    @Test fun expiryVariantOfForgetMomentNeverRedactsPhotoCites() = runBlocking {
+        db.frameDao().insertIgnore(FrameEntity("legacy", 1, "/legacy.jpg", "rokid_glasses"))
+        db.askDao().upsert(AskEntity("q1", 1, "q", "answer", """["${PHOTO_CITE_PREFIX}legacy"]""", null, "phone_typed", false))
+        val r = service.forgetMoment("legacy", redactCites = false)
+        assertEquals(listOf("/legacy.jpg", "/legacy.meta.json"), r.framesToDelete.sorted())
+        assertFalse(db.askDao().byId("q1")!!.redacted)
+        // the nothing-left branch too: cites stay
+        db.askDao().upsert(AskEntity("q2", 1, "q", "answer", """["${PHOTO_CITE_PREFIX}ghost"]""", null, "phone_typed", false))
+        service.forgetMoment("ghost", redactCites = false)
+        assertFalse(db.askDao().byId("q2")!!.redacted)
+    }
+
+    // --- wave 3 Task 2 (S3, S4): a photo the user described leaves the skipped-photo rule ---------------------------------
+
+    private suspend fun skippedDue() = db.forgetDao().skippedPhotosDue(0, 0, 1_000, 0, 10)
+    private suspend fun linkedDue() = db.forgetDao().linkedPhotosDue(0, 0, 1_000, 0, 0, 0, 10)
+    private suspend fun described(frameId: String) {
+        mem("d_$frameId", frameId = frameId)
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("d_$frameId", frameId, null, "FACT")))
+    }
+
+    @Test fun describedFactRowTakesAPhotoOutOfTheSkippedRule() = runBlocking {
+        keyframe("f1"); keyframe("f2"); keyframe("f3")
+        assertEquals(listOf("f1", "f2", "f3"), skippedDue())
+        described("f1")
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("cluster_summary", "f2", "c1", "CLUSTER_MEMBER"))) // a cluster summary citing it is not a describe
+        assertEquals("only a FACT row exempts", listOf("f2", "f3"), skippedDue())
+        assertTrue("it follows the photo window now", "f1" in linkedDue())
+    }
+
+    @Test fun expirePhotosRecheckSkippedKeepsAPhotoDescribedAfterSelection() = runBlocking {
+        keyframe("f1"); keyframe("f2")
+        val selected = skippedDue()
+        assertEquals(listOf("f1", "f2"), selected)
+        described("f1") // the user's describe commits after retention selected the ids
+        val kept = service.expirePhotos(selected, recheckSkipped = true)
+        assertEquals(setOf("/f2.jpg", "/f2.meta.json"), kept.framesToDelete.toSet())
+        assertTrue("described photo kept", db.forgetDao().frame("f1") != null); assertTrue(db.forgetDao().tombstoned(listOf("f1")).isEmpty())
+        assertNull(db.forgetDao().frame("f2"))
+    }
+
+    @Test fun expirePhotosWithoutRecheckStillExpiresWhatItIsGiven() = runBlocking {
+        keyframe("f1"); described("f1")
+        service.expirePhotos(listOf("f1"))
+        assertNull(db.forgetDao().frame("f1"))
     }
 }

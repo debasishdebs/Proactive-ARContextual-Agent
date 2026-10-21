@@ -177,13 +177,31 @@ class GlassesRelauncherTest {
         advanceTimeBy(GlassesRelauncher.AUTO_OPEN_WINDOW_MS + 1_000); assertFalse(r.r.reopenedRecently())
     }
 
+    private val far = Long.MAX_VALUE / 2
+
     @Test fun theCallGuardFailsClosedWithoutThePhoneStatePermissionForAWhileAfterAScene() {
         val normal = android.media.AudioManager.MODE_NORMAL
         val idle = android.telephony.TelephonyManager.CALL_STATE_IDLE
-        assertTrue(AndroidRelaunchGuards.callIdle(normal, idle, 0))
-        assertFalse(AndroidRelaunchGuards.callIdle(normal, android.telephony.TelephonyManager.CALL_STATE_RINGING, 60_000))
-        assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_IN_COMMUNICATION, idle, 60_000))
-        assertFalse("unknown call state right after the scene counts as a call", AndroidRelaunchGuards.callIdle(normal, null, 5_000))
-        assertTrue(AndroidRelaunchGuards.callIdle(normal, null, AndroidRelaunchGuards.UNKNOWN_CALL_HOLD_MS))
+        assertTrue(AndroidRelaunchGuards.callIdle(normal, idle, 0, far))
+        assertFalse(AndroidRelaunchGuards.callIdle(normal, android.telephony.TelephonyManager.CALL_STATE_RINGING, 60_000, far))
+        assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_IN_COMMUNICATION, idle, 60_000, far))
+        assertFalse("unknown call state right after the scene counts as a call", AndroidRelaunchGuards.callIdle(normal, null, 5_000, far))
+        assertTrue(AndroidRelaunchGuards.callIdle(normal, null, AndroidRelaunchGuards.UNKNOWN_CALL_HOLD_MS, far))
+    }
+
+    @Test fun notIdleWithinFifteenSecondsOfNonNormalMode() {
+        val normal = android.media.AudioManager.MODE_NORMAL
+        assertFalse(AndroidRelaunchGuards.callIdle(normal, null, far, AndroidRelaunchGuards.CALL_END_SETTLE_MS - 1))
+        assertTrue(AndroidRelaunchGuards.callIdle(normal, null, far, AndroidRelaunchGuards.CALL_END_SETTLE_MS))
+    }
+
+    @Test fun idleAfterSettleAndHold() {
+        val normal = android.media.AudioManager.MODE_NORMAL
+        assertFalse("settled, but the 30 s hold after the scene is still running", AndroidRelaunchGuards.callIdle(normal, null, 29_999, 60_000))
+        assertTrue(AndroidRelaunchGuards.callIdle(normal, null, 30_000, 15_000))
+    }
+
+    @Test fun ringtoneModeIsBusy() {
+        assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_RINGTONE, null, far, far))
     }
 }

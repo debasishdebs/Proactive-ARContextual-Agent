@@ -294,7 +294,7 @@ class QueueDrainWorker(
         if (!written) return
         EmbeddingWorker.enqueue(applicationContext)
         PipelineRecords.upsertTrace(applicationContext, job.id, "REPROCESSED", "Re-summarized after critic feedback")
-        com.rokid.context.orchestration.nudge.NudgeTrigger.afterSummarizerPass(applicationContext)
+        if (QueuePayloads.bool(payload, "nudge", true)) com.rokid.context.orchestration.nudge.NudgeTrigger.afterSummarizerPass(applicationContext)
     }
 
     /**
