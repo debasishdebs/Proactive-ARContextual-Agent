@@ -263,6 +263,17 @@ class CanvasRunnerTest {
 
     // ---- life cycle ----
 
+    @Test fun cancelledScopeDoesNotLeaveRunnerBusy() = runBlocking<Unit> {
+        val dead = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { it.cancel() }
+        val r = runner(liveFakes()); val p = DefaultPipelines.liveExtract()
+        val id = r.start(p, p.id, null, frames(2), ok(r, p, frames(2)).confirmToken, dead)
+        finish(r)
+        assertNull(r.active.value)
+        val st = dao.run(id)?.status
+        assertTrue(st != "RUNNING" && st != null)
+        assertNotNull(begin(r, p, frames(1))); finish(r) // not Busy
+    }
+
     @Test fun cancelStopsBeforeNextChunk() = runBlocking<Unit> {
         lateinit var r: CanvasRunner
         r = runner(liveFakes(onExtractChunk = { r.cancel("run1") }))
