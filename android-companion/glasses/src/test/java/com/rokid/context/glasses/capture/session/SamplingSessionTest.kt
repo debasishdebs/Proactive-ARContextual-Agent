@@ -432,25 +432,41 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
-    @Test fun restUsesFixedEvery60s() = runTest {
-        val r = rig(this) { work = 1; rest = 5 }
-        r.fixedDuring = { assertFalse(r.camera.isOpen); assertEquals("fixed", r.owner.current) }
+    @Test fun restKeepsSamplingAtTwoPerMinute() = runTest {
+        val r = glanceRig(this) { work = 1; rest = 5; settings = HudSettings(captureMode = CaptureMode.SMART, workRestEnabled = true) }
         r.session.start()
-        delay(61_000) // one minute of work, then rest
-        assertEquals("rest", r.session.status.value.reason)
-        assertNotNull(r.session.status.value.restingUntilMs)
-        assertFalse(r.camera.isOpen)
+        r.gyro(61_000, 0f) // one minute of work, then rest
+        assertNotNull(r.session.status.value.restingUntilMs, "resting")
+        assertTrue(r.session.status.value.running, "rest keeps the session running")
         val restStart = r.clock()
-        val opensAtRest = r.camera.opens
-        delay(4 * 60_000L + 30_000)
-        assertEquals(opensAtRest, r.camera.opens, "no sampling during rest")
-        assertEquals(4, r.fixedCaptures.size)
-        r.fixedCaptures.zipWithNext { a, b -> assertEquals(60_000L, b - a) }
-        assertTrue(r.fixedCaptures.first() - restStart in 0..61_000)
-        delay(60_000) // rest over: sampling resumes
-        assertEquals(4, r.fixedCaptures.size)
+        for (i in 1..6) { r.scene = 10 + i; r.gyro(400, 1f); r.gyro(9_600, 0f) } // six real glances, 10 s apart, each on a new scene
+        assertTrue(r.session.status.value.running)
+        assertNotNull(r.session.status.value.restingUntilMs)
+        val inRest = r.keyframes.map { it.first }.filter { it >= restStart }
+        for (t in inRest) assertTrue(inRest.count { it in t until t + 60_000 } <= 2, "rolling minute from $t: $inRest")
+        assertTrue(inRest.isNotEmpty(), "rest still captures glances")
+        assertEquals(0, r.fixedCaptures.size)
+        r.session.stop("test")
+    }
+
+    @Test fun workRestDisabledByDefaultNeverRests() = runTest {
+        val r = glanceRig(this) { work = 1; rest = 5 }
+        r.session.start()
+        var t = 0
+        while (t < 120) { r.gyro(60_000, 0f); t += 60; assertNull(r.session.status.value.restingUntilMs); assertTrue(r.session.status.value.running) }
+        assertNull(r.sessionWorkRest.resting.value)
+        r.session.stop("test")
+    }
+
+    @Test fun restingFlagIsClearedWhenTheSwitchTurnsOffMidRest() = runTest {
+        val r = glanceRig(this) { work = 1; rest = 5; settings = HudSettings(captureMode = CaptureMode.SMART, workRestEnabled = true) }
+        r.session.start()
+        r.gyro(61_000, 0f)
+        assertNotNull(r.session.status.value.restingUntilMs)
+        r.settings = r.settings.copy(workRestEnabled = false)
+        r.gyro(2_000, 0f)
         assertNull(r.session.status.value.restingUntilMs)
-        assertTrue(r.camera.opens > opensAtRest)
+        assertTrue(r.session.status.value.running)
         r.session.stop("test")
     }
 
@@ -560,7 +576,8 @@ class SamplingSessionTest {
         assertNull(shared.resting.value, "work 100 s of 120 s: no rest yet")
         delay(30_000)
         assertNotNull(shared.resting.value, "the work clock kept running across the restart: rest after 2 min in total")
-        assertEquals("rest", b.session.status.value.reason)
+        assertNotNull(b.session.status.value.restingUntilMs)
+        assertTrue(b.session.status.value.running, "rest no longer blocks")
         b.session.stop("test")
     }
 
@@ -629,7 +646,7 @@ class SamplingSessionTest {
     }
 
     /** CameraOwner is not reentrant: the session starts Fixed work only after its own acquire block has ended. */
-    @Test fun fallbackAndRestFixedCapturesNeverRunInsideTheSessionBlock() = runTest {
+    @Test fun fallbackFixedCapturesNeverRunInsideTheSessionBlock() = runTest {
         val r = rig(this)
         val ran = ArrayList<String>()
         r.camera.failOpens = 99
@@ -637,12 +654,6 @@ class SamplingSessionTest {
         r.session.start()
         delay(10_000)
         assertEquals(listOf("fallback:fixed:camera=false"), ran, "the fallback capture got the owner (no deadlock)")
-        val rest = rig(this) { work = 1; rest = 5 }
-        rest.fixedDuring = { ran += "rest:${rest.owner.current}:camera=${rest.camera.isOpen}" }
-        rest.session.start()
-        delay(61_000 + 61_000)
-        assertTrue(ran.contains("rest:fixed:camera=false"), "$ran")
-        rest.session.stop("test")
     }
 
     // ---- battery wave A3 task 3: novelty gate and keep cap with the DEFAULT glance parameters ----

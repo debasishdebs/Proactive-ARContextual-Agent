@@ -57,7 +57,7 @@ fun interface KeyframeEncoder { fun encode(frame: Nv21Frame): EncodedKeyframe? }
  * deceleration; closed when settled, with a brief check (open, first usable frame, close) every 5 s (15 s after 10 quiet
  * minutes). Each analysed frame is copied into a [Candidate] before the camera's buffer is released; [KeyframeGate] picks
  * the keepers and the WINNING candidate's pixels are encoded (never the current frame). Rest and mode changes release the
- * camera first; rest runs [fixedCapture] once per minute. Heat polling is the owner's job ([HeatPoller]).
+ * camera first; rest keeps glance capture at [GlanceParams.restCapPerMin] a minute. Heat polling is the owner's job ([HeatPoller]).
  *
  * Threading: the loop and policy run on [scope]; frames arrive on the camera thread. All state is under [lock].
  * [clock] is SystemClock.elapsedRealtime (the same clock as the classifiers, heat and work/rest).
@@ -83,7 +83,7 @@ class SamplingSession(
     private val batterySaver: () -> Boolean = { false },
     private val profile: () -> CaptureProfile = { CaptureProfile.DEFAULT },
     private val phoneInUse: () -> Boolean = { false },
-    /** One Fixed-mode capture (through [owner]); the session calls it every 60 s while resting. */
+    /** Unused since wave A3 rest (rest now keeps glance capture); kept for call-site compatibility. */
     private val fixedCapture: suspend () -> Unit = {},
     /** Three failed binds: the owner runs Fixed 30 s for the rest of this session. */
     private val onFallback: () -> Unit = {},
@@ -143,7 +143,6 @@ class SamplingSession(
     private var forceBrief = false
     private var pendingDwellAt: Long? = null
     private var pendingNowAt: Long? = null
-    private var nextRestCaptureAt: Long? = null
     private val keptAt = ArrayDeque<Long>()
     // Glance counters since the last [diagSnapshot] (guarded by [lock]): opens skipped as not novel / over the cap.
     private var novelSkipAccum = 0
@@ -253,7 +252,7 @@ class SamplingSession(
         val cap = capNow()
         if (now - lastKeyframeAt < glance.noveltyWindowMs && turned < glance.noveltyMinRad && !walked) {
             novelSkipAccum++
-        } else if (k >= cap && turned < glance.bigTurnRad && !walked || k.toLong() >= 2L * cap) {
+        } else if (k >= cap && (resting || turned < glance.bigTurnRad && !walked) || k.toLong() >= 2L * cap) {
             cappedAccum++
         } else {
             pendingDwellAt = now
@@ -267,14 +266,18 @@ class SamplingSession(
         val now = clock()
         wear.tick()
         val s = settings()
-        val prof = profile()
+        val base = profile()
+        var prof = base
         var wait = TICK_MS
         var ep: Episode?
         var why: String?
         synchronized(lock) {
-            why = blockReason(s, prof)
+            why = blockReason(s, base)
             if (why == null) workRest.onSampling() else workRest.onPaused()
-            if (why == null && workRest.resting.value != null) why = "rest"
+            val nowResting = why == null && workRest.resting.value != null
+            if (nowResting != resting) stillStepV = 0 // the profile changes
+            resting = nowResting
+            if (resting) prof = base.forRest()
             blocked = why
             if (wasBlocked && why == null) stillStepV = 0
             wasBlocked = why != null
@@ -285,11 +288,9 @@ class SamplingSession(
         }
         if (why != null) {
             closeEpisode(ep)
-            if (why == "rest") restTick(now) else nextRestCaptureAt = null
             publish(now, why)
             return wait
         }
-        nextRestCaptureAt = null
         val d: CameraPolicy.Decision
         synchronized(lock) {
             val st = motion.state.value
@@ -345,16 +346,6 @@ class SamplingSession(
     }
 
     private fun lowPower() = batterySaver() || batteryPct() in 0..LOW_BATTERY_PCT
-
-    /** While resting: one Fixed capture per minute, through the camera owner, after the session has released the camera. */
-    private fun restTick(now: Long) {
-        val next = nextRestCaptureAt ?: (now + REST_CAPTURE_MS).also { nextRestCaptureAt = it }
-        if (now < next || fixedJob?.isActive == true) return
-        nextRestCaptureAt = now + REST_CAPTURE_MS
-        fixedJob = scope.launch {
-            try { fixedCapture() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("rest capture failed: ${e.javaClass.simpleName}") }
-        }
-    }
 
     private fun publish(now: Long, why: String?) {
         val running = why == null && started && !stopped
@@ -427,7 +418,7 @@ class SamplingSession(
                     log("camera not ready on the first bind: retrying in $COLD_START_RETRY_MS ms (not counted)")
                 } else if (camera.busy) onBusy(now) else onBindFailed(now)
             }
-            if (!stopped) flushed = gate.flushWindow(capNow())
+            if (!stopped) flushed = gate.flushWindow(capNow(), resting)
         }
         (flushed as? GateResult.Keep)?.let { k ->
             scope.launch(workContext) { try { emit(k, now) } catch (e: CancellationException) { throw e } catch (e: Exception) { log("emit failed: ${e.javaClass.simpleName}") } }
@@ -535,7 +526,7 @@ class SamplingSession(
         val result: GateResult? = if (FrameGuard.checkBatteryAndDark(batteryPct(), charging(), luma.toDouble()) != null) null
         else synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
-            gate.offer(cand, sampleMotion, dwellArmed, forced, capNow()).also { h = gate.lastHashes() }
+            gate.offer(cand, sampleMotion, dwellArmed, forced, capNow(), resting).also { h = gate.lastHashes() }
         }
         val usable = result != null && !(result is GateResult.Skip && result.reason == KeyframeGate.BLUR)
         if (result is GateResult.Keep) emit(result, now)
@@ -626,7 +617,6 @@ class SamplingSession(
         const val MAX_LEAD_MS = 1_500L
         const val NO_FRAME_MS = 3_000L
         const val PENDING_MS = 3_000L
-        const val REST_CAPTURE_MS = 60_000L
         const val TEN_MIN_MS = 10 * 60_000L
         const val LOW_BATTERY_PCT = 20
         const val MAX_BIND_FAILURES = 3

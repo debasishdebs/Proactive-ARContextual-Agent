@@ -145,7 +145,7 @@ class Rig(
     val gate = KeyframeGate(store, clock)
     var heatReading = HeatReading(0, Float.NaN, 30f)
     val heat = HeatGuard({ heatReading }, clock)
-    val sessionWorkRest = workRest ?: WorkRest(clock, { work }, { rest })
+    val sessionWorkRest = workRest ?: WorkRest(clock, { work }, { rest }, enabled = { settings.workRestEnabled })
     val owner = CameraOwner()
     val camera = FakeCamera(test.backgroundScope, clock, startupMs) { t -> Scenes.frame(scene, soft, t) }
     val keyframes = ArrayList<Pair<Long, KeyframeOut>>()
