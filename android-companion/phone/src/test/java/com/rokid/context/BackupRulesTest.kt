@@ -59,6 +59,8 @@ class BackupRulesTest {
     private val restorable = setOf(
         "hub_settings", "action_settings", "context_sources", "memory_settings", "retrieval_settings", "prompt_settings",
         "persona_settings", "voice_settings", "nudge_engine",
+        // The scene-grouping watch list ("keys", "receipt" ...): a plain user list of words, no ids into the DB (Ruling: wave 2 Task 3).
+        "watch_list",
         // AI call pace (10 / 12 / 15 s) is a plain user setting.
         com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.PREFS,
         // Activity sort (Latest first / Oldest first / A-Z / Z-A) is a plain UI preference kept in hub_settings: restored.

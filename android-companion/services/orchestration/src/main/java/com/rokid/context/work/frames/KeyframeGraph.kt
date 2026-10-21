@@ -10,11 +10,15 @@ import android.os.BatteryManager
 import android.os.PowerManager
 import android.util.Log
 import com.rokid.context.ai.AiGraph
+import com.rokid.context.ai.contract.ClusterContract
+import com.rokid.context.ai.contract.ClusterPhoto
 import com.rokid.context.ai.contract.ExtractOutput
 import com.rokid.context.connectors.sources.SourcesGraph
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.db.FrameClusterEntity
+import com.rokid.context.memory.frames.FrameImages
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.model.CallClass
@@ -27,11 +31,19 @@ import com.rokid.context.orchestration.nudge.NudgeDecision
 import com.rokid.context.orchestration.nudge.NudgeEvaluator
 import com.rokid.context.orchestration.nudge.NudgeRun
 import com.rokid.context.orchestration.nudge.NudgeEngineFactory
+import com.rokid.context.work.budget.BackgroundWork
 import com.rokid.context.work.budget.BudgetStats
 import com.rokid.context.work.budget.CallBudget
 import com.rokid.context.work.budget.PhoneThermal
 import com.rokid.context.work.budget.PhonePowerPolicy
 import com.rokid.context.work.budget.ThermalStatusProvider
+import com.rokid.context.work.frames.scene.ClusterSave
+import com.rokid.context.work.frames.scene.ClusterSaveResult
+import com.rokid.context.work.frames.scene.MlKitTextPresence
+import com.rokid.context.work.frames.scene.SceneIndexer
+import com.rokid.context.work.frames.scene.SpaceImageSpaces
+import com.rokid.context.work.frames.scene.WatchListStore
+import com.rokid.context.work.frames.scene.WatchVectors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -58,6 +70,13 @@ object KeyframeGraph {
 
     fun get(context: Context): KeyframeHandle = handle ?: synchronized(this) { handle ?: KeyframeHandle(context.applicationContext).also { handle = it } }
 
+    /**
+     * Whether the scene indexer is active right now (an IMAGE-capable embedder is bound and the phone may make image vectors, Ruling 2):
+     * the ingest then leaves `routedAt` NULL so the router, not the per-photo path, sees the frame first. False on any failure
+     * (wave-1 behaviour: the frame is claimable at once).
+     */
+    suspend fun sceneActive(context: Context): Boolean = try { get(context).sceneActive() } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
+
     fun resetForTests() { synchronized(this) { handle?.pipeline?.stop(); handle = null } }
 
     /** [PowerManager.currentThermalStatus] as a [ThermalStatusProvider] (API 29+; NONE below). */
@@ -83,9 +102,34 @@ class KeyframeHandle internal constructor(private val app: Context) {
 
     private val wakeLock by lazy { ExtractWakeLock(app) }
 
-    val pipeline: KeyframePipeline by lazy {
-        KeyframePipeline(db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated, onExtracted = ::afterExtraction, releaseAtStart = true)
+    private val imageSpaces by lazy { SpaceImageSpaces(MemoryGraph.get(app).spaces, AiGraph.get(app).embedders) }
+    @Volatile private var sceneCheckedAt = 0L
+    @Volatile private var sceneCached = false
+
+    /** [KeyframeGraph.sceneActive], cached for 30 s (the check builds the space's embedder). */
+    internal suspend fun sceneActive(): Boolean {
+        val now = clock()
+        if (now - sceneCheckedAt < SCENE_CHECK_MS) return sceneCached
+        val active = power.mayRunBackground(BackgroundWork.IMAGE_VECTORS) && imageSpaces.targets().any { it.active }
+        sceneCached = active; sceneCheckedAt = now
+        return active
     }
+
+    /** Scene routing (spec P4.1). With no IMAGE-capable embedder every target list is empty and frames stay on the wave-1 per-photo path. */
+    val indexer: SceneIndexer by lazy {
+        SceneIndexer(db, { imageSpaces.targets() }, MlKitTextPresence(), WatchVectors(WatchListStore.get(app)), power, ::photoBytes, clock, foreground = { KeyframeGraph.foreground() })
+    }
+
+    val pipeline: KeyframePipeline by lazy {
+        KeyframePipeline(
+            db, { ids, claim, cls -> wakeLock.hold { extract(ids, claim, cls) } }, clock, power, deferred = ::batteryDeferral, online = ::networkValidated,
+            onExtracted = ::afterExtraction, releaseAtStart = true, indexer = indexer, clusterExtractor = { cl, reps, claim, cls -> wakeLock.hold { summarize(cl, reps, claim, cls) } },
+        )
+    }
+
+    /** The JPEG bytes of [ids] (decrypted when sealed); a frame whose file is gone is left out. */
+    private suspend fun photoBytes(ids: List<String>): Map<String, ByteArray> =
+        PipelineRecords.framesByIds(app, ids).mapNotNull { f -> FrameImages.readBytes(f.path)?.let { f.id to it } }.toMap()
 
     val stats: StateFlow<KeyframeStats> by lazy {
         val budget = (AiGraph.gate as? CallBudget)?.stats ?: MutableStateFlow(BudgetStats())
@@ -187,6 +231,41 @@ class KeyframeHandle internal constructor(private val app: Context) {
         }
     }
 
+    /**
+     * One CLUSTER_SUMMARY call over the representatives [reps] of [clusters] (wave 2). The cluster CAS is inside [ClusterSave]; the follow-up
+     * (embeddings) runs after it. [ClusterContract.call] leaves out a cluster that stays invalid alone: it is reported as left out so the
+     * pipeline fails it with an attempt. Cluster memories are not offered to the fast-path nudge (Ruling 16); the backstop sees them.
+     */
+    private suspend fun summarize(clusters: List<FrameClusterEntity>, reps: Map<String, List<String>>, claimId: String, callClass: CallClass): ClusterOutcome {
+        val generation = com.rokid.context.orchestration.MemoryWipe.generation.get()
+        val loaded = FramePhotos.load(app, reps.values.flatten().distinct())
+        val frames = PipelineRecords.framesByIds(app, loaded.photos.map { it.frameId }).associateBy { it.id }
+        val motion = clusters.associate { it.clusterId to (it.motionClass ?: "UNKNOWN") }
+        val photos = reps.flatMap { (cid, ids) ->
+            ids.mapNotNull { id ->
+                val img = loaded.photos.firstOrNull { it.frameId == id } ?: return@mapNotNull null
+                val ts = frames[id]?.ts ?: 0L
+                ClusterPhoto(cid, id, android.util.Base64.decode(img.image.base64Data, android.util.Base64.DEFAULT), "cluster_id: $cid frame_id: $id time: ${java.time.Instant.ofEpochMilli(ts)} motion: ${motion[cid]}")
+            }
+        }
+        val withPhotos = photos.map { it.clusterId }.toSet()
+        val gone = reps.filter { (cid, ids) -> cid !in withPhotos && ids.all { it in loaded.gone } }.keys
+        val unseen = reps.keys - withPhotos - gone
+        if (photos.isEmpty()) return ClusterOutcome.Saved(emptyList(), leftOut = unseen, gone = gone)
+        val out = ClusterContract.call(AiGraph.get(app).runner, photos, callClass)
+        val sent = out.clusters.associate { c -> c.clusterId to photos.filter { it.clusterId == c.clusterId }.map { it.frameId } }
+        val leftOut = unseen + (withPhotos - sent.keys)
+        return when (val saved = ClusterSave.save(app, claimId, out, sent, generation, clock(), ReviewState.OK)) {
+            is ClusterSaveResult.Saved -> {
+                withContext(NonCancellable) {
+                    ExtractFollowUp.afterSave(app, generation, saved.memories, true, 1.0, AppConfigStore.getWithoutSecret(app).persona)
+                }
+                ClusterOutcome.Saved(saved.memories, saved.failedClusters.toSet(), leftOut, gone)
+            }
+            ClusterSaveResult.Stale, ClusterSaveResult.Wiped -> ClusterOutcome.Stale
+        }
+    }
+
     /** After a save (embeddings and the nudge backstop were done by [ExtractFollowUp]): an offer to the nudge evaluator for memories from dwell keyframes or a new place. */
     private suspend fun afterExtraction(frames: List<KeyframeCandidate>, memories: List<SavedMemory>) {
         if (memories.isEmpty()) return
@@ -206,6 +285,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
 
     internal companion object {
         private const val TAG = "KeyframeGraph"
+        private const val SCENE_CHECK_MS = 30_000L
 
         /** The memory id prefix of one extraction: the WHOLE claim id (a 12-char prefix collided, and a collision replaced another batch's memories). */
         fun factPrefix(claimId: String) = "$ID_ROOT${claimId}_"

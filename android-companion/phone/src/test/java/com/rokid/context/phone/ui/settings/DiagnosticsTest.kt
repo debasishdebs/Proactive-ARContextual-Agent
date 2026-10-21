@@ -106,4 +106,14 @@ class DiagnosticsTest {
         show(KeyframeRows(stats))
         compose.onNodeWithText(KeyframeLines.CLUSTER_PROMPT_OUT_OF_DATE).assertDoesNotExist()
     }
+
+    @Test fun showsClusterAndQueueCounts() {
+        val st = stats.copy(clusters = mapOf("CLOSED" to 2, "SUMMARIZED" to 5), scenePhotos24h = 120, sceneCalls24h = 9, captionQueue = 4, unrouted = 3)
+        show(KeyframeRows(st))
+        compose.onNodeWithTag("kf_clusters").assertTextContains("CLOSED 2", substring = true).assertTextContains("SUMMARIZED 5", substring = true)
+        compose.onNodeWithTag("kf_scene_photos").assertTextContains("Photos covered by scene summaries (last 24 h): 120")
+        compose.onNodeWithTag("kf_scene_calls").assertTextContains("Scene calls (last 24 h): 9")
+        compose.onNodeWithTag("kf_caption_queue").assertTextContains("Caption queue: 4")
+        compose.onNodeWithTag("kf_unrouted").assertTextContains("Unrouted: 3")
+    }
 }

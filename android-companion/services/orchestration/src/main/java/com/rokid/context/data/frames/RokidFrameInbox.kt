@@ -276,19 +276,21 @@ object RokidFrameInbox {
         appendFrame: FrameAppender = PipelineRecords::appendFrame,
         receipt: ReceiptMeta? = null,
         nowMs: () -> Long = System::currentTimeMillis,
+        sceneActive: suspend () -> Boolean = { com.rokid.context.work.frames.KeyframeGraph.sceneActive(context) },
     ): InboxResult {
         val frameId = frameIdOf(file)
         val payload = "rokid_file=${file.name} bytes=${file.length()}"
         Log.i(TAG, "ingestFile path=${file.absolutePath} source=$source exists=${file.exists()} size=${file.length()}")
         val now = nowMs()
+        val routeFirst = try { sceneActive() } catch (c: CancellationException) { throw c } catch (_: Exception) { false }
         val rows = FrameRows(
-            // routedAt = now: wave-1 behaviour (every frame is claimable at once). Wave 2 Task 6 changes this to leave routedAt NULL
-            // only when the scene indexer is active (vectors available), so the router, not the per-photo path, sees the frame first.
+            // routedAt stays NULL only when the scene indexer is active (an IMAGE-capable embedder is bound, vectors available, Ruling 2):
+            // the router, not the per-photo path, sees the frame first. Otherwise routedAt = now: wave-1 behaviour (claimable at once).
             FrameMetaEntity(
                 frameId = frameId, wireFrameId = receipt?.wireFrameId, sessionId = receipt?.sessionId,
                 motion = receipt?.motion ?: "UNKNOWN", dwell = receipt?.dwell ?: false, blur = receipt?.blur,
                 dhash = receipt?.dhash, phash = receipt?.phash, width = receipt?.width, salience = null, salienceTerms = null,
-                clusterId = null, nearDupOf = null, imageVectorSpace = null, createdAt = now, routedAt = now,
+                clusterId = null, nearDupOf = null, imageVectorSpace = null, createdAt = now, routedAt = if (routeFirst) null else now,
             ),
             FrameStateEntity(frameId = frameId, state = "PENDING", attempts = 0, lastError = null, claimedAt = null, claimId = null, updatedAt = now),
         )

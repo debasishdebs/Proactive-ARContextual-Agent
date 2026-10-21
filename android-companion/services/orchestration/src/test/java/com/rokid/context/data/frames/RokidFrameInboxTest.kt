@@ -17,6 +17,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -42,6 +43,17 @@ class RokidFrameInboxTest {
 
     private fun inboxFile(name: String, ageMs: Long = 0) = File(inbox, name).apply { writeBytes(byteArrayOf(1, 2)); setLastModified(now - ageMs) }
     private suspend fun rows() = MemoryGraph.get(ctx).db.frameDao().count()
+
+    @Test fun ingestLeavesRoutedAtNullOnlyWhenTheSceneIndexerIsActive() = runBlocking {
+        archive.mkdirs()
+        val a = File(archive, "a.jpg").apply { writeBytes(byteArrayOf(1, 2)) }
+        val b = File(archive, "b.jpg").apply { writeBytes(byteArrayOf(3, 4)) }
+        assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, a, "rokid_glasses", nowMs = { now }, sceneActive = { true }))
+        assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, b, "rokid_glasses", nowMs = { now }, sceneActive = { false }))
+        val meta = MemoryGraph.get(ctx).db.frameMetaDao()
+        assertNull("the router sees the frame first", meta.get("a")!!.routedAt)
+        assertEquals("wave-1 path: claimable at once", now, meta.get("b")!!.routedAt)
+    }
 
     @Test fun orphanPartsOlderThanAMinuteAreSwept() {
         val old = inboxFile("rokid_1_a.jpg.part", ageMs = 120_000)

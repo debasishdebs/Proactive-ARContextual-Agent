@@ -55,8 +55,11 @@ class SceneIndexer(
 
     private class Counts { var fast = 0; var dup = 0; var clustered = 0; val closed = mutableListOf<String>(); var routed = 0 }
 
-    /** Routes up to 8 unrouted PENDING frames, oldest capture first. Returns frames routed and, if it held back, when to come back. */
-    suspend fun routeBatch(): RouteResult = lock.withLock {
+    /**
+     * Routes up to 8 unrouted PENDING frames, oldest capture first. Returns frames routed and, if it held back, when to come back.
+     * [force] (an Ask) skips the background batching wait; heat still applies.
+     */
+    suspend fun routeBatch(force: Boolean = false): RouteResult = lock.withLock {
         val now = clock()
         val t = tuning()
         if (power?.severe() == true) return RouteResult(0, BLOCKED_RETRY_MS)
@@ -69,7 +72,7 @@ class SceneIndexer(
             work = rows.filter { it.dwell }
             if (work.size < rows.size) retry = BLOCKED_RETRY_MS
             if (work.isEmpty()) return RouteResult(0, retry)
-        } else if (!foreground() && rows.none { it.dwell } && rows.size < BATCH) {
+        } else if (!force && !foreground() && rows.none { it.dwell } && rows.size < BATCH) {
             val waited = now - rows.minOf { it.createdAt }
             if (waited < BACKGROUND_WAIT_MS) return RouteResult(0, BACKGROUND_WAIT_MS - waited)
         }

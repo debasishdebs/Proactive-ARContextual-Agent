@@ -1,5 +1,6 @@
 package com.rokid.context.work.frames
 
+import com.rokid.context.memory.db.FrameClusterDao
 import com.rokid.context.memory.db.FrameStateDao
 
 /**
@@ -21,12 +22,12 @@ object FrameRecovery {
      * Fix wave I5: only claims older than [processStartMs] are a dead process's; a claim made since by a worker of this process
      * (the legacy backstop claims without the pipeline) is live and stays.
      */
-    suspend fun releaseAtProcessStart(dao: FrameStateDao, nowMs: Long, processStartMs: Long = ProcessStart.wallMs): Int =
-        dao.releaseAllExtracting(nowMs, claimedBeforeMs = processStartMs)
+    suspend fun releaseAtProcessStart(dao: FrameStateDao, nowMs: Long, processStartMs: Long = ProcessStart.wallMs, clusters: FrameClusterDao? = null): Int =
+        dao.releaseAllExtracting(nowMs, claimedBeforeMs = processStartMs) + (clusters?.releaseAllSummarizing(nowMs, processStartMs) ?: 0) // a SUMMARIZING cluster goes back to CLOSED, attempts unchanged
 
-    /** Returns how many abandoned claims were requeued; [signal] is called afterwards so the pipeline drains what is claimable. */
-    suspend fun run(dao: FrameStateDao, nowMs: Long, signal: () -> Unit = {}): Int {
-        val n = dao.requeueAbandoned(nowMs, nowMs - CLAIM_TIMEOUT_MS)
+    /** Returns how many abandoned claims (frames and, with [clusters], scene clusters) were requeued; [signal] is called afterwards so the pipeline drains what is claimable. */
+    suspend fun run(dao: FrameStateDao, nowMs: Long, clusters: FrameClusterDao? = null, signal: () -> Unit = {}): Int {
+        val n = dao.requeueAbandoned(nowMs, nowMs - CLAIM_TIMEOUT_MS) + (clusters?.requeueAbandoned(nowMs, nowMs - CLAIM_TIMEOUT_MS) ?: 0)
         signal()
         return n
     }
