@@ -90,4 +90,21 @@ class GlassesRuntimeTest {
             GlassesRuntime.bridgeFactory = { CxrBridge(it) }
         }
     }
+
+    private fun ctx(state: com.rokid.context.core.model.context.ContextState) =
+        com.rokid.context.core.model.context.MotionContextMessage(state = state, atMs = 1)
+
+    /** The nudge policy reads this with no capture service running: the TTL and a session close must still end it. */
+    @Test fun contextAppliedExpiresWithTheTtlAndResetsOnCloseWithoutAService() {
+        val runtime = GlassesRuntime.get(app)
+        val driving = com.rokid.context.core.model.context.ContextState.VEHICLE_DRIVING
+        runtime.contextGate.onMessage(ctx(driving), 1_000)
+        assertEquals(driving, runtime.contextApplied(2_000))
+        assertEquals(true, !com.rokid.context.core.model.context.ContextPolicies.of(runtime.contextApplied(2_000)).nudges)
+        assertEquals(com.rokid.context.core.model.context.ContextState.UNKNOWN, runtime.contextApplied(181_001))
+        assertEquals(true, com.rokid.context.core.model.context.ContextPolicies.of(runtime.contextApplied(181_001)).nudges)
+        runtime.contextGate.onMessage(ctx(driving), 1_000)
+        runtime.contextGate.onMessage(null, 2_000) // session close
+        assertEquals(com.rokid.context.core.model.context.ContextState.UNKNOWN, runtime.contextApplied(2_500))
+    }
 }

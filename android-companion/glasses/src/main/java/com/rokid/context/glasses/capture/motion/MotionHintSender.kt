@@ -16,15 +16,19 @@ class MotionHintSender(private val clock: () -> Long, private val send: (MotionH
     private var stills = 0
     private var lastSendAt = clock()
     private var lastSentWalking = false
+    private var force = false
+
+    /** Send at the next second whatever the cadence (the session just opened). */
+    @Synchronized fun forceNext() { force = true }
 
     @Synchronized fun onSecond(state: MotionState, nowMs: Long) {
         val walking = state == MotionState.WALKING
         val since = nowMs - lastSendAt
-        if ((walking != lastSentWalking && since >= MIN_GAP_MS) || since >= REFRESH_MS) {
+        if (force || (walking != lastSentWalking && since >= MIN_GAP_MS) || since >= REFRESH_MS) {
+            force = false
             val frac = if (filled < MIN_SLOTS) -1f else stills.toFloat() / filled
-            send(MotionHint(state = state, atMs = clock(), stillFrac5m = frac))
-            lastSendAt = nowMs
-            lastSentWalking = walking
+            // A failed send (session closed, bridge error) is not a send: it is retried on the next second.
+            if (send(MotionHint(state = state, atMs = clock(), stillFrac5m = frac))) { lastSendAt = nowMs; lastSentWalking = walking }
         }
         val still = state == MotionState.STILL
         if (filled == SLOTS && ring[next]) stills--

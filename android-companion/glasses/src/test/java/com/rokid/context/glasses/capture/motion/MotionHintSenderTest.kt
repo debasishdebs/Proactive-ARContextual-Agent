@@ -31,9 +31,22 @@ class MotionHintSenderTest {
         assertEquals(listOf(MotionState.WALKING, MotionState.STILL), sent.map { it.state })
     }
 
-    @Test fun stillFractionReflectsWalkingSeconds() {
+    @Test fun stillFractionIsTheExactShareOfThePreviousSeconds() {
         run(1, 100, MotionState.STILL); run(101, 120, MotionState.HEAD_MOVING)
-        val f = sent.last().stillFrac5m
-        assertEquals(true, f in 0.5f..1f, "frac=$f")
+        assertEquals(100f / 119f, sent.last().stillFrac5m) // 100 still of the 119 seconds before the send at 120 s
+    }
+
+    @Test fun aFailedSendIsRetriedNextSecondAndForceNextSendsAtOnce() {
+        var ok = false
+        val sent2 = ArrayList<MotionHint>()
+        val t = MotionHintSender({ now }) { sent2 += it; ok }
+        now = 5_000; t.onSecond(MotionState.WALKING, now)
+        now = 6_000; t.onSecond(MotionState.WALKING, now)
+        assertEquals(2, sent2.size) // both attempts failed, so it tried again
+        ok = true; now = 7_000; t.onSecond(MotionState.WALKING, now)
+        now = 8_000; t.onSecond(MotionState.WALKING, now)
+        assertEquals(3, sent2.size)
+        t.forceNext(); now = 9_000; t.onSecond(MotionState.WALKING, now)
+        assertEquals(4, sent2.size)
     }
 }

@@ -155,12 +155,13 @@ class SamplingSession(
     private var cappedAccum = 0
     /** In a rest span the cap is [GlanceParams.restCapPerMin] (set by [tick]). Guarded by [lock]. */
     private var resting = false
-    private fun capNow(): Int {
+    /** [cc] is the context cap read once per decision, so the cap and the hard flag always agree. */
+    private fun capNow(cc: Int?): Int {
         val a3 = if (resting) glance.restCapPerMin else glance.capPerMin
-        return minOf(a3, contextCap() ?: Int.MAX_VALUE)
+        return minOf(a3, cc ?: Int.MAX_VALUE)
     }
     /** Hard cap (no dwell bonus) while resting or while a context cap is active. */
-    private fun hardNow() = resting || contextCap() != null
+    private fun hardNow(cc: Int?) = resting || cc != null
     // Camera-open time since the last [diagSnapshot] read (guarded by [lock]), for the "camera-open share" heartbeat field.
     private var openAccumMs = 0L
     private var shareFromAt = 0L
@@ -261,10 +262,11 @@ class SamplingSession(
         val k = keptAt.count { now - it < 60_000L }
         val turned = motion.rotationSinceMarkRad()
         val walked = motion.walkedSinceMark()
-        val cap = capNow()
+        val cc = contextCap()
+        val cap = capNow(cc)
         if (now - lastKeyframeAt < glance.noveltyWindowMs && turned < glance.noveltyMinRad && !walked) {
             novelSkipAccum++
-        } else if (k >= cap && (hardNow() || turned < glance.bigTurnRad && !walked) || k.toLong() >= 2L * cap) {
+        } else if (k >= cap && (hardNow(cc) || turned < glance.bigTurnRad && !walked) || k.toLong() >= 2L * cap) {
             cappedAccum++
         } else {
             pendingDwellAt = now
@@ -330,7 +332,7 @@ class SamplingSession(
                     val lead = briefLeadMs()
                     // A timer check whose frame the cap would drop anyway does not power up the camera (battery wave A3, task 9).
                     // It opens at the END of the hold, not a start-up lead early: the frame must land after the oldest keep has aged out.
-                    val hold = if (!forced && dueAt != null && now + lead >= dueAt) gate.timerHoldUntil(capNow(), now)?.takeIf { it > now } else null
+                    val hold = if (!forced && dueAt != null && now + lead >= dueAt) gate.timerHoldUntil(capNow(contextCap()), now)?.takeIf { it > now } else null
                     if (hold != null) wait = (hold - now).coerceIn(HOLD_MIN_WAIT_MS, TICK_MS) // never the 1 ms floor while a hold is live
                     else if (forced || (dueAt != null && now + lead >= dueAt)) startEpisode(continuous = false, now)
                     else if (dueAt != null) wait = (dueAt - lead - now).coerceIn(1L, TICK_MS)
@@ -434,7 +436,7 @@ class SamplingSession(
                     log("camera not ready on the first bind: retrying in $COLD_START_RETRY_MS ms (not counted)")
                 } else if (camera.busy) onBusy(now) else onBindFailed(now)
             }
-            if (!stopped) flushed = gate.flushWindow(capNow(), hardNow())
+            if (!stopped) { val cc = contextCap(); flushed = gate.flushWindow(capNow(cc), hardNow(cc)) }
         }
         (flushed as? GateResult.Keep)?.let { k ->
             scope.launch(workContext) { try { emit(k, now) } catch (e: CancellationException) { throw e } catch (e: Exception) { log("emit failed: ${e.javaClass.simpleName}") } }
@@ -542,7 +544,8 @@ class SamplingSession(
         val result: GateResult? = if (FrameGuard.checkBatteryAndDark(batteryPct(), charging(), luma.toDouble()) != null) null
         else synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
-            gate.offer(cand, sampleMotion, dwellArmed, forced, capNow(), hardNow()).also { h = gate.lastHashes() }
+            val cc = contextCap()
+            gate.offer(cand, sampleMotion, dwellArmed, forced, capNow(cc), hardNow(cc)).also { h = gate.lastHashes() }
         }
         val usable = result != null && !(result is GateResult.Skip && result.reason == KeyframeGate.BLUR)
         if (result is GateResult.Keep) emit(result, now)

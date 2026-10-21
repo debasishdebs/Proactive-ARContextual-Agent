@@ -169,7 +169,11 @@ class CameraPolicyTest {
 
     @Test fun withContextRestKeepsTheLargerT2Gaps() {
         val pol = com.rokid.context.core.model.context.ContextPolicies.of(com.rokid.context.core.model.context.ContextState.REST)
+        val big = settleT2.copy(settledCheckMs = 90_000, quietCheckMs = 200_000, walkCheckMs = 95_000, stillCapMs = 400_000)
+        assertEquals(big, big.withContext(pol))
         val r = settleT2.forRest().withContext(pol)
         assertEquals(settleT2.forRest(), r)
+        val small = settleT2.copy(settledCheckMs = 5_000, quietCheckMs = 5_000, walkCheckMs = 5_000, stillCapMs = 5_000)
+        assertEquals(30_000L, small.withContext(pol).settledCheckMs); assertEquals(120_000L, small.withContext(pol).stillCapMs)
     }
 }
