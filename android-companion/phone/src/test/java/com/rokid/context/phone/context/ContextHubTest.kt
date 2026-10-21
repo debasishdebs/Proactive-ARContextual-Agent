@@ -220,7 +220,8 @@ class ContextHubTest {
         assertEquals(SourceStatus.FAILED, f.hub.status.value["phone_activity"]); assertEquals(1, s.stops)
         f.off("phone_activity"); f.on("phone_activity")
         assertEquals("a toggle starts it again", 2, s.starts)
-        fail!!.invoke(); f.ts.runCurrent() // the new run's callback is live; an old run's is not (below)
+        fail!!.invoke(); f.ts.runCurrent() // the new run's callback is live
+        assertEquals(SourceStatus.FAILED, f.hub.status.value["phone_activity"]); assertEquals(2, s.stops)
     }
 
     @Test fun aStaleRunsFailureIsIgnored() = runTest {

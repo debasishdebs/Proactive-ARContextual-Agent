@@ -103,7 +103,7 @@ class ContextHubService : Service() {
             }
         } else if (intent?.action == ACTION_REFRESH_TYPES) {
             val wanted = micRetry.toTry(wantedTypes(inFront = true), resume)
-            if (needsReentry(currentTypes, wanted)) enterForeground(lastText, wanted)
+            refreshTypesTarget(currentTypes, wanted, appInForeground())?.let { enterForeground(lastText, it) }
         }
         // The notification's action, after the hub is started: through the shared pause control. Resume loads the stored
         // pauses first (after a process death activePauses may not have loaded yet) and names those ids.
@@ -253,8 +253,9 @@ class ContextHubService : Service() {
         val micHeld: StateFlow<Boolean> = _micHeld.asStateFlow()
 
         /**
-         * Whether the context hub wants location (the speed source is requested). Set by `HubGraph.build` to `ctxHub.speedWanted`;
-         * the `location` type is added to the foreground types only while this is true, from the front, with a location permission.
+         * Whether the `phone_speed` switch is on (set by `HubGraph.build` from the context settings). The `location` type is added to
+         * the foreground types only while this is true, from the front, with a location permission; whether fixes are actually
+         * requested is a separate decision (the hub wants speed during a suspected vehicle, and access must be valid).
          */
         @Volatile var wantLocation: () -> Boolean = { false }
 
@@ -293,6 +294,10 @@ class ContextHubService : Service() {
 
         /** A start is in front only when its intent says so; a sticky restart's null intent is the background. */
         internal fun startedInFront(intent: Intent?): Boolean = intent?.getBooleanExtra(EXTRA_IN_FRONT, false) == true
+
+        /** The types a REFRESH_TYPES should re-enter with, or null (not in the front, or nothing changes). */
+        internal fun refreshTypesTarget(current: Int?, wanted: Int, inFront: Boolean): Int? =
+            if (inFront && needsReentry(current, wanted)) wanted else null
 
         /** The types a location refresh should enter with, or null for no change (not started, in the background, or already as wanted). */
         internal fun refreshTarget(current: Int?, want: Boolean, inFront: Boolean, permitted: Boolean, sdk: Int): Int? {

@@ -178,4 +178,21 @@ class CarSourceTest {
         assertFalse(CarSource.bondedDevicesForPickerOrEmpty(permitted = false) { listOf("A" to "B") }.isNotEmpty())
         assertEquals(listOf("A" to "B"), CarSource.bondedDevicesForPickerOrEmpty(permitted = true) { listOf("A" to "B") })
     }
+
+    @Test fun aProxyFromAnEarlierRunIsRefusedAndOnlyTheCurrentRunsAreDrained() {
+        val h = CarSource.ProxyHolder<String>()
+        val run1 = h.beginRun()
+        val run2 = h.beginRun() // quick stop/start: a new run before run 1's proxy connected
+        assertFalse("a late connect of run 1 must be closed by the caller", h.add(run1, 2, "late1"))
+        assertTrue(h.add(run2, 2, "p2")); assertTrue(h.add(run2, 1, "h2"))
+        assertEquals(setOf(2 to "p2", 1 to "h2"), h.endRun().toSet())
+        assertFalse("after the run ended nothing is accepted", h.add(run2, 2, "again"))
+        assertTrue(h.endRun().isEmpty())
+    }
+
+    @Test fun aProxyThatDisconnectsIsForgotten() {
+        val h = CarSource.ProxyHolder<String>(); val r = h.beginRun()
+        h.add(r, 2, "p"); h.remove(r, 2)
+        assertTrue(h.endRun().isEmpty())
+    }
 }
