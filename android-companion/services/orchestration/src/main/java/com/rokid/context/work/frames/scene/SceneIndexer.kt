@@ -94,7 +94,7 @@ class SceneIndexer(
             val vectorWrites = db.embeddingDao()
             targets.forEachIndexed { i, tg ->
                 val rows = work.mapNotNull { m -> embedded[m.frameId]?.get(i)?.let { v -> FrameVectorEntity(m.frameId, tg.spaceId, VectorCodec.encode(v)) } }
-                if (rows.isNotEmpty()) vectorWrites.putImageVectors(rows, tg.imageDims) // one batched, width-checked transaction per target
+                if (rows.isNotEmpty()) vectorWrites.putImageVectorsForLiveFrames(rows, tg.imageDims) // one batched, width-checked transaction per target; a Forget that committed while embedding wins
             }
 
             for (m in work) {

@@ -163,6 +163,18 @@ abstract class EmbeddingDao {
     open suspend fun putImageVectors(rows: List<FrameVectorEntity>, expectedDims: Int): Int =
         rows.count { putImageVector(it.frameId, it.spaceId, it.blob, expectedDims) == ImagePut.STORED }
 
+    @Query("SELECT COUNT(*) FROM frame_meta WHERE frameId = :frameId") protected abstract suspend fun metaRows(frameId: String): Int
+    @Query("SELECT COUNT(*) FROM forget_tombstone WHERE frameId = :frameId") protected abstract suspend fun tombstoneRows(frameId: String): Int
+
+    /**
+     * [putImageVectors] for the scene indexer, in ONE transaction: a row is stored only while its `frame_meta` row exists and the frame has
+     * no Forget tombstone, so a vector embedded before a Forget and written after it is dropped (a derivative of a forgotten photo must not
+     * survive). Returns how many were stored.
+     */
+    @Transaction
+    open suspend fun putImageVectorsForLiveFrames(rows: List<FrameVectorEntity>, expectedDims: Int): Int =
+        rows.count { metaRows(it.frameId) > 0 && tombstoneRows(it.frameId) == 0 && putImageVector(it.frameId, it.spaceId, it.blob, expectedDims) == ImagePut.STORED }
+
     /** [putImageVector], only into a BUILDING or ACTIVE space and only for a photo that still exists (a late write after expiry or Forget is dropped). */
     @Transaction
     open suspend fun putImageChecked(frameId: String, spaceId: String, blob: ByteArray, expectedDims: Int): ImagePut {
