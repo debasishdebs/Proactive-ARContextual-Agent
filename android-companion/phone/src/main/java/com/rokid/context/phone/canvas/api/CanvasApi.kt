@@ -7,8 +7,10 @@ import com.rokid.context.canvas.Estimate
 import com.rokid.context.phone.canvas.server.ApiHandler
 import com.rokid.context.phone.canvas.server.HttpRequest
 import com.rokid.context.phone.canvas.server.HttpResponse
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -36,13 +38,17 @@ class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: L
         const val MAX_LIMIT = 120
         const val MAX_FRAME_IDS = 50
         const val MAX_NOTE = 280
+        const val MAX_FREEZE_NOTE = 80
         const val MAX_NAME = 80
         const val MAX_TEXT = 64 * 1024
         private val OK = buildJsonObject { put("ok", true) }
     }
 
     override fun handle(req: HttpRequest): HttpResponse = try {
-        runBlocking { withTimeout(callTimeoutMs) { dispatch(req) } }
+        // Reads are bounded by the deadline. A mutation (publish, rollback, freeze, save, start, cancel, score, delete) runs to
+        // completion once started: cancelling it between two writes could leave live prompts changed with no publish record.
+        if (req.method.equals("GET", true)) runBlocking { withTimeout(callTimeoutMs) { dispatch(req) } }
+        else runBlocking { withContext(NonCancellable) { dispatch(req) } }
     } catch (e: TimeoutCancellationException) {
         HttpResponse.error(503, "busy", "The phone is busy. Try again.")
     } catch (e: ApiError) {
@@ -76,7 +82,7 @@ class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: L
                 else throw ApiError(409, "conflict", "Built-in and published pipelines cannot be deleted.")
             }
             "POST pipelines/:id/freeze" -> {
-                val note = optBody(req)?.optString("note", MAX_NOTE) ?: ""
+                val note = optBody(req)?.optString("note", MAX_FREEZE_NOTE) ?: ""
                 json(backend.freeze(id(s[1]), note))
             }
             "POST pipelines/:id/versions/:n/publish" -> {

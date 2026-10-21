@@ -146,7 +146,8 @@ class CanvasApiTest {
         assertEquals(2, r.obj()["version"]!!.jsonPrimitive.int)
         assertTrue("freeze:first" in be.calls)
         assertEquals(200, call("POST", "/api/pipelines/p-1/freeze").status) // note optional
-        assertEquals(400, call("POST", "/api/pipelines/p-1/freeze", """{"note":"${"x".repeat(281)}"}""").status)
+        assertEquals(400, call("POST", "/api/pipelines/p-1/freeze", """{"note":"${"x".repeat(81)}"}""").status)
+        assertEquals(200, call("POST", "/api/pipelines/p-1/freeze", """{"note":"${"x".repeat(80)}"}""").status)
     }
 
     @Test fun freezeInvalidPipeline() {
@@ -327,6 +328,20 @@ class CanvasApiTest {
         val r = slow.handle(HttpRequest("GET", "/api/pipelines", emptyMap(), emptyMap(), ByteArray(0)))
         assertEquals(503, r.status)
         assertEquals("busy", Json.parseToJsonElement(String(r.body)).jsonObject["error"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun mutationSurvivesRequestDeadline() {
+        var finished = false
+        val slow = CanvasApi(object : CanvasBackend by be {
+            override suspend fun publish(id: String, version: Int): CanvasPublisher.Outcome {
+                delay(400) // longer than the 100 ms deadline
+                finished = true
+                return CanvasPublisher.Outcome.Published(9, emptyList())
+            }
+        }, callTimeoutMs = 100)
+        val r = slow.handle(HttpRequest("POST", "/api/pipelines/p-1/versions/1/publish", emptyMap(), emptyMap(), ByteArray(0)))
+        assertTrue(finished)
+        assertEquals(200, r.status)
     }
 
     @Test fun errorsNeverEchoInput() {
