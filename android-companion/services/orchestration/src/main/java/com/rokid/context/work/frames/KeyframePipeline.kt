@@ -52,6 +52,9 @@ sealed interface ExtractOutcome {
     /** The claim no longer held, or Delete all ran: the output was dropped and nothing was written. */
     data class Stale(override val unreadable: Set<String> = emptySet(), override val unseen: Set<String> = emptySet()) : ExtractOutcome
 
+    /** Delete all ran since the work began: nothing was written. Handled like [Stale] by the pipeline, but a caller (describe on demand) can tell it apart (S5). */
+    data class Wiped(override val unreadable: Set<String> = emptySet(), override val unseen: Set<String> = emptySet()) : ExtractOutcome
+
     /**
      * [countsAttempt] false (offline, no provider set up): the frames go back to PENDING with no attempt used.
      * [maxAttempts]: the failure that ends in FAILED_FINAL; transient failures (429, 5xx, timeouts) get [RetryPolicy.MAX_ATTEMPTS]
@@ -86,6 +89,20 @@ sealed interface ExtractOutcome {
 
         private const val CHAIN_DEPTH = 8
     }
+}
+
+/** What [KeyframePipeline.extractNow] concluded for one frame (S5). */
+sealed interface ExtractNowOutcome {
+    /** The frame is EXTRACTED and [memories] memories cite it. */
+    data class Extracted(val memories: Int) : ExtractNowOutcome
+    /** The call ran and the frame is EXTRACTED, but nothing in it was worth a memory. */
+    data object ExtractedEmpty : ExtractNowOutcome
+    /** The frame was not claimed (someone else holds it, it is not claimable) or its claim no longer held at the save. Re-read its state. */
+    data object LostClaim : ExtractNowOutcome
+    /** The call or the photo failed ([kind]: `unreadable` = the photo can never be read again, `unseen`, `offline`, a provider or class name). */
+    data class Failed(val kind: String) : ExtractNowOutcome
+    /** Delete all ran during the call; nothing was written. */
+    data object Wiped : ExtractNowOutcome
 }
 
 /**
@@ -278,6 +295,41 @@ class KeyframePipeline(
         return done
     }
 
+    /**
+     * User-started extraction of exactly [frameIds] (describe on demand): claims through [FrameStateDao.claimForAsk] (PENDING, IN_CLUSTER of
+     * an OPEN/CLOSED cluster) and [FrameStateDao.claimCaptionQueued], then the ordinary [runBatch] path as [callClass] with `user = true`
+     * (CAS, settle, follow-up, no power gate). One outcome per requested frame; a frame this call did not claim is [ExtractNowOutcome.LostClaim].
+     */
+    suspend fun extractNow(frameIds: List<String>, callClass: CallClass = CallClass.USER): Map<String, ExtractNowOutcome> {
+        val ids = frameIds.distinct().take(MAX_BATCH)
+        if (ids.isEmpty()) return emptyMap()
+        ensureStartRelease()
+        val now = clock()
+        val picked = candidates(ids, emptyMap())
+        var claimedFrames = emptyList<KeyframeCandidate>()
+        var result: ExtractOutcome? = null
+        runBatch(picked, callClass, user = true, report = { frames, o -> claimedFrames = frames; result = o }) { batch, claimId ->
+            val asked = states.claimForAsk(batch, claimId, now).map { it.frameId }
+            val rest = batch - asked.toSet()
+            asked + if (rest.isEmpty()) emptyList() else states.claimCaptionQueued(rest, claimId, now).map { it.frameId }
+        }
+        val o = result
+        val claimed = claimedFrames.map { it.frameId }.toSet()
+        return ids.associateWith { id ->
+            when {
+                o == null || id !in claimed -> ExtractNowOutcome.LostClaim
+                id in o.unreadable -> ExtractNowOutcome.Failed("unreadable")
+                id in o.unseen -> ExtractNowOutcome.Failed("unseen")
+                else -> when (o) {
+                    is ExtractOutcome.Saved -> o.memories.count { id in it.frameIds }.let { if (it > 0) ExtractNowOutcome.Extracted(it) else ExtractNowOutcome.ExtractedEmpty }
+                    is ExtractOutcome.Stale -> ExtractNowOutcome.LostClaim
+                    is ExtractOutcome.Wiped -> ExtractNowOutcome.Wiped
+                    is ExtractOutcome.Failed -> ExtractNowOutcome.Failed(o.error)
+                }
+            }
+        }
+    }
+
     private suspend fun process() {
         while (true) {
             val paused = pausedUntilMs - clock()
@@ -374,7 +426,12 @@ class KeyframePipeline(
     }
 
     /** Claims [picked] (through [claim]) and runs one extraction call over them. */
-    private suspend fun runBatch(picked: List<KeyframeCandidate>, callClass: CallClass, user: Boolean, claim: suspend (List<String>, String) -> List<String>): Step {
+    private suspend fun runBatch(
+        picked: List<KeyframeCandidate>, callClass: CallClass, user: Boolean,
+        /** Told which frames were claimed and how the call ended, before they are settled ([extractNow]). */
+        report: ((claimed: List<KeyframeCandidate>, outcome: ExtractOutcome) -> Unit)? = null,
+        claim: suspend (List<String>, String) -> List<String>,
+    ): Step {
         if (!user && power?.tryExtraction() == false) return Step.Idle(pollMs, blocked = true)
         val claimId = newClaimId()
         val claimed = claim(picked.map { it.frameId }, claimId).toSet()
@@ -391,6 +448,7 @@ class KeyframePipeline(
             Log.i(TAG, "extraction failed: ${e.javaClass.simpleName}")
             ExtractOutcome.classify(e, online())
         }
+        report?.invoke(frames, outcome)
         return Step.Done(settle(frames, claimId, outcome, user, offerToNudges = callClass != CallClass.BACKFILL))
     }
 
@@ -527,7 +585,7 @@ class KeyframePipeline(
                 if (offerToNudges) runCatching { onExtracted(rest, o.memories) }.onFailure { Log.w(TAG, "post-extraction hook failed: ${it.javaClass.simpleName}") }
                 rest.size
             }
-            is ExtractOutcome.Stale -> {
+            is ExtractOutcome.Stale, is ExtractOutcome.Wiped -> {
                 // One claim failed the CAS and rolled the whole save back: give back every other claim of the batch with no attempt.
                 // release() is claim-guarded, so the stale frame itself (retaken, forgotten) is left alone.
                 withContext(NonCancellable) { rest.forEach { states.release(it.frameId, claimId, clock()) } }

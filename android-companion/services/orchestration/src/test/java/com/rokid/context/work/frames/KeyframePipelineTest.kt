@@ -410,4 +410,31 @@ class KeyframePipelineTest {
         assertEquals("NEAR_DUP", state("f3")); assertEquals("NEAR_DUP", state("f1"))
         assertEquals(29, db.frameStateDao().shedCount().first()) // 30 older frames, minus the queued f2
     }
+
+    // --- wave 3 Task 2 (S5): extractNow's typed outcome per frame --------------------------------------------------------
+
+    @Test fun extractNowTypesEachFramesOutcome() = runBlocking {
+        seed("a", 1000); seed("b", 2000); seed("held", 3000, state = "EXTRACTING"); seed("done", 4000, state = "EXTRACTED")
+        val saved = pipeline({ ids, claim, cls ->
+            calls += ids to cls
+            ids.forEach { check(db.frameStateDao().completeIfClaimed(it, claim, "EXTRACTED", now) == 1) }
+            ExtractOutcome.Saved(listOf(com.rokid.context.orchestration.SavedMemory("m1", listOf("a"), 0)))
+        })
+        val r = saved.extractNow(listOf("a", "b", "held"))
+        assertEquals(mapOf("a" to ExtractNowOutcome.Extracted(1), "b" to ExtractNowOutcome.ExtractedEmpty, "held" to ExtractNowOutcome.LostClaim), r)
+        assertEquals(listOf(listOf("a", "b") to CallClass.USER), calls.map { it.first.sorted() to it.second })
+        assertEquals("EXTRACTING", state("held")) // someone else's claim is untouched
+        assertEquals(mapOf("done" to ExtractNowOutcome.LostClaim), saved.extractNow(listOf("done"))) // not claimable: nothing runs
+        assertEquals(1, calls.size)
+    }
+
+    @Test fun extractNowFailureWipeAndStaleAreDistinct() = runBlocking {
+        seed("f", 1000); seed("w", 2000); seed("s", 3000)
+        assertEquals(mapOf("f" to ExtractNowOutcome.Failed("offline")), pipeline({ _, _, _ -> ExtractOutcome.Failed("offline", countsAttempt = false) }).extractNow(listOf("f")))
+        assertEquals("PENDING", state("f")) // given back, no attempt
+        assertEquals(mapOf("w" to ExtractNowOutcome.Wiped), pipeline({ _, _, _ -> ExtractOutcome.Wiped() }).extractNow(listOf("w")))
+        assertEquals("PENDING", state("w"))
+        assertEquals(mapOf("s" to ExtractNowOutcome.LostClaim), pipeline({ _, _, _ -> ExtractOutcome.Stale() }).extractNow(listOf("s")))
+        assertEquals(mapOf("s" to ExtractNowOutcome.Failed("unreadable")), pipeline({ _, _, _ -> ExtractOutcome.Failed("unreadable", unreadable = setOf("s")) }).extractNow(listOf("s")))
+    }
 }

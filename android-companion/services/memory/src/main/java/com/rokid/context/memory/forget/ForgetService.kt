@@ -35,6 +35,8 @@ class ForgetService(
         val framesToDelete: List<String>,
         /** Proposals of the redacted asks/nudges (any state): their posted notifications must go. */
         val redactedProposals: List<String> = emptyList(),
+        /** [expirePhotos]: how many photos it actually expired (a recheck or `requireLinked` skip is not counted). */
+        val expiredFrames: Int = 0,
     ) {
         companion object { val EMPTY = Result(emptySet(), emptySet(), 0, 0, emptyList()) }
     }
@@ -91,19 +93,24 @@ class ForgetService(
      * the caller to delete (on IO, under the WipeFence, through `FrameSweep.delete`). An unknown or already expired frame is skipped.
      * UI that assumes `memory.frameId` has a row shows "Photo expired". With [requireLinked] (every deadline-based expiry) a photo that no
      * memory cites any more (the memory was forgotten or expired since the caller selected it) is skipped inside the same transaction: an
-     * undescribed photo is never deleted by retention.
+     * undescribed photo is never deleted by retention. With [recheckSkipped] (the skipped-photo retention caller) each id is re-evaluated against
+     * the skipped-photo rule inside the transaction and skipped when it no longer qualifies: a photo the user described after the caller selected
+     * it is kept (S4).
      */
-    suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false): Result = db.withTransaction {
+    suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = db.withTransaction {
         val paths = mutableListOf<String>()
+        var expired = 0
         val now = clock()
         for (id in frameIds.distinct()) {
             val frame = dao.frame(id) ?: continue
             if (requireLinked && dao.remainingRefs(id) == 0) continue
+            if (recheckSkipped && dao.stillSkippedPhoto(id) == 0) continue
+            expired++
             dao.insertTombstone(ForgetTombstoneEntity(id, now))
             dao.deleteFrame(id)
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
-        Result.EMPTY.copy(framesToDelete = paths.distinct())
+        Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
     }
 
     private fun sidecarOf(jpegPath: String) = jpegPath.removeSuffix(".jpg") + ".meta.json"
