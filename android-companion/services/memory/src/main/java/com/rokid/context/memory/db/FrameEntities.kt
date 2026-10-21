@@ -25,6 +25,12 @@ data class FrameMetaEntity(
     val createdAt: Long,
     /** Room v4 (wave 2): null = the scene router has not seen this frame yet. */
     val routedAt: Long? = null,
+    /** Room v5 (wave B): the image-intent result for this photo (null = not classified). */
+    @ColumnInfo(defaultValue = "NULL") val intentLabel: String? = null,
+    @ColumnInfo(defaultValue = "NULL") val intentConf: Float? = null,
+    @ColumnInfo(defaultValue = "NULL") val intentAt: Long? = null,
+    /** Room v5 (wave 3): when the glasses captured the photo, on the phone clock (null = unknown, e.g. a pre-v5 row). [createdAt] is the receive time. */
+    @ColumnInfo(defaultValue = "NULL") val capturedAtMs: Long? = null,
 )
 
 enum class FrameState { PENDING, EXTRACTING, EXTRACTED, CLUSTERED, NEAR_DUP, FAILED, FAILED_FINAL, IN_CLUSTER, CAPTION_QUEUED }

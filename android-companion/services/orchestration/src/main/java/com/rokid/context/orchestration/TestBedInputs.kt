@@ -55,6 +55,8 @@ class TestBedInputs(
                     setOfNotNull("test", frame?.id),
                 )
             }
+            // One photo, no variables: the seed has no placeholders.
+            PromptKey.INTENT_CLASSIFY -> Prepared(PromptVars(), frameFor(input)?.let { FrameInputs.fromFrames(listOf(it), 1) }.orEmpty(), emptySet())
             PromptKey.EXPLICIT_REMEMBER -> Prepared(PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(text))), emptyList(), emptySet())
             PromptKey.SUMMARIZE -> Prepared(
                 PromptVars(recentContext = PromptComposer.dataBlock("memories", text.lines().filter { it.isNotBlank() }) + "\n" + PromptComposer.dataBlock("critic_notes", listOf("test run"))),

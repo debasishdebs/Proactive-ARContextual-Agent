@@ -11,7 +11,8 @@ object TemplateVariables {
     fun used(template: String): Set<String> = PLACEHOLDER.findAll(template).map { it.groupValues[1] }.toCollection(LinkedHashSet())
     fun unknown(template: String): List<String> = used(template).filter { it !in KNOWN }
     fun required(key: PromptKey): Set<String> = when (key) {
-        PromptKey.SYSTEM -> emptySet()
+        // The INTENT_CLASSIFY seed is a fixed instruction over one attached photo: it takes no variables.
+        PromptKey.SYSTEM, PromptKey.INTENT_CLASSIFY -> emptySet()
         PromptKey.ANSWER -> setOf("question", "retrieved_memories")
         else -> setOf("recent_context")
     }

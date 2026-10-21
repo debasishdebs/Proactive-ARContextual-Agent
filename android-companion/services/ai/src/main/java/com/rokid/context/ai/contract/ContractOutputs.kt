@@ -25,6 +25,8 @@ data class ExtractOutput(
     val facts: List<Fact>, override val extras: JsonObject = JsonObject(emptyMap()),
     val captions: List<FrameCaption> = emptyList(), val provenance: Boolean = false,
 ) : ContractOutput
+/** An INTENT_CLASSIFY result: [label] (unknown names are OTHER) and [confidence] clamped to 0..1. */
+data class IntentOutput(val label: com.rokid.context.core.model.context.IntentLabel, val confidence: Float, override val extras: JsonObject = JsonObject(emptyMap())) : ContractOutput
 data class SummaryOutput(
     val summary: String, val events: List<String>, val entities: List<String>, val confidence: Double, val candidateMemoryType: String,
     override val extras: JsonObject = JsonObject(emptyMap()),

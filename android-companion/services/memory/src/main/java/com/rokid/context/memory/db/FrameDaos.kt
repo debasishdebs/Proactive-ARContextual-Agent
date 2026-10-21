@@ -360,6 +360,18 @@ interface FrameMetaDao {
             "imageVectorSpace = :imageVectorSpace, routedAt = :routedAt WHERE frameId = :frameId",
     )
     suspend fun markRouted(frameId: String, salience: Float?, salienceTerms: String?, nearDupOf: String?, clusterId: String?, imageVectorSpace: String?, routedAt: Long)
+
+    /** Wave B: records the image-intent result of a photo. Returns the rows changed (0 = no such frame). */
+    @Query("UPDATE frame_meta SET intentLabel = :label, intentConf = :conf, intentAt = :at WHERE frameId = :frameId")
+    suspend fun setIntent(frameId: String, label: String, conf: Float, at: Long): Int
+
+    /** The newest photo received at or after [sinceMs] that has no intent result yet. */
+    @Query("SELECT * FROM frame_meta WHERE createdAt >= :sinceMs AND intentLabel IS NULL ORDER BY createdAt DESC, frameId LIMIT 1")
+    suspend fun newestUnlabelled(sinceMs: Long): FrameMetaEntity?
+
+    /** Wave 3: sets the capture time of a photo (phone clock). Returns the rows changed. */
+    @Query("UPDATE frame_meta SET capturedAtMs = :capturedAtMs WHERE frameId = :frameId")
+    suspend fun setCapturedAt(frameId: String, capturedAtMs: Long): Int
 }
 
 @Dao

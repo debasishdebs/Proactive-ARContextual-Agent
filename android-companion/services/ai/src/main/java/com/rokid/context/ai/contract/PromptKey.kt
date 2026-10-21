@@ -12,7 +12,9 @@ enum class PromptKey(val role: Role?, val label: String) {
     ANSWER(Role.ANSWER, "Answer"),
     NUDGE(Role.NUDGE, "Nudge"),
     /** Wave 2: one call summarises up to 3 closed scene clusters. Appended so [of] still returns VISION_EXTRACT for the role. */
-    CLUSTER_SUMMARY(Role.VISION_EXTRACT, "Scene summaries");
+    CLUSTER_SUMMARY(Role.VISION_EXTRACT, "Scene summaries"),
+    /** Wave B: one photo in, the wearer's activity out ([IntentOutput]). Appended after [CLUSTER_SUMMARY]; [of] still returns VISION_EXTRACT for the role. */
+    INTENT_CLASSIFY(Role.VISION_EXTRACT, "Activity from a photo");
 
     companion object {
         fun of(role: Role): PromptKey? = entries.firstOrNull { it.role == role }

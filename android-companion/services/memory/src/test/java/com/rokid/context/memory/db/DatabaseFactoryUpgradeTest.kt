@@ -23,23 +23,33 @@ class DatabaseFactoryUpgradeTest {
 
     private fun assertUpgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(4, raw.version)
+        assertEquals(5, raw.version)
         V1Fixture.tables(1).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertTrue(V1Fixture.tableNames(raw).containsAll(V1Fixture.FRAME_TABLES))
+        assertNullCols(raw)
+    }
+
+    /** v5 columns on frame_meta (intent + wave 3 capture time): a pre-v5 row keeps them NULL. */
+    private fun assertNullCols(raw: androidx.sqlite.db.SupportSQLiteDatabase) {
+        raw.query("SELECT intentLabel, intentConf, intentAt, capturedAtMs FROM frame_meta").use {
+            // A v1 file has no frame_meta rows (the table is born at v2): the columns must exist; a surviving row keeps them NULL.
+            while (it.moveToNext()) (0..3).forEach { i -> assertTrue("col $i null", it.isNull(i)) }
+        }
     }
 
     /** A real v3 file (frame_*, canvas_* and every other table seeded) through the production builders: canvas rows survive. */
     private fun assertV3Upgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(4, raw.version)
+        assertEquals(5, raw.version)
         V1Fixture.tables(3).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertEquals("CLOSED", raw.query("SELECT state FROM frame_cluster").use { it.moveToFirst(); it.getString(0) })
         assertTrue(raw.query("SELECT routedAt FROM frame_meta").use { it.moveToFirst(); it.isNull(0) })
+        assertNullCols(raw)
     }
 
     private fun createV3() { helper.createDatabase(DatabaseFactory.NAME, 3).use { V1Fixture.seedVersion(it, 3) } }
 
-    @Test fun v1FileUpgradesToV4ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
+    @Test fun v1FileUpgradesToV5ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
         listOf(false, true).forEach { deferred ->
             ctx.getDatabasePath(DatabaseFactory.NAME).delete()
             V1Fixture.create(DatabaseFactory.NAME)
@@ -48,7 +58,7 @@ class DatabaseFactoryUpgradeTest {
         }
     }
 
-    @Test fun v3FileUpgradesToV4ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
+    @Test fun v3FileUpgradesToV5ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
         listOf(false, true).forEach { deferred ->
             ctx.getDatabasePath(DatabaseFactory.NAME).delete()
             createV3()

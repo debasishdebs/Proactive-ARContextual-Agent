@@ -45,6 +45,12 @@ object RoleContracts {
                 (o["captions"] as? JsonArray).orEmpty().map { c -> c.jsonObject.let { FrameCaption(str(it, "frame_id"), str(it, "caption")) } },
                 extras(o, "clusters", "captions"),
             )
+            // "label" and "confidence" are required: an output without either is a contract failure (getValue throws).
+            PromptKey.INTENT_CLASSIFY -> IntentOutput(
+                com.rokid.context.core.model.context.IntentLabel.parse(str(o, "label")),
+                (o.getValue("confidence") as JsonPrimitive).double.toFloat().coerceIn(0f, 1f),
+                extras(o, "label", "confidence"),
+            )
             PromptKey.EXPLICIT_REMEMBER -> ExtractOutput(
                 o.getValue("facts").jsonArray.map { f ->
                     val fo = f.jsonObject
@@ -92,6 +98,7 @@ object RoleContracts {
                 output.captions.filterNot { it.frameId in ctx.inputIds }.takeIf { it.isNotEmpty() }
                     ?.let { add("captions for photos that were not sent: ${it.take(3).joinToString(", ") { c -> c.frameId }}") }
             }
+            is IntentOutput -> Unit
             is SummaryOutput -> if (output.confidence !in 0.0..1.0) add("confidence must be 0–1")
             is CriticOutput -> Unit
             is AnswerOutput -> {

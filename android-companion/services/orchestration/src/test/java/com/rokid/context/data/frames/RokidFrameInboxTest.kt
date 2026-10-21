@@ -55,6 +55,20 @@ class RokidFrameInboxTest {
         assertEquals("wave-1 path: claimable at once", now, meta.get("b")!!.routedAt)
     }
 
+    @Test fun ingestRecordsTheGlassesCaptureTimeOnlyForAReceipt() = runBlocking {
+        archive.mkdirs()
+        val captured = now - 90_000
+        val a = File(archive, "a.jpg").apply { writeBytes(byteArrayOf(1, 2)); setLastModified(captured) }
+        val b = File(archive, "b.jpg").apply { writeBytes(byteArrayOf(3, 4)); setLastModified(captured) }
+        val receipt = ReceiptMeta(wireFrameId = "w-a", capturedAtMs = 7, size = 2)
+        assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, a, "rokid_glasses", receipt = receipt, nowMs = { now }, sceneActive = { false }))
+        assertEquals(InboxResult.STORED, RokidFrameInbox.ingestFile(ctx, b, "rokid_glasses", nowMs = { now }, sceneActive = { false }))
+        val meta = MemoryGraph.get(ctx).db.frameMetaDao()
+        assertEquals("phone-clock capture time (the receipt file's mtime), not the receive time", captured, meta.get("a")!!.capturedAtMs)
+        assertEquals(now, meta.get("a")!!.createdAt)
+        assertNull("a file without a receipt has no known capture time", meta.get("b")!!.capturedAtMs)
+    }
+
     @Test fun orphanPartsOlderThanAMinuteAreSwept() {
         val old = inboxFile("rokid_1_a.jpg.part", ageMs = 120_000)
         assertEquals(1, RokidFrameInbox.sweepOrphanParts(ctx, nowMs = now))
