@@ -106,6 +106,7 @@ object CriticExecutor : NodeExecutor {
         return items.mapIndexed { i, it ->
             val v = it.value as? CanvasValue.Extraction ?: return@mapIndexed NodeResult(it.frameId, null, error = "BAD_INPUT")
             if (!bound) return@mapIndexed NodeResult(it.frameId, v.copy(trusted = false, note = "unbound"), branch = "fail")
+            if (v.facts.isEmpty()) return@mapIndexed NodeResult(it.frameId, v.copy(trusted = true), branch = "pass") // nothing to review: no model call
             val started = System.nanoTime()
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {

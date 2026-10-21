@@ -195,7 +195,7 @@ class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: L
             })
             CanvasRepository.SaveResult.Conflict -> throw ApiError(409, "conflict", "The draft changed. Reload it.")
             CanvasRepository.SaveResult.ReadOnly -> throw ApiError(403, "forbidden", "Built-in pipelines are read-only.")
-            is CanvasRepository.SaveResult.Unreadable -> throw ApiError(400, "bad_request", "The pipeline JSON is not readable.", listOf(r.reason.take(200)))
+            is CanvasRepository.SaveResult.Unreadable -> throw ApiError(400, "bad_request", "Pipeline JSON is not valid.")
         }
     }
 

@@ -35,7 +35,7 @@ class CanvasServer(
      * response write, and the idle wait for the next keep-alive request. It is disarmed only while our handler runs
      * (the API bounds that itself). A client that drips bytes is closed when the deadline passes.
      */
-    private class BoundedRunner(private val max: Int, private val deadlineMs: Long, private val log: (String) -> Unit) : NanoHTTPD.AsyncRunner {
+    internal class BoundedRunner(private val max: Int, private val deadlineMs: Long, private val log: (String) -> Unit) : NanoHTTPD.AsyncRunner {
         private class Conn(val handler: NanoHTTPD.ClientHandler) { @Volatile var deadline = Long.MAX_VALUE }
 
         private val permits = Semaphore(max)
@@ -80,7 +80,7 @@ class CanvasServer(
         fun disarm() { current.get()?.deadline = Long.MAX_VALUE }
     }
 
-    private inner class Daemon(hostname: String?, port: Int) : NanoHTTPD(hostname, port) {
+    internal inner class Daemon(hostname: String?, port: Int) : NanoHTTPD(hostname, port) {
         val runner = BoundedRunner(maxClients, deadlineMs, log)
         init { setAsyncRunner(runner) }
 
@@ -93,7 +93,7 @@ class CanvasServer(
             toResponse(router.handle(req)).also { if (unread) it.closeConnection(true) }.also { runner.arm() }
         } catch (e: Throwable) {
             runner.arm()
-            toResponse(HttpResponse.error(500, "internal", "Something went wrong."))
+            toResponse(router.withSecurityHeaders(HttpResponse.error(500, "internal", "Something went wrong.")))
         }
     }
 
