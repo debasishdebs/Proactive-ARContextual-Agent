@@ -17,6 +17,10 @@ import com.rokid.context.core.model.HelloRequest
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.LinkState
 import com.rokid.context.core.model.MemoryLine
+import com.rokid.context.core.model.MotionHint
+import com.rokid.context.core.model.MotionState
+import com.rokid.context.core.model.context.ContextState
+import com.rokid.context.core.model.context.MotionContextMessage
 import com.rokid.context.core.model.NudgeLine
 import com.rokid.context.core.model.Overlay
 import com.rokid.context.core.model.PROTOCOL_VERSION
@@ -84,6 +88,10 @@ class HubTest {
         reopenGuards: RelaunchGuards? = null,
         standDown: StandDown = InMemoryStandDown(),
         phoneUse: kotlinx.coroutines.flow.StateFlow<Boolean> = kotlinx.coroutines.flow.MutableStateFlow(false),
+        motionContext: kotlinx.coroutines.flow.StateFlow<MotionContextMessage?> = kotlinx.coroutines.flow.MutableStateFlow(null),
+        onMotionHint: (MotionHint) -> Unit = {},
+        ctxStart: () -> Unit = {},
+        ctxStop: () -> Unit = {},
     ): Hub {
         val pauses = HubPauses(dao, now = clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
@@ -92,12 +100,65 @@ class HubTest {
         return Hub(
             backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler),
             startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, standDown = standDown, phoneUse = phoneUse,
+            motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop,
         )
             .also { if (start) { it.start(); runCurrent() } }
     }
     private fun FakeGlassesLink.lastOn(channel: String) = sent.last { it.first == channel }.second
     private fun hello(glassesNowMs: Long = now, pauses: List<PauseRecord> = emptyList()) =
         GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 77, bufferSize = 4, glassesNowMs = glassesNowMs, pauses = pauses))
+
+    private fun ctxMsg(at: Long = now, since: Long = now - 60_000, state: ContextState = ContextState.VEHICLE_DRIVING) =
+        MotionContextMessage(state = state, confidence = 0.9f, sinceMs = since, atMs = at, reasons = listOf("ANDROID_AUTO"))
+
+    @Test fun motionContextIsSentOnItsChannelWithTheSessionStart() = runTest {
+        val link = FakeGlassesLink(); val flow = MutableStateFlow<MotionContextMessage?>(null)
+        hub(link, motionContext = flow)
+        assertTrue(link.sent.none { it.first == Channels.MOTION_CONTEXT })
+        link.emitReady(); runCurrent(); link.sent.clear()
+        flow.value = ctxMsg(); runCurrent()
+        val sent = Wire.decode<MotionContextMessage>(link.lastOn(Channels.MOTION_CONTEXT)) as Decoded.Ok
+        assertEquals(ContextState.VEHICLE_DRIVING, sent.value.state)
+        assertEquals(now, sent.value.sessionStartMs)
+    }
+
+    @Test fun motionContextIsResentOnReadyAsAFreshEnvelope() = runTest {
+        val link = FakeGlassesLink(); val flow = MutableStateFlow<MotionContextMessage?>(ctxMsg(at = now - 500_000))
+        var t = now
+        hub(link, clock = { t }, motionContext = flow)
+        link.emitReady(); runCurrent()
+        t = now + 90_000
+        link.sent.clear(); link.emitReady(); runCurrent()
+        val m = (Wire.decode<MotionContextMessage>(link.lastOn(Channels.MOTION_CONTEXT)) as Decoded.Ok).value
+        assertEquals(t, m.sessionStartMs)
+        assertTrue(m.atMs >= m.sessionStartMs)
+        assertEquals(now - 60_000, m.sinceMs)
+        assertEquals(ContextState.VEHICLE_DRIVING, m.state)
+    }
+
+    @Test fun motionContextGoingNullSendsAnExplicitRevoke() = runTest {
+        val link = FakeGlassesLink(); val flow = MutableStateFlow<MotionContextMessage?>(null)
+        hub(link, motionContext = flow)
+        flow.value = ctxMsg(); runCurrent(); link.sent.clear()
+        flow.value = null; runCurrent()
+        val m = (Wire.decode<MotionContextMessage>(link.lastOn(Channels.MOTION_CONTEXT)) as Decoded.Ok).value
+        assertEquals(ContextState.UNKNOWN, m.state); assertTrue(m.reasons.isEmpty())
+    }
+
+    @Test fun motionHintEventReachesTheHubCallback() = runTest {
+        val link = FakeGlassesLink(); val got = ArrayList<MotionHint>()
+        hub(link, onMotionHint = { got += it })
+        val h = MotionHint(MotionState.WALKING, now, stillFrac5m = 0.1f)
+        link.emit(GlassesEvent.MotionHintReceived(h)); runCurrent()
+        assertEquals(listOf(h), got)
+    }
+
+    @Test fun contextLifecycleFollowsHubStartAndStop() = runTest {
+        var starts = 0; var stops = 0
+        val h = hub(FakeGlassesLink(), ctxStart = { starts++ }, ctxStop = { stops++ })
+        assertEquals(1, starts); assertEquals(0, stops)
+        h.stop(); assertEquals(1, stops)
+    }
 
     @Test fun startConnectsOnceAndReadyPushesSettingsThenState() = runTest {
         val link = FakeGlassesLink()

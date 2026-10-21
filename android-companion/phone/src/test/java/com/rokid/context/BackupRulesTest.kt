@@ -48,6 +48,8 @@ class BackupRulesTest {
         com.rokid.context.phone.hub.PrefsStandDown.PREFS,
         // Derived state: restored, they would say adoption / retirement already happened on an install that never did it.
         "frame_adoption", "space_retired_at", "image_read_attempts",
+        // Wave B: opt-in context sources, my-car addresses, the LiveFit digest, the watch epoch/seq: every source off after a restore.
+        com.rokid.context.phone.context.ContextSourceSettings.PREFS,
     )
 
     /**
