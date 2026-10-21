@@ -149,4 +149,34 @@ class PipelineValidatorTest {
         )
         assertEquals(emptyList<String>(), problems(ok))
     }
+
+    @Test fun problemsCarryNodeIds() {
+        val unknownEnd = pipe(listOf(photos(), extract()), listOf(PipelineEdge("photos", "extract"), PipelineEdge("photos", "x")))
+        val e = PipelineValidator.problems(unknownEnd).single { it.text == "edge photos->x: unknown node x" }
+        assertEquals(PipelineEdge("photos", "x"), e.edge); assertEquals(null, e.nodeId)
+        val badBatch = pipe(listOf(photos(), extract(params = buildJsonObject { put("batch", 9) })), listOf(PipelineEdge("photos", "extract")))
+        val b = PipelineValidator.problems(badBatch).single()
+        assertEquals("node extract: batch must be 1..3", b.text); assertEquals("extract", b.nodeId); assertEquals(null, b.edge)
+        val unreachable = PipelineValidator.problems(pipe(listOf(photos(), extract(), extract("lonely")), listOf(PipelineEdge("photos", "extract"))))
+        assertEquals("lonely", unreachable.single { it.text == "node lonely: unreachable" }.nodeId)
+        assertEquals(null, PipelineValidator.problems(pipe(listOf(extract()), emptyList())).single { it.text == "exactly one input.photos required" }.nodeId)
+        val typed = PipelineValidator.problems(pipe(listOf(photos(), extract(), promptSwitch(listOf("a"))), listOf(PipelineEdge("photos", "extract"), PipelineEdge("extract", "sw"))))
+        assertEquals(PipelineEdge("extract", "sw"), typed.single { it.text.startsWith("edge extract->sw") }.edge)
+    }
+
+    @Test fun validateTextsUnchanged() {
+        val bad = listOf(
+            pipe(listOf(photos(), extract(), extract()), listOf(PipelineEdge("photos", "extract"))),
+            pipe(listOf(photos(), extract()), listOf(PipelineEdge("photos", "extract", "x"))),
+            pipe(listOf(photos(), extract(), extract("lonely")), listOf(PipelineEdge("photos", "extract"))),
+            pipe(listOf(photos(), aiPrompt()), listOf(PipelineEdge("photos", "intent"))),
+            pipe(listOf(extract()), emptyList()),
+        )
+        bad.forEach { p -> assertEquals(PipelineValidator.validate(p), PipelineValidator.problems(p).map { it.text }); assertTrue(PipelineValidator.validate(p).isNotEmpty()) }
+        assertEquals(
+            listOf("duplicate node id extract"),
+            PipelineValidator.validate(pipe(listOf(photos(), extract(), extract()), listOf(PipelineEdge("photos", "extract")))),
+        )
+        assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.liveExtract()))
+    }
 }

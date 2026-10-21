@@ -8,6 +8,12 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 
+/**
+ * One validation problem: a fixed [text] naming node or edge ids only (never prompt text), plus the node ([nodeId]) or
+ * edge ([edge]) it is about when there is one, so the editor can mark it.
+ */
+data class Problem(val text: String, val nodeId: String? = null, val edge: PipelineEdge? = null)
+
 /** Problems are fixed texts naming node or edge ids only: never prompt text. Empty list = valid. */
 object PipelineValidator {
     private val ID = Regex("^[a-z][a-z0-9_]{0,31}$")
@@ -15,51 +21,57 @@ object PipelineValidator {
     private const val MAX_EDGES = 80
     private const val MAX_TEXT = 16_000
 
-    fun validate(p: Pipeline): List<String> {
-        val out = mutableListOf<String>()
+    /** The texts of [problems], unchanged. */
+    fun validate(p: Pipeline): List<String> = problems(p).map { it.text }
+
+    /** The same rules and texts as [validate], each with the node or edge it is about. */
+    fun problems(p: Pipeline): List<Problem> {
+        val out = mutableListOf<Problem>()
+        operator fun MutableList<Problem>.plusAssign(text: String) { add(Problem(text)) }
+        fun MutableList<Problem>.node(id: String, text: String) { add(Problem(text, nodeId = id)) }
         if (p.nodes.size > MAX_NODES) out += "too many nodes (max $MAX_NODES)"
         if (p.edges.size > MAX_EDGES) out += "too many edges (max $MAX_EDGES)"
 
         val byId = LinkedHashMap<String, PipelineNode>()
         val dup = mutableSetOf<String>()
         for (n in p.nodes) {
-            if (!ID.matches(n.id)) out += "node ${shown(n.id)}: bad id"
-            if (byId.containsKey(n.id)) { if (dup.add(n.id)) out += "duplicate node id ${shown(n.id)}" } else byId[n.id] = n
+            if (!ID.matches(n.id)) out.node(n.id, "node ${shown(n.id)}: bad id")
+            if (byId.containsKey(n.id)) { if (dup.add(n.id)) out.node(n.id, "duplicate node id ${shown(n.id)}") } else byId[n.id] = n
         }
         val types = byId.mapValues { NodeTypes.byType(it.value.type) }
-        byId.forEach { (id, n) -> if (types[id] == null) out += "node $id: unknown type" }
+        byId.forEach { (id, n) -> if (types[id] == null) out.node(id, "node $id: unknown type") }
 
         // Edges
         val valid = mutableListOf<PipelineEdge>()
         for (e in p.edges) {
             val label = "edge ${shown(e.from)}->${shown(e.to)}"
             var ok = true
-            if (e.from !in byId) { out += "$label: unknown node ${shown(e.from)}"; ok = false }
-            if (e.to !in byId) { out += "$label: unknown node ${shown(e.to)}"; ok = false }
+            if (e.from !in byId) { out.add(Problem("$label: unknown node ${shown(e.from)}", edge = e)); ok = false }
+            if (e.to !in byId) { out.add(Problem("$label: unknown node ${shown(e.to)}", edge = e)); ok = false }
             if (!ok) continue
             valid += e
             val src = types[e.from] ?: continue
             val branches = src.branches(byId.getValue(e.from).params)
             if (branches.isEmpty()) {
-                if (e.`when` != null) out += "$label: when not allowed"
+                if (e.`when` != null) out.add(Problem("$label: when not allowed", edge = e))
             } else if (e.`when` == null) {
-                out += "$label: when required (${branches.joinToString(", ")})"
+                out.add(Problem("$label: when required (${branches.joinToString(", ")})", edge = e))
             } else if (e.`when` !in branches) {
-                out += "$label: unknown when ${shown(e.`when`)}"
+                out.add(Problem("$label: unknown when ${shown(e.`when`)}", edge = e))
             }
             val dst = types[e.to] ?: continue
-            if (src.output !in dst.inputs) out += "$label: ${src.output} not accepted by ${e.to}"
+            if (src.output !in dst.inputs) out.add(Problem("$label: ${src.output} not accepted by ${e.to}", edge = e))
         }
 
         // Input
         val inputs = byId.values.filter { it.type == NodeTypes.INPUT_PHOTOS }
         if (inputs.size != 1) out += "exactly one input.photos required"
-        inputs.forEach { n -> if (valid.any { it.to == n.id }) out += "node ${n.id}: input must have no incoming edge" }
+        inputs.forEach { n -> if (valid.any { it.to == n.id }) out.node(n.id, "node ${n.id}: input must have no incoming edge") }
 
         // Mixed incoming types
         byId.keys.forEach { id ->
             val kinds = valid.filter { it.to == id }.mapNotNull { types[it.from]?.output }.toSet()
-            if (kinds.size > 1) out += "node $id: incoming edges carry different types"
+            if (kinds.size > 1) out.node(id, "node $id: incoming edges carry different types")
         }
 
         // Cycles (DFS; report each node a back edge returns to)
@@ -81,18 +93,18 @@ object PipelineValidator {
             }
         }
         byId.keys.forEach { if (state[it] == null) dfs(it) }
-        cyc.forEach { out += "cycle through $it" }
+        cyc.forEach { out.node(it, "cycle through $it") }
 
         // Reachability
         if (inputs.size == 1) {
             val seen = mutableSetOf(inputs[0].id)
             val queue = ArrayDeque(listOf(inputs[0].id))
             while (queue.isNotEmpty()) (next[queue.removeFirst()] ?: emptyList()).forEach { if (seen.add(it)) queue.addLast(it) }
-            byId.keys.filter { it !in seen }.forEach { out += "node $it: unreachable" }
+            byId.keys.filter { it !in seen }.forEach { out.node(it, "node $it: unreachable") }
         }
 
         // Params
-        byId.forEach { (id, n) -> types[id]?.let { out += paramProblems(id, n, it) } }
+        byId.forEach { (id, n) -> types[id]?.let { t -> paramProblems(id, n, t).forEach { out.node(id, it) } } }
         return out
     }
 
