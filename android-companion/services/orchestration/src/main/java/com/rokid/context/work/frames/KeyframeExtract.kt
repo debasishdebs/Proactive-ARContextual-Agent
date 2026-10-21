@@ -27,10 +27,12 @@ internal object KeyframeExtract {
     /**
      * [claimId] non-null: the claim CAS for every sent frame runs inside the save transaction. Null: no claim (a frame in a state nobody owns).
      * [afterSave] runs inside that same transaction with the frames that were sent and the memories written (a throw rolls the save back).
+     * [nudge] false: the saved memories never wake the nudge backstop (describe on demand; also every BACKFILL save).
      * [online] is asked only when the call fails, to tell "offline" from a transient server error.
      */
     suspend fun run(
         app: Context, frameIds: List<String>, claimId: String?, callClass: CallClass, idPrefix: String, online: () -> Boolean,
+        nudge: Boolean = callClass != CallClass.BACKFILL,
         afterSave: (suspend (sent: Set<String>, saved: List<SavedMemory>) -> Unit)? = null,
     ): ExtractOutcome {
         val generation = MemoryWipe.generation.get()
@@ -73,7 +75,7 @@ internal object KeyframeExtract {
                     // Embeddings, the nudge backstop (trusted) or a PRIORITY_REPROCESS job (low confidence), exactly as the legacy job did;
                     // also when the critic was cancelled (the memories are saved and the claim is done).
                     withContext(NonCancellable) {
-                        ExtractFollowUp.afterSave(app, generation, saved.memories, trusted, ExtractFollowUp.confidence(facts), AppConfigStore.getWithoutSecret(app).persona, nudge = callClass != CallClass.BACKFILL)
+                        ExtractFollowUp.afterSave(app, generation, saved.memories, trusted, ExtractFollowUp.confidence(facts), AppConfigStore.getWithoutSecret(app).persona, nudge = nudge)
                     }
                 }
                 ExtractOutcome.Saved(saved.memories, loaded.gone, loaded.unseen)

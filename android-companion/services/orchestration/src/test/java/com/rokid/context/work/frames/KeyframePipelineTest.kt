@@ -434,7 +434,16 @@ class KeyframePipelineTest {
         assertEquals("PENDING", state("f")) // given back, no attempt
         assertEquals(mapOf("w" to ExtractNowOutcome.Wiped), pipeline({ _, _, _ -> ExtractOutcome.Wiped() }).extractNow(listOf("w")))
         assertEquals("PENDING", state("w"))
-        assertEquals(mapOf("s" to ExtractNowOutcome.LostClaim), pipeline({ _, _, _ -> ExtractOutcome.Stale() }).extractNow(listOf("s")))
+        assertEquals(mapOf("s" to ExtractNowOutcome.Stale), pipeline({ _, _, _ -> ExtractOutcome.Stale() }).extractNow(listOf("s")))
         assertEquals(mapOf("s" to ExtractNowOutcome.Failed("unreadable")), pipeline({ _, _, _ -> ExtractOutcome.Failed("unreadable", unreadable = setOf("s")) }).extractNow(listOf("s")))
+    }
+
+    @Test fun extractNowNeverOffersToNudges() = runBlocking {
+        seed("a", 1000); seed("b", 2000)
+        val offered = mutableListOf<List<String>>()
+        val p = KeyframePipeline(db, completing().let { inner -> { ids, c, cls -> inner(ids, c, cls); ExtractOutcome.Saved(listOf(com.rokid.context.orchestration.SavedMemory("m", ids, 0))) } },
+            { now }, null, onExtracted = { frames, _ -> offered += frames.map { it.frameId } }, newClaimId = { "c" }, pollMs = 50)
+        p.extractNow(listOf("a")); assertTrue("describe is not offered to the nudge evaluator", offered.isEmpty())
+        p.drainOnce(); assertEquals("the ordinary path still is", listOf(listOf("b")), offered)
     }
 }

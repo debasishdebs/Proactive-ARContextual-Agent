@@ -33,6 +33,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -214,7 +216,7 @@ class DescribeOnDemandTest {
 
     // --- scenes ---------------------------------------------------------------------------------------------------------
 
-    @Test fun sceneUsesRepsThenMedoid() = runBlocking {
+    @Test fun sceneUsesStoredReps() = runBlocking {
         cluster("c1", "SUMMARIZED", reps = """["r1","r2"]""")
         seed("r1", "CLUSTERED", cluster = "c1"); seed("r2", "CLUSTERED", cluster = "c1"); seed("x3", "CLUSTERED", cluster = "c1")
         assertTrue(describe.describeScene("c1") is DescribeResult.Saved)
@@ -248,16 +250,53 @@ class DescribeOnDemandTest {
     private fun pipelineless(): Map<String, ExtractNowOutcome> = error("no claimable frame expected in this test")
 
     @Test fun lostClaimRereadsState() = runBlocking {
-        seed("l1", "PENDING"); seed("l2", "PENDING")
+        seed("l1", "PENDING"); seed("l2", "PENDING"); seed("l3", "PENDING")
         val d = custom({ ids ->
-            // someone else claims l1 between our classification and our claim; l2 is simply not claimed
+            // between our classification and our claim: someone else claims l1, a night job parks l2 as NEAR_DUP; l3 is simply not claimed
             db.frameStateDao().move(listOf("l1"), "PENDING", "EXTRACTING", null, now)
+            db.frameStateDao().move(listOf("l2"), "PENDING", "NEAR_DUP", null, now)
             ids.associateWith { ExtractNowOutcome.LostClaim }
         })
-        val r = d.describePhotos(listOf("l1", "l2"))
+        val r = d.describePhotos(listOf("l1", "l2", "l3"))
         assertEquals(DescribeResult.Saved(2, 1), r)
-        assertEquals("l1 is someone else's: never sent", setOf("l2"), photoIdsSent().toSet())
-        assertEquals("EXTRACTING", stateOf("l1"))
+        assertEquals("only l2 (nobody's) is described; l1 is held and l3 is the pipeline's", setOf("l2"), photoIdsSent().toSet())
+        assertEquals("EXTRACTING", stateOf("l1")); assertEquals("PENDING", stateOf("l3"))
+    }
+
+    @Test fun staleClaimAfterTheCallIsNeverASecondCall() = runBlocking {
+        seed("s1", "PENDING")
+        val d = custom({ ids -> ids.associateWith { ExtractNowOutcome.Stale } })
+        assertEquals(DescribeResult.Busy, d.describePhotos(listOf("s1")))
+        assertTrue("no second paid call", prompts.isEmpty()); assertEquals("PENDING", stateOf("s1")); assertTrue(memoryIds().isEmpty())
+    }
+
+    @Test fun forgetOfAnotherPhotoInTheSameBatchCostsOneCallAndSavesNothing() = runBlocking {
+        seed("a", "PENDING"); seed("b", "PENDING")
+        midCall = { db.frameStateDao().deleteFor(listOf("b")) } // Forget of b lands while the model answers: its claim CAS fails and rolls the batch back
+        assertEquals(DescribeResult.Busy, describe.describePhotos(listOf("a", "b")))
+        assertEquals("exactly one paid call, never rerouted to the no-claim path", 1, prompts.size)
+        assertTrue(memoryIds().isEmpty()); assertEquals("PENDING", stateOf("a")) // given back with no attempt; the pipeline owns it again
+    }
+
+    @Test fun forgetDuringTheCallSavesNothingOnEitherPath() = runBlocking {
+        val forget = com.rokid.context.memory.forget.ForgetService(db, MemoryGraph.get(ctx).proposals)
+        seed("d1", "EXTRACTED"); db.frameVectorDao().upsert(listOf(FrameVectorEntity("d1", "sp", VectorCodec.encode(floatArrayOf(1f, 0f)))))
+        midCall = { forget.forgetMoment("d1") }
+        describe.describePhotos(listOf("d1"))
+        assertTrue("no memory", memoryIds().isEmpty()); assertTrue("no provenance", db.frameSourceDao().memoriesForFrame("d1").isEmpty())
+        assertTrue("no vector", db.frameVectorDao().forFrames("sp", listOf("d1")).isEmpty()); assertNull(db.frameStateDao().get("d1"))
+        assertEquals(listOf("d1"), db.forgetDao().tombstoned(listOf("d1")))
+        seed("d2", "PENDING")
+        midCall = { forget.forgetMoment("d2") }
+        describe.describePhotos(listOf("d2"))
+        assertTrue(memoryIds().isEmpty()); assertTrue(db.frameSourceDao().memoriesForFrame("d2").isEmpty())
+    }
+
+    @Test fun describeNeverWakesTheNudgePaths() = runBlocking {
+        fun nudgeEnqueued() = androidx.work.WorkManager.getInstance(ctx).getWorkInfosForUniqueWork(com.rokid.context.orchestration.nudge.NudgeTrigger.WORK).get().isNotEmpty()
+        seed("n1", "PENDING"); seed("n2", "EXTRACTED")
+        assertTrue(describe.describePhotos(listOf("n1")) is DescribeResult.Saved); assertTrue(describe.describePhotos(listOf("n2")) is DescribeResult.Saved)
+        assertFalse("no nudge backstop for a describe (either path)", nudgeEnqueued())
     }
 
     @Test fun failedExtractionNotRetriedDirect() = runBlocking {
@@ -271,8 +310,9 @@ class DescribeOnDemandTest {
         seed("w1", "PENDING")
         assertEquals(DescribeResult.Wiped, custom({ ids -> ids.associateWith { ExtractNowOutcome.Wiped } }).describePhotos(listOf("w1")))
         assertTrue(prompts.isEmpty())
-        // a lost claim of a frame nobody holds is NOT a wipe: it goes to the no-claim path
-        assertTrue(custom({ ids -> ids.associateWith { ExtractNowOutcome.LostClaim } }).describePhotos(listOf("w1")) is DescribeResult.Saved)
+        // a frame this call never claimed that is still the pipeline's (PENDING) is not described behind its back
+        assertEquals(DescribeResult.Busy, custom({ ids -> ids.associateWith { ExtractNowOutcome.LostClaim } }).describePhotos(listOf("w1")))
+        assertTrue(prompts.isEmpty())
     }
 
     @Test fun unreadablePhotoIsExpired() = runBlocking {

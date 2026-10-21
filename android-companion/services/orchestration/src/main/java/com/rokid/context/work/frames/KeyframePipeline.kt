@@ -91,14 +91,22 @@ sealed interface ExtractOutcome {
     }
 }
 
+/** Coroutine-context marker: the extraction running under it must not trigger nudges (describe on demand). Read by [KeyframeHandle]'s extractor. */
+internal object NoNudge : kotlin.coroutines.AbstractCoroutineContextElement(Key) { object Key : kotlin.coroutines.CoroutineContext.Key<NoNudge> }
+
 /** What [KeyframePipeline.extractNow] concluded for one frame (S5). */
 sealed interface ExtractNowOutcome {
     /** The frame is EXTRACTED and [memories] memories cite it. */
     data class Extracted(val memories: Int) : ExtractNowOutcome
     /** The call ran and the frame is EXTRACTED, but nothing in it was worth a memory. */
     data object ExtractedEmpty : ExtractNowOutcome
-    /** The frame was not claimed (someone else holds it, it is not claimable) or its claim no longer held at the save. Re-read its state. */
+    /** The frame was never claimed by this call (someone else holds it, or it is not claimable): nothing was sent. Re-read its state. */
     data object LostClaim : ExtractNowOutcome
+    /**
+     * The call ran (and was paid for) but the claim no longer held at the save (a Forget of another photo in the batch, a claim timeout): the save was rolled back and the
+     * claims given back. Never retried by the caller: a second call would be a second charge (S5).
+     */
+    data object Stale : ExtractNowOutcome
     /** The call or the photo failed ([kind]: `unreadable` = the photo can never be read again, `unseen`, `offline`, a provider or class name). */
     data class Failed(val kind: String) : ExtractNowOutcome
     /** Delete all ran during the call; nothing was written. */
@@ -308,11 +316,12 @@ class KeyframePipeline(
         val picked = candidates(ids, emptyMap())
         var claimedFrames = emptyList<KeyframeCandidate>()
         var result: ExtractOutcome? = null
-        runBatch(picked, callClass, user = true, report = { frames, o -> claimedFrames = frames; result = o }) { batch, claimId ->
+        // A describe is the user's own look at a photo that may be days old: its memories are never offered to the nudge paths (no NUDGE token, no live nudge).
+        withContext(NoNudge) { runBatch(picked, callClass, user = true, offerToNudges = false, report = { frames, o -> claimedFrames = frames; result = o }) { batch, claimId ->
             val asked = states.claimForAsk(batch, claimId, now).map { it.frameId }
             val rest = batch - asked.toSet()
             asked + if (rest.isEmpty()) emptyList() else states.claimCaptionQueued(rest, claimId, now).map { it.frameId }
-        }
+        } }
         val o = result
         val claimed = claimedFrames.map { it.frameId }.toSet()
         return ids.associateWith { id ->
@@ -322,7 +331,7 @@ class KeyframePipeline(
                 id in o.unseen -> ExtractNowOutcome.Failed("unseen")
                 else -> when (o) {
                     is ExtractOutcome.Saved -> o.memories.count { id in it.frameIds }.let { if (it > 0) ExtractNowOutcome.Extracted(it) else ExtractNowOutcome.ExtractedEmpty }
-                    is ExtractOutcome.Stale -> ExtractNowOutcome.LostClaim
+                    is ExtractOutcome.Stale -> ExtractNowOutcome.Stale
                     is ExtractOutcome.Wiped -> ExtractNowOutcome.Wiped
                     is ExtractOutcome.Failed -> ExtractNowOutcome.Failed(o.error)
                 }
@@ -430,6 +439,7 @@ class KeyframePipeline(
         picked: List<KeyframeCandidate>, callClass: CallClass, user: Boolean,
         /** Told which frames were claimed and how the call ended, before they are settled ([extractNow]). */
         report: ((claimed: List<KeyframeCandidate>, outcome: ExtractOutcome) -> Unit)? = null,
+        offerToNudges: Boolean = callClass != CallClass.BACKFILL,
         claim: suspend (List<String>, String) -> List<String>,
     ): Step {
         if (!user && power?.tryExtraction() == false) return Step.Idle(pollMs, blocked = true)
@@ -449,7 +459,7 @@ class KeyframePipeline(
             ExtractOutcome.classify(e, online())
         }
         report?.invoke(frames, outcome)
-        return Step.Done(settle(frames, claimId, outcome, user, offerToNudges = callClass != CallClass.BACKFILL))
+        return Step.Done(settle(frames, claimId, outcome, user, offerToNudges = offerToNudges))
     }
 
     /**
