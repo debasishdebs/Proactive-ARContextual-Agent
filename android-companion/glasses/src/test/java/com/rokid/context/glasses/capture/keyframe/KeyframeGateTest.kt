@@ -326,4 +326,28 @@ class KeyframeGateTest {
         for (i in 0 until 12) assertIs<GateResult.Keep>(at(10_000L + i * 4_000, cand(i + 1)), "keep $i")
         assertEquals(0 to 0, gate.takeSkipCounts())
     }
+
+    // ---- battery wave A3 final review I3: non-glance keeps leave one glance slot a minute ----
+
+    private fun timerKeep(t: Long, scene: Int, cap: Int = 4, hard: Boolean = false): GateResult {
+        store.ring.clear(); now = t; return gate.offer(cand(scene), MotionState.STILL, dwellArmed = false, capPerMin = cap, hardCap = hard)
+    }
+
+    @Test fun nonGlanceKeepsStopAtCapMinusOneEvenOnABigChange() {
+        for ((i, t) in listOf(10_000L, 15_000L, 20_000L).withIndex()) assertIs<GateResult.Keep>(timerKeep(t, i + 1), "keep $i")
+        assertEquals("CAPPED", reason(timerKeep(25_000, 4))) // an empty ring is a big change, and still no bonus for a timer keep
+        assertEquals(1, gate.takeSkipCounts().second)
+    }
+
+    @Test fun aGlanceStillGetsTheLastSlotAfterTimerKeeps() {
+        for ((i, t) in listOf(10_000L, 15_000L, 20_000L).withIndex()) assertIs<GateResult.Keep>(timerKeep(t, i + 1))
+        assertEquals("CAPPED", reason(timerKeep(25_000, 4)))
+        store.ring.clear()
+        assertIs<GateResult.Keep>(capped(26_000, cand(5))) // a glance: k = 3 < 4
+    }
+
+    @Test fun restingTimerKeepsAreCappedAtOne() {
+        assertIs<GateResult.Keep>(timerKeep(10_000, 1, cap = 2, hard = true))
+        assertEquals("CAPPED", reason(timerKeep(15_000, 2, cap = 2, hard = true)))
+    }
 }

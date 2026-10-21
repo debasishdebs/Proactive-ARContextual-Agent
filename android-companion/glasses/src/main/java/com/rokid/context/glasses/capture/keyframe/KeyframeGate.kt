@@ -53,7 +53,7 @@ class PrefsGateStore(private val prefs: SharedPreferences) : GateStore {
  * samples are collected in windows of up to 1.5 s (at most 3 kept, losers released at once) and the sharpest wins.
  * A dwell (glance) sample compares to the whole ring like any other, and still needs blur >= [BLUR_FLOOR].
  * Rate cap (battery wave A3, spec section 5): with a `capPerMin`, at most that many keeps per rolling minute, up to twice
- * that many only when the frame differs from every ring keyframe by at least [BIG_CHANGE] of 64 bits (never with [hardCap], used while resting); forced keeps are exempt.
+ * that many only when a glance (dwell) frame differs from every ring keyframe by at least [BIG_CHANGE] of 64 bits (never with [hardCap], used while resting); non-glance keeps stop at cap - 1 (at least 1) with no bonus; forced keeps are exempt.
  */
 class KeyframeGate(private val store: GateStore, private val clock: () -> Long) {
     private class Scored(val c: Candidate, val d: Long, val p: Long, val blur: Float, val motion: MotionState)
@@ -145,7 +145,10 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         if (capPerMin != Int.MAX_VALUE) {
             val k = keptTimes.count { now - it < CAP_WINDOW_MS }
             val dMin = ring.minOfOrNull { (d, p) -> minOf(hamming(best.d, d), hamming(best.p, p)) } ?: 64
-            if (k.toLong() >= (if (hardCap) 1L else 2L) * capPerMin || (k >= capPerMin && dMin < BIG_CHANGE)) { capped++; return Skip(CAPPED) }
+            // A non-glance keep (timer or stream) stops at cap - 1 with no big-change bonus: one glance slot a minute stays free.
+            val over = if (dwell) k.toLong() >= (if (hardCap) 1L else 2L) * capPerMin || (k >= capPerMin && dMin < BIG_CHANGE)
+            else k >= maxOf(1, capPerMin - 1)
+            if (over) { capped++; return Skip(CAPPED) }
         }
         // Fix wave K1: a dwell keyframe (head settled) keeps the short gap; any other keep is rate-capped, wider while moving.
         val moving = best.motion == MotionState.WALKING || best.motion == MotionState.HEAD_MOVING
