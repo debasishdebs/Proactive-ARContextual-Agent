@@ -132,12 +132,23 @@ class SpeedSourceTest {
         assertEquals(clock.wall() - 20_000, got.single().atMs)
     }
 
-    @Test fun onMsGrowsOnlyWhileWanted() {
+    @Test fun onMsCountsOnlyTimeLocationWasActuallyRequested() {
         val s = started()
-        clock.el += 60_000; assertEquals(0L, s.onMs)
-        s.setWanted(true); clock.el += 45_000; assertEquals(45_000L, s.onMs)
-        s.setWanted(false); clock.el += 600_000; assertEquals(45_000L, s.onMs)
-        s.setWanted(true); clock.el += 5_000; s.setWanted(true); assertEquals(50_000L, s.onMs)
+        s.setWanted(true); clock.el += 60_000
+        assertEquals(0L, s.onMs); assertFalse(s.requesting) // wanted but the shell has no access: nothing requested
+        s.onRequesting(true); clock.el += 45_000
+        assertEquals(45_000L, s.onMs); assertTrue(s.requesting)
+        s.onRequesting(false); clock.el += 600_000
+        assertEquals(45_000L, s.onMs)
+        s.onRequesting(true); clock.el += 5_000; s.setWanted(false) // unwant ends the request
+        clock.el += 100_000
+        assertEquals(50_000L, s.onMs); assertFalse(s.requesting)
+    }
+
+    @Test fun wantedBeforeStartIsAppliedAtStart() {
+        val s = src()
+        s.setWanted(true); assertTrue(calls.isEmpty())
+        assertTrue(s.start()); assertEquals(listOf(true to false), calls); assertTrue(s.wanted)
     }
 
     @Test fun platformIsToldOnlyOnChangesAndStopTurnsItOff() {
@@ -151,13 +162,26 @@ class SpeedSourceTest {
         s.setWanted(true); assertEquals(false to false, calls.last()) // a stopped source cannot be wanted
     }
 
-    @Test fun aFastReadingAsksForAQuickFollowUp() {
+    @Test fun aFastReadingAsksForOneQuickFollowUpThenBackToNormal() {
         val s = started(); s.setWanted(true)
-        s.onFix(clock.el, 12.0, 77.0, 10f, 10f)  // 36 km/h
+        s.onFix(clock.el, 12.0, 77.0, 10f, 10f)  // 36 km/h: the rising edge
         assertEquals(true to true, calls.last())
         clock.el += 15_000
-        s.onFix(clock.el, 12.0, 77.0, 10f, 1f)   // slow again
+        s.onFix(clock.el, 12.0, 77.0, 10f, 11f)  // still fast: the follow-up arrived, back to 30 s
         assertEquals(true to false, calls.last())
+        val n = calls.size
+        clock.el += 30_000
+        s.onFix(clock.el, 12.0, 77.0, 10f, 12f)  // still fast: no sticky 15 s mode, no new request change
+        assertEquals(n, calls.size)
+    }
+
+    @Test fun aNewFastEpisodeAsksAgain() {
+        val s = started(); s.setWanted(true)
+        s.onFix(clock.el, 12.0, 77.0, 10f, 10f); clock.el += 15_000
+        s.onFix(clock.el, 12.0, 77.0, 10f, 0.5f) // slow
+        clock.el += 30_000
+        s.onFix(clock.el, 12.0, 77.0, 10f, 10f)  // fast again
+        assertEquals(true to true, calls.last())
     }
 
     @Test fun noPermissionNoRequest() {

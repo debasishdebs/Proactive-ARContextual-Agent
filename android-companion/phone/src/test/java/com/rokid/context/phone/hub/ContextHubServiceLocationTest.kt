@@ -62,7 +62,37 @@ class ContextHubServiceLocationTest {
         assertFalse(ContextHubService.needsReentry(DEV or MIC, DEV or MIC))
     }
 
-    @Test fun wantLocationDefaultsToFalse() {
-        assertFalse(ContextHubService.wantLocation())
+    @Test fun refreshTargetActsOnlyFromTheFrontAndKeepsTheMic() {
+        // front, wanted: add location, keep the mic
+        assertEquals(DEV or MIC or LOC, ContextHubService.refreshTarget(DEV or MIC, want = true, inFront = true, permitted = true, sdk = 35))
+        // background: nothing (no re-entry, so the mic type is never re-asked from the background)
+        assertNull(ContextHubService.refreshTarget(DEV or MIC, want = true, inFront = false, permitted = true, sdk = 35))
+        assertNull(ContextHubService.refreshTarget(DEV or MIC or LOC, want = false, inFront = false, permitted = true, sdk = 35))
+        // not started yet
+        assertNull(ContextHubService.refreshTarget(null, true, true, true, 35))
+        // already as wanted
+        assertNull(ContextHubService.refreshTarget(DEV or MIC or LOC, true, true, true, 35))
+        // dropped from the front
+        assertEquals(DEV or MIC, ContextHubService.refreshTarget(DEV or MIC or LOC, false, true, true, 35))
+    }
+
+    @Test fun stickyRestartNeverTakesLocationOrMicrophone() {
+        val t = ContextHubService.foregroundTypes(35, micGranted = true, inFront = false)
+        assertEquals(DEV, ContextHubService.withLocation(t, want = true, inFront = false, permitted = true, sdk = 35))
+    }
+
+    @Test fun refusedLocationIsNotRetriedWithinTheSameResume() {
+        val r = MicRetry()
+        assertEquals(DEV or MIC or LOC, r.toTry(DEV or MIC or LOC, 1L))
+        r.entered(tried = DEV or MIC or LOC, entered = DEV or MIC) // location refused
+        assertEquals(DEV or MIC, r.toTry(DEV or MIC or LOC, 1L))    // same resume: not again
+        assertEquals(DEV or MIC, r.toTry(DEV or MIC or LOC, null))  // a recheck counts as the latest resume
+        assertEquals(DEV or MIC or LOC, r.toTry(DEV or MIC or LOC, 2L)) // the next resume tries once more
+    }
+
+    @Test fun micRefusalMemoryIsIndependentOfLocation() {
+        val r = MicRetry()
+        r.entered(tried = DEV or MIC or LOC, entered = DEV or LOC) // mic refused, location held
+        assertEquals(DEV or LOC, r.toTry(DEV or MIC or LOC, 0L))
     }
 }

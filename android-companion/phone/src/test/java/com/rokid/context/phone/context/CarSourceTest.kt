@@ -103,7 +103,7 @@ class CarSourceTest {
         assertEquals(listOf(true, false), links().map { it.connected }) // and removes it again: no longer a car
     }
 
-    @Test fun myCarListChangeKeepsACarClassDeviceAsCarClass() {
+    @Test fun myCarListChangeSwapsACarClassDeviceToMyCar() {
         val s = started()
         s.onBtDevice("AA:0B", CAR, true)
         myCars = setOf("AA:0B"); s.recompute()
@@ -144,6 +144,16 @@ class CarSourceTest {
         val s = started()
         s.onBtSnapshot(A2DP, listOf("AA:0E" to CAR, "AA:0F" to HEADSET_CLASS))
         assertEquals(setOf(CarLinkKind.CAR_CLASS_BT), s.currentKinds())
+    }
+
+    @Test fun bluetoothOffClearsEveryLinkAndOnReSnapshots() {
+        val s = started()
+        s.onBtDevice("AA:20", CAR, true); s.onBtDevice("AA:21", CAR, true, HS)
+        s.onBluetoothState(android.bluetooth.BluetoothAdapter.STATE_OFF)
+        assertEquals(listOf(true, false), links().map { it.connected }); assertTrue(s.currentKinds().isEmpty())
+        s.onBluetoothState(android.bluetooth.BluetoothAdapter.STATE_ON)
+        s.onBtSnapshot(A2DP, listOf("AA:20" to CAR)) // the proxy rebinds and reports again
+        assertEquals(listOf(true, false, true), links().map { it.connected })
     }
 
     @Test fun nothingBeforeStartOrAfterStopAndStopClearsState() {

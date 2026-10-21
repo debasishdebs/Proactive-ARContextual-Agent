@@ -95,12 +95,11 @@ class ContextHubService : Service() {
                 hub.status.map { it.link }.distinctUntilChanged().collect { driver.onLink(it) }
             }
         } else if (intent?.action == ACTION_REFRESH_LOCATION) {
-            // Only the location bit changes, only from the front (a location type cannot be taken from the background on API 34+), and
-            // everything else (the microphone included) stays as currently held.
-            val cur = currentTypes
-            if (cur != null && appInForeground()) {
-                val wanted = withLocation(cur, wantLocation(), inFront = true, permitted = hasLocationAccess(), sdk = Build.VERSION.SDK_INT)
-                if (needsReentry(cur, wanted)) enterForeground(lastText, wanted)
+            // Only the location bit changes, only from the front, and everything else (the microphone included) stays as held.
+            val target = refreshTarget(currentTypes, wantLocation(), appInForeground(), hasLocationAccess(), Build.VERSION.SDK_INT)
+            if (target != null) {
+                val wanted = micRetry.toTry(target, null)
+                if (needsReentry(currentTypes, wanted)) enterForeground(lastText, wanted)
             }
         } else if (intent?.action == ACTION_REFRESH_TYPES) {
             val wanted = micRetry.toTry(wantedTypes(inFront = true), resume)
@@ -295,6 +294,13 @@ class ContextHubService : Service() {
         /** A start is in front only when its intent says so; a sticky restart's null intent is the background. */
         internal fun startedInFront(intent: Intent?): Boolean = intent?.getBooleanExtra(EXTRA_IN_FRONT, false) == true
 
+        /** The types a location refresh should enter with, or null for no change (not started, in the background, or already as wanted). */
+        internal fun refreshTarget(current: Int?, want: Boolean, inFront: Boolean, permitted: Boolean, sdk: Int): Int? {
+            if (current == null || !inFront) return null
+            val t = withLocation(current, want, inFront = true, permitted = permitted, sdk = sdk)
+            return if (t == current) null else t
+        }
+
         internal fun holdsLocation(types: Int?): Boolean = types != null && types and ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION != 0
 
         /**
@@ -370,17 +376,23 @@ class ContextHubService : Service() {
  */
 internal class MicRetry {
     private val mic = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+    private val loc = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
     private var resume = 0L
-    private var refusedIn: Long? = null
+    private var micRefusedIn: Long? = null
+    private var locRefusedIn: Long? = null
 
-    /** The types to try now: [wanted] without the mic if it was already refused during this resume. */
+    /** The types to try now: [wanted] without the mic / location if that type was already refused during this resume. */
     fun toTry(wanted: Int, resume: Long?): Int {
         if (resume != null) this.resume = resume
-        return if (refusedIn == this.resume) wanted and mic.inv() else wanted
+        var t = wanted
+        if (micRefusedIn == this.resume) t = t and mic.inv()
+        if (locRefusedIn == this.resume) t = t and loc.inv()
+        return t
     }
 
-    /** Records a try: a mic type that did not end up held was refused during the current resume. */
+    /** Records a try: an optional type that did not end up held was refused during the current resume. */
     fun entered(tried: Int, entered: Int?) {
-        if (tried and mic != 0 && (entered == null || entered and mic == 0)) refusedIn = resume
+        if (tried and mic != 0 && (entered == null || entered and mic == 0)) micRefusedIn = resume
+        if (tried and loc != 0 && (entered == null || entered and loc == 0)) locRefusedIn = resume
     }
 }
