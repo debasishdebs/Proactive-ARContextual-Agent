@@ -127,6 +127,14 @@ object HubGraph {
             installed = { runCatching { app.packageManager.getPackageInfo(com.rokid.context.phone.context.WatchMotionIntake.LIVEFIT_PACKAGE, 0) }.isSuccess },
             sinkFor = ctxHub::sinkFor, onRejected = ctxHub.stats::onWatchRejected, onEpochReset = ctxHub.stats::onWatchEpoch,
         ))
+        // Opt-in, default off. Calls only inside a vehicle episode a listed Bluetooth device started; never pauses or throttles capture.
+        ctxRegistry.register(com.rokid.context.phone.context.ImageIntentSource(
+            sinkFor = ctxHub::sinkFor, decision = { ctxHub.decision.value }, stats = ctxHub.stats,
+            enabled = { com.rokid.context.phone.context.ContextSourceSettings.of(app).enabled(com.rokid.context.phone.context.ImageIntentSource.ID) },
+            create = { episode, onResult, stats, enabled ->
+                com.rokid.context.work.frames.intent.IntentSamplers.create(app, ctxScope, enabled, episode, onResult, stats)
+            },
+        ))
         contextRegistry = ctxRegistry; contextHub = ctxHub
         return Hub(
             scope, link, pauses, settings, ingestor, LegacyHubSources(app),

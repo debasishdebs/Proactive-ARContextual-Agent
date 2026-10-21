@@ -3,6 +3,7 @@ package com.rokid.context.phone.context
 import com.rokid.context.core.model.context.CarLinkKind
 import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.core.model.context.Evidence
+import com.rokid.context.core.model.context.IntentLabel
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
@@ -34,6 +35,9 @@ class ContextHubStats(private val clock: () -> Long = System::currentTimeMillis)
     fun onChange() = add("changes")
     fun onIntent(ok: Boolean) = add(if (ok) "intent" else "intentFail")
     fun onIntentSkip() = add("intentSkip")
+    /** The newest result as an enum name and a percent (never a photo or a caption); shown in the log line and Diagnostics. */
+    fun onIntentResult(label: IntentLabel, confidence: Float) { lastIntent = "${label.name}@${(confidence.coerceIn(0f, 1f) * 100).toInt()}" }
+    @Volatile private var lastIntent: String? = null
     fun onDropped() = add("dropped")
     fun onWatchRejected() = add("watchRej")
     fun onWatchEpoch() = add("watchEpoch")
@@ -46,7 +50,7 @@ class ContextHubStats(private val clock: () -> Long = System::currentTimeMillis)
     fun line(state: ContextState): String =
         "ctxhub v=1 state=${state.name} ar=${get("ar")} steps=${get("steps")} loc=${get("loc")} locOnS=${get("locOnS")} bt=${get("bt")} " +
             "aa=${get("aa")} air=${get("air")} hints=${get("hints")} watch=${get("watch")} watchRej=${get("watchRej")} " +
-            "intent=${get("intent")} intentFail=${get("intentFail")} intentSkip=${get("intentSkip")} sends=${get("sends")} " +
+            "intent=${get("intent")} intentFail=${get("intentFail")} intentSkip=${get("intentSkip")}${lastIntent?.let { " intentLast=$it" } ?: ""} sends=${get("sends")} " +
             "changes=${get("changes")} batt=${batt(phoneBatteryStart)}->${batt(phoneBatteryNow)}"
 
     /** For Diagnostics: every counter, seconds per committed state (`state_<NAME>_s`) and the battery. */
