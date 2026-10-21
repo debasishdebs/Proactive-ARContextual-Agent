@@ -112,8 +112,13 @@ class CaptureService : LifecycleService() {
 
     internal enum class Outcome { BUFFERED, SKIPPED, FAILED }
 
+    private val screenOnReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) { runtime.screenWakes.onScreenOn() }
+    }
+
     override fun onCreate() {
         super.onCreate()
+        runCatching { registerReceiver(screenOnReceiver, IntentFilter(Intent.ACTION_SCREEN_ON)) }
         lastUpBytes = runtime.uplink.bytesSent; lastUpAt = SystemClock.elapsedRealtime() // the first heartbeat must not count pre-restart bytes
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel(CHANNEL_ID, "Capture", NotificationManager.IMPORTANCE_LOW))
@@ -121,6 +126,7 @@ class CaptureService : LifecycleService() {
 
     override fun onDestroy() {
         if (liveInstance === this) liveInstance = null
+        runCatching { unregisterReceiver(screenOnReceiver) }
         stopSmart("destroyed")
         cameraExecutor.shutdown()
         scope.cancel()
@@ -275,6 +281,7 @@ class CaptureService : LifecycleService() {
             val upDelta = (upTotal - lastUpBytes).coerceAtLeast(0)
             val upSpan = if (lastUpAt < 0) 60_000L else now - lastUpAt
             lastUpBytes = upTotal; lastUpAt = now
+            val (scrOn, scrOurs, nudgeOff) = runtime.screenWakes.take()
             DiagLog.i(TAG, Heartbeat(
                 running = shown.running, reason = shown.reason.toString(), uiMode = runtime.uiMode.get(),
                 wake = settings.cameraWake.name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
@@ -284,6 +291,7 @@ class CaptureService : LifecycleService() {
                 wear = runtime.wear.worn.value, known = runtime.wear.known, parked = runtime.wear.parked.value,
                 sensors = ((smart?.feed as? AndroidSensorFeed)?.rate ?: SensorRate.FULL).name.lowercase(), phoneUse = runtime.phoneUse.active(now),
                 restartGapSec = runtime.restarts.lastGapSec, stillGapMs = smart?.session?.stillGapMs() ?: 0L,
+                scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, csvFail = (smart?.feed as? AndroidSensorFeed)?.csvFailures ?: 0,
             ).format())
         }
         val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"

@@ -88,7 +88,9 @@ class GlassesRuntime private constructor(private val app: Context) {
     val buffer = OutboundBuffer(File(app.filesDir, "outbound"), log = { DiagLog.i(UPLINK_TAG, it) })
     /** Our HUD activity's lifecycle, for the capture fallback (spec §1.7: never reopened over another app). */
     val hudPresence = HudPresence()
-    val fallback = ForegroundFallback(hudPresence)
+    /** Screen-wake attribution counters (battery wave A3): display-on events, ours, and nudges held back while the screen was off. */
+    val screenWakes = com.rokid.context.glasses.capture.diag.ScreenWakeStats(android.os.SystemClock::elapsedRealtime)
+    val fallback = ForegroundFallback(hudPresence, onLaunch = { screenWakes.onOurUi() })
     /** About a second of "photo sent" after a frame is buffered or delivered (Glance check, icon ring pulse). */
     val photoCue = PhotoCue(scope)
     /** One wear state for the process, fed by the phone's `pc_wear` (see [WearDetector]); the sampling session gates on it. */
