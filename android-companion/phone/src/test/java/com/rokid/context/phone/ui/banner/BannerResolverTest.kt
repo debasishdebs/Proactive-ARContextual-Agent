@@ -63,7 +63,7 @@ class BannerResolverTest {
         assertEquals(BannerTone.AMBER, BannerResolver.resolve(BannerInputs(storagePct = 70))?.tone)
         assertEquals(BannerTone.AMBER, BannerResolver.resolve(BannerInputs(storagePct = 89))?.tone)
         assertEquals(BannerTone.CORAL, BannerResolver.resolve(BannerInputs(storagePct = 90))?.tone)
-        assertEquals("Memory storage 92% full", BannerResolver.resolve(BannerInputs(storagePct = 92))?.title)
+        assertEquals("Memory storage 92% full \u00b7 raise the limit in Settings \u2192 Memory", BannerResolver.resolve(BannerInputs(storagePct = 92))?.title)
     }
 
     @Test fun aiBlockedBannerTruncatesLongText() {
@@ -94,5 +94,13 @@ class BannerResolverTest {
         val closed = BannerResolver.resolve(BannerInputs(link = LinkState.CLOSED_ON_GLASSES))!!
         assertEquals("Closed on glasses \u00b7 capture stopped", closed.title)
         assertEquals("Open on glasses", closed.actionLabel)
+    }
+
+    @Test fun storageBannerPointsToSettings() {
+        val amber = BannerResolver.resolve(BannerInputs(storagePct = 75))!!
+        val coral = BannerResolver.resolve(BannerInputs(storagePct = 95))!!
+        assertEquals("Memory storage 75% full \u00b7 raise the limit in Settings \u2192 Memory", amber.title)
+        assertEquals("Memory storage 95% full \u00b7 raise the limit in Settings \u2192 Memory", coral.title)
+        assertEquals(BannerTone.AMBER, amber.tone); assertEquals(BannerTone.CORAL, coral.tone)
     }
 }

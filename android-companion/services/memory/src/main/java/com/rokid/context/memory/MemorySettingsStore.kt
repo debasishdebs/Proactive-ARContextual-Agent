@@ -12,7 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * retention run of the build that has per-kind retention (Ruling 13): photo deadlines count from `max(capture time, perKindSince)`.
  */
 data class MemorySettings(
-    val shortHours: Int = 24, val mediumDays: Int = 7, val longDays: Int = 30, val quotaMb: Int = 100,
+    val shortHours: Int = 24, val mediumDays: Int = 7, val longDays: Int = 30, val quotaMb: Int = 250,
     val photoDays: Int = 7, val skippedPhotoDays: Int = 1, val captionDays: Int = FOREVER, val clusterSummaryDays: Int = FOREVER,
     val imageVectorDays: Int = FOREVER, val perKindSince: Long = 0L,
     /** When the last retention run started: a long gap, or a clock behind it, renews [perKindSince] (fix round 1, I3). */

@@ -100,8 +100,8 @@ object BannerResolver {
         },
         i.storagePct?.let { p ->
             when {
-                p >= 90 -> BannerSpec(BannerKind.STORAGE, BannerTone.CORAL, "Memory storage $p% full")
-                p >= 70 -> BannerSpec(BannerKind.STORAGE, BannerTone.AMBER, "Memory storage $p% full")
+                p >= 90 -> BannerSpec(BannerKind.STORAGE, BannerTone.CORAL, "Memory storage $p% full \u00b7 raise the limit in Settings \u2192 Memory")
+                p >= 70 -> BannerSpec(BannerKind.STORAGE, BannerTone.AMBER, "Memory storage $p% full \u00b7 raise the limit in Settings \u2192 Memory")
                 else -> null
             }
         },

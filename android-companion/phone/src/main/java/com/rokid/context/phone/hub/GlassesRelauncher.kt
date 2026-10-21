@@ -4,8 +4,11 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioManager
+import android.os.Build
+import android.os.SystemClock
 import android.telephony.TelephonyManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.rokid.context.core.model.LinkState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -194,28 +197,59 @@ class GlassesRelauncher(
 }
 
 /**
- * The real guards. A call is TelephonyManager.callState != IDLE or an AudioManager mode other than NORMAL. Without
- * READ_PHONE_STATE (Android 12+ refuses callState; the manifest does not ask for it) the audio mode is all we have, and a
- * VoIP call that still rings has mode NORMAL: so the call state is treated as unknown, and unknown counts as "in a call" for
- * [UNKNOWN_CALL_HOLD_MS] after a scene event ([callIdle] with a null call state). [wearing] is the last CXR `wearingStatus`.
+ * The real guards. A call is TelephonyManager.callState != IDLE or an AudioManager mode other than NORMAL. READ_PHONE_STATE is deliberately not
+ * requested (2026-10-21 ruling R12); callState is read only if a merged library declared it and it was granted. Without it the audio mode is all
+ * we have, and a VoIP call that still rings has mode NORMAL: so the call state is treated as unknown, and unknown counts as "in a call" for
+ * [UNKNOWN_CALL_HOLD_MS] after a scene event ([callIdle] with a null call state). A call just ended is not idle either: the guard stamps
+ * `normalSinceMs` on the transition INTO NORMAL (the mode listener on API 31+, or the poll that first sees NORMAL after a non-NORMAL sample), on the
+ * monotonic clock [elapsed], and [callIdle] needs [CALL_END_SETTLE_MS] since then (S12). [wearing] is the last CXR `wearingStatus`.
+ * [modeSource] and [callStateSource] are test seams; null = the real AudioManager and TelephonyManager.
  */
 class AndroidRelaunchGuards(
     context: Context,
     private val wearing: () -> Boolean?,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val elapsed: () -> Long = SystemClock::elapsedRealtime,
+    private val modeSource: (() -> Int)? = null,
+    private val callStateSource: (() -> Int?)? = null,
+    watchModeChanges: Boolean = true,
 ) : RelaunchGuards {
     private val app = context.applicationContext
     private val telephony = app.getSystemService(TelephonyManager::class.java)
     private val audio = app.getSystemService(AudioManager::class.java)
     @Volatile private var sceneAtMs = Long.MIN_VALUE / 2
+    /** Monotonic time we last entered NORMAL; null while the mode is not NORMAL; "long ago" until a non-NORMAL mode was seen. */
+    private var normalSinceMs: Long? = Long.MIN_VALUE / 2
+    private val lock = Any()
+
+    init {
+        // API 31+: the listener sees a hang-up the moment it happens, between two polls.
+        if (watchModeChanges && Build.VERSION.SDK_INT >= 31) {
+            try { audio?.addOnModeChangedListener(ContextCompat.getMainExecutor(app)) { mode -> onModeChanged(mode) } } catch (e: Exception) { Log.w(GlassesRelauncher.TAG, "mode listener unavailable: ${e.javaClass.simpleName}") }
+        }
+    }
 
     override fun onSceneEvent(nowMs: Long) { sceneAtMs = nowMs }
 
+    /** A mode sample (the listener, or a poll). The transition into NORMAL is stamped once; any non-NORMAL mode clears it. */
+    internal fun onModeChanged(mode: Int) {
+        synchronized(lock) {
+            if (mode != AudioManager.MODE_NORMAL) normalSinceMs = null
+            else if (normalSinceMs == null) normalSinceMs = elapsed()
+        }
+    }
+
     override fun callIdle(): Boolean {
-        val mode = try { audio?.mode ?: AudioManager.MODE_NORMAL } catch (e: Exception) { AudioManager.MODE_NORMAL }
+        val mode = modeSource?.invoke() ?: try { audio?.mode ?: AudioManager.MODE_NORMAL } catch (e: Exception) { AudioManager.MODE_NORMAL }
+        onModeChanged(mode) // every poll samples the mode too
+        val state = callStateSource?.invoke() ?: if (callStateSource != null) null else readCallState()
+        val sinceNormal = synchronized(lock) { normalSinceMs }?.let { elapsed() - it } ?: 0L
+        return callIdle(mode, state, clock() - sceneAtMs, sinceNormal)
+    }
+
+    private fun readCallState(): Int? {
         val permitted = app.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
-        val state = if (!permitted) null else try { telephony?.callState } catch (e: SecurityException) { null }
-        return callIdle(mode, state, clock() - sceneAtMs)
+        return if (!permitted) null else try { telephony?.callState } catch (e: SecurityException) { null }
     }
 
     override fun mediaIdle(): Boolean = try { audio?.isMusicActive != true } catch (e: Exception) { true }
@@ -224,10 +258,13 @@ class AndroidRelaunchGuards(
 
     companion object {
         const val UNKNOWN_CALL_HOLD_MS = 30_000L
+        /** After the mode returns to NORMAL the call is treated as still ending for this long (a VoIP app may flip the mode back right away). */
+        const val CALL_END_SETTLE_MS = 15_000L
 
         /** Pure: [callState] null = unreadable (no permission). Unknown holds the reopen back until [UNKNOWN_CALL_HOLD_MS] after the scene event. */
-        fun callIdle(audioMode: Int, callState: Int?, sinceSceneMs: Long): Boolean = when {
+        fun callIdle(audioMode: Int, callState: Int?, sinceSceneMs: Long, sinceNormalMs: Long): Boolean = when {
             audioMode != AudioManager.MODE_NORMAL -> false
+            sinceNormalMs < CALL_END_SETTLE_MS -> false
             callState != null -> callState == TelephonyManager.CALL_STATE_IDLE
             else -> sinceSceneMs >= UNKNOWN_CALL_HOLD_MS
         }
