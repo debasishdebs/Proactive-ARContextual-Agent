@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         FrameMetaEntity::class, FrameStateEntity::class, FrameSourceEntity::class, FrameClusterEntity::class, FrameVectorEntity::class,
         CanvasPipelineEntity::class, CanvasPipelineVersionEntity::class, CanvasRunEntity::class, CanvasRunItemEntity::class, CanvasScoreEntity::class, CanvasPublishEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -81,5 +81,27 @@ val MIGRATION_2_3: Migration = object : Migration(2, 3) {
         db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_score` (`runId` TEXT NOT NULL, `frameId` TEXT NOT NULL, `nodeId` TEXT NOT NULL, `score` INTEGER NOT NULL, `note` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`runId`, `frameId`, `nodeId`))")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_score_frameId` ON `canvas_score` (`frameId`)")
         db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_publish` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `pipelineId` TEXT NOT NULL, `version` INTEGER NOT NULL, `hash` TEXT NOT NULL, `publishedAt` INTEGER NOT NULL, `rolledBackAt` INTEGER, `snapshotJson` TEXT NOT NULL)")
+    }
+}
+
+/**
+ * v3 → v4 (wave 2, scene grouping): additive only. Nine claim/state columns on `frame_cluster`, `frame_meta.routedAt`, two indices.
+ * Existing clusters get a state from their `closedAt`. No table is created or dropped (the canvas tables are untouched).
+ */
+val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `frame_cluster` ADD COLUMN `state` TEXT NOT NULL DEFAULT 'OPEN'")
+        db.execSQL("ALTER TABLE `frame_cluster` ADD COLUMN `attempts` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `frame_cluster` ADD COLUMN `claimId` TEXT")
+        db.execSQL("ALTER TABLE `frame_cluster` ADD COLUMN `claimedAt` INTEGER")
+        db.execSQL("ALTER TABLE `frame_cluster` ADD COLUMN `lastError` TEXT")
+        db.execSQL("ALTER TABLE `frame_cluster` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `frame_cluster` ADD COLUMN `motionClass` TEXT")
+        db.execSQL("ALTER TABLE `frame_cluster` ADD COLUMN `memberCount` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `frame_cluster` ADD COLUMN `lastTs` INTEGER")
+        db.execSQL("UPDATE `frame_cluster` SET `state` = CASE WHEN `closedAt` IS NULL THEN 'OPEN' ELSE 'CLOSED' END")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_frame_cluster_state` ON `frame_cluster` (`state`)")
+        db.execSQL("ALTER TABLE `frame_meta` ADD COLUMN `routedAt` INTEGER")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_frame_meta_clusterId` ON `frame_meta` (`clusterId`)")
     }
 }

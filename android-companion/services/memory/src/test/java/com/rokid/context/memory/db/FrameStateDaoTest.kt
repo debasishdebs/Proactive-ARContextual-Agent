@@ -69,7 +69,7 @@ class FrameStateDaoTest {
 
     private suspend fun frame(id: String, ts: Long, state: String = "PENDING", attempts: Int = 0, updatedAt: Long = ts, dwell: Boolean = false) {
         db.frameDao().insertIgnore(FrameEntity(id, ts, "/x/$id.jpg", "rokid_glasses"))
-        db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", dwell, null, null, null, null, null, null, null, null, null, ts))
+        db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", dwell, null, null, null, null, null, null, null, null, null, ts, routedAt = ts))
         dao.insertIgnore(listOf(FrameStateEntity(id, state, attempts, null, null, null, updatedAt)))
     }
 
@@ -101,5 +101,74 @@ class FrameStateDaoTest {
         dao.insertIgnore((1..600).map { FrameStateEntity("old$it", "PENDING", 0, null, null, null, it.toLong()) })
         frame("d1", 100, dwell = true); frame("d2", 200, dwell = true); frame("plain", 300)
         assertEquals(listOf("d2", "d1"), dao.newestDwellClaimable(1_000, 0, 5).map { it.frameId })
+    }
+
+    // ---- wave 2 (Room v4) ----
+
+    private suspend fun meta(id: String, routedAt: Long?, clusterId: String? = null, ts: Long = 1) {
+        db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", false, null, null, null, null, null, null, clusterId, null, null, ts, routedAt))
+    }
+
+    private suspend fun cluster(id: String, state: String) = db.frameClusterDao().upsert(FrameClusterEntity(id, 1, null, null, "[]", null, state))
+
+    @Test fun unroutedFrameNotClaimableForTenMinutes() = runBlocking {
+        val t = 1_000_000L
+        dao.insertIgnore(listOf(row("u").copy(updatedAt = t))); meta("u", routedAt = null)
+        dao.insertIgnore(listOf(row("r").copy(updatedAt = t))); meta("r", routedAt = t)
+        fun newest(now: Long) = runBlocking { dao.newestClaimable(now, 0, Long.MIN_VALUE, 0, 10).map { it.frameId }.toSet() }
+        fun dwell(now: Long) = runBlocking { dao.newestDwellClaimable(now, 0, 10).map { it.frameId }.toSet() }
+        assertEquals(setOf("r"), newest(t + 599_999)); assertEquals(setOf("r", "u"), newest(t + 600_000))
+        assertEquals(setOf("r"), dao.recoverable(t + 599_999, 0, 10).map { it.frameId }.toSet()); assertEquals(setOf("r", "u"), dao.recoverable(t + 600_000, 0, 10).map { it.frameId }.toSet())
+        db.openHelper.writableDatabase.execSQL("UPDATE frame_meta SET dwell = 1")
+        assertEquals(setOf("r"), dwell(t + 599_999)); assertEquals(setOf("r", "u"), dwell(t + 600_000))
+    }
+
+    @Test fun legacyFrameWithoutMetaStillClaimable() = runBlocking {
+        dao.insertIgnore(listOf(row("legacy").copy(updatedAt = 1_000)))
+        assertEquals(listOf("legacy"), dao.newestClaimable(1_001, 0, Long.MIN_VALUE, 0, 10).map { it.frameId })
+        assertEquals(listOf("legacy"), dao.recoverable(1_001, 0, 10).map { it.frameId })
+    }
+
+    @Test fun moveIsGuardedByTheFromState() = runBlocking {
+        dao.insertIgnore(listOf(row("a"), row("b", "EXTRACTED")))
+        assertEquals(1, dao.move(listOf("a", "b"), "PENDING", "IN_CLUSTER", null, 500))
+        assertEquals("IN_CLUSTER", dao.get("a")!!.state); assertEquals(500L, dao.get("a")!!.updatedAt); assertEquals("EXTRACTED", dao.get("b")!!.state)
+        assertEquals(1, dao.move(listOf("a"), "IN_CLUSTER", "NEAR_DUP", "why", 600)); assertEquals("why", dao.get("a")!!.lastError)
+    }
+
+    @Test fun settleClusterOnlyMovesInCluster() = runBlocking {
+        dao.insertIgnore(listOf(row("in", "IN_CLUSTER"), row("done", "EXTRACTED"), row("pend"), row("other", "IN_CLUSTER")))
+        meta("in", 1, "c1"); meta("done", 1, "c1"); meta("pend", 1, "c1"); meta("other", 1, "c2")
+        assertEquals(1, dao.settleCluster("c1", "NEAR_DUP", "cluster_failed", 700))
+        assertEquals("NEAR_DUP", dao.get("in")!!.state); assertEquals("cluster_failed", dao.get("in")!!.lastError)
+        assertEquals("EXTRACTED", dao.get("done")!!.state); assertEquals("PENDING", dao.get("pend")!!.state); assertEquals("IN_CLUSTER", dao.get("other")!!.state)
+    }
+
+    @Test fun askClaimsInClusterAndUnrouted() = runBlocking {
+        cluster("open", "OPEN"); cluster("closed", "CLOSED")
+        dao.insertIgnore(listOf(row("unrouted"), row("routed"), row("inOpen", "IN_CLUSTER"), row("inClosed", "IN_CLUSTER"), row("done", "EXTRACTED"), row("noMeta", "IN_CLUSTER")))
+        meta("unrouted", null); meta("routed", 5); meta("inOpen", 5, "open"); meta("inClosed", 5, "closed"); meta("done", 5)
+        val got = dao.claimForAsk(listOf("unrouted", "routed", "inOpen", "inClosed", "done", "noMeta"), "ask", 1_000)
+        assertEquals(setOf("unrouted", "routed", "inOpen", "inClosed"), got.map { it.frameId }.toSet())
+        got.forEach { assertEquals("EXTRACTING", it.state); assertEquals("ask", it.claimId); assertEquals(1_000L, it.claimedAt) }
+        assertEquals("EXTRACTED", dao.get("done")!!.state); assertEquals("IN_CLUSTER", dao.get("noMeta")!!.state)
+        assertEquals(emptyList<FrameStateEntity>(), dao.claimForAsk(emptyList(), "x", 1))
+    }
+
+    @Test fun askSkipsSummarizingClusterMembers() = runBlocking {
+        cluster("sum", "SUMMARIZING"); cluster("done", "SUMMARIZED"); cluster("failed", "FAILED")
+        dao.insertIgnore(listOf(row("a", "IN_CLUSTER"), row("b", "IN_CLUSTER"), row("c", "IN_CLUSTER")))
+        meta("a", 5, "sum"); meta("b", 5, "done"); meta("c", 5, "failed")
+        assertEquals(emptyList<FrameStateEntity>(), dao.claimForAsk(listOf("a", "b", "c"), "ask", 1_000))
+        listOf("a", "b", "c").forEach { assertEquals("IN_CLUSTER", dao.get(it)!!.state) }
+    }
+
+    @Test fun captionQueuedOldestFirst() = runBlocking {
+        dao.insertIgnore(listOf(row("new", "CAPTION_QUEUED").copy(updatedAt = 300), row("old", "CAPTION_QUEUED").copy(updatedAt = 100), row("mid", "CAPTION_QUEUED").copy(updatedAt = 200), row("p")))
+        assertEquals(listOf("old", "mid"), dao.captionQueued(2).map { it.frameId })
+        val got = dao.claimCaptionQueued(listOf("old", "p", "new"), "cap", 1_000)
+        assertEquals(setOf("old", "new"), got.map { it.frameId }.toSet())
+        got.forEach { assertEquals("EXTRACTING", it.state); assertEquals("cap", it.claimId) }
+        assertEquals("PENDING", dao.get("p")!!.state)
     }
 }

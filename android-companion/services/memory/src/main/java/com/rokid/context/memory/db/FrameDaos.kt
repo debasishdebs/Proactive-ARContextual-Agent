@@ -64,13 +64,14 @@ abstract class FrameStateDao {
     abstract suspend fun fail(frameId: String, claimId: String, error: String, nowMs: Long, maxAttempts: Int = MAX_ATTEMPTS): Int
 
     @Query(
-        "SELECT * FROM frame_state WHERE (state IN ('PENDING','FAILED') OR (state = 'EXTRACTING' AND claimedAt < :abandonBeforeMs)) " +
-            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) ORDER BY updatedAt LIMIT :limit",
+        "SELECT s.* FROM frame_state s WHERE (s.state IN ('PENDING','FAILED') OR (s.state = 'EXTRACTING' AND s.claimedAt < :abandonBeforeMs)) " +
+            "AND (NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " + // wave 2: an unrouted frame is the scene router's for 10 min
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) ORDER BY s.updatedAt LIMIT :limit",
     )
-    protected abstract suspend fun recoverableRows(abandonBeforeMs: Long, limit: Int): List<FrameStateEntity>
+    protected abstract suspend fun recoverableRows(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameStateEntity>
 
     /** PENDING, FAILED (attempts < 5 by construction: the fifth is FAILED_FINAL) and abandoned EXTRACTING rows, oldest first. */
-    open suspend fun recoverable(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameStateEntity> = recoverableRows(abandonBeforeMs, limit)
+    open suspend fun recoverable(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameStateEntity> = recoverableRows(nowMs, abandonBeforeMs, limit)
 
     /**
      * Claimable rows, NEWEST capture first (frame.ts, else the row's updatedAt), at most [limit], capture >= [sinceMs]. A FAILED row
@@ -82,6 +83,7 @@ abstract class FrameStateDao {
             "WHERE (s.state IN ('PENDING','FAILED') OR (s.state = 'EXTRACTING' AND s.claimedAt < :abandonBeforeMs)) " +
             "AND (:ignoreBackoff = 1 OR s.state != 'FAILED' OR s.updatedAt + MIN(30000 << MAX(s.attempts - 1, 0), 1800000) <= :nowMs) " +
             "AND COALESCE(f.ts, s.updatedAt) >= :sinceMs " +
+            "AND (NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " + // wave 2: unrouted frames wait 10 min for the scene router
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) " +
             "ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
     )
@@ -92,6 +94,7 @@ abstract class FrameStateDao {
         "SELECT s.* FROM frame_state s JOIN frame_meta m ON m.frameId = s.frameId LEFT JOIN frame f ON f.id = s.frameId " +
             "WHERE m.dwell = 1 AND (s.state IN ('PENDING','FAILED') OR (s.state = 'EXTRACTING' AND s.claimedAt < :abandonBeforeMs)) " +
             "AND (s.state != 'FAILED' OR s.updatedAt + MIN(30000 << MAX(s.attempts - 1, 0), 1800000) <= :nowMs) " +
+            "AND (NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) " +
             "ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
     )
@@ -183,6 +186,59 @@ abstract class FrameStateDao {
 
     @Query("DELETE FROM frame_state WHERE frameId IN (:frameIds)") abstract suspend fun deleteFor(frameIds: List<String>): Int
 
+    /** Guarded move from [from] to [to] (no claim involved): routing and cluster settlement. Returns rows changed. */
+    @Query(
+        "UPDATE frame_state SET state = :to, lastError = :lastError, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE frameId IN (:frameIds) AND state = :from",
+    )
+    abstract suspend fun move(frameIds: List<String>, from: String, to: String, lastError: String?, nowMs: Long): Int
+
+    /** Members of [clusterId] still IN_CLUSTER → [to] (CLUSTERED, NEAR_DUP or FAILED_FINAL). */
+    @Query(
+        "UPDATE frame_state SET state = :to, lastError = :lastError, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE state = 'IN_CLUSTER' AND frameId IN (SELECT frameId FROM frame_meta WHERE clusterId = :clusterId)",
+    )
+    abstract suspend fun settleCluster(clusterId: String, to: String, lastError: String?, nowMs: Long): Int
+
+    /** An ask claims PENDING frames (routed or not) and the IN_CLUSTER members of an OPEN/CLOSED cluster (a SUMMARIZING one is mid-call). */
+    @Query(
+        "UPDATE frame_state SET state = 'EXTRACTING', claimedAt = :nowMs, claimId = :claimId, updatedAt = :nowMs " +
+            "WHERE frameId IN (:frameIds) AND (state = 'PENDING' OR (state = 'IN_CLUSTER' AND EXISTS (" +
+            "SELECT 1 FROM frame_meta m JOIN frame_cluster c ON c.clusterId = m.clusterId WHERE m.frameId = frame_state.frameId AND c.state IN ('OPEN','CLOSED')))) " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)",
+    )
+    protected abstract suspend fun claimAskRows(frameIds: List<String>, claimId: String, nowMs: Long): Int
+
+    /** Ask path: [frameIds] (the caller already limited them to frames captured since its window) in PENDING or IN_CLUSTER of an OPEN/CLOSED cluster → EXTRACTING. */
+    @Transaction
+    open suspend fun claimForAsk(frameIds: List<String>, claimId: String, nowMs: Long): List<FrameStateEntity> {
+        if (frameIds.isEmpty()) return emptyList()
+        claimAskRows(frameIds, claimId, nowMs)
+        return claimedBy(frameIds, claimId)
+    }
+
+    /** Key-moment photos whose caption is still owed, oldest first (lowest priority; aging is the pipeline's job). */
+    @Query(
+        "SELECT * FROM frame_state WHERE state = 'CAPTION_QUEUED' " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) ORDER BY updatedAt LIMIT :limit",
+    )
+    abstract suspend fun captionQueued(limit: Int): List<FrameStateEntity>
+
+    @Query(
+        "UPDATE frame_state SET state = 'EXTRACTING', claimedAt = :nowMs, claimId = :claimId, updatedAt = :nowMs " +
+            "WHERE frameId IN (:frameIds) AND state = 'CAPTION_QUEUED' " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId)",
+    )
+    protected abstract suspend fun claimCaptionRows(frameIds: List<String>, claimId: String, nowMs: Long): Int
+
+    /** CAPTION_QUEUED → EXTRACTING; returns the rows it claimed. */
+    @Transaction
+    open suspend fun claimCaptionQueued(frameIds: List<String>, claimId: String, nowMs: Long): List<FrameStateEntity> {
+        if (frameIds.isEmpty()) return emptyList()
+        claimCaptionRows(frameIds, claimId, nowMs)
+        return claimedBy(frameIds, claimId)
+    }
+
     companion object { const val MAX_ATTEMPTS = 5 }
 }
 
@@ -194,6 +250,23 @@ interface FrameMetaDao {
     @Query("SELECT COUNT(*) FROM frame_meta WHERE createdAt >= :sinceMs") suspend fun countSince(sinceMs: Long): Int
     @Query("SELECT * FROM frame_meta WHERE wireFrameId = :wireFrameId") suspend fun byWireId(wireFrameId: String): FrameMetaEntity?
     @Query("DELETE FROM frame_meta WHERE frameId IN (:frameIds)") suspend fun deleteFor(frameIds: List<String>): Int
+
+    /** PENDING frames the scene router has not seen (routedAt null), no tombstone, oldest capture first. */
+    @Query(
+        "SELECT m.* FROM frame_meta m JOIN frame_state s ON s.frameId = m.frameId LEFT JOIN frame f ON f.id = m.frameId " +
+            "WHERE s.state = 'PENDING' AND m.routedAt IS NULL " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = m.frameId) " +
+            "ORDER BY COALESCE(f.ts, m.createdAt) ASC LIMIT :limit",
+    )
+    suspend fun unroutedPending(limit: Int): List<FrameMetaEntity>
+
+    @Query("SELECT * FROM frame_meta WHERE clusterId = :clusterId ORDER BY createdAt, frameId") suspend fun members(clusterId: String): List<FrameMetaEntity>
+
+    @Query(
+        "UPDATE frame_meta SET salience = :salience, salienceTerms = :salienceTerms, nearDupOf = :nearDupOf, clusterId = :clusterId, " +
+            "imageVectorSpace = :imageVectorSpace, routedAt = :routedAt WHERE frameId = :frameId",
+    )
+    suspend fun markRouted(frameId: String, salience: Float?, salienceTerms: String?, nearDupOf: String?, clusterId: String?, imageVectorSpace: String?, routedAt: Long)
 }
 
 @Dao
@@ -214,12 +287,98 @@ interface FrameVectorDao {
     @Query("DELETE FROM frame_vector WHERE spaceId = :spaceId") suspend fun deleteSpace(spaceId: String): Int
     @Query("SELECT COUNT(*) FROM frame_vector WHERE spaceId = :spaceId") suspend fun countForSpace(spaceId: String): Int
     @Query("DELETE FROM frame_vector WHERE frameId IN (:frameIds)") suspend fun deleteFor(frameIds: List<String>): Int
+    @Query("SELECT * FROM frame_vector WHERE frameId = :frameId AND spaceId = :spaceId") suspend fun get(frameId: String, spaceId: String): FrameVectorEntity?
+
+    /** Vectors of [spaceId] for frames captured in [fromTs, toTs] (by frame.ts). */
+    @Query("SELECT v.* FROM frame_vector v JOIN frame f ON f.id = v.frameId WHERE v.spaceId = :spaceId AND f.ts BETWEEN :fromTs AND :toTs ORDER BY f.ts")
+    suspend fun window(spaceId: String, fromTs: Long, toTs: Long): List<FrameVectorEntity>
+
+    @Query("SELECT * FROM frame_vector WHERE spaceId = :spaceId AND frameId IN (:frameIds)") suspend fun forFrames(spaceId: String, frameIds: List<String>): List<FrameVectorEntity>
 }
 
+/**
+ * Scene clusters (wave 2). The summary call's claim lives on the cluster row (not on its members): CLOSED → SUMMARIZING (claimId) →
+ * SUMMARIZED, with the same CAS, backoff and attempt rules as [FrameStateDao]. Callers chunk `IN (…)` lists (≤ 500).
+ */
 @Dao
-interface FrameClusterDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(row: FrameClusterEntity)
-    @Query("SELECT * FROM frame_cluster WHERE closedAt IS NULL ORDER BY openedAt DESC LIMIT 1") suspend fun open(): FrameClusterEntity?
+abstract class FrameClusterDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun upsert(row: FrameClusterEntity)
+    @Query("SELECT * FROM frame_cluster WHERE state = 'OPEN' ORDER BY openedAt DESC LIMIT 1") abstract suspend fun open(): FrameClusterEntity?
+    @Query("SELECT * FROM frame_cluster WHERE clusterId = :clusterId") abstract suspend fun get(clusterId: String): FrameClusterEntity?
+
+    /** CLOSED, FAILED past its backoff (30 s doubling, capped at 30 min), or SUMMARIZING abandoned before [abandonBeforeMs]; oldest closedAt first. */
+    @Query(
+        "SELECT * FROM frame_cluster WHERE (state = 'CLOSED' " +
+            "OR (state = 'FAILED' AND updatedAt + MIN(30000 << MAX(attempts - 1, 0), 1800000) <= :nowMs) " +
+            "OR (state = 'SUMMARIZING' AND claimedAt < :abandonBeforeMs)) ORDER BY closedAt, clusterId LIMIT :limit",
+    )
+    abstract suspend fun claimable(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameClusterEntity>
+
+    @Query(
+        "UPDATE frame_cluster SET state = 'SUMMARIZING', claimedAt = :nowMs, claimId = :claimId, updatedAt = :nowMs " +
+            "WHERE clusterId IN (:ids) AND state IN ('CLOSED','FAILED')",
+    )
+    protected abstract suspend fun claimRows(ids: List<String>, claimId: String, nowMs: Long): Int
+
+    /** An abandoned claim counts as an attempt: back to CLOSED, or FAILED_FINAL on the fifth. */
+    @Query(
+        "UPDATE frame_cluster SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'CLOSED' END, " +
+            "lastError = 'abandoned', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE clusterId IN (:ids) AND state = 'SUMMARIZING' AND claimedAt < :abandonBeforeMs",
+    )
+    protected abstract suspend fun abandonRows(ids: List<String>, nowMs: Long, abandonBeforeMs: Long, maxAttempts: Int): Int
+
+    @Query("SELECT * FROM frame_cluster WHERE clusterId IN (:ids) AND state = 'SUMMARIZING' AND claimId = :claimId")
+    protected abstract suspend fun claimedBy(ids: List<String>, claimId: String): List<FrameClusterEntity>
+
+    /** CLOSED / FAILED / abandoned SUMMARIZING → SUMMARIZING with [claimId]; returns the rows it claimed (an abandoned one counts an attempt first). */
+    @Transaction
+    open suspend fun claim(ids: List<String>, claimId: String, nowMs: Long, abandonBeforeMs: Long): List<FrameClusterEntity> {
+        if (ids.isEmpty()) return emptyList()
+        abandonRows(ids, nowMs, abandonBeforeMs, FrameStateDao.MAX_ATTEMPTS)
+        claimRows(ids, claimId, nowMs)
+        return claimedBy(ids, claimId)
+    }
+
+    /** The CAS: SUMMARIZING + [claimId] → SUMMARIZED with [memoryId]; 1, or 0 when the claim no longer holds. Runs first in the commit transaction. */
+    @Query(
+        "UPDATE frame_cluster SET state = 'SUMMARIZED', memoryId = :memoryId, claimedAt = NULL, claimId = NULL, lastError = NULL, updatedAt = :nowMs " +
+            "WHERE clusterId = :clusterId AND state = 'SUMMARIZING' AND claimId = :claimId",
+    )
+    abstract suspend fun completeIfClaimed(clusterId: String, claimId: String, memoryId: String, nowMs: Long): Int
+
+    /** → FAILED, or FAILED_FINAL on the [maxAttempts]th failure. 0 when the claim no longer holds. */
+    @Query(
+        "UPDATE frame_cluster SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'FAILED' END, " +
+            "lastError = :error, claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE clusterId = :clusterId AND state = 'SUMMARIZING' AND claimId = :claimId",
+    )
+    abstract suspend fun fail(clusterId: String, claimId: String, error: String, nowMs: Long, maxAttempts: Int = FrameStateDao.MAX_ATTEMPTS): Int
+
+    /** Gives a claim back without an attempt (offline, no provider, cancelled). */
+    @Query(
+        "UPDATE frame_cluster SET state = 'CLOSED', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE clusterId = :clusterId AND state = 'SUMMARIZING' AND claimId = :claimId",
+    )
+    abstract suspend fun release(clusterId: String, claimId: String, nowMs: Long): Int
+
+    /** Process start: SUMMARIZING claims taken before [claimedBeforeMs] (an earlier process) go back to CLOSED, attempts unchanged. */
+    @Query(
+        "UPDATE frame_cluster SET state = 'CLOSED', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE state = 'SUMMARIZING' AND (claimedAt IS NULL OR claimedAt < :claimedBeforeMs)",
+    )
+    abstract suspend fun releaseAllSummarizing(nowMs: Long, claimedBeforeMs: Long): Int
+
+    /** Abandoned SUMMARIZING claims go back to CLOSED and count an attempt; the fifth ends in FAILED_FINAL. */
+    @Query(
+        "UPDATE frame_cluster SET attempts = attempts + 1, state = CASE WHEN attempts + 1 >= :maxAttempts THEN 'FAILED_FINAL' ELSE 'CLOSED' END, " +
+            "lastError = 'abandoned', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE state = 'SUMMARIZING' AND claimedAt < :abandonBeforeMs",
+    )
+    abstract suspend fun requeueAbandoned(nowMs: Long, abandonBeforeMs: Long, maxAttempts: Int = FrameStateDao.MAX_ATTEMPTS): Int
+
+    @Query("SELECT state AS k, COUNT(*) AS v FROM frame_cluster GROUP BY state")
+    abstract fun counts(): Flow<Map<@MapColumn("k") String, @MapColumn("v") Int>>
 }
 
 /** A frame row still awaiting extraction when v2 adopts it: its id and the JPEG path (the caller checks the file). */
