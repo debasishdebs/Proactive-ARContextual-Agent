@@ -16,4 +16,13 @@ object WearingStatus {
             else -> null
         }
     }
+
+    private val SAFE = Regex("^[A-Za-z0-9_ -]{1,24}$")
+
+    /** Log-safe view of the raw SDK string: a short plain token as is, anything else only its length. */
+    fun describe(raw: String?): String = when {
+        raw == null -> "<null>"
+        SAFE.matches(raw) -> raw
+        else -> "<other len=${raw.length}>"
+    }
 }
