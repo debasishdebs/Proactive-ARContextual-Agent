@@ -26,27 +26,57 @@ class HeuristicMotionModel(private val p: GlanceParams = GlanceParams()) : Motio
     }
 }
 
-/** A decision tree in flat arrays (the output of tools/motion-train). Leaves have `left == -1`; classes index [STILL, HEAD_MOVING, WALKING]. */
+/**
+ * A decision tree in flat arrays (the output of tools/motion-train). Leaves have `left == -1`; classes index [STILL, HEAD_MOVING, WALKING].
+ * The whole tree is validated at construction ([valid]); an invalid tree, or any runtime failure, answers with [fallback]
+ * so the shadow never throws and never loses a CSV row. Use [orHeuristic] to load untrusted arrays.
+ */
 class TreeMotionModel(
     override val id: String,
     private val feature: IntArray, private val threshold: FloatArray,
     private val left: IntArray, private val right: IntArray, private val leafClass: IntArray,
+    private val fallback: MotionModel = HeuristicMotionModel(),
 ) : MotionModel {
     init {
         val n = feature.size
         require(threshold.size == n && left.size == n && right.size == n && leafClass.size == n) { "tree arrays must have equal sizes" }
     }
 
-    override fun classify(f: SecondFeatures): MotionState {
-        if (feature.isEmpty()) return MotionState.STILL
-        val x = f.toArray()
-        var node = 0
-        var hops = 0
-        while (left[node] != -1 && hops++ <= feature.size) {
-            node = if (x[feature[node]] <= threshold[node]) left[node] else right[node]
+    /** Feature and child indices in range, children strictly forward (so acyclic, depth <= size), classes known, thresholds finite. */
+    val valid: Boolean = run {
+        val n = feature.size
+        n > 0 && (0 until n).all { i ->
+            if (left[i] == -1) leafClass[i] in 0..2 && right[i] == -1
+            else feature[i] in 0 until FEATURES && threshold[i].isFinite() &&
+                left[i] in (i + 1) until n && right[i] in (i + 1) until n
         }
-        return CLASSES.getOrElse(leafClass[node]) { MotionState.STILL }
     }
 
-    private companion object { val CLASSES = listOf(MotionState.STILL, MotionState.HEAD_MOVING, MotionState.WALKING) }
+    override fun classify(f: SecondFeatures): MotionState {
+        if (!valid) return fallback.classify(f)
+        return try {
+            val x = f.toArray()
+            var node = 0
+            while (left[node] != -1) node = if (x[feature[node]] <= threshold[node]) left[node] else right[node]
+            CLASSES[leafClass[node]]
+        } catch (_: Throwable) {
+            fallback.classify(f)
+        }
+    }
+
+    companion object {
+        private const val FEATURES = 7
+        private val CLASSES = listOf(MotionState.STILL, MotionState.HEAD_MOVING, MotionState.WALKING)
+
+        /** The tree when the arrays form a valid tree, else the heuristic; [log] gets one count-only line when rejected. */
+        fun orHeuristic(
+            id: String, feature: IntArray, threshold: FloatArray, left: IntArray, right: IntArray, leafClass: IntArray,
+            log: (String) -> Unit = {},
+        ): MotionModel {
+            val t = runCatching { TreeMotionModel(id, feature, threshold, left, right, leafClass) }.getOrNull()
+            if (t != null && t.valid) return t
+            runCatching { log("motion tree rejected nodes=${feature.size} using heuristic") }
+            return HeuristicMotionModel()
+        }
+    }
 }

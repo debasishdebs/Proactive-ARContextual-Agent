@@ -9,6 +9,7 @@ class MotionCsv(private val dir: File, private val maxBytes: Long = 4L * 1024 * 
 
     @Synchronized fun append(row: String) {
         runCatching {
+            require(SAFE.matches(row)) { "row is not numeric/enum-only" }
             dir.mkdirs()
             val f = File(dir, NAME)
             if (f.length() >= maxBytes) {
@@ -22,6 +23,7 @@ class MotionCsv(private val dir: File, private val maxBytes: Long = 4L * 1024 * 
     }
 
     companion object {
+        private val SAFE = Regex("^[0-9.,A-Z_a-z-]+$")
         const val NAME = "motion_features.csv"
         const val HEADER = "t_ms,gyro_max,gyro_mean,gyro_rms,above_on_frac,acc_var,step_hz,rot_rad,glances,micro,state,model,fused,label,rate"
     }

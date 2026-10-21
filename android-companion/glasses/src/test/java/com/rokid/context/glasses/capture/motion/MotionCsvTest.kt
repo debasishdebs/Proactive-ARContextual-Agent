@@ -17,7 +17,7 @@ class MotionCsvTest {
         c.append(row)
         assertEquals(3, f.readLines().size)
         assertEquals("t_ms,gyro_max,gyro_mean,gyro_rms,above_on_frac,acc_var,step_hz,rot_rad,glances,micro,state,model,fused,label,rate", MotionCsv.HEADER)
-        assertTrue(row.matches(Regex("^[0-9.,A-Z_a-z-]+$")))
+        assertEquals(0, c.failures)
     }
 
     @Test fun emptyExistingFileGetsHeader() {
@@ -43,5 +43,13 @@ class MotionCsvTest {
         val c = MotionCsv(bad)
         c.append(row)
         assertEquals(1, c.failures)
+    }
+
+    @Test fun freeTextRowsAreRefusedAndNeverWritten() {
+        val d = dir(); val c = MotionCsv(d)
+        c.append(row)
+        for (bad in listOf("1000,hello world", "1000,a;b", "1000,\"quoted\"", "1000,caf\u00e9", "1000,x\ny")) c.append(bad)
+        assertEquals(5, c.failures)
+        assertEquals(listOf(MotionCsv.HEADER, row), File(d, "motion_features.csv").readLines())
     }
 }
