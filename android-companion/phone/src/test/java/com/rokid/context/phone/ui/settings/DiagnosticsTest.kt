@@ -43,6 +43,19 @@ class DiagnosticsTest {
         compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(), {}, {}, {}, {}, {}, {}, {}, {}, {}, keyframes = rows, onRetryAll = onRetry) } }
     }
 
+    @Test fun showsTheContextHubLineFromStats() {
+        val st = com.rokid.context.phone.context.ContextHubStats { 0L }
+        st.onWatchRejected(); st.onSend()
+        val line = st.line(com.rokid.context.core.model.context.ContextState.WALKING)
+        compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(), {}, {}, {}, {}, {}, {}, {}, {}, {}, contextLine = line) } }
+        compose.onNodeWithTag("diag_ctx").assertTextContains("ctxhub v=1 state=WALKING", substring = true).assertTextContains("watchRej=1", substring = true).assertTextContains("sends=1", substring = true)
+    }
+
+    @Test fun noContextLineWithoutAHub() {
+        compose.setContent { PcTheme { DiagnosticsScreen(DiagnosticsUiState(), {}, {}, {}, {}, {}, {}, {}, {}, {}) } }
+        compose.onNodeWithTag("diag_ctx").assertDoesNotExist()
+    }
+
     @Test fun showsBacklogAndLatency() {
         show(KeyframeRows(stats, droppedNudges = mapOf("SHOWN_GAP" to 2), sidecarLost = 4))
         compose.onNodeWithTag("kf_backlog").assertTextContains("Backlog 3", substring = true).assertTextContains("PENDING 3", substring = true).assertTextContains("FAILED_FINAL 2", substring = true)

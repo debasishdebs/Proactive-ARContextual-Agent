@@ -256,8 +256,9 @@ class CaptureSettingsTest {
         show(CaptureSettingsUiState(), vm)
         compose.onNodeWithTag("motion_sources").assertExists()
         compose.onNodeWithTag("source_glasses_imu").assertIsNotEnabled()
-        compose.onNodeWithTag("source_phone_motion").assertIsNotEnabled()
-        compose.onNodeWithTag("source_watch_livefit").assertIsNotEnabled()
+        compose.onNodeWithTag("source_phone_motion").assertDoesNotExist()
+        compose.onNodeWithTag("source_watch_livefit").assertDoesNotExist()
+        compose.onNodeWithTag("context_sources_link").assertExists()
         compose.onNodeWithTag("motion_label_note").assertDoesNotExist()
         pick("motion_label", 4)
         assertEquals(MotionLabel.EATING, hud.settings.value.motionLabel)
@@ -266,6 +267,23 @@ class CaptureSettingsTest {
         vm.setMotionSource("phone_motion", true)
         assertEquals(emptyList<String>(), hud.settings.value.motionSourcesOff)
         vm.setMotionSource("glasses_imu", false); assertEquals(emptyList<String>(), hud.settings.value.motionSourcesOff)
+        vm.cancelScope()
+    }
+
+    @Test fun contextSourcesLinkShowsStateWordAndOpens() {
+        var opened = 0
+        compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(contextWord = "Walking"), onBack = {}, onOpenContext = { opened++ }) } }
+        compose.onNodeWithTag("context_sources_link").assertExists()
+        compose.onNodeWithText("Phone, car, watch and photo context").assertExists()
+        compose.onNodeWithText("Walking").assertExists()
+        compose.onNodeWithTag("context_sources_link").performClick(); compose.waitForIdle()
+        assertEquals(1, opened)
+    }
+
+    @Test fun viewModelCarriesTheCommittedContextWord() = runBlocking {
+        val st = kotlinx.coroutines.flow.MutableStateFlow(com.rokid.context.core.model.context.ContextState.VEHICLE_PASSENGER)
+        val vm = CaptureSettingsViewModel(FakeHudSettings(), context = st)
+        assertEquals("Passenger", withTimeout(5_000) { vm.state.first { it.contextWord == "Passenger" } }.contextWord)
         vm.cancelScope()
     }
 

@@ -15,7 +15,12 @@ import com.rokid.context.core.model.MotionLabel
 import com.rokid.context.core.model.QUICK_LOOK_MS_ALLOWED
 import com.rokid.context.core.model.REST_MINUTES_ALLOWED
 import com.rokid.context.core.model.WORK_MINUTES_ALLOWED
+import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.core.model.normalized
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Sensors
+import com.rokid.context.core.ui.components.ChipRow
+import com.rokid.context.core.ui.theme.PcColors
 import com.rokid.context.phone.ui.settings.ChoiceRow
 import com.rokid.context.phone.ui.settings.HudSettingsControl
 import com.rokid.context.phone.ui.settings.NoticeText
@@ -69,6 +74,8 @@ data class CaptureSettingsUiState(
     val workRestEnabled: Boolean = false,
     val motionLabel: MotionLabel = MotionLabel.NONE,
     val motionSourcesOff: List<String> = emptyList(),
+    /** The committed context state in words (Unknown / Resting / Walking / Passenger / Driving / Flying). */
+    val contextWord: String = "Unknown",
 ) {
     /** 0 Smart, 1 Settle, 2 Fixed. */
     val modeIndex: Int get() = when {
@@ -88,13 +95,14 @@ class CaptureSettingsViewModel(
     private val hud: HudSettingsControl,
     private val pace: AiCallPaceStore = AiCallPaceStore(),
     private val keyframes: StateFlow<KeyframeStats> = MutableStateFlow(KeyframeStats()),
+    private val context: kotlinx.coroutines.flow.Flow<ContextState> = MutableStateFlow(ContextState.UNKNOWN),
 ) : ViewModel() {
-    private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats): CaptureSettingsUiState {
+    private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState): CaptureSettingsUiState {
         val n = h.normalized()
-        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff)
+        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs))
     }
-    val state: StateFlow<CaptureSettingsUiState> = combine(hud.settings, pace.paceMs, keyframes, ::of)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value))
+    val state: StateFlow<CaptureSettingsUiState> = combine(hud.settings, pace.paceMs, keyframes, context, ::of)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value, ContextState.UNKNOWN))
 
     fun setMode(m: CaptureMode) = hud.update { it.copy(captureMode = m) }
     /** 0 Smart (motion wake), 1 Settle, 2 Fixed (wake untouched). */
@@ -131,7 +139,7 @@ fun CaptureSettingsScreen(
     state: CaptureSettingsUiState, onBack: () -> Unit,
     onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {},
     onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {},
-    onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {},
+    onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {}, onOpenContext: () -> Unit = {},
 ) {
     val options = CaptureIntervals.options(state.intervalSec)
     val longWork = state.workMinutes > 45
@@ -175,8 +183,9 @@ fun CaptureSettingsScreen(
             SettingsCard(Modifier.testTag("motion_sources")) {
                 Text("Motion sources", style = MaterialTheme.typography.titleMedium)
                 SwitchRow("Glasses motion sensor", "Always on", true, {}, tag = "source_glasses_imu", enabled = false)
-                SwitchRow("Phone motion", "Coming later", false, {}, tag = "source_phone_motion", enabled = false)
-                SwitchRow("Watch live fit", "Coming later", false, {}, tag = "source_watch_livefit", enabled = false)
+                androidx.compose.foundation.layout.Box(Modifier.testTag("context_sources_link")) {
+                    ChipRow(Icons.Outlined.Sensors, PcColors.ChipSky, "Phone, car, watch and photo context", state.contextWord, onClick = onOpenContext)
+                }
                 Text("Motion labels (training)", style = MaterialTheme.typography.titleMedium)
                 val labels = listOf("None", "Sitting", "Glancing", "Chores", "Eating", "Walking", "Not worn")
                 ChoiceRow("Motion label", labels, MotionLabel.entries.indexOf(state.motionLabel), { onMotionLabel(MotionLabel.entries[it]) }, tag = "motion_label")

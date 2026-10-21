@@ -25,6 +25,8 @@ object Routes {
     const val SETTINGS_NEARBY = "settings/glasses/nearby"
     const val SETTINGS_PHONE_INPUTS = "settings/phone-inputs"
     const val SETTINGS_CAPTURE = "settings/capture"
+    /** Settings > Capture > Phone, car, watch and photo context (Wave B). */
+    const val SETTINGS_CONTEXT = "settings/capture/context"
     const val SETTINGS_ENDPOINT = "settings/endpoints/{id}"
     const val SETTINGS_ROLES = "settings/roles"
     const val SETTINGS_PROMPTS = "settings/prompts"

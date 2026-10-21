@@ -56,6 +56,9 @@ import com.rokid.context.phone.ui.settings.connectors.NotesRoute
 import com.rokid.context.phone.ui.settings.connectors.ShoppingRoute
 import com.rokid.context.phone.ui.settings.connectors.SourcesRoute
 import com.rokid.context.phone.ui.settings.capture.CaptureSettingsViewModel
+import kotlinx.coroutines.flow.map
+import com.rokid.context.phone.ui.settings.capture.ContextSourcesScreen
+import com.rokid.context.phone.ui.settings.capture.ContextSourcesViewModel
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsScreen
 import com.rokid.context.phone.ui.settings.glasses.GlassesSettingsViewModel
 import com.rokid.context.phone.ui.settings.inputs.PhoneInputsScreen
@@ -123,11 +126,21 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_CAPTURE) {
-        val vm = viewModel { CaptureSettingsViewModel(s.hud, s.aiCallPace, s.keyframes.stats) }
+        val vm = viewModel { CaptureSettingsViewModel(s.hud, s.aiCallPace, s.keyframes.stats, s.contextSources.decision.map { it.state }) }
         val state by vm.state.collectAsStateWithLifecycle()
         CaptureSettingsScreen(state, onBack = back, onModeChoice = vm::setModeChoice, onBatteryTarget = vm::setBatteryTarget, onPauseWhenPhoneInUse = vm::setPauseWhenPhoneInUse, onInterval = vm::setInterval, onQuickLook = vm::setQuickLook,
             onPauseWhenNotWorn = vm::setPauseWhenNotWorn, onCaptureCue = vm::setCaptureCue, onWork = vm::setWork, onRest = vm::setRest, onPace = vm::setPace,
-            onWorkRestEnabled = vm::setWorkRestEnabled, onMotionLabel = vm::setMotionLabel)
+            onWorkRestEnabled = vm::setWorkRestEnabled, onMotionLabel = vm::setMotionLabel, onOpenContext = { nav.navigate(Routes.SETTINGS_CONTEXT) })
+    }
+
+    composable(Routes.SETTINGS_CONTEXT) {
+        val c = s.contextSources
+        val settings = c.settings
+        if (settings != null) {
+            val vm = viewModel { ContextSourcesViewModel(settings, c.certLookup, c.decision, c.status, c.stats) }
+            val state by vm.state.collectAsStateWithLifecycle()
+            ContextSourcesScreen(state, onBack = back, onApply = vm::setApply, onWatch = vm::setWatch)
+        }
     }
 
     composable(Routes.SETTINGS_ENDPOINTS) {
@@ -246,6 +259,8 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val app = LocalContext.current.applicationContext
         val dev = remember { DeveloperModeStore.get(app) }
         val devOn by dev.enabled.collectAsStateWithLifecycle()
+        val ctxDecision by s.contextSources.decision.collectAsStateWithLifecycle()
+        val contextLine = s.contextSources.stats?.line(ctxDecision.state)
         DiagnosticsScreen(
             state, onBack = back, onOpenQueues = { nav.navigate(Routes.DIAGNOSTICS_QUEUES) }, onOpenTracker = { nav.navigate(Routes.DIAGNOSTICS_TRACKER) },
             onSummarizeNow = vm::summarizeNow, onCaptureNow = vm::captureNow, onReprocess = vm::reprocess,
@@ -253,6 +268,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onExportSettings = vm::exportSettings, keyframes = keyframes, onRetryAll = vm::retryAll,
             onOpenPrompts = { nav.navigate(Routes.SETTINGS_PROMPTS) }, glassesRestarts = glassesRestarts,
             developerMode = devOn,
+            contextLine = contextLine,
             onOpenPhotoDimTest = if (PhotoDimEval.rowVisible(com.rokid.context.BuildConfig.DEBUG, devOn)) ({ nav.navigate(Routes.DIAGNOSTICS_PHOTO_DIM) }) else null,
             onDeveloperMode = { on ->
                 dev.set(on)
