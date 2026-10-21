@@ -123,6 +123,9 @@ dependencies {
     testImplementation(platform("androidx.compose:compose-bom:2024.09.00"))
     testImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("androidx.work:work-testing:2.9.1")
+    // Headless JS tests for the canvas bundle (ES modules); 23.1 is the last GraalJS line that runs on JDK 17.
+    testImplementation("org.graalvm.polyglot:polyglot:23.1.13")
+    testImplementation("org.graalvm.polyglot:js-community:23.1.13") { artifact { type = "pom" } }
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
