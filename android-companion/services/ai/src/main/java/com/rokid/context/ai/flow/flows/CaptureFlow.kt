@@ -19,6 +19,7 @@ val CaptureFlow = AgentFlow(
     nodes = listOf(
         FlowNode("photo", "Photo", NodeKind.INPUT),
         step("extract", "Facts from frames", *role(PromptKey.VISION_EXTRACT)),
+        step("scene", "Scene summaries", *role(PromptKey.CLUSTER_SUMMARY)),
         step("confidence", "Confidence check"),
         step("critic", "Critic", *role(PromptKey.CRITIC)),
         step("save", "Save memory"),
@@ -36,6 +37,8 @@ val CaptureFlow = AgentFlow(
     ),
     edges = listOf(
         FlowEdge("photo", "extract"),
+        FlowEdge("photo", "scene", "grouped scene"),
+        FlowEdge("scene", "save"),
         FlowEdge("extract", "confidence"),
         FlowEdge("confidence", "save", "trusted"),
         FlowEdge("confidence", "critic", "low confidence"),

@@ -46,6 +46,15 @@ class TestBedInputs(
                 val lines = listOfNotNull(frame?.let(::frameLine), text.takeIf { it.isNotBlank() })
                 Prepared(PromptVars(recentContext = PromptComposer.dataBlock("frames", lines)), frame?.let { FrameInputs.fromFrames(listOf(it), 1) }.orEmpty(), emptySet())
             }
+            PromptKey.CLUSTER_SUMMARY -> {
+                // A test run is one cluster of one photo, labelled like ClusterContract's lines.
+                val frame = frameFor(input)
+                val lines = listOfNotNull(frame?.let { "cluster_id: test frame_id: ${it.id} time: ${it.ts} source: ${it.source}" }, text.takeIf { it.isNotBlank() })
+                Prepared(
+                    PromptVars(recentContext = PromptComposer.dataBlock("photos", lines)), frame?.let { FrameInputs.fromFrames(listOf(it), 1) }.orEmpty(),
+                    setOfNotNull("test", frame?.id),
+                )
+            }
             PromptKey.EXPLICIT_REMEMBER -> Prepared(PromptVars(recentContext = PromptComposer.dataBlock("user_said", listOf(text))), emptyList(), emptySet())
             PromptKey.SUMMARIZE -> Prepared(
                 PromptVars(recentContext = PromptComposer.dataBlock("memories", text.lines().filter { it.isNotBlank() }) + "\n" + PromptComposer.dataBlock("critic_notes", listOf("test run"))),
