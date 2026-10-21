@@ -239,4 +239,13 @@ class PhotoRecallTest {
         assertTrue("took ${System.currentTimeMillis() - t0} ms", System.currentTimeMillis() - t0 < 1_500)
         assertEquals(ImageSearchState.TIMED_OUT, r.imageState); assertTrue(r.image.isEmpty())
     }
+
+    /** Fix round 2 (m1): the query embed and the scan share ONE deadline; time the embed used is not given to the scan again. */
+    @Test fun embedAndScanShareOneDeadline() = runBlocking {
+        photo("a", floatArrayOf(1f, 0f))
+        var now = 10_000L
+        val slow = ImageSpaceTarget("s1", "fp", 2, { emptyList() }, { now += 1_000; floatArrayOf(1f, 0f) }, true) // the embed "takes" the whole budget
+        val r = PhotoRecall(db, ImageSpaces { listOf(slow) }, { _, _, _ -> emptyList() }, { now }).search("milk", imageK = 2, captionK = 0, budgetMs = 1_000)
+        assertEquals(ImageSearchState.TIMED_OUT, r.imageState); assertTrue(r.image.isEmpty()); assertEquals(0, r.scanned)
+    }
 }

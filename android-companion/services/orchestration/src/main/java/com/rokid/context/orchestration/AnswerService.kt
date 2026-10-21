@@ -98,13 +98,16 @@ class AnswerService(
     /** Wave 3 (R4): the photos that match the question by image vector, at most 2 are used. Never fails the ask: an error or a timeout is "none". */
     private val photos: suspend (question: String, nowMs: Long) -> List<PhotoHit> = { _, _ -> emptyList() },
     /** Asked before every photo search ([AskPhotoPolicy.allowed]: the user's switch, pipeline pause, quiet hours, an Answer model that sees images). False = no scan, no image, no photo line. */
-    private val photosAllowed: suspend () -> Boolean = { true },
+    private val photosAllowed: suspend () -> Boolean = { false },
+    /** The endpoint the gate checked (the ANSWER primary): images are sent only there, never to a fallback. */
+    private val imageEndpointId: suspend () -> String? = { null },
     /** Decrypted in memory only (`FramePhotos.load`); a missing key = unreadable photo, which is skipped. */
     private val photoImages: suspend (frameIds: List<String>) -> Map<String, ModelImageInput> = { emptyMap() },
 ) {
     /** [photos]: the photo lines of the prompt, in order; [images]: the attached images (`image=<n>` is a 1-based index into it, S10). */
     data class Retrieved(
         val vars: PromptVars, val memories: List<MemoryEntity>, val photos: List<PhotoCite> = emptyList(), val images: List<ModelImageInput> = emptyList(),
+        val imageEndpointId: String? = null,
     ) {
         val ids: Set<String> get() = memories.map { it.id }.toSet() + photos.map { it.citeId }
     }
@@ -145,6 +148,7 @@ class AnswerService(
             kept,
             recalled.map { (hit, citeId) -> PhotoCite(citeId, hit.frameId, hit.ts, hit.photoStored, hit.receivedAt) },
             images,
+            if (images.isEmpty()) null else try { imageEndpointId() } catch (c: CancellationException) { throw c } catch (_: Exception) { null },
         )
     }
 
@@ -209,7 +213,7 @@ class AnswerService(
             runCatching(onNoMatch).onFailure { Log.w(TAG, "no-match reprocess not queued (${it.javaClass.simpleName})") }
             throw NoMemoriesException()
         }
-        val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER)).output as AnswerOutput
+        val out = runner.run(RoleCall(PromptKey.ANSWER, r.vars, images = r.images, imagesOnlyOnEndpoint = r.imageEndpointId, inputIds = r.ids, callClass = com.rokid.context.model.CallClass.USER)).output as AnswerOutput
         val text = AskText.collapse(out.answer).take(MAX_ANSWER)
         if (text.isEmpty()) throw ModelCallException("ANSWER reply was empty", retryable = true, kind = FailureKind.INVALID_OUTPUT)
         val id = askId ?: "ask_${UUID.randomUUID()}"
@@ -244,16 +248,17 @@ class AnswerService(
     }
 
     /** The first cited source that is a photo still in storage: (frame id, capture time). An expired photo gives no HUD label (S9). */
-    private suspend fun firstCitedPhoto(r: Retrieved, cited: List<String>): Pair<String, Long>? {
+    internal suspend fun firstCitedPhoto(r: Retrieved, cited: List<String>): Pair<String, Long>? {
         val cites = r.photos.associateBy { it.citeId }
         val memories = r.memories.associateBy { it.id }
         // The fence ran at the commit; a Forget can land between it and here, so the moment is checked again (only a time could leak, but none does).
-        suspend fun live(frameId: String) = com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, setOf(PHOTO_CITE_PREFIX + frameId))
+        suspend fun live(frameId: String, memoryId: String? = null) =
+            com.rokid.context.memory.forget.ForgetFence.allLive(memory.db, setOfNotNull(PHOTO_CITE_PREFIX + frameId, memoryId))
         for (id in cited) {
             val cite = cites[id]
             if (cite != null) { if (cite.stored && cite.ts != null && live(cite.frameId)) return cite.frameId to cite.ts; continue }
             val frameId = memories[id]?.frameId ?: continue
-            memory.db.frameDao().byIds(listOf(frameId)).firstOrNull()?.takeIf { live(it.id) }?.let { return it.id to it.ts }
+            memory.db.frameDao().byIds(listOf(frameId)).firstOrNull()?.takeIf { live(it.id, id) }?.let { return it.id to it.ts }
         }
         return null
     }
@@ -278,6 +283,9 @@ class AnswerService(
          * The privacy gate of Ask photos: the user's switch (off by default), the pipeline not paused, not inside quiet hours (unknown quiet hours count as
          * quiet), and an ANSWER endpoint that can see images. Runs off Main (reads prefs and the endpoint table).
          */
+        /** The endpoint that receives the images: the ANSWER binding's primary (null = none). */
+        internal suspend fun answerImageEndpoint(context: Context): String? = AiGraph.get(context).bindings.get(com.rokid.context.ai.Role.ANSWER)?.endpointId
+
         internal suspend fun photosAllowedNow(context: Context, nowMs: Long = System.currentTimeMillis()): Boolean {
             if (!AskPhotoPolicy.enabled(context)) return false
             val hud = com.rokid.context.orchestration.nudge.NudgeEnvironment.hud?.invoke()
@@ -285,7 +293,9 @@ class AnswerService(
             val ai = AiGraph.get(context)
             val vision = ai.bindings.get(com.rokid.context.ai.Role.ANSWER)?.endpointId?.let { ai.endpoints.byId(it) }
                 ?.capabilities?.contains(com.rokid.context.ai.Capability.VISION) == true
-            return AskPhotoPolicy.allowed(true, com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(context), quiet, vision)
+            // Paused = a pause covers now (the pause button writes pause records) or the legacy pipeline flag is off.
+            val paused = MemoryGraph.get(context).db.pauseDao().countCovering(nowMs) > 0
+            return AskPhotoPolicy.allowed(true, com.rokid.context.data.runtime.AppConfigStore.isPipelineEnabled(context) && !paused, quiet, vision)
         }
 
         /** Adapts the connectors provider: the ask's nowMs reaches it (the one-argument form falls back to the wall clock). */
@@ -304,6 +314,7 @@ class AnswerService(
                 sources = sourcesFrom(provider),
                 proposals = OriginFencedIntake(context, MemoryGraph.get(context), ActionsGraph.get(context).intake),
                 photosAllowed = { photosAllowedNow(context) },
+                imageEndpointId = { answerImageEndpoint(context) },
                 // The scan has its own budget (below the outer timeout), so partial hits survive; the timeout is only the backstop.
                 photos = { q, _ ->
                     kotlinx.coroutines.withTimeoutOrNull(AskPhotoPolicy.ASK_TIMEOUT_MS) {

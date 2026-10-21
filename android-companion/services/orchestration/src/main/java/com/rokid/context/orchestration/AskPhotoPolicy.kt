@@ -37,9 +37,9 @@ object AskPhotoPolicy {
     fun allowed(enabled: Boolean, pipelineOn: Boolean, quietNow: Boolean, answerHasVision: Boolean): Boolean =
         enabled && pipelineOn && !quietNow && answerHasVision
 
-    /** The floor: best first, at or above [MIN_SCORE], within [MARGIN] of the top, at most [MAX_PHOTOS]. */
+    /** The floor (non-finite scores are dropped first): best first, at or above [MIN_SCORE], within [MARGIN] of the top, at most [MAX_PHOTOS]. */
     fun select(hits: List<PhotoHit>): List<PhotoHit> {
-        val sorted = hits.sortedByDescending { it.score }
+        val sorted = hits.filter { it.score.isFinite() }.sortedByDescending { it.score }
         val top = sorted.firstOrNull()?.score ?: return emptyList()
         return sorted.filter { it.score >= MIN_SCORE && it.score >= top - MARGIN }.take(MAX_PHOTOS)
     }

@@ -170,12 +170,13 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
         val state by vm.state.collectAsStateWithLifecycle()
         // "Send matching photos with questions": off by default; names the Answer endpoint the photos would go to.
         val appCtx = androidx.compose.ui.platform.LocalContext.current.applicationContext
-        var sendPhotos by remember { mutableStateOf(com.rokid.context.orchestration.AskPhotoPolicy.enabled(appCtx)) }
+        var sendPhotos by remember { mutableStateOf<Boolean?>(null) }
+        androidx.compose.runtime.LaunchedEffect(Unit) { sendPhotos = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { com.rokid.context.orchestration.AskPhotoPolicy.enabled(appCtx) } } // prefs read off Main
         val answerEndpointId = state.rows.firstOrNull { it.role == com.rokid.context.ai.Role.ANSWER }?.endpointId
         val answerEndpoint by produceState<com.rokid.context.ai.Endpoint?>(null, answerEndpointId) { value = answerEndpointId?.let { s.ai.endpoints.byId(it) } }
         RolesScreen(state, onBack = back, onEndpoint = vm::setEndpoint, onModel = vm::setModel, onFallback = vm::setFallback,
             onTemperature = vm::setTemperature, onMaxTokens = vm::setMaxTokens, onClear = { vm.clear(it) },
-            askPhotos = AskPhotosUi(sendPhotos, answerEndpoint?.name, answerEndpoint?.capabilities?.contains(com.rokid.context.ai.Capability.VISION) == true),
+            askPhotos = sendPhotos?.let { AskPhotosUi(it, answerEndpoint?.name, answerEndpoint?.capabilities?.contains(com.rokid.context.ai.Capability.VISION) == true) },
             onAskPhotos = { on -> sendPhotos = on; com.rokid.context.orchestration.AskPhotoPolicy.set(appCtx, on) })
     }
 

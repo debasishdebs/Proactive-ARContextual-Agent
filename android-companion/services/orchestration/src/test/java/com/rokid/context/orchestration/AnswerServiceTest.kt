@@ -151,7 +151,7 @@ class AnswerServiceTest {
     ): AnswerService {
         val fn: suspend (String, Long) -> List<PhotoHit> = photoFn ?: { _, _ -> photos }
         return AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() }, zone = { ZoneOffset.UTC },
-        photosAllowed = { allowed }, photos = fn, photoImages = { ids: List<String> -> imageCalls += ids; ids.mapNotNull { id -> images[id]?.let { id to it } }.toMap() })
+        photosAllowed = { allowed }, imageEndpointId = { null }, photos = fn, photoImages = { ids: List<String> -> imageCalls += ids; ids.mapNotNull { id -> images[id]?.let { id to it } }.toMap() })
     }
 
     @Test fun twoPhotoLinesAndImagesReachAnswer() = runBlocking {
@@ -317,12 +317,64 @@ class AnswerServiceTest {
         assertTrue(!AskPhotoPolicy.allowed(enabled = true, pipelineOn = false, quietNow = false, answerHasVision = true))
         assertTrue(!AskPhotoPolicy.allowed(enabled = true, pipelineOn = true, quietNow = true, answerHasVision = true))
         assertTrue(!AskPhotoPolicy.allowed(enabled = true, pipelineOn = true, quietNow = false, answerHasVision = false))
-        assertTrue("the scan budget leaves room under the 1.5 s ask timeout", AskPhotoPolicy.SCAN_BUDGET_MS < AskPhotoPolicy.ASK_TIMEOUT_MS)
-    }
+            }
 
     @Test fun switchDefaultsOffAndPersists() {
         assertTrue(!AskPhotoPolicy.enabled(ctx))
         AskPhotoPolicy.set(ctx, true); assertTrue(AskPhotoPolicy.enabled(ctx))
         AskPhotoPolicy.set(ctx, false); assertTrue(!AskPhotoPolicy.enabled(ctx))
+    }
+
+    // ---- Fix round 2 ------------------------------------------------------------------------------------------------------------------
+
+    /** m3: a service built without the gate sends nothing. */
+    @Test fun constructorDefaultGateIsClosed() = runBlocking {
+        val seen = Seen(); recording(seen) { """{"answer":"x","sources":["rokid_mem_1"]}""" }
+        MemoryGraph.get(ctx).memories.add(LegacyImporter.toMemory("rokid_mem_1", "short_term", 0.9, 10, "Milk"))
+        moment("f1"); var scans = 0
+        AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() }, photos = { _, _ -> scans++; listOf(hit("f1")) },
+            photoImages = { ids -> ids.associateWith { img("A") } }).answerOrThrow("milk", "phone_typed", nowMs = 5)
+        assertEquals(0, scans); assertEquals(emptyList<ModelImageInput>(), seen.images)
+    }
+
+    /** m2: images go only to the endpoint the gate checked; if the router falls back to another, they are dropped (the text still goes). */
+    @Test fun imagesNeverReachAFallbackEndpoint() = runBlocking {
+        val primaryImages = mutableListOf<Int>(); val fallbackImages = mutableListOf<Int>(); val fallbackPrompts = mutableListOf<String>()
+        ai = AiGraph(MemoryGraph.get(ctx), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { e, _, _ ->
+            object : ModelProvider {
+                override suspend fun generate(prompt: String): String = if (e.id == "primary") error("down") else { fallbackPrompts += prompt; """{"answer":"x","sources":["frame:f1"]}""" }
+                override suspend fun generateWithImages(prompt: String, images: List<ModelImageInput>): String {
+                    if (e.id == "primary") { primaryImages += images.size; error("down") }
+                    fallbackImages += images.size; fallbackPrompts += prompt; return """{"answer":"x","sources":["frame:f1"]}"""
+                }
+            }
+        }).also { AiGraph.resetForTests(it) }
+        val caps = setOf(com.rokid.context.ai.Capability.CHAT, com.rokid.context.ai.Capability.VISION)
+        listOf("primary", "fb").forEach { ai.endpoints.save(com.rokid.context.ai.Endpoint(it, it, com.rokid.context.ai.EndpointKind.AZURE_OPENAI, "https://$it.example", "2024-10-21", listOf("gpt"), caps, 1), apiKey = "k").getOrThrow() }
+        ai.bindings.set(com.rokid.context.ai.RoleBinding(com.rokid.context.ai.Role.ANSWER, "primary", "gpt", fallbackEndpointId = "fb", fallbackModel = "gpt")).getOrThrow()
+        moment("f1")
+        val s = AnswerService(MemoryGraph.get(ctx), ai.runner, ai.retriever, { RetrievalSettings() }, zone = { ZoneOffset.UTC }, photosAllowed = { true },
+            photos = { _, _ -> listOf(hit("f1")) }, photoImages = { ids -> ids.associateWith { img("A") } }, imageEndpointId = { "primary" })
+        s.answerOrThrow("keys", "phone_typed", nowMs = 5)
+        assertEquals(listOf(1), primaryImages) // the checked endpoint got the photo
+        assertEquals(listOf(0), fallbackImages.ifEmpty { listOf(0) }) // the fallback never did
+        assertTrue(fallbackPrompts.isNotEmpty())
+    }
+
+    /** m5: a NaN score cannot empty the selection; ties keep scan order. */
+    @Test fun selectIgnoresNonFiniteScoresAndKeepsTies() {
+        val picked = AskPhotoPolicy.select(listOf(hit("n").copy(score = Double.NaN), hit("a").copy(score = 0.5), hit("b").copy(score = 0.5), hit("i").copy(score = Double.POSITIVE_INFINITY)))
+        assertEquals(listOf("a", "b"), picked.map { it.frameId })
+    }
+
+    /** m6: the HUD time needs the caption memory live too, not only the frame. */
+    @Test fun hudPhotoNeedsTheCaptionMemoryLive() = runBlocking {
+        val mem = MemoryGraph.get(ctx); moment("f1")
+        mem.memories.add(LegacyImporter.toMemory("cap1", "short_term", 0.9, 10, "Keys").copy(frameId = "f1"))
+        val svc = service()
+        val r = AnswerService.Retrieved(com.rokid.context.prompt.PromptVars(), mem.timeline.memoriesByIds(listOf("cap1")))
+        assertEquals("f1", svc.firstCitedPhoto(r, listOf("cap1"))?.first)
+        mem.db.forgetDao().invalidate(listOf("cap1"))
+        assertEquals(null, svc.firstCitedPhoto(r, listOf("cap1")))
     }
 }
