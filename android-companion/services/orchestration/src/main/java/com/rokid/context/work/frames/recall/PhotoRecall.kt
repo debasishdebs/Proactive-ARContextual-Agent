@@ -12,6 +12,10 @@ import com.rokid.context.work.frames.scene.ImageSpaceTarget
 import com.rokid.context.work.frames.scene.ImageSpaces
 import com.rokid.context.work.frames.scene.SpaceImageSpaces
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -91,10 +95,12 @@ class PhotoRecall(
             images.targets().firstOrNull { it.active } // S7: the ACTIVE one by flag, never "the first"
         } catch (c: CancellationException) { throw c } catch (_: Exception) { return failed() }
             ?: return ImageScanOutcome(ImageSearchState.NO_IMAGE_SPACE, emptyList(), 0, false)
-        val q = try {
-            val full = target.embedQueryFull(query)
-            if (full.size < target.imageDims) null else VectorMath.l2(full.copyOf(target.imageDims)).takeIf { VectorMath.usable(it) }
-        } catch (c: CancellationException) { throw c } catch (_: Exception) { null } ?: return failed()
+        // The query embed (a cold on-device model load can block) gets the scan's own budget, on a detached coroutine: awaiting it is cancellable even when
+        // the embed itself is not, so the ask is never held past the budget. Whatever it finishes later is dropped.
+        val embed = CoroutineScope(SupervisorJob() + Dispatchers.Default).async { target.embedQueryFull(query) }
+        val full = try { withTimeoutOrNull(budgetMs) { embed.await() } } catch (c: CancellationException) { embed.cancel(); throw c } catch (_: Exception) { return failed() }
+        if (full == null) { embed.cancel(); return ImageScanOutcome(ImageSearchState.TIMED_OUT, emptyList(), 0, false) }
+        val q = (if (full.size < target.imageDims) null else VectorMath.l2(full.copyOf(target.imageDims)).takeIf { VectorMath.usable(it) }) ?: return failed()
         return try {
             val r = withContext(Dispatchers.Default) {
                 ImageScan.topK(q, k, { before -> db.frameVectorDao().pageDesc(target.spaceId, before, ImageScan.PAGE).map { it.rowid to (it.frameId to it.blob) } }, clock, budgetMs = budgetMs)
