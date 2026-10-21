@@ -8,7 +8,14 @@ import android.hardware.SensorManager
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import com.rokid.context.core.model.MotionLabel
 import com.rokid.context.glasses.capture.diag.DiagLog
+import com.rokid.context.glasses.capture.motion.model.HeuristicMotionModel
+import com.rokid.context.glasses.capture.motion.model.SecondFeatures
+import com.rokid.context.glasses.capture.motion.source.GlassesImuSource
+import com.rokid.context.glasses.capture.motion.source.MotionFusion
+import java.io.File
+import java.util.Locale
 
 /** Wires the IMU and proximity sensors into the pure classifiers. Fakeable in tests. */
 interface SensorFeed {
@@ -52,10 +59,17 @@ class AndroidSensorFeed internal constructor(
     private val sm: SensorRegistry,
     private val now: () -> Long = SystemClock::elapsedRealtime,
     private val verboseFeatures: Boolean = false,
+    private val label: () -> MotionLabel = { MotionLabel.NONE },
+    private val csvDir: File? = null,
 ) : SensorFeed {
-    constructor(context: Context, verboseFeatures: Boolean = false) : this(
-        ManagerRegistry(context.getSystemService(Context.SENSOR_SERVICE) as SensorManager), verboseFeatures = verboseFeatures,
+    constructor(context: Context, verboseFeatures: Boolean = false, label: () -> MotionLabel = { MotionLabel.NONE }, csvDir: File? = null) : this(
+        ManagerRegistry(context.getSystemService(Context.SENSOR_SERVICE) as SensorManager),
+        verboseFeatures = verboseFeatures, label = label, csvDir = csvDir,
     )
+
+    // Shadow only: the model and fusion are logged to the CSV and never read by capture.
+    private val imuSource = GlassesImuSource(HeuristicMotionModel())
+    private val csv: MotionCsv? = csvDir?.let { MotionCsv(it) }
 
     private var thread: HandlerThread? = null
     private var listener: SensorEventListener? = null
@@ -119,6 +133,7 @@ class AndroidSensorFeed internal constructor(
                 w.tick()
                 val f = c.features()
                 features.log(f)
+                shadow(f)
                 w.onSecond(f.gyroMax, f.accVariance, now())
                 // Fix wave H: the proximity sensor never gates capture; one count-only line a minute shows what it reads.
                 if (++ticks % 60 == 0) DiagLog.i(TAG, proximityDiagLine(lastRaw, proxMax, prox != null, w.worn.value))
@@ -127,6 +142,24 @@ class AndroidSensorFeed internal constructor(
         }
         h.postDelayed(t, 1000)
         thread = ht; handler = h; listener = l; tick = t
+    }
+
+    /** Once a second: classify in shadow, fuse, and (diag marker or a label set) append one CSV row. Touches no classifier state. */
+    private fun shadow(f: MotionClassifier.Features) {
+        runCatching {
+            val t = now()
+            val sf = SecondFeatures(f.gyroMax, f.gyroMean, f.gyroRms, f.aboveOnFrac, f.accVariance, f.stepHz.toFloat(), f.rotRad)
+            val ev = imuSource.onSecond(sf, t)
+            val fused = MotionFusion.fuse(listOf(ev), t)
+            val l = label()
+            val out = csv ?: return
+            if (!verboseFeatures && l == MotionLabel.NONE) return
+            out.append(String.format(
+                Locale.US, "%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%s,%s,%s,%s,%s",
+                t, sf.gyroMax, sf.gyroMean, sf.gyroRms, sf.aboveOnFrac, sf.accVar, sf.stepHz, sf.rotRad,
+                f.glances, f.micro, f.state.name, ev.state.name, fused?.state?.name ?: "NONE", l.name, rate.name.lowercase(),
+            ))
+        }
     }
 
     @Synchronized override fun stop() {

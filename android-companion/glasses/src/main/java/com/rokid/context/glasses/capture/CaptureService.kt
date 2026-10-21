@@ -214,7 +214,7 @@ class CaptureService : LifecycleService() {
         )
         val verbose = DiagFlags.verboseFeatures(filesDir)
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
-        val feed = AndroidSensorFeed(this, verbose).also { it.start(motion, wear) }
+        val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir).also { it.start(motion, wear) }
         val sm = Smart(session, feed, motion)
         smart = sm
         // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
