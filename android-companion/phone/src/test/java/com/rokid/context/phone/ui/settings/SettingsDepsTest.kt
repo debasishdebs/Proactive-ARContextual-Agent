@@ -19,6 +19,7 @@ class SettingsDepsTest {
             lazySpaces = lazy<com.rokid.context.memory.EmbeddingSpaces> { error("not real spaces") },
             rebuildIndex = {},
             lazyMemorySettings = lazy<com.rokid.context.memory.MemorySettingsStore> { memorySettings++; error("not a real store") },
+            lazyWatchList = lazy<com.rokid.context.work.frames.scene.WatchListStore> { error("not a real store") },
             encryption = object : com.rokid.context.phone.ui.settings.memory.EncryptionControl {
                 override fun status() = com.rokid.context.memory.DbEncryption.Status(false, null, false); override fun request(encrypted: Boolean) = Unit
             },

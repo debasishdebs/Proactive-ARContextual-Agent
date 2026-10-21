@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -66,5 +67,13 @@ class WatchListTest {
         assertEquals(1f, wv.maxCos(floatArrayOf(0.6f, 0.8f), listOf(v))!!, 1e-5f)
         assertEquals(0f, wv.maxCos(floatArrayOf(0.8f, -0.6f), listOf(v))!!, 1e-5f)
         assertNull(wv.maxCos(floatArrayOf(1f, 0f), emptyList()))
+    }
+
+    @Test fun singletonSharedAcrossHolders() {
+        val a = WatchListStore.get(ctx); val b = WatchListStore.get(ctx)
+        assertSame(a, b)
+        a.set(listOf("bike"))
+        assertEquals(listOf("bike"), b.items.value)
+        a.reset()
     }
 }

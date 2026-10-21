@@ -23,4 +23,15 @@ class TextPresenceTest {
         assertEquals(5, tp.words(ByteArray(4)))
         assertEquals(0, MlKitTextPresence(timeoutMs = 500L) { "" }.words(ByteArray(4)))
     }
+
+    @Test fun bitmapReleasedOnlyAfterTheRecognizerCompletesEvenPastTimeout() = runBlocking {
+        var released = 0
+        var done: ((String?) -> Unit)? = null
+        val tp = MlKitTextPresence(timeoutMs = 50L) { MlKitTextPresence.awaitThenRelease({ done = it }, { released++ }) }
+        assertNull(tp.words(ByteArray(4)))   // timed out
+        assertEquals(0, released)            // ML Kit may still be reading the bitmap
+        done!!.invoke("late text here")
+        done!!.invoke("again")
+        assertEquals(1, released)
+    }
 }

@@ -55,6 +55,8 @@ class SettingsDeps(
     val rebuildIndex: () -> Unit,
     /** Lazy for the same reason as [lazyRetrieval] (Settings → Memory, Task 20). */
     private val lazyMemorySettings: Lazy<MemorySettingsStore>,
+    /** The process-wide watch list (WatchListStore.get): the scene indexer reads the same instance. */
+    private val lazyWatchList: Lazy<com.rokid.context.work.frames.scene.WatchListStore>,
     val encryption: EncryptionControl,
     val usedBytes: suspend () -> Long,
     val wipe: suspend () -> Unit,
@@ -96,6 +98,7 @@ class SettingsDeps(
     val retrieval: RetrievalSettingsStore get() = lazyRetrieval.value
     val spaces: EmbeddingSpaces get() = lazySpaces.value
     val memorySettings: MemorySettingsStore get() = lazyMemorySettings.value
+    val watchList: com.rokid.context.work.frames.scene.WatchListStore get() = lazyWatchList.value
     val actions: com.rokid.context.connectors.actions.ActionsGraphApi get() = lazyActions.value
 
     companion object {
@@ -115,6 +118,7 @@ class SettingsDeps(
             lazySpaces = lazy { MemoryGraph.get(app).spaces },
             rebuildIndex = { scope.launch(Dispatchers.IO) { com.rokid.context.orchestration.EmbeddingWorker.enqueue(app, rebuild = true) } },
             lazyMemorySettings = lazy { MemorySettingsStore.get(app) },
+            lazyWatchList = lazy { com.rokid.context.work.frames.scene.WatchListStore.get(app) },
             encryption = object : EncryptionControl {
                 override fun status() = DbEncryption.status(app)
                 override fun request(encrypted: Boolean) {
