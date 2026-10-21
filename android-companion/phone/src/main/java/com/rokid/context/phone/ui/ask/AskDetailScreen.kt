@@ -20,9 +20,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -33,12 +36,17 @@ import com.rokid.context.core.ui.components.ScreenHeader
 import com.rokid.context.core.ui.components.SectionLabel
 import com.rokid.context.core.ui.components.SoftCard
 import com.rokid.context.core.ui.theme.PcColors
+import com.rokid.context.phone.ui.memory.MemoryDetailModel
 
 /** Ask detail (spec §2.4). Stateless; [proposalCard] (the live ProposalCard) replaces the read-only proposal line when given. */
 @Composable
 fun AskDetailScreen(
     state: AskDetailUiState, onBack: () -> Unit, onRate: (Boolean) -> Unit, onOpenMemory: (String) -> Unit,
     proposalCard: (@Composable () -> Unit)? = null,
+    /** (frame id, yyyy-MM-dd) of a cited photo that is still stored. */
+    onOpenPhoto: ((String, String) -> Unit)? = null,
+    /** "More photos": opens the photo search with the question (wave 3). Null hides the button. */
+    onMorePhotos: ((String) -> Unit)? = null,
 ) {
     Column(Modifier.fillMaxSize().background(PcColors.Surface).verticalScroll(rememberScrollState())) {
         ScreenHeader("Answer", onBack)
@@ -76,13 +84,17 @@ fun AskDetailScreen(
                 Text("No saved memories were cited", style = MaterialTheme.typography.bodyMedium, color = PcColors.InkSoft, modifier = Modifier.padding(horizontal = 20.dp))
             }
             state.sources.forEach { s ->
+                if (s.isPhotoCite) { PhotoSourceCard(s, onOpenPhoto); return@forEach }
                 SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth(), onClick = { onOpenMemory(s.memoryId) }) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FrameThumb(s.framePath, size = 52.dp)
+                        FrameThumb(s.framePath, size = if (s.largeThumb) 96.dp else 52.dp)
                         Text(s.text, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = 12.dp))
                         ConfidenceChip(s.confidence)
                     }
                 }
+            }
+            if (onMorePhotos != null) {
+                TextButton(onClick = { onMorePhotos(state.question) }, modifier = Modifier.padding(horizontal = 8.dp).testTag("more_photos")) { Text("More photos") }
             }
             if (state.missingSources > 0) {
                 val n = state.missingSources
@@ -93,5 +105,25 @@ fun AskDetailScreen(
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** A cited photo: a 96 dp thumbnail (decrypted in memory by [FrameThumb]) that opens the frame viewer, or, once the photo is gone, the "Photo expired" state. */
+@Composable
+private fun PhotoSourceCard(s: SourceCard, onOpenPhoto: ((String, String) -> Unit)?) {
+    val open = if (!s.expired && s.photoFrameId != null && s.photoDate != null && onOpenPhoto != null) ({ onOpenPhoto(s.photoFrameId, s.photoDate) }) else null
+    val label = if (s.expired) MemoryDetailModel.PHOTO_EXPIRED else "Photo, opens the photo viewer"
+    SoftCard(
+        Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth().testTag("photo_source_${s.citedFrameId}")
+            .semantics(mergeDescendants = true) { contentDescription = label },
+        onClick = open,
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            FrameThumb(if (s.expired) null else s.framePath, size = 96.dp)
+            Text(
+                if (s.expired) MemoryDetailModel.PHOTO_EXPIRED else s.text, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink,
+                modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+            )
+        }
     }
 }

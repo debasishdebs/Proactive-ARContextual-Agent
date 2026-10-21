@@ -38,3 +38,10 @@ Task 7a: implemented 51853af, review dispatched; Task 10 fix 3083091 re-review d
 Task 10: complete (cb088d9..3083091, 1 fix round, Opus re-review approved). Parked minors: pendingAppliedOnceOnly should advance clock 2 s between fires; provider class comment on caller-first; watchEpoch not in line(); intake comment omits null-json check.
 
 Final review r3 (2026-10-22): I2 fixed (fusion ignores watch ASLEEP while a fresh glasses hint has 0 <= stillFrac5m < 0.85; LiveFit MAX_AGE_MS 30 -> 15 min, lf-motion/int a09525d). I3 ruled by the user and applied: VEHICLE_PASSENGER and VEHICLE_DRIVING rows = UNKNOWN row (DRIVING keeps nudges off); LEDGER: Task 2 image-assisted vehicle start (vehicleImage) and image-assisted REST (0.70) must be gated or removed BEFORE Task 9 lands (not implemented). Task 12 step 0 rewritten (12 checks; watch never sends IN_VEHICLE).
+USER RULING 2026-10-22: wave B Task 8's v5 migration also carries the wave 3 capture-time column (one migration). Ordering: wave B 3,4,5,7b,8,9 on ctx/int; wave 3 and canvas slice 2 run as parallel streams after v5 lands (see wave 3 spec §9).
+Task 8: implemented dd2bac5 (v5: intent cols + capturedAtMs), review dispatched; Task 9 dispatched
+Task 8: complete (7cecf12..dd2bac5, Opus review approved, 9 minors; 2,4,5,6,8,1 folded into Task 9 addendum; skipped: newestUnlabelled index, v1 assertNullCols, inert flow node). SqlCipherMigrationDeviceTest v5 asserts compile only: run on device next session.
+Task 9: implemented dd2bac5..71c6f25 (fusion imageAssist default off; IntentSampler; ImageIntentSource; Task 8 addendum), review dispatched
+Task 9: fix round 1 fed7504; re-review dispatched
+- 2026-10-22 merged w3g/int (db92d80) into ctx/int, merge 85c4a90: no conflicts, glasses/glasses-link/core-model/phone unit tests green, Room still v5, PROTOCOL_VERSION still 1.
+Tasks 3,5,4 implemented a9059202..cc5e2c44 (3fec93e8, 45d8c57f, cc5e2c44); review dispatched; Task 7b dispatched

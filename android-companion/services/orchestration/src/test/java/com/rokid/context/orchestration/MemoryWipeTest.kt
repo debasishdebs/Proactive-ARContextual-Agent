@@ -58,6 +58,13 @@ class MemoryWipeTest {
     }
 
     /** Final review I3: the photo test's labels (the user's own free text about their photos) and results go with Delete all. */
+    /** Fix round 2 (m4): Delete all withdraws the consent to send photos with questions, like image intent. */
+    @Test fun deleteAllTurnsTheAskPhotosSwitchOff() = runBlocking {
+        AskPhotoPolicy.set(ctx, true)
+        MemoryWipe.deleteAll(ctx)
+        assertFalse(AskPhotoPolicy.enabled(ctx))
+    }
+
     @Test fun deleteAllRemovesThePhotoEvalDirectory() = runBlocking {
         val dir = File(ctx.filesDir, "photo-eval").apply { mkdirs() }
         File(dir, "queries.json").writeText("[{\"frameId\":\"f1\",\"query\":\"private words\"}]")

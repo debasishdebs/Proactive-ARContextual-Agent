@@ -32,6 +32,8 @@ data class RoleCall(
     val callClass: CallClass? = null,
     /** Canvas seam: an in-memory draft used in place of the active template and schema of [key] (never stored). The result's promptVersion is 0. */
     val override: PromptDraft? = null,
+    /** When set, [images] go only to this endpoint: a fallback endpoint gets the text without them (the user's consent names one endpoint). */
+    val imagesOnlyOnEndpoint: String? = null,
 ) {
     val effectiveClass: CallClass
         get() = callClass ?: when (key) {
@@ -79,7 +81,7 @@ class RoleRunner(
             val cap = cutCap
             val build: (com.rokid.context.ai.Endpoint) -> ModelRequest = { e ->
                 val plan = StructuredOutput.plan(e, schema, call.key.name)
-                ModelRequest(text + plan.promptSuffix, call.images, maxTokens = cap, format = plan.format, requireImages = call.key == PromptKey.INTENT_CLASSIFY)
+                ModelRequest(text + plan.promptSuffix, call.images.takeIf { call.imagesOnlyOnEndpoint == null || call.imagesOnlyOnEndpoint == e.id }.orEmpty(), maxTokens = cap, format = plan.format, requireImages = call.key == PromptKey.INTENT_CLASSIFY)
             }
             val reply = if (call.fromFrames) router.completeFromFrames(call.effectiveClass, build) else router.complete(role, call.effectiveClass, build)
             val eval = OutputCheck.evaluate(call.key, schema, reply.text, ctx)
