@@ -9,6 +9,7 @@ import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
 import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.FrameSourceEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemorySourceEntity
 import com.rokid.context.memory.db.MemoryTier
@@ -104,7 +105,7 @@ class ForgetServiceTest {
         mem("m1", frameId = "f1"); mem("m2", frameId = "f1"); mem("other")
         val r = service.forgetMoment("f1")
         assertEquals(setOf("m1", "m2"), r.forgotten)
-        assertEquals(listOf("/f1.jpg"), r.framesToDelete)
+        assertEquals(setOf("/f1.jpg", "/f1.meta.json"), r.framesToDelete.toSet())
         assertNull(db.forgetDao().frame("f1"))
         assertEquals(0, db.forgetDao().memoryIdsOfFrame("f1").size)
         assertEquals(listOf("f1"), db.forgetDao().tombstoned(listOf("f1")))
@@ -271,7 +272,25 @@ class ForgetServiceTest {
         assertEquals(ForgetService.Result.EMPTY, service.forgetMoment("nothing"))
         assertTrue(db.forgetDao().tombstoned(listOf("nothing")).isEmpty())
         db.askDao().upsert(AskEntity("q1", 1, "q", "a", """["${PHOTO_CITE_PREFIX}nothing"]""", null, "phone_typed", false))
-        assertEquals(ForgetService.Result.EMPTY, service.forgetMoment("nothing"))
-        assertFalse(db.askDao().byId("q1")!!.redacted) // nothing existed: an unrelated stray cite is not our business
+        // user ruling (safer default): a stray cite of an id with nothing left is still redacted, no EMPTY short-circuit before redaction
+        val r = service.forgetMoment("nothing")
+        assertEquals(1, r.redactedAsks); assertTrue(db.askDao().byId("q1")!!.redacted)
+        assertEquals(ForgetService.Result.EMPTY, service.forgetMoment("nothing")) // and nothing is left to do the second time
+    }
+
+    @Test fun forgetMomentListsTheSidecarToo() = runBlocking {
+        keyframe("f1")
+        assertEquals(setOf("/f1.jpg", "/f1.meta.json"), service.forgetMoment("f1").framesToDelete.toSet())
+    }
+
+    @Test fun forgetMomentDeletesFrameSourceRowsByFrame() = runBlocking {
+        // an orphan provenance row (its memory is already gone) and an orphan canvas row of a moment that has nothing else left
+        db.frameSourceDao().insertAll(listOf(FrameSourceEntity("gone_memory", "f9", null, "FACT"), FrameSourceEntity("gone_memory", "other", null, "FACT")))
+        service.forgetMoment("f9")
+        assertTrue(db.frameSourceDao().memoriesForFrame("f9").isEmpty())
+        assertEquals(listOf("gone_memory"), db.frameSourceDao().memoriesForFrame("other"))
+        keyframe("f1"); db.frameSourceDao().insertAll(listOf(FrameSourceEntity("gone2", "f1", null, "CLUSTER_MEMBER")))
+        service.forgetMoment("f1")
+        assertTrue(db.frameSourceDao().memoriesForFrame("f1").isEmpty())
     }
 }

@@ -51,13 +51,17 @@ class ForgetService(
     suspend fun forgetMoment(frameId: String): Result = db.withTransaction {
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
-        if (frame == null && ids.isEmpty() && dao.photoRowCount(frameId) == 0) return@withTransaction Result.EMPTY
+        if (frame == null && ids.isEmpty() && dao.photoRowCount(frameId) == 0) {
+            // Nothing left of the moment: still redact stray `frame:<id>` cites and drop orphan provenance and canvas rows (safer default).
+            dropCanvasOutputs(listOf(frameId)); dao.deleteFrameSourcesOfFrames(listOf(frameId))
+            return@withTransaction cascade(emptyList(), lockFrames = true, extraCited = setOf(PHOTO_CITE_PREFIX + frameId))
+        }
         val r = cascade(ids, lockFrames = true, extraCited = setOf(PHOTO_CITE_PREFIX + frameId))
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
         dropCanvasOutputs(listOf(frameId))
         dao.deleteFrame(frameId)
         listOf(frameId).let { dao.deleteFrameSourcesOfFrames(it); dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
-        r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() })).distinct())
+        r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }) + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }?.let(::sidecarOf))).distinct())
     }
 
     /**
