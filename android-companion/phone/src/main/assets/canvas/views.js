@@ -110,12 +110,14 @@ export async function pipelineView(ctx, root, id) {
       box.appendChild(h('div', { class: 'row' }, mode('Live', false), mode('Draft', true)));
       const tpl = isDraft ? d.template : live.template;
       const sch = isDraft ? d.schema : live.schema;
-      box.appendChild(field('Template' + (isDraft ? '' : ' (live, read-only)'), textArea(tpl, (v) => { d.template = v; markDirty(); }, !isDraft)));
-      box.appendChild(field('Schema' + (isDraft ? '' : ' (live, read-only)'), textArea(sch, (v) => { d.schema = v.trim() ? v : null; markDirty(); }, !isDraft)));
+      const tplArea = textArea(tpl, (v) => { d.template = v; markDirty(); }, !isDraft);
+      const schArea = textArea(sch, (v) => { d.schema = v.trim() ? v : null; markDirty(); }, !isDraft);
+      box.appendChild(field('Template' + (isDraft ? '' : ' (live, read-only)'), tplArea));
+      box.appendChild(field('Schema' + (isDraft ? '' : ' (live, read-only)'), schArea));
       box.appendChild(h('div', { class: 'row' }, btn('Check', async () => {
         clear(results);
         try {
-          const r = await ctx.api('POST', '/api/check-prompt', { nodeType: node.type, template: String(tpl || ''), schema: sch ? String(sch) : null });
+          const r = await ctx.api('POST', '/api/check-prompt', { nodeType: node.type, template: tplArea.value, schema: schArea.value.trim() ? schArea.value : null });
           results.appendChild(r.problems.length ? problemList(r.problems) : h('p', { class: 'ok' }, 'No problems.'));
         } catch (e) { ctx.showError(e); }
       }), live.version != null ? h('span', { class: 'muted' }, 'live prompt v' + live.version) : null));
@@ -349,6 +351,7 @@ export async function runView(ctx, root, runId) {
   const frameInfo = new Map();
   let timer = null;
   let stopped = false;
+  let drawnStatus = null;
   ctx.onLeave(() => { stopped = true; if (timer) clearTimeout(timer); });
   const scoreKey = (f, n) => f + '|' + n;
 
@@ -443,8 +446,10 @@ export async function runView(ctx, root, runId) {
       try { others = await ctx.api('GET', '/api/runs'); } catch (e) { others = []; }
       if (stopped) return;
       await draw(run, others);
+      drawnStatus = String(run.status);
     }
-    if (String(run.status).toUpperCase() === 'RUNNING') timer = setTimeout(tick, 2000);
+    // Poll until the status on screen is terminal, whether or not a field has focus.
+    if (String(run.status).toUpperCase() === 'RUNNING' || drawnStatus !== String(run.status)) timer = setTimeout(tick, 2000);
   }
   await tick();
 }
