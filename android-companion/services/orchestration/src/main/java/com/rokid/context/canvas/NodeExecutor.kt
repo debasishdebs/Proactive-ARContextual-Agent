@@ -26,7 +26,10 @@ data class CallMeta(
 data class NodeResult(
     val frameId: String, val value: CanvasValue?, val branch: String? = null, val error: String? = null, val meta: CallMeta? = null, val calls: Int = 0,
     val cause: Throwable? = null, val extracted: ExtractedBatch? = null,
-)
+) {
+    /** Never prints [cause] or [value]: a cause message can carry provider-derived text. */
+    override fun toString() = "NodeResult(frameId=$frameId, branch=$branch, error=$error, calls=$calls)"
+}
 
 class RunContext(
     val runId: String,
