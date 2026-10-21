@@ -56,4 +56,18 @@ class PromptDaoCasTest {
         assertEquals(CasOutcome.Mismatch(listOf("B")), dao.casSaveAll(listOf(w("B", "b1", "", "b2", null)), true, 6)) // "" is not null
         assertNull(dao.active("B")!!.outputSchema)
     }
+
+    @Test fun failureInSecondWriteRollsBackFirst() = runBlocking {
+        db.openHelper.writableDatabase.execSQL("CREATE TRIGGER boom BEFORE INSERT ON prompt_version WHEN NEW.promptId = 'B' BEGIN SELECT RAISE(ABORT, 'boom'); END")
+        val r = runCatching { dao.casSaveAll(listOf(w("A", "a0", "sa", "a1", "sa"), w("B", "b0", null, "b1", null)), keepVersions = true, now = 5) }
+        assertEquals(true, r.isFailure)
+        assertEquals("a0", dao.active("A")!!.template); assertEquals(1, dao.maxVersion("A"))
+        assertEquals("b0", dao.active("B")!!.template)
+    }
+
+    @Test fun duplicateIdsRejected() = runBlocking {
+        val r = runCatching { dao.casSaveAll(listOf(w("A", "a0", "sa", "a1", "sa"), w("A", "a0", "sa", "a2", "sa")), true, 5) }
+        assertEquals(true, r.exceptionOrNull() is IllegalArgumentException)
+        assertEquals(1, dao.maxVersion("A"))
+    }
 }
