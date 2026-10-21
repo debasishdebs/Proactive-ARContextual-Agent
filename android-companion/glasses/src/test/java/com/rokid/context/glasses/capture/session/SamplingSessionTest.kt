@@ -449,6 +449,49 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
+    private fun motionRestRig(t: TestScope) = glanceRig(t) {
+        work = 1; rest = 5; profile = CaptureProfile.DEFAULT // MOTION wake, T0
+        settings = HudSettings(captureMode = CaptureMode.SMART, workRestEnabled = true)
+    }
+
+    @Test fun restWithMotionProfileOnsetOpensNothingAndTimerChecksAreSpaced() = runTest {
+        val r = motionRestRig(this)
+        r.session.start()
+        r.gyro(61_000, 0f)
+        assertNotNull(r.session.status.value.restingUntilMs)
+        r.gyro(5_000, 0f)
+        val before = r.camera.opens
+        r.gyro(200, 1f) // an onset (no completed glance yet)
+        assertEquals(before, r.camera.opens, "an onset opens nothing in rest")
+        r.gyro(120_000, 0f)
+        val opens = r.camera.openTimes
+        val inRest = opens.filter { it > 66_000 }
+        inRest.zipWithNext { a, b -> assertTrue(b - a >= 29_000, "timer checks at least 30 s apart: $inRest") }
+        r.session.stop("test")
+    }
+
+    @Test fun restWithMotionProfileStillOpensForAGlanceAtTwoPerMin() = runTest {
+        val r = motionRestRig(this)
+        r.session.start()
+        r.gyro(61_000, 0f)
+        val restStart = r.clock()
+        for (i in 1..6) { r.scene = 20 + i; r.gyro(400, 1f); r.gyro(9_600, 0f) }
+        val inRest = r.keyframes.map { it.first }.filter { it >= restStart }
+        assertTrue(inRest.isNotEmpty())
+        for (t in inRest) assertTrue(inRest.count { it in t until t + 60_000 } <= 2, "$inRest")
+        r.session.stop("test")
+    }
+
+    @Test fun motionOnsetOutsideRestStillOpensImmediately() = runTest {
+        val r = glanceRig(this) { profile = CaptureProfile.DEFAULT }
+        r.session.start()
+        r.gyro(8_000, 0f)
+        val before = r.camera.opens
+        r.gyro(300, 1f)
+        assertTrue(r.camera.opens > before, "onset opens in work")
+        r.session.stop("test")
+    }
+
     @Test fun workRestDisabledByDefaultNeverRests() = runTest {
         val r = glanceRig(this) { work = 1; rest = 5 }
         r.session.start()

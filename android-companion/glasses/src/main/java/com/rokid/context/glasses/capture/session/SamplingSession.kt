@@ -235,7 +235,7 @@ class SamplingSession(
 
     private fun onOnset() = synchronized(lock) {
         stillStepV = 0
-        if (profile().wake == CameraWake.MOTION) {
+        if (!resting && profile().wake == CameraWake.MOTION) { // never an immediate open in rest
             forceAnalyse = true // the immediate check at the first sign of movement
             forceBrief = true
         }
