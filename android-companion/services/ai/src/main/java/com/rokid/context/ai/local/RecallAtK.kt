@@ -11,7 +11,10 @@ object RecallAtK {
     data class Query(val text: String, val relevant: Set<String>, val small: Boolean)
 
     /** [overall] and [small] are fractions in 0..1 over the queries that could be judged ([queries], [smallQueries]). */
-    data class Result(val dims: Int, val overall: Double, val small: Double, val queries: Int, val smallQueries: Int, val photos: Int)
+    data class Result(val dims: Int, val overall: Double, val small: Double, val queries: Int, val smallQueries: Int, val photos: Int,
+        /** Whole-number hits behind [overall] and [small], so a decision log keeps raw counts. */
+        val hits: Int = 0, val smallHits: Int = 0,
+    )
 
     /** Raw 768 CLS -> L2 -> first [dims] -> L2. */
     fun imageVector(rawCls: FloatArray, dims: Int): FloatArray = NomicText.shorten(VectorMath.l2(rawCls), dims)
@@ -39,7 +42,7 @@ object RecallAtK {
         }
         return Result(
             dims, if (judged == 0) 0.0 else hits.toDouble() / judged, if (smallJudged == 0) 0.0 else smallHits.toDouble() / smallJudged,
-            judged, smallJudged, images.size,
+            judged, smallJudged, images.size, hits, smallHits,
         )
     }
 

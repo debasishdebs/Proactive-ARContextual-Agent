@@ -593,11 +593,11 @@ object RecallAtK {
 1. **Backup first:** the phone app data tar (as `~/Desktop/rokid/backups/…`) before installing the wave-2 build (it runs the v2 → v3 migration and the new retention). Install with `install -r`. Check that the migration kept every row: DB counts only (`frame_meta`, `frame_state`, `frame_cluster`, `memory`).
 2. **Reference test:**
    - Fetch the two pinned bundle files on the Mac from the catalog URLs into the scratchpad, and check SHA-256 against `LocalModels.kt` (print match yes/no only).
-   - `adb push` them to `/data/local/tmp/pca-nomic/`, install the `:services:ai` androidTest APK, then `adb shell run-as com.rokid.context.ai.test sh -c 'mkdir -p files/models && cp /data/local/tmp/pca-nomic/* files/models/'` (if `run-as` can't read there, pass `-e modelsDir /data/local/tmp/pca-nomic`).
+   - `adb push` them to `/data/local/tmp/pca-nomic/`, install the `:services:ai` androidTest APK, then `adb shell run-as com.rokid.context.services.ai.test sh -c 'mkdir -p files/models && cp /data/local/tmp/pca-nomic/* files/models/'` (if `run-as` can't read there, pass `-e modelsDir /data/local/tmp/pca-nomic`).
    - Run `NomicReferenceDeviceTest` and `NomicVisionDeviceTest`.
    - **Pass:** every cosine ≥ 0.99 and ≥ 20 images/s. **On a fail, stop:** don't bind Nomic, and record the result.
 3. **Photo test (user + controller):**
-   - The user picks ≥ 60 keyframes (≥ 15 with small or edge-of-frame objects) in the debug frame viewer and writes ≥ 40 queries. The controller builds `queries.json` (frame ids only) in the scratchpad and pushes it with `run-as com.rokid.context` into `files/photo-eval/`.
+   - The user labels in the app: debug frame viewer -> "Add to photo test" (query text + small/edge toggle), ≥ 60 photos, ≥ 40 queries, ≥ 15 small. The app adds up to 1,500 other photos as distractors (refuses below max(300, 5 × labelled)); verdict PASS_256 / KEEP_768 / INCONCLUSIVE (768 ≥ 0.95 overall and small → keep 768). Vision truncation to 256 is not a documented Nomic property: say "evidence from your own photos only" in the decision log.
    - Run Diagnostics → "Photo search dimension test". Read `result.json` (numbers only).
    - **Rule:** store 256 only if recall@3 drops ≤ 3 points overall **and** ≤ 5 points on the small/edge subset; **otherwise keep 768 (the default).**
    - If 256 wins: a one-line commit `NomicVision.STORED_DIMS = 256` and a rebuild **before** step 4.
