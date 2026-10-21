@@ -42,6 +42,18 @@ class FrameUplinkTest {
     }
     private fun okFor(c: FrameChunk) = FrameAck(frameId = c.meta.frameId, ok = true)
 
+    @Test fun bytesSentSumsAcceptedChunkLengthsOnly() = runTest {
+        val b = buffer()
+        b.add("g1", jpeg(100), now - 1, null, null, 80)
+        val accepted = ArrayList<FrameChunk>()
+        var n = 0
+        val u = FrameUplink(this, b, sendChunk = { c -> if (n++ == 0) -1 else { accepted += c; 0 } }, canSend = { open }, config = UplinkConfig(maxAttempts = 2))
+        assertEquals(0L, u.bytesSent)
+        u.kick(); advanceUntilIdle()
+        assertEquals(accepted.sumOf { it.chunk.length }.toLong(), u.bytesSent)
+        assertTrue(u.bytesSent > 0)
+    }
+
     @Test fun ackedFramesAreDeletedOldestFirst() = runTest {
         val b = buffer()
         b.add("g1", jpeg(100), now - 2, null, null, 80); b.add("g2", jpeg(100), now - 1, null, null, 80)
