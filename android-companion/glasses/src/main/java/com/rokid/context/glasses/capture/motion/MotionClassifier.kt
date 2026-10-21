@@ -71,6 +71,13 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, privat
     private var ry = 0f
     private var rz = 0f
     private var walked = false
+    // Gyro-bias drift bound: the pose as it was when the head last moved (a sample over the release threshold). After
+    // POSE_QUIET_RESET_MS without such a sample, what the pose gained since is bias drift and is discarded, so a bias
+    // at or above the deadband cannot grow the pose to the novelty threshold while the head is still.
+    private var quietSinceMs = -1L
+    private var qx = 0f
+    private var qy = 0f
+    private var qz = 0f
 
     // Cached per accel sample (the window only changes then): the strict rule, and the K3 relaxed rule's run.
     private var strictWalk = false
@@ -90,6 +97,7 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, privat
         featN++; featSum += mag; featSumSq += mag * mag; featTravelled += mag * dtS
         if (mag > params.onsetRadS) featAbove++
         if (mag >= params.deadbandRadS) { rx += x * dtS; ry += y * dtS; rz += z * dtS }
+        trackQuiet(mag, tMs)
         if (above) {
             lastAboveGyroMs = maxOf(lastAboveGyroMs, tMs)
             if (mag > peak) peak = mag
@@ -144,12 +152,22 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, privat
         detector.glances = 0; detector.micro = 0
     }
 
+    /** Caller holds the lock. Snapshots the pose at each moving sample; restores it after a long quiet spell (bias drift). */
+    private fun trackQuiet(mag: Float, tMs: Long) {
+        if (quietSinceMs < 0 || mag > params.releaseRadS) {
+            quietSinceMs = tMs; qx = rx; qy = ry; qz = rz
+        } else if (tMs - quietSinceMs >= POSE_QUIET_RESET_MS) {
+            rx = qx; ry = qy; rz = qz
+            quietSinceMs = tMs
+        }
+    }
+
     /** Net head turn (rad) since the last [markPose]: a look away and back cancels. */
     @Synchronized fun rotationSinceMarkRad(): Float = sqrt(rx * rx + ry * ry + rz * rz)
 
     @Synchronized fun walkedSinceMark(): Boolean = walked
 
-    @Synchronized fun markPose() { rx = 0f; ry = 0f; rz = 0f; walked = false }
+    @Synchronized fun markPose() { rx = 0f; ry = 0f; rz = 0f; walked = false; qx = 0f; qy = 0f; qz = 0f }
 
     /** Glances and micro bouts since the last call (the heartbeat). */
     @Synchronized fun takeGlanceCounts(): GlanceCounts {
@@ -224,6 +242,8 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, privat
         const val RELAXED_GRACE_MS = 500L
         const val WINDOW_MS = 1000L
         const val MIN_SPAN_MS = 800L
+        /** No head movement (nothing over the release threshold) for this long: the pose gained since is gyro-bias drift and is dropped. */
+        const val POSE_QUIET_RESET_MS = 4_000L
         const val HEAD_HOLD_MS = 250L   // bridges the zero crossings inside one head turn
         /** Legacy; see [GlanceParams.LEGACY]. */
         const val DWELL_MS = 1000L

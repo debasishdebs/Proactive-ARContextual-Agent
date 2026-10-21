@@ -68,7 +68,7 @@ class GlimpseOffsetTest {
             scope = test.backgroundScope, camera = camera, owner = CameraOwner(), motion = motion, wear = wear, gate = gate,
             heat = heat, workRest = workRest, encoder = TagEncoder(),
             sink = { k: KeyframeOut, _ -> out += Triple(clock(), Scenes.sceneOf(k.jpeg), Scenes.capturedAtOf(k.jpeg)) },
-            clock = clock, settings = { HudSettings(captureMode = CaptureMode.SMART, quickLookMs = quickLookMs) },
+            clock = clock, settings = { HudSettings(captureMode = CaptureMode.SMART, quickLookMs = quickLookMs) }, glance = GlanceParams.LEGACY,
         )
         // 50 Hz gyro, every sample reaches the classifier 20 ms after it was taken
         test.backgroundScope.launch {

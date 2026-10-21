@@ -12,6 +12,7 @@ import com.rokid.context.glasses.capture.keyframe.GateResult
 import com.rokid.context.glasses.capture.keyframe.KeyframeGate
 import com.rokid.context.glasses.capture.keyframe.Nv21Frame
 import com.rokid.context.glasses.capture.keyframe.Thumb
+import com.rokid.context.glasses.capture.motion.GlanceParams
 import com.rokid.context.glasses.capture.motion.MotionClassifier
 import com.rokid.context.glasses.capture.motion.WearDetector
 import kotlinx.coroutines.CancellationException
@@ -90,6 +91,8 @@ class SamplingSession(
     private val newSessionId: () -> String = { Random.nextLong().toULong().toString(16).padStart(16, '0') },
     /** Where a flushed keyframe is encoded (the service passes Dispatchers.Default so the main thread never encodes). */
     private val workContext: CoroutineContext = EmptyCoroutineContext,
+    /** Glance novelty window, turn thresholds and keep caps (one instance shared with the [MotionClassifier]). */
+    private val glance: GlanceParams = GlanceParams(),
 ) {
     private class Episode(val continuous0: Boolean, val why: String) {
         @Volatile var continuous = continuous0
@@ -142,6 +145,12 @@ class SamplingSession(
     private var pendingNowAt: Long? = null
     private var nextRestCaptureAt: Long? = null
     private val keptAt = ArrayDeque<Long>()
+    // Glance counters since the last [diagSnapshot] (guarded by [lock]): opens skipped as not novel / over the cap.
+    private var novelSkipAccum = 0
+    private var cappedAccum = 0
+    /** In a rest span the cap is [GlanceParams.restCapPerMin] (set by [tick]). Guarded by [lock]. */
+    private var resting = false
+    private fun capNow() = if (resting) glance.restCapPerMin else glance.capPerMin
     // Camera-open time since the last [diagSnapshot] read (guarded by [lock]), for the "camera-open share" heartbeat field.
     private var openAccumMs = 0L
     private var shareFromAt = 0L
@@ -184,6 +193,7 @@ class SamplingSession(
             sessionId = newSessionId()
             val now = clock()
             lastKeyframeAt = now
+            motion.markPose()
             shareFromAt = now // the first heartbeat snapshot spans the session, not the whole clock
             lastBriefAt = now - DUE_NOW_MS // the first brief check is due at once, at any cadence
         }
@@ -234,9 +244,21 @@ class SamplingSession(
     }
 
     private fun onDwell() = synchronized(lock) {
-        pendingDwellAt = clock()
+        val now = clock()
         stillStepV = 0
-        kick.trySend(Unit)
+        // Spec A3 section 4: a glance opens the camera only when it can matter (free IMU tests, before any open).
+        val k = keptAt.count { now - it < 60_000L }
+        val turned = motion.rotationSinceMarkRad()
+        val walked = motion.walkedSinceMark()
+        val cap = capNow()
+        if (now - lastKeyframeAt < glance.noveltyWindowMs && turned < glance.noveltyMinRad && !walked) {
+            novelSkipAccum++
+        } else if (k >= cap && turned < glance.bigTurnRad && !walked || k.toLong() >= 2L * cap) {
+            cappedAccum++
+        } else {
+            pendingDwellAt = now
+            kick.trySend(Unit)
+        }
         Unit
     }
 
@@ -405,7 +427,7 @@ class SamplingSession(
                     log("camera not ready on the first bind: retrying in $COLD_START_RETRY_MS ms (not counted)")
                 } else if (camera.busy) onBusy(now) else onBindFailed(now)
             }
-            if (!stopped) flushed = gate.flushWindow()
+            if (!stopped) flushed = gate.flushWindow(capNow())
         }
         (flushed as? GateResult.Keep)?.let { k ->
             scope.launch(workContext) { try { emit(k, now) } catch (e: CancellationException) { throw e } catch (e: Exception) { log("emit failed: ${e.javaClass.simpleName}") } }
@@ -444,7 +466,11 @@ class SamplingSession(
         openAccumMs = 0; shareFromAt = now
         val opens = opensAccum; val wakes = LinkedHashMap(wakeAccum)
         opensAccum = 0; wakeAccum.keys.forEach { wakeAccum[it] = 0 }
-        DiagStats(kf, open, span, delta, opens, wakes)
+        val gl = motion.takeGlanceCounts()
+        val (same, gateCapped) = gate.takeSkipCounts()
+        val novel = novelSkipAccum; val capped = cappedAccum + gateCapped
+        novelSkipAccum = 0; cappedAccum = 0
+        DiagStats(kf, open, span, delta, opens, wakes, gl.glances, gl.micro, novel, capped, same)
     }
 
     /** "startup n=.. p50=.. p95=.. lead=.. ms" for the status heartbeat. */
@@ -509,7 +535,7 @@ class SamplingSession(
         val result: GateResult? = if (FrameGuard.checkBatteryAndDark(batteryPct(), charging(), luma.toDouble()) != null) null
         else synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
-            gate.offer(cand, sampleMotion, dwellArmed, forced).also { h = gate.lastHashes() }
+            gate.offer(cand, sampleMotion, dwellArmed, forced, capNow()).also { h = gate.lastHashes() }
         }
         val usable = result != null && !(result is GateResult.Skip && result.reason == KeyframeGate.BLUR)
         if (result is GateResult.Keep) emit(result, now)
@@ -560,7 +586,7 @@ class SamplingSession(
             enc.jpeg, enc.width, keep.motion, keep.dwell, keep.blur,
             hex(keep.dhash), hex(keep.phash), keep.candidate.seq, sessionId,
         )
-        synchronized(lock) { lastKeyframeAt = now; keptAt.addLast(now) }
+        synchronized(lock) { lastKeyframeAt = now; motion.markPose(); keptAt.addLast(now) }
         val px = keep.candidate.pixels
         val srcW = YuvCopy.rotatedWidth(px.w, px.h, px.rotation); val srcH = YuvCopy.rotatedHeight(px.w, px.h, px.rotation)
         log("keyframe seq=${out.sampleSeq} src=${srcW}x$srcH out=${enc.width}x${enc.height} motion=${out.motion} dwell=${out.dwell} blur=${out.blur.toInt()} bytes=${out.jpeg.size}")
@@ -612,4 +638,7 @@ class SamplingSession(
 }
 
 /** One heartbeat interval of camera counters: keyframes in the last minute, camera-open ms, the span they cover, and frames analysed in it. */
-data class DiagStats(val kf1m: Int, val openMs: Long, val spanMs: Long, val analysed: Int, val opens: Int = 0, val wakes: Map<String, Int> = emptyMap())
+data class DiagStats(val kf1m: Int, val openMs: Long, val spanMs: Long, val analysed: Int, val opens: Int = 0, val wakes: Map<String, Int> = emptyMap(),
+    /** Battery wave A3: glances and micro bouts, opens skipped as not novel or over the cap, and same-scene (duplicate) skips, since the last snapshot. */
+    val glances: Int = 0, val micro: Int = 0, val novelSkips: Int = 0, val capped: Int = 0, val same: Int = 0,
+)

@@ -4,6 +4,10 @@ package com.rokid.context.glasses.capture.motion
  * QUIET / BOUT / SETTLING machine of the glance model (spec A3 section 3). Pure and not thread-safe: the classifier calls
  * it under its own lock, always on gyro time. A glance is a real head bout (long and wide enough) followed by [GlanceParams.settleMs]
  * without a sample over the onset threshold; shorter bouts are micro-motion, which never arms a glance but postpones a pending one.
+ *
+ * Bout length does not depend on the sample rate: a sample at time t stands for the period (t - dt, t], so a bout is measured
+ * from its first sample's time minus one sample period (that sample's own dt, clamped to maxDtMs) to the last sample over the
+ * release threshold. A real 300 ms look is therefore a bout at 20 Hz (6 samples, 250 ms apart first-to-last) as at 50 Hz.
  */
 class GlanceDetector(private val p: GlanceParams) {
     private enum class Phase { QUIET, BOUT, SETTLING }
@@ -43,7 +47,7 @@ class GlanceDetector(private val p: GlanceParams) {
     }
 
     private fun beginBout(mag: Float, tMs: Long, dtMs: Long, armed: Boolean) {
-        phase = Phase.BOUT; start = tMs; lastAbove = tMs
+        phase = Phase.BOUT; start = tMs - dtMs.coerceIn(0L, p.maxDtMs); lastAbove = tMs
         turned = mag * dtMs.coerceAtMost(p.maxDtMs) / 1000f
         this.armed = armed
     }
