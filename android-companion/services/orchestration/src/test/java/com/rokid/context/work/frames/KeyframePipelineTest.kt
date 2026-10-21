@@ -44,7 +44,7 @@ class KeyframePipelineTest {
 
     private suspend fun seed(id: String, ts: Long, dwell: Boolean = false, state: String = "PENDING") {
         db.frameDao().insertIgnore(FrameEntity(id, ts, "/x/$id.jpg", "rokid_glasses"))
-        db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", dwell, null, null, null, null, null, null, null, null, null, ts))
+        db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", dwell, null, null, null, null, null, null, null, null, null, ts, routedAt = ts))
         db.frameStateDao().insertIgnore(listOf(FrameStateEntity(id, state, 0, null, null, null, ts)))
     }
 

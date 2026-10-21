@@ -282,11 +282,13 @@ object RokidFrameInbox {
         Log.i(TAG, "ingestFile path=${file.absolutePath} source=$source exists=${file.exists()} size=${file.length()}")
         val now = nowMs()
         val rows = FrameRows(
+            // routedAt = now: wave-1 behaviour (every frame is claimable at once). Wave 2 Task 6 changes this to leave routedAt NULL
+            // only when the scene indexer is active (vectors available), so the router, not the per-photo path, sees the frame first.
             FrameMetaEntity(
                 frameId = frameId, wireFrameId = receipt?.wireFrameId, sessionId = receipt?.sessionId,
                 motion = receipt?.motion ?: "UNKNOWN", dwell = receipt?.dwell ?: false, blur = receipt?.blur,
                 dhash = receipt?.dhash, phash = receipt?.phash, width = receipt?.width, salience = null, salienceTerms = null,
-                clusterId = null, nearDupOf = null, imageVectorSpace = null, createdAt = now,
+                clusterId = null, nearDupOf = null, imageVectorSpace = null, createdAt = now, routedAt = now,
             ),
             FrameStateEntity(frameId = frameId, state = "PENDING", attempts = 0, lastError = null, claimedAt = null, claimId = null, updatedAt = now),
         )

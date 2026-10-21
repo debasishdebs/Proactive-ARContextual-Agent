@@ -98,7 +98,7 @@ class KeyframeIntegrationTest {
     private suspend fun seed(id: String, state: String, updatedAt: Long, claimedAt: Long? = null) {
         val f = File(ctx.cacheDir, "$id.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
         db.frameDao().insertIgnore(FrameEntity(id, System.currentTimeMillis() - 1000, f.absolutePath, "rokid_glasses"))
-        db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", false, null, null, null, null, null, null, null, null, null, updatedAt))
+        db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", false, null, null, null, null, null, null, null, null, null, updatedAt, routedAt = updatedAt))
         db.frameStateDao().insertIgnore(listOf(FrameStateEntity(id, state, 0, null, claimedAt, claimedAt?.let { "pipeline" }, updatedAt)))
     }
 
