@@ -116,11 +116,11 @@ cmd_summary() {
   end="$(sed -n 's/^end=//p' "$d/batt_run.txt" | tail -1)"
   [ -n "$start" ] && [ -n "$end" ] || die "batt_run.txt needs start= and end="
   # Timestamps are MM-DD_HH:MM:SS (glasses clock); diag lines are "MM-DD HH:MM:SS.mmm".
-  local diag=""
-  [ -f "$d/capture_diag.log.1" ] && diag="$d/capture_diag.log.1"
-  [ -f "$d/capture_diag.log" ] && diag="$diag $d/capture_diag.log"
+  local diag=()
+  [ -f "$d/capture_diag.log.1" ] && diag+=("$d/capture_diag.log.1")
+  [ -f "$d/capture_diag.log" ] && diag+=("$d/capture_diag.log")
   if [ "$mode" = "minutes" ]; then
-    summary_minutes "$d" "$start" "$end" "$clk" "$diag"
+    summary_minutes "$d" "$start" "$end" "$clk" ${diag[@]+"${diag[@]}"}
     return
   fi
   awk -v S="$start" -v E="$end" '
@@ -178,7 +178,7 @@ cmd_summary() {
       print "reason=" list(re)
       print "sensors=" list(se)
     }
-  ' "$d/batt.log" $diag
+  ' "$d/batt.log" ${diag[@]+"${diag[@]}"}
   [ -f "$d/cpu.log" ] && summary_cpu "$d/cpu.log" "$start" "$end" "$clk"
 }
 
@@ -190,7 +190,9 @@ summary_cpu() {
     $2 == "cpu" || $2 == "thr" {
       if ($2 == "cpu") { key = $3; split($4, a, "="); pid = a[2]; split($5, b, "="); k = b[2] + 0 }
       else { key = "thr:" $4; pid = "t"; split($5, b, "="); k = b[2] + 0 }
-      t = secs($1); if (t < 0) t += 86400
+      t = secs($1)
+      if (key in tl && t + off[key] < tl[key]) off[key] += 86400 # the clock wrapped past midnight (the window test above is lexical on MM-DD, so month and year ends are the limit)
+      t += off[key]
       if (!(key in tf)) { tf[key] = t; if ($2 == "thr") { order[++nthr] = key } }
       tl[key] = t
       if (key in lastp) {
@@ -212,7 +214,8 @@ summary_cpu() {
 
 # One line per in-window heartbeat minute: counters plus CPU s/min from the sample in that minute and the one before it (gap <= 5 min, same pid).
 summary_minutes() {
-  local d="$1" start="$2" end="$3" clk="$4" diag="$5" cpu=""
+  local d="$1" start="$2" end="$3" clk="$4" cpu=""
+  shift 4 # what is left are the diag files
   [ -s "$d/cpu.log" ] && cpu="$d/cpu.log"
   [ -n "$cpu" ] || echo "no cpu.log (cpu columns are na)"
   # Files are told apart by name (CPU), never by order: a missing or empty cpu.log must not turn a diag file into the CPU file.
@@ -246,7 +249,7 @@ summary_minutes() {
       }
       print line
     }
-  ' $cpu $diag
+  ' ${cpu:+"$cpu"} "$@" /dev/null # /dev/null: awk with no file arguments would read stdin
 }
 
 case "${1:-}" in
