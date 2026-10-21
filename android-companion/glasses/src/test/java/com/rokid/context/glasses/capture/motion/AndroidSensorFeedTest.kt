@@ -219,4 +219,22 @@ class AndroidSensorFeedTest {
         val on = run(dir(), MotionLabel.WALKING)
         assertEquals(off, on)
     }
+
+    @Test fun everyWrittenRowIsNumericOrEnumOnly() {
+        val d = dir()
+        var l = MotionLabel.NONE
+        val feed = AndroidSensorFeed(Reg(true), label = { l }, csvDir = d)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        val labels = MotionLabel.values().filter { it != MotionLabel.NONE }
+        for (x in labels) { l = x; tickOnce() }
+        feed.stop()
+        val lines = File(d, "motion_features.csv").readLines()
+        assertEquals(MotionCsv.HEADER, lines[0])
+        assertEquals(labels.size, lines.size - 1)
+        val strict = Regex("^[0-9]+(,-?[0-9]+\\.[0-9]{3}){7},[0-9]+,[0-9]+,[A-Z_]+,[A-Z_]+,[A-Z_]+,[A-Z_]+,[a-z]+$")
+        lines.drop(1).forEachIndexed { i, r ->
+            assertTrue(r.matches(strict), "row $i not strict: shape check")
+            assertTrue(r.contains(",${labels[i].name},"))
+        }
+    }
 }
