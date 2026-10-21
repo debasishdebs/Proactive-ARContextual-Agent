@@ -57,8 +57,11 @@ class OnnxImageEmbedder(
         for (attempt in 1..2) {
             try {
                 return sessionFactory(modelPath).also { session = it }
-            } catch (e: Exception) {
-                Log.w(TAG, "session create failed attempt=$attempt")
+            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Native-load Errors (UnsatisfiedLinkError, NoClassDefFoundError, OOM...) degrade to text-only like any failure; class name only.
+                Log.w(TAG, "session create failed attempt=$attempt class=${e.javaClass.simpleName}")
             }
         }
         unavailable = true

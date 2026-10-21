@@ -76,6 +76,15 @@ class EndpointEmbedderTest {
         assertEquals("a runtime that cannot start drops IMAGE", setOf(Modality.TEXT), e.modalities)
     }
 
+    @Test fun nativeLoadErrorDegradesToTextOnly() = runBlocking {
+        val gguf = withVision()
+        val e = EndpointEmbedder(nomicSpec(gguf), endpoint(gguf, NomicText.CATALOG_ID), null, client,
+            imageEmbedderFor = { p, d -> OnnxImageEmbedder(p, d, sessionFactory = { throw UnsatisfiedLinkError("libonnxruntime") }, preprocess = { _, _ -> FloatArray(3 * 224 * 224) }) })
+        try { e.embedImages(listOf(byteArrayOf(1))); fail() } catch (x: com.rokid.context.ai.ProviderConfigException) { /* typed, retryable */ }
+        assertEquals(setOf(Modality.TEXT), e.modalities)
+        assertNull(e.imageDims)
+    }
+
     @Test fun embedImagesUsesStoredDims() = runBlocking {
         val fake = FakeSession()
         val e = embedderWith(withVision(), NomicVision.STORED_DIMS, fake)

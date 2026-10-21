@@ -16,7 +16,9 @@ subprojects {
         // Gate stall 2026-10-14: the Robolectric worker stopped answering jstack (GC thrash on the 512 MB default heap).
         // A bigger heap, and an out-of-memory that exits with a dump instead of thrashing, so a stall fails fast and explained.
         maxHeapSize = "2g"
-        jvmArgs("-XX:+HeapDumpOnOutOfMemoryError", "-XX:HeapDumpPath=${layout.buildDirectory.get().asFile}/test-heap", "-XX:+ExitOnOutOfMemoryError")
+        jvmArgs("-XX:+HeapDumpOnOutOfMemoryError", "-XX:HeapDumpPath=${layout.buildDirectory.get().asFile}/test-heap", "-XX:+ExitOnOutOfMemoryError",
+            // HotSpot C2 SIGSEGV (Node::uncast) crashed the test JVM twice on 2026-10-21: C1 only, and the crash report lands under build/.
+            "-XX:TieredStopAtLevel=1", "-XX:ErrorFile=${layout.buildDirectory.get().asFile}/hs_err_pid%p.log")
         testLogging {
             events("started", "failed", "skipped")
             exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
