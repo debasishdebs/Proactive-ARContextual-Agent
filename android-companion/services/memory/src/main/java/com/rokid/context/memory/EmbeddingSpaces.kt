@@ -47,8 +47,6 @@ class EmbeddingSpaces(
     private val dao: EmbeddingDao,
     private val retired: RetiredClock = InMemoryRetiredClock(),
     private val now: () -> Long = System::currentTimeMillis,
-    /** Off in wave 1 (the frame_vector backfill ships in wave 2); then a swap needs text coverage only. */
-    private val requireImageCoverage: Boolean = false,
 ) {
     suspend fun current(): EmbeddingSpaceEntity? = dao.current()
     suspend fun queryable(): EmbeddingSpaceEntity? = dao.current()?.takeIf { it.state == SpaceState.ACTIVE }
@@ -61,9 +59,16 @@ class EmbeddingSpaces(
     suspend fun put(memoryId: String, spaceId: String, vector: FloatArray): Boolean =
         dao.putChecked(MemoryVectorEntity(memoryId, spaceId, VectorCodec.encode(vector)), vector.size)
     suspend fun missing(spaceId: String, limit: Int): List<EmbedInput> = dao.missing(spaceId, limit)
+    /** Stored photos with no image vector in [spaceId], newest first, `unembeddable` ones excluded. */
+    suspend fun missingImages(spaceId: String, limit: Int): List<String> = dao.missingImageIds(spaceId, limit)
+    suspend fun missingImageCount(spaceId: String): Int = dao.missingImageCount(spaceId)
+    /** False when the space is no longer writable or the photo is gone. */
+    suspend fun putImage(frameId: String, spaceId: String, vector: FloatArray): Boolean = dao.putImageChecked(frameId, spaceId, VectorCodec.encode(vector))
+    suspend fun markUnembeddable(frameId: String) = dao.markUnembeddable(frameId, now())
     suspend fun coverage(spaceId: String): Coverage = Coverage(dao.coveredCount(spaceId), dao.eligibleCount())
-    suspend fun swapIfComplete(buildingId: String): Boolean {
-        val old = dao.swapRetiring(buildingId, requireImageCoverage) ?: return false
+    /** [requireImages]: the building embedder declares IMAGE, so every stored photo (bar `unembeddable` ones) needs a vector in [buildingId] (Ruling 15). */
+    suspend fun swapIfComplete(buildingId: String, requireImages: Boolean = false): Boolean {
+        val old = dao.swapRetiring(buildingId, requireImages) ?: return false
         old.forEach { retired.markRetired(it, now()) }
         return true
     }
@@ -117,6 +122,7 @@ class EmbeddingSpaces(
 
     companion object {
         const val GRACE_MS = 7 * 24 * 60 * 60 * 1000L
+        const val UNEMBEDDABLE = "unembeddable"
         private const val TICK_MS = 60_000L
     }
 }
