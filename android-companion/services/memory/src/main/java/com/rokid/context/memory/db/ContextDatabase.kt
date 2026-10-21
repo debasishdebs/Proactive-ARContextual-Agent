@@ -13,8 +13,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         NudgeEntity::class, ProposalEntity::class, ActionLogEntity::class, PauseRecordEntity::class, PauseIntervalEntity::class,
         ShoppingItemEntity::class, NoteEntity::class,
         FrameMetaEntity::class, FrameStateEntity::class, FrameSourceEntity::class, FrameClusterEntity::class, FrameVectorEntity::class,
+        CanvasPipelineEntity::class, CanvasPipelineVersionEntity::class, CanvasRunEntity::class, CanvasRunItemEntity::class, CanvasScoreEntity::class, CanvasPublishEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -46,6 +47,7 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun frameVectorDao(): FrameVectorDao
     abstract fun frameClusterDao(): FrameClusterDao
     abstract fun frameAdoptionDao(): FrameAdoptionDao
+    abstract fun canvasDao(): CanvasDao
 }
 
 /**
@@ -63,5 +65,21 @@ val MIGRATION_1_2: Migration = object : Migration(1, 2) {
         db.execSQL("CREATE TABLE IF NOT EXISTS `frame_cluster` (`clusterId` TEXT NOT NULL, `openedAt` INTEGER NOT NULL, `closedAt` INTEGER, `closeReason` TEXT, `repFrameIds` TEXT NOT NULL, `memoryId` TEXT, PRIMARY KEY(`clusterId`))")
         db.execSQL("CREATE TABLE IF NOT EXISTS `frame_vector` (`frameId` TEXT NOT NULL, `spaceId` TEXT NOT NULL, `blob` BLOB NOT NULL, PRIMARY KEY(`frameId`, `spaceId`))")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_frame_vector_spaceId` ON `frame_vector` (`spaceId`)")
+    }
+}
+
+/** v2 → v3 (experiment canvas): only adds the six canvas tables, with the statements Room generated for `3.json`. */
+val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_pipeline` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `draftJson` TEXT NOT NULL, `draftRev` INTEGER NOT NULL, `builtIn` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_pipeline_version` (`pipelineId` TEXT NOT NULL, `version` INTEGER NOT NULL, `json` TEXT NOT NULL, `hash` TEXT NOT NULL, `note` TEXT NOT NULL, `frozenAt` INTEGER NOT NULL, PRIMARY KEY(`pipelineId`, `version`))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_run` (`runId` TEXT NOT NULL, `pipelineId` TEXT NOT NULL, `version` INTEGER, `pipelineHash` TEXT NOT NULL, `pipelineJson` TEXT NOT NULL, `status` TEXT NOT NULL, `frameCount` INTEGER NOT NULL, `estCalls` INTEGER NOT NULL, `calls` INTEGER NOT NULL, `failures` INTEGER NOT NULL, `startedAt` INTEGER NOT NULL, `finishedAt` INTEGER, `modelsJson` TEXT NOT NULL, PRIMARY KEY(`runId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_run_pipelineId` ON `canvas_run` (`pipelineId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_run_startedAt` ON `canvas_run` (`startedAt`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_run_item` (`runId` TEXT NOT NULL, `frameId` TEXT NOT NULL, `nodeId` TEXT NOT NULL, `status` TEXT NOT NULL, `branch` TEXT, `outputJson` TEXT, `error` TEXT, `latencyMs` INTEGER, `promptTokens` INTEGER, `completionTokens` INTEGER, `model` TEXT, `promptVersion` INTEGER, `batchId` TEXT, PRIMARY KEY(`runId`, `frameId`, `nodeId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_run_item_frameId` ON `canvas_run_item` (`frameId`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_score` (`runId` TEXT NOT NULL, `frameId` TEXT NOT NULL, `nodeId` TEXT NOT NULL, `score` INTEGER NOT NULL, `note` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`runId`, `frameId`, `nodeId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_score_frameId` ON `canvas_score` (`frameId`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_publish` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `pipelineId` TEXT NOT NULL, `version` INTEGER NOT NULL, `hash` TEXT NOT NULL, `publishedAt` INTEGER NOT NULL, `rolledBackAt` INTEGER, `snapshotJson` TEXT NOT NULL)")
     }
 }

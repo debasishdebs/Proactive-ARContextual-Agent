@@ -47,6 +47,7 @@ class ForgetService(
         if (frame == null && ids.isEmpty()) return@withTransaction Result.EMPTY
         val r = cascade(ids, lockFrames = true)
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
+        dropCanvasOutputs(listOf(frameId))
         dao.deleteFrame(frameId)
         listOf(frameId).let { dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
         r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() })).distinct())
@@ -86,7 +87,7 @@ class ForgetService(
         d.chunked(CHUNK).forEach { c -> dao.invalidate(c); dao.deleteVectorsFor(c) }
         // 4. Extraction lock.
         val now = clock()
-        if (lockFrames) frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }
+        if (lockFrames) { frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; dropCanvasOutputs(frames) }
         // 5. Redaction (exact JSON match after a LIKE prefilter: "A1" never matches "A").
         val cited = forgotten + invalidated
         val asks = cited.flatMap { id -> dao.asksCiting(likeFor(id)) }.distinctBy { it.id }.filter { a -> parseIds(a.sourcesJson).any { it in cited } }
@@ -114,6 +115,12 @@ class ForgetService(
         uncited.chunked(CHUNK).forEach { dao.deleteFrameVectorsFor(it) }
         val files = uncited.mapNotNull { dao.frame(it)?.path?.takeIf { p -> p.isNotBlank() } }
         return Result(forgotten, invalidated, asks.size, nudges.size, files, redactedProposals)
+    }
+
+    /** Experiment canvas outputs are photo-derived: they go with the photo, in the same transaction as its tombstone. */
+    private suspend fun dropCanvasOutputs(frameIds: List<String>) {
+        val canvas = db.canvasDao()
+        frameIds.chunked(CHUNK).forEach { canvas.deleteItemsForFrames(it); canvas.deleteScoresForFrames(it) }
     }
 
     private fun likeFor(id: String) = "%\"${MemoryRepository.escapeLike(id)}\"%"

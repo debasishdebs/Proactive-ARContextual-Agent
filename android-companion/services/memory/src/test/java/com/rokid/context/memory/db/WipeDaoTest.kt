@@ -29,5 +29,19 @@ class WipeDaoTest {
         assertEquals(1, rowCount(raw, "note"))
     }
 
+    @Test fun wipeClearsCanvasRunsKeepsPipelines() = runBlocking {
+        val c = db.canvasDao()
+        c.upsertPipeline(CanvasPipelineEntity("p", "p", "{}", 0, false, 1, 1))
+        c.insertVersion(CanvasPipelineVersionEntity("p", 1, "{}", "h", "", 1))
+        c.insertPublish(CanvasPublishEntity(pipelineId = "p", version = 1, hash = "h", publishedAt = 1, rolledBackAt = null, snapshotJson = "{}"))
+        c.insertRun(CanvasRunEntity("r", "p", 1, "h", "{}", "DONE", 1, 1, 1, 0, 1, 2, "[]"))
+        c.upsertItem(CanvasRunItemEntity("r", "f", "n", "OK", null, "{}", null, null, null, null, null, null, null))
+        c.upsertScore(CanvasScoreEntity("r", "f", "n", 1, "", 1))
+        db.wipeDao().wipeMemory()
+        val raw = db.openHelper.writableDatabase
+        listOf("canvas_run", "canvas_run_item", "canvas_score").forEach { assertEquals(it, 0, rowCount(raw, it)) }
+        listOf("canvas_pipeline", "canvas_pipeline_version", "canvas_publish").forEach { assertEquals(it, 1, rowCount(raw, it)) }
+    }
+
     private fun rowCount(raw: androidx.sqlite.db.SupportSQLiteDatabase, t: String) = raw.query("SELECT COUNT(*) FROM `$t`").use { it.moveToFirst(); it.getInt(0) }
 }
