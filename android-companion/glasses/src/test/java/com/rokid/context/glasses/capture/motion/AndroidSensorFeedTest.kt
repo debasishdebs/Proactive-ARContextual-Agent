@@ -10,6 +10,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowSensor
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @RunWith(AndroidJUnit4::class)
@@ -106,5 +107,21 @@ class AndroidSensorFeedTest {
         feed.setRate(SensorRate.LOW)
         assertTrue(reg.calls.isEmpty())
         assertEquals(0, reg.unregistered)
+    }
+
+    @Test fun setRateRacingStopNeverThrowsOrReRegistersAfterStop() {
+        val reg = Reg(nonWakeUpProx = true)
+        val feed = AndroidSensorFeed(reg)
+        feed.start(MotionClassifier { 0L }, WearDetector { 0L })
+        val flip = Thread { repeat(2000) { feed.setRate(if (it % 2 == 0) SensorRate.LOW else SensorRate.FULL) } }
+        var err: Throwable? = null
+        flip.setUncaughtExceptionHandler { _, e -> err = e }
+        flip.start()
+        feed.stop()
+        flip.join()
+        assertNull(err)
+        val callsAtStop = reg.calls.size
+        feed.setRate(SensorRate.LOW)
+        assertEquals(callsAtStop, reg.calls.size, "a stopped feed registers nothing")
     }
 }

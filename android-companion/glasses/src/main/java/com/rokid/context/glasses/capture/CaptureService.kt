@@ -29,6 +29,9 @@ import com.rokid.context.glasses.capture.motion.AndroidSensorFeed
 import com.rokid.context.glasses.capture.motion.MotionClassifier
 import com.rokid.context.glasses.capture.motion.SensorFeed
 import com.rokid.context.glasses.capture.session.AndroidKeyframeEncoder
+import com.rokid.context.glasses.capture.session.BatteryBudget
+import com.rokid.context.glasses.capture.session.CaptureProfile
+import com.rokid.context.glasses.capture.session.SensorRatePolicy
 import com.rokid.context.glasses.capture.session.CameraXBind
 import com.rokid.context.glasses.capture.session.CameraXSamplingCamera
 import com.rokid.context.glasses.capture.session.HeatGuard
@@ -80,6 +83,8 @@ class CaptureService : LifecycleService() {
     private val heatPoller = HeatPoller(heat, SystemClock::elapsedRealtime)
     private class Smart(val session: SamplingSession, val feed: SensorFeed)
     private var smart: Smart? = null
+    private val budget = BatteryBudget(SystemClock::elapsedRealtime).also { it.onChange = { l -> DiagLog.i(TAG, l) } }
+    private val ratePolicy = SensorRatePolicy()
     private var supervisor: Job? = null
     private var lastMode: CaptureMode? = null
     /** Three failed binds: Fixed 30 s, until the mode setting changes, the service restarts or the watchdog retries Smart (5 min). */
@@ -150,6 +155,8 @@ class CaptureService : LifecycleService() {
                 }
                 if (heatPoller.tick()) logHeat()
                 reconcile()
+                if (tick % 60 == 0) budget.onSample(batteryPercent(), isCharging(), runtime.settingsCache.readNormalized().batteryTargetHours)
+                smart?.feed?.setRate(ratePolicy.update(runtime.captureStatus.value.reason, SystemClock.elapsedRealtime()))
                 publishStatus(tick++)
               } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
                 delay(SUPERVISE_MS)
@@ -180,6 +187,7 @@ class CaptureService : LifecycleService() {
             settings = { runtime.settingsCache.readNormalized() },
             capturePaused = { !runtime.pauses.captureAllowed() },
             batteryPct = ::batteryPercent, charging = ::isCharging, batterySaver = ::isBatterySaverOn,
+            profile = { val s = runtime.settingsCache.readNormalized(); CaptureProfile.of(s.cameraWake, budget.tier.value) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default,
         )
         val feed = AndroidSensorFeed(this).also { it.start(motion, wear) }

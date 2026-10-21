@@ -1,5 +1,6 @@
 package com.rokid.context.glasses.capture.session
 
+import com.rokid.context.core.model.CameraWake
 import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.MotionState
@@ -58,6 +59,69 @@ class SamplingSessionTest {
         val analysed = r.session.analysedFrames
         delay(700)
         assertTrue(r.session.analysedFrames > analysed, "the first frame after open is analysed at once")
+        r.session.stop("test")
+    }
+
+    @Test fun settleOnsetOpensNoCamera() = runTest {
+        val r = rig(this) { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }
+        r.session.start()
+        delay(3_000) // start-up check done
+        val before = r.camera.opens
+        r.motion.onGyro(2f, 0f, 0f, r.clock())
+        runCurrent()
+        assertEquals(before, r.camera.opens, "no check at the first sign of movement in SETTLE")
+        assertFalse(r.camera.isOpen)
+        r.session.stop("test")
+    }
+
+    @Test fun settleDwellOpensABriefCheck() = runTest {
+        val r = rig(this) { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }
+        r.startSensors()
+        r.session.start()
+        delay(3_000)
+        r.gyroMag = 3f
+        delay(300)
+        val moving = r.camera.opens
+        r.gyroMag = 0f
+        delay(2_500) // the dwell (1 s still) forces a brief check
+        assertTrue(r.camera.opens > moving, "dwell opened a brief check")
+        assertFalse(r.camera.isOpen || r.session.status.value.reason != null)
+        r.session.stop("test")
+    }
+
+    @Test fun pausedProfileBlocksWithBatteryBudget() = runTest {
+        val r = rig(this)
+        r.startSensors()
+        r.gyroMag = 2f
+        r.session.start()
+        delay(2_000)
+        assertTrue(r.camera.isOpen)
+        r.profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T3)
+        delay(1_000)
+        assertFalse(r.camera.isOpen)
+        assertEquals("battery_budget", r.session.status.value.reason)
+        r.profile = CaptureProfile.DEFAULT
+        delay(1_000)
+        assertTrue(r.camera.isOpen)
+        r.session.stop("test")
+    }
+
+    @Test fun parkedBlocksOnlyWithPauseWhenNotWorn() = runTest {
+        val r = rig(this, HudSettings(captureMode = CaptureMode.SMART, pauseWhenNotWorn = true))
+        r.startSensors()
+        r.gyroMag = 2f
+        r.session.start()
+        delay(2_000)
+        assertTrue(r.camera.isOpen)
+        for (i in 0 until 130) r.wear.onSecond(0f, 0f, i * 1000L) // 130 still seconds: parked (unknown wear: 120 s)
+        assertTrue(r.wear.parked.value)
+        delay(1_000)
+        assertFalse(r.camera.isOpen)
+        assertEquals("parked", r.session.status.value.reason)
+        r.settings = r.settings.copy(pauseWhenNotWorn = false)
+        delay(1_000)
+        assertTrue(r.camera.isOpen)
+        assertNull(r.session.status.value.reason)
         r.session.stop("test")
     }
 

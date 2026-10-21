@@ -65,7 +65,7 @@ class AndroidSensorFeed internal constructor(
         for (s in list) sm.register(l, s, period, latency, h)
     }
 
-    override fun setRate(r: SensorRate) {
+    @Synchronized override fun setRate(r: SensorRate) {
         if (r == rate) return
         rate = r
         val l = listener ?: return
@@ -74,7 +74,7 @@ class AndroidSensorFeed internal constructor(
         registerAll(l, h, sensors, r)
     }
 
-    override fun start(c: MotionClassifier, w: WearDetector) {
+    @Synchronized override fun start(c: MotionClassifier, w: WearDetector) {
         if (listener != null) return
         val ht = HandlerThread("motion-sensors").also { it.start() }
         val h = Handler(ht.looper)
@@ -119,7 +119,7 @@ class AndroidSensorFeed internal constructor(
         thread = ht; handler = h; listener = l; tick = t
     }
 
-    override fun stop() {
+    @Synchronized override fun stop() {
         listener?.let { sm.unregister(it) }
         tick?.let { handler?.removeCallbacks(it) }
         thread?.quitSafely()
