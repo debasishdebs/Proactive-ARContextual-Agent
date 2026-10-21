@@ -590,6 +590,7 @@ object RecallAtK {
 
 **Needs:** Tasks 1–11 merged and the gate green. Follow handoff §2 (filtered logcat or our tags only, never print secrets, `-s <serial>` always, an explicit user OK before anything destructive, never toggle Wi-Fi). Phone: `adb-RZCY902F76K-nmSM2g._adb-tls-connect._tcp`.
 
+0. **Before install (final review I1-I3):** (a) run `SqlCipherMigrationDeviceTest` on the phone and copy `databases/` and `shared_prefs/` with `run-as` (backup); (b) the default Photos retention is 7 days: before the 7th day after install set Settings → Memory → Photos to 30/90/Forever, or run the photo test within the first week (it needs ≥ 60 labelled photos + ≥ 300 distractors still on disk); (c) label every near-identical photo of a scene with the same query when building the photo test. Wave-1 shed and near-dup photos (never scored) are described by the night job (about 5 nights for ~800 photos) before they can be deleted.
 1. **Backup first:** the phone app data tar (as `~/Desktop/rokid/backups/…`) before installing the wave-2 build (it runs the v2 → v3 migration and the new retention). Install with `install -r`. Check that the migration kept every row: DB counts only (`frame_meta`, `frame_state`, `frame_cluster`, `memory`).
 2. **Reference test:**
    - Fetch the two pinned bundle files on the Mac from the catalog URLs into the scratchpad, and check SHA-256 against `LocalModels.kt` (print match yes/no only).

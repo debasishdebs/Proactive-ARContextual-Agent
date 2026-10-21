@@ -102,7 +102,7 @@ class PhotoDimEvalViewModel(private val eval: PhotoDimEval, private val labels: 
 
 /** Production wiring: the downloaded bundle (not the bound space), photos opened in-app, the same thermal and battery gate as backfill. */
 object PhotoDimEvalFactory {
-    fun dir(app: Context) = File(app.filesDir, "photo-eval")
+    fun dir(app: Context) = File(app.filesDir, com.rokid.context.orchestration.MemoryWipe.PHOTO_EVAL_DIR)
 
     fun labels(app: Context) = PhotoLabels(dir(app))
 

@@ -210,9 +210,9 @@ class RetentionWorkerTest {
     @Test fun skippedPhotoDeletedAfterOneDay() = runBlocking {
         cluster("c1", "SUMMARIZED")
         val old = t0 + 30 * 60_000L // captured after the stamp: the 7-day protection of pre-existing photos does not apply
-        val shed = photo("shed", old, "NEAR_DUP", lastError = "shed_backlog", updatedAt = old)
+        val shed = photo("shed", old, "NEAR_DUP", salience = 0.0f, lastError = "shed_backlog", updatedAt = old)
         val dup = photo("dup", old, "NEAR_DUP", salience = 0.1f)
-        val member = photo("mem", old, "CLUSTERED", clusterId = "c1").also {
+        val member = photo("mem", old, "CLUSTERED", salience = 0.1f, clusterId = "c1").also {
             graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("m_sum", "mem", "c1", "CLUSTER_MEMBER")))
         }
         mem("m_sum", MemoryTier.LONG, day)
@@ -427,7 +427,7 @@ class RetentionWorkerTest {
     @Test fun summaryExpiryDoesNotMakeRepresentativesSkipped() = runBlocking {
         graph.db.frameClusterDao().upsert(FrameClusterEntity("cr", 1, 2, "gap", "[\"rep\"]", null, state = "SUMMARIZED"))
         val rep = photo("rep", t0 + hour, "CLUSTERED", clusterId = "cr")
-        val member = photo("mb", t0 + hour, "CLUSTERED", clusterId = "cr")
+        val member = photo("mb", t0 + hour, "CLUSTERED", salience = 0.1f, clusterId = "cr")
         graph.db.memoryDao().insert(MemoryEntity("sumx", "rep", "t", "cluster_summary", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, t0 - 40 * day, false, "t"))
         graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("sumx", "rep", "cr", "CLUSTER_REP"), FrameSourceEntity("sumx", "mb", "cr", "CLUSTER_MEMBER")))
         pass(settings(summary = 30), t0 + 12 * hour)
@@ -458,7 +458,7 @@ class RetentionWorkerTest {
         for (skipped in listOf(0, 1, 7)) for (photoDays in listOf(1, 3, 7)) {
             val tag = "s${skipped}p$photoDays"
             val trip = t0 - 20 * day
-            val sk = photo("sk$tag", trip, "NEAR_DUP", lastError = "shed_backlog")
+            val sk = photo("sk$tag", trip, "NEAR_DUP", salience = 0.0f, lastError = "shed_backlog")
             val lk = photo("lk$tag", trip, "EXTRACTED", linked = true)
             val st = settings(photo = photoDays, skipped = skipped)
             pass(st, t0); pass(st, t0 + day); pass(st, t0 + 6 * day + 23 * hour)
