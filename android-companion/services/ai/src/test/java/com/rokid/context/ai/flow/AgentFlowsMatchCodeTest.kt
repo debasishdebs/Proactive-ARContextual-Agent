@@ -17,7 +17,7 @@ class AgentFlowsMatchCodeTest {
     private val drain by lazy { src("work/QueueDrainWorker.kt") }
     /** The trust verdict, critic pass, reprocess job and nudge backstop shared by the drain job and the keyframe pipeline. */
     private val followUp by lazy { src("orchestration/ExtractFollowUp.kt") }
-    private val keyframes by lazy { src("work/frames/KeyframeGraph.kt") }
+    private val keyframes by lazy { src("work/frames/KeyframeExtract.kt") }
 
     /** The body of `fun <name>(` up to the next member declaration at class indentation. */
     private fun body(source: String, name: String): String {
@@ -31,7 +31,7 @@ class AgentFlowsMatchCodeTest {
 
     @Test fun confidenceToCriticIsConditional() {
         anchor("capture confidence->critic (drain job)", "ExtractFollowUp.trusted(" in body(drain, "processBatchedSummarization"))
-        anchor("capture confidence->critic (keyframe pipeline)", "ExtractFollowUp.modelCriticPasses(" in body(keyframes, "extract"))
+        anchor("capture confidence->critic (keyframe pipeline)", "ExtractFollowUp.modelCriticPasses(" in body(keyframes, "run"))
         anchor("capture confidence->critic \"low confidence\"", "critic.validate(" in body(followUp, "locallyTrusted") && "locallyTrusted(" in body(followUp, "trusted") && "|| modelCriticPasses(" in body(followUp, "trusted"))
         anchor("capture critic->save_review \"fail / unbound\"", "ai.bindings.get(Role.CRITIC) == null) return false" in body(followUp, "modelCriticPasses"))
     }
@@ -42,7 +42,7 @@ class AgentFlowsMatchCodeTest {
         val reprocess = b.indexOf("QueuePriority.PRIORITY_REPROCESS", branch)
         anchor("capture save_review->reprocess", branch >= 0 && reprocess > branch)
         anchor("capture save_review->reprocess (drain job)", "ExtractFollowUp.afterSave(" in body(drain, "processBatchedSummarization"))
-        anchor("capture save_review->reprocess (keyframe pipeline)", "ExtractFollowUp.afterSave(" in body(keyframes, "extract"))
+        anchor("capture save_review->reprocess (keyframe pipeline)", "ExtractFollowUp.afterSave(" in body(keyframes, "run"))
     }
 
     @Test fun reprocessUsesSummarize() {
