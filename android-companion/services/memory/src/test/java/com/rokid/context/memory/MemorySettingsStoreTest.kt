@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
@@ -66,10 +67,27 @@ class MemorySettingsStoreTest {
         // exactly 7 days is still fine, more is not
         store("c").apply { update { it.copy(perKindSince = 100 * day, perKindLastRun = 100 * day) }; assertEquals(100 * day, stampPerKindSince(107 * day).perKindSince) }
         store("c2").apply { update { it.copy(perKindSince = 100 * day, perKindLastRun = 100 * day) }; assertEquals(108 * day, stampPerKindSince(108 * day).perKindSince) }
-        // clock behind the stamp / the last run
-        store("d").apply { update { it.copy(perKindSince = 100 * day, perKindLastRun = 100 * day) }; assertEquals(50 * day, stampPerKindSince(50 * day).perKindSince) }
+        // clock behind the stamp / the last run: the stamp never moves earlier
+        store("d").apply { update { it.copy(perKindSince = 100 * day, perKindLastRun = 100 * day) }; assertEquals(100 * day, stampPerKindSince(50 * day).perKindSince) }
         // a stamp with no run record (an older build's, or restored) is not trusted
         store("e").apply { update { it.copy(perKindSince = 100 * day) }; assertEquals(101 * day, stampPerKindSince(101 * day).perKindSince) }
+    }
+
+    /** N2: whatever the clock does, the stamp is monotonic: a re-stamp can only delay deletion. */
+    @Test fun stampIsMonotonicForAnyClockSequence() {
+        val day = 24 * 3_600_000L
+        val rnd = java.util.Random(42)
+        repeat(50) { n ->
+            val st = MemorySettingsStore(ApplicationProvider.getApplicationContext<Context>().getSharedPreferences("stamp_prop_$n", Context.MODE_PRIVATE))
+            var last = 0L
+            repeat(40) {
+                val now = (1 + rnd.nextInt(400)) * day + rnd.nextInt(1000)
+                val s = st.stampPerKindSince(now)
+                assertTrue("stamp ${s.perKindSince} < previous $last", s.perKindSince >= last)
+                assertTrue(s.perKindSince > 0)
+                last = s.perKindSince
+            }
+        }
     }
 
     /** Fix round 2 N4: an edit that starts while another is mid-update is applied after it, not lost. */

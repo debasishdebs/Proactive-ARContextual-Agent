@@ -491,4 +491,55 @@ class RetentionWorkerTest {
         pass(settings(), t0 + 15 * day + 25 * hour)
         assertNull(frameRow("cq1")); assertFalse(q.exists())
     }
+
+    // --- Fix round 2: the sweep must never own keyframes -------------------------------------------------------------
+    private suspend fun tombstone(id: String) = graph.db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity(id, 1))
+
+    /** N1: a keyframe an earlier build tombstoned (row kept) whose last MEDIUM fact expires keeps its JPEG, vectors and meta through the sweep and at start-up. */
+    @Test fun tombstonedKeyframeSurvivesSweepWhenItsLastFactExpires() = runBlocking {
+        val jpg = photo("tk", now - 2 * hour, "EXTRACTED")
+        tombstone("tk")
+        graph.db.memoryDao().insert(MemoryEntity("fact_tk", "tk", "t", "note", "", MemoryTier.MEDIUM, 0.8, ReviewState.OK, false, now - 8 * day, false, "t"))
+        graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("fact_tk", "tk", null, "FACT")))
+        assertTrue(work() is ListenableWorker.Result.Success) // expires the fact, then sweeps
+        assertFalse(exists("fact_tk"))
+        FrameSweep.sweep(ctx, now + 30 * day)
+        ForgetStartup.run(ctx) {}
+        assertTrue(jpg.exists()); assertNotNull(frameRow("tk"))
+        assertNotNull(graph.db.frameVectorDao().get("tk", "sp")); assertNotNull(graph.db.frameMetaDao().get("tk")); assertNotNull(graph.db.frameStateDao().get("tk"))
+    }
+
+    /** N1: an expiring cluster summary does not take its cluster's tombstoned frames with it. */
+    @Test fun expiringClusterSummaryKeepsItsTombstonedFrames() = runBlocking {
+        graph.db.frameClusterDao().upsert(FrameClusterEntity("cx", 1, 2, "gap", "[\"r1\"]", null, state = "SUMMARIZED"))
+        val r1 = photo("r1", t0 + hour, "CLUSTERED", clusterId = "cx"); val m1 = photo("m1", t0 + hour, "CLUSTERED", clusterId = "cx", salience = 0.9f)
+        listOf("r1", "m1").forEach { tombstone(it) }
+        graph.db.memoryDao().insert(MemoryEntity("sumy", "r1", "t", "cluster_summary", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, t0 - 40 * day, false, "t"))
+        graph.db.frameSourceDao().insertAll(listOf(FrameSourceEntity("sumy", "r1", "cx", "CLUSTER_REP"), FrameSourceEntity("sumy", "m1", "cx", "CLUSTER_MEMBER")))
+        pass(settings(summary = 30), t0 + hour)
+        assertFalse(exists("sumy"))
+        FrameSweep.sweep(ctx, t0 + 40 * day); ForgetStartup.run(ctx) {}
+        assertTrue(r1.exists() && m1.exists()); assertNotNull(frameRow("r1")); assertNotNull(frameRow("m1"))
+        assertNotNull(graph.db.frameVectorDao().get("r1", "sp"))
+    }
+
+    /** A legacy frame (no frame_meta) that is tombstoned and uncited is still swept. */
+    @Test fun legacyTombstonedFrameIsStillSwept() = runBlocking {
+        val jpg = File(ctx.filesDir, "rokid_archive/lg.jpg").apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
+        graph.db.frameDao().insertIgnore(FrameEntity("lg", 1, jpg.absolutePath, "rokid_glasses"))
+        tombstone("lg")
+        FrameSweep.sweep(ctx)
+        assertFalse(jpg.exists())
+    }
+
+    /** Minor: a CAPTION_QUEUED frame in an unsummarised cluster is not converted. */
+    @Test fun captionQueuedInUnsettledClusterIsNotConverted() = runBlocking {
+        cluster("cu", "CLOSED")
+        photo("cq2", t0 - 20 * day, "CAPTION_QUEUED", salience = 0.9f, clusterId = "cu")
+        pass(settings(), t0 + 30 * day)
+        assertEquals("CAPTION_QUEUED", graph.db.frameStateDao().get("cq2")!!.state)
+        graph.db.frameClusterDao().upsert(FrameClusterEntity("cu", 1, 2, "gap", "[]", null, state = "SUMMARIZED"))
+        pass(settings(), t0 + 31 * day)
+        assertEquals("NEAR_DUP", graph.db.frameStateDao().get("cq2")!!.state)
+    }
 }

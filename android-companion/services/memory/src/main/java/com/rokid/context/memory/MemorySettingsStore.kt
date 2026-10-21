@@ -57,7 +57,8 @@ class MemorySettingsStore(private val prefs: SharedPreferences) {
         update {
             val stale = it.perKindSince == 0L || nowMs < it.perKindSince || it.perKindLastRun == 0L ||
                 nowMs < it.perKindLastRun || nowMs - it.perKindLastRun > MAX_RUN_GAP_MS
-            it.copy(perKindSince = if (stale) nowMs else it.perKindSince, perKindLastRun = nowMs)
+            // Monotonic: a re-stamp only ever moves the stamp later (a clock set back must not shorten the 7-day protection).
+            it.copy(perKindSince = if (stale) maxOf(it.perKindSince, nowMs) else it.perKindSince, perKindLastRun = nowMs)
         }
         return state.value
     }
