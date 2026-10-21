@@ -412,3 +412,29 @@ Do not run this without the user. Each step needs the user present; Bluetooth to
    - whether the icon must stay visible (compare (a) with the icon against a run with the icon hidden, if (a) or (d) shows the display matters);
    - the phone-in-use default.
 9. **Write the results** into the handoff §6/§8 (close W1 and LOW if they pass; BAT gets the numbers) and the backlog.
+
+### Task 10: Camera frame-rate cap (glasses) — added 2026-10-21 after the measured run
+**Why:** the 2026-10-21 run (handoff §6) shows cameraserver used 38 min of CPU in 55 min, and drain tracks camera-open share (about 2.8 %/min at 100 % open). The camera streams preview + analysis at the HAL default rate, but the session analyses at most 3 fps (`analysisMs` 333).
+
+**Files:**
+- `glasses/src/main/java/com/rokid/context/glasses/capture/session/CameraXSamplingCamera.kt` (`CameraXBind`)
+- new `glasses/src/main/java/com/rokid/context/glasses/capture/session/FpsRangePick.kt` (pure)
+- new test `glasses/src/test/java/com/rokid/context/glasses/capture/session/FpsRangePickTest.kt`
+
+**Implement:**
+- `object FpsRangePick { const val CAP_FPS = 15; fun pick(available: List<IntRange>): IntRange? }`. Among the ranges with `last <= CAP_FPS`, prefer the lowest `last`, then the widest (lowest `first`), but never a range with `last < 5`. Return null when none qualifies (keep the HAL default).
+- In `CameraXBind`, read `CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` through `Camera2CameraInfo.from(cameraInfo)` for the selected camera (once, cached), call `pick`, and, when it returns a range, apply it with `Camera2Interop.Extender(builder).setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(first, last))` on **both** the `ImageAnalysis.Builder` and the `Preview.Builder`.
+  - Because the camera is selected at bind time, read the characteristics from `provider.availableCameraInfos` filtered by the selector, before building the use cases. `analysis()` gains a parameter `fps: IntRange?`, and the Fixed one-shot path keeps compiling (default null = today).
+  - Log once per process: `camera fps range=<first>-<last>` or `camera fps range=default` (tag PcCapture, `DiagLog.i` so it lands in `files/capture_diag.log`).
+- Never touch torch/flash/LED (`LedSourceRulesTest` stays green). The `camera-camera2` artifact is already on the classpath through CameraX; if `Camera2Interop` needs an `@OptIn(ExperimentalCamera2Interop::class)`, add it.
+
+**Tests (FpsRangePickTest):**
+- `[ [15,30], [30,30], [7,15], [15,15] ]` → `7..15`;
+- `[ [30,30], [24,30] ]` → null;
+- `[ [3,3], [5,10] ]` → `5..10`;
+- `[ [10,15], [5,15] ]` → `5..15`;
+- empty → null.
+
+**Command:** `gw.sh :glasses:testDebugUnitTest --tests '*FpsRangePickTest'`, then `:glasses:testDebugUnitTest`, then `gw.sh :glasses:assembleDebug`.
+
+**Commit:** `perf(glasses): cap the camera stream at <= 15 fps (we analyse at most 3 fps)`
