@@ -17,7 +17,9 @@ import androidx.activity.ComponentActivity
 import androidx.annotation.VisibleForTesting
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -139,8 +141,11 @@ class MainActivity : ComponentActivity() {
         val missing = listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO).filterNot(::granted)
         if (missing.isNotEmpty()) requestPermissions(missing)
         if (savedInstanceState == null) handleIntent(intent) // a recreated activity must not capture again
-        setContent { Hud() }
+        setContent { Hud(hidden = hudHidden.value) }
     }
+
+    /** True from a start that is about to minimise until the next start that shows the HUD: [Hud] then draws only black (UI1). */
+    private val hudHidden = androidx.compose.runtime.mutableStateOf(false)
 
     /** (Re)started: phone messages may open the CXR session again (spec §1.7 send gate). */
     override fun onStart() {
@@ -162,10 +167,14 @@ class MainActivity : ComponentActivity() {
         if (extra) si?.removeExtra(EXTRA_START_MINIMISED)
         val source = StartSources.classify(si?.action, si?.categories, referrer?.host)
         if (source == StartSource.LAUNCHER) runtime.restarts.clearUserExit() // the wearer opened it: an earlier exit is over
-        if (runtime.startGate.onStart(source, extra, fromMinimised = wasMinimised)) {
+        val decision = runtime.startGate.decide(source, extra, fromMinimised = wasMinimised)
+        com.rokid.context.glasses.capture.diag.DiagLog.i(GlassesRuntime.CAPTURE_TAG, decision.line(StartSources.refClass(referrer?.host)))
+        if (decision.minimise) {
+            hudHidden.value = true // before the first frame: no HUD flash ahead of the minimise
             Log.i(TAG, "starting minimised (icon mode) source=$source")
             swipeTimer.post { minimise() }
-        } else if (source == StartSource.LAUNCHER) Log.i(TAG, "opened from the launcher: showing the HUD")
+        } else hudHidden.value = false
+        if (!decision.minimise && source == StartSource.LAUNCHER) Log.i(TAG, "opened from the launcher: showing the HUD")
     }
 
     /** Finishing closes the session at once; [onDestroy] may come late. */
@@ -240,7 +249,12 @@ class MainActivity : ComponentActivity() {
     private fun voteBlocked(): Boolean = returnToMinimised && SystemClock.uptimeMillis() - autoOpenedAtMs < VOTE_GUARD_MS
 
     @Composable
-    private fun Hud() {
+    private fun Hud(hidden: Boolean) {
+        if (hidden) Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black).testTag("hud_hidden")) else HudContent()
+    }
+
+    @Composable
+    private fun HudContent() {
         val frame by controller.frame.collectAsStateWithLifecycle()
         val settings by controller.settings.collectAsStateWithLifecycle()
         val connection by controller.connection.collectAsStateWithLifecycle()
@@ -266,7 +280,7 @@ class MainActivity : ComponentActivity() {
         // Votes follow the presented overlay: an expired, hidden or dismissed Confirm can never be answered unseen.
         val shownConfirm = view.overlay as? Overlay.Confirm
         LaunchedEffect(shownConfirm?.proposalId) { confirm.onConfirm(shownConfirm); highlightYes = confirm.highlightYes }
-        Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().testTag("hud_root")) {
             HudRoot(
                 HudModel(
                     view = view, frame = frame, settings = settings,

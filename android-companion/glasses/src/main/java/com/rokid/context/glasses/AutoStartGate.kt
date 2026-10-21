@@ -3,7 +3,28 @@ package com.rokid.context.glasses
 /** Who started the activity: the Rokid launcher (the wearer's own open) or anything else (the phone's appStart, an auto-reopen, a service). */
 enum class StartSource { LAUNCHER, OTHER }
 
+/** What the referrer was, as a class only: the package name never reaches a log. */
+enum class RefClass { LAUNCHER, OTHER, NONE }
+
+/** Why a start did or did not minimise. */
+data class StartDecision(
+    val minimise: Boolean, val pending: Boolean, val markerRecent: Boolean, val extra: Boolean,
+    val fromMinimised: Boolean, val source: StartSource,
+) {
+    /** Count-only diag line; never the referrer package. */
+    fun line(ref: RefClass): String =
+        "start src=$source ref=$ref pending=${pending.b} marker=${markerRecent.b} fromMin=${fromMinimised.b} extra=${extra.b} minimise=${minimise.b}"
+
+    private val Boolean.b get() = if (this) 1 else 0
+}
+
 object StartSources {
+    fun refClass(referrerPackage: String?): RefClass = when {
+        referrerPackage.isNullOrBlank() -> RefClass.NONE
+        referrerPackage.contains("launcher", ignoreCase = true) -> RefClass.LAUNCHER
+        else -> RefClass.OTHER
+    }
+
     /**
      * A launcher open is MAIN + LAUNCHER from a referrer that is a launcher app. The CXR appStart carries the same
      * action, so the referrer is the only discriminator the intent offers; an unreadable referrer is [StartSource.OTHER]
@@ -34,12 +55,16 @@ class AutoStartGate(private val takePending: () -> Boolean, private val uptimeMs
      * (or any start from icon mode) within [MARKER_WINDOW_MS] of the phone's `pc_auto_open` marker is minimised whether or not
      * the process restarted; when the marker comes after the start, [onAutoOpenMarker] does it.
      */
-    @Synchronized fun onStart(source: StartSource, extraMinimised: Boolean, fromMinimised: Boolean = false): Boolean {
+    @Synchronized fun onStart(source: StartSource, extraMinimised: Boolean, fromMinimised: Boolean = false): Boolean =
+        decide(source, extraMinimised, fromMinimised).minimise
+
+    /** The body of [onStart], with the reasons. Consumes the one-shot pending flag like [onStart] does. */
+    @Synchronized fun decide(source: StartSource, extraMinimised: Boolean, fromMinimised: Boolean = false): StartDecision {
         val pending = takePending()
         val markerRecent = markerAt?.let { uptimeMs() - it <= MARKER_WINDOW_MS } == true
         val minimise = extraMinimised || (pending && source != StartSource.LAUNCHER) || (markerRecent && (source != StartSource.LAUNCHER || fromMinimised))
         if (!minimise && (pending || source != StartSource.LAUNCHER || fromMinimised)) frontAt = uptimeMs()
-        return minimise
+        return StartDecision(minimise, pending, markerRecent, extraMinimised, fromMinimised, source)
     }
 
     /** `pc_auto_open` arrived: true = the HUD that came to front a moment ago was the phone's reopen and must go to icon mode. */
