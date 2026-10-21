@@ -19,8 +19,9 @@ object ContextPolicies {
         ContextState.UNKNOWN to UNCHANGED,
         ContextState.WALKING to UNCHANGED,
         ContextState.REST to ContextCapturePolicy(2, 30_000, 60_000, 30_000, 120_000, forceSettle = true, pause = false, nudges = true),
-        ContextState.VEHICLE_PASSENGER to ContextCapturePolicy(1, 60_000, 120_000, 60_000, 180_000, forceSettle = true, pause = false, nudges = true),
-        ContextState.VEHICLE_DRIVING to ContextCapturePolicy(1, 60_000, 120_000, 60_000, 180_000, forceSettle = true, pause = false, nudges = false),
+        // user ruling: vehicle classification never pauses or throttles capture by itself (same as UNKNOWN); only DRIVING drops nudges
+        ContextState.VEHICLE_PASSENGER to UNCHANGED,
+        ContextState.VEHICLE_DRIVING to UNCHANGED.copy(nudges = false),
         ContextState.FLIGHT to ContextCapturePolicy(1, 120_000, 300_000, 120_000, 300_000, forceSettle = true, pause = false, nudges = true),
     )
 

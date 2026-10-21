@@ -159,12 +159,12 @@ class CameraPolicyTest {
         assertEquals(CaptureProfile.DEFAULT, CaptureProfile.DEFAULT.withContext(p.of(com.rokid.context.core.model.context.ContextState.WALKING)))
     }
 
-    @Test fun withContextPassengerSettlesAndWidensGaps() {
-        val pol = com.rokid.context.core.model.context.ContextPolicies.of(com.rokid.context.core.model.context.ContextState.VEHICLE_PASSENGER)
-        val r = CaptureProfile.DEFAULT.withContext(pol)
-        assertEquals(CameraWake.SETTLE, r.wake)
-        assertEquals(60_000L, r.settledCheckMs); assertEquals(120_000L, r.quietCheckMs); assertEquals(60_000L, r.walkCheckMs); assertEquals(180_000L, r.stillCapMs)
-        assertFalse("context never pauses by itself", r.paused)
+    @Test fun withContextVehicleRowsDoNotReduceCapture() {
+        for (st in listOf(com.rokid.context.core.model.context.ContextState.VEHICLE_PASSENGER, com.rokid.context.core.model.context.ContextState.VEHICLE_DRIVING)) {
+            val pol = com.rokid.context.core.model.context.ContextPolicies.of(st)
+            assertEquals(st.name, CaptureProfile.DEFAULT, CaptureProfile.DEFAULT.withContext(pol))
+            assertTrue(st.name, pol.capPerMin == null)
+        }
     }
 
     @Test fun withContextRestKeepsTheLargerT2Gaps() {
