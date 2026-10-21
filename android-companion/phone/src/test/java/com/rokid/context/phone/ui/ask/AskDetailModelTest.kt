@@ -66,4 +66,13 @@ class AskDetailModelTest {
         assertEquals(true, unknown.sources.single().expired)
         assertEquals(0, unknown.missingSources)
     }
+
+    /** Fix round 1 (M1, spec 3.4): a captioned photo's card (the common cite) shows the large 96 dp thumbnail; a plain memory keeps 52 dp. */
+    @Test fun captionMemoryOfAStoredPhotoGetsTheLargeThumbnail() {
+        val cap = Fixtures.memory("cap", "Keys on a desk", 3, frameId = "f1").copy(type = "caption")
+        val a = ask.copy(sourcesJson = """["cap","m1","m2"]""")
+        val s = AskDetailModel.build(a, memories + cap, frames, emptyList(), ZONE)
+        assertEquals(listOf(true, false, false), s.sources.map { it.largeThumb })
+        assertEquals("/frames/f1.jpg", s.sources[0].framePath)
+    }
 }

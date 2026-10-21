@@ -42,6 +42,7 @@ class AppAnswerer(
     private val answerText: suspend (askId: String) -> String?,
     private val offNotice: suspend (proposalId: String) -> String? = { null },
     private val zone: () -> ZoneId = ZoneId::systemDefault,
+    private val now: () -> Long = System::currentTimeMillis,
 ) : Answerer {
     override suspend fun answer(question: String, source: VoiceSource): AnswerResult = when (val r = ask(question, source.askSource)) {
         is AskOutcome.Answered -> (r.proposalId?.let { offNotice(it) } ?: answerText(r.askId))?.takeIf { it.isNotBlank() }?.let { AnswerResult.Answered(r.askId, it, photoLabel = r.photoAtMs?.let(::photoLabel)) }
@@ -49,8 +50,17 @@ class AppAnswerer(
         is AskOutcome.Failed -> AnswerResult.Failed(HudAskText.forFailure(r.message), HudAskText.forPhone(r.message))
     }
 
-    /** "Photo HH:mm" in the system zone: the capture time of the first cited stored photo (fixed copy plus a time, never provider text). */
-    private fun photoLabel(atMs: Long) = "Photo " + LABEL_TIME.withZone(zone()).format(Instant.ofEpochMilli(atMs))
+    /** "Photo HH:mm" (or "Photo Fri 14:02" when not from today) in the system zone: the capture time of the first cited stored photo (fixed copy plus a time, never provider text). */
+    private fun photoLabel(atMs: Long): String {
+        val z = zone()
+        val at = Instant.ofEpochMilli(atMs).atZone(z)
+        val sameDay = at.toLocalDate() == Instant.ofEpochMilli(now()).atZone(z).toLocalDate()
+        return "Photo " + (if (sameDay) LABEL_TIME else LABEL_DAY_TIME).format(at)
+    }
 
-    private companion object { val LABEL_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.US) }
+    private companion object {
+        val LABEL_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.US)
+        /** A photo from another day names the weekday, so the label never reads as today (M3). */
+        val LABEL_DAY_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE HH:mm", Locale.US)
+    }
 }

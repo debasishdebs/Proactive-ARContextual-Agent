@@ -34,7 +34,8 @@ class TestBedInputs(
             PromptKey.SYSTEM -> Prepared(PromptVars(), emptyList(), emptySet())
             PromptKey.ANSWER -> {
                 val r = answers.retrieve(text.ifBlank { "What did I see today?" }, System.currentTimeMillis())
-                Prepared(r.vars, emptyList(), r.ids)
+                // The same photo gate and floor as production (the AnswerService decides): the images the photo lines point at travel with them.
+                Prepared(r.vars, r.images, r.ids)
             }
             PromptKey.NUDGE -> {
                 // The same memories, recent_nudges and sources blocks as NudgeEngine, plus the typed line.

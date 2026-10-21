@@ -127,4 +127,26 @@ class PhotoSearchViewModelTest {
         val m = vm("keys")
         assertTrue(m.state.value.tiles.isEmpty()); assertFalse(m.state.value.searching)
     }
+
+    /** Fix round 1 (I3): a refresh that started during a newer search (holding the previous result) cannot overwrite the new tiles when it finishes last. */
+    @Test fun refreshStartedDuringANewerSearchCannotOverwriteIt() = runTest {
+        val newSearch = CompletableDeferred<RecallResult>()
+        val staleRefresh = CompletableDeferred<RecallResult>()
+        searchFn = { q -> if (q == "second") newSearch.await() else res(hit("old")) }
+        reenrichFn = { staleRefresh.await() }
+        val m = vm("first")
+        m.onQueryChange("second"); m.submit()
+        m.refresh() // a Room invalidation while the second search runs
+        newSearch.complete(res(hit("new")))
+        assertEquals(listOf("new"), m.state.value.tiles.map { it.frameId })
+        staleRefresh.complete(res(hit("old")))
+        assertEquals(listOf("new"), m.state.value.tiles.map { it.frameId })
+    }
+
+    @Test fun failedSearchShowsAMessage() = runTest {
+        searchFn = { throw java.io.IOException("x") }
+        val m = vm("keys")
+        assertEquals(PhotoSearchModel.SEARCH_FAILED, m.state.value.note)
+        assertEquals("Couldn't search \u2014 try again", PhotoSearchModel.SEARCH_FAILED)
+    }
 }

@@ -87,7 +87,7 @@ fun AskDetailScreen(
                 if (s.isPhotoCite) { PhotoSourceCard(s, onOpenPhoto); return@forEach }
                 SoftCard(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth(), onClick = { onOpenMemory(s.memoryId) }) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FrameThumb(s.framePath, size = 52.dp)
+                        FrameThumb(s.framePath, size = if (s.largeThumb) 96.dp else 52.dp)
                         Text(s.text, style = MaterialTheme.typography.bodyMedium, color = PcColors.Ink, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f).padding(horizontal = 12.dp))
                         ConfidenceChip(s.confidence)
                     }

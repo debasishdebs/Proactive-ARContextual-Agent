@@ -12,6 +12,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.ActivityCompat
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.setValue
+import com.rokid.context.phone.ui.settings.ai.AskPhotosUi
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraphBuilder
@@ -164,8 +168,15 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     composable(Routes.SETTINGS_ROLES) {
         val vm = viewModel { RolesViewModel(s.ai, s.onEmbedBindingChanged) }
         val state by vm.state.collectAsStateWithLifecycle()
+        // "Send matching photos with questions": off by default; names the Answer endpoint the photos would go to.
+        val appCtx = androidx.compose.ui.platform.LocalContext.current.applicationContext
+        var sendPhotos by remember { mutableStateOf(com.rokid.context.orchestration.AskPhotoPolicy.enabled(appCtx)) }
+        val answerEndpointId = state.rows.firstOrNull { it.role == com.rokid.context.ai.Role.ANSWER }?.endpointId
+        val answerEndpoint by produceState<com.rokid.context.ai.Endpoint?>(null, answerEndpointId) { value = answerEndpointId?.let { s.ai.endpoints.byId(it) } }
         RolesScreen(state, onBack = back, onEndpoint = vm::setEndpoint, onModel = vm::setModel, onFallback = vm::setFallback,
-            onTemperature = vm::setTemperature, onMaxTokens = vm::setMaxTokens, onClear = { vm.clear(it) })
+            onTemperature = vm::setTemperature, onMaxTokens = vm::setMaxTokens, onClear = { vm.clear(it) },
+            askPhotos = AskPhotosUi(sendPhotos, answerEndpoint?.name, answerEndpoint?.capabilities?.contains(com.rokid.context.ai.Capability.VISION) == true),
+            onAskPhotos = { on -> sendPhotos = on; com.rokid.context.orchestration.AskPhotoPolicy.set(appCtx, on) })
     }
 
     composable(Routes.SETTINGS_FLOWS) {

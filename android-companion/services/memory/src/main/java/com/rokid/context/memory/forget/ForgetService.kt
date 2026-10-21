@@ -107,6 +107,7 @@ class ForgetService(
             if (recheckSkipped && dao.stillSkippedPhoto(id) == 0) continue
             expired++
             dao.insertTombstone(ForgetTombstoneEntity(id, now))
+            dropCanvasOutputs(listOf(id)) // S25: frame retention uses the same cascade
             dao.deleteFrame(id)
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
@@ -166,8 +167,7 @@ class ForgetService(
 
     /** Experiment canvas outputs are photo-derived: they go with the photo, in the same transaction as its tombstone. */
     private suspend fun dropCanvasOutputs(frameIds: List<String>) {
-        val canvas = db.canvasDao()
-        frameIds.chunked(CHUNK).forEach { canvas.deleteItemsForFrames(it); canvas.deleteScoresForFrames(it) }
+        db.canvasDao().deleteCanvasOutputsForFrames(frameIds) // items, scores and live traces, batch-wide (S25)
     }
 
     private fun likeFor(id: String) = "%\"${MemoryRepository.escapeLike(id)}\"%"
