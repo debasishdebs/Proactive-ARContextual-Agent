@@ -282,6 +282,47 @@ class SceneIndexerTest {
         assertEquals(2, db.frameClusterDao().get(meta("a1").clusterId!!)!!.memberCount)
     }
 
+    private fun repIds(json: String) = org.json.JSONArray(json).let { a -> (0 until a.length()).map { a.getString(it) } }
+
+    @Test fun restartWithoutImageSpaceStillClosesWithAllMembersAndReps() = runBlocking {
+        seed("a1", T, code(1, plane(0, 0.0))); seed("a2", T + 10_000, code(2, plane(0, 25.0))); seed("a3", T + 20_000, code(3, plane(0, 50.0)))
+        indexer().routeBatch()
+        val c = meta("a1").clusterId!!
+        targets = emptyList()                     // after a restart no IMAGE space is bound (Ruling 2)
+        now = T + 200_000
+        assertEquals(true, indexer().closeAged())
+        val row = db.frameClusterDao().get(c)!!
+        assertEquals("CLOSED", row.state); assertEquals(3, row.memberCount)
+        val reps = repIds(row.repFrameIds)
+        assertTrue(reps.isNotEmpty() && reps.all { it in setOf("a1", "a2", "a3") })
+    }
+
+    @Test fun restartWhereMembersLackActiveVectorsClosesThenStartsFresh() = runBlocking {
+        seed("a1", T, code(1, plane(0, 0.0))); seed("a2", T + 10_000, code(2, plane(0, 25.0)))
+        indexer().routeBatch()
+        val c = meta("a1").clusterId!!
+        db.openHelper.writableDatabase.execSQL("DELETE FROM frame_vector")   // e.g. a swapped-in space with no vectors yet
+        seed("b1", T + 20_000, code(3, plane(2, 0.0)))
+        indexer().routeBatch()
+        val old = db.frameClusterDao().get(c)!!
+        assertEquals("CLOSED", old.state); assertEquals("no_vectors", old.closeReason); assertEquals(2, old.memberCount)
+        assertTrue(repIds(old.repFrameIds).isNotEmpty())
+        assertNotEquals(c, meta("b1").clusterId)
+    }
+
+    @Test fun deleteAllBetweenFramesDoesNotResurrectTheCluster() = runBlocking {
+        val ix = indexer()
+        seed("a1", T, code(1, plane(0, 0.0))); ix.routeBatch()
+        val c = meta("a1").clusterId!!
+        listOf("frame_cluster", "frame_meta", "frame_state", "frame_vector", "frame").forEach { db.openHelper.writableDatabase.execSQL("DELETE FROM $it") }
+        seed("a2", T + 10_000, code(2, plane(0, 25.0))); ix.routeBatch()
+        assertNull(db.frameClusterDao().get(c))
+        val c2 = meta("a2").clusterId!!
+        assertNotEquals(c, c2)
+        assertEquals(listOf("a2"), db.frameMetaDao().members(c2).map { it.frameId })
+        assertEquals(1, db.frameClusterDao().get(c2)!!.memberCount)
+    }
+
     @Test fun logsHaveNoText() = runBlocking {
         ShadowLog.reset()
         seed("a", T, code(1, plane(0, 0.0), w = 7)); seed("b", T + 1000, code(2, plane(2, 0.0)))
