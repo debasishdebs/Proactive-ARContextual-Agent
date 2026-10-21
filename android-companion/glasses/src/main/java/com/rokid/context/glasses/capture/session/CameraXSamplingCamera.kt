@@ -3,11 +3,17 @@ package com.rokid.context.glasses.capture.session
 import android.content.Context
 import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CaptureRequest
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.util.Range
 import android.util.Size
 import android.view.Surface
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -19,6 +25,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.rokid.context.glasses.capture.CaptureSession
+import com.rokid.context.glasses.capture.diag.DiagLog
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
@@ -44,10 +51,33 @@ internal object CameraXBind {
         )
     }
 
-    fun analysis(): ImageAnalysis = ImageAnalysis.Builder()
-        .setResolutionSelector(resolution)
-        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-        .build()
+    /** [fps] caps the stream through the AE target range; null keeps the HAL default. */
+    @OptIn(ExperimentalCamera2Interop::class)
+    fun analysis(fps: IntRange? = null): ImageAnalysis {
+        val b = ImageAnalysis.Builder()
+            .setResolutionSelector(resolution)
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+        if (fps != null) Camera2Interop.Extender(b).setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps.first, fps.last))
+        return b.build()
+    }
+
+    private var fpsResolved = false
+    private var fpsCached: IntRange? = null
+
+    /** The capped fps range for the selected camera, read once per process (main thread, before building the use cases). */
+    @OptIn(ExperimentalCamera2Interop::class)
+    fun fpsRange(provider: ProcessCameraProvider): IntRange? {
+        if (fpsResolved) return fpsCached
+        val ranges = runCatching {
+            val info = selector(provider).filter(provider.availableCameraInfos).firstOrNull() ?: return@runCatching emptyList()
+            Camera2CameraInfo.from(info).getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+                ?.map { it.lower..it.upper }.orEmpty()
+        }.getOrDefault(emptyList())
+        fpsCached = FpsRangePick.pick(ranges)
+        fpsResolved = true
+        DiagLog.i(TAG, "camera fps range=" + (fpsCached?.let { "${it.first}-${it.last}" } ?: "default"))
+        return fpsCached
+    }
 
     fun selector(provider: ProcessCameraProvider): CameraSelector {
         if (runCatching { provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) }.getOrDefault(false)) return CameraSelector.DEFAULT_BACK_CAMERA
@@ -59,13 +89,16 @@ internal object CameraXBind {
      * Binds [analysis] (and a preview onto a throwaway texture, which this camera HAL needs to deliver frames) to [owner].
      * Main thread only. The result unbinds and releases the texture exactly once; null when the bind threw.
      */
+    @OptIn(ExperimentalCamera2Interop::class)
     fun bind(
         owner: LifecycleOwner, provider: ProcessCameraProvider, analysis: ImageAnalysis, executor: Executor,
-        onBound: ((androidx.camera.core.Camera) -> Unit)? = null,
+        fps: IntRange? = null, onBound: ((androidx.camera.core.Camera) -> Unit)? = null,
     ): CaptureSession? {
         lateinit var texture: SurfaceTexture
         val session = CaptureSession(unbind = { provider.unbindAll() }, release = { texture.release() }).also { texture = SurfaceTexture(0) }
-        val preview = Preview.Builder().setResolutionSelector(resolution).build().also { p ->
+        val previewBuilder = Preview.Builder().setResolutionSelector(resolution)
+        if (fps != null) Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(fps.first, fps.last))
+        val preview = previewBuilder.build().also { p ->
             p.setSurfaceProvider { request ->
                 texture.setDefaultBufferSize(request.resolution.width, request.resolution.height)
                 val surface = Surface(texture)
@@ -112,12 +145,13 @@ internal class CameraXSamplingCamera(private val context: Context, private val o
 
     override suspend fun open(onFrame: (FrameSource) -> Unit): Boolean {
         val p = provider ?: CameraXBind.provider(context)?.also { provider = it } ?: return false
-        val analysis = CameraXBind.analysis()
+        val fps = CameraXBind.fpsRange(p)
+        val analysis = CameraXBind.analysis(fps)
         analysis.setAnalyzer(executor) { image ->
             try { onFrame(ImageProxyFrame(image)) } catch (e: Exception) { Log.w(TAG, "analyze failed: ${e.javaClass.simpleName}") } finally { image.close() }
         }
         busy = false
-        held = CameraXBind.bind(owner, p, analysis, executor) { cam ->
+        held = CameraXBind.bind(owner, p, analysis, executor, fps = fps) { cam ->
             // Another app holding the camera shows as a CameraState error, not as a frame: remember it (main thread).
             val live = cam.cameraInfo.cameraState
             val obs = androidx.lifecycle.Observer<androidx.camera.core.CameraState> { st ->
