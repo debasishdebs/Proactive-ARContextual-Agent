@@ -1,5 +1,6 @@
 package com.rokid.context.phone.canvas.api
 
+import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.canvas.CanvasRepository
 import com.rokid.context.canvas.CanvasRunner
@@ -60,6 +61,9 @@ class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: L
     } catch (e: IllegalArgumentException) {
         if (e.message == "invalid_pipeline") HttpResponse.error(422, "invalid_pipeline", "The pipeline has problems.")
         else HttpResponse.error(400, "bad_request", "Bad request.")
+    } catch (e: Throwable) {
+        // Includes StackOverflowError and OOM: a canvas request must never take the process (it hosts the glasses link) down.
+        HttpResponse.error(500, "internal", "Something went wrong.")
     }
 
     private fun bad(msg: String = "Bad request.") = ApiError(400, "bad_request", msg)
@@ -131,7 +135,8 @@ class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: L
     }
 
     private fun body(req: HttpRequest): JsonObject =
-        try { Json.parseToJsonElement(String(req.body, Charsets.UTF_8)) as? JsonObject } catch (e: Exception) { null } ?: throw bad("Expected a JSON object.")
+        (try { Json.parseToJsonElement(String(req.body, Charsets.UTF_8)) as? JsonObject } catch (e: Throwable) { null } ?: throw bad("Expected a JSON object."))
+            .also { if (PipelineJson.tooDeep(it)) throw bad("JSON is nested too deeply.") }
 
     /** An empty body is allowed (null); anything else must be a JSON object. */
     private fun optBody(req: HttpRequest): JsonObject? = if (req.body.isEmpty()) null else body(req)

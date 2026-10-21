@@ -99,6 +99,9 @@ class CanvasBackendImpl(
     /** True while an experiment run is executing (the service's idle rule never stops the server then). */
     fun runActive(): Boolean = runner.active.value != null
 
+    /** Asks the active run (if any) to stop at its next chunk boundary. */
+    fun cancelActiveRun() { runner.active.value?.let { runner.cancel(it) } }
+
     private val startLock = Mutex()
     @Volatile private var started = false
 

@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,7 +27,7 @@ import kotlinx.coroutines.launch
  * no open canvas screen), on the notification's Stop action, or when Developer mode turns off.
  */
 open class CanvasService : Service() {
-    private val scope = CoroutineScope(Dispatchers.Default)
+    private val scope = CoroutineScope(Dispatchers.Default + CoroutineExceptionHandler { _, t -> android.util.Log.w("CanvasService", "task failed (${t.javaClass.simpleName})") })
     private var watcher: Job? = null
     private lateinit var graph: CanvasHost
 

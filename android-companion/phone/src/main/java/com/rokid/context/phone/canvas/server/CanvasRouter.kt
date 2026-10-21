@@ -51,7 +51,7 @@ class CanvasRouter(
 
     fun handle(req: HttpRequest): HttpResponse {
         val start = System.nanoTime()
-        val res = try { route(req) } catch (e: Exception) {
+        val res = try { route(req) } catch (e: Throwable) {
             HttpResponse.error(500, "internal", "Something went wrong.") // never the exception text
         }
         val ms = (System.nanoTime() - start) / 1_000_000

@@ -48,7 +48,8 @@ fun CanvasWebRoute(host: CanvasHost, onBack: () -> Unit) {
     val status by host.status.collectAsStateWithLifecycle()
     val port = status.port
     var url by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) { CanvasService.start(ctx.applicationContext); if (!host.status.value.on) host.start(host.status.value.lan) }
+    // Only the service starts the server (and handles refusal and timeout); this screen waits for the status to flip.
+    LaunchedEffect(Unit) { CanvasService.start(ctx.applicationContext) }
     LaunchedEffect(status.on, port) { if (url == null && status.on && port != null) url = "http://127.0.0.1:$port/#t=${host.webViewToken()}" }
     DisposableEffect(Unit) { host.screenOpen = true; onDispose { host.screenOpen = false } }
 

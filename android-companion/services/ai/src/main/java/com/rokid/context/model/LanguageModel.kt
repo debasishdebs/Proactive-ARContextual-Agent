@@ -5,7 +5,8 @@ import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoutedReply
 
 /** Who a model call is for; the call budget (P2) gives each class its own token rules. */
-enum class CallClass { USER, EXTRACT, NUDGE, CAPTION_QUEUE, BACKFILL, OTHER }
+/** [EXPERIMENT]: experiment-canvas runs. Counted for diagnostics but never charged to the live budget (the run's own caps limit it). */
+enum class CallClass { USER, EXTRACT, NUDGE, CAPTION_QUEUE, BACKFILL, OTHER, EXPERIMENT }
 
 /**
  * Routing-aware seam over the router (spec F.1): the router's public API plus an explicit [CallClass]. Role routing,

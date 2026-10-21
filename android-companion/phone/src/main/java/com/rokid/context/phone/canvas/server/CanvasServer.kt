@@ -61,7 +61,7 @@ class CanvasServer(
             try {
                 pool.execute {
                     current.set(conn)
-                    try { handler.run() } finally { current.remove(); release(handler) }
+                    try { handler.run() } catch (t: Throwable) { log("CONN error"); handler.close() } finally { current.remove(); release(handler) }
                 }
             } catch (e: Exception) { release(handler); handler.close() }
         }
@@ -91,7 +91,7 @@ class CanvasServer(
             // An unread (oversize) or chunked body would otherwise be parsed as the next request on a kept-alive connection.
             val unread = req.bodyTooLarge || req.headers.containsKey("transfer-encoding")
             toResponse(router.handle(req)).also { if (unread) it.closeConnection(true) }.also { runner.arm() }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             runner.arm()
             toResponse(HttpResponse.error(500, "internal", "Something went wrong."))
         }

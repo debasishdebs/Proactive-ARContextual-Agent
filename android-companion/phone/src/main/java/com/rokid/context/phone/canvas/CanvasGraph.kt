@@ -14,6 +14,7 @@ import com.rokid.context.phone.canvas.server.CanvasAuth
 import com.rokid.context.phone.canvas.server.CanvasRouter
 import com.rokid.context.phone.canvas.server.CanvasServer
 import com.rokid.context.phone.canvas.server.HostPolicy
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -56,6 +57,8 @@ interface CanvasCore {
     val api: ApiHandler
     suspend fun start()
     fun runActive(): Boolean
+    /** Cancels the active run, if any (Developer mode turned off). */
+    suspend fun cancelActive()
     suspend fun home(): HomeData
     suspend fun rollback(): CanvasPublisher.Outcome
     suspend fun pipeline(id: String): Pipeline?
@@ -116,7 +119,7 @@ class CanvasGraph(
     val lan: Boolean get() = lanOn
 
     init {
-        scope.launch { devMode.collect { on -> if (!on) { stop(); revokeAll() } } }
+        scope.launch { devMode.collect { on -> if (!on) { stop(); revokeAll(); try { core.cancelActive() } catch (e: Exception) { log("canvas cancel failed (${e.javaClass.simpleName})") } } } }
     }
 
     @Synchronized
@@ -204,7 +207,7 @@ class CanvasGraph(
 
         private fun build(app: Context): CanvasGraph {
             val auth = CanvasAuth(System::currentTimeMillis)
-            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> Log.w(TAG, "canvas task failed (${t.javaClass.simpleName})") })
             val ref = java.util.concurrent.atomic.AtomicReference<CanvasGraph>()
             val backend = lazy { CanvasBackendImpl.create(app, AiGraph.get(app), auth, lan = { ref.get()?.lan == true }, scope = scope) }
             val graph = CanvasGraph(
@@ -223,6 +226,7 @@ class BackendCore(private val backend: Lazy<CanvasBackendImpl>) : CanvasCore {
     override val api = ApiHandler { apiLazy.value.handle(it) }
     override suspend fun start() = backend.value.start()
     override fun runActive() = backend.isInitialized() && backend.value.runActive()
+    override suspend fun cancelActive() { if (backend.isInitialized()) backend.value.cancelActiveRun() }
 
     override suspend fun home(): HomeData {
         val b = backend.value

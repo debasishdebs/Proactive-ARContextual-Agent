@@ -65,7 +65,7 @@ object VisionExtractExecutor : NodeExecutor {
             val started = System.nanoTime()
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {
-                val b = ExtractSave.extract(ctx.runner, chunk.map { it.photo }, CallClass.USER, override, sources)
+                val b = ExtractSave.extract(ctx.runner, chunk.map { it.photo }, CallClass.EXPERIMENT, override, sources)
                 val meta = CallMeta(ms(), null, null, null, b.promptVersion, batchId)
                 chunk.forEachIndexed { i, it ->
                     val facts = b.output.facts.filter { f -> it.frameId in f.sourceFrameIds }
@@ -109,7 +109,7 @@ object CriticExecutor : NodeExecutor {
             val started = System.nanoTime()
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {
-                val r = ctx.runner.run(RoleCall(PromptKey.CRITIC, ExtractFollowUp.criticVars(v.facts, listOf(it.photo.description)), callClass = CallClass.USER, override = override))
+                val r = ctx.runner.run(RoleCall(PromptKey.CRITIC, ExtractFollowUp.criticVars(v.facts, listOf(it.photo.description)), callClass = CallClass.EXPERIMENT, override = override))
                 val pass = (r.output as CriticOutput).pass
                 val meta = CallMeta(r.reply.latencyMs, r.reply.promptTokens, r.reply.completionTokens, r.reply.model, r.promptVersion, "${ctx.runId}:${node.id}:$i")
                 NodeResult(it.frameId, v.copy(trusted = pass), branch = if (pass) "pass" else "fail", meta = meta, calls = 1)
@@ -154,7 +154,7 @@ object PromptExecutor : NodeExecutor {
             val batchId = "${ctx.runId}:${node.id}:$i"
             val started = System.nanoTime()
             try {
-                val reply = ctx.model.complete(role, CallClass.USER) { e ->
+                val reply = ctx.model.complete(role, CallClass.EXPERIMENT) { e ->
                     val plan = StructuredOutput.plan(e, schemaObj, name)
                     ModelRequest(prompt + plan.promptSuffix, if (images) listOf(it.photo.image) else emptyList(), format = plan.format)
                 }
