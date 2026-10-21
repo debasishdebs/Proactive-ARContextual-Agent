@@ -148,10 +148,11 @@ abstract class FrameStateDao {
     /**
      * Fix wave K5, backlog shedding: PENDING frames beyond the NEWEST [keepNewest] (by capture time) that are not dwell keyframes
      * go to NEAR_DUP with lastError 'shed_backlog' (no schema change): they are never extracted, and their photos then follow the
-     * normal retention of skipped photos. Dwell keyframes and tombstoned frames are left alone. Returns how many rows moved.
+     * normal retention of skipped photos. A shed frame with frame_meta.salience >= 0.5 goes to CAPTION_QUEUED instead (wave 2, Ruling 8). Dwell keyframes and tombstoned frames are left alone. Returns how many rows moved.
      */
     @Query(
-        "UPDATE frame_state SET state = 'NEAR_DUP', lastError = 'shed_backlog', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+        "UPDATE frame_state SET state = CASE WHEN COALESCE((SELECT m.salience FROM frame_meta m WHERE m.frameId = frame_state.frameId), 0) >= 0.5 THEN 'CAPTION_QUEUED' ELSE 'NEAR_DUP' END, " +
+            "lastError = 'shed_backlog', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
             "WHERE state = 'PENDING' AND frameId IN (" +
             "SELECT p.frameId FROM frame_state p LEFT JOIN frame f ON f.id = p.frameId WHERE p.state = 'PENDING' " +
             "ORDER BY COALESCE(f.ts, p.updatedAt) DESC LIMIT -1 OFFSET :keepNewest) " +
@@ -217,6 +218,17 @@ abstract class FrameStateDao {
         return claimedBy(frameIds, claimId)
     }
 
+    /**
+     * Frames an ask may claim: captured since [sinceMs], PENDING (routed or not) or IN_CLUSTER in an OPEN/CLOSED cluster (a SUMMARIZING
+     * cluster is mid-call), newest first.
+     */
+    @Query(
+        "SELECT s.* FROM frame_state s LEFT JOIN frame f ON f.id = s.frameId WHERE COALESCE(f.ts, s.updatedAt) >= :sinceMs AND (s.state = 'PENDING' OR (s.state = 'IN_CLUSTER' AND EXISTS (" +
+            "SELECT 1 FROM frame_meta m JOIN frame_cluster c ON c.clusterId = m.clusterId WHERE m.frameId = s.frameId AND c.state IN ('OPEN','CLOSED')))) " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
+    )
+    abstract suspend fun askCandidates(sinceMs: Long, limit: Int): List<FrameStateEntity>
+
     /** Key-moment photos whose caption is still owed, oldest first (lowest priority; aging is the pipeline's job). */
     @Query(
         "SELECT * FROM frame_state WHERE state = 'CAPTION_QUEUED' " +
@@ -259,6 +271,10 @@ interface FrameMetaDao {
             "ORDER BY COALESCE(f.ts, m.createdAt) ASC LIMIT :limit",
     )
     suspend fun unroutedPending(limit: Int): List<FrameMetaEntity>
+
+    /** PENDING frames the scene router has not routed yet (Diagnostics). */
+    @Query("SELECT COUNT(*) FROM frame_meta m JOIN frame_state s ON s.frameId = m.frameId WHERE s.state = 'PENDING' AND m.routedAt IS NULL")
+    suspend fun unroutedCount(): Int
 
     @Query("SELECT * FROM frame_meta WHERE clusterId = :clusterId ORDER BY createdAt, frameId") suspend fun members(clusterId: String): List<FrameMetaEntity>
 
@@ -379,7 +395,18 @@ abstract class FrameClusterDao {
 
     @Query("SELECT state AS k, COUNT(*) AS v FROM frame_cluster GROUP BY state")
     abstract fun counts(): Flow<Map<@MapColumn("k") String, @MapColumn("v") Int>>
+
+    /** When the earliest FAILED cluster leaves its backoff (null: none is waiting). */
+    @Query("SELECT MIN(updatedAt + MIN(30000 << MAX(attempts - 1, 0), 1800000)) FROM frame_cluster WHERE state = 'FAILED'")
+    abstract suspend fun nextRetryAt(): Long?
+
+    /** Clusters summarized at or after [sinceMs]: the memory id (its claim id is the call) and how many photos the summary covers. */
+    @Query("SELECT memoryId, memberCount FROM frame_cluster WHERE state = 'SUMMARIZED' AND memoryId IS NOT NULL AND updatedAt >= :sinceMs")
+    abstract suspend fun summarizedSince(sinceMs: Long): List<SummarizedCluster>
 }
+
+/** A summarized cluster for Diagnostics: [memoryId] is `rokid_cl_<claimId>_<n>`. */
+data class SummarizedCluster(val memoryId: String, val memberCount: Int)
 
 /** A frame row still awaiting extraction when v2 adopts it: its id and the JPEG path (the caller checks the file). */
 data class AwaitingFrame(val id: String, val path: String)

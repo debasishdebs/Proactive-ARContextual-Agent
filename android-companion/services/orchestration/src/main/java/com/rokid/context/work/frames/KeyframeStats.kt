@@ -26,6 +26,15 @@ data class KeyframeStats(
     val latencyP95Ms: Long? = null,
     /** Photos skipped to keep up with the backlog (frame_state NEAR_DUP, lastError shed_backlog). */
     val shed: Int = 0,
+    /** Scene clusters per `frame_cluster` state (OPEN, CLOSED, SUMMARIZING, SUMMARIZED, FAILED, FAILED_FINAL). */
+    val clusters: Map<String, Int> = emptyMap(),
+    /** Photos covered by the scene summaries of the last 24 h, and the scene calls that wrote them. */
+    val scenePhotos24h: Int = 0,
+    val sceneCalls24h: Int = 0,
+    /** Key-moment photos waiting for a caption (frame_state CAPTION_QUEUED). */
+    val captionQueue: Int = 0,
+    /** PENDING frames the scene router has not routed yet. */
+    val unrouted: Int = 0,
 )
 
 /** The last [max] capture-to-memory latencies; percentiles are nearest-rank. */
@@ -55,7 +64,8 @@ class LatencyTracker(private val max: Int = 200) {
 
 object KeyframeStatsReporter {
     fun create(scope: CoroutineScope, db: ContextDatabase, budget: StateFlow<BudgetStats>, latency: LatencyTracker, clock: () -> Long): StateFlow<KeyframeStats> =
-        combine(db.frameStateDao().counts(), budget, latency.samples, db.frameStateDao().shedCount()) { counts, b, lat, shed ->
+        combine(db.frameStateDao().counts(), budget, latency.samples, db.frameStateDao().shedCount(), db.frameClusterDao().counts()) { counts, b, lat, shed, clusters ->
+            val summarized = db.frameClusterDao().summarizedSince(clock() - DAY_MS)
             KeyframeStats(
                 counts = counts,
                 callsPerHour = b.callsLastHour,
@@ -64,6 +74,13 @@ object KeyframeStatsReporter {
                 latencyP50Ms = LatencyTracker.percentile(lat, 50),
                 latencyP95Ms = LatencyTracker.percentile(lat, 95),
                 shed = shed,
+                clusters = clusters,
+                scenePhotos24h = summarized.sumOf { it.memberCount },
+                sceneCalls24h = summarized.map { it.memoryId.substringBeforeLast('_') }.distinct().size, // rokid_cl_<claimId>_<n>: one claim = one call
+                captionQueue = counts["CAPTION_QUEUED"] ?: 0,
+                unrouted = db.frameMetaDao().unroutedCount(),
             )
         }.stateIn(scope, SharingStarted.Eagerly, KeyframeStats())
+
+    private const val DAY_MS = 24 * 3_600_000L
 }

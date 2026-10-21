@@ -282,6 +282,7 @@ object KeyframeLines {
     class Line(val tag: String, val text: String)
 
     private val ORDER = listOf("PENDING", "EXTRACTING", "EXTRACTED", "FAILED", "FAILED_FINAL")
+    private val CLUSTER_ORDER = listOf("OPEN", "CLOSED", "SUMMARIZING", "SUMMARIZED", "FAILED", "FAILED_FINAL")
 
     fun ms(v: Long?): String = when {
         v == null -> "\u2014"
@@ -302,6 +303,11 @@ object KeyframeLines {
             Line("kf_backlog", "Backlog ${st.backlog} \u2014 $states"),
             Line("kf_rate", "Keyframes per hour: ${st.keyframesPerHour}"),
             Line("kf_shed", "Skipped to keep up: ${st.shed}"),
+            Line("kf_clusters", "Scene clusters: ${CLUSTER_ORDER.filter { (st.clusters[it] ?: 0) > 0 }.joinToString(" \u00b7 ") { "$it ${st.clusters[it]}" }.ifEmpty { "none" }}"),
+            Line("kf_scene_photos", "Photos covered by scene summaries (last 24 h): ${st.scenePhotos24h}"),
+            Line("kf_scene_calls", "Scene calls (last 24 h): ${st.sceneCalls24h}"),
+            Line("kf_caption_queue", "Caption queue: ${st.captionQueue}"),
+            Line("kf_unrouted", "Unrouted: ${st.unrouted}"),
             Line("kf_calls", "AI calls per hour: $calls"),
             Line("kf_latency", "Capture to memory: p50 ${ms(st.latencyP50Ms)} \u00b7 p95 ${ms(st.latencyP95Ms)}"),
             Line("kf_dropped", "Dropped nudges: $dropped"),

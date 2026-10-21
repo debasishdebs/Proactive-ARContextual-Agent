@@ -22,6 +22,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import com.rokid.context.work.frames.scene.SceneIndexer
+import com.rokid.context.work.frames.scene.WatchListStore
+import com.rokid.context.work.frames.scene.WatchVectors
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -355,5 +358,56 @@ class KeyframePipelineTest {
         p.drainOnce()
         assertEquals(0, p.drainUntilIdle(200)) // the next retry is 30 s away: not worth holding the worker
         assertEquals(1, calls.size)
+    }
+
+    // ---- wave 2 Task 6: routing before any claim ----
+
+    /** A frame the scene router has not seen (routedAt NULL), as the ingest leaves it when the indexer is active. */
+    private suspend fun seedUnrouted(id: String, ts: Long, dwell: Boolean = false) {
+        db.frameDao().insertIgnore(FrameEntity(id, ts, "/x/$id.jpg", "rokid_glasses"))
+        db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", dwell, null, null, null, null, null, null, null, null, null, ts, routedAt = null))
+        db.frameStateDao().insertIgnore(listOf(FrameStateEntity(id, "PENDING", 0, null, null, null, ts)))
+    }
+
+    /** No IMAGE-capable space: every frame routes as in wave 1 (PENDING, per photo). */
+    private fun noImageSpaceIndexer() = SceneIndexer(
+        db, { emptyList() }, { null }, WatchVectors(WatchListStore(ctx.getSharedPreferences("kp_watch", Context.MODE_PRIVATE))), null,
+        { emptyMap() }, { now },
+    )
+
+    @Test fun routesBeforeClaim() = runBlocking {
+        seedUnrouted("a", now - 5_000)
+        val plain = KeyframePipeline(db, completing(), { now }, null, pollMs = 50)
+        assertEquals("an unrouted frame is the router's for 10 min", 0, plain.drainOnce())
+        val routed = KeyframePipeline(db, completing(), { now }, null, pollMs = 50, indexer = noImageSpaceIndexer())
+        assertEquals(1, routed.drainOnce())
+        assertTrue(db.frameMetaDao().get("a")!!.routedAt != null)
+        assertEquals("EXTRACTED", state("a"))
+    }
+
+    @Test fun dwellStillFirst() = runBlocking {
+        for (i in 1..4) seedUnrouted("f$i", now - 10_000 + i * 1000L, dwell = i == 1)
+        KeyframePipeline(db, completing(), { now }, null, pollMs = 50, indexer = noImageSpaceIndexer()).drainOnce()
+        assertEquals("f1", calls.single().first.first()) // the dwell keyframe leads, then the newest
+        assertEquals(listOf("f1", "f4", "f3"), calls.single().first)
+    }
+
+    @Test fun waveOneBehaviourWithoutImageSpace() = runBlocking {
+        for (i in 1..5) seedUnrouted("f$i", now - 10_000 + i * 1000L)
+        val p = KeyframePipeline(db, completing(), { now }, null, pollMs = 50, indexer = noImageSpaceIndexer())
+        assertEquals(listOf(3, 2), listOf(p.drainOnce(), p.drainOnce()))
+        assertEquals(listOf(3, 2), calls.map { it.first.size })
+        assertEquals(null, db.frameClusterDao().open())
+        assertEquals(setOf("EXTRACTED"), (1..5).map { state("f$it") }.toSet())
+    }
+
+    @Test fun shedSalientGoesToCaptionQueue() = runBlocking {
+        for (i in 1..50) seed("f$i", i * 1000L)
+        db.frameMetaDao().markRouted("f2", 0.6f, null, null, null, null, 1L)
+        db.frameMetaDao().markRouted("f3", 0.4f, null, null, null, null, 1L)
+        pipeline().drainOnce()
+        assertEquals("CAPTION_QUEUED", state("f2")); assertEquals("shed_backlog", db.frameStateDao().get("f2")!!.lastError)
+        assertEquals("NEAR_DUP", state("f3")); assertEquals("NEAR_DUP", state("f1"))
+        assertEquals(29, db.frameStateDao().shedCount().first()) // 30 older frames, minus the queued f2
     }
 }

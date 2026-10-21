@@ -3,12 +3,19 @@ package com.rokid.context.work.frames
 import android.util.Log
 import com.rokid.context.ai.FailureKind
 import com.rokid.context.ai.ModelCallException
+import com.rokid.context.ai.contract.ClusterContract
 import com.rokid.context.memory.db.ContextDatabase
+import com.rokid.context.memory.db.FrameClusterEntity
+import com.rokid.context.memory.db.FrameClusterDao
+import com.rokid.context.memory.db.FrameState
+import com.rokid.context.memory.db.FrameStateEntity
 import com.rokid.context.memory.db.FrameStateDao
 import com.rokid.context.model.CallClass
 import com.rokid.context.orchestration.SavedMemory
 import com.rokid.context.work.budget.BackgroundWork
 import com.rokid.context.work.budget.PhonePowerPolicy
+import com.rokid.context.work.frames.scene.SceneIndexer
+import org.json.JSONArray
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -82,6 +89,26 @@ sealed interface ExtractOutcome {
 }
 
 /**
+ * What one scene-cluster call concluded (wave 2). The clusters were claimed on `frame_cluster` (SUMMARIZING); the pipeline settles them.
+ */
+sealed interface ClusterOutcome {
+    /**
+     * The summaries are saved ([ClusterSave]: one transaction, cluster CAS first). [failedFinal] were failed for good by the save itself
+     * (no representative left). [leftOut]: clusters the call returned no valid summary for (the pipeline fails each, an attempt);
+     * [gone]: clusters none of whose photos can be read any more (failed for good).
+     */
+    data class Saved(
+        val memories: List<SavedMemory>, val failedFinal: Set<String> = emptySet(), val leftOut: Set<String> = emptySet(), val gone: Set<String> = emptySet(),
+    ) : ClusterOutcome
+
+    /** A cluster claim no longer held, or Delete all ran: nothing was written. */
+    data object Stale : ClusterOutcome
+
+    /** As [ExtractOutcome.Failed], for every cluster of the call. */
+    data class Failed(val error: String, val countsAttempt: Boolean = true, val maxAttempts: Int = FrameStateDao.MAX_ATTEMPTS) : ClusterOutcome
+}
+
+/**
  * Processes keyframes as they arrive (spec §P2.1): [signal] after a frame commits; the loop claims at most 3 pending frames
  * per call (dwell keyframes first, then newest), extracts them as one VISION_EXTRACT call ([extractor] = ExtractSave.extract
  * then saveExtraction with the claims, so the claim CAS runs inside the save transaction) and settles each frame.
@@ -114,6 +141,10 @@ class KeyframePipeline(
     private val releaseAtStart: Boolean = false,
     /** Wall clock of this process's start: only claims older than it belong to a dead process (fix wave I5). */
     private val processStartMs: () -> Long = { ProcessStart.wallMs },
+    /** Wave 2: routes keyframes into the fast path, near-dups and scene clusters before any claim. Null: wave-1 behaviour (every frame is claimable). */
+    private val indexer: SceneIndexer? = null,
+    /** Wave 2: one CLUSTER_SUMMARY call over the claimed [clusters] with [reps] (cluster id to the representatives to send), saved with the cluster CAS. */
+    private val clusterExtractor: (suspend (clusters: List<FrameClusterEntity>, reps: Map<String, List<String>>, claimId: String, callClass: CallClass) -> ClusterOutcome)? = null,
 ) {
     private sealed interface Step {
         data class Done(val frames: Int) : Step
@@ -122,6 +153,7 @@ class KeyframePipeline(
     }
 
     private val states: FrameStateDao get() = db.frameStateDao()
+    private val clusters: FrameClusterDao get() = db.frameClusterDao()
     private val wake = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var pausedUntilMs = 0L
     @Volatile private var pauseStepMs = 0L
@@ -135,7 +167,7 @@ class KeyframePipeline(
         if (!releaseAtStart) return
         startRelease.withLock {
             if (startReleased) return
-            val n = FrameRecovery.releaseAtProcessStart(states, clock(), processStartMs())
+            val n = FrameRecovery.releaseAtProcessStart(states, clock(), processStartMs(), clusters)
             startReleased = true
             Log.i(PIPE_TAG, "released=$n at process start")
         }
@@ -168,7 +200,7 @@ class KeyframePipeline(
     fun stop() { synchronized(this) { loop?.cancel(); loop = null } }
 
     /** Abandoned claims back to PENDING, then wake the loop. */
-    suspend fun recover(): Int { ensureStartRelease(); return FrameRecovery.run(states, clock(), ::signal) }
+    suspend fun recover(): Int { ensureStartRelease(); return FrameRecovery.run(states, clock(), clusters, ::signal) }
 
     /** One pass: claims up to 3 frames (dwell first, then newest) and extracts them. Returns the frames that reached EXTRACTED. */
     suspend fun drainOnce(): Int = (drainStarted(CallClass.EXTRACT, sinceMs = null) as? Step.Done)?.frames ?: 0
@@ -240,27 +272,79 @@ class KeyframePipeline(
                 power?.mayRunBackground(BackgroundWork.EXTRACTION) == false -> pollMs
                 else -> null
             }
-            if (wait != null) return if (states.newestClaimable(now, abandonBefore, Long.MIN_VALUE, 0, 1).isEmpty()) Step.Idle(null) else Step.Idle(wait, blocked = true)
+            if (wait != null) return if (anythingWaiting(now, abandonBefore)) Step.Idle(wait, blocked = true) else Step.Idle(null)
         }
+        // Wave 2 (Ruling 3): routing runs before any claim; an ask routes at once, ignoring the background batching.
+        val routeRetry = route(force = user)
         if (!user) shedBacklog(now)
-        val rows = if (user) {
-            states.newestClaimable(now, abandonBefore, sinceMs ?: Long.MIN_VALUE, 1, MAX_BATCH)
-        } else {
-            // Dwell keyframes first, then newest: the newest 3 of each kind cover any backlog size (review I4).
-            (states.newestDwellClaimable(now, abandonBefore, MAX_BATCH) + states.newestClaimable(now, abandonBefore, Long.MIN_VALUE, 0, MAX_BATCH)).distinctBy { it.frameId }
-        }
-        if (rows.isEmpty()) {
-            val retryAt = if (user) null else states.nextRetryAt()
-            return Step.Idle(retryAt?.let { (it - now).coerceAtLeast(1L) })
-        }
-        val infos = candidates(rows.map { it.frameId }, rows.associate { it.frameId to it.updatedAt }).let { c -> sinceMs?.let { s -> c.filter { it.ts >= s } } ?: c }
-        val picked = (if (user) infos.sortedByDescending { it.ts } else infos.sortedWith(compareByDescending<KeyframeCandidate> { it.dwell }.thenByDescending { it.ts }))
-            .take(MAX_BATCH)
-        if (picked.isEmpty()) return Step.Idle(null)
-        if (!user && power?.tryExtraction() == false) return Step.Idle(pollMs, blocked = true)
 
+        if (user) {
+            val rows = (states.askCandidates(sinceMs ?: Long.MIN_VALUE, MAX_BATCH) + states.newestClaimable(now, abandonBefore, sinceMs ?: Long.MIN_VALUE, 1, MAX_BATCH)).distinctBy { it.frameId }
+            if (rows.isEmpty()) return Step.Idle(null)
+            val infos = candidates(rows.map { it.frameId }, rows.associate { it.frameId to it.updatedAt }).let { c -> sinceMs?.let { s -> c.filter { it.ts >= s } } ?: c }
+            val picked = infos.sortedByDescending { it.ts }.take(MAX_BATCH)
+            if (picked.isEmpty()) return Step.Idle(null)
+            return runBatch(picked, callClass, user = true) { ids, claimId -> states.claimForAsk(ids, claimId, now); states.claim(ids, claimId, now, abandonBefore).map { it.frameId } }
+        }
+
+        // Pick, in order: dwell PENDING, caption-queued frames waited >= 10 min, newest PENDING, a cluster call, the rest of the caption queue.
+        val dwell = states.newestDwellClaimable(now, abandonBefore, MAX_BATCH)
+        val captionsOk = power?.mayRunBackground(BackgroundWork.CAPTION_QUEUE) != false
+        val aged = if (dwell.isEmpty() && captionsOk) states.captionQueued(MAX_BATCH).filter { now - it.updatedAt >= CAPTION_AGE_MS } else emptyList()
+        if (aged.isNotEmpty()) captionStep(aged, now)?.let { return it }
+        val rows = (dwell + states.newestClaimable(now, abandonBefore, Long.MIN_VALUE, 0, MAX_BATCH)).distinctBy { it.frameId }
+        if (rows.isNotEmpty()) {
+            // Dwell keyframes first, then newest: the newest 3 of each kind cover any backlog size (review I4).
+            val picked = candidates(rows.map { it.frameId }, rows.associate { it.frameId to it.updatedAt })
+                .sortedWith(compareByDescending<KeyframeCandidate> { it.dwell }.thenByDescending { it.ts }).take(MAX_BATCH)
+            if (picked.isNotEmpty()) return runBatch(picked, callClass, user = false) { ids, claimId -> states.claim(ids, claimId, now, abandonBefore).map { it.frameId } }
+        }
+        clusterStep(now, abandonBefore)?.let { return it }
+        if (captionsOk) captionStep(states.captionQueued(MAX_BATCH), now)?.let { return it }
+        return Step.Idle(idleWait(now, abandonBefore, routeRetry))
+    }
+
+    /** Whether anything could be claimed or routed once the gate opens (a blocked loop only polls when there is something to do). */
+    private suspend fun anythingWaiting(now: Long, abandonBefore: Long): Boolean =
+        states.newestClaimable(now, abandonBefore, Long.MIN_VALUE, 0, 1).isNotEmpty() ||
+            (clusterExtractor != null && clusters.claimable(now, abandonBefore, 1).isNotEmpty()) ||
+            states.captionQueued(1).isNotEmpty() || (indexer != null && db.frameMetaDao().unroutedCount() > 0)
+
+    /** Closes an aged cluster and routes what is waiting (up to [ROUTE_PASSES] batches of 8). Returns when to come back if the router held frames back. */
+    private suspend fun route(force: Boolean): Long? {
+        val ix = indexer ?: return null
+        return try {
+            ix.closeAged()
+            var retry: Long? = null
+            for (i in 0 until ROUTE_PASSES) {
+                val r = ix.routeBatch(force)
+                retry = r.retryInMs
+                if (r.routed < SceneIndexer.BATCH) break
+            }
+            retry
+        } catch (c: CancellationException) { throw c } catch (e: Exception) {
+            Log.w(TAG, "routing failed: ${e.javaClass.simpleName}")
+            null
+        }
+    }
+
+    private suspend fun idleWait(now: Long, abandonBefore: Long, routeRetry: Long?): Long? {
+        val waits = mutableListOf<Long>()
+        states.nextRetryAt()?.let { waits += it - now }
+        routeRetry?.let { waits += it }
+        if (clusterExtractor != null) {
+            clusters.nextRetryAt()?.let { waits += it - now }
+            clusters.claimable(now, abandonBefore, 1).firstOrNull()?.let { waits += (it.closedAt ?: it.updatedAt) + CLUSTER_WAIT_MS - now }
+        }
+        if (indexer != null && clusters.open() != null) waits += OPEN_POLL_MS // an open cluster closes on age or gap: look again
+        return waits.minOrNull()?.coerceAtLeast(1L)
+    }
+
+    /** Claims [picked] (through [claim]) and runs one extraction call over them. */
+    private suspend fun runBatch(picked: List<KeyframeCandidate>, callClass: CallClass, user: Boolean, claim: suspend (List<String>, String) -> List<String>): Step {
+        if (!user && power?.tryExtraction() == false) return Step.Idle(pollMs, blocked = true)
         val claimId = newClaimId()
-        val claimed = states.claim(picked.map { it.frameId }, claimId, now, abandonBefore).map { it.frameId }.toSet()
+        val claimed = claim(picked.map { it.frameId }, claimId).toSet()
         if (claimed.isEmpty()) return Step.Idle(CONTENTION_MS) // the old worker or an ask took them
         val frames = picked.filter { it.frameId in claimed }
         Log.i(PIPE_TAG, "claimed=${frames.size} batch=${picked.size} class=${callClass.name}")
@@ -275,6 +359,108 @@ class KeyframePipeline(
             ExtractOutcome.classify(e, online())
         }
         return Step.Done(settle(frames, claimId, outcome, user))
+    }
+
+    /**
+     * Caption queue (spec §Captions, Ruling 9): the oldest [rows] go through the ordinary VISION_EXTRACT path as CAPTION_QUEUE calls, or as
+     * EXTRACT once the oldest has waited 30 min. [rows] come oldest first. Null when nothing could be claimed.
+     */
+    private suspend fun captionStep(rows: List<FrameStateEntity>, now: Long): Step? {
+        if (rows.isEmpty()) return null
+        val cls = if (now - rows.first().updatedAt >= CAPTION_EXTRACT_AGE_MS) CallClass.EXTRACT else CallClass.CAPTION_QUEUE
+        val chosen = rows.filter { cls == CallClass.CAPTION_QUEUE || now - it.updatedAt >= CAPTION_EXTRACT_AGE_MS }.take(MAX_BATCH)
+        val picked = candidates(chosen.map { it.frameId }, chosen.associate { it.frameId to it.updatedAt })
+        return runBatch(picked, cls, user = false) { ids, claimId -> states.claimCaptionQueued(ids, claimId, now).map { it.frameId } }
+            .takeUnless { it is Step.Idle && it.waitMs == CONTENTION_MS }
+    }
+
+    /**
+     * One cluster call (Ruling 5): at least [ClusterContract.MAX_CLUSTERS] claimable clusters, or the oldest has waited 60 s. Claims
+     * up to 3, sends 3 representatives each (2 each for 3 clusters: at most 6 photos) and saves with the cluster CAS.
+     */
+    private suspend fun clusterStep(now: Long, abandonBefore: Long): Step? {
+        val run = clusterExtractor ?: return null
+        val ready = clusters.claimable(now, abandonBefore, ClusterContract.MAX_CLUSTERS)
+        if (ready.isEmpty()) return null
+        if (ready.size < ClusterContract.MAX_CLUSTERS && now - (ready.first().closedAt ?: ready.first().updatedAt) < CLUSTER_WAIT_MS) return null
+        if (power?.tryExtraction() == false) return Step.Idle(pollMs, blocked = true)
+        val claimId = newClaimId()
+        val claimed = clusters.claim(ready.map { it.clusterId }, claimId, now, abandonBefore)
+        if (claimed.isEmpty()) return Step.Idle(CONTENTION_MS)
+        val live = HashMap<String, List<String>>()   // cluster id -> representatives still IN_CLUSTER, medoid first
+        for (c in claimed) {
+            val reps = inCluster(repIdsOf(c)).ifEmpty { inCluster(db.frameMetaDao().members(c.clusterId).map { it.frameId }) }
+            if (reps.isEmpty()) failCluster(c.clusterId, claimId, "no_members", now, 1) else live[c.clusterId] = reps
+        }
+        if (live.isEmpty()) return Step.Done(0)
+        val per = if (live.size >= ClusterContract.MAX_CLUSTERS) ClusterContract.MAX_PHOTOS / ClusterContract.MAX_CLUSTERS else PHOTOS_PER_CLUSTER
+        val reps = live.mapValues { it.value.take(per) }
+        val sent = claimed.filter { it.clusterId in reps }
+        Log.i(PIPE_TAG, "clusters=${sent.size} photos=${reps.values.sumOf { it.size }}")
+        val outcome = try {
+            run(sent, reps, claimId, CallClass.EXTRACT)
+        } catch (c: CancellationException) {
+            withContext(NonCancellable) { sent.forEach { clusters.release(it.clusterId, claimId, clock()) } }
+            Log.i(PIPE_TAG, "released=${sent.size} clusters cancelled")
+            throw c
+        } catch (e: Exception) {
+            Log.i(TAG, "cluster call failed: ${e.javaClass.simpleName}")
+            ExtractOutcome.classify(e, online()).let { ClusterOutcome.Failed(it.error, it.countsAttempt, it.maxAttempts) }
+        }
+        return Step.Done(settleClusters(sent, claimId, outcome))
+    }
+
+    private fun repIdsOf(c: FrameClusterEntity): List<String> =
+        try { JSONArray(c.repFrameIds).let { a -> List(a.length()) { a.getString(it) } } } catch (_: Exception) { emptyList() }
+
+    /** [ids] (order kept) that are still IN_CLUSTER. */
+    private suspend fun inCluster(ids: List<String>): List<String> {
+        if (ids.isEmpty()) return emptyList()
+        val st = ids.chunked(CHUNK).flatMap { states.byIds(it) }.filter { it.state == FrameState.IN_CLUSTER.name }.map { it.frameId }.toSet()
+        return ids.filter { it in st }
+    }
+
+    private suspend fun failCluster(id: String, claimId: String, error: String, now: Long, maxAttempts: Int) {
+        if (clusters.fail(id, claimId, error, now, maxAttempts) > 0) splitIfFinal(id, now)
+    }
+
+    /** Ruling 10: a cluster at FAILED_FINAL: its representatives become FAILED_FINAL (describe-before-delete), its other members are skipped. */
+    private suspend fun splitIfFinal(id: String, now: Long) {
+        val c = clusters.get(id)?.takeIf { it.state == "FAILED_FINAL" } ?: return
+        repIdsOf(c).chunked(CHUNK).forEach { states.move(it, FrameState.IN_CLUSTER.name, FrameState.FAILED_FINAL.name, "cluster_failed", now) }
+        states.settleCluster(id, FrameState.NEAR_DUP.name, "cluster_failed", now)
+        Log.i(PIPE_TAG, "cluster failed for good")
+    }
+
+    private suspend fun settleClusters(sent: List<FrameClusterEntity>, claimId: String, o: ClusterOutcome): Int {
+        val now = clock()
+        return when (o) {
+            is ClusterOutcome.Saved -> {
+                pauseStepMs = 0L; pausedUntilMs = 0L
+                o.leftOut.forEach { failCluster(it, claimId, "cluster_invalid", now, FrameStateDao.MAX_ATTEMPTS) }
+                o.gone.forEach { failCluster(it, claimId, "reps_gone", now, 1) }
+                val done = sent.count { it.clusterId !in o.leftOut && it.clusterId !in o.gone && it.clusterId !in o.failedFinal }
+                Log.i(PIPE_TAG, "summarised=$done leftOut=${o.leftOut.size} gone=${o.gone.size}")
+                done
+            }
+            ClusterOutcome.Stale -> {
+                withContext(NonCancellable) { sent.forEach { clusters.release(it.clusterId, claimId, clock()) } }
+                Log.i(PIPE_TAG, "released=${sent.size} clusters stale")
+                0
+            }
+            is ClusterOutcome.Failed -> {
+                if (o.countsAttempt) {
+                    sent.forEach { failCluster(it.clusterId, claimId, o.error, now, o.maxAttempts) }
+                    Log.i(PIPE_TAG, "failed class=${o.error} clusters=${sent.size}")
+                } else {
+                    sent.forEach { clusters.release(it.clusterId, claimId, now) }
+                    Log.i(PIPE_TAG, "released=${sent.size} clusters reason=${o.error}")
+                    pauseStepMs = if (pauseStepMs == 0L) PAUSE_START_MS else minOf(pauseStepMs * 2, PAUSE_MAX_MS)
+                    pausedUntilMs = now + pauseStepMs
+                }
+                0
+            }
+        }
     }
 
     /** Fix wave K5: the AI budget describes about 15 photos a minute; a bigger backlog is thinned (see [FrameStateDao.shedOldestNonDwell]). */
@@ -343,6 +529,15 @@ class KeyframePipeline(
         private const val ASK_POLL_MS = 100L
         private const val CHUNK = 500
         private const val CONTENTION_MS = 1_000L
+        private const val ROUTE_PASSES = 5
+        /** A closed cluster waits this long for companions before it is called alone. */
+        const val CLUSTER_WAIT_MS = 60_000L
+        private const val PHOTOS_PER_CLUSTER = 3
+        /** Caption queue aging (Ruling 9): ahead of non-dwell PENDING after 10 min, an ordinary EXTRACT call after 30 min. */
+        const val CAPTION_AGE_MS = 10 * 60_000L
+        const val CAPTION_EXTRACT_AGE_MS = 30 * 60_000L
+        /** While a cluster is open the loop looks again this often so it closes on age or gap. */
+        private const val OPEN_POLL_MS = 30_000L
         private const val PAUSE_START_MS = 30_000L
         private const val PAUSE_MAX_MS = 5 * 60_000L
         private const val BACKOFF_MAX_MS = 30 * 60_000L
