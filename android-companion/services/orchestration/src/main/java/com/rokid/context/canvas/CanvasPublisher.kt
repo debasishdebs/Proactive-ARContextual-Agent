@@ -11,6 +11,8 @@ import com.rokid.context.memory.db.CanvasPublishEntity
 import com.rokid.context.prompt.PromptDefaults
 import com.rokid.context.prompt.PromptDraft
 import com.rokid.context.prompt.PromptRepository
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonNull
@@ -25,6 +27,9 @@ import kotlinx.serialization.json.put
 /**
  * Publishes a frozen, tested, live-shaped pipeline version by writing its edited prompts through [PromptRepository],
  * and rolls the newest publish back only while those prompts are still exactly what the publish wrote.
+ * Publish and rollback are serialised by one [Mutex], so exactly one instance must serve the app. A prompt edit from
+ * another writer (Settings) is not under that lock: rollback re-checks each fingerprint right before writing that key,
+ * which narrows but cannot close the window without a compare-and-set in PromptRepository.
  */
 class CanvasPublisher(
     private val dao: CanvasDao,
@@ -37,7 +42,11 @@ class CanvasPublisher(
         data class Blocked(val reasons: List<String>) : Outcome
     }
 
-    suspend fun publish(pipelineId: String, version: Int): Outcome {
+    private val lock = Mutex()
+
+    suspend fun publish(pipelineId: String, version: Int): Outcome = lock.withLock { publishLocked(pipelineId, version) }
+
+    private suspend fun publishLocked(pipelineId: String, version: Int): Outcome {
         val v = dao.version(pipelineId, version) ?: return Outcome.Blocked(listOf("Version not found"))
         val p = PipelineJson.decode(v.json).getOrNull() ?: return Outcome.Blocked(listOf("Version is unreadable"))
         if (!LiveShape.matches(p)) return Outcome.Blocked(listOf("Only pipelines shaped like Live extraction can go live in this version"))
@@ -71,7 +80,9 @@ class CanvasPublisher(
     }
 
     /** Undoes the newest active publish, unless any of its prompts was edited since. */
-    suspend fun rollback(): Outcome {
+    suspend fun rollback(): Outcome = lock.withLock { rollbackLocked() }
+
+    private suspend fun rollbackLocked(): Outcome {
         val pub = dao.activePublishes().firstOrNull() ?: return Outcome.Blocked(listOf("Nothing to roll back"))
         val snap = runCatching { Json.parseToJsonElement(pub.snapshotJson).jsonObject }.getOrNull()
             ?: return Outcome.Blocked(listOf("The publish record is unreadable"))
@@ -91,7 +102,13 @@ class CanvasPublisher(
             val t = (o["template"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
             key to PromptDraft(t, (o["schema"] as? JsonPrimitive)?.takeIf { it.isString }?.content)
         }
-        prev.forEach { (key, draft) -> prompts.save(key, draft, note = "Canvas rollback", testedOk = true) }
+        val expected = published.toMap()
+        for ((key, draft) in prev) {
+            val a = prompts.active(key)
+            if (PromptDefaults.fingerprint(a.template, a.outputSchema) != expected[key]) // an outside edit landed since the check above
+                return Outcome.Blocked(listOf("${key.label} was changed after the publish. Use Settings \u2192 Prompts \u2192 History instead."))
+            prompts.save(key, draft, note = "Canvas rollback", testedOk = true)
+        }
         dao.markRolledBack(pub.id, clock())
         return Outcome.Published(pub.id, prev.map { it.first })
     }
