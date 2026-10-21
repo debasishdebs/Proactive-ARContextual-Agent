@@ -66,7 +66,7 @@ class IndexMaintenanceTest {
      */
     private val fake = object : IndexEmbedders {
         var fp = "A"; var dim = 2; var drift = false; var bound = true; var calls = 0; var tilt = 0.0; var docDim: Int? = null
-        var imageCapable = false; var imageCalls = 0; var imageNetworkDown = false; var imageBroken: Exception? = null; var imageEmpty = false; var imageWidth = IMG_DIMS
+        var imageCapable = false; var imageCalls = 0; var imageNetworkDown = false; var imageBroken: Exception? = null; var imageEmpty = false; var imageDeclared: Int? = IMG_DIMS; var imageWidth = IMG_DIMS
         var canaryCalls = 0; val canaryTilts = ArrayDeque<Double>(); var failCanaries = false; var spaceGone = false
         fun embedder(fingerprint: String = fp, d: Int = dim) = object : Embedder {
             override val fingerprint = fingerprint
@@ -82,7 +82,7 @@ class IndexMaintenanceTest {
                 }
             }
             override suspend fun embedQuery(text: String) = embedDocuments(listOf(text)).single()
-            override val imageDims: Int? get() = IMG_DIMS
+            override val imageDims: Int? get() = imageDeclared
             override val modalities get() = if (imageCapable) setOf(Modality.TEXT, Modality.IMAGE) else setOf(Modality.TEXT)
             override suspend fun embedImages(jpegs: List<ByteArray>): List<FloatArray> {
                 imageCalls++
@@ -270,11 +270,36 @@ class IndexMaintenanceTest {
         assertEquals(listOf("p1", "p2"), imageVectors(spaces.queryable()!!.id))
     }
 
-    @Test fun aWholeBatchFailingToDecodeIsABrokenDecoderNotBadPhotos() = runBlocking {
+    @Test fun aDecoderThatFailsEverythingNeverSwapsAndAFixedDecoderWithANewFingerprintRecovers() = runBlocking {
         mem("m1"); fake.imageCapable = true; photo("a", 10, BAD); photo("b", 20, BAD); photo("c", 30, BAD)
-        try { maintenance().run(); fail("every photo failing is systemic") } catch (_: ImageEmbedderException) { }
-        listOf("a", "b", "c").forEach { assertNull(db.frameMetaDao().get(it)) }
+        try { maintenance().run(); fail("no image vector at all must not swap") } catch (_: IndexConfigException) { }
+        listOf("a", "b", "c").forEach { assertEquals("unembeddable", db.frameMetaDao().get(it)!!.imageVectorSpace) }
         assertNull(spaces.queryable())
+        // the decoder is fixed (same photos now decode) and the binding changes: a new build clears the marks
+        listOf("a", "b", "c").forEach { photoBytes[it] = byteArrayOf(1) }
+        fake.fp = "B"
+        assertEquals(Outcome.DONE, maintenance().run())
+        listOf("a", "b", "c").forEach { assertNull(db.frameMetaDao().get(it)!!.imageVectorSpace) }
+        assertEquals(listOf("a", "b", "c"), imageVectors(spaces.queryable()!!.id))
+    }
+
+    @Test fun imageCapableEmbedderWithoutImageDimsIsAConfigErrorAndTouchesNothing() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("p1", 10)
+        assertEquals(Outcome.DONE, maintenance().run())
+        val active = spaces.queryable()!!
+        val before = db.frameVectorDao().forSpace(active.id, 10, 0).map { it.frameId to it.blob.size }
+        photo("p2", 20)
+        fake.imageDeclared = null
+        try { maintenance().run(); fail("an IMAGE embedder must declare imageDims") } catch (e: IndexConfigException) { assertTrue(e.message!!.contains("imageDims")) }
+        assertEquals("nothing purged, nothing written", before, db.frameVectorDao().forSpace(active.id, 10, 0).map { it.frameId to it.blob.size })
+        assertEquals(listOf("p2"), spaces.missingImages(active.id, 10))
+    }
+
+    @Test fun imageWidthIsIndependentOfTheTextDimension() = runBlocking {
+        fake.dim = 256; fake.imageDeclared = 768; fake.imageWidth = 768
+        mem("m1"); fake.imageCapable = true; photo("p1", 10)
+        assertEquals(Outcome.DONE, maintenance().run())
+        assertEquals(listOf(768 * 4), db.frameVectorDao().forSpace(spaces.queryable()!!.id, 10, 0).map { it.blob.size })
     }
 
     @Test fun aLibraryOfOnlyUndecodablePhotosNeverSwapsWithZeroImageVectors() = runBlocking {

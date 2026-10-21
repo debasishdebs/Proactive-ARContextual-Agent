@@ -95,6 +95,7 @@ abstract class EmbeddingDao {
             if (b.fingerprint == space.fingerprint) { imageDims?.let { purgeWrongWidthImages(b.id, it) }; return b } // resuming drops rows of a wrong width
             discard(b.id)
         }
+        clearUnembeddable() // a new build: earlier decode failures (maybe a broken decoder's) are retried; resuming a build, above, keeps its marks
         unusedWith(space.fingerprint).forEach { discard(it) } // a STALE/RETIRED row would block the unique fingerprint
         insertSpace(space)
         return space
@@ -114,6 +115,10 @@ abstract class EmbeddingDao {
             " ORDER BY f.ts DESC, f.id LIMIT :limit",
     )
     abstract suspend fun missingImageIds(spaceId: String, limit: Int): List<String>
+
+    /** `unembeddable` marks belong to a space build: a build for a new fingerprint starts without them (a fixed decoder gets a fresh chance). */
+    @Query("UPDATE frame_meta SET imageVectorSpace = NULL WHERE imageVectorSpace = 'unembeddable'")
+    abstract suspend fun clearUnembeddable(): Int
 
     @Query("SELECT COUNT(*) FROM frame") protected abstract suspend fun storedPhotoCount(): Int
     @Query("SELECT COUNT(*) FROM frame f JOIN frame_meta m ON m.frameId = f.id WHERE m.imageVectorSpace = 'unembeddable'") protected abstract suspend fun unembeddablePhotoCount(): Int
@@ -152,6 +157,11 @@ abstract class EmbeddingDao {
         putFrameVector(FrameVectorEntity(frameId, spaceId, blob))
         return ImagePut.STORED
     }
+
+    /** [putImageVector] for a batch in one transaction; returns how many were stored (wrong widths are skipped, never stored). */
+    @Transaction
+    open suspend fun putImageVectors(rows: List<FrameVectorEntity>, expectedDims: Int): Int =
+        rows.count { putImageVector(it.frameId, it.spaceId, it.blob, expectedDims) == ImagePut.STORED }
 
     /** [putImageVector], only into a BUILDING or ACTIVE space and only for a photo that still exists (a late write after expiry or Forget is dropped). */
     @Transaction

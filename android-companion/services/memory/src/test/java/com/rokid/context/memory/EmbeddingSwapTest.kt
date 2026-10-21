@@ -189,10 +189,10 @@ class EmbeddingSwapTest {
         mem("m1")
         val s = spaces()
         val a = s.build("fpA"); s.swapIfComplete(a.id)
+        val b = s.build("fpB")
         frame("bad"); frame("legacy")
         db.frameMetaDao().upsert(FrameMetaEntity("bad", null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, null, 1))
         s.markUnembeddable("bad"); s.markUnembeddable("legacy") // legacy: no frame_meta row yet
-        val b = s.build("fpB")
         frame("good"); fvec("good", b.id) // one real image vector: a library where every photo is marked would be refused
         assertEquals(emptyList<String>(), s.missingImages(b.id, 10))
         assertEquals(0, s.missingImageCount(b.id))
@@ -253,8 +253,8 @@ class EmbeddingSwapTest {
         mem("m1")
         val s = spaces()
         val a = s.build("fpA"); s.swapIfComplete(a.id)
+        val b = s.build("fpB") // marks made during this build
         frame("x"); frame("y"); s.markUnembeddable("x"); s.markUnembeddable("y")
-        val b = s.build("fpB")
         assertEquals(0, s.missingImageCount(b.id))
         assertEquals(ImageSwapHealth.NO_VECTORS, s.imageSwapHealth(b.id))
         assertFalse(s.swapIfComplete(b.id, requireImages = true))
@@ -274,5 +274,28 @@ class EmbeddingSwapTest {
         repeat(10) { db.frameDao().insertIgnore(FrameEntity("more$it", 1, "/p", "glasses")); fvec("more$it", b.id) } // now 11 of 31 are marked
         assertEquals(ImageSwapHealth.OK, s.imageSwapHealth(b.id))
         assertTrue(s.swapIfComplete(b.id, requireImages = true))
+    }
+
+    @Test fun aNewFingerprintBuildClearsUnembeddableMarksButAResumedOneKeepsThem() = runBlocking {
+        mem("m1")
+        val s = spaces()
+        val a = s.build("fpA"); s.swapIfComplete(a.id)
+        val b = s.build("fpB")
+        for (i in 0 until 12) { frame("bad$i"); s.markUnembeddable("bad$i") }
+        frame("ok0"); frame("ok1"); frame("ok2")
+        s.startBuilding("fpB", "{}", 2, "[]", 11) // resume: marks stay
+        assertEquals("unembeddable", db.frameMetaDao().get("bad0")!!.imageVectorSpace)
+        for (i in 0 until 8) { frame("more$i"); s.markUnembeddable("more$i") } // 20 of 23 marked, no vectors: refused
+        assertEquals(ImageSwapHealth.NO_VECTORS, s.imageSwapHealth(b.id))
+        assertFalse(s.swapIfComplete(b.id, requireImages = true))
+        val c = s.startBuilding("fpC", "{}", 2, "[]", 12) // a new fingerprint: a fresh chance
+        assertEquals(null, db.frameMetaDao().get("bad0")!!.imageVectorSpace)
+        assertEquals(23, s.missingImageCount(c.id))
+    }
+
+    @Test fun putImageVectorsStoresABatchAndSkipsWrongWidths() = runBlocking {
+        frame("f1"); frame("f2")
+        val n = dao.putImageVectors(listOf(FrameVectorEntity("f1", "sX", VectorCodec.encode(floatArrayOf(1f, 0f, 0f))), FrameVectorEntity("f2", "sX", VectorCodec.encode(floatArrayOf(1f)))), 3)
+        assertEquals(1, n); assertEquals(1, db.frameVectorDao().countForSpace("sX"))
     }
 }
