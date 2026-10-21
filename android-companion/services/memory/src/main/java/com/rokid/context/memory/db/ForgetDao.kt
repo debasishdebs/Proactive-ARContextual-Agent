@@ -41,6 +41,8 @@ abstract class ForgetDao {
     @Query("UPDATE memory SET reviewState = 'INVALIDATED' WHERE id IN (:ids)") abstract suspend fun invalidate(ids: List<String>): Int
 
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertTombstone(t: ForgetTombstoneEntity): Long
+    /** Those of [frameIds] that are wave-1+ keyframes (have a `frame_meta` row). */
+    @Query("SELECT frameId FROM frame_meta WHERE frameId IN (:frameIds)") abstract suspend fun keyframeIds(frameIds: List<String>): List<String>
     @Query("SELECT frameId FROM forget_tombstone WHERE frameId IN (:frameIds)") abstract suspend fun tombstoned(frameIds: List<String>): List<String>
 
     @Query("SELECT frameId FROM forget_tombstone") abstract suspend fun allTombstones(): List<String>
@@ -99,27 +101,37 @@ abstract class ForgetDao {
     @Query(
         "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
             "WHERE s.state IN ('NEAR_DUP','CLUSTERED') " + SKIPPED_PHOTO +
-            "AND MAX(s.updatedAt, :since) + :windowMs <= :nowMs ORDER BY s.updatedAt, f.id LIMIT :limit",
+            "AND MAX(s.updatedAt, :since) + :windowMs <= :nowMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs) ORDER BY s.updatedAt, f.id LIMIT :limit",
     )
-    abstract suspend fun skippedPhotosDue(since: Long, windowMs: Long, nowMs: Long, limit: Int): List<String>
+    abstract suspend fun skippedPhotosDue(since: Long, windowMs: Long, nowMs: Long, protectMs: Long, limit: Int): List<String>
 
     /** Per-kind photo retention: keyframes past `max(frame.ts, [since]) + [windowMs]` that a memory cites (`memory.frameId` or `frame_source`). */
     @Query(
         "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
             "WHERE " + PHOTO_ELIGIBLE +
             "AND (EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id)) " +
-            "AND MAX(f.ts, :since) + :windowMs <= :nowMs ORDER BY f.ts, f.id LIMIT :limit",
+            "AND MAX(f.ts, :since) + :windowMs <= :nowMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs) ORDER BY f.ts, f.id LIMIT :limit",
     )
-    abstract suspend fun linkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, limit: Int): List<String>
+    abstract suspend fun linkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, protectMs: Long, limit: Int): List<String>
 
     /** The same for keyframes no memory cites: [windowMs] already includes the describe-before-delete grace. */
     @Query(
         "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
             "WHERE " + PHOTO_ELIGIBLE +
             "AND NOT EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id) " +
-            "AND MAX(f.ts, :since) + :windowMs <= :nowMs ORDER BY f.ts, f.id LIMIT :limit",
+            "AND MAX(f.ts, :since) + :windowMs <= :nowMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs) ORDER BY f.ts, f.id LIMIT :limit",
     )
-    abstract suspend fun unlinkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, limit: Int): List<String>
+    abstract suspend fun unlinkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, protectMs: Long, limit: Int): List<String>
+
+    /**
+     * A keyframe still CAPTION_QUEUED [ageMs] after `max(its last change, since)` becomes a skipped photo: NEAR_DUP with lastError
+     * `caption_expired` (the skipped rules then apply, behind the upgrade protection). Returns how many moved.
+     */
+    @Query(
+        "UPDATE frame_state SET state = 'NEAR_DUP', lastError = 'caption_expired', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE state = 'CAPTION_QUEUED' AND frameId IN (SELECT frameId FROM frame_meta) AND MAX(updatedAt, :since) + :ageMs <= :nowMs",
+    )
+    abstract suspend fun expireCaptionQueued(since: Long, ageMs: Long, nowMs: Long): Int
 
     /** Memories of [type] created before [beforeMs], in any review state. */
     @Query("SELECT id FROM memory WHERE type = :type AND createdAt < :beforeMs ORDER BY createdAt LIMIT :limit")
@@ -153,18 +165,22 @@ abstract class ForgetDao {
 
     companion object {
         /** A frame whose cluster is still being built, summarised or retried is never expired. */
+        /**
+         * Not a cluster representative: no CLUSTER_REP `frame_source` row, and not in its cluster's `repFrameIds` (the row goes with an expired
+         * summary; the cluster keeps the list). LIKE may over-match ids with `_`: that only protects a frame.
+         */
+        const val NOT_A_REP =
+            "AND NOT EXISTS (SELECT 1 FROM frame_source r WHERE r.frameId = f.id AND r.role = 'CLUSTER_REP') " +
+                "AND NOT EXISTS (SELECT 1 FROM frame_cluster rc WHERE rc.clusterId = m.clusterId AND rc.repFrameIds LIKE '%\"' || f.id || '\"%') "
         const val CLUSTER_SETTLED =
             "AND NOT EXISTS (SELECT 1 FROM frame_cluster c WHERE c.clusterId = m.clusterId AND c.state NOT IN ('SUMMARIZED','FAILED_FINAL')) "
         /** Skipped-photo guard, shared by [skippedPhotosDue] and the photo query that must leave those frames to it. */
         const val SKIPPED_PHOTO =
-            "AND COALESCE(m.salience, 0) < 0.5 AND m.dwell = 0 " +
-                "AND NOT EXISTS (SELECT 1 FROM frame_source r WHERE r.frameId = f.id AND r.role = 'CLUSTER_REP') " +
-                "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " + CLUSTER_SETTLED
+            "AND (COALESCE(m.salience, 0) < 0.5 OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " +
+                NOT_A_REP + CLUSTER_SETTLED
         /** Photo retention applies to every keyframe not owed work, not forgotten, not a skipped photo (those follow [SKIPPED_PHOTO]'s window). */
         const val PHOTO_ELIGIBLE =
-            "s.state NOT IN ('PENDING','EXTRACTING','FAILED','IN_CLUSTER','CAPTION_QUEUED') " +
-                "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " + CLUSTER_SETTLED +
-                "AND NOT (s.state IN ('NEAR_DUP','CLUSTERED') AND COALESCE(m.salience, 0) < 0.5 AND m.dwell = 0 " +
-                "AND NOT EXISTS (SELECT 1 FROM frame_source r WHERE r.frameId = f.id AND r.role = 'CLUSTER_REP')) "
+            "s.state NOT IN ('PENDING','EXTRACTING','FAILED','IN_CLUSTER','CAPTION_QUEUED') " + CLUSTER_SETTLED +
+                "AND NOT (s.state IN ('NEAR_DUP','CLUSTERED') AND (COALESCE(m.salience, 0) < 0.5 OR COALESCE(s.lastError, '') = 'caption_expired') AND m.dwell = 0 " + NOT_A_REP + ") "
     }
 }

@@ -78,4 +78,12 @@ class RetentionSettingsTest {
         assertEquals(true, note.contains("Photos are removed 30 days after they were taken"))
         assertEquals(true, note.contains("captions and scene summaries stay"))
     }
+
+    /** I2: the note is the same whatever the photo window (skipped photos included), and goes once the 7 days are over. */
+    @Test fun upgradeNoteIsExactAndTemporary() {
+        val text = "Photos you already have are kept at least 7 days from this update."
+        assertEquals(text, MemorySettingsViewModel.upgradeNote(MemorySettings(photoDays = 30), 1_000L))
+        assertEquals(text, MemorySettingsViewModel.upgradeNote(MemorySettings(photoDays = 1, skippedPhotoDays = 0, perKindSince = 1_000L), 1_000L + 6 * 24 * 3_600_000L))
+        assertEquals(null, MemorySettingsViewModel.upgradeNote(MemorySettings(perKindSince = 1_000L), 1_000L + 8 * 24 * 3_600_000L))
+    }
 }

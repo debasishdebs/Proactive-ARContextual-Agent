@@ -67,7 +67,11 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
  * descendants: each derived memory expires on its own window. A photo goes through [ForgetService.expirePhotos] (frame row, JPEG and
  * sidecar; the tombstone lets the sweep retry a failed delete). [onChunk] gets each committed chunk.
  */
-internal class Retention(private val graph: MemoryGraph, private val service: ForgetService) {
+internal class Retention(
+    private val graph: MemoryGraph,
+    private val service: ForgetService,
+    private val describeBeforeDeleteReady: Boolean = DESCRIBE_BEFORE_DELETE_READY,
+) {
     data class Summary(val skippedDeleted: Int = 0, val deletedUndescribed: Int = 0)
 
     suspend fun run(s: MemorySettings, nowMs: Long, onChunk: suspend (ForgetService.Result) -> Unit = {}): Summary {
@@ -96,10 +100,12 @@ internal class Retention(private val graph: MemoryGraph, private val service: Fo
                 onChunk(service.expire(ids))
             }
         }
+        // 3b. A key-moment photo still waiting for its caption after 14 days becomes a skipped photo.
+        dao.expireCaptionQueued(since, CAPTION_QUEUE_DAYS * DAY, nowMs)
         // 4. Ordinary skipped photos.
         var skipped = 0
         for (round in 0 until MAX_ROUNDS) {
-            val ids = dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, CHUNK)
+            val ids = dao.skippedPhotosDue(since, s.skippedPhotoDays * DAY, nowMs, PROTECT_MS, CHUNK)
             if (ids.isEmpty()) break
             skipped += ids.size
             onChunk(service.expirePhotos(ids))
@@ -109,12 +115,13 @@ internal class Retention(private val graph: MemoryGraph, private val service: Fo
         if (s.photoDays != MemorySettings.FOREVER) {
             val window = s.photoDays * DAY
             for (round in 0 until MAX_ROUNDS) {
-                val ids = dao.linkedPhotosDue(since, window, nowMs, CHUNK)
+                val ids = dao.linkedPhotosDue(since, window, nowMs, PROTECT_MS, CHUNK)
                 if (ids.isEmpty()) break
                 onChunk(service.expirePhotos(ids))
             }
-            for (round in 0 until MAX_ROUNDS) {
-                val ids = dao.unlinkedPhotosDue(since, window + GRACE_DAYS * DAY, nowMs, CHUNK)
+            // I1: only once describe-before-delete ships; until then an undescribed, non-skipped photo is never deleted.
+            if (describeBeforeDeleteReady) for (round in 0 until MAX_ROUNDS) {
+                val ids = dao.unlinkedPhotosDue(since, window + GRACE_DAYS * DAY, nowMs, PROTECT_MS, CHUNK)
                 if (ids.isEmpty()) break
                 undescribed += ids.size
                 onChunk(service.expirePhotos(ids))
@@ -137,14 +144,19 @@ internal class Retention(private val graph: MemoryGraph, private val service: Fo
         return Summary(skipped, undescribed)
     }
 
-    private companion object {
-        const val CHUNK = 200
-        const val MAX_ROUNDS = 50
-        const val HOUR = 3_600_000L
-        const val DAY = 24 * HOUR
+    companion object {
+        /** Task 9 ships describe-before-delete and flips this: until then an undescribed, non-skipped photo is never deleted (fix round 1, I1). */
+        const val DESCRIBE_BEFORE_DELETE_READY = false
+        private const val CHUNK = 200
+        private const val MAX_ROUNDS = 50
+        private const val HOUR = 3_600_000L
+        private const val DAY = 24 * HOUR
         /** Spec §P6.4: an undescribed photo is kept this long past its deadline (Task 9 adds the describe-before-delete work). */
-        const val GRACE_DAYS = 3L
-        const val CAPTION = "caption"
-        const val CLUSTER_SUMMARY = "cluster_summary"
+        private const val GRACE_DAYS = 3L
+        /** Photos that existed when per-kind retention started are kept this long after the stamp, whatever their kind (I2). */
+        private const val PROTECT_MS = 7 * 24 * HOUR
+        private const val CAPTION_QUEUE_DAYS = 14L
+        private const val CAPTION = "caption"
+        private const val CLUSTER_SUMMARY = "cluster_summary"
     }
 }
