@@ -901,23 +901,38 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
-    @Test fun theHoldDoesNotSpinTheTickLoopAndTheCheckOpensAtHoldEndMinusLead() = runTest {
+    @Test fun theHoldDoesNotSpinTheTickLoopAndTheCheckOpensAtHoldEnd() = runTest {
         val r = glanceRig(this)
         r.session.start()
         while (r.keyframes.size < 3 && r.clock() < 59_000) { r.gyro(1_000, 0f); r.scene++ }
         assertEquals(3, r.keyframes.size)
-        val first = r.keyframes[0].first
-        val holdEnd = first + 60_000
+        val holdEnd = r.keyframes[0].first + 60_000
         r.tvFor(holdEnd - 3_000)
         val reads = r.profileReads
         val opens = r.camera.opens
-        while (r.clock() < holdEnd - 1_600) { r.gyro(20, 0f); r.scene++ }
-        assertEquals(opens, r.camera.opens, "no open before the hold end minus the longest lead")
+        while (r.clock() < holdEnd - 20) { r.gyro(20, 0f); r.scene++ }
+        assertEquals(opens, r.camera.opens, "no open before the hold end")
         while (r.clock() < holdEnd + 300) { r.gyro(20, 0f); r.scene++ }
-        assertTrue(r.camera.opens > opens, "the deferred check opened by the hold end: ${r.camera.openTimes}")
-        assertTrue(r.camera.openTimes.last() >= holdEnd - 1_600, "${r.camera.openTimes}")
-        val wakeups = r.profileReads - reads
-        assertTrue(wakeups < 60, "tick wake-ups over ~4.9 s: $wakeups (a spin is ~1 per ms)")
+        assertTrue(r.camera.opens > opens, "the deferred check opened at the hold end: ${r.camera.openTimes}")
+        assertTrue(r.profileReads - reads < 80, "tick wake-ups over ~3.3 s: ${r.profileReads - reads} (a spin is ~1 per ms)")
         r.session.stop("test")
     }
+
+    /** Task 9 re-review: the deferred open lands its frame after the oldest keep has aged out, whatever the camera's start-up time. */
+    private suspend fun TestScope.deferredCheckKeeps(startupMs: Long) {
+        val r = Rig(this, HudSettings(captureMode = CaptureMode.SMART), startupMs = { startupMs }, glance = GlanceParams())
+            .apply { profile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0) }
+        r.session.start()
+        while (r.keyframes.size < 3 && r.clock() < 59_000) { r.gyro(1_000, 0f); r.scene++ }
+        assertEquals(3, r.keyframes.size, "keeps=${r.keyframes.map { it.first }}")
+        val holdEnd = r.keyframes[0].first + 60_000
+        r.tvFor(holdEnd + 4_000)
+        val after = r.keyframes.filter { it.first >= holdEnd }
+        assertTrue(after.isNotEmpty(), "the deferred check ended in a keep (not a capped frame): opens=${r.camera.openTimes} keeps=${r.keyframes.map { it.first }} holdEnd=$holdEnd")
+        r.session.stop("test")
+    }
+
+    @Test fun deferredCheckKeepsWhenStartupIsShorterThanTheLead() = runTest { deferredCheckKeeps(300) }
+
+    @Test fun deferredCheckKeepsWhenStartupIsLongerThanTheLead() = runTest { deferredCheckKeeps(900) }
 }

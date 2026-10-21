@@ -318,8 +318,9 @@ class SamplingSession(
                     val forced = forceBrief || pendingDwellAt != null || pendingNowAt != null
                     val lead = briefLeadMs()
                     // A timer check whose frame the cap would drop anyway does not power up the camera (battery wave A3, task 9).
-                    val hold = if (!forced && dueAt != null && now + lead >= dueAt) gate.timerHoldUntil(capNow(), now)?.takeIf { now + lead < it } else null // the hold ends a start-up lead early so the frame lands as the oldest keep ages out (no 1 ms spin at its end)
-                    if (hold != null) wait = (hold - lead - now).coerceIn(1L, TICK_MS)
+                    // It opens at the END of the hold, not a start-up lead early: the frame must land after the oldest keep has aged out.
+                    val hold = if (!forced && dueAt != null && now + lead >= dueAt) gate.timerHoldUntil(capNow(), now)?.takeIf { it > now } else null
+                    if (hold != null) wait = (hold - now).coerceIn(HOLD_MIN_WAIT_MS, TICK_MS) // never the 1 ms floor while a hold is live
                     else if (forced || (dueAt != null && now + lead >= dueAt)) startEpisode(continuous = false, now)
                     else if (dueAt != null) wait = (dueAt - lead - now).coerceIn(1L, TICK_MS)
                 }
@@ -602,6 +603,7 @@ class SamplingSession(
     companion object {
         const val OWNER = "session"
         const val TICK_MS = 250L
+        private const val HOLD_MIN_WAIT_MS = 50L
         const val ANALYSIS_MS = 333L
         /** Older than any brief-check cadence (5 s, 15 s, x2 for heat): a check anchored here is due now. */
         const val DUE_NOW_MS = 40_000L
