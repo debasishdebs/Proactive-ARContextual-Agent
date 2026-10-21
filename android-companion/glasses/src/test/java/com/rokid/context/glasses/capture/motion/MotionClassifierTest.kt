@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
 
 class MotionClassifierTest {
     private var now = 0L
-    private val c = MotionClassifier { now }
+    private val c = MotionClassifier({ now }, GlanceParams.LEGACY)
     private val dwells = mutableListOf<Long>()
     private val onsets = mutableListOf<Long>()
 
@@ -194,7 +194,7 @@ class MotionClassifierTest {
     @Test fun batchedHeadTurnEmitsOneOnsetAndAnExactDwell() {
         for (first in listOf(true, false)) {
             onsets.clear(); dwells.clear()
-            val k = MotionClassifier { 0L }
+            val k = MotionClassifier({ 0L }, GlanceParams.LEGACY)
             k.onsetListener = { onsets += it }; k.dwellListener = { dwells += it }
             var batch = 0L
             while (batch < 4000) {
@@ -213,7 +213,7 @@ class MotionClassifierTest {
     @Test fun batchedShortGlanceIsDetectedInEitherOrder() {
         for (first in listOf(true, false)) {
             onsets.clear(); dwells.clear()
-            val k = MotionClassifier { 0L }
+            val k = MotionClassifier({ 0L }, GlanceParams.LEGACY)
             k.onsetListener = { onsets += it }; k.dwellListener = { dwells += it }
             var batch = 0L
             while (batch < 4000) {
@@ -230,7 +230,7 @@ class MotionClassifierTest {
 
     @Test fun walkingDetectedAt20HzInBatchesInEitherOrder() {
         for (first in listOf(true, false)) {
-            val k = MotionClassifier { 0L }
+            val k = MotionClassifier({ 0L }, GlanceParams.LEGACY)
             var detectedAt = -1L
             var batch = 0L
             while (batch < 4000 && detectedAt < 0) {
@@ -254,5 +254,90 @@ class MotionClassifierTest {
             t += 50
         }
         assertTrue(detectedAt in 0..3000, "walking detected at $detectedAt")
+    }
+
+    // ---- battery wave A3: glance model, head pose, per-second features ----
+
+    private fun defaults() = MotionClassifier({ now }).also { k ->
+        k.dwellListener = { dwells += it }
+    }
+
+    private fun gyroOn(k: MotionClassifier, from: Long, ms: Long, mag: Float, z: Float = 0f) {
+        var t = from
+        while (t < from + ms) { now = t; if (z != 0f) k.onGyro(0f, 0f, z, t) else k.onGyro(mag, 0f, 0f, t); t += 20 }
+    }
+
+    @Test fun defaultsIgnoreMicroMotion() {
+        val k = defaults()
+        for (i in 0 until 10) { gyroOn(k, i * 2000L, 60, 1.5f); gyroOn(k, i * 2000L + 60, 1940, 0f) }
+        gyroOn(k, 20_000, 1000, 0f)
+        assertTrue(dwells.isEmpty(), "dwells=$dwells")
+        assertEquals(10, k.takeGlanceCounts().micro)
+        assertEquals(GlanceCounts(0, 0), k.takeGlanceCounts())
+    }
+
+    @Test fun defaultsDwellAfterRealTurnAndOneAndAHalfSeconds() {
+        val k = defaults()
+        gyroOn(k, 0, 400, 1.5f) // last above sample at 380
+        gyroOn(k, 400, 4000, 0f)
+        assertEquals(listOf(380L + 1_500), dwells)
+        assertEquals(GlanceCounts(1, 0), k.takeGlanceCounts())
+    }
+
+    @Test fun poseIntegratesNetTurn() {
+        val k = defaults()
+        gyroOn(k, 0, 500, 0f, z = 1f)
+        assertEquals(0.5f, k.rotationSinceMarkRad(), 0.03f)
+        gyroOn(k, 500, 500, 0f, z = -1f)
+        assertEquals(0f, k.rotationSinceMarkRad(), 0.05f)
+        gyroOn(k, 1000, 500, 0f, z = 1f)
+        k.markPose()
+        assertEquals(0f, k.rotationSinceMarkRad(), 1e-6f)
+    }
+
+    @Test fun deadbandSkipsBias() {
+        val k = defaults()
+        gyroOn(k, 0, 60_000, 0.03f)
+        assertTrue(k.rotationSinceMarkRad() < 0.01f)
+    }
+
+    @Test fun walkedSinceMarkAfterWalking() {
+        val k = defaults()
+        assertFalse(k.walkedSinceMark())
+        var t = 0L
+        while (t < 2000) { k.onLinearAccel(0f, 2.0f * sin(2 * PI * 2.0 * t / 1000.0).toFloat(), 0f, t); t += 20 }
+        assertEquals(MotionState.WALKING, k.state.value)
+        assertTrue(k.walkedSinceMark())
+        k.markPose()
+        assertFalse(k.walkedSinceMark())
+    }
+
+    @Test fun featuresCarryPerSecondStats() {
+        val k = defaults()
+        gyroOn(k, 0, 1000, 1.0f)
+        val f = k.features()
+        assertEquals(1.0f, f.gyroMean, 0.01f)
+        assertEquals(1.0f, f.gyroRms, 0.01f)
+        assertEquals(1.0f, f.aboveOnFrac, 1e-6f)
+        assertEquals(1.0f, f.rotRad, 0.05f)
+        val g = k.features()
+        assertEquals(0f, g.gyroMean); assertEquals(0f, g.aboveOnFrac); assertEquals(0f, g.rotRad)
+        assertEquals(0, g.glances); assertEquals(0, g.micro)
+    }
+
+    @Test fun defaultsAtBatchedStillRateAreOrderIndependent() {
+        for (first in listOf(true, false)) {
+            val k = MotionClassifier({ 0L }); val d = mutableListOf<Long>()
+            k.dwellListener = { d += it }
+            var batch = 0L
+            while (batch < 5000) {
+                val ts = (batch until batch + 500 step 50).toList()
+                val g = { for (t in ts) k.onGyro(if (t in 2000..2350) 2f else 0f, 0f, 0f, t) }
+                val a = { for (t in ts) k.onLinearAccel(0f, 0f, 0f, t) }
+                if (first) { g(); a() } else { a(); g() }
+                batch += 500
+            }
+            assertEquals(listOf(3850L), d, "gyroFirst=$first")
+        }
     }
 }
