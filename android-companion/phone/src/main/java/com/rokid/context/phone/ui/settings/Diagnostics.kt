@@ -83,6 +83,8 @@ interface KeyframeDiagnostics {
     suspend fun droppedNudges(): Map<String, Int>
     /** v2 frames ingested with defaults after their sidecar stayed lost. */
     suspend fun sidecarLost(): Int
+    /** Retention counters (count only): ordinary skipped photos deleted, photos described by the night job, photos deleted undescribed (must stay 0). */
+    suspend fun retentionCounters(): RetentionCounters = RetentionCounters()
     /** False when the stored VISION_EXTRACT prompt still has the facts-only schema. */
     suspend fun promptIsCurrent(): Boolean
     /** False when the stored CLUSTER_SUMMARY prompt lacks `cluster_id` / `source_frame_ids` (then one cluster per call). */
@@ -99,11 +101,15 @@ interface KeyframeDiagnostics {
     }
 }
 
+/** Task 8/9 counters. [deletedUndescribed] is a guarantee: it must stay 0. */
+data class RetentionCounters(val skippedDeleted: Int = 0, val describedBeforeDelete: Int = 0, val deletedUndescribed: Int = 0)
+
 /** The Keyframes block of Diagnostics: the stats plus the loaded extras. */
 data class KeyframeRows(
     val stats: KeyframeStats = KeyframeStats(),
     val droppedNudges: Map<String, Int> = emptyMap(),
     val sidecarLost: Int = 0,
+    val retention: RetentionCounters = RetentionCounters(),
     val promptCurrent: Boolean = true,
     val clusterPromptCurrent: Boolean = true,
 )
@@ -133,7 +139,7 @@ class DiagnosticsViewModel(
     private fun refreshKeyframes() {
         viewModelScope.launch {
             val loaded = try {
-                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent()) }
+                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), retention = keyframes.retentionCounters(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent()) }
             } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.i(TAG, "keyframe extras failed (${e.javaClass.simpleName})"); return@launch }
             extras.value = loaded
         }
@@ -312,6 +318,7 @@ object KeyframeLines {
             Line("kf_latency", "Capture to memory: p50 ${ms(st.latencyP50Ms)} \u00b7 p95 ${ms(st.latencyP95Ms)}"),
             Line("kf_dropped", "Dropped nudges: $dropped"),
             Line("kf_sidecar", "Lost sidecars: ${k.sidecarLost}"),
+            Line("kf_retention", "Photos deleted: skipped ${k.retention.skippedDeleted} \u00b7 described first ${k.retention.describedBeforeDelete} \u00b7 undescribed ${k.retention.deletedUndescribed}"),
         )
     }
 }

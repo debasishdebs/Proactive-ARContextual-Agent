@@ -62,7 +62,7 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
  * counts as the first run, so nothing is deleted by a per-kind deadline); (2) the SHORT/MEDIUM/LONG tier windows, which leave captions and
  * cluster summaries alone; (3) captions and cluster summaries by their own windows (FOREVER = never); (4) ordinary skipped photos (shed,
  * semantic near-dup, non-representative cluster members; never a representative or a key moment) after `skippedPhotoDays`; (5) every other
- * keyframe photo after `photoDays` (an unlinked one only after a further [GRACE_DAYS]); (6) image vectors after `imageVectorDays`; (7) the
+ * keyframe photo after `photoDays` while a memory cites it (a described-before-delete one after a further [GRACE_DAYS]; one no memory cites never); (6) image vectors after `imageVectorDays`; (7) the
  * legacy orphan pass for frames that have no `frame_meta`. Expiry deletes the rows with their edges and vectors and never invalidates
  * descendants: each derived memory expires on its own window. A photo goes through [ForgetService.expirePhotos] (frame row, JPEG and
  * sidecar; the tombstone lets the sweep retry a failed delete). [onChunk] gets each committed chunk.
@@ -72,6 +72,7 @@ internal class Retention(
     private val service: ForgetService,
     private val describeBeforeDeleteReady: Boolean = DESCRIBE_BEFORE_DELETE_READY,
 ) {
+    /** [deletedUndescribed] is 0 by construction (expiry requires a citing memory); it is kept as the Diagnostics counter that proves it. */
     data class Summary(val skippedDeleted: Int = 0, val deletedUndescribed: Int = 0)
 
     suspend fun run(s: MemorySettings, nowMs: Long, onChunk: suspend (ForgetService.Result) -> Unit = {}): Summary {
@@ -110,21 +111,16 @@ internal class Retention(
             skipped += ids.size
             onChunk(service.expirePhotos(ids))
         }
-        // 5. Other keyframe photos: linked at photoDays, unlinked after the grace.
-        var undescribed = 0
+        // 5. Other keyframe photos, deleted only while a memory cites them. An undescribed photo is never deleted: the night job (NightIndexWorker)
+        // describes it first, and the photo then waits [GRACE_DAYS] past its deadline (describe-before-delete). A failed describe or an
+        // offline phone leaves the photo alone, however long that lasts. [describeBeforeDeleteReady] gates the deletion of described ones.
         if (s.photoDays != MemorySettings.FOREVER) {
             val window = s.photoDays * DAY
+            val ready = if (describeBeforeDeleteReady) 1 else 0
             for (round in 0 until MAX_ROUNDS) {
-                val ids = dao.linkedPhotosDue(since, window, nowMs, PROTECT_MS, CHUNK)
+                val ids = dao.linkedPhotosDue(since, window, nowMs, PROTECT_MS, ready, GRACE_DAYS * DAY, CHUNK)
                 if (ids.isEmpty()) break
-                onChunk(service.expirePhotos(ids))
-            }
-            // I1: only once describe-before-delete ships; until then an undescribed, non-skipped photo is never deleted.
-            if (describeBeforeDeleteReady) for (round in 0 until MAX_ROUNDS) {
-                val ids = dao.unlinkedPhotosDue(since, window + GRACE_DAYS * DAY, nowMs, PROTECT_MS, CHUNK)
-                if (ids.isEmpty()) break
-                undescribed += ids.size
-                onChunk(service.expirePhotos(ids))
+                onChunk(service.expirePhotos(ids, requireLinked = true))
             }
         }
         // 6. Image vectors (all spaces); the photo stays. The marker keeps the backfill from re-embedding what was removed.
@@ -141,17 +137,20 @@ internal class Retention(
             if (frames.isEmpty()) break
             frames.forEach { onChunk(service.forgetMoment(it)) }
         }
-        return Summary(skipped, undescribed)
+        return Summary(skipped, 0)
     }
 
     companion object {
-        /** Task 9 ships describe-before-delete and flips this: until then an undescribed, non-skipped photo is never deleted (fix round 1, I1). */
-        const val DESCRIBE_BEFORE_DELETE_READY = false
+        /**
+         * Describe-before-delete ships (Task 9): the night job describes every due, undescribed, non-skipped photo, and a described photo is
+         * deleted at its deadline + [GRACE_DAYS]. An undescribed photo is never deleted, whether or not this is on.
+         */
+        const val DESCRIBE_BEFORE_DELETE_READY = true
         private const val CHUNK = 200
         private const val MAX_ROUNDS = 50
         private const val HOUR = 3_600_000L
         private const val DAY = 24 * HOUR
-        /** Spec §P6.4: an undescribed photo is kept this long past its deadline (Task 9 adds the describe-before-delete work). */
+        /** Spec §P6.4: a photo described for describe-before-delete is kept this long past its deadline. */
         private const val GRACE_DAYS = 3L
         /** Photos that existed when per-kind retention started are kept this long after the stamp, whatever their kind (I2). */
         private const val PROTECT_MS = 7 * 24 * HOUR

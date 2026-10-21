@@ -14,6 +14,8 @@ object PipelineStatsStore {
     /** Count-only Diagnostics entries (Task 8): photos retention deleted as skipped / deleted before any memory described them. */
     const val K_SKIPPED_DELETED = "skipped_photos_deleted"
     const val K_DELETED_UNDESCRIBED = "deleted_undescribed"
+    /** Count-only (Task 9): photos the night job described before they could expire. */
+    const val K_DESCRIBED_BEFORE_DELETE = "described_before_delete"
 
     data class Stats(
         val summarizerTriggered: Int,
@@ -31,6 +33,12 @@ object PipelineStatsStore {
 
     fun skippedPhotosDeleted(context: Context): Int = context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getInt(K_SKIPPED_DELETED, 0)
     fun deletedUndescribed(context: Context): Int = context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getInt(K_DELETED_UNDESCRIBED, 0)
+    fun describedBeforeDelete(context: Context): Int = context.getSharedPreferences(PREF, Context.MODE_PRIVATE).getInt(K_DESCRIBED_BEFORE_DELETE, 0)
+    fun addDescribedBeforeDelete(context: Context, n: Int) {
+        if (n <= 0) return
+        val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        p.edit().putInt(K_DESCRIBED_BEFORE_DELETE, p.getInt(K_DESCRIBED_BEFORE_DELETE, 0) + n).apply()
+    }
     fun addRetentionDeletes(context: Context, skipped: Int, undescribed: Int) {
         if (skipped <= 0 && undescribed <= 0) return
         val p = context.getSharedPreferences(PREF, Context.MODE_PRIVATE)

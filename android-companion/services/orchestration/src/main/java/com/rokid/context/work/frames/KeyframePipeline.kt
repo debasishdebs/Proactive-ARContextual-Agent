@@ -232,6 +232,37 @@ class KeyframePipeline(
     }
 
     /**
+     * The night job's drain (Task 9), from the caller's own coroutine: the caption queue (describe-before-delete photos first) through the
+     * ordinary claim / CAS extraction path with [callClass] (BACKFILL: never takes a nudge token), for at most [maxMs]. [allowed] is the bulk
+     * gate (charging or > 70 %, no capture burst), asked before every call; heat and battery saver stop it too. Stops when the queue is empty,
+     * the gate closes, a call could not run (offline: the claims are given back, nothing is lost) or a failure paused the loop. A photo whose
+     * call failed keeps its attempts; it is never deleted by a failure. Returns the frames that reached EXTRACTED.
+     */
+    suspend fun drainCaptionQueue(maxMs: Long, callClass: CallClass = CallClass.BACKFILL, allowed: suspend () -> Boolean = { true }): Int {
+        val start = System.nanoTime()
+        fun left() = maxMs - (System.nanoTime() - start) / 1_000_000L
+        var total = 0
+        var fruitless = 0
+        ensureStartRelease()
+        while (left() > 0) {
+            if (!allowed() || deferred() || power?.mayRunBackground(BackgroundWork.BACKFILL) == false) break
+            if (pausedUntilMs - clock() > 0 && !forced) break
+            forced = false
+            val rows = states.describeQueued(MAX_BATCH)
+            if (rows.isEmpty()) break
+            val picked = candidates(rows.map { it.frameId }, rows.associate { it.frameId to it.updatedAt })
+            val now = clock()
+            when (val s = runBatch(picked, callClass, user = false) { ids, claimId -> states.claimCaptionQueued(ids, claimId, now).map { it.frameId } }) {
+                is Step.Done -> { total += s.frames; if (s.frames == 0 && ++fruitless >= MAX_FRUITLESS) break }
+                is Step.Idle -> break
+            }
+            // A failure that did not count an attempt (offline) released the claims to PENDING: they wait for the next night, not for the live loop.
+            states.requeueDescribe(picked.map { it.frameId }, clock())
+        }
+        return total
+    }
+
+    /**
      * Ask with a backlog (spec §P2.3): the newest <= 3 frames from the last [windowMs] go first, as a user-started call. Frames in
      * that window that the loop already holds (its call may be waiting for a budget token) are waited for, up to [waitMs] and the
      * caller's own cap, so the ask still sees their memories (review I4).
@@ -359,7 +390,7 @@ class KeyframePipeline(
             Log.i(TAG, "extraction failed: ${e.javaClass.simpleName}")
             ExtractOutcome.classify(e, online())
         }
-        return Step.Done(settle(frames, claimId, outcome, user))
+        return Step.Done(settle(frames, claimId, outcome, user, offerToNudges = callClass != CallClass.BACKFILL))
     }
 
     /**
@@ -477,7 +508,8 @@ class KeyframePipeline(
         if (n > 0) Log.i(PIPE_TAG, "shed=$n")
     }
 
-    private suspend fun settle(frames: List<KeyframeCandidate>, claimId: String, o: ExtractOutcome, user: Boolean): Int {
+    /** [offerToNudges] false for the night job's calls: a week-old photo's memory is not a live moment (the fast-path nudge is never offered it). */
+    private suspend fun settle(frames: List<KeyframeCandidate>, claimId: String, o: ExtractOutcome, user: Boolean, offerToNudges: Boolean = true): Int {
         val now = clock()
         frames.filter { it.frameId in o.unreadable }.forEach { states.fail(it.frameId, claimId, "unreadable", now, maxAttempts = 1) }
         frames.filter { it.frameId in o.unseen && it.frameId !in o.unreadable }.forEach { states.fail(it.frameId, claimId, "unreadable", now) }
@@ -491,7 +523,7 @@ class KeyframePipeline(
                     if (lag != null && lag <= LatencyTracker.MAX_RECEIPT_LAG_MS) Log.i(PIPE_TAG, "latencyMs=${(now - it.ts).coerceAtLeast(0L)}")
                 }
                 Log.i(PIPE_TAG, "extracted=${rest.size}")
-                runCatching { onExtracted(rest, o.memories) }.onFailure { Log.w(TAG, "post-extraction hook failed: ${it.javaClass.simpleName}") }
+                if (offerToNudges) runCatching { onExtracted(rest, o.memories) }.onFailure { Log.w(TAG, "post-extraction hook failed: ${it.javaClass.simpleName}") }
                 rest.size
             }
             is ExtractOutcome.Stale -> {
@@ -527,6 +559,8 @@ class KeyframePipeline(
         /** Count-only audit log tag (ids, counts, class names; never captions, text or paths). */
         private const val PIPE_TAG = "PcPipeline"
         const val MAX_BATCH = 3
+        /** The night drain stops after this many batches in a row that settled nothing (a stale claim cannot spin it). */
+        private const val MAX_FRUITLESS = 3
         /** Above this many PENDING frames the oldest non-dwell ones beyond the newest [SHED_KEEP_NEWEST] are skipped (fix wave K5). */
         const val SHED_ABOVE = 40
         const val SHED_KEEP_NEWEST = 20

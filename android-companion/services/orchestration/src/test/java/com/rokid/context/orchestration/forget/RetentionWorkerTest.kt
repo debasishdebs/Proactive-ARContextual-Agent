@@ -272,16 +272,14 @@ class RetentionWorkerTest {
         assertEquals("m_f", graph.db.frameSourceDao().memoriesForFrame("f").single())
     }
 
-    /** Spec P6.4: with the charger never connected, an unlinked photo is still deleted on day 3 of its grace. */
-    @Test fun unlinkedPhotoGetsThreeDayGraceWithChargerNeverConnected() = runBlocking {
+    /** Task 9 (controller ruling): an undescribed photo is never deleted, not even after the grace; a failed or missing night job keeps it. */
+    @Test fun unlinkedPhotoIsNeverDeletedWithChargerNeverConnected() = runBlocking {
         val f = photo("u", t0 + hour, "EXTRACTED")
-        pass(settings(), t0 + 8 * day, gate = true) // past 7 days, inside the grace
-        assertTrue(f.exists())
-        pass(settings(), t0 + 9 * day + 12 * hour, gate = true)
-        assertTrue(f.exists())
-        val s = pass(settings(), t0 + 10 * day + 2 * hour, gate = true)
-        assertFalse(f.exists()); assertNull(frameRow("u"))
-        assertEquals(1, s.deletedUndescribed)
+        for (at in listOf(8 * day, 9 * day + 12 * hour, 10 * day + 2 * hour, 400 * day)) {
+            val s = pass(settings(), t0 + at, gate = true)
+            assertTrue("kept at +${at / day} d", f.exists() && frameRow("u") != null)
+            assertEquals(0, s.deletedUndescribed)
+        }
     }
 
     @Test fun captionsAndSummariesOutliveTierWindows() = runBlocking {
@@ -338,7 +336,7 @@ class RetentionWorkerTest {
         pass(s, since + 6 * day); assertEquals(800, graph.db.frameDao().count())
         pass(s, since + 7 * day + hour); assertEquals(200, graph.db.frameDao().count()) // skipped and linked go; unlinked wait for describe-before-delete
         pass(s, since + 30 * day); assertEquals(200, graph.db.frameDao().count()) // gate off: undescribed photos are never deleted
-        pass(s, since + 10 * day + hour, gate = true); assertEquals(0, graph.db.frameDao().count())
+        pass(s, since + 400 * day, gate = true); assertEquals(200, graph.db.frameDao().count()) // and with the gate on: only the night job's describe lets them go
         assertEquals(300, graph.db.memoryViewDao().let { dao -> (0 until 300).count { dao.byId("m_lk$it") != null } })
         // the stamp is written once
         work(); assertEquals(since, store.settings.value.perKindSince)
@@ -441,16 +439,18 @@ class RetentionWorkerTest {
         assertNull(frameRow("mb")); assertFalse(member.exists()) // the non-representative member is skipped
     }
 
-    /** I1: while describe-before-delete is not shipped, an undescribed non-skipped photo is never deleted. */
+    /** I1 / Task 9: an undescribed, non-skipped photo is never deleted, with the gate off or on; a described one waits for the gate and its grace. */
     @Test fun describeGateBothWays() = runBlocking {
         val und = photo("und", t0 + hour, "EXTRACTED")
         val lnk = photo("lnk", t0 + hour, "EXTRACTED", linked = true)
+        val dsc = photo("dsc", t0 + hour, "EXTRACTED", lastError = "describe_before_delete", linked = true)
         val skp = photo("skp", t0 + hour, "NEAR_DUP", salience = 0.1f)
-        assertEquals(false, Retention.DESCRIBE_BEFORE_DELETE_READY)
-        pass(settings(), t0 + 60 * day) // gate off (the build's constant)
-        assertTrue(und.exists()); assertFalse(lnk.exists()); assertFalse(skp.exists())
+        pass(settings(), t0 + 8 * day + hour) // gate off: a described photo waits, the ordinary linked and skipped ones go
+        assertTrue(und.exists() && dsc.exists()); assertFalse(lnk.exists()); assertFalse(skp.exists())
+        pass(settings(), t0 + 60 * day, gate = false); assertTrue(dsc.exists())
+        pass(settings(), t0 + 9 * day, gate = true); assertTrue("inside the 3-day grace", dsc.exists())
         val on = pass(settings(), t0 + 60 * day, gate = true)
-        assertFalse(und.exists()); assertEquals(1, on.deletedUndescribed)
+        assertTrue(und.exists()); assertFalse(dsc.exists()); assertEquals(0, on.deletedUndescribed)
     }
 
     /** I2: every pre-existing photo is protected for 7 days after the stamp, whatever its kind or setting. */

@@ -76,13 +76,16 @@ class ForgetService(
      * marker the sweep retries a failed delete from) and loses its `frame` row. `frame_meta`, `frame_vector`, `frame_state`, `frame_source`,
      * the memories and everything derived from them stay. [Result.framesToDelete] lists each photo's JPEG and its `.meta.json` sidecar for
      * the caller to delete (on IO, under the WipeFence, through `FrameSweep.delete`). An unknown or already expired frame is skipped.
-     * UI that assumes `memory.frameId` has a row shows "Photo expired".
+     * UI that assumes `memory.frameId` has a row shows "Photo expired". With [requireLinked] (every deadline-based expiry) a photo that no
+     * memory cites any more (the memory was forgotten or expired since the caller selected it) is skipped inside the same transaction: an
+     * undescribed photo is never deleted by retention.
      */
-    suspend fun expirePhotos(frameIds: List<String>): Result = db.withTransaction {
+    suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false): Result = db.withTransaction {
         val paths = mutableListOf<String>()
         val now = clock()
         for (id in frameIds.distinct()) {
             val frame = dao.frame(id) ?: continue
+            if (requireLinked && dao.remainingRefs(id) == 0) continue
             dao.insertTombstone(ForgetTombstoneEntity(id, now))
             dao.deleteFrame(id)
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }

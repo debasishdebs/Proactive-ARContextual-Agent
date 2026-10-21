@@ -109,23 +109,41 @@ abstract class ForgetDao {
     )
     abstract suspend fun skippedPhotosDue(since: Long, windowMs: Long, nowMs: Long, protectMs: Long, limit: Int): List<String>
 
-    /** Per-kind photo retention: keyframes past `max(frame.ts, [since]) + [windowMs]` that a memory cites (`memory.frameId` or `frame_source`). */
+    /**
+     * Per-kind photo retention: keyframes past `max(frame.ts, [since]) + [windowMs]` that a memory cites (`memory.frameId` or `frame_source`).
+     * A photo the night job described for describe-before-delete (`lastError = describe_before_delete`) waits [graceMs] more, and only when
+     * [describeReady] is 1. A photo no memory cites is never returned: an undescribed photo is never deleted (the night job describes it first).
+     */
     @Query(
         "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
             "WHERE " + PHOTO_ELIGIBLE +
             "AND (EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id)) " +
+            "AND (COALESCE(s.lastError, '') != 'describe_before_delete' OR (:describeReady = 1 AND MAX(f.ts, :since) + :windowMs + :graceMs <= :nowMs)) " +
             "AND MAX(f.ts, :since) + :windowMs <= :nowMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs) ORDER BY f.ts, f.id LIMIT :limit",
     )
-    abstract suspend fun linkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, protectMs: Long, limit: Int): List<String>
+    abstract suspend fun linkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, protectMs: Long, describeReady: Int, graceMs: Long, limit: Int): List<String>
 
-    /** The same for keyframes no memory cites: [windowMs] already includes the describe-before-delete grace. */
+    /**
+     * Night job (Task 9): keyframes that become due within [aheadMs] (`max(frame.ts, [since]) + [windowMs] <= [nowMs] + [aheadMs]`), that no
+     * memory cites, and that are not ordinary skipped photos, a cluster still being summarised, or owed work (the [PHOTO_ELIGIBLE] rule),
+     * in one of the settled states, deadline first. They are the photos describe-before-delete must caption before they may expire.
+     */
     @Query(
         "SELECT f.id FROM frame f JOIN frame_meta m ON m.frameId = f.id JOIN frame_state s ON s.frameId = f.id " +
-            "WHERE " + PHOTO_ELIGIBLE +
+            "WHERE s.state IN ('FAILED_FINAL','EXTRACTED','NEAR_DUP','CLUSTERED') AND " + PHOTO_ELIGIBLE +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = f.id) " +
             "AND NOT EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id) " +
-            "AND MAX(f.ts, :since) + :windowMs <= :nowMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs) ORDER BY f.ts, f.id LIMIT :limit",
+            "AND MAX(f.ts, :since) + :windowMs <= :nowMs + :aheadMs AND (f.ts >= :since OR :since + :protectMs <= :nowMs + :aheadMs) " +
+            "ORDER BY MAX(f.ts, :since), f.id LIMIT :limit",
     )
-    abstract suspend fun unlinkedPhotosDue(since: Long, windowMs: Long, nowMs: Long, protectMs: Long, limit: Int): List<String>
+    abstract suspend fun describeDue(since: Long, windowMs: Long, nowMs: Long, aheadMs: Long, protectMs: Long, limit: Int): List<String>
+
+    /** How many of [frameIds] some memory cites now (`memory.frameId` or `frame_source`). */
+    @Query(
+        "SELECT COUNT(*) FROM frame f WHERE f.id IN (:frameIds) AND (EXISTS (SELECT 1 FROM memory x WHERE x.frameId = f.id) " +
+            "OR EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = f.id))",
+    )
+    abstract suspend fun citedCount(frameIds: List<String>): Int
 
     /**
      * A keyframe still CAPTION_QUEUED [ageMs] after `max(its last change, since)` becomes a skipped photo: NEAR_DUP with lastError
@@ -133,7 +151,7 @@ abstract class ForgetDao {
      */
     @Query(
         "UPDATE frame_state SET state = 'NEAR_DUP', lastError = 'caption_expired', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
-            "WHERE state = 'CAPTION_QUEUED' AND MAX(updatedAt, :since) + :ageMs <= :nowMs " +
+            "WHERE state = 'CAPTION_QUEUED' AND COALESCE(lastError, '') != 'describe_before_delete' AND MAX(updatedAt, :since) + :ageMs <= :nowMs " +
             "AND frameId IN (SELECT m.frameId FROM frame_meta m WHERE NOT EXISTS (SELECT 1 FROM frame_cluster c WHERE c.clusterId = m.clusterId AND c.state NOT IN ('SUMMARIZED','FAILED_FINAL')))",
     )
     abstract suspend fun expireCaptionQueued(since: Long, ageMs: Long, nowMs: Long): Int

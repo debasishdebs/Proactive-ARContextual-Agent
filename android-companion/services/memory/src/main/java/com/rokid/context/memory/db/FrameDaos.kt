@@ -50,7 +50,9 @@ abstract class FrameStateDao {
 
     /** The CAS; returns 1 when the claim still holds and the row moved to [to]. Used inside the caller's transaction. */
     @Query(
-        "UPDATE frame_state SET state = :to, claimedAt = NULL, claimId = NULL, lastError = NULL, updatedAt = :nowMs " +
+        "UPDATE frame_state SET state = :to, claimedAt = NULL, claimId = NULL, " +
+            // Task 9: a photo described for describe-before-delete keeps its marker (its delete deadline carries the 3-day grace).
+            "lastError = CASE WHEN lastError = 'describe_before_delete' THEN lastError ELSE NULL END, updatedAt = :nowMs " +
             "WHERE frameId = :frameId AND state = 'EXTRACTING' AND claimId = :claimId",
     )
     abstract suspend fun completeIfClaimed(frameId: String, claimId: String, to: String, nowMs: Long): Int
@@ -229,12 +231,44 @@ abstract class FrameStateDao {
     )
     abstract suspend fun askCandidates(sinceMs: Long, limit: Int): List<FrameStateEntity>
 
-    /** Key-moment photos whose caption is still owed, oldest first (lowest priority; aging is the pipeline's job). */
+    /**
+     * Key-moment photos whose caption is still owed, oldest first (lowest priority; aging is the pipeline's job). Photos queued by the night
+     * job for describe-before-delete (`lastError = describe_before_delete`) are the night job's only: see [describeQueued].
+     */
     @Query(
-        "SELECT * FROM frame_state WHERE state = 'CAPTION_QUEUED' " +
+        "SELECT * FROM frame_state WHERE state = 'CAPTION_QUEUED' AND COALESCE(lastError, '') != 'describe_before_delete' " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) ORDER BY updatedAt LIMIT :limit",
     )
     abstract suspend fun captionQueued(limit: Int): List<FrameStateEntity>
+
+    /** The night job's queue: every CAPTION_QUEUED photo, describe-before-delete ones first (by their queue order = deadline), then oldest first. */
+    @Query(
+        "SELECT * FROM frame_state WHERE state = 'CAPTION_QUEUED' " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) " +
+            "ORDER BY CASE WHEN lastError = 'describe_before_delete' THEN 0 ELSE 1 END, updatedAt LIMIT :limit",
+    )
+    abstract suspend fun describeQueued(limit: Int): List<FrameStateEntity>
+
+    /**
+     * Night job (Task 9): [frameId] (a settled, undescribed, non-skipped keyframe that is due soon) → CAPTION_QUEUED with attempts 0 and
+     * lastError `describe_before_delete`; [orderMs] sets the queue order (deadline order). Guarded: still in one of the settled states,
+     * not forgotten, and still cited by no memory (`memory.frameId` or `frame_source`). Returns 1 when it moved.
+     */
+    @Query(
+        "UPDATE frame_state SET state = 'CAPTION_QUEUED', attempts = 0, lastError = 'describe_before_delete', claimedAt = NULL, claimId = NULL, updatedAt = :orderMs " +
+            "WHERE frameId = :frameId AND state IN ('FAILED_FINAL','EXTRACTED','NEAR_DUP','CLUSTERED') " +
+            "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = frame_state.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM memory m WHERE m.frameId = frame_state.frameId) " +
+            "AND NOT EXISTS (SELECT 1 FROM frame_source fs WHERE fs.frameId = frame_state.frameId)",
+    )
+    abstract suspend fun queueForDescribe(frameId: String, orderMs: Long): Int
+
+    /** A night describe whose claim was given back (offline: PENDING, marker kept) goes back to the night queue. */
+    @Query(
+        "UPDATE frame_state SET state = 'CAPTION_QUEUED', claimedAt = NULL, claimId = NULL, updatedAt = :nowMs " +
+            "WHERE frameId IN (:frameIds) AND state = 'PENDING' AND lastError = 'describe_before_delete'",
+    )
+    abstract suspend fun requeueDescribe(frameIds: List<String>, nowMs: Long): Int
 
     @Query(
         "UPDATE frame_state SET state = 'EXTRACTING', claimedAt = :nowMs, claimId = :claimId, updatedAt = :nowMs " +
@@ -251,7 +285,11 @@ abstract class FrameStateDao {
         return claimedBy(frameIds, claimId)
     }
 
-    companion object { const val MAX_ATTEMPTS = 5 }
+    companion object {
+        const val MAX_ATTEMPTS = 5
+        /** frame_state.lastError of a photo the night job queued (or described) for describe-before-delete. */
+        const val DESCRIBE_BEFORE_DELETE = "describe_before_delete"
+    }
 }
 
 @Dao

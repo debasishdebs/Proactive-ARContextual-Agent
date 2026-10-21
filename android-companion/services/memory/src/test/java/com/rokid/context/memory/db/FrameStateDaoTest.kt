@@ -171,4 +171,39 @@ class FrameStateDaoTest {
         got.forEach { assertEquals("EXTRACTING", it.state); assertEquals("cap", it.claimId) }
         assertEquals("PENDING", dao.get("p")!!.state)
     }
+
+    /** Task 9: the describe-before-delete marker keeps the live loop out of the night queue and survives the save. */
+    @Test fun describeQueueIsTheNightJobsOwn() = runBlocking {
+        val m = "describe_before_delete"
+        dao.insertIgnore(listOf(
+            row("live", "CAPTION_QUEUED").copy(updatedAt = 50), row("n2", "CAPTION_QUEUED").copy(updatedAt = 200, lastError = m),
+            row("n1", "CAPTION_QUEUED").copy(updatedAt = 100, lastError = m),
+        ))
+        assertEquals(listOf("live"), dao.captionQueued(10).map { it.frameId }) // the live loop never takes a describe-before-delete photo
+        assertEquals(listOf("n1", "n2", "live"), dao.describeQueued(10).map { it.frameId }) // the night job: deadline order, then the rest
+        val got = dao.claimCaptionQueued(listOf("n1"), "night", 1_000)
+        assertEquals(1, got.size)
+        assertEquals(1, dao.completeIfClaimed("n1", "night", "EXTRACTED", 2_000))
+        assertEquals(m, dao.get("n1")!!.lastError) // the marker survives a successful save
+        dao.insertIgnore(listOf(row("plain", "EXTRACTING", claimedAt = 1, claimId = "c").copy(lastError = "abandoned")))
+        assertEquals(1, dao.completeIfClaimed("plain", "c", "EXTRACTED", 3_000)); assertNull(dao.get("plain")!!.lastError)
+    }
+
+    @Test fun queueForDescribeIsGuarded() = runBlocking {
+        db.frameDao().insertIgnore(FrameEntity("cited", 1, "/x", "rokid_glasses"))
+        db.memoryDao().insert(MemoryEntity("m", "cited", "t", "caption", "", MemoryTier.LONG, 1.0, ReviewState.OK, false, 1, false, "t"))
+        dao.insertIgnore(listOf(
+            row("ok", "EXTRACTED"), row("fin", "FAILED_FINAL", 5), row("pend", "PENDING"), row("cited", "EXTRACTED"), row("forgot", "EXTRACTED"),
+            row("run", "EXTRACTING", 0, 1, "c"),
+        ))
+        db.forgetDao().insertTombstone(ForgetTombstoneEntity("forgot", 1))
+        assertEquals(1, dao.queueForDescribe("ok", 777)); assertEquals(1, dao.queueForDescribe("fin", 778))
+        for (id in listOf("pend", "cited", "forgot", "run", "nope")) assertEquals(id, 0, dao.queueForDescribe(id, 5))
+        dao.get("ok")!!.let { assertEquals("CAPTION_QUEUED", it.state); assertEquals(0, it.attempts); assertEquals("describe_before_delete", it.lastError); assertEquals(777L, it.updatedAt) }
+        assertEquals("CAPTION_QUEUED", dao.get("fin")!!.state)
+        // an offline night call released the claim to PENDING: it goes back to the night queue, an unrelated PENDING does not
+        dao.claimCaptionQueued(listOf("ok"), "n", 1_000); dao.release("ok", "n", 1_100)
+        assertEquals("PENDING", dao.get("ok")!!.state)
+        assertEquals(1, dao.requeueDescribe(listOf("ok", "pend"), 1_200)); assertEquals("CAPTION_QUEUED", dao.get("ok")!!.state); assertEquals("PENDING", dao.get("pend")!!.state)
+    }
 }
