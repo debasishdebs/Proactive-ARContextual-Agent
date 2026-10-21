@@ -24,7 +24,11 @@ class NudgeInputs(
     data class Prepared(val vars: PromptVars, val inputIds: Set<String>)
 
     suspend fun build(nowMs: Long, extraText: String? = null): Prepared {
-        val recent = memory.db.memoryDao().between(nowMs - WINDOW_MS, nowMs + 1).filter { it.reviewState == ReviewState.OK }.take(MAX_MEMORIES)
+        val candidates = memory.db.memoryDao().between(nowMs - WINDOW_MS, nowMs + 1).filter { it.reviewState == ReviewState.OK }
+        // A memory about an old photo (a night describe or a late backlog extraction: its photo was captured more than the window before the memory
+        // was written) is not a live moment, whatever its createdAt says. frame_meta outlives the photo, so the check survives expiry.
+        val captured = candidates.mapNotNull { it.frameId }.distinct().chunked(500).flatMap { memory.db.frameMetaDao().byIds(it) }.associate { it.frameId to it.createdAt }
+        val recent = candidates.filter { m -> m.frameId?.let { captured[it] }?.let { m.createdAt - it <= WINDOW_MS } ?: true }.take(MAX_MEMORIES)
         val time = TIME.withZone(zone())
         val lines = recent.map { "id=${it.id} \u00b7 ${time.format(Instant.ofEpochMilli(it.createdAt))} \u00b7 ${AskText.clip(AskText.collapse(it.text), MAX_TEXT)}" } +
             listOfNotNull(extraText?.takeIf { it.isNotBlank() })

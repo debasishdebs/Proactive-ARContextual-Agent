@@ -261,4 +261,23 @@ class FrameStateDaoTest {
         assertEquals(0, dao.queueForDescribe("b", 1_000)) // in its cooldown
         assertEquals(1, dao.queueForDescribe("b", 1_000 + 2 * dayMs)); assertEquals(2, dao.get("b")!!.attempts) // the count is kept
     }
+
+    /** Fix round 2: a night claim a dead process never settled counts an attempt with a cooldown, so a photo that kills the process every night is parked. */
+    @Test fun crashLoopOnANightPhotoIsBounded() = runBlocking {
+        dao.insertIgnore(listOf(row("a", "CAPTION_QUEUED").copy(lastError = marker)))
+        var t = 1_000L
+        for ((i, d) in listOf(1L, 2L, 4L, 8L).withIndex()) {
+            dao.claimCaptionQueued(listOf("a"), "c$i", t)
+            assertEquals(1, dao.releaseAllExtracting(t + 10, Long.MAX_VALUE)) // the next process start
+            dao.get("a")!!.let { assertEquals("CAPTION_QUEUED", it.state); assertEquals(i + 1, it.attempts); assertEquals(t + 10 + d * dayMs, it.claimedAt) }
+            assertEquals(emptyList<FrameStateEntity>(), dao.describeQueued(t + d * dayMs, 10)) // still cooling down
+            t += d * dayMs + 1_000
+        }
+        dao.claimCaptionQueued(listOf("a"), "c5", t); dao.releaseAllExtracting(t + 10, Long.MAX_VALUE)
+        dao.get("a")!!.let { assertEquals("FAILED_FINAL", it.state); assertEquals("describe_failed", it.lastError) }
+        // an abandoned claim (the 15-minute sweep) cools down the same way
+        dao.insertIgnore(listOf(row("b", "CAPTION_QUEUED").copy(lastError = marker)))
+        dao.claimCaptionQueued(listOf("b"), "cb", 1_000); assertEquals(1, dao.requeueAbandoned(100_000, 50_000))
+        dao.get("b")!!.let { assertEquals(1, it.attempts); assertEquals(100_000 + dayMs, it.claimedAt) }
+    }
 }
