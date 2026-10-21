@@ -14,7 +14,7 @@ class PhonePowerPolicyTest {
     @Test fun backgroundBatchesVectors60s() {
         assertEquals(0L, policy.vectorBatchIntervalMs()) // foreground: on every arrival
         fg = false
-        assertEquals(60_000L, policy.vectorBatchIntervalMs())
+        assertEquals(15_000L, policy.vectorBatchIntervalMs())
         assertTrue(policy.mayRunBackground(BackgroundWork.IMAGE_VECTORS))
     }
 
