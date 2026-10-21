@@ -9,7 +9,8 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * A space that can hold image vectors: the ACTIVE one, plus the BUILDING one during a re-index (both are written; only the
- * [active] one is read for routing). [imageDims] is the stored image vector width.
+ * [active] one is read for routing). [imageDims] is the stored image vector width; NOTE: [SpaceImageSpaces] only probes the TEXT embedder
+ * for it, so a consumer that needs the real width should prefer the size of the first image vector it has.
  */
 class ImageSpaceTarget(
     val spaceId: String,

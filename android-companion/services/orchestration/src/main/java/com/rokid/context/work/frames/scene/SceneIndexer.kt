@@ -42,11 +42,12 @@ class SceneIndexer(
     /** The one OPEN cluster, in memory: members' vectors give the centroid; [streak] is the run of drifting newest members. */
     private class OpenState(
         val clusterId: String, val spaceId: String, val openedAt: Long, var lastTs: Long, var motion: MotionClass,
-        val ids: MutableList<String>, val ts: MutableList<Long>, val vecs: MutableList<FloatArray>, val streak: MutableList<String>,
+        val ids: MutableList<String>, val ts: MutableList<Long>, val vecs: MutableList<FloatArray?>, val streak: MutableList<String>,
     ) {
         /** Mean of the members that are not in the drift streak (those are not yet part of the scene); all of them if that leaves none. */
         fun centroid(): FloatArray? {
-            val v = vecs.filterIndexed { i, _ -> ids[i] !in streak }.ifEmpty { vecs }
+            val all = vecs.indices.mapNotNull { i -> vecs[i]?.let { ids[i] to it } }
+            val v = all.filter { it.first !in streak }.ifEmpty { all }.map { it.second }
             return if (v.isEmpty()) null else SceneRules.centroid(v)
         }
         fun view() = OpenClusterView(openedAt, lastTs, ids.size, motion, centroid(), streak.toList())
@@ -117,7 +118,7 @@ class SceneIndexer(
     /** Closes the open cluster on age (5 min) or gap (2 min); called on every pipeline pass and by the backstop. */
     suspend fun closeAged(): Boolean = lock.withLock {
         val active = try { images.targets().firstOrNull { it.active } } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
-        val cur = open ?: loadOpen(active) ?: return false
+        val cur = validOpen() ?: loadOpen(active) ?: return false
         open = cur
         val reason = SceneRules.closeByTime(cur.view(), clock(), tuning()) ?: return false
         db.withTransaction { closeRow(cur, reason, emptySet(), clock(), tuning()) }
@@ -178,15 +179,16 @@ class SceneIndexer(
     }
 
     private suspend fun placeInCluster(m: FrameMetaEntity, input: RouteInput, v: FloatArray, terms: SalienceTerms, active: ImageSpaceTarget, now: Long, c: Counts, t: SceneTuning) {
-        val cur = open ?: loadOpen(active)
+        val cur = validOpen() ?: loadOpen(active)
         val close = when {
             cur == null -> null
+            cur.ids.isNotEmpty() && cur.vecs.all { it == null } -> SceneRules.Close.Yes("no_vectors", emptyList())   // nothing to compare against: close it, reps by the fallback
             cur.spaceId.isNotEmpty() && cur.spaceId != active.spaceId -> SceneRules.Close.Yes("space_change", emptyList())
             else -> SceneRules.shouldClose(cur.view(), input, t).let { it as? SceneRules.Close.Yes }
         }
         var next: OpenState? = null
         var joined = false
-        db.withTransaction {
+        try { db.withTransaction {
             val moved = db.frameStateDao().move(listOf(m.frameId), "PENDING", "IN_CLUSTER", null, now)
             if (moved == 0) {   // an Ask claimed it meanwhile: keep the routing facts, leave the state and the cluster alone
                 db.frameMetaDao().markRouted(m.frameId, terms.total, terms.json(), null, null, active.spaceId, now)
@@ -217,7 +219,7 @@ class SceneIndexer(
             db.frameClusterDao().upsert(rowOf(target))
             db.frameMetaDao().markRouted(m.frameId, terms.total, terms.json(), null, target.clusterId, active.spaceId, now)
             next = target
-        }
+        } } catch (e: Exception) { open = null; throw e }   // the cached state may hold the frame already: reload from the database
         if (close != null && joined) c.closed += close.reason
         if (joined) { open = next; c.routed++; c.clustered++ } else { c.routed++ }
     }
@@ -226,7 +228,7 @@ class SceneIndexer(
     private suspend fun closeRow(cur: OpenState, reason: String, carry: Set<String>, now: Long, t: SceneTuning) {
         val keep = cur.ids.indices.filter { cur.ids[it] !in carry }
         val blur = db.frameMetaDao().byIds(keep.map { cur.ids[it] }).associate { it.frameId to it.blur }
-        val cands = keep.filter { it < cur.vecs.size }.map { RepCandidate(cur.ids[it], cur.vecs[it], blur[cur.ids[it]]) }
+        val cands = keep.mapNotNull { i -> cur.vecs[i]?.let { RepCandidate(cur.ids[i], it, blur[cur.ids[i]]) } }
         val reps = if (cands.isNotEmpty()) SceneRules.pickReps(cands, t) else spread(keep.map { cur.ids[it] }, t.maxReps)
         db.frameClusterDao().upsert(
             rowOf(cur, ids = keep.map { cur.ids[it] }, lastTs = keep.maxOfOrNull { cur.ts[it] } ?: cur.lastTs).copy(
@@ -249,19 +251,28 @@ class SceneIndexer(
             db.frameVectorDao().forFrames(active.spaceId, members.map { it.frameId }).associate { it.frameId to it.blob }
         val tsById = db.frameDao().byIds(members.map { it.frameId }).associate { it.id to it.ts }
         val s = OpenState(
-            row.clusterId, active?.spaceId ?: "", row.openedAt, row.lastTs ?: row.openedAt,
+            row.clusterId, members.firstNotNullOfOrNull { m -> m.imageVectorSpace?.takeIf { it != UNEMBEDDABLE } } ?: (active?.spaceId ?: ""),
+            row.openedAt, row.lastTs ?: row.openedAt,
             row.motionClass?.let { runCatching { MotionClass.valueOf(it) }.getOrNull() } ?: MotionClass.UNKNOWN,
             mutableListOf(), mutableListOf(), mutableListOf(), mutableListOf(),
         )
+        // Every member counts; a vector only feeds the centroid and the representatives where there is one.
         for (m in members) {
-            val blob = vectors[m.frameId] ?: continue
-            val v = try { VectorCodec.decode(blob) } catch (_: IllegalArgumentException) { continue }
-            s.ids += m.frameId; s.ts += tsById[m.frameId] ?: m.createdAt; s.vecs += v
+            s.ids += m.frameId; s.ts += tsById[m.frameId] ?: m.createdAt
+            s.vecs += vectors[m.frameId]?.let { try { VectorCodec.decode(it) } catch (_: IllegalArgumentException) { null } }
         }
         return s
     }
 
     // ---- helpers ----
+
+    /** The cached open cluster, unless its row is gone or no longer OPEN (Delete all, forget): then the cache is dropped and nothing stale is reused. */
+    private suspend fun validOpen(): OpenState? {
+        val cur = open ?: return null
+        if (db.frameClusterDao().get(cur.clusterId)?.state == "OPEN") return cur
+        open = null
+        return null
+    }
 
     private suspend fun ocr(jpeg: ByteArray): Int? {
         if (ocrInFlight.get() >= MAX_OCR_IN_FLIGHT) return null   // bound the OCR work: no text signal rather than a queue
