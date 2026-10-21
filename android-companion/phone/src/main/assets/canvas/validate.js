@@ -1,13 +1,16 @@
 // Pure port checks and problem grouping for the canvas editor. No DOM, no React.
 
+/** Own-property test: ids and type names come from user JSON, so "constructor" and "__proto__" are legal keys. */
+export const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
+
 const LABELS = { PHOTOS: 'Photo', EXTRACTION: 'Facts', JSON: 'JSON', PREVIEW: 'Preview' };
 
-export const portLabel = (port) => LABELS[port] || String(port);
+export const portLabel = (port) => (own(LABELS, port) ? LABELS[port] : String(port));
 
 /** Node type lookup over the /api/node-types array (or a {type: nodeType} map). */
 export function typeOf(nodeTypes, type) {
   if (Array.isArray(nodeTypes)) return nodeTypes.find((t) => t.type === type) || null;
-  return (nodeTypes && nodeTypes[type]) || null;
+  return own(nodeTypes, type) ? nodeTypes[type] || null : null;
 }
 
 const nodeOf = (pipe, id) => ((pipe && pipe.nodes) || []).find((n) => n.id === id) || null;
@@ -43,7 +46,7 @@ export const edgeKey = (e) => e.from + '>' + e.to + '>' + (e.when == null ? '' :
 
 /** problems: [{text, nodeId?, edge?:{from,to,when?}}] (or plain strings) → {nodeId|edgeKey: [text]}; unattributed under "". */
 export function problemsByNode(problems) {
-  const out = {};
+  const out = Object.create(null);
   const add = (k, t) => { (out[k] || (out[k] = [])).push(t); };
   for (const p of problems || []) {
     if (typeof p === 'string') { add('', p); continue; }

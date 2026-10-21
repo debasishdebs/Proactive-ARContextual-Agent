@@ -29,7 +29,7 @@ class CanvasRouter(
             "Referrer-Policy" to "no-referrer",
             "Cache-Control" to "no-store",
         )
-        private val STATIC_PATH = Regex("^/[a-z0-9_-]+\\.(html|js|css|svg)$")
+        internal val STATIC_PATH = Regex("^/[a-z0-9_-]+\\.(html|js|css|svg)$")
         private val ROUTE_NAME = Regex("[a-z-]{1,24}")
         private val METHODS = setOf("GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
         private val CONTENT_TYPES = mapOf(

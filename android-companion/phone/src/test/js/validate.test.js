@@ -1,7 +1,22 @@
 import { portCheck, problemsByNode, portLabel, edgeKey } from '../../main/assets/canvas/validate.js';
 import { nodeTypes, livePipe, eq, ok } from './fixtures.js';
 
+const PROTO = ['constructor', '__proto__', 'hasOwnProperty', 'toString'];
+
 export const tests = {
+  protoKeyIdsDontCrash() {
+    for (const id of PROTO) {
+      const m = problemsByNode([{ text: 'x:' + id, nodeId: id }, { text: 'e', edge: { from: id, to: 'b' } }]);
+      eq(Object.prototype.hasOwnProperty.call(m, id) ? m[id] : null, ['x:' + id], id);
+      eq(m[id + '>b>'], ['e']);
+    }
+    const pipe = { nodes: [{ id: 'constructor', type: 'ai.prompt', title: '', params: {} }, { id: 'photos', type: 'input.photos', title: 'Photo', params: {} }], edges: [] };
+    eq(portCheck(pipe, 'constructor', 'photos', nodeTypes), 'Photo takes no input');
+    eq(portCheck(pipe, 'photos', 'constructor', [].concat(nodeTypes)), null);
+    eq(portLabel('constructor'), 'constructor');
+    const asMap = {}; for (const t of nodeTypes) asMap[t.type] = t;
+    eq(portCheck({ nodes: [{ id: 'a', type: 'constructor', title: '', params: {} }, { id: 'b', type: 'ai.prompt', title: 'P', params: {} }], edges: [] }, 'a', 'b', asMap), 'Unknown node type');
+  },
   portCheckAcceptsListedInputs() {
     const p = livePipe();
     eq(portCheck(p, 'photos', 'extract', nodeTypes), null);

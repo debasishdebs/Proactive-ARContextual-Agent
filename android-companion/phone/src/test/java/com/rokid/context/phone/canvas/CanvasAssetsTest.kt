@@ -59,6 +59,11 @@ class CanvasAssetsTest {
         assertTrue("vendor-xyflow.css before style.css", css.indexOfFirst { it.contains("vendor-xyflow.css") } in 0 until css.indexOfFirst { it.contains("style.css\"") })
     }
 
+    @Test fun shimLeaksNoGlobalsIntoTheClassicScope() {
+        val t = text("jsx-shim.js").trim()
+        assertTrue("jsx-shim.js must be one IIFE (a top-level const would collide with later classic scripts)", t.startsWith("(") && t.endsWith(")();") || t.endsWith("}());"))
+    }
+
     @Test fun noDangerousInnerHtmlInOwnCode() {
         for (f in all) assertFalse("${f.name} uses dangerouslySetInnerHTML", f.readText().contains("dangerouslySetInnerHTML"))
     }

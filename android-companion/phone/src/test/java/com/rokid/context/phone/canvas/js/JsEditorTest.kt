@@ -10,4 +10,9 @@ class JsEditorTest {
     @Test fun flowAdapterTests() = JsHarness.assertAllPass("flowadapter.test.js")
     @Test fun paramFormTests() = JsHarness.assertAllPass("paramform.test.js")
     @Test fun draftStateTests() = JsHarness.assertAllPass("draftstate.test.js")
+
+    @Test fun aFileWithoutTestsFails() {
+        val e = runCatching { JsHarness.assertAllPass("zero-tests.fixture.js") }.exceptionOrNull()
+        org.junit.Assert.assertTrue("zero tests must fail, was $e", e is AssertionError)
+    }
 }

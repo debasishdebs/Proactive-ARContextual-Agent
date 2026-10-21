@@ -6,6 +6,12 @@ const ctx = { roles: ['VISION', 'TEXT'], prompts: ['live', 'draft'] };
 const field = (type, name, params) => fields(desc(type), params || {}, ctx).find((f) => f.name === name);
 
 export const tests = {
+  protoKeyNamesDontCrash() {
+    const d = [{ name: 'constructor', kind: 'int', min: 1, max: 3 }, { name: '__proto__', kind: 'text' }, { name: 'toString', kind: 'bool' }];
+    const f = fields(d, {}, ctx);
+    eq(f.map((x) => x.value), [1, '', false]);
+    eq(fields(d, JSON.parse('{"constructor":2,"__proto__":"hi","toString":true}'), ctx).map((x) => x.value), [2, 'hi', true]);
+  },
   intFieldBoundsFromDescriptor() {
     const f = field('ai.vision_extract', 'batch', { batch: 2 });
     eq(f.control, 'number'); eq(f.min, 1); eq(f.max, 3); eq(f.value, 2); eq(f.label, 'Batch');
@@ -46,7 +52,10 @@ export const tests = {
     const f = field('ai.prompt', 'schema');
     eq(coerce(f, '{"type":"object"}'), { value: '{"type":"object"}' });
     eq(coerce(f, '{nope'), { error: 'Must be valid JSON' });
-    eq(coerce(f, ''), { error: 'Must be valid JSON' });
+    const clear = coerce(f, '');
+    eq('value' in clear && clear.value === undefined && !clear.error, true, 'an empty schema clears the param');
+    eq(coerce(f, '   ').error, undefined);
+    for (const bad of ['[]', '1', 'null', '"s"', 'true']) eq(coerce(f, bad), { error: 'Must be a JSON object' }, bad);
     eq(field('ai.prompt', 'schema', { schema: { type: 'object' } }).value, '{"type":"object"}', 'an object schema is shown as JSON text');
   },
   labelsSplitTrimUnique() {

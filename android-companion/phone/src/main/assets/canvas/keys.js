@@ -1,12 +1,14 @@
 // Pure keyboard decisions over layout cells ({id: {layer, column}}). Returns intents; never touches the DOM.
 
+const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
+
 export const idle = { mode: 'idle' };
 
 const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
 
 /** The nearest node in the arrow's direction by layer and column; the current id when there is none. */
 export function move(cells, currentId, key) {
-  const cur = cells && cells[currentId];
+  const cur = own(cells, currentId) ? cells[currentId] : null;
   if (!cur || !ARROWS.includes(key)) return currentId;
   let best = null, bestKey = null;
   for (const id of Object.keys(cells).sort()) {

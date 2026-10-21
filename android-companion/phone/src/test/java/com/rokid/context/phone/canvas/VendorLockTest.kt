@@ -41,9 +41,16 @@ class VendorLockTest {
         for (n in listOf("React", "@xyflow/react", "htm")) assertTrue("licence text for $n", t.contains(n))
     }
 
+    @Test fun lockUrlsAreTheJsdelivrBasePlusSpec() {
+        val licences = mapOf("vendor-react.js" to "MIT", "vendor-react-dom.js" to "MIT", "vendor-xyflow.js" to "MIT", "vendor-xyflow.css" to "MIT", "vendor-htm.js" to "Apache-2.0")
+        for (l in lock()) {
+            assertEquals("${l.name} url", "https://cdn.jsdelivr.net/npm/" + l.spec, l.url)
+            assertEquals("${l.name} licence", licences[l.name], l.licence)
+        }
+    }
+
     @Test fun lockNotServed() {
-        // Same rule as CanvasRouter.STATIC_PATH.
-        val rule = Regex("^/[a-z0-9_-]+\\.(html|js|css|svg)$")
+        val rule = com.rokid.context.phone.canvas.server.CanvasRouter.STATIC_PATH // the real rule, not a copy
         assertFalse(rule.matches("/vendor-lock.txt"))
         assertFalse(rule.matches("/vendor-licenses.txt"))
         for (f in vendorFiles()) assertTrue("${f.name} must be servable", rule.matches("/${f.name}"))

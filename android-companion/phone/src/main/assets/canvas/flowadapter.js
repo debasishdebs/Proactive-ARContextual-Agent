@@ -1,6 +1,6 @@
 // Pipeline model <-> React Flow view model. Pure: no React, no DOM. React Flow never owns the data.
 import { addNode, removeNode, connect, disconnect, setParam, setTitle } from './graph.js';
-import { portLabel, problemsByNode, edgeKey, typeOf } from './validate.js';
+import { portLabel, problemsByNode, edgeKey, typeOf, own } from './validate.js';
 
 export const CELL_W = 220, CELL_H = 120;
 
@@ -16,8 +16,8 @@ export function toFlow(pipe, layout, problems, nodeTypes, opts) {
   const cells = (layout && layout.cells) || {};
   const layers = Math.max(0, Number(layout && layout.layers) || 0);
   const by = problemsByNode(problems);
-  const nodes = (pipe.nodes || []).filter((n) => cells[n.id]).map((n) => node(n, cells[n.id].column * CELL_W, cells[n.id].layer * CELL_H, false));
-  (pipe.nodes || []).filter((n) => !cells[n.id]).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  const nodes = (pipe.nodes || []).filter((n) => own(cells, n.id)).map((n) => node(n, cells[n.id].column * CELL_W, cells[n.id].layer * CELL_H, false));
+  (pipe.nodes || []).filter((n) => !own(cells, n.id)).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .forEach((n, i) => nodes.push(node(n, i * CELL_W, layers * CELL_H, true)));
   // Keep the pipeline's node order for stable rendering.
   const order = new Map((pipe.nodes || []).map((n, i) => [n.id, i]));
@@ -25,7 +25,7 @@ export function toFlow(pipe, layout, problems, nodeTypes, opts) {
 
   function node(n, x, y, pending) {
     const nt = typeOf(nodeTypes, n.type);
-    const probs = by[n.id] || [];
+    const probs = own(by, n.id) ? by[n.id] : [];
     const typeLabel = nt ? nt.label : n.type;
     const title = titleOf(n, nt);
     return {
@@ -49,7 +49,7 @@ export function toFlow(pipe, layout, problems, nodeTypes, opts) {
     const id = edgeKey(e);
     const edge = {
       id, source: e.from, target: e.to,
-      className: (by[id] || []).length ? 'has-problem' : undefined,
+      className: own(by, id) && by[id].length ? 'has-problem' : undefined,
       ariaLabel: (titleById.get(e.from) || e.from) + ' to ' + (titleById.get(e.to) || e.to) + (e.when ? ' ' + e.when : ''),
       deletable: !readOnly,
     };
