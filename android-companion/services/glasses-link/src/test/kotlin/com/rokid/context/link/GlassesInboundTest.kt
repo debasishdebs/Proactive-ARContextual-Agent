@@ -20,6 +20,15 @@ class GlassesInboundTest {
     @Test fun userExitIsDecoded() =
         assertEquals(listOf<GlassesEvent>(GlassesEvent.UserExit), inbound.onMessage(Channels.USER_EXIT, listOf(Wire.encode(com.rokid.context.core.model.UserExit()))))
 
+    @Test fun motionHintWithVersionIsDecoded() {
+        val json = """{"v":$PROTOCOL_VERSION,"state":"WALKING","atMs":5,"stillFrac5m":0.25}"""
+        val hint = com.rokid.context.core.model.MotionHint(com.rokid.context.core.model.MotionState.WALKING, 5, stillFrac5m = 0.25f)
+        assertEquals(listOf<GlassesEvent>(GlassesEvent.MotionHintReceived(hint)), inbound.onMessage(Channels.MOTION_HINT, listOf(json)))
+    }
+
+    @Test fun motionHintWithoutVersionIsOutdated() =
+        assertEquals(listOf<GlassesEvent>(GlassesEvent.Outdated(null)), inbound.onMessage(Channels.MOTION_HINT, listOf("""{"state":"WALKING","atMs":5}""")))
+
     @Test fun helloIsDecoded() =
         assertEquals(listOf<GlassesEvent>(GlassesEvent.HelloReceived(hello)), inbound.onMessage(Channels.HELLO, listOf(Wire.encode(hello))))
 

@@ -40,6 +40,7 @@ class GlassesInbound {
                 runCatching { Base64.getDecoder().decode(first) }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { GlassesEvent.Audio(it) },
             )
             Channels.USER_EXIT -> gate(Wire.decode<com.rokid.context.core.model.UserExit>(first)) { GlassesEvent.UserExit }
+            Channels.MOTION_HINT -> gate(Wire.decode<com.rokid.context.core.model.MotionHint>(first)) { GlassesEvent.MotionHintReceived(it) }
             Channels.LISTEN_END -> if (!listenAccepted) emptyList() else { listenAccepted = false; listOf(GlassesEvent.ListenEnd) }
             else -> emptyList()
         }
