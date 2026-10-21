@@ -83,6 +83,9 @@ cmd_stop() {
   echo "stopped"
 }
 
+# stdin -> stdout without any line that names a secret, a device key or the AssistServer service.
+filter_diag() { grep -v -i -E "$DENY|AssistServer"; true; }
+
 cmd_pull() {
   local d="${1:-}"
   [ -n "$d" ] || die "usage: pull <dir>"
@@ -95,8 +98,9 @@ cmd_pull() {
     grep -v -i -E "$DENY" "$d/cpu.raw" | grep -E '^[0-9][0-9]-[0-9][0-9]_[0-9:]+ (cpu|thr) ' > "$d/cpu.log"
     rm -f "$d/cpu.raw"
   fi
-  adb -s "$G" exec-out run-as "$PKG" cat files/capture_diag.log > "$d/capture_diag.log" 2>/dev/null
-  adb -s "$G" exec-out run-as "$PKG" cat files/capture_diag.log.1 > "$d/capture_diag.log.1" 2>/dev/null
+  # Diag logs go through the same deny list as the other pulls (A22); run-as errors are dropped.
+  adb -s "$G" exec-out run-as "$PKG" cat files/capture_diag.log 2>/dev/null | filter_diag > "$d/capture_diag.log"
+  adb -s "$G" exec-out run-as "$PKG" cat files/capture_diag.log.1 2>/dev/null | filter_diag > "$d/capture_diag.log.1"
   adb -s "$G" shell dumpsys batterystats --charged "$PKG" 2>/dev/null \
     | grep -v -i -E "$DENY|AssistServer" \
     | grep -i -E "Estimated power use|camera|cpu|wake|bluetooth|screen" > "$d/batterystats.txt"
@@ -127,8 +131,7 @@ cmd_summary() {
     function secs(t,   a) { split(substr(t, 7), a, ":"); return a[1]*3600 + a[2]*60 + a[3] }
     function stamp(t) { sub(/_/, " ", t); return t }
     function inwin(t) { return t >= stamp(S) && t <= stamp(E) }
-    FNR == 1 { fileno++ }
-    fileno == 1 {
+    FILENAME == ARGV[1] {
       # batt.log: "MM-DD_HH:MM:SS level: N temperature: N ..."
       t = $1; if (t < S || t > E) next
       for (i = 2; i < NF; i++) if ($i == "level:") { l = $(i+1) + 0; if (bs == "") bs = l; be = l }
@@ -258,5 +261,6 @@ case "${1:-}" in
   pull) shift; cmd_pull "$@" ;;
   summary) shift; cmd_summary "$@" ;;
   print-cpu-logger) cpu_logger_script ;;
+  filter-diag) filter_diag ;;
   *) echo "usage: $0 start <label> | stop | pull <dir> | summary <dir> [minutes]" >&2; exit 2 ;;
 esac

@@ -61,5 +61,16 @@ if "$HERE/battery-run.sh" print-cpu-logger | grep -q awk; then echo "FAIL: cpu l
 if grep -i -E "logcat" "$HERE/battery-run.sh" >/dev/null; then echo "FAIL: logcat"; fail=1; fi
 if grep -q logcat "$HERE/battery-run.sh"; then echo "FAIL: battery-run.sh mentions logcat"; fail=1; fi
 if ! grep -q "AssistServer" "$HERE/battery-run.sh"; then echo "FAIL: battery-run.sh deny-list lacks AssistServer"; fail=1; fi
+# A21: an empty batt.log must not make the first diag file read as the battery log (awk routes by FILENAME == ARGV[1], not by file order).
+tmpd="$(mktemp -d)"; cp "$HERE"/testdata/battery-run/{batt_run.txt,capture_diag.log} "$tmpd"/; : > "$tmpd/batt.log"
+eout="$("$HERE/battery-run.sh" summary "$tmpd")"; rm -rf "$tmpd"
+case "$eout" in *"hb_lines=3 "*) ;; *) echo "FAIL: empty batt.log misroutes the diag file: $eout"; fail=1 ;; esac
+# A22: pulled diag logs go through the same deny filter as the other pulls (a secret-bearing line never reaches disk).
+fout="$(printf '10-21 10:00:00.000 I PcCapture status ok\n10-21 10:00:01.000 I x deviceSecret=abc123\n10-21 10:00:02.000 I AssistServer foo\n10-21 10:00:03.000 I y DevCmdHelper z\n10-21 10:00:04.000 I PcCapture heartbeat v=2\n' | "$HERE/battery-run.sh" filter-diag)"
+case "$fout" in *deviceSecret*|*AssistServer*|*DevCmdHelper*|*abc123*) echo "FAIL: filter-diag leaked a denied line"; fail=1 ;; esac
+case "$fout" in *"status ok"*"heartbeat v=2"*) ;; *) echo "FAIL: filter-diag dropped good lines"; fail=1 ;; esac
+for d in capture_diag.log capture_diag.log.1; do
+  grep -q "files/$d 2>/dev/null | filter_diag > " "$HERE/battery-run.sh" || { echo "FAIL: pull of $d does not go through filter_diag"; fail=1; }
+done
 [ $fail -eq 0 ] && echo "PASS"
 exit $fail
