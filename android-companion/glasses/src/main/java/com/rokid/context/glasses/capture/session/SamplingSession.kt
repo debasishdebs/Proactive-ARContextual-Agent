@@ -136,9 +136,10 @@ class SamplingSession(
     private var pendingNowAt: Long? = null
     private var nextRestCaptureAt: Long? = null
     private val keptAt = ArrayDeque<Long>()
-    // Camera-open time since the last [diagStats] read (guarded by [lock]), for the "camera-open share" heartbeat field.
+    // Camera-open time since the last [diagSnapshot] read (guarded by [lock]), for the "camera-open share" heartbeat field.
     private var openAccumMs = 0L
     private var shareFromAt = 0L
+    private var analysedAtSnapshot = 0
 
     /** Samples whose copy took longer than [COPY_BUDGET_MS] (the thumbnail target is 30 ms). */
     private val slowCount = AtomicInteger()
@@ -394,15 +395,18 @@ class SamplingSession(
         return sorted[(Math.ceil(q * sorted.size).toInt() - 1).coerceIn(0, sorted.size - 1)]
     }
 
-    /** "kf1m=N camOpen=P%" for the status heartbeat: keyframes in the last minute, and the share of time since the last read the camera was open. */
-    fun diagStats(): String = synchronized(lock) {
+    /** Keyframes in the last minute, camera-open ms, the span and the analysed-frame delta since the previous snapshot; resets the accumulators. */
+    fun diagSnapshot(): DiagStats = synchronized(lock) {
         val now = clock()
         val kf = keptAt.count { now - it <= 60_000L }
         var open = openAccumMs
         episode?.let { if (it.openedAt > 0) open += (now - maxOf(it.openedAt, shareFromAt)).coerceAtLeast(0) }
         val span = (now - shareFromAt).coerceAtLeast(1)
+        val analysed = analysedCount.get()
+        val delta = analysed - analysedAtSnapshot
+        analysedAtSnapshot = analysed
         openAccumMs = 0; shareFromAt = now
-        "kf1m=$kf camOpen=${(100 * open / span).coerceIn(0, 100)}%"
+        DiagStats(kf, open, span, delta)
     }
 
     /** "startup n=.. p50=.. p95=.. lead=.. ms" for the status heartbeat. */
@@ -551,3 +555,6 @@ class SamplingSession(
         const val FORCED_GAP_MS = 120L
     }
 }
+
+/** One heartbeat interval of camera counters: keyframes in the last minute, camera-open ms, the span they cover, and frames analysed in it. */
+data class DiagStats(val kf1m: Int, val openMs: Long, val spanMs: Long, val analysed: Int)

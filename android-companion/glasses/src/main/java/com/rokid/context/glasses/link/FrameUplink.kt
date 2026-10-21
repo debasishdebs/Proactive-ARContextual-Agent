@@ -16,6 +16,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /** Phase 0 values (spec §1.8). */
 data class UplinkConfig(
@@ -61,6 +62,9 @@ class FrameUplink(
     private val crashes = HashMap<String, Int>()
     private val _flushing = MutableStateFlow(false)
     val flushing: StateFlow<Boolean> = _flushing
+    private val sentChars = AtomicLong()
+    /** Chunk characters the transport accepted, since start (monotonic; the heartbeat reports its per-minute delta). */
+    val bytesSent: Long get() = sentChars.get()
 
     /** Start a flush unless one is running (then that one runs again): on session open, after a capture, when listening ends. */
     @Synchronized fun kick() {
@@ -177,6 +181,7 @@ class FrameUplink(
                     if (!buffer.contains(frameId)) return Outcome.CLEARED
                     if (!canSend()) return Outcome.INTERRUPTED
                     if (sendChunk(c) != 0) { refused = true; break }
+                    sentChars.addAndGet(c.chunk.length.toLong())
                 }
                 val ack = if (refused) null else awaitAck(frameId, waiter)
                 if (!buffer.contains(frameId)) return Outcome.CLEARED

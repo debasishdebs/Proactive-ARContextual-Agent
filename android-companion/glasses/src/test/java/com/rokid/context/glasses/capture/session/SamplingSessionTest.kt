@@ -315,12 +315,14 @@ class SamplingSessionTest {
         r.session.stop("test")
     }
 
-    @Test fun diagStatsCountsKeyframesAndCameraShare() = runTest {
+    @Test fun diagSnapshotCountsKeyframesAndResets() = runTest {
         val r = rig(this)
         r.session.start()
         delay(3_000)
-        val line = r.session.diagStats()
-        assertTrue(Regex("""kf1m=1 camOpen=\d+%""").matches(line), line)
+        val d = r.session.diagSnapshot()
+        assertEquals(1, d.kf1m)
+        assertTrue(d.spanMs >= 1 && d.openMs in 0..d.spanMs)
+        assertEquals(0, r.session.diagSnapshot().analysed)
         r.session.stop("test")
     }
 

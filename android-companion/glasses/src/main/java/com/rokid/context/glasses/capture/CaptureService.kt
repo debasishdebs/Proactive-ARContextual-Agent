@@ -32,6 +32,9 @@ import com.rokid.context.glasses.capture.session.AndroidKeyframeEncoder
 import com.rokid.context.glasses.capture.session.BatteryBudget
 import com.rokid.context.glasses.capture.session.CaptureProfile
 import com.rokid.context.glasses.capture.session.SensorRatePolicy
+import com.rokid.context.glasses.capture.session.DiagStats
+import com.rokid.context.glasses.capture.diag.Heartbeat
+import com.rokid.context.glasses.capture.motion.SensorRate
 import com.rokid.context.glasses.capture.session.CameraXBind
 import com.rokid.context.glasses.capture.session.CameraXSamplingCamera
 import com.rokid.context.glasses.capture.session.HeatGuard
@@ -85,6 +88,7 @@ class CaptureService : LifecycleService() {
     private var smart: Smart? = null
     private val budget = BatteryBudget(SystemClock::elapsedRealtime).also { it.onChange = { l -> DiagLog.i(TAG, l) } }
     private val ratePolicy = SensorRatePolicy()
+    private var lastUpBytes = 0L
     private var supervisor: Job? = null
     private var lastMode: CaptureMode? = null
     /** Three failed binds: Fixed 30 s, until the mode setting changes, the service restarts or the watchdog retries Smart (5 min). */
@@ -155,8 +159,11 @@ class CaptureService : LifecycleService() {
                 }
                 if (heatPoller.tick()) logHeat()
                 reconcile()
-                if (tick % 60 == 0) budget.onSample(batteryPercent(), isCharging(), runtime.settingsCache.readNormalized().batteryTargetHours)
-                smart?.feed?.setRate(ratePolicy.update(runtime.captureStatus.value.reason, SystemClock.elapsedRealtime()))
+                // Own guard: a throw here must not stop the status or the tick.
+                try {
+                    if (tick % 60 == 0) budget.onSample(batteryPercent(), isCharging(), runtime.settingsCache.readNormalized().batteryTargetHours)
+                    smart?.feed?.setRate(ratePolicy.update(runtime.captureStatus.value.reason, SystemClock.elapsedRealtime()))
+                } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "budget/rate update failed: ${e.javaClass.simpleName}") }
                 publishStatus(tick++)
               } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
                 delay(SUPERVISE_MS)
@@ -237,7 +244,23 @@ class CaptureService : LifecycleService() {
         // Counts and states only. One line when it changes, and a heartbeat every minute.
         val line = "status running=${shown.running} reason=${shown.reason} motion=${shown.motion} keyframes10m=${shown.keyframesLast10Min} resting=${shown.restingUntilMs != null} heat=${heat.level.value} degraded=$degraded ${smart?.session?.startupStats() ?: ""}"
         // Fix wave K3/K4: the heartbeat (every minute) adds what the retest could not show: ui mode, rate, camera share, battery temp, wear, restart gap.
-        if (tick % 60 == 0) DiagLog.i(TAG, "heartbeat running=${shown.running} reason=${shown.reason} ui_mode=${runtime.uiMode.get()} ${smart?.session?.diagStats() ?: ""} heat=${heat.level.value} batteryC=${heat.lastReading?.batteryTempC} wear=${runtime.wear.worn.value} restartGapSec=${runtime.restarts.lastGapSec}")
+        if (tick % 60 == 0) {
+            val now = SystemClock.elapsedRealtime()
+            val settings = runtime.settingsCache.readNormalized()
+            val upTotal = runtime.uplink.bytesSent
+            val upDelta = (upTotal - lastUpBytes).coerceAtLeast(0)
+            lastUpBytes = upTotal
+            DiagLog.i(TAG, Heartbeat(
+                running = shown.running, reason = shown.reason.toString(), uiMode = runtime.uiMode.get(),
+                wake = settings.cameraWake.name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
+                batt = batteryPercent(), charging = isCharging(), drainPctPerMin = budget.drainPctPerMin, projectedHours = budget.projectedHours,
+                stats = smart?.session?.diagSnapshot() ?: DiagStats(0, 0, 0, 0), upBytes = upDelta,
+                heat = heat.level.value.toString(), batteryC = heat.lastReading?.batteryTempC,
+                wear = runtime.wear.worn.value, known = runtime.wear.known, parked = runtime.wear.parked.value,
+                sensors = ((smart?.feed as? AndroidSensorFeed)?.rate ?: SensorRate.FULL).name.lowercase(), phoneUse = runtime.phoneUse.active(now),
+                restartGapSec = runtime.restarts.lastGapSec,
+            ).format())
+        }
         if (line != lastLogged || tick % 60 == 0) { lastLogged = line; DiagLog.i(TAG, line) }
     }
 
