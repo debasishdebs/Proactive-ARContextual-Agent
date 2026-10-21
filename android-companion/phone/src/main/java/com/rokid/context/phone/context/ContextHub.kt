@@ -1,0 +1,283 @@
+package com.rokid.context.phone.context
+
+import com.rokid.context.core.model.MotionHint
+import com.rokid.context.core.model.context.ContextDecision
+import com.rokid.context.core.model.context.ContextFusion
+import com.rokid.context.core.model.context.ContextState
+import com.rokid.context.core.model.context.Evidence
+import com.rokid.context.core.model.context.FusionParams
+import com.rokid.context.core.model.context.MotionContextMessage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * The phone's context hub (spec §3-§6): reconciles the opt-in sources against [settings] and [registry], fuses their evidence
+ * (plus the glasses' motion hint) into a [ContextState] and publishes it as [message] for `pc_motion_ctx`.
+ *
+ * One serial executor: evidence intake, reconcile and the 10 s tick are commands on a single channel read by one coroutine on
+ * [scope]; callers on other threads only enqueue. [ContextFusion] is touched only there.
+ */
+class ContextHub(
+    private val scope: CoroutineScope,
+    private val settings: ContextSourceSettings,
+    private val registry: ContextSourceRegistry,
+    private val params: FusionParams = FusionParams(watchTtlMs = 1_500_000),
+    private var fusion: ContextFusion = ContextFusion(params),
+    private val clock: () -> Long = System::currentTimeMillis,
+    val stats: ContextHubStats = ContextHubStats(clock),
+    private val log: (String) -> Unit = {},
+) : EvidenceSink {
+    private sealed interface Cmd {
+        class Ev(val e: Evidence, val sourceId: String?, val gen: Int) : Cmd
+        data object Reconcile : Cmd
+        data object Tick : Cmd
+        data object Stop : Cmd
+    }
+
+    private val inbox = Channel<Cmd>(Channel.UNLIMITED)
+    private val lock = Any()
+    @Volatile private var started = false
+    private var actor: Job? = null
+    private var feeders: List<Job> = emptyList()
+
+    private val _message = MutableStateFlow<MotionContextMessage?>(null)
+    /** Null while no source is running; the Hub sends every non-null value on `pc_motion_ctx`. */
+    val message: StateFlow<MotionContextMessage?> = _message
+    private val _decision = MutableStateFlow(ContextDecision(ContextState.UNKNOWN, 0f, clock(), emptySet(), null, ContextState.UNKNOWN, false))
+    val decision: StateFlow<ContextDecision> = _decision
+    private val _status = MutableStateFlow(ALL_IDS.associateWith { SourceStatus.OFF })
+    val status: StateFlow<Map<String, SourceStatus>> = _status
+
+    @Volatile var speedWanted: Boolean = false
+        private set
+
+    /** id -> generation of the running instance; written on the actor, read by the sink wrappers. */
+    private val live = ConcurrentHashMap<String, Int>()
+
+    // --- actor-only state
+    private val running = HashMap<String, Int>()
+    private val failed = HashSet<String>()
+    private var nextGen = 0
+    private val retained = LinkedHashMap<String, Evidence>()
+    private var retainSeq = 0
+    private var lastEvalAt = 0L
+    private var committed = ContextState.UNKNOWN
+    private var lastStatsLogAt = 0L
+    private var lastSpeedCall: Boolean? = null
+    private var lastSpeedObj: SpeedControl? = null
+
+    /** Idempotent. Also called again after [stop]: the sources are then started once more. */
+    fun start() {
+        synchronized(lock) {
+            if (started) return
+            started = true
+            val prev = actor
+            actor = scope.launch { prev?.join(); runActor() }
+            val now = clock()
+            feeders = listOf(
+                scope.launch { settings.changes.collect { inbox.trySend(Cmd.Reconcile) } },
+                scope.launch { registry.changes.collect { inbox.trySend(Cmd.Reconcile) } },
+                scope.launch { while (true) { delay(TICK_MS); inbox.trySend(Cmd.Tick) } },
+            )
+            lastEvalAt = now; lastStatsLogAt = now
+        }
+    }
+
+    /** Idempotent: stops every running source and the loop; the revoke and a null [message] follow on the executor. */
+    fun stop() {
+        synchronized(lock) {
+            if (!started) return
+            started = false
+            feeders.forEach { it.cancel() }; feeders = emptyList()
+            inbox.trySend(Cmd.Stop)
+        }
+    }
+
+    /** The shared sink: any thread. Evidence of a source that is not running is dropped on the executor. */
+    override fun accept(e: Evidence) { if (started) inbox.trySend(Cmd.Ev(e, null, 0)) }
+
+    /** A sink for one source: evidence is also dropped when that source has been stopped since it was handed out (stale generation). */
+    fun sinkFor(id: String): EvidenceSink = EvidenceSink { e ->
+        val gen = live[id] ?: return@EvidenceSink
+        inbox.trySend(Cmd.Ev(e, id, gen))
+    }
+
+    fun onMotionHint(h: MotionHint) { accept(Evidence.GlassesMotion(clock(), h.state, h.stillFrac5m)) }
+
+    private suspend fun runActor() {
+        for (c in inbox) {
+            try {
+                when (c) {
+                    is Cmd.Ev -> onEvidence(c)
+                    Cmd.Reconcile -> { reconcile(); publish(clock()) }
+                    Cmd.Tick -> onTick()
+                    Cmd.Stop -> { shutdown(); return }
+                }
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { log("ctx hub ${c::class.simpleName} failed: ${e.javaClass.simpleName}") }
+        }
+    }
+
+    private fun onEvidence(c: Cmd.Ev) {
+        val src = c.sourceId ?: sourceOf(c.e)
+        if (src != null && running[src] == null) return
+        if (c.sourceId != null && running[c.sourceId] != c.gen) return
+        fusion.onEvidence(c.e)
+        retain(c.e)
+        stats.count(c.e)
+        publish(clock())
+    }
+
+    private fun onTick() {
+        val now = clock()
+        publish(now)
+        if (speedWanted) stats.addLocOnSeconds(TICK_MS / 1000)
+        if (now - lastStatsLogAt >= STATS_LOG_MS) { lastStatsLogAt = now; log(stats.line(_decision.value.state)) }
+    }
+
+    // --- reconcile
+    private fun wanted(id: String) =
+        if (id == AIRPLANE) settings.enabled("phone_activity") || settings.enabled("phone_speed") else settings.enabled(id)
+
+    private fun reconcile() {
+        var revoked = false
+        val next = HashMap<String, SourceStatus>()
+        for (id in ALL_IDS) {
+            val s = registry.get(id)
+            next[id] = when {
+                !wanted(id) -> {
+                    failed.remove(id)
+                    if (running.containsKey(id)) { stopSource(id, s); revoked = true }
+                    SourceStatus.OFF
+                }
+                running.containsKey(id) -> SourceStatus.ON
+                id in failed -> SourceStatus.FAILED
+                s == null || !safe(false) { s.available() } -> SourceStatus.UNAVAILABLE
+                safe(false) { s.start() } -> { running[id] = ++nextGen; live[id] = nextGen; SourceStatus.ON }
+                else -> { failed.add(id); SourceStatus.FAILED }
+            }
+        }
+        _status.value = next
+        if (revoked) rebuild()
+    }
+
+    private inline fun <T> safe(fallback: T, f: () -> T): T = try { f() } catch (e: CancellationException) { throw e } catch (e: Exception) { fallback }
+
+    /** Marks the source revoked (late callbacks are dropped) and forgets its evidence; the caller rebuilds the fusion. */
+    private fun stopSource(id: String, s: ContextSource?) {
+        running.remove(id); live.remove(id)
+        safe(Unit) { s?.stop() }
+        retained.keys.removeAll { retained[it]?.let { e -> sourceOf(e) } == id }
+    }
+
+    /** Task 2's engine has no "forget": a fresh engine replays the retained evidence of the sources still on (hysteresis restarts from UNKNOWN). */
+    private fun rebuild() {
+        fusion = ContextFusion(params)
+        committed = ContextState.UNKNOWN
+        retained.values.forEach { fusion.onEvidence(it) }
+        forcePublish = true
+    }
+    private var forcePublish = false
+
+    private fun retain(e: Evidence) {
+        val key = when (e) {
+            is Evidence.GlassesMotion -> "g"
+            is Evidence.ActivityTransition -> "act"
+            is Evidence.Steps -> "steps"
+            is Evidence.CarLink -> "car:${e.kind}"
+            is Evidence.Airplane -> "air"
+            is Evidence.WatchMotion -> "watch"
+            is Evidence.Speed -> "speed:${retainSeq++}"
+            is Evidence.Intent -> "intent:${retainSeq++}"
+        }
+        retained.remove(key); retained[key] = e
+        trim("speed:", MAX_SPEEDS); trim("intent:", MAX_INTENTS)
+    }
+
+    private fun trim(prefix: String, max: Int) {
+        val keys = retained.keys.filter { it.startsWith(prefix) }
+        keys.dropLast(max).forEach { retained.remove(it) }
+    }
+
+    // --- evaluate and publish
+    private fun publish(now: Long) {
+        val d = fusion.evaluate(now)
+        stats.addStateTime(_decision.value.state, now - lastEvalAt); lastEvalAt = now
+        if (d.state != committed) { committed = d.state; stats.onChange() }
+        _decision.value = d
+        applySpeed(settings.enabled("phone_speed") && d.vehicleSuspected)
+
+        val force = forcePublish; forcePublish = false
+        val cur = _message.value
+        if (SIX_IDS.none { running.containsKey(it) }) {
+            if (cur != null) revokeThenNull(now)
+            return
+        }
+        val apply = settings.applyToCapture
+        val next = MotionContextMessage(
+            state = d.state, confidence = d.confidence.coerceIn(0f, 1f), sinceMs = d.sinceMs, atMs = now, apply = apply,
+            reasons = d.reasons.map { it.name },
+        )
+        val send = force || cur == null || cur.state != next.state || cur.apply != apply ||
+            (next.state != ContextState.UNKNOWN && now - cur.atMs >= RESEND_MS)
+        if (!send) return
+        if (cur != null && cur.apply != apply && cur.state != ContextState.UNKNOWN) { _message.value = revoke(now, apply); stats.onSend() }
+        _message.value = next; stats.onSend()
+    }
+
+    private fun revoke(now: Long, apply: Boolean) =
+        MotionContextMessage(state = ContextState.UNKNOWN, confidence = 0f, sinceMs = now, atMs = now, apply = apply, reasons = emptyList())
+
+    private fun revokeThenNull(now: Long) {
+        _message.value = revoke(now, settings.applyToCapture); stats.onSend()
+        _message.value = null
+    }
+
+    private fun applySpeed(want: Boolean) {
+        speedWanted = want
+        val sc = registry.speed
+        if (want == lastSpeedCall && sc === lastSpeedObj) return
+        lastSpeedCall = want; lastSpeedObj = sc
+        safe(Unit) { sc?.setWanted(want) }
+    }
+
+    private fun shutdown() {
+        for (id in running.keys.toList()) stopSource(id, registry.get(id))
+        failed.clear()
+        _status.value = ALL_IDS.associateWith { SourceStatus.OFF }
+        fusion = ContextFusion(params); committed = ContextState.UNKNOWN; retained.clear()
+        applySpeed(false)
+        if (_message.value != null) revokeThenNull(clock())
+        _decision.value = _decision.value.copy(state = ContextState.UNKNOWN, reasons = emptySet(), vehicleSuspected = false)
+    }
+
+    companion object {
+        const val AIRPLANE = "phone_airplane"
+        val SIX_IDS = listOf("phone_activity", "phone_steps", "phone_speed", "phone_car", "watch_livefit", "image_intent")
+        private val ALL_IDS = SIX_IDS + AIRPLANE
+        const val TICK_MS = 10_000L
+        const val RESEND_MS = 60_000L
+        const val STATS_LOG_MS = 600_000L
+        private const val MAX_SPEEDS = 8
+        private const val MAX_INTENTS = 3
+
+        /** Which source produces an evidence kind; null = the glasses hint (always on, never revoked). */
+        fun sourceOf(e: Evidence): String? = when (e) {
+            is Evidence.GlassesMotion -> null
+            is Evidence.ActivityTransition -> "phone_activity"
+            is Evidence.Steps -> "phone_steps"
+            is Evidence.Speed -> "phone_speed"
+            is Evidence.CarLink -> "phone_car"
+            is Evidence.Airplane -> AIRPLANE
+            is Evidence.WatchMotion -> "watch_livefit"
+            is Evidence.Intent -> "image_intent"
+        }
+    }
+}

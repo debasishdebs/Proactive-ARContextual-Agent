@@ -31,6 +31,12 @@ object HubGraph {
 
     internal val isBuilt: Boolean get() = hub != null
 
+    /** Wave B: the one process-wide context hub and its registry; later tasks call `contextRegistry?.register(…)`. Built with the hub, started with it. */
+    @Volatile var contextHub: com.rokid.context.phone.context.ContextHub? = null
+        private set
+    @Volatile var contextRegistry: com.rokid.context.phone.context.ContextSourceRegistry? = null
+        private set
+
     fun resetForTests(h: Hub?) { synchronized(this) { hub = h } }
 
     /** Off the main thread: the receipt commit does Room and file I/O. The process-wide hub outlives it. */
@@ -109,6 +115,14 @@ object HubGraph {
         ) { onFrameStored(app) }
         val link = CxrGlassesLink(app, scope, probe = com.rokid.context.BuildConfig.DEBUG)
         val phoneUse = PhoneUseSignal().also { it.start(app) }
+        // Wave B: constructed here, started and stopped with the Hub (no sensing until a source is registered and switched on).
+        val ctxRegistry = com.rokid.context.phone.context.ContextSourceRegistry()
+        val ctxScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + guard)
+        val ctxHub = com.rokid.context.phone.context.ContextHub(
+            ctxScope, com.rokid.context.phone.context.ContextSourceSettings.of(app), ctxRegistry,
+            log = { Log.i("PcCtx", it) },
+        )
+        contextRegistry = ctxRegistry; contextHub = ctxHub
         return Hub(
             scope, link, pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
@@ -116,6 +130,7 @@ object HubGraph {
             reopenGuards = AndroidRelaunchGuards(app, { link.wearing.value }), reopenEnabled = { KeepRunningNearby.of(app).enabled() },
             standDown = PrefsStandDown(app.getSharedPreferences(PrefsStandDown.PREFS, Context.MODE_PRIVATE)),
             phoneUse = phoneUse.inUse,
+            motionContext = ctxHub.message, onMotionHint = ctxHub::onMotionHint, ctxStart = ctxHub::start, ctxStop = ctxHub::stop,
         )
     }
 }

@@ -8,6 +8,9 @@ import com.rokid.context.core.model.GlassesStatusSource
 import com.rokid.context.core.model.HelloRequest
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.LinkState
+import com.rokid.context.core.model.MotionHint
+import com.rokid.context.core.model.context.ContextState
+import com.rokid.context.core.model.context.MotionContextMessage
 import com.rokid.context.core.model.Overlay
 import com.rokid.context.core.model.PauseOrigin
 import com.rokid.context.core.model.PauseRecord
@@ -63,6 +66,13 @@ class Hub(
     private val standDown: StandDown = InMemoryStandDown(),
     /** Battery wave A §7: true while the phone screen is on and unlocked; forwarded as `pc_phone_ctx`. */
     private val phoneUse: StateFlow<Boolean> = MutableStateFlow(false),
+    /** Wave B: the context hub's `pc_motion_ctx` message; null = nothing to say (a revoke is sent on the way to null). */
+    private val motionContext: StateFlow<MotionContextMessage?> = MutableStateFlow(null),
+    /** Wave B: a `pc_motion_hint` from the glasses goes to the context hub. */
+    private val onMotionHint: (MotionHint) -> Unit = {},
+    /** Wave B: the context hub starts and stops with this hub (both idempotent on its side). */
+    private val ctxStart: () -> Unit = {},
+    private val ctxStop: () -> Unit = {},
 ) : GlassesStatusSource {
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
@@ -98,6 +108,7 @@ class Hub(
 
     fun start() {
         if (started) return
+        ctxStart()
         jobs = listOf(
             scope.launch { link.state.collect { s -> onLinkState(s) } },
             scope.launch { link.events.collect { guarded("event ${it::class.simpleName}") { onEvent(it) } } },
@@ -105,6 +116,7 @@ class Hub(
             // null = unknown again (session closed, offline, BT lost): the stale value is dropped, never re-sent (fix wave I1).
             scope.launch { link.wearing.collect { w -> lastWorn = w; if (w != null) { lastWornAtMs = clock(); Log.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else Log.i(TAG, "wear unknown") } },
             scope.launch { phoneUse.collect { guarded("phone_ctx") { sendPhoneContext() } } },
+            scope.launch { motionContext.collect { m -> guarded("motion_ctx") { onMotionContext(m) } } },
             scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
             scope.launch { voice.overlay.drop(1).collect { broadcaster.markDirty() } },
             scope.launch { actions.overlay.drop(1).collect { broadcaster.markDirty() } },
@@ -128,6 +140,7 @@ class Hub(
         jobs.forEach { it.cancel() }
         jobs = emptyList()
         relauncher?.stop()
+        ctxStop()
         link.close()
     }
 
@@ -241,6 +254,23 @@ class Hub(
         link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = lastWornAtMs, sessionStartMs = sessionStartMs)))
     }
 
+    /** The last `pc_motion_ctx` this session sent; a null from the context hub ends it with an explicit UNKNOWN. */
+    private var lastMotionCtx: MotionContextMessage? = null
+
+    private suspend fun onMotionContext(m: MotionContextMessage?) {
+        if (m != null) { sendMotionContext(m); return }
+        val last = lastMotionCtx ?: return
+        lastMotionCtx = null
+        // The hub's own revoke can be conflated away on its way to null: send one here unless the glasses already hold UNKNOWN.
+        if (last.state != ContextState.UNKNOWN) sendMotionContext(last.copy(state = ContextState.UNKNOWN, confidence = 0f, reasons = emptyList(), atMs = clock()))
+    }
+
+    private suspend fun sendMotionContext(m: MotionContextMessage) {
+        val out = m.copy(sessionStartMs = sessionStartMs)
+        lastMotionCtx = out
+        link.send(Channels.MOTION_CONTEXT, Wire.encode(out))
+    }
+
     /** `pc_phone_ctx`: always sent; the glasses gate on their `pauseWhenPhoneInUse` setting. */
     private suspend fun sendPhoneContext() {
         link.send(Channels.PHONE_CONTEXT, Wire.encode(com.rokid.context.core.model.PhoneContextMessage(inUse = phoneUse.value, atMs = clock(), sessionStartMs = sessionStartMs)))
@@ -281,6 +311,8 @@ class Hub(
         if (lastWorn != null) lastWornAtMs = clock() // the SDK's value is current for this session (it is dropped on every loss)
         sendWear()
         sendPhoneContext()
+        // A fresh envelope (new atMs, this session's start), same state and sinceMs: the glasses drop a stale or pre-session stamp.
+        motionContext.value?.let { sendMotionContext(it.copy(atMs = clock())) }
         sendAutoOpen()
         broadcaster.markDirty()
     }
@@ -354,6 +386,7 @@ class Hub(
             }
             is GlassesEvent.Audio -> voice.onAudio(e.pcm) // never logged: it is the wearer's voice
             GlassesEvent.ListenEnd -> voice.onListenEnd()
+            is GlassesEvent.MotionHintReceived -> onMotionHint(e.hint)
         }
     }
 
