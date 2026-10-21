@@ -81,6 +81,7 @@ class SamplingSession(
     private val charging: () -> Boolean = { false },
     private val batterySaver: () -> Boolean = { false },
     private val profile: () -> CaptureProfile = { CaptureProfile.DEFAULT },
+    private val phoneInUse: () -> Boolean = { false },
     /** One Fixed-mode capture (through [owner]); the session calls it every 60 s while resting. */
     private val fixedCapture: suspend () -> Unit = {},
     /** Three failed binds: the owner runs Fixed 30 s for the rest of this session. */
@@ -286,6 +287,7 @@ class SamplingSession(
         if (capturePaused()) return "paused"
         if (s.pauseWhenNotWorn && !wear.worn.value) return "not_worn" // only a real pc_wear=false makes it false
         if (s.pauseWhenNotWorn && wear.parked.value) return "parked"
+        if (s.pauseWhenPhoneInUse && phoneInUse()) return "phone_in_use"
         if (heat.level.value == HeatLevel.STOP) return "heat"
         if (FrameGuard.lowBattery(batteryPct(), charging())) return "battery"
         if (prof.paused) return "battery_budget"

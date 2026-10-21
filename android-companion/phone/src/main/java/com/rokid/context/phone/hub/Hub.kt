@@ -61,6 +61,8 @@ class Hub(
     private val reopenEnabled: () -> Boolean = { true },
     /** Fix wave I2: the wearer's exit, persisted: a phone restart must never reopen an app the wearer exited. */
     private val standDown: StandDown = InMemoryStandDown(),
+    /** Battery wave A §7: true while the phone screen is on and unlocked; forwarded as `pc_phone_ctx`. */
+    private val phoneUse: StateFlow<Boolean> = MutableStateFlow(false),
 ) : GlassesStatusSource {
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
@@ -102,6 +104,7 @@ class Hub(
             scope.launch { link.ready.collect { guarded("ready") { onReady() } } },
             // null = unknown again (session closed, offline, BT lost): the stale value is dropped, never re-sent (fix wave I1).
             scope.launch { link.wearing.collect { w -> lastWorn = w; if (w != null) { lastWornAtMs = clock(); Log.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else Log.i(TAG, "wear unknown") } },
+            scope.launch { phoneUse.collect { guarded("phone_ctx") { sendPhoneContext() } } },
             scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
             scope.launch { voice.overlay.drop(1).collect { broadcaster.markDirty() } },
             scope.launch { actions.overlay.drop(1).collect { broadcaster.markDirty() } },
@@ -238,6 +241,11 @@ class Hub(
         link.send(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = w, atMs = lastWornAtMs, sessionStartMs = sessionStartMs)))
     }
 
+    /** `pc_phone_ctx`: always sent; the glasses gate on their `pauseWhenPhoneInUse` setting. */
+    private suspend fun sendPhoneContext() {
+        link.send(Channels.PHONE_CONTEXT, Wire.encode(com.rokid.context.core.model.PhoneContextMessage(inUse = phoneUse.value, atMs = clock(), sessionStartMs = sessionStartMs)))
+    }
+
     /** Phone clock when the current glasses session began (a `pc_wear` stamped before it is stale; the glasses ignore it). */
     private var sessionStartMs = 0L
 
@@ -272,6 +280,7 @@ class Hub(
         pushSettings()
         if (lastWorn != null) lastWornAtMs = clock() // the SDK's value is current for this session (it is dropped on every loss)
         sendWear()
+        sendPhoneContext()
         sendAutoOpen()
         broadcaster.markDirty()
     }

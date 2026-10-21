@@ -66,6 +66,15 @@ class HudControllerTest {
         assertEquals(2, hellos())
     }
 
+    @Test fun aSessionCloseTellsPhoneUseItIsUnknown() = runTest {
+        val c = controller()
+        val seen = ArrayList<Boolean?>()
+        c.onPhoneUse = { seen += it }
+        bridge.phone(Channels.STATE, state())
+        c.onActivityExit()
+        assertEquals(listOf<Boolean?>(null), seen)
+    }
+
     @Test fun activityExitClosesTheSession() = runTest {
         val c = controller()
         bridge.phone(Channels.STATE, state())
@@ -223,6 +232,16 @@ class HudControllerTest {
         bridge.phone(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = false, atMs = 6_000, sessionStartMs = 5_000)))
         bridge.phone(Channels.WEAR, Wire.encode(com.rokid.context.core.model.WearMessage(worn = true, atMs = 1, sessionStartMs = 0)))
         assertEquals("an old phone (no session start) is never ignored", listOf<Boolean?>(false, true), seen)
+    }
+
+    @Test fun aFreshPhoneContextReachesTheCallbackAndAStaleOneIsIgnored() = runTest {
+        val c = controller()
+        val seen = ArrayList<Boolean?>()
+        c.onPhoneUse = { seen += it }
+        bridge.phone(Channels.PHONE_CONTEXT, Wire.encode(com.rokid.context.core.model.PhoneContextMessage(inUse = true, atMs = 1_000, sessionStartMs = 5_000)))
+        assertTrue(seen.isEmpty())
+        bridge.phone(Channels.PHONE_CONTEXT, Wire.encode(com.rokid.context.core.model.PhoneContextMessage(inUse = true, atMs = 6_000, sessionStartMs = 5_000)))
+        assertEquals(listOf<Boolean?>(true), seen)
     }
 
     @Test fun theAutoOpenMarkerReachesTheActivity() = runTest {

@@ -83,6 +83,7 @@ class HubTest {
         nudges: HubNudges = HubNudges.None,
         reopenGuards: RelaunchGuards? = null,
         standDown: StandDown = InMemoryStandDown(),
+        phoneUse: kotlinx.coroutines.flow.StateFlow<Boolean> = kotlinx.coroutines.flow.MutableStateFlow(false),
     ): Hub {
         val pauses = HubPauses(dao, now = clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
@@ -90,7 +91,7 @@ class HubTest {
         val settings = HubSettingsStore(ctx.getSharedPreferences("hub_test_${tmp.root.name}", 0)) { "hud" }
         return Hub(
             backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler),
-            startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, standDown = standDown,
+            startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, standDown = standDown, phoneUse = phoneUse,
         )
             .also { if (start) { it.start(); runCurrent() } }
     }
@@ -104,7 +105,7 @@ class HubTest {
         assertEquals(1, link.connectOnceCalls)
         link.sent.clear()
         link.emitReady(); advanceTimeBy(300) // STATE goes through the broadcaster's 250 ms window
-        assertEquals(listOf(Channels.SETTINGS, Channels.STATE), link.sent.map { it.first }.take(2))
+        assertEquals(listOf(Channels.SETTINGS, Channels.STATE), link.sent.map { it.first }.filter { it != Channels.PHONE_CONTEXT }.take(2))
         val frame = (Wire.decode<StateFrame>(link.lastOn(Channels.STATE)) as Decoded.Ok).value
         assertEquals(CaptureState.Running, frame.capture)
         assertEquals(2, frame.queueDepth)
@@ -237,6 +238,19 @@ class HubTest {
         assertEquals(false, m.worn)
         link.sent.clear(); link.emitReady(); advanceTimeBy(300)
         assertTrue("re-sent on ready", link.sent.any { it.first == Channels.WEAR })
+    }
+
+    /** Battery wave A task 7: the phone-in-use flag is forwarded as pc_phone_ctx on change and again when the session opens. */
+    @Test fun phoneUseIsForwardedToTheGlasses() = runTest {
+        val link = FakeGlassesLink()
+        val use = kotlinx.coroutines.flow.MutableStateFlow(false)
+        hub(link, phoneUse = use)
+        link.sent.clear()
+        use.value = true; runCurrent()
+        val m = (Wire.decode<com.rokid.context.core.model.PhoneContextMessage>(link.lastOn(Channels.PHONE_CONTEXT)) as Decoded.Ok).value
+        assertEquals(true, m.inUse)
+        link.sent.clear(); link.emitReady(); advanceTimeBy(300)
+        assertTrue("re-sent on ready", link.sent.any { it.first == Channels.PHONE_CONTEXT })
     }
 
     /** Fix wave H (D): the glasses' pc_user_exit marks the state; an explicit open clears it at once. */

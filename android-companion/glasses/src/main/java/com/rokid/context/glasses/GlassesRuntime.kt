@@ -92,6 +92,8 @@ class GlassesRuntime private constructor(private val app: Context) {
     val photoCue = PhotoCue(scope)
     /** One wear state for the process, fed by the phone's `pc_wear` (see [WearDetector]); the sampling session gates on it. */
     val wear = com.rokid.context.glasses.capture.motion.WearDetector()
+    /** The phone's `pc_phone_ctx` (in use = screen on and unlocked), debounced; the sampling session gates on it. */
+    val phoneUse = com.rokid.context.glasses.capture.session.PhoneUse()
     /** Fix wave H3: a ~600 ms HUD mark per saved keyframe ("Capture blink on HUD", synced `captureCue`). */
     val captureBlink = com.rokid.context.glasses.hud.CaptureBlink(scope, { settingsCache.read().captureCue })
     /** The minimised icon (spec 2026-10-14 §3), one window per process; shown only while the keep-alive service runs. */
@@ -174,6 +176,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         controller = c
         c.onFrameAck = uplink::onAck
         c.onWear = { w -> if (w == null) wear.reset() else { wear.onRemote(w); Log.i(TAG, "wear=$w (from the phone)") } }
+        c.onPhoneUse = { u -> if (u == null) phoneUse.reset() else phoneUse.onRemote(u, android.os.SystemClock.elapsedRealtime()) }
         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
         c.onPhoneSettings = { s -> ioScope.launch { applyPhoneSettings(s) } }
@@ -193,6 +196,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     fun detach(c: HudController) {
         c.onFrameAck = {}
         c.onWear = {}
+        c.onPhoneUse = {}
         c.onAutoOpen = {}
         c.onSessionOpened = {}
         c.onPhoneSettings = {}

@@ -188,6 +188,7 @@ class CaptureService : LifecycleService() {
             capturePaused = { !runtime.pauses.captureAllowed() },
             batteryPct = ::batteryPercent, charging = ::isCharging, batterySaver = ::isBatterySaverOn,
             profile = { val s = runtime.settingsCache.readNormalized(); CaptureProfile.of(s.cameraWake, budget.tier.value) },
+            phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default,
         )
         val feed = AndroidSensorFeed(this).also { it.start(motion, wear) }
