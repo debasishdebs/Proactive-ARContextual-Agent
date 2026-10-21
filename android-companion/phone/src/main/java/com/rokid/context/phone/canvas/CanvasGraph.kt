@@ -40,6 +40,8 @@ data class CanvasStatus(
     val lanIp: String? = null,
     val code: String? = null,
     val codeExpiresAt: Long = 0L,
+    /** A short fixed-text notice for the canvas screen (e.g. the system would not let the service run). */
+    val notice: String? = null,
 ) {
     val localUrl: String? get() = if (on && port != null) "http://127.0.0.1:$port" else null
     val lanUrl: String? get() = if (on && lan && lanIp != null && port != null) "http://$lanIp:$port" else null
@@ -75,6 +77,10 @@ interface CanvasHost {
     fun webViewToken(): String
     /** Re-reads the Wi-Fi address into [status]. */
     fun refreshNetwork()
+    /** The service's idle rule (see [CanvasGraph.shouldIdleStop]). */
+    fun shouldIdleStop(): Boolean
+    /** Stops the server and tells the canvas screen why, in fixed text. */
+    fun stopWithNotice(text: String)
     suspend fun home(): HomeData
     suspend fun rollback(): CanvasPublisher.Outcome
     suspend fun pipeline(id: String): Pipeline?
@@ -128,6 +134,7 @@ class CanvasGraph(
             return
         }
         server = s
+        notice = null
         startedAt = clock()
         scope.launch { try { core.start() } catch (e: Exception) { log("canvas backend start failed (${e.javaClass.simpleName})") } }
         publish()
@@ -164,13 +171,22 @@ class CanvasGraph(
     override suspend fun pipeline(id: String) = core.pipeline(id)
 
     /** The service's idle rule: no authenticated request for 30 min, no run, no canvas screen open. */
-    fun shouldIdleStop(now: Long = clock()): Boolean =
+    override fun shouldIdleStop(): Boolean = shouldIdleStop(clock())
+
+    fun shouldIdleStop(now: Long): Boolean =
         server != null && IdlePolicy.shouldStop(maxOf(auth.lastActivityMs, startedAt), now, core.runActive(), screenOpen)
+
+    @Volatile private var notice: String? = null
+
+    override fun stopWithNotice(text: String) {
+        notice = text
+        stop()
+    }
 
     private fun publish() {
         val s = server
         val code = auth.currentCode()
-        _status.value = CanvasStatus(on = s != null, port = s?.port, lan = lanOn, lanIp = wifiIp(), code = code?.code, codeExpiresAt = code?.expiresAt ?: 0L)
+        _status.value = CanvasStatus(on = s != null, port = s?.port, lan = lanOn, lanIp = wifiIp(), code = code?.code, codeExpiresAt = code?.expiresAt ?: 0L, notice = notice)
     }
 
     companion object {

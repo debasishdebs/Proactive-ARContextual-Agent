@@ -108,7 +108,7 @@ class CanvasHomeViewModel(
         val left = if (s.code != null) ((s.codeExpiresAt - l.nowMs) / 1000).toInt().coerceAtLeast(0) else 0
         CanvasHomeUi(
             status = s, showCode = (l.showCode || s.lan) && s.code != null, secondsLeft = left, wifiAvailable = s.lanIp != null,
-            pipelines = l.pipelines, runs = l.runs, publishActive = l.publishActive, message = l.message,
+            pipelines = l.pipelines, runs = l.runs, publishActive = l.publishActive, message = l.message ?: s.notice,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, CanvasHomeUi(status = host.status.value))
 

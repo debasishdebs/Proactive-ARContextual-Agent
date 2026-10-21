@@ -25,16 +25,16 @@ import kotlinx.coroutines.launch
  * LAN is on, or a run is going. It stops itself, and the server, after 30 min with no authenticated request (and no run,
  * no open canvas screen), on the notification's Stop action, or when Developer mode turns off.
  */
-class CanvasService : Service() {
+open class CanvasService : Service() {
     private val scope = CoroutineScope(Dispatchers.Default)
     private var watcher: Job? = null
-    private lateinit var graph: CanvasGraph
+    private lateinit var graph: CanvasHost
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        graph = CanvasGraph.get(applicationContext)
+        graph = CanvasGraph.host(applicationContext)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Experiment canvas", NotificationManager.IMPORTANCE_LOW))
     }
@@ -42,12 +42,13 @@ class CanvasService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP || !DeveloperModeStore.get(this).enabled.value) {
             // A started foreground service must still enter the foreground before it may stop.
-            enterForeground("Stopping")
+            if (!enterForegroundSafely("Stopping")) return START_NOT_STICKY
             shutDown()
             return START_NOT_STICKY
         }
-        enterForeground(text(graph.status.value))
+        if (!enterForegroundSafely(text(graph.status.value))) return START_NOT_STICKY
         if (!graph.status.value.on) graph.start(false)
+        if (!graph.status.value.on) { shutDown(); return START_NOT_STICKY } // the server could not bind
         if (watcher == null) watcher = scope.launch { watch() }
         return START_NOT_STICKY
     }
@@ -71,9 +72,37 @@ class CanvasService : Service() {
 
     private fun shutDown() {
         graph.stop()
-        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
         stopSelf()
     }
+
+    /**
+     * Android 15 gives a dataSync foreground service 6 h per 24 h; at the limit the system calls this and the service must
+     * stop within seconds or the process (which also hosts the glasses link) is killed. Stops the server and ends every session.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) = timedOut()
+
+    override fun onTimeout(startId: Int) = timedOut()
+
+    private fun timedOut() {
+        graph.stopWithNotice(NOTICE_TIME_LIMIT)
+        graph.revokeAll()
+        shutDown()
+    }
+
+    /** False when the system refused the foreground start: the server is then stopped, the service ends and the canvas screen says why. */
+    private fun enterForegroundSafely(text: String): Boolean = try {
+        enterForeground(text)
+        true
+    } catch (e: Exception) {
+        // ForegroundServiceStartNotAllowedException, SecurityException, IllegalStateException and the like: never crash the process.
+        graph.stopWithNotice(NOTICE_NOT_ALLOWED)
+        stopSelf()
+        false
+    }
+
+    /** The platform start; overridable so a test can make it throw. */
+    protected open fun enterForeground(text: String) = startForegroundNow(text)
 
     override fun onDestroy() {
         watcher?.cancel()
@@ -83,7 +112,7 @@ class CanvasService : Service() {
 
     private fun text(s: CanvasStatus) = "Experiment canvas is on \u00b7 " + (s.lanUrl ?: s.localUrl ?: "starting")
 
-    private fun enterForeground(text: String) {
+    private fun startForegroundNow(text: String) {
         val n = notification(text)
         if (Build.VERSION.SDK_INT >= 29) ServiceCompat.startForeground(this, ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         else startForeground(ID, n)
@@ -107,6 +136,8 @@ class CanvasService : Service() {
     companion object {
         const val CHANNEL = "canvas"
         const val ID = 4107
+        const val NOTICE_TIME_LIMIT = "Android stopped the canvas service after its time limit. Open the canvas again to restart it."
+        const val NOTICE_NOT_ALLOWED = "Android would not let the canvas run in the background. Open the canvas again with the app in front."
         const val ACTION_STOP = "com.rokid.context.phone.canvas.STOP"
         private const val TICK_MS = 60_000L
 
