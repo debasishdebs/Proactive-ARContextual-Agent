@@ -234,4 +234,34 @@ class ClusterCallTest {
         assertEquals(0, called)
         assertEquals("IN_CLUSTER", st("c1_5").state)
     }
+
+    private suspend fun assertSplit(id: String) {
+        assertEquals("FAILED_FINAL", cl(id).state)
+        listOf("${id}_1", "${id}_2", "${id}_3").forEach { assertEquals("FAILED_FINAL", st(it).state) }
+        listOf("${id}_4", "${id}_5").forEach { assertEquals("NEAR_DUP", st(it).state); assertEquals("cluster_failed", st(it).lastError) }
+    }
+
+    private suspend fun abandonedFifth(id: String) {
+        cluster(id, state = "SUMMARIZING", attempts = 4)
+        db.frameClusterDao().upsert(cl(id).copy(claimId = "dead", claimedAt = now - FrameRecovery.CLAIM_TIMEOUT_MS - 1))
+    }
+
+    @Test fun abandonedFifthClaimSplitsAtClaimTime() = runBlocking {
+        abandonedFifth("c1")
+        pipeline().drainOnce()
+        assertTrue(calls.isEmpty())
+        assertSplit("c1")
+    }
+
+    @Test fun abandonedFifthClaimSplitsInTheBackstop() = runBlocking {
+        abandonedFifth("c1")
+        assertEquals(1, pipeline().recover())
+        assertSplit("c1")
+    }
+
+    @Test fun strandedFinalClusterIsSplitAtProcessStart() = runBlocking {
+        cluster("c1", state = "FAILED_FINAL", attempts = 5)
+        pipeline(releaseAtStart = true).drainUntilIdle(200)
+        assertSplit("c1")
+    }
 }
