@@ -10,6 +10,9 @@ import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.orchestration.MemoryWipe
+import com.rokid.context.work.budget.PhoneThermal
+import com.rokid.context.work.budget.ThermalStatusProvider
+import com.rokid.context.work.frames.KeyframeGraph
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -29,9 +32,16 @@ class HistoricalBackfillTest {
         WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx))
         QueueRuntimeStore.clearAll(ctx)
+        // The backfill signals the real keyframe pipeline (Dispatchers.Default), which would legitimately claim a requeued PENDING frame
+        // (PENDING -> EXTRACTING) before the assertions read it. Latch SEVERE so background extraction stays off: the test then sees PENDING.
+        KeyframeGraph.resetForTests()
+        KeyframeGraph.thermal = ThermalStatusProvider { PhoneThermal.SEVERE }
     }
 
-    @After fun tearDown() { MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null) }
+    @After fun tearDown() {
+        KeyframeGraph.resetForTests(); KeyframeGraph.thermal = ThermalStatusProvider { PhoneThermal.NONE }
+        MemoryGraph.get(ctx).db.close(); MemoryGraph.resetForTests(null)
+    }
 
     @Test fun aWipeAfterTheFramesWereChosenQueuesNothing() = runBlocking {
         val jpeg = File(ctx.filesDir, "f1.jpg").apply { writeBytes(byteArrayOf(1, 2, 3)) }
