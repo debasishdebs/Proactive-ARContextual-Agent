@@ -14,6 +14,7 @@ import com.rokid.context.memory.Modality
 import com.rokid.context.memory.SpaceEmbedderProvider
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
 import com.rokid.context.memory.db.ImagePut
+import com.rokid.context.memory.db.ImageSwapHealth
 import com.rokid.context.memory.db.SpaceState
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -29,6 +30,9 @@ data class BoundEmbedder(val embedder: Embedder, val configJson: String, val dim
  * longer matches the space, so retrying cannot help: the worker records it and stops (Task 8 carry).
  */
 class IndexConfigException(message: String) : Exception(message)
+
+/** The image embedder misbehaved (a wrong-count result, a whole batch failing to decode): retryable, and never a reason to mark a photo. */
+class ImageEmbedderException(message: String) : Exception(message)
 
 /** What [IndexMaintenance] needs from `:services:ai`. */
 interface IndexEmbedders : SpaceEmbedderProvider {
@@ -183,7 +187,9 @@ class IndexMaintenance(
     private val imageMaxPerRun: Int = 160,
 ) {
     /** RETRY: a pre-swap canary check could not run; the worker retries with backoff (bounded) and never swaps unchecked. */
-    enum class Outcome { IDLE, DONE, MORE, RETRY }
+    enum class Outcome { IDLE, DONE, MORE, RETRY,
+        /** Only image-vector backfill is left (paused, deferred photos, or the swap waiting on them): the worker continues after a growing delay, not at once. */
+        BACKFILL }
 
     private enum class Check { MATCH, NOISY, DRIFTED, UNCHECKED }
 
@@ -234,21 +240,22 @@ class IndexMaintenance(
         var budget = maxPerRun
         val images = ImageProgress(imageMaxPerRun)
         var activeLeft = false
+        var activeImagesLeft = false
         if (current != null && current.state == SpaceState.ACTIVE) {
             val e = if (current.fingerprint == fp) bound.embedder else embedders.forSpace(current)
             if (e != null) {
                 try {
                     budget = fill(current, e, budget)
                     fillImages(current, e, images) // catch-up after downtime; the ACTIVE space is read for routing, so its photos come first
-                    activeLeft = spaces.missing(current.id, 1).isNotEmpty() || // re-checked so a memory written meanwhile is not left behind
-                        (Modality.IMAGE in e.modalities && !images.paused && spaces.missingImages(current.id, 1).isNotEmpty())
+                    activeLeft = spaces.missing(current.id, 1).isNotEmpty() // re-checked so a memory written meanwhile is not left behind
+                    activeImagesLeft = Modality.IMAGE in e.modalities && !images.paused && spaces.missingImages(current.id, 1).isNotEmpty()
                 } catch (c: CancellationException) { throw c } catch (c: IndexConfigException) { throw c } catch (t: Exception) {
                     if (building == null) throw t // nothing else to do: let the worker retry with backoff
                     Log.i(TAG, "old space not reachable; it keeps its vectors: ${SafeLog.describe(t)}")
                 }
             }
         }
-        if (building == null) return if (activeLeft) Outcome.MORE else Outcome.DONE
+        if (building == null) return if (activeLeft) Outcome.MORE else if (activeImagesLeft) Outcome.BACKFILL else Outcome.DONE
 
         fill(building, bound.embedder, budget)
         fillImages(building, bound.embedder, images)
@@ -267,8 +274,17 @@ class IndexMaintenance(
             Check.MATCH -> Unit
         }
         // Ruling 15: image coverage is required per space, iff the building embedder declares IMAGE. Paused backfill waits for the next trigger (no spin).
-        if (!spaces.swapIfComplete(building.id, requireImages = Modality.IMAGE in bound.embedder.modalities)) {
-            return if (images.paused) Outcome.DONE else Outcome.MORE
+        val imageSpace = Modality.IMAGE in bound.embedder.modalities
+        if (imageSpace && spaces.missingImageCount(building.id) == 0) {
+            // Every photo is covered or marked: with no image vector at all (or a mostly-marked library) that is a broken decoder, not a finished build.
+            val health = spaces.imageSwapHealth(building.id)
+            if (health != ImageSwapHealth.OK) {
+                Log.w(TAG, "image backfill unhealthy ($health): not swapping")
+                throw IndexConfigException("image backfill unhealthy: $health")
+            }
+        }
+        if (!spaces.swapIfComplete(building.id, requireImages = imageSpace)) {
+            return if (images.paused) Outcome.DONE else Outcome.BACKFILL
         }
         clock.markCanary(now())
         clock.recordDiscard(null)
@@ -283,7 +299,7 @@ class IndexMaintenance(
             if (now() - d.at < DAY_MS) { Log.i(TAG, "build held for 24 h after a drift discard"); return null }
         }
         val canaries = bound.embedder.embedDocuments(Canaries.TEXTS)
-        return spaces.startBuilding(fp, bound.configJson, bound.dim, Canaries.encode(canaries), now())
+        return spaces.startBuilding(fp, bound.configJson, bound.dim, Canaries.encode(canaries), now(), bound.embedder.imageDims)
     }
 
     /** Embeds up to [budget] missing memories into [space]; returns what is left of the budget. */
@@ -320,6 +336,10 @@ class IndexMaintenance(
      */
     private suspend fun fillImages(space: EmbeddingSpaceEntity, embedder: Embedder, p: ImageProgress) {
         if (Modality.IMAGE !in embedder.modalities) return
+        // The width comes from the embedder (never from a stored vector, which a bad write could have poisoned); rows of another width are dropped.
+        val dims = embedder.imageDims ?: space.dim
+        val purged = spaces.purgeWrongWidthImages(space.id, dims)
+        if (purged > 0) Log.w(TAG, "image backfill: dropped $purged vectors of the wrong width")
         val skip = HashSet<String>() // skipped this run: not re-listed, or they would starve the photos behind them
         while (p.budget > 0) {
             if (!bulkAllowed()) { p.paused = true; Log.i(TAG, "image backfill paused by the bulk gate"); return }
@@ -331,22 +351,27 @@ class IndexMaintenance(
             val first = photos(ids)
             val readable = ids.filter { first[it] is PhotoRead.Bytes }
             val batch = readable.takeIf { it.isNotEmpty() }
-                ?.let { r -> tryImages(embedder, r.map { (first.getValue(it) as PhotoRead.Bytes).data })?.takeIf { it.size == r.size }?.let { r.zip(it).toMap() } }
-            var marked = 0; var transient = 0; var rejected = 0; var stored = 0
+                ?.let { r -> tryImages(embedder, r.map { (first.getValue(it) as PhotoRead.Bytes).data })?.let { r.zip(it).toMap() } }
+            var transient = 0; var rejected = 0; var stored = 0
+            val toMark = ArrayList<String>(); var decodeFailed = 0
             for (id in ids) {
                 val v = batch?.get(id) ?: when (val r = embedOne(embedder, id, first[id])) {
                     is One.Vector -> r.v
                     One.Skip -> { skip += id; transient++; continue }
-                    One.Unembeddable -> { spaces.markUnembeddable(id); readAttempts.forget(id); marked++; continue }
+                    One.Unembeddable -> { toMark += id; continue }
+                    One.DecodeFailed -> { toMark += id; decodeFailed++; continue }
                 }
-                when (spaces.putImage(id, space.id, v, embedder.imageDims)) {
+                when (spaces.putImage(id, space.id, v, dims)) {
                     ImagePut.STORED -> { stored++; readAttempts.forget(id) }
                     ImagePut.WIDTH_MISMATCH -> { skip += id; rejected++ } // never stored, never marked
                     ImagePut.DROPPED -> if (spaces.queryable()?.id != space.id && spaces.building()?.id != space.id) return // discarded, retired or marked stale meanwhile
                 }
             }
-            Log.i(TAG, "image backfill: ${ids.size} photos, $stored stored, $marked unembeddable, $transient deferred, $rejected wrong width")
-            if (rejected > 0 && stored == 0 && batch != null && rejected == batch.size) {
+            // Every photo of a batch of 2+ failing to decode is a broken decoder or model, not 2+ bad photos: mark none, retry later.
+            if (ids.size >= 2 && decodeFailed == ids.size) throw ImageEmbedderException("every photo of a batch failed to decode")
+            toMark.forEach { spaces.markUnembeddable(it); readAttempts.forget(it) }
+            Log.i(TAG, "image backfill: ${ids.size} photos, $stored stored, ${toMark.size} unembeddable, $transient deferred, $rejected wrong width")
+            if (rejected > 0 && stored == 0 && rejected == ids.size - toMark.size - transient) {
                 throw IndexConfigException("space ${space.id}: image vectors have the wrong width")
             }
         }
@@ -356,6 +381,7 @@ class IndexMaintenance(
         class Vector(val v: FloatArray) : One
         object Skip : One
         object Unembeddable : One
+        object DecodeFailed : One
     }
 
     /** The photo on its own after a failed batch (or one that could not be read for the batch): see [fillImages] for what marks it. */
@@ -365,16 +391,21 @@ class IndexMaintenance(
         if (r === PhotoRead.Missing) return One.Unembeddable
         if (r === PhotoRead.Unreadable) return if (readAttempts.record(id, now()) >= UNREADABLE_MARK_AFTER) One.Unembeddable else One.Skip
         val bytes = (r as PhotoRead.Bytes).data
-        tryImages(embedder, listOf(bytes))?.singleOrNull()?.let { return One.Vector(it) }
+        tryImages(embedder, listOf(bytes))?.single()?.let { return One.Vector(it) }
         // Failed to decode once: a second attempt on a fresh read.
         val again = (photos(listOf(id))[id] as? PhotoRead.Bytes)?.data ?: return One.Skip
-        return tryImages(embedder, listOf(again))?.singleOrNull()?.let { One.Vector(it) } ?: One.Unembeddable
+        return tryImages(embedder, listOf(again))?.single()?.let { One.Vector(it) } ?: One.DecodeFailed
     }
 
-    /** null = a definite decode failure; any other exception is the embedder's, not the photo's, and propagates. */
-    private suspend fun tryImages(embedder: Embedder, jpegs: List<ByteArray>): List<FloatArray>? = try {
-        embedder.embedImages(jpegs)
-    } catch (_: ImageDecodeException) { null }
+    /**
+     * null = a definite decode failure ([ImageDecodeException]); any other exception is the embedder's, not the photo's, and propagates.
+     * A result that is not one vector per photo (empty, short, long) is also the embedder's failure: [ImageEmbedderException], never a mark.
+     */
+    private suspend fun tryImages(embedder: Embedder, jpegs: List<ByteArray>): List<FloatArray>? {
+        val out = try { embedder.embedImages(jpegs) } catch (_: ImageDecodeException) { return null }
+        if (out.size != jpegs.size) throw ImageEmbedderException("embedder returned ${out.size} vectors for ${jpegs.size} photos")
+        return out
+    }
 
     /**
      * Re-embeds the canaries (the embedder applies the space's document prefix) against the stored set. A mismatch is

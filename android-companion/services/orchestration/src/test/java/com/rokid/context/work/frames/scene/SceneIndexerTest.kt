@@ -47,6 +47,8 @@ class SceneIndexerTest {
     private val vecs = mutableMapOf<Int, FloatArray>()
     private val words = mutableMapOf<Int, Int>()
     private val failing = mutableSetOf<Int>()
+    private val broken = mutableSetOf<Int>()   // the embedder itself fails (not the photo)
+    private val wide = mutableSetOf<Int>()     // the embedder returns the wrong width
     private var watchVec = FloatArray(6).also { it[5] = 1f }
     private var ocrCalls = 0
 
@@ -58,7 +60,9 @@ class SceneIndexerTest {
     private fun embed(target: String): suspend (List<ByteArray>) -> List<FloatArray> = { jpegs ->
         jpegs.map { b ->
             val c = b[0].toInt()
-            if (c in failing) error("decode failed")
+            if (c in failing) throw com.rokid.context.memory.ImageDecodeException("decode failed")
+            if (c in broken) throw IllegalStateException("model not loaded")
+            if (c in wide) return@map FloatArray(7) { i -> if (i == 0) 1f else 0f }
             vecs[c]!!.let { v -> if (target == "building") FloatArray(v.size) { i -> v[(i + 1) % v.size] } else v }
         }
     }
@@ -254,6 +258,26 @@ class SceneIndexerTest {
         assertEquals(1, r2.routed)
         assertEquals("unembeddable", meta("bad").imageVectorSpace); assertNotNull(meta("bad").routedAt)
         assertEquals("PENDING", st("bad").state)
+    }
+
+    /** Review C1 (live path): a failing embedder is not a bad photo; the frame waits, is never marked, and is routed once the model works. */
+    @Test fun embedderFailureNeverMarksAFrameUnembeddable() = runBlocking {
+        broken += 1
+        seed("f", T, code(1, plane(0, 0.0)))
+        val ix = indexer()
+        repeat(4) { val r = ix.routeBatch(); assertEquals(0, r.routed); assertNotNull(r.retryInMs) }
+        assertNull(meta("f").routedAt); assertNull(meta("f").imageVectorSpace)
+        broken.clear()
+        assertEquals(1, ix.routeBatch().routed)
+        assertNotNull(meta("f").routedAt); assertEquals("sA", meta("f").imageVectorSpace)
+    }
+
+    @Test fun wrongWidthVectorIsNeverStoredNorMarked() = runBlocking {
+        wide += 1
+        seed("w", T, code(1, plane(0, 0.0)))
+        val ix = indexer()
+        repeat(3) { assertEquals(0, ix.routeBatch().routed) }
+        assertEquals(0, db.frameVectorDao().countForSpace("sA")); assertNull(meta("w").imageVectorSpace); assertNull(meta("w").routedAt)
     }
 
     @Test fun missingPhotoRoutesFast() = runBlocking {

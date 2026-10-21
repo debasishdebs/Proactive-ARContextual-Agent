@@ -66,7 +66,7 @@ class IndexMaintenanceTest {
      */
     private val fake = object : IndexEmbedders {
         var fp = "A"; var dim = 2; var drift = false; var bound = true; var calls = 0; var tilt = 0.0; var docDim: Int? = null
-        var imageCapable = false; var imageCalls = 0; var imageNetworkDown = false; var imageBroken: Exception? = null; var imageWidth = IMG_DIMS
+        var imageCapable = false; var imageCalls = 0; var imageNetworkDown = false; var imageBroken: Exception? = null; var imageEmpty = false; var imageWidth = IMG_DIMS
         var canaryCalls = 0; val canaryTilts = ArrayDeque<Double>(); var failCanaries = false; var spaceGone = false
         fun embedder(fingerprint: String = fp, d: Int = dim) = object : Embedder {
             override val fingerprint = fingerprint
@@ -88,6 +88,7 @@ class IndexMaintenanceTest {
                 imageCalls++
                 if (imageNetworkDown) throw java.io.IOException("endpoint unreachable")
                 imageBroken?.let { throw it }
+                if (imageEmpty) return emptyList()
                 return jpegs.map { b -> if (b[0] == BAD) throw ImageDecodeException("cannot decode") else FloatArray(imageWidth) { i -> if (i == 0) b[0].toFloat() else 1f } }
             }
         }
@@ -145,7 +146,7 @@ class IndexMaintenanceTest {
         mem("m1"); fake.imageCapable = true
         assertEquals(Outcome.DONE, maintenance().run())
         photo("late1", 10); photo("late2", 20); photo("late3", 30)
-        assertEquals(Outcome.MORE, maintenance(imageMaxPerRun = 2).run())
+        assertEquals(Outcome.BACKFILL, maintenance(imageMaxPerRun = 2).run())
         assertEquals(2, imageVectors(spaces.queryable()!!.id).size)
         assertEquals(Outcome.DONE, maintenance(imageMaxPerRun = 2).run())
         assertEquals(listOf("late1", "late2", "late3"), imageVectors(spaces.queryable()!!.id))
@@ -154,7 +155,7 @@ class IndexMaintenanceTest {
     @Test fun swapWaitsForImageCoverageWhenImageCapable() = runBlocking {
         mem("m1"); fake.imageCapable = true
         photo("p1", 10); photo("p2", 20); photo("p3", 30)
-        assertEquals(Outcome.MORE, maintenance(imageMaxPerRun = 2).run())
+        assertEquals(Outcome.BACKFILL, maintenance(imageMaxPerRun = 2).run())
         assertNull("text is complete but one photo has no vector yet", spaces.queryable())
         assertEquals(2, imageVectors(spaces.building()!!.id).size)
         assertEquals(Outcome.DONE, maintenance(imageMaxPerRun = 2).run())
@@ -203,9 +204,9 @@ class IndexMaintenanceTest {
     @Test fun backfillRunsInBatchesOfTheConfiguredSizeAndIsResumable() = runBlocking {
         mem("m1"); fake.imageCapable = true
         repeat(5) { photo("p$it", it.toLong()) }
-        assertEquals(Outcome.MORE, maintenance(imageMaxPerRun = 3).run())
+        assertEquals(Outcome.BACKFILL, maintenance(imageMaxPerRun = 3).run())
         assertEquals(listOf(2, 1), photoLoads.map { it.size }) // batches of 2, bounded to 3 per run
-        while (maintenance(imageMaxPerRun = 3).run() == Outcome.MORE) Unit
+        while (maintenance(imageMaxPerRun = 3).run() == Outcome.BACKFILL) Unit
         assertEquals(5, imageVectors(spaces.queryable()!!.id).size)
         assertFalse(photoLoads.flatten().groupBy { it }.any { it.value.size > 1 })
     }
@@ -223,11 +224,11 @@ class IndexMaintenanceTest {
 
     @Test fun transientReadFaultIsMarkedOnlyAfterThreeSpacedAttempts() = runBlocking {
         mem("m1"); fake.imageCapable = true; photo("ok", 10); photo("locked", 20); unreadable += "locked"
-        assertEquals("one photo is still waiting: more later", Outcome.MORE, maintenance().run())
+        assertEquals("one photo is still waiting: more later", Outcome.BACKFILL, maintenance().run())
         assertNull(db.frameMetaDao().get("locked"))
-        assertEquals(Outcome.MORE, maintenance().run()) // same hour: counts once
+        assertEquals(Outcome.BACKFILL, maintenance().run()) // same hour: counts once
         assertNull(db.frameMetaDao().get("locked"))
-        now += IndexMaintenance.READ_RETRY_GAP_MS; assertEquals(Outcome.MORE, maintenance().run())
+        now += IndexMaintenance.READ_RETRY_GAP_MS; assertEquals(Outcome.BACKFILL, maintenance().run())
         assertNull("two attempts are not enough", db.frameMetaDao().get("locked"))
         now += IndexMaintenance.READ_RETRY_GAP_MS; assertEquals(Outcome.DONE, maintenance().run())
         assertEquals("unembeddable", db.frameMetaDao().get("locked")!!.imageVectorSpace)
@@ -236,7 +237,7 @@ class IndexMaintenanceTest {
 
     @Test fun aReadFaultThatClearsLeavesThePhotoEmbeddable() = runBlocking {
         mem("m1"); fake.imageCapable = true; photo("locked", 20); unreadable += "locked"
-        assertEquals(Outcome.MORE, maintenance().run())
+        assertEquals(Outcome.BACKFILL, maintenance().run())
         unreadable.clear()
         assertEquals(Outcome.DONE, maintenance().run())
         assertEquals(listOf("locked"), imageVectors(spaces.queryable()!!.id)); assertNull(db.frameMetaDao().get("locked"))
@@ -257,6 +258,46 @@ class IndexMaintenanceTest {
         assertEquals("no un-delayed MORE while the indexer still owns a frame", Outcome.DONE, maintenance().run())
         assertEquals(listOf("p1"), imageVectors(spaces.queryable()!!.id))
         assertEquals(1, photoLoads.flatten().count { it == "p1" }); assertFalse("fresh" in photoLoads.flatten())
+    }
+
+    @Test fun emptyEmbedderResultIsRetryableAndMarksNothing() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("p1", 10); photo("p2", 20)
+        fake.imageEmpty = true
+        repeat(3) { try { maintenance().run(); fail("a wrong-count result is the embedder's failure") } catch (_: ImageEmbedderException) { } }
+        assertNull(db.frameMetaDao().get("p1")); assertNull(db.frameMetaDao().get("p2")); assertNull(spaces.queryable())
+        fake.imageEmpty = false
+        assertEquals(Outcome.DONE, maintenance().run())
+        assertEquals(listOf("p1", "p2"), imageVectors(spaces.queryable()!!.id))
+    }
+
+    @Test fun aWholeBatchFailingToDecodeIsABrokenDecoderNotBadPhotos() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("a", 10, BAD); photo("b", 20, BAD); photo("c", 30, BAD)
+        try { maintenance().run(); fail("every photo failing is systemic") } catch (_: ImageEmbedderException) { }
+        listOf("a", "b", "c").forEach { assertNull(db.frameMetaDao().get(it)) }
+        assertNull(spaces.queryable())
+    }
+
+    @Test fun aLibraryOfOnlyUndecodablePhotosNeverSwapsWithZeroImageVectors() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("only", 10, BAD) // a batch of one can't be told from one bad photo
+        try { maintenance().run(); fail("no image vector at all is a config failure") } catch (_: IndexConfigException) { }
+        assertEquals("unembeddable", db.frameMetaDao().get("only")!!.imageVectorSpace)
+        assertNull(spaces.queryable())
+    }
+
+    @Test fun aWrongWidthRowInTheBuildingSpaceIsDroppedAndRefilled() = runBlocking {
+        mem("m1"); fake.imageCapable = true; photo("p1", 10)
+        bulk = false; maintenance().run() // text done, images wait
+        val b = spaces.building()!!
+        db.frameVectorDao().upsert(listOf(com.rokid.context.memory.db.FrameVectorEntity("p1", b.id, byteArrayOf(1, 2, 3, 4)))) // a 1-float row: a bad write
+        bulk = true
+        assertEquals(Outcome.DONE, maintenance().run())
+        val rows = db.frameVectorDao().forSpace(spaces.queryable()!!.id, 10, 0)
+        assertEquals(listOf(IMG_DIMS * 4), rows.map { it.blob.size })
+    }
+
+    @Test fun longTextReindexContinuesAtOnceButBackfillWaits() = runBlocking {
+        repeat(5) { mem("m$it") }
+        assertEquals(Outcome.MORE, maintenance(maxPerRun = 2).run()) // text backlog: immediate continuation
     }
 
     @Test fun noBindingIsIdle() = runBlocking {

@@ -51,13 +51,18 @@ class EmbeddingWorkerTest {
         assertTrue(infos.single().constraints.requiresBatteryNotLow()) // F5
     }
 
-    /** Review C2: a run with work left is continued after 30 s, doubling per consecutive MORE up to 15 min, never at once. */
+    @Test fun aTextBacklogContinuesAtOnceWithoutTouchingTheBackoff() = runBlocking {
+        EmbeddingWorker.execute(ctx, attempt = 0) { IndexMaintenance.Outcome.MORE }
+        assertEquals(1, queued().size); assertEquals(0, PrefsIndexClock(ctx).moreStreak())
+    }
+
+    /** Review C2: image backfill with work left is continued after 30 s, doubling per consecutive MORE up to 15 min, never at once. */
     @Test fun moreContinuesWithAnExponentialBackoff() = runBlocking {
         assertEquals(30_000L, EmbeddingWorker.moreDelayMs(0))
         assertEquals(60_000L, EmbeddingWorker.moreDelayMs(1))
         assertEquals(15 * 60_000L, EmbeddingWorker.moreDelayMs(9))
         assertEquals(15 * 60_000L, EmbeddingWorker.moreDelayMs(50))
-        EmbeddingWorker.execute(ctx, attempt = 0) { IndexMaintenance.Outcome.MORE }
+        EmbeddingWorker.execute(ctx, attempt = 0) { IndexMaintenance.Outcome.BACKFILL }
         val first = queued().single()
         assertTrue("delayed, not immediate", first.state == WorkInfo.State.ENQUEUED)
         assertEquals(1, PrefsIndexClock(ctx).moreStreak())
