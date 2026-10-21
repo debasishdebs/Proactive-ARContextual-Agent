@@ -105,4 +105,9 @@ class ConfigExportTest {
         assertEquals("0.3", b["temperature"]!!.jsonPrimitive.content)
         assertTrue("prompts" in root)
     }
+
+    /** Wave B: the context hub's state (my-car addresses, the LiveFit digest) never enters the settings export. */
+    @Test fun ctxHubStateIsNotExported() {
+        assertFalse("ctx_hub_state" in ConfigExport.PREFS_FILES)
+    }
 }

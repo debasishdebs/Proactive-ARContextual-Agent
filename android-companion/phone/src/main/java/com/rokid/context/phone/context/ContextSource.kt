@@ -11,7 +11,10 @@ interface ContextSource {
     val id: String
     /** Hardware / Play services / app present; false means the hub never starts it. */
     fun available(): Boolean
-    /** false = could not start (permission, missing sensor). */
+    /**
+     * false = could not start (permission, missing sensor). Take `hub.sinkFor(id)` inside this call and use it for this run only:
+     * evidence sent during `start()` is accepted and a callback from an earlier run is dropped.
+     */
     fun start(): Boolean
     fun stop()
     val events: Int

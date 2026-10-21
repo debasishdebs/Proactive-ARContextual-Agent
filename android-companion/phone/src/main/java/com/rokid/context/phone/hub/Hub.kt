@@ -73,6 +73,8 @@ class Hub(
     /** Wave B: the context hub starts and stops with this hub (both idempotent on its side). */
     private val ctxStart: () -> Unit = {},
     private val ctxStop: () -> Unit = {},
+    /** Wave B: the current `applyToCapture` setting, used by the synthesized UNKNOWN revoke (null = the last sent value's). */
+    private val applyToCapture: (() -> Boolean)? = null,
 ) : GlassesStatusSource {
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
@@ -137,10 +139,12 @@ class Hub(
 
     fun stop() {
         voice.onLinkLost() // first (preflight F15): the link is closing, so an open glasses listen can't complete
+        // The glasses must not keep applying a context after this session: tell them UNKNOWN before the collector and the link go.
+        ctxStop()
+        scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { guarded("motion_ctx") { onMotionContext(null) } }
         jobs.forEach { it.cancel() }
         jobs = emptyList()
         relauncher?.stop()
-        ctxStop()
         link.close()
     }
 
@@ -262,7 +266,7 @@ class Hub(
         val last = lastMotionCtx ?: return
         lastMotionCtx = null
         // The hub's own revoke can be conflated away on its way to null: send one here unless the glasses already hold UNKNOWN.
-        if (last.state != ContextState.UNKNOWN) sendMotionContext(last.copy(state = ContextState.UNKNOWN, confidence = 0f, reasons = emptyList(), atMs = clock()))
+        if (last.state != ContextState.UNKNOWN) sendMotionContext(last.copy(state = ContextState.UNKNOWN, confidence = 0f, reasons = emptyList(), sinceMs = clock(), atMs = clock(), apply = applyToCapture?.invoke() ?: last.apply))
     }
 
     private suspend fun sendMotionContext(m: MotionContextMessage) {

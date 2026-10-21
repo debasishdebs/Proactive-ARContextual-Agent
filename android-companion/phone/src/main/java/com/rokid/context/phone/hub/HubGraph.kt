@@ -131,6 +131,7 @@ object HubGraph {
             standDown = PrefsStandDown(app.getSharedPreferences(PrefsStandDown.PREFS, Context.MODE_PRIVATE)),
             phoneUse = phoneUse.inUse,
             motionContext = ctxHub.message, onMotionHint = ctxHub::onMotionHint, ctxStart = ctxHub::start, ctxStop = ctxHub::stop,
+            applyToCapture = { com.rokid.context.phone.context.ContextSourceSettings.of(app).applyToCapture },
         )
     }
 }
