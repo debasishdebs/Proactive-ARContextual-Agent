@@ -65,7 +65,7 @@ abstract class FrameStateDao {
 
     @Query(
         "SELECT s.* FROM frame_state s WHERE (s.state IN ('PENDING','FAILED') OR (s.state = 'EXTRACTING' AND s.claimedAt < :abandonBeforeMs)) " +
-            "AND (NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " + // wave 2: an unrouted frame is the scene router's for 10 min
+            "AND (s.state != 'PENDING' OR NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " + // wave 2: an unrouted frame is the scene router's for 10 min
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) ORDER BY s.updatedAt LIMIT :limit",
     )
     protected abstract suspend fun recoverableRows(nowMs: Long, abandonBeforeMs: Long, limit: Int): List<FrameStateEntity>
@@ -83,7 +83,7 @@ abstract class FrameStateDao {
             "WHERE (s.state IN ('PENDING','FAILED') OR (s.state = 'EXTRACTING' AND s.claimedAt < :abandonBeforeMs)) " +
             "AND (:ignoreBackoff = 1 OR s.state != 'FAILED' OR s.updatedAt + MIN(30000 << MAX(s.attempts - 1, 0), 1800000) <= :nowMs) " +
             "AND COALESCE(f.ts, s.updatedAt) >= :sinceMs " +
-            "AND (NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " + // wave 2: unrouted frames wait 10 min for the scene router
+            "AND (s.state != 'PENDING' OR NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " + // wave 2: unrouted frames wait 10 min for the scene router
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) " +
             "ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
     )
@@ -94,7 +94,7 @@ abstract class FrameStateDao {
         "SELECT s.* FROM frame_state s JOIN frame_meta m ON m.frameId = s.frameId LEFT JOIN frame f ON f.id = s.frameId " +
             "WHERE m.dwell = 1 AND (s.state IN ('PENDING','FAILED') OR (s.state = 'EXTRACTING' AND s.claimedAt < :abandonBeforeMs)) " +
             "AND (s.state != 'FAILED' OR s.updatedAt + MIN(30000 << MAX(s.attempts - 1, 0), 1800000) <= :nowMs) " +
-            "AND (NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " +
+            "AND (s.state != 'PENDING' OR NOT EXISTS (SELECT 1 FROM frame_meta m2 WHERE m2.frameId = s.frameId AND m2.routedAt IS NULL) OR s.updatedAt <= :nowMs - 600000) " +
             "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = s.frameId) " +
             "ORDER BY COALESCE(f.ts, s.updatedAt) DESC LIMIT :limit",
     )
