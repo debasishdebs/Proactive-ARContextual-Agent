@@ -5,6 +5,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.ImagePut
+import com.rokid.context.memory.db.ImageSwapHealth
+import com.rokid.context.memory.retrieval.VectorCodec
 import com.rokid.context.memory.db.FrameMetaEntity
 import com.rokid.context.memory.db.FrameStateEntity
 import com.rokid.context.memory.db.FrameVectorEntity
@@ -191,6 +193,7 @@ class EmbeddingSwapTest {
         db.frameMetaDao().upsert(FrameMetaEntity("bad", null, null, "UNKNOWN", false, null, null, null, null, null, null, null, null, null, 1))
         s.markUnembeddable("bad"); s.markUnembeddable("legacy") // legacy: no frame_meta row yet
         val b = s.build("fpB")
+        frame("good"); fvec("good", b.id) // one real image vector: a library where every photo is marked would be refused
         assertEquals(emptyList<String>(), s.missingImages(b.id, 10))
         assertEquals(0, s.missingImageCount(b.id))
         assertEquals("unembeddable", db.frameMetaDao().get("bad")!!.imageVectorSpace)
@@ -217,13 +220,59 @@ class EmbeddingSwapTest {
         val s = spaces()
         val a = s.build("fpA"); s.swapIfComplete(a.id)
         frame("f1"); frame("f2"); frame("f3")
-        assertEquals(ImagePut.WIDTH_MISMATCH, s.putImage("f1", a.id, floatArrayOf(1f, 0f), expectedDims = 3))
+        assertEquals("a poisoned first vector can't set the width", ImagePut.WIDTH_MISMATCH, s.putImage("f1", a.id, floatArrayOf(1f, 0f), expectedDims = 3))
         assertEquals(0, db.frameVectorDao().countForSpace(a.id))
-        // no declared width: the first stored vector fixes it
-        assertEquals(ImagePut.STORED, s.putImage("f2", a.id, floatArrayOf(1f, 0f, 0f, 0f)))
-        assertEquals(ImagePut.WIDTH_MISMATCH, s.putImage("f3", a.id, floatArrayOf(1f, 0f, 0f)))
+        assertEquals(ImagePut.STORED, s.putImage("f2", a.id, floatArrayOf(1f, 0f, 0f), expectedDims = 3))
+        assertEquals(ImagePut.WIDTH_MISMATCH, s.putImage("f3", a.id, floatArrayOf(1f, 0f, 0f, 0f), expectedDims = 3))
         assertEquals(1, db.frameVectorDao().countForSpace(a.id))
-        assertEquals(listOf("f3", "f1").sorted(), s.missingImages(a.id, 10).sorted()) // still missing, not marked
+        assertEquals(listOf("f1", "f3"), s.missingImages(a.id, 10).sorted()) // still missing, not marked
         assertEquals(null, db.frameMetaDao().get("f1"))
+    }
+
+    @Test fun theSharedWritePointRejectsAWrongWidthToo() = runBlocking {
+        frame("f1")
+        assertEquals(ImagePut.WIDTH_MISMATCH, dao.putImageVector("f1", "sX", VectorCodec.encode(floatArrayOf(1f, 0f)), 3))
+        assertEquals(ImagePut.STORED, dao.putImageVector("f1", "sX", VectorCodec.encode(floatArrayOf(1f, 0f, 0f)), 3))
+        assertEquals(1, db.frameVectorDao().countForSpace("sX"))
+    }
+
+    @Test fun resumingABuildDropsImageVectorsOfTheWrongWidth() = runBlocking {
+        mem("m1")
+        val s = spaces()
+        val b = s.startBuilding("fpB", "{}", 2, "[]", 10, imageDims = 3)
+        frame("bad"); frame("good")
+        fvec("bad", b.id) // a 1-byte blob: not 3 floats
+        db.frameVectorDao().upsert(listOf(FrameVectorEntity("good", b.id, VectorCodec.encode(floatArrayOf(1f, 0f, 0f)))))
+        val again = s.startBuilding("fpB", "{}", 2, "[]", 11, imageDims = 3)
+        assertEquals(b.id, again.id)
+        assertEquals(1, db.frameVectorDao().countForSpace(b.id))
+        assertEquals(listOf("bad"), s.missingImages(b.id, 10))
+    }
+
+    @Test fun swapRefusedWhenEveryPhotoIsUnembeddableAndNoVectorExists() = runBlocking {
+        mem("m1")
+        val s = spaces()
+        val a = s.build("fpA"); s.swapIfComplete(a.id)
+        frame("x"); frame("y"); s.markUnembeddable("x"); s.markUnembeddable("y")
+        val b = s.build("fpB")
+        assertEquals(0, s.missingImageCount(b.id))
+        assertEquals(ImageSwapHealth.NO_VECTORS, s.imageSwapHealth(b.id))
+        assertFalse(s.swapIfComplete(b.id, requireImages = true))
+        assertTrue("a text-only swap does not look at photos", s.swapIfComplete(b.id, requireImages = false))
+    }
+
+    @Test fun swapRefusedWhenMoreThanHalfOfTheLibraryIsUnembeddable() = runBlocking {
+        mem("m1")
+        val s = spaces()
+        val a = s.build("fpA"); s.swapIfComplete(a.id)
+        val b = s.build("fpB")
+        repeat(10) { frame("ok$it"); fvec("ok$it", b.id) }
+        repeat(11) { frame("bad$it"); s.markUnembeddable("bad$it") }
+        assertEquals(ImageSwapHealth.SYSTEMIC, s.imageSwapHealth(b.id))
+        assertFalse(s.swapIfComplete(b.id, requireImages = true))
+        db.frameVectorDao().upsert(listOf(FrameVectorEntity("ok0", b.id, byteArrayOf(1))))
+        repeat(10) { db.frameDao().insertIgnore(FrameEntity("more$it", 1, "/p", "glasses")); fvec("more$it", b.id) } // now 11 of 31 are marked
+        assertEquals(ImageSwapHealth.OK, s.imageSwapHealth(b.id))
+        assertTrue(s.swapIfComplete(b.id, requireImages = true))
     }
 }

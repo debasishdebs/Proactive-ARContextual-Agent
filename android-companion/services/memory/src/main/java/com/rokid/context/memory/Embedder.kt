@@ -11,7 +11,7 @@ interface EmbeddingService {
     suspend fun embedQuery(text: String): FloatArray
     /** The un-shortened query vector (768 for Nomic), for shortening per index; the same as [embedQuery] when there's nothing to shorten. */
     suspend fun embedQueryFull(text: String): FloatArray = embedQuery(text)
-    /** The width of the image vectors [embedImages] returns (Nomic: 768), or null when the embedder doesn't say (then the space's existing image vectors decide). */
+    /** The width of the image vectors [embedImages] returns (Nomic: `NomicVision.STORED_DIMS` = 768); an IMAGE-capable embedder must declare it. A vector of another width is never stored. */
     val imageDims: Int? get() = null
     /** Throws [ImageDecodeException] for a photo that cannot be decoded; any other exception is an embedder failure. */
     suspend fun embedImages(jpegs: List<ByteArray>): List<FloatArray> = throw UnsupportedOperationException("text-only space")

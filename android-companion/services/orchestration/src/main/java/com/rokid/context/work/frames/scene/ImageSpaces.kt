@@ -37,7 +37,7 @@ class SpaceImageSpaces(private val spaces: EmbeddingSpaces, private val provider
         space ?: return null
         val e = try { provider.forSpace(space) } catch (c: CancellationException) { throw c } catch (_: Exception) { null } ?: return null
         if (Modality.IMAGE !in e.modalities) return null
-        val d = dims[space.id] ?: probe(e, space).also { dims[space.id] = it }
+        val d = e.imageDims ?: dims[space.id] ?: probe(e, space).also { dims[space.id] = it } // the embedder's declared width wins; the probe is a fallback
         return ImageSpaceTarget(space.id, space.fingerprint, d, e::embedImages, e::embedQueryFull, active)
     }
 

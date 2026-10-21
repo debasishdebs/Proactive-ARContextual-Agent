@@ -27,3 +27,7 @@ local.properties
 
 # Native (CMake/NDK) build output
 .cxx/
+
+# JVM crash dumps (contain local paths and environment)
+hs_err_pid*.log
+replay_pid*.log

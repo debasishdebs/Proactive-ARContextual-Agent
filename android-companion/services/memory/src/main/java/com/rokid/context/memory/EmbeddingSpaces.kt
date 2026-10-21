@@ -4,6 +4,7 @@ import com.rokid.context.memory.db.EmbedInput
 import com.rokid.context.memory.db.EmbeddingDao
 import com.rokid.context.memory.db.EmbeddingSpaceEntity
 import com.rokid.context.memory.db.ImagePut
+import com.rokid.context.memory.db.ImageSwapHealth
 import com.rokid.context.memory.db.MemoryVectorEntity
 import com.rokid.context.memory.db.SpaceState
 import com.rokid.context.memory.retrieval.VectorCodec
@@ -53,8 +54,8 @@ class EmbeddingSpaces(
     suspend fun queryable(): EmbeddingSpaceEntity? = dao.current()?.takeIf { it.state == SpaceState.ACTIVE }
     suspend fun building(): EmbeddingSpaceEntity? = dao.building()
 
-    suspend fun startBuilding(fingerprint: String, configJson: String, dim: Int, canaryJson: String, now: Long): EmbeddingSpaceEntity =
-        dao.startBuilding(EmbeddingSpaceEntity("space_${UUID.randomUUID()}", fingerprint, configJson, dim, SpaceState.BUILDING, canaryJson, now))
+    suspend fun startBuilding(fingerprint: String, configJson: String, dim: Int, canaryJson: String, now: Long, imageDims: Int? = null): EmbeddingSpaceEntity =
+        dao.startBuilding(EmbeddingSpaceEntity("space_${UUID.randomUUID()}", fingerprint, configJson, dim, SpaceState.BUILDING, canaryJson, now), imageDims)
 
     /** False when the space is gone or no longer writable (RETIRED/STALE); throws on a dimension mismatch. */
     suspend fun put(memoryId: String, spaceId: String, vector: FloatArray): Boolean =
@@ -64,8 +65,10 @@ class EmbeddingSpaces(
     suspend fun missingImages(spaceId: String, limit: Int): List<String> = dao.missingImageIds(spaceId, limit)
     suspend fun missingImageCount(spaceId: String): Int = dao.missingImageCount(spaceId)
     /** [ImagePut.DROPPED] when the space is no longer writable or the photo is gone; [ImagePut.WIDTH_MISMATCH] (never stored) when the width differs from [expectedDims] or the space's stored image width. */
-    suspend fun putImage(frameId: String, spaceId: String, vector: FloatArray, expectedDims: Int? = null): ImagePut =
+    suspend fun putImage(frameId: String, spaceId: String, vector: FloatArray, expectedDims: Int): ImagePut =
         dao.putImageChecked(frameId, spaceId, VectorCodec.encode(vector), expectedDims)
+    suspend fun purgeWrongWidthImages(spaceId: String, dims: Int): Int = dao.purgeWrongWidthImages(spaceId, dims)
+    suspend fun imageSwapHealth(spaceId: String): ImageSwapHealth = dao.imageSwapHealth(spaceId)
     suspend fun markUnembeddable(frameId: String) = dao.markUnembeddable(frameId, now())
     suspend fun coverage(spaceId: String): Coverage = Coverage(dao.coveredCount(spaceId), dao.eligibleCount())
     /** [requireImages]: the building embedder declares IMAGE, so every stored photo (bar `unembeddable` ones) needs a vector in [buildingId] (Ruling 15). */

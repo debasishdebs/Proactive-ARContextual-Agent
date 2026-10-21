@@ -94,9 +94,15 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         /** One run's outcome as a WorkManager result. A config failure is recorded and stops; other failures retry a bounded number of times. */
         internal suspend fun execute(context: Context, attempt: Int, run: suspend () -> IndexMaintenance.Outcome): Result = try {
             val outcome = run()
-            if (outcome != IndexMaintenance.Outcome.MORE) PrefsIndexClock(context).setMoreStreak(0)
+            if (outcome != IndexMaintenance.Outcome.BACKFILL) PrefsIndexClock(context).setMoreStreak(0)
             when (outcome) {
-                IndexMaintenance.Outcome.MORE -> { continueLater(context); Result.success() }
+                // A long text re-index keeps going at once; only image-vector backfill (paused, deferred photos) waits with a growing delay.
+                IndexMaintenance.Outcome.MORE -> { continueLater(context, delayMs = 0L); Result.success() }
+                IndexMaintenance.Outcome.BACKFILL -> {
+                    val clock = PrefsIndexClock(context)
+                    val streak = clock.moreStreak(); clock.setMoreStreak(streak + 1)
+                    continueLater(context, moreDelayMs(streak)); Result.success()
+                }
                 IndexMaintenance.Outcome.RETRY -> retryOrFail(attempt)
                 else -> Result.success()
             }
@@ -131,19 +137,16 @@ class EmbeddingWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             WorkManager.getInstance(context).enqueueUniqueWork(NAME, if (rebuild) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP, req)
         }
 
-        /** The wait before the next run of a long backlog: 30 s, doubling per consecutive MORE, at most 15 min (never a tight loop). */
+        /** The wait before the next image-backfill run: 30 s, doubling per consecutive BACKFILL, at most 15 min (never a tight loop). */
         internal fun moreDelayMs(streak: Int): Long = minOf(MORE_MAX_DELAY_MS, MORE_BASE_DELAY_MS shl streak.coerceIn(0, 10))
 
-        private fun continueLater(context: Context) {
-            val clock = PrefsIndexClock(context)
-            val streak = clock.moreStreak()
-            clock.setMoreStreak(streak + 1)
+        private fun continueLater(context: Context, delayMs: Long) {
             WorkManager.getInstance(context).enqueueUniqueWork(
                 NAME, ExistingWorkPolicy.APPEND_OR_REPLACE,
                 OneTimeWorkRequestBuilder<EmbeddingWorker>()
                     .setInputData(workDataOf(KEY_REBUILD to false))
                     .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build())
-                    .setInitialDelay(moreDelayMs(streak), java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .apply { if (delayMs > 0) setInitialDelay(delayMs, java.util.concurrent.TimeUnit.MILLISECONDS) }
                     .build(),
             )
         }

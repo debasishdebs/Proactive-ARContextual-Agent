@@ -2,6 +2,7 @@ package com.rokid.context.work.frames.scene
 
 import android.util.Log
 import androidx.room.withTransaction
+import com.rokid.context.memory.ImageDecodeException
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.FrameClusterEntity
 import com.rokid.context.memory.db.FrameMetaEntity
@@ -87,13 +88,14 @@ class SceneIndexer(
             for (m in work) fastRoute(m, vector = null, spaceId = null, words = null, terms = null, now, counts, t)
         } else {
             val bytes = try { photos(work.map { it.frameId }) } catch (c: CancellationException) { throw c } catch (_: Exception) { emptyMap() }
-            val embedded = embedAll(work.filter { it.frameId in bytes }, bytes, targets)   // frameId -> per-target vectors (null where failed)
-            val toWrite = targets.map { mutableListOf<FrameVectorEntity>() }
+            val deferred = HashSet<String>()
+            val embedded = embedAll(work.filter { it.frameId in bytes }, bytes, targets, deferred)   // frameId -> per-target vectors (null where failed)
+            // The single checked write point of image vectors (shared with the backfill): a wrong width is never stored.
+            val vectorWrites = db.embeddingDao()
             for (m in work) {
                 val vs = embedded[m.frameId] ?: continue
-                targets.forEachIndexed { i, tg -> vs[i]?.let { toWrite[i] += FrameVectorEntity(m.frameId, tg.spaceId, VectorCodec.encode(it)) } }
+                targets.forEachIndexed { i, tg -> vs[i]?.let { v -> vectorWrites.putImageVector(m.frameId, tg.spaceId, VectorCodec.encode(v), tg.imageDims) } }
             }
-            toWrite.forEach { if (it.isNotEmpty()) db.frameVectorDao().upsert(it) }
 
             for (m in work) {
                 val ts = tsOf(m)
@@ -101,6 +103,7 @@ class SceneIndexer(
                 val v = active?.let { a -> vs?.get(targets.indexOf(a)) }
                 when {
                     m.frameId !in bytes -> fastRoute(m, null, null, null, null, now, counts, t)   // unreadable: the pipeline fails it
+                    vs != null && active != null && v == null && m.frameId in deferred -> retry = minOf(retry ?: DEFER_RETRY_MS, DEFER_RETRY_MS) // the embedder failed: try again, never a mark
                     vs != null && active != null && v == null -> {
                         val n = (failures[m.frameId] ?: 0) + 1
                         failures[m.frameId] = n
@@ -136,19 +139,39 @@ class SceneIndexer(
 
     // ---- embedding ----
 
-    /** Per frame, one vector per target (null where that target failed). One batch call per target; a failed batch is retried frame by frame. */
-    private suspend fun embedAll(rows: List<FrameMetaEntity>, bytes: Map<String, ByteArray>, targets: List<ImageSpaceTarget>): Map<String, List<FloatArray?>> {
+    /**
+     * Per frame, one vector per target (null where that target failed). One batch call per target; a failed batch is retried frame by frame.
+     * Only a typed [ImageDecodeException] is the photo's fault (counted towards `unembeddable`); any other failure, a wrong-count result or a
+     * vector of the wrong width is the embedder's: the frame goes in [deferred] and is retried, never marked.
+     */
+    private suspend fun embedAll(rows: List<FrameMetaEntity>, bytes: Map<String, ByteArray>, targets: List<ImageSpaceTarget>, deferred: MutableSet<String>): Map<String, List<FloatArray?>> {
         if (rows.isEmpty()) return emptyMap()
         val perTarget = targets.map { tg ->
-            val batch = tryEmbed(tg, rows.map { bytes[it.frameId]!! })
-            if (batch != null && batch.size == rows.size) batch
-            else rows.map { m -> tryEmbed(tg, listOf(bytes[m.frameId]!!))?.singleOrNull() }
+            val batch = tryEmbed(tg, rows.map { bytes[it.frameId]!! })?.takeIf { it.size == rows.size }
+            batch ?: rows.map { m ->
+                val one = tryEmbed(tg, listOf(bytes[m.frameId]!!))
+                val v = one?.singleOrNull()
+                if (v == null && (one == null || one.size != 1)) { if (tg.active) deferredIfNotDecode(m, one, deferred) }
+                v
+            }
         }
-        return rows.withIndex().associate { (i, m) -> m.frameId to perTarget.map { it[i] } }
+        // The width check: a vector of another width is the embedder's fault; it is not written and not routed on.
+        val checked = perTarget.mapIndexed { i, vs -> vs.mapIndexed { j, v -> if (v != null && v.size != targets[i].imageDims) { if (targets[i].active) deferred += rows[j].frameId; null } else v } }
+        return rows.withIndex().associate { (i, m) -> m.frameId to checked.map { it[i] } }
     }
 
-    private suspend fun tryEmbed(tg: ImageSpaceTarget, jpegs: List<ByteArray>): List<FloatArray>? =
-        try { tg.embedImages(jpegs) } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+    /** null = decode failure or a failed call; [lastFailure] tells which. */
+    private var lastFailure: Throwable? = null
+
+    private suspend fun tryEmbed(tg: ImageSpaceTarget, jpegs: List<ByteArray>): List<FloatArray>? {
+        lastFailure = null
+        return try { tg.embedImages(jpegs) } catch (c: CancellationException) { throw c } catch (e: Exception) { lastFailure = e; null }
+    }
+
+    private fun deferredIfNotDecode(m: FrameMetaEntity, one: List<FloatArray>?, deferred: MutableSet<String>) {
+        // A decode failure counts against the photo; an embedder failure (any other exception, or a wrong-count result) does not.
+        if (one != null || lastFailure !is ImageDecodeException) deferred += m.frameId
+    }
 
     // ---- routing ----
 

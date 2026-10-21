@@ -14,6 +14,9 @@ object NomicVision {
     const val INPUT = 224
     const val CLS_DIMS = 768
 
+    /** The stored image-vector width (Ruling 17), part of the space fingerprint; the image embedder declares it as `imageDims`. */
+    const val STORED_DIMS = 768
+
     /** [resample] is the PIL code from the config (3 = bicubic). [resizeShortestEdge] false = stretch to [resize] x [resize]. */
     class PreprocessConfig(
         val resize: Int,
