@@ -108,7 +108,31 @@ class ContextSourcesSettingsTest {
         stats.onWatchRejected(); stats.onWatchRejected()
         val v = vm(); show(v)
         compose.onNodeWithTag("ctx_state").assertTextContains("Driving", substring = true)
-            .assertTextContains("FAILED", substring = true).assertTextContains("watchRej 2", substring = true).assertTextContains("watch 0", substring = true)
+            .assertTextContains("FAILED", substring = true).assertTextContains("rejected 2", substring = true).assertTextContains("watch msgs 0", substring = true)
+        v.cancelScope()
+    }
+
+    @Test fun multiSignerLiveFitCannotBePinned() {
+        val lookup = object : LiveFitCertLookup { override fun sha256(): String? = null; override fun cannotPin() = true }
+        val v = ContextSourcesViewModel(settings, lookup, decision, status, stats); show(v)
+        compose.onNodeWithTag("ctx_watch_livefit").performClick(); compose.waitForIdle()
+        compose.onNodeWithTag("ctx_watch_missing").assertTextContains("more than one signing certificate", substring = true)
+        compose.onNodeWithTag("ctx_watch_livefit").assertIsOff()
+        assertFalse(settings.enabled("watch_livefit")); assertNull(settings.liveFitCertSha256)
+        v.cancelScope()
+    }
+
+    @Test fun rejectedWithNoAcceptedShowsReToggleHint() {
+        settings.setEnabled("watch_livefit", true); settings.liveFitCertSha256 = digest
+        stats.onWatchRejected()
+        val v = vm(); show(v)
+        compose.onNodeWithTag("ctx_watch_hint").assertTextContains("off and on", substring = true)
+        v.cancelScope()
+    }
+
+    @Test fun noHintWhenWatchOffOrNothingRejected() {
+        val v = vm(); show(v)
+        compose.onNodeWithTag("ctx_watch_hint").assertDoesNotExist()
         v.cancelScope()
     }
 

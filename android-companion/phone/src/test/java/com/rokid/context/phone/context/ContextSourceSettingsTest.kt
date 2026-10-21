@@ -44,14 +44,22 @@ class ContextSourceSettingsTest {
         assertEquals(setOf("CC:DD"), settings().myCars)
     }
 
-    @Test fun clearPersonalKeepsSwitches() {
+    @Test fun clearPersonalKeepsApplySwitchButTurnsWatchOff() {
         val s = settings()
         s.setEnabled("watch_livefit", true); s.applyToCapture = false
         s.addMyCar("AA:BB"); s.liveFitCertSha256 = "digest"; s.setWatchSeq(epoch = 7, seq = 42)
         s.clearPersonal()
-        assertTrue(s.enabled("watch_livefit")); assertFalse(s.applyToCapture)
+        assertFalse(s.enabled("watch_livefit")); assertFalse(s.applyToCapture)
         assertTrue(s.myCars.isEmpty()); assertNull(s.liveFitCertSha256)
         assertEquals(0L, s.watchEpoch); assertEquals(0L, s.watchLastSeq)
+    }
+
+    @Test fun wipeThenClearStillClearsPersonalWhenTheWipeThrows() {
+        val s = settings()
+        s.setEnabled("watch_livefit", true); s.addMyCar("AA:BB"); s.liveFitCertSha256 = "digest"
+        val r = runCatching { kotlinx.coroutines.runBlocking { s.wipeThenClear { error("boom") } } }
+        assertTrue(r.isFailure)
+        assertTrue(s.myCars.isEmpty()); assertNull(s.liveFitCertSha256); assertFalse(s.enabled("watch_livefit"))
     }
 
     @Test fun watchEpochAndSeqPersist() {
