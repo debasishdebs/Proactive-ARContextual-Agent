@@ -233,7 +233,7 @@ class KeyframePipeline(
 
     /**
      * The night job's drain (Task 9), from the caller's own coroutine: the caption queue (describe-before-delete photos first) through the
-     * ordinary claim / CAS extraction path with [callClass] (BACKFILL: never takes a nudge token), for at most [maxMs] and [maxCalls] batches. [allowed] is the bulk
+     * ordinary claim / CAS extraction path with [callClass] (BACKFILL: never takes a nudge token), for at most [maxMs] and [maxCalls] batches (a batch is one claim of up to 3 photos and one call; the single-photo fallback of a rejected batch is not counted separately). [allowed] is the bulk
      * gate (charging or > 70 %, no capture burst), asked before every call; heat and battery saver stop it too. Stops when the queue is empty,
      * the gate closes, a call could not run (offline: the claims are given back, nothing is lost) or a failure paused the loop. A photo whose
      * call failed keeps its attempts; it is never deleted by a failure. Returns the frames that reached EXTRACTED.

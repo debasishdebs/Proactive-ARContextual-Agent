@@ -75,13 +75,14 @@ object ExtractFollowUp {
     /**
      * After [saved] (everything the transaction wrote, captions included). Nothing saved, or Delete all ran since [generation]:
      * SKIPPED (no reprocess job, it would carry fact text). Trusted: embeddings and the nudge backstop. Not trusted: embeddings and a
-     * reprocess job for the facts that were written (captions alone need no review).
+     * reprocess job for the facts that were written (captions alone need no review). [nudge] false (the night describe job's BACKFILL saves):
+     * embeddings still run, the nudge backstop does not.
      */
-    suspend fun afterSave(context: Context, generation: Long, saved: List<SavedMemory>, trusted: Boolean, confidence: Double, personaSnapshot: String): Result {
+    suspend fun afterSave(context: Context, generation: Long, saved: List<SavedMemory>, trusted: Boolean, confidence: Double, personaSnapshot: String, nudge: Boolean = true): Result {
         if (saved.isEmpty() || MemoryWipe.generation.get() != generation) return Result.SKIPPED
         EmbeddingWorker.enqueue(context)
         if (trusted) {
-            NudgeTrigger.afterSummarizerPass(context)
+            if (nudge) NudgeTrigger.afterSummarizerPass(context) // never after a night / backfill save: its memories are about old photos
             return Result.TRUSTED
         }
         val written = saved.filter { it.index != null }

@@ -233,7 +233,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
                     // Embeddings, the nudge backstop (trusted) or a PRIORITY_REPROCESS job (low confidence), exactly as the legacy job did;
                     // also when the critic was cancelled (the memories are saved and the claim is done).
                     withContext(NonCancellable) {
-                        ExtractFollowUp.afterSave(app, generation, saved.memories, trusted, ExtractFollowUp.confidence(facts), AppConfigStore.getWithoutSecret(app).persona)
+                        ExtractFollowUp.afterSave(app, generation, saved.memories, trusted, ExtractFollowUp.confidence(facts), AppConfigStore.getWithoutSecret(app).persona, nudge = callClass != CallClass.BACKFILL)
                     }
                 }
                 ExtractOutcome.Saved(saved.memories, loaded.gone, loaded.unseen)
@@ -272,7 +272,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
         return when (val saved = ClusterSave.save(app, claimId, out, sent, generation, clock(), verdict.factReview)) {
             is ClusterSaveResult.Saved -> {
                 withContext(NonCancellable) {
-                    ExtractFollowUp.afterSave(app, generation, saved.memories, verdict.trusted, verdict.confidence, AppConfigStore.getWithoutSecret(app).persona)
+                    ExtractFollowUp.afterSave(app, generation, saved.memories, verdict.trusted, verdict.confidence, AppConfigStore.getWithoutSecret(app).persona, nudge = callClass != CallClass.BACKFILL)
                 }
                 ClusterOutcome.Saved(saved.memories, saved.failedClusters.toSet(), leftOut, gone)
             }
