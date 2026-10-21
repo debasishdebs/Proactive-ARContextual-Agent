@@ -89,6 +89,7 @@ class CaptureService : LifecycleService() {
     private val budget = BatteryBudget(SystemClock::elapsedRealtime).also { it.onChange = { l -> DiagLog.i(TAG, l) } }
     private val ratePolicy = SensorRatePolicy()
     private var lastUpBytes = 0L
+    private var lastUpAt = -1L
     private var supervisor: Job? = null
     private var lastMode: CaptureMode? = null
     /** Three failed binds: Fixed 30 s, until the mode setting changes, the service restarts or the watchdog retries Smart (5 min). */
@@ -249,12 +250,13 @@ class CaptureService : LifecycleService() {
             val settings = runtime.settingsCache.readNormalized()
             val upTotal = runtime.uplink.bytesSent
             val upDelta = (upTotal - lastUpBytes).coerceAtLeast(0)
-            lastUpBytes = upTotal
+            val upSpan = if (lastUpAt < 0) 60_000L else now - lastUpAt
+            lastUpBytes = upTotal; lastUpAt = now
             DiagLog.i(TAG, Heartbeat(
                 running = shown.running, reason = shown.reason.toString(), uiMode = runtime.uiMode.get(),
                 wake = settings.cameraWake.name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
                 batt = batteryPercent(), charging = isCharging(), drainPctPerMin = budget.drainPctPerMin, projectedHours = budget.projectedHours,
-                stats = smart?.session?.diagSnapshot() ?: DiagStats(0, 0, 0, 0), upBytes = upDelta,
+                stats = smart?.session?.diagSnapshot() ?: DiagStats(0, 0, 0, 0), upBytes = upDelta, upSpanMs = upSpan,
                 heat = heat.level.value.toString(), batteryC = heat.lastReading?.batteryTempC,
                 wear = runtime.wear.worn.value, known = runtime.wear.known, parked = runtime.wear.parked.value,
                 sensors = ((smart?.feed as? AndroidSensorFeed)?.rate ?: SensorRate.FULL).name.lowercase(), phoneUse = runtime.phoneUse.active(now),

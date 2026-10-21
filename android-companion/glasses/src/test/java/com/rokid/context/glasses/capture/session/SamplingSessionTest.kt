@@ -321,6 +321,7 @@ class SamplingSessionTest {
         delay(3_000)
         val d = r.session.diagSnapshot()
         assertEquals(1, d.kf1m)
+        assertTrue(d.spanMs <= 3_500, "span bounded by the session lifetime: ${d.spanMs}")
         assertTrue(d.spanMs >= 1 && d.openMs in 0..d.spanMs)
         assertEquals(0, r.session.diagSnapshot().analysed)
         r.session.stop("test")
