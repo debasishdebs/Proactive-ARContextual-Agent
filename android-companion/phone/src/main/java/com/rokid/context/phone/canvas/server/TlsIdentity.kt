@@ -40,6 +40,9 @@ object TlsFingerprint {
     /** `ABCD EF01 ...`: uppercase hex, 4 digits per group, one space between groups. */
     fun format(der: ByteArray): String = der.joinToString("") { "%02X".format(it) }.chunked(4).joinToString(" ")
 
+    /** What a browser's certificate viewer shows: `AB:CD:EF:...` (spaces, colons and case of [fp] are ignored). */
+    fun colonPairs(fp: String): String = fp.filter { it.isLetterOrDigit() }.uppercase().chunked(2).joinToString(":")
+
     fun digest(cert: X509Certificate): ByteArray = MessageDigest.getInstance("SHA-256").digest(cert.encoded)
 
     /** Constant-time: both sides are SHA-256 digests of equal length, compared with [MessageDigest.isEqual]. */
@@ -82,49 +85,85 @@ internal class PinnedKeyManager(private val key: PrivateKey, private val chain: 
  * warn about the name; the WebView pins by fingerprint, not by name). JSSE signs through the keystore; the key bytes are never read.
  */
 class KeystoreTlsIdentity(@Suppress("UNUSED_PARAMETER") context: Context, private val alias: String = ALIAS, private val clock: () -> Long = System::currentTimeMillis) : TlsIdentity {
+    private val aliases = listOf(alias, alias + ALT_SUFFIX)
+
+    /** The alias of the key in use; "New certificate" alternates between the two so the old key outlives a failed attempt. */
+    @Volatile var activeAlias: String = alias
+        private set
     @Volatile private var material: TlsMaterial = loadOrCreate()
 
     override val fingerprint: String get() = material.fingerprint
     override fun serverSocketFactory(): SSLServerSocketFactory = material.factory
     override fun matches(cert: X509Certificate): Boolean = TlsFingerprint.sameCert(material.digest, cert)
 
+    /**
+     * Failure-safe: the new key is generated under the other alias and must load completely before anything is swapped; the old key
+     * is deleted only afterwards. Any failure leaves the old key and certificate in place and is thrown to the caller.
+     */
     @Synchronized
     override fun rotate() {
-        keystore().deleteEntry(alias)
-        material = loadOrCreate()
+        val old = activeAlias
+        val target = aliases.first { it != old }
+        val ks = keystore()
+        runCatching { ks.deleteEntry(target) } // a stale half-made entry of an earlier attempt
+        try {
+            generate(target)
+            val fresh = materialFor(keystore(), target)
+            material = fresh
+            activeAlias = target
+        } catch (e: Exception) {
+            runCatching { keystore().deleteEntry(target) }
+            throw e
+        }
+        runCatching { keystore().deleteEntry(old) }
     }
 
-    /** Removes our entry (test aliases only; the app never calls it). */
-    fun delete() { keystore().deleteEntry(alias) }
+    /** Removes both entries (test aliases only; the app never calls it). */
+    fun delete() { val ks = keystore(); aliases.forEach { runCatching { ks.deleteEntry(it) } } }
 
     private fun keystore(): KeyStore = KeyStore.getInstance(PROVIDER).apply { load(null) }
 
-    @Synchronized
-    private fun loadOrCreate(): TlsMaterial {
-        var ks = keystore()
-        if (!usable(ks)) {
-            ks.deleteEntry(alias)
-            KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, PROVIDER).apply { initialize(keySpec(alias, clock())) }.generateKeyPair()
-            ks = keystore()
-        }
-        val key = ks.getKey(alias, null) as PrivateKey
-        val chain = ks.getCertificateChain(alias).map { it as X509Certificate }.toTypedArray()
+    private fun generate(target: String) {
+        KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, PROVIDER).apply { initialize(keySpec(target, clock())) }.generateKeyPair()
+    }
+
+    private fun materialFor(ks: KeyStore, a: String): TlsMaterial {
+        val key = ks.getKey(a, null) as PrivateKey
+        val chain = ks.getCertificateChain(a).map { it as X509Certificate }.toTypedArray()
         return TlsMaterial.build(key, chain)
     }
 
+    @Synchronized
+    private fun loadOrCreate(): TlsMaterial {
+        val ks = keystore()
+        // after a crash between "new key made" and "old key deleted" both can exist: the newer certificate wins
+        val best = aliases.filter { usable(ks, it) }.maxByOrNull { (ks.getCertificate(it) as X509Certificate).notBefore.time }
+        if (best != null) {
+            aliases.filter { it != best }.forEach { runCatching { ks.deleteEntry(it) } }
+            activeAlias = best
+            return materialFor(ks, best)
+        }
+        aliases.forEach { runCatching { ks.deleteEntry(it) } }
+        generate(alias)
+        activeAlias = alias
+        return materialFor(keystore(), alias)
+    }
+
     /** A stored key whose certificate is valid for at least a week more; anything else is replaced. */
-    private fun usable(ks: KeyStore): Boolean {
-        val chain = ks.getCertificateChain(alias) ?: return false
-        if (ks.getKey(alias, null) !is PrivateKey) return false
+    private fun usable(ks: KeyStore, a: String): Boolean {
+        val chain = ks.getCertificateChain(a) ?: return false
+        if (ks.getKey(a, null) !is PrivateKey) return false
         val cert = chain.firstOrNull() as? X509Certificate ?: return false
         return try { cert.checkValidity(Date(clock() + 7 * DAY_MS)); true } catch (e: java.security.cert.CertificateException) { false }
     }
 
     companion object {
         const val ALIAS = "pc_canvas_tls"
+        private const val ALT_SUFFIX = "_b"
         private const val PROVIDER = "AndroidKeyStore"
         private const val DAY_MS = 86_400_000L
-        private const val VALID_DAYS = 825L
+        /** 824 days: under the 825-day cap that Apple's TLS policy applies. */
+        private const val VALID_DAYS = 824L
         private const val SUBJECT = "CN=Proactive Context canvas"
 
         /**
@@ -142,9 +181,6 @@ class KeystoreTlsIdentity(@Suppress("UNUSED_PARAMETER") context: Context, privat
                 .setCertificateNotAfter(Date(nowMs + VALID_DAYS * DAY_MS))
                 .setUserAuthenticationRequired(false)
                 .build()
-
-        /** The identity, or null when this phone's keystore cannot make or serve the key: LAN is then unavailable (S16). */
-        fun createOrNull(context: Context): TlsIdentity? = try { KeystoreTlsIdentity(context) } catch (e: Exception) { null }
     }
 }
 

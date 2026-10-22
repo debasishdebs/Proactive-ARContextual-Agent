@@ -33,6 +33,15 @@ class CanvasServer(
         val FALLBACK = 8766..8770
         const val MAX_BODY = 256 * 1024
         internal val TLS_PROTOCOLS = arrayOf("TLSv1.3", "TLSv1.2")
+
+        // held strongly: java.util.logging keeps loggers weakly, and a collected one forgets its level
+        private val nanoLogger = java.util.logging.Logger.getLogger(NanoHTTPD::class.java.name)
+
+        init {
+            // NanoHTTPD logs every failed handshake (a port scan, or plain HTTP sent to the TLS port) at SEVERE with a stack trace.
+            // Our own log is count-only; the library's is silenced.
+            nanoLogger.level = java.util.logging.Level.OFF
+        }
     }
 
     private class Status(private val code: Int) : NanoHTTPD.Response.IStatus {
@@ -132,6 +141,11 @@ class CanvasServer(
     /** Connections currently held (for tests and diagnostics). */
     val activeClients: Int get() = daemon?.runner?.active ?: 0
 
+    /** The protocols the bound TLS server socket is limited to (a fresh, unbound socket from the same factory), or null without TLS. */
+    internal fun probeProtocols(): List<String>? = daemon?.let { d ->
+        if (!bindLan) null else d.serverSocketFactory.create().use { (it as? javax.net.ssl.SSLServerSocket)?.enabledProtocols?.toList() }
+    }
+
     @Volatile var bindHost: String? = null
         private set
 
@@ -173,7 +187,7 @@ class CanvasServer(
         val query = s.parameters.mapNotNull { (k, v) -> v.firstOrNull()?.let { k to it } }.toMap()
         val method = s.method?.name ?: "GET"
         val len = headers["content-length"]?.trim()?.toLongOrNull()?.coerceAtLeast(0) ?: 0L
-        if (len > MAX_BODY) return HttpRequest(method, s.uri, query, headers, ByteArray(0), bodyTooLarge = true)
+        if (len > MAX_BODY) return HttpRequest(method, s.uri, query, headers, ByteArray(0), bodyTooLarge = true, remoteIp = s.remoteIpAddress)
         val body = ByteArray(len.toInt())
         var read = 0
         val input = s.inputStream
@@ -182,7 +196,7 @@ class CanvasServer(
             if (n < 0) break
             read += n
         }
-        return HttpRequest(method, s.uri, query, headers, if (read == body.size) body else body.copyOf(read))
+        return HttpRequest(method, s.uri, query, headers, if (read == body.size) body else body.copyOf(read), remoteIp = s.remoteIpAddress)
     }
 
     private fun toResponse(r: HttpResponse): NanoHTTPD.Response {

@@ -195,6 +195,9 @@ class CanvasServerTest {
     @Test fun lanAcceptsTls12AndTls13Only() {
         val s = server(lan = true)
         port = s.start()
+        // the real assertion: the server socket NanoHTTPD binds is limited to these two (the JDK itself refuses 1.0/1.1, so a
+        // failed 1.1 handshake would prove nothing)
+        assertEquals(listOf("TLSv1.3", "TLSv1.2"), s.probeProtocols())
         fun handshake(protocol: String): Boolean = runCatching {
             val ctx = javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null, arrayOf(trustAll), null) }
             (ctx.socketFactory.createSocket("127.0.0.1", port) as javax.net.ssl.SSLSocket).use {
@@ -206,8 +209,27 @@ class CanvasServerTest {
         }.getOrDefault(false)
         assertTrue(handshake("TLSv1.3"))
         assertTrue(handshake("TLSv1.2"))
-        assertFalse(handshake("TLSv1.1"))
-        assertFalse(handshake("TLSv1"))
+    }
+
+    @Test fun loopbackHttpServerHasNoTlsProtocols() {
+        val s = server(lan = false)
+        port = s.start()
+        assertNull(s.probeProtocols())
+    }
+
+    @Test fun nanoHttpdFailedHandshakeLoggingIsSilenced() {
+        server(lan = false)
+        assertEquals(java.util.logging.Level.OFF, java.util.logging.Logger.getLogger("fi.iki.elonen.NanoHTTPD").level)
+    }
+
+    @Test fun theRemoteAddressReachesTheRouter() {
+        var seen: String? = null
+        val capture = ApiHandler { req -> seen = req.remoteIp; HttpResponse.json(200, buildJsonObject { put("ok", true) }) }
+        val s = CanvasServer(CanvasRouter(auth, hosts, capture, assets), false).also { servers += it }
+        port = s.start()
+        val token = auth.newWebViewToken()
+        client.newCall(Request.Builder().url("http://127.0.0.1:$port/api/x").header("Authorization", "Bearer $token").build()).execute().close()
+        assertEquals("127.0.0.1", seen)
     }
 
     private val trustAll = object : javax.net.ssl.X509TrustManager {

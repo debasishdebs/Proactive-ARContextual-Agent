@@ -38,11 +38,11 @@ class KeystoreTlsDeviceTest {
     @After fun cleanUp() {
         runCatching { server?.stop() }
         runCatching { identity?.delete() }
-        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(alias) }
+        for (a in listOf(alias, alias + "_b", alias + "_other", alias + "_other_b")) runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(a) }
     }
 
     private fun serve(): KeystoreTlsIdentity {
-        runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(alias) } // a leftover of an earlier failed run
+        for (a in listOf(alias, alias + "_b")) runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(a) } // a leftover of an earlier failed run
         val id = KeystoreTlsIdentity(context, alias).also { identity = it }
         val auth = CanvasAuth(System::currentTimeMillis)
         val hosts = HostPolicy(port = { port }, lanIp = { null }, secure = { true })
@@ -115,10 +115,14 @@ class KeystoreTlsDeviceTest {
     @Test fun keyIsNotExportableAndRotationChangesTheCertificate() {
         val id = serve()
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        assertNull("the private key must not be exportable", (ks.getKey(alias, null) as PrivateKey).encoded)
+        assertNull("the private key must not be exportable", (ks.getKey(id.activeAlias, null) as PrivateKey).encoded)
         val before = id.fingerprint
+        val oldAlias = id.activeAlias
         id.rotate()
         assertNotEquals(before, id.fingerprint)
+        assertNotEquals("the new key lives under the other alias", oldAlias, id.activeAlias)
+        assertFalse("the old key is deleted after the swap", ks.containsAlias(oldAlias))
+        assertNull((ks.getKey(id.activeAlias, null) as PrivateKey).encoded)
         // a restarted server serves the new certificate under the same identity object
         server!!.stop()
         val router = CanvasRouter(CanvasAuth(System::currentTimeMillis), HostPolicy({ port }, { null }, { true }), { HttpResponse.error(404, "not_found", "x") }, { null })

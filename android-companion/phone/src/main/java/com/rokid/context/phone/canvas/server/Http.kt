@@ -20,6 +20,8 @@ class HttpRequest(
     val headers: Map<String, String>,
     val body: ByteArray,
     val bodyTooLarge: Boolean = false,
+    /** The peer address of the connection (the adapter sets it); null in unit tests. Used only to rate-limit pairing per device. */
+    val remoteIp: String? = null,
 )
 
 class HttpResponse(

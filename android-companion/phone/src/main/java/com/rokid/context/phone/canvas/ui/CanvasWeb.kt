@@ -103,6 +103,8 @@ fun CanvasWebRoute(host: CanvasHost, onBack: () -> Unit) {
         val old = key
         val new = CanvasWebKey.next(old, scheme, port, status.fingerprint) { host.webViewToken() }
         key = new
+        // The old page's session is no longer used; leaving it would use up one of the 3 session slots and evict a paired laptop.
+        if (old != null && old.token != new.token) host.endWebViewSession(old.token)
         applyWebKey(old, new, object : SslResettableLoader {
             override fun clearSslPreferences() = web.clearSslPreferences()
             override fun loadUrl(url: String) = web.loadUrl(url)

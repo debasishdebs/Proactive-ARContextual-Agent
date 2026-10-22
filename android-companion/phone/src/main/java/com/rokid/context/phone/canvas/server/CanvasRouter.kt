@@ -94,15 +94,15 @@ class CanvasRouter(
             val p = (Json.parseToJsonElement(String(req.body, Charsets.UTF_8)) as? JsonObject)?.get("code") as? JsonPrimitive
             p?.takeIf { it.isString }?.content
         } catch (e: Exception) { null } ?: return HttpResponse.error(400, "bad_request", "Expected {\"code\":\"123456\"}.")
-        return when (val r = auth.pair(code)) {
+        return when (val r = auth.pair(code, req.remoteIp)) {
             is CanvasAuth.Pair.Ok -> HttpResponse.json(200, buildJsonObject { put("token", r.token) })
             is CanvasAuth.Pair.Wrong -> HttpResponse.json(401, buildJsonObject {
                 put("error", "unauthorized"); put("message", "Wrong code."); put("triesLeft", r.triesLeft)
             })
             is CanvasAuth.Pair.Locked -> HttpResponse.json(
                 429,
-                buildJsonObject { put("error", "refused"); put("message", "Pairing is locked. Try again shortly.") },
-                mapOf("Retry-After" to auth.retryAfterSeconds().coerceAtLeast(1).toString()),
+                buildJsonObject { put("error", "refused"); put("message", "Pairing is locked. Tap New code in the app.") },
+                mapOf("Retry-After" to auth.retryAfterSeconds(req.remoteIp).coerceAtLeast(1).toString()),
             )
             CanvasAuth.Pair.NoCode -> HttpResponse.error(401, "unauthorized", "No pairing code is active. Show a new one in the app.")
         }

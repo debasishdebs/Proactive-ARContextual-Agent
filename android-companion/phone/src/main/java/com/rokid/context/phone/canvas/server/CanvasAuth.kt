@@ -9,12 +9,15 @@ class CanvasAuth(private val clock: () -> Long, private val random: SecureRandom
     companion object {
         const val CODE_TTL_MS = 5 * 60_000L
         const val MAX_TRIES = 5
+        const val GLOBAL_MAX_WRONG = 20
+        const val MAX_TRACKED_IPS = 64
         const val LOCK_MS = 30_000L
         /** Lockout lengths per process: each lockout takes the next step, then the last one for good; a successful pair starts over. */
         val LOCK_STEPS_MS = longArrayOf(LOCK_MS, 120_000L, 600_000L)
         const val IDLE_MS = 30 * 60_000L
         const val MAX_AGE_MS = 12 * 3_600_000L
         const val MAX_SESSIONS = 3
+        private const val NO_IP = "?"
     }
 
     data class Code(val code: String, val expiresAt: Long)
@@ -28,34 +31,52 @@ class CanvasAuth(private val clock: () -> Long, private val random: SecureRandom
 
     private class Session(val token: ByteArray, val createdAt: Long, var lastSeen: Long)
 
+    /** Per remote device: wrong guesses against the current code, and its own escalating lock. */
+    private class IpState { var tries = 0; var lockedUntil = 0L; var lockouts = 0; var lastSeen = 0L }
+
     private val lock = Any()
     private var code: Code? = null
-    private var tries = 0
+    /** Wrong guesses from every device since the code was minted (the global back-stop). */
+    private var wrongTotal = 0
+    /** The global lock (back-stop) and its own escalation count. */
     private var lockedUntil = 0L
     private var lockouts = 0
-    /** Set by a lockout, cleared only by an explicit [newCode]: nothing mints a code on its own after a lockout. */
+    /** Set by the global lock, cleared only by an explicit [newCode]: nothing mints a code on its own after it. */
     private var awaitingNew = false
+    private val ips = LinkedHashMap<String, IpState>() // least recently seen first
     private val sessions = ArrayList<Session>() // oldest first
 
     /** The newest successful [check] (the service's idle rule); starts at construction time. */
     @Volatile var lastActivityMs: Long = clock()
         private set
 
-    /** Mints a code. During a lockout its life starts when the lock ends, so a long lock cannot eat the code's five minutes. */
+    /**
+     * Mints a code. The tap is the rate limiter, so it clears every current lock (global and per device) but keeps the escalation
+     * counts: a device gets MAX_TRIES guesses per tap and never more, and the next lock it earns is still the next, longer step.
+     */
     fun newCode(): Code = synchronized(lock) {
-        val now = clock()
-        val c = Code("%06d".format(random.nextInt(1_000_000)), maxOf(now, lockedUntil) + CODE_TTL_MS)
+        val c = Code("%06d".format(random.nextInt(1_000_000)), clock() + CODE_TTL_MS)
         code = c
-        tries = 0
+        wrongTotal = 0
+        lockedUntil = 0L
         awaitingNew = false
+        for (st in ips.values) { st.tries = 0; st.lockedUntil = 0L }
         c
     }
 
-    /** True after a lockout until [newCode] is called. */
+    /** True after the global lock until [newCode] is called. */
     fun awaitingNewCode(): Boolean = synchronized(lock) { awaitingNew }
 
-    /** Seconds until the lock ends, rounded up; 0 when not locked. */
-    fun retryAfterSeconds(): Long = synchronized(lock) { ((lockedUntil - clock() + 999) / 1000).coerceAtLeast(0) }
+    /** Wrong pairing guesses, from any device, since the current code was minted. */
+    fun wrongAttempts(): Int = synchronized(lock) { wrongTotal }
+
+    internal fun trackedIps(): Int = synchronized(lock) { ips.size }
+
+    /** Seconds until pairing opens again for [ip] (the longer of the global lock and its own), rounded up; 0 when not locked. */
+    fun retryAfterSeconds(ip: String? = null): Long = synchronized(lock) {
+        val until = maxOf(lockedUntil, ips[ip ?: NO_IP]?.lockedUntil ?: 0L)
+        ((until - clock() + 999) / 1000).coerceAtLeast(0)
+    }
 
     fun currentCode(): Code? = synchronized(lock) { liveCode() }
 
@@ -65,24 +86,54 @@ class CanvasAuth(private val clock: () -> Long, private val random: SecureRandom
         return c
     }
 
-    fun pair(code: String): Pair = synchronized(lock) {
+    private fun stateFor(ip: String?, now: Long): IpState {
+        val key = ip ?: NO_IP
+        val st = ips.remove(key) ?: IpState() // re-inserted last: most recently seen
+        st.lastSeen = now
+        ips[key] = st
+        // bounded: a device with nothing to remember goes first, then the least recently seen
+        while (ips.size > MAX_TRACKED_IPS) {
+            val idle = ips.entries.firstOrNull { it.key != key && it.value.tries == 0 && it.value.lockedUntil <= now && it.value.lockouts == 0 }
+                ?: ips.entries.first { it.key != key }
+            ips.remove(idle.key)
+        }
+        return st
+    }
+
+    /**
+     * Pairing is limited per remote device ([ip]): MAX_TRIES wrong guesses lock that device for 30 s, 120 s, then 600 s each time
+     * (a good pairing from it resets that). One noisy device therefore cannot lock the user's own laptop out. Across all devices
+     * GLOBAL_MAX_WRONG wrong guesses against one code void it and lock everyone (same steps, own count), until "New code".
+     * 5 per device and 20 in all bound the chance of guessing a 6-digit code at about 2e-5 per code.
+     */
+    fun pair(code: String, ip: String? = null): Pair = synchronized(lock) {
         val now = clock()
         if (now < lockedUntil) return Pair.Locked(lockedUntil)
+        val st = stateFor(ip, now)
+        if (now < st.lockedUntil) return Pair.Locked(st.lockedUntil)
         val current = liveCode() ?: return Pair.NoCode
         if (!constantTimeEquals(code.toByteArray(Charsets.UTF_8), current.code.toByteArray(Charsets.UTF_8))) {
-            tries++
-            if (tries >= MAX_TRIES) {
+            st.tries++
+            wrongTotal++
+            if (wrongTotal >= GLOBAL_MAX_WRONG) {
                 this.code = null
-                tries = 0
                 lockedUntil = now + LOCK_STEPS_MS[minOf(lockouts, LOCK_STEPS_MS.size - 1)]
                 lockouts++
                 awaitingNew = true
                 return Pair.Locked(lockedUntil)
             }
-            return Pair.Wrong(MAX_TRIES - tries)
+            if (st.tries >= MAX_TRIES) {
+                st.tries = 0
+                st.lockedUntil = now + LOCK_STEPS_MS[minOf(st.lockouts, LOCK_STEPS_MS.size - 1)]
+                st.lockouts++
+                return Pair.Locked(st.lockedUntil)
+            }
+            return Pair.Wrong(MAX_TRIES - st.tries)
         }
         this.code = null
-        tries = 0
+        wrongTotal = 0
+        st.tries = 0
+        st.lockouts = 0
         lockouts = 0
         Pair.Ok(addSession())
     }

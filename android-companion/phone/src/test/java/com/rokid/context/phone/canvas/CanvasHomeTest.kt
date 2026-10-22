@@ -65,10 +65,11 @@ class CanvasHomeTest {
         show(CanvasHomeUi(status = lanStatus, wifiAvailable = true), onNewCertificate = { rotated++ })
         compose.onNodeWithTag("canvas_scroll").performScrollToNode(hasText("Certificate fingerprint"))
         compose.onNodeWithTag("canvas_lan_url").assertTextEquals("https://192.168.1.20:8765")
-        compose.onNodeWithTag("canvas_fingerprint").assertTextEquals(fp.split(' ').take(8).joinToString(" "))
+        compose.onNodeWithTag("canvas_fingerprint").assertTextEquals("01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF")
+        compose.onNodeWithText("Ignore spaces, colons and capitals.").assertExists()
         compose.onNodeWithText("Your browser will warn once. Check that the fingerprint in its certificate details matches.").assertExists()
         compose.onNodeWithTag("canvas_fingerprint_toggle").performClick()
-        compose.onNodeWithTag("canvas_fingerprint").assertTextEquals(fp)
+        compose.onNodeWithTag("canvas_fingerprint").assertTextEquals(fp.replace(" ", "").chunked(2).joinToString(":"))
         compose.onNodeWithTag("canvas_scroll").performScrollToNode(hasTestTag("canvas_new_certificate"))
         compose.onNodeWithTag("canvas_new_certificate").performClick()
         assertEquals(1, rotated)
@@ -97,6 +98,23 @@ class CanvasHomeTest {
         compose.onNodeWithTag("canvas_scroll").performScrollToNode(hasTestTag("canvas_new_code"))
         compose.onNodeWithTag("canvas_new_code").performClick()
         assertEquals(1, taps)
+    }
+
+    @Test fun wrongAttemptsFromAnotherDeviceAreShown() {
+        show(CanvasHomeUi(status = lanStatus.copy(code = "123456", codeExpiresAt = 1, wrongAttempts = 7), showCode = true, wifiAvailable = true))
+        compose.onNodeWithTag("canvas_scroll").performScrollToNode(hasText("7 wrong attempts from another device"))
+        compose.onNodeWithText("7 wrong attempts from another device").assertExists()
+        compose.onNodeWithTag("canvas_scroll").performScrollToNode(hasText("Use from a laptop"))
+    }
+
+    @Test fun noWrongAttemptLineWhenThereAreNone() {
+        show(CanvasHomeUi(status = lanStatus.copy(code = "123456", codeExpiresAt = 1), showCode = true, wifiAvailable = true))
+        compose.onAllNodes(hasText("wrong attempt", substring = true)).assertCountEquals(0)
+    }
+
+    @Test fun oneWrongAttemptIsSingular() {
+        show(CanvasHomeUi(status = lanStatus.copy(code = "123456", codeExpiresAt = 1, wrongAttempts = 1), showCode = true, wifiAvailable = true))
+        compose.onNodeWithTag("canvas_scroll").performScrollToNode(hasText("1 wrong attempt from another device"))
     }
 
     @Test fun newCodeButtonAbsentWhenNotLocked() {

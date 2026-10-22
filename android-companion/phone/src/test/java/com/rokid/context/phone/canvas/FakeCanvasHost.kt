@@ -28,6 +28,8 @@ class FakeCanvasHost : CanvasHost {
     override fun rotateCertificate() { calls += "rotate" }
     var identity: com.rokid.context.phone.canvas.server.TlsIdentity? = null
     override fun tlsIdentity() = identity
+    val endedSessions = mutableListOf<String>()
+    override fun endWebViewSession(token: String) { endedSessions += token }
     override fun webViewToken() = "t"
     override fun refreshNetwork() {}
     var idle = false

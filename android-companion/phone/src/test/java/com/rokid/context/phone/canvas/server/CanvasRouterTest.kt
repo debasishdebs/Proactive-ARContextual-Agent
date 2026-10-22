@@ -258,4 +258,22 @@ class CanvasRouterTest {
         assertEquals(2, (o["problems"] as kotlinx.serialization.json.JsonArray).size)
         assertEquals(JsonPrimitive("x"), HttpResponse.json(200, JsonPrimitive("x")).let { Json.parseToJsonElement(it.text()) })
     }
+
+    @Test fun lockedMessageSaysWhatToDo() {
+        val code = auth.newCode().code
+        val wrong = if (code == "000000") "000001" else "000000"
+        repeat(5) { router.handle(req("POST", "/api/pair", body = """{"code":"$wrong"}""")) }
+        val body = String(router.handle(req("POST", "/api/pair", body = """{"code":"$code"}""")).body)
+        assertTrue(body, body.contains("Tap New code in the app"))
+    }
+
+    @Test fun pairingIsRateLimitedPerRemoteAddress() {
+        val code = auth.newCode().code
+        val wrong = if (code == "000000") "000001" else "000000"
+        fun pair(c: String, ip: String) = router.handle(HttpRequest("POST", "/api/pair", emptyMap(), mapOf("host" to "127.0.0.1:8765"), """{"code":"$c"}""".toByteArray(), remoteIp = ip))
+        repeat(5) { pair(wrong, "192.168.1.50") }
+        assertEquals(429, pair(wrong, "192.168.1.50").status)
+        assertEquals(429, pair(code, "192.168.1.50").status)
+        assertEquals("another device is not blocked", 200, pair(code, "192.168.1.20").status)
+    }
 }
