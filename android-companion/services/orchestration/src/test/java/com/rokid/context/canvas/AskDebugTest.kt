@@ -241,14 +241,14 @@ class AskDebugTest {
 
     // ---- the Ask photo gate seam (wave 3 AskPhotoPolicy): refuses by default, images only after the gate says yes ----
 
-    private class FakePhotos(var allow: Boolean, var throwOnAllowed: Boolean = false) : AskDebugPhotos {
+    private class FakePhotos(var allow: Boolean, var throwOnAllowed: Boolean = false, val endpoint: String? = "az") : AskDebugPhotos {
         var allowedCalls = 0; var recalls = 0; var imageLoads = 0
         val frames = mutableSetOf("f9")
         override suspend fun allowed(): Boolean { allowedCalls++; if (throwOnAllowed) throw IllegalStateException("prefs"); return allow }
         override suspend fun recall(question: String, nowMs: Long): AskPhotoRecall {
             recalls++
             return AskPhotoRecall(listOf("id=frame:f9 \u00b7 1970-01-01 00:00 \u00b7 photo \u00b7 image=1 \u00b7 a blue mug"), setOf("frame:f9"), frames.toSet(),
-                images = { imageLoads++; listOf(ModelImageInput("image/jpeg", "AAAA")) })
+                images = { imageLoads++; listOf(ModelImageInput("image/jpeg", "AAAA")) }, imageEndpointId = endpoint)
         }
     }
 
@@ -292,6 +292,13 @@ class AskDebugTest {
         assertEquals(1, requests.single().images.size)
         assertTrue(prompts.single().contains("id=frame:f9 \u00b7"))
         assertEquals("In the fridge", r.answer)
+    }
+
+    @Test fun aGateWithoutACheckedEndpointSendsNoImage() = runBlocking<Unit> {
+        add("m1", "milk carton in the fridge", 10); ask()
+        val p = FakePhotos(allow = true, endpoint = null)
+        debug(p).replay("a1", "T {{question}} {{retrieved_memories}}")
+        assertEquals(0, p.imageLoads); assertTrue(requests.single().images.isEmpty())
     }
 
     @Test fun photoForgottenDuringReplayReturnsNoText() = runBlocking<Unit> {

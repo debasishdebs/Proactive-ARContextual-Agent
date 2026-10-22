@@ -36,6 +36,8 @@ class AskRedacted : IllegalStateException("redacted")
 data class AskPhotoRecall(
     val lines: List<String>, val citeIds: Set<String>, val frameIds: Set<String>, val memoryIds: Set<String> = emptySet(),
     val images: suspend () -> List<ModelImageInput> = { emptyList() },
+    /** The endpoint the gate checked: a replay sends the images only there ([RoleCall.imagesOnlyOnEndpoint]); null with images = they are dropped (fail closed). */
+    val imageEndpointId: String? = null,
 )
 
 /**
@@ -131,9 +133,10 @@ class AskDebug(
         val l = load(ask)
         val memoryIds = l.sr.retrieved.ids + (l.photos?.memoryIds ?: emptySet())
         val frameIds = l.photos?.frameIds ?: emptySet()
-        val images = l.photos?.let { p -> try { p.images() } catch (c: CancellationException) { throw c } catch (e: Exception) { return Replay.Failed(e.javaClass.simpleName) } } ?: emptyList()
+        val endpoint = l.photos?.imageEndpointId
+        val images = if (endpoint == null) emptyList() else l.photos?.let { p -> try { p.images() } catch (c: CancellationException) { throw c } catch (e: Exception) { return Replay.Failed(e.javaClass.simpleName) } } ?: emptyList()
         val result = try {
-            runner.run(RoleCall(PromptKey.ANSWER, l.vars, images = images, inputIds = memoryIds + (l.photos?.citeIds ?: emptySet()), callClass = CallClass.EXPERIMENT, override = draft))
+            runner.run(RoleCall(PromptKey.ANSWER, l.vars, images = images, imagesOnlyOnEndpoint = if (images.isEmpty()) null else endpoint, inputIds = memoryIds + (l.photos?.citeIds ?: emptySet()), callClass = CallClass.EXPERIMENT, override = draft))
         } catch (c: CancellationException) {
             throw c
         } catch (e: ModelCallException) {
