@@ -3,7 +3,9 @@ package com.rokid.context.canvas.trace
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.rokid.context.memory.db.DaoFence
 import com.rokid.context.memory.db.DatabaseFactory
+import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.memory.db.DeletionEpochStore
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -37,11 +39,28 @@ class FencedFilesTest {
 
     @Test fun fencedPublishSkipsAfterWipe() = runBlocking {
         val store = DeletionEpochStore.of(ctx)
-        val captured = store.read()
+        // The REAL fence: the in-process generation and the persisted epoch, exactly what a recorder captures before it writes the tmp file.
+        val fence = DaoFence(MemoryWipe.generation.get(), store.read(), MemoryWipe.generation::get, store::read)
         val t = tmp(); val f = finalFile()
         store.commitWipe(1_000) // a Delete all committed its epoch while the file was being written
-        assertFalse(files.publish(t, f) { store.read().counter == captured.counter })
+        assertFalse(files.publish(t, f) { fence.holds() })
         assertFalse("nothing published", f.exists()); assertFalse("the tmp file is removed", t.exists())
+        val again = DaoFence(MemoryWipe.generation.get(), store.read(), MemoryWipe.generation::get, store::read)
+        assertTrue("a recorder that captured the new epoch publishes", files.publish(tmp(), finalFile("t2.bin")) { again.holds() })
+    }
+
+    @Test fun aFailedMoveRollsBackTheRowTheFenceWroteAndLeavesNoFile() = runBlocking {
+        val t = tmp()
+        File(ctx.filesDir, FencedFiles.TRACES_DIR).apply { deleteRecursively(); writeText("a file where the folder should be") }
+        val blocked = File(File(ctx.filesDir, FencedFiles.TRACES_DIR), "t1.bin")
+        val e = com.rokid.context.memory.db.DeletionEpoch("i", 0, 0)
+        val published = files.publish(t, blocked) {
+            db.canvasSlice3Dao().insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("row", "MOMENT", "tap", "X", 5, createdAt = 1), DaoFence(0, e, { 0 }, { e }))
+        }
+        assertFalse(published)
+        assertEquals("the row the fence wrote did not commit without its file", null, db.canvasSlice3Dao().label("row"))
+        assertEquals("labelRev rolled back too", 0L, db.canvasSlice3Dao().labelRev())
+        assertFalse(t.exists())
     }
 
     @Test fun theFenceRunsInsideTheDatabaseTransaction() = runBlocking {

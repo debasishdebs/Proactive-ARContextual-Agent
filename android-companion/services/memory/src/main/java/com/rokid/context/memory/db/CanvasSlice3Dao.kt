@@ -30,14 +30,14 @@ abstract class CanvasSlice3Dao {
     }
 
     // --- labels (marks); there is no text column ---
-    @Insert(onConflict = OnConflictStrategy.REPLACE) protected abstract suspend fun insertLabel(l: CanvasLabelEntity)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) protected abstract suspend fun insertLabel(l: CanvasLabelEntity)
     @Query("SELECT * FROM canvas_label WHERE labelId = :id") abstract suspend fun label(id: String): CanvasLabelEntity?
     @Query("SELECT * FROM canvas_label ORDER BY atMs, labelId") abstract suspend fun labels(): List<CanvasLabelEntity>
-    @Query("SELECT * FROM canvas_label WHERE atMs >= :fromMs AND atMs < :toMs ORDER BY atMs, labelId") abstract suspend fun labelsBetween(fromMs: Long, toMs: Long): List<CanvasLabelEntity>
+    @Query("SELECT * FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs ORDER BY atMs, labelId") abstract suspend fun labelsBetween(fromMs: Long, toMs: Long): List<CanvasLabelEntity>
     @Query("DELETE FROM canvas_label WHERE labelId = :id") protected abstract suspend fun deleteLabelRow(id: String): Int
     @Query("UPDATE canvas_label SET name = :name WHERE labelId = :id") protected abstract suspend fun renameLabelRow(id: String, name: String): Int
     @Query("DELETE FROM canvas_label WHERE frameId IN (:frameIds)") protected abstract suspend fun deleteLabelRowsForFrames(frameIds: List<String>): Int
-    @Query("DELETE FROM canvas_label WHERE atMs >= :fromMs AND atMs < :toMs") protected abstract suspend fun deleteLabelRowsBetween(fromMs: Long, toMs: Long): Int
+    @Query("DELETE FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs") protected abstract suspend fun deleteLabelRowsBetween(fromMs: Long, toMs: Long): Int
 
     /**
      * Inserts a mark only if, inside this transaction, the fence still holds AND the mark's occurrence time is not before the latest wipe
@@ -46,6 +46,7 @@ abstract class CanvasSlice3Dao {
     @Transaction open suspend fun insertLabelFenced(label: CanvasLabelEntity, fence: DaoFence): Boolean {
         if (!fence.holds()) return false
         if (label.atMs < fence.now().wipedAtMs) return false
+        if (label(label.labelId) != null) return true // a re-sent mark: already recorded, and labelRev must not move (it would refuse every in-flight replay commit)
         insertLabel(label)
         bumpLabelRev()
         return true
@@ -71,7 +72,7 @@ abstract class CanvasSlice3Dao {
         return n
     }
 
-    /** Forget of a time range: the marks inside it go and `labelRev` moves. */
+    /** Forget of a time range [fromMs, toMs] (both inclusive, the same bounds as [invalidateBySources]): the marks inside it go and `labelRev` moves. */
     @Transaction open suspend fun deleteLabelsBetween(fromMs: Long, toMs: Long): Int {
         val n = deleteLabelRowsBetween(fromMs, toMs)
         if (n > 0) bumpLabelRev()
@@ -125,14 +126,17 @@ abstract class CanvasSlice3Dao {
     // --- replays and sweeps (S75, S77) ---
     @Query("SELECT * FROM canvas_replay WHERE replayId = :id") abstract suspend fun replay(id: String): CanvasReplayEntity?
     @Query("SELECT * FROM canvas_replay ORDER BY createdAt DESC, replayId LIMIT :limit") abstract suspend fun replays(limit: Int): List<CanvasReplayEntity>
+    /** The evidence gate 3 reads (S60): finished, valid, EXACT replays of exactly this config, newest first. */
+    @Query("SELECT * FROM canvas_replay WHERE configHash = :configHash AND replayClass = 'EXACT' AND jobState = 'DONE' AND invalidated = 0 ORDER BY createdAt DESC, replayId")
+    abstract suspend fun validExactReplays(configHash: String): List<CanvasReplayEntity>
     @Query("SELECT * FROM canvas_sweep WHERE sweepId = :id") abstract suspend fun sweep(id: String): CanvasSweepEntity?
     @Query("SELECT * FROM canvas_sweep ORDER BY createdAt DESC, sweepId LIMIT :limit") abstract suspend fun sweeps(limit: Int): List<CanvasSweepEntity>
     @Insert abstract suspend fun insertReplay(r: CanvasReplayEntity)
     @Insert abstract suspend fun insertSweep(s: CanvasSweepEntity)
-    @Query("UPDATE canvas_replay SET jobState = 'DONE', resultJson = :result, finishedAt = :now WHERE replayId = :id AND jobState = 'RUNNING' AND invalidated = 0")
-    protected abstract suspend fun finishReplay(id: String, result: String, now: Long): Int
-    @Query("UPDATE canvas_sweep SET jobState = 'DONE', resultJson = :result, finishedAt = :now WHERE sweepId = :id AND jobState = 'RUNNING' AND invalidated = 0")
-    protected abstract suspend fun finishSweep(id: String, result: String, now: Long): Int
+    @Query("UPDATE canvas_replay SET jobState = 'DONE', resultJson = :result, finishedAt = :now WHERE replayId = :id AND jobState = 'RUNNING' AND invalidated = 0 AND configHash IS :configHash")
+    protected abstract suspend fun finishReplay(id: String, result: String, configHash: String?, now: Long): Int
+    @Query("UPDATE canvas_sweep SET jobState = 'DONE', resultJson = :result, finishedAt = :now WHERE sweepId = :id AND jobState = 'RUNNING' AND invalidated = 0 AND configHash IS :configHash")
+    protected abstract suspend fun finishSweep(id: String, result: String, configHash: String?, now: Long): Int
     @Query("UPDATE canvas_replay SET jobState = 'CANCELLED', finishedAt = :now WHERE replayId = :id AND jobState = 'RUNNING'") abstract suspend fun cancelReplay(id: String, now: Long): Int
     @Query("UPDATE canvas_sweep SET jobState = 'CANCELLED', finishedAt = :now WHERE sweepId = :id AND jobState = 'RUNNING'") abstract suspend fun cancelSweep(id: String, now: Long): Int
     @Query("UPDATE canvas_replay SET jobState = 'ABORTED', finishedAt = :now WHERE jobState = 'RUNNING'") protected abstract suspend fun abortReplays(now: Long): Int
@@ -151,32 +155,34 @@ abstract class CanvasSlice3Dao {
     }
 
     /**
-     * Commits a replay result only if, INSIDE this transaction, the wipe generation and the persisted epoch hold, no source trace is tombstoned or
+     * Commits a replay result (of the config [configHash], which must be the row's) only if, INSIDE this transaction, the wipe generation and the persisted epoch hold, no source trace is tombstoned or
      * rewritten, `labelRev` did not move, and the job is still RUNNING and not invalidated. Otherwise nothing is written (the caller drops the result).
      */
-    @Transaction open suspend fun commitReplayFenced(replayId: String, resultJson: String, sources: List<TraceSource>, expectedLabelRev: Long, fence: DaoFence, now: Long): Boolean {
+    @Transaction open suspend fun commitReplayFenced(replayId: String, resultJson: String, configHash: String?, sources: List<TraceSource>, expectedLabelRev: Long, fence: DaoFence, now: Long): Boolean {
         if (!fence.holds()) return false
         if (!sourcesHold(sources, expectedLabelRev)) return false
-        return finishReplay(replayId, resultJson, now) > 0
+        if (TraceSources.decode(replay(replayId)?.sourcesJson ?: return false) == null) return false // unreadable provenance: fail closed
+        return finishReplay(replayId, resultJson, configHash, now) > 0
     }
 
     /** As [commitReplayFenced], for a sweep. */
-    @Transaction open suspend fun commitSweepFenced(sweepId: String, resultJson: String, sources: List<TraceSource>, expectedLabelRev: Long, fence: DaoFence, now: Long): Boolean {
+    @Transaction open suspend fun commitSweepFenced(sweepId: String, resultJson: String, configHash: String?, sources: List<TraceSource>, expectedLabelRev: Long, fence: DaoFence, now: Long): Boolean {
         if (!fence.holds()) return false
         if (!sourcesHold(sources, expectedLabelRev)) return false
-        return finishSweep(sweepId, resultJson, now) > 0
+        if (TraceSources.decode(sweep(sweepId)?.sourcesJson ?: return false) == null) return false
+        return finishSweep(sweepId, resultJson, configHash, now) > 0
     }
 
     @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND instr(sourcesJson, :needle) > 0") protected abstract suspend fun invalidateReplaysOfTrace(needle: String): Int
     @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND instr(sourcesJson, :needle) > 0") protected abstract suspend fun invalidateSweepsOfTrace(needle: String): Int
-    @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND fromMs IS NOT NULL AND toMs IS NOT NULL AND fromMs <= :toMs AND toMs >= :fromMs") protected abstract suspend fun invalidateReplaysInRange(fromMs: Long, toMs: Long): Int
-    @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND fromMs IS NOT NULL AND toMs IS NOT NULL AND fromMs <= :toMs AND toMs >= :fromMs") protected abstract suspend fun invalidateSweepsInRange(fromMs: Long, toMs: Long): Int
+    @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND (fromMs IS NULL OR toMs IS NULL OR (fromMs <= :toMs AND toMs >= :fromMs))") protected abstract suspend fun invalidateReplaysInRange(fromMs: Long, toMs: Long): Int
+    @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND (fromMs IS NULL OR toMs IS NULL OR (fromMs <= :toMs AND toMs >= :fromMs))") protected abstract suspend fun invalidateSweepsInRange(fromMs: Long, toMs: Long): Int
     @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND labelRev != :labelRev") protected abstract suspend fun invalidateReplaysOfOtherLabelRev(labelRev: Long): Int
     @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND labelRev != :labelRev") protected abstract suspend fun invalidateSweepsOfOtherLabelRev(labelRev: Long): Int
     @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND sweepId IN (SELECT sweepId FROM canvas_sweep WHERE invalidated = 1)") protected abstract suspend fun invalidateReplaysOfInvalidSweeps(): Int
 
     /**
-     * Marks the replays and sweeps that read any of [traceIds], or whose source envelope overlaps `[fromMs, toMs]`, or (with [labelRevChanged]) that
+     * Marks the replays and sweeps that read any of [traceIds], or whose source envelope overlaps `[fromMs, toMs]` (inclusive) or is unknown (no range: fail closed), or (with [labelRevChanged]) that
      * were computed under another `labelRev`, INVALIDATED with their results deleted; the replays of an invalidated sweep follow. One transaction. Returns the rows changed.
      */
     @Transaction open suspend fun invalidateBySources(traceIds: Collection<String>, fromMs: Long?, toMs: Long?, labelRevChanged: Boolean): Int {

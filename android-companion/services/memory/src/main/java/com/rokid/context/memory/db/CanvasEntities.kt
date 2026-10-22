@@ -93,7 +93,7 @@ data class CanvasPublishEntity(
     val rollbackReason: String? = null,
     /** Room v7 (slice 3a capture-plan publish; all null for a prompts or interpreter publish): the publish group this row belongs to. */
     val groupId: String? = null,
-    /** Room v7: which half of a plan group (`phone`, `glasses`, ...). */
+    /** Room v7: the group component this row publishes: `capture_plan` in core (later ASYNC components add values). */
     val component: String? = null,
     /** Room v7: the canonical CapturePlan JSON (config and meta; no photo data). */
     val planJson: String? = null,

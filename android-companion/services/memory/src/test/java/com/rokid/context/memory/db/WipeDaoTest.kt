@@ -66,7 +66,7 @@ class WipeDaoTest {
         s.insertLabelFenced(CanvasLabelEntity("l1", "MOMENT", "tap", "X", 5, createdAt = 1), fence)
         s.insertCalibration(CanvasCalibrationEntity(configHash = "c", settingsRev = 1, mode = "LIVE", phasesJson = "[]", createdAt = 1))
         s.insertHelperJob(CanvasHelperJobEntity("j1", "py", "QUEUED", frameIdsJson = "[\"f1\"]", createdAt = 1, updatedAt = 1))
-        s.upsertGroupState(CanvasGroupStateEntity("g1", 1, 1, "c", "glasses", "ACTIVE", 1))
+        s.upsertGroupState(CanvasGroupStateEntity("g1", 1, 1, "c", "capture_plan", "EFFECTIVE", 1))
     }
 
     /** Delete all reaches every slice 3a table that can hold derived data; the two that hold none are kept on purpose, and labelRev still moves. */

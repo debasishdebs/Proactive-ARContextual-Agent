@@ -79,7 +79,7 @@ class CanvasSlice3DaoTest {
     @Test fun replayCommitSucceedsWhenEverythingHolds() = runBlocking {
         assertTrue(dao.acceptTraceFenced(trace("t1"), fence()))
         dao.insertReplay(replay("r1", sources = listOf(src("t1"))))
-        assertTrue(dao.commitReplayFenced("r1", "{\"keeps\":3}", listOf(src("t1")), 0, fence(), 50))
+        assertTrue(dao.commitReplayFenced("r1", "{\"keeps\":3}", null, listOf(src("t1")), 0, fence(), 50))
         val r = dao.replay("r1")!!
         assertEquals("DONE", r.jobState); assertEquals("{\"keeps\":3}", r.resultJson); assertEquals(50L, r.finishedAt)
     }
@@ -88,7 +88,7 @@ class CanvasSlice3DaoTest {
         dao.acceptTraceFenced(trace("t1"), fence())
         dao.insertReplay(replay("r1", sources = listOf(src("t1"))))
         dao.tombstoneTrace("t1", 30)
-        assertFalse(dao.commitReplayFenced("r1", "{}", listOf(src("t1")), 0, fence(), 50))
+        assertFalse(dao.commitReplayFenced("r1", "{}", null, listOf(src("t1")), 0, fence(), 50))
         val r = dao.replay("r1")!!
         assertEquals("RUNNING", r.jobState); assertNull(r.resultJson)
     }
@@ -96,21 +96,21 @@ class CanvasSlice3DaoTest {
     @Test fun replayCommitBlockedWhenARewriteMovedTheRevision() = runBlocking {
         dao.acceptTraceFenced(trace("t1", revision = 1), fence())
         dao.insertReplay(replay("r1", sources = listOf(src("t1", 0))))
-        assertFalse("the source was read at revision 0", dao.commitReplayFenced("r1", "{}", listOf(src("t1", 0)), 0, fence(), 50))
+        assertFalse("the source was read at revision 0", dao.commitReplayFenced("r1", "{}", null, listOf(src("t1", 0)), 0, fence(), 50))
     }
 
     @Test fun replayCommitBlockedWhenASourceIsMissing() = runBlocking {
         dao.insertReplay(replay("r1", sources = listOf(src("ghost"))))
-        assertFalse(dao.commitReplayFenced("r1", "{}", listOf(src("ghost")), 0, fence(), 50))
+        assertFalse(dao.commitReplayFenced("r1", "{}", null, listOf(src("ghost")), 0, fence(), 50))
     }
 
     @Test fun replayCommitBlockedWhenLabelRevMoved() = runBlocking {
         dao.acceptTraceFenced(trace("t1"), fence())
         dao.insertReplay(replay("r1", labelRev = 0, sources = listOf(src("t1"))))
         dao.insertLabelFenced(label("l1"), fence()) // labelRev 0 -> 1 while the replay ran
-        assertFalse(dao.commitReplayFenced("r1", "{}", listOf(src("t1")), 0, fence(), 50))
+        assertFalse(dao.commitReplayFenced("r1", "{}", null, listOf(src("t1")), 0, fence(), 50))
         assertEquals("RUNNING", dao.replay("r1")!!.jobState)
-        assertTrue("recomputed under the new labelRev it commits", dao.commitReplayFenced("r1", "{}", listOf(src("t1")), 1, fence(), 50))
+        assertTrue("recomputed under the new labelRev it commits", dao.commitReplayFenced("r1", "{}", null, listOf(src("t1")), 1, fence(), 50))
     }
 
     @Test fun replayCommitBlockedByWipeGenerationAndByPersistedEpoch() = runBlocking {
@@ -118,9 +118,9 @@ class CanvasSlice3DaoTest {
         dao.insertReplay(replay("r1", sources = listOf(src("t1")))); dao.insertReplay(replay("r2", sources = listOf(src("t1"))))
         val f = fence()
         generation = 6
-        assertFalse(dao.commitReplayFenced("r1", "{}", listOf(src("t1")), 0, f, 50))
+        assertFalse(dao.commitReplayFenced("r1", "{}", null, listOf(src("t1")), 0, f, 50))
         generation = 5; epoch = DeletionEpoch("install-b", 3, 1_000) // a re-pairing: another installId
-        assertFalse(dao.commitReplayFenced("r2", "{}", listOf(src("t1")), 0, f, 50))
+        assertFalse(dao.commitReplayFenced("r2", "{}", null, listOf(src("t1")), 0, f, 50))
         assertEquals(listOf("RUNNING", "RUNNING"), listOf(dao.replay("r1")!!.jobState, dao.replay("r2")!!.jobState))
     }
 
@@ -128,10 +128,10 @@ class CanvasSlice3DaoTest {
         dao.acceptTraceFenced(trace("t1"), fence())
         dao.insertReplay(replay("r1", sources = listOf(src("t1")))); dao.insertReplay(replay("r2", sources = listOf(src("t1"))))
         dao.invalidateBySources(listOf("t1"), null, null, false)
-        assertFalse(dao.commitReplayFenced("r1", "{}", listOf(src("t1")), 0, fence(), 50))
+        assertFalse(dao.commitReplayFenced("r1", "{}", null, listOf(src("t1")), 0, fence(), 50))
         dao.insertReplay(replay("r3", sources = listOf(src("t1"))))
         assertEquals(1, dao.cancelReplay("r3", 40))
-        assertFalse(dao.commitReplayFenced("r3", "{}", listOf(src("t1")), 0, fence(), 50))
+        assertFalse(dao.commitReplayFenced("r3", "{}", null, listOf(src("t1")), 0, fence(), 50))
         assertEquals("CANCELLED", dao.replay("r3")!!.jobState)
     }
 
@@ -139,10 +139,10 @@ class CanvasSlice3DaoTest {
         dao.acceptTraceFenced(trace("t1"), fence())
         dao.insertSweep(CanvasSweepEntity("s1", "{}", "[]", null, false, TraceSources.encode(listOf(src("t1"))), 0, "RUNNING", null, null, 1))
         dao.tombstoneTrace("t1", 30)
-        assertFalse(dao.commitSweepFenced("s1", "{}", listOf(src("t1")), 0, fence(), 50))
+        assertFalse(dao.commitSweepFenced("s1", "{}", null, listOf(src("t1")), 0, fence(), 50))
         dao.acceptTraceFenced(trace("t2"), fence())
         dao.insertSweep(CanvasSweepEntity("s2", "{}", "[]", null, false, TraceSources.encode(listOf(src("t2"))), 0, "RUNNING", null, null, 1))
-        assertTrue(dao.commitSweepFenced("s2", "{\"pareto\":[]}", listOf(src("t2")), 0, fence(), 50))
+        assertTrue(dao.commitSweepFenced("s2", "{\"pareto\":[]}", null, listOf(src("t2")), 0, fence(), 50))
         assertEquals("DONE", dao.sweep("s2")!!.jobState)
     }
 
@@ -205,9 +205,9 @@ class CanvasSlice3DaoTest {
         dao.insertReplay(replay("unknown-range").copy(jobState = "DONE", resultJson = "{}"))
         dao.insertSweep(CanvasSweepEntity("s", "{}", resultJson = "{}", jobState = "DONE", fromMs = 250, toMs = 260, createdAt = 1))
         dao.insertReplay(replay("child", sweepId = "s", from = 900, to = 950).copy(jobState = "DONE", resultJson = "{}"))
-        assertEquals(3, dao.invalidateBySources(emptyList(), 180, 300, false)) // in, sweep s, then its child
+        assertEquals(4, dao.invalidateBySources(emptyList(), 180, 300, false)) // in, the one with no range (fail closed), sweep s, then its child
         assertTrue(dao.replay("in")!!.invalidated); assertTrue(dao.sweep("s")!!.invalidated); assertTrue(dao.replay("child")!!.invalidated)
-        assertFalse(dao.replay("out")!!.invalidated); assertFalse(dao.replay("unknown-range")!!.invalidated)
+        assertFalse(dao.replay("out")!!.invalidated); assertTrue("no time range: any range Forget invalidates it", dao.replay("unknown-range")!!.invalidated)
         assertNull(dao.sweep("s")!!.resultJson); assertNull(dao.replay("child")!!.resultJson)
     }
 
@@ -220,13 +220,57 @@ class CanvasSlice3DaoTest {
         assertTrue(dao.replay("old")!!.invalidated); assertFalse(dao.replay("fresh")!!.invalidated)
     }
 
+    // --- review fixes ---
+    @Test fun replayAndSweepCommitCarryTheConfigHash() = runBlocking {
+        dao.acceptTraceFenced(trace("t1"), fence())
+        dao.insertReplay(replay("r1", sources = listOf(src("t1"))).copy(configHash = "c1"))
+        assertFalse("another config's result must not land on this row", dao.commitReplayFenced("r1", "{}", "c2", listOf(src("t1")), 0, fence(), 50))
+        assertFalse(dao.commitReplayFenced("r1", "{}", null, listOf(src("t1")), 0, fence(), 50))
+        assertTrue(dao.commitReplayFenced("r1", "{}", "c1", listOf(src("t1")), 0, fence(), 50))
+        dao.insertSweep(CanvasSweepEntity("s1", "{}", sourcesJson = TraceSources.encode(listOf(src("t1"))), createdAt = 1, configHash = "c1"))
+        assertFalse(dao.commitSweepFenced("s1", "{}", "c9", listOf(src("t1")), 0, fence(), 50))
+        assertTrue(dao.commitSweepFenced("s1", "{}", "c1", listOf(src("t1")), 0, fence(), 50))
+    }
+
+    @Test fun exactHashReplaysAreFoundByConfigHash() = runBlocking {
+        dao.insertReplay(replay("a", from = 1, to = 2).copy(configHash = "c1", jobState = "DONE", resultJson = "{}", replayClass = "EXACT"))
+        dao.insertReplay(replay("b").copy(configHash = "c1", jobState = "DONE", resultJson = "{}", replayClass = "COUNTERFACTUAL"))
+        dao.insertReplay(replay("c").copy(configHash = "c2", jobState = "DONE", resultJson = "{}", replayClass = "EXACT"))
+        dao.insertReplay(replay("d").copy(configHash = "c1", jobState = "DONE", replayClass = "EXACT").copy(invalidated = true))
+        assertEquals(listOf("a"), dao.validExactReplays("c1").map { it.replayId })
+    }
+
+    @Test fun aCorruptSourcesColumnRefusesTheCommit() = runBlocking {
+        dao.acceptTraceFenced(trace("t1"), fence())
+        dao.insertReplay(replay("r1", sources = listOf(src("t1"))).copy(sourcesJson = "{not json"))
+        assertFalse("unknown sources: fail closed", dao.commitReplayFenced("r1", "{}", null, listOf(src("t1")), 0, fence(), 50))
+        assertNull(TraceSources.decode("{not json"))
+        assertNull(TraceSources.decode("[{\"traceId\":\"a\"}]"))
+    }
+
+    @Test fun aDuplicateMarkIsIdempotentAndDoesNotBumpLabelRev() = runBlocking {
+        assertTrue(dao.insertLabelFenced(label("l1"), fence()))
+        assertEquals(1L, dao.labelRev())
+        assertTrue("already recorded counts as stored", dao.insertLabelFenced(label("l1"), fence()))
+        assertEquals("a re-sent mark must not refuse every in-flight replay commit", 1L, dao.labelRev())
+        assertEquals(1, dao.labels().size)
+    }
+
+    @Test fun labelRangeDeleteAndRangeInvalidationShareInclusiveBounds() = runBlocking {
+        listOf("a" to 10_100L, "b" to 10_200L, "c" to 10_300L).forEach { (id, at) -> dao.insertLabelFenced(label(id, atMs = at), fence()) }
+        assertEquals("both ends inclusive", 2, dao.deleteLabelsBetween(10_100, 10_200))
+        assertEquals(listOf("c"), dao.labels().map { it.labelId })
+        dao.insertReplay(replay("edge", from = 10_300, to = 10_400).copy(jobState = "DONE", resultJson = "{}"))
+        assertEquals(1, dao.invalidateBySources(emptyList(), 10_200, 10_300, false))
+    }
+
     // --- group state, calibration, helper jobs ---
     @Test fun groupStateRoundTrip() = runBlocking {
-        val s = CanvasGroupStateEntity("g1", 4, 77, "cfgHash", "glasses", "STAGED", 10)
+        val s = CanvasGroupStateEntity("g1", 4, 77, "cfgHash", "capture_plan", "SENT", 10, mode = "TRIAL", phoneInstall = "install-a", sentAtMs = 9)
         dao.upsertGroupState(s)
         assertEquals(s, dao.groupState("g1"))
-        dao.upsertGroupState(s.copy(gen = 5, state = "ACTIVE", updatedAt = 20))
-        assertEquals("ACTIVE", dao.groupState("g1")!!.state); assertEquals(5L, dao.groupState("g1")!!.gen)
+        dao.upsertGroupState(s.copy(gen = 5, state = "EFFECTIVE", updatedAt = 20))
+        assertEquals("EFFECTIVE", dao.groupState("g1")!!.state); assertEquals(5L, dao.groupState("g1")!!.gen); assertEquals("install-a", dao.groupState("g1")!!.phoneInstall)
         assertEquals(1, dao.groupStates().size)
         assertEquals(1, dao.deleteGroupState("g1")); assertNull(dao.groupState("g1"))
     }
