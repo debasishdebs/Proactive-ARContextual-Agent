@@ -37,13 +37,12 @@ class SqlCipherMigrationDeviceTest {
      * namespace + ".test" (com.rokid.context.services.memory.test) with its own data dir, never the app's. It refuses to run if it is not in
      * such a package, or if a `context.db` exists that this test did not create (no marker file): that would be user data.
      */
-    @Before fun guardAndClean() {
-        check(ctx.packageName.endsWith(".test")) { "refusing to run outside the androidTest APK sandbox" }
-        check(!prodNamed.exists() || marker.exists()) { "refusing to run: a context.db exists that this test did not create" }
-        marker.writeText("created by SqlCipherMigrationDeviceTest")
-        clean()
+    private val guard by lazy {
+        MigrationFixtureGuard(ctx.packageName, { prodNamed.exists() }, { marker.exists() }, { marker.writeText("created by SqlCipherMigrationDeviceTest") }, { marker.delete() }, ::clean)
     }
-    @After fun cleanAndUnmark() { clean(); marker.delete() }
+    /** Ownership is recorded only after both guards pass; a refused run deletes nothing (JUnit still runs @After). */
+    @Before fun guardAndClean() { guard.acquire() }
+    @After fun cleanAndUnmark() { guard.release() }
 
     private fun clean() { suffixes.forEach { File(file.path + it).delete(); File(prodNamed.path + it).delete() } }
 
