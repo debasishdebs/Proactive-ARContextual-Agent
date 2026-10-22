@@ -10,6 +10,7 @@ import com.rokid.context.phone.canvas.server.CanvasAuth
 import com.rokid.context.phone.canvas.server.CanvasServer
 import com.rokid.context.phone.canvas.server.HttpResponse
 import com.rokid.context.phone.canvas.server.PkcsTlsIdentity
+import com.rokid.context.phone.canvas.server.TlsIdentity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,16 +45,29 @@ class CanvasGraphTlsTest {
     private var servers = 0
     private val graphs = mutableListOf<CanvasGraph>()
 
-    private fun graph(tlsFactory: () -> PkcsTlsIdentity? = { tls }) = CanvasGraph(
-        auth, core, AssetSource { null }, MutableStateFlow(true), wifiIp = { "192.168.1.20" },
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined), clock = { now }, tlsFactory = tlsFactory, prune = { pruned++ },
-        newServer = { r, lan, t -> servers++; CanvasServer(r, lan, t, onStart = { pruned++ }) },
-    ).also { graphs += it }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
+    /** [counting] swaps in a server factory that counts starts; the prune test leaves the production factory alone. */
+    private fun graph(tlsFactory: () -> TlsIdentity? = { tls }, counting: Boolean = true): CanvasGraph =
+        if (counting) CanvasGraph(
+            auth, core, AssetSource { null }, MutableStateFlow(true), wifiIp = { "192.168.1.20" },
+            scope = scope, clock = { now }, tlsFactory = tlsFactory, prune = { pruned++ },
+            newServer = { r, lan, t -> servers++; CanvasServer(r, lan, t) },
+        ).also { graphs += it }
+        else CanvasGraph(
+            auth, core, AssetSource { null }, MutableStateFlow(true), wifiIp = { "192.168.1.20" },
+            scope = scope, clock = { now }, tlsFactory = tlsFactory, prune = { pruned++ },
+        ).also { graphs += it }
+
+    /** Rotation that fails the way a keystore error would. */
+    private class FailingRotation(private val d: TlsIdentity) : TlsIdentity by d {
+        override fun rotate() { throw IllegalStateException("keystore said no") }
+    }
 
     @After fun tearDown() { graphs.forEach { runCatching { it.stop() } } }
 
     @Test fun lanUnavailableWithoutTls() {
-        val g = graph { null }
+        val g = graph(tlsFactory = { null })
         assertFalse(g.status.value.lanAvailable)
         g.setLan(true)
         assertFalse(g.status.value.lan)
@@ -100,7 +114,7 @@ class CanvasGraphTlsTest {
         g.start(false)
         val code = g.newPairingCode().code
         val wrong = if (code == "000000") "000001" else "000000"
-        repeat(CanvasAuth.MAX_TRIES) { auth.pair(wrong) }
+        repeat(CanvasAuth.GLOBAL_MAX_WRONG) { auth.pair(wrong, "10.0.0.${it / CanvasAuth.MAX_TRIES}") } // the global back-stop
         assertNull(g.pairingCode())
         assertTrue(g.status.value.pairLocked)
         assertNull(g.status.value.code)
@@ -110,9 +124,59 @@ class CanvasGraphTlsTest {
     }
 
     @Test fun pruneAtInitAndOnServerStart() {
-        val g = graph()
+        val g = graph(counting = false) // the production newServer: its onStart hook must reach prune()
         assertEquals("one background prune at graph init", 1, pruned)
         g.start(false)
         assertEquals("and one on the server start", 2, pruned)
+    }
+
+    @Test fun aFailedRotationIsFailureSafe() {
+        val g = graph({ FailingRotation(tls) })
+        g.setLan(true)
+        assertTrue(g.status.value.lan)
+        auth.newWebViewToken()
+        g.rotateCertificate() // must not throw
+        val st = g.status.value
+        assertEquals("every session was revoked", 0, auth.sessionCount())
+        assertFalse("LAN is stopped", st.lan)
+        assertNull(st.fingerprint)
+        assertEquals("Secure LAN isn't available on this phone", st.notice)
+        assertFalse(st.lanAvailable)
+        assertTrue("loopback stays up over plain http", st.on && st.localUrl!!.startsWith("http://"))
+    }
+
+    @Test fun aKeystoreFailureIsNotRememberedForTheWholeProcess() {
+        var attempts = 0
+        val g = graph({ if (attempts++ == 0) throw IllegalStateException("transient") else tls })
+        assertFalse(g.status.value.lanAvailable)
+        g.setLan(true)
+        assertFalse(g.status.value.lan)
+        g.refreshNetwork() // too soon: no retry storm
+        assertEquals(1, attempts)
+        now += 31_000L
+        g.refreshNetwork()
+        assertEquals(2, attempts)
+        assertTrue(g.status.value.lanAvailable)
+        g.setLan(true)
+        assertTrue(g.status.value.lan)
+    }
+
+    @Test fun endingAWebViewSessionRevokesOnlyThatToken() {
+        val g = graph()
+        val old = g.webViewToken()
+        val other = g.webViewToken()
+        g.endWebViewSession(old)
+        assertFalse(auth.check(old))
+        assertTrue(auth.check(other))
+    }
+
+    @Test fun wrongAttemptsReachTheStatus() {
+        val g = graph()
+        g.start(false)
+        val code = g.newPairingCode().code
+        val wrong = if (code == "000000") "000001" else "000000"
+        auth.pair(wrong, "192.168.1.50"); auth.pair(wrong, "192.168.1.50")
+        g.refreshNetwork()
+        assertEquals(2, g.status.value.wrongAttempts)
     }
 }

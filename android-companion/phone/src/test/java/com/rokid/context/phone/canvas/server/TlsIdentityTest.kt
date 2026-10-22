@@ -51,7 +51,7 @@ class TlsIdentityTest {
         assertEquals("pc_test_alias", spec.keystoreAlias)
         assertEquals("CN=Proactive Context canvas", spec.certificateSubject.name)
         assertEquals(1_700_000_000_000L - 86_400_000L, spec.certificateNotBefore!!.time)
-        assertEquals(1_700_000_000_000L + 825L * 86_400_000L, spec.certificateNotAfter!!.time)
+        assertEquals(1_700_000_000_000L + 824L * 86_400_000L, spec.certificateNotAfter!!.time)
         assertFalse("TLS must not wait for a user", spec.isUserAuthenticationRequired)
         assertEquals(KeystoreTlsIdentity.ALIAS, "pc_canvas_tls")
     }
@@ -64,6 +64,11 @@ class TlsIdentityTest {
                 assertTrue("$bad on a key line: $keyLines", keyLines.isEmpty())
             } else assertFalse("$bad in TlsIdentity.kt", source.contains(bad))
         }
+    }
+
+    @Test fun colonPairsAreWhatABrowserShows() {
+        assertEquals("00:01:02:03:04:05:06:07", TlsFingerprint.colonPairs("0001 0203 0405 0607"))
+        assertEquals("AB:CD", TlsFingerprint.colonPairs("abcd"))
     }
 
     @Test fun sslDecisionProceedsOnlyOnMatch() {

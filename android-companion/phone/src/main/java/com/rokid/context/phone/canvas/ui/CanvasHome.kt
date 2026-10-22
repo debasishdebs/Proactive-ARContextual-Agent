@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.TextButton
+import com.rokid.context.phone.canvas.server.TlsFingerprint
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -258,15 +259,24 @@ fun CanvasHomeScreen(
                         val fingerprint = ui.status.fingerprint
                         if (ui.status.lan && fingerprint != null) {
                             var all by remember { mutableStateOf(false) }
+                            // what the browser shows: colon pairs; the short form is the first 8 groups (16 bytes)
                             val groups = fingerprint.split(' ')
                             Text("Certificate fingerprint", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
                             Text(
-                                (if (all) groups else groups.take(8)).joinToString(" "), style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
+                                TlsFingerprint.colonPairs((if (all) groups else groups.take(8)).joinToString("")), style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
                                 modifier = Modifier.testTag("canvas_fingerprint"),
                             )
                             TextButton(onClick = { all = !all }, modifier = Modifier.testTag("canvas_fingerprint_toggle")) { Text(if (all) "Show less" else "Show all") }
                             Text("Your browser will warn once. Check that the fingerprint in its certificate details matches.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                            Text("Ignore spaces, colons and capitals.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                             OutlinedButton(onClick = onNewCertificate, modifier = Modifier.testTag("canvas_new_certificate")) { Text("New certificate") }
+                        }
+                        if (ui.status.wrongAttempts > 0) {
+                            val n = ui.status.wrongAttempts
+                            Text(
+                                "$n wrong attempt${if (n == 1) "" else "s"} from another device", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft,
+                                modifier = Modifier.testTag("canvas_wrong_attempts"),
+                            )
                         }
                         if (ui.status.on && ui.status.pairLocked) {
                             Text(LOCKED_TEXT, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("canvas_locked"))

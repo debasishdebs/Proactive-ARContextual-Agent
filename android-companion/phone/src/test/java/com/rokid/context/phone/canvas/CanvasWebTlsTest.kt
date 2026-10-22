@@ -7,7 +7,6 @@ import android.webkit.WebView
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.phone.canvas.server.PkcsTlsIdentity
-import com.rokid.context.phone.canvas.server.SslDecision
 import com.rokid.context.phone.canvas.ui.CanvasWebClient
 import com.rokid.context.phone.canvas.ui.CanvasWebKey
 import com.rokid.context.phone.canvas.ui.SslResettableLoader
@@ -63,10 +62,6 @@ class CanvasWebTlsTest {
         assertFalse(src.contains("onReceivedHttpAuthRequest"))
     }
 
-    @Test fun sslDecisionIsIdentityOfMatch() {
-        assertTrue(SslDecision.decide(true)); assertFalse(SslDecision.decide(false))
-    }
-
     // ---- lifecycle key (S37) ----
 
     private class Loader : SslResettableLoader {
@@ -115,6 +110,6 @@ class CanvasWebTlsTest {
         val rotated = CanvasWebKey.next(first, "https", 8765, theirs.fingerprint, ::mint)
         assertTrue(applyWebKey(first, rotated, loader))
         assertEquals(listOf("clear", "load:https://127.0.0.1:8765/"), loader.calls)
-        assertNotNull(rotated.token); assertNull(null)
+        assertTrue(rotated.token != first.token)
     }
 }

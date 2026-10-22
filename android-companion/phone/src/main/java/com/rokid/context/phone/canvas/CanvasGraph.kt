@@ -54,6 +54,8 @@ data class CanvasStatus(
     val fingerprint: String? = null,
     /** Pairing is locked out and waits for the explicit "New code". */
     val pairLocked: Boolean = false,
+    /** Wrong pairing attempts since the code was minted, from any device. */
+    val wrongAttempts: Int = 0,
 ) {
     /** The scheme the server speaks now: https while LAN is on (loopback included), plain http on loopback otherwise. */
     val scheme: String get() = if (lan) "https" else "http"
@@ -99,6 +101,8 @@ interface CanvasHost {
     fun rotateCertificate()
     /** The LAN certificate identity, for the WebView's pinning; null when LAN is unavailable. */
     fun tlsIdentity(): TlsIdentity?
+    /** Ends a WebView session the screen no longer uses (a re-key must not evict a paired laptop). */
+    fun endWebViewSession(token: String)
     fun webViewToken(): String
     /** Re-reads the Wi-Fi address into [status]. */
     fun refreshNetwork()
@@ -137,8 +141,28 @@ class CanvasGraph(
     @Volatile private var lanOn = false
     @Volatile private var startedAt = 0L
 
-    private val tlsLazy = lazy { try { tlsFactory() } catch (e: Exception) { log("canvas TLS unavailable (${e.javaClass.simpleName})"); null } }
-    private val tls: TlsIdentity? get() = tlsLazy.value
+    // The LAN certificate identity. Only a success is remembered: a keystore error is retried (at most every 30 s, from the
+    // screen's network refresh), so one transient failure does not disable LAN until the process dies. Keygen never runs on the caller.
+    private val tlsLock = Any()
+    @Volatile private var tlsId: TlsIdentity? = null
+    @Volatile private var tlsFailed = false
+    @Volatile private var tlsAttemptAt = Long.MIN_VALUE
+    private val tls: TlsIdentity? get() = tlsId
+
+    private fun ensureTls() {
+        synchronized(tlsLock) {
+            if (tlsId != null) return
+            tlsAttemptAt = clock()
+            try {
+                tlsId = tlsFactory()
+                tlsFailed = tlsId == null
+            } catch (e: Exception) {
+                log("canvas TLS unavailable (${e.javaClass.simpleName})")
+                tlsFailed = true
+            }
+        }
+        publish()
+    }
 
     private val router = CanvasRouter(
         auth, HostPolicy(port = { server?.port ?: 0 }, lanIp = { if (lanOn) wifiIp() else null }, secure = { lanOn }), core.api, assets, log,
@@ -152,7 +176,7 @@ class CanvasGraph(
 
     init {
         // The certificate (a keystore key on first use) and one trace prune, both off the caller's thread.
-        scope.launch { tlsLazy.value; publish() }
+        scope.launch { ensureTls() }
         scope.launch { try { prune() } catch (e: CancellationException) { throw e } catch (e: Exception) { /* history only */ } }
         scope.launch { devMode.collect { on -> if (!on) { stop(); revokeAll(); try { core.cancelActive() } catch (e: Exception) { log("canvas cancel failed (${e.javaClass.simpleName})") } } } }
     }
@@ -166,7 +190,7 @@ class CanvasGraph(
         val identity = if (lan) tls else null
         if (lan && identity == null) { // never a plain-HTTP LAN
             lanOn = false
-            notice = "Secure LAN isn't available on this phone"
+            notice = LAN_UNAVAILABLE_NOTICE
             publish()
             return
         }
@@ -215,11 +239,34 @@ class CanvasGraph(
 
     override fun tlsIdentity(): TlsIdentity? = tls
 
-    /** New key and certificate: every session was bound to the old one, so all are revoked, and LAN restarts on the new certificate. */
+    override fun endWebViewSession(token: String) { auth.logout(token) }
+
+    /** Off the caller's thread (keygen is a keystore round-trip). */
+    override fun rotateCertificate() { scope.launch { rotateNow() } }
+
+    /**
+     * New key and certificate: every session was bound to the old one, so all are revoked, and LAN restarts on the new certificate.
+     * Failure-safe: any failure (the identity keeps its old key) revokes every session, stops LAN and says LAN is unavailable.
+     */
     @Synchronized
-    override fun rotateCertificate() {
+    private fun rotateNow() {
         val identity = tls ?: return
-        identity.rotate()
+        try {
+            identity.rotate()
+        } catch (e: Exception) {
+            log("canvas certificate rotation failed (${e.javaClass.simpleName})")
+            auth.revokeAll()
+            server?.stop()
+            server = null
+            lanOn = false
+            tlsId = null // loaded again from the keystore on the next retry
+            tlsFailed = true
+            tlsAttemptAt = clock()
+            start(false)
+            notice = LAN_UNAVAILABLE_NOTICE
+            publish()
+            return
+        }
         auth.revokeAll()
         if (lanOn && server != null) {
             server?.stop()
@@ -230,7 +277,10 @@ class CanvasGraph(
 
     override fun webViewToken(): String = auth.newWebViewToken()
 
-    override fun refreshNetwork() = publish()
+    override fun refreshNetwork() {
+        if (tlsId == null && clock() - tlsAttemptAt >= TLS_RETRY_MS) scope.launch { ensureTls() }
+        publish()
+    }
 
     override suspend fun home() = core.home()
     override suspend fun rollback(expectedId: Long) = core.rollback(expectedId)
@@ -252,16 +302,18 @@ class CanvasGraph(
     private fun publish() {
         val s = server
         val code = auth.currentCode()
-        val identity = if (tlsLazy.isInitialized()) tlsLazy.value else null
+        val identity = tlsId
         _status.value = CanvasStatus(
             on = s != null, port = s?.port, lan = lanOn, lanIp = wifiIp(), code = code?.code, codeExpiresAt = code?.expiresAt ?: 0L, notice = notice,
-            lanAvailable = !tlsLazy.isInitialized() || identity != null, fingerprint = if (lanOn) identity?.fingerprint else null,
-            pairLocked = auth.awaitingNewCode(),
+            lanAvailable = identity != null || !tlsFailed, fingerprint = if (lanOn) identity?.fingerprint else null,
+            pairLocked = auth.awaitingNewCode(), wrongAttempts = auth.wrongAttempts(),
         )
     }
 
     companion object {
         private const val TAG = "Canvas"
+        private const val TLS_RETRY_MS = 30_000L
+        const val LAN_UNAVAILABLE_NOTICE = "Secure LAN isn't available on this phone"
         @Volatile private var instance: CanvasGraph? = null
         @Volatile private var override: CanvasHost? = null
 
