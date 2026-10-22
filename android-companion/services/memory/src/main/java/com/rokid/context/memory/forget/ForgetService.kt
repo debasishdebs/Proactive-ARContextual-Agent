@@ -50,7 +50,9 @@ class ForgetService(
      * (`frame_meta`, `frame_vector`, state, no `frame` row, no memory) is still a moment (S2). Saved answers that cited it (`frame:<id>`) are
      * redacted with their proposals and alarms (S1), unless [redactCites] is false (retention's legacy-frame expiry never redacts). Empty only when no frame, metadata, vector, state or memory exists.
      */
-    suspend fun forgetMoment(frameId: String, redactCites: Boolean = true): Result = db.withTransaction {
+    suspend fun forgetMoment(frameId: String, redactCites: Boolean = true): Result = notifying { forgetMomentTx(frameId, redactCites) }
+
+    private suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true): Result = db.withTransaction {
         val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
@@ -72,7 +74,9 @@ class ForgetService(
      * Forget fact for [ids] (retention passes chunks). A frame's JPEG is listed only when no memory points at it any
      * more; its row is kept (with the tombstone) so the frame is never extracted again.
      */
-    suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true): Result = db.withTransaction {
+    suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true): Result = notifying { forgetFactsTx(ids, lockFrames) }
+
+    private suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true): Result = db.withTransaction {
         cascade(ids.distinct(), lockFrames)
     }
 
@@ -82,7 +86,9 @@ class ForgetService(
      * Final review C1: retention is storage hygiene, not a user removal, so an accepted proposal (EXECUTING/EXECUTED)
      * keeps its params, log and armed alarm; it is not listed in [Result.redactedProposals]. PENDING still expires.
      */
-    suspend fun expire(ids: Collection<String>): Result = db.withTransaction {
+    suspend fun expire(ids: Collection<String>): Result = notifying { expireTx(ids) }
+
+    private suspend fun expireTx(ids: Collection<String>): Result = db.withTransaction {
         cascade(ids.distinct(), lockFrames = true, invalidateDescendants = false, scrubAccepted = false, keepKeyframes = true)
     }
 
@@ -97,7 +103,9 @@ class ForgetService(
      * the skipped-photo rule inside the transaction and skipped when it no longer qualifies: a photo the user described after the caller selected
      * it is kept (S4).
      */
-    suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = db.withTransaction {
+    suspend fun expirePhotos(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = notifying { expirePhotosTx(frameIds, requireLinked, recheckSkipped) }
+
+    private suspend fun expirePhotosTx(frameIds: List<String>, requireLinked: Boolean = false, recheckSkipped: Boolean = false): Result = db.withTransaction {
         val paths = mutableListOf<String>()
         var expired = 0
         val expiredIds = mutableListOf<String>()
@@ -168,7 +176,18 @@ class ForgetService(
     }
 
     /** Experiment canvas outputs are photo-derived: they go with the photo, in the same transaction as its tombstone. */
+    private val pendingFrames = java.util.concurrent.ConcurrentLinkedQueue<List<String>>()
+
+    /** Runs [tx]; only after it committed are the registered [ForgetListener]s told which photos went (a rolled-back transaction tells nobody). */
+    private suspend fun notifying(tx: suspend () -> Result): Result {
+        val r = try { tx() } catch (e: Throwable) { pendingFrames.clear(); throw e }
+        val ids = generateSequence { pendingFrames.poll() }.flatten().distinct().toList()
+        if (ids.isNotEmpty()) ForgetListeners.framesForgotten(ids)
+        return r
+    }
+
     private suspend fun dropCanvasOutputs(frameIds: List<String>) {
+        if (frameIds.isNotEmpty()) pendingFrames.add(frameIds)
         db.canvasDao().deleteCanvasOutputsForFrames(frameIds) // items, scores and live traces, batch-wide (S25)
         db.canvasSlice3Dao().deleteSliceOutputsForFrames(frameIds, clock()) // slice 3a: labels of the photos, the results that read them, helper jobs that carry them
     }
