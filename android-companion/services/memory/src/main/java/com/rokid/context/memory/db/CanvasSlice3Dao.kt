@@ -56,9 +56,10 @@ abstract class CanvasSlice3Dao {
         return true
     }
 
+    /** Deletes one label; the results computed under the old labels (they embody it) are invalidated in the same transaction. */
     @Transaction open suspend fun deleteLabel(id: String): Boolean {
         val n = deleteLabelRow(id)
-        if (n > 0) bumpLabelRev()
+        if (n > 0) { bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true) }
         return n > 0
     }
 
@@ -73,7 +74,7 @@ abstract class CanvasSlice3Dao {
 
     @Transaction open suspend fun correctLabel(id: String, name: String): Boolean {
         val n = renameLabelRow(id, name)
-        if (n > 0) bumpLabelRev()
+        if (n > 0) { bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true) }
         return n > 0
     }
 

@@ -38,6 +38,7 @@ object HubGraph {
         private set
 
     /** Slice 3a: the hub-owned plan reconciliation, the collect session and its control publisher. Built with the hub (so a canvas server stop never touches them). */
+    @Volatile var forgetCoordinator: com.rokid.context.canvas.plan.CanvasForgetCoordinator? = null
     @Volatile var planSender: com.rokid.context.phone.hub.plan.PlanSender? = null
         private set
     @Volatile var collectSession: com.rokid.context.canvas.trace.CollectSession? = null
@@ -182,6 +183,15 @@ object HubGraph {
             phoneRt = phoneRt::apply,
         )
         com.rokid.context.phone.canvas.PlanGraph.warm(scope)
+
+        // S58: files and glasses follow every Delete all and time-range Forget; registered once (the hub graph is a process singleton).
+        forgetCoordinator?.let { com.rokid.context.memory.forget.ForgetListeners.unregister(it) }
+        com.rokid.context.memory.forget.ForgetListeners.register(
+            com.rokid.context.canvas.plan.CanvasForgetCoordinator(
+                com.rokid.context.memory.forget.CanvasSlice3Forget(com.rokid.context.memory.MemoryGraph.get(app).db), app.filesDir, collect,
+                send = { c -> link.send(com.rokid.context.core.model.Channels.TRACE_CTL, com.rokid.context.core.model.Wire.encode(c)) },
+            ).also { forgetCoordinator = it },
+        )
         return Hub(
             scope, link, pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
