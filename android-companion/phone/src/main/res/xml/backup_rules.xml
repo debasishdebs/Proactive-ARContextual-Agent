@@ -51,4 +51,6 @@
     <exclude domain="sharedpref" path="pc_dev.xml" />
     <!-- AI call pace paces this phone's own model calls: per-device, default after a restore. -->
     <exclude domain="sharedpref" path="ai_call_pace.xml" />
+    <!-- Opt-in privacy switch "Send matching photos with questions": off after a restore. -->
+    <exclude domain="sharedpref" path="ask_photos.xml" />
 </full-backup-content>

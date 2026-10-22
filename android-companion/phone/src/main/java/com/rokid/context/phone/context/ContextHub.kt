@@ -37,6 +37,7 @@ class ContextHub(
     private sealed interface Cmd {
         class Ev(val e: Evidence, val sourceId: String?, val gen: Int) : Cmd
         data object Reconcile : Cmd
+        class Fail(val id: String, val gen: Int) : Cmd
         data object Drain : Cmd
         data object Tick : Cmd
         data object Stop : Cmd
@@ -124,6 +125,22 @@ class ContextHub(
         return EvidenceSink { e -> if (started) offer(Cmd.Ev(e, id, gen)) }
     }
 
+    /**
+     * For a source whose request fails asynchronously (after `start()` returned true): call the result to mark that run FAILED
+     * (the source is stopped, and a settings toggle starts it again). Take it inside `start()` like [sinkFor]; a stale run's call is ignored.
+     */
+    fun failFor(id: String): () -> Unit {
+        val gen = live[id] ?: return { }
+        return { if (started) inbox.trySend(Cmd.Fail(id, gen)) }
+    }
+
+    private fun onSourceFailed(c: Cmd.Fail) {
+        if (running[c.id] != c.gen) return
+        stopSource(c.id, registry.get(c.id)); failed.add(c.id)
+        _status.value = _status.value + (c.id to SourceStatus.FAILED)
+        rebuild(); publish(clock())
+    }
+
     fun onMotionHint(h: MotionHint) { accept(Evidence.GlassesMotion(clock(), h.state, h.stillFrac5m)) }
 
     private suspend fun runActor() {
@@ -133,6 +150,7 @@ class ContextHub(
                     is Cmd.Ev -> onEvidence(c)
                     Cmd.Drain -> drain()
                     Cmd.Reconcile -> { reconcile(); publish(clock()) }
+                    is Cmd.Fail -> onSourceFailed(c)
                     Cmd.Tick -> onTick()
                     Cmd.Stop -> { shutdown(); return }
                 }
@@ -162,7 +180,7 @@ class ContextHub(
     private fun onTick() {
         val now = clock()
         publish(now)
-        if (speedWanted) stats.addLocOnSeconds(TICK_MS / 1000)
+        if (speedWanted && registry.speed?.requesting == true) stats.addLocOnSeconds(TICK_MS / 1000)
         if (now - lastStatsLogAt >= STATS_LOG_MS) { lastStatsLogAt = now; log(stats.line(_decision.value.state)) }
     }
 

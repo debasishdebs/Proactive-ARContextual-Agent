@@ -158,6 +158,8 @@ Reasons (`ContextReason` names): `GLASSES_WALK, PHONE_WALK, STEPS, WATCH_WALK, S
 - The image-intent driver-vs-passenger step runs **only while a vehicle episode is on** — no intent calls otherwise (replaces §7.3's 1/5-min background probe) — and also classifies the **vehicle type**: two-wheeler, three-wheeler (auto-rickshaw), four-wheeler (car/taxi), bus/train/other (an additive field next to `IntentLabel`; deferred to Tasks 8/9).
 - Open: a two-wheeler driver (no phone glance, helmet) — proposed: the DRIVING policy (cap 1/min, nudges off), pause for the user to decide. Open: the reviewed engine (§6.1) also starts vehicles from activity IN_VEHICLE, speed, the watch and two images; proposed to keep these as additional vehicle evidence while gating the image sampler on the episode. Task 2 is unchanged in this pass. [LEDGER, I3] Task 2's image-assisted vehicle start (`vehicleImage`) and image-assisted REST (0.70 threshold) are intent-alone reductions; they must be gated or removed before Task 9 lands (not done now).
 
+**Residual risk (accepted, fix round 2):** the Android Auto state comes from the `androidx.car.app.connection` provider authority. On a phone without the Android Auto app another app could claim that authority and report PROJECTION, faking an `ANDROID_AUTO` link (prior 0.85, so DRIVING with nudges off). Capture is never changed by it (user ruling), so the impact is nudges only.
+
 ## 7. Image intent (INTENT_CLASSIFY)
 ### 7.1 Prompt and contract
 `PromptKey.INTENT_CLASSIFY(Role.VISION_EXTRACT, "Activity from a photo")`, appended **after** `CLUSTER_SUMMARY`; editable in the prompt editor (and so later from the canvas). One photo per call; output schema `{"label": <IntentLabel name>, "confidence": <0..1>}`.

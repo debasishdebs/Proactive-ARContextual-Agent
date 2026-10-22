@@ -214,4 +214,38 @@ class PhotoRecallTest {
         photo("a", floatArrayOf(1f, 0f)); queryVec = floatArrayOf(Float.NaN, 1f)
         assertEquals(ImageSearchState.FAILED, recall().search("milk").imageState)
     }
+
+    /** Wave 3 Task 4 (S11): the open search screen re-reads its visible frames: forgotten ones vanish, a new caption turns the check on, order and scores stay. */
+    @Test fun reenrichDropsForgottenAndRefreshesDescribed() = runBlocking {
+        photo("a", floatArrayOf(1f, 0f)); photo("b", floatArrayOf(0.9f, 0.1f)); photo("c", floatArrayOf(0.5f, 0.5f), stored = true)
+        val r = recall().search("milk")
+        assertEquals(listOf("a", "b", "c"), r.image.map { it.frameId })
+        assertFalse(r.image.first { it.frameId == "b" }.described)
+        caption("b"); db.frameMetaDao().deleteFor(listOf("a")); db.frameDao().deleteByIds(listOf("c"))
+        val again = recall().reenrich(r)
+        assertEquals(listOf("b", "c"), again.image.map { it.frameId })
+        assertTrue(again.image.first { it.frameId == "b" }.described); assertEquals("cap_b", again.image.first { it.frameId == "b" }.captionMemoryId)
+        assertFalse(again.image.first { it.frameId == "c" }.photoStored)
+        assertEquals(r.image.first { it.frameId == "b" }.score, again.image.first { it.frameId == "b" }.score, 0.0)
+        assertEquals(r.imageState, again.imageState); assertEquals(r.scanned, again.scanned)
+    }
+
+    /** Fix round 1 (I1): a cold, blocking query embed cannot hold the ask past the scan budget. */
+    @Test fun coldBlockingEmbedIsBoundedByTheBudget() = runBlocking {
+        photo("a", floatArrayOf(1f, 0f))
+        val slow = ImageSpaceTarget("s1", "fp", 2, { emptyList() }, { Thread.sleep(3_000); floatArrayOf(1f, 0f) }, true)
+        val t0 = System.currentTimeMillis()
+        val r = recall(listOf(slow)).search("milk", imageK = 2, captionK = 0, budgetMs = 200)
+        assertTrue("took ${System.currentTimeMillis() - t0} ms", System.currentTimeMillis() - t0 < 1_500)
+        assertEquals(ImageSearchState.TIMED_OUT, r.imageState); assertTrue(r.image.isEmpty())
+    }
+
+    /** Fix round 2 (m1): the query embed and the scan share ONE deadline; time the embed used is not given to the scan again. */
+    @Test fun embedAndScanShareOneDeadline() = runBlocking {
+        photo("a", floatArrayOf(1f, 0f))
+        var now = 10_000L
+        val slow = ImageSpaceTarget("s1", "fp", 2, { emptyList() }, { now += 1_000; floatArrayOf(1f, 0f) }, true) // the embed "takes" the whole budget
+        val r = PhotoRecall(db, ImageSpaces { listOf(slow) }, { _, _, _ -> emptyList() }, { now }).search("milk", imageK = 2, captionK = 0, budgetMs = 1_000)
+        assertEquals(ImageSearchState.TIMED_OUT, r.imageState); assertTrue(r.image.isEmpty()); assertEquals(0, r.scanned)
+    }
 }

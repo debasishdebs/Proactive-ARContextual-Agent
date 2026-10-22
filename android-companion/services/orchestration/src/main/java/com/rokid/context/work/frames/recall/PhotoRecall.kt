@@ -12,6 +12,10 @@ import com.rokid.context.work.frames.scene.ImageSpaceTarget
 import com.rokid.context.work.frames.scene.ImageSpaces
 import com.rokid.context.work.frames.scene.SpaceImageSpaces
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -59,7 +63,7 @@ class PhotoRecall(
         var scanned = 0
         var truncated = false
         if (imageK > 0) {
-            val scan = imageScan(query, imageK, budgetMs)
+            val scan = imageScan(query, imageK, budgetMs, t0)
             state = scan.state; imageIds = scan.hits; scanned = scan.scanned; truncated = scan.truncated
         }
         val imageSet = imageIds.map { it.first }.toSet()
@@ -71,21 +75,38 @@ class PhotoRecall(
         return RecallResult(image, cap, state, scanned, truncated, captionState)
     }
 
+    /**
+     * Re-reads the stored/described/caption state of the frames in [r] (same order and scores), dropping frames whose `frame_meta` is gone (a Forget). The open
+     * photo screen calls it on a database change instead of re-scanning (S11). Never throws, except for cancellation.
+     */
+    suspend fun reenrich(r: RecallResult): RecallResult = try {
+        RecallResult(
+            enrich(r.image.map { it.frameId to it.score }, PhotoSource.IMAGE),
+            enrich(r.captions.map { it.frameId to it.score }, PhotoSource.CAPTION),
+            r.imageState, r.scanned, r.truncated, r.captionState,
+        )
+    } catch (c: CancellationException) { throw c } catch (_: Exception) { r }
+
     private class ImageScanOutcome(val state: ImageSearchState, val hits: List<Pair<String, Double>>, val scanned: Int, val truncated: Boolean)
 
-    private suspend fun imageScan(query: String, k: Int, budgetMs: Long): ImageScanOutcome {
+    private suspend fun imageScan(query: String, k: Int, budgetMs: Long, startMs: Long): ImageScanOutcome {
         fun failed() = ImageScanOutcome(ImageSearchState.FAILED, emptyList(), 0, false)
         val target: ImageSpaceTarget = try {
             images.targets().firstOrNull { it.active } // S7: the ACTIVE one by flag, never "the first"
         } catch (c: CancellationException) { throw c } catch (_: Exception) { return failed() }
             ?: return ImageScanOutcome(ImageSearchState.NO_IMAGE_SPACE, emptyList(), 0, false)
-        val q = try {
-            val full = target.embedQueryFull(query)
-            if (full.size < target.imageDims) null else VectorMath.l2(full.copyOf(target.imageDims)).takeIf { VectorMath.usable(it) }
-        } catch (c: CancellationException) { throw c } catch (_: Exception) { null } ?: return failed()
+        // The query embed (a cold on-device model load can block) gets the scan's own budget, on a detached coroutine: awaiting it is cancellable even when
+        // the embed itself is not, so the ask is never held past the budget. Whatever it finishes later is dropped.
+        val embed = CoroutineScope(SupervisorJob() + Dispatchers.Default).async { target.embedQueryFull(query) }
+        val full = try { withTimeoutOrNull(budgetMs) { embed.await() } } catch (c: CancellationException) { embed.cancel(); throw c } catch (_: Exception) { return failed() }
+        if (full == null) { embed.cancel(); return ImageScanOutcome(ImageSearchState.TIMED_OUT, emptyList(), 0, false) }
+        // One deadline for the embed and the scan: what the embed used is not given to the scan again.
+        val remaining = budgetMs - (clock() - startMs)
+        if (remaining <= 0) { embed.cancel(); return ImageScanOutcome(ImageSearchState.TIMED_OUT, emptyList(), 0, false) }
+        val q = (if (full.size < target.imageDims) null else VectorMath.l2(full.copyOf(target.imageDims)).takeIf { VectorMath.usable(it) }) ?: return failed()
         return try {
             val r = withContext(Dispatchers.Default) {
-                ImageScan.topK(q, k, { before -> db.frameVectorDao().pageDesc(target.spaceId, before, ImageScan.PAGE).map { it.rowid to (it.frameId to it.blob) } }, clock, budgetMs = budgetMs)
+                ImageScan.topK(q, k, { before -> db.frameVectorDao().pageDesc(target.spaceId, before, ImageScan.PAGE).map { it.rowid to (it.frameId to it.blob) } }, clock, budgetMs = remaining)
             }
             ImageScanOutcome(if (r.timedOut) ImageSearchState.TIMED_OUT else ImageSearchState.RAN, r.hits, r.scanned, r.truncated)
         } catch (c: CancellationException) { throw c } catch (_: Exception) { failed() }

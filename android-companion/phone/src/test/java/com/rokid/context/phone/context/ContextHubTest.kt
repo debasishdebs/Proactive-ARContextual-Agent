@@ -47,6 +47,7 @@ class ContextHubTest {
 
     private class FakeSpeed : SpeedControl {
         val calls = ArrayList<Boolean>()
+        override var requesting = false
         override fun setWanted(on: Boolean) { calls += on }
     }
 
@@ -197,6 +198,38 @@ class ContextHubTest {
         assertTrue(speed.calls.last()); assertTrue(f.hub.speedWanted)
         f.accept(Evidence.CarLink(f.clock(), CarLinkKind.ANDROID_AUTO, false)); f.adv(300_000)
         assertFalse(speed.calls.last()); assertFalse(f.hub.speedWanted)
+    }
+
+    @Test fun locationSecondsCountOnlyWhileTheShellIsRequesting() = runTest {
+        val f = Fx(this); val speed = FakeSpeed(); f.registry.speed = speed
+        f.reg("phone_car"); f.on("phone_car", "phone_speed"); f.start()
+        f.accept(Evidence.CarLink(f.clock(), CarLinkKind.ANDROID_AUTO, true)); f.adv(31_000)
+        assertTrue(f.hub.speedWanted)
+        f.adv(100_000)
+        assertTrue("wanted but not requested: no location time", f.stats.line(ContextState.UNKNOWN).contains("locOnS=0 "))
+        speed.requesting = true; f.adv(100_000)
+        assertFalse(f.stats.line(ContextState.UNKNOWN).contains("locOnS=0 "))
+    }
+
+    @Test fun anAsyncFailureReportedBySourceMarksItFailedAndStopsIt() = runTest {
+        val f = Fx(this); var fail: (() -> Unit)? = null
+        val s = f.reg("phone_activity"); s.onStart = { fail = f.hub.failFor("phone_activity") }
+        f.on("phone_activity"); f.start()
+        assertEquals(SourceStatus.ON, f.hub.status.value["phone_activity"])
+        fail!!.invoke(); f.ts.runCurrent()
+        assertEquals(SourceStatus.FAILED, f.hub.status.value["phone_activity"]); assertEquals(1, s.stops)
+        f.off("phone_activity"); f.on("phone_activity")
+        assertEquals("a toggle starts it again", 2, s.starts)
+        fail!!.invoke(); f.ts.runCurrent() // the new run's callback is live
+        assertEquals(SourceStatus.FAILED, f.hub.status.value["phone_activity"]); assertEquals(2, s.stops)
+    }
+
+    @Test fun aStaleRunsFailureIsIgnored() = runTest {
+        val f = Fx(this); val cbs = ArrayList<() -> Unit>()
+        val s = f.reg("phone_activity"); s.onStart = { cbs += f.hub.failFor("phone_activity") }
+        f.on("phone_activity"); f.start(); f.off("phone_activity"); f.on("phone_activity")
+        cbs[0].invoke(); f.ts.runCurrent()
+        assertEquals(SourceStatus.ON, f.hub.status.value["phone_activity"])
     }
 
     @Test fun applyToCaptureFlipsAtOnce() = runTest {

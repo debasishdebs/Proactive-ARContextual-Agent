@@ -40,4 +40,21 @@ class AppAnswererTest {
         assertEquals(AnswerResult.Failed("Couldn't answer that", AskActions.FAILED), r)
         assertEquals(AnswerResult.Failed("Couldn't answer that", AskActions.FAILED), answerer(AskOutcome.Answered("a1"), text = "  ").answer("q", VoiceSource.PHONE))
     }
+
+    /** Wave 3 Task 3: a stored photo's capture time becomes the HUD label, in the system zone. */
+    @Test fun photoLabelFormatsTime() = runBlocking {
+        val at = java.time.LocalDateTime.of(2026, 10, 9, 8, 53).atZone(java.time.ZoneOffset.ofHours(2)).toInstant().toEpochMilli()
+        val a = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1", photoFrameId = "f1", photoAtMs = at) }, answerText = { "On the desk." }, zone = { java.time.ZoneOffset.ofHours(2) }, now = { at + 3_600_000L })
+        assertEquals(AnswerResult.Answered("a1", "On the desk.", photoLabel = "Photo 08:53"), a.answer("keys?", VoiceSource.GLASSES))
+        assertEquals(AnswerResult.Answered("a1", "Milk and eggs."), answerer(AskOutcome.Answered("a1")).answer("milk?", VoiceSource.GLASSES))
+    }
+
+    /** Fix round 1 (M3): a photo from another day names the day, so "Photo 14:02" never reads as today. */
+    @Test fun photoLabelNamesTheDayWhenNotToday() = runBlocking {
+        val zone = java.time.ZoneOffset.UTC
+        val now = java.time.LocalDateTime.of(2026, 10, 12, 10, 0).toInstant(zone).toEpochMilli()
+        val old = java.time.LocalDateTime.of(2026, 10, 9, 14, 2).toInstant(zone).toEpochMilli() // a Friday
+        val a = AppAnswerer(ask = { _, _ -> AskOutcome.Answered("a1", photoFrameId = "f1", photoAtMs = old) }, answerText = { "On the desk." }, zone = { zone }, now = { now })
+        assertEquals("Photo Fri 14:02", (a.answer("keys?", VoiceSource.GLASSES) as AnswerResult.Answered).photoLabel)
+    }
 }

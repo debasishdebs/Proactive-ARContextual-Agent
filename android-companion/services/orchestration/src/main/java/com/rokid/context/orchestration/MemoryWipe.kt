@@ -47,6 +47,7 @@ object MemoryWipe {
         // Fix round 3: never import here (a failing import must not block Delete all). An import in progress is
         // waited for (it holds the lock until it finishes or throws); then it is marked done and never runs again.
         MemoryGraph.markLegacyImportDone(context)
+        AskPhotoPolicy.set(context, false) // Delete all withdraws the consent to send photos with questions (like image intent); re-enabling is one tap
         generation.incrementAndGet()
         val wipedAt = System.currentTimeMillis()
         val wipedElapsed = SystemClock.elapsedRealtime()

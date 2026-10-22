@@ -14,6 +14,7 @@ import com.rokid.context.phone.ui.settings.NoticeText
 import com.rokid.context.phone.ui.settings.SecondaryAction
 import com.rokid.context.phone.ui.settings.SettingsCard
 import com.rokid.context.phone.ui.settings.SettingsPage
+import com.rokid.context.phone.ui.settings.SwitchRow
 import com.rokid.context.phone.ui.settings.TextFieldRow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -122,8 +123,11 @@ fun RolesScreen(
     onTemperature: (Role, String) -> Unit,
     onMaxTokens: (Role, String) -> Unit,
     onClear: (Role) -> Unit,
+    askPhotos: AskPhotosUi? = null,
+    onAskPhotos: (Boolean) -> Unit = {},
 ) {
     SettingsPage("Models by role", onBack, tag = "roles") {
+        askPhotos?.let { item(key = "ask_photos") { AskPhotosCard(it, onAskPhotos) } }
         state.rows.forEach { r ->
             item(key = r.role.name) {
                 RoleBindingCard(r, onEndpoint, onModel, onFallback, onTemperature, onMaxTokens, onClear)
@@ -162,5 +166,21 @@ fun RoleBindingCard(
             if (r.endpointId != null) SecondaryAction("Unset", { onClear(r.role) }, tag = "role_${r.role.name}_clear")
         }
         r.error?.let { NoticeText(it, error = true, tag = "role_${r.role.name}_error") }
+    }
+}
+
+/** What the "Send matching photos with questions" card shows: the switch, the ANSWER endpoint the photos would go to, and whether it can see images. */
+data class AskPhotosUi(val enabled: Boolean, val endpointName: String?, val visionOk: Boolean)
+
+/** Settings > AI (next to the Answer binding): off by default. Names the endpoint, because that is where the photos go. */
+@Composable
+fun AskPhotosCard(state: AskPhotosUi, onChange: (Boolean) -> Unit) {
+    SettingsCard {
+        SwitchRow(
+            "Send matching photos with questions",
+            "Up to 2 photos that match a question are sent to ${state.endpointName ?: "your Answer model"} with it. Captions are always sent.",
+            state.enabled, onChange, tag = "ask_photos_switch",
+        )
+        if (state.enabled && !state.visionOk) NoticeText("The Answer model can't see photos, so none are sent.", tag = "ask_photos_no_vision")
     }
 }

@@ -98,6 +98,6 @@ class PhoneVoiceRulesTest {
         assertTrue("android.permission.RECORD_AUDIO" in merged)
         assertTrue("android.permission.FOREGROUND_SERVICE_MICROPHONE" in merged)
         val service = Regex("<service\\b[^>]*>").findAll(merged).map { it.value }.single { "ContextHubService" in it }
-        assertTrue(service, "android:foregroundServiceType=\"connectedDevice|microphone\"" in service)
+        assertTrue(service, "android:foregroundServiceType=\"connectedDevice|microphone|location\"" in service)
     }
 }
