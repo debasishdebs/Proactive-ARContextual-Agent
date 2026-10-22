@@ -204,7 +204,7 @@ class TraceRecorderTest {
         repeat(200) { r.gyro(1); drain() } // the writer keeps up
         val tmp = File(root, "imu_trace_tmp")
         val inTmp = tmp.listFiles()!!.single().list()!!.toList()
-        assertTrue(inTmp.isNotEmpty() && inTmp.all { it.startsWith("chunk-") && it.endsWith(".json") }, "chunks so far: $inTmp")
+        assertTrue(inTmp.isNotEmpty() && inTmp.all { (it.startsWith("chunk-") && it.endsWith(".json")) || it == "start.json" }, "chunks so far: $inTmp")
         assertFalse(File(root, "traces").exists() && File(root, "traces").list()!!.isNotEmpty(), "not importable before the close")
         r.close(CloseReason.STOP); drain()
         assertTrue(tmp.listFiles()!!.isEmpty(), "tmp is empty after the rename")
@@ -262,6 +262,64 @@ class TraceRecorderTest {
         File(root, "imu_trace_tmp/trace-dead-0001/chunk-0000.json").writeText("x")
         recorder()
         assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty())
+    }
+
+    /** A process killed mid-trace (Rokid kills the app on a call, or a crash): [chunks] chunk files are in tmp and the recorder object is simply abandoned. */
+    private fun killedMidTrace(chunks: Int, counter: Long = 1) {
+        val r = recorder(flush = 2_000); r.onControl(TraceTestKit.collect(counter = counter)); r.begin()
+        var guard = 0
+        while (File(root, "imu_trace_tmp").listFiles()?.singleOrNull()?.list()?.count { it.startsWith("chunk-") && it.endsWith(".json") }.let { (it ?: 0) < chunks } && guard++ < 100_000) r.gyro(1)
+        assertTrue(r.recording, "never closed: the process dies here")
+    }
+
+    @Test fun anUnfinishedTraceOfTheCurrentEpochIsSealedPartialAtStart() {
+        killedMidTrace(chunks = 3)
+        val n = File(root, "imu_trace_tmp").listFiles()!!.single().list()!!.count { it.startsWith("chunk-") }
+        val r = recorder()
+        assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty(), "tmp is empty after the recovery")
+        val t = TraceTestKit.readAll(root).single()
+        assertTrue(t.manifest.chunkCount >= 3 && t.manifest.chunkCount == n, "every complete chunk is kept: ${t.manifest.chunkCount} vs $n")
+        assertEquals(TraceStatus.PARTIAL, t.manifest.recorded)
+        assertEquals(TraceStatus.PARTIAL, t.verification.status, "no cl event: the frozen assembler says PARTIAL")
+        assertEquals(CloseReason.STOP, t.manifest.closeReason)
+        assertEquals(1L, t.manifest.deletionCounter)
+        assertEquals(t.events.size.toLong(), t.manifest.eventCount)
+        assertTrue(t.manifest.endElapsedMs >= t.manifest.startElapsedMs && t.events.last().tMs == t.manifest.endElapsedMs)
+        assertEquals(listOf("trace-0001-test"), File(root, "traces").list()!!.toList(), "the importable directory holds only the frozen file set")
+        assertTrue(File(root, "traces/trace-0001-test").list()!!.none { it == "start.json" })
+        assertTrue(r.usedBytes > 0 && r.usedBytes == File(root, "traces").walkTopDown().filter { it.isFile }.sumOf { it.length() })
+    }
+
+    @Test fun anUnfinishedTraceFromAnOlderEpochIsDeletedNotSealed() {
+        killedMidTrace(chunks = 2, counter = 1)
+        File(root, "trace_epoch").writeText("inst-1\n2") // the phone deleted everything (epoch 2) before the app came back
+        recorder()
+        assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty())
+        assertEquals(0, TraceTestKit.readAll(root).size)
+    }
+
+    @Test fun anUnfinishedTraceThatWouldExceedTheDiskCapIsDeleted() {
+        killedMidTrace(chunks = 3)
+        recorder(cap = 1_000)
+        assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty())
+        assertEquals(0, TraceTestKit.readAll(root).size, "nothing is evicted and nothing is sealed over the cap")
+    }
+
+    @Test fun aTornTailChunkEndsTheSealedTraceAtTheLastGoodChunk() {
+        killedMidTrace(chunks = 4)
+        val dir = File(root, "imu_trace_tmp").listFiles()!!.single()
+        File(dir, "chunk-0003.json").writeText("garbage"); File(dir, "chunk-0004.json.part").writeText("half")
+        recorder()
+        val t = TraceTestKit.readAll(root).single()
+        assertEquals(3, t.manifest.chunkCount)
+    }
+
+    @Test fun aSealedTraceIsNotRecordedTwiceAndTheNextTraceStillStarts() {
+        killedMidTrace(chunks = 2)
+        val r = recorder(); r.onControl(TraceTestKit.collect(counter = 1))
+        assertTrue(r.begin()); r.gyro(5); r.close(CloseReason.STOP)
+        assertEquals(2, TraceTestKit.readAll(root).size)
+        assertEquals(1, TraceTestKit.readAll(root).count { it.verification.status == TraceStatus.COMPLETE })
     }
 
     // ---- caps ----

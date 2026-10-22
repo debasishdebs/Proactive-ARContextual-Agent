@@ -93,7 +93,7 @@ class TraceRecorder(
     private class Finish(val endElapsed: Long, val endWall: Long, val endPhone: PhoneSample?, val reason: String)
 
     private val lock = Any()
-    private val storage = TraceStorage(root)
+    private val storage = TraceStorage(root, diskCapBytes)
 
     // epoch (guarded by lock)
     private var installId = ""
@@ -336,6 +336,7 @@ class TraceRecorder(
         if (events.isEmpty()) return
         try {
             val e = ChunkCodec.encode(j.id, j.seq, events, bounds)
+            if (j.seq == 0) writeStartRecord(j)
             val c = TraceChunk(traceId = j.id, kind = ChunkCodec.KIND, seq = j.seq, count = 0, installId = j.installId, deletionCounter = j.counter, sha256 = e.sha256, b64 = e.b64)
             try { storage.writeChunk(j.id, j.seq, c) } catch (x: java.io.IOException) { j.writeFailed = true; log("trace chunk not written"); return }
             j.shas += e.sha256; j.events += e.eventCount; j.raw += e.rawBytes; j.seq++
@@ -348,6 +349,22 @@ class TraceRecorder(
                 writeBatch(j, events.subList(mid, events.size))
             } else { j.writeFailed = true; log("trace chunk refused: ${x.code}") }
         }
+    }
+
+    /** The start record a restart seals a killed trace from (writer thread, once per trace, before the first chunk): the end fields are placeholders the seal replaces. */
+    private fun writeStartRecord(j: Job) {
+        try {
+            val both = j.startPhone != null
+            storage.writeStart(j.id, Manifest(
+                traceId = j.id, installId = j.installId, deletionCounter = j.counter, revision = 1, parentTraceId = null, bootId = j.boot,
+                startElapsedMs = j.startElapsed, endElapsedMs = j.startElapsed, startWallMs = j.startWall, endWallMs = j.startWall,
+                startPhoneWallMs = if (both) j.startPhone!!.atMs else null, endPhoneWallMs = if (both) j.startPhone!!.atMs else null,
+                startPhoneAgeMs = if (both) (j.startElapsed - j.startPhone!!.arrivedElapsed).coerceAtLeast(0) else null, endPhoneAgeMs = if (both) (j.startElapsed - j.startPhone!!.arrivedElapsed).coerceAtLeast(0) else null,
+                phoneOffsetMs = null, offsetUncertaintyMs = null,
+                chunkCount = 1, eventCount = 1, rawBytes = 1, traceSha256 = "0".repeat(64),
+                recorded = TraceStatus.PARTIAL, closeReason = CloseReason.STOP, snapshot = j.snapshot,
+            ))
+        } catch (e: Exception) { log("trace start record not written: ${e.javaClass.simpleName}") } // the trace itself is unaffected; a kill then deletes it as before
     }
 
     private fun finishJob(j: Job, end: Finish) {

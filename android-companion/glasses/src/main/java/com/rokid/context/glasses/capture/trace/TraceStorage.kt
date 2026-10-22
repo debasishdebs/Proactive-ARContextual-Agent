@@ -1,8 +1,11 @@
 package com.rokid.context.glasses.capture.trace
 
+import com.rokid.context.capture.trace.ChunkCodec
+import com.rokid.context.capture.trace.CloseReason
 import com.rokid.context.capture.trace.Manifest
 import com.rokid.context.capture.trace.ManifestChunk
 import com.rokid.context.capture.trace.TraceFiles
+import com.rokid.context.capture.trace.TraceStatus
 import com.rokid.context.core.model.TraceChunk
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
@@ -11,21 +14,70 @@ import java.util.concurrent.atomic.AtomicLong
  * The recorder's files. Layout (the frozen [TraceFiles] layout, one directory per trace):
  * - `imu_trace_tmp/<traceId>/chunk-NNNN.json`: a trace being written. A chunk file is written under a `.part` name and renamed, so a crash leaves
  *   no half file that looks complete; the whole directory is invisible to import until [publish].
+ * - `imu_trace_tmp/<traceId>/start.json`: the manifest skeleton written with the first chunk (never in `traces/`): what a restart needs to SEAL a killed trace as PARTIAL.
  * - `traces/<traceId>/`: a closed trace (`manifest.json` last, then the directory is renamed here atomically). Only these are importable.
  * - `trace_epoch`: the last deletion epoch seen (two lines: installId, counter).
  *
  * Every method is called from the single writer thread, except [recover] and [readEpoch] (construction). [used] counts the bytes of both directories.
  */
-internal class TraceStorage(private val root: File) {
+internal class TraceStorage(private val root: File, private val diskCapBytes: Long = Long.MAX_VALUE) {
     val tracesDir = File(root, "traces")
     val tmpDir = File(root, "imu_trace_tmp")
     private val epochFile = File(root, "trace_epoch")
     val used = AtomicLong(0)
 
-    /** Start-up: an unfinished trace (no manifest, the process died) is not importable, so it is deleted; the used size is recounted. */
+    /**
+     * Start-up: an unfinished trace (the process died: killed on a call, a crash) is SEALED as a PARTIAL trace and moved to `traces/` ([seal]) instead of deleted, when it
+     * belongs to the persisted deletion epoch and fits the disk cap; anything else in tmp (another epoch, no start record, no readable chunk, over the cap) is deleted.
+     * The used size is recounted.
+     */
     fun recover() {
+        used.set(sizeOf(tracesDir))
+        val epoch = readEpoch()
+        for (dir in tmpDir.listFiles()?.filter { it.isDirectory } ?: emptyList()) {
+            try { seal(dir, epoch) } catch (e: Exception) { /* not sealable: deleted below */ }
+        }
         tmpDir.deleteRecursively()
         used.set(sizeOf(tracesDir))
+    }
+
+    /** Writes the start record of a trace (the manifest skeleton: everything the end cannot tell). It stays in tmp only; [publish] and [seal] remove it. */
+    fun writeStart(id: String, m: Manifest) {
+        val dir = jobDir(id)
+        dir.mkdirs()
+        val part = File(dir, START_FILE + ".part")
+        part.writeText(TraceFiles.encodeFile(ManifestChunk.encode(m)), Charsets.UTF_8)
+        if (!part.renameTo(File(dir, START_FILE))) throw java.io.IOException("rename")
+    }
+
+    private fun seal(dir: File, epoch: Pair<String, Long>) {
+        val m0 = ManifestChunk.decode(TraceFiles.decodeFile(File(dir, START_FILE).readText(Charsets.UTF_8)).getOrThrow()).getOrThrow()
+        if (m0.traceId != dir.name || m0.installId != epoch.first || m0.deletionCounter != epoch.second) return
+        val shas = ArrayList<String>(); var events = 0L; var raw = 0L; var lastT = m0.startElapsedMs
+        while (shas.size < com.rokid.context.capture.trace.TraceBounds.MAX_CHUNKS) {
+            val f = File(dir, TraceFiles.chunkFile(shas.size))
+            if (!f.isFile) break
+            // the chunk count in the file is still the placeholder (publish stamps it), so the decode is by parts
+            val c = try { TraceFiles.decodeFile(f.readText(Charsets.UTF_8)).getOrThrow().let { tc -> ChunkCodec.decode(tc.traceId, tc.seq, tc.sha256, tc.b64).getOrThrow() } } catch (e: Exception) { break }
+            if (c.traceId != m0.traceId || c.seq != shas.size || c.events.isEmpty() || c.events.first().tMs < lastT) break
+            shas += c.sha256; events += c.events.size; raw += c.rawBytes; lastT = c.events.last().tMs
+        }
+        if (shas.isEmpty()) return
+        for (extra in dir.listFiles() ?: emptyArray()) {
+            val i = CHUNK_NAME.matchEntire(extra.name)?.groupValues?.get(1)?.toInt()
+            if (extra.name != START_FILE && (i == null || i >= shas.size)) extra.delete()
+        }
+        val dt = lastT - m0.startElapsedMs
+        val phone = m0.startPhoneWallMs != null
+        val m = m0.copy(
+            endElapsedMs = lastT, endWallMs = m0.startWallMs + dt,
+            endPhoneWallMs = if (phone) m0.startPhoneWallMs else null, endPhoneAgeMs = if (phone) (m0.startPhoneAgeMs ?: 0) + dt else null,
+            chunkCount = shas.size, eventCount = events, rawBytes = raw, traceSha256 = Manifest.traceSha(shas),
+            recorded = TraceStatus.PARTIAL, closeReason = CloseReason.STOP,
+        )
+        File(dir, START_FILE).delete()
+        if (sizeOf(tracesDir) + sizeOf(dir) + MANIFEST_ALLOWANCE > diskCapBytes) return
+        publish(m.traceId, m)
     }
 
     fun readEpoch(): Pair<String, Long> = try {
@@ -68,6 +120,7 @@ internal class TraceStorage(private val root: File) {
             if (!part.renameTo(f)) throw java.io.IOException("rename")
             used.addAndGet(f.length() - old)
         }
+        File(dir, START_FILE).delete()
         val mf = File(dir, TraceFiles.MANIFEST_FILE)
         mf.writeText(TraceFiles.encodeFile(ManifestChunk.encode(m)), Charsets.UTF_8)
         used.addAndGet(mf.length())
@@ -122,6 +175,12 @@ internal class TraceStorage(private val root: File) {
         }
         if (ok) forgetFile.delete()
         return ok && !forgetFile.exists()
+    }
+
+    private companion object {
+        const val START_FILE = "start.json"
+        const val MANIFEST_ALLOWANCE = 4_096L
+        val CHUNK_NAME = Regex("chunk-(\\d{4})\\.json")
     }
 
     private fun sizeOf(f: File): Long = if (!f.exists()) 0 else if (f.isFile) f.length() else (f.listFiles() ?: emptyArray()).sumOf { sizeOf(it) }
