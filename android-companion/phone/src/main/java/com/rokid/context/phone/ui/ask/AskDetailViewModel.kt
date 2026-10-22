@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.rokid.context.memory.AskRepository
 import com.rokid.context.memory.ProposalRepository
 import com.rokid.context.memory.TimelineRepository
+import com.rokid.context.memory.forget.PHOTO_CITE_PREFIX
 import com.rokid.context.orchestration.AskSources
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import com.rokid.context.memory.db.MemoryEntity
@@ -36,8 +37,10 @@ class AskDetailViewModel(
             val memories: Flow<List<MemoryEntity>> =
                 if (ids.isEmpty()) flowOf(emptyList()) else combine(ids.map { timeline.memory(it) }) { rows -> rows.filterNotNull() }
             combine(memories, proposals.forOrigin(ask.id)) { mems, props ->
-                val frames = timeline.framesByIds(mems.mapNotNull { it.frameId })
-                AskDetailModel.build(ask, mems, frames, props, zone())
+                val citedFrames = ids.filter { it.startsWith(PHOTO_CITE_PREFIX) }.map { it.removePrefix(PHOTO_CITE_PREFIX) }
+                val frames = timeline.framesByIds(mems.mapNotNull { it.frameId } + citedFrames)
+                val byId = frames.associateBy { it.id }
+                AskDetailModel.build(ask, mems, frames, props, zone(), photoFrames = citedFrames.associateWith { byId[it] })
             }
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), AskDetailUiState())

@@ -12,6 +12,8 @@ object Routes {
     const val ACTIVITY = "activity?period={period}"
     const val DAY = "day/{date}"
     const val MEMORY = "memory/{id}"
+    /** Find a photo (wave 3): `q` is optional; a non-blank one searches once on open. */
+    const val PHOTOS = "photos?q={q}"
     const val FRAMES = "frames/{date}?start={start}"
     const val SETTINGS = "settings"
     const val SETTINGS_ENDPOINTS = "settings/endpoints"
@@ -79,6 +81,8 @@ object Routes {
     fun activity(period: Period? = null) = if (period == null) "activity" else "activity?period=${period.name.lowercase()}"
     fun day(date: LocalDate) = "day/$date"
     fun memory(id: String) = "memory/${enc(id)}"
+    /** Encoded with `android.net.Uri.encode` (a platform API, not hand-written escaping). */
+    fun photos(q: String = "") = if (q.isBlank()) "photos" else "photos?q=${android.net.Uri.encode(q)}"
     fun nudge(id: String) = "nudge/${enc(id)}"
     fun frames(date: LocalDate, start: String? = null) = "frames/$date" + (start?.let { "?start=${enc(it)}" } ?: "")
     fun startRoute(onboardingComplete: Boolean) = if (onboardingComplete) HOME else ONBOARDING
@@ -87,7 +91,7 @@ object Routes {
     fun tabFor(route: String?): Tab? = when {
         route == null || route == ONBOARDING -> null
         route == HOME || route.startsWith("ask/") || route.startsWith("nudge/") -> Tab.HOME
-        route.startsWith("activity") || route.startsWith("day/") || route.startsWith("memory/") || route.startsWith("frames/") -> Tab.ACTIVITY
+        route.startsWith("activity") || route.startsWith("day/") || route.startsWith("memory/") || route.startsWith("frames/") || route.startsWith("photos") -> Tab.ACTIVITY
         route.startsWith("settings") -> Tab.SETTINGS
         else -> null
     }

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -19,6 +19,9 @@
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Wave B speed source (phone_speed, default off): FINE is requested, approximate is accepted; no background location. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <!-- /P7-C sources -->
 
     <!-- Wave B: LiveFit (Galaxy Watch forwarder) must be visible to the provider's caller check. -->
@@ -48,7 +51,7 @@
         <service
             android:name=".phone.hub.ContextHubService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|microphone" />
+            android:foregroundServiceType="connectedDevice|microphone|location" />
 
         <!-- Experiment canvas server (Developer mode only; started by the canvas screen, LAN on or a run). -->
         <service
@@ -74,6 +77,11 @@
         <!-- P7-B proposals -->
         <receiver android:name=".phone.actions.ProposalActionReceiver" android:exported="false" />
         <receiver android:name=".phone.hub.ClosedNoticeReceiver" android:exported="false" />
+        <!-- Wave B: the car-app library's unused permission activity and notification receiver are not needed (only CarConnection is). -->
+        <activity android:name="androidx.car.app.CarAppPermissionActivity" tools:node="remove" />
+        <receiver android:name="androidx.car.app.notification.CarAppNotificationBroadcastReceiver" tools:node="remove" />
+        <!-- Wave B: Play services Activity Recognition transitions (PendingIntent target; not exported). -->
+        <receiver android:name="com.rokid.context.phone.context.ActivityTransitionReceiver" android:exported="false" />
         <!-- /P7-B proposals -->
 
         <!-- P7-C sources (application) -->

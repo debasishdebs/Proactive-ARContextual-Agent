@@ -256,7 +256,7 @@ fun MemorySettingsScreen(
         AlertDialog(
             onDismissRequest = onCancelDeleteAll,
             title = { Text(if (state.confirmStep == 1) "Delete all memories?" else "Are you sure?") },
-            text = { Text(if (state.confirmStep == 1) "Every memory, photo, answer and nudge will be removed. The Watch and Image intent sources also turn off." else "This can't be undone. Delete every memory, photo and answer?") },
+            text = { Text(if (state.confirmStep == 1) "Every memory, photo, answer and nudge will be removed. The Watch and Image intent sources and \"Send matching photos with questions\" also turn off, and your My car list is cleared." else "This can't be undone. Delete every memory, photo and answer?") },
             confirmButton = { TextButton(onClick = onConfirmDeleteAll, modifier = Modifier.testTag("delete_confirm")) { Text(if (state.confirmStep == 1) "Continue" else "Delete everything") } },
             dismissButton = { TextButton(onClick = onCancelDeleteAll, modifier = Modifier.testTag("delete_cancel")) { Text("Cancel") } },
         )

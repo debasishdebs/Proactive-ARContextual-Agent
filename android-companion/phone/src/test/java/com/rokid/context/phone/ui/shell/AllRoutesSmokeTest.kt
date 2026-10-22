@@ -190,6 +190,7 @@ class AllRoutesSmokeTest {
             "period" -> "week"
             "start" -> FRAME_ID
             "ids" -> "capture,ask,nudge"
+            "q" -> "keys" // Find a photo: a non-blank q searches once on open (PhotoSearchDeps.None: no photos)
             else -> null
         }
 

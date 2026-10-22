@@ -66,4 +66,14 @@ class AskDetailViewModelTest {
         assertEquals(listOf("Wallet in drawer"), s.sources.map { it.text })
         assertEquals(1, s.missingSources)
     }
+
+    /** Wave 3 Task 3: a `frame:<id>` source becomes a photo card; a Forget redacts the ask, so the card goes with the answer. */
+    @Test fun photoSourceShowsFrameAndExpiredWhenGone() = runBlocking {
+        graph.db.frameDao().insertIgnore(Fixtures.frame("f1", 1, path = "/frames/f1.jpg"))
+        graph.asks.upsert(Fixtures.ask("a1", Fixtures.NOW, sources = """["frame:f1","frame:gone"]"""))
+        val s = withTimeout(5_000) { vm("a1").state.first { it.found } }
+        assertEquals(listOf("/frames/f1.jpg", null), s.sources.map { it.framePath })
+        assertEquals(listOf(false, true), s.sources.map { it.expired })
+        assertEquals(0, s.missingSources)
+    }
 }

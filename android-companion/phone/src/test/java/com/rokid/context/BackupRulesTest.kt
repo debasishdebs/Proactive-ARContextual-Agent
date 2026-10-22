@@ -56,6 +56,8 @@ class BackupRulesTest {
         com.rokid.context.phone.canvas.DeveloperModeStore.PREFS,
         // AI call pace (10 / 12 / 15 s) paces this phone's own model calls (the call budget reads it): per-device, back to the default after a restore.
         com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.PREFS,
+        // Fix round 1: "Send matching photos with questions" is an opt-in privacy switch: off after a restore.
+        com.rokid.context.orchestration.AskPhotoPolicy.PREFS,
     )
 
     /**
