@@ -19,6 +19,7 @@ dependencies {
     // Rokid CXR-L through the Hi Rokid app. client-l 1.1.2 depends on a cxr-service-bridge SNAPSHOT; pin the release.
     implementation("com.rokid.cxr:client-l:1.1.2")
     implementation("com.rokid.cxr:cxr-service-bridge:1.5")
+    testImplementation(project(":core:capture"))
     testImplementation(kotlin("test"))
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

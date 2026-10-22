@@ -27,11 +27,30 @@ class Slice3aWireTest {
     }
 
     @Test fun queuedMarkOlderThanSessionAccepted() {
-        val gate = PlanAckGate(install = { "i" }, sessionStart = { 50_000 })
-        val m = MarkMessage(epoch = "e", seq = 1, atMs = 10, atElapsedMs = 5, sessionStartMs = 40_000)
-        val ev = inbound.onMessage(Channels.MARK, listOf(Wire.encode(m))).single()
-        assertEquals(GlassesEvent.MarkReceived(m), ev)
-        assertEquals(0, gate.ackStale, "marks never go through the ack gate")
+        // a mark queued an hour before the session started: its sessionStartMs is older than the current one and it still arrives
+        val m = MarkMessage(epoch = "e", seq = 1, atMs = 10, atElapsedMs = 5, sessionStartMs = 40_000, undo = null)
+        val ev = inbound.onMessage(Channels.MARK, listOf(Wire.encode(m))).single() as GlassesEvent.MarkReceived
+        assertEquals(m, ev.mark)
+        assertTrue(ev.mark.atMs < ev.mark.sessionStartMs)
+    }
+
+    @Test fun receiverAcksStampedByMessageMatchTheGate() {
+        val gate = PlanAckGate(install = { "inst" }, sessionStart = { 9_000 })
+        val plan = com.rokid.context.capture.plan.PlanJson.encode(com.rokid.context.capture.plan.PlanResolver.identity().let {
+            com.rokid.context.capture.plan.CapturePlan(1, com.rokid.context.capture.plan.PlanJson.configHash(it), it, com.rokid.context.capture.plan.PlanMeta("t", 1))
+        })
+        val hash = com.rokid.context.capture.plan.PlanJson.configHash(com.rokid.context.capture.plan.PlanResolver.identity())
+        var st: com.rokid.context.capture.plan.ReceiverState? = null
+        val rx = com.rokid.context.capture.plan.PlanReceiver(object : com.rokid.context.capture.plan.PlanPersistence {
+            override fun load() = st
+            override fun commit(s: com.rokid.context.capture.plan.ReceiverState) { st = s }
+        }, { 1L }, { "b" })
+        val staged = rx.onMessage(com.rokid.context.core.model.CapturePlanMessage(gen = 1, mode = com.rokid.context.core.model.PlanMode.SHADOW, configHash = hash, planJson = plan, phoneInstall = "inst", sessionStartMs = 9_000))
+        assertEquals(PlanAckState.STAGED, staged.state)
+        assertEquals(AckVerdict.MATCH, gate.classify(staged))
+        assertEquals(AckVerdict.MATCH, gate.classify(rx.activated(1)))
+        assertEquals(AckVerdict.MATCH, gate.classify(rx.revert("auto:ceiling")))
+        assertEquals(0, gate.ackStale)
     }
 
     @Test fun planAckAndTraceChunkAreDecoded() {
@@ -39,6 +58,13 @@ class Slice3aWireTest {
         assertEquals(listOf<GlassesEvent>(GlassesEvent.PlanAckReceived(a)), inbound.onMessage(Channels.CAPTURE_PLAN_ACK, listOf(Wire.encode(a))))
         val c = TraceChunk(traceId = "trace-0001", seq = 0, count = 1)
         assertEquals(listOf<GlassesEvent>(GlassesEvent.TraceChunkReceived(c)), inbound.onMessage(Channels.TRACE_CHUNK, listOf(Wire.encode(c))))
+    }
+
+    @Test fun oversizedTraceChunkIsDroppedAtDecode() {
+        val big = Wire.encode(TraceChunk(traceId = "trace-0001", b64 = "A".repeat(90_001 + 4_096)))
+        assertEquals(emptyList(), inbound.onMessage(Channels.TRACE_CHUNK, listOf(big)))
+        val ok = Wire.encode(TraceChunk(traceId = "trace-0001", b64 = "A".repeat(90_000)))
+        assertEquals(1, inbound.onMessage(Channels.TRACE_CHUNK, listOf(ok)).size)
     }
 
     @Test fun otherVersionOnNewChannelIsOutdatedNotApplied() {

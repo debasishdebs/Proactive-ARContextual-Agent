@@ -858,4 +858,14 @@ class HubTest {
         hub(link); link.emitReady(); runCurrent()
         assertTrue((Wire.decode<HudSettings>(link.lastOn(Channels.SETTINGS)) as Decoded.Ok).value.planAware)
     }
+
+    @Test fun anyDecodedPlanAckMarksThePeerCapable() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link, phoneInstall = { "mine" })
+        link.emitReady(); runCurrent(); link.emit(hello()); runCurrent()
+        // a caps-shaped ack that also carries an install, and a stale one: both prove the channel
+        link.emit(GlassesEvent.PlanAckReceived(com.rokid.context.core.model.CapturePlanAck(gen = 0, phoneInstall = "other", caps = listOf("plan1")))); runCurrent()
+        assertEquals(com.rokid.context.link.PlanPeer.CAPABLE, h.planPeer())
+        assertEquals(1, h.planAckStale)
+    }
 }

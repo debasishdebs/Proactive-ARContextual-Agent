@@ -35,15 +35,23 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
 
     val current: ReceiverState? get() = st
 
+    /**
+     * Acks to a message echo that message's `sessionStartMs`; the phone matches acks by gen, install and session (PlanAckGate). Acks the
+     * glasses originate (activated, tick, revert) are stamped with the latest phone session start seen in a message; the adapter that
+     * runs a receiver across a phone session change must keep sending the current gen so this value is fresh.
+     */
+    private var lastSessionStartMs = 0L
+
     fun onMessage(m: CapturePlanMessage): CapturePlanAck {
+        lastSessionStartMs = maxOf(lastSessionStartMs, m.sessionStartMs)
         val cur = st?.takeIf { it.phoneInstall == m.phoneInstall }   // gens count per phone install
         cur?.terminal?.get(m.gen)?.let {
             val was = cur.terminalMeta[m.gen]
-            return ack(m.gen, was?.mode ?: cur.mode, PlanAckState.REVERTED, it, null, m.phoneInstall, was?.publishId ?: m.publishId)
+            return ack(m.gen, was?.mode ?: cur.mode, PlanAckState.REVERTED, it, null, m.phoneInstall, was?.publishId ?: m.publishId, m.sessionStartMs)
         }
         if (cur != null && m.gen < cur.appliedGen) return reject(m, "stale")
         if (cur != null && m.gen == cur.appliedGen) {
-            return ack(m.gen, cur.mode, if (cur.effective) PlanAckState.EFFECTIVE else PlanAckState.STAGED, null, cur.configHash, m.phoneInstall, m.publishId)
+            return ack(m.gen, cur.mode, if (cur.effective) PlanAckState.EFFECTIVE else PlanAckState.STAGED, null, cur.configHash, m.phoneInstall, m.publishId, m.sessionStartMs)
         }
         // Unrestricted LIVE is not a capability of this build: a buggy or rogue phone must not get an unbounded plan staged (round 3).
         if (m.mode == PlanMode.LIVE && "live" !in CAPS) return reject(m, "unsupported:live")
@@ -69,7 +77,7 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
             terminalMeta = cur?.terminalMeta ?: emptyMap(),
         )
         persist.commit(next); st = next
-        return ack(m.gen, m.mode, PlanAckState.STAGED, null, next.configHash, m.phoneInstall, m.publishId)
+        return ack(m.gen, m.mode, PlanAckState.STAGED, null, next.configHash, m.phoneInstall, m.publishId, m.sessionStartMs)
     }
 
     /** The staged plan became the applied one at the safe boundary. A TRIAL starts its clock here, once. */
@@ -119,10 +127,10 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
         return ack(cur.appliedGen, cur.mode, PlanAckState.REVERTED, reason, null, cur.phoneInstall, cur.publishId)
     }
 
-    private fun reject(m: CapturePlanMessage, reason: String) = ack(m.gen, m.mode, PlanAckState.REJECTED, reason, null, m.phoneInstall, m.publishId)
+    private fun reject(m: CapturePlanMessage, reason: String) = ack(m.gen, m.mode, PlanAckState.REJECTED, reason, null, m.phoneInstall, m.publishId, m.sessionStartMs)
 
-    private fun ack(gen: Long, mode: PlanMode, state: PlanAckState, reason: String?, hash: String?, install: String, publishId: String?) =
-        CapturePlanAck(gen = gen, publishId = publishId, mode = mode, effectiveHash = hash, state = state, reason = reason, phoneInstall = install, caps = CAPS)
+    private fun ack(gen: Long, mode: PlanMode, state: PlanAckState, reason: String?, hash: String?, install: String, publishId: String?, session: Long = lastSessionStartMs) =
+        CapturePlanAck(gen = gen, publishId = publishId, mode = mode, effectiveHash = hash, state = state, reason = reason, phoneInstall = install, caps = CAPS, sessionStartMs = session)
 
     companion object {
         const val MAX_TRIAL_MS = 3_600_000L
