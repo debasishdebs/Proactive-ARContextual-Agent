@@ -1,5 +1,8 @@
 package com.rokid.context.voice.commands
 
+// Original to this project; the table is the S85 ruling. Parser structure adapted from Live Fit
+// services/voice/src/main/kotlin/com/debasish/livefit/services/voice/CommandParser.kt@4529735 (Apache-2.0, same owner).
+
 /** One intent word that may follow a mark command (S85). [intentLabel] is a final `IntentLabel` enum name. */
 data class IntentEntry(val word: String, val canvasLabel: String, val intentLabel: String)
 
@@ -16,6 +19,17 @@ object MarkPhrases {
         "note this", "note that", "bookmark this", "bookmark that", "capture this", "this is important", "that was important",
     )
 
+    /**
+     * Mark phrases that also start ordinary sentences or existing actions ("note that the meeting is at five" is a
+     * note, "save this file" is a request). They count as a mark only when nothing else follows in the same clause
+     * except fillers and intent words, and when the next clause is not unrelated speech. Otherwise the whole
+     * utterance falls through to Ask. "mark that / this / it" are unambiguous: trailing unknown words still give a mark.
+     */
+    val MARK_STANDALONE: Set<String> = setOf(
+        "remember this", "remember that", "save this", "save that", "note this", "note that",
+        "bookmark this", "bookmark that", "capture this", "this is important", "that was important",
+    )
+
     /** MOMENT for the previous ~10 s (the same anchor), source VOICE. */
     val RETRO: List<String> = listOf("i missed that")
 
@@ -23,7 +37,7 @@ object MarkPhrases {
     val UNDO: List<String> = listOf("undo mark", "cancel mark", "remove mark")
 
     /** Leading fillers, optional, before a command. */
-    val FILLERS: Set<String> = setOf("please", "ok", "okay", "hey")
+    val FILLERS: Set<String> = setOf("please", "ok", "okay", "hey", "um", "uh", "so")
 
     /** Words that may sit between a command and its intent word ("mark that, I'm just driving"). */
     val INTENT_FILLERS: Set<String> = setOf(

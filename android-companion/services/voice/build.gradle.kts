@@ -25,3 +25,11 @@ dependencies {
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("androidx.test.ext:junit:1.2.1")
 }
+
+// The doc-drift test reads the docs and the regen switch; declare them so a hand edit (or a regen run) re-runs it
+// instead of leaving the task UP-TO-DATE.
+tasks.withType<Test>().configureEach {
+    inputs.file(rootProject.file("../docs/voice-marks.md"))
+    inputs.file(rootProject.file("../README.md"))
+    inputs.property("voiceMarksRegen", providers.environmentVariable("VOICE_MARKS_REGEN").orElse(""))
+}

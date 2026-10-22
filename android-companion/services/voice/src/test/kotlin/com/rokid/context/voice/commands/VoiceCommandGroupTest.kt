@@ -10,14 +10,14 @@ class VoiceCommandGroupTest {
     @Test fun everyMarkCommandHasAGroup() {
         assertEquals(VoiceCommandGroup.Mark, VoiceCommandGroup.of(MarkCommand.Mark(null)))
         assertEquals(VoiceCommandGroup.Mark, VoiceCommandGroup.of(MarkCommand.Mark("driving")))
-        assertEquals(VoiceCommandGroup.Retro, VoiceCommandGroup.of(MarkCommand.Retro))
+        assertEquals(VoiceCommandGroup.Retro, VoiceCommandGroup.of(MarkCommand.Retro()))
         assertEquals(VoiceCommandGroup.Undo, VoiceCommandGroup.of(MarkCommand.Undo))
     }
 
     @Test fun disabledGroupsBlockTheirCommandsOnly() {
         val off = setOf(VoiceCommandGroup.Undo)
         assertFalse(VoiceCommandGroup.isAllowed(MarkCommand.Undo, off))
-        assertTrue(VoiceCommandGroup.isAllowed(MarkCommand.Retro, off))
+        assertTrue(VoiceCommandGroup.isAllowed(MarkCommand.Retro(), off))
         assertTrue(VoiceCommandGroup.isAllowed(MarkCommand.Mark(null), off))
     }
 
@@ -33,6 +33,10 @@ class VoiceCommandGroupTest {
         assertTrue(MarkPhrases.MARK.first() in VoiceCommandGroup.Mark.examples)
         assertTrue(MarkPhrases.RETRO.first() in VoiceCommandGroup.Retro.examples)
         assertTrue(MarkPhrases.UNDO.first() in VoiceCommandGroup.Undo.examples)
+    }
+
+    @Test fun blockedMessageDoesNotPointAtANonexistentSetting() {
+        for (g in VoiceCommandGroup.entries) assertFalse("Settings" in g.blockedMessage, g.blockedMessage)
     }
 
     @Test fun gateRunsAllowedAndToastsBlocked() = runTest {
