@@ -1,5 +1,5 @@
-import { toFlow, canConnect, applyChange, edgeFromId, CELL_W, CELL_H } from '../../main/assets/canvas/flowadapter.js';
-import { nodeTypes, livePipe, liveCells, eq, ok } from './fixtures.js';
+import { toFlow, canConnect, applyChange, edgeFromId, lanesOf, bindingsOf, CELL_W, CELL_H, LANE_GAP } from '../../main/assets/canvas/flowadapter.js';
+import { nodeTypes, allTypes, capturePipe, livePipe, liveCells, eq, ok } from './fixtures.js';
 
 const layout = { layers: 5, columns: 1, cells: liveCells };
 const flow = (pipe, problems, opts, lay) => toFlow(pipe || livePipe(), lay === undefined ? layout : lay, problems || [], nodeTypes, opts || {});
@@ -162,5 +162,71 @@ export const tests = {
     eq(JSON.stringify(p), before);
     toFlow(p, layout, [], nodeTypes, {}); canConnect({ source: 'extract', target: 'critic' }, p, nodeTypes);
     eq(JSON.stringify(p), before);
+  },
+
+  // ---- schema 2: lanes, the photos binding, warnings
+  lanesSplitTheCanvasByDomain() {
+    // the server lays all nodes out in layers; each domain gets its own band of columns
+    const cells = {
+      head_1: { layer: 0, column: 0 }, thresh_1: { layer: 1, column: 0 }, hub_1: { layer: 0, column: 1 }, sigout_1: { layer: 1, column: 1 },
+      sigin_1: { layer: 0, column: 2 }, rate_1: { layer: 2, column: 0 }, capture_1: { layer: 3, column: 0 }, photos: { layer: 4, column: 0 },
+    };
+    const f = toFlow(capturePipe(), { layers: 5, columns: 3, cells }, [], allTypes, {});
+    eq(f.lanes.map((l) => l.domain), ['RT_GLASSES', 'RT_PHONE', 'ASYNC']);
+    eq(f.lanes.map((l) => l.label), ['Glasses (real time)', 'Phone (real time)', 'Async (phone)']);
+    const x = (id) => node(f, id).position.x;
+    const lane = (d) => f.lanes.find((l) => l.domain === d);
+    for (const n of f.nodes) {
+      const l = lane(n.data.domain);
+      ok(n.position.x >= l.x && n.position.x + CELL_W <= l.x + l.width, n.id + ' sits inside its lane');
+    }
+    ok(lane('RT_PHONE').x >= lane('RT_GLASSES').x + lane('RT_GLASSES').width + LANE_GAP - 1, 'lanes do not overlap');
+    ok(x('hub_1') > x('rate_1'), 'the phone lane is to the right of the glasses lane');
+    eq(node(f, 'capture_1').data.domain, 'RT_GLASSES');
+    eq(node(f, 'photos').position.y, 4 * CELL_H, 'rows still come from the layer');
+  },
+  oneDomainKeepsTheSlice2Positions() {
+    const f = flow();
+    eq(f.lanes, [], 'a single-domain graph has no lanes');
+    eq(node(f, 'extract').position, { x: 0, y: CELL_H });
+    eq(lanesOf(livePipe(), layout, nodeTypes), []);
+  },
+  signalNodeLaneComesFromItsDomainParam() {
+    const p = capturePipe();
+    const f = toFlow(p, { layers: 5, columns: 1, cells: {} }, [], allTypes, {});
+    eq(node(f, 'sigin_1').data.domain, 'RT_GLASSES');
+    eq(node(f, 'sigout_1').data.domain, 'RT_PHONE');
+    const q = capturePipe(); q.nodes.find((n) => n.id === 'sigin_1').params.domain = 'RT_PHONE';
+    eq(toFlow(q, { layers: 0, columns: 0, cells: {} }, [], allTypes, {}).nodes.find((n) => n.id === 'sigin_1').data.domain, 'RT_PHONE');
+  },
+  canConnectAllowsThePhotosBindingAcrossLanes() {
+    const p = capturePipe(); p.edges = p.edges.filter((e) => e.to !== 'photos');
+    eq(canConnect({ source: 'capture_1', target: 'photos' }, p, allTypes), { ok: true });
+    eq(canConnect({ source: 'thresh_1', target: 'photos' }, p, allTypes), { ok: false, reason: 'Photo is in another domain' });
+    eq(canConnect({ source: 'hub_1', target: 'rate_1' }, p, allTypes), { ok: false, reason: 'Capture frequency by activity is in another domain' });
+    eq(canConnect({ source: 'rate_1', target: 'photos' }, p, allTypes).ok, false);
+  },
+  warningsShowOnTheirNodeAndCountInTheLabel() {
+    const p = capturePipe();
+    const lay = { layers: 5, columns: 1, cells: {} };
+    const f = toFlow(p, lay, [{ text: 'node thresh_1: bad', nodeId: 'thresh_1' }], allTypes, { warnings: [{ text: 'timer photo gap below the settings profile has no effect', nodeId: 'rate_1' }] });
+    eq(node(f, 'rate_1').data.warnings, ['timer photo gap below the settings profile has no effect']);
+    eq(node(f, 'rate_1').data.problems, []);
+    eq(node(f, 'thresh_1').data.problems, ['node thresh_1: bad']);
+    eq(node(f, 'thresh_1').data.warnings, []);
+    ok(node(f, 'rate_1').ariaLabel.endsWith(', 1 warning'), node(f, 'rate_1').ariaLabel);
+    ok(node(f, 'thresh_1').ariaLabel.endsWith(', 1 problem'));
+  },
+  bindingsListEachNameOncePerSide() {
+    const b = bindingsOf(capturePipe(), allTypes);
+    eq(b, [
+      { name: 'ctx', kind: 'signal', from: 'sigout_1', to: 'sigin_1', state: 'bound', text: 'ctx: Send signal (phone) to Receive signal (glasses)' },
+      { name: 'photos', kind: 'photos', from: 'capture_1', to: 'photos', state: 'bound', text: 'photos: Capture image (glasses) to Photo (async)' },
+    ]);
+    const p = capturePipe(); p.nodes = p.nodes.filter((n) => n.id !== 'sigin_1'); p.edges = p.edges.filter((e) => e.from !== 'sigin_1' && e.to !== 'sigin_1' && e.to !== 'photos');
+    const c = bindingsOf(p, allTypes);
+    eq(c.map((x) => [x.name, x.state]), [['ctx', 'unreceived'], ['photos', 'unbound']]);
+    ok(c[0].text.includes('nothing receives it'), c[0].text);
+    eq(bindingsOf(livePipe(), nodeTypes), [], 'a slice 2 pipeline has no bindings');
   },
 };
