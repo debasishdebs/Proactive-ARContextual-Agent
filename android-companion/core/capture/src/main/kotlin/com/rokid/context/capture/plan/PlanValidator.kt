@@ -9,7 +9,7 @@ import kotlinx.serialization.json.JsonPrimitive
 /** Refuses plans that break the non-removable invariants or bounds (S3, S32, S83, S84). Texts are exact; the en dash is U+2013. */
 object PlanValidator {
     private const val DASH = "\u2013"
-    private val SENSING = Regex("^(sampleRate.*|sensor.*|imu.*Hz|tick.*|fusionCadence.*|evaluate.*|detector.*|classifier.*)$", RegexOption.IGNORE_CASE)
+    internal val SENSING = Regex("^(sampleRate.*|sensor.*|imu.*Hz|tick.*|fusionCadence.*|evaluate.*|detector.*|classifier.*)$", RegexOption.IGNORE_CASE)
     private val EDITABLE = PlanState.entries.map { it.name }.toSet()
 
     /** [raw] is the parsed plan JSON, [p] its strict decode (null when that failed), [bytes] the UTF-8 length of the text. */
