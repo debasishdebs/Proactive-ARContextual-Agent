@@ -93,7 +93,7 @@ class PlanSender(
     private fun load(): CapturePlanMessage? = prefs.getString(KEY_MSG, null)?.let { (Wire.decode<CapturePlanMessage>(it) as? com.rokid.context.core.model.Decoded.Ok)?.value }
 
     companion object {
-        const val PREFS = "canvas_plan_state" // ruled on ahead of this task: excluded from backup and device transfer
+        const val PREFS = com.rokid.context.orchestration.MemoryWipe.PLAN_STATE_PREFS // ruled on ahead of this task: excluded from backup and device transfer
         private const val KEY_GEN = "gen"
         private const val KEY_MSG = "msg"
     }

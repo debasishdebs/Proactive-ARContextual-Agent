@@ -29,6 +29,10 @@ object MemoryWipe {
     /** `files/photo-eval`: the debug photo test's labels and results (also excluded from backup). */
     const val PHOTO_EVAL_DIR = "photo-eval"
 
+    /** Plan-state prefs name (PlanSender.PREFS reads this) and the Collect prefs: both are cleared by Delete all. */
+    const val PLAN_STATE_PREFS = "canvas_plan_state"
+    private val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS)
+
     /**
      * Bumped first by every Delete all. A writer that read it before its work began (a queue job before its claim, an
      * ask before retrieval) re-checks it inside the transaction that writes, and drops the write if it moved
@@ -103,6 +107,8 @@ object MemoryWipe {
             File(context.filesDir, PHOTO_EVAL_DIR).deleteRecursively()
             // Slice 3a: sealed traces, pulled imports and orphan tmp files (the tables went with wipeMemory). The epoch above already refuses a fenced publish.
             FencedFiles.DELETE_ALL_DIRS.forEach { File(context.filesDir, it).deleteRecursively() }
+            // Slice 3a privacy: the persisted capture-plan state and the Collect session window go too.
+            WIPED_PREFS.forEach { context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().commit() }
             MemoryMaintenance.vacuum(db)
             MemoryMaintenance.checkpoint(db)
             deleted
