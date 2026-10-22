@@ -42,7 +42,7 @@ class Migration6To7Test {
         newTables.forEach { t -> assertTrue("table $t", V1Fixture.tableNames(db).contains(t)); assertEquals("table $t empty", 0, V1Fixture.count(db, t)) }
         val idx = db.query("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'index_canvas_%'").use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
         assertTrue(idx.containsAll(listOf(
-            "index_canvas_trace_startedAtMs", "index_canvas_trace_parentTraceId", "index_canvas_trace_event_tMs", "index_canvas_replay_sweepId", "index_canvas_replay_createdAt",
+            "index_canvas_trace_startedAtMs", "index_canvas_trace_parentTraceId", "index_canvas_trace_event_tMs", "index_canvas_replay_sweepId", "index_canvas_replay_createdAt", "index_canvas_replay_configHash", "index_canvas_sweep_configHash",
             "index_canvas_sweep_createdAt", "index_canvas_label_atMs", "index_canvas_label_frameId", "index_canvas_calibration_configHash", "index_canvas_helper_job_state",
         )))
         // The new tables' defaults are in force for a writer that omits them.
@@ -62,11 +62,11 @@ class Migration6To7Test {
             assertEquals("added columns of $t", extra, v7[t]!!.drop(cols.size))
         }
         assertEquals(7, newPublishCols.size)
-        assertEquals(listOf("groupId", "gen", "publishId", "configHash", "component", "state", "updatedAt").toSet(), v7["canvas_group_state"]!!.map { it.first }.toSet())
+        assertEquals(listOf("groupId", "gen", "publishId", "configHash", "component", "state", "updatedAt", "mode", "phoneInstall", "sentAtMs").toSet(), v7["canvas_group_state"]!!.map { it.first }.toSet())
         assertEquals(listOf("key", "value"), v7["canvas_meta"]!!.map { it.first })
         assertTrue("canvas_label has no text column", v7["canvas_label"]!!.map { it.first }.none { it.equals("text", true) || it.equals("transcript", true) })
         assertEquals(listOf("traceId", "source", "status", "manifestJson", "wipeGen", "tombstoned", "revision", "parentTraceId", "installId", "deletionCounter", "exact", "startedAtMs", "endedAtMs", "createdAt"), v7["canvas_trace"]!!.map { it.first })
-        listOf("canvas_replay", "canvas_sweep").forEach { t -> assertTrue("$t has provenance and job state", v7[t]!!.map { it.first }.containsAll(listOf("sourcesJson", "labelRev", "jobState"))) }
+        listOf("canvas_replay", "canvas_sweep").forEach { t -> assertTrue("$t has provenance, job state and the config hash (S60)", v7[t]!!.map { it.first }.containsAll(listOf("sourcesJson", "labelRev", "jobState", "configHash"))) }
     }
 
     @Test fun migratedMatchesExportedSchema() { v6(); migrate().close() }

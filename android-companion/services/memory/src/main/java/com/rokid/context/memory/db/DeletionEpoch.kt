@@ -27,6 +27,10 @@ class DaoFence(
     fun now(): DeletionEpoch = currentEpoch()
 }
 
+/**
+ * JSON note (:services:memory has no kotlinx.serialization dependency, and it is not a transitive one here): `org.json` is the Android platform parser and is
+ * already used by ForgetService in this module. The text is written by hand, so it is deterministic.
+ */
 /** One source of a replay or sweep: a trace id with the revision read, and the interval used. Serialised by hand so the text is deterministic. */
 data class TraceSource(val traceId: String, val revision: Int, val fromMs: Long, val toMs: Long)
 
@@ -35,10 +39,11 @@ object TraceSources {
         "{\"traceId\":${org.json.JSONObject.quote(it.traceId)},\"revision\":${it.revision},\"fromMs\":${it.fromMs},\"toMs\":${it.toMs}}"
     }
 
-    fun decode(json: String): List<TraceSource> = runCatching {
+    /** The sources, or null when the text is not a valid list: callers must treat null as "unknown sources" and fail closed, never as "none". */
+    fun decode(json: String): List<TraceSource>? = runCatching {
         val a = org.json.JSONArray(json)
         (0 until a.length()).map { i -> a.getJSONObject(i).let { TraceSource(it.getString("traceId"), it.getInt("revision"), it.getLong("fromMs"), it.getLong("toMs")) } }
-    }.getOrDefault(emptyList())
+    }.getOrNull()
 
     /** The substring [encode] writes for [traceId]: what `invalidateBySources` searches for. */
     fun needle(traceId: String): String = "\"traceId\":${org.json.JSONObject.quote(traceId)},"

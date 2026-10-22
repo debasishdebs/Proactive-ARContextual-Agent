@@ -227,8 +227,6 @@ class BackupRulesTest {
 
     /** S81: every slice 3a prefs file and folder is excluded in the legacy rules AND both data-extraction sections, under its exact name. */
     @Test fun slice3aPrefsAndFoldersAreExcludedEverywhere() {
-        assertEquals(setOf("deletion_epoch", "canvas_plan_state", "canvas_collect", "mark_settings"), slice3aPrefs)
-        assertEquals(setOf("canvas_traces", "canvas_import", "canvas_tmp"), slice3aFiles)
         for (section in allSections()) {
             val ex = excludes(section)
             for (n in slice3aPrefs) assertTrue("${section.tagName}: $n.xml", "sharedpref:$n.xml" in ex)

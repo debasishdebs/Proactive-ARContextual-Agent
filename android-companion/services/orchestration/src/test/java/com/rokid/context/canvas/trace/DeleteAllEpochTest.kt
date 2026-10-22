@@ -10,6 +10,7 @@ import com.rokid.context.memory.db.DaoFence
 import com.rokid.context.memory.db.DatabaseFactory
 import com.rokid.context.memory.db.DeletionEpochStore
 import com.rokid.context.orchestration.MemoryWipe
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -92,5 +93,30 @@ class DeleteAllEpochTest {
         val start = DeletionEpochStore.of(ctx).read().counter
         MemoryWipe.deleteAll(ctx); MemoryWipe.deleteAll(ctx)
         assertEquals(start + 2, DeletionEpochStore.of(ctx).read().counter)
+    }
+
+    /**
+     * Delete all racing in-flight fenced commits: commits keep capturing the epoch and committing while a wipe runs on another thread. Whatever the interleaving,
+     * no row recorded under a pre-wipe counter survives the wipe, and no commit that captured the old epoch lands after it.
+     */
+    @Test fun concurrentDeleteAllAgainstInFlightCommits() = runBlocking {
+        val g = MemoryGraph.get(ctx)
+        val store = DeletionEpochStore.of(ctx)
+        val dao = g.db.canvasSlice3Dao()
+        val wipe = kotlinx.coroutines.GlobalScope.async(kotlinx.coroutines.Dispatchers.IO) { MemoryWipe.deleteAll(ctx) }
+        val committers = (0 until 4).map { w ->
+            kotlinx.coroutines.GlobalScope.async(kotlinx.coroutines.Dispatchers.IO) {
+                repeat(60) { i ->
+                    val e = store.read() // captured before the write, as a recorder does
+                    val fence = DaoFence(MemoryWipe.generation.get(), e, MemoryWipe.generation::get, store::read)
+                    dao.acceptTraceFenced(CanvasTraceEntity("t-$w-$i", "IMU", "COMPLETE", "{}", 0, installId = e.installId, deletionCounter = e.counter, startedAtMs = 1, createdAt = 1), fence)
+                }
+            }
+        }
+        wipe.await(); committers.forEach { it.await() }
+        val now = store.read()
+        assertEquals(1L, now.counter)
+        val stale = g.db.openHelper.writableDatabase.query("SELECT COUNT(*) FROM canvas_trace WHERE deletionCounter < ${now.counter}").use { it.moveToFirst(); it.getInt(0) }
+        assertEquals("no pre-wipe row survives the wipe", 0, stale)
     }
 }

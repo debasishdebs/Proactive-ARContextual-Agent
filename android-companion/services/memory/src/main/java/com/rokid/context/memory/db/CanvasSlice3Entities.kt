@@ -8,7 +8,7 @@ import androidx.room.PrimaryKey
 /*
  * Experiment canvas slice 3a (Room v7, migration A, additive). Nine new tables; the seven new `canvas_publish` columns are on
  * [CanvasPublishEntity]. Data-safety rule: every table here is either WIPED by Delete all or KEPT BY DESIGN (it holds no user data), and
- * every table that can hold derived data is invalidated by the label/trace/frame deletion paths (Task 34). SchemaTest pins the classification.
+ * every table that can hold derived data is invalidated by the label/trace/frame deletion paths (Task 34). WipeDaoTest pins the classification.
  *
  * Privacy: no audio, transcript, location, address or device name is ever stored here. Marks keep times, sources and enum or canvas label names.
  */
@@ -55,7 +55,7 @@ data class CanvasTraceEventEntity(
  * `jobState` is RUNNING, DONE, CANCELLED or ABORTED (S77). `fromMs`/`toMs` are the envelope of the source intervals (null when unknown),
  * used by time-range invalidation; they are also the columns reserved for the later ranged replay.
  */
-@Entity(tableName = "canvas_replay", indices = [Index("sweepId"), Index("createdAt")])
+@Entity(tableName = "canvas_replay", indices = [Index("sweepId"), Index("createdAt"), Index("configHash")])
 data class CanvasReplayEntity(
     @PrimaryKey val replayId: String,
     val sweepId: String? = null,
@@ -70,10 +70,12 @@ data class CanvasReplayEntity(
     val toMs: Long? = null,
     val createdAt: Long,
     val finishedAt: Long? = null,
+    /** The `configHash` of the capture config this replay evaluated (S60: all evidence is keyed by it; gate 3 needs an exact-hash replay). Null for a replay with no single config. */
+    val configHash: String? = null,
 )
 
 /** A parameter sweep (grid or seeded random) with its split days, results and provenance (same invalidation and job-state rules as a replay). */
-@Entity(tableName = "canvas_sweep", indices = [Index("createdAt")])
+@Entity(tableName = "canvas_sweep", indices = [Index("createdAt"), Index("configHash")])
 data class CanvasSweepEntity(
     @PrimaryKey val sweepId: String,
     val paramsJson: String,
@@ -87,6 +89,8 @@ data class CanvasSweepEntity(
     val toMs: Long? = null,
     val createdAt: Long,
     val finishedAt: Long? = null,
+    /** The `configHash` of the base config the sweep varies from (S60); each point's own hash lives in its result. Null when the sweep has no single base config. */
+    val configHash: String? = null,
 )
 
 /**
@@ -131,7 +135,12 @@ data class CanvasCalibrationEntity(
     val createdAt: Long,
 )
 
-/** The S62 recovery table of a publish group: the last durable transition per group (no user data; kept by Delete all). */
+/**
+ * The S62 recovery table of a publish group: the last durable transition per group (no user data; kept by Delete all).
+ * `component` is `capture_plan` in core (the only component; later ASYNC components add values). `state` is DESIRED, PREPARED, SENT, EFFECTIVE, FAILED,
+ * UNKNOWN_REMOTE or REVERTED (terminal per gen). `mode` (SHADOW, TRIAL, LIVE), `phoneInstall` and `sentAtMs` complete the S62 matching tuple
+ * (`gen`, `publishId`, `mode`, `configHash`, `phoneInstall`) and the 10-minute UNKNOWN_REMOTE timer.
+ */
 @Entity(tableName = "canvas_group_state")
 data class CanvasGroupStateEntity(
     @PrimaryKey val groupId: String,
@@ -141,6 +150,9 @@ data class CanvasGroupStateEntity(
     val component: String,
     val state: String,
     val updatedAt: Long,
+    val mode: String? = null,
+    val phoneInstall: String? = null,
+    val sentAtMs: Long? = null,
 )
 
 /** A laptop-helper job (3b only starts writing it). `frameIdsJson` lists the photos it carries, so Forget can void it. */

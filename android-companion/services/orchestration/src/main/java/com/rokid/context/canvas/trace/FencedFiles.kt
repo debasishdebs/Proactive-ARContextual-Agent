@@ -4,7 +4,6 @@ import androidx.room.withTransaction
 import com.rokid.context.memory.db.ContextDatabase
 import kotlinx.coroutines.CancellationException
 import java.io.File
-import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -27,22 +26,29 @@ class FencedFiles(private val db: ContextDatabase, private val filesDir: File) {
 
     /**
      * Moves [tmp] (which must be under [TMP_DIR]) to [final] (which must be under [TRACES_DIR] or [IMPORT_DIR]) atomically, but only if [fence] returns true
-     * inside the transaction. Returns whether it was published; on false the tmp file is gone. [fence] runs on the transaction, so it may query the DB.
+     * inside the transaction. Returns whether it was published; on false the tmp file is gone and nothing is left at [final] (a failed move or commit rolls the
+     * transaction back, including any row [fence] wrote). [fence] runs on the transaction, so it may query the DB.
      */
     suspend fun publish(tmp: File, final: File, fence: suspend () -> Boolean): Boolean {
         require(isUnder(tmp, TMP_DIR)) { "tmp must be under $TMP_DIR" }
         require(isUnder(final, TRACES_DIR) || isUnder(final, IMPORT_DIR)) { "final must be under $TRACES_DIR or $IMPORT_DIR" }
+        var moved = false
         return try {
             db.withTransaction {
                 if (!fence()) { tmp.delete(); return@withTransaction false }
                 final.parentFile?.mkdirs()
-                try {
-                    Files.move(tmp.toPath(), final.toPath(), StandardCopyOption.ATOMIC_MOVE)
-                    true
-                } catch (e: IOException) { tmp.delete(); false }
+                // A failed move THROWS so the transaction rolls back: a row the fence lambda wrote (the way to make the row and the file atomic) must not commit without its file.
+                Files.move(tmp.toPath(), final.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                moved = true
+                true
             }
-        } catch (e: CancellationException) { tmp.delete(); throw e }
-        catch (e: Exception) { tmp.delete(); false }
+        } catch (e: Exception) {
+            // The move failed, or the commit failed AFTER the move (the row is rolled back): neither a tmp file nor an orphan final file may stay behind.
+            tmp.delete()
+            if (moved) final.delete()
+            if (e is CancellationException) throw e
+            false
+        }
     }
 
     /** Start-up: deletes everything under `files/canvas_tmp` (nothing there is complete). Returns the files removed. Never throws. */

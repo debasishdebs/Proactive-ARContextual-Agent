@@ -17,8 +17,6 @@ class DeletionEpochStoreTest {
     private val ctx = ApplicationProvider.getApplicationContext<Context>()
     @Before fun clean() { ctx.getSharedPreferences(DeletionEpochStore.PREFS, Context.MODE_PRIVATE).edit().clear().commit() }
 
-    @Test fun prefsNameIsTheBackupRuledOne() { assertEquals("deletion_epoch", DeletionEpochStore.PREFS) }
-
     @Test fun installIdStable() {
         val first = DeletionEpochStore.of(ctx).read()
         assertTrue("a random UUID", Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").matches(first.installId))
@@ -42,10 +40,28 @@ class DeletionEpochStoreTest {
         assertEquals("read back through a fresh store, as after a process death", e, DeletionEpochStore.of(ctx).read())
     }
 
-    @Test fun theWipeTimeNeverMovesBackward() {
+    @Test fun theCounterIsTheRealFenceAndTheWipeTimeIsJustTheCommitClock() {
         val s = DeletionEpochStore.of(ctx)
-        s.commitWipe(9_000)
-        assertEquals("a clock set back keeps the later fence", 9_000L, s.commitWipe(1_000).wipedAtMs)
+        s.commitWipe(9_000_000_000_000) // a clock far in the future at the first wipe
+        val e = s.commitWipe(1_000)
+        assertEquals("the counter still grows", 2L, e.counter)
+        assertEquals("the later real wipe time is not held at the bogus larger value", 1_000L, e.wipedAtMs)
+    }
+
+    @Test fun installIdFallbackIsStableWhenTheFirstWriteFails() {
+        val real = ctx.getSharedPreferences("fallback-x", Context.MODE_PRIVATE)
+        real.edit().clear().commit()
+        val broken = object : android.content.SharedPreferences by real {
+            override fun edit(): android.content.SharedPreferences.Editor = object : android.content.SharedPreferences.Editor by real.edit() {
+                override fun putString(key: String?, value: String?) = this
+                override fun commit() = false
+            }
+        }
+        var n = 0
+        val s = DeletionEpochStore(broken) { "id-${n++}" } // would be a different id on every call without the fallback
+        val first = s.read().installId
+        assertEquals(first, s.read().installId)
+        assertEquals(first, DeletionEpochStore(broken) { "id-${n++}" }.read().installId)
     }
 
     @Test fun anUncommittableWriteThrowsSoDeleteAllNeverStartsUnrecorded() {

@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 7,
-    "identityHash": "419d8cb94d4a35afcd392852e07fc341",
+    "identityHash": "e4d08479d8fe8aa33ed957ed423c9b5d",
     "entities": [
       {
         "tableName": "frame",
@@ -2361,7 +2361,7 @@
       },
       {
         "tableName": "canvas_replay",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`replayId` TEXT NOT NULL, `sweepId` TEXT, `paramsJson` TEXT NOT NULL, `replayClass` TEXT NOT NULL, `resultJson` TEXT, `invalidated` INTEGER NOT NULL DEFAULT 0, `sourcesJson` TEXT NOT NULL DEFAULT '[]', `labelRev` INTEGER NOT NULL DEFAULT 0, `jobState` TEXT NOT NULL DEFAULT 'RUNNING', `fromMs` INTEGER, `toMs` INTEGER, `createdAt` INTEGER NOT NULL, `finishedAt` INTEGER, PRIMARY KEY(`replayId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`replayId` TEXT NOT NULL, `sweepId` TEXT, `paramsJson` TEXT NOT NULL, `replayClass` TEXT NOT NULL, `resultJson` TEXT, `invalidated` INTEGER NOT NULL DEFAULT 0, `sourcesJson` TEXT NOT NULL DEFAULT '[]', `labelRev` INTEGER NOT NULL DEFAULT 0, `jobState` TEXT NOT NULL DEFAULT 'RUNNING', `fromMs` INTEGER, `toMs` INTEGER, `createdAt` INTEGER NOT NULL, `finishedAt` INTEGER, `configHash` TEXT, PRIMARY KEY(`replayId`))",
         "fields": [
           {
             "fieldPath": "replayId",
@@ -2444,6 +2444,12 @@
             "columnName": "finishedAt",
             "affinity": "INTEGER",
             "notNull": false
+          },
+          {
+            "fieldPath": "configHash",
+            "columnName": "configHash",
+            "affinity": "TEXT",
+            "notNull": false
           }
         ],
         "primaryKey": {
@@ -2470,13 +2476,22 @@
             ],
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_canvas_replay_createdAt` ON `${TABLE_NAME}` (`createdAt`)"
+          },
+          {
+            "name": "index_canvas_replay_configHash",
+            "unique": false,
+            "columnNames": [
+              "configHash"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_canvas_replay_configHash` ON `${TABLE_NAME}` (`configHash`)"
           }
         ],
         "foreignKeys": []
       },
       {
         "tableName": "canvas_sweep",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sweepId` TEXT NOT NULL, `paramsJson` TEXT NOT NULL, `splitDaysJson` TEXT NOT NULL DEFAULT '[]', `resultJson` TEXT, `invalidated` INTEGER NOT NULL DEFAULT 0, `sourcesJson` TEXT NOT NULL DEFAULT '[]', `labelRev` INTEGER NOT NULL DEFAULT 0, `jobState` TEXT NOT NULL DEFAULT 'RUNNING', `fromMs` INTEGER, `toMs` INTEGER, `createdAt` INTEGER NOT NULL, `finishedAt` INTEGER, PRIMARY KEY(`sweepId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sweepId` TEXT NOT NULL, `paramsJson` TEXT NOT NULL, `splitDaysJson` TEXT NOT NULL DEFAULT '[]', `resultJson` TEXT, `invalidated` INTEGER NOT NULL DEFAULT 0, `sourcesJson` TEXT NOT NULL DEFAULT '[]', `labelRev` INTEGER NOT NULL DEFAULT 0, `jobState` TEXT NOT NULL DEFAULT 'RUNNING', `fromMs` INTEGER, `toMs` INTEGER, `createdAt` INTEGER NOT NULL, `finishedAt` INTEGER, `configHash` TEXT, PRIMARY KEY(`sweepId`))",
         "fields": [
           {
             "fieldPath": "sweepId",
@@ -2554,6 +2569,12 @@
             "columnName": "finishedAt",
             "affinity": "INTEGER",
             "notNull": false
+          },
+          {
+            "fieldPath": "configHash",
+            "columnName": "configHash",
+            "affinity": "TEXT",
+            "notNull": false
           }
         ],
         "primaryKey": {
@@ -2571,6 +2592,15 @@
             ],
             "orders": [],
             "createSql": "CREATE INDEX IF NOT EXISTS `index_canvas_sweep_createdAt` ON `${TABLE_NAME}` (`createdAt`)"
+          },
+          {
+            "name": "index_canvas_sweep_configHash",
+            "unique": false,
+            "columnNames": [
+              "configHash"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_canvas_sweep_configHash` ON `${TABLE_NAME}` (`configHash`)"
           }
         ],
         "foreignKeys": []
@@ -2783,7 +2813,7 @@
       },
       {
         "tableName": "canvas_group_state",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`groupId` TEXT NOT NULL, `gen` INTEGER NOT NULL, `publishId` INTEGER NOT NULL, `configHash` TEXT NOT NULL, `component` TEXT NOT NULL, `state` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`groupId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`groupId` TEXT NOT NULL, `gen` INTEGER NOT NULL, `publishId` INTEGER NOT NULL, `configHash` TEXT NOT NULL, `component` TEXT NOT NULL, `state` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, `mode` TEXT, `phoneInstall` TEXT, `sentAtMs` INTEGER, PRIMARY KEY(`groupId`))",
         "fields": [
           {
             "fieldPath": "groupId",
@@ -2826,6 +2856,24 @@
             "columnName": "updatedAt",
             "affinity": "INTEGER",
             "notNull": true
+          },
+          {
+            "fieldPath": "mode",
+            "columnName": "mode",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "phoneInstall",
+            "columnName": "phoneInstall",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sentAtMs",
+            "columnName": "sentAtMs",
+            "affinity": "INTEGER",
+            "notNull": false
           }
         ],
         "primaryKey": {
@@ -2914,7 +2962,7 @@
     "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '419d8cb94d4a35afcd392852e07fc341')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'e4d08479d8fe8aa33ed957ed423c9b5d')"
     ]
   }
 }
