@@ -50,4 +50,22 @@ class GlassesBackupRulesTest {
         assertTrue(src.contains("File(app.filesDir, \"outbound\")"))
         assertTrue(src.contains("File(app.filesDir, \"pauses.preferences_pb\")"))
     }
+
+    /** Slice 3a: the plan and receiver state live in the `capture_plan` shared prefs, which the sharedpref exclude (all sections) covers. */
+    @Test fun theCapturePlanPrefsAreInternalSharedPrefsAndExcluded() {
+        val prefs = File("src/main/java/com/rokid/context/glasses/capture/plan/PrefsPlanPersistence.kt").readText()
+        assertTrue(prefs.contains("const val PREFS = \"capture_plan\""))
+        val rt = File("src/main/java/com/rokid/context/glasses/GlassesRuntime.kt").readText()
+        assertTrue(rt.contains("getSharedPreferences(com.rokid.context.glasses.capture.plan.PrefsPlanPersistence.PREFS, Context.MODE_PRIVATE)"))
+        val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) + listOf("cloud-backup", "device-transfer").map {
+            parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element
+        }
+        for (section in sections) assertTrue(section.tagName, "sharedpref:." in excludes(section))
+    }
+
+    /** The receiver's boot id must change every boot: it is the OS boot counter, not the uptime clock alone. */
+    @Test fun theReceiversBootIdComesFromTheBootCounter() {
+        val rt = File("src/main/java/com/rokid/context/glasses/GlassesRuntime.kt").readText()
+        assertTrue(rt.contains("BootId.of(android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1)"))
+    }
 }

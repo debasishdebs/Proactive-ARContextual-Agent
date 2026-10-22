@@ -93,6 +93,8 @@ class SamplingSession(
     private val workContext: CoroutineContext = EmptyCoroutineContext,
     /** Glance novelty window, turn thresholds and keep caps (one instance shared with the [MotionClassifier]). */
     private val glance: GlanceParams = GlanceParams(),
+    /** The glance tunables in force now (slice 3a: a plan swaps them at a safe boundary); defaults to the fixed [glance]. */
+    private val glanceNow: () -> GlanceParams = { glance },
     /**
      * Wave B context cap (keyframes per minute) from the motion hub, or null for none. When non-null it is a hard cap
      * (no dwell bonus: [hardNow]) and [capNow] is the smaller of it and the A3 cap. Forced keeps (a manual "Capture now")
@@ -157,7 +159,8 @@ class SamplingSession(
     private var resting = false
     /** [cc] is the context cap read once per decision, so the cap and the hard flag always agree. */
     private fun capNow(cc: Int?): Int {
-        val a3 = if (resting) glance.restCapPerMin else glance.capPerMin
+        val g = glanceNow()
+        val a3 = if (resting) g.restCapPerMin else g.capPerMin
         return minOf(a3, cc ?: Int.MAX_VALUE)
     }
     /** Hard cap (no dwell bonus) while resting or while a context cap is active. */
@@ -177,6 +180,9 @@ class SamplingSession(
     /** Frames copied and offered to the gate (for logs and tests). */
     private val analysedCount = AtomicInteger()
     val analysedFrames: Int get() = analysedCount.get()
+
+    /** A camera episode (brief check or open camera) is running or about to: not a safe moment to swap the plan. */
+    fun episodeOpen(): Boolean = synchronized(lock) { episode != null }
 
     val stillStep: Int get() = synchronized(lock) { stillStepV }
 
@@ -264,7 +270,7 @@ class SamplingSession(
         val walked = motion.walkedSinceMark()
         val cc = contextCap()
         val cap = capNow(cc)
-        when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glance)) {
+        when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glanceNow())) {
             GlanceAdmission.Decision.NOVEL_SKIP -> novelSkipAccum++
             GlanceAdmission.Decision.CAPPED -> cappedAccum++
             GlanceAdmission.Decision.OPEN -> {
@@ -569,7 +575,7 @@ class SamplingSession(
         if (result is GateResult.Skip && result.reason == KeyframeGate.CAPPED) { /* a capped frame is no evidence either way */ }
         else if (result is GateResult.Keep) stillStepV = 0
         else if (ep.why == "timer" && sampleMotion == MotionState.STILL && h != null && prev != null) {
-            val same = minOf(java.lang.Long.bitCount(h.first xor prev.first), java.lang.Long.bitCount(h.second xor prev.second)) <= KeyframeGate.HAMMING
+            val same = minOf(java.lang.Long.bitCount(h.first xor prev.first), java.lang.Long.bitCount(h.second xor prev.second)) <= gate.hammingNow()
             if (!same) stillStepV = 0
             else if ((backoffBase() shl stillStepV) < lastProfile.stillCapMs) stillStepV++
         }

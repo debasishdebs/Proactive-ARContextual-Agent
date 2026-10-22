@@ -88,7 +88,7 @@ class CaptureService : LifecycleService() {
     private val runtime by lazy { GlassesRuntime.get(this) }
     private val inFlight = AtomicBoolean(false)
     /** The one gate for Smart and Fixed: its last-5 ring and last keep time survive a service restart. */
-    private val gate by lazy { KeyframeGate(PrefsGateStore(prefs), SystemClock::elapsedRealtime) }
+    private val gate by lazy { KeyframeGate(PrefsGateStore(prefs), SystemClock::elapsedRealtime, params = { runtime.plan.active.gate }) }
     private val heat = HeatGuard(::readHeat, SystemClock::elapsedRealtime)
     private val heatPoller = HeatPoller(heat, SystemClock::elapsedRealtime)
     private class Smart(val session: SamplingSession, val feed: SensorFeed, val motion: MotionClassifier) { var rateJob: Job? = null }
@@ -194,6 +194,7 @@ class CaptureService : LifecycleService() {
                 try {
                     if (tick % 60 == 0) budget.onSample(batteryPercent(), isCharging(), runtime.settingsCache.readNormalized().batteryTargetHours)
                     applyRate()
+                    runtime.plan.tick(SystemClock.elapsedRealtime()) // TRIAL end and staged activation ride this existing 1 s loop
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "budget/rate update failed: ${e.javaClass.simpleName}") }
                 publishStatus(tick++)
               } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
@@ -222,7 +223,8 @@ class CaptureService : LifecycleService() {
 
     private fun startSmart() {
         val clock: () -> Long = SystemClock::elapsedRealtime
-        val glance = GlanceParams() // one instance: the classifier's detector and the session's novelty / cap rules
+        val plan = runtime.plan
+        val glance = plan.active.glance // the classifier starts on the config in force; a later plan swaps both together (PlanHost)
         val motion = MotionClassifier(clock, glance)
         ratePolicy.reset()
         val wear = runtime.wear
@@ -233,11 +235,12 @@ class CaptureService : LifecycleService() {
             settings = { runtime.settingsCache.readNormalized() },
             capturePaused = { !runtime.pauses.captureAllowed() },
             batteryPct = ::batteryPercent, charging = ::isCharging, batterySaver = ::isBatterySaverOn,
-            profile = { val s = runtime.settingsCache.readNormalized(); CaptureProfile.of(s.cameraWake, budget.tier.value).withContext(ContextPolicies.of(appliedContext())) },
+            // S68: settings tier profile, then the plan row (SETTINGS config = ContextPolicies.DEFAULT), then forRest / heat / battery in the session.
+            profile = { val s = runtime.settingsCache.readNormalized(); plan.active.profile(s.cameraWake, budget.tier.value, appliedContext()) },
             // A hard cap (no dwell bonus); a manual "Capture now" is forced and stays exempt (see SamplingSession.contextCap).
-            contextCap = { ContextPolicies.of(appliedContext()).capPerMin },
+            contextCap = { plan.active.contextCap(appliedContext()) },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
-            fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance,
+            fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
         )
         hintSender = MotionHintSender(clock) { h -> runtime.controller?.sendMotionHint(h) == true }
         val verbose = DiagFlags.verboseFeatures(filesDir)
@@ -251,6 +254,11 @@ class CaptureService : LifecycleService() {
                 try { applyRate(it) } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "rate update failed: ${e.javaClass.simpleName}") }
             }
         }
+        plan.host = object : com.rokid.context.glasses.capture.plan.PlanHost {
+            override fun quiet() = motion.quiet() && !session.episodeOpen()
+            override fun abortBout() = motion.abortBout()
+            override fun install(cfg: com.rokid.context.glasses.capture.plan.ActiveConfig) = motion.setConfig(cfg.glance)
+        }
         runtime.smartCapture.value = true
         session.start()
         scheduleNextCapture(failed = false) // the watchdog
@@ -261,6 +269,7 @@ class CaptureService : LifecycleService() {
     private fun stopSmart(reason: String) {
         val cur = smart ?: return
         smart = null
+        runtime.plan.host = null
         hintSender = null
         runtime.resetLocalMotion()
         cur.rateJob?.cancel()
