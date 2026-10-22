@@ -19,6 +19,38 @@ abstract class CanvasSlice3Dao {
     @Query("INSERT OR IGNORE INTO canvas_meta (`key`, value) VALUES (:key, :value)") protected abstract suspend fun insertMetaIgnore(key: String, value: String)
     @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = :key") protected abstract suspend fun incrementMeta(key: String): Int
 
+    @Query("INSERT OR REPLACE INTO canvas_meta (`key`, value) VALUES (:key, :value)") protected abstract suspend fun setMeta(key: String, value: String)
+
+    // --- the durable forget-range fence (S58, P7): `canvas_meta` key `forgetRanges` = "from-to;from-to" (merged, at most MAX_RANGES) ---
+    /** Every time range the user forgot (merged). Delete all clears it (the epoch fence covers everything before it). */
+    open suspend fun forgottenRanges(): List<LongRange> = parseRanges(meta(FORGET_RANGES))
+
+    private suspend fun addForgetRange(from: Long, to: Long) {
+        val merged = mergeRanges(parseRanges(meta(FORGET_RANGES)) + listOf(minOf(from, to)..maxOf(from, to)))
+        setMeta(FORGET_RANGES, merged.joinToString(";") { "${it.first}-${it.last}" })
+    }
+
+    /** True when [atMs] lies inside a forgotten range: a mark, a voice command or a trace for that time must not come back. */
+    open suspend fun isForgotten(atMs: Long): Boolean = forgottenRanges().any { atMs in it }
+    open suspend fun overlapsForgotten(fromMs: Long, toMs: Long): Boolean = forgottenRanges().any { it.first <= toMs && it.last >= fromMs }
+
+    /** The outcome of one forget: the traces that were tombstoned, the marks deleted and the results invalidated. */
+    data class ForgetOutcome(val tombstonedTraceIds: List<String>, val labelsDeleted: Int, val resultsInvalidated: Int)
+
+    /**
+     * Forget of the time range [fromMs, toMs], in ONE transaction: the range is recorded as a durable fence FIRST (a mark, a voice command or a trace import for it is
+     * refused from now on, whatever its delivery order), the live traces overlapping it are tombstoned, its marks are deleted, `labelRev` moves, and every result that read
+     * any of that is invalidated. Idempotent.
+     */
+    @Transaction open suspend fun forgetRangeTx(fromMs: Long, toMs: Long, now: Long): ForgetOutcome {
+        addForgetRange(fromMs, toMs)
+        val ids = liveTraces().filter { it.startedAtMs <= toMs && (it.endedAtMs ?: Long.MAX_VALUE) >= fromMs }.map { it.traceId }
+        ids.forEach { tombstoneTrace(it, now) }
+        val labels = deleteLabelsBetween(fromMs, toMs)
+        val invalid = invalidateBySources(ids, fromMs, toMs, labelRevChanged = labels > 0)
+        return ForgetOutcome(ids, labels, invalid)
+    }
+
     /** The durable label counter (0 until the first label write). */
     open suspend fun labelRev(): Long = meta(LABEL_REV)?.toLongOrNull() ?: 0L
 
@@ -47,6 +79,7 @@ abstract class CanvasSlice3Dao {
     @Transaction open suspend fun insertLabelFenced(label: CanvasLabelEntity, fence: DaoFence): Boolean {
         if (!fence.holds()) return false
         if (label.atMs < fence.now().wipedAtMs) return false
+        if (isForgotten(label.atMs)) return false // a mark of a forgotten range: neither a late delivery nor a delayed voice command brings it back
         if (label(label.labelId) != null) return true // a re-sent mark: already recorded, and labelRev must not move (it would refuse every in-flight replay commit)
         insertLabel(label)
         bumpLabelRev()
@@ -100,7 +133,7 @@ abstract class CanvasSlice3Dao {
     @Query("DELETE FROM canvas_trace_event WHERE traceId = :id") protected abstract suspend fun deleteEventsOf(id: String): Int
     @Query("INSERT OR IGNORE INTO canvas_trace (traceId, source, status, manifestJson, wipeGen, tombstoned, revision, installId, deletionCounter, exact, startedAtMs, createdAt) VALUES (:id, 'UNKNOWN', 'PARTIAL', '{}', 0, 1, 0, '', 0, 0, 0, :now)")
     protected abstract suspend fun insertTombstoneStub(id: String, now: Long)
-    @Query("UPDATE canvas_trace SET tombstoned = 1, manifestJson = '{}' WHERE traceId = :id") protected abstract suspend fun markTombstoned(id: String): Int
+    @Query("UPDATE canvas_trace SET tombstoned = 1, manifestJson = '{}', startedAtMs = 0, endedAtMs = NULL, parentTraceId = NULL, installId = '', deletionCounter = 0 WHERE traceId = :id") protected abstract suspend fun markTombstoned(id: String): Int
 
     /**
      * A trace (or its updated manifest) is accepted only while the fence holds, the trace is not tombstoned, and it was recorded under the CURRENT
@@ -111,6 +144,7 @@ abstract class CanvasSlice3Dao {
         val epoch = fence.now()
         if (t.installId != epoch.installId || t.deletionCounter != epoch.counter) return false
         if (trace(t.traceId)?.tombstoned == true) return false
+        if (overlapsForgotten(t.startedAtMs, t.endedAtMs ?: t.startedAtMs)) return false
         upsertTrace(t)
         return true
     }
@@ -148,8 +182,8 @@ abstract class CanvasSlice3Dao {
     protected abstract suspend fun finishReplay(id: String, result: String, configHash: String?, now: Long): Int
     @Query("UPDATE canvas_sweep SET jobState = 'DONE', resultJson = :result, finishedAt = :now WHERE sweepId = :id AND jobState = 'RUNNING' AND invalidated = 0 AND configHash IS :configHash")
     protected abstract suspend fun finishSweep(id: String, result: String, configHash: String?, now: Long): Int
-    @Query("UPDATE canvas_replay SET jobState = 'CANCELLED', finishedAt = :now WHERE replayId = :id AND jobState = 'RUNNING'") abstract suspend fun cancelReplay(id: String, now: Long): Int
-    @Query("UPDATE canvas_sweep SET jobState = 'CANCELLED', finishedAt = :now WHERE sweepId = :id AND jobState = 'RUNNING'") abstract suspend fun cancelSweep(id: String, now: Long): Int
+    @Query("UPDATE canvas_replay SET jobState = 'CANCELLED', finishedAt = :now, sourcesJson = '[]', fromMs = NULL, toMs = NULL, paramsJson = '{}' WHERE replayId = :id AND jobState = 'RUNNING'") abstract suspend fun cancelReplay(id: String, now: Long): Int
+    @Query("UPDATE canvas_sweep SET jobState = 'CANCELLED', finishedAt = :now, sourcesJson = '[]', fromMs = NULL, toMs = NULL, paramsJson = '{}' WHERE sweepId = :id AND jobState = 'RUNNING'") abstract suspend fun cancelSweep(id: String, now: Long): Int
     @Query("UPDATE canvas_replay SET jobState = 'ABORTED', finishedAt = :now WHERE jobState = 'RUNNING'") protected abstract suspend fun abortReplays(now: Long): Int
     @Query("UPDATE canvas_sweep SET jobState = 'ABORTED', finishedAt = :now WHERE jobState = 'RUNNING'") protected abstract suspend fun abortSweeps(now: Long): Int
 
@@ -185,13 +219,13 @@ abstract class CanvasSlice3Dao {
         return finishSweep(sweepId, resultJson, configHash, now) > 0
     }
 
-    @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND instr(sourcesJson, :needle) > 0") protected abstract suspend fun invalidateReplaysOfTrace(needle: String): Int
-    @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND instr(sourcesJson, :needle) > 0") protected abstract suspend fun invalidateSweepsOfTrace(needle: String): Int
-    @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND (fromMs IS NULL OR toMs IS NULL OR (fromMs <= :toMs AND toMs >= :fromMs))") protected abstract suspend fun invalidateReplaysInRange(fromMs: Long, toMs: Long): Int
-    @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND (fromMs IS NULL OR toMs IS NULL OR (fromMs <= :toMs AND toMs >= :fromMs))") protected abstract suspend fun invalidateSweepsInRange(fromMs: Long, toMs: Long): Int
-    @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND labelRev != :labelRev") protected abstract suspend fun invalidateReplaysOfOtherLabelRev(labelRev: Long): Int
-    @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND labelRev != :labelRev") protected abstract suspend fun invalidateSweepsOfOtherLabelRev(labelRev: Long): Int
-    @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL WHERE invalidated = 0 AND sweepId IN (SELECT sweepId FROM canvas_sweep WHERE invalidated = 1)") protected abstract suspend fun invalidateReplaysOfInvalidSweeps(): Int
+    @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL, sourcesJson = '[]', fromMs = NULL, toMs = NULL WHERE invalidated = 0 AND instr(sourcesJson, :needle) > 0") protected abstract suspend fun invalidateReplaysOfTrace(needle: String): Int
+    @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL, sourcesJson = '[]', fromMs = NULL, toMs = NULL WHERE invalidated = 0 AND instr(sourcesJson, :needle) > 0") protected abstract suspend fun invalidateSweepsOfTrace(needle: String): Int
+    @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL, sourcesJson = '[]', fromMs = NULL, toMs = NULL WHERE invalidated = 0 AND (fromMs IS NULL OR toMs IS NULL OR (fromMs <= :toMs AND toMs >= :fromMs))") protected abstract suspend fun invalidateReplaysInRange(fromMs: Long, toMs: Long): Int
+    @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL, sourcesJson = '[]', fromMs = NULL, toMs = NULL WHERE invalidated = 0 AND (fromMs IS NULL OR toMs IS NULL OR (fromMs <= :toMs AND toMs >= :fromMs))") protected abstract suspend fun invalidateSweepsInRange(fromMs: Long, toMs: Long): Int
+    @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL, sourcesJson = '[]', fromMs = NULL, toMs = NULL WHERE invalidated = 0 AND labelRev != :labelRev") protected abstract suspend fun invalidateReplaysOfOtherLabelRev(labelRev: Long): Int
+    @Query("UPDATE canvas_sweep SET invalidated = 1, resultJson = NULL, sourcesJson = '[]', fromMs = NULL, toMs = NULL WHERE invalidated = 0 AND labelRev != :labelRev") protected abstract suspend fun invalidateSweepsOfOtherLabelRev(labelRev: Long): Int
+    @Query("UPDATE canvas_replay SET invalidated = 1, resultJson = NULL, sourcesJson = '[]', fromMs = NULL, toMs = NULL WHERE invalidated = 0 AND sweepId IN (SELECT sweepId FROM canvas_sweep WHERE invalidated = 1)") protected abstract suspend fun invalidateReplaysOfInvalidSweeps(): Int
 
     /**
      * Marks the replays and sweeps that read any of [traceIds], or whose source envelope overlaps `[fromMs, toMs]` (inclusive) or is unknown (no range: fail closed), or (with [labelRevChanged]) that
@@ -204,6 +238,20 @@ abstract class CanvasSlice3Dao {
         if (labelRevChanged) { val rev = labelRev(); n += invalidateReplaysOfOtherLabelRev(rev) + invalidateSweepsOfOtherLabelRev(rev) }
         n += invalidateReplaysOfInvalidSweeps()
         return n
+    }
+
+    /**
+     * The INITIAL insert of a replay or sweep job, under the same fence as its final commit: if a Forget or Delete all landed after the sources were loaded, the
+     * sources are gone, tombstoned, of another epoch or the labels moved, and NOTHING is written (no row keeps their ids, intervals or parameters).
+     */
+    @Transaction open suspend fun insertReplayFenced(r: CanvasReplayEntity, sources: List<TraceSource>, expectedLabelRev: Long, fence: DaoFence): Boolean {
+        if (!fence.holds() || !sourcesHold(sources, expectedLabelRev, fence.now())) return false
+        insertReplay(r); return true
+    }
+
+    @Transaction open suspend fun insertSweepFenced(s: CanvasSweepEntity, sources: List<TraceSource>, expectedLabelRev: Long, fence: DaoFence): Boolean {
+        if (!fence.holds() || !sourcesHold(sources, expectedLabelRev, fence.now())) return false
+        insertSweep(s); return true
     }
 
     // --- calibration ---
@@ -241,6 +289,26 @@ abstract class CanvasSlice3Dao {
 
     companion object {
         const val LABEL_REV = "labelRev"
+        const val FORGET_RANGES = "forgetRanges"
+        const val MAX_RANGES = 200
+        fun parseRanges(text: String?): List<LongRange> = text.orEmpty().split(';').mapNotNull { p ->
+            val i = p.indexOf('-', 1).takeIf { it > 0 } ?: return@mapNotNull null
+            val a = p.substring(0, i).toLongOrNull(); val b = p.substring(i + 1).toLongOrNull()
+            if (a != null && b != null && a <= b) a..b else null
+        }
+        /** Overlapping or touching ranges are merged; past [MAX_RANGES] the two closest are merged too (fencing a little more, never less). */
+        fun mergeRanges(ranges: List<LongRange>): List<LongRange> {
+            val out = ArrayList<LongRange>()
+            for (r in ranges.sortedBy { it.first }) {
+                val last = out.lastOrNull()
+                if (last != null && r.first <= last.last + 1) out[out.size - 1] = last.first..maxOf(last.last, r.last) else out += r
+            }
+            while (out.size > MAX_RANGES) {
+                val i = (0 until out.size - 1).minByOrNull { out[it + 1].first - out[it].last }!!
+                out[i] = out[i].first..out[i + 1].last; out.removeAt(i + 1)
+            }
+            return out
+        }
         private const val CHUNK = 500
     }
 }

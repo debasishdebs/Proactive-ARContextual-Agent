@@ -28,7 +28,7 @@ object DeletionGraph {
         w("canvas_helper_job", "laptop-helper jobs; they carry photo ids"),
         w("canvas_run", "photo experiment runs"), w("canvas_run_item", "per-photo run outputs"), w("canvas_score", "per-photo scores"),
         w("canvas_live_trace", "per-photo live outputs"),
-        k("canvas_meta", "the monotonic labelRev counter (bumped by the wipe so no earlier result reads as current); no user data"),
+        k("canvas_meta", "the monotonic labelRev counter (bumped by the wipe so no earlier result reads as current); the forgetRanges fence value is emptied by the wipe; otherwise no user data"),
         k("canvas_group_state", "publish-group recovery record: gen, hashes, mode, install id and state; needed to recover a deployed plan; no user data"),
         k("canvas_pipeline", "pipelines are user-authored prompts and settings"), k("canvas_pipeline_version", "frozen pipeline versions: prompts"),
         k("canvas_publish", "publish records: hashes and snapshots of prompts, no photo data"),

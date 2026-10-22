@@ -77,6 +77,14 @@ class ReplayServiceTest {
     private fun state(id: String) = runBlocking { dao.replay(id)!!.jobState }
     private fun awaitState(id: String, s: String) = wait("state $s") { if (state(id) == s) s else null }
 
+    @Test fun aForgetBetweenLoadingTheSourcesAndTheInitialInsertWritesNoRow() {
+        val t = FakeTrace(); trace("t1", t)
+        val svc = ReplayService(dao, { id -> loaded[id].also { dao.tombstoneTrace(id, 5) } }, ::fence, scope, dev, thermal, { now }, { "rp_${ids.incrementAndGet()}" })
+        assertTrue(runCatching { runBlocking { svc.start(ReplayRequest(listOf("t1"), paramsJson = "{\"secret\":1}")) } }.exceptionOrNull() is ReplayUnknownTrace)
+        assertTrue("no row keeps the trace id or the request parameters", runBlocking { dao.replays(10) }.isEmpty())
+        assertNull(svc.runningId())
+    }
+
     @Test fun doneIsCommittedThroughTheFencedDaoWithResult() {
         val t = FakeTrace(); trace("t1", t)
         val id = runBlocking { service().start(ReplayRequest(listOf("t1"))) }
