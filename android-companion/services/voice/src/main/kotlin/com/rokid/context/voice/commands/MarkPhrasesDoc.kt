@@ -1,9 +1,12 @@
 package com.rokid.context.voice.commands
 
+// Original to this project (generator for the S85 phrase docs).
+
 /**
  * Renders the user-facing voice-mark phrase tables as markdown, from [MarkPhrases] and [VoiceCommandGroup] only.
  * `docs/voice-marks.md` and the README embed this text between marker comments; `VoiceMarksDocTest` fails on drift.
- * Regenerate with `VOICE_MARKS_REGEN=1 ./gradlew :services:voice:testDebugUnitTest --tests '*VoiceMarksDocTest'`.
+ * Regenerate with `VOICE_MARKS_REGEN=1 ./gradlew --no-daemon :services:voice:testDebugUnitTest --tests '*VoiceMarksDocTest'`
+ * (the docs and the variable are declared test inputs, so the task re-runs after a hand edit or a regen).
  * Every phrase and intent word is written in backticks; nothing else in a block is.
  */
 internal object MarkPhrasesDoc {
@@ -19,8 +22,12 @@ internal object MarkPhrasesDoc {
         appendLine("Saves a mark for the last 10 seconds up to the moment you pressed push-to-talk.")
         appendLine(list(MarkPhrases.MARK))
         appendLine()
+        appendLine("#### Phrases that must stand alone")
+        appendLine("These also start ordinary sentences or notes. They count as a mark only when nothing but an intent word follows, so \"note that the meeting is at five\" stays a note and goes to the assistant.")
+        appendLine(list(MarkPhrases.MARK_STANDALONE.sortedBy { MarkPhrases.MARK.indexOf(it) }))
+        appendLine()
         appendLine("#### I missed that")
-        appendLine("Same as a mark: saves the previous 10 seconds, recorded as a voice mark.")
+        appendLine("Does the same as a mark: saves the previous 10 seconds. It is not a mark if other words follow, so \"I missed that bus\" is a normal sentence.")
         appendLine(list(MarkPhrases.RETRO))
         appendLine()
         appendLine("#### Undo")
@@ -31,7 +38,7 @@ internal object MarkPhrasesDoc {
         appendLine(list(MarkPhrases.FILLERS))
         appendLine()
         appendLine("#### Intent words (what you were doing)")
-        appendLine("Add one after a mark command, for example \"mark that, I'm driving\". Anything not in this table saves a plain mark.")
+        appendLine("Add one after a mark command, for example \"mark that, I'm driving\". With \"mark that\", \"mark this\" or \"mark it\", other words in the same sentence still save a plain mark; any other words in a later sentence are not part of the mark.")
         appendLine()
         appendLine("| Word | Label on the mark | Intent label |")
         appendLine("| --- | --- | --- |")
@@ -51,7 +58,7 @@ internal object MarkPhrasesDoc {
         appendLine()
     }
 
-    /** Compact list for the README, from the same data (the Settings toggle groups and their examples). */
+    /** Compact list for the README, from the same data (the command groups and their examples). */
     fun renderCompact(): String =
         VoiceCommandGroup.values().joinToString("\n") { "- **${it.label}**: ${it.examples}" } + "\n"
 }
