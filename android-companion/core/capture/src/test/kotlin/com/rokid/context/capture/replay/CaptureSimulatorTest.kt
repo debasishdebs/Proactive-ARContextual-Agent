@@ -287,6 +287,22 @@ class CaptureSimulatorTest {
         assertEquals(3, strict.skips)
     }
 
+    /**
+     * A plan always runs SETTLE (S27, `ActiveConfig.forceSettle`): a candidate that says so replays a MOTION-wake recording with the SETTLE profile (10 s settled
+     * gap), not the recorded 5 s. One recorded timer check at 12 s sets the last brief; the candidate's next check is due 5 s later under the recorded wake and
+     * 10 s later under SETTLE (each 535 ms early).
+     */
+    @Test fun aPlanCandidateForcesTheSettleProfile() {
+        val t0 = START + 12_000
+        val still = (START..START + 40_000L step 20).flatMap { t -> listOf(TraceEvent.Gyro(t, t, 0f, 0f, 0.02f), TraceEvent.Accel(t, t, 0f, 0f, 0f)) }
+        val ev = ReplayFixtures.trace(ReplayFixtures.timerEpisode(t0) + still, endMs = START + 40_000)
+        fun firstAfter(c: ReplayCandidate) = run(ev, candidate = c).opens.first { it.atMs > t0 + 2_000 }.atMs
+        val keep = firstAfter(ReplayCandidate("aaaaaaaaaaaa"))
+        val settle = firstAfter(ReplayCandidate("aaaaaaaaaaaa", forceSettle = true))
+        assertTrue(keep in t0 + 4_000..t0 + 6_000, "recorded MOTION wake: 5 s gap, $keep")
+        assertTrue(settle in t0 + 9_000..t0 + 11_000, "SETTLE: 10 s gap, $settle")
+    }
+
     @Test fun aCandidateCountsTheOpensItDecidesWhereARecordedOpenCoincides() {
         val o = ReplayFixtures.timerOracle(untilMs = START + 60_000L)
         val ev = ReplayFixtures.trace(o.events, endMs = START + 60_000L)
