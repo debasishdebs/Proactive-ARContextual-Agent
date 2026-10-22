@@ -135,6 +135,12 @@ class PhotoRecallTest {
         assertEquals(listOf("late"), recall().search("milk", imageK = 1, captionK = 0).image.map { it.frameId }) // without a cutoff the later one wins
     }
 
+    @Test fun cutoffAlsoBoundsByReceiveTimeSoALateDeliveredPhotoDidNotExistForTheAsk() = runBlocking {
+        photo("lateDelivery", floatArrayOf(1f, 0f), ts = 2 * hour, createdAt = 9 * hour) // captured before the ask, received after it
+        photo("onTime", floatArrayOf(0.8f, 0.2f), ts = 2 * hour, createdAt = 3 * hour)
+        assertEquals(listOf("onTime"), recall().search("milk", imageK = 1, captionK = 0, notAfterMs = 4 * hour).image.map { it.frameId })
+    }
+
     @Test fun cutoffHidesACaptionWrittenAfterTheAsk() = runBlocking {
         photo("a", floatArrayOf(1f, 0f), ts = 3 * hour, createdAt = 3 * hour)
         caption("a", memId = "cap_old", text = "old caption", at = 2 * hour); caption("a", memId = "cap_new", text = "new caption", at = 8 * hour)

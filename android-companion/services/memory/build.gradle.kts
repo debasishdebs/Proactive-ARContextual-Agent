@@ -12,6 +12,9 @@ android {
     kotlinOptions { jvmTarget = "17" }
     testOptions { unitTests.isIncludeAndroidResources = true }
     sourceSets["test"].assets.srcDirs("$projectDir/schemas")
+    // Test-only code shared by the JVM tests and the device tests (MigrationFixtureGuard): it must not ship in the app.
+    sourceSets["test"].java.srcDir("src/sharedTest/java")
+    sourceSets["androidTest"].java.srcDir("src/sharedTest/java")
 }
 
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
