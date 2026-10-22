@@ -36,7 +36,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             val epoch = DeletionEpochStore.of(app)
             val fence = { DaoFence(MemoryWipe.generation.get(), epoch.read(), MemoryWipe.generation::get, epoch::read) }
             // TODO(later): a thermal-severe flow for ReplayService (it also stops on shutdown, Developer mode off and the user).
-            val traces = StoredReplayTraces(dao, File(app.filesDir, com.rokid.context.canvas.trace.FencedFiles.TRACES_DIR))
+            val traces = StoredReplayTraces(dao, File(app.filesDir, com.rokid.context.canvas.trace.FencedFiles.TRACES_DIR), epoch::read)
             val gate = kotlinx.coroutines.sync.Mutex()   // S77: one replay or sweep job at a time
             val replay = ReplayService(dao, traces, fence, scope, devMode, jobGate = gate)
             val sweeps = SweepService(dao, traces, fence, scope, devMode, jobGate = gate)

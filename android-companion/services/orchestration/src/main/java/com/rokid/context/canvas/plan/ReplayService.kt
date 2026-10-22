@@ -111,11 +111,13 @@ class ReplayService(
             val hashes = loaded.map { (_, t) -> t.planHash ?: "0" }.distinct()
             val configHash = req.candidate?.configHash ?: hashes.singleOrNull()
             val id = newId()
-            dao.insertReplay(CanvasReplayEntity(
+            val row = CanvasReplayEntity(
                 replayId = id, paramsJson = req.paramsJson, replayClass = if (req.candidate == null) "EXACT" else "COUNTERFACTUAL",
                 sourcesJson = TraceSources.encode(sources), labelRev = labelRev, jobState = "RUNNING",
                 fromMs = sources.minOf { it.fromMs }, toMs = sources.maxOf { it.toMs }, createdAt = clock(), configHash = configHash,
-            ))
+            )
+            // Fenced like the final commit: a Forget or Delete all that landed after the sources were loaded writes nothing (no row keeps their ids, intervals or parameters).
+            if (!dao.insertReplayFenced(row, sources, labelRev, f)) throw ReplayUnknownTrace(req.traceIds.first())
             val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) { run(id, loaded.map { it.second }, req, sources, labelRev, configHash, f) }
             val r = Running(id, job)
             running = r

@@ -11,6 +11,7 @@ import com.rokid.context.memory.db.ReviewState
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -67,5 +68,29 @@ class ForgetListenerTest {
         service.forgetMoment("f1")
         assertEquals("the listener after the broken one still ran", listOf("f1"), seen.flatten())
         assertEquals(null, db.frameDao().let { null })
+    }
+
+    @Test fun aForgottenPhotoTombstonesTheTracesAndDeletesTheMarksAroundItAndTellsTheListener() = runBlocking {
+        val photoAt = 500_000L
+        db.frameDao().insertIgnore(FrameEntity("p1", photoAt, "/p1.jpg", "rokid_glasses")); mem("mp1", "p1")
+        val dao = db.canvasSlice3Dao()
+        dao.acceptTraceFenced(com.rokid.context.memory.db.CanvasTraceEntity("trace-near-01", "IMU", "COMPLETE", "{}", 0, installId = "i", deletionCounter = 1, startedAtMs = photoAt - 3_000, endedAtMs = photoAt + 3_000, createdAt = 1), fence())
+        dao.acceptTraceFenced(com.rokid.context.memory.db.CanvasTraceEntity("trace-far-001", "IMU", "COMPLETE", "{}", 0, installId = "i", deletionCounter = 1, startedAtMs = 5_000_000, endedAtMs = 5_001_000, createdAt = 1), fence())
+        dao.insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk-near", "MOMENT", "tap", "MOMENT", photoAt + 4_000, createdAt = 1), fence()) // a mark carries no frame id
+        dao.insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk-far", "MOMENT", "tap", "MOMENT", 5_000_500, createdAt = 1), fence())
+        val ranges = ArrayList<Triple<Long, Long, List<String>>>()
+        ForgetListeners.register(object : ForgetListener { override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) { ranges += Triple(fromMs, toMs, traceIds) } })
+        service.forgetMoment("p1")
+        assertNull(dao.label("mk-near")); assertTrue(dao.label("mk-far") != null)
+        assertTrue(dao.trace("trace-near-01")!!.tombstoned); assertTrue(!dao.trace("trace-far-001")!!.tombstoned)
+        assertEquals(listOf(Triple(photoAt - 10_000, photoAt + 10_000, listOf("trace-near-01"))), ranges)
+        assertTrue("a mark redelivered for that moment is refused", !dao.insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk-near", "MOMENT", "tap", "MOMENT", photoAt + 4_000, createdAt = 2), fence()))
+    }
+
+    @Test fun retentionExpiryOfAPhotoDoesTheSame() = runBlocking {
+        db.frameDao().insertIgnore(FrameEntity("p2", 700_000, "/p2.jpg", "rokid_glasses")); mem("mp2", "p2")
+        db.canvasSlice3Dao().insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk", "MOMENT", "tap", "MOMENT", 701_000, createdAt = 1), fence())
+        service.expirePhotos(listOf("p2"))
+        assertNull(db.canvasSlice3Dao().label("mk"))
     }
 }

@@ -34,6 +34,8 @@ class PlanSender(
     private val clock: () -> Long = System::currentTimeMillis,
     /** Later (Task 13): the phone half of an accepted plan is applied on the phone. Called with the plan JSON, or null when the desired state is "use settings". */
     private val onDesired: (String?) -> Unit = {},
+    /** The persisted deletion counter NOW: a plan built before a Delete all must not be persisted after it (S57). */
+    private val epochCounter: () -> Long = { 0L },
 ) : PlanPublishPort, com.rokid.context.canvas.plan.PlanTransport {
     private val lock = Any()
     private val _desired = MutableStateFlow(load())
@@ -45,10 +47,11 @@ class PlanSender(
     @Volatile private var sessionStartMs = 0L
 
     override suspend fun sendShadow(planJson: String, configHash: String): PlanSendResult {
+        val c0 = epochCounter()
         val msg = synchronized(lock) {
             val gen = prefs.getLong(KEY_GEN, 0L) + 1
             val m = CapturePlanMessage(gen = gen, publishId = "debug-$gen", mode = PlanMode.SHADOW, configHash = configHash, planJson = planJson, phoneInstall = install())
-            persist(m)
+            persist(m, c0)
             _desired.value = m
             m
         }
@@ -61,10 +64,11 @@ class PlanSender(
      * sent again at each session open. TRIAL/LIVE entry points are the later publish task's to expose.
      */
     override suspend fun send(mode: PlanMode, planJson: String?, configHash: String?, publishId: String, trialMaxMs: Long?): com.rokid.context.canvas.plan.SendOutcome {
+        val c0 = epochCounter()
         val msg = synchronized(lock) {
             val gen = prefs.getLong(KEY_GEN, 0L) + 1
             val m = CapturePlanMessage(gen = gen, publishId = publishId, mode = mode, configHash = configHash, planJson = planJson, trialMaxMs = trialMaxMs, phoneInstall = install())
-            persist(m)
+            persist(m, c0)
             _desired.value = m
             m
         }
@@ -74,10 +78,11 @@ class PlanSender(
 
     /** Back to "use settings" (a new gen, so the glasses drop the plan). */
     suspend fun revertToSettings(): PlanSendResult {
+        val c0 = epochCounter()
         val msg = synchronized(lock) {
             val gen = prefs.getLong(KEY_GEN, 0L) + 1
             val m = CapturePlanMessage(gen = gen, mode = PlanMode.SETTINGS, phoneInstall = install())
-            persist(m)
+            persist(m, c0)
             _desired.value = m
             m
         }
@@ -110,7 +115,14 @@ class PlanSender(
         return try { link.send(Channels.CAPTURE_PLAN, Wire.encode(out)) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { false }
     }
 
-    private fun persist(m: CapturePlanMessage) {
+    /** Delete all: the desired plan and its ack are forgotten in memory (the prefs were cleared by the wipe), so a reconnect re-sends nothing; the glasses are told "use settings" by the next publish. */
+    fun resetAfterWipe() {
+        synchronized(lock) { _desired.value = null; _ack.value = null }
+        runCatching { onDesired(null) }
+    }
+
+    private fun persist(m: CapturePlanMessage, c0: Long) {
+        check(epochCounter() == c0) { "plan refused: a Delete all happened meanwhile" }
         check(prefs.edit().putLong(KEY_GEN, m.gen).putString(KEY_MSG, Wire.encode(m)).commit()) { "plan state not persisted" }
     }
 

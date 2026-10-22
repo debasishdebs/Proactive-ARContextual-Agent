@@ -12,13 +12,10 @@ import com.rokid.context.memory.db.ContextDatabase
 class CanvasSlice3Forget(private val db: ContextDatabase, private val clock: () -> Long = System::currentTimeMillis) {
     data class Result(val tombstonedTraceIds: List<String>, val labelsDeleted: Int, val resultsInvalidated: Int)
 
+    fun dao() = db.canvasSlice3Dao()
+
     suspend fun forgetRange(fromMs: Long, toMs: Long): Result = db.withTransaction {
-        val dao = db.canvasSlice3Dao()
-        val ids = dao.liveTraces().filter { it.startedAtMs <= toMs && (it.endedAtMs ?: Long.MAX_VALUE) >= fromMs }.map { it.traceId }
-        val now = clock()
-        ids.forEach { dao.tombstoneTrace(it, now) }
-        val labels = dao.deleteLabelsBetween(fromMs, toMs)
-        val invalid = dao.invalidateBySources(ids, fromMs, toMs, labelRevChanged = labels > 0)
-        Result(ids, labels, invalid)
+        val o = db.canvasSlice3Dao().forgetRangeTx(fromMs, toMs, clock())
+        Result(o.tombstonedTraceIds, o.labelsDeleted, o.resultsInvalidated)
     }
 }

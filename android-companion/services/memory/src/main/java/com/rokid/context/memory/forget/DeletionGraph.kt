@@ -28,7 +28,7 @@ object DeletionGraph {
         w("canvas_helper_job", "laptop-helper jobs; they carry photo ids"),
         w("canvas_run", "photo experiment runs"), w("canvas_run_item", "per-photo run outputs"), w("canvas_score", "per-photo scores"),
         w("canvas_live_trace", "per-photo live outputs"),
-        k("canvas_meta", "the monotonic labelRev counter (bumped by the wipe so no earlier result reads as current); no user data"),
+        k("canvas_meta", "the monotonic labelRev counter (bumped by the wipe so no earlier result reads as current); the forgetRanges fence value is emptied by the wipe; otherwise no user data"),
         k("canvas_group_state", "publish-group recovery record: gen, hashes, mode, install id and state; needed to recover a deployed plan; no user data"),
         k("canvas_pipeline", "pipelines are user-authored prompts and settings"), k("canvas_pipeline_version", "frozen pipeline versions: prompts"),
         k("canvas_publish", "publish records: hashes and snapshots of prompts, no photo data"),
@@ -45,6 +45,17 @@ object DeletionGraph {
     /** The GLASSES app's prefs (a different device: Delete all reaches them through the new epoch in `pc_trace_ctl`, not by this process). */
     val GLASSES_PREFS: List<Entry> = listOf(
         w("mark_queue", "unsent pc_mark outbox; MarkOutbox.onEpoch clears it when the phone's installId or deletion counter changes"),
+    )
+
+    /** Files and folders of the GLASSES recorder under its `imu` root (names only; the glasses delete them on a new epoch or a forget request). */
+    val GLASSES_FILES: List<Entry> = listOf(
+        w("imu", "the glasses recorder's root folder (holds the rest)"),
+        w("traces", "closed IMU traces; deleted by an epoch wipe and by a forget range or tombstone"),
+        w("imu_trace_tmp", "a trace being written; deleted by an epoch wipe, a forget, and at start-up"),
+        k("trace_epoch", "the last deletion epoch seen (install id and counter): the fence itself, no user data; written only after a wipe succeeded"),
+        k("trace_epoch.part", "its atomic-write temp file"),
+        w("trace_forget", "pending forget requests (ranges and ids); removed once carried out"),
+        w("trace_forget.part", "its atomic-write temp file"),
     )
 
     /** Folders under `filesDir`. */

@@ -21,18 +21,43 @@ class CanvasForgetCoordinator(
     private val filesDir: File,
     private val collect: CollectSession,
     private val send: suspend (TraceControl) -> Unit,
+    /** Hub-held state that Delete all must drop from memory too (the desired capture plan that is re-sent at every session). */
+    private val onWiped: () -> Unit = {},
 ) : ForgetListener {
     /** The user forgot the time range. Returns what was tombstoned. */
     suspend fun forgetRange(fromMs: Long, toMs: Long): CanvasSlice3Forget.Result {
         val r = forget.forgetRange(fromMs, toMs)
-        deleteTraceFiles(r.tombstonedTraceIds)
-        ForgetListeners.rangeForgotten(fromMs, toMs, r.tombstonedTraceIds)
-        trySend(collect.control(tombstones = r.tombstonedTraceIds, forgetFromMs = fromMs, forgetToMs = toMs))
+        afterRange(fromMs, toMs, r.tombstonedTraceIds)
+        ForgetListeners.rangeForgotten(fromMs, toMs, r.tombstonedTraceIds, except = this)
         return r
     }
 
+    /** Files and glasses follow a committed range forget (also a photo's time link, through [ForgetListeners]). Idempotent. */
+    override suspend fun onRangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) = afterRange(fromMs, toMs, traceIds)
+
+    /** A photo was forgotten or expired: its marks and traces went in the same transaction (the time link); any trace folder that is still there is removed now. */
+    override suspend fun onFramesForgotten(frameIds: List<String>) { sweepTombstoned() }
+
+    private suspend fun afterRange(fromMs: Long, toMs: Long, ids: List<String>) {
+        deleteTraceFiles(ids)
+        sweepTombstoned() // also recovers a crash between the transaction and the file delete
+        trySend(collect.control(tombstones = ids, forgetFromMs = fromMs, forgetToMs = toMs))
+    }
+
+    /** Removes the folder of every tombstoned trace that is still on disk (the tombstone is durable, so a crash after the DB commit is repaired here). Returns the folders removed. */
+    suspend fun sweepTombstoned(): Int = sweepTombstoned(forget.dao(), filesDir)
+
     override suspend fun onDeleteAll() {
+        try { onWiped() } catch (e: Exception) { /* the persisted state is already cleared */ }
         trySend(collect.refresh()) // the persisted NEW epoch, collect off (the prefs were cleared): the glasses wipe what they hold
+    }
+
+    companion object {
+        suspend fun sweepTombstoned(dao: com.rokid.context.memory.db.CanvasSlice3Dao, filesDir: File): Int {
+            val root = File(filesDir, FencedFiles.TRACES_DIR)
+            val dirs = root.listFiles()?.filter { it.isDirectory } ?: return 0
+            return dirs.count { d -> (try { dao.trace(d.name)?.tombstoned == true } catch (e: Exception) { false }) && d.deleteRecursively() }
+        }
     }
 
     /** Trace folders of [traceIds] under `canvas_traces`; a bad id or a missing folder is skipped. Returns the folders removed. */

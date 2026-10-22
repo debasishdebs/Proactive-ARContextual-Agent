@@ -91,10 +91,11 @@ class SweepService(
             val sources = loaded.map { (id, t) -> TraceSource(id, t.revision, t.fromMs, t.toMs) }
             val baseHash = PlanJson.configHash(req.base)
             val id = newId()
-            dao.insertSweep(CanvasSweepEntity(
+            val row = CanvasSweepEntity(
                 sweepId = id, paramsJson = req.paramsJson, sourcesJson = TraceSources.encode(sources), labelRev = labelRev, jobState = "RUNNING",
                 fromMs = sources.minOf { it.fromMs }, toMs = sources.maxOf { it.toMs }, createdAt = clock(), configHash = baseHash,
-            ))
+            )
+            if (!dao.insertSweepFenced(row, sources, labelRev, f)) throw ReplayUnknownTrace(req.traceIds.first())
             val job = scope.launch(start = CoroutineStart.LAZY) { run(id, loaded.map { it.second }, req, points, sources, labelRev, baseHash, f) }
             val r = Running(id, job)
             running = r

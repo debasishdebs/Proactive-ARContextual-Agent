@@ -42,6 +42,19 @@ object MemoryWipe {
      */
     val generation = AtomicLong(0)
 
+    private val resumeLock = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Start-up recovery (S57): a Delete all whose epoch was committed but whose cleanup did not finish (a crash, or a deletion that failed) is finished now. The cleanup
+     * is idempotent. Returns whether a pending wipe was found. Safe to call from several places; one runs at a time.
+     */
+    suspend fun resumeIfPending(context: Context, db: ContextDatabase = MemoryGraph.get(context).db): Boolean {
+        if (!DeletionEpochStore.of(context).wipePending()) return false
+        if (!resumeLock.tryLock()) return true
+        try { deleteAll(context, db, resume = true) } finally { resumeLock.unlock() }
+        return true
+    }
+
     /** Test seam: runs right after the deletion epoch is committed and before anything is deleted (a test throws here to model a crash). */
     @Volatile internal var afterEpochCommit: (DeletionEpoch) -> Unit = {}
 
@@ -54,10 +67,12 @@ object MemoryWipe {
      * leaving the Memory screen mid-wipe (ViewModel cleared) must not stop it part-way; the caller sees its
      * cancellation only after the wipe has finished.
      */
-    suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db): Int = withContext(Dispatchers.IO + NonCancellable) {
+    suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db, resume: Boolean = false): Int = withContext(Dispatchers.IO + NonCancellable) {
         // S57: the persisted deletion epoch (`counter + 1`, `wipedAtMs`) is committed BEFORE anything is deleted, so a crash or power loss mid-wipe still
         // leaves a durable record that everything recorded under the old counter is stale. If it cannot be committed nothing is deleted.
-        afterEpochCommit(DeletionEpochStore.of(context).commitWipe(System.currentTimeMillis()))
+        // The same commit writes the "wipe pending" marker: if the process dies before the cleanup below finished, the next start finishes it ([resumeIfPending]).
+        if (!resume) afterEpochCommit(DeletionEpochStore.of(context).commitWipe(System.currentTimeMillis()))
+        var leftovers = 0 // artefacts that still exist after their deletion was attempted: the marker stays and the next start retries
         // Fix round 3: never import here (a failing import must not block Delete all). An import in progress is
         // waited for (it holds the lock until it finishes or throws); then it is marked done and never runs again.
         MemoryGraph.markLegacyImportDone(context)
@@ -97,22 +112,25 @@ object MemoryWipe {
                         f.isFile && !(dir == inbox && f.parentFile == inbox && f.name !in inboxAtMark && f.lastModified() >= wipedAt)
                     }.toList()
                 }
-                val n = (listed + folders).distinctBy { it.absolutePath }.count { it.exists() && it.delete() }
+                val all = (listed + folders).distinctBy { it.absolutePath }
+                val n = all.count { it.exists() && it.delete() }
+                leftovers += all.count { it.exists() }
                 // Fix round 1 I3: the deleted frames may have freed the space the fence record needs; else it fails closed.
                 if (!marked && !WipeFence.markStarted(context.filesDir, wipedAt, wipedElapsed)) Log.w("MemoryWipe", "Delete all fence unknown: frames are held until it is recorded")
                 n
             }
-            LegacyImporter.LEGACY_FILES.forEach { File(context.filesDir, it).delete() }
-            MemoryExport.dir(context).listFiles()?.filter { it.isFile }?.forEach { it.delete() }
+            LegacyImporter.LEGACY_FILES.forEach { File(context.filesDir, it).let { f -> f.delete(); if (f.exists()) leftovers++ } }
+            MemoryExport.dir(context).listFiles()?.filter { it.isFile }?.forEach { f -> f.delete(); if (f.exists()) leftovers++ }
             // Final review I3: the debug photo test's labels (queries.json, the user's free text about their photos) and results.
-            File(context.filesDir, PHOTO_EVAL_DIR).deleteRecursively()
+            File(context.filesDir, PHOTO_EVAL_DIR).let { it.deleteRecursively(); if (it.exists()) leftovers++ }
             // Slice 3a: sealed traces, pulled imports and orphan tmp files (the tables went with wipeMemory). The epoch above already refuses a fenced publish.
-            FencedFiles.DELETE_ALL_DIRS.forEach { File(context.filesDir, it).deleteRecursively() }
+            FencedFiles.DELETE_ALL_DIRS.forEach { File(context.filesDir, it).let { d -> d.deleteRecursively(); if (d.exists()) leftovers++ } }
             // Slice 3a privacy: the persisted capture-plan state and the Collect session window go too.
-            WIPED_PREFS.forEach { context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().commit() }
+            WIPED_PREFS.forEach { if (!context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().commit()) leftovers++ }
             MemoryMaintenance.vacuum(db)
             MemoryMaintenance.checkpoint(db)
             // Slice 3a (S58): files and devices follow through the registered listeners (the glasses get the NEW epoch). After everything above; never throws.
+            if (leftovers == 0) DeletionEpochStore.of(context).clearWipePending() else Log.w("MemoryWipe", "Delete all left $leftovers artefact(s): the cleanup is retried at the next start")
             com.rokid.context.memory.forget.ForgetListeners.deleteAll()
             deleted
         } finally {
