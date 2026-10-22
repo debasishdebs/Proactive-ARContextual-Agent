@@ -137,7 +137,7 @@ class PlanController(
 
     /** The effective plan state for the heartbeat. */
     fun status(): PlanStatus = synchronized(lock) {
-        running?.let { (id, hash) -> return PlanStatus(hash, id.gen, id.mode, null) }   // the plan really running, not a staged replacement
+        running?.let { (id, hash) -> return PlanStatus(hash?.take(8), id.gen, id.mode, null) }   // the plan really running, not a staged replacement
         val st = receiver.current ?: return PlanStatus(null, 0, PlanMode.SETTINGS, null)
         val reason = st.terminal[st.appliedGen]
         val mode = if (st.effective && reason == null) st.mode else PlanMode.SETTINGS
@@ -146,6 +146,7 @@ class PlanController(
 
     /** The plan in force for the IMU trace: gen, full config hash and mode. No effective plan = gen 0, no hash, SETTINGS (what the trace's `pl` event calls "no plan"). */
     fun traceKey(): PlanKey = synchronized(lock) {
+        running?.let { (id, hash) -> return PlanKey(id.gen, hash, id.mode) }   // the plan really running, never a staged replacement
         val st = receiver.current ?: return PlanKey(0, null, PlanMode.SETTINGS)
         val effective = st.effective && st.terminal[st.appliedGen] == null && st.mode != PlanMode.SETTINGS && st.configHash != null
         if (effective) PlanKey(st.appliedGen, st.configHash, st.mode) else PlanKey(0, null, PlanMode.SETTINGS)
@@ -246,7 +247,7 @@ class PlanController(
     /** After an activation was persisted (or a persisted effective plan was resumed): remember what now drives capture. */
     private fun markRunning(st: ReceiverState) {
         running = if ((st.mode == PlanMode.TRIAL || st.mode == PlanMode.LIVE) && st.appliedGen !in st.terminal)
-            PlanId(st.phoneInstall, st.appliedGen, st.mode) to st.configHash?.take(8) else null
+            PlanId(st.phoneInstall, st.appliedGen, st.mode) to st.configHash else null
         runningDeadline = if (running != null && st.mode == PlanMode.TRIAL) st.trialStartElapsed?.let { it + (st.trialMaxMs ?: 0L) } else null
     }
 
