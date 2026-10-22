@@ -70,8 +70,9 @@ class CanvasRunBatchForgetTest {
         assertEquals(true, "intent" in before && "extract_workout" in before)
         ForgetService(db, ProposalRepository(db.proposalDao(), db.actionDao(), db)) { 1_000 }.forgetMoment("f2")
         assertEquals(0, rows(run, "f2").size)
-        // the three photos shared ONE extract call, so its rows go with f2 (S25); every per-photo row (input, intent, route, write) stays
-        for (f in listOf("f1", "f3")) assertEquals(before - "extract_workout", nodes(f))
+        // the three photos shared ONE extract call, so its rows go with f2 (S25) AND so do the rows derived from it (the write preview carries the
+        // call's text, lineage); only the per-photo rows from before the call (input, intent, route) stay
+        for (f in listOf("f1", "f3")) assertEquals(before - setOf("extract_workout", "write"), nodes(f))
         assertEquals(true, db.canvasDao().scores(run).none { it.frameId == "f2" })
     }
 }
