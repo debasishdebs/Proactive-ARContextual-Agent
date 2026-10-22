@@ -247,4 +247,25 @@ class PlanReceiverTest {
         assertEquals(7_000L, r.revert("auto:ceiling").sessionStartMs)
         assertEquals(7_000L, r.onMessage(m).sessionStartMs)          // terminal re-ack
     }
+
+    @Test fun revertFailsClosedWhenTheWriteFails() {
+        class Flaky : PlanPersistence {
+            var s: ReceiverState? = null; var fail = false
+            override fun load() = s
+            override fun commit(s: ReceiverState) { if (fail) throw java.io.IOException("disk"); this.s = s }
+        }
+        val p = Flaky(); val r = PlanReceiver(p, { clock }, { boot })
+        r.onMessage(msg(1, PlanMode.TRIAL, 60_000)); r.activated(1)
+        p.fail = true
+        val a = r.revert("auto:ceiling")                      // must not throw
+        assertEquals(PlanAckState.REVERTED, a.state)
+        assertEquals(PlanMode.SETTINGS, r.current!!.mode)     // reverted in memory
+        assertEquals("auto:ceiling", r.current!!.terminal[1])
+        assertEquals(true, r.persistPending)
+        assertEquals(PlanMode.TRIAL, p.s!!.mode)              // the disk still has the TRIAL
+        p.fail = false
+        r.tick(ContextState.REST, clock)                      // the retry
+        assertEquals(false, r.persistPending)
+        assertEquals("auto:ceiling", p.s!!.terminal[1])
+    }
 }

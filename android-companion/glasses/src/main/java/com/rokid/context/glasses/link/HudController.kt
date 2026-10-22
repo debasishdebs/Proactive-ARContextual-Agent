@@ -77,6 +77,10 @@ class HudController(
      */
     @Volatile var capsAck: () -> com.rokid.context.core.model.CapturePlanAck =
         { com.rokid.context.core.model.CapturePlanAck(gen = 0, caps = com.rokid.context.capture.plan.PlanReceiver.CAPS) }
+    /** The state of the plan held (null = none ever): sent as a SEPARATE ack after the caps announcement, which stays gen 0 and caps-only (S74). */
+    @Volatile var statusAck: () -> com.rokid.context.core.model.CapturePlanAck? = { null }
+    /** `pc_capture_plan` (slice 3a): a plan message of this session; the runtime's plan controller answers with acks through [sendPlanAck]. */
+    @Volatile var onCapturePlan: (com.rokid.context.core.model.CapturePlanMessage) -> Unit = {}
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
     @Volatile var onWear: (Boolean?) -> Unit = {}
     /** `pc_phone_ctx`: whether the phone is in use (screen on, unlocked); null = the session closed (unknown again). */
@@ -103,6 +107,7 @@ class HudController(
         bridge.subscribe(Channels.WEAR) { text -> (Wire.decode<WearMessage>(text) as? Decoded.Ok)?.value?.let(::onWearMessage) }
         bridge.subscribe(Channels.PHONE_CONTEXT) { text -> (Wire.decode<PhoneContextMessage>(text) as? Decoded.Ok)?.value?.let(::onPhoneContextMessage) }
         bridge.subscribe(Channels.MOTION_CONTEXT) { text -> (Wire.decode<MotionContextMessage>(text) as? Decoded.Ok)?.value?.let(::onMotionContextMessage) }
+        bridge.subscribe(Channels.CAPTURE_PLAN) { text -> (Wire.decode<com.rokid.context.core.model.CapturePlanMessage>(text) as? Decoded.Ok)?.value?.let(::onPlanMessage) }
         bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { Log.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
         bridge.setConnectionListener(connected = { Log.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
         scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }
@@ -111,6 +116,12 @@ class HudController(
     private fun onPhoneContextMessage(m: PhoneContextMessage) {
         if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_phone_ctx ignored"); return }
         onPhoneUse(m.inUse)
+    }
+
+    private fun onPlanMessage(m: com.rokid.context.core.model.CapturePlanMessage) {
+        // A transport copy older than this session is stale; the phone re-sends its current gen on the new session.
+        if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_capture_plan ignored"); return }
+        onCapturePlan(m)
     }
 
     private fun onMotionContextMessage(m: MotionContextMessage) {
@@ -186,6 +197,7 @@ class HudController(
             Log.i(TAG, "session open")
             sendHello()
             sendCapsAck()
+            try { statusAck()?.let { bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(it)) } } catch (e: Exception) { Log.w(TAG, "plan status ack failed: ${e.javaClass.simpleName}") }
             onSessionOpened()
         }
     }
@@ -217,6 +229,9 @@ class HudController(
     fun onActivityStart() { exited = false }
 
     fun send(command: Command): Boolean = bridge.send(Channels.CMD, Wire.encode(CommandEnvelope(command = command))) == 0
+
+    /** `pc_capture_plan_ack`: only while the session is open (a closed session gets the status ack of [capsAck] on its next open). */
+    fun sendPlanAck(a: com.rokid.context.core.model.CapturePlanAck): Boolean = _sessionOpen.value && bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(a)) == 0
 
     /** `pc_motion_hint`: the glasses classifier state for the phone's hub, only while the session is open. */
     fun sendMotionHint(h: MotionHint): Boolean = _sessionOpen.value && bridge.send(Channels.MOTION_HINT, Wire.encode(h)) == 0
