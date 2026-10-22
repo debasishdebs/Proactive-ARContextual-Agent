@@ -361,7 +361,7 @@ class CanvasBackendImpl(
     override suspend fun cancelRun(id: String): Boolean = runner.cancel(id)
 
     override suspend fun deleteRun(id: String): Boolean {
-        if (runner.active.value == id) throw CanvasRunner.Busy()
+        if (runner.isBusy(id)) throw CanvasRunner.Busy() // the active run or either run of a live A/B group (a QUEUED B included)
         if (dao.run(id) == null) return false
         dao.deleteRun(id)
         return true

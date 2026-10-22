@@ -582,7 +582,7 @@ class CanvasRunnerTest {
         assertTrue(r.cancelGroup(st.group))
         gate.complete(Unit); finish(r)
         assertEquals("CANCELLED", dao.run(st.runB)?.status)
-        assertTrue(dao.run(st.runA)?.status == "CANCELLED" || dao.run(st.runA)?.status == "DONE")
+        assertEquals("CANCELLED", dao.run(st.runA)?.status)
         assertFalse(r.cancelGroup(st.group)) // nothing left to cancel
     }
 
@@ -699,5 +699,51 @@ class CanvasRunnerTest {
         assertEquals(101 + 102 + 103 + 104 + 105, rows.sumOf { it.promptTokens ?: 0 })
         val u = RunUsage.of(dao.items(run.runId))
         assertEquals(5, u.calls)
+    }
+
+    // ---- fix round 1 ----
+
+    @Test fun queuedBIsBusyAndDeletedBNeverRuns() = runBlocking<Unit> {
+        val started = CompletableDeferred<Unit>(); val gate = CompletableDeferred<Unit>()
+        val order = mutableListOf<String>()
+        val r = runner(liveFakes() + (NodeTypes.VISION_EXTRACT to pausedExtract(started, gate)), context = { id -> order += id; idleContext(id) })
+        val a = DefaultPipelines.liveExtract()
+        val st = beginAb(r, a, variantB(a), frames(2))
+        withTimeout(10_000) { started.await() }
+        assertTrue(r.isBusy(st.runA)); assertTrue(r.isBusy(st.runB)); assertFalse(r.isBusy("other"))
+        dao.deleteRun(st.runB) // the row vanishes anyway (a delete that raced)
+        gate.complete(Unit); finish(r)
+        assertEquals(listOf(st.runA), order)            // B made no model call and built no context
+        assertTrue(dao.items(st.runB).isEmpty())
+        assertNull(dao.run(st.runB))
+        assertFalse(r.isBusy(st.runB))
+    }
+
+    @Test fun forgetBetweenChunksDoesNotSendTheForgottenPhoto() = runBlocking<Unit> {
+        var chunks = 0
+        val r = runner(liveFakes(onExtractChunk = {
+            if (++chunks == 1) runBlocking { MemoryGraph.get(app).db.forgetDao().insertTombstone(ForgetTombstoneEntity("f4", 1)) }
+        }))
+        val run = runAll(r, DefaultPipelines.liveExtract(), frames(4))
+        assertEquals(1, chunks)                         // the second chunk (f4) was never sent
+        assertEquals(listOf("f1", "f2", "f3"), seen["extract"]?.sorted())
+        assertEquals("CANCELLED", run.status)
+    }
+
+    @Test fun wipeBetweenChunksStopsBeforeTheNextCall() = runBlocking<Unit> {
+        var chunks = 0
+        val r = runner(liveFakes(onExtractChunk = { if (++chunks == 1) gen++ }))
+        val run = runAll(r, DefaultPipelines.liveExtract(), frames(4))
+        assertEquals(1, chunks)
+        assertEquals("CANCELLED", run.status)
+    }
+
+    @Test fun bStartsAtItsOwnTime() = runBlocking<Unit> {
+        val lastNode = fake(NodeTypes.MEMORY_WRITE, onChunk = { now += 5_000 }) { _, it -> NodeResult(it.frameId, CanvasValue.Preview(emptyList())) }
+        val r = runner(liveFakes() + (NodeTypes.MEMORY_WRITE to lastNode))
+        val a = DefaultPipelines.liveExtract()
+        val st = beginAb(r, a, variantB(a), frames(1)); finish(r)
+        assertEquals(10_000L, dao.run(st.runA)!!.startedAt)
+        assertTrue(dao.run(st.runB)!!.startedAt >= 15_000L)
     }
 }

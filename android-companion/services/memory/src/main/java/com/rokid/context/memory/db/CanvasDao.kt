@@ -31,6 +31,8 @@ abstract class CanvasDao {
     @Query("SELECT * FROM canvas_run ORDER BY startedAt DESC LIMIT :limit") abstract suspend fun runs(limit: Int): List<CanvasRunEntity>
     @Query("SELECT * FROM canvas_run ORDER BY startedAt DESC LIMIT :limit") abstract fun observeRuns(limit: Int): Flow<List<CanvasRunEntity>>
     @Query("UPDATE canvas_run SET status = 'INTERRUPTED', finishedAt = :now WHERE status = 'RUNNING'") abstract suspend fun interruptRunning(now: Long): Int
+    /** QUEUED to RUNNING with the real start time; 0 rows = the row is gone or no longer queued, so the caller must not run it. */
+    @Query("UPDATE canvas_run SET status = 'RUNNING', startedAt = :now WHERE runId = :id AND status = 'QUEUED'") abstract suspend fun markStarted(id: String, now: Long): Int
     /** S31 recovery: the QUEUED and RUNNING rows of an A/B group are CANCELLED (B must never start after a restart). Returns the rows changed. */
     @Query("UPDATE canvas_run SET status = 'CANCELLED', finishedAt = :now WHERE abGroup IS NOT NULL AND status IN ('RUNNING', 'QUEUED')") abstract suspend fun cancelOpenGroupRuns(now: Long): Int
 

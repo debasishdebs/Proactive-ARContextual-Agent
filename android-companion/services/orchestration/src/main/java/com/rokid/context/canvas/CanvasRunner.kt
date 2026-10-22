@@ -107,6 +107,9 @@ class CanvasRunner(
         return true
     }
 
+    /** True for the active run and for either run of the live A/B group (a QUEUED B included). */
+    fun isBusy(runId: String): Boolean = _active.value == runId || group?.owns(runId) == true
+
     private fun isCancelled(runId: String) = cancelled.get() == runId || group?.let { it.owns(runId) && it.cancelled } == true
 
     private suspend fun price(p: Pipeline, ids: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Priced {
@@ -262,9 +265,11 @@ class CanvasRunner(
                 try {
                     val first = execute(g.runA, a, ids)
                     if (first == "DONE" && !g.cancelled) {
-                        dao.updateRun(g.runB, "RUNNING", 0, 0, null)
-                        _active.value = g.runB
-                        execute(g.runB, b, ids)
+                        // B's row may be gone (a delete that raced): then B must not spend a single model call.
+                        if (dao.markStarted(g.runB, clock()) > 0) {
+                            _active.value = g.runB
+                            execute(g.runB, b, ids)
+                        }
                     }
                 } catch (c: CancellationException) {
                     throw c
@@ -345,6 +350,8 @@ class CanvasRunner(
                 for (chunk in queue.chunked(ex?.chunkSize(node)?.coerceAtLeast(1) ?: Int.MAX_VALUE)) {
                     if (isCancelled(runId)) { status = "CANCELLED"; break@stop }
                     if (hot()) { status = "STOPPED_HOT"; break@stop }
+                    // Pre-call fence: after a wipe or a Forget the loaded bytes must not be sent again (the commit fence alone only drops the write).
+                    if (generation() != gen || dao.tombstonedAmong(chunk.map { it.frameId }) > 0) { status = "CANCELLED"; break@stop }
                     val results = ex?.run(node, chunk, ctx)?.associateBy { it.frameId }.orEmpty()
                     for (item in chunk) {
                         val r = results[item.frameId] ?: NodeResult(item.frameId, null, error = if (ex == null) "no_executor" else "no_result")
