@@ -1,5 +1,5 @@
 import { nextId, addNode, removeNode, connect, disconnect, setParam, setTitle, branchesOf } from '../../main/assets/canvas/graph.js';
-import { nodeTypes, livePipe, eq, ok } from './fixtures.js';
+import { nodeTypes, allTypes, captureTypes, livePipe, eq, ok } from './fixtures.js';
 
 const NT = (type) => nodeTypes.find((n) => n.type === type);
 const ID = /^[a-z][a-z0-9_]{0,31}$/;
@@ -145,5 +145,22 @@ export const tests = {
     }
     const r = addNode(livePipe(), Object.assign({}, NT('ai.prompt'), { short: 'A Very-Long Short Name That Goes On And On' }), null, nodeTypes);
     ok(ID.test(r.pipe.nodes[r.pipe.nodes.length - 1].id));
+  },
+
+  // ---- schema 2
+  addingACaptureNodeBumpsTheSchemaAndFillsDefaults() {
+    const t = captureTypes.find((x) => x.type === 'imu.head_motion');
+    const r = addNode({ schema: 1, id: 'p', name: 'p', nodes: [], edges: [] }, t, null, allTypes);
+    eq(r.pipe.schema, 2, 'a schema-1 draft becomes schema 2 when a capture node joins');
+    eq(r.pipe.nodes[0].params, { onsetRadS: 0.6, bridgeMs: 250 });
+    eq(r.pipe.nodes[0].id, 'head_1');
+    const e = addNode(r.pipe, captureTypes.find((x) => x.type === 'capture.image'), null, allTypes);
+    eq(e.pipe.nodes[1].params, { hamming: 10, ringCompare: 'all' }, 'int and enum defaults');
+    const tb = addNode(r.pipe, captureTypes.find((x) => x.type === 'policy.capture_rate'), null, allTypes);
+    eq(tb.pipe.nodes[1].params, {}, 'a table starts empty: every cell inherits');
+  },
+  slice2NodesKeepSchema1() {
+    const r = addNode(livePipe(), NT('ai.prompt'), 'extract', nodeTypes);
+    eq(r.pipe.schema, 1);
   },
 };
