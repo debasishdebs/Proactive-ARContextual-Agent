@@ -76,7 +76,11 @@ export async function api(method, path, body) {
 // ---- cleanup per view ----
 let leaveFns = [];
 let imageCache = new Map();
+let imageStatus = new Map(); // path -> HTTP status of a failed image load (404: the photo was forgotten)
 let generation = 0;
+let guardFn = null; // () => confirm text | null: asked before the view is left (unsaved editor changes)
+let lastHash = '';
+let restoring = false;
 
 function onLeave(fn) { leaveFns.push(fn); }
 
@@ -85,6 +89,7 @@ function leave() {
   for (const fn of leaveFns.splice(0)) { try { fn(); } catch (e) { /* ignore */ } }
   for (const p of imageCache.values()) p.then((u) => { if (u) URL.revokeObjectURL(u); }, () => {});
   imageCache = new Map();
+  imageStatus = new Map();
 }
 
 /** A blob: URL for an image route, fetched with the bearer token. Cached until the view changes. */
@@ -92,7 +97,7 @@ function imageUrl(path) {
   if (imageCache.has(path)) return imageCache.get(path);
   const gen = generation;
   const p = request('GET', path).then(async (res) => {
-    if (!res.ok) return null;
+    if (!res.ok) { imageStatus.set(path, res.status); return null; }
     const url = URL.createObjectURL(await res.blob());
     if (gen !== generation) { URL.revokeObjectURL(url); return null; }
     return url;
@@ -101,9 +106,13 @@ function imageUrl(path) {
   return p;
 }
 
-/** Loads [path] into the <img> [img]; lazy (when visible) if [lazy]. */
-function loadImage(img, path, lazy) {
-  const go = () => imageUrl(path).then((u) => { if (u) img.setAttribute('src', u); else img.setAttribute('alt', 'photo unavailable'); });
+/** Loads [path] into the <img> [img]; lazy (when visible) if [lazy]. onFail(status) runs when the image can't be shown. */
+function loadImage(img, path, lazy, onFail) {
+  const go = () => imageUrl(path).then((u) => {
+    if (u) { img.setAttribute('src', u); return; }
+    img.setAttribute('alt', 'photo unavailable');
+    if (onFail) onFail(imageStatus.get(path));
+  });
   if (!lazy || typeof IntersectionObserver === 'undefined') { go(); return; }
   const obs = new IntersectionObserver((entries) => {
     if (entries.some((e) => e.isIntersecting)) { obs.disconnect(); go(); }
@@ -113,10 +122,10 @@ function loadImage(img, path, lazy) {
 }
 
 // ---- modal ----
-function modal(title, content, actions) {
+function modal(title, content, actions, cls) {
   const overlay = h('div', { class: 'overlay' });
   const close = () => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
-  const box = h('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+  const box = h('div', { class: 'modal' + (cls ? ' ' + cls : ''), role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
     h('h2', null, title), content,
     h('div', { class: 'row end' }, (actions || []).map((a) => btn(a.label, () => a.run(close), a.cls || 'btn')), btn('Close', close, 'btn')));
   overlay.appendChild(box);
@@ -125,7 +134,10 @@ function modal(title, content, actions) {
   return close;
 }
 
-const ctx = { api, ApiError, showError, showNotice, clearBanner, imageUrl, loadImage, modal, onLeave, go };
+/** A view with unsaved work registers fn: it returns the confirm text, or null when there is nothing to lose. */
+function guard(fn) { guardFn = fn; }
+
+const ctx = { api, ApiError, showError, showNotice, clearBanner, imageUrl, loadImage, modal, onLeave, go, guard, reload: () => route(true) };
 
 function go(hash) { location.hash = hash; }
 
@@ -171,8 +183,15 @@ function renderNav() {
   }, 'btn small'));
 }
 
-async function route() {
+async function route(force) {
+  if (restoring) { restoring = false; return; } // the hash we just put back after a declined leave
   if (!token) { showPairing(''); return; }
+  if (force !== true && guardFn) {
+    const text = guardFn();
+    if (text && !window.confirm(text)) { restoring = true; location.hash = lastHash; return; }
+  }
+  guardFn = null;
+  lastHash = location.hash;
   leave();
   clearBanner();
   renderNav();
@@ -191,15 +210,16 @@ async function route() {
 }
 
 function boot() {
+  lastHash = location.hash;
   const b = parseBootHash(location.hash);
   if (b.token !== undefined) {
     setToken(b.token);
     history.replaceState(null, '', '/#/');
   } else if (b.pair !== undefined) {
     history.replaceState(null, '', '/#/');
-    if (!token) { showPairing(b.pair); window.addEventListener('hashchange', route); return; }
+    if (!token) { showPairing(b.pair); window.addEventListener('hashchange', () => route()); return; }
   }
-  window.addEventListener('hashchange', route);
+  window.addEventListener('hashchange', () => route());
   route();
 }
 

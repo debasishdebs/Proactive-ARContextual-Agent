@@ -9,7 +9,11 @@ import org.junit.Test
 /** A source scan of the web UI bundle: the CSP forbids inline script and style, and model output is untrusted (no HTML sinks). */
 class CanvasAssetsTest {
     private val dir = File("src/main/assets/canvas")
-    private val names = listOf("index.html", "app.js", "dom.js", "dag.js", "views.js", "boot.js", "jsx-shim.js", "style.css")
+    private val names = listOf(
+        "index.html", "app.js", "dom.js", "views.js", "boot.js", "style.css", "photos.js",
+        "graph.js", "validate.js", "keys.js", "flowadapter.js", "paramform.js", "draftstate.js",
+        "editorlogic.js", "editorflow.js", "floweditor.js", "jsx-shim.js",
+    )
     private fun text(n: String) = File(dir, n).readText()
     private val js get() = names.filter { it.endsWith(".js") }
     /** Our own files: vendored `vendor-*` files are pinned by SHA-256 (VendorLockTest), not scanned. */
@@ -82,9 +86,31 @@ class CanvasAssetsTest {
     }
 
     @Test fun checkReadsLiveEditorValues() {
-        val v = text("views.js")
-        assertTrue(v.contains("tplArea.value"))
-        assertTrue(v.contains("schArea.value"))
+        val f = text("floweditor.js")
+        assertTrue("Check must send the text as typed now", f.contains("texts.current"))
+        assertTrue(text("editorlogic.js").contains("export function checkPayload"))
+    }
+
+    @Test fun floweditorTouchesReactOnlyInsideMount() {
+        val f = text("floweditor.js")
+        val top = f.substring(0, f.indexOf("export function mountEditor"))
+        assertFalse("floweditor.js must not read globals at import time", top.contains("globalThis") || top.contains("React."))
+        for (n in listOf("editorlogic.js", "editorflow.js", "photos.js", "graph.js", "validate.js", "keys.js", "flowadapter.js", "paramform.js", "draftstate.js")) {
+            val t = text(n)
+            assertFalse("$n (pure) must not touch React", Regex("globalThis|React\\.[a-z]|ReactDOM|useState|createElement|document\\.").containsMatchIn(t))
+        }
+    }
+
+    @Test fun oldHandBuiltDagIsGone() {
+        assertFalse(File(dir, "dag.js").exists())
+        assertFalse(File("src/test/js/dag.test.js").exists())
+        for (f in all) assertFalse("${f.name} still imports dag.js", f.readText().contains("dag.js"))
+    }
+
+    @Test fun photosNeverPutTheTokenInAUrl() {
+        val t = text("photos.js")
+        assertTrue(t.contains("/api/frames/"))
+        assertFalse(t.contains("token"))
     }
 
     @Test fun pollStopsOnlyOnRunState() {

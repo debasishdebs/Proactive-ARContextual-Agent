@@ -1,4 +1,4 @@
-import { fields, coerce } from '../../main/assets/canvas/paramform.js';
+import { fields, coerce, promptParts, coercePromptPart } from '../../main/assets/canvas/paramform.js';
 import { nodeTypes, eq, ok } from './fixtures.js';
 
 const desc = (type) => nodeTypes.find((t) => t.type === type).params;
@@ -84,7 +84,37 @@ export const tests = {
     eq(g.find((x) => x.name === 'images').value, false);
     eq(g.find((x) => x.name === 'template').value, '');
     eq(g.find((x) => x.name === 'role').value, '');
-    eq(fields(desc('route.switch'), {}, ctx)[0].value, '');
+    eq(fields(desc('route.switch'), {}, ctx).find((x) => x.name === 'cases').value, '');
     eq(fields(undefined, {}, ctx), []);
+  },
+  switchFieldDefaultsToActivity() {
+    const f = fields(desc('route.switch'), {}, ctx).find((x) => x.name === 'field');
+    eq([f.control, f.value], ['text', 'activity'], 'a text param shows its descriptor default when absent');
+    eq(fields(desc('route.switch'), { field: 'mood' }, ctx).find((x) => x.name === 'field').value, 'mood');
+    eq(coerce(f, 'mood'), { value: 'mood' });
+  },
+  promptPartsLiveAreReadOnly() {
+    const f = field('ai.vision_extract', 'prompt', { prompt: { source: 'live' } });
+    eq(promptParts(f, { template: 'T', schema: '{"a":1}' }).map((p) => [p.part, p.value, p.readOnly, p.control]), [['template', 'T', true, 'textarea'], ['schema', '{"a":1}', true, 'textarea']]);
+    eq(promptParts(f, null), [], 'no live prompt known: nothing to show');
+    eq(promptParts(f, { template: 'T', schema: { a: 1 } })[1].value, '{"a":1}', 'an object schema is shown as JSON text');
+  },
+  promptPartsDraftAreEditable() {
+    const f = field('ai.vision_extract', 'prompt', { prompt: { source: 'draft', template: 'mine', schema: '{}' } });
+    eq(promptParts(f, { template: 'T' }).map((p) => [p.part, p.value, p.readOnly]), [['template', 'mine', false], ['schema', '{}', false]]);
+    const bare = field('ai.vision_extract', 'prompt', { prompt: { source: 'draft' } });
+    eq(promptParts(bare, null).map((p) => p.value), ['', '']);
+  },
+  coercePromptPartRules() {
+    const f = field('ai.vision_extract', 'prompt', { prompt: { source: 'draft', template: 'a', schema: '{}' } });
+    eq(coercePromptPart(f, 'template', 'new'), { value: { source: 'draft', template: 'new', schema: '{}' } });
+    eq(coercePromptPart(f, 'schema', ''), { value: { source: 'draft', template: 'a' } });
+    eq(coercePromptPart(f, 'schema', '{"x":1}'), { value: { source: 'draft', template: 'a', schema: '{"x":1}' } });
+    eq(coercePromptPart(f, 'schema', '{nope'), { error: 'Must be valid JSON' });
+    eq(coercePromptPart(f, 'schema', '[1]'), { error: 'Must be a JSON object' });
+    eq(coercePromptPart(f, 'other', 'x'), { error: 'Unknown prompt field' });
+    const live = field('ai.vision_extract', 'prompt', { prompt: { source: 'live' } });
+    eq(coercePromptPart(live, 'template', 'x'), { error: 'Switch to Draft to edit the prompt' });
+    eq(f.current.template, 'a', 'the field is not mutated');
   },
 };
