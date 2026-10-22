@@ -154,6 +154,18 @@ class CanvasDaoTest {
         assertEquals(35, dao.interpretedCount(1))
     }
 
+    @Test fun traceFramesNewestFirstDistinctPerPublish() = runBlocking {
+        dao.upsertTrace(listOf(
+            trace(1, "a", at = 10), trace(1, "a", node = "n1", at = 11), trace(1, "b", at = 20), trace(1, "c", at = 5), trace(2, "z", at = 99),
+        ))
+        assertEquals(listOf("b", "a", "c"), dao.traceFrames(1, 10))
+        assertEquals(listOf("b", "a"), dao.traceFrames(1, 2))
+        assertEquals(listOf("z"), dao.traceFrames(2, 10))
+        val rows = dao.tracesOfFrames(1, listOf("a", "b"))
+        assertEquals(listOf("a", "a", "b"), rows.map { it.frameId })
+        assertTrue(dao.tracesOfFrames(1, listOf("z")).isEmpty()) // another publish's frame
+    }
+
     @Test fun pruneTracesByAgeAndCount() = runBlocking {
         dao.upsertTrace((1..10).map { trace(1, "f$it", at = it.toLong()) })
         assertEquals(3, dao.pruneTraces(4, 100))

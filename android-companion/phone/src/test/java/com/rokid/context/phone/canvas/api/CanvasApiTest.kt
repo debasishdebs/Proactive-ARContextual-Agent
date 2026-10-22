@@ -4,6 +4,7 @@ import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.canvas.CanvasRepository
 import com.rokid.context.canvas.CanvasRunner
 import com.rokid.context.canvas.Estimate
+import com.rokid.context.canvas.LiveMode
 import com.rokid.context.canvas.ModelLabel
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.phone.canvas.server.HttpRequest
@@ -61,7 +62,14 @@ private class FakeBackend : CanvasBackend {
     override suspend fun diff(id: String, a: String, b: String): JsonObject? { enter("diff"); lastDiff = listOf(id, a, b); return if (known) buildJsonObject { put("nodes", JsonArray(emptyList())) } else null }
     override suspend fun publish(id: String, version: Int): CanvasPublisher.Outcome { enter("publish:$version"); known(0); return publishOutcome }
     override suspend fun activePublish() = buildJsonObject { enter("activePublish"); put("active", false) }
-    override suspend fun rollback(): CanvasPublisher.Outcome { enter("rollback"); return rollbackOutcome }
+    var lastRollbackExpected: Long? = -1
+    override suspend fun rollback(expectedId: Long?): CanvasPublisher.Outcome { enter("rollback"); lastRollbackExpected = expectedId; return rollbackOutcome }
+    var lastInterpreterPublish: Triple<String, Int, LiveMode>? = null
+    override suspend fun publishInterpreter(id: String, version: Int, mode: LiveMode): CanvasPublisher.Outcome { enter("publishInterpreter:$mode"); known(0); lastInterpreterPublish = Triple(id, version, mode); return publishOutcome }
+    var lastHistoryLimit = -1
+    override suspend fun publishHistory(limit: Int): JsonArray { enter("history"); lastHistoryLimit = limit; return JsonArray(listOf(buildJsonObject { put("id", 1); put("kind", "interpreter") })) }
+    var lastLiveLimit = -1
+    override suspend fun live(limit: Int): JsonObject { enter("live"); lastLiveLimit = limit; return buildJsonObject { put("active", false); put("frames", JsonArray(emptyList())) } }
     override suspend fun checkPrompt(nodeType: String, template: String, schema: String?): List<String> { enter("check:$nodeType"); return listOf("bad") }
     override suspend fun frames(afterMs: Long?, beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray { enter("frames"); lastFrames = listOf(afterMs, beforeMs, limit, dwellOnly); return JsonArray(emptyList()) }
     override suspend fun frame(id: String): JsonObject? { enter("frame"); return if (known) buildJsonObject { put("id", id) } else null }
@@ -462,5 +470,73 @@ class CanvasApiTest {
             assertEquals("day=[$bad]", 400, r.status)
             assertEquals("bad_request", r.err())
         }
+    }
+
+    // ---- slice 2, Task 9 (commit 2): interpreter publish, rollback by expected id, history, live ----
+
+    @Test fun publishModeAbsentIsPrompts() {
+        assertEquals(200, call("POST", "/api/pipelines/p-1/versions/2/publish").status)
+        assertEquals(200, call("POST", "/api/pipelines/p-1/versions/2/publish", """{}""").status)
+        assertEquals(200, call("POST", "/api/pipelines/p-1/versions/2/publish", """{"mode":"prompts"}""").status)
+        assertEquals(200, call("POST", "/api/pipelines/p-1/versions/2/publish", """{"mode":null}""").status)
+        assertEquals(listOf("publish:2", "publish:2", "publish:2", "publish:2"), be.calls.filter { it.startsWith("publish") })
+        assertEquals("prompts", call("POST", "/api/pipelines/p-1/versions/2/publish").obj()["kind"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun publishShadowAndLiveGoThroughTheInterpreter() {
+        val sh = call("POST", "/api/pipelines/p-1/versions/3/publish", """{"mode":"shadow"}""")
+        assertEquals(200, sh.status)
+        assertEquals(Triple("p-1", 3, LiveMode.SHADOW), be.lastInterpreterPublish)
+        assertEquals("interpreter", sh.obj()["kind"]!!.jsonPrimitive.content)
+        assertEquals("SHADOW", sh.obj()["mode"]!!.jsonPrimitive.content)
+        assertEquals(7, sh.obj()["publishId"]!!.jsonPrimitive.int)
+        assertEquals(200, call("POST", "/api/pipelines/p-1/versions/3/publish", """{"mode":"live"}""").status)
+        assertEquals(LiveMode.LIVE, be.lastInterpreterPublish!!.third)
+        assertTrue("publish:3" !in be.calls)
+    }
+
+    @Test fun publishBlockedAndBadModeMapToFixedErrors() {
+        be.publishOutcome = CanvasPublisher.Outcome.Blocked(listOf("Run this version first: intent have no successful run"))
+        val b = call("POST", "/api/pipelines/p-1/versions/3/publish", """{"mode":"live"}""")
+        assertEquals(409, b.status)
+        assertEquals("publish_blocked", b.err())
+        assertEquals("Run this version first: intent have no successful run", b.obj()["problems"]!!.jsonArray[0].jsonPrimitive.content)
+        for (bad in listOf("""{"mode":"later"}""", """{"mode":3}""", """{"mode":"LIVE "}""", "not json")) assertEquals(bad, 400, call("POST", "/api/pipelines/p-1/versions/3/publish", bad).status)
+        be.known = false
+        assertEquals(404, call("POST", "/api/pipelines/p-1/versions/3/publish", """{"mode":"shadow"}""").status)
+    }
+
+    @Test fun rollbackPassesTheExpectedPublishId() {
+        assertEquals(200, call("POST", "/api/publish/rollback").status)
+        assertEquals(null, be.lastRollbackExpected)
+        assertEquals(200, call("POST", "/api/publish/rollback", """{"expectedId":42}""").status)
+        assertEquals(42L, be.lastRollbackExpected)
+        assertEquals(200, call("POST", "/api/publish/rollback", """{"expectedId":null}""").status)
+        assertEquals(null, be.lastRollbackExpected)
+        for (bad in listOf("""{"expectedId":"x"}""", """{"expectedId":-1}""", """{"expectedId":1.5}""", "nope")) assertEquals(bad, 400, call("POST", "/api/publish/rollback", bad).status)
+        be.rollbackOutcome = CanvasPublisher.Outcome.Blocked(listOf("That publish was already rolled back."))
+        val r = call("POST", "/api/publish/rollback", """{"expectedId":9}""")
+        assertEquals(409, r.status)
+        assertEquals("rollback_blocked", r.err())
+    }
+
+    @Test fun historyListsRows() {
+        val r = call("GET", "/api/publish/history")
+        assertEquals(200, r.status)
+        assertEquals("interpreter", Json.parseToJsonElement(String(r.body)).jsonArray[0].jsonObject["kind"]!!.jsonPrimitive.content)
+        assertEquals(50, be.lastHistoryLimit)
+        call("GET", "/api/publish/history", query = mapOf("limit" to "9999")); assertEquals(50, be.lastHistoryLimit)
+        call("GET", "/api/publish/history", query = mapOf("limit" to "5")); assertEquals(5, be.lastHistoryLimit)
+        call("GET", "/api/publish/history", query = mapOf("limit" to "0")); assertEquals(1, be.lastHistoryLimit)
+        assertEquals(400, call("GET", "/api/publish/history", query = mapOf("limit" to "x")).status)
+        assertEquals(405, call("POST", "/api/publish/history").status)
+    }
+
+    @Test fun liveRoute() {
+        assertEquals(200, call("GET", "/api/live").status)
+        assertEquals(50, be.lastLiveLimit)
+        call("GET", "/api/live", query = mapOf("limit" to "9999")); assertEquals(100, be.lastLiveLimit)
+        call("GET", "/api/live", query = mapOf("limit" to "7")); assertEquals(7, be.lastLiveLimit)
+        assertEquals(400, call("GET", "/api/live", query = mapOf("limit" to "x")).status)
     }
 }

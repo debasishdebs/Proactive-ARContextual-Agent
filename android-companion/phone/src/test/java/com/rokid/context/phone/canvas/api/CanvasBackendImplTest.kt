@@ -17,6 +17,7 @@ import com.rokid.context.ai.RoleBinding
 import com.rokid.context.canvas.CanvasRepository
 import com.rokid.context.canvas.Estimate
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.db.CanvasLiveTraceEntity
 import com.rokid.context.memory.db.CanvasRunEntity
 import com.rokid.context.memory.db.CanvasRunItemEntity
 import com.rokid.context.memory.db.DatabaseFactory
@@ -404,5 +405,159 @@ class CanvasBackendImplTest {
         assertEquals(listOf("f3", "f2", "f1"), ids(backend.frames(null, Long.MAX_VALUE, 10, false)))
         assertEquals(listOf("f2"), ids(backend.frames(2_000, 3_000, 10, false))) // after inclusive, before exclusive
         assertEquals(listOf("f3", "f2"), ids(backend.frames(2_000, Long.MAX_VALUE, 10, false)))
+    }
+
+    // ---- slice 2, Task 9 (commit 2): stack, history, live view, pruning ----
+
+    private suspend fun insertFull(kind: String, mode: String?, version: Int, at: Long, rolledBackAt: Long? = null, reason: String? = null, pipelineId: String = "live-extract") =
+        MemoryGraph.get(app).db.canvasDao().insertPublish(com.rokid.context.memory.db.CanvasPublishEntity(
+            pipelineId = pipelineId, version = version, hash = "h$version", publishedAt = at, rolledBackAt = rolledBackAt, snapshotJson = "{}", kind = kind, mode = mode, rollbackReason = reason))
+
+    @Test fun historyListsRolledBackRows() = runBlocking<Unit> {
+        val p = insertFull("prompts", null, 1, at = 100, rolledBackAt = 150)
+        val a = insertFull("interpreter", "SHADOW", 2, at = 200)
+        val b = insertFull("interpreter", "LIVE", 3, at = 300, rolledBackAt = 350, reason = "auto: 10 of 30 fell back")
+        val rows = backend.publishHistory(50).map { it.jsonObject }
+        assertEquals(listOf(b, a, p), rows.map { it["id"]!!.jsonPrimitive.content.toLong() })
+        val live = rows[0]
+        assertEquals("interpreter", live["kind"]!!.jsonPrimitive.content)
+        assertEquals("LIVE", live["mode"]!!.jsonPrimitive.content)
+        assertEquals("live-extract", live["pipelineId"]!!.jsonPrimitive.content)
+        assertEquals(3, live["version"]!!.jsonPrimitive.int)
+        assertEquals(300L, live["publishedAt"]!!.jsonPrimitive.content.toLong())
+        assertEquals(350L, live["rolledBackAt"]!!.jsonPrimitive.content.toLong())
+        assertEquals("auto: 10 of 30 fell back", live["rollbackReason"]!!.jsonPrimitive.content)
+        assertEquals("null", rows[1]["rolledBackAt"].toString())
+        assertEquals("null", rows[1]["rollbackReason"].toString())
+        assertEquals("prompts", rows[2]["kind"]!!.jsonPrimitive.content)
+        assertEquals("null", rows[2]["mode"].toString())
+        assertEquals(2, backend.publishHistory(2).size)
+        assertEquals(setOf("id", "kind", "mode", "pipelineId", "version", "publishedAt", "rolledBackAt", "rollbackReason"), rows[0].keys)
+    }
+
+    @Test fun activePublishShowsTheStackAndTheInterpreter() = runBlocking<Unit> {
+        val p = insertFull("prompts", null, 1, at = 100)
+        val i = insertFull("interpreter", "SHADOW", 2, at = 200)
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        dao.upsertTrace(listOf(
+            CanvasLiveTraceEntity(i, "f1", "_batch", "SHADOW", "OK", null, null, null, "b1", System.currentTimeMillis() - 3),
+            CanvasLiveTraceEntity(i, "f2", "_batch", "SHADOW", "ERROR", null, null, "deadline", "b1", System.currentTimeMillis() - 2),
+            CanvasLiveTraceEntity(i, "f3", "_batch", "SHADOW", "OK", null, null, null, "b2", System.currentTimeMillis() - 1),
+        ))
+        val a = backend.activePublish()
+        assertEquals("true", a["active"]!!.jsonPrimitive.content) // the prompts publish, as before
+        assertEquals(p, a["publishId"]!!.jsonPrimitive.content.toLong())
+        val stack = a["stack"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf(i, p), stack.map { it["id"]!!.jsonPrimitive.content.toLong() })
+        assertEquals("SHADOW", stack[0]["mode"]!!.jsonPrimitive.content)
+        assertEquals("null", stack[1]["mode"].toString())
+        val interp = a["interpreter"]!!.jsonObject
+        assertEquals(i, interp["id"]!!.jsonPrimitive.content.toLong())
+        assertEquals(3, interp["interpreted"]!!.jsonPrimitive.int)
+        assertEquals(1, interp["fallbacks"]!!.jsonPrimitive.int)
+        // nothing active: an empty stack and no interpreter
+        dao.markRolledBack(i, 5); dao.markRolledBack(p, 5)
+        val none = backend.activePublish()
+        assertEquals("false", none["active"]!!.jsonPrimitive.content)
+        assertEquals(0, none["stack"]!!.jsonArray.size)
+        assertEquals("null", none["interpreter"].toString())
+    }
+
+    @Test fun liveViewListsTraces() = runBlocking<Unit> {
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        backend.start()
+        val id = backend.duplicate("intent-draft", "Mine")
+        val v = backend.freeze(id, "n", null)["version"]!!.jsonPrimitive.int
+        val pub = insertFull("interpreter", "LIVE", v, at = 10, pipelineId = id)
+        val now = System.currentTimeMillis()
+        fun t(frame: String, node: String, status: String = "OK", branch: String? = null, out: String? = null, err: String? = null, at: Long, batch: String = "b-$frame") =
+            CanvasLiveTraceEntity(pub, frame, node, "LIVE", status, branch, out, err, batch, at)
+        dao.upsertTrace(listOf(
+            t("f1", "photos", at = now - 300), t("f1", "intent", out = """{"kind":"json"}""", at = now - 290), t("f1", "route", branch = "cooking", at = now - 280),
+            t("f1", "extract_cooking", at = now - 270), t("f1", "_batch", at = now - 260),
+            t("f2", "intent", at = now - 200), t("f2", "route", branch = "other", at = now - 190), t("f2", "extract_other", status = "ERROR", err = "deadline", at = now - 180),
+            t("f2", "_batch", status = "ERROR", err = "deadline", at = now - 170),
+            t("f3", "intent", at = now - 100), t("f3", "route", branch = "cooking", at = now - 90), t("f3", "_batch", at = now - 80),
+        ))
+        val view = backend.live(50)
+        assertEquals("true", view["active"]!!.jsonPrimitive.content)
+        assertEquals(pub, view["publishId"]!!.jsonPrimitive.content.toLong())
+        assertEquals("LIVE", view["mode"]!!.jsonPrimitive.content)
+        assertEquals(3, view["interpreted"]!!.jsonPrimitive.int)
+        assertEquals(1, view["fallbacks"]!!.jsonPrimitive.int)
+        val frames = view["frames"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("f3", "f2", "f1"), frames.map { it["frameId"]!!.jsonPrimitive.content }) // newest first
+        val f1 = frames[2]
+        assertEquals("cooking", f1["label"]!!.jsonPrimitive.content)
+        assertEquals("OK", f1["batch"]!!.jsonPrimitive.content)
+        assertEquals(now - 260, f1["at"]!!.jsonPrimitive.content.toLong())
+        val nodes = f1["nodes"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("photos", "intent", "route", "extract_cooking"), nodes.map { it["nodeId"]!!.jsonPrimitive.content }) // _batch is the frame's own status
+        assertEquals("cooking", nodes[2]["branch"]!!.jsonPrimitive.content)
+        assertEquals("""{"kind":"json"}""", nodes[1]["output"]!!.jsonPrimitive.content)
+        assertEquals(setOf("nodeId", "status", "branch", "output", "error"), nodes[0].keys)
+        val f2 = frames[1]
+        assertEquals("ERROR", f2["batch"]!!.jsonPrimitive.content)
+        assertEquals("other", f2["label"]!!.jsonPrimitive.content)
+        assertEquals("deadline", f2["nodes"]!!.jsonArray.last().jsonObject["error"]!!.jsonPrimitive.content)
+        assertEquals(mapOf("cooking" to 2, "other" to 1), view["labels"]!!.jsonObject.mapValues { it.value.jsonPrimitive.int })
+        assertEquals(2, backend.live(2)["frames"]!!.jsonArray.size)
+        // no interpreter publish active: an empty view
+        dao.markRolledBack(pub, 5)
+        val off = backend.live(50)
+        assertEquals("false", off["active"]!!.jsonPrimitive.content)
+        assertEquals(0, off["frames"]!!.jsonArray.size)
+    }
+
+    @Test fun liveViewHasNoLabelWhenTheSwitchFailed() = runBlocking<Unit> {
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        backend.start()
+        val id = backend.duplicate("intent-draft", "Mine")
+        val v = backend.freeze(id, "n", null)["version"]!!.jsonPrimitive.int
+        val pub = insertFull("interpreter", "LIVE", v, at = 10, pipelineId = id)
+        dao.upsertTrace(listOf(CanvasLiveTraceEntity(pub, "f1", "_batch", "LIVE", "ERROR", null, null, "internal", "b", System.currentTimeMillis())))
+        val f = backend.live(10)["frames"]!!.jsonArray.single().jsonObject
+        assertEquals("null", f["label"].toString())
+        assertEquals(0, backend.live(10)["labels"]!!.jsonObject.size)
+    }
+
+    @Test fun liveReadPrunes() = runBlocking<Unit> {
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        val pub = insertFull("interpreter", "LIVE", 1, at = 10)
+        dao.upsertTrace(listOf(CanvasLiveTraceEntity(pub, "old", "_batch", "LIVE", "OK", null, null, null, "b", 1)))
+        assertEquals(1, dao.traces(pub, 10).size)
+        backend.live(10)
+        assertEquals("a trace older than 7 days is pruned by a read", 0, dao.traces(pub, 10).size)
+        // the history and the stack reads prune too (once an hour: a fresh backend has its own stamp)
+        val backend2 = CanvasBackendImpl.create(app, ai, auth, { lan }, scope)
+        dao.upsertTrace(listOf(CanvasLiveTraceEntity(pub, "old2", "_batch", "LIVE", "OK", null, null, null, "b2", 1)))
+        backend2.publishHistory(5)
+        assertEquals(0, dao.traces(pub, 10).size)
+        val backend3 = CanvasBackendImpl.create(app, ai, auth, { lan }, scope)
+        dao.upsertTrace(listOf(CanvasLiveTraceEntity(pub, "old3", "_batch", "LIVE", "OK", null, null, null, "b3", 1)))
+        backend3.activePublish()
+        assertEquals(0, dao.traces(pub, 10).size)
+    }
+
+    @Test fun publishInterpreterBlockedTextsAreFixed() = runBlocking<Unit> {
+        backend.start()
+        val id = backend.duplicate("intent-draft", "Mine")
+        val v = backend.freeze(id, "n", null)["version"]!!.jsonPrimitive.int
+        val out = backend.publishInterpreter(id, v, com.rokid.context.canvas.LiveMode.LIVE) as com.rokid.context.canvas.CanvasPublisher.Outcome.Blocked
+        assertEquals(1, out.reasons.size)
+        assertTrue(out.reasons.single().startsWith("Run this version first: "))
+        assertEquals(listOf("Version not found"), (backend.publishInterpreter(id, 99, com.rokid.context.canvas.LiveMode.SHADOW) as com.rokid.context.canvas.CanvasPublisher.Outcome.Blocked).reasons)
+    }
+
+    @Test fun rollbackByExpectedIdThroughTheBackend() = runBlocking<Unit> {
+        val a = insertFull("interpreter", "SHADOW", 1, at = 100)
+        val b = insertFull("interpreter", "LIVE", 2, at = 200)
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        assertTrue(dao.markRolledBackWithReason(b, 250, "auto: 10 of 30 fell back") > 0)
+        val out = backend.rollback(b) as com.rokid.context.canvas.CanvasPublisher.Outcome.Blocked
+        assertEquals(listOf("That publish was already rolled back."), out.reasons)
+        assertEquals(a, dao.activeInterpreter()!!.id)
+        assertTrue(backend.rollback(a) is com.rokid.context.canvas.CanvasPublisher.Outcome.Published)
+        assertNull(dao.activeInterpreter())
     }
 }
