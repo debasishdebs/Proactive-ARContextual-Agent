@@ -181,7 +181,7 @@ object LiveExtract {
     private suspend fun load(deps: LiveDeps, pub: CanvasPublishEntity): Pipeline? {
         deps.cached?.takeIf { it.first == pub.id }?.let { return it.second }
         val v = deps.dao.version(pub.pipelineId, pub.version) ?: return null
-        val p = PipelineJson.decode(v.json).getOrNull() ?: return null
+        val p = com.rokid.context.ai.canvas.plan.PlanShape.asyncProjection(PipelineJson.decode(v.json).getOrNull() ?: return null) // S72: the interpreter reads the ASYNC half only
         deps.cached = pub.id to p
         return p
     }

@@ -5,7 +5,9 @@ import com.rokid.context.ai.canvas.LiveShape
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.canvas.PromptSource
+import com.rokid.context.ai.canvas.plan.PlanShape
 import com.rokid.context.ai.canvas.promptSource
+import com.rokid.context.ai.canvas.PipelineHash
 import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.memory.db.CanvasDao
 import com.rokid.context.memory.db.CanvasPublishEntity
@@ -51,6 +53,10 @@ class CanvasPublisher(
 
         const val KIND_PROMPTS = "prompts"
         const val KIND_INTERPRETER = "interpreter"
+        /** Slice 3a: a capture-plan publish row (`component` = `capture_plan`, one per publish group). It is NOT a prompts or interpreter publish: those stacks ignore it. */
+        const val KIND_CAPTURE_PLAN = "capture_plan"
+        /** The `component` of an ASYNC interpreter row that belongs to a publish group. */
+        const val COMPONENT_ASYNC = "interpreter"
 
         /**
          * The conditional update behind [autoRollback]: one statement (`WHERE rolledBackAt IS NULL`), so it is safe without the publisher's lock and the live
@@ -80,9 +86,12 @@ class CanvasPublisher(
      * Gates, in order: the shape ([InterpretableShape.problems]); the draft extract prompts' compatibility; every `ai.prompt` schema a JSON object;
      * every AI node before extraction has a successful run of this exact hash.
      */
-    suspend fun publishInterpreter(pipelineId: String, version: Int, mode: LiveMode): Outcome = lock.withLock {
+    suspend fun publishInterpreter(pipelineId: String, version: Int, mode: LiveMode, groupId: String? = null): Outcome = lock.withLock {
         val v = dao.version(pipelineId, version) ?: return@withLock Outcome.Blocked(listOf("Version not found"))
-        val p = PipelineJson.decode(v.json).getOrNull() ?: return@withLock Outcome.Blocked(listOf("Version is unreadable"))
+        val full = PipelineJson.decode(v.json).getOrNull() ?: return@withLock Outcome.Blocked(listOf("Version is unreadable"))
+        // S72: a full three-domain graph publishes its ASYNC projection; the hash is the slice 2 hash of that projection, so a tested identity is kept.
+        val p = PlanShape.asyncProjection(full)
+        val hash = if (p === full) v.hash else PipelineHash.of(p)
         val shape = InterpretableShape.problems(p)
         if (shape.isNotEmpty()) return@withLock Outcome.Blocked(shape)
         val compat = p.nodes.filter { it.type == NodeTypes.VISION_EXTRACT }.flatMap { n ->
@@ -97,12 +106,12 @@ class CanvasPublisher(
         }.map { "node ${it.id}: schema is not a JSON object" }
         if (badSchema.isNotEmpty()) return@withLock Outcome.Blocked(badSchema)
         val ai = InterpretableShape.preSaveNodes(p).filter { it.type == NodeTypes.PROMPT || it.type == NodeTypes.VISION_EXTRACT }
-        val untested = ai.map { it.id }.filter { dao.testedNodeCount(v.hash, listOf(it)) == 0 }
+        val untested = ai.map { it.id }.filter { dao.testedNodeCount(hash, listOf(it)) == 0 }
         if (untested.isNotEmpty()) return@withLock Outcome.Blocked(listOf("Run this version first: ${untested.joinToString(", ")} have no successful run"))
-        val snapshot = buildJsonObject { put("pipelineId", pipelineId); put("version", version); put("hash", v.hash) }.toString()
+        val snapshot = buildJsonObject { put("pipelineId", pipelineId); put("version", version); put("hash", hash) }.toString()
         try {
-            val id = dao.insertPublish(CanvasPublishEntity(pipelineId = pipelineId, version = version, hash = v.hash, publishedAt = clock(), rolledBackAt = null,
-                snapshotJson = snapshot, kind = KIND_INTERPRETER, mode = mode.name))
+            val id = dao.insertPublish(CanvasPublishEntity(pipelineId = pipelineId, version = version, hash = hash, publishedAt = clock(), rolledBackAt = null,
+                snapshotJson = snapshot, kind = KIND_INTERPRETER, mode = mode.name, groupId = groupId, component = groupId?.let { COMPONENT_ASYNC }))
             Outcome.Published(id, emptyList())
         } catch (e: CancellationException) {
             throw e
