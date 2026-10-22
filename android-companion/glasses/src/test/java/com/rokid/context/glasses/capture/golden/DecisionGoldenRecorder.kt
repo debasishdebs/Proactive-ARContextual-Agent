@@ -62,10 +62,13 @@ object DecisionGoldenRecorder {
         val turns = plan.turns.sortedBy { it.atMs }
         var turnIdx = 0
         val noise = Random(s.seed xor 0x5DEECE66DL)
-        var motionInputs = 0L
         val dwellAt = ArrayList<Long>()
         val dwellOpenLatencies = ArrayList<Long>()
         val okOpens = ArrayList<Long>()
+        val attempts = ArrayList<Long>()          // S83 attempts: every ok open, and every open that failed while the camera was busy
+        val episodes = ArrayList<LongArray>()     // [start, end] of each camera episode (end = Long.MAX_VALUE while open)
+        val classifierTrace = StringBuilder()
+        var nextFeat = 1_000L
         val openCauses = ArrayList<Pair<Long, String>>()
 
         test.backgroundScope.launch { r.motion.dwell.collect { dwellAt += r.clock(); line(r.clock(), "dwell", "-", "tMs=$it") } }
@@ -92,9 +95,14 @@ object DecisionGoldenRecorder {
                     line(at, "open", cause, if (ok) "-" else "failed")
                     analysedAtOpen = r.session.analysedFrames
                     openCauses += at to cause
-                    if (ok) okOpens += at
+                    if (ok) { okOpens += at; episodes += longArrayOf(at, Long.MAX_VALUE) }
+                    val busyNow = plan.busy.lastOrNull { it.first <= at }?.second == true
+                    if (ok || busyNow) attempts += at
                     if (cause == "dwell") dwellAt.lastOrNull { it <= at }?.let { dwellOpenLatencies += at - it }
-                } else line(at, "close", "-", "analysed=${r.session.analysedFrames - analysedAtOpen}")
+                } else {
+                    line(at, "close", "-", "analysed=${r.session.analysedFrames - analysedAtOpen}")
+                    episodes.lastOrNull()?.let { if (it[1] == Long.MAX_VALUE) it[1] = at }
+                }
             }
             while (keepIdx < r.keyframes.size) {
                 val (at, k) = r.keyframes[keepIdx++]
@@ -126,11 +134,17 @@ object DecisionGoldenRecorder {
                 val z = if (turnIdx < turns.size && turns[turnIdx].atMs <= t) turns[turnIdx].rate else 0f
                 val walking = plan.walks.any { t in it }
                 val gx = (noise.nextFloat() - 0.5f) * 0.04f; val gy = (noise.nextFloat() - 0.5f) * 0.04f; val gz = (noise.nextFloat() - 0.5f) * 0.04f
-                r.motion.onGyro(gx, gy, gz + z, t); motionInputs++
+                r.motion.onGyro(gx, gy, gz + z, t);
                 val ax = (noise.nextFloat() - 0.5f) * 0.04f; val ay = (noise.nextFloat() - 0.5f) * 0.04f; val az = (noise.nextFloat() - 0.5f) * 0.04f
                 val w = if (walking) (2.0 * sin(2 * PI * 1.8 * t / 1000.0)).toFloat() else 0f
-                r.motion.onLinearAccel(ax, ay, az + w, t); motionInputs++
+                r.motion.onLinearAccel(ax, ay, az + w, t);
                 poller.tick()
+                if (t >= nextFeat) {
+                    nextFeat += 1_000L
+                    val f = r.motion.features()
+                    classifierTrace.append(t).append(' ').append((f.rotRad * 1000).toInt()).append(' ').append((f.gyroMax * 1000).toInt()).append(' ')
+                        .append((f.accVariance * 1000).toInt()).append(' ').append((f.stepHz * 10).toInt()).append(' ').append(f.state).append(' ').append(f.glances).append(' ').append(f.micro).append('\n')
+                }
                 poll(t)
                 delay(FEED_MS)
             }
@@ -140,27 +154,35 @@ object DecisionGoldenRecorder {
         poll(r.clock())
         r.session.stop("golden end")
 
-        // expectedResv: where the gap since the last successful open would exceed the S83 bound (a resv open would land there)
+        // expectedResv (S83 "while eligible"): sweep the 250 ms policy tick. A camera episode in progress satisfies the bound at every
+        // tick it is open; so does an attempt (an ok open, or an open that failed while the camera was busy). The bound is taken from the
+        // applied state at the tick being tested (not at the start of the gap). The scripts are always eligible (worn, unpaused, heat < STOP).
         fun at(x: Long): Pair<ContextState, Boolean> =
             (ctxTimeline.last { it.first <= x }.second) to (restTimeline.last { it.first <= x }.second)
         val resv = ArrayList<Long>()
         var last = 0L
-        val ends = okOpens + s.durationMs
-        for (o in ends) {
-            while (true) {
-                val (c, rs) = at(last)
-                val due = last + reservedBoundMs(c, rs)
-                if (due < o) { resv += due; last = due } else break
-            }
-            last = o
+        var ai = 0
+        var x = 0L
+        while (x <= s.durationMs) {
+            while (ai < attempts.size && attempts[ai] <= x) { last = maxOf(last, attempts[ai]); ai++ }
+            if (episodes.any { it[0] <= x && x < it[1] }) last = x
+            val (c, rs) = at(x)
+            if (x - last >= reservedBoundMs(c, rs)) { resv += x; last = x }
+            x += 250L
         }
+        val sha = java.security.MessageDigest.getInstance("SHA-256")
+        val classifierSource = out.lineSequence().filter { l -> l.split(' ').getOrNull(1) in setOf("motion", "dwell", "glance") }.joinToString("\n") + "\n" + classifierTrace
+        val classifierSha = sha.digest(classifierSource.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
 
         val sb = StringBuilder()
         sb.append("# golden decisions v1 script=${s.name} seed=${s.seed} durationMs=${s.durationMs}\n")
         sb.append("# settings wake=${s.settings.cameraWake} tier=${s.tier} workRest=${s.settings.workRestEnabled} work=${s.workMin} rest=${s.restMin} glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)\n")
         sb.append("# line: t kind cause detail (t = virtual ms from session start)\n")
+        sb.append("# expectedResv rule (S83 while eligible): swept on the 250 ms tick; an open camera episode satisfies the bound at every tick it is open;\n")
+        sb.append("#   an attempt = an ok open, or an open that failed while the camera was busy (bind failures do not count); the bound is reservedBoundMs of the\n")
+        sb.append("#   applied state at the tick tested (not at the gap start). Task 12 must add a resv open at each listed time, within ONE tick (250 ms), and nowhere else.\n")
         sb.append(out)
-        sb.append("# motionClassifierInputs=$motionInputs\n")
+        sb.append("# classifierFingerprint=$classifierSha (sha256/16 of the motion, dwell and glance lines plus the classifier's own 1 s features(): rotation, gyro max, accel variance, step Hz, state, glances; changes if the classifier input stream or its output changes)\n")
         sb.append("# glanceTriggerToOpenLatencyMs=${dwellOpenLatencies.joinToString(",")}\n")
         sb.append("# opens=${openCauses.size} ok=${okOpens.size} byCause=${openCauses.groupingBy { it.second }.eachCount().toSortedMap()} keeps=${r.keyframes.size}\n")
         sb.append("# expectedResv=${resv.joinToString(",")}\n")
