@@ -44,7 +44,8 @@ class GlassesInbound {
             Channels.CAPTURE_PLAN_ACK -> gate(Wire.decode<com.rokid.context.core.model.CapturePlanAck>(first)) { GlassesEvent.PlanAckReceived(it) }
             // Only `v` gates a mark: a queued mark older than the session is still a real moment (S74).
             Channels.MARK -> gate(Wire.decode<com.rokid.context.core.model.MarkMessage>(first)) { GlassesEvent.MarkReceived(it) }
-            Channels.TRACE_CHUNK -> gate(Wire.decode<com.rokid.context.core.model.TraceChunk>(first)) { GlassesEvent.TraceChunkReceived(it) }
+            // S73 bound (base64 <= 90,000 chars) applied at decode, before the transfer task exists: an oversized chunk is dropped.
+            Channels.TRACE_CHUNK -> if (first.length > MAX_TRACE_CHUNK_JSON) emptyList() else gate(Wire.decode<com.rokid.context.core.model.TraceChunk>(first)) { GlassesEvent.TraceChunkReceived(it) }
             Channels.LISTEN_END -> if (!listenAccepted) emptyList() else { listenAccepted = false; listOf(GlassesEvent.ListenEnd) }
             else -> emptyList()
         }
@@ -54,5 +55,10 @@ class GlassesInbound {
         is Decoded.Ok -> listOf(ok(d.value))
         is Decoded.VersionMismatch -> listOf(GlassesEvent.Outdated(d.remote))
         is Decoded.Malformed -> emptyList()
+    }
+
+    private companion object {
+        /** 90,000 base64 chars (S73) plus room for the other fields. */
+        const val MAX_TRACE_CHUNK_JSON = 90_000 + 4_096
     }
 }

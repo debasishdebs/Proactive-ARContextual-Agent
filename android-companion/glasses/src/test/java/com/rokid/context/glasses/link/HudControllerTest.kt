@@ -73,6 +73,22 @@ class HudControllerTest {
         assertEquals("again on the next session", 2, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
     }
 
+    @Test fun capsAckIsResentOnAHelloRequestAndNeverBreaksTheSession() = runTest {
+        val c = controller()
+        var calls = 0
+        c.capsAck = { calls++; if (calls == 1) error("boom") else com.rokid.context.core.model.CapturePlanAck(gen = 0, caps = listOf("plan1")) }
+        var opened = 0
+        c.onSessionOpened = { opened++ }
+        bridge.phone(Channels.STATE, state())   // the lambda throws once: the session still opens, nothing was sent
+        assertTrue(c.sessionOpen.value); assertEquals(1, opened)
+        assertEquals(0, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
+        bridge.phone(Channels.HELLO_REQUEST, Wire.encode(HelloRequest()))
+        assertEquals(1, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
+        bridge.rc = 1   // a failing send is ignored
+        bridge.phone(Channels.HELLO_REQUEST, Wire.encode(HelloRequest()))
+        assertTrue(c.sessionOpen.value)
+    }
+
     @Test fun btDisconnectClosesTheSessionAndTheNextMessageSaysHelloAgain() = runTest {
         val c = controller()
         bridge.phone(Channels.STATE, state())

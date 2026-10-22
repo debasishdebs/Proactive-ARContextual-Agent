@@ -69,7 +69,12 @@ class HudController(
     /** All three are called on a bridge thread. */
     @Volatile var onFrameAck: (FrameAck) -> Unit = {}
     @Volatile var onSessionOpened: () -> Unit = {}
-    /** Slice 3a: the unsolicited `pc_capture_plan_ack` sent on every session open (gen 0, no plan): tells the phone our caps. Task 11 fills in the applied plan. */
+    /**
+     * Slice 3a (S74): the unsolicited `pc_capture_plan_ack` sent on every session open and every hello request: gen 0, no plan, no
+     * install, no session, no reason; only the caps. Task 11 must NOT put the applied plan, gen or install in it: the phone
+     * classifies that shape as the caps announcement, anything else is matched like an ordinary ack. (Real acks come from
+     * `PlanReceiver`.)
+     */
     @Volatile var capsAck: () -> com.rokid.context.core.model.CapturePlanAck =
         { com.rokid.context.core.model.CapturePlanAck(gen = 0, caps = com.rokid.context.capture.plan.PlanReceiver.CAPS) }
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
@@ -162,7 +167,7 @@ class HudController(
                 if (exited) return
                 val wasOpen = _sessionOpen.value
                 phoneMessage() // opens the session (and says hello) if this is its first message
-                if (wasOpen) sendHello()
+                if (wasOpen) { sendCapsAck(); sendHello() } // a new phone session on a long-lived glasses session needs the caps again (also retries a failed send)
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
             is Decoded.Malformed -> Log.w(TAG, "bad pc_hello_request (${d.reason})")
@@ -180,9 +185,15 @@ class HudController(
         if (!exited && _sessionOpen.compareAndSet(false, true)) {
             Log.i(TAG, "session open")
             sendHello()
-            bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(capsAck())) // plumbing only; the phone shows "too old" for a peer that never sends it
+            sendCapsAck()
             onSessionOpened()
         }
+    }
+
+    /** Plumbing only; the phone shows "too old" for a peer that never sends it. A failed send or a throwing [capsAck] is retried at the next hello request. */
+    private fun sendCapsAck() {
+        val ok = runCatching { bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(capsAck())) == 0 }.getOrDefault(false)
+        if (!ok) Log.w(TAG, "caps ack not sent")
     }
 
     private fun markOutdated(remote: Int?) {

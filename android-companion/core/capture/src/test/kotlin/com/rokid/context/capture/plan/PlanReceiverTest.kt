@@ -230,9 +230,21 @@ class PlanReceiverTest {
 
     @Test fun deepNestingRejectedNotCrash() {
         val r = rx()
-        val deep = "{\"planSchema\":1,\"x\":" + "[".repeat(4_000) + "]".repeat(4_000) + "}"
+        val deep = "{\"planSchema\":1,\"x\":" + "[".repeat(200) + "]".repeat(200) + "}"
+        // 200 levels is far past the validator depth cap, which gives `bounds` (not `schema`)
         val a = r.onMessage(msg(1, json = deep))
-        assertEquals(PlanAckState.REJECTED, a.state)
+        assertEquals(PlanAckState.REJECTED, a.state); assertEquals("bounds", a.reason)
         assertNull(mem.s)
+    }
+
+    @Test fun acksCarryThePhoneSessionStart() {
+        val r = rx()
+        val m = msg(1, PlanMode.TRIAL, 60_000).copy(sessionStartMs = 7_000)
+        assertEquals(7_000L, r.onMessage(m).sessionStartMs)
+        assertEquals(7_000L, r.onMessage(m).sessionStartMs)          // duplicate
+        assertEquals(7_000L, r.activated(1).sessionStartMs)
+        assertEquals(7_000L, r.onMessage(msg(0).copy(sessionStartMs = 7_000)).sessionStartMs)   // stale reject echoes too
+        assertEquals(7_000L, r.revert("auto:ceiling").sessionStartMs)
+        assertEquals(7_000L, r.onMessage(m).sessionStartMs)          // terminal re-ack
     }
 }

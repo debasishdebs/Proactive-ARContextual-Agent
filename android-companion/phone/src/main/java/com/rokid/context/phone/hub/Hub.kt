@@ -418,10 +418,14 @@ class Hub(
             is GlassesEvent.Audio -> voice.onAudio(e.pcm) // never logged: it is the wearer's voice
             GlassesEvent.ListenEnd -> voice.onListenEnd()
             is GlassesEvent.MotionHintReceived -> onMotionHint(e.hint)
-            is GlassesEvent.PlanAckReceived -> when (ackGate.classify(e.ack)) {
-                AckVerdict.CAPS -> { peerTracker.onCapsAck(); onPlanCaps(e.ack.caps) }
-                AckVerdict.MATCH -> { peerTracker.onCapsAck(); onPlanAck(e.ack) }
-                AckVerdict.STALE -> Log.i(TAG, "stale pc_capture_plan_ack ignored (count=${ackGate.ackStale})")
+            is GlassesEvent.PlanAckReceived -> {
+                peerTracker.onCapsAck() // any decoded plan ack proves the glasses speak the channel, stale or not
+                when (ackGate.classify(e.ack)) {
+                    AckVerdict.CAPS -> onPlanCaps(e.ack.caps)
+                    AckVerdict.MATCH -> onPlanAck(e.ack)
+                    // count only; a line for the first and then every 20th, so a reconnect storm stays quiet
+                    AckVerdict.STALE -> ackGate.ackStale.let { n -> if (n == 1 || n % 20 == 0) Log.i(TAG, "stale pc_capture_plan_ack ignored (count=$n)") }
+                }
             }
             is GlassesEvent.MarkReceived -> onMark(e.mark) // no freshness test: only `v` was gated on the way in
             is GlassesEvent.TraceChunkReceived -> onTraceChunk(e.chunk)
