@@ -2,6 +2,7 @@ package com.rokid.context.canvas
 
 import com.rokid.context.ai.ModelCallException
 import com.rokid.context.ai.Role
+import com.rokid.context.ai.RoutedReply
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PromptSource
@@ -15,6 +16,7 @@ import com.rokid.context.ai.schema.ModelJson
 import com.rokid.context.ai.schema.StructuredOutput
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.model.ModelRequest
+import com.rokid.context.orchestration.CallUsage
 import com.rokid.context.orchestration.ExtractFollowUp
 import com.rokid.context.orchestration.ExtractSave
 import com.rokid.context.prompt.NowText
@@ -41,6 +43,17 @@ private fun PipelineNode.draft(): PromptDraft? = (promptSource() as? PromptSourc
 
 private fun failure(e: Exception): String = if (e is ModelCallException) e.kind.name else e.javaClass.simpleName
 
+/** Summed tokens of a call's attempts: null when no attempt reported any (the provider may not say). */
+private fun sumOrNull(values: List<Int?>): Int? = values.filterNotNull().takeIf { it.isNotEmpty() }?.sum()
+
+private fun List<RoutedReply>.asUsage() = map { CallUsage(it.promptTokens, it.completionTokens, it.model, it.latencyMs) }
+
+/** The meta of the ONE row that owns a provider call: the summed tokens of its [attempts] and their count (1 when unknown); S32. */
+private fun ownerMeta(latencyMs: Long, attempts: List<CallUsage>, promptVersion: Int?, batchId: String?) = CallMeta(
+    latencyMs, sumOrNull(attempts.map { it.promptTokens }), sumOrNull(attempts.map { it.completionTokens }), attempts.lastOrNull { it.model != null }?.model,
+    promptVersion, batchId, calls = attempts.size.coerceAtLeast(1),
+)
+
 private fun noCalls(node: PipelineNode, items: Int) = 0
 
 private fun ceilDiv(n: Int, d: Int) = (n + d - 1) / d
@@ -65,17 +78,20 @@ object VisionExtractExecutor : NodeExecutor {
             fun ms() = (System.nanoTime() - started) / 1_000_000
             try {
                 val b = ExtractSave.extract(ctx.runner, chunk.map { it.photo }, ctx.callClass, override, sources)
-                val meta = CallMeta(ms(), null, null, null, b.promptVersion, batchId)
+                // One provider call (or a few attempts) behind the whole chunk: only its first item owns the usage, counted once (S32).
+                val owner = ownerMeta(ms(), b.attempts, b.promptVersion, batchId)
+                val mate = CallMeta(owner.latencyMs, null, null, null, b.promptVersion, batchId)
                 chunk.forEachIndexed { i, it ->
                     val facts = b.output.facts.filter { f -> it.frameId in f.sourceFrameIds }
                     val captions = b.output.captions.filter { c -> c.frameId == it.frameId }.take(1)
-                    out += NodeResult(it.frameId, CanvasValue.Extraction(facts, captions), meta = meta, calls = if (i == 0) 1 else 0, extracted = b)
+                    out += NodeResult(it.frameId, CanvasValue.Extraction(facts, captions), meta = if (i == 0) owner else mate, calls = if (i == 0) owner.calls!! else 0, extracted = b)
                 }
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                val meta = CallMeta(ms(), null, null, null, null, batchId)
-                chunk.forEachIndexed { i, it -> out += NodeResult(it.frameId, null, error = failure(e), meta = meta, calls = if (i == 0) 1 else 0, cause = e) }
+                val owner = ownerMeta(ms(), (e as? ModelCallException)?.replies.orEmpty().asUsage(), null, batchId)
+                val mate = CallMeta(owner.latencyMs, null, null, null, null, batchId)
+                chunk.forEachIndexed { i, it -> out += NodeResult(it.frameId, null, error = failure(e), meta = if (i == 0) owner else mate, calls = if (i == 0) owner.calls!! else 0, cause = e) }
             }
         }
         return out
@@ -111,13 +127,14 @@ object CriticExecutor : NodeExecutor {
             try {
                 val r = ctx.runner.run(RoleCall(PromptKey.CRITIC, ExtractFollowUp.criticVars(v.facts, listOf(it.photo.description)), callClass = ctx.callClass, override = override))
                 val pass = (r.output as CriticOutput).pass
-                val meta = CallMeta(r.reply.latencyMs, r.reply.promptTokens, r.reply.completionTokens, r.reply.model, r.promptVersion, "${ctx.runId}:${node.id}:${it.frameId}")
-                NodeResult(it.frameId, v.copy(trusted = pass), branch = if (pass) "pass" else "fail", meta = meta, calls = 1)
+                val meta = ownerMeta(r.reply.latencyMs, r.replies.asUsage(), r.promptVersion, "${ctx.runId}:${node.id}:${it.frameId}")
+                NodeResult(it.frameId, v.copy(trusted = pass), branch = if (pass) "pass" else "fail", meta = meta, calls = meta.calls!!)
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
                 // Live keeps the local verdict (not trusted) when the critic fails.
-                NodeResult(it.frameId, v.copy(trusted = false), branch = "fail", error = failure(e), meta = CallMeta(ms(), null, null, null, null, "${ctx.runId}:${node.id}:${it.frameId}"), calls = 1, cause = e)
+                val meta = ownerMeta(ms(), (e as? ModelCallException)?.replies.orEmpty().asUsage(), null, "${ctx.runId}:${node.id}:${it.frameId}")
+                NodeResult(it.frameId, v.copy(trusted = false), branch = "fail", error = failure(e), meta = meta, calls = meta.calls!!, cause = e)
             }
         }
     }
@@ -158,14 +175,14 @@ object PromptExecutor : NodeExecutor {
                     val plan = StructuredOutput.plan(e, schemaObj, name)
                     ModelRequest(prompt + plan.promptSuffix, if (images) listOf(it.photo.image) else emptyList(), format = plan.format)
                 }
-                val meta = CallMeta(reply.latencyMs, reply.promptTokens, reply.completionTokens, reply.model, null, batchId)
+                val meta = ownerMeta(reply.latencyMs, listOf(reply).asUsage(), null, batchId)
                 val json = ModelJson.parse(reply.text) ?: return@mapIndexed NodeResult(it.frameId, null, error = "NOT_JSON", meta = meta, calls = 1)
                 val problems = JsonSchemaValidator.validate(schemaObj, json)
                 NodeResult(it.frameId, CanvasValue.Json(json), error = if (problems.isEmpty()) null else "INVALID_OUTPUT", meta = meta, calls = 1)
             } catch (c: CancellationException) {
                 throw c
             } catch (e: Exception) {
-                NodeResult(it.frameId, null, error = failure(e), meta = CallMeta((System.nanoTime() - started) / 1_000_000, null, null, null, null, batchId), calls = 1, cause = e)
+                NodeResult(it.frameId, null, error = failure(e), meta = CallMeta((System.nanoTime() - started) / 1_000_000, null, null, null, null, batchId, calls = 1), calls = 1, cause = e)
             }
         }
     }

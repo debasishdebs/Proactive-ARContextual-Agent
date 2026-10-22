@@ -4,6 +4,15 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.ai.AiGraph
+import com.rokid.context.ai.InMemoryKeyVault
+import com.rokid.context.ai.InMemorySeedState
+import com.rokid.context.ai.ProviderBuilder
+import com.rokid.context.memory.db.CanvasRunItemEntity
+import com.rokid.context.memory.db.ForgetTombstoneEntity
+import com.rokid.context.model.ModelProvider
+import com.rokid.context.model.ModelReply
+import com.rokid.context.model.ModelRequest
+import kotlinx.serialization.json.JsonPrimitive
 import com.rokid.context.ai.canvas.DefaultPipelines
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.Pipeline
@@ -58,6 +67,7 @@ class CanvasRunnerTest {
     private var missing = emptySet<String>()
     private val tokens = ConfirmTokens({ now })
     private val seen = HashMap<String, MutableList<String>>() // nodeId -> frame ids it ran for
+    private var gen = 0L
 
     @Before fun setUp() {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(app))
@@ -98,7 +108,7 @@ class CanvasRunnerTest {
 
     private fun runner(executors: Map<String, NodeExecutor>, context: (String) -> RunContext = ::idleContext) = CanvasRunner(
         dao, { f -> PhotoLoad(f.filter { it !in missing }.map(::photo), f.filter { it in missing }.toSet()) },
-        executors, context, tokens, { hotNow() }, { now }, { "run${++ids}" },
+        executors, context, tokens, { hotNow() }, { now }, { "run${++ids}" }, { gen },
     )
 
     /** For fake executors, which never touch the context. */
@@ -410,5 +420,284 @@ class CanvasRunnerTest {
     @Test fun liveExtractDefaultBatchMatchesKeyframePipeline() {
         val extract = DefaultPipelines.liveExtract().nodes.single { it.type == NodeTypes.VISION_EXTRACT }
         assertEquals(KeyframePipeline.MAX_BATCH, extract.params["batch"]!!.jsonPrimitive.content.toInt())
+    }
+
+    // ---- Task 7: runner minors ----
+
+    @Test fun startRefusesOver50Photos() = runBlocking<Unit> {
+        val r = runner(liveFakes()); val p = DefaultPipelines.liveExtract()
+        try { r.start(p, p.id, null, frames(51), "whatever", scope); fail() } catch (e: IllegalArgumentException) { assertEquals("more than 50 photos", e.message) }
+        assertTrue(dao.runs(10).isEmpty())
+        assertNull(r.active.value)
+    }
+
+    /** The CancellationException branch (the scope dies mid-run): its CANCELLED write gets the same one retry as FAILED as the final update. */
+    @Test fun cancelledUpdateRetried() = runBlocking<Unit> {
+        val own = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        var armed = false
+        val r = runner(liveFakes(onExtractChunk = {
+            if (!armed) { armed = true; sql("CREATE TRIGGER fail_cancel BEFORE UPDATE ON canvas_run WHEN NEW.status = 'CANCELLED' BEGIN SELECT RAISE(ABORT, 'full'); END"); own.cancel() }
+        }))
+        val p = DefaultPipelines.liveExtract()
+        val id = r.start(p, p.id, null, frames(4), ok(r, p, frames(4)).confirmToken, own)
+        finish(r)
+        sql("DROP TRIGGER fail_cancel")
+        val run = dao.run(id)!!
+        assertEquals("FAILED", run.status) // the CANCELLED write threw once; the retry reached a terminal state
+        assertNotNull(run.finishedAt)
+        assertNull(r.active.value)
+    }
+
+    // ---- Task 7: fences (S24) ----
+
+    private fun pausedExtract(started: CompletableDeferred<Unit>, gate: CompletableDeferred<Unit>) = object : NodeExecutor {
+        override val type = NodeTypes.VISION_EXTRACT
+        override fun chunkSize(node: PipelineNode) = 3
+        override fun nominalCalls(node: PipelineNode, items: Int) = (items + 2) / 3
+        override fun maxCalls(node: PipelineNode, items: Int) = nominalCalls(node, items) * 2
+        override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
+            started.complete(Unit); gate.await()
+            return items.map { NodeResult(it.frameId, extraction(it.frameId), calls = 1) }
+        }
+    }
+
+    @Test fun wipeDuringExperimentRunWritesNoItems() = runBlocking<Unit> {
+        val started = CompletableDeferred<Unit>(); val gate = CompletableDeferred<Unit>()
+        val r = runner(liveFakes() + (NodeTypes.VISION_EXTRACT to pausedExtract(started, gate)))
+        val id = begin(r, DefaultPipelines.liveExtract(), frames(3))
+        withTimeout(10_000) { started.await() }
+        gen++ // Delete all ran while the model call was in flight
+        gate.complete(Unit); finish(r)
+        val items = dao.items(id)
+        assertTrue(items.none { it.nodeId != "photos" })  // nothing derived from the photos after the wipe
+        assertEquals("CANCELLED", dao.run(id)?.status)
+    }
+
+    @Test fun forgetDuringExperimentRunWritesNoItemsOfThatChunk() = runBlocking<Unit> {
+        val started = CompletableDeferred<Unit>(); val gate = CompletableDeferred<Unit>()
+        val r = runner(liveFakes() + (NodeTypes.VISION_EXTRACT to pausedExtract(started, gate)))
+        val id = begin(r, DefaultPipelines.liveExtract(), frames(3))
+        withTimeout(10_000) { started.await() }
+        MemoryGraph.get(app).db.forgetDao().insertTombstone(ForgetTombstoneEntity("f2", 1))
+        gate.complete(Unit); finish(r)
+        assertTrue(dao.items(id).none { it.nodeId != "photos" })
+        assertEquals("CANCELLED", dao.run(id)?.status)
+    }
+
+    @Test fun unwipedRunStillWritesEverything() = runBlocking<Unit> {
+        val run = runAll(runner(liveFakes()), DefaultPipelines.liveExtract(), frames(3))
+        assertEquals("DONE", run.status)
+        assertEquals(3, dao.items(run.runId).count { it.nodeId == "extract" })
+    }
+
+    // ---- Task 7: A/B (S31) ----
+
+    private fun variantB(p: Pipeline) = p.copy(nodes = p.nodes.map { if (it.type == NodeTypes.VISION_EXTRACT) it.copy(params = JsonObject(it.params + ("batch" to JsonPrimitive(1)))) else it })
+    private suspend fun abOk(r: CanvasRunner, a: Pipeline, b: Pipeline, f: List<String>) = r.estimateAb(a, b, f, noLabel) as Estimate.Ok
+    private fun spec(a: Pipeline, b: Pipeline) = AbSpec(a to null, "pa", b to 2, "pb")
+    private suspend fun beginAb(r: CanvasRunner, a: Pipeline, b: Pipeline, f: List<String>): AbStarted = r.startAb(spec(a, b), f, abOk(r, a, b, f).confirmToken, scope)
+
+    @Test fun abRunsSequentiallyWithGroup() = runBlocking<Unit> {
+        val order = mutableListOf<String>()
+        val statusesDuringA = mutableListOf<String>()
+        var first = true
+        val ex = liveFakes(onExtractChunk = { if (first) { first = false; statusesDuringA += runBlocking { dao.runs(10).filter { it.abGroup != null }.map { it.status } } } })
+        val r = runner(ex, context = { id -> order += id; idleContext(id) })
+        val a = DefaultPipelines.liveExtract()
+        val st = beginAb(r, a, variantB(a), frames(3)); finish(r)
+        assertEquals(listOf(st.runA, st.runB), order)
+        assertEquals(listOf("QUEUED", "RUNNING"), statusesDuringA.sorted())
+        val rows = dao.runsInGroup(st.group)
+        assertEquals(setOf(st.runA, st.runB), rows.map { it.runId }.toSet())
+        assertTrue(rows.all { it.status == "DONE" && it.abGroup == st.group })
+        assertEquals(PipelineHash.of(a), dao.run(st.runA)!!.pipelineHash)
+        assertEquals(PipelineHash.of(variantB(a)), dao.run(st.runB)!!.pipelineHash)
+        assertEquals("pa", dao.run(st.runA)!!.pipelineId); assertEquals("pb", dao.run(st.runB)!!.pipelineId)
+        assertEquals(2, dao.run(st.runB)!!.version)
+        assertTrue(dao.items(st.runB).any { it.nodeId == "extract" })
+    }
+
+    @Test fun abReturnsBothIds() = runBlocking<Unit> {
+        val started = CompletableDeferred<Unit>(); val gate = CompletableDeferred<Unit>()
+        val r = runner(liveFakes() + (NodeTypes.VISION_EXTRACT to pausedExtract(started, gate)))
+        val a = DefaultPipelines.liveExtract()
+        val st = beginAb(r, a, variantB(a), frames(2))
+        withTimeout(10_000) { started.await() }
+        assertTrue(st.runA != st.runB && st.group.isNotEmpty())
+        assertEquals("RUNNING", dao.run(st.runA)?.status)
+        assertEquals("QUEUED", dao.run(st.runB)?.status)
+        assertEquals(st.runA, r.active.value)
+        gate.complete(Unit); finish(r)
+    }
+
+    @Test fun otherRunRefusedDuringGroup() = runBlocking<Unit> {
+        val started = CompletableDeferred<Unit>(); val gate = CompletableDeferred<Unit>()
+        val r = runner(liveFakes() + (NodeTypes.VISION_EXTRACT to pausedExtract(started, gate)))
+        val a = DefaultPipelines.liveExtract()
+        beginAb(r, a, variantB(a), frames(2))
+        withTimeout(10_000) { started.await() }
+        try { begin(r, a, frames(1)); fail() } catch (e: CanvasRunner.Busy) { assertEquals("another run is in progress", e.message) }
+        try { beginAb(r, a, variantB(a), frames(1)); fail() } catch (e: CanvasRunner.Busy) { assertEquals("another run is in progress", e.message) }
+        gate.complete(Unit); finish(r)
+        assertNotNull(begin(r, a, frames(1))); finish(r)
+    }
+
+    @Test fun abBNotStartedWhenACancelled() = runBlocking<Unit> {
+        val order = mutableListOf<String>()
+        lateinit var r: CanvasRunner
+        r = runner(liveFakes(onExtractChunk = { r.cancel(r.active.value!!) }), context = { id -> order += id; idleContext(id) })
+        val a = DefaultPipelines.liveExtract()
+        val st = beginAb(r, a, variantB(a), frames(4)); finish(r)
+        assertEquals(listOf(st.runA), order)           // B never started
+        assertEquals("CANCELLED", dao.run(st.runA)?.status)
+        assertEquals("CANCELLED", dao.run(st.runB)?.status)
+        assertNotNull(dao.run(st.runB)?.finishedAt)
+        assertTrue(dao.items(st.runB).isEmpty())
+    }
+
+    @Test fun cancelBetweenAAndBCancelsB() = runBlocking<Unit> {
+        val order = mutableListOf<String>()
+        lateinit var r: CanvasRunner
+        var st: AbStarted? = null
+        val lastNode = fake(NodeTypes.MEMORY_WRITE, onChunk = { if (st != null) r.cancel(st!!.runB) }) { _, it -> NodeResult(it.frameId, CanvasValue.Preview(emptyList())) }
+        val started = CompletableDeferred<Unit>()
+        r = runner(liveFakes() + (NodeTypes.MEMORY_WRITE to lastNode), context = { id -> order += id; started.complete(Unit); idleContext(id) })
+        val a = DefaultPipelines.liveExtract()
+        val e = abOk(r, a, variantB(a), frames(1))
+        // The cancel arrives in A's very last chunk, so A ends DONE and the group is already cancelled when B would start.
+        st = r.startAb(spec(a, variantB(a)), frames(1), e.confirmToken, scope)
+        finish(r)
+        val s = st!!
+        assertEquals(listOf(s.runA), order)
+        assertEquals("CANCELLED", dao.run(s.runB)?.status)
+        assertTrue(dao.items(s.runB).isEmpty())
+    }
+
+    @Test fun cancelGroupCancelsBothQueuedAndRunning() = runBlocking<Unit> {
+        val started = CompletableDeferred<Unit>(); val gate = CompletableDeferred<Unit>()
+        val r = runner(liveFakes() + (NodeTypes.VISION_EXTRACT to pausedExtract(started, gate)))
+        val a = DefaultPipelines.liveExtract()
+        val st = beginAb(r, a, variantB(a), frames(2))
+        withTimeout(10_000) { started.await() }
+        assertTrue(r.cancelGroup(st.group))
+        gate.complete(Unit); finish(r)
+        assertEquals("CANCELLED", dao.run(st.runB)?.status)
+        assertTrue(dao.run(st.runA)?.status == "CANCELLED" || dao.run(st.runA)?.status == "DONE")
+        assertFalse(r.cancelGroup(st.group)) // nothing left to cancel
+    }
+
+    @Test fun recoveryCancelsQueuedB() = runBlocking<Unit> {
+        fun row(id: String, status: String, group: String?) = CanvasRunEntity(id, "p", null, "h", "{}", status, 1, 1, 0, 0, 1, null, "[]", group)
+        dao.insertRun(row("a", "RUNNING", "g")); dao.insertRun(row("b", "QUEUED", "g")); dao.insertRun(row("c", "RUNNING", null)); dao.insertRun(row("d", "DONE", "g"))
+        assertEquals(3, runner(liveFakes()).recoverAtStart())
+        assertEquals(listOf("CANCELLED", "CANCELLED", "INTERRUPTED", "DONE"), listOf("a", "b", "c", "d").map { dao.run(it)!!.status })
+    }
+
+    @Test fun abEstimateSumsAndRefusesOver200() = runBlocking<Unit> {
+        val r = runner(liveFakes()); val a = DefaultPipelines.liveExtract()
+        val e = abOk(r, a, variantB(a), frames(7))
+        assertEquals(7, e.photos)
+        assertEquals(2 * (3 + 7), e.nominal)
+        assertEquals(2 * (3 * 2 + 7 * 2), e.max)
+        assertEquals(listOf("extract", "critic", "extract", "critic"), e.models.map { it.nodeId })
+        val heavy = runner(liveFakes() + fake(NodeTypes.CRITIC, nominal = { it * 3 }) { _, it -> NodeResult(it.frameId, it.value, branch = "pass") }.let { it.type to it })
+        assertTrue(heavy.estimate(a, frames(40), noLabel) is Estimate.Ok) // one side alone fits (14 + 120)
+        assertEquals(listOf("more than 200 model calls"), (heavy.estimateAb(a, variantB(a), frames(40), noLabel) as Estimate.Refused).reasons)
+        assertEquals(listOf("more than 50 photos"), (r.estimateAb(a, variantB(a), frames(51), noLabel) as Estimate.Refused).reasons)
+        val bad = a.copy(edges = a.edges.drop(1))
+        assertTrue("pipeline has problems" in (r.estimateAb(a, bad, frames(1), noLabel) as Estimate.Refused).reasons)
+    }
+
+    @Test fun abTokenBoundToBothHashes() = runBlocking<Unit> {
+        val r = runner(liveFakes()); val a = DefaultPipelines.liveExtract(); val b = variantB(a)
+        val f = frames(2)
+        fun refused(s: AbSpec, t: String, frames: List<String> = f) = runBlocking { try { r.startAb(s, frames, t, scope); false } catch (e: IllegalArgumentException) { e.message == "bad_token" } }
+        assertTrue(refused(spec(a, a), abOk(r, a, b, f).confirmToken))      // B swapped for A
+        assertTrue(refused(spec(b, a), abOk(r, a, b, f).confirmToken))      // sides swapped
+        assertTrue(refused(spec(a, b), abOk(r, a, b, f).confirmToken, frames(3)))
+        assertTrue(refused(spec(a, b), ok(r, a, f).confirmToken))           // a plain run's token
+        try { r.start(a, a.id, null, f, abOk(r, a, b, f).confirmToken, scope); fail() } catch (e: IllegalArgumentException) { assertEquals("bad_token", e.message) }
+        assertTrue(dao.runs(10).isEmpty())
+        val st = beginAb(r, a, b, f); finish(r)
+        assertEquals("DONE", dao.run(st.runB)?.status)
+    }
+
+    @Test fun pruneKeepsActiveGroup() = runBlocking<Unit> {
+        for (i in 1..25) dao.insertRun(CanvasRunEntity("old$i", "p", null, "h", "{}", "DONE", 1, 1, 0, 0, i.toLong(), i + 1L, "[]"))
+        val r = runner(liveFakes()); val a = DefaultPipelines.liveExtract()
+        val st = beginAb(r, a, variantB(a), frames(1)); finish(r)
+        val kept = dao.runs(100).map { it.runId }
+        assertEquals(20, kept.size)
+        assertTrue(st.runA in kept && st.runB in kept)
+        assertFalse("old1" in kept); assertTrue("old19" in kept)
+    }
+
+    // ---- Task 7: token estimate (S32) ----
+
+    private fun usageRow(run: String, frame: String, node: String, p: Int, c: Int, calls: Int) =
+        CanvasRunItemEntity(run, frame, node, "OK", null, "{}", null, 5, p, c, "gpt", null, "$run:$node:$frame", calls)
+
+    @Test fun tokenEstimateFromHistory() = runBlocking<Unit> {
+        val past = Pipeline(1, "old", "old", listOf(PipelineNode("ex_old", NodeTypes.VISION_EXTRACT, "x", JsonObject(emptyMap()))), emptyList())
+        dao.insertRun(CanvasRunEntity("hist", "old", null, "h", PipelineJson.canonical(past), "DONE", 2, 2, 2, 0, 1, 2, "[]"))
+        dao.upsertItem(usageRow("hist", "a", "ex_old", 300, 30, 1)); dao.upsertItem(usageRow("hist", "b", "ex_old", 300, 30, 1))
+        dao.upsertItem(usageRow("hist", "a", "critic", 50, 5, 1)) // the current pipeline's own node id
+        val e = ok(runner(liveFakes()), DefaultPipelines.liveExtract(), frames(7))
+        // extract: 3 nominal calls x (300, 30); critic: 7 x (50, 5)
+        assertEquals(TokenEstimate(3 * 300 + 7 * 50, 3 * 30 + 7 * 5, 3), e.tokens)
+    }
+
+    @Test fun tokenEstimateNullWithoutHistory() = runBlocking<Unit> {
+        assertNull(ok(runner(liveFakes()), DefaultPipelines.liveExtract(), frames(7)).tokens)
+        assertNull(abOk(runner(liveFakes()), DefaultPipelines.liveExtract(), variantB(DefaultPipelines.liveExtract()), frames(2)).tokens)
+    }
+
+    // ---- Task 7: usage per call (S32), through the real executors ----
+
+    private var providerCalls = 0
+    private fun tokenContext(script: (String, Int) -> String): (String) -> RunContext {
+        providerCalls = 0
+        val ai = AiGraph(MemoryGraph.get(app), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { _, _, _ ->
+            object : ModelProvider {
+                override suspend fun generate(prompt: String) = error("unused")
+                override suspend fun complete(request: ModelRequest): ModelReply { val n = ++providerCalls; return ModelReply(script(request.prompt, n), 100 + n, 10 + n) }
+            }
+        }).also { AiGraph.resetForTests(it); TestAi.bindAll(it) }
+        return { id -> RunContext(id, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) }
+    }
+    private fun sent(p: String) = Regex("frame_id: (f\\d)").findAll(p).map { it.groupValues[1] }.toList().distinct()
+    private fun good(p: String) = sent(p).let { ids ->
+        """{"facts":[${ids.joinToString(",") { """{"text":"Mug in $it","type":"object","confidence":0.99,"tags":[],"source_frame_ids":["$it"]}""" }}],"captions":[${ids.joinToString(",") { """{"frame_id":"$it","caption":"Counter $it"}""" }}]}"""
+    }
+    private fun extractRows(runId: String) = runBlocking { dao.items(runId).filter { it.nodeId == "extract" } }
+
+    @Test fun threePhotoBatchCountsTokensOnce() = runBlocking<Unit> {
+        val run = runAll(runner(Executors.all(), tokenContext { p, _ -> good(p) }), DefaultPipelines.liveExtract(), frames(3))
+        val rows = extractRows(run.runId)
+        assertEquals(3, rows.size)
+        assertEquals(101, rows.sumOf { it.promptTokens ?: 0 }); assertEquals(11, rows.sumOf { it.completionTokens ?: 0 })
+        assertEquals(1, rows.sumOf { it.calls ?: 0 })
+        assertEquals(1, rows.count { it.calls != null })
+        assertEquals(1, rows.mapNotNull { it.batchId }.distinct().size)
+        assertEquals("gpt", rows.single { it.calls != null }.model)
+        val m = dao.tokenMeans(listOf("extract"), 10)
+        assertEquals(1, m.n); assertEquals(101.0, m.p!!, 0.0)
+    }
+
+    @Test fun rejectedRetryCountedAsAttempt() = runBlocking<Unit> {
+        val run = runAll(runner(Executors.all(), tokenContext { p, n -> if (n == 1) "not json" else good(p) }), DefaultPipelines.liveExtract(), frames(1))
+        val owner = extractRows(run.runId).single()
+        assertEquals(2, owner.calls)
+        assertEquals(101 + 102, owner.promptTokens)
+    }
+
+    @Test fun singlePhotoFallbackAttemptsCounted() = runBlocking<Unit> {
+        val run = runAll(runner(Executors.all(), tokenContext { p, _ -> if (sent(p).size > 1) """{"facts":[],"captions":[]}""" else good(p) }), DefaultPipelines.liveExtract(), frames(3))
+        val rows = extractRows(run.runId)
+        assertEquals(5, providerCalls)
+        assertEquals(5, rows.sumOf { it.calls ?: 0 })
+        assertEquals(101 + 102 + 103 + 104 + 105, rows.sumOf { it.promptTokens ?: 0 })
+        val u = RunUsage.of(dao.items(run.runId))
+        assertEquals(5, u.calls)
     }
 }

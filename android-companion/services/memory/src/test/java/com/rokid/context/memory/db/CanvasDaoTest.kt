@@ -178,15 +178,40 @@ class CanvasDaoTest {
     }
 
     @Test fun tokenMeansOnlyOk() = runBlocking {
-        dao.upsertItem(item("r", "f1", "n1").copy(promptTokens = 100, completionTokens = 10))
-        dao.upsertItem(item("r", "f2", "n1").copy(promptTokens = 200, completionTokens = 30))
-        dao.upsertItem(item("r", "f3", "n1", status = "ERROR").copy(promptTokens = 9999, completionTokens = 9999))
+        dao.upsertItem(item("r", "f1", "n1").copy(promptTokens = 100, completionTokens = 10, calls = 1))
+        dao.upsertItem(item("r", "f2", "n1").copy(promptTokens = 200, completionTokens = 30, calls = 1))
+        dao.upsertItem(item("r", "f3", "n1", status = "ERROR").copy(promptTokens = 9999, completionTokens = 9999, calls = 1))
         dao.upsertItem(item("r", "f4", "n1")) // no usage recorded
-        dao.upsertItem(item("r", "f5", "other").copy(promptTokens = 5000, completionTokens = 5000))
+        dao.upsertItem(item("r", "f5", "other").copy(promptTokens = 5000, completionTokens = 5000, calls = 1))
         val m = dao.tokenMeans(listOf("n1"), 10)
         assertEquals(2, m.n); assertEquals(150.0, m.p!!, 0.0); assertEquals(20.0, m.c!!, 0.0)
         assertEquals(1, dao.tokenMeans(listOf("n1"), 1).n)
         assertEquals(0, dao.tokenMeans(listOf("none"), 10).n); assertNull(dao.tokenMeans(listOf("none"), 10).p)
+    }
+
+    /** S32: a mean per provider CALL (sum of tokens / sum of calls over the owner rows), not per item. */
+    @Test fun tokenMeansPerCallNotPerItem() = runBlocking {
+        dao.upsertItem(item("r", "f1", "n1").copy(promptTokens = 600, completionTokens = 30, calls = 3)) // owner of a 3-call item
+        dao.upsertItem(item("r", "f2", "n1").copy(promptTokens = 100, completionTokens = 0, calls = 1))
+        dao.upsertItem(item("r", "f3", "n1")) // batch-mate: not an owner, no tokens, no calls
+        val m = dao.tokenMeans(listOf("n1"), 10)
+        assertEquals(2, m.n)
+        assertEquals(700.0 / 4, m.p!!, 1e-9)
+        assertEquals(30.0 / 4, m.c!!, 1e-9)
+    }
+
+    @Test fun tokenMeansIgnoresRowsWithoutCalls() = runBlocking {
+        dao.upsertItem(item("r", "f1", "n1").copy(promptTokens = 100, completionTokens = 10)) // legacy row: tokens but calls unknown
+        assertEquals(0, dao.tokenMeans(listOf("n1"), 10).n)
+    }
+
+    /** S31 recovery: the QUEUED and RUNNING rows of a group are CANCELLED; plain runs are not touched here. */
+    @Test fun cancelOpenGroupRuns() = runBlocking {
+        dao.insertRun(run("a", "RUNNING", at = 1).copy(abGroup = "g")); dao.insertRun(run("b", "QUEUED", at = 2).copy(abGroup = "g"))
+        dao.insertRun(run("c", "DONE", at = 3).copy(abGroup = "g")); dao.insertRun(run("d", "RUNNING", at = 4))
+        assertEquals(2, dao.cancelOpenGroupRuns(99))
+        assertEquals(listOf("CANCELLED", "CANCELLED", "DONE", "RUNNING"), listOf("a", "b", "c", "d").map { dao.run(it)!!.status })
+        assertEquals(99L, dao.run("b")!!.finishedAt)
     }
 
     @Test fun recentFramesBetweenBounds() = runBlocking {
