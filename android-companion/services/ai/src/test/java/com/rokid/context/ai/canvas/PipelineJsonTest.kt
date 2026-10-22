@@ -44,7 +44,7 @@ class PipelineJsonTest {
     }
 
     @Test fun decodeRejectsWrongSchemaVersion() {
-        val text = PipelineJson.encode(sample).replace("\"schema\":1", "\"schema\":2")
+        val text = PipelineJson.encode(sample).replace("\"schema\":1", "\"schema\":3")
         assertEquals("unsupported schema", PipelineJson.decode(text).exceptionOrNull()?.message)
     }
 
