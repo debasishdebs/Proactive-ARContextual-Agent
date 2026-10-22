@@ -139,6 +139,7 @@ class SamplingSession(
     }
 
     private val lock = Any()
+    init { gate.setCeilingListener { onCeilingHit(it) } } // the gate reports its own ceiling refusals (frames, window flushes, forced keeps whose encode failed)
     private val kick = Channel<Unit>(Channel.CONFLATED)
     private val _status = MutableStateFlow(SessionStatus(false, MotionState.STILL, 0, null, "idle"))
     val status: StateFlow<SessionStatus> = _status
@@ -236,6 +237,9 @@ class SamplingSession(
         else if (lastLowPower) low else lastProfile.settledCheckMs
     }
 
+    /** The wake the session really runs now: the composed profile after WorkRest's `forRest()` (what the heartbeat reports). */
+    fun effectiveWake(): CameraWake = synchronized(lock) { lastProfile.wake }
+
     /** True while the session loop runs (the watchdog reports "alive" only then). */
     val alive: Boolean get() = job?.isActive == true && !stopped
 
@@ -322,7 +326,7 @@ class SamplingSession(
         val cap = capNow(cc)
         when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glanceNow())) {
             GlanceAdmission.Decision.NOVEL_SKIP -> novelSkipAccum++
-            GlanceAdmission.Decision.CAPPED -> { cappedAccum++; if (k.toLong() >= 2L * cap) onCeilingHit(now) }
+            GlanceAdmission.Decision.CAPPED -> { cappedAccum++; if (gate.keptInMinute(now).toLong() >= 2L * cap) onCeilingHit(now) }
             GlanceAdmission.Decision.OPEN -> {
                 pendingDwellAt = now
                 kick.trySend(Unit)
@@ -701,7 +705,6 @@ class SamplingSession(
             gate.offer(cand, sampleMotion, dwellArmed, forced, offerCap, offerHard).also {
                 if (trace != null && it is GateResult.Skip) trace.onGateSkip(sequence, it.reason)
                 h = gate.lastHashes()
-                if (!forced && it is GateResult.Skip && it.reason == KeyframeGate.CAPPED && keptAt.count { k -> now - k < 60_000L }.toLong() >= 2L * capNow(cc)) onCeilingHit(now)
             }
         }
         val usable = result != null && !(result is GateResult.Skip && result.reason == KeyframeGate.BLUR)

@@ -208,7 +208,8 @@ class CaptureService : LifecycleService() {
                 try {
                     val planNow = SystemClock.elapsedRealtime()
                     runtime.plan.tick(planNow) // TRIAL end and staged activation ride this existing 1 s loop
-                    autoRevert.check(planNow, runtime.plan.planLive())?.let { reason -> DiagLog.w(TAG, "plan auto-revert: $reason"); runtime.plan.revert(reason) }
+                    val running = runtime.plan.runningId()
+                    autoRevert.check(planNow, running)?.let { reason -> DiagLog.w(TAG, "plan auto-revert: $reason"); running?.let { id -> runtime.plan.revertIf(id, reason) } }
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "plan tick failed: ${e.javaClass.simpleName}") }
                 publishStatus(tick++)
               } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
@@ -253,7 +254,7 @@ class CaptureService : LifecycleService() {
             profile = { val s = runtime.settingsCache.readNormalized(); plan.active.profile(s.cameraWake, budget.tier.value, appliedContext()) },
             // A hard cap (no dwell bonus); a manual "Capture now" is forced and stays exempt (see SamplingSession.contextCap).
             contextCap = { plan.active.contextCap(appliedContext()) },
-            appliedState = { appliedContext() }, onCeilingHit = { autoRevert.onCeilingHit(it) },
+            appliedState = { appliedContext() }, onCeilingHit = { autoRevert.onCeilingHit(it, plan.runningId()) },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
             trace = runtime.traceRecorder,
             traceInfo = { val k = plan.traceKey(); TraceInfo(TraceSettingsHash.of(runtime.settingsCache.readNormalized()), k.gen, k.configHash, k.mode, budget.tier.value) },
@@ -342,7 +343,7 @@ class CaptureService : LifecycleService() {
                 val ps = runtime.plan.status()
                 val hb = Heartbeat(
                     running = shown.running, reason = shown.reason.toString(), uiMode = runtime.uiMode.get(),
-                    wake = runtime.plan.active.effectiveWake(settings.cameraWake, budget.tier.value, applied).name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
+                    wake = (smart?.session?.effectiveWake() ?: runtime.plan.active.effectiveWake(settings.cameraWake, budget.tier.value, applied)).name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
                     batt = batteryPercent(), charging = isCharging(), drainPctPerMin = budget.drainPctPerMin, projectedHours = budget.projectedHours,
                     stats = smart?.session?.diagSnapshot() ?: DiagStats(0, 0, 0, 0), upBytes = upDelta, upSpanMs = upSpan,
                     heat = heat.level.value.toString(), batteryC = heat.lastReading?.batteryTempC,

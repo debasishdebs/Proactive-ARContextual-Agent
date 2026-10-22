@@ -23,6 +23,9 @@ interface PlanHost {
 /** The plan identity the IMU trace records (and closes on a change of): see [PlanController.traceKey]. */
 data class PlanKey(val gen: Long, val configHash: String?, val mode: PlanMode)
 
+/** Which plan is RUNNING (drives real capture): the phone install, its gen and the mode. Hits and protections are keyed by it. */
+data class PlanId(val install: String, val gen: Long, val mode: PlanMode)
+
 /** What the heartbeat reports: the plan in force (EFFECTIVE only; a staged plan is not yet), its gen and the last revert reason. */
 data class PlanStatus(val hash8: String?, val gen: Long, val mode: PlanMode, val revert: String?)
 
@@ -65,6 +68,16 @@ class PlanController(
         private set
     private var shadowKey: Pair<Long, String?>? = null
 
+    /**
+     * The TRIAL/LIVE plan that is running NOW (set when its activation is persisted, cleared whenever capture returns to settings). It is NOT
+     * the receiver's current state, which already describes a staged replacement while the running plan keeps capturing.
+     */
+    @Volatile private var running: Pair<PlanId, String?>? = null
+    /** When the running TRIAL must end (its persisted start + limit), kept here because a staged replacement takes the receiver's TRIAL clock over. */
+    private var runningDeadline: Long? = null
+    /** Lock-free on purpose: the gate and the session call it from under their own locks, and the controller lock is taken above them. */
+    fun runningId(): PlanId? = running?.first
+
     /** The session host appears (a Smart session starts): installs the config in force under the lock, so an activation racing the start is never missed. */
     fun attach(h: PlanHost) = synchronized(lock) { host = h; h.install(active) }
 
@@ -85,7 +98,7 @@ class PlanController(
             if (st.appliedGen in st.terminal) return
             if (st.mode == PlanMode.LIVE) { receiver.revert("unsupported:live"); return }
             val cfg = configOf(st) ?: run { receiver.revert("auto:rejected"); return }
-            if (st.effective) active = cfg else { pendingCfg = cfg; pendingGen = st.appliedGen; stagedAt = elapsed() }
+            if (st.effective) { active = cfg; markRunning(st) } else { pendingCfg = cfg; pendingGen = st.appliedGen; stagedAt = elapsed() }
         } catch (e: Exception) {
             active = ActiveConfig.SETTINGS; dropPending()   // never crash the app on start: no plan applied
             log("plan load failed: ${e.javaClass.simpleName}")
@@ -114,13 +127,17 @@ class PlanController(
     }
 
     /** True while an effective TRIAL or LIVE plan drives real capture: the only time a plan's auto-revert rules (the ceiling) apply. */
-    fun planLive(): Boolean = synchronized(lock) {
-        val st = receiver.current
-        st != null && st.effective && (st.mode == PlanMode.TRIAL || st.mode == PlanMode.LIVE) && st.appliedGen !in st.terminal
+    fun planLive(): Boolean = running != null
+
+    /** Reverts only if [id] is still the running plan (a stale verdict about plan A must never revert B). Null when it is not. */
+    fun revertIf(id: PlanId, reason: String): CapturePlanAck? = locked { out ->
+        if (running?.first != id) return@locked null
+        try { receiver.revert(reason).also { reverted(it, out) } } catch (e: Exception) { failClosed(); log("plan revert failed: ${e.javaClass.simpleName}"); null }
     }
 
     /** The effective plan state for the heartbeat. */
     fun status(): PlanStatus = synchronized(lock) {
+        running?.let { (id, hash) -> return PlanStatus(hash, id.gen, id.mode, null) }   // the plan really running, not a staged replacement
         val st = receiver.current ?: return PlanStatus(null, 0, PlanMode.SETTINGS, null)
         val reason = st.terminal[st.appliedGen]
         val mode = if (st.effective && reason == null) st.mode else PlanMode.SETTINGS
@@ -140,6 +157,8 @@ class PlanController(
         locked { out ->
             try {
                 receiver.tick(appliedState(), now)?.let { reverted(it, out) }
+                // The running TRIAL's own limit, even while a staged replacement (whose activation keeps failing) holds the receiver's clock.
+                if (running != null && runningDeadline?.let { now >= it } == true) reverted(receiver.revert("auto:trial_end"), out)
                 tryActivate(now, out)
             } catch (e: Exception) { log("plan tick failed: ${e.javaClass.simpleName}") }
         }
@@ -195,7 +214,7 @@ class PlanController(
         swap(cfg)
         try {
             val ack = receiver.activated(pendingGen)
-            if (ack.state == PlanAckState.EFFECTIVE) out += ack else swap(prev)
+            if (ack.state == PlanAckState.EFFECTIVE) { out += ack; receiver.current?.let { markRunning(it) } } else swap(prev)
             dropPending()
         } catch (e: Exception) {
             swap(prev)   // not persisted as effective: stay on the old inputs and retry
@@ -212,6 +231,7 @@ class PlanController(
                 host?.let { if (!it.quiet()) it.abortBout() }
                 swap(ActiveConfig.SETTINGS)
             }
+            running = null
             out += ack
         }
     }
@@ -219,7 +239,15 @@ class PlanController(
     /** The settings path, in memory, whatever the disk says: used when a revert cannot be recorded. */
     private fun failClosed() {
         dropPending()
+        running = null
         if (active != ActiveConfig.SETTINGS) { host?.let { if (!it.quiet()) it.abortBout() }; swap(ActiveConfig.SETTINGS) }
+    }
+
+    /** After an activation was persisted (or a persisted effective plan was resumed): remember what now drives capture. */
+    private fun markRunning(st: ReceiverState) {
+        running = if ((st.mode == PlanMode.TRIAL || st.mode == PlanMode.LIVE) && st.appliedGen !in st.terminal)
+            PlanId(st.phoneInstall, st.appliedGen, st.mode) to st.configHash?.take(8) else null
+        runningDeadline = if (running != null && st.mode == PlanMode.TRIAL) st.trialStartElapsed?.let { it + (st.trialMaxMs ?: 0L) } else null
     }
 
     private fun swap(cfg: ActiveConfig) { active = cfg; host?.install(cfg) }
