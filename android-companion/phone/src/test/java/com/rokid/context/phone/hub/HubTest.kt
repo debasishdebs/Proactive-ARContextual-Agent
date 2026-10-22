@@ -360,6 +360,17 @@ class HubTest {
         assertEquals("Rokid closed the app 5 times (last gap 38s)", h.state.value.rokidClosesLine())
     }
 
+    /** Watchdog: any glasses message stamps the heartbeat, and the watchdog's note reaches the status the banner reads. */
+    @Test fun anyGlassesEventStampsTheHeartbeatAndTheWatchdogNoteReachesTheStatus() = runTest {
+        val link = FakeGlassesLink()
+        val h = hub(link)
+        assertNull(h.lastHeardAtMs)
+        link.emit(GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 77, bufferSize = 0, glassesNowMs = now, pauses = emptyList()))); runCurrent()
+        assertNotNull(h.lastHeardAtMs)
+        h.setWatchdogNote("Glasses not connected"); assertEquals("Glasses not connected", h.status.value.note)
+        h.setWatchdogNote(null); assertNull(h.status.value.note)
+    }
+
     /** Wave 3: unverified and other force-stops reach the Diagnostics line on the phone. */
     @Test fun helloCarriesTheUnverifiedAndOtherForceStopCounts() = runTest {
         val link = FakeGlassesLink()
