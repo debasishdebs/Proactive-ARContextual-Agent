@@ -20,6 +20,9 @@ interface PlanHost {
     fun install(cfg: ActiveConfig)
 }
 
+/** What the heartbeat reports: the plan in force (EFFECTIVE only; a staged plan is not yet), its gen and the last revert reason. */
+data class PlanStatus(val hash8: String?, val gen: Long, val mode: PlanMode, val revert: String?)
+
 /**
  * Glasses side of the capture plan (S59, S67, S69). Wraps the pure [PlanReceiver] and owns the one thing it cannot: when a staged
  * plan becomes the real capture inputs.
@@ -51,6 +54,14 @@ class PlanController(
         private set
     @Volatile var host: PlanHost? = null
 
+    /**
+     * The SHADOW plan's config while a SHADOW plan is effective (S67), else null. It is never [active]: real capture stays on the settings
+     * path. [ShadowRunner] reads it to count what the plan would have done.
+     */
+    @Volatile var shadow: ActiveConfig? = null
+        private set
+    private var shadowKey: Pair<Long, String?>? = null
+
     /** The session host appears (a Smart session starts): installs the config in force under the lock, so an activation racing the start is never missed. */
     fun attach(h: PlanHost) = synchronized(lock) { host = h; h.install(active) }
 
@@ -61,7 +72,7 @@ class PlanController(
     private var pendingGen = -1L
     private var stagedAt = 0L
 
-    init { synchronized(lock) { bootstrap() } }
+    init { synchronized(lock) { bootstrap(); refreshShadow() } }
 
     /** Load: end an expired or foreign-boot TRIAL FIRST, then resume what is still valid. A staged state waits for the first tick. */
     private fun bootstrap() {
@@ -97,6 +108,20 @@ class PlanController(
             log("plan message not applied: ${e.javaClass.simpleName}")
             CapturePlanAck(gen = m.gen, publishId = m.publishId, mode = m.mode, state = PlanAckState.REJECTED, reason = "persist", caps = PlanReceiver.CAPS, phoneInstall = m.phoneInstall).also { out += it }
         }
+    }
+
+    /** True while an effective TRIAL or LIVE plan drives real capture: the only time a plan's auto-revert rules (the ceiling) apply. */
+    fun planLive(): Boolean = synchronized(lock) {
+        val st = receiver.current
+        st != null && st.effective && (st.mode == PlanMode.TRIAL || st.mode == PlanMode.LIVE) && st.appliedGen !in st.terminal
+    }
+
+    /** The effective plan state for the heartbeat. */
+    fun status(): PlanStatus = synchronized(lock) {
+        val st = receiver.current ?: return PlanStatus(null, 0, PlanMode.SETTINGS, null)
+        val reason = st.terminal[st.appliedGen]
+        val mode = if (st.effective && reason == null) st.mode else PlanMode.SETTINGS
+        PlanStatus(if (mode == PlanMode.SETTINGS) null else st.configHash?.take(8), st.appliedGen, mode, reason)
     }
 
     /** The capture supervisor's 1 s beat ([now] = elapsedRealtime): ends a TRIAL, activates a staged plan at its boundary. */
@@ -191,9 +216,19 @@ class PlanController(
 
     private fun dropPending() { pendingCfg = null; pendingGen = -1L }
 
+    /** Keeps [shadow] equal to the effective SHADOW plan of the receiver (decoded once per gen and hash). Under the lock. */
+    private fun refreshShadow() {
+        val st = receiver.current
+        val live = st != null && st.mode == PlanMode.SHADOW && st.effective && st.appliedGen !in st.terminal
+        val key = if (live) st!!.appliedGen to st.configHash else null
+        if (key == shadowKey) return
+        shadowKey = key
+        shadow = if (!live) null else st!!.planJson?.let { PlanJson.decodeStrict(it).getOrNull() }?.let { ActiveConfig.of(it) }
+    }
+
     private fun <T> locked(body: (MutableList<CapturePlanAck>) -> T): T {
         val out = ArrayList<CapturePlanAck>(2)
-        val r = synchronized(lock) { body(out).also { for (i in out.indices) out[i] = out[i].copy(sessionStartMs = session) } }
+        val r = synchronized(lock) { body(out).also { for (i in out.indices) out[i] = out[i].copy(sessionStartMs = session); refreshShadow() } }
         for (a in out) try { send(a) } catch (e: Exception) { log("plan ack not sent: ${e.javaClass.simpleName}") }
         return r
     }

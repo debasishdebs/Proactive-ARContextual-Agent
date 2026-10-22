@@ -30,6 +30,9 @@ import com.rokid.context.glasses.capture.keyframe.Candidate
 import com.rokid.context.glasses.capture.keyframe.GateResult
 import com.rokid.context.glasses.capture.keyframe.KeyframeGate
 import com.rokid.context.glasses.capture.keyframe.PrefsGateStore
+import com.rokid.context.glasses.capture.plan.AutoRevert
+import com.rokid.context.glasses.capture.plan.ShadowCounts
+import com.rokid.context.glasses.capture.plan.ShadowRunner
 import com.rokid.context.glasses.capture.motion.AndroidSensorFeed
 import com.rokid.context.glasses.capture.motion.GlanceParams
 import com.rokid.context.glasses.capture.motion.MotionClassifier
@@ -91,8 +94,12 @@ class CaptureService : LifecycleService() {
     private val gate by lazy { KeyframeGate(PrefsGateStore(prefs), SystemClock::elapsedRealtime, params = { runtime.plan.active.gate }) }
     private val heat = HeatGuard(::readHeat, SystemClock::elapsedRealtime)
     private val heatPoller = HeatPoller(heat, SystemClock::elapsedRealtime)
-    private class Smart(val session: SamplingSession, val feed: SensorFeed, val motion: MotionClassifier) { var rateJob: Job? = null }
+    private class Smart(val session: SamplingSession, val feed: SensorFeed, val motion: MotionClassifier, val shadow: ShadowRunner) { var rateJob: Job? = null }
     private var smart: Smart? = null
+    /** Local auto-revert rules (the hard ceiling); fed by the session, checked on the supervisor's 1 s beat. */
+    private val autoRevert = AutoRevert()
+    /** The applied context as of the supervisor's last beat: SHADOW reads it on the sensor thread, where the hub must not be polled. */
+    @Volatile private var appliedCache = ContextState.UNKNOWN
     private var hintSender: MotionHintSender? = null
 
     private var wasSessionOpen = false
@@ -187,7 +194,7 @@ class CaptureService : LifecycleService() {
                 if (open && !wasSessionOpen) hintSender?.forceNext() // the phone has no hint until the session opens
                 wasSessionOpen = open
                 smart?.let { sm -> hintSender?.onSecond(sm.motion.state.value, SystemClock.elapsedRealtime()) }
-                appliedContext()
+                appliedCache = appliedContext()
                 if (heatPoller.tick()) logHeat()
                 reconcile()
                 // Own guard: a throw here must not stop the status or the tick.
@@ -197,7 +204,9 @@ class CaptureService : LifecycleService() {
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "budget/rate update failed: ${e.javaClass.simpleName}") }
                 // Own guard: a throw above must not skip the TRIAL limit check.
                 try {
-                    runtime.plan.tick(SystemClock.elapsedRealtime()) // TRIAL end and staged activation ride this existing 1 s loop
+                    val planNow = SystemClock.elapsedRealtime()
+                    runtime.plan.tick(planNow) // TRIAL end and staged activation ride this existing 1 s loop
+                    autoRevert.check(planNow, runtime.plan.planLive())?.let { reason -> DiagLog.w(TAG, "plan auto-revert: $reason"); runtime.plan.revert(reason) }
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "plan tick failed: ${e.javaClass.simpleName}") }
                 publishStatus(tick++)
               } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
@@ -242,6 +251,7 @@ class CaptureService : LifecycleService() {
             profile = { val s = runtime.settingsCache.readNormalized(); plan.active.profile(s.cameraWake, budget.tier.value, appliedContext()) },
             // A hard cap (no dwell bonus); a manual "Capture now" is forced and stays exempt (see SamplingSession.contextCap).
             contextCap = { plan.active.contextCap(appliedContext()) },
+            appliedState = { appliedContext() }, onCeilingHit = { autoRevert.onCeilingHit(it) },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
         )
@@ -249,7 +259,9 @@ class CaptureService : LifecycleService() {
         val verbose = DiagFlags.verboseFeatures(filesDir)
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
         val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir).also { it.start(motion, wear) }
-        val sm = Smart(session, feed, motion)
+        val shadow = ShadowRunner({ plan.shadow }, { appliedCache }, { runtime.workRest.resting.value != null }) // SHADOW: counts only, no camera
+        motion.addTap(shadow)
+        val sm = Smart(session, feed, motion, shadow)
         smart = sm
         // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
         sm.rateJob = scope.launch {
@@ -320,9 +332,11 @@ class CaptureService : LifecycleService() {
                 val upTotal = runtime.uplink.bytesSent
                 val upDelta = (upTotal - lastUpBytes).coerceAtLeast(0)
                 val upSpan = if (lastUpAt < 0) 60_000L else now - lastUpAt
+                val applied = appliedContext()
+                val ps = runtime.plan.status()
                 val hb = Heartbeat(
                     running = shown.running, reason = shown.reason.toString(), uiMode = runtime.uiMode.get(),
-                    wake = settings.cameraWake.name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
+                    wake = runtime.plan.active.effectiveWake(settings.cameraWake, budget.tier.value, applied).name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
                     batt = batteryPercent(), charging = isCharging(), drainPctPerMin = budget.drainPctPerMin, projectedHours = budget.projectedHours,
                     stats = smart?.session?.diagSnapshot() ?: DiagStats(0, 0, 0, 0), upBytes = upDelta, upSpanMs = upSpan,
                     heat = heat.level.value.toString(), batteryC = heat.lastReading?.batteryTempC,
@@ -331,11 +345,13 @@ class CaptureService : LifecycleService() {
                     restartGapSec = runtime.restarts.lastGapSec, stillGapMs = smart?.session?.stillGapMs() ?: 0L,
                     csvFail = (smart?.feed as? AndroidSensorFeed)?.csvFailures ?: 0,
                     ctx = runtime.contextGate.raw()?.name ?: "none", ctxAgeS = runtime.contextGate.ageMs(now)?.div(1000),
-                    ctxApplied = appliedContext().name,
+                    ctxApplied = applied.name,
+                    plan = ps.hash8 ?: "none", gen = ps.gen, planMode = ps.mode.name, planRevert = ps.revert ?: "none",
                 )
                 lastUpBytes = upTotal; lastUpAt = now
                 val (scrOn, scrOurs, nudgeOff) = runtime.screenWakes.take()
-                hb.copy(scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, ctxVeto = runtime.contextGate.takeVetoes()).format()
+                val sh = smart?.shadow?.take() ?: ShadowCounts(0, 0)
+                hb.copy(scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, ctxVeto = runtime.contextGate.takeVetoes(), shOpen = sh.open, shSkip = sh.skip).format()
             }?.let { DiagLog.i(TAG, it) }
         }
         val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"

@@ -38,6 +38,14 @@ data class Heartbeat(
     val ctxAgeS: Long? = null,
     val ctxApplied: String = "UNKNOWN",
     val ctxVeto: Int = 0,
+    /** Slice 3a: the plan in force (first 8 hex of its config hash, or "none"), its gen, the effective mode, and the last auto-revert reason. */
+    val plan: String = "none",
+    val gen: Long = 0,
+    val planMode: String = "SETTINGS",
+    val planRevert: String = "none",
+    /** SHADOW's counterfactual glance opens and skips since the previous heartbeat (counts, not per-minute). */
+    val shOpen: Int = 0,
+    val shSkip: Int = 0,
 ) {
     private fun perMin(v: Long, spanMs: Long = stats.spanMs): Long = v * 60_000L / spanMs.coerceAtLeast(1)
 
@@ -54,6 +62,8 @@ data class Heartbeat(
             "glances1m=${perMin(stats.glances.toLong())} micro1m=${perMin(stats.micro.toLong())} novelSkip1m=${perMin(stats.novelSkips.toLong())} " +
             "capped1m=${perMin(stats.capped.toLong())} same1m=${perMin(stats.same.toLong())} scrOn=$scrOn scrOurs=$scrOurs nudgeOff=$nudgeOff" +
             " ctx=$ctx ctxAgeS=${ctxAgeS ?: "na"} ctxApplied=$ctxApplied ctxVeto=$ctxVeto" +
+            " plan=$plan gen=$gen planMode=$planMode ruleSkip1m=0 exprErr=0 planRevert=$planRevert resv=${stats.wakes["resv"] ?: 0} shOpen=$shOpen shSkip=$shSkip" +
+            " worn=${if (wear) 1 else 0} charging=${if (charging) 1 else 0}" +
             if (csvFail > 0) " csvFail=$csvFail" else ""
     }
 

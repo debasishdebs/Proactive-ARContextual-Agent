@@ -31,6 +31,12 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params
     /** Drops the running bout and any pending glance (the 10 s forced swap). */
     @Synchronized fun abortBout() { detector.abort() }
 
+    private val taps = java.util.concurrent.CopyOnWriteArrayList<SampleTap>()
+
+    /** Registers a read-only consumer of every input sample ([SampleTap]). */
+    fun addTap(t: SampleTap) { taps.addIfAbsent(t) }
+    fun removeTap(t: SampleTap) { taps.remove(t) }
+
     /** Keeps the trailing-lambda form `MotionClassifier { now }` (default [GlanceParams]). */
     constructor(clock: () -> Long) : this(clock, GlanceParams())
 
@@ -125,6 +131,7 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params
         val fired = detector.onGyro(mag, t, dt, _state.value == MotionState.STILL)
         drainDetector()
         if (fired) emitDwell(t)
+        if (taps.isNotEmpty()) for (tap in taps) try { tap.onGyro(x, y, z, tMs, _state.value) } catch (e: Exception) { /* a tap never affects capture */ }
     }
 
     @Synchronized fun onLinearAccel(x: Float, y: Float, z: Float, tMs: Long) {
@@ -137,6 +144,7 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params
         val fired = detector.onTime(gyroNewestMs, _state.value == MotionState.STILL)
         drainDetector()
         if (fired) emitDwell(gyroNewestMs)
+        if (taps.isNotEmpty()) for (tap in taps) try { tap.onAccel(x, y, z, tMs, gyroNewestMs, _state.value) } catch (e: Exception) { /* a tap never affects capture */ }
     }
 
     /** [tMs] stamps an onset: the own time of the sample that caused it. The head-hold test always runs on gyro time. */
