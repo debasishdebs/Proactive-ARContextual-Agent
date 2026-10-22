@@ -89,7 +89,9 @@ class Hub(
     /** Slice 3a: the capabilities in the glasses' unsolicited caps ack of this session. */
     private val onPlanCaps: (List<String>) -> Unit = {},
     /** Slice 3a: a `pc_mark`, accepted whatever its age (occurrence time, not freshness). Idempotency is the receiver's. */
-    private val onMark: suspend (MarkMessage) -> Unit = {},
+    private val onMark: suspend (MarkMessage, com.rokid.context.canvas.marks.MarkArrival) -> Boolean = { _, _ -> true },
+    /** A glasses `ListenStart` reached the phone (phone clock): the mark recorder joins it with a `listen = true` mark within 3 s. */
+    private val onGlassesListenStart: suspend (Long) -> Unit = {},
     /** Slice 3a: a `pc_trace_chunk` (the transfer contract is a later task). */
     private val onTraceChunk: suspend (TraceChunk) -> Unit = {},
     /** Slice 3a: a glasses session is ready (its [sessionStartMs] is passed): the plan sender and the trace control re-send their desired state. */
@@ -433,9 +435,20 @@ class Hub(
                     AckVerdict.STALE -> ackGate.ackStale.let { n -> if (n == 1 || n % 20 == 0) Log.i(TAG, "stale pc_capture_plan_ack ignored (count=$n)") }
                 }
             }
-            is GlassesEvent.MarkReceived -> onMark(e.mark) // no freshness test: only `v` was gated on the way in
+            is GlassesEvent.MarkReceived -> onMarkReceived(e.mark, now)
             is GlassesEvent.TraceChunkReceived -> onTraceChunk(e.chunk)
         }
+    }
+
+    /**
+     * No freshness test: only `v` was gated on the way in (occurrence time, not a staleness stamp). The mark is mapped to phone time with the hello offset
+     * (receipt time while there is none) and acknowledged only after the recorder handled it; a store failure sends no ack, so the glasses re-send.
+     */
+    private suspend fun onMarkReceived(m: MarkMessage, now: Long) {
+        val off = offset
+        val arrival = com.rokid.context.canvas.marks.MarkArrival(off?.toPhone(m.atMs) ?: now, mapped = off != null, receivedAtMs = now)
+        val handled = try { onMark(m, arrival) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { Log.w(TAG, "mark not recorded (${e.javaClass.simpleName})"); false }
+        if (handled) link.send(Channels.MARK_ACK, Wire.encode(com.rokid.context.core.model.MarkAck(epoch = m.epoch, seqs = listOf(m.seq))))
     }
 
     private fun onUserExit(how: String) {
@@ -458,7 +471,7 @@ class Hub(
                 Log.i(TAG, "resume asked for ${c.clears.size} pause(s)")
                 pushSettings(); broadcaster.markDirty()
             }
-            Command.ListenStart -> { Log.i(TAG, "listen start"); voice.onListenStart() }
+            Command.ListenStart -> { Log.i(TAG, "listen start"); try { onGlassesListenStart(clock()) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { Log.w(TAG, "listen join failed (${e.javaClass.simpleName})") }; voice.onListenStart() }
             Command.Cancel -> { Log.i(TAG, "voice cancel"); voice.onCancel() }
             is Command.Confirm -> { Log.i(TAG, "confirm answered"); actions.onConfirm(c.proposalId, c.yes) }
             is Command.Undo -> { Log.i(TAG, "undo asked"); actions.onUndo(c.proposalId) }

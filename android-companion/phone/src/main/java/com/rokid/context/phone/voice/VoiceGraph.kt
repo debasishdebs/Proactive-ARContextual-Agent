@@ -54,6 +54,7 @@ class VoiceGraph private constructor(private val app: Context) {
         AndroidSpeaker(app), bluetoothMedia = { AudioRoutes.hasBluetoothMedia(app) },
         onFallbackSuspected = { capabilities.onFallbackSuspected() },
         log = { Log.i(TAG, it) },
+        interceptor = MarkVoiceInterceptor({ com.rokid.context.phone.canvas.MarkGraph.recorder(app) }, scope, log = { Log.i(TAG, it) }),
     )
     /** G7: Battery Saver, for the glasses tap's blocked reason (the ask path refuses the ask itself). */
     private val batterySaver = com.rokid.context.orchestration.BatterySaver.observe(app)

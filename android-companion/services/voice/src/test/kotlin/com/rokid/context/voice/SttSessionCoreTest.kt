@@ -54,7 +54,7 @@ class SttSessionCoreTest {
         assertEquals(SttResult.PackMissing, outcome(SttSessionCore.ERROR_LANGUAGE_NOT_SUPPORTED))
         assertEquals(SttResult.NoPermission, outcome(SttSessionCore.ERROR_INSUFFICIENT_PERMISSIONS))
         assertEquals(SttResult.Failed, outcome(SttSessionCore.ERROR_CLIENT))
-        assertEquals(SttResult.Text("milk"), outcome(SttSessionCore.ERROR_NO_MATCH, partial = "milk"))
+        assertEquals(SttResult.Text("milk", genuineFinal = false), outcome(SttSessionCore.ERROR_NO_MATCH, partial = "milk"))
     }
 
     @Test fun cancelReportsNothingAndFinishesOnce() {

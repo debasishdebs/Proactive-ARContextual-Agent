@@ -30,7 +30,7 @@ class SttSessionCore(private val listener: SttListener, private val fallbackSusp
         finish(
             when {
                 fallbackSuspected() -> SttResult.FallbackSuspected
-                partial != null -> SttResult.Text(partial) // complete partials, then an error instead of a final
+                partial != null -> SttResult.Text(partial, genuineFinal = false) // complete partials, then an error instead of a final
                 code == ERROR_NO_MATCH || code == ERROR_SPEECH_TIMEOUT -> SttResult.NoSpeech
                 code == ERROR_LANGUAGE_NOT_SUPPORTED || code == ERROR_LANGUAGE_UNAVAILABLE -> SttResult.PackMissing
                 code == ERROR_INSUFFICIENT_PERMISSIONS -> SttResult.NoPermission

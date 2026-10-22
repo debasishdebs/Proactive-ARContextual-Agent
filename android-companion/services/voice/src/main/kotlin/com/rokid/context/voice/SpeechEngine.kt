@@ -7,7 +7,8 @@ interface SttListener {
 }
 
 sealed interface SttResult {
-    data class Text(val text: String) : SttResult
+    /** [genuineFinal] false = a partial standing in for a final (recognizer error or final timeout): never to be acted on as a command. */
+    data class Text(val text: String, val genuineFinal: Boolean = true) : SttResult
     data object NoSpeech : SttResult
     /** Spec §5.1.1 guard: output while our audio can't have been read; never answered. */
     data object FallbackSuspected : SttResult
