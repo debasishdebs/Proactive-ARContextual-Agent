@@ -268,8 +268,11 @@ class AskDebugTest {
     }
 
     @Test fun viewIsRefusedWhenAnyReturnedHitIsForgottenEvenOutsideThePrompt() = runBlocking<Unit> {
-        add("m1", "milk carton in the fridge", 10); add("m2", "milk bottle on the shelf", 20); ask()
-        val r = pausedView { mem.db.openHelper.writableDatabase.execSQL("UPDATE memory SET reviewState = 'INVALIDATED' WHERE id = 'm2'") }
+        topK = 15
+        repeat(15) { add("m$it", "milk " + "x".repeat(600) + " $it", 10L + it) } // clipped to 500 chars a line: only about 9 fit the prompt bound
+        ask(sources = "[]")
+        val outside = debug().view("a1")!!.hits.first { !it.inPrompt }.memoryId // precondition: a hit shown but NOT in the prompt
+        val r = pausedView { mem.db.openHelper.writableDatabase.execSQL("UPDATE memory SET reviewState = 'INVALIDATED' WHERE id = '$outside'") }
         assertTrue(r.exceptionOrNull() is AskRedacted)
     }
 

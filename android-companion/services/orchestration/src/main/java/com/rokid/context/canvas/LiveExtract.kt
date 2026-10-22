@@ -151,7 +151,7 @@ object LiveExtract {
         // After EVERY committed outcome, not only a fallback: the 30th photo of a window holding 10 failures may itself be a success.
         if (committed || effects.fellBack) {
             try {
-                if (deps.dao.interpretedCount(id) >= FALLBACK_WINDOW && deps.dao.recentFallbacks(id, FALLBACK_WINDOW) >= FALLBACK_LIMIT) {
+                if (deps.dao.interpretedCountUpTo(id, FALLBACK_WINDOW) >= FALLBACK_WINDOW && deps.dao.recentFallbacks(id, FALLBACK_WINDOW) >= FALLBACK_LIMIT) {
                     deps.publisher(id, AUTO_ROLLBACK_REASON)
                 }
             } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.w(TAG, "auto-rollback check failed: ${e.javaClass.simpleName}") }
