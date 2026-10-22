@@ -36,6 +36,9 @@ data class ActiveConfig(
     fun profile(wake: CameraWake, tier: BudgetTier, applied: ContextState): CaptureProfile =
         CaptureProfile.of(if (forceSettle) CameraWake.SETTLE else wake, tier).withContext(policyFor(applied))
 
+    /** The wake the camera really runs now: the composed profile's, which the heartbeat reports (not the settings wake while a plan runs SETTLE). */
+    fun effectiveWake(wake: CameraWake, tier: BudgetTier, applied: ContextState): CameraWake = profile(wake, tier, applied).wake
+
     /** Row `capPerMin` null = null here too: no context cap and no hard flag. */
     fun contextCap(applied: ContextState): Int? = policyFor(applied).capPerMin
 

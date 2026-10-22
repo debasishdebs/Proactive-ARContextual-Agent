@@ -38,16 +38,18 @@ object DecisionGoldenRecorder {
      * starts; the rig then reads gate values and glance tunables from it and the rows below come from its active config, the way
      * CaptureService composes them. Null = the unmodified settings path of the frozen goldens.
      */
-    suspend fun record(test: TestScope, s: GoldenScript, planFor: ((Rig) -> PlanController)? = null): String {
+    suspend fun record(test: TestScope, s: GoldenScript, planFor: ((Rig) -> PlanController)? = null, onRig: ((Rig) -> Unit)? = null): String {
         val plan = ScriptPlan().also { s.plan(Random(s.seed), it, s.durationMs) }
         val r = Rig(test, s.settings, work = s.workMin, rest = s.restMin, glance = GlanceParams())
         r.scene = 1
+        onRig?.invoke(r)
         val ctl = planFor?.invoke(r)
         if (ctl != null) r.activePlan = { ctl.active }
         fun applyCtx(c: ContextState) {
             val pol = ctl?.active?.policyFor(c) ?: ContextPolicies.of(c)
             r.profile = CaptureProfile.of(r.settings.cameraWake, s.tier).withContext(pol)
             r.contextCap = pol.capPerMin
+            r.applied = c
         }
         applyCtx(ContextState.UNKNOWN)
 

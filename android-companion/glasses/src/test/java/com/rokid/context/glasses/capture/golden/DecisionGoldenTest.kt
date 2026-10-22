@@ -54,4 +54,13 @@ class DecisionGoldenTest {
             assertTrue(all.contains(k), "no '$k' line in any golden")
         }
     }
+
+    @Test fun expectedResvHeaderMatchesTheOpensRecorded() {
+        for (s in GoldenScripts.all) {
+            val g = javaClass.getResourceAsStream("/golden/${fileName(s.name)}")!!.bufferedReader().use { it.readText() }
+            val expected = g.lineSequence().first { it.startsWith("# expectedResv=") }.removePrefix("# expectedResv=").split(',').count { it.isNotBlank() }
+            val recorded = g.lineSequence().count { Regex("""^\d+ open resv """).containsMatchIn(it) }
+            assertEquals(expected, recorded, "${s.name}: the golden records the opens its expectedResv header lists")
+        }
+    }
 }

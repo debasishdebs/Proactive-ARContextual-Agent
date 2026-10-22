@@ -1,9 +1,11 @@
 package com.rokid.context.glasses.capture.session
 
+import com.rokid.context.capture.plan.reservedBoundMs
 import com.rokid.context.core.model.CameraWake
 import com.rokid.context.core.model.CaptureMode
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.MotionState
+import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.glasses.capture.FrameGuard
 import com.rokid.context.glasses.capture.KeyframeOut
 import com.rokid.context.glasses.capture.SessionStatus
@@ -101,6 +103,10 @@ class SamplingSession(
      * stay exempt: [KeyframeGate.offer] never applies the cap to them.
      */
     private val contextCap: () -> Int? = { null },
+    /** The context state applied to capture now: it picks the bound of the reserved timer photo attempt (S83). */
+    private val appliedState: () -> ContextState = { ContextState.UNKNOWN },
+    /** Called (under [lock], keep it cheap) each time a glance or a frame is refused by the hard ceiling (2 x the cap): the auto-revert counts them. */
+    private val onCeilingHit: (Long) -> Unit = {},
 ) {
     private class Episode(val continuous0: Boolean, val why: String) {
         @Volatile var continuous = continuous0
@@ -170,7 +176,12 @@ class SamplingSession(
     private var shareFromAt = 0L
     private var analysedAtSnapshot = 0
     private var opensAccum = 0
-    private val wakeAccum = linkedMapOf("timer" to 0, "dwell" to 0, "onset" to 0, "now" to 0, "stream" to 0)
+    private val wakeAccum = linkedMapOf("timer" to 0, "dwell" to 0, "onset" to 0, "now" to 0, "stream" to 0, "resv" to 0)
+    /**
+     * S83 reserved timer photo attempt: the start of the last episode that delivered a first frame (a continuous one counts until it ends).
+     * A failed open does not move it. While eligible, [tick] starts a brief `resv` episode once [reservedBoundMs] has passed since it.
+     */
+    private var lastPhotoAttemptAtMs = 0L
 
     /** Samples whose copy took longer than [COPY_BUDGET_MS] (the thumbnail target is 30 ms). */
     private val slowCount = AtomicInteger()
@@ -210,6 +221,7 @@ class SamplingSession(
             sessionId = newSessionId()
             val now = clock()
             lastKeyframeAt = now
+            lastPhotoAttemptAtMs = now
             motion.markPose()
             shareFromAt = now // the first heartbeat snapshot spans the session, not the whole clock
             lastBriefAt = now - DUE_NOW_MS // the first brief check is due at once, at any cadence
@@ -272,7 +284,7 @@ class SamplingSession(
         val cap = capNow(cc)
         when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glanceNow())) {
             GlanceAdmission.Decision.NOVEL_SKIP -> novelSkipAccum++
-            GlanceAdmission.Decision.CAPPED -> cappedAccum++
+            GlanceAdmission.Decision.CAPPED -> { cappedAccum++; if (k.toLong() >= 2L * cap) onCeilingHit(now) }
             GlanceAdmission.Decision.OPEN -> {
                 pendingDwellAt = now
                 kick.trySend(Unit)
@@ -336,11 +348,16 @@ class SamplingSession(
                     val dueAt = d.nextBriefCheckAtMs
                     val forced = forceBrief || pendingDwellAt != null || pendingNowAt != null
                     val lead = briefLeadMs()
+                    val timerDue = dueAt != null && now + lead >= dueAt
                     // A timer check whose frame the cap would drop anyway does not power up the camera (battery wave A3, task 9).
                     // It opens at the END of the hold, not a start-up lead early: the frame must land after the oldest keep has aged out.
-                    val hold = if (!forced && dueAt != null && now + lead >= dueAt) gate.timerHoldUntil(capNow(contextCap()), now)?.takeIf { it > now } else null
-                    if (hold != null) wait = (hold - now).coerceIn(HOLD_MIN_WAIT_MS, TICK_MS) // never the 1 ms floor while a hold is live
-                    else if (forced || (dueAt != null && now + lead >= dueAt)) startEpisode(continuous = false, now)
+                    val hold = if (!forced && timerDue) gate.timerHoldUntil(capNow(contextCap()), now)?.takeIf { it > now } else null
+                    // S83: the reserved timer photo attempt. No gap, hold, guard or novelty rule delays it past the bound; it is the cause only when
+                    // the ordinary timer would not have opened now (a timer that is due, and not held, keeps its own cause). Only the gate's dedupe,
+                    // blur and the hard ceiling still apply to its frame. Camera busy / bind back-off (canBind) and every block above still hold.
+                    val resv = !forced && now - lastPhotoAttemptAtMs >= reservedBoundMs(appliedState(), resting) && (!timerDue || hold != null)
+                    if (hold != null && !resv) wait = (hold - now).coerceIn(HOLD_MIN_WAIT_MS, TICK_MS) // never the 1 ms floor while a hold is live
+                    else if (forced || timerDue || resv) startEpisode(continuous = false, now, resv = resv)
                     else if (dueAt != null) wait = (dueAt - lead - now).coerceIn(1L, TICK_MS)
                 }
             }
@@ -384,12 +401,13 @@ class SamplingSession(
     // ---- camera episodes ----
 
     /** Caller holds [lock]. */
-    private fun startEpisode(continuous: Boolean, now: Long) {
+    private fun startEpisode(continuous: Boolean, now: Long, resv: Boolean = false) {
         val why = when {
             continuous -> "stream"
             pendingNowAt != null -> "now"
             pendingDwellAt != null -> "dwell"
             forceBrief -> "onset"
+            resv -> "resv"
             else -> "timer"
         }
         val ep = Episode(continuous, why)
@@ -432,6 +450,7 @@ class SamplingSession(
         synchronized(lock) {
             if (episode === ep) episode = null
             if (ep.continuous) lastCheckHash = null
+            if (ep.continuous && ep.firstFrameAt >= 0) lastPhotoAttemptAtMs = maxOf(lastPhotoAttemptAtMs, now) // an open camera satisfies the bound while it is open
             if (ep.openedAt > 0) openAccumMs += (now - maxOf(ep.openedAt, shareFromAt)).coerceAtLeast(0)
             lastBriefAt = now
             if (ep.openFailed || ep.noFrames) {
@@ -525,6 +544,7 @@ class SamplingSession(
             ep.lastFrameAt = now
             if (ep.firstFrameAt < 0) {
                 ep.firstFrameAt = now; bindFailures = 0; coldStartGrace = false
+                lastPhotoAttemptAtMs = maxOf(lastPhotoAttemptAtMs, if (ep.openedAt > 0) ep.openedAt else now)
                 if (ep.openedAt > 0) { startups.addLast(now - ep.openedAt); while (startups.size > STARTUP_WINDOW) startups.removeFirst() }
             }
             val must = forceAnalyse || pendingDwellAt != null || pendingNowAt != null
@@ -551,7 +571,10 @@ class SamplingSession(
         else synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
             val cc = contextCap()
-            gate.offer(cand, sampleMotion, dwellArmed, forced, capNow(cc), hardNow(cc)).also { h = gate.lastHashes() }
+            gate.offer(cand, sampleMotion, dwellArmed, forced, capNow(cc), hardNow(cc)).also {
+                h = gate.lastHashes()
+                if (!forced && it is GateResult.Skip && it.reason == KeyframeGate.CAPPED && keptAt.count { k -> now - k < 60_000L }.toLong() >= 2L * capNow(cc)) onCeilingHit(now)
+            }
         }
         val usable = result != null && !(result is GateResult.Skip && result.reason == KeyframeGate.BLUR)
         if (result is GateResult.Keep) emit(result, now)
@@ -574,7 +597,7 @@ class SamplingSession(
         val prev = lastCheckHash
         if (result is GateResult.Skip && result.reason == KeyframeGate.CAPPED) { /* a capped frame is no evidence either way */ }
         else if (result is GateResult.Keep) stillStepV = 0
-        else if (ep.why == "timer" && sampleMotion == MotionState.STILL && h != null && prev != null) {
+        else if ((ep.why == "timer" || ep.why == "resv") && sampleMotion == MotionState.STILL && h != null && prev != null) {
             val same = minOf(java.lang.Long.bitCount(h.first xor prev.first), java.lang.Long.bitCount(h.second xor prev.second)) <= gate.hammingNow()
             if (!same) stillStepV = 0
             else if ((backoffBase() shl stillStepV) < lastProfile.stillCapMs) stillStepV++

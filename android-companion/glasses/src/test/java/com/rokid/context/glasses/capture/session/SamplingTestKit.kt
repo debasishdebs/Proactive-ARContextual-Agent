@@ -139,6 +139,8 @@ class Rig(
 ) {
     val sched = test.testScheduler
     val clock: () -> Long = { sched.currentTime }
+    /** The virtual time this rig was built at: where a test that starts its session at once counts attempts from. */
+    val createdAt: Long = sched.currentTime
     val motion = MotionClassifier(clock, glance)
     val wear = WearDetector(clock)
     val store = MemStore()
@@ -157,6 +159,10 @@ class Rig(
     var gyroMag = 0f
     var profile: CaptureProfile = CaptureProfile.DEFAULT
     var contextCap: Int? = null
+    /** The times the session reported a refusal by the hard ceiling (2 x the cap); the auto-revert counts these. */
+    val ceilingHits = ArrayList<Long>()
+    /** The context state applied to capture now (the service passes the hub's); it picks the reserved timer attempt's bound. */
+    var applied: com.rokid.context.core.model.context.ContextState = com.rokid.context.core.model.context.ContextState.UNKNOWN
     var profileReads = 0 // one read per policy tick: counts loop wake-ups
     var phoneInUse = false
     var fixedCaptures = ArrayList<Long>()
@@ -166,7 +172,7 @@ class Rig(
     val session = SamplingSession(
         scope = test.backgroundScope, camera = camera, owner = owner, motion = motion, wear = wear, gate = gate, heat = heat,
         workRest = sessionWorkRest, encoder = encoder, sink = { k, _ -> keyframes += clock() to k }, clock = clock, settings = { settings },
-        capturePaused = { paused }, profile = { profileReads++; profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance, glanceNow = { activePlan?.invoke()?.glance ?: glance }, contextCap = { contextCap },
+        capturePaused = { paused }, profile = { profileReads++; profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance, glanceNow = { activePlan?.invoke()?.glance ?: glance }, contextCap = { contextCap }, appliedState = { applied }, onCeilingHit = { ceilingHits += it },
         fixedCapture = { owner.acquire("fixed") { fixedCaptures += clock(); fixedDuring() } },
     )
 
