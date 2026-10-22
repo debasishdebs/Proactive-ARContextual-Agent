@@ -61,6 +61,18 @@ export async function pipelineView(ctx, root, id) {
   const editorBox = h('div', { class: 'editor-box' });
   let editor = null;
   const showDirty = () => { status.textContent = editor && editor.isDirty() ? 'Unsaved changes' : ''; };
+  let refreshJson = () => {};
+  const revLine = h('p', { class: 'muted' });
+  const showRev = (rev) => { revLine.textContent = 'Draft revision ' + rev + (data.live ? ' · LIVE v' + data.live.version : '') + (data.liveShape ? ' · live shape' : ''); };
+  showRev(data.draftRev);
+  let busy = false;
+  const busyButtons = [];
+  /** Save draft and Freeze run one at a time: a second tap would send the same draftRev and get a false conflict. */
+  const exclusive = (fn) => async () => {
+    if (busy) return;
+    busy = true; busyButtons.forEach((b) => { b.disabled = true; });
+    try { await fn(); } finally { busy = false; busyButtons.forEach((b) => { b.disabled = false; }); }
+  };
 
   async function saveJson(jsonText) {
     try {
@@ -78,6 +90,7 @@ export async function pipelineView(ctx, root, id) {
     if (!editor) return;
     const r = await editor.save();
     showDirty();
+    if (r.ok) showRev(editor.savedRev());
     if (r.ok) {
       if (r.problems.length) ctx.showError({ message: 'Saved, with problems.', problems: r.problems });
       else ctx.showNotice('Draft saved.');
@@ -87,23 +100,27 @@ export async function pipelineView(ctx, root, id) {
 
   clear(root);
   root.appendChild(h('h2', null, data.name));
-  root.appendChild(h('p', { class: 'muted' }, 'Draft revision ' + data.draftRev + (data.live ? ' · LIVE v' + data.live.version : '') + (data.liveShape ? ' · live shape' : '')));
+  root.appendChild(revLine);
+  const saveBtn = ro ? null : btn('Save draft', exclusive(saveDraft), 'btn primary');
+  const freezeBtn = ro ? null : btn('Freeze', () => {
+    const note = h('input', { type: 'text', maxlength: 80, placeholder: 'Note (80 characters at most)' });
+    ctx.modal('Freeze draft', field('Note', note), [{ label: 'Freeze', cls: 'btn primary', run: async (close) => {
+      close();
+      if (!editor) return;
+      await exclusive(async () => {
+        const r = await editor.freeze(note.value.slice(0, 80));
+        if (r.ok) { await ctx.reload(); ctx.showNotice('Frozen as v' + r.version + '.'); } else if (r.conflict) ctx.showNotice(r.message); else ctx.showError(r.error);
+      })();
+    } }]);
+  });
+  if (saveBtn) busyButtons.push(saveBtn, freezeBtn);
   root.appendChild(h('div', { class: 'row wrap' },
     ro ? btn('Duplicate to edit', async () => {
       const name = window.prompt('Name for the copy', data.name + ' copy');
       if (!name || !name.trim()) return;
       try { const r = await ctx.api('POST', '/api/pipelines', { from: id, name: name.trim() }); ctx.go('#/p/' + enc(r.id)); } catch (e) { ctx.showError(e); }
     }, 'btn primary') : null,
-    ro ? null : btn('Save draft', saveDraft, 'btn primary'),
-    ro ? null : btn('Freeze', () => {
-      const note = h('input', { type: 'text', maxlength: 80, placeholder: 'Note (80 characters at most)' });
-      ctx.modal('Freeze draft', field('Note', note), [{ label: 'Freeze', cls: 'btn primary', run: async (close) => {
-        close();
-        if (!editor) return;
-        const r = await editor.freeze(note.value.slice(0, 80));
-        if (r.ok) { await ctx.reload(); ctx.showNotice('Frozen as v' + r.version + '.'); } else if (r.conflict) ctx.showNotice(r.message); else ctx.showError(r.error);
-      } }]);
-    }),
+    saveBtn, freezeBtn,
     h('a', { class: 'btn', href: '#/run/new?p=' + enc(id) }, 'New run (draft)'),
     status));
   root.appendChild(editorBox);
@@ -112,7 +129,7 @@ export async function pipelineView(ctx, root, id) {
     editorBox.appendChild(h('p', { class: 'muted' }, 'The draft cannot be edited here. Fix it in Edit JSON.'));
   } else {
     editor = mountEditor(editorBox, {
-      api: ctx.api, nodeTypes: types, readOnly: ro, onError: ctx.showError, onDraft: showDirty,
+      api: ctx.api, nodeTypes: types, readOnly: ro, onError: ctx.showError, onDraft: () => { showDirty(); refreshJson(); },
       pipeline: { id, pipe, draftRev: data.draftRev, layout: data.layout, problems: data.problemsDetailed || [], activePrompts: data.activePrompts || {} },
     });
     const warn = (ev) => { if (editor.isDirty()) { ev.preventDefault(); ev.returnValue = ''; } };
@@ -126,7 +143,9 @@ export async function pipelineView(ctx, root, id) {
   jsonArea.value = pipe ? pretty(pipe) : String(data.json);
   const jsonBox = h('details', { class: 'card' }, h('summary', null, 'Edit JSON'), jsonArea,
     ro ? null : h('div', { class: 'row' }, btn('Save JSON', () => saveJson(jsonArea.value), 'btn primary')));
-  jsonBox.addEventListener('toggle', () => { if (jsonBox.open && editor) jsonArea.value = pretty(editor.getDraft()); });
+  // the panel follows the canvas while it is open, so Save JSON never overwrites edits it has not shown
+  refreshJson = () => { if (jsonBox.open && editor) jsonArea.value = pretty(editor.getDraft()); };
+  jsonBox.addEventListener('toggle', refreshJson);
   root.appendChild(jsonBox);
 
   // versions
@@ -138,6 +157,9 @@ export async function pipelineView(ctx, root, id) {
       h('a', { class: 'btn', href: '#/run/new?p=' + enc(id) + '&v=' + v.version }, 'Run'),
       btn('Publish', async () => {
         if (!window.confirm('Publish v' + v.version + ' as the live prompts?')) return;
+        // the publish re-renders this page: it must not silently drop unsaved canvas edits
+        const lose = editor && editor.leaveText('Publishing reloads this page.');
+        if (lose && !window.confirm(lose)) return;
         try {
           const r = await ctx.api('POST', '/api/pipelines/' + enc(id) + '/versions/' + v.version + '/publish');
           await ctx.reload();

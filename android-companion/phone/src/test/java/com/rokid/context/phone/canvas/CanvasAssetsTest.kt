@@ -101,6 +101,15 @@ class CanvasAssetsTest {
         }
     }
 
+    @Test fun inspectorRolesMatchTheRoleEnum() {
+        val kt = File("../services/ai/src/main/java/com/rokid/context/ai/Role.kt").readText()
+        val roles = Regex("^\\s+([A-Z_]+)\\(Capability", RegexOption.MULTILINE).findAll(kt).map { it.groupValues[1] }.toList()
+        assertTrue("could not read roles from Role.kt", roles.size >= 6)
+        val js = text("editorlogic.js")
+        val listed = Regex("ROLES = \\[([^\\]]*)]").find(js)!!.groupValues[1].split(",").map { it.trim().trim('\'') }.filter { it.isNotEmpty() }
+        assertEquals("ROLES in editorlogic.js drifted from Role.kt (EMBED is not allowed on ai.prompt)", roles.filter { it != "EMBED" }.sorted(), listed.sorted())
+    }
+
     @Test fun oldHandBuiltDagIsGone() {
         assertFalse(File(dir, "dag.js").exists())
         assertFalse(File("src/test/js/dag.test.js").exists())

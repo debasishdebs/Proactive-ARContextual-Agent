@@ -207,6 +207,7 @@ export function mountEditor(el, opts) {
   return {
     getDraft: () => store.get().ds.pipe,
     isDirty: () => L.isDirty(store.get()),
+    leaveText: (what) => L.leaveText(store.get(), what),
     savedRev: () => store.get().ds.savedRev,
     save: () => saveDraft(store, api, p.id),
     freeze: (note) => freezeDraft(store, api, p.id, note),
