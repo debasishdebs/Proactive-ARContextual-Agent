@@ -170,17 +170,21 @@ object HubGraph {
         val phoneRt = com.rokid.context.phone.hub.plan.LaterSeams.noPhoneRt // TODO(Task 13): PhoneRtApplier
         val sender = com.rokid.context.phone.hub.plan.PlanSender(
             link, app.getSharedPreferences(com.rokid.context.phone.hub.plan.PlanSender.PREFS, Context.MODE_PRIVATE), install, onDesired = phoneRt::apply,
+            epochCounter = { com.rokid.context.memory.db.DeletionEpochStore.of(app).read().counter },
         )
         val collect = com.rokid.context.canvas.trace.CollectSession.of(app)
         val ctl = com.rokid.context.phone.hub.plan.TraceControlPublisher(link, collect, scope).also { it.start() }
         val traceIntake = com.rokid.context.phone.hub.plan.LaterSeams.noTraceIntake // TODO(Task 18): TraceIntake
         planSender = sender; collectSession = collect; traceControl = ctl
+        // S57: a Delete all whose cleanup was cut short (a crash, a failed delete) is finished as the hub comes up.
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) { try { com.rokid.context.orchestration.MemoryWipe.resumeIfPending(app) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { Log.w(Hub.TAG, "wipe resume failed (${e.javaClass.simpleName})") } }
         // S58: files and glasses follow every Delete all and time-range Forget; registered once (the hub graph is a process singleton).
         forgetCoordinator?.let { com.rokid.context.memory.forget.ForgetListeners.unregister(it) }
         com.rokid.context.memory.forget.ForgetListeners.register(
             com.rokid.context.canvas.plan.CanvasForgetCoordinator(
                 com.rokid.context.memory.forget.CanvasSlice3Forget(com.rokid.context.memory.MemoryGraph.get(app).db), app.filesDir, collect,
                 send = { c -> link.send(com.rokid.context.core.model.Channels.TRACE_CTL, com.rokid.context.core.model.Wire.encode(c)) },
+                onWiped = sender::resetAfterWipe,
             ).also { forgetCoordinator = it },
         )
         return Hub(

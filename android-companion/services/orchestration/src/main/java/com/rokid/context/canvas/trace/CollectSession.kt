@@ -32,7 +32,10 @@ class CollectSession(
     fun start(durationMs: Long = DEFAULT_DURATION_MS): TraceControl {
         val now = clock()
         val d = durationMs.coerceIn(MIN_DURATION_MS, MAX_DURATION_MS)
+        val counter = epoch.read().counter
         check(prefs.edit().putLong(KEY_START, now).putLong(KEY_UNTIL, now + d).commit()) { "collect session not persisted" }
+        // S57: a Delete all that committed its epoch while this start was writing has (or will have) cleared the prefs; this write must not survive it.
+        if (epoch.read().counter != counter) { prefs.edit().remove(KEY_START).remove(KEY_UNTIL).commit(); return refresh() }
         return refresh()
     }
 

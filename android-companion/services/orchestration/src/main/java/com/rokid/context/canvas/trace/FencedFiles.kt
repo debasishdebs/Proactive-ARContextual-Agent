@@ -35,7 +35,7 @@ class FencedFiles(private val db: ContextDatabase, private val filesDir: File) {
         var moved = false
         return try {
             db.withTransaction {
-                if (!fence()) { tmp.delete(); return@withTransaction false }
+                if (!fence()) { tmp.deleteRecursively(); return@withTransaction false }
                 final.parentFile?.mkdirs()
                 // A failed move THROWS so the transaction rolls back: a row the fence lambda wrote (the way to make the row and the file atomic) must not commit without its file.
                 Files.move(tmp.toPath(), final.toPath(), StandardCopyOption.ATOMIC_MOVE)
@@ -44,11 +44,16 @@ class FencedFiles(private val db: ContextDatabase, private val filesDir: File) {
             }
         } catch (e: Exception) {
             // The move failed, or the commit failed AFTER the move (the row is rolled back): neither a tmp file nor an orphan final file may stay behind.
-            tmp.delete()
-            if (moved) final.delete()
+            discard(tmp, final, moved)
             if (e is CancellationException) throw e
             false
         }
+    }
+
+    /** After a failed move or commit: neither a tmp path nor a moved final path stays. Both may be NON-EMPTY directories (an import), so `delete()` would leave their chunks behind. */
+    internal fun discard(tmp: File, final: File, moved: Boolean) {
+        tmp.deleteRecursively()
+        if (moved) final.deleteRecursively()
     }
 
     /** Start-up: deletes everything under `files/canvas_tmp` (nothing there is complete). Returns the files removed. Never throws. */

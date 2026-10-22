@@ -34,12 +34,22 @@ class DeletionEpochStore(private val prefs: SharedPreferences, private val newIn
     fun commitWipe(nowMs: Long): DeletionEpoch = synchronized(LOCK) {
         val old = read()
         val next = DeletionEpoch(old.installId, old.counter + 1, nowMs)
-        if (!prefs.edit().putLong(KEY_COUNTER, next.counter).putLong(KEY_WIPED_AT, next.wipedAtMs).commit()) throw IOException("deletion epoch not committed")
+        if (!prefs.edit().putLong(KEY_COUNTER, next.counter).putLong(KEY_WIPED_AT, next.wipedAtMs).putLong(KEY_PENDING, next.counter).commit()) throw IOException("deletion epoch not committed")
         next
     }
 
+    /**
+     * True from the epoch commit of a Delete all until its cleanup finished completely (the marker is written in the SAME commit as the new counter, so
+     * there is no instant where the counter moved but a crash would forget the cleanup). The start-up recovery finishes a pending wipe.
+     */
+    fun wipePending(): Boolean = synchronized(LOCK) { prefs.getLong(KEY_PENDING, 0L) > 0L }
+
+    /** Called only when every deletion succeeded. False when it could not be written (the next start retries the cleanup, which is idempotent). */
+    fun clearWipePending(): Boolean = synchronized(LOCK) { prefs.edit().remove(KEY_PENDING).commit() }
+
     companion object {
         const val PREFS = "deletion_epoch"
+        private const val KEY_PENDING = "wipePending"
         private const val KEY_INSTALL = "installId"
         private const val KEY_COUNTER = "counter"
         private const val KEY_WIPED_AT = "wipedAtMs"

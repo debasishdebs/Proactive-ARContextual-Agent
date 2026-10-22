@@ -85,6 +85,14 @@ class CanvasSlice3ForgetTest {
         assertTrue(dao.replay("r1")!!.invalidated)
     }
 
+    @Test fun aReplayCannotCommitOverASourceOfAnOlderEpoch() = runBlocking {
+        trace("t-old-0001", 1_000, 2_000) // recorded under epoch (i, 1)
+        dao.insertReplay(CanvasReplayEntity("r1", null, "{}", "EXACT", null, sourcesJson = TraceSources.encode(listOf(TraceSource("t-old-0001", 0, 1_000, 2_000))), labelRev = dao.labelRev(), createdAt = 1))
+        val e2 = DeletionEpoch("i", 2, 0) // a Delete all whose cleanup never ran
+        val newer = DaoFence(0, e2, { 0 }, { e2 })
+        assertFalse(dao.commitReplayFenced("r1", "{}", null, listOf(TraceSource("t-old-0001", 0, 1_000, 2_000)), dao.labelRev(), newer, 5))
+    }
+
     @Test fun forgettingTwiceIsIdempotent() = runBlocking {
         trace("t1", 1_000, 2_000)
         forget.forgetRange(0, 10_000)

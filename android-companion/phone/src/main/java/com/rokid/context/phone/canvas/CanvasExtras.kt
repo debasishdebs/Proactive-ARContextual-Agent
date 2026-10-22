@@ -33,7 +33,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             val epoch = DeletionEpochStore.of(app)
             val fence = { DaoFence(MemoryWipe.generation.get(), epoch.read(), MemoryWipe.generation::get, epoch::read) }
             // TODO(later): a thermal-severe flow for ReplayService (it also stops on shutdown, Developer mode off and the user).
-            val replay = ReplayService(dao, StoredReplayTraces(dao, File(app.filesDir, com.rokid.context.canvas.trace.FencedFiles.TRACES_DIR)), fence, scope, devMode)
+            val replay = ReplayService(dao, StoredReplayTraces(dao, File(app.filesDir, com.rokid.context.canvas.trace.FencedFiles.TRACES_DIR), epoch::read), fence, scope, devMode)
             return build(
                 dao, replay, devMode, startup = { CanvasStartup.run(app, db) },
                 sender = { HubGraph.get(app); HubGraph.planSender }, collect = { HubGraph.get(app); HubGraph.collectSession },
