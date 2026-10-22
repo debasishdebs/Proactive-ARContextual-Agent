@@ -50,12 +50,12 @@ class PlanFix1Test {
         assertTrue(ok(c.statusAck()), "the status ack of the session")
     }
 
-    @Test fun aRevertAtLoadIsStampedWithTheNextSessionOnItsStatusAck() {
-        ctl().onMessage(m(1))
-        boot = "bc:2"
-        val c2 = ctl(mem, null)
-        c2.onMessage(m(2, session = 900L))                          // the new session's first message teaches the stamp
-        assertEquals(900L, c2.statusAck().sessionStartMs)
+    @Test fun theStampNeverMovesBackwardsAndTheFirstMessageTeachesIt() {
+        val c = ctl()
+        c.onMessage(m(1, session = 900L))
+        assertEquals(900L, c.statusAck().sessionStartMs)
+        c.onMessage(m(1, session = 500L))                           // a delayed copy from an older session
+        assertEquals(900L, c.statusAck().sessionStartMs)
     }
 
     @Test fun theHeldPlanTravelsAsAStatusAckNotAsTheAnnouncement() {
@@ -97,6 +97,15 @@ class PlanFix1Test {
     @Test fun aFailedWriteInOnPhoneSettingsDoesNotThrowAndFailsClosed() {
         val c = ctl(); c.onMessage(m(1)); mem.failNextCommit = true
         c.onPhoneSettings(planAware = false)
+        assertSame(ActiveConfig.SETTINGS, c.active)
+    }
+
+    @Test fun aFailedRollbackWriteStillDropsTheTrialInMemory() {
+        val c = ctl(); c.onMessage(m(1))
+        assertTrue(c.active !== ActiveConfig.SETTINGS)
+        mem.failNextCommit = true
+        val a = c.onMessage(PlanTestKit.settings(2).copy(phoneInstall = "p1", sessionStartMs = 777L))
+        assertEquals(PlanAckState.REJECTED, a.state); assertEquals("persist", a.reason)
         assertSame(ActiveConfig.SETTINGS, c.active)
     }
 

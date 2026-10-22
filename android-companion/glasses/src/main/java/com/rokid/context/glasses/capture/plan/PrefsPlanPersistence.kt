@@ -11,7 +11,10 @@ import com.rokid.context.capture.plan.ReceiverStateJson
  * a failed write throws so the controller never reports EFFECTIVE for a state that is not on disk. Reads happen once, at load.
  */
 class PrefsPlanPersistence(private val prefs: SharedPreferences) : PlanPersistence {
-    override fun load(): ReceiverState? {
+    /** Never throws: a mistyped or unreadable pref is no plan (SETTINGS), not a crash at app start. */
+    override fun load(): ReceiverState? = try { read() } catch (e: Exception) { null }
+
+    private fun read(): ReceiverState? {
         val raw = prefs.getString(KEY, null) ?: return null
         ReceiverStateJson.decode(raw)?.let { return it }
         // Unreadable state. Fail closed: the newest gen ever held (written in the same edit as the state) is treated as REVERTED, so a

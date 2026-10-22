@@ -80,7 +80,7 @@ class PlanController(
 
     /** The plan message from the phone. Returns the immediate ack (STAGED, REJECTED or a re-ack); EFFECTIVE follows when activated. */
     fun onMessage(m: CapturePlanMessage): CapturePlanAck = locked { out ->
-        session = m.sessionStartMs
+        session = maxOf(session, m.sessionStartMs)   // a delayed copy from an older session must not move the stamp back
         try {
             val ack = receiver.onMessage(m)
             out += ack
@@ -93,6 +93,7 @@ class PlanController(
             ack.copy(sessionStartMs = session)
         } catch (e: Exception) {
             // The state could not be persisted: nothing is staged, nothing changes, and the throw never reaches the link callback.
+            failClosed()   // a newer message supersedes the held plan: if its write failed (e.g. a SETTINGS rollback) the TRIAL must not keep running
             log("plan message not applied: ${e.javaClass.simpleName}")
             CapturePlanAck(gen = m.gen, publishId = m.publishId, mode = m.mode, state = PlanAckState.REJECTED, reason = "persist", caps = PlanReceiver.CAPS, phoneInstall = m.phoneInstall).also { out += it }
         }
