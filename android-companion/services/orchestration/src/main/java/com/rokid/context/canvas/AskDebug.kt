@@ -38,6 +38,8 @@ data class AskPhotoRecall(
     val images: suspend () -> List<ModelImageInput> = { emptyList() },
     /** The endpoint the gate checked: a replay sends the images only there ([RoleCall.imagesOnlyOnEndpoint]); null with images = they are dropped (fail closed). */
     val imageEndpointId: String? = null,
+    /** How many images the numbered `image=<n>` lines promise. A replay whose loaded images differ in number is refused (`attachments_changed`): the numbering would point at the wrong photo. Null = unchecked. */
+    val imageCount: Int? = null,
 )
 
 /**
@@ -144,6 +146,7 @@ class AskDebug(
         val frameIds = l.photos?.frameIds ?: emptySet()
         val endpoint = l.photos?.imageEndpointId
         val images = if (endpoint == null) emptyList() else l.photos?.let { p -> try { p.images() } catch (c: CancellationException) { throw c } catch (e: Exception) { return Replay.Failed(e.javaClass.simpleName) } } ?: emptyList()
+        if (l.photos?.imageCount != null && images.size != l.photos.imageCount) return Replay.Failed("attachments_changed")
         val result = try {
             runner.run(RoleCall(PromptKey.ANSWER, l.vars, images = images, imagesOnlyOnEndpoint = if (images.isEmpty()) null else endpoint, inputIds = memoryIds + (l.photos?.citeIds ?: emptySet()), callClass = CallClass.EXPERIMENT, override = draft))
         } catch (c: CancellationException) {

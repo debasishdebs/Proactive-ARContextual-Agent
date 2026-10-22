@@ -232,6 +232,7 @@ class AnswerService(
             lines, recalled.map { it.second }.toSet(), recalled.map { it.first.frameId }.toSet(), recalled.mapNotNull { it.first.captionMemoryId }.toSet(),
             images = { withImage.mapNotNull { (hit, _) -> photoImages(listOf(hit.frameId))[hit.frameId] } },
             imageEndpointId = endpoint.takeIf { withImage.isNotEmpty() },
+            imageCount = withImage.size,
         )
     }
 

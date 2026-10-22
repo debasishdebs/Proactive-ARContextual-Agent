@@ -66,7 +66,7 @@ class AnswerServiceDebugPhotosTest {
         assertEquals(setOf("f1"), r.frameIds); assertEquals(setOf("frame:f1"), r.citeIds)
         assertTrue(r.lines.any { it.startsWith("id=frame:f1 ·") && it.contains("image=1") })
         assertEquals("az", r.imageEndpointId)
-        assertEquals(1, r.images().size); assertEquals(1, imageLoads)
+        assertEquals(1, r.images().size); assertEquals(1, imageLoads); assertEquals(1, r.imageCount)
     }
 
     @Test fun aPhotoCapturedAfterTheAskIsNotOffered() = runBlocking<Unit> {
