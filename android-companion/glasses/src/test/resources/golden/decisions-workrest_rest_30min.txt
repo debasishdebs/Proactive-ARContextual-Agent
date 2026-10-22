@@ -1,0 +1,486 @@
+# golden decisions v1 script=workrest_rest_30min seed=44 durationMs=1800000
+# settings wake=SETTLE tier=T0 workRest=true work=5 rest=10 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
+# line: t kind cause detail (t = virtual ms from session start)
+0 ctx UNKNOWN -
+0 status - running=false reason=idle
+0 gap - ms=5000 step=0
+0 open timer -
+20 status - running=true reason=null
+20 gap - ms=10000 step=0
+535 close - analysed=1
+535 keep other scene=1 motion=STILL blur=4835
+10000 motion HEAD_MOVING -
+10840 motion STILL -
+10840 open timer -
+11375 close - analysed=1
+11375 keep other scene=1126 motion=STILL blur=4769
+12080 glance - g=1 micro=0
+12080 dwell - tMs=12080
+12100 skip novel n=1
+20840 open timer -
+21375 close - analysed=1
+21380 skip same n=1
+21380 gap - ms=20000 step=1
+40840 open timer -
+41375 close - analysed=1
+41380 skip same n=1
+41380 gap - ms=40000 step=2
+58260 motion HEAD_MOVING -
+59180 motion STILL -
+60420 glance - g=1 micro=0
+60420 dwell - tMs=60420
+60420 open dwell -
+60440 gap - ms=10000 step=0
+60955 close - analysed=1
+60955 keep dwell scene=1288 motion=STILL blur=4370
+70420 open timer -
+70955 close - analysed=1
+70960 skip same n=1
+70960 gap - ms=20000 step=1
+90420 open timer -
+90955 close - analysed=1
+90960 skip same n=1
+90960 gap - ms=40000 step=2
+104060 motion HEAD_MOVING -
+105420 motion STILL -
+106660 glance - g=1 micro=0
+106660 dwell - tMs=106660
+106660 open dwell -
+106680 gap - ms=10000 step=0
+107195 close - analysed=1
+107195 keep dwell scene=4939 motion=STILL blur=4201
+116660 open timer -
+117195 close - analysed=1
+117200 skip same n=1
+117200 gap - ms=20000 step=1
+124460 motion HEAD_MOVING -
+125400 motion STILL -
+126640 glance - g=1 micro=0
+126640 dwell - tMs=126640
+126640 open dwell -
+126660 gap - ms=10000 step=0
+127175 close - analysed=1
+127175 keep dwell scene=836 motion=STILL blur=4353
+136640 open timer -
+137175 close - analysed=1
+137180 skip same n=1
+137180 gap - ms=20000 step=1
+156640 open timer -
+157175 close - analysed=1
+157180 skip same n=1
+157180 gap - ms=40000 step=2
+179420 motion HEAD_MOVING -
+180340 motion STILL -
+181580 glance - g=1 micro=0
+181580 dwell - tMs=181580
+181580 open dwell -
+181600 gap - ms=10000 step=0
+182115 close - analysed=1
+182120 skip same n=1
+191580 open timer -
+192115 close - analysed=1
+192120 skip same n=1
+192120 gap - ms=20000 step=1
+208940 motion HEAD_MOVING -
+209660 motion STILL -
+210900 glance - g=1 micro=0
+210900 dwell - tMs=210900
+210900 open dwell -
+210920 gap - ms=10000 step=0
+211435 close - analysed=1
+211435 keep dwell scene=635 motion=STILL blur=4218
+220900 open timer -
+221435 close - analysed=1
+221440 skip same n=1
+221440 gap - ms=20000 step=1
+233600 motion HEAD_MOVING -
+234280 motion STILL -
+235520 glance - g=1 micro=0
+235520 dwell - tMs=235520
+235520 open dwell -
+235540 gap - ms=10000 step=0
+236055 close - analysed=1
+236055 keep dwell scene=2311 motion=STILL blur=4130
+245520 open timer -
+246055 close - analysed=1
+246060 skip same n=1
+246060 gap - ms=20000 step=1
+265520 open timer -
+266055 close - analysed=1
+266060 skip same n=1
+266060 gap - ms=40000 step=2
+292300 motion HEAD_MOVING -
+293300 motion STILL -
+294540 glance - g=1 micro=0
+294540 dwell - tMs=294540
+294540 open dwell -
+294560 gap - ms=10000 step=0
+295075 close - analysed=1
+295075 keep dwell scene=1232 motion=STILL blur=3573
+300080 rest start -
+300080 gap - ms=30000 step=0
+350880 motion HEAD_MOVING -
+351660 motion STILL -
+352900 glance - g=1 micro=0
+352900 dwell - tMs=352900
+352900 open dwell -
+353435 close - analysed=1
+353435 keep dwell scene=4251 motion=STILL blur=4377
+382280 motion HEAD_MOVING -
+382940 motion STILL -
+384180 glance - g=1 micro=0
+384180 dwell - tMs=384180
+384180 open dwell -
+384715 close - analysed=1
+384720 skip same n=1
+403840 motion HEAD_MOVING -
+404840 motion STILL -
+406080 glance - g=1 micro=0
+406080 dwell - tMs=406080
+406080 open dwell -
+406615 close - analysed=1
+406615 keep dwell scene=3020 motion=STILL blur=4412
+440520 motion HEAD_MOVING -
+441900 motion STILL -
+443140 glance - g=1 micro=0
+443140 dwell - tMs=443140
+443140 open dwell -
+443675 close - analysed=1
+443675 keep dwell scene=1025 motion=STILL blur=4219
+475380 motion HEAD_MOVING -
+476100 motion STILL -
+477340 glance - g=1 micro=0
+477340 dwell - tMs=477340
+477340 open dwell -
+477875 close - analysed=1
+477875 keep dwell scene=4809 motion=STILL blur=4252
+522240 motion HEAD_MOVING -
+523160 motion STILL -
+524400 glance - g=1 micro=0
+524400 dwell - tMs=524400
+524400 open dwell -
+524935 close - analysed=1
+524935 keep dwell scene=2007 motion=STILL blur=4913
+550480 motion HEAD_MOVING -
+551580 motion STILL -
+552820 glance - g=1 micro=0
+552820 dwell - tMs=552820
+552820 open dwell -
+553355 close - analysed=1
+553355 keep dwell scene=4355 motion=STILL blur=3890
+607620 motion HEAD_MOVING -
+608660 motion STILL -
+609900 glance - g=1 micro=0
+609900 dwell - tMs=609900
+609900 open dwell -
+610435 close - analysed=1
+610440 skip same n=1
+629040 motion HEAD_MOVING -
+629940 motion STILL -
+631180 glance - g=1 micro=0
+631180 dwell - tMs=631180
+631180 open dwell -
+631715 close - analysed=1
+631715 keep dwell scene=1110 motion=STILL blur=4105
+650060 motion HEAD_MOVING -
+650980 motion STILL -
+652220 glance - g=1 micro=0
+652220 dwell - tMs=652220
+652220 open dwell -
+652755 close - analysed=1
+652755 keep dwell scene=3861 motion=STILL blur=3947
+673120 motion HEAD_MOVING -
+673820 motion STILL -
+675060 glance - g=1 micro=0
+675060 dwell - tMs=675060
+675080 skip cap n=1
+699940 motion HEAD_MOVING -
+701160 motion STILL -
+702400 glance - g=1 micro=0
+702400 dwell - tMs=702400
+702400 open dwell -
+702935 close - analysed=1
+702935 keep dwell scene=4785 motion=STILL blur=4362
+723000 motion HEAD_MOVING -
+723740 motion STILL -
+724980 glance - g=1 micro=0
+724980 dwell - tMs=724980
+724980 open dwell -
+725515 close - analysed=1
+725515 keep dwell scene=1402 motion=STILL blur=4680
+768400 motion HEAD_MOVING -
+769380 motion STILL -
+770620 glance - g=1 micro=0
+770620 dwell - tMs=770620
+770620 open dwell -
+771155 close - analysed=1
+771155 keep dwell scene=1216 motion=STILL blur=4004
+793560 motion HEAD_MOVING -
+794560 motion STILL -
+795800 glance - g=1 micro=0
+795800 dwell - tMs=795800
+795800 open dwell -
+796335 close - analysed=1
+796340 skip same n=1
+831155 open timer -
+831690 close - analysed=1
+831700 skip same n=1
+831700 gap - ms=60000 step=1
+853120 motion HEAD_MOVING -
+854280 motion STILL -
+855520 glance - g=1 micro=0
+855520 dwell - tMs=855520
+855520 open dwell -
+855540 gap - ms=30000 step=0
+856055 close - analysed=1
+856055 keep dwell scene=3540 motion=STILL blur=4294
+874400 motion HEAD_MOVING -
+875720 motion STILL -
+876960 glance - g=1 micro=0
+876960 dwell - tMs=876960
+876960 open dwell -
+877495 close - analysed=1
+877495 keep dwell scene=3926 motion=STILL blur=4999
+900245 open timer -
+900260 rest end -
+900260 gap - ms=10000 step=0
+900780 skip same n=1
+900780 gap - ms=20000 step=1
+900780 close - analysed=1
+918780 motion HEAD_MOVING -
+919560 motion STILL -
+920245 open timer -
+920780 skip same n=1
+920780 gap - ms=40000 step=2
+920780 close - analysed=1
+920800 glance - g=1 micro=0
+920800 dwell - tMs=920800
+920800 open dwell -
+920820 gap - ms=10000 step=0
+921335 close - analysed=1
+921340 skip same n=1
+930800 open timer -
+931335 close - analysed=1
+931340 skip same n=1
+931340 gap - ms=20000 step=1
+947520 motion HEAD_MOVING -
+948640 motion STILL -
+949880 glance - g=1 micro=0
+949880 dwell - tMs=949880
+949880 open dwell -
+949900 gap - ms=10000 step=0
+950415 close - analysed=1
+950415 keep dwell scene=1904 motion=STILL blur=4023
+959880 open timer -
+960415 close - analysed=1
+960420 skip same n=1
+960420 gap - ms=20000 step=1
+972840 motion HEAD_MOVING -
+974060 motion STILL -
+975300 glance - g=1 micro=0
+975300 dwell - tMs=975300
+975300 open dwell -
+975320 gap - ms=10000 step=0
+975835 close - analysed=1
+975835 keep dwell scene=991 motion=STILL blur=3972
+985300 open timer -
+985835 close - analysed=1
+985840 skip same n=1
+985840 gap - ms=20000 step=1
+1005300 open timer -
+1005835 close - analysed=1
+1005840 skip same n=1
+1005840 gap - ms=40000 step=2
+1022880 motion HEAD_MOVING -
+1023880 motion STILL -
+1025120 glance - g=1 micro=0
+1025120 dwell - tMs=1025120
+1025120 open dwell -
+1025140 gap - ms=10000 step=0
+1025655 close - analysed=1
+1025655 keep dwell scene=98 motion=STILL blur=4066
+1035120 open timer -
+1035655 close - analysed=1
+1035660 skip same n=1
+1035660 gap - ms=20000 step=1
+1055120 open timer -
+1055655 close - analysed=1
+1055660 skip same n=1
+1055660 gap - ms=40000 step=2
+1062320 motion HEAD_MOVING -
+1063640 motion STILL -
+1064880 glance - g=1 micro=0
+1064880 dwell - tMs=1064880
+1064880 open dwell -
+1064900 gap - ms=10000 step=0
+1065415 close - analysed=1
+1065415 keep dwell scene=1192 motion=STILL blur=4660
+1074880 open timer -
+1075415 close - analysed=1
+1075420 skip same n=1
+1075420 gap - ms=20000 step=1
+1094880 open timer -
+1095415 close - analysed=1
+1095420 skip same n=1
+1095420 gap - ms=40000 step=2
+1098740 motion HEAD_MOVING -
+1099520 motion STILL -
+1100760 glance - g=1 micro=0
+1100760 dwell - tMs=1100760
+1100760 open dwell -
+1100780 gap - ms=10000 step=0
+1101295 close - analysed=1
+1101295 keep dwell scene=4346 motion=STILL blur=4327
+1110760 open timer -
+1111295 close - analysed=1
+1111300 skip same n=1
+1111300 gap - ms=20000 step=1
+1130760 open timer -
+1131295 close - analysed=1
+1131300 skip same n=1
+1131300 gap - ms=40000 step=2
+1150680 motion HEAD_MOVING -
+1151620 motion STILL -
+1152860 glance - g=1 micro=0
+1152860 dwell - tMs=1152860
+1152860 open dwell -
+1152880 gap - ms=10000 step=0
+1153395 close - analysed=1
+1153395 keep dwell scene=2854 motion=STILL blur=4410
+1162860 open timer -
+1163395 close - analysed=1
+1163400 skip same n=1
+1163400 gap - ms=20000 step=1
+1182860 open timer -
+1183395 close - analysed=1
+1183400 skip same n=1
+1183400 gap - ms=40000 step=2
+1200400 rest start -
+1200400 gap - ms=30000 step=0
+1209220 motion HEAD_MOVING -
+1210120 motion STILL -
+1211360 glance - g=1 micro=0
+1211360 dwell - tMs=1211360
+1211360 open dwell -
+1211895 close - analysed=1
+1211900 skip same n=1
+1241360 open timer -
+1241895 close - analysed=1
+1241900 skip same n=1
+1241900 gap - ms=60000 step=1
+1258980 motion HEAD_MOVING -
+1260260 motion STILL -
+1261500 glance - g=1 micro=0
+1261500 dwell - tMs=1261500
+1261500 open dwell -
+1261520 gap - ms=30000 step=0
+1262035 close - analysed=1
+1262035 keep dwell scene=404 motion=STILL blur=4235
+1279060 motion HEAD_MOVING -
+1280460 motion STILL -
+1281700 glance - g=1 micro=0
+1281700 dwell - tMs=1281700
+1281700 open dwell -
+1282235 close - analysed=1
+1282235 keep dwell scene=3144 motion=STILL blur=4791
+1326020 motion HEAD_MOVING -
+1326760 motion STILL -
+1328000 glance - g=1 micro=0
+1328000 dwell - tMs=1328000
+1328000 open dwell -
+1328535 close - analysed=1
+1328535 keep dwell scene=204 motion=STILL blur=4199
+1357300 motion HEAD_MOVING -
+1358680 motion STILL -
+1359920 glance - g=1 micro=0
+1359920 dwell - tMs=1359920
+1359920 open dwell -
+1360455 close - analysed=1
+1360460 skip same n=1
+1389920 open timer -
+1390455 close - analysed=1
+1390460 skip same n=1
+1390460 gap - ms=60000 step=1
+1410760 motion HEAD_MOVING -
+1411880 motion STILL -
+1413120 glance - g=1 micro=0
+1413120 dwell - tMs=1413120
+1413120 open dwell -
+1413140 gap - ms=30000 step=0
+1413655 close - analysed=1
+1413660 skip same n=1
+1443120 open timer -
+1443655 close - analysed=1
+1443660 skip same n=1
+1443660 gap - ms=60000 step=1
+1454600 motion HEAD_MOVING -
+1455940 motion STILL -
+1457180 glance - g=1 micro=0
+1457180 dwell - tMs=1457180
+1457180 open dwell -
+1457200 gap - ms=30000 step=0
+1457715 close - analysed=1
+1457720 skip same n=1
+1487180 open timer -
+1487715 close - analysed=1
+1487720 skip same n=1
+1487720 gap - ms=60000 step=1
+1498160 motion HEAD_MOVING -
+1499080 motion STILL -
+1500320 glance - g=1 micro=0
+1500320 dwell - tMs=1500320
+1500320 open dwell -
+1500340 gap - ms=30000 step=0
+1500855 close - analysed=1
+1500855 keep dwell scene=3738 motion=STILL blur=4247
+1533220 motion HEAD_MOVING -
+1534280 motion STILL -
+1535520 glance - g=1 micro=0
+1535520 dwell - tMs=1535520
+1535520 open dwell -
+1536055 close - analysed=1
+1536055 keep dwell scene=369 motion=STILL blur=4462
+1575100 motion HEAD_MOVING -
+1576460 motion STILL -
+1577700 glance - g=1 micro=0
+1577700 dwell - tMs=1577700
+1577700 open dwell -
+1578235 close - analysed=1
+1578235 keep dwell scene=123 motion=STILL blur=4800
+1633260 motion HEAD_MOVING -
+1634380 motion STILL -
+1635620 glance - g=1 micro=0
+1635620 dwell - tMs=1635620
+1635620 open dwell -
+1636155 close - analysed=1
+1636160 skip same n=1
+1665620 open timer -
+1666155 close - analysed=1
+1666160 skip same n=1
+1666160 gap - ms=60000 step=1
+1670840 motion HEAD_MOVING -
+1671960 motion STILL -
+1673200 glance - g=1 micro=0
+1673200 dwell - tMs=1673200
+1673200 open dwell -
+1673220 gap - ms=30000 step=0
+1673735 close - analysed=1
+1673735 keep dwell scene=1857 motion=STILL blur=4178
+1722460 motion HEAD_MOVING -
+1723780 motion STILL -
+1725020 glance - g=1 micro=0
+1725020 dwell - tMs=1725020
+1725020 open dwell -
+1725555 close - analysed=1
+1725560 skip same n=1
+1752820 motion HEAD_MOVING -
+1753800 motion STILL -
+1755020 open timer -
+1755040 glance - g=1 micro=0
+1755040 dwell - tMs=1755040
+1755555 close - analysed=1
+1755555 keep dwell scene=1840 motion=STILL blur=4422
+# motionClassifierInputs=180000
+# glanceTriggerToOpenLatencyMs=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+# opens=77 ok=77 byCause={dwell=43, timer=34} keeps=35
+# expectedResv=
