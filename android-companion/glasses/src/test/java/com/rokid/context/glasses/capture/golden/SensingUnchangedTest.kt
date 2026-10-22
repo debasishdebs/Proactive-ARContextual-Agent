@@ -28,14 +28,17 @@ class SensingUnchangedTest {
     private fun slowGaps(c: PlanConfig) = c.copy(policy = c.policy.mapValues { (_, r) -> r.copy(timerPhotoGapsMs = TimerPhotoGaps(300_000, 300_000, 300_000, 300_000)) })
 
     private fun observe(s: GoldenScript, config: PlanConfig): Observed {
-        var text = ""; val rates = ArrayList<Pair<Long, SensorRate>>(); var g = 0; var a = 0
+        var text = ""; cur = SensorRate.FULL; val rates = ArrayList<Pair<Long, SensorRate>>(); var g = 0; var a = 0
         runTest(timeout = 10.minutes) {
-            text = DecisionGoldenRecorder.record(this, s, planFor = { r ->
+            text = DecisionGoldenRecorder.record(this, s, sensorRate = { cur }, composeProfile = true, planFor = { r ->
                 RigPlan.controller(r) { it.onMessage(PlanTestKit.trial(1, PlanTestKit.plan(config), max = 3_600_000)) }.also { startObservers(r, rates) { dg, da -> g += dg; a += da } }
             })
         }
         return Observed(text, rates, g, a)
     }
+
+    /** The rate the (scripted) sensors are registered at: set by the observer from the real rate policy, and obeyed by the recorder's feed. */
+    @Volatile private var cur = SensorRate.FULL
 
     /** What CaptureService does each second: the rate policy over the session's own status reason and the motion state; plus a tap counting classifier inputs. */
     private fun startObservers(r: Rig, rates: MutableList<Pair<Long, SensorRate>>, counts: (Int, Int) -> Unit) {
@@ -44,6 +47,7 @@ class SensingUnchangedTest {
         r.test.backgroundScope.launch {
             while (isActive) {
                 val rate = policy.update(r.session.status.value.reason, r.clock(), r.motion.state.value)
+                cur = rate
                 if (rate != last) { rates += r.clock() to rate; last = rate }
                 delay(1_000)
             }
@@ -67,7 +71,8 @@ class SensingUnchangedTest {
             assertTrue(identity.rates.isNotEmpty())
             assertEquals(identity.gyro, slow.gyro, "${s.name}: identical MotionClassifier input count")
             assertEquals(identity.accel, slow.accel, "${s.name}: identical MotionClassifier input count")
-            assertTrue(identity.gyro > 10_000)
+            assertTrue(identity.rates.any { it.second == SensorRate.STILL }, "${s.name}: the rate policy really moved to STILL, and the feed obeyed it")
+            assertTrue(identity.gyro > 5_000)
             assertEquals(lines(identity, setOf("motion", "dwell", "glance")), lines(slow, setOf("motion", "dwell", "glance")), "${s.name}: detection unchanged")
             assertEquals(header(identity, "classifierFingerprint"), header(slow, "classifierFingerprint"))
             assertEquals(header(identity, "glanceTriggerToOpenLatencyMs"), header(slow, "glanceTriggerToOpenLatencyMs"), "${s.name}: glance-trigger-to-open latencies")

@@ -36,6 +36,11 @@ class ReservedAttemptTest {
         val w = times.filter { it in from..to }
         return w.zipWithNext { a, b -> b - a }
     }
+    /** The last attempt must be recent too: starvation after an early success must not pass. */
+    private fun assertFinalGap(r: Rig, bound: Long, what: String) {
+        val last = attempts(r).last()
+        assertTrue(r.clock() - last <= bound + tol, "$what: ${r.clock() - last} ms since the last attempt at the end (bound $bound)")
+    }
     private fun resv(r: Rig) = r.session.diagSnapshot().wakes["resv"] ?: 0
 
     private fun walking(r: Rig) {
@@ -57,6 +62,7 @@ class ReservedAttemptTest {
             delay(10.minutes.inWholeMilliseconds)
             val g = gaps(attempts(r))
             assertTrue(g.isNotEmpty() && g.max() <= 60_000 + tol, "gap=$gap gaps=$g")
+            assertFinalGap(r, 60_000L, "final")
             assertTrue(resv(r) >= 8, "reserved attempts carried it: ${resv(r)}")
             r.session.stop("test")
         }
@@ -70,6 +76,7 @@ class ReservedAttemptTest {
         assertEquals(com.rokid.context.core.model.MotionState.WALKING, r.motion.state.value)
         val g = gaps(attempts(r))
         assertTrue(g.isNotEmpty() && g.max() <= 60_000 + tol, "gaps=$g")
+        assertFinalGap(r, 60_000L, "final")
         r.session.stop("test")
     }
 
@@ -81,6 +88,7 @@ class ReservedAttemptTest {
             delay(26.minutes.inWholeMilliseconds)
             val g = gaps(attempts(r))
             assertTrue(g.isNotEmpty() && g.max() <= 300_000 + tol, "$state gap=$gap gaps=$g")
+            assertFinalGap(r, 300_000L, "final")
             if (gap == 900_000L) assertTrue(g.all { it >= 300_000 - tol }, "not more often than the bound at rest: $g")
             r.session.stop("test")
         }
@@ -99,6 +107,7 @@ class ReservedAttemptTest {
         assertTrue(r.session.status.value.restingUntilMs != null, "resting")
         val g = gaps(attempts(r), from = 130_000)
         assertTrue(g.size >= 3 && g.max() <= 300_000 + tol, "gaps=$g")
+        assertFinalGap(r, 300_000L, "final")
         assertTrue(g.all { it >= 300_000 - tol }, "the bound is 300 s while resting, not 60 s: $g")
         r.session.stop("test")
     }
@@ -111,6 +120,7 @@ class ReservedAttemptTest {
         assertEquals(com.rokid.context.core.model.MotionState.HEAD_MOVING, r.motion.state.value)
         val g = gaps(attempts(r))
         assertTrue(g.isNotEmpty() && g.max() <= 60_000 + tol, "gaps=$g")
+        assertFinalGap(r, 60_000L, "final")
         r.session.stop("test")
     }
 
@@ -121,6 +131,7 @@ class ReservedAttemptTest {
         delay(15.minutes.inWholeMilliseconds)
         val g = gaps(attempts(r))
         assertTrue(g.max() <= 60_000 + tol, "the still-scene backoff (cap 300 s) never defeats the bound: $g")
+        assertFinalGap(r, 60_000L, "final")
         assertTrue(r.session.stillStep >= 2, "the backoff ran")
         r.session.stop("test")
     }
@@ -133,6 +144,7 @@ class ReservedAttemptTest {
         assertEquals(HeatLevel.SLOW, r.heat.level.value)
         val g = gaps(attempts(r))
         assertTrue(g.max() <= 60_000 + tol, "gaps=$g")
+        assertFinalGap(r, 60_000L, "final")
         r.session.stop("test")
     }
 
@@ -202,6 +214,7 @@ class ReservedAttemptTest {
         delay(10.minutes.inWholeMilliseconds)
         val g = gaps(attempts(r))
         assertTrue(g.max() <= 60_000 + tol, "the hold never starves the bound: $g")
+        assertFinalGap(r, 60_000L, "final")
         val keeps = r.keyframes.map { it.first }
         val worst = keeps.maxOfOrNull { k -> keeps.count { it in k..(k + 59_999) } } ?: 0
         assertTrue(keeps.isNotEmpty() && worst <= 2 * 2, "hard ceiling 2 x cap still applies in any minute: $worst")

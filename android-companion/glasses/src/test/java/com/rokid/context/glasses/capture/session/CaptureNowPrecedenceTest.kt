@@ -120,4 +120,17 @@ class CaptureNowPrecedenceTest {
         assertTrue(r.ceilingHits.isNotEmpty(), "two keeps against cap 1: the ceiling")
         r.session.stop("test")
     }
+
+    /** The ceiling is the GATE's own history: forced keeps whose encode failed still fill it, and the next refused glance is reported. */
+    @Test fun twoFailedEncodeKeepsThenACappedGlanceStillReportTheCeiling() = runTest {
+        val failing = KeyframeEncoder { null }
+        val r = Rig(this, HudSettings(captureMode = CaptureMode.SMART, pauseWhenNotWorn = true), encoder = failing).apply { profile = restrictive(); applied = ContextState.REST; contextCap = 1 }
+        settled(r)
+        r.session.captureNow(); delay(2_000)
+        r.session.captureNow(); delay(2_000)
+        assertTrue(r.keyframes.isEmpty(), "no encode succeeded: the session's own keep history is empty")
+        r.scene = 60; r.gyroMag = 1.5f; delay(300); r.gyroMag = 0.01f; delay(3_000)
+        assertTrue(r.ceilingHits.isNotEmpty(), "the gate refused a fresh glance at 2 x cap: ${r.ceilingHits}")
+        r.session.stop("test")
+    }
 }

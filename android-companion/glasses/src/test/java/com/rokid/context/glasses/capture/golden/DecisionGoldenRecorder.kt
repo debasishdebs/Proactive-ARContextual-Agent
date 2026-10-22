@@ -38,7 +38,12 @@ object DecisionGoldenRecorder {
      * starts; the rig then reads gate values and glance tunables from it and the rows below come from its active config, the way
      * CaptureService composes them. Null = the unmodified settings path of the frozen goldens.
      */
-    suspend fun record(test: TestScope, s: GoldenScript, planFor: ((Rig) -> PlanController)? = null, onRig: ((Rig) -> Unit)? = null): String {
+    suspend fun record(test: TestScope, s: GoldenScript, planFor: ((Rig) -> PlanController)? = null, onRig: ((Rig) -> Unit)? = null,
+        /** When set, the scripted IMU feed obeys the registered rate (FULL 50 Hz, STILL 20 Hz, LOW 10 Hz) like the real feed: a rate decision changes the classifier's input. Null = every 20 ms (the frozen goldens). */
+        sensorRate: (() -> com.rokid.context.glasses.capture.motion.SensorRate)? = null,
+        /** True = the profile is composed the way CaptureService does for a plan (`ActiveConfig.profile`: forced SETTLE), not tier + row. */
+        composeProfile: Boolean = false,
+    ): String {
         val plan = ScriptPlan().also { s.plan(Random(s.seed), it, s.durationMs) }
         val r = Rig(test, s.settings, work = s.workMin, rest = s.restMin, glance = GlanceParams())
         r.scene = 1
@@ -47,7 +52,7 @@ object DecisionGoldenRecorder {
         if (ctl != null) r.activePlan = { ctl.active }
         fun applyCtx(c: ContextState) {
             val pol = ctl?.active?.policyFor(c) ?: ContextPolicies.of(c)
-            r.profile = CaptureProfile.of(r.settings.cameraWake, s.tier).withContext(pol)
+            r.profile = if (composeProfile && ctl != null) ctl.active.profile(r.settings.cameraWake, s.tier, c) else CaptureProfile.of(r.settings.cameraWake, s.tier).withContext(pol)
             r.contextCap = pol.capPerMin
             r.applied = c
         }
@@ -71,6 +76,7 @@ object DecisionGoldenRecorder {
 
         val turns = plan.turns.sortedBy { it.atMs }
         var turnIdx = 0
+        var lastFedAt = Long.MIN_VALUE / 2
         val noise = Random(s.seed xor 0x5DEECE66DL)
         val dwellAt = ArrayList<Long>()
         val dwellOpenLatencies = ArrayList<Long>()
@@ -144,10 +150,13 @@ object DecisionGoldenRecorder {
                 val z = if (turnIdx < turns.size && turns[turnIdx].atMs <= t) turns[turnIdx].rate else 0f
                 val walking = plan.walks.any { t in it }
                 val gx = (noise.nextFloat() - 0.5f) * 0.04f; val gy = (noise.nextFloat() - 0.5f) * 0.04f; val gz = (noise.nextFloat() - 0.5f) * 0.04f
-                r.motion.onGyro(gx, gy, gz + z, t);
+                val period = when (sensorRate?.invoke()) { null -> 0L; com.rokid.context.glasses.capture.motion.SensorRate.FULL -> 20L; com.rokid.context.glasses.capture.motion.SensorRate.STILL -> 50L; else -> 100L }
+                val feedNow = sensorRate == null || t - lastFedAt >= period
+                if (feedNow) lastFedAt = t
+                if (feedNow) r.motion.onGyro(gx, gy, gz + z, t);
                 val ax = (noise.nextFloat() - 0.5f) * 0.04f; val ay = (noise.nextFloat() - 0.5f) * 0.04f; val az = (noise.nextFloat() - 0.5f) * 0.04f
                 val w = if (walking) (2.0 * sin(2 * PI * 1.8 * t / 1000.0)).toFloat() else 0f
-                r.motion.onLinearAccel(ax, ay, az + w, t);
+                if (feedNow) r.motion.onLinearAccel(ax, ay, az + w, t);
                 poller.tick()
                 if (t >= nextFeat) {
                     nextFeat += 1_000L
