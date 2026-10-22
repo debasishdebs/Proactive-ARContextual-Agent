@@ -17,7 +17,8 @@ class FrameIntentWriter(private val store: IntentFrameStore) : FrameIntentSink {
 
     override suspend fun record(frameId: String, label: String, confidence: Float?, atMs: Long) {
         lastRows = -1
-        val known = IntentLabel.entries.firstOrNull { it.name == label } ?: return
+        // the interpreter lowercases its labels: match case-insensitively, still rejecting unknown ones
+        val known = IntentLabel.entries.firstOrNull { it.name.equals(label.trim(), ignoreCase = true) } ?: return
         try {
             val conf = (confidence ?: 0f).let { if (it.isNaN()) 0f else it.coerceIn(0f, 1f) }
             lastRows = store.setIntentIfUnlabelled(frameId, known.name, conf, atMs)
