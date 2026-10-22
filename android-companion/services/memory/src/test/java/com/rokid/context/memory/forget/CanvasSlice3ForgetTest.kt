@@ -85,6 +85,14 @@ class CanvasSlice3ForgetTest {
         assertTrue(dao.replay("r1")!!.invalidated)
     }
 
+    @Test fun aReplayCannotCommitOverASourceOfAnOlderEpoch() = runBlocking {
+        trace("t-old-0001", 1_000, 2_000) // recorded under epoch (i, 1)
+        dao.insertReplay(CanvasReplayEntity("r1", null, "{}", "EXACT", null, sourcesJson = TraceSources.encode(listOf(TraceSource("t-old-0001", 0, 1_000, 2_000))), labelRev = dao.labelRev(), createdAt = 1))
+        val e2 = DeletionEpoch("i", 2, 0) // a Delete all whose cleanup never ran
+        val newer = DaoFence(0, e2, { 0 }, { e2 })
+        assertFalse(dao.commitReplayFenced("r1", "{}", null, listOf(TraceSource("t-old-0001", 0, 1_000, 2_000)), dao.labelRev(), newer, 5))
+    }
+
     @Test fun forgettingTwiceIsIdempotent() = runBlocking {
         trace("t1", 1_000, 2_000)
         forget.forgetRange(0, 10_000)
@@ -101,5 +109,65 @@ class CanvasSlice3ForgetTest {
         dao.insertSweep(CanvasSweepEntity("sw", "{}", resultJson = "{}", jobState = "DONE", fromMs = 1_000, toMs = 2_000, createdAt = 1))
         forget.forgetRange(1_500, 1_600)
         assertTrue(dao.sweep("sw")!!.invalidated)
+    }
+
+    // --- fix round 1: the durable range fence, the photo time link, fenced initial inserts, scrubbed provenance ---
+
+    @Test fun aMarkOfAForgottenRangeCannotComeBackByRedeliveryOrAFreshWriter() = runBlocking {
+        dao.insertLabelFenced(CanvasLabelEntity("mk:e:1", "MOMENT", "tap", "MOMENT", 1_500, createdAt = 1), fence)
+        forget.forgetRange(1_000, 2_000)
+        assertFalse("the unacked mark delivered again", dao.insertLabelFenced(CanvasLabelEntity("mk:e:1", "MOMENT", "tap", "MOMENT", 1_500, createdAt = 2), fence))
+        assertFalse("a delayed voice mark at the listen start", dao.insertLabelFenced(CanvasLabelEntity("vm:1", "INTENT", "voice", "driving", 1_999, createdAt = 2), fence))
+        assertTrue("just outside the range is fine", dao.insertLabelFenced(CanvasLabelEntity("mk:e:2", "MOMENT", "tap", "MOMENT", 2_001, createdAt = 2), fence))
+        assertNull(dao.label("mk:e:1"))
+    }
+
+    @Test fun aTraceOverlappingAForgottenRangeCannotImportLater() = runBlocking {
+        forget.forgetRange(1_000, 2_000)
+        val e = CanvasTraceEntity("late-trace-1", "IMU", "COMPLETE", "{}", 0, installId = "i", deletionCounter = 1, startedAtMs = 1_900, endedAtMs = 2_500, createdAt = 3)
+        assertFalse(dao.acceptTraceFenced(e, fence))
+        assertTrue(dao.acceptTraceFenced(e.copy(traceId = "late-trace-2", startedAtMs = 3_000, endedAtMs = 3_500), fence))
+    }
+
+    @Test fun rangesMergeAndAreCapped() = runBlocking {
+        forget.forgetRange(100, 200); forget.forgetRange(150, 300); forget.forgetRange(301, 310)
+        assertEquals(listOf(100L..310L), dao.forgottenRanges())
+        (0 until 250).forEach { i -> forget.forgetRange(10_000L + i * 100, 10_010L + i * 100) }
+        assertTrue(dao.forgottenRanges().size <= com.rokid.context.memory.db.CanvasSlice3Dao.MAX_RANGES)
+        assertTrue("capping only ever fences MORE", dao.isForgotten(10_005L) && dao.isForgotten(10_000L + 249 * 100 + 5))
+    }
+
+    @Test fun deleteAllClearsTheRangeFenceBecauseTheEpochCoversEverythingBeforeIt() = runBlocking {
+        forget.forgetRange(1_000, 2_000)
+        db.wipeDao().wipeMemory()
+        assertTrue(dao.forgottenRanges().isEmpty())
+    }
+
+    @Test fun theInitialInsertOfAReplayIsFencedLikeItsCommit() = runBlocking {
+        trace("trace-src-001", 1_000, 2_000)
+        val src = listOf(TraceSource("trace-src-001", 0, 1_000, 2_000))
+        val row = CanvasReplayEntity("r1", null, "{\"secret\":1}", "EXACT", null, sourcesJson = TraceSources.encode(src), labelRev = dao.labelRev(), createdAt = 1)
+        forget.forgetRange(0, 10_000) // lands after the sources were loaded
+        assertFalse(dao.insertReplayFenced(row, src, dao.labelRev(), fence))
+        assertNull("no row keeps the trace id or the parameters", dao.replay("r1"))
+        val sw = CanvasSweepEntity("sw1", "{}", sourcesJson = TraceSources.encode(src), labelRev = dao.labelRev(), createdAt = 1)
+        assertFalse(dao.insertSweepFenced(sw, src, dao.labelRev(), fence)); assertNull(dao.sweep("sw1"))
+    }
+
+    @Test fun aCancelledJobAndAnInvalidatedResultKeepNoProvenance() = runBlocking {
+        trace("trace-src-002", 1_000, 2_000)
+        val src = listOf(TraceSource("trace-src-002", 0, 1_000, 2_000))
+        assertTrue(dao.insertReplayFenced(CanvasReplayEntity("r1", null, "{\"p\":1}", "EXACT", null, sourcesJson = TraceSources.encode(src), labelRev = dao.labelRev(), fromMs = 1_000, toMs = 2_000, createdAt = 1), src, dao.labelRev(), fence))
+        dao.cancelReplay("r1", 5)
+        dao.replay("r1")!!.let { assertEquals("[]", it.sourcesJson); assertNull(it.fromMs); assertEquals("{}", it.paramsJson) }
+        dao.insertReplay(CanvasReplayEntity("r2", null, "{}", "EXACT", "{}", sourcesJson = TraceSources.encode(src), jobState = "DONE", fromMs = 1_000, toMs = 2_000, createdAt = 1))
+        forget.forgetRange(1_000, 2_000)
+        dao.replay("r2")!!.let { assertTrue(it.invalidated); assertEquals("[]", it.sourcesJson); assertNull(it.toMs) }
+    }
+
+    @Test fun aTombstoneKeepsOnlyItsIdentity() = runBlocking {
+        trace("trace-src-003", 1_000, 2_000)
+        forget.forgetRange(0, 10_000)
+        dao.trace("trace-src-003")!!.let { assertTrue(it.tombstoned); assertEquals(0L, it.startedAtMs); assertNull(it.endedAtMs); assertNull(it.parentTraceId); assertEquals("", it.installId) }
     }
 }

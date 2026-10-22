@@ -47,6 +47,7 @@ abstract class WipeDao {
     @Query("DELETE FROM canvas_calibration") protected abstract suspend fun slice3Calibration()
     @Query("DELETE FROM canvas_helper_job") protected abstract suspend fun slice3HelperJobs()
     @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = 'labelRev'") protected abstract suspend fun slice3BumpLabelRev(): Int
+    @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'forgetRanges'") protected abstract suspend fun slice3ClearForgetRanges(): Int
     @Query("SELECT path FROM frame") abstract suspend fun framePaths(): List<String>
 
     @Transaction
@@ -54,7 +55,7 @@ abstract class WipeDao {
         val proposals = proposalIds()
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         canvasItems(); canvasScores(); canvasRuns(); canvasTraces() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
-        slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3BumpLabelRev()
+        slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3ClearForgetRanges(); slice3BumpLabelRev()
         scrubProposalParams(com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS); scrubActionLog()
         return proposals
     }

@@ -118,4 +118,51 @@ class CanvasForgetCoordinatorTest {
         assertFalse("an occurrence before the wipe is refused even by a fresh writer", dao.insertLabelFenced(CanvasLabelEntity("old", "MOMENT", "tap", "MOMENT", now.wipedAtMs - 1, createdAt = 1), fresh))
         assertTrue(dao.labels().isEmpty())
     }
+
+    // --- fix round 1 ---
+
+    @Test fun aForgottenPhotoRemovesTheTraceFolderAroundItThroughTheListenerPath() = runBlocking {
+        ForgetListeners.register(coordinator)
+        val g = MemoryGraph.get(ctx)
+        val photoAt = 800_000L
+        g.db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity("ph1", photoAt, "/ph1.jpg", "rokid_glasses"))
+        val dir = trace("trace-near-01", photoAt - 2_000, photoAt + 2_000)
+        val far = trace("trace-far-001", 9_000_000, 9_001_000)
+        val service = com.rokid.context.memory.forget.ForgetService(g.db, com.rokid.context.memory.ProposalRepository(g.db.proposalDao(), g.db.actionDao(), g.db))
+        service.forgetMoment("ph1")
+        assertFalse("the photo's moment: the sealed trace folder is gone", dir.exists()); assertTrue(far.exists())
+        assertTrue("and the glasses were told the tombstone and range", sent.any { "trace-near-01" in it.tombstones })
+    }
+
+    @Test fun startupRemovesTraceFoldersWhoseTombstoneIsDurableButWhoseFilesSurvivedACrash() = runBlocking {
+        val dir = trace("trace-crash-01", 1_000, 2_000)
+        dao.tombstoneTrace("trace-crash-01", 5) // the DB committed, the process died before the file delete
+        assertTrue(dir.exists())
+        FencedFiles.let { com.rokid.context.canvas.trace.CanvasStartup.run(ctx, MemoryGraph.get(ctx).db) }
+        assertFalse(dir.exists())
+    }
+
+    @Test fun aMarkRedeliveredAfterARangeForgetIsAckedButNotStored() = runBlocking {
+        val rec = com.rokid.context.canvas.marks.MarkRecorder(dao, { fence() }, { 1L })
+        val m = com.rokid.context.core.model.MarkMessage(epoch = "e", seq = 1, atMs = 5, atElapsedMs = 5, listen = true)
+        val at = com.rokid.context.canvas.marks.MarkArrival(1_500, true, 1_500)
+        assertTrue(rec.onMark(m, at)); assertEquals(1, dao.labels().size)
+        coordinator.forgetRange(1_000, 2_000)
+        assertTrue("acked, so the glasses stop re-sending it", rec.onMark(m, at))
+        assertTrue(dao.labels().isEmpty())
+        rec.onListenStart(1_800)
+        rec.applyVoice(listOf(com.rokid.context.canvas.marks.VoiceMark.Mark("driving")), true, 1_900)
+        assertTrue("a delayed voice command for the forgotten moment stores nothing", dao.labels().isEmpty())
+    }
+
+    @Test fun anUnimportedTraceOverlappingAForgottenRangeCannotImportLater() = runBlocking {
+        val e = DeletionEpochStore.of(ctx).read()
+        val pulled = File(ctx.cacheDir, "pulled_forget").apply { deleteRecursively() }
+        val d = com.rokid.context.canvas.trace.PulledTraces.write(pulled, "trace-late-001", e.installId, e.counter) // recorded at wall 1_700_000_001_000..012_010
+        coordinator.forgetRange(1_700_000_000_000, 1_700_000_005_000)
+        val r = com.rokid.context.canvas.trace.TraceImport(dao, FencedFiles(MemoryGraph.get(ctx).db, ctx.filesDir), { DaoFence(MemoryWipe.generation.get(), DeletionEpochStore.of(ctx).read(), MemoryWipe.generation::get, DeletionEpochStore.of(ctx)::read) }) { 5_000L }.import(d)
+        assertTrue(r.toString(), r is com.rokid.context.canvas.trace.TraceImportResult.Rejected)
+        assertFalse(File(File(ctx.filesDir, FencedFiles.TRACES_DIR), "trace-late-001").exists())
+        pulled.deleteRecursively(); Unit
+    }
 }

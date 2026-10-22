@@ -26,6 +26,23 @@ class CollectSessionTest {
         prefs.edit().clear().commit(); ctx.getSharedPreferences(DeletionEpochStore.PREFS, Context.MODE_PRIVATE).edit().clear().commit(); now = 1_000_000L
     }
 
+    /** A Delete all that commits its epoch while a start is writing: the start must not survive it (S57). */
+    @Test fun aStartOverlappingADeleteAllDoesNotPublishCollectOn() {
+        val real = prefs
+        val racing = object : android.content.SharedPreferences by real {
+            override fun edit(): android.content.SharedPreferences.Editor {
+                val e = real.edit()
+                return object : android.content.SharedPreferences.Editor by e {
+                    override fun putLong(k: String, v: Long) = apply { e.putLong(k, v) }
+                    override fun commit(): Boolean = e.commit().also { epoch.commitWipe(now) } // the wipe lands right after the write
+                }
+            }
+        }
+        val c = CollectSession(racing, epoch) { now }.start()
+        assertFalse("collect is off", c.collect)
+        assertFalse(real.contains("collectUntilMs"))
+    }
+
     @Test fun controlCarriesPersistedEpoch() {
         val s = session()
         val c1 = s.start()

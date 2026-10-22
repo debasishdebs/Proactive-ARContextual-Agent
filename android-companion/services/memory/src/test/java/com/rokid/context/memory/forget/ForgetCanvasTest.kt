@@ -28,7 +28,7 @@ class ForgetCanvasTest {
     private val canvas = db.canvasDao()
     @After fun close() = db.close()
 
-    private suspend fun frame(id: String) = db.frameDao().insertIgnore(FrameEntity(id, 1, "/$id.jpg", "rokid_glasses"))
+    private suspend fun frame(id: String, ts: Long = 1) = db.frameDao().insertIgnore(FrameEntity(id, ts, "/$id.jpg", "rokid_glasses"))
     private suspend fun mem(id: String, frame: String?) =
         db.memoryDao().insert(MemoryEntity(id, frame, "text of $id", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, "text of $id"))
     private suspend fun canvasRows(run: String, frame: String) {
@@ -107,16 +107,16 @@ class ForgetCanvasTest {
 
     // --- slice 3a (Room v7): labels of a photo, the results that read them, helper jobs that carry it ---
     private fun fence() = com.rokid.context.memory.db.DeletionEpoch("i", 1, 0).let { e -> com.rokid.context.memory.db.DaoFence(0, e, { 0 }, { e }) }
-    private suspend fun sliceRows(frame: String) {
+    private suspend fun sliceRows(frame: String, at: Long = 5) {
         val s = db.canvasSlice3Dao()
-        s.insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("l-$frame", "INTENT", "photo", "SHOPPING", 5, frameId = frame, createdAt = 1), fence())
+        s.insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("l-$frame", "INTENT", "photo", "SHOPPING", at, frameId = frame, createdAt = 1), fence())
         s.insertHelperJob(com.rokid.context.memory.db.CanvasHelperJobEntity("j-$frame", "py", "QUEUED", frameIdsJson = "[\"$frame\"]", createdAt = 1, updatedAt = 1))
         s.insertReplay(com.rokid.context.memory.db.CanvasReplayEntity("r-$frame", null, "{}", "EXACT", "{}", labelRev = s.labelRev(), jobState = "DONE", createdAt = 1))
     }
     private suspend fun sliceLeft(frame: String) = db.canvasSlice3Dao().let { s -> listOfNotNull(s.label("l-$frame"), s.helperJob("j-$frame")?.takeIf { it.state != "VOIDED" }).size }
 
     @Test fun forgetMomentDeletesLabelsVoidsHelperJobsAndInvalidatesResults() = runBlocking {
-        frame("f1"); mem("m1", "f1"); frame("f2"); mem("m2", "f2"); sliceRows("f1"); sliceRows("f2")
+        frame("f1"); mem("m1", "f1"); frame("f2", ts = 1_000_000); mem("m2", "f2"); sliceRows("f1"); sliceRows("f2", 1_000_000) // f2 is far from f1 in time: the time link must not reach it
         service.forgetMoment("f1")
         assertEquals(0, sliceLeft("f1")); assertEquals(2, sliceLeft("f2"))
         val s = db.canvasSlice3Dao()

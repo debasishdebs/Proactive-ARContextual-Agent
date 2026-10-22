@@ -31,6 +31,13 @@ class FencedFilesTest {
     private fun tmp(text: String = "trace") = files.newTmp("t1").also { it.writeText(text) }
     private fun finalFile(name: String = "t1.bin") = File(File(ctx.filesDir, FencedFiles.TRACES_DIR), name)
 
+    @Test fun discardRemovesNonEmptyDirectoriesAfterAFailedCommit() {
+        val tmpDir = File(ctx.filesDir, FencedFiles.TMP_DIR + "/imp-1").apply { mkdirs(); File(this, "chunk-0000.json").writeText("x") }
+        val finalDir = File(ctx.filesDir, FencedFiles.TRACES_DIR + "/trace-0001").apply { mkdirs(); File(this, "chunk-0000.json").writeText("x") }
+        files.discard(tmpDir, finalDir, moved = true)
+        assertFalse(tmpDir.exists()); assertFalse("a moved import's chunks do not stay behind", finalDir.exists())
+    }
+
     @Test fun publishRenamesWhenTheFenceHolds() = runBlocking {
         val t = tmp(); val f = finalFile()
         assertTrue(files.publish(t, f) { true })

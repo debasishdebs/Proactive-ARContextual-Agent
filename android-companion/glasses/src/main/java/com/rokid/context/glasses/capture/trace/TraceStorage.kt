@@ -81,11 +81,47 @@ internal class TraceStorage(private val root: File) {
         dir.deleteRecursively()
     }
 
-    /** A new epoch: every local trace and the tmp directory go. */
-    fun wipe() {
+    /** A new epoch: every local trace and the tmp directory go. True only when both are really gone (the caller then adopts the epoch; else it retries at the next control). */
+    fun wipe(): Boolean {
         tmpDir.deleteRecursively()
         tracesDir.deleteRecursively()
-        used.set(0)
+        used.set(sizeOf(tracesDir) + sizeOf(tmpDir))
+        return !tmpDir.exists() && !tracesDir.exists()
+    }
+
+    // ---- forget requests (S58, P7): durable until carried out, so a failed delete is retried and a forgotten trace cannot be pulled later ----
+    private val forgetFile = File(root, "trace_forget")
+
+    /** Lines `R <fromWallMs> <toWallMs>` (a range on the GLASSES wall clock) and `T <traceId>`. */
+    fun addForget(lines: List<String>) {
+        root.mkdirs()
+        val part = File(root, "trace_forget.part")
+        part.writeText((pendingForget() + lines).distinct().joinToString("\n"))
+        if (!part.renameTo(forgetFile)) { forgetFile.delete(); part.renameTo(forgetFile) }
+    }
+
+    fun pendingForget(): List<String> = try { forgetFile.readText().lines().filter { it.isNotBlank() } } catch (e: Exception) { emptyList() }
+    fun hasPendingForget(): Boolean = forgetFile.exists()
+
+    /**
+     * Carries out every pending forget request: a trace in `traces/` whose id is listed, or whose wall-clock interval overlaps a listed range, or whose manifest cannot be
+     * read (it cannot be shown not to overlap), is deleted. The request file is removed only when everything matched is really gone. Returns that.
+     */
+    fun runForget(): Boolean {
+        val lines = pendingForget()
+        if (lines.isEmpty()) { forgetFile.delete(); return true }
+        val ids = lines.filter { it.startsWith("T ") }.map { it.substring(2).trim() }.toSet()
+        val ranges = lines.filter { it.startsWith("R ") }.mapNotNull { l -> l.split(' ').let { p -> p.getOrNull(1)?.toLongOrNull()?.let { a -> p.getOrNull(2)?.toLongOrNull()?.let { b -> a..b } } } }
+        var ok = true
+        for (dir in tracesDir.listFiles()?.filter { it.isDirectory } ?: emptyList()) {
+            val hit = dir.name in ids || run {
+                val m = try { ManifestChunk.decode(TraceFiles.decodeFile(File(dir, TraceFiles.MANIFEST_FILE).readText(Charsets.UTF_8)).getOrThrow()).getOrThrow() } catch (e: Exception) { null }
+                m == null || ranges.any { m.startWallMs <= it.last && m.endWallMs >= it.first }
+            }
+            if (hit) { val n = sizeOf(dir); dir.deleteRecursively(); if (dir.exists()) ok = false else used.addAndGet(-n) }
+        }
+        if (ok) forgetFile.delete()
+        return ok && !forgetFile.exists()
     }
 
     private fun sizeOf(f: File): Long = if (!f.exists()) 0 else if (f.isFile) f.length() else (f.listFiles() ?: emptyArray()).sumOf { sizeOf(it) }

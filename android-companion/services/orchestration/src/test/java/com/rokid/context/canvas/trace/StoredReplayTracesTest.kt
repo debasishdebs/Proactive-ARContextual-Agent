@@ -36,6 +36,15 @@ class StoredReplayTracesTest {
         FencedFiles.DELETE_ALL_DIRS.forEach { File(ctx.filesDir, it).deleteRecursively() }; pulled.deleteRecursively()
     }
 
+    @Test fun aTraceOfAnOlderEpochIsRefusedEvenWithValidRowAndFiles() = runBlocking {
+        val dir = PulledTraces.write(pulled, "trace-aaaa-0001", store.read().installId, store.read().counter)
+        TraceImport(dao, FencedFiles(db, ctx.filesDir), ::fence) { 5_000L }.import(dir)
+        assertNotNull(StoredReplayTraces(dao, root, store::read).load("trace-aaaa-0001"))
+        store.commitWipe(9_000L) // a Delete all whose cleanup never ran: row and files are still there
+        assertNull(StoredReplayTraces(dao, root, store::read).load("trace-aaaa-0001"))
+        assertNotNull("without the epoch check it would load: the guard is what refuses it", StoredReplayTraces(dao, root).load("trace-aaaa-0001"))
+    }
+
     @Test fun anImportedTraceLoadsAndReplaysAndAnUnknownOrTombstonedOneDoesNot() = runBlocking {
         val dir = PulledTraces.write(pulled, "trace-aaaa-0001", store.read().installId, store.read().counter)
         TraceImport(dao, FencedFiles(db, ctx.filesDir), ::fence) { 5_000L }.import(dir)
