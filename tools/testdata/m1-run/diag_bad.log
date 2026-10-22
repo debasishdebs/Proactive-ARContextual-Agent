@@ -1,0 +1,4 @@
+01-01 10:00:00.000 I PcCapture heartbeat v=2 running=true plan=none gen=0 planMode=SETTINGS planRevert=none shOpen=0 shSkip=0 worn=1
+01-01 10:01:00.000 I PcCapture heartbeat v=2 running=true plan=f5782e0d gen=3 planMode=SHADOW planRevert=none shOpen=50 shSkip=10 worn=1
+01-01 10:02:00.000 I PcCapture heartbeat v=2 running=true plan=f5782e0d gen=3 planMode=SHADOW planRevert=none shOpen=80 shSkip=9 worn=1
+01-01 10:02:30.000 I AssistServer secret=SHOULDNOTAPPEAR

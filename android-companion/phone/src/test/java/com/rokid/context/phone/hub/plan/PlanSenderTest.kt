@@ -114,4 +114,26 @@ class PlanSenderTest {
         assertEquals(PlanMode.SETTINGS, plans().last().mode); assertNull(plans().last().planJson)
         assertNotNull(s.capturePlan.value)
     }
+
+    @Test fun theGroupTransportAllocatesTheGenAndCarriesThePublishId() = runBlocking {
+        val s = sender()
+        s.onSessionReady(9_000)
+        val out = s.send(PlanMode.SHADOW, "{\"p\":1}", "abc", "77", null)
+        assertEquals(1L, out.gen); assertTrue(out.sent)
+        val m = plans().single()
+        assertEquals("77", m.publishId); assertEquals(PlanMode.SHADOW, m.mode); assertEquals("abc", m.configHash); assertEquals("inst1", m.phoneInstall); assertEquals(9_000L, m.sessionStartMs)
+        val settings = s.send(PlanMode.SETTINGS, null, null, "78", null)
+        assertEquals(2L, settings.gen); assertNull(plans().last().planJson); assertEquals("78", plans().last().publishId)
+    }
+
+    @Test fun aSettingsDesiredStateIsSentOnEverySessionReadyWithTheSessionStamp() = runBlocking {
+        val s = sender()
+        s.send(PlanMode.SETTINGS, null, null, "5", null)
+        link.sent.clear(); now = 20_000
+        s.onSessionReady(15_000)
+        val m = plans().single()
+        assertEquals(PlanMode.SETTINGS, m.mode); assertEquals(1L, m.gen); assertEquals(15_000L, m.sessionStartMs); assertEquals("5", m.publishId)
+        link.sent.clear(); s.onSessionReady(16_000)
+        assertEquals("again on the next session", 16_000L, plans().single().sessionStartMs)
+    }
 }
