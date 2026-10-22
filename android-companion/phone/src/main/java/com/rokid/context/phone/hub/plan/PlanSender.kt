@@ -59,11 +59,8 @@ class PlanSender(
         return PlanSendResult(msg.gen, push(msg))
     }
 
-    /**
-     * The publish groups' way to the glasses (Task 26): any mode, with the group's publish id echoed in every ack. Like [sendShadow], the desired state is persisted and
-     * sent again at each session open. TRIAL/LIVE entry points are the later publish task's to expose.
-     */
-    override suspend fun send(mode: PlanMode, planJson: String?, configHash: String?, publishId: String, trialMaxMs: Long?): com.rokid.context.canvas.plan.SendOutcome {
+    /** Allocates and persists the next gen of this desired state and makes it the desired one, WITHOUT putting it on the link ([transmit] does). */
+    override suspend fun stage(mode: PlanMode, planJson: String?, configHash: String?, publishId: String, trialMaxMs: Long?): Long {
         val c0 = epochCounter()
         val msg = synchronized(lock) {
             val gen = prefs.getLong(KEY_GEN, 0L) + 1
@@ -73,7 +70,32 @@ class PlanSender(
             m
         }
         runCatching { onDesired(if (mode == PlanMode.SETTINGS) null else planJson) }
-        return com.rokid.context.canvas.plan.SendOutcome(msg.gen, push(msg))
+        return msg.gen
+    }
+
+    override suspend fun transmit(gen: Long): Boolean {
+        val m = synchronized(lock) { _desired.value?.takeIf { it.gen == gen } } ?: return false   // superseded or wiped meanwhile: nothing to send
+        return push(m)
+    }
+
+    /** The phone failed this staged desired state (a crash left it PREPARED): it is dropped, durably, so no session ever sends it. A no-op unless it is the desired one. */
+    override suspend fun discard(publishId: String) {
+        val dropped = synchronized(lock) {
+            if (_desired.value?.publishId != publishId) return@synchronized false
+            check(prefs.edit().remove(KEY_MSG).commit()) { "plan state not persisted" }
+            _desired.value = null
+            true
+        }
+        if (dropped) runCatching { onDesired(null) }
+    }
+
+    /**
+     * The publish groups' way to the glasses (Task 26): any mode, with the group's publish id echoed in every ack. Like [sendShadow], the desired state is persisted and
+     * sent again at each session open. TRIAL/LIVE entry points are the later publish task's to expose.
+     */
+    override suspend fun send(mode: PlanMode, planJson: String?, configHash: String?, publishId: String, trialMaxMs: Long?): com.rokid.context.canvas.plan.SendOutcome {
+        val gen = stage(mode, planJson, configHash, publishId, trialMaxMs)
+        return com.rokid.context.canvas.plan.SendOutcome(gen, transmit(gen))
     }
 
     /** Back to "use settings" (a new gen, so the glasses drop the plan). */
@@ -115,22 +137,31 @@ class PlanSender(
         return try { link.send(Channels.CAPTURE_PLAN, Wire.encode(out)) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { false }
     }
 
-    /** Delete all: the desired plan and its ack are forgotten in memory (the prefs were cleared by the wipe), so a reconnect re-sends nothing; the glasses are told "use settings" by the next publish. */
+    /**
+     * Delete all: the desired plan and its ack are forgotten, in memory AND in the persisted state (a plan persisted by a send that raced the wipe is dropped too, so a process
+     * restart never retransmits it). The gen counter stays: it is not personal data, and the glasses keep their gen, so the next publish must still overtake it.
+     */
     fun resetAfterWipe() {
-        synchronized(lock) { _desired.value = null; _ack.value = null }
+        synchronized(lock) { prefs.edit().remove(KEY_MSG).commit(); _desired.value = null; _ack.value = null }
         runCatching { onDesired(null) }
     }
 
     private fun persist(m: CapturePlanMessage, c0: Long) {
         check(epochCounter() == c0) { "plan refused: a Delete all happened meanwhile" }
         check(prefs.edit().putLong(KEY_GEN, m.gen).putString(KEY_MSG, Wire.encode(m)).commit()) { "plan state not persisted" }
+        // The commit and the epoch are not one atomic step, so the epoch is read AGAIN after it: a Delete all that cleared the prefs between the check above and the commit
+        // would otherwise leave this plan behind. The wipe moves the epoch before it clears, so a changed epoch here means the plan must go (compensation).
+        if (epochCounter() != c0) {
+            prefs.edit().remove(KEY_MSG).commit()
+            error("plan refused: a Delete all happened meanwhile")
+        }
     }
 
     private fun load(): CapturePlanMessage? = prefs.getString(KEY_MSG, null)?.let { (Wire.decode<CapturePlanMessage>(it) as? com.rokid.context.core.model.Decoded.Ok)?.value }
 
     companion object {
         const val PREFS = com.rokid.context.orchestration.MemoryWipe.PLAN_STATE_PREFS // ruled on ahead of this task: excluded from backup and device transfer
-        private const val KEY_GEN = "gen"
+        private const val KEY_GEN = com.rokid.context.orchestration.MemoryWipe.PLAN_GEN_KEY
         private const val KEY_MSG = "msg"
     }
 }
