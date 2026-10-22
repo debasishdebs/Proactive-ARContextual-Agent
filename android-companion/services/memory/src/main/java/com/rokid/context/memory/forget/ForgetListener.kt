@@ -23,10 +23,10 @@ object ForgetListeners {
     val registered: List<ForgetListener> get() = all.toList()
 
     suspend fun framesForgotten(ids: List<String>) = each { it.onFramesForgotten(ids) }
-    suspend fun rangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>) = each { it.onRangeForgotten(fromMs, toMs, traceIds) }
+    suspend fun rangeForgotten(fromMs: Long, toMs: Long, traceIds: List<String>, except: ForgetListener? = null) = each(except) { it.onRangeForgotten(fromMs, toMs, traceIds) }
     suspend fun deleteAll() = each { it.onDeleteAll() }
 
-    private suspend fun each(f: suspend (ForgetListener) -> Unit) {
-        for (l in all) try { f(l) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* a listener never undoes a committed deletion */ }
+    private suspend fun each(except: ForgetListener? = null, f: suspend (ForgetListener) -> Unit) {
+        for (l in all) if (l !== except) try { f(l) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* a listener never undoes a committed deletion */ }
     }
 }

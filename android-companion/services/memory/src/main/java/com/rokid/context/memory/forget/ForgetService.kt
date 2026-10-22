@@ -3,6 +3,7 @@ package com.rokid.context.memory.forget
 import androidx.room.withTransaction
 import com.rokid.context.memory.MemoryRepository
 import com.rokid.context.memory.ProposalRepository
+import com.rokid.context.memory.db.CanvasSlice3Dao
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.ForgetTombstoneEntity
 import org.json.JSONArray
@@ -64,7 +65,7 @@ class ForgetService(
         }
         val r = cascade(ids, lockFrames = true, extraCited = cites)
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
-        dropCanvasOutputs(listOf(frameId))
+        dropCanvasOutputs(listOf(frameId), listOfNotNull(frame?.ts))
         dao.deleteFrame(frameId)
         listOf(frameId).let { dao.deleteFrameSourcesOfFrames(it); dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
         r.copy(framesToDelete = (r.framesToDelete + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }) + listOfNotNull(frame?.path?.takeIf { it.isNotBlank() }?.let(::sidecarOf))).distinct())
@@ -109,18 +110,19 @@ class ForgetService(
         val paths = mutableListOf<String>()
         var expired = 0
         val expiredIds = mutableListOf<String>()
+        val expiredTimes = mutableListOf<Long>()
         val now = clock()
         for (id in frameIds.distinct()) {
             val frame = dao.frame(id) ?: continue
             if (requireLinked && dao.remainingRefs(id) == 0) continue
             if (recheckSkipped && dao.stillSkippedPhoto(id) == 0) continue
             expired++
-            expiredIds += id
+            expiredIds += id; expiredTimes += frame.ts
             dao.insertTombstone(ForgetTombstoneEntity(id, now))
             dao.deleteFrame(id)
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
-        dropCanvasOutputs(expiredIds) // S25: frame retention uses the same cascade, once for the whole set
+        dropCanvasOutputs(expiredIds, expiredTimes) // S25: frame retention uses the same cascade, once for the whole set
         Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
     }
 
@@ -176,18 +178,29 @@ class ForgetService(
     }
 
     /** Experiment canvas outputs are photo-derived: they go with the photo, in the same transaction as its tombstone. */
-    private val pendingFrames = java.util.concurrent.ConcurrentLinkedQueue<List<String>>()
+    private class Pending(val frames: List<String>, val spans: List<Triple<Long, Long, List<String>>>)
+    private val pendingFrames = java.util.concurrent.ConcurrentLinkedQueue<Pending>()
 
     /** Runs [tx]; only after it committed are the registered [ForgetListener]s told which photos went (a rolled-back transaction tells nobody). */
     private suspend fun notifying(tx: suspend () -> Result): Result {
         val r = try { tx() } catch (e: Throwable) { pendingFrames.clear(); throw e }
-        val ids = generateSequence { pendingFrames.poll() }.flatten().distinct().toList()
+        val all = generateSequence { pendingFrames.poll() }.toList()
+        val ids = all.flatMap { it.frames }.distinct()
         if (ids.isNotEmpty()) ForgetListeners.framesForgotten(ids)
+        all.flatMap { it.spans }.groupBy { it.first to it.second }.forEach { (r, v) -> ForgetListeners.rangeForgotten(r.first, r.second, v.flatMap { it.third }.distinct()) } // files and glasses follow the time link
         return r
     }
 
-    private suspend fun dropCanvasOutputs(frameIds: List<String>) {
-        if (frameIds.isNotEmpty()) pendingFrames.add(frameIds)
+    private suspend fun dropCanvasOutputs(frameIds: List<String>, capturedAtOrNull: List<Long>? = null) {
+        val capturedAt = capturedAtOrNull ?: frameIds.mapNotNull { dao.frame(it)?.ts }
+        // A mark carries no frame id (the glasses tap does not know which photo it is near), so the link between a photo and the marks and traces of its moment is TIME:
+        // everything within PHOTO_LINK_MS of a forgotten photo goes with it (marks, traces, and the results that read them), through the same durable range fence as a
+        // range Forget. Conservative on purpose: a privacy action errs on deleting a little more.
+        val spans = capturedAt.map { (it - PHOTO_LINK_MS)..(it + PHOTO_LINK_MS) }.let(CanvasSlice3Dao::mergeRanges).map { r ->
+            val o = db.canvasSlice3Dao().forgetRangeTx(r.first, r.last, clock())
+            Triple(r.first, r.last, o.tombstonedTraceIds)
+        }
+        if (frameIds.isNotEmpty() || spans.isNotEmpty()) pendingFrames.add(Pending(frameIds, spans))
         db.canvasDao().deleteCanvasOutputsForFrames(frameIds) // items, scores and live traces, batch-wide (S25)
         db.canvasSlice3Dao().deleteSliceOutputsForFrames(frameIds, clock()) // slice 3a: labels of the photos, the results that read them, helper jobs that carry them
     }
@@ -195,6 +208,8 @@ class ForgetService(
     private fun likeFor(id: String) = "%\"${MemoryRepository.escapeLike(id)}\"%"
 
     companion object {
+        /** How far around a forgotten photo's capture time marks and traces are linked to it (a mark labels the 10 s before it). */
+        const val PHOTO_LINK_MS = 10_000L
         const val REDACTED = "Removed \u2014 a source was forgotten"
         /**
          * `proposal.paramsJson` after its origin was redacted. Has no action fields, so executors and boot re-arm
