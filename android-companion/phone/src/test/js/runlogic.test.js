@@ -8,6 +8,10 @@ const rows = [
 ];
 
 export const tests = {
+  isMovingKnowsServerEnumsNumbersAndBooleans() {
+    for (const m of ['WALKING', 'walking', 'VEHICLE', 'MOVING', 'HEAD_MOVING', 1, 0.5, true]) ok(R.isMoving(m), String(m));
+    for (const m of ['STILL', 'UNKNOWN', 'NONE', 'NOT_WORN', '', null, undefined, 0, false, NaN]) ok(!R.isMoving(m), String(m));
+  },
   rollbackPayloadNamesTheNewestPublish() {
     eq(R.rollbackPayload({ stack: [{ id: 7 }, { id: 3 }] }), { expectedId: 7 });
     eq(R.rollbackPayload({ stack: [] }), null);

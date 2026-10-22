@@ -47,3 +47,13 @@ export function parseRef(value) {
   const v = value.slice(i + 1);
   return v === 'draft' ? { pipelineId: value.slice(0, i) } : { pipelineId: value.slice(0, i), version: parseInt(v, 10) };
 }
+
+/**
+ * Whether a frame's `motion` (frame_meta.motion: the server sends an enum NAME such as WALKING, VEHICLE, MOVING or HEAD_MOVING; STILL and UNKNOWN are
+ * not motion) counts as moving. A number > 0 or `true` is also accepted.
+ */
+export function isMoving(m) {
+  if (typeof m === 'string') return ['WALKING', 'VEHICLE', 'MOVING', 'HEAD_MOVING'].includes(m.trim().toUpperCase());
+  if (typeof m === 'number') return m > 0;
+  return m === true;
+}

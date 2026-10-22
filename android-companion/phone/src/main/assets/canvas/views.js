@@ -4,7 +4,7 @@ import { mountEditor } from './floweditor.js';
 import { photoThumb, openPhoto } from './photos.js';
 import { publishDialog, publishCard } from './versions.js';
 import { when, usageLine, branchText, compareSummary, tokenEstimateText } from './format.js';
-import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction } from './runlogic.js';
+import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction, isMoving } from './runlogic.js';
 
 const pretty = (v) => JSON.stringify(v, null, 2);
 const enc = encodeURIComponent;
@@ -182,7 +182,7 @@ export async function runNewView(ctx, root, pipelineId, version) {
   const counter = h('span', { class: 'muted' });
   const grid = h('div', { class: 'grid' });
   const more = h('div', { class: 'row' });
-  const visible = () => st.frames.filter((f) => !st.motion || Number(f.motion) > 0 || f.motion === true);
+  const visible = () => st.frames.filter((f) => !st.motion || isMoving(f.motion));
 
   const upd = () => { counter.textContent = st.selected.size + ' of ' + MAX_PHOTOS + ' selected'; };
   const drawGrid = () => {
