@@ -5,6 +5,7 @@ import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.canvas.CanvasRepository
 import com.rokid.context.canvas.CanvasRunner
 import com.rokid.context.canvas.Estimate
+import com.rokid.context.canvas.LiveMode
 import com.rokid.context.phone.canvas.server.ApiHandler
 import com.rokid.context.phone.canvas.server.HttpRequest
 import com.rokid.context.phone.canvas.server.HttpResponse
@@ -45,6 +46,9 @@ class CanvasApi(
         const val DEFAULT_LIMIT = 60
         const val MAX_LIMIT = 120
         const val MAX_FRAME_IDS = 50
+        const val MAX_HISTORY = 50
+        const val DEFAULT_LIVE = 50
+        const val MAX_LIVE = 100
         const val MAX_NOTE = 280
         /** The deadline of the one mutation that calls a model and writes nothing: the Ask replay. */
         const val MUTATION_DEADLINE_MS = 60_000L
@@ -97,12 +101,11 @@ class CanvasApi(
             "POST pipelines/:id/freeze" -> freeze(id(s[1]), req)
             "GET pipelines/:id/diff" -> diff(id(s[1]), req)
             "POST validate" -> validate(req)
-            "POST pipelines/:id/versions/:n/publish" -> {
-                if (!VERSION.matches(s[3])) throw bad()
-                outcome(backend.publish(id(s[1]), s[3].toInt()), "publish_blocked")
-            }
+            "POST pipelines/:id/versions/:n/publish" -> publish(id(s[1]), s[3], req)
             "GET publish" -> json(backend.activePublish())
-            "POST publish/rollback" -> outcome(backend.rollback(), "rollback_blocked")
+            "GET publish/history" -> json(backend.publishHistory(limit(req, MAX_HISTORY, MAX_HISTORY)))
+            "GET live" -> json(backend.live(limit(req, DEFAULT_LIVE, MAX_LIVE)))
+            "POST publish/rollback" -> rollback(req)
             "POST check-prompt" -> checkPrompt(req)
             "GET frames" -> frames(req)
             "GET frames/:id" -> json(backend.frame(id(s[1])) ?: throw NoSuchElementException())
@@ -122,11 +125,11 @@ class CanvasApi(
 
     /** The route shape with ids as `:id`, or null for a path that is no route at all (404). */
     private fun templateOf(s: List<String>): String? = when {
-        s.size == 1 && s[0] in setOf("session", "logout", "node-types", "pipelines", "publish", "check-prompt", "frames", "runs", "compare", "validate") -> s[0]
+        s.size == 1 && s[0] in setOf("session", "logout", "node-types", "pipelines", "publish", "check-prompt", "frames", "runs", "compare", "validate", "live") -> s[0]
         s.size == 2 && s[0] == "pipelines" -> "pipelines/:id"
         s.size == 3 && s[0] == "pipelines" && s[2] in setOf("freeze", "diff") -> "pipelines/:id/${s[2]}"
         s.size == 5 && s[0] == "pipelines" && s[2] == "versions" && s[4] == "publish" -> "pipelines/:id/versions/:n/publish"
-        s.size == 2 && s[0] == "publish" && s[1] == "rollback" -> "publish/rollback"
+        s.size == 2 && s[0] == "publish" && s[1] in setOf("rollback", "history") -> "publish/${s[1]}"
         s.size == 2 && s[0] == "frames" -> "frames/:id"
         s.size == 3 && s[0] == "frames" && s[2] in setOf("thumb", "image") -> "frames/:id/${s[2]}"
         s.size == 2 && s[0] == "runs" && s[1] == "estimate" -> "runs/estimate"
@@ -235,12 +238,39 @@ class CanvasApi(
         }
     }
 
-    private fun outcome(o: CanvasPublisher.Outcome, blockedCode: String): HttpResponse = when (o) {
+    /** `limit` clamped to 1..[max]; absent means [default]. */
+    private fun limit(req: HttpRequest, default: Int, max: Int): Int =
+        (req.query["limit"]?.let { it.toIntOrNull() ?: throw bad() } ?: default).coerceIn(1, max)
+
+    /** A publish in the mode of the optional body: absent, null or `prompts` is the MVP prompt publish; `shadow` and `live` publish the interpreter. */
+    private suspend fun publish(id: String, version: String, req: HttpRequest): HttpResponse {
+        if (!VERSION.matches(version)) throw bad()
+        val m = optBody(req)?.get("mode")
+        val mode = if (m == null || m is JsonNull) "prompts" else (m as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw bad("Bad \"mode\".")
+        return when (mode) {
+            "prompts" -> outcome(backend.publish(id, version.toInt()), "publish_blocked")
+            "shadow" -> outcome(backend.publishInterpreter(id, version.toInt(), LiveMode.SHADOW), "publish_blocked", LiveMode.SHADOW)
+            "live" -> outcome(backend.publishInterpreter(id, version.toInt(), LiveMode.LIVE), "publish_blocked", LiveMode.LIVE)
+            else -> throw bad("Bad \"mode\".")
+        }
+    }
+
+    private fun outcome(o: CanvasPublisher.Outcome, blockedCode: String, mode: LiveMode? = null): HttpResponse = when (o) {
         is CanvasPublisher.Outcome.Published -> json(buildJsonObject {
             put("publishId", o.publishId)
             put("keys", JsonArray(o.keys.map { JsonPrimitive(it.name) }))
+            put("kind", if (mode == null) CanvasPublisher.KIND_PROMPTS else CanvasPublisher.KIND_INTERPRETER)
+            mode?.let { put("mode", it.name) }
         })
         is CanvasPublisher.Outcome.Blocked -> throw ApiError(409, blockedCode, "Blocked.", o.reasons)
+    }
+
+    /** The optional `expectedId` is the publish the user saw as the newest: an auto-rollback that won the race refuses the click instead of undoing the wrong publish. */
+    private suspend fun rollback(req: HttpRequest): HttpResponse {
+        val b = optBody(req)
+        val expected = if (b == null || b["expectedId"].let { it == null || it is JsonNull }) null
+            else ((b["expectedId"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull() ?: throw bad("Bad \"expectedId\".")).also { if (it < 0) throw bad() }
+        return outcome(backend.rollback(expected), "rollback_blocked")
     }
 
     private suspend fun checkPrompt(req: HttpRequest): HttpResponse {

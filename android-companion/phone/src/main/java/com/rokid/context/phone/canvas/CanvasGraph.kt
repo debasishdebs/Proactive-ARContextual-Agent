@@ -248,7 +248,7 @@ class BackendCore(private val backend: Lazy<CanvasBackendImpl>) : CanvasCore {
         return HomeData(pipelines, runs, b.activePublish()["active"]?.jsonPrimitive?.contentOrNull == "true")
     }
 
-    override suspend fun rollback() = backend.value.rollback()
+    override suspend fun rollback() = backend.value.rollback(null)
 
     override suspend fun pipeline(id: String): Pipeline? =
         backend.value.pipeline(id)?.get("json")?.jsonPrimitive?.contentOrNull?.let { PipelineJson.decode(it).getOrNull() }

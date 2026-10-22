@@ -3,6 +3,7 @@ package com.rokid.context.phone.canvas.api
 import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.canvas.CanvasRepository
 import com.rokid.context.canvas.Estimate
+import com.rokid.context.canvas.LiveMode
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 
@@ -32,9 +33,24 @@ interface CanvasBackend {
     suspend fun validate(json: String): JsonObject
     /** `PipelineDiff` of version [a] against [b] (a version number or `draft`) as JSON; null when the pipeline or a version is unknown. */
     suspend fun diff(id: String, a: String, b: String): JsonObject?
+    /** The MVP prompt publish of a live-shaped version. */
     suspend fun publish(id: String, version: Int): CanvasPublisher.Outcome
+    /** An interpreter publish in [mode] (Shadow or Live); the gates' reasons come back as `Blocked`. */
+    suspend fun publishInterpreter(id: String, version: Int, mode: LiveMode): CanvasPublisher.Outcome
+    /**
+     * The active stack, newest first: `{active, publishId, pipelineId, version, publishedAt}` of the newest prompts publish (as before), plus
+     * `stack:[{id,kind,mode,pipelineId,version,publishedAt}]` and `interpreter:{id,kind,mode,pipelineId,version,publishedAt,interpreted,fallbacks}|null`.
+     */
     suspend fun activePublish(): JsonObject
-    suspend fun rollback(): CanvasPublisher.Outcome
+    /** Every publish row, newest first (S43): `[{id,kind,mode,pipelineId,version,publishedAt,rolledBackAt,rollbackReason}]`. */
+    suspend fun publishHistory(limit: Int): JsonArray
+    /**
+     * The active interpreter publish's recent traces: `{active, publishId?, pipelineId?, version?, mode?, interpreted, fallbacks, labels:{"<label>":n},
+     * frames:[{frameId, at, label, batch:"OK"|"ERROR", nodes:[{nodeId,status,branch,output,error}]}]}`. Debug data of the user's photos: authenticated routes only.
+     */
+    suspend fun live(limit: Int): JsonObject
+    /** Rolls back the newest publish of either kind; [expectedId] (the publish the caller saw) guards a race with an auto-rollback. */
+    suspend fun rollback(expectedId: Long?): CanvasPublisher.Outcome
     suspend fun checkPrompt(nodeType: String, template: String, schema: String?): List<String>
     /** Frames with `afterMs <= ts < beforeMs` (no lower bound when [afterMs] is null), newest first. */
     suspend fun frames(afterMs: Long?, beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray

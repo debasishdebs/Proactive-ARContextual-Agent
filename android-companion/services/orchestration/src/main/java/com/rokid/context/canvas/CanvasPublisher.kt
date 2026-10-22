@@ -71,6 +71,7 @@ class CanvasPublisher(
     private val TAG = "CanvasPublisher"
     private val PUBLISH_FAILED = "Publishing failed. Nothing was changed."
     private val ROLLBACK_FAILED = "Rolling back failed. Nothing was changed."
+    private val ALREADY_ROLLED_BACK = "That publish was already rolled back."
 
     suspend fun publish(pipelineId: String, version: Int): Outcome = lock.withLock { publishLocked(pipelineId, version) }
 
@@ -168,11 +169,20 @@ class CanvasPublisher(
         return result
     }
 
-    /** Undoes the newest active publish, unless any of its prompts was edited since. */
-    suspend fun rollback(): Outcome = lock.withLock { rollbackLocked() }
+    /**
+     * Undoes the newest active publish, unless any of its prompts was edited since.
+     * [expectedId]: the publish the caller saw as the newest. When it is no longer active (an auto-rollback won the race) or a newer publish
+     * exists, nothing is undone, so a manual click can never undo a publish the user did not see (Task 6 review M6). Null: the newest, as before.
+     */
+    suspend fun rollback(expectedId: Long? = null): Outcome = lock.withLock { rollbackLocked(expectedId) }
 
-    private suspend fun rollbackLocked(): Outcome {
-        val pub = dao.activePublishes().firstOrNull() ?: return Outcome.Blocked(listOf("Nothing to roll back"))
+    private suspend fun rollbackLocked(expectedId: Long?): Outcome {
+        val active = dao.activePublishes()
+        if (expectedId != null) {
+            if (active.none { it.id == expectedId }) return Outcome.Blocked(listOf(ALREADY_ROLLED_BACK))
+            if (active.first().id != expectedId) return Outcome.Blocked(listOf("A newer publish exists. Reload and try again."))
+        }
+        val pub = active.firstOrNull() ?: return Outcome.Blocked(listOf("Nothing to roll back"))
         if (pub.kind == KIND_INTERPRETER) return rollbackInterpreter(pub)
         val snap = runCatching { Json.parseToJsonElement(pub.snapshotJson).jsonObject }.getOrNull()
             ?: return Outcome.Blocked(listOf("The publish record is unreadable"))
@@ -229,7 +239,7 @@ class CanvasPublisher(
     private suspend fun rollbackInterpreter(pub: CanvasPublishEntity): Outcome {
         var result: Outcome = Outcome.Blocked(listOf(ROLLBACK_FAILED))
         try {
-            transact { result = if (dao.markRolledBack(pub.id, clock()) > 0) Outcome.Published(pub.id, emptyList()) else Outcome.Blocked(listOf("Nothing to roll back")) }
+            transact { result = if (dao.markRolledBack(pub.id, clock()) > 0) Outcome.Published(pub.id, emptyList()) else Outcome.Blocked(listOf(ALREADY_ROLLED_BACK)) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

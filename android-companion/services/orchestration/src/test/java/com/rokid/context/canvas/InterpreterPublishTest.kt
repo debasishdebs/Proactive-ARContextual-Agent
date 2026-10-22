@@ -179,4 +179,56 @@ class InterpreterPublishTest {
         assertFalse(publisher().autoRollback(pub.publishId, "auto: x"))
         assertEquals(1, dao.activePublishes().size)
     }
+
+    // ---- Task 9: rollback BY EXPECTED PUBLISH ID (Task 6 review M6) ----
+
+    @Test fun rollbackByExpectedIdUndoesThatPublish() = runBlocking<Unit> {
+        val (id, v) = intentVersion()
+        publisher().publishInterpreter(id, v, LiveMode.SHADOW)
+        val live = publisher().publishInterpreter(id, v, LiveMode.LIVE) as CanvasPublisher.Outcome.Published
+        assertEquals(live.publishId, (publisher().rollback(live.publishId) as CanvasPublisher.Outcome.Published).publishId)
+        assertEquals("SHADOW", dao.activeInterpreter()!!.mode)
+    }
+
+    @Test fun manualClickAfterAnAutoRollbackDoesNotUndoTheOlderPublish() = runBlocking<Unit> {
+        val (id, v) = intentVersion()
+        val shadow = publisher().publishInterpreter(id, v, LiveMode.SHADOW) as CanvasPublisher.Outcome.Published
+        val live = publisher().publishInterpreter(id, v, LiveMode.LIVE) as CanvasPublisher.Outcome.Published
+        // the user saw Live as the newest publish; the auto-rollback wins the race
+        assertTrue(publisher().autoRollback(live.publishId, "auto: 10 of 30 fell back"))
+        val out = publisher().rollback(live.publishId) as CanvasPublisher.Outcome.Blocked
+        assertEquals(listOf("That publish was already rolled back."), out.reasons)
+        assertEquals("Shadow must stay active", shadow.publishId, dao.activeInterpreter()!!.id)
+        assertEquals("auto: 10 of 30 fell back", dao.publishHistory(5).first { it.id == live.publishId }.rollbackReason)
+    }
+
+    @Test fun expectedIdThatIsNotTheNewestIsRefusedAndNothingChanges() = runBlocking<Unit> {
+        val (id, v) = intentVersion()
+        val shadow = publisher().publishInterpreter(id, v, LiveMode.SHADOW) as CanvasPublisher.Outcome.Published
+        publisher().publishInterpreter(id, v, LiveMode.LIVE)
+        val out = publisher().rollback(shadow.publishId) as CanvasPublisher.Outcome.Blocked
+        assertEquals(listOf("A newer publish exists. Reload and try again."), out.reasons)
+        assertEquals(2, dao.activePublishes().size)
+    }
+
+    @Test fun expectedIdOfAPromptsPublishUnderANewerInterpreterRowIsRefused() = runBlocking<Unit> {
+        val (pid, pv) = liveShaped("EDITED {{recent_context}}")
+        val promptPub = publisher().publish(pid, pv) as CanvasPublisher.Outcome.Published
+        val (iid, iv) = intentVersion()
+        publisher().publishInterpreter(iid, iv, LiveMode.SHADOW)
+        assertTrue(publisher().rollback(promptPub.publishId) is CanvasPublisher.Outcome.Blocked)
+        assertEquals("EDITED {{recent_context}}", ai.prompts.active(PromptKey.VISION_EXTRACT).template)
+    }
+
+    @Test fun unknownExpectedIdIsAlreadyRolledBack() = runBlocking<Unit> {
+        val out = publisher().rollback(999L) as CanvasPublisher.Outcome.Blocked
+        assertEquals(listOf("That publish was already rolled back."), out.reasons)
+    }
+
+    @Test fun noExpectedIdKeepsTheOldBehaviour() = runBlocking<Unit> {
+        val (id, v) = intentVersion()
+        val p = publisher().publishInterpreter(id, v, LiveMode.LIVE) as CanvasPublisher.Outcome.Published
+        assertEquals(p.publishId, (publisher().rollback() as CanvasPublisher.Outcome.Published).publishId)
+        assertEquals(CanvasPublisher.Outcome.Blocked(listOf("Nothing to roll back")), publisher().rollback())
+    }
 }

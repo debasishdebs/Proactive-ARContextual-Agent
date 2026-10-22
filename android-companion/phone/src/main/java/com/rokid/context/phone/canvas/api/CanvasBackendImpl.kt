@@ -20,13 +20,16 @@ import com.rokid.context.canvas.CanvasRunner
 import com.rokid.context.canvas.ConfirmTokens
 import com.rokid.context.canvas.Estimate
 import com.rokid.context.canvas.Executors
+import com.rokid.context.canvas.LiveMode
 import com.rokid.context.canvas.ModelLabel
 import com.rokid.context.canvas.PhotoLoad
 import com.rokid.context.canvas.PhotoSource
 import com.rokid.context.canvas.RunContext
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.CanvasDao
+import com.rokid.context.memory.db.CanvasMaintenance
 import com.rokid.context.memory.db.CanvasPipelineVersionEntity
+import com.rokid.context.memory.db.CanvasPublishEntity
 import com.rokid.context.memory.db.CanvasRunEntity
 import com.rokid.context.memory.db.CanvasScoreEntity
 import com.rokid.context.orchestration.ExtractSave
@@ -37,6 +40,7 @@ import com.rokid.context.prompt.LineDiff
 import com.rokid.context.prompt.PromptDraft
 import com.rokid.context.work.frames.FramePhotos
 import com.rokid.context.work.frames.KeyframeGraph
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -69,6 +73,7 @@ class CanvasBackendImpl(
     companion object {
         private val pretty = Json { prettyPrint = true }
         private const val NOT_SET = "not set"
+        private const val LIVE_BATCH_NODE = "_batch"
         /** Fixed text for a pipeline JSON that cannot be decoded (never the decoder's message, never the input). */
         const val UNDECODABLE = "The pipeline JSON is not valid."
 
@@ -320,14 +325,76 @@ class CanvasBackendImpl(
 
     override suspend fun publish(id: String, version: Int): CanvasPublisher.Outcome = publisher.publish(id, version)
 
+    /** Trace retention (S44): at most once an hour, on the canvas reads; debug data, so a failure is swallowed. */
+    private val maintenance = CanvasMaintenance(dao, clock)
+    private suspend fun prune() {
+        try { maintenance.pruneTraces() } catch (e: CancellationException) { throw e } catch (e: Exception) { /* history only */ }
+    }
+
+    private fun publishJson(p: CanvasPublishEntity) = buildJsonObject {
+        put("id", p.id); put("kind", p.kind); put("mode", p.mode); put("pipelineId", p.pipelineId); put("version", p.version); put("publishedAt", p.publishedAt)
+    }
+
     override suspend fun activePublish(): JsonObject {
-        val p = dao.activePublishes().firstOrNull { it.kind == CanvasPublisher.KIND_PROMPTS } ?: return buildJsonObject { put("active", false) }
+        prune()
+        val active = dao.activePublishes()
+        val p = active.firstOrNull { it.kind == CanvasPublisher.KIND_PROMPTS }
+        val i = active.firstOrNull { it.kind == CanvasPublisher.KIND_INTERPRETER }
         return buildJsonObject {
-            put("active", true); put("publishId", p.id); put("pipelineId", p.pipelineId); put("version", p.version); put("publishedAt", p.publishedAt)
+            put("active", p != null)
+            if (p != null) { put("publishId", p.id); put("pipelineId", p.pipelineId); put("version", p.version); put("publishedAt", p.publishedAt) }
+            put("stack", JsonArray(active.map(::publishJson)))
+            put("interpreter", if (i == null) JsonNull else JsonObject(publishJson(i) + mapOf(
+                "interpreted" to JsonPrimitive(dao.interpretedCount(i.id)), "fallbacks" to JsonPrimitive(dao.recentFallbacks(i.id, Int.MAX_VALUE)),
+            )))
         }
     }
 
-    override suspend fun rollback(): CanvasPublisher.Outcome = publisher.rollback()
+    override suspend fun publishInterpreter(id: String, version: Int, mode: LiveMode): CanvasPublisher.Outcome {
+        start()
+        return publisher.publishInterpreter(id, version, mode)
+    }
+
+    override suspend fun publishHistory(limit: Int): JsonArray {
+        prune()
+        return JsonArray(dao.publishHistory(limit).map { p -> JsonObject(publishJson(p) + mapOf("rolledBackAt" to JsonPrimitive(p.rolledBackAt), "rollbackReason" to JsonPrimitive(p.rollbackReason))) })
+    }
+
+    override suspend fun live(limit: Int): JsonObject {
+        prune()
+        val pub = dao.activeInterpreter() ?: return buildJsonObject {
+            put("active", false); put("interpreted", 0); put("fallbacks", 0); put("labels", JsonObject(emptyMap())); put("frames", JsonArray(emptyList()))
+        }
+        // the label of a photo is the branch its first switch took (the switch ids come from the published version)
+        val switches = dao.version(pub.pipelineId, pub.version)?.json?.let { PipelineJson.decode(it).getOrNull() }
+            ?.nodes?.filter { it.type == NodeTypes.SWITCH }?.map { it.id }.orEmpty()
+        val frameIds = dao.traceFrames(pub.id, limit)
+        val byFrame = if (frameIds.isEmpty()) emptyMap() else dao.tracesOfFrames(pub.id, frameIds).groupBy { it.frameId }
+        val labels = LinkedHashMap<String, Int>()
+        val frames = frameIds.map { f ->
+            val rows = byFrame[f].orEmpty()
+            val batch = rows.firstOrNull { it.nodeId == LIVE_BATCH_NODE }
+            val label = switches.firstNotNullOfOrNull { sid -> rows.firstOrNull { it.nodeId == sid && it.status == "OK" }?.branch }
+            if (label != null) labels[label] = (labels[label] ?: 0) + 1
+            buildJsonObject {
+                put("frameId", f)
+                put("at", batch?.at ?: rows.maxOfOrNull { it.at } ?: 0L)
+                put("label", label)
+                put("batch", batch?.status ?: "ERROR")
+                put("nodes", JsonArray(rows.filter { it.nodeId != LIVE_BATCH_NODE }.map { r ->
+                    buildJsonObject { put("nodeId", r.nodeId); put("status", r.status); put("branch", r.branch); put("output", r.outputJson); put("error", r.error) }
+                }))
+            }
+        }
+        return buildJsonObject {
+            put("active", true); put("publishId", pub.id); put("pipelineId", pub.pipelineId); put("version", pub.version); put("mode", pub.mode); put("publishedAt", pub.publishedAt)
+            put("interpreted", dao.interpretedCount(pub.id)); put("fallbacks", dao.recentFallbacks(pub.id, Int.MAX_VALUE))
+            put("labels", JsonObject(labels.mapValues { JsonPrimitive(it.value) }))
+            put("frames", JsonArray(frames))
+        }
+    }
+
+    override suspend fun rollback(expectedId: Long?): CanvasPublisher.Outcome = publisher.rollback(expectedId)
 
     override suspend fun checkPrompt(nodeType: String, template: String, schema: String?): List<String> {
         val type = NodeTypes.byType(nodeType) ?: return listOf("Unknown node type")

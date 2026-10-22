@@ -63,6 +63,12 @@ abstract class CanvasDao {
     // --- live trace (Room v6) ---
     @Upsert abstract suspend fun upsertTrace(rows: List<CanvasLiveTraceEntity>)
     @Query("SELECT * FROM canvas_live_trace WHERE publishId = :publishId ORDER BY at DESC LIMIT :limit") abstract suspend fun traces(publishId: Long, limit: Int): List<CanvasLiveTraceEntity>
+    /** The [limit] newest photos of [publishId] by their latest trace row (the live view). */
+    @Query("SELECT frameId FROM canvas_live_trace WHERE publishId = :publishId GROUP BY frameId ORDER BY MAX(at) DESC, frameId LIMIT :limit")
+    abstract suspend fun traceFrames(publishId: Long, limit: Int): List<String>
+    /** Every trace row of [publishId] for [frameIds] (callers pass at most 100 ids). */
+    @Query("SELECT * FROM canvas_live_trace WHERE publishId = :publishId AND frameId IN (:frameIds) ORDER BY at, nodeId")
+    abstract suspend fun tracesOfFrames(publishId: Long, frameIds: List<String>): List<CanvasLiveTraceEntity>
     @Query("SELECT * FROM canvas_live_trace WHERE frameId = :frameId ORDER BY at DESC") abstract suspend fun tracesForFrame(frameId: String): List<CanvasLiveTraceEntity>
     /** The last [window] per-photo outcomes of [publishId]: the count of ERROR among them. */
     @Query("SELECT COUNT(*) FROM (SELECT status FROM canvas_live_trace WHERE publishId = :publishId AND nodeId = '_batch' ORDER BY at DESC, rowid DESC LIMIT :window) WHERE status = 'ERROR'")
