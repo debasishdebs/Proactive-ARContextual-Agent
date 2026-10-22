@@ -11,7 +11,7 @@ import kotlinx.serialization.json.intOrNull
 enum class ParamKind(val wire: String) { INT("int"), NUMBER("number"), ENUM("enum"), BOOL("bool"), TEXT("text"), TABLE("table") }
 
 /**
- * One table column. [blankable] accepts null or absent ("unchanged"); [allowZero] accepts 0 ("inherit") next to the [min]..[max] range.
+ * One table column. [blankable] accepts null or absent ("unchanged"); [allowZero] accepts 0 ("inherit") next to the [min]..[max] range, and null too (a blank gap is 0, S68).
  * [group] is the heading shared by several columns.
  */
 data class ColSpec(

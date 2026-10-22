@@ -38,8 +38,9 @@ data class CompileResult(
  * Compiles the capture half of a pipeline (the RT_GLASSES and RT_PHONE graphs) into a [CapturePlan] (S8, S27, S68, S78, S84).
  * Pure and deterministic: nodes and edges are visited in id order, so the input order never changes the output. Every field the
  * plan carries is resolved: from the graph, else from [PlanResolver.defaults] (today's behaviour). The compiler only fills the
- * fixed plan schema, so it can never emit a sensing or detection key (S84). Problem texts are fixed and name node ids only; no
- * pipeline, node or model text is echoed. The ASYNC half is ignored here (slice 2's interpreter runs it).
+ * fixed plan schema, so it can never emit a sensing or detection key (S84). Problem texts are fixed and name node ids, type ids and bounds. Pipeline,
+ * node and model titles are never echoed, but the validator texts the compiler forwards can echo an unknown param, row or column key
+ * (truncated to 40 chars). The ASYNC half is ignored here (slice 2's interpreter runs it).
  */
 object PlanCompiler {
     const val WARN_GAP = "timer photo gap below the settings profile has no effect"
@@ -52,6 +53,8 @@ object PlanCompiler {
     val SETTINGS_PROFILE: CaptureProfile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0)
 
     private val OP_NOT_ALLOWED = Regex("^node [a-z][a-z0-9_]*: op not allowed for feature ")
+    /** The validator's release check runs against the head's own onset; the compiler checks it again after the thresholds are folded in. */
+    private val RELEASE_PRE_FOLD = Regex("^node [a-z][a-z0-9_]*: releaseRadS must not exceed onsetRadS$")
     private val SENSING = Regex("^(sampleRate.*|sensor.*|imu.*Hz|tick.*|fusionCadence.*|evaluate.*|detector.*|classifier.*)$", RegexOption.IGNORE_CASE)
 
     /** The fixed chain (S78); thresholds may repeat, every other type once. */
@@ -96,7 +99,7 @@ object PlanCompiler {
         val problems = LinkedHashSet<String>()
         problems += PipelineValidator.validate(p.copy(nodes = nodes, edges = edges)).filterNot { v ->
             OP_NOT_ALLOWED.containsMatchIn(v) || flaggedEdges.any { v.startsWith("edge $it: ") && v.contains(" not accepted by ") } ||
-                flaggedNodes.any { v == "node $it: unreachable" }
+                flaggedNodes.any { v == "node $it: unreachable" } || RELEASE_PRE_FOLD.matches(v)
         }
         problems += own
         if (glasses.isEmpty() && problems.isEmpty()) problems += NO_CAPTURE_HALF
@@ -152,9 +155,9 @@ object PlanCompiler {
                 else -> g.copy(minBoutRad = v.toFloat())
             }
         }
-        if (problems.isEmpty() && g.releaseRadS > g.onsetRadS) {
-            problems += if (seen.containsKey("gyroPeak") && head != null) "node ${head.id}: releaseRadS must not exceed the gyroPeak threshold"
-            else "node ${head?.id ?: "head"}: releaseRadS must not exceed onsetRadS"
+        if (problems.isEmpty() && head != null && g.releaseRadS > g.onsetRadS) {
+            problems += if (seen.containsKey("gyroPeak")) "node ${head.id}: releaseRadS must not exceed the gyroPeak threshold"
+            else "node ${head.id}: releaseRadS must not exceed onsetRadS"
         }
         val warnings = LinkedHashSet<String>()
         val policy = chain.firstOrNull { it.type == NodeTypes.POLICY_CAPTURE_RATE }?.let { rows(it, base.policy, profile, warnings) } ?: base.policy
@@ -203,11 +206,22 @@ object PlanCompiler {
             val keepIn = chainEdges.filter { it.to == e.to }.maxWith(compareBy({ rank(it.from) }, { it.from }))
             if (keepOut != e || keepIn != e) flag(e)
         }
+        // a second node of any non-threshold chain type is a branch of the fixed chain
+        for ((type, group) in glasses.filter { it.type in RANK && it.type != NodeTypes.GATE_THRESHOLD }.groupBy { it.type }) {
+            if (group.size > 1) { out += "unsupported wrapper order: $type before $type"; group.drop(1).forEach { flaggedNodes += it.id } }
+        }
+        // a policy that is fed by ctx must sit on the chain when the chain has other nodes
+        val onChain = chainEdges.flatMap { listOf(it.from, it.to) }.toSet()
+        if (onChain.isNotEmpty()) {
+            for (n in glasses.filter { it.type == NodeTypes.POLICY_CAPTURE_RATE && it.id !in onChain }) {
+                if (edges.any { it.to == n.id && byId[it.from]?.type == NodeTypes.SIGNAL_IN }) out += "unsupported wrapper order: ${n.type} is not on the chain"
+            }
+        }
         // the ctx binding: signal.in ctx feeds policy.capture_rate only, and signal.out ctx is sent from hub.context
         for (n in glasses.filter { it.type == NodeTypes.SIGNAL_IN }) {
             if ((str(n, "name") ?: "ctx") != "ctx") continue
             val targets = edges.filter { it.from == n.id }.mapNotNull { byId[it.to] }
-            if (targets.isEmpty() || targets.any { it.type != NodeTypes.POLICY_CAPTURE_RATE }) { out += CTX_TO_POLICY; flaggedNodes += n.id }
+            if (targets.size != 1 || targets.any { it.type != NodeTypes.POLICY_CAPTURE_RATE }) { out += CTX_TO_POLICY; flaggedNodes += n.id }
         }
         for (n in phone.filter { it.type == NodeTypes.SIGNAL_OUT }) {
             if ((str(n, "name") ?: "ctx") != "ctx") continue
@@ -215,23 +229,26 @@ object PlanCompiler {
         }
     }
 
-    /** One row per state. A state with no row is today's row; a present row is complete: a blank or absent cap is null and a blank or absent gap is 0 (S68). */
+    /**
+     * One row per state, always all of them. A state with no row is today's row. In a present row an absent cell takes the identity
+     * row's value and only an explicit JSON null is blank: a null cap is no cap and a null gap is 0 = inherit (S68).
+     */
     private fun rows(n: PipelineNode, base: Map<PlanState, PlanRow>, profile: CaptureProfile, warnings: MutableSet<String>): Map<PlanState, PlanRow> {
         val table = n.params["rows"] as? JsonObject
         return PlanState.entries.associateWith { s ->
             val row = table?.get(s.name) as? JsonObject ?: return@associateWith base.getValue(s)
             val b = base.getValue(s)
-            fun gap(k: String): Long = ((row[k] as? JsonPrimitive)?.takeIf { !it.isString && it !is JsonNull }?.intOrNull ?: 0) * 1_000L
-            fun flag(k: String, d: Boolean) = (row[k] as? JsonPrimitive)?.takeIf { !it.isString && it !is JsonNull }?.booleanOrNull ?: d
-            val gaps = TimerPhotoGaps(gap("settledGapS"), gap("quietGapS"), gap("walkGapS"), gap("stillCapGapS"))
+            fun cell(k: String): JsonPrimitive? = (row[k] as? JsonPrimitive)?.takeIf { !it.isString }
+            fun gap(k: String, d: Long): Long = if (k !in row) d else if (row[k] is JsonNull) 0L else (cell(k)?.intOrNull ?: 0) * 1_000L
+            fun flag(k: String, d: Boolean) = cell(k)?.takeIf { it !is JsonNull }?.booleanOrNull ?: d
+            val g0 = b.timerPhotoGapsMs
+            val gaps = TimerPhotoGaps(gap("settledGapS", g0.settledMs), gap("quietGapS", g0.quietMs), gap("walkGapS", g0.walkMs), gap("stillCapGapS", g0.stillCapMs))
             // S68: the settings profile wins when it is longer; a plan gap below it has no effect
             if (gaps.settledMs.below(profile.settledCheckMs) || gaps.quietMs.below(profile.quietCheckMs) ||
                 gaps.walkMs.below(profile.walkCheckMs ?: profile.settledCheckMs) || gaps.stillCapMs.below(profile.stillCapMs)
             ) warnings += WARN_GAP
-            PlanRow(
-                capPerMin = (row["capPerMin"] as? JsonPrimitive)?.takeIf { !it.isString && it !is JsonNull }?.intOrNull,
-                timerPhotoGapsMs = gaps, forceSettle = flag("forceSettle", b.forceSettle), nudges = flag("nudges", b.nudges),
-            )
+            val cap = if ("capPerMin" !in row) b.capPerMin else cell("capPerMin")?.takeIf { it !is JsonNull }?.intOrNull
+            PlanRow(capPerMin = cap, timerPhotoGapsMs = gaps, forceSettle = flag("forceSettle", b.forceSettle), nudges = flag("nudges", b.nudges))
         }
     }
 

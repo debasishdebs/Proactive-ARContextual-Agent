@@ -7,6 +7,7 @@ import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.capture.plan.CanonicalJson
 import com.rokid.context.capture.plan.PlanJson
 import com.rokid.context.capture.plan.PlanResolver
+import com.rokid.context.capture.plan.PlanState
 import com.rokid.context.capture.plan.PlanValidator
 import com.rokid.context.glasses.capture.motion.GlanceDetector
 import com.rokid.context.glasses.capture.motion.GlanceParams
@@ -75,6 +76,14 @@ class PlanCompilerTest {
         val rest = (m.getValue("REST") as JsonObject).toMutableMap()
         kv.forEach { (k, v) -> rest[k] = when (v) { null -> JsonNull; is Boolean -> JsonPrimitive(v); else -> JsonPrimitive(v as Number) } }
         m["REST"] = JsonObject(rest)
+        return JsonObject(m)
+    }
+
+    private fun rowsWith(state: String, vararg kv: Pair<String, Any?>): JsonObject {
+        val m = identityRows.toMutableMap()
+        val row = (m.getValue(state) as JsonObject).toMutableMap()
+        kv.forEach { (k, v) -> row[k] = when (v) { null -> JsonNull; is Boolean -> JsonPrimitive(v); else -> JsonPrimitive(v as Number) } }
+        m[state] = JsonObject(row)
         return JsonObject(m)
     }
 
@@ -155,6 +164,16 @@ class PlanCompilerTest {
         only(graph(rate = rateWith(rowsWithRest("capPerMin" to 3))), "/policy/REST/capPerMin")
         only(graph(rate = rateWith(rowsWithRest("quietGapS" to 90))), "/policy/REST/timerPhotoGapsMs/quietMs")
         only(graph(rate = rateWith(rowsWithRest("forceSettle" to false))), "/policy/REST/forceSettle")
+        only(graph(rate = rateWith(rowsWithRest("walkGapS" to 45))), "/policy/REST/timerPhotoGapsMs/walkMs")
+        only(graph(rate = rateWith(rowsWithRest("stillCapGapS" to 200))), "/policy/REST/timerPhotoGapsMs/stillCapMs")
+        only(graph(rate = rateWith(rowsWithRest("nudges" to false))), "/policy/REST/nudges")
+        only(graph(rate = rateWith(rowsWith("FLIGHT", "capPerMin" to 2))), "/policy/FLIGHT/capPerMin")
+        only(graph(rate = rateWith(rowsWith("FLIGHT", "quietGapS" to 200))), "/policy/FLIGHT/timerPhotoGapsMs/quietMs")
+        only(graph(rate = rateWith(rowsWith("FLIGHT", "nudges" to false))), "/policy/FLIGHT/nudges")
+        only(graph(rate = rateWith(rowsWith("VEHICLE_PASSENGER", "capPerMin" to 3))), "/policy/VEHICLE_PASSENGER/capPerMin")
+        only(graph(rate = rateWith(rowsWith("VEHICLE_PASSENGER", "walkGapS" to 40))), "/policy/VEHICLE_PASSENGER/timerPhotoGapsMs/walkMs")
+        only(graph(rate = rateWith(rowsWith("VEHICLE_DRIVING", "settledGapS" to 20))), "/policy/VEHICLE_DRIVING/timerPhotoGapsMs/settledMs")
+        only(graph(rate = rateWith(rowsWith("VEHICLE_DRIVING", "capPerMin" to 2))), "/policy/VEHICLE_DRIVING/capPerMin")
         // a changed param never moves the meta-independent hash of an unchanged config
         assertEquals(base.plan!!.configHash, ok(graph(name = "another name")).plan!!.configHash)
         assertFalse(base.plan!!.configHash == ok(graph(head = obj("bridgeMs" to 300))).plan!!.configHash)
@@ -188,8 +207,35 @@ class PlanCompilerTest {
         assertEquals(1, glances(at06, 0.61f))
         val at059 = ok(graph(thresh = obj("feature" to "gyroPeak", "op" to ">", "value" to 0.59)))
         assertEquals(1, glances(at059, 0.6f))
-        // inclusive bouts: boutMs >= 300 maps to minBoutMs 300 unchanged
         assertEquals(300L, ok(graph(thresh = obj("feature" to "boutMs", "op" to ">=", "value" to 300))).plan!!.config.glance.minBoutMs)
+    }
+
+    /** A bout of [n] samples [dt] ms apart, the first with dt [firstDt] (its length is (n-1)*dt + firstDt), then 4 s of rest; the glance count. */
+    private fun replayBout(r: CompileResult, n: Int, firstDt: Long, dt: Long, mag: Float): Int {
+        val g = r.plan!!.config.glance
+        val d = GlanceDetector(GlanceParams(onsetRadS = g.onsetRadS, releaseRadS = g.releaseRadS, bridgeMs = g.bridgeMs, minBoutMs = g.minBoutMs,
+            minBoutRad = g.minBoutRad, settleMs = g.settleMs, maxDtMs = 250))
+        var t = 1_000L
+        d.onGyro(mag, t, firstDt, true)
+        repeat(n - 1) { t += dt; d.onGyro(mag, t, dt, true) }
+        val end = t + 4_000
+        while (t < end) { t += 20; d.onGyro(0f, t, 20, true) }
+        return d.glances
+    }
+
+    @Test fun boutMsBoundaryExactThroughTheDetector() {
+        val r = ok(graph(thresh = obj("feature" to "boutMs", "op" to ">=", "value" to 350)))
+        assertEquals(350L, r.plan!!.config.glance.minBoutMs)
+        assertEquals(1, replayBout(r, 17, 30, 20, 1.5f)) // length 16*20+30 = 350 counts (inclusive)
+        assertEquals(0, replayBout(r, 17, 29, 20, 1.5f)) // 349 does not
+    }
+
+    @Test fun boutRadBoundaryExactThroughTheDetector() {
+        val r = ok(graph(thresh = obj("feature" to "boutRad", "op" to ">=", "value" to 0.5)))
+        assertEquals(0.5f, r.plan!!.config.glance.minBoutRad, 0f)
+        // dt 125 ms at 1 rad/s is 0.125 rad a sample (exact in float): four samples turn exactly 0.5 rad, three 0.375
+        assertEquals(1, replayBout(r, 4, 125, 125, 1.0f))
+        assertEquals(0, replayBout(r, 3, 125, 125, 1.0f))
     }
 
     @Test fun thresholdValueOutOfBoundsNamesTheNode() {
@@ -199,7 +245,7 @@ class PlanCompilerTest {
     }
 
     @Test fun conflictingThresholdsRefused() {
-        val g = graph(head = obj("onsetRadS" to 0.5)).let { it.copy(nodes = it.nodes) }
+        val g = graph(head = obj("onsetRadS" to 0.5))
         assertEquals(listOf("node thresh: gyroPeak threshold conflicts with onsetRadS of node head"), refused(g))
         val two = graph(extra = listOf(node("thresh2", NodeTypes.GATE_THRESHOLD, obj("feature" to "gyroPeak", "op" to ">", "value" to 0.7))),
             edges = chainEdges.filter { it != PipelineEdge("thresh", "settle") } + PipelineEdge("thresh", "thresh2") + PipelineEdge("thresh2", "settle"))
@@ -215,7 +261,43 @@ class PlanCompilerTest {
         assertEquals(listOf("node head: releaseRadS must not exceed the gyroPeak threshold"), refused(g))
     }
 
+    @Test fun headReleaseAboveDefaultOnsetIsFineWhenTheFoldedOnsetIsHigher() {
+        // not refused before the fold: head release 0.7 with a gyroPeak threshold of 0.8 is a valid plan
+        val r = ok(graph(head = obj("releaseRadS" to 0.7), thresh = obj("feature" to "gyroPeak", "op" to ">", "value" to 0.8)))
+        assertEquals(0.7f, r.plan!!.config.glance.releaseRadS, 0f)
+        assertEquals(0.8f, r.plan!!.config.glance.onsetRadS, 0f)
+    }
+
+    @Test fun headReleaseAboveItsOwnOnsetRefusedWithoutThreshold() {
+        val p = Pipeline(2, "p", "P", listOf(node("head", NodeTypes.IMU_HEAD_MOTION, obj("onsetRadS" to 0.5, "releaseRadS" to 0.6))), emptyList())
+        assertEquals(listOf("node head: releaseRadS must not exceed onsetRadS"), refused(p))
+    }
+
     // ---- topology (S78) ----
+
+    @Test fun duplicatePolicyRefused() {
+        val g = graph(extra = listOf(node("a_rate", NodeTypes.POLICY_CAPTURE_RATE, rateWith(obj("REST" to obj("capPerMin" to 4))))), edges = chainEdges + PipelineEdge("cin", "a_rate"))
+        val p = refused(g)
+        assertTrue(p.toString(), p.contains("unsupported wrapper order: policy.capture_rate before policy.capture_rate"))
+        // a second node of any other chain type is refused too
+        val twoCaps = graph(extra = listOf(node("cap2", NodeTypes.GATE_RATE_CAP)), edges = chainEdges + PipelineEdge("novel", "cap2"))
+        assertTrue(refused(twoCaps).contains("unsupported wrapper order: gate.rate_cap before gate.rate_cap"))
+    }
+
+    @Test fun ctxMustHaveExactlyOneOutEdge() {
+        val g = graph(edges = chainEdges + PipelineEdge("cin", "cap"))
+        assertTrue(refused(g).contains("ctx binding must feed policy.capture_rate"))
+    }
+
+    @Test fun policyOffTheChainRefused() {
+        // the policy is fed by ctx but is not between novelty and the cap
+        val edges = listOf(
+            PipelineEdge("head", "thresh"), PipelineEdge("thresh", "settle"), PipelineEdge("settle", "novel"), PipelineEdge("novel", "cap"),
+            PipelineEdge("cin", "rate"), PipelineEdge("cap", "cam"), PipelineEdge("hub", "cout"),
+        )
+        val p = refused(graph(edges = edges))
+        assertTrue(p.toString(), p.contains("unsupported wrapper order: policy.capture_rate is not on the chain"))
+    }
 
     @Test fun reorderedPolicyBeforeNoveltyRefused() {
         val edges = listOf(
@@ -269,7 +351,7 @@ class PlanCompilerTest {
         assertTrue(refused(g).any { it.contains("crosses domains") })
         val g2 = graph(extra = listOf(node("photos", NodeTypes.INPUT_PHOTOS), node("extract", NodeTypes.VISION_EXTRACT)),
             edges = chainEdges + PipelineEdge("cam", "photos") + PipelineEdge("photos", "extract") + PipelineEdge("extract", "rate"))
-        assertTrue(refused(g2).isNotEmpty())
+        assertEquals(listOf("edge extract->rate: crosses domains", "cycle through cam"), refused(g2))
         // the photos binding itself and the ASYNC half are fine and do not change the plan
         val withAsync = graph(extra = listOf(node("photos", NodeTypes.INPUT_PHOTOS), node("extract", NodeTypes.VISION_EXTRACT)),
             edges = chainEdges + PipelineEdge("cam", "photos") + PipelineEdge("photos", "extract"))
@@ -315,23 +397,46 @@ class PlanCompilerTest {
     // ---- policy rows (S68, S83) ----
 
     @Test fun blankCapIsNull() {
+        // only an explicit null is blank
         val explicit = ok(graph(rate = rateWith(rowsWithRest("capPerMin" to null))))
-        assertNull(explicit.plan!!.config.policy.getValue(com.rokid.context.capture.plan.PlanState.REST).capPerMin)
-        // an absent cap in a present row is blank too; an absent row is the identity row
-        val absent = ok(graph(rate = rateWith(obj("REST" to obj("settledGapS" to 30), "FLIGHT" to obj("forceSettle" to true)))))
-        val rows = absent.plan!!.config.policy
-        assertNull(rows.getValue(com.rokid.context.capture.plan.PlanState.REST).capPerMin)
-        assertNull(rows.getValue(com.rokid.context.capture.plan.PlanState.FLIGHT).capPerMin)
-        assertEquals(PlanResolver.identity().policy.getValue(com.rokid.context.capture.plan.PlanState.VEHICLE_PASSENGER), rows.getValue(com.rokid.context.capture.plan.PlanState.VEHICLE_PASSENGER))
+        assertNull(explicit.plan!!.config.policy.getValue(PlanState.REST).capPerMin)
+        // an absent cap in a present row takes the identity row's cap
+        val absent = ok(graph(rate = rateWith(obj("REST" to obj("settledGapS" to 30), "FLIGHT" to obj("forceSettle" to true))))).plan!!.config.policy
+        assertEquals(2, absent.getValue(PlanState.REST).capPerMin)
+        assertEquals(1, absent.getValue(PlanState.FLIGHT).capPerMin)
     }
 
     @Test fun blankGapIsZero() {
         val r = ok(graph(rate = rateWith(rowsWithRest("settledGapS" to null))))
-        val gaps = r.plan!!.config.policy.getValue(com.rokid.context.capture.plan.PlanState.REST).timerPhotoGapsMs
+        val gaps = r.plan!!.config.policy.getValue(PlanState.REST).timerPhotoGapsMs
         assertEquals(0L, gaps.settledMs)
         assertEquals(60_000L, gaps.quietMs)
-        val absent = ok(graph(rate = rateWith(obj("REST" to obj("capPerMin" to 2))))).plan!!.config.policy.getValue(com.rokid.context.capture.plan.PlanState.REST)
-        assertEquals(listOf(0L, 0L, 0L, 0L), absent.timerPhotoGapsMs.all())
+        // absent gaps take the identity row's gaps
+        val absent = ok(graph(rate = rateWith(obj("REST" to obj("capPerMin" to 1))))).plan!!.config.policy.getValue(PlanState.REST)
+        assertEquals(listOf(30_000L, 60_000L, 30_000L, 120_000L), absent.timerPhotoGapsMs.all())
+        assertEquals(1, absent.capPerMin)
+    }
+
+    @Test fun partialRowKeepsIdentityCells() {
+        val id = PlanResolver.identity().policy
+        for (s in PlanState.entries) {
+            val r = ok(graph(rate = rateWith(obj(s.name to obj("nudges" to false)))))
+            val row = r.plan!!.config.policy.getValue(s)
+            val expected = if (s == PlanState.VEHICLE_DRIVING) id.getValue(s) else id.getValue(s).copy(nudges = false)
+            assertEquals(s.name, expected, row)
+        }
+    }
+
+    @Test fun allFourRowsAreAlwaysEmittedFromIdentity() {
+        val id = PlanResolver.identity().policy
+        for (g in listOf(graph(), graph(rate = rateWith(obj("REST" to obj("capPerMin" to 3)))), graph(rate = rateWith(obj())))) {
+            val policy = ok(g).plan!!.config.policy
+            assertEquals(PlanState.entries.toSet(), policy.keys)
+            for (s in PlanState.entries) if (s != PlanState.REST || g == graph()) assertEquals(id.getValue(s), policy.getValue(s))
+        }
+        // the encoded json carries all four rows
+        val json = ok(graph(rate = rateWith(obj("REST" to obj("capPerMin" to 3))))).planJson!!
+        for (s in PlanState.entries) assertTrue(s.name, json.contains("\"${s.name}\""))
     }
 
     @Test fun gapBelowProfileWarns() {
@@ -363,6 +468,10 @@ class PlanCompilerTest {
     @Test fun staticCostIsTheSumOverTheCaptureHalf() {
         val c = ok(graph()).staticCost
         assertEquals(0, c.modelCalls)
-        assertEquals(1, c.rtOps)
+        assertEquals(StaticCost(0, 1, "LOW"), c)
+        // the ASYNC half (a vision node with model calls) is not counted
+        val withAsync = graph(extra = listOf(node("photos", NodeTypes.INPUT_PHOTOS), node("extract", NodeTypes.VISION_EXTRACT)),
+            edges = chainEdges + PipelineEdge("cam", "photos") + PipelineEdge("photos", "extract"))
+        assertEquals(c, ok(withAsync).staticCost)
     }
 }
