@@ -190,6 +190,19 @@ export const tests = {
       eq(ctx.gone, ['#/run/r1']);
     });
   },
+  async motionOnlyUnderstandsTheServersEnumValues() {
+    // GET /api/frames returns frame_meta.motion as a string (MotionClass / MotionState names), not a number or a boolean
+    const frames = ['WALKING', 'VEHICLE', 'MOVING', 'HEAD_MOVING', 'STILL', 'UNKNOWN', null].map((m, i) => ({ id: 'f' + i, ts: 1000 + i, dwell: false, motion: m }));
+    await withView({ 'GET /api/frames': frames }, async ({ ctx, root }) => {
+      await runNewView(ctx, root, 'p1', '1');
+      const cells = () => findAll(root, (e) => e.classList.contains('thumb')).length;
+      eq(cells(), 7);
+      const label = findAll(root, (e) => e.tagName === 'label' && E.textOf(e).includes('Motion only'))[0];
+      const box = findAll(label, (e) => e.tagName === 'input')[0];
+      box.checked = true; box.dispatch('change'); await E.settle();
+      eq(cells(), 4, 'WALKING, VEHICLE, MOVING and HEAD_MOVING stay; STILL, UNKNOWN and none are hidden');
+    });
+  },
   async runViewShowsUsageAndBranches() {
     await withView({}, async ({ ctx, root }) => {
       await runView(ctx, root, 'r1');
