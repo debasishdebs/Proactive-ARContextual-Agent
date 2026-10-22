@@ -32,13 +32,13 @@ Build a separate app stack that:
 4. Add retrieval path (keyword + vector index) for voice query answering.
 
 ## Voice marks
-Say a short command after push-to-talk (glasses or phone) to save a mark for the last 10 seconds. No hotword, English only, on by default.
+Say a short command after push-to-talk (glasses or phone) to save a mark for the last 10 seconds. No hotword, English only. Voice marks are always on in this build (no switch yet).
 <!-- voice-marks-readme:begin -->
 - **Mark a moment**: "mark that", "mark this", "mark it"
 - **I missed that**: "i missed that"
 - **Undo a mark**: "undo mark", "cancel mark"
 <!-- voice-marks-readme:end -->
-Add what you were doing ("mark that, I'm driving"); unknown words save a plain mark. Audio is never stored or uploaded and recognition is on-device. Full guide: [docs/voice-marks.md](docs/voice-marks.md).
+Add what you were doing ("mark that, I'm driving"); unknown words in the same sentence as "mark that" save a plain mark, while "note that the meeting is at five" stays a normal note. Notification, tile and home-button marks are not available yet. Audio is never stored or uploaded and recognition is on-device. Full guide: [docs/voice-marks.md](docs/voice-marks.md).
 
 ## Project Tracking Files
 - `MEMORY.md`: durable facts and locked decisions.

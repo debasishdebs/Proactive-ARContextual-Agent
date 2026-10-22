@@ -1,7 +1,10 @@
 package com.rokid.context.voice.commands
 
+// Adapted from Live Fit services/voice/src/main/kotlin/com/debasish/livefit/services/voice/VoiceCommandGroup.kt@4529735
+// (Apache-2.0, same owner). Pure Kotlin, no Android.
+
 /**
- * Voice command groups for a Settings toggle list, in list order (adapted from Live Fit's VoiceCommandGroup).
+ * Voice command groups for a future Settings toggle list (no Settings switch exists yet in this build), in list order (adapted from Live Fit's VoiceCommandGroup).
  * Examples come from [MarkPhrases], so they cannot drift from the parser.
  */
 enum class VoiceCommandGroup(val label: String, val examples: String, val toggleable: Boolean = true) {
@@ -9,12 +12,12 @@ enum class VoiceCommandGroup(val label: String, val examples: String, val toggle
     Retro("I missed that", quoted(MarkPhrases.RETRO)),
     Undo("Undo a mark", quoted(MarkPhrases.UNDO.take(2)));
 
-    val blockedMessage: String get() = "'$label' is turned off in Settings"
+    val blockedMessage: String get() = "'$label' is turned off"
 
     companion object {
         fun of(command: MarkCommand): VoiceCommandGroup = when (command) {
             is MarkCommand.Mark -> Mark
-            MarkCommand.Retro -> Retro
+            is MarkCommand.Retro -> Retro
             MarkCommand.Undo -> Undo
         }
 

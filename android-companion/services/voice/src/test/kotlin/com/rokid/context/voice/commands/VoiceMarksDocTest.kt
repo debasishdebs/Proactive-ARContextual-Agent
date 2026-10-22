@@ -20,6 +20,7 @@ class VoiceMarksDocTest {
     private fun maybeRegen(file: File, begin: String, end: String, body: String) {
         if (System.getenv("VOICE_MARKS_REGEN") != "1") return
         val t = file.readText()
+        block(t, begin, end) // fails with a clear message when a marker is missing
         val b = t.indexOf(begin); val e = t.indexOf(end)
         file.writeText(t.substring(0, b + begin.length) + "\n" + body + t.substring(e))
     }
@@ -51,7 +52,8 @@ class VoiceMarksDocTest {
         val inDoc = Regex("`([^`]+)`").findAll(docBlock()).map { it.groupValues[1] }.toSet()
         val extra = inDoc - tablePhrases()
         assertTrue(extra.isEmpty(), "docs/voice-marks.md lists phrases not in MarkPhrases: $extra")
-        assertTrue("forget" !in inDoc)
+        assertTrue(inDoc.none { "forget" in it }, "no backticked token may mention forget")
+        assertTrue("forget" !in docBlock().lowercase(), "the generated block must not mention forget at all")
     }
 
     @Test fun docMentionsPrivacyAndUnsupported() {
@@ -63,7 +65,15 @@ class VoiceMarksDocTest {
             "Hindi and other languages are not supported yet.",
             "The word \"forget\" is never a mark command",
             "There is no hotword and no always-on listening.",
-            "Unknown words save a plain mark.",
+            "Unknown words in a mark command's own sentence save a plain mark.",
+            "Voice marks are always on in this build.",
         ).forEach { assertTrue(it in doc, "missing sentence: $it") }
+    }
+
+    @Test fun docDoesNotPromiseThingsThisBuildLacks() {
+        val doc = docFile.readText() + readmeFile.readText().substringAfter("## Voice marks").substringBefore("## Project Tracking")
+        listOf("switch off Voice marks", "turn them off, open Settings", "on by default", "Or use the phone notification", "does nothing")
+            .forEach { assertTrue(it !in doc, "doc still says: $it") }
+        assertTrue("not available yet" in doc)
     }
 }
