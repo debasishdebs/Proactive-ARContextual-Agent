@@ -5,6 +5,7 @@ import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import kotlin.time.Duration.Companion.minutes
 
 /**
@@ -23,11 +24,13 @@ class DecisionGoldenTest {
 
     @Test fun goldensReproduce() {
         val record = System.getenv("GOLDEN_RECORD") == "1"
+        val recorded = ArrayList<String>()
         for (s in GoldenScripts.all) {
             val actual = run(s)
             if (record) {
                 val dir = File("src/test/resources/golden").also { it.mkdirs() }
                 File(dir, fileName(s.name)).writeText(actual)
+                recorded += s.name
                 continue
             }
             val stream = javaClass.getResourceAsStream("/golden/${fileName(s.name)}")
@@ -35,6 +38,8 @@ class DecisionGoldenTest {
             val expected = stream.bufferedReader().use { it.readText() }
             assertEquals(expected, actual, "golden mismatch for ${s.name}")
         }
+        // A recording run must never be green: it is a deliberate act that the next, unset run must confirm.
+        if (record) fail("GOLDEN_RECORD=1: recorded ${recorded.size} goldens; rerun without GOLDEN_RECORD to verify")
     }
 
     @Test fun recordingIsDeterministic() {
