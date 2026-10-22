@@ -135,6 +135,7 @@ class LiveSeamIntegrationTest {
         assertEquals(listOf("A mug g1", "A mug g2", "A mug g3"), facts())
         withTimeout(10_000) { while (db.canvasDao().interpretedCount(pid) < 3) delay(25) }
         assertEquals(3, db.canvasDao().recentFallbacks(pid, 30))
+        assertEquals("exactly one live extraction after the fallback", 1, prompts.count { "Look at the photos" !in it })
         assertTrue("labels of a fallen-back batch are discarded", labels.isEmpty())
     }
 

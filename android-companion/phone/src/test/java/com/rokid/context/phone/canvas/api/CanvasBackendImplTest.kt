@@ -100,6 +100,25 @@ class CanvasBackendImplTest {
         return FrameEntity(id, ts, file.path, "rokid").also { runBlocking { MemoryGraph.get(app).db.frameDao().insertIgnore(it) } }
     }
 
+    private suspend fun insertPublish(kind: String, mode: String?, version: Int) = MemoryGraph.get(app).db.canvasDao().insertPublish(
+        com.rokid.context.memory.db.CanvasPublishEntity(pipelineId = "live-extract", version = version, hash = "h$version", publishedAt = 1, rolledBackAt = null, snapshotJson = "{}", kind = kind, mode = mode))
+
+    @Test fun interpreterPublishIsNotThePromptsLiveOrActivePublish() = runBlocking<Unit> {
+        insertPublish("interpreter", "LIVE", 1)
+        val live = backend.pipelines().first { it.jsonObject["id"]!!.jsonPrimitive.content == "live-extract" }.jsonObject
+        assertEquals("null", live["live"].toString())
+        assertEquals("false", backend.activePublish()["active"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun anOlderPromptsPublishStaysTheActiveOneUnderANewerInterpreterRow() = runBlocking<Unit> {
+        val promptsId = insertPublish("prompts", null, 1)
+        insertPublish("interpreter", "SHADOW", 2)
+        val a = backend.activePublish()
+        assertEquals(promptsId.toString(), a["publishId"]!!.jsonPrimitive.content)
+        val live = backend.pipelines().first { it.jsonObject["id"]!!.jsonPrimitive.content == "live-extract" }.jsonObject
+        assertEquals("1", live["live"]!!.jsonObject["version"]!!.jsonPrimitive.content)
+    }
+
     @Test fun pipelinesIncludeBuiltIns() = runBlocking<Unit> {
         val list = backend.pipelines()
         val ids = list.map { it.jsonObject["id"]!!.jsonPrimitive.content }
