@@ -349,6 +349,22 @@ class LiveExtractTest {
 
     // ---- the intent sink ----
 
+    @Test fun interpreterLabelsReachFrameMetaThroughTheRealWriter() = runBlocking<Unit> {
+        intentGraph()
+        publish(intentPipeline(), LiveMode.LIVE)
+        val db = MemoryGraph.get(app).db
+        for (id in listOf("ex1", "ex2", "ex3")) {
+            db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity(id, 900, "/none/$id.jpg", "rokid_glasses"))
+            db.frameMetaDao().upsert(com.rokid.context.memory.db.FrameMetaEntity(id, null, null, "STILL", false, null, null, null, null, null, null, null, null, null, 1_000))
+        }
+        val writer = com.rokid.context.work.frames.intent.FrameIntentWriter(com.rokid.context.work.frames.intent.RoomIntentFrameStore { db })
+        val d = deps(sink = writer)
+        val out = LiveExtract.batch(d, photos("ex1", "ex2", "ex3"), CallClass.EXTRACT)
+        LiveExtract.commit(d, out.effects, MemoryWipe.generation.get(), setOf("ex1", "ex2", "ex3"))
+        fun label(id: String) = db.openHelper.readableDatabase.query("SELECT intentLabel FROM frame_meta WHERE frameId='$id'").use { it.moveToFirst(); it.getString(0) }
+        assertEquals("DRIVING", label("ex1")); assertEquals("COMPUTER_WORK", label("ex2")); assertEquals("OTHER", label("ex3"))
+    }
+
     @Test fun sinkCalledWithLabels() = runBlocking<Unit> {
         intentGraph()
         publish(intentPipeline(), LiveMode.LIVE)
