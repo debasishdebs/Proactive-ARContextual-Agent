@@ -49,6 +49,7 @@ import com.rokid.context.glasses.capture.CaptureScheduler
 import com.rokid.context.glasses.capture.CaptureService
 import com.rokid.context.glasses.capture.diag.PopupGate
 import com.rokid.context.glasses.hud.CaptureCueMark
+import com.rokid.context.glasses.hud.MarkCueMark
 import com.rokid.context.glasses.hud.CaptureStatusMarks
 import com.rokid.context.glasses.hud.ConfirmInput
 import com.rokid.context.glasses.hud.InputRouter
@@ -263,6 +264,7 @@ class MainActivity : ComponentActivity() {
         val photoCue by runtime.photoCue.active.collectAsStateWithLifecycle()
         val capture by runtime.captureStatus.collectAsStateWithLifecycle()
         val blink by runtime.captureBlink.active.collectAsStateWithLifecycle()
+        val markCue by runtime.markCue.text.collectAsStateWithLifecycle()
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
         var battery by remember { mutableStateOf(runtime.batteryPct()) }
         LaunchedEffect(Unit) {
@@ -292,6 +294,7 @@ class MainActivity : ComponentActivity() {
             // Heat stop and a capture that fell back to Fixed (spec P1.5, P1.6): small marks over the HUD, nothing when fine.
             CaptureStatusMarks(cooling = capture.cooling, degraded = capture.degraded, modifier = Modifier.align(Alignment.TopStart))
             CaptureCueMark(active = blink, modifier = Modifier.align(Alignment.TopEnd))
+            MarkCueMark(text = markCue, modifier = Modifier.align(Alignment.BottomEnd))
         }
     }
 
@@ -333,8 +336,8 @@ class MainActivity : ComponentActivity() {
                 Routed.ConfirmToggle -> if (!voteBlocked()) { confirm.onSwipe(); highlightYes = confirm.highlightYes }
                 Routed.ConfirmChoose -> if (!voteBlocked()) confirm.onTap()?.let { controller.send(it); presenter.dismiss(shown); afterConfirm() }
                 Routed.ConfirmNo -> if (!voteBlocked()) confirm.onNo()?.let { controller.send(it); presenter.dismiss(shown); afterConfirm() }
-                Routed.FinishListening -> runtime.ptt.stop()
-                Routed.CancelListening -> { runtime.ptt.cancel(); controller.send(Command.Cancel) }
+                Routed.FinishListening -> { runtime.ptt.stop(); runtime.markTap.onListenFinished() }
+                Routed.CancelListening -> { val ours = runtime.listening.value; runtime.ptt.cancel(); controller.send(Command.Cancel); if (ours) runtime.markTap.onUndo() else runtime.markTap.onListenFinished() }
                 Routed.DismissOverlay -> dismiss(shown)
                 // An Answer that carried the undo stays up (the phone drops the undo line); a toast goes.
                 is Routed.Undo -> { controller.send(Command.Undo(r.proposalId)); if (shown is Overlay.Toast) presenter.dismiss(shown) }
@@ -482,10 +485,13 @@ class MainActivity : ComponentActivity() {
      * matter: Ask is a user action.
      */
     private fun onAsk(now: Long) {
-        if (runtime.listening.value) { runtime.ptt.stop(); return }
+        if (runtime.listening.value) { runtime.ptt.stop(); runtime.markTap.onListenFinished(); return }
         // BUG-R3-3: the VAD ended the listen a beat before this tap; the tap was the send, the ask is already on its way.
         if (runtime.ptt.takeLateTap()) { Log.i(TAG, "ptt: tap after auto-end taken as send"); return }
-        HudCopy.askUnavailable(controller.connection.value, controller.settings.value.askBlockedReason)?.let { local = LocalOverlay.Toast(it, now); return }
+        // P3: tap = mark + listen. The mark is taken first and never waits for the checks below (design §4.3); it never changes capture.
+        val askBlocked = HudCopy.askUnavailable(controller.connection.value, controller.settings.value.askBlockedReason)
+        runtime.markTap.onTap(listen = askBlocked == null && granted(Manifest.permission.RECORD_AUDIO))
+        askBlocked?.let { local = LocalOverlay.Toast(it, now); return }
         if (!granted(Manifest.permission.RECORD_AUDIO)) {
             local = LocalOverlay.Toast(MIC_PERMISSION, now)
             requestPermissions(listOf(Manifest.permission.RECORD_AUDIO))
