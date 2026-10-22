@@ -10,6 +10,12 @@ object PlanFixtures {
 
     fun text(p: CapturePlan = plan()) = PlanJson.encode(p)
 
+    /** A plan whose canonical text is exactly [target] UTF-8 bytes: ASCII padding, then a 2-byte char, so chars < bytes. */
+    fun planWithBytes(target: Int): CapturePlan {
+        val bytes0 = PlanJson.encode(plan(name = "é")).toByteArray(Charsets.UTF_8).size
+        return plan(name = "a".repeat(target - bytes0) + "é")
+    }
+
     fun raw(p: CapturePlan = plan()): JsonObject = Json.parseToJsonElement(text(p)) as JsonObject
 
     fun row(c: PlanConfig, s: PlanState, f: (PlanRow) -> PlanRow) = c.copy(policy = c.policy + (s to f(c.policy.getValue(s))))

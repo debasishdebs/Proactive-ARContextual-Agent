@@ -79,9 +79,9 @@ class PlanReceiverTest {
 
     @Test fun planModesNeedPlanJsonAndHash() {
         val r = rx()
-        for (mode in listOf(PlanMode.LIVE, PlanMode.SHADOW)) {
-            assertEquals("schema", r.onMessage(msg(1, mode, json = null)).reason)
-            assertEquals("schema", r.onMessage(msg(1, mode, hash = null)).reason)
+        for (mode in listOf(PlanMode.TRIAL, PlanMode.SHADOW)) {
+            assertEquals("schema", r.onMessage(msg(1, mode, 60_000, json = null)).reason)
+            assertEquals("schema", r.onMessage(msg(1, mode, 60_000, hash = null)).reason)
         }
         assertEquals("schema", r.onMessage(msg(1, hash = "000000000000")).reason)
         assertEquals("schema", r.onMessage(msg(1, json = "{not json")).reason)
@@ -119,10 +119,13 @@ class PlanReceiverTest {
     @Test fun wallClockRollbackDoesNotExtend() {
         val r = rx()
         clock = 10_000
-        // the phone's display-only wall clock fields are garbage; only the glasses' elapsed clock counts
-        r.onMessage(CapturePlanMessage(gen = 1, mode = PlanMode.TRIAL, configHash = plan.configHash, planJson = text, trialMaxMs = 60_000, trialEndsAtMs = 9_999_999_999, phoneInstall = "p1", atMs = 1))
-        r.activated(1)
-        assertNull(r.tick(ContextState.REST, 69_000))
+        trial(r, 1, 60_000)
+        // the phone's wall clock was rolled back an hour: a re-sent duplicate now carries an old atMs and a far-future trialEndsAtMs
+        val rolledBack = CapturePlanMessage(gen = 1, mode = PlanMode.TRIAL, configHash = plan.configHash, planJson = text, trialMaxMs = 60_000, trialEndsAtMs = 9_999_999_999, phoneInstall = "p1", atMs = 1)
+        clock = 40_000
+        assertEquals(PlanAckState.EFFECTIVE, r.onMessage(rolledBack).state)
+        assertEquals(10_000L, mem.s!!.trialStartElapsed)
+        assertNull(r.tick(ContextState.REST, 69_999))
         assertEquals("auto:trial_end", r.tick(ContextState.REST, 70_000)!!.reason)
     }
 
@@ -159,5 +162,77 @@ class PlanReceiverTest {
         val r = rx()
         r.onMessage(msg(50)); r.activated(50)
         assertEquals(PlanAckState.STAGED, r.onMessage(msg(1, install = "p2")).state)
+    }
+
+    @Test fun liveRefusedWithoutCap() {
+        val r = rx()
+        assertEquals(false, "live" in PlanReceiver.CAPS)
+        val a = r.onMessage(msg(1, PlanMode.LIVE))
+        assertEquals(PlanAckState.REJECTED, a.state); assertEquals("unsupported:live", a.reason); assertEquals(PlanMode.LIVE, a.mode)
+        assertNull(mem.s); assertEquals(0, mem.commits)
+        // after a staged SHADOW, a LIVE with a newer gen still stages nothing
+        r.onMessage(msg(2)); r.activated(2)
+        assertEquals("unsupported:live", r.onMessage(msg(3, PlanMode.LIVE)).reason)
+        assertEquals(2, mem.s!!.appliedGen); assertEquals(PlanMode.SHADOW, mem.s!!.mode)
+    }
+
+    @Test fun terminalReAckKeepsOriginalModeAndPublishId() {
+        val r = rx()
+        r.onMessage(msg(2, PlanMode.TRIAL, 60_000).copy(publishId = "pub-7")); r.activated(2)
+        r.revert("auto:ceiling")
+        val a = r.onMessage(msg(2, PlanMode.TRIAL, 60_000).copy(publishId = "pub-other"))
+        assertEquals(PlanAckState.REVERTED, a.state); assertEquals("auto:ceiling", a.reason)
+        assertEquals(PlanMode.TRIAL, a.mode); assertEquals("pub-7", a.publishId)
+    }
+
+    @Test fun secondRevertKeepsTheFirstReason() {
+        val r = rx()
+        trial(r, 1)
+        assertEquals("auto:ceiling", r.revert("auto:ceiling").reason)
+        val again = r.revert("auto:trial_end")
+        assertEquals("auto:ceiling", again.reason); assertEquals(PlanAckState.REVERTED, again.state)
+        assertEquals("auto:ceiling", mem.s!!.terminal[1L])
+        assertEquals("auto:ceiling", r.onMessage(msg(1, PlanMode.TRIAL, 60_000)).reason)
+    }
+
+    @Test fun activatedTickAndRevertAcksCarryPublishId() {
+        val r = rx()
+        clock = 10_000
+        r.onMessage(msg(1, PlanMode.TRIAL, 60_000).copy(publishId = "pub-1"))
+        assertEquals("pub-1", r.activated(1).publishId)
+        assertEquals("pub-1", r.tick(ContextState.REST, 70_000)!!.publishId)
+        val r2 = rx()
+        r2.onMessage(msg(2).copy(publishId = "pub-2")); r2.activated(2)
+        assertEquals("pub-2", r2.revert("auto:ceiling").publishId)
+    }
+
+    @Test fun bootIdIsReadOnceNotPerTick() {
+        var reads = 0
+        val r = PlanReceiver(mem, { clock }, { reads++; boot })
+        trial(r, 1, 3_600_000)
+        val before = reads
+        repeat(100) { assertNull(r.tick(ContextState.REST, clock + 1_000)) }
+        assertEquals(before, reads)
+        assertEquals(1, reads)
+    }
+
+    @Test fun multibyteUtf8BoundaryThroughTheReceiver() {
+        val r = rx()
+        val ok = PlanFixtures.planWithBytes(8_192)
+        val okText = PlanJson.encode(ok)
+        assertEquals(8_192, okText.toByteArray(Charsets.UTF_8).size); assertEquals(true, okText.length < 8_192)
+        assertEquals(PlanAckState.STAGED, r.onMessage(msg(1, json = okText, hash = ok.configHash)).state)
+        val big = PlanFixtures.planWithBytes(8_193)
+        val bigText = PlanJson.encode(big)
+        assertEquals(true, bigText.length <= 8_192)   // a char-length check would let it through
+        assertEquals("too_big", r.onMessage(msg(2, json = bigText, hash = big.configHash)).reason)
+    }
+
+    @Test fun deepNestingRejectedNotCrash() {
+        val r = rx()
+        val deep = "{\"planSchema\":1,\"x\":" + "[".repeat(4_000) + "]".repeat(4_000) + "}"
+        val a = r.onMessage(msg(1, json = deep))
+        assertEquals(PlanAckState.REJECTED, a.state)
+        assertNull(mem.s)
     }
 }

@@ -75,7 +75,57 @@ object PlanJson {
             .joinToString("") { "%02x".format(it) }.take(12)
 
     /** Strict: unknown keys, missing required keys, wrong types, unknown policy rows and non-finite numbers all fail. */
-    fun decodeStrict(s: String): Result<CapturePlan> = runCatching { decodeElement(Json.parseToJsonElement(s)) }
+    fun decodeStrict(s: String): Result<CapturePlan> = runCatching {
+        require(!hasDuplicateKeys(s)) { "duplicate key" }
+        decodeElement(Json.parseToJsonElement(s))
+    }
+
+    private val JSON_NUMBER = Regex("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?")
+
+    /** True when [content] is a number token in the JSON grammar (no `0.6f`, `1d`, hex floats, `+1`, `.5`, `01`). */
+    fun isJsonNumber(content: String): Boolean = JSON_NUMBER.matches(content)
+
+    /**
+     * True when any object in [s] repeats a key (compared after unescaping, so `"a"` and `"\u0061"` clash). kotlinx keeps the last
+     * duplicate silently; the plan is closed and canonical, so a repeat is refused. Iterative: no recursion on nesting.
+     */
+    fun hasDuplicateKeys(s: String): Boolean {
+        val keys = ArrayList<HashSet<String>?>()   // null = an array
+        var expectKey = false
+        var i = 0
+        while (i < s.length) {
+            when (s[i]) {
+                '{' -> { keys.add(HashSet()); expectKey = true }
+                '[' -> { keys.add(null); expectKey = false }
+                '}', ']' -> { if (keys.isNotEmpty()) keys.removeAt(keys.size - 1); expectKey = false }
+                ',' -> expectKey = keys.lastOrNull() != null
+                '"' -> {
+                    val sb = StringBuilder()
+                    i++
+                    while (i < s.length && s[i] != '"') {
+                        if (s[i] == '\\' && i + 1 < s.length) {
+                            i++
+                            when (s[i]) {
+                                'u' -> {
+                                    val cp = s.substring(i + 1, minOf(i + 5, s.length)).toIntOrNull(16)
+                                    if (cp != null && i + 5 <= s.length) { sb.append(cp.toChar()); i += 4 } else sb.append('u')
+                                }
+                                'n' -> sb.append('\n'); 't' -> sb.append('\t'); 'r' -> sb.append('\r'); 'b' -> sb.append('\b'); 'f' -> sb.append('\u000c')
+                                else -> sb.append(s[i])
+                            }
+                        } else sb.append(s[i])
+                        i++
+                    }
+                    if (expectKey) {
+                        if (!keys.last()!!.add(sb.toString())) return true
+                        expectKey = false
+                    }
+                }
+            }
+            i++
+        }
+        return false
+    }
 
     fun decodeElement(e: JsonElement): CapturePlan {
         val o = Obj(e, "plan")
@@ -124,6 +174,7 @@ object PlanJson {
 
     internal fun num(e: JsonElement, path: String): Double {
         require(e is JsonPrimitive && e !is JsonNull && !e.isString) { "$path is not a number" }
+        require(isJsonNumber(e.content)) { "$path is not a finite number" }
         val d = e.content.toDoubleOrNull()
         require(d != null && d.isFinite()) { "$path is not a finite number" }
         return d

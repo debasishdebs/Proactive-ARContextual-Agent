@@ -4,15 +4,21 @@ import com.rokid.context.core.model.context.ContextState
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
+/** S83: independent literals, not a re-statement of the rule. Rows: state, bound when not resting, bound when WorkRest is resting. */
 class ReservedBoundTest {
     @Test fun boundsPerStateAndResting() {
-        for (s in ContextState.entries) for (rest in listOf(true, false)) {
-            val rest300 = s in setOf(ContextState.REST, ContextState.VEHICLE_PASSENGER, ContextState.VEHICLE_DRIVING, ContextState.FLIGHT) ||
-                (rest && s != ContextState.WALKING)
-            assertEquals(if (rest300) 300_000L else 60_000L, reservedBoundMs(s, rest), "$s resting=$rest")
+        val expected = listOf(
+            Triple(ContextState.UNKNOWN, 60_000L, 300_000L),
+            Triple(ContextState.WALKING, 60_000L, 60_000L),
+            Triple(ContextState.REST, 300_000L, 300_000L),
+            Triple(ContextState.VEHICLE_PASSENGER, 300_000L, 300_000L),
+            Triple(ContextState.VEHICLE_DRIVING, 300_000L, 300_000L),
+            Triple(ContextState.FLIGHT, 300_000L, 300_000L),
+        )
+        assertEquals(ContextState.entries.toSet(), expected.map { it.first }.toSet())
+        for ((s, active, resting) in expected) {
+            assertEquals(active, reservedBoundMs(s, false), "$s not resting")
+            assertEquals(resting, reservedBoundMs(s, true), "$s resting")
         }
-        assertEquals(60_000L, reservedBoundMs(ContextState.UNKNOWN, false))
-        assertEquals(300_000L, reservedBoundMs(ContextState.UNKNOWN, true))   // S83a WorkRest resting while UNKNOWN
-        assertEquals(60_000L, reservedBoundMs(ContextState.WALKING, true))
     }
 }

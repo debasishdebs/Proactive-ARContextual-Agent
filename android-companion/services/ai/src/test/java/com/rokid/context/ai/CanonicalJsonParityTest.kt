@@ -8,8 +8,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * Pins the canonical text and hash that the phone-side PlanCompiler (Task 7) must reproduce byte for byte. The same fixtures are
- * asserted in :core:capture, so the glasses and the phone cannot drift apart.
+ * Pins the canonical text and hash that the phone-side PlanCompiler (Task 7) must reproduce byte for byte. It runs the same
+ * :core:capture code on the same JVM, so it is a change detector for the pinned values, not an independent phone/glasses check; only
+ * the identity hash is also asserted in :core:capture (PlanJsonTest).
  */
 class CanonicalJsonParityTest {
     @Test fun canonicalTextIsPinned() {

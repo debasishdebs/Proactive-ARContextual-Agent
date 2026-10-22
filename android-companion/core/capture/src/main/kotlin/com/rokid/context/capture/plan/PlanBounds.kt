@@ -21,6 +21,7 @@ object PlanBounds {
     const val GAP_MAX_MS = 300_000L
     val FAST_KMH = 20.0..40.0
     const val FUSION_FRACTION = 0.5
+    private val FRACTION_KEYS = setOf("stillFrac", "stillFracWithImage")
 
     /** The tunable phone fusion keys with today's defaults (walking veto, flight and image rules are not tunable, S32). */
     val FUSION_DEFAULTS: Map<String, Double> = FusionParams().let { f ->
@@ -35,7 +36,10 @@ object PlanBounds {
 
     fun fusionRange(key: String): ClosedFloatingPointRange<Double>? {
         val d = FUSION_DEFAULTS[key] ?: return null
-        return if (key == "fastKmh") FAST_KMH else (d * (1 - FUSION_FRACTION))..(d * (1 + FUSION_FRACTION))
+        if (key == "fastKmh") return FAST_KMH
+        val hi = d * (1 + FUSION_FRACTION)
+        // A share of time above 1.0 is meaningless: REST would become unreachable.
+        return (d * (1 - FUSION_FRACTION))..(if (key in FRACTION_KEYS) minOf(hi, 1.0) else hi)
     }
 
     fun fmt(n: Number): String {
