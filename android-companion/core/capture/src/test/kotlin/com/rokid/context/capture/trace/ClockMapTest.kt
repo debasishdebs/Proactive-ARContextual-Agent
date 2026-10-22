@@ -2,13 +2,16 @@ package com.rokid.context.capture.trace
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class ClockMapTest {
     // start: elapsed 1000 <-> glasses wall 1_700_000_001_000 (offset 1_699_999_999_000); end: elapsed 12000 <-> wall ..._012_010 (offset +10 ms of drift)
     private val m = TraceFixtures.manifest()          // phoneOffsetMs = 250
     private val map = ClockMap.of(m)
-    private val boot = "boot-42"
+    private val boot = "42"
     private val off0 = 1_700_000_001_000 - 1000L
 
     @Test fun clockMapStartMidEnd() {
@@ -33,27 +36,50 @@ class ClockMapTest {
     }
 
     @Test fun rebootEpochIsNeverMapped() {
-        assertNull(map.glassesWall(6_500, "boot-43"))
-        assertNull(map.phoneWall(6_500, "boot-43"))
+        assertNull(map.glassesWall(6_500, "43"))
+        assertNull(map.phoneWall(6_500, "43"))
         // two traces on either side of a reboot: elapsed restarts, so the same elapsed value maps through the map of its own boot only
-        val after = ClockMap.of(m.copy(bootId = "boot-43", startWallMs = 1_700_100_000_000, endWallMs = 1_700_100_011_000))
-        assertEquals(1_700_100_000_000, after.glassesWall(1000, "boot-43"))
+        val after = ClockMap.of(m.copy(bootId = "43", startWallMs = 1_700_100_000_000, endWallMs = 1_700_100_011_000))
+        assertEquals(1_700_100_000_000, after.glassesWall(1000, "43"))
         assertEquals(1_700_000_001_000, map.glassesWall(1000, boot))
-        assertEquals(after.glassesWall(1000, "boot-43"), ClockMap.resolve(listOf(map, after), "boot-43", 1000)?.glassesWall(1000, "boot-43"))
+        assertEquals(after.glassesWall(1000, "43"), ClockMap.resolve(listOf(map, after), "43", 1000)?.glassesWall(1000, "43"))
         assertEquals(1_700_000_001_000, ClockMap.resolve(listOf(map, after), boot, 1000)?.glassesWall(1000, boot))
-        assertNull(ClockMap.resolve(listOf(map, after), "boot-44", 1000))
+        assertNull(ClockMap.resolve(listOf(map, after), "44", 1000))
     }
 
     @Test fun noPhoneOffsetMeansNoPhoneTime() {
-        val unsynced = ClockMap.of(m.copy(phoneOffsetMs = null, offsetUncertaintyMs = null))
+        val unsynced = ClockMap.of(m.copy(phoneOffsetMs = null, offsetUncertaintyMs = null, startPhoneWallMs = null, endPhoneWallMs = null))
         assertEquals(1_700_000_001_000, unsynced.glassesWall(1000, boot))
         assertNull(unsynced.phoneWall(1000, boot))
-        assertNull(unsynced.uncertaintyMs)
+        assertEquals(10L, unsynced.uncertaintyMs)      // the glasses drift is known even when the phone never synchronised (M11)
         assertEquals(40L + 10L, map.uncertaintyMs)     // phone sync uncertainty plus the drift between the two samples
     }
 
     @Test fun zeroLengthTraceUsesTheStartOffset() {
         val z = ClockMap.of(m.copy(endElapsedMs = 1000, endWallMs = 1_700_000_001_000))
         assertEquals(1_700_000_001_005, z.glassesWall(1005, boot))
+    }
+
+    @Test fun aWallClockCorrectionInsideTheTraceIsRefusedNotSmeared() {
+        val jumped = ClockMap.of(m.copy(endWallMs = m.endWallMs + 5_000))
+        assertTrue(jumped.wallJump)
+        assertNull(jumped.glassesWall(6_500, boot)); assertNull(jumped.phoneWall(6_500, boot)); assertNull(jumped.glassesWall(1000, boot))
+        assertEquals(5_010L + 40L, jumped.uncertaintyMs)
+        // the bound itself is still mapped
+        val edge = ClockMap.of(m.copy(endWallMs = m.endWallMs - 10 + ClockMap.MAX_WALL_JUMP_MS))
+        assertFalse(edge.wallJump); assertNotNull(edge.glassesWall(6_500, boot))
+        assertTrue(ClockMap.of(m.copy(endWallMs = m.endWallMs - 10 - ClockMap.MAX_WALL_JUMP_MS - 1)).wallJump)
+    }
+
+    @Test fun phoneSamplesGiveTheTracesOwnOffsetWhenIntakeHasNone() {
+        // start: phone = glasses + 250, end: phone = glasses + 252 (the phone offset drifted 2 ms)
+        val sampled = ClockMap.of(m.copy(phoneOffsetMs = null, offsetUncertaintyMs = null))
+        assertEquals(1_700_000_001_000 + 250, sampled.phoneWall(1000, boot))
+        assertEquals(1_700_000_012_010 + 252, sampled.phoneWall(12_000, boot))
+        assertEquals(off0 + 6_500 + 5 + 251, sampled.phoneWall(6_500, boot))
+        // an intake offset wins when present
+        assertEquals(1_700_000_001_000 + 250, map.phoneWall(1000, boot))
+        // neither: no phone time
+        assertNull(ClockMap.of(m.copy(phoneOffsetMs = null, offsetUncertaintyMs = null, startPhoneWallMs = null, endPhoneWallMs = null)).phoneWall(1000, boot))
     }
 }
