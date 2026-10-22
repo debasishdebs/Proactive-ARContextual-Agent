@@ -71,6 +71,24 @@ class InterruptedDeleteAllTest {
         assertFalse("nothing pending: a second start does nothing", MemoryWipe.resumeIfPending(ctx))
     }
 
+    private fun staged(): File = File(File(ctx.getExternalFilesDir(null)!!, FencedFiles.STAGING_DIR), "trace-aaaa-0001").apply { mkdirs(); File(this, "chunk-0000.json").writeText("raw sensor data") }
+
+    @Test fun deleteAllClearsTheExternalTraceStagingFolder() = runBlocking {
+        val dir = staged()
+        MemoryWipe.deleteAll(ctx)
+        assertFalse("the staged raw trace is gone", dir.exists()); assertFalse(epochStore().wipePending())
+    }
+
+    @Test fun theInterruptedWipeResumeClearsTheExternalTraceStagingFolderToo() = runBlocking {
+        val dir = staged()
+        MemoryWipe.afterEpochCommit = { throw IllegalStateException("crash") }
+        assertThrows(IllegalStateException::class.java) { runBlocking { MemoryWipe.deleteAll(ctx) } }
+        assertTrue(dir.exists())
+        MemoryWipe.afterEpochCommit = {}
+        MemoryWipe.resumeIfPending(ctx)
+        assertFalse(dir.exists()); assertFalse(epochStore().wipePending())
+    }
+
     @Test fun aCompleteDeleteAllLeavesNoMarker() = runBlocking {
         seed()
         MemoryWipe.deleteAll(ctx)

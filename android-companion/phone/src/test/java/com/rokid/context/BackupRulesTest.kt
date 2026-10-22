@@ -24,7 +24,9 @@ class BackupRulesTest {
         "file:models",
         // Final review I4: the photo test's labels (queries.json holds the user's free text about their photos) never leave the phone.
         "file:photo-eval",
-    ) + secretBaks + memoryCopies + slice3aFiles.map { "file:$it" } + setupState.map { "sharedpref:$it.xml" }
+    ) + secretBaks + memoryCopies + slice3aFiles.map { "file:$it" } +
+        // Final pass 10: the dev-mode trace staging folder under the app's EXTERNAL files dir (raw sensor traces, readable by adb): never backed up or transferred.
+        "external:${com.rokid.context.canvas.trace.FencedFiles.STAGING_DIR}" + setupState.map { "sharedpref:$it.xml" }
 
     /**
      * B12 ruling: copies of the legacy key file found in files/ after a restore. Backup rules match a path exactly, or
