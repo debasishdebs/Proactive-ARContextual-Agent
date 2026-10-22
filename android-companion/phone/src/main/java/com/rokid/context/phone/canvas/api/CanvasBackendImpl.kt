@@ -80,6 +80,7 @@ class CanvasBackendImpl(
     private val lan: () -> Boolean,
     private val clock: () -> Long = System::currentTimeMillis,
     private val askDebug: Lazy<AskDebug>,
+    private val thumbnailer: (ByteArray) -> ByteArray? = { FrameImagesHttp.thumbnail(it) },
 ) : CanvasBackend {
     companion object {
         private val pretty = Json { prettyPrint = true }
@@ -141,6 +142,7 @@ class CanvasBackendImpl(
             answers: () -> AnswerService = { AnswerService.forApp(app, extractFirst = false) },
             /** The Ask photo gate of a replay; [AskPhotoBinding] by default, which refuses every photo until a gate is bound. */
             askPhotos: () -> AskDebugPhotos = AskPhotoBinding::current,
+            thumbnailer: (ByteArray) -> ByteArray? = { FrameImagesHttp.thumbnail(it) },
         ): CanvasBackendImpl {
             val dao = MemoryGraph.get(app).db.canvasDao()
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
@@ -151,9 +153,15 @@ class CanvasBackendImpl(
                 ConfirmTokens(clock), hot, clock,
             )
             val askDebug = lazy {
-                AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = askPhotos())
+                AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos))
             }
-            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug)
+            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, thumbnailer)
+        }
+
+        /** The gate is read at every call, so a gate bound after the first Ask view is the one used (and nothing bound is [AskDebugPhotos.Refuse]). */
+        private class LiveBoundPhotos(private val source: () -> AskDebugPhotos) : AskDebugPhotos {
+            override suspend fun allowed() = source().allowed()
+            override suspend fun recall(question: String, nowMs: Long) = source().recall(question, nowMs)
         }
 
         /** The real TestBed gate (`ai.testBed::compatibility`): a replay whose draft the bound endpoints cannot compile is refused as `incompatible`. */
@@ -219,7 +227,7 @@ class CanvasBackendImpl(
         NodeTypes.VISION_EXTRACT -> listOf(param("batch", "int", mapOf("min" to 1, "max" to ExtractSave.MAX_BATCH)), param("prompt", "prompt"))
         NodeTypes.CRITIC -> listOf(param("prompt", "prompt"))
         NodeTypes.PROMPT -> listOf(param("role", "role"), param("template", "text"), param("schema", "schema"), param("images", "bool"), param("name", "text"))
-        NodeTypes.SWITCH -> listOf(param("field", "text"), param("cases", "labels"))
+        NodeTypes.SWITCH -> listOf(JsonObject(param("field", "text") + ("default" to JsonPrimitive("activity"))), param("cases", "labels"))
         else -> emptyList()
     }
 
@@ -247,7 +255,7 @@ class CanvasBackendImpl(
         start()
         val e = repo.get(id) ?: return null
         val p = PipelineJson.decode(e.draftJson).getOrNull()
-        val detailed = if (p == null) listOf(Problem("The draft is not readable")) else PipelineValidator.problems(p)
+        val detailed = if (p == null) listOf(Problem(UNDECODABLE)) else PipelineValidator.problems(p)
         val problems = detailed.map { it.text }
         val prompts = buildJsonObject {
             p?.nodes?.forEach { n ->
@@ -403,7 +411,7 @@ class CanvasBackendImpl(
                 put("frameId", f)
                 put("at", batch?.at ?: rows.maxOfOrNull { it.at } ?: 0L)
                 put("label", label)
-                put("batch", batch?.status ?: "ERROR")
+                put("batch", batch?.status)
                 put("nodes", JsonArray(rows.filter { it.nodeId != LIVE_BATCH_NODE }.map { r ->
                     buildJsonObject { put("nodeId", r.nodeId); put("status", r.status); put("branch", r.branch); put("output", r.outputJson); put("error", r.error) }
                 }))
@@ -417,7 +425,7 @@ class CanvasBackendImpl(
         }
     }
 
-    override suspend fun rollback(expectedId: Long?): CanvasPublisher.Outcome = publisher.rollback(expectedId)
+    override suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome = publisher.rollback(expectedId)
 
     override suspend fun checkPrompt(nodeType: String, template: String, schema: String?): List<String> {
         val type = NodeTypes.byType(nodeType) ?: return listOf("Unknown node type")
@@ -461,11 +469,12 @@ class CanvasBackendImpl(
             if (File(frame.path).length() > FrameImagesHttp.MAX_IMAGE_BYTES) null else FrameImages.readBytes(frame.path) // opened in memory; nothing is written
         } ?: return null
         if (bytes.size > FrameImagesHttp.MAX_IMAGE_BYTES) return null
-        // like a live Ask (S35): a Forget or a Delete all that landed while the file was opened means nothing is served
-        if (MemoryWipe.generation.get() != generation || dao.tombstonedAmong(listOf(id)) > 0 || PipelineRecords.framesByIds(app, listOf(id)).isEmpty()) return null
         val type = FrameImagesHttp.sniff(bytes) ?: return null
-        if (!thumb) return FrameImage(bytes, type)
-        return withContext(Dispatchers.Default) { FrameImagesHttp.thumbnail(bytes) }?.let { FrameImage(it, "image/jpeg") }
+        val image = if (!thumb) FrameImage(bytes, type) else withContext(Dispatchers.Default) { thumbnailer(bytes) }?.let { FrameImage(it, "image/jpeg") } ?: return null
+        // like a live Ask (S35), as late as possible (after the decode, right before the answer is built): a Forget or a Delete all that landed
+        // while the file was opened or decoded means nothing is served
+        if (MemoryWipe.generation.get() != generation || dao.tombstonedAmong(listOf(id)) > 0 || PipelineRecords.framesByIds(app, listOf(id)).isEmpty()) return null
+        return image
     }
 
     // ---- runs ----
@@ -552,7 +561,7 @@ class CanvasBackendImpl(
     private fun parse(text: String?): JsonElement = text?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() } ?: JsonNull
 
     private fun runJson(r: CanvasRunEntity) = buildJsonObject {
-        put("runId", r.runId); put("pipelineId", r.pipelineId); put("version", r.version); put("pipelineHash", r.pipelineHash)
+        put("runId", r.runId); put("abGroup", r.abGroup); put("pipelineId", r.pipelineId); put("version", r.version); put("pipelineHash", r.pipelineHash)
         put("status", r.status); put("frameCount", r.frameCount); put("estCalls", r.estCalls); put("calls", r.calls); put("failures", r.failures)
         put("startedAt", r.startedAt); put("finishedAt", r.finishedAt)
         put("models", parse(r.modelsJson).takeIf { it is JsonArray } ?: JsonArray(emptyList()))

@@ -5,6 +5,7 @@ import com.rokid.context.canvas.CanvasRepository
 import com.rokid.context.canvas.CanvasRunner
 import com.rokid.context.canvas.AbStarted
 import com.rokid.context.canvas.AskDebug
+import com.rokid.context.canvas.AskRedacted
 import com.rokid.context.canvas.Estimate
 import com.rokid.context.canvas.TokenEstimate
 import com.rokid.context.canvas.LiveMode
@@ -66,7 +67,7 @@ private class FakeBackend : CanvasBackend {
     override suspend fun publish(id: String, version: Int): CanvasPublisher.Outcome { enter("publish:$version"); known(0); return publishOutcome }
     override suspend fun activePublish() = buildJsonObject { enter("activePublish"); put("active", false) }
     var lastRollbackExpected: Long? = -1
-    override suspend fun rollback(expectedId: Long?): CanvasPublisher.Outcome { enter("rollback"); lastRollbackExpected = expectedId; return rollbackOutcome }
+    override suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome { enter("rollback"); lastRollbackExpected = expectedId; return rollbackOutcome }
     var lastInterpreterPublish: Triple<String, Int, LiveMode>? = null
     override suspend fun publishInterpreter(id: String, version: Int, mode: LiveMode): CanvasPublisher.Outcome { enter("publishInterpreter:$mode"); known(0); lastInterpreterPublish = Triple(id, version, mode); return publishOutcome }
     var estimateAbResult: Estimate = Estimate.Ok(2, 6, 10, listOf(ModelLabel("extract", "az", "gpt")), "tokAB", TokenEstimate(900, 120, 4))
@@ -79,7 +80,7 @@ private class FakeBackend : CanvasBackend {
     var lastReplay: Pair<String, String>? = null
     var replayDelayMs = 0L
     override suspend fun asks(): JsonArray { enter("asks"); return JsonArray(listOf(buildJsonObject { put("id", "a1") })) }
-    override suspend fun ask(id: String): JsonObject? { enter("ask"); if (askRedacted) throw IllegalStateException("redacted"); return if (known) buildJsonObject { put("askId", id); put("composedPrompt", "SECRET PROMPT") } else null }
+    override suspend fun ask(id: String): JsonObject? { enter("ask"); if (askRedacted) throw AskRedacted(); return if (known) buildJsonObject { put("askId", id); put("composedPrompt", "SECRET PROMPT") } else null }
     override suspend fun replayAsk(id: String, template: String): AskDebug.Replay { enter("replay"); if (replayDelayMs > 0) delay(replayDelayMs); lastReplay = id to template; return replayResult }
     var lastHistoryLimit = -1
     override suspend fun publishHistory(limit: Int): JsonArray { enter("history"); lastHistoryLimit = limit; return JsonArray(listOf(buildJsonObject { put("id", 1); put("kind", "interpreter") })) }
@@ -225,9 +226,9 @@ class CanvasApiTest {
         assertEquals("Run first", blocked.obj()["problems"]!!.jsonArray[0].jsonPrimitive.content)
         assertEquals(400, call("POST", "/api/pipelines/p-1/versions/x/publish").status)
         assertEquals(200, call("GET", "/api/publish").status)
-        assertEquals(200, call("POST", "/api/publish/rollback").status)
+        assertEquals(200, call("POST", "/api/publish/rollback", """{"expectedId":7}""").status)
         be.rollbackOutcome = CanvasPublisher.Outcome.Blocked(listOf("edited"))
-        val rb = call("POST", "/api/publish/rollback")
+        val rb = call("POST", "/api/publish/rollback", """{"expectedId":7}""")
         assertEquals(409, rb.status)
         assertEquals("rollback_blocked", rb.err())
     }
@@ -522,12 +523,16 @@ class CanvasApiTest {
     }
 
     @Test fun rollbackPassesTheExpectedPublishId() {
-        assertEquals(200, call("POST", "/api/publish/rollback").status)
-        assertEquals(null, be.lastRollbackExpected)
         assertEquals(200, call("POST", "/api/publish/rollback", """{"expectedId":42}""").status)
         assertEquals(42L, be.lastRollbackExpected)
-        assertEquals(200, call("POST", "/api/publish/rollback", """{"expectedId":null}""").status)
-        assertEquals(null, be.lastRollbackExpected)
+        // the id is required: a click must name the publish it saw
+        be.calls.clear()
+        for (missing in listOf(null, "{}", """{"expectedId":null}""")) {
+            val r = call("POST", "/api/publish/rollback", missing)
+            assertEquals(missing, 400, r.status); assertEquals("bad_request", r.err())
+            assertEquals("Reload and try again.", r.obj()["message"]!!.jsonPrimitive.content)
+        }
+        assertTrue("rollback" !in be.calls)
         for (bad in listOf("""{"expectedId":"x"}""", """{"expectedId":-1}""", """{"expectedId":1.5}""", "nope")) assertEquals(bad, 400, call("POST", "/api/publish/rollback", bad).status)
         be.rollbackOutcome = CanvasPublisher.Outcome.Blocked(listOf("That publish was already rolled back."))
         val r = call("POST", "/api/publish/rollback", """{"expectedId":9}""")
@@ -671,5 +676,20 @@ class CanvasApiTest {
         // a mutation is NonCancellable: the same 2 s read deadline does not cut a 300 ms replay, and a slow publish still finishes
         be.replayDelayMs = 300
         assertEquals(200, call("POST", "/api/asks/a1/replay", """{"template":"T"}""").status)
+    }
+
+    @Test fun validateEstimateAndCheckPromptRunUnderTheReadDeadline() {
+        be.delayMs = 3_000
+        val fast = CanvasApi(be, callTimeoutMs = 200)
+        fun post(path: String, body: String) = fast.handle(HttpRequest("POST", path, emptyMap(), mapOf("authorization" to "Bearer abc"), body.toByteArray()))
+        for ((path, body) in listOf(
+            "/api/validate" to """{"json":"{}"}""", "/api/runs/estimate" to """{"pipelineId":"p","frameIds":["a"]}""",
+            "/api/runs/estimate-ab" to """{"a":{"pipelineId":"p"},"b":{"pipelineId":"q"},"frameIds":["a"]}""", "/api/check-prompt" to """{"nodeType":"ai.prompt","template":"t"}""",
+        )) { val r = post(path, body); assertEquals(path, 503, r.status); assertEquals("busy", r.err()) }
+    }
+
+    @Test fun aPlainRedactedMessageIsNotARedactedAsk() {
+        val api2 = CanvasApi(object : CanvasBackend by be { override suspend fun ask(id: String): JsonObject? = throw IllegalStateException("redacted") })
+        assertEquals(500, api2.handle(HttpRequest("GET", "/api/asks/a1", emptyMap(), emptyMap(), ByteArray(0))).status)
     }
 }

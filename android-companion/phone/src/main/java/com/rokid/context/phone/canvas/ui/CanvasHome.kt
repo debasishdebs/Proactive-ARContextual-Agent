@@ -47,6 +47,7 @@ import com.rokid.context.phone.canvas.CanvasHost
 import com.rokid.context.phone.canvas.CanvasService
 import com.rokid.context.phone.canvas.CanvasStatus
 import com.rokid.context.phone.canvas.PipelineRow
+import com.rokid.context.phone.canvas.PublishRow
 import com.rokid.context.phone.canvas.RunRow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,6 +73,8 @@ data class CanvasHomeUi(
     val pipelines: List<PipelineRow> = emptyList(),
     val runs: List<RunRow> = emptyList(),
     val publishActive: Boolean = false,
+    /** The publish the "Roll back" button undoes (named, so the click cannot hit a newer one). */
+    val newestPublish: PublishRow? = null,
     /** Shown once in a snackbar, then cleared by [CanvasHomeViewModel.messageShown]. */
     val message: String? = null,
 )
@@ -84,6 +87,13 @@ object CanvasHomeText {
     }
 
     fun countdown(seconds: Int): String = "Expires in ${seconds / 60}:%02d".format(seconds % 60)
+
+    /** The button's label names what it undoes. */
+    fun rollbackLabel(p: PublishRow): String = when {
+        p.kind == "interpreter" && p.mode == "SHADOW" -> "Roll back Shadow pipeline"
+        p.kind == "interpreter" -> "Roll back live pipeline"
+        else -> "Roll back live"
+    }
 
     fun rollbackMessage(o: CanvasPublisher.Outcome): String = when (o) {
         is CanvasPublisher.Outcome.Published -> "Rolled back"
@@ -99,7 +109,7 @@ class CanvasHomeViewModel(
 ) : ViewModel() {
     private data class Local(
         val showCode: Boolean = false, val nowMs: Long = 0L, val pipelines: List<PipelineRow> = emptyList(), val runs: List<RunRow> = emptyList(),
-        val publishActive: Boolean = false, val message: String? = null,
+        val publishActive: Boolean = false, val newest: PublishRow? = null, val message: String? = null,
     )
 
     private val local = MutableStateFlow(Local(nowMs = clock()))
@@ -108,7 +118,7 @@ class CanvasHomeViewModel(
         val left = if (s.code != null) ((s.codeExpiresAt - l.nowMs) / 1000).toInt().coerceAtLeast(0) else 0
         CanvasHomeUi(
             status = s, showCode = (l.showCode || s.lan) && s.code != null, secondsLeft = left, wifiAvailable = s.lanIp != null,
-            pipelines = l.pipelines, runs = l.runs, publishActive = l.publishActive, message = l.message ?: s.notice,
+            pipelines = l.pipelines, runs = l.runs, publishActive = l.publishActive, newestPublish = l.newest, message = l.message ?: s.notice,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, CanvasHomeUi(status = host.status.value))
 
@@ -135,7 +145,7 @@ class CanvasHomeViewModel(
         viewModelScope.launch {
             try {
                 val h = host.home()
-                local.update { it.copy(pipelines = h.pipelines, runs = h.runs, publishActive = h.publishActive) }
+                local.update { it.copy(pipelines = h.pipelines, runs = h.runs, publishActive = h.publishActive, newest = h.newestPublish) }
             } catch (c: CancellationException) { throw c } catch (e: Exception) { /* the lists stay as they were */ }
         }
     }
@@ -157,9 +167,10 @@ class CanvasHomeViewModel(
     }
 
     fun rollback() {
+        val target = local.value.newest ?: return // nothing was shown, so there is nothing to undo by id
         viewModelScope.launch {
             val msg = try {
-                CanvasHomeText.rollbackMessage(host.rollback())
+                CanvasHomeText.rollbackMessage(host.rollback(target.id))
             } catch (c: CancellationException) { throw c } catch (e: Exception) { "Roll back failed" }
             local.update { it.copy(message = msg) }
             reload()
@@ -264,7 +275,7 @@ fun CanvasHomeScreen(
             }
             item {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (ui.publishActive) OutlinedButton(onClick = onRollback, modifier = Modifier.fillMaxWidth().testTag("canvas_rollback")) { Text("Roll back live") }
+                    ui.newestPublish?.let { newest -> OutlinedButton(onClick = onRollback, modifier = Modifier.fillMaxWidth().testTag("canvas_rollback")) { Text(CanvasHomeText.rollbackLabel(newest)) } }
                     OutlinedButton(onClick = onSignOutAll, modifier = Modifier.fillMaxWidth().testTag("canvas_sign_out")) { Text("Sign out all browsers") }
                     Spacer(Modifier.height(24.dp))
                 }

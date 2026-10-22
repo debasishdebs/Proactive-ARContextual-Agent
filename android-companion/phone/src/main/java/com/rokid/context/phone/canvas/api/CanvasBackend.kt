@@ -52,8 +52,8 @@ interface CanvasBackend {
      * frames:[{frameId, at, label, batch:"OK"|"ERROR", nodes:[{nodeId,status,branch,output,error}]}]}`. Debug data of the user's photos: authenticated routes only.
      */
     suspend fun live(limit: Int): JsonObject
-    /** Rolls back the newest publish of either kind; [expectedId] (the publish the caller saw) guards a race with an auto-rollback. */
-    suspend fun rollback(expectedId: Long?): CanvasPublisher.Outcome
+    /** Rolls back the newest publish of either kind; [expectedId] (the publish the caller saw as the newest) is required: it guards a race with an auto-rollback. */
+    suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome
     suspend fun checkPrompt(nodeType: String, template: String, schema: String?): List<String>
     /** Frames with `afterMs <= ts < beforeMs` (no lower bound when [afterMs] is null), newest first. */
     suspend fun frames(afterMs: Long?, beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray

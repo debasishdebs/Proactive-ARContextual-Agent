@@ -21,7 +21,9 @@ class FakeCanvasHost : CanvasHost {
     var idle = false
     override fun shouldIdleStop() = idle
     override fun stopWithNotice(text: String) { calls += "stopNotice"; status.value = CanvasStatus(notice = text) }
-    override suspend fun home() = HomeData(emptyList(), emptyList(), true)
-    override suspend fun rollback() = outcome
+    var newest: PublishRow? = PublishRow(7, "prompts", null)
+    val rollbackIds = mutableListOf<Long>()
+    override suspend fun home() = HomeData(emptyList(), emptyList(), newest != null, newest)
+    override suspend fun rollback(expectedId: Long) = outcome.also { rollbackIds += expectedId }
     override suspend fun pipeline(id: String): Pipeline? = null
 }
