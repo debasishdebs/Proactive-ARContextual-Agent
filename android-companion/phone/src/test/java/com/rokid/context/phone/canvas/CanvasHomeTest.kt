@@ -19,6 +19,7 @@ import com.rokid.context.phone.canvas.server.AssetSource
 import com.rokid.context.phone.canvas.server.CanvasAuth
 import com.rokid.context.phone.canvas.server.HttpResponse
 import com.rokid.context.phone.canvas.ui.CanvasHomeScreen
+import com.rokid.context.phone.canvas.ui.CanvasHomeText
 import com.rokid.context.phone.canvas.ui.CanvasHomeUi
 import com.rokid.context.phone.canvas.ui.CanvasHomeViewModel
 import com.rokid.context.phone.ui.MainDispatcherRule
@@ -87,6 +88,7 @@ class CanvasHomeTest {
     @Test fun rollbackBlockedShowsReason() {
         val host = FakeCanvasHost()
         val vm = CanvasHomeViewModel(host, ensureService = {}, openUrl = {}, clock = { 0L })
+        vm.reload()
         vm.rollback()
         val msg = vm.state.value.message
         assertNotNull(msg)
@@ -98,6 +100,7 @@ class CanvasHomeTest {
     @Test fun rollbackPublishedSaysSo() {
         val host = FakeCanvasHost().also { it.outcome = CanvasPublisher.Outcome.Published(1, emptyList()) }
         val vm = CanvasHomeViewModel(host, ensureService = {}, openUrl = {}, clock = { 0L })
+        vm.reload()
         vm.rollback()
         assertEquals("Rolled back", vm.state.value.message)
     }
@@ -128,7 +131,7 @@ class CanvasHomeTest {
             override fun runActive() = false
             override suspend fun cancelActive() { cancelled++ }
             override suspend fun home() = HomeData(emptyList(), emptyList(), false)
-            override suspend fun rollback(): CanvasPublisher.Outcome = CanvasPublisher.Outcome.Blocked(emptyList())
+            override suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome = CanvasPublisher.Outcome.Blocked(emptyList())
             override suspend fun pipeline(id: String): Pipeline? = null
         }
         val graph = CanvasGraph(auth, core, AssetSource { null }, dev, wifiIp = { "192.168.1.20" }, scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined), clock = { 1_000L })
@@ -157,7 +160,7 @@ class CanvasHomeTest {
             override fun runActive() = false
             override suspend fun cancelActive() { cancelled++ }
             override suspend fun home() = HomeData(emptyList(), emptyList(), false)
-            override suspend fun rollback(): CanvasPublisher.Outcome = CanvasPublisher.Outcome.Blocked(emptyList())
+            override suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome = CanvasPublisher.Outcome.Blocked(emptyList())
             override suspend fun pipeline(id: String): Pipeline? = null
         }
         val graph = CanvasGraph(auth, core, AssetSource { null }, MutableStateFlow(true), wifiIp = { "192.168.1.20" }, scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined), clock = { 1_000L })
@@ -173,5 +176,30 @@ class CanvasHomeTest {
             graph.setLan(false)
             assertFalse(graph.status.value.lan)
         } finally { graph.stop() }
+    }
+
+    @Test fun rollbackNamesTheNewestPublishItSaw() {
+        val host = FakeCanvasHost().also { it.newest = PublishRow(42, "interpreter", "SHADOW"); it.outcome = CanvasPublisher.Outcome.Published(42, emptyList()) }
+        val vm = CanvasHomeViewModel(host, ensureService = {}, openUrl = {}, clock = { 0L })
+        vm.reload()
+        assertEquals(PublishRow(42, "interpreter", "SHADOW"), vm.state.value.newestPublish)
+        vm.rollback()
+        assertEquals(listOf(42L), host.rollbackIds)
+    }
+
+    @Test fun rollbackWithNothingShownDoesNothing() {
+        val host = FakeCanvasHost().also { it.newest = null }
+        val vm = CanvasHomeViewModel(host, ensureService = {}, openUrl = {}, clock = { 0L })
+        vm.reload()
+        vm.rollback()
+        assertEquals(emptyList<Long>(), host.rollbackIds)
+    }
+
+    @Test fun rollbackButtonShowsForAnInterpreterPublishToo() {
+        show(CanvasHomeUi(status = CanvasStatus(on = true, port = 8765), publishActive = true, newestPublish = PublishRow(3, "interpreter", "LIVE")))
+        compose.onNodeWithTag("canvas_scroll").performScrollToNode(hasText("Roll back live pipeline"))
+        compose.onNodeWithTag("canvas_rollback").assertIsDisplayed()
+        assertEquals("Roll back Shadow pipeline", CanvasHomeText.rollbackLabel(PublishRow(3, "interpreter", "SHADOW")))
+        assertEquals("Roll back live", CanvasHomeText.rollbackLabel(PublishRow(3, "prompts", null)))
     }
 }

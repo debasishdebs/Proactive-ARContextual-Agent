@@ -214,11 +214,12 @@ class CanvasEndToEndTest {
         assertTrue(live.endsWith("DRAFT-MARKER-7"))
         assertTrue(call("GET", "/api/publish", token).body!!.jsonObject["active"]!!.jsonPrimitive.content == "true")
 
-        val back = call("POST", "/api/publish/rollback", token)
+        val pid = published.body!!.jsonObject["publishId"]!!.jsonPrimitive.content.toLong()
+        val back = call("POST", "/api/publish/rollback", token, buildJsonObject { put("expectedId", pid) })
         assertEquals(200, back.status)
         assertEquals(original, runBlocking { ai.prompts.active(PromptKey.VISION_EXTRACT).template })
 
-        val again = call("POST", "/api/publish/rollback", token)
+        val again = call("POST", "/api/publish/rollback", token, buildJsonObject { put("expectedId", pid) })
         assertEquals(409, again.status)
         assertEquals("rollback_blocked", again.body!!.jsonObject["error"]!!.jsonPrimitive.content)
     }

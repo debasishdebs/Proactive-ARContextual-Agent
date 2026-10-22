@@ -2,6 +2,7 @@ package com.rokid.context.phone.canvas.api
 
 import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.canvas.AskDebug
+import com.rokid.context.canvas.AskRedacted
 import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.canvas.CanvasRepository
 import com.rokid.context.canvas.CanvasRunner
@@ -44,6 +45,7 @@ class CanvasApi(
         private val ID = Regex("^[A-Za-z0-9:_-]{1,64}$")
         private val FROM = Regex("^[A-Za-z0-9:_-]{1,64}(@[0-9]{1,6})?$")
         private val VERSION = Regex("^[0-9]{1,6}$")
+        private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt")
         private val DAY = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
         const val DEFAULT_LIMIT = 60
         const val MAX_LIMIT = 120
@@ -63,7 +65,7 @@ class CanvasApi(
     override fun handle(req: HttpRequest): HttpResponse = try {
         // Reads are bounded by the deadline. A mutation (publish, rollback, freeze, save, start, cancel, score, delete) runs to
         // completion once started: cancelling it between two writes could leave live prompts changed with no publish record.
-        if (req.method.equals("GET", true)) runBlocking { withTimeout(callTimeoutMs) { dispatch(req) } }
+        if (readOnly(req)) runBlocking { withTimeout(callTimeoutMs) { dispatch(req) } }
         else runBlocking { withContext(NonCancellable) { dispatch(req) } }
     } catch (e: TimeoutCancellationException) {
         HttpResponse.error(503, "busy", "The phone is busy. Try again.")
@@ -80,6 +82,10 @@ class CanvasApi(
         // Includes StackOverflowError and OOM: a canvas request must never take the process (it hosts the glasses link) down.
         HttpResponse.error(500, "internal", "Something went wrong.")
     }
+
+    /** GET, and the POSTs that only compute (validate, the two estimates, check-prompt): they write nothing, so a deadline is safe. */
+    private fun readOnly(req: HttpRequest): Boolean =
+        req.method.equals("GET", true) || (req.method.equals("POST", true) && req.path in READ_ONLY_POSTS)
 
     private fun bad(msg: String = "Bad request.") = ApiError(400, "bad_request", msg)
     private fun json(body: JsonElement) = HttpResponse.json(200, body)
@@ -289,9 +295,9 @@ class CanvasApi(
 
     /** The optional `expectedId` is the publish the user saw as the newest: an auto-rollback that won the race refuses the click instead of undoing the wrong publish. */
     private suspend fun rollback(req: HttpRequest): HttpResponse {
-        val b = optBody(req)
-        val expected = if (b == null || b["expectedId"].let { it == null || it is JsonNull }) null
-            else ((b["expectedId"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull() ?: throw bad("Bad \"expectedId\".")).also { if (it < 0) throw bad() }
+        val e = optBody(req)?.get("expectedId")
+        if (e == null || e is JsonNull) throw bad("Reload and try again.") // a click names the publish it saw, or nothing is undone
+        val expected = (e as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()?.takeIf { it >= 0 } ?: throw bad("Bad \"expectedId\".")
         return outcome(backend.rollback(expected), "rollback_blocked")
     }
 
@@ -352,8 +358,7 @@ class CanvasApi(
 
     private suspend fun askView(id: String): HttpResponse = try {
         json(backend.ask(id) ?: throw NoSuchElementException())
-    } catch (e: IllegalStateException) {
-        if (e is CanvasRunner.Busy || e.message != "redacted") throw e
+    } catch (e: AskRedacted) {
         throw ApiError(409, "refused", "This ask was redacted")
     }
 

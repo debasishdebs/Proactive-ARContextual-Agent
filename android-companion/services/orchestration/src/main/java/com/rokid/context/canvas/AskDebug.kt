@@ -25,6 +25,9 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import kotlin.coroutines.cancellation.CancellationException
 
+/** A view of a redacted ask: its text was removed by Forget and must not be rebuilt. A type of its own, so no caller matches on a message. */
+class AskRedacted : IllegalStateException("redacted")
+
 /**
  * What the photo seam hands the Ask debug flow once its gate has said yes: the photo [lines] of the prompt (same shape as a live Ask's), the ids the
  * answer may cite, the frames and caption memories those lines stand for (rechecked after a replay, S35), and a lazy [images] loader that only a
@@ -95,10 +98,10 @@ class AskDebug(
 
     suspend fun list(limit: Int = 50): List<AskEntity> = dao.recentAsks(limit)
 
-    /** Null: unknown ask. Throws [IllegalStateException] ("redacted") for a redacted ask: its text was removed by Forget and must not be rebuilt. */
+    /** Null: unknown ask. Throws [AskRedacted] for a redacted ask: its text was removed by Forget and must not be rebuilt. */
     suspend fun view(askId: String): View? {
         val ask = dao.ask(askId) ?: return null
-        if (ask.redacted) throw IllegalStateException("redacted")
+        if (ask.redacted) throw AskRedacted()
         val l = load(ask)
         val cited = AskSources.parse(ask.sourcesJson)
         val kept = l.sr.retrieved.ids

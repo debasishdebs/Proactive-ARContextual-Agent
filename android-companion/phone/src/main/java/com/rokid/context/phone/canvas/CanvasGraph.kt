@@ -50,7 +50,9 @@ data class CanvasStatus(
 
 data class PipelineRow(val id: String, val name: String, val versions: Int, val liveVersion: Int?)
 data class RunRow(val status: String, val photos: Int, val calls: Int, val startedAt: Long)
-data class HomeData(val pipelines: List<PipelineRow>, val runs: List<RunRow>, val publishActive: Boolean)
+/** The newest active publish of either kind (the stack's first row): what "Roll back" would undo, named so the click can say which one it means. */
+data class PublishRow(val id: Long, val kind: String, val mode: String?)
+data class HomeData(val pipelines: List<PipelineRow>, val runs: List<RunRow>, val publishActive: Boolean, val newestPublish: PublishRow? = null)
 
 /** The data side of the canvas, behind one seam so the graph is testable without the AI graph and the database. */
 interface CanvasCore {
@@ -60,7 +62,8 @@ interface CanvasCore {
     /** Cancels the active run, if any (Developer mode turned off). */
     suspend fun cancelActive()
     suspend fun home(): HomeData
-    suspend fun rollback(): CanvasPublisher.Outcome
+    /** Rolls back the publish [expectedId], the one the user saw as the newest. */
+    suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome
     suspend fun pipeline(id: String): Pipeline?
 }
 
@@ -85,7 +88,8 @@ interface CanvasHost {
     /** Stops the server and tells the canvas screen why, in fixed text. */
     fun stopWithNotice(text: String)
     suspend fun home(): HomeData
-    suspend fun rollback(): CanvasPublisher.Outcome
+    /** Rolls back the publish [expectedId], the one the user saw as the newest. */
+    suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome
     suspend fun pipeline(id: String): Pipeline?
 }
 
@@ -170,7 +174,7 @@ class CanvasGraph(
     override fun refreshNetwork() = publish()
 
     override suspend fun home() = core.home()
-    override suspend fun rollback() = core.rollback()
+    override suspend fun rollback(expectedId: Long) = core.rollback(expectedId)
     override suspend fun pipeline(id: String) = core.pipeline(id)
 
     /** The service's idle rule: no authenticated request for 30 min, no run, no canvas screen open. */
@@ -245,10 +249,12 @@ class BackendCore(private val backend: Lazy<CanvasBackendImpl>) : CanvasCore {
                 o["calls"]?.jsonPrimitive?.intOrNull ?: 0, o["startedAt"]?.jsonPrimitive?.longOrNull ?: 0L,
             )
         }
-        return HomeData(pipelines, runs, b.activePublish()["active"]?.jsonPrimitive?.contentOrNull == "true")
+        val newest = (b.activePublish()["stack"] as? JsonArray)?.firstOrNull() as? JsonObject
+        val row = newest?.let { o -> o["id"]?.jsonPrimitive?.longOrNull?.let { PublishRow(it, o["kind"]?.jsonPrimitive?.contentOrNull.orEmpty(), o["mode"]?.jsonPrimitive?.contentOrNull) } }
+        return HomeData(pipelines, runs, row != null, row)
     }
 
-    override suspend fun rollback() = backend.value.rollback(null)
+    override suspend fun rollback(expectedId: Long) = backend.value.rollback(expectedId)
 
     override suspend fun pipeline(id: String): Pipeline? =
         backend.value.pipeline(id)?.get("json")?.jsonPrimitive?.contentOrNull?.let { PipelineJson.decode(it).getOrNull() }

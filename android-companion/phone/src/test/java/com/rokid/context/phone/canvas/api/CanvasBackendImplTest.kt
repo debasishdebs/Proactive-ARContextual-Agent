@@ -329,6 +329,7 @@ class CanvasBackendImplTest {
         // the editor needs the switch's field param to edit it
         val params = types.getValue("route.switch")["params"]!!.jsonArray.map { it.jsonObject }
         assertEquals("text", params.first { it["name"]!!.jsonPrimitive.content == "field" }["kind"]!!.jsonPrimitive.content)
+        assertEquals("activity", params.first { it["name"]!!.jsonPrimitive.content == "field" }["default"]!!.jsonPrimitive.content)
         assertTrue(params.any { it["name"]!!.jsonPrimitive.content == "cases" })
         // every short id is valid as a node id prefix
         assertTrue(types.keys.all { Regex("^[a-z][a-z0-9]{0,15}$").matches(s(it, "short")) })
@@ -540,6 +541,54 @@ class CanvasBackendImplTest {
         assertEquals(0, off["frames"]!!.jsonArray.size)
     }
 
+    @Test fun aFrameWithoutABatchRowHasNoBatchStatus() = runBlocking<Unit> {
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        backend.start()
+        val id = backend.duplicate("intent-draft", "Mine")
+        val v = backend.freeze(id, "n", null)["version"]!!.jsonPrimitive.int
+        val pub = insertFull("interpreter", "LIVE", v, at = 10, pipelineId = id)
+        dao.upsertTrace(listOf(CanvasLiveTraceEntity(pub, "f1", "intent", "LIVE", "OK", null, null, null, "b", System.currentTimeMillis())))
+        assertEquals("null", backend.live(10)["frames"]!!.jsonArray.single().jsonObject["batch"].toString())
+    }
+
+    @Test fun runsListCarriesTheAbGroup() = runBlocking<Unit> {
+        insertRun("r1"); insertRun("r2", abGroup = "g9", at = 2)
+        val rows = backend.runs().map { it.jsonObject }.associateBy { it["runId"]!!.jsonPrimitive.content }
+        assertEquals("g9", rows.getValue("r2")["abGroup"]!!.jsonPrimitive.content)
+        assertEquals("null", rows.getValue("r1")["abGroup"].toString())
+    }
+
+    @Test fun anUnreadableDraftHasOneFixedText() = runBlocking<Unit> {
+        backend.start()
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        dao.upsertPipeline(com.rokid.context.memory.db.CanvasPipelineEntity("bad", "Bad", "garbage", 0, false, 1, 1))
+        val p = checkNotNull(backend.pipeline("bad"))
+        assertEquals(listOf(CanvasBackendImpl.UNDECODABLE), p["problems"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(listOf(CanvasBackendImpl.UNDECODABLE), p["interpretable"]!!.jsonObject["problems"]!!.jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test fun aPhotoForgottenDuringTheThumbnailDecodeIsNotServed() = runBlocking<Unit> {
+        seed("f1", 1_000)
+        val b = CanvasBackendImpl.create(app, ai, auth, { lan }, scope, thumbnailer = { bytes ->
+            runBlocking { MemoryGraph.get(app).db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("f1", 1)) } // Forget lands during the decode
+            FrameImagesHttp.thumbnail(bytes)
+        })
+        assertNull(b.frameImage("f1", thumb = true))
+    }
+
+    @Test fun aLaterBindOfThePhotoGateIsSeen() = runBlocking<Unit> {
+        bind(); seedAsk()
+        assertTrue(backend.replayAsk("a1", "T {{question}} {{retrieved_memories}}") is AskDebug.Replay.Ok) // the first replay, with the default Refuse
+        var asked = 0
+        AskPhotoBinding.bind(object : AskDebugPhotos {
+            override suspend fun allowed(): Boolean { asked++; return false }
+            override suspend fun recall(question: String, nowMs: Long): AskPhotoRecall = AskPhotoRecall(emptyList(), emptySet(), emptySet())
+        })
+        backend.replayAsk("a1", "T {{question}} {{retrieved_memories}}")
+        assertTrue("the gate bound after the first replay is the one asked", asked >= 1)
+        AskPhotoBinding.reset()
+    }
+
     @Test fun liveViewHasNoLabelWhenTheSwitchFailed() = runBlocking<Unit> {
         val dao = MemoryGraph.get(app).db.canvasDao()
         backend.start()
@@ -717,7 +766,7 @@ class CanvasBackendImplTest {
 
     @Test fun askViewOfARedactedAskIsRefused() = runBlocking<Unit> {
         seedAsk(redacted = true)
-        try { backend.ask("a1"); org.junit.Assert.fail() } catch (e: IllegalStateException) { assertEquals("redacted", e.message) }
+        try { backend.ask("a1"); org.junit.Assert.fail() } catch (e: com.rokid.context.canvas.AskRedacted) { }
     }
 
     @Test fun replayDoesNotChangeTheAskCount() = runBlocking<Unit> {
