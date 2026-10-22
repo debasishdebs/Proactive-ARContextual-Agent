@@ -83,7 +83,7 @@ object LiveExtract {
         if (pub == null) return LiveBatch(ExtractSave.extract(deps.runner, photos, callClass), LiveEffects.None)
         if (pub.mode != LiveMode.LIVE.name) return LiveBatch(ExtractSave.extract(deps.runner, photos, callClass), LiveEffects(pub.id, emptyList(), emptyMap(), false, shadow = true))
 
-        val outcome = interpret(deps, pub, "LIVE", photos, deps.context("live:${pub.id}", callClass))
+        val outcome = interpret(deps, pub, "LIVE", photos) { deps.context("live:${pub.id}", callClass) }
         return when (outcome) {
             is PipelineInterpreter.Outcome.Extracted -> LiveBatch(outcome.batch, LiveEffects(pub.id, outcome.traces, outcome.labels, false))
             // memories are never lost to an experiment: the whole batch goes through the live extraction; its own failure propagates as live does today
@@ -102,7 +102,10 @@ object LiveExtract {
             if (!deps.shadowBusy.compareAndSet(false, true)) return
             try {
                 val pub = deps.dao.activeInterpreter()?.takeIf { it.mode == LiveMode.SHADOW.name } ?: return
-                val outcome = interpret(deps, pub, "SHADOW", photos, deps.context("shadow:${pub.id}", CallClass.EXPERIMENT))
+                // privacy: the photos were loaded before the live save; a Delete all or a Forget since then must stop the run BEFORE any model call
+                val ids = photos.map { it.frameId }
+                if (MemoryWipe.generation.get() != generation || deps.dao.tombstonedAmong(ids) > 0) return
+                val outcome = interpret(deps, pub, "SHADOW", photos) { deps.context("shadow:${pub.id}", CallClass.EXPERIMENT) }
                 val traces = when (outcome) {
                     is PipelineInterpreter.Outcome.Extracted -> outcome.traces
                     is PipelineInterpreter.Outcome.Failed -> outcome.traces
@@ -158,13 +161,13 @@ object LiveExtract {
      * Runs the published version under the deadline (S30). A transient failure (S23) and cancellation propagate; the deadline, a version that can't be
      * loaded and any other throwable from the interpreter path are [PipelineInterpreter.Outcome.Failed] with their own `_batch` rows.
      */
-    private suspend fun interpret(deps: LiveDeps, pub: CanvasPublishEntity, mode: String, photos: List<ExtractPhoto>, ctx: RunContext): PipelineInterpreter.Outcome {
+    private suspend fun interpret(deps: LiveDeps, pub: CanvasPublishEntity, mode: String, photos: List<ExtractPhoto>, ctx: () -> RunContext): PipelineInterpreter.Outcome {
         fun failed(reason: String) = PipelineInterpreter.Outcome.Failed(reason, photos.map {
             CanvasLiveTraceEntity(pub.id, it.frameId, PipelineInterpreter.BATCH, mode, "ERROR", null, null, reason, null, deps.clock())
         })
         return try {
             val p = load(deps, pub) ?: return failed("internal")
-            withTimeoutOrNull(deps.deadlineMs) { deps.interpreter.run(p, pub.id, mode, photos, ctx) } ?: failed("deadline")
+            withTimeoutOrNull(deps.deadlineMs) { deps.interpreter.run(p, pub.id, mode, photos, ctx()) } ?: failed("deadline")
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {

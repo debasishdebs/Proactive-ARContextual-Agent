@@ -15,6 +15,7 @@ import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.CanvasDao
+import com.rokid.context.memory.db.CanvasLiveTraceEntity
 import com.rokid.context.memory.db.CanvasPipelineVersionEntity
 import com.rokid.context.memory.db.CanvasPublishEntity
 import com.rokid.context.memory.db.DatabaseFactory
@@ -264,6 +265,8 @@ class LiveExtractTest {
         assertTrue("took the deadline, not the provider", (System.nanoTime() - started) / 1_000_000 < 10_000)
         assertEquals(1, extractCalls)
         assertTrue(out.effects.fellBack)
+        val direct = ExtractSave.extract(ai.runner, photos("ex1", "ex2", "ex3"), CallClass.EXTRACT)
+        assertEquals(direct.output.facts, out.batch.output.facts); assertEquals(direct.output.captions, out.batch.output.captions)
         LiveExtract.commit(deps(), out.effects, MemoryWipe.generation.get(), setOf("ex1", "ex2", "ex3"))
         assertEquals(listOf("deadline", "deadline", "deadline"), allTraces(pid).filter { it.nodeId == "_batch" }.map { it.error })
         assertEquals(3, allTraces(pid).size)
@@ -451,5 +454,69 @@ class LiveExtractTest {
         val d = deps()
         repeat(8) { i -> LiveExtract.shadow(d, photos("ex${i}0"), MemoryWipe.generation.get()) }
         assertTrue(prompts.isEmpty())
+    }
+
+    // ---- fix round 1 ----
+
+    @Test fun shadowSkippedAfterWipeBeforeAnyModelCall() = runBlocking<Unit> {
+        graph { extractReply(it) }
+        val pid = publish(DefaultPipelines.liveExtract(), LiveMode.SHADOW)
+        val d = deps(); val gen = MemoryWipe.generation.get()
+        MemoryWipe.generation.incrementAndGet() // Delete all landed between the live save and the shadow run
+        repeat(LiveExtract.SHADOW_EVERY) { LiveExtract.shadow(d, photos("ex1"), gen) }
+        assertTrue(prompts.isEmpty()); assertTrue(allTraces(pid).isEmpty())
+    }
+
+    @Test fun shadowSkippedWhenAPhotoWasForgottenBeforeAnyModelCall() = runBlocking<Unit> {
+        graph { extractReply(it) }
+        val pid = publish(DefaultPipelines.liveExtract(), LiveMode.SHADOW)
+        MemoryGraph.get(app).db.forgetDao().insertTombstone(ForgetTombstoneEntity("ex2", 1))
+        val d = deps(); val gen = MemoryWipe.generation.get()
+        repeat(LiveExtract.SHADOW_EVERY) { LiveExtract.shadow(d, photos("ex1", "ex2"), gen) }
+        assertTrue(prompts.isEmpty()); assertTrue(allTraces(pid).isEmpty())
+    }
+
+    @Test fun contextFactoryThrowingFallsBackAsInternal() = runBlocking<Unit> {
+        graph { extractReply(it) }
+        val pid = publish(intentPipeline(), LiveMode.LIVE)
+        val base = deps()
+        val d = LiveDeps(dao, ai.runner, { _, _ -> throw IllegalStateException("no context") }, base.interpreter, base.sink, base.publisher, base.shadowAllowed, base.clock, base.deadlineMs)
+        val out = LiveExtract.batch(d, photos("ex1", "ex2"), CallClass.EXTRACT)
+        assertEquals(1, extractCalls); assertTrue(out.effects.fellBack)
+        LiveExtract.commit(d, out.effects, MemoryWipe.generation.get(), setOf("ex1", "ex2"))
+        assertEquals(listOf("internal", "internal"), allTraces(pid).map { it.error })
+    }
+
+    private fun row(pid: Long, frame: String, status: String, at: Long) =
+        CanvasLiveTraceEntity(pid, frame, "_batch", "LIVE", status, null, null, if (status == "ERROR") "x" else null, null, at)
+    private fun failEffects(pid: Long, vararg ids: String) =
+        LiveEffects(pid, ids.map { row(pid, it, "ERROR", now) }, emptyMap(), true)
+
+    @Test fun oldFailuresOutsideTheThirtyPhotoWindowDoNotRollBack() = runBlocking<Unit> {
+        graph { extractReply(it) }
+        val pid = publish(intentPipeline(), LiveMode.LIVE)
+        dao.upsertTrace((1..20).map { row(pid, "old$it", "ERROR", it.toLong()) } + (1..30).map { row(pid, "ok$it", "OK", 100L + it) })
+        LiveExtract.commit(deps(), failEffects(pid, "new1"), MemoryWipe.generation.get(), setOf("new1"))
+        assertEquals(pid, dao.activeInterpreter()?.id)
+        assertEquals(1, dao.recentFallbacks(pid, 30))
+    }
+
+    @Test fun windowOrderIsDeterministicWhenTimestampsTie() = runBlocking<Unit> {
+        graph { extractReply(it) }
+        val pid = publish(intentPipeline(), LiveMode.LIVE)
+        // 12 failures inserted first, then 25 successes, ALL with the same timestamp: the 30-row window is the newest by insertion order
+        dao.upsertTrace((1..12).map { row(pid, "e$it", "ERROR", 500) })
+        dao.upsertTrace((1..25).map { row(pid, "g$it", "OK", 500) })
+        LiveExtract.commit(deps(), failEffects(pid, "new1"), MemoryWipe.generation.get(), setOf("new1"))
+        assertEquals("window = new failure + 25 OK + 4 older failures", 5, dao.recentFallbacks(pid, 30))
+        assertEquals(pid, dao.activeInterpreter()?.id)
+    }
+
+    @Test fun aRetriedPhotoCountsOnce() = runBlocking<Unit> {
+        graph { extractReply(it) }
+        val pid = publish(intentPipeline(), LiveMode.LIVE)
+        repeat(12) { LiveExtract.commit(deps(), failEffects(pid, "a", "b", "c"), MemoryWipe.generation.get(), setOf("a", "b", "c")) }
+        assertEquals(3, dao.interpretedCount(pid)); assertEquals(3, dao.recentFallbacks(pid, 30))
+        assertEquals(pid, dao.activeInterpreter()?.id)
     }
 }

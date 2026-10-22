@@ -61,7 +61,7 @@ abstract class CanvasDao {
     @Query("SELECT * FROM canvas_live_trace WHERE publishId = :publishId ORDER BY at DESC LIMIT :limit") abstract suspend fun traces(publishId: Long, limit: Int): List<CanvasLiveTraceEntity>
     @Query("SELECT * FROM canvas_live_trace WHERE frameId = :frameId ORDER BY at DESC") abstract suspend fun tracesForFrame(frameId: String): List<CanvasLiveTraceEntity>
     /** The last [window] per-photo outcomes of [publishId]: the count of ERROR among them. */
-    @Query("SELECT COUNT(*) FROM (SELECT status FROM canvas_live_trace WHERE publishId = :publishId AND nodeId = '_batch' ORDER BY at DESC LIMIT :window) WHERE status = 'ERROR'")
+    @Query("SELECT COUNT(*) FROM (SELECT status FROM canvas_live_trace WHERE publishId = :publishId AND nodeId = '_batch' ORDER BY at DESC, rowid DESC LIMIT :window) WHERE status = 'ERROR'")
     abstract suspend fun recentFallbacks(publishId: Long, window: Int): Int
     @Query("SELECT COUNT(*) FROM canvas_live_trace WHERE publishId = :publishId AND nodeId = '_batch'") abstract suspend fun interpretedCount(publishId: Long): Int
     @Query("DELETE FROM canvas_live_trace WHERE at < :olderThan") protected abstract suspend fun deleteTracesOlderThan(olderThan: Long): Int
@@ -91,6 +91,8 @@ abstract class CanvasDao {
         if (currentGeneration() != generation) return false
         return frameIds.toList().chunked(CHUNK).none { tombstonedCount(it) > 0 }
     }
+    /** How many of [frameIds] are tombstoned (forgotten). */
+    open suspend fun tombstonedAmong(frameIds: Collection<String>): Int = frameIds.toList().chunked(CHUNK).sumOf { tombstonedCount(it) }
     @Query("SELECT COUNT(*) FROM forget_tombstone WHERE frameId IN (:frameIds)") protected abstract suspend fun tombstonedCount(frameIds: List<String>): Int
 
     // --- A/B groups, asks, token means ---
