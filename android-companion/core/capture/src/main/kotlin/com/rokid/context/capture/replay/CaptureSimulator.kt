@@ -1,5 +1,8 @@
 package com.rokid.context.capture.replay
 
+import com.rokid.context.capture.plan.PlanResolver
+import com.rokid.context.capture.plan.PlanRow
+import com.rokid.context.capture.plan.PlanState
 import com.rokid.context.capture.plan.reservedBoundMs
 import com.rokid.context.capture.trace.EpisodeCause
 import com.rokid.context.capture.trace.EpisodeOutcome
@@ -12,6 +15,9 @@ import com.rokid.context.capture.trace.ReplayTally
 import com.rokid.context.capture.trace.TraceEvent
 import com.rokid.context.core.model.CameraWake
 import com.rokid.context.core.model.MotionState
+import com.rokid.context.core.model.context.ContextCapturePolicy
+import com.rokid.context.core.model.context.ContextPolicies
+import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.glasses.capture.keyframe.Candidate
 import com.rokid.context.glasses.capture.keyframe.GateParams
 import com.rokid.context.glasses.capture.keyframe.GateResult
@@ -30,7 +36,25 @@ import com.rokid.context.glasses.capture.session.GlanceAdmission
  * carries; [glance] and [gate], when set, replace what the recording was made with. Without a candidate a replay is the BASE: the recorded config, checked
  * against the recording.
  */
-class ReplayCandidate(val configHash: String, val glance: GlanceParams? = null, val gate: GateParams? = null)
+class ReplayCandidate(
+    val configHash: String, val glance: GlanceParams? = null, val gate: GateParams? = null,
+    /**
+     * The plan's policy rows (`ActiveConfig.table`, Task 24). When set, the candidate's capture profile is composed as a plan does (SETTLE wake on the recorded budget tier, the row of the
+     * recorded context applied as minima, WorkRest's `forRest()`), the row's `capPerMin` replaces the recorded context cap, and the candidate's cadence is its OWN: a decided open sets its
+     * next check, instead of the recorded closes (the recording was made under other gaps).
+     */
+    val table: Map<ContextState, ContextCapturePolicy>? = null,
+    /** False: the phone's context is not applied to capture (the UNKNOWN row is used whatever it says). */
+    val ctxBound: Boolean = true,
+) {
+    companion object {
+        /** The table of a plan: the editable rows given, every other state the locked default row (an editable row left out is the UNKNOWN row, as in `ActiveConfig.of`). */
+        fun policyTable(rows: Map<PlanState, PlanRow>): Map<ContextState, ContextCapturePolicy> {
+            val unknown = ContextPolicies.DEFAULT.getValue(ContextState.UNKNOWN)
+            return ContextPolicies.DEFAULT + PlanState.entries.associate { s -> ContextState.valueOf(s.name) to (rows[s]?.let { PlanResolver.toContextPolicy(it) } ?: unknown) }
+        }
+    }
+}
 
 /** A camera open the replay decided (after the pre-roll). */
 data class ReplayOpen(val atMs: Long, val cause: EpisodeCause)
@@ -109,6 +133,8 @@ object CaptureSimulator {
     private const val MAX_LEAD_MS = 1_500L
     private const val STARTUP_WINDOW = 20
     private const val DUE_NOW_MS = 40_000L
+    /** How long a candidate's own open lasts before its next check counts (the mean open of `CounterfactualReplay.DEFAULT_OPEN_S`). */
+    private const val CANDIDATE_OPEN_MS = 700L
     private const val PENDING_MS = 3_000L
     private const val HOLD_MIN_WAIT_MS = 50L
     private const val DARK_BACKOFF_AFTER = 3
@@ -167,6 +193,10 @@ object CaptureSimulator {
         var stillStep = snap.stillStep
         var darkStreak = snap.darkStreak
         var recordedHash: String? = null
+
+        /** The candidate's policy row for the recorded context (`ActiveConfig.policyFor`), or null when the candidate has no table (the recorded profile is used). */
+        fun candRow(): ContextCapturePolicy? = cand?.table?.let { ContextPolicies.of(if (cand.ctxBound) ctx else ContextState.UNKNOWN, it) }
+        val ownCadence = cand?.table != null
 
         // scheduler state (SamplingSession)
         var lastBriefAt = snap.lastBriefAt ?: (start - DUE_NOW_MS)
@@ -271,6 +301,12 @@ object CaptureSimulator {
 
         // ---- glance admission (SamplingSession.onOnset / onDwell) ----
 
+        /** The context cap the decision reads: the recorded one, or the candidate row's (`ActiveConfig.contextCap`). */
+        fun ctxCapNow(): Int? = candRow().let { r -> if (r != null) r.capPerMin else pf.ctxCap }
+
+        /** The hard flag: with a candidate table it is `resting || context cap` (`SamplingSession.hardNow`), else the recorded one. */
+        fun hardNow(): Boolean = candRow().let { r -> if (r != null) resting || r.capPerMin != null else pf.hard }
+
         fun capNowFor(cc: Int?): Int = minOf(if (resting) glance.restCapPerMin else glance.capPerMin, cc ?: Int.MAX_VALUE)
 
         fun onOnset() {
@@ -279,7 +315,7 @@ object CaptureSimulator {
 
         fun onDwell(t: Long) {
             val k = keptAt.count { t - it < 60_000L }
-            val d = GlanceAdmission.decide(t - lastKeyframeAt, k, capNowFor(pf.ctxCap), pf.hard, cls.rotationSinceMarkRad(), cls.walkedSinceMark(), glance)
+            val d = GlanceAdmission.decide(t - lastKeyframeAt, k, capNowFor(ctxCapNow()), hardNow(), cls.rotationSinceMarkRad(), cls.walkedSinceMark(), glance)
             if (d == GlanceAdmission.Decision.OPEN) pendingDwellAt = t
         }
 
@@ -303,7 +339,10 @@ object CaptureSimulator {
             wasMoving = moving
             pendingDwellAt?.let { if (t - it > PENDING_MS) pendingDwellAt = null }
             pendingNowAt?.let { if (t - it > PENDING_MS) pendingNowAt = null }
-            val prof = CaptureProfile(pf.wake, pf.settledMs, pf.quietMs, pf.walkMs, pf.analysisMs, false, pf.stillCapMs)
+            val prof = candRow()?.let { row ->
+                // A plan: SETTLE wake on the recorded budget tier, the row as minima, then WorkRest's forRest() (ActiveConfig.profile, SamplingSession.tick).
+                CaptureProfile.of(CameraWake.SETTLE, pf.tier).withContext(row).let { if (resting) it.forRest() else it }
+            } ?: CaptureProfile(pf.wake, pf.settledMs, pf.quietMs, pf.walkMs, pf.analysisMs, false, pf.stillCapMs)
             val d = CameraPolicy.decide(
                 st, cls.decelerating.value, motionEndAt?.let { t - it }, t - lastKeyframeAt, pf.quickLookMs.toInt(), pf.lowPower, pf.heatSlow, t, lastBriefAt,
                 quiet = darkStreak >= DARK_BACKOFF_AFTER, profile = prof, stillStep = stillStep,
@@ -319,7 +358,7 @@ object CaptureSimulator {
                 val forced = forceBrief || pendingDwellAt != null || pendingNowAt != null
                 val lead = briefLeadMs()
                 val timerDue = dueAt != null && t + lead >= dueAt
-                val hold = if (!forced && timerDue) gate.timerHoldUntil(capNowFor(pf.ctxCap), t)?.takeIf { it > t } else null
+                val hold = if (!forced && timerDue) gate.timerHoldUntil(capNowFor(ctxCapNow()), t)?.takeIf { it > t } else null
                 val resv = !forced && t - lastPhotoAttemptAt >= reservedBoundMs(ctx, resting) && (!timerDue || hold != null)
                 if (hold != null && !resv) wait = (hold - t).coerceIn(HOLD_MIN_WAIT_MS, TICK_MS)
                 else if (forced || timerDue || resv) {
@@ -333,6 +372,7 @@ object CaptureSimulator {
         fun decide(t: Long, cause: EpisodeCause) {
             forceBrief = false
             suppressUntil = t + DECISION_HOLD_MS
+            if (ownCadence) { lastBriefAt = t + CANDIDATE_OPEN_MS; lastPhotoAttemptAt = t }   // the candidate's next check follows ITS open, not the recorded close
             if (preRoll) return
             val ro = ReplayOpen(t, cause)
             opens += ro
@@ -367,14 +407,14 @@ object CaptureSimulator {
             if (first != null) {
                 bindFailures = 0; coldStartGrace = false
                 val opened = e.openedAtMs
-                lastPhotoAttemptAt = maxOf(lastPhotoAttemptAt, if (opened != null && opened > 0) opened else first)
+                if (!ownCadence) lastPhotoAttemptAt = maxOf(lastPhotoAttemptAt, if (opened != null && opened > 0) opened else first)
                 if (opened != null && opened > 0) { startups.addLast(first - opened); while (startups.size > STARTUP_WINDOW) startups.removeFirst() }
-                if (wasContinuous) lastPhotoAttemptAt = maxOf(lastPhotoAttemptAt, e.tMs)
+                if (wasContinuous && !ownCadence) lastPhotoAttemptAt = maxOf(lastPhotoAttemptAt, e.tMs)
             }
-            lastBriefAt = e.tMs
+            if (!ownCadence) lastBriefAt = e.tMs
             val outcome = e.outcome
             if (outcome != null && outcome != EpisodeOutcome.OK) {
-                lastBriefAt = e.tMs - DUE_NOW_MS                       // retry after the back-off, not on the 5 s beat
+                if (!ownCadence) lastBriefAt = e.tMs - DUE_NOW_MS      // retry after the back-off, not on the 5 s beat
                 val asCold = outcome == EpisodeOutcome.COLD || ((outcome == EpisodeOutcome.OPEN_FAILED || outcome == EpisodeOutcome.NO_FRAMES) && coldStartGrace)
                 when {
                     asCold -> { coldStartGrace = false; bindBackoffUntil = e.tMs + COLD_START_RETRY_MS }
@@ -406,8 +446,8 @@ object CaptureSimulator {
         fun onScore(e: TraceEvent.Score) {
             if (e.force && !preRoll) cur.flagged += e
             gateNow = e.nowMs
-            val cap = if (base) e.cap ?: Int.MAX_VALUE else capNowFor(pf.ctxCap)
-            val hard = if (base) e.hard else pf.hard
+            val cap = if (base) e.cap ?: Int.MAX_VALUE else capNowFor(ctxCapNow())
+            val hard = if (base) e.hard else hardNow()
             val r = gate.offerScored(e.seq, e.d, e.p, e.blur, e.motion, e.dwellArmed, e.force, cap, hard, e.nowMs)
             if (e.dwellArmed && e.passedBlur) pendingDwellAt = null
             if (e.force) pendingNowAt = null
@@ -418,7 +458,7 @@ object CaptureSimulator {
 
         fun onFlush(e: TraceEvent.Flush) {
             gateNow = e.nowMs
-            val r = gate.flushWindow(capNowFor(pf.ctxCap), pf.hard)
+            val r = gate.flushWindow(capNowFor(ctxCapNow()), hardNow())
             if (r is GateResult.Keep) {
                 if (!base) bookKeep(e.nowMs)
                 if (!preRoll) { val (seq, g) = gateOf(r, r.candidate.seq); record(seq, g) }
