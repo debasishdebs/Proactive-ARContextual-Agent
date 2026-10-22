@@ -1,7 +1,10 @@
 package com.rokid.context.phone.canvas.api
 
+import com.rokid.context.canvas.AbStarted
+import com.rokid.context.canvas.AskDebug
 import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.canvas.CanvasRepository
+import com.rokid.context.canvas.CanvasRunner
 import com.rokid.context.canvas.Estimate
 import com.rokid.context.canvas.LiveMode
 import kotlinx.serialization.json.JsonArray
@@ -58,13 +61,35 @@ interface CanvasBackend {
     suspend fun frame(id: String): JsonObject?
     suspend fun frameImage(id: String, thumb: Boolean): ByteArray?
     suspend fun estimate(pipelineId: String, version: Int?, frameIds: List<String>): Estimate
+    /** The price of an A/B pair: one token, bound to both pipelines (`hashA|hashB`) and the photos. */
+    suspend fun estimateAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>): Estimate
+    /** Starts A now and B after it ends DONE; both ids are reserved up front. [CanvasRunner.Busy] while any run or group is active. */
+    suspend fun startAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>, token: String): AbStarted
     suspend fun startRun(pipelineId: String, version: Int?, frameIds: List<String>, token: String): String
     suspend fun runs(): JsonArray
-    /** The run row plus `items`, `scores` and `progress {done,total}`. */
+    /**
+     * The run row plus `items`, `scores`, `progress {done,total}`, `abGroup` (null for a plain run), `usage {calls, est, promptTokens, completionTokens, medianLatencyMs}`
+     * and `branches {"<switchNodeId>": {"<label>": count}}`.
+     */
     suspend fun run(id: String): JsonObject?
     suspend fun cancelRun(id: String): Boolean
     suspend fun deleteRun(id: String): Boolean
     suspend fun score(runId: String, frameId: String, nodeId: String, score: Int, note: String)
-    /** `{frames:[{frameId, nodes:[{nodeId, a, b, diff:[{op,text}]}]}]}`; null when either run is unknown. */
+    /**
+     * `{frames:[{frameId, nodes:[{nodeId, a, b, diff:[{op,text}]}]}], branches:{a:{..},b:{..}}, agreement:{"<switchNodeId>": 0..1}, scoreSums:{"<nodeId>":{a,b}}}`;
+     * null when either run is unknown.
+     */
     suspend fun compare(a: String, b: String): JsonObject?
+
+    // ---- Ask debug (authenticated routes only: the composed prompt and the replay hold the user's memories; nothing here is ever logged) ----
+
+    /** The newest asks: `[{id, ts, question, answer (short), rating, redacted}]`. */
+    suspend fun asks(): JsonArray
+    /** The ask's debug view (see [AskDebug.View]); null for an unknown ask; throws [IllegalStateException] ("redacted") for a redacted one. */
+    suspend fun ask(id: String): JsonObject?
+    /** One ANSWER call with [template] as the EXPERIMENT class; saves nothing. */
+    suspend fun replayAsk(id: String, template: String): AskDebug.Replay
 }
+
+/** A pipeline of an A/B pair: the draft when [version] is null. */
+data class PipelineRef(val pipelineId: String, val version: Int?)

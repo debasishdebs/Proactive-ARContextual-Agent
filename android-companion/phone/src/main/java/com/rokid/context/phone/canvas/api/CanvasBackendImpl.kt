@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Role
+import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.canvas.InterpretableShape
 import com.rokid.context.ai.canvas.LiveShape
 import com.rokid.context.ai.canvas.NodeTypes
@@ -14,6 +15,10 @@ import com.rokid.context.ai.canvas.PipelineFlows
 import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PipelineValidator
+import com.rokid.context.canvas.AbSpec
+import com.rokid.context.canvas.AbStarted
+import com.rokid.context.canvas.AskDebug
+import com.rokid.context.canvas.AskDebugPhotos
 import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.canvas.CanvasRepository
 import com.rokid.context.canvas.CanvasRunner
@@ -25,6 +30,7 @@ import com.rokid.context.canvas.ModelLabel
 import com.rokid.context.canvas.PhotoLoad
 import com.rokid.context.canvas.PhotoSource
 import com.rokid.context.canvas.RunContext
+import com.rokid.context.canvas.RunUsage
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.CanvasDao
 import com.rokid.context.memory.db.CanvasMaintenance
@@ -32,6 +38,7 @@ import com.rokid.context.memory.db.CanvasPipelineVersionEntity
 import com.rokid.context.memory.db.CanvasPublishEntity
 import com.rokid.context.memory.db.CanvasRunEntity
 import com.rokid.context.memory.db.CanvasScoreEntity
+import com.rokid.context.orchestration.AnswerService
 import com.rokid.context.orchestration.ExtractSave
 import com.rokid.context.orchestration.FrameInputs
 import com.rokid.context.orchestration.PipelineRecords
@@ -69,11 +76,14 @@ class CanvasBackendImpl(
     private val auth: CanvasAuth,
     private val lan: () -> Boolean,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val askDebug: Lazy<AskDebug>,
 ) : CanvasBackend {
     companion object {
         private val pretty = Json { prettyPrint = true }
         private const val NOT_SET = "not set"
         private const val LIVE_BATCH_NODE = "_batch"
+        private const val ASK_LIST_LIMIT = 50
+        private const val ASK_ANSWER_PREVIEW = 140
         /** Fixed text for a pipeline JSON that cannot be decoded (never the decoder's message, never the input). */
         const val UNDECODABLE = "The pipeline JSON is not valid."
 
@@ -124,6 +134,10 @@ class CanvasBackendImpl(
             photos: PhotoSource = photoSource(app),
             hot: () -> Boolean = { KeyframeGraph.get(app).power.severe() },
             clock: () -> Long = System::currentTimeMillis,
+            /** The Ask retrieval of the debug view (no backlog extraction: a view must not start model work). Tests pass their own. */
+            answers: () -> AnswerService = { AnswerService.forApp(app, extractFirst = false) },
+            /** The Ask photo gate of a replay; [AskPhotoBinding] by default, which refuses every photo until a gate is bound. */
+            askPhotos: () -> AskDebugPhotos = AskPhotoBinding::current,
         ): CanvasBackendImpl {
             val dao = MemoryGraph.get(app).db.canvasDao()
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
@@ -133,8 +147,14 @@ class CanvasBackendImpl(
                 { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
                 ConfirmTokens(clock), hot, clock,
             )
-            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock)
+            val askDebug = lazy {
+                AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = askPhotos())
+            }
+            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug)
         }
+
+        /** The real TestBed gate (`ai.testBed::compatibility`): a replay whose draft the bound endpoints cannot compile is refused as `incompatible`. */
+        internal fun compatibilityOf(ai: AiGraph): suspend (PromptKey, PromptDraft) -> List<String> = { key, draft -> ai.testBed.compatibility(key, draft) }
     }
 
     /** True while an experiment run is executing (the service's idle rule never stops the server then). */
@@ -469,6 +489,55 @@ class CanvasBackendImpl(
         return runner.start(p, pipelineId, version, frameIds, token, scope)
     }
 
+    override suspend fun estimateAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>): Estimate {
+        val pa = loadPipeline(a.pipelineId, a.version) ?: return Estimate.Refused(listOf("pipeline is not readable"))
+        val pb = loadPipeline(b.pipelineId, b.version) ?: return Estimate.Refused(listOf("pipeline is not readable"))
+        return runner.estimateAb(pa, pb, frameIds, ::label)
+    }
+
+    override suspend fun startAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>, token: String): AbStarted {
+        val pa = loadPipeline(a.pipelineId, a.version) ?: throw IllegalArgumentException("invalid_pipeline")
+        val pb = loadPipeline(b.pipelineId, b.version) ?: throw IllegalArgumentException("invalid_pipeline")
+        return runner.startAb(AbSpec(pa to a.version, a.pipelineId, pb to b.version, b.pipelineId), frameIds, token, scope)
+    }
+
+    // ---- Ask debug: the composed prompt and the replay hold the user's memories. Served on authenticated routes only; nothing here logs them. ----
+
+    override suspend fun asks(): JsonArray {
+        start()
+        return JsonArray(askDebug.value.list(ASK_LIST_LIMIT).map { a ->
+            buildJsonObject {
+                put("id", a.id); put("ts", a.ts)
+                put("question", if (a.redacted) "" else a.question)
+                put("answer", if (a.redacted) "" else a.answer.take(ASK_ANSWER_PREVIEW))
+                put("rating", a.rating); put("redacted", a.redacted)
+            }
+        })
+    }
+
+    override suspend fun ask(id: String): JsonObject? {
+        start()
+        val v = askDebug.value.view(id) ?: return null
+        return buildJsonObject {
+            put("askId", v.askId); put("ts", v.ts); put("question", v.question); put("answer", v.answer)
+            put("cited", JsonArray(v.cited.map { JsonPrimitive(it) })); put("rating", v.rating)
+            put("mode", v.mode); put("fallback", v.fallback)
+            put("hits", JsonArray(v.hits.map { h ->
+                buildJsonObject {
+                    put("memoryId", h.memoryId); put("text", h.text); put("frameId", h.frameId)
+                    put("lexical", h.lexical); put("semantic", h.semantic); put("fused", h.fused); put("score", h.score)
+                    put("cited", h.cited); put("inPrompt", h.inPrompt)
+                }
+            }))
+            put("composedPrompt", v.composedPrompt); put("activeTemplate", v.activeTemplate); put("activeVersion", v.activeVersion)
+        }
+    }
+
+    override suspend fun replayAsk(id: String, template: String): AskDebug.Replay {
+        start()
+        return askDebug.value.replay(id, template)
+    }
+
     private fun parse(text: String?): JsonElement = text?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() } ?: JsonNull
 
     private fun runJson(r: CanvasRunEntity) = buildJsonObject {
@@ -489,8 +558,15 @@ class CanvasBackendImpl(
         val items = dao.items(id)
         val nodes = (PipelineJson.decode(r.pipelineJson).getOrNull()?.nodes?.size ?: 0)
         val total = r.frameCount * nodes
+        val usage = RunUsage.of(items)
         return JsonObject(
             runJson(r) + mapOf(
+                "abGroup" to JsonPrimitive(r.abGroup),
+                "usage" to buildJsonObject {
+                    put("calls", usage.calls); put("est", r.estCalls)
+                    put("promptTokens", usage.promptTokens); put("completionTokens", usage.completionTokens); put("medianLatencyMs", usage.medianLatencyMs)
+                },
+                "branches" to RunInsights.branches(items, RunInsights.switchIds(r.pipelineJson)),
                 "pipelineJson" to JsonPrimitive(r.pipelineJson),
                 "items" to JsonArray(items.map { i ->
                     buildJsonObject {
@@ -528,7 +604,14 @@ class CanvasBackendImpl(
         val ia = dao.items(ra.runId).associateBy { it.frameId to it.nodeId }
         val ib = dao.items(rb.runId).associateBy { it.frameId to it.nodeId }
         val frames = ia.keys.map { it.first }.distinct().filter { f -> ib.keys.any { it.first == f } }
+        val switches = (RunInsights.switchIds(ra.pipelineJson) + RunInsights.switchIds(rb.pipelineJson)).distinct()
         return buildJsonObject {
+            put("branches", buildJsonObject {
+                put("a", RunInsights.branches(ia.values.toList(), RunInsights.switchIds(ra.pipelineJson)))
+                put("b", RunInsights.branches(ib.values.toList(), RunInsights.switchIds(rb.pipelineJson)))
+            })
+            put("agreement", RunInsights.agreement(ia.values.toList(), ib.values.toList(), switches))
+            put("scoreSums", RunInsights.scoreSums(dao.scores(ra.runId), dao.scores(rb.runId)))
             put("frames", JsonArray(frames.map { f ->
                 buildJsonObject {
                     put("frameId", f)

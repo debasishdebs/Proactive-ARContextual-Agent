@@ -1,6 +1,7 @@
 package com.rokid.context.phone.canvas.api
 
 import com.rokid.context.ai.canvas.PipelineJson
+import com.rokid.context.canvas.AskDebug
 import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.canvas.CanvasRepository
 import com.rokid.context.canvas.CanvasRunner
@@ -35,6 +36,7 @@ class CanvasApi(
     private val callTimeoutMs: Long = 30_000,
     /** The phone's zone: the day filter of `GET /api/frames?day=` is that day's local midnight to the next. */
     private val zone: () -> java.time.ZoneId = java.time.ZoneId::systemDefault,
+    private val mutationDeadlineMs: Long = MUTATION_DEADLINE_MS,
 ) : ApiHandler {
     private class ApiError(val status: Int, val code: String, val msg: String, val problems: List<String> = emptyList()) : Exception(code)
 
@@ -112,6 +114,11 @@ class CanvasApi(
             "GET frames/:id/thumb" -> FrameImagesHttp.response(backend.frameImage(id(s[1]), thumb = true))
             "GET frames/:id/image" -> FrameImagesHttp.response(backend.frameImage(id(s[1]), thumb = false))
             "POST runs/estimate" -> estimate(req)
+            "POST runs/estimate-ab" -> estimateAb(req)
+            "POST runs/ab" -> startAb(req)
+            "GET asks" -> json(backend.asks())
+            "GET asks/:id" -> askView(id(s[1]))
+            "POST asks/:id/replay" -> withTimeout(mutationDeadlineMs) { replay(id(s[1]), req) }
             "POST runs" -> startRun(req)
             "GET runs" -> json(backend.runs())
             "GET runs/:id" -> json(backend.run(id(s[1])) ?: throw NoSuchElementException())
@@ -132,7 +139,10 @@ class CanvasApi(
         s.size == 2 && s[0] == "publish" && s[1] in setOf("rollback", "history") -> "publish/${s[1]}"
         s.size == 2 && s[0] == "frames" -> "frames/:id"
         s.size == 3 && s[0] == "frames" && s[2] in setOf("thumb", "image") -> "frames/:id/${s[2]}"
-        s.size == 2 && s[0] == "runs" && s[1] == "estimate" -> "runs/estimate"
+        s.size == 2 && s[0] == "runs" && s[1] in setOf("estimate", "estimate-ab", "ab") -> "runs/${s[1]}"
+        s.size == 1 && s[0] == "asks" -> "asks"
+        s.size == 2 && s[0] == "asks" -> "asks/:id"
+        s.size == 3 && s[0] == "asks" && s[2] == "replay" -> "asks/:id/replay"
         s.size == 2 && s[0] == "runs" -> "runs/:id"
         s.size == 3 && s[0] == "runs" && s[2] in setOf("cancel", "scores") -> "runs/:id/${s[2]}"
         else -> null
@@ -293,17 +303,68 @@ class CanvasApi(
         return json(backend.frames(after, minOf(before, nextMidnight), limit, req.query["dwell"] == "true"))
     }
 
+    private fun estimateJson(e: Estimate): HttpResponse = when (e) {
+        is Estimate.Ok -> json(buildJsonObject {
+            put("nominal", e.nominal)
+            put("max", e.max)
+            put("photos", e.photos)
+            put("models", JsonArray(e.models.map { m -> buildJsonObject { put("nodeId", m.nodeId); put("endpoint", m.endpoint); put("model", m.model) } }))
+            put("confirmToken", e.confirmToken)
+            put("tokens", e.tokens?.let { t -> buildJsonObject { put("promptTokens", t.promptTokens); put("completionTokens", t.completionTokens); put("basedOn", t.basedOn) } } ?: JsonNull)
+        })
+        is Estimate.Refused -> throw ApiError(422, "refused", "This run is over the limits.", e.reasons)
+    }
+
     private suspend fun estimate(req: HttpRequest): HttpResponse {
         val b = body(req)
-        return when (val e = backend.estimate(b.idField("pipelineId"), b.version(), b.frameIds())) {
-            is Estimate.Ok -> json(buildJsonObject {
-                put("nominal", e.nominal)
-                put("max", e.max)
-                put("photos", e.photos)
-                put("models", JsonArray(e.models.map { m -> buildJsonObject { put("nodeId", m.nodeId); put("endpoint", m.endpoint); put("model", m.model) } }))
-                put("confirmToken", e.confirmToken)
+        return estimateJson(backend.estimate(b.idField("pipelineId"), b.version(), b.frameIds()))
+    }
+
+    private fun JsonObject.pipelineRef(key: String): PipelineRef {
+        val o = this[key] as? JsonObject ?: throw bad("Missing \"$key\".")
+        return PipelineRef(o.idField("pipelineId"), o.version())
+    }
+
+    private suspend fun estimateAb(req: HttpRequest): HttpResponse {
+        val b = body(req)
+        return estimateJson(backend.estimateAb(b.pipelineRef("a"), b.pipelineRef("b"), b.frameIds()))
+    }
+
+    private suspend fun startAb(req: HttpRequest): HttpResponse {
+        val b = body(req)
+        val started = backend.startAb(b.pipelineRef("a"), b.pipelineRef("b"), b.frameIds(), b.str("confirmToken", 128))
+        return json(buildJsonObject { put("group", started.group); put("runA", started.runA); put("runB", started.runB) })
+    }
+
+    // ---- Ask debug: authenticated like every /api route (the router checks the token first); bodies and prompts are never logged ----
+
+    private suspend fun askView(id: String): HttpResponse = try {
+        json(backend.ask(id) ?: throw NoSuchElementException())
+    } catch (e: IllegalStateException) {
+        if (e is CanvasRunner.Busy || e.message != "redacted") throw e
+        throw ApiError(409, "refused", "This ask was redacted")
+    }
+
+    private suspend fun replay(id: String, req: HttpRequest): HttpResponse {
+        val template = body(req).str("template", MAX_TEXT)
+        return when (val r = backend.replayAsk(id, template)) {
+            is AskDebug.Replay.Ok -> json(buildJsonObject {
+                put("answer", r.answer)
+                put("sources", JsonArray(r.sources.map { JsonPrimitive(it) }))
+                put("latencyMs", r.latencyMs); put("promptTokens", r.promptTokens); put("completionTokens", r.completionTokens); put("model", r.model)
             })
-            is Estimate.Refused -> throw ApiError(422, "refused", "This run is over the limits.", e.reasons)
+            is AskDebug.Replay.Failed -> when (r.error) {
+                "redacted" -> throw ApiError(409, "refused", "This ask was redacted")
+                "not_found" -> throw NoSuchElementException()
+                "incompatible" -> throw ApiError(422, "refused", "That template doesn't fit the Answer prompt. Check it first.")
+                "forgotten" -> throw ApiError(409, "refused", "A memory used by this ask was forgotten while it ran. No answer is shown.")
+                "AUTH" -> throw ApiError(502, "model_failed", "The model rejected the key.")
+                "REJECTED" -> throw ApiError(502, "model_failed", "The model refused the request.")
+                "INVALID_OUTPUT" -> throw ApiError(502, "model_failed", "The model's answer didn't fit the Answer format.")
+                "TRANSIENT" -> throw ApiError(502, "model_failed", "The model call failed. Try again.")
+                "NOT_SET" -> throw ApiError(502, "model_failed", "No model is set for Answer.")
+                else -> throw ApiError(502, "model_failed", "The replay failed.") // an exception class name or an unknown word: never echoed
+            }
         }
     }
 
