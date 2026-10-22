@@ -1,0 +1,253 @@
+package com.rokid.context.capture.trace
+
+import com.rokid.context.core.model.CameraWake
+import com.rokid.context.core.model.MotionState
+import com.rokid.context.core.model.PlanMode
+import com.rokid.context.core.model.context.ContextState
+import com.rokid.context.glasses.capture.motion.GlanceParams
+import com.rokid.context.glasses.capture.session.BudgetTier
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+
+/** Trace schema version carried by every manifest and by every chunk header (`PCT1`). A change to any record, field order or bound bumps it. */
+const val TRACE_SCHEMA = 1
+
+private val TOKEN = Regex("[A-Za-z0-9_:.-]{0,32}")
+private val HASH = Regex("[0-9a-f]{1,64}")
+private val ID = Regex("[A-Za-z0-9_-]{1,64}")
+private val ID_OR_EMPTY = Regex("[A-Za-z0-9_-]{0,64}")
+internal fun ms(v: Long, what: String) { require(v in 0..TraceBounds.MAX_MS) { "$what out of range" } }
+internal fun token(v: String, what: String) { require(TOKEN.matches(v)) { "$what is not a token" } }
+internal fun hash(v: String, what: String) { require(HASH.matches(v)) { "$what is not lower-case hex" } }
+internal fun id(v: String, what: String, allowEmpty: Boolean = false) {
+    require((if (allowEmpty) ID_OR_EMPTY else ID).matches(v)) { "$what is not an id" }
+}
+internal fun finite(f: Float, what: String) { require(f.isFinite()) { "$what is not finite" } }
+
+enum class EpisodeCause { TIMER, DWELL, ONSET, NOW, RESV, STREAM }
+enum class GateOutcome { KEEP, SKIP }
+
+/**
+ * FROZEN (trace schema 1). One recorded event. Every `tMs` is the glasses `SystemClock.elapsedRealtime()` at the moment the recorder
+ * appended the event; the recorder appends from a single writer, so `tMs` is non-decreasing over the whole trace (the decoder refuses a
+ * regression). Records hold numbers, enum names and hash hex only: no audio, photo, text, location or device name (sensor features only).
+ *
+ * Wire form (see [EventCodec]): one canonical JSON array per event, `["<tag>", tMs, fields in the order declared here]`.
+ * Floats travel as their IEEE-754 bits (a signed 32-bit integer), 64-bit hashes as 16 lower-case hex digits, booleans as `true`/`false`.
+ */
+sealed interface TraceEvent {
+    val tMs: Long
+
+    /** `g`: gyroscope, rad/s. */
+    data class Gyro(override val tMs: Long, val x: Float, val y: Float, val z: Float) : TraceEvent {
+        init { ms(tMs, "tMs"); finite(x, "x"); finite(y, "y"); finite(z, "z") }
+    }
+
+    /** `a`: accelerometer, m/s^2. */
+    data class Accel(override val tMs: Long, val x: Float, val y: Float, val z: Float) : TraceEvent {
+        init { ms(tMs, "tMs"); finite(x, "x"); finite(y, "y"); finite(z, "z") }
+    }
+
+    /** `cx`: the context state the glasses applied (from the phone's `pc_motion_ctx`). */
+    data class Ctx(override val tMs: Long, val state: ContextState) : TraceEvent { init { ms(tMs, "tMs") } }
+
+    /** `rs`: WorkRest resting on or off. */
+    data class Resting(override val tMs: Long, val on: Boolean) : TraceEvent { init { ms(tMs, "tMs") } }
+
+    /** `pf`: the effective [com.rokid.context.glasses.capture.session.CaptureProfile] inputs after plan, heat and battery rules. [walkMs] null = no walk check. */
+    data class Profile(
+        override val tMs: Long, val wake: CameraWake, val settledMs: Long, val quietMs: Long, val walkMs: Long?, val stillCapMs: Long,
+        val analysisMs: Long, val tier: BudgetTier, val lowPower: Boolean, val heatSlow: Boolean,
+    ) : TraceEvent {
+        init {
+            ms(tMs, "tMs"); ms(settledMs, "settledMs"); ms(quietMs, "quietMs"); walkMs?.let { ms(it, "walkMs") }; ms(stillCapMs, "stillCapMs"); ms(analysisMs, "analysisMs")
+        }
+    }
+
+    /** `gp`: the keyframe gate parameters in force. */
+    data class GateParams(override val tMs: Long, val hamming: Int, val bigChange: Int, val ringAll: Boolean) : TraceEvent {
+        init { ms(tMs, "tMs"); require(hamming in 0..64 && bigChange in 0..64) { "gate params out of range" } }
+    }
+
+    /** `pl`: the capture plan in force (gen 0 and hash "0" with mode SETTINGS = no plan). */
+    data class Plan(override val tMs: Long, val gen: Long, val configHash: String, val mode: PlanMode) : TraceEvent {
+        init { ms(tMs, "tMs"); ms(gen, "gen"); hash(configHash, "configHash") }
+    }
+
+    /** `ep`: a camera episode opens or closes. [firstFrameAtMs] (elapsed) is set on a close once a frame arrived. */
+    data class Episode(override val tMs: Long, val open: Boolean, val cause: EpisodeCause, val firstFrameAtMs: Long? = null) : TraceEvent {
+        init { ms(tMs, "tMs"); firstFrameAtMs?.let { ms(it, "firstFrameAtMs") } }
+    }
+
+    /** `sc`: one scored frame (blur failures included). [d] and [p] are the 64-bit dHash and pHash; [seq] is the session frame number. */
+    data class Score(
+        override val tMs: Long, val seq: Long, val d: Long, val p: Long, val blur: Float, val passedBlur: Boolean, val motion: MotionState,
+        val dwellArmed: Boolean, val force: Boolean,
+    ) : TraceEvent {
+        init { ms(tMs, "tMs"); ms(seq, "seq"); finite(blur, "blur") }
+    }
+
+    /** `gt`: what the gate decided for [seq]: KEEP (reason "") or SKIP (BLUR, DUPLICATE, THROTTLED, WINDOW, CAPPED). */
+    data class Gate(override val tMs: Long, val seq: Long, val outcome: GateOutcome, val reason: String) : TraceEvent {
+        init { ms(tMs, "tMs"); ms(seq, "seq"); token(reason, "reason") }
+    }
+
+    /** `fl`: the gate window was flushed ([reason] is a token such as `window`, `timer`, `stop`). */
+    data class Flush(override val tMs: Long, val reason: String) : TraceEvent { init { ms(tMs, "tMs"); token(reason, "reason") } }
+
+    /** `bo`: the still-scene back-off step changed. */
+    data class Backoff(override val tMs: Long, val stillStep: Int) : TraceEvent { init { ms(tMs, "tMs"); require(stillStep in 0..32) { "stillStep" } } }
+
+    /** `bl`: capture is blocked (pause, wear gate, camera busy ...); null = unblocked. */
+    data class Blocked(override val tMs: Long, val reason: String?) : TraceEvent { init { ms(tMs, "tMs"); reason?.let { token(it, "reason") } } }
+
+    /** `pr`: the 10 s pre-roll is over ([TraceBounds.PRE_ROLL_MS] after the start); the simulator discards decisions before it. */
+    data class PreRollEnd(override val tMs: Long) : TraceEvent { init { ms(tMs, "tMs") } }
+
+    /** `cl`: the trace ends ([reason] is a non-empty token: stop, pause, unplug, epoch, cap, reboot ...). The last event of a trace. */
+    data class Close(override val tMs: Long, val reason: String) : TraceEvent { init { ms(tMs, "tMs"); token(reason, "reason"); require(reason.isNotEmpty()) { "reason" } } }
+}
+
+/** One keyframe-ring entry: the dHash and pHash of a kept frame. */
+data class RingHash(val d: Long, val p: Long)
+
+/**
+ * FROZEN (trace schema 1). The state the recorder captures at the clean boundary, so an exact replay starts from the same state.
+ * Clean boundary (S65): the recorder starts only when the detector is QUIET, no camera episode is open and the gate window is empty;
+ * the first 10 s are a pre-roll ([TraceBounds.PRE_ROLL_MS]) that refills the classifier windows. The recorder must also append `Ctx`,
+ * `Resting`, `Profile`, `GateParams` and `Plan` events at the start time, so a replay needs nothing but this snapshot and the events.
+ */
+data class StartSnapshot(
+    /** Hash prefix of the effective settings (hex). */
+    val settingsHash: String,
+    /** The keyframe ring, newest last, at most 5. */
+    val ring: List<RingHash>,
+    /** Elapsed time of the last keyframe, or null. */
+    val lastKeyframeAt: Long?,
+    /** Elapsed times of keeps in the last rolling minute, ascending, at most 64. */
+    val keptAt: List<Long>,
+    val planGen: Long,
+    /** The plan `configHash` in force, or null for settings. */
+    val planHash: String?,
+    val glance: GlanceParams,
+    val ctx: ContextState,
+    val resting: Boolean,
+    val tier: BudgetTier,
+    /** 1 = every sensor sample is recorded; n > 1 = every n-th sample (S66). */
+    val sampleEvery: Int,
+    /** `sampleEvery == 1`. Only an exact trace may be parity or publish evidence. */
+    val exact: Boolean,
+) {
+    init {
+        hash(settingsHash, "settingsHash")
+        require(ring.size <= MAX_RING) { "ring too long" }
+        lastKeyframeAt?.let { ms(it, "lastKeyframeAt") }
+        require(keptAt.size <= MAX_KEPT) { "keptAt too long" }
+        keptAt.forEach { ms(it, "keptAt") }
+        require(keptAt.zipWithNext().all { (a, b) -> a <= b }) { "keptAt not ascending" }
+        ms(planGen, "planGen"); planHash?.let { hash(it, "planHash") }
+        listOf(glance.onsetRadS, glance.releaseRadS, glance.minBoutRad, glance.deadbandRadS, glance.noveltyMinRad, glance.bigTurnRad).forEach { finite(it, "glance") }
+        listOf(glance.bridgeMs, glance.minBoutMs, glance.settleMs, glance.maxDtMs, glance.noveltyWindowMs).forEach { ms(it, "glance") }
+        require(glance.capPerMin in 0..100_000 && glance.restCapPerMin in 0..100_000) { "glance cap" }
+        require(sampleEvery in 1..MAX_SAMPLE_EVERY) { "sampleEvery" }
+        require(exact == (sampleEvery == 1)) { "exact must equal sampleEvery == 1" }
+    }
+
+    companion object { const val MAX_RING = 5; const val MAX_KEPT = 64; const val MAX_SAMPLE_EVERY = 16 }
+}
+
+/**
+ * FROZEN (trace schema 1). Canonical one-line encoding of an event and its strict inverse. Tags and field order:
+ * `g` x y z (float bits) | `a` x y z | `cx` state | `rs` on | `pf` wake settledMs quietMs walkMs|null stillCapMs analysisMs tier lowPower heatSlow |
+ * `gp` hamming bigChange ringAll | `pl` gen configHash mode | `ep` open cause(lower-case) firstFrameAtMs|null |
+ * `sc` seq d(hex16) p(hex16) blurBits passedBlur motion dwellArmed force | `gt` seq outcome(lower-case) reason | `fl` reason | `bo` stillStep |
+ * `bl` reason|null | `pr` | `cl` reason. Enum values travel as their Kotlin names (upper case), except cause and outcome (lower case).
+ */
+object EventCodec {
+    private val INT = Regex("-?(0|[1-9][0-9]{0,15})")
+    private val HEX16 = Regex("[0-9a-f]{16}")
+    private fun bad(): Nothing = throw TraceFormatException("bad_event")
+
+    fun encode(e: TraceEvent): String {
+        val sb = StringBuilder(64)
+        fun head(tag: String) { sb.append("[\"").append(tag).append("\",").append(e.tMs) }
+        fun num(v: Long) { sb.append(',').append(v) }
+        fun bits(f: Float) { sb.append(',').append(f.toRawBits()) }
+        fun str(v: String) { sb.append(",\"").append(v).append('"') }
+        fun flag(v: Boolean) { sb.append(',').append(v) }
+        fun nul(v: Long?) { if (v == null) sb.append(",null") else num(v) }
+        fun hex(v: Long) { str(java.lang.Long.toHexString(v).padStart(16, '0')) }
+        when (e) {
+            is TraceEvent.Gyro -> { head("g"); bits(e.x); bits(e.y); bits(e.z) }
+            is TraceEvent.Accel -> { head("a"); bits(e.x); bits(e.y); bits(e.z) }
+            is TraceEvent.Ctx -> { head("cx"); str(e.state.name) }
+            is TraceEvent.Resting -> { head("rs"); flag(e.on) }
+            is TraceEvent.Profile -> {
+                head("pf"); str(e.wake.name); num(e.settledMs); num(e.quietMs); nul(e.walkMs); num(e.stillCapMs); num(e.analysisMs)
+                str(e.tier.name); flag(e.lowPower); flag(e.heatSlow)
+            }
+            is TraceEvent.GateParams -> { head("gp"); num(e.hamming.toLong()); num(e.bigChange.toLong()); flag(e.ringAll) }
+            is TraceEvent.Plan -> { head("pl"); num(e.gen); str(e.configHash); str(e.mode.name) }
+            is TraceEvent.Episode -> { head("ep"); flag(e.open); str(e.cause.name.lowercase()); nul(e.firstFrameAtMs) }
+            is TraceEvent.Score -> {
+                head("sc"); num(e.seq); hex(e.d); hex(e.p); bits(e.blur); flag(e.passedBlur); str(e.motion.name); flag(e.dwellArmed); flag(e.force)
+            }
+            is TraceEvent.Gate -> { head("gt"); num(e.seq); str(e.outcome.name.lowercase()); str(e.reason) }
+            is TraceEvent.Flush -> { head("fl"); str(e.reason) }
+            is TraceEvent.Backoff -> { head("bo"); num(e.stillStep.toLong()) }
+            is TraceEvent.Blocked -> { head("bl"); if (e.reason == null) sb.append(",null") else str(e.reason) }
+            is TraceEvent.PreRollEnd -> head("pr")
+            is TraceEvent.Close -> { head("cl"); str(e.reason) }
+        }
+        return sb.append(']').toString()
+    }
+
+    /** Strict: only a line that re-encodes to exactly itself is accepted (no whitespace, `+1`, `-0`, `1.0` or differing escapes). Throws [TraceFormatException]. */
+    fun decode(line: String): TraceEvent {
+        if (line.length > TraceBounds.MAX_LINE_CHARS) bad()
+        val e = try { parse(line) } catch (x: TraceFormatException) { throw x } catch (x: Exception) { bad() }
+        if (encode(e) != line) bad()
+        return e
+    }
+
+    private fun parse(line: String): TraceEvent {
+        val a = kotlinx.serialization.json.Json.parseToJsonElement(line) as? JsonArray ?: bad()
+        if (a.size < 2) bad()
+        var i = 0
+        fun next(): JsonElement = if (i < a.size) a[i++] else bad()
+        fun prim(): JsonPrimitive = next() as? JsonPrimitive ?: bad()
+        fun long(): Long { val p = prim(); if (p is JsonNull || p.isString || !INT.matches(p.content)) bad(); return p.content.toLong() }
+        fun int(): Int = long().also { if (it !in Int.MIN_VALUE..Int.MAX_VALUE) bad() }.toInt()
+        fun bool(): Boolean { val p = prim(); if (p is JsonNull || p.isString) bad(); return when (p.content) { "true" -> true; "false" -> false; else -> bad() } }
+        fun str(): String { val p = prim(); if (p is JsonNull || !p.isString) bad(); return p.content }
+        fun strOrNull(): String? { val p = prim(); return if (p is JsonNull) null else { if (!p.isString) bad(); p.content } }
+        fun longOrNull(): Long? { val p = prim(); return if (p is JsonNull) null else { if (p.isString || !INT.matches(p.content)) bad(); p.content.toLong() } }
+        fun float(): Float = Float.fromBits(int())
+        fun hex(): Long { val s = str(); if (!HEX16.matches(s)) bad(); return java.lang.Long.parseUnsignedLong(s, 16) }
+        fun <T : Enum<T>> en(values: Array<T>, lower: Boolean = false): T { val s = str(); return values.firstOrNull { (if (lower) it.name.lowercase() else it.name) == s } ?: bad() }
+        val tag = str()
+        val t = long()
+        val ev: TraceEvent = when (tag) {
+            "g" -> TraceEvent.Gyro(t, float(), float(), float())
+            "a" -> TraceEvent.Accel(t, float(), float(), float())
+            "cx" -> TraceEvent.Ctx(t, en(ContextState.values()))
+            "rs" -> TraceEvent.Resting(t, bool())
+            "pf" -> TraceEvent.Profile(t, en(CameraWake.values()), long(), long(), longOrNull(), long(), long(), en(BudgetTier.values()), bool(), bool())
+            "gp" -> TraceEvent.GateParams(t, int(), int(), bool())
+            "pl" -> TraceEvent.Plan(t, long(), str(), en(PlanMode.values()))
+            "ep" -> TraceEvent.Episode(t, bool(), en(EpisodeCause.values(), lower = true), longOrNull())
+            "sc" -> TraceEvent.Score(t, long(), hex(), hex(), float(), bool(), en(MotionState.values()), bool(), bool())
+            "gt" -> TraceEvent.Gate(t, long(), en(GateOutcome.values(), lower = true), str())
+            "fl" -> TraceEvent.Flush(t, str())
+            "bo" -> TraceEvent.Backoff(t, int())
+            "bl" -> TraceEvent.Blocked(t, strOrNull())
+            "pr" -> TraceEvent.PreRollEnd(t)
+            "cl" -> TraceEvent.Close(t, str())
+            else -> bad()
+        }
+        if (i != a.size) bad()
+        return ev
+    }
+}
