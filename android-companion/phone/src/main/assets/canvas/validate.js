@@ -3,7 +3,7 @@
 /** Own-property test: ids and type names come from user JSON, so "constructor" and "__proto__" are legal keys. */
 export const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
 
-const LABELS = { PHOTOS: 'Photo', EXTRACTION: 'Facts', JSON: 'JSON', PREVIEW: 'Preview' };
+const LABELS = { PHOTOS: 'Photo', EXTRACTION: 'Facts', JSON: 'JSON', PREVIEW: 'Preview', MOTION_EVENT: 'Motion', TRIGGER: 'Trigger', CONTEXT: 'Context', SIGNAL: 'Signal' };
 
 export const portLabel = (port) => (own(LABELS, port) ? LABELS[port] : String(port));
 
@@ -21,12 +21,16 @@ function list(items) {
   return items.slice(0, -1).join(', ') + ' or ' + items[items.length - 1];
 }
 
+/** The one cross-domain edge (the `photos` binding): the capture node feeds the async half's Photo input. */
+export const isPhotosBinding = (a, b) => !!a && !!b && a.type === 'capture.image' && b.type === 'input.photos';
+
 /** null when from → to is allowed by port types, else a short fixed refusal text. */
 export function portCheck(pipe, from, to, nodeTypes) {
   const a = nodeOf(pipe, from), b = nodeOf(pipe, to);
   if (!a || !b) return 'No such node';
   const ta = typeOf(nodeTypes, a.type), tb = typeOf(nodeTypes, b.type);
   if (!ta || !tb) return 'Unknown node type';
+  if (isPhotosBinding(a, b)) return null;
   const accepts = tb.inputs || [];
   if (accepts.length === 0) return titleOf(b, tb) + ' takes no input';
   if (!accepts.includes(ta.output)) {
@@ -58,4 +62,19 @@ export function problemsByNode(problems) {
     if (!placed) add('', text);
   }
   return out;
+}
+
+/**
+ * The compile route's problem and warning texts → [{text, nodeId?, edge?}]: "node <id>: ..." names its node and
+ * "edge <from>-><to>: ..." its edge; anything else (the pipeline as a whole) has no place on the canvas.
+ */
+export function attributeProblems(texts) {
+  return (texts || []).map((raw) => {
+    const text = String(raw);
+    const n = /^node ([a-z][a-z0-9_]*): /.exec(text);
+    if (n) return { text, nodeId: n[1] };
+    const e = /^edge ([a-z][a-z0-9_]*)->([a-z][a-z0-9_]*): /.exec(text);
+    if (e) return { text, edge: { from: e[1], to: e[2] } };
+    return { text };
+  });
 }

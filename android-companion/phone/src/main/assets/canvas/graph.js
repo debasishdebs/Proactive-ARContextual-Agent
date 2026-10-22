@@ -39,7 +39,9 @@ function defaultParams(nodeType) {
   for (const d of nodeType.params || []) {
     if (d.default !== undefined) { out[d.name] = d.default; continue; }
     switch (d.kind) {
-      case 'int': out[d.name] = d.min !== undefined ? d.min : 0; break;
+      case 'int': case 'number': out[d.name] = d.min !== undefined ? d.min : 0; break;
+      case 'enum': if (Array.isArray(d.options) && d.options.length) out[d.name] = d.options[0]; break;
+      case 'table': break; // empty: every cell inherits
       case 'bool': out[d.name] = false; break;
       case 'text': out[d.name] = ''; break;
       case 'prompt': out[d.name] = { source: 'live' }; break;
@@ -60,6 +62,7 @@ export function addNode(pipe, nodeType, after, nodeTypes) {
   const next = clone(pipe);
   next.nodes = next.nodes || []; next.edges = next.edges || [];
   const id = nextId(next, nodeType.short || String(nodeType.type).split('.').pop());
+  if (Number(nodeType.sinceSchema) > Number(next.schema || 1)) next.schema = Number(nodeType.sinceSchema); // S41: capture nodes need schema 2
   next.nodes.push({ id, type: nodeType.type, title: nodeType.label, params: defaultParams(nodeType) });
   const src = after ? nodeOf(next, after) : null;
   if (src) {
