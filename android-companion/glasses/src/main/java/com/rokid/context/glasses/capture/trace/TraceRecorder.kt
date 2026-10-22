@@ -48,7 +48,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * **Epoch (S57).** A [TraceControl] with a different `installId`, or a larger `deletionCounter`, drops the buffer and the running trace, deletes
  * every local trace and `imu_trace_tmp`, and adopts the epoch (persisted). A control with the same `installId` and a smaller counter is stale and ignored.
  *
- * Not here (Task 17): tombstones, forget ranges and the transfer (`send`).
+ * **Forget (S58, P7).** A control's tombstones and forget range delete the closed traces they match (and drop a running one that overlaps); the request is kept in
+ * `trace_forget` until the delete really succeeded, so a failed delete is retried at the next control. A failed epoch wipe is retried too, and the new epoch is persisted only after it.
+ *
+ * Not here: the transfer (`send`).
  *
  * Lock order: session, then classifier and gate, then [lock]. The recorder never calls back into any of them.
  */
@@ -95,6 +98,8 @@ class TraceRecorder(
     // epoch (guarded by lock)
     private var installId = ""
     private var deletionCounter = 0L
+    /** The last epoch wipe left something behind: the epoch stays unsaved and the wipe is retried at the next control. */
+    @Volatile private var wipeFailed = false
     // collect window
     @Volatile private var collect = false
     @Volatile private var collectUntil = Long.MAX_VALUE
@@ -133,8 +138,8 @@ class TraceRecorder(
 
     /** The phone's `pc_trace_ctl` (link thread). Applies the epoch, then the collect window. Tombstones, forget ranges and `send` are Task 17. */
     fun onControl(c: TraceControl) {
-        var persist: Pair<String, Long>? = null
         var wipe = false
+        var forgetLines: List<String> = emptyList()
         synchronized(lock) {
             val now = clock()
             if (c.installId == installId && c.deletionCounter < deletionCounter) return // a stale message of this pairing
@@ -142,15 +147,35 @@ class TraceRecorder(
             if (c.installId != installId || c.deletionCounter > deletionCounter) {
                 abortLocked()
                 installId = c.installId; deletionCounter = c.deletionCounter
-                persist = installId to deletionCounter
                 wipe = true
+            }
+            // Forget (S58, P7): the phone's range is on ITS clock; the offset from this very message maps it to the glasses wall clock, widened for safety. A running trace that
+            // overlaps (or is listed) is dropped now; the closed ones are deleted by [TraceStorage.runForget], which is retried until it succeeds.
+            if (c.tombstones.isNotEmpty() || (c.forgetFromMs != null && c.forgetToMs != null)) {
+                val offset = if (c.atMs > 0) c.atMs - wallClock() else 0L
+                val margin = if (c.atMs > 0) FORGET_MARGIN_MS else FORGET_MARGIN_NO_CLOCK_MS
+                val lines = ArrayList<String>()
+                c.tombstones.filter { com.rokid.context.capture.trace.TraceBounds.isTraceId(it) }.forEach { lines += "T $it" }
+                if (c.forgetFromMs != null && c.forgetToMs != null) lines += "R ${c.forgetFromMs!! - offset - margin} ${c.forgetToMs!! - offset + margin}"
+                forgetLines = lines
+                job?.let { j ->
+                    val hit = lines.any { l -> l == "T ${j.id}" || (l.startsWith("R ") && l.split(' ').let { p -> j.startWall <= p[2].toLong() && wallClock() >= p[1].toLong() } ) }
+                    if (hit) abortLocked()
+                }
             }
             collect = c.collect
             collectUntil = if (c.collect && c.collectUntilMs != null && c.atMs > 0) now + (c.collectUntilMs!! - c.atMs) else Long.MAX_VALUE
             if (recording && !collectingNow(now)) closeLocked(CloseReason.STOP)
         }
-        if (wipe) io { try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}") } }
-        persist?.let { (i, n) -> io { try { storage.writeEpoch(i, n) } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } } }
+        // A new epoch is persisted only after its wipe really succeeded; a wipe that failed is retried by EVERY following control (also of the same epoch).
+        if (wipe || wipeFailed) io {
+            val ok = try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}"); false }
+            wipeFailed = !ok
+            if (ok) { val (i, n) = synchronized(lock) { installId to deletionCounter }; try { storage.writeEpoch(i, n) } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
+        }
+        if (forgetLines.isNotEmpty() || storage.hasPendingForget()) io {
+            try { if (forgetLines.isNotEmpty()) storage.addForget(forgetLines); if (!storage.runForget()) log("trace forget incomplete: retried at the next control") } catch (e: Exception) { log("trace forget failed: ${e.javaClass.simpleName}") }
+        }
     }
 
     // ---- start / close ----
@@ -374,6 +399,10 @@ class TraceRecorder(
         /** S73-style flush point: about 64 KB of event text, well under the 90,000 character b64 bound after gzip. */
         const val FLUSH_BYTES = 64 * 1024
         const val BUFFER_EVENTS = 4096
+        /** A forget range is widened by this on each side after mapping it to the glasses clock (the mapping comes from one message). */
+        const val FORGET_MARGIN_MS = 5_000L
+        /** With no phone clock in the control the range cannot be mapped: delete an hour either side rather than miss it. */
+        const val FORGET_MARGIN_NO_CLOCK_MS = 3_600_000L
         const val MAX_IN_FLIGHT = 3
         private const val EST_SAMPLE = 56
         private const val EST_EVENT = 72

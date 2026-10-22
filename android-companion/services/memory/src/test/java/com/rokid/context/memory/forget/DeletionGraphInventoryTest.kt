@@ -29,7 +29,7 @@ class DeletionGraphInventoryTest {
     }
 
     @Test fun everyKeptEntryStatesAReason() {
-        (DeletionGraph.TABLES + DeletionGraph.PREFS + DeletionGraph.GLASSES_PREFS + DeletionGraph.DIRS).forEach { assertTrue("${it.name} needs a reason", it.why.length > 8) }
+        (DeletionGraph.TABLES + DeletionGraph.PREFS + DeletionGraph.GLASSES_PREFS + DeletionGraph.GLASSES_FILES + DeletionGraph.DIRS).forEach { assertTrue("${it.name} needs a reason", it.why.length > 8) }
     }
 
     /** WipeDao is the code that deletes: its DELETE statements must match the registry exactly (kept tables are never deleted, wiped ones always are). */

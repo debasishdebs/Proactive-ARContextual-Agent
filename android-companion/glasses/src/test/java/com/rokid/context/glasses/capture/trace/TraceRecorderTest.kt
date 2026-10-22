@@ -295,6 +295,63 @@ class TraceRecorderTest {
         assertEquals(0, t.all<TraceEvent.Gyro>().filter { it.sMs > 0 }.size - 3, "nothing of the dropped buffer leaks in")
     }
 
+    // ---- forget (fix round 1) ----
+
+    private fun TraceRecorder.oneTrace() { begin(); gyro(5); close(CloseReason.STOP) }
+    private val wallBase get() = 1_700_000_000_000
+
+    @Test fun aForgetRangeDeletesTheClosedTracesThatOverlapItAndKeepsTheRest() {
+        val r = recorder(); r.onControl(TraceTestKit.collect(counter = 1))
+        r.oneTrace(); val first = TraceTestKit.readAll(root).single().manifest
+        clock.t += 3_600_000; r.oneTrace()
+        assertEquals(2, TraceTestKit.readAll(root).size)
+        val atMs = wallBase + clock.t // the phone clock equals the glasses clock in this test
+        r.onControl(TraceTestKit.collect(counter = 1).copy(atMs = atMs, forgetFromMs = first.startWallMs - 1_000, forgetToMs = first.endWallMs + 1_000, collect = true))
+        val left = TraceTestKit.readAll(root)
+        assertEquals(1, left.size); assertTrue(left.single().manifest.startWallMs > first.endWallMs + 60_000)
+        assertFalse(File(root, "trace_forget").exists(), "the request is done: no pending file")
+    }
+
+    @Test fun aListedTombstoneIsDeletedByIdAndARunningOverlappingTraceIsDropped() {
+        val r = recorder(); r.onControl(TraceTestKit.collect(counter = 1))
+        r.oneTrace(); val id = TraceTestKit.readAll(root).single().manifest.traceId
+        r.begin(); r.gyro(5)
+        val atMs = wallBase + clock.t
+        r.onControl(TraceTestKit.collect(counter = 1).copy(atMs = atMs, tombstones = listOf(id), forgetFromMs = atMs - 1_000, forgetToMs = atMs + 1_000, collect = true))
+        assertFalse(r.recording, "the running trace overlaps the range: dropped")
+        assertEquals(0, TraceTestKit.readAll(root).size)
+        assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty())
+    }
+
+    @Test fun aForgetThatCouldNotDeleteIsRetriedAtTheNextControl() {
+        val r = recorder(); r.onControl(TraceTestKit.collect(counter = 1))
+        r.oneTrace(); val m = TraceTestKit.readAll(root).single()
+        val tracesDir = File(root, "traces")
+        val atMs = wallBase + clock.t
+        val ctl = TraceTestKit.collect(counter = 1).copy(atMs = atMs, forgetFromMs = m.manifest.startWallMs - 1, forgetToMs = m.manifest.endWallMs + 1)
+        tracesDir.setWritable(false); m.dir.setWritable(false)
+        try { r.onControl(ctl) } finally { tracesDir.setWritable(true); m.dir.setWritable(true) }
+        if (m.dir.exists()) {
+            assertTrue(File(root, "trace_forget").exists(), "a failed delete leaves the request on disk")
+            r.onControl(TraceTestKit.collect(counter = 1).copy(atMs = atMs)) // a plain control of the same epoch retries it
+        }
+        assertEquals(0, TraceTestKit.readAll(root).size); assertFalse(File(root, "trace_forget").exists())
+    }
+
+    @Test fun theNewEpochIsNotPersistedUntilItsWipeSucceededAndAnySameEpochControlRetries() {
+        val r = recorder(); r.onControl(TraceTestKit.collect(counter = 1)); r.oneTrace()
+        File(root, "imu_trace_tmp").mkdirs(); File(root, "imu_trace_tmp/x").writeText("x")
+        val dir = File(root, "traces")
+        dir.setWritable(false); File(root, "traces").listFiles()!!.forEach { it.setWritable(false) }
+        try { r.onControl(TraceTestKit.collect(counter = 2)) } finally { dir.setWritable(true); File(root, "traces").listFiles()?.forEach { it.setWritable(true) } }
+        if (File(root, "traces").exists()) {
+            assertEquals("inst-1\n1", File(root, "trace_epoch").readText(), "not adopted on disk while the wipe failed")
+            r.onControl(TraceTestKit.collect(counter = 2)) // the SAME (new) epoch again: retries
+        }
+        assertEquals(0, TraceTestKit.readAll(root).size)
+        assertEquals("inst-1\n2", File(root, "trace_epoch").readText())
+    }
+
     @Test fun newInstallIdResets() {
         val r = recorder(); r.onControl(TraceTestKit.collect(install = "inst-old", counter = 9))
         r.begin(); r.gyro(5); r.close(CloseReason.STOP)

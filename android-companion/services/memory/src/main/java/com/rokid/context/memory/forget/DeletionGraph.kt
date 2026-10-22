@@ -47,6 +47,17 @@ object DeletionGraph {
         w("mark_queue", "unsent pc_mark outbox; MarkOutbox.onEpoch clears it when the phone's installId or deletion counter changes"),
     )
 
+    /** Files and folders of the GLASSES recorder under its `imu` root (names only; the glasses delete them on a new epoch or a forget request). */
+    val GLASSES_FILES: List<Entry> = listOf(
+        w("imu", "the glasses recorder's root folder (holds the rest)"),
+        w("traces", "closed IMU traces; deleted by an epoch wipe and by a forget range or tombstone"),
+        w("imu_trace_tmp", "a trace being written; deleted by an epoch wipe, a forget, and at start-up"),
+        k("trace_epoch", "the last deletion epoch seen (install id and counter): the fence itself, no user data; written only after a wipe succeeded"),
+        k("trace_epoch.part", "its atomic-write temp file"),
+        w("trace_forget", "pending forget requests (ranges and ids); removed once carried out"),
+        w("trace_forget.part", "its atomic-write temp file"),
+    )
+
     /** Folders under `filesDir`. */
     val DIRS: List<Entry> = listOf(
         w("canvas_traces", "sealed IMU traces"), w("canvas_import", "pulled trace imports"), w("canvas_tmp", "tmp files of an unpublished write"),
