@@ -17,7 +17,20 @@ data class GlanceCounts(val glances: Int, val micro: Int)
  * Everything is decided per sample, so [onset] lags the movement by at most one sensor sample.
  * Thresholds are constants for now; they are expected to be tuned on device.
  */
-class MotionClassifier(@Suppress("unused") private val clock: () -> Long, private val params: GlanceParams = GlanceParams()) {
+class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params: GlanceParams = GlanceParams()) {
+    /** The glance tunables in force; every read goes through here (slice 3a: a plan swaps the whole set at once, see [setConfig]). */
+    @Volatile var config: GlanceParams = params
+        private set
+
+    /** Swaps every glance tunable at once (the classifier's own reads and the detector's). The caller picks the safe moment: [quiet], or [abortBout] first. */
+    @Synchronized fun setConfig(p: GlanceParams) { config = p; detector.p = p }
+
+    /** No bout running and no glance pending: a plan may swap the config now. */
+    @Synchronized fun quiet(): Boolean = detector.isQuiet()
+
+    /** Drops the running bout and any pending glance (the 10 s forced swap). */
+    @Synchronized fun abortBout() { detector.abort() }
+
     /** Keeps the trailing-lambda form `MotionClassifier { now }` (default [GlanceParams]). */
     constructor(clock: () -> Long) : this(clock, GlanceParams())
 
@@ -93,10 +106,10 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, privat
         if (mag > featGyroMax) featGyroMax = mag
         val dt = if (lastGyroMs < 0) 0L else maxOf(0L, tMs - lastGyroMs)
         lastGyroMs = maxOf(lastGyroMs, tMs)
-        val dtS = dt.coerceAtMost(params.maxDtMs) / 1000f
+        val dtS = dt.coerceAtMost(config.maxDtMs) / 1000f
         featN++; featSum += mag; featSumSq += mag * mag; featTravelled += mag * dtS
-        if (mag > params.onsetRadS) featAbove++
-        if (mag >= params.deadbandRadS) { rx += x * dtS; ry += y * dtS; rz += z * dtS }
+        if (mag > config.onsetRadS) featAbove++
+        if (mag >= config.deadbandRadS) { rx += x * dtS; ry += y * dtS; rz += z * dtS }
         trackQuiet(mag, tMs)
         if (above) {
             lastAboveGyroMs = maxOf(lastAboveGyroMs, tMs)
@@ -154,7 +167,7 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, privat
 
     /** Caller holds the lock. Snapshots the pose at each moving sample; restores it after a long quiet spell (bias drift). */
     private fun trackQuiet(mag: Float, tMs: Long) {
-        if (quietSinceMs < 0 || mag > params.releaseRadS) {
+        if (quietSinceMs < 0 || mag > config.releaseRadS) {
             quietSinceMs = tMs; qx = rx; qy = ry; qz = rz
         } else if (tMs - quietSinceMs >= POSE_QUIET_RESET_MS) {
             rx = qx; ry = qy; rz = qz
