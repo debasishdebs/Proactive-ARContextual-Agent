@@ -39,6 +39,12 @@ async function visit(b, hash) {
 const ROUTES = ['#/', '#/p/p1', '#/p/p1/diff?a=1&b=draft', '#/live', '#/run/new?p=p1', '#/run/r1', '#/compare?a=r1&b=r2', '#/asks', '#/ask/a1'];
 
 export const tests = {
+  async floweditorImportsWithoutReact() {
+    // before boot() installs any React stub: the editor module must load with no React, ReactDOM, ReactFlow or htm globals
+    for (const k of ['React', 'ReactDOM', 'ReactFlow', 'htm']) eq(typeof globalThis[k], 'undefined');
+    const m = await import('../../main/assets/canvas/floweditor.js');
+    eq(typeof m.mountEditor, 'function');
+  },
   async bootsAndRoutesEveryView() {
     const b = await boot();
     ok(b.root.children.length > 0, 'the boot route rendered');

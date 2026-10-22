@@ -64,7 +64,7 @@ export function compareSummary(c) {
   const ids = [...new Set([...Object.keys(a), ...Object.keys(b), ...Object.keys((c && c.agreement) || {})])];
   const sums = (c && c.scoreSums) || {};
   return {
-    switches: ids.map((id) => ({ id, a: counts(a[id]), b: counts(b[id]), agreement: agreementPercent((c.agreement || {})[id]) })),
+    switches: ids.map((id) => ({ id, a: counts(a[id]), b: counts(b[id]), agreement: agreementPercent(((c && c.agreement) || {})[id]) })),
     scores: Object.keys(sums).map((id) => ({ id, a: sums[id].a, b: sums[id].b })),
   };
 }

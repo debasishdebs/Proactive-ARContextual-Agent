@@ -23,14 +23,22 @@ export function retryDelay(attempt, err) {
   return [1000, 2000, 4000][attempt] === undefined ? null : [1000, 2000, 4000][attempt];
 }
 
-/** The A/B selector: every pipeline's draft and frozen versions, "<id>@draft" / "<id>@<n>". */
-export function abOptions(pipelines) {
+export const refKey = (r) => r.pipelineId + '@' + (r.version ? r.version : 'draft');
+
+/** Redraw only when nothing on screen is final: a finished, unchanged run keeps its open details and typed notes. */
+export const shouldRedraw = (drawnStatus, run) => drawnStatus === null || drawnStatus !== String(run.status) || isActive(run.status);
+
+/** What the run poll does next: 'stop', 'pause' (tab hidden: resume on visibilitychange) or 'wait' (schedule the next tick). */
+export const pollAction = (hidden, wantMore) => (!wantMore ? 'stop' : hidden ? 'pause' : 'wait');
+
+/** The A/B selector: every pipeline's draft and frozen versions except [exclude] (the base), "<id>@draft" / "<id>@<n>". */
+export function abOptions(pipelines, exclude) {
   const out = [];
   for (const p of pipelines || []) {
     out.push({ value: p.id + '@draft', label: p.name + ' (draft)' });
     for (const v of p.versions || []) out.push({ value: p.id + '@' + v.version, label: p.name + ' v' + v.version });
   }
-  return out;
+  return out.filter((o) => o.value !== exclude);
 }
 
 export function parseRef(value) {

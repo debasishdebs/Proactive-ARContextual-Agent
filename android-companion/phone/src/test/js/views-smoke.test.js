@@ -50,7 +50,7 @@ export const tests = {
     try {
       await withView({}, async ({ ctx, root, env, api }) => {
         await pipelineView(ctx, root, 'p1');
-        E.click(E.buttons(root, 'Publish')[1]); // v2
+        E.click(E.buttons(root, 'Publish')[1]); // v2, which carries its own shape
         const m = ctx.modals[ctx.modals.length - 1];
         eq(m.title, 'Publish v2');
         const t = E.textOf(m.content);
@@ -63,6 +63,18 @@ export const tests = {
         eq(api.calls.filter((c) => c.method === 'POST').length, 0, 'declined second confirm publishes nothing');
         env.confirmAnswer = true;
         api.calls.length = 0;
+      });
+    } finally { unstubReact(); }
+  },
+  async publishDialogWithoutAVersionShapeHidesTheDraftCost() {
+    stubReact();
+    try {
+      await withView({}, async ({ ctx, root }) => {
+        await pipelineView(ctx, root, 'p1');
+        E.click(E.buttons(root, 'Publish')[0]); // v1 has no shape of its own
+        const t = E.textOf(ctx.modals[0].content);
+        ok(t.includes('The cost estimate describes your current draft; this version may differ. See Diff with draft.'), t);
+        ok(!t.includes('about 4–6×') && !t.includes('Live always runs the confidence check and the critic after'), 'no draft numbers or warnings: ' + t);
       });
     } finally { unstubReact(); }
   },
@@ -97,11 +109,16 @@ export const tests = {
         if (n === 2) throw new E.FakeApiError(409, 'rollback_blocked', 'Blocked.', ['A newer publish exists. Reload and try again.']);
         return { publishId: 7, keys: [], kind: 'interpreter' };
       },
-    }, async ({ ctx, root, api }) => {
+    }, async ({ ctx, root, api, env }) => {
       await pipelinesView(ctx, root);
       has(root, '#7'); has(root, 'SHADOW');
       const b = E.buttons(root, 'Roll back')[0];
       ok(b, 'a Roll back button');
+      env.confirmAnswer = false;
+      E.click(b); await E.settle();
+      eq(env.confirms[0], 'Roll back #7 · interpreter (SHADOW) · p1 v2?');
+      eq(api.calls.filter((c) => c.path === '/api/publish/rollback').length, 0, 'declined: nothing is undone');
+      env.confirmAnswer = true;
       E.click(b); await E.settle();
       eq(api.calls.filter((c) => c.path === '/api/publish/rollback')[0].body, { expectedId: 7 });
       eq(ctx.errors[0].problems, ['That publish was already rolled back.']);
@@ -160,6 +177,7 @@ export const tests = {
       ok(api.calls.some((c) => c.path.startsWith('/api/frames?') && c.query.get('day') === '2026-10-21'), 'frames asked with day');
       const sel = findAll(root, (e) => e.tagName === 'select' && e.getAttribute('aria-label') === 'A/B against…')[0];
       ok(sel, 'A/B selector');
+      eq(findAll(sel, (e) => e.tagName === 'option').map((o) => o.value).includes('p1@1'), false, 'the base is not offered against itself');
       sel.value = 'p1@2'; sel.dispatch('change');
       E.click(findAll(root, (e) => e.classList.contains('thumb'))[0]);
       E.click(E.buttons(root, 'Estimate')[0]); await E.settle();
@@ -195,6 +213,37 @@ export const tests = {
       eq(ctx.gone, []);
       phase = 2; await env.runTimers();
       eq(ctx.gone, ['#/compare?a=r1&b=r2']);
+    });
+  },
+  async finishedRunAKeepsItsPageWhileBRuns() {
+    let phase = 0;
+    await withView({
+      'GET /api/runs/r1': () => E.run('r1', 'DONE', 'g1'),
+      'GET /api/runs': () => [E.runRow('r1', 'DONE', 'g1', 10), E.runRow('r2', phase === 0 ? 'RUNNING' : 'RUNNING', 'g1', 20)],
+      'POST /api/runs/r1/cancel': { ok: true },
+    }, async ({ ctx, root, env, api }) => {
+      await runView(ctx, root, 'r1');
+      ok(E.buttons(root, 'Cancel A/B pair').length === 1, 'cancel stays while B runs');
+      const marker = document.createElement('i');
+      root.appendChild(marker); // stands for an opened <details> or typed note
+      await env.runTimers();
+      ok(marker.parentNode === root, 'the page was not redrawn');
+      ok(env.timers.length === 1, 'still watching B');
+    });
+  },
+  async hiddenTabPausesThePollAndResumes() {
+    await withView({ 'GET /api/runs/r1': E.run('r1', 'RUNNING', 'g1') }, async ({ ctx, root, env, api }) => {
+      let hidden = true;
+      Object.defineProperty(document, 'hidden', { get: () => hidden, configurable: true });
+      const handlers = [];
+      document.addEventListener = (t, f) => { if (t === 'visibilitychange') handlers.push(f); };
+      document.removeEventListener = () => {};
+      await runView(ctx, root, 'r1');
+      eq(env.timers.length, 0, 'no timer while hidden');
+      const n = api.calls.length;
+      hidden = false; for (const f of handlers) await f();
+      ok(api.calls.length > n, 'resumed with a fetch');
+      eq(env.timers.length, 1);
     });
   },
   async runCancelOnAGroupIsLabelledAsOne() {
@@ -239,6 +288,7 @@ export const tests = {
   async askViewRendersHitsAndPrompt() {
     await withView({ 'POST /api/check-prompt': { problems: ['needs {{question}}'] }, 'POST /api/asks/a1/replay': { answer: 'Replayed answer', sources: ['m1'], latencyMs: 1200, promptTokens: 100, completionTokens: 20, model: 'mm' } }, async ({ ctx, root, api }) => {
       await askView(ctx, root, 'a1');
+      for (const a of findAll(root, (e) => e.tagName === 'textarea')) eq([a.getAttribute('autocomplete'), a.getAttribute('spellcheck')], ['off', 'false']);
       has(root, '0.123'); has(root, 'cited'); has(root, 'in prompt'); has(root, 'a desk with <b>a laptop</b>');
       has(root, 'Re-retrieved as of the ask\'s time; may differ if settings or embeddings changed');
       ok(ctx.images.includes('/api/frames/f1/thumb'));

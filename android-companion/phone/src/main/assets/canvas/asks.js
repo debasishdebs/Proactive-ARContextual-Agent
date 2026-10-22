@@ -47,11 +47,11 @@ export async function askView(ctx, root, id) {
   root.appendChild(h('section', { class: 'card' }, h('h3', null, 'Retrieved memories'), h('p', { class: 'muted' }, RETRIEVAL_NOTE),
     h('table', { class: 'hits' }, h('thead', null, h('tr', null, ['Memory', 'Lexical', 'Semantic', 'Fused', 'Score', ''].map((t) => h('th', null, t)))),
       h('tbody', null, (a.hits || []).map((x) => hitRow(ctx, x))))));
-  const prompt = h('textarea', { rows: 10, readonly: true, class: 'mono', 'aria-label': 'Composed prompt' });
+  const prompt = h('textarea', { rows: 10, readonly: true, class: 'mono', 'aria-label': 'Composed prompt', autocomplete: 'off', spellcheck: 'false' });
   prompt.value = a.composedPrompt || '';
   root.appendChild(h('section', { class: 'card' }, h('h3', null, 'Composed prompt'), prompt));
 
-  const tpl = h('textarea', { rows: 10, spellcheck: 'false', class: 'mono', 'aria-label': 'Answer template' });
+  const tpl = h('textarea', { rows: 10, spellcheck: 'false', autocomplete: 'off', class: 'mono', 'aria-label': 'Answer template' });
   tpl.value = a.activeTemplate || '';
   const checkOut = h('div', { role: 'status' });
   const result = h('div', null);

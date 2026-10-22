@@ -125,7 +125,7 @@ class CanvasAssetsTest {
 
     @Test fun pollStopsOnlyOnRunState() {
         val v = text("views.js")
-        val line = v.lines().first { it.contains("setTimeout(tick") }
+        val line = v.lines().first { it.contains("pollAction(") }
         assertTrue(line.contains("drawnStatus !== String(run.status)"))
         assertFalse(line.contains("editing"))
     }
