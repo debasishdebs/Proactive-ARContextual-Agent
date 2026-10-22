@@ -28,11 +28,53 @@ class VoicePipelineTest {
     private val pcm = ByteArray(3_200) { 9 }
     private var language: () -> SpeechLanguage = { SpeechLanguage.ENGLISH }
 
+    private var interceptor: UtteranceInterceptor = UtteranceInterceptor { _, _, _ -> InterceptResult.PassThrough }
+    private val logs = mutableListOf<String>()
+
     private fun TestScope.pipeline() = VoicePipeline(
         backgroundScope, engine, caps, { language() },
         Answerer { q, source -> asked += q to source; answer(q) },
         speaker, bluetoothMedia = { bluetooth }, onFallbackSuspected = { fallbacks++ },
+        interceptor = { t, s, g -> interceptor.intercept(t, s, g) }, log = { logs += it },
     ).also { runCurrent() }
+
+    @Test fun interceptorRunsBeforeThinking() = runTest {
+        val seen = mutableListOf<Triple<String, VoiceSource, Boolean>>()
+        lateinit var p: VoicePipeline
+        var stateDuring: VoiceState? = null
+        interceptor = UtteranceInterceptor { t, s, g -> seen += Triple(t, s, g); stateDuring = p.state.value; InterceptResult.PassThrough }
+        p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("milk?")); runCurrent()
+        assertEquals(listOf(Triple("milk?", VoiceSource.GLASSES, true)), seen)
+        assertTrue(stateDuring is VoiceState.Listening, "Thinking is not yet published when the interceptor runs")
+        assertEquals(listOf("milk?" to VoiceSource.GLASSES), asked)
+    }
+
+    @Test fun interceptorHandledMakesNoModelCall() = runTest {
+        interceptor = UtteranceInterceptor { _, _, _ -> InterceptResult.Handled }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("mark that")); runCurrent()
+        assertTrue(asked.isEmpty())
+        assertEquals(VoiceState.Idle, p.state.value)
+        assertTrue(logs.any { it == "outcome=MARKED source=GLASSES" })
+    }
+
+    @Test fun interceptorCanNarrowTheQuestionToUnmatchedClauses() = runTest {
+        interceptor = UtteranceInterceptor { _, _, _ -> InterceptResult.Ask("what's this building") }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("mark that and what's this building")); runCurrent()
+        assertEquals(listOf("what's this building" to VoiceSource.GLASSES), asked)
+        assertTrue(p.state.value is VoiceState.Answer)
+    }
+
+    @Test fun timeoutPartialNotGenuine() = runTest {
+        val seen = mutableListOf<Boolean>()
+        interceptor = UtteranceInterceptor { _, _, g -> seen += g; InterceptResult.PassThrough }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onPartial("where did I park"); p.glassesListenEnd()
+        advanceTimeBy(6_001); runCurrent()
+        assertEquals(listOf(false), seen)
+    }
 
     @Test fun aGlassesAskFlowsToASpokenAnswerThatClearsItself() = runTest {
         val p = pipeline()
