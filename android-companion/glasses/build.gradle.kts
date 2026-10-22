@@ -37,6 +37,7 @@ android {
 
 dependencies {
     implementation(project(":core:model"))
+    implementation(project(":core:capture"))
     implementation(project(":core:hud"))
     implementation("com.rokid.cxr:cxr-service-bridge:1.5")
     implementation("androidx.core:core-ktx:1.13.1")

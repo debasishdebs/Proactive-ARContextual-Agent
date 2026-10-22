@@ -32,6 +32,7 @@ dependencies {
     api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     api(project(":services:memory"))
     api(project(":core:model"))
+    api(project(":core:capture"))
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0") // Nomic vision; MIT; arm64 only via abiFilters
     implementation("androidx.security:security-crypto:1.1.0-alpha06")

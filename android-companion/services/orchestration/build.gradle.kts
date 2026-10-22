@@ -14,6 +14,7 @@ android {
 
 dependencies {
     api(project(":services:ai"))
+    api(project(":core:capture"))
     api(project(":services:memory"))
     api(project(":services:connectors"))
     api("androidx.work:work-runtime-ktx:2.9.1")
