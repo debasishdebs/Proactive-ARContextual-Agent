@@ -3,6 +3,10 @@ package com.rokid.context.work.frames
 import android.content.Context
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.contract.ExtractOutput
+import com.rokid.context.canvas.LiveBatch
+import com.rokid.context.canvas.LiveDeps
+import com.rokid.context.canvas.LiveEffects
+import com.rokid.context.canvas.LiveExtract
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.memory.MemoryGraph
@@ -35,6 +39,8 @@ internal object KeyframeExtract {
         app: Context, frameIds: List<String>, claimId: String?, callClass: CallClass, idPrefix: String, online: () -> Boolean,
         nudge: Boolean = callClass != CallClass.BACKFILL,
         quiet: Boolean = false,
+        /** The canvas interpreter seam (the keyframe pipeline passes it; describe on demand does not, and keeps the plain extraction). */
+        live: LiveDeps? = null,
         afterSave: (suspend (sent: Set<String>, saved: List<SavedMemory>) -> Unit)? = null,
     ): ExtractOutcome {
         val generation = MemoryWipe.generation.get()
@@ -42,13 +48,14 @@ internal object KeyframeExtract {
         val photos = loaded.photos
         if (photos.isEmpty()) return ExtractOutcome.Failed("unreadable", unreadable = loaded.gone, unseen = loaded.unseen)
         val ai = AiGraph.get(app)
-        val batch = try {
-            ExtractSave.extract(ai.runner, photos, callClass)
+        val liveBatch = try {
+            if (live == null) LiveBatch(ExtractSave.extract(ai.runner, photos, callClass), LiveEffects.None) else LiveExtract.batch(live, photos, callClass)
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
             return ExtractOutcome.classify(e, online = online()).copy(unreadable = loaded.gone, unseen = loaded.unseen)
         }
+        val batch = liveBatch.batch
         val facts = batch.output.facts.filter { it.text.isNotBlank() }
         val sent = photos.map { it.frameId }
         // The same trust verdict (local critic, then the model critic) and follow-up as the legacy job (review I6). Final review I2: the
@@ -64,6 +71,11 @@ internal object KeyframeExtract {
         )
         return when (saved) {
             is ExtractSaveResult.Saved -> {
+                if (live != null) {
+                    // the extraction is saved: now (and only now) the canvas effects of this batch are committed, fenced; never throws, no-op without a publish
+                    withContext(NonCancellable) { LiveExtract.commit(live, liveBatch.effects, generation, sent.toSet()) }
+                    if (liveBatch.effects.shadow) LiveExtract.shadowAsync(live, photos, generation)
+                }
                 var trusted = localTrusted
                 try {
                     if (!localTrusted) {

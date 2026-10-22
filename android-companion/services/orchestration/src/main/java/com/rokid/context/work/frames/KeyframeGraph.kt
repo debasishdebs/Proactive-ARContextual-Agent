@@ -13,6 +13,10 @@ import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.contract.ClusterContract
 import com.rokid.context.ai.contract.ClusterPhoto
 import com.rokid.context.ai.contract.ExtractOutput
+import com.rokid.context.canvas.CanvasPublisher
+import com.rokid.context.canvas.FrameIntentSink
+import com.rokid.context.canvas.LiveDeps
+import com.rokid.context.canvas.RunContext
 import com.rokid.context.connectors.sources.SourcesGraph
 import com.rokid.context.data.runtime.AppConfigStore
 import com.rokid.context.domain.summary.CriticWorker
@@ -73,6 +77,9 @@ object KeyframeGraph {
      * stops. [KeyframeHandle.signal] pokes it (a failure there never reaches the pipeline).
      */
     @Volatile var intentSampler: com.rokid.context.work.frames.intent.IntentSampler? = null
+
+    /** Wave B binds the real intent writer here; until then the canvas's labels live only in its own trace table. */
+    @Volatile var intentSink: FrameIntentSink = FrameIntentSink.None
 
     @Volatile private var handle: KeyframeHandle? = null
 
@@ -215,7 +222,21 @@ class KeyframeHandle internal constructor(private val app: Context) {
     /** One VISION_EXTRACT over [frameIds] (<= 3, labelled with their ids), saved with the claim CAS inside the transaction. */
     private suspend fun extract(frameIds: List<String>, claimId: String, callClass: CallClass): ExtractOutcome =
         KeyframeExtract.run(app, frameIds, claimId, callClass, factPrefix(claimId), ::networkValidated, nudge = callClass != CallClass.BACKFILL && kotlin.coroutines.coroutineContext[NoNudge.Key] == null,
-            quiet = kotlin.coroutines.coroutineContext[NoNudge.Key] != null)
+            quiet = kotlin.coroutines.coroutineContext[NoNudge.Key] != null, live = liveDeps)
+
+    /** The canvas interpreter seam's dependencies (spec section 5): no interpreter publish means the plain extraction. Built on first use. */
+    private val liveDeps: LiveDeps by lazy {
+        val ai = AiGraph.get(app)
+        val dao = db.canvasDao()
+        LiveDeps(
+            dao = dao, runner = ai.runner,
+            context = { runId, callClass -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, callClass = callClass) },
+            sink = FrameIntentSink { frameId, label, confidence, atMs -> KeyframeGraph.intentSink.record(frameId, label, confidence, atMs) },
+            publisher = { id, reason -> CanvasPublisher.autoRollbackOn(dao, clock, id, reason) },
+            shadowAllowed = { app.getSharedPreferences("pc_dev", Context.MODE_PRIVATE).getBoolean("developer_mode", false) },
+            clock = clock, scope = scope,
+        )
+    }
 
     /**
      * One CLUSTER_SUMMARY call over the representatives [reps] of [clusters] (wave 2). The cluster CAS is inside [ClusterSave]; the follow-up

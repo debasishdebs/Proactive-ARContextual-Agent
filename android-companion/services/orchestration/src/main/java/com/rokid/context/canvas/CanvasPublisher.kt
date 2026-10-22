@@ -1,5 +1,6 @@
 package com.rokid.context.canvas
 
+import com.rokid.context.ai.canvas.InterpretableShape
 import com.rokid.context.ai.canvas.LiveShape
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.PipelineJson
@@ -47,6 +48,18 @@ class CanvasPublisher(
     companion object {
         /** The production transaction runner: both DAOs live in one Room database, and Room nests transactions. */
         fun inTransaction(db: RoomDatabase): suspend (suspend () -> Unit) -> Unit = { body -> db.withTransaction { body() } }
+
+        const val KIND_PROMPTS = "prompts"
+        const val KIND_INTERPRETER = "interpreter"
+
+        /**
+         * The conditional update behind [autoRollback]: one statement (`WHERE rolledBackAt IS NULL`), so it is safe without the publisher's lock and the live
+         * path (which has no publisher instance) can call it. Only an active interpreter row is touched.
+         */
+        suspend fun autoRollbackOn(dao: CanvasDao, clock: () -> Long, publishId: Long, reason: String): Boolean {
+            if (dao.activePublishes().none { it.id == publishId && it.kind == KIND_INTERPRETER }) return false
+            return dao.markRolledBackWithReason(publishId, clock(), reason) > 0
+        }
     }
 
     sealed interface Outcome {
@@ -60,6 +73,46 @@ class CanvasPublisher(
     private val ROLLBACK_FAILED = "Rolling back failed. Nothing was changed."
 
     suspend fun publish(pipelineId: String, version: Int): Outcome = lock.withLock { publishLocked(pipelineId, version) }
+
+    /**
+     * Publishes a frozen version as an interpreter, in [mode] (spec section 5/6). Writes no prompts: the interpreter reads the frozen version's JSON.
+     * Gates, in order: the shape ([InterpretableShape.problems]); the draft extract prompts' compatibility; every `ai.prompt` schema a JSON object;
+     * every AI node before extraction has a successful run of this exact hash.
+     */
+    suspend fun publishInterpreter(pipelineId: String, version: Int, mode: LiveMode): Outcome = lock.withLock {
+        val v = dao.version(pipelineId, version) ?: return@withLock Outcome.Blocked(listOf("Version not found"))
+        val p = PipelineJson.decode(v.json).getOrNull() ?: return@withLock Outcome.Blocked(listOf("Version is unreadable"))
+        val shape = InterpretableShape.problems(p)
+        if (shape.isNotEmpty()) return@withLock Outcome.Blocked(shape)
+        val compat = p.nodes.filter { it.type == NodeTypes.VISION_EXTRACT }.flatMap { n ->
+            val key = NodeTypes.byType(n.type)?.promptKey ?: return@flatMap emptyList()
+            val d = n.promptSource() as? PromptSource.Draft ?: return@flatMap emptyList()
+            compatibility(key, PromptDraft(d.template, d.schema)).map { "${key.label}: $it" }
+        }
+        if (compat.isNotEmpty()) return@withLock Outcome.Blocked(compat)
+        val badSchema = p.nodes.filter { it.type == NodeTypes.PROMPT }.filter { n ->
+            val s = (n.params["schema"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            !s.isNullOrBlank() && runCatching { Json.parseToJsonElement(s) }.getOrNull() !is JsonObject
+        }.map { "node ${it.id}: schema is not a JSON object" }
+        if (badSchema.isNotEmpty()) return@withLock Outcome.Blocked(badSchema)
+        val ai = InterpretableShape.preSaveNodes(p).filter { it.type == NodeTypes.PROMPT || it.type == NodeTypes.VISION_EXTRACT }
+        val untested = ai.map { it.id }.filter { dao.testedNodeCount(v.hash, listOf(it)) == 0 }
+        if (untested.isNotEmpty()) return@withLock Outcome.Blocked(listOf("Run this version first: ${untested.joinToString(", ")} have no successful run"))
+        val snapshot = buildJsonObject { put("pipelineId", pipelineId); put("version", version); put("hash", v.hash) }.toString()
+        try {
+            val id = dao.insertPublish(CanvasPublishEntity(pipelineId = pipelineId, version = version, hash = v.hash, publishedAt = clock(), rolledBackAt = null,
+                snapshotJson = snapshot, kind = KIND_INTERPRETER, mode = mode.name))
+            Outcome.Published(id, emptyList())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "interpreter publish failed: ${e.javaClass.simpleName}")
+            Outcome.Blocked(listOf(PUBLISH_FAILED))
+        }
+    }
+
+    /** Rolls an interpreter publish back with a fixed [reason] (auto-rollback). False when it is not an active interpreter publish (already rolled back). */
+    suspend fun autoRollback(publishId: Long, reason: String): Boolean = lock.withLock { autoRollbackOn(dao, clock, publishId, reason) }
 
     private suspend fun publishLocked(pipelineId: String, version: Int): Outcome {
         val v = dao.version(pipelineId, version) ?: return Outcome.Blocked(listOf("Version not found"))
@@ -120,6 +173,7 @@ class CanvasPublisher(
 
     private suspend fun rollbackLocked(): Outcome {
         val pub = dao.activePublishes().firstOrNull() ?: return Outcome.Blocked(listOf("Nothing to roll back"))
+        if (pub.kind == KIND_INTERPRETER) return rollbackInterpreter(pub)
         val snap = runCatching { Json.parseToJsonElement(pub.snapshotJson).jsonObject }.getOrNull()
             ?: return Outcome.Blocked(listOf("The publish record is unreadable"))
         val published = snap["published"]?.jsonArray.orEmpty().mapNotNull { e ->
@@ -162,6 +216,20 @@ class CanvasPublisher(
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "rollback failed: ${e.javaClass.simpleName}")
+            return Outcome.Blocked(listOf(ROLLBACK_FAILED))
+        }
+        return result
+    }
+
+    /** An interpreter row holds no prompts: undoing it is just the mark (inside the transaction runner like every other journal write). */
+    private suspend fun rollbackInterpreter(pub: CanvasPublishEntity): Outcome {
+        var result: Outcome = Outcome.Blocked(listOf(ROLLBACK_FAILED))
+        try {
+            transact { result = if (dao.markRolledBack(pub.id, clock()) > 0) Outcome.Published(pub.id, emptyList()) else Outcome.Blocked(listOf("Nothing to roll back")) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

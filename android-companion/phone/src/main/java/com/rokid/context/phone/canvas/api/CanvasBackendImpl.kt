@@ -162,7 +162,7 @@ class CanvasBackendImpl(
     }
 
     private suspend fun liveJson(id: String): JsonElement =
-        dao.activePublishes().firstOrNull { it.pipelineId == id }?.let { buildJsonObject { put("version", it.version) } } ?: JsonNull
+        dao.activePublishes().firstOrNull { it.kind == CanvasPublisher.KIND_PROMPTS && it.pipelineId == id }?.let { buildJsonObject { put("version", it.version) } } ?: JsonNull
 
     override suspend fun pipelines(): JsonArray {
         start()
@@ -238,7 +238,7 @@ class CanvasBackendImpl(
     override suspend fun publish(id: String, version: Int): CanvasPublisher.Outcome = publisher.publish(id, version)
 
     override suspend fun activePublish(): JsonObject {
-        val p = dao.activePublishes().firstOrNull() ?: return buildJsonObject { put("active", false) }
+        val p = dao.activePublishes().firstOrNull { it.kind == CanvasPublisher.KIND_PROMPTS } ?: return buildJsonObject { put("active", false) }
         return buildJsonObject {
             put("active", true); put("publishId", p.id); put("pipelineId", p.pipelineId); put("version", p.version); put("publishedAt", p.publishedAt)
         }

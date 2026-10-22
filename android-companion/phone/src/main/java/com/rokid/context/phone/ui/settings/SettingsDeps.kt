@@ -205,6 +205,11 @@ private class AppKeyframeDiagnostics(private val app: Context) : KeyframeDiagnos
         com.rokid.context.orchestration.ExtractSave.promptIsCurrent(AiGraph.get(app).runner.activeSchema(com.rokid.context.ai.contract.PromptKey.VISION_EXTRACT))
     override suspend fun clusterPromptIsCurrent() =
         com.rokid.context.ai.contract.ClusterContract.promptIsCurrent(AiGraph.get(app).runner.activeSchema(com.rokid.context.ai.contract.PromptKey.CLUSTER_SUMMARY))
+    override suspend fun livePipeline(): LivePipelineInfo? {
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        val pub = dao.activeInterpreter() ?: return null
+        return LivePipelineInfo(dao.pipeline(pub.pipelineId)?.name ?: pub.pipelineId, pub.version, pub.mode == "LIVE", dao.recentFallbacks(pub.id, Int.MAX_VALUE), dao.interpretedCount(pub.id))
+    }
     override suspend fun retryAllFinal() = MemoryGraph.get(app).db.frameStateDao().retryAllFinal(System.currentTimeMillis())
 }
 
