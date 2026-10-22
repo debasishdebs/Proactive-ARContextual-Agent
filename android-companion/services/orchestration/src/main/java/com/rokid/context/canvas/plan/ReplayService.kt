@@ -106,7 +106,8 @@ class ReplayService(
         try {
             val f = fence()
             val labelRev = dao.labelRev()
-            val loaded = req.traceIds.map { it to (traces.load(it) ?: throw ReplayUnknownTrace(it)) }
+            // A trace counts once: a repeated id would otherwise be replayed and summed again toward the evidence minutes.
+            val loaded = req.traceIds.distinct().map { it to (traces.load(it) ?: throw ReplayUnknownTrace(it)) }
             val sources = loaded.map { (id, t) -> TraceSource(id, t.revision, t.fromMs, t.toMs) }
             val hashes = loaded.map { (_, t) -> t.planHash ?: "0" }.distinct()
             val configHash = req.candidate?.configHash ?: hashes.singleOrNull()

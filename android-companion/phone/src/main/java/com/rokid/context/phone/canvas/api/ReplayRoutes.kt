@@ -7,7 +7,6 @@ import com.rokid.context.canvas.plan.ReplayRequest
 import com.rokid.context.canvas.plan.ReplayService
 import com.rokid.context.canvas.plan.ReplayUnknownTrace
 import com.rokid.context.capture.replay.ReplayCandidate
-import com.rokid.context.glasses.capture.keyframe.GateParams
 import com.rokid.context.memory.db.CanvasReplayEntity
 import com.rokid.context.memory.db.TraceSources
 import com.rokid.context.phone.canvas.server.HttpRequest
@@ -18,21 +17,23 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
 /**
  * `/api/replays` routes (S77). Written in Task 21 and NOT registered: Task 22 hands it to `CanvasApi`/`CanvasRouter` (auth, Host/Origin policy and body size are the
  * router's). [handle] returns null for a path that is not a replay route. Messages are fixed texts; no input is echoed.
  *
- * - `POST /api/replays` `{traceIds, candidate?: {configHash, gate?: {hamming, bigChange, ringCompareAll}}, fusion?: {key: number}}` -> `202 {replayId}`
+ * - `POST /api/replays` `{traceIds, candidate?: {configHash}, fusion?: {key: number}}` -> `202 {replayId}`
  * - `GET /api/replays` -> the newest jobs; `GET /api/replays/{id}` -> the job and, once DONE, its estimate (always labelled an estimate, with its warnings)
  * - `POST /api/replays/{id}/cancel`
  */
-class ReplayRoutes(private val service: ReplayService) {
+class ReplayRoutes(
+    private val service: ReplayService,
+    /** The candidate of the STORED plan with this hash, or null when none has it (S77: the label must be the hash of what is simulated; nothing in the body overrides it). */
+    private val candidateFor: suspend (String) -> ReplayCandidate? = { null },
+) {
     companion object {
         private val ID = Regex("^[A-Za-z0-9:_-]{1,64}$")
         private val HASH = Regex("^[0-9a-f]{1,64}$")
@@ -75,15 +76,7 @@ class ReplayRoutes(private val service: ReplayService) {
         require(ids.isNotEmpty() && ids.size <= ReplayService.MAX_TRACES && ids.all { ID.matches(it) }) { "traceIds" }
         val cand = (b["candidate"] as? JsonObject)?.let { c ->
             val hash = (c["configHash"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { HASH.matches(it) } ?: throw IllegalArgumentException("configHash")
-            val gate = (c["gate"] as? JsonObject)?.let { g ->
-                val d = GateParams()
-                GateParams(
-                    hamming = g["hamming"]?.let { (it as? JsonPrimitive)?.intOrNull ?: throw IllegalArgumentException("hamming") } ?: d.hamming,
-                    bigChange = g["bigChange"]?.let { (it as? JsonPrimitive)?.intOrNull ?: throw IllegalArgumentException("bigChange") } ?: d.bigChange,
-                    ringCompareAll = g["ringCompareAll"]?.let { (it as? JsonPrimitive)?.booleanOrNull ?: throw IllegalArgumentException("ringCompareAll") } ?: d.ringCompareAll,
-                )
-            }
-            ReplayCandidate(hash, gate = gate)
+            candidateFor(hash) ?: throw NoSuchElementException("configHash")
         }
         val fusion = (b["fusion"] as? JsonObject)?.mapValues { (it.value as? JsonPrimitive)?.doubleOrNull?.takeIf { d -> d.isFinite() } ?: throw IllegalArgumentException("fusion") }
         val replayId = service.start(ReplayRequest(ids, cand, fusion, paramsJson = JsonObject(b.filterKeys { it != "traceIds" }).toString()))

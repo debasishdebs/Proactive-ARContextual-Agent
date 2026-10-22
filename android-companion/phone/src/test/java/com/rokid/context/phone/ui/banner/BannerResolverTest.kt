@@ -103,4 +103,10 @@ class BannerResolverTest {
         assertEquals("Memory storage 95% full \u00b7 raise the limit in Settings \u2192 Memory", coral.title)
         assertEquals(BannerTone.AMBER, amber.tone); assertEquals(BannerTone.CORAL, coral.tone)
     }
+
+    @Test fun watchdogNoteReplacesTheGlassesBannerTitleEvenWhileLinked() {
+        val b = BannerResolver.resolve(BannerInputs(link = LinkState.CONNECTED, glassesNote = "Glasses app not running, reopening\u2026 \u00b7 last heard 4 min ago"))!!
+        assertEquals(BannerKind.GLASSES_DISCONNECTED, b.kind); assertTrue(b.title.startsWith("Glasses app not running"))
+        assertEquals("Glasses disconnected", BannerResolver.resolve(BannerInputs(link = LinkState.OFFLINE))!!.title)
+    }
 }

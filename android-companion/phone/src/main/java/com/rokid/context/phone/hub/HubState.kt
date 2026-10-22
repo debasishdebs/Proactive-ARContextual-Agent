@@ -29,6 +29,8 @@ data class HubState(
     val otherCloses: Int = 0,
     /** Fix wave I: the glasses app is minimised without "display over other apps": capture runs but no icon shows. */
     val iconBlocked: Boolean = false,
+    /** The watchdog's user-visible line (link down / app not running / stopped by you, with the last-heard age); null = none. */
+    val watchdogNote: String? = null,
 ) {
     /**
      * Diagnostics line "Rokid closed the app N times (last gap Xs; M unverified; K other force-stops)"; null until the glasses
@@ -50,6 +52,7 @@ data class HubState(
         bufferedFrames = bufferedFrames,
         lastFrameAtMs = lastFrameAtMs,
         frame = lastFrame,
+        note = watchdogNote,
     )
 }
 

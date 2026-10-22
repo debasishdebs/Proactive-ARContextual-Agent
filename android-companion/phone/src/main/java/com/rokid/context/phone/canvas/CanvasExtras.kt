@@ -44,8 +44,9 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 dao, replay, devMode, startup = { CanvasStartup.run(app, db) },
                 sender = { HubGraph.get(app); HubGraph.planSender }, collect = { HubGraph.get(app); HubGraph.collectSession },
                 importer = TraceImport(dao, com.rokid.context.canvas.trace.FencedFiles(db, app.filesDir), fence),
-                stagingRoot = { app.getExternalFilesDir(null)?.let { File(it, "trace-staging").also(File::mkdirs) } },
+                stagingRoot = { app.getExternalFilesDir(null)?.let { File(it, com.rokid.context.canvas.trace.FencedFiles.STAGING_DIR).also(File::mkdirs) } },
                 plans = { HubGraph.get(app); PlanGraph.current()?.publisher }, m1 = { HubGraph.get(app); PlanGraph.current()?.m1 }, sweeps = sweeps,
+                candidates = com.rokid.context.canvas.plan.ReplayCandidates(db.canvasDao())::forHash,
             )
         }
 
@@ -59,9 +60,11 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             m1: () -> com.rokid.context.canvas.plan.M1EvidenceStore? = { null },
             /** Task 24/36: the sweep jobs; null = the routes are not registered (a test of another group). */
             sweeps: SweepService? = null,
+            /** The candidate of the stored plan with a hash (`ReplayCandidates.forHash`); null = replays with a candidate are refused. */
+            candidates: (suspend (String) -> com.rokid.context.capture.replay.ReplayCandidate?)? = null,
         ): CanvasExtras {
             val traces = TraceRoutes(dao, collect, devMode::value, importer = { importer }, stagingRoot = stagingRoot)
-            val replays = ReplayRoutes(replay)
+            val replays = ReplayRoutes(replay, candidates ?: { null })
             val planRoutes = PlanRoutes(devMode::value, sender, plans = plans, m1 = m1)
             val all = buildList {
                 add(ApiExtra(traces::handle)); add(ApiExtra(replays::handle))
