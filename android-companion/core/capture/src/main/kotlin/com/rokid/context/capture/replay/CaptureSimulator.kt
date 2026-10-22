@@ -294,6 +294,7 @@ object CaptureSimulator {
         fun tick(t: Long): Long {
             now = t
             var wait = TICK_MS
+            if (!compared) awaiting.removeAll { it.ev.tMs + ReplayRule.OPEN_TOLERANCE_MS < t }   // a candidate's recorded opens wait only one tolerance for the replay's own decision
             if (stopped) return wait
             if (blocked != null) { pendingDwellAt = null; pendingNowAt = null; forceBrief = false; return wait }
             val st = cls.state.value
@@ -335,7 +336,8 @@ object CaptureSimulator {
             if (preRoll) return
             val ro = ReplayOpen(t, cause)
             opens += ro
-            if (!compared) return
+            // A candidate keeps no verdict, but a recorded open at the same instant is the SAME decision (not a pre-emption of it): consume it, so the candidate's opens are counted.
+            if (!compared) { awaiting.firstOrNull { ReplayRule.opensMatch(it.ev.tMs, it.ev.cause, t, cause) }?.let { awaiting.remove(it) }; return }
             val rec = awaiting.firstOrNull { ReplayRule.opensMatch(it.ev.tMs, it.ev.cause, t, cause) }
             if (rec != null) awaiting.remove(rec) else pendingReplayed += RepOpen(ro, cur)
         }
@@ -349,7 +351,7 @@ object CaptureSimulator {
             if (preRoll) { forceBrief = false; return }
             cur.flagged += e
             cur.endMs = e.tMs
-            if (!compared) { forceBrief = false; return }
+            if (!compared) { forceBrief = false; awaiting += RecOpen(e, cur); return }
             val twin = pendingReplayed.firstOrNull { ReplayRule.opensMatch(e.tMs, e.cause, it.open.atMs, it.open.cause) }
             if (twin != null) pendingReplayed.remove(twin) else awaiting += RecOpen(e, cur)
             closing += cur
