@@ -24,7 +24,7 @@ class BackupRulesTest {
         "file:models",
         // Final review I4: the photo test's labels (queries.json holds the user's free text about their photos) never leave the phone.
         "file:photo-eval",
-    ) + secretBaks + memoryCopies + setupState.map { "sharedpref:$it.xml" }
+    ) + secretBaks + memoryCopies + slice3aFiles.map { "file:$it" } + setupState.map { "sharedpref:$it.xml" }
 
     /**
      * B12 ruling: copies of the legacy key file found in files/ after a restore. Backup rules match a path exactly, or
@@ -58,6 +58,18 @@ class BackupRulesTest {
         com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.PREFS,
         // Fix round 1: "Send matching photos with questions" is an opt-in privacy switch: off after a restore.
         com.rokid.context.orchestration.AskPhotoPolicy.PREFS,
+    ) + slice3aPrefs
+
+    /**
+     * Canvas slice 3a (S57, S81): per-install state that must never be restored onto another install. The persisted deletion epoch (a restored counter or
+     * install id would let another install's data pass its fence, or revoke a wipe), the plan and collection state, and the mark settings. The last three are
+     * ruled on ahead of the tasks that create them, so the XML is final before any of that code can write a file.
+     */
+    private val slice3aPrefs: Set<String> get() = setOf(com.rokid.context.memory.db.DeletionEpochStore.PREFS, "canvas_plan_state", "canvas_collect", "mark_settings")
+
+    /** Slice 3a folders under `files/`: sealed sensor traces, pulled imports and their tmp files. Sensor and label data: never backed up or transferred. */
+    private val slice3aFiles: Set<String> get() = setOf(
+        com.rokid.context.canvas.trace.FencedFiles.TRACES_DIR, com.rokid.context.canvas.trace.FencedFiles.IMPORT_DIR, com.rokid.context.canvas.trace.FencedFiles.TMP_DIR,
     )
 
     /**
@@ -208,5 +220,40 @@ class BackupRulesTest {
         val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) +
             listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
         for (section in sections) assertTrue(section.tagName, "sharedpref:app_config.xml" in excludes(section))
+    }
+
+    private fun allSections() = listOf(parse("src/main/res/xml/backup_rules.xml")) +
+        listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
+
+    /** S81: every slice 3a prefs file and folder is excluded in the legacy rules AND both data-extraction sections, under its exact name. */
+    @Test fun slice3aPrefsAndFoldersAreExcludedEverywhere() {
+        for (section in allSections()) {
+            val ex = excludes(section)
+            for (n in slice3aPrefs) assertTrue("${section.tagName}: $n.xml", "sharedpref:$n.xml" in ex)
+            for (n in slice3aFiles) assertTrue("${section.tagName}: $n", "file:$n" in ex)
+        }
+        // None of them is restorable, and none is exported in a config export.
+        assertTrue((restorable intersect slice3aPrefs).isEmpty())
+        assertTrue(slice3aPrefs.none { it in com.rokid.context.orchestration.ConfigExport.PREFS_FILES })
+    }
+
+    /**
+     * The new slice 3a tables are in `context.db`, which every section excludes (with its WAL and SHM), so they are never backed up or transferred. Reads
+     * the exported schema: a table that moved to another database file would fail here.
+     */
+    @Test fun slice3aTablesLiveInTheExcludedDatabase() {
+        assertEquals("context.db", com.rokid.context.memory.db.DatabaseFactory.NAME)
+        val text = File("../services/memory/schemas/com.rokid.context.memory.db.ContextDatabase/7.json").readText()
+        val tables = Regex(""""tableName"\s*:\s*"([^"]+)"""").findAll(text).map { it.groupValues[1] }.toSet()
+        val slice3 = setOf("canvas_trace", "canvas_trace_event", "canvas_replay", "canvas_sweep", "canvas_label", "canvas_meta", "canvas_calibration", "canvas_group_state", "canvas_helper_job")
+        assertTrue(tables.containsAll(slice3))
+        for (section in allSections()) for (f in listOf("context.db", "context.db-wal", "context.db-shm")) assertTrue("${section.tagName}: $f", "database:$f" in excludes(section))
+    }
+
+    /** The folder names and the prefs name are code constants: pin them so a rename cannot silently leave the old name excluded. */
+    @Test fun slice3aNamesMatchTheCode() {
+        val fenced = File("../services/orchestration/src/main/java/com/rokid/context/canvas/trace/FencedFiles.kt").readText()
+        for (n in slice3aFiles) assertTrue(n, fenced.contains("\"$n\""))
+        assertTrue(File("../services/memory/src/main/java/com/rokid/context/memory/db/DeletionEpochStore.kt").readText().contains("const val PREFS = \"deletion_epoch\""))
     }
 }

@@ -38,7 +38,8 @@ object PipelineValidator {
             if (!ID.matches(n.id)) out.node(n.id, "node ${shown(n.id)}: bad id")
             if (byId.containsKey(n.id)) { if (dup.add(n.id)) out.node(n.id, "duplicate node id ${shown(n.id)}") } else byId[n.id] = n
         }
-        val types = byId.mapValues { NodeTypes.byType(it.value.type) }
+        val types = byId.mapValues { NodeTypes.resolve(it.value.type, p.schema) }
+        val domains = byId.mapNotNull { (id, n) -> types[id]?.let { t -> id to NodeTypes.domainOf(n, t) } }.toMap()
         byId.forEach { (id, n) -> if (types[id] == null) out.node(id, "node $id: unknown type") }
 
         // Edges
@@ -51,6 +52,9 @@ object PipelineValidator {
             if (!ok) continue
             valid += e
             val src = types[e.from] ?: continue
+            val photosBinding = isPhotosBinding(e, byId)
+            val crossing = domains[e.from] != null && domains[e.to] != null && domains[e.from] != domains[e.to]
+            if (crossing && !photosBinding) { out.add(Problem("$label: crosses domains", edge = e)); continue }
             val branches = src.branches(byId.getValue(e.from).params)
             if (branches.isEmpty()) {
                 if (e.`when` != null) out.add(Problem("$label: when not allowed", edge = e))
@@ -60,17 +64,47 @@ object PipelineValidator {
                 out.add(Problem("$label: unknown when ${shown(e.`when`)}", edge = e))
             }
             val dst = types[e.to] ?: continue
-            if (src.output !in dst.inputs) out.add(Problem("$label: ${src.output} not accepted by ${e.to}", edge = e))
+            if (!photosBinding && src.output !in dst.inputs) out.add(Problem("$label: ${src.output} not accepted by ${e.to}", edge = e))
         }
 
-        // Input
+        // Roots: one per domain that has nodes (S34). Slice 2's single `input.photos` rule is kept for any graph with an ASYNC half or no RT half.
+        val rtNodes = domains.values.any { it == Domain.RT_GLASSES || it == Domain.RT_PHONE }
         val inputs = byId.values.filter { it.type == NodeTypes.INPUT_PHOTOS }
-        if (inputs.size != 1) out += "exactly one input.photos required"
-        inputs.forEach { n -> if (valid.any { it.to == n.id }) out.node(n.id, "node ${n.id}: input must have no incoming edge") }
+        val asyncNodes = domains.values.any { it == Domain.ASYNC }
+        if ((asyncNodes || !rtNodes) && inputs.size != 1) out += "exactly one input.photos required"
+        val rootOf = HashMap<Domain, List<PipelineNode>>()
+        for (d in listOf(Domain.RT_GLASSES, Domain.RT_PHONE)) {
+            if (domains.none { it.value == d }) continue
+            val rootType = NodeTypes.all.first { it.root && it.domain == d }.type
+            val roots = byId.values.filter { it.type == rootType }
+            rootOf[d] = roots
+            if (roots.size != 1) out += "exactly one $rootType required"
+        }
+        rootOf[Domain.ASYNC] = inputs
+        (inputs + rootOf.filterKeys { it != Domain.ASYNC }.values.flatten()).forEach { n ->
+            val photosOnly = n.type == NodeTypes.INPUT_PHOTOS
+            if (valid.any { it.to == n.id && !(photosOnly && isPhotosBinding(it, byId)) }) {
+                out.node(n.id, if (photosOnly) "node ${n.id}: input must have no incoming edge" else "node ${n.id}: root must have no incoming edge")
+            }
+        }
+
+        // Signal nodes: the domain is the instance's own param (S34), and a binding name is used once per side
+        byId.forEach { (id, n) ->
+            val t = types[id] ?: return@forEach
+            if (!t.domainFromParams) return@forEach
+            val raw = (n.params["domain"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            val d = raw ?: t.domain.name
+            val name = (n.params["name"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "ctx"
+            val ok = NodeTypes.SIGNAL_DOMAINS.any { it.name == d } && signalPlaceOk(n.type, name, d)
+            if (!ok) out.node(id, "node $id: signal domain ${shown(d)} not allowed here")
+        }
+        byId.values.filter { types[it.id]?.domainFromParams == true }.groupBy { n -> n.type to ((n.params["name"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "ctx") }
+            .forEach { (key, nodes) -> nodes.drop(1).forEach { out.node(it.id, "node ${it.id}: binding ${shown(key.second)} used more than once") } }
 
         // Mixed incoming types
         byId.keys.forEach { id ->
-            val kinds = valid.filter { it.to == id }.mapNotNull { types[it.from]?.output }.toSet()
+            if (types[id]?.mixedIn == true) return@forEach
+            val kinds = valid.filter { it.to == id && !isPhotosBinding(it, byId) }.mapNotNull { types[it.from]?.output }.toSet()
             if (kinds.size > 1) out.node(id, "node $id: incoming edges carry different types")
         }
 
@@ -95,12 +129,14 @@ object PipelineValidator {
         byId.keys.forEach { if (state[it] == null) dfs(it) }
         cyc.forEach { out.node(it, "cycle through $it") }
 
-        // Reachability
-        if (inputs.size == 1) {
-            val seen = mutableSetOf(inputs[0].id)
-            val queue = ArrayDeque(listOf(inputs[0].id))
-            while (queue.isNotEmpty()) (next[queue.removeFirst()] ?: emptyList()).forEach { if (seen.add(it)) queue.addLast(it) }
-            byId.keys.filter { it !in seen }.forEach { out.node(it, "node $it: unreachable") }
+        // Reachability, per domain: every node is reachable from its own root. A `signal.in` is a binding end and counts as a seed.
+        for ((d, roots) in rootOf) {
+            if (roots.size != 1) continue
+            val seeds = listOf(roots[0].id) + byId.values.filter { types[it.id]?.domainFromParams == true && it.type == NodeTypes.SIGNAL_IN && domains[it.id] == d }.map { it.id }
+            val seen = seeds.toMutableSet()
+            val queue = ArrayDeque(seeds)
+            while (queue.isNotEmpty()) (next[queue.removeFirst()] ?: emptyList()).forEach { if (domains[it] == d && seen.add(it)) queue.addLast(it) }
+            byId.keys.filter { domains[it] == d && it !in seen }.forEach { out.node(it, "node $it: unreachable") }
         }
 
         // Params
@@ -111,6 +147,7 @@ object PipelineValidator {
     private fun paramProblems(id: String, n: PipelineNode, t: NodeType): List<String> {
         val out = mutableListOf<String>()
         val params = n.params
+        out += ParamCheck.problems(id, t, params)
         if (n.type == NodeTypes.VISION_EXTRACT) {
             params["batch"]?.let { b ->
                 val v = (b as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull
@@ -148,6 +185,18 @@ object PipelineValidator {
             ) out += "node $id: cases must be 1..12 unique labels like ids"
         }
         return out
+    }
+
+    /** The one cross-domain edge: the capture node feeds the ASYNC half's `input.photos` (the `photos` binding). */
+    private fun isPhotosBinding(e: PipelineEdge, byId: Map<String, PipelineNode>) =
+        byId[e.from]?.type == NodeTypes.CAPTURE_IMAGE && byId[e.to]?.type == NodeTypes.INPUT_PHOTOS
+
+    /** `ctx` is sent from RT_PHONE and received in RT_GLASSES; `intent` is received in RT_PHONE (it is sent by `event.hub_intent`). */
+    private fun signalPlaceOk(type: String, name: String, domain: String) = when (type to name) {
+        NodeTypes.SIGNAL_OUT to "ctx" -> domain == "RT_PHONE"
+        NodeTypes.SIGNAL_IN to "ctx" -> domain == "RT_GLASSES"
+        NodeTypes.SIGNAL_IN to "intent" -> domain == "RT_PHONE"
+        else -> false
     }
 
     private fun schemaProblem(id: String, v: JsonElement?, required: Boolean): String? {

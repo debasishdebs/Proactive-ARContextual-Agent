@@ -7,6 +7,7 @@ import com.rokid.context.ai.contract.PromptKey
 import com.rokid.context.ai.canvas.InterpretableShape
 import com.rokid.context.ai.canvas.LiveShape
 import com.rokid.context.ai.canvas.NodeTypes
+import com.rokid.context.ai.canvas.ParamSpec
 import com.rokid.context.ai.canvas.PipelineDiff
 import com.rokid.context.ai.canvas.Problem
 import com.rokid.context.ai.canvas.Pipeline
@@ -92,17 +93,6 @@ class CanvasBackendImpl(
         const val UNDECODABLE = "The pipeline JSON is not valid."
         /** The Ask debug view's template editor names the Answer prompt with this type (it has no pipeline node). */
         const val ASK_ANSWER = "ask.answer"
-
-        /** The id prefix of a node type (slice 3's registry replaces this mapping). */
-        internal val SHORT = mapOf(
-            NodeTypes.INPUT_PHOTOS to "photos", NodeTypes.VISION_EXTRACT to "extract", NodeTypes.LOCAL_CRITIC to "trust", NodeTypes.CRITIC to "critic",
-            NodeTypes.PROMPT to "prompt", NodeTypes.SWITCH to "route", NodeTypes.MEMORY_WRITE to "write",
-        )
-
-        /** The palette group of a node type, by its id prefix. */
-        internal fun categoryOf(type: String): String = when (type.substringBefore('.')) {
-            "input" -> "Inputs"; "ai" -> "AI"; "route" -> "Routing"; "gate" -> "Checks"; "memory" -> "Memory"; else -> "Other"
-        }
 
         internal fun problemJson(p: Problem): JsonObject = buildJsonObject {
             put("text", p.text)
@@ -209,22 +199,59 @@ class CanvasBackendImpl(
         buildJsonObject {
             put("type", t.type)
             put("label", t.label)
+            put("version", t.version)
             put("inputs", JsonArray(t.inputs.map { JsonPrimitive(it.name) }))
             put("output", t.output.name)
             put("promptKey", t.promptKey?.name)
             put("branches", JsonArray(t.branches(JsonObject(emptyMap())).map { JsonPrimitive(it) }))
             put("branchesFromCases", t.type == NodeTypes.SWITCH)
-            put("params", JsonArray(paramsOf(t.type)))
-            put("short", SHORT[t.type] ?: t.type.substringAfterLast('.'))
-            put("category", categoryOf(t.type))
-            put("palette", t.type != NodeTypes.INPUT_PHOTOS) // exactly one photo input per pipeline
-            put("domain", "ASYNC")
+            put("params", JsonArray(if (t.params.specs.isEmpty()) paramsOf(t.type) else t.params.specs.map { paramJson(it) }))
+            put("short", t.short.ifEmpty { t.type.substringAfterLast('.') })
+            put("category", t.category.label)
+            put("palette", t.palette) // exactly one photo input per pipeline: not offered
+            put("domain", t.domain.name)
+            put("domainFromParams", t.domainFromParams)
+            put("executor", t.executor.name)
+            put("root", t.root)
+            put("sinceSchema", t.sinceSchema)
+            put("liveable", t.liveable)
+            put("cost", buildJsonObject { put("modelCalls", t.cost.modelCalls); put("rtOps", t.cost.rtOps); put("cpuClass", t.cost.cpuClass) })
         }
     })
+
+    private fun paramJson(s: ParamSpec): JsonObject = buildJsonObject {
+        put("name", s.name); put("kind", s.kind.wire)
+        if (s.label.isNotEmpty()) put("label", s.label)
+        s.min?.let { put("min", num(it)) }
+        s.max?.let { put("max", num(it)) }
+        s.step?.let { put("step", num(it)) }
+        s.default?.let { put("default", it) }
+        if (s.options.isNotEmpty()) put("options", JsonArray(s.options.map { JsonPrimitive(it) }))
+        if (s.maxLen > 0) put("maxLen", s.maxLen)
+        put("sweep", s.sweep)
+        s.table?.let { tb ->
+            put("table", buildJsonObject {
+                put("rows", JsonArray(tb.rows.map { JsonPrimitive(it) }))
+                put("cols", JsonArray(tb.cols.map { c ->
+                    buildJsonObject {
+                        put("name", c.name); put("label", c.label); put("kind", c.kind.wire)
+                        c.min?.let { put("min", num(it)) }
+                        c.max?.let { put("max", num(it)) }
+                        put("blankable", c.blankable); put("allowZero", c.allowZero)
+                        c.group?.let { put("group", it) }
+                    }
+                }))
+            })
+        }
+    }
+
+    /** Whole numbers print as integers, so 4.0 is 4 on the wire. */
+    private fun num(d: Double): JsonPrimitive = if (d == Math.floor(d) && Math.abs(d) < 1e12) JsonPrimitive(d.toLong()) else JsonPrimitive(d)
 
     private fun param(name: String, kind: String, extra: Map<String, Int> = emptyMap()) =
         buildJsonObject { put("name", name); put("kind", kind); extra.forEach { (k, v) -> put(k, v) } }
 
+    /** The slice 2 types keep their editor param descriptors here (their v1 descriptors have no [ParamSchema]). */
     private fun paramsOf(type: String): List<JsonObject> = when (type) {
         NodeTypes.VISION_EXTRACT -> listOf(param("batch", "int", mapOf("min" to 1, "max" to ExtractSave.MAX_BATCH)), param("prompt", "prompt"))
         NodeTypes.CRITIC -> listOf(param("prompt", "prompt"))

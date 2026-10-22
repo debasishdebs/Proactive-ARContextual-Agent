@@ -29,6 +29,11 @@ class ContextApp : Application() {
         // conversion a toggle or a process death left part-way (a no-op when every file is already in the wanted form).
         com.rokid.context.phone.FrameReaders.install(this)
         com.rokid.context.orchestration.FrameCryptoWorker.enqueue(this)
+        // Canvas slice 3a start-up recovery (S58, S77): orphan files in canvas_tmp go, and a replay or sweep left RUNNING by a dead process is ABORTED.
+        kotlin.concurrent.thread(name = "canvas-startup") {
+            runCatching { kotlinx.coroutines.runBlocking { com.rokid.context.canvas.trace.CanvasStartup.run(this@ContextApp, com.rokid.context.memory.MemoryGraph.get(this@ContextApp).db) } }
+                .onFailure { android.util.Log.w("ContextApp", "canvas start-up recovery failed; retries next start (${it.javaClass.simpleName})") }
+        }
         // Eager background import so it is normally done before first use; PipelineRecords calls wait only if it is still running.
         kotlin.concurrent.thread(name = "legacy-import") {
             // Never throws (P8 D5): a failure is logged inside and retried by LegacyImportWorker.

@@ -10,6 +10,8 @@ import kotlinx.serialization.json.intOrNull
 
 object PipelineJson {
     const val SCHEMA = 1
+    /** Schema 2 adds the capture-half types; its canonical form names each node as `type@version` (S41). */
+    const val SCHEMA_V2 = 2
     const val MAX_BYTES = 64 * 1024
     /** Nesting deeper than this is refused before any recursive walk (toString, canonical, hash). */
     const val MAX_DEPTH = 32
@@ -22,7 +24,7 @@ object PipelineJson {
         val root = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return fail("not JSON")
         if (tooDeep(root)) return fail("too deep")
         val schema = (root["schema"] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull
-        if (schema != SCHEMA) return fail("unsupported schema")
+        if (schema != SCHEMA && schema != SCHEMA_V2) return fail("unsupported schema")
         val id = str(root["id"]) ?: return fail("missing id")
         val name = str(root["name"]) ?: return fail("missing name")
         val nodesJson = root["nodes"] as? JsonArray ?: return fail("missing nodes")
@@ -66,15 +68,15 @@ object PipelineJson {
     }
 
     /** Keys sorted at every level, no whitespace. Array order is kept. */
-    fun canonical(p: Pipeline): String = sorted(toElement(p)).toString()
+    fun canonical(p: Pipeline): String = sorted(toElement(p, versioned = true)).toString()
 
-    private fun toElement(p: Pipeline): JsonObject = JsonObject(
+    private fun toElement(p: Pipeline, versioned: Boolean = false): JsonObject = JsonObject(
         linkedMapOf(
             "schema" to JsonPrimitive(p.schema),
             "id" to JsonPrimitive(p.id),
             "name" to JsonPrimitive(p.name),
             "nodes" to JsonArray(p.nodes.map {
-                JsonObject(linkedMapOf("id" to JsonPrimitive(it.id), "type" to JsonPrimitive(it.type), "title" to JsonPrimitive(it.title), "params" to it.params))
+                JsonObject(linkedMapOf("id" to JsonPrimitive(it.id), "type" to JsonPrimitive(if (versioned) typeName(p.schema, it.type) else it.type), "title" to JsonPrimitive(it.title), "params" to it.params))
             }),
             "edges" to JsonArray(p.edges.map { e ->
                 val m = linkedMapOf<String, JsonElement>("from" to JsonPrimitive(e.from), "to" to JsonPrimitive(e.to))
@@ -83,6 +85,10 @@ object PipelineJson {
             }),
         ),
     )
+
+    /** Schema 2 hashes `type@version`; schema 1 keeps the bare type, so stored hashes are never recomputed. */
+    private fun typeName(schema: Int, type: String) =
+        if (schema >= SCHEMA_V2) NodeTypes.resolve(type, schema)?.let { "$type@${it.version}" } ?: type else type
 
     private fun sorted(e: JsonElement): JsonElement = when (e) {
         is JsonObject -> JsonObject(e.entries.sortedBy { it.key }.associateTo(LinkedHashMap()) { it.key to sorted(it.value) })
