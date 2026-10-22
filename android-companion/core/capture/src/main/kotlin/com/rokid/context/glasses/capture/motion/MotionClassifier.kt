@@ -188,6 +188,19 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params
 
     @Synchronized fun walkedSinceMark(): Boolean = walked
 
+    /**
+     * Replay seam (slice 3a Task 20): starts the classifier from what a trace's start snapshot recorded, so the first replayed sample has the same `dt` and
+     * the pose the glance admission reads is the live one. [prevGyroMs] and [quietSinceMs] null = -1 (none yet). Internal: only the simulator calls it.
+     */
+    @Synchronized internal fun restoreForReplay(
+        prevGyroMs: Long?, rx: Float, ry: Float, rz: Float, walked: Boolean, qx: Float, qy: Float, qz: Float, quietSinceMs: Long?,
+    ) {
+        lastGyroMs = prevGyroMs ?: -1L
+        this.rx = rx; this.ry = ry; this.rz = rz; this.walked = walked
+        this.qx = qx; this.qy = qy; this.qz = qz
+        this.quietSinceMs = quietSinceMs ?: -1L
+    }
+
     @Synchronized fun markPose() { rx = 0f; ry = 0f; rz = 0f; walked = false; qx = 0f; qy = 0f; qz = 0f }
 
     /** Glances and micro bouts since the last call (the heartbeat). */
