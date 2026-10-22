@@ -47,4 +47,6 @@
     <exclude domain="sharedpref" path="image_read_attempts.xml" />
     <!-- Wave B: opt-in context sources, my-car addresses, LiveFit digest, watch epoch/seq: every source is off after a restore. -->
     <exclude domain="sharedpref" path="ctx_hub_state.xml" />
+    <!-- Canvas slice 2: the Developer mode switch is a per-device debug flag: off after a restore. -->
+    <exclude domain="sharedpref" path="pc_dev.xml" />
 </full-backup-content>
