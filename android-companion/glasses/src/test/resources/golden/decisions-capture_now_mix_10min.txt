@@ -1,0 +1,465 @@
+# golden decisions v1 script=capture_now_mix_10min seed=88 durationMs=600000
+# settings wake=MOTION tier=T0 workRest=false work=90 rest=15 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
+# line: t kind cause detail (t = virtual ms from session start)
+0 ctx UNKNOWN -
+0 status - running=false reason=idle
+0 gap - ms=5000 step=0
+0 open timer -
+20 status - running=true reason=null
+535 close - analysed=1
+535 keep other scene=1 motion=STILL blur=4835
+5000 motion HEAD_MOVING -
+5000 open stream -
+6040 motion STILL -
+6255 keep other scene=549 motion=STILL blur=4700
+7280 glance - g=1 micro=0
+7280 dwell - tMs=7280
+7300 skip novel n=1
+7700 skip same n=1
+8060 skip same n=1
+8420 skip same n=1
+8780 skip same n=1
+9140 skip same n=1
+9500 skip same n=1
+9860 skip same n=1
+10040 close - analysed=13
+14505 open timer -
+15040 skip same n=1
+15040 close - analysed=1
+19505 open timer -
+20000 now - accepted=true
+20040 keep other scene=549 motion=STILL blur=4700
+20040 close - analysed=1
+21500 now - accepted=true
+21500 open now -
+22035 close - analysed=1
+22035 keep other scene=549 motion=STILL blur=4700
+46000 motion HEAD_MOVING -
+46000 open stream -
+47100 motion STILL -
+47260 skip same n=2
+47620 skip same n=1
+47980 skip same n=1
+48340 skip same n=1
+48340 glance - g=1 micro=0
+48340 dwell - tMs=48340
+48460 skip same n=1
+48820 skip same n=1
+49180 skip same n=1
+49540 skip same n=1
+49900 skip same n=1
+50260 skip same n=1
+50620 skip same n=1
+50980 skip same n=1
+51340 skip same n=1
+51340 close - analysed=15
+66255 open timer -
+66790 close - analysed=1
+66800 skip same n=1
+71255 open timer -
+71790 close - analysed=1
+71800 skip same n=1
+71800 gap - ms=10000 step=1
+81255 open timer -
+81790 close - analysed=1
+81800 skip same n=1
+81800 gap - ms=20000 step=2
+85960 motion HEAD_MOVING -
+85960 open stream -
+85980 gap - ms=5000 step=0
+87140 motion STILL -
+87215 keep other scene=512 motion=HEAD_MOVING blur=4580
+88380 glance - g=1 micro=0
+88380 dwell - tMs=88380
+88400 skip novel n=1
+88660 skip same n=1
+89020 skip same n=1
+89380 skip same n=1
+89740 skip same n=1
+90100 skip same n=1
+90460 skip same n=1
+90820 skip same n=1
+91140 close - analysed=13
+95000 now - accepted=true
+95000 open now -
+95535 close - analysed=1
+95535 keep other scene=512 motion=STILL blur=4580
+100000 open timer -
+100535 close - analysed=1
+100540 skip same n=1
+100540 gap - ms=10000 step=1
+110000 open timer -
+110535 close - analysed=1
+110540 skip same n=1
+110540 gap - ms=20000 step=2
+127040 motion HEAD_MOVING -
+127040 open stream -
+127060 gap - ms=5000 step=0
+127760 motion STILL -
+127940 skip same n=2
+128300 skip same n=1
+128660 skip same n=1
+129000 glance - g=1 micro=0
+129000 dwell - tMs=129000
+129020 skip same n=1
+129380 skip same n=1
+129740 skip same n=1
+130100 skip same n=1
+130460 skip same n=1
+130820 skip same n=1
+131180 skip same n=1
+131540 skip same n=1
+131900 skip same n=1
+132000 close - analysed=13
+136465 open timer -
+137000 skip same n=1
+137000 close - analysed=1
+141465 open timer -
+142000 skip same n=1
+142000 gap - ms=10000 step=1
+142000 close - analysed=1
+150000 now - accepted=true
+150000 open now -
+150535 close - analysed=1
+150535 keep other scene=512 motion=STILL blur=4580
+150540 gap - ms=5000 step=0
+155000 open timer -
+155535 close - analysed=1
+155540 skip same n=1
+155540 gap - ms=10000 step=1
+156080 motion HEAD_MOVING -
+156080 open stream -
+156100 gap - ms=5000 step=0
+156840 motion STILL -
+156980 skip same n=2
+157340 skip same n=1
+157700 skip same n=1
+158060 skip same n=1
+158080 glance - g=1 micro=0
+158080 dwell - tMs=158080
+158180 skip same n=1
+158540 skip same n=1
+158900 skip same n=1
+159260 skip same n=1
+159620 skip same n=1
+159980 skip same n=1
+160340 skip same n=1
+160700 skip same n=1
+161060 skip same n=1
+161080 close - analysed=14
+165545 open timer -
+166080 skip same n=1
+166080 close - analysed=1
+170545 open timer -
+171080 skip same n=1
+171080 gap - ms=10000 step=1
+171080 close - analysed=1
+180545 open timer -
+181080 skip same n=1
+181080 gap - ms=20000 step=2
+181080 close - analysed=1
+196400 motion HEAD_MOVING -
+196400 open stream -
+196420 gap - ms=5000 step=0
+197720 motion STILL -
+198015 keep other scene=1411 motion=HEAD_MOVING blur=5038
+198960 glance - g=1 micro=0
+198960 dwell - tMs=198960
+198980 skip novel n=1
+199460 skip same n=1
+199820 skip same n=1
+200180 skip same n=1
+200540 skip same n=1
+200900 skip same n=1
+201260 skip same n=1
+201620 skip same n=1
+201720 close - analysed=14
+206185 open timer -
+206720 skip same n=1
+206720 close - analysed=1
+211185 open timer -
+211720 skip same n=1
+211720 gap - ms=10000 step=1
+211720 close - analysed=1
+221185 open timer -
+221720 skip same n=1
+221720 gap - ms=20000 step=2
+221720 close - analysed=1
+223680 motion HEAD_MOVING -
+223680 open stream -
+223700 gap - ms=5000 step=0
+224980 motion STILL -
+225295 keep other scene=1191 motion=HEAD_MOVING blur=4199
+226220 glance - g=1 micro=0
+226220 dwell - tMs=226220
+226240 skip novel n=1
+226740 skip same n=1
+227100 skip same n=1
+227460 skip same n=1
+227820 skip same n=1
+228180 skip same n=1
+228540 skip same n=1
+228900 skip same n=1
+228980 close - analysed=14
+233445 open timer -
+233980 skip same n=1
+233980 close - analysed=1
+238445 open timer -
+238980 skip same n=1
+238980 gap - ms=10000 step=1
+238980 close - analysed=1
+245600 motion WALKING -
+245600 open stream -
+245620 gap - ms=5000 step=0
+247940 skip same n=1
+250100 skip same n=1
+252260 skip same n=1
+254420 skip same n=1
+256575 keep other scene=1375 motion=WALKING blur=4237
+258740 skip same n=1
+260900 skip same n=1
+263060 skip same n=1
+265220 skip same n=1
+267380 skip same n=1
+269540 skip same n=1
+271700 skip same n=1
+273860 skip same n=1
+276020 skip same n=1
+278180 skip same n=1
+280000 now - accepted=true
+280095 keep other scene=1375 motion=WALKING blur=4237
+282260 skip same n=1
+284420 skip same n=1
+286580 skip same n=1
+288740 skip same n=1
+290900 skip same n=1
+293060 skip same n=1
+295220 skip same n=1
+297380 skip same n=1
+299540 skip same n=1
+300000 now - accepted=true
+300015 keep other scene=1375 motion=WALKING blur=4237
+302180 skip same n=1
+304340 skip same n=1
+306500 skip same n=1
+308660 skip same n=1
+310820 skip same n=1
+312980 skip same n=1
+315140 skip same n=1
+317300 skip same n=1
+319460 skip same n=1
+321620 skip same n=1
+323780 skip same n=1
+325940 skip same n=1
+328100 skip same n=1
+330260 skip same n=1
+332420 skip same n=1
+334580 skip same n=1
+336740 skip same n=1
+338900 skip same n=1
+341060 skip same n=1
+343215 keep other scene=177 motion=WALKING blur=4297
+345380 skip same n=1
+345920 motion STILL -
+346100 skip same n=2
+346460 skip same n=1
+346820 skip same n=1
+347180 skip same n=1
+347400 glance - g=1 micro=0
+347400 dwell - tMs=347400
+347420 skip same n=1
+347780 skip same n=1
+348140 skip same n=1
+348500 skip same n=1
+348860 skip same n=1
+349220 skip same n=1
+349580 skip same n=1
+349940 skip same n=1
+350150 close - analysed=291
+354615 open timer -
+355150 close - analysed=1
+355160 skip same n=1
+359615 open timer -
+360150 close - analysed=1
+360160 skip same n=1
+360160 gap - ms=10000 step=1
+369615 open timer -
+370150 close - analysed=1
+370160 skip same n=1
+370160 gap - ms=20000 step=2
+380000 motion HEAD_MOVING -
+380000 open stream -
+380020 gap - ms=5000 step=0
+380840 motion STILL -
+380895 keep other scene=4737 motion=HEAD_MOVING blur=5174
+382080 glance - g=1 micro=0
+382080 dwell - tMs=382080
+382100 skip novel n=1
+382340 skip same n=1
+382700 skip same n=1
+383060 skip same n=1
+383420 skip same n=1
+383780 skip same n=1
+384140 skip same n=1
+384500 skip same n=1
+384840 close - analysed=12
+389305 open timer -
+389840 skip same n=1
+389840 close - analysed=1
+394305 open timer -
+394840 skip same n=1
+394840 gap - ms=10000 step=1
+394840 close - analysed=1
+404305 open timer -
+404840 skip same n=1
+404840 gap - ms=20000 step=2
+404840 close - analysed=1
+415480 motion HEAD_MOVING -
+415480 open stream -
+415500 gap - ms=5000 step=0
+416380 motion STILL -
+416735 keep other scene=790 motion=HEAD_MOVING blur=3750
+417620 glance - g=1 micro=0
+417620 dwell - tMs=417620
+417640 skip novel n=1
+418180 skip same n=1
+418540 skip same n=1
+418900 skip same n=1
+419260 skip same n=1
+419620 skip same n=1
+419980 skip same n=1
+420340 skip same n=1
+420380 close - analysed=13
+424845 open timer -
+425380 skip same n=1
+425380 close - analysed=1
+429845 open timer -
+430380 skip same n=1
+430380 gap - ms=10000 step=1
+430380 close - analysed=1
+439845 open timer -
+440380 skip same n=1
+440380 gap - ms=20000 step=2
+440380 close - analysed=1
+453720 motion HEAD_MOVING -
+453720 open stream -
+453740 gap - ms=5000 step=0
+454820 motion STILL -
+454975 keep other scene=4491 motion=HEAD_MOVING blur=4144
+456060 glance - g=1 micro=0
+456060 dwell - tMs=456060
+456080 skip novel n=1
+456420 skip same n=1
+456780 skip same n=1
+457140 skip same n=1
+457500 skip same n=1
+457860 skip same n=1
+458220 skip same n=1
+458580 skip same n=1
+458820 close - analysed=13
+463285 open timer -
+463820 skip same n=1
+463820 close - analysed=1
+468285 open timer -
+468820 skip same n=1
+468820 gap - ms=10000 step=1
+468820 close - analysed=1
+478285 open timer -
+478820 skip same n=1
+478820 gap - ms=20000 step=2
+478820 close - analysed=1
+483000 now - accepted=true
+483000 open now -
+483535 close - analysed=1
+483535 keep other scene=4491 motion=STILL blur=4144
+483540 gap - ms=5000 step=0
+488000 open timer -
+488340 motion HEAD_MOVING -
+489020 motion STILL -
+489260 skip same n=2
+489620 skip same n=1
+489980 skip same n=1
+490260 glance - g=1 micro=0
+490260 dwell - tMs=490260
+490300 skip same n=1
+490660 skip same n=1
+491020 skip same n=1
+491380 skip same n=1
+491740 skip same n=1
+492100 skip same n=1
+492460 skip same n=1
+492820 skip same n=1
+493180 skip same n=1
+493260 close - analysed=14
+497725 open timer -
+498260 skip same n=1
+498260 close - analysed=1
+502725 open timer -
+503260 skip same n=1
+503260 gap - ms=10000 step=1
+503260 close - analysed=1
+512725 open timer -
+513260 skip same n=1
+513260 gap - ms=20000 step=2
+513260 close - analysed=1
+518740 motion HEAD_MOVING -
+518740 open stream -
+518760 gap - ms=5000 step=0
+520080 motion STILL -
+520360 skip same n=2
+520720 skip same n=1
+521080 skip same n=1
+521320 glance - g=1 micro=0
+521320 dwell - tMs=521320
+521360 skip same n=1
+521720 skip same n=1
+522080 skip same n=1
+522440 skip same n=1
+522800 skip same n=1
+523160 skip same n=1
+523520 skip same n=1
+523880 skip same n=1
+524240 skip same n=1
+524320 close - analysed=15
+528785 open timer -
+529320 skip same n=1
+529320 close - analysed=1
+533785 open timer -
+534320 skip same n=1
+534320 gap - ms=10000 step=1
+534320 close - analysed=1
+543785 open timer -
+544320 skip same n=1
+544320 gap - ms=20000 step=2
+544320 close - analysed=1
+562300 motion HEAD_MOVING -
+562300 open stream -
+562320 gap - ms=5000 step=0
+563060 motion STILL -
+563195 keep other scene=1833 motion=HEAD_MOVING blur=4230
+564300 glance - g=1 micro=0
+564300 dwell - tMs=564300
+564320 skip novel n=1
+564640 skip same n=1
+565000 skip same n=1
+565360 skip same n=1
+565720 skip same n=1
+566080 skip same n=1
+566440 skip same n=1
+566800 skip same n=1
+567060 close - analysed=12
+571525 open timer -
+572060 skip same n=1
+572060 close - analysed=1
+576525 open timer -
+577060 skip same n=1
+577060 gap - ms=10000 step=1
+577060 close - analysed=1
+586525 open timer -
+587060 skip same n=1
+587060 gap - ms=20000 step=2
+587060 close - analysed=1
+# motionClassifierInputs=60000
+# glanceTriggerToOpenLatencyMs=
+# opens=58 ok=58 byCause={now=4, stream=13, timer=41} keeps=18
+# expectedResv=305600
