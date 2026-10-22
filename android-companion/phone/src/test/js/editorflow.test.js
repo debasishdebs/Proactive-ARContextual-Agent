@@ -39,6 +39,7 @@ export const tests = {
     const store = newStore(); edit(store, 2);
     const r = await validateDraft(store, fakeApi([{ method: 'POST', path: '/api/validate', fail: { status: 0, message: 'The phone could not be reached.' } }]));
     ok(!r.ok); eq(store.get().ds.layout, layout);
+    eq(store.get().status, "Couldn't check the draft: The phone could not be reached.");
   },
   async saveSendsTheSavedRevAndMarksClean() {
     const store = newStore(); edit(store, 2);

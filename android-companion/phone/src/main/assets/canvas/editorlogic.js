@@ -35,6 +35,9 @@ export function markSaved(ed, serverRev, atRev) {
   return Object.assign({}, ed, { cleanRev: atRev, ds: Object.assign({}, ed.ds, { savedRev: serverRev }) });
 }
 
+/** The confirm text before something that would drop unsaved edits (leave, reload after publish); null when saved. */
+export const leaveText = (ed, what) => (isDirty(ed) ? (what ? what + ' ' : '') + 'You have unsaved changes to this pipeline. Continue and lose them?' : null);
+
 export const lockForSave = (ed) => Object.assign({}, ed, { ds: draft.lock(ed.ds), choose: null });
 export const unlockAfterSave = (ed, savedRev) => Object.assign({}, ed, { ds: draft.unlock(ed.ds, savedRev) });
 export const isReadOnly = (ed) => ed.readOnly || ed.ds.locked;
@@ -210,7 +213,7 @@ export function nearestAbove(nodes, pos) {
   for (const n of nodes || []) {
     const gap = pos.y - n.position.y;
     if (gap <= 0) continue;
-    const k = [gap, Math.abs(n.position.x + 110 - pos.x)];
+    const k = [gap, Math.abs(n.position.x + 90 - pos.x)];
     if (!bestKey || k[0] < bestKey[0] || (k[0] === bestKey[0] && k[1] < bestKey[1])) { best = n.id; bestKey = k; }
   }
   return best;

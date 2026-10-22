@@ -1,6 +1,6 @@
 // The editor's async flows, pure over an injected `api(method, path, body)` and a store from editorlogic.createStore:
 // validate (stale replies dropped), save (CAS on the saved draft revision), and save-then-freeze under the edit lock.
-import { validationRequest, applyReply, markSaved, lockForSave, unlockAfterSave, isDirty } from './editorlogic.js';
+import { validationRequest, applyReply, markSaved, lockForSave, unlockAfterSave, isDirty, say } from './editorlogic.js';
 
 const enc = encodeURIComponent;
 const fail = (e) => ({ ok: false, conflict: !!(e && e.status === 409), message: e && e.message ? String(e.message) : 'Request failed.', error: e });
@@ -12,7 +12,11 @@ export async function validateDraft(store, api) {
     const reply = await api('POST', '/api/validate', body);
     store.update((ed) => applyReply(ed, reply));
     return { ok: true };
-  } catch (e) { return fail(e); } // the old layout and problems stay
+  } catch (e) { // the old layout and problems stay, and the editor says they may be stale
+    const f = fail(e);
+    store.update((ed) => say(ed, "Couldn't check the draft: " + f.message));
+    return f;
+  }
 }
 
 /** PUT the draft against the saved revision. → {ok, draftRev, problems} | {ok:false, conflict?, message}. */

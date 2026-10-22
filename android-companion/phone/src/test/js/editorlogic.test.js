@@ -354,4 +354,16 @@ export const tests = {
     eq(c.nodes.find((n) => n.id === 'critic').selected, true);
     ok(c.edges === b.edges, 'edges did not change');
   },
+  leaveTextOnlyWhenDirty() {
+    const ed = open();
+    eq(E.leaveText(ed), null);
+    const d = apply(ed, { kind: 'param', nodeId: 'extract', key: 'batch', value: 2 });
+    ok(/unsaved/i.test(E.leaveText(d)));
+    eq(E.leaveText(E.markSaved(d, 4, d.ds.rev)), null, 'saved: nothing to lose');
+    ok(/Publish/.test(E.leaveText(d, 'Publishing reloads this page.')), 'a caller can name the action');
+  },
+  nearestAboveUsesTheCardCentre() {
+    const two = [{ id: 'l', position: { x: 0, y: 0 } }, { id: 'r', position: { x: 220, y: 0 } }];
+    eq(E.nearestAbove(two, { x: 210, y: 100 }), 'r', 'cards are 180 wide: centres at 90 and 310');
+  },
 };

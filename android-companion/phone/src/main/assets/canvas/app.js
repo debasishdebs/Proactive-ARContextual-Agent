@@ -86,6 +86,7 @@ function onLeave(fn) { leaveFns.push(fn); }
 
 function leave() {
   generation++;
+  guardFn = null;
   for (const fn of leaveFns.splice(0)) { try { fn(); } catch (e) { /* ignore */ } }
   for (const p of imageCache.values()) p.then((u) => { if (u) URL.revokeObjectURL(u); }, () => {});
   imageCache = new Map();
@@ -177,6 +178,8 @@ function renderNav() {
   clear(nav);
   nav.appendChild(h('a', { href: '#/' }, 'Pipelines'));
   nav.appendChild(btn('Sign out', async () => {
+    const text = guardFn ? guardFn() : null;
+    if (text && !window.confirm(text)) return;
     try { await request('POST', '/api/logout'); } catch (e) { /* ignore */ }
     setToken(null);
     showPairing('');
