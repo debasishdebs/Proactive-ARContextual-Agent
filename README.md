@@ -31,6 +31,15 @@ Build a separate app stack that:
 3. Add memory store (`short_term`, `medium_term`, `long_term`) + weekly compaction.
 4. Add retrieval path (keyword + vector index) for voice query answering.
 
+## Voice marks
+Say a short command after push-to-talk (glasses or phone) to save a mark for the last 10 seconds. No hotword, English only, on by default.
+<!-- voice-marks-readme:begin -->
+- **Mark a moment**: "mark that", "mark this", "mark it"
+- **I missed that**: "i missed that"
+- **Undo a mark**: "undo mark", "cancel mark"
+<!-- voice-marks-readme:end -->
+Add what you were doing ("mark that, I'm driving"); unknown words save a plain mark. Audio is never stored or uploaded and recognition is on-device. Full guide: [docs/voice-marks.md](docs/voice-marks.md).
+
 ## Project Tracking Files
 - `MEMORY.md`: durable facts and locked decisions.
 - `CONTEXT.md`: active problem framing and constraints.
