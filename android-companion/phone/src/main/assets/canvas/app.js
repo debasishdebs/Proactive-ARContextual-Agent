@@ -2,6 +2,9 @@
 import { h, clear, btn } from './dom.js';
 import { parseBootHash } from './boot.js';
 import { pipelinesView, pipelineView, runNewView, runView, compareView } from './views.js';
+import { diffView } from './versions.js';
+import { liveView } from './liveview.js';
+import { asksView, askView } from './asks.js';
 
 const TOKEN_KEY = 'pcToken';
 let token = null;
@@ -138,7 +141,7 @@ function modal(title, content, actions, cls) {
 /** A view with unsaved work registers fn: it returns the confirm text, or null when there is nothing to lose. */
 function guard(fn) { guardFn = fn; }
 
-const ctx = { api, ApiError, showError, showNotice, clearBanner, imageUrl, loadImage, modal, onLeave, go, guard, reload: () => route(true) };
+export const ctx = { api, ApiError, showError, showNotice, clearBanner, imageUrl, loadImage, modal, onLeave, go, guard, reload: () => route(true) };
 
 function go(hash) { location.hash = hash; }
 
@@ -177,6 +180,12 @@ function parseHash() {
 function renderNav() {
   clear(nav);
   nav.appendChild(h('a', { href: '#/' }, 'Pipelines'));
+  nav.appendChild(h('a', { href: '#/asks' }, 'Asks'));
+  // "Live" shows only while an interpreter is published; the nav does not wait for the answer
+  const slot = h('span', null);
+  nav.appendChild(slot);
+  const gen = generation;
+  api('GET', '/api/publish').then((p) => { if (gen === generation && p && p.interpreter) slot.appendChild(h('a', { href: '#/live' }, 'Live')); }, () => {});
   nav.appendChild(btn('Sign out', async () => {
     const text = guardFn ? guardFn() : null;
     if (text && !window.confirm(text)) return;
@@ -202,9 +211,13 @@ async function route(force) {
   const { parts, query } = parseHash();
   try {
     if (parts.length === 0) await pipelinesView(ctx, root);
+    else if (parts[0] === 'p' && parts[1] && parts[2] === 'diff') await diffView(ctx, root, parts[1], query.get('a') || '', query.get('b') || '');
     else if (parts[0] === 'p' && parts[1]) await pipelineView(ctx, root, parts[1]);
     else if (parts[0] === 'run' && parts[1] === 'new') await runNewView(ctx, root, query.get('p') || '', query.get('v') || '');
     else if (parts[0] === 'run' && parts[1]) await runView(ctx, root, parts[1]);
+    else if (parts[0] === 'live') await liveView(ctx, root);
+    else if (parts[0] === 'asks') await asksView(ctx, root);
+    else if (parts[0] === 'ask' && parts[1]) await askView(ctx, root, parts[1]);
     else if (parts[0] === 'compare') await compareView(ctx, root, query.get('a') || '', query.get('b') || '');
     else root.appendChild(h('p', null, 'Not found.'));
   } catch (e) {
