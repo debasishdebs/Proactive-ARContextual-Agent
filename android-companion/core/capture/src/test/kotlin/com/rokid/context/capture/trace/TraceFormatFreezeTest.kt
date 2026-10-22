@@ -172,11 +172,19 @@ class TraceFormatFreeze2Test {
     }
 
     @Test fun replayEqualityRule() {
-        assertEquals(250L, ReplayRule.OPEN_TOLERANCE_MS)
-        assertTrue(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 2250, EpisodeCause.TIMER))
-        assertTrue(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 1750, EpisodeCause.TIMER))
+        // Task 23b ruling (deliberate change of the round-1 symmetric 250 ms): the live tick loop is only ever LATE against the replayed tick (wake-up latency,
+        // measured +135..+259 ms on a real desk trace), so a recorded open may be up to LATE_SLACK_MS after the simulated one but only EARLY_SLACK_MS before it.
+        assertEquals(250L, ReplayRule.EARLY_SLACK_MS)
+        assertEquals(500L, ReplayRule.LATE_SLACK_MS)
+        assertTrue(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 1750, EpisodeCause.TIMER))   // recorded 250 later than simulated
+        assertTrue(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 1500, EpisodeCause.TIMER))   // recorded 500 later than simulated
+        assertFalse(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 1499, EpisodeCause.TIMER))
+        assertTrue(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 2250, EpisodeCause.TIMER))   // recorded 250 earlier than simulated
         assertFalse(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 2251, EpisodeCause.TIMER))
         assertFalse(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 2000, EpisodeCause.DWELL))
+        // the real desk trace b653442d (M1): recorded 5313780 (+259 ms late) vs simulated 5313521 now matches; a recorded 5314100 (+579) does not
+        assertTrue(ReplayRule.opensMatch(5313780, EpisodeCause.TIMER, 5313521, EpisodeCause.TIMER))
+        assertFalse(ReplayRule.opensMatch(5314100, EpisodeCause.TIMER, 5313521, EpisodeCause.TIMER))
         val g = TraceEvent.Gate(1, 5, GateOutcome.KEEP, "", keptAtMs = 7)
         assertTrue(ReplayRule.gatesMatch(g, g.copy(tMs = 99)))        // append time is not part of the equality
         assertFalse(ReplayRule.gatesMatch(g, g.copy(encoded = false, keptAtMs = null)))

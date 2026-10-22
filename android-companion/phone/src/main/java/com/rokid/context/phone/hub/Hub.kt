@@ -311,6 +311,19 @@ class Hub(
     /** Whether the glasses app understands capture plans; TOO_OLD = it never sent a caps ack ("Glasses app too old for canvas plans"). */
     fun planPeer(): PlanPeer = peerTracker.state(clock())
 
+    /** Phone clock of the last message from the glasses app or session start; null before any. Read by the [GlassesWatchdog]. */
+    @Volatile var lastHeardAtMs: Long? = null
+        private set
+
+    // Watchdog hooks (all on the hub's thread).
+    /** One guarded reopen attempt for the watchdog; see [GlassesRelauncher.attemptNow]. */
+    fun watchdogRelaunch(): String? = relauncher?.attemptNow() ?: "no relauncher"
+    fun watchdogReconnect() = link.connectOnResume()
+    fun watchdogProbe() = link.probeAlive()
+    fun standingDown(): Boolean = standDown.active
+    /** The Home banner's watchdog line ("Glasses not connected · last heard 7 min ago"), null = nothing to say. */
+    fun setWatchdogNote(note: String?) { if (_state.value.watchdogNote != note) set { it.copy(watchdogNote = note) } }
+
     /** Phone clock when the current glasses session began (a `pc_wear` stamped before it is stale; the glasses ignore it). */
     private var sessionStartMs = 0L
 
@@ -341,6 +354,7 @@ class Hub(
     /** `pc_settings` first, then a `pc_state` through the broadcaster (≤ 4 Hz, Global Constraint). */
     private suspend fun onReady() {
         newSession()
+        lastHeardAtMs = clock()
         peerTracker.onSessionOpen(sessionStartMs)
         set(markDirty = false) { it.copy(versionMismatch = false, offset = null) }
         pushSettings()
@@ -364,6 +378,7 @@ class Hub(
 
     private suspend fun onEvent(e: GlassesEvent) {
         val now = clock()
+        lastHeardAtMs = now // any message proves the glasses app is alive (the watchdog's heartbeat)
         when (e) {
             is GlassesEvent.HelloReceived -> {
                 val h = e.hello

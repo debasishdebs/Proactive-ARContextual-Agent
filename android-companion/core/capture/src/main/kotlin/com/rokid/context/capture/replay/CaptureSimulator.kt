@@ -50,6 +50,22 @@ class ReplayCandidate(
     val forceSettle: Boolean = false,
 ) {
     companion object {
+        /** The candidate of a plan: what a LIVE plan of this config would apply (`ActiveConfig.of`), labelled with the plan's own hash. */
+        fun of(plan: com.rokid.context.capture.plan.CapturePlan): ReplayCandidate {
+            val g = plan.config.glance
+            val gt = plan.config.gate
+            return ReplayCandidate(
+                plan.configHash,
+                glance = GlanceParams(
+                    onsetRadS = g.onsetRadS, releaseRadS = g.releaseRadS, bridgeMs = g.bridgeMs, minBoutMs = g.minBoutMs, minBoutRad = g.minBoutRad,
+                    settleMs = g.settleMs, noveltyWindowMs = g.noveltyWindowMs, noveltyMinRad = g.noveltyMinRad, bigTurnRad = g.bigTurnRad,
+                ),
+                gate = GateParams(gt.hamming, gt.bigChange, gt.ringCompare == "all"),
+                table = policyTable(plan.config.policy),
+                ctxBound = plan.config.ctxBound,
+            )
+        }
+
         /** The table of a plan: the editable rows given, every other state the locked default row (an editable row left out is the UNKNOWN row, as in `ActiveConfig.of`). */
         fun policyTable(rows: Map<PlanState, PlanRow>): Map<ContextState, ContextCapturePolicy> {
             val unknown = ContextPolicies.DEFAULT.getValue(ContextState.UNKNOWN)
@@ -104,7 +120,7 @@ data class ReplayResult(
  * Replay is APPROXIMATE (controller ruling), in these ways:
  * - Episodes follow the recording (an `ep` open or close is a fact the scheduler state adopts), and the replay only decides OPENS: whenever no episode is
  *   open it asks the scheduler "would you open now, and why". A decision matches a recorded open when the cause is equal and the times differ by at most
- *   [ReplayRule.OPEN_TOLERANCE_MS] (a tick is not recorded).
+ *   the [ReplayRule] slacks (a tick is not recorded; the live loop is late by its wake-up latency).
  * - Gates are replayed from fully recorded inputs and must be EQUAL ([ReplayRule.gatesMatch]). The session bookkeeping times (`gt.keptAtMs`, `gt.encoded`)
  *   are recorded facts the replay adopts for a keep it reproduced, not something it can derive (the frame-entry time and the encoder are not in the trace).
  * - The trace is cut into windows at every recorded open (a window runs from one recorded open to the next, both ends included). A window that contains a
@@ -344,7 +360,7 @@ object CaptureSimulator {
         fun tick(t: Long): Long {
             now = t
             var wait = TICK_MS
-            if (!compared) awaiting.removeAll { it.ev.tMs + ReplayRule.OPEN_TOLERANCE_MS < t }   // a candidate's recorded opens wait only one tolerance for the replay's own decision
+            if (!compared) awaiting.removeAll { it.ev.tMs + ReplayRule.EARLY_SLACK_MS < t }   // a candidate's recorded opens wait only one early slack for the replay's own decision
             if (stopped) return wait
             if (blocked != null) { pendingDwellAt = null; pendingNowAt = null; forceBrief = false; return wait }
             val st = cls.state.value
@@ -520,7 +536,7 @@ object CaptureSimulator {
             val it1 = pendingReplayed.iterator()
             while (it1.hasNext()) {
                 val p = it1.next()
-                if (p.open.atMs + ReplayRule.OPEN_TOLERANCE_MS < t) {
+                if (p.open.atMs + ReplayRule.LATE_SLACK_MS < t) {
                     it1.remove(); p.win.extra++
                     mismatch("open_extra", p.open.atMs, "replay would open (${p.open.cause}) with no recorded open")
                 }
@@ -528,7 +544,7 @@ object CaptureSimulator {
             val it2 = awaiting.iterator()
             while (it2.hasNext()) {
                 val a = it2.next()
-                if (a.ev.tMs + ReplayRule.OPEN_TOLERANCE_MS < t) {
+                if (a.ev.tMs + ReplayRule.EARLY_SLACK_MS < t) {
                     it2.remove(); a.win.missed++; forceBrief = false
                     mismatch("open_missed", a.ev.tMs, "recorded open (${a.ev.cause}) was not recomputed")
                 }
@@ -538,7 +554,7 @@ object CaptureSimulator {
                 val x = it3.next()
                 if (x.nowMs + GATE_PAIR_MS < t) { it3.remove(); x.win.gateBad++; mismatch("gate_missing", x.nowMs, "replayed gate seq=${x.seq} has no recorded gt") }
             }
-            while (closing.isNotEmpty() && closing.first().endMs + ReplayRule.OPEN_TOLERANCE_MS < t) finalize(closing.removeFirst())
+            while (closing.isNotEmpty() && closing.first().endMs + ReplayRule.LATE_SLACK_MS < t) finalize(closing.removeFirst())
         }
 
         fun finalize(w: Win) {
@@ -552,8 +568,8 @@ object CaptureSimulator {
         fun finish(): ReplayResult {
             if (compared && !preRoll) {
                 // what falls inside the last tolerance of the trace cannot be judged: its twin would have come after the close
-                pendingReplayed.removeAll { it.open.atMs + ReplayRule.OPEN_TOLERANCE_MS >= now }
-                awaiting.removeAll { it.ev.tMs + ReplayRule.OPEN_TOLERANCE_MS >= now }
+                pendingReplayed.removeAll { it.open.atMs + ReplayRule.LATE_SLACK_MS >= now }
+                awaiting.removeAll { it.ev.tMs + ReplayRule.EARLY_SLACK_MS >= now }
                 expected.removeAll { it.nowMs + GATE_PAIR_MS >= now }
                 settle(now + 1)
                 while (closing.isNotEmpty()) finalize(closing.removeFirst())

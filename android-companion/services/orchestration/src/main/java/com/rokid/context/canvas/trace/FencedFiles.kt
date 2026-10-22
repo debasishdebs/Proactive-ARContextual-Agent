@@ -70,6 +70,9 @@ class FencedFiles(private val db: ContextDatabase, private val filesDir: File) {
         const val IMPORT_DIR = "canvas_import"
         const val TMP_DIR = "canvas_tmp"
 
+        /** The dev-mode trace staging folder under the app's EXTERNAL files dir (adb can write it): raw sensor traces, so Delete all clears it and backup/transfer exclude it. */
+        const val STAGING_DIR = "trace-staging"
+
         /** The folders Delete all removes (all three), as names under `filesDir`. */
         val DELETE_ALL_DIRS = listOf(TRACES_DIR, IMPORT_DIR, TMP_DIR)
 

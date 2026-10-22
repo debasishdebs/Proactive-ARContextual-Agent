@@ -205,3 +205,25 @@ class GlassesRelauncherTest {
         assertFalse(AndroidRelaunchGuards.callIdle(android.media.AudioManager.MODE_RINGTONE, null, far, far))
     }
 }
+
+/** The watchdog's trigger: [GlassesRelauncher.attemptNow] reuses every guard, the back-off bookkeeping and the hourly cap. */
+@OptIn(ExperimentalCoroutinesApi::class)
+class GlassesRelauncherAttemptNowTest {
+    private class G : RelaunchGuards { var call = true; var wornNow: Boolean? = null; override fun callIdle() = call; override fun mediaIdle() = true; override fun worn() = wornNow }
+    private fun TestScope.make(g: G = G(), sd: StandDown = InMemoryStandDown(), max: Int = 6, on: () -> Boolean = { true }): Pair<GlassesRelauncher, IntArray> {
+        val n = IntArray(1)
+        val r = GlassesRelauncher(backgroundScope, kotlinx.coroutines.flow.MutableStateFlow(LinkState.CONNECTED), on, g, { n[0]++ }, { currentTime }, {}, standDown = sd, maxPerHour = max)
+        return r to n
+    }
+
+    @Test fun launchesWhenEveryGuardPasses() = runTest { val (r, n) = make(); assertEquals(null, r.attemptNow()); assertEquals(1, n[0]) }
+    @Test fun callActiveDoesNotLaunch() = runTest { val (r, n) = make(G().apply { call = false }); assertEquals("call active", r.attemptNow()); assertEquals(0, n[0]) }
+    @Test fun standDownDoesNotLaunch() = runTest { val sd = InMemoryStandDown().apply { enter(0) }; val (r, n) = make(sd = sd); assertEquals("stood down", r.attemptNow()); assertEquals(0, n[0]) }
+    @Test fun notWornDoesNotLaunch() = runTest { val (r, n) = make(G().apply { wornNow = false }); assertEquals("glasses not worn", r.attemptNow()); assertEquals(0, n[0]) }
+    @Test fun settingOffDoesNotLaunch() = runTest { val (r, n) = make(on = { false }); assertEquals("setting off", r.attemptNow()); assertEquals(0, n[0]) }
+    @Test fun hourlyCapStopsTheWatchdogToo() = runTest {
+        val (r, n) = make(max = 2)
+        assertEquals(null, r.attemptNow()); assertEquals(null, r.attemptNow()); assertEquals("hourly limit", r.attemptNow()); assertEquals(2, n[0])
+        advanceTimeBy(3_600_100); assertEquals(null, r.attemptNow()); assertEquals(3, n[0])
+    }
+}

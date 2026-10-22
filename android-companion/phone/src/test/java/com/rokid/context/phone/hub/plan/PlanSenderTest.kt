@@ -45,6 +45,7 @@ class PlanSenderTest {
     private var now = 10_000L
     private fun sender(p: android.content.SharedPreferences = prefs) = PlanSender(link, p, { "inst1" }, { now })
     private fun plans() = link.sent.filter { it.first == Channels.CAPTURE_PLAN }.map { (Wire.decode<CapturePlanMessage>(it.second) as Decoded.Ok).value }
+    private fun plans0(s: PlanSender) = s.capturePlan.value!!
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     @After fun close() { scope.cancel(); prefs.edit().clear().commit() }
 
@@ -64,6 +65,59 @@ class PlanSenderTest {
         val r = runCatching { s.sendShadow("{}", "h") }
         assertTrue(r.isFailure)
         assertNull("nothing was persisted", prefs.getString("msg", null))
+    }
+
+    @Test fun aDeleteAllThatClearsThePrefsAfterTheCheckButBeforeTheCommitLeavesNoPlanBehind() = runBlocking {
+        var calls = 0
+        // the epoch is the same at the check (call 2) and moves by the time the commit has landed (call 3): the wipe ran in between
+        val s = PlanSender(link, prefs, { "inst1" }, { now }, epochCounter = { if (++calls <= 2) 0L else 1L })
+        val r = runCatching { s.stage(PlanMode.SHADOW, "{}", "abc", "7", null) }
+        assertTrue(r.isFailure)
+        assertNull("the raced plan is compensated away", prefs.getString("msg", null))
+        sender().let { restarted -> restarted.onSessionReady(9_000); assertTrue("a restart retransmits nothing", plans().isEmpty()); assertNull(restarted.capturePlan.value) }
+    }
+
+    @Test fun resetAfterWipeAlsoDropsThePersistedDesiredStateButKeepsTheGenCounter() = runBlocking {
+        val s = sender(); s.send(PlanMode.SHADOW, "{}", "abc", "7", null)
+        s.resetAfterWipe()   // nothing else clears the prefs here: a plan persisted by a send that raced the wipe must go too
+        assertNull(prefs.getString("msg", null))
+        val restarted = sender(); restarted.onSessionReady(9_000)
+        assertTrue(plans().none { it.publishId == "7" && link.sent.size > 1 })
+        assertNull(restarted.capturePlan.value)
+        assertEquals("the counter survives", 2L, restarted.send(PlanMode.SHADOW, "{}", "abc", "8", null).gen)
+    }
+
+    @Test fun afterDeleteAllTheNextPublishIsStillAcceptedByAGlassesReceiverHoldingAnOlderGen() = runBlocking {
+        val s = sender()
+        var applied: com.rokid.context.capture.plan.ReceiverState? = null
+        val rx = com.rokid.context.capture.plan.PlanReceiver(object : com.rokid.context.capture.plan.PlanPersistence {
+            override fun load() = applied
+            override fun commit(s: com.rokid.context.capture.plan.ReceiverState) { applied = s }
+        }, { now }, { "boot" })
+        var last = 0L
+        repeat(5) { i -> last = s.stage(PlanMode.SETTINGS, null, null, "p$i", null); rx.onMessage(plans0(s)) }
+        assertEquals(5L, last)
+        com.rokid.context.orchestration.MemoryWipe.clearWipedPrefs(prefs, com.rokid.context.orchestration.MemoryWipe.PLAN_STATE_PREFS)   // what Delete all does to the persisted state
+        s.resetAfterWipe()
+        val g = sender().stage(PlanMode.SETTINGS, null, null, "p9", null)
+        assertEquals(6L, g)
+        val ack = rx.onMessage(plans0(sender()).copy(gen = g))
+        assertTrue("accepted, not stale", ack.reason != "stale" && ack.state != PlanAckState.REJECTED)
+    }
+
+    @Test fun stagingPersistsWithoutTransmittingAndTransmitSendsTheStagedGen() = runBlocking {
+        val s = sender(); s.onSessionReady(9_000); link.sent.clear()
+        val g = s.stage(PlanMode.SHADOW, "{}", "abc", "7", null)
+        assertTrue("staged is not on the link", plans().isEmpty()); assertNotNull(prefs.getString("msg", null))
+        assertTrue(s.transmit(g)); assertEquals(g, plans().single().gen)
+        assertEquals("a gen that is no longer desired is not sent", false, s.transmit(g + 5))
+    }
+
+    @Test fun discardDropsAStagedDesiredStateOfThatPublishOnly() = runBlocking {
+        val s = sender(); s.stage(PlanMode.TRIAL, "{}", "abc", "7", 1000L)
+        s.discard("other"); assertNotNull(s.capturePlan.value)
+        s.discard("7"); assertNull(s.capturePlan.value); assertNull(prefs.getString("msg", null))
+        sender().let { it.onSessionReady(9_000) }; assertTrue("never sent", plans().isEmpty())
     }
 
     @Test fun sendsAShadowPlanStampedForTheSession() = runBlocking {

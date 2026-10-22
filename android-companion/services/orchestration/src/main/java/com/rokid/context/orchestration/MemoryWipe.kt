@@ -31,6 +31,17 @@ object MemoryWipe {
 
     /** Plan-state prefs name (PlanSender.PREFS reads this) and the Collect prefs: both are cleared by Delete all. */
     const val PLAN_STATE_PREFS = "canvas_plan_state"
+    /** The plan state's generation counter: not personal data, and the glasses keep their generation across a Delete all, so the phone's must keep counting from it (else every later publish is stale there). */
+    const val PLAN_GEN_KEY = "gen"
+
+    /** Clears one of [WIPED_PREFS]; the plan state keeps only its generation counter. */
+    fun clearWipedPrefs(prefs: android.content.SharedPreferences, name: String): Boolean {
+        val keep = if (name == PLAN_STATE_PREFS) prefs.getLong(PLAN_GEN_KEY, 0L).takeIf { it > 0 } else null
+        val e = prefs.edit().clear()
+        if (keep != null) e.putLong(PLAN_GEN_KEY, keep)
+        return e.commit()
+    }
+
     /** The prefs Delete all clears (a test pins it to [com.rokid.context.memory.forget.DeletionGraph.wipedPrefs]). */
     val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS)
 
@@ -125,8 +136,10 @@ object MemoryWipe {
             File(context.filesDir, PHOTO_EVAL_DIR).let { it.deleteRecursively(); if (it.exists()) leftovers++ }
             // Slice 3a: sealed traces, pulled imports and orphan tmp files (the tables went with wipeMemory). The epoch above already refuses a fenced publish.
             FencedFiles.DELETE_ALL_DIRS.forEach { File(context.filesDir, it).let { d -> d.deleteRecursively(); if (d.exists()) leftovers++ } }
+            // Final pass 10: raw traces staged under the EXTERNAL files dir (adb push) are sensor data too; the resume of an interrupted wipe comes through here as well.
+            context.getExternalFilesDir(null)?.let { File(it, FencedFiles.STAGING_DIR) }?.let { d -> d.deleteRecursively(); if (d.exists()) leftovers++ }
             // Slice 3a privacy: the persisted capture-plan state and the Collect session window go too.
-            WIPED_PREFS.forEach { if (!context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().commit()) leftovers++ }
+            WIPED_PREFS.forEach { if (!clearWipedPrefs(context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE), it)) leftovers++ }
             MemoryMaintenance.vacuum(db)
             MemoryMaintenance.checkpoint(db)
             // Slice 3a (S58): files and devices follow through the registered listeners (the glasses get the NEW epoch). After everything above; never throws.

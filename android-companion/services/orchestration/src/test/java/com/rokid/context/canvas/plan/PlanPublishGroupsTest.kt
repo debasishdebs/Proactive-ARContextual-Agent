@@ -168,4 +168,58 @@ class PlanPublishGroupsTest {
         assertEquals(listOf(PlanMode.SHADOW, PlanMode.SETTINGS, PlanMode.SHADOW), tx.sent.map { it.mode }); assertEquals(3L, store.rows["g"]!!.gen)
         assertNotNull(store.rows["g"])
     }
+
+    /** A transport with the real split: [stage] allocates and persists the gen, [transmit] puts it on the link (a hook lets a test act at that instant). */
+    private inner class SplitTransport : PlanTransport {
+        var gen = 0L
+        val staged = ArrayList<Triple<Long, PlanMode, String>>()
+        val transmitted = ArrayList<Long>()
+        val discarded = ArrayList<String>()
+        var failStage = false
+        var onTransmit: suspend (Long) -> Unit = {}
+        override suspend fun send(mode: PlanMode, planJson: String?, configHash: String?, publishId: String, trialMaxMs: Long?): SendOutcome =
+            SendOutcome(stage(mode, planJson, configHash, publishId, trialMaxMs), transmit(gen))
+        override suspend fun stage(mode: PlanMode, planJson: String?, configHash: String?, publishId: String, trialMaxMs: Long?): Long {
+            gen++; staged += Triple(gen, mode, publishId)
+            if (failStage) throw java.io.IOException("process died after the gen was persisted")
+            return gen
+        }
+        override suspend fun transmit(gen: Long): Boolean { transmitted += gen; onTransmit(gen); return true }
+        override suspend fun discard(publishId: String) { discarded += publishId }
+    }
+
+    @Test fun theGenIsStoredWithSentBeforeTransmittingSoAFastEffectiveAckIsCorrelated() = runBlocking {
+        val sp = SplitTransport()
+        val g = PlanPublishGroups(store, sp, { "inst" }, { now }, { gid, json -> activated += gid to json }, plans)
+        sp.onTransmit = { gen -> g.onAck(ack(gen, PlanAckState.EFFECTIVE, publishId = "7")) }   // the glasses answer before transmit returns
+        g.publish("g", 7, PlanMode.SHADOW, "{\"p\":1}", "h1", null)
+        assertEquals("EFFECTIVE", state()); assertEquals(listOf("g" to "{\"p\":1}"), activated); assertEquals(0, g.ignoredAcks)
+    }
+
+    @Test fun aCrashAfterStagingLeavesATrialPreparedAndRecoveryDiscardsTheStagedDesiredState() = runBlocking {
+        val sp = SplitTransport(); sp.failStage = true
+        val g = PlanPublishGroups(store, sp, { "inst" }, { now }, { _, _ -> }, plans)
+        try { g.publish("g", 7, PlanMode.TRIAL, "{\"p\":1}", "h1", 3_600_000L); fail() } catch (e: java.io.IOException) { }
+        assertEquals("PREPARED", state()); assertTrue("nothing was on the link", sp.transmitted.isEmpty())
+        PlanPublishGroups(store, sp, { "inst" }, { now }, { _, _ -> }, plans).recover()
+        assertEquals("FAILED", state()); assertEquals("the sender must not resend what the phone failed", listOf("7"), sp.discarded)
+    }
+
+    @Test fun aCrashAfterStagingOfANonTrialIsRestagedAndSent() = runBlocking {
+        val sp = SplitTransport(); sp.failStage = true
+        val g = PlanPublishGroups(store, sp, { "inst" }, { now }, { _, _ -> }, plans)
+        try { g.publish("g", 7, PlanMode.SHADOW, "{\"p\":1}", "h1", null); fail() } catch (e: java.io.IOException) { }
+        sp.failStage = false
+        PlanPublishGroups(store, sp, { "inst" }, { now }, { _, _ -> }, plans).recover()
+        assertEquals("SENT", state()); assertEquals(sp.gen, store.rows["g"]!!.gen); assertEquals(listOf(sp.gen), sp.transmitted); assertTrue(sp.discarded.isEmpty())
+    }
+
+    @Test fun anAckOfAGroupThatAnotherGroupSupersededNeverActivatesItsHalves() = runBlocking {
+        val g = groups(); publish(g, "gA", 7, "hA"); publish(g, "gB", 8, "hB")
+        assertEquals(2L, store.rows["gB"]!!.gen)
+        g.onAck(CapturePlanAck(gen = 1, publishId = "7", mode = PlanMode.SHADOW, effectiveHash = "hA", state = PlanAckState.EFFECTIVE, phoneInstall = "inst"))
+        assertEquals("SENT", state("gA")); assertTrue("A's ASYNC half must stay off", activated.isEmpty()); assertEquals(1, g.ignoredAcks)
+        g.onAck(CapturePlanAck(gen = 2, publishId = "8", mode = PlanMode.SHADOW, effectiveHash = "hB", state = PlanAckState.EFFECTIVE, phoneInstall = "inst"))
+        assertEquals(listOf("gB" to "{\"p\":1}"), activated)
+    }
 }

@@ -41,15 +41,18 @@ class ReplayRoutesTest {
     private val hold = CountDownLatch(1)
     @After fun close() { scope.cancel(); db.close() }
 
+    private val seen = java.util.Collections.synchronizedList(ArrayList<ReplayCandidate?>())
     private fun fig() = ReplayFigures("abc", 3, 1.0, 2.1, 0.7, 3.0, 1.0, 0, 0.45, 3.7)
     private val trace = object : ReplayTrace("abc", 0, 10, 20) {
         override fun replay(candidate: ReplayCandidate?, candidateFusion: Map<String, Double>?, tick: () -> Unit): ReplayReport {
+            seen += candidate
             while (!hold.await(5, TimeUnit.MILLISECONDS)) tick()
             return ReplayReport("EXACT", 3.0, fig(), null, 0.0, 1, 0, 0, emptyMap(), false, listOf("replay is approximate"))
         }
     }
     private val service = ReplayService(db.canvasSlice3Dao(), { if (it == "t1") trace else null }, { DaoFence(1, epoch, { 1 }, { epoch }) }, scope, dev)
-    private val routes = ReplayRoutes(service)
+    private val stored = ReplayCandidate("a1b2", gate = com.rokid.context.glasses.capture.keyframe.GateParams(hamming = 9, bigChange = 99))
+    private val routes = ReplayRoutes(service) { h -> if (h == "a1b2") stored else null }
 
     private fun req(m: String, path: String, body: String = "") = HttpRequest(m, path, emptyMap(), emptyMap(), body.toByteArray())
     private fun call(m: String, path: String, body: String = "") = runBlocking { routes.handle(req(m, path, body)) }
@@ -77,5 +80,19 @@ class ReplayRoutesTest {
         assertEquals(404, call("GET", "/api/replays/zzz")!!.status)
         dev.value = false
         assertEquals(403, call("POST", "/api/replays", """{"traceIds":["t1"]}""")!!.status)
+    }
+
+    @Test fun aCandidateIsTheStoredPlanOfItsHashNeverTheCallersFigures() {
+        runBlocking { db.canvasSlice3Dao().acceptTraceFenced(CanvasTraceEntity("t1", "IMU", "COMPLETE", "{}", 1, false, 0, null, "i", 1, true, 10, 20, 1), DaoFence(1, epoch, { 1 }, { epoch })) }
+        // A hash no stored plan has is refused, whatever gate the caller attaches: a label must be the hash of what was simulated.
+        assertEquals(404, call("POST", "/api/replays", """{"traceIds":["t1"],"candidate":{"configHash":"ffff","gate":{"hamming":1}}}""")!!.status)
+        assertTrue(seen.isEmpty())
+        hold.countDown()
+        val r = call("POST", "/api/replays", """{"traceIds":["t1"],"candidate":{"configHash":"a1b2","gate":{"hamming":1,"bigChange":1}}}""")!!
+        assertEquals(202, r.status)
+        val id = Regex("\"replayId\":\"([^\"]+)\"").find(String(r.body))!!.groupValues[1]
+        runBlocking { withTimeout(10_000) { while (service.get(id)!!.jobState != "DONE") delay(5) } }
+        assertEquals("the stored plan's candidate is what is simulated", listOf(stored), seen.toList())
+        assertEquals(9, seen.single()!!.gate!!.hamming)
     }
 }

@@ -35,6 +35,37 @@ class CaptureSimulatorTest {
         assertTrue(r.mismatches.isEmpty())
     }
 
+    /** One post-pre-roll timer open of the oracle with that open and everything after it moved by [shift] ms (the later opens stay on time relative to the moved close). */
+    private fun shiftedFromFirstOpen(shift: Long): Pair<List<TraceEvent>, Long> {
+        val o = ReplayFixtures.timerOracle(untilMs = START + 60_000L)
+        val first = o.opens.first { it >= PRE_ROLL_END }
+        val moved = o.events.map { e -> if (e.tMs < first) e else when (e) {
+            is TraceEvent.Episode -> e.copy(tMs = e.tMs + shift)
+            is TraceEvent.Backoff -> e.copy(tMs = e.tMs + shift)
+            else -> e
+        } }
+        return ReplayFixtures.trace(moved, endMs = START + 60_000L) to first
+    }
+
+    /** Task 23b: the live loop is late against the replayed tick (real trace: recorded 5313780 vs simulated 5313521, +259 ms). A recorded open up to 500 ms later is the same open. */
+    @Test fun lateRecordedOpenWithinLateSlackMatches() {
+        val (t, first) = shiftedFromFirstOpen(+400)
+        val r = run(t)
+        assertEquals(0, r.failed, r.mismatches.toString())
+        assertTrue(r.opens.any { it.atMs == first })
+    }
+
+    @Test fun lateRecordedOpenBeyondLateSlackFails() {
+        val (t, _) = shiftedFromFirstOpen(+600)
+        assertTrue(run(t).failed > 0)
+    }
+
+    /** An EARLY recorded open (before the replayed tick) keeps the 250 ms bound: a live loop does not run ahead of the policy. */
+    @Test fun earlyRecordedOpenBeyondEarlySlackStillFails() {
+        assertTrue(run(shiftedFromFirstOpen(-300).first).failed > 0)
+        assertEquals(0, run(shiftedFromFirstOpen(-200).first).failed)
+    }
+
     /** The back-off ladder (5, 10, 20, 40 s; a 60 s gap would meet the reserved photo attempt, S83) comes from the recorded `bo` events: the recomputed opens follow it. */
     @Test fun backoffLadderIsRecomputedFromRecordedStillStep() {
         val o = ReplayFixtures.timerOracle(untilMs = START + 300_000L) { k -> minOf(k, 3) }

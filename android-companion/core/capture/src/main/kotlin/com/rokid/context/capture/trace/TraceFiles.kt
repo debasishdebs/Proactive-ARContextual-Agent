@@ -104,16 +104,22 @@ object TraceFiles {
  * - The gate is replayed from fully recorded inputs: `sc.nowMs`, `sc.cap/hard`, `fl.nowMs` (the flush decision time), `pf` context cap, the snapshot. Every `gt`
  *   (seq, outcome, reason, `encoded`, `keptAtMs`) must then be EQUAL ([gatesMatch]).
  * - Camera opens depend on the session tick clock (not recorded): a replayed open matches a recorded one when the cause is equal and the times differ by at
- *   most [OPEN_TOLERANCE_MS] ([opensMatch]).
+ *   at most the slacks of [opensMatch]: the recorded open may be up to [LATE_SLACK_MS] later than the replayed one, or [EARLY_SLACK_MS] earlier.
  * - Not recorded, by decision: consumed `captureNow()` requests, the lifetime of a request waiting behind a bind back-off, and when the asynchronous
  *   onset/dwell collectors ran or which transient StateFlow states a tick observed. A window of the trace that involves any of them is INEXACT
  *   ([Exactness.classify]): the replay result model carries an `exact` flag (it is NOT on the wire), inexact windows are excluded from pass/fail and COUNTED
  *   ([ReplayTally]).
  */
 object ReplayRule {
-    const val OPEN_TOLERANCE_MS = 250L
+    /**
+     * Asymmetric (Task 23b, from a real desk trace): the live tick loop is only ever LATE against the replayed one (wake-up latency; recorded opens were +135..+259 ms
+     * after the simulated tick, which lands exactly on dueAt minus the lead), never ahead of it. So a recorded open may follow the replayed one by up to [LATE_SLACK_MS],
+     * but precede it by at most [EARLY_SLACK_MS] (one replay tick).
+     */
+    const val EARLY_SLACK_MS = 250L
+    const val LATE_SLACK_MS = 500L
     fun opensMatch(recordedAtMs: Long, recordedCause: EpisodeCause, replayedAtMs: Long, replayedCause: EpisodeCause): Boolean =
-        recordedCause == replayedCause && Math.abs(recordedAtMs - replayedAtMs) <= OPEN_TOLERANCE_MS
+        recordedCause == replayedCause && (recordedAtMs - replayedAtMs) in -EARLY_SLACK_MS..LATE_SLACK_MS
     fun gatesMatch(a: TraceEvent.Gate, b: TraceEvent.Gate): Boolean =
         a.seq == b.seq && a.outcome == b.outcome && a.reason == b.reason && a.encoded == b.encoded && a.keptAtMs == b.keptAtMs
 }

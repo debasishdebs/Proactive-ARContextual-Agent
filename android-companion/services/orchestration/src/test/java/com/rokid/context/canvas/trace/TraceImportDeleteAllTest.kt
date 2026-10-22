@@ -60,7 +60,8 @@ class TraceImportDeleteAllTest {
         ctx.getSharedPreferences("canvas_plan_state", Context.MODE_PRIVATE).edit().putLong("gen", 7).putString("msg", "x").commit()
         ctx.getSharedPreferences(CollectSession.PREFS, Context.MODE_PRIVATE).edit().putLong("until", 9).commit()
         MemoryWipe.deleteAll(ctx)
-        assertTrue(ctx.getSharedPreferences("canvas_plan_state", Context.MODE_PRIVATE).all.isEmpty())
+        // the plan state loses everything but the generation counter (the glasses keep theirs, so the phone must keep counting)
+        assertEquals(mapOf<String, Any?>("gen" to 7L), ctx.getSharedPreferences("canvas_plan_state", Context.MODE_PRIVATE).all)
         assertTrue(ctx.getSharedPreferences(CollectSession.PREFS, Context.MODE_PRIVATE).all.isEmpty())
     }
 }

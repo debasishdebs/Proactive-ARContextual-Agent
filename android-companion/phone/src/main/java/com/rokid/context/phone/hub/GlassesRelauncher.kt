@@ -160,15 +160,29 @@ class GlassesRelauncher(
         while (state.value == LinkState.CLOSED_ON_GLASSES || (afterFailure && state.value == LinkState.OFFLINE)) {
             if (standDown.active) return
             val why = blocker()
-            if (why == null) {
-                attempts.addLast(now()); step++; awaitingSince = now(); lastReopenAt = now()
-                log("relaunch: reopening the glasses app (attempt ${attempts.size}/h, next step $step)")
-                try { reopen() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("relaunch: reopen failed (${e.javaClass.simpleName})") }
-                return
-            }
+            if (why == null) { doReopen(); return }
             if (why != lastWhy) { log("relaunch: waiting ($why)"); lastWhy = why }
             delay(pollMs)
         }
+    }
+
+    private fun doReopen() {
+        attempts.addLast(now()); step++; awaitingSince = now(); lastReopenAt = now()
+        log("relaunch: reopening the glasses app (attempt ${attempts.size}/h, next step $step)")
+        try { reopen() } catch (e: CancellationException) { throw e } catch (e: Exception) { log("relaunch: reopen failed (${e.javaClass.simpleName})") }
+    }
+
+    /**
+     * The watchdog's periodic trigger: one attempt now through every guard of the event-driven path (setting, hourly cap, call idle
+     * including its post-call settle, media, worn) plus the stand-down. Null = reopened; else why not ("pending" = a timed attempt is queued).
+     */
+    fun attemptNow(): String? {
+        if (standDown.active) return "stood down"
+        if (job?.isActive == true) return "pending"
+        val why = blocker()
+        if (why != null) { log("relaunch: watchdog waiting ($why)"); return why }
+        doReopen()
+        return null
     }
 
     /** The first reason not to reopen now, or null. */

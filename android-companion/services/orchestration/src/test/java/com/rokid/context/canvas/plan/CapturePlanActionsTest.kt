@@ -115,6 +115,21 @@ class CapturePlanActionsTest {
         assertTrue(active().isEmpty())
     }
 
+    @Test fun aRefusedUndoChangesNothing() {
+        done(publish()); h.effective()
+        val (id2, v2) = secondPlan()
+        done(publish(id = id2, version = v2)); h.effective()
+        val before = active().map { it.id }; val sentBefore = h.sent.size; val stateBefore = status().active!!.state
+        h.glasses = GlassesState.NOT_LINKED
+        val out = undo(active().first().id)
+        assertTrue(out.toString(), out is CanvasPublisher.Outcome.Blocked)
+        assertEquals("every publish row is still active", before, active().map { it.id })
+        assertEquals("nothing was sent", sentBefore, h.sent.size); assertEquals(stateBefore, status().active!!.state)
+        assertTrue(all().none { it.rollbackReason == "undo" || it.rollbackReason == "reinstated" })
+        h.glasses = GlassesState.LINKED_CAPABLE
+        assertTrue("the same undo works once the glasses are back", undo(active().first().id) is CanvasPublisher.Outcome.Published)
+    }
+
     @Test fun undoRevealsThePreviousActivePlanInItsOwnMode() {
         done(publish()); h.effective()
         val (id2, v2) = secondPlan()
@@ -243,5 +258,12 @@ class CapturePlanActionsTest {
         h.effective()
         assertEquals(listOf("Glasses: EFFECTIVE · gen 1 · shadow", "Phone RT: applied", "ASYNC: shadow"), status().rows)
         assertEquals(hashA, status().active!!.configHash)
+    }
+
+    @Test fun aReplayCandidateIsResolvedFromTheStoredPlanOfItsHashOnly() = runBlocking {
+        val c = ReplayCandidates(h.canvas)
+        val cand = c.forHash(hashA)!!
+        assertEquals(hashA, cand.configHash); assertNotNull(cand.table); assertNotNull(cand.gate)
+        assertNull("no stored plan has this hash", c.forHash("deadbeef"))
     }
 }
