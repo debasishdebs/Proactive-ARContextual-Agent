@@ -214,6 +214,24 @@ class CaptureSimulatorTest {
     }
 
     /**
+     * Found by the real-session parity test (Task 23a): an open that FAILS (busy, bind) is recorded as `ep` open and `ep` close at the SAME instant, and the close
+     * starts a back-off. The window that ENDS at that open is exact (the failure is in the next window), so the replay must still make its own decision at that
+     * instant. It used to run the tick after both events, saw the back-off and decided nothing: a failed window for an open the session decided correctly.
+     */
+    @Test fun anOpenThatFailsAtTheSameInstantIsStillRecomputed() {
+        val o = ReplayFixtures.timerOracle(untilMs = START + 120_000L)
+        val at = o.opens.filter { it >= PRE_ROLL_END }[8]
+        val failing = o.events.filter { it.tMs < at } + listOf(
+            TraceEvent.Episode(at, true, EpisodeCause.TIMER), TraceEvent.Episode(at, false, EpisodeCause.TIMER, openedAtMs = at, outcome = EpisodeOutcome.BUSY),
+        )
+        val r = run(ReplayFixtures.trace(failing, endMs = at + 25_000))
+        assertEquals(0, r.failed, r.mismatches.toString())
+        assertTrue(r.passed >= 8, "the windows before the failed open passed: ${r.passed}")
+        assertTrue(r.mismatches.none { it.kind == "open_missed" && it.atMs == at }, r.mismatches.toString())
+        assertTrue((r.inexactReasons[Inexact.BIND_FAILURE] ?: 0) >= 1)
+    }
+
+    /**
      * A head turn at 20.0-20.7 s over three timer checks. By hand from the glance model: the first over-threshold sample (20,000) is the onset and the loop is
      * kicked, so the ONSET brief check opens at once; the bout ends at 20,700, settles 1.5 s later and the glance fires on the 22,200 sample, which opens a DWELL
      * check on the next tick (admission: 21 s since the last keyframe is past the 20 s novelty window). The ONSET episode runs until 21,000 because the camera
