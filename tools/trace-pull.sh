@@ -7,7 +7,7 @@ set -u
 
 G="${G:-1901092545029120}"
 PKG=com.rokid.context.glasses
-SRC=files/traces
+SRC=files/imu/traces
 
 die() { echo "$*" >&2; exit 1; }
 [ $# -eq 1 ] || die "usage: tools/trace-pull.sh <out-dir>"
@@ -16,13 +16,13 @@ mkdir -p "$OUT" || die "cannot create $OUT"
 
 LIST=$(mktemp) || die "no tmp file"
 trap 'rm -f "$LIST"' EXIT
-adb -s "$G" exec-out run-as "$PKG" tar -c -C files traces 2>/dev/null | tar -t > "$LIST" || die "could not read $SRC on the glasses"
+adb -s "$G" exec-out run-as "$PKG" tar -c -C files/imu traces 2>/dev/null | tar -t > "$LIST" || die "could not read $SRC on the glasses"
 # Refuse anything that could write outside <out-dir>.
 if grep -Eq '(^/|(^|/)\.\.(/|$))' "$LIST"; then die "unsafe path in the archive: refusing"; fi
 
 TMP=$(mktemp -d) || die "no tmp dir"
 trap 'rm -f "$LIST"; rm -rf "$TMP"' EXIT
-adb -s "$G" exec-out run-as "$PKG" tar -c -C files traces 2>/dev/null | tar -x -C "$TMP" || die "pull failed"
+adb -s "$G" exec-out run-as "$PKG" tar -c -C files/imu traces 2>/dev/null | tar -x -C "$TMP" || die "pull failed"
 
 n=0; skipped=0
 for d in "$TMP"/traces/*/; do
