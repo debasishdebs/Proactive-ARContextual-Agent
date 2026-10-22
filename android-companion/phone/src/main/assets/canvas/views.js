@@ -4,7 +4,7 @@ import { mountEditor } from './floweditor.js';
 import { photoThumb, openPhoto } from './photos.js';
 import { publishDialog, publishCard } from './versions.js';
 import { when, usageLine, branchText, compareSummary, tokenEstimateText } from './format.js';
-import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef } from './runlogic.js';
+import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction } from './runlogic.js';
 
 const pretty = (v) => JSON.stringify(v, null, 2);
 const enc = encodeURIComponent;
@@ -233,7 +233,7 @@ export async function runNewView(ctx, root, pipelineId, version) {
   day.addEventListener('change', () => { st.day = day.value; st.frames = []; st.selected = new Set(); st.done = false; load(true); });
   const baseRef = Object.assign({ pipelineId }, version ? { version: parseInt(version, 10) } : {});
   const abSel = h('select', { 'aria-label': 'A/B against…' }, h('option', { value: '' }, 'A/B against…'),
-    abOptions(pipelines).map((o) => h('option', { value: o.value }, o.label)));
+    abOptions(pipelines, refKey(baseRef)).map((o) => h('option', { value: o.value }, o.label)));
   const refName = (r) => { const p = pipelines.find((x) => x.id === r.pipelineId); return (p ? p.name : r.pipelineId) + (r.version ? ' v' + r.version : ' (draft)'); };
   const newest = h('input', { type: 'number', min: 1, max: MAX_PHOTOS, value: 10, 'aria-label': 'How many newest photos' });
   root.appendChild(h('section', { class: 'card' },
@@ -333,6 +333,10 @@ export async function runView(ctx, root, runId) {
   let drawnStatus = null;
   let sawActive = false;
   let attempt = 0;
+  let paused = false;
+  const hidden = () => typeof document !== 'undefined' && document.hidden === true;
+  const onVisible = () => { if (paused && !hidden() && !stopped) { paused = false; return tick(); } };
+  if (document.addEventListener) { document.addEventListener('visibilitychange', onVisible); ctx.onLeave(() => document.removeEventListener('visibilitychange', onVisible)); }
   ctx.onLeave(() => { stopped = true; if (timer) clearTimeout(timer); });
   const scoreKey = (f, n) => f + '|' + n;
 
@@ -385,7 +389,7 @@ export async function runView(ctx, root, runId) {
       branchText(run.branches).map((t) => h('p', { class: 'muted' }, t)),
       partner ? h('p', null, 'A/B partner: ', h('a', { href: '#/run/' + enc(partner.runId) }, 'run ' + partner.runId), ' (' + partner.status + ')') : null,
       h('div', { class: 'row wrap' },
-        running ? btn(run.abGroup ? 'Cancel A/B pair' : 'Cancel', async () => { try { await ctx.api('POST', '/api/runs/' + enc(runId) + '/cancel'); } catch (e) { ctx.showError(e); } }, 'btn danger') : null,
+        (running || (partner && isActive(partner.status))) ? btn(run.abGroup ? 'Cancel A/B pair' : 'Cancel', async () => { try { await ctx.api('POST', '/api/runs/' + enc(runId) + '/cancel'); } catch (e) { ctx.showError(e); } }, 'btn danger') : null,
         (() => {
           const sel = h('select', { 'aria-label': 'Compare with' }, h('option', { value: '' }, 'Compare with…'),
             others.filter((r) => r.runId !== runId).map((r) => h('option', { value: r.runId }, r.status + ' ' + when(r.startedAt))));
@@ -429,7 +433,7 @@ export async function runView(ctx, root, runId) {
     if (stopped) return;
     const ae = document.activeElement;
     const editing = ae && root.contains(ae) && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.tagName === 'SELECT');
-    if (!editing || !root.firstChild) {
+    if ((!editing || !root.firstChild) && shouldRedraw(drawnStatus, run)) {
       await draw(run, others);
       drawnStatus = String(run.status);
     }
@@ -439,7 +443,9 @@ export async function runView(ctx, root, runId) {
     const pair = shouldAutoOpen(sawActive, run, partner) ? abPair(others, run.abGroup) : null;
     if (pair) { ctx.go('#/compare?a=' + enc(pair.a) + '&b=' + enc(pair.b)); return; }
     // Poll until the status on screen is terminal (and an A/B partner is), whether or not a field has focus.
-    if (isActive(run.status) || partnerActive || drawnStatus !== String(run.status)) timer = setTimeout(tick, 2000);
+    const act = pollAction(hidden(), isActive(run.status) || partnerActive || drawnStatus !== String(run.status));
+    if (act === 'pause') paused = true;
+    else if (act === 'wait') timer = setTimeout(tick, 2000);
   }
   await tick();
 }

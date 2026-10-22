@@ -67,5 +67,6 @@ export const tests = {
     eq(s.switches, [{ id: 'route', a: 'x 2', b: 'x 1, y 1', agreement: '50%' }]);
     eq(s.scores, [{ id: 'extract', a: 3, b: -1 }]);
     eq(F.compareSummary({}).switches, []);
+    eq(F.compareSummary(null), { switches: [], scores: [] });
   },
 };

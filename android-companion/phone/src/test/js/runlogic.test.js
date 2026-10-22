@@ -30,6 +30,18 @@ export const tests = {
     ok(!R.shouldAutoOpen(true, done, { status: 'CANCELLED' }), 'only when both are DONE');
     ok(!R.shouldAutoOpen(true, done, null));
   },
+  redrawOnlyWhenSomethingChanged() {
+    ok(R.shouldRedraw(null, { status: 'DONE' }), 'first draw');
+    ok(!R.shouldRedraw('DONE', { status: 'DONE' }), 'a finished, unchanged run keeps its open details');
+    ok(R.shouldRedraw('RUNNING', { status: 'DONE' }), 'status changed');
+    ok(R.shouldRedraw('RUNNING', { status: 'RUNNING' }), 'a running run shows progress');
+  },
+  pollPausesWhileTheTabIsHidden() {
+    eq(R.pollAction(false, true), 'wait');
+    eq(R.pollAction(true, true), 'pause');
+    eq(R.pollAction(true, false), 'stop');
+    eq(R.pollAction(false, false), 'stop');
+  },
   activeAndKeepPolling() {
     ok(R.isActive('RUNNING') && R.isActive('QUEUED') && R.isActive('running'));
     ok(!R.isActive('DONE') && !R.isActive(undefined));
@@ -41,8 +53,12 @@ export const tests = {
     eq(R.retryDelay(0, { status: 401 }), null);
   },
   abOptions() {
-    const o = R.abOptions([{ id: 'p1', name: 'Live', versions: [{ version: 1 }, { version: 2 }] }, { id: 'p2', name: 'Mine', versions: [] }]);
+    const list = [{ id: 'p1', name: 'Live', versions: [{ version: 1 }, { version: 2 }] }, { id: 'p2', name: 'Mine', versions: [] }];
+    const o = R.abOptions(list);
     eq(o.map((x) => x.value), ['p1@draft', 'p1@1', 'p1@2', 'p2@draft']);
+    eq(R.abOptions(list, 'p1@1').map((x) => x.value), ['p1@draft', 'p1@2', 'p2@draft'], 'the base is not offered against itself');
+    eq(R.refKey({ pipelineId: 'p1', version: 1 }), 'p1@1');
+    eq(R.refKey({ pipelineId: 'p1' }), 'p1@draft');
     eq(o[1].label, 'Live v1');
     eq(o[0].label, 'Live (draft)');
     eq(R.parseRef('p1@2'), { pipelineId: 'p1', version: 2 });

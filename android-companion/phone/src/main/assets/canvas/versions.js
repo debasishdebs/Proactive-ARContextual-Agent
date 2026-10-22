@@ -27,18 +27,22 @@ export async function diffView(ctx, root, id, a, b) {
  * [mayLeave]() asks before the reload that would drop unsaved editor changes.
  */
 export function publishDialog(ctx, id, version, data, mayLeave) {
-  const it = data.interpretable || { problems: [], warnings: [], callRange: [0, 0] };
+  // the version's own shape when the server sent it; otherwise the draft's numbers would be another pipeline's, so none are shown
+  const row = (data.versions || []).find((v) => v.version === version) || {};
+  const it = row.interpretable || null;
   const radios = MODES.map((m) => {
     const r = h('input', { type: 'radio', name: 'mode', value: m.mode });
-    r.checked = m.mode === (data.liveShape ? 'prompts' : 'shadow');
+    r.checked = m.mode === (row.liveShape === false ? 'shadow' : 'prompts');
     return r;
   });
-  const range = callRangeText(it.callRange);
+  const range = it ? callRangeText(it.callRange) : '';
   const body = h('div', null,
     MODES.map((m, i) => h('label', { class: 'field' }, h('span', null, radios[i], ' ', h('strong', null, m.label)), h('span', { class: 'muted' }, m.text))),
-    data.liveShape ? null : h('p', { class: 'muted' }, 'The current draft is not the live shape, so Prompts only may be refused.'),
-    it.problems.length ? h('div', null, h('p', { class: 'muted' }, 'The current draft cannot be an interpreter yet:'), h('ul', { class: 'problems' }, it.problems.map((p) => h('li', null, p)))) : (range ? h('p', null, range + ' (current draft).') : null),
-    (it.warnings || []).map((w) => h('p', { class: 'muted' }, w)),
+    row.liveShape === false ? h('p', { class: 'muted' }, 'This version is not the live shape, so Prompts only may be refused.') : null,
+    !it ? h('p', { class: 'muted' }, 'The cost estimate describes your current draft; this version may differ. See Diff with draft.')
+      : it.problems.length ? h('div', null, h('p', { class: 'muted' }, 'This version cannot be an interpreter yet:'), h('ul', { class: 'problems' }, it.problems.map((p) => h('li', null, p))))
+      : (range ? h('p', null, range + '.') : null),
+    it ? (it.warnings || []).map((w) => h('p', { class: 'muted' }, w)) : null,
     h('p', { class: 'muted' }, 'The server checks the version you publish and says what blocks it.'));
   ctx.modal('Publish v' + version, body, [{ label: 'Publish', cls: 'btn primary', run: async (close) => {
     const mode = MODES[radios.findIndex((r) => r.checked)].mode;
@@ -65,6 +69,7 @@ export async function publishCard(ctx, host) {
   host.appendChild(h('section', { class: 'card' }, h('h3', null, 'Publishing'),
     head ? h('p', null, 'Newest: ' + head.title + (pub.interpreter ? ' · interpreted ' + pub.interpreter.interpreted + ' · fallbacks ' + pub.interpreter.fallbacks : '')) : h('p', { class: 'muted' }, 'Nothing is published.'),
     payload ? btn('Roll back', async () => {
+      if (!window.confirm('Roll back ' + head.title + '?')) return;
       try {
         await ctx.api('POST', '/api/publish/rollback', payload);
         await ctx.reload();

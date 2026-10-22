@@ -98,8 +98,9 @@ export async function runAction(ctx, label, i) {
 
 // ---- canned JSON, shaped like the real routes ----
 export const pipe = () => JSON.stringify(livePipe());
-export const versions = [{ version: 1, hash: 'h1', note: 'first', frozenAt: 1000 }, { version: 2, hash: 'h2', note: 'second', frozenAt: 2000 }];
 export const interpretable = { problems: [], warnings: ['Live always runs the confidence check and the critic after extraction'], callRange: [4, 6] };
+// v2 carries its own shape (the server serves it); v1 is an older row without one
+export const versions = [{ version: 1, hash: 'h1', note: 'first', frozenAt: 1000 }, { version: 2, hash: 'h2', note: 'second', frozenAt: 2000, liveShape: true, interpretable }];
 export const publishState = {
   active: false,
   stack: [{ id: 7, kind: 'interpreter', mode: 'SHADOW', pipelineId: 'p1', version: 2, publishedAt: 1000 }],
