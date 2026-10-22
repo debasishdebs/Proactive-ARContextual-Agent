@@ -124,6 +124,18 @@ class GlassesRuntime private constructor(private val app: Context) {
         send = { a -> controller?.sendPlanAck(a) },
         log = { DiagLog.i(CAPTURE_TAG, it) },
     )
+    /**
+     * Slice 3a Task 16: the IMU trace recorder. Records only while the phone's `pc_trace_ctl` says collect (default: never). Files go under
+     * `files/imu/` (`traces/`, `imu_trace_tmp/`, `trace_epoch`); all file work runs on its own idle-blocked daemon thread (no timer, no wake-up).
+     */
+    val traceRecorder: com.rokid.context.glasses.capture.trace.TraceRecorder by lazy {
+        val writer = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "imu-trace").also { it.isDaemon = true } }
+        com.rokid.context.glasses.capture.trace.TraceRecorder(
+            root = File(app.filesDir, "imu"), clock = android.os.SystemClock::elapsedRealtime, wallClock = System::currentTimeMillis,
+            bootId = { com.rokid.context.capture.trace.Manifest.bootIdOf(android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, 0).coerceAtLeast(0)) },
+            io = { r -> writer.execute(r) }, log = { DiagLog.i(CAPTURE_TAG, it) },
+        )
+    }
     /** Fix wave H3: a ~600 ms HUD mark per saved keyframe ("Capture blink on HUD", synced `captureCue`). */
     val captureBlink = com.rokid.context.glasses.hud.CaptureBlink(scope, { settingsCache.read().captureCue })
     /** The minimised icon (spec 2026-10-14 §3), one window per process; shown only while the keep-alive service runs. */
@@ -214,6 +226,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
         c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); ioScope.launch { applyPhoneSettings(s) } }
         c.onCapturePlan = { m -> plan.onMessage(m) }
+        c.onTraceControl = { m -> traceRecorder.onControl(m) }
         c.statusAck = { plan.statusAck().takeIf { it.gen != 0L } }   // the caps announcement stays HudController's gen-0 default
         attachJob?.cancel()
         attachJob = scope.launch {

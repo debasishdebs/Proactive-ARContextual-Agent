@@ -31,6 +31,8 @@ import com.rokid.context.glasses.capture.keyframe.GateResult
 import com.rokid.context.glasses.capture.keyframe.KeyframeGate
 import com.rokid.context.glasses.capture.keyframe.PrefsGateStore
 import com.rokid.context.glasses.capture.plan.AutoRevert
+import com.rokid.context.glasses.capture.trace.TraceInfo
+import com.rokid.context.glasses.capture.trace.TraceSettingsHash
 import com.rokid.context.glasses.capture.plan.ShadowCounts
 import com.rokid.context.glasses.capture.plan.ShadowRunner
 import com.rokid.context.glasses.capture.motion.AndroidSensorFeed
@@ -206,7 +208,8 @@ class CaptureService : LifecycleService() {
                 try {
                     val planNow = SystemClock.elapsedRealtime()
                     runtime.plan.tick(planNow) // TRIAL end and staged activation ride this existing 1 s loop
-                    autoRevert.check(planNow, runtime.plan.planLive())?.let { reason -> DiagLog.w(TAG, "plan auto-revert: $reason"); runtime.plan.revert(reason) }
+                    val running = runtime.plan.runningId()
+                    autoRevert.check(planNow, running)?.let { reason -> DiagLog.w(TAG, "plan auto-revert: $reason"); running?.let { id -> runtime.plan.revertIf(id, reason) } }
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "plan tick failed: ${e.javaClass.simpleName}") }
                 publishStatus(tick++)
               } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
@@ -251,8 +254,10 @@ class CaptureService : LifecycleService() {
             profile = { val s = runtime.settingsCache.readNormalized(); plan.active.profile(s.cameraWake, budget.tier.value, appliedContext()) },
             // A hard cap (no dwell bonus); a manual "Capture now" is forced and stays exempt (see SamplingSession.contextCap).
             contextCap = { plan.active.contextCap(appliedContext()) },
-            appliedState = { appliedContext() }, onCeilingHit = { autoRevert.onCeilingHit(it) },
+            appliedState = { appliedContext() }, onCeilingHit = { autoRevert.onCeilingHit(it, plan.runningId()) },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
+            trace = runtime.traceRecorder,
+            traceInfo = { val k = plan.traceKey(); TraceInfo(TraceSettingsHash.of(runtime.settingsCache.readNormalized()), k.gen, k.configHash, k.mode, budget.tier.value) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
         )
         hintSender = MotionHintSender(clock) { h -> runtime.controller?.sendMotionHint(h) == true }
@@ -261,6 +266,7 @@ class CaptureService : LifecycleService() {
         val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir).also { it.start(motion, wear) }
         val shadow = ShadowRunner({ plan.shadow }, { appliedCache }, { runtime.workRest.resting.value != null }) // SHADOW: counts only, no camera
         motion.addTap(shadow)
+        motion.addTap(runtime.traceRecorder) // records only while a trace runs (collect on, clean boundary); one volatile read otherwise
         val sm = Smart(session, feed, motion, shadow)
         smart = sm
         // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
@@ -289,6 +295,7 @@ class CaptureService : LifecycleService() {
         runtime.resetLocalMotion()
         cur.rateJob?.cancel()
         cur.session.stop(reason)
+        cur.motion.removeTap(runtime.traceRecorder)
         runtime.workRest.onPaused() // leaving counts as a pause: only one of R minutes or more restarts the work clock
         cur.feed.stop()
         runtime.smartCapture.value = false
@@ -336,7 +343,7 @@ class CaptureService : LifecycleService() {
                 val ps = runtime.plan.status()
                 val hb = Heartbeat(
                     running = shown.running, reason = shown.reason.toString(), uiMode = runtime.uiMode.get(),
-                    wake = runtime.plan.active.effectiveWake(settings.cameraWake, budget.tier.value, applied).name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
+                    wake = (smart?.session?.effectiveWake() ?: runtime.plan.active.effectiveWake(settings.cameraWake, budget.tier.value, applied)).name, tier = budget.tier.value.name, targetH = settings.batteryTargetHours,
                     batt = batteryPercent(), charging = isCharging(), drainPctPerMin = budget.drainPctPerMin, projectedHours = budget.projectedHours,
                     stats = smart?.session?.diagSnapshot() ?: DiagStats(0, 0, 0, 0), upBytes = upDelta, upSpanMs = upSpan,
                     heat = heat.level.value.toString(), batteryC = heat.lastReading?.batteryTempC,

@@ -45,6 +45,18 @@ class PlanStatusTest {
         assertEquals("auto:old_phone", c.status().revert)
     }
 
+    @Test fun traceKeyDescribesTheRunningPlanNotAStagedReplacement() {
+        val c = ctl()
+        c.onMessage(trial(1, tuned))
+        val a = c.traceKey()
+        assertEquals(1L, a.gen); assertEquals(PlanMode.TRIAL, a.mode); assertEquals(tuned.configHash, a.configHash)
+        host.quiet = false
+        c.onMessage(PlanTestKit.settings(2))          // staged, waiting for quiet: TRIAL 1 still captures
+        assertEquals(a, c.traceKey())
+        host.quiet = true; c.tick(now)
+        assertEquals(PlanKey(0, null, PlanMode.SETTINGS), c.traceKey())
+    }
+
     private data class StatusView(val hash: String, val gen: Long, val mode: PlanMode, val revert: String)
 
     /** Diagnostics label fix: a plan always runs SETTLE, so the heartbeat's `wake` must say so (not the settings wake). */

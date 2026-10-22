@@ -201,6 +201,13 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params
         this.quietSinceMs = quietSinceMs ?: -1L
     }
 
+    /** The head pose accumulated since the last [markPose] (the IMU trace's start snapshot). */
+    @Synchronized fun poseSnapshot(): com.rokid.context.capture.trace.PoseSnapshot =
+        com.rokid.context.capture.trace.PoseSnapshot(rx, ry, rz, walked, qx, qy, qz, quietSinceMs.takeIf { it >= 0 })
+
+    /** The previous gyro sensor time (the `dt` source of the next sample), or null before any. */
+    @Synchronized fun prevGyroMs(): Long? = lastGyroMs.takeIf { it >= 0 }
+
     @Synchronized fun markPose() { rx = 0f; ry = 0f; rz = 0f; walked = false; qx = 0f; qy = 0f; qz = 0f }
 
     /** Glances and micro bouts since the last call (the heartbeat). */

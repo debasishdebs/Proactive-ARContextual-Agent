@@ -1,0 +1,385 @@
+package com.rokid.context.glasses.capture.trace
+
+import com.rokid.context.capture.trace.ChunkCodec
+import com.rokid.context.capture.trace.CloseReason
+import com.rokid.context.capture.trace.EpisodeCause
+import com.rokid.context.capture.trace.EpisodeOutcome
+import com.rokid.context.capture.trace.GateOutcome
+import com.rokid.context.capture.trace.Manifest
+import com.rokid.context.capture.trace.StartSnapshot
+import com.rokid.context.capture.trace.TraceBounds
+import com.rokid.context.capture.trace.TraceEvent
+import com.rokid.context.capture.trace.TraceFormatException
+import com.rokid.context.capture.trace.TraceStatus
+import com.rokid.context.capture.trace.clampDarkStreak
+import com.rokid.context.core.model.MotionState
+import com.rokid.context.core.model.PlanMode
+import com.rokid.context.core.model.TraceChunk
+import com.rokid.context.core.model.TraceControl
+import com.rokid.context.core.model.context.ContextState
+import com.rokid.context.glasses.capture.keyframe.GateParams
+import com.rokid.context.glasses.capture.motion.SampleTap
+import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * The glasses IMU trace recorder (slice 3a Task 16) on the FROZEN trace schema 1 (`:core:capture` trace package; nothing here changes it).
+ *
+ * **When it records.** Only while the phone's [TraceControl] says `collect` (and `collectUntilMs` has not passed) AND the session offers a clean
+ * boundary ([SessionTrace.wantsStart], [start]): the detector QUIET, no camera episode, an empty gate window, capture unblocked. A trace starts
+ * with the initial `cx rs pf gp pl` events at its start time, then a 10 s pre-roll (`pr` at exactly start + 10 s). It ends (`cl`, manifest
+ * `closeReason`) on collect off or expiry (`stop`), a privacy pause (`pause`), heat STOP (`stop`), a plan activation (`plan`), a plan revert
+ * (`plan_revert`), a settings edit (`settings`), the disk or trace cap (`cap`), or session stop. A new segment starts at the next clean boundary.
+ *
+ * **Single writer, stamp inside the lock.** Every append goes through [lock]; `tMs` is `clock()` read INSIDE it, so stamp order equals append order
+ * across the sensor thread, the camera analysis executor (score listener), the session tick and the link thread. A time with its own meaning
+ * (the gate's `now`, a sensor time, the first frame) is a field. The `pr` event is the one exception by design: it carries `start + 10_000`
+ * and is inserted before the first append at or after that instant, so order still holds.
+ *
+ * **Sensing is never slowed.** A sensor sample is a few array stores into a preallocated [EventBuf] (no allocation, no I/O, no timer, no wake-up).
+ * At 64 KB of estimated payload the buffer is handed to the single writer thread ([io]); gzip, base64, hashing and file writes happen there.
+ * If the writer falls behind ([MAX_IN_FLIGHT] buffers) the newest batch is dropped and the trace is recorded PARTIAL, never blocked.
+ *
+ * **Disk.** Chunk files go to `imu_trace_tmp/<id>/` (renamed from `.part`), the manifest is written last and the directory is renamed to
+ * `traces/<id>/` at close ([TraceStorage]). At [diskCapBytes] (150 MB, including the running trace) the trace closes with `cap` and no new one
+ * starts until space is freed; nothing is deleted to make room and no event is dropped for it. A chunk the codec refuses as too big
+ * (`b64_too_long`: the real limit is 90,000 base64 characters) is split in two and retried.
+ *
+ * **Epoch (S57).** A [TraceControl] with a different `installId`, or a larger `deletionCounter`, drops the buffer and the running trace, deletes
+ * every local trace and `imu_trace_tmp`, and adopts the epoch (persisted). A control with the same `installId` and a smaller counter is stale and ignored.
+ *
+ * Not here (Task 17): tombstones, forget ranges and the transfer (`send`).
+ *
+ * Lock order: session, then classifier and gate, then [lock]. The recorder never calls back into any of them.
+ */
+class TraceRecorder(
+    root: File,
+    private val clock: () -> Long,
+    private val wallClock: () -> Long,
+    private val bootId: () -> String,
+    /** 1 = every sensor sample (exact). n > 1 = every n-th gyro and accel sample (S66, flagged not exact). */
+    override val sampleEvery: Int = 1,
+    /** Runs a task on the single writer thread (tests: inline). Must run tasks in order. */
+    private val io: (Runnable) -> Unit,
+    private val newTraceId: () -> String = { java.util.UUID.randomUUID().toString() },
+    private val diskCapBytes: Long = DISK_CAP_BYTES,
+    private val flushBytes: Int = FLUSH_BYTES,
+    private val bounds: TraceBounds = TraceBounds.DEFAULT,
+    private val bufferEvents: Int = BUFFER_EVENTS,
+    private val log: (String) -> Unit = {},
+) : SessionTrace, SampleTap {
+    init { require(sampleEvery in 1..StartSnapshot.MAX_SAMPLE_EVERY) { "sampleEvery" } }
+
+    /** One trace being recorded; the writer-owned fields are touched only on the writer thread. */
+    private class Job(
+        val id: String, val startElapsed: Long, val startWall: Long, val startPhone: PhoneSample?, val snapshot: StartSnapshot,
+        val installId: String, val counter: Long, val boot: String,
+    ) {
+        @Volatile var aborted = false
+        @Volatile var dropped = false
+        val inFlight = AtomicInteger(0)
+        // writer-owned
+        var seq = 0
+        val shas = ArrayList<String>()
+        var events = 0L
+        var raw = 0L
+        var writeFailed = false
+    }
+
+    private class PhoneSample(val atMs: Long, val arrivedElapsed: Long)
+    private class Finish(val endElapsed: Long, val endWall: Long, val endPhone: PhoneSample?, val reason: String)
+
+    private val lock = Any()
+    private val storage = TraceStorage(root)
+
+    // epoch (guarded by lock)
+    private var installId = ""
+    private var deletionCounter = 0L
+    // collect window
+    @Volatile private var collect = false
+    @Volatile private var collectUntil = Long.MAX_VALUE
+    private var phone: PhoneSample? = null
+
+    @Volatile override var recording = false
+        private set
+    @Volatile private var capClose = false
+
+    // the running trace (guarded by lock)
+    private var job: Job? = null
+    private var cur: EventBuf? = null
+    private val pool = ArrayDeque<EventBuf>()
+    private var buffersMade = 0
+    private var est = 0
+    private var gN = 0
+    private var aN = 0
+    private var preRollAt = 0L
+    private var preRollDone = true
+    private var activeInfo: TraceInfo? = null
+
+    init {
+        storage.recover()
+        storage.readEpoch().let { installId = it.first; deletionCounter = it.second }
+    }
+
+    /** Bytes under `traces/` and `imu_trace_tmp/` (tests, diagnostics). */
+    val usedBytes: Long get() = storage.used.get()
+
+    override val wantsStart: Boolean
+        get() = !recording && collectingNow(clock()) && installId.isNotEmpty() && storage.used.get() < diskCapBytes
+
+    private fun collectingNow(now: Long) = collect && now < collectUntil
+
+    // ---- link: TraceControl ----
+
+    /** The phone's `pc_trace_ctl` (link thread). Applies the epoch, then the collect window. Tombstones, forget ranges and `send` are Task 17. */
+    fun onControl(c: TraceControl) {
+        var persist: Pair<String, Long>? = null
+        var wipe = false
+        synchronized(lock) {
+            val now = clock()
+            if (c.installId == installId && c.deletionCounter < deletionCounter) return // a stale message of this pairing
+            phone = if (c.atMs > 0) PhoneSample(c.atMs, now) else phone
+            if (c.installId != installId || c.deletionCounter > deletionCounter) {
+                abortLocked()
+                installId = c.installId; deletionCounter = c.deletionCounter
+                persist = installId to deletionCounter
+                wipe = true
+            }
+            collect = c.collect
+            collectUntil = if (c.collect && c.collectUntilMs != null && c.atMs > 0) now + (c.collectUntilMs!! - c.atMs) else Long.MAX_VALUE
+            if (recording && !collectingNow(now)) closeLocked(CloseReason.STOP)
+        }
+        if (wipe) io { try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}") } }
+        persist?.let { (i, n) -> io { try { storage.writeEpoch(i, n) } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } } }
+    }
+
+    // ---- start / close ----
+
+    override fun start(s: TraceStart): Boolean = synchronized(lock) {
+        val now = clock()
+        if (recording || !collectingNow(now) || installId.isEmpty() || storage.used.get() >= diskCapBytes) return false
+        if (s.snapshot.sampleEvery != sampleEvery) return false
+        val id = newTraceId()
+        if (!TraceBounds.isTraceId(id)) return false
+        val b = cur ?: buffer() ?: return false // the buffer of the previous trace is reused (it was flushed at its close)
+        b.clear()
+        val sn = s.snapshot
+        val j = Job(id, now, wallClock(), phone?.let { PhoneSample(it.atMs, it.arrivedElapsed) }, sn, installId, deletionCounter, bootId())
+        job = j; cur = b; est = 0; gN = 0; aN = 0
+        preRollAt = now + TraceBounds.PRE_ROLL_MS; preRollDone = false
+        activeInfo = s.info
+        capClose = false
+        try {
+            val p = s.profile
+            b.add(TraceEvent.Ctx(now, sn.ctx))
+            b.add(TraceEvent.Resting(now, sn.resting))
+            b.add(TraceEvent.Profile(now, p.wake, p.settledMs, p.quietMs, p.walkMs, p.stillCapMs, p.analysisMs, p.tier, p.lowPower, p.heatSlow, p.quickLookMs, p.ctxCap, p.hard))
+            b.add(TraceEvent.GateParams(now, s.gate.hamming, s.gate.bigChange, s.gate.ringCompareAll))
+            b.add(TraceEvent.Plan(now, s.info.planGen, s.info.planHash ?: "0", s.info.planMode))
+        } catch (e: IllegalArgumentException) {
+            b.clear(); job = null; cur = null; activeInfo = null
+            return false
+        }
+        est = 5 * EST_EVENT
+        recording = true
+        true
+    }
+
+    override fun close(reason: String) {
+        require(reason in CloseReason.ALL) { "close reason" }
+        synchronized(lock) { closeLocked(reason) }
+    }
+
+    override fun onConfig(info: TraceInfo): Boolean = synchronized(lock) {
+        val a = activeInfo
+        if (!recording || a == null) return false
+        val reason = when {
+            info.settingsHash != a.settingsHash -> CloseReason.SETTINGS
+            !info.samePlan(a) -> if (info.planMode == PlanMode.SETTINGS && info.planHash == null) CloseReason.PLAN_REVERT else CloseReason.PLAN
+            else -> return false
+        }
+        closeLocked(reason)
+        true
+    }
+
+    /** Ends the running trace: the `cl` event is always recorded, the last batch is forced out and the finish is queued behind it. Caller holds [lock]. */
+    private fun closeLocked(reason: String) {
+        val j = job ?: return
+        if (cur == null) return
+        recording = false
+        val t = prep()
+        if (cur!!.isFull) flushLocked(force = true)
+        cur!!.add(TraceEvent.Close(t, reason))
+        flushLocked(force = true)
+        val end = Finish(t, wallClock(), phone?.let { PhoneSample(it.atMs, it.arrivedElapsed) }, reason)
+        job = null; activeInfo = null
+        io { finishJob(j, end) }
+    }
+
+    /** Drops the running trace and everything buffered (a new epoch). Caller holds [lock]. */
+    private fun abortLocked() {
+        val j = job ?: return
+        j.aborted = true
+        recording = false
+        job = null; activeInfo = null
+        cur?.clear(); est = 0
+        io { try { storage.discard(j.id) } catch (e: Exception) { /* the wipe that follows removes it */ } }
+    }
+
+    // ---- append path (every caller holds lock) ----
+
+    /** The stamp: `clock()` inside the lock. Inserts the pre-roll end first when this append is the first at or after it. */
+    private fun prep(): Long {
+        val t = clock()
+        if (!preRollDone && t >= preRollAt) { preRollDone = true; addObj(TraceEvent.PreRollEnd(preRollAt)) }
+        return t
+    }
+
+    private fun addObj(e: TraceEvent) {
+        var b = cur!!
+        if (b.isFull) { flushLocked(force = false); b = cur!! }
+        if (b.isFull) { drop("full"); return }
+        b.add(e)
+        est += EST_EVENT
+    }
+
+    private inline fun rec(make: (Long) -> TraceEvent) {
+        if (!recording) return
+        synchronized(lock) {
+            if (!recording) return
+            try {
+                val t = prep()
+                addObj(make(t))
+                after(t)
+            } catch (e: IllegalArgumentException) {
+                drop("bounds:" + e.message) // a value outside the frozen bounds: never crash capture, mark the trace PARTIAL
+            }
+        }
+    }
+
+    private fun after(t: Long) {
+        if (capClose) { closeLocked(CloseReason.CAP); return }
+        if (t >= collectUntil) { closeLocked(CloseReason.STOP); return }
+        if (est >= flushBytes) flushLocked(force = false)
+    }
+
+    private fun sample(gyro: Boolean, x: Float, y: Float, z: Float, sMs: Long) {
+        if (!recording) return
+        if (!x.isFinite() || !y.isFinite() || !z.isFinite() || sMs < 0 || sMs > TraceBounds.MAX_MS) return
+        synchronized(lock) {
+            if (!recording) return
+            if (sampleEvery > 1) { if (gyro) { if (gN++ % sampleEvery != 0) return } else { if (aN++ % sampleEvery != 0) return } }
+            val t = prep()
+            var b = cur!!
+            if (b.isFull) { flushLocked(force = false); b = cur!! }
+            if (b.isFull) { drop("full"); return }
+            b.addSample(gyro, t, sMs, x, y, z)
+            est += EST_SAMPLE
+            after(t)
+        }
+    }
+
+    /** Hands the buffer to the writer. At the in-flight limit the batch is dropped (PARTIAL) unless [force]. Caller holds [lock]. */
+    private fun flushLocked(force: Boolean) {
+        val j = job ?: return
+        val b = cur ?: return
+        if (b.size == 0) return
+        if (!force && j.inFlight.get() >= MAX_IN_FLIGHT) { drop("inflight"); b.clear(); est = 0; return }
+        val next = buffer(force)
+        if (next == null) { drop("nobuffer"); b.clear(); est = 0; return }
+        cur = next
+        est = 0
+        j.inFlight.incrementAndGet()
+        io {
+            try { if (!j.aborted) writeBatch(j, b.events()) } catch (e: Exception) { j.writeFailed = true; log("trace batch failed: ${e.javaClass.simpleName}") }
+            finally { j.inFlight.decrementAndGet(); recycle(b) }
+        }
+    }
+
+    /** A free buffer: pooled, else a new one up to [MAX_IN_FLIGHT] + 1; a forced flush (the close) may exceed that by what it needs. */
+    private fun buffer(force: Boolean = false): EventBuf? =
+        pool.removeLastOrNull() ?: if (force || buffersMade < MAX_IN_FLIGHT + 1) EventBuf(bufferEvents).also { buffersMade++ } else null
+
+    /** The trace loses events (a full buffer, a writer that fell behind, a value outside the frozen bounds): it is recorded PARTIAL. Caller holds [lock]. */
+    private fun drop(why: String) { job?.dropped = true; log("trace dropped events: $why") }
+
+    private fun recycle(b: EventBuf) = synchronized(lock) { b.clear(); pool.addLast(b) }
+
+    // ---- writer thread ----
+
+    private fun writeBatch(j: Job, events: List<TraceEvent>) {
+        if (events.isEmpty()) return
+        try {
+            val e = ChunkCodec.encode(j.id, j.seq, events, bounds)
+            val c = TraceChunk(traceId = j.id, kind = ChunkCodec.KIND, seq = j.seq, count = 0, installId = j.installId, deletionCounter = j.counter, sha256 = e.sha256, b64 = e.b64)
+            try { storage.writeChunk(j.id, j.seq, c) } catch (x: java.io.IOException) { j.writeFailed = true; log("trace chunk not written"); return }
+            j.shas += e.sha256; j.events += e.eventCount; j.raw += e.rawBytes; j.seq++
+            if (j.seq >= CHUNK_SOFT_LIMIT || j.raw >= RAW_SOFT_LIMIT || j.events >= EVENT_SOFT_LIMIT || storage.used.get() >= diskCapBytes) capClose = true
+        } catch (x: TraceFormatException) {
+            // The real limit is the 90,000 base64 characters: split in two (the first half keeps the seq) and retry.
+            if (events.size > 1 && x.code in SPLIT_CODES) {
+                val mid = events.size / 2
+                writeBatch(j, events.subList(0, mid))
+                writeBatch(j, events.subList(mid, events.size))
+            } else { j.writeFailed = true; log("trace chunk refused: ${x.code}") }
+        }
+    }
+
+    private fun finishJob(j: Job, end: Finish) {
+        try {
+            if (j.aborted || j.seq == 0) { storage.discard(j.id); return }
+            val both = j.startPhone != null && end.endPhone != null
+            val m = Manifest(
+                traceId = j.id, installId = j.installId, deletionCounter = j.counter, revision = 1, parentTraceId = null, bootId = j.boot,
+                startElapsedMs = j.startElapsed, endElapsedMs = end.endElapsed, startWallMs = j.startWall, endWallMs = end.endWall,
+                startPhoneWallMs = if (both) j.startPhone!!.atMs else null, endPhoneWallMs = if (both) end.endPhone!!.atMs else null,
+                startPhoneAgeMs = if (both) (j.startElapsed - j.startPhone!!.arrivedElapsed).coerceAtLeast(0) else null,
+                endPhoneAgeMs = if (both) (end.endElapsed - end.endPhone!!.arrivedElapsed).coerceAtLeast(0) else null,
+                phoneOffsetMs = null, offsetUncertaintyMs = null,
+                chunkCount = j.seq, eventCount = j.events, rawBytes = j.raw, traceSha256 = Manifest.traceSha(j.shas),
+                recorded = if (j.dropped || j.writeFailed) TraceStatus.PARTIAL else TraceStatus.COMPLETE,
+                closeReason = end.reason, snapshot = j.snapshot,
+            )
+            storage.publish(j.id, m)
+        } catch (e: Exception) {
+            log("trace not published: ${e.javaClass.simpleName}")
+            try { storage.discard(j.id) } catch (x: Exception) { /* swept at the next start */ }
+        }
+    }
+
+    // ---- SampleTap (sensor thread, under the classifier's lock) ----
+
+    override fun onGyro(x: Float, y: Float, z: Float, tMs: Long, state: MotionState) = sample(true, x, y, z, tMs)
+    override fun onAccel(x: Float, y: Float, z: Float, tMs: Long, gyroNewestMs: Long, state: MotionState) = sample(false, x, y, z, tMs)
+
+    // ---- SessionTrace ----
+
+    override fun onContext(state: ContextState) = rec { TraceEvent.Ctx(it, state) }
+    override fun onResting(on: Boolean) = rec { TraceEvent.Resting(it, on) }
+    override fun onProfile(p: TraceProfile) = rec { TraceEvent.Profile(it, p.wake, p.settledMs, p.quietMs, p.walkMs, p.stillCapMs, p.analysisMs, p.tier, p.lowPower, p.heatSlow, p.quickLookMs, p.ctxCap, p.hard) }
+    override fun onGateParams(g: GateParams) = rec { TraceEvent.GateParams(it, g.hamming, g.bigChange, g.ringCompareAll) }
+    override fun onBlocked(reason: String?) = rec { TraceEvent.Blocked(it, reason) }
+    override fun onBackoff(step: Int) = rec { TraceEvent.Backoff(it, step) }
+    override fun onDark(streak: Int) = rec { TraceEvent.DarkStreak(it, clampDarkStreak(streak)) }
+    override fun onEpisodeOpen(cause: EpisodeCause) = rec { TraceEvent.Episode(it, true, cause) }
+    override fun onEpisodeClose(cause: EpisodeCause, firstFrameAtMs: Long?, openedAtMs: Long?, outcome: EpisodeOutcome) = rec { TraceEvent.Episode(it, false, cause, firstFrameAtMs, openedAtMs, outcome) }
+    override fun onScore(seq: Long, d: Long, p: Long, blur: Float, passedBlur: Boolean, motion: MotionState, dwellArmed: Boolean, force: Boolean, cap: Int?, hard: Boolean, nowMs: Long) =
+        rec { TraceEvent.Score(it, seq, d, p, blur, passedBlur, motion, dwellArmed, force, cap?.takeIf { c -> c != Int.MAX_VALUE }, hard, nowMs) }
+    override fun onGateKeep(seq: Long, encoded: Boolean, keptAtMs: Long?) = rec { TraceEvent.Gate(it, seq, GateOutcome.KEEP, "", encoded, if (encoded) keptAtMs else null) }
+    override fun onGateSkip(seq: Long, reason: String) = rec { TraceEvent.Gate(it, seq, GateOutcome.SKIP, reason) }
+    override fun onFlush(reason: String, nowMs: Long) = rec { TraceEvent.Flush(it, reason, nowMs) }
+
+    companion object {
+        const val DISK_CAP_BYTES = 150L * 1024 * 1024
+        /** S73-style flush point: about 64 KB of event text, well under the 90,000 character b64 bound after gzip. */
+        const val FLUSH_BYTES = 64 * 1024
+        const val BUFFER_EVENTS = 4096
+        const val MAX_IN_FLIGHT = 3
+        private const val EST_SAMPLE = 56
+        private const val EST_EVENT = 72
+        private const val CHUNK_SOFT_LIMIT = 4_000
+        private const val RAW_SOFT_LIMIT = 250L * 1024 * 1024
+        private const val EVENT_SOFT_LIMIT = 9_500_000L
+        private val SPLIT_CODES = setOf("b64_too_long", "gunzip_too_big", "too_many_events")
+    }
+}

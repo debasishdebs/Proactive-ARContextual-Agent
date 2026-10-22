@@ -81,6 +81,8 @@ class HudController(
     @Volatile var statusAck: () -> com.rokid.context.core.model.CapturePlanAck? = { null }
     /** `pc_capture_plan` (slice 3a): a plan message of this session; the runtime's plan controller answers with acks through [sendPlanAck]. */
     @Volatile var onCapturePlan: (com.rokid.context.core.model.CapturePlanMessage) -> Unit = {}
+    /** `pc_trace_ctl` (slice 3a): collect on/off, the deletion epoch; the IMU trace recorder consumes it. */
+    @Volatile var onTraceControl: (com.rokid.context.core.model.TraceControl) -> Unit = {}
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
     @Volatile var onWear: (Boolean?) -> Unit = {}
     /** `pc_phone_ctx`: whether the phone is in use (screen on, unlocked); null = the session closed (unknown again). */
@@ -108,6 +110,7 @@ class HudController(
         bridge.subscribe(Channels.PHONE_CONTEXT) { text -> (Wire.decode<PhoneContextMessage>(text) as? Decoded.Ok)?.value?.let(::onPhoneContextMessage) }
         bridge.subscribe(Channels.MOTION_CONTEXT) { text -> (Wire.decode<MotionContextMessage>(text) as? Decoded.Ok)?.value?.let(::onMotionContextMessage) }
         bridge.subscribe(Channels.CAPTURE_PLAN) { text -> (Wire.decode<com.rokid.context.core.model.CapturePlanMessage>(text) as? Decoded.Ok)?.value?.let(::onPlanMessage) }
+        bridge.subscribe(Channels.TRACE_CTL) { text -> (Wire.decode<com.rokid.context.core.model.TraceControl>(text) as? Decoded.Ok)?.value?.let { m -> try { onTraceControl(m) } catch (e: Exception) { Log.w(TAG, "trace control failed: ${e.javaClass.simpleName}") } } }
         bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { Log.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
         bridge.setConnectionListener(connected = { Log.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
         scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }

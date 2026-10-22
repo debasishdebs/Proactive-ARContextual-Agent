@@ -1,21 +1,26 @@
 package com.rokid.context.glasses.capture.plan
 
 /**
- * Local auto-revert rules a plan can trip (S59, slice 3a core): the hard ceiling hit [LIMIT] times in [WINDOW_MS]. (`auto:trial_end`
- * and `auto:reboot` are the receiver's; the opens-per-minute and `exprErr` rules arrive with later slices.) A plan is "live" only for
- * an effective TRIAL or LIVE: the settings path and SHADOW capture exactly as settings do, so their ceiling hits are not a plan's fault.
- * Thread-safe; [onCeilingHit] is cheap enough to call under the session lock.
+ * Local auto-revert rules a plan can trip (S59, slice 3a core): the hard ceiling refused [LIMIT] times in [WINDOW_MS] under ONE plan.
+ * (`auto:trial_end` and `auto:reboot` are the receiver's; the opens-per-minute and `exprErr` rules arrive with later slices.)
+ *
+ * Every hit carries the identity ([PlanId]) of the plan that was running when it happened. A hit with no running plan (the settings path,
+ * SHADOW) is dropped at once, and [check] counts only hits of the plan running now, so hits of plan A (or of settings) can never count
+ * against B, whatever the supervisor happened to observe in between. Thread-safe; cheap enough to call under the session or gate lock.
  */
 class AutoRevert(private val windowMs: Long = WINDOW_MS, private val limit: Int = LIMIT) {
-    private val hits = ArrayDeque<Long>()
+    private class Hit(val at: Long, val id: PlanId)
+    private val hits = ArrayDeque<Hit>()
 
-    @Synchronized fun onCeilingHit(nowMs: Long) { hits.addLast(nowMs); while (hits.size > MAX_KEPT) hits.removeFirst() }
+    @Synchronized fun onCeilingHit(nowMs: Long, running: PlanId?) {
+        if (running == null) return
+        hits.addLast(Hit(nowMs, running)); while (hits.size > MAX_KEPT) hits.removeFirst()
+    }
 
-    /** The reason to revert with now, or null. Firing clears the hits (once per breach); no live plan clears them too (stale hits never count against a later plan). */
-    @Synchronized fun check(nowMs: Long, planLive: Boolean): String? {
-        if (!planLive) { hits.clear(); return null }
-        while (hits.isNotEmpty() && nowMs - hits.first() > windowMs) hits.removeFirst()
-        if (hits.size < limit) return null
+    /** The reason to revert [running] with now, or null. Hits of any other plan are discarded; firing clears the hits (once per breach). */
+    @Synchronized fun check(nowMs: Long, running: PlanId?): String? {
+        hits.removeAll { it.id != running || nowMs - it.at > windowMs }
+        if (running == null || hits.size < limit) return null
         hits.clear()
         return "auto:ceiling"
     }
