@@ -1,3 +1,4 @@
+#   Tomorrow: start from docs/superpowers/specs/2026-10-22-handoff-evening.md, section "00. START HERE". The first job is the replay diagnosis on the worn trace.
 """Uniform model gateway for proactive context agent.
 
 This keeps cloud APIs and local models swappable behind a single interface,
