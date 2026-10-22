@@ -264,13 +264,13 @@ class SamplingSession(
         val walked = motion.walkedSinceMark()
         val cc = contextCap()
         val cap = capNow(cc)
-        if (now - lastKeyframeAt < glance.noveltyWindowMs && turned < glance.noveltyMinRad && !walked) {
-            novelSkipAccum++
-        } else if (k >= cap && (hardNow(cc) || turned < glance.bigTurnRad && !walked) || k.toLong() >= 2L * cap) {
-            cappedAccum++
-        } else {
-            pendingDwellAt = now
-            kick.trySend(Unit)
+        when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glance)) {
+            GlanceAdmission.Decision.NOVEL_SKIP -> novelSkipAccum++
+            GlanceAdmission.Decision.CAPPED -> cappedAccum++
+            GlanceAdmission.Decision.OPEN -> {
+                pendingDwellAt = now
+                kick.trySend(Unit)
+            }
         }
         Unit
     }
