@@ -228,7 +228,9 @@ object CaptureSimulator {
         // ---- the event loop ----
 
         fun accept(e: TraceEvent) {
-            advanceTo(e.tMs)
+            // The session decides, then appends the `ep` open at the tick's own instant: the tick due AT an open's time runs before the open is applied (an open that
+            // fails is recorded with its close at the same instant, and the close's back-off must not hide the decision that produced it).
+            advanceTo(if (e is TraceEvent.Episode && e.open) e.tMs + 1 else e.tMs)
             if (e.tMs > now) now = e.tMs
             when (e) {
                 is TraceEvent.Gyro -> { val s = cls.state.value; val d = cls.decelerating.value; cls.onGyro(e.x, e.y, e.z, e.sMs); afterSensor(e.tMs, s, d) }
@@ -351,7 +353,13 @@ object CaptureSimulator {
             if (preRoll) { forceBrief = false; return }
             cur.flagged += e
             cur.endMs = e.tMs
-            if (!compared) { forceBrief = false; awaiting += RecOpen(e, cur); return }
+            if (!compared) {
+                forceBrief = false
+                // the candidate's own decision at this instant (the tick runs just before the open is applied) is the same open: nothing waits for a twin
+                val own = opens.lastOrNull()
+                if (own == null || !ReplayRule.opensMatch(e.tMs, e.cause, own.atMs, own.cause)) awaiting += RecOpen(e, cur)
+                return
+            }
             val twin = pendingReplayed.firstOrNull { ReplayRule.opensMatch(e.tMs, e.cause, it.open.atMs, it.open.cause) }
             if (twin != null) pendingReplayed.remove(twin) else awaiting += RecOpen(e, cur)
             closing += cur
