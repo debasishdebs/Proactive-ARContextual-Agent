@@ -102,7 +102,7 @@ class CanvasRouter(
             is CanvasAuth.Pair.Locked -> HttpResponse.json(
                 429,
                 buildJsonObject { put("error", "refused"); put("message", "Pairing is locked. Try again shortly.") },
-                mapOf("Retry-After" to "30"),
+                mapOf("Retry-After" to auth.retryAfterSeconds().coerceAtLeast(1).toString()),
             )
             CanvasAuth.Pair.NoCode -> HttpResponse.error(401, "unauthorized", "No pairing code is active. Show a new one in the app.")
         }

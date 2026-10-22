@@ -99,7 +99,9 @@ class CanvasRouterTest {
         repeat(4) { assertEquals(401, router.handle(req("POST", "/api/pair", body = """{"code":"$wrong"}""")).status) }
         val locked = router.handle(req("POST", "/api/pair", body = """{"code":"$wrong"}"""))
         assertEquals(429, locked.status)
-        assertNotNull(locked.headers["Retry-After"])
+        assertEquals("30", locked.headers["Retry-After"])
+        now += 10_000L
+        assertEquals("20", router.handle(req("POST", "/api/pair", body = """{"code":"$code"}""")).headers["Retry-After"])
         assertEquals(429, router.handle(req("POST", "/api/pair", body = """{"code":"$code"}""")).status)
     }
 

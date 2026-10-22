@@ -15,7 +15,19 @@ class FakeCanvasHost : CanvasHost {
     override fun stop() { calls += "stop"; status.value = status.value.copy(on = false, port = null) }
     override fun setLan(on: Boolean) { calls += "lan:$on" }
     override fun revokeAll() { calls += "revoke" }
-    override fun pairingCode() = CanvasAuth.Code("654321", Long.MAX_VALUE).also { calls += "code"; status.value = status.value.copy(code = it.code, codeExpiresAt = it.expiresAt) }
+    /** True while the pairing is locked out and waiting for the explicit "New code" (nothing is minted). */
+    var lockedOut = false
+    override fun pairingCode(): CanvasAuth.Code? {
+        if (lockedOut) { calls += "code:locked"; return null }
+        return CanvasAuth.Code("654321", Long.MAX_VALUE).also { calls += "code"; status.value = status.value.copy(code = it.code, codeExpiresAt = it.expiresAt) }
+    }
+    override fun newPairingCode() = CanvasAuth.Code("654321", Long.MAX_VALUE).also {
+        calls += "newCode"; lockedOut = false
+        status.value = status.value.copy(code = it.code, codeExpiresAt = it.expiresAt, pairLocked = false)
+    }
+    override fun rotateCertificate() { calls += "rotate" }
+    var identity: com.rokid.context.phone.canvas.server.TlsIdentity? = null
+    override fun tlsIdentity() = identity
     override fun webViewToken() = "t"
     override fun refreshNetwork() {}
     var idle = false

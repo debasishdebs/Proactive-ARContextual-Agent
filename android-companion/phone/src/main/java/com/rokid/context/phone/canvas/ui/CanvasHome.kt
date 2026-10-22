@@ -25,6 +25,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,7 +66,9 @@ import java.util.Date
 import java.util.Locale
 import kotlin.coroutines.cancellation.CancellationException
 
-const val LAN_WARNING = "Photos and outputs travel unencrypted on this Wi-Fi. Turns off after 30 min idle."
+const val LAN_NOTE = "Encrypted with a certificate made on this phone. Turns off after 30 min idle."
+const val LAN_UNAVAILABLE = "Secure LAN isn't available on this phone"
+const val LOCKED_TEXT = "Locked \u2014 tap New code"
 
 data class CanvasHomeUi(
     val status: CanvasStatus = CanvasStatus(),
@@ -137,7 +143,8 @@ class CanvasHomeViewModel(
         val now = clock()
         local.update { it.copy(nowMs = now) }
         val s = host.status.value
-        if ((local.value.showCode || s.lan) && s.on && (s.code == null || now >= s.codeExpiresAt)) host.pairingCode()
+        // After a lockout nothing mints a code: the user taps "New code" (S17).
+        if ((local.value.showCode || s.lan) && s.on && !s.pairLocked && (s.code == null || now >= s.codeExpiresAt)) host.pairingCode()
         host.refreshNetwork()
     }
 
@@ -160,10 +167,15 @@ class CanvasHomeViewModel(
     fun openInBrowser() {
         ensureService()
         if (!host.status.value.on) host.start(host.status.value.lan)
-        val port = host.status.value.port ?: return
-        val code = host.pairingCode().code
+        val st = host.status.value
+        val port = st.port ?: return
+        val code = host.pairingCode()
+        if (code == null) {
+            local.update { it.copy(message = "Pairing is locked. Tap New code first.") }
+            return
+        }
         local.update { it.copy(showCode = true) }
-        openUrl("http://127.0.0.1:$port/#pair=$code")
+        openUrl("${st.scheme}://127.0.0.1:$port/#pair=${code.code}") // a fragment: never sent to the server, never in a Referer
     }
 
     fun rollback() {
@@ -182,6 +194,18 @@ class CanvasHomeViewModel(
         local.update { it.copy(message = "Signed out all browsers") }
     }
 
+    /** The explicit "New code": the only way out of a pairing lockout. */
+    fun newCode() {
+        host.newPairingCode()
+        local.update { it.copy(showCode = true) }
+    }
+
+    /** New certificate: the LAN restarts on it and every browser is signed out. */
+    fun newCertificate() {
+        host.rotateCertificate()
+        local.update { it.copy(message = "New certificate. Every browser was signed out.") }
+    }
+
     fun messageShown() { local.update { it.copy(message = null) } }
 }
 
@@ -196,6 +220,8 @@ fun CanvasHomeScreen(
     onRollback: () -> Unit,
     onSignOutAll: () -> Unit,
     onMessageShown: () -> Unit,
+    onNewCode: () -> Unit = {},
+    onNewCertificate: () -> Unit = {},
 ) {
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(ui.message) {
@@ -221,14 +247,31 @@ fun CanvasHomeScreen(
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Text("Use from a laptop", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                             Switch(
-                                checked = ui.status.lan, onCheckedChange = onLan, enabled = ui.wifiAvailable || ui.status.lan,
+                                checked = ui.status.lan, onCheckedChange = onLan, enabled = ui.status.lanAvailable && (ui.wifiAvailable || ui.status.lan),
                                 modifier = Modifier.testTag("canvas_lan_switch"),
                             )
                         }
-                        Text(LAN_WARNING, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
-                        if (!ui.wifiAvailable && !ui.status.lan) Text("Connect to Wi-Fi to use this.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        Text(LAN_NOTE, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                        if (!ui.status.lanAvailable) Text(LAN_UNAVAILABLE, style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft, modifier = Modifier.testTag("canvas_lan_unavailable"))
+                        else if (!ui.wifiAvailable && !ui.status.lan) Text("Connect to Wi-Fi to use this.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
                         ui.status.lanUrl?.let { Text(it, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("canvas_lan_url")) }
-                        if (ui.showCode && ui.status.code != null) {
+                        val fingerprint = ui.status.fingerprint
+                        if (ui.status.lan && fingerprint != null) {
+                            var all by remember { mutableStateOf(false) }
+                            val groups = fingerprint.split(' ')
+                            Text("Certificate fingerprint", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
+                            Text(
+                                (if (all) groups else groups.take(8)).joinToString(" "), style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
+                                modifier = Modifier.testTag("canvas_fingerprint"),
+                            )
+                            TextButton(onClick = { all = !all }, modifier = Modifier.testTag("canvas_fingerprint_toggle")) { Text(if (all) "Show less" else "Show all") }
+                            Text("Your browser will warn once. Check that the fingerprint in its certificate details matches.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                            OutlinedButton(onClick = onNewCertificate, modifier = Modifier.testTag("canvas_new_certificate")) { Text("New certificate") }
+                        }
+                        if (ui.status.on && ui.status.pairLocked) {
+                            Text(LOCKED_TEXT, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("canvas_locked"))
+                            Button(onClick = onNewCode, modifier = Modifier.testTag("canvas_new_code")) { Text("New code") }
+                        } else if (ui.showCode && ui.status.code != null) {
                             Text("Pairing code", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
                             Text(ui.status.code, style = MaterialTheme.typography.headlineMedium, modifier = Modifier.testTag("canvas_code"))
                             Text(CanvasHomeText.countdown(ui.secondsLeft), style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft, modifier = Modifier.testTag("canvas_code_left"))
@@ -310,5 +353,6 @@ fun CanvasHomeRoute(host: CanvasHost, onBack: () -> Unit, onOpenEditor: () -> Un
     CanvasHomeScreen(
         ui, onBack, onOpenEditor, onOpenBrowser = vm::openInBrowser, onLan = vm::setLan, onOpenPipeline = onOpenPipeline,
         onRollback = vm::rollback, onSignOutAll = vm::signOutAll, onMessageShown = vm::messageShown,
+        onNewCode = vm::newCode, onNewCertificate = vm::newCertificate,
     )
 }

@@ -127,6 +127,11 @@ dependencies {
     testImplementation("org.graalvm.polyglot:polyglot:23.1.13")
     testImplementation("org.graalvm.polyglot:js-community:23.1.13") { artifact { type = "pom" } }
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    // Device-only: the real AndroidKeyStore handshake test (run on the phone in Task 14; compile-verified in CI-less builds).
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:core:1.6.1")
 }
 
 // Compose UI tests need ui-test-manifest's host activity, which is debug-only; release unit tests would have none.

@@ -10,6 +10,8 @@ class CanvasAuth(private val clock: () -> Long, private val random: SecureRandom
         const val CODE_TTL_MS = 5 * 60_000L
         const val MAX_TRIES = 5
         const val LOCK_MS = 30_000L
+        /** Lockout lengths per process: each lockout takes the next step, then the last one for good; a successful pair starts over. */
+        val LOCK_STEPS_MS = longArrayOf(LOCK_MS, 120_000L, 600_000L)
         const val IDLE_MS = 30 * 60_000L
         const val MAX_AGE_MS = 12 * 3_600_000L
         const val MAX_SESSIONS = 3
@@ -30,18 +32,30 @@ class CanvasAuth(private val clock: () -> Long, private val random: SecureRandom
     private var code: Code? = null
     private var tries = 0
     private var lockedUntil = 0L
+    private var lockouts = 0
+    /** Set by a lockout, cleared only by an explicit [newCode]: nothing mints a code on its own after a lockout. */
+    private var awaitingNew = false
     private val sessions = ArrayList<Session>() // oldest first
 
     /** The newest successful [check] (the service's idle rule); starts at construction time. */
     @Volatile var lastActivityMs: Long = clock()
         private set
 
+    /** Mints a code. During a lockout its life starts when the lock ends, so a long lock cannot eat the code's five minutes. */
     fun newCode(): Code = synchronized(lock) {
-        val c = Code("%06d".format(random.nextInt(1_000_000)), clock() + CODE_TTL_MS)
+        val now = clock()
+        val c = Code("%06d".format(random.nextInt(1_000_000)), maxOf(now, lockedUntil) + CODE_TTL_MS)
         code = c
         tries = 0
+        awaitingNew = false
         c
     }
+
+    /** True after a lockout until [newCode] is called. */
+    fun awaitingNewCode(): Boolean = synchronized(lock) { awaitingNew }
+
+    /** Seconds until the lock ends, rounded up; 0 when not locked. */
+    fun retryAfterSeconds(): Long = synchronized(lock) { ((lockedUntil - clock() + 999) / 1000).coerceAtLeast(0) }
 
     fun currentCode(): Code? = synchronized(lock) { liveCode() }
 
@@ -60,13 +74,16 @@ class CanvasAuth(private val clock: () -> Long, private val random: SecureRandom
             if (tries >= MAX_TRIES) {
                 this.code = null
                 tries = 0
-                lockedUntil = now + LOCK_MS
+                lockedUntil = now + LOCK_STEPS_MS[minOf(lockouts, LOCK_STEPS_MS.size - 1)]
+                lockouts++
+                awaitingNew = true
                 return Pair.Locked(lockedUntil)
             }
             return Pair.Wrong(MAX_TRIES - tries)
         }
         this.code = null
         tries = 0
+        lockouts = 0
         Pair.Ok(addSession())
     }
 

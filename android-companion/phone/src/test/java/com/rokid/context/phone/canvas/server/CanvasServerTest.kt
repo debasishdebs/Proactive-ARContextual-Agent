@@ -10,6 +10,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.InetSocketAddress
@@ -30,8 +31,12 @@ class CanvasServerTest {
     private val servers = mutableListOf<CanvasServer>()
     private val sockets = mutableListOf<ServerSocket>()
 
-    private fun server(lan: Boolean = false) =
-        CanvasServer(CanvasRouter(auth, hosts, api, assets), lan).also { servers += it }
+    private fun server(lan: Boolean = false, tls: TlsIdentity? = if (lan) fixture else null) =
+        CanvasServer(CanvasRouter(auth, hosts, api, assets), lan, tls).also { servers += it }
+
+    private val fixture = PkcsTlsIdentity.load()
+    private var secure = false
+    private val secureHosts = HostPolicy(port = { port }, lanIp = { null }, secure = { secure })
 
     /** Listens on [p] so the server sees it busy. Reuse is on so TIME_WAIT left by earlier tests cannot block the test itself. */
     private fun occupy(p: Int): ServerSocket {
@@ -153,6 +158,112 @@ class CanvasServerTest {
         val s = server(lan = true)
         port = s.start()
         assertEquals("0.0.0.0", s.bindHost)
+        fixture.client().newCall(Request.Builder().url("https://127.0.0.1:$port/").build()).execute().use { assertEquals(200, it.code) }
+    }
+
+    @Test fun lanServesHttpsOnly() {
+        secure = true
+        val s = CanvasServer(CanvasRouter(auth, secureHosts, api, assets), true, fixture).also { servers += it }
+        port = s.start()
+        val https = fixture.client()
+        https.newCall(Request.Builder().url("https://127.0.0.1:$port/").build()).execute().use { r ->
+            assertEquals(200, r.code)
+            assertNull("HSTS does not apply to a self-signed IP origin", r.header("Strict-Transport-Security"))
+        }
+        // a same-origin https POST passes the widened Origin rule; an http Origin does not
+        val token = auth.newWebViewToken()
+        https.newCall(
+            Request.Builder().url("https://127.0.0.1:$port/api/x").header("Authorization", "Bearer $token")
+                .header("Origin", "https://127.0.0.1:$port").post("{}".toRequestBody()).build(),
+        ).execute().use { assertEquals(200, it.code) }
+        https.newCall(
+            Request.Builder().url("https://127.0.0.1:$port/api/x").header("Authorization", "Bearer $token")
+                .header("Origin", "http://127.0.0.1:$port").post("{}".toRequestBody()).build(),
+        ).execute().use { assertEquals(403, it.code) }
+        https.newCall(Request.Builder().url("https://127.0.0.1:$port/").header("Host", "evil.example:$port").build()).execute().use { assertEquals(421, it.code) }
+        // plain HTTP to the same port is refused, not served and not redirected
+        val plain = OkHttpClient.Builder().callTimeout(5, TimeUnit.SECONDS).followRedirects(false).build()
+        val failure = runCatching { plain.newCall(Request.Builder().url("http://127.0.0.1:$port/").build()).execute().use { it.code } }
+        assertTrue("plain http got ${failure.getOrNull()}", failure.isFailure)
+        // a client that does not trust the certificate cannot talk either
+        val untrusting = OkHttpClient.Builder().callTimeout(5, TimeUnit.SECONDS).build()
+        assertTrue(runCatching { untrusting.newCall(Request.Builder().url("https://127.0.0.1:$port/").build()).execute().close() }.isFailure)
+        // the other throwaway certificate is not ours either
+        assertTrue(runCatching { PkcsTlsIdentity.other().client().newCall(Request.Builder().url("https://127.0.0.1:$port/").build()).execute().close() }.isFailure)
+    }
+
+    @Test fun lanAcceptsTls12AndTls13Only() {
+        val s = server(lan = true)
+        port = s.start()
+        fun handshake(protocol: String): Boolean = runCatching {
+            val ctx = javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null, arrayOf(trustAll), null) }
+            (ctx.socketFactory.createSocket("127.0.0.1", port) as javax.net.ssl.SSLSocket).use {
+                it.enabledProtocols = arrayOf(protocol)
+                it.soTimeout = 5000
+                it.startHandshake()
+                it.session.protocol == protocol
+            }
+        }.getOrDefault(false)
+        assertTrue(handshake("TLSv1.3"))
+        assertTrue(handshake("TLSv1.2"))
+        assertFalse(handshake("TLSv1.1"))
+        assertFalse(handshake("TLSv1"))
+    }
+
+    private val trustAll = object : javax.net.ssl.X509TrustManager {
+        override fun checkClientTrusted(c: Array<java.security.cert.X509Certificate>?, a: String?) {}
+        override fun checkServerTrusted(c: Array<java.security.cert.X509Certificate>?, a: String?) {}
+        override fun getAcceptedIssuers() = emptyArray<java.security.cert.X509Certificate>()
+    }
+
+    @Test fun lanWithoutTlsRejected() {
+        val failed = runCatching { CanvasServer(CanvasRouter(auth, hosts, api, assets), true, null) }.exceptionOrNull()
+        assertTrue("$failed", failed is IllegalArgumentException)
+    }
+
+    @Test fun loopbackOffStaysHttp() {
+        val s = server(lan = false)
+        port = s.start()
+        client.newCall(Request.Builder().url("http://127.0.0.1:$port/").build()).execute().use { assertEquals(200, it.code) }
+        assertTrue(runCatching { fixture.client().newCall(Request.Builder().url("https://127.0.0.1:$port/").build()).execute().close() }.isFailure)
+    }
+
+    private fun watchdogs() = Thread.getAllStackTraces().keys.count { it.name == "canvas-watchdog" && it.isAlive }
+
+    @Test fun failedBindLeaksNoWatchdog() {
+        val before = watchdogs()
+        for (p in listOf(CanvasServer.PORT) + CanvasServer.FALLBACK) occupy(p)
+        val s = server()
+        assertTrue(runCatching { s.start() }.exceptionOrNull() is java.io.IOException)
+        assertTrue("watchdogs leaked: before=$before now=${watchdogs()}", awaitTrue { watchdogs() <= before })
+    }
+
+    @Test fun throwingLogKeepsWatchdog() {
+        val s = CanvasServer(CanvasRouter(auth, hosts, api, assets), false, log = { throw IllegalStateException("log is broken") }, deadlineMs = 600).also { servers += it }
+        port = s.start()
+        // two slow clients in a row: if the first deadline's log call killed the watchdog, the second is never cut off
+        repeat(2) {
+            val drip = Socket("127.0.0.1", port)
+            try {
+                drip.getOutputStream().apply { write("GET / HTTP/1.1\r\nX-A: ".toByteArray()); flush() }
+                assertTrue("client $it was not cut off", closedByPeer(drip, 5000))
+            } finally { drip.close() }
+        }
+        assertTrue(awaitTrue { s.activeClients == 0 })
+    }
+
+    @Test fun serverStartPrunes() {
+        var pruned = 0
+        val s = CanvasServer(CanvasRouter(auth, hosts, api, assets), false, onStart = { pruned++ }).also { servers += it }
+        port = s.start()
+        assertEquals(1, pruned)
+        s.start() // already running: no second prune
+        assertEquals(1, pruned)
+    }
+
+    @Test fun aThrowingStartHookNeverFailsTheBind() {
+        val s = CanvasServer(CanvasRouter(auth, hosts, api, assets), false, onStart = { throw IllegalStateException("x") }).also { servers += it }
+        port = s.start()
         client.newCall(Request.Builder().url("http://127.0.0.1:$port/").build()).execute().use { assertEquals(200, it.code) }
     }
 
