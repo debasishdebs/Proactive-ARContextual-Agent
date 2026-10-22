@@ -2,7 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. This is a **lean plan**: exact interfaces, values, behaviour bullets and named tests, not full code. Every code task is TDD: write the named tests RED, implement, then make them GREEN. Opus writes specs and reviews; **Sonnet implements**.
 
-**Goal:** a drag-and-drop DAG editor whose JavaScript is tested headlessly. The router → intent → memory pipeline goes live through an interpreter behind the `KeyframePipeline` extractor seam, in Shadow mode and then Live mode, with fallback and auto-rollback. A/B runs, a versioned diff view, the Ask debug view with replay, compare-and-set prompt saves, HTTPS on LAN, token usage and estimates. The scene nodes are gated on wave 2.
+**Amended 2026-10-21 (editor on open source):** the old Task 11 (a hand-built plain-JS/SVG editor) is replaced by Tasks 11a–11e on vendored React Flow (spec §4, Rulings S21 and S22; evaluation `docs/superpowers/specs/2026-10-21-canvas-editor-oss-evaluation.md`). The editor stream needs only Task 1, so 11a–11d start now, in parallel with the backend. Tasks 1 and 2 are done on `canvas/integration`. The graph model, the validator, the API, the runner, the interpreter, the CAS save and the Room rule are unchanged.
+
+**Amended 2026-10-22 (round 3, Codex plan review):** the 22 findings of `.superpowers/codex/canvas-slice2-plan-review.md` are triaged and ruled in spec §0 and §13 (Rulings S23–S44). All are accepted. A new **Task 2b** makes the prompt CAS and the publish journal one transaction (S27). Tasks 3–14 each gain a **Round 3** block; where a block contradicts older text in its task, the block wins. The interfaces shared with slice 3 are pinned in spec §14. The estimates are updated below.
+
+**Goal:** a drag-and-drop DAG editor on vendored React Flow whose pure JavaScript is tested headlessly. The router → intent → memory pipeline goes live through an interpreter behind the `KeyframePipeline` extractor seam, in Shadow mode and then Live mode, with fallback and auto-rollback. A/B runs, a versioned diff view, the Ask debug view with replay, compare-and-set prompt saves, HTTPS on LAN, token usage and estimates. The scene nodes are gated on wave 2.
 
 **Spec:** `docs/superpowers/specs/2026-10-21-canvas-slice2-design.md`. § numbers below point into it. The MVP spec and plan (`2026-10-21-experiment-canvas-design.md`, `2026-10-21-experiment-canvas-mvp.md`) describe the code you are extending.
 
@@ -10,21 +14,49 @@
 
 **Waves** (at most 2 Gradle runs machine-wide; one per worktree):
 
-| wave | tasks | modules |
+| wave | backend stream | editor stream (phone assets only) |
 |---|---|---|
-| W1 | 1, 2, 3, 4 | 1: phone tests · 2: memory + ai + orchestration (prompt CAS) · 3: ai (`ai.canvas`) · 4: memory (Room) |
-| W2 | 5 (needs 3, 4), 7 (needs 4), 8 (none), 10 (none) | orchestration · orchestration · orchestration + phone · phone server |
-| W3 | 6 (needs 2, 4, 5) | orchestration (live seam) + phone (Diagnostics line) |
-| W4 | 9 (needs 3, 6, 7, 8, 10) | phone api |
-| W5 | 11 (needs 1, 9), then 12 (needs 11) | phone assets |
-| W6 | 13 (gated: needs 9 and wave 2 merged) | ai + orchestration + assets |
-| — | 14 (device and browser checklist, for the user) | none |
+| done | 1 (GraalJS harness, `d21d66b`), 2 (CAS, `667561f` + `a208852`) | — |
+| W1 | 2b (needs 2), 3 (ai), 4 (memory, Room; lands on the integration line only after wave B's v5, S26) | 11a (vendor), then 11b (graph/validate/keys) |
+| W2 | 5 (needs 3, 4), 7 (needs 4), 8 (none), 10 (none) | 11c (flowadapter, needs 11b), 11d (paramform + draftstate) |
+| W3 | 6 (needs 2, 4, 5) | — |
+| W4 | 9 (needs 3, 6, 7, 8, 10) | — |
+| W5 | — | 11e (needs 11a–11d and 9), then 12 (needs 9 and 11e: both edit `views.js`/`app.js`) |
+| W6 | 13 (gated: needs 9 and wave 2 merged) | — |
+| — | 14 (device and browser checklist, for the user) | |
+
+The editor stream runs in its own worktree. Each stream holds one of the 2 machine-wide Gradle slots.
+
+**Estimates** (honest agent-hours per task: Sonnet implementing TDD, the throttled Gradle runs, one Opus review and one fix round; not wall-clock):
+
+| Task | Agent-hours | Notes |
+|---|---|---|
+| 1 GraalJS harness | done | |
+| 2 CAS prompt save | done | |
+| 2b Prompts + publish journal in one transaction (S27) | 1.0 | new in round 3 |
+| 3 Structured problems, interpretable shape, diff | 2.5 (was 2.0) | + S28 routing rules, S33 call range |
+| 4 Room migration + cascades | 3.0 (was 2.5) | + S24 fenced writes, S25 batch-wide forget, S26 canonical-lineage tests, S44 maintenance |
+| 5 Interpreter | 4.25 (was 3.5) | + S23 real failure kinds, S28 runtime routing, S42 provenance |
+| 6 Live seam, Shadow/Live publish | 5.0 (was 4.0) | + S24 effects after save, S29 telemetry boundary, S30 deadline; riskiest, reviewed alone |
+| 7 A/B, tokens, estimate | 3.0 (was 2.5) | + S31 group lifecycle, S32 per-call usage, S24 runner fence |
+| 8 Ask debug backend | 3.25 (was 2.5) | + S34 bound inside `MemoryRetriever`, S35 replay fence |
+| 9 API routes + end-to-end test | 3.75 (was 3.5) | + S43 history, S31 response, S38 freeze `draftRev` |
+| 10 HTTPS LAN, pinning, pairing | 5.0 (was 4.0) | + S36 digests, fixture SANs, device test; S37 reload and SSL callback |
+| 11a Vendor files, load order, asset tests | 0.5 | `curl` + hash check |
+| 11b `graph.js`, `validate.js`, `keys.js` + tests | 1.5 | pure |
+| 11c `flowadapter.js` + tests | 2.0 | pure |
+| 11d `paramform.js`, `draftstate.js` + tests | 1.0 (was 0.75) | + S38 |
+| 11e `floweditor.js`, palette, inspector, keyboard, views wiring, deletions | 2.75 (was 2.5) | + S38 wiring, S39 lazy globals; browser checklist |
+| 12 Views + full gate | 4.0 (was 3.5) | + S39 real boot and every route; includes the 0.5 h gate |
+| 13 Scene nodes (gated) | 3.5 (was 3.0) | + S40; only when wave 2 is merged |
+| 14 Checklist doc | 0.75 (was 0.5) | + S41, S43, S36 device test; device time is the user's |
+| **Total remaining** | **about 47 h** (43 h without 13; was 39 / 36) | with two streams, about 24–26 h of agent wall-clock. The editor (11a–11e) is **7.75 h** (was 7.25), against an estimated 12–16 h for a hand-built one. The 7.75 h increase is backend correctness (fences, failure classes, deadlines, TLS); no new UI is hand-built |
 
 ## Global Constraints
 
 - **Modules:** only `:services:ai`, `:services:orchestration`, `:services:memory` and `:phone`, including `phone/src/main/assets/canvas/`. **Do not touch** `:glasses`, `:core:hud`, `:services:glasses-link`, `core/model` protocol types, or any glasses code. If a task seems to need one of them, stop and report.
 - **PROTOCOL_VERSION is unchanged.** There is no wire change of any kind in this plan.
-- **Room is additive only.** Task 4 adds one migration, numbered with the **next free version, check at merge**. Canvas MVP is v3, wave 2 takes v4 and wave B takes v5, so on the merged line this one is expected to be **v6**. On a branch where v4 or v5 doesn't exist yet, use that branch's next number. Then, at merge time, renumber to come after wave 2 (v4) and wave B (v5): rename the `Migration` and its test, regenerate the schema JSON, and **never edit an existing migration**. Every migration gets a migration test (`MigrationNToMTest`) proving that the old rows survive and that no old column changed, plus `runMigrationsAndValidate`. Do not use `fallbackToDestructiveMigration*` anywhere.
+- **Room is additive only.** Task 4 adds one migration on the **canonical lineage** v3 (canvas MVP) → v4 (wave 2) → v5 (wave B) → **v6** (spec S26). On a branch where v4 or v5 doesn't exist yet, use that branch's next number **for unit tests only**. Never build an APK for the phone from such a branch. Task 4 lands on the integration line only after wave B's `MIGRATION_4_5` and `5.json` are there; then rename the `Migration` and its test, regenerate the schema JSON, and **never edit an existing migration**. Every migration gets a migration test (`MigrationNToMTest`) proving that the old rows survive and that no old column changed, plus `runMigrationsAndValidate`. Do not use `fallbackToDestructiveMigration*` anywhere.
 - **Live path:** with no interpreter publish active, live behaviour is byte-identical to today. Every new parameter defaults to today's behaviour. The existing tests of `RoleRunner`, `ExtractSave`, `ExtractFollowUp`, `KeyframePipeline`, `PromptRepository` and `CanvasPublisher` must pass unchanged. Experiment runs never write `memory`, `frame_state`, `frame_source`, `memory_vector`, nudges or jobs.
 - **Ownership:** wave B owns the `frame_meta` intent column and its writer. The canvas writes the label only to `canvas_live_trace` and to the `FrameIntentSink` interface (default no-op). It never adds or writes a `frame_meta` column.
 - **Gradle:** from `android-companion/`, always through the throttle, with the absolute path (worktrees don't have the git-ignored `.superpowers/`):
@@ -42,24 +74,27 @@
   - Stored error strings are fixed short texts, never provider text.
   - Do not read or print `glasses`/`AssistServer` logcat (there is no adb anyway).
   - The test-only TLS fixture (Task 10) is a throwaway self-signed certificate. Never reuse it, and never ship it in `src/main`.
-- **Web UI:** plain ES2020 modules, no build toolchain, no vendored libraries, no external URLs. No `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval` or `new Function` (the existing `CanvasAssetsTest` enforces this). No inline scripts, styles or `on*=` attributes (CSP). New files must match the static path rule `^/[a-z0-9_-]+\.(html|js|css|svg)$` (flat in `assets/canvas/`). Logic goes in pure modules (no `document`/`window`), and each pure module gets a JS test (Task 1 harness).
+- **Web UI:** plain ES2020 modules, no build toolchain, no npm, no CDN or external URLs at runtime. The **only** vendored libraries are the five files of spec §4.1 (React 18.3.1, React DOM 18.3.1, `@xyflow/react` 12.12.0 JS and CSS, `htm` 3.1.1), committed with flat `vendor-*` names, pinned in `vendor-lock.txt` by SHA-256 and never edited. Our own files: no `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`, `eval`, `new Function` or `dangerouslySetInnerHTML` (`CanvasAssetsTest` enforces this on every non-vendor file). No inline scripts, styles or `on*=` attributes (CSP unchanged). New files must match the static path rule `^/[a-z0-9_-]+\.(html|js|css|svg)$` (flat in `assets/canvas/`). Logic goes in pure modules (no `document`/`window`/React), and each pure module gets a JS test (Task 1 harness). Only `floweditor.js` touches React.
 - **Android ICU regex:** no unescaped `}` in a `Regex` (`AndroidRegexRulesTest`). Keep `\uXXXX` escapes as escapes, and grep each diff for accidental non-ASCII in `.kt` files.
 - **JSON:** `kotlinx.serialization.json` elements by hand. No serialization Gradle plugin.
-- **Dependencies:** the only new ones are test-only, in `:phone`: GraalJS (Task 1). TLS uses the platform (AndroidKeyStore and JSSE). Nothing else.
+- **Dependencies:** the only new Gradle ones are test-only, in `:phone`: GraalJS (Task 1). The vendored web files (Task 11a) are assets, not Gradle dependencies. TLS uses the platform (AndroidKeyStore and JSSE). Nothing else.
 - **Commits:** local only, never push. One commit per task with the given message, ending with the trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - **FAST MODE:** inside a task, fix only Critical and Important review findings. Minors go to the ledger.
 - **Fakes:** reuse the MVP test fakes (`FakeLanguageModel`, the `FakeCanvasHost`, fake backends, `DatabaseFactory.inMemory(context)`).
 
 ## Review focus
-1. **The live seam** (Task 6): with no interpreter publish, `LiveExtract.batch` makes exactly the old `ExtractSave.extract(ai.runner, photos, callClass)` call. Diff `KeyframeHandle.extract` line by line. The fallback never drops a batch.
+1. **The live seam** (Task 6): with no interpreter publish, `LiveExtract.batch` makes exactly the old `ExtractSave.extract(ai.runner, photos, callClass)` call and returns empty effects, and `LiveExtract.commit` touches no table. Diff `KeyframeHandle.extract` line by line. The fallback never drops a batch, and a telemetry failure never changes the returned batch (S29).
+6. **Fences** (Tasks 4, 6, 7, 8): every photo-derived canvas write and the replay result recheck the generation captured before the photos were loaded, plus tombstones, inside the commit (S24, S35).
 2. **CAS** (Task 2): a mismatch on any key writes nothing.
 3. **TLS** (Task 10): LAN never serves plain HTTP. The WebView proceeds only on a matching fingerprint.
-4. **The JS really executes** (Tasks 1, 11, 12): each pure module has tests run by GraalJS, and every asset parses.
+4. **The JS really executes** (Tasks 1, 11b–11d, 12): each pure module has tests run by GraalJS, and every non-vendor asset parses. **Vendored files match their lock hashes** (Task 11a), and `floweditor.js` holds no logic that a pure module could hold (Task 11e).
 5. **Forget and Delete all** reach `canvas_live_trace` (Task 4).
 
 ---
 
 ### Task 1: Headless JS test harness (GraalJS) and the fake DOM
+
+**Status: done** (`d21d66b` on `canvas/integration`). Amendment: `dag.test.js` and `JsDomTest.dagTests` are removed in Task 11e together with `dag.js`; the harness, the fake DOM, `dom.test.js` and `app-boot.test.js` stay. `JsModulesParseTest` gains the `vendor-*` exclusion in Task 11a.
 
 **Files:**
 - Modify: `phone/build.gradle.kts`: `testImplementation("org.graalvm.polyglot:polyglot:<v>")` and `testImplementation("org.graalvm.polyglot:js-community:<v>")`. Use the newest **23.1.x** that resolves from mavenCentral (23.1 is the last line that supports JDK 17). `js-community` is a POM-type artifact; if Gradle needs it, declare it with `{ artifact { type = "pom" } }` or via `platform(...)`. Record the version in the commit body. If no 23.1.x artifact resolves, **stop and report**: no Rhino fallback, because the bundle uses ES modules and classes.
@@ -105,6 +140,8 @@ object JsHarness {
 
 ### Task 2: Compare-and-set prompt save; atomic multi-key publish and rollback
 
+**Status: done** (`667561f`, review fix `a208852`). Unchanged by the amendment.
+
 **Files:**
 - Modify: `services/memory/src/main/java/com/rokid/context/memory/db/PromptDao.kt`; `services/ai/src/main/java/com/rokid/context/prompt/PromptRepository.kt`; `services/orchestration/src/main/java/com/rokid/context/canvas/CanvasPublisher.kt`
 - Test: `services/memory/src/test/java/com/rokid/context/memory/db/PromptDaoCasTest.kt`, `services/ai/src/test/java/com/rokid/context/prompt/PromptRepositoryCasTest.kt`; extend `services/orchestration/src/test/java/com/rokid/context/canvas/CanvasPublisherTest.kt`
@@ -134,6 +171,25 @@ suspend fun saveAllIfUnchanged(edits: List<CasEdit>): CasOutcome   // same norma
 **Test command:** `gw.sh :services:memory:testDebugUnitTest --tests '*PromptDaoCas*'`, then `gw.sh :services:ai:testDebugUnitTest --tests '*PromptRepositoryCas*' --tests 'com.rokid.context.prompt.*'`, then `gw.sh :services:orchestration:testDebugUnitTest --tests 'com.rokid.context.canvas.*'`
 
 **Commit:** `fix(prompts): compare-and-set multi-key prompt save; canvas publish and rollback all-or-nothing`
+
+---
+
+### Task 2b: Prompt CAS and publish journal in one transaction (round 3, spec S27; 1.0 h)
+
+`a208852` already fingerprints the accepted drafts and makes one read per key. This task closes the remaining gap only.
+
+**Files:** modify `services/orchestration/src/main/java/com/rokid/context/canvas/CanvasPublisher.kt` (it takes a `transact: suspend (suspend () -> Unit) -> Unit`, which defaults to `db.withTransaction`, so the tests can inject failures); if `PromptRepository.saveAllIfUnchanged` opens its own transaction, make it join the caller's (Room nests transactions).
+**Test:** extend `CanvasPublisherTest.kt`.
+
+**Behaviour:**
+- Publish: the legacy-fingerprint/expectation read, `saveAllIfUnchanged` and `insertPublish` run inside one `transact { }`. Rollback: the read, the CAS and `markRolledBack` likewise.
+- Any throw inside rolls everything back. The outcome is the existing fixed failure text, and nothing is written.
+
+**Tests:** `insertPublishFailureRollsBackPrompts`, `markRolledBackFailureRestoresNothing`, `legacyFingerprintCheckedInTransaction`, and every existing `CanvasPublisherTest`/`PromptDaoCasTest` test green and unchanged.
+
+**Test command:** `gw.sh :services:orchestration:testDebugUnitTest --tests 'com.rokid.context.canvas.*'`
+
+**Commit:** `fix(canvas): prompt CAS and publish journal commit in one transaction`
 
 ---
 
@@ -173,7 +229,13 @@ object PipelineDiff {
 - `"node <id>: the critic must use the Live prompt"`;
 - `"at most 3 prompt nodes"`.
 
-Paths are enumerated over the DAG, edges with `when` included. The `other` branch counts as a path when the switch has no `other` edge: that's fine (no item travels it), so that path is ignored.
+Paths are enumerated over the DAG, edges with `when` included. **Round 3 (S28):** an unwired switch branch, `other` included, is a problem, no longer ignored.
+
+**Round 3 (S28, S33):**
+- New problem texts: `"node <id>: only a switch can send photos down two paths"` (any non-switch pre-save node with 2+ out-edges, e.g. `input.photos` → two extractors); `"node <id>: branch <b> isn't connected"` (every `branchesOf` value, `other` included).
+- `callFactor` is replaced by `fun callRange(p: Pipeline, photos: Int = 3): Pair<Double, Double>`, relative to Live's 1 call per batch. A photo's prompt calls are the prompt nodes on its path. Extract calls are, for each extractor, ceil(photos routed there / its `batchSize`). The minimum puts all photos on the cheapest path, the maximum spreads them over the most expensive distinct paths. Both are rounded to 1 decimal.
+- The `intent-draft` seed wires `other` to a generic extract node (update the seed and its fixture).
+- Tests: `parallelExtractorsBlocked`, `missingOtherBlocked`, `everyBranchWiredPasses`, `rangeIntentDraft`, `batchOneExtractorIsThreeX`, `mixedLabelsMax` (they replace `callFactorIntentDraft`).
 - `PipelineDiff` matches nodes by id. Params compare as canonical JSON per key. A prompt diff appears for every node whose `prompt` param (or `ai.prompt`'s `template`/`schema`) differs. The `LineDiff` lives in `com.rokid.context.ai.prompt`; reuse it.
 
 **Tests:**
@@ -238,6 +300,15 @@ data class TokenMeans(val p: Double?, val c: Double?, val n: Int)
 - `WipeDaoTest.wipeClearsLiveTrace`; `ForgetCanvasTest.forgetDeletesLiveTraceForFrame`.
 - Plus a device test: extend `SqlCipherMigrationDeviceTest` (androidTest, compile-verified only; it runs on the phone in Task 14).
 
+**Round 3 (S24, S25, S26, S32, S44):**
+- **Columns:** `canvas_live_trace` also gets `batchId TEXT NULL` with an index, and `canvas_run_item` gets `calls INTEGER NULL` (6 added columns in all; update `noOtherTableChanged`).
+- **Fenced writes** (S24): `@Transaction open suspend fun commitTracesFenced(rows, generation: Long, frameIds: Set<String>): Boolean` and `insertRunItemsFenced(rows, scores, generation, frameIds): Boolean`. Each rechecks `MemoryWipe.generation` and the frames' tombstones (the same check `ExtractSave.saveExtraction` uses) inside the transaction and writes nothing on a mismatch (returns false).
+- **Batch-wide forget** (S25): `ForgetService` deletes the forgotten frames' run items, scores and traces **plus every row sharing a non-null `batchId` with them**, in the same transaction. Frame retention deletes use the same path.
+- **Lineage** (S26): `Migration<5>To<6>Test` runs `runMigrationsAndValidate` from each canonical exported schema (`3.json`, `4.json`, `5.json`), replacing `chainFromV1`. On a branch without v5, the provisional test is unit-test only, and the task notes it in the ledger.
+- **Maintenance** (S44): `CanvasMaintenance.pruneTraces(now)` (at most hourly, an in-memory stamp) wraps `pruneTraces`; Tasks 6, 9 and 10 call it, and the live path never does.
+- **Device test** (S41): `SqlCipherMigrationDeviceTest` builds fixtures at v3, v4 and v5 with its own key and migrates each to v6; it never opens the production database.
+- **Tests:** `forgetOneOfThreeClearsBatch`, `forgetLeavesOtherBatches`, `fencedTraceDroppedAfterWipe`, `fencedTraceDroppedForTombstone`, `fencedItemsDroppedAfterWipe`, `migratesFromEachCanonicalSchema`.
+
 **Test command:** `gw.sh :services:memory:testDebugUnitTest --tests 'com.rokid.context.memory.db.*' --tests 'com.rokid.context.memory.forget.*'`
 
 **Commit:** `feat(memory): Room v<N> canvas publish kinds/modes, A/B group, live trace table (additive) with cascades`
@@ -267,7 +338,9 @@ class PipelineInterpreter(private val executors: Map<String, NodeExecutor> = Exe
 ```
 **Behaviour:**
 - It uses the same item-flow rules as `CanvasRunner` (the edge `when` rule and the merge conflict). Factor the shared routing helper out of `CanvasRunner` into an internal `ItemFlow` object, and keep `CanvasRunnerTest` green.
-- **Executor errors:** executors catch exceptions and return item errors. For the live path, the interpreter must know when a failure is "retryable network or budget". Add an optional `cause: Throwable?` to `NodeResult` (defaulting to null; it is not stored). Executors set it when they catch a `ModelCallException`. The interpreter rethrows the first cause whose `retryable == true` or whose kind is in `{NETWORK, TIMEOUT, RATE_LIMIT, BUDGET}` (use the existing `FailureKind` names; check `ExtractOutcome.classify` for the set live treats as retryable and match it).
+- **Executor errors (Round 3, S23):** executors catch exceptions and return item errors. Add an optional `cause: Throwable?` to `NodeResult` (defaulting to null; it is not stored). Executors set it to any caught throwable except cancellation. The interpreter rethrows the first cause that is **transient**: an `IOException` (an `InterruptedIOException` included) anywhere in its cause chain (depth 8, as `ExtractOutcome.classify` reads it), or a `ModelCallException` with `kind == FailureKind.TRANSIENT && retryable`. Every other cause, including `INVALID_OUTPUT` and `NOT_SET` with `retryable = true`, plus `AUTH` and `REJECTED`, gives `Failed(<kind name or simpleName>)`. The real kinds are `NOT_SET, AUTH, REJECTED, INVALID_OUTPUT, TRANSIENT`; there is no budget exception (`CallBudget.withPermit` suspends).
+- **Routing at run time (Round 3, S28):** an item that reaches 0 or 2+ `ai.vision_extract` nodes gives `Failed("routing")`.
+- **Provenance (Round 3, S42):** `NodeResult` gains `extracted: ExtractedBatch? = null`, which the vision executor sets. The merge takes `output.provenance` = true only when every chunk had it.
 - **Labels:** for each item that passed a `route.switch`, the label is the switch `field` value of the item's JSON, and the confidence is its numeric `confidence` field when present.
 - **Traces:** one row per (item, executed node), with `outputJson` capped at 8,000 characters (truncated with a fixed marker), plus one `_batch` row per photo (OK, or ERROR with the reason).
 - It writes nothing itself: the caller persists the traces and calls the sink.
@@ -276,7 +349,8 @@ class PipelineInterpreter(private val executors: Map<String, NodeExecutor> = Exe
 - `intentRoutesToPerLabelPrompt` (2 photos, the fake intent replies `driving` / `computer_work` → each extract call carries its own draft template and the upstream JSON);
 - `mergedBatchHasFactsAndCaptionsPerFrame`, `duplicateFactAcrossItemsMergedOnce`;
 - `invalidIntentOutputFails`, `unboundRoleFails`;
-- `retryableModelErrorRethrown`, `cancellationRethrown`;
+- `retryableModelErrorRethrown` (a TRANSIENT, retryable failure), `cancellationRethrown`;
+- Round 3: `invalidOutputRetryableFails` and `notSetRetryableFails` (real `ModelCallException`s with `retryable = true` → `Failed`, not rethrown), `ioInCauseChainRethrown`, `itemReachingTwoExtractsFails`, `legacySchemaProvenanceMatchesDirect`;
 - `liveExtractShapeEqualsDirectExtract` (live-extract pipeline over 3 photos gives the same facts as `ExtractSave.extract` with the same fake replies);
 - `labelsCollected`, `tracesPerNodeAndBatchRow`, `callClassFromContext` (the fake model sees EXTRACT when ctx.callClass = EXTRACT);
 - `executorsWriteNothing` stays green.
@@ -324,14 +398,28 @@ class LiveDeps(val dao: CanvasDao, val runner: RoleRunner, val context: (runId: 
   1. `dao.activeInterpreter()`. When it is null or SHADOW, return `ExtractSave.extract(runner, photos, callClass)`.
   2. When it is LIVE, decode the version's JSON (cache it by publishId in a `@Volatile` field).
   3. Call `interpreter.run(p, id, "LIVE", photos, context("live:<publishId>", callClass))`.
-  4. **On `Extracted`:** persist the traces, call `sink.record` for each label (catching and logging errors), and return its batch.
-  5. **On `Failed`:** persist the traces, then return `ExtractSave.extract(runner, photos, callClass)` (the fallback). Then, if `interpretedCount ≥ FALLBACK_WINDOW` and `recentFallbacks(id, 30) ≥ FALLBACK_LIMIT`, call `publisher(id, "auto: 10 of 30 fell back")`.
-  6. A rethrown retryable exception propagates (no fallback, and no `_batch` row).
-  7. Any other unexpected throwable from the interpreter path is treated as `Failed("internal")`.
-  8. Pruning: at most once per hour (an in-memory timestamp), `dao.pruneTraces(now - 7 d, 5_000)`.
+  4. **On `Extracted`:** buffer the traces and labels in the returned `LiveEffects` (round 3: nothing is written here), and return its batch.
+  5. **On `Failed`:** buffer the traces (labels discarded), then return `ExtractSave.extract(runner, photos, callClass)` (the fallback) with those effects. The auto-rollback check moves to `commit` (round 3).
+  6. A rethrown transient exception (S23) propagates (no fallback, and no `_batch` row).
+  7. Any other unexpected throwable from the interpreter path, including a version load or decode failure, is treated as `Failed("internal")`.
+  8. ~~Pruning~~: round 3 (S44) removes inline pruning; `CanvasMaintenance` does it.
 - **Wiring in `KeyframeHandle.extract`:** replace `ExtractSave.extract(ai.runner, photos, callClass)` with `LiveExtract.batch(liveDeps, photos, callClass)`. `liveDeps` is a `lazy` built from `MemoryGraph.get(app).db.canvasDao()`, `ai.runner`, and a context factory mirroring `CanvasBackendImpl`'s. The publisher is a lambda into a `CanvasPublisher` built over the same DAO. `shadowAllowed` reads `DeveloperModeStore`'s prefs (`pc_dev` / `developer_mode`). The phone module owns that store, so pass a `() -> Boolean` reading the SharedPreferences directly: there is no `:phone` import in orchestration.
 - After `ExtractSaveResult.Saved`, launch `LiveExtract.shadow(liveDeps, photos)` in `scope`, **without awaiting**, and only when the active interpreter is SHADOW. At most one shadow job at a time: an `AtomicBoolean`, and skip when busy.
 - Nothing else in `extract` changes.
+- **Round 3 (S24, S29, S30): the seam becomes two touch points, both no-ops without a publish.**
+  ```kotlin
+  class LiveEffects(val publishId: Long?, val traces: List<CanvasLiveTraceEntity>, val labels: Map<String, Pair<String, Float?>>, val fellBack: Boolean) { companion object { val None = LiveEffects(null, emptyList(), emptyMap(), false) } }
+  class LiveBatch(val batch: ExtractedBatch, val effects: LiveEffects)
+  suspend fun batch(deps: LiveDeps, photos: List<ExtractPhoto>, callClass: CallClass): LiveBatch      // CHANGED return type; with no LIVE publish: LiveBatch(ExtractSave.extract(...), LiveEffects.None)
+  /** After ExtractSaveResult.Saved only. LiveEffects.None → returns at once, no DB access. Otherwise, each step in its own runCatching (cancellation rethrown):
+   *  dao.commitTracesFenced(traces, generation, savedFrames) → sink.record for labels of saved frames only (skipped when the fence dropped the traces)
+   *  → if fellBack and interpretedCount ≥ 30 and recentFallbacks ≥ 10: publisher(id, "auto: 10 of 30 fell back"). Never throws. */
+  suspend fun commit(deps: LiveDeps, effects: LiveEffects, generation: Long, savedFrames: Set<String>)
+  const val INTERPRETER_DEADLINE_MS = 240_000L   // withTimeoutOrNull around interpreter.run; null → Failed("deadline") → fallback
+  ```
+  - In `KeyframeHandle.extract`: `val live = LiveExtract.batch(liveDeps, photos, callClass)`; `val batch = live.batch` (the rest unchanged); after `ExtractSaveResult.Saved`, `LiveExtract.commit(liveDeps, live.effects, generation, sent.toSet())`, using the `generation` the function already captures before `FramePhotos.load`.
+  - `shadow(...)` gains `generation` and commits its traces through `commitTracesFenced` (no sink: Shadow is read-only, as in slice 3 S36). The deadline applies to it too.
+  - **Tests (Round 3):** `forgetDuringLiveCallWritesNoTrace` and `wipeDuringShadowWritesNoTrace` (a paused fake model, released after Forget/Delete all), `sinkOnlyForSavedFrames`, `fallbackDiscardsLabels`, `noPublishCommitTouchesNoTable`, `traceDaoFailureKeepsExtraction`, `sinkFailureKeepsExtraction`, `versionDecodeFailureFallsBack`, `autoRollbackEvaluatedInCommit`, `slowProviderHitsDeadlineAndFallsBack` and `budgetWaitCountsAgainstDeadline` (virtual time), `deadlineIsNotCancellation`. `pruneAtMostHourly` moves to Task 4's `CanvasMaintenance` test.
 - **Diagnostics:** when `activeInterpreter()` is not null, the line reads `Live pipeline: <pipeline name> v<N> · <Shadow|Live> · <fallbacks>/<interpreted> fell back`. The calls line also names `EXPERIMENT` (spec §7): change `named` to include `CallClass.EXPERIMENT`, which removes it from OTHER.
 
 **Tests:**
@@ -383,6 +471,12 @@ data class TokenEstimate(val promptTokens: Int, val completionTokens: Int, val b
 - `ExecutorsTest.extractRecordsTokensAndModel`.
 - `CanvasRunnerTest`: `abRunsSequentiallyWithGroup`, `abBNotStartedWhenACancelled`, `abEstimateSumsAndRefusesOver200`, `abTokenBoundToBothHashes`, `pruneKeepsActiveGroup`, `tokenEstimateFromHistory`, `tokenEstimateNullWithoutHistory`, `cancelledUpdateRetried`.
 
+**Round 3 (S31, S32, S24); where this contradicts the text above, this wins:**
+- **Usage per call:** `ExtractedBatch` gains `attempts: List<CallUsage> = emptyList()` (`data class CallUsage(val promptTokens: Int?, val completionTokens: Int?, val model: String?, val latencyMs: Long)`), one entry per provider attempt, covering rejected-output retries and single-photo fallback calls. This replaces the three scalar fields. The vision executor stamps every item of a chunk with the chunk's `batchId`, but only the chunk's first item gets the summed tokens and `calls = attempts.size`; the others get null. Run usage sums the owner rows. `tokenMeans` returns per-call means (Σ tokens / Σ calls over owner rows).
+- **A/B lifecycle:** `startAb(...)` returns `data class AbStarted(val group: String, val runA: String, val runB: String)` after inserting both rows (A RUNNING, B QUEUED). `cancelGroup(group)`; cancelling either run cancels the group, including between A's end and B's start. While a group has a QUEUED or RUNNING row, `start`/`startAb` refuse with `"another run is in progress"`. The existing startup recovery marks a group's QUEUED and RUNNING rows CANCELLED.
+- **Fence:** the runner writes items and scores through Task 4's `insertRunItemsFenced` with the generation captured before it loads each chunk's photos.
+- **Tests:** `cancelBetweenAAndBCancelsB`, `abReturnsBothIds`, `otherRunRefusedDuringGroup`, `recoveryCancelsQueuedB`, `threePhotoBatchCountsTokensOnce`, `rejectedRetryCountedAsAttempt`, `singlePhotoFallbackAttemptsCounted`, `wipeDuringExperimentRunWritesNoItems` (a paused fake model). In `ExtractSaveUsageTest`, `tokensFromReply` and `singlePhotoFallbackSumsTokens` become `attemptsFromReplies` and `fallbackAttemptsListed`.
+
 **Test command:** `gw.sh :services:orchestration:testDebugUnitTest --tests 'com.rokid.context.canvas.*' --tests 'com.rokid.context.orchestration.*'`
 
 **Commit:** `feat(canvas): A/B runs, token usage on extract calls, token estimate, runner fixes`
@@ -420,6 +514,11 @@ class AskDebug(private val dao: CanvasDao, private val answers: AnswerService, p
 - `composedPrompt` = `PromptComposer.compose(active SYSTEM, active ANSWER template, vars.toMap(persona, NowText.of(ask time)))`. That is the same composition `RoleRunner` uses. If it isn't public, add an internal helper next to RoleRunner rather than copying the logic.
 - `replay` validates the template the way `TestBed.compatibility(ANSWER, draft)` does. Problems → `Failed("incompatible")`. It never calls `memory.asks.add` or the proposal intake.
 - It holds no extra state, and logs the class name only.
+
+**Round 3 (S34, S35):**
+- `notAfterMs` is passed into `services/memory/.../retrieval/MemoryRetriever.kt` (an additive `notAfterMs: Long? = null`) and applied **before** the lexical candidate limit, the semantic candidate set, top-k and the newest-30 fallback; `retrieveScored` filters nothing afterwards. Extend `MemoryRetrieverTest`: `notAfterAppliedBeforeLimits`, `manyNewerMatchesDontHideOlder`, `fallbackPoolBounded`, with today's tests unchanged (null = today).
+- `replay` captures `MemoryWipe.generation` and the retrieved memory ids before the call. After the reply it rechecks (as `AnswerService.answerOrThrow` does) that the ask isn't redacted, the generation is unchanged and every retrieved memory is still live; otherwise it returns `Failed("forgotten")` with no text. Tests: `forgetDuringReplayReturnsNoText`, `wipeDuringReplay`, `redactDuringReplay` (a paused fake model).
+- Test command addition: `gw.sh :services:memory:testDebugUnitTest --tests '*MemoryRetriever*'`.
 
 **Tests:**
 - `AnswerServiceScoredTest`: `sameIdsAsRetrieve`, `notAfterDropsNewerMemories`, `fallbackFlagWhenNoHits`.
@@ -463,7 +562,7 @@ class AskDebug(private val dao: CanvasDao, private val answers: AnswerService, p
 
 - `frameIds` over 50 → 400 `bad_request` "At most 50 photos" (it used to be silently truncated: final-review M5).
 - `CanvasBackendImpl` builds `AskDebug` and `LiveDeps`-compatible readers over the same DAO and `AiGraph`. The publisher instance stays single (as the final review required).
-- Node types: `GET /api/node-types` adds `"palette": true|false` (false for `input.photos`, which is exactly 1 per pipeline) and `"short"` (the id prefix: `photos`, `extract`, `trust`, `critic`, `prompt`, `route`, `write`).
+- Node types: `GET /api/node-types` adds `"palette": true|false` (false for `input.photos`, which is exactly 1 per pipeline), `"short"` (the id prefix: `photos`, `extract`, `trust`, `critic`, `prompt`, `route`, `write`) and `"category"` for the palette groups (`Inputs` for `input.*`, `AI` for `ai.*`, `Routing` for `route.*`, `Checks` for `gate.*`, `Memory` for `memory.*`; slice 3's registry replaces this mapping). Test: `nodeTypesCarryCategory`.
 
 **Tests:**
 - `CanvasApiTest`: one happy-path test and one error-mapping test per new or changed route, plus `frameIdsOver50Is400`, `publishModeAbsentIsPrompts`, `validateUndecodable`, `replayRedactedIs409`, `dayFilterParsed`, `dayFilterBadIs400`.
@@ -475,8 +574,16 @@ class AskDebug(private val dao: CanvasDao, private val answers: AnswerService, p
   4. estimate-ab against live-extract, then start AB, then poll until both are DONE; compare shows `agreement` and `branches`;
   5. freeze → v1 → publish `shadow` → `GET /api/publish` shows it;
   6. publish `live` → drive `LiveExtract.batch` directly with the fake photos → `GET /api/live` lists traces with labels;
-  7. rollback → the active interpreter is gone; rollback again → the shadow row is gone;
+  7. rollback → the Live row is rolled back and **Shadow is active again** (round 3, S43); rollback again → no interpreter is active; `GET /api/publish/history` lists both rows with `rolledBackAt`;
   8. the ask flow: seed an ask and memories → view has scores → replay → the ask count is unchanged.
+
+**Round 3 (S31, S38, S43, S44, S33):**
+- `POST /api/runs/ab` returns `{group, runA, runB}`; `POST /api/runs/{id}/cancel` on a group member cancels the group.
+- `GET /api/publish/history?limit=<≤ 50>`: every row, newest first: `{id, kind, mode, pipelineId, version, publishedAt, rolledBackAt, rollbackReason}`.
+- `POST /api/pipelines/{id}/freeze {"note"?, "draftRev"?}`: when `draftRev` is present and not the current one → 409 `conflict` "The draft changed. Save again."
+- `POST /api/validate` and `GET /api/pipelines/{id}` return `interpretable.callRange: [min, max]` instead of `callFactor`; `/api/validate` echoes the request's `rev` unchanged (S38).
+- `CanvasBackendImpl` calls `CanvasMaintenance.pruneTraces` on `/api/live` and `/api/publish*` reads.
+- Tests: `historyListsRolledBackRows`, `abResponseHasBothIds`, `cancelMemberCancelsGroup`, `freezeStaleRevIs409`, `validateEchoesRev`, `liveReadPrunes`.
 
 **Test command:** `gw.sh :phone:testDebugUnitTest --tests 'com.rokid.context.phone.canvas.*'`
 
@@ -539,20 +646,59 @@ class HostPolicy(port: () -> Int, lanIp: () -> String?, secure: () -> Boolean)  
 - `CanvasHomeTest`: `fingerprintShownWhenLanOn`, `lanDisabledWhenTlsUnavailable`, `lockedShowsNewCodeButton`, `noUnencryptedWarning`.
 - Also write a pure, unit-tested `SslDecision.decide(matches: Boolean): Boolean` that the WebView client delegates to, plus a test, `sslErrorProceedsOnlyOnMatch`.
 
+**Round 3 (S36, S37, S44):**
+- **Digests:** `KeystoreTlsIdentity` uses `setDigests(DIGEST_NONE, DIGEST_SHA256, DIGEST_SHA384, DIGEST_SHA512)` with `PURPOSE_SIGN`. The keystore certificate has no SAN (the platform can't set one; there is no new dependency).
+- **Fixture:** `canvas-tls-test.p12` is generated with `-ext SAN=IP:127.0.0.1,DNS:localhost`, so OkHttp's default hostname verifier passes in `lanServesHttpsOnly`.
+- **Device test:** `phone/src/androidTest/.../KeystoreTlsDeviceTest.kt`: TLS 1.2 and TLS 1.3 handshakes against a loopback `CanvasServer` with a fresh `KeystoreTlsIdentity` (a test alias, deleted afterwards), using a hostname verifier that accepts only `identity.matches(cert)`. Compile-verified here; run in Task 14.
+- **WebView lifecycle:** `CanvasWebRoute` keys its WebView state on `(scheme, port, fingerprint, token)`. On any change, and on first creation, it calls `clearSslPreferences()` and then `loadUrl(newUrl)`. Make the key a pure `CanvasWebKey` data class with `needsReload(old, new)`.
+- **SSL callback test:** Robolectric drives the real `WebViewClient.onReceivedSslError` with `SslError(SslError.SSL_UNTRUSTED, cert, url)` for the fixture certificate (→ `proceed`) and for a second throwaway certificate (→ `cancel`), using a fake `SslErrorHandler`.
+- `CanvasServer` start calls `CanvasMaintenance.pruneTraces`, and `CanvasGraph` init launches one background prune (S44).
+- Tests: `digestsIncludeNone` (a structural check on the spec builder), `reloadsOnOriginChange`, `clearsSslPreferencesOnRotate`, `sslCallbackProceedsOnlyForOurCert`, `serverStartPrunes`.
+
 **Test command:** `gw.sh :phone:testDebugUnitTest --tests 'com.rokid.context.phone.canvas.*'`
 
 **Commit:** `feat(phone): HTTPS-only LAN with a keystore certificate, pinned WebView, escalating pairing lockout, server thread fixes`
 
 ---
 
-### Task 11: Drag-and-drop DAG editor (plain JS, SVG, keyboard), with JS tests
+### Tasks 11a–11e: the DAG editor on vendored React Flow (replaces the old hand-built Task 11)
 
-**Files (`phone/src/main/assets/canvas/`):**
-- create the pure modules `graph.js`, `keys.js`, `validate.js`, and the DOM module `editor.js`;
-- modify `dag.js` (ports, problem marks, focusable edges), `views.js` (the pipeline view uses the editor; one draft model), `style.css`.
-- Tests: `phone/src/test/js/graph.test.js`, `keys.test.js`, `validate.test.js`, `editor.test.js` (fake DOM); `phone/src/test/java/com/rokid/context/phone/canvas/js/JsEditorTest.kt` (runs the four); keep `CanvasAssetsTest` green (raise `jsUnderSizeBudget` to 3,500 lines in total, and say so in the commit).
+Spec §4. Files are in `phone/src/main/assets/canvas/` unless stated; JS tests in `phone/src/test/js/`; Kotlin test runners in `phone/src/test/java/com/rokid/context/phone/canvas/js/`. **Not built** (dropped from the old Task 11): `editor.js`, `editor.test.js`, the SVG ports, the ghost line, pan/zoom and hit-testing, and every `dag.js` change.
 
-**Pure module contracts:**
+Common test command (each sub-task): `gw.sh :phone:testDebugUnitTest --tests 'com.rokid.context.phone.canvas.js.*' --tests 'com.rokid.context.phone.canvas.CanvasAssetsTest' --tests 'com.rokid.context.phone.canvas.VendorLockTest'`
+
+---
+
+#### Task 11a: Vendor React Flow, React, htm; load order; asset-test amendments (0.5 h)
+
+**Files:**
+- Create (downloaded with `curl -sfo <name> https://cdn.jsdelivr.net/npm/<source>`, never edited): `vendor-react.js`, `vendor-react-dom.js`, `vendor-xyflow.js`, `vendor-xyflow.css`, `vendor-htm.js` (the sources, bytes and SHA-256 values are in spec §4.1). Check each with `shasum -a 256`. **A hash mismatch stops the task**: report it; don't substitute another version.
+- Create: `vendor-lock.txt` (one line per file: `<served name> <npm spec> <url> <bytes> <sha256> <licence>`), `vendor-licenses.txt` (the React MIT, `@xyflow/react` MIT and `htm` Apache-2.0 texts with their copyright lines, copied from each package's `LICENSE` via jsdelivr), `jsx-shim.js` (ours):
+  ```js
+  const k = (t, p, key) => React.createElement(t, key === undefined ? p : Object.assign({}, p, { key }));
+  globalThis.jsxRuntime = { jsx: k, jsxs: k, Fragment: React.Fragment };
+  ```
+- Modify: `index.html`: `<link rel="stylesheet" href="vendor-xyflow.css">` before `style.css`; then `<script defer src="vendor-react.js">`, `vendor-react-dom.js`, `jsx-shim.js`, `vendor-xyflow.js`, `vendor-htm.js`, in that order, before the existing `<script type="module" src="app.js">`.
+- Modify: `phone/src/test/java/com/rokid/context/phone/canvas/CanvasAssetsTest.kt`:
+  - `own` files = every file in the assets root that doesn't start with `vendor-`; `noExternalUrls`, `noHtmlSinks` and `tokenNeverInQueryString` scan `own` only; `dangerouslySetInnerHTML` joins the banned list;
+  - `scriptsAreModules` → `scriptsAreModulesExceptPinnedVendor`: every `<script>` is `type="module"`, except the five classic `defer` tags above, which must appear in exactly that order and before the first module;
+  - `jsUnderSizeBudget` counts `own` `.js` files only, with the budget raised to 3,500 lines (say so in the commit).
+- Modify: `JsModulesParseTest.everyAssetModuleParses`: skip `vendor-*.js` (UMD scripts are not modules).
+- Create: `phone/src/test/java/com/rokid/context/phone/canvas/VendorLockTest.kt`.
+
+**Tests:**
+- `VendorLockTest`: `everyVendorFileIsLocked` (each `vendor-*` file in the assets root has a lock line whose SHA-256 and byte count match), `everyLockLineHasAFile`, `licencesListed` (`vendor-licenses.txt` names React, `@xyflow/react` and `htm`), `lockNotServed` (`vendor-lock.txt` and `vendor-licenses.txt` fail the server's static path rule; assert with the same `Regex` as `CanvasRouter.STATIC_PATH`).
+- `CanvasAssetsTest`: `scriptsAreModulesExceptPinnedVendor`, `noDangerousInnerHtmlInOwnCode`, and the existing tests green over `own`.
+
+**Commit:** `feat(phone): vendor React Flow 12.12.0, React 18.3.1 UMD and htm for the canvas, pinned by SHA-256 (offline, no build)`
+
+---
+
+#### Task 11b: Pure model modules `graph.js`, `validate.js`, `keys.js` (1.5 h)
+
+**Files:** create `graph.js`, `validate.js`, `keys.js`; tests `graph.test.js`, `validate.test.js`, `keys.test.js`; `JsEditorTest.kt` (runs every editor-stream JS test file; 11c and 11d add theirs to it).
+
+**Pure module contracts** (unchanged from the old Task 11):
 ```js
 // graph.js — never mutates its input; every op returns { pipe, error? } (error is a short fixed text)
 export function nextId(pipe, short)                       // "<short>_<n>", smallest free n ≥ 1, matches ^[a-z][a-z0-9_]{0,31}$
@@ -565,44 +711,108 @@ export function branchesOf(node, nodeTypes)               // switch: cases + "ot
 // validate.js
 export function portCheck(pipe, from, to, nodeTypes)      // null | "<to title> accepts <A or B>, not <X>" | "<to title> already receives <Y>" (mixed incoming)
 export function problemsByNode(problems)                  // {nodeId: [text]}, plus {edgeKey: [text]} with edgeKey "from>to>when"
-// keys.js — focus navigation over layout cells
+// keys.js — pure keyboard decisions over layout cells; returns intents, never touches the DOM
 export function move(cells, currentId, key /* ArrowUp|Down|Left|Right */)   // nearest node in that direction by layer/column; stays when none
-export function reduce(state, key, ctx)                   // connect-mode state machine: idle → (c) connecting{from} → arrows pick target → Enter → {action:"connect"} | Esc → idle
+export function reduce(state, key, ctx)                   // idle → (c) connecting{from} → arrows pick target → Enter → {action:"connect", from, to} | Esc → idle;
+                                                          // also {action:"focus", id}, {action:"palette"} for "a", {action:"remove", id} for Delete
 ```
-**Editor behaviour (§4):**
-- **Palette:** buttons from `/api/node-types` where `palette` is true. Drag (pointer events with `setPointerCapture`) onto the SVG, or Enter, calls `addNode`.
-- **Connecting:** each node has an out-port circle (`role="button"`, `aria-label="Connect from <title>"`). Dragging it shows a ghost line. On hover, a target gets class `ok` or `refused` from `portCheck`. Dropping on a refused target shows the reason in an inline `role="status"` line. Dropping from a branching source opens a small menu of free branches.
-- **Edges:** focusable `<path tabindex=0>` with `aria-label="<from> to <to> [when]"`. Delete removes the focused node or edge.
-- **Validation:** after every change, a 250 ms debounce sends `POST /api/validate`; the response's layout re-renders. While it is pending, the previous layout stays, and a new node is appended at the end of its layer. Problem marks:
-  - a node gets class `has-problem`, a badge, and `aria-describedby` pointing at a hidden list item;
-  - an edge gets class `has-problem`;
-  - the list under the canvas is buttons that focus their node.
-- **One draft:** the editor holds the draft. The inspector edits through `setParam`, the JSON panel shows `JSON.stringify(draft, null, 2)`, and "Apply JSON" replaces the draft after a `JSON.parse`. Save sends PUT with `draftRev`; Freeze saves first when dirty. Leaving with unsaved changes asks for confirmation (MVP Task 10 minors 1–2).
-- Built-in pipelines are read-only: the palette is hidden, and the note "Duplicate to edit" shows.
-- **Look:** the 44 px minimum touch size; the focus ring always visible; works at 360 px (the canvas container scrolls).
 
 **Tests:**
-- `graph.test.js`:
-  - `nextIdSkipsTaken`, `addNodeDefaultsAndAutoEdge`, `addAfterBranchingUsesFirstFreeBranch`;
-  - `removeNodeDropsEdges`, `cannotRemoveInput`;
-  - `connectRefusesCycle`, `connectRefusesDuplicate`, `connectRefusesSelf`, `connectRefusesPortMismatch`;
-  - `inputNeverMutated`, `idsMatchRule`.
-- `validate.test.js`: `portCheckAcceptsListedInputs`, `portCheckMixedIncoming`, `problemsByNodeAndEdge`.
-- `keys.test.js`: `arrowMovesByLayerAndColumn`, `staysAtEdge`, `connectModeFlow`, `escCancels`.
-- `editor.test.js` (fake DOM, fake `api`):
-  - `paletteEnterAddsNode`, `dropOnRefusedShowsReason`;
-  - `deleteKeyRemovesFocusedEdge`;
-  - `problemMarksApplied`, `debouncedValidateOncePerBurst` (fake timers: inject `setTimeout`);
-  - `applyJsonReplacesDraft`, `freezeSavesFirstWhenDirty`;
-  - `builtInReadOnly`.
+- `graph.test.js`: `nextIdSkipsTaken`, `addNodeDefaultsAndAutoEdge`, `addAfterBranchingUsesFirstFreeBranch`, `removeNodeDropsEdges`, `cannotRemoveInput`, `connectRefusesCycle`, `connectRefusesDuplicate`, `connectRefusesSelf`, `connectRefusesPortMismatch`, `inputNeverMutated`, `idsMatchRule`.
+- `validate.test.js`: `portCheckAcceptsListedInputs`, `portCheckMixedIncoming`, `problemsByNodeAndEdge`, `refusalTextExact` ("Facts from frames accepts Photo or JSON, not Preview").
+- `keys.test.js`: `arrowMovesByLayerAndColumn`, `staysAtEdge`, `connectModeFlow`, `escCancels`, `aFocusesPalette`, `deleteEmitsRemove`.
 
-**Test command:** `gw.sh :phone:testDebugUnitTest --tests 'com.rokid.context.phone.canvas.js.*' --tests 'com.rokid.context.phone.canvas.CanvasAssetsTest'`
+**Commit:** `feat(phone): canvas pure graph, port-check and keyboard modules, JS-tested`
 
-**Commit:** `feat(phone): canvas drag-and-drop DAG editor with keyboard access and inline validation, JS-tested`
+---
+
+#### Task 11c: `flowadapter.js`, pipeline ↔ React Flow (2 h; needs 11b)
+
+**Files:** create `flowadapter.js` (imports `graph.js` and `validate.js` only; **no React**); test `flowadapter.test.js` (added to `JsEditorTest`).
+
+**Contract:**
+```js
+export const CELL_W = 220, CELL_H = 120
+/** → {nodes:[{id, type:"card", position:{x,y}, data:{title, typeLabel, inPorts, outPort, problems:[text], domain, pending, readOnly}, deletable, connectable, ariaLabel}],
+ *     edges:[{id:"from>to>when", source, target, label?:when, className:"has-problem"|undefined, ariaLabel:"<from> to <to> [when]", deletable}]}
+ *  Positions: x = column*CELL_W, y = layer*CELL_H from layout.cells; nodes not in the layout: pending row (layer = layers), id order, data.pending = true.
+ *  deletable=false for input.photos and when opts.readOnly; connectable=false when opts.readOnly. domain = nodeType.domain ?? "ASYNC". */
+export function toFlow(pipe, layout, problems, nodeTypes, opts /* {readOnly} */)
+/** {ok:true} | {ok:false, reason}: portCheck + graph.connect refusals (cycle, duplicate, self) + cross-domain ("<to title> is in another domain"). conn = {source, target, when?} */
+export function canConnect(conn, pipe, nodeTypes)
+/** change = {kind:"add", nodeType, after} | {kind:"connect", from, to, when?} | {kind:"remove", nodeId} | {kind:"removeEdge", edgeId} | {kind:"param", nodeId, key, value} | {kind:"title", nodeId, title}
+ *  → graph.js result {pipe, error?}; connect without when from a branching source uses the first unused branch. */
+export function applyChange(draft, change, nodeTypes)
+export function edgeFromId(edgeId)   // "from>to>when" → {from, to, when?}
+```
+
+**Tests (`flowadapter.test.js`):**
+- `positionsFromLayoutCells`, `pendingNodesGetPendingRow`, `problemBadgesPerNodeAndEdge`, `inputNotDeletable`, `readOnlyDisablesDeleteAndConnect`, `edgeIdsRoundTrip`, `ariaLabelsPresent`, `domainDefaultsAsync`;
+- `canConnectPortMismatchReason` (the exact "accepts Photo or JSON, not Preview" text), `canConnectRefusesCycle`, `canConnectRefusesCrossDomain` (two fake node types with different `domain`);
+- `applyAddUsesShortId`, `applyConnectPicksFirstFreeBranch`, `applyRemoveDropsEdges`, `applyRemoveEdge`, `applyParamAndTitle`, `applyNeverMutatesDraft`.
+
+**Commit:** `feat(phone): canvas flow adapter between the pipeline model and React Flow, JS-tested`
+
+---
+
+#### Task 11d: `paramform.js`, the inspector field model (0.75 h)
+
+**Files:** create `paramform.js` (pure); test `paramform.test.js` (added to `JsEditorTest`).
+
+**Contract:**
+```js
+/** descriptors from /api/node-types params: {name, kind: int|bool|text|prompt|role|schema|labels, min?, max?}
+ *  → [{name, control: "number"|"checkbox"|"text"|"textarea"|"select"|"labels", label, min?, max?, value}] (value = current param or default) */
+export function fields(descriptors, params, ctx /* {roles, prompts} for select options */)
+/** raw input → {value} | {error} ("Must be between 1 and 3", "Must be a whole number", "Must be valid JSON" for schema, "Labels must be unique") */
+export function coerce(field, raw)
+```
+- `prompt` and `role` render as selects (options from `ctx`); `template` and `schema` as textareas; `labels` as a comma-separated text field split and trimmed. No JSON Schema library (spec §4.6).
+
+**Tests:** `intFieldBoundsFromDescriptor`, `coerceIntOutOfRange`, `coerceNonInteger`, `boolCheckbox`, `schemaMustBeJson`, `labelsSplitTrimUnique`, `defaultsWhenParamMissing`.
+
+**Round 3 (S38), also in this task: `draftstate.js`** (pure, about 40 lines; test `draftstate.test.js`, added to `JsEditorTest`):
+```js
+export function init(pipe, serverRev)          // {pipe, rev: 0, savedRev: serverRev, locked: false, layout: null, problems: []}
+export function change(state, change, nodeTypes) // applyChange; on success rev+1; refused while locked
+export function validationSent(state)          // → {rev} to send with POST /api/validate
+export function validationReply(state, reply)  // applied only when reply.rev === state.rev; otherwise state unchanged
+export function lock(state); export function unlock(state, savedRev)   // save-and-freeze: lock → save → freeze(draftRev = savedRev) → unlock
+```
+Tests: `staleValidationDropped`, `reversedRepliesKeepNewest`, `changeRefusedWhileLocked`, `unlockRecordsSavedRev`. The commit message adds "and draft revisions".
+
+**Commit:** `feat(phone): canvas inspector field model from node param descriptors, JS-tested`
+
+---
+
+#### Task 11e: `floweditor.js`, palette, inspector, keyboard wiring, views integration, deletions (2.5 h; needs 11a–11d and Task 9)
+
+**Files:**
+- Create: `floweditor.js` (the only React file). `const html = htm.bind(React.createElement)`; `const { ReactFlow, ReactFlowProvider, Handle, Position, useReactFlow, applyNodeChanges } = globalThis.ReactFlow`. Exports `mountEditor(el, { api, pipeline, nodeTypes, readOnly, onDraft }) → { getDraft, isDirty, unmount }` using `ReactDOM.createRoot`.
+- Modify: `views.js` (the pipeline view mounts the editor; the inspector, the JSON panel, Save and Freeze read `getDraft()`; leave-with-unsaved confirm), `style.css` (node card, `has-problem`, `pending`, refusal line, palette groups, 44 px targets, visible focus ring, the pane's own scroll container at 360 px).
+- Delete: `dag.js`, `phone/src/test/js/dag.test.js`, `JsDomTest.dagTests`; drop `dag.js` from `CanvasAssetsTest.names` and add `graph.js`, `validate.js`, `keys.js`, `flowadapter.js`, `paramform.js`, `floweditor.js`, `jsx-shim.js`.
+
+**Behaviour** (spec §4.2–4.3; keep every decision in the pure modules, so this file stays declarative):
+- `ReactFlow` props: `nodes`/`edges` from `toFlow(draft, layout, problems, nodeTypes, {readOnly})`; `nodeTypes={{card: NodeCard}}`; `nodesDraggable={false}`; `nodesFocusable`; `edgesFocusable`; `deleteKeyCode={['Delete','Backspace']}`; `fitView`; `zoomOnPinch`; `panOnDrag`; `isValidConnection={c => canConnect(c, draft, nodeTypes).ok}`.
+- `onConnect` → `applyChange(connect)`; from a branching source, a small popover lists the free branches (first pre-selected) before applying. `onConnectEnd` with no connection made over a refused target → the `canConnect` reason in a `role="status"` line.
+- `onBeforeDelete` keeps only `deletable` items; `onNodesDelete`/`onEdgesDelete` → `applyChange(remove | removeEdge)`. `onNodesChange` applies selection changes only.
+- `NodeCard`: target `Handle` on top, source `Handle` on the bottom, title and type, a badge when `data.problems` is non-empty, `aria-describedby` pointing at a visually hidden list of those texts, class `pending` while unlaid.
+- **Palette:** buttons for `palette: true` types, grouped by `category`; Enter → `applyChange(add, after = selected)`; HTML5 drag onto the pane → the same, using `screenToFlowPosition` only to pick `after` (the nearest node above the drop), never to store a position; on touch: tap the button, then tap the pane.
+- **Inspector:** `paramform.fields(...)` → plain controls; on change `coerce` → `applyChange(param)`; errors inline. Title field and Remove button.
+- **Keyboard:** one `onKeyDown` on the wrapper → `keys.reduce(state, key, {cells})` → `focus` (focus `.react-flow__node[data-id="<id>"]`), `connect` (`applyChange`), `palette`, `remove`. If React Flow's own arrow handling fights it in the browser check, set `disableKeyboardA11y` and keep `nodesFocusable` (spec §4.5).
+- **Validate:** after every change, a 250 ms debounce `POST /api/validate {json}`; on reply, keep `layout` and `problems` and re-render. While pending, the old layout stays and new nodes show in the pending row.
+- Built-in pipelines: `readOnly`, the palette hidden, "Duplicate to edit".
+- **Round 3 (S38, S39):** the editor's single draft is a `draftstate.js` state. Every change goes through `draftstate.change`, validate replies through `validationReply`, and Freeze is `lock` → save → `POST …/freeze {draftRev}` → `unlock` (the editor renders `readOnly` while locked; a 409 shows its message and unlocks). `floweditor.js` reads `globalThis.React`, `ReactDOM`, `ReactFlow` and `htm` **inside** `mountEditor`, never at module top level, so `app.js` imports under GraalJS (Task 12's boot test).
+
+**Tests:** headless coverage is the pure modules (11b–11d). Here: `CanvasAssetsTest` green (the names list, no sinks in `floweditor.js`), `JsModulesParseTest` parses `floweditor.js` and `views.js`, and `views-smoke.test.js` (Task 12) mounts the non-editor views only. The browser behaviour is checked in Task 14 §2.
+
+**Commit:** `feat(phone): canvas DAG editor on React Flow with typed handles, inline refusals, keyboard and inspector; remove the SVG renderer`
 
 ---
 
 ### Task 12: Web views: versions diff, publish modes, Live view, A/B compare, Ask debug, day filter, usage; full gate
+
+**Amendment:** runs after 11e (both edit `views.js`, `app.js` and `style.css`). No library is added here (spec §4.6): the diff is the server's `PipelineDiff`/`LineDiff`, rendered by `diffview.js` rows through `h()`; prompt editors stay `<textarea>`. `views-smoke.test.js` does not mount the React editor (React is not loaded under GraalJS): `pipelineViewRenders` stubs `mountEditor` with a fake that records its arguments. Estimate 3.5 h including the gate.
 
 **Files (`phone/src/main/assets/canvas/`):**
 - create the pure modules `format.js` (usage line, token estimate text, agreement percent, fingerprint-free) and `diffview.js` (turns `PipelineDiff` JSON into a row model), and the DOM module `asks.js` (the ask list and the ask view);
@@ -638,6 +848,7 @@ export function reduce(state, key, ctx)                   // connect-mode state 
 - `diffview.test.js`: `rowsForAddedRemovedChanged`, `promptLinesClassed`.
 - `views-smoke.test.js`: `pipelineViewRenders`, `diffViewRenders`, `liveViewRenders`, `runViewShowsUsageAndBranches`, `compareShowsAgreement`, `askViewRendersHitsAndPrompt`, `askRedactedShowsMessage`, `runPollRetriesThenStops`.
 - `CanvasAssetsTest` stays green.
+- **Round 3 (S39, S33, S43):** `app-routes.test.js` (run by `JsViewsTest`) installs the fake DOM, a fake `fetch` answering every route with canned JSON, and stub `React`/`ReactDOM`/`ReactFlow`/`htm` globals (`mountEditor` records its arguments), then imports the **real** `app.js` and sets `location.hash` to each route in turn: `#/`, `#/p/<id>`, `#/p/<id>/diff?a=1&b=draft`, `#/live`, `#/run/new`, `#/run/<id>`, `#/compare?a=&b=`, `#/asks`, `#/ask/<id>`. It asserts each renders a non-empty view with no thrown error. Tests: `bootsAndRoutesEveryView`, `unknownRouteShowsNotFound`, `floweditorImportsWithoutReact`. The publish dialog shows `callRange` ("about 4–6×"), and the auto-rollback reason is shown from `/api/publish/history`.
 
 **Gate:** after the tests pass, run `tools/gate.sh /tmp/pca-canvas-s2-gate.log` from the repo root: BUILD SUCCESSFUL with 0 failures. Note any flaky re-run in the commit body.
 
@@ -677,6 +888,8 @@ export function reduce(state, key, ctx)                   // connect-mode state 
 - `SceneNodeTypesTest`: `portsAndPromptKey`, `tuningParamRanges`, `unknownTuningKeyRejected`, `scenePipelineNotInterpretable`.
 - `SceneExecutorsTest`: `overridesReachRules` (a dedupe threshold of 0.99 vs 0.80 changes near_dup), `noVectorIsFastPath`, `clusterIdsInTimeOrder`, `summaryPacksThreeClustersSixPhotos`, `summaryDraftOverrideUsed`, `writesNothing`.
 
+**Round 3 (S40, S25):** `NodeType` gains `chunking: Chunking = PER_ITEM` (`PER_ITEM | WHOLE_NODE | BY_CLUSTER`), which `CanvasRunner` reads instead of a per-type special case: `scene.group` = `WHOLE_NODE`, `ai.cluster_summary` = `BY_CLUSTER` (≤ 3 clusters / ≤ 6 photos per chunk). The summary calls through `ClusterContract.call`, its retries included. Nominal = ceil(clusters / 3); max = nominal × (1 + the contract's retry count), with KDoc. Each call's items share one `batchId` (the S25 batch-wide forget). Tests go **through `CanvasRunner`**: `summaryPacksViaRunner`, `multiClusterPackedInOneCall`, `summaryMaxIncludesRetries`, `clusterForgetClearsCluster`.
+
 **Gate:** `tools/gate.sh /tmp/pca-canvas-s2-scene-gate.log`.
 
 **Commit:** `feat(canvas): scene grouping and cluster summary nodes over wave 2 SceneRules (preview only)`
@@ -687,19 +900,23 @@ export function reduce(state, key, ctx)                   // connect-mode state 
 
 Write it as `docs/superpowers/specs/2026-10-21-canvas-slice2-device-checklist.md` (the controller writes the doc; the steps are run by the user with the phone and glasses in hand).
 
-0. **Install safety:**
-   - export memories first (Settings → Memory → Export);
-   - install only a build whose Room version is ≥ every build already on the phone (no downgrade path);
-   - run `SqlCipherMigrationDeviceTest` (extended in Task 4) before the app build;
-   - if wave B or wave 2 merged in between, confirm the slice 2 migration number came after theirs.
+0. **Install safety (round 3, S41, S26):**
+   - take the handoff's full phone backup (the `pca-phone-pre-*.tar` procedure; counts only, never opened). Memory Export is **not** a backup (it omits photos and most of the database);
+   - install with `adb install -r` only, **never uninstall** (that deletes the AndroidKeyStore key that opens the SQLCipher database);
+   - install only an integration-line build whose schema is on the canonical lineage v3 → v4 → v5 → v6, and whose Room version is ≥ every build already on the phone (no downgrade path, no provisional schema);
+   - run `SqlCipherMigrationDeviceTest` (`:services:memory` androidTest, fixtures at v3/v4/v5 → v6, never the production database) before the app APK;
+   - after the install, run `KeystoreTlsDeviceTest` (`:phone` androidTest, S36).
 1. **JS in a real browser:**
    - open the editor in the WebView, in phone Chrome and on a laptop: the pipelines list, the DAG and the inspector render;
    - no console errors (laptop DevTools);
    - check `blob:` thumbnails in the WebView (open MVP item).
-2. **Editor:**
-   - duplicate `intent-draft`; drag a Prompt node from the palette; connect it; try a refused connection and read the inline reason;
-   - delete an edge with the keyboard only (Tab, arrows, Delete); connect with `c` → arrows → Enter;
-   - check the 360 px phone width.
+2. **Editor (React Flow, spec §4):**
+   - DevTools console: no CSP violations and no React errors on load; `ReactFlow`, `React` and `jsxRuntime` globals present; the React Flow attribution is visible;
+   - duplicate `intent-draft`; drag a Prompt node from the palette (laptop) and tap-to-add it (phone); connect it; try a refused connection and read the inline reason; connect from the switch and pick a `when`;
+   - phone Chrome at 360 px: touch-drag a connection, pinch-zoom and pan inside the pane, no page-level horizontal scroll;
+   - laptop keyboard-only pass: Tab into the canvas, arrows move by layer and column, `c` → arrows → Enter connects, Esc cancels, Delete removes an edge and a node, `a` jumps to the palette; focus is always visible, and arrows never move a node (if they do, note it: Task 11e's `disableKeyboardA11y` fallback);
+   - screen-reader spot check (TalkBack or VoiceOver): a node with a problem reads its problem text; an edge reads "<from> to <to>";
+   - time the first editor render on the phone once (note it in the handoff; expected well under 1 s for tens of nodes).
 3. **A/B:** pick 10 photos of mixed activities (desk, walking, driving as passenger, workout), A/B intent-draft vs live-extract; read the branch counts, agreement and token line; score some cards.
 4. **Shadow:**
    - freeze → publish Shadow; wear the glasses for 15 min;
@@ -707,7 +924,7 @@ Write it as `docs/superpowers/specs/2026-10-21-canvas-slice2-device-checklist.md
    - live memories are unchanged in kind.
 5. **Live:**
    - publish Live; 15 min worn; memories still appear; the `#/live` fallbacks count is low;
-   - check that an incompatible draft schema is **blocked** at publish; then force live failures by unbinding the role the intent node uses for a few minutes: batches fall back, and after 10 of 30 the publish auto-rolls back (Diagnostics line gone, and the reason shows in `GET /api/publish` history);
+   - check that an incompatible draft schema is **blocked** at publish; then force live failures by unbinding the role the intent node uses for a few minutes: batches fall back, and after 10 of 30 the publish auto-rolls back (the Diagnostics line is gone, and the reason shows in `GET /api/publish/history`, S43);
    - note the extra call volume against the battery and budget notes.
 6. **Rollback:** Roll back from the app's Canvas home with the browser closed; a prompt publish + an interpreter publish unwind newest first.
 7. **Ask debug:** open a recent ask; the scores and cited badges look plausible; replay with an edited ANSWER template; the ask history doesn't grow.
@@ -722,3 +939,7 @@ Write it as `docs/superpowers/specs/2026-10-21-canvas-slice2-device-checklist.md
 10. **Scene nodes** (only if Task 13 ran): a scene.group run over a 30-photo desk session; change `dedupeCos` and see the near-dup count change.
 
 **Commit:** none (doc only; the controller commits it with the ledger).
+
+
+## User additions (2026-10-22)
+- **Thumbnail task (add to Task 11e / views, after Task 9):** in the test bed and the run/compare views show a thumbnail of each selected/tested image; clicking opens it full screen next to the model's returned value so relevancy can be judged. Photos are served only by the authenticated canvas server (downscaled JPEG thumbnail route + full-size route), 404 for forgotten/deleted frames, honouring MemoryWipe/tombstones; tests: thumbnail route 404 after Forget, auth required, no listing endpoint. Est. 2 agent-h.

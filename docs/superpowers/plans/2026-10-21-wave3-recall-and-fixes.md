@@ -2,17 +2,83 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (or superpowers:executing-plans). This is a lean plan: it gives exact interfaces, values and test names, not full code. **Implementers are Sonnet; reviews are Opus.** Steps use checkboxes.
 
-**Spec:** `docs/superpowers/specs/2026-10-21-wave3-recall-and-fixes-design.md`. Rulings R1–R17 are there. Read the section named in each task first; where this plan and the spec differ, the spec's rulings win.
+**Spec:** `docs/superpowers/specs/2026-10-21-wave3-recall-and-fixes-design.md`. Rulings R1–R17 (round 1) and **S1–S21 (round 2, spec §7)** are there. Read the section named in each task first. Where this plan and the spec differ, the spec's rulings win, and S-rulings win over R-rulings.
 
-**Base:** branch from `int/2026-10-21` **after wave 2 has merged**. The recall tasks need:
+## Changes in round 2 (2026-10-22)
+
+1. **Codex plan review folded** (`.superpowers/codex/wave3-plan-review.md`, 21 findings). All 21 are accepted as Rulings S1–S21 (spec §7). For S16, D36 and D39 are deferred to canvas slice 2 if the GraalJS harness hasn't merged. Each task below lists the S-rulings it carries.
+2. **New Task 11 (Forget covers photo cites and metadata-only moments; S1, S2).** It runs before Task 3.
+3. **Base is now the merged integration branch.** Wave 2 (Room v4), A3 and the canvas MVP (v3) are merged in `bundle/2026-10-21` @`81912dc`. `ctx/int` @`6187727` adds the wave B fast path and is the installed build. All "if wave 2 / A3 hasn't merged" hedges are removed.
+4. **Room:** v5 is reserved for wave B Task 8, and canvas slice 2/3 take the versions after it. Wave 3 plans no migration. If one is needed, it takes **the next free version at merge time** (S17).
+5. **Wave 2 retention facts written into Tasks 2 and 11:**
+   - `SCORED_LOW` (salience NOT NULL and < 0.5) defines skipped photos;
+   - unscored photos (NULL salience) are *not* skipped and are described before delete;
+   - deadline expiry passes `requireLinked`.
+   - Describe adds a FACT-provenance guard to `SKIPPED_PHOTO` (S3) and a recheck inside the expiry transaction (S4).
+6. **Interface changes:**
+   - `extractNow` returns per-frame outcomes (S5);
+   - describe ids use a full UUID (S6);
+   - the ACTIVE target is picked by flag (S7);
+   - the retrieval pool goes past 20 through a seam (S8);
+   - `PhotoHit.receivedAt` is added for expired photos (S9);
+   - images map to cites explicitly (S10);
+   - the ViewModel invalidates its results (S11);
+   - the call-end settle is stamped on the transition into NORMAL (S12);
+   - WorkRest stores `bootCount` (S13);
+   - `ExitKind` UNKNOWN is reported separately and stale exits are ignored (S14);
+   - a count-only `restart …` diag line is written (S20).
+7. **Module and test fixes:**
+   - `WearingStatus.kt` → `:services:glasses-link` (S15);
+   - D26 is tested through `CanvasServer.Daemon.serve()`, and D36/D39 run in the GraalJS harness (S16);
+   - Task 7 uses separate gate instances, and Task 1's ordering is renamed (S21);
+   - Task 10 checks the schema version and pauses ingest (S18).
+8. **User rulings:** intent never throttles capture; open-source libraries before custom code (spec §8); estimates are in agent-hours (below).
+
+## Ordered task list (round 2)
+
+The base is the integration tip that contains `ctx/int` @`6187727`, i.e. A3 + canvas MVP + wave 2 + wave B fast path. Re-check it at start with `git log` (the same rule as the handoff merge order).
+
+| # | Task | Depends on (merged branch / task) | Est. agent-h |
+|---|---|---|---|
+| 1 | T1 PhotoRecall (S7, S8, S9, S21) | wave 2 `ImageSpaces`, `MemoryRetriever` (in base) | 4.5 |
+| 2 | T11 Forget photo cites and metadata-only moments (S1, S2) | wave 2 `ForgetService.expirePhotos` (in base); T1 only for `PHOTO_CITE_PREFIX` | 3 |
+| 3 | T2 Describe on demand (S3, S4, S5, S6, S19) | wave 2 `ForgetDao.SKIPPED_PHOTO`, `SceneRules` (in base); T1 types | 6 |
+| 4 | T3 Ask integration (S9, S10) | T1, T11 | 5 |
+| 5 | T4 Photo search screen (S9, S11, S19, S21) | T1–T3 | 5 |
+| ∥ | T5 Phone fixes (S12) | base only | 3 |
+| ∥ | T6 WorkRest persistence (S13) | A3 `WorkRest.enabled` (in base) | 2 |
+| ∥ | T7 UI1/REF (S21) | T6 (same stream; `GlassesRuntime.kt`) | 2.5 |
+| ∥ | T8 DIAG (S14, S20) | T7 (same stream) | 3 |
+| ∥ | T9 one-liners (S15, S16) | T8 (same stream); D36/D39 need canvas slice 2 Task 1 harness (`canvas/integration` `d21d66b`) merged, else deferred | 3 (2 without D36/D39) |
+| 6 | Opus reviews (per task + whole wave) and one Codex final code pass | all code tasks | 5 |
+| 7 | T10 Device checklist (controller) | everything merged, gate green, **Nomic bound** for steps 2–4 (Nomic harness exists; binding is the handoff §9 item 5 step) | 3 |
+
+**Total:** about 40 agent-h of code, 5 h of reviews and 3 h on the device.
+
+**Streams:** R = T1 → T11 → T2 → T3 → T4. P = T5. G = T6 → T7 → T8 → T9. P and G run in parallel with R in their own worktrees.
+
+**Merge:** wave 3 merges after wave B Task 8 (v5) if both are in flight. It has no migration, so either order works, but rebase onto whichever lands first. It does not wait for canvas slice 2 except for D36/D39.
+
+## Open for the user
+
+Round 1 rulings R1–R17 are still unconfirmed (spec §6, items 1–8). Round 2 adds:
+
+1. **S9:** expired photos show "received HH:mm", not the capture time. Do you want a `frame_meta.capturedAt` column in the next free migration?
+2. **S14:** Diagnostics splits the counts into Rokid, unattributed and other. Should an unverifiable pid still count as Rokid, as it does today?
+3. **S1:** Forget on a moment also redacts saved answers that cited the photo, and their proposals and alarms. OK?
+4. **S16:** move D36 and D39 to canvas slice 2 if the GraalJS harness isn't merged when Task 9 starts?
+5. **S20:** is the "other force-stops" count in `capture_diag.log` enough, or do you want it on the phone Diagnostics screen (an additive hello field plus UI, about 2 agent-h more)?
+6. **Order:** run wave 3 before or after wave B Tasks 3–9? The handoff order says wave B first. Wave 3 has no Room conflict either way.
+
+**Base (round 1, superseded by the ordered list above):** the recall tasks use:
 - wave-2 Task 4: `ImageSpaces` / `ImageSpaceTarget`;
 - wave-2 Task 8: photo expiry, which removes the `frame` row and keeps `frame_meta`, `frame_vector` and the memories;
 - wave-2 Task 10: Nomic declares `Modality.IMAGE`.
 
-If one of those hasn't merged yet, build against the interface and use fakes in tests. Never re-implement it.
+All three are in the base now. Never re-implement them.
 
 **Goal:**
-- **A (Tasks 1–4):** words → photo search (image vectors plus a caption fallback), a photo-grid screen, describe on demand, and Ask answers that cite photos.
+- **A (Tasks 1, 11, 2, 3, 4):** Forget coverage for photo cites (Task 11), words → photo search (image vectors plus a caption fallback), a photo-grid screen, describe on demand, and Ask answers that cite photos.
 - **B (Tasks 5–9):** the small-fixes bundle.
 - **Task 10:** the device checklist.
 
@@ -22,12 +88,12 @@ If one of those hasn't merged yet, build against the interface and use fakes in 
   - `:services:memory`: DAO queries only;
   - `:services:orchestration`: recall, describe, AnswerService;
   - `:services:voice`: HUD label;
-  - `:services:glasses-link`: none;
+  - `:services:glasses-link`: `WearingStatus.kt` only (Task 9, S15);
   - `:phone`: screens, notification, call guard, banner;
   - `:glasses`: WorkRest, start gate, restart diagnostics;
   - `tools/`: shell.
 - **Protocol:** `PROTOCOL_VERSION` stays **1**. Any wire change is additive only, and this wave adds none: the HUD photo label is text inside `Overlay.Answer.text` (spec R5).
-- **Room:** **no schema change is planned** (spec R7). Every new query reads existing tables. If a task truly needs one, it takes **the next free version (expected v5 after wave 2's v4; check at merge)**, additive only (`ALTER TABLE … ADD COLUMN` / `CREATE INDEX`). It is registered in both `DatabaseFactory.build()` and `buildDeferred()`, the schema is exported, and it gets a `MigrationTestHelper` test. Stop and tell the controller before doing so.
+- **Room:** **no schema change is planned** (spec R7). Every new query reads existing tables. The taken versions are v3 (canvas MVP), v4 (wave 2) and v5 (reserved for wave B Task 8), and canvas slice 2/3 hold the next ones. If a task truly needs a schema change, it takes **the next free version at merge time** (S17; never hardcode a number), additive only (`ALTER TABLE … ADD COLUMN` / `CREATE INDEX`). It is registered in both `DatabaseFactory.build()` and `buildDeferred()`, the schema is exported, and it gets a `MigrationTestHelper` test. Stop and tell the controller before doing so.
 - **Gradle:** run from `android-companion/` as `/Users/<user>/Desktop/rokid/proactive-context-agent/.superpowers/sdd/gw.sh <tasks>`. It wraps `./gradlew --no-daemon` and allows at most 2 runs per machine.
   - **One Gradle run at a time per worktree.** Never `gradlew --stop`.
   - Per-module test commands look like `…/gw.sh :services:orchestration:testDebugUnitTest --tests '<pattern>'`. The same applies to `:services:memory`, `:services:voice`, `:phone` and `:glasses`; all are Android modules, hence `testDebugUnitTest`.
@@ -37,18 +103,18 @@ If one of those hasn't merged yet, build against the interface and use fakes in 
   - Never print secrets, `.env` values, keys or tokens.
   - Logs carry ids, counts and class names only: never query text, captions, answers, recognised text, file paths, package names of other apps, or raw `ApplicationExitInfo` descriptions.
   - Photos are decrypted **in memory only**, through `FrameDecode.opener` (UI) and `FramePhotos.load` (AI). Never write a decrypted or thumbnail file.
-- **Memory ids** start with `rokid_` and never with `rokid_review_`. Describe-on-demand ids are `rokid_desc_<8 hex>_<n>` (facts) and `rokid_desc_<8 hex>_c<n>` (captions).
+- **Memory ids** start with `rokid_` and never with `rokid_review_`. Describe-on-demand ids are `rokid_desc_<uuid>_<n>` (facts) and `rokid_desc_<uuid>_c<n>` (captions), with a full `UUID.randomUUID()` (S6).
+- **Intent never throttles capture (user ruling).** No wave-3 code reads intent, vehicle or context-hub state to pause or slow capture, and no task edits `ContextGate` or the capture-rate rules. WorkRest (Task 6) is the user's own schedule.
+- **Open-source first (user ruling; spec §8).** Use the library or platform API in the spec §8 table instead of custom code. Any custom code written where a library existed is named in the report, with the reason.
 - **Call classes:** recall's describe and the Ask's photos are **USER**. Nothing in this wave takes EXTRACT or NUDGE tokens.
-- **Glasses-side tasks (5 does not apply; 6, 7, 8, 9 do):** the battery **wave A3 branch is also editing glasses code**: `WorkRest.kt` (adds `enabled`), `SamplingSession.kt`, `CaptureService.kt`, `Heartbeat.kt`, `GlassesRuntime.kt`, `CaptureSettings` and `HudSettings`.
-  - If A3 has merged into your base, build on it.
-  - If not, keep your edits minimal and additive (new parameters with defaults, new files) so the merge is mechanical, and say in the report which A3 files you touched.
+- **Glasses-side tasks (6, 7, 8, 9):** A3 is merged in the base (`WorkRest.enabled` exists). Build on it. Wave B's remaining tasks (7b, 9) may still edit `GlassesRuntime.kt` and the capture path, so keep edits additive and name the touched files in the report.
 - **Commits:** local only, never push. Each message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Submodule: `git submodule update --init -- android-companion/services/ai/src/main/cpp/llama.cpp`, never `--reference`.
 
 ## Streams and dependencies
 
 | Stream | Tasks | Needs |
 |---|---|---|
-| R (recall) | 1 → 2 → 3 → 4 | wave 2 merged (see Base). 2 needs only 1's model types; 3 needs 1; 4 needs 1–3. |
+| R (recall) | 1 → 11 → 2 → 3 → 4 | wave 2 (in base). 11 needs 1's `PHOTO_CITE_PREFIX`; 2 needs 1's types; 3 needs 1 and 11; 4 needs 1–3. |
 | P (phone fixes) | 5 | none; runs in parallel with R and G |
 | G (glasses fixes) | 6 → 7 → 8 → 9 | none; 6 and 8 both touch `GlassesRuntime.kt`, so the stream runs in order. 9 also touches tools and the canvas web assets. |
 | D | 10 | all merged, gate green |
@@ -59,7 +125,20 @@ If one of those hasn't merged yet, build against the interface and use fakes in 
 
 ### Task 1: `PhotoRecall` — image-vector scan plus caption fallback
 
-**Spec:** §3.1, R1, R2, R3, R9.
+**Spec:** §3.1, R1, R2, R3, R9. **Round 2:** S7, S8, S9, S21. **Est.:** 4.5 agent-h.
+
+**Round 2 changes (these win over the text below):**
+- **S7:** `images.targets().firstOrNull { it.active }`. Never take the "first" target. Add the test `buildingOnlyTargetsIsNoImageSpace`.
+- **S8:**
+  - add an internal `poolOverride: Int? = null` (≤ 200) to `MemoryRetriever.retrieve` in `:services:memory`; it skips the `topK ≤ 20` clamp for this caller only;
+  - `PhotoRecall.captions` is wired with `poolOverride = 60`;
+  - add `captionPoolBeyondTwentyWithRealRetriever` (the real `MemoryRetriever` on in-memory Room; a photo-backed hit ranked 25th is returned).
+- **S9:**
+  - `PhotoHit` gains `receivedAt: Long?` (`frame_meta.createdAt`);
+  - `ts` is `frame.ts` when stored, else `null`;
+  - add `expiredPhotoHasReceivedAtNotTs` (capture and receipt 5 h apart).
+- **S21:** rename `pagesNewestFirstUntilShortPage` → `pagesByVectorRowidDesc` and `pageDescNewestFirstBySpace` → `pageDescByRowidDescBySpace`. The KDoc says "most recently indexed".
+- **Open source:** the heap is `java.util.PriorityQueue` (or the extracted `BruteForceVectorIndex` heap), with no hand-written heap.
 
 **Files:**
 - modify `services/memory/src/main/java/com/rokid/context/memory/db/FrameDaos.kt`:
@@ -156,9 +235,60 @@ class PhotoRecall(
 
 ---
 
+### Task 11 (round 2): Forget covers photo cites and metadata-only moments
+
+**Needs:** Task 1 (`PHOTO_CITE_PREFIX` lives in `:services:memory`, so define it here if Task 1 hasn't). **Spec:** §7 S1, S2. **Est.:** 3 agent-h. **Runs before Task 3.**
+
+**Files:**
+- modify `services/memory/src/main/java/com/rokid/context/memory/forget/ForgetService.kt` (`forgetMoment`, `cascade` redaction input);
+- modify `db/ForgetDao.kt` (queries: asks citing a `frame:` id; meta/vector existence);
+- tests: extend `ForgetServiceTest.kt` and `PhotoExpiryTest.kt` (orchestration); add an export assertion in the existing export test.
+
+**Behaviour:**
+- **S2:** `forgetMoment(frameId)` returns `EMPTY` only when there is no `frame` row, no `frame_meta`, no `frame_vector` and no memory. A metadata/vector-only moment gets the tombstone, plus deletion of meta, vector, state, source and canvas outputs (as today).
+- **S1:** the redaction set passed to the ask/nudge redaction step is the memory ids **plus** `frame:<frameId>`. Asks whose stored sources or inputIds contain that id are redacted, and their proposals and alarms are scrubbed the same way as for a forgotten memory. Retention `expirePhotos` does **not** redact (the photo's metadata lives on, and the cite stays live per R4).
+
+**Tests:**
+- `forgetMomentRedactsSavedAnswerCitingPhoto` (answer committed → Forget → ask redacted, proposal scrubbed, alarm cancelled, the export row redacted);
+- `expiredUncaptionedSkippedPhotoCanBeForgotten` (salience 0.3, expired at 1 day, no memories → Forget → meta and vector gone, `frame:` cite dead);
+- `forgetMomentEmptyOnlyWhenNothingExists`;
+- `photoExpiryDoesNotRedactCites`.
+
+- [ ] RED → implement → GREEN:
+  - `…/gw.sh :services:memory:testDebugUnitTest --tests '*Forget*'`;
+  - `:services:orchestration:testDebugUnitTest --tests '*PhotoExpiry*' --tests '*Export*'`.
+- [ ] Commit `fix(forget): Forget moment redacts photo-cited answers and removes metadata-only moments`.
+
+---
+
 ### Task 2: Describe on demand
 
-**Needs:** Task 1 (`PhotoHit` only, for the UI later). **Spec:** §3.3, R6.
+**Needs:** Task 1 (`PhotoHit` only, for the UI later). **Spec:** §3.3, R6. **Round 2:** S3, S4, S5, S6, S19. **Est.:** 6 agent-h.
+
+**Round 2 changes (these win over the text below):**
+- **S5:** the `extractNow` signature becomes
+  ```kotlin
+  sealed interface ExtractNowOutcome { data class Extracted(val memories: Int) : ExtractNowOutcome; data object ExtractedEmpty : ExtractNowOutcome
+      data object LostClaim : ExtractNowOutcome; data class Failed(val kind: String) : ExtractNowOutcome; data object Wiped : ExtractNowOutcome }
+  suspend fun extractNow(frameIds: List<String>, callClass: CallClass = CallClass.USER): Map<String, ExtractNowOutcome>
+  ```
+  - only never-claimed `LostClaim` frames are re-read (`frame_state`): EXTRACTING, PENDING or CAPTION_QUEUED → Busy, a state nobody owns → the no-claim path; a claim lost after the call is `Stale` → Busy, never a second call (fix round 1);
+  - `Failed` → Unavailable;
+  - `Wiped` → Wiped.
+  - Tests: `lostClaimRereadsState`, `failedExtractionNotRetriedDirect`, `wipedDistinctFromStaleClaim`.
+- **S6:** ids are `rokid_desc_<uuid>_<n>` / `_c<n>` with a full UUID, through an injectable `idSource: () -> String = { UUID.randomUUID().toString() }`. Test: `collidingShortPrefixDoesNotOverwrite`.
+- **S3:**
+  - in `:services:memory` `ForgetDao`, `SKIPPED_PHOTO` and the skipped clause of `PHOTO_ELIGIBLE` gain `AND NOT EXISTS (SELECT 1 FROM frame_source d WHERE d.frameId = f.id AND d.role = 'FACT')`;
+  - the no-claim describe writes FACT provenance rows (it does today through `saveExtraction`; assert it).
+  - Test: `describedSummarizingMemberSurvivesSettlementAndRetention`.
+- **S4:**
+  - the save and the state `move` run in one `db.withTransaction`;
+  - `ForgetService.expirePhotos(frameIds, requireLinked, recheckSkipped: Boolean = false)` re-evaluates `SKIPPED_PHOTO` per id inside its transaction, and the skipped-photo retention caller passes `true`.
+  - Test: `retentionPausedAfterSelectionKeepsJustDescribedPhoto` (a latch in a fake `ForgetDao` wrapper).
+- **Wave 2 facts:**
+  - `nearDupDescribedMovesToExtracted` must use a frame with `salience = 0.3`, a real skipped photo. NULL salience is not skipped (`SCORED_LOW`);
+  - a `CAPTION_QUEUED` frame with lastError `describe_before_delete` goes through `claimCaptionQueued` (the claim path), so the night job and describe never both run it.
+- **S19:** the scene fallback uses the existing `SceneRules` representative picker over the members' ACTIVE-space vectors (medoid = max mean cosine). With no vectors, it takes the newest by `frame.ts`. Up to 3. Test: `sceneWithoutRepsUsesSceneRulesMedoid`.
 
 **Files:**
 - create `services/orchestration/src/main/java/com/rokid/context/work/frames/recall/DescribeOnDemand.kt`;
@@ -218,7 +348,18 @@ suspend fun extractNow(frameIds: List<String>, callClass: CallClass = CallClass.
 
 ### Task 3: Ask integration — photo hits in ANSWER, photo cites, HUD label, Ask detail
 
-**Needs:** Task 1. **Spec:** §3.4, R4, R5.
+**Needs:** Task 1 and Task 11. **Spec:** §3.4, R4, R5. **Round 2:** S9, S10 (S1/S2 are in Task 11). **Est.:** 5 agent-h.
+
+**Round 2 changes (these win over the text below):**
+- **S10:**
+  - replace `photoImages(...).values.take(2)` with a walk over `r.photos` in order. Each stored photo is loaded through `photoImages(listOf(frameId))[frameId]`, an unreadable one is skipped, and at most 2 are attached;
+  - each attached photo's prompt line gains ` · image=<n>` (1-based index into `RoleCall.images`); a line without an image has no `image=`.
+  - Tests: `imagesFollowCiteOrderNotMapOrder`, `unreadableFirstPhotoShiftsIndexExplicitly`.
+- **S9:**
+  - a photo line for an expired photo reads `… · received <yyyy-MM-dd HH:mm> · photo · …`;
+  - `photoAtMs` (the HUD label) is set only from a **stored** photo's `frame.ts`.
+  - Test: `expiredPhotoLineSaysReceived`.
+- **Forget:** `forgottenPhotoDuringAnswerRedacts` stays (the in-flight fence). Saved answers are Task 11's job.
 
 **Files:**
 - modify `services/orchestration/src/main/java/com/rokid/context/orchestration/AnswerService.kt` and `AskActions.kt` (`AskOutcome.Answered`);
@@ -294,7 +435,20 @@ const val PHOTO_CITE_PREFIX = "frame:"   // in AskSources (orchestration) and mi
 
 ### Task 4: Photo search screen and the entry points
 
-**Needs:** Tasks 1–3. **Spec:** §3.2, R8, R9.
+**Needs:** Tasks 1–3. **Spec:** §3.2, R8, R9. **Round 2:** S9, S11, S19, S21. **Est.:** 5 agent-h.
+
+**Round 2 changes (these win over the text below):**
+- **S19:**
+  - `PhotoTile` gains `captionMemoryId: String?`;
+  - "Open" goes to the frame viewer when stored, else to `memory/{captionMemoryId}`, and is **disabled** (tag `open_disabled`) when both are missing. The tile then reads "Photo expired · no caption".
+  - Test: `openDisabledWithoutPhotoOrCaption`.
+- **S11:**
+  - the ViewModel observes Room invalidation of `frame`, `frame_meta`, `memory` and `frame_source` (`InvalidationTracker` or a `Flow` query; no custom bus), and re-enriches the visible frame ids, dropping vanished ones;
+  - each `submit()` increments a generation, and a completion from an older generation is discarded.
+  - Tests: `forgetWhileVisibleRemovesTile`, `returnFromForgetShowsNoStaleTile`, `describeSuccessUpdatesCheck`, `staleSearchCompletionDiscarded`.
+- **S9:** expired tiles show "received HH:mm".
+- **S21:** the truncated note becomes "Searched the ${r.scanned} most recently indexed photos".
+- **Open source:** `Routes.photos(q)` uses `Uri.encode`.
 
 **Files:**
 - create in `phone/src/main/java/com/rokid/context/phone/ui/photos/`: `PhotoSearchModel.kt` (pure), `PhotoSearchViewModel.kt`, `PhotoSearchScreen.kt`;
@@ -364,7 +518,18 @@ class PhotoSearchViewModel(initialQuery: String?, search: suspend (String) -> Re
 
 ### Task 5: Phone fixes — NOT1 notification, PERM call guard, storage quota and banner, backup-rules check
 
-**Spec:** §4.1, §4.4, §4.6, §4.7; R11, R12, R16. Phone and `:services:memory` only, no glasses.
+**Spec:** §4.1, §4.4, §4.6, §4.7; R11, R12, R16. **Round 2:** S12. **Est.:** 3 agent-h. Phone and `:services:memory` only, no glasses.
+
+**Round 2 changes (these win over the text below):**
+- **S12:**
+  - replace `lastNonNormalAtMs` with `normalSinceMs`. It is set to `SystemClock.elapsedRealtime()` on the **transition into** NORMAL, seen by the listener or by a poll that sees NORMAL after a non-NORMAL sample, and reset to "not normal" on any non-NORMAL mode;
+  - `callIdle(audioMode, callState, sinceSceneMs, sinceNormalMs)` requires `sinceNormalMs ≥ CALL_END_SETTLE_MS`;
+  - the guard's clock is the monotonic `elapsedRealtime`, injected.
+  - Tests:
+    - `hangUpJustBeforePollStillSettles15s`: drive the guard with a fake mode source, IN_CALL → NORMAL at t, then a poll at t+1 s, and expect not idle until t+15 s;
+    - `listenerTransitionStampsNormalSince`.
+- **Open source:** use `NotificationCompat` / `NotificationManagerCompat` for NOT1.
+- **Quota:** `MemorySettings.quotaMb` is still in `MemorySettingsStore.kt` (default 100 in the base). Change both defaults there.
 
 **Files:**
 - NOT1:
@@ -446,7 +611,13 @@ companion object {
 
 ### Task 6: WorkRest state survives process death (glasses)
 
-**Spec:** §4.2, R13. **A3 overlap:** A3 Task 4 adds `enabled: () -> Boolean = { true }` to `WorkRest` and edits `GlassesRuntime.kt`. Add `store` **after** `enabled` (or as the last parameter if A3 hasn't merged), with a default, so both merge orders compile.
+**Spec:** §4.2, R13. **Round 2:** S13. **Est.:** 2 agent-h. **A3 is merged:** `WorkRest` already has `enabled: () -> Boolean = { true }`. Add `store` after it, with a default. `disabledClearsStore` is now required.
+
+**Round 2 changes (these win over the text below):**
+- **S13:**
+  - `WorkRestSnapshot` gains `bootCount: Int` (`Settings.Global.getInt(cr, Settings.Global.BOOT_COUNT, -1)`, injected as `bootCount: () -> Int`), stored under the key `bc`;
+  - on load, discard when `saved.bootCount != current`, or, only if either is −1, when `savedAtElapsedMs > clock()`.
+  - Tests: `rebootWithLongerUptimeDiscards` (same uptime direction, different boot count), `unknownBootCountFallsBackToUptime`.
 
 **Files:**
 - modify `glasses/src/main/java/com/rokid/context/glasses/capture/session/WorkRest.kt`;
@@ -487,7 +658,9 @@ class WorkRest(clock, workMin, restMin, /* A3: */ enabled: () -> Boolean = { tru
 
 ### Task 7: Start-up flash (UI1) and launcher-vs-auto-open detection (REF) (glasses)
 
-**Spec:** §4.3, R14. **A3 overlap:** none expected (MainActivity and AutoStartGate). Rebase cleanly if A3 touched `MainActivity`.
+**Spec:** §4.3, R14. **Round 2:** S21. **Est.:** 2.5 agent-h. A3 is in the base, so build on its `MainActivity`.
+
+**Round 2 change (S21):** the decision table builds **two gate instances with identical state** per row, one for `decide()` and one for `onStart()`, because both consume the one-shot pending flag. It asserts that `onStart` equals `decide().minimise`.
 
 **Files:**
 - modify `glasses/src/main/java/com/rokid/context/glasses/AutoStartGate.kt` and `MainActivity.kt` (the `Hud()` composable gets a hidden flag);
@@ -543,7 +716,19 @@ class AutoStartGate(...) {
 
 ### Task 8: Restart-reason polish — count only Rokid force-stops (DIAG) (glasses + phone text)
 
-**Spec:** §4.5, R15. **A3 overlap:** `GlassesRuntime.kt` (the `restarts` construction only).
+**Spec:** §4.5, R15. **Round 2:** S14, S20. **Est.:** 3 agent-h. **Base:** `GlassesRuntime.kt:152` today reads `…firstOrNull()?.reason == REASON_USER_REQUESTED`. Replace that with `ExitFacts`.
+
+**Round 2 changes (these win over the `classify` body and the counts below):**
+- **S14:**
+  - `classify(f, lastAliveMs, nowMs, caller: (Int) -> CallerInfo?)`, where `CallerInfo(name: String, startedBeforeExit: Boolean)` comes from `/proc/<pid>/cmdline` and the start time in `/proc/<pid>/stat` (null when absent or hidden);
+  - ROKID = readable, `startedBeforeExit` and `com.rokid.*`;
+  - OTHER = readable, `startedBeforeExit` and not Rokid;
+  - everything else (absent, hidden, reused) → UNKNOWN;
+  - a stale exit (`timestampMs ∉ (lastAliveMs − 5 000, nowMs]`) is ignored and not counted;
+  - UNKNOWN goes in its own key `unknown_closes` and is **not** added to the Rokid count;
+  - `summary()` reads "Rokid closed the app N times (last gap Xs; M unattributed; K other force-stops)".
+  - Tests: `hiddenPidIsUnknown`, `reusedPidIsUnknown`, `staleExitIgnored`, `unknownNotAddedToRokid`. Drop `deadPidIsOther`, which becomes UNKNOWN.
+- **S20:** on each start, write one count-only line to `capture_diag.log`: `restart rokid=N unknown=M other=K gap=… reason=…`. Test: `restartCountsLineWritten`. No hello, heartbeat or phone change.
 
 **Files:**
 - modify `glasses/src/main/java/com/rokid/context/glasses/RestartDiagnostics.kt`;
@@ -601,7 +786,18 @@ object ExitClassifier {
 
 ### Task 9: Deferred one-liners (glasses diag, tools, canvas)
 
-**Spec:** §4.8, R17. Each item is at most about 20 lines plus a test where one is named. **A3 overlap:** `CaptureService.kt` and `Heartbeat.kt` (A19, A20). Keep these edits inside `publishStatus` and the heartbeat builder, and mention them in the report.
+**Spec:** §4.8, R17. **Round 2:** S15, S16. **Est.:** 3 agent-h (2 without D36/D39). Each item is at most about 20 lines plus a test where one is named. A3 is in the base. Keep the A19/A20 edits inside `publishStatus` and the heartbeat builder (wave B 7b/9 may touch the capture path).
+
+**Round 2 changes (these win over the table below):**
+- **S15, A3-minor:**
+  - the file is `services/glasses-link/src/main/kotlin/com/rokid/context/link/WearingStatus.kt` (the `SAFE` regex, about line 27);
+  - the test is `…/gw.sh :services:glasses-link:testDebugUnitTest --tests '*WearingStatus*'`.
+- **S16:**
+  - **D26:** the test is `CanvasServerTest.serveCatchPathHasSecurityHeaders`. It drives `CanvasServer.Daemon.serve()` with an adapter that throws during conversion. `CanvasRouter` already sets headers on its own catches.
+  - **D36 / D39:** test them by **running** `app.js` / `views.js` in the GraalJS harness:
+    - malformed `#t=` and `#pair=` → the pairing screen;
+    - fake timers: a failed poll retries at 2/4/8/15 s, a success resets the back-off, navigating away cancels, and a 401/403 stops polling.
+  - The harness is canvas slice 2 Task 1 (`canvas/integration` `d21d66b`). If it isn't in the base when Task 9 starts, **skip D36 and D39**, record them as moved to canvas slice 2, and remove the source-scan tests from this plan.
 
 | Id | Change | File | Test |
 |---|---|---|---|
@@ -631,7 +827,21 @@ object ExitClassifier {
 
 ### Task 10: Device checklist (controller only; not code)
 
-**Needs:** Tasks 1–9 merged with wave 2, gate green, **Nomic bound** (wave-2 Task 12 step 4). Follow handoff §2:
+**Needs:** Tasks 1–9 and 11 merged onto the integration tip, gate green. **Nomic bound** is needed for steps 2–4: the harness exists (`NomicReferenceDeviceTest`), and binding is handoff §9 item 5. **Est.:** 3 h on the device. **Round 2:** S18, S14, S20, S9.
+
+**Round 2 changes (these win over the steps below):**
+- **Step 1 (S18):**
+  - before installing, read the installed phone DB's schema version on a **copy** of the fresh encrypted backup, through the handoff's `SqlCipherMigrationDeviceTest` path (version and counts only);
+  - if the new build's version is higher (wave B v5 or canvas versions may have landed), run that migration test on the copy first;
+  - pause the night job and disconnect the glasses for the before and after count reads, so retention and ingest don't move the counts.
+  - Drop the sentence "this wave has no migration" as proof of safety.
+- **Step 9 (S14, S20):**
+  - read the `restart rokid=… unknown=… other=…` line in `capture_diag.log` (counts only), not the phone Diagnostics screen;
+  - after `adb force-stop`, record whether `other` or `unknown` went up (either is a pass; Rokid unchanged);
+  - after a Rokid call-scene close, `rokid` +1, or `unknown` +1 if the caller was hidden (record which).
+- **Step 2 (S9):** an expired tile reads "received HH:mm".
+
+Follow handoff §2:
 - filtered logcat or our tags only, never print secrets;
 - `-s <serial>` always;
 - an explicit user OK before anything destructive;
@@ -683,4 +893,10 @@ Devices: glasses `1901092545029120` (USB), phone `adb-RZCY902F76K-nmSM2g._adb-tl
 
 ## Rulings (summary; full text in the spec)
 
-R1 brute-force scan with caps (50 000 / 2 s), no ANN · R2 no score merging, 2 photos to ANSWER · R3 caption fallback through MemoryRetriever · R4 photo lines, images and `frame:` cites in ANSWER · R5 HUD "· Photo HH:mm" as text, phone-side only · R6 describe = VISION_EXTRACT under USER, and described skipped photos leave the 1-day rule · R7 no Room or protocol change · R8 search on submit, no history · R9 image hits need an ACTIVE IMAGE space · R10 the Ask half of the debug view stays with the canvas · R11 silent notification after 45 s closed · R12 no READ_PHONE_STATE, plus a 15 s call-end settle · R13 WorkRest persisted, reboot-safe · R14 hidden first frame on an automatic minimise · R15 classify the force-stop caller by pid · R16 250 MB default · R17 the minors list.
+**Round 2 (spec §7):**
+- S1 Forget redacts photo-cited answers · S2 metadata-only moments forgettable · S3 FACT provenance exempts described photos from the skipped rule · S4 atomic describe and a skipped recheck in expiry;
+- S5 per-frame `extractNow` outcomes · S6 full-UUID describe ids · S7 ACTIVE by flag · S8 retrieval pool seam (> 20) · S9 "received" time for expired photos, no migration;
+- S10 image ↔ cite mapping · S11 result invalidation and generations · S12 settle stamped on the move into NORMAL, monotonic · S13 boot count · S14 UNKNOWN separate, fresh exits only;
+- S15 `WearingStatus` in `:services:glasses-link` · S16 behavioural D26/D36/D39 tests (D36/D39 deferred without the harness) · S17 next free Room version at merge · S18 schema check before install · S19 caption id on tiles, SceneRules medoid · S20 count-only restart diag line · S21 ordering wording and separate gate instances.
+
+**Round 1:** R1 brute-force scan with caps (50 000 / 2 s), no ANN · R2 no score merging, 2 photos to ANSWER · R3 caption fallback through MemoryRetriever · R4 photo lines, images and `frame:` cites in ANSWER · R5 HUD "· Photo HH:mm" as text, phone-side only · R6 describe = VISION_EXTRACT under USER, and described skipped photos leave the 1-day rule · R7 no Room or protocol change · R8 search on submit, no history · R9 image hits need an ACTIVE IMAGE space · R10 the Ask half of the debug view stays with the canvas · R11 silent notification after 45 s closed · R12 no READ_PHONE_STATE, plus a 15 s call-end settle · R13 WorkRest persisted, reboot-safe · R14 hidden first frame on an automatic minimise · R15 classify the force-stop caller by pid · R16 250 MB default · R17 the minors list.
