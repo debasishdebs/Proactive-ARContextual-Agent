@@ -8,6 +8,7 @@ import com.rokid.context.glasses.capture.session.BudgetTier
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** Pins schema 1: enum wire names, the tag and field lists, the sensor-time rule (C1) and the scheduler inputs (C2). A failure here means bump TRACE_SCHEMA. */
@@ -32,7 +33,7 @@ class TraceFormatFreezeTest {
         assertEquals(listOf("g", "a", "cx", "rs", "pf", "gp", "pl", "ep", "sc", "gt", "fl", "bo", "bl", "dk", "pr", "cl"), EventCodec.TAGS, bump)
         assertEquals(EventCodec.TAGS, EventCodec.FIELDS.keys.toList())
         assertEquals(listOf("sMs", "x", "y", "z"), EventCodec.FIELDS.getValue("g"))
-        assertEquals(listOf("seq", "d", "p", "blur", "passedBlur", "motion", "dwellArmed", "force", "cap", "hard"), EventCodec.FIELDS.getValue("sc"))
+        assertEquals(listOf("seq", "d", "p", "blur", "passedBlur", "motion", "dwellArmed", "force", "cap", "hard", "nowMs"), EventCodec.FIELDS.getValue("sc"))
         // every golden line has exactly tag + tMs + the declared fields, and every tag appears
         val lines = TraceFixtures.goldenPayload.lines().drop(1).filter { it.isNotEmpty() }
         assertEquals(EventCodec.TAGS.toSet(), lines.map { it.substring(2, it.indexOf('"', 2)) }.toSet())
@@ -123,17 +124,84 @@ class TraceFormatFreezeTest {
         // an episode that never opened the camera
         val failed = TraceEvent.Episode(30, false, EpisodeCause.TIMER, null, null, EpisodeOutcome.OPEN_FAILED)
         assertEquals(failed, EventCodec.decode(EventCodec.encode(failed)))
-        val sc = TraceEvent.Score(1, 1, 1, 2, 3f, true, MotionState.WALKING, false, true, null, true)
+        val sc = TraceEvent.Score(1, 1, 1, 2, 3f, true, MotionState.WALKING, false, true, null, true, 9)
         assertEquals(sc, EventCodec.decode(EventCodec.encode(sc)))
         assertEquals(sc.copy(cap = 4), EventCodec.decode(EventCodec.encode(sc.copy(cap = 4))))
         assertEquals(TraceEvent.DarkStreak(5, 3), EventCodec.decode(EventCodec.encode(TraceEvent.DarkStreak(5, 3))))
     }
 
     @Test fun gateCrossFieldRule() {
-        assertEquals("""["gt",1,2,"keep",""]""", EventCodec.encode(TraceEvent.Gate(1, 2, GateOutcome.KEEP, "")))
+        assertEquals("""["gt",1,2,"keep","",true]""", EventCodec.encode(TraceEvent.Gate(1, 2, GateOutcome.KEEP, "")))
         for (r in GATE_SKIP_REASONS) TraceEvent.Gate(1, 2, GateOutcome.SKIP, r)
         assertFailsWith<IllegalArgumentException> { TraceEvent.Gate(1, 2, GateOutcome.KEEP, "BLUR") }
         assertFailsWith<IllegalArgumentException> { TraceEvent.Gate(1, 2, GateOutcome.SKIP, "") }
         assertFailsWith<IllegalArgumentException> { TraceEvent.Gate(1, 2, GateOutcome.SKIP, "OTHER") }
+    }
+}
+
+class TraceFormatFreeze2Test {
+    @Test fun anUnboundedDarkStreakIsClampedNotRefused() {
+        var live = 0
+        repeat(5_000) { live++ }                            // a device left face-down overnight
+        assertEquals(MAX_DARK_STREAK, clampDarkStreak(live)); assertEquals(MAX_DARK_STREAK, clampDarkStreak(Int.MAX_VALUE)); assertEquals(0, clampDarkStreak(-3))
+        val e = TraceEvent.DarkStreak(5, clampDarkStreak(live))
+        assertEquals(e, EventCodec.decode(EventCodec.encode(e)))
+        assertFailsWith<IllegalArgumentException> { TraceEvent.DarkStreak(5, live) }                       // unclamped is refused
+        assertFailsWith<IllegalArgumentException> { TraceFixtures.snapshot.copy(darkStreak = live) }
+        assertEquals(MAX_DARK_STREAK, TraceFixtures.snapshot.copy(darkStreak = clampDarkStreak(live)).darkStreak)
+        assertTrue(clampDarkStreak(live) >= 3, "quiet (>= 3) is preserved by the clamp")
+    }
+
+    @Test fun contextCapAndHardArePartOfTheEffectiveProfile() {
+        val pf = TraceFixtures.events.filterIsInstance<TraceEvent.Profile>().single()
+        assertEquals(3, pf.ctxCap); assertTrue(pf.hard)
+        val none = pf.copy(ctxCap = null, hard = false)
+        assertEquals(none, EventCodec.decode(EventCodec.encode(none)))
+        assertEquals(pf, EventCodec.decode(EventCodec.encode(pf)))
+        assertFailsWith<IllegalArgumentException> { pf.copy(ctxCap = -1) }
+    }
+
+    @Test fun nowMsAndEncodeFailureAreRecorded() {
+        val sc = TraceFixtures.events.filterIsInstance<TraceEvent.Score>().single()
+        assertEquals(2490L, sc.nowMs)
+        assertEquals(sc.copy(nowMs = 123), EventCodec.decode(EventCodec.encode(sc.copy(nowMs = 123))))
+        val failed = TraceFixtures.events.filterIsInstance<TraceEvent.Gate>().single()
+        assertEquals(false, failed.encoded)
+        assertEquals(failed, EventCodec.decode(EventCodec.encode(failed)))
+        assertFailsWith<IllegalArgumentException> { TraceEvent.Gate(1, 1, GateOutcome.SKIP, "BLUR", encoded = false) }
+    }
+
+    @Test fun replayEqualityRule() {
+        assertEquals(250L, ReplayRule.OPEN_TOLERANCE_MS)
+        assertTrue(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 2250, EpisodeCause.TIMER))
+        assertTrue(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 1750, EpisodeCause.TIMER))
+        assertFalse(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 2251, EpisodeCause.TIMER))
+        assertFalse(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 2000, EpisodeCause.DWELL))
+        val g = TraceEvent.Gate(1, 5, GateOutcome.KEEP, "")
+        assertTrue(ReplayRule.gatesMatch(g, g.copy(tMs = 99)))        // append time is not part of the equality
+        assertFalse(ReplayRule.gatesMatch(g, g.copy(encoded = false)))
+        assertFalse(ReplayRule.gatesMatch(g, TraceEvent.Gate(1, 5, GateOutcome.SKIP, "CAPPED")))
+    }
+
+    /** Every mapped field must really exist in the recorder model (a re-pointing to a renamed or missing field fails), and FIELDS must equal the model's fields in order. */
+    @Test fun schedulerInputsPointAtFieldsTheRecorderModelWrites() {
+        val classes = mapOf(
+            "g" to TraceEvent.Gyro::class.java, "a" to TraceEvent.Accel::class.java, "cx" to TraceEvent.Ctx::class.java, "rs" to TraceEvent.Resting::class.java,
+            "pf" to TraceEvent.Profile::class.java, "gp" to TraceEvent.GateParams::class.java, "pl" to TraceEvent.Plan::class.java, "ep" to TraceEvent.Episode::class.java,
+            "sc" to TraceEvent.Score::class.java, "gt" to TraceEvent.Gate::class.java, "fl" to TraceEvent.Flush::class.java, "bo" to TraceEvent.Backoff::class.java,
+            "bl" to TraceEvent.Blocked::class.java, "dk" to TraceEvent.DarkStreak::class.java, "pr" to TraceEvent.PreRollEnd::class.java, "cl" to TraceEvent.Close::class.java,
+        )
+        fun props(c: Class<*>) = c.declaredFields.filter { !java.lang.reflect.Modifier.isStatic(it.modifiers) }.map { it.name }
+        assertEquals(EventCodec.TAGS.toSet(), classes.keys)
+        for ((tag, cls) in classes) assertEquals(listOf("tMs") + EventCodec.FIELDS.getValue(tag), props(cls), tag)
+        val snap = props(StartSnapshot::class.java).toSet()
+        for ((input, where) in SchedulerInputs.ALL) {
+            if (where.startsWith("derived:")) continue
+            val (head, field) = where.split('.').let { it[0] to it[1] }
+            if (head == "snapshot") assertTrue(field in snap, "$input -> $where is not a StartSnapshot field")
+            else assertTrue(field in props(classes.getValue(head)), "$input -> $where is not written by the recorder model")
+        }
+        // and a snapshot input is really encoded in the manifest
+        for ((input, where) in SchedulerInputs.ALL) if (where.startsWith("snapshot.")) assertTrue("\"${where.removePrefix("snapshot.")}\":" in TraceFixtures.goldenManifest, input)
     }
 }

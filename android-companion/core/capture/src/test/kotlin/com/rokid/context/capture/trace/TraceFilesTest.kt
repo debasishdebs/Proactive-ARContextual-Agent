@@ -96,3 +96,15 @@ class TraceFilesTest {
         assertEquals("sha_mismatch", code(verify(dir(c = chunk.copy(sha256 = tampered.sha256)))))
     }
 }
+
+class TraceFilesLocaleTest {
+    @Test fun chunkFileNamesAreAsciiUnderANonAsciiDigitLocale() {
+        val old = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale.forLanguageTag("ar-SA-u-nu-arab"))
+            assertTrue(String.format("%04d", 7).any { it.code > 127 }, "the test locale must really produce non-ASCII digits")
+            assertEquals("chunk-0007.json", TraceFiles.chunkFile(7))
+            assertTrue(TraceFiles.chunkFile(4095).matches(Regex("chunk-[0-9]{4}\\.json")))
+        } finally { java.util.Locale.setDefault(old) }
+    }
+}
