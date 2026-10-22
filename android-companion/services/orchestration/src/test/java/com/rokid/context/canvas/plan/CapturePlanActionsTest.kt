@@ -115,6 +115,21 @@ class CapturePlanActionsTest {
         assertTrue(active().isEmpty())
     }
 
+    @Test fun aRefusedUndoChangesNothing() {
+        done(publish()); h.effective()
+        val (id2, v2) = secondPlan()
+        done(publish(id = id2, version = v2)); h.effective()
+        val before = active().map { it.id }; val sentBefore = h.sent.size; val stateBefore = status().active!!.state
+        h.glasses = GlassesState.NOT_LINKED
+        val out = undo(active().first().id)
+        assertTrue(out.toString(), out is CanvasPublisher.Outcome.Blocked)
+        assertEquals("every publish row is still active", before, active().map { it.id })
+        assertEquals("nothing was sent", sentBefore, h.sent.size); assertEquals(stateBefore, status().active!!.state)
+        assertTrue(all().none { it.rollbackReason == "undo" || it.rollbackReason == "reinstated" })
+        h.glasses = GlassesState.LINKED_CAPABLE
+        assertTrue("the same undo works once the glasses are back", undo(active().first().id) is CanvasPublisher.Outcome.Published)
+    }
+
     @Test fun undoRevealsThePreviousActivePlanInItsOwnMode() {
         done(publish()); h.effective()
         val (id2, v2) = secondPlan()

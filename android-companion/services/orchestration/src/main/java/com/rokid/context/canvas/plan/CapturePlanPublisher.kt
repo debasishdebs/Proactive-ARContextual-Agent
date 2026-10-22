@@ -140,15 +140,18 @@ class CapturePlanPublisher(
         if (active.first().id != expectedId) return@withLock CanvasPublisher.Outcome.Blocked(listOf("A newer publish exists. Reload and try again."))
         val gid = active.first().groupId ?: return@withLock publisher.rollback(expectedId)
         val rows = active.filter { it.groupId == gid }                       // newest first
+        // Everything that can refuse the reinstatement is checked BEFORE anything is rolled back: a refused undo changes nothing (S26).
+        val plan = rows.firstOrNull { it.component == PlanPublishGroups.COMPONENT }
+        val previous = plan?.let { canvas.activePublishes().firstOrNull { p -> p.component == PlanPublishGroups.COMPONENT && p.groupId != gid && p.planJson != null && stateOk(p) } }
+        val mode = previous?.let { reinstateMode(it, fallbackToShadow = true) }
+        if (mode is Refusal) return@withLock CanvasPublisher.Outcome.Blocked(mode.out.reasons)
         for (r in rows.filter { it.kind == CanvasPublisher.KIND_INTERPRETER }) {
             val o = publisher.rollback(r.id)                                    // 1. ASYNC (the interpreter rows are the group's newest)
             if (o is CanvasPublisher.Outcome.Blocked) return@withLock o
         }
-        val plan = rows.firstOrNull { it.component == PlanPublishGroups.COMPONENT }
         if (plan != null) {
-            val previous = canvas.activePublishes().firstOrNull { it.component == PlanPublishGroups.COMPONENT && it.groupId != gid && it.planJson != null && stateOk(it) }
             canvas.markRolledBackWithReason(plan.id, clock(), "undo")
-            val out = if (previous != null) reinstate(previous, fallbackToShadow = true) else sendSettings()   // 2 and 3: phone RT and glasses, as one desired state
+            val out = if (previous != null) reinstate(previous, mode as PlanMode) else sendSettings()   // 2 and 3: phone RT and glasses, as one desired state
             if (out is PlanOutcome.Blocked) return@withLock CanvasPublisher.Outcome.Blocked(out.reasons)
         }
         CanvasPublisher.Outcome.Published(expectedId, emptyList())
@@ -161,7 +164,9 @@ class CapturePlanPublisher(
         val earlier = if (current == null) rows else rows.dropWhile { it.id >= current.id }
         val prev = earlier.firstOrNull { it.planJson != null && it.mode in RESTORABLE && stateOk(it) }
             ?: return@withLock PlanOutcome.Blocked(listOf("There is no earlier capture plan to restore."))
-        val out = reinstate(prev, fallbackToShadow = false)
+        val mode = reinstateMode(prev, fallbackToShadow = false)
+        if (mode is Refusal) return@withLock mode.out
+        val out = reinstate(prev, mode as PlanMode)
         if (out is PlanOutcome.Done && current != null) canvas.markRolledBackWithReason(current.id, clock(), "restore_previous")
         out
     }
@@ -181,18 +186,25 @@ class CapturePlanPublisher(
         } catch (e: CancellationException) { throw e } catch (e: Exception) { PlanOutcome.Blocked(listOf(PUBLISH_FAILED)) }
     }
 
-    /** A new publish of an old plan: a clone row in a new group (the original is marked superseded). A TRIAL is a new, counted trial. */
-    private suspend fun reinstate(row: CanvasPublishEntity, fallbackToShadow: Boolean): PlanOutcome {
+    private class Refusal(val out: PlanOutcome.Blocked)
+
+    /** Everything that can refuse a reinstatement of [row], checked without changing anything: the mode it would be sent in (a TRIAL no longer allowed becomes SHADOW when [fallbackToShadow]) or a [Refusal]. */
+    private suspend fun reinstateMode(row: CanvasPublishEntity, fallbackToShadow: Boolean): Any {
         var mode = PlanMode.valueOf(row.mode!!)
-        val hash = row.configHash ?: return PlanOutcome.Blocked(listOf(PUBLISH_FAILED))
+        val hash = row.configHash ?: return Refusal(PlanOutcome.Blocked(listOf(PUBLISH_FAILED)))
         if (mode == PlanMode.TRIAL) {
             val refusal = gates.trialAllowed(hash)
-            if (refusal != null) { if (fallbackToShadow) mode = PlanMode.SHADOW else return PlanOutcome.Blocked(listOf(refusal)) }
+            if (refusal != null) { if (fallbackToShadow) mode = PlanMode.SHADOW else return Refusal(PlanOutcome.Blocked(listOf(refusal))) }
         }
-        if (!gates.glassesReady()) return PlanOutcome.Blocked(listOf(PlanEvidenceGates.G5))
+        if (!gates.glassesReady()) return Refusal(PlanOutcome.Blocked(listOf(PlanEvidenceGates.G5)))
+        return mode
+    }
+
+    /** A new publish of an old plan: a clone row in a new group (the original is marked superseded). A TRIAL is a new, counted trial. The caller has run [reinstateMode]. */
+    private suspend fun reinstate(row: CanvasPublishEntity, mode: PlanMode): PlanOutcome {
         compensateUnknown()
         canvas.markRolledBackWithReason(row.id, clock(), "reinstated")
-        return send(row.pipelineId, row.version, row.hash, mode, hash, row.planJson!!, newGroupId(), previous = currentDesired(null))
+        return send(row.pipelineId, row.version, row.hash, mode, row.configHash!!, row.planJson!!, newGroupId(), previous = currentDesired(null))
     }
 
     // ---- the Settings row and the Diagnostics card ----
