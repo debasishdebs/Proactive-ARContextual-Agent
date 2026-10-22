@@ -34,3 +34,7 @@ replay_pid*.log
 
 # Kotlin compiler session logs
 android-companion/.kotlin/
+
+# local tooling and stray files
+.claude/
+window.xml
