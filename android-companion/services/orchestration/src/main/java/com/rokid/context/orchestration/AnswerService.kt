@@ -193,7 +193,7 @@ class AnswerService(
         }
         // The relevance floor: below it a photo gets neither an image nor a line (provisional values: AskPhotoPolicy).
         // Ask debug only: a photo known to be captured (else received) after the ask did not exist for it.
-        val visible = if (notAfterMs == null) hits else hits.filter { h -> (h.ts ?: h.receivedAt)?.let { it <= notAfterMs } ?: true }
+        val visible = if (notAfterMs == null) hits else hits.filter { h -> ((h.ts ?: h.receivedAt)?.let { it <= notAfterMs } ?: true) && (h.receivedAt?.let { it <= notAfterMs } ?: true) }
         return AskPhotoPolicy.select(visible.distinctBy { it.frameId }).map { it to (it.captionMemoryId ?: (PHOTO_CITE_PREFIX + it.frameId)) }
     }
 

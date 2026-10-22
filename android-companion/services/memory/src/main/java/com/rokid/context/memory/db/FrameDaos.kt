@@ -448,10 +448,10 @@ interface FrameVectorDao {
     )
     suspend fun pageDesc(spaceId: String, beforeRowid: Long, limit: Int): List<FrameVectorRow>
 
-    /** As [pageDesc] for a historical view: only frames captured (frame.ts, else the capture time, else the receive time) at or before [notAfter] are scanned, so the cutoff applies BEFORE top-k. */
+    /** As [pageDesc] for a historical view: only frames captured (frame.ts, else the capture time, else the receive time) AND received (frame_meta.createdAt) at or before [notAfter] are scanned, so the cutoff applies BEFORE top-k. */
     @Query(
         "SELECT v.rowid AS rowid, v.frameId AS frameId, v.blob AS blob FROM frame_vector v JOIN frame_meta m ON m.frameId = v.frameId LEFT JOIN frame f ON f.id = v.frameId " +
-            "WHERE v.spaceId = :spaceId AND v.rowid < :beforeRowid AND COALESCE(f.ts, m.capturedAtMs, m.createdAt) <= :notAfter ORDER BY v.rowid DESC LIMIT :limit",
+            "WHERE v.spaceId = :spaceId AND v.rowid < :beforeRowid AND COALESCE(f.ts, m.capturedAtMs, m.createdAt) <= :notAfter AND m.createdAt <= :notAfter ORDER BY v.rowid DESC LIMIT :limit",
     )
     suspend fun pageDescNotAfter(spaceId: String, beforeRowid: Long, limit: Int, notAfter: Long): List<FrameVectorRow>
 
