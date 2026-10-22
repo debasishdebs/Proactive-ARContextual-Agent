@@ -92,6 +92,8 @@ class Hub(
     private val onMark: suspend (MarkMessage) -> Unit = {},
     /** Slice 3a: a `pc_trace_chunk` (the transfer contract is a later task). */
     private val onTraceChunk: suspend (TraceChunk) -> Unit = {},
+    /** Slice 3a: a glasses session is ready (its [sessionStartMs] is passed): the plan sender and the trace control re-send their desired state. */
+    private val onSessionReady: suspend (Long) -> Unit = {},
 ) : GlassesStatusSource {
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
@@ -343,6 +345,7 @@ class Hub(
         // A fresh envelope (new atMs, this session's start), same state and sinceMs: the glasses drop a stale or pre-session stamp.
         motionContext.value?.let { sendMotionContext(it.copy(atMs = clock())) }
         sendAutoOpen()
+        try { onSessionReady(sessionStartMs) } catch (e: CancellationException) { throw e } catch (e: Exception) { Log.w(TAG, "session-ready hook failed: ${e.javaClass.simpleName}") }
         broadcaster.markDirty()
     }
 

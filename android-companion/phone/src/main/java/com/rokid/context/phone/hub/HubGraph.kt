@@ -37,6 +37,14 @@ object HubGraph {
     @Volatile var contextRegistry: com.rokid.context.phone.context.ContextSourceRegistry? = null
         private set
 
+    /** Slice 3a: the hub-owned plan reconciliation, the collect session and its control publisher. Built with the hub (so a canvas server stop never touches them). */
+    @Volatile var planSender: com.rokid.context.phone.hub.plan.PlanSender? = null
+        private set
+    @Volatile var collectSession: com.rokid.context.canvas.trace.CollectSession? = null
+        private set
+    @Volatile var traceControl: com.rokid.context.phone.hub.plan.TraceControlPublisher? = null
+        private set
+
     fun resetForTests(h: Hub?) { synchronized(this) { hub = h } }
 
     /** Off the main thread: the receipt commit does Room and file I/O. The process-wide hub outlives it. */
@@ -156,6 +164,16 @@ object HubGraph {
             },
         ))
         contextRegistry = ctxRegistry; contextHub = ctxHub
+        // Slice 3a: plan reconciliation and the collect session live HERE, in the hub; the canvas server only calls them.
+        val install = { com.rokid.context.memory.db.DeletionEpochStore.of(app).read().installId }
+        val phoneRt = com.rokid.context.phone.hub.plan.LaterSeams.noPhoneRt // TODO(Task 13): PhoneRtApplier
+        val sender = com.rokid.context.phone.hub.plan.PlanSender(
+            link, app.getSharedPreferences(com.rokid.context.phone.hub.plan.PlanSender.PREFS, Context.MODE_PRIVATE), install, onDesired = phoneRt::apply,
+        )
+        val collect = com.rokid.context.canvas.trace.CollectSession.of(app)
+        val ctl = com.rokid.context.phone.hub.plan.TraceControlPublisher(link, collect, scope).also { it.start() }
+        val traceIntake = com.rokid.context.phone.hub.plan.LaterSeams.noTraceIntake // TODO(Task 18): TraceIntake
+        planSender = sender; collectSession = collect; traceControl = ctl
         return Hub(
             scope, link, pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
@@ -165,6 +183,8 @@ object HubGraph {
             phoneUse = phoneUse.inUse,
             motionContext = ctxHub.message, onMotionHint = ctxHub::onMotionHint, ctxStart = ctxHub::start, ctxStop = ctxHub::stop,
             applyToCapture = { com.rokid.context.phone.context.ContextSourceSettings.of(app).applyToCapture },
+            phoneInstall = install, onPlanAck = sender::onAck, onTraceChunk = traceIntake::onChunk,
+            onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
         )
     }
 }
