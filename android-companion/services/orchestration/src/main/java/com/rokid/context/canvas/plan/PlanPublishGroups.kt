@@ -28,9 +28,23 @@ interface PlanSource {
 
 data class SendOutcome(val gen: Long, val sent: Boolean)
 
-/** The phone's way to the glasses (`PlanSender` in `:phone`): allocates the durable gen and sends; `sent = false` means stored, sent again when a session opens. */
+/**
+ * The phone's way to the glasses (`PlanSender` in `:phone`): allocates the durable gen and sends; `sent = false` means stored, sent again when a session opens.
+ *
+ * The publish groups use the two halves apart ([stage], then [transmit]) so the gen is in the group's row before anything is on the link: a fast ack is then correlated, and a crash
+ * between the halves leaves a state recovery can reason about. A transport that cannot split keeps the defaults ([stage] sends at once).
+ */
 interface PlanTransport {
     suspend fun send(mode: PlanMode, planJson: String?, configHash: String?, publishId: String, trialMaxMs: Long?): SendOutcome
+
+    /** Allocates and persists the gen of this desired state WITHOUT putting it on the link. */
+    suspend fun stage(mode: PlanMode, planJson: String?, configHash: String?, publishId: String, trialMaxMs: Long?): Long = send(mode, planJson, configHash, publishId, trialMaxMs).gen
+
+    /** Puts the staged [gen] on the link now (false = stored, sent when a session opens). */
+    suspend fun transmit(gen: Long): Boolean = true
+
+    /** Forgets a staged desired state of [publishId] that the phone failed (a TRIAL left PREPARED by a crash), so it is never sent. A no-op when it is not the staged one. */
+    suspend fun discard(publishId: String) {}
 }
 
 /** The desired state a compensation puts back (`mode` SETTINGS = use settings). */
@@ -76,8 +90,9 @@ class PlanPublishGroups(
     }
 
     private suspend fun send(prepared: CanvasGroupStateEntity, planJson: String?, trialMaxMs: Long?) {
-        val out = transport.send(PlanMode.valueOf(prepared.mode!!), planJson, prepared.configHash.ifEmpty { null }, prepared.publishId.toString(), trialMaxMs)
-        write(prepared, "SENT", gen = out.gen, sentAtMs = clock())
+        val gen = transport.stage(PlanMode.valueOf(prepared.mode!!), planJson, prepared.configHash.ifEmpty { null }, prepared.publishId.toString(), trialMaxMs)
+        write(prepared, "SENT", gen = gen, sentAtMs = clock())   // the gen and SENT are durable BEFORE the link sees the message: a fast ack finds its group
+        transport.transmit(gen)
     }
 
     /** UNKNOWN_REMOTE only: a new gen with [previous]. False when the group is in another state. */
@@ -93,7 +108,10 @@ class PlanPublishGroups(
 
     /** An ack the hub already classified as this install and session. */
     suspend fun onAck(a: CapturePlanAck) {
-        val r = store.all().firstOrNull { it.gen == a.gen && it.gen != 0L }
+        val all = store.all()
+        val r = all.firstOrNull { it.gen == a.gen && it.gen != 0L }
+        // Only the latest desired gen counts: a delayed ack of a group another one superseded must not switch its phone halves on after the newer plan.
+        if (r != null && all.any { it.gen > r.gen }) { ignored.incrementAndGet(); return }
         if (r == null || a.phoneInstall != r.phoneInstall || a.publishId != r.publishId.toString() || a.mode.name != r.mode) { ignored.incrementAndGet(); return }
         if (r.state == STATE_REVERTED) { ignored.incrementAndGet(); return }
         when (a.state) {
@@ -133,7 +151,8 @@ class PlanPublishGroups(
             "PREPARED" -> {
                 val mode = PlanMode.valueOf(r.mode!!)
                 val json = if (mode == PlanMode.SETTINGS) null else plans.load(r.groupId, r.publishId)
-                if (mode == PlanMode.TRIAL || (mode != PlanMode.SETTINGS && json == null)) write(r, "FAILED") else send(r, json, null)
+                // A TRIAL's bound is not recorded here, so it is never sent again: the staged desired state is dropped from the sender too (the phone and the sender agree it failed).
+                if (mode == PlanMode.TRIAL || (mode != PlanMode.SETTINGS && json == null)) { write(r, "FAILED"); transport.discard(r.publishId.toString()) } else send(r, json, null)
             }
             "EFFECTIVE" -> activateOf(r)
         }
