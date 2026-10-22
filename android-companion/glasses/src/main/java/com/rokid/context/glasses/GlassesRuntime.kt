@@ -244,7 +244,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onTraceControl = { m -> markOutbox.onEpoch(m.installId, m.deletionCounter); traceRecorder.onControl(m) }
         c.onMarkAck = { a -> markOutbox.onAck(a) }
         c.onMarksDue = { markTap.flush() }
-        c.statusAck = { plan.statusAck().takeIf { it.gen != 0L } }   // the caps announcement stays HudController's gen-0 default
+        c.statusAck = { plan.onLinkSession(); plan.statusAck().takeIf { it.gen != 0L } }   // the caps announcement stays HudController's gen-0 default
         attachJob?.cancel()
         attachJob = scope.launch {
             launch {

@@ -56,8 +56,16 @@ class PlanController(
     private val receiver = PlanReceiver(persist, elapsed, bootId)
 
     /** The config capture reads right now. Changes only inside [lock], at a safe boundary. */
-    @Volatile var active: ActiveConfig = ActiveConfig.SETTINGS
-        private set
+    @Volatile private var activeCfg: ActiveConfig = ActiveConfig.SETTINGS
+    /**
+     * What capture reads at the point of use. A running TRIAL past its limit reads as SETTINGS here even when nothing called [tick] (the
+     * supervisor is cancelled when the HUD exits); the revert itself is recorded by the next [tick] or [statusAck]. One volatile read and
+     * one clock read: no lock, no allocation, no wakeup.
+     */
+    val active: ActiveConfig get() {
+        val c = activeCfg
+        return if (c !== ActiveConfig.SETTINGS && elapsed() >= runningDeadlineMs) ActiveConfig.SETTINGS else c
+    }
     @Volatile var host: PlanHost? = null
 
     /**
@@ -74,18 +82,20 @@ class PlanController(
      */
     @Volatile private var running: Pair<PlanId, String?>? = null
     /** When the running TRIAL must end (its persisted start + limit), kept here because a staged replacement takes the receiver's TRIAL clock over. */
-    private var runningDeadline: Long? = null
+    private var runningPub: String? = null
+    @Volatile private var runningDeadlineMs: Long = Long.MAX_VALUE   // MAX = no deadline (primitive: no boxing on the hot path)
     /** Lock-free on purpose: the gate and the session call it from under their own locks, and the controller lock is taken above them. */
     fun runningId(): PlanId? = running?.first
 
     /** The session host appears (a Smart session starts): installs the config in force under the lock, so an activation racing the start is never missed. */
-    fun attach(h: PlanHost) = synchronized(lock) { host = h; h.install(active) }
+    fun attach(h: PlanHost) = synchronized(lock) { host = h; h.install(activeCfg) }
 
     /** The phone's `sessionStartMs` of the latest plan message: every ack echoes it, or the phone's PlanAckGate counts the ack STALE. */
     private var session = 0L
+    private var sessionFresh = true
 
     private var pendingCfg: ActiveConfig? = null
-    private var pendingGen = -1L
+    private var pendingId: PlanId? = null
     private var stagedAt = 0L
 
     init { synchronized(lock) { bootstrap(); refreshShadow() } }
@@ -98,24 +108,24 @@ class PlanController(
             if (st.appliedGen in st.terminal) return
             if (st.mode == PlanMode.LIVE) { receiver.revert("unsupported:live"); return }
             val cfg = configOf(st) ?: run { receiver.revert("auto:rejected"); return }
-            if (st.effective) { active = cfg; markRunning(st) } else { pendingCfg = cfg; pendingGen = st.appliedGen; stagedAt = elapsed() }
+            if (st.effective) { activeCfg = cfg; markRunning(st) } else { pendingCfg = cfg; pendingId = PlanId(st.phoneInstall, st.appliedGen, st.mode); stagedAt = elapsed() }
         } catch (e: Exception) {
-            active = ActiveConfig.SETTINGS; dropPending()   // never crash the app on start: no plan applied
+            activeCfg = ActiveConfig.SETTINGS; dropPending()   // never crash the app on start: no plan applied
             log("plan load failed: ${e.javaClass.simpleName}")
         }
     }
 
     /** The plan message from the phone. Returns the immediate ack (STAGED, REJECTED or a re-ack); EFFECTIVE follows when activated. */
     fun onMessage(m: CapturePlanMessage): CapturePlanAck = locked { out ->
-        session = maxOf(session, m.sessionStartMs)   // a delayed copy from an older session must not move the stamp back
+        if (sessionFresh) { session = m.sessionStartMs; sessionFresh = false }   // the first message of a link session names the phone's session; a delayed older copy later cannot move it
         try {
             val ack = receiver.onMessage(m)
             out += ack
             val st = receiver.current
-            if (ack.state == PlanAckState.STAGED && st != null && st.appliedGen == m.gen && !st.effective && pendingGen != m.gen) {
+            if (ack.state == PlanAckState.STAGED && st != null && st.appliedGen == m.gen && !st.effective && pendingId != PlanId(m.phoneInstall, m.gen, m.mode)) {
                 val cfg = configOf(st)
                 if (cfg == null) { out += receiver.revert("auto:rejected"); dropPending() }
-                else { pendingCfg = cfg; pendingGen = m.gen; stagedAt = elapsed(); tryActivate(stagedAt, out) }
+                else { pendingCfg = cfg; pendingId = PlanId(m.phoneInstall, m.gen, m.mode); stagedAt = elapsed(); tryActivate(stagedAt, out) }
             }
             ack.copy(sessionStartMs = session)
         } catch (e: Exception) {
@@ -132,6 +142,16 @@ class PlanController(
     /** Reverts only if [id] is still the running plan (a stale verdict about plan A must never revert B). Null when it is not. */
     fun revertIf(id: PlanId, reason: String): CapturePlanAck? = locked { out ->
         if (running?.first != id) return@locked null
+        val st = receiver.current
+        if (st == null || st.phoneInstall != id.install || st.appliedGen != id.gen) {
+            // A staged replacement B owns the receiver's state: revert A alone (settings back, B left pending and still activatable).
+            val was = id
+            val ack = CapturePlanAck(gen = was.gen, publishId = runningPub, mode = was.mode, state = PlanAckState.REVERTED, reason = reason, caps = PlanReceiver.CAPS, phoneInstall = was.install)
+            running = null; runningDeadlineMs = Long.MAX_VALUE; runningPub = null
+            if (activeCfg != ActiveConfig.SETTINGS) { host?.let { if (!it.quiet()) it.abortBout() }; swap(ActiveConfig.SETTINGS) }
+            out += ack
+            return@locked ack
+        }
         try { receiver.revert(reason).also { reverted(it, out) } } catch (e: Exception) { failClosed(); log("plan revert failed: ${e.javaClass.simpleName}"); null }
     }
 
@@ -159,7 +179,7 @@ class PlanController(
             try {
                 receiver.tick(appliedState(), now)?.let { reverted(it, out) }
                 // The running TRIAL's own limit, even while a staged replacement (whose activation keeps failing) holds the receiver's clock.
-                if (running != null && runningDeadline?.let { now >= it } == true) reverted(receiver.revert("auto:trial_end"), out)
+                if (running != null && now >= runningDeadlineMs) reverted(receiver.revert("auto:trial_end"), out)
                 tryActivate(now, out)
             } catch (e: Exception) { log("plan tick failed: ${e.javaClass.simpleName}") }
         }
@@ -181,6 +201,13 @@ class PlanController(
         if (receiver.current == null) return@locked null
         try { receiver.revert(reason).also { reverted(it, out) } } catch (e: Exception) { failClosed(); log("plan revert failed: ${e.javaClass.simpleName}"); null }
     }
+
+    /**
+     * A new link session opened (hello): the next plan message names the phone's new session and replaces the stamp, whatever the phone's
+     * clock now says (it may have moved backwards). Inside one link session the stamp is fixed, so a delayed message of an OLDER phone
+     * session cannot move it: session identity, not a numeric maximum.
+     */
+    fun onLinkSession() = synchronized(lock) { sessionFresh = true }
 
     /** What the phone should know on a session open: the caps, and the state of the current gen (gen 0 = no plan ever). */
     fun statusAck(): CapturePlanAck = synchronized(lock) {
@@ -207,14 +234,14 @@ class PlanController(
     private fun tryActivate(now: Long, out: MutableList<CapturePlanAck>) {
         val cfg = pendingCfg ?: return
         val h = host
-        if (cfg != active && h != null && !h.quiet()) {
+        if (cfg != activeCfg && h != null && !h.quiet()) {
             if (now - stagedAt < FORCE_AFTER_MS) return
             h.abortBout()
         }
-        val prev = active
+        val prev = activeCfg
         swap(cfg)
         try {
-            val ack = receiver.activated(pendingGen)
+            val ack = receiver.activated(pendingId!!.gen)
             if (ack.state == PlanAckState.EFFECTIVE) { out += ack; receiver.current?.let { markRunning(it) } } else swap(prev)
             dropPending()
         } catch (e: Exception) {
@@ -228,11 +255,11 @@ class PlanController(
     private fun reverted(ack: CapturePlanAck, out: MutableList<CapturePlanAck>) {
         dropPending()
         if (ack.state == PlanAckState.REVERTED) {
-            if (active != ActiveConfig.SETTINGS) {
+            if (activeCfg != ActiveConfig.SETTINGS) {
                 host?.let { if (!it.quiet()) it.abortBout() }
                 swap(ActiveConfig.SETTINGS)
             }
-            running = null
+            running = null; runningDeadlineMs = Long.MAX_VALUE
             out += ack
         }
     }
@@ -240,20 +267,21 @@ class PlanController(
     /** The settings path, in memory, whatever the disk says: used when a revert cannot be recorded. */
     private fun failClosed() {
         dropPending()
-        running = null
-        if (active != ActiveConfig.SETTINGS) { host?.let { if (!it.quiet()) it.abortBout() }; swap(ActiveConfig.SETTINGS) }
+        running = null; runningDeadlineMs = Long.MAX_VALUE
+        if (activeCfg != ActiveConfig.SETTINGS) { host?.let { if (!it.quiet()) it.abortBout() }; swap(ActiveConfig.SETTINGS) }
     }
 
     /** After an activation was persisted (or a persisted effective plan was resumed): remember what now drives capture. */
     private fun markRunning(st: ReceiverState) {
         running = if ((st.mode == PlanMode.TRIAL || st.mode == PlanMode.LIVE) && st.appliedGen !in st.terminal)
             PlanId(st.phoneInstall, st.appliedGen, st.mode) to st.configHash else null
-        runningDeadline = if (running != null && st.mode == PlanMode.TRIAL) st.trialStartElapsed?.let { it + (st.trialMaxMs ?: 0L) } else null
+        runningPub = if (running != null) st.publishId else null
+        runningDeadlineMs = if (running != null && st.mode == PlanMode.TRIAL) st.trialStartElapsed?.let { it + (st.trialMaxMs ?: 0L) } ?: Long.MAX_VALUE else Long.MAX_VALUE
     }
 
-    private fun swap(cfg: ActiveConfig) { active = cfg; host?.install(cfg) }
+    private fun swap(cfg: ActiveConfig) { activeCfg = cfg; host?.install(cfg) }
 
-    private fun dropPending() { pendingCfg = null; pendingGen = -1L }
+    private fun dropPending() { pendingCfg = null; pendingId = null }
 
     /** Keeps [shadow] equal to the effective SHADOW plan of the receiver (decoded once per gen and hash). Under the lock. */
     private fun refreshShadow() {
