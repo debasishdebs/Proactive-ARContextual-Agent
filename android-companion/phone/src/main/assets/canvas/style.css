@@ -130,3 +130,10 @@ textarea[readonly] { background: var(--step); }
 table.params { border-collapse: collapse; font-size: 13px; }
 table.params th, table.params td { padding: 3px 5px; border: 1px solid var(--line); text-align: left; vertical-align: bottom; }
 table.params input[type=number] { width: 5.5em; }
+/* slice 3a task 36: replay and sweep */
+.fusion-warning { padding: 8px; border: 2px solid var(--warn, #b26a00); border-radius: 8px; font-weight: 600; }
+.traces { max-height: 220px; overflow: auto; }
+.sortcol { white-space: nowrap; }
+table.results td, table.results th { white-space: nowrap; }
+.param-row input { width: 7em; }
+.plain { list-style: none; padding: 0; margin: 0; }
