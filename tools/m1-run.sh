@@ -278,5 +278,6 @@ sub="$1"; shift
 case "$sub" in
   pair) cmd_pair "$@" ;; plan) cmd_plan ;; shadow) cmd_shadow ;; status) cmd_status ;;
   collect) cmd_collect "$@" ;; pull) cmd_pull "$@" ;; replay) cmd_replay "$@" ;;
+  get) need_state; [ -n "${1:-}" ] || die "usage: m1-run.sh get <path>"; api GET "$1" >/dev/null; cat "$LAST"; echo ;;  # read-only: prints the JSON body (the token is only in a header, never in a body)
   *) die "unknown subcommand: $sub" ;;
 esac
