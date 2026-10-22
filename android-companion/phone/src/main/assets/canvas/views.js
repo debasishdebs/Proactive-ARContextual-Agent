@@ -176,7 +176,7 @@ export async function runNewView(ctx, root, pipelineId, version) {
   if (!pipelineId) { root.appendChild(h('p', null, 'Open a pipeline first.')); return; }
   const st = { frames: [], selected: new Set(), done: false, dwell: false, motion: false, day: '' };
   let pipelines = [];
-  try { pipelines = await ctx.api('GET', '/api/pipelines'); } catch (e) { pipelines = []; } // only the A/B choices need it
+  try { pipelines = await ctx.api('GET', '/api/pipelines'); } catch (e) { if (e && e.stale) return; pipelines = []; } // only the A/B choices need it; a view that was left stops here
   clear(root);
   root.appendChild(h('h2', null, 'New run'));
   const counter = h('span', { class: 'muted' });
