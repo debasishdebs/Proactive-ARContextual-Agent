@@ -136,4 +136,15 @@ class Slice3aWireTest {
         assertEquals(71, (ev as GlassesEvent.HelloReceived).hello.glassesBatteryPct)
         assertEquals(Hello::class, ev.hello::class)
     }
+
+    @Test fun acksAfterThePhoneClockMovedBackMatchWhenStampedByLinkSession() {
+        // Final pass 14: the glasses stamp acks with the phone session of the CURRENT link session (not the maximum ever seen).
+        var phoneSession = 9_000L
+        val gate = PlanAckGate(install = { "p1" }, sessionStart = { phoneSession })
+        fun ack(stamp: Long) = CapturePlanAck(gen = 2, state = PlanAckState.EFFECTIVE, phoneInstall = "p1", sessionStartMs = stamp)
+        assertEquals(AckVerdict.MATCH, gate.classify(ack(9_000)))
+        phoneSession = 2_000L                                   // reconnect, the phone clock moved back
+        assertEquals(AckVerdict.STALE, gate.classify(ack(maxOf(9_000L, 2_000L))), "the old numeric maximum is what broke correlation")
+        assertEquals(AckVerdict.MATCH, gate.classify(ack(2_000)), "the new link session's stamp")
+    }
 }
