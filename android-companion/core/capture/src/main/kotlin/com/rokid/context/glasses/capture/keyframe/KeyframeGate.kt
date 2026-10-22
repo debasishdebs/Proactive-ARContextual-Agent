@@ -61,12 +61,35 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long, 
     @Synchronized fun takeSkipCounts(): Pair<Int, Int> = (duplicates to capped).also { duplicates = 0; capped = 0 }
 
     @Volatile private var scoreListener: ScoreListener? = null
+    private var lastOfferNow = 0L
 
     /** Null removes it. Called on the offering thread, under the gate lock: keep it cheap and never call back into the gate. */
     fun setScoreListener(l: ScoreListener?) { scoreListener = l }
 
     /** The current new-scene threshold (the plan's, else [HAMMING]); the session's same-scene backoff uses the same one. */
     fun hammingNow(): Int = params().hamming
+
+    /** The gate values in force now (the IMU trace records them at its start). */
+    fun paramsNow(): GateParams = params()
+
+    /**
+     * The clock reading [offer] took for the sample it is scoring, or [flushWindow] took for its decision. Valid only on the calling thread, from inside a
+     * [ScoreListener] call (it runs under the gate lock, in [offer]) or right after a [flushWindow] that returned a result, with nothing else touching the gate
+     * in between (the session holds its own lock): it is the `sc.nowMs` / `fl.nowMs` the trace records, so replay sees the exact decision time.
+     */
+    fun lastOfferNowMs(): Long = lastOfferNow
+
+    /** What the IMU trace needs of the gate at a clean start: the ring (newest last), the last keep time (null = never), the keeps in the last minute (ascending) and whether the window is empty. */
+    class TraceState(val ring: List<Pair<Long, Long>>, val lastKeptAt: Long?, val keptAt: List<Long>, val windowEmpty: Boolean)
+
+    @Synchronized
+    fun traceState(now: Long): TraceState = TraceState(
+        store.lastKeyframes(), store.lastKeptAt().takeIf { it > 0L },
+        keptTimes.filter { now - it in 0 until CAP_WINDOW_MS }.sorted(), window.isEmpty(),
+    )
+
+    /** True when no scored candidate is pending in the window (a clean trace boundary). */
+    @Synchronized fun windowEmpty(): Boolean = window.isEmpty()
 
     /** (dHash, pHash) of the last frame that passed the blur check, or null before any. */
     @Synchronized fun lastHashes(): Pair<Long, Long>? = lastScoredHashes
@@ -95,6 +118,7 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long, 
     @Synchronized
     fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean, force: Boolean = false, capPerMin: Int = Int.MAX_VALUE, hardCap: Boolean = false): GateResult {
         val now = clock()
+        lastOfferNow = now
         val blur = ImageHashes.blur(c.thumb)
         if (blur < BLUR_FLOOR) { scoreListener?.onScored(c.seq, 0L, 0L, blur, false); return Skip(BLUR) }
         val d = ImageHashes.dHash(c.thumb); val p = ImageHashes.pHash(c.thumb)
@@ -132,7 +156,7 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long, 
     /** At window end: the best pending candidate, or null when nothing is pending. */
     @Synchronized
     fun flushWindow(capPerMin: Int = Int.MAX_VALUE, hardCap: Boolean = false): GateResult? =
-        if (window.isEmpty()) null else finish(window.toList().also { window.clear() }, dwell = false, clock(), capPerMin, hardCap)
+        if (window.isEmpty()) null else { val now = clock(); lastOfferNow = now; finish(window.toList().also { window.clear() }, dwell = false, now, capPerMin, hardCap) }
 
     /** Records a keep decided elsewhere (forced capture): pushes the ring and the last keep time. */
     @Synchronized

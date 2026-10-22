@@ -31,6 +31,8 @@ import com.rokid.context.glasses.capture.keyframe.GateResult
 import com.rokid.context.glasses.capture.keyframe.KeyframeGate
 import com.rokid.context.glasses.capture.keyframe.PrefsGateStore
 import com.rokid.context.glasses.capture.plan.AutoRevert
+import com.rokid.context.glasses.capture.trace.TraceInfo
+import com.rokid.context.glasses.capture.trace.TraceSettingsHash
 import com.rokid.context.glasses.capture.plan.ShadowCounts
 import com.rokid.context.glasses.capture.plan.ShadowRunner
 import com.rokid.context.glasses.capture.motion.AndroidSensorFeed
@@ -253,6 +255,8 @@ class CaptureService : LifecycleService() {
             contextCap = { plan.active.contextCap(appliedContext()) },
             appliedState = { appliedContext() }, onCeilingHit = { autoRevert.onCeilingHit(it) },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
+            trace = runtime.traceRecorder,
+            traceInfo = { val k = plan.traceKey(); TraceInfo(TraceSettingsHash.of(runtime.settingsCache.readNormalized()), k.gen, k.configHash, k.mode, budget.tier.value) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
         )
         hintSender = MotionHintSender(clock) { h -> runtime.controller?.sendMotionHint(h) == true }
@@ -261,6 +265,7 @@ class CaptureService : LifecycleService() {
         val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir).also { it.start(motion, wear) }
         val shadow = ShadowRunner({ plan.shadow }, { appliedCache }, { runtime.workRest.resting.value != null }) // SHADOW: counts only, no camera
         motion.addTap(shadow)
+        motion.addTap(runtime.traceRecorder) // records only while a trace runs (collect on, clean boundary); one volatile read otherwise
         val sm = Smart(session, feed, motion, shadow)
         smart = sm
         // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
@@ -289,6 +294,7 @@ class CaptureService : LifecycleService() {
         runtime.resetLocalMotion()
         cur.rateJob?.cancel()
         cur.session.stop(reason)
+        cur.motion.removeTap(runtime.traceRecorder)
         runtime.workRest.onPaused() // leaving counts as a pause: only one of R minutes or more restarts the work clock
         cur.feed.stop()
         runtime.smartCapture.value = false

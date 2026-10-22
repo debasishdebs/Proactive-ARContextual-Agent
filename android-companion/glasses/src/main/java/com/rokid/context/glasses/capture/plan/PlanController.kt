@@ -20,6 +20,9 @@ interface PlanHost {
     fun install(cfg: ActiveConfig)
 }
 
+/** The plan identity the IMU trace records (and closes on a change of): see [PlanController.traceKey]. */
+data class PlanKey(val gen: Long, val configHash: String?, val mode: PlanMode)
+
 /** What the heartbeat reports: the plan in force (EFFECTIVE only; a staged plan is not yet), its gen and the last revert reason. */
 data class PlanStatus(val hash8: String?, val gen: Long, val mode: PlanMode, val revert: String?)
 
@@ -122,6 +125,13 @@ class PlanController(
         val reason = st.terminal[st.appliedGen]
         val mode = if (st.effective && reason == null) st.mode else PlanMode.SETTINGS
         PlanStatus(if (mode == PlanMode.SETTINGS) null else st.configHash?.take(8), st.appliedGen, mode, reason)
+    }
+
+    /** The plan in force for the IMU trace: gen, full config hash and mode. No effective plan = gen 0, no hash, SETTINGS (what the trace's `pl` event calls "no plan"). */
+    fun traceKey(): PlanKey = synchronized(lock) {
+        val st = receiver.current ?: return PlanKey(0, null, PlanMode.SETTINGS)
+        val effective = st.effective && st.terminal[st.appliedGen] == null && st.mode != PlanMode.SETTINGS && st.configHash != null
+        if (effective) PlanKey(st.appliedGen, st.configHash, st.mode) else PlanKey(0, null, PlanMode.SETTINGS)
     }
 
     /** The capture supervisor's 1 s beat ([now] = elapsedRealtime): ends a TRIAL, activates a staged plan at its boundary. */
