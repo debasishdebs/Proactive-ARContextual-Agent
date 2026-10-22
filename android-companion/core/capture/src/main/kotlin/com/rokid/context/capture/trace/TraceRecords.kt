@@ -29,10 +29,39 @@ internal fun finite(f: Float, what: String) { require(f.isFinite()) { "$what is 
 enum class EpisodeCause { TIMER, DWELL, ONSET, NOW, RESV, STREAM }
 enum class GateOutcome { KEEP, SKIP }
 
+/** How a camera episode ended (`ep` close). Wire: lower case. Drives `lastBriefAt` and the bind back-off in the scheduler (SamplingSession.endEpisode). */
+enum class EpisodeOutcome { OK, OPEN_FAILED, NO_FRAMES, BUSY, BIND, COLD }
+
+/**
+ * FROZEN (trace schema 1). Why a trace ended (`cl` reason and `Manifest.closeReason`). Decision (I4): a plan activation or revert, or a settings
+ * edit, CLOSES the current trace (reason [PLAN], [PLAN_REVERT], [SETTINGS]) and the recorder starts a new segment with a fresh clean start
+ * (new snapshot, `pl`/`gp` events at the new start). So a trace never changes plan or settings by itself; the validator refuses a `pl` or
+ * `gp` event after the start and a `pf` whose quickLookMs changes mid-trace. (`pf` may still change for heat or battery.)
+ */
+object CloseReason {
+    const val STOP = "stop"
+    const val PAUSE = "pause"
+    const val UNPLUG = "unplug"
+    const val EPOCH = "epoch"
+    const val CAP = "cap"
+    const val REBOOT = "reboot"
+    const val PLAN = "plan"
+    const val PLAN_REVERT = "plan_revert"
+    const val SETTINGS = "settings"
+    val ALL: Set<String> = linkedSetOf(STOP, PAUSE, UNPLUG, EPOCH, CAP, REBOOT, PLAN, PLAN_REVERT, SETTINGS)
+}
+
+/** The five reasons a gate SKIP can carry (KeyframeGate: BLUR, DUPLICATE, THROTTLED, WINDOW, CAPPED). */
+val GATE_SKIP_REASONS: Set<String> = linkedSetOf("BLUR", "DUPLICATE", "THROTTLED", "WINDOW", "CAPPED")
+
 /**
  * FROZEN (trace schema 1). One recorded event. Every `tMs` is the glasses `SystemClock.elapsedRealtime()` at the moment the recorder
- * appended the event; the recorder appends from a single writer, so `tMs` is non-decreasing over the whole trace (the decoder refuses a
- * regression). Records hold numbers, enum names and hash hex only: no audio, photo, text, location or device name (sensor features only).
+ * appended (delivered) the event; the recorder appends from a single writer, so `tMs` is non-decreasing over the whole trace (the decoder
+ * refuses a regression). Sensor events additionally carry their own sensor time `sMs` (see [Gyro]), which is NOT ordered.
+ *
+ * Recorder obligation (Task 16, M6): take `elapsedRealtime` INSIDE the append lock, so the stamp order equals the append order across the
+ * sensor thread, the camera analysis executor (score listener), the session tick and the link thread. A time that has its own meaning
+ * (the gate's `now`, a sensor timestamp, the first frame, the camera open) belongs in a field, never in `tMs`. Records hold numbers, enum names and hash hex only: no audio, photo, text, location or device name (sensor features only).
  *
  * Wire form (see [EventCodec]): one canonical JSON array per event, `["<tag>", tMs, fields in the order declared here]`.
  * Floats travel as their IEEE-754 bits (a signed 32-bit integer), 64-bit hashes as 16 lower-case hex digits, booleans as `true`/`false`.
@@ -40,14 +69,20 @@ enum class GateOutcome { KEEP, SKIP }
 sealed interface TraceEvent {
     val tMs: Long
 
-    /** `g`: gyroscope, rad/s. */
-    data class Gyro(override val tMs: Long, val x: Float, val y: Float, val z: Float) : TraceEvent {
-        init { ms(tMs, "tMs"); finite(x, "x"); finite(y, "y"); finite(z, "z") }
+    /**
+     * `g`: gyroscope, rad/s. [tMs] is the delivery (append) time; [sMs] is the sensor event time in ms (`SensorEvent.timestamp / 1_000_000`),
+     * exactly the value the classifier integrates `dt` from (SensorFeed -> MotionClassifier.onGyro). Batched delivery (STILL 0.5 s, LOW 1 s)
+     * gives many samples nearly equal `tMs` and distinct `sMs`; `sMs` is per sensor and may be out of order across sensors and across a
+     * batch boundary, so it is NOT checked for order (the classifier uses max()). Replay feeds `sMs` to the classifier and `tMs` to the
+     * scheduler for the interleaving against ticks, scores and episodes.
+     */
+    data class Gyro(override val tMs: Long, val sMs: Long, val x: Float, val y: Float, val z: Float) : TraceEvent {
+        init { ms(tMs, "tMs"); ms(sMs, "sMs"); finite(x, "x"); finite(y, "y"); finite(z, "z") }
     }
 
-    /** `a`: accelerometer, m/s^2. */
-    data class Accel(override val tMs: Long, val x: Float, val y: Float, val z: Float) : TraceEvent {
-        init { ms(tMs, "tMs"); finite(x, "x"); finite(y, "y"); finite(z, "z") }
+    /** `a`: linear acceleration, m/s^2. [sMs] as for [Gyro]. */
+    data class Accel(override val tMs: Long, val sMs: Long, val x: Float, val y: Float, val z: Float) : TraceEvent {
+        init { ms(tMs, "tMs"); ms(sMs, "sMs"); finite(x, "x"); finite(y, "y"); finite(z, "z") }
     }
 
     /** `cx`: the context state the glasses applied (from the phone's `pc_motion_ctx`). */
@@ -56,13 +91,18 @@ sealed interface TraceEvent {
     /** `rs`: WorkRest resting on or off. */
     data class Resting(override val tMs: Long, val on: Boolean) : TraceEvent { init { ms(tMs, "tMs") } }
 
-    /** `pf`: the effective [com.rokid.context.glasses.capture.session.CaptureProfile] inputs after plan, heat and battery rules. [walkMs] null = no walk check. */
+    /**
+     * `pf`: the effective [com.rokid.context.glasses.capture.session.CaptureProfile] inputs after plan, heat and battery rules. [walkMs] null = no
+     * walk check. [quickLookMs] is the settings Quick look (`CameraPolicy.holdMs` input). It must not change inside one trace: a settings edit
+     * closes the trace ([CloseReason.SETTINGS]).
+     */
     data class Profile(
         override val tMs: Long, val wake: CameraWake, val settledMs: Long, val quietMs: Long, val walkMs: Long?, val stillCapMs: Long,
-        val analysisMs: Long, val tier: BudgetTier, val lowPower: Boolean, val heatSlow: Boolean,
+        val analysisMs: Long, val tier: BudgetTier, val lowPower: Boolean, val heatSlow: Boolean, val quickLookMs: Long,
     ) : TraceEvent {
         init {
             ms(tMs, "tMs"); ms(settledMs, "settledMs"); ms(quietMs, "quietMs"); walkMs?.let { ms(it, "walkMs") }; ms(stillCapMs, "stillCapMs"); ms(analysisMs, "analysisMs")
+            ms(quickLookMs, "quickLookMs")
         }
     }
 
@@ -76,22 +116,41 @@ sealed interface TraceEvent {
         init { ms(tMs, "tMs"); ms(gen, "gen"); hash(configHash, "configHash") }
     }
 
-    /** `ep`: a camera episode opens or closes. [firstFrameAtMs] (elapsed) is set on a close once a frame arrived. */
-    data class Episode(override val tMs: Long, val open: Boolean, val cause: EpisodeCause, val firstFrameAtMs: Long? = null) : TraceEvent {
-        init { ms(tMs, "tMs"); firstFrameAtMs?.let { ms(it, "firstFrameAtMs") } }
+    /**
+     * `ep`: a camera episode opens (decision) or closes. On an open, [firstFrameAtMs], [openedAtMs] and [outcome] are null. On a close:
+     * [firstFrameAtMs] (elapsed) is set once a frame arrived; [openedAtMs] is when the camera actually opened (null if it never did), the
+     * start-up sample is `firstFrameAtMs - openedAtMs` (the brief lead p95 ring); [outcome] drives `lastBriefAt` and the busy/bind/cold back-offs.
+     */
+    data class Episode(
+        override val tMs: Long, val open: Boolean, val cause: EpisodeCause, val firstFrameAtMs: Long? = null, val openedAtMs: Long? = null, val outcome: EpisodeOutcome? = null,
+    ) : TraceEvent {
+        init {
+            ms(tMs, "tMs"); firstFrameAtMs?.let { ms(it, "firstFrameAtMs") }; openedAtMs?.let { ms(it, "openedAtMs") }
+            if (open) require(firstFrameAtMs == null && openedAtMs == null && outcome == null) { "an open carries no close fields" } else require(outcome != null) { "a close needs an outcome" }
+        }
     }
 
-    /** `sc`: one scored frame (blur failures included). [d] and [p] are the 64-bit dHash and pHash; [seq] is the session frame number. */
+    /**
+     * `sc`: one scored frame (blur failures included). [d] and [p] are the 64-bit dHash and pHash; [seq] is the session frame number.
+     * [cap] and [hard] are the rate cap handed to `KeyframeGate.offerScored(..., cap, hard, nowMs)` (null = uncapped), so replay needs no
+     * context or plan re-derivation. [tMs] is the append time; the gate's own `now` is the clock at the offer, within the same lock.
+     */
     data class Score(
         override val tMs: Long, val seq: Long, val d: Long, val p: Long, val blur: Float, val passedBlur: Boolean, val motion: MotionState,
-        val dwellArmed: Boolean, val force: Boolean,
+        val dwellArmed: Boolean, val force: Boolean, val cap: Int?, val hard: Boolean,
     ) : TraceEvent {
-        init { ms(tMs, "tMs"); ms(seq, "seq"); finite(blur, "blur") }
+        init { ms(tMs, "tMs"); ms(seq, "seq"); finite(blur, "blur"); cap?.let { require(it in 0..100_000) { "cap" } } }
     }
 
-    /** `gt`: what the gate decided for [seq]: KEEP (reason "") or SKIP (BLUR, DUPLICATE, THROTTLED, WINDOW, CAPPED). */
+    /** `gt`: what the gate decided for [seq]: KEEP (reason "") or SKIP (reason one of [GATE_SKIP_REASONS]). */
     data class Gate(override val tMs: Long, val seq: Long, val outcome: GateOutcome, val reason: String) : TraceEvent {
-        init { ms(tMs, "tMs"); ms(seq, "seq"); token(reason, "reason") }
+        init {
+            ms(tMs, "tMs"); ms(seq, "seq"); token(reason, "reason")
+            when (outcome) {
+                GateOutcome.KEEP -> require(reason.isEmpty()) { "a keep has no reason" }
+                GateOutcome.SKIP -> require(reason in GATE_SKIP_REASONS) { "unknown skip reason" }
+            }
+        }
     }
 
     /** `fl`: the gate window was flushed ([reason] is a token such as `window`, `timer`, `stop`). */
@@ -103,31 +162,91 @@ sealed interface TraceEvent {
     /** `bl`: capture is blocked (pause, wear gate, camera busy ...); null = unblocked. */
     data class Blocked(override val tMs: Long, val reason: String?) : TraceEvent { init { ms(tMs, "tMs"); reason?.let { token(it, "reason") } } }
 
+    /**
+     * `dk`: the consecutive unusable (dark, no copy, blurred-and-settled) brief checks count changed ([streak], 0 after a usable brief frame).
+     * `quiet = streak >= 3` is a `CameraPolicy.decide` input; dark frames never reach the gate, so no `sc` records them.
+     */
+    data class DarkStreak(override val tMs: Long, val streak: Int) : TraceEvent { init { ms(tMs, "tMs"); require(streak in 0..MAX_DARK_STREAK) { "streak" } } }
+
     /** `pr`: the 10 s pre-roll is over ([TraceBounds.PRE_ROLL_MS] after the start); the simulator discards decisions before it. */
     data class PreRollEnd(override val tMs: Long) : TraceEvent { init { ms(tMs, "tMs") } }
 
-    /** `cl`: the trace ends ([reason] is a non-empty token: stop, pause, unplug, epoch, cap, reboot ...). The last event of a trace. */
+    /** `cl`: the trace ends ([reason] is a non-empty token; the validator requires one of [CloseReason.ALL] and the manifest's closeReason). The last event of a trace. */
     data class Close(override val tMs: Long, val reason: String) : TraceEvent { init { ms(tMs, "tMs"); token(reason, "reason"); require(reason.isNotEmpty()) { "reason" } } }
+}
+
+const val MAX_DARK_STREAK = 1_000
+
+/** `sampleEvery` applies only to `g` and `a`; every other event is always recorded. */
+val TraceEvent.isSensorSample: Boolean get() = this is TraceEvent.Gyro || this is TraceEvent.Accel
+
+/**
+ * The 25 Hz (S66) downsampler: keeps every n-th gyro and every n-th accel sample (separate counters, the first of each is kept) and ALWAYS
+ * keeps every other event. [sampleEvery] 1 keeps everything (an exact trace).
+ */
+class Downsampler(private val sampleEvery: Int) {
+    init { require(sampleEvery in 1..StartSnapshot.MAX_SAMPLE_EVERY) { "sampleEvery" } }
+    private var g = 0
+    private var a = 0
+    fun keep(e: TraceEvent): Boolean = when (e) {
+        is TraceEvent.Gyro -> g++ % sampleEvery == 0
+        is TraceEvent.Accel -> a++ % sampleEvery == 0
+        else -> true
+    }
 }
 
 /** One keyframe-ring entry: the dHash and pHash of a kept frame. */
 data class RingHash(val d: Long, val p: Long)
 
+/** The classifier pose accumulated since the last mark (`MotionClassifier.markPose`): feeds `GlanceAdmission` novelty until the next keep. [quietSinceMs] null = -1 in the classifier. */
+data class PoseSnapshot(
+    val rx: Float, val ry: Float, val rz: Float, val walked: Boolean, val qx: Float, val qy: Float, val qz: Float, val quietSinceMs: Long?,
+) {
+    init { listOf(rx, ry, rz, qx, qy, qz).forEach { finite(it, "pose") }; quietSinceMs?.let { ms(it, "quietSinceMs") } }
+    companion object { val ZERO = PoseSnapshot(0f, 0f, 0f, false, 0f, 0f, 0f, null) }
+}
+
 /**
  * FROZEN (trace schema 1). The state the recorder captures at the clean boundary, so an exact replay starts from the same state.
  * Clean boundary (S65): the recorder starts only when the detector is QUIET, no camera episode is open and the gate window is empty;
  * the first 10 s are a pre-roll ([TraceBounds.PRE_ROLL_MS]) that refills the classifier windows. The recorder must also append `Ctx`,
- * `Resting`, `Profile`, `GateParams` and `Plan` events at the start time, so a replay needs nothing but this snapshot and the events.
+ * `Resting`, `Profile`, `GateParams` and `Plan` events at the start time (`tMs == startElapsedMs`, checked by [TraceAssembler]), so a replay needs
+ * nothing but this snapshot and the events. All times are glasses elapsed ms of the trace's boot.
+ *
+ * Which values (pinned, C2): [lastKeyframeAt] and [keptAt] are the SESSION's values (`SamplingSession.lastKeyframeAt`, `keptAt`: the 10 min list of
+ * emitted keyframes, trimmed to the last minute here); [gateLastKeptAt] and [gateKeptAt] are the GATE's (`GateStore.lastKeptAt`, `KeyframeGate.keptTimes`).
+ * They differ after an encode failure, a forced keep or a session restart, so both are recorded. The scheduler start state follows
+ * `SamplingSession`: [lastBriefAt], [stillStep], [lastCheckHash], [darkStreak], [bindBackoffUntil], [coldStartGrace], the brief-lead ring [startups]
+ * (the last 20 `firstFrameAt - openedAt` ms) and [lastPhotoAttemptAtMs] (the S83/S70 reserved attempt).
  */
 data class StartSnapshot(
     /** Hash prefix of the effective settings (hex). */
     val settingsHash: String,
     /** The keyframe ring, newest last, at most 5. */
     val ring: List<RingHash>,
-    /** Elapsed time of the last keyframe, or null. */
+    /** Session `lastKeyframeAt` (elapsed), or null before any. */
     val lastKeyframeAt: Long?,
-    /** Elapsed times of keeps in the last rolling minute, ascending, at most 64. */
+    /** Session `keptAt` within the last rolling minute, ascending, at most 64. */
     val keptAt: List<Long>,
+    /** Gate store `lastKeptAt`, or null (0 in the store). */
+    val gateLastKeptAt: Long?,
+    /** Gate `keptTimes` within the last rolling minute, ascending, at most 64. */
+    val gateKeptAt: List<Long>,
+    /** `SamplingSession.lastBriefAt` (it decides the first timer open), or null. */
+    val lastBriefAt: Long?,
+    /** The still-scene back-off step (0..32). */
+    val stillStep: Int,
+    /** `lastCheckHash` (dHash, pHash of the previous brief check), or null. */
+    val lastCheckHash: RingHash?,
+    /** Consecutive unusable brief checks (quiet when >= 3). */
+    val darkStreak: Int,
+    /** `bindBackoffUntil`, or null when none is pending. */
+    val bindBackoffUntil: Long?,
+    val coldStartGrace: Boolean,
+    /** The brief-lead ring, oldest first, at most [MAX_STARTUPS]. */
+    val startups: List<Long>,
+    val pose: PoseSnapshot,
+    val lastPhotoAttemptAtMs: Long?,
     val planGen: Long,
     /** The plan `configHash` in force, or null for settings. */
     val planHash: String?,
@@ -135,7 +254,7 @@ data class StartSnapshot(
     val ctx: ContextState,
     val resting: Boolean,
     val tier: BudgetTier,
-    /** 1 = every sensor sample is recorded; n > 1 = every n-th sample (S66). */
+    /** 1 = every sensor sample is recorded; n > 1 = every n-th sample (S66, see [Downsampler]). */
     val sampleEvery: Int,
     /** `sampleEvery == 1`. Only an exact trace may be parity or publish evidence. */
     val exact: Boolean,
@@ -147,6 +266,17 @@ data class StartSnapshot(
         require(keptAt.size <= MAX_KEPT) { "keptAt too long" }
         keptAt.forEach { ms(it, "keptAt") }
         require(keptAt.zipWithNext().all { (a, b) -> a <= b }) { "keptAt not ascending" }
+        gateLastKeptAt?.let { ms(it, "gateLastKeptAt") }
+        require(gateKeptAt.size <= MAX_KEPT) { "gateKeptAt too long" }
+        gateKeptAt.forEach { ms(it, "gateKeptAt") }
+        require(gateKeptAt.zipWithNext().all { (a, b) -> a <= b }) { "gateKeptAt not ascending" }
+        lastBriefAt?.let { ms(it, "lastBriefAt") }
+        require(stillStep in 0..32) { "stillStep" }
+        require(darkStreak in 0..MAX_DARK_STREAK) { "darkStreak" }
+        bindBackoffUntil?.let { ms(it, "bindBackoffUntil") }
+        require(startups.size <= MAX_STARTUPS) { "startups too long" }
+        startups.forEach { ms(it, "startups") }
+        lastPhotoAttemptAtMs?.let { ms(it, "lastPhotoAttemptAtMs") }
         ms(planGen, "planGen"); planHash?.let { hash(it, "planHash") }
         listOf(glance.onsetRadS, glance.releaseRadS, glance.minBoutRad, glance.deadbandRadS, glance.noveltyMinRad, glance.bigTurnRad).forEach { finite(it, "glance") }
         listOf(glance.bridgeMs, glance.minBoutMs, glance.settleMs, glance.maxDtMs, glance.noveltyWindowMs).forEach { ms(it, "glance") }
@@ -155,17 +285,36 @@ data class StartSnapshot(
         require(exact == (sampleEvery == 1)) { "exact must equal sampleEvery == 1" }
     }
 
-    companion object { const val MAX_RING = 5; const val MAX_KEPT = 64; const val MAX_SAMPLE_EVERY = 16 }
+    companion object { const val MAX_RING = 5; const val MAX_KEPT = 64; const val MAX_STARTUPS = 20; const val MAX_SAMPLE_EVERY = 16 }
 }
 
 /**
  * FROZEN (trace schema 1). Canonical one-line encoding of an event and its strict inverse. Tags and field order:
- * `g` x y z (float bits) | `a` x y z | `cx` state | `rs` on | `pf` wake settledMs quietMs walkMs|null stillCapMs analysisMs tier lowPower heatSlow |
- * `gp` hamming bigChange ringAll | `pl` gen configHash mode | `ep` open cause(lower-case) firstFrameAtMs|null |
- * `sc` seq d(hex16) p(hex16) blurBits passedBlur motion dwellArmed force | `gt` seq outcome(lower-case) reason | `fl` reason | `bo` stillStep |
- * `bl` reason|null | `pr` | `cl` reason. Enum values travel as their Kotlin names (upper case), except cause and outcome (lower case).
+ * The field list of every tag is [FIELDS] (frozen, tested), and the tag list is [TAGS] (16 tags). Floats are IEEE bits, 64-bit hashes hex16,
+ * enum values their Kotlin names (upper case) except `ep` cause and outcome and `gt` outcome (lower case).
  */
 object EventCodec {
+    /** The frozen tag list, in declaration order. */
+    val TAGS: List<String> = listOf("g", "a", "cx", "rs", "pf", "gp", "pl", "ep", "sc", "gt", "fl", "bo", "bl", "dk", "pr", "cl")
+
+    /** The frozen field names per tag (after the tag and `tMs`), in wire order. */
+    val FIELDS: Map<String, List<String>> = linkedMapOf(
+        "g" to listOf("sMs", "x", "y", "z"), "a" to listOf("sMs", "x", "y", "z"), "cx" to listOf("state"), "rs" to listOf("on"),
+        "pf" to listOf("wake", "settledMs", "quietMs", "walkMs", "stillCapMs", "analysisMs", "tier", "lowPower", "heatSlow", "quickLookMs"),
+        "gp" to listOf("hamming", "bigChange", "ringAll"), "pl" to listOf("gen", "configHash", "mode"),
+        "ep" to listOf("open", "cause", "firstFrameAtMs", "openedAtMs", "outcome"),
+        "sc" to listOf("seq", "d", "p", "blur", "passedBlur", "motion", "dwellArmed", "force", "cap", "hard"),
+        "gt" to listOf("seq", "outcome", "reason"), "fl" to listOf("reason"), "bo" to listOf("stillStep"), "bl" to listOf("reason"),
+        "dk" to listOf("streak"), "pr" to emptyList(), "cl" to listOf("reason"),
+    )
+
+    fun tag(e: TraceEvent): String = when (e) {
+        is TraceEvent.Gyro -> "g"; is TraceEvent.Accel -> "a"; is TraceEvent.Ctx -> "cx"; is TraceEvent.Resting -> "rs"; is TraceEvent.Profile -> "pf"
+        is TraceEvent.GateParams -> "gp"; is TraceEvent.Plan -> "pl"; is TraceEvent.Episode -> "ep"; is TraceEvent.Score -> "sc"; is TraceEvent.Gate -> "gt"
+        is TraceEvent.Flush -> "fl"; is TraceEvent.Backoff -> "bo"; is TraceEvent.Blocked -> "bl"; is TraceEvent.DarkStreak -> "dk"
+        is TraceEvent.PreRollEnd -> "pr"; is TraceEvent.Close -> "cl"
+    }
+
     private val INT = Regex("-?(0|[1-9][0-9]{0,15})")
     private val HEX16 = Regex("[0-9a-f]{16}")
     private fun bad(): Nothing = throw TraceFormatException("bad_event")
@@ -180,24 +329,27 @@ object EventCodec {
         fun nul(v: Long?) { if (v == null) sb.append(",null") else num(v) }
         fun hex(v: Long) { str(java.lang.Long.toHexString(v).padStart(16, '0')) }
         when (e) {
-            is TraceEvent.Gyro -> { head("g"); bits(e.x); bits(e.y); bits(e.z) }
-            is TraceEvent.Accel -> { head("a"); bits(e.x); bits(e.y); bits(e.z) }
+            is TraceEvent.Gyro -> { head("g"); num(e.sMs); bits(e.x); bits(e.y); bits(e.z) }
+            is TraceEvent.Accel -> { head("a"); num(e.sMs); bits(e.x); bits(e.y); bits(e.z) }
             is TraceEvent.Ctx -> { head("cx"); str(e.state.name) }
             is TraceEvent.Resting -> { head("rs"); flag(e.on) }
             is TraceEvent.Profile -> {
                 head("pf"); str(e.wake.name); num(e.settledMs); num(e.quietMs); nul(e.walkMs); num(e.stillCapMs); num(e.analysisMs)
-                str(e.tier.name); flag(e.lowPower); flag(e.heatSlow)
+                str(e.tier.name); flag(e.lowPower); flag(e.heatSlow); num(e.quickLookMs)
             }
             is TraceEvent.GateParams -> { head("gp"); num(e.hamming.toLong()); num(e.bigChange.toLong()); flag(e.ringAll) }
             is TraceEvent.Plan -> { head("pl"); num(e.gen); str(e.configHash); str(e.mode.name) }
-            is TraceEvent.Episode -> { head("ep"); flag(e.open); str(e.cause.name.lowercase()); nul(e.firstFrameAtMs) }
+            is TraceEvent.Episode -> { head("ep"); flag(e.open); str(e.cause.name.lowercase()); nul(e.firstFrameAtMs); nul(e.openedAtMs)
+                if (e.outcome == null) sb.append(",null") else str(e.outcome.name.lowercase())
+            }
             is TraceEvent.Score -> {
-                head("sc"); num(e.seq); hex(e.d); hex(e.p); bits(e.blur); flag(e.passedBlur); str(e.motion.name); flag(e.dwellArmed); flag(e.force)
+                head("sc"); num(e.seq); hex(e.d); hex(e.p); bits(e.blur); flag(e.passedBlur); str(e.motion.name); flag(e.dwellArmed); flag(e.force); nul(e.cap?.toLong()); flag(e.hard)
             }
             is TraceEvent.Gate -> { head("gt"); num(e.seq); str(e.outcome.name.lowercase()); str(e.reason) }
             is TraceEvent.Flush -> { head("fl"); str(e.reason) }
             is TraceEvent.Backoff -> { head("bo"); num(e.stillStep.toLong()) }
             is TraceEvent.Blocked -> { head("bl"); if (e.reason == null) sb.append(",null") else str(e.reason) }
+            is TraceEvent.DarkStreak -> { head("dk"); num(e.streak.toLong()) }
             is TraceEvent.PreRollEnd -> head("pr")
             is TraceEvent.Close -> { head("cl"); str(e.reason) }
         }
@@ -227,22 +379,24 @@ object EventCodec {
         fun float(): Float = Float.fromBits(int())
         fun hex(): Long { val s = str(); if (!HEX16.matches(s)) bad(); return java.lang.Long.parseUnsignedLong(s, 16) }
         fun <T : Enum<T>> en(values: Array<T>, lower: Boolean = false): T { val s = str(); return values.firstOrNull { (if (lower) it.name.lowercase() else it.name) == s } ?: bad() }
+        fun <T : Enum<T>> enOrNull(values: Array<T>): T? { val p = prim(); if (p is JsonNull) return null; if (!p.isString) bad(); return values.firstOrNull { it.name.lowercase() == p.content } ?: bad() }
         val tag = str()
         val t = long()
         val ev: TraceEvent = when (tag) {
-            "g" -> TraceEvent.Gyro(t, float(), float(), float())
-            "a" -> TraceEvent.Accel(t, float(), float(), float())
+            "g" -> TraceEvent.Gyro(t, long(), float(), float(), float())
+            "a" -> TraceEvent.Accel(t, long(), float(), float(), float())
             "cx" -> TraceEvent.Ctx(t, en(ContextState.values()))
             "rs" -> TraceEvent.Resting(t, bool())
-            "pf" -> TraceEvent.Profile(t, en(CameraWake.values()), long(), long(), longOrNull(), long(), long(), en(BudgetTier.values()), bool(), bool())
+            "pf" -> TraceEvent.Profile(t, en(CameraWake.values()), long(), long(), longOrNull(), long(), long(), en(BudgetTier.values()), bool(), bool(), long())
             "gp" -> TraceEvent.GateParams(t, int(), int(), bool())
             "pl" -> TraceEvent.Plan(t, long(), str(), en(PlanMode.values()))
-            "ep" -> TraceEvent.Episode(t, bool(), en(EpisodeCause.values(), lower = true), longOrNull())
-            "sc" -> TraceEvent.Score(t, long(), hex(), hex(), float(), bool(), en(MotionState.values()), bool(), bool())
+            "ep" -> TraceEvent.Episode(t, bool(), en(EpisodeCause.values(), lower = true), longOrNull(), longOrNull(), enOrNull(EpisodeOutcome.values()))
+            "sc" -> TraceEvent.Score(t, long(), hex(), hex(), float(), bool(), en(MotionState.values()), bool(), bool(), longOrNull()?.also { if (it !in 0..100_000) bad() }?.toInt(), bool())
             "gt" -> TraceEvent.Gate(t, long(), en(GateOutcome.values(), lower = true), str())
             "fl" -> TraceEvent.Flush(t, str())
             "bo" -> TraceEvent.Backoff(t, int())
             "bl" -> TraceEvent.Blocked(t, strOrNull())
+            "dk" -> TraceEvent.DarkStreak(t, int())
             "pr" -> TraceEvent.PreRollEnd(t)
             "cl" -> TraceEvent.Close(t, str())
             else -> bad()

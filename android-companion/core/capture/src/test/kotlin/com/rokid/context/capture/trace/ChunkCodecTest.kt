@@ -22,7 +22,7 @@ class ChunkCodecTest {
     @Test fun encodeThenDecodeRoundTrips() {
         val enc = ChunkCodec.encode(id, 0, TraceFixtures.events)
         assertEquals(TraceFixtures.GOLDEN_SHA, enc.sha256)
-        assertEquals(16, enc.eventCount); assertEquals(1000, enc.firstTMs); assertEquals(12_000, enc.lastTMs)
+        assertEquals(17, enc.eventCount); assertEquals(1000, enc.firstTMs); assertEquals(12_000, enc.lastTMs)
         assertTrue(enc.b64.length <= TraceBounds.MAX_B64_CHARS)
         val dec = ChunkCodec.decode(id, 0, enc.sha256, enc.b64).getOrThrow()
         assertEquals(TraceFixtures.events, dec.events)
@@ -37,7 +37,7 @@ class ChunkCodecTest {
     @Test fun decodesAWireChunk() {
         val enc = ChunkCodec.encode(id, 0, TraceFixtures.events)
         val wire = TraceChunk(traceId = id, kind = "chunk", seq = 0, count = 1, sha256 = enc.sha256, b64 = enc.b64)
-        assertEquals(16, ChunkCodec.decode(wire).getOrThrow().events.size)
+        assertEquals(17, ChunkCodec.decode(wire).getOrThrow().events.size)
         assertEquals("chunk_count", fail(ChunkCodec.decode(wire.copy(count = 0))))
         assertEquals("chunk_count", fail(ChunkCodec.decode(wire.copy(count = 4097))))
         assertEquals("seq", fail(ChunkCodec.decode(wire.copy(seq = 1))))   // seq must be < count
@@ -89,9 +89,21 @@ class ChunkCodecTest {
         assertEquals("b64_invalid", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, "not base64 !!")))
         assertEquals("b64_invalid", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, TraceFixtures.GOLDEN_B64.substring(0, 20) + "\n" + TraceFixtures.GOLDEN_B64.substring(20))))
         // encode refuses what decode would refuse
-        val big = List(20_000) { TraceEvent.Gyro(it.toLong(), (it % 7) * 0.37f, it * 0.011f, -it * 0.003f) }
+        val big = List(20_000) { TraceEvent.Gyro(it.toLong(), it.toLong(), (it % 7) * 0.37f, it * 0.011f, -it * 0.003f) }
         assertFailsWith<TraceFormatException> { ChunkCodec.encode(id, 0, big, TraceBounds(maxRawBytes = 100_000)) }
         assertFailsWith<TraceFormatException> { ChunkCodec.encode(id, 0, big, TraceBounds(maxB64Chars = 1_000)) }
+    }
+
+    @Test fun base64MustBePadded() {
+        val padded = TraceFixtures.GOLDEN_B64
+        assertTrue(padded.length % 4 == 0)
+        // find a chunk whose base64 needs padding: the JDK decoder would take it unpadded, the frozen format does not
+        val enc = (1..12).map { n -> ChunkCodec.encode(id, 0, List(n) { TraceEvent.PreRollEnd(5) }) }.first { it.b64.endsWith("=") }
+        assertTrue(ChunkCodec.decode(id, 0, enc.sha256, enc.b64).isSuccess)
+        assertEquals("b64_invalid", fail(ChunkCodec.decode(id, 0, enc.sha256, enc.b64.trimEnd('='))))
+        assertEquals("b64_invalid", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, padded + "A")))
+        assertEquals("b64_invalid", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, padded.replace('+', '-').replace('/', '_') + "AAA")))
+        assertTrue(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, padded).isSuccess)
     }
 
     @Test fun gzipDamageRejected() {
@@ -117,7 +129,7 @@ class ChunkCodecTest {
 
     @Test fun structureIsStrict() {
         val g = TraceFixtures.goldenPayload
-        assertEquals("line_count", fail(decodeText(g.replace(",16]", ",17]"))))
+        assertEquals("line_count", fail(decodeText(g.replace(",17]", ",18]"))))
         assertEquals("line_count", fail(decodeText(g + """["pr",12001]""" + "\n")))
         assertEquals("bad_payload", fail(decodeText(g.trimEnd('\n'))))                                   // missing final newline
         assertEquals("bad_payload", fail(decodeText(g.replace("\n", "\r\n"))))

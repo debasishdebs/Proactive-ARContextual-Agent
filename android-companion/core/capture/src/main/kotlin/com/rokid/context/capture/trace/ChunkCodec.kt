@@ -18,7 +18,8 @@ import kotlinx.serialization.json.JsonPrimitive
 class EncodedChunk(val traceId: String, val seq: Int, val eventCount: Int, val rawBytes: Int, val sha256: String, val b64: String, val firstTMs: Long, val lastTMs: Long)
 
 /** A verified chunk (events decoded, checksum and bounds checked). */
-class DecodedChunk(val traceId: String, val seq: Int, val events: List<TraceEvent>, val rawBytes: Int, val sha256: String) {
+/** [count] is `TraceChunk.count` when decoded from a `TraceChunk`, null when decoded from parts. */
+class DecodedChunk(val traceId: String, val seq: Int, val events: List<TraceEvent>, val rawBytes: Int, val sha256: String, val count: Int? = null) {
     val firstTMs: Long get() = events.first().tMs
     val lastTMs: Long get() = events.last().tMs
 }
@@ -33,7 +34,12 @@ class DecodedChunk(val traceId: String, val seq: Int, val events: List<TraceEven
  * - **b64**: standard base64 (RFC 4648, padded, no line breaks) of the gzip of the payload.
  * - **`TraceChunk` mapping** (kind `"chunk"`): `count` = number of chunks in the whole trace, `seq` in `[0, count)`, `sha256` and `b64` as above.
  * - **Bounds** ([TraceBounds]): b64 <= 90,000 chars, raw <= 512 KiB (a streamed gunzip limit), <= 200,000 events, seq < 4,096.
- * - **Time**: event `tMs` is non-decreasing inside a chunk (and, checked by [TraceAssembler], across chunks).
+ * - **Time**: event `tMs` is non-decreasing inside a chunk (and, checked by [TraceAssembler], across chunks). Sensor time `sMs` is not ordered.
+ * - **Real chunk limit (M7):** the binding bound is the 90,000 char b64, not 512 KiB. IMU lines gzip roughly 3:1, so 90,000 chars is about 67 KB gzip,
+ *   about 200 KB raw. [encode] throws `b64_too_long` AFTER the work is done, so the recorder (Task 16) must flush at a raw target of about 150 KB (the
+ *   64 KB flush of round 1 fits) and, on `b64_too_long`, split the event list in two (first half keeps the seq, the rest follows) and retry.
+ *   4,096 chunks x 64 KB = 256 MiB = `MAX_TRACE_RAW_BYTES`, so 12 h at 100 events/s (about 195 MB) fits.
+ * - **Padding (M5):** the base64 must be padded (length a multiple of 4); URL-safe characters and whitespace are refused.
  *
  * Decode never throws anything but [TraceFormatException] (returned in a [Result]); its `code` is one of
  * bad_trace_id, seq, chunk_count, kind, sha_invalid, b64_too_long, b64_invalid, gzip_invalid, gunzip_too_big, sha_mismatch, bad_payload,
@@ -75,7 +81,7 @@ object ChunkCodec {
         if (c.kind != KIND) throw TraceFormatException("kind")
         if (c.count !in 1..bounds.maxChunks) throw TraceFormatException("chunk_count")
         if (c.seq !in 0 until c.count) throw TraceFormatException("seq")
-        decodeOrThrow(c.traceId, c.seq, c.sha256, c.b64, bounds)
+        decodeOrThrow(c.traceId, c.seq, c.sha256, c.b64, bounds).let { DecodedChunk(it.traceId, it.seq, it.events, it.rawBytes, it.sha256, c.count) }
     }.recoverFormat()
 
     fun decode(traceId: String, seq: Int, sha256: String, b64: String, bounds: TraceBounds = TraceBounds.DEFAULT): Result<DecodedChunk> =
@@ -91,6 +97,7 @@ object ChunkCodec {
         if (seq !in 0 until bounds.maxChunks) throw TraceFormatException("seq")
         if (!SHA.matches(sha256)) throw TraceFormatException("sha_invalid")
         if (b64.length > bounds.maxB64Chars) throw TraceFormatException("b64_too_long")
+        if (b64.length % 4 != 0) throw TraceFormatException("b64_invalid") // padded base64 only (the JDK decoder would accept unpadded input)
         val gz = try { Base64.getDecoder().decode(b64) } catch (e: IllegalArgumentException) { throw TraceFormatException("b64_invalid") }
         val raw = gunzipLimited(gz, bounds.maxRawBytes)
         if (sha256Hex(raw) != sha256) throw TraceFormatException("sha_mismatch")
