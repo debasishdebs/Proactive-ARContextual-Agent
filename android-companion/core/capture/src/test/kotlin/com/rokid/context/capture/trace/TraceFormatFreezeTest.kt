@@ -131,9 +131,9 @@ class TraceFormatFreezeTest {
     }
 
     @Test fun gateCrossFieldRule() {
-        assertEquals("""["gt",1,2,"keep","",true]""", EventCodec.encode(TraceEvent.Gate(1, 2, GateOutcome.KEEP, "")))
+        assertEquals("""["gt",1,2,"keep","",true,1]""", EventCodec.encode(TraceEvent.Gate(1, 2, GateOutcome.KEEP, "", keptAtMs = 1)))
         for (r in GATE_SKIP_REASONS) TraceEvent.Gate(1, 2, GateOutcome.SKIP, r)
-        assertFailsWith<IllegalArgumentException> { TraceEvent.Gate(1, 2, GateOutcome.KEEP, "BLUR") }
+        assertFailsWith<IllegalArgumentException> { TraceEvent.Gate(1, 2, GateOutcome.KEEP, "BLUR", keptAtMs = 1) }
         assertFailsWith<IllegalArgumentException> { TraceEvent.Gate(1, 2, GateOutcome.SKIP, "") }
         assertFailsWith<IllegalArgumentException> { TraceEvent.Gate(1, 2, GateOutcome.SKIP, "OTHER") }
     }
@@ -177,9 +177,10 @@ class TraceFormatFreeze2Test {
         assertTrue(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 1750, EpisodeCause.TIMER))
         assertFalse(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 2251, EpisodeCause.TIMER))
         assertFalse(ReplayRule.opensMatch(2000, EpisodeCause.TIMER, 2000, EpisodeCause.DWELL))
-        val g = TraceEvent.Gate(1, 5, GateOutcome.KEEP, "")
+        val g = TraceEvent.Gate(1, 5, GateOutcome.KEEP, "", keptAtMs = 7)
         assertTrue(ReplayRule.gatesMatch(g, g.copy(tMs = 99)))        // append time is not part of the equality
-        assertFalse(ReplayRule.gatesMatch(g, g.copy(encoded = false)))
+        assertFalse(ReplayRule.gatesMatch(g, g.copy(encoded = false, keptAtMs = null)))
+        assertFalse(ReplayRule.gatesMatch(g, g.copy(keptAtMs = 8)))
         assertFalse(ReplayRule.gatesMatch(g, TraceEvent.Gate(1, 5, GateOutcome.SKIP, "CAPPED")))
     }
 
@@ -203,5 +204,86 @@ class TraceFormatFreeze2Test {
         }
         // and a snapshot input is really encoded in the manifest
         for ((input, where) in SchedulerInputs.ALL) if (where.startsWith("snapshot.")) assertTrue("\"${where.removePrefix("snapshot.")}\":" in TraceFixtures.goldenManifest, input)
+    }
+}
+
+class TraceFormatFreeze3Test {
+    @Test fun flushCarriesTheGateDecisionTime() {
+        val f = TraceEvent.Flush(7000, "window", nowMs = 6999)
+        assertEquals("""["fl",7000,"window",6999]""", EventCodec.encode(f))
+        assertEquals(f, EventCodec.decode(EventCodec.encode(f)))
+        assertFailsWith<TraceFormatException> { EventCodec.decode("""["fl",7000,"window"]""") }
+    }
+
+    @Test fun keepBookkeepingTimeIsSetExactlyForAnEncodedKeep() {
+        val k = TraceEvent.Gate(10, 1, GateOutcome.KEEP, "", encoded = true, keptAtMs = 9)
+        assertEquals("""["gt",10,1,"keep","",true,9]""", EventCodec.encode(k))
+        assertEquals(k, EventCodec.decode(EventCodec.encode(k)))
+        assertFailsWith<IllegalArgumentException> { k.copy(keptAtMs = null) }
+        assertFailsWith<IllegalArgumentException> { k.copy(encoded = false) }
+        assertFailsWith<IllegalArgumentException> { TraceEvent.Gate(10, 1, GateOutcome.SKIP, "BLUR", keptAtMs = 9) }
+    }
+
+    @Test fun snapshotCarriesBindFailuresAndThePreviousGyroTime() {
+        val back = Manifest.decodeStrict(TraceFixtures.goldenManifest).getOrThrow().snapshot
+        assertEquals(1, back.bindFailures); assertEquals(985L, back.prevGyroMs)
+        assertFailsWith<IllegalArgumentException> { TraceFixtures.snapshot.copy(bindFailures = 101) }
+        assertEquals(null, Manifest.decodeStrict(TraceFixtures.manifest(snap = TraceFixtures.snapshot.copy(prevGyroMs = null)).encode()).getOrThrow().snapshot.prevGyroMs)
+    }
+
+    @Test fun inexactWindowsAreMarkedAndCounted() {
+        val ex = Exactness.classify(TraceFixtures.events.filter { it !is TraceEvent.Episode }.take(5))
+        assertEquals(emptySet(), ex)
+        val dwell = listOf(TraceEvent.Episode(1, true, EpisodeCause.DWELL))
+        assertEquals(setOf(Inexact.ASYNC_CALLBACK), Exactness.classify(dwell))
+        assertEquals(setOf(Inexact.CAPTURE_NOW), Exactness.classify(listOf(TraceEvent.Episode(1, true, EpisodeCause.NOW))))
+        assertEquals(setOf(Inexact.CAPTURE_NOW), Exactness.classify(listOf(TraceEvent.Score(1, 1, 0, 0, 20f, true, MotionState.STILL, false, true, null, false, 1))))
+        assertEquals(setOf(Inexact.BIND_FAILURE), Exactness.classify(listOf(TraceEvent.Episode(1, false, EpisodeCause.TIMER, null, null, EpisodeOutcome.BIND))))
+        assertEquals(setOf(Inexact.BIND_FAILURE), Exactness.classify(emptyList(), TraceFixtures.snapshot))      // bindFailures = 1 and a back-off pending
+        assertEquals(emptySet(), Exactness.classify(emptyList(), TraceFixtures.snapshot.copy(bindFailures = 0, bindBackoffUntil = null)))
+        val t = ReplayTally()
+        t.record(emptySet(), true); t.record(emptySet(), false); t.record(setOf(Inexact.CAPTURE_NOW), false); t.record(setOf(Inexact.BIND_FAILURE), true)
+        assertEquals(1, t.passed); assertEquals(1, t.failed); assertEquals(2, t.inexact)
+    }
+
+    @Test fun phoneSampleAgeAndOffsetDriftAreAccountedFor() {
+        val m = TraceFixtures.manifest()
+        val ok = ClockMap.of(m)
+        assertEquals(false, ok.phoneSampleStale); assertEquals(false, ok.phoneJump)
+        assertEquals(m.startWallMs + 250, ok.phoneWall(1000, "42"))               // atMs + age - wall = 250
+        assertEquals(m.endWallMs + 252, ok.phoneWall(12_000, "42"))
+        assertEquals(40L + 10L + 2L + 20L, ok.uncertaintyMs)                      // sync + glasses drift + phone drift + max age
+        // too old: the samples are not used, the intake offset is the fallback
+        val stale = ClockMap.of(m.copy(endPhoneAgeMs = ClockMap.MAX_PHONE_AGE_MS + 1))
+        assertTrue(stale.phoneSampleStale)
+        assertEquals(m.startWallMs + 250, stale.phoneWall(1000, "42"))
+        assertEquals(m.endWallMs + 250, stale.phoneWall(12_000, "42"))            // intake offset 250, not the samples
+        assertEquals(null, ClockMap.of(m.copy(endPhoneAgeMs = ClockMap.MAX_PHONE_AGE_MS + 1, phoneOffsetMs = null, offsetUncertaintyMs = null)).phoneWall(1000, "42"))
+        // the age bound itself is accepted
+        assertEquals(false, ClockMap.of(m.copy(endPhoneAgeMs = ClockMap.MAX_PHONE_AGE_MS)).phoneSampleStale)
+        // the phone clock was corrected between the samples
+        val jumped = ClockMap.of(m.copy(endPhoneWallMs = m.endPhoneWallMs!! + 5_000))
+        assertTrue(jumped.phoneJump); assertEquals(null, jumped.phoneWall(6_000, "42")); assertTrue(jumped.glassesWall(6_000, "42") != null)
+    }
+
+    @Test fun hostileTinyChunksAreRejectedEarlyAndKeepNothing() {
+        val id = TraceFixtures.ID
+        // 4,096 highly compressible chunks of repeated pr events against a manifest that says 20 events in total
+        val manifest = TraceFixtures.manifest(chunkCount = 4096, eventCount = 4096, rawBytes = 5_000)
+        val asm = TraceAssembler(manifest)
+        val events = List(5_000) { TraceEvent.PreRollEnd(11_000) }
+        val e0 = ChunkCodec.encode(id, 0, events)
+        for (seq in 0 until 4096) {
+            val e = ChunkCodec.encode(id, seq, events)
+            asm.accept(ChunkCodec.decode(id, seq, e.sha256, e.b64).getOrThrow())
+        }
+        assertTrue(e0.b64.length < 1_000, "tiny on the wire")
+        assertEquals(0L, asm.inspectedEvents, "an over-manifest chunk is never inspected")
+        assertEquals("totals", asm.verify().reason)
+        assertEquals(TraceStatus.PARTIAL, asm.verify().status)
+        // within bounds, inspection is bounded by the manifest event count
+        val ok = TraceAssembler(TraceFixtures.manifest(chunkCount = 1, eventCount = 17, rawBytes = TraceFixtures.GOLDEN_RAW_BYTES.toLong(), traceSha = TraceFixtures.GOLDEN_TRACE_SHA))
+        ok.accept(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, TraceFixtures.GOLDEN_B64).getOrThrow())
+        assertEquals(17L, ok.inspectedEvents); assertEquals(TraceStatus.COMPLETE, ok.verify().status)
     }
 }

@@ -32,7 +32,8 @@ enum class TraceStatus { COMPLETE, PARTIAL }
  *
  * Clock (I1, S42): at the trace start AND at its end the recorder samples, at the same instant, the glasses elapsed realtime and the glasses wall clock
  * ([startElapsedMs]/[startWallMs], [endElapsedMs]/[endWallMs]) and, when linked, the phone wall time from the latest phone message
- * ([startPhoneWallMs]/[endPhoneWallMs], null when unlinked, both or neither). [ClockMap] interpolates the glasses wall offset between the two samples and
+ * ([startPhoneWallMs]/[endPhoneWallMs] = the latest phone message's own `atMs`, and [startPhoneAgeMs]/[endPhoneAgeMs] = how long ago, in glasses elapsed ms, that message
+ * arrived; the phone wall time at the sample instant is `atMs + age`; all four null when unlinked, samples and ages go together). [ClockMap] interpolates the glasses wall offset between the two samples and
  * REFUSES (null) when the offset moved by more than [ClockMap.MAX_WALL_JUMP_MS] (the wall clock was corrected mid-trace), instead of smearing it.
  * [phoneOffsetMs] (phone wall minus glasses wall) and [offsetUncertaintyMs] are still filled by the phone at intake (null on the glasses); the phone samples
  * let a later import (Task 19) derive an offset for the trace's own time instead of the intake-time one.
@@ -62,6 +63,8 @@ data class Manifest(
     val endWallMs: Long,
     val startPhoneWallMs: Long?,
     val endPhoneWallMs: Long?,
+    val startPhoneAgeMs: Long?,
+    val endPhoneAgeMs: Long?,
     val phoneOffsetMs: Long?,
     val offsetUncertaintyMs: Long?,
     val chunkCount: Int,
@@ -82,6 +85,8 @@ data class Manifest(
         require(BOOT_ID.matches(bootId)) { "bootId is the decimal boot count" }
         require((startPhoneWallMs == null) == (endPhoneWallMs == null)) { "phone wall samples go together" }
         startPhoneWallMs?.let { ms(it, "startPhoneWallMs") }; endPhoneWallMs?.let { ms(it, "endPhoneWallMs") }
+        require((startPhoneAgeMs == null) == (startPhoneWallMs == null) && (endPhoneAgeMs == null) == (endPhoneWallMs == null)) { "phone sample ages go with the samples" }
+        startPhoneAgeMs?.let { ms(it, "startPhoneAgeMs") }; endPhoneAgeMs?.let { ms(it, "endPhoneAgeMs") }
         ms(startElapsedMs, "startElapsedMs"); ms(endElapsedMs, "endElapsedMs"); ms(startWallMs, "startWallMs"); ms(endWallMs, "endWallMs")
         require(endElapsedMs >= startElapsedMs) { "end before start" }
         require((phoneOffsetMs == null) == (offsetUncertaintyMs == null)) { "phone offset and uncertainty go together" }
@@ -107,6 +112,7 @@ data class Manifest(
             "parentTraceId" to (parentTraceId?.let { JsonPrimitive(it) } ?: JsonNull), "bootId" to JsonPrimitive(bootId),
             "startElapsedMs" to n(startElapsedMs), "endElapsedMs" to n(endElapsedMs), "startWallMs" to n(startWallMs), "endWallMs" to n(endWallMs),
             "startPhoneWallMs" to (startPhoneWallMs?.let { n(it) } ?: JsonNull), "endPhoneWallMs" to (endPhoneWallMs?.let { n(it) } ?: JsonNull),
+            "startPhoneAgeMs" to (startPhoneAgeMs?.let { n(it) } ?: JsonNull), "endPhoneAgeMs" to (endPhoneAgeMs?.let { n(it) } ?: JsonNull),
             "phoneOffsetMs" to (phoneOffsetMs?.let { n(it) } ?: JsonNull), "offsetUncertaintyMs" to (offsetUncertaintyMs?.let { n(it) } ?: JsonNull),
             "chunkCount" to n(chunkCount.toLong()), "eventCount" to n(eventCount), "rawBytes" to n(rawBytes), "traceSha256" to JsonPrimitive(traceSha256),
             "recorded" to JsonPrimitive(recorded.name), "closeReason" to JsonPrimitive(closeReason), "snapshot" to snapshotJson(snapshot),
@@ -137,7 +143,7 @@ data class Manifest(
                 "gateLastKeptAt" to (s.gateLastKeptAt?.let { n(it) } ?: JsonNull), "gateKeptAt" to JsonArray(s.gateKeptAt.map { n(it) }),
                 "lastBriefAt" to (s.lastBriefAt?.let { n(it) } ?: JsonNull), "stillStep" to n(s.stillStep.toLong()),
                 "lastCheckHash" to (s.lastCheckHash?.let { JsonArray(listOf(hex(it.d), hex(it.p))) } ?: JsonNull), "darkStreak" to n(s.darkStreak.toLong()),
-                "bindBackoffUntil" to (s.bindBackoffUntil?.let { n(it) } ?: JsonNull), "coldStartGrace" to JsonPrimitive(s.coldStartGrace),
+                "bindBackoffUntil" to (s.bindBackoffUntil?.let { n(it) } ?: JsonNull), "bindFailures" to n(s.bindFailures.toLong()), "prevGyroMs" to (s.prevGyroMs?.let { n(it) } ?: JsonNull), "coldStartGrace" to JsonPrimitive(s.coldStartGrace),
                 "startups" to JsonArray(s.startups.map { n(it) }), "lastPhotoAttemptAtMs" to (s.lastPhotoAttemptAtMs?.let { n(it) } ?: JsonNull),
                 "pose" to JsonObject(
                     mapOf(
@@ -182,7 +188,8 @@ data class Manifest(
                 traceId = top.str("traceId"), installId = top.str("installId"), deletionCounter = top.int("deletionCounter"), revision = top.int("revision").toInt(),
                 parentTraceId = top.strOrNull("parentTraceId"), bootId = top.str("bootId"), startElapsedMs = top.int("startElapsedMs"),
                 endElapsedMs = top.int("endElapsedMs"), startWallMs = top.int("startWallMs"), endWallMs = top.int("endWallMs"),
-                startPhoneWallMs = top.intOrNull("startPhoneWallMs"), endPhoneWallMs = top.intOrNull("endPhoneWallMs"), phoneOffsetMs = top.intOrNull("phoneOffsetMs"), offsetUncertaintyMs = top.intOrNull("offsetUncertaintyMs"),
+                startPhoneWallMs = top.intOrNull("startPhoneWallMs"), endPhoneWallMs = top.intOrNull("endPhoneWallMs"),
+                startPhoneAgeMs = top.intOrNull("startPhoneAgeMs"), endPhoneAgeMs = top.intOrNull("endPhoneAgeMs"), phoneOffsetMs = top.intOrNull("phoneOffsetMs"), offsetUncertaintyMs = top.intOrNull("offsetUncertaintyMs"),
                 chunkCount = top.int("chunkCount").toInt(), eventCount = top.int("eventCount"), rawBytes = top.int("rawBytes"),
                 traceSha256 = top.str("traceSha256"), recorded = top.enum("recorded", TraceStatus.values()), closeReason = top.str("closeReason"),
                 snapshot = decodeSnapshot(snap),
@@ -208,7 +215,7 @@ data class Manifest(
                 gateLastKeptAt = o.intOrNull("gateLastKeptAt"), gateKeptAt = o.arr("gateKeptAt").map { intOf(it) },
                 lastBriefAt = o.intOrNull("lastBriefAt"), stillStep = o.int("stillStep").toInt(),
                 lastCheckHash = o.take("lastCheckHash").let { if (it is JsonNull) null else (it as? JsonArray)?.takeIf { a -> a.size == 2 }?.let { a -> RingHash(hexOf(a[0]), hexOf(a[1])) } ?: throw IllegalArgumentException("lastCheckHash") },
-                darkStreak = o.int("darkStreak").toInt(), bindBackoffUntil = o.intOrNull("bindBackoffUntil"), coldStartGrace = o.bool("coldStartGrace"),
+                darkStreak = o.int("darkStreak").toInt(), bindBackoffUntil = o.intOrNull("bindBackoffUntil"), bindFailures = o.int("bindFailures").toInt(), prevGyroMs = o.intOrNull("prevGyroMs"), coldStartGrace = o.bool("coldStartGrace"),
                 startups = o.arr("startups").map { intOf(it) }, pose = decodePose(o.obj("pose")), lastPhotoAttemptAtMs = o.intOrNull("lastPhotoAttemptAtMs"),
                 planGen = o.int("planGen"),
                 planHash = o.strOrNull("planHash"), glance = glance, ctx = o.enum("ctx", ContextState.values()), resting = o.bool("resting"),
@@ -287,11 +294,19 @@ class TraceAssembler(private val manifest: Manifest) {
     private var conflict = false
     private val initial = HashSet<String>()
     private var configChange = false
-    private val quickLooks = HashSet<Long>()
-    private val preRolls = ArrayList<Long>()
+    private var quickLook: Long? = null
+    private var quickLookChanged = false
+    private var preRollCount = 0
+    private var preRollFirst = -1L
     private var closes = 0
     private var lastIsClose = false
     private var lastCloseReason: String? = null
+    // running totals of the chunks kept so far: a hostile stream of tiny, highly compressed chunks is rejected as soon as it exceeds the manifest
+    private var runEvents = 0L
+    private var runRaw = 0L
+    private var overrun = false
+    /** Events inspected so far (bounded by the manifest's eventCount; a test hook). */
+    internal var inspectedEvents = 0L; private set
 
     fun accept(c: DecodedChunk) {
         if (c.traceId != manifest.traceId) { foreign = true; return }
@@ -299,17 +314,21 @@ class TraceAssembler(private val manifest: Manifest) {
         if (c.seq !in 0 until manifest.chunkCount) { outOfRange = true; return }
         val prev = seen[c.seq]
         if (prev != null) { if (prev.sha != c.sha256) conflict = true; return }
+        runEvents += c.events.size; runRaw += c.rawBytes
+        if (runEvents > manifest.eventCount || runRaw > manifest.rawBytes) overrun = true
         seen[c.seq] = Meta(c.sha256, c.events.size, c.rawBytes, c.firstTMs, c.lastTMs)
+        if (overrun) return                      // verdict is already PARTIAL(totals): inspect and keep nothing more
+        inspectedEvents += c.events.size
         for (e in c.events) when (e) {
             is TraceEvent.Ctx, is TraceEvent.Resting, is TraceEvent.Profile -> {
                 if (c.seq == 0 && e.tMs == manifest.startElapsedMs) initial.add(EventCodec.tag(e))
-                if (e is TraceEvent.Profile) quickLooks.add(e.quickLookMs)
+                if (e is TraceEvent.Profile) { if (quickLook == null) quickLook = e.quickLookMs else if (quickLook != e.quickLookMs) quickLookChanged = true }
             }
             is TraceEvent.GateParams, is TraceEvent.Plan -> {
                 if (e.tMs == manifest.startElapsedMs) { if (c.seq == 0) initial.add(EventCodec.tag(e)) } else configChange = true
             }
-            is TraceEvent.PreRollEnd -> preRolls.add(e.tMs)
-            is TraceEvent.Close -> closes++
+            is TraceEvent.PreRollEnd -> { if (preRollCount == 0) preRollFirst = e.tMs; if (preRollCount < 2) preRollCount++ }
+            is TraceEvent.Close -> if (closes < 2) closes++
             else -> Unit
         }
         if (c.seq == manifest.chunkCount - 1) (c.events.last() as? TraceEvent.Close).let { lastIsClose = it != null; lastCloseReason = it?.reason }
@@ -333,9 +352,9 @@ class TraceAssembler(private val manifest: Manifest) {
         if (Manifest.traceSha((0 until manifest.chunkCount).map { seen.getValue(it).sha }) != manifest.traceSha256) return partial("trace_sha")
         if (manifest.recorded != TraceStatus.COMPLETE) return partial("recorded_partial")
         if (!initial.containsAll(INITIAL_TAGS)) return partial("start_state")
-        if (configChange || quickLooks.size > 1) return partial("config_change")
+        if (configChange || quickLookChanged) return partial("config_change")
         val longEnough = manifest.endElapsedMs >= manifest.preRollEndMs
-        if (preRolls.size > 1 || (preRolls.size == 1 && preRolls[0] != manifest.preRollEndMs) || (preRolls.isEmpty() && longEnough)) return partial("pre_roll")
+        if (preRollCount > 1 || (preRollCount == 1 && preRollFirst != manifest.preRollEndMs) || (preRollCount == 0 && longEnough)) return partial("pre_roll")
         if (closes != 1 || !lastIsClose || lastCloseReason != manifest.closeReason) return partial("close")
         return Verification(TraceStatus.COMPLETE, "ok")
     }

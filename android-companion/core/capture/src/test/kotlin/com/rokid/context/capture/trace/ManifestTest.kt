@@ -79,7 +79,7 @@ class ManifestTest {
             "parentTraceId", "phoneOffsetMs", "rawBytes", "recorded", "revision", "snapshot", "startElapsedMs", "startPhoneWallMs", "startWallMs", "traceId", "traceSchema", "traceSha256",
             "ctx", "exact", "glance", "keptAt", "lastKeyframeAt", "planGen", "planHash", "resting", "ring", "sampleEvery", "settingsHash", "tier",
             "bigTurnRad", "bridgeMs", "capPerMin", "deadbandRadS", "maxDtMs", "minBoutMs", "minBoutRad", "noveltyMinRad", "noveltyWindowMs", "onsetRadS", "releaseRadS", "restCapPerMin", "settleMs",
-            "gateLastKeptAt", "gateKeptAt", "lastBriefAt", "stillStep", "lastCheckHash", "darkStreak", "bindBackoffUntil", "coldStartGrace", "startups", "pose", "lastPhotoAttemptAtMs",
+            "startPhoneAgeMs", "endPhoneAgeMs", "bindFailures", "prevGyroMs", "gateLastKeptAt", "gateKeptAt", "lastBriefAt", "stillStep", "lastCheckHash", "darkStreak", "bindBackoffUntil", "coldStartGrace", "startups", "pose", "lastPhotoAttemptAtMs",
             "rx", "ry", "rz", "walked", "qx", "qy", "qz", "quietSinceMs",
         )
         assertEquals(emptySet(), keys - allowed)

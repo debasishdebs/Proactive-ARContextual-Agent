@@ -43,8 +43,8 @@ class EventCodecTest {
             """["pr",5,1]""", """["pr"]""", """["zz",5]""", """[]""", """{"a":1}""", """["pr",5]x""", """ ["pr",5]""", "[\"pr\",5]\n",
             """["cx",1,"MARS"]""", """["cx",1,"rest"]""", """["rs",1,"true"]""", """["rs",1,1]""", """["ep",1,true,"TIMER",null]""", """["ep",1,true,"bogus",null]""",
             """["g",1,1,[1],0,0]""", """["g",1,1,{"a":1},0,0]""", """["g",1,1,1.5,0,0]""", """["g",1,1,2147483648,0,0]""", """["g",1,0,0,0]""", """["g",1,-1,0,0,0]""", """["pr",9007199254740992]""",
-            """["gt",1,1,"keep","bad reason",true]""", """["gt",1,1,"skip","BLUR",false]""", """["gt",1,1,"keep",""]""", """["gt",1,1,"keep","BLUR",true]""", """["gt",1,1,"skip","",true]""", """["gt",1,1,"skip","MARS",true]""",
-            """["ep",1,true,"timer",null,null,"ok"]""", """["ep",1,false,"timer",null,null,null]""", """["ep",1,false,"timer",null,null,"OK"]""", """["dk",1,1001]""", """["gt",1,1,"maybe","",true]""", """["pl",1,1,"XYZ","SHADOW"]""", """["pl",1,1,"abc","SOMETIMES"]""",
+            """["gt",1,1,"keep","bad reason",true,1]""", """["gt",1,1,"skip","BLUR",false,null]""", """["gt",1,1,"keep",""]""", """["gt",1,1,"keep","",true,null]""", """["gt",1,1,"keep","",false,5]""", """["gt",1,1,"skip","BLUR",true,5]""", """["gt",1,1,"keep","BLUR",true,1]""", """["gt",1,1,"skip","",true,null]""", """["gt",1,1,"skip","MARS",true,null]""",
+            """["ep",1,true,"timer",null,null,"ok"]""", """["ep",1,false,"timer",null,null,null]""", """["ep",1,false,"timer",null,null,"OK"]""", """["dk",1,1001]""", """["gt",1,1,"maybe","",true,null]""", """["pl",1,1,"XYZ","SHADOW"]""", """["pl",1,1,"abc","SOMETIMES"]""",
             """["sc",1,1,"0123","0123456789abcdef",0,true,"STILL",false,false,null,false,0]""", """["gp",1,65,0,true]""", """["bo",1,33]""", """["cl",1,""]""",
             "[\"cl\",1,\"a" + '\\' + "u0041\"]",   // a JSON escape of a plain letter: valid JSON, not canonical
         )
