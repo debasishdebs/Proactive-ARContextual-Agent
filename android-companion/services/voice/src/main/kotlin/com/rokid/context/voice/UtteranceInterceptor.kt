@@ -4,8 +4,8 @@ package com.rokid.context.voice
 sealed interface InterceptResult {
     /** Not ours: the ask continues unchanged. */
     data object PassThrough : InterceptResult
-    /** Consumed (e.g. a mark): no model call, the ask ends [VoiceOutcome.MARKED]. */
-    data object Handled : InterceptResult
+    /** Consumed (e.g. a mark): no model call, the ask ends [VoiceOutcome.MARKED]; [hud] (a fixed short text, never the transcript) is toasted when not null. */
+    data class Handled(val hud: String? = null) : InterceptResult
     /** Ask only [question] (the clauses nothing matched). */
     data class Ask(val question: String) : InterceptResult
 }

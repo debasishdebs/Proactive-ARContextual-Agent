@@ -36,6 +36,7 @@ abstract class CanvasSlice3Dao {
     @Query("SELECT * FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs ORDER BY atMs, labelId") abstract suspend fun labelsBetween(fromMs: Long, toMs: Long): List<CanvasLabelEntity>
     @Query("DELETE FROM canvas_label WHERE labelId = :id") protected abstract suspend fun deleteLabelRow(id: String): Int
     @Query("UPDATE canvas_label SET name = :name WHERE labelId = :id") protected abstract suspend fun renameLabelRow(id: String, name: String): Int
+    @Query("UPDATE canvas_label SET source = :source WHERE labelId = :id") protected abstract suspend fun retagLabelRow(id: String, source: String): Int
     @Query("DELETE FROM canvas_label WHERE frameId IN (:frameIds)") protected abstract suspend fun deleteLabelRowsForFrames(frameIds: List<String>): Int
     @Query("DELETE FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs") protected abstract suspend fun deleteLabelRowsBetween(fromMs: Long, toMs: Long): Int
 
@@ -54,6 +55,15 @@ abstract class CanvasSlice3Dao {
 
     @Transaction open suspend fun deleteLabel(id: String): Boolean {
         val n = deleteLabelRow(id)
+        if (n > 0) bumpLabelRev()
+        return n > 0
+    }
+
+    /** Changes how a mark was made (tap to voice, tap to ask_tap). Bumps `labelRev` only when the source really changed. */
+    @Transaction open suspend fun retagLabel(id: String, source: String): Boolean {
+        val cur = label(id) ?: return false
+        if (cur.source == source) return true
+        val n = retagLabelRow(id, source)
         if (n > 0) bumpLabelRev()
         return n > 0
     }

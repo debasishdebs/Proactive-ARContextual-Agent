@@ -8,7 +8,7 @@ A voice mark saves "something worth remembering happened just now" without touch
 - Or press push-to-talk on the glasses or the phone, then say a command from the lists below.
 - Marks from the phone notification, the tile or the home button are not available yet; they are planned for a later build.
 
-Voice marks are always on in this build. A switch to turn them off is coming in a later build. There is no hotword and no always-on listening. The app listens only after you press push-to-talk (or after a tap, on the voice path), and stops when you finish speaking.
+Voice marks are always on in this build. A switch to turn them off is coming in a later build. Marking by tap on the glasses is always on in this build too, and has no switch yet. A tap only saves a mark and never changes when photos are taken. There is no hotword and no always-on listening. The app listens only after you press push-to-talk (or after a tap, on the voice path), and stops when you finish speaking.
 
 ## What you can say
 
