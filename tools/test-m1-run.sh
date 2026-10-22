@@ -24,7 +24,23 @@ run replay t-1 --diag "$T/diag_ok.log"; chk "windows_compared=24 inexact_windows
 chk "hours_from_full=7.5"; chk "PASS exact parity"; chk "PASS shadow vs counterfactual opens: 102 vs 100, deviation 2.0%"
 run replay t-1 --diag "$T/diag_bad.log" && { echo "FAIL: 130 vs 100 should fail the 5% check"; fail=1; }
 chk "FAIL shadow vs counterfactual opens: 130 vs 100"
-rm -rf "$W/pull"; M1_DIAG="$T/diag_ok.log" run pull "$W/pull"; chk "heartbeat lines saved: 3"
+# pull: a stub adb (glasses on USB serial G, phone on wireless adb whose serial has spaces) records its arguments; the phone is selected by transport id only
+mkdir -p "$W/bin"; cat > "$W/bin/adb" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$ADB_LOG"
+[ "$1" = devices ] && printf 'List of devices attached\n1901092545029120 device usb:1-1 product:g transport_id:3\nadb-PHN 123 (2)._adb-tls-connect._tcp device product:p model:P transport_id:7\n'
+exit 0
+STUB
+chmod +x "$W/bin/adb"; export ADB_LOG="$W/adb.log"; : > "$ADB_LOG"
+rm -rf "$W/pull"; mkdir -p "$W/pull/trace-aaaa-0001" "$W/pull/trace-partial-0001"; echo '{}' > "$W/pull/trace-aaaa-0001/manifest.json"; echo '{}' > "$W/pull/trace-partial-0001/manifest.json"
+PATH="$W/bin:$PATH" M1_DIAG="$T/diag_ok.log" run pull "$W/pull" && { echo "FAIL: the PARTIAL trace should fail the pull"; fail=1; }
+chk "heartbeat lines saved: 3"; chk "imported traceId=trace-aaaa-0001 status=COMPLETE events=11 chunks=1"; chk "error=partial_trace"; chk "rerun with --allow-partial"
+grep -q -- '-t 7 push '"$W/pull/trace-aaaa-0001"' /sdcard/Android/data/com.rokid.context/files/trace-staging/' "$ADB_LOG" || { echo "FAIL: no push by transport id"; fail=1; }
+grep -q -- '-s ' "$ADB_LOG" && { echo "FAIL: phone selected by serial"; fail=1; }
+rm -rf "$W/pull/trace-partial-0001"
+PATH="$W/bin:$PATH" M1_DIAG="$T/diag_ok.log" run pull "$W/pull"; chk "imported 1 trace(s), failed 0"
+PATH="$W/bin:$PATH" M1_PHONE_TID=9 M1_DIAG="$T/diag_ok.log" run pull "$W/pull" >/dev/null; grep -q -- '-t 9 push' "$ADB_LOG" || { echo "FAIL: M1_PHONE_TID ignored"; fail=1; }
+run replay --diag "$T/diag_ok.log"; chk "replay started"
 grep -q SHOULDNOTAPPEAR "$W/pull/heartbeats.log" "$T/diag_ok.log" >/dev/null && grep -q SHOULDNOTAPPEAR "$W/pull/heartbeats.log" && { echo "FAIL: non-heartbeat line leaked into the pull"; fail=1; }
 no "mock-token-xyz"; no "Bearer"; no "SHOULDNOTAPPEAR"; no "123456"
 [ "$fail" = 0 ] && echo "ALL OK" || { echo "FAILED"; exit 1; }

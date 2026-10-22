@@ -5,6 +5,7 @@ import com.rokid.context.canvas.plan.ReplayService
 import com.rokid.context.canvas.plan.SweepService
 import com.rokid.context.canvas.trace.CanvasStartup
 import com.rokid.context.canvas.trace.StoredReplayTraces
+import com.rokid.context.canvas.trace.TraceImport
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.DaoFence
 import com.rokid.context.memory.db.DeletionEpochStore
@@ -42,6 +43,8 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             return build(
                 dao, replay, devMode, startup = { CanvasStartup.run(app, db) },
                 sender = { HubGraph.get(app); HubGraph.planSender }, collect = { HubGraph.get(app); HubGraph.collectSession },
+                importer = TraceImport(dao, com.rokid.context.canvas.trace.FencedFiles(db, app.filesDir), fence),
+                stagingRoot = { app.getExternalFilesDir(null)?.let { File(it, "trace-staging").also(File::mkdirs) } },
                 plans = { HubGraph.get(app); PlanGraph.current()?.publisher }, m1 = { HubGraph.get(app); PlanGraph.current()?.m1 }, sweeps = sweeps,
             )
         }
@@ -51,12 +54,13 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
             dao: com.rokid.context.memory.db.CanvasSlice3Dao, replay: ReplayService, devMode: StateFlow<Boolean>, startup: suspend () -> Unit,
             sender: () -> com.rokid.context.phone.hub.plan.PlanPublishPort?, collect: () -> com.rokid.context.canvas.trace.CollectSession?,
             /** Task 27/28: the gated publish and the S26 actions, and the M1 record; null until the composition task (33) binds them (the routes then answer 503). */
+            importer: TraceImport? = null, stagingRoot: () -> File? = { null },
             plans: () -> com.rokid.context.canvas.plan.CapturePlanPublisher? = { null },
             m1: () -> com.rokid.context.canvas.plan.M1EvidenceStore? = { null },
             /** Task 24/36: the sweep jobs; null = the routes are not registered (a test of another group). */
             sweeps: SweepService? = null,
         ): CanvasExtras {
-            val traces = TraceRoutes(dao, collect, devMode::value)
+            val traces = TraceRoutes(dao, collect, devMode::value, importer = { importer }, stagingRoot = stagingRoot)
             val replays = ReplayRoutes(replay)
             val planRoutes = PlanRoutes(devMode::value, sender, plans = plans, m1 = m1)
             val all = buildList {

@@ -10,6 +10,8 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     testOptions { unitTests.isIncludeAndroidResources = true }
+    // PulledTraces (a valid pulled-trace writer) is shared with the phone import-route tests.
+    sourceSets.getByName("test").java.srcDir("src/pulledfixtures/java")
 }
 
 dependencies {

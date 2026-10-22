@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 TOKEN = "mock-token-xyz"
 class H(BaseHTTPRequestHandler):
     polls = 0
+    imports = []
     def log_message(self, *a): pass
     def send(self, code, obj):
         b = json.dumps(obj).encode(); self.send_response(code); self.send_header("Content-Type", "application/json")
@@ -24,6 +25,10 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/plans/debug-shadow":
             if b.get("mode") != "SHADOW": return self.send(400, {"error": "shadow_only"})
             return self.send(200, {"label": "debug SHADOW (no publish gates)", "mode": "SHADOW", "gen": 3, "sent": True, "configHash": "f5782e0d8610", "warnings": []})
+        if p == "/api/traces/import":
+            if b.get("name") == "trace-partial-0001" and not b.get("allowPartial"): return self.send(409, {"error": "partial_trace"})
+            H.imports.append(b["name"])
+            return self.send(200, {"traceId": b["name"], "status": "COMPLETE", "events": 11, "chunks": 1, "unchanged": False})
         if p == "/api/collect/start": return self.send(200, {"active": True, "untilMs": 1000 * b["minutes"]})
         if p == "/api/collect/stop": return self.send(200, {"active": False, "untilMs": None})
         if p == "/api/replays":
