@@ -684,6 +684,22 @@ class CanvasRunnerTest {
         assertEquals(1, m.n); assertEquals(101.0, m.p!!, 0.0)
     }
 
+    @Test fun forgettingOnePhotoOfAMultiSourceBatchDeletesEveryDownstreamRowOfTheOther() = runBlocking<Unit> {
+        // One provider call (batch "B1") produced a fact from f1 AND f2; the trust and preview rows of f2 are derived from it, so Forget of f1 must reach them (S25 lineage).
+        val ex = linkedMapOf<String, NodeExecutor>().apply {
+            putAll(liveFakes())
+            put(NodeTypes.VISION_EXTRACT, fake(NodeTypes.VISION_EXTRACT, chunk = 3, nominal = { 1 }) { _, it ->
+                NodeResult(it.frameId, extraction(it.frameId), calls = 1, meta = CallMeta(5, null, null, null, null, "B1"))
+            })
+        }
+        val run = runAll(runner(ex), DefaultPipelines.liveExtract(), listOf("f1", "f2"))
+        val before = dao.items(run.runId)
+        val downstream = before.filter { it.frameId == "f2" && it.nodeId != "photos" && it.outputJson != null }
+        assertTrue(downstream.isNotEmpty()); assertTrue("downstream rows keep the batch lineage", downstream.all { it.batchId == "B1" })
+        dao.deleteCanvasOutputsForFrames(listOf("f1"))
+        assertTrue("nothing derived from the batch survives", dao.items(run.runId).none { it.frameId == "f2" && it.batchId == "B1" })
+    }
+
     @Test fun rejectedRetryCountedAsAttempt() = runBlocking<Unit> {
         val run = runAll(runner(Executors.all(), tokenContext { p, n -> if (n == 1) "not json" else good(p) }), DefaultPipelines.liveExtract(), frames(1))
         val owner = extractRows(run.runId).single()

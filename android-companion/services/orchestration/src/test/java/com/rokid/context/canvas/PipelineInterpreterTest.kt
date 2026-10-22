@@ -374,7 +374,8 @@ class PipelineInterpreterTest {
         assertTrue(o.traces.single { it.frameId == "ex1" && it.nodeId == "ex_driving" }.outputJson!!.contains("Mug in ex1"))
         assertNull(o.traces.single { it.nodeId == "_batch" && it.frameId == "ex1" }.outputJson)
         assertTrue(o.traces.filter { it.nodeId == "intent" || it.nodeId.startsWith("ex_") }.all { it.batchId != null }) // the model calls carry one
-        assertTrue(o.traces.filter { it.nodeId == "route" || it.nodeId == "_batch" }.all { it.batchId == null })
+        assertTrue(o.traces.filter { it.nodeId == "_batch" }.all { it.batchId == null })
+        assertTrue("downstream rows keep their frame's batch", o.traces.filter { it.nodeId == "route" }.all { it.batchId != null })
     }
 
     @Test fun traceBatchIdsAreUniquePerRun() = runBlocking<Unit> {

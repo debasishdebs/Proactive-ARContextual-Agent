@@ -53,10 +53,14 @@ class PipelineInterpreter(
     suspend fun run(p: Pipeline, publishId: Long, mode: String, photos: List<ExtractPhoto>, ctx: RunContext): Outcome {
         val token = newId()
         val traces = ArrayList<CanvasLiveTraceEntity>()
-        fun row(frameId: String, nodeId: String, r: NodeResult) = CanvasLiveTraceEntity(
-            publishId, frameId, nodeId, mode, if (r.error == null) "OK" else "ERROR", r.branch, r.value?.let { cap(CanvasValueJson.encode(it)) }, r.error,
-            r.meta?.batchId?.let { "$token:$it" }, clock(),
-        )
+        val lineage = HashMap<String, String>() // S25: downstream rows of a frame keep the batch of the call they derive from
+        fun row(frameId: String, nodeId: String, r: NodeResult): CanvasLiveTraceEntity {
+            r.meta?.batchId?.let { lineage[frameId] = it }
+            return CanvasLiveTraceEntity(
+                publishId, frameId, nodeId, mode, if (r.error == null) "OK" else "ERROR", r.branch, r.value?.let { cap(CanvasValueJson.encode(it)) }, r.error,
+                (r.meta?.batchId ?: lineage[frameId])?.let { "$token:$it" }, clock(),
+            )
+        }
         fun batchRows(error: String?) = photos.map { CanvasLiveTraceEntity(publishId, it.frameId, BATCH, mode, if (error == null) "OK" else "ERROR", null, null, error, null, clock()) }
         fun failed(reason: String): Outcome = Outcome.Failed(reason, traces + batchRows(reason))
 
