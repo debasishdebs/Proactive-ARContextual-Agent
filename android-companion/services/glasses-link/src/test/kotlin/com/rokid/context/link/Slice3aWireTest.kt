@@ -21,6 +21,22 @@ class Slice3aWireTest {
         Channels.MOTION_HINT to listOf("""{"v":1,"state":"STILL","atMs":1700000001000,"stillFrac5m":0.5}"""),
     )
 
+    @Test fun stampedReceiverAcksMatchAndTheCapsAckStaysCapsOnly() {
+        // The shapes the glasses PlanController now sends (fix round 1): every plan ack echoes install and session; the announcement is gen 0.
+        val gate = PlanAckGate(install = { "p1" }, sessionStart = { 777 })
+        for (st in PlanAckState.entries) {
+            val a = CapturePlanAck(gen = 3, state = st, reason = if (st == PlanAckState.REVERTED) "auto:trial_end" else null, caps = listOf("plan1"), phoneInstall = "p1", sessionStartMs = 777)
+            assertEquals(AckVerdict.MATCH, gate.classify(a), "$st")
+        }
+        val caps = CapturePlanAck(gen = 0, caps = listOf("plan1", "shadow", "trial"))   // sent after a plan was held and reverted: still the plain announcement
+        assertEquals(AckVerdict.CAPS, gate.classify(caps))
+        val tracker = PlanPeerTracker(graceMs = 10_000)
+        tracker.onSessionOpen(0); tracker.onHello(0); tracker.onCapsAck()
+        assertEquals(PlanPeer.CAPABLE, tracker.state(60_000))
+        val old = CapturePlanAck(gen = 3, state = PlanAckState.EFFECTIVE, phoneInstall = "p1")   // an unstamped ack is the bug this fixes
+        assertEquals(AckVerdict.STALE, gate.classify(old))
+    }
+
     @Test fun markIsDecodedWhenOlderThanSessionStart() {
         val m = MarkMessage(epoch = "e", seq = 3, atMs = 1_000, atElapsedMs = 500, sessionStartMs = 9_000)
         assertEquals(listOf<GlassesEvent>(GlassesEvent.MarkReceived(m)), inbound.onMessage(Channels.MARK, listOf(Wire.encode(m))))

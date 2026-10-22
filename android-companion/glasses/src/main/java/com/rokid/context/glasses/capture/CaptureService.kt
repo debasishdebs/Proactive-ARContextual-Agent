@@ -194,8 +194,11 @@ class CaptureService : LifecycleService() {
                 try {
                     if (tick % 60 == 0) budget.onSample(batteryPercent(), isCharging(), runtime.settingsCache.readNormalized().batteryTargetHours)
                     applyRate()
-                    runtime.plan.tick(SystemClock.elapsedRealtime()) // TRIAL end and staged activation ride this existing 1 s loop
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "budget/rate update failed: ${e.javaClass.simpleName}") }
+                // Own guard: a throw above must not skip the TRIAL limit check.
+                try {
+                    runtime.plan.tick(SystemClock.elapsedRealtime()) // TRIAL end and staged activation ride this existing 1 s loop
+                } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "plan tick failed: ${e.javaClass.simpleName}") }
                 publishStatus(tick++)
               } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
                 delay(SUPERVISE_MS)
@@ -254,11 +257,11 @@ class CaptureService : LifecycleService() {
                 try { applyRate(it) } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "rate update failed: ${e.javaClass.simpleName}") }
             }
         }
-        plan.host = object : com.rokid.context.glasses.capture.plan.PlanHost {
+        plan.attach(object : com.rokid.context.glasses.capture.plan.PlanHost { // installs the glance config in force: an activation racing the start is not lost
             override fun quiet() = motion.quiet() && !session.episodeOpen()
             override fun abortBout() = motion.abortBout()
             override fun install(cfg: com.rokid.context.glasses.capture.plan.ActiveConfig) = motion.setConfig(cfg.glance)
-        }
+        })
         runtime.smartCapture.value = true
         session.start()
         scheduleNextCapture(failed = false) // the watchdog

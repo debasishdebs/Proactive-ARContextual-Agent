@@ -377,11 +377,21 @@ class HudControllerTest {
         assertEquals(2, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })    // the caps ack and this one
     }
 
-    @Test fun sessionOpenAckCarriesTheControllersStatus() = runTest {
+    @Test fun sessionOpenSendsCapsAckThenASeparateStatusAck() = runTest {
         val c = controller()
-        c.capsAck = { com.rokid.context.core.model.CapturePlanAck(gen = 7, state = com.rokid.context.core.model.PlanAckState.REVERTED, reason = "auto:reboot", caps = listOf("plan1", "shadow", "trial")) }
+        c.statusAck = { com.rokid.context.core.model.CapturePlanAck(gen = 7, state = com.rokid.context.core.model.PlanAckState.REVERTED, reason = "auto:reboot", caps = listOf("plan1", "shadow", "trial"), phoneInstall = "p1", sessionStartMs = 9) }
         bridge.phone(Channels.STATE, state())
-        val a = (Wire.decode<com.rokid.context.core.model.CapturePlanAck>(bridge.sent.first { it.first == Channels.CAPTURE_PLAN_ACK }.second.single()) as com.rokid.context.core.model.Decoded.Ok).value
-        assertEquals(7L, a.gen); assertEquals("auto:reboot", a.reason)
+        val acks = bridge.sent.filter { it.first == Channels.CAPTURE_PLAN_ACK }.map { (Wire.decode<com.rokid.context.core.model.CapturePlanAck>(it.second.single()) as com.rokid.context.core.model.Decoded.Ok).value }
+        assertEquals(2, acks.size)
+        val isCaps = { x: com.rokid.context.core.model.CapturePlanAck -> x.gen == 0L && x.phoneInstall.isEmpty() && x.sessionStartMs == 0L && x.reason == null }
+        kotlin.test.assertTrue(isCaps(acks[0]), "the announcement stays caps-only")
+        assertEquals(listOf("plan1", "shadow", "trial"), acks[0].caps)
+        assertEquals(7L, acks[1].gen); assertEquals("auto:reboot", acks[1].reason)
+        kotlin.test.assertFalse(isCaps(acks[1]))
+    }
+
+    @Test fun noStatusAckWhenNoPlanWasEverHeld() = runTest {
+        controller(); bridge.phone(Channels.STATE, state())
+        assertEquals(1, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
     }
 }

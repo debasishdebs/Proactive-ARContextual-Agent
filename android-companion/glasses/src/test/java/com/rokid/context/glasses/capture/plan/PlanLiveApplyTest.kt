@@ -151,23 +151,26 @@ class PlanLiveApplyTest {
     @Test fun rowGapsComposeAsMinimaOverTheSettingsProfile() {
         val a = ActiveConfig.of(rowPlan)
         val p = a.profile(CameraWake.MOTION, BudgetTier.T0, ContextState.VEHICLE_PASSENGER)
-        assertEquals(CameraWake.MOTION, p.wake)                       // forceSettle false: the settings wake stays
+        assertEquals(CameraWake.SETTLE, p.wake)                       // a plan is always SETTLE (spec 3.4), whatever the settings wake
         assertEquals(45_000L, p.settledCheckMs)                       // plan 45 s over the settings 5 s
         val low = a.profile(CameraWake.MOTION, BudgetTier.T2, ContextState.VEHICLE_PASSENGER)
         assertEquals(45_000L, low.settledCheckMs)                     // T2's own 20 s is below the row
-        assertEquals(CaptureProfile.of(CameraWake.MOTION, BudgetTier.T2).quietCheckMs, low.quietCheckMs)   // a row gap of 0 inherits
+        assertEquals(CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T2).quietCheckMs, low.quietCheckMs)   // a row gap of 0 inherits
+        assertEquals(CameraWake.MOTION, ActiveConfig.SETTINGS.profile(CameraWake.MOTION, BudgetTier.T0, ContextState.UNKNOWN).wake)   // settings path keeps it
     }
 
     @Test fun settingsEditAfterPublishDoesNotChangeLivePlan() {
-        var activeAfter: ActiveConfig? = null
         runTest {
-            val r = Rig(this, HudSettings(captureMode = CaptureMode.SMART), glance = com.rokid.context.glasses.capture.motion.GlanceParams())
+            val r = Rig(this, HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.MOTION, batteryTargetHours = 8), glance = com.rokid.context.glasses.capture.motion.GlanceParams())
             val c = RigPlan.controller(r) { it.onMessage(trial(1, rowPlan, 3_600_000)) }
-            val before = c.active
+            fun composed() = c.active.profile(r.settings.cameraWake, BudgetTier.T0, ContextState.VEHICLE_PASSENGER)
+            val before = composed(); val cfg = c.active
             c.onPhoneSettings(planAware = true)                       // a settings push after publish
             r.settings = r.settings.copy(cameraWake = CameraWake.SETTLE, batteryTargetHours = 4, workMinutes = 30)
-            activeAfter = c.active
-            assertSame(before, activeAfter)
+            assertSame(cfg, c.active)
+            assertEquals(before, composed(), "the composed profile does not follow the settings edit")
+            assertEquals(CameraWake.SETTLE, before.wake)
+            assertEquals(45_000L, before.settledCheckMs)
             assertEquals(1, c.active.contextCap(ContextState.REST))
             assertEquals(1, c.active.contextCap(ContextState.VEHICLE_PASSENGER))
         }
@@ -177,7 +180,10 @@ class PlanLiveApplyTest {
 
     private fun blockedUnderPlan(setup: (Rig) -> Unit, reason: String) = runTest {
         val r = Rig(this, HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.MOTION), glance = com.rokid.context.glasses.capture.motion.GlanceParams())
-        RigPlan.controller(r) { it.onMessage(trial(1, rowPlan, 3_600_000)) }
+        val c = RigPlan.controller(r) { it.onMessage(trial(1, rowPlan, 3_600_000)) }
+        r.profile = c.active.profile(r.settings.cameraWake, BudgetTier.T0, ContextState.REST)   // the plan rows, composed like the service does
+        r.contextCap = c.active.contextCap(ContextState.REST)
+        assertEquals(1, r.contextCap, "the plan row is what the session runs on")
         setup(r)
         r.startSensors(); r.session.start()
         delay(90_000)

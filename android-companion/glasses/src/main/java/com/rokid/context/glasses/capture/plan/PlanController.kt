@@ -51,6 +51,12 @@ class PlanController(
         private set
     @Volatile var host: PlanHost? = null
 
+    /** The session host appears (a Smart session starts): installs the config in force under the lock, so an activation racing the start is never missed. */
+    fun attach(h: PlanHost) = synchronized(lock) { host = h; h.install(active) }
+
+    /** The phone's `sessionStartMs` of the latest plan message: every ack echoes it, or the phone's PlanAckGate counts the ack STALE. */
+    private var session = 0L
+
     private var pendingCfg: ActiveConfig? = null
     private var pendingGen = -1L
     private var stagedAt = 0L
@@ -59,33 +65,47 @@ class PlanController(
 
     /** Load: end an expired or foreign-boot TRIAL FIRST, then resume what is still valid. A staged state waits for the first tick. */
     private fun bootstrap() {
-        receiver.tick(appliedState(), elapsed())
-        val st = receiver.current ?: return
-        if (st.appliedGen in st.terminal) return
-        if (st.mode == PlanMode.LIVE) { receiver.revert("unsupported:live"); return }
-        val cfg = configOf(st) ?: run { receiver.revert("auto:rejected"); return }
-        if (st.effective) active = cfg else { pendingCfg = cfg; pendingGen = st.appliedGen; stagedAt = elapsed() }
+        try {
+            receiver.tick(appliedState(), elapsed())
+            val st = receiver.current ?: return
+            if (st.appliedGen in st.terminal) return
+            if (st.mode == PlanMode.LIVE) { receiver.revert("unsupported:live"); return }
+            val cfg = configOf(st) ?: run { receiver.revert("auto:rejected"); return }
+            if (st.effective) active = cfg else { pendingCfg = cfg; pendingGen = st.appliedGen; stagedAt = elapsed() }
+        } catch (e: Exception) {
+            active = ActiveConfig.SETTINGS; dropPending()   // never crash the app on start: no plan applied
+            log("plan load failed: ${e.javaClass.simpleName}")
+        }
     }
 
     /** The plan message from the phone. Returns the immediate ack (STAGED, REJECTED or a re-ack); EFFECTIVE follows when activated. */
     fun onMessage(m: CapturePlanMessage): CapturePlanAck = locked { out ->
-        val ack = receiver.onMessage(m)
-        out += ack
-        val st = receiver.current
-        if (ack.state == PlanAckState.STAGED && st != null && st.appliedGen == m.gen && !st.effective && pendingGen != m.gen) {
-            val cfg = configOf(st)
-            if (cfg == null) { out += receiver.revert("auto:rejected"); dropPending() }
-            else { pendingCfg = cfg; pendingGen = m.gen; stagedAt = elapsed(); tryActivate(stagedAt, out) }
+        session = m.sessionStartMs
+        try {
+            val ack = receiver.onMessage(m)
+            out += ack
+            val st = receiver.current
+            if (ack.state == PlanAckState.STAGED && st != null && st.appliedGen == m.gen && !st.effective && pendingGen != m.gen) {
+                val cfg = configOf(st)
+                if (cfg == null) { out += receiver.revert("auto:rejected"); dropPending() }
+                else { pendingCfg = cfg; pendingGen = m.gen; stagedAt = elapsed(); tryActivate(stagedAt, out) }
+            }
+            ack.copy(sessionStartMs = session)
+        } catch (e: Exception) {
+            // The state could not be persisted: nothing is staged, nothing changes, and the throw never reaches the link callback.
+            log("plan message not applied: ${e.javaClass.simpleName}")
+            CapturePlanAck(gen = m.gen, publishId = m.publishId, mode = m.mode, state = PlanAckState.REJECTED, reason = "persist", caps = PlanReceiver.CAPS, phoneInstall = m.phoneInstall).also { out += it }
         }
-        ack
     }
 
     /** The capture supervisor's 1 s beat ([now] = elapsedRealtime): ends a TRIAL, activates a staged plan at its boundary. */
     fun tick(now: Long) {
-        if (synchronized(lock) { pendingCfg == null && receiver.current?.mode != PlanMode.TRIAL }) return   // the common idle case: one uncontended lock, no IO
+        if (synchronized(lock) { pendingCfg == null && receiver.current?.mode != PlanMode.TRIAL && !receiver.persistPending }) return   // the common idle case: one uncontended lock, no IO
         locked { out ->
-            receiver.tick(appliedState(), now)?.let { reverted(it, out) }
-            tryActivate(now, out)
+            try {
+                receiver.tick(appliedState(), now)?.let { reverted(it, out) }
+                tryActivate(now, out)
+            } catch (e: Exception) { log("plan tick failed: ${e.javaClass.simpleName}") }
         }
     }
 
@@ -93,26 +113,30 @@ class PlanController(
     fun onPhoneSettings(planAware: Boolean) {
         if (planAware) return
         locked { out ->
-            val st = receiver.current
-            if (st != null && st.mode != PlanMode.SETTINGS && st.appliedGen !in st.terminal) reverted(receiver.revert("auto:old_phone"), out)
+            try {
+                val st = receiver.current
+                if (st != null && st.mode != PlanMode.SETTINGS && st.appliedGen !in st.terminal) reverted(receiver.revert("auto:old_phone"), out)
+            } catch (e: Exception) { failClosed(); log("plan revert failed: ${e.javaClass.simpleName}") }
         }
     }
 
     /** Local auto-revert (ceiling, opens, heat: Task 12). Null when there is no plan to revert. */
     fun revert(reason: String): CapturePlanAck? = locked { out ->
         if (receiver.current == null) return@locked null
-        receiver.revert(reason).also { reverted(it, out) }
+        try { receiver.revert(reason).also { reverted(it, out) } } catch (e: Exception) { failClosed(); log("plan revert failed: ${e.javaClass.simpleName}"); null }
     }
 
     /** What the phone should know on a session open: the caps, and the state of the current gen (gen 0 = no plan ever). */
     fun statusAck(): CapturePlanAck = synchronized(lock) {
+        // A TRIAL past its limit is ended before it is reported, even while the capture service (and its tick) is not running.
+        try { receiver.tick(appliedState(), elapsed())?.let { reverted(it, ArrayList()) } } catch (e: Exception) { failClosed(); log("plan tick failed: ${e.javaClass.simpleName}") }
         val st = receiver.current ?: return CapturePlanAck(gen = 0, caps = PlanReceiver.CAPS)
         val reason = st.terminal[st.appliedGen]
         val was = st.terminalMeta[st.appliedGen]
         CapturePlanAck(
             gen = st.appliedGen, publishId = was?.publishId ?: st.publishId, mode = was?.mode ?: st.mode, effectiveHash = if (reason == null) st.configHash else null,
             state = if (reason != null) PlanAckState.REVERTED else if (st.effective) PlanAckState.EFFECTIVE else PlanAckState.STAGED,
-            reason = reason, caps = PlanReceiver.CAPS, phoneInstall = st.phoneInstall,
+            reason = reason, caps = PlanReceiver.CAPS, phoneInstall = st.phoneInstall, sessionStartMs = session,
         )
     }
 
@@ -138,7 +162,8 @@ class PlanController(
             if (ack.state == PlanAckState.EFFECTIVE) out += ack else swap(prev)
             dropPending()
         } catch (e: Exception) {
-            swap(prev)   // not persisted as effective: stay on the old inputs and retry at the next tick
+            swap(prev)   // not persisted as effective: stay on the old inputs and retry
+            stagedAt = now   // back off: a failing write forces (aborts a bout) at most once per FORCE_AFTER_MS
             log("plan activation not persisted: ${e.javaClass.simpleName}")
         }
     }
@@ -155,13 +180,19 @@ class PlanController(
         }
     }
 
+    /** The settings path, in memory, whatever the disk says: used when a revert cannot be recorded. */
+    private fun failClosed() {
+        dropPending()
+        if (active != ActiveConfig.SETTINGS) { host?.let { if (!it.quiet()) it.abortBout() }; swap(ActiveConfig.SETTINGS) }
+    }
+
     private fun swap(cfg: ActiveConfig) { active = cfg; host?.install(cfg) }
 
     private fun dropPending() { pendingCfg = null; pendingGen = -1L }
 
     private fun <T> locked(body: (MutableList<CapturePlanAck>) -> T): T {
         val out = ArrayList<CapturePlanAck>(2)
-        val r = synchronized(lock) { body(out) }
+        val r = synchronized(lock) { body(out).also { for (i in out.indices) out[i] = out[i].copy(sessionStartMs = session) } }
         for (a in out) try { send(a) } catch (e: Exception) { log("plan ack not sent: ${e.javaClass.simpleName}") }
         return r
     }

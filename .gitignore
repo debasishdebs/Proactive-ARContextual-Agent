@@ -31,3 +31,6 @@ local.properties
 # JVM crash dumps (contain local paths and environment)
 hs_err_pid*.log
 replay_pid*.log
+
+# Kotlin compiler session logs
+android-companion/.kotlin/

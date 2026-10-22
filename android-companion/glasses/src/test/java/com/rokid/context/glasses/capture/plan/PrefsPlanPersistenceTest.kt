@@ -44,4 +44,18 @@ class PrefsPlanPersistenceTest {
         val c = PlanController(PrefsPlanPersistence(prefs), { 1L }, { "bc:1" }, { com.rokid.context.core.model.context.ContextState.UNKNOWN }, {})
         assertEquals(0L, c.statusAck().gen); assertEquals(ActiveConfig.SETTINGS, c.active)
     }
+
+    @Test fun aCorruptStoredStateStillRefusesAReSentRevertedGen() {
+        prefs.edit().clear().commit()
+        val ctx = com.rokid.context.core.model.context.ContextState.UNKNOWN
+        val first = PlanController(PrefsPlanPersistence(prefs), { 1_000L }, { "bc:4" }, { ctx }, {})
+        first.onMessage(PlanTestKit.trial(1, PlanTestKit.plan(), 60_000)); first.revert("auto:ceiling")
+        prefs.edit().putString("state", "{truncated").commit()           // the state is lost, the high-water mark is not
+        val sent = ArrayList<com.rokid.context.core.model.CapturePlanAck>()
+        val c = PlanController(PrefsPlanPersistence(prefs), { 2_000L }, { "bc:4" }, { ctx }, { sent += it })
+        val again = c.onMessage(PlanTestKit.trial(1, PlanTestKit.plan(), 60_000))
+        assertEquals(PlanAckState.REVERTED, again.state, "a re-sent reverted gen is not applied again")
+        assertEquals(ActiveConfig.SETTINGS, c.active)
+        assertEquals(PlanAckState.STAGED, c.onMessage(PlanTestKit.trial(2, PlanTestKit.plan(), 60_000)).state)
+    }
 }

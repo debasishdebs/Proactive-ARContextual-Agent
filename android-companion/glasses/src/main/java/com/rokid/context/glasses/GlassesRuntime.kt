@@ -214,7 +214,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
         c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); ioScope.launch { applyPhoneSettings(s) } }
         c.onCapturePlan = { m -> plan.onMessage(m) }
-        c.capsAck = { plan.statusAck() }
+        c.statusAck = { plan.statusAck().takeIf { it.gen != 0L } }   // the caps announcement stays HudController's gen-0 default
         attachJob?.cancel()
         attachJob = scope.launch {
             launch {
