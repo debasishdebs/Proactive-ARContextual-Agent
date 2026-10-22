@@ -97,6 +97,28 @@ class DiagnosticsTest {
         compose.onNodeWithTag("kf_live_pipeline").assertTextContains("Live pipeline: P v1 \u00b7 Shadow \u00b7 0/0 fell back")
     }
 
+    @Test fun capturePlanCardShowsTheGroupStates() {
+        val status = com.rokid.context.canvas.plan.PlanStatus(
+            com.rokid.context.canvas.plan.ActivePlan(7, "g1", "Quiet walk", 3, "TRIAL", "abcdef123456", "EFFECTIVE"),
+            listOf("Glasses: EFFECTIVE \u00b7 gen 4 \u00b7 trial", "Phone RT: applied", "ASYNC: shadow"),
+        )
+        show(KeyframeRows(stats, capturePlan = status))
+        compose.onNodeWithTag("kf_capture_plan").assertTextContains("Capture plan: Quiet walk v3 (trial) \u00b7 EFFECTIVE")
+        compose.onNodeWithTag("kf_plan_row_0").assertTextContains("Glasses: EFFECTIVE \u00b7 gen 4 \u00b7 trial")
+        compose.onNodeWithTag("kf_plan_row_1").assertTextContains("Phone RT: applied")
+        compose.onNodeWithTag("kf_plan_row_2").assertTextContains("ASYNC: shadow")
+    }
+
+    @Test fun noCapturePlanCardWithoutAPlan() {
+        show(KeyframeRows(stats))
+        compose.onNodeWithTag("kf_capture_plan").assertDoesNotExist(); compose.onNodeWithTag("kf_plan_row_0").assertDoesNotExist()
+    }
+
+    @Test fun anEmptyPlanStatusShowsNoCard() {
+        show(KeyframeRows(stats, capturePlan = com.rokid.context.canvas.plan.PlanStatus(null, emptyList())))
+        compose.onNodeWithTag("kf_capture_plan").assertDoesNotExist()
+    }
+
     @Test fun noLivePipelineLineWithoutAnInterpreterPublish() {
         show(KeyframeRows(stats))
         compose.onNodeWithTag("kf_live_pipeline").assertDoesNotExist()

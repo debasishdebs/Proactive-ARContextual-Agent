@@ -3,6 +3,7 @@ package com.rokid.context.phone.ui.settings.capture
 import android.app.Application
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.onNodeWithText
@@ -56,8 +57,9 @@ class CaptureSettingsTest {
         vm.cancelScope()
     }
 
+    private var used = 0
     private fun show(state: CaptureSettingsUiState, vm: CaptureSettingsViewModel? = null) {
-        compose.setContent { PcTheme { CaptureSettingsScreen(state, onBack = {}, onModeChoice = { vm?.setModeChoice(it) }, onBatteryTarget = { vm?.setBatteryTarget(it) }, onPauseWhenPhoneInUse = { vm?.setPauseWhenPhoneInUse(it) }, onWork = { vm?.setWork(it) }, onRest = { vm?.setRest(it) }, onWorkRestEnabled = { vm?.setWorkRestEnabled(it) }, onMotionLabel = { vm?.setMotionLabel(it) }) } }
+        compose.setContent { PcTheme { CaptureSettingsScreen(state, onBack = {}, onModeChoice = { vm?.setModeChoice(it) }, onBatteryTarget = { vm?.setBatteryTarget(it) }, onPauseWhenPhoneInUse = { vm?.setPauseWhenPhoneInUse(it) }, onWork = { vm?.setWork(it) }, onRest = { vm?.setRest(it) }, onWorkRestEnabled = { vm?.setWorkRestEnabled(it) }, onMotionLabel = { vm?.setMotionLabel(it) }, onUseSettings = { vm?.useSettings(); used++ }) } }
     }
 
     @Test fun smartHidesInterval() {
@@ -290,5 +292,45 @@ class CaptureSettingsTest {
     @Test fun motionLabelNoteShownWhenLabelSet() {
         show(CaptureSettingsUiState(motionLabel = MotionLabel.EATING))
         compose.onNodeWithTag("motion_label_note").assertExists()
+    }
+
+    // ---- Task 28: the capture plan row, "Frozen in canvas plan vN" (S12), Use settings (S26) ----
+
+    private val plan = com.rokid.context.canvas.plan.ActivePlan(7, "g1", "Quiet walk", 3, "SHADOW", "abcdef123456", "EFFECTIVE")
+
+    @Test fun noPlanShowsNoPlanRowAndNoFrozenLabels() {
+        show(CaptureSettingsUiState(wake = CameraWake.MOTION, workRestEnabled = true))
+        compose.onNodeWithTag("capture_plan_row").assertDoesNotExist()
+        compose.onNodeWithTag("frozen_mode").assertDoesNotExist(); compose.onNodeWithTag("frozen_quick_look").assertDoesNotExist(); compose.onNodeWithTag("frozen_work_rest").assertDoesNotExist()
+    }
+
+    @Test fun theCapturePlanRowNamesThePlanAndUseSettingsTapsIt() {
+        show(CaptureSettingsUiState(plan = plan))
+        compose.onNodeWithText("Capture plan: Quiet walk v3 (shadow) \u00b7 Use settings").assertExists()
+        compose.onNodeWithTag("capture_plan_row").performClick()
+        assertEquals(1, used)
+    }
+
+    @Test fun theRowsThePlanResolvedAreLabelledFrozen() {
+        show(CaptureSettingsUiState(plan = plan, wake = CameraWake.MOTION, workRestEnabled = true))
+        for (tag in listOf("frozen_mode", "frozen_quick_look", "frozen_work_rest")) compose.onNodeWithTag(tag).assertExists()
+        compose.onNodeWithTag("frozen_mode").assertTextEquals("Frozen in canvas plan v3")
+    }
+
+    @Test fun theFixedIntervalRowIsFrozenToo() {
+        show(CaptureSettingsUiState(plan = plan, mode = CaptureMode.FIXED))
+        compose.onNodeWithTag("frozen_interval").assertExists(); compose.onNodeWithTag("frozen_quick_look").assertDoesNotExist()
+    }
+
+    @Test fun theViewModelFollowsThePlanFlowAndUseSettingsCallsTheControl() = runBlocking {
+        val active = kotlinx.coroutines.flow.MutableStateFlow<com.rokid.context.canvas.plan.ActivePlan?>(plan)
+        var calls = 0
+        val control = object : CapturePlanControl { override val active = active; override suspend fun useSettings() { calls++; active.value = null } }
+        val vm = CaptureSettingsViewModel(FakeHudSettings(), plan = control)
+        assertEquals(plan, withTimeout(5_000) { vm.state.first { it.plan != null } }.plan)
+        vm.useSettings()
+        assertEquals(null, withTimeout(5_000) { vm.state.first { it.plan == null } }.plan)
+        assertEquals(1, calls)
+        vm.cancelScope()
     }
 }
