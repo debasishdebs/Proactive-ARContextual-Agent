@@ -1,0 +1,52 @@
+import * as R from '../../main/assets/canvas/runlogic.js';
+import { eq, ok } from './fixtures.js';
+
+const rows = [
+  { runId: 'r2', abGroup: 'g1', status: 'QUEUED', startedAt: 20 },
+  { runId: 'r1', abGroup: 'g1', status: 'DONE', startedAt: 10 },
+  { runId: 'r9', abGroup: null, status: 'DONE', startedAt: 5 },
+];
+
+export const tests = {
+  rollbackPayloadNamesTheNewestPublish() {
+    eq(R.rollbackPayload({ stack: [{ id: 7 }, { id: 3 }] }), { expectedId: 7 });
+    eq(R.rollbackPayload({ stack: [] }), null);
+    eq(R.rollbackPayload(null), null);
+    eq(R.rollbackPayload({}), null);
+  },
+  partnerAndPair() {
+    eq(R.partnerOf(rows, { runId: 'r1', abGroup: 'g1' }).runId, 'r2');
+    eq(R.partnerOf(rows, { runId: 'r2', abGroup: 'g1' }).runId, 'r1');
+    eq(R.partnerOf(rows, { runId: 'r9', abGroup: null }), null);
+    eq(R.partnerOf(rows, { runId: 'zz', abGroup: 'gone' }), null);
+    eq(R.abPair(rows, 'g1'), { a: 'r1', b: 'r2' });
+    eq(R.abPair(rows, 'nope'), null);
+  },
+  autoOpenOnlyAfterWatchingItRun() {
+    const done = { status: 'DONE' };
+    ok(R.shouldAutoOpen(true, done, { status: 'DONE' }));
+    ok(!R.shouldAutoOpen(false, done, { status: 'DONE' }), 'a finished pair opened from a link is not bounced');
+    ok(!R.shouldAutoOpen(true, done, { status: 'QUEUED' }));
+    ok(!R.shouldAutoOpen(true, done, { status: 'CANCELLED' }), 'only when both are DONE');
+    ok(!R.shouldAutoOpen(true, done, null));
+  },
+  activeAndKeepPolling() {
+    ok(R.isActive('RUNNING') && R.isActive('QUEUED') && R.isActive('running'));
+    ok(!R.isActive('DONE') && !R.isActive(undefined));
+  },
+  retryBacksOffThreeTimesThenStops() {
+    eq([0, 1, 2, 3].map((n) => R.retryDelay(n, { status: 0 })), [1000, 2000, 4000, null]);
+    eq(R.retryDelay(0, { status: 503 }), 1000);
+    eq(R.retryDelay(0, { status: 404 }), null, 'a missing run is not retried');
+    eq(R.retryDelay(0, { status: 401 }), null);
+  },
+  abOptions() {
+    const o = R.abOptions([{ id: 'p1', name: 'Live', versions: [{ version: 1 }, { version: 2 }] }, { id: 'p2', name: 'Mine', versions: [] }]);
+    eq(o.map((x) => x.value), ['p1@draft', 'p1@1', 'p1@2', 'p2@draft']);
+    eq(o[1].label, 'Live v1');
+    eq(o[0].label, 'Live (draft)');
+    eq(R.parseRef('p1@2'), { pipelineId: 'p1', version: 2 });
+    eq(R.parseRef('p1@draft'), { pipelineId: 'p1' });
+    eq(R.parseRef(''), null);
+  },
+};
