@@ -403,6 +403,21 @@ class CanvasBackendImplTest {
         assertTrue(bad["problemsDetailed"]!!.jsonArray.any { it.jsonObject["nodeId"]?.jsonPrimitive?.content == "extract" })
     }
 
+    @Test fun eachVersionRowCarriesItsOwnShape() = runBlocking<Unit> {
+        // Task 12 fix: the publish dialog prices the version it publishes, not the draft
+        val id = backend.duplicate("live-extract", "Mine")
+        val d = checkNotNull(backend.pipeline(id))
+        val frozenRange = d["interpretable"]!!.jsonObject["callRange"]
+        backend.freeze(id, "one", null)
+        val edited = d["json"]!!.jsonPrimitive.content.replace(""""batch":3""", """"batch":1""")
+        backend.saveDraft(id, edited, d["draftRev"]!!.jsonPrimitive.int)
+        val after = checkNotNull(backend.pipeline(id))
+        val v = after["versions"]!!.jsonArray[0].jsonObject
+        assertEquals(frozenRange, v["interpretable"]!!.jsonObject["callRange"])
+        assertEquals("true", v["liveShape"]!!.jsonPrimitive.content)
+        assertTrue("the draft differs", after["interpretable"]!!.jsonObject["callRange"] != frozenRange)
+    }
+
     @Test fun diffDraftVsVersion() = runBlocking<Unit> {
         val id = backend.duplicate("live-extract", "Mine")
         backend.freeze(id, "one", null)
