@@ -50,11 +50,22 @@ class VoicePipelineTest {
         assertEquals(listOf("milk?" to VoiceSource.GLASSES), asked)
     }
 
+    @Test fun interceptorSeesTheUnclippedTranscript() = runTest {
+        var len = 0
+        interceptor = UtteranceInterceptor { t, _, _ -> len = t.length; InterceptResult.PassThrough }
+        val p = pipeline()
+        p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("a".repeat(900))); runCurrent()
+        assertEquals(900, len)
+        assertEquals(500, asked.single().first.length, "Ask still gets the clipped text")
+    }
+
     @Test fun interceptorHandledMakesNoModelCall() = runTest {
-        interceptor = UtteranceInterceptor { _, _, _ -> InterceptResult.Handled }
+        interceptor = UtteranceInterceptor { _, _, _ -> InterceptResult.Handled("marked \u00b7 driving") }
         val p = pipeline()
         p.glassesListenStart(); engine.last.listener.onFinal(SttResult.Text("mark that")); runCurrent()
         assertTrue(asked.isEmpty())
+        assertEquals(Overlay.Toast("marked \u00b7 driving"), p.overlay.value)
+        advanceTimeBy(4_001)
         assertEquals(VoiceState.Idle, p.state.value)
         assertTrue(logs.any { it == "outcome=MARKED source=GLASSES" })
     }

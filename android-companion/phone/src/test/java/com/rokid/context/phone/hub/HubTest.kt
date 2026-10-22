@@ -96,7 +96,8 @@ class HubTest {
         phoneInstall: () -> String = { "" },
         onPlanAck: (com.rokid.context.core.model.CapturePlanAck) -> Unit = {},
         onPlanCaps: (List<String>) -> Unit = {},
-        onMark: suspend (com.rokid.context.core.model.MarkMessage) -> Unit = {},
+        onMark: suspend (com.rokid.context.core.model.MarkMessage, com.rokid.context.canvas.marks.MarkArrival) -> Boolean = { _, _ -> true },
+        onGlassesListenStart: suspend (Long) -> Unit = {},
     ): Hub {
         val pauses = HubPauses(dao, now = clock)
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
@@ -106,7 +107,7 @@ class HubTest {
             backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler),
             startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, standDown = standDown, phoneUse = phoneUse,
             motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
-            phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark,
+            phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark, onGlassesListenStart = onGlassesListenStart,
         )
             .also { if (start) { it.start(); runCurrent() } }
     }
@@ -847,10 +848,46 @@ class HubTest {
 
     @Test fun queuedMarkOlderThanSessionAccepted() = runTest {
         val link = FakeGlassesLink(); val got = ArrayList<com.rokid.context.core.model.MarkMessage>()
-        hub(link, onMark = { got += it })
+        hub(link, onMark = { m, _ -> got += m; true })
         link.emitReady(); runCurrent()
         link.emit(GlassesEvent.MarkReceived(com.rokid.context.core.model.MarkMessage(epoch = "e", seq = 1, atMs = now - 3_600_000, atElapsedMs = 5, sessionStartMs = now))); runCurrent()
         assertEquals(listOf(1L), got.map { it.seq })
+    }
+
+    @Test fun aRecordedMarkIsAckedByEpochAndSeq() = runTest {
+        val link = FakeGlassesLink()
+        hub(link, onMark = { _, _ -> true })
+        link.emitReady(); runCurrent()
+        link.emit(GlassesEvent.MarkReceived(com.rokid.context.core.model.MarkMessage(epoch = "e9", seq = 4, atMs = now, atElapsedMs = 5))); runCurrent()
+        val ack = (Wire.decode<com.rokid.context.core.model.MarkAck>(link.lastOn(Channels.MARK_ACK)) as Decoded.Ok).value
+        assertEquals(com.rokid.context.core.model.MarkAck(epoch = "e9", seqs = listOf(4L)), ack)
+    }
+
+    @Test fun aMarkTheRecorderFailedOnIsNotAckedSoTheGlassesResend() = runTest {
+        val link = FakeGlassesLink()
+        hub(link, onMark = { _, _ -> throw IllegalStateException("db") })
+        link.emitReady(); runCurrent()
+        link.emit(GlassesEvent.MarkReceived(com.rokid.context.core.model.MarkMessage(epoch = "e", seq = 1, atMs = now, atElapsedMs = 5))); runCurrent()
+        assertTrue(link.sent.none { it.first == Channels.MARK_ACK })
+    }
+
+    @Test fun aMarkIsMappedToPhoneTimeWithTheHelloOffsetElseReceiptTime() = runTest {
+        val link = FakeGlassesLink(); val arrivals = ArrayList<com.rokid.context.canvas.marks.MarkArrival>()
+        hub(link, onMark = { _, a -> arrivals += a; true })
+        link.emitReady(); runCurrent()
+        link.emit(GlassesEvent.MarkReceived(com.rokid.context.core.model.MarkMessage(epoch = "e", seq = 1, atMs = 777, atElapsedMs = 5))); runCurrent()
+        assertEquals(com.rokid.context.canvas.marks.MarkArrival(now, false, now), arrivals[0])
+        link.emit(hello(glassesNowMs = now + 140)); runCurrent()
+        link.emit(GlassesEvent.MarkReceived(com.rokid.context.core.model.MarkMessage(epoch = "e", seq = 2, atMs = now + 140 - 2_000, atElapsedMs = 5))); runCurrent()
+        assertEquals(com.rokid.context.canvas.marks.MarkArrival(now - 2_000, true, now), arrivals[1])
+    }
+
+    @Test fun aGlassesListenStartIsForwardedToTheMarkJoin() = runTest {
+        val link = FakeGlassesLink(); val starts = ArrayList<Long>()
+        hub(link, onGlassesListenStart = { starts += it })
+        link.emitReady(); runCurrent()
+        link.emit(GlassesEvent.Cmd(com.rokid.context.core.model.Command.ListenStart)); runCurrent()
+        assertEquals(listOf(now), starts)
     }
 
     @Test fun newPhoneSendsPlanAwareTrue() = runTest {
