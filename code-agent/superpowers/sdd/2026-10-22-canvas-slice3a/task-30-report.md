@@ -1,0 +1,5 @@
+# Task 30 report
+Built (glasses): MarkOutbox (+MarkStore/PrefsMarkStore, prefs mark_queue: persisted before record returns; random per-install epoch, monotonic seq; ack by (epoch,seq); cap 200; burst 20; 24 h age; per-mark deletionCounter; new installId or larger counter clears, first epoch adopted without clearing), MarkTap + MarkCue (tap = mark + listen, cue 600 ms, double-tap while recording = undo entry), HudController.sendMark/onMarkAck/onMarksDue (session open and hello request), runtime wiring (onTraceControl feeds the outbox epoch), MainActivity hook in onAsk (mark taken before the ask checks), cue composable.
+Tests: MarkOutboxTest 13, MarkTapTest 8, MarkLinkTest 5 (incl. newEpochClearsQueue, oldQueuedMarkResentAfterReconnect). Mutations RED: no clear on epoch, no age drop, ack ignores epoch, undo cue wrong.
+Gate: :glasses 728 tests 0 failures, :services:glasses-link 137 0.
+Not done: "Mark by tap" HudSettings toggle (enabled lambda is constant true); no capture calls anywhere (mark never changes capture).

@@ -1,0 +1,8 @@
+# Task: phone-side glasses watchdog
+Status: DONE. Phone suite: 1542 tests, 0 failures, 0 skipped (full run once at end). New: GlassesWatchdogTest 12, GlassesRelauncherAttemptNowTest 6, +1 HubTest, +1 BannerResolverTest.
+RED: compile failure (attemptNow/GlassesWatchdog missing) before implementation, then GREEN.
+Mutation checks (all killed, restored): attemptNow without stand-down; attemptNow without blocker (call/cap/worn/setting); link-down calls relaunch instead of reconnect; watchdog ignoring the setting; watchdog ignoring stand-down.
+Design: GlassesWatchdog tick every 150 s, N=3 min silent (SILENT_MS). Process-lifetime (HubGraph scope), so it can restart a dead hub service via ContextHubService.ensureRunning. Switch reused: KeepRunningNearby ("Reopen after Rokid closes it"), default ON. Relaunch goes only through GlassesRelauncher.attemptNow (all guards, cap, back-off bookkeeping). MINIMISED silence = existing probeAlive. Link OFFLINE/PAUSED_BT = link.connectOnResume (existing path).
+UI: GlassesStatus.note -> banner title ("Glasses not connected" / "Glasses app not running, reopening... " / "Glasses app stopped by you" + last heard N min ago).
+Service keep-alive finding (no device): ContextHubService stopSelf()s without hub when a sticky/background restart finds KeepRunningNearby off or startForeground refused; running flag then stays false with process alive. Cannot confirm the actual cause of 0 ServiceRecords. Mitigation: watchdog restarts it; Android may refuse a background startForegroundService (logged "start refused").
+Heartbeat = any glasses event or session start (no periodic heartbeat exists on the wire).

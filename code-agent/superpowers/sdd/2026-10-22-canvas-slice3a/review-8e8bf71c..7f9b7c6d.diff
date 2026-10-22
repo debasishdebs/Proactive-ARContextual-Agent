@@ -1,0 +1,1802 @@
+# Review package: 739b9793^..7f9b7c6d
+
+## Commits
+7f9b7c6d fix(capture): Task 4 review round 1: refuse LIVE (unsupported:live), cap still fractions at 1.0, depth cap, duplicate keys, strict JSON numbers, boot id read once, terminal re-ack keeps mode and publishId
+739b9793 feat(link): additive capture-plan, mark and trace channels, listenId, planAware and ack correlation with frozen old-peer fixtures (protocol v1)
+
+## Files changed
+ .../com/rokid/context/capture/plan/PlanBounds.kt   |   6 +-
+ .../com/rokid/context/capture/plan/PlanJson.kt     |  53 +++++++-
+ .../com/rokid/context/capture/plan/PlanReceiver.kt |  67 +++++-----
+ .../com/rokid/context/capture/plan/PlanResolver.kt |   8 +-
+ .../rokid/context/capture/plan/PlanValidator.kt    |  17 ++-
+ .../com/rokid/context/capture/plan/PlanFixtures.kt |   6 +
+ .../com/rokid/context/capture/plan/PlanJsonTest.kt |  24 +++-
+ .../rokid/context/capture/plan/PlanReceiverTest.kt |  93 ++++++++++++--
+ .../rokid/context/capture/plan/PlanResolverTest.kt |   6 +-
+ .../context/capture/plan/PlanValidatorTest.kt      |  41 +++++--
+ .../context/capture/plan/ReservedBoundTest.kt      |  20 +--
+ .../com/rokid/context/core/model/Protocol.kt       | 135 ++++++++++++++++++++-
+ .../rokid/context/core/model/WireSlice3aTest.kt    |  98 +++++++++++++++
+ .../resources/compat/old_command_envelope.json     |   1 +
+ .../test/resources/compat/old_glasses_hello.json   |   1 +
+ .../test/resources/compat/old_hud_settings.json    |   1 +
+ .../rokid/context/glasses/link/HudController.kt    |   4 +
+ .../context/glasses/link/HudControllerTest.kt      |  16 +++
+ .../main/java/com/rokid/context/phone/hub/Hub.kt   |  33 +++++
+ .../rokid/context/phone/hub/StateFrameBuilder.kt   |   1 +
+ .../java/com/rokid/context/phone/hub/HubTest.kt    |  60 +++++++++
+ .../rokid/context/ai/CanonicalJsonParityTest.kt    |   5 +-
+ .../kotlin/com/rokid/context/link/GlassesEvent.kt  |   9 ++
+ .../com/rokid/context/link/GlassesInbound.kt       |   4 +
+ .../main/kotlin/com/rokid/context/link/PlanAck.kt  |  52 ++++++++
+ .../com/rokid/context/link/Slice3aWireTest.kt      |  97 +++++++++++++++
+ 26 files changed, 794 insertions(+), 64 deletions(-)
+
+## Diff
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanBounds.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanBounds.kt
+index c078b340..2873730e 100644
+--- a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanBounds.kt
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanBounds.kt
+@@ -14,34 +14,38 @@ object PlanBounds {
+     val NOVELTY_MIN_RAD = 0.1f..0.8f
+     val BIG_TURN_RAD = 0.5f..1.5f
+     const val RELEASE_LO = 0.2f
+     val BIG_CHANGE = 16..32
+     val HAMMING = 6..16
+     val CAP_PER_MIN = 1..4
+     const val GAP_MIN_MS = 5_000L
+     const val GAP_MAX_MS = 300_000L
+     val FAST_KMH = 20.0..40.0
+     const val FUSION_FRACTION = 0.5
++    private val FRACTION_KEYS = setOf("stillFrac", "stillFracWithImage")
+ 
+     /** The tunable phone fusion keys with today's defaults (walking veto, flight and image rules are not tunable, S32). */
+     val FUSION_DEFAULTS: Map<String, Double> = FusionParams().let { f ->
+         mapOf(
+             "fastKmh" to f.fastKmh.dbl(), "fastTtlMs" to f.fastTtlMs.dbl(), "fastConfirmGapMs" to f.fastConfirmGapMs.dbl(),
+             "vehicleHoldMs" to f.vehicleHoldMs.dbl(), "enterVehicleMs" to f.enterVehicleMs.dbl(),
+             "switchDriverMs" to f.switchDriverMs.dbl(), "enterRestMs" to f.enterRestMs.dbl(),
+             "enterUnknownMs" to f.enterUnknownMs.dbl(), "hintStillTtlMs" to f.hintStillTtlMs.dbl(),
+             "stillFrac" to f.stillFrac.dbl(), "stillFracWithImage" to f.stillFracWithImage.dbl(),
+         )
+     }
+ 
+     fun fusionRange(key: String): ClosedFloatingPointRange<Double>? {
+         val d = FUSION_DEFAULTS[key] ?: return null
+-        return if (key == "fastKmh") FAST_KMH else (d * (1 - FUSION_FRACTION))..(d * (1 + FUSION_FRACTION))
++        if (key == "fastKmh") return FAST_KMH
++        val hi = d * (1 + FUSION_FRACTION)
++        // A share of time above 1.0 is meaningless: REST would become unreachable.
++        return (d * (1 - FUSION_FRACTION))..(if (key in FRACTION_KEYS) minOf(hi, 1.0) else hi)
+     }
+ 
+     fun fmt(n: Number): String {
+         val bd = BigDecimal(n.toString())
+         return if (bd.signum() == 0) "0" else bd.stripTrailingZeros().toPlainString()
+     }
+ 
+     private fun Number.dbl(): Double = toString().toDouble()
+ }
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanJson.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanJson.kt
+index b2080708..b33854fb 100644
+--- a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanJson.kt
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanJson.kt
+@@ -68,21 +68,71 @@ object PlanJson {
+             "phoneFusion" to JsonObject(c.phoneFusion.mapValues { JsonPrimitive(it.value) }),
+         ),
+     )
+ 
+     /** 12 hex of SHA-256 over the canonical `config` JSON. The meta block never changes it. */
+     fun configHash(c: PlanConfig): String =
+         MessageDigest.getInstance("SHA-256").digest(CanonicalJson.encode(configJson(c)).toByteArray(Charsets.UTF_8))
+             .joinToString("") { "%02x".format(it) }.take(12)
+ 
+     /** Strict: unknown keys, missing required keys, wrong types, unknown policy rows and non-finite numbers all fail. */
+-    fun decodeStrict(s: String): Result<CapturePlan> = runCatching { decodeElement(Json.parseToJsonElement(s)) }
++    fun decodeStrict(s: String): Result<CapturePlan> = runCatching {
++        require(!hasDuplicateKeys(s)) { "duplicate key" }
++        decodeElement(Json.parseToJsonElement(s))
++    }
++
++    private val JSON_NUMBER = Regex("-?(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?")
++
++    /** True when [content] is a number token in the JSON grammar (no `0.6f`, `1d`, hex floats, `+1`, `.5`, `01`). */
++    fun isJsonNumber(content: String): Boolean = JSON_NUMBER.matches(content)
++
++    /**
++     * True when any object in [s] repeats a key (compared after unescaping, so `"a"` and `"\u0061"` clash). kotlinx keeps the last
++     * duplicate silently; the plan is closed and canonical, so a repeat is refused. Iterative: no recursion on nesting.
++     */
++    fun hasDuplicateKeys(s: String): Boolean {
++        val keys = ArrayList<HashSet<String>?>()   // null = an array
++        var expectKey = false
++        var i = 0
++        while (i < s.length) {
++            when (s[i]) {
++                '{' -> { keys.add(HashSet()); expectKey = true }
++                '[' -> { keys.add(null); expectKey = false }
++                '}', ']' -> { if (keys.isNotEmpty()) keys.removeAt(keys.size - 1); expectKey = false }
++                ',' -> expectKey = keys.lastOrNull() != null
++                '"' -> {
++                    val sb = StringBuilder()
++                    i++
++                    while (i < s.length && s[i] != '"') {
++                        if (s[i] == '\\' && i + 1 < s.length) {
++                            i++
++                            when (s[i]) {
++                                'u' -> {
++                                    val cp = s.substring(i + 1, minOf(i + 5, s.length)).toIntOrNull(16)
++                                    if (cp != null && i + 5 <= s.length) { sb.append(cp.toChar()); i += 4 } else sb.append('u')
++                                }
++                                'n' -> sb.append('\n'); 't' -> sb.append('\t'); 'r' -> sb.append('\r'); 'b' -> sb.append('\b'); 'f' -> sb.append('\u000c')
++                                else -> sb.append(s[i])
++                            }
++                        } else sb.append(s[i])
++                        i++
++                    }
++                    if (expectKey) {
++                        if (!keys.last()!!.add(sb.toString())) return true
++                        expectKey = false
++                    }
++                }
++            }
++            i++
++        }
++        return false
++    }
+ 
+     fun decodeElement(e: JsonElement): CapturePlan {
+         val o = Obj(e, "plan")
+         val schema = o.int("planSchema")
+         val hash = o.str("configHash")
+         val config = decodeConfig(o.take("config"), "config")
+         val meta = o.obj("meta").let { m ->
+             val name = m.str("name")
+             val rev = m.long("settingsRev")
+             val expect = m.takeOpt("expectOpensP95PerMin")?.let { x ->
+@@ -117,20 +167,21 @@ object PlanJson {
+         val gt = c.obj("gate")
+         val gate = GateBlock(gt.int("bigChange"), gt.int("hamming"), gt.str("ringCompare")).also { gt.done() }
+         val ctxBound = c.bool("ctxBound")
+         val fusion = c.obj("phoneFusion").let { f -> f.markOpen(); f.entries().mapValues { num(it.value, "phoneFusion.${it.key}") } }
+         c.done()
+         return PlanConfig(glance, policy, gate, ctxBound, fusion)
+     }
+ 
+     internal fun num(e: JsonElement, path: String): Double {
+         require(e is JsonPrimitive && e !is JsonNull && !e.isString) { "$path is not a number" }
++        require(isJsonNumber(e.content)) { "$path is not a finite number" }
+         val d = e.content.toDoubleOrNull()
+         require(d != null && d.isFinite()) { "$path is not a finite number" }
+         return d
+     }
+ 
+     private fun intOf(e: JsonElement, path: String): Int = longOf(e, path).also { require(it in Int.MIN_VALUE..Int.MAX_VALUE) { "$path out of range" } }.toInt()
+ 
+     private fun longOf(e: JsonElement, path: String): Long {
+         num(e, path)
+         return (e as JsonPrimitive).content.toLongOrNull() ?: throw IllegalArgumentException("$path is not an integer")
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanReceiver.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanReceiver.kt
+index 1b987f0d..b3f75a30 100644
+--- a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanReceiver.kt
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanReceiver.kt
+@@ -1,123 +1,132 @@
+ package com.rokid.context.capture.plan
+ 
++import com.rokid.context.core.model.CapturePlanAck
++import com.rokid.context.core.model.CapturePlanMessage
++import com.rokid.context.core.model.PlanAckState
++import com.rokid.context.core.model.PlanMode
+ import com.rokid.context.core.model.context.ContextState
+ import kotlinx.serialization.json.Json
+ import kotlinx.serialization.json.JsonObject
+ 
+-/** Local copies of the wire types of Task 5 (`:core:model` Protocol.kt); the glasses adapt them one to one. */
+-enum class PlanMode { SETTINGS, SHADOW, TRIAL, LIVE }
+-enum class PlanAckState { REJECTED, STAGED, EFFECTIVE, REVERTED }
+-
+-data class CapturePlanMessage(
+-    val v: Int = 1, val gen: Long, val publishId: String? = null, val mode: PlanMode = PlanMode.SETTINGS, val configHash: String? = null,
+-    val planJson: String? = null, val trialEndsAtMs: Long? = null, val trialMaxMs: Long? = null, val phoneInstall: String = "",
+-    val atMs: Long = 0, val sessionStartMs: Long = 0,
+-)
+-
+-data class CapturePlanAck(
+-    val v: Int = 1, val gen: Long, val publishId: String? = null, val mode: PlanMode = PlanMode.SETTINGS, val effectiveHash: String? = null,
+-    val state: PlanAckState = PlanAckState.REJECTED, val reason: String? = null, val planSchemaMax: Int = PLAN_SCHEMA,
+-    val caps: List<String> = PlanReceiver.CAPS, val phoneInstall: String = "", val atMs: Long = 0, val sessionStartMs: Long = 0,
+-)
+-
+ interface PlanPersistence { fun load(): ReceiverState?; fun commit(s: ReceiverState) }
+ 
+ /** [effective] is false while a plan is only staged (S69): it becomes true at [PlanReceiver.activated]. */
+ data class ReceiverState(
+     val appliedGen: Long, val phoneInstall: String, val mode: PlanMode, val planJson: String?, val configHash: String?,
+     val trialStartElapsed: Long?, val trialMaxMs: Long?, val bootId: String, val previous: ReceiverState?, val terminal: Map<Long, String>,
+     val effective: Boolean = false,
++    /** The phone's publish id for [appliedGen] (echoed in every ack so the phone can match it, S62). */
++    val publishId: String? = null,
++    /** The original mode and publish id of each terminal gen, so a re-ack of a REVERTED gen reports what was reverted. */
++    val terminalMeta: Map<Long, TerminalMeta> = emptyMap(),
+ )
+ 
++/** What a REVERTED gen was before it reverted. */
++data class TerminalMeta(val mode: PlanMode, val publishId: String?)
++
+ /**
+  * Pure plan receiver for the glasses (S59). Stale and duplicate gens are answered without re-applying; a REVERTED gen is final; a
+  * TRIAL is bounded on the glasses' own elapsed clock and ends on a reboot. Not thread-safe.
+  */
+-class PlanReceiver(private val persist: PlanPersistence, private val elapsed: () -> Long, private val bootId: () -> String) {
++class PlanReceiver(private val persist: PlanPersistence, private val elapsed: () -> Long, bootId: () -> String) {
++    /** Read once: a boot id cannot change inside a process. A persisted state from another boot is detected by comparing it to this. */
++    private val boot: String = bootId()
+     private var st: ReceiverState? = persist.load()
+ 
+     val current: ReceiverState? get() = st
+ 
+     fun onMessage(m: CapturePlanMessage): CapturePlanAck {
+         val cur = st?.takeIf { it.phoneInstall == m.phoneInstall }   // gens count per phone install
+-        cur?.terminal?.get(m.gen)?.let { return ack(m.gen, cur.mode, PlanAckState.REVERTED, it, null, m.phoneInstall, m.publishId) }
++        cur?.terminal?.get(m.gen)?.let {
++            val was = cur.terminalMeta[m.gen]
++            return ack(m.gen, was?.mode ?: cur.mode, PlanAckState.REVERTED, it, null, m.phoneInstall, was?.publishId ?: m.publishId)
++        }
+         if (cur != null && m.gen < cur.appliedGen) return reject(m, "stale")
+         if (cur != null && m.gen == cur.appliedGen) {
+             return ack(m.gen, cur.mode, if (cur.effective) PlanAckState.EFFECTIVE else PlanAckState.STAGED, null, cur.configHash, m.phoneInstall, m.publishId)
+         }
++        // Unrestricted LIVE is not a capability of this build: a buggy or rogue phone must not get an unbounded plan staged (round 3).
++        if (m.mode == PlanMode.LIVE && "live" !in CAPS) return reject(m, "unsupported:live")
+         if (m.mode == PlanMode.TRIAL && (m.trialMaxMs == null || m.trialMaxMs !in 1L..MAX_TRIAL_MS)) return reject(m, "bounds")
+         var planJson: String? = null
+         if (m.mode != PlanMode.SETTINGS) {
+             planJson = m.planJson
+             if (planJson == null || m.configHash == null) return reject(m, "schema")
+             val bytes = planJson.toByteArray(Charsets.UTF_8).size
+             if (bytes > PLAN_MAX_BYTES) return reject(m, "too_big")
+             val raw = runCatching { Json.parseToJsonElement(planJson) as? JsonObject }.getOrNull() ?: return reject(m, "schema")
+             val plan = PlanJson.decodeStrict(planJson).getOrNull()
+             val problems = PlanValidator.problems(raw, plan, bytes)
+             if (problems.any { it.startsWith("plan schema ") }) return reject(m, "version")
+             if (problems.isNotEmpty()) return reject(m, "bounds")
+             if (plan == null) return reject(m, "schema")
+             if (plan.configHash != m.configHash || PlanJson.configHash(plan.config) != m.configHash) return reject(m, "schema")
+         }
+         val next = ReceiverState(
+             appliedGen = m.gen, phoneInstall = m.phoneInstall, mode = m.mode, planJson = planJson, configHash = m.configHash.takeIf { planJson != null },
+-            trialStartElapsed = null, trialMaxMs = m.trialMaxMs.takeIf { m.mode == PlanMode.TRIAL }, bootId = bootId(),
+-            previous = (cur ?: st)?.copy(previous = null), terminal = cur?.terminal ?: emptyMap(), effective = false,
++            trialStartElapsed = null, trialMaxMs = m.trialMaxMs.takeIf { m.mode == PlanMode.TRIAL }, bootId = boot,
++            previous = (cur ?: st)?.copy(previous = null), terminal = cur?.terminal ?: emptyMap(), effective = false, publishId = m.publishId,
++            terminalMeta = cur?.terminalMeta ?: emptyMap(),
+         )
+         persist.commit(next); st = next
+         return ack(m.gen, m.mode, PlanAckState.STAGED, null, next.configHash, m.phoneInstall, m.publishId)
+     }
+ 
+     /** The staged plan became the applied one at the safe boundary. A TRIAL starts its clock here, once. */
+     fun activated(gen: Long): CapturePlanAck {
+         val cur = st
+         if (cur == null || cur.appliedGen != gen || gen in cur.terminal) {
+-            return CapturePlanAck(gen = gen, state = PlanAckState.REJECTED, reason = "stale", phoneInstall = cur?.phoneInstall ?: "")
++            return CapturePlanAck(gen = gen, state = PlanAckState.REJECTED, reason = "stale", phoneInstall = cur?.phoneInstall ?: "", caps = CAPS)
+         }
+         if (!cur.effective) {
+             val next = cur.copy(
+-                effective = true, bootId = bootId(),
++                effective = true, bootId = boot,
+                 trialStartElapsed = if (cur.mode == PlanMode.TRIAL) cur.trialStartElapsed ?: elapsed() else null,
+             )
+             persist.commit(next); st = next
+         }
+         val s = st!!
+-        return ack(gen, s.mode, PlanAckState.EFFECTIVE, null, s.configHash, s.phoneInstall, null)
++        return ack(gen, s.mode, PlanAckState.EFFECTIVE, null, s.configHash, s.phoneInstall, s.publishId)
+     }
+ 
+     /** [now] is the glasses' `elapsedRealtime`. Returns the REVERTED ack when the TRIAL ended, else null. */
+     @Suppress("UNUSED_PARAMETER")
+     fun tick(state: ContextState, now: Long): CapturePlanAck? {
+         val cur = st ?: return null
+         if (cur.mode != PlanMode.TRIAL || cur.appliedGen in cur.terminal) return null
+-        if (cur.bootId != bootId()) return revert("auto:reboot")
++        if (cur.bootId != boot) return revert("auto:reboot")
+         val start = cur.trialStartElapsed ?: return null
+         val max = cur.trialMaxMs ?: return revert("auto:trial_end")
+         if (now < start) return revert("auto:reboot")      // elapsed went backwards: treat as a reboot
+         return if (now - start >= max) revert("auto:trial_end") else null
+     }
+ 
+-    /** Back to the settings path; the gen is terminal and is never applied again. */
++    /** Back to the settings path; the gen is terminal and is never applied again. The first reason stays: a second revert re-acks it. */
+     fun revert(reason: String): CapturePlanAck {
+-        val cur = st ?: return CapturePlanAck(gen = 0, state = PlanAckState.REJECTED, reason = "stale")
++        val cur = st ?: return CapturePlanAck(gen = 0, state = PlanAckState.REJECTED, reason = "stale", caps = CAPS)
++        cur.terminal[cur.appliedGen]?.let { first ->
++            val was = cur.terminalMeta[cur.appliedGen]
++            return ack(cur.appliedGen, was?.mode ?: cur.mode, PlanAckState.REVERTED, first, null, cur.phoneInstall, was?.publishId ?: cur.publishId)
++        }
+         val terminal = (cur.terminal + (cur.appliedGen to reason)).entries.sortedBy { it.key }.takeLast(MAX_TERMINAL).associate { it.key to it.value }
++        val meta = (cur.terminalMeta + (cur.appliedGen to TerminalMeta(cur.mode, cur.publishId))).filterKeys { it in terminal }
+         val next = ReceiverState(
+             appliedGen = cur.appliedGen, phoneInstall = cur.phoneInstall, mode = PlanMode.SETTINGS, planJson = null, configHash = null,
+-            trialStartElapsed = null, trialMaxMs = null, bootId = bootId(), previous = null, terminal = terminal, effective = true,
++            trialStartElapsed = null, trialMaxMs = null, bootId = boot, previous = null, terminal = terminal, effective = true,
++            publishId = cur.publishId, terminalMeta = meta,
+         )
+         persist.commit(next); st = next
+-        return ack(cur.appliedGen, cur.mode, PlanAckState.REVERTED, reason, null, cur.phoneInstall, null)
++        return ack(cur.appliedGen, cur.mode, PlanAckState.REVERTED, reason, null, cur.phoneInstall, cur.publishId)
+     }
+ 
+     private fun reject(m: CapturePlanMessage, reason: String) = ack(m.gen, m.mode, PlanAckState.REJECTED, reason, null, m.phoneInstall, m.publishId)
+ 
+     private fun ack(gen: Long, mode: PlanMode, state: PlanAckState, reason: String?, hash: String?, install: String, publishId: String?) =
+-        CapturePlanAck(gen = gen, publishId = publishId, mode = mode, effectiveHash = hash, state = state, reason = reason, phoneInstall = install)
++        CapturePlanAck(gen = gen, publishId = publishId, mode = mode, effectiveHash = hash, state = state, reason = reason, phoneInstall = install, caps = CAPS)
+ 
+     companion object {
+         const val MAX_TRIAL_MS = 3_600_000L
+         private const val MAX_TERMINAL = 16
+         val CAPS = listOf("plan1", "shadow", "trial")
+     }
+ }
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanResolver.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanResolver.kt
+index e9ece044..8743fe76 100644
+--- a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanResolver.kt
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanResolver.kt
+@@ -33,27 +33,31 @@ object PlanResolver {
+         val g = GlanceParams()
+         return PlanConfig(
+             glance = GlanceBlock(g.onsetRadS, g.releaseRadS, g.bridgeMs, g.minBoutMs, g.minBoutRad, g.settleMs, g.noveltyWindowMs, g.noveltyMinRad, g.bigTurnRad),
+             policy = PlanState.entries.associateWith { rowOf(ContextPolicies.DEFAULT.getValue(toState(it))) },
+             gate = GateBlock(KeyframeGate.BIG_CHANGE, KeyframeGate.HAMMING, "all"),
+             ctxBound = true,
+             phoneFusion = PlanBounds.FUSION_DEFAULTS,
+         )
+     }
+ 
+-    /** The identity plan: rows, glance and gate equal today's defaults bit for bit (no clamping); the rest comes from [base]. */
++    /**
++     * Rows, glance and gate equal today's defaults bit for bit (no clamping); `ctxBound` and `phoneFusion` come from [base]. It is the
++     * exact identity plan (today's behaviour) only with the default [base]; a caller that wants no behaviour change passes nothing.
++     */
+     fun identity(base: PlanConfig = defaults()): PlanConfig {
+         val d = defaults()
+         return base.copy(glance = d.glance, policy = d.policy, gate = d.gate)
+     }
+ 
+     /**
+      * Fills every field [partial] (a `config` JSON object) leaves out from [base]. An explicit `null` capPerMin means "unchanged" and
+-     * is kept. Fails (Result) on unknown keys or non-finite numbers.
++     * is kept. Fails (Result) on unknown keys or non-finite numbers. It does NOT check bounds or the fusion allowlist: the result MUST go
++     * through [PlanValidator] before it is published or applied.
+      */
+     fun resolve(partial: JsonObject, base: PlanConfig): Result<PlanConfig> =
+         runCatching { PlanJson.decodeConfig(merge(PlanJson.configJson(base), partial)) }
+ 
+     private fun merge(base: JsonElement, over: JsonElement): JsonElement =
+         if (base is JsonObject && over is JsonObject) JsonObject(base + over.mapValues { (k, v) -> base[k]?.let { merge(it, v) } ?: v })
+         else over
+ }
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanValidator.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanValidator.kt
+index f2c49376..697bfd30 100644
+--- a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanValidator.kt
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanValidator.kt
+@@ -8,20 +8,35 @@ import kotlinx.serialization.json.JsonPrimitive
+ 
+ /** Refuses plans that break the non-removable invariants or bounds (S3, S32, S83, S84). Texts are exact; the en dash is U+2013. */
+ object PlanValidator {
+     private const val DASH = "\u2013"
+     private val SENSING = Regex("^(sampleRate.*|sensor.*|imu.*Hz|tick.*|fusionCadence.*|evaluate.*|detector.*|classifier.*)$", RegexOption.IGNORE_CASE)
+     private val EDITABLE = PlanState.entries.map { it.name }.toSet()
+ 
+     /** [raw] is the parsed plan JSON, [p] its strict decode (null when that failed), [bytes] the UTF-8 length of the text. */
+     fun problems(raw: JsonObject, p: CapturePlan?, bytes: Int): List<String> {
+         val out = ArrayList<String>()
++        // The walkers below recurse: refuse deep nesting first (a real plan is about 6 levels), and never let one throw.
++        if (tooDeep(raw, 0)) return listOf("plan is nested too deep (max $MAX_DEPTH)")
++        return runCatching { walk(raw, p, bytes, out) }.getOrElse { listOf("plan could not be checked") }
++    }
++
++    private const val MAX_DEPTH = 32
++
++    private fun tooDeep(e: JsonElement, depth: Int): Boolean = when {
++        depth > MAX_DEPTH -> true
++        e is JsonObject -> e.values.any { tooDeep(it, depth + 1) }
++        e is JsonArray -> e.any { tooDeep(it, depth + 1) }
++        else -> false
++    }
++
++    private fun walk(raw: JsonObject, p: CapturePlan?, bytes: Int, out: MutableList<String>): List<String> {
+         if (bytes > PLAN_MAX_BYTES) out += "plan is $bytes bytes (max $PLAN_MAX_BYTES)"
+         val schema = (raw["planSchema"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()
+         if (schema != PLAN_SCHEMA.toLong()) out += "plan schema ${schema ?: (raw["planSchema"] as? JsonPrimitive)?.content ?: "missing"} is not supported"
+         finite(raw, "", out)
+         sensing(raw, out)
+         rawRules(raw, out)
+         if (p != null) bounds(p, out)
+         return out.distinct()
+     }
+ 
+@@ -31,21 +46,21 @@ object PlanValidator {
+         val raw = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(text) as? JsonObject }.getOrNull()
+             ?: return listOf("plan is not a JSON object") to null
+         val plan = PlanJson.decodeStrict(text).getOrNull()
+         return problems(raw, plan, bytes) to plan
+     }
+ 
+     private fun finite(e: JsonElement, path: String, out: MutableList<String>) {
+         when (e) {
+             is JsonNull -> {}
+             is JsonPrimitive -> if (!e.isString && e.content != "true" && e.content != "false") {
+-                val d = e.content.toDoubleOrNull()
++                val d = e.content.takeIf { PlanJson.isJsonNumber(it) }?.toDoubleOrNull()
+                 if (d == null || !d.isFinite()) out += "${path.ifEmpty { "plan" }} is not a finite number"
+             }
+             is JsonArray -> e.forEachIndexed { i, x -> finite(x, "$path[$i]", out) }
+             is JsonObject -> e.forEach { (k, v) -> finite(v, if (path.isEmpty()) k else "$path.$k", out) }
+         }
+     }
+ 
+     /** S84: any key under (or named like) a sensing or detection block. */
+     private fun sensing(e: JsonElement, out: MutableList<String>) {
+         if (e is JsonObject) {
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanFixtures.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanFixtures.kt
+index 2d35b8b0..b0fc4b64 100644
+--- a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanFixtures.kt
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanFixtures.kt
+@@ -3,20 +3,26 @@ package com.rokid.context.capture.plan
+ import kotlinx.serialization.json.Json
+ import kotlinx.serialization.json.JsonElement
+ import kotlinx.serialization.json.JsonObject
+ 
+ object PlanFixtures {
+     fun plan(config: PlanConfig = PlanResolver.identity(), name: String = "t", meta: PlanMeta = PlanMeta(name, 1)) =
+         CapturePlan(PLAN_SCHEMA, PlanJson.configHash(config), config, meta)
+ 
+     fun text(p: CapturePlan = plan()) = PlanJson.encode(p)
+ 
++    /** A plan whose canonical text is exactly [target] UTF-8 bytes: ASCII padding, then a 2-byte char, so chars < bytes. */
++    fun planWithBytes(target: Int): CapturePlan {
++        val bytes0 = PlanJson.encode(plan(name = "é")).toByteArray(Charsets.UTF_8).size
++        return plan(name = "a".repeat(target - bytes0) + "é")
++    }
++
+     fun raw(p: CapturePlan = plan()): JsonObject = Json.parseToJsonElement(text(p)) as JsonObject
+ 
+     fun row(c: PlanConfig, s: PlanState, f: (PlanRow) -> PlanRow) = c.copy(policy = c.policy + (s to f(c.policy.getValue(s))))
+ 
+     /** Replace one path in the raw JSON, e.g. set("config.policy.REST.capPerMin", "5"). */
+     fun mutate(p: CapturePlan = plan(), f: (MutableMap<String, Any?>) -> Unit): JsonObject {
+         @Suppress("UNCHECKED_CAST")
+         fun toMap(e: JsonElement): Any? = when (e) {
+             is JsonObject -> e.mapValues { toMap(it.value) }.toMutableMap<String, Any?>()
+             else -> e
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanJsonTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanJsonTest.kt
+index 9c0d9376..804bb55a 100644
+--- a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanJsonTest.kt
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanJsonTest.kt
+@@ -15,21 +15,21 @@ class PlanJsonTest {
+         assertEquals(12, a.configHash.length)
+         assertTrue(a.configHash.all { it in "0123456789abcdef" })
+         val changed = PlanFixtures.row(a.config, PlanState.REST) { it.copy(capPerMin = 3) }
+         assertNotEquals(a.configHash, PlanJson.configHash(changed))
+     }
+ 
+     @Test fun configHashStableAcrossKeyOrder() {
+         val c = PlanResolver.identity()
+         val reversed = JsonObject(PlanJson.configJson(c).entries.reversed().associate { it.key to it.value })
+         assertEquals(PlanJson.configHash(c), CanonicalJson.encode(reversed).let { s ->
+-            java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(12)
++            java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }.take(12)
+         })
+         // a pretty-printed text with reversed top-level keys decodes to the same hash
+         val raw = PlanFixtures.raw()
+         val rev = JsonObject(raw.entries.reversed().associate { it.key to it.value })
+         val pretty = Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), rev)
+         assertEquals(PlanJson.configHash(c), PlanJson.configHash(PlanJson.decodeStrict(pretty).getOrThrow().config))
+     }
+ 
+     @Test fun strictDecodeRejectsUnknownKey() {
+         val t = PlanFixtures.text()
+@@ -45,15 +45,37 @@ class PlanJsonTest {
+     @Test fun roundTripExact() {
+         val p = PlanFixtures.plan(meta = PlanMeta("m é \"q\"", 7, mapOf("REST" to 1.25, "FLIGHT" to 0.5)))
+         val t = PlanJson.encode(p)
+         val back = PlanJson.decodeStrict(t).getOrThrow()
+         assertEquals(p, back)
+         assertEquals(t, PlanJson.encode(back))
+         assertEquals(p.config.glance.minBoutRad, back.config.glance.minBoutRad)
+         assertTrue(Json.parseToJsonElement(t) is JsonObject)
+     }
+ 
++    @Test fun duplicateKeysRefused() {
++        val t = PlanFixtures.text()
++        assertTrue(PlanJson.decodeStrict(t.replace("\"planSchema\":1}", "\"planSchema\":1,\"planSchema\":1}")).isFailure)
++        assertTrue(PlanJson.decodeStrict(t.replace("\"bridgeMs\":250,", "\"bridgeMs\":250,\"bridgeMs\":251,")).isFailure)
++        // the same key spelled with an escape is still the same key
++        assertTrue(PlanJson.decodeStrict(t.replace("\"bridgeMs\":250,", "\"bridgeMs\":250,\"bridge\\u004Ds\":251,")).isFailure)
++        // a key text inside a string value is not a key
++        assertTrue(PlanJson.decodeStrict(PlanJson.encode(PlanFixtures.plan(name = "\"a\":1,\"a\":2"))).isSuccess)
++        assertTrue(PlanJson.decodeStrict(t).isSuccess)
++    }
++
++    @Test fun numberGrammarIsJsonOnly() {
++        val t = PlanFixtures.text()
++        for (bad in listOf("0.6f", "0.6F", "0.6d", "0x1p-1", "+0.6", "0.6.0")) {
++            assertTrue(PlanJson.decodeStrict(t.replace("\"onsetRadS\":0.6", "\"onsetRadS\":$bad")).isFailure, bad)
++        }
++        for (bad in listOf("250d", "0x10", "2.5e2f")) {
++            assertTrue(PlanJson.decodeStrict(t.replace("\"bridgeMs\":250", "\"bridgeMs\":$bad")).isFailure, bad)
++        }
++        assertTrue(PlanJson.decodeStrict(t.replace("\"onsetRadS\":0.6", "\"onsetRadS\":6e-1")).isSuccess)
++    }
++
+     @Test fun identityConfigHashPinned() {
+         // the same value is pinned in :services:ai CanonicalJsonParityTest
+         assertEquals("f5782e0d8610", PlanJson.configHash(PlanResolver.identity()))
+     }
+ }
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanReceiverTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanReceiverTest.kt
+index 2acafab9..50022a67 100644
+--- a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanReceiverTest.kt
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanReceiverTest.kt
+@@ -1,12 +1,16 @@
+ package com.rokid.context.capture.plan
+ 
++import com.rokid.context.core.model.CapturePlanAck
++import com.rokid.context.core.model.CapturePlanMessage
++import com.rokid.context.core.model.PlanAckState
++import com.rokid.context.core.model.PlanMode
+ import com.rokid.context.core.model.context.ContextState
+ import kotlin.test.Test
+ import kotlin.test.assertEquals
+ import kotlin.test.assertNotNull
+ import kotlin.test.assertNull
+ 
+ class PlanReceiverTest {
+     private class Mem(var s: ReceiverState? = null) : PlanPersistence {
+         var commits = 0
+         override fun load() = s
+@@ -68,23 +72,23 @@ class PlanReceiverTest {
+     }
+ 
+     @Test fun trialMaxOver60MinRejected() {
+         val r = rx()
+         assertEquals("bounds", r.onMessage(msg(1, PlanMode.TRIAL, 3_600_001)).reason)
+         assertEquals(PlanAckState.STAGED, r.onMessage(msg(1, PlanMode.TRIAL, 3_600_000)).state)
+     }
+ 
+     @Test fun planModesNeedPlanJsonAndHash() {
+         val r = rx()
+-        for (mode in listOf(PlanMode.LIVE, PlanMode.SHADOW)) {
+-            assertEquals("schema", r.onMessage(msg(1, mode, json = null)).reason)
+-            assertEquals("schema", r.onMessage(msg(1, mode, hash = null)).reason)
++        for (mode in listOf(PlanMode.TRIAL, PlanMode.SHADOW)) {
++            assertEquals("schema", r.onMessage(msg(1, mode, 60_000, json = null)).reason)
++            assertEquals("schema", r.onMessage(msg(1, mode, 60_000, hash = null)).reason)
+         }
+         assertEquals("schema", r.onMessage(msg(1, hash = "000000000000")).reason)
+         assertEquals("schema", r.onMessage(msg(1, json = "{not json")).reason)
+         assertEquals(PlanAckState.STAGED, r.onMessage(CapturePlanMessage(gen = 1, mode = PlanMode.SETTINGS, phoneInstall = "p1")).state)
+     }
+ 
+     @Test fun tooBigAndBoundsAndVersion() {
+         val r = rx()
+         assertEquals("too_big", r.onMessage(msg(1, json = " ".repeat(8_193) + text)).reason)
+         val bad = PlanFixtures.plan(PlanFixtures.row(PlanResolver.identity(), PlanState.REST) { it.copy(capPerMin = 9) })
+@@ -108,24 +112,27 @@ class PlanReceiverTest {
+         assertNull(r.tick(ContextState.REST, 69_999))
+         val a = assertNotNull(r.tick(ContextState.REST, 70_000))
+         assertEquals(PlanAckState.REVERTED, a.state); assertEquals("auto:trial_end", a.reason)
+         assertEquals(PlanMode.SETTINGS, mem.s!!.mode)
+         assertNull(r.tick(ContextState.REST, 1_000_000))
+     }
+ 
+     @Test fun wallClockRollbackDoesNotExtend() {
+         val r = rx()
+         clock = 10_000
+-        // the phone's display-only wall clock fields are garbage; only the glasses' elapsed clock counts
+-        r.onMessage(CapturePlanMessage(gen = 1, mode = PlanMode.TRIAL, configHash = plan.configHash, planJson = text, trialMaxMs = 60_000, trialEndsAtMs = 9_999_999_999, phoneInstall = "p1", atMs = 1))
+-        r.activated(1)
+-        assertNull(r.tick(ContextState.REST, 69_000))
++        trial(r, 1, 60_000)
++        // the phone's wall clock was rolled back an hour: a re-sent duplicate now carries an old atMs and a far-future trialEndsAtMs
++        val rolledBack = CapturePlanMessage(gen = 1, mode = PlanMode.TRIAL, configHash = plan.configHash, planJson = text, trialMaxMs = 60_000, trialEndsAtMs = 9_999_999_999, phoneInstall = "p1", atMs = 1)
++        clock = 40_000
++        assertEquals(PlanAckState.EFFECTIVE, r.onMessage(rolledBack).state)
++        assertEquals(10_000L, mem.s!!.trialStartElapsed)
++        assertNull(r.tick(ContextState.REST, 69_999))
+         assertEquals("auto:trial_end", r.tick(ContextState.REST, 70_000)!!.reason)
+     }
+ 
+     @Test fun duplicateDoesNotExtendTrial() {
+         val r = rx()
+         clock = 10_000; trial(r, 1, 60_000)
+         clock = 50_000
+         r.onMessage(msg(1, PlanMode.TRIAL, 60_000))
+         r.activated(1)
+         assertEquals(10_000L, mem.s!!.trialStartElapsed)
+@@ -149,11 +156,83 @@ class PlanReceiverTest {
+         val a = assertNotNull(again.tick(ContextState.REST, clock + 1))
+         assertEquals("auto:reboot", a.reason)
+         assertEquals(PlanAckState.REVERTED, again.onMessage(msg(1, PlanMode.TRIAL, 3_600_000)).state)
+     }
+ 
+     @Test fun otherPhoneInstallRestartsGenCounter() {
+         val r = rx()
+         r.onMessage(msg(50)); r.activated(50)
+         assertEquals(PlanAckState.STAGED, r.onMessage(msg(1, install = "p2")).state)
+     }
++
++    @Test fun liveRefusedWithoutCap() {
++        val r = rx()
++        assertEquals(false, "live" in PlanReceiver.CAPS)
++        val a = r.onMessage(msg(1, PlanMode.LIVE))
++        assertEquals(PlanAckState.REJECTED, a.state); assertEquals("unsupported:live", a.reason); assertEquals(PlanMode.LIVE, a.mode)
++        assertNull(mem.s); assertEquals(0, mem.commits)
++        // after a staged SHADOW, a LIVE with a newer gen still stages nothing
++        r.onMessage(msg(2)); r.activated(2)
++        assertEquals("unsupported:live", r.onMessage(msg(3, PlanMode.LIVE)).reason)
++        assertEquals(2, mem.s!!.appliedGen); assertEquals(PlanMode.SHADOW, mem.s!!.mode)
++    }
++
++    @Test fun terminalReAckKeepsOriginalModeAndPublishId() {
++        val r = rx()
++        r.onMessage(msg(2, PlanMode.TRIAL, 60_000).copy(publishId = "pub-7")); r.activated(2)
++        r.revert("auto:ceiling")
++        val a = r.onMessage(msg(2, PlanMode.TRIAL, 60_000).copy(publishId = "pub-other"))
++        assertEquals(PlanAckState.REVERTED, a.state); assertEquals("auto:ceiling", a.reason)
++        assertEquals(PlanMode.TRIAL, a.mode); assertEquals("pub-7", a.publishId)
++    }
++
++    @Test fun secondRevertKeepsTheFirstReason() {
++        val r = rx()
++        trial(r, 1)
++        assertEquals("auto:ceiling", r.revert("auto:ceiling").reason)
++        val again = r.revert("auto:trial_end")
++        assertEquals("auto:ceiling", again.reason); assertEquals(PlanAckState.REVERTED, again.state)
++        assertEquals("auto:ceiling", mem.s!!.terminal[1L])
++        assertEquals("auto:ceiling", r.onMessage(msg(1, PlanMode.TRIAL, 60_000)).reason)
++    }
++
++    @Test fun activatedTickAndRevertAcksCarryPublishId() {
++        val r = rx()
++        clock = 10_000
++        r.onMessage(msg(1, PlanMode.TRIAL, 60_000).copy(publishId = "pub-1"))
++        assertEquals("pub-1", r.activated(1).publishId)
++        assertEquals("pub-1", r.tick(ContextState.REST, 70_000)!!.publishId)
++        val r2 = rx()
++        r2.onMessage(msg(2).copy(publishId = "pub-2")); r2.activated(2)
++        assertEquals("pub-2", r2.revert("auto:ceiling").publishId)
++    }
++
++    @Test fun bootIdIsReadOnceNotPerTick() {
++        var reads = 0
++        val r = PlanReceiver(mem, { clock }, { reads++; boot })
++        trial(r, 1, 3_600_000)
++        val before = reads
++        repeat(100) { assertNull(r.tick(ContextState.REST, clock + 1_000)) }
++        assertEquals(before, reads)
++        assertEquals(1, reads)
++    }
++
++    @Test fun multibyteUtf8BoundaryThroughTheReceiver() {
++        val r = rx()
++        val ok = PlanFixtures.planWithBytes(8_192)
++        val okText = PlanJson.encode(ok)
++        assertEquals(8_192, okText.toByteArray(Charsets.UTF_8).size); assertEquals(true, okText.length < 8_192)
++        assertEquals(PlanAckState.STAGED, r.onMessage(msg(1, json = okText, hash = ok.configHash)).state)
++        val big = PlanFixtures.planWithBytes(8_193)
++        val bigText = PlanJson.encode(big)
++        assertEquals(true, bigText.length <= 8_192)   // a char-length check would let it through
++        assertEquals("too_big", r.onMessage(msg(2, json = bigText, hash = big.configHash)).reason)
++    }
++
++    @Test fun deepNestingRejectedNotCrash() {
++        val r = rx()
++        val deep = "{\"planSchema\":1,\"x\":" + "[".repeat(4_000) + "]".repeat(4_000) + "}"
++        val a = r.onMessage(msg(1, json = deep))
++        assertEquals(PlanAckState.REJECTED, a.state)
++        assertNull(mem.s)
++    }
+ }
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanResolverTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanResolverTest.kt
+index 27c70998..0926e3e7 100644
+--- a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanResolverTest.kt
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanResolverTest.kt
+@@ -46,21 +46,25 @@ class PlanResolverTest {
+     @Test fun identityVehicleRowsUnchangedNoHardFlag() {
+         val id = PlanResolver.identity()
+         for (s in listOf(PlanState.VEHICLE_PASSENGER, PlanState.VEHICLE_DRIVING)) {
+             val r = id.policy.getValue(s)
+             assertNull(r.capPerMin)
+             assertEquals(TimerPhotoGaps(0, 0, 0, 0), r.timerPhotoGapsMs)
+             assertFalse(r.forceSettle)
+         }
+         assertTrue(id.policy.getValue(PlanState.VEHICLE_PASSENGER).nudges)
+         assertFalse(id.policy.getValue(PlanState.VEHICLE_DRIVING).nudges)
+-        assertFalse(PlanResolver.toContextPolicy(id.policy.getValue(PlanState.VEHICLE_DRIVING)).pause)
++        for (s in listOf(PlanState.VEHICLE_PASSENGER, PlanState.VEHICLE_DRIVING)) {
++            val mapped = PlanResolver.toContextPolicy(id.policy.getValue(s))
++            assertFalse(mapped.pause, "$s must never pause capture")
++            assertEquals(ContextPolicies.DEFAULT.getValue(ContextState.valueOf(s.name)), mapped, "$s maps back to today's row")
++        }
+     }
+ 
+     @Test fun toContextPolicyRoundTrip() {
+         for ((_, p) in ContextPolicies.DEFAULT) assertEquals(p, PlanResolver.toContextPolicy(PlanResolver.rowOf(p)))
+     }
+ 
+     @Test fun resolveFillsFromBaseAndKeepsExplicitNullCap() {
+         val base = PlanResolver.identity()
+         val partial = JsonObject(
+             mapOf(
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanValidatorTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanValidatorTest.kt
+index 63181118..ecd77e67 100644
+--- a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanValidatorTest.kt
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanValidatorTest.kt
+@@ -128,27 +128,46 @@ class PlanValidatorTest {
+     @Test fun refusesNaN() {
+         val raw = PlanFixtures.mutate { it.at("config", "glance")["onsetRadS"] = JsonPrimitive(Double.NaN) }
+         assertTrue("config.glance.onsetRadS is not a finite number" in PlanValidator.problems(raw, null, 100))
+         val inf = PlanFixtures.mutate { it.at("config", "phoneFusion")["fastKmh"] = JsonPrimitive(Double.POSITIVE_INFINITY) }
+         assertTrue("config.phoneFusion.fastKmh is not a finite number" in PlanValidator.problems(inf, null, 100))
+         val nul = PlanFixtures.mutate { it.at("config", "policy", "REST")["capPerMin"] = JsonNull }
+         assertEquals(emptyList(), PlanValidator.problems(nul, null, 100))
+     }
+ 
+     @Test fun utf8BoundaryMultibyteName() {
+-        fun planWithBytes(target: Int): CapturePlan {
+-            // pad with ASCII, then end the name on a 2-byte character so that chars < bytes
+-            val empty = PlanFixtures.plan(name = "é")
+-            val bytes0 = PlanJson.encode(empty).toByteArray().size   // contains one 2-byte char
+-            return PlanFixtures.plan(name = "a".repeat(target - bytes0) + "é")
+-        }
+-        val ok = planWithBytes(8_192)
++        val ok = PlanFixtures.planWithBytes(8_192)
+         val okText = PlanJson.encode(ok)
+-        assertEquals(8_192, okText.toByteArray().size)
++        assertEquals(8_192, okText.toByteArray(Charsets.UTF_8).size)
+         assertTrue(okText.length < 8_192)   // chars alone would hide the overflow
+         assertEquals(emptyList(), PlanValidator.check(okText).first)
+-        val big = planWithBytes(8_193)
+-        val bigText = PlanJson.encode(big)
+-        assertEquals(8_193, bigText.toByteArray().size)
++        val bigText = PlanJson.encode(PlanFixtures.planWithBytes(8_193))
++        assertEquals(8_193, bigText.toByteArray(Charsets.UTF_8).size)
+         assertEquals(listOf("plan is 8193 bytes (max 8192)"), PlanValidator.check(bigText).first)
+     }
++
++    @Test fun stillFractionsAreCappedAtOne() {
++        fun withFusion(k: String, v: Double) = problems(base.copy(phoneFusion = base.phoneFusion + (k to v)))
++        for (k in listOf("stillFrac", "stillFracWithImage")) {
++            assertEquals(emptyList(), withFusion(k, 1.0), k)
++            assertEquals(listOf("fusion.$k out of bounds ${PlanBounds.fmt(PlanBounds.FUSION_DEFAULTS.getValue(k) * 0.5)}–1"), withFusion(k, 1.01), k)
++        }
++    }
++
++    @Test fun deepNestingRefusedNotCrash() {
++        var deep: kotlinx.serialization.json.JsonElement = JsonPrimitive(1)
++        repeat(100_000) { deep = kotlinx.serialization.json.JsonArray(listOf(deep)) }
++        val raw = PlanFixtures.mutate { it["extra"] = deep }
++        assertEquals(listOf("plan is nested too deep (max 32)"), PlanValidator.problems(raw, null, 100))
++        // a real plan is about 6 levels deep
++        assertEquals(emptyList(), PlanValidator.problems(PlanFixtures.raw(), PlanFixtures.plan(), 100))
++    }
++
++    @Test fun refusesTokensOutsideTheJsonNumberGrammar() {
++        val t = PlanFixtures.text()
++        for (bad in listOf("0.6f", "1d", "0x1p-1", "+1", ".5", "01", "1.")) {
++            val text = t.replace("\"onsetRadS\":0.6", "\"onsetRadS\":$bad")
++            assertTrue(PlanJson.decodeStrict(text).isFailure, bad)
++            assertTrue(PlanValidator.check(text).first.isNotEmpty(), bad)
++        }
++    }
+ }
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/ReservedBoundTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/ReservedBoundTest.kt
+index bb2c3d12..cf012f56 100644
+--- a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/ReservedBoundTest.kt
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/ReservedBoundTest.kt
+@@ -1,18 +1,24 @@
+ package com.rokid.context.capture.plan
+ 
+ import com.rokid.context.core.model.context.ContextState
+ import kotlin.test.Test
+ import kotlin.test.assertEquals
+ 
++/** S83: independent literals, not a re-statement of the rule. Rows: state, bound when not resting, bound when WorkRest is resting. */
+ class ReservedBoundTest {
+     @Test fun boundsPerStateAndResting() {
+-        for (s in ContextState.entries) for (rest in listOf(true, false)) {
+-            val rest300 = s in setOf(ContextState.REST, ContextState.VEHICLE_PASSENGER, ContextState.VEHICLE_DRIVING, ContextState.FLIGHT) ||
+-                (rest && s != ContextState.WALKING)
+-            assertEquals(if (rest300) 300_000L else 60_000L, reservedBoundMs(s, rest), "$s resting=$rest")
++        val expected = listOf(
++            Triple(ContextState.UNKNOWN, 60_000L, 300_000L),
++            Triple(ContextState.WALKING, 60_000L, 60_000L),
++            Triple(ContextState.REST, 300_000L, 300_000L),
++            Triple(ContextState.VEHICLE_PASSENGER, 300_000L, 300_000L),
++            Triple(ContextState.VEHICLE_DRIVING, 300_000L, 300_000L),
++            Triple(ContextState.FLIGHT, 300_000L, 300_000L),
++        )
++        assertEquals(ContextState.entries.toSet(), expected.map { it.first }.toSet())
++        for ((s, active, resting) in expected) {
++            assertEquals(active, reservedBoundMs(s, false), "$s not resting")
++            assertEquals(resting, reservedBoundMs(s, true), "$s resting")
+         }
+-        assertEquals(60_000L, reservedBoundMs(ContextState.UNKNOWN, false))
+-        assertEquals(300_000L, reservedBoundMs(ContextState.UNKNOWN, true))   // S83a WorkRest resting while UNKNOWN
+-        assertEquals(60_000L, reservedBoundMs(ContextState.WALKING, true))
+     }
+ }
+diff --git a/android-companion/core/model/src/main/kotlin/com/rokid/context/core/model/Protocol.kt b/android-companion/core/model/src/main/kotlin/com/rokid/context/core/model/Protocol.kt
+index 9b10b6f5..7998060c 100644
+--- a/android-companion/core/model/src/main/kotlin/com/rokid/context/core/model/Protocol.kt
++++ b/android-companion/core/model/src/main/kotlin/com/rokid/context/core/model/Protocol.kt
+@@ -22,20 +22,34 @@ object Channels {
+     /** Wave B, phone to glasses: a [com.rokid.context.core.model.context.MotionContextMessage]. Additive. */
+     const val MOTION_CONTEXT = "pc_motion_ctx"
+     /** Fix wave H, phone to glasses: a [WearMessage] (the real wear signal from the Rokid SDK). Additive. */
+     const val WEAR = "pc_wear"
+     /** Fix wave H, glasses to phone: a [UserExit] (the wearer exited the app on purpose; do not reopen it). Additive. */
+     const val USER_EXIT = "pc_user_exit"
+     /** Fix wave I, phone to glasses: an [AutoOpen] (this start of the glasses app was the phone's automatic reopen: keep it minimised). Additive. */
+     const val AUTO_OPEN = "pc_auto_open"
+     /** Battery wave A, phone to glasses: a [PhoneContextMessage] (the phone is in use). Additive. */
+     const val PHONE_CONTEXT = "pc_phone_ctx"
++    /** Slice 3a, phone to glasses: a [CapturePlanMessage] (a desired capture plan or "use settings"). Additive. */
++    const val CAPTURE_PLAN = "pc_capture_plan"
++    /** Slice 3a, glasses to phone: a [CapturePlanAck] (also sent unsolicited at gen 0 on every session open, carrying the caps). Additive. */
++    const val CAPTURE_PLAN_ACK = "pc_capture_plan_ack"
++    /** Slice 3a, glasses to phone: a [MarkMessage] ("mark this moment"). Additive. */
++    const val MARK = "pc_mark"
++    /** Slice 3a, phone to glasses: a [MarkAck]. Additive. */
++    const val MARK_ACK = "pc_mark_ack"
++    /** Slice 3a, phone to glasses: a [TraceControl] (collect, tombstones, send). Additive. */
++    const val TRACE_CTL = "pc_trace_ctl"
++    /** Slice 3a, glasses to phone: a [TraceChunk]. Additive. */
++    const val TRACE_CHUNK = "pc_trace_chunk"
++    /** Slice 3a, phone to glasses: a [TraceAck]. Additive. */
++    const val TRACE_ACK = "pc_trace_ack"
+ }
+ 
+ /** How the glasses decide when to capture: Smart = motion-driven keyframes, Fixed = the interval timer. */
+ @Serializable enum class CaptureMode { SMART, FIXED }
+ 
+ /** Coarse head/body motion class from the glasses IMU; an unknown wire value decodes to [UNKNOWN]. */
+ @Serializable enum class MotionState { STILL, HEAD_MOVING, WALKING, VEHICLE, UNKNOWN }
+ 
+ /** Glasses → phone on `pc_motion_hint`. [stillFrac5m]: share of the last 300 s the classifier was STILL; -1 = not yet known. */
+ @Serializable data class MotionHint(
+@@ -195,20 +209,22 @@ data class HudSettings(
+     /** Battery wave A, additive: target battery life in hours, 0 = Off, default Off (wave A2: last-resort lever) (see [BATTERY_TARGET_HOURS_ALLOWED], [normalized]). */
+     val batteryTargetHours: Int = 0,
+     /** Battery wave A, additive: pause capture while the phone is in use (see [PhoneContextMessage]). */
+     val pauseWhenPhoneInUse: Boolean = false,
+     /** Wave A3: WorkRest default Off. */
+     val workRestEnabled: Boolean = false,
+     /** Wave A3: training label, enum only. Unknown wire value = NONE. */
+     val motionLabel: MotionLabel = MotionLabel.NONE,
+     /** Wave A3: source ids the user turned off; glasses_imu is ignored here (see [normalized]). */
+     val motionSourcesOff: List<String> = emptyList(),
++    /** Slice 3a, additive: a new phone sets true (it speaks `pc_capture_plan`). Glasses holding a persisted plan that see false revert to settings (`auto:old_phone`). */
++    val planAware: Boolean = false,
+ )
+ 
+ /** Wave A3, additive: training label for the motion feature log. */
+ @Serializable enum class MotionLabel { NONE, SITTING, GLANCING, CHORES, EATING, WALKING, NOT_WORN }
+ 
+ /** Battery wave A, additive: what wakes the camera. */
+ @Serializable enum class CameraWake { MOTION, SETTLE }
+ 
+ /** Battery wave A, additive: phone to glasses on [Channels.PHONE_CONTEXT]; [inUse] = the phone is being used right now. */
+ @Serializable
+@@ -265,21 +281,138 @@ sealed interface Command {
+     @Serializable @SerialName("pause") data class Pause(val pause: PauseRecord) : Command
+     @Serializable @SerialName("resume") data class Resume(val clears: Set<String>) : Command
+     @Serializable @SerialName("page_changed") data class PageChanged(val page: HudPage) : Command
+     @Serializable @SerialName("listen_start") data object ListenStart : Command
+     @Serializable @SerialName("cancel") data object Cancel : Command
+     /** Phase 7, additive: undo an executed proposal (glasses double-tap on an undo toast). */
+     @Serializable @SerialName("undo") data class Undo(val proposalId: String) : Command
+ }
+ 
+ /** `pc_cmd` payload: commands are wrapped so every message carries [v]. */
+-@Serializable data class CommandEnvelope(val v: Int = PROTOCOL_VERSION, val command: Command)
++@Serializable data class CommandEnvelope(
++    val v: Int = PROTOCOL_VERSION,
++    val command: Command,
++    /** Slice 3a, additive: ties a `ListenStart` to the `pc_mark` that opened it (`MarkMessage.listenId`). An old decoder ignores it. */
++    val listenId: String? = null,
++)
++
++/** Slice 3a: how the glasses run a capture plan. An unknown wire value decodes to [SETTINGS]. */
++@Serializable enum class PlanMode { SETTINGS, SHADOW, TRIAL, LIVE }
++
++/** Slice 3a: the state a [CapturePlanAck] reports. An unknown wire value decodes to [REJECTED]. */
++@Serializable enum class PlanAckState { REJECTED, STAGED, EFFECTIVE, REVERTED }
++
++/**
++ * Slice 3a, phone to glasses on [Channels.CAPTURE_PLAN]. [gen] is the phone's durable desired-state counter; [mode] =
++ * SETTINGS with no [planJson] means use settings. [atMs] (phone clock) before [sessionStartMs] = a stale transport copy.
++ */
++@Serializable
++data class CapturePlanMessage(
++    val v: Int = PROTOCOL_VERSION,
++    val gen: Long,
++    val publishId: String? = null,
++    val mode: PlanMode = PlanMode.SETTINGS,
++    val configHash: String? = null,
++    val planJson: String? = null,
++    val trialEndsAtMs: Long? = null,
++    val trialMaxMs: Long? = null,
++    /** The phone install this gen belongs to; echoed in the ack so the phone can tell a stale ack from this install's. */
++    val phoneInstall: String = "",
++    val atMs: Long = 0,
++    val sessionStartMs: Long = 0,
++)
++
++/**
++ * Slice 3a, glasses to phone on [Channels.CAPTURE_PLAN_ACK]. The phone matches it by [gen], [phoneInstall] and
++ * [sessionStartMs] (all echoed from the message). The unsolicited caps ack on session open has gen 0 and no plan.
++ */
++@Serializable
++data class CapturePlanAck(
++    val v: Int = PROTOCOL_VERSION,
++    val gen: Long,
++    val publishId: String? = null,
++    val mode: PlanMode = PlanMode.SETTINGS,
++    val effectiveHash: String? = null,
++    val state: PlanAckState = PlanAckState.REJECTED,
++    val reason: String? = null,
++    val planSchemaMax: Int = 1,
++    val caps: List<String> = emptyList(),
++    val phoneInstall: String = "",
++    val atMs: Long = 0,
++    val sessionStartMs: Long = 0,
++)
++
++/**
++ * Slice 3a, glasses to phone on [Channels.MARK]. [atMs] and [atElapsedMs] are the occurrence time, never a freshness
++ * test: a queued mark older than [sessionStartMs] is still accepted.
++ */
++@Serializable
++data class MarkMessage(
++    val v: Int = PROTOCOL_VERSION,
++    val epoch: String,
++    val seq: Long,
++    val atMs: Long,
++    val atElapsedMs: Long,
++    val bootCount: Int = -1,
++    val sessionStartMs: Long = 0,
++    val src: String = "tap",
++    val listen: Boolean = false,
++    val listenId: String? = null,
++    val undo: Long? = null,
++    val deletionCounter: Long = -1,
++)
++
++/** Slice 3a, phone to glasses on [Channels.MARK_ACK]: the marks of [epoch] with these [seqs] are stored. */
++@Serializable data class MarkAck(val v: Int = PROTOCOL_VERSION, val epoch: String, val seqs: List<Long> = emptyList())
++
++/** Slice 3a, phone to glasses on [Channels.TRACE_CTL]: the "collect for tuning" session, deletion tombstones and the send request. */
++@Serializable
++data class TraceControl(
++    val v: Int = PROTOCOL_VERSION,
++    val collect: Boolean = false,
++    val collectUntilMs: Long? = null,
++    val installId: String = "",
++    val deletionCounter: Long = 0,
++    val tombstones: List<String> = emptyList(),
++    val forgetFromMs: Long? = null,
++    val forgetToMs: Long? = null,
++    val send: Boolean = false,
++    val atMs: Long = 0,
++    val sessionStartMs: Long = 0,
++)
++
++/** Slice 3a, glasses to phone on [Channels.TRACE_CHUNK]: one base64 gzip chunk of a trace. */
++@Serializable
++data class TraceChunk(
++    val v: Int = PROTOCOL_VERSION,
++    val traceId: String,
++    val kind: String = "",
++    val seq: Int = 0,
++    val count: Int = 0,
++    val installId: String = "",
++    val deletionCounter: Long = 0,
++    val sha256: String = "",
++    val b64: String = "",
++    val atMs: Long = 0,
++    val sessionStartMs: Long = 0,
++)
++
++/** Slice 3a, phone to glasses on [Channels.TRACE_ACK]: the trace was stored ([ok]) or not ([reason]). */
++@Serializable
++data class TraceAck(
++    val v: Int = PROTOCOL_VERSION,
++    val traceId: String,
++    val ok: Boolean,
++    val reason: String? = null,
++    val atMs: Long = 0,
++    val sessionStartMs: Long = 0,
++)
+ 
+ /**
+  * Glasses → phone on `pc_hello`: sent when a session opens and again after each buffered frame (a status report).
+  * [glassesNowMs] gives the phone the clock offset; [pauses] and [nextCaptureAtMs] are in glasses clock.
+  * [resumedAtMs] = pauseId → glasses-clock instant of every Resume the wearer made that the phone has not yet confirmed
+  * (it still listed the id). Re-sent in every hello, so a Resume made while the link was down is never lost. Additive:
+  * an older payload without it decodes to empty.
+  */
+ @Serializable
+ data class Hello(
+diff --git a/android-companion/core/model/src/test/kotlin/com/rokid/context/core/model/WireSlice3aTest.kt b/android-companion/core/model/src/test/kotlin/com/rokid/context/core/model/WireSlice3aTest.kt
+new file mode 100644
+index 00000000..542b7ccb
+--- /dev/null
++++ b/android-companion/core/model/src/test/kotlin/com/rokid/context/core/model/WireSlice3aTest.kt
+@@ -0,0 +1,98 @@
++package com.rokid.context.core.model
++
++import kotlinx.serialization.Serializable
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFalse
++import kotlin.test.assertIs
++import kotlin.test.assertNull
++import kotlin.test.assertTrue
++
++/** Slice 3a wire: additive channels and fields only, `PROTOCOL_VERSION` stays 1, old peers decode and ignore (S74). */
++class WireSlice3aTest {
++    private fun res(name: String): String = checkNotNull(javaClass.getResource("/compat/$name")) { name }.readText().trim()
++    private inline fun <reified T> ok(text: String): T = assertIs<Decoded.Ok<T>>(Wire.decode<T>(text)).value
++
++    /** A frozen copy of the v1 classes as an old peer has them (no slice 3a fields). */
++    @Serializable private data class OldCommandEnvelope(val v: Int = PROTOCOL_VERSION, val command: Command)
++    @Serializable private data class OldHudSettingsSubset(val v: Int = PROTOCOL_VERSION, val verbosity: Verbosity = Verbosity.MEDIUM, val scale: Float = 0.4f)
++
++    @Test fun channelNamesAndVersion() {
++        assertEquals(1, PROTOCOL_VERSION)
++        assertEquals("pc_capture_plan", Channels.CAPTURE_PLAN)
++        assertEquals("pc_capture_plan_ack", Channels.CAPTURE_PLAN_ACK)
++        assertEquals("pc_mark", Channels.MARK)
++        assertEquals("pc_mark_ack", Channels.MARK_ACK)
++        assertEquals("pc_trace_ctl", Channels.TRACE_CTL)
++        assertEquals("pc_trace_chunk", Channels.TRACE_CHUNK)
++        assertEquals("pc_trace_ack", Channels.TRACE_ACK)
++    }
++
++    @Test fun capturePlanMessageRoundTripAndDefaults() {
++        val m = CapturePlanMessage(gen = 7, publishId = "p1", mode = PlanMode.TRIAL, configHash = "abcdef012345", planJson = "{}", trialMaxMs = 60_000, phoneInstall = "inst-1", atMs = 5, sessionStartMs = 3)
++        assertEquals(m, ok<CapturePlanMessage>(Wire.encode(m)))
++        val d = ok<CapturePlanMessage>("""{"v":1,"gen":2}""")
++        assertEquals(PlanMode.SETTINGS, d.mode); assertEquals("", d.phoneInstall); assertNull(d.trialMaxMs); assertEquals(0L, d.sessionStartMs)
++        assertEquals(PlanMode.SETTINGS, ok<CapturePlanMessage>("""{"v":1,"gen":2,"mode":"HYPER"}""").mode)
++    }
++
++    @Test fun capturePlanAckRoundTripAndDefaults() {
++        val a = CapturePlanAck(gen = 3, mode = PlanMode.SHADOW, state = PlanAckState.EFFECTIVE, effectiveHash = "abcdef012345", caps = listOf("plan1"), phoneInstall = "i", atMs = 9, sessionStartMs = 4)
++        assertEquals(a, ok<CapturePlanAck>(Wire.encode(a)))
++        val d = ok<CapturePlanAck>("""{"v":1,"gen":0}""")
++        assertEquals(PlanAckState.REJECTED, d.state); assertEquals(1, d.planSchemaMax); assertEquals(emptyList(), d.caps); assertEquals("", d.phoneInstall)
++        assertEquals(PlanAckState.REJECTED, ok<CapturePlanAck>("""{"v":1,"gen":1,"state":"MAYBE"}""").state)
++    }
++
++    @Test fun markMessagesRoundTripAndDefaults() {
++        val m = MarkMessage(epoch = "e1", seq = 4, atMs = 10, atElapsedMs = 20, bootCount = 3, sessionStartMs = 5, listen = true, listenId = "L1", undo = 2, deletionCounter = 6)
++        assertEquals(m, ok<MarkMessage>(Wire.encode(m)))
++        val d = ok<MarkMessage>("""{"v":1,"epoch":"e","seq":1,"atMs":1,"atElapsedMs":2}""")
++        assertEquals(-1, d.bootCount); assertEquals("tap", d.src); assertFalse(d.listen); assertNull(d.listenId); assertNull(d.undo); assertEquals(-1L, d.deletionCounter)
++        val ack = MarkAck(epoch = "e", seqs = listOf(1, 2))
++        assertEquals(ack, ok<MarkAck>(Wire.encode(ack)))
++    }
++
++    @Test fun traceMessagesRoundTripAndDefaults() {
++        val c = TraceControl(collect = true, collectUntilMs = 99, installId = "i", deletionCounter = 2, tombstones = listOf("t-1"), forgetFromMs = 1, forgetToMs = 2, send = true, atMs = 5, sessionStartMs = 3)
++        assertEquals(c, ok<TraceControl>(Wire.encode(c)))
++        val d = ok<TraceControl>("""{"v":1}""")
++        assertFalse(d.collect); assertFalse(d.send); assertEquals("", d.installId); assertEquals(0L, d.deletionCounter); assertEquals(emptyList(), d.tombstones)
++        val ch = TraceChunk(traceId = "trace-0001", kind = "imu", seq = 1, count = 3, installId = "i", deletionCounter = 1, sha256 = "00", b64 = "AA==", atMs = 1, sessionStartMs = 1)
++        assertEquals(ch, ok<TraceChunk>(Wire.encode(ch)))
++        val a = TraceAck(traceId = "trace-0001", ok = true, atMs = 3, sessionStartMs = 2)
++        assertEquals(a, ok<TraceAck>(Wire.encode(a)))
++        assertEquals(0L, ok<TraceAck>("""{"v":1,"traceId":"x","ok":false}""").sessionStartMs)
++    }
++
++    @Test fun anotherVersionIsAMismatchNotAnApply() {
++        assertIs<Decoded.VersionMismatch>(Wire.decode<CapturePlanMessage>("""{"v":2,"gen":1}"""))
++        assertIs<Decoded.VersionMismatch>(Wire.decode<MarkMessage>("""{"v":2,"epoch":"e","seq":1,"atMs":1,"atElapsedMs":1}"""))
++    }
++
++    @Test fun oldPhoneHudSettingsDecodesPlanAwareFalse() {
++        val old = ok<HudSettings>(res("old_hud_settings.json"))
++        assertFalse(old.planAware)
++        assertEquals(CaptureMode.SMART, old.captureMode)
++        assertTrue(ok<HudSettings>(Wire.encode(HudSettings(planAware = true))).planAware)
++    }
++
++    @Test fun oldCommandEnvelopeDecodesListenIdNull() {
++        val env = ok<CommandEnvelope>(res("old_command_envelope.json"))
++        assertNull(env.listenId)
++        assertEquals(Command.Confirm("p-42", true), env.command)
++        assertEquals("L9", ok<CommandEnvelope>(Wire.encode(CommandEnvelope(command = Command.ListenStart, listenId = "L9"))).listenId)
++    }
++
++    @Test fun oldDecoderIgnoresListenId() {
++        val text = Wire.encode(CommandEnvelope(command = Command.ListenStart, listenId = "L9"))
++        val old = Wire.json.decodeFromString<OldCommandEnvelope>(text)
++        assertEquals(Command.ListenStart, old.command)
++        val s = Wire.json.decodeFromString<OldHudSettingsSubset>(Wire.encode(HudSettings(planAware = true)))
++        assertEquals(Verbosity.MEDIUM, s.verbosity)
++    }
++
++    @Test fun oldHelloStillDecodes() {
++        assertEquals(71, ok<Hello>(res("old_glasses_hello.json")).glassesBatteryPct)
++    }
++}
+diff --git a/android-companion/core/model/src/test/resources/compat/old_command_envelope.json b/android-companion/core/model/src/test/resources/compat/old_command_envelope.json
+new file mode 100644
+index 00000000..51942bf0
+--- /dev/null
++++ b/android-companion/core/model/src/test/resources/compat/old_command_envelope.json
+@@ -0,0 +1 @@
++{"v":1,"command":{"kind":"confirm","proposalId":"p-42","yes":true}}
+diff --git a/android-companion/core/model/src/test/resources/compat/old_glasses_hello.json b/android-companion/core/model/src/test/resources/compat/old_glasses_hello.json
+new file mode 100644
+index 00000000..fcf26779
+--- /dev/null
++++ b/android-companion/core/model/src/test/resources/compat/old_glasses_hello.json
+@@ -0,0 +1 @@
++{"v":1,"glassesBatteryPct":71,"bufferSize":0,"glassesNowMs":1700000000000,"pauses":[],"resumedAtMs":{},"rokidCloses":0,"unverifiedCloses":0,"otherCloses":0,"iconBlocked":false}
+diff --git a/android-companion/core/model/src/test/resources/compat/old_hud_settings.json b/android-companion/core/model/src/test/resources/compat/old_hud_settings.json
+new file mode 100644
+index 00000000..a2ad6d75
+--- /dev/null
++++ b/android-companion/core/model/src/test/resources/compat/old_hud_settings.json
+@@ -0,0 +1 @@
++{"v":1,"verbosity":"MEDIUM","scale":0.4,"position":"BOTTOM_CENTER","gestures":{"TAP":"ASK","DOUBLE_TAP":"PAUSE_RESUME","SWIPE_FORWARD":"NEXT_PAGE","SWIPE_BACK":"PREV_PAGE"},"captureIntervalSec":300,"burstOnChange":true,"pauses":[],"resumedPauseIds":[],"pausesExact":true,"zoneId":"Europe/Dublin","iconCorner":"TOP_RIGHT","popupSeconds":6,"captureMode":"SMART","pauseWhenNotWorn":true,"captureCue":true,"workMinutes":45,"quickLookMs":1000,"restMinutes":15,"cameraWake":"SETTLE","batteryTargetHours":0,"pauseWhenPhoneInUse":false,"workRestEnabled":false,"motionLabel":"NONE","motionSourcesOff":[]}
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/link/HudController.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/link/HudController.kt
+index cb71ef78..ed71a3be 100644
+--- a/android-companion/glasses/src/main/java/com/rokid/context/glasses/link/HudController.kt
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/link/HudController.kt
+@@ -62,20 +62,23 @@ class HudController(
+     private val _settings = MutableStateFlow(cache.read())
+     val settings: StateFlow<HudSettings> = _settings
+     private val _connection = MutableStateFlow(HudConnection.CONNECTING)
+     val connection: StateFlow<HudConnection> = _connection
+     private val _sessionOpen = MutableStateFlow(false)
+     val sessionOpen: StateFlow<Boolean> = _sessionOpen
+ 
+     /** All three are called on a bridge thread. */
+     @Volatile var onFrameAck: (FrameAck) -> Unit = {}
+     @Volatile var onSessionOpened: () -> Unit = {}
++    /** Slice 3a: the unsolicited `pc_capture_plan_ack` sent on every session open (gen 0, no plan): tells the phone our caps. Task 11 fills in the applied plan. */
++    @Volatile var capsAck: () -> com.rokid.context.core.model.CapturePlanAck =
++        { com.rokid.context.core.model.CapturePlanAck(gen = 0, caps = com.rokid.context.capture.plan.PlanReceiver.CAPS) }
+     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
+     @Volatile var onWear: (Boolean?) -> Unit = {}
+     /** `pc_phone_ctx`: whether the phone is in use (screen on, unlocked); null = the session closed (unknown again). */
+     @Volatile var onPhoneUse: (Boolean?) -> Unit = {}
+     /** `pc_auto_open` (fix wave I): the phone reopened the app by itself; a launcher-looking start of the last seconds was really that. */
+     @Volatile var onAutoOpen: () -> Unit = {}
+     /**
+      * Each phone push: `pc_settings` as sent; a `pc_state` pause list as the last settings with those pauses, inexact
+      * (a frame carries no clock flag) and with no resumes.
+      */
+@@ -170,20 +173,21 @@ class HudController(
+     private fun onAck(text: String) { (Wire.decode<FrameAck>(text) as? Decoded.Ok)?.value?.let { onFrameAck(it) } }
+ 
+     /** First message of a session: say hello (clock, battery, buffer, pauses) before any frame is sent. */
+     private fun phoneMessage() {
+         everReceived = true
+         outdated = false
+         liveness.onFrame()
+         if (!exited && _sessionOpen.compareAndSet(false, true)) {
+             Log.i(TAG, "session open")
+             sendHello()
++            bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(capsAck())) // plumbing only; the phone shows "too old" for a peer that never sends it
+             onSessionOpened()
+         }
+     }
+ 
+     private fun markOutdated(remote: Int?) {
+         Log.w(TAG, "phone protocol v=$remote, glasses v=$PROTOCOL_VERSION")
+         outdated = true
+         closeSession("version mismatch")
+     }
+ 
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/link/HudControllerTest.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/link/HudControllerTest.kt
+index 2f1320f7..0986df6a 100644
+--- a/android-companion/glasses/src/test/java/com/rokid/context/glasses/link/HudControllerTest.kt
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/link/HudControllerTest.kt
+@@ -50,20 +50,36 @@ class HudControllerTest {
+         val c = controller()
+         var opened = 0
+         c.onSessionOpened = { opened++ }
+         bridge.phone(Channels.STATE, state()); bridge.phone(Channels.STATE, state())
+         assertTrue(c.sessionOpen.value)
+         assertEquals(1, opened)
+         assertEquals(1, hellos())
+         assertEquals(HudConnection.LIVE, c.connection.value)
+     }
+ 
++    @Test fun capsAckOnReadyWithoutPlan() = runTest {
++        controller()
++        bridge.phone(Channels.STATE, state())
++        val acks = bridge.sent.filter { it.first == Channels.CAPTURE_PLAN_ACK }
++        assertEquals(1, acks.size)
++        val a = (Wire.decode<com.rokid.context.core.model.CapturePlanAck>(acks.single().second.single()) as com.rokid.context.core.model.Decoded.Ok).value
++        assertEquals(0L, a.gen)
++        assertEquals(null, a.effectiveHash); assertEquals(null, a.publishId)
++        assertEquals(com.rokid.context.core.model.PlanMode.SETTINGS, a.mode)
++        assertEquals(listOf("plan1", "shadow", "trial"), a.caps)
++        bridge.phone(Channels.STATE, state())
++        assertEquals("once per session open", 1, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
++        bridge.disconnected(); bridge.phone(Channels.STATE, state())
++        assertEquals("again on the next session", 2, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
++    }
++
+     @Test fun btDisconnectClosesTheSessionAndTheNextMessageSaysHelloAgain() = runTest {
+         val c = controller()
+         bridge.phone(Channels.STATE, state())
+         bridge.disconnected()
+         assertFalse(c.sessionOpen.value)
+         assertEquals("no frames while closed", -1, c.sendFrameChunk(FrameCodec.split("g1", ByteArray(4) { 1 }, capturedAtMs = 1).single()))
+         bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings()))
+         assertTrue(c.sessionOpen.value)
+         assertEquals(2, hellos())
+     }
+diff --git a/android-companion/phone/src/main/java/com/rokid/context/phone/hub/Hub.kt b/android-companion/phone/src/main/java/com/rokid/context/phone/hub/Hub.kt
+index 74373a63..034dd1e5 100644
+--- a/android-companion/phone/src/main/java/com/rokid/context/phone/hub/Hub.kt
++++ b/android-companion/phone/src/main/java/com/rokid/context/phone/hub/Hub.kt
+@@ -1,18 +1,25 @@
+ package com.rokid.context.phone.hub
+ 
+ import android.util.Log
+ import com.rokid.context.core.model.Channels
+ import com.rokid.context.core.model.Command
+ import com.rokid.context.core.model.GlassesStatus
+ import com.rokid.context.core.model.GlassesStatusSource
++import com.rokid.context.core.model.CapturePlanAck
+ import com.rokid.context.core.model.HelloRequest
++import com.rokid.context.core.model.MarkMessage
++import com.rokid.context.core.model.TraceChunk
++import com.rokid.context.link.AckVerdict
++import com.rokid.context.link.PlanAckGate
++import com.rokid.context.link.PlanPeer
++import com.rokid.context.link.PlanPeerTracker
+ import com.rokid.context.core.model.HudSettings
+ import com.rokid.context.core.model.LinkState
+ import com.rokid.context.core.model.MotionHint
+ import com.rokid.context.core.model.context.ContextState
+ import com.rokid.context.core.model.context.MotionContextMessage
+ import com.rokid.context.core.model.Overlay
+ import com.rokid.context.core.model.PauseOrigin
+ import com.rokid.context.core.model.PauseRecord
+ import com.rokid.context.core.model.PROTOCOL_VERSION
+ import com.rokid.context.core.model.Wire
+@@ -68,20 +75,30 @@ class Hub(
+     private val phoneUse: StateFlow<Boolean> = MutableStateFlow(false),
+     /** Wave B: the context hub's `pc_motion_ctx` message; null = nothing to say (a revoke is sent on the way to null). */
+     private val motionContext: StateFlow<MotionContextMessage?> = MutableStateFlow(null),
+     /** Wave B: a `pc_motion_hint` from the glasses goes to the context hub. */
+     private val onMotionHint: (MotionHint) -> Unit = {},
+     /** Wave B: the context hub starts and stops with this hub (both idempotent on its side). */
+     private val ctxStart: () -> Unit = {},
+     private val ctxStop: () -> Unit = {},
+     /** Wave B: the current `applyToCapture` setting, used by the synthesized UNKNOWN revoke (null = the last sent value's). */
+     private val applyToCapture: (() -> Boolean)? = null,
++    /** Slice 3a: this phone install's id; an ack on `pc_capture_plan_ack` must echo it (S74). Wired by a later task. */
++    private val phoneInstall: () -> String = { "" },
++    /** Slice 3a: an ack of this install and this session (the caller matches its outstanding gen). Stale acks never reach it. */
++    private val onPlanAck: (CapturePlanAck) -> Unit = {},
++    /** Slice 3a: the capabilities in the glasses' unsolicited caps ack of this session. */
++    private val onPlanCaps: (List<String>) -> Unit = {},
++    /** Slice 3a: a `pc_mark`, accepted whatever its age (occurrence time, not freshness). Idempotency is the receiver's. */
++    private val onMark: suspend (MarkMessage) -> Unit = {},
++    /** Slice 3a: a `pc_trace_chunk` (the transfer contract is a later task). */
++    private val onTraceChunk: suspend (TraceChunk) -> Unit = {},
+ ) : GlassesStatusSource {
+     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
+         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
+         GlassesRelauncher(scope, link.state, reopenEnabled, it, reopen = { link.connectAutomatic() }, now = clock, log = { m -> Log.i(GlassesRelauncher.TAG, m) }, standDown = standDown)
+     }
+     private val _state = MutableStateFlow(HubState())
+     val state: StateFlow<HubState> = _state
+     private val _status = MutableStateFlow(_state.value.toGlassesStatus())
+     override val status: StateFlow<GlassesStatus> = _status
+     private val _hudSettings = MutableStateFlow(settings.read())
+@@ -273,20 +290,27 @@ class Hub(
+         val out = m.copy(sessionStartMs = sessionStartMs)
+         lastMotionCtx = out
+         link.send(Channels.MOTION_CONTEXT, Wire.encode(out))
+     }
+ 
+     /** `pc_phone_ctx`: always sent; the glasses gate on their `pauseWhenPhoneInUse` setting. */
+     private suspend fun sendPhoneContext() {
+         link.send(Channels.PHONE_CONTEXT, Wire.encode(com.rokid.context.core.model.PhoneContextMessage(inUse = phoneUse.value, atMs = clock(), sessionStartMs = sessionStartMs)))
+     }
+ 
++    private val ackGate = PlanAckGate(phoneInstall) { sessionStartMs }
++    private val peerTracker = PlanPeerTracker()
++    /** Acks dropped as stale since the app started (another install, another session, or pre-session). */
++    val planAckStale: Int get() = ackGate.ackStale
++    /** Whether the glasses app understands capture plans; TOO_OLD = it never sent a caps ack ("Glasses app too old for canvas plans"). */
++    fun planPeer(): PlanPeer = peerTracker.state(clock())
++
+     /** Phone clock when the current glasses session began (a `pc_wear` stamped before it is stale; the glasses ignore it). */
+     private var sessionStartMs = 0L
+ 
+     /** `pc_auto_open` while our own reopen is fresh: the glasses keep that start in icon mode. */
+     private suspend fun sendAutoOpen() {
+         if (relauncher?.reopenedRecently() != true) return
+         link.send(Channels.AUTO_OPEN, Wire.encode(com.rokid.context.core.model.AutoOpen(atMs = clock())))
+     }
+ 
+     /**
+@@ -303,20 +327,21 @@ class Hub(
+ 
+     private fun set(markDirty: Boolean = true, f: (HubState) -> HubState) {
+         _state.update(f)
+         _status.value = _state.value.toGlassesStatus()
+         if (markDirty) broadcaster.markDirty()
+     }
+ 
+     /** `pc_settings` first, then a `pc_state` through the broadcaster (≤ 4 Hz, Global Constraint). */
+     private suspend fun onReady() {
+         newSession()
++        peerTracker.onSessionOpen(sessionStartMs)
+         set(markDirty = false) { it.copy(versionMismatch = false, offset = null) }
+         pushSettings()
+         if (lastWorn != null) lastWornAtMs = clock() // the SDK's value is current for this session (it is dropped on every loss)
+         sendWear()
+         sendPhoneContext()
+         // A fresh envelope (new atMs, this session's start), same state and sinceMs: the glasses drop a stale or pre-session stamp.
+         motionContext.value?.let { sendMotionContext(it.copy(atMs = clock())) }
+         sendAutoOpen()
+         broadcaster.markDirty()
+     }
+@@ -327,20 +352,21 @@ class Hub(
+             settings.read(), active, _state.value.offset, voice.askBlockedReason.value, resumed = resumed, zoneId = ZoneId.systemDefault().id,
+         )
+         link.send(Channels.SETTINGS, Wire.encode(pushed))
+     }
+ 
+     private suspend fun onEvent(e: GlassesEvent) {
+         val now = clock()
+         when (e) {
+             is GlassesEvent.HelloReceived -> {
+                 val h = e.hello
++                peerTracker.onHello(now)
+                 val measured = ClockOffset.fromHello(h.glassesNowMs, now)
+                 offset = measured
+                 val anchored = anchoredBeforeOffset.values.map(measured::recordToPhone)
+                 anchoredBeforeOffset.clear()
+                 ackedSinceHello.clear()
+                 withContext(io) {
+                     anchored.forEach { pauses.reanchor(it) }
+                     // Resumes the wearer made while the link was down (their pc_cmd may never have arrived).
+                     h.resumedAtMs.forEach { (id, at) -> pauses.resume(setOf(id), measured.toPhone(at)) }
+                     pauses.union(h.pauses.map(measured::recordToPhone))
+@@ -385,20 +411,27 @@ class Hub(
+                     )
+                 }
+             }
+             is GlassesEvent.Outdated -> {
+                 Log.w(TAG, "glasses protocol v=${e.remote}, phone v=$PROTOCOL_VERSION")
+                 set { it.copy(versionMismatch = true) }
+             }
+             is GlassesEvent.Audio -> voice.onAudio(e.pcm) // never logged: it is the wearer's voice
+             GlassesEvent.ListenEnd -> voice.onListenEnd()
+             is GlassesEvent.MotionHintReceived -> onMotionHint(e.hint)
++            is GlassesEvent.PlanAckReceived -> when (ackGate.classify(e.ack)) {
++                AckVerdict.CAPS -> { peerTracker.onCapsAck(); onPlanCaps(e.ack.caps) }
++                AckVerdict.MATCH -> { peerTracker.onCapsAck(); onPlanAck(e.ack) }
++                AckVerdict.STALE -> Log.i(TAG, "stale pc_capture_plan_ack ignored (count=${ackGate.ackStale})")
++            }
++            is GlassesEvent.MarkReceived -> onMark(e.mark) // no freshness test: only `v` was gated on the way in
++            is GlassesEvent.TraceChunkReceived -> onTraceChunk(e.chunk)
+         }
+     }
+ 
+     private fun onUserExit(how: String) {
+         Log.i(TAG, "wearer exited the glasses app on purpose ($how): not reopening")
+         standDown.enter(clock())
+         relauncher?.onUserExit(); set { it.copy(closedByUser = true) }
+     }
+ 
+     private suspend fun onCommand(c: Command, now: Long) {
+diff --git a/android-companion/phone/src/main/java/com/rokid/context/phone/hub/StateFrameBuilder.kt b/android-companion/phone/src/main/java/com/rokid/context/phone/hub/StateFrameBuilder.kt
+index f0076875..33b82ca2 100644
+--- a/android-companion/phone/src/main/java/com/rokid/context/phone/hub/StateFrameBuilder.kt
++++ b/android-companion/phone/src/main/java/com/rokid/context/phone/hub/StateFrameBuilder.kt
+@@ -59,20 +59,21 @@ object StateFrameBuilder {
+     }
+ 
+     /** `pc_settings` carries the merged pause set (spec §5.5), converted like [build], and why Ask can't start (§5.1.1). */
+     /** Phase 7: [resumed] = ids the phone resumed; `pausesExact` only when [offset] measured the conversion; [zoneId] for quiet hours. */
+     fun settingsFor(
+         settings: HudSettings, activePauses: List<PauseRecord>, offset: ClockOffset?, askBlockedReason: String? = null,
+         resumed: List<String> = emptyList(), zoneId: String? = null,
+     ): HudSettings = settings.copy(
+         pauses = toGlasses(activePauses, offset), askBlockedReason = askBlockedReason,
+         resumedPauseIds = resumed, pausesExact = offset != null, zoneId = zoneId,
++        planAware = true, // slice 3a: this phone speaks pc_capture_plan (an old phone leaves it false)
+     )
+ 
+     private fun toGlasses(records: List<PauseRecord>, offset: ClockOffset?) = records.map { r -> offset?.recordToGlasses(r) ?: r }
+ }
+ 
+ /** HUD AI health from the newest model outcome in the last 30 min (spec §3.2 Status page; short text only). */
+ object AiHealthRule {
+     private const val WINDOW_MS = 30 * 60_000L
+     private val OK_STATES = setOf("TRUSTED", "NEEDS_REVIEW", "REPROCESSED", "WRITE_CONTEXT_OK", "READ_CONTEXT_OK")
+     private val TITLES = UserFacingErrors.all.map { it.title }.toSet()
+diff --git a/android-companion/phone/src/test/java/com/rokid/context/phone/hub/HubTest.kt b/android-companion/phone/src/test/java/com/rokid/context/phone/hub/HubTest.kt
+index 2546a9cc..9a41092f 100644
+--- a/android-companion/phone/src/test/java/com/rokid/context/phone/hub/HubTest.kt
++++ b/android-companion/phone/src/test/java/com/rokid/context/phone/hub/HubTest.kt
+@@ -86,29 +86,34 @@ class HubTest {
+         actions: HubActions = HubActions.None,
+         nudges: HubNudges = HubNudges.None,
+         reopenGuards: RelaunchGuards? = null,
+         standDown: StandDown = InMemoryStandDown(),
+         phoneUse: kotlinx.coroutines.flow.StateFlow<Boolean> = kotlinx.coroutines.flow.MutableStateFlow(false),
+         motionContext: kotlinx.coroutines.flow.StateFlow<MotionContextMessage?> = kotlinx.coroutines.flow.MutableStateFlow(null),
+         onMotionHint: (MotionHint) -> Unit = {},
+         ctxStart: () -> Unit = {},
+         ctxStop: () -> Unit = {},
+         applyToCapture: (() -> Boolean)? = null,
++        phoneInstall: () -> String = { "" },
++        onPlanAck: (com.rokid.context.core.model.CapturePlanAck) -> Unit = {},
++        onPlanCaps: (List<String>) -> Unit = {},
++        onMark: suspend (com.rokid.context.core.model.MarkMessage) -> Unit = {},
+     ): Hub {
+         val pauses = HubPauses(dao, now = clock)
+         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
+         val ingestor = FrameIngestor(File(tmp.root, "inbox"), FrameReassembler(), FrameAdmission(ledger, pauses), ledger, onStored = onStored)
+         val settings = HubSettingsStore(ctx.getSharedPreferences("hub_test_${tmp.root.name}", 0)) { "hud" }
+         return Hub(
+             backgroundScope, link, pauses, settings, ingestor, sources, clock = clock, io = StandardTestDispatcher(testScheduler),
+             startService = startService, voice = voice, actions = actions, nudges = nudges, reopenGuards = reopenGuards, standDown = standDown, phoneUse = phoneUse,
+             motionContext = motionContext, onMotionHint = onMotionHint, ctxStart = ctxStart, ctxStop = ctxStop, applyToCapture = applyToCapture,
++            phoneInstall = phoneInstall, onPlanAck = onPlanAck, onPlanCaps = onPlanCaps, onMark = onMark,
+         )
+             .also { if (start) { it.start(); runCurrent() } }
+     }
+     private fun FakeGlassesLink.lastOn(channel: String) = sent.last { it.first == channel }.second
+     private fun hello(glassesNowMs: Long = now, pauses: List<PauseRecord> = emptyList()) =
+         GlassesEvent.HelloReceived(Hello(glassesBatteryPct = 77, bufferSize = 4, glassesNowMs = glassesNowMs, pauses = pauses))
+ 
+     private fun ctxMsg(at: Long = now, since: Long = now - 60_000, state: ContextState = ContextState.VEHICLE_DRIVING) =
+         MotionContextMessage(state = state, confidence = 0.9f, sinceMs = since, atMs = at, reasons = listOf("ANDROID_AUTO"))
+ 
+@@ -791,11 +796,66 @@ class HubTest {
+         assertEquals(listOf("q"), h.activePauses.value.map { it.pauseId })
+     }
+ 
+     @Test fun activePausesFollowPausePhoneAndResumeWithoutStart() = runTest {
+         val h = hub(FakeGlassesLink(), start = false)
+         val r = h.pausePhone(untilMs = null)
+         assertEquals(listOf(r), h.activePauses.value)
+         h.resume(setOf(r.pauseId))
+         assertEquals(emptyList<PauseRecord>(), h.activePauses.value)
+     }
++
++    @Test fun ackFromOtherInstallIgnored() = runTest {
++        val link = FakeGlassesLink(); val got = ArrayList<com.rokid.context.core.model.CapturePlanAck>()
++        val h = hub(link, phoneInstall = { "mine" }, onPlanAck = { got += it })
++        link.emitReady(); runCurrent()
++        link.emit(GlassesEvent.PlanAckReceived(com.rokid.context.core.model.CapturePlanAck(gen = 3, phoneInstall = "theirs", sessionStartMs = now))); runCurrent()
++        assertTrue(got.isEmpty()); assertEquals(1, h.planAckStale)
++    }
++
++    @Test fun ackFromOldSessionIgnoredAndCurrentPasses() = runTest {
++        val link = FakeGlassesLink(); val got = ArrayList<com.rokid.context.core.model.CapturePlanAck>()
++        var t = now
++        val h = hub(link, clock = { t }, phoneInstall = { "mine" }, onPlanAck = { got += it })
++        link.emitReady(); runCurrent()
++        val oldSession = now
++        t = now + 60_000
++        link.emitReady(); runCurrent() // a new session: sessionStartMs = t
++        link.emit(GlassesEvent.PlanAckReceived(com.rokid.context.core.model.CapturePlanAck(gen = 3, phoneInstall = "mine", sessionStartMs = oldSession))); runCurrent()
++        assertTrue(got.isEmpty()); assertEquals(1, h.planAckStale)
++        link.emit(GlassesEvent.PlanAckReceived(com.rokid.context.core.model.CapturePlanAck(gen = 3, phoneInstall = "mine", sessionStartMs = t))); runCurrent()
++        assertEquals(listOf(3L), got.map { it.gen }); assertEquals(1, h.planAckStale)
++    }
++
++    @Test fun capsAckIsNotStaleAndMarksThePeerCapable() = runTest {
++        val link = FakeGlassesLink(); var caps: List<String>? = null
++        val h = hub(link, phoneInstall = { "mine" }, onPlanCaps = { caps = it })
++        link.emitReady(); runCurrent()
++        link.emit(hello()); runCurrent()
++        link.emit(GlassesEvent.PlanAckReceived(com.rokid.context.core.model.CapturePlanAck(gen = 0, caps = listOf("plan1", "shadow")))); runCurrent()
++        assertEquals(listOf("plan1", "shadow"), caps); assertEquals(0, h.planAckStale)
++        assertEquals(com.rokid.context.link.PlanPeer.CAPABLE, h.planPeer())
++    }
++
++    @Test fun glassesWithoutACapsAckAreTooOldAfterTheGrace() = runTest {
++        val link = FakeGlassesLink(); var t = now
++        val h = hub(link, clock = { t })
++        link.emitReady(); runCurrent(); link.emit(hello()); runCurrent()
++        assertEquals(com.rokid.context.link.PlanPeer.UNKNOWN, h.planPeer())
++        t = now + 11_000
++        assertEquals(com.rokid.context.link.PlanPeer.TOO_OLD, h.planPeer())
++    }
++
++    @Test fun queuedMarkOlderThanSessionAccepted() = runTest {
++        val link = FakeGlassesLink(); val got = ArrayList<com.rokid.context.core.model.MarkMessage>()
++        hub(link, onMark = { got += it })
++        link.emitReady(); runCurrent()
++        link.emit(GlassesEvent.MarkReceived(com.rokid.context.core.model.MarkMessage(epoch = "e", seq = 1, atMs = now - 3_600_000, atElapsedMs = 5, sessionStartMs = now))); runCurrent()
++        assertEquals(listOf(1L), got.map { it.seq })
++    }
++
++    @Test fun newPhoneSendsPlanAwareTrue() = runTest {
++        val link = FakeGlassesLink()
++        hub(link); link.emitReady(); runCurrent()
++        assertTrue((Wire.decode<HudSettings>(link.lastOn(Channels.SETTINGS)) as Decoded.Ok).value.planAware)
++    }
+ }
+diff --git a/android-companion/services/ai/src/test/java/com/rokid/context/ai/CanonicalJsonParityTest.kt b/android-companion/services/ai/src/test/java/com/rokid/context/ai/CanonicalJsonParityTest.kt
+index ad5bcacc..8d614859 100644
+--- a/android-companion/services/ai/src/test/java/com/rokid/context/ai/CanonicalJsonParityTest.kt
++++ b/android-companion/services/ai/src/test/java/com/rokid/context/ai/CanonicalJsonParityTest.kt
+@@ -1,22 +1,23 @@
+ package com.rokid.context.ai
+ 
+ import com.rokid.context.capture.plan.CanonicalJson
+ import com.rokid.context.capture.plan.PlanJson
+ import com.rokid.context.capture.plan.PlanResolver
+ import kotlinx.serialization.json.Json
+ import org.junit.Assert.assertEquals
+ import org.junit.Test
+ 
+ /**
+- * Pins the canonical text and hash that the phone-side PlanCompiler (Task 7) must reproduce byte for byte. The same fixtures are
+- * asserted in :core:capture, so the glasses and the phone cannot drift apart.
++ * Pins the canonical text and hash that the phone-side PlanCompiler (Task 7) must reproduce byte for byte. It runs the same
++ * :core:capture code on the same JVM, so it is a change detector for the pinned values, not an independent phone/glasses check; only
++ * the identity hash is also asserted in :core:capture (PlanJsonTest).
+  */
+ class CanonicalJsonParityTest {
+     @Test fun canonicalTextIsPinned() {
+         val src = """{ "c":"\u0001\u00e9\"\\","b":{"y":[1.0,2.50,0.0,-0.0],"x":0.50},"a":1.000,"n":null,"t":true }"""
+         assertEquals("{\"a\":1,\"b\":{\"x\":0.5,\"y\":[1,2.5,0,0]},\"c\":\"\\u0001\u00e9\\\"\\\\\",\"n\":null,\"t\":true}", CanonicalJson.encode(Json.parseToJsonElement(src)))
+     }
+ 
+     @Test fun identityPlanHashAndTextArePinned() {
+         val c = PlanResolver.identity()
+         assertEquals(PINNED_IDENTITY_HASH, PlanJson.configHash(c))
+diff --git a/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/GlassesEvent.kt b/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/GlassesEvent.kt
+index 9e9f354b..40055038 100644
+--- a/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/GlassesEvent.kt
++++ b/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/GlassesEvent.kt
+@@ -1,22 +1,31 @@
+ package com.rokid.context.link
+ 
++import com.rokid.context.core.model.CapturePlanAck
+ import com.rokid.context.core.model.Command
+ import com.rokid.context.core.model.FrameChunk
+ import com.rokid.context.core.model.Hello
++import com.rokid.context.core.model.MarkMessage
+ import com.rokid.context.core.model.MotionHint
++import com.rokid.context.core.model.TraceChunk
+ 
+ /** Glasses → phone messages that passed the protocol-version gate (spec §1.5). */
+ sealed interface GlassesEvent {
+     data class HelloReceived(val hello: Hello) : GlassesEvent
+     data class Cmd(val command: Command) : GlassesEvent
+     data class Frame(val chunk: FrameChunk) : GlassesEvent
+     /** PCM 16 kHz mono (consumed in Phase 6). */
+     class Audio(val pcm: ByteArray) : GlassesEvent
+     data object ListenEnd : GlassesEvent
+     /** Fix wave H: the wearer exited the glasses app on purpose (`pc_user_exit`). */
+     data object UserExit : GlassesEvent
+     /** `pc_motion_hint`: the glasses' motion state (feeds the phone context hub). */
+     data class MotionHintReceived(val hint: MotionHint) : GlassesEvent
++    /** `pc_capture_plan_ack` (slice 3a): not yet correlated, see [PlanAckGate]. */
++    data class PlanAckReceived(val ack: CapturePlanAck) : GlassesEvent
++    /** `pc_mark` (slice 3a). Accepted whatever its age: `atMs` is the occurrence time, not a freshness stamp. */
++    data class MarkReceived(val mark: MarkMessage) : GlassesEvent
++    /** `pc_trace_chunk` (slice 3a). */
++    data class TraceChunkReceived(val chunk: TraceChunk) : GlassesEvent
+     /** The glasses app speaks another protocol version ([remote] = its `v`, null when absent). */
+     data class Outdated(val remote: Int?) : GlassesEvent
+ }
+diff --git a/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/GlassesInbound.kt b/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/GlassesInbound.kt
+index cf9188a0..6d56a1e8 100644
+--- a/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/GlassesInbound.kt
++++ b/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/GlassesInbound.kt
+@@ -34,20 +34,24 @@ class GlassesInbound {
+                     else -> Unit
+                 }
+                 GlassesEvent.Cmd(env.command)
+             }
+             Channels.FRAME -> if (parts.size < 2) emptyList() else gate(Wire.decode<FrameMeta>(first)) { GlassesEvent.Frame(FrameChunk(it, parts[1])) }
+             Channels.AUDIO -> if (!listenAccepted) emptyList() else listOfNotNull(
+                 runCatching { Base64.getDecoder().decode(first) }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { GlassesEvent.Audio(it) },
+             )
+             Channels.USER_EXIT -> gate(Wire.decode<com.rokid.context.core.model.UserExit>(first)) { GlassesEvent.UserExit }
+             Channels.MOTION_HINT -> gate(Wire.decode<com.rokid.context.core.model.MotionHint>(first)) { GlassesEvent.MotionHintReceived(it) }
++            Channels.CAPTURE_PLAN_ACK -> gate(Wire.decode<com.rokid.context.core.model.CapturePlanAck>(first)) { GlassesEvent.PlanAckReceived(it) }
++            // Only `v` gates a mark: a queued mark older than the session is still a real moment (S74).
++            Channels.MARK -> gate(Wire.decode<com.rokid.context.core.model.MarkMessage>(first)) { GlassesEvent.MarkReceived(it) }
++            Channels.TRACE_CHUNK -> gate(Wire.decode<com.rokid.context.core.model.TraceChunk>(first)) { GlassesEvent.TraceChunkReceived(it) }
+             Channels.LISTEN_END -> if (!listenAccepted) emptyList() else { listenAccepted = false; listOf(GlassesEvent.ListenEnd) }
+             else -> emptyList()
+         }
+     }
+ 
+     private inline fun <T> gate(d: Decoded<T>, ok: (T) -> GlassesEvent): List<GlassesEvent> = when (d) {
+         is Decoded.Ok -> listOf(ok(d.value))
+         is Decoded.VersionMismatch -> listOf(GlassesEvent.Outdated(d.remote))
+         is Decoded.Malformed -> emptyList()
+     }
+diff --git a/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/PlanAck.kt b/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/PlanAck.kt
+new file mode 100644
+index 00000000..2d6f612e
+--- /dev/null
++++ b/android-companion/services/glasses-link/src/main/kotlin/com/rokid/context/link/PlanAck.kt
+@@ -0,0 +1,52 @@
++package com.rokid.context.link
++
++import com.rokid.context.core.model.CapturePlanAck
++import java.util.concurrent.atomic.AtomicInteger
++
++enum class AckVerdict {
++    /** The unsolicited caps announcement of a session (gen 0, no install, no session): capabilities only, nothing to match. */
++    CAPS,
++    /** Echoes this install and this session: it may answer an outstanding gen (the caller matches the gen). */
++    MATCH,
++    /** Another install, another session or a pre-session stamp: counted and ignored. */
++    STALE,
++}
++
++/**
++ * Slice 3a ack correlation (S24, S74). A `pc_capture_plan_ack` is passed through only when its `phoneInstall` is this
++ * install and its `sessionStartMs` is the current glasses session; anything else is [AckVerdict.STALE] and counted in
++ * [ackStale] (a count only: no ack content is ever logged).
++ */
++class PlanAckGate(private val install: () -> String, private val sessionStart: () -> Long) {
++    private val stale = AtomicInteger()
++    val ackStale: Int get() = stale.get()
++
++    fun classify(ack: CapturePlanAck): AckVerdict {
++        if (ack.gen == 0L && ack.phoneInstall.isEmpty() && ack.sessionStartMs == 0L && ack.reason == null) return AckVerdict.CAPS
++        if (ack.phoneInstall == install() && ack.sessionStartMs == sessionStart()) return AckVerdict.MATCH
++        stale.incrementAndGet()
++        return AckVerdict.STALE
++    }
++}
++
++enum class PlanPeer { UNKNOWN, CAPABLE, TOO_OLD }
++
++/**
++ * Whether the glasses app understands capture plans. A new glasses build sends a caps ack on every session open; an old
++ * one never does. TOO_OLD = a hello was seen, [graceMs] passed and no caps ack arrived (the UI says "Glasses app too old
++ * for canvas plans"). Resets with each session. Not thread-safe by itself: call from the hub's scope.
++ */
++class PlanPeerTracker(private val graceMs: Long = 10_000L) {
++    private var helloAtMs: Long? = null
++    private var caps = false
++
++    fun onSessionOpen(@Suppress("UNUSED_PARAMETER") nowMs: Long) { helloAtMs = null; caps = false }
++    fun onHello(nowMs: Long) { if (helloAtMs == null) helloAtMs = nowMs }
++    fun onCapsAck() { caps = true }
++
++    fun state(nowMs: Long): PlanPeer = when {
++        caps -> PlanPeer.CAPABLE
++        helloAtMs?.let { nowMs - it >= graceMs } == true -> PlanPeer.TOO_OLD
++        else -> PlanPeer.UNKNOWN
++    }
++}
+diff --git a/android-companion/services/glasses-link/src/test/kotlin/com/rokid/context/link/Slice3aWireTest.kt b/android-companion/services/glasses-link/src/test/kotlin/com/rokid/context/link/Slice3aWireTest.kt
+new file mode 100644
+index 00000000..f2387000
+--- /dev/null
++++ b/android-companion/services/glasses-link/src/test/kotlin/com/rokid/context/link/Slice3aWireTest.kt
+@@ -0,0 +1,97 @@
++package com.rokid.context.link
++
++import com.rokid.context.core.model.CapturePlanAck
++import com.rokid.context.core.model.Channels
++import com.rokid.context.core.model.Hello
++import com.rokid.context.core.model.MarkMessage
++import com.rokid.context.core.model.PlanAckState
++import com.rokid.context.core.model.TraceChunk
++import com.rokid.context.core.model.Wire
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertTrue
++
++/** Slice 3a wire plumbing on the phone side (S74): new inbound channels, ack correlation, the old-peer fixture. */
++class Slice3aWireTest {
++    private val inbound = GlassesInbound()
++
++    // A frozen capture of what an old glasses build sends in a session: hello, motion hint, frame meta. No new channel.
++    private val oldPeerSession = listOf(
++        Channels.HELLO to listOf("""{"v":1,"glassesBatteryPct":71,"bufferSize":0,"glassesNowMs":1700000000000,"pauses":[],"resumedAtMs":{},"rokidCloses":0,"iconBlocked":false}"""),
++        Channels.MOTION_HINT to listOf("""{"v":1,"state":"STILL","atMs":1700000001000,"stillFrac5m":0.5}"""),
++    )
++
++    @Test fun markIsDecodedWhenOlderThanSessionStart() {
++        val m = MarkMessage(epoch = "e", seq = 3, atMs = 1_000, atElapsedMs = 500, sessionStartMs = 9_000)
++        assertEquals(listOf<GlassesEvent>(GlassesEvent.MarkReceived(m)), inbound.onMessage(Channels.MARK, listOf(Wire.encode(m))))
++    }
++
++    @Test fun queuedMarkOlderThanSessionAccepted() {
++        val gate = PlanAckGate(install = { "i" }, sessionStart = { 50_000 })
++        val m = MarkMessage(epoch = "e", seq = 1, atMs = 10, atElapsedMs = 5, sessionStartMs = 40_000)
++        val ev = inbound.onMessage(Channels.MARK, listOf(Wire.encode(m))).single()
++        assertEquals(GlassesEvent.MarkReceived(m), ev)
++        assertEquals(0, gate.ackStale, "marks never go through the ack gate")
++    }
++
++    @Test fun planAckAndTraceChunkAreDecoded() {
++        val a = CapturePlanAck(gen = 2, state = PlanAckState.EFFECTIVE, phoneInstall = "i", sessionStartMs = 5)
++        assertEquals(listOf<GlassesEvent>(GlassesEvent.PlanAckReceived(a)), inbound.onMessage(Channels.CAPTURE_PLAN_ACK, listOf(Wire.encode(a))))
++        val c = TraceChunk(traceId = "trace-0001", seq = 0, count = 1)
++        assertEquals(listOf<GlassesEvent>(GlassesEvent.TraceChunkReceived(c)), inbound.onMessage(Channels.TRACE_CHUNK, listOf(Wire.encode(c))))
++    }
++
++    @Test fun otherVersionOnNewChannelIsOutdatedNotApplied() {
++        val bad = Wire.encode(CapturePlanAck(gen = 1)).replace("\"v\":1", "\"v\":2")
++        assertEquals(listOf<GlassesEvent>(GlassesEvent.Outdated(2)), inbound.onMessage(Channels.CAPTURE_PLAN_ACK, listOf(bad)))
++    }
++
++    @Test fun ackFromOtherInstallIgnored() {
++        val gate = PlanAckGate(install = { "mine" }, sessionStart = { 7_000 })
++        val v = gate.classify(CapturePlanAck(gen = 4, state = PlanAckState.EFFECTIVE, phoneInstall = "theirs", sessionStartMs = 7_000))
++        assertEquals(AckVerdict.STALE, v)
++        assertEquals(1, gate.ackStale)
++    }
++
++    @Test fun ackFromOldSessionIgnored() {
++        val gate = PlanAckGate(install = { "mine" }, sessionStart = { 7_000 })
++        assertEquals(AckVerdict.STALE, gate.classify(CapturePlanAck(gen = 4, state = PlanAckState.EFFECTIVE, phoneInstall = "mine", sessionStartMs = 6_000)))
++        assertEquals(AckVerdict.STALE, gate.classify(CapturePlanAck(gen = 4, state = PlanAckState.EFFECTIVE, phoneInstall = "mine", sessionStartMs = 0)))
++        assertEquals(2, gate.ackStale)
++        assertEquals(AckVerdict.MATCH, gate.classify(CapturePlanAck(gen = 4, state = PlanAckState.EFFECTIVE, phoneInstall = "mine", sessionStartMs = 7_000)))
++        assertEquals(2, gate.ackStale)
++    }
++
++    @Test fun unsolicitedCapsAckIsCapsNotStale() {
++        val gate = PlanAckGate(install = { "mine" }, sessionStart = { 7_000 })
++        assertEquals(AckVerdict.CAPS, gate.classify(CapturePlanAck(gen = 0, caps = listOf("plan1"))))
++        assertEquals(0, gate.ackStale)
++        // gen 0 that does carry an install or session is an ordinary ack and is matched like one.
++        assertEquals(AckVerdict.STALE, gate.classify(CapturePlanAck(gen = 0, phoneInstall = "x")))
++    }
++
++    @Test fun oldGlassesNeverAcksPhoneShowsTooOld() {
++        val tracker = PlanPeerTracker(graceMs = 10_000)
++        tracker.onSessionOpen(0)
++        assertEquals(PlanPeer.UNKNOWN, tracker.state(1_000))
++        oldPeerSession.forEach { (ch, parts) ->
++            inbound.onMessage(ch, parts).forEach { e ->
++                if (e is GlassesEvent.HelloReceived) tracker.onHello(2_000)
++                assertTrue(e !is GlassesEvent.PlanAckReceived)
++            }
++        }
++        assertEquals(PlanPeer.UNKNOWN, tracker.state(5_000), "inside the grace window")
++        assertEquals(PlanPeer.TOO_OLD, tracker.state(12_001))
++        // A new session starts over, and a caps ack makes the peer capable.
++        tracker.onSessionOpen(20_000)
++        tracker.onHello(20_100)
++        tracker.onCapsAck()
++        assertEquals(PlanPeer.CAPABLE, tracker.state(40_000))
++    }
++
++    @Test fun oldHelloFixtureStillDecodes() {
++        val ev = inbound.onMessage(Channels.HELLO, oldPeerSession[0].second).single()
++        assertEquals(71, (ev as GlassesEvent.HelloReceived).hello.glassesBatteryPct)
++        assertEquals(Hello::class, ev.hello::class)
++    }
++}

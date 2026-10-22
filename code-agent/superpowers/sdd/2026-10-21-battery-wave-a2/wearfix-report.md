@@ -1,0 +1,1 @@
+Wear fix: snapshotToApply now returns parsed only when wearCheckOn==true, else null (ignored, logged as "watcher: wearing snapshot ignored (wear check off) raw=<describe>"). Change events unchanged. Tests: full 3x3 truth table; RED run confirmed (1 failed of 123), then GREEN. APKs phone+glasses assembleDebug OK.
