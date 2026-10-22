@@ -125,13 +125,22 @@ class PlanRoutes(
         put("ok", r.ok); put("configHash", r.configHash?.let { JsonPrimitive(it) } ?: JsonNull)
         put("gates", JsonArray(r.gates.map { g -> buildJsonObject { put("n", g.n); put("ok", g.ok); put("text", if (g.ok) "" else g.text) } }))
         put("reasons", JsonArray(r.reasons.map { JsonPrimitive(it) }))
+        put("evidence", r.evidence?.let { e ->
+            buildJsonObject {
+                put("replayId", e.replayId); put("minutes", e.minutes); put("statesCovered", e.statesCovered)
+                put("candidatePctPerMin", e.candidatePctPerMin); put("baselinePctPerMin", e.baselinePctPerMin)
+                put("windowsCompared", e.windowsCompared); put("inexactWindows", e.inexactWindows); put("fusionWarning", e.fusionWarning)
+            }
+        } ?: JsonNull)
     }
 
     private suspend fun check(req: HttpRequest): HttpResponse {
         val p = plans() ?: return unavailable()
         val (id, v, mode) = target(body(req))
         val r = p.check(id, v, mode) ?: return HttpResponse.error(404, "not_found", "Not found.")
-        return HttpResponse.json(200, gatesJson(r))
+        val body = gatesJson(r)
+        // the M1 flag is shown as its own line (never inferred); the record itself is the Developer-mode route's
+        return HttpResponse.json(200, JsonObject(body + ("m1Passed" to JsonPrimitive(m1()?.get() != null))))
     }
 
     private fun blocked(o: PlanOutcome.Blocked) = HttpResponse.error(409, "publish_blocked", "Blocked.", o.reasons)
@@ -161,7 +170,7 @@ class PlanRoutes(
             put("active", s.active?.let { a ->
                 buildJsonObject {
                     put("publishId", a.publishId); put("groupId", a.groupId); put("name", a.name); put("version", a.version); put("mode", a.mode)
-                    put("configHash", a.configHash); put("state", a.state); put("settingsRow", a.settingsRow); put("frozenLabel", a.frozenLabel)
+                    put("configHash", a.configHash); put("state", a.state); put("sentAtMs", a.sentAtMs?.let { JsonPrimitive(it) } ?: JsonNull); put("settingsRow", a.settingsRow); put("frozenLabel", a.frozenLabel)
                 }
             } ?: JsonNull)
             put("rows", JsonArray(s.rows.map { JsonPrimitive(it) }))

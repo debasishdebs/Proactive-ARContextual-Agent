@@ -3,6 +3,7 @@ import { h, clear, btn } from './dom.js';
 import { mountEditor } from './floweditor.js';
 import { photoThumb, openPhoto } from './photos.js';
 import { publishDialog, publishCard } from './versions.js';
+import { planDialog } from './planpublish.js';
 import { when, usageLine, branchText, compareSummary, tokenEstimateText } from './format.js';
 import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction, isMoving } from './runlogic.js';
 
@@ -160,6 +161,7 @@ export async function pipelineView(ctx, root, id) {
       h('a', { class: 'btn', href: '#/run/new?p=' + enc(id) + '&v=' + v.version }, 'Run'),
       prevOf(data.versions, v.version) ? h('a', { class: 'btn', href: '#/p/' + enc(id) + '/diff?a=' + prevOf(data.versions, v.version) + '&b=' + v.version }, 'Diff with previous') : null,
       h('a', { class: 'btn', href: '#/p/' + enc(id) + '/diff?a=' + v.version + '&b=draft' }, 'Diff with draft'),
+      btn('Publish plan', () => planDialog(ctx, id, v.version)),
       btn('Publish', () => publishDialog(ctx, id, v.version, data, () => {
         // the publish re-renders this page: it must not silently drop unsaved canvas edits
         const lose = editor && editor.leaveText('Publishing reloads this page.');

@@ -21,9 +21,9 @@ class ModuleDependencyRulesTest {
         assertFalse(hud.contains("material3"), ":core:hud must not use Material3")
     }
 
-    @Test fun glassesDependsOnlyOnModelAndHud() {
+    @Test fun glassesDependsOnlyOnModelCaptureAndHud() {
         val glasses = gradle("../../glasses/build.gradle.kts")
-        assertEquals(setOf(":core:model", ":core:hud"), projects(glasses))
+        assertEquals(setOf(":core:model", ":core:capture", ":core:hud"), projects(glasses)) // :core:capture holds the pure glance, motion and gate code (0bedf427)
         assertFalse(glasses.contains("material3"), ":glasses must not use Material3")
     }
 
