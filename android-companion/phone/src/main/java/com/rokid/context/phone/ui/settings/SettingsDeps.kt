@@ -161,6 +161,7 @@ class SettingsDeps(
             exportSettings = { com.rokid.context.orchestration.ConfigExport.write(app) },
             aiCallPace = com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.get(app),
             keyframes = AppKeyframeDiagnostics(app),
+            capturePlan = com.rokid.context.phone.canvas.ProcessPlanControl { HubGraph.get(app); com.rokid.context.phone.canvas.PlanGraph.current() },
             glassesRestarts = HubGraph.get(app).state.map { it.glassesDiagnostics() }.stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null),
             contextSources = AppContextSources(app),
         )
@@ -215,6 +216,7 @@ private class AppKeyframeDiagnostics(private val app: Context) : KeyframeDiagnos
         val pub = dao.activeInterpreter() ?: return null
         return LivePipelineInfo(dao.pipeline(pub.pipelineId)?.name ?: pub.pipelineId, pub.version, pub.mode == "LIVE", dao.recentFallbacks(pub.id, Int.MAX_VALUE), dao.interpretedCount(pub.id))
     }
+    override suspend fun capturePlan() = com.rokid.context.phone.canvas.PlanGraph.current()?.publisher?.status()
     override suspend fun retryAllFinal() = MemoryGraph.get(app).db.frameStateDao().retryAllFinal(System.currentTimeMillis())
 }
 

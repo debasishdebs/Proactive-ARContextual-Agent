@@ -1,5 +1,6 @@
 package com.rokid.context.phone.canvas
 
+import com.rokid.context.phone.hub.HubGraph
 import android.content.Context
 import android.util.Log
 import com.rokid.context.ai.AiGraph
@@ -329,7 +330,7 @@ class CanvasGraph(
             val auth = CanvasAuth(System::currentTimeMillis)
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> Log.w(TAG, "canvas task failed (${t.javaClass.simpleName})") })
             val ref = java.util.concurrent.atomic.AtomicReference<CanvasGraph>()
-            val backend = lazy { com.rokid.context.phone.canvas.api.AskPhotoBinding.bind(com.rokid.context.orchestration.AnswerService.forApp(app, extractFirst = false).askDebugPhotos()); CanvasBackendImpl.create(app, AiGraph.get(app), auth, lan = { ref.get()?.lan == true }, scope = scope) }
+            val backend = lazy { com.rokid.context.phone.canvas.api.AskPhotoBinding.bind(com.rokid.context.orchestration.AnswerService.forApp(app, extractFirst = false).askDebugPhotos()); HubGraph.get(app); CanvasBackendImpl.create(app, AiGraph.get(app), auth, lan = { ref.get()?.lan == true }, scope = scope, plans = { PlanGraph.current()?.publisher }, sharedPublisher = PlanGraph.current()?.canvasPublisher) }
             val extras = lazy { CanvasExtras.create(app, scope, DeveloperModeStore.get(app).enabled) }
             val maintenance = lazy { CanvasMaintenance(MemoryGraph.get(app).db.canvasDao()) }
             val graph = CanvasGraph(

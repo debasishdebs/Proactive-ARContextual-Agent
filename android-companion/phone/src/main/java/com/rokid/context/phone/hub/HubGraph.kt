@@ -174,6 +174,14 @@ object HubGraph {
         val ctl = com.rokid.context.phone.hub.plan.TraceControlPublisher(link, collect, scope).also { it.start() }
         val traceIntake = com.rokid.context.phone.hub.plan.LaterSeams.noTraceIntake // TODO(Task 18): TraceIntake
         planSender = sender; collectSession = collect; traceControl = ctl
+        // Task 33: the publish groups sit behind the same transport; their graph is built on first use (it needs the AI graph) and warmed here so recover() runs at startup.
+        val hubRef = java.util.concurrent.atomic.AtomicReference<Hub>()
+        com.rokid.context.phone.canvas.PlanGraph.install(
+            app, scope, sender, install,
+            glasses = { hubRef.get()?.let { com.rokid.context.phone.canvas.PlanGraph.glassesState(it.state.value.link, it.planPeer()) } ?: com.rokid.context.canvas.plan.GlassesState.UNKNOWN },
+            phoneRt = phoneRt::apply,
+        )
+        com.rokid.context.phone.canvas.PlanGraph.warm(scope)
         return Hub(
             scope, link, pauses, settings, ingestor, LegacyHubSources(app),
             startService = { ContextHubService.ensureRunning(app) }, voice = com.rokid.context.phone.voice.VoiceGraph.get(app).hubVoice,
@@ -183,10 +191,10 @@ object HubGraph {
             phoneUse = phoneUse.inUse,
             motionContext = ctxHub.message, onMotionHint = ctxHub::onMotionHint, ctxStart = ctxHub::start, ctxStop = ctxHub::stop,
             applyToCapture = { com.rokid.context.phone.context.ContextSourceSettings.of(app).applyToCapture },
-            phoneInstall = install, onPlanAck = sender::onAck, onTraceChunk = traceIntake::onChunk,
+            phoneInstall = install, onPlanAck = { ack -> sender.onAck(ack); com.rokid.context.phone.canvas.PlanGraph.feedAck(ack) }, onTraceChunk = traceIntake::onChunk,
             onMark = { m, a -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onMark(m, a) },
             onGlassesListenStart = { t -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
-        )
+        ).also { hubRef.set(it) }
     }
 }

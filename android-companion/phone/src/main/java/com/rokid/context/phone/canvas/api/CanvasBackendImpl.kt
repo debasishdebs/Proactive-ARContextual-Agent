@@ -139,10 +139,12 @@ class CanvasBackendImpl(
             askPhotos: () -> AskDebugPhotos = AskPhotoBinding::current,
             thumbnailer: (ByteArray) -> ByteArray? = { FrameImagesHttp.thumbnail(it) },
             plans: () -> com.rokid.context.canvas.plan.CapturePlanPublisher? = { null },
+            /** Task 33: the process's ONE publisher (the plan graph's), so slice 2 publishes and the plan groups share a lock; null builds its own (tests). */
+            sharedPublisher: CanvasPublisher? = null,
         ): CanvasBackendImpl {
             val dao = MemoryGraph.get(app).db.canvasDao()
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
-            val publisher = CanvasPublisher(dao, ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, clock, CanvasPublisher.inTransaction(MemoryGraph.get(app).db))
+            val publisher = sharedPublisher ?: CanvasPublisher(dao, ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, clock, CanvasPublisher.inTransaction(MemoryGraph.get(app).db))
             val runner = CanvasRunner(
                 dao, photos, Executors.all(),
                 { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },

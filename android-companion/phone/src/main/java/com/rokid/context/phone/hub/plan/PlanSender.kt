@@ -94,7 +94,15 @@ class PlanSender(
 
     /** An ack of this install and session; only the outstanding gen counts. */
     fun onAck(ack: CapturePlanAck) {
-        if (ack.gen == _desired.value?.gen) _ack.value = ack
+        synchronized(lock) {
+            if (ack.gen != _desired.value?.gen) return
+            _ack.value = ack
+            // S25: a reverted gen is over (the glasses went back to their previous plan themselves) and is never sent again, in this session, the next or after a restart. The gen counter stays.
+            if (ack.state == com.rokid.context.core.model.PlanAckState.REVERTED) {
+                check(prefs.edit().remove(KEY_MSG).commit()) { "plan state not persisted" }
+                _desired.value = null
+            }
+        }
     }
 
     private suspend fun push(m: CapturePlanMessage): Boolean {

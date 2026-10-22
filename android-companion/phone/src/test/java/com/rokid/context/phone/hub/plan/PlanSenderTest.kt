@@ -65,6 +65,31 @@ class PlanSenderTest {
         s.onAck(CapturePlanAck(gen = g, state = PlanAckState.EFFECTIVE)); assertEquals(PlanAckState.EFFECTIVE, s.lastAck.value!!.state)
     }
 
+    @Test fun aRevertedGenIsNeverSentAgainOnTheNextSession() = runBlocking {
+        val s = sender()
+        s.onSessionReady(9_000)
+        val g = s.send(PlanMode.TRIAL, "{}", "abc", "7", 3_600_000L).gen
+        assertEquals(1, plans().size)
+        s.onAck(CapturePlanAck(gen = g, publishId = "7", mode = PlanMode.TRIAL, state = PlanAckState.REVERTED, reason = "auto:trial_end"))
+        assertNull("the reverted gen is no longer the desired state", s.capturePlan.value)
+        now = 30_000; s.onSessionReady(25_000)
+        assertEquals("nothing is re-sent", 1, plans().size)
+        val restarted = sender()
+        restarted.onSessionReady(40_000)
+        assertEquals("nor after a restart of the process", 1, plans().size)
+        assertEquals("a new send still takes a fresh gen", g + 1, restarted.send(PlanMode.SHADOW, "{}", "abc", "8", null).gen)
+    }
+
+    @Test fun aRevertedAckOfAnOlderGenLeavesTheNewerDesiredState() = runBlocking {
+        val s = sender()
+        val g1 = s.send(PlanMode.TRIAL, "{}", "abc", "7", 1L).gen
+        val g2 = s.send(PlanMode.SHADOW, "{}", "abc", "8", null).gen
+        s.onAck(CapturePlanAck(gen = g1, publishId = "7", mode = PlanMode.TRIAL, state = PlanAckState.REVERTED))
+        assertEquals(g2, s.capturePlan.value!!.gen)
+        s.onSessionReady(9_000)
+        assertEquals(g2, plans().last().gen)
+    }
+
     @Test fun aSendWithNoSessionIsStoredAndSentWhenOneOpens() = runBlocking {
         link.setState(com.rokid.context.core.model.LinkState.OFFLINE)
         val s = sender()
