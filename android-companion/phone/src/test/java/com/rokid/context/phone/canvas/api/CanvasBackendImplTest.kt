@@ -37,6 +37,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -199,7 +200,7 @@ class CanvasBackendImplTest {
         assertEquals(listOf("m1"), live.map { it["id"]!!.jsonPrimitive.content })
         assertEquals("A red mug", live[0]["text"]!!.jsonPrimitive.content)
         assertEquals("object", live[0]["type"]!!.jsonPrimitive.content)
-        val list = backend.frames(Long.MAX_VALUE, 10, false)
+        val list = backend.frames(null, Long.MAX_VALUE, 10, false)
         assertEquals("true", list[0].jsonObject["hasLiveMemories"]!!.jsonPrimitive.content)
         assertNull(backend.frame("missing"))
     }
@@ -275,5 +276,133 @@ class CanvasBackendImplTest {
         backend.start()
         backend.start() // once
         assertEquals("INTERRUPTED", checkNotNull(backend.run("r1"))["status"]!!.jsonPrimitive.content)
+    }
+
+    // ---- slice 2, Task 9 (commit 1): node types, validate, diff, freeze rev, day filter ----
+
+    @Test fun nodeTypesCarryCategory() {
+        val types = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
+        fun s(t: String, k: String) = types.getValue(t)[k]!!.jsonPrimitive.content
+        assertEquals(mapOf(
+            "input.photos" to "photos", "ai.vision_extract" to "extract", "gate.local_critic" to "trust", "ai.critic" to "critic",
+            "ai.prompt" to "prompt", "route.switch" to "route", "memory.write" to "write",
+        ), types.keys.associateWith { s(it, "short") })
+        assertEquals(mapOf(
+            "input.photos" to "Inputs", "ai.vision_extract" to "AI", "gate.local_critic" to "Checks", "ai.critic" to "AI",
+            "ai.prompt" to "AI", "route.switch" to "Routing", "memory.write" to "Memory",
+        ), types.keys.associateWith { s(it, "category") })
+        // exactly one photo input per pipeline: not offered by the palette
+        assertEquals(listOf("input.photos"), types.keys.filter { s(it, "palette") == "false" })
+        assertTrue(types.keys.all { s(it, "domain") == "ASYNC" })
+        // the editor needs the switch's field param to edit it
+        val params = types.getValue("route.switch")["params"]!!.jsonArray.map { it.jsonObject }
+        assertEquals("text", params.first { it["name"]!!.jsonPrimitive.content == "field" }["kind"]!!.jsonPrimitive.content)
+        assertTrue(params.any { it["name"]!!.jsonPrimitive.content == "cases" })
+        // every short id is valid as a node id prefix
+        assertTrue(types.keys.all { Regex("^[a-z][a-z0-9]{0,15}$").matches(s(it, "short")) })
+    }
+
+    @Test fun validateReturnsLayoutAndProblems() = runBlocking<Unit> {
+        val live = checkNotNull(backend.pipeline("live-extract"))["json"]!!.jsonPrimitive.content
+        val ok = backend.validate(live)
+        assertEquals(0, ok["problems"]!!.jsonArray.size)
+        assertTrue(ok["layout"]!!.jsonObject["cells"]!!.jsonObject.containsKey("extract"))
+        assertEquals("true", ok["liveShape"]!!.jsonPrimitive.content)
+        val interp = ok["interpretable"]!!.jsonObject
+        assertEquals(0, interp["problems"]!!.jsonArray.size)
+        val range = interp["callRange"]!!.jsonArray.map { it.jsonPrimitive.content.toDouble() }
+        assertEquals(2, range.size)
+        assertTrue(range[0] > 0.0 && range[0] <= range[1])
+        assertFalse(interp.containsKey("callFactor"))
+        // a node with a bad param and an edge to nowhere: problems are objects with nodeId or edge
+        val broken = live.replace(""""batch":3""", """"batch":9""")
+        val bad = backend.validate(broken)
+        val problems = bad["problems"]!!.jsonArray.map { it.jsonObject }
+        assertTrue(problems.isNotEmpty())
+        assertTrue(problems.all { it["text"]!!.jsonPrimitive.content.isNotEmpty() })
+        assertTrue(problems.any { it["nodeId"]?.jsonPrimitive?.content == "extract" })
+        assertTrue(bad["layout"] is JsonObject)
+        assertEquals(listOf("Fix the pipeline's problems first"), bad["interpretable"]!!.jsonObject["problems"]!!.jsonArray.map { it.jsonPrimitive.content })
+        // an edge problem names its edge
+        val edgeBad = backend.validate(live.replace(""""to":"trust"""", """"to":"photos""""))
+        assertTrue(edgeBad["problems"]!!.jsonArray.map { it.jsonObject }.any { it["edge"] is JsonObject })
+        // validate saves nothing
+        val before = checkNotNull(backend.pipeline("live-extract"))
+        backend.validate(broken)
+        assertEquals(before["draftRev"], checkNotNull(backend.pipeline("live-extract"))["draftRev"])
+        assertEquals(before["json"], checkNotNull(backend.pipeline("live-extract"))["json"])
+    }
+
+    @Test fun validateUndecodable() = runBlocking<Unit> {
+        for (text in listOf("", "not json", "[1,2]", """{"schema":99}""", "{" .repeat(5))) {
+            val r = backend.validate(text)
+            val problems = r["problems"]!!.jsonArray
+            assertEquals(text, 1, problems.size)
+            assertEquals("The pipeline JSON is not valid.", problems[0].jsonObject["text"]!!.jsonPrimitive.content)
+            assertEquals("null", r["layout"].toString())
+            assertEquals("false", r["liveShape"]!!.jsonPrimitive.content)
+            assertEquals(1, r["interpretable"]!!.jsonObject["problems"]!!.jsonArray.size)
+        }
+        // the fixed text never echoes the input
+        assertFalse(backend.validate("secret-text-xyz").toString().contains("secret-text-xyz"))
+    }
+
+    @Test fun pipelineDetailHasDetailedProblemsAndInterpretable() = runBlocking<Unit> {
+        val p = checkNotNull(backend.pipeline("intent-draft"))
+        assertEquals(0, p["problems"]!!.jsonArray.size)
+        assertTrue(p["problemsDetailed"] is JsonArray)
+        val interp = p["interpretable"]!!.jsonObject
+        assertEquals(2, interp["callRange"]!!.jsonArray.size)
+        assertTrue(interp["warnings"] is JsonArray)
+        assertFalse(interp.containsKey("callFactor"))
+        val copy = backend.duplicate("live-extract", "Mine")
+        val d = checkNotNull(backend.pipeline(copy))
+        backend.saveDraft(copy, d["json"]!!.jsonPrimitive.content.replace(""""batch":3""", """"batch":9"""), d["draftRev"]!!.jsonPrimitive.int)
+        val bad = checkNotNull(backend.pipeline(copy))
+        assertTrue(bad["problems"]!!.jsonArray.all { it is JsonPrimitive })
+        assertEquals(bad["problems"]!!.jsonArray.size, bad["problemsDetailed"]!!.jsonArray.size)
+        assertTrue(bad["problemsDetailed"]!!.jsonArray.any { it.jsonObject["nodeId"]?.jsonPrimitive?.content == "extract" })
+    }
+
+    @Test fun diffDraftVsVersion() = runBlocking<Unit> {
+        val id = backend.duplicate("live-extract", "Mine")
+        backend.freeze(id, "one", null)
+        val d = checkNotNull(backend.pipeline(id))
+        val edited = d["json"]!!.jsonPrimitive.content.replace(""""batch":3""", """"batch":2""")
+        backend.saveDraft(id, edited, d["draftRev"]!!.jsonPrimitive.int)
+        val diff = checkNotNull(backend.diff(id, "1", "draft"))
+        val nodes = diff["nodes"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("extract"), nodes.map { it["nodeId"]!!.jsonPrimitive.content })
+        assertEquals("changed", nodes[0]["kind"]!!.jsonPrimitive.content)
+        assertEquals(listOf("batch"), nodes[0]["params"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(0, diff["edgesAdded"]!!.jsonArray.size)
+        assertEquals("false", diff["renamed"]!!.jsonPrimitive.content)
+        assertTrue(diff["prompts"] is JsonArray)
+        // version against version, and the same on both sides is empty
+        backend.freeze(id, "two", null)
+        assertEquals(1, checkNotNull(backend.diff(id, "1", "2"))["nodes"]!!.jsonArray.size)
+        assertEquals(0, checkNotNull(backend.diff(id, "2", "draft"))["nodes"]!!.jsonArray.size)
+        assertNull(backend.diff(id, "9", "draft"))
+        assertNull(backend.diff("nope", "1", "draft"))
+        assertNull(backend.diff(id, "x", "draft"))
+    }
+
+    @Test fun freezeStaleRevThrowsAndFreezesNothing() = runBlocking<Unit> {
+        val id = backend.duplicate("live-extract", "Mine")
+        val d = checkNotNull(backend.pipeline(id))
+        val rev = d["draftRev"]!!.jsonPrimitive.int
+        val saved = backend.saveDraft(id, d["json"]!!.jsonPrimitive.content, rev) as CanvasRepository.SaveResult.Saved
+        try { backend.freeze(id, "n", rev); org.junit.Assert.fail("stale rev must be refused") } catch (e: CanvasRepository.DraftChanged) { }
+        assertEquals(0, MemoryGraph.get(app).db.canvasDao().versions(id).size)
+        assertEquals(1, backend.freeze(id, "n", saved.rev)["version"]!!.jsonPrimitive.int)
+        assertEquals(1, backend.freeze(id, "n", null)["version"]!!.jsonPrimitive.int) // no rev: today's behaviour (the same hash returns v1)
+    }
+
+    @Test fun framesAfterAndBefore() = runBlocking<Unit> {
+        seed("f1", 1_000); seed("f2", 2_000); seed("f3", 3_000)
+        fun ids(a: JsonArray) = a.map { it.jsonObject["id"]!!.jsonPrimitive.content }
+        assertEquals(listOf("f3", "f2", "f1"), ids(backend.frames(null, Long.MAX_VALUE, 10, false)))
+        assertEquals(listOf("f2"), ids(backend.frames(2_000, 3_000, 10, false))) // after inclusive, before exclusive
+        assertEquals(listOf("f3", "f2"), ids(backend.frames(2_000, Long.MAX_VALUE, 10, false)))
     }
 }

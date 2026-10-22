@@ -26,19 +26,28 @@ import kotlinx.serialization.json.put
 /**
  * The canvas JSON API (spec section 8). Auth, Host/Origin policy, body size and logging are the router's; this class only maps
  * routes to [CanvasBackend] calls and results to statuses. Messages are fixed texts: no input and no exception text is echoed.
- * The backend is called under a timeout ([callTimeoutMs]); a slow call answers 503 `busy`.
+ * A read is called under a timeout ([callTimeoutMs]) and a slow one answers 503 `busy`. A mutation runs to completion once started (a cancel
+ * between two writes could leave half a publish); only the Ask replay, which writes nothing, has a deadline ([MUTATION_DEADLINE_MS]).
  */
-class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: Long = 30_000) : ApiHandler {
+class CanvasApi(
+    private val backend: CanvasBackend,
+    private val callTimeoutMs: Long = 30_000,
+    /** The phone's zone: the day filter of `GET /api/frames?day=` is that day's local midnight to the next. */
+    private val zone: () -> java.time.ZoneId = java.time.ZoneId::systemDefault,
+) : ApiHandler {
     private class ApiError(val status: Int, val code: String, val msg: String, val problems: List<String> = emptyList()) : Exception(code)
 
     companion object {
         private val ID = Regex("^[A-Za-z0-9:_-]{1,64}$")
         private val FROM = Regex("^[A-Za-z0-9:_-]{1,64}(@[0-9]{1,6})?$")
         private val VERSION = Regex("^[0-9]{1,6}$")
+        private val DAY = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
         const val DEFAULT_LIMIT = 60
         const val MAX_LIMIT = 120
         const val MAX_FRAME_IDS = 50
         const val MAX_NOTE = 280
+        /** The deadline of the one mutation that calls a model and writes nothing: the Ask replay. */
+        const val MUTATION_DEADLINE_MS = 60_000L
         const val MAX_FREEZE_NOTE = 80
         const val MAX_NAME = 80
         const val MAX_TEXT = 64 * 1024
@@ -85,10 +94,9 @@ class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: L
                 if (backend.deletePipeline(id(s[1]))) json(OK)
                 else throw ApiError(409, "conflict", "Built-in and published pipelines cannot be deleted.")
             }
-            "POST pipelines/:id/freeze" -> {
-                val note = optBody(req)?.optString("note", MAX_FREEZE_NOTE) ?: ""
-                json(backend.freeze(id(s[1]), note))
-            }
+            "POST pipelines/:id/freeze" -> freeze(id(s[1]), req)
+            "GET pipelines/:id/diff" -> diff(id(s[1]), req)
+            "POST validate" -> validate(req)
             "POST pipelines/:id/versions/:n/publish" -> {
                 if (!VERSION.matches(s[3])) throw bad()
                 outcome(backend.publish(id(s[1]), s[3].toInt()), "publish_blocked")
@@ -114,9 +122,9 @@ class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: L
 
     /** The route shape with ids as `:id`, or null for a path that is no route at all (404). */
     private fun templateOf(s: List<String>): String? = when {
-        s.size == 1 && s[0] in setOf("session", "logout", "node-types", "pipelines", "publish", "check-prompt", "frames", "runs", "compare") -> s[0]
+        s.size == 1 && s[0] in setOf("session", "logout", "node-types", "pipelines", "publish", "check-prompt", "frames", "runs", "compare", "validate") -> s[0]
         s.size == 2 && s[0] == "pipelines" -> "pipelines/:id"
-        s.size == 3 && s[0] == "pipelines" && s[2] == "freeze" -> "pipelines/:id/freeze"
+        s.size == 3 && s[0] == "pipelines" && s[2] in setOf("freeze", "diff") -> "pipelines/:id/${s[2]}"
         s.size == 5 && s[0] == "pipelines" && s[2] == "versions" && s[4] == "publish" -> "pipelines/:id/versions/:n/publish"
         s.size == 2 && s[0] == "publish" && s[1] == "rollback" -> "publish/rollback"
         s.size == 2 && s[0] == "frames" -> "frames/:id"
@@ -161,7 +169,8 @@ class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: L
 
     private fun JsonObject.frameIds(): List<String> {
         val arr = this["frameIds"] as? JsonArray ?: throw bad("Missing \"frameIds\".")
-        return arr.take(MAX_FRAME_IDS).map { e ->
+        if (arr.size > MAX_FRAME_IDS) throw bad("At most $MAX_FRAME_IDS photos")
+        return arr.map { e ->
             val v = (e as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw bad("Bad frame id.")
             id(v)
         }
@@ -180,13 +189,40 @@ class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: L
         return json(buildJsonObject { put("id", backend.duplicate(from, name)) })
     }
 
+    /** The pipeline JSON of a request: an object, or a string holding one. */
+    private fun JsonObject.pipelineJson(): String = when (val e = this["json"]) {
+        is JsonObject -> e.toString()
+        is JsonPrimitive -> e.takeIf { it.isString }?.content
+        else -> null
+    } ?: throw bad("Missing \"json\".")
+
+    private suspend fun freeze(id: String, req: HttpRequest): HttpResponse {
+        val b = optBody(req)
+        val note = b?.optString("note", MAX_FREEZE_NOTE) ?: ""
+        val rev = if (b == null || b["draftRev"].let { it == null || it is JsonNull }) null else b.int("draftRev").also { if (it < 0) throw bad() }
+        return try {
+            json(backend.freeze(id, note, rev))
+        } catch (e: CanvasRepository.DraftChanged) {
+            throw ApiError(409, "conflict", "The draft changed. Save again.")
+        }
+    }
+
+    /** Validates a draft without saving it. The request's `rev` (S38) comes back unchanged so the editor can drop stale replies. */
+    private suspend fun validate(req: HttpRequest): HttpResponse {
+        val b = body(req)
+        val rev = if (b["rev"].let { it == null || it is JsonNull }) null else b.int("rev").also { if (it < 0) throw bad() }
+        val r = backend.validate(b.pipelineJson())
+        return json(if (rev == null) r else JsonObject(r + ("rev" to JsonPrimitive(rev))))
+    }
+
+    private suspend fun diff(id: String, req: HttpRequest): HttpResponse {
+        fun side(k: String): String = (req.query[k] ?: throw bad()).also { if (it != "draft" && !VERSION.matches(it)) throw bad() }
+        return json(backend.diff(id, side("a"), side("b")) ?: throw NoSuchElementException())
+    }
+
     private suspend fun saveDraft(id: String, req: HttpRequest): HttpResponse {
         val b = body(req)
-        val j = when (val e = b["json"]) {
-            is JsonObject -> e.toString()
-            is JsonPrimitive -> e.takeIf { it.isString }?.content
-            else -> null
-        } ?: throw bad("Missing \"json\".")
+        val j = b.pipelineJson()
         val rev = b.int("draftRev").also { if (it < 0) throw bad() }
         return when (val r = backend.saveDraft(id, j, rev)) {
             is CanvasRepository.SaveResult.Saved -> json(buildJsonObject {
@@ -216,7 +252,15 @@ class CanvasApi(private val backend: CanvasBackend, private val callTimeoutMs: L
     private suspend fun frames(req: HttpRequest): HttpResponse {
         val before = req.query["before"]?.let { it.toLongOrNull() ?: throw bad() } ?: Long.MAX_VALUE
         val limit = (req.query["limit"]?.let { it.toIntOrNull() ?: throw bad() } ?: DEFAULT_LIMIT).coerceIn(1, MAX_LIMIT)
-        return json(backend.frames(before, limit, req.query["dwell"] == "true"))
+        val day = req.query["day"]
+        if (day == null) return json(backend.frames(null, before, limit, req.query["dwell"] == "true"))
+        // the day filter, in the phone's zone: local midnight up to the next midnight, or to `before` when that is earlier
+        if (!DAY.matches(day)) throw bad("Bad day.")
+        val date = try { java.time.LocalDate.parse(day) } catch (e: java.time.DateTimeException) { throw bad("Bad day.") }
+        val z = zone()
+        val after = date.atStartOfDay(z).toInstant().toEpochMilli()
+        val nextMidnight = date.plusDays(1).atStartOfDay(z).toInstant().toEpochMilli()
+        return json(backend.frames(after, minOf(before, nextMidnight), limit, req.query["dwell"] == "true"))
     }
 
     private suspend fun estimate(req: HttpRequest): HttpResponse {

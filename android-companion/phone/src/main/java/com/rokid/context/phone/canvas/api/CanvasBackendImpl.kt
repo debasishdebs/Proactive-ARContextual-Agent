@@ -4,8 +4,11 @@ import android.content.Context
 import android.util.Base64
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Role
+import com.rokid.context.ai.canvas.InterpretableShape
 import com.rokid.context.ai.canvas.LiveShape
 import com.rokid.context.ai.canvas.NodeTypes
+import com.rokid.context.ai.canvas.PipelineDiff
+import com.rokid.context.ai.canvas.Problem
 import com.rokid.context.ai.canvas.Pipeline
 import com.rokid.context.ai.canvas.PipelineFlows
 import com.rokid.context.ai.canvas.PipelineJson
@@ -66,6 +69,39 @@ class CanvasBackendImpl(
     companion object {
         private val pretty = Json { prettyPrint = true }
         private const val NOT_SET = "not set"
+        /** Fixed text for a pipeline JSON that cannot be decoded (never the decoder's message, never the input). */
+        const val UNDECODABLE = "The pipeline JSON is not valid."
+
+        /** The id prefix of a node type (slice 3's registry replaces this mapping). */
+        internal val SHORT = mapOf(
+            NodeTypes.INPUT_PHOTOS to "photos", NodeTypes.VISION_EXTRACT to "extract", NodeTypes.LOCAL_CRITIC to "trust", NodeTypes.CRITIC to "critic",
+            NodeTypes.PROMPT to "prompt", NodeTypes.SWITCH to "route", NodeTypes.MEMORY_WRITE to "write",
+        )
+
+        /** The palette group of a node type, by its id prefix. */
+        internal fun categoryOf(type: String): String = when (type.substringBefore('.')) {
+            "input" -> "Inputs"; "ai" -> "AI"; "route" -> "Routing"; "gate" -> "Checks"; "memory" -> "Memory"; else -> "Other"
+        }
+
+        internal fun problemJson(p: Problem): JsonObject = buildJsonObject {
+            put("text", p.text)
+            p.nodeId?.let { put("nodeId", it) }
+            p.edge?.let { e -> put("edge", buildJsonObject { put("from", e.from); put("to", e.to); e.`when`?.let { w -> put("when", w) } }) }
+        }
+
+        /** `{problems, warnings, callRange:[min,max]}` of the interpreter shape (S33). */
+        internal fun interpretableJson(p: Pipeline?): JsonObject {
+            if (p == null) return buildJsonObject {
+                put("problems", JsonArray(listOf(JsonPrimitive(UNDECODABLE)))); put("warnings", JsonArray(emptyList()))
+                put("callRange", JsonArray(listOf(JsonPrimitive(0.0), JsonPrimitive(0.0))))
+            }
+            val (min, max) = InterpretableShape.callRange(p)
+            return buildJsonObject {
+                put("problems", JsonArray(InterpretableShape.problems(p).map { JsonPrimitive(it) }))
+                put("warnings", JsonArray(InterpretableShape.warnings(p).map { JsonPrimitive(it) }))
+                put("callRange", JsonArray(listOf(JsonPrimitive(min), JsonPrimitive(max))))
+            }
+        }
 
         /** Frames the runner reads through the same loader as live extraction: archived keyframes, sealed ones opened. */
         fun photoSource(app: Context) = PhotoSource { ids ->
@@ -141,6 +177,10 @@ class CanvasBackendImpl(
             put("branches", JsonArray(t.branches(JsonObject(emptyMap())).map { JsonPrimitive(it) }))
             put("branchesFromCases", t.type == NodeTypes.SWITCH)
             put("params", JsonArray(paramsOf(t.type)))
+            put("short", SHORT[t.type] ?: t.type.substringAfterLast('.'))
+            put("category", categoryOf(t.type))
+            put("palette", t.type != NodeTypes.INPUT_PHOTOS) // exactly one photo input per pipeline
+            put("domain", "ASYNC")
         }
     })
 
@@ -151,7 +191,7 @@ class CanvasBackendImpl(
         NodeTypes.VISION_EXTRACT -> listOf(param("batch", "int", mapOf("min" to 1, "max" to ExtractSave.MAX_BATCH)), param("prompt", "prompt"))
         NodeTypes.CRITIC -> listOf(param("prompt", "prompt"))
         NodeTypes.PROMPT -> listOf(param("role", "role"), param("template", "text"), param("schema", "schema"), param("images", "bool"), param("name", "text"))
-        NodeTypes.SWITCH -> listOf(param("cases", "labels"))
+        NodeTypes.SWITCH -> listOf(param("field", "text"), param("cases", "labels"))
         else -> emptyList()
     }
 
@@ -179,7 +219,8 @@ class CanvasBackendImpl(
         start()
         val e = repo.get(id) ?: return null
         val p = PipelineJson.decode(e.draftJson).getOrNull()
-        val problems = if (p == null) listOf("The draft is not readable") else PipelineValidator.validate(p)
+        val detailed = if (p == null) listOf(Problem("The draft is not readable")) else PipelineValidator.problems(p)
+        val problems = detailed.map { it.text }
         val prompts = buildJsonObject {
             p?.nodes?.forEach { n ->
                 val key = NodeTypes.byType(n.type)?.promptKey ?: return@forEach
@@ -193,6 +234,8 @@ class CanvasBackendImpl(
             put("draftRev", e.draftRev)
             put("builtIn", e.builtIn)
             put("problems", JsonArray(problems.map { JsonPrimitive(it) }))
+            put("problemsDetailed", JsonArray(detailed.map(::problemJson)))
+            put("interpretable", interpretableJson(p))
             put("layout", p?.let { runCatching { PipelineFlows.layoutJson(it) }.getOrNull() } ?: emptyLayout)
             put("versions", JsonArray(dao.versions(id).map(::versionJson)))
             put("liveShape", p != null && LiveShape.matches(p))
@@ -226,11 +269,51 @@ class CanvasBackendImpl(
         return repo.delete(id)
     }
 
-    override suspend fun freeze(id: String, note: String): JsonObject {
+    override suspend fun freeze(id: String, note: String, draftRev: Int?): JsonObject {
         start()
         if (repo.get(id) == null) throw NoSuchElementException("pipeline")
-        val v = repo.freeze(id, note)
+        val v = repo.freeze(id, note, draftRev)
         return buildJsonObject { put("version", v.version); put("hash", v.hash) }
+    }
+
+    override suspend fun validate(json: String): JsonObject {
+        val p = PipelineJson.decode(json).getOrNull() ?: return buildJsonObject {
+            put("problems", JsonArray(listOf(buildJsonObject { put("text", UNDECODABLE) })))
+            put("layout", JsonNull)
+            put("liveShape", false)
+            put("interpretable", interpretableJson(null))
+        }
+        return buildJsonObject {
+            put("problems", JsonArray(PipelineValidator.problems(p).map(::problemJson)))
+            put("layout", runCatching { PipelineFlows.layoutJson(p) }.getOrNull() ?: JsonNull)
+            put("liveShape", LiveShape.matches(p))
+            put("interpretable", interpretableJson(p))
+        }
+    }
+
+    private suspend fun diffSide(id: String, token: String): Pipeline? {
+        val json = if (token == "draft") repo.get(id)?.draftJson else token.toIntOrNull()?.let { dao.version(id, it)?.json }
+        return json?.let { PipelineJson.decode(it).getOrNull() }
+    }
+
+    override suspend fun diff(id: String, a: String, b: String): JsonObject? {
+        start()
+        val pa = diffSide(id, a) ?: return null
+        val pb = diffSide(id, b) ?: return null
+        val d = PipelineDiff.of(pa, pb)
+        fun edge(e: com.rokid.context.ai.canvas.PipelineEdge) = buildJsonObject { put("from", e.from); put("to", e.to); e.`when`?.let { put("when", it) } }
+        return buildJsonObject {
+            put("renamed", d.renamed)
+            put("nodes", JsonArray(d.nodes.map { n -> buildJsonObject { put("nodeId", n.nodeId); put("kind", n.kind); put("params", JsonArray(n.params.map { JsonPrimitive(it) })) } }))
+            put("edgesAdded", JsonArray(d.edgesAdded.map(::edge)))
+            put("edgesRemoved", JsonArray(d.edgesRemoved.map(::edge)))
+            put("prompts", JsonArray(d.prompts.map { pd ->
+                buildJsonObject {
+                    put("nodeId", pd.nodeId); put("part", pd.part)
+                    put("lines", JsonArray(pd.lines.map { l -> buildJsonObject { put("op", l.kind.name.lowercase()); put("text", l.text) } }))
+                }
+            }))
+        }
     }
 
     // ---- publish ----
@@ -258,8 +341,8 @@ class CanvasBackendImpl(
 
     // ---- frames ----
 
-    override suspend fun frames(beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray =
-        JsonArray(dao.recentFrames(beforeMs, dwellOnly, limit).map { r ->
+    override suspend fun frames(afterMs: Long?, beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray =
+        JsonArray((if (afterMs == null) dao.recentFrames(beforeMs, dwellOnly, limit) else dao.recentFramesBetween(afterMs, beforeMs, dwellOnly, limit)).map { r ->
             buildJsonObject {
                 put("id", r.id); put("ts", r.ts); put("motion", r.motion); put("dwell", r.dwell); put("blur", r.blur); put("state", r.state)
                 put("hasLiveMemories", r.liveCount > 0)
