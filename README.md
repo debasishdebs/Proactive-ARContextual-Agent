@@ -128,6 +128,19 @@ cd android-companion
   - `CriticWorkerJob` composes `system_global + critic_validation`.
   - Prompt hash is logged for audit/debug without exposing full prompt text.
 
+## Build from a fresh clone (dependencies)
+
+Everything needed to build is in git except the items below; no key, token or `local.properties` was needed on the maintainer's machine.
+
+- **JDK 17** (`JAVA_HOME`). The Gradle wrapper (8.13) downloads itself.
+- **Android SDK** with platform 36, build-tools, **NDK 28.2.13676358** and **CMake 3.22.1** (SDK Manager). Point `ANDROID_HOME` at it, or set `sdk.dir` in `android-companion/local.properties` (untracked).
+- **git-lfs**: run `git lfs install` once, then `git lfs pull` (one test fixture, `nomic/reference.json`, is an LFS file).
+- **The llama.cpp submodule**: clone with `--recurse-submodules`, or run `git submodule update --init` (do not use `--reference`).
+- **Build:** `cd android-companion && ./gradlew :phone:assembleDebug :glasses:assembleDebug`. The first build compiles llama.cpp natively and takes 10+ minutes; allow about 6 GB of free RAM. Full test gate: `tools/gate.sh`.
+- **Install on devices:** phone with `adb install -r` after a backup (never uninstall: the app holds the database key, and Room migrations are one-way); glasses over USB adb; the watch app is the Live AR Fit repo. Model endpoints and keys are entered in the app, never in the repo.
+- **Optional tools:** `gh` (releases), `gitleaks` (run before any push), the Codex CLI (reviews), an Android emulator AVD (the encrypted-migration device test runs only there), Podman (slice 3b, later).
+- **Intentionally not in git:** APKs and build outputs, `local.properties`, phone database backups, local worktree snapshots. `code-agent/` has the working rules and the handoff.
+
 ## AI-agent context
 
 `code-agent/` holds the project's working memory for AI coding agents and new contributors: the current handoff, working rules, Claude memory snapshot, Codex reviews and the per-task briefs and reports. Start at [`code-agent/README.md`](code-agent/README.md).

@@ -18,4 +18,6 @@ code-agent/
   releases/            release-notes markdown used with `gh release create --notes-file`
 ```
 
+Build prerequisites for a fresh clone (JDK 17, Android SDK 36 + NDK 28.2 + CMake 3.22.1, git-lfs, the llama.cpp submodule) are in the root `README.md`, section "Build from a fresh clone (dependencies)".
+
 Conventions: Sonnet-only agents, Codex for reviews, one review per task, reuse-first, never print secrets, never push/rm from an agent (the owner pushes with one-line commands). Details in `claude/WORKING-RULES.md`. No secrets, personal screenshots or device identifiers should ever be added here; the history of this repo was rewritten once to remove screenshots (see the handoff).
