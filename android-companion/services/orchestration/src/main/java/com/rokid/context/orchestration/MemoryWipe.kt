@@ -136,6 +136,8 @@ object MemoryWipe {
             File(context.filesDir, PHOTO_EVAL_DIR).let { it.deleteRecursively(); if (it.exists()) leftovers++ }
             // Slice 3a: sealed traces, pulled imports and orphan tmp files (the tables went with wipeMemory). The epoch above already refuses a fenced publish.
             FencedFiles.DELETE_ALL_DIRS.forEach { File(context.filesDir, it).let { d -> d.deleteRecursively(); if (d.exists()) leftovers++ } }
+            // Final pass 10: raw traces staged under the EXTERNAL files dir (adb push) are sensor data too; the resume of an interrupted wipe comes through here as well.
+            context.getExternalFilesDir(null)?.let { File(it, FencedFiles.STAGING_DIR) }?.let { d -> d.deleteRecursively(); if (d.exists()) leftovers++ }
             // Slice 3a privacy: the persisted capture-plan state and the Collect session window go too.
             WIPED_PREFS.forEach { if (!clearWipedPrefs(context.applicationContext.getSharedPreferences(it, Context.MODE_PRIVATE), it)) leftovers++ }
             MemoryMaintenance.vacuum(db)

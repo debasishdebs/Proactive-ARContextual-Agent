@@ -15,11 +15,12 @@ import java.io.File
  */
 class DeletionInventoryFilesTest {
     private val root: File = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
-    private val registeredNames = (DeletionGraph.TABLES + DeletionGraph.PREFS + DeletionGraph.GLASSES_PREFS + DeletionGraph.GLASSES_FILES + DeletionGraph.DIRS).map { it.name }.toSet()
+    private val registeredNames = (DeletionGraph.TABLES + DeletionGraph.PREFS + DeletionGraph.GLASSES_PREFS + DeletionGraph.GLASSES_FILES + DeletionGraph.DIRS + DeletionGraph.EXTERNAL_DIRS).map { it.name }.toSet()
 
     @Test fun deleteAllClearsExactlyTheRegisteredPrefsAndFolders() {
         assertEquals(DeletionGraph.wipedPrefs.toSet(), MemoryWipe.WIPED_PREFS.toSet())
         assertEquals(DeletionGraph.wipedDirs.toSet(), FencedFiles.DELETE_ALL_DIRS.toSet())
+        assertEquals(DeletionGraph.wipedExternalDirs.toSet(), setOf(FencedFiles.STAGING_DIR))
         assertTrue(CollectSession.PREFS in MemoryWipe.WIPED_PREFS)
     }
 

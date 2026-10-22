@@ -36,7 +36,7 @@ object DeletionGraph {
 
     /** Phone SharedPreferences names (without `.xml`). */
     val PREFS: List<Entry> = listOf(
-        w("canvas_plan_state", "the publish-group and plan state sent to the glasses; cleared so a stale plan is never re-sent"),
+        w("canvas_plan_state", "the publish-group and plan state sent to the glasses; cleared so a stale plan is never re-sent (only the generation counter stays: not personal data, and the glasses keep theirs)"),
         w("canvas_collect", "the Collect-for-tuning session window"),
         k("deletion_epoch", "the persisted deletion epoch (install id, counter, wipedAtMs): it IS the fence and holds no user data"),
         k("mark_settings", "reserved: mark toggles (settings, not memory); not written yet"),
@@ -63,6 +63,12 @@ object DeletionGraph {
         w("canvas_traces", "sealed IMU traces"), w("canvas_import", "pulled trace imports"), w("canvas_tmp", "tmp files of an unpublished write"),
     )
 
+    /** Folders under the app's EXTERNAL files dir (`getExternalFilesDir(null)`): adb-pushed staging of raw traces; cleared by Delete all and excluded from backup and device transfer. */
+    val EXTERNAL_DIRS: List<Entry> = listOf(
+        w("trace-staging", "dev-mode trace import staging (raw sensor traces pushed over adb); cleared by Delete all and its resume, excluded from backup and transfer"),
+    )
+
+    val wipedExternalDirs get() = EXTERNAL_DIRS.filter { it.fate == Fate.WIPED }.map { it.name }
     val wipedTables get() = TABLES.filter { it.fate == Fate.WIPED }.map { it.name }
     val wipedPrefs get() = PREFS.filter { it.fate == Fate.WIPED }.map { it.name }
     val wipedDirs get() = DIRS.filter { it.fate == Fate.WIPED }.map { it.name }
