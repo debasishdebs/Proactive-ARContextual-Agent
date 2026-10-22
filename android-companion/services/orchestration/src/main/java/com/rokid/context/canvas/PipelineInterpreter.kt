@@ -53,12 +53,12 @@ class PipelineInterpreter(
     suspend fun run(p: Pipeline, publishId: Long, mode: String, photos: List<ExtractPhoto>, ctx: RunContext): Outcome {
         val token = newId()
         val traces = ArrayList<CanvasLiveTraceEntity>()
-        val lineage = HashMap<String, String>() // S25: downstream rows of a frame keep the batch of the call they derive from
+        val lineage = HashMap<String, LinkedHashSet<String>>() // S25: every call whose output a frame's rows derive from
         fun row(frameId: String, nodeId: String, r: NodeResult): CanvasLiveTraceEntity {
-            r.meta?.batchId?.let { lineage[frameId] = it }
+            val batch = CanvasLineage.compose(lineage.getOrPut(frameId) { LinkedHashSet() }, r.meta?.batchId)
             return CanvasLiveTraceEntity(
                 publishId, frameId, nodeId, mode, if (r.error == null) "OK" else "ERROR", r.branch, r.value?.let { cap(CanvasValueJson.encode(it)) }, r.error,
-                (r.meta?.batchId ?: lineage[frameId])?.let { "$token:$it" }, clock(),
+                batch?.split(CanvasLineage.SEP)?.joinToString(CanvasLineage.SEP.toString()) { "$token:$it" }, clock(),
             )
         }
         fun batchRows(error: String?) = photos.map { CanvasLiveTraceEntity(publishId, it.frameId, BATCH, mode, if (error == null) "OK" else "ERROR", null, null, error, null, clock()) }

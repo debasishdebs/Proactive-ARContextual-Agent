@@ -378,6 +378,26 @@ class PipelineInterpreterTest {
         assertTrue("downstream rows keep their frame's batch", o.traces.filter { it.nodeId == "route" }.all { it.batchId != null })
     }
 
+    @Test fun forgettingAPhotoRemovesTheTracesSharingItsExtractCallAndKeepsTheLineageTokens() = runBlocking<Unit> {
+        // The interpreter only runs the pre-save nodes (prompts, switch, extract): the critic and write never run here, so the chain is intent -> extract.
+        graph { p -> extractReply(*sentIds(p).toTypedArray()) }
+        val fakeExtract = fake(NodeTypes.VISION_EXTRACT) { _, items ->
+            items.map { NodeResult(it.frameId, CanvasValue.Extraction(listOf(Fact("Shared mug", "object", 0.9, emptyList(), items.map { x -> x.frameId })),
+                items.map { x -> FrameCaption(x.frameId, "c") }), calls = 1, meta = CallMeta(5, null, null, null, null, "ex:shared")) }
+        }
+        val promptFake = fake(NodeTypes.PROMPT) { _, items -> items.map { NodeResult(it.frameId, CanvasValue.Json(JsonObject(emptyMap())), calls = 1, meta = CallMeta(5, null, null, null, null, "intent:" + it.frameId)) } }
+        val p = Pipeline(PipelineJson.SCHEMA, "x", "x", listOf(node(NodeTypes.INPUT_PHOTOS, "photos"), node(NodeTypes.PROMPT, "intent"), extractNode("extract")),
+            listOf(PipelineEdge("photos", "intent"), PipelineEdge("intent", "extract")))
+        val o = extracted(run(p, photos("ex1", "ex2"), i = interpreter(Executors.all() + mapOf(NodeTypes.PROMPT to promptFake, NodeTypes.VISION_EXTRACT to fakeExtract))))
+        val ex2Extract = o.traces.single { it.frameId == "ex2" && it.nodeId == "extract" }
+        assertTrue("the extract row names the shared call AND the frame's own earlier call: " + ex2Extract.batchId, ex2Extract.batchId!!.contains("intent:ex2") && ex2Extract.batchId!!.contains("ex:shared"))
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        assertTrue(dao.commitTracesFenced(o.traces, 0, setOf("ex1", "ex2")) { 0 })
+        dao.deleteCanvasOutputsForFrames(listOf("ex1"))
+        val left = dao.traces(7, 100).filter { it.frameId == "ex2" && it.outputJson?.contains("Shared mug") == true }
+        assertTrue("traces of ex2 still hold the forgotten fact: " + left.map { it.nodeId }, left.isEmpty())
+    }
+
     @Test fun traceBatchIdsAreUniquePerRun() = runBlocking<Unit> {
         graph { extractReply(*sentIds(it).toTypedArray()) }
         val a = extracted(run(DefaultPipelines.liveExtract(), photos("ex1")))

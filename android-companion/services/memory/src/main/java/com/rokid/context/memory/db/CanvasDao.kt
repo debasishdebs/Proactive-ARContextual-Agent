@@ -159,24 +159,25 @@ abstract class CanvasDao {
     @Query("DELETE FROM canvas_score WHERE frameId IN (:frameIds)") abstract suspend fun deleteScoresForFrames(frameIds: List<String>): Int
     @Query("DELETE FROM canvas_live_trace WHERE frameId IN (:frameIds)") abstract suspend fun deleteTracesForFrames(frameIds: List<String>): Int
 
+    // batchId is a lineage list ("own|earlier|..."): a row belongs to a call when the call is one of its '|'-separated tokens.
     @Query("SELECT DISTINCT batchId FROM canvas_run_item WHERE frameId IN (:frameIds) AND batchId IS NOT NULL") protected abstract suspend fun itemBatchesOf(frameIds: List<String>): List<String>
     @Query("SELECT DISTINCT batchId FROM canvas_live_trace WHERE frameId IN (:frameIds) AND batchId IS NOT NULL") protected abstract suspend fun traceBatchesOf(frameIds: List<String>): List<String>
-    @Query("DELETE FROM canvas_score WHERE EXISTS (SELECT 1 FROM canvas_run_item i WHERE i.runId = canvas_score.runId AND i.frameId = canvas_score.frameId AND i.nodeId = canvas_score.nodeId AND i.batchId IN (:batchIds))")
-    protected abstract suspend fun deleteScoresInBatches(batchIds: List<String>): Int
-    @Query("DELETE FROM canvas_run_item WHERE batchId IN (:batchIds)") protected abstract suspend fun deleteItemsInBatches(batchIds: List<String>): Int
-    @Query("DELETE FROM canvas_live_trace WHERE batchId IN (:batchIds)") protected abstract suspend fun deleteTracesInBatches(batchIds: List<String>): Int
+    @Query("DELETE FROM canvas_score WHERE EXISTS (SELECT 1 FROM canvas_run_item i WHERE i.runId = canvas_score.runId AND i.frameId = canvas_score.frameId AND i.nodeId = canvas_score.nodeId AND i.batchId IS NOT NULL AND instr('|' || i.batchId || '|', '|' || :token || '|') > 0)")
+    protected abstract suspend fun deleteScoresOfBatch(token: String): Int
+    @Query("DELETE FROM canvas_run_item WHERE batchId IS NOT NULL AND instr('|' || batchId || '|', '|' || :token || '|') > 0") protected abstract suspend fun deleteItemsOfBatch(token: String): Int
+    @Query("DELETE FROM canvas_live_trace WHERE batchId IS NOT NULL AND instr('|' || batchId || '|', '|' || :token || '|') > 0") protected abstract suspend fun deleteTracesOfBatch(token: String): Int
 
     /**
-     * The Forget cascade (S25): every item, score and trace row of [frameIds], plus every row (of any frame) that shares a non-null `batchId`
-     * with one of them, because one provider call produced them all. Idempotent; call it inside the Forget transaction.
+     * The Forget cascade (S25): every item, score and trace row of [frameIds], plus every row (of any frame) that lists one of their calls in its
+     * lineage, because one provider call produced them all and later nodes (critic, write) derive from it. Idempotent; call it inside the Forget transaction.
      */
     @Transaction open suspend fun deleteCanvasOutputsForFrames(frameIds: List<String>) {
         if (frameIds.isEmpty()) return
-        val batches = frameIds.chunked(CHUNK).flatMap { itemBatchesOf(it) + traceBatchesOf(it) }.distinct()
+        val tokens = frameIds.chunked(CHUNK).flatMap { itemBatchesOf(it) + traceBatchesOf(it) }.flatMap { it.split('|') }.filter { it.isNotEmpty() }.distinct()
         // Scores first: they are matched through the items that still exist.
-        batches.chunked(CHUNK).forEach { deleteScoresInBatches(it) }
+        tokens.forEach { deleteScoresOfBatch(it) }
         frameIds.chunked(CHUNK).forEach { deleteScoresForFrames(it) }
-        batches.chunked(CHUNK).forEach { deleteItemsInBatches(it); deleteTracesInBatches(it) }
+        tokens.forEach { deleteItemsOfBatch(it); deleteTracesOfBatch(it) }
         frameIds.chunked(CHUNK).forEach { deleteItemsForFrames(it); deleteTracesForFrames(it) }
     }
 
