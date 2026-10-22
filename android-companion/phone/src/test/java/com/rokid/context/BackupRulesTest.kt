@@ -52,6 +52,8 @@ class BackupRulesTest {
         "frame_adoption", "space_retired_at", "image_read_attempts",
         // Wave B: opt-in context sources, my-car addresses, the LiveFit digest, the watch epoch/seq: every source off after a restore.
         com.rokid.context.phone.context.ContextSourceSettings.PREFS,
+        // Canvas slice 2: the Developer mode switch is a per-device debug flag (Shadow runs only while it is on): off after a restore.
+        com.rokid.context.phone.canvas.DeveloperModeStore.PREFS,
     )
 
     /**

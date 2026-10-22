@@ -43,6 +43,7 @@
         <exclude domain="sharedpref" path="image_read_attempts.xml" />
         <!-- Wave B: opt-in context sources, my-car addresses, LiveFit digest, watch epoch/seq: every source is off after a restore. -->
         <exclude domain="sharedpref" path="ctx_hub_state.xml" />
+        <exclude domain="sharedpref" path="pc_dev.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="endpoint_keys.xml" />
@@ -86,5 +87,6 @@
         <exclude domain="sharedpref" path="image_read_attempts.xml" />
         <!-- Wave B: opt-in context sources, my-car addresses, LiveFit digest, watch epoch/seq: every source is off after a restore. -->
         <exclude domain="sharedpref" path="ctx_hub_state.xml" />
+        <exclude domain="sharedpref" path="pc_dev.xml" />
     </device-transfer>
 </data-extraction-rules>
