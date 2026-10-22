@@ -150,7 +150,8 @@ object ParamCheck {
 
     private fun cell(id: String, row: String, c: ColSpec, v: JsonElement): List<String> {
         val head = "node $id: $row ${c.name} must be"
-        if (v is JsonNull) return if (c.blankable) emptyList() else listOf("$head set")
+        // a blank gap (null) is 0 = inherit (S68); only a cell that is neither blankable nor a gap must be set
+        if (v is JsonNull) return if (c.blankable || c.allowZero) emptyList() else listOf("$head set")
         return when (c.kind) {
             ParamKind.BOOL -> if (isBool(v)) emptyList() else listOf("$head true or false")
             else -> {
