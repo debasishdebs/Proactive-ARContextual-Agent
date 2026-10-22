@@ -315,6 +315,17 @@ class LiveExtractTest {
         assertEquals(before, intentCalls)
     }
 
+    @Test fun tenFailuresThenTwentySuccessesRollBackAtTheThirtiethPhoto() = runBlocking<Unit> {
+        graph { p -> if (isIntent(p) && "ex10" in p) "garbage" else intentReply(p) ?: extractReply(p) }
+        val pid = publish(intentPipeline(), LiveMode.LIVE)
+        suspend fun one(id: String) { LiveExtract.commit(deps(), LiveExtract.batch(deps(), photos(id), CallClass.EXTRACT).effects, MemoryWipe.generation.get(), setOf(id)) }
+        for (i in 1..10) one("ex10${"%02d".format(i)}")
+        for (i in 1..19) { one("ex20${"%02d".format(i)}"); assertEquals("window not full yet at $i", pid, dao.activeInterpreter()?.id) }
+        one("ex2020") // the 30th interpreted photo succeeded, yet its window holds exactly 10 failures
+        assertNull(dao.activeInterpreter())
+        assertEquals("auto: 10 of 30 fell back", dao.publishHistory(5).single { it.id == pid }.rollbackReason)
+    }
+
     @Test fun noAutoRollbackBelowThirtyInterpretedPhotos() = runBlocking<Unit> {
         graph { p -> if (isIntent(p)) "garbage" else extractReply(p) }
         val pid = publish(intentPipeline(), LiveMode.LIVE)
