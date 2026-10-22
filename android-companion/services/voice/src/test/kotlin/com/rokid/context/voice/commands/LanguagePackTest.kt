@@ -14,8 +14,8 @@ class LanguagePackTest {
     @Test fun englishPacksParseMarkCommands() {
         for (locale in listOf("en-IN", "en-US", "en-GB")) {
             val pack = LanguageRegistry.forLocale(locale)!!
-            assertEquals(MarkCommand.Mark("driving"), pack.parseCommand("mark that, I'm driving"))
-            assertEquals(MarkCommand.Undo, pack.parseCommand("undo mark"))
+            assertEquals(listOf<MarkCommand>(MarkCommand.Mark("driving")), pack.parseUtterance("mark that, I'm driving").commands)
+            assertEquals(listOf<MarkCommand>(MarkCommand.Undo), pack.parseUtterance("undo mark").commands)
         }
     }
 
