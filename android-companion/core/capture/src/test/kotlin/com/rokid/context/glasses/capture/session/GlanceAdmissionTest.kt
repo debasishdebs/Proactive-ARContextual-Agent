@@ -15,15 +15,15 @@ class GlanceAdmissionTest {
         else if (k >= cap && (hard || turned < g.bigTurnRad && !walked) || k.toLong() >= 2L * cap) Decision.CAPPED
         else Decision.OPEN
 
-    /** 64 cases: recent x turned (at the novelty edge, between, at the big-turn edge, above) x walked x hard cap x kept (at cap, at twice the cap). */
+    /** 96 cases: recent x turned (below novelty, at the novelty edge, between, at the big-turn edge) x walked x hard cap x kept (cap-1, cap, 2*cap). */
     @Test fun matchesOnDwellTruthTable() {
         var n = 0
-        for (since in listOf(5_000L, 30_000L)) for (turned in listOf(g.noveltyMinRad, 0.5f, g.bigTurnRad, 1.0f))
-            for (walked in listOf(false, true)) for (hard in listOf(false, true)) for (k in listOf(cap, 2 * cap)) {
+        for (since in listOf(5_000L, 30_000L)) for (turned in listOf(0.1f, g.noveltyMinRad, 0.5f, g.bigTurnRad))
+            for (walked in listOf(false, true)) for (hard in listOf(false, true)) for (k in listOf(cap - 1, cap, 2 * cap)) {
                 assertEquals(reference(since, k, hard, turned, walked), GlanceAdmission.decide(since, k, cap, hard, turned, walked, g), "since=$since turned=$turned walked=$walked hard=$hard k=$k")
                 n++
             }
-        assertEquals(64, n)
+        assertEquals(96, n)
     }
 
     @Test fun noveltySkipsOnlyAStillRecentLookAndIsStrictAtTheEdges() {

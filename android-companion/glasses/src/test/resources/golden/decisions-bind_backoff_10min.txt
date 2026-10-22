@@ -1,6 +1,9 @@
 # golden decisions v1 script=bind_backoff_10min seed=77 durationMs=600000
 # settings wake=SETTLE tier=T0 workRest=false work=90 rest=15 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
 # line: t kind cause detail (t = virtual ms from session start)
+# expectedResv rule (S83 while eligible): swept on the 250 ms tick; an open camera episode satisfies the bound at every tick it is open;
+#   an attempt = an ok open, or an open that failed while the camera was busy (bind failures do not count); the bound is reservedBoundMs of the
+#   applied state at the tick tested (not at the gap start). Task 12 must add a resv open at each listed time, within ONE tick (250 ms), and nowhere else.
 0 ctx UNKNOWN -
 0 status - running=false reason=idle
 0 gap - ms=5000 step=0
@@ -257,7 +260,7 @@
 592300 gap - ms=10000 step=0
 592815 close - analysed=1
 592820 skip same n=1
-# motionClassifierInputs=60000
+# classifierFingerprint=7f019b117f0b4087 (sha256/16 of the motion, dwell and glance lines plus the classifier's own 1 s features(): rotation, gyro max, accel variance, step Hz, state, glances; changes if the classifier input stream or its output changes)
 # glanceTriggerToOpenLatencyMs=0,0,0,0,0,1000,2000,0,0,0,0,0,0,0,0,2250,0,0
 # opens=49 ok=41 byCause={dwell=18, timer=31} keeps=16
-# expectedResv=465180
+# expectedResv=
