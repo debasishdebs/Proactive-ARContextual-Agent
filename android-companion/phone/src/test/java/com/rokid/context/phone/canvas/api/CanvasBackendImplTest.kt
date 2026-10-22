@@ -59,6 +59,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -218,6 +219,21 @@ class CanvasBackendImplTest {
         assertEquals(1, checkNotNull(backend.run(runId))["scores"]!!.jsonArray.size)
         assertTrue(backend.deleteRun(runId))
         assertNull(backend.run(runId))
+    }
+
+    @Test fun scoreGoesThroughTheFencedWrite() = runBlocking<Unit> {
+        bind()
+        val ids = listOf("f1", "f2")
+        ids.forEachIndexed { i, id -> seed(id, 1_000L + i) }
+        val est = backend.estimate("live-extract", null, ids) as Estimate.Ok
+        val runId = backend.startRun("live-extract", null, ids, est.confirmToken)
+        withTimeout(30_000) { while (backend.run(runId)!!["status"]!!.jsonPrimitive.content == "RUNNING") delay(50) }
+        val db = MemoryGraph.get(app).db
+        db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("f1", 1)) // Forget landed; the run's items are still there
+        try { backend.score(runId, "f1", "extract", 1, "secret note"); fail("a tombstoned frame must not get a score") } catch (_: NoSuchElementException) { }
+        assertEquals(0, db.canvasDao().scores(runId).count { it.frameId == "f1" })
+        backend.score(runId, "f2", "extract", 1, "fine") // the other photo still scores
+        assertEquals(1, db.canvasDao().scores(runId).size)
     }
 
     @Test fun frameLiveMemoriesListed() = runBlocking<Unit> {

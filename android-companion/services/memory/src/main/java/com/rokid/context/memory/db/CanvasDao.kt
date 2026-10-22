@@ -85,6 +85,8 @@ abstract class CanvasDao {
     @Query("SELECT COUNT(*) FROM (SELECT status FROM canvas_live_trace WHERE publishId = :publishId AND nodeId = '_batch' ORDER BY at DESC, rowid DESC LIMIT :window) WHERE status = 'ERROR'")
     abstract suspend fun recentFallbacks(publishId: Long, window: Int): Int
     @Query("SELECT COUNT(*) FROM canvas_live_trace WHERE publishId = :publishId AND nodeId = '_batch'") abstract suspend fun interpretedCount(publishId: Long): Int
+    /** As [interpretedCount], read no further than [limit] rows (the auto-rollback only needs to know whether a full window exists). */
+    @Query("SELECT COUNT(*) FROM (SELECT 1 FROM canvas_live_trace WHERE publishId = :publishId AND nodeId = '_batch' LIMIT :limit)") abstract suspend fun interpretedCountUpTo(publishId: Long, limit: Int): Int
     @Query("DELETE FROM canvas_live_trace WHERE at < :olderThan") protected abstract suspend fun deleteTracesOlderThan(olderThan: Long): Int
     @Query("DELETE FROM canvas_live_trace WHERE rowid IN (SELECT rowid FROM canvas_live_trace ORDER BY at DESC, rowid DESC LIMIT -1 OFFSET :keep)") protected abstract suspend fun deleteTracesBeyond(keep: Int): Int
     /** Retention: rows older than [olderThan], then all but the newest [keep]. Returns the rows deleted. */
