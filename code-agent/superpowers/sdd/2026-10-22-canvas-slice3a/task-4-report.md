@@ -1,0 +1,11 @@
+# Task 4 report: CapturePlan, bounds, validator, resolver, PlanReceiver
+
+Status: DONE. Files in core/capture/.../capture/plan/{CapturePlan,CanonicalJson,PlanJson,PlanBounds,PlanValidator,PlanResolver,PlanReceiver}.kt, tests beside them, services/ai CanonicalJsonParityTest, glasses ReservedBoundParityTest.
+Tests: :core:capture:test green (plan: 46 tests + existing), :services:ai CanonicalJsonParityTest green, :glasses:testDebugUnitTest green (goldens + parity).
+Mutation REDs: WALKING/UNKNOWN refusal removed -> refusesWalkingRow and refusesUnknownRow fail; duplicate resets trial start -> duplicateDoesNotExtendTrial fails. The parity test had a real RED (placeholder hash) before pinning f5782e0d8610.
+Concerns: see handback.
+
+## Task 4 fix round 1 (after the Opus review)
+Applied in one commit (see git log): (1) PlanReceiver rejects mode LIVE with `unsupported:live` (CAPS keep no `live`), test liveRefusedWithoutCap; (2) stillFrac and stillFracWithImage capped at 1.0; (3) validator depth cap 32 inside runCatching, test deepNestingRefusedNotCrash (was a StackOverflowError at 100,000 levels); (4) decodeStrict refuses duplicate keys (iterative scanner, unescapes keys); (5) strict JSON number grammar in decode and the finite check; (6) boot id read once at construction; (7) terminal re-ack keeps the original mode and publishId (new ReceiverState.publishId and terminalMeta, defaulted), a second revert re-acks the first reason, activated/tick/revert acks carry publishId; (8) multibyte 8,192/8,193 boundary tested through the receiver; (9) KDocs for resolve/identity and CanonicalJsonParityTest, Charsets.UTF_8 in tests, ReservedBoundTest with independent literals, vehicle rows asserted against ContextPolicies.DEFAULT and pause false, wall-clock-rollback test now re-sends a duplicate with old atMs and far-future trialEndsAtMs; (10) done in Task 5 (local types deleted); (11) REDs recorded in the commit body.
+Real REDs before the fix: 10 tests. Mutation REDs after: receiver size check as planJson.length fails multibyteUtf8BoundaryThroughTheReceiver; depth check disabled fails deepNestingRefusedNotCrash.
+Concerns for Task 11: keep PlanReceiver single-threaded; `bootId` must change per boot; ReceiverState gained two defaulted fields, so a persisted older JSON/prefs form needs defaults on load.

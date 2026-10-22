@@ -1,0 +1,2145 @@
+# Review package: ad9cc15d^..03b23eef
+
+## Commits
+03b23eef feat(glasses): capture plan via PlanReceiver with staged atomic activation, local TRIAL limit, S68 profile composition (settings path equals the frozen goldens)
+55e745bb feat(capture): ReceiverStateJson (older persisted forms decode with defaults) and BootId (BOOT_COUNT based, boot-instant fallback)
+ad9cc15d feat(capture): GateParams provider, ScoreListener and offerScored on KeyframeGate; swappable glance config, quiet and abortBout on the classifier (Task 11 part 1)
+
+## Files changed
+ .../context/capture/plan/ReceiverStateJson.kt      |  68 +++++++
+ .../glasses/capture/keyframe/KeyframeGate.kt       |  47 ++++-
+ .../glasses/capture/motion/GlanceDetector.kt       |  10 +-
+ .../glasses/capture/motion/MotionClassifier.kt     |  23 ++-
+ .../context/capture/plan/ReceiverStateJsonTest.kt  |  47 +++++
+ .../glasses/capture/keyframe/KeyframeGateTest.kt   |  71 +++++++
+ .../glasses/capture/motion/MotionClassifierTest.kt |  41 ++++
+ .../com/rokid/context/glasses/GlassesRuntime.kt    |  17 +-
+ .../context/glasses/capture/CaptureService.kt      |  19 +-
+ .../context/glasses/capture/plan/ActiveConfig.kt   |  62 ++++++
+ .../context/glasses/capture/plan/PlanController.kt | 170 +++++++++++++++++
+ .../glasses/capture/plan/PrefsPlanPersistence.kt   |  21 +++
+ .../glasses/capture/session/SamplingSession.kt     |  12 +-
+ .../rokid/context/glasses/link/HudController.kt    |  12 ++
+ .../context/glasses/GlassesBackupRulesTest.kt      |  18 ++
+ .../capture/golden/DecisionGoldenRecorder.kt       |  12 +-
+ .../glasses/capture/plan/PlanControllerTest.kt     | 209 +++++++++++++++++++++
+ .../glasses/capture/plan/PlanLiveApplyTest.kt      | 191 +++++++++++++++++++
+ .../context/glasses/capture/plan/PlanTestKit.kt    |  64 +++++++
+ .../capture/plan/PrefsPlanPersistenceTest.kt       |  47 +++++
+ .../glasses/capture/plan/StagedActivationTest.kt   | 104 ++++++++++
+ .../glasses/capture/session/SamplingTestKit.kt     |   6 +-
+ .../context/glasses/link/HudControllerTest.kt      |  31 +++
+ 23 files changed, 1277 insertions(+), 25 deletions(-)
+
+## Diff
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/ReceiverStateJson.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/ReceiverStateJson.kt
+new file mode 100644
+index 00000000..4c809a56
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/ReceiverStateJson.kt
+@@ -0,0 +1,68 @@
++package com.rokid.context.capture.plan
++
++import com.rokid.context.core.model.PlanMode
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonArray
++import kotlinx.serialization.json.JsonElement
++import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
++import kotlinx.serialization.json.booleanOrNull
++import kotlinx.serialization.json.buildJsonObject
++import kotlinx.serialization.json.contentOrNull
++import kotlinx.serialization.json.longOrNull
++import kotlinx.serialization.json.put
++
++/**
++ * The persisted form of [ReceiverState] (one string in the `capture_plan` prefs). Hand-written so a field added later decodes with its
++ * default from an older text; anything unreadable decodes to null, which the controller treats as "no plan" (the settings path).
++ */
++object ReceiverStateJson {
++    fun encode(s: ReceiverState): String = Json.encodeToString(JsonObject.serializer(), toJson(s))
++
++    fun decode(text: String?): ReceiverState? {
++        if (text.isNullOrBlank()) return null
++        return runCatching { fromJson(Json.parseToJsonElement(text) as JsonObject) }.getOrNull()
++    }
++
++    private fun toJson(s: ReceiverState): JsonObject = buildJsonObject {
++        put("appliedGen", s.appliedGen); put("phoneInstall", s.phoneInstall); put("mode", s.mode.name)
++        put("planJson", s.planJson); put("configHash", s.configHash)
++        put("trialStartElapsed", s.trialStartElapsed); put("trialMaxMs", s.trialMaxMs)
++        put("bootId", s.bootId); put("effective", s.effective); put("publishId", s.publishId)
++        s.previous?.let { put("previous", toJson(it)) }
++        put("terminal", JsonObject(s.terminal.mapKeys { it.key.toString() }.mapValues { JsonPrimitive(it.value) }))
++        put("terminalMeta", JsonObject(s.terminalMeta.mapKeys { it.key.toString() }.mapValues { (_, m) ->
++            buildJsonObject { put("mode", m.mode.name); put("publishId", m.publishId) }
++        }))
++    }
++
++    private fun str(o: JsonObject, k: String): String? = (o[k] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.contentOrNull
++    private fun lng(o: JsonObject, k: String): Long? = (o[k] as? JsonPrimitive)?.longOrNull
++
++    private fun fromJson(o: JsonObject): ReceiverState {
++        val terminal = (o["terminal"] as? JsonObject).orEmpty().entries.associate { (k, v) -> k.toLong() to (v as JsonPrimitive).content }
++        val meta = (o["terminalMeta"] as? JsonObject).orEmpty().entries.associate { (k, v) ->
++            val m = v as JsonObject
++            k.toLong() to TerminalMeta(PlanMode.valueOf(str(m, "mode")!!), str(m, "publishId"))
++        }
++        return ReceiverState(
++            appliedGen = lng(o, "appliedGen")!!, phoneInstall = str(o, "phoneInstall")!!, mode = PlanMode.valueOf(str(o, "mode")!!),
++            planJson = str(o, "planJson"), configHash = str(o, "configHash"),
++            trialStartElapsed = lng(o, "trialStartElapsed"), trialMaxMs = lng(o, "trialMaxMs"), bootId = str(o, "bootId")!!,
++            previous = (o["previous"] as? JsonObject)?.let { fromJson(it) }, terminal = terminal,
++            effective = (o["effective"] as? JsonPrimitive)?.booleanOrNull ?: false,
++            publishId = str(o, "publishId"), terminalMeta = meta,
++        )
++    }
++}
++
++/**
++ * The boot marker for [PlanReceiver]: `Settings.Global.BOOT_COUNT` (persisted by the OS, +1 per boot), so a reboot is visible even
++ * when `elapsedRealtime` has already passed the old trial start. With no readable count the boot instant (wall minus elapsed, minute
++ * resolution) stands in; a drifting clock can only flip it spuriously, which ends a TRIAL early (the safe side).
++ */
++object BootId {
++    fun of(bootCount: Int, wallMs: Long, elapsedMs: Long): String =
++        if (bootCount >= 0) "bc:$bootCount" else "bt:${(wallMs - elapsedMs) / 60_000L}"
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGate.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGate.kt
+index 020d6e29..f0c57bc5 100644
+--- a/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGate.kt
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGate.kt
+@@ -8,53 +8,73 @@ class Nv21Frame(val w: Int, val h: Int, val rotation: Int, val data: ByteArray)
+ /** One sample: [seq] numbers it within the session, [thumb] is what the hashes see, [pixels] is what gets encoded if it wins. */
+ class Candidate(val seq: Long, val thumb: Thumb, val pixels: Nv21Frame)
+ 
+ sealed interface GateResult {
+     /** [candidate] is the winner: G3 encodes its pixels, never a later frame. */
+     data class Keep(val candidate: Candidate, val dhash: Long, val phash: Long, val blur: Float, val dwell: Boolean, val motion: MotionState = MotionState.STILL) : GateResult
+     /** [reason] is BLUR | DUPLICATE | THROTTLED | WINDOW | CAPPED. */
+     data class Skip(val reason: String) : GateResult
+ }
+ 
++/**
++ * The plan-tunable gate values (slice 3a, S68). The defaults are today's constants, so no plan means no change. [ringCompareAll] true
++ * = a sample must differ from each of the last 5 keyframes (today); false = from the newest one only.
++ */
++data class GateParams(val hamming: Int = KeyframeGate.HAMMING, val bigChange: Int = KeyframeGate.BIG_CHANGE, val ringCompareAll: Boolean = true)
++
++/** Sees every frame the gate scored, before the keep decision (the IMU/replay recorders). [d] and [p] are 0 when [passedBlur] is false. */
++fun interface ScoreListener { fun onScored(seq: Long, d: Long, p: Long, blur: Float, passedBlur: Boolean) }
++
+ /** The last-5 keyframe ring and the last keep time, persisted so a service restart does not re-keep the same scene. */
+ interface GateStore {
+     fun lastKeyframes(): List<Pair<Long, Long>>
+     fun push(d: Long, p: Long)
+     fun lastKeptAt(): Long
+     fun setLastKeptAt(t: Long)
+ }
+ 
+ /**
+  * Keyframe test (spec section P1.1): a sample is NEW when min(Hamming dHash, Hamming pHash) > [HAMMING] against each of the
+  * last 5 keyframes. A new scene may follow the previous keyframe after 0.5 s, anything else after 1.2 s. While moving,
+  * samples are collected in windows of up to 1.5 s (at most 3 kept, losers released at once) and the sharpest wins.
+  * A dwell (glance) sample compares to the whole ring like any other, and still needs blur >= [BLUR_FLOOR].
+  * Rate cap (battery wave A3, spec section 5): with a `capPerMin`, at most that many keeps per rolling minute, up to twice
+  * that many only when a glance (dwell) frame differs from every ring keyframe by at least [BIG_CHANGE] of 64 bits (never with [hardCap], used while resting); non-glance keeps stop at cap - 1 (at least 1) with no bonus; forced keeps are exempt.
+  */
+-class KeyframeGate(private val store: GateStore, private val clock: () -> Long) {
++class KeyframeGate(private val store: GateStore, private val clock: () -> Long, private val params: () -> GateParams = { GateParams() }) {
++    /** Keeps the trailing-lambda form `KeyframeGate(store) { now }` (the clock) working next to the params provider. */
++    constructor(store: GateStore, clock: () -> Long) : this(store, clock, { GateParams() })
++
+     private class Scored(val c: Candidate, val d: Long, val p: Long, val blur: Float, val motion: MotionState)
+ 
+     // Thread safety: offer() runs on the camera analysis executor, flushWindow() on the session timer or dwell
+     // coroutine, recordKeep() on whichever thread handles "Capture now". They all share the window and the store, so each
+     // public entry point is @Synchronized (cheap: hashing is the only real work and it is a few ms).
+     private val window = ArrayList<Scored>(MAX_CANDIDATES + 1)
+     private var windowStart = 0L
+     private var lastScoredHashes: Pair<Long, Long>? = null
+     /** Times of every keep (forced included) in the last 60 s. */
+     private val keptTimes = ArrayDeque<Long>()
+     @Volatile private var duplicates = 0
+     @Volatile private var capped = 0
+ 
+     /** DUPLICATE and CAPPED skips since the previous call (the heartbeat); resets both. */
+     @Synchronized fun takeSkipCounts(): Pair<Int, Int> = (duplicates to capped).also { duplicates = 0; capped = 0 }
+ 
++    @Volatile private var scoreListener: ScoreListener? = null
++
++    /** Null removes it. Called on the offering thread, under the gate lock: keep it cheap and never call back into the gate. */
++    fun setScoreListener(l: ScoreListener?) { scoreListener = l }
++
++    /** The current new-scene threshold (the plan's, else [HAMMING]); the session's same-scene backoff uses the same one. */
++    fun hammingNow(): Int = params().hamming
++
+     /** (dHash, pHash) of the last frame that passed the blur check, or null before any. */
+     @Synchronized fun lastHashes(): Pair<Long, Long>? = lastScoredHashes
+ 
+     /**
+      * When a timer check may power up the camera again: the time the oldest keep leaves the rolling minute, once the minute
+      * already holds the non-glance keep budget (max(1, cap - 1), the same limit [finish] applies); null while budget remains.
+      */
+     @Synchronized
+     fun timerHoldUntil(capPerMin: Int, now: Long): Long? {
+         if (capPerMin == Int.MAX_VALUE) return null
+@@ -69,39 +89,53 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long)
+      * [force] is "Capture now": the frame is kept whatever the ring and throttle say (the blur floor still applies),
+      * recorded like any keep so the next sample of the same scene is a duplicate, and any pending window is released.
+      * A STILL sample first closes the pending moving window (its winner is never a dwell keep); if that window keeps a
+      * frame, that is the result (the still sample could not be kept in the same instant anyway: 0.5 s throttle).
+      * Otherwise the still sample is judged on its own, as a dwell when [dwellArmed].
+      */
+     @Synchronized
+     fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean, force: Boolean = false, capPerMin: Int = Int.MAX_VALUE, hardCap: Boolean = false): GateResult {
+         val now = clock()
+         val blur = ImageHashes.blur(c.thumb)
+-        if (blur < BLUR_FLOOR) return Skip(BLUR)
+-        val s = Scored(c, ImageHashes.dHash(c.thumb), ImageHashes.pHash(c.thumb), blur, motion)
++        if (blur < BLUR_FLOOR) { scoreListener?.onScored(c.seq, 0L, 0L, blur, false); return Skip(BLUR) }
++        val d = ImageHashes.dHash(c.thumb); val p = ImageHashes.pHash(c.thumb)
++        scoreListener?.onScored(c.seq, d, p, blur, true)
++        return decide(c, d, p, blur, motion, dwellArmed, force, capPerMin, hardCap, now)
++    }
++
++    /** The decision for a scored sample, shared by [offer] and [offerScored] (one path, so a replay cannot drift from the live gate). */
++    private fun decide(c: Candidate, d: Long, p: Long, blur: Float, motion: MotionState, dwellArmed: Boolean, force: Boolean, capPerMin: Int, hardCap: Boolean, now: Long): GateResult {
++        val s = Scored(c, d, p, blur, motion)
+         lastScoredHashes = s.d to s.p
+         if (force) {
+             window.clear()
+             recordKeep(c, s.d, s.p, now)
+             return GateResult.Keep(c, s.d, s.p, blur, dwell = false, motion)
+         }
+         if (motion == MotionState.STILL) {
+             if (window.isNotEmpty()) {
+                 val closed = finish(window.toList().also { window.clear() }, dwell = false, now, capPerMin, hardCap)
+                 if (closed is GateResult.Keep) return closed
+             }
+             return finish(listOf(s), dwell = dwellArmed, now, capPerMin, hardCap)
+         }
+         addToWindow(s, now)
+         return if (now - windowStart >= WINDOW_MS) finish(window.toList().also { window.clear() }, dwell = false, now, capPerMin, hardCap) else Skip(WINDOW)
+     }
+ 
++    /** Replay entry (Tasks 16, 20): the same decision as [offer] from a recorded score; the candidate carries no pixels. */
++    @Synchronized
++    fun offerScored(seq: Long, d: Long, p: Long, blur: Float, motion: MotionState, dwellArmed: Boolean, force: Boolean, cap: Int, hard: Boolean, nowMs: Long): GateResult {
++        if (blur < BLUR_FLOOR) return Skip(BLUR)
++        return decide(Candidate(seq, Thumb(0, 0, ByteArray(0)), Nv21Frame(0, 0, 0, ByteArray(0))), d, p, blur, motion, dwellArmed, force, cap, hard, nowMs)
++    }
++
+     /** At window end: the best pending candidate, or null when nothing is pending. */
+     @Synchronized
+     fun flushWindow(capPerMin: Int = Int.MAX_VALUE, hardCap: Boolean = false): GateResult? =
+         if (window.isEmpty()) null else finish(window.toList().also { window.clear() }, dwell = false, clock(), capPerMin, hardCap)
+ 
+     /** Records a keep decided elsewhere (forced capture): pushes the ring and the last keep time. */
+     @Synchronized
+     @Suppress("UNUSED_PARAMETER")
+     fun recordKeep(candidate: Candidate, dhash: Long, phash: Long, nowMs: Long) {
+         store.push(dhash, phash)
+@@ -114,33 +148,34 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long)
+         while (keptTimes.isNotEmpty() && now - keptTimes.first() >= CAP_WINDOW_MS) keptTimes.removeFirst()
+     }
+ 
+     private fun addToWindow(s: Scored, now: Long) {
+         if (window.isEmpty()) windowStart = now
+         window += s
+         if (window.size > MAX_CANDIDATES) window.remove(window.minBy { it.blur })
+     }
+ 
+     private fun finish(pool: List<Scored>, dwell: Boolean, now: Long, capPerMin: Int, hardCap: Boolean = false): GateResult {
+-        val ring = store.lastKeyframes()
+-        val fresh = pool.filter { s -> ring.all { (d, p) -> minOf(hamming(s.d, d), hamming(s.p, p)) > HAMMING } }
++        val gp = params() // read once per decision: the threshold, the bonus and the ring rule always agree
++        val ring = store.lastKeyframes().let { if (gp.ringCompareAll) it else it.takeLast(1) }
++        val fresh = pool.filter { s -> ring.all { (d, p) -> minOf(hamming(s.d, d), hamming(s.p, p)) > gp.hamming } }
+         val last = store.lastKeptAt()
+         val gap = if (last <= 0L) Long.MAX_VALUE else now - last // never kept (a fresh store): nothing to throttle against
+         // A clock that moved back (negative gap) does not throttle, or capture would stop until it caught up.
+         fun within(ms: Long) = gap in 0 until ms
+         val best = fresh.maxByOrNull { it.blur }
+             ?: return if (within(MIN_GAP_ANY_MS)) Skip(THROTTLED) else { duplicates++; Skip(DUPLICATE) }
+         if (capPerMin != Int.MAX_VALUE) {
+             val k = keptTimes.count { now - it < CAP_WINDOW_MS }
+             val dMin = ring.minOfOrNull { (d, p) -> minOf(hamming(best.d, d), hamming(best.p, p)) } ?: 64
+             // A non-glance keep (timer or stream) stops at cap - 1 with no big-change bonus: one glance slot a minute stays free.
+-            val over = if (dwell) k.toLong() >= (if (hardCap) 1L else 2L) * capPerMin || (k >= capPerMin && dMin < BIG_CHANGE)
++            val over = if (dwell) k.toLong() >= (if (hardCap) 1L else 2L) * capPerMin || (k >= capPerMin && dMin < gp.bigChange)
+             else k >= maxOf(1, capPerMin - 1)
+             if (over) { capped++; return Skip(CAPPED) }
+         }
+         // Fix wave K1: a dwell keyframe (head settled) keeps the short gap; any other keep is rate-capped, wider while moving.
+         val moving = best.motion == MotionState.WALKING || best.motion == MotionState.HEAD_MOVING
+         if (within(if (dwell) MIN_GAP_NEW_MS else if (moving) NON_DWELL_MOVING_GAP_MS else NON_DWELL_GAP_MS)) return Skip(THROTTLED)
+         store.push(best.d, best.p)
+         store.setLastKeptAt(now)
+         noteKept(now)
+         return GateResult.Keep(best.c, best.d, best.p, best.blur, dwell, best.motion)
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/GlanceDetector.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/GlanceDetector.kt
+index 6ae6119f..bb0572b1 100644
+--- a/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/GlanceDetector.kt
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/GlanceDetector.kt
+@@ -2,21 +2,23 @@ package com.rokid.context.glasses.capture.motion
+ 
+ /**
+  * QUIET / BOUT / SETTLING machine of the glance model (spec A3 section 3). Pure and not thread-safe: the classifier calls
+  * it under its own lock, always on gyro time. A glance is a real head bout (long and wide enough) followed by [GlanceParams.settleMs]
+  * without a sample over the onset threshold; shorter bouts are micro-motion, which never arms a glance but postpones a pending one.
+  *
+  * Bout length does not depend on the sample rate: a sample at time t stands for the period (t - dt, t], so a bout is measured
+  * from its first sample's time minus one sample period (that sample's own dt, clamped to maxDtMs) to the last sample over the
+  * release threshold. A real 300 ms look is therefore a bout at 20 Hz (6 samples, 250 ms apart first-to-last) as at 50 Hz.
+  */
+-class GlanceDetector(private val p: GlanceParams) {
++class GlanceDetector(p: GlanceParams) {
++    /** The tunables in force; the classifier swaps them under its lock ([MotionClassifier.setConfig]). */
++    var p: GlanceParams = p
+     private enum class Phase { QUIET, BOUT, SETTLING }
+ 
+     private var phase = Phase.QUIET
+     private var start = 0L
+     private var lastAbove = 0L
+     private var turned = 0f
+     private var armed = false
+     private var since = 0L
+ 
+     /** Glances fired and micro bouts seen; the classifier reads and resets them. */
+@@ -31,20 +33,26 @@ class GlanceDetector(private val p: GlanceParams) {
+                 turned += mag * dtMs.coerceAtMost(p.maxDtMs) / 1000f
+                 if (mag > p.releaseRadS) lastAbove = tMs
+                 return false
+             }
+             Phase.QUIET -> if (mag > p.onsetRadS) beginBout(mag, tMs, dtMs, armed = false)
+             Phase.SETTLING -> if (mag > p.onsetRadS) beginBout(mag, tMs, dtMs, armed) else return settled(tMs, still)
+         }
+         return false
+     }
+ 
++    /** True when no bout is running and no glance is pending: the only moment the tunables may be swapped without mixing two models. */
++    fun isQuiet(): Boolean = phase == Phase.QUIET
++
++    /** Drops a running bout and any pending glance (a forced swap after the safe-boundary wait). Counters are kept. */
++    fun abort() { phase = Phase.QUIET; armed = false }
++
+     /** The settle test alone (accel callbacks, with gyro time). */
+     fun onTime(tMs: Long, still: Boolean): Boolean = phase == Phase.SETTLING && settled(tMs, still)
+ 
+     /** Walking: arriving (walk end then stillness) is a glance. */
+     fun onWalking(tMs: Long) {
+         phase = Phase.SETTLING; since = tMs; armed = true
+     }
+ 
+     private fun beginBout(mag: Float, tMs: Long, dtMs: Long, armed: Boolean) {
+         phase = Phase.BOUT; start = tMs - dtMs.coerceIn(0L, p.maxDtMs); lastAbove = tMs
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifier.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifier.kt
+index 141e9be1..1282710b 100644
+--- a/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifier.kt
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifier.kt
+@@ -10,21 +10,34 @@ import kotlin.math.abs
+ import kotlin.math.sqrt
+ 
+ /** Glances and micro-motion bouts counted since the previous take. */
+ data class GlanceCounts(val glances: Int, val micro: Int)
+ 
+ /**
+  * Gyro + linear-acceleration motion state over a 1 s sliding window (spec P1.1).
+  * Everything is decided per sample, so [onset] lags the movement by at most one sensor sample.
+  * Thresholds are constants for now; they are expected to be tuned on device.
+  */
+-class MotionClassifier(@Suppress("unused") private val clock: () -> Long, private val params: GlanceParams = GlanceParams()) {
++class MotionClassifier(@Suppress("unused") private val clock: () -> Long, params: GlanceParams = GlanceParams()) {
++    /** The glance tunables in force; every read goes through here (slice 3a: a plan swaps the whole set at once, see [setConfig]). */
++    @Volatile var config: GlanceParams = params
++        private set
++
++    /** Swaps every glance tunable at once (the classifier's own reads and the detector's). The caller picks the safe moment: [quiet], or [abortBout] first. */
++    @Synchronized fun setConfig(p: GlanceParams) { config = p; detector.p = p }
++
++    /** No bout running and no glance pending: a plan may swap the config now. */
++    @Synchronized fun quiet(): Boolean = detector.isQuiet()
++
++    /** Drops the running bout and any pending glance (the 10 s forced swap). */
++    @Synchronized fun abortBout() { detector.abort() }
++
+     /** Keeps the trailing-lambda form `MotionClassifier { now }` (default [GlanceParams]). */
+     constructor(clock: () -> Long) : this(clock, GlanceParams())
+ 
+     private val _state = MutableStateFlow(MotionState.STILL)
+     val state: StateFlow<MotionState> = _state
+ 
+     private val _dwell = MutableSharedFlow<Long>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+     val dwell: SharedFlow<Long> = _dwell
+ 
+     private val _onset = MutableSharedFlow<Long>(extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+@@ -86,24 +99,24 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, privat
+     private var lastVariance = 0f
+     private var lastHz = 0.0
+ 
+     @Synchronized fun onGyro(x: Float, y: Float, z: Float, tMs: Long) {
+         gyroNewestMs = maxOf(gyroNewestMs, tMs); val t = gyroNewestMs
+         val mag = sqrt(x * x + y * y + z * z)
+         val above = mag > HEAD_MOVING_RAD_S
+         if (mag > featGyroMax) featGyroMax = mag
+         val dt = if (lastGyroMs < 0) 0L else maxOf(0L, tMs - lastGyroMs)
+         lastGyroMs = maxOf(lastGyroMs, tMs)
+-        val dtS = dt.coerceAtMost(params.maxDtMs) / 1000f
++        val dtS = dt.coerceAtMost(config.maxDtMs) / 1000f
+         featN++; featSum += mag; featSumSq += mag * mag; featTravelled += mag * dtS
+-        if (mag > params.onsetRadS) featAbove++
+-        if (mag >= params.deadbandRadS) { rx += x * dtS; ry += y * dtS; rz += z * dtS }
++        if (mag > config.onsetRadS) featAbove++
++        if (mag >= config.deadbandRadS) { rx += x * dtS; ry += y * dtS; rz += z * dtS }
+         trackQuiet(mag, tMs)
+         if (above) {
+             lastAboveGyroMs = maxOf(lastAboveGyroMs, tMs)
+             if (mag > peak) peak = mag
+         }
+         // Under the threshold for HEAD_HOLD_MS the turn is over: a stale peak must not outlive it (a walk lasts minutes).
+         if (!above && t - lastAboveGyroMs >= HEAD_HOLD_MS) peak = 0f
+         update(t)
+         // Only a head turn has a peak to decelerate from; never while walking.
+         _decelerating.value = _state.value == MotionState.HEAD_MOVING && peak > 0f && mag < DECEL_FRACTION * peak
+@@ -147,21 +160,21 @@ class MotionClassifier(@Suppress("unused") private val clock: () -> Long, privat
+     }
+ 
+     private fun drainDetector() {
+         featGlances += detector.glances; hbGlances += detector.glances
+         featMicro += detector.micro; hbMicro += detector.micro
+         detector.glances = 0; detector.micro = 0
+     }
+ 
+     /** Caller holds the lock. Snapshots the pose at each moving sample; restores it after a long quiet spell (bias drift). */
+     private fun trackQuiet(mag: Float, tMs: Long) {
+-        if (quietSinceMs < 0 || mag > params.releaseRadS) {
++        if (quietSinceMs < 0 || mag > config.releaseRadS) {
+             quietSinceMs = tMs; qx = rx; qy = ry; qz = rz
+         } else if (tMs - quietSinceMs >= POSE_QUIET_RESET_MS) {
+             rx = qx; ry = qy; rz = qz
+             quietSinceMs = tMs
+         }
+     }
+ 
+     /** Net head turn (rad) since the last [markPose]: a look away and back cancels. */
+     @Synchronized fun rotationSinceMarkRad(): Float = sqrt(rx * rx + ry * ry + rz * rz)
+ 
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/ReceiverStateJsonTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/ReceiverStateJsonTest.kt
+new file mode 100644
+index 00000000..e06dc25f
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/ReceiverStateJsonTest.kt
+@@ -0,0 +1,47 @@
++package com.rokid.context.capture.plan
++
++import com.rokid.context.core.model.PlanMode
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNotEquals
++import kotlin.test.assertNull
++
++class ReceiverStateJsonTest {
++    private val prev = ReceiverState(2, "p1", PlanMode.SHADOW, "{\"a\":1}", "abc123def456", null, null, "bc:7", null, emptyMap())
++    private val full = ReceiverState(
++        appliedGen = 5, phoneInstall = "p1", mode = PlanMode.TRIAL, planJson = "{\"x\":\"é\\\"\"}", configHash = "0123456789ab",
++        trialStartElapsed = 123_456L, trialMaxMs = 3_600_000L, bootId = "bc:9", previous = prev,
++        terminal = mapOf(3L to "auto:trial_end", 4L to "auto:ceiling"), effective = true, publishId = "pub-1",
++        terminalMeta = mapOf(3L to TerminalMeta(PlanMode.TRIAL, "pub-0"), 4L to TerminalMeta(PlanMode.SHADOW, null)),
++    )
++
++    @Test fun roundTripIsExact() {
++        assertEquals(full, ReceiverStateJson.decode(ReceiverStateJson.encode(full)))
++        assertEquals(prev, ReceiverStateJson.decode(ReceiverStateJson.encode(prev)))
++    }
++
++    @Test fun olderFormWithoutTheNewFieldsDecodesWithDefaults() {
++        val old = """{"appliedGen":4,"phoneInstall":"p1","mode":"TRIAL","planJson":null,"configHash":"0123456789ab","trialStartElapsed":10,"trialMaxMs":60000,"bootId":"bc:1","terminal":{"2":"auto:reboot"}}"""
++        val s = ReceiverStateJson.decode(old)!!
++        assertEquals(false, s.effective); assertNull(s.publishId); assertEquals(emptyMap(), s.terminalMeta); assertNull(s.previous)
++        assertEquals(mapOf(2L to "auto:reboot"), s.terminal); assertEquals(PlanMode.TRIAL, s.mode)
++    }
++
++    @Test fun malformedOrUnknownIsNullNotACrash() {
++        assertNull(ReceiverStateJson.decode(null)); assertNull(ReceiverStateJson.decode("")); assertNull(ReceiverStateJson.decode("{"))
++        assertNull(ReceiverStateJson.decode("""{"appliedGen":"x"}"""))
++        assertNull(ReceiverStateJson.decode("""{"appliedGen":1,"phoneInstall":"p","mode":"WARP","bootId":"b","terminal":{}}"""))
++    }
++
++    @Test fun bootIdChangesWithTheBootCountAndNeverWithTheClockWhenTheCountIsKnown() {
++        assertNotEquals(BootId.of(7, 1_000_000, 5_000), BootId.of(8, 1_000_000, 5_000))
++        assertEquals(BootId.of(7, 1_000_000, 5_000), BootId.of(7, 9_999_999, 777))
++    }
++
++    @Test fun bootIdFallsBackToTheBootInstantWhenTheCountIsUnreadable() {
++        val a = BootId.of(-1, 10_000_000, 100_000)           // booted at 9_900_000
++        val b = BootId.of(-1, 20_000_000, 100_000)           // booted at 19_900_000: another boot
++        assertNotEquals(a, b)
++        assertNotEquals(BootId.of(-1, 1_000_000, 1_000), BootId.of(7, 1_000_000, 1_000))
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGateTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGateTest.kt
+index a898d014..767e685e 100644
+--- a/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGateTest.kt
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGateTest.kt
+@@ -343,11 +343,82 @@ class KeyframeGateTest {
+         for ((i, t) in listOf(10_000L, 15_000L, 20_000L).withIndex()) assertIs<GateResult.Keep>(timerKeep(t, i + 1))
+         assertEquals("CAPPED", reason(timerKeep(25_000, 4)))
+         store.ring.clear()
+         assertIs<GateResult.Keep>(capped(26_000, cand(5))) // a glance: k = 3 < 4
+     }
+ 
+     @Test fun restingTimerKeepsAreCappedAtOne() {
+         assertIs<GateResult.Keep>(timerKeep(10_000, 1, cap = 2, hard = true))
+         assertEquals("CAPPED", reason(timerKeep(15_000, 2, cap = 2, hard = true)))
+     }
++
++    // ---- slice 3a Task 11: the GateParams provider, ScoreListener and offerScored ----
++
++    private fun gateWith(st: MemStore, params: () -> GateParams) = KeyframeGate(st, { now }, params)
++
++    @Test fun hammingFromTheProviderDecidesWhatIsANewScene() {
++        val strict = gateWith(MemStore()) { GateParams(hamming = 64) }   // nothing can differ by more than 64 bits
++        now = 10_000; assertIs<GateResult.Keep>(strict.offer(cand(1), MotionState.STILL, false))
++        now = 20_000; assertEquals("DUPLICATE", reason(strict.offer(cand(2), MotionState.STILL, false)))
++        val dflt = gateWith(MemStore()) { GateParams() }
++        now = 10_000; assertIs<GateResult.Keep>(dflt.offer(cand(1), MotionState.STILL, false))
++        now = 20_000; assertIs<GateResult.Keep>(dflt.offer(cand(2), MotionState.STILL, false))
++    }
++
++    @Test fun ringCompareLastOnlySeesOnlyTheNewestKeyframe() {
++        for (all in listOf(true, false)) {
++            val st = MemStore()
++            val g = gateWith(st) { GateParams(ringCompareAll = all) }
++            now = 10_000; assertIs<GateResult.Keep>(g.offer(cand(1), MotionState.STILL, false))
++            now = 20_000; assertIs<GateResult.Keep>(g.offer(cand(2), MotionState.STILL, false))
++            now = 30_000   // scene 1 again: seen two keeps ago, but not the newest keyframe
++            val r = g.offer(cand(1), MotionState.STILL, false)
++            if (all) assertEquals("DUPLICATE", reason(r)) else assertIs<GateResult.Keep>(r)
++        }
++    }
++
++    @Test fun bigChangeFromTheProviderMovesTheBonusThreshold() {
++        // cap 1 hard=false: the second dwell keep in a minute is allowed only for a frame far from every ring keyframe
++        for ((bigChange, bonus) in listOf(64 to false, 1 to true)) {
++            val st = MemStore()
++            val g = gateWith(st) { GateParams(bigChange = bigChange) }
++            now = 10_000; assertIs<GateResult.Keep>(g.offer(cand(1), MotionState.STILL, true, capPerMin = 1))
++            now = 20_000
++            val r = g.offer(cand(2), MotionState.STILL, true, capPerMin = 1)
++            if (bonus) assertIs<GateResult.Keep>(r) else assertEquals("CAPPED", reason(r))
++        }
++    }
++
++    @Test fun scoreListenerSeesEveryScoredFrameBeforeTheDecision() {
++        val seen = ArrayList<List<Any>>()
++        val g = gateWith(MemStore()) { GateParams() }
++        g.setScoreListener { seq, d, p, blur, passed -> seen += listOf(seq, d, p, blur > 0f, passed) }
++        val a = cand(1); val blurry = cand(2, soft = 100)
++        now = 10_000; g.offer(a, MotionState.STILL, false)
++        now = 20_000; g.offer(blurry, MotionState.STILL, false)
++        assertEquals(2, seen.size)
++        assertEquals(listOf<Any>(a.seq, ImageHashes.dHash(a.thumb), ImageHashes.pHash(a.thumb), true, true), seen[0])
++        assertEquals(false, seen[1][4]); assertEquals(0L, seen[1][1]); assertEquals(0L, seen[1][2])
++        g.setScoreListener(null); g.offer(cand(3), MotionState.STILL, false)
++        assertEquals(2, seen.size)
++    }
++
++    @Test fun offerScoredDecidesLikeOfferFromTheRecordedScore() {
++        val scores = ArrayList<DoubleArray>()
++        val rec = ArrayList<List<Long>>()
++        val live = gateWith(MemStore()) { GateParams() }
++        live.setScoreListener { seq, d, p, blur, passed -> if (passed) rec += listOf(seq, d, p, blur.toRawBits().toLong()) }
++        val replay = gateWith(MemStore()) { GateParams() }
++        val script = listOf(Triple(10_000L, 1, MotionState.STILL), Triple(11_000L, 1, MotionState.STILL), Triple(20_000L, 2, MotionState.STILL), Triple(30_000L, 3, MotionState.WALKING), Triple(31_600L, 3, MotionState.WALKING), Triple(40_000L, 4, MotionState.STILL))
++        for ((t, scene, m) in script) {
++            now = t
++            val a = live.offer(cand(scene), m, dwellArmed = scene == 2, capPerMin = 4)
++            val last = rec.last()
++            val b = replay.offerScored(last[0], last[1], last[2], Float.fromBits(last[3].toInt()), m, scene == 2, false, 4, false, t)
++            assertEquals(a::class, b::class, "at $t")
++            if (a is GateResult.Keep) {
++                val k = b as GateResult.Keep
++                assertEquals(a.dhash, k.dhash); assertEquals(a.phash, k.phash); assertEquals(a.dwell, k.dwell); assertEquals(a.motion, k.motion)
++            } else assertEquals((a as GateResult.Skip).reason, (b as GateResult.Skip).reason, "at $t")
++        }
++    }
+ }
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifierTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifierTest.kt
+index 25b0973b..3767984c 100644
+--- a/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifierTest.kt
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifierTest.kt
+@@ -402,11 +402,52 @@ class MotionClassifierTest {
+         assertTrue(maxPose < 0.30f, "bias drift stays under the novelty threshold, max=$maxPose")
+     }
+ 
+     @Test fun aRealTurnSurvivesTheStillnessResetOfALaterBias() {
+         val k = defaults()
+         gyroOn(k, 0, 1_000, 0f, z = 1f)               // a 1 rad turn
+         gyroOn(k, 1_000, 60_000, 0f, z = 0.07f)       // then bias only
+         val r = k.rotationSinceMarkRad()
+         assertTrue(r in 0.95f..1.35f, "turn kept, drift bounded, was $r")
+     }
++
++    // ---- slice 3a Task 11: one swappable config ----
++
++    @Test fun setConfigSwapsTheSettleTimeOfTheNextGlance() {
++        val k = defaults()
++        k.setConfig(GlanceParams(settleMs = 3_000))
++        gyroOn(k, 0, 400, 1.5f)
++        gyroOn(k, 400, 6000, 0f)
++        assertEquals(listOf(380L + 3_000), dwells)
++    }
++
++    @Test fun setConfigOnsetAboveTheTurnMeansNoGlance() {
++        val k = defaults()
++        k.setConfig(GlanceParams(onsetRadS = 2.0f))
++        gyroOn(k, 0, 400, 1.5f)
++        gyroOn(k, 400, 6000, 0f)
++        assertTrue(dwells.isEmpty(), "dwells=$dwells")
++        assertEquals(GlanceCounts(0, 0), k.takeGlanceCounts())
++        assertEquals(2.0f, k.config.onsetRadS)
++    }
++
++    @Test fun quietIsFalseInABoutAndWhileAGlanceIsPendingAndTrueAfterwards() {
++        val k = defaults()
++        assertTrue(k.quiet())
++        gyroOn(k, 0, 400, 1.5f)
++        assertFalse(k.quiet(), "mid bout")
++        gyroOn(k, 400, 600, 0f)
++        assertFalse(k.quiet(), "settling: a glance is pending")
++        gyroOn(k, 1000, 3000, 0f)
++        assertTrue(k.quiet())
++    }
++
++    @Test fun abortBoutDropsTheBoutAndItsGlance() {
++        val k = defaults()
++        gyroOn(k, 0, 400, 1.5f)
++        assertFalse(k.quiet())
++        k.abortBout()
++        assertTrue(k.quiet())
++        gyroOn(k, 400, 6000, 0f)
++        assertTrue(dwells.isEmpty(), "dwells=$dwells")
++    }
+ }
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/GlassesRuntime.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/GlassesRuntime.kt
+index 9a7d7e7a..c65864f7 100644
+--- a/android-companion/glasses/src/main/java/com/rokid/context/glasses/GlassesRuntime.kt
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/GlassesRuntime.kt
+@@ -105,20 +105,32 @@ class GlassesRuntime private constructor(private val app: Context) {
+     @Volatile private var lastWalkAtMs: Long? = null
+     /** The capture service reports the local classifier state (and null-resets it on stop) for the walking veto. */
+     internal fun noteLocalMotion(s: MotionState, nowMs: Long) { localMotion = s; if (s == MotionState.WALKING) lastWalkAtMs = nowMs }
+     internal fun resetLocalMotion() { localMotion = MotionState.STILL }
+     /**
+      * The context state to apply right now, computed on demand from the gate (TTL, apply flag, kill switch, local walking
+      * veto), so it never outlives a message, a session close or a stopped capture service. Used by capture and nudges.
+      */
+     fun contextApplied(nowMs: Long = android.os.SystemClock.elapsedRealtime()): com.rokid.context.core.model.context.ContextState =
+         contextGate.effective(nowMs, localMotion, lastWalkAtMs, settingsCache.readNormalized().motionSourcesOff)
++    /**
++     * Slice 3a: the capture plan (S59, S69). Built here so a persisted plan is loaded, and a TRIAL of another boot or past its limit is
++     * reverted, before the capture service starts. The boot id is `Settings.Global.BOOT_COUNT` (persisted by the OS, changes per boot).
++     */
++    val plan = com.rokid.context.glasses.capture.plan.PlanController(
++        com.rokid.context.glasses.capture.plan.PrefsPlanPersistence(app.getSharedPreferences(com.rokid.context.glasses.capture.plan.PrefsPlanPersistence.PREFS, Context.MODE_PRIVATE)),
++        elapsed = android.os.SystemClock::elapsedRealtime,
++        bootId = { com.rokid.context.capture.plan.BootId.of(android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1), System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime()) },
++        appliedState = { contextApplied() },
++        send = { a -> controller?.sendPlanAck(a) },
++        log = { DiagLog.i(CAPTURE_TAG, it) },
++    )
+     /** Fix wave H3: a ~600 ms HUD mark per saved keyframe ("Capture blink on HUD", synced `captureCue`). */
+     val captureBlink = com.rokid.context.glasses.hud.CaptureBlink(scope, { settingsCache.read().captureCue })
+     /** The minimised icon (spec 2026-10-14 §3), one window per process; shown only while the keep-alive service runs. */
+     val minimisedIcon: MinimisedIcon by lazy {
+         MinimisedIcon(app, app.getSystemService(WindowManager::class.java)) {
+             val scheduler = CaptureScheduler(app)
+             val now = System.currentTimeMillis()
+             IconState(
+                 running = CaptureService.liveInstance != null,
+                 fraction = if (smartCapture.value) null else IconRing.fraction(scheduler.nextTriggerAtMs(), scheduler.armedAtMs(), now),
+@@ -193,21 +205,23 @@ class GlassesRuntime private constructor(private val app: Context) {
+     }
+ 
+     fun attach(c: HudController) {
+         controller = c
+         c.onFrameAck = uplink::onAck
+         c.onWear = { w -> if (w == null) wear.reset() else { wear.onRemote(w); Log.i(TAG, "wear=$w (from the phone)") } }
+         c.onMotionContext = { m -> contextGate.onMessage(m, android.os.SystemClock.elapsedRealtime()) }
+         c.onPhoneUse = { u -> if (u == null) phoneUse.reset() else phoneUse.onRemote(u, android.os.SystemClock.elapsedRealtime()) }
+         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
+         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
+-        c.onPhoneSettings = { s -> ioScope.launch { applyPhoneSettings(s) } }
++        c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); ioScope.launch { applyPhoneSettings(s) } }
++        c.onCapturePlan = { m -> plan.onMessage(m) }
++        c.capsAck = { plan.statusAck() }
+         attachJob?.cancel()
+         attachJob = scope.launch {
+             launch {
+                 combine(c.frame, listening) { f, l -> l || f?.overlay is Overlay.Listening }
+                     .distinctUntilChanged()
+                     .collect { busy -> if (!busy) uplink.kick() }
+             }
+             // A closed session can't take the rest of an utterance: stop recording, no pc_listen_end.
+             launch { c.sessionOpen.collect { open -> if (!open) ptt.cancel() } }
+         }
+@@ -215,20 +229,21 @@ class GlassesRuntime private constructor(private val app: Context) {
+ 
+     /** [c]'s activity is gone: its callbacks go quiet; if it is current, the bridge stops calling it too. */
+     fun detach(c: HudController) {
+         c.onFrameAck = {}
+         c.onWear = {}
+         c.onPhoneUse = {}
+         c.onMotionContext = {}
+         c.onAutoOpen = {}
+         c.onSessionOpened = {}
+         c.onPhoneSettings = {}
++        c.onCapturePlan = {}
+         if (controller !== c) return
+         ptt.cancel()
+         ptt.onProblem = {} // only the current activity's handler: a newer activity's must survive an old detach
+         controller = null
+         attachJob?.cancel()
+         bridge.release()
+     }
+ 
+     /** `pc_hello`: clock, battery, buffer size, local pauses, unconfirmed resumes, next capture (all glasses clock). */
+     fun hello(nextCaptureAtMs: Long?): Hello = Hello(
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/CaptureService.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/CaptureService.kt
+index 4e31ec69..a5b3bdae 100644
+--- a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/CaptureService.kt
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/CaptureService.kt
+@@ -81,21 +81,21 @@ import kotlin.random.Random
+ class CaptureService : LifecycleService() {
+     /** A throw in a launched job must never crash the process on Main; only the exception's simple name is logged. */
+     private val errors = CoroutineExceptionHandler { _, e -> DiagLog.w(TAG, "capture job failed: ${e.javaClass.simpleName}") }
+     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + errors)
+     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+     private val scheduler by lazy { CaptureScheduler(this) }
+     private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
+     private val runtime by lazy { GlassesRuntime.get(this) }
+     private val inFlight = AtomicBoolean(false)
+     /** The one gate for Smart and Fixed: its last-5 ring and last keep time survive a service restart. */
+-    private val gate by lazy { KeyframeGate(PrefsGateStore(prefs), SystemClock::elapsedRealtime) }
++    private val gate by lazy { KeyframeGate(PrefsGateStore(prefs), SystemClock::elapsedRealtime, params = { runtime.plan.active.gate }) }
+     private val heat = HeatGuard(::readHeat, SystemClock::elapsedRealtime)
+     private val heatPoller = HeatPoller(heat, SystemClock::elapsedRealtime)
+     private class Smart(val session: SamplingSession, val feed: SensorFeed, val motion: MotionClassifier) { var rateJob: Job? = null }
+     private var smart: Smart? = null
+     private var hintSender: MotionHintSender? = null
+ 
+     private var wasSessionOpen = false
+ 
+     /** The context state applied to capture right now (see [GlassesRuntime.contextApplied]); also feeds it the local motion. */
+     private fun appliedContext(): ContextState {
+@@ -187,20 +187,21 @@ class CaptureService : LifecycleService() {
+                 if (open && !wasSessionOpen) hintSender?.forceNext() // the phone has no hint until the session opens
+                 wasSessionOpen = open
+                 smart?.let { sm -> hintSender?.onSecond(sm.motion.state.value, SystemClock.elapsedRealtime()) }
+                 appliedContext()
+                 if (heatPoller.tick()) logHeat()
+                 reconcile()
+                 // Own guard: a throw here must not stop the status or the tick.
+                 try {
+                     if (tick % 60 == 0) budget.onSample(batteryPercent(), isCharging(), runtime.settingsCache.readNormalized().batteryTargetHours)
+                     applyRate()
++                    runtime.plan.tick(SystemClock.elapsedRealtime()) // TRIAL end and staged activation ride this existing 1 s loop
+                 } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "budget/rate update failed: ${e.javaClass.simpleName}") }
+                 publishStatus(tick++)
+               } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "supervisor tick failed: ${e.javaClass.simpleName}") }
+                 delay(SUPERVISE_MS)
+             }
+         }
+     }
+ 
+     /** Smart configured and the HUD keep-alive up: a session runs. Anything else: none, and the Fixed chain takes over. */
+     private fun reconcile() {
+@@ -215,59 +216,67 @@ class CaptureService : LifecycleService() {
+         else if (!wantSmart && smart != null) stopSmart(if (degraded) "bind" else "mode")
+     }
+ 
+     /** Feed `setRate` is @Synchronized and idempotent, so the supervisor and the rateJob may both call this. */
+     private fun applyRate(state: MotionState? = null) {
+         smart?.let { it.feed.setRate(ratePolicy.update(runtime.captureStatus.value.reason, SystemClock.elapsedRealtime(), state ?: it.motion.state.value)) }
+     }
+ 
+     private fun startSmart() {
+         val clock: () -> Long = SystemClock::elapsedRealtime
+-        val glance = GlanceParams() // one instance: the classifier's detector and the session's novelty / cap rules
++        val plan = runtime.plan
++        val glance = plan.active.glance // the classifier starts on the config in force; a later plan swaps both together (PlanHost)
+         val motion = MotionClassifier(clock, glance)
+         ratePolicy.reset()
+         val wear = runtime.wear
+         wear.resetStillRun() // a still run from before a session restart must not park the glasses at once
+         val session = SamplingSession(
+             scope = scope, camera = CameraXSamplingCamera(this, this, cameraExecutor), owner = runtime.cameraOwner, motion = motion,
+             wear = wear, gate = gate, heat = heat, workRest = runtime.workRest, encoder = AndroidKeyframeEncoder, sink = ::onKeyframe, clock = clock,
+             settings = { runtime.settingsCache.readNormalized() },
+             capturePaused = { !runtime.pauses.captureAllowed() },
+             batteryPct = ::batteryPercent, charging = ::isCharging, batterySaver = ::isBatterySaverOn,
+-            profile = { val s = runtime.settingsCache.readNormalized(); CaptureProfile.of(s.cameraWake, budget.tier.value).withContext(ContextPolicies.of(appliedContext())) },
++            // S68: settings tier profile, then the plan row (SETTINGS config = ContextPolicies.DEFAULT), then forRest / heat / battery in the session.
++            profile = { val s = runtime.settingsCache.readNormalized(); plan.active.profile(s.cameraWake, budget.tier.value, appliedContext()) },
+             // A hard cap (no dwell bonus); a manual "Capture now" is forced and stays exempt (see SamplingSession.contextCap).
+-            contextCap = { ContextPolicies.of(appliedContext()).capPerMin },
++            contextCap = { plan.active.contextCap(appliedContext()) },
+             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
+-            fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance,
++            fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
+         )
+         hintSender = MotionHintSender(clock) { h -> runtime.controller?.sendMotionHint(h) == true }
+         val verbose = DiagFlags.verboseFeatures(filesDir)
+         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
+         val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir).also { it.start(motion, wear) }
+         val sm = Smart(session, feed, motion)
+         smart = sm
+         // Motion leaving STILL must restore FULL at once, not at the next supervisor tick.
+         sm.rateJob = scope.launch {
+             motion.movementSignals().collect { // the collected state, not state.value: a glance may already be over
+                 try { applyRate(it) } catch (e: CancellationException) { throw e } catch (e: Exception) { DiagLog.w(TAG, "rate update failed: ${e.javaClass.simpleName}") }
+             }
+         }
++        plan.host = object : com.rokid.context.glasses.capture.plan.PlanHost {
++            override fun quiet() = motion.quiet() && !session.episodeOpen()
++            override fun abortBout() = motion.abortBout()
++            override fun install(cfg: com.rokid.context.glasses.capture.plan.ActiveConfig) = motion.setConfig(cfg.glance)
++        }
+         runtime.smartCapture.value = true
+         session.start()
+         scheduleNextCapture(failed = false) // the watchdog
+         DiagLog.i(TAG, "smart session started")
+     }
+ 
+     /** Releases the camera (through the owner) and the sensors. Idempotent. */
+     private fun stopSmart(reason: String) {
+         val cur = smart ?: return
+         smart = null
++        runtime.plan.host = null
+         hintSender = null
+         runtime.resetLocalMotion()
+         cur.rateJob?.cancel()
+         cur.session.stop(reason)
+         runtime.workRest.onPaused() // leaving counts as a pause: only one of R minutes or more restarts the work clock
+         cur.feed.stop()
+         runtime.smartCapture.value = false
+     }
+ 
+     private fun onSessionFallback() {
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/plan/ActiveConfig.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/plan/ActiveConfig.kt
+new file mode 100644
+index 00000000..c8345608
+--- /dev/null
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/plan/ActiveConfig.kt
+@@ -0,0 +1,62 @@
++package com.rokid.context.glasses.capture.plan
++
++import com.rokid.context.capture.plan.CapturePlan
++import com.rokid.context.capture.plan.PlanResolver
++import com.rokid.context.capture.plan.PlanState
++import com.rokid.context.core.model.CameraWake
++import com.rokid.context.core.model.context.ContextCapturePolicy
++import com.rokid.context.core.model.context.ContextPolicies
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.glasses.capture.keyframe.GateParams
++import com.rokid.context.glasses.capture.motion.GlanceParams
++import com.rokid.context.glasses.capture.session.BudgetTier
++import com.rokid.context.glasses.capture.session.CaptureProfile
++
++/**
++ * One immutable set of everything a plan changes on the glasses (S69): the glance tunables, the gate values and the policy table.
++ * It is built once and swapped in whole at a safe boundary, so no decision ever mixes two plans. [SETTINGS] is today's behaviour
++ * (no plan); SHADOW and SETTINGS plans map to it, so they cannot change real capture (S67).
++ *
++ * [table] always holds all six states. UNKNOWN and WALKING are the locked default rows (S32); an editable row the plan leaves out
++ * is the UNKNOWN row (unchanged capture), NOT the REST or FLIGHT default. [ctxBound] false = the phone's context state is not
++ * applied to capture (the UNKNOWN row is used whatever it says).
++ */
++data class ActiveConfig(
++    val glance: GlanceParams,
++    val gate: GateParams,
++    val table: Map<ContextState, ContextCapturePolicy>,
++    val ctxBound: Boolean,
++    val configHash: String? = null,
++) {
++    fun policyFor(applied: ContextState): ContextCapturePolicy = ContextPolicies.of(if (ctxBound) applied else ContextState.UNKNOWN, table)
++
++    /** S68: the settings tier profile, then the row (minima via maxOf). The session applies `forRest()`, then heat and the battery tier. */
++    fun profile(wake: CameraWake, tier: BudgetTier, applied: ContextState): CaptureProfile =
++        CaptureProfile.of(wake, tier).withContext(policyFor(applied))
++
++    /** Row `capPerMin` null = null here too: no context cap and no hard flag. */
++    fun contextCap(applied: ContextState): Int? = policyFor(applied).capPerMin
++
++    companion object {
++        val SETTINGS = ActiveConfig(GlanceParams(), GateParams(), ContextPolicies.DEFAULT, ctxBound = true)
++
++        /** The config a LIVE or TRIAL plan applies. Only the plan's glance fields replace [GlanceParams] defaults (caps and sample limits are not plan params). */
++        fun of(plan: CapturePlan): ActiveConfig {
++            val g = plan.config.glance
++            val unknown = ContextPolicies.DEFAULT.getValue(ContextState.UNKNOWN)
++            val rows = PlanState.entries.associate { s ->
++                ContextState.valueOf(s.name) to (plan.config.policy[s]?.let { PlanResolver.toContextPolicy(it) } ?: unknown)
++            }
++            return ActiveConfig(
++                glance = GlanceParams(
++                    onsetRadS = g.onsetRadS, releaseRadS = g.releaseRadS, bridgeMs = g.bridgeMs, minBoutMs = g.minBoutMs, minBoutRad = g.minBoutRad,
++                    settleMs = g.settleMs, noveltyWindowMs = g.noveltyWindowMs, noveltyMinRad = g.noveltyMinRad, bigTurnRad = g.bigTurnRad,
++                ),
++                gate = GateParams(plan.config.gate.hamming, plan.config.gate.bigChange, plan.config.gate.ringCompare == "all"),
++                table = mapOf(ContextState.UNKNOWN to unknown, ContextState.WALKING to ContextPolicies.DEFAULT.getValue(ContextState.WALKING)) + rows,
++                ctxBound = plan.config.ctxBound,
++                configHash = plan.configHash,
++            )
++        }
++    }
++}
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/plan/PlanController.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/plan/PlanController.kt
+new file mode 100644
+index 00000000..266fc9ce
+--- /dev/null
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/plan/PlanController.kt
+@@ -0,0 +1,170 @@
++package com.rokid.context.glasses.capture.plan
++
++import com.rokid.context.capture.plan.PlanJson
++import com.rokid.context.capture.plan.PlanPersistence
++import com.rokid.context.capture.plan.PlanReceiver
++import com.rokid.context.capture.plan.ReceiverState
++import com.rokid.context.core.model.CapturePlanAck
++import com.rokid.context.core.model.CapturePlanMessage
++import com.rokid.context.core.model.PlanAckState
++import com.rokid.context.core.model.PlanMode
++import com.rokid.context.core.model.context.ContextState
++
++/** What the controller needs from the live capture objects (null host = no Smart session: nothing is running, every swap is safe). */
++interface PlanHost {
++    /** The detector is QUIET (no bout, no pending glance) and no camera episode is open. */
++    fun quiet(): Boolean
++    /** Drops the running bout (the 10 s forced swap). */
++    fun abortBout()
++    /** Swaps the classifier's glance config (the gate and the session read [PlanController.active] themselves). */
++    fun install(cfg: ActiveConfig)
++}
++
++/**
++ * Glasses side of the capture plan (S59, S67, S69). Wraps the pure [PlanReceiver] and owns the one thing it cannot: when a staged
++ * plan becomes the real capture inputs.
++ *
++ * - **Single-threaded by construction:** the receiver is private and every entry point takes [lock]; acks are sent after the lock is
++ *   released. Messages arrive on a link thread, [tick] on the capture supervisor, [onPhoneSettings] on the IO scope.
++ * - **Staged, then atomic:** a message is persisted as staged. The immutable [ActiveConfig] is installed (and EFFECTIVE acked) only
++ *   when the detector is QUIET and no camera episode is open, or after 10 s by aborting the running bout. The glance config, the
++ *   gate values and the policy rows change in the same call, never one by one. A crash in between leaves SETTINGS (the persisted
++ *   state is still staged and is re-activated at the first safe tick).
++ * - **LIVE is never applied** (the receiver refuses it; a persisted LIVE state is reverted `unsupported:live` on load). TRIAL ends by
++ *   itself on the local clock and on a reboot; the check runs on load before anything persisted is applied.
++ * - SHADOW and SETTINGS map to [ActiveConfig.SETTINGS]: real capture is untouched (S67).
++ * - No timers: [tick] rides the capture supervisor's existing 1 s loop and returns at once when nothing is pending.
++ */
++class PlanController(
++    persist: PlanPersistence,
++    private val elapsed: () -> Long,
++    bootId: () -> String,
++    private val appliedState: () -> ContextState,
++    private val send: (CapturePlanAck) -> Unit,
++    private val log: (String) -> Unit = {},
++) {
++    private val lock = Any()
++    private val receiver = PlanReceiver(persist, elapsed, bootId)
++
++    /** The config capture reads right now. Changes only inside [lock], at a safe boundary. */
++    @Volatile var active: ActiveConfig = ActiveConfig.SETTINGS
++        private set
++    @Volatile var host: PlanHost? = null
++
++    private var pendingCfg: ActiveConfig? = null
++    private var pendingGen = -1L
++    private var stagedAt = 0L
++
++    init { synchronized(lock) { bootstrap() } }
++
++    /** Load: end an expired or foreign-boot TRIAL FIRST, then resume what is still valid. A staged state waits for the first tick. */
++    private fun bootstrap() {
++        receiver.tick(appliedState(), elapsed())
++        val st = receiver.current ?: return
++        if (st.appliedGen in st.terminal) return
++        if (st.mode == PlanMode.LIVE) { receiver.revert("unsupported:live"); return }
++        val cfg = configOf(st) ?: run { receiver.revert("auto:rejected"); return }
++        if (st.effective) active = cfg else { pendingCfg = cfg; pendingGen = st.appliedGen; stagedAt = elapsed() }
++    }
++
++    /** The plan message from the phone. Returns the immediate ack (STAGED, REJECTED or a re-ack); EFFECTIVE follows when activated. */
++    fun onMessage(m: CapturePlanMessage): CapturePlanAck = locked { out ->
++        val ack = receiver.onMessage(m)
++        out += ack
++        val st = receiver.current
++        if (ack.state == PlanAckState.STAGED && st != null && st.appliedGen == m.gen && !st.effective && pendingGen != m.gen) {
++            val cfg = configOf(st)
++            if (cfg == null) { out += receiver.revert("auto:rejected"); dropPending() }
++            else { pendingCfg = cfg; pendingGen = m.gen; stagedAt = elapsed(); tryActivate(stagedAt, out) }
++        }
++        ack
++    }
++
++    /** The capture supervisor's 1 s beat ([now] = elapsedRealtime): ends a TRIAL, activates a staged plan at its boundary. */
++    fun tick(now: Long) {
++        if (synchronized(lock) { pendingCfg == null && receiver.current?.mode != PlanMode.TRIAL }) return   // the common idle case: one uncontended lock, no IO
++        locked { out ->
++            receiver.tick(appliedState(), now)?.let { reverted(it, out) }
++            tryActivate(now, out)
++        }
++    }
++
++    /** A phone that does not speak plans (planAware false in a fresh `pc_settings`) while a plan is held: back to settings. */
++    fun onPhoneSettings(planAware: Boolean) {
++        if (planAware) return
++        locked { out ->
++            val st = receiver.current
++            if (st != null && st.mode != PlanMode.SETTINGS && st.appliedGen !in st.terminal) reverted(receiver.revert("auto:old_phone"), out)
++        }
++    }
++
++    /** Local auto-revert (ceiling, opens, heat: Task 12). Null when there is no plan to revert. */
++    fun revert(reason: String): CapturePlanAck? = locked { out ->
++        if (receiver.current == null) return@locked null
++        receiver.revert(reason).also { reverted(it, out) }
++    }
++
++    /** What the phone should know on a session open: the caps, and the state of the current gen (gen 0 = no plan ever). */
++    fun statusAck(): CapturePlanAck = synchronized(lock) {
++        val st = receiver.current ?: return CapturePlanAck(gen = 0, caps = PlanReceiver.CAPS)
++        val reason = st.terminal[st.appliedGen]
++        val was = st.terminalMeta[st.appliedGen]
++        CapturePlanAck(
++            gen = st.appliedGen, publishId = was?.publishId ?: st.publishId, mode = was?.mode ?: st.mode, effectiveHash = if (reason == null) st.configHash else null,
++            state = if (reason != null) PlanAckState.REVERTED else if (st.effective) PlanAckState.EFFECTIVE else PlanAckState.STAGED,
++            reason = reason, caps = PlanReceiver.CAPS, phoneInstall = st.phoneInstall,
++        )
++    }
++
++    // ---- under the lock ----
++
++    private fun configOf(st: ReceiverState): ActiveConfig? = when (st.mode) {
++        PlanMode.SETTINGS, PlanMode.SHADOW -> ActiveConfig.SETTINGS
++        PlanMode.TRIAL -> st.planJson?.let { PlanJson.decodeStrict(it).getOrNull() }?.let { ActiveConfig.of(it) }
++        else -> null   // LIVE: never applied
++    }
++
++    private fun tryActivate(now: Long, out: MutableList<CapturePlanAck>) {
++        val cfg = pendingCfg ?: return
++        val h = host
++        if (cfg != active && h != null && !h.quiet()) {
++            if (now - stagedAt < FORCE_AFTER_MS) return
++            h.abortBout()
++        }
++        val prev = active
++        swap(cfg)
++        try {
++            val ack = receiver.activated(pendingGen)
++            if (ack.state == PlanAckState.EFFECTIVE) out += ack else swap(prev)
++            dropPending()
++        } catch (e: Exception) {
++            swap(prev)   // not persisted as effective: stay on the old inputs and retry at the next tick
++            log("plan activation not persisted: ${e.javaClass.simpleName}")
++        }
++    }
++
++    /** A revert is always safe, so it does not wait for a boundary: a running bout is dropped and the settings come back at once. */
++    private fun reverted(ack: CapturePlanAck, out: MutableList<CapturePlanAck>) {
++        dropPending()
++        if (ack.state == PlanAckState.REVERTED) {
++            if (active != ActiveConfig.SETTINGS) {
++                host?.let { if (!it.quiet()) it.abortBout() }
++                swap(ActiveConfig.SETTINGS)
++            }
++            out += ack
++        }
++    }
++
++    private fun swap(cfg: ActiveConfig) { active = cfg; host?.install(cfg) }
++
++    private fun dropPending() { pendingCfg = null; pendingGen = -1L }
++
++    private fun <T> locked(body: (MutableList<CapturePlanAck>) -> T): T {
++        val out = ArrayList<CapturePlanAck>(2)
++        val r = synchronized(lock) { body(out) }
++        for (a in out) try { send(a) } catch (e: Exception) { log("plan ack not sent: ${e.javaClass.simpleName}") }
++        return r
++    }
++
++    companion object { const val FORCE_AFTER_MS = 10_000L }
++}
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/plan/PrefsPlanPersistence.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/plan/PrefsPlanPersistence.kt
+new file mode 100644
+index 00000000..a55621f6
+--- /dev/null
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/plan/PrefsPlanPersistence.kt
+@@ -0,0 +1,21 @@
++package com.rokid.context.glasses.capture.plan
++
++import android.content.SharedPreferences
++import com.rokid.context.capture.plan.PlanPersistence
++import com.rokid.context.capture.plan.ReceiverState
++import com.rokid.context.capture.plan.ReceiverStateJson
++
++/**
++ * The plan and the receiver state in the `capture_plan` prefs (one string). Excluded from backup and device transfer like every
++ * glasses pref (GlassesBackupRulesTest). [commit] is synchronous (`commit()`, not `apply()`): the receiver persists BEFORE it acks, and
++ * a failed write throws so the controller never reports EFFECTIVE for a state that is not on disk. Reads happen once, at load.
++ */
++class PrefsPlanPersistence(private val prefs: SharedPreferences) : PlanPersistence {
++    override fun load(): ReceiverState? = ReceiverStateJson.decode(prefs.getString(KEY, null))
++
++    override fun commit(s: ReceiverState) {
++        if (!prefs.edit().putString(KEY, ReceiverStateJson.encode(s)).commit()) throw java.io.IOException("capture_plan not written")
++    }
++
++    companion object { const val PREFS = "capture_plan"; private const val KEY = "state" }
++}
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/SamplingSession.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/SamplingSession.kt
+index d36dc5b4..081e0272 100644
+--- a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/SamplingSession.kt
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/SamplingSession.kt
+@@ -86,20 +86,22 @@ class SamplingSession(
+     /** Unused since wave A3 rest (rest now keeps glance capture); kept for call-site compatibility. */
+     private val fixedCapture: suspend () -> Unit = {},
+     /** Three failed binds: the owner runs Fixed 30 s for the rest of this session. */
+     private val onFallback: () -> Unit = {},
+     private val log: (String) -> Unit = {},
+     private val newSessionId: () -> String = { Random.nextLong().toULong().toString(16).padStart(16, '0') },
+     /** Where a flushed keyframe is encoded (the service passes Dispatchers.Default so the main thread never encodes). */
+     private val workContext: CoroutineContext = EmptyCoroutineContext,
+     /** Glance novelty window, turn thresholds and keep caps (one instance shared with the [MotionClassifier]). */
+     private val glance: GlanceParams = GlanceParams(),
++    /** The glance tunables in force now (slice 3a: a plan swaps them at a safe boundary); defaults to the fixed [glance]. */
++    private val glanceNow: () -> GlanceParams = { glance },
+     /**
+      * Wave B context cap (keyframes per minute) from the motion hub, or null for none. When non-null it is a hard cap
+      * (no dwell bonus: [hardNow]) and [capNow] is the smaller of it and the A3 cap. Forced keeps (a manual "Capture now")
+      * stay exempt: [KeyframeGate.offer] never applies the cap to them.
+      */
+     private val contextCap: () -> Int? = { null },
+ ) {
+     private class Episode(val continuous0: Boolean, val why: String) {
+         @Volatile var continuous = continuous0
+         val done = CompletableDeferred<Unit>()
+@@ -150,41 +152,45 @@ class SamplingSession(
+     private var pendingDwellAt: Long? = null
+     private var pendingNowAt: Long? = null
+     private val keptAt = ArrayDeque<Long>()
+     // Glance counters since the last [diagSnapshot] (guarded by [lock]): opens skipped as not novel / over the cap.
+     private var novelSkipAccum = 0
+     private var cappedAccum = 0
+     /** In a rest span the cap is [GlanceParams.restCapPerMin] (set by [tick]). Guarded by [lock]. */
+     private var resting = false
+     /** [cc] is the context cap read once per decision, so the cap and the hard flag always agree. */
+     private fun capNow(cc: Int?): Int {
+-        val a3 = if (resting) glance.restCapPerMin else glance.capPerMin
++        val g = glanceNow()
++        val a3 = if (resting) g.restCapPerMin else g.capPerMin
+         return minOf(a3, cc ?: Int.MAX_VALUE)
+     }
+     /** Hard cap (no dwell bonus) while resting or while a context cap is active. */
+     private fun hardNow(cc: Int?) = resting || cc != null
+     // Camera-open time since the last [diagSnapshot] read (guarded by [lock]), for the "camera-open share" heartbeat field.
+     private var openAccumMs = 0L
+     private var shareFromAt = 0L
+     private var analysedAtSnapshot = 0
+     private var opensAccum = 0
+     private val wakeAccum = linkedMapOf("timer" to 0, "dwell" to 0, "onset" to 0, "now" to 0, "stream" to 0)
+ 
+     /** Samples whose copy took longer than [COPY_BUDGET_MS] (the thumbnail target is 30 ms). */
+     private val slowCount = AtomicInteger()
+     val slowCopies: Int get() = slowCount.get()
+     private val openedCount = AtomicInteger()
+     val camerasOpened: Int get() = openedCount.get()
+     /** Frames copied and offered to the gate (for logs and tests). */
+     private val analysedCount = AtomicInteger()
+     val analysedFrames: Int get() = analysedCount.get()
+ 
++    /** A camera episode (brief check or open camera) is running or about to: not a safe moment to swap the plan. */
++    fun episodeOpen(): Boolean = synchronized(lock) { episode != null }
++
+     val stillStep: Int get() = synchronized(lock) { stillStepV }
+ 
+     /** The current gap between brief checks of a still scene (after the backoff), for the heartbeat. */
+     fun stillGapMs(): Long = synchronized(lock) { CameraPolicy.stillGap(backoffBase(), stillStepV, lastProfile.stillCapMs) }
+ 
+     /** The gap the policy starts from before doubling. Caller holds [lock]. */
+     private fun backoffBase(): Long {
+         val low = if (lastLowPower) 10_000L else 0L
+         return if (lastProfile.wake == CameraWake.SETTLE) maxOf(low, lastProfile.settledCheckMs)
+         else if (lastLowPower) low else lastProfile.settledCheckMs
+@@ -257,21 +263,21 @@ class SamplingSession(
+ 
+     private fun onDwell() = synchronized(lock) {
+         val now = clock()
+         stillStepV = 0
+         // Spec A3 section 4: a glance opens the camera only when it can matter (free IMU tests, before any open).
+         val k = keptAt.count { now - it < 60_000L }
+         val turned = motion.rotationSinceMarkRad()
+         val walked = motion.walkedSinceMark()
+         val cc = contextCap()
+         val cap = capNow(cc)
+-        when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glance)) {
++        when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glanceNow())) {
+             GlanceAdmission.Decision.NOVEL_SKIP -> novelSkipAccum++
+             GlanceAdmission.Decision.CAPPED -> cappedAccum++
+             GlanceAdmission.Decision.OPEN -> {
+                 pendingDwellAt = now
+                 kick.trySend(Unit)
+             }
+         }
+         Unit
+     }
+ 
+@@ -562,21 +568,21 @@ class SamplingSession(
+ 
+     /**
+      * Still-scene backoff after a usable brief-check frame: a keep or a changed scene resets it; an unchanged scene on a
+      * timer check while STILL doubles the next gap (until the cap). Caller holds [lock].
+      */
+     private fun updateBackoff(ep: Episode, h: Pair<Long, Long>?, result: GateResult?, sampleMotion: MotionState) {
+         val prev = lastCheckHash
+         if (result is GateResult.Skip && result.reason == KeyframeGate.CAPPED) { /* a capped frame is no evidence either way */ }
+         else if (result is GateResult.Keep) stillStepV = 0
+         else if (ep.why == "timer" && sampleMotion == MotionState.STILL && h != null && prev != null) {
+-            val same = minOf(java.lang.Long.bitCount(h.first xor prev.first), java.lang.Long.bitCount(h.second xor prev.second)) <= KeyframeGate.HAMMING
++            val same = minOf(java.lang.Long.bitCount(h.first xor prev.first), java.lang.Long.bitCount(h.second xor prev.second)) <= gate.hammingNow()
+             if (!same) stillStepV = 0
+             else if ((backoffBase() shl stillStepV) < lastProfile.stillCapMs) stillStepV++
+         }
+         if (h != null) lastCheckHash = h
+     }
+ 
+     /**
+      * A frame that cannot be judged (dark, blurred, no pixels). A brief check does not hold the camera open for a better
+      * one: once the exposure has had a moment to settle (a few frames or SETTLE_MS) it ends, usable or not, and a run of
+      * such checks backs the cadence off. Caller holds [lock].
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/link/HudController.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/link/HudController.kt
+index ed71a3be..8b467603 100644
+--- a/android-companion/glasses/src/main/java/com/rokid/context/glasses/link/HudController.kt
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/link/HudController.kt
+@@ -65,20 +65,22 @@ class HudController(
+     val connection: StateFlow<HudConnection> = _connection
+     private val _sessionOpen = MutableStateFlow(false)
+     val sessionOpen: StateFlow<Boolean> = _sessionOpen
+ 
+     /** All three are called on a bridge thread. */
+     @Volatile var onFrameAck: (FrameAck) -> Unit = {}
+     @Volatile var onSessionOpened: () -> Unit = {}
+     /** Slice 3a: the unsolicited `pc_capture_plan_ack` sent on every session open (gen 0, no plan): tells the phone our caps. Task 11 fills in the applied plan. */
+     @Volatile var capsAck: () -> com.rokid.context.core.model.CapturePlanAck =
+         { com.rokid.context.core.model.CapturePlanAck(gen = 0, caps = com.rokid.context.capture.plan.PlanReceiver.CAPS) }
++    /** `pc_capture_plan` (slice 3a): a plan message of this session; the runtime's plan controller answers with acks through [sendPlanAck]. */
++    @Volatile var onCapturePlan: (com.rokid.context.core.model.CapturePlanMessage) -> Unit = {}
+     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
+     @Volatile var onWear: (Boolean?) -> Unit = {}
+     /** `pc_phone_ctx`: whether the phone is in use (screen on, unlocked); null = the session closed (unknown again). */
+     @Volatile var onPhoneUse: (Boolean?) -> Unit = {}
+     /** `pc_auto_open` (fix wave I): the phone reopened the app by itself; a launcher-looking start of the last seconds was really that. */
+     @Volatile var onAutoOpen: () -> Unit = {}
+     /**
+      * Each phone push: `pc_settings` as sent; a `pc_state` pause list as the last settings with those pauses, inexact
+      * (a frame carries no clock flag) and with no resumes.
+      */
+@@ -91,30 +93,37 @@ class HudController(
+     private val ctxLock = Any()
+ 
+     fun start() {
+         bridge.subscribe(Channels.STATE) { onState(it) }
+         bridge.subscribe(Channels.SETTINGS) { onSettings(it) }
+         bridge.subscribe(Channels.FRAME_ACK) { onAck(it) }
+         bridge.subscribe(Channels.HELLO_REQUEST) { onHelloRequest(it) }
+         bridge.subscribe(Channels.WEAR) { text -> (Wire.decode<WearMessage>(text) as? Decoded.Ok)?.value?.let(::onWearMessage) }
+         bridge.subscribe(Channels.PHONE_CONTEXT) { text -> (Wire.decode<PhoneContextMessage>(text) as? Decoded.Ok)?.value?.let(::onPhoneContextMessage) }
+         bridge.subscribe(Channels.MOTION_CONTEXT) { text -> (Wire.decode<MotionContextMessage>(text) as? Decoded.Ok)?.value?.let(::onMotionContextMessage) }
++        bridge.subscribe(Channels.CAPTURE_PLAN) { text -> (Wire.decode<com.rokid.context.core.model.CapturePlanMessage>(text) as? Decoded.Ok)?.value?.let(::onPlanMessage) }
+         bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { Log.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
+         bridge.setConnectionListener(connected = { Log.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
+         scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }
+     }
+ 
+     private fun onPhoneContextMessage(m: PhoneContextMessage) {
+         if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_phone_ctx ignored"); return }
+         onPhoneUse(m.inUse)
+     }
+ 
++    private fun onPlanMessage(m: com.rokid.context.core.model.CapturePlanMessage) {
++        // A transport copy older than this session is stale; the phone re-sends its current gen on the new session.
++        if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_capture_plan ignored"); return }
++        onCapturePlan(m)
++    }
++
+     private fun onMotionContextMessage(m: MotionContextMessage) {
+         if (m.atMs < m.sessionStartMs) { Log.i(TAG, "stale pc_motion_ctx ignored"); return }
+         // One lock for the session check, the ordering check, the gate update and the close reset: a delayed older
+         // message can neither pass before a newer revoke and land after it, nor outlive the session close. The gate
+         // callback is non-blocking, so holding the lock across it is safe.
+         synchronized(ctxLock) {
+             if (!_sessionOpen.value) { Log.i(TAG, "pc_motion_ctx of a closed session ignored"); return }
+             if (m.atMs < lastCtxAtMs) { Log.i(TAG, "older pc_motion_ctx ignored"); return }
+             lastCtxAtMs = m.atMs
+             onMotionContext(m)
+@@ -200,20 +209,23 @@ class HudController(
+     }
+ 
+     /** The activity is going away: the phone's CUSTOM_APP session closes with it (spec §1.7). */
+     fun onActivityExit() { exited = true; closeSession("activity exit") }
+ 
+     /** The activity (re)started: phone messages may open a session again. */
+     fun onActivityStart() { exited = false }
+ 
+     fun send(command: Command): Boolean = bridge.send(Channels.CMD, Wire.encode(CommandEnvelope(command = command))) == 0
+ 
++    /** `pc_capture_plan_ack`: only while the session is open (a closed session gets the status ack of [capsAck] on its next open). */
++    fun sendPlanAck(a: com.rokid.context.core.model.CapturePlanAck): Boolean = _sessionOpen.value && bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(a)) == 0
++
+     /** `pc_motion_hint`: the glasses classifier state for the phone's hub, only while the session is open. */
+     fun sendMotionHint(h: MotionHint): Boolean = _sessionOpen.value && bridge.send(Channels.MOTION_HINT, Wire.encode(h)) == 0
+ 
+     /** `pc_user_exit`: the wearer exited the app on purpose; the phone must not reopen it. */
+     fun sendUserExit(): Boolean = bridge.send(Channels.USER_EXIT, Wire.encode(UserExit())) == 0
+ 
+     fun sendHello(): Boolean = bridge.send(Channels.HELLO, Wire.encode(hello())) == 0
+ 
+     /** pc_audio: one Base64 PCM chunk, only while the session is open (a send result of 0 is not delivery). */
+     fun sendAudio(base64: String): Boolean = _sessionOpen.value && bridge.send(Channels.AUDIO, base64) == 0
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/GlassesBackupRulesTest.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/GlassesBackupRulesTest.kt
+index 15ff390a..1aa90ef4 100644
+--- a/android-companion/glasses/src/test/java/com/rokid/context/glasses/GlassesBackupRulesTest.kt
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/GlassesBackupRulesTest.kt
+@@ -43,11 +43,29 @@ class GlassesBackupRulesTest {
+             assertEquals(section.tagName, 0, section.getElementsByTagName("include").length)
+         }
+     }
+ 
+     /** The stores the domain-wide excludes must cover all live in internal storage (filesDir or shared_prefs). */
+     @Test fun theOutboundBufferAndPauseStoreLiveInFilesDir() {
+         val src = File("src/main/java/com/rokid/context/glasses/GlassesRuntime.kt").readText()
+         assertTrue(src.contains("File(app.filesDir, \"outbound\")"))
+         assertTrue(src.contains("File(app.filesDir, \"pauses.preferences_pb\")"))
+     }
++
++    /** Slice 3a: the plan and receiver state live in the `capture_plan` shared prefs, which the sharedpref exclude (all sections) covers. */
++    @Test fun theCapturePlanPrefsAreInternalSharedPrefsAndExcluded() {
++        val prefs = File("src/main/java/com/rokid/context/glasses/capture/plan/PrefsPlanPersistence.kt").readText()
++        assertTrue(prefs.contains("const val PREFS = \"capture_plan\""))
++        val rt = File("src/main/java/com/rokid/context/glasses/GlassesRuntime.kt").readText()
++        assertTrue(rt.contains("getSharedPreferences(com.rokid.context.glasses.capture.plan.PrefsPlanPersistence.PREFS, Context.MODE_PRIVATE)"))
++        val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) + listOf("cloud-backup", "device-transfer").map {
++            parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element
++        }
++        for (section in sections) assertTrue(section.tagName, "sharedpref:." in excludes(section))
++    }
++
++    /** The receiver's boot id must change every boot: it is the OS boot counter, not the uptime clock alone. */
++    @Test fun theReceiversBootIdComesFromTheBootCounter() {
++        val rt = File("src/main/java/com/rokid/context/glasses/GlassesRuntime.kt").readText()
++        assertTrue(rt.contains("BootId.of(android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1)"))
++    }
+ }
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/DecisionGoldenRecorder.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/DecisionGoldenRecorder.kt
+index fd4243c2..fa15ec90 100644
+--- a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/DecisionGoldenRecorder.kt
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/DecisionGoldenRecorder.kt
+@@ -1,15 +1,16 @@
+ package com.rokid.context.glasses.capture.golden
+ 
+ import com.rokid.context.core.model.context.ContextPolicies
+ import com.rokid.context.core.model.context.ContextState
+ import com.rokid.context.glasses.capture.motion.GlanceParams
++import com.rokid.context.glasses.capture.plan.PlanController
+ import com.rokid.context.glasses.capture.session.CaptureProfile
+ import com.rokid.context.glasses.capture.session.HeatLevel
+ import com.rokid.context.glasses.capture.session.HeatPoller
+ import com.rokid.context.glasses.capture.session.Rig
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.isActive
+ import kotlinx.coroutines.launch
+ import kotlinx.coroutines.test.TestScope
+ import kotlin.math.PI
+ import kotlin.math.sin
+@@ -25,26 +26,33 @@ import kotlin.random.Random
+  * the session status. The sensors and a 20 ms poll run on one coroutine, so the output is a pure function of the script.
+  */
+ object DecisionGoldenRecorder {
+     private const val FEED_MS = 20L
+ 
+     /** Same rule as S83's `reservedBoundMs` (plan Task 4); redefined here because this task adds no main code. */
+     private fun reservedBoundMs(state: ContextState, resting: Boolean): Long =
+         if (state in setOf(ContextState.REST, ContextState.VEHICLE_PASSENGER, ContextState.VEHICLE_DRIVING, ContextState.FLIGHT) ||
+             (resting && state != ContextState.WALKING)) 300_000L else 60_000L
+ 
+-    suspend fun record(test: TestScope, s: GoldenScript): String {
++    /**
++     * [planFor] (slice 3a Task 11): builds the plan controller for this rig and applies whatever plan the test wants BEFORE the session
++     * starts; the rig then reads gate values and glance tunables from it and the rows below come from its active config, the way
++     * CaptureService composes them. Null = the unmodified settings path of the frozen goldens.
++     */
++    suspend fun record(test: TestScope, s: GoldenScript, planFor: ((Rig) -> PlanController)? = null): String {
+         val plan = ScriptPlan().also { s.plan(Random(s.seed), it, s.durationMs) }
+         val r = Rig(test, s.settings, work = s.workMin, rest = s.restMin, glance = GlanceParams())
+         r.scene = 1
++        val ctl = planFor?.invoke(r)
++        if (ctl != null) r.activePlan = { ctl.active }
+         fun applyCtx(c: ContextState) {
+-            val pol = ContextPolicies.of(c)
++            val pol = ctl?.active?.policyFor(c) ?: ContextPolicies.of(c)
+             r.profile = CaptureProfile.of(r.settings.cameraWake, s.tier).withContext(pol)
+             r.contextCap = pol.capPerMin
+         }
+         applyCtx(ContextState.UNKNOWN)
+ 
+         // scheduled script actions, in time order (stable)
+         class Act(val at: Long, val run: () -> Unit)
+         val acts = ArrayList<Act>()
+         val out = StringBuilder()
+         val ctxTimeline = ArrayList<Pair<Long, ContextState>>().apply { add(0L to ContextState.UNKNOWN) }
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PlanControllerTest.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PlanControllerTest.kt
+new file mode 100644
+index 00000000..ba9833f1
+--- /dev/null
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PlanControllerTest.kt
+@@ -0,0 +1,209 @@
++package com.rokid.context.glasses.capture.plan
++
++import com.rokid.context.capture.plan.PlanReceiver
++import com.rokid.context.core.model.PlanAckState
++import com.rokid.context.core.model.PlanMode
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.glasses.capture.keyframe.GateParams
++import com.rokid.context.glasses.capture.plan.PlanTestKit.settings
++import com.rokid.context.glasses.capture.plan.PlanTestKit.shadow
++import com.rokid.context.glasses.capture.plan.PlanTestKit.trial
++import java.util.concurrent.Executors
++import java.util.concurrent.atomic.AtomicInteger
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNotSame
++import kotlin.test.assertNull
++import kotlin.test.assertSame
++import kotlin.test.assertTrue
++
++class PlanControllerTest {
++    private var now = 1_000L
++    private var boot = "bc:1"
++    private val mem = MemPersistence()
++    private val acks = Acks()
++    private val host = FakeHost()
++    private fun ctl(m: MemPersistence = mem, h: FakeHost? = host) =
++        PlanController(m, { now }, { boot }, { ContextState.UNKNOWN }, { acks.sent += it }).also { it.host = h }
++
++    // a plan whose gate differs from today's, so "applied" is observable
++    private val tuned = PlanTestKit.plan(PlanTestKit.plan().config.let { it.copy(gate = it.gate.copy(hamming = 14)) })
++
++    @Test fun effectiveOnlyAfterActivation() {
++        val c = ctl(); host.quiet = false
++        val a = c.onMessage(trial(1, tuned))
++        assertEquals(PlanAckState.STAGED, a.state)
++        assertEquals(listOf("STAGED"), acks.states())
++        assertSame(ActiveConfig.SETTINGS, c.active)
++        host.quiet = true; now += 1_000; c.tick(now)
++        assertEquals(listOf("STAGED", "EFFECTIVE"), acks.states())
++        assertEquals(GateParams(hamming = 14), c.active.gate)
++    }
++
++    @Test fun quietAtArrivalActivatesAtOnce() {
++        val c = ctl()
++        c.onMessage(trial(1, tuned))
++        assertEquals(listOf("STAGED", "EFFECTIVE"), acks.states())
++        assertEquals(1, host.installs.size)
++    }
++
++    @Test fun stagedActivationWaitsForQuiet() {
++        val c = ctl(); host.quiet = false
++        c.onMessage(trial(1, tuned))
++        for (i in 1..9) { now += 1_000; c.tick(now) }          // 9 s staged
++        assertTrue(host.installs.isEmpty()); assertEquals(0, host.aborts)
++        assertSame(ActiveConfig.SETTINGS, c.active)
++    }
++
++    @Test fun activationAbortsBoutAfter10s() {
++        val c = ctl(); host.quiet = false
++        c.onMessage(trial(1, tuned))
++        now += 9_999; c.tick(now); assertEquals(0, host.aborts)
++        now += 1; c.tick(now)
++        assertEquals(1, host.aborts); assertEquals(1, host.installs.size)
++        assertEquals(listOf("STAGED", "EFFECTIVE"), acks.states())
++    }
++
++    @Test fun noMixedOldDetectorNewCaps() {
++        val c = ctl(); host.quiet = false
++        val rest = PlanTestKit.withRow(tuned.config, com.rokid.context.capture.plan.PlanState.REST) { it.copy(capPerMin = 1) }
++        c.onMessage(trial(1, PlanTestKit.plan(rest)))
++        // staged but not activated: the gate values, the glance config and the rows are ALL still the old ones
++        assertEquals(GateParams(), c.active.gate)
++        assertEquals(2, c.active.contextCap(ContextState.REST))
++        assertEquals(com.rokid.context.glasses.capture.motion.GlanceParams(), c.active.glance)
++        assertTrue(host.installs.isEmpty())
++        host.quiet = true; now += 250; c.tick(now)
++        assertEquals(1, c.active.contextCap(ContextState.REST))
++        assertSame(c.active, host.installs.single())
++    }
++
++    @Test fun shadowAndSettingsNeverChangeTheRealInputs() {
++        val c = ctl()
++        c.onMessage(shadow(1, tuned))
++        assertSame(ActiveConfig.SETTINGS, c.active)
++        assertEquals(listOf("STAGED", "EFFECTIVE"), acks.states())
++        assertEquals(PlanMode.SHADOW, mem.state!!.mode)
++        c.onMessage(settings(2))
++        assertSame(ActiveConfig.SETTINGS, c.active)
++    }
++
++    @Test fun liveIsNeverApplied() {
++        val c = ctl()
++        val a = c.onMessage(PlanTestKit.msg(1, PlanMode.LIVE, tuned))
++        assertEquals(PlanAckState.REJECTED, a.state); assertEquals("unsupported:live", a.reason)
++        assertSame(ActiveConfig.SETTINGS, c.active); assertTrue(host.installs.isEmpty())
++    }
++
++    @Test fun aPersistedLiveStateIsRevertedOnLoadNotApplied() {
++        val seed = MemPersistence()
++        PlanReceiver(seed, { now }, { boot }).also { it.onMessage(trial(1, tuned)); it.activated(1) }
++        seed.state = seed.state!!.copy(mode = PlanMode.LIVE, trialStartElapsed = null, trialMaxMs = null)
++        val c = ctl(seed)
++        assertSame(ActiveConfig.SETTINGS, c.active); assertTrue(host.installs.isEmpty())
++        assertEquals(PlanMode.SETTINGS, seed.state!!.mode)
++        assertEquals("unsupported:live", seed.state!!.terminal[1])
++    }
++
++    @Test fun trialEndsByItselfLocally() {
++        val c = ctl()
++        c.onMessage(trial(1, tuned, 60_000))
++        val start = now
++        now = start + 59_999; c.tick(now); assertEquals(GateParams(hamming = 14), c.active.gate)
++        now = start + 60_000; c.tick(now)
++        assertSame(ActiveConfig.SETTINGS, c.active)
++        assertEquals("REVERTED:auto:trial_end", acks.states().last())
++        assertSame(ActiveConfig.SETTINGS, host.installs.last())
++    }
++
++    @Test fun rebootEndsTheTrialBeforeAnythingIsApplied() {
++        val c1 = ctl(); c1.onMessage(trial(1, tuned, 3_600_000))
++        assertNotSame(ActiveConfig.SETTINGS, c1.active)
++        boot = "bc:2"; now += 10_000
++        val h2 = FakeHost(); acks.sent.clear()
++        val c2 = ctl(mem, h2)
++        assertSame(ActiveConfig.SETTINGS, c2.active)
++        assertTrue(h2.installs.isEmpty(), "a persisted TRIAL of another boot must never be applied")
++        assertEquals("auto:reboot", mem.state!!.terminal[1])
++        val s = c2.statusAck()
++        assertEquals(PlanAckState.REVERTED, s.state); assertEquals("auto:reboot", s.reason); assertEquals(1L, s.gen)
++        assertEquals(PlanReceiver.CAPS, s.caps)
++    }
++
++    @Test fun aPersistedTrialOfTheSameBootResumesWithItsOriginalClock() {
++        val c1 = ctl(); c1.onMessage(trial(1, tuned, 60_000))
++        val start = now
++        now += 30_000
++        val h2 = FakeHost(); val c2 = ctl(mem, h2)
++        assertEquals(GateParams(hamming = 14), c2.active.gate)
++        now = start + 60_000; c2.tick(now)
++        assertSame(ActiveConfig.SETTINGS, c2.active)
++    }
++
++    @Test fun aStagedStateFromACrashMidApplyLeavesSettingsUntilActivated() {
++        val seed = MemPersistence()
++        PlanReceiver(seed, { now }, { boot }).onMessage(trial(1, tuned))     // staged, never activated
++        val h = FakeHost(quiet = false); val c = ctl(seed, h)
++        assertSame(ActiveConfig.SETTINGS, c.active)
++        h.quiet = true; now += 250; c.tick(now)
++        assertEquals(GateParams(hamming = 14), c.active.gate)
++        assertTrue(seed.state!!.effective)
++    }
++
++    @Test fun aFailedCommitAtActivationRollsBackToSettings() {
++        val c = ctl(); host.quiet = false
++        c.onMessage(trial(1, tuned))
++        host.quiet = true; mem.failNextCommit = true; now += 250
++        c.tick(now)
++        assertSame(ActiveConfig.SETTINGS, c.active)
++        assertSame(ActiveConfig.SETTINGS, host.installs.last())
++        assertTrue(acks.states().none { it == "EFFECTIVE" })
++        now += 250; c.tick(now)                       // the next tick retries and succeeds
++        assertEquals("EFFECTIVE", acks.states().last())
++        assertEquals(GateParams(hamming = 14), c.active.gate)
++    }
++
++    @Test fun oldPhoneRevertsPersistedPlan() {
++        val c = ctl(); c.onMessage(trial(1, tuned))
++        c.onPhoneSettings(planAware = true); assertEquals(GateParams(hamming = 14), c.active.gate)
++        c.onPhoneSettings(planAware = false)
++        assertSame(ActiveConfig.SETTINGS, c.active)
++        assertEquals("REVERTED:auto:old_phone", acks.states().last())
++        val n = acks.sent.size
++        c.onPhoneSettings(planAware = false)
++        assertEquals(n, acks.sent.size)               // nothing left to revert
++    }
++
++    @Test fun noPlanAndOldPhoneIsSilent() {
++        val c = ctl(); c.onPhoneSettings(planAware = false)
++        assertTrue(acks.sent.isEmpty()); assertNull(mem.state)
++    }
++
++    @Test fun statusAckWithoutAnyPlanIsTheCapsAnnouncement() {
++        val a = ctl().statusAck()
++        assertEquals(0L, a.gen); assertEquals(PlanReceiver.CAPS, a.caps); assertEquals("", a.phoneInstall)
++    }
++
++    @Test fun anAbsentEditableRowIsTheUnknownRowNotTheDefaultRestRow() {
++        val cfg = tuned.config.copy(policy = tuned.config.policy - com.rokid.context.capture.plan.PlanState.REST)
++        val a = ActiveConfig.of(PlanTestKit.plan(cfg))
++        assertEquals(null, a.contextCap(ContextState.REST))
++        assertEquals(0L, a.policyFor(ContextState.REST).minSettledCheckMs)
++        assertEquals(6, a.table.size)
++    }
++
++    @Test fun receiverAccessIsSerialised() {
++        val inside = AtomicInteger(); val overlap = AtomicInteger()
++        val slow = object : MemPersistence() {
++            override fun commit(s: com.rokid.context.capture.plan.ReceiverState) {
++                if (inside.incrementAndGet() > 1) overlap.incrementAndGet()
++                Thread.sleep(1); super.commit(s); inside.decrementAndGet()
++            }
++        }
++        val c = ctl(slow, FakeHost())
++        val pool = Executors.newFixedThreadPool(4)
++        val jobs = (0 until 4).map { t -> pool.submit { for (i in 1..40) { val g = (i * 4 + t).toLong(); c.onMessage(shadow(g)); c.tick(now + g); c.onPhoneSettings(true) } } }
++        jobs.forEach { it.get() }; pool.shutdown()
++        assertEquals(0, overlap.get(), "two threads were inside the receiver at once")
++    }
++}
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PlanLiveApplyTest.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PlanLiveApplyTest.kt
+new file mode 100644
+index 00000000..32a87044
+--- /dev/null
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PlanLiveApplyTest.kt
+@@ -0,0 +1,191 @@
++package com.rokid.context.glasses.capture.plan
++
++import com.rokid.context.capture.plan.PlanState
++import com.rokid.context.core.model.CameraWake
++import com.rokid.context.core.model.CaptureMode
++import com.rokid.context.core.model.HudSettings
++import com.rokid.context.core.model.MotionState
++import com.rokid.context.core.model.PlanMode
++import com.rokid.context.core.model.context.ContextCapturePolicy
++import com.rokid.context.core.model.context.ContextPolicies
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.core.model.context.MotionContextMessage
++import com.rokid.context.glasses.capture.golden.DecisionGoldenRecorder
++import com.rokid.context.glasses.capture.golden.GoldenScript
++import com.rokid.context.glasses.capture.golden.GoldenScripts
++import com.rokid.context.glasses.capture.golden.Turn
++import com.rokid.context.glasses.capture.plan.PlanTestKit.shadow
++import com.rokid.context.glasses.capture.plan.PlanTestKit.trial
++import com.rokid.context.glasses.capture.plan.PlanTestKit.withRow
++import com.rokid.context.glasses.capture.session.BudgetTier
++import com.rokid.context.glasses.capture.session.CaptureProfile
++import com.rokid.context.glasses.capture.session.ContextGate
++import com.rokid.context.glasses.capture.session.HeatReading
++import com.rokid.context.glasses.capture.session.Rig
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.test.TestScope
++import kotlinx.coroutines.test.runTest
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNotEquals
++import kotlin.test.assertNotNull
++import kotlin.test.assertNull
++import kotlin.test.assertSame
++import kotlin.test.assertTrue
++import kotlin.time.Duration.Companion.minutes
++
++/** Slice 3a Task 11: what an applied plan does (and, for the identity plan, does NOT do) to the real decisions. */
++class PlanLiveApplyTest {
++    private fun golden(name: String) = javaClass.getResourceAsStream("/golden/decisions-$name.txt")!!.bufferedReader().use { it.readText() }
++
++    private fun record(s: GoldenScript, planFor: ((Rig) -> PlanController)?): String {
++        var text = ""
++        runTest(timeout = 5.minutes) { text = DecisionGoldenRecorder.record(this, s, planFor) }
++        return text
++    }
++
++    private val identity = PlanTestKit.plan()
++
++    @Test fun settingsPathEqualsGoldens() {
++        for (s in GoldenScripts.all) assertEquals(golden(s.name), record(s) { r -> RigPlan.controller(r) }, "settings path via the plan machinery: ${s.name}")
++    }
++
++    @Test fun identityPlanLiveEqualsGoldens() {
++        // Every script: REST 120 s and FLIGHT 300 s rows, WorkRest, T2 budget and heat-SLOW included. The receiver refuses LIVE (CORE), so
++        // the live apply path is the TRIAL one; the config the session reads is the plan's, not the settings default.
++        for (s in GoldenScripts.all) {
++            var applied: ActiveConfig? = null
++            val text = record(s) { r -> RigPlan.controller(r) { it.onMessage(trial(1, identity, 3_600_000)); applied = it.active } }
++            assertEquals(identity.configHash, applied!!.configHash, "the plan really was applied: ${s.name}")
++            assertEquals(golden(s.name), text, "identity plan: ${s.name}")
++        }
++    }
++
++    @Test fun shadowLeavesCaptureInputsUntouched() {
++        // restrictive rows in the shadow plan: if any of it reached capture the REST and FLIGHT goldens would change
++        val harsh = PlanTestKit.plan(
++            withRow(withRow(identity.config, PlanState.REST) { it.copy(capPerMin = 1, timerPhotoGapsMs = it.timerPhotoGapsMs.copy(settledMs = 300_000, quietMs = 300_000, walkMs = 300_000, stillCapMs = 300_000)) },
++                PlanState.FLIGHT) { it.copy(capPerMin = 1) }.let { it.copy(glance = it.glance.copy(onsetRadS = 1.0f, settleMs = 3_000)) },
++        )
++        for (s in listOf(GoldenScripts.restStill, GoldenScripts.flightSettings, GoldenScripts.unknownWalk)) {
++            var active: ActiveConfig? = null
++            val text = record(s) { r -> RigPlan.controller(r) { it.onMessage(shadow(1, harsh)); active = it.active } }
++            assertSame(ActiveConfig.SETTINGS, active)
++            assertEquals(golden(s.name), text, "shadow: ${s.name}")
++        }
++    }
++
++    // ---- scripts for the plan effects ----
++
++    private fun script(name: String, ctx: ContextState, wake: CameraWake = CameraWake.SETTLE, build: (com.rokid.context.glasses.capture.golden.ScriptPlan, Long) -> Unit) =
++        GoldenScript(name, 5L, 6 * 60_000L, HudSettings(captureMode = CaptureMode.SMART, cameraWake = wake), BudgetTier.T0) { _, p, d ->
++            p.ctx += 0L to ctx
++            build(p, d)
++        }
++
++    private fun times(text: String, kind: String) = text.lines().filter { it.split(' ').getOrNull(1) == kind }.map { it.substringBefore(' ').toLong() }
++    private fun maxInAMinute(ts: List<Long>) = ts.maxOfOrNull { t -> ts.count { it >= t && it < t + 60_000 } } ?: 0
++
++    /** A glance (turn onto a new scene) every [gap] ms. */
++    private fun glanceEvery(p: com.rokid.context.glasses.capture.golden.ScriptPlan, d: Long, gap: Long, rate: Float = 1.5f) {
++        var t = 5_000L; var scene = 100
++        while (t < d) { p.turns += Turn(t, 600, rate, scene++); t += gap }
++    }
++
++    @Test fun liveCapOneLimitsKeeps() {
++        val s = script("cap1", ContextState.REST) { p, d -> glanceEvery(p, d, 9_000) }
++        val base = record(s) { r -> RigPlan.controller(r) }
++        val capped = PlanTestKit.plan(withRow(identity.config, PlanState.REST) { it.copy(capPerMin = 1) })
++        val live = record(s) { r -> RigPlan.controller(r) { it.onMessage(trial(1, capped, 3_600_000)) } }
++        assertTrue(maxInAMinute(times(base, "keep")) >= 2, "settings REST cap 2 keeps two in a minute: ${times(base, "keep")}")
++        assertEquals(1, maxInAMinute(times(live, "keep")), "plan REST cap 1: ${times(live, "keep")}")
++    }
++
++    @Test fun onsetFromPlanChangesBoutStart() {
++        val s = script("onset", ContextState.UNKNOWN) { p, d -> glanceEvery(p, d, 30_000, rate = 0.8f) }
++        val base = record(s) { r -> RigPlan.controller(r) }
++        val high = PlanTestKit.plan(identity.config.let { it.copy(glance = it.glance.copy(onsetRadS = 1.0f)) })
++        val live = record(s) { r -> RigPlan.controller(r) { it.onMessage(trial(1, high, 3_600_000)) } }
++        assertTrue(times(base, "dwell").isNotEmpty(), "0.8 rad/s is a bout at the default onset 0.6")
++        assertTrue(times(live, "dwell").isEmpty(), "and none at onset 1.0: ${times(live, "dwell")}")
++    }
++
++    // ---- composition (S68) ----
++
++    private val rowPlan = PlanTestKit.plan(
++        withRow(withRow(identity.config, PlanState.VEHICLE_PASSENGER) { it.copy(capPerMin = 1, timerPhotoGapsMs = it.timerPhotoGapsMs.copy(settledMs = 45_000)) }, PlanState.REST) { it.copy(capPerMin = 1) },
++    )
++    private val unchangedRow = ContextPolicies.DEFAULT.getValue(ContextState.UNKNOWN)
++
++    private fun applied(a: ActiveConfig = ActiveConfig.of(rowPlan)) = a
++    private fun msg(s: ContextState) = MotionContextMessage(state = s, atMs = 1, reasons = emptyList())
++
++    @Test fun vetoedVehicleGetsFullRateRow() {
++        val a = ActiveConfig.of(rowPlan)
++        assertEquals(ContextPolicies.DEFAULT.getValue(ContextState.WALKING), a.table.getValue(ContextState.WALKING), "the locked WALKING row is in every applied table")
++        assertEquals(unchangedRow, a.table.getValue(ContextState.UNKNOWN))
++        val g = ContextGate(); g.onMessage(msg(ContextState.VEHICLE_PASSENGER), 0)
++        val st = g.effective(10_000, MotionState.WALKING, null, emptyList())      // the local walking veto
++        assertEquals(ContextState.UNKNOWN, st)
++        assertEquals(unchangedRow, a.policyFor(st)); assertNull(a.contextCap(st))
++        assertEquals(CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0).withContext(unchangedRow), a.profile(CameraWake.SETTLE, BudgetTier.T0, st))
++    }
++
++    @Test fun speedLiftsVeto() {
++        // The glasses' own veto is unconditional (ContextGateTest pins "whatever the reasons"); the SPEED exception lives in the phone hub,
++        // which sends the vehicle state while the glasses are not walking (a rider). That message gets the plan's row, not the default.
++        val a = ActiveConfig.of(rowPlan)
++        val g = ContextGate(); g.onMessage(msg(ContextState.VEHICLE_PASSENGER).copy(reasons = listOf("SPEED")), 0)
++        val st = g.effective(10_000, MotionState.HEAD_MOVING, lastLocalWalkAtMs = null, sourcesOff = emptyList())
++        assertEquals(ContextState.VEHICLE_PASSENGER, st)
++        assertEquals(1, a.contextCap(st)); assertEquals(45_000L, a.policyFor(st).minSettledCheckMs)
++        assertNotEquals(ActiveConfig.SETTINGS.contextCap(st), a.contextCap(st))
++    }
++
++    @Test fun ctxUnboundAppliesUnknown() {
++        val unbound = ActiveConfig.of(PlanTestKit.plan(rowPlan.config.copy(ctxBound = false)))
++        for (s in ContextState.entries) { assertEquals(unchangedRow, unbound.policyFor(s), "$s"); assertNull(unbound.contextCap(s)) }
++        assertEquals(1, ActiveConfig.of(rowPlan).contextCap(ContextState.REST))
++    }
++
++    @Test fun rowGapsComposeAsMinimaOverTheSettingsProfile() {
++        val a = ActiveConfig.of(rowPlan)
++        val p = a.profile(CameraWake.MOTION, BudgetTier.T0, ContextState.VEHICLE_PASSENGER)
++        assertEquals(CameraWake.MOTION, p.wake)                       // forceSettle false: the settings wake stays
++        assertEquals(45_000L, p.settledCheckMs)                       // plan 45 s over the settings 5 s
++        val low = a.profile(CameraWake.MOTION, BudgetTier.T2, ContextState.VEHICLE_PASSENGER)
++        assertEquals(45_000L, low.settledCheckMs)                     // T2's own 20 s is below the row
++        assertEquals(CaptureProfile.of(CameraWake.MOTION, BudgetTier.T2).quietCheckMs, low.quietCheckMs)   // a row gap of 0 inherits
++    }
++
++    @Test fun settingsEditAfterPublishDoesNotChangeLivePlan() {
++        var activeAfter: ActiveConfig? = null
++        runTest {
++            val r = Rig(this, HudSettings(captureMode = CaptureMode.SMART), glance = com.rokid.context.glasses.capture.motion.GlanceParams())
++            val c = RigPlan.controller(r) { it.onMessage(trial(1, rowPlan, 3_600_000)) }
++            val before = c.active
++            c.onPhoneSettings(planAware = true)                       // a settings push after publish
++            r.settings = r.settings.copy(cameraWake = CameraWake.SETTLE, batteryTargetHours = 4, workMinutes = 30)
++            activeAfter = c.active
++            assertSame(before, activeAfter)
++            assertEquals(1, c.active.contextCap(ContextState.REST))
++            assertEquals(1, c.active.contextCap(ContextState.VEHICLE_PASSENGER))
++        }
++    }
++
++    // ---- invariants beat the plan ----
++
++    private fun blockedUnderPlan(setup: (Rig) -> Unit, reason: String) = runTest {
++        val r = Rig(this, HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.MOTION), glance = com.rokid.context.glasses.capture.motion.GlanceParams())
++        RigPlan.controller(r) { it.onMessage(trial(1, rowPlan, 3_600_000)) }
++        setup(r)
++        r.startSensors(); r.session.start()
++        delay(90_000)
++        assertEquals(reason, r.session.status.value.reason)
++        assertEquals(0, r.camera.opens, "no camera open while $reason")
++        r.session.stop("end")
++    }
++
++    @Test fun heatStopBeatsPlan() = blockedUnderPlan({ it.heatReading = HeatReading(0, Float.NaN, 45f) }, "heat")
++    @Test fun userPauseBeatsPlan() = blockedUnderPlan({ it.paused = true }, "paused")
++}
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PlanTestKit.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PlanTestKit.kt
+new file mode 100644
+index 00000000..ad31bc6b
+--- /dev/null
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PlanTestKit.kt
+@@ -0,0 +1,64 @@
++package com.rokid.context.glasses.capture.plan
++
++import com.rokid.context.capture.plan.CapturePlan
++import com.rokid.context.capture.plan.PLAN_SCHEMA
++import com.rokid.context.capture.plan.PlanConfig
++import com.rokid.context.capture.plan.PlanJson
++import com.rokid.context.capture.plan.PlanMeta
++import com.rokid.context.capture.plan.PlanPersistence
++import com.rokid.context.capture.plan.PlanResolver
++import com.rokid.context.capture.plan.PlanRow
++import com.rokid.context.capture.plan.PlanState
++import com.rokid.context.capture.plan.ReceiverState
++import com.rokid.context.core.model.CapturePlanAck
++import com.rokid.context.core.model.CapturePlanMessage
++import com.rokid.context.core.model.PlanMode
++
++object PlanTestKit {
++    fun plan(config: PlanConfig = PlanResolver.identity(), name: String = "t") = CapturePlan(PLAN_SCHEMA, PlanJson.configHash(config), config, PlanMeta(name, 1))
++    fun withRow(c: PlanConfig, s: PlanState, f: (PlanRow) -> PlanRow) = c.copy(policy = c.policy + (s to f(c.policy.getValue(s))))
++    fun msg(gen: Long, mode: PlanMode, plan: CapturePlan? = plan(), trialMaxMs: Long? = null, install: String = "p1") = CapturePlanMessage(
++        gen = gen, mode = mode, configHash = plan?.configHash, planJson = plan?.let { PlanJson.encode(it) }, trialMaxMs = trialMaxMs, phoneInstall = install, atMs = 5,
++    )
++    fun trial(gen: Long, plan: CapturePlan = plan(), max: Long = 60_000L) = msg(gen, PlanMode.TRIAL, plan, max)
++    fun shadow(gen: Long, plan: CapturePlan = plan()) = msg(gen, PlanMode.SHADOW, plan)
++    fun settings(gen: Long) = msg(gen, PlanMode.SETTINGS, null)
++}
++
++open class MemPersistence(var state: ReceiverState? = null) : PlanPersistence {
++    var commits = 0
++    var failNextCommit = false
++    override fun load() = state
++    override fun commit(s: ReceiverState) {
++        if (failNextCommit) { failNextCommit = false; throw java.io.IOException("disk full") }
++        state = s; commits++
++    }
++}
++
++class FakeHost(var quiet: Boolean = true) : PlanHost {
++    val installs = ArrayList<ActiveConfig>()
++    var aborts = 0
++    override fun quiet() = quiet
++    override fun abortBout() { aborts++; quiet = true }
++    override fun install(cfg: ActiveConfig) { installs += cfg }
++}
++
++class Acks { val sent = ArrayList<CapturePlanAck>(); fun states() = sent.map { it.state.name + (it.reason?.let { r -> ":$r" } ?: "") } }
++
++/** The PlanHost CaptureService builds, over a test [com.rokid.context.glasses.capture.session.Rig]. */
++class RigHost(private val r: com.rokid.context.glasses.capture.session.Rig) : PlanHost {
++    override fun quiet() = r.motion.quiet() && !r.session.episodeOpen()
++    override fun abortBout() = r.motion.abortBout()
++    override fun install(cfg: ActiveConfig) = r.motion.setConfig(cfg.glance)
++}
++
++object RigPlan {
++    /** A controller on [r] (virtual clock, in-memory persistence); [apply] sends the plan messages before the session starts. */
++    fun controller(r: com.rokid.context.glasses.capture.session.Rig, mem: MemPersistence = MemPersistence(), apply: (PlanController) -> Unit = {}): PlanController {
++        val c = PlanController(mem, r.clock, { "bc:1" }, { com.rokid.context.core.model.context.ContextState.UNKNOWN }, {})
++        c.host = RigHost(r)
++        r.activePlan = { c.active }
++        apply(c)
++        return c
++    }
++}
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PrefsPlanPersistenceTest.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PrefsPlanPersistenceTest.kt
+new file mode 100644
+index 00000000..1af43430
+--- /dev/null
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/PrefsPlanPersistenceTest.kt
+@@ -0,0 +1,47 @@
++package com.rokid.context.glasses.capture.plan
++
++import android.content.Context
++import androidx.test.core.app.ApplicationProvider
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import com.rokid.context.capture.plan.PlanReceiver
++import com.rokid.context.capture.plan.ReceiverStateJson
++import com.rokid.context.core.model.PlanAckState
++import org.junit.runner.RunWith
++import org.robolectric.annotation.Config
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNull
++import kotlin.test.assertTrue
++
++@RunWith(AndroidJUnit4::class)
++@Config(sdk = [34])
++class PrefsPlanPersistenceTest {
++    private val prefs = ApplicationProvider.getApplicationContext<Context>().getSharedPreferences(PrefsPlanPersistence.PREFS, Context.MODE_PRIVATE)
++
++    @Test fun aStagedTrialSurvivesAProcessRestartAndResumesOnTheSameBoot() {
++        prefs.edit().clear().commit()
++        assertNull(PrefsPlanPersistence(prefs).load())
++        val first = PlanController(PrefsPlanPersistence(prefs), { 1_000L }, { "bc:4" }, { com.rokid.context.core.model.context.ContextState.UNKNOWN }, {})
++        assertEquals(PlanAckState.STAGED, first.onMessage(PlanTestKit.trial(1, PlanTestKit.plan(), 60_000)).state)
++        assertTrue(prefs.getString("state", "")!!.contains("\"effective\":true"))
++        val second = PlanController(PrefsPlanPersistence(prefs), { 20_000L }, { "bc:4" }, { com.rokid.context.core.model.context.ContextState.UNKNOWN }, {})
++        assertEquals(PlanReceiver.CAPS, second.statusAck().caps)
++        assertEquals(PlanAckState.EFFECTIVE, second.statusAck().state)
++        assertEquals(PlanTestKit.plan().configHash, second.active.configHash)
++    }
++
++    @Test fun anotherBootEndsItAtLoadAndTheRevertIsPersisted() {
++        prefs.edit().clear().commit()
++        PlanController(PrefsPlanPersistence(prefs), { 1_000L }, { "bc:4" }, { com.rokid.context.core.model.context.ContextState.UNKNOWN }, {})
++            .onMessage(PlanTestKit.trial(1, PlanTestKit.plan(), 3_600_000))
++        val next = PlanController(PrefsPlanPersistence(prefs), { 50L }, { "bc:5" }, { com.rokid.context.core.model.context.ContextState.UNKNOWN }, {})
++        assertEquals(ActiveConfig.SETTINGS, next.active)
++        assertEquals("auto:reboot", ReceiverStateJson.decode(prefs.getString("state", null))!!.terminal[1])
++    }
++
++    @Test fun anUnreadableStoredStateIsNoPlan() {
++        prefs.edit().putString("state", "{not json").commit()
++        val c = PlanController(PrefsPlanPersistence(prefs), { 1L }, { "bc:1" }, { com.rokid.context.core.model.context.ContextState.UNKNOWN }, {})
++        assertEquals(0L, c.statusAck().gen); assertEquals(ActiveConfig.SETTINGS, c.active)
++    }
++}
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/StagedActivationTest.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/StagedActivationTest.kt
+new file mode 100644
+index 00000000..8cbc3a6a
+--- /dev/null
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/plan/StagedActivationTest.kt
+@@ -0,0 +1,104 @@
++package com.rokid.context.glasses.capture.plan
++
++import com.rokid.context.capture.plan.PlanState
++import com.rokid.context.core.model.CaptureMode
++import com.rokid.context.core.model.HudSettings
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.glasses.capture.keyframe.GateParams
++import com.rokid.context.glasses.capture.motion.GlanceParams
++import com.rokid.context.glasses.capture.plan.PlanTestKit.trial
++import com.rokid.context.glasses.capture.plan.PlanTestKit.withRow
++import com.rokid.context.glasses.capture.session.Rig
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.test.TestScope
++import kotlinx.coroutines.test.runTest
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFalse
++import kotlin.test.assertSame
++import kotlin.test.assertTrue
++
++/** Staged activation against the REAL classifier and gate (the fake-host cases are in PlanControllerTest). */
++class StagedActivationTest {
++    private val identity = PlanTestKit.plan()
++    private val tuned = PlanTestKit.plan(
++        withRow(identity.config, PlanState.REST) { it.copy(capPerMin = 1) }.let { it.copy(glance = it.glance.copy(onsetRadS = 1.0f), gate = it.gate.copy(hamming = 14)) },
++    )
++
++    private fun TestScope.rig() = Rig(this, HudSettings(captureMode = CaptureMode.SMART), glance = GlanceParams())
++
++    private fun withAcks(r: Rig, sent: MutableList<String>): PlanController {
++        val c = PlanController(MemPersistence(), r.clock, { "bc:1" }, { ContextState.UNKNOWN }, { sent += it.state.name })
++        c.host = RigHost(r); r.activePlan = { c.active }
++        return c
++    }
++
++    /** Continuous gyro of [rate] rad/s for [ms]; [tick] runs once a second like the supervisor. */
++    private suspend fun turn(r: Rig, c: PlanController, ms: Long, rate: Float, tick: Boolean = true) {
++        var t = 0L
++        while (t < ms) {
++            r.motion.onGyro(rate, 0f, 0f, r.clock())
++            if (tick && t % 1_000L == 0L) c.tick(r.clock())
++            delay(20); t += 20
++        }
++    }
++
++    @Test fun stagedActivationWaitsForQuiet() = runTest {
++        val sent = ArrayList<String>()
++        val r = rig()
++        val c = withAcks(r, sent)
++        turn(r, c, 400, 1.5f, tick = false)                 // a bout is running
++        assertFalse(r.motion.quiet())
++        c.onMessage(trial(1, tuned))
++        turn(r, c, 1_000, 0f)                                // settling: the glance is pending, not quiet before ~1.5 s
++        assertEquals(listOf("STAGED"), sent)
++        assertFalse(r.motion.quiet())
++        turn(r, c, 3_000, 0f)
++        assertTrue(r.motion.quiet())
++        assertEquals(listOf("STAGED", "EFFECTIVE"), sent)
++        assertEquals(1.0f, r.motion.config.onsetRadS)
++    }
++
++    @Test fun effectiveOnlyAfterActivation() = runTest {
++        val sent = ArrayList<String>()
++        val r = rig()
++        val c = withAcks(r, sent)
++        turn(r, c, 400, 1.5f, tick = false)
++        c.onMessage(trial(1, tuned))
++        assertEquals(listOf("STAGED"), sent)
++        assertEquals(GlanceParams(), r.motion.config)
++        turn(r, c, 6_000, 0f)
++        assertEquals(listOf("STAGED", "EFFECTIVE"), sent)
++    }
++
++    @Test fun activationAbortsBoutAfter10s() = runTest {
++        val r = rig()
++        val c = RigPlan.controller(r)
++        turn(r, c, 400, 1.5f, tick = false)
++        c.onMessage(trial(1, tuned))
++        val staged = r.clock()
++        turn(r, c, 9_000, 1.5f)                              // the bout never ends: 9 s staged, nothing applied
++        assertEquals(0.6f, r.motion.config.onsetRadS); assertSame(ActiveConfig.SETTINGS, c.active)
++        turn(r, c, 2_000, 1.5f)
++        assertEquals(1.0f, r.motion.config.onsetRadS)
++        assertEquals(tuned.configHash, c.active.configHash)
++        assertTrue(r.clock() - staged >= 10_000)
++    }
++
++    @Test fun noMixedOldDetectorNewCaps() = runTest {
++        val r = rig()
++        val c = RigPlan.controller(r)
++        turn(r, c, 400, 1.5f, tick = false)
++        c.onMessage(trial(1, tuned))
++        // while the bout runs: classifier, gate values, rows and the session's glance tunables are ALL the old ones
++        fun snapshot() = listOf(r.motion.config, r.activePlan!!().gate, r.activePlan!!().contextCap(ContextState.REST), r.activePlan!!().glance)
++        val old = snapshot()
++        assertEquals(listOf(GlanceParams(), GateParams(), 2, GlanceParams()), old)
++        turn(r, c, 2_000, 1.5f)
++        assertEquals(old, snapshot())
++        turn(r, c, 12_000, 0f)
++        val new = snapshot()
++        assertEquals(listOf(r.motion.config, GateParams(hamming = 14), 1, r.motion.config), new)
++        assertEquals(1.0f, r.motion.config.onsetRadS)
++    }
++}
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/session/SamplingTestKit.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/session/SamplingTestKit.kt
+index 79fbfaa5..757c41be 100644
+--- a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/session/SamplingTestKit.kt
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/session/SamplingTestKit.kt
+@@ -135,21 +135,23 @@ class Rig(
+     val encoder: KeyframeEncoder = TagEncoder(),
+     var work: Int = 90, var rest: Int = 15,
+     val workRest: WorkRest? = null,
+     val glance: GlanceParams = GlanceParams.LEGACY,
+ ) {
+     val sched = test.testScheduler
+     val clock: () -> Long = { sched.currentTime }
+     val motion = MotionClassifier(clock, glance)
+     val wear = WearDetector(clock)
+     val store = MemStore()
+-    val gate = KeyframeGate(store, clock)
++    /** Slice 3a: the active plan config, read the way CaptureService does (gate values, glance tunables). Null = no plan machinery. */
++    @Volatile var activePlan: (() -> com.rokid.context.glasses.capture.plan.ActiveConfig)? = null
++    val gate = KeyframeGate(store, clock, params = { activePlan?.invoke()?.gate ?: com.rokid.context.glasses.capture.keyframe.GateParams() })
+     var heatReading = HeatReading(0, Float.NaN, 30f)
+     val heat = HeatGuard({ heatReading }, clock)
+     val sessionWorkRest = workRest ?: WorkRest(clock, { work }, { rest }, enabled = { settings.workRestEnabled })
+     val owner = CameraOwner()
+     val camera = FakeCamera(test.backgroundScope, clock, startupMs) { t -> Scenes.frame(scene, soft, t) }
+     val keyframes = ArrayList<Pair<Long, KeyframeOut>>()
+     var paused = false
+     var fallbacks = 0
+     var onFallbackAction: suspend () -> Unit = {}
+     var gyroMag = 0f
+@@ -157,21 +159,21 @@ class Rig(
+     var contextCap: Int? = null
+     var profileReads = 0 // one read per policy tick: counts loop wake-ups
+     var phoneInUse = false
+     var fixedCaptures = ArrayList<Long>()
+     var fixedDuring: suspend () -> Unit = {}
+     val logs = ArrayList<String>()
+ 
+     val session = SamplingSession(
+         scope = test.backgroundScope, camera = camera, owner = owner, motion = motion, wear = wear, gate = gate, heat = heat,
+         workRest = sessionWorkRest, encoder = encoder, sink = { k, _ -> keyframes += clock() to k }, clock = clock, settings = { settings },
+-        capturePaused = { paused }, profile = { profileReads++; profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance, contextCap = { contextCap },
++        capturePaused = { paused }, profile = { profileReads++; profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance, glanceNow = { activePlan?.invoke()?.glance ?: glance }, contextCap = { contextCap },
+         fixedCapture = { owner.acquire("fixed") { fixedCaptures += clock(); fixedDuring() } },
+     )
+ 
+     /** The sensor feed: gyro at 50 Hz from [gyroMag], and the heat poll every 30 s like the service does. */
+     fun startSensors() {
+         test.backgroundScope.launch { while (isActive) { motion.onGyro(gyroMag, 0f, 0f, clock()); delay(20) } }
+         val poller = HeatPoller(heat, clock)
+         test.backgroundScope.launch { while (isActive) { poller.tick(); delay(1000) } }
+     }
+ 
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/link/HudControllerTest.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/link/HudControllerTest.kt
+index 0986df6a..9cd59786 100644
+--- a/android-companion/glasses/src/test/java/com/rokid/context/glasses/link/HudControllerTest.kt
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/link/HudControllerTest.kt
+@@ -346,11 +346,42 @@ class HudControllerTest {
+     }
+ 
+     @Test fun sendMotionHintOnlyWhileTheSessionIsOpen() = runTest {
+         val c = controller()
+         val h = com.rokid.context.core.model.MotionHint(state = com.rokid.context.core.model.MotionState.WALKING, atMs = 5)
+         assertFalse(c.sendMotionHint(h))
+         bridge.phone(Channels.STATE, state())
+         assertTrue(c.sendMotionHint(h))
+         assertEquals(1, bridge.sent.count { it.first == Channels.MOTION_HINT })
+     }
++
++    // ---- slice 3a Task 11: the plan channel ----
++
++    private fun planMsg(gen: Long = 1, atMs: Long = 5, sessionStartMs: Long = 0) =
++        Wire.encode(com.rokid.context.core.model.CapturePlanMessage(gen = gen, atMs = atMs, sessionStartMs = sessionStartMs, phoneInstall = "p1"))
++
++    @Test fun planMessageReachesTheHandlerAndAStaleCopyDoesNot() = runTest {
++        val c = controller()
++        val got = ArrayList<Long>()
++        c.onCapturePlan = { got += it.gen }
++        bridge.phone(Channels.CAPTURE_PLAN, planMsg(1))
++        bridge.phone(Channels.CAPTURE_PLAN, planMsg(2, atMs = 10, sessionStartMs = 11))   // older than its session
++        assertEquals(listOf(1L), got)
++    }
++
++    @Test fun planAckGoesOutOnlyWhileTheSessionIsOpen() = runTest {
++        val c = controller()
++        val a = com.rokid.context.core.model.CapturePlanAck(gen = 3, state = com.rokid.context.core.model.PlanAckState.EFFECTIVE)
++        assertEquals(false, c.sendPlanAck(a))
++        bridge.phone(Channels.STATE, state())
++        assertEquals(true, c.sendPlanAck(a))
++        assertEquals(2, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })    // the caps ack and this one
++    }
++
++    @Test fun sessionOpenAckCarriesTheControllersStatus() = runTest {
++        val c = controller()
++        c.capsAck = { com.rokid.context.core.model.CapturePlanAck(gen = 7, state = com.rokid.context.core.model.PlanAckState.REVERTED, reason = "auto:reboot", caps = listOf("plan1", "shadow", "trial")) }
++        bridge.phone(Channels.STATE, state())
++        val a = (Wire.decode<com.rokid.context.core.model.CapturePlanAck>(bridge.sent.first { it.first == Channels.CAPTURE_PLAN_ACK }.second.single()) as com.rokid.context.core.model.Decoded.Ok).value
++        assertEquals(7L, a.gen); assertEquals("auto:reboot", a.reason)
++    }
+ }

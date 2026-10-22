@@ -127,3 +127,7 @@ cd android-companion
   - `SummarizerWorkerJob` composes `system_global + write_context_batched`.
   - `CriticWorkerJob` composes `system_global + critic_validation`.
   - Prompt hash is logged for audit/debug without exposing full prompt text.
+
+## AI-agent context
+
+`code-agent/` holds the project's working memory for AI coding agents and new contributors: the current handoff, working rules, Claude memory snapshot, Codex reviews and the per-task briefs and reports. Start at [`code-agent/README.md`](code-agent/README.md).

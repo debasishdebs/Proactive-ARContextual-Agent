@@ -1,0 +1,705 @@
+# Review package: 6010674f^..6010674f
+
+## Commits
+6010674f feat(ai): PlanCompiler over the fixed wrapper chain (strict operators, per-state timer photo gaps, fusion subset) with the exact identity and §1 goldens
+
+## Files changed
+ .../sdd/2026-10-22-canvas-slice3a/task-7-report.md |  19 ++
+ .../com/rokid/context/ai/canvas/ParamSchema.kt     |   3 +-
+ .../rokid/context/ai/canvas/plan/PlanCompiler.kt   | 250 ++++++++++++++
+ .../context/ai/canvas/plan/PlanCompilerTest.kt     | 368 +++++++++++++++++++++
+ .../canvas/section1-capture-plan.golden.json       |   1 +
+ 5 files changed, 640 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/.superpowers/sdd/2026-10-22-canvas-slice3a/task-7-report.md b/.superpowers/sdd/2026-10-22-canvas-slice3a/task-7-report.md
+new file mode 100644
+index 00000000..2e0bec86
+--- /dev/null
++++ b/.superpowers/sdd/2026-10-22-canvas-slice3a/task-7-report.md
+@@ -0,0 +1,19 @@
++# Task 7 report: PlanCompiler
++
++Status: DONE (route /api/plans/compile NOT added: CanvasApi/PlanRoutes belong to Task 22 per the Round 3 table and the task rules).
++
++Files: services/ai/.../ai/canvas/plan/PlanCompiler.kt, test PlanCompilerTest (27 tests), resource test/resources/canvas/section1-capture-plan.golden.json (hash 5ca1e1c3c69f computed with python hashlib, independent of Kotlin; identity hash f5782e0d8610 re-derived the same way). One small edit in ParamSchema.kt: a null gap cell (blank = inherit) is accepted.
++
++API: PlanCompiler.compile(pipeline, settingsRev = 0, profile = SETTLE/T0): CompileResult(plan, planJson, problems, warnings, staticCost). plan/planJson null iff problems. Output re-checked with PlanValidator.check.
++
++Semantics chosen (flag for review):
++- Missing optional nodes take identity values; a state with no row = identity row; in a PRESENT row an absent or null cap = null and an absent or null gap = 0 (S68 blank rule), forceSettle/nudges absent = identity row.
++- Thresholds fold into glance (gyroPeak -> onsetRadS, boutMs -> minBoutMs, boutRad -> minBoutRad), with node-specific bounds; two thresholds on a feature, or a threshold vs an explicit head param, must agree.
++- Chain rank head < threshold* < settle < novelty < policy < rate_cap < capture; branch = extra edge out of / into a chain node, reported as "unsupported wrapper order: a before b". ctx binding: signal.in ctx must feed policy only ("ctx binding must feed policy.capture_rate"), signal.out ctx must come from hub.context. ctxBound = signal.in ctx feeds policy.
++- Compiler texts replace the validator's overlapping ones (operator, port mismatch on a refused chain edge, unreachable unbound signal).
++- S68 warning compared with the SETTLE/T0 settings profile (10/30/10/60 s), overridable parameter.
++- hub.context any param -> "hub fusion params arrive in slice 3a-LATER".
++
++Mutation REDs: fold >= into onset -> gyroPeakGteRefused fails; warning `<` to `<=` -> gapBelowProfileWarns fails. Initial RED: stub compiler, 26 of 27 tests failed on assertions.
++
++Tests: PlanCompilerTest 27/27; :services:ai canvas.* + CanonicalJsonParityTest green; :services:orchestration canvas.* green; :core:capture:test green.
+diff --git a/android-companion/services/ai/src/main/java/com/rokid/context/ai/canvas/ParamSchema.kt b/android-companion/services/ai/src/main/java/com/rokid/context/ai/canvas/ParamSchema.kt
+index f1afcf59..a0a59533 100644
+--- a/android-companion/services/ai/src/main/java/com/rokid/context/ai/canvas/ParamSchema.kt
++++ b/android-companion/services/ai/src/main/java/com/rokid/context/ai/canvas/ParamSchema.kt
+@@ -143,21 +143,22 @@ object ParamCheck {
+             }
+             if (rowName == "VEHICLE_DRIVING" && (row["nudges"] as? JsonPrimitive)?.takeIf { !it.isString }?.content == "true") {
+                 out += "node $id: VEHICLE_DRIVING nudges are locked off"
+             }
+         }
+         return out
+     }
+ 
+     private fun cell(id: String, row: String, c: ColSpec, v: JsonElement): List<String> {
+         val head = "node $id: $row ${c.name} must be"
+-        if (v is JsonNull) return if (c.blankable) emptyList() else listOf("$head set")
++        // a blank gap (null) is 0 = inherit (S68); only a cell that is neither blankable nor a gap must be set
++        if (v is JsonNull) return if (c.blankable || c.allowZero) emptyList() else listOf("$head set")
+         return when (c.kind) {
+             ParamKind.BOOL -> if (isBool(v)) emptyList() else listOf("$head true or false")
+             else -> {
+                 val n = (v as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull
+                 val ok = n != null && ((c.allowZero && n == 0) || inRange(n.toDouble(), c.min, c.max))
+                 if (ok) emptyList()
+                 else listOf("$head " + (if (c.blankable) "blank or " else if (c.allowZero) "0 or " else "") + "between ${fmt(c.min)} and ${fmt(c.max)}")
+             }
+         }
+     }
+diff --git a/android-companion/services/ai/src/main/java/com/rokid/context/ai/canvas/plan/PlanCompiler.kt b/android-companion/services/ai/src/main/java/com/rokid/context/ai/canvas/plan/PlanCompiler.kt
+new file mode 100644
+index 00000000..4cb504c7
+--- /dev/null
++++ b/android-companion/services/ai/src/main/java/com/rokid/context/ai/canvas/plan/PlanCompiler.kt
+@@ -0,0 +1,250 @@
++package com.rokid.context.ai.canvas.plan
++
++import com.rokid.context.ai.canvas.Domain
++import com.rokid.context.ai.canvas.NodeType
++import com.rokid.context.ai.canvas.NodeTypes
++import com.rokid.context.ai.canvas.Pipeline
++import com.rokid.context.ai.canvas.PipelineEdge
++import com.rokid.context.ai.canvas.PipelineNode
++import com.rokid.context.ai.canvas.PipelineValidator
++import com.rokid.context.capture.plan.CapturePlan
++import com.rokid.context.capture.plan.GateBlock
++import com.rokid.context.capture.plan.PlanConfig
++import com.rokid.context.capture.plan.PlanJson
++import com.rokid.context.capture.plan.PlanMeta
++import com.rokid.context.capture.plan.PlanResolver
++import com.rokid.context.capture.plan.PlanRow
++import com.rokid.context.capture.plan.PlanState
++import com.rokid.context.capture.plan.PlanValidator
++import com.rokid.context.capture.plan.TimerPhotoGaps
++import com.rokid.context.core.model.CameraWake
++import com.rokid.context.glasses.capture.session.BudgetTier
++import com.rokid.context.glasses.capture.session.CaptureProfile
++import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
++import kotlinx.serialization.json.booleanOrNull
++import kotlinx.serialization.json.doubleOrNull
++import kotlinx.serialization.json.intOrNull
++
++data class StaticCost(val modelCalls: Int, val rtOps: Int, val cpuClass: String)
++
++/** [plan] and [planJson] are both null exactly when [problems] is not empty. [warnings] never block a plan. There is no clamped output. */
++data class CompileResult(
++    val plan: CapturePlan?, val planJson: String?, val problems: List<String>, val warnings: List<String>, val staticCost: StaticCost,
++)
++
++/**
++ * Compiles the capture half of a pipeline (the RT_GLASSES and RT_PHONE graphs) into a [CapturePlan] (S8, S27, S68, S78, S84).
++ * Pure and deterministic: nodes and edges are visited in id order, so the input order never changes the output. Every field the
++ * plan carries is resolved: from the graph, else from [PlanResolver.defaults] (today's behaviour). The compiler only fills the
++ * fixed plan schema, so it can never emit a sensing or detection key (S84). Problem texts are fixed and name node ids only; no
++ * pipeline, node or model text is echoed. The ASYNC half is ignored here (slice 2's interpreter runs it).
++ */
++object PlanCompiler {
++    const val WARN_GAP = "timer photo gap below the settings profile has no effect"
++    const val HUB_PARAMS = "hub fusion params arrive in slice 3a-LATER"
++    const val NO_CAPTURE_HALF = "pipeline has no capture half"
++    const val CTX_TO_POLICY = "ctx binding must feed policy.capture_rate"
++    const val CTX_FROM_HUB = "ctx binding must be sent from hub.context"
++
++    /** S68: the settings profile a plan row composes with (SETTLE wake, budget tier T0, the shortest gaps; `maxOf` makes lower plan gaps moot). */
++    val SETTINGS_PROFILE: CaptureProfile = CaptureProfile.of(CameraWake.SETTLE, BudgetTier.T0)
++
++    private val OP_NOT_ALLOWED = Regex("^node [a-z][a-z0-9_]*: op not allowed for feature ")
++    private val SENSING = Regex("^(sampleRate.*|sensor.*|imu.*Hz|tick.*|fusionCadence.*|evaluate.*|detector.*|classifier.*)$", RegexOption.IGNORE_CASE)
++
++    /** The fixed chain (S78); thresholds may repeat, every other type once. */
++    private val RANK = mapOf(
++        NodeTypes.IMU_HEAD_MOTION to 0, NodeTypes.GATE_THRESHOLD to 1, NodeTypes.IMU_SETTLE to 2, NodeTypes.GATE_NOVELTY to 3,
++        NodeTypes.POLICY_CAPTURE_RATE to 4, NodeTypes.GATE_RATE_CAP to 5, NodeTypes.CAPTURE_IMAGE to 6,
++    )
++
++    /** Per feature: the only operator, the plan field it folds into, and the bounds of the folded value (the S78 operator table). */
++    private data class Fold(val op: String, val lo: Double, val hi: Double, val whole: Boolean, val why: String)
++    private val FOLDS = mapOf(
++        "gyroPeak" to Fold(">", 0.4, 1.0, false, "onset is strict >"),
++        "boutMs" to Fold(">=", 100.0, 800.0, true, "bouts are inclusive >="),
++        "boutRad" to Fold(">=", 0.1, 0.8, false, "bouts are inclusive >="),
++    )
++
++    fun compile(
++        p: Pipeline, settingsRev: Long = 0, profile: CaptureProfile = SETTINGS_PROFILE,
++    ): CompileResult {
++        val nodes = p.nodes.sortedBy { it.id }
++        val edges = p.edges.sortedWith(compareBy({ it.from }, { it.to }, { it.`when` ?: "" }))
++        val byId = nodes.associateBy { it.id }
++        fun type(n: PipelineNode): NodeType? = NodeTypes.resolve(n.type, p.schema)
++        fun domain(n: PipelineNode): Domain? = type(n)?.let { NodeTypes.domainOf(n, it) }
++        val glasses = nodes.filter { domain(it) == Domain.RT_GLASSES }
++        val phone = nodes.filter { domain(it) == Domain.RT_PHONE }
++        val cost = cost(glasses + phone, ::type)
++
++        // 1. the compiler's own checks come first, because their texts replace the generic ones they overlap with
++        val own = LinkedHashSet<String>()
++        val flaggedEdges = HashSet<String>()
++        val flaggedNodes = HashSet<String>()
++        for (n in glasses.filter { it.type == NodeTypes.GATE_THRESHOLD }) operatorProblem(n)?.let { own += it }
++        for (n in glasses + phone) {
++            if (n.params.keys.any { SENSING.matches(it) }) own += "node ${n.id}: sensing and detection are not plan parameters"
++        }
++        if (phone.any { it.type == NodeTypes.HUB_CONTEXT && it.params.isNotEmpty() }) own += HUB_PARAMS
++        topology(glasses, phone, edges, byId, own, flaggedEdges, flaggedNodes)
++
++        // 2. the pipeline's own rules; the operator check, a port mismatch on an edge the chain check refused and an unreachable
++        //    unbound signal are reported once, with the texts above
++        val problems = LinkedHashSet<String>()
++        problems += PipelineValidator.validate(p.copy(nodes = nodes, edges = edges)).filterNot { v ->
++            OP_NOT_ALLOWED.containsMatchIn(v) || flaggedEdges.any { v.startsWith("edge $it: ") && v.contains(" not accepted by ") } ||
++                flaggedNodes.any { v == "node $it: unreachable" }
++        }
++        problems += own
++        if (glasses.isEmpty() && problems.isEmpty()) problems += NO_CAPTURE_HALF
++        if (problems.isNotEmpty()) return failed(problems, cost)
++
++        // 3. nothing else to check before the fold
++
++        // 4. fold
++        val base = PlanResolver.identity()
++        val chain = glasses.filter { it.type in RANK }
++        val ctxBound = glasses.any { n -> n.type == NodeTypes.SIGNAL_IN && edges.any { it.from == n.id && byId[it.to]?.type == NodeTypes.POLICY_CAPTURE_RATE } }
++        var g = base.glance
++        var gate = base.gate
++        val head = chain.firstOrNull { it.type == NodeTypes.IMU_HEAD_MOTION }
++        head?.let { n ->
++            g = g.copy(
++                onsetRadS = num(n, "onsetRadS")?.toFloat() ?: g.onsetRadS, releaseRadS = num(n, "releaseRadS")?.toFloat() ?: g.releaseRadS,
++                bridgeMs = int(n, "bridgeMs")?.toLong() ?: g.bridgeMs, minBoutMs = int(n, "minBoutMs")?.toLong() ?: g.minBoutMs,
++                minBoutRad = num(n, "minBoutRad")?.toFloat() ?: g.minBoutRad,
++            )
++        }
++        chain.firstOrNull { it.type == NodeTypes.IMU_SETTLE }?.let { n -> g = g.copy(settleMs = int(n, "settleMs")?.toLong() ?: g.settleMs) }
++        chain.firstOrNull { it.type == NodeTypes.GATE_NOVELTY }?.let { n ->
++            g = g.copy(noveltyWindowMs = int(n, "noveltyWindowMs")?.toLong() ?: g.noveltyWindowMs, noveltyMinRad = num(n, "noveltyMinRad")?.toFloat() ?: g.noveltyMinRad)
++        }
++        chain.firstOrNull { it.type == NodeTypes.GATE_RATE_CAP }?.let { n ->
++            gate = gate.copy(bigChange = int(n, "bigChange") ?: gate.bigChange)
++            g = g.copy(bigTurnRad = num(n, "bigTurnRad")?.toFloat() ?: g.bigTurnRad)
++        }
++        chain.firstOrNull { it.type == NodeTypes.CAPTURE_IMAGE }?.let { n ->
++            gate = gate.copy(hamming = int(n, "hamming") ?: gate.hamming, ringCompare = str(n, "ringCompare") ?: gate.ringCompare)
++        }
++
++        // thresholds fold into glance.*; two on one feature must agree, and an explicit head param must agree too
++        val seen = LinkedHashMap<String, Pair<PipelineNode, Double>>()
++        for (n in chain.filter { it.type == NodeTypes.GATE_THRESHOLD }) {
++            val feature = str(n, "feature") ?: "gyroPeak"
++            val fold = FOLDS.getValue(feature)
++            val v = num(n, "value") ?: 0.6
++            if (v < fold.lo || v > fold.hi) { problems += "node ${n.id}: $feature threshold must be between ${fmt(fold.lo)} and ${fmt(fold.hi)}"; continue }
++            if (fold.whole && v != Math.floor(v)) { problems += "node ${n.id}: $feature threshold must be a whole number"; continue }
++            val first = seen[feature]
++            if (first != null) {
++                if (first.second != v) problems += "node ${n.id}: $feature threshold conflicts with node ${first.first.id}"
++                continue
++            }
++            val own = head?.let { h -> num(h, ownParam(feature)) }
++            if (own != null && own != v) { problems += "node ${n.id}: $feature threshold conflicts with ${ownParam(feature)} of node ${head.id}"; continue }
++            seen[feature] = n to v
++            g = when (feature) {
++                "gyroPeak" -> g.copy(onsetRadS = v.toFloat())
++                "boutMs" -> g.copy(minBoutMs = v.toLong())
++                else -> g.copy(minBoutRad = v.toFloat())
++            }
++        }
++        if (problems.isEmpty() && g.releaseRadS > g.onsetRadS) {
++            problems += if (seen.containsKey("gyroPeak") && head != null) "node ${head.id}: releaseRadS must not exceed the gyroPeak threshold"
++            else "node ${head?.id ?: "head"}: releaseRadS must not exceed onsetRadS"
++        }
++        val warnings = LinkedHashSet<String>()
++        val policy = chain.firstOrNull { it.type == NodeTypes.POLICY_CAPTURE_RATE }?.let { rows(it, base.policy, profile, warnings) } ?: base.policy
++        if (problems.isNotEmpty()) return failed(problems, cost)
++
++        val config = PlanConfig(glance = g, policy = policy, gate = gate, ctxBound = ctxBound, phoneFusion = base.phoneFusion)
++        val plan = CapturePlan(configHash = PlanJson.configHash(config), config = config, meta = PlanMeta(p.name, settingsRev))
++        val json = PlanJson.encode(plan)
++        // the output must pass the plan validator, by construction; if it ever does not, nothing is emitted
++        val (planProblems, _) = PlanValidator.check(json)
++        if (planProblems.isNotEmpty()) return failed(planProblems.toCollection(LinkedHashSet()), cost)
++        return CompileResult(plan, json, emptyList(), warnings.toList(), cost)
++    }
++
++    private fun failed(problems: Set<String>, cost: StaticCost) = CompileResult(null, null, problems.toList(), emptyList(), cost)
++
++    private fun ownParam(feature: String) = when (feature) { "gyroPeak" -> "onsetRadS"; "boutMs" -> "minBoutMs"; else -> "minBoutRad" }
++
++    /** S78: the operator text for a threshold whose op does not match its feature; null when fine or when the feature itself is invalid. */
++    private fun operatorProblem(n: PipelineNode): String? {
++        val feature = str(n, "feature") ?: "gyroPeak"
++        val fold = FOLDS[feature] ?: return null
++        val op = str(n, "op") ?: ">"
++        if (op != ">" && op != ">=") return null
++        return if (op == fold.op) null else "$op is not supported for $feature: ${fold.why}"
++    }
++
++    private fun topology(
++        glasses: List<PipelineNode>, phone: List<PipelineNode>, edges: List<PipelineEdge>, byId: Map<String, PipelineNode>,
++        out: MutableSet<String>, flaggedEdges: MutableSet<String>, flaggedNodes: MutableSet<String>,
++    ) {
++        val ids = glasses.map { it.id }.toSet()
++        val chainEdges = edges.filter { byId[it.from]?.type in RANK && byId[it.to]?.type in RANK && it.from in ids && it.to in ids }
++        fun rank(id: String) = RANK.getValue(byId.getValue(id).type)
++        fun flag(e: PipelineEdge) {
++            out += "unsupported wrapper order: ${byId.getValue(e.from).type} before ${byId.getValue(e.to).type}"
++            flaggedEdges += "${e.from}->${e.to}"
++        }
++        for (e in chainEdges) {
++            val ra = rank(e.from); val rb = rank(e.to)
++            if (ra > rb || (ra == rb && byId.getValue(e.from).type != NodeTypes.GATE_THRESHOLD)) flag(e)
++        }
++        // a branch: a second way out of, or into, one chain node (the edge to the nearest later node, and from the nearest earlier one, is the chain's)
++        for (e in chainEdges) {
++            val keepOut = chainEdges.filter { it.from == e.from }.minWith(compareBy({ rank(it.to) }, { it.to }))
++            val keepIn = chainEdges.filter { it.to == e.to }.maxWith(compareBy({ rank(it.from) }, { it.from }))
++            if (keepOut != e || keepIn != e) flag(e)
++        }
++        // the ctx binding: signal.in ctx feeds policy.capture_rate only, and signal.out ctx is sent from hub.context
++        for (n in glasses.filter { it.type == NodeTypes.SIGNAL_IN }) {
++            if ((str(n, "name") ?: "ctx") != "ctx") continue
++            val targets = edges.filter { it.from == n.id }.mapNotNull { byId[it.to] }
++            if (targets.isEmpty() || targets.any { it.type != NodeTypes.POLICY_CAPTURE_RATE }) { out += CTX_TO_POLICY; flaggedNodes += n.id }
++        }
++        for (n in phone.filter { it.type == NodeTypes.SIGNAL_OUT }) {
++            if ((str(n, "name") ?: "ctx") != "ctx") continue
++            if (edges.none { it.to == n.id && byId[it.from]?.type == NodeTypes.HUB_CONTEXT }) { out += CTX_FROM_HUB; flaggedNodes += n.id }
++        }
++    }
++
++    /** One row per state. A state with no row is today's row; a present row is complete: a blank or absent cap is null and a blank or absent gap is 0 (S68). */
++    private fun rows(n: PipelineNode, base: Map<PlanState, PlanRow>, profile: CaptureProfile, warnings: MutableSet<String>): Map<PlanState, PlanRow> {
++        val table = n.params["rows"] as? JsonObject
++        return PlanState.entries.associateWith { s ->
++            val row = table?.get(s.name) as? JsonObject ?: return@associateWith base.getValue(s)
++            val b = base.getValue(s)
++            fun gap(k: String): Long = ((row[k] as? JsonPrimitive)?.takeIf { !it.isString && it !is JsonNull }?.intOrNull ?: 0) * 1_000L
++            fun flag(k: String, d: Boolean) = (row[k] as? JsonPrimitive)?.takeIf { !it.isString && it !is JsonNull }?.booleanOrNull ?: d
++            val gaps = TimerPhotoGaps(gap("settledGapS"), gap("quietGapS"), gap("walkGapS"), gap("stillCapGapS"))
++            // S68: the settings profile wins when it is longer; a plan gap below it has no effect
++            if (gaps.settledMs.below(profile.settledCheckMs) || gaps.quietMs.below(profile.quietCheckMs) ||
++                gaps.walkMs.below(profile.walkCheckMs ?: profile.settledCheckMs) || gaps.stillCapMs.below(profile.stillCapMs)
++            ) warnings += WARN_GAP
++            PlanRow(
++                capPerMin = (row["capPerMin"] as? JsonPrimitive)?.takeIf { !it.isString && it !is JsonNull }?.intOrNull,
++                timerPhotoGapsMs = gaps, forceSettle = flag("forceSettle", b.forceSettle), nudges = flag("nudges", b.nudges),
++            )
++        }
++    }
++
++    private fun Long.below(limit: Long) = this != 0L && this < limit
++
++    private fun cost(nodes: List<PipelineNode>, type: (PipelineNode) -> NodeType?): StaticCost {
++        val specs = nodes.mapNotNull { type(it)?.cost }
++        val order = listOf("LOW", "MEDIUM", "HIGH")
++        return StaticCost(specs.sumOf { it.modelCalls }, specs.sumOf { it.rtOps }, specs.maxOfOrNull { order.indexOf(it.cpuClass) }?.let { order.getOrElse(it) { "LOW" } } ?: "LOW")
++    }
++
++    private fun num(n: PipelineNode, k: String): Double? = (n.params[k] as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull
++    private fun int(n: PipelineNode, k: String): Int? = (n.params[k] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull
++    private fun str(n: PipelineNode, k: String): String? = (n.params[k] as? JsonPrimitive)?.takeIf { it.isString }?.content
++    private fun fmt(d: Double) = if (d == Math.floor(d)) d.toLong().toString() else d.toString()
++}
+diff --git a/android-companion/services/ai/src/test/java/com/rokid/context/ai/canvas/plan/PlanCompilerTest.kt b/android-companion/services/ai/src/test/java/com/rokid/context/ai/canvas/plan/PlanCompilerTest.kt
+new file mode 100644
+index 00000000..971e7ca8
+--- /dev/null
++++ b/android-companion/services/ai/src/test/java/com/rokid/context/ai/canvas/plan/PlanCompilerTest.kt
+@@ -0,0 +1,368 @@
++package com.rokid.context.ai.canvas.plan
++
++import com.rokid.context.ai.canvas.Pipeline
++import com.rokid.context.ai.canvas.PipelineEdge
++import com.rokid.context.ai.canvas.PipelineNode
++import com.rokid.context.ai.canvas.NodeTypes
++import com.rokid.context.capture.plan.CanonicalJson
++import com.rokid.context.capture.plan.PlanJson
++import com.rokid.context.capture.plan.PlanResolver
++import com.rokid.context.capture.plan.PlanValidator
++import com.rokid.context.glasses.capture.motion.GlanceDetector
++import com.rokid.context.glasses.capture.motion.GlanceParams
++import kotlinx.serialization.json.JsonArray
++import kotlinx.serialization.json.JsonElement
++import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
++import kotlinx.serialization.json.buildJsonObject
++import kotlinx.serialization.json.put
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotNull
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class PlanCompilerTest {
++    private val none = JsonObject(emptyMap())
++    private fun node(id: String, type: String, params: JsonObject = none, title: String = id) = PipelineNode(id, type, title, params)
++    private fun sig(id: String, type: String, name: String, domain: String) =
++        node(id, type, buildJsonObject { put("name", name); put("domain", domain) })
++    private fun obj(vararg kv: Pair<String, Any?>) = buildJsonObject {
++        kv.forEach { (k, v) ->
++            when (v) {
++                null -> put(k, JsonNull)
++                is Int -> put(k, v); is Double -> put(k, v); is Boolean -> put(k, v); is String -> put(k, v)
++                is JsonElement -> put(k, v)
++                else -> error("type")
++            }
++        }
++    }
++    private val chainEdges = listOf(
++        PipelineEdge("head", "thresh"), PipelineEdge("thresh", "settle"), PipelineEdge("settle", "novel"), PipelineEdge("novel", "rate"),
++        PipelineEdge("cin", "rate"), PipelineEdge("rate", "cap"), PipelineEdge("cap", "cam"), PipelineEdge("hub", "cout"),
++    )
++
++    /** The default capture-half graph: every node at its defaults, the policy node with no rows. */
++    private fun graph(
++        head: JsonObject = none, thresh: JsonObject = obj("feature" to "gyroPeak", "op" to ">", "value" to 0.6), settle: JsonObject = none,
++        novel: JsonObject = none, rate: JsonObject = none, cap: JsonObject = none, cam: JsonObject = none, hub: JsonObject = none,
++        name: String = "P", edges: List<PipelineEdge> = chainEdges, extra: List<PipelineNode> = emptyList(),
++    ) = Pipeline(
++        2, "p", name,
++        listOf(
++            node("head", NodeTypes.IMU_HEAD_MOTION, head), node("thresh", NodeTypes.GATE_THRESHOLD, thresh), node("settle", NodeTypes.IMU_SETTLE, settle),
++            node("novel", NodeTypes.GATE_NOVELTY, novel), node("rate", NodeTypes.POLICY_CAPTURE_RATE, rate), node("cap", NodeTypes.GATE_RATE_CAP, cap),
++            node("cam", NodeTypes.CAPTURE_IMAGE, cam), sig("cin", NodeTypes.SIGNAL_IN, "ctx", "RT_GLASSES"),
++            node("hub", NodeTypes.HUB_CONTEXT, hub), sig("cout", NodeTypes.SIGNAL_OUT, "ctx", "RT_PHONE"),
++        ) + extra,
++        edges,
++    )
++
++    private fun ok(p: Pipeline): CompileResult = PlanCompiler.compile(p).also { assertEquals(emptyList<String>(), it.problems); assertNotNull(it.plan) }
++    private fun refused(p: Pipeline): List<String> = PlanCompiler.compile(p).also { assertNull(it.plan); assertNull(it.planJson) }.problems
++
++    private val identityRows = obj(
++        "REST" to obj("capPerMin" to 2, "settledGapS" to 30, "quietGapS" to 60, "walkGapS" to 30, "stillCapGapS" to 120, "forceSettle" to true, "nudges" to true),
++        "VEHICLE_PASSENGER" to obj("capPerMin" to null, "settledGapS" to 0, "quietGapS" to 0, "walkGapS" to 0, "stillCapGapS" to 0, "forceSettle" to false, "nudges" to true),
++        "VEHICLE_DRIVING" to obj("capPerMin" to null, "settledGapS" to 0, "quietGapS" to 0, "walkGapS" to 0, "stillCapGapS" to 0, "forceSettle" to false, "nudges" to false),
++        "FLIGHT" to obj("capPerMin" to 1, "settledGapS" to 120, "quietGapS" to 300, "walkGapS" to 120, "stillCapGapS" to 300, "forceSettle" to true, "nudges" to true),
++    )
++    private fun rateWith(rows: JsonObject) = obj("rows" to rows)
++    private fun rowsWithRest(vararg kv: Pair<String, Any?>): JsonObject {
++        val m = identityRows.toMutableMap()
++        val rest = (m.getValue("REST") as JsonObject).toMutableMap()
++        kv.forEach { (k, v) -> rest[k] = when (v) { null -> JsonNull; is Boolean -> JsonPrimitive(v); else -> JsonPrimitive(v as Number) } }
++        m["REST"] = JsonObject(rest)
++        return JsonObject(m)
++    }
++
++    private fun leaves(e: JsonElement, path: String = "", out: MutableMap<String, String> = sortedMapOf()): Map<String, String> {
++        when (e) {
++            is JsonObject -> e.forEach { (k, v) -> leaves(v, "$path/$k", out) }
++            is JsonArray -> e.forEachIndexed { i, v -> leaves(v, "$path/$i", out) }
++            else -> out[path] = e.toString()
++        }
++        return out
++    }
++    private fun configLeaves(r: CompileResult) = leaves(PlanJson.configJson(r.plan!!.config))
++    private fun changed(a: CompileResult, b: CompileResult): Set<String> {
++        val x = configLeaves(a); val y = configLeaves(b)
++        return (x.keys + y.keys).filter { x[it] != y[it] }.toSet()
++    }
++
++    private fun resource(n: String) = javaClass.classLoader!!.getResourceAsStream(n)!!.readBytes().toString(Charsets.UTF_8)
++
++    // ---- goldens ----
++
++    @Test fun goldenCompilesExactly() {
++        val g = graph(
++            name = "section1 capture half",
++            thresh = obj("feature" to "gyroPeak", "op" to ">", "value" to 0.7), settle = obj("settleMs" to 2000),
++            novel = obj("noveltyWindowMs" to 30_000, "noveltyMinRad" to 0.3), cap = obj("bigChange" to 20, "bigTurnRad" to 0.9),
++            cam = obj("hamming" to 10, "ringCompare" to "last"),
++            rate = rateWith(obj(
++                "REST" to obj("capPerMin" to 1, "settledGapS" to 60, "quietGapS" to 120, "walkGapS" to 60, "stillCapGapS" to 240, "forceSettle" to true, "nudges" to true),
++                "VEHICLE_PASSENGER" to obj("capPerMin" to 2, "forceSettle" to false, "nudges" to true),
++            )),
++        )
++        val r = ok(g)
++        assertEquals(resource("canvas/section1-capture-plan.golden.json"), r.planJson)
++        assertEquals("5ca1e1c3c69f", r.plan!!.configHash)
++        assertEquals(emptyList<String>(), r.warnings)
++    }
++
++    @Test fun identityGraphEqualsIdentityPlanBitForBit() {
++        val identity = PlanResolver.identity()
++        for (g in listOf(graph(), graph(rate = rateWith(identityRows)))) {
++            val r = ok(g)
++            assertEquals("f5782e0d8610", r.plan!!.configHash)
++            assertEquals(identity, r.plan!!.config)
++            assertEquals(CanonicalJson.encode(PlanJson.configJson(identity)), CanonicalJson.encode(PlanJson.configJson(r.plan!!.config)))
++            assertEquals(PlanJson.encode(r.plan!!), r.planJson)
++            assertEquals(emptyList<String>(), r.warnings)
++        }
++    }
++
++    @Test fun planPassesValidatorAndFitsTheCap() {
++        val r = ok(graph())
++        val (problems, decoded) = PlanValidator.check(r.planJson!!)
++        assertEquals(emptyList<String>(), problems)
++        assertEquals(r.plan, decoded)
++        assertTrue(r.planJson!!.toByteArray(Charsets.UTF_8).size <= 8_192)
++    }
++
++    // ---- one changed param changes only that field ----
++
++    @Test fun oneChangedParamChangesOnlyThatField() {
++        val base = ok(graph())
++        fun only(g: Pipeline, path: String) = assertEquals(setOf(path), changed(base, ok(g)))
++        only(graph(head = obj("bridgeMs" to 300)), "/glance/bridgeMs")
++        only(graph(head = obj("minBoutMs" to 400)), "/glance/minBoutMs")
++        only(graph(head = obj("minBoutRad" to 0.3)), "/glance/minBoutRad")
++        only(graph(head = obj("releaseRadS" to 0.25)), "/glance/releaseRadS")
++        only(graph(thresh = obj("feature" to "gyroPeak", "op" to ">", "value" to 0.8)), "/glance/onsetRadS")
++        only(graph(thresh = obj("feature" to "boutMs", "op" to ">=", "value" to 350)), "/glance/minBoutMs")
++        only(graph(thresh = obj("feature" to "boutRad", "op" to ">=", "value" to 0.3)), "/glance/minBoutRad")
++        only(graph(settle = obj("settleMs" to 2000)), "/glance/settleMs")
++        only(graph(novel = obj("noveltyWindowMs" to 30_000)), "/glance/noveltyWindowMs")
++        only(graph(novel = obj("noveltyMinRad" to 0.4)), "/glance/noveltyMinRad")
++        only(graph(cap = obj("bigChange" to 24)), "/gate/bigChange")
++        only(graph(cap = obj("bigTurnRad" to 1.0)), "/glance/bigTurnRad")
++        only(graph(cam = obj("hamming" to 12)), "/gate/hamming")
++        only(graph(cam = obj("ringCompare" to "last")), "/gate/ringCompare")
++        only(graph(rate = rateWith(rowsWithRest("capPerMin" to 3))), "/policy/REST/capPerMin")
++        only(graph(rate = rateWith(rowsWithRest("quietGapS" to 90))), "/policy/REST/timerPhotoGapsMs/quietMs")
++        only(graph(rate = rateWith(rowsWithRest("forceSettle" to false))), "/policy/REST/forceSettle")
++        // a changed param never moves the meta-independent hash of an unchanged config
++        assertEquals(base.plan!!.configHash, ok(graph(name = "another name")).plan!!.configHash)
++        assertFalse(base.plan!!.configHash == ok(graph(head = obj("bridgeMs" to 300))).plan!!.configHash)
++    }
++
++    // ---- operators (S78) ----
++
++    @Test fun gyroPeakGteRefused() {
++        val p = refused(graph(thresh = obj("feature" to "gyroPeak", "op" to ">=", "value" to 0.6)))
++        assertEquals(listOf(">= is not supported for gyroPeak: onset is strict >"), p)
++    }
++
++    @Test fun boutMsGtRefused() {
++        assertEquals(listOf("> is not supported for boutMs: bouts are inclusive >="), refused(graph(thresh = obj("feature" to "boutMs", "op" to ">", "value" to 300))))
++        assertEquals(listOf("> is not supported for boutRad: bouts are inclusive >="), refused(graph(thresh = obj("feature" to "boutRad", "op" to ">", "value" to 0.3))))
++    }
++
++    @Test fun thresholdBoundaryExact() {
++        // onset 0.6 with strict >: a 0.6 sample never starts a bout; 0.61 does (replay through the real detector)
++        fun glances(r: CompileResult, mag: Float): Int {
++            val g = r.plan!!.config.glance
++            val d = GlanceDetector(GlanceParams(onsetRadS = g.onsetRadS, releaseRadS = g.releaseRadS, bridgeMs = g.bridgeMs, minBoutMs = g.minBoutMs,
++                minBoutRad = g.minBoutRad, settleMs = g.settleMs))
++            var t = 0L
++            fun feed(ms: Long, m: Float) { val end = t + ms; while (t < end) { d.onGyro(m, t, 20, true); t += 20 } }
++            feed(1_000, 0f); feed(500, mag); feed(4_000, 0f)
++            return d.glances
++        }
++        val at06 = ok(graph())
++        assertEquals(0, glances(at06, 0.6f))
++        assertEquals(1, glances(at06, 0.61f))
++        val at059 = ok(graph(thresh = obj("feature" to "gyroPeak", "op" to ">", "value" to 0.59)))
++        assertEquals(1, glances(at059, 0.6f))
++        // inclusive bouts: boutMs >= 300 maps to minBoutMs 300 unchanged
++        assertEquals(300L, ok(graph(thresh = obj("feature" to "boutMs", "op" to ">=", "value" to 300))).plan!!.config.glance.minBoutMs)
++    }
++
++    @Test fun thresholdValueOutOfBoundsNamesTheNode() {
++        assertEquals(listOf("node thresh: gyroPeak threshold must be between 0.4 and 1"), refused(graph(thresh = obj("feature" to "gyroPeak", "op" to ">", "value" to 0.3))))
++        assertEquals(listOf("node thresh: boutMs threshold must be between 100 and 800"), refused(graph(thresh = obj("feature" to "boutMs", "op" to ">=", "value" to 900))))
++        assertEquals(listOf("node thresh: boutMs threshold must be a whole number"), refused(graph(thresh = obj("feature" to "boutMs", "op" to ">=", "value" to 300.5))))
++    }
++
++    @Test fun conflictingThresholdsRefused() {
++        val g = graph(head = obj("onsetRadS" to 0.5)).let { it.copy(nodes = it.nodes) }
++        assertEquals(listOf("node thresh: gyroPeak threshold conflicts with onsetRadS of node head"), refused(g))
++        val two = graph(extra = listOf(node("thresh2", NodeTypes.GATE_THRESHOLD, obj("feature" to "gyroPeak", "op" to ">", "value" to 0.7))),
++            edges = chainEdges.filter { it != PipelineEdge("thresh", "settle") } + PipelineEdge("thresh", "thresh2") + PipelineEdge("thresh2", "settle"))
++        assertEquals(listOf("node thresh2: gyroPeak threshold conflicts with node thresh"), refused(two))
++        // the same value twice is fine
++        val same = graph(extra = listOf(node("thresh2", NodeTypes.GATE_THRESHOLD, obj("feature" to "gyroPeak", "op" to ">", "value" to 0.6))),
++            edges = chainEdges.filter { it != PipelineEdge("thresh", "settle") } + PipelineEdge("thresh", "thresh2") + PipelineEdge("thresh2", "settle"))
++        ok(same)
++    }
++
++    @Test fun releaseAboveFoldedOnsetRefused() {
++        val g = graph(head = obj("releaseRadS" to 0.5), thresh = obj("feature" to "gyroPeak", "op" to ">", "value" to 0.45))
++        assertEquals(listOf("node head: releaseRadS must not exceed the gyroPeak threshold"), refused(g))
++    }
++
++    // ---- topology (S78) ----
++
++    @Test fun reorderedPolicyBeforeNoveltyRefused() {
++        val edges = listOf(
++            PipelineEdge("head", "thresh"), PipelineEdge("thresh", "settle"), PipelineEdge("settle", "rate"), PipelineEdge("rate", "novel"),
++            PipelineEdge("cin", "rate"), PipelineEdge("novel", "cap"), PipelineEdge("cap", "cam"), PipelineEdge("hub", "cout"),
++        )
++        assertTrue(refused(graph(edges = edges)).contains("unsupported wrapper order: policy.capture_rate before gate.novelty"))
++    }
++
++    @Test fun settleBeforeThresholdRefused() {
++        val edges = listOf(
++            PipelineEdge("head", "settle"), PipelineEdge("settle", "thresh"), PipelineEdge("thresh", "novel"), PipelineEdge("novel", "rate"),
++            PipelineEdge("cin", "rate"), PipelineEdge("rate", "cap"), PipelineEdge("cap", "cam"), PipelineEdge("hub", "cout"),
++        )
++        assertTrue(refused(graph(edges = edges)).contains("unsupported wrapper order: imu.settle before gate.threshold"))
++    }
++
++    @Test fun branchRefused() {
++        // novelty feeds both the policy and the rate cap
++        val edges = chainEdges + PipelineEdge("novel", "cap")
++        assertEquals(listOf("unsupported wrapper order: gate.novelty before gate.rate_cap"), refused(graph(edges = edges)))
++        // two inputs into one chain node
++        val join = chainEdges + PipelineEdge("settle", "rate")
++        assertEquals(listOf("unsupported wrapper order: imu.settle before policy.capture_rate"), refused(graph(edges = join)))
++    }
++
++    @Test fun disconnectedBindingRefused() {
++        val noCtxEdge = chainEdges.filter { it != PipelineEdge("cin", "rate") }
++        assertEquals(listOf("ctx binding must feed policy.capture_rate"), refused(graph(edges = noCtxEdge)))
++        val wrongTarget = noCtxEdge + PipelineEdge("cin", "cap")
++        assertTrue(refused(graph(edges = wrongTarget)).contains("ctx binding must feed policy.capture_rate"))
++        val noHub = chainEdges.filter { it != PipelineEdge("hub", "cout") }
++        assertEquals(listOf("ctx binding must be sent from hub.context"), refused(graph(edges = noHub)))
++    }
++
++    @Test fun optionalNodesMayBeLeftOut() {
++        val p = Pipeline(
++            2, "p", "P",
++            listOf(node("head", NodeTypes.IMU_HEAD_MOTION), node("settle", NodeTypes.IMU_SETTLE), node("novel", NodeTypes.GATE_NOVELTY), node("cam", NodeTypes.CAPTURE_IMAGE)),
++            listOf(PipelineEdge("head", "settle"), PipelineEdge("settle", "novel"), PipelineEdge("novel", "cam")),
++        )
++        val r = ok(p)
++        assertFalse(r.plan!!.config.ctxBound)
++        assertEquals(PlanResolver.identity().copy(ctxBound = false), r.plan!!.config)
++    }
++
++    // ---- refusals ----
++
++    @Test fun asyncNodeInTheRtHalfRefused() {
++        val g = graph(extra = listOf(node("extract", NodeTypes.VISION_EXTRACT)), edges = chainEdges + PipelineEdge("cam", "extract"))
++        assertTrue(refused(g).any { it.contains("crosses domains") })
++        val g2 = graph(extra = listOf(node("photos", NodeTypes.INPUT_PHOTOS), node("extract", NodeTypes.VISION_EXTRACT)),
++            edges = chainEdges + PipelineEdge("cam", "photos") + PipelineEdge("photos", "extract") + PipelineEdge("extract", "rate"))
++        assertTrue(refused(g2).isNotEmpty())
++        // the photos binding itself and the ASYNC half are fine and do not change the plan
++        val withAsync = graph(extra = listOf(node("photos", NodeTypes.INPUT_PHOTOS), node("extract", NodeTypes.VISION_EXTRACT)),
++            edges = chainEdges + PipelineEdge("cam", "photos") + PipelineEdge("photos", "extract"))
++        assertEquals(ok(graph()).planJson!!.substringBefore("\"meta\""), ok(withAsync).planJson!!.substringBefore("\"meta\""))
++    }
++
++    @Test fun asyncOnlyPipelineHasNoCaptureHalf() {
++        val p = Pipeline(2, "p", "P", listOf(node("photos", NodeTypes.INPUT_PHOTOS), node("extract", NodeTypes.VISION_EXTRACT)), listOf(PipelineEdge("photos", "extract")))
++        assertEquals(listOf("pipeline has no capture half"), refused(p))
++    }
++
++    @Test fun cycleRefused() {
++        assertTrue(refused(graph(edges = chainEdges + PipelineEdge("cam", "cap"))).any { it.startsWith("cycle through ") })
++    }
++
++    @Test fun unknownParamAndOutOfBoundsNameTheNode() {
++        assertTrue(refused(graph(head = obj("nope" to 1))).contains("node head: unknown param nope"))
++        assertTrue(refused(graph(head = obj("onsetRadS" to 1.1))).contains("node head: onsetRadS must be between 0.4 and 1"))
++        assertTrue(refused(graph(settle = obj("settleMs" to 999))).contains("node settle: settleMs must be between 1000 and 3000"))
++        assertTrue(refused(graph(cam = obj("hamming" to 17))).contains("node cam: hamming must be between 6 and 16"))
++        assertTrue(refused(graph(rate = rateWith(obj("WALKING" to obj("capPerMin" to 1))))).contains("node rate: unknown row WALKING"))
++    }
++
++    @Test fun hubParamsRefusedUntilLater() {
++        assertEquals(listOf("hub fusion params arrive in slice 3a-LATER"), refused(graph(hub = obj("fastKmh" to 30))))
++    }
++
++    @Test fun sensingParamNeverCompiles() {
++        val p = refused(graph(head = obj("sampleRateHz" to 100)))
++        assertTrue(p.toString(), p.contains("node head: sensing and detection are not plan parameters"))
++        assertTrue(refused(graph(settle = obj("detectorMode" to 1))).contains("node settle: sensing and detection are not plan parameters"))
++    }
++
++    @Test fun messagesNeverEchoPipelineText() {
++        val marker = "LEAKMARKER"
++        val g = graph(name = marker).let { p -> p.copy(nodes = p.nodes.map { it.copy(title = marker) }) }
++        assertFalse(PlanCompiler.compile(g).problems.any { it.contains(marker) })
++        val bad = g.copy(nodes = g.nodes.map { if (it.id == "head") it.copy(params = obj("onsetRadS" to 9.0)) else it })
++        val r = PlanCompiler.compile(bad)
++        assertTrue(r.problems.isNotEmpty()); assertFalse(r.problems.any { it.contains(marker) })
++    }
++
++    // ---- policy rows (S68, S83) ----
++
++    @Test fun blankCapIsNull() {
++        val explicit = ok(graph(rate = rateWith(rowsWithRest("capPerMin" to null))))
++        assertNull(explicit.plan!!.config.policy.getValue(com.rokid.context.capture.plan.PlanState.REST).capPerMin)
++        // an absent cap in a present row is blank too; an absent row is the identity row
++        val absent = ok(graph(rate = rateWith(obj("REST" to obj("settledGapS" to 30), "FLIGHT" to obj("forceSettle" to true)))))
++        val rows = absent.plan!!.config.policy
++        assertNull(rows.getValue(com.rokid.context.capture.plan.PlanState.REST).capPerMin)
++        assertNull(rows.getValue(com.rokid.context.capture.plan.PlanState.FLIGHT).capPerMin)
++        assertEquals(PlanResolver.identity().policy.getValue(com.rokid.context.capture.plan.PlanState.VEHICLE_PASSENGER), rows.getValue(com.rokid.context.capture.plan.PlanState.VEHICLE_PASSENGER))
++    }
++
++    @Test fun blankGapIsZero() {
++        val r = ok(graph(rate = rateWith(rowsWithRest("settledGapS" to null))))
++        val gaps = r.plan!!.config.policy.getValue(com.rokid.context.capture.plan.PlanState.REST).timerPhotoGapsMs
++        assertEquals(0L, gaps.settledMs)
++        assertEquals(60_000L, gaps.quietMs)
++        val absent = ok(graph(rate = rateWith(obj("REST" to obj("capPerMin" to 2))))).plan!!.config.policy.getValue(com.rokid.context.capture.plan.PlanState.REST)
++        assertEquals(listOf(0L, 0L, 0L, 0L), absent.timerPhotoGapsMs.all())
++    }
++
++    @Test fun gapBelowProfileWarns() {
++        val w = "timer photo gap below the settings profile has no effect"
++        // the settings profile (SETTLE, T0): settled 10 s, quiet 30 s, walk 10 s, still cap 60 s
++        for ((k, v) in listOf("settledGapS" to 9, "quietGapS" to 29, "walkGapS" to 5, "stillCapGapS" to 59)) {
++            val r = ok(graph(rate = rateWith(rowsWithRest(k to v))))
++            assertEquals(k, listOf(w), r.warnings)
++            assertNotNull(r.plan)
++        }
++        assertEquals(emptyList<String>(), ok(graph(rate = rateWith(rowsWithRest("settledGapS" to 10, "quietGapS" to 30, "walkGapS" to 10, "stillCapGapS" to 60)))).warnings)
++        assertEquals(emptyList<String>(), ok(graph(rate = rateWith(rowsWithRest("settledGapS" to 0)))).warnings)
++        // two low gaps still give one warning
++        assertEquals(listOf(w), ok(graph(rate = rateWith(rowsWithRest("settledGapS" to 5, "quietGapS" to 5)))).warnings)
++    }
++
++    // ---- determinism, cost ----
++
++    @Test fun compileIsDeterministicAndOrderIndependent() {
++        val g = graph(rate = rateWith(rowsWithRest("capPerMin" to 3)), settle = obj("settleMs" to 2000))
++        val a = ok(g)
++        assertEquals(a.planJson, ok(g).planJson)
++        val shuffled = g.copy(nodes = g.nodes.reversed(), edges = g.edges.reversed())
++        assertEquals(a.planJson, ok(shuffled).planJson)
++        val bad = graph(thresh = obj("feature" to "gyroPeak", "op" to ">=", "value" to 0.6), head = obj("nope" to 1), hub = obj("a" to 1))
++        assertEquals(PlanCompiler.compile(bad).problems, PlanCompiler.compile(bad.copy(nodes = bad.nodes.reversed(), edges = bad.edges.reversed())).problems)
++    }
++
++    @Test fun staticCostIsTheSumOverTheCaptureHalf() {
++        val c = ok(graph()).staticCost
++        assertEquals(0, c.modelCalls)
++        assertEquals(1, c.rtOps)
++    }
++}
+diff --git a/android-companion/services/ai/src/test/resources/canvas/section1-capture-plan.golden.json b/android-companion/services/ai/src/test/resources/canvas/section1-capture-plan.golden.json
+new file mode 100644
+index 00000000..e2ac1191
+--- /dev/null
++++ b/android-companion/services/ai/src/test/resources/canvas/section1-capture-plan.golden.json
+@@ -0,0 +1 @@
++{"config":{"ctxBound":true,"gate":{"bigChange":20,"hamming":10,"ringCompare":"last"},"glance":{"bigTurnRad":0.9,"bridgeMs":250,"minBoutMs":300,"minBoutRad":0.26,"noveltyMinRad":0.3,"noveltyWindowMs":30000,"onsetRadS":0.7,"releaseRadS":0.3,"settleMs":2000},"phoneFusion":{"enterRestMs":120000,"enterUnknownMs":60000,"enterVehicleMs":30000,"fastConfirmGapMs":45000,"fastKmh":25,"fastTtlMs":120000,"hintStillTtlMs":120000,"stillFrac":0.85,"stillFracWithImage":0.7,"switchDriverMs":60000,"vehicleHoldMs":180000},"policy":{"FLIGHT":{"capPerMin":1,"forceSettle":true,"nudges":true,"timerPhotoGapsMs":{"quietMs":300000,"settledMs":120000,"stillCapMs":300000,"walkMs":120000}},"REST":{"capPerMin":1,"forceSettle":true,"nudges":true,"timerPhotoGapsMs":{"quietMs":120000,"settledMs":60000,"stillCapMs":240000,"walkMs":60000}},"VEHICLE_DRIVING":{"capPerMin":null,"forceSettle":false,"nudges":false,"timerPhotoGapsMs":{"quietMs":0,"settledMs":0,"stillCapMs":0,"walkMs":0}},"VEHICLE_PASSENGER":{"capPerMin":2,"forceSettle":false,"nudges":true,"timerPhotoGapsMs":{"quietMs":0,"settledMs":0,"stillCapMs":0,"walkMs":0}}}},"configHash":"5ca1e1c3c69f","meta":{"name":"section1 capture half","settingsRev":0},"planSchema":1}
+\ No newline at end of file

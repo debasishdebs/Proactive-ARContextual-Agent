@@ -1,0 +1,10 @@
+- [Never print secrets](never-print-secrets.md) — counts/names only; a sed once leaked AWS keys into a transcript
+- [Fast parallel execution](fast-parallel-execution.md) — lean plans, parallel worktree streams, cross-phase; no Haiku; see opus-specs-sonnet-code
+- [Resume from handoff](resume-from-backlog.md) — read docs/superpowers/specs/2026-10-21-handoff.md first (state, decisions, bugs, pending, open questions)
+- [No --reference for llama.cpp submodule](submodule-no-reference.md) — borrowing objects from a removable worktree broke the main checkout
+- [Opus specs, Sonnet code](opus-specs-sonnet-code.md) — cost: Opus for specs/plans/reviews, Sonnet for code agents
+- [Glasses logcat leaks device secret](glasses-logcat-leaks-device-secret.md) — extended filter incl. deviceSecret/DevCmdHelper/call data; never print AssistServer lines
+- [Codex second opinion rules](codex-second-opinion-rules.md) — Codex (gpt-6.1-sol) reviews Opus plans + one final code pass; never implements
+- [Container runtime install OK](container-runtime-install-ok.md) — user allows installing Podman/Docker when slice 3 helper starts
+- [Agent dispatch hygiene](agent-dispatch-hygiene.md) — no git stash / no machine-wide pkill / clean after merges / one agent per worktree
+- [No debug APKs on releases](no-debug-apks-on-releases.md) — attach no APKs to GitHub releases until builds are release-signed (not debug)

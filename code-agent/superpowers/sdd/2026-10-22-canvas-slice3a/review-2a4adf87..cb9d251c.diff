@@ -1,0 +1,1358 @@
+# Review package: 2a4adf87..cb9d251c
+
+## Commits
+cb9d251c feat(capture): frozen IMU trace schema (scheduling inputs, scores, flushes, clean start with 10 s pre-roll), bounded codec, manifest-lite with epoch and revision
+
+## Files changed
+ .../com/rokid/context/capture/trace/ChunkCodec.kt  | 151 ++++++++++++
+ .../com/rokid/context/capture/trace/ClockMap.kt    |  50 ++++
+ .../com/rokid/context/capture/trace/Manifest.kt    | 264 +++++++++++++++++++++
+ .../com/rokid/context/capture/trace/TraceBounds.kt |  43 ++++
+ .../rokid/context/capture/trace/TraceRecords.kt    | 253 ++++++++++++++++++++
+ .../rokid/context/capture/trace/ChunkCodecTest.kt  | 140 +++++++++++
+ .../rokid/context/capture/trace/ClockMapTest.kt    |  59 +++++
+ .../rokid/context/capture/trace/EventCodecTest.kt  |  64 +++++
+ .../rokid/context/capture/trace/ManifestTest.kt    | 167 +++++++++++++
+ .../rokid/context/capture/trace/TraceFixtures.kt   |  88 +++++++
+ 10 files changed, 1279 insertions(+)
+
+## Diff
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/ChunkCodec.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/ChunkCodec.kt
+new file mode 100644
+index 00000000..ac28bc8d
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/ChunkCodec.kt
+@@ -0,0 +1,151 @@
++package com.rokid.context.capture.trace
++
++import com.rokid.context.core.model.TraceChunk
++import java.io.ByteArrayInputStream
++import java.io.ByteArrayOutputStream
++import java.io.IOException
++import java.nio.ByteBuffer
++import java.nio.charset.CodingErrorAction
++import java.security.MessageDigest
++import java.util.Base64
++import java.util.zip.GZIPInputStream
++import java.util.zip.GZIPOutputStream
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonArray
++import kotlinx.serialization.json.JsonPrimitive
++
++/** An encoded chunk, ready for a `TraceChunk`: [sha256] is over the raw payload, [b64] is base64 of its gzip. */
++class EncodedChunk(val traceId: String, val seq: Int, val eventCount: Int, val rawBytes: Int, val sha256: String, val b64: String, val firstTMs: Long, val lastTMs: Long)
++
++/** A verified chunk (events decoded, checksum and bounds checked). */
++class DecodedChunk(val traceId: String, val seq: Int, val events: List<TraceEvent>, val rawBytes: Int, val sha256: String) {
++    val firstTMs: Long get() = events.first().tMs
++    val lastTMs: Long get() = events.last().tMs
++}
++
++/**
++ * FROZEN (trace schema 1). The chunk wire format.
++ *
++ * - **Payload** (the raw bytes, UTF-8/ASCII): a header line `["PCT1","<traceId>",<seq>,<eventCount>]` then `eventCount` event lines
++ *   ([EventCodec]), every line ended by `\n` (no `\r`, no blank line, no trailing bytes). The header binds the payload to its trace and
++ *   position, so chunks cannot be swapped between traces or reordered silently.
++ * - **Chunk sha256**: lower-case hex SHA-256 of the raw payload (deterministic, independent of the gzip implementation).
++ * - **b64**: standard base64 (RFC 4648, padded, no line breaks) of the gzip of the payload.
++ * - **`TraceChunk` mapping** (kind `"chunk"`): `count` = number of chunks in the whole trace, `seq` in `[0, count)`, `sha256` and `b64` as above.
++ * - **Bounds** ([TraceBounds]): b64 <= 90,000 chars, raw <= 512 KiB (a streamed gunzip limit), <= 200,000 events, seq < 4,096.
++ * - **Time**: event `tMs` is non-decreasing inside a chunk (and, checked by [TraceAssembler], across chunks).
++ *
++ * Decode never throws anything but [TraceFormatException] (returned in a [Result]); its `code` is one of
++ * bad_trace_id, seq, chunk_count, kind, sha_invalid, b64_too_long, b64_invalid, gzip_invalid, gunzip_too_big, sha_mismatch, bad_payload,
++ * bad_header, header_mismatch, too_many_events, line_count, bad_event, not_monotonic.
++ */
++object ChunkCodec {
++    const val MAGIC = "PCT1"
++    const val KIND = "chunk"
++    private val SHA = Regex("[0-9a-f]{64}")
++
++    fun payload(traceId: String, seq: Int, events: List<TraceEvent>, bounds: TraceBounds = TraceBounds.DEFAULT): ByteArray {
++        if (!TraceBounds.isTraceId(traceId)) throw TraceFormatException("bad_trace_id")
++        if (seq !in 0 until bounds.maxChunks) throw TraceFormatException("seq")
++        if (events.isEmpty()) throw TraceFormatException("bad_header")
++        if (events.size > bounds.maxEventsPerChunk) throw TraceFormatException("too_many_events")
++        val sb = StringBuilder(events.size * 48 + 64)
++        sb.append("[\"").append(MAGIC).append("\",\"").append(traceId).append("\",").append(seq).append(',').append(events.size).append("]\n")
++        var prev = 0L
++        for (e in events) {
++            if (e.tMs < prev) throw TraceFormatException("not_monotonic")
++            prev = e.tMs
++            sb.append(EventCodec.encode(e)).append('\n')
++        }
++        val raw = sb.toString().toByteArray(Charsets.UTF_8)
++        if (raw.size > bounds.maxRawBytes) throw TraceFormatException("gunzip_too_big")
++        return raw
++    }
++
++    fun encode(traceId: String, seq: Int, events: List<TraceEvent>, bounds: TraceBounds = TraceBounds.DEFAULT): EncodedChunk {
++        val raw = payload(traceId, seq, events, bounds)
++        val bo = ByteArrayOutputStream(raw.size / 3 + 64)
++        GZIPOutputStream(bo).use { it.write(raw) }
++        val b64 = Base64.getEncoder().encodeToString(bo.toByteArray())
++        if (b64.length > bounds.maxB64Chars) throw TraceFormatException("b64_too_long")
++        return EncodedChunk(traceId, seq, events.size, raw.size, sha256Hex(raw), b64, events.first().tMs, events.last().tMs)
++    }
++
++    fun decode(c: TraceChunk, bounds: TraceBounds = TraceBounds.DEFAULT): Result<DecodedChunk> = runCatching {
++        if (c.kind != KIND) throw TraceFormatException("kind")
++        if (c.count !in 1..bounds.maxChunks) throw TraceFormatException("chunk_count")
++        if (c.seq !in 0 until c.count) throw TraceFormatException("seq")
++        decodeOrThrow(c.traceId, c.seq, c.sha256, c.b64, bounds)
++    }.recoverFormat()
++
++    fun decode(traceId: String, seq: Int, sha256: String, b64: String, bounds: TraceBounds = TraceBounds.DEFAULT): Result<DecodedChunk> =
++        runCatching { decodeOrThrow(traceId, seq, sha256, b64, bounds) }.recoverFormat()
++
++    private fun <T> Result<T>.recoverFormat(): Result<T> = exceptionOrNull().let { e ->
++        // Anything unexpected is still reported as a format failure (never a crash on hostile input).
++        if (e == null || e is TraceFormatException) this else Result.failure(TraceFormatException("bad_payload"))
++    }
++
++    private fun decodeOrThrow(traceId: String, seq: Int, sha256: String, b64: String, bounds: TraceBounds): DecodedChunk {
++        if (!TraceBounds.isTraceId(traceId)) throw TraceFormatException("bad_trace_id")
++        if (seq !in 0 until bounds.maxChunks) throw TraceFormatException("seq")
++        if (!SHA.matches(sha256)) throw TraceFormatException("sha_invalid")
++        if (b64.length > bounds.maxB64Chars) throw TraceFormatException("b64_too_long")
++        val gz = try { Base64.getDecoder().decode(b64) } catch (e: IllegalArgumentException) { throw TraceFormatException("b64_invalid") }
++        val raw = gunzipLimited(gz, bounds.maxRawBytes)
++        if (sha256Hex(raw) != sha256) throw TraceFormatException("sha_mismatch")
++        val text = try {
++            Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(raw)).toString()
++        } catch (e: java.nio.charset.CharacterCodingException) { throw TraceFormatException("bad_payload") }
++        if (text.isEmpty()) throw TraceFormatException("bad_header")
++        if (text.indexOf('\r') >= 0 || !text.endsWith("\n")) throw TraceFormatException("bad_payload")
++        val lines = text.substring(0, text.length - 1).split('\n')
++        if (lines.any { it.isEmpty() }) throw TraceFormatException("bad_payload")
++        val count = parseHeader(lines[0], traceId, seq, bounds)
++        if (lines.size - 1 != count) throw TraceFormatException("line_count")
++        val events = ArrayList<TraceEvent>(count)
++        var prev = 0L
++        for (i in 1 until lines.size) {
++            val e = try { EventCodec.decode(lines[i]) } catch (x: TraceFormatException) { throw TraceFormatException("bad_event") }
++            if (e.tMs < prev) throw TraceFormatException("not_monotonic")
++            prev = e.tMs
++            events.add(e)
++        }
++        return DecodedChunk(traceId, seq, events, raw.size, sha256)
++    }
++
++    private fun parseHeader(line: String, traceId: String, seq: Int, bounds: TraceBounds): Int {
++        if (line.length > TraceBounds.MAX_LINE_CHARS) throw TraceFormatException("bad_header")
++        val a = try { Json.parseToJsonElement(line) as? JsonArray } catch (e: Exception) { null } ?: throw TraceFormatException("bad_header")
++        val p = a.map { it as? JsonPrimitive }
++        if (p.size != 4 || p.any { it == null }) throw TraceFormatException("bad_header")
++        val magic = p[0]!!; val id = p[1]!!; val s = p[2]!!; val n = p[3]!!
++        if (!magic.isString || magic.content != MAGIC || !id.isString || s.isString || n.isString) throw TraceFormatException("bad_header")
++        val sv = s.content.toIntOrNull(); val nv = n.content.toLongOrNull()
++        if (sv == null || nv == null) throw TraceFormatException("bad_header")
++        if (nv > bounds.maxEventsPerChunk) throw TraceFormatException("too_many_events")
++        if (nv < 1) throw TraceFormatException("bad_header")
++        if (id.content != traceId || sv != seq) throw TraceFormatException("header_mismatch")
++        if (line != "[\"$MAGIC\",\"$traceId\",$seq,$nv]") throw TraceFormatException("bad_header")
++        return nv.toInt()
++    }
++
++    /** Streamed gunzip: aborts as soon as more than [limit] bytes would be produced, so a bomb never inflates in memory. */
++    internal fun gunzipLimited(gz: ByteArray, limit: Int): ByteArray {
++        val out = ByteArrayOutputStream(minOf(limit, gz.size * 4 + 64))
++        val buf = ByteArray(8192)
++        try {
++            GZIPInputStream(ByteArrayInputStream(gz), 8192).use { zin ->
++                while (true) {
++                    val n = zin.read(buf)
++                    if (n < 0) break
++                    if (out.size().toLong() + n > limit) throw TraceFormatException("gunzip_too_big")
++                    out.write(buf, 0, n)
++                }
++            }
++        } catch (e: TraceFormatException) { throw e } catch (e: IOException) { throw TraceFormatException("gzip_invalid") }
++        return out.toByteArray()
++    }
++
++    internal fun sha256Hex(raw: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(raw).joinToString("") { "%02x".format(it) }
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/ClockMap.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/ClockMap.kt
+new file mode 100644
+index 00000000..f5946784
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/ClockMap.kt
+@@ -0,0 +1,50 @@
++package com.rokid.context.capture.trace
++
++/**
++ * FROZEN (trace schema 1). Maps glasses `elapsedRealtime` to wall time for one trace, from the manifest's two samples (start and end).
++ *
++ * - The glasses wall offset (`wall - elapsed`) is interpolated linearly between the samples. Outside `[start, end]` the nearest sample's
++ *   offset is held, for at most [SLACK_MS] (marks and flushes land just outside a trace); farther away the map answers null.
++ * - Phone wall time = glasses wall time + `phoneOffsetMs` (null until the phone has synchronised: then [phoneWall] is null).
++ * - **Reboot epoch:** `elapsedRealtime` restarts at every boot, so a map answers only for its own `bootId`; any other boot id gets null,
++ *   never a guess. [resolve] picks the right map out of several traces by boot id and time.
++ * - Uncertainty = the phone sync uncertainty plus the observed drift between the two samples (null when not synchronised).
++ */
++class ClockMap private constructor(
++    val bootId: String, private val startE: Long, private val endE: Long, private val startOffset: Long, private val endOffset: Long,
++    private val phoneOffset: Long?, val uncertaintyMs: Long?,
++) {
++    /** True when [elapsedMs] on [boot] can be mapped (inside the trace or within [SLACK_MS] of it). */
++    fun covers(elapsedMs: Long, boot: String): Boolean = boot == bootId && elapsedMs >= 0 && elapsedMs >= startE - SLACK_MS && elapsedMs <= endE + SLACK_MS
++
++    fun glassesWall(elapsedMs: Long, boot: String): Long? {
++        if (!covers(elapsedMs, boot)) return null
++        val off = when {
++            elapsedMs <= startE -> startOffset
++            elapsedMs >= endE -> endOffset
++            else -> startOffset + Math.round((endOffset - startOffset).toDouble() * (elapsedMs - startE).toDouble() / (endE - startE).toDouble())
++        }
++        return elapsedMs + off
++    }
++
++    fun phoneWall(elapsedMs: Long, boot: String): Long? {
++        val po = phoneOffset ?: return null
++        return glassesWall(elapsedMs, boot)?.plus(po)
++    }
++
++    /** Distance in ms from the trace window (0 inside). */
++    private fun distance(e: Long): Long = when { e < startE -> startE - e; e > endE -> e - endE; else -> 0 }
++
++    companion object {
++        const val SLACK_MS = 60_000L
++
++        fun of(m: Manifest): ClockMap {
++            val so = m.startWallMs - m.startElapsedMs; val eo = m.endWallMs - m.endElapsedMs
++            return ClockMap(m.bootId, m.startElapsedMs, m.endElapsedMs, so, eo, m.phoneOffsetMs, m.offsetUncertaintyMs?.plus(Math.abs(eo - so)))
++        }
++
++        /** The map of [bootId] closest to [elapsedMs] that covers it, or null (a different boot never matches). */
++        fun resolve(maps: List<ClockMap>, bootId: String, elapsedMs: Long): ClockMap? =
++            maps.filter { it.covers(elapsedMs, bootId) }.minByOrNull { it.distance(elapsedMs) }
++    }
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/Manifest.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/Manifest.kt
+new file mode 100644
+index 00000000..fe59ad69
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/Manifest.kt
+@@ -0,0 +1,264 @@
++package com.rokid.context.capture.trace
++
++import com.rokid.context.capture.plan.CanonicalJson
++import com.rokid.context.capture.plan.PlanJson
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.glasses.capture.motion.GlanceParams
++import com.rokid.context.glasses.capture.session.BudgetTier
++import java.security.MessageDigest
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonArray
++import kotlinx.serialization.json.JsonElement
++import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
++
++enum class TraceStatus { COMPLETE, PARTIAL }
++
++/**
++ * FROZEN (trace schema 1). Manifest-lite (S42 as amended by S73): one canonical JSON document (keys sorted, no whitespace, integers
++ * only, at most [TraceBounds.MAX_MANIFEST_BYTES] bytes, depth at most [TraceBounds.MAX_MANIFEST_DEPTH]) shipped as one `TraceChunk` of kind
++ * `"manifest"` before the chunks. Strict decode: every key is required, no unknown key, no duplicate key, and the text must equal its own
++ * re-encoding.
++ *
++ * Deviation from the round 1 text, forced by the S73 b64 bound: with up to 4,096 chunks a per-chunk sha list cannot fit one 90,000 char chunk,
++ * so the per-chunk sha travels in each `TraceChunk.sha256` and the manifest carries [traceSha256] = SHA-256 over the ASCII concatenation of
++ * the chunk sha hex strings in `seq` order ([traceSha]). A chunk that does not match the one the manifest summarised therefore makes the
++ * trace PARTIAL (see [TraceAssembler]).
++ *
++ * Epoch: [installId] and [deletionCounter] are the glasses' persisted deletion epoch at recording time; the phone refuses a trace whose
++ * epoch is older than its own. [revision] starts at 1 and is bumped by the phone when it re-ingests the same trace id with different content;
++ * [parentTraceId] names the trace a trimmed copy was cut from.
++ *
++ * Clock: the start and end samples (glasses `elapsedRealtime` <-> glasses wall clock) are taken by the recorder; [phoneOffsetMs] (phone wall
++ * minus glasses wall) and [offsetUncertaintyMs] are null on the glasses and filled by the phone at intake. [bootId] names the boot all
++ * `tMs` belong to (a reboot restarts `elapsedRealtime`; a trace never spans one: the recorder closes it with reason `reboot`).
++ */
++data class Manifest(
++    val traceId: String,
++    val installId: String,
++    val deletionCounter: Long,
++    val revision: Int,
++    val parentTraceId: String?,
++    val bootId: String,
++    val startElapsedMs: Long,
++    val endElapsedMs: Long,
++    val startWallMs: Long,
++    val endWallMs: Long,
++    val phoneOffsetMs: Long?,
++    val offsetUncertaintyMs: Long?,
++    val chunkCount: Int,
++    val eventCount: Long,
++    val rawBytes: Long,
++    val traceSha256: String,
++    /** What the recorder itself knew: PARTIAL if it dropped events (disk cap) or could not close cleanly. */
++    val recorded: TraceStatus,
++    val closeReason: String,
++    val snapshot: StartSnapshot,
++) {
++    init {
++        require(TraceBounds.isTraceId(traceId)) { "traceId" }
++        id(installId, "installId", allowEmpty = true)
++        ms(deletionCounter, "deletionCounter")
++        require(revision in 1..MAX_REVISION) { "revision" }
++        parentTraceId?.let { require(TraceBounds.isTraceId(it)) { "parentTraceId" } }
++        id(bootId, "bootId")
++        ms(startElapsedMs, "startElapsedMs"); ms(endElapsedMs, "endElapsedMs"); ms(startWallMs, "startWallMs"); ms(endWallMs, "endWallMs")
++        require(endElapsedMs >= startElapsedMs) { "end before start" }
++        require((phoneOffsetMs == null) == (offsetUncertaintyMs == null)) { "phone offset and uncertainty go together" }
++        phoneOffsetMs?.let { require(it in -TraceBounds.MAX_MS..TraceBounds.MAX_MS) { "phoneOffsetMs" } }
++        offsetUncertaintyMs?.let { ms(it, "offsetUncertaintyMs") }
++        require(chunkCount in 1..TraceBounds.MAX_CHUNKS) { "chunkCount" }
++        require(eventCount in 1..TraceBounds.MAX_TRACE_EVENTS && eventCount >= chunkCount) { "eventCount" }
++        require(rawBytes in 1..TraceBounds.MAX_TRACE_RAW_BYTES) { "rawBytes" }
++        require(HEX64.matches(traceSha256)) { "traceSha256" }
++        token(closeReason, "closeReason"); require(closeReason.isNotEmpty()) { "closeReason" }
++    }
++
++    /** S66: false for a downsampled (25 Hz) trace. Never parity or publish evidence. */
++    val exact: Boolean get() = snapshot.exact
++
++    /** Decisions before this elapsed time are discarded by the simulator (S65). */
++    val preRollEndMs: Long get() = startElapsedMs + TraceBounds.PRE_ROLL_MS
++
++    fun toJson(): JsonObject = JsonObject(
++        mapOf(
++            "traceSchema" to n(TRACE_SCHEMA.toLong()), "traceId" to JsonPrimitive(traceId), "installId" to JsonPrimitive(installId),
++            "deletionCounter" to n(deletionCounter), "revision" to n(revision.toLong()),
++            "parentTraceId" to (parentTraceId?.let { JsonPrimitive(it) } ?: JsonNull), "bootId" to JsonPrimitive(bootId),
++            "startElapsedMs" to n(startElapsedMs), "endElapsedMs" to n(endElapsedMs), "startWallMs" to n(startWallMs), "endWallMs" to n(endWallMs),
++            "phoneOffsetMs" to (phoneOffsetMs?.let { n(it) } ?: JsonNull), "offsetUncertaintyMs" to (offsetUncertaintyMs?.let { n(it) } ?: JsonNull),
++            "chunkCount" to n(chunkCount.toLong()), "eventCount" to n(eventCount), "rawBytes" to n(rawBytes), "traceSha256" to JsonPrimitive(traceSha256),
++            "recorded" to JsonPrimitive(recorded.name), "closeReason" to JsonPrimitive(closeReason), "snapshot" to snapshotJson(snapshot),
++        ),
++    )
++
++    /** Canonical text ([CanonicalJson]: sorted keys, no whitespace). Byte-exact and frozen. */
++    fun encode(): String = CanonicalJson.encode(toJson())
++
++    companion object {
++        const val MAX_REVISION = 1_000_000
++        private val HEX64 = Regex("[0-9a-f]{64}")
++        private val INT = Regex("-?(0|[1-9][0-9]{0,15})")
++        private fun n(v: Long) = JsonPrimitive(v)
++        private fun bits(f: Float) = JsonPrimitive(f.toRawBits())
++        private fun hex(v: Long) = JsonPrimitive(java.lang.Long.toHexString(v).padStart(16, '0'))
++
++        private fun snapshotJson(s: StartSnapshot) = JsonObject(
++            mapOf(
++                "settingsHash" to JsonPrimitive(s.settingsHash),
++                "ring" to JsonArray(s.ring.map { JsonArray(listOf(hex(it.d), hex(it.p))) }),
++                "lastKeyframeAt" to (s.lastKeyframeAt?.let { n(it) } ?: JsonNull),
++                "keptAt" to JsonArray(s.keptAt.map { n(it) }),
++                "planGen" to n(s.planGen), "planHash" to (s.planHash?.let { JsonPrimitive(it) } ?: JsonNull),
++                "glance" to JsonObject(
++                    mapOf(
++                        "onsetRadS" to bits(s.glance.onsetRadS), "releaseRadS" to bits(s.glance.releaseRadS), "bridgeMs" to n(s.glance.bridgeMs),
++                        "minBoutMs" to n(s.glance.minBoutMs), "minBoutRad" to bits(s.glance.minBoutRad), "settleMs" to n(s.glance.settleMs),
++                        "maxDtMs" to n(s.glance.maxDtMs), "deadbandRadS" to bits(s.glance.deadbandRadS), "noveltyWindowMs" to n(s.glance.noveltyWindowMs),
++                        "noveltyMinRad" to bits(s.glance.noveltyMinRad), "bigTurnRad" to bits(s.glance.bigTurnRad),
++                        "capPerMin" to n(s.glance.capPerMin.toLong()), "restCapPerMin" to n(s.glance.restCapPerMin.toLong()),
++                    ),
++                ),
++                "ctx" to JsonPrimitive(s.ctx.name), "resting" to JsonPrimitive(s.resting), "tier" to JsonPrimitive(s.tier.name),
++                "sampleEvery" to n(s.sampleEvery.toLong()), "exact" to JsonPrimitive(s.exact),
++            ),
++        )
++
++        /** SHA-256 (lower-case hex) over the ASCII concatenation of the chunk sha hex strings in `seq` order. */
++        fun traceSha(chunkShas: List<String>): String =
++            MessageDigest.getInstance("SHA-256").digest(chunkShas.joinToString("").toByteArray(Charsets.US_ASCII)).joinToString("") { "%02x".format(it) }
++
++        /** Strict decode; the failure is always a [TraceFormatException] with code `bad_manifest`. */
++        fun decodeStrict(s: String): Result<Manifest> = try {
++            Result.success(decode(s))
++        } catch (e: Exception) {
++            Result.failure(TraceFormatException("bad_manifest"))
++        }
++
++        private fun decode(s: String): Manifest {
++            require(s.length <= TraceBounds.MAX_MANIFEST_BYTES) { "too long" }
++            require(depthOk(s)) { "too deep" }
++            require(!PlanJson.hasDuplicateKeys(s)) { "duplicate key" }
++            val top = Obj(Json.parseToJsonElement(s))
++            require(top.int("traceSchema") == TRACE_SCHEMA.toLong()) { "traceSchema" }
++            val snap = top.obj("snapshot")
++            val m = Manifest(
++                traceId = top.str("traceId"), installId = top.str("installId"), deletionCounter = top.int("deletionCounter"), revision = top.int("revision").toInt(),
++                parentTraceId = top.strOrNull("parentTraceId"), bootId = top.str("bootId"), startElapsedMs = top.int("startElapsedMs"),
++                endElapsedMs = top.int("endElapsedMs"), startWallMs = top.int("startWallMs"), endWallMs = top.int("endWallMs"),
++                phoneOffsetMs = top.intOrNull("phoneOffsetMs"), offsetUncertaintyMs = top.intOrNull("offsetUncertaintyMs"),
++                chunkCount = top.int("chunkCount").toInt(), eventCount = top.int("eventCount"), rawBytes = top.int("rawBytes"),
++                traceSha256 = top.str("traceSha256"), recorded = top.enum("recorded", TraceStatus.values()), closeReason = top.str("closeReason"),
++                snapshot = decodeSnapshot(snap),
++            )
++            top.done()
++            require(m.encode() == s) { "not canonical" }
++            return m
++        }
++
++        private fun decodeSnapshot(o: Obj): StartSnapshot {
++            val g = o.obj("glance")
++            val glance = GlanceParams(
++                onsetRadS = g.float("onsetRadS"), releaseRadS = g.float("releaseRadS"), bridgeMs = g.int("bridgeMs"), minBoutMs = g.int("minBoutMs"),
++                minBoutRad = g.float("minBoutRad"), settleMs = g.int("settleMs"), maxDtMs = g.int("maxDtMs"), deadbandRadS = g.float("deadbandRadS"),
++                noveltyWindowMs = g.int("noveltyWindowMs"), noveltyMinRad = g.float("noveltyMinRad"), bigTurnRad = g.float("bigTurnRad"),
++                capPerMin = g.int("capPerMin").toInt(), restCapPerMin = g.int("restCapPerMin").toInt(),
++            )
++            g.done()
++            val s = StartSnapshot(
++                settingsHash = o.str("settingsHash"),
++                ring = o.arr("ring").map { p -> (p as? JsonArray)?.takeIf { it.size == 2 }?.let { RingHash(hexOf(it[0]), hexOf(it[1])) } ?: throw IllegalArgumentException("ring") },
++                lastKeyframeAt = o.intOrNull("lastKeyframeAt"), keptAt = o.arr("keptAt").map { intOf(it) }, planGen = o.int("planGen"),
++                planHash = o.strOrNull("planHash"), glance = glance, ctx = o.enum("ctx", ContextState.values()), resting = o.bool("resting"),
++                tier = o.enum("tier", BudgetTier.values()), sampleEvery = o.int("sampleEvery").toInt(), exact = o.bool("exact"),
++            )
++            o.done()
++            return s
++        }
++
++        private fun intOf(e: JsonElement): Long {
++            require(e is JsonPrimitive && e !is JsonNull && !e.isString && INT.matches(e.content)) { "not an integer" }
++            return e.content.toLong()
++        }
++        private fun hexOf(e: JsonElement): Long {
++            require(e is JsonPrimitive && e.isString && Regex("[0-9a-f]{16}").matches(e.content)) { "not hex16" }
++            return java.lang.Long.parseUnsignedLong(e.content, 16)
++        }
++
++        /** Nesting depth of '[' and '{' outside strings, without recursion. */
++        private fun depthOk(s: String): Boolean {
++            var d = 0; var inStr = false; var esc = false
++            for (c in s) {
++                if (inStr) { if (esc) esc = false else if (c == '\\') esc = true else if (c == '"') inStr = false; continue }
++                when (c) {
++                    '"' -> inStr = true
++                    '{', '[' -> { d++; if (d > TraceBounds.MAX_MANIFEST_DEPTH) return false }
++                    '}', ']' -> d--
++                }
++            }
++            return true
++        }
++
++        private class Obj(e: JsonElement) {
++            private val o: JsonObject = e as? JsonObject ?: throw IllegalArgumentException("not an object")
++            private val used = HashSet<String>()
++            private fun take(k: String): JsonElement { used += k; return o[k] ?: throw IllegalArgumentException("$k missing") }
++            fun str(k: String): String = take(k).let { require(it is JsonPrimitive && it !is JsonNull && it.isString) { "$k not a string" }; (it as JsonPrimitive).content }
++            fun strOrNull(k: String): String? = take(k).let { if (it is JsonNull) null else { require(it is JsonPrimitive && it.isString) { "$k not a string" }; (it as JsonPrimitive).content } }
++            fun int(k: String): Long = intOf(take(k))
++            fun intOrNull(k: String): Long? = take(k).let { if (it is JsonNull) null else intOf(it) }
++            fun float(k: String): Float { val v = int(k); require(v in Int.MIN_VALUE..Int.MAX_VALUE) { "$k bits" }; return Float.fromBits(v.toInt()) }
++            fun bool(k: String): Boolean = take(k).let { require(it is JsonPrimitive && it !is JsonNull && !it.isString && (it.content == "true" || it.content == "false")) { "$k not a boolean" }; (it as JsonPrimitive).content == "true" }
++            fun obj(k: String) = Obj(take(k))
++            fun arr(k: String): JsonArray = take(k) as? JsonArray ?: throw IllegalArgumentException("$k not an array")
++            fun <T : Enum<T>> enum(k: String, values: Array<T>): T = str(k).let { s -> values.firstOrNull { it.name == s } ?: throw IllegalArgumentException("$k unknown") }
++            fun done() = require(o.keys == used) { "unknown key" }
++        }
++    }
++}
++
++/** The outcome of checking a received trace against its manifest. [reason] is `ok` or the first failed check (a stable token). */
++class Verification(val status: TraceStatus, val reason: String)
++
++/**
++ * Streams chunks against a [Manifest] without keeping their events. COMPLETE needs: every `seq` in `[0, chunkCount)` present exactly once
++ * with a single sha; every chunk from this trace; time non-decreasing across chunks and inside `[startElapsedMs, endElapsedMs]`; the event and
++ * byte totals equal to the manifest; the [Manifest.traceSha] equal to [Manifest.traceSha256]; and the glasses having recorded it COMPLETE.
++ * Anything else is PARTIAL: viewable and replayable, never publish evidence. Reasons, in the order they are checked: foreign_chunk,
++ * seq_out_of_range, conflict, missing, not_monotonic, range, totals, trace_sha, recorded_partial.
++ */
++class TraceAssembler(private val manifest: Manifest) {
++    private class Meta(val sha: String, val events: Int, val rawBytes: Int, val first: Long, val last: Long)
++    private val seen = HashMap<Int, Meta>()
++    private var foreign = false
++    private var outOfRange = false
++    private var conflict = false
++
++    fun accept(c: DecodedChunk) {
++        if (c.traceId != manifest.traceId) { foreign = true; return }
++        if (c.seq !in 0 until manifest.chunkCount) { outOfRange = true; return }
++        val prev = seen[c.seq]
++        if (prev != null) { if (prev.sha != c.sha256) conflict = true; return }
++        seen[c.seq] = Meta(c.sha256, c.events.size, c.rawBytes, c.firstTMs, c.lastTMs)
++    }
++
++    fun verify(): Verification {
++        fun partial(r: String) = Verification(TraceStatus.PARTIAL, r)
++        if (foreign) return partial("foreign_chunk")
++        if (outOfRange) return partial("seq_out_of_range")
++        if (conflict) return partial("conflict")
++        if ((0 until manifest.chunkCount).any { it !in seen }) return partial("missing")
++        var prevLast = -1L; var events = 0L; var raw = 0L
++        for (i in 0 until manifest.chunkCount) {
++            val m = seen.getValue(i)
++            if (m.first < prevLast) return partial("not_monotonic")
++            prevLast = m.last; events += m.events; raw += m.rawBytes
++        }
++        if (seen.getValue(0).first < manifest.startElapsedMs || prevLast > manifest.endElapsedMs) return partial("range")
++        if (events != manifest.eventCount || raw != manifest.rawBytes) return partial("totals")
++        if (Manifest.traceSha((0 until manifest.chunkCount).map { seen.getValue(it).sha }) != manifest.traceSha256) return partial("trace_sha")
++        if (manifest.recorded != TraceStatus.COMPLETE) return partial("recorded_partial")
++        return Verification(TraceStatus.COMPLETE, "ok")
++    }
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/TraceBounds.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/TraceBounds.kt
+new file mode 100644
+index 00000000..2d089663
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/TraceBounds.kt
+@@ -0,0 +1,43 @@
++package com.rokid.context.capture.trace
++
++/** Raised by every trace decoder. [code] is a short stable token (never raw data) that is safe to log and to put in a `TraceAck.reason`. */
++class TraceFormatException(val code: String, detail: String = code) : IllegalArgumentException(detail)
++
++/**
++ * FROZEN (trace schema 1). The S73 transfer bounds, enforced on decode (and on encode, so a recorder cannot write what the phone refuses).
++ * The five S73 limits are fixed constants; [DEFAULT] carries them and tests build a smaller copy to reach a limit cheaply.
++ */
++data class TraceBounds(
++    /** Base64 characters in one `TraceChunk.b64`. */
++    val maxB64Chars: Int = MAX_B64_CHARS,
++    /** Raw (gunzipped) payload bytes of one chunk. Enforced by a streamed read, so a gzip bomb never inflates past it. */
++    val maxRawBytes: Int = MAX_RAW_BYTES,
++    /** Events in one chunk (checked against the header count before any event line is read). */
++    val maxEventsPerChunk: Int = MAX_EVENTS_PER_CHUNK,
++    /** Chunks in one trace (also bounds `seq`). */
++    val maxChunks: Int = MAX_CHUNKS,
++) {
++    companion object {
++        const val MAX_B64_CHARS = 90_000
++        const val MAX_RAW_BYTES = 512 * 1024
++        const val MAX_EVENTS_PER_CHUNK = 200_000
++        const val MAX_CHUNKS = 4_096
++        /** One whole trace (sum of raw payloads). 12 h at 100 sensor events/s is about 200 MB raw; the glasses disk cap (150 MB) holds it gzipped. */
++        const val MAX_TRACE_RAW_BYTES = 256L * 1024 * 1024
++        const val MAX_TRACE_EVENTS = 10_000_000L
++        /** One event line, bytes. The longest legal line is under 200. */
++        const val MAX_LINE_CHARS = 512
++        /** The manifest document, bytes (it rides one `TraceChunk` of kind "manifest"). */
++        const val MAX_MANIFEST_BYTES = 8_192
++        /** JSON nesting allowed in the manifest (object, snapshot object, ring array, pair array). */
++        const val MAX_MANIFEST_DEPTH = 5
++        /** S65/S66: decisions inside the first 10 s after the (clean) start are discarded by the simulator. */
++        const val PRE_ROLL_MS = 10_000L
++        const val MAX_MS = 9_007_199_254_740_991L   // 2^53 - 1: every time field is a plain JSON integer any parser reads exactly
++        val DEFAULT = TraceBounds()
++
++        /** S73: `^[a-z0-9-]{8,64}$` (full match, so a trailing newline is not accepted). */
++        private val TRACE_ID = Regex("^[a-z0-9-]{8,64}$")
++        fun isTraceId(s: String): Boolean = TRACE_ID.matches(s)
++    }
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/TraceRecords.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/TraceRecords.kt
+new file mode 100644
+index 00000000..f97221db
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/trace/TraceRecords.kt
+@@ -0,0 +1,253 @@
++package com.rokid.context.capture.trace
++
++import com.rokid.context.core.model.CameraWake
++import com.rokid.context.core.model.MotionState
++import com.rokid.context.core.model.PlanMode
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.glasses.capture.motion.GlanceParams
++import com.rokid.context.glasses.capture.session.BudgetTier
++import kotlinx.serialization.json.JsonArray
++import kotlinx.serialization.json.JsonElement
++import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.JsonPrimitive
++
++/** Trace schema version carried by every manifest and by every chunk header (`PCT1`). A change to any record, field order or bound bumps it. */
++const val TRACE_SCHEMA = 1
++
++private val TOKEN = Regex("[A-Za-z0-9_:.-]{0,32}")
++private val HASH = Regex("[0-9a-f]{1,64}")
++private val ID = Regex("[A-Za-z0-9_-]{1,64}")
++private val ID_OR_EMPTY = Regex("[A-Za-z0-9_-]{0,64}")
++internal fun ms(v: Long, what: String) { require(v in 0..TraceBounds.MAX_MS) { "$what out of range" } }
++internal fun token(v: String, what: String) { require(TOKEN.matches(v)) { "$what is not a token" } }
++internal fun hash(v: String, what: String) { require(HASH.matches(v)) { "$what is not lower-case hex" } }
++internal fun id(v: String, what: String, allowEmpty: Boolean = false) {
++    require((if (allowEmpty) ID_OR_EMPTY else ID).matches(v)) { "$what is not an id" }
++}
++internal fun finite(f: Float, what: String) { require(f.isFinite()) { "$what is not finite" } }
++
++enum class EpisodeCause { TIMER, DWELL, ONSET, NOW, RESV, STREAM }
++enum class GateOutcome { KEEP, SKIP }
++
++/**
++ * FROZEN (trace schema 1). One recorded event. Every `tMs` is the glasses `SystemClock.elapsedRealtime()` at the moment the recorder
++ * appended the event; the recorder appends from a single writer, so `tMs` is non-decreasing over the whole trace (the decoder refuses a
++ * regression). Records hold numbers, enum names and hash hex only: no audio, photo, text, location or device name (sensor features only).
++ *
++ * Wire form (see [EventCodec]): one canonical JSON array per event, `["<tag>", tMs, fields in the order declared here]`.
++ * Floats travel as their IEEE-754 bits (a signed 32-bit integer), 64-bit hashes as 16 lower-case hex digits, booleans as `true`/`false`.
++ */
++sealed interface TraceEvent {
++    val tMs: Long
++
++    /** `g`: gyroscope, rad/s. */
++    data class Gyro(override val tMs: Long, val x: Float, val y: Float, val z: Float) : TraceEvent {
++        init { ms(tMs, "tMs"); finite(x, "x"); finite(y, "y"); finite(z, "z") }
++    }
++
++    /** `a`: accelerometer, m/s^2. */
++    data class Accel(override val tMs: Long, val x: Float, val y: Float, val z: Float) : TraceEvent {
++        init { ms(tMs, "tMs"); finite(x, "x"); finite(y, "y"); finite(z, "z") }
++    }
++
++    /** `cx`: the context state the glasses applied (from the phone's `pc_motion_ctx`). */
++    data class Ctx(override val tMs: Long, val state: ContextState) : TraceEvent { init { ms(tMs, "tMs") } }
++
++    /** `rs`: WorkRest resting on or off. */
++    data class Resting(override val tMs: Long, val on: Boolean) : TraceEvent { init { ms(tMs, "tMs") } }
++
++    /** `pf`: the effective [com.rokid.context.glasses.capture.session.CaptureProfile] inputs after plan, heat and battery rules. [walkMs] null = no walk check. */
++    data class Profile(
++        override val tMs: Long, val wake: CameraWake, val settledMs: Long, val quietMs: Long, val walkMs: Long?, val stillCapMs: Long,
++        val analysisMs: Long, val tier: BudgetTier, val lowPower: Boolean, val heatSlow: Boolean,
++    ) : TraceEvent {
++        init {
++            ms(tMs, "tMs"); ms(settledMs, "settledMs"); ms(quietMs, "quietMs"); walkMs?.let { ms(it, "walkMs") }; ms(stillCapMs, "stillCapMs"); ms(analysisMs, "analysisMs")
++        }
++    }
++
++    /** `gp`: the keyframe gate parameters in force. */
++    data class GateParams(override val tMs: Long, val hamming: Int, val bigChange: Int, val ringAll: Boolean) : TraceEvent {
++        init { ms(tMs, "tMs"); require(hamming in 0..64 && bigChange in 0..64) { "gate params out of range" } }
++    }
++
++    /** `pl`: the capture plan in force (gen 0 and hash "0" with mode SETTINGS = no plan). */
++    data class Plan(override val tMs: Long, val gen: Long, val configHash: String, val mode: PlanMode) : TraceEvent {
++        init { ms(tMs, "tMs"); ms(gen, "gen"); hash(configHash, "configHash") }
++    }
++
++    /** `ep`: a camera episode opens or closes. [firstFrameAtMs] (elapsed) is set on a close once a frame arrived. */
++    data class Episode(override val tMs: Long, val open: Boolean, val cause: EpisodeCause, val firstFrameAtMs: Long? = null) : TraceEvent {
++        init { ms(tMs, "tMs"); firstFrameAtMs?.let { ms(it, "firstFrameAtMs") } }
++    }
++
++    /** `sc`: one scored frame (blur failures included). [d] and [p] are the 64-bit dHash and pHash; [seq] is the session frame number. */
++    data class Score(
++        override val tMs: Long, val seq: Long, val d: Long, val p: Long, val blur: Float, val passedBlur: Boolean, val motion: MotionState,
++        val dwellArmed: Boolean, val force: Boolean,
++    ) : TraceEvent {
++        init { ms(tMs, "tMs"); ms(seq, "seq"); finite(blur, "blur") }
++    }
++
++    /** `gt`: what the gate decided for [seq]: KEEP (reason "") or SKIP (BLUR, DUPLICATE, THROTTLED, WINDOW, CAPPED). */
++    data class Gate(override val tMs: Long, val seq: Long, val outcome: GateOutcome, val reason: String) : TraceEvent {
++        init { ms(tMs, "tMs"); ms(seq, "seq"); token(reason, "reason") }
++    }
++
++    /** `fl`: the gate window was flushed ([reason] is a token such as `window`, `timer`, `stop`). */
++    data class Flush(override val tMs: Long, val reason: String) : TraceEvent { init { ms(tMs, "tMs"); token(reason, "reason") } }
++
++    /** `bo`: the still-scene back-off step changed. */
++    data class Backoff(override val tMs: Long, val stillStep: Int) : TraceEvent { init { ms(tMs, "tMs"); require(stillStep in 0..32) { "stillStep" } } }
++
++    /** `bl`: capture is blocked (pause, wear gate, camera busy ...); null = unblocked. */
++    data class Blocked(override val tMs: Long, val reason: String?) : TraceEvent { init { ms(tMs, "tMs"); reason?.let { token(it, "reason") } } }
++
++    /** `pr`: the 10 s pre-roll is over ([TraceBounds.PRE_ROLL_MS] after the start); the simulator discards decisions before it. */
++    data class PreRollEnd(override val tMs: Long) : TraceEvent { init { ms(tMs, "tMs") } }
++
++    /** `cl`: the trace ends ([reason] is a non-empty token: stop, pause, unplug, epoch, cap, reboot ...). The last event of a trace. */
++    data class Close(override val tMs: Long, val reason: String) : TraceEvent { init { ms(tMs, "tMs"); token(reason, "reason"); require(reason.isNotEmpty()) { "reason" } } }
++}
++
++/** One keyframe-ring entry: the dHash and pHash of a kept frame. */
++data class RingHash(val d: Long, val p: Long)
++
++/**
++ * FROZEN (trace schema 1). The state the recorder captures at the clean boundary, so an exact replay starts from the same state.
++ * Clean boundary (S65): the recorder starts only when the detector is QUIET, no camera episode is open and the gate window is empty;
++ * the first 10 s are a pre-roll ([TraceBounds.PRE_ROLL_MS]) that refills the classifier windows. The recorder must also append `Ctx`,
++ * `Resting`, `Profile`, `GateParams` and `Plan` events at the start time, so a replay needs nothing but this snapshot and the events.
++ */
++data class StartSnapshot(
++    /** Hash prefix of the effective settings (hex). */
++    val settingsHash: String,
++    /** The keyframe ring, newest last, at most 5. */
++    val ring: List<RingHash>,
++    /** Elapsed time of the last keyframe, or null. */
++    val lastKeyframeAt: Long?,
++    /** Elapsed times of keeps in the last rolling minute, ascending, at most 64. */
++    val keptAt: List<Long>,
++    val planGen: Long,
++    /** The plan `configHash` in force, or null for settings. */
++    val planHash: String?,
++    val glance: GlanceParams,
++    val ctx: ContextState,
++    val resting: Boolean,
++    val tier: BudgetTier,
++    /** 1 = every sensor sample is recorded; n > 1 = every n-th sample (S66). */
++    val sampleEvery: Int,
++    /** `sampleEvery == 1`. Only an exact trace may be parity or publish evidence. */
++    val exact: Boolean,
++) {
++    init {
++        hash(settingsHash, "settingsHash")
++        require(ring.size <= MAX_RING) { "ring too long" }
++        lastKeyframeAt?.let { ms(it, "lastKeyframeAt") }
++        require(keptAt.size <= MAX_KEPT) { "keptAt too long" }
++        keptAt.forEach { ms(it, "keptAt") }
++        require(keptAt.zipWithNext().all { (a, b) -> a <= b }) { "keptAt not ascending" }
++        ms(planGen, "planGen"); planHash?.let { hash(it, "planHash") }
++        listOf(glance.onsetRadS, glance.releaseRadS, glance.minBoutRad, glance.deadbandRadS, glance.noveltyMinRad, glance.bigTurnRad).forEach { finite(it, "glance") }
++        listOf(glance.bridgeMs, glance.minBoutMs, glance.settleMs, glance.maxDtMs, glance.noveltyWindowMs).forEach { ms(it, "glance") }
++        require(glance.capPerMin in 0..100_000 && glance.restCapPerMin in 0..100_000) { "glance cap" }
++        require(sampleEvery in 1..MAX_SAMPLE_EVERY) { "sampleEvery" }
++        require(exact == (sampleEvery == 1)) { "exact must equal sampleEvery == 1" }
++    }
++
++    companion object { const val MAX_RING = 5; const val MAX_KEPT = 64; const val MAX_SAMPLE_EVERY = 16 }
++}
++
++/**
++ * FROZEN (trace schema 1). Canonical one-line encoding of an event and its strict inverse. Tags and field order:
++ * `g` x y z (float bits) | `a` x y z | `cx` state | `rs` on | `pf` wake settledMs quietMs walkMs|null stillCapMs analysisMs tier lowPower heatSlow |
++ * `gp` hamming bigChange ringAll | `pl` gen configHash mode | `ep` open cause(lower-case) firstFrameAtMs|null |
++ * `sc` seq d(hex16) p(hex16) blurBits passedBlur motion dwellArmed force | `gt` seq outcome(lower-case) reason | `fl` reason | `bo` stillStep |
++ * `bl` reason|null | `pr` | `cl` reason. Enum values travel as their Kotlin names (upper case), except cause and outcome (lower case).
++ */
++object EventCodec {
++    private val INT = Regex("-?(0|[1-9][0-9]{0,15})")
++    private val HEX16 = Regex("[0-9a-f]{16}")
++    private fun bad(): Nothing = throw TraceFormatException("bad_event")
++
++    fun encode(e: TraceEvent): String {
++        val sb = StringBuilder(64)
++        fun head(tag: String) { sb.append("[\"").append(tag).append("\",").append(e.tMs) }
++        fun num(v: Long) { sb.append(',').append(v) }
++        fun bits(f: Float) { sb.append(',').append(f.toRawBits()) }
++        fun str(v: String) { sb.append(",\"").append(v).append('"') }
++        fun flag(v: Boolean) { sb.append(',').append(v) }
++        fun nul(v: Long?) { if (v == null) sb.append(",null") else num(v) }
++        fun hex(v: Long) { str(java.lang.Long.toHexString(v).padStart(16, '0')) }
++        when (e) {
++            is TraceEvent.Gyro -> { head("g"); bits(e.x); bits(e.y); bits(e.z) }
++            is TraceEvent.Accel -> { head("a"); bits(e.x); bits(e.y); bits(e.z) }
++            is TraceEvent.Ctx -> { head("cx"); str(e.state.name) }
++            is TraceEvent.Resting -> { head("rs"); flag(e.on) }
++            is TraceEvent.Profile -> {
++                head("pf"); str(e.wake.name); num(e.settledMs); num(e.quietMs); nul(e.walkMs); num(e.stillCapMs); num(e.analysisMs)
++                str(e.tier.name); flag(e.lowPower); flag(e.heatSlow)
++            }
++            is TraceEvent.GateParams -> { head("gp"); num(e.hamming.toLong()); num(e.bigChange.toLong()); flag(e.ringAll) }
++            is TraceEvent.Plan -> { head("pl"); num(e.gen); str(e.configHash); str(e.mode.name) }
++            is TraceEvent.Episode -> { head("ep"); flag(e.open); str(e.cause.name.lowercase()); nul(e.firstFrameAtMs) }
++            is TraceEvent.Score -> {
++                head("sc"); num(e.seq); hex(e.d); hex(e.p); bits(e.blur); flag(e.passedBlur); str(e.motion.name); flag(e.dwellArmed); flag(e.force)
++            }
++            is TraceEvent.Gate -> { head("gt"); num(e.seq); str(e.outcome.name.lowercase()); str(e.reason) }
++            is TraceEvent.Flush -> { head("fl"); str(e.reason) }
++            is TraceEvent.Backoff -> { head("bo"); num(e.stillStep.toLong()) }
++            is TraceEvent.Blocked -> { head("bl"); if (e.reason == null) sb.append(",null") else str(e.reason) }
++            is TraceEvent.PreRollEnd -> head("pr")
++            is TraceEvent.Close -> { head("cl"); str(e.reason) }
++        }
++        return sb.append(']').toString()
++    }
++
++    /** Strict: only a line that re-encodes to exactly itself is accepted (no whitespace, `+1`, `-0`, `1.0` or differing escapes). Throws [TraceFormatException]. */
++    fun decode(line: String): TraceEvent {
++        if (line.length > TraceBounds.MAX_LINE_CHARS) bad()
++        val e = try { parse(line) } catch (x: TraceFormatException) { throw x } catch (x: Exception) { bad() }
++        if (encode(e) != line) bad()
++        return e
++    }
++
++    private fun parse(line: String): TraceEvent {
++        val a = kotlinx.serialization.json.Json.parseToJsonElement(line) as? JsonArray ?: bad()
++        if (a.size < 2) bad()
++        var i = 0
++        fun next(): JsonElement = if (i < a.size) a[i++] else bad()
++        fun prim(): JsonPrimitive = next() as? JsonPrimitive ?: bad()
++        fun long(): Long { val p = prim(); if (p is JsonNull || p.isString || !INT.matches(p.content)) bad(); return p.content.toLong() }
++        fun int(): Int = long().also { if (it !in Int.MIN_VALUE..Int.MAX_VALUE) bad() }.toInt()
++        fun bool(): Boolean { val p = prim(); if (p is JsonNull || p.isString) bad(); return when (p.content) { "true" -> true; "false" -> false; else -> bad() } }
++        fun str(): String { val p = prim(); if (p is JsonNull || !p.isString) bad(); return p.content }
++        fun strOrNull(): String? { val p = prim(); return if (p is JsonNull) null else { if (!p.isString) bad(); p.content } }
++        fun longOrNull(): Long? { val p = prim(); return if (p is JsonNull) null else { if (p.isString || !INT.matches(p.content)) bad(); p.content.toLong() } }
++        fun float(): Float = Float.fromBits(int())
++        fun hex(): Long { val s = str(); if (!HEX16.matches(s)) bad(); return java.lang.Long.parseUnsignedLong(s, 16) }
++        fun <T : Enum<T>> en(values: Array<T>, lower: Boolean = false): T { val s = str(); return values.firstOrNull { (if (lower) it.name.lowercase() else it.name) == s } ?: bad() }
++        val tag = str()
++        val t = long()
++        val ev: TraceEvent = when (tag) {
++            "g" -> TraceEvent.Gyro(t, float(), float(), float())
++            "a" -> TraceEvent.Accel(t, float(), float(), float())
++            "cx" -> TraceEvent.Ctx(t, en(ContextState.values()))
++            "rs" -> TraceEvent.Resting(t, bool())
++            "pf" -> TraceEvent.Profile(t, en(CameraWake.values()), long(), long(), longOrNull(), long(), long(), en(BudgetTier.values()), bool(), bool())
++            "gp" -> TraceEvent.GateParams(t, int(), int(), bool())
++            "pl" -> TraceEvent.Plan(t, long(), str(), en(PlanMode.values()))
++            "ep" -> TraceEvent.Episode(t, bool(), en(EpisodeCause.values(), lower = true), longOrNull())
++            "sc" -> TraceEvent.Score(t, long(), hex(), hex(), float(), bool(), en(MotionState.values()), bool(), bool())
++            "gt" -> TraceEvent.Gate(t, long(), en(GateOutcome.values(), lower = true), str())
++            "fl" -> TraceEvent.Flush(t, str())
++            "bo" -> TraceEvent.Backoff(t, int())
++            "bl" -> TraceEvent.Blocked(t, strOrNull())
++            "pr" -> TraceEvent.PreRollEnd(t)
++            "cl" -> TraceEvent.Close(t, str())
++            else -> bad()
++        }
++        if (i != a.size) bad()
++        return ev
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/ChunkCodecTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/ChunkCodecTest.kt
+new file mode 100644
+index 00000000..53bdc35c
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/ChunkCodecTest.kt
+@@ -0,0 +1,140 @@
++package com.rokid.context.capture.trace
++
++import com.rokid.context.core.model.TraceChunk
++import java.util.Base64
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFailsWith
++import kotlin.test.assertTrue
++
++class ChunkCodecTest {
++    private val id = TraceFixtures.ID
++    private fun fail(r: Result<*>): String = (r.exceptionOrNull() as? TraceFormatException)?.code ?: "NOT_A_TRACE_FORMAT_FAILURE:${r.exceptionOrNull()}:${r.getOrNull()}"
++    private fun decodeText(text: String, seq: Int = 0, traceId: String = id, bounds: TraceBounds = TraceBounds.DEFAULT) =
++        ChunkCodec.decode(traceId, seq, TraceFixtures.sha(text.toByteArray()), TraceFixtures.gzipB64(text.toByteArray()), bounds)
++
++    @Test fun goldenPayloadIsByteExact() {
++        assertEquals(TraceFixtures.goldenPayload, String(ChunkCodec.payload(id, 0, TraceFixtures.events), Charsets.UTF_8))
++        assertEquals(TraceFixtures.GOLDEN_RAW_BYTES, ChunkCodec.payload(id, 0, TraceFixtures.events).size)
++        assertEquals(TraceFixtures.GOLDEN_SHA, TraceFixtures.sha(ChunkCodec.payload(id, 0, TraceFixtures.events)))
++    }
++
++    @Test fun encodeThenDecodeRoundTrips() {
++        val enc = ChunkCodec.encode(id, 0, TraceFixtures.events)
++        assertEquals(TraceFixtures.GOLDEN_SHA, enc.sha256)
++        assertEquals(16, enc.eventCount); assertEquals(1000, enc.firstTMs); assertEquals(12_000, enc.lastTMs)
++        assertTrue(enc.b64.length <= TraceBounds.MAX_B64_CHARS)
++        val dec = ChunkCodec.decode(id, 0, enc.sha256, enc.b64).getOrThrow()
++        assertEquals(TraceFixtures.events, dec.events)
++        assertEquals(TraceFixtures.GOLDEN_RAW_BYTES, dec.rawBytes)
++    }
++
++    @Test fun foreignGzipOfGoldenDecodes() {
++        val dec = ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, TraceFixtures.GOLDEN_B64).getOrThrow()
++        assertEquals(TraceFixtures.events, dec.events)
++    }
++
++    @Test fun decodesAWireChunk() {
++        val enc = ChunkCodec.encode(id, 0, TraceFixtures.events)
++        val wire = TraceChunk(traceId = id, kind = "chunk", seq = 0, count = 1, sha256 = enc.sha256, b64 = enc.b64)
++        assertEquals(16, ChunkCodec.decode(wire).getOrThrow().events.size)
++        assertEquals("chunk_count", fail(ChunkCodec.decode(wire.copy(count = 0))))
++        assertEquals("chunk_count", fail(ChunkCodec.decode(wire.copy(count = 4097))))
++        assertEquals("seq", fail(ChunkCodec.decode(wire.copy(seq = 1))))   // seq must be < count
++        assertEquals("kind", fail(ChunkCodec.decode(wire.copy(kind = "manifest"))))
++    }
++
++    @Test fun gunzipBombRejected() {
++        val bomb = ByteArray(40 * 1024 * 1024)   // 40 MB of zeros gzips to about 40 KB
++        val b64 = TraceFixtures.gzipB64(bomb)
++        assertTrue(b64.length < TraceBounds.MAX_B64_CHARS, "the bomb must fit the b64 bound for the test to mean anything")
++        assertEquals("gunzip_too_big", fail(ChunkCodec.decode(id, 0, TraceFixtures.sha(bomb), b64)))
++    }
++
++    @Test fun gunzipLimitIsStreamed() {
++        // one byte over the limit is refused, exactly the limit is not refused for size
++        val text = TraceFixtures.goldenPayload
++        val tight = TraceBounds(maxRawBytes = TraceFixtures.GOLDEN_RAW_BYTES)
++        assertTrue(decodeText(text, bounds = tight).isSuccess)
++        assertEquals("gunzip_too_big", fail(decodeText(text, bounds = TraceBounds(maxRawBytes = TraceFixtures.GOLDEN_RAW_BYTES - 1))))
++    }
++
++    @Test fun tooManyEventsRejected() {
++        // the header claims more events than the bound: refused before any event line is read
++        val hdr = """["PCT1","$id",0,200001]""" + "\n" + """["pr",1]""" + "\n"
++        assertEquals("too_many_events", fail(decodeText(hdr)))
++        val small = TraceBounds(maxEventsPerChunk = 15)
++        assertEquals("too_many_events", fail(decodeText(TraceFixtures.goldenPayload, bounds = small)))
++        assertFailsWith<TraceFormatException> { ChunkCodec.encode(id, 0, TraceFixtures.events, small) }
++    }
++
++    @Test fun badTraceIdRejected() {
++        val bad = listOf("", "short", "UPPERCASE-ID-1234", "has space in id", "trace_0001_under", "a".repeat(65), "trace-0001\n", "trace-0001-" + 233.toChar() + "-x")
++        for (b in bad) {
++            assertEquals("bad_trace_id", fail(ChunkCodec.decode(b, 0, TraceFixtures.GOLDEN_SHA, TraceFixtures.GOLDEN_B64)), b)
++            assertFailsWith<TraceFormatException>(b) { ChunkCodec.encode(b, 0, TraceFixtures.events) }
++        }
++        assertTrue(TraceBounds.isTraceId("a".repeat(8)) && TraceBounds.isTraceId("a".repeat(64)) && !TraceBounds.isTraceId("a".repeat(7)))
++    }
++
++    @Test fun tooManyChunksRejected() {
++        assertEquals("seq", fail(ChunkCodec.decode(id, 4096, TraceFixtures.GOLDEN_SHA, TraceFixtures.GOLDEN_B64)))
++        assertEquals("seq", fail(ChunkCodec.decode(id, -1, TraceFixtures.GOLDEN_SHA, TraceFixtures.GOLDEN_B64)))
++        assertFailsWith<TraceFormatException> { ChunkCodec.encode(id, 4096, TraceFixtures.events) }
++        assertEquals("seq", fail(ChunkCodec.decode(id, 4, TraceFixtures.GOLDEN_SHA, TraceFixtures.GOLDEN_B64, TraceBounds(maxChunks = 4))))
++    }
++
++    @Test fun b64Bounds() {
++        assertEquals("b64_too_long", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, "A".repeat(90_001))))
++        assertEquals("b64_invalid", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, "not base64 !!")))
++        assertEquals("b64_invalid", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, TraceFixtures.GOLDEN_B64.substring(0, 20) + "\n" + TraceFixtures.GOLDEN_B64.substring(20))))
++        // encode refuses what decode would refuse
++        val big = List(20_000) { TraceEvent.Gyro(it.toLong(), (it % 7) * 0.37f, it * 0.011f, -it * 0.003f) }
++        assertFailsWith<TraceFormatException> { ChunkCodec.encode(id, 0, big, TraceBounds(maxRawBytes = 100_000)) }
++        assertFailsWith<TraceFormatException> { ChunkCodec.encode(id, 0, big, TraceBounds(maxB64Chars = 1_000)) }
++    }
++
++    @Test fun gzipDamageRejected() {
++        val raw = Base64.getDecoder().decode(TraceFixtures.GOLDEN_B64)
++        assertEquals("gzip_invalid", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, Base64.getEncoder().encodeToString(raw.copyOf(raw.size - 9)))))
++        assertEquals("gzip_invalid", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, Base64.getEncoder().encodeToString("plain text".toByteArray()))))
++        assertEquals("gzip_invalid", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA, "")))
++    }
++
++    @Test fun checksumMismatchRejected() {
++        assertEquals("sha_mismatch", fail(ChunkCodec.decode(id, 0, "0".repeat(64), TraceFixtures.GOLDEN_B64)))
++        assertEquals("sha_invalid", fail(ChunkCodec.decode(id, 0, TraceFixtures.GOLDEN_SHA.uppercase(), TraceFixtures.GOLDEN_B64)))
++        assertEquals("sha_invalid", fail(ChunkCodec.decode(id, 0, "abc", TraceFixtures.GOLDEN_B64)))
++    }
++
++    @Test fun headerBindsPayloadToItsTraceAndSeq() {
++        assertEquals("header_mismatch", fail(decodeText(TraceFixtures.goldenPayload, seq = 1)))              // payload says seq 0
++        assertEquals("header_mismatch", fail(decodeText(TraceFixtures.goldenPayload, traceId = "trace-0002-other")))
++        assertEquals("bad_header", fail(decodeText(TraceFixtures.goldenPayload.replace("PCT1", "PCT2"))))
++        assertEquals("bad_header", fail(decodeText("")))
++        assertEquals("bad_header", fail(decodeText("""["PCT1","$id",0,0]""" + "\n")))   // an empty chunk is not a chunk
++    }
++
++    @Test fun structureIsStrict() {
++        val g = TraceFixtures.goldenPayload
++        assertEquals("line_count", fail(decodeText(g.replace(",16]", ",17]"))))
++        assertEquals("line_count", fail(decodeText(g + """["pr",12001]""" + "\n")))
++        assertEquals("bad_payload", fail(decodeText(g.trimEnd('\n'))))                                   // missing final newline
++        assertEquals("bad_payload", fail(decodeText(g.replace("\n", "\r\n"))))
++        assertEquals("bad_payload", fail(decodeText(g.replace("\n[\"cx\"", "\n\n[\"cx\""))))             // blank line
++        assertEquals("bad_event", fail(decodeText(g.replace("\"REST\"", "\"MARS\""))))
++        assertEquals("bad_event", fail(decodeText(g.replace("""["pr",11000]""", """["pr", 11000]"""))))
++        assertEquals("bad_payload", fail(decodeText(String(byteArrayOf(0x5b, 0x22, 0x70, 0x72, 0x22, 0x2c, 0x31, 0x5d, 0x0a, 0xff.toByte()), Charsets.ISO_8859_1))))
++    }
++
++    @Test fun timeMustNotGoBackwards() {
++        val g = TraceFixtures.goldenPayload.replace("""["fl",2700,"window"]""", """["fl",2599,"window"]""")
++        assertEquals("not_monotonic", fail(decodeText(g)))
++        assertFailsWith<TraceFormatException> { ChunkCodec.encode(id, 0, listOf(TraceEvent.PreRollEnd(5), TraceEvent.PreRollEnd(4))) }
++        assertTrue(ChunkCodec.encode(id, 0, listOf(TraceEvent.PreRollEnd(5), TraceEvent.PreRollEnd(5))).eventCount == 2)  // equal times are fine
++    }
++
++    @Test fun emptyChunkRefusedOnEncode() {
++        assertFailsWith<TraceFormatException> { ChunkCodec.encode(id, 0, emptyList()) }
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/ClockMapTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/ClockMapTest.kt
+new file mode 100644
+index 00000000..62d5c2d3
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/ClockMapTest.kt
+@@ -0,0 +1,59 @@
++package com.rokid.context.capture.trace
++
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNull
++
++class ClockMapTest {
++    // start: elapsed 1000 <-> glasses wall 1_700_000_001_000 (offset 1_699_999_999_000); end: elapsed 12000 <-> wall ..._012_010 (offset +10 ms of drift)
++    private val m = TraceFixtures.manifest()          // phoneOffsetMs = 250
++    private val map = ClockMap.of(m)
++    private val boot = "boot-42"
++    private val off0 = 1_700_000_001_000 - 1000L
++
++    @Test fun clockMapStartMidEnd() {
++        assertEquals(1_700_000_001_000, map.glassesWall(1000, boot))                       // start sample
++        assertEquals(1_700_000_012_010, map.glassesWall(12_000, boot))                     // end sample
++        assertEquals(off0 + 6_500 + 5, map.glassesWall(6_500, boot))                       // midpoint: half the 10 ms drift
++        assertEquals(1_700_000_001_000 + 250, map.phoneWall(1000, boot))                   // the phone offset is added
++        assertEquals(1_700_000_012_010 + 250, map.phoneWall(12_000, boot))
++        assertEquals(off0 + 6_500 + 5 + 250, map.phoneWall(6_500, boot))
++    }
++
++    @Test fun holdsTheNearestOffsetForASmallOvershootOnly() {
++        assertEquals(1_700_000_001_000 - 500, map.glassesWall(500, boot))                  // 500 ms before the start: the start offset
++        assertEquals(1_700_000_012_010 + 5_000, map.glassesWall(17_000, boot))             // 5 s after the end: the end offset
++    }
++
++    @Test fun refusesFarOutsideTheTrace() {
++        assertNull(map.glassesWall(12_000 + ClockMap.SLACK_MS + 1, boot))
++        assertEquals(1_700_000_012_010 + ClockMap.SLACK_MS, map.glassesWall(12_000 + ClockMap.SLACK_MS, boot))
++        assertNull(map.phoneWall(12_000 + ClockMap.SLACK_MS + 1, boot))
++        assertNull(map.glassesWall(-1, boot))
++    }
++
++    @Test fun rebootEpochIsNeverMapped() {
++        assertNull(map.glassesWall(6_500, "boot-43"))
++        assertNull(map.phoneWall(6_500, "boot-43"))
++        // two traces on either side of a reboot: elapsed restarts, so the same elapsed value maps through the map of its own boot only
++        val after = ClockMap.of(m.copy(bootId = "boot-43", startWallMs = 1_700_100_000_000, endWallMs = 1_700_100_011_000))
++        assertEquals(1_700_100_000_000, after.glassesWall(1000, "boot-43"))
++        assertEquals(1_700_000_001_000, map.glassesWall(1000, boot))
++        assertEquals(after.glassesWall(1000, "boot-43"), ClockMap.resolve(listOf(map, after), "boot-43", 1000)?.glassesWall(1000, "boot-43"))
++        assertEquals(1_700_000_001_000, ClockMap.resolve(listOf(map, after), boot, 1000)?.glassesWall(1000, boot))
++        assertNull(ClockMap.resolve(listOf(map, after), "boot-44", 1000))
++    }
++
++    @Test fun noPhoneOffsetMeansNoPhoneTime() {
++        val unsynced = ClockMap.of(m.copy(phoneOffsetMs = null, offsetUncertaintyMs = null))
++        assertEquals(1_700_000_001_000, unsynced.glassesWall(1000, boot))
++        assertNull(unsynced.phoneWall(1000, boot))
++        assertNull(unsynced.uncertaintyMs)
++        assertEquals(40L + 10L, map.uncertaintyMs)     // phone sync uncertainty plus the drift between the two samples
++    }
++
++    @Test fun zeroLengthTraceUsesTheStartOffset() {
++        val z = ClockMap.of(m.copy(endElapsedMs = 1000, endWallMs = 1_700_000_001_000))
++        assertEquals(1_700_000_001_005, z.glassesWall(1005, boot))
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/EventCodecTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/EventCodecTest.kt
+new file mode 100644
+index 00000000..b2fcb2b1
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/EventCodecTest.kt
+@@ -0,0 +1,64 @@
++package com.rokid.context.capture.trace
++
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFailsWith
++import kotlin.test.assertNotEquals
++import kotlin.test.assertTrue
++
++class EventCodecTest {
++    private val lines = TraceFixtures.goldenPayload.lines().drop(1).filter { it.isNotEmpty() }
++
++    @Test fun roundTripEveryEventType() {
++        assertEquals(16, TraceFixtures.events.size)
++        assertEquals(15, TraceFixtures.events.map { it::class }.toSet().size) // Episode appears twice (open and close)
++        TraceFixtures.events.forEachIndexed { i, e ->
++            assertEquals(lines[i], EventCodec.encode(e), "encode $i")
++            assertEquals(e, EventCodec.decode(lines[i]), "decode $i")
++        }
++    }
++
++    @Test fun floatBitsExact() {
++        val odd = listOf(-0.0f, 0.0f, Float.MIN_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, 1.17549435E-38f, 0.1f, 9.80665f)
++        for (f in odd) {
++            val e = TraceEvent.Gyro(5, f, f, f)
++            val back = EventCodec.decode(EventCodec.encode(e)) as TraceEvent.Gyro
++            assertEquals(f.toRawBits(), back.x.toRawBits(), "$f")
++        }
++        assertNotEquals(EventCodec.encode(TraceEvent.Gyro(5, 0.0f, 0f, 0f)), EventCodec.encode(TraceEvent.Gyro(5, -0.0f, 0f, 0f)))
++        assertEquals("""["g",5,-2147483648,0,0]""", EventCodec.encode(TraceEvent.Gyro(5, -0.0f, 0f, 0f)))
++    }
++
++    @Test fun nonFiniteFloatsRefusedBothWays() {
++        assertFailsWith<IllegalArgumentException> { TraceEvent.Gyro(1, Float.NaN, 0f, 0f) }
++        assertFailsWith<IllegalArgumentException> { TraceEvent.Score(1, 1, 0, 0, Float.POSITIVE_INFINITY, true, com.rokid.context.core.model.MotionState.STILL, false, false) }
++        val nanBits = Float.NaN.toRawBits()
++        assertFailsWith<TraceFormatException> { EventCodec.decode("""["g",1,$nanBits,0,0]""") }
++        assertFailsWith<TraceFormatException> { EventCodec.decode("""["g",1,NaN,0,0]""") }
++    }
++
++    @Test fun strictDecodeRefusesEverythingNonCanonical() {
++        val bad = listOf(
++            """["pr", 5]""", """["pr",+5]""", """["pr",05]""", """["pr",5.0]""", """["pr",5e0]""", """["pr","5"]""", """["pr",-1]""",
++            """["pr",5,1]""", """["pr"]""", """["zz",5]""", """[]""", """{"a":1}""", """["pr",5]x""", """ ["pr",5]""", "[\"pr\",5]\n",
++            """["cx",1,"MARS"]""", """["cx",1,"rest"]""", """["rs",1,"true"]""", """["rs",1,1]""", """["ep",1,true,"TIMER",null]""", """["ep",1,true,"bogus",null]""",
++            """["g",1,[1],0,0]""", """["g",1,{"a":1},0,0]""", """["g",1,1.5,0,0]""", """["g",1,2147483648,0,0]""", """["pr",9007199254740992]""",
++            """["gt",1,1,"keep","bad reason"]""", """["gt",1,1,"maybe",""]""", """["pl",1,1,"XYZ","SHADOW"]""", """["pl",1,1,"abc","SOMETIMES"]""",
++            """["sc",1,1,"0123","0123456789abcdef",0,true,"STILL",false,false]""", """["gp",1,65,0,true]""", """["bo",1,33]""", """["cl",1,""]""",
++            "[\"cl\",1,\"a" + '\\' + "u0041\"]",   // a JSON escape of a plain letter: valid JSON, not canonical
++        )
++        for (b in bad) assertFailsWith<TraceFormatException>(b) { EventCodec.decode(b) }
++    }
++
++    @Test fun overlongLineRefused() {
++        val line = """["cl",1,"${"x".repeat(600)}"]"""
++        assertFailsWith<TraceFormatException> { EventCodec.decode(line) }
++    }
++
++    @Test fun everyEncodedLineIsShortAndAscii() {
++        for (e in TraceFixtures.events) {
++            val s = EventCodec.encode(e)
++            assertTrue(s.length in 5..TraceBounds.MAX_LINE_CHARS && s.all { it.code in 0x20..0x7e }, s)
++        }
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/ManifestTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/ManifestTest.kt
+new file mode 100644
+index 00000000..67370143
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/ManifestTest.kt
+@@ -0,0 +1,167 @@
++package com.rokid.context.capture.trace
++
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFailsWith
++import kotlin.test.assertFalse
++import kotlin.test.assertTrue
++
++class ManifestTest {
++    private fun fail(r: Result<*>): String = (r.exceptionOrNull() as? TraceFormatException)?.code ?: "NOT_A_TRACE_FORMAT_FAILURE:${r.exceptionOrNull()}:${r.getOrNull()}"
++    private val id = TraceFixtures.ID
++
++    @Test fun goldenManifestIsByteExact() {
++        assertEquals(TraceFixtures.goldenManifest, TraceFixtures.manifest().encode())
++        assertEquals(TraceFixtures.manifest(), Manifest.decodeStrict(TraceFixtures.goldenManifest).getOrThrow())
++    }
++
++    @Test fun traceShaIsTheDigestOfTheChunkShaList() {
++        assertEquals(TraceFixtures.GOLDEN_TRACE_SHA, Manifest.traceSha(listOf(TraceFixtures.GOLDEN_SHA)))
++        assertTrue(Manifest.traceSha(listOf("a".repeat(64), "b".repeat(64))) != Manifest.traceSha(listOf("b".repeat(64), "a".repeat(64))))
++    }
++
++    @Test fun strictDecode() {
++        val g = TraceFixtures.goldenManifest
++        val bad = mapOf(
++            "unknown key" to g.replace("{\"bootId\"", "{\"aaa\":1,\"bootId\""),
++            "missing key" to g.replace("\"closeReason\":\"stop\",", ""),
++            "duplicate key" to g.replace("\"revision\":1,", "\"revision\":1,\"revision\":2,"),
++            "whitespace" to g.replace("\"revision\":1", "\"revision\": 1"),
++            "unsorted" to g.replace("\"bootId\":\"boot-42\",\"chunkCount\":1", "\"chunkCount\":1,\"bootId\":\"boot-42\""),
++            "float" to g.replace("\"revision\":1", "\"revision\":1.0"),
++            "future schema" to g.replace("\"traceSchema\":1", "\"traceSchema\":2"),
++            "nan" to g.replace("\"revision\":1", "\"revision\":NaN"),
++            "bad enum" to g.replace("\"COMPLETE\"", "\"DONE\""),
++            "snapshot unknown key" to g.replace("\"ctx\":\"REST\"", "\"ctx\":\"REST\",\"zz\":1"),
++            "exact mismatch" to g.replace("\"sampleEvery\":1", "\"sampleEvery\":2"),
++            "negative offset id" to g.replace("\"deletionCounter\":3", "\"deletionCounter\":-3"),
++            "not an object" to "[1]", "empty" to "", "trailing" to "$g ", "trailing json" to "$g{}",
++            "bad trace id" to g.replace("trace-0001-golden", "BAD"),
++            "chunks over bound" to g.replace("\"chunkCount\":1", "\"chunkCount\":4097"),
++            "end before start" to g.replace("\"endElapsedMs\":12000", "\"endElapsedMs\":999"),
++        )
++        for ((n, s) in bad) assertEquals("bad_manifest", fail(Manifest.decodeStrict(s)), n)
++    }
++
++    @Test fun depthAndSizeBounded() {
++        val deep = "[".repeat(10_000) + "]".repeat(10_000)
++        assertEquals("bad_manifest", fail(Manifest.decodeStrict(deep)))
++        val nested = TraceFixtures.goldenManifest.replace("\"keptAt\":[100,200]", "\"keptAt\":[[[[[[[[1]]]]]]]]")
++        assertEquals("bad_manifest", fail(Manifest.decodeStrict(nested)))
++        assertEquals("bad_manifest", fail(Manifest.decodeStrict(TraceFixtures.goldenManifest + " ".repeat(TraceBounds.MAX_MANIFEST_BYTES))))
++    }
++
++    @Test fun downsampledFlaggedNotExact() {
++        val down = TraceFixtures.snapshot.copy(sampleEvery = 2, exact = false)
++        val m = TraceFixtures.manifest(snap = down)
++        assertFalse(m.exact)
++        assertTrue(TraceFixtures.manifest().exact)
++        assertFalse(Manifest.decodeStrict(m.encode()).getOrThrow().exact)
++        // 25 Hz recording can never claim to be exact, and an exact claim needs full rate
++        assertFailsWith<IllegalArgumentException> { TraceFixtures.snapshot.copy(sampleEvery = 2, exact = true) }
++        assertFailsWith<IllegalArgumentException> { TraceFixtures.snapshot.copy(sampleEvery = 1, exact = false) }
++        assertFailsWith<IllegalArgumentException> { TraceFixtures.snapshot.copy(sampleEvery = 0, exact = false) }
++    }
++
++    @Test fun epochAndRevisionAreCarried() {
++        val m = TraceFixtures.manifest().copy(installId = "install-zzz", deletionCounter = 9, revision = 4, parentTraceId = "parent-trace-01")
++        val back = Manifest.decodeStrict(m.encode()).getOrThrow()
++        assertEquals("install-zzz", back.installId); assertEquals(9, back.deletionCounter); assertEquals(4, back.revision); assertEquals("parent-trace-01", back.parentTraceId)
++        assertFailsWith<IllegalArgumentException> { m.copy(revision = 0) }
++        assertFailsWith<IllegalArgumentException> { m.copy(parentTraceId = "BAD ID") }
++    }
++
++    @Test fun nothingPrivateInTheManifest() {
++        // the document is numbers, enum names, hashes and ids: no free text fields beyond the bounded closeReason token
++        assertTrue(TraceFixtures.goldenManifest.all { it.code in 0x20..0x7e })
++        assertFailsWith<IllegalArgumentException> { TraceFixtures.manifest().copy(closeReason = "free text with spaces") }
++    }
++
++    // ---- COMPLETE / PARTIAL (round 1 cases) ----
++    private fun chunk(seq: Int, vararg ts: Long, traceId: String = id): DecodedChunk {
++        val enc = ChunkCodec.encode(traceId, seq, ts.map { TraceEvent.PreRollEnd(it) })
++        return ChunkCodec.decode(traceId, seq, enc.sha256, enc.b64).getOrThrow()
++    }
++    private fun manifestFor(vararg c: DecodedChunk, recorded: TraceStatus = TraceStatus.COMPLETE, start: Long = 1000, end: Long = 12_000): Manifest {
++        val sorted = c.sortedBy { it.seq }
++        return TraceFixtures.manifest(
++            chunkCount = c.size, eventCount = c.sumOf { it.events.size }.toLong(), rawBytes = c.sumOf { it.rawBytes }.toLong(),
++            traceSha = Manifest.traceSha(sorted.map { it.sha256 }), recorded = recorded,
++        ).copy(startElapsedMs = start, endElapsedMs = end)
++    }
++
++    @Test fun completeWhenEveryChunkIsPresentAndMatching() {
++        val a = chunk(0, 1000, 2000); val b = chunk(1, 3000); val c = chunk(2, 12_000)
++        val asm = TraceAssembler(manifestFor(a, b, c))
++        listOf(c, a, b).forEach { asm.accept(it) }            // arrival order does not matter
++        asm.accept(b)                                          // an idempotent re-send is fine
++        val v = asm.verify()
++        assertEquals(TraceStatus.COMPLETE, v.status, v.reason)
++    }
++
++    @Test fun partialWhenAChunkIsMissing() {
++        val a = chunk(0, 1000); val b = chunk(1, 3000); val c = chunk(2, 12_000)
++        val asm = TraceAssembler(manifestFor(a, b, c)); asm.accept(a); asm.accept(c)
++        assertEquals(TraceStatus.PARTIAL, asm.verify().status)
++        assertEquals("missing", asm.verify().reason)
++    }
++
++    @Test fun partialWhenAChunkDiffersFromTheOneTheManifestSummarises() {
++        val a = chunk(0, 1000); val b = chunk(1, 3000); val c = chunk(2, 12_000)
++        val m = manifestFor(a, b, c)
++        val asm = TraceAssembler(m); asm.accept(a); asm.accept(chunk(1, 3001)); asm.accept(c)
++        assertEquals("trace_sha", asm.verify().reason)
++        assertEquals(TraceStatus.PARTIAL, asm.verify().status)
++    }
++
++    @Test fun partialOnConflictingResendAndForeignChunk() {
++        val a = chunk(0, 1000); val c = chunk(1, 12_000)
++        val m = manifestFor(a, c)
++        val dup = TraceAssembler(m); dup.accept(a); dup.accept(chunk(0, 1001)); dup.accept(c)
++        assertEquals("conflict", dup.verify().reason)
++        val foreign = TraceAssembler(m); foreign.accept(a); foreign.accept(c); foreign.accept(chunk(0, 5, traceId = "trace-9999-other"))
++        assertEquals("foreign_chunk", foreign.verify().reason)
++        val beyond = TraceAssembler(m); beyond.accept(a); beyond.accept(c); beyond.accept(chunk(2, 12_001))
++        assertEquals("seq_out_of_range", beyond.verify().reason)
++    }
++
++    @Test fun partialWhenTheGlassesRecordedItPartial() {
++        val a = chunk(0, 1000, 12_000)
++        val asm = TraceAssembler(manifestFor(a, recorded = TraceStatus.PARTIAL)); asm.accept(a)
++        assertEquals(TraceStatus.PARTIAL, asm.verify().status); assertEquals("recorded_partial", asm.verify().reason)
++    }
++
++    @Test fun partialWhenTimeRunsBackwardsAcrossChunksOrLeavesTheTraceWindow() {
++        val a = chunk(0, 1000, 5000); val b = chunk(1, 4000, 12_000)
++        val asm = TraceAssembler(manifestFor(a, b)); asm.accept(a); asm.accept(b)
++        assertEquals("not_monotonic", asm.verify().reason)
++        val early = chunk(0, 900, 12_000)
++        val e = TraceAssembler(manifestFor(early)); e.accept(early)
++        assertEquals("range", e.verify().reason)
++    }
++
++    @Test fun partialWhenTotalsDisagree() {
++        val a = chunk(0, 1000, 12_000)
++        val m = manifestFor(a).copy(eventCount = 5)
++        val asm = TraceAssembler(m); asm.accept(a)
++        assertEquals("totals", asm.verify().reason)
++    }
++
++    @Test fun noChunksAtAllIsPartial() {
++        val a = chunk(0, 1000, 12_000)
++        assertEquals("missing", TraceAssembler(manifestFor(a)).verify().reason)
++    }
++
++    @Test fun tooManyChunksRejectedByTheManifest() {
++        assertFailsWith<IllegalArgumentException> { TraceFixtures.manifest(chunkCount = 4097) }
++        assertFailsWith<IllegalArgumentException> { TraceFixtures.manifest(chunkCount = 0) }
++        assertTrue(TraceFixtures.manifest(chunkCount = 4096, eventCount = 5000).chunkCount == 4096)
++        assertFailsWith<IllegalArgumentException> { TraceFixtures.manifest(eventCount = TraceBounds.MAX_TRACE_EVENTS + 1) }
++        assertFailsWith<IllegalArgumentException> { TraceFixtures.manifest(rawBytes = TraceBounds.MAX_TRACE_RAW_BYTES + 1) }
++    }
++
++    @Test fun preRollIsTenSecondsAfterTheStart() {
++        assertEquals(11_000, TraceFixtures.manifest().preRollEndMs)
++        assertEquals(10_000, TraceBounds.PRE_ROLL_MS)
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/TraceFixtures.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/TraceFixtures.kt
+new file mode 100644
+index 00000000..8cb0933d
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/trace/TraceFixtures.kt
+@@ -0,0 +1,88 @@
++package com.rokid.context.capture.trace
++
++import com.rokid.context.core.model.CameraWake
++import com.rokid.context.core.model.MotionState
++import com.rokid.context.core.model.PlanMode
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.glasses.capture.motion.GlanceParams
++import com.rokid.context.glasses.capture.session.BudgetTier
++import java.io.ByteArrayOutputStream
++import java.security.MessageDigest
++import java.util.Base64
++import java.util.zip.GZIPOutputStream
++
++object TraceFixtures {
++    const val ID = "trace-0001-golden"
++
++    /** One of every event type, in time order (the golden chunk). */
++    val events: List<TraceEvent> = listOf(
++        TraceEvent.Gyro(1000, 1.0f, -1.0f, 0.5f),
++        TraceEvent.Accel(1004, 0f, 0f, 9.80665f),
++        TraceEvent.Ctx(1010, ContextState.REST),
++        TraceEvent.Resting(1010, true),
++        TraceEvent.Profile(1020, CameraWake.SETTLE, 10_000, 30_000, null, 60_000, 333, BudgetTier.T0, lowPower = false, heatSlow = true),
++        TraceEvent.GateParams(1020, 10, 24, true),
++        TraceEvent.Plan(1020, 7, "abc123def456", PlanMode.SHADOW),
++        TraceEvent.Episode(2000, true, EpisodeCause.TIMER, null),
++        TraceEvent.Score(2500, 42, 0x0123456789abcdefL, -0x0123456789abcdf0L, 12.5f, true, MotionState.STILL, dwellArmed = false, force = false),
++        TraceEvent.Gate(2600, 42, GateOutcome.KEEP, ""),
++        TraceEvent.Flush(2700, "window"),
++        TraceEvent.Backoff(2800, 2),
++        TraceEvent.Blocked(2900, null),
++        TraceEvent.Episode(3000, false, EpisodeCause.DWELL, 2900),
++        TraceEvent.PreRollEnd(11_000),
++        TraceEvent.Close(12_000, "stop"),
++    )
++
++    val goldenPayload = """["PCT1","trace-0001-golden",0,16]
++["g",1000,1065353216,-1082130432,1056964608]
++["a",1004,0,0,1092413450]
++["cx",1010,"REST"]
++["rs",1010,true]
++["pf",1020,"SETTLE",10000,30000,null,60000,333,"T0",false,true]
++["gp",1020,10,24,true]
++["pl",1020,7,"abc123def456","SHADOW"]
++["ep",2000,true,"timer",null]
++["sc",2500,42,"0123456789abcdef","fedcba9876543210",1095237632,true,"STILL",false,false]
++["gt",2600,42,"keep",""]
++["fl",2700,"window"]
++["bo",2800,2]
++["bl",2900,null]
++["ep",3000,false,"dwell",2900]
++["pr",11000]
++["cl",12000,"stop"]
++"""
++    const val GOLDEN_RAW_BYTES = 526
++    const val GOLDEN_SHA = "234830094aa0a69cd178be01c28fd6420b4324baf70fed450aad1d03d375c6af"
++    /** A gzip of [goldenPayload] made by a different implementation (python gzip, mtime 0). */
++    const val GOLDEN_B64 = "H4sIAAAAAAAC/0VRTWuDQBC992fMeYXZT/VYUqGFQEsVegg9GF0ldKtBDenP78xm014WfG/emzfPA7ztGgkCtqXtfIaIMhvn0PsJBArpPh8OMIKQRNDjrLZaSScyiYWSGo1WBFtXOuOw4OE2DhsSs6BURmpjkZnuhymJAt6rugGGljVB23LxDJwHBhTN1FXT7KvbZhQ6vtMlBOFugNYCGgQxtGH1f/rxnPTkqcy/bUhwLqA9dlLp3g/GOrq7fn58ev2IaTyJFZuzjBo5ffsF4lJm145YS6xRApAsSJ8XJdmRFxkNvu+ObVnkzlIrEnljaZXOHXV0c6ybl/3+Hjm+MfNGxi4Zf3lOATHPQKlVTgRcT1M/XyN4nAksCFTxi0fKVM39Bi4rLYH+6kOaiUXQQZIrjT+EW4kHw7rNZ7L/BZKKDlcOAgAA"
++    const val GOLDEN_TRACE_SHA = "6634e53a372f7f3f72d82f5236e5e9456104511b90504034b129a3aeb2424f5b"
++
++    val snapshot = StartSnapshot(
++        settingsHash = "a1b2c3d4e5f6", ring = listOf(RingHash(0x0123456789abcdefL, -0x0123456789abcdf0L)), lastKeyframeAt = 500, keptAt = listOf(100, 200),
++        planGen = 7, planHash = "abc123def456", glance = GlanceParams(), ctx = ContextState.REST, resting = true, tier = BudgetTier.T0, sampleEvery = 1, exact = true,
++    )
++
++    fun manifest(
++        chunkCount: Int = 1, eventCount: Long = 16, rawBytes: Long = GOLDEN_RAW_BYTES.toLong(), traceSha: String = GOLDEN_TRACE_SHA,
++        recorded: TraceStatus = TraceStatus.COMPLETE, snap: StartSnapshot = snapshot, id: String = ID,
++    ) = Manifest(
++        traceId = id, installId = "install-abc", deletionCounter = 3, revision = 1, parentTraceId = null, bootId = "boot-42",
++        startElapsedMs = 1000, endElapsedMs = 12_000, startWallMs = 1_700_000_001_000, endWallMs = 1_700_000_012_010, phoneOffsetMs = 250, offsetUncertaintyMs = 40,
++        chunkCount = chunkCount, eventCount = eventCount, rawBytes = rawBytes, traceSha256 = traceSha, recorded = recorded, closeReason = "stop", snapshot = snap,
++    )
++
++    val goldenManifest = """{"bootId":"boot-42","chunkCount":1,"closeReason":"stop","deletionCounter":3,"endElapsedMs":12000,"endWallMs":1700000012010,"eventCount":16,"installId":"install-abc","offsetUncertaintyMs":40,"parentTraceId":null,"phoneOffsetMs":250,"rawBytes":526,"recorded":"COMPLETE","revision":1,"snapshot":{"ctx":"REST","exact":true,"glance":{"bigTurnRad":1061997773,"bridgeMs":250,"capPerMin":4,"deadbandRadS":1028443341,"maxDtMs":100,"minBoutMs":300,"minBoutRad":1048911544,"noveltyMinRad":1050253722,"noveltyWindowMs":20000,"onsetRadS":1058642330,"releaseRadS":1050253722,"restCapPerMin":2,"settleMs":1500},"keptAt":[100,200],"lastKeyframeAt":500,"planGen":7,"planHash":"abc123def456","resting":true,"ring":[["0123456789abcdef","fedcba9876543210"]],"sampleEvery":1,"settingsHash":"a1b2c3d4e5f6","tier":"T0"},"startElapsedMs":1000,"startWallMs":1700000001000,"traceId":"trace-0001-golden","traceSchema":1,"traceSha256":"$GOLDEN_TRACE_SHA"}"""
++
++    fun gzipB64(raw: ByteArray): String {
++        val bo = ByteArrayOutputStream()
++        GZIPOutputStream(bo).use { it.write(raw) }
++        return Base64.getEncoder().encodeToString(bo.toByteArray())
++    }
++
++    fun sha(raw: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(raw).joinToString("") { "%02x".format(it) }
++
++    /** A hand-built chunk (bypasses ChunkCodec.encode) from raw payload text. */
++    fun rawChunk(text: String, traceId: String = ID, seq: Int = 0) =
++        Triple(traceId to seq, sha(text.toByteArray()), gzipB64(text.toByteArray()))
++}

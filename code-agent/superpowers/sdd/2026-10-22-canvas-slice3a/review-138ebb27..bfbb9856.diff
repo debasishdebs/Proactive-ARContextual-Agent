@@ -1,0 +1,868 @@
+# Review package: 138ebb27..bfbb9856
+
+## Commits
+bfbb9856 docs(voice): voice marks guide and README section generated from the phrase table, with a doc-drift test
+3f0aa729 feat(voice): mark-moment command layer adapted from Live Fit with the S85 phrase table, anchored rules, question-word veto and final IntentLabel mapping
+
+## Files changed
+ README.md                                          |   9 ++
+ .../rokid/context/voice/commands/EnglishClauses.kt |  18 +++
+ .../context/voice/commands/LanguageRegistry.kt     |  24 +++
+ .../context/voice/commands/MarkCommandParser.kt    |  78 +++++++++
+ .../rokid/context/voice/commands/MarkPhrases.kt    |  66 ++++++++
+ .../rokid/context/voice/commands/MarkPhrasesDoc.kt |  57 +++++++
+ .../context/voice/commands/VoiceCommandGroup.kt    |  50 ++++++
+ .../context/voice/commands/EnglishClausesTest.kt   |  19 +++
+ .../context/voice/commands/LanguagePackTest.kt     |  23 +++
+ .../voice/commands/MarkCommandParserTest.kt        | 112 +++++++++++++
+ .../voice/commands/VoiceCommandGroupTest.kt        |  45 ++++++
+ .../context/voice/commands/VoiceMarksDocTest.kt    |  69 ++++++++
+ docs/voice-marks.md                                | 178 +++++++++++++++++++++
+ 13 files changed, 748 insertions(+)
+
+## Diff
+diff --git a/README.md b/README.md
+index 7d7219f9..8c408838 100644
+--- a/README.md
++++ b/README.md
+@@ -24,20 +24,29 @@ Build a separate app stack that:
+   - If battery `<= 30%`: send/process only while charging.
+ - Local model processing:
+   - Run only when charging, or when battery `> 70%`.
+ 
+ ## Next Build Steps
+ 1. Implement Android WorkManager jobs from `phone_request_policy.py` logic.
+ 2. Add mobile settings screen for intervals/thresholds/provider endpoints.
+ 3. Add memory store (`short_term`, `medium_term`, `long_term`) + weekly compaction.
+ 4. Add retrieval path (keyword + vector index) for voice query answering.
+ 
++## Voice marks
++Say a short command after push-to-talk (glasses or phone) to save a mark for the last 10 seconds. No hotword, English only, on by default.
++<!-- voice-marks-readme:begin -->
++- **Mark a moment**: "mark that", "mark this", "mark it"
++- **I missed that**: "i missed that"
++- **Undo a mark**: "undo mark", "cancel mark"
++<!-- voice-marks-readme:end -->
++Add what you were doing ("mark that, I'm driving"); unknown words save a plain mark. Audio is never stored or uploaded and recognition is on-device. Full guide: [docs/voice-marks.md](docs/voice-marks.md).
++
+ ## Project Tracking Files
+ - `MEMORY.md`: durable facts and locked decisions.
+ - `CONTEXT.md`: active problem framing and constraints.
+ - `HANDOFF.md`: current session status and next steps.
+ - `DECISIONS.md`: timestamped decision log.
+ 
+ ## Android Companion Progress
+ Implemented baseline modules:
+ - policy engine and provider-block orchestration
+ - queue/idempotency core
+diff --git a/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/EnglishClauses.kt b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/EnglishClauses.kt
+new file mode 100644
+index 00000000..9dd86c95
+--- /dev/null
++++ b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/EnglishClauses.kt
+@@ -0,0 +1,18 @@
++package com.rokid.context.voice.commands
++
++/**
++ * Splits "mark that and then I'm driving" into clauses (adapted from Live Fit's EnglishClauses, Apache-2.0,
++ * same owner; pure Kotlin).
++ */
++object EnglishClauses {
++    private val separators = Regex("""\s*,\s*|\s*\band then\b\s*|\s*\bthen\b\s*|\s*\band\b\s*|\s*[.!?;]+\s+""", RegexOption.IGNORE_CASE)
++
++    /** Clauses made only of these are dropped ("hey, mark that please" is one command). */
++    private val filler = setOf("hey", "hi", "ok", "okay", "please", "um", "uh", "so", "now", "alright", "rokid", "also")
++
++    fun split(utterance: String): List<String> = utterance.split(separators)
++        .map { it.trim().trim('.', '!', '?', ';', ':').trim() }
++        .filter { clause ->
++            clause.isNotEmpty() && !clause.lowercase().split(Regex("[^a-z']+")).filter { it.isNotEmpty() }.all { it in filler }
++        }
++}
+diff --git a/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/LanguageRegistry.kt b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/LanguageRegistry.kt
+new file mode 100644
+index 00000000..0f2051a7
+--- /dev/null
++++ b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/LanguageRegistry.kt
+@@ -0,0 +1,24 @@
++package com.rokid.context.voice.commands
++
++/** Everything voice needs for one language (adapted from Live Fit's LanguagePack). Add a language by registering a pack. */
++data class LanguagePack(
++    val locale: String,
++    val displayName: String,
++    /** Parses a whole utterance (intents may sit in later clauses), or null when it is not a mark command. */
++    val parseCommand: (String) -> MarkCommand?,
++    val splitClauses: (String) -> List<String> = EnglishClauses::split,
++)
++
++object LanguageRegistry {
++    const val DEFAULT_LOCALE = "en-IN"
++
++    private fun english(locale: String, name: String) = LanguagePack(locale, name, MarkCommandParser::parse)
++
++    val packs: Map<String, LanguagePack> = listOf(
++        english("en-IN", "English (India)"),
++        english("en-US", "English (US)"),
++        english("en-GB", "English (UK)"),
++    ).associateBy { it.locale }
++
++    fun forLocale(locale: String): LanguagePack? = packs[locale]
++}
+diff --git a/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/MarkCommandParser.kt b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/MarkCommandParser.kt
+new file mode 100644
+index 00000000..e180037d
+--- /dev/null
++++ b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/MarkCommandParser.kt
+@@ -0,0 +1,78 @@
++package com.rokid.context.voice.commands
++
++sealed interface MarkCommand {
++    /** [intent] is the canvas label of one clear intent word, else null (a plain MOMENT). */
++    data class Mark(val intent: String?) : MarkCommand
++    data object Retro : MarkCommand
++    data object Undo : MarkCommand
++}
++
++/**
++ * Maps one recognised utterance to a [MarkCommand] using only the [MarkPhrases] tables (S85). Pure Kotlin, no
++ * Android, no I/O; the utterance is never stored or logged here.
++ *
++ * - A command matches only at the start of a clause, after optional fillers.
++ * - A clause that starts with a question word is never a command; only "can you" / "could you" + a command is.
++ * - An intent is read only after a command, through optional fillers. Negation, two different intents or any
++ *   other word after a Mark gives `Mark(null)`. Retro and Undo ignore a clean trailing intent but pass through
++ *   (null) when other words follow, so "I missed that bus" still reaches Ask.
++ */
++object MarkCommandParser {
++    fun parse(utterance: String): MarkCommand? {
++        val clauses = EnglishClauses.split(utterance).map(::tokens).filter { it.isNotEmpty() }
++        for ((i, clause) in clauses.withIndex()) {
++            val (kind, rest) = matchClause(clause) ?: continue
++            val remainder = rest + clauses.drop(i + 1).flatten()
++            return build(kind, remainder)
++        }
++        return null
++    }
++
++    private enum class Kind { MARK, RETRO, UNDO }
++
++    private fun tokens(clause: String): List<String> =
++        clause.lowercase().replace('\u2019', '\'').replace(Regex("[^a-z' ]"), " ").trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
++
++    private fun matchClause(raw: List<String>): Pair<Kind, List<String>>? {
++        var t = raw.dropWhile { it in MarkPhrases.FILLERS }
++        if (t.isEmpty()) return null
++        if (t.first() in MarkPhrases.QUESTION_WORDS) {
++            val polite = MarkPhrases.POLITE_PREFIXES.firstOrNull { t.take(it.size) == it } ?: return null
++            t = t.drop(polite.size).dropWhile { it in MarkPhrases.FILLERS }
++        }
++        fun find(phrases: List<String>, kind: Kind): Pair<Kind, List<String>>? =
++            phrases.map { it.split(' ') }.firstOrNull { t.take(it.size) == it }?.let { kind to t.drop(it.size) }
++        return find(MarkPhrases.MARK, Kind.MARK) ?: find(MarkPhrases.RETRO, Kind.RETRO) ?: find(MarkPhrases.UNDO, Kind.UNDO)
++    }
++
++    private fun build(kind: Kind, remainder: List<String>): MarkCommand? {
++        val read = readIntents(remainder)
++        return when (kind) {
++            Kind.MARK -> MarkCommand.Mark(if (read.clean && read.found.size == 1) read.found.first().canvasLabel else null)
++            Kind.RETRO -> if (read.leftover.isEmpty() && !read.negated) MarkCommand.Retro else null
++            Kind.UNDO -> if (read.leftover.isEmpty() && !read.negated) MarkCommand.Undo else null
++        }
++    }
++
++    private class Read(val found: Set<IntentEntry>, val leftover: List<String>, val negated: Boolean) {
++        val clean get() = leftover.isEmpty() && !negated
++    }
++
++    private fun readIntents(remainder: List<String>): Read {
++        val found = linkedSetOf<IntentEntry>(); val leftover = mutableListOf<String>(); var negated = false
++        val byLength = MarkPhrases.INTENTS.sortedByDescending { it.word.count { c -> c == ' ' } }
++        var i = 0
++        while (i < remainder.size) {
++            val w = remainder[i]
++            val hit = byLength.firstOrNull { e -> e.word.split(' ').let { p -> remainder.subList(i, minOf(remainder.size, i + p.size)) == p } }
++            when {
++                hit != null -> { found += hit; i += hit.word.split(' ').size; continue }
++                w in MarkPhrases.NEGATIONS || w.endsWith("n't") -> negated = true
++                w in MarkPhrases.INTENT_FILLERS || w in MarkPhrases.FILLERS -> Unit
++                else -> leftover += w
++            }
++            i++
++        }
++        return Read(found, leftover, negated)
++    }
++}
+diff --git a/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/MarkPhrases.kt b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/MarkPhrases.kt
+new file mode 100644
+index 00000000..31d30b76
+--- /dev/null
++++ b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/MarkPhrases.kt
+@@ -0,0 +1,66 @@
++package com.rokid.context.voice.commands
++
++/** One intent word that may follow a mark command (S85). [intentLabel] is a final `IntentLabel` enum name. */
++data class IntentEntry(val word: String, val canvasLabel: String, val intentLabel: String)
++
++/**
++ * The single source for the S85 voice phrase tables. The parser and the generated user docs both read this object
++ * and nothing else, so they cannot drift. English only. All phrases are lower case, letters, spaces and apostrophes.
++ *
++ * "forget" is deliberately absent everywhere: it collides with the Forget feature and never matches.
++ */
++object MarkPhrases {
++    /** MOMENT for [t - 10 s, t], t = the push-to-talk start. */
++    val MARK: List<String> = listOf(
++        "mark that", "mark this", "mark it", "remember this", "remember that", "save this", "save that",
++        "note this", "note that", "bookmark this", "bookmark that", "capture this", "this is important", "that was important",
++    )
++
++    /** MOMENT for the previous ~10 s (the same anchor), source VOICE. */
++    val RETRO: List<String> = listOf("i missed that")
++
++    /** Deletes this listen's mark, or the newest voice/tap mark within 2 min. */
++    val UNDO: List<String> = listOf("undo mark", "cancel mark", "remove mark")
++
++    /** Leading fillers, optional, before a command. */
++    val FILLERS: Set<String> = setOf("please", "ok", "okay", "hey")
++
++    /** Words that may sit between a command and its intent word ("mark that, I'm just driving"). */
++    val INTENT_FILLERS: Set<String> = setOf(
++        "i'm", "im", "i", "am", "we're", "were", "we", "are", "just", "currently", "as", "and", "please", "also",
++    )
++
++    /** An intent after a command that contains one of these is a negation and saves a plain MOMENT. */
++    val NEGATIONS: Set<String> = setOf(
++        "not", "no", "never", "don't", "dont", "isn't", "isnt", "aren't", "arent", "wasn't", "wasnt", "won't", "wont", "can't", "cant", "nothing",
++    )
++
++    /** A clause whose first word is one of these is never a command (except "can you" / "could you" + a command). */
++    val QUESTION_WORDS: Set<String> = setOf(
++        "what", "which", "who", "whom", "whose", "where", "when", "why", "how", "is", "are", "am", "was", "were",
++        "do", "does", "did", "can", "could", "should", "would", "will", "shall", "may",
++    )
++
++    /** The two exceptions to the question-word veto: "can you <command>" and "could you <command>". */
++    val POLITE_PREFIXES: List<List<String>> = listOf(listOf("can", "you"), listOf("could", "you"))
++
++    private fun e(word: String, label: String) = IntentEntry(word, word, label)
++
++    val INTENTS: List<IntentEntry> = listOf(
++        e("sitting", "SITTING_IDLE"), e("resting", "SITTING_IDLE"), e("relaxing", "SITTING_IDLE"), e("sleeping", "SITTING_IDLE"),
++        e("working", "COMPUTER_WORK"), e("studying", "COMPUTER_WORK"), e("reading", "COMPUTER_WORK"), e("writing", "COMPUTER_WORK"),
++        e("computer work", "COMPUTER_WORK"),
++        e("meeting", "OTHER"), e("talking", "OTHER"), e("conversation", "OTHER"),
++        e("eating", "OTHER"), e("cooking", "OTHER"), e("shopping", "OTHER"), e("watching tv", "OTHER"), e("gaming", "OTHER"), e("cleaning", "OTHER"),
++        e("driving", "DRIVING"),
++        e("passenger", "VEHICLE_PASSENGER"), e("commuting", "VEHICLE_PASSENGER"), e("travelling", "VEHICLE_PASSENGER"),
++        // A two-wheeler rider may be the driver, so riding is never guessed (S85a).
++        e("riding", "OTHER"),
++        e("flying", "FLIGHT_CABIN"),
++        e("walking", "WALKING"),
++        e("exercising", "WORKOUT"), e("workout", "WORKOUT"), e("running", "WORKOUT"), e("cycling", "WORKOUT"),
++        e("other", "OTHER"),
++    )
++
++    fun intentFor(word: String): IntentEntry? = INTENTS.firstOrNull { it.word == word }
++}
+diff --git a/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/MarkPhrasesDoc.kt b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/MarkPhrasesDoc.kt
+new file mode 100644
+index 00000000..ca97870f
+--- /dev/null
++++ b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/MarkPhrasesDoc.kt
+@@ -0,0 +1,57 @@
++package com.rokid.context.voice.commands
++
++/**
++ * Renders the user-facing voice-mark phrase tables as markdown, from [MarkPhrases] and [VoiceCommandGroup] only.
++ * `docs/voice-marks.md` and the README embed this text between marker comments; `VoiceMarksDocTest` fails on drift.
++ * Regenerate with `VOICE_MARKS_REGEN=1 ./gradlew :services:voice:testDebugUnitTest --tests '*VoiceMarksDocTest'`.
++ * Every phrase and intent word is written in backticks; nothing else in a block is.
++ */
++internal object MarkPhrasesDoc {
++    const val DOC_BEGIN = "<!-- voice-marks:begin -->"
++    const val DOC_END = "<!-- voice-marks:end -->"
++    const val README_BEGIN = "<!-- voice-marks-readme:begin -->"
++    const val README_END = "<!-- voice-marks-readme:end -->"
++
++    private fun list(phrases: Collection<String>) = phrases.joinToString("\n") { "- `$it`" }
++
++    fun render(): String = buildString {
++        appendLine("#### Mark a moment")
++        appendLine("Saves a mark for the last 10 seconds up to the moment you pressed push-to-talk.")
++        appendLine(list(MarkPhrases.MARK))
++        appendLine()
++        appendLine("#### I missed that")
++        appendLine("Same as a mark: saves the previous 10 seconds, recorded as a voice mark.")
++        appendLine(list(MarkPhrases.RETRO))
++        appendLine()
++        appendLine("#### Undo")
++        appendLine("Deletes the mark from this listen, or your newest voice or tap mark from the last 2 minutes.")
++        appendLine(list(MarkPhrases.UNDO))
++        appendLine()
++        appendLine("#### Polite starts you can add before any command")
++        appendLine(list(MarkPhrases.FILLERS))
++        appendLine()
++        appendLine("#### Intent words (what you were doing)")
++        appendLine("Add one after a mark command, for example \"mark that, I'm driving\". Anything not in this table saves a plain mark.")
++        appendLine()
++        appendLine("| Word | Label on the mark | Intent label |")
++        appendLine("| --- | --- | --- |")
++        MarkPhrases.INTENTS.forEach { appendLine("| `${it.word}` | ${it.canvasLabel} | ${it.intentLabel} |") }
++        appendLine()
++        appendLine("#### Small words allowed between a command and its intent word")
++        appendLine(list(MarkPhrases.INTENT_FILLERS.sorted()))
++        appendLine()
++        appendLine("#### Negations (the mark is saved plain, with no intent)")
++        appendLine(list(MarkPhrases.NEGATIONS.sorted()))
++        appendLine()
++        appendLine("#### Question words (a sentence starting with one is never a command)")
++        appendLine(list(MarkPhrases.QUESTION_WORDS.sorted()))
++        appendLine()
++        appendLine("#### Exceptions to the question rule")
++        append(list(MarkPhrases.POLITE_PREFIXES.map { it.joinToString(" ") }))
++        appendLine()
++    }
++
++    /** Compact list for the README, from the same data (the Settings toggle groups and their examples). */
++    fun renderCompact(): String =
++        VoiceCommandGroup.values().joinToString("\n") { "- **${it.label}**: ${it.examples}" } + "\n"
++}
+diff --git a/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/VoiceCommandGroup.kt b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/VoiceCommandGroup.kt
+new file mode 100644
+index 00000000..6328c8ba
+--- /dev/null
++++ b/android-companion/services/voice/src/main/kotlin/com/rokid/context/voice/commands/VoiceCommandGroup.kt
+@@ -0,0 +1,50 @@
++package com.rokid.context.voice.commands
++
++/**
++ * Voice command groups for a Settings toggle list, in list order (adapted from Live Fit's VoiceCommandGroup).
++ * Examples come from [MarkPhrases], so they cannot drift from the parser.
++ */
++enum class VoiceCommandGroup(val label: String, val examples: String, val toggleable: Boolean = true) {
++    Mark("Mark a moment", quoted(MarkPhrases.MARK.take(3))),
++    Retro("I missed that", quoted(MarkPhrases.RETRO)),
++    Undo("Undo a mark", quoted(MarkPhrases.UNDO.take(2)));
++
++    val blockedMessage: String get() = "'$label' is turned off in Settings"
++
++    companion object {
++        fun of(command: MarkCommand): VoiceCommandGroup = when (command) {
++            is MarkCommand.Mark -> Mark
++            MarkCommand.Retro -> Retro
++            MarkCommand.Undo -> Undo
++        }
++
++        fun isAllowed(command: MarkCommand, disabled: Set<VoiceCommandGroup>): Boolean = of(command).let { !it.toggleable || it !in disabled }
++
++        /** [disabled] after the user turns [group] on or off; a locked group never changes. */
++        fun withEnabled(disabled: Set<VoiceCommandGroup>, group: VoiceCommandGroup, enabled: Boolean): Set<VoiceCommandGroup> = when {
++            !group.toggleable -> disabled
++            enabled -> disabled - group
++            else -> disabled + group
++        }
++
++        /** Persisted form of the turned-off groups (comma-separated names). */
++        fun encode(disabled: Set<VoiceCommandGroup>): String = disabled.filter { it.toggleable }.joinToString(",") { it.name }
++
++        fun decode(text: String): Set<VoiceCommandGroup> =
++            text.split(',').mapNotNull { n -> entries.firstOrNull { it.name == n.trim() } }.filter { it.toggleable }.toSet()
++    }
++}
++
++private fun quoted(phrases: List<String>): String = phrases.joinToString(", ") { "\"$it\"" }
++
++/** Dispatcher front: runs commands whose group is on; a turned-off one only toasts [VoiceCommandGroup.blockedMessage]. */
++class VoiceCommandGate(
++    private val disabled: () -> Set<VoiceCommandGroup>,
++    private val toast: (String) -> Unit,
++    private val dispatch: suspend (MarkCommand) -> Unit,
++) {
++    suspend operator fun invoke(command: MarkCommand) {
++        if (VoiceCommandGroup.isAllowed(command, disabled())) dispatch(command)
++        else toast(VoiceCommandGroup.of(command).blockedMessage)
++    }
++}
+diff --git a/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/EnglishClausesTest.kt b/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/EnglishClausesTest.kt
+new file mode 100644
+index 00000000..9897c07d
+--- /dev/null
++++ b/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/EnglishClausesTest.kt
+@@ -0,0 +1,19 @@
++package com.rokid.context.voice.commands
++
++import kotlin.test.Test
++import kotlin.test.assertEquals
++
++class EnglishClausesTest {
++    @Test fun splitsOnAndThenAndCommas() {
++        assertEquals(listOf("mark that", "I'm driving"), EnglishClauses.split("mark that, I'm driving"))
++        assertEquals(listOf("mark that", "undo mark"), EnglishClauses.split("mark that and then undo mark"))
++        assertEquals(listOf("Mark that", "note this"), EnglishClauses.split("Mark that. then note this!"))
++    }
++
++    @Test fun fillerOnlyClausesAreDropped() {
++        assertEquals(listOf("mark that please"), EnglishClauses.split("hey, mark that please"))
++        assertEquals(listOf("mark that"), EnglishClauses.split("okay, um, mark that, please"))
++        assertEquals(emptyList(), EnglishClauses.split("hey please"))
++        assertEquals(emptyList(), EnglishClauses.split(""))
++    }
++}
+diff --git a/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/LanguagePackTest.kt b/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/LanguagePackTest.kt
+new file mode 100644
+index 00000000..0b9c9929
+--- /dev/null
++++ b/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/LanguagePackTest.kt
+@@ -0,0 +1,23 @@
++package com.rokid.context.voice.commands
++
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNotNull
++import kotlin.test.assertNull
++
++class LanguagePackTest {
++    @Test fun defaultLocaleIsEnglishIndia() {
++        assertEquals("en-IN", LanguageRegistry.DEFAULT_LOCALE)
++        assertNotNull(LanguageRegistry.forLocale("en-IN"))
++    }
++
++    @Test fun englishPacksParseMarkCommands() {
++        for (locale in listOf("en-IN", "en-US", "en-GB")) {
++            val pack = LanguageRegistry.forLocale(locale)!!
++            assertEquals(MarkCommand.Mark("driving"), pack.parseCommand("mark that, I'm driving"))
++            assertEquals(MarkCommand.Undo, pack.parseCommand("undo mark"))
++        }
++    }
++
++    @Test fun unknownLocaleHasNoPack() = assertNull(LanguageRegistry.forLocale("hi-IN"))
++}
+diff --git a/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/MarkCommandParserTest.kt b/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/MarkCommandParserTest.kt
+new file mode 100644
+index 00000000..edb8295e
+--- /dev/null
++++ b/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/MarkCommandParserTest.kt
+@@ -0,0 +1,112 @@
++package com.rokid.context.voice.commands
++
++import com.rokid.context.core.model.context.IntentLabel
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNull
++import kotlin.test.assertTrue
++
++class MarkCommandParserTest {
++    private fun parse(s: String) = MarkCommandParser.parse(s)
++    private fun kind(phrase: String): MarkCommand? = when (phrase) {
++        in MarkPhrases.RETRO -> MarkCommand.Retro
++        in MarkPhrases.UNDO -> MarkCommand.Undo
++        else -> MarkCommand.Mark(null)
++    }
++    private val allCommands get() = MarkPhrases.MARK + MarkPhrases.RETRO + MarkPhrases.UNDO
++
++    @Test fun everyListedPhraseParses() {
++        for (p in allCommands) {
++            assertEquals(kind(p), parse(p), p)
++            assertEquals(kind(p), parse("please $p"), "please $p")
++            assertEquals(kind(p), parse("Hey, ${p.replaceFirstChar { it.uppercase() }}!"), "hey $p")
++            val withIntent = parse("$p, driving")
++            val expected = if (p in MarkPhrases.MARK) MarkCommand.Mark("driving") else kind(p)
++            assertEquals(expected, withIntent, "$p, driving")
++        }
++    }
++
++    @Test fun everyIntentWordAfterCommandParses() {
++        for (i in MarkPhrases.INTENTS) {
++            assertEquals(MarkCommand.Mark(i.canvasLabel), parse("mark that, ${i.word}"), i.word)
++            assertEquals(MarkCommand.Mark(i.canvasLabel), parse("mark that, I'm ${i.word}"), "I'm ${i.word}")
++            assertEquals(MarkCommand.Mark(i.canvasLabel), parse("mark that, we're just currently ${i.word}"), "we're ${i.word}")
++            assertEquals(MarkCommand.Mark(i.canvasLabel), parse("mark that I am ${i.word}"), "I am ${i.word}")
++        }
++    }
++
++    @Test fun questionFormsNeverParse() {
++        val forms = mutableListOf("is this important", "was that important", "should I save this", "how do I bookmark this",
++            "can I note this", "where did I save that", "why did I miss that", "what did I miss", "what did I save", "what did Mark say",
++            "Mark called me", "mark my words", "did I miss that")
++        for (c in allCommands) { forms += "did you $c"; forms += "do you $c"; forms += "would you $c"; forms += "what if I $c" }
++        for (f in forms) assertNull(parse(f), f)
++    }
++
++    @Test fun canYouMarkThatParses() {
++        assertEquals(MarkCommand.Mark(null), parse("can you mark that"))
++        assertEquals(MarkCommand.Mark(null), parse("could you note this please"))
++        assertEquals(MarkCommand.Mark("driving"), parse("could you mark that, I'm driving"))
++        assertEquals(MarkCommand.Undo, parse("can you undo mark"))
++        assertNull(parse("can you remember"))
++        assertNull(parse("can they mark that"))
++    }
++
++    @Test fun forgetNeverMatches() {
++        for (s in listOf("forget that", "forget this", "forget the last mark", "please forget that", "forget mark that"))
++            assertNull(parse(s), s)
++        val all = MarkPhrases.MARK + MarkPhrases.RETRO + MarkPhrases.UNDO + MarkPhrases.INTENTS.map { it.word }
++        assertTrue(all.none { "forget" in it })
++    }
++
++    @Test fun intentWithoutCommandPassesThrough() {
++        assertNull(parse("I'm driving"))
++        assertNull(parse("driving"))
++    }
++
++    @Test fun negatedIntentPlainMark() {
++        assertEquals(MarkCommand.Mark(null), parse("mark that, I'm not driving"))
++        assertEquals(MarkCommand.Mark(null), parse("mark that not walking"))
++    }
++
++    @Test fun twoIntentsPlainMark() {
++        assertEquals(MarkCommand.Mark(null), parse("mark that, driving and walking"))
++        assertEquals(MarkCommand.Mark(null), parse("mark that, reading, sitting"))
++    }
++
++    @Test fun unknownWordPlainMark() {
++        assertEquals(MarkCommand.Mark(null), parse("mark that, baking"))
++        assertEquals(MarkCommand.Mark(null), parse("mark that, I'm driving to work"))
++        assertEquals(MarkCommand.Mark(null), parse("mark that was great"))
++    }
++
++    @Test fun undoPhrases() {
++        for (s in listOf("undo mark", "Cancel mark", "please remove mark.", "ok, undo mark")) assertEquals(MarkCommand.Undo, parse(s), s)
++        assertNull(parse("undo"))
++    }
++
++    @Test fun retroDoesNotStealOtherSentences() {
++        assertEquals(MarkCommand.Retro, parse("I missed that"))
++        assertNull(parse("I missed that bus"))
++    }
++
++    @Test fun everyIntentHasFinalIntentLabel() {
++        val names = IntentLabel.entries.map { it.name }.toSet()
++        for (i in MarkPhrases.INTENTS) assertTrue(i.intentLabel in names, "${i.word} -> ${i.intentLabel}")
++        assertEquals(setOf("SITTING_IDLE", "WORKOUT", "COMPUTER_WORK", "DRIVING", "VEHICLE_PASSENGER", "FLIGHT_CABIN", "WALKING", "OTHER"),
++            MarkPhrases.INTENTS.map { it.intentLabel }.toSet())
++        assertEquals("COMPUTER_WORK", MarkPhrases.intentFor("reading")!!.intentLabel)
++        assertEquals("COMPUTER_WORK", MarkPhrases.intentFor("writing")!!.intentLabel)
++        assertEquals("VEHICLE_PASSENGER", MarkPhrases.intentFor("travelling")!!.intentLabel)
++    }
++
++    @Test fun ridingMapsToOther() = assertEquals("OTHER", MarkPhrases.intentFor("riding")!!.intentLabel)
++
++    @Test fun curlyApostropheIsNormalised() = assertEquals(MarkCommand.Mark("driving"), parse("mark that, I\u2019m driving"))
++
++    @Test fun emptyAndNoise() {
++        assertNull(parse(""))
++        assertNull(parse("   ..."))
++        assertNull(parse("what's the weather"))
++    }
++}
+diff --git a/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/VoiceCommandGroupTest.kt b/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/VoiceCommandGroupTest.kt
+new file mode 100644
+index 00000000..8e7d0625
+--- /dev/null
++++ b/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/VoiceCommandGroupTest.kt
+@@ -0,0 +1,45 @@
++package com.rokid.context.voice.commands
++
++import kotlinx.coroutines.test.runTest
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFalse
++import kotlin.test.assertTrue
++
++class VoiceCommandGroupTest {
++    @Test fun everyMarkCommandHasAGroup() {
++        assertEquals(VoiceCommandGroup.Mark, VoiceCommandGroup.of(MarkCommand.Mark(null)))
++        assertEquals(VoiceCommandGroup.Mark, VoiceCommandGroup.of(MarkCommand.Mark("driving")))
++        assertEquals(VoiceCommandGroup.Retro, VoiceCommandGroup.of(MarkCommand.Retro))
++        assertEquals(VoiceCommandGroup.Undo, VoiceCommandGroup.of(MarkCommand.Undo))
++    }
++
++    @Test fun disabledGroupsBlockTheirCommandsOnly() {
++        val off = setOf(VoiceCommandGroup.Undo)
++        assertFalse(VoiceCommandGroup.isAllowed(MarkCommand.Undo, off))
++        assertTrue(VoiceCommandGroup.isAllowed(MarkCommand.Retro, off))
++        assertTrue(VoiceCommandGroup.isAllowed(MarkCommand.Mark(null), off))
++    }
++
++    @Test fun withEnabledEncodeDecodeRoundTrip() {
++        val off = VoiceCommandGroup.withEnabled(emptySet(), VoiceCommandGroup.Retro, enabled = false)
++        assertEquals(setOf(VoiceCommandGroup.Retro), off)
++        assertEquals(emptySet(), VoiceCommandGroup.withEnabled(off, VoiceCommandGroup.Retro, enabled = true))
++        assertEquals(off, VoiceCommandGroup.decode(VoiceCommandGroup.encode(off)))
++        assertEquals(emptySet(), VoiceCommandGroup.decode("Bogus,,Nope"))
++    }
++
++    @Test fun examplesComeFromThePhraseTable() {
++        assertTrue(MarkPhrases.MARK.first() in VoiceCommandGroup.Mark.examples)
++        assertTrue(MarkPhrases.RETRO.first() in VoiceCommandGroup.Retro.examples)
++        assertTrue(MarkPhrases.UNDO.first() in VoiceCommandGroup.Undo.examples)
++    }
++
++    @Test fun gateRunsAllowedAndToastsBlocked() = runTest {
++        val ran = mutableListOf<MarkCommand>(); val toasts = mutableListOf<String>()
++        val gate = VoiceCommandGate({ setOf(VoiceCommandGroup.Undo) }, { toasts += it }, { ran += it })
++        gate(MarkCommand.Mark(null)); gate(MarkCommand.Undo)
++        assertEquals(listOf<MarkCommand>(MarkCommand.Mark(null)), ran)
++        assertEquals(listOf(VoiceCommandGroup.Undo.blockedMessage), toasts)
++    }
++}
+diff --git a/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/VoiceMarksDocTest.kt b/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/VoiceMarksDocTest.kt
+new file mode 100644
+index 00000000..e09260ec
+--- /dev/null
++++ b/android-companion/services/voice/src/test/kotlin/com/rokid/context/voice/commands/VoiceMarksDocTest.kt
+@@ -0,0 +1,69 @@
++package com.rokid.context.voice.commands
++
++import java.io.File
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertTrue
++
++class VoiceMarksDocTest {
++    private val root: File = generateSequence(File("").absoluteFile) { it.parentFile }
++        .first { File(it, "docs/voice-marks.md").exists() || File(it, "README.md").exists() && File(it, "docs").isDirectory }
++    private val docFile = File(root, "docs/voice-marks.md")
++    private val readmeFile = File(root, "README.md")
++
++    private fun block(text: String, begin: String, end: String): String {
++        val b = text.indexOf(begin); val e = text.indexOf(end)
++        assertTrue(b >= 0 && e > b, "markers $begin / $end missing")
++        return text.substring(b + begin.length, e).trim('\n') + "\n"
++    }
++
++    private fun maybeRegen(file: File, begin: String, end: String, body: String) {
++        if (System.getenv("VOICE_MARKS_REGEN") != "1") return
++        val t = file.readText()
++        val b = t.indexOf(begin); val e = t.indexOf(end)
++        file.writeText(t.substring(0, b + begin.length) + "\n" + body + t.substring(e))
++    }
++
++    private fun docBlock(): String {
++        maybeRegen(docFile, MarkPhrasesDoc.DOC_BEGIN, MarkPhrasesDoc.DOC_END, MarkPhrasesDoc.render())
++        return block(docFile.readText(), MarkPhrasesDoc.DOC_BEGIN, MarkPhrasesDoc.DOC_END)
++    }
++
++    private fun tablePhrases(): Set<String> =
++        (MarkPhrases.MARK + MarkPhrases.RETRO + MarkPhrases.UNDO + MarkPhrases.FILLERS + MarkPhrases.INTENT_FILLERS +
++            MarkPhrases.NEGATIONS + MarkPhrases.QUESTION_WORDS + MarkPhrases.INTENTS.map { it.word } +
++            MarkPhrases.POLITE_PREFIXES.map { it.joinToString(" ") }).toSet()
++
++    @Test fun docBlockEqualsRender() = assertEquals(MarkPhrasesDoc.render(), docBlock())
++
++    @Test fun readmeBlockEqualsRenderCompact() {
++        maybeRegen(readmeFile, MarkPhrasesDoc.README_BEGIN, MarkPhrasesDoc.README_END, MarkPhrasesDoc.renderCompact())
++        assertEquals(MarkPhrasesDoc.renderCompact(), block(readmeFile.readText(), MarkPhrasesDoc.README_BEGIN, MarkPhrasesDoc.README_END))
++    }
++
++    @Test fun everyPhraseInTableAppearsInDoc() {
++        val doc = docBlock()
++        val missing = tablePhrases().filter { "`$it`" !in doc }
++        assertTrue(missing.isEmpty(), "phrases missing from docs/voice-marks.md: $missing")
++    }
++
++    @Test fun noPhraseInDocMissingFromTable() {
++        val inDoc = Regex("`([^`]+)`").findAll(docBlock()).map { it.groupValues[1] }.toSet()
++        val extra = inDoc - tablePhrases()
++        assertTrue(extra.isEmpty(), "docs/voice-marks.md lists phrases not in MarkPhrases: $extra")
++        assertTrue("forget" !in inDoc)
++    }
++
++    @Test fun docMentionsPrivacyAndUnsupported() {
++        val doc = docFile.readText()
++        listOf(
++            "Audio is never stored or uploaded.",
++            "Recognition runs on the phone's on-device recogniser only.",
++            "Only the time, source and label are kept.",
++            "Hindi and other languages are not supported yet.",
++            "The word \"forget\" is never a mark command",
++            "There is no hotword and no always-on listening.",
++            "Unknown words save a plain mark.",
++        ).forEach { assertTrue(it in doc, "missing sentence: $it") }
++    }
++}
+diff --git a/docs/voice-marks.md b/docs/voice-marks.md
+new file mode 100644
+index 00000000..65ee965a
+--- /dev/null
++++ b/docs/voice-marks.md
+@@ -0,0 +1,178 @@
++# Voice marks
++
++A voice mark saves "something worth remembering happened just now" without touching your phone. Say a short command and the app saves a mark for the last few seconds. This page is generated from the same phrase table the app uses, so it always matches what the app understands.
++
++## How to mark
++
++- Tap the glasses while the HUD is visible.
++- Or press push-to-talk on the glasses or the phone, then say a command from the lists below.
++- Or use the phone notification, the tile or the home button.
++
++There is no hotword and no always-on listening. The app listens only after you press push-to-talk (or after a tap, on the voice path), and stops when you finish speaking.
++
++## What you can say
++
++Use any phrase below. A word like "please", "ok" or "hey" in front is fine. After a mark command you can add what you were doing, for example "mark that, I'm driving". Unknown words save a plain mark. A mark is never lost because the app did not know your word.
++
++Commands: mark a moment, "I missed that" (saves the previous 10 seconds), and undo.
++
++<!-- voice-marks:begin -->
++#### Mark a moment
++Saves a mark for the last 10 seconds up to the moment you pressed push-to-talk.
++- `mark that`
++- `mark this`
++- `mark it`
++- `remember this`
++- `remember that`
++- `save this`
++- `save that`
++- `note this`
++- `note that`
++- `bookmark this`
++- `bookmark that`
++- `capture this`
++- `this is important`
++- `that was important`
++
++#### I missed that
++Same as a mark: saves the previous 10 seconds, recorded as a voice mark.
++- `i missed that`
++
++#### Undo
++Deletes the mark from this listen, or your newest voice or tap mark from the last 2 minutes.
++- `undo mark`
++- `cancel mark`
++- `remove mark`
++
++#### Polite starts you can add before any command
++- `please`
++- `ok`
++- `okay`
++- `hey`
++
++#### Intent words (what you were doing)
++Add one after a mark command, for example "mark that, I'm driving". Anything not in this table saves a plain mark.
++
++| Word | Label on the mark | Intent label |
++| --- | --- | --- |
++| `sitting` | sitting | SITTING_IDLE |
++| `resting` | resting | SITTING_IDLE |
++| `relaxing` | relaxing | SITTING_IDLE |
++| `sleeping` | sleeping | SITTING_IDLE |
++| `working` | working | COMPUTER_WORK |
++| `studying` | studying | COMPUTER_WORK |
++| `reading` | reading | COMPUTER_WORK |
++| `writing` | writing | COMPUTER_WORK |
++| `computer work` | computer work | COMPUTER_WORK |
++| `meeting` | meeting | OTHER |
++| `talking` | talking | OTHER |
++| `conversation` | conversation | OTHER |
++| `eating` | eating | OTHER |
++| `cooking` | cooking | OTHER |
++| `shopping` | shopping | OTHER |
++| `watching tv` | watching tv | OTHER |
++| `gaming` | gaming | OTHER |
++| `cleaning` | cleaning | OTHER |
++| `driving` | driving | DRIVING |
++| `passenger` | passenger | VEHICLE_PASSENGER |
++| `commuting` | commuting | VEHICLE_PASSENGER |
++| `travelling` | travelling | VEHICLE_PASSENGER |
++| `riding` | riding | OTHER |
++| `flying` | flying | FLIGHT_CABIN |
++| `walking` | walking | WALKING |
++| `exercising` | exercising | WORKOUT |
++| `workout` | workout | WORKOUT |
++| `running` | running | WORKOUT |
++| `cycling` | cycling | WORKOUT |
++| `other` | other | OTHER |
++
++#### Small words allowed between a command and its intent word
++- `also`
++- `am`
++- `and`
++- `are`
++- `as`
++- `currently`
++- `i`
++- `i'm`
++- `im`
++- `just`
++- `please`
++- `we`
++- `we're`
++- `were`
++
++#### Negations (the mark is saved plain, with no intent)
++- `aren't`
++- `arent`
++- `can't`
++- `cant`
++- `don't`
++- `dont`
++- `isn't`
++- `isnt`
++- `never`
++- `no`
++- `not`
++- `nothing`
++- `wasn't`
++- `wasnt`
++- `won't`
++- `wont`
++
++#### Question words (a sentence starting with one is never a command)
++- `am`
++- `are`
++- `can`
++- `could`
++- `did`
++- `do`
++- `does`
++- `how`
++- `is`
++- `may`
++- `shall`
++- `should`
++- `was`
++- `were`
++- `what`
++- `when`
++- `where`
++- `which`
++- `who`
++- `whom`
++- `whose`
++- `why`
++- `will`
++- `would`
++
++#### Exceptions to the question rule
++- `can you`
++- `could you`
++<!-- voice-marks:end -->
++
++## What does not work
++
++- Hindi and other languages are not supported yet. English only for now.
++- The word "forget" is never a mark command. It belongs to the Forget feature and is deliberately left out here.
++- There is no hotword and no always-on listening.
++- Questions phrased as commands are ignored. A sentence that starts with a question word is never a command, so "what did you mark" does nothing. The only exceptions are "can you" and "could you" followed by a command, for example "can you mark that".
++- If you say an intent after a negation ("mark that, I'm not driving"), the mark is saved plain, with no intent.
++
++## Privacy
++
++- Audio is never stored or uploaded.
++- Recognition runs on the phone's on-device recogniser only.
++- Only the time, source and label are kept.
++
++## Turning it off
++
++Voice marks are on by default. To turn them off, open Settings and switch off Voice marks. Each command group (Mark a moment, I missed that, Undo a mark) can also be switched off on its own. Tap and notification marks keep working.
++
++## For developers: keeping this page in sync
++
++The block between the markers is generated by `MarkPhrasesDoc.render()` from `MarkPhrases` (the parser's data table). `VoiceMarksDocTest` fails if a phrase in the table is missing from this page or the page lists a phrase that is not in the table. After changing the table, regenerate with:
++
++`VOICE_MARKS_REGEN=1 ./gradlew --no-daemon :services:voice:testDebugUnitTest --tests '*VoiceMarksDocTest'`
++
++Then run the command again without the variable and commit the result. The README list is generated the same way from `VoiceCommandGroup.examples`.

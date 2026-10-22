@@ -1,6 +1,6 @@
 # Handoff, 2026-10-22 evening (read this first, then the older handoff 2026-10-21-handoff.md for history)
 
-# 00. START HERE (consolidated and authoritative as of 2026-10-23 ~02:00; sections 0-16 below are history/detail, this wins on any conflict)
+# 00. START HERE (the repo also has a `code-agent/` folder at its root: index README, working rules, Claude memory snapshot, Codex reviews and every task brief/report/ledger under code-agent/superpowers/sdd/; the same layout exists in the LiveFit repo) (consolidated and authoritative as of 2026-10-23 ~02:00; sections 0-16 below are history/detail, this wins on any conflict)
 
 **Where everything is**
 - Repos (parent ~/Desktop/rokid): `proactive-context-agent` = PCA, main checkout on branch **v0.9-beta** (remote `origin` = github.com/debasishdebs/Proactive-ARContextual-Agent, ssh); `live-fitness-tracker` = LiveFit (base branch design/livefit-v1-v2 = a09525d, branch + tag v1.0-beta, origin = Live-AR-Fit). Third-party/unrelated folders left untouched: Rokid-APKs, awesome-rokid, rokid-docs, rokid-apps, rokid-upi-payment-mvp. `android-sdk` (toolchain, do not move), `backups` (phone DB backups; never commit), `archive` (EVERYTHING else moved there, nothing deleted: old pca-*/lf-* worktree folders now plain snapshots, handoff-* incl. handoff-final-slice3a = the installed APK pair, report archive, release-notes, pre-rewrite mirror WITH personal screenshots: never push it). The user zips and deletes the archive later.

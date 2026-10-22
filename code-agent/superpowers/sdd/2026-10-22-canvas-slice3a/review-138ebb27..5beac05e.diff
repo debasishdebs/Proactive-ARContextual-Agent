@@ -1,0 +1,4150 @@
+# Review package: 138ebb27..5beac05e
+
+## Commits
+5beac05e refactor(capture): extract GlanceAdmission from SamplingSession.onDwell (behaviour-identical, truth-table tested)
+0bedf427 refactor(capture): move the pure glance, motion, keyframe-gate and camera-policy code into :core:capture (move-only, packages unchanged)
+2827261a test(glasses): freeze pre-slice-3a capture decision goldens (settings mode, 8 scripts, expected reserved-attempt points)
+
+## Files changed
+ android-companion/core/capture/build.gradle.kts    |  12 +
+ .../glasses/capture/keyframe/ImageHashes.kt        |   0
+ .../glasses/capture/keyframe/KeyframeGate.kt       |  24 -
+ .../glasses/capture/motion/FeatureLogger.kt        |   0
+ .../glasses/capture/motion/GlanceDetector.kt       |   0
+ .../context/glasses/capture/motion/GlanceParams.kt |   0
+ .../glasses/capture/motion/MotionClassifier.kt     |   0
+ .../glasses/capture/motion/model/MotionModel.kt    |   0
+ .../glasses/capture/session/CameraPolicy.kt        |   0
+ .../glasses/capture/session/CaptureProfile.kt      |  50 ++
+ .../glasses/capture/session/GlanceAdmission.kt     |  33 +
+ .../glasses/capture/keyframe/ImageHashesTest.kt    |   0
+ .../glasses/capture/keyframe/KeyframeGateTest.kt   |   0
+ .../glasses/capture/motion/FeatureLoggerTest.kt    |   0
+ .../glasses/capture/motion/GlanceDetectorTest.kt   |   0
+ .../glasses/capture/motion/MotionClassifierTest.kt |   0
+ .../capture/motion/model/MotionModelTest.kt        |   0
+ .../motion/model/MotionModelTrainedTreeTest.kt     |   0
+ .../glasses/capture/session/CameraPolicyTest.kt    |   0
+ .../glasses/capture/session/GlanceAdmissionTest.kt |  43 ++
+ android-companion/glasses/build.gradle.kts         |   1 +
+ .../glasses/capture/keyframe/PrefsGateStore.kt     |  26 +
+ .../glasses/capture/session/BatteryBudget.kt       |  48 --
+ .../glasses/capture/session/SamplingSession.kt     |  14 +-
+ .../capture/golden/DecisionGoldenRecorder.kt       | 169 ++++
+ .../glasses/capture/golden/DecisionGoldenTest.kt   |  52 ++
+ .../glasses/capture/golden/GoldenScripts.kt        | 135 ++++
+ .../golden/decisions-bind_backoff_10min.txt        | 263 +++++++
+ .../resources/golden/decisions-budget_t2_20min.txt | 344 +++++++++
+ .../golden/decisions-capture_now_mix_10min.txt     | 465 +++++++++++
+ .../golden/decisions-flight_settings_20min.txt     | 214 ++++++
+ .../resources/golden/decisions-heat_slow_10min.txt | 238 ++++++
+ .../golden/decisions-rest_still_30min.txt          | 287 +++++++
+ .../golden/decisions-unknown_walk_20min.txt        | 854 +++++++++++++++++++++
+ .../golden/decisions-workrest_rest_30min.txt       | 486 ++++++++++++
+ android-companion/services/ai/build.gradle.kts     |   1 +
+ .../services/orchestration/build.gradle.kts        |   1 +
+ android-companion/settings.gradle.kts              |   1 +
+ 38 files changed, 3682 insertions(+), 79 deletions(-)
+
+## Diff
+diff --git a/android-companion/core/capture/build.gradle.kts b/android-companion/core/capture/build.gradle.kts
+new file mode 100644
+index 00000000..225b58c9
+--- /dev/null
++++ b/android-companion/core/capture/build.gradle.kts
+@@ -0,0 +1,12 @@
++plugins {
++    id("org.jetbrains.kotlin.jvm")
++}
++
++kotlin { jvmToolchain(17) }
++
++// Pure Kotlin/JVM: the glance, motion, keyframe-gate and camera-policy decision code, no Android.
++dependencies {
++    api(project(":core:model")) // MotionState, CameraWake, ContextCapturePolicy; brings kotlinx-coroutines (flows) and serialization
++    testImplementation(kotlin("test-junit"))
++    testImplementation("junit:junit:4.13.2")
++}
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/keyframe/ImageHashes.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/keyframe/ImageHashes.kt
+similarity index 100%
+rename from android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/keyframe/ImageHashes.kt
+rename to android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/keyframe/ImageHashes.kt
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/keyframe/KeyframeGate.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGate.kt
+similarity index 89%
+rename from android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/keyframe/KeyframeGate.kt
+rename to android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGate.kt
+index fd82751f..020d6e29 100644
+--- a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/keyframe/KeyframeGate.kt
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGate.kt
+@@ -1,13 +1,12 @@
+ package com.rokid.context.glasses.capture.keyframe
+ 
+-import android.content.SharedPreferences
+ import com.rokid.context.core.model.MotionState
+ 
+ /** A copy of one camera frame (640x480 NV21, about 460 KB), kept only while it is a window candidate. */
+ class Nv21Frame(val w: Int, val h: Int, val rotation: Int, val data: ByteArray)
+ 
+ /** One sample: [seq] numbers it within the session, [thumb] is what the hashes see, [pixels] is what gets encoded if it wins. */
+ class Candidate(val seq: Long, val thumb: Thumb, val pixels: Nv21Frame)
+ 
+ sealed interface GateResult {
+     /** [candidate] is the winner: G3 encodes its pixels, never a later frame. */
+@@ -17,43 +16,20 @@ sealed interface GateResult {
+ }
+ 
+ /** The last-5 keyframe ring and the last keep time, persisted so a service restart does not re-keep the same scene. */
+ interface GateStore {
+     fun lastKeyframes(): List<Pair<Long, Long>>
+     fun push(d: Long, p: Long)
+     fun lastKeptAt(): Long
+     fun setLastKeptAt(t: Long)
+ }
+ 
+-/** [GateStore] over the "capture_guard" prefs (the ring is one string, oldest first). */
+-class PrefsGateStore(private val prefs: SharedPreferences) : GateStore {
+-    override fun lastKeyframes(): List<Pair<Long, Long>> =
+-        (prefs.getString(KEY_RING, null) ?: "").split(',').mapNotNull { e ->
+-            val parts = e.split(':')
+-            if (parts.size != 2) null else runCatching { parts[0].toULong(16).toLong() to parts[1].toULong(16).toLong() }.getOrNull()
+-        }.takeLast(RING)
+-
+-    override fun push(d: Long, p: Long) {
+-        val next = (lastKeyframes() + (d to p)).takeLast(RING)
+-        prefs.edit().putString(KEY_RING, next.joinToString(",") { "${it.first.toULong().toString(16)}:${it.second.toULong().toString(16)}" }).apply()
+-    }
+-
+-    override fun lastKeptAt(): Long = prefs.getLong(KEY_LAST_KEPT_AT, 0L)
+-    override fun setLastKeptAt(t: Long) { prefs.edit().putLong(KEY_LAST_KEPT_AT, t).apply() }
+-
+-    companion object {
+-        const val RING = 5
+-        private const val KEY_RING = "keyframe_ring"
+-        private const val KEY_LAST_KEPT_AT = "last_kept_at"
+-    }
+-}
+-
+ /**
+  * Keyframe test (spec section P1.1): a sample is NEW when min(Hamming dHash, Hamming pHash) > [HAMMING] against each of the
+  * last 5 keyframes. A new scene may follow the previous keyframe after 0.5 s, anything else after 1.2 s. While moving,
+  * samples are collected in windows of up to 1.5 s (at most 3 kept, losers released at once) and the sharpest wins.
+  * A dwell (glance) sample compares to the whole ring like any other, and still needs blur >= [BLUR_FLOOR].
+  * Rate cap (battery wave A3, spec section 5): with a `capPerMin`, at most that many keeps per rolling minute, up to twice
+  * that many only when a glance (dwell) frame differs from every ring keyframe by at least [BIG_CHANGE] of 64 bits (never with [hardCap], used while resting); non-glance keeps stop at cap - 1 (at least 1) with no bonus; forced keeps are exempt.
+  */
+ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) {
+     private class Scored(val c: Candidate, val d: Long, val p: Long, val blur: Float, val motion: MotionState)
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/motion/FeatureLogger.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/FeatureLogger.kt
+similarity index 100%
+rename from android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/motion/FeatureLogger.kt
+rename to android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/FeatureLogger.kt
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/motion/GlanceDetector.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/GlanceDetector.kt
+similarity index 100%
+rename from android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/motion/GlanceDetector.kt
+rename to android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/GlanceDetector.kt
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/motion/GlanceParams.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/GlanceParams.kt
+similarity index 100%
+rename from android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/motion/GlanceParams.kt
+rename to android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/GlanceParams.kt
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/motion/MotionClassifier.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifier.kt
+similarity index 100%
+rename from android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/motion/MotionClassifier.kt
+rename to android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifier.kt
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/motion/model/MotionModel.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/model/MotionModel.kt
+similarity index 100%
+rename from android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/motion/model/MotionModel.kt
+rename to android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/motion/model/MotionModel.kt
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/CameraPolicy.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/session/CameraPolicy.kt
+similarity index 100%
+rename from android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/CameraPolicy.kt
+rename to android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/session/CameraPolicy.kt
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/session/CaptureProfile.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/session/CaptureProfile.kt
+new file mode 100644
+index 00000000..e2ecada9
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/session/CaptureProfile.kt
+@@ -0,0 +1,50 @@
++package com.rokid.context.glasses.capture.session
++
++import com.rokid.context.core.model.CameraWake
++
++enum class BudgetTier { T0, T1, T2, T3 }
++
++/** Capture cadences for a wake mode and budget tier (spec §6). Pure. */
++data class CaptureProfile(
++    val wake: CameraWake,
++    val settledCheckMs: Long,
++    val quietCheckMs: Long,
++    val walkCheckMs: Long?,
++    val analysisMs: Long,
++    val paused: Boolean,
++    /** A still scene backs the brief checks off (doubling) up to this gap; a changed scene, motion or a settle resets it. */
++    val stillCapMs: Long = 60_000L,
++) {
++    /** The profile while resting (WorkRest on): glance captures only, timer checks at least 30 s apart, backing off to 2 min. */
++    fun forRest(): CaptureProfile = copy(
++        wake = CameraWake.SETTLE, settledCheckMs = maxOf(settledCheckMs, 30_000), quietCheckMs = maxOf(quietCheckMs, 60_000),
++        walkCheckMs = maxOf(walkCheckMs ?: settledCheckMs, 30_000), stillCapMs = maxOf(stillCapMs, 120_000),
++    )
++
++    /**
++     * Wave B: applies a context policy on top (never shortens a gap, never turns pause off). An all-zero policy (UNKNOWN,
++     * WALKING) returns an equal profile. Context and intent alone never pause capture (the policy table has no pause row).
++     */
++    fun withContext(p: com.rokid.context.core.model.context.ContextCapturePolicy): CaptureProfile = copy(
++        wake = if (p.forceSettle) CameraWake.SETTLE else wake,
++        settledCheckMs = maxOf(settledCheckMs, p.minSettledCheckMs),
++        quietCheckMs = maxOf(quietCheckMs, p.minQuietCheckMs),
++        walkCheckMs = if (p.minWalkCheckMs > 0) maxOf(walkCheckMs ?: settledCheckMs, p.minWalkCheckMs) else walkCheckMs,
++        stillCapMs = maxOf(stillCapMs, p.minStillCapMs),
++        paused = paused || p.pause,
++    )
++
++    companion object {
++        fun of(wake: CameraWake, tier: BudgetTier): CaptureProfile = when (tier) {
++            BudgetTier.T0 -> when (wake) {
++                CameraWake.MOTION -> CaptureProfile(CameraWake.MOTION, 5_000, 15_000, null, 333, false)
++                CameraWake.SETTLE -> CaptureProfile(CameraWake.SETTLE, 10_000, 30_000, 10_000, 333, false)
++            }
++            BudgetTier.T1 -> CaptureProfile(CameraWake.SETTLE, 10_000, 30_000, 10_000, 333, false)
++            BudgetTier.T2 -> CaptureProfile(CameraWake.SETTLE, 20_000, 60_000, 20_000, 666, false)
++            BudgetTier.T3 -> CaptureProfile(CameraWake.SETTLE, 20_000, 60_000, 20_000, 666, true)
++        }
++
++        val DEFAULT: CaptureProfile = of(CameraWake.MOTION, BudgetTier.T0)
++    }
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/session/GlanceAdmission.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/session/GlanceAdmission.kt
+new file mode 100644
+index 00000000..bffd80a5
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/glasses/capture/session/GlanceAdmission.kt
+@@ -0,0 +1,33 @@
++package com.rokid.context.glasses.capture.session
++
++import com.rokid.context.glasses.capture.motion.GlanceParams
++
++/**
++ * The free IMU admission test a glance (dwell) passes before the camera may open (spec A3 section 4): the novelty gate,
++ * then the per-minute cap. Extracted unchanged from SamplingSession.onDwell so it can be tested and replayed on its own. Pure.
++ */
++object GlanceAdmission {
++    enum class Decision { OPEN, NOVEL_SKIP, CAPPED }
++
++    /**
++     * @param sinceLastKeyframeMs now minus the time of the last keyframe
++     * @param keptLastMinute keyframes kept in the last 60 s
++     * @param cap the per-minute cap now (resting, A3 or context cap, whichever is lower)
++     * @param hardCap no dwell bonus: while resting or while a context cap is active
++     * @param turnedRad head rotation since the last keyframe pose
++     * @param walked a walk was seen since the last keyframe pose
++     */
++    fun decide(
++        sinceLastKeyframeMs: Long,
++        keptLastMinute: Int,
++        cap: Int,
++        hardCap: Boolean,
++        turnedRad: Float,
++        walked: Boolean,
++        glance: GlanceParams,
++    ): Decision = when {
++        sinceLastKeyframeMs < glance.noveltyWindowMs && turnedRad < glance.noveltyMinRad && !walked -> Decision.NOVEL_SKIP
++        keptLastMinute >= cap && (hardCap || turnedRad < glance.bigTurnRad && !walked) || keptLastMinute.toLong() >= 2L * cap -> Decision.CAPPED
++        else -> Decision.OPEN
++    }
++}
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/keyframe/ImageHashesTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/keyframe/ImageHashesTest.kt
+similarity index 100%
+rename from android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/keyframe/ImageHashesTest.kt
+rename to android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/keyframe/ImageHashesTest.kt
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/keyframe/KeyframeGateTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGateTest.kt
+similarity index 100%
+rename from android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/keyframe/KeyframeGateTest.kt
+rename to android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/keyframe/KeyframeGateTest.kt
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/motion/FeatureLoggerTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/FeatureLoggerTest.kt
+similarity index 100%
+rename from android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/motion/FeatureLoggerTest.kt
+rename to android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/FeatureLoggerTest.kt
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/motion/GlanceDetectorTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/GlanceDetectorTest.kt
+similarity index 100%
+rename from android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/motion/GlanceDetectorTest.kt
+rename to android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/GlanceDetectorTest.kt
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/motion/MotionClassifierTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifierTest.kt
+similarity index 100%
+rename from android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/motion/MotionClassifierTest.kt
+rename to android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/MotionClassifierTest.kt
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/motion/model/MotionModelTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/model/MotionModelTest.kt
+similarity index 100%
+rename from android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/motion/model/MotionModelTest.kt
+rename to android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/model/MotionModelTest.kt
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/motion/model/MotionModelTrainedTreeTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/model/MotionModelTrainedTreeTest.kt
+similarity index 100%
+rename from android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/motion/model/MotionModelTrainedTreeTest.kt
+rename to android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/motion/model/MotionModelTrainedTreeTest.kt
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/session/CameraPolicyTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/session/CameraPolicyTest.kt
+similarity index 100%
+rename from android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/session/CameraPolicyTest.kt
+rename to android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/session/CameraPolicyTest.kt
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/session/GlanceAdmissionTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/session/GlanceAdmissionTest.kt
+new file mode 100644
+index 00000000..672a5ce0
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/glasses/capture/session/GlanceAdmissionTest.kt
+@@ -0,0 +1,43 @@
++package com.rokid.context.glasses.capture.session
++
++import com.rokid.context.glasses.capture.motion.GlanceParams
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import com.rokid.context.glasses.capture.session.GlanceAdmission.Decision
++
++class GlanceAdmissionTest {
++    private val g = GlanceParams() // noveltyWindowMs 20 000, noveltyMinRad 0.30, bigTurnRad 0.8
++    private val cap = 2
++
++    /** The pre-extraction onDwell condition, verbatim (the reference the extract must equal). */
++    private fun reference(since: Long, k: Int, hard: Boolean, turned: Float, walked: Boolean): Decision =
++        if (since < g.noveltyWindowMs && turned < g.noveltyMinRad && !walked) Decision.NOVEL_SKIP
++        else if (k >= cap && (hard || turned < g.bigTurnRad && !walked) || k.toLong() >= 2L * cap) Decision.CAPPED
++        else Decision.OPEN
++
++    /** 64 cases: recent x turned (at the novelty edge, between, at the big-turn edge, above) x walked x hard cap x kept (at cap, at twice the cap). */
++    @Test fun matchesOnDwellTruthTable() {
++        var n = 0
++        for (since in listOf(5_000L, 30_000L)) for (turned in listOf(g.noveltyMinRad, 0.5f, g.bigTurnRad, 1.0f))
++            for (walked in listOf(false, true)) for (hard in listOf(false, true)) for (k in listOf(cap, 2 * cap)) {
++                assertEquals(reference(since, k, hard, turned, walked), GlanceAdmission.decide(since, k, cap, hard, turned, walked, g), "since=$since turned=$turned walked=$walked hard=$hard k=$k")
++                n++
++            }
++        assertEquals(64, n)
++    }
++
++    @Test fun noveltySkipsOnlyAStillRecentLookAndIsStrictAtTheEdges() {
++        assertEquals(Decision.NOVEL_SKIP, GlanceAdmission.decide(5_000, 0, cap, false, 0.1f, false, g))
++        assertEquals(Decision.OPEN, GlanceAdmission.decide(5_000, 0, cap, false, g.noveltyMinRad, false, g)) // turned == min is not novel-skipped
++        assertEquals(Decision.OPEN, GlanceAdmission.decide(g.noveltyWindowMs, 0, cap, false, 0.1f, false, g)) // window edge is open
++        assertEquals(Decision.OPEN, GlanceAdmission.decide(5_000, 0, cap, false, 0.1f, true, g)) // walked
++    }
++
++    @Test fun capRules() {
++        assertEquals(Decision.OPEN, GlanceAdmission.decide(30_000, cap - 1, cap, false, 0.1f, false, g))
++        assertEquals(Decision.CAPPED, GlanceAdmission.decide(30_000, cap, cap, false, 0.1f, false, g)) // small turn: no bonus
++        assertEquals(Decision.OPEN, GlanceAdmission.decide(30_000, cap, cap, false, 1.0f, false, g)) // big turn: the dwell bonus
++        assertEquals(Decision.CAPPED, GlanceAdmission.decide(30_000, cap, cap, true, 1.0f, false, g)) // hard cap: no bonus
++        assertEquals(Decision.CAPPED, GlanceAdmission.decide(30_000, 2 * cap, cap, false, 1.0f, false, g)) // twice the cap is final
++    }
++}
+diff --git a/android-companion/glasses/build.gradle.kts b/android-companion/glasses/build.gradle.kts
+index ede4ff63..b93a66bf 100644
+--- a/android-companion/glasses/build.gradle.kts
++++ b/android-companion/glasses/build.gradle.kts
+@@ -30,20 +30,21 @@ android {
+         sourceCompatibility = JavaVersion.VERSION_17
+         targetCompatibility = JavaVersion.VERSION_17
+     }
+     kotlinOptions { jvmTarget = "17" }
+     buildFeatures { compose = true; buildConfig = true }
+     testOptions { unitTests.isIncludeAndroidResources = true }
+ }
+ 
+ dependencies {
+     implementation(project(":core:model"))
++    implementation(project(":core:capture"))
+     implementation(project(":core:hud"))
+     implementation("com.rokid.cxr:cxr-service-bridge:1.5")
+     implementation("androidx.core:core-ktx:1.13.1")
+     implementation(platform("androidx.compose:compose-bom:2024.09.00"))
+     implementation("androidx.compose.foundation:foundation") // HUD is foundation-only: no Material components
+     implementation("androidx.activity:activity-compose:1.9.2")
+     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.5")
+     implementation("androidx.lifecycle:lifecycle-service:2.8.5")
+     implementation("androidx.datastore:datastore-preferences-core:1.1.1")
+     implementation("androidx.camera:camera-core:1.3.4")
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/keyframe/PrefsGateStore.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/keyframe/PrefsGateStore.kt
+new file mode 100644
+index 00000000..d6e783ec
+--- /dev/null
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/keyframe/PrefsGateStore.kt
+@@ -0,0 +1,26 @@
++package com.rokid.context.glasses.capture.keyframe
++
++import android.content.SharedPreferences
++
++/** [GateStore] over the "capture_guard" prefs (the ring is one string, oldest first). */
++class PrefsGateStore(private val prefs: SharedPreferences) : GateStore {
++    override fun lastKeyframes(): List<Pair<Long, Long>> =
++        (prefs.getString(KEY_RING, null) ?: "").split(',').mapNotNull { e ->
++            val parts = e.split(':')
++            if (parts.size != 2) null else runCatching { parts[0].toULong(16).toLong() to parts[1].toULong(16).toLong() }.getOrNull()
++        }.takeLast(RING)
++
++    override fun push(d: Long, p: Long) {
++        val next = (lastKeyframes() + (d to p)).takeLast(RING)
++        prefs.edit().putString(KEY_RING, next.joinToString(",") { "${it.first.toULong().toString(16)}:${it.second.toULong().toString(16)}" }).apply()
++    }
++
++    override fun lastKeptAt(): Long = prefs.getLong(KEY_LAST_KEPT_AT, 0L)
++    override fun setLastKeptAt(t: Long) { prefs.edit().putLong(KEY_LAST_KEPT_AT, t).apply() }
++
++    companion object {
++        const val RING = 5
++        private const val KEY_RING = "keyframe_ring"
++        private const val KEY_LAST_KEPT_AT = "last_kept_at"
++    }
++}
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/BatteryBudget.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/BatteryBudget.kt
+index 92c9ef69..4a9f6377 100644
+--- a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/BatteryBudget.kt
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/BatteryBudget.kt
+@@ -1,63 +1,15 @@
+ package com.rokid.context.glasses.capture.session
+ 
+-import com.rokid.context.core.model.CameraWake
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.StateFlow
+ 
+-enum class BudgetTier { T0, T1, T2, T3 }
+-
+-/** Capture cadences for a wake mode and budget tier (spec §6). Pure. */
+-data class CaptureProfile(
+-    val wake: CameraWake,
+-    val settledCheckMs: Long,
+-    val quietCheckMs: Long,
+-    val walkCheckMs: Long?,
+-    val analysisMs: Long,
+-    val paused: Boolean,
+-    /** A still scene backs the brief checks off (doubling) up to this gap; a changed scene, motion or a settle resets it. */
+-    val stillCapMs: Long = 60_000L,
+-) {
+-    /** The profile while resting (WorkRest on): glance captures only, timer checks at least 30 s apart, backing off to 2 min. */
+-    fun forRest(): CaptureProfile = copy(
+-        wake = CameraWake.SETTLE, settledCheckMs = maxOf(settledCheckMs, 30_000), quietCheckMs = maxOf(quietCheckMs, 60_000),
+-        walkCheckMs = maxOf(walkCheckMs ?: settledCheckMs, 30_000), stillCapMs = maxOf(stillCapMs, 120_000),
+-    )
+-
+-    /**
+-     * Wave B: applies a context policy on top (never shortens a gap, never turns pause off). An all-zero policy (UNKNOWN,
+-     * WALKING) returns an equal profile. Context and intent alone never pause capture (the policy table has no pause row).
+-     */
+-    fun withContext(p: com.rokid.context.core.model.context.ContextCapturePolicy): CaptureProfile = copy(
+-        wake = if (p.forceSettle) CameraWake.SETTLE else wake,
+-        settledCheckMs = maxOf(settledCheckMs, p.minSettledCheckMs),
+-        quietCheckMs = maxOf(quietCheckMs, p.minQuietCheckMs),
+-        walkCheckMs = if (p.minWalkCheckMs > 0) maxOf(walkCheckMs ?: settledCheckMs, p.minWalkCheckMs) else walkCheckMs,
+-        stillCapMs = maxOf(stillCapMs, p.minStillCapMs),
+-        paused = paused || p.pause,
+-    )
+-
+-    companion object {
+-        fun of(wake: CameraWake, tier: BudgetTier): CaptureProfile = when (tier) {
+-            BudgetTier.T0 -> when (wake) {
+-                CameraWake.MOTION -> CaptureProfile(CameraWake.MOTION, 5_000, 15_000, null, 333, false)
+-                CameraWake.SETTLE -> CaptureProfile(CameraWake.SETTLE, 10_000, 30_000, 10_000, 333, false)
+-            }
+-            BudgetTier.T1 -> CaptureProfile(CameraWake.SETTLE, 10_000, 30_000, 10_000, 333, false)
+-            BudgetTier.T2 -> CaptureProfile(CameraWake.SETTLE, 20_000, 60_000, 20_000, 666, false)
+-            BudgetTier.T3 -> CaptureProfile(CameraWake.SETTLE, 20_000, 60_000, 20_000, 666, true)
+-        }
+-
+-        val DEFAULT: CaptureProfile = of(CameraWake.MOTION, BudgetTier.T0)
+-    }
+-}
+-
+ /**
+  * Battery-life controller (spec §6): reacts to the measured drain against a target runtime.
+  * Not thread-safe; call [onSample] from one place (the supervisor, every 60 s).
+  */
+ class BatteryBudget(private val clock: () -> Long) {
+     private data class Sample(val atMs: Long, val pct: Int)
+ 
+     private val history = ArrayDeque<Sample>()
+     private val _tier = MutableStateFlow(BudgetTier.T0)
+     private var tierSinceMs: Long? = null
+diff --git a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/SamplingSession.kt b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/SamplingSession.kt
+index 40c3b930..d36dc5b4 100644
+--- a/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/SamplingSession.kt
++++ b/android-companion/glasses/src/main/java/com/rokid/context/glasses/capture/session/SamplingSession.kt
+@@ -257,27 +257,27 @@ class SamplingSession(
+ 
+     private fun onDwell() = synchronized(lock) {
+         val now = clock()
+         stillStepV = 0
+         // Spec A3 section 4: a glance opens the camera only when it can matter (free IMU tests, before any open).
+         val k = keptAt.count { now - it < 60_000L }
+         val turned = motion.rotationSinceMarkRad()
+         val walked = motion.walkedSinceMark()
+         val cc = contextCap()
+         val cap = capNow(cc)
+-        if (now - lastKeyframeAt < glance.noveltyWindowMs && turned < glance.noveltyMinRad && !walked) {
+-            novelSkipAccum++
+-        } else if (k >= cap && (hardNow(cc) || turned < glance.bigTurnRad && !walked) || k.toLong() >= 2L * cap) {
+-            cappedAccum++
+-        } else {
+-            pendingDwellAt = now
+-            kick.trySend(Unit)
++        when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glance)) {
++            GlanceAdmission.Decision.NOVEL_SKIP -> novelSkipAccum++
++            GlanceAdmission.Decision.CAPPED -> cappedAccum++
++            GlanceAdmission.Decision.OPEN -> {
++                pendingDwellAt = now
++                kick.trySend(Unit)
++            }
+         }
+         Unit
+     }
+ 
+     /** One policy evaluation. Returns how long the loop may sleep (a brief check can be due before the next 250 ms). */
+     private fun tick(): Long {
+         val now = clock()
+         wear.tick()
+         val s = settings()
+         val base = profile()
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/DecisionGoldenRecorder.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/DecisionGoldenRecorder.kt
+new file mode 100644
+index 00000000..e25f9432
+--- /dev/null
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/DecisionGoldenRecorder.kt
+@@ -0,0 +1,169 @@
++package com.rokid.context.glasses.capture.golden
++
++import com.rokid.context.core.model.context.ContextPolicies
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.glasses.capture.motion.GlanceParams
++import com.rokid.context.glasses.capture.session.CaptureProfile
++import com.rokid.context.glasses.capture.session.HeatLevel
++import com.rokid.context.glasses.capture.session.HeatPoller
++import com.rokid.context.glasses.capture.session.Rig
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.isActive
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.test.TestScope
++import kotlin.math.PI
++import kotlin.math.sin
++import kotlin.random.Random
++
++/**
++ * Test-only. Drives the real [com.rokid.context.glasses.capture.session.SamplingSession] (through the shared [Rig]) with a
++ * seeded script in SETTINGS mode (no plan: [ContextPolicies.DEFAULT] per scripted context state, applied the way
++ * CaptureService does) and renders one text line per observable decision: `t kind cause detail`.
++ *
++ * Nothing here touches production code: decisions are observed from the fake camera (open and close events), the keyframe sink,
++ * the session's own diagnostics counters (open causes, novelty / cap / same-scene skips, glances), the classifier's flows and
++ * the session status. The sensors and a 20 ms poll run on one coroutine, so the output is a pure function of the script.
++ */
++object DecisionGoldenRecorder {
++    private const val FEED_MS = 20L
++
++    /** Same rule as S83's `reservedBoundMs` (plan Task 4); redefined here because this task adds no main code. */
++    private fun reservedBoundMs(state: ContextState, resting: Boolean): Long =
++        if (state in setOf(ContextState.REST, ContextState.VEHICLE_PASSENGER, ContextState.VEHICLE_DRIVING, ContextState.FLIGHT) ||
++            (resting && state != ContextState.WALKING)) 300_000L else 60_000L
++
++    suspend fun record(test: TestScope, s: GoldenScript): String {
++        val plan = ScriptPlan().also { s.plan(Random(s.seed), it, s.durationMs) }
++        val r = Rig(test, s.settings, work = s.workMin, rest = s.restMin, glance = GlanceParams())
++        r.scene = 1
++        fun applyCtx(c: ContextState) {
++            val pol = ContextPolicies.of(c)
++            r.profile = CaptureProfile.of(r.settings.cameraWake, s.tier).withContext(pol)
++            r.contextCap = pol.capPerMin
++        }
++        applyCtx(ContextState.UNKNOWN)
++
++        // scheduled script actions, in time order (stable)
++        class Act(val at: Long, val run: () -> Unit)
++        val acts = ArrayList<Act>()
++        val out = StringBuilder()
++        val ctxTimeline = ArrayList<Pair<Long, ContextState>>().apply { add(0L to ContextState.UNKNOWN) }
++        val restTimeline = ArrayList<Pair<Long, Boolean>>().apply { add(0L to false) }
++        fun line(t: Long, kind: String, cause: String, detail: String) { out.append(t).append(' ').append(kind).append(' ').append(cause).append(' ').append(detail).append('\n') }
++        plan.ctx.forEach { (t, c) -> acts += Act(t) { applyCtx(c); ctxTimeline += t to c; line(t, "ctx", c.name, "-") } }
++        plan.heat.forEach { (t, h) -> acts += Act(t) { r.heatReading = h } }
++        plan.failOpens.forEach { (t, n) -> acts += Act(t) { r.camera.failOpens = n } }
++        plan.busy.forEach { (t, b) -> acts += Act(t) { r.camera.busyOpens = b } }
++        plan.captureNows.forEach { t -> acts += Act(t) { line(t, "now", "-", "accepted=${r.session.captureNow()}") } }
++        plan.turns.forEach { tn -> tn.scene?.let { sc -> acts += Act(tn.atMs) { r.scene = sc } } }
++        acts.sortBy { it.at } // stable: same-time actions keep insertion order
++        var actIdx = 0
++
++        val turns = plan.turns.sortedBy { it.atMs }
++        var turnIdx = 0
++        val noise = Random(s.seed xor 0x5DEECE66DL)
++        var motionInputs = 0L
++        val dwellAt = ArrayList<Long>()
++        val dwellOpenLatencies = ArrayList<Long>()
++        val okOpens = ArrayList<Long>()
++        val openCauses = ArrayList<Pair<Long, String>>()
++
++        test.backgroundScope.launch { r.motion.dwell.collect { dwellAt += r.clock(); line(r.clock(), "dwell", "-", "tMs=$it") } }
++
++        var evIdx = 0; var keepIdx = 0
++        val causeQueue = ArrayDeque<String>()
++        var analysedAtOpen = 0
++        var lastMotion = r.motion.state.value
++        var lastStatus = ""
++        var lastGap = -1L
++        var lastHeat = HeatLevel.OK
++        var lastResting = false
++        val poller = HeatPoller(r.heat, r.clock)
++
++        fun poll(t: Long) {
++            val d = r.session.diagSnapshot()
++            for ((k, v) in d.wakes) repeat(v) { causeQueue.addLast(k) }
++            while (evIdx < r.camera.events.size) {
++                val e = r.camera.events[evIdx++]
++                val at = e.substringAfter('@').toLong()
++                if (e.startsWith("open")) {
++                    val cause = causeQueue.removeFirstOrNull() ?: "?"
++                    val ok = r.camera.isOpen
++                    line(at, "open", cause, if (ok) "-" else "failed")
++                    analysedAtOpen = r.session.analysedFrames
++                    openCauses += at to cause
++                    if (ok) okOpens += at
++                    if (cause == "dwell") dwellAt.lastOrNull { it <= at }?.let { dwellOpenLatencies += at - it }
++                } else line(at, "close", "-", "analysed=${r.session.analysedFrames - analysedAtOpen}")
++            }
++            while (keepIdx < r.keyframes.size) {
++                val (at, k) = r.keyframes[keepIdx++]
++                line(at, "keep", if (k.dwell) "dwell" else "other", "scene=${com.rokid.context.glasses.capture.session.Scenes.sceneOf(k.jpeg)} motion=${k.motion} blur=${k.blur.toInt()}")
++            }
++            if (d.novelSkips > 0) line(t, "skip", "novel", "n=${d.novelSkips}")
++            if (d.capped > 0) line(t, "skip", "cap", "n=${d.capped}")
++            if (d.same > 0) line(t, "skip", "same", "n=${d.same}")
++            if (d.glances > 0 || d.micro > 0) line(t, "glance", "-", "g=${d.glances} micro=${d.micro}")
++            val ms = r.motion.state.value
++            if (ms != lastMotion) { lastMotion = ms; line(t, "motion", ms.name, "-") }
++            val st = r.session.status.value
++            val stKey = "running=${st.running} reason=${st.reason}"
++            if (stKey != lastStatus) { lastStatus = stKey; line(t, "status", "-", stKey) }
++            val resting = st.restingUntilMs != null
++            if (resting != lastResting) { lastResting = resting; restTimeline += t to resting; line(t, "rest", if (resting) "start" else "end", "-") }
++            val gap = r.session.stillGapMs()
++            if (gap != lastGap) { lastGap = gap; line(t, "gap", "-", "ms=$gap step=${r.session.stillStep}") }
++            val hl = r.heat.level.value
++            if (hl != lastHeat) { lastHeat = hl; line(t, "heat", hl.name, "-") }
++        }
++
++        // sensors (gyro + linear accel at 50 Hz, heat poll) and the decision poll share one coroutine
++        test.backgroundScope.launch {
++            while (isActive) {
++                val t = r.clock()
++                while (actIdx < acts.size && acts[actIdx].at <= t) acts[actIdx++].run()
++                while (turnIdx < turns.size && turns[turnIdx].atMs + turns[turnIdx].durMs <= t) turnIdx++
++                val z = if (turnIdx < turns.size && turns[turnIdx].atMs <= t) turns[turnIdx].rate else 0f
++                val walking = plan.walks.any { t in it }
++                val gx = (noise.nextFloat() - 0.5f) * 0.04f; val gy = (noise.nextFloat() - 0.5f) * 0.04f; val gz = (noise.nextFloat() - 0.5f) * 0.04f
++                r.motion.onGyro(gx, gy, gz + z, t); motionInputs++
++                val ax = (noise.nextFloat() - 0.5f) * 0.04f; val ay = (noise.nextFloat() - 0.5f) * 0.04f; val az = (noise.nextFloat() - 0.5f) * 0.04f
++                val w = if (walking) (2.0 * sin(2 * PI * 1.8 * t / 1000.0)).toFloat() else 0f
++                r.motion.onLinearAccel(ax, ay, az + w, t); motionInputs++
++                poller.tick()
++                poll(t)
++                delay(FEED_MS)
++            }
++        }
++        r.session.start()
++        delay(s.durationMs)
++        poll(r.clock())
++        r.session.stop("golden end")
++
++        // expectedResv: where the gap since the last successful open would exceed the S83 bound (a resv open would land there)
++        fun at(x: Long): Pair<ContextState, Boolean> =
++            (ctxTimeline.last { it.first <= x }.second) to (restTimeline.last { it.first <= x }.second)
++        val resv = ArrayList<Long>()
++        var last = 0L
++        val ends = okOpens + s.durationMs
++        for (o in ends) {
++            while (true) {
++                val (c, rs) = at(last)
++                val due = last + reservedBoundMs(c, rs)
++                if (due < o) { resv += due; last = due } else break
++            }
++            last = o
++        }
++
++        val sb = StringBuilder()
++        sb.append("# golden decisions v1 script=${s.name} seed=${s.seed} durationMs=${s.durationMs}\n")
++        sb.append("# settings wake=${s.settings.cameraWake} tier=${s.tier} workRest=${s.settings.workRestEnabled} work=${s.workMin} rest=${s.restMin} glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)\n")
++        sb.append("# line: t kind cause detail (t = virtual ms from session start)\n")
++        sb.append(out)
++        sb.append("# motionClassifierInputs=$motionInputs\n")
++        sb.append("# glanceTriggerToOpenLatencyMs=${dwellOpenLatencies.joinToString(",")}\n")
++        sb.append("# opens=${openCauses.size} ok=${okOpens.size} byCause=${openCauses.groupingBy { it.second }.eachCount().toSortedMap()} keeps=${r.keyframes.size}\n")
++        sb.append("# expectedResv=${resv.joinToString(",")}\n")
++        return sb.toString()
++    }
++}
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/DecisionGoldenTest.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/DecisionGoldenTest.kt
+new file mode 100644
+index 00000000..155a8dc1
+--- /dev/null
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/DecisionGoldenTest.kt
+@@ -0,0 +1,52 @@
++package com.rokid.context.glasses.capture.golden
++
++import kotlinx.coroutines.test.runTest
++import java.io.File
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertTrue
++import kotlin.time.Duration.Companion.minutes
++
++/**
++ * Frozen decisions of the unmodified pre-slice-3a capture code (settings mode). The files under `src/test/resources/golden`
++ * were recorded once from `s2/int`; the move-only refactor (Task 2) must reproduce them unchanged. To (re)record deliberately,
++ * run with `GOLDEN_RECORD=1` (never as part of a refactor).
++ */
++class DecisionGoldenTest {
++    private fun fileName(name: String) = "decisions-$name.txt"
++
++    private fun run(s: GoldenScript): String {
++        var text = ""
++        runTest(timeout = 5.minutes) { text = DecisionGoldenRecorder.record(this, s) }
++        return text
++    }
++
++    @Test fun goldensReproduce() {
++        val record = System.getenv("GOLDEN_RECORD") == "1"
++        for (s in GoldenScripts.all) {
++            val actual = run(s)
++            if (record) {
++                val dir = File("src/test/resources/golden").also { it.mkdirs() }
++                File(dir, fileName(s.name)).writeText(actual)
++                continue
++            }
++            val stream = javaClass.getResourceAsStream("/golden/${fileName(s.name)}")
++            assertTrue(stream != null, "missing golden ${fileName(s.name)}")
++            val expected = stream.bufferedReader().use { it.readText() }
++            assertEquals(expected, actual, "golden mismatch for ${s.name}")
++        }
++    }
++
++    @Test fun recordingIsDeterministic() {
++        for (s in listOf(GoldenScripts.unknownWalk, GoldenScripts.bindBackoff)) assertEquals(run(s), run(s), s.name)
++    }
++
++    @Test fun goldensCoverTheDecisionKinds() {
++        val all = GoldenScripts.all.joinToString("\n") { s ->
++            javaClass.getResourceAsStream("/golden/${fileName(s.name)}")!!.bufferedReader().use { it.readText() }
++        }
++        for (k in listOf(" open timer ", " open dwell ", " keep ", " skip same ", " glance ", " gap ", " close ", " now ", " heat SLOW", " rest start", " open timer failed")) {
++            assertTrue(all.contains(k), "no '$k' line in any golden")
++        }
++    }
++}
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/GoldenScripts.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/GoldenScripts.kt
+new file mode 100644
+index 00000000..f02f9ee0
+--- /dev/null
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/GoldenScripts.kt
+@@ -0,0 +1,135 @@
++package com.rokid.context.glasses.capture.golden
++
++import com.rokid.context.core.model.CameraWake
++import com.rokid.context.core.model.CaptureMode
++import com.rokid.context.core.model.HudSettings
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.glasses.capture.session.BudgetTier
++import com.rokid.context.glasses.capture.session.HeatReading
++import kotlin.random.Random
++
++/** A scripted head turn: rotation [rate] rad/s about the vertical axis for [durMs] from [atMs]; [scene] is shown from its start. */
++class Turn(val atMs: Long, val durMs: Long, val rate: Float, val scene: Int?)
++
++/** Everything a script feeds the real session. All times are virtual ms from session start. */
++class ScriptPlan {
++    val turns = ArrayList<Turn>()
++    val walks = ArrayList<LongRange>()
++    val ctx = ArrayList<Pair<Long, ContextState>>()
++    val heat = ArrayList<Pair<Long, HeatReading>>()
++    val failOpens = ArrayList<Pair<Long, Int>>()
++    val busy = ArrayList<Pair<Long, Boolean>>()
++    val captureNows = ArrayList<Long>()
++}
++
++/** A seeded script. [plan] must be a pure function of its [Random]. */
++class GoldenScript(
++    val name: String,
++    val seed: Long,
++    val durationMs: Long,
++    val settings: HudSettings,
++    val tier: BudgetTier,
++    val workMin: Int = 90,
++    val restMin: Int = 15,
++    val plan: (Random, ScriptPlan, Long) -> Unit,
++)
++
++object GoldenScripts {
++    private const val MIN = 60_000L
++
++    /** Glances (a turn of 0.4-1.2 s at 1-2 rad/s, usually onto a new scene) every [gapMin]..[gapMax] ms between [from] and [to]. */
++    private fun glances(r: Random, p: ScriptPlan, from: Long, to: Long, gapMin: Long, gapMax: Long, newSceneOdds: Int = 80) {
++        var t = from
++        while (t < to) {
++            val scene = if (r.nextInt(100) < newSceneOdds) 1 + r.nextInt(5000) else null
++            p.turns += Turn(t, 400L + r.nextInt(800), 1.0f + r.nextFloat(), scene)
++            t += gapMin + (r.nextLong(gapMax - gapMin + 1))
++        }
++    }
++
++    private fun walkSpell(r: Random, p: ScriptPlan, from: Long, lenMs: Long) {
++        p.walks += from until from + lenMs
++        glances(r, p, from + 10_000, from + lenMs, 12_000, 40_000, 60)
++    }
++
++    val unknownWalk = GoldenScript(
++        "unknown_walk_20min", 11L, 20 * MIN, HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.MOTION), BudgetTier.T0,
++    ) { r, p, d ->
++        p.ctx += 0L to ContextState.UNKNOWN
++        var t = 5_000L
++        while (t < d) {
++            val len = 60_000L + r.nextLong(90_000)
++            if (r.nextBoolean()) { walkSpell(r, p, t, minOf(len, d - t)) }
++            else glances(r, p, t, minOf(t + len, d), 15_000, 60_000)
++            t += len + 10_000
++        }
++    }
++
++    val restStill = GoldenScript(
++        "rest_still_30min", 22L, 30 * MIN, HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.SETTLE), BudgetTier.T0,
++    ) { r, p, d ->
++        p.ctx += 0L to ContextState.REST
++        glances(r, p, 20_000, d, 40_000, 120_000, 50)
++    }
++
++    val flightSettings = GoldenScript(
++        "flight_settings_20min", 33L, 20 * MIN, HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.SETTLE), BudgetTier.T0,
++    ) { r, p, d ->
++        p.ctx += 0L to ContextState.UNKNOWN
++        p.ctx += 3 * MIN to ContextState.FLIGHT
++        p.ctx += 17 * MIN to ContextState.UNKNOWN
++        glances(r, p, 10_000, d, 30_000, 90_000, 60)
++    }
++
++    val workRestRest = GoldenScript(
++        "workrest_rest_30min", 44L, 30 * MIN,
++        HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.SETTLE, workRestEnabled = true), BudgetTier.T0,
++        workMin = 5, restMin = 10,
++    ) { r, p, d ->
++        p.ctx += 0L to ContextState.UNKNOWN
++        glances(r, p, 10_000, d, 20_000, 60_000, 70)
++    }
++
++    val budgetT2 = GoldenScript(
++        "budget_t2_20min", 55L, 20 * MIN, HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.SETTLE), BudgetTier.T2,
++    ) { r, p, d ->
++        p.ctx += 0L to ContextState.UNKNOWN
++        glances(r, p, 8_000, 8 * MIN, 12_000, 45_000, 70)
++        walkSpell(r, p, 8 * MIN + 5_000, 90_000)
++        glances(r, p, 11 * MIN, d, 20_000, 90_000, 70)
++    }
++
++    val heatSlow = GoldenScript(
++        "heat_slow_10min", 66L, 10 * MIN, HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.SETTLE), BudgetTier.T0,
++    ) { r, p, d ->
++        p.ctx += 0L to ContextState.UNKNOWN
++        p.heat += 0L to HeatReading(0, Float.NaN, 30f)
++        p.heat += 60_000L to HeatReading(0, Float.NaN, 41f)
++        p.heat += 8 * MIN to HeatReading(0, Float.NaN, 30f)
++        glances(r, p, 5_000, d, 15_000, 50_000, 70)
++    }
++
++    val bindBackoff = GoldenScript(
++        "bind_backoff_10min", 77L, 10 * MIN, HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.SETTLE), BudgetTier.T0,
++    ) { r, p, d ->
++        p.ctx += 0L to ContextState.UNKNOWN
++        p.failOpens += 0L to 1            // the cold-start grace
++        p.failOpens += 2 * MIN to 2       // two real bind failures (never the 3 that latch the Fixed fallback)
++        p.failOpens += 5 * MIN to 2
++        p.busy += 7 * MIN to true         // another app holds the camera
++        p.busy += 7 * MIN + 70_000L to false
++        glances(r, p, 5_000, d, 15_000, 50_000, 80)
++    }
++
++    val captureNowMix = GoldenScript(
++        "capture_now_mix_10min", 88L, 10 * MIN, HudSettings(captureMode = CaptureMode.SMART, cameraWake = CameraWake.MOTION), BudgetTier.T0,
++    ) { r, p, d ->
++        p.ctx += 0L to ContextState.UNKNOWN
++        glances(r, p, 5_000, 4 * MIN, 15_000, 45_000, 70)
++        walkSpell(r, p, 4 * MIN + 5_000, 100_000)
++        glances(r, p, 6 * MIN + 20_000, d, 20_000, 60_000, 70)
++        for (at in listOf(20_000L, 21_500L, 95_000L, 150_000L, 4 * MIN + 40_000, 5 * MIN, 8 * MIN + 3_000)) p.captureNows += at
++    }
++
++    val all = listOf(unknownWalk, restStill, flightSettings, workRestRest, budgetT2, heatSlow, bindBackoff, captureNowMix)
++}
+diff --git a/android-companion/glasses/src/test/resources/golden/decisions-bind_backoff_10min.txt b/android-companion/glasses/src/test/resources/golden/decisions-bind_backoff_10min.txt
+new file mode 100644
+index 00000000..39214837
+--- /dev/null
++++ b/android-companion/glasses/src/test/resources/golden/decisions-bind_backoff_10min.txt
+@@ -0,0 +1,263 @@
++# golden decisions v1 script=bind_backoff_10min seed=77 durationMs=600000
++# settings wake=SETTLE tier=T0 workRest=false work=90 rest=15 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
++# line: t kind cause detail (t = virtual ms from session start)
++0 ctx UNKNOWN -
++0 status - running=false reason=idle
++0 gap - ms=5000 step=0
++0 open timer failed
++20 status - running=true reason=null
++20 gap - ms=10000 step=0
++500 open timer -
++1035 close - analysed=1
++1035 keep other scene=1 motion=STILL blur=4835
++5000 motion HEAD_MOVING -
++5900 motion STILL -
++7140 glance - g=1 micro=0
++7140 dwell - tMs=7140
++7140 open dwell -
++7675 close - analysed=1
++7675 keep dwell scene=2702 motion=STILL blur=4836
++17140 open timer -
++17675 close - analysed=1
++17680 skip same n=1
++17680 gap - ms=20000 step=1
++37140 open timer -
++37675 close - analysed=1
++37680 skip same n=1
++37680 gap - ms=40000 step=2
++41280 motion HEAD_MOVING -
++42480 motion STILL -
++43720 glance - g=1 micro=0
++43720 dwell - tMs=43720
++43720 open dwell -
++43740 gap - ms=10000 step=0
++44255 close - analysed=1
++44255 keep dwell scene=1985 motion=STILL blur=4787
++61035 open timer -
++61570 close - analysed=1
++61580 skip same n=1
++61580 gap - ms=20000 step=1
++70300 motion HEAD_MOVING -
++71240 motion STILL -
++72480 glance - g=1 micro=0
++72480 dwell - tMs=72480
++72480 open dwell -
++72500 gap - ms=10000 step=0
++73015 close - analysed=1
++73015 keep dwell scene=4854 motion=STILL blur=4751
++82480 open timer -
++83015 close - analysed=1
++83020 skip same n=1
++83020 gap - ms=20000 step=1
++102480 open timer -
++103015 close - analysed=1
++103020 skip same n=1
++103020 gap - ms=40000 step=2
++103060 motion HEAD_MOVING -
++104280 motion STILL -
++105520 glance - g=1 micro=0
++105520 dwell - tMs=105520
++105520 open dwell -
++105540 gap - ms=10000 step=0
++106055 close - analysed=1
++106055 keep dwell scene=1167 motion=STILL blur=4579
++115520 open timer -
++116055 close - analysed=1
++116060 skip same n=1
++116060 gap - ms=20000 step=1
++132720 motion HEAD_MOVING -
++134160 motion STILL -
++135400 glance - g=1 micro=0
++135400 dwell - tMs=135400
++135400 open dwell failed
++135420 gap - ms=10000 step=0
++136400 open dwell failed
++137400 open dwell -
++137935 close - analysed=1
++137935 keep dwell scene=1841 motion=STILL blur=4284
++147400 open timer -
++147935 close - analysed=1
++147940 skip same n=1
++147940 gap - ms=20000 step=1
++148560 motion HEAD_MOVING -
++149220 motion STILL -
++150460 glance - g=1 micro=0
++150460 dwell - tMs=150460
++150460 open dwell -
++150480 gap - ms=10000 step=0
++150995 close - analysed=1
++150995 keep dwell scene=3551 motion=STILL blur=4425
++166055 open timer -
++166590 close - analysed=1
++166600 skip same n=1
++166600 gap - ms=20000 step=1
++185900 motion HEAD_MOVING -
++187080 motion STILL -
++187080 open timer -
++187615 close - analysed=1
++187615 keep other scene=2776 motion=STILL blur=4995
++187620 gap - ms=10000 step=0
++188320 glance - g=1 micro=0
++188320 dwell - tMs=188320
++188340 skip novel n=1
++197935 open timer -
++198470 close - analysed=1
++198480 skip same n=1
++198480 gap - ms=20000 step=1
++217935 open timer -
++218470 close - analysed=1
++218480 skip same n=1
++218480 gap - ms=40000 step=2
++220440 motion HEAD_MOVING -
++221540 motion STILL -
++222780 glance - g=1 micro=0
++222780 dwell - tMs=222780
++222780 open dwell -
++222800 gap - ms=10000 step=0
++223315 close - analysed=1
++223315 keep dwell scene=4965 motion=STILL blur=4734
++232780 open timer -
++233315 close - analysed=1
++233320 skip same n=1
++233320 gap - ms=20000 step=1
++248300 motion HEAD_MOVING -
++249720 motion STILL -
++250960 glance - g=1 micro=0
++250960 dwell - tMs=250960
++250960 open dwell -
++250980 gap - ms=10000 step=0
++251495 close - analysed=1
++251495 keep dwell scene=3856 motion=STILL blur=4948
++260960 open timer -
++261495 close - analysed=1
++261500 skip same n=1
++261500 gap - ms=20000 step=1
++274660 motion HEAD_MOVING -
++275720 motion STILL -
++276960 glance - g=1 micro=0
++276960 dwell - tMs=276960
++276960 open dwell -
++276980 gap - ms=10000 step=0
++277495 close - analysed=1
++277495 keep dwell scene=2596 motion=STILL blur=4913
++286960 open timer -
++287495 close - analysed=1
++287500 skip same n=1
++287500 gap - ms=20000 step=1
++292360 motion HEAD_MOVING -
++293520 motion STILL -
++294760 glance - g=1 micro=0
++294760 dwell - tMs=294760
++294760 open dwell -
++294780 gap - ms=10000 step=0
++295295 close - analysed=1
++295295 keep dwell scene=4837 motion=STILL blur=5125
++311495 open timer failed
++312495 open timer failed
++313495 open timer -
++314030 close - analysed=1
++314040 skip same n=1
++314040 gap - ms=20000 step=1
++333495 open timer -
++334030 close - analysed=1
++334040 skip same n=1
++334040 gap - ms=40000 step=2
++334360 motion HEAD_MOVING -
++335460 motion STILL -
++336700 glance - g=1 micro=0
++336700 dwell - tMs=336700
++336700 open dwell -
++336720 gap - ms=10000 step=0
++337235 close - analysed=1
++337235 keep dwell scene=863 motion=STILL blur=4026
++346700 open timer -
++347235 close - analysed=1
++347240 skip same n=1
++347240 gap - ms=20000 step=1
++350420 motion HEAD_MOVING -
++351420 motion STILL -
++352660 glance - g=1 micro=0
++352660 dwell - tMs=352660
++352660 open dwell -
++352680 gap - ms=10000 step=0
++353195 close - analysed=1
++353195 keep dwell scene=860 motion=STILL blur=4008
++362660 open timer -
++363195 close - analysed=1
++363200 skip same n=1
++363200 gap - ms=20000 step=1
++382660 open timer -
++383195 close - analysed=1
++383200 skip same n=1
++383200 gap - ms=40000 step=2
++393300 motion HEAD_MOVING -
++393940 motion STILL -
++395180 glance - g=1 micro=0
++395180 dwell - tMs=395180
++395180 open dwell -
++395200 gap - ms=10000 step=0
++395715 close - analysed=1
++395715 keep dwell scene=361 motion=STILL blur=4188
++405180 open timer -
++405715 close - analysed=1
++405720 skip same n=1
++405720 gap - ms=20000 step=1
++425180 open timer failed
++442260 motion HEAD_MOVING -
++443640 motion STILL -
++444880 glance - g=1 micro=0
++444880 dwell - tMs=444880
++444900 gap - ms=10000 step=0
++455380 open timer failed
++469060 motion HEAD_MOVING -
++470040 motion STILL -
++471280 glance - g=1 micro=0
++471280 dwell - tMs=471280
++485530 open timer failed
++490000 motion HEAD_MOVING -
++491200 motion STILL -
++492440 glance - g=1 micro=0
++492440 dwell - tMs=492440
++511400 motion HEAD_MOVING -
++512140 motion STILL -
++513380 glance - g=1 micro=0
++513380 dwell - tMs=513380
++515630 open dwell -
++516165 close - analysed=1
++516165 keep dwell scene=4204 motion=STILL blur=4208
++525630 open timer -
++526165 close - analysed=1
++526180 skip same n=1
++526180 gap - ms=20000 step=1
++545630 open timer -
++546165 close - analysed=1
++546180 skip same n=1
++546180 gap - ms=40000 step=2
++548720 motion HEAD_MOVING -
++549380 motion STILL -
++550620 glance - g=1 micro=0
++550620 dwell - tMs=550620
++550620 open dwell -
++550640 gap - ms=10000 step=0
++551155 close - analysed=1
++551160 skip same n=1
++560620 open timer -
++561155 close - analysed=1
++561160 skip same n=1
++561160 gap - ms=20000 step=1
++580620 open timer -
++581155 close - analysed=1
++581160 skip same n=1
++581160 gap - ms=40000 step=2
++590400 motion HEAD_MOVING -
++591040 motion STILL -
++592280 glance - g=1 micro=0
++592280 dwell - tMs=592280
++592280 open dwell -
++592300 gap - ms=10000 step=0
++592815 close - analysed=1
++592820 skip same n=1
++# motionClassifierInputs=60000
++# glanceTriggerToOpenLatencyMs=0,0,0,0,0,1000,2000,0,0,0,0,0,0,0,0,2250,0,0
++# opens=49 ok=41 byCause={dwell=18, timer=31} keeps=16
++# expectedResv=465180
+diff --git a/android-companion/glasses/src/test/resources/golden/decisions-budget_t2_20min.txt b/android-companion/glasses/src/test/resources/golden/decisions-budget_t2_20min.txt
+new file mode 100644
+index 00000000..3d36ec4e
+--- /dev/null
++++ b/android-companion/glasses/src/test/resources/golden/decisions-budget_t2_20min.txt
+@@ -0,0 +1,344 @@
++# golden decisions v1 script=budget_t2_20min seed=55 durationMs=1200000
++# settings wake=SETTLE tier=T2 workRest=false work=90 rest=15 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
++# line: t kind cause detail (t = virtual ms from session start)
++0 ctx UNKNOWN -
++0 status - running=false reason=idle
++0 gap - ms=5000 step=0
++0 open timer -
++20 status - running=true reason=null
++20 gap - ms=20000 step=0
++535 close - analysed=1
++535 keep other scene=1 motion=STILL blur=4835
++8000 motion HEAD_MOVING -
++8860 motion STILL -
++10100 glance - g=1 micro=0
++10100 dwell - tMs=10100
++10100 open dwell -
++10635 close - analysed=1
++10635 keep dwell scene=2989 motion=STILL blur=3761
++26860 motion HEAD_MOVING -
++28240 motion STILL -
++29480 glance - g=1 micro=0
++29480 dwell - tMs=29480
++29480 open dwell -
++30015 close - analysed=1
++30015 keep dwell scene=3286 motion=STILL blur=4283
++60535 open timer -
++61070 close - analysed=1
++61080 skip same n=1
++61080 gap - ms=40000 step=1
++61620 motion HEAD_MOVING -
++62700 motion STILL -
++63940 glance - g=1 micro=0
++63940 dwell - tMs=63940
++63940 open dwell -
++63960 gap - ms=20000 step=0
++64475 close - analysed=1
++64475 keep dwell scene=661 motion=STILL blur=5141
++78920 motion HEAD_MOVING -
++79740 motion STILL -
++80980 glance - g=1 micro=0
++80980 dwell - tMs=80980
++80980 open dwell -
++81515 close - analysed=1
++81520 skip same n=1
++100980 open timer -
++101515 close - analysed=1
++101520 skip same n=1
++101520 gap - ms=40000 step=1
++119900 motion HEAD_MOVING -
++121240 motion STILL -
++122480 glance - g=1 micro=0
++122480 dwell - tMs=122480
++122480 open dwell -
++122500 gap - ms=20000 step=0
++123015 close - analysed=1
++123020 skip same n=1
++132160 motion HEAD_MOVING -
++133060 motion STILL -
++134300 glance - g=1 micro=0
++134300 dwell - tMs=134300
++134300 open dwell -
++134835 close - analysed=1
++134835 keep dwell scene=1444 motion=STILL blur=5383
++154300 open timer -
++154835 close - analysed=1
++154840 skip same n=1
++154840 gap - ms=40000 step=1
++173960 motion HEAD_MOVING -
++175100 motion STILL -
++176340 glance - g=1 micro=0
++176340 dwell - tMs=176340
++176340 open dwell -
++176360 gap - ms=20000 step=0
++176875 close - analysed=1
++176875 keep dwell scene=3123 motion=STILL blur=4446
++196340 open timer -
++196875 close - analysed=1
++196880 skip same n=1
++196880 gap - ms=40000 step=1
++211560 motion HEAD_MOVING -
++212660 motion STILL -
++213900 glance - g=1 micro=0
++213900 dwell - tMs=213900
++213900 open dwell -
++213920 gap - ms=20000 step=0
++214435 close - analysed=1
++214435 keep dwell scene=3889 motion=STILL blur=4658
++233900 open timer -
++234435 close - analysed=1
++234440 skip same n=1
++234440 gap - ms=40000 step=1
++253020 motion HEAD_MOVING -
++254180 motion STILL -
++255420 glance - g=1 micro=0
++255420 dwell - tMs=255420
++255420 open dwell -
++255440 gap - ms=20000 step=0
++255955 close - analysed=1
++255955 keep dwell scene=736 motion=STILL blur=4892
++275420 open timer -
++275955 close - analysed=1
++275960 skip same n=1
++275960 gap - ms=40000 step=1
++279160 motion HEAD_MOVING -
++280220 motion STILL -
++281460 glance - g=1 micro=0
++281460 dwell - tMs=281460
++281460 open dwell -
++281480 gap - ms=20000 step=0
++281995 close - analysed=1
++281995 keep dwell scene=1035 motion=STILL blur=3648
++301460 open timer -
++301995 close - analysed=1
++302000 skip same n=1
++302000 gap - ms=40000 step=1
++316460 motion HEAD_MOVING -
++317880 motion STILL -
++319120 glance - g=1 micro=0
++319120 dwell - tMs=319120
++319120 open dwell -
++319140 gap - ms=20000 step=0
++319655 close - analysed=1
++319655 keep dwell scene=588 motion=STILL blur=4121
++339120 open timer -
++339655 close - analysed=1
++339660 skip same n=1
++339660 gap - ms=40000 step=1
++343060 motion HEAD_MOVING -
++344420 motion STILL -
++345660 glance - g=1 micro=0
++345660 dwell - tMs=345660
++345660 open dwell -
++345680 gap - ms=20000 step=0
++346195 close - analysed=1
++346195 keep dwell scene=419 motion=STILL blur=5333
++365660 open timer -
++366195 close - analysed=1
++366200 skip same n=1
++366200 gap - ms=40000 step=1
++387280 motion HEAD_MOVING -
++387940 motion STILL -
++389180 glance - g=1 micro=0
++389180 dwell - tMs=389180
++389180 open dwell -
++389200 gap - ms=20000 step=0
++389715 close - analysed=1
++389720 skip same n=1
++409180 open timer -
++409715 close - analysed=1
++409720 skip same n=1
++409720 gap - ms=40000 step=1
++411880 motion HEAD_MOVING -
++412620 motion STILL -
++413860 glance - g=1 micro=0
++413860 dwell - tMs=413860
++413860 open dwell -
++413880 gap - ms=20000 step=0
++414395 close - analysed=1
++414395 keep dwell scene=4008 motion=STILL blur=4855
++430440 motion HEAD_MOVING -
++431600 motion STILL -
++432840 glance - g=1 micro=0
++432840 dwell - tMs=432840
++432840 open dwell -
++433375 close - analysed=1
++433375 keep dwell scene=1730 motion=STILL blur=4567
++452840 open timer -
++453375 close - analysed=1
++453380 skip same n=1
++453380 gap - ms=40000 step=1
++475080 motion HEAD_MOVING -
++476280 motion STILL -
++477520 glance - g=1 micro=0
++477520 dwell - tMs=477520
++477520 open dwell -
++477540 gap - ms=20000 step=0
++478055 close - analysed=1
++478055 keep dwell scene=3346 motion=STILL blur=3946
++485600 motion WALKING -
++497520 open timer -
++498055 close - analysed=1
++498060 skip same n=1
++517520 open timer -
++518055 close - analysed=1
++518055 keep other scene=2808 motion=WALKING blur=5197
++537520 open timer -
++538055 close - analysed=1
++538055 keep other scene=3353 motion=WALKING blur=4082
++557520 open timer -
++558055 close - analysed=1
++558060 skip same n=1
++575920 motion STILL -
++577400 glance - g=1 micro=0
++577400 dwell - tMs=577400
++577400 open dwell -
++577935 close - analysed=1
++577935 keep dwell scene=1165 motion=STILL blur=4145
++597400 open timer -
++597935 close - analysed=1
++597940 skip same n=1
++597940 gap - ms=40000 step=1
++637400 open timer -
++637935 close - analysed=1
++637940 skip same n=1
++637940 gap - ms=60000 step=2
++660000 motion HEAD_MOVING -
++660900 motion STILL -
++662140 glance - g=1 micro=0
++662140 dwell - tMs=662140
++662140 open dwell -
++662160 gap - ms=20000 step=0
++662675 close - analysed=1
++662675 keep dwell scene=4030 motion=STILL blur=5046
++682140 open timer -
++682675 close - analysed=1
++682680 skip same n=1
++682680 gap - ms=40000 step=1
++707540 motion HEAD_MOVING -
++708700 motion STILL -
++709940 glance - g=1 micro=0
++709940 dwell - tMs=709940
++709940 open dwell -
++709960 gap - ms=20000 step=0
++710475 close - analysed=1
++710480 skip same n=1
++729940 open timer -
++730475 close - analysed=1
++730480 skip same n=1
++730480 gap - ms=40000 step=1
++765140 motion HEAD_MOVING -
++766440 motion STILL -
++767680 glance - g=1 micro=0
++767680 dwell - tMs=767680
++767680 open dwell -
++767700 gap - ms=20000 step=0
++768215 close - analysed=1
++768215 keep dwell scene=16 motion=STILL blur=4284
++786120 motion HEAD_MOVING -
++786880 motion STILL -
++787680 open timer -
++788120 glance - g=1 micro=0
++788120 dwell - tMs=788120
++788215 close - analysed=1
++788215 keep dwell scene=4767 motion=STILL blur=4504
++807680 open timer -
++808215 close - analysed=1
++808220 skip same n=1
++808220 gap - ms=40000 step=1
++847680 open timer -
++848215 close - analysed=1
++848220 skip same n=1
++848220 gap - ms=60000 step=2
++849680 motion HEAD_MOVING -
++850940 motion STILL -
++852180 glance - g=1 micro=0
++852180 dwell - tMs=852180
++852180 open dwell -
++852200 gap - ms=20000 step=0
++852715 close - analysed=1
++852720 skip same n=1
++872180 open timer -
++872715 close - analysed=1
++872720 skip same n=1
++872720 gap - ms=40000 step=1
++912180 open timer -
++912715 close - analysed=1
++912720 skip same n=1
++912720 gap - ms=60000 step=2
++915040 motion HEAD_MOVING -
++915920 motion STILL -
++917160 glance - g=1 micro=0
++917160 dwell - tMs=917160
++917160 open dwell -
++917180 gap - ms=20000 step=0
++917695 close - analysed=1
++917695 keep dwell scene=1849 motion=STILL blur=4878
++937160 open timer -
++937695 close - analysed=1
++937700 skip same n=1
++937700 gap - ms=40000 step=1
++940120 motion HEAD_MOVING -
++941040 motion STILL -
++942280 glance - g=1 micro=0
++942280 dwell - tMs=942280
++942280 open dwell -
++942300 gap - ms=20000 step=0
++942815 close - analysed=1
++942815 keep dwell scene=1605 motion=STILL blur=4817
++962280 open timer -
++962815 close - analysed=1
++962820 skip same n=1
++962820 gap - ms=40000 step=1
++1002280 open timer -
++1002815 close - analysed=1
++1002820 skip same n=1
++1002820 gap - ms=60000 step=2
++1009340 motion HEAD_MOVING -
++1010420 motion STILL -
++1011660 glance - g=1 micro=0
++1011660 dwell - tMs=1011660
++1011660 open dwell -
++1011680 gap - ms=20000 step=0
++1012195 close - analysed=1
++1012200 skip same n=1
++1031660 open timer -
++1032195 close - analysed=1
++1032200 skip same n=1
++1032200 gap - ms=40000 step=1
++1071660 open timer -
++1072195 close - analysed=1
++1072200 skip same n=1
++1072200 gap - ms=60000 step=2
++1081920 motion HEAD_MOVING -
++1083220 motion STILL -
++1084460 glance - g=1 micro=0
++1084460 dwell - tMs=1084460
++1084460 open dwell -
++1084480 gap - ms=20000 step=0
++1084995 close - analysed=1
++1084995 keep dwell scene=1910 motion=STILL blur=4766
++1104460 open timer -
++1104995 close - analysed=1
++1105000 skip same n=1
++1105000 gap - ms=40000 step=1
++1134460 motion HEAD_MOVING -
++1135760 motion STILL -
++1137000 glance - g=1 micro=0
++1137000 dwell - tMs=1137000
++1137000 open dwell -
++1137020 gap - ms=20000 step=0
++1137535 close - analysed=1
++1137535 keep dwell scene=1793 motion=STILL blur=4749
++1157000 open timer -
++1157535 close - analysed=1
++1157540 skip same n=1
++1157540 gap - ms=40000 step=1
++1197000 open timer -
++1197535 close - analysed=1
++1197540 skip same n=1
++1197540 gap - ms=60000 step=2
++# motionClassifierInputs=120000
++# glanceTriggerToOpenLatencyMs=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
++# opens=59 ok=59 byCause={dwell=26, timer=33} keeps=24
++# expectedResv=
+diff --git a/android-companion/glasses/src/test/resources/golden/decisions-capture_now_mix_10min.txt b/android-companion/glasses/src/test/resources/golden/decisions-capture_now_mix_10min.txt
+new file mode 100644
+index 00000000..10bf7252
+--- /dev/null
++++ b/android-companion/glasses/src/test/resources/golden/decisions-capture_now_mix_10min.txt
+@@ -0,0 +1,465 @@
++# golden decisions v1 script=capture_now_mix_10min seed=88 durationMs=600000
++# settings wake=MOTION tier=T0 workRest=false work=90 rest=15 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
++# line: t kind cause detail (t = virtual ms from session start)
++0 ctx UNKNOWN -
++0 status - running=false reason=idle
++0 gap - ms=5000 step=0
++0 open timer -
++20 status - running=true reason=null
++535 close - analysed=1
++535 keep other scene=1 motion=STILL blur=4835
++5000 motion HEAD_MOVING -
++5000 open stream -
++6040 motion STILL -
++6255 keep other scene=549 motion=STILL blur=4700
++7280 glance - g=1 micro=0
++7280 dwell - tMs=7280
++7300 skip novel n=1
++7700 skip same n=1
++8060 skip same n=1
++8420 skip same n=1
++8780 skip same n=1
++9140 skip same n=1
++9500 skip same n=1
++9860 skip same n=1
++10040 close - analysed=13
++14505 open timer -
++15040 skip same n=1
++15040 close - analysed=1
++19505 open timer -
++20000 now - accepted=true
++20040 keep other scene=549 motion=STILL blur=4700
++20040 close - analysed=1
++21500 now - accepted=true
++21500 open now -
++22035 close - analysed=1
++22035 keep other scene=549 motion=STILL blur=4700
++46000 motion HEAD_MOVING -
++46000 open stream -
++47100 motion STILL -
++47260 skip same n=2
++47620 skip same n=1
++47980 skip same n=1
++48340 skip same n=1
++48340 glance - g=1 micro=0
++48340 dwell - tMs=48340
++48460 skip same n=1
++48820 skip same n=1
++49180 skip same n=1
++49540 skip same n=1
++49900 skip same n=1
++50260 skip same n=1
++50620 skip same n=1
++50980 skip same n=1
++51340 skip same n=1
++51340 close - analysed=15
++66255 open timer -
++66790 close - analysed=1
++66800 skip same n=1
++71255 open timer -
++71790 close - analysed=1
++71800 skip same n=1
++71800 gap - ms=10000 step=1
++81255 open timer -
++81790 close - analysed=1
++81800 skip same n=1
++81800 gap - ms=20000 step=2
++85960 motion HEAD_MOVING -
++85960 open stream -
++85980 gap - ms=5000 step=0
++87140 motion STILL -
++87215 keep other scene=512 motion=HEAD_MOVING blur=4580
++88380 glance - g=1 micro=0
++88380 dwell - tMs=88380
++88400 skip novel n=1
++88660 skip same n=1
++89020 skip same n=1
++89380 skip same n=1
++89740 skip same n=1
++90100 skip same n=1
++90460 skip same n=1
++90820 skip same n=1
++91140 close - analysed=13
++95000 now - accepted=true
++95000 open now -
++95535 close - analysed=1
++95535 keep other scene=512 motion=STILL blur=4580
++100000 open timer -
++100535 close - analysed=1
++100540 skip same n=1
++100540 gap - ms=10000 step=1
++110000 open timer -
++110535 close - analysed=1
++110540 skip same n=1
++110540 gap - ms=20000 step=2
++127040 motion HEAD_MOVING -
++127040 open stream -
++127060 gap - ms=5000 step=0
++127760 motion STILL -
++127940 skip same n=2
++128300 skip same n=1
++128660 skip same n=1
++129000 glance - g=1 micro=0
++129000 dwell - tMs=129000
++129020 skip same n=1
++129380 skip same n=1
++129740 skip same n=1
++130100 skip same n=1
++130460 skip same n=1
++130820 skip same n=1
++131180 skip same n=1
++131540 skip same n=1
++131900 skip same n=1
++132000 close - analysed=13
++136465 open timer -
++137000 skip same n=1
++137000 close - analysed=1
++141465 open timer -
++142000 skip same n=1
++142000 gap - ms=10000 step=1
++142000 close - analysed=1
++150000 now - accepted=true
++150000 open now -
++150535 close - analysed=1
++150535 keep other scene=512 motion=STILL blur=4580
++150540 gap - ms=5000 step=0
++155000 open timer -
++155535 close - analysed=1
++155540 skip same n=1
++155540 gap - ms=10000 step=1
++156080 motion HEAD_MOVING -
++156080 open stream -
++156100 gap - ms=5000 step=0
++156840 motion STILL -
++156980 skip same n=2
++157340 skip same n=1
++157700 skip same n=1
++158060 skip same n=1
++158080 glance - g=1 micro=0
++158080 dwell - tMs=158080
++158180 skip same n=1
++158540 skip same n=1
++158900 skip same n=1
++159260 skip same n=1
++159620 skip same n=1
++159980 skip same n=1
++160340 skip same n=1
++160700 skip same n=1
++161060 skip same n=1
++161080 close - analysed=14
++165545 open timer -
++166080 skip same n=1
++166080 close - analysed=1
++170545 open timer -
++171080 skip same n=1
++171080 gap - ms=10000 step=1
++171080 close - analysed=1
++180545 open timer -
++181080 skip same n=1
++181080 gap - ms=20000 step=2
++181080 close - analysed=1
++196400 motion HEAD_MOVING -
++196400 open stream -
++196420 gap - ms=5000 step=0
++197720 motion STILL -
++198015 keep other scene=1411 motion=HEAD_MOVING blur=5038
++198960 glance - g=1 micro=0
++198960 dwell - tMs=198960
++198980 skip novel n=1
++199460 skip same n=1
++199820 skip same n=1
++200180 skip same n=1
++200540 skip same n=1
++200900 skip same n=1
++201260 skip same n=1
++201620 skip same n=1
++201720 close - analysed=14
++206185 open timer -
++206720 skip same n=1
++206720 close - analysed=1
++211185 open timer -
++211720 skip same n=1
++211720 gap - ms=10000 step=1
++211720 close - analysed=1
++221185 open timer -
++221720 skip same n=1
++221720 gap - ms=20000 step=2
++221720 close - analysed=1
++223680 motion HEAD_MOVING -
++223680 open stream -
++223700 gap - ms=5000 step=0
++224980 motion STILL -
++225295 keep other scene=1191 motion=HEAD_MOVING blur=4199
++226220 glance - g=1 micro=0
++226220 dwell - tMs=226220
++226240 skip novel n=1
++226740 skip same n=1
++227100 skip same n=1
++227460 skip same n=1
++227820 skip same n=1
++228180 skip same n=1
++228540 skip same n=1
++228900 skip same n=1
++228980 close - analysed=14
++233445 open timer -
++233980 skip same n=1
++233980 close - analysed=1
++238445 open timer -
++238980 skip same n=1
++238980 gap - ms=10000 step=1
++238980 close - analysed=1
++245600 motion WALKING -
++245600 open stream -
++245620 gap - ms=5000 step=0
++247940 skip same n=1
++250100 skip same n=1
++252260 skip same n=1
++254420 skip same n=1
++256575 keep other scene=1375 motion=WALKING blur=4237
++258740 skip same n=1
++260900 skip same n=1
++263060 skip same n=1
++265220 skip same n=1
++267380 skip same n=1
++269540 skip same n=1
++271700 skip same n=1
++273860 skip same n=1
++276020 skip same n=1
++278180 skip same n=1
++280000 now - accepted=true
++280095 keep other scene=1375 motion=WALKING blur=4237
++282260 skip same n=1
++284420 skip same n=1
++286580 skip same n=1
++288740 skip same n=1
++290900 skip same n=1
++293060 skip same n=1
++295220 skip same n=1
++297380 skip same n=1
++299540 skip same n=1
++300000 now - accepted=true
++300015 keep other scene=1375 motion=WALKING blur=4237
++302180 skip same n=1
++304340 skip same n=1
++306500 skip same n=1
++308660 skip same n=1
++310820 skip same n=1
++312980 skip same n=1
++315140 skip same n=1
++317300 skip same n=1
++319460 skip same n=1
++321620 skip same n=1
++323780 skip same n=1
++325940 skip same n=1
++328100 skip same n=1
++330260 skip same n=1
++332420 skip same n=1
++334580 skip same n=1
++336740 skip same n=1
++338900 skip same n=1
++341060 skip same n=1
++343215 keep other scene=177 motion=WALKING blur=4297
++345380 skip same n=1
++345920 motion STILL -
++346100 skip same n=2
++346460 skip same n=1
++346820 skip same n=1
++347180 skip same n=1
++347400 glance - g=1 micro=0
++347400 dwell - tMs=347400
++347420 skip same n=1
++347780 skip same n=1
++348140 skip same n=1
++348500 skip same n=1
++348860 skip same n=1
++349220 skip same n=1
++349580 skip same n=1
++349940 skip same n=1
++350150 close - analysed=291
++354615 open timer -
++355150 close - analysed=1
++355160 skip same n=1
++359615 open timer -
++360150 close - analysed=1
++360160 skip same n=1
++360160 gap - ms=10000 step=1
++369615 open timer -
++370150 close - analysed=1
++370160 skip same n=1
++370160 gap - ms=20000 step=2
++380000 motion HEAD_MOVING -
++380000 open stream -
++380020 gap - ms=5000 step=0
++380840 motion STILL -
++380895 keep other scene=4737 motion=HEAD_MOVING blur=5174
++382080 glance - g=1 micro=0
++382080 dwell - tMs=382080
++382100 skip novel n=1
++382340 skip same n=1
++382700 skip same n=1
++383060 skip same n=1
++383420 skip same n=1
++383780 skip same n=1
++384140 skip same n=1
++384500 skip same n=1
++384840 close - analysed=12
++389305 open timer -
++389840 skip same n=1
++389840 close - analysed=1
++394305 open timer -
++394840 skip same n=1
++394840 gap - ms=10000 step=1
++394840 close - analysed=1
++404305 open timer -
++404840 skip same n=1
++404840 gap - ms=20000 step=2
++404840 close - analysed=1
++415480 motion HEAD_MOVING -
++415480 open stream -
++415500 gap - ms=5000 step=0
++416380 motion STILL -
++416735 keep other scene=790 motion=HEAD_MOVING blur=3750
++417620 glance - g=1 micro=0
++417620 dwell - tMs=417620
++417640 skip novel n=1
++418180 skip same n=1
++418540 skip same n=1
++418900 skip same n=1
++419260 skip same n=1
++419620 skip same n=1
++419980 skip same n=1
++420340 skip same n=1
++420380 close - analysed=13
++424845 open timer -
++425380 skip same n=1
++425380 close - analysed=1
++429845 open timer -
++430380 skip same n=1
++430380 gap - ms=10000 step=1
++430380 close - analysed=1
++439845 open timer -
++440380 skip same n=1
++440380 gap - ms=20000 step=2
++440380 close - analysed=1
++453720 motion HEAD_MOVING -
++453720 open stream -
++453740 gap - ms=5000 step=0
++454820 motion STILL -
++454975 keep other scene=4491 motion=HEAD_MOVING blur=4144
++456060 glance - g=1 micro=0
++456060 dwell - tMs=456060
++456080 skip novel n=1
++456420 skip same n=1
++456780 skip same n=1
++457140 skip same n=1
++457500 skip same n=1
++457860 skip same n=1
++458220 skip same n=1
++458580 skip same n=1
++458820 close - analysed=13
++463285 open timer -
++463820 skip same n=1
++463820 close - analysed=1
++468285 open timer -
++468820 skip same n=1
++468820 gap - ms=10000 step=1
++468820 close - analysed=1
++478285 open timer -
++478820 skip same n=1
++478820 gap - ms=20000 step=2
++478820 close - analysed=1
++483000 now - accepted=true
++483000 open now -
++483535 close - analysed=1
++483535 keep other scene=4491 motion=STILL blur=4144
++483540 gap - ms=5000 step=0
++488000 open timer -
++488340 motion HEAD_MOVING -
++489020 motion STILL -
++489260 skip same n=2
++489620 skip same n=1
++489980 skip same n=1
++490260 glance - g=1 micro=0
++490260 dwell - tMs=490260
++490300 skip same n=1
++490660 skip same n=1
++491020 skip same n=1
++491380 skip same n=1
++491740 skip same n=1
++492100 skip same n=1
++492460 skip same n=1
++492820 skip same n=1
++493180 skip same n=1
++493260 close - analysed=14
++497725 open timer -
++498260 skip same n=1
++498260 close - analysed=1
++502725 open timer -
++503260 skip same n=1
++503260 gap - ms=10000 step=1
++503260 close - analysed=1
++512725 open timer -
++513260 skip same n=1
++513260 gap - ms=20000 step=2
++513260 close - analysed=1
++518740 motion HEAD_MOVING -
++518740 open stream -
++518760 gap - ms=5000 step=0
++520080 motion STILL -
++520360 skip same n=2
++520720 skip same n=1
++521080 skip same n=1
++521320 glance - g=1 micro=0
++521320 dwell - tMs=521320
++521360 skip same n=1
++521720 skip same n=1
++522080 skip same n=1
++522440 skip same n=1
++522800 skip same n=1
++523160 skip same n=1
++523520 skip same n=1
++523880 skip same n=1
++524240 skip same n=1
++524320 close - analysed=15
++528785 open timer -
++529320 skip same n=1
++529320 close - analysed=1
++533785 open timer -
++534320 skip same n=1
++534320 gap - ms=10000 step=1
++534320 close - analysed=1
++543785 open timer -
++544320 skip same n=1
++544320 gap - ms=20000 step=2
++544320 close - analysed=1
++562300 motion HEAD_MOVING -
++562300 open stream -
++562320 gap - ms=5000 step=0
++563060 motion STILL -
++563195 keep other scene=1833 motion=HEAD_MOVING blur=4230
++564300 glance - g=1 micro=0
++564300 dwell - tMs=564300
++564320 skip novel n=1
++564640 skip same n=1
++565000 skip same n=1
++565360 skip same n=1
++565720 skip same n=1
++566080 skip same n=1
++566440 skip same n=1
++566800 skip same n=1
++567060 close - analysed=12
++571525 open timer -
++572060 skip same n=1
++572060 close - analysed=1
++576525 open timer -
++577060 skip same n=1
++577060 gap - ms=10000 step=1
++577060 close - analysed=1
++586525 open timer -
++587060 skip same n=1
++587060 gap - ms=20000 step=2
++587060 close - analysed=1
++# motionClassifierInputs=60000
++# glanceTriggerToOpenLatencyMs=
++# opens=58 ok=58 byCause={now=4, stream=13, timer=41} keeps=18
++# expectedResv=305600
+diff --git a/android-companion/glasses/src/test/resources/golden/decisions-flight_settings_20min.txt b/android-companion/glasses/src/test/resources/golden/decisions-flight_settings_20min.txt
+new file mode 100644
+index 00000000..7188ede6
+--- /dev/null
++++ b/android-companion/glasses/src/test/resources/golden/decisions-flight_settings_20min.txt
+@@ -0,0 +1,214 @@
++# golden decisions v1 script=flight_settings_20min seed=33 durationMs=1200000
++# settings wake=SETTLE tier=T0 workRest=false work=90 rest=15 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
++# line: t kind cause detail (t = virtual ms from session start)
++0 ctx UNKNOWN -
++0 status - running=false reason=idle
++0 gap - ms=5000 step=0
++0 open timer -
++20 status - running=true reason=null
++20 gap - ms=10000 step=0
++535 close - analysed=1
++535 keep other scene=1 motion=STILL blur=4835
++10000 motion HEAD_MOVING -
++11100 motion STILL -
++11100 open timer -
++11635 close - analysed=1
++11635 keep other scene=699 motion=STILL blur=4531
++12340 glance - g=1 micro=0
++12340 dwell - tMs=12340
++12360 skip novel n=1
++21100 open timer -
++21635 close - analysed=1
++21640 skip same n=1
++21640 gap - ms=20000 step=1
++41100 open timer -
++41635 close - analysed=1
++41640 skip same n=1
++41640 gap - ms=40000 step=2
++81100 open timer -
++81635 close - analysed=1
++81640 skip same n=1
++81640 gap - ms=60000 step=3
++84640 motion HEAD_MOVING -
++85960 motion STILL -
++87200 glance - g=1 micro=0
++87200 dwell - tMs=87200
++87200 open dwell -
++87220 gap - ms=10000 step=0
++87735 close - analysed=1
++87740 skip same n=1
++97200 open timer -
++97735 close - analysed=1
++97740 skip same n=1
++97740 gap - ms=20000 step=1
++116720 motion HEAD_MOVING -
++117640 motion STILL -
++117640 open timer -
++118175 close - analysed=1
++118180 skip same n=1
++118180 gap - ms=40000 step=2
++118880 glance - g=1 micro=0
++118880 dwell - tMs=118880
++118880 open dwell -
++118900 gap - ms=10000 step=0
++119415 close - analysed=1
++119420 skip same n=1
++128880 open timer -
++129415 close - analysed=1
++129420 skip same n=1
++129420 gap - ms=20000 step=1
++148880 open timer -
++149415 close - analysed=1
++149420 skip same n=1
++149420 gap - ms=40000 step=2
++180000 ctx FLIGHT -
++180180 gap - ms=300000 step=2
++204760 motion HEAD_MOVING -
++205680 motion STILL -
++206920 glance - g=1 micro=0
++206920 dwell - tMs=206920
++206920 open dwell -
++206940 gap - ms=120000 step=0
++207455 close - analysed=1
++207455 keep dwell scene=704 motion=STILL blur=4739
++243400 motion HEAD_MOVING -
++244800 motion STILL -
++246040 glance - g=1 micro=0
++246040 dwell - tMs=246040
++246060 skip cap n=1
++289020 motion HEAD_MOVING -
++290000 motion STILL -
++291240 glance - g=1 micro=0
++291240 dwell - tMs=291240
++291240 open dwell -
++291775 close - analysed=1
++291775 keep dwell scene=4845 motion=STILL blur=4439
++344620 motion HEAD_MOVING -
++345500 motion STILL -
++346740 glance - g=1 micro=0
++346740 dwell - tMs=346740
++346760 skip cap n=1
++411240 open timer -
++411775 close - analysed=1
++411775 keep other scene=1791 motion=STILL blur=4165
++428040 motion HEAD_MOVING -
++429240 motion STILL -
++430480 glance - g=1 micro=0
++430480 dwell - tMs=430480
++430500 skip cap n=1
++495960 motion HEAD_MOVING -
++496740 motion STILL -
++497980 glance - g=1 micro=0
++497980 dwell - tMs=497980
++497980 open dwell -
++498515 close - analysed=1
++498515 keep dwell scene=3006 motion=STILL blur=5494
++526860 motion HEAD_MOVING -
++528120 motion STILL -
++529360 glance - g=1 micro=0
++529360 dwell - tMs=529360
++529380 skip cap n=1
++569020 motion HEAD_MOVING -
++570140 motion STILL -
++571380 glance - g=1 micro=0
++571380 dwell - tMs=571380
++571380 open dwell -
++571915 close - analysed=1
++571915 keep dwell scene=1051 motion=STILL blur=4808
++655680 motion HEAD_MOVING -
++656440 motion STILL -
++657680 glance - g=1 micro=0
++657680 dwell - tMs=657680
++657680 open dwell -
++658215 close - analysed=1
++658220 skip same n=1
++730560 motion HEAD_MOVING -
++731440 motion STILL -
++732680 glance - g=1 micro=0
++732680 dwell - tMs=732680
++732680 open dwell -
++733215 close - analysed=1
++733215 keep dwell scene=425 motion=STILL blur=4296
++810100 motion HEAD_MOVING -
++811260 motion STILL -
++812500 glance - g=1 micro=0
++812500 dwell - tMs=812500
++812500 open dwell -
++813035 close - analysed=1
++813040 skip same n=1
++893060 motion HEAD_MOVING -
++894300 motion STILL -
++895540 glance - g=1 micro=0
++895540 dwell - tMs=895540
++895540 open dwell -
++896075 close - analysed=1
++896080 skip same n=1
++966660 motion HEAD_MOVING -
++967560 motion STILL -
++968800 glance - g=1 micro=0
++968800 dwell - tMs=968800
++968800 open dwell -
++969335 close - analysed=1
++969340 skip same n=1
++1020000 ctx UNKNOWN -
++1020085 open timer -
++1020100 gap - ms=10000 step=0
++1020620 skip same n=1
++1020620 gap - ms=20000 step=1
++1020620 close - analysed=1
++1040085 open timer -
++1040620 skip same n=1
++1040620 gap - ms=40000 step=2
++1040620 close - analysed=1
++1049720 motion HEAD_MOVING -
++1050440 motion STILL -
++1051680 glance - g=1 micro=0
++1051680 dwell - tMs=1051680
++1051680 open dwell -
++1051700 gap - ms=10000 step=0
++1052215 close - analysed=1
++1052220 skip same n=1
++1061680 open timer -
++1062215 close - analysed=1
++1062220 skip same n=1
++1062220 gap - ms=20000 step=1
++1081680 open timer -
++1082215 close - analysed=1
++1082220 skip same n=1
++1082220 gap - ms=40000 step=2
++1121680 open timer -
++1122215 close - analysed=1
++1122220 skip same n=1
++1122220 gap - ms=60000 step=3
++1128460 motion HEAD_MOVING -
++1129780 motion STILL -
++1131020 glance - g=1 micro=0
++1131020 dwell - tMs=1131020
++1131020 open dwell -
++1131040 gap - ms=10000 step=0
++1131555 close - analysed=1
++1131555 keep dwell scene=4489 motion=STILL blur=4244
++1141020 open timer -
++1141555 close - analysed=1
++1141560 skip same n=1
++1141560 gap - ms=20000 step=1
++1161020 open timer -
++1161555 close - analysed=1
++1161560 skip same n=1
++1161560 gap - ms=40000 step=2
++1174100 motion HEAD_MOVING -
++1175180 motion STILL -
++1176420 glance - g=1 micro=0
++1176420 dwell - tMs=1176420
++1176420 open dwell -
++1176440 gap - ms=10000 step=0
++1176955 close - analysed=1
++1176955 keep dwell scene=2252 motion=STILL blur=3550
++1186420 open timer -
++1186955 close - analysed=1
++1186960 skip same n=1
++1186960 gap - ms=20000 step=1
++# motionClassifierInputs=120000
++# glanceTriggerToOpenLatencyMs=0,0,0,0,0,0,0,0,0,0,0,0,0,0
++# opens=32 ok=32 byCause={dwell=14, timer=18} keeps=10
++# expectedResv=
+diff --git a/android-companion/glasses/src/test/resources/golden/decisions-heat_slow_10min.txt b/android-companion/glasses/src/test/resources/golden/decisions-heat_slow_10min.txt
+new file mode 100644
+index 00000000..4eed69aa
+--- /dev/null
++++ b/android-companion/glasses/src/test/resources/golden/decisions-heat_slow_10min.txt
+@@ -0,0 +1,238 @@
++# golden decisions v1 script=heat_slow_10min seed=66 durationMs=600000
++# settings wake=SETTLE tier=T0 workRest=false work=90 rest=15 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
++# line: t kind cause detail (t = virtual ms from session start)
++0 ctx UNKNOWN -
++0 status - running=false reason=idle
++0 gap - ms=5000 step=0
++0 open timer -
++20 status - running=true reason=null
++20 gap - ms=10000 step=0
++535 close - analysed=1
++535 keep other scene=1 motion=STILL blur=4835
++5000 motion HEAD_MOVING -
++5740 motion STILL -
++6980 glance - g=1 micro=0
++6980 dwell - tMs=6980
++6980 open dwell -
++7515 close - analysed=1
++7515 keep dwell scene=518 motion=STILL blur=4183
++16980 open timer -
++17515 close - analysed=1
++17520 skip same n=1
++17520 gap - ms=20000 step=1
++20620 motion HEAD_MOVING -
++21660 motion STILL -
++22900 glance - g=1 micro=0
++22900 dwell - tMs=22900
++22900 open dwell -
++22920 gap - ms=10000 step=0
++23435 close - analysed=1
++23440 skip same n=1
++32900 open timer -
++33435 close - analysed=1
++33440 skip same n=1
++33440 gap - ms=20000 step=1
++44820 motion HEAD_MOVING -
++46240 motion STILL -
++47480 glance - g=1 micro=0
++47480 dwell - tMs=47480
++47480 open dwell -
++47500 gap - ms=10000 step=0
++48015 close - analysed=1
++48020 skip same n=1
++57480 open timer -
++58015 close - analysed=1
++58020 skip same n=1
++58020 gap - ms=20000 step=1
++60000 heat SLOW -
++75020 motion HEAD_MOVING -
++76280 motion STILL -
++77520 glance - g=1 micro=0
++77520 dwell - tMs=77520
++77520 open dwell -
++77540 gap - ms=10000 step=0
++78055 close - analysed=1
++78055 keep dwell scene=1515 motion=STILL blur=3982
++97520 open timer -
++98055 close - analysed=1
++98060 skip same n=1
++98060 gap - ms=20000 step=1
++98660 motion HEAD_MOVING -
++100020 motion STILL -
++101260 glance - g=1 micro=0
++101260 dwell - tMs=101260
++101260 open dwell -
++101280 gap - ms=10000 step=0
++101795 close - analysed=1
++101795 keep dwell scene=4966 motion=STILL blur=4124
++121260 open timer -
++121795 close - analysed=1
++121800 skip same n=1
++121800 gap - ms=20000 step=1
++125020 motion HEAD_MOVING -
++126220 motion STILL -
++127460 glance - g=1 micro=0
++127460 dwell - tMs=127460
++127460 open dwell -
++127480 gap - ms=10000 step=0
++127995 close - analysed=1
++127995 keep dwell scene=4886 motion=STILL blur=3974
++147460 open timer -
++147995 close - analysed=1
++148000 skip same n=1
++148000 gap - ms=20000 step=1
++159420 motion HEAD_MOVING -
++160100 motion STILL -
++161340 glance - g=1 micro=0
++161340 dwell - tMs=161340
++161340 open dwell -
++161360 gap - ms=10000 step=0
++161875 close - analysed=1
++161875 keep dwell scene=1984 motion=STILL blur=4652
++181340 open timer -
++181820 motion HEAD_MOVING -
++181875 close - analysed=1
++181880 skip same n=1
++183060 motion STILL -
++184300 glance - g=1 micro=0
++184300 dwell - tMs=184300
++184300 open dwell -
++184835 close - analysed=1
++184840 skip same n=1
++204300 open timer -
++204835 close - analysed=1
++204840 skip same n=1
++204840 gap - ms=20000 step=1
++219460 motion HEAD_MOVING -
++220440 motion STILL -
++221680 glance - g=1 micro=0
++221680 dwell - tMs=221680
++221680 open dwell -
++221700 gap - ms=10000 step=0
++222215 close - analysed=1
++222220 skip same n=1
++241680 open timer -
++242215 close - analysed=1
++242220 skip same n=1
++242220 gap - ms=20000 step=1
++268960 motion HEAD_MOVING -
++270200 motion STILL -
++271440 glance - g=1 micro=0
++271440 dwell - tMs=271440
++271440 open dwell -
++271460 gap - ms=10000 step=0
++271975 close - analysed=1
++271980 skip same n=1
++291440 open timer -
++291975 close - analysed=1
++291980 skip same n=1
++291980 gap - ms=20000 step=1
++316380 motion HEAD_MOVING -
++317660 motion STILL -
++318900 glance - g=1 micro=0
++318900 dwell - tMs=318900
++318900 open dwell -
++318920 gap - ms=10000 step=0
++319435 close - analysed=1
++319435 keep dwell scene=689 motion=STILL blur=4188
++338900 open timer -
++339435 close - analysed=1
++339440 skip same n=1
++339440 gap - ms=20000 step=1
++346340 motion HEAD_MOVING -
++347260 motion STILL -
++348500 glance - g=1 micro=0
++348500 dwell - tMs=348500
++348500 open dwell -
++348520 gap - ms=10000 step=0
++349035 close - analysed=1
++349035 keep dwell scene=3198 motion=STILL blur=4947
++368500 open timer -
++369035 close - analysed=1
++369040 skip same n=1
++369040 gap - ms=20000 step=1
++375500 motion HEAD_MOVING -
++376700 motion STILL -
++377940 glance - g=1 micro=0
++377940 dwell - tMs=377940
++377940 open dwell -
++377960 gap - ms=10000 step=0
++378475 close - analysed=1
++378475 keep dwell scene=1306 motion=STILL blur=4061
++397940 open timer -
++398475 close - analysed=1
++398480 skip same n=1
++398480 gap - ms=20000 step=1
++415680 motion HEAD_MOVING -
++416840 motion STILL -
++418080 glance - g=1 micro=0
++418080 dwell - tMs=418080
++418080 open dwell -
++418100 gap - ms=10000 step=0
++418615 close - analysed=1
++418620 skip same n=1
++438080 open timer -
++438615 close - analysed=1
++438620 skip same n=1
++438620 gap - ms=20000 step=1
++453860 motion HEAD_MOVING -
++455280 motion STILL -
++456520 glance - g=1 micro=0
++456520 dwell - tMs=456520
++456520 open dwell -
++456540 gap - ms=10000 step=0
++457055 close - analysed=1
++457055 keep dwell scene=2586 motion=STILL blur=4287
++476520 open timer -
++477055 close - analysed=1
++477060 skip same n=1
++477060 gap - ms=20000 step=1
++480000 heat OK -
++484300 motion HEAD_MOVING -
++485740 motion STILL -
++486980 glance - g=1 micro=0
++486980 dwell - tMs=486980
++486980 open dwell -
++487000 gap - ms=10000 step=0
++487515 close - analysed=1
++487520 skip same n=1
++496980 open timer -
++497515 close - analysed=1
++497520 skip same n=1
++497520 gap - ms=20000 step=1
++512580 motion HEAD_MOVING -
++513780 motion STILL -
++515020 glance - g=1 micro=0
++515020 dwell - tMs=515020
++515020 open dwell -
++515040 gap - ms=10000 step=0
++515555 close - analysed=1
++515555 keep dwell scene=835 motion=STILL blur=4433
++525020 open timer -
++525555 close - analysed=1
++525560 skip same n=1
++525560 gap - ms=20000 step=1
++545020 open timer -
++545555 close - analysed=1
++545560 skip same n=1
++545560 gap - ms=40000 step=2
++558300 motion HEAD_MOVING -
++559160 motion STILL -
++560400 glance - g=1 micro=0
++560400 dwell - tMs=560400
++560400 open dwell -
++560420 gap - ms=10000 step=0
++560935 close - analysed=1
++560935 keep dwell scene=2605 motion=STILL blur=4829
++570400 open timer -
++570935 close - analysed=1
++570940 skip same n=1
++570940 gap - ms=20000 step=1
++590400 open timer -
++590935 close - analysed=1
++590940 skip same n=1
++590940 gap - ms=40000 step=2
++# motionClassifierInputs=60000
++# glanceTriggerToOpenLatencyMs=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
++# opens=39 ok=39 byCause={dwell=18, timer=21} keeps=12
++# expectedResv=
+diff --git a/android-companion/glasses/src/test/resources/golden/decisions-rest_still_30min.txt b/android-companion/glasses/src/test/resources/golden/decisions-rest_still_30min.txt
+new file mode 100644
+index 00000000..c64a0016
+--- /dev/null
++++ b/android-companion/glasses/src/test/resources/golden/decisions-rest_still_30min.txt
+@@ -0,0 +1,287 @@
++# golden decisions v1 script=rest_still_30min seed=22 durationMs=1800000
++# settings wake=SETTLE tier=T0 workRest=false work=90 rest=15 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
++# line: t kind cause detail (t = virtual ms from session start)
++0 ctx REST -
++0 status - running=false reason=idle
++0 gap - ms=5000 step=0
++0 open timer -
++20 status - running=true reason=null
++20 gap - ms=30000 step=0
++535 close - analysed=1
++535 keep other scene=1 motion=STILL blur=4835
++20000 motion HEAD_MOVING -
++20760 motion STILL -
++22000 glance - g=1 micro=0
++22000 dwell - tMs=22000
++22000 open dwell -
++22535 close - analysed=1
++22535 keep dwell scene=3399 motion=STILL blur=3816
++79580 motion HEAD_MOVING -
++80340 motion STILL -
++81580 glance - g=1 micro=0
++81580 dwell - tMs=81580
++81580 open dwell -
++82115 close - analysed=1
++82115 keep dwell scene=3893 motion=STILL blur=4028
++142130 open timer -
++142665 close - analysed=1
++142680 skip same n=1
++142680 gap - ms=60000 step=1
++196820 motion HEAD_MOVING -
++197540 motion STILL -
++198780 glance - g=1 micro=0
++198780 dwell - tMs=198780
++198780 open dwell -
++198800 gap - ms=30000 step=0
++199315 close - analysed=1
++199320 skip same n=1
++228780 open timer -
++229315 close - analysed=1
++229320 skip same n=1
++229320 gap - ms=60000 step=1
++288780 open timer -
++289315 close - analysed=1
++289320 skip same n=1
++289320 gap - ms=120000 step=2
++300480 motion HEAD_MOVING -
++301860 motion STILL -
++303100 glance - g=1 micro=0
++303100 dwell - tMs=303100
++303100 open dwell -
++303120 gap - ms=30000 step=0
++303635 close - analysed=1
++303640 skip same n=1
++333100 open timer -
++333635 close - analysed=1
++333640 skip same n=1
++333640 gap - ms=60000 step=1
++389200 motion HEAD_MOVING -
++390500 motion STILL -
++391740 glance - g=1 micro=0
++391740 dwell - tMs=391740
++391740 open dwell -
++391760 gap - ms=30000 step=0
++392275 close - analysed=1
++392275 keep dwell scene=1948 motion=STILL blur=4342
++452290 open timer -
++452825 close - analysed=1
++452840 skip same n=1
++452840 gap - ms=60000 step=1
++459920 motion HEAD_MOVING -
++460840 motion STILL -
++462080 glance - g=1 micro=0
++462080 dwell - tMs=462080
++462080 open dwell -
++462100 gap - ms=30000 step=0
++462615 close - analysed=1
++462615 keep dwell scene=4807 motion=STILL blur=5147
++517460 motion HEAD_MOVING -
++518600 motion STILL -
++519840 glance - g=1 micro=0
++519840 dwell - tMs=519840
++519840 open dwell -
++520375 close - analysed=1
++520375 keep dwell scene=331 motion=STILL blur=4305
++580390 open timer -
++580925 close - analysed=1
++580940 skip same n=1
++580940 gap - ms=60000 step=1
++618380 motion HEAD_MOVING -
++619440 motion STILL -
++620680 glance - g=1 micro=0
++620680 dwell - tMs=620680
++620680 open dwell -
++620700 gap - ms=30000 step=0
++621215 close - analysed=1
++621215 keep dwell scene=2706 motion=STILL blur=4448
++681230 open timer -
++681765 close - analysed=1
++681780 skip same n=1
++681780 gap - ms=60000 step=1
++691240 motion HEAD_MOVING -
++692000 motion STILL -
++693240 glance - g=1 micro=0
++693240 dwell - tMs=693240
++693240 open dwell -
++693260 gap - ms=30000 step=0
++693775 close - analysed=1
++693780 skip same n=1
++723240 open timer -
++723775 close - analysed=1
++723780 skip same n=1
++723780 gap - ms=60000 step=1
++758740 motion HEAD_MOVING -
++759660 motion STILL -
++760900 glance - g=1 micro=0
++760900 dwell - tMs=760900
++760900 open dwell -
++760920 gap - ms=30000 step=0
++761435 close - analysed=1
++761440 skip same n=1
++790900 open timer -
++791435 close - analysed=1
++791440 skip same n=1
++791440 gap - ms=60000 step=1
++845640 motion HEAD_MOVING -
++846640 motion STILL -
++847880 glance - g=1 micro=0
++847880 dwell - tMs=847880
++847880 open dwell -
++847900 gap - ms=30000 step=0
++848415 close - analysed=1
++848415 keep dwell scene=4111 motion=STILL blur=4672
++908430 open timer -
++908965 close - analysed=1
++908980 skip same n=1
++908980 gap - ms=60000 step=1
++959820 motion HEAD_MOVING -
++960660 motion STILL -
++961900 glance - g=1 micro=0
++961900 dwell - tMs=961900
++961900 open dwell -
++961920 gap - ms=30000 step=0
++962435 close - analysed=1
++962440 skip same n=1
++991900 open timer -
++992435 close - analysed=1
++992440 skip same n=1
++992440 gap - ms=60000 step=1
++1044360 motion HEAD_MOVING -
++1045260 motion STILL -
++1046500 glance - g=1 micro=0
++1046500 dwell - tMs=1046500
++1046500 open dwell -
++1046520 gap - ms=30000 step=0
++1047035 close - analysed=1
++1047040 skip same n=1
++1076500 open timer -
++1077035 close - analysed=1
++1077040 skip same n=1
++1077040 gap - ms=60000 step=1
++1109880 motion HEAD_MOVING -
++1110940 motion STILL -
++1112180 glance - g=1 micro=0
++1112180 dwell - tMs=1112180
++1112180 open dwell -
++1112200 gap - ms=30000 step=0
++1112715 close - analysed=1
++1112720 skip same n=1
++1142180 open timer -
++1142715 close - analysed=1
++1142720 skip same n=1
++1142720 gap - ms=60000 step=1
++1167540 motion HEAD_MOVING -
++1168640 motion STILL -
++1169880 glance - g=1 micro=0
++1169880 dwell - tMs=1169880
++1169880 open dwell -
++1169900 gap - ms=30000 step=0
++1170415 close - analysed=1
++1170415 keep dwell scene=3619 motion=STILL blur=4272
++1230430 open timer -
++1230965 close - analysed=1
++1230980 skip same n=1
++1230980 gap - ms=60000 step=1
++1245440 motion HEAD_MOVING -
++1246500 motion STILL -
++1247740 glance - g=1 micro=0
++1247740 dwell - tMs=1247740
++1247740 open dwell -
++1247760 gap - ms=30000 step=0
++1248275 close - analysed=1
++1248275 keep dwell scene=3733 motion=STILL blur=3566
++1308290 open timer -
++1308825 close - analysed=1
++1308840 skip same n=1
++1308840 gap - ms=60000 step=1
++1313940 motion HEAD_MOVING -
++1315260 motion STILL -
++1316500 glance - g=1 micro=0
++1316500 dwell - tMs=1316500
++1316500 open dwell -
++1316520 gap - ms=30000 step=0
++1317035 close - analysed=1
++1317040 skip same n=1
++1346500 open timer -
++1347035 close - analysed=1
++1347040 skip same n=1
++1347040 gap - ms=60000 step=1
++1385840 motion HEAD_MOVING -
++1386480 motion STILL -
++1387720 glance - g=1 micro=0
++1387720 dwell - tMs=1387720
++1387720 open dwell -
++1387740 gap - ms=30000 step=0
++1388255 close - analysed=1
++1388260 skip same n=1
++1417720 open timer -
++1418255 close - analysed=1
++1418260 skip same n=1
++1418260 gap - ms=60000 step=1
++1477720 open timer -
++1478255 close - analysed=1
++1478260 skip same n=1
++1478260 gap - ms=120000 step=2
++1478500 motion HEAD_MOVING -
++1479240 motion STILL -
++1480480 glance - g=1 micro=0
++1480480 dwell - tMs=1480480
++1480480 open dwell -
++1480500 gap - ms=30000 step=0
++1481015 close - analysed=1
++1481015 keep dwell scene=2122 motion=STILL blur=3962
++1541030 open timer -
++1541565 close - analysed=1
++1541580 skip same n=1
++1541580 gap - ms=60000 step=1
++1544240 motion HEAD_MOVING -
++1544900 motion STILL -
++1546140 glance - g=1 micro=0
++1546140 dwell - tMs=1546140
++1546140 open dwell -
++1546160 gap - ms=30000 step=0
++1546675 close - analysed=1
++1546675 keep dwell scene=3486 motion=STILL blur=3924
++1587440 motion HEAD_MOVING -
++1588300 motion STILL -
++1589540 glance - g=1 micro=0
++1589540 dwell - tMs=1589540
++1589540 open dwell -
++1590075 close - analysed=1
++1590075 keep dwell scene=2103 motion=STILL blur=4154
++1650090 open timer -
++1650625 close - analysed=1
++1650640 skip same n=1
++1650640 gap - ms=60000 step=1
++1651200 motion HEAD_MOVING -
++1652180 motion STILL -
++1653420 glance - g=1 micro=0
++1653420 dwell - tMs=1653420
++1653420 open dwell -
++1653440 gap - ms=30000 step=0
++1653955 close - analysed=1
++1653960 skip same n=1
++1683420 open timer -
++1683955 close - analysed=1
++1683960 skip same n=1
++1683960 gap - ms=60000 step=1
++1743420 open timer -
++1743955 close - analysed=1
++1743960 skip same n=1
++1743960 gap - ms=120000 step=2
++1750200 motion HEAD_MOVING -
++1751620 motion STILL -
++1752860 glance - g=1 micro=0
++1752860 dwell - tMs=1752860
++1752860 open dwell -
++1752880 gap - ms=30000 step=0
++1753395 close - analysed=1
++1753400 skip same n=1
++1782860 open timer -
++1783395 close - analysed=1
++1783400 skip same n=1
++1783400 gap - ms=60000 step=1
++# motionClassifierInputs=180000
++# glanceTriggerToOpenLatencyMs=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
++# opens=47 ok=47 byCause={dwell=23, timer=24} keeps=13
++# expectedResv=
+diff --git a/android-companion/glasses/src/test/resources/golden/decisions-unknown_walk_20min.txt b/android-companion/glasses/src/test/resources/golden/decisions-unknown_walk_20min.txt
+new file mode 100644
+index 00000000..9415aaff
+--- /dev/null
++++ b/android-companion/glasses/src/test/resources/golden/decisions-unknown_walk_20min.txt
+@@ -0,0 +1,854 @@
++# golden decisions v1 script=unknown_walk_20min seed=11 durationMs=1200000
++# settings wake=MOTION tier=T0 workRest=false work=90 rest=15 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
++# line: t kind cause detail (t = virtual ms from session start)
++0 ctx UNKNOWN -
++0 status - running=false reason=idle
++0 gap - ms=5000 step=0
++0 open timer -
++20 status - running=true reason=null
++535 close - analysed=1
++535 keep other scene=1 motion=STILL blur=4835
++5000 motion HEAD_MOVING -
++5000 open stream -
++6060 motion STILL -
++6255 keep other scene=2230 motion=STILL blur=4829
++7300 glance - g=1 micro=0
++7300 dwell - tMs=7300
++7320 skip novel n=1
++7700 skip same n=1
++8060 skip same n=1
++8420 skip same n=1
++8780 skip same n=1
++9140 skip same n=1
++9500 skip same n=1
++9860 skip same n=1
++10060 close - analysed=13
++14525 open timer -
++15060 skip same n=1
++15060 close - analysed=1
++19525 open timer -
++20060 skip same n=1
++20060 gap - ms=10000 step=1
++20060 close - analysed=1
++29525 open timer -
++30060 skip same n=1
++30060 gap - ms=20000 step=2
++30060 close - analysed=1
++44680 motion HEAD_MOVING -
++44680 open stream -
++44700 gap - ms=5000 step=0
++45460 motion STILL -
++45575 keep other scene=2951 motion=HEAD_MOVING blur=3974
++46700 glance - g=1 micro=0
++46700 dwell - tMs=46700
++46720 skip novel n=1
++47020 skip same n=1
++47380 skip same n=1
++47740 skip same n=1
++48100 skip same n=1
++48460 skip same n=1
++48820 skip same n=1
++49180 skip same n=1
++49460 close - analysed=12
++60535 open timer -
++61070 close - analysed=1
++61080 skip same n=1
++65535 open timer -
++66070 close - analysed=1
++66080 skip same n=1
++66080 gap - ms=10000 step=1
++75535 open timer -
++76070 close - analysed=1
++76080 skip same n=1
++76080 gap - ms=20000 step=2
++91620 motion HEAD_MOVING -
++91620 open stream -
++91640 gap - ms=5000 step=0
++93020 motion STILL -
++93235 keep other scene=2370 motion=HEAD_MOVING blur=4532
++94260 glance - g=1 micro=0
++94260 dwell - tMs=94260
++94280 skip novel n=1
++94680 skip same n=1
++95040 skip same n=1
++95400 skip same n=1
++95760 skip same n=1
++96120 skip same n=1
++96480 skip same n=1
++96840 skip same n=1
++97020 close - analysed=14
++101485 open timer -
++102020 skip same n=1
++102020 close - analysed=1
++106485 open timer -
++107020 skip same n=1
++107020 gap - ms=10000 step=1
++107020 close - analysed=1
++116485 open timer -
++117020 skip same n=1
++117020 gap - ms=20000 step=2
++117020 close - analysed=1
++136485 open timer -
++137020 skip same n=1
++137020 gap - ms=40000 step=3
++137020 close - analysed=1
++144900 motion HEAD_MOVING -
++144900 open stream -
++144920 gap - ms=5000 step=0
++145600 motion STILL -
++145795 keep other scene=89 motion=HEAD_MOVING blur=4271
++146840 glance - g=1 micro=0
++146840 dwell - tMs=146840
++146860 skip novel n=1
++147240 skip same n=1
++147600 skip same n=1
++147960 skip same n=1
++148320 skip same n=1
++148680 skip same n=1
++149040 skip same n=1
++149400 skip same n=1
++149600 close - analysed=12
++154065 open timer -
++154600 skip same n=1
++154600 close - analysed=1
++159065 open timer -
++159600 skip same n=1
++159600 gap - ms=10000 step=1
++159600 close - analysed=1
++169065 open timer -
++169600 skip same n=1
++169600 gap - ms=20000 step=2
++169600 close - analysed=1
++178680 motion HEAD_MOVING -
++178680 open stream -
++178700 gap - ms=5000 step=0
++179760 motion STILL -
++179935 keep other scene=2906 motion=HEAD_MOVING blur=4089
++181000 glance - g=1 micro=0
++181000 dwell - tMs=181000
++181020 skip novel n=1
++181380 skip same n=1
++181740 skip same n=1
++182100 skip same n=1
++182460 skip same n=1
++182820 skip same n=1
++183180 skip same n=1
++183540 skip same n=1
++183760 close - analysed=13
++188225 open timer -
++188760 skip same n=1
++188760 close - analysed=1
++193225 open timer -
++193760 skip same n=1
++193760 gap - ms=10000 step=1
++193760 close - analysed=1
++203225 open timer -
++203760 skip same n=1
++203760 gap - ms=20000 step=2
++203760 close - analysed=1
++223225 open timer -
++223760 skip same n=1
++223760 gap - ms=40000 step=3
++223760 close - analysed=1
++227260 motion WALKING -
++227260 open stream -
++227280 gap - ms=5000 step=0
++229600 skip same n=1
++231760 skip same n=1
++233920 skip same n=1
++236080 skip same n=1
++238240 skip same n=1
++240400 skip same n=1
++242560 skip same n=1
++244720 skip same n=1
++246880 skip same n=1
++249040 skip same n=1
++251200 skip same n=1
++253360 skip same n=1
++255520 skip same n=1
++257680 skip same n=1
++259840 skip same n=1
++262000 skip same n=1
++264160 skip same n=1
++266320 skip same n=1
++268480 skip same n=1
++270640 skip same n=1
++272800 skip same n=1
++274960 skip same n=1
++277120 skip same n=1
++279280 skip same n=1
++281440 skip same n=1
++283600 skip same n=1
++285760 skip same n=1
++287920 skip same n=1
++290080 skip same n=1
++292240 skip same n=1
++294400 skip same n=1
++296560 skip same n=1
++298720 skip same n=1
++300880 skip same n=1
++303040 skip same n=1
++305200 skip same n=1
++307360 skip same n=1
++309520 skip same n=1
++311680 skip same n=1
++313835 keep other scene=3894 motion=WALKING blur=4227
++316000 skip same n=1
++318160 skip same n=1
++320320 skip same n=1
++322480 skip same n=1
++324640 skip same n=1
++326800 skip same n=1
++328960 skip same n=1
++331120 skip same n=1
++333280 skip same n=1
++335440 skip same n=1
++337600 skip same n=1
++339760 skip same n=1
++341920 skip same n=1
++344080 skip same n=1
++346240 skip same n=1
++348400 skip same n=1
++350560 skip same n=1
++352720 skip same n=1
++354880 skip same n=1
++357040 skip same n=1
++359200 skip same n=1
++361360 skip same n=1
++363520 skip same n=1
++365680 skip same n=1
++367840 skip same n=1
++369240 motion STILL -
++369280 skip same n=2
++369640 skip same n=1
++370000 skip same n=1
++370360 skip same n=1
++370720 skip same n=1
++370720 glance - g=1 micro=0
++370720 dwell - tMs=370720
++370840 skip same n=1
++371200 skip same n=1
++371560 skip same n=1
++371920 skip same n=1
++372280 skip same n=1
++372640 skip same n=1
++373000 skip same n=1
++373360 skip same n=1
++373470 close - analysed=406
++377935 open timer -
++378380 motion HEAD_MOVING -
++379600 motion STILL -
++379910 keep other scene=2694 motion=HEAD_MOVING blur=4261
++380840 glance - g=1 micro=0
++380840 dwell - tMs=380840
++380860 skip novel n=1
++381360 skip same n=1
++381720 skip same n=1
++382080 skip same n=1
++382440 skip same n=1
++382800 skip same n=1
++383160 skip same n=1
++383520 skip same n=1
++383600 close - analysed=15
++388065 open timer -
++388600 skip same n=1
++388600 close - analysed=1
++393065 open timer -
++393600 skip same n=1
++393600 gap - ms=10000 step=1
++393600 close - analysed=1
++403065 open timer -
++403600 skip same n=1
++403600 gap - ms=20000 step=2
++403600 close - analysed=1
++419180 motion HEAD_MOVING -
++419180 open stream -
++419200 gap - ms=5000 step=0
++420200 motion STILL -
++420435 keep other scene=4327 motion=HEAD_MOVING blur=4287
++421440 glance - g=1 micro=0
++421440 dwell - tMs=421440
++421460 skip novel n=1
++421880 skip same n=1
++422240 skip same n=1
++422600 skip same n=1
++422960 skip same n=1
++423320 skip same n=1
++423680 skip same n=1
++424040 skip same n=1
++424200 close - analysed=13
++428665 open timer -
++429200 skip same n=1
++429200 close - analysed=1
++433665 open timer -
++434200 skip same n=1
++434200 gap - ms=10000 step=1
++434200 close - analysed=1
++443665 open timer -
++444200 skip same n=1
++444200 gap - ms=20000 step=2
++444200 close - analysed=1
++463665 open timer -
++464200 skip same n=1
++464200 gap - ms=40000 step=3
++464200 close - analysed=1
++470320 motion HEAD_MOVING -
++470320 open stream -
++470340 gap - ms=5000 step=0
++471260 motion STILL -
++471575 keep other scene=2909 motion=HEAD_MOVING blur=4335
++472500 glance - g=1 micro=0
++472500 dwell - tMs=472500
++472520 skip novel n=1
++473020 skip same n=1
++473380 skip same n=1
++473740 skip same n=1
++474100 skip same n=1
++474460 skip same n=1
++474820 skip same n=1
++475180 skip same n=1
++475260 close - analysed=13
++479725 open timer -
++480260 skip same n=1
++480260 close - analysed=1
++484725 open timer -
++485260 skip same n=1
++485260 gap - ms=10000 step=1
++485260 close - analysed=1
++494725 open timer -
++495260 skip same n=1
++495260 gap - ms=20000 step=2
++495260 close - analysed=1
++503600 motion HEAD_MOVING -
++503600 open stream -
++503620 gap - ms=5000 step=0
++504940 motion STILL -
++505220 skip same n=2
++505580 skip same n=1
++505940 skip same n=1
++506180 glance - g=1 micro=0
++506180 dwell - tMs=506180
++506220 skip same n=1
++506580 skip same n=1
++506940 skip same n=1
++507300 skip same n=1
++507660 skip same n=1
++508020 skip same n=1
++508380 skip same n=1
++508740 skip same n=1
++509100 skip same n=1
++509180 close - analysed=15
++513645 open timer -
++514180 skip same n=1
++514180 close - analysed=1
++518645 open timer -
++519180 skip same n=1
++519180 gap - ms=10000 step=1
++519180 close - analysed=1
++528260 motion HEAD_MOVING -
++528260 open stream -
++528280 gap - ms=5000 step=0
++529620 motion STILL -
++529875 keep other scene=1236 motion=HEAD_MOVING blur=4261
++530860 glance - g=1 micro=0
++530860 dwell - tMs=530860
++530880 skip novel n=1
++531320 skip same n=1
++531680 skip same n=1
++532040 skip same n=1
++532400 skip same n=1
++532760 skip same n=1
++533120 skip same n=1
++533480 skip same n=1
++533620 close - analysed=14
++538085 open timer -
++538620 skip same n=1
++538620 close - analysed=1
++543085 open timer -
++543620 skip same n=1
++543620 gap - ms=10000 step=1
++543620 close - analysed=1
++553085 open timer -
++553620 skip same n=1
++553620 gap - ms=20000 step=2
++553620 close - analysed=1
++561660 motion HEAD_MOVING -
++561660 open stream -
++561680 gap - ms=5000 step=0
++562580 motion STILL -
++562915 keep other scene=2267 motion=HEAD_MOVING blur=5074
++563820 glance - g=1 micro=0
++563820 dwell - tMs=563820
++563840 skip novel n=1
++564360 skip same n=1
++564720 skip same n=1
++565080 skip same n=1
++565440 skip same n=1
++565800 skip same n=1
++566160 skip same n=1
++566520 skip same n=1
++566580 close - analysed=13
++571045 open timer -
++571580 skip same n=1
++571580 close - analysed=1
++576045 open timer -
++576580 skip same n=1
++576580 gap - ms=10000 step=1
++576580 close - analysed=1
++583680 motion HEAD_MOVING -
++583680 open stream -
++583700 gap - ms=5000 step=0
++584840 motion STILL -
++584935 keep other scene=667 motion=HEAD_MOVING blur=4491
++586080 glance - g=1 micro=0
++586080 dwell - tMs=586080
++586100 skip novel n=1
++586380 skip same n=1
++586740 skip same n=1
++587100 skip same n=1
++587460 skip same n=1
++587820 skip same n=1
++588180 skip same n=1
++588540 skip same n=1
++588840 close - analysed=13
++593305 open timer -
++593840 skip same n=1
++593840 close - analysed=1
++598305 open timer -
++598840 skip same n=1
++598840 gap - ms=10000 step=1
++598840 close - analysed=1
++608305 open timer -
++608840 skip same n=1
++608840 gap - ms=20000 step=2
++608840 close - analysed=1
++611040 motion WALKING -
++611040 open stream -
++611060 motion STILL -
++611060 gap - ms=5000 step=0
++611080 motion WALKING -
++611140 motion STILL -
++611160 motion WALKING -
++613380 skip same n=1
++615540 skip same n=1
++617700 skip same n=1
++619860 skip same n=1
++622020 skip same n=1
++624180 skip same n=1
++626340 skip same n=1
++628500 skip same n=1
++630660 skip same n=1
++632820 skip same n=1
++634980 skip same n=1
++637140 skip same n=1
++639300 skip same n=1
++641460 skip same n=1
++643620 skip same n=1
++645780 skip same n=1
++647940 skip same n=1
++650100 skip same n=1
++652260 skip same n=1
++654420 skip same n=1
++656575 keep other scene=1646 motion=WALKING blur=4793
++658740 skip same n=1
++660900 skip same n=1
++663060 skip same n=1
++665220 skip same n=1
++667380 skip same n=1
++669540 skip same n=1
++671695 keep other scene=2797 motion=WALKING blur=4898
++673860 skip same n=1
++675560 motion STILL -
++675660 skip same n=2
++676020 skip same n=1
++676380 skip same n=1
++676740 skip same n=1
++677040 glance - g=1 micro=0
++677040 dwell - tMs=677040
++677060 skip same n=1
++677420 skip same n=1
++677780 skip same n=1
++678140 skip same n=1
++678500 skip same n=1
++678860 skip same n=1
++679220 skip same n=1
++679580 skip same n=1
++679790 close - analysed=190
++684255 open timer -
++684790 close - analysed=1
++684800 skip same n=1
++685180 motion WALKING -
++685180 open stream -
++685380 motion STILL -
++685400 motion WALKING -
++687520 skip same n=1
++689680 skip same n=1
++691840 skip same n=1
++694000 skip same n=1
++696155 keep other scene=3072 motion=WALKING blur=4545
++698320 skip same n=1
++700480 skip same n=1
++702640 skip same n=1
++704800 skip same n=1
++706960 skip same n=1
++709120 skip same n=1
++711280 skip same n=1
++713440 skip same n=1
++715600 skip same n=1
++717760 skip same n=1
++719920 skip same n=1
++722080 skip same n=1
++724240 skip same n=1
++726400 skip same n=1
++728560 skip same n=1
++730720 skip same n=1
++732880 skip same n=1
++735040 skip same n=1
++737200 skip same n=1
++739360 skip same n=1
++741520 skip same n=1
++743680 skip same n=1
++745840 skip same n=1
++748000 skip same n=1
++750160 skip same n=1
++752320 skip same n=1
++754480 skip same n=1
++756640 skip same n=1
++758800 skip same n=1
++760960 skip same n=1
++762680 motion STILL -
++762760 skip same n=2
++763120 skip same n=1
++763480 skip same n=1
++763840 skip same n=1
++764160 glance - g=1 micro=0
++764160 dwell - tMs=764160
++764200 skip same n=1
++764560 skip same n=1
++764920 skip same n=1
++765280 skip same n=1
++765640 skip same n=1
++766000 skip same n=1
++766360 skip same n=1
++766720 skip same n=1
++766910 close - analysed=226
++771375 open timer -
++771910 close - analysed=1
++771920 skip same n=1
++772260 motion WALKING -
++772260 open stream -
++774600 skip same n=1
++776760 skip same n=1
++778920 skip same n=1
++781080 skip same n=1
++783240 skip same n=1
++785400 skip same n=1
++787560 skip same n=1
++789720 skip same n=1
++791880 skip same n=1
++794040 skip same n=1
++796200 skip same n=1
++798360 skip same n=1
++800520 skip same n=1
++802680 skip same n=1
++804840 skip same n=1
++806995 keep other scene=4427 motion=WALKING blur=4143
++809160 skip same n=1
++811320 skip same n=1
++813480 skip same n=1
++815640 skip same n=1
++817800 skip same n=1
++819960 skip same n=1
++822120 skip same n=1
++824280 skip same n=1
++826440 skip same n=1
++828600 skip same n=1
++830760 skip same n=1
++832920 skip same n=1
++835080 skip same n=1
++837240 skip same n=1
++839400 skip same n=1
++841120 motion STILL -
++841200 skip same n=2
++841560 skip same n=1
++841920 skip same n=1
++842280 skip same n=1
++842600 glance - g=1 micro=0
++842600 dwell - tMs=842600
++842640 skip same n=1
++843000 skip same n=1
++843360 skip same n=1
++843720 skip same n=1
++844080 skip same n=1
++844440 skip same n=1
++844800 skip same n=1
++845160 skip same n=1
++845350 close - analysed=202
++849815 open timer -
++850180 motion HEAD_MOVING -
++851480 motion STILL -
++851790 keep other scene=2566 motion=HEAD_MOVING blur=5220
++852720 glance - g=1 micro=0
++852720 dwell - tMs=852720
++852740 skip novel n=1
++853240 skip same n=1
++853600 skip same n=1
++853960 skip same n=1
++854320 skip same n=1
++854680 skip same n=1
++855040 skip same n=1
++855400 skip same n=1
++855480 close - analysed=15
++859945 open timer -
++860480 skip same n=1
++860480 close - analysed=1
++864945 open timer -
++865480 skip same n=1
++865480 gap - ms=10000 step=1
++865480 close - analysed=1
++874945 open timer -
++875480 skip same n=1
++875480 gap - ms=20000 step=2
++875480 close - analysed=1
++894945 open timer -
++895480 skip same n=1
++895480 gap - ms=40000 step=3
++895480 close - analysed=1
++907560 motion HEAD_MOVING -
++907560 open stream -
++907580 gap - ms=5000 step=0
++908360 motion STILL -
++908460 skip same n=2
++908820 skip same n=1
++909180 skip same n=1
++909540 skip same n=1
++909600 glance - g=1 micro=0
++909600 dwell - tMs=909600
++909660 skip same n=1
++910020 skip same n=1
++910380 skip same n=1
++910740 skip same n=1
++911100 skip same n=1
++911460 skip same n=1
++911820 skip same n=1
++912180 skip same n=1
++912540 skip same n=1
++912600 close - analysed=14
++917065 open timer -
++917600 skip same n=1
++917600 close - analysed=1
++922065 open timer -
++922600 skip same n=1
++922600 gap - ms=10000 step=1
++922600 close - analysed=1
++926400 motion HEAD_MOVING -
++926400 open stream -
++926420 gap - ms=5000 step=0
++927740 motion STILL -
++928015 keep other scene=419 motion=HEAD_MOVING blur=5333
++928980 glance - g=1 micro=0
++928980 dwell - tMs=928980
++929000 skip novel n=1
++929460 skip same n=1
++929820 skip same n=1
++930180 skip same n=1
++930540 skip same n=1
++930900 skip same n=1
++931260 skip same n=1
++931620 skip same n=1
++931740 close - analysed=14
++936205 open timer -
++936740 skip same n=1
++936740 close - analysed=1
++940480 motion WALKING -
++940480 open stream -
++940500 motion STILL -
++940520 motion WALKING -
++940600 motion STILL -
++940620 motion WALKING -
++942820 skip same n=1
++944980 skip same n=1
++947140 skip same n=1
++949300 skip same n=1
++951460 skip same n=1
++953620 skip same n=1
++955780 skip same n=1
++957940 skip same n=1
++960100 skip same n=1
++962260 skip same n=1
++964420 skip same n=1
++966580 skip same n=1
++968740 skip same n=1
++970900 skip same n=1
++973060 skip same n=1
++975220 skip same n=1
++977380 skip same n=1
++979540 skip same n=1
++981700 skip same n=1
++983860 skip same n=1
++986020 skip same n=1
++988180 skip same n=1
++990340 skip same n=1
++992500 skip same n=1
++994660 skip same n=1
++996820 skip same n=1
++998980 skip same n=1
++1001140 skip same n=1
++1003300 skip same n=1
++1005460 skip same n=1
++1007620 skip same n=1
++1009780 skip same n=1
++1011940 skip same n=1
++1014095 keep other scene=4085 motion=WALKING blur=4843
++1016260 skip same n=1
++1018420 skip same n=1
++1020580 skip same n=1
++1022740 skip same n=1
++1024900 skip same n=1
++1027060 skip same n=1
++1029220 skip same n=1
++1031380 skip same n=1
++1033540 skip same n=1
++1035700 skip same n=1
++1037860 skip same n=1
++1040020 skip same n=1
++1042180 skip same n=1
++1044340 skip same n=1
++1046500 skip same n=1
++1048660 skip same n=1
++1050820 skip same n=1
++1052980 skip same n=1
++1055140 skip same n=1
++1057300 skip same n=1
++1059460 skip same n=1
++1061620 skip same n=1
++1063775 keep other scene=2270 motion=WALKING blur=4485
++1065940 skip same n=1
++1068100 skip same n=1
++1069440 motion STILL -
++1069540 skip same n=2
++1069900 skip same n=1
++1070260 skip same n=1
++1070620 skip same n=1
++1070920 glance - g=1 micro=0
++1070920 dwell - tMs=1070920
++1070940 skip same n=1
++1071300 skip same n=1
++1071660 skip same n=1
++1072020 skip same n=1
++1072380 skip same n=1
++1072740 skip same n=1
++1073100 skip same n=1
++1073460 skip same n=1
++1073670 close - analysed=369
++1078135 open timer -
++1078500 motion HEAD_MOVING -
++1079400 motion STILL -
++1079750 keep other scene=1840 motion=HEAD_MOVING blur=4422
++1080640 glance - g=1 micro=0
++1080640 dwell - tMs=1080640
++1080660 skip novel n=1
++1081200 skip same n=1
++1081560 skip same n=1
++1081920 skip same n=1
++1082280 skip same n=1
++1082640 skip same n=1
++1083000 skip same n=1
++1083360 skip same n=1
++1083400 close - analysed=14
++1087865 open timer -
++1088400 skip same n=1
++1088400 close - analysed=1
++1092865 open timer -
++1093400 skip same n=1
++1093400 gap - ms=10000 step=1
++1093400 close - analysed=1
++1102865 open timer -
++1103400 skip same n=1
++1103400 gap - ms=20000 step=2
++1103400 close - analysed=1
++1108780 motion HEAD_MOVING -
++1108780 open stream -
++1108800 gap - ms=5000 step=0
++1109580 motion STILL -
++1109675 keep other scene=369 motion=HEAD_MOVING blur=4462
++1110820 glance - g=1 micro=0
++1110820 dwell - tMs=1110820
++1110840 skip novel n=1
++1111120 skip same n=1
++1111480 skip same n=1
++1111840 skip same n=1
++1112200 skip same n=1
++1112560 skip same n=1
++1112920 skip same n=1
++1113280 skip same n=1
++1113580 close - analysed=12
++1123775 open timer -
++1124310 close - analysed=1
++1124320 skip same n=1
++1128775 open timer -
++1129310 close - analysed=1
++1129320 skip same n=1
++1129320 gap - ms=10000 step=1
++1138775 open timer -
++1139310 close - analysed=1
++1139320 skip same n=1
++1139320 gap - ms=20000 step=2
++1140300 motion HEAD_MOVING -
++1140300 open stream -
++1140320 gap - ms=5000 step=0
++1141300 motion STILL -
++1141555 keep other scene=4764 motion=HEAD_MOVING blur=4362
++1142540 glance - g=1 micro=0
++1142540 dwell - tMs=1142540
++1142560 skip novel n=1
++1143000 skip same n=1
++1143360 skip same n=1
++1143720 skip same n=1
++1144080 skip same n=1
++1144440 skip same n=1
++1144800 skip same n=1
++1145160 skip same n=1
++1145300 close - analysed=13
++1149765 open timer -
++1150300 skip same n=1
++1150300 close - analysed=1
++1154765 open timer -
++1155300 skip same n=1
++1155300 gap - ms=10000 step=1
++1155300 close - analysed=1
++1164765 open timer -
++1165300 skip same n=1
++1165300 gap - ms=20000 step=2
++1165300 close - analysed=1
++1184765 open timer -
++1185300 skip same n=1
++1185300 gap - ms=40000 step=3
++1185300 close - analysed=1
++1187000 motion HEAD_MOVING -
++1187000 open stream -
++1187020 gap - ms=5000 step=0
++1187760 motion STILL -
++1187900 skip same n=2
++1188260 skip same n=1
++1188620 skip same n=1
++1188980 skip same n=1
++1189000 glance - g=1 micro=0
++1189000 dwell - tMs=1189000
++1189100 skip same n=1
++1189460 skip same n=1
++1189820 skip same n=1
++1190180 skip same n=1
++1190540 skip same n=1
++1190900 skip same n=1
++1191260 skip same n=1
++1191620 skip same n=1
++1191980 skip same n=1
++1192000 close - analysed=14
++1196465 open timer -
++1197000 skip same n=1
++1197000 close - analysed=1
++# motionClassifierInputs=120000
++# glanceTriggerToOpenLatencyMs=
++# opens=82 ok=82 byCause={stream=21, timer=61} keeps=24
++# expectedResv=287260,347260,671040,745180,832260,1000480,1060480
+diff --git a/android-companion/glasses/src/test/resources/golden/decisions-workrest_rest_30min.txt b/android-companion/glasses/src/test/resources/golden/decisions-workrest_rest_30min.txt
+new file mode 100644
+index 00000000..41bf7c52
+--- /dev/null
++++ b/android-companion/glasses/src/test/resources/golden/decisions-workrest_rest_30min.txt
+@@ -0,0 +1,486 @@
++# golden decisions v1 script=workrest_rest_30min seed=44 durationMs=1800000
++# settings wake=SETTLE tier=T0 workRest=true work=5 rest=10 glance=GlanceParams() mode=settings(ContextPolicies.DEFAULT)
++# line: t kind cause detail (t = virtual ms from session start)
++0 ctx UNKNOWN -
++0 status - running=false reason=idle
++0 gap - ms=5000 step=0
++0 open timer -
++20 status - running=true reason=null
++20 gap - ms=10000 step=0
++535 close - analysed=1
++535 keep other scene=1 motion=STILL blur=4835
++10000 motion HEAD_MOVING -
++10840 motion STILL -
++10840 open timer -
++11375 close - analysed=1
++11375 keep other scene=1126 motion=STILL blur=4769
++12080 glance - g=1 micro=0
++12080 dwell - tMs=12080
++12100 skip novel n=1
++20840 open timer -
++21375 close - analysed=1
++21380 skip same n=1
++21380 gap - ms=20000 step=1
++40840 open timer -
++41375 close - analysed=1
++41380 skip same n=1
++41380 gap - ms=40000 step=2
++58260 motion HEAD_MOVING -
++59180 motion STILL -
++60420 glance - g=1 micro=0
++60420 dwell - tMs=60420
++60420 open dwell -
++60440 gap - ms=10000 step=0
++60955 close - analysed=1
++60955 keep dwell scene=1288 motion=STILL blur=4370
++70420 open timer -
++70955 close - analysed=1
++70960 skip same n=1
++70960 gap - ms=20000 step=1
++90420 open timer -
++90955 close - analysed=1
++90960 skip same n=1
++90960 gap - ms=40000 step=2
++104060 motion HEAD_MOVING -
++105420 motion STILL -
++106660 glance - g=1 micro=0
++106660 dwell - tMs=106660
++106660 open dwell -
++106680 gap - ms=10000 step=0
++107195 close - analysed=1
++107195 keep dwell scene=4939 motion=STILL blur=4201
++116660 open timer -
++117195 close - analysed=1
++117200 skip same n=1
++117200 gap - ms=20000 step=1
++124460 motion HEAD_MOVING -
++125400 motion STILL -
++126640 glance - g=1 micro=0
++126640 dwell - tMs=126640
++126640 open dwell -
++126660 gap - ms=10000 step=0
++127175 close - analysed=1
++127175 keep dwell scene=836 motion=STILL blur=4353
++136640 open timer -
++137175 close - analysed=1
++137180 skip same n=1
++137180 gap - ms=20000 step=1
++156640 open timer -
++157175 close - analysed=1
++157180 skip same n=1
++157180 gap - ms=40000 step=2
++179420 motion HEAD_MOVING -
++180340 motion STILL -
++181580 glance - g=1 micro=0
++181580 dwell - tMs=181580
++181580 open dwell -
++181600 gap - ms=10000 step=0
++182115 close - analysed=1
++182120 skip same n=1
++191580 open timer -
++192115 close - analysed=1
++192120 skip same n=1
++192120 gap - ms=20000 step=1
++208940 motion HEAD_MOVING -
++209660 motion STILL -
++210900 glance - g=1 micro=0
++210900 dwell - tMs=210900
++210900 open dwell -
++210920 gap - ms=10000 step=0
++211435 close - analysed=1
++211435 keep dwell scene=635 motion=STILL blur=4218
++220900 open timer -
++221435 close - analysed=1
++221440 skip same n=1
++221440 gap - ms=20000 step=1
++233600 motion HEAD_MOVING -
++234280 motion STILL -
++235520 glance - g=1 micro=0
++235520 dwell - tMs=235520
++235520 open dwell -
++235540 gap - ms=10000 step=0
++236055 close - analysed=1
++236055 keep dwell scene=2311 motion=STILL blur=4130
++245520 open timer -
++246055 close - analysed=1
++246060 skip same n=1
++246060 gap - ms=20000 step=1
++265520 open timer -
++266055 close - analysed=1
++266060 skip same n=1
++266060 gap - ms=40000 step=2
++292300 motion HEAD_MOVING -
++293300 motion STILL -
++294540 glance - g=1 micro=0
++294540 dwell - tMs=294540
++294540 open dwell -
++294560 gap - ms=10000 step=0
++295075 close - analysed=1
++295075 keep dwell scene=1232 motion=STILL blur=3573
++300080 rest start -
++300080 gap - ms=30000 step=0
++350880 motion HEAD_MOVING -
++351660 motion STILL -
++352900 glance - g=1 micro=0
++352900 dwell - tMs=352900
++352900 open dwell -
++353435 close - analysed=1
++353435 keep dwell scene=4251 motion=STILL blur=4377
++382280 motion HEAD_MOVING -
++382940 motion STILL -
++384180 glance - g=1 micro=0
++384180 dwell - tMs=384180
++384180 open dwell -
++384715 close - analysed=1
++384720 skip same n=1
++403840 motion HEAD_MOVING -
++404840 motion STILL -
++406080 glance - g=1 micro=0
++406080 dwell - tMs=406080
++406080 open dwell -
++406615 close - analysed=1
++406615 keep dwell scene=3020 motion=STILL blur=4412
++440520 motion HEAD_MOVING -
++441900 motion STILL -
++443140 glance - g=1 micro=0
++443140 dwell - tMs=443140
++443140 open dwell -
++443675 close - analysed=1
++443675 keep dwell scene=1025 motion=STILL blur=4219
++475380 motion HEAD_MOVING -
++476100 motion STILL -
++477340 glance - g=1 micro=0
++477340 dwell - tMs=477340
++477340 open dwell -
++477875 close - analysed=1
++477875 keep dwell scene=4809 motion=STILL blur=4252
++522240 motion HEAD_MOVING -
++523160 motion STILL -
++524400 glance - g=1 micro=0
++524400 dwell - tMs=524400
++524400 open dwell -
++524935 close - analysed=1
++524935 keep dwell scene=2007 motion=STILL blur=4913
++550480 motion HEAD_MOVING -
++551580 motion STILL -
++552820 glance - g=1 micro=0
++552820 dwell - tMs=552820
++552820 open dwell -
++553355 close - analysed=1
++553355 keep dwell scene=4355 motion=STILL blur=3890
++607620 motion HEAD_MOVING -
++608660 motion STILL -
++609900 glance - g=1 micro=0
++609900 dwell - tMs=609900
++609900 open dwell -
++610435 close - analysed=1
++610440 skip same n=1
++629040 motion HEAD_MOVING -
++629940 motion STILL -
++631180 glance - g=1 micro=0
++631180 dwell - tMs=631180
++631180 open dwell -
++631715 close - analysed=1
++631715 keep dwell scene=1110 motion=STILL blur=4105
++650060 motion HEAD_MOVING -
++650980 motion STILL -
++652220 glance - g=1 micro=0
++652220 dwell - tMs=652220
++652220 open dwell -
++652755 close - analysed=1
++652755 keep dwell scene=3861 motion=STILL blur=3947
++673120 motion HEAD_MOVING -
++673820 motion STILL -
++675060 glance - g=1 micro=0
++675060 dwell - tMs=675060
++675080 skip cap n=1
++699940 motion HEAD_MOVING -
++701160 motion STILL -
++702400 glance - g=1 micro=0
++702400 dwell - tMs=702400
++702400 open dwell -
++702935 close - analysed=1
++702935 keep dwell scene=4785 motion=STILL blur=4362
++723000 motion HEAD_MOVING -
++723740 motion STILL -
++724980 glance - g=1 micro=0
++724980 dwell - tMs=724980
++724980 open dwell -
++725515 close - analysed=1
++725515 keep dwell scene=1402 motion=STILL blur=4680
++768400 motion HEAD_MOVING -
++769380 motion STILL -
++770620 glance - g=1 micro=0
++770620 dwell - tMs=770620
++770620 open dwell -
++771155 close - analysed=1
++771155 keep dwell scene=1216 motion=STILL blur=4004
++793560 motion HEAD_MOVING -
++794560 motion STILL -
++795800 glance - g=1 micro=0
++795800 dwell - tMs=795800
++795800 open dwell -
++796335 close - analysed=1
++796340 skip same n=1
++831155 open timer -
++831690 close - analysed=1
++831700 skip same n=1
++831700 gap - ms=60000 step=1
++853120 motion HEAD_MOVING -
++854280 motion STILL -
++855520 glance - g=1 micro=0
++855520 dwell - tMs=855520
++855520 open dwell -
++855540 gap - ms=30000 step=0
++856055 close - analysed=1
++856055 keep dwell scene=3540 motion=STILL blur=4294
++874400 motion HEAD_MOVING -
++875720 motion STILL -
++876960 glance - g=1 micro=0
++876960 dwell - tMs=876960
++876960 open dwell -
++877495 close - analysed=1
++877495 keep dwell scene=3926 motion=STILL blur=4999
++900245 open timer -
++900260 rest end -
++900260 gap - ms=10000 step=0
++900780 skip same n=1
++900780 gap - ms=20000 step=1
++900780 close - analysed=1
++918780 motion HEAD_MOVING -
++919560 motion STILL -
++920245 open timer -
++920780 skip same n=1
++920780 gap - ms=40000 step=2
++920780 close - analysed=1
++920800 glance - g=1 micro=0
++920800 dwell - tMs=920800
++920800 open dwell -
++920820 gap - ms=10000 step=0
++921335 close - analysed=1
++921340 skip same n=1
++930800 open timer -
++931335 close - analysed=1
++931340 skip same n=1
++931340 gap - ms=20000 step=1
++947520 motion HEAD_MOVING -
++948640 motion STILL -
++949880 glance - g=1 micro=0
++949880 dwell - tMs=949880
++949880 open dwell -
++949900 gap - ms=10000 step=0
++950415 close - analysed=1
++950415 keep dwell scene=1904 motion=STILL blur=4023
++959880 open timer -
++960415 close - analysed=1
++960420 skip same n=1
++960420 gap - ms=20000 step=1
++972840 motion HEAD_MOVING -
++974060 motion STILL -
++975300 glance - g=1 micro=0
++975300 dwell - tMs=975300
++975300 open dwell -
++975320 gap - ms=10000 step=0
++975835 close - analysed=1
++975835 keep dwell scene=991 motion=STILL blur=3972
++985300 open timer -
++985835 close - analysed=1
++985840 skip same n=1
++985840 gap - ms=20000 step=1
++1005300 open timer -
++1005835 close - analysed=1
++1005840 skip same n=1
++1005840 gap - ms=40000 step=2
++1022880 motion HEAD_MOVING -
++1023880 motion STILL -
++1025120 glance - g=1 micro=0
++1025120 dwell - tMs=1025120
++1025120 open dwell -
++1025140 gap - ms=10000 step=0
++1025655 close - analysed=1
++1025655 keep dwell scene=98 motion=STILL blur=4066
++1035120 open timer -
++1035655 close - analysed=1
++1035660 skip same n=1
++1035660 gap - ms=20000 step=1
++1055120 open timer -
++1055655 close - analysed=1
++1055660 skip same n=1
++1055660 gap - ms=40000 step=2
++1062320 motion HEAD_MOVING -
++1063640 motion STILL -
++1064880 glance - g=1 micro=0
++1064880 dwell - tMs=1064880
++1064880 open dwell -
++1064900 gap - ms=10000 step=0
++1065415 close - analysed=1
++1065415 keep dwell scene=1192 motion=STILL blur=4660
++1074880 open timer -
++1075415 close - analysed=1
++1075420 skip same n=1
++1075420 gap - ms=20000 step=1
++1094880 open timer -
++1095415 close - analysed=1
++1095420 skip same n=1
++1095420 gap - ms=40000 step=2
++1098740 motion HEAD_MOVING -
++1099520 motion STILL -
++1100760 glance - g=1 micro=0
++1100760 dwell - tMs=1100760
++1100760 open dwell -
++1100780 gap - ms=10000 step=0
++1101295 close - analysed=1
++1101295 keep dwell scene=4346 motion=STILL blur=4327
++1110760 open timer -
++1111295 close - analysed=1
++1111300 skip same n=1
++1111300 gap - ms=20000 step=1
++1130760 open timer -
++1131295 close - analysed=1
++1131300 skip same n=1
++1131300 gap - ms=40000 step=2
++1150680 motion HEAD_MOVING -
++1151620 motion STILL -
++1152860 glance - g=1 micro=0
++1152860 dwell - tMs=1152860
++1152860 open dwell -
++1152880 gap - ms=10000 step=0
++1153395 close - analysed=1
++1153395 keep dwell scene=2854 motion=STILL blur=4410
++1162860 open timer -
++1163395 close - analysed=1
++1163400 skip same n=1
++1163400 gap - ms=20000 step=1
++1182860 open timer -
++1183395 close - analysed=1
++1183400 skip same n=1
++1183400 gap - ms=40000 step=2
++1200400 rest start -
++1200400 gap - ms=30000 step=0
++1209220 motion HEAD_MOVING -
++1210120 motion STILL -
++1211360 glance - g=1 micro=0
++1211360 dwell - tMs=1211360
++1211360 open dwell -
++1211895 close - analysed=1
++1211900 skip same n=1
++1241360 open timer -
++1241895 close - analysed=1
++1241900 skip same n=1
++1241900 gap - ms=60000 step=1
++1258980 motion HEAD_MOVING -
++1260260 motion STILL -
++1261500 glance - g=1 micro=0
++1261500 dwell - tMs=1261500
++1261500 open dwell -
++1261520 gap - ms=30000 step=0
++1262035 close - analysed=1
++1262035 keep dwell scene=404 motion=STILL blur=4235
++1279060 motion HEAD_MOVING -
++1280460 motion STILL -
++1281700 glance - g=1 micro=0
++1281700 dwell - tMs=1281700
++1281700 open dwell -
++1282235 close - analysed=1
++1282235 keep dwell scene=3144 motion=STILL blur=4791
++1326020 motion HEAD_MOVING -
++1326760 motion STILL -
++1328000 glance - g=1 micro=0
++1328000 dwell - tMs=1328000
++1328000 open dwell -
++1328535 close - analysed=1
++1328535 keep dwell scene=204 motion=STILL blur=4199
++1357300 motion HEAD_MOVING -
++1358680 motion STILL -
++1359920 glance - g=1 micro=0
++1359920 dwell - tMs=1359920
++1359920 open dwell -
++1360455 close - analysed=1
++1360460 skip same n=1
++1389920 open timer -
++1390455 close - analysed=1
++1390460 skip same n=1
++1390460 gap - ms=60000 step=1
++1410760 motion HEAD_MOVING -
++1411880 motion STILL -
++1413120 glance - g=1 micro=0
++1413120 dwell - tMs=1413120
++1413120 open dwell -
++1413140 gap - ms=30000 step=0
++1413655 close - analysed=1
++1413660 skip same n=1
++1443120 open timer -
++1443655 close - analysed=1
++1443660 skip same n=1
++1443660 gap - ms=60000 step=1
++1454600 motion HEAD_MOVING -
++1455940 motion STILL -
++1457180 glance - g=1 micro=0
++1457180 dwell - tMs=1457180
++1457180 open dwell -
++1457200 gap - ms=30000 step=0
++1457715 close - analysed=1
++1457720 skip same n=1
++1487180 open timer -
++1487715 close - analysed=1
++1487720 skip same n=1
++1487720 gap - ms=60000 step=1
++1498160 motion HEAD_MOVING -
++1499080 motion STILL -
++1500320 glance - g=1 micro=0
++1500320 dwell - tMs=1500320
++1500320 open dwell -
++1500340 gap - ms=30000 step=0
++1500855 close - analysed=1
++1500855 keep dwell scene=3738 motion=STILL blur=4247
++1533220 motion HEAD_MOVING -
++1534280 motion STILL -
++1535520 glance - g=1 micro=0
++1535520 dwell - tMs=1535520
++1535520 open dwell -
++1536055 close - analysed=1
++1536055 keep dwell scene=369 motion=STILL blur=4462
++1575100 motion HEAD_MOVING -
++1576460 motion STILL -
++1577700 glance - g=1 micro=0
++1577700 dwell - tMs=1577700
++1577700 open dwell -
++1578235 close - analysed=1
++1578235 keep dwell scene=123 motion=STILL blur=4800
++1633260 motion HEAD_MOVING -
++1634380 motion STILL -
++1635620 glance - g=1 micro=0
++1635620 dwell - tMs=1635620
++1635620 open dwell -
++1636155 close - analysed=1
++1636160 skip same n=1
++1665620 open timer -
++1666155 close - analysed=1
++1666160 skip same n=1
++1666160 gap - ms=60000 step=1
++1670840 motion HEAD_MOVING -
++1671960 motion STILL -
++1673200 glance - g=1 micro=0
++1673200 dwell - tMs=1673200
++1673200 open dwell -
++1673220 gap - ms=30000 step=0
++1673735 close - analysed=1
++1673735 keep dwell scene=1857 motion=STILL blur=4178
++1722460 motion HEAD_MOVING -
++1723780 motion STILL -
++1725020 glance - g=1 micro=0
++1725020 dwell - tMs=1725020
++1725020 open dwell -
++1725555 close - analysed=1
++1725560 skip same n=1
++1752820 motion HEAD_MOVING -
++1753800 motion STILL -
++1755020 open timer -
++1755040 glance - g=1 micro=0
++1755040 dwell - tMs=1755040
++1755555 close - analysed=1
++1755555 keep dwell scene=1840 motion=STILL blur=4422
++# motionClassifierInputs=180000
++# glanceTriggerToOpenLatencyMs=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
++# opens=77 ok=77 byCause={dwell=43, timer=34} keeps=35
++# expectedResv=
+diff --git a/android-companion/services/ai/build.gradle.kts b/android-companion/services/ai/build.gradle.kts
+index bfdd9c2f..b1f01d43 100644
+--- a/android-companion/services/ai/build.gradle.kts
++++ b/android-companion/services/ai/build.gradle.kts
+@@ -25,20 +25,21 @@ android {
+     testOptions { unitTests.isIncludeAndroidResources = true }
+     // The Nomic reference vectors/images are shared with the device parity test.
+     sourceSets.getByName("androidTest").resources.srcDir("src/test/resources")
+ }
+ 
+ dependencies {
+     api("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+     api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+     api(project(":services:memory"))
+     api(project(":core:model"))
++    api(project(":core:capture"))
+     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0") // Nomic vision; MIT; arm64 only via abiFilters
+     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+     testImplementation("junit:junit:4.13.2")
+     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+     testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
+     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+     testImplementation("org.robolectric:robolectric:4.13")
+     testImplementation("androidx.test:core:1.6.1")
+diff --git a/android-companion/services/orchestration/build.gradle.kts b/android-companion/services/orchestration/build.gradle.kts
+index 7183f3f5..c18e6960 100644
+--- a/android-companion/services/orchestration/build.gradle.kts
++++ b/android-companion/services/orchestration/build.gradle.kts
+@@ -7,20 +7,21 @@ android {
+     namespace = "com.rokid.context.services.orchestration"
+     compileSdk = 36
+     defaultConfig { minSdk = 29 }
+     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+     kotlinOptions { jvmTarget = "17" }
+     testOptions { unitTests.isIncludeAndroidResources = true }
+ }
+ 
+ dependencies {
+     api(project(":services:ai"))
++    api(project(":core:capture"))
+     api(project(":services:memory"))
+     api(project(":services:connectors"))
+     api("androidx.work:work-runtime-ktx:2.9.1")
+     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1") // unbundled Latin model, delivered by Play services
+     testImplementation("junit:junit:4.13.2")
+     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+     testImplementation("org.robolectric:robolectric:4.13")
+diff --git a/android-companion/settings.gradle.kts b/android-companion/settings.gradle.kts
+index ae53bbaa..36e1b8af 100644
+--- a/android-companion/settings.gradle.kts
++++ b/android-companion/settings.gradle.kts
+@@ -11,18 +11,19 @@ dependencyResolutionManagement {
+     repositories {
+         maven { url = uri("https://maven.rokid.com/repository/maven-public/") }
+         google()
+         mavenCentral()
+     }
+ }
+ 
+ rootProject.name = "proactive-context-agent-companion"
+ include(":phone", ":glasses")
+ include(":core:model")
++include(":core:capture")
+ include(":core:hud")
+ include(":core:ui")
+ include(":services:ai")
+ include(":services:memory")
+ include(":services:orchestration")
+ include(":services:glasses-link")
+ include(":services:voice")
+ include(":services:connectors")

@@ -1,0 +1,1317 @@
+# Review package: 2481dc40^..2481dc40
+
+## Commits
+2481dc40 feat(capture): CapturePlan config/meta with configHash, 8 KB UTF-8 cap, per-state timer photo gaps 5–300 s, sensing-key refusal, exact identity plan, pure PlanReceiver with local TRIAL enforcement
+
+## Files changed
+ .../rokid/context/capture/plan/CanonicalJson.kt    |  63 ++++++++
+ .../com/rokid/context/capture/plan/CapturePlan.kt  |  49 ++++++
+ .../com/rokid/context/capture/plan/PlanBounds.kt   |  47 ++++++
+ .../com/rokid/context/capture/plan/PlanJson.kt     | 165 +++++++++++++++++++++
+ .../com/rokid/context/capture/plan/PlanReceiver.kt | 123 +++++++++++++++
+ .../com/rokid/context/capture/plan/PlanResolver.kt |  59 ++++++++
+ .../rokid/context/capture/plan/PlanValidator.kt    | 120 +++++++++++++++
+ .../context/capture/plan/CanonicalJsonTest.kt      |  20 +++
+ .../com/rokid/context/capture/plan/PlanFixtures.kt |  33 +++++
+ .../com/rokid/context/capture/plan/PlanJsonTest.kt |  59 ++++++++
+ .../rokid/context/capture/plan/PlanReceiverTest.kt | 159 ++++++++++++++++++++
+ .../rokid/context/capture/plan/PlanResolverTest.kt |  79 ++++++++++
+ .../context/capture/plan/PlanValidatorTest.kt      | 154 +++++++++++++++++++
+ .../context/capture/plan/ReservedBoundTest.kt      |  18 +++
+ .../capture/golden/ReservedBoundParityTest.kt      |  17 +++
+ .../rokid/context/ai/CanonicalJsonParityTest.kt    |  31 ++++
+ 16 files changed, 1196 insertions(+)
+
+## Diff
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/CanonicalJson.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/CanonicalJson.kt
+new file mode 100644
+index 00000000..246957bb
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/CanonicalJson.kt
+@@ -0,0 +1,63 @@
++package com.rokid.context.capture.plan
++
++import java.math.BigDecimal
++import kotlinx.serialization.json.JsonArray
++import kotlinx.serialization.json.JsonElement
++import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
++
++/**
++ * Canonical JSON: keys sorted by UTF-16 order, no whitespace, numbers in plain normalized decimal form (1.0 and 1 are both "1"),
++ * strings escape only quote, backslash and C0 controls (as \u00xx lower-case hex), all other characters raw (UTF-8 on the wire).
++ * Non-finite numbers throw. A phone-side compiler produces byte-identical text.
++ */
++object CanonicalJson {
++    fun encode(e: JsonElement): String = StringBuilder().also { write(it, e) }.toString()
++
++    private fun write(sb: StringBuilder, e: JsonElement) {
++        when (e) {
++            is JsonNull -> sb.append("null")
++            is JsonPrimitive -> if (e.isString) quote(sb, e.content) else sb.append(primitive(e.content))
++            is JsonArray -> {
++                sb.append('[')
++                e.forEachIndexed { i, x -> if (i > 0) sb.append(','); write(sb, x) }
++                sb.append(']')
++            }
++            is JsonObject -> {
++                sb.append('{')
++                e.keys.sorted().forEachIndexed { i, k ->
++                    if (i > 0) sb.append(',')
++                    quote(sb, k); sb.append(':'); write(sb, e.getValue(k))
++                }
++                sb.append('}')
++            }
++        }
++    }
++
++    private fun primitive(c: String): String = when (c) {
++        "true", "false" -> c
++        else -> normalizeNumber(c)
++    }
++
++    fun normalizeNumber(c: String): String {
++        require(c.length <= 40) { "number literal too long" }
++        val d = c.toDoubleOrNull()
++        require(d != null && d.isFinite()) { "not a finite number" }
++        val bd = BigDecimal(c)
++        return if (bd.signum() == 0) "0" else bd.stripTrailingZeros().toPlainString()
++    }
++
++    private fun quote(sb: StringBuilder, s: String) {
++        sb.append('"')
++        for (ch in s) {
++            when {
++                ch == '"' -> sb.append("\\\"")
++                ch == '\\' -> sb.append("\\\\")
++                ch.code < 0x20 -> sb.append("\\u").append(ch.code.toString(16).padStart(4, '0'))
++                else -> sb.append(ch)
++            }
++        }
++        sb.append('"')
++    }
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/CapturePlan.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/CapturePlan.kt
+new file mode 100644
+index 00000000..0aa201b7
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/CapturePlan.kt
+@@ -0,0 +1,49 @@
++package com.rokid.context.capture.plan
++
++import com.rokid.context.core.model.context.ContextState
++
++const val PLAN_SCHEMA = 1
++const val PLAN_MAX_BYTES = 8_192
++
++/** S83: fixed in Kotlin, never plan params. */
++const val RESERVED_ACTIVE_MS = 60_000L
++const val RESERVED_REST_MS = 300_000L
++
++/** Editable rows only (S32): WALKING and UNKNOWN are never in a plan. */
++enum class PlanState { REST, VEHICLE_PASSENGER, VEHICLE_DRIVING, FLIGHT }
++
++/** Each value is 0 (inherit) or 5_000..300_000 ms (S83). */
++data class TimerPhotoGaps(val settledMs: Long, val quietMs: Long, val walkMs: Long, val stillCapMs: Long) {
++    fun all(): List<Long> = listOf(settledMs, quietMs, walkMs, stillCapMs)
++}
++
++data class PlanRow(val capPerMin: Int?, val timerPhotoGapsMs: TimerPhotoGaps, val forceSettle: Boolean, val nudges: Boolean)
++
++data class GlanceBlock(
++    val onsetRadS: Float, val releaseRadS: Float, val bridgeMs: Long, val minBoutMs: Long, val minBoutRad: Float,
++    val settleMs: Long, val noveltyWindowMs: Long, val noveltyMinRad: Float, val bigTurnRad: Float,
++)
++
++/** [ringCompare] is "last" or "all". */
++data class GateBlock(val bigChange: Int, val hamming: Int, val ringCompare: String)
++
++data class PlanConfig(
++    val glance: GlanceBlock,
++    val policy: Map<PlanState, PlanRow>,
++    val gate: GateBlock,
++    val ctxBound: Boolean,
++    val phoneFusion: Map<String, Double>,
++)
++
++data class PlanMeta(val name: String, val settingsRev: Long, val expectOpensP95PerMin: Map<String, Double>? = null)
++
++data class CapturePlan(val planSchema: Int = PLAN_SCHEMA, val configHash: String, val config: PlanConfig, val meta: PlanMeta)
++
++/**
++ * The reserved timer photo attempt bound (S83): 300 s in REST, VEHICLE_*, FLIGHT, or when WorkRest is resting while the state is not
++ * WALKING; otherwise 60 s (UNKNOWN, WALKING). Must stay identical to the golden recorder's rule (see ReservedBoundParityTest).
++ */
++fun reservedBoundMs(state: ContextState, resting: Boolean): Long =
++    if (state in setOf(ContextState.REST, ContextState.VEHICLE_PASSENGER, ContextState.VEHICLE_DRIVING, ContextState.FLIGHT) ||
++        (resting && state != ContextState.WALKING)
++    ) RESERVED_REST_MS else RESERVED_ACTIVE_MS
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanBounds.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanBounds.kt
+new file mode 100644
+index 00000000..c078b340
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanBounds.kt
+@@ -0,0 +1,47 @@
++package com.rokid.context.capture.plan
++
++import com.rokid.context.core.model.context.FusionParams
++import java.math.BigDecimal
++
++/** Plan value bounds (section 8 node catalogue, S83). Fixed in Kotlin. */
++object PlanBounds {
++    val ONSET = 0.4f..1.0f
++    val BRIDGE_MS = 100L..500L
++    val MIN_BOUT_MS = 100L..800L
++    val MIN_BOUT_RAD = 0.1f..0.8f
++    val SETTLE_MS = 1_000L..3_000L
++    val NOVELTY_WINDOW_MS = 5_000L..60_000L
++    val NOVELTY_MIN_RAD = 0.1f..0.8f
++    val BIG_TURN_RAD = 0.5f..1.5f
++    const val RELEASE_LO = 0.2f
++    val BIG_CHANGE = 16..32
++    val HAMMING = 6..16
++    val CAP_PER_MIN = 1..4
++    const val GAP_MIN_MS = 5_000L
++    const val GAP_MAX_MS = 300_000L
++    val FAST_KMH = 20.0..40.0
++    const val FUSION_FRACTION = 0.5
++
++    /** The tunable phone fusion keys with today's defaults (walking veto, flight and image rules are not tunable, S32). */
++    val FUSION_DEFAULTS: Map<String, Double> = FusionParams().let { f ->
++        mapOf(
++            "fastKmh" to f.fastKmh.dbl(), "fastTtlMs" to f.fastTtlMs.dbl(), "fastConfirmGapMs" to f.fastConfirmGapMs.dbl(),
++            "vehicleHoldMs" to f.vehicleHoldMs.dbl(), "enterVehicleMs" to f.enterVehicleMs.dbl(),
++            "switchDriverMs" to f.switchDriverMs.dbl(), "enterRestMs" to f.enterRestMs.dbl(),
++            "enterUnknownMs" to f.enterUnknownMs.dbl(), "hintStillTtlMs" to f.hintStillTtlMs.dbl(),
++            "stillFrac" to f.stillFrac.dbl(), "stillFracWithImage" to f.stillFracWithImage.dbl(),
++        )
++    }
++
++    fun fusionRange(key: String): ClosedFloatingPointRange<Double>? {
++        val d = FUSION_DEFAULTS[key] ?: return null
++        return if (key == "fastKmh") FAST_KMH else (d * (1 - FUSION_FRACTION))..(d * (1 + FUSION_FRACTION))
++    }
++
++    fun fmt(n: Number): String {
++        val bd = BigDecimal(n.toString())
++        return if (bd.signum() == 0) "0" else bd.stripTrailingZeros().toPlainString()
++    }
++
++    private fun Number.dbl(): Double = toString().toDouble()
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanJson.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanJson.kt
+new file mode 100644
+index 00000000..b2080708
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanJson.kt
+@@ -0,0 +1,165 @@
++package com.rokid.context.capture.plan
++
++import java.security.MessageDigest
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonElement
++import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
++
++/** Canonical encode, strict decode and the 12-hex [configHash] over `config` only (S60). */
++object PlanJson {
++    fun encode(p: CapturePlan): String = CanonicalJson.encode(toJson(p))
++
++    fun toJson(p: CapturePlan): JsonObject = JsonObject(
++        mapOf(
++            "planSchema" to JsonPrimitive(p.planSchema),
++            "configHash" to JsonPrimitive(p.configHash),
++            "config" to configJson(p.config),
++            "meta" to JsonObject(
++                buildMap {
++                    put("name", JsonPrimitive(p.meta.name))
++                    put("settingsRev", JsonPrimitive(p.meta.settingsRev))
++                    p.meta.expectOpensP95PerMin?.let { m -> put("expectOpensP95PerMin", JsonObject(m.mapValues { JsonPrimitive(it.value) })) }
++                },
++            ),
++        ),
++    )
++
++    fun configJson(c: PlanConfig): JsonObject = JsonObject(
++        mapOf(
++            "glance" to c.glance.let { g ->
++                JsonObject(
++                    mapOf(
++                        "onsetRadS" to JsonPrimitive(g.onsetRadS), "releaseRadS" to JsonPrimitive(g.releaseRadS),
++                        "bridgeMs" to JsonPrimitive(g.bridgeMs), "minBoutMs" to JsonPrimitive(g.minBoutMs),
++                        "minBoutRad" to JsonPrimitive(g.minBoutRad), "settleMs" to JsonPrimitive(g.settleMs),
++                        "noveltyWindowMs" to JsonPrimitive(g.noveltyWindowMs), "noveltyMinRad" to JsonPrimitive(g.noveltyMinRad),
++                        "bigTurnRad" to JsonPrimitive(g.bigTurnRad),
++                    ),
++                )
++            },
++            "policy" to JsonObject(
++                c.policy.entries.associate { (s, r) ->
++                    s.name to JsonObject(
++                        mapOf(
++                            "capPerMin" to (r.capPerMin?.let { JsonPrimitive(it) } ?: JsonNull),
++                            "timerPhotoGapsMs" to JsonObject(
++                                mapOf(
++                                    "settledMs" to JsonPrimitive(r.timerPhotoGapsMs.settledMs),
++                                    "quietMs" to JsonPrimitive(r.timerPhotoGapsMs.quietMs),
++                                    "walkMs" to JsonPrimitive(r.timerPhotoGapsMs.walkMs),
++                                    "stillCapMs" to JsonPrimitive(r.timerPhotoGapsMs.stillCapMs),
++                                ),
++                            ),
++                            "forceSettle" to JsonPrimitive(r.forceSettle),
++                            "nudges" to JsonPrimitive(r.nudges),
++                        ),
++                    )
++                },
++            ),
++            "gate" to JsonObject(
++                mapOf(
++                    "bigChange" to JsonPrimitive(c.gate.bigChange), "hamming" to JsonPrimitive(c.gate.hamming),
++                    "ringCompare" to JsonPrimitive(c.gate.ringCompare),
++                ),
++            ),
++            "ctxBound" to JsonPrimitive(c.ctxBound),
++            "phoneFusion" to JsonObject(c.phoneFusion.mapValues { JsonPrimitive(it.value) }),
++        ),
++    )
++
++    /** 12 hex of SHA-256 over the canonical `config` JSON. The meta block never changes it. */
++    fun configHash(c: PlanConfig): String =
++        MessageDigest.getInstance("SHA-256").digest(CanonicalJson.encode(configJson(c)).toByteArray(Charsets.UTF_8))
++            .joinToString("") { "%02x".format(it) }.take(12)
++
++    /** Strict: unknown keys, missing required keys, wrong types, unknown policy rows and non-finite numbers all fail. */
++    fun decodeStrict(s: String): Result<CapturePlan> = runCatching { decodeElement(Json.parseToJsonElement(s)) }
++
++    fun decodeElement(e: JsonElement): CapturePlan {
++        val o = Obj(e, "plan")
++        val schema = o.int("planSchema")
++        val hash = o.str("configHash")
++        val config = decodeConfig(o.take("config"), "config")
++        val meta = o.obj("meta").let { m ->
++            val name = m.str("name")
++            val rev = m.long("settingsRev")
++            val expect = m.takeOpt("expectOpensP95PerMin")?.let { x ->
++                Obj(x, "meta.expectOpensP95PerMin").also { it.markOpen() }.entries().mapValues { num(it.value, "meta.expectOpensP95PerMin.${it.key}") }
++            }
++            m.done()
++            PlanMeta(name, rev, expect)
++        }
++        o.done()
++        return CapturePlan(schema, hash, config, meta)
++    }
++
++    /** Decodes a `config` object (used by the resolver too). */
++    fun decodeConfig(e: JsonElement, path: String = "config"): PlanConfig {
++        val c = Obj(e, path)
++        val g = c.obj("glance")
++        val glance = GlanceBlock(
++            g.float("onsetRadS"), g.float("releaseRadS"), g.long("bridgeMs"), g.long("minBoutMs"), g.float("minBoutRad"),
++            g.long("settleMs"), g.long("noveltyWindowMs"), g.float("noveltyMinRad"), g.float("bigTurnRad"),
++        ).also { g.done() }
++        val pol = c.obj("policy")
++        val policy = LinkedHashMap<PlanState, PlanRow>()
++        for ((k, v) in pol.entries()) {
++            val st = PlanState.entries.firstOrNull { it.name == k } ?: throw IllegalArgumentException("unknown policy row $k")
++            val r = Obj(v, "policy.$k")
++            val cap = r.takeOpt("capPerMin")?.let { if (it is JsonNull) null else intOf(it, "policy.$k.capPerMin") }
++            val gp = r.obj("timerPhotoGapsMs")
++            val gaps = TimerPhotoGaps(gp.long("settledMs"), gp.long("quietMs"), gp.long("walkMs"), gp.long("stillCapMs")).also { gp.done() }
++            policy[st] = PlanRow(cap, gaps, r.bool("forceSettle"), r.bool("nudges")).also { r.done() }
++        }
++        pol.markOpen()
++        val gt = c.obj("gate")
++        val gate = GateBlock(gt.int("bigChange"), gt.int("hamming"), gt.str("ringCompare")).also { gt.done() }
++        val ctxBound = c.bool("ctxBound")
++        val fusion = c.obj("phoneFusion").let { f -> f.markOpen(); f.entries().mapValues { num(it.value, "phoneFusion.${it.key}") } }
++        c.done()
++        return PlanConfig(glance, policy, gate, ctxBound, fusion)
++    }
++
++    internal fun num(e: JsonElement, path: String): Double {
++        require(e is JsonPrimitive && e !is JsonNull && !e.isString) { "$path is not a number" }
++        val d = e.content.toDoubleOrNull()
++        require(d != null && d.isFinite()) { "$path is not a finite number" }
++        return d
++    }
++
++    private fun intOf(e: JsonElement, path: String): Int = longOf(e, path).also { require(it in Int.MIN_VALUE..Int.MAX_VALUE) { "$path out of range" } }.toInt()
++
++    private fun longOf(e: JsonElement, path: String): Long {
++        num(e, path)
++        return (e as JsonPrimitive).content.toLongOrNull() ?: throw IllegalArgumentException("$path is not an integer")
++    }
++
++    /** Reads an object key by key and fails on leftovers. */
++    internal class Obj(e: JsonElement, private val path: String) {
++        private val o: JsonObject = e as? JsonObject ?: throw IllegalArgumentException("$path is not an object")
++        private val used = HashSet<String>()
++        private var open = false
++
++        fun markOpen() { open = true; used.addAll(o.keys) }
++        fun entries(): Map<String, JsonElement> = o
++        fun take(k: String): JsonElement { used += k; return o[k] ?: throw IllegalArgumentException("$path.$k is missing") }
++        fun takeOpt(k: String): JsonElement? { used += k; return o[k] }
++        fun obj(k: String) = Obj(take(k), "$path.$k")
++        fun str(k: String): String = take(k).let { require(it is JsonPrimitive && it.isString) { "$path.$k is not a string" }; (it as JsonPrimitive).content }
++        fun bool(k: String): Boolean = take(k).let { require(it is JsonPrimitive && !it.isString && (it.content == "true" || it.content == "false")) { "$path.$k is not a boolean" }; it.toString() == "true" }
++        fun int(k: String): Int = intOf(take(k), "$path.$k")
++        fun long(k: String): Long = longOf(take(k), "$path.$k")
++        fun float(k: String): Float {
++            val e = take(k)
++            num(e, "$path.$k")
++            return (e as JsonPrimitive).content.toFloat().also { require(it.isFinite()) { "$path.$k is not a finite number" } }
++        }
++        fun done() {
++            if (open) return
++            val extra = o.keys - used
++            require(extra.isEmpty()) { "unknown key $path.${extra.sorted().first()}" }
++        }
++    }
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanReceiver.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanReceiver.kt
+new file mode 100644
+index 00000000..1b987f0d
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanReceiver.kt
+@@ -0,0 +1,123 @@
++package com.rokid.context.capture.plan
++
++import com.rokid.context.core.model.context.ContextState
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonObject
++
++/** Local copies of the wire types of Task 5 (`:core:model` Protocol.kt); the glasses adapt them one to one. */
++enum class PlanMode { SETTINGS, SHADOW, TRIAL, LIVE }
++enum class PlanAckState { REJECTED, STAGED, EFFECTIVE, REVERTED }
++
++data class CapturePlanMessage(
++    val v: Int = 1, val gen: Long, val publishId: String? = null, val mode: PlanMode = PlanMode.SETTINGS, val configHash: String? = null,
++    val planJson: String? = null, val trialEndsAtMs: Long? = null, val trialMaxMs: Long? = null, val phoneInstall: String = "",
++    val atMs: Long = 0, val sessionStartMs: Long = 0,
++)
++
++data class CapturePlanAck(
++    val v: Int = 1, val gen: Long, val publishId: String? = null, val mode: PlanMode = PlanMode.SETTINGS, val effectiveHash: String? = null,
++    val state: PlanAckState = PlanAckState.REJECTED, val reason: String? = null, val planSchemaMax: Int = PLAN_SCHEMA,
++    val caps: List<String> = PlanReceiver.CAPS, val phoneInstall: String = "", val atMs: Long = 0, val sessionStartMs: Long = 0,
++)
++
++interface PlanPersistence { fun load(): ReceiverState?; fun commit(s: ReceiverState) }
++
++/** [effective] is false while a plan is only staged (S69): it becomes true at [PlanReceiver.activated]. */
++data class ReceiverState(
++    val appliedGen: Long, val phoneInstall: String, val mode: PlanMode, val planJson: String?, val configHash: String?,
++    val trialStartElapsed: Long?, val trialMaxMs: Long?, val bootId: String, val previous: ReceiverState?, val terminal: Map<Long, String>,
++    val effective: Boolean = false,
++)
++
++/**
++ * Pure plan receiver for the glasses (S59). Stale and duplicate gens are answered without re-applying; a REVERTED gen is final; a
++ * TRIAL is bounded on the glasses' own elapsed clock and ends on a reboot. Not thread-safe.
++ */
++class PlanReceiver(private val persist: PlanPersistence, private val elapsed: () -> Long, private val bootId: () -> String) {
++    private var st: ReceiverState? = persist.load()
++
++    val current: ReceiverState? get() = st
++
++    fun onMessage(m: CapturePlanMessage): CapturePlanAck {
++        val cur = st?.takeIf { it.phoneInstall == m.phoneInstall }   // gens count per phone install
++        cur?.terminal?.get(m.gen)?.let { return ack(m.gen, cur.mode, PlanAckState.REVERTED, it, null, m.phoneInstall, m.publishId) }
++        if (cur != null && m.gen < cur.appliedGen) return reject(m, "stale")
++        if (cur != null && m.gen == cur.appliedGen) {
++            return ack(m.gen, cur.mode, if (cur.effective) PlanAckState.EFFECTIVE else PlanAckState.STAGED, null, cur.configHash, m.phoneInstall, m.publishId)
++        }
++        if (m.mode == PlanMode.TRIAL && (m.trialMaxMs == null || m.trialMaxMs !in 1L..MAX_TRIAL_MS)) return reject(m, "bounds")
++        var planJson: String? = null
++        if (m.mode != PlanMode.SETTINGS) {
++            planJson = m.planJson
++            if (planJson == null || m.configHash == null) return reject(m, "schema")
++            val bytes = planJson.toByteArray(Charsets.UTF_8).size
++            if (bytes > PLAN_MAX_BYTES) return reject(m, "too_big")
++            val raw = runCatching { Json.parseToJsonElement(planJson) as? JsonObject }.getOrNull() ?: return reject(m, "schema")
++            val plan = PlanJson.decodeStrict(planJson).getOrNull()
++            val problems = PlanValidator.problems(raw, plan, bytes)
++            if (problems.any { it.startsWith("plan schema ") }) return reject(m, "version")
++            if (problems.isNotEmpty()) return reject(m, "bounds")
++            if (plan == null) return reject(m, "schema")
++            if (plan.configHash != m.configHash || PlanJson.configHash(plan.config) != m.configHash) return reject(m, "schema")
++        }
++        val next = ReceiverState(
++            appliedGen = m.gen, phoneInstall = m.phoneInstall, mode = m.mode, planJson = planJson, configHash = m.configHash.takeIf { planJson != null },
++            trialStartElapsed = null, trialMaxMs = m.trialMaxMs.takeIf { m.mode == PlanMode.TRIAL }, bootId = bootId(),
++            previous = (cur ?: st)?.copy(previous = null), terminal = cur?.terminal ?: emptyMap(), effective = false,
++        )
++        persist.commit(next); st = next
++        return ack(m.gen, m.mode, PlanAckState.STAGED, null, next.configHash, m.phoneInstall, m.publishId)
++    }
++
++    /** The staged plan became the applied one at the safe boundary. A TRIAL starts its clock here, once. */
++    fun activated(gen: Long): CapturePlanAck {
++        val cur = st
++        if (cur == null || cur.appliedGen != gen || gen in cur.terminal) {
++            return CapturePlanAck(gen = gen, state = PlanAckState.REJECTED, reason = "stale", phoneInstall = cur?.phoneInstall ?: "")
++        }
++        if (!cur.effective) {
++            val next = cur.copy(
++                effective = true, bootId = bootId(),
++                trialStartElapsed = if (cur.mode == PlanMode.TRIAL) cur.trialStartElapsed ?: elapsed() else null,
++            )
++            persist.commit(next); st = next
++        }
++        val s = st!!
++        return ack(gen, s.mode, PlanAckState.EFFECTIVE, null, s.configHash, s.phoneInstall, null)
++    }
++
++    /** [now] is the glasses' `elapsedRealtime`. Returns the REVERTED ack when the TRIAL ended, else null. */
++    @Suppress("UNUSED_PARAMETER")
++    fun tick(state: ContextState, now: Long): CapturePlanAck? {
++        val cur = st ?: return null
++        if (cur.mode != PlanMode.TRIAL || cur.appliedGen in cur.terminal) return null
++        if (cur.bootId != bootId()) return revert("auto:reboot")
++        val start = cur.trialStartElapsed ?: return null
++        val max = cur.trialMaxMs ?: return revert("auto:trial_end")
++        if (now < start) return revert("auto:reboot")      // elapsed went backwards: treat as a reboot
++        return if (now - start >= max) revert("auto:trial_end") else null
++    }
++
++    /** Back to the settings path; the gen is terminal and is never applied again. */
++    fun revert(reason: String): CapturePlanAck {
++        val cur = st ?: return CapturePlanAck(gen = 0, state = PlanAckState.REJECTED, reason = "stale")
++        val terminal = (cur.terminal + (cur.appliedGen to reason)).entries.sortedBy { it.key }.takeLast(MAX_TERMINAL).associate { it.key to it.value }
++        val next = ReceiverState(
++            appliedGen = cur.appliedGen, phoneInstall = cur.phoneInstall, mode = PlanMode.SETTINGS, planJson = null, configHash = null,
++            trialStartElapsed = null, trialMaxMs = null, bootId = bootId(), previous = null, terminal = terminal, effective = true,
++        )
++        persist.commit(next); st = next
++        return ack(cur.appliedGen, cur.mode, PlanAckState.REVERTED, reason, null, cur.phoneInstall, null)
++    }
++
++    private fun reject(m: CapturePlanMessage, reason: String) = ack(m.gen, m.mode, PlanAckState.REJECTED, reason, null, m.phoneInstall, m.publishId)
++
++    private fun ack(gen: Long, mode: PlanMode, state: PlanAckState, reason: String?, hash: String?, install: String, publishId: String?) =
++        CapturePlanAck(gen = gen, publishId = publishId, mode = mode, effectiveHash = hash, state = state, reason = reason, phoneInstall = install)
++
++    companion object {
++        const val MAX_TRIAL_MS = 3_600_000L
++        private const val MAX_TERMINAL = 16
++        val CAPS = listOf("plan1", "shadow", "trial")
++    }
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanResolver.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanResolver.kt
+new file mode 100644
+index 00000000..e9ece044
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanResolver.kt
+@@ -0,0 +1,59 @@
++package com.rokid.context.capture.plan
++
++import com.rokid.context.core.model.context.ContextCapturePolicy
++import com.rokid.context.core.model.context.ContextPolicies
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.glasses.capture.keyframe.KeyframeGate
++import com.rokid.context.glasses.capture.motion.GlanceParams
++import kotlinx.serialization.json.JsonElement
++import kotlinx.serialization.json.JsonObject
++
++/** Resolution of a plan against today's behaviour (S27, S68, S83). Nothing here clamps. */
++object PlanResolver {
++    private fun toState(s: PlanState) = ContextState.valueOf(s.name)
++
++    fun rowOf(p: ContextCapturePolicy) = PlanRow(
++        p.capPerMin, TimerPhotoGaps(p.minSettledCheckMs, p.minQuietCheckMs, p.minWalkCheckMs, p.minStillCapMs), p.forceSettle, p.nudges,
++    )
++
++    /** Maps a plan row back to the glasses policy exactly (a plan never pauses). */
++    fun toContextPolicy(row: PlanRow) = ContextCapturePolicy(
++        capPerMin = row.capPerMin,
++        minSettledCheckMs = row.timerPhotoGapsMs.settledMs,
++        minQuietCheckMs = row.timerPhotoGapsMs.quietMs,
++        minWalkCheckMs = row.timerPhotoGapsMs.walkMs,
++        minStillCapMs = row.timerPhotoGapsMs.stillCapMs,
++        forceSettle = row.forceSettle,
++        pause = false,
++        nudges = row.nudges,
++    )
++
++    /** Today's defaults as a plan config: the rows are exactly [ContextPolicies.DEFAULT]. */
++    fun defaults(): PlanConfig {
++        val g = GlanceParams()
++        return PlanConfig(
++            glance = GlanceBlock(g.onsetRadS, g.releaseRadS, g.bridgeMs, g.minBoutMs, g.minBoutRad, g.settleMs, g.noveltyWindowMs, g.noveltyMinRad, g.bigTurnRad),
++            policy = PlanState.entries.associateWith { rowOf(ContextPolicies.DEFAULT.getValue(toState(it))) },
++            gate = GateBlock(KeyframeGate.BIG_CHANGE, KeyframeGate.HAMMING, "all"),
++            ctxBound = true,
++            phoneFusion = PlanBounds.FUSION_DEFAULTS,
++        )
++    }
++
++    /** The identity plan: rows, glance and gate equal today's defaults bit for bit (no clamping); the rest comes from [base]. */
++    fun identity(base: PlanConfig = defaults()): PlanConfig {
++        val d = defaults()
++        return base.copy(glance = d.glance, policy = d.policy, gate = d.gate)
++    }
++
++    /**
++     * Fills every field [partial] (a `config` JSON object) leaves out from [base]. An explicit `null` capPerMin means "unchanged" and
++     * is kept. Fails (Result) on unknown keys or non-finite numbers.
++     */
++    fun resolve(partial: JsonObject, base: PlanConfig): Result<PlanConfig> =
++        runCatching { PlanJson.decodeConfig(merge(PlanJson.configJson(base), partial)) }
++
++    private fun merge(base: JsonElement, over: JsonElement): JsonElement =
++        if (base is JsonObject && over is JsonObject) JsonObject(base + over.mapValues { (k, v) -> base[k]?.let { merge(it, v) } ?: v })
++        else over
++}
+diff --git a/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanValidator.kt b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanValidator.kt
+new file mode 100644
+index 00000000..f2c49376
+--- /dev/null
++++ b/android-companion/core/capture/src/main/kotlin/com/rokid/context/capture/plan/PlanValidator.kt
+@@ -0,0 +1,120 @@
++package com.rokid.context.capture.plan
++
++import kotlinx.serialization.json.JsonArray
++import kotlinx.serialization.json.JsonElement
++import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
++
++/** Refuses plans that break the non-removable invariants or bounds (S3, S32, S83, S84). Texts are exact; the en dash is U+2013. */
++object PlanValidator {
++    private const val DASH = "\u2013"
++    private val SENSING = Regex("^(sampleRate.*|sensor.*|imu.*Hz|tick.*|fusionCadence.*|evaluate.*|detector.*|classifier.*)$", RegexOption.IGNORE_CASE)
++    private val EDITABLE = PlanState.entries.map { it.name }.toSet()
++
++    /** [raw] is the parsed plan JSON, [p] its strict decode (null when that failed), [bytes] the UTF-8 length of the text. */
++    fun problems(raw: JsonObject, p: CapturePlan?, bytes: Int): List<String> {
++        val out = ArrayList<String>()
++        if (bytes > PLAN_MAX_BYTES) out += "plan is $bytes bytes (max $PLAN_MAX_BYTES)"
++        val schema = (raw["planSchema"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()
++        if (schema != PLAN_SCHEMA.toLong()) out += "plan schema ${schema ?: (raw["planSchema"] as? JsonPrimitive)?.content ?: "missing"} is not supported"
++        finite(raw, "", out)
++        sensing(raw, out)
++        rawRules(raw, out)
++        if (p != null) bounds(p, out)
++        return out.distinct()
++    }
++
++    /** Convenience for text: size, parse, strict decode, then [problems]. Returns the decoded plan when it decoded. */
++    fun check(text: String): Pair<List<String>, CapturePlan?> {
++        val bytes = text.toByteArray(Charsets.UTF_8).size
++        val raw = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(text) as? JsonObject }.getOrNull()
++            ?: return listOf("plan is not a JSON object") to null
++        val plan = PlanJson.decodeStrict(text).getOrNull()
++        return problems(raw, plan, bytes) to plan
++    }
++
++    private fun finite(e: JsonElement, path: String, out: MutableList<String>) {
++        when (e) {
++            is JsonNull -> {}
++            is JsonPrimitive -> if (!e.isString && e.content != "true" && e.content != "false") {
++                val d = e.content.toDoubleOrNull()
++                if (d == null || !d.isFinite()) out += "${path.ifEmpty { "plan" }} is not a finite number"
++            }
++            is JsonArray -> e.forEachIndexed { i, x -> finite(x, "$path[$i]", out) }
++            is JsonObject -> e.forEach { (k, v) -> finite(v, if (path.isEmpty()) k else "$path.$k", out) }
++        }
++    }
++
++    /** S84: any key under (or named like) a sensing or detection block. */
++    private fun sensing(e: JsonElement, out: MutableList<String>) {
++        if (e is JsonObject) {
++            for ((k, v) in e) {
++                if (SENSING.matches(k)) {
++                    if (v is JsonObject) v.keys.forEach { out += "$it: sensing and detection are not plan parameters" }
++                    else out += "$k: sensing and detection are not plan parameters"
++                }
++                sensing(v, out)
++            }
++        } else if (e is JsonArray) e.forEach { sensing(it, out) }
++    }
++
++    private fun rawRules(raw: JsonObject, out: MutableList<String>) {
++        val config = raw["config"] as? JsonObject ?: return
++        val policy = config["policy"] as? JsonObject
++        if (policy != null) {
++            for ((k, v) in policy) {
++                if (k !in EDITABLE) out += if (k == "WALKING" || k == "UNKNOWN") "policy row $k is locked" else "policy row $k is not supported"
++                if (v is JsonObject && "pause" in v) out += "pause is not allowed"
++            }
++        }
++        val fusion = config["phoneFusion"] as? JsonObject
++        fusion?.keys?.filter { it !in PlanBounds.FUSION_DEFAULTS }?.sorted()?.forEach { out += "fusion.$it is not tunable" }
++        if (wakeMotion(raw)) out += "MOTION wake is settings-only"
++    }
++
++    private fun wakeMotion(e: JsonElement): Boolean = when (e) {
++        is JsonObject -> e.any { (k, v) ->
++            (k.equals("cameraWake", true) || k.equals("wake", true)) && (v as? JsonPrimitive)?.content.equals("MOTION", true) || wakeMotion(v)
++        }
++        is JsonArray -> e.any { wakeMotion(it) }
++        else -> false
++    }
++
++    private fun bounds(p: CapturePlan, out: MutableList<String>) {
++        val g = p.config.glance
++        fun f(name: String, v: Float, r: ClosedFloatingPointRange<Float>) {
++            if (!(v >= r.start && v <= r.endInclusive)) out += "glance.$name out of bounds ${PlanBounds.fmt(r.start)}$DASH${PlanBounds.fmt(r.endInclusive)}"
++        }
++        fun l(name: String, v: Long, r: LongRange) {
++            if (v !in r) out += "glance.$name out of bounds ${r.first}$DASH${r.last}"
++        }
++        f("onsetRadS", g.onsetRadS, PlanBounds.ONSET)
++        if (!(g.releaseRadS >= PlanBounds.RELEASE_LO && g.releaseRadS <= g.onsetRadS)) {
++            out += "glance.releaseRadS out of bounds ${PlanBounds.fmt(PlanBounds.RELEASE_LO)}$DASH${PlanBounds.fmt(g.onsetRadS)}"
++        }
++        l("bridgeMs", g.bridgeMs, PlanBounds.BRIDGE_MS)
++        l("minBoutMs", g.minBoutMs, PlanBounds.MIN_BOUT_MS)
++        f("minBoutRad", g.minBoutRad, PlanBounds.MIN_BOUT_RAD)
++        l("settleMs", g.settleMs, PlanBounds.SETTLE_MS)
++        l("noveltyWindowMs", g.noveltyWindowMs, PlanBounds.NOVELTY_WINDOW_MS)
++        f("noveltyMinRad", g.noveltyMinRad, PlanBounds.NOVELTY_MIN_RAD)
++        f("bigTurnRad", g.bigTurnRad, PlanBounds.BIG_TURN_RAD)
++        val gt = p.config.gate
++        if (gt.bigChange !in PlanBounds.BIG_CHANGE) out += "gate.bigChange out of bounds ${PlanBounds.BIG_CHANGE.first}$DASH${PlanBounds.BIG_CHANGE.last}"
++        if (gt.hamming !in PlanBounds.HAMMING) out += "gate.hamming out of bounds ${PlanBounds.HAMMING.first}$DASH${PlanBounds.HAMMING.last}"
++        if (gt.ringCompare != "last" && gt.ringCompare != "all") out += "gate.ringCompare out of bounds last|all"
++        for ((s, r) in p.config.policy) {
++            if (r.capPerMin != null && r.capPerMin !in PlanBounds.CAP_PER_MIN) out += "policy row $s: capPerMin must be 1${DASH}4 or unchanged"
++            if (r.timerPhotoGapsMs.all().any { it != 0L && (it < PlanBounds.GAP_MIN_MS || it > PlanBounds.GAP_MAX_MS) }) {
++                out += "policy row $s: timer photo gaps must be 0 (inherit) or 5${DASH}300 s"
++            }
++            if (s == PlanState.VEHICLE_DRIVING && r.nudges) out += "VEHICLE_DRIVING nudges are always off"
++        }
++        for ((k, v) in p.config.phoneFusion) {
++            val r = PlanBounds.fusionRange(k) ?: continue   // untunable keys are reported from the raw JSON
++            if (!v.isFinite()) out += "fusion.$k is not a finite number"
++            else if (v < r.start || v > r.endInclusive) out += "fusion.$k out of bounds ${PlanBounds.fmt(r.start)}$DASH${PlanBounds.fmt(r.endInclusive)}"
++        }
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/CanonicalJsonTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/CanonicalJsonTest.kt
+new file mode 100644
+index 00000000..6e77523b
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/CanonicalJsonTest.kt
+@@ -0,0 +1,20 @@
++package com.rokid.context.capture.plan
++
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFailsWith
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonPrimitive
++
++class CanonicalJsonTest {
++    private fun c(s: String) = CanonicalJson.encode(Json.parseToJsonElement(s))
++
++    @Test fun sortsKeysAndNormalizesNumbers() {
++        assertEquals("""{"a":1,"b":{"x":0.5,"y":[1,2.5,0]},"c":"\u0001é"}""", c("""{ "c":"\u0001é","b":{"y":[1.0,2.50,0.0],"x":0.50},"a":1.000 }"""))
++    }
++
++    @Test fun nonFiniteRejected() {
++        assertFailsWith<IllegalArgumentException> { CanonicalJson.encode(JsonPrimitive(Double.NaN)) }
++        assertFailsWith<IllegalArgumentException> { CanonicalJson.encode(JsonPrimitive(Double.POSITIVE_INFINITY)) }
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanFixtures.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanFixtures.kt
+new file mode 100644
+index 00000000..2d35b8b0
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanFixtures.kt
+@@ -0,0 +1,33 @@
++package com.rokid.context.capture.plan
++
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonElement
++import kotlinx.serialization.json.JsonObject
++
++object PlanFixtures {
++    fun plan(config: PlanConfig = PlanResolver.identity(), name: String = "t", meta: PlanMeta = PlanMeta(name, 1)) =
++        CapturePlan(PLAN_SCHEMA, PlanJson.configHash(config), config, meta)
++
++    fun text(p: CapturePlan = plan()) = PlanJson.encode(p)
++
++    fun raw(p: CapturePlan = plan()): JsonObject = Json.parseToJsonElement(text(p)) as JsonObject
++
++    fun row(c: PlanConfig, s: PlanState, f: (PlanRow) -> PlanRow) = c.copy(policy = c.policy + (s to f(c.policy.getValue(s))))
++
++    /** Replace one path in the raw JSON, e.g. set("config.policy.REST.capPerMin", "5"). */
++    fun mutate(p: CapturePlan = plan(), f: (MutableMap<String, Any?>) -> Unit): JsonObject {
++        @Suppress("UNCHECKED_CAST")
++        fun toMap(e: JsonElement): Any? = when (e) {
++            is JsonObject -> e.mapValues { toMap(it.value) }.toMutableMap<String, Any?>()
++            else -> e
++        }
++        @Suppress("UNCHECKED_CAST")
++        val m = toMap(raw(p)) as MutableMap<String, Any?>
++        f(m)
++        fun back(a: Any?): JsonElement = when (a) {
++            is Map<*, *> -> JsonObject(a.entries.associate { it.key as String to back(it.value) })
++            else -> a as JsonElement
++        }
++        return back(m) as JsonObject
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanJsonTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanJsonTest.kt
+new file mode 100644
+index 00000000..9c0d9376
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanJsonTest.kt
+@@ -0,0 +1,59 @@
++package com.rokid.context.capture.plan
++
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNotEquals
++import kotlin.test.assertTrue
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonObject
++
++class PlanJsonTest {
++    @Test fun configHashIgnoresMeta() {
++        val a = PlanFixtures.plan(name = "one")
++        val b = PlanFixtures.plan(meta = PlanMeta("two", 99, mapOf("REST" to 1.5)))
++        assertEquals(a.configHash, b.configHash)
++        assertEquals(12, a.configHash.length)
++        assertTrue(a.configHash.all { it in "0123456789abcdef" })
++        val changed = PlanFixtures.row(a.config, PlanState.REST) { it.copy(capPerMin = 3) }
++        assertNotEquals(a.configHash, PlanJson.configHash(changed))
++    }
++
++    @Test fun configHashStableAcrossKeyOrder() {
++        val c = PlanResolver.identity()
++        val reversed = JsonObject(PlanJson.configJson(c).entries.reversed().associate { it.key to it.value })
++        assertEquals(PlanJson.configHash(c), CanonicalJson.encode(reversed).let { s ->
++            java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(12)
++        })
++        // a pretty-printed text with reversed top-level keys decodes to the same hash
++        val raw = PlanFixtures.raw()
++        val rev = JsonObject(raw.entries.reversed().associate { it.key to it.value })
++        val pretty = Json { prettyPrint = true }.encodeToString(JsonObject.serializer(), rev)
++        assertEquals(PlanJson.configHash(c), PlanJson.configHash(PlanJson.decodeStrict(pretty).getOrThrow().config))
++    }
++
++    @Test fun strictDecodeRejectsUnknownKey() {
++        val t = PlanFixtures.text()
++        assertTrue(PlanJson.decodeStrict(t.replace("\"ctxBound\":true", "\"ctxBound\":true,\"extra\":1")).isFailure)
++        assertTrue(PlanJson.decodeStrict(t.replace("\"nudges\":true", "\"nudges\":true,\"pause\":true")).isFailure)
++        assertTrue(PlanJson.decodeStrict(t.replace("{\"name\"", "{\"zzz\":1,\"name\"")).isFailure)
++        assertTrue(PlanJson.decodeStrict(t.replace("\"bridgeMs\":250", "\"bridgeMs\":NaN")).isFailure)
++        assertTrue(PlanJson.decodeStrict(t.replace("\"onsetRadS\":0.6", "\"onsetRadS\":Infinity")).isFailure)
++        assertTrue(PlanJson.decodeStrict(t.replace("\"glance\":", "\"glanse\":")).isFailure)
++        assertTrue(PlanJson.decodeStrict(t).isSuccess)
++    }
++
++    @Test fun roundTripExact() {
++        val p = PlanFixtures.plan(meta = PlanMeta("m é \"q\"", 7, mapOf("REST" to 1.25, "FLIGHT" to 0.5)))
++        val t = PlanJson.encode(p)
++        val back = PlanJson.decodeStrict(t).getOrThrow()
++        assertEquals(p, back)
++        assertEquals(t, PlanJson.encode(back))
++        assertEquals(p.config.glance.minBoutRad, back.config.glance.minBoutRad)
++        assertTrue(Json.parseToJsonElement(t) is JsonObject)
++    }
++
++    @Test fun identityConfigHashPinned() {
++        // the same value is pinned in :services:ai CanonicalJsonParityTest
++        assertEquals("f5782e0d8610", PlanJson.configHash(PlanResolver.identity()))
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanReceiverTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanReceiverTest.kt
+new file mode 100644
+index 00000000..2acafab9
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanReceiverTest.kt
+@@ -0,0 +1,159 @@
++package com.rokid.context.capture.plan
++
++import com.rokid.context.core.model.context.ContextState
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertNotNull
++import kotlin.test.assertNull
++
++class PlanReceiverTest {
++    private class Mem(var s: ReceiverState? = null) : PlanPersistence {
++        var commits = 0
++        override fun load() = s
++        override fun commit(s: ReceiverState) { this.s = s; commits++ }
++    }
++
++    private var clock = 1_000L
++    private var boot = "boot1"
++    private val mem = Mem()
++    private fun rx() = PlanReceiver(mem, { clock }, { boot })
++
++    private val plan = PlanFixtures.plan()
++    private val text = PlanFixtures.text(plan)
++    private fun msg(gen: Long, mode: PlanMode = PlanMode.SHADOW, trialMaxMs: Long? = null, json: String? = text, hash: String? = plan.configHash, install: String = "p1") =
++        CapturePlanMessage(gen = gen, mode = mode, configHash = hash, planJson = json, trialMaxMs = trialMaxMs, phoneInstall = install, atMs = 5)
++
++    private fun trial(r: PlanReceiver, gen: Long = 1, max: Long = 60_000) {
++        assertEquals(PlanAckState.STAGED, r.onMessage(msg(gen, PlanMode.TRIAL, max)).state)
++        assertEquals(PlanAckState.EFFECTIVE, r.activated(gen).state)
++    }
++
++    @Test fun staleRejected() {
++        val r = rx()
++        r.onMessage(msg(5)); r.activated(5)
++        val a = r.onMessage(msg(4))
++        assertEquals(PlanAckState.REJECTED, a.state); assertEquals("stale", a.reason)
++        assertEquals(5, mem.s!!.appliedGen)
++    }
++
++    @Test fun duplicateReackedNotReapplied() {
++        val r = rx()
++        r.onMessage(msg(3))
++        val c = mem.commits
++        assertEquals(PlanAckState.STAGED, r.onMessage(msg(3)).state)
++        r.activated(3)
++        val d = r.onMessage(msg(3))
++        assertEquals(PlanAckState.EFFECTIVE, d.state)
++        assertEquals(plan.configHash, d.effectiveHash)
++        assertEquals(c + 1, mem.commits)   // only the activation committed
++    }
++
++    @Test fun terminalGenNeverReapplied() {
++        val r = rx()
++        trial(r, 2)
++        r.revert("auto:ceiling")
++        val a = r.onMessage(msg(2, PlanMode.TRIAL, 60_000))
++        assertEquals(PlanAckState.REVERTED, a.state); assertEquals("auto:ceiling", a.reason)
++        assertEquals(PlanMode.SETTINGS, mem.s!!.mode)
++        assertEquals(PlanAckState.REVERTED, r.onMessage(msg(2)).state)
++        assertEquals(PlanAckState.STAGED, r.onMessage(msg(3)).state)   // a newer gen is fine
++    }
++
++    @Test fun trialNeedsMaxMs() {
++        val r = rx()
++        val a = r.onMessage(msg(1, PlanMode.TRIAL, null))
++        assertEquals("bounds", a.reason)
++        assertEquals("bounds", r.onMessage(msg(1, PlanMode.TRIAL, 0)).reason)
++        assertNull(mem.s)
++    }
++
++    @Test fun trialMaxOver60MinRejected() {
++        val r = rx()
++        assertEquals("bounds", r.onMessage(msg(1, PlanMode.TRIAL, 3_600_001)).reason)
++        assertEquals(PlanAckState.STAGED, r.onMessage(msg(1, PlanMode.TRIAL, 3_600_000)).state)
++    }
++
++    @Test fun planModesNeedPlanJsonAndHash() {
++        val r = rx()
++        for (mode in listOf(PlanMode.LIVE, PlanMode.SHADOW)) {
++            assertEquals("schema", r.onMessage(msg(1, mode, json = null)).reason)
++            assertEquals("schema", r.onMessage(msg(1, mode, hash = null)).reason)
++        }
++        assertEquals("schema", r.onMessage(msg(1, hash = "000000000000")).reason)
++        assertEquals("schema", r.onMessage(msg(1, json = "{not json")).reason)
++        assertEquals(PlanAckState.STAGED, r.onMessage(CapturePlanMessage(gen = 1, mode = PlanMode.SETTINGS, phoneInstall = "p1")).state)
++    }
++
++    @Test fun tooBigAndBoundsAndVersion() {
++        val r = rx()
++        assertEquals("too_big", r.onMessage(msg(1, json = " ".repeat(8_193) + text)).reason)
++        val bad = PlanFixtures.plan(PlanFixtures.row(PlanResolver.identity(), PlanState.REST) { it.copy(capPerMin = 9) })
++        assertEquals("bounds", r.onMessage(msg(1, json = PlanFixtures.text(bad), hash = bad.configHash)).reason)
++        val v2 = text.replace("\"planSchema\":1", "\"planSchema\":2")
++        assertEquals("version", r.onMessage(msg(1, json = v2)).reason)
++    }
++
++    @Test fun stagedNotEffectiveUntilActivated() {
++        val r = rx()
++        assertEquals(PlanAckState.STAGED, r.onMessage(msg(1)).state)
++        assertEquals(false, mem.s!!.effective)
++        assertEquals(PlanAckState.EFFECTIVE, r.activated(1).state)
++        assertEquals(true, mem.s!!.effective)
++        assertEquals(PlanAckState.REJECTED, r.activated(9).state)
++    }
++
++    @Test fun trialEndsOnElapsedNotWallClock() {
++        val r = rx()
++        clock = 10_000; trial(r, 1, 60_000)
++        assertNull(r.tick(ContextState.REST, 69_999))
++        val a = assertNotNull(r.tick(ContextState.REST, 70_000))
++        assertEquals(PlanAckState.REVERTED, a.state); assertEquals("auto:trial_end", a.reason)
++        assertEquals(PlanMode.SETTINGS, mem.s!!.mode)
++        assertNull(r.tick(ContextState.REST, 1_000_000))
++    }
++
++    @Test fun wallClockRollbackDoesNotExtend() {
++        val r = rx()
++        clock = 10_000
++        // the phone's display-only wall clock fields are garbage; only the glasses' elapsed clock counts
++        r.onMessage(CapturePlanMessage(gen = 1, mode = PlanMode.TRIAL, configHash = plan.configHash, planJson = text, trialMaxMs = 60_000, trialEndsAtMs = 9_999_999_999, phoneInstall = "p1", atMs = 1))
++        r.activated(1)
++        assertNull(r.tick(ContextState.REST, 69_000))
++        assertEquals("auto:trial_end", r.tick(ContextState.REST, 70_000)!!.reason)
++    }
++
++    @Test fun duplicateDoesNotExtendTrial() {
++        val r = rx()
++        clock = 10_000; trial(r, 1, 60_000)
++        clock = 50_000
++        r.onMessage(msg(1, PlanMode.TRIAL, 60_000))
++        r.activated(1)
++        assertEquals(10_000L, mem.s!!.trialStartElapsed)
++        assertEquals("auto:trial_end", r.tick(ContextState.REST, 70_000)!!.reason)
++    }
++
++    @Test fun trialClockStartsAtActivationNotStaging() {
++        val r = rx()
++        clock = 10_000
++        r.onMessage(msg(1, PlanMode.TRIAL, 60_000))
++        assertNull(r.tick(ContextState.REST, 500_000))   // never activated: not running
++        clock = 20_000; r.activated(1)
++        assertEquals(20_000L, mem.s!!.trialStartElapsed)
++    }
++
++    @Test fun rebootDuringTrialReverts() {
++        val r = rx()
++        trial(r, 1, 3_600_000)
++        boot = "boot2"
++        val again = PlanReceiver(mem, { clock }, { boot })   // restarted process reads the persisted state
++        val a = assertNotNull(again.tick(ContextState.REST, clock + 1))
++        assertEquals("auto:reboot", a.reason)
++        assertEquals(PlanAckState.REVERTED, again.onMessage(msg(1, PlanMode.TRIAL, 3_600_000)).state)
++    }
++
++    @Test fun otherPhoneInstallRestartsGenCounter() {
++        val r = rx()
++        r.onMessage(msg(50)); r.activated(50)
++        assertEquals(PlanAckState.STAGED, r.onMessage(msg(1, install = "p2")).state)
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanResolverTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanResolverTest.kt
+new file mode 100644
+index 00000000..27c70998
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanResolverTest.kt
+@@ -0,0 +1,79 @@
++package com.rokid.context.capture.plan
++
++import com.rokid.context.core.model.context.ContextPolicies
++import com.rokid.context.core.model.context.ContextState
++import com.rokid.context.glasses.capture.keyframe.KeyframeGate
++import com.rokid.context.glasses.capture.motion.GlanceParams
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFalse
++import kotlin.test.assertNull
++import kotlin.test.assertTrue
++import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
++
++class PlanResolverTest {
++    @Test fun identityEqualsDefaultPoliciesExactly() {
++        val id = PlanResolver.identity()
++        assertEquals(PlanState.entries.toSet(), id.policy.keys)
++        for (s in PlanState.entries) {
++            val d = ContextPolicies.DEFAULT.getValue(ContextState.valueOf(s.name))
++            val r = id.policy.getValue(s)
++            assertEquals(d.capPerMin, r.capPerMin, "$s cap")
++            assertEquals(d.minSettledCheckMs, r.timerPhotoGapsMs.settledMs, "$s settled")
++            assertEquals(d.minQuietCheckMs, r.timerPhotoGapsMs.quietMs, "$s quiet")
++            assertEquals(d.minWalkCheckMs, r.timerPhotoGapsMs.walkMs, "$s walk")
++            assertEquals(d.minStillCapMs, r.timerPhotoGapsMs.stillCapMs, "$s stillCap")
++            assertEquals(d.forceSettle, r.forceSettle, "$s forceSettle")
++            assertEquals(d.nudges, r.nudges, "$s nudges")
++            assertEquals(d, PlanResolver.toContextPolicy(r), "$s whole row")
++        }
++        val rest = id.policy.getValue(PlanState.REST)
++        assertEquals(2, rest.capPerMin)
++        assertEquals(TimerPhotoGaps(30_000, 60_000, 30_000, 120_000), rest.timerPhotoGapsMs)
++        assertTrue(rest.forceSettle)
++        val flight = id.policy.getValue(PlanState.FLIGHT)
++        assertEquals(1, flight.capPerMin)
++        assertEquals(TimerPhotoGaps(120_000, 300_000, 120_000, 300_000), flight.timerPhotoGapsMs)
++        val g = GlanceParams()
++        assertEquals(GlanceBlock(g.onsetRadS, g.releaseRadS, g.bridgeMs, g.minBoutMs, g.minBoutRad, g.settleMs, g.noveltyWindowMs, g.noveltyMinRad, g.bigTurnRad), id.glance)
++        assertEquals(GateBlock(KeyframeGate.BIG_CHANGE, KeyframeGate.HAMMING, "all"), id.gate)
++        // the identity plan is valid under the bounds, with no clamping needed
++        assertEquals(emptyList(), PlanValidator.check(PlanFixtures.text()).first)
++    }
++
++    @Test fun identityVehicleRowsUnchangedNoHardFlag() {
++        val id = PlanResolver.identity()
++        for (s in listOf(PlanState.VEHICLE_PASSENGER, PlanState.VEHICLE_DRIVING)) {
++            val r = id.policy.getValue(s)
++            assertNull(r.capPerMin)
++            assertEquals(TimerPhotoGaps(0, 0, 0, 0), r.timerPhotoGapsMs)
++            assertFalse(r.forceSettle)
++        }
++        assertTrue(id.policy.getValue(PlanState.VEHICLE_PASSENGER).nudges)
++        assertFalse(id.policy.getValue(PlanState.VEHICLE_DRIVING).nudges)
++        assertFalse(PlanResolver.toContextPolicy(id.policy.getValue(PlanState.VEHICLE_DRIVING)).pause)
++    }
++
++    @Test fun toContextPolicyRoundTrip() {
++        for ((_, p) in ContextPolicies.DEFAULT) assertEquals(p, PlanResolver.toContextPolicy(PlanResolver.rowOf(p)))
++    }
++
++    @Test fun resolveFillsFromBaseAndKeepsExplicitNullCap() {
++        val base = PlanResolver.identity()
++        val partial = JsonObject(
++            mapOf(
++                "glance" to JsonObject(mapOf("onsetRadS" to JsonPrimitive(0.8))),
++                "policy" to JsonObject(mapOf("REST" to JsonObject(mapOf("capPerMin" to JsonNull)))),
++            ),
++        )
++        val r = PlanResolver.resolve(partial, base).getOrThrow()
++        assertEquals(0.8f, r.glance.onsetRadS)
++        assertEquals(base.glance.bridgeMs, r.glance.bridgeMs)
++        assertNull(r.policy.getValue(PlanState.REST).capPerMin)
++        assertEquals(base.policy.getValue(PlanState.REST).timerPhotoGapsMs, r.policy.getValue(PlanState.REST).timerPhotoGapsMs)
++        assertEquals(base.policy.getValue(PlanState.FLIGHT), r.policy.getValue(PlanState.FLIGHT))
++        assertTrue(PlanResolver.resolve(JsonObject(mapOf("bogus" to JsonPrimitive(1))), base).isFailure)
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanValidatorTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanValidatorTest.kt
+new file mode 100644
+index 00000000..63181118
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/PlanValidatorTest.kt
+@@ -0,0 +1,154 @@
++package com.rokid.context.capture.plan
++
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertTrue
++import kotlinx.serialization.json.JsonNull
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
++
++class PlanValidatorTest {
++    private val base = PlanResolver.identity()
++
++    private fun problems(c: PlanConfig) = PlanValidator.check(PlanFixtures.text(PlanFixtures.plan(c))).first
++
++    private fun rawProblems(f: (MutableMap<String, Any?>) -> Unit): List<String> {
++        val raw = PlanFixtures.mutate(f = f)
++        return PlanValidator.problems(raw, null, 100)
++    }
++
++    @Suppress("UNCHECKED_CAST")
++    private fun MutableMap<String, Any?>.at(vararg path: String): MutableMap<String, Any?> =
++        path.fold(this) { m, k -> m[k] as MutableMap<String, Any?> }
++
++    private fun gaps(c: PlanConfig, g: TimerPhotoGaps) = PlanFixtures.row(c, PlanState.REST) { it.copy(timerPhotoGapsMs = g) }
++
++    @Test fun identityIsClean() = assertEquals(emptyList(), problems(base))
++
++    @Test fun acceptsRestGap300s() = assertEquals(emptyList(), problems(gaps(base, TimerPhotoGaps(300_000, 300_000, 300_000, 300_000))))
++
++    @Test fun acceptsGap5s() = assertEquals(emptyList(), problems(gaps(base, TimerPhotoGaps(5_000, 5_000, 5_000, 5_000))))
++
++    @Test fun refusesGap301s() = assertEquals(
++        listOf("policy row REST: timer photo gaps must be 0 (inherit) or 5–300 s"),
++        problems(gaps(base, TimerPhotoGaps(301_000, 60_000, 30_000, 120_000))),
++    )
++
++    @Test fun refusesGap4s() = assertEquals(
++        listOf("policy row REST: timer photo gaps must be 0 (inherit) or 5–300 s"),
++        problems(gaps(base, TimerPhotoGaps(30_000, 4_000, 30_000, 120_000))),
++    )
++
++    @Test fun acceptsGapZeroInherit() = assertEquals(emptyList(), problems(gaps(base, TimerPhotoGaps(0, 0, 0, 0))))
++
++    @Test fun acceptsNullCap() = assertEquals(emptyList(), problems(PlanFixtures.row(base, PlanState.REST) { it.copy(capPerMin = null) }))
++
++    @Test fun refusesCapOutsideOneToFour() {
++        for (cap in listOf(0, 5, -1)) {
++            assertEquals(
++                listOf("policy row REST: capPerMin must be 1–4 or unchanged"),
++                problems(PlanFixtures.row(base, PlanState.REST) { it.copy(capPerMin = cap) }),
++            )
++        }
++        for (cap in 1..4) assertEquals(emptyList(), problems(PlanFixtures.row(base, PlanState.REST) { it.copy(capPerMin = cap) }))
++    }
++
++    @Test fun refusesDrivingNudgesOn() = assertEquals(
++        listOf("VEHICLE_DRIVING nudges are always off"),
++        problems(PlanFixtures.row(base, PlanState.VEHICLE_DRIVING) { it.copy(nudges = true) }),
++    )
++
++    @Test fun refusesWalkingRow() {
++        val p = rawProblems { it.at("config", "policy")["WALKING"] = JsonObject(emptyMap()) }
++        assertTrue("policy row WALKING is locked" in p, p.toString())
++    }
++
++    @Test fun refusesUnknownRow() {
++        val p = rawProblems { it.at("config", "policy")["UNKNOWN"] = JsonObject(emptyMap()) }
++        assertTrue("policy row UNKNOWN is locked" in p, p.toString())
++    }
++
++    @Test fun refusesPause() {
++        val p = rawProblems { it.at("config", "policy", "REST")["pause"] = JsonPrimitive(true) }
++        assertTrue("pause is not allowed" in p, p.toString())
++    }
++
++    @Test fun refusesMotionWake() {
++        val p = rawProblems { it.at("config")["cameraWake"] = JsonPrimitive("MOTION") }
++        assertTrue("MOTION wake is settings-only" in p, p.toString())
++    }
++
++    @Test fun refusesNonTunableFusion() {
++        val p = rawProblems { it.at("config", "phoneFusion")["walkingVeto"] = JsonPrimitive(1) }
++        assertTrue("fusion.walkingVeto is not tunable" in p, p.toString())
++    }
++
++    @Test fun refusesFusionOutsideHalfOrFastKmhRange() {
++        val d = PlanBounds.FUSION_DEFAULTS.getValue("vehicleHoldMs")
++        fun withFusion(k: String, v: Double) = problems(base.copy(phoneFusion = base.phoneFusion + (k to v)))
++        assertEquals(emptyList(), withFusion("vehicleHoldMs", d * 1.5))
++        assertEquals(1, withFusion("vehicleHoldMs", d * 1.51).size)
++        assertEquals(1, withFusion("vehicleHoldMs", d * 0.49).size)
++        assertEquals(emptyList(), withFusion("fastKmh", 20.0))
++        assertEquals(emptyList(), withFusion("fastKmh", 40.0))
++        assertEquals(listOf("fusion.fastKmh out of bounds 20–40"), withFusion("fastKmh", 41.0))
++    }
++
++    @Test fun refusesBadSchema() {
++        val raw = PlanFixtures.mutate { it["planSchema"] = JsonPrimitive(2) }
++        assertTrue("plan schema 2 is not supported" in PlanValidator.problems(raw, null, 100))
++    }
++
++    @Test fun refusesGlanceAndGateOutOfBounds() {
++        val g = base.glance
++        assertEquals(listOf("glance.onsetRadS out of bounds 0.4–1"), problems(base.copy(glance = g.copy(onsetRadS = 1.2f))))
++        assertEquals(listOf("glance.releaseRadS out of bounds 0.2–0.6"), problems(base.copy(glance = g.copy(releaseRadS = 0.7f))))
++        assertEquals(listOf("glance.settleMs out of bounds 1000–3000"), problems(base.copy(glance = g.copy(settleMs = 500))))
++        assertEquals(listOf("glance.bridgeMs out of bounds 100–500"), problems(base.copy(glance = g.copy(bridgeMs = 600))))
++        assertEquals(listOf("gate.hamming out of bounds 6–16"), problems(base.copy(gate = base.gate.copy(hamming = 17))))
++        assertEquals(listOf("gate.bigChange out of bounds 16–32"), problems(base.copy(gate = base.gate.copy(bigChange = 33))))
++        assertEquals(listOf("gate.ringCompare out of bounds last|all"), problems(base.copy(gate = base.gate.copy(ringCompare = "x"))))
++    }
++
++    @Test fun refusesTooBig() {
++        val raw = PlanFixtures.raw()
++        assertEquals(listOf("plan is 8193 bytes (max 8192)"), PlanValidator.problems(raw, PlanFixtures.plan(), 8193))
++        assertEquals(emptyList(), PlanValidator.problems(raw, PlanFixtures.plan(), 8192))
++    }
++
++    @Test fun refusesSensingKey() {
++        for (block in listOf("sampleRateHz", "sensorConfig", "imuGyroHz", "tickMs", "fusionCadenceMs", "evaluateEveryMs", "detectorParams", "classifierCfg")) {
++            val p = rawProblems { it.at("config")[block] = JsonObject(mapOf("hz" to JsonPrimitive(10))) }
++            assertTrue("hz: sensing and detection are not plan parameters" in p, "$block $p")
++        }
++        val nested = rawProblems { it.at("config", "glance")["tickMs"] = JsonPrimitive(5) }
++        assertTrue("tickMs: sensing and detection are not plan parameters" in nested, nested.toString())
++    }
++
++    @Test fun refusesNaN() {
++        val raw = PlanFixtures.mutate { it.at("config", "glance")["onsetRadS"] = JsonPrimitive(Double.NaN) }
++        assertTrue("config.glance.onsetRadS is not a finite number" in PlanValidator.problems(raw, null, 100))
++        val inf = PlanFixtures.mutate { it.at("config", "phoneFusion")["fastKmh"] = JsonPrimitive(Double.POSITIVE_INFINITY) }
++        assertTrue("config.phoneFusion.fastKmh is not a finite number" in PlanValidator.problems(inf, null, 100))
++        val nul = PlanFixtures.mutate { it.at("config", "policy", "REST")["capPerMin"] = JsonNull }
++        assertEquals(emptyList(), PlanValidator.problems(nul, null, 100))
++    }
++
++    @Test fun utf8BoundaryMultibyteName() {
++        fun planWithBytes(target: Int): CapturePlan {
++            // pad with ASCII, then end the name on a 2-byte character so that chars < bytes
++            val empty = PlanFixtures.plan(name = "é")
++            val bytes0 = PlanJson.encode(empty).toByteArray().size   // contains one 2-byte char
++            return PlanFixtures.plan(name = "a".repeat(target - bytes0) + "é")
++        }
++        val ok = planWithBytes(8_192)
++        val okText = PlanJson.encode(ok)
++        assertEquals(8_192, okText.toByteArray().size)
++        assertTrue(okText.length < 8_192)   // chars alone would hide the overflow
++        assertEquals(emptyList(), PlanValidator.check(okText).first)
++        val big = planWithBytes(8_193)
++        val bigText = PlanJson.encode(big)
++        assertEquals(8_193, bigText.toByteArray().size)
++        assertEquals(listOf("plan is 8193 bytes (max 8192)"), PlanValidator.check(bigText).first)
++    }
++}
+diff --git a/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/ReservedBoundTest.kt b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/ReservedBoundTest.kt
+new file mode 100644
+index 00000000..bb2c3d12
+--- /dev/null
++++ b/android-companion/core/capture/src/test/kotlin/com/rokid/context/capture/plan/ReservedBoundTest.kt
+@@ -0,0 +1,18 @@
++package com.rokid.context.capture.plan
++
++import com.rokid.context.core.model.context.ContextState
++import kotlin.test.Test
++import kotlin.test.assertEquals
++
++class ReservedBoundTest {
++    @Test fun boundsPerStateAndResting() {
++        for (s in ContextState.entries) for (rest in listOf(true, false)) {
++            val rest300 = s in setOf(ContextState.REST, ContextState.VEHICLE_PASSENGER, ContextState.VEHICLE_DRIVING, ContextState.FLIGHT) ||
++                (rest && s != ContextState.WALKING)
++            assertEquals(if (rest300) 300_000L else 60_000L, reservedBoundMs(s, rest), "$s resting=$rest")
++        }
++        assertEquals(60_000L, reservedBoundMs(ContextState.UNKNOWN, false))
++        assertEquals(300_000L, reservedBoundMs(ContextState.UNKNOWN, true))   // S83a WorkRest resting while UNKNOWN
++        assertEquals(60_000L, reservedBoundMs(ContextState.WALKING, true))
++    }
++}
+diff --git a/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/ReservedBoundParityTest.kt b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/ReservedBoundParityTest.kt
+new file mode 100644
+index 00000000..45557d5b
+--- /dev/null
++++ b/android-companion/glasses/src/test/java/com/rokid/context/glasses/capture/golden/ReservedBoundParityTest.kt
+@@ -0,0 +1,17 @@
++package com.rokid.context.glasses.capture.golden
++
++import com.rokid.context.capture.plan.reservedBoundMs
++import com.rokid.context.core.model.context.ContextState
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++/** The golden recorder re-implements S83's reserved bound; the production function must give the same value for every input. */
++class ReservedBoundParityTest {
++    @Test fun productionBoundEqualsTheGoldenRecordersRule() {
++        val m = DecisionGoldenRecorder::class.java.getDeclaredMethod("reservedBoundMs", ContextState::class.java, java.lang.Boolean.TYPE)
++        m.isAccessible = true
++        for (s in ContextState.entries) for (resting in listOf(true, false)) {
++            assertEquals("$s resting=$resting", m.invoke(DecisionGoldenRecorder, s, resting) as Long, reservedBoundMs(s, resting))
++        }
++    }
++}
+diff --git a/android-companion/services/ai/src/test/java/com/rokid/context/ai/CanonicalJsonParityTest.kt b/android-companion/services/ai/src/test/java/com/rokid/context/ai/CanonicalJsonParityTest.kt
+new file mode 100644
+index 00000000..ad5bcacc
+--- /dev/null
++++ b/android-companion/services/ai/src/test/java/com/rokid/context/ai/CanonicalJsonParityTest.kt
+@@ -0,0 +1,31 @@
++package com.rokid.context.ai
++
++import com.rokid.context.capture.plan.CanonicalJson
++import com.rokid.context.capture.plan.PlanJson
++import com.rokid.context.capture.plan.PlanResolver
++import kotlinx.serialization.json.Json
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++/**
++ * Pins the canonical text and hash that the phone-side PlanCompiler (Task 7) must reproduce byte for byte. The same fixtures are
++ * asserted in :core:capture, so the glasses and the phone cannot drift apart.
++ */
++class CanonicalJsonParityTest {
++    @Test fun canonicalTextIsPinned() {
++        val src = """{ "c":"\u0001\u00e9\"\\","b":{"y":[1.0,2.50,0.0,-0.0],"x":0.50},"a":1.000,"n":null,"t":true }"""
++        assertEquals("{\"a\":1,\"b\":{\"x\":0.5,\"y\":[1,2.5,0,0]},\"c\":\"\\u0001\u00e9\\\"\\\\\",\"n\":null,\"t\":true}", CanonicalJson.encode(Json.parseToJsonElement(src)))
++    }
++
++    @Test fun identityPlanHashAndTextArePinned() {
++        val c = PlanResolver.identity()
++        assertEquals(PINNED_IDENTITY_HASH, PlanJson.configHash(c))
++        assertEquals(PINNED_IDENTITY_CONFIG, CanonicalJson.encode(PlanJson.configJson(c)))
++    }
++
++    private companion object {
++        const val PINNED_IDENTITY_HASH = "f5782e0d8610"
++        const val PINNED_IDENTITY_CONFIG =
++            "{\"ctxBound\":true,\"gate\":{\"bigChange\":22,\"hamming\":10,\"ringCompare\":\"all\"},\"glance\":{\"bigTurnRad\":0.8,\"bridgeMs\":250,\"minBoutMs\":300,\"minBoutRad\":0.26,\"noveltyMinRad\":0.3,\"noveltyWindowMs\":20000,\"onsetRadS\":0.6,\"releaseRadS\":0.3,\"settleMs\":1500},\"phoneFusion\":{\"enterRestMs\":120000,\"enterUnknownMs\":60000,\"enterVehicleMs\":30000,\"fastConfirmGapMs\":45000,\"fastKmh\":25,\"fastTtlMs\":120000,\"hintStillTtlMs\":120000,\"stillFrac\":0.85,\"stillFracWithImage\":0.7,\"switchDriverMs\":60000,\"vehicleHoldMs\":180000},\"policy\":{\"FLIGHT\":{\"capPerMin\":1,\"forceSettle\":true,\"nudges\":true,\"timerPhotoGapsMs\":{\"quietMs\":300000,\"settledMs\":120000,\"stillCapMs\":300000,\"walkMs\":120000}},\"REST\":{\"capPerMin\":2,\"forceSettle\":true,\"nudges\":true,\"timerPhotoGapsMs\":{\"quietMs\":60000,\"settledMs\":30000,\"stillCapMs\":120000,\"walkMs\":30000}},\"VEHICLE_DRIVING\":{\"capPerMin\":null,\"forceSettle\":false,\"nudges\":false,\"timerPhotoGapsMs\":{\"quietMs\":0,\"settledMs\":0,\"stillCapMs\":0,\"walkMs\":0}},\"VEHICLE_PASSENGER\":{\"capPerMin\":null,\"forceSettle\":false,\"nudges\":true,\"timerPhotoGapsMs\":{\"quietMs\":0,\"settledMs\":0,\"stillCapMs\":0,\"walkMs\":0}}}}"
++    }
++}

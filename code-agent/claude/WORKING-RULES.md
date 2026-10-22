@@ -1,0 +1,7 @@
+# Working rules (binding)
+
+- **Agents:** Sonnet 5.5 for planning, review and code; Codex (gpt-6.1-sol, read-only) for independent reviews; Codex never implements. Reuse existing classes; keep tasks lean (<= ~2.5 agent-hours); at most 3 concurrent Gradle builds (`--no-daemon -Dorg.gradle.workers.max=2`).
+- **Git:** never `git stash` (shared across worktrees), never machine-wide `pkill`, never `gradle --stop`, never force-push; one agent per worktree; clean modules before trusting a red gate. Agents do not push or delete with `rm -rf`; the owner pushes (one-line commands) and creates GitHub releases with `gh`.
+- **Secrets:** never print secrets (counts and names only). Glasses logcat leaks the Rokid device secret: read only our own tags (`adb exec-out run-as com.rokid.context.glasses cat files/capture_diag.log`). Run `gitleaks` before any push.
+- **Devices:** never uninstall the phone app (it holds the SQLCipher key); `adb install -r` only, after a phone backup; never install or launch the apps during a phone call; glasses adb is USB-only; phone and watch are wireless (select by transport id). The encrypted-migration device test runs only on the emulator.
+- **Invariants:** PROTOCOL_VERSION stays 1; DB migrations additive; walking veto unconditional; plans never touch sensing; intent never throttles capture; TRIAL/LIVE publishes need the M1 evidence flag; no APKs on releases until builds are release-signed.
