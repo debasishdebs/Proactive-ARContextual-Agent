@@ -17,6 +17,17 @@ import com.rokid.context.glasses.capture.keyframe.Thumb
 import com.rokid.context.glasses.capture.motion.GlanceParams
 import com.rokid.context.glasses.capture.motion.MotionClassifier
 import com.rokid.context.glasses.capture.motion.WearDetector
+import com.rokid.context.capture.trace.CloseReason
+import com.rokid.context.capture.trace.EpisodeCause
+import com.rokid.context.capture.trace.EpisodeOutcome
+import com.rokid.context.capture.trace.PoseSnapshot
+import com.rokid.context.capture.trace.RingHash
+import com.rokid.context.capture.trace.StartSnapshot
+import com.rokid.context.capture.trace.clampDarkStreak
+import com.rokid.context.glasses.capture.trace.SessionTrace
+import com.rokid.context.glasses.capture.trace.TraceInfo
+import com.rokid.context.glasses.capture.trace.TraceProfile
+import com.rokid.context.glasses.capture.trace.TraceStart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -107,6 +118,10 @@ class SamplingSession(
     private val appliedState: () -> ContextState = { ContextState.UNKNOWN },
     /** Called (under [lock], keep it cheap) each time a glance or a frame is refused by the hard ceiling (2 x the cap): the auto-revert counts them. */
     private val onCeilingHit: (Long) -> Unit = {},
+    /** Slice 3a Task 16: the IMU trace recorder (null = none). The session only reports to it and offers clean boundaries; it never waits on it. */
+    private val trace: SessionTrace? = null,
+    /** The settings hash, plan and budget tier in force, for the trace's start and its close-on-change rule. Null = no trace can start. */
+    private val traceInfo: () -> TraceInfo? = { null },
 ) {
     private class Episode(val continuous0: Boolean, val why: String) {
         @Volatile var continuous = continuous0
@@ -124,6 +139,7 @@ class SamplingSession(
     }
 
     private val lock = Any()
+    init { gate.setCeilingListener { onCeilingHit(it) } } // the gate reports its own ceiling refusals (frames, window flushes, forced keeps whose encode failed)
     private val kick = Channel<Unit>(Channel.CONFLATED)
     private val _status = MutableStateFlow(SessionStatus(false, MotionState.STILL, 0, null, "idle"))
     val status: StateFlow<SessionStatus> = _status
@@ -153,6 +169,20 @@ class SamplingSession(
     private var lastLowPower = false
     private var wasBlocked = true
     private var seq = 0L
+    // The context of the gate.offer in flight, read by the score listener on the same thread (guarded by [lock]; only written when tracing).
+    private var offerMotion = MotionState.STILL
+    private var offerDwell = false
+    private var offerForce = false
+    private var offerCap = Int.MAX_VALUE
+    private var offerHard = false
+    // Flushed winners being encoded off-lock: a trace may not start while one is pending (guarded by [lock]).
+    private var emitsInFlight = 0
+    // What the running trace was last told (guarded by [lock]); reset when a trace starts or ends.
+    private var tracedBlock: String? = null
+    private var tracedCtx: ContextState? = null
+    private var tracedResting = false
+    private var tracedProfile: TraceProfile? = null
+    private var tracedGate: com.rokid.context.glasses.capture.keyframe.GateParams? = null
     private var forceAnalyse = false
     private var forceBrief = false
     private var pendingDwellAt: Long? = null
@@ -207,12 +237,19 @@ class SamplingSession(
         else if (lastLowPower) low else lastProfile.settledCheckMs
     }
 
+    /** The wake the session really runs now: the composed profile after WorkRest's `forRest()` (what the heartbeat reports). */
+    fun effectiveWake(): CameraWake = synchronized(lock) { lastProfile.wake }
+
     /** True while the session loop runs (the watchdog reports "alive" only then). */
     val alive: Boolean get() = job?.isActive == true && !stopped
 
     // Measured camera start-up (open -> first frame), the lead of a brief check. Guarded by [lock].
     private val startups = ArrayDeque<Long>()
     private var darkStreak = 0
+    /** The still-scene back-off step changes through here, so the IMU trace sees every change (`bo`). Caller holds [lock]. */
+    private fun still(v: Int) { if (v != stillStepV) { stillStepV = v; trace?.onBackoff(v) } }
+    /** The dark streak changes through here (`dk`, clamped by the recorder). Caller holds [lock]. */
+    private fun dark(v: Int) { if (v != darkStreak) { darkStreak = v; trace?.onDark(v) } }
     private var busyCount = 0
 
     fun start() {
@@ -225,6 +262,10 @@ class SamplingSession(
             motion.markPose()
             shareFromAt = now // the first heartbeat snapshot spans the session, not the whole clock
             lastBriefAt = now - DUE_NOW_MS // the first brief check is due at once, at any cadence
+        }
+        if (trace != null) gate.setScoreListener { seq, d, p, blur, passed ->
+            // Runs inside gate.offer on the offering thread, under [lock] (onFrame): the offer context fields were set just before it.
+            if (trace.recording) trace.onScore(seq, d, p, blur, passed, offerMotion, offerDwell, offerForce, offerCap.takeIf { it != Int.MAX_VALUE }, offerHard, gate.lastOfferNowMs())
         }
         job = scope.launch {
             launch { motion.state.collect { kick.trySend(Unit) } }
@@ -249,6 +290,7 @@ class SamplingSession(
             ep = episode
         }
         closeEpisode(ep)
+        trace?.let { gate.setScoreListener(null); it.close(CloseReason.STOP) }
         fixedJob?.cancel()
         job?.cancel()
         publish(clock(), reason)
@@ -265,7 +307,7 @@ class SamplingSession(
 
     private fun onOnset() = synchronized(lock) {
         // Micro-motion flips STILL -> HEAD_MOVING every few seconds: in SETTLE it must not defeat the still-scene backoff (a real look resets it in onDwell).
-        if (profile().wake == CameraWake.MOTION) stillStepV = 0
+        if (profile().wake == CameraWake.MOTION) still(0)
         if (!resting && profile().wake == CameraWake.MOTION) { // never an immediate open in rest
             forceAnalyse = true // the immediate check at the first sign of movement
             forceBrief = true
@@ -275,7 +317,7 @@ class SamplingSession(
 
     private fun onDwell() = synchronized(lock) {
         val now = clock()
-        stillStepV = 0
+        still(0)
         // Spec A3 section 4: a glance opens the camera only when it can matter (free IMU tests, before any open).
         val k = keptAt.count { now - it < 60_000L }
         val turned = motion.rotationSinceMarkRad()
@@ -284,7 +326,7 @@ class SamplingSession(
         val cap = capNow(cc)
         when (GlanceAdmission.decide(now - lastKeyframeAt, k, cap, hardNow(cc), turned, walked, glanceNow())) {
             GlanceAdmission.Decision.NOVEL_SKIP -> novelSkipAccum++
-            GlanceAdmission.Decision.CAPPED -> { cappedAccum++; if (k.toLong() >= 2L * cap) onCeilingHit(now) }
+            GlanceAdmission.Decision.CAPPED -> { cappedAccum++; if (gate.keptInMinute(now).toLong() >= 2L * cap) onCeilingHit(now) }
             GlanceAdmission.Decision.OPEN -> {
                 pendingDwellAt = now
                 kick.trySend(Unit)
@@ -307,16 +349,17 @@ class SamplingSession(
             why = blockReason(s, base)
             if (why == null) workRest.onSampling() else workRest.onPaused()
             val nowResting = why == null && workRest.resting.value != null
-            if (nowResting != resting) stillStepV = 0 // the profile changes
+            if (nowResting != resting) still(0) // the profile changes
             resting = nowResting
             if (resting) prof = base.forRest()
             blocked = why
-            if (wasBlocked && why == null) stillStepV = 0
+            if (wasBlocked && why == null) still(0)
             wasBlocked = why != null
             lastProfile = prof
             lastLowPower = lowPower()
             ep = episode
             if (why != null) { pendingDwellAt = null; pendingNowAt = null; forceBrief = false }
+            if (trace != null) traceTick(now, s, prof, why)
         }
         if (why != null) {
             closeEpisode(ep)
@@ -371,6 +414,80 @@ class SamplingSession(
         return wait
     }
 
+    private fun causeOf(why: String): EpisodeCause = when (why) {
+        "stream" -> EpisodeCause.STREAM
+        "now" -> EpisodeCause.NOW
+        "dwell" -> EpisodeCause.DWELL
+        "onset" -> EpisodeCause.ONSET
+        "resv" -> EpisodeCause.RESV
+        else -> EpisodeCause.TIMER
+    }
+
+    /**
+     * Once per tick, under [lock], when a trace recorder is attached: closes the trace when the plan or settings changed (I4) or capture is paused or
+     * heat-stopped, reports what the scheduler used this tick (block, context, resting, effective profile, gate values) only when it CHANGED, and
+     * offers a clean boundary when the recorder wants one. Costs two volatile reads while the recorder is idle.
+     */
+    private fun traceTick(now: Long, s: HudSettings, prof: CaptureProfile, why: String?) {
+        val tr = trace ?: return
+        val info = if (tr.recording || tr.wantsStart) traceInfo() else null
+        if (tr.recording) {
+            if (info != null && tr.onConfig(info)) resetTraced()
+            else if (why == "paused") { tr.close(CloseReason.PAUSE); resetTraced() }
+            else if (why == "heat") { tr.close(CloseReason.STOP); resetTraced() }
+        }
+        if (tr.recording) {
+            if (why != tracedBlock) { tracedBlock = why; tr.onBlocked(why) }
+            val ctx = appliedState()
+            if (ctx != tracedCtx) { tracedCtx = ctx; tr.onContext(ctx) }
+            if (resting != tracedResting) { tracedResting = resting; tr.onResting(resting) }
+            if (info != null) {
+                val p = traceProfile(s, prof, info)
+                if (p != tracedProfile) { tracedProfile = p; tr.onProfile(p) }
+            }
+            val g = gate.paramsNow()
+            if (g != tracedGate) { tracedGate = g; tr.onGateParams(g) }
+        } else if (why == null && tr.wantsStart && episode == null && emitsInFlight == 0 && pendingDwellAt == null && pendingNowAt == null && !forceBrief && motion.quiet()) {
+            if (info == null) return
+            val gs = gate.traceState(now)
+            if (!gs.windowEmpty) return
+            val start = try { traceStart(now, s, prof, info, gs) } catch (e: IllegalArgumentException) { log("trace start refused: ${e.message}"); return }
+            if (tr.start(start)) {
+                tracedBlock = null; tracedCtx = start.snapshot.ctx; tracedResting = start.snapshot.resting
+                tracedProfile = start.profile; tracedGate = start.gate
+            }
+        }
+    }
+
+    private fun resetTraced() { tracedBlock = null; tracedCtx = null; tracedResting = false; tracedProfile = null; tracedGate = null }
+
+    private fun traceProfile(s: HudSettings, prof: CaptureProfile, info: TraceInfo): TraceProfile {
+        val cc = contextCap()
+        return TraceProfile(
+            prof.wake, prof.settledCheckMs, prof.quietCheckMs, prof.walkCheckMs, prof.stillCapMs, prof.analysisMs, info.tier, lowPower(),
+            heat.level.value == HeatLevel.SLOW, s.quickLookMs.toLong(), cc, hardNow(cc),
+        )
+    }
+
+    /** The replay snapshot at a clean boundary (S65). Caller holds [lock]. Throws IllegalArgumentException for a value outside the frozen bounds. */
+    private fun traceStart(now: Long, s: HudSettings, prof: CaptureProfile, info: TraceInfo, gs: KeyframeGate.TraceState): TraceStart {
+        val n = trace!!.sampleEvery
+        val snap = StartSnapshot(
+            settingsHash = info.settingsHash,
+            ring = gs.ring.takeLast(StartSnapshot.MAX_RING).map { RingHash(it.first, it.second) },
+            lastKeyframeAt = lastKeyframeAt,
+            keptAt = keptAt.filter { now - it < 60_000L }.takeLast(StartSnapshot.MAX_KEPT),
+            gateLastKeptAt = gs.lastKeptAt, gateKeptAt = gs.keptAt.takeLast(StartSnapshot.MAX_KEPT),
+            lastBriefAt = maxOf(0L, lastBriefAt), stillStep = stillStepV,
+            lastCheckHash = lastCheckHash?.let { RingHash(it.first, it.second) }, darkStreak = clampDarkStreak(darkStreak),
+            bindBackoffUntil = bindBackoffUntil.takeIf { it > 0L }, coldStartGrace = coldStartGrace, bindFailures = bindFailures.coerceAtMost(StartSnapshot.MAX_BIND_FAILURES),
+            prevGyroMs = motion.prevGyroMs(), startups = startups.toList().takeLast(StartSnapshot.MAX_STARTUPS), pose = motion.poseSnapshot(),
+            lastPhotoAttemptAtMs = lastPhotoAttemptAtMs, planGen = info.planGen, planHash = info.planHash, glance = glanceNow(),
+            ctx = appliedState(), resting = resting, tier = info.tier, sampleEvery = n, exact = n == 1,
+        )
+        return TraceStart(snap, traceProfile(s, prof, info), gate.paramsNow(), info)
+    }
+
     /** The first reason sampling may not run now, in the order the HUD cares about; null = go. Caller holds [lock]. */
     private fun blockReason(s: HudSettings, prof: CaptureProfile): String? {
         if (stopped) return "stopped"
@@ -413,6 +530,7 @@ class SamplingSession(
         val ep = Episode(continuous, why)
         episode = ep
         forceBrief = false
+        trace?.onEpisodeOpen(causeOf(why))
         scope.launch {
             try {
                 owner.acquire(OWNER) {
@@ -453,18 +571,29 @@ class SamplingSession(
             if (ep.continuous && ep.firstFrameAt >= 0) lastPhotoAttemptAtMs = maxOf(lastPhotoAttemptAtMs, now) // an open camera satisfies the bound while it is open
             if (ep.openedAt > 0) openAccumMs += (now - maxOf(ep.openedAt, shareFromAt)).coerceAtLeast(0)
             lastBriefAt = now
+            var outcome = EpisodeOutcome.OK
             if (ep.openFailed || ep.noFrames) {
                 lastBriefAt = now - DUE_NOW_MS // retry after the back-off, not on the 5 s beat
                 if (coldStartGrace) {
                     coldStartGrace = false
                     bindBackoffUntil = now + COLD_START_RETRY_MS
+                    outcome = EpisodeOutcome.COLD
                     log("camera not ready on the first bind: retrying in $COLD_START_RETRY_MS ms (not counted)")
-                } else if (camera.busy) onBusy(now) else onBindFailed(now)
+                } else if (camera.busy) { outcome = EpisodeOutcome.BUSY; onBusy(now) } else { outcome = EpisodeOutcome.BIND; onBindFailed(now) }
             }
-            if (!stopped) { val cc = contextCap(); flushed = gate.flushWindow(capNow(cc), hardNow(cc)) }
+            // The trace records the scheduler's own view of how the episode ended (cold, busy and bind drive the back-offs; every other end is ok).
+            trace?.onEpisodeClose(causeOf(ep.why), ep.firstFrameAt.takeIf { it >= 0 }, ep.openedAt.takeIf { it > 0 }, outcome)
+            if (!stopped) {
+                val cc = contextCap(); flushed = gate.flushWindow(capNow(cc), hardNow(cc))
+                if (trace != null && flushed != null) trace.onFlush(FLUSH_EPISODE, gate.lastOfferNowMs())
+            }
+            if (flushed is GateResult.Keep) emitsInFlight++
         }
         (flushed as? GateResult.Keep)?.let { k ->
-            scope.launch(workContext) { try { emit(k, now) } catch (e: CancellationException) { throw e } catch (e: Exception) { log("emit failed: ${e.javaClass.simpleName}") } }
+            scope.launch(workContext) {
+                try { emit(k, now) } catch (e: CancellationException) { throw e } catch (e: Exception) { log("emit failed: ${e.javaClass.simpleName}") }
+                finally { synchronized(lock) { emitsInFlight-- } }
+            }
         }
         kick.trySend(Unit)
     }
@@ -521,6 +650,7 @@ class SamplingSession(
         if (bindFailures >= MAX_BIND_FAILURES && !stopped) {
             degraded = true
             stopped = true
+            trace?.close(CloseReason.STOP)
             blocked = "bind"
             job?.cancel()
             fixedJob?.cancel()
@@ -571,9 +701,10 @@ class SamplingSession(
         else synchronized(lock) {
             if (ep !== episode || ep.closing || stopped) return
             val cc = contextCap()
-            gate.offer(cand, sampleMotion, dwellArmed, forced, capNow(cc), hardNow(cc)).also {
+            offerMotion = sampleMotion; offerDwell = dwellArmed; offerForce = forced; offerCap = capNow(cc); offerHard = hardNow(cc)
+            gate.offer(cand, sampleMotion, dwellArmed, forced, offerCap, offerHard).also {
+                if (trace != null && it is GateResult.Skip) trace.onGateSkip(sequence, it.reason)
                 h = gate.lastHashes()
-                if (!forced && it is GateResult.Skip && it.reason == KeyframeGate.CAPPED && keptAt.count { k -> now - k < 60_000L }.toLong() >= 2L * capNow(cc)) onCeilingHit(now)
             }
         }
         val usable = result != null && !(result is GateResult.Skip && result.reason == KeyframeGate.BLUR)
@@ -584,7 +715,7 @@ class SamplingSession(
                 ep.lastUnusable = false
                 if (dwellArmed) pendingDwellAt = null
                 if (forced) pendingNowAt = null
-                if (!ep.continuous) { darkStreak = 0; closeEpisode(ep) } // a brief check ends at its first usable frame
+                if (!ep.continuous) { dark(0); closeEpisode(ep) } // a brief check ends at its first usable frame
             } else unusable(ep, now)
         }
     }
@@ -596,11 +727,11 @@ class SamplingSession(
     private fun updateBackoff(ep: Episode, h: Pair<Long, Long>?, result: GateResult?, sampleMotion: MotionState) {
         val prev = lastCheckHash
         if (result is GateResult.Skip && result.reason == KeyframeGate.CAPPED) { /* a capped frame is no evidence either way */ }
-        else if (result is GateResult.Keep) stillStepV = 0
+        else if (result is GateResult.Keep) still(0)
         else if ((ep.why == "timer" || ep.why == "resv") && sampleMotion == MotionState.STILL && h != null && prev != null) {
             val same = minOf(java.lang.Long.bitCount(h.first xor prev.first), java.lang.Long.bitCount(h.second xor prev.second)) <= gate.hammingNow()
-            if (!same) stillStepV = 0
-            else if ((backoffBase() shl stillStepV) < lastProfile.stillCapMs) stillStepV++
+            if (!same) still(0)
+            else if ((backoffBase() shl stillStepV) < lastProfile.stillCapMs) still(stillStepV + 1)
         }
         if (h != null) lastCheckHash = h
     }
@@ -613,7 +744,7 @@ class SamplingSession(
     private fun unusable(ep: Episode, now: Long) {
         ep.lastUnusable = true
         if (!ep.continuous && !ep.closing && (ep.frames >= SETTLE_FRAMES || now - ep.firstFrameAt >= SETTLE_MS)) {
-            darkStreak++
+            dark(darkStreak + 1)
             closeEpisode(ep)
         }
     }
@@ -621,12 +752,13 @@ class SamplingSession(
     /** Encodes the WINNING candidate's pixels and hands the keyframe on. */
     private fun emit(keep: GateResult.Keep, now: Long) {
         val enc = encoder.encode(keep.candidate.pixels)
-        if (enc == null) { log("encode failed for sample ${keep.candidate.seq}"); return }
+        if (enc == null) { log("encode failed for sample ${keep.candidate.seq}"); trace?.onGateKeep(keep.candidate.seq, false, null); return }
         val out = KeyframeOut(
             enc.jpeg, enc.width, keep.motion, keep.dwell, keep.blur,
             hex(keep.dhash), hex(keep.phash), keep.candidate.seq, sessionId,
         )
         synchronized(lock) { lastKeyframeAt = now; motion.markPose(); keptAt.addLast(now) }
+        trace?.onGateKeep(keep.candidate.seq, true, now)
         val px = keep.candidate.pixels
         val srcW = YuvCopy.rotatedWidth(px.w, px.h, px.rotation); val srcH = YuvCopy.rotatedHeight(px.w, px.h, px.rotation)
         log("keyframe seq=${out.sampleSeq} src=${srcW}x$srcH out=${enc.width}x${enc.height} motion=${out.motion} dwell=${out.dwell} blur=${out.blur.toInt()} bytes=${out.jpeg.size}")
@@ -674,6 +806,8 @@ class SamplingSession(
         const val COLD_START_RETRY_MS = 500L
         const val COPY_BUDGET_MS = 30L
         const val FORCED_GAP_MS = 120L
+        /** The `fl` reason of the gate window flush at the end of a camera episode. */
+        const val FLUSH_EPISODE = "episode"
     }
 }
 
