@@ -167,6 +167,12 @@ class NodeTypesV2Test {
         assertTrue(table.cols.first().blankable)
     }
 
+    @Test fun nullGapCellIsAcceptedAndNullBoolIsNot() {
+        // a blank gap (null) is 0 = inherit (S68), also at the validator level
+        for (k in listOf("settledGapS", "quietGapS", "walkGapS", "stillCapGapS")) assertEquals(k, emptyList<String>(), problems(rate(buildJsonObject { put("REST", row(k to null)) })))
+        assertHas(rate(buildJsonObject { put("REST", row("forceSettle" to null)) }), "node rate: REST forceSettle must be set")
+    }
+
     @Test fun policyTableBounds() {
         assertEquals(emptyList<String>(), problems(rate(buildJsonObject {
             put("REST", row("capPerMin" to 1, "settledGapS" to 0, "quietGapS" to 5, "walkGapS" to 300, "stillCapGapS" to 60, "forceSettle" to true, "nudges" to false))
