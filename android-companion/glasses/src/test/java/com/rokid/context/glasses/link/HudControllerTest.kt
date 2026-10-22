@@ -57,6 +57,22 @@ class HudControllerTest {
         assertEquals(HudConnection.LIVE, c.connection.value)
     }
 
+    @Test fun capsAckOnReadyWithoutPlan() = runTest {
+        controller()
+        bridge.phone(Channels.STATE, state())
+        val acks = bridge.sent.filter { it.first == Channels.CAPTURE_PLAN_ACK }
+        assertEquals(1, acks.size)
+        val a = (Wire.decode<com.rokid.context.core.model.CapturePlanAck>(acks.single().second.single()) as com.rokid.context.core.model.Decoded.Ok).value
+        assertEquals(0L, a.gen)
+        assertEquals(null, a.effectiveHash); assertEquals(null, a.publishId)
+        assertEquals(com.rokid.context.core.model.PlanMode.SETTINGS, a.mode)
+        assertEquals(listOf("plan1", "shadow", "trial"), a.caps)
+        bridge.phone(Channels.STATE, state())
+        assertEquals("once per session open", 1, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
+        bridge.disconnected(); bridge.phone(Channels.STATE, state())
+        assertEquals("again on the next session", 2, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
+    }
+
     @Test fun btDisconnectClosesTheSessionAndTheNextMessageSaysHelloAgain() = runTest {
         val c = controller()
         bridge.phone(Channels.STATE, state())

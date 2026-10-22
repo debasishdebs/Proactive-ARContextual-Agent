@@ -1,24 +1,12 @@
 package com.rokid.context.capture.plan
 
+import com.rokid.context.core.model.CapturePlanAck
+import com.rokid.context.core.model.CapturePlanMessage
+import com.rokid.context.core.model.PlanAckState
+import com.rokid.context.core.model.PlanMode
 import com.rokid.context.core.model.context.ContextState
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-
-/** Local copies of the wire types of Task 5 (`:core:model` Protocol.kt); the glasses adapt them one to one. */
-enum class PlanMode { SETTINGS, SHADOW, TRIAL, LIVE }
-enum class PlanAckState { REJECTED, STAGED, EFFECTIVE, REVERTED }
-
-data class CapturePlanMessage(
-    val v: Int = 1, val gen: Long, val publishId: String? = null, val mode: PlanMode = PlanMode.SETTINGS, val configHash: String? = null,
-    val planJson: String? = null, val trialEndsAtMs: Long? = null, val trialMaxMs: Long? = null, val phoneInstall: String = "",
-    val atMs: Long = 0, val sessionStartMs: Long = 0,
-)
-
-data class CapturePlanAck(
-    val v: Int = 1, val gen: Long, val publishId: String? = null, val mode: PlanMode = PlanMode.SETTINGS, val effectiveHash: String? = null,
-    val state: PlanAckState = PlanAckState.REJECTED, val reason: String? = null, val planSchemaMax: Int = PLAN_SCHEMA,
-    val caps: List<String> = PlanReceiver.CAPS, val phoneInstall: String = "", val atMs: Long = 0, val sessionStartMs: Long = 0,
-)
 
 interface PlanPersistence { fun load(): ReceiverState?; fun commit(s: ReceiverState) }
 
@@ -73,7 +61,7 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
     fun activated(gen: Long): CapturePlanAck {
         val cur = st
         if (cur == null || cur.appliedGen != gen || gen in cur.terminal) {
-            return CapturePlanAck(gen = gen, state = PlanAckState.REJECTED, reason = "stale", phoneInstall = cur?.phoneInstall ?: "")
+            return CapturePlanAck(gen = gen, state = PlanAckState.REJECTED, reason = "stale", phoneInstall = cur?.phoneInstall ?: "", caps = CAPS)
         }
         if (!cur.effective) {
             val next = cur.copy(
@@ -100,7 +88,7 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
 
     /** Back to the settings path; the gen is terminal and is never applied again. */
     fun revert(reason: String): CapturePlanAck {
-        val cur = st ?: return CapturePlanAck(gen = 0, state = PlanAckState.REJECTED, reason = "stale")
+        val cur = st ?: return CapturePlanAck(gen = 0, state = PlanAckState.REJECTED, reason = "stale", caps = CAPS)
         val terminal = (cur.terminal + (cur.appliedGen to reason)).entries.sortedBy { it.key }.takeLast(MAX_TERMINAL).associate { it.key to it.value }
         val next = ReceiverState(
             appliedGen = cur.appliedGen, phoneInstall = cur.phoneInstall, mode = PlanMode.SETTINGS, planJson = null, configHash = null,
@@ -113,7 +101,7 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
     private fun reject(m: CapturePlanMessage, reason: String) = ack(m.gen, m.mode, PlanAckState.REJECTED, reason, null, m.phoneInstall, m.publishId)
 
     private fun ack(gen: Long, mode: PlanMode, state: PlanAckState, reason: String?, hash: String?, install: String, publishId: String?) =
-        CapturePlanAck(gen = gen, publishId = publishId, mode = mode, effectiveHash = hash, state = state, reason = reason, phoneInstall = install)
+        CapturePlanAck(gen = gen, publishId = publishId, mode = mode, effectiveHash = hash, state = state, reason = reason, phoneInstall = install, caps = CAPS)
 
     companion object {
         const val MAX_TRIAL_MS = 3_600_000L

@@ -66,6 +66,7 @@ object StateFrameBuilder {
     ): HudSettings = settings.copy(
         pauses = toGlasses(activePauses, offset), askBlockedReason = askBlockedReason,
         resumedPauseIds = resumed, pausesExact = offset != null, zoneId = zoneId,
+        planAware = true, // slice 3a: this phone speaks pc_capture_plan (an old phone leaves it false)
     )
 
     private fun toGlasses(records: List<PauseRecord>, offset: ClockOffset?) = records.map { r -> offset?.recordToGlasses(r) ?: r }

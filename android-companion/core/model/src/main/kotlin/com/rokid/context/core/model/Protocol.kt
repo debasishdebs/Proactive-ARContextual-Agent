@@ -29,6 +29,20 @@ object Channels {
     const val AUTO_OPEN = "pc_auto_open"
     /** Battery wave A, phone to glasses: a [PhoneContextMessage] (the phone is in use). Additive. */
     const val PHONE_CONTEXT = "pc_phone_ctx"
+    /** Slice 3a, phone to glasses: a [CapturePlanMessage] (a desired capture plan or "use settings"). Additive. */
+    const val CAPTURE_PLAN = "pc_capture_plan"
+    /** Slice 3a, glasses to phone: a [CapturePlanAck] (also sent unsolicited at gen 0 on every session open, carrying the caps). Additive. */
+    const val CAPTURE_PLAN_ACK = "pc_capture_plan_ack"
+    /** Slice 3a, glasses to phone: a [MarkMessage] ("mark this moment"). Additive. */
+    const val MARK = "pc_mark"
+    /** Slice 3a, phone to glasses: a [MarkAck]. Additive. */
+    const val MARK_ACK = "pc_mark_ack"
+    /** Slice 3a, phone to glasses: a [TraceControl] (collect, tombstones, send). Additive. */
+    const val TRACE_CTL = "pc_trace_ctl"
+    /** Slice 3a, glasses to phone: a [TraceChunk]. Additive. */
+    const val TRACE_CHUNK = "pc_trace_chunk"
+    /** Slice 3a, phone to glasses: a [TraceAck]. Additive. */
+    const val TRACE_ACK = "pc_trace_ack"
 }
 
 /** How the glasses decide when to capture: Smart = motion-driven keyframes, Fixed = the interval timer. */
@@ -202,6 +216,8 @@ data class HudSettings(
     val motionLabel: MotionLabel = MotionLabel.NONE,
     /** Wave A3: source ids the user turned off; glasses_imu is ignored here (see [normalized]). */
     val motionSourcesOff: List<String> = emptyList(),
+    /** Slice 3a, additive: a new phone sets true (it speaks `pc_capture_plan`). Glasses holding a persisted plan that see false revert to settings (`auto:old_phone`). */
+    val planAware: Boolean = false,
 )
 
 /** Wave A3, additive: training label for the motion feature log. */
@@ -272,7 +288,124 @@ sealed interface Command {
 }
 
 /** `pc_cmd` payload: commands are wrapped so every message carries [v]. */
-@Serializable data class CommandEnvelope(val v: Int = PROTOCOL_VERSION, val command: Command)
+@Serializable data class CommandEnvelope(
+    val v: Int = PROTOCOL_VERSION,
+    val command: Command,
+    /** Slice 3a, additive: ties a `ListenStart` to the `pc_mark` that opened it (`MarkMessage.listenId`). An old decoder ignores it. */
+    val listenId: String? = null,
+)
+
+/** Slice 3a: how the glasses run a capture plan. An unknown wire value decodes to [SETTINGS]. */
+@Serializable enum class PlanMode { SETTINGS, SHADOW, TRIAL, LIVE }
+
+/** Slice 3a: the state a [CapturePlanAck] reports. An unknown wire value decodes to [REJECTED]. */
+@Serializable enum class PlanAckState { REJECTED, STAGED, EFFECTIVE, REVERTED }
+
+/**
+ * Slice 3a, phone to glasses on [Channels.CAPTURE_PLAN]. [gen] is the phone's durable desired-state counter; [mode] =
+ * SETTINGS with no [planJson] means use settings. [atMs] (phone clock) before [sessionStartMs] = a stale transport copy.
+ */
+@Serializable
+data class CapturePlanMessage(
+    val v: Int = PROTOCOL_VERSION,
+    val gen: Long,
+    val publishId: String? = null,
+    val mode: PlanMode = PlanMode.SETTINGS,
+    val configHash: String? = null,
+    val planJson: String? = null,
+    val trialEndsAtMs: Long? = null,
+    val trialMaxMs: Long? = null,
+    /** The phone install this gen belongs to; echoed in the ack so the phone can tell a stale ack from this install's. */
+    val phoneInstall: String = "",
+    val atMs: Long = 0,
+    val sessionStartMs: Long = 0,
+)
+
+/**
+ * Slice 3a, glasses to phone on [Channels.CAPTURE_PLAN_ACK]. The phone matches it by [gen], [phoneInstall] and
+ * [sessionStartMs] (all echoed from the message). The unsolicited caps ack on session open has gen 0 and no plan.
+ */
+@Serializable
+data class CapturePlanAck(
+    val v: Int = PROTOCOL_VERSION,
+    val gen: Long,
+    val publishId: String? = null,
+    val mode: PlanMode = PlanMode.SETTINGS,
+    val effectiveHash: String? = null,
+    val state: PlanAckState = PlanAckState.REJECTED,
+    val reason: String? = null,
+    val planSchemaMax: Int = 1,
+    val caps: List<String> = emptyList(),
+    val phoneInstall: String = "",
+    val atMs: Long = 0,
+    val sessionStartMs: Long = 0,
+)
+
+/**
+ * Slice 3a, glasses to phone on [Channels.MARK]. [atMs] and [atElapsedMs] are the occurrence time, never a freshness
+ * test: a queued mark older than [sessionStartMs] is still accepted.
+ */
+@Serializable
+data class MarkMessage(
+    val v: Int = PROTOCOL_VERSION,
+    val epoch: String,
+    val seq: Long,
+    val atMs: Long,
+    val atElapsedMs: Long,
+    val bootCount: Int = -1,
+    val sessionStartMs: Long = 0,
+    val src: String = "tap",
+    val listen: Boolean = false,
+    val listenId: String? = null,
+    val undo: Long? = null,
+    val deletionCounter: Long = -1,
+)
+
+/** Slice 3a, phone to glasses on [Channels.MARK_ACK]: the marks of [epoch] with these [seqs] are stored. */
+@Serializable data class MarkAck(val v: Int = PROTOCOL_VERSION, val epoch: String, val seqs: List<Long> = emptyList())
+
+/** Slice 3a, phone to glasses on [Channels.TRACE_CTL]: the "collect for tuning" session, deletion tombstones and the send request. */
+@Serializable
+data class TraceControl(
+    val v: Int = PROTOCOL_VERSION,
+    val collect: Boolean = false,
+    val collectUntilMs: Long? = null,
+    val installId: String = "",
+    val deletionCounter: Long = 0,
+    val tombstones: List<String> = emptyList(),
+    val forgetFromMs: Long? = null,
+    val forgetToMs: Long? = null,
+    val send: Boolean = false,
+    val atMs: Long = 0,
+    val sessionStartMs: Long = 0,
+)
+
+/** Slice 3a, glasses to phone on [Channels.TRACE_CHUNK]: one base64 gzip chunk of a trace. */
+@Serializable
+data class TraceChunk(
+    val v: Int = PROTOCOL_VERSION,
+    val traceId: String,
+    val kind: String = "",
+    val seq: Int = 0,
+    val count: Int = 0,
+    val installId: String = "",
+    val deletionCounter: Long = 0,
+    val sha256: String = "",
+    val b64: String = "",
+    val atMs: Long = 0,
+    val sessionStartMs: Long = 0,
+)
+
+/** Slice 3a, phone to glasses on [Channels.TRACE_ACK]: the trace was stored ([ok]) or not ([reason]). */
+@Serializable
+data class TraceAck(
+    val v: Int = PROTOCOL_VERSION,
+    val traceId: String,
+    val ok: Boolean,
+    val reason: String? = null,
+    val atMs: Long = 0,
+    val sessionStartMs: Long = 0,
+)
 
 /**
  * Glasses → phone on `pc_hello`: sent when a session opens and again after each buffered frame (a status report).
