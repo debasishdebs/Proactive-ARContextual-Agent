@@ -55,4 +55,12 @@ class TraceImportDeleteAllTest {
         assertEquals("old_epoch", (again as TraceImportResult.Rejected).code)
         assertFalse(folder.exists())
     }
+
+    @Test fun deleteAllClearsPlanStateAndCollectPrefs() = runBlocking {
+        ctx.getSharedPreferences("canvas_plan_state", Context.MODE_PRIVATE).edit().putLong("gen", 7).putString("msg", "x").commit()
+        ctx.getSharedPreferences(CollectSession.PREFS, Context.MODE_PRIVATE).edit().putLong("until", 9).commit()
+        MemoryWipe.deleteAll(ctx)
+        assertTrue(ctx.getSharedPreferences("canvas_plan_state", Context.MODE_PRIVATE).all.isEmpty())
+        assertTrue(ctx.getSharedPreferences(CollectSession.PREFS, Context.MODE_PRIVATE).all.isEmpty())
+    }
 }
