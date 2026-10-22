@@ -1,5 +1,5 @@
 import * as E from '../../main/assets/canvas/editorlogic.js';
-import { nodeTypes, livePipe, liveCells, eq, ok } from './fixtures.js';
+import { nodeTypes, allTypes, captureTypes, capturePipe, livePipe, liveCells, eq, ok } from './fixtures.js';
 
 const layout = { layers: 5, columns: 1, cells: liveCells };
 const open = (o) => E.open(livePipe(), 3, layout, [], o);
@@ -365,5 +365,121 @@ export const tests = {
   nearestAboveUsesTheCardCentre() {
     const two = [{ id: 'l', position: { x: 0, y: 0 } }, { id: 'r', position: { x: 220, y: 0 } }];
     eq(E.nearestAbove(two, { x: 210, y: 100 }), 'r', 'cards are 180 wide: centres at 90 and 310');
+  },
+
+  // ---- schema 2 (capture half)
+  paletteGroupsCaptureNodesByCategoryAndHidesUnliveable() {
+    const types = allTypes.concat([Object.assign({}, captureTypes[0], { type: 'expr', label: 'Expression', liveable: false, category: 'Thresholds/Filters' })]);
+    const g = E.paletteGroups(open(), types);
+    const names = g.map((x) => x.category);
+    for (const c of ['Sensors', 'Thresholds/Filters', 'Signals/Hub', 'Policy/Frequency', 'Actions/Capture']) ok(names.includes(c), c);
+    ok(g.find((x) => x.category === 'Actions/Capture').items.some((it) => it.label === 'Capture image'));
+    ok(!JSON.stringify(g).includes('Expression'), 'an expression node (not liveable until 3c) is not offered');
+    ok(!JSON.stringify(g).includes('input.photos') && !JSON.stringify(g).includes('"Photo"'), 'the Photo input stays out of the palette');
+  },
+  inspectorIsGeneratedFromTheParamSchema() {
+    const cap = () => E.open(capturePipe(), 1, { layers: 5, columns: 1, cells: {} }, []);
+    let ed = E.selectNode(cap(), 'head_1');
+    const m = E.inspectorFor(ed, allTypes, {});
+    eq(m.fields.map((f) => [f.name, f.control, f.sweep]), [['onsetRadS', 'number', true], ['bridgeMs', 'number', true]]);
+    eq(m.fields[0].value, 0.6, 'the schema default shows');
+    ed = E.selectNode(ed, 'rate_1');
+    const t = E.inspectorFor(ed, allTypes, {});
+    eq(t.fields.map((f) => f.control), ['table']);
+    ok(t.fields[0].table.hint.includes('reserved timer photo attempt'));
+    eq(E.inspectorFor(E.selectNode(ed, 'thresh_1'), allTypes, {}).fields.map((f) => f.control), ['select', 'select', 'number']);
+    eq(E.inspectorFor(E.selectNode(ed, 'hub_1'), allTypes, {}).fields, [], 'the hub has no tunables');
+  },
+  inputChangeBoundsAndEnum() {
+    let ed = E.selectNode(E.open(capturePipe(), 1, null, []), 'thresh_1');
+    const bad = E.inputChange(ed, 'thresh_1', 'value', null, '9000', allTypes, {});
+    eq(bad.error, 'Must be between 0 and 5000'); eq(bad.ed.ds.rev, 0, 'a refused value changes nothing');
+    const good = E.inputChange(ed, 'thresh_1', 'feature', null, 'boutMs', allTypes, {});
+    eq(good.ed.ds.pipe.nodes.find((n) => n.id === 'thresh_1').params.feature, 'boutMs');
+    eq(E.isDirty(good.ed), true);
+    eq(E.inputChange(ed, 'thresh_1', 'feature', null, 'nope', allTypes, {}).error, 'Pick one of the listed options');
+  },
+  tableChangeWritesAndBlankInherits() {
+    let ed = E.open(capturePipe(), 1, null, []);
+    let r = E.tableChange(ed, 'rate_1', 'rows', 'REST', 'settledGapS', '60', allTypes);
+    ok(!r.error, r.error);
+    eq(r.ed.ds.pipe.nodes.find((n) => n.id === 'rate_1').params.rows, { REST: { settledGapS: 60 } });
+    r = E.tableChange(r.ed, 'rate_1', 'rows', 'REST', 'settledGapS', '', allTypes);
+    eq(r.ed.ds.pipe.nodes.find((n) => n.id === 'rate_1').params, {}, 'blank inherits: the cell, the row and the param are gone');
+    const refused = E.tableChange(ed, 'rate_1', 'rows', 'REST', 'settledGapS', '4', allTypes);
+    eq([refused.error, refused.ed.ds.rev], ['Must be 0 (inherit) or between 5 and 300', 0]);
+    eq(E.tableChange(E.open(capturePipe(), 1, null, [], { readOnly: true }), 'rate_1', 'rows', 'REST', 'settledGapS', '60', allTypes).error, E.READ_ONLY_TEXT);
+  },
+  flowCarriesLanesAndBindings() {
+    const ed = E.open(capturePipe(), 1, { layers: 5, columns: 1, cells: {} }, []);
+    const f = E.flowFor(ed, allTypes);
+    eq(f.lanes.map((l) => l.domain), ['RT_GLASSES', 'RT_PHONE', 'ASYNC']);
+    eq(E.bindingsFor(ed, allTypes).map((b) => b.name), ['ctx', 'photos']);
+  },
+
+  // ---- compile (a read-only call: it never saves) and the draft's own save
+  compileStartsAtTheCurrentRevAndSendsTheDraft() {
+    let ed = apply(E.open(capturePipe(), 1, null, []), { kind: 'param', nodeId: 'thresh_1', key: 'value', value: 0.8 });
+    eq(JSON.parse(E.compileRequest(ed).json).nodes[1].params.value, 0.8);
+    ed = E.compileStart(ed);
+    eq([ed.compile.state, ed.compile.rev], ['running', ed.ds.rev]);
+    eq(E.compileView(ed).state, 'running');
+    eq(E.compileView(open()), null, 'nothing compiled yet');
+  },
+  compileReplyIsAttributedToNodes() {
+    let ed = E.compileStart(E.open(capturePipe(), 1, { layers: 5, columns: 1, cells: {} }, []));
+    const rev = ed.compile.rev;
+    ed = E.applyCompile(ed, rev, {
+      ok: false, planJson: null, configHash: null, staticCost: { modelCalls: 0, rtOps: 3, cpuClass: 1 },
+      problems: ['node thresh_1: gyroPeak threshold must be between 0 and 10', 'pipeline has no capture half'], warnings: ['timer photo gap below the settings profile has no effect'],
+    });
+    const v = E.compileView(ed);
+    eq([v.state, v.ok, v.stale], ['done', false, false]);
+    eq(v.problems, [{ text: 'node thresh_1: gyroPeak threshold must be between 0 and 10', nodeId: 'thresh_1' }, { text: 'pipeline has no capture half' }]);
+    eq(v.warnings.map((w) => w.text), ['timer photo gap below the settings profile has no effect']);
+    const f = E.flowFor(ed, allTypes);
+    const n = (id) => f.nodes.find((x) => x.id === id);
+    eq(n('thresh_1').data.problems, ['node thresh_1: gyroPeak threshold must be between 0 and 10'], 'the compile problem shows on its node');
+    eq(n('rate_1').data.warnings, ['timer photo gap below the settings profile has no effect'], 'the gap warning shows on the capture frequency node');
+    eq(n('head_1').data.problems, []);
+  },
+  compileWarningsNeverBlockAndSayWhatCompiled() {
+    let ed = E.compileStart(E.open(capturePipe(), 1, null, []));
+    ed = E.applyCompile(ed, ed.compile.rev, { ok: true, planJson: '{"v":1}', configHash: 'abcdef0123456789', staticCost: { modelCalls: 0, rtOps: 3, cpuClass: 1 }, problems: [], warnings: ['timer photo gap below the settings profile has no effect'] });
+    const v = E.compileView(ed);
+    eq([v.ok, v.problems.length, v.warnings.length], [true, 0, 1]);
+    ok(v.summary.includes('7 bytes') && v.summary.includes('abcdef01') && v.summary.includes('3 rt ops'), v.summary);
+    ok(!JSON.stringify(v).toLowerCase().includes('clamp'), 'there is no clamped text');
+  },
+  anEditMakesTheCompileStaleAndHidesItsMarks() {
+    let ed = E.compileStart(E.open(capturePipe(), 1, null, []));
+    ed = E.applyCompile(ed, ed.compile.rev, { ok: false, planJson: null, problems: ['node thresh_1: x'], warnings: [], staticCost: { modelCalls: 0, rtOps: 0, cpuClass: 0 } });
+    ed = apply(ed, { kind: 'param', nodeId: 'thresh_1', key: 'value', value: 0.9 });
+    const v = E.compileView(ed);
+    eq(v.stale, true); ok(v.note.includes('changed since'), v.note);
+    eq(E.flowFor(ed, allTypes).nodes.find((n) => n.id === 'thresh_1').data.problems, [], 'old compile marks are not shown against a changed draft');
+  },
+  aReplyForAnOlderCompileIsDropped() {
+    let ed = E.compileStart(E.open(capturePipe(), 1, null, []));
+    const old = ed.compile.rev;
+    ed = apply(ed, { kind: 'param', nodeId: 'thresh_1', key: 'value', value: 0.9 });
+    ed = E.compileStart(ed);
+    const same = E.applyCompile(ed, old, { ok: true, planJson: '{}', configHash: 'h', problems: [], warnings: [], staticCost: {} });
+    eq(same, ed, 'the reply for revision ' + old + ' is not the running compile');
+    eq(E.compileFailed(ed, old, 'x'), ed);
+  },
+  compileDoesNotTouchDirtyOrSaved() {
+    let ed = apply(E.open(capturePipe(), 4, null, []), { kind: 'param', nodeId: 'thresh_1', key: 'value', value: 0.9 });
+    const before = [E.isDirty(ed), ed.ds.savedRev, ed.ds.rev];
+    ed = E.applyCompile(E.compileStart(ed), ed.ds.rev, { ok: true, planJson: '{}', configHash: 'h', problems: [], warnings: [], staticCost: {} });
+    eq([E.isDirty(ed), ed.ds.savedRev, ed.ds.rev], before, 'compiling is not saving');
+    ok(E.compileView(ed).note.includes('unsaved'), 'the view says it compiled unsaved edits');
+    const saved = E.markSaved(ed, 5, ed.ds.rev);
+    eq(E.compileView(saved).stale, false, 'saving does not change what was compiled');
+    eq(E.compileView(saved).note, '');
+  },
+  readOnlyCanStillCompile() {
+    const ed = E.compileStart(E.open(capturePipe(), 1, null, [], { readOnly: true }));
+    eq(ed.compile.state, 'running');
   },
 };

@@ -1,10 +1,10 @@
 // Every decision of the DAG editor screen, pure: no React, no DOM, no fetch. floweditor.js only renders this state.
 // State (`ed`) is never mutated; each operation returns a new one (or the same object when nothing changed).
 import * as draft from './draftstate.js';
-import { toFlow, canConnect } from './flowadapter.js';
+import { toFlow, canConnect, bindingsOf, lanesOf } from './flowadapter.js';
 import { branchesOf } from './graph.js';
-import { typeOf, own, edgeKey } from './validate.js';
-import { fields, coerce, promptParts, coercePromptPart } from './paramform.js';
+import { typeOf, own, edgeKey, attributeProblems } from './validate.js';
+import { fields, coerce, coerceCell, promptParts, coercePromptPart } from './paramform.js';
 import * as keys from './keys.js';
 
 /** Model roles an `ai.prompt` node can use (services/ai Role; EMBED is not allowed by the validator). */
@@ -24,7 +24,7 @@ const noSel = () => ({ nodes: [], edges: [] });
 export function open(pipe, serverRev, layout, problems, opts) {
   let ds = draft.init(pipe, serverRev);
   if (layout) ds = draft.validationReply(ds, { rev: 0, layout, problems: problems || [] });
-  return { ds, cleanRev: 0, readOnly: !!(opts && opts.readOnly), sel: noSel(), nav: keys.idle, status: '', armed: null, choose: null };
+  return { ds, cleanRev: 0, readOnly: !!(opts && opts.readOnly), sel: noSel(), nav: keys.idle, status: '', armed: null, choose: null, compile: null };
 }
 
 /** Dirty is tracked here: the draft's own revision against the revision last saved (or loaded). */
@@ -193,7 +193,7 @@ export function paletteGroups(ed, nodeTypes) {
   if (isReadOnly(ed)) return [];
   const groups = [];
   for (const t of nodeTypes || []) {
-    if (!t.palette) continue;
+    if (!t.palette || t.liveable === false) continue; // `expr` is registered but hidden until 3c
     const cat = String(t.category || 'Other');
     let g = groups.find((x) => x.category === cat);
     if (!g) { g = { category: cat, items: [] }; groups.push(g); }
@@ -238,9 +238,12 @@ export function dropOnPane(ed, type, pos, flowNodes, nodeTypes) {
 
 // ---------------------------------------------------------------- the view model
 
-/** toFlow plus the editor's selection and connect-mode marks. */
+/** toFlow plus the editor's selection and connect-mode marks, and the compile marks while they still describe this draft. */
 export function flowFor(ed, nodeTypes) {
-  const f = toFlow(ed.ds.pipe, ed.ds.layout, ed.ds.problems, nodeTypes, { readOnly: isReadOnly(ed) });
+  const c = compileView(ed);
+  const marks = c && c.state === 'done' && !c.stale ? c : null;
+  const problems = marks ? (ed.ds.problems || []).concat(marks.problems.filter((p) => p.nodeId || p.edge)) : ed.ds.problems;
+  const f = toFlow(ed.ds.pipe, ed.ds.layout, problems, nodeTypes, { readOnly: isReadOnly(ed), warnings: marks ? marks.warnings.filter((w) => w.nodeId) : [] });
   const connecting = ed.nav.mode === 'connecting';
   for (const n of f.nodes) {
     n.selected = ed.sel.nodes.includes(n.id);
@@ -281,6 +284,67 @@ export function stabilize(prev, next, measured) {
     nodes: prev && sameList(prev.nodes, nodes) ? prev.nodes : nodes,
     edges: prev && sameList(prev.edges, edges) ? prev.edges : edges,
   };
+}
+
+/** The domain lanes the canvas draws ([] for a single-domain graph). */
+export const lanesFor = (ed, nodeTypes) => lanesOf(ed.ds.pipe, ed.ds.layout, nodeTypes);
+
+/** The named links between lanes, for the bindings list. */
+export const bindingsFor = (ed, nodeTypes) => bindingsOf(ed.ds.pipe, nodeTypes);
+
+// ---------------------------------------------------------------- compile (POST /api/plans/compile)
+
+/** The compile route is read-only: it sends nothing and stores nothing, and it never saves the draft. */
+export const compileRequest = (ed) => ({ json: JSON.stringify(ed.ds.pipe) });
+
+/** Marks a compile of the current revision as running (a newer start supersedes an older one in flight). */
+export const compileStart = (ed) => Object.assign({}, ed, { compile: { state: 'running', rev: ed.ds.rev } });
+
+const utf8Length = (str) => { let n = 0; for (const ch of String(str)) { const c = ch.codePointAt(0); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; } return n; };
+
+/** A compile reply for `rev`: dropped unless it is the running compile's. Kept even when the draft has moved on (the view then says stale). */
+export function applyCompile(ed, rev, reply) {
+  if (!ed.compile || ed.compile.rev !== rev || ed.compile.state !== 'running') return ed;
+  const cost = (reply && reply.staticCost) || {};
+  return Object.assign({}, ed, {
+    compile: {
+      state: 'done', rev, ok: !!(reply && reply.ok), planBytes: reply && typeof reply.planJson === 'string' ? utf8Length(reply.planJson) : null,
+      hash: reply && reply.configHash ? String(reply.configHash) : '', modelCalls: Number(cost.modelCalls) || 0, rtOps: Number(cost.rtOps) || 0,
+      problems: attributeProblems(reply && reply.problems), warnings: attributeProblems(reply && reply.warnings),
+    },
+  });
+}
+
+export function compileFailed(ed, rev, message) {
+  if (!ed.compile || ed.compile.rev !== rev || ed.compile.state !== 'running') return ed;
+  return Object.assign({}, ed, { compile: { state: 'failed', rev, message: String(message || 'The compile failed.') } });
+}
+
+/** A warning that the compiler words for the whole plan belongs on the node that causes it. */
+const WARNING_HOMES = [{ match: /timer photo gap/, type: 'policy.capture_rate' }];
+function placeWarnings(pipe, list) {
+  const out = [];
+  for (const w of list) {
+    if (w.nodeId) { out.push(w); continue; }
+    const home = WARNING_HOMES.find((h) => h.match.test(w.text));
+    const nodes = home ? (pipe.nodes || []).filter((n) => n.type === home.type) : [];
+    if (nodes.length === 0) out.push(w); else for (const n of nodes) out.push({ text: w.text, nodeId: n.id });
+  }
+  return out;
+}
+
+/** null before any compile; else {state, stale, ok, problems, warnings, summary, note, message}. A stale view's marks are not drawn on the nodes. */
+export function compileView(ed) {
+  const c = ed.compile;
+  if (!c) return null;
+  const stale = c.rev !== ed.ds.rev;
+  if (c.state !== 'done') return { state: c.state, stale, ok: false, problems: [], warnings: [], summary: '', note: '', message: c.message || '' };
+  const bytes = c.planBytes === null ? '' : c.planBytes + ' bytes';
+  const summary = c.ok
+    ? 'Compiles: plan ' + bytes + (c.hash ? ', hash ' + c.hash.slice(0, 8) : '') + ', ' + c.modelCalls + ' model calls, ' + c.rtOps + ' rt ops.'
+    : 'Does not compile yet: ' + c.problems.length + (c.problems.length === 1 ? ' problem.' : ' problems.');
+  const note = stale ? 'The draft has changed since this compile. Compile again.' : isDirty(ed) ? 'Compiled your unsaved edits. Save to keep them.' : '';
+  return { state: 'done', stale, ok: c.ok, problems: c.problems, warnings: placeWarnings(ed.ds.pipe, c.warnings), summary, note, message: '' };
 }
 
 /** [{text, nodeId?, edgeId?}]: what the problems list shows; nodeId is what a click focuses. */
@@ -338,6 +402,20 @@ export function inputChange(ed, nodeId, name, part, raw, nodeTypes, env) {
     }
   }
   return dispatch(ed, { kind: 'param', nodeId, key: name, value }, nodeTypes);
+}
+
+/**
+ * One cell of a table param typed in the inspector. → {ed, error?}; a value that fails to coerce changes nothing.
+ * A blank cell is removed (a gap inherits the settings profile, a cap is unchanged); a table left empty removes the param.
+ */
+export function tableChange(ed, nodeId, name, row, col, raw, nodeTypes) {
+  const node = nodeById(ed.ds.pipe, nodeId);
+  const nt = node && typeOf(nodeTypes, node.type);
+  const desc = nt && (nt.params || []).find((d) => d.name === name && d.kind === 'table');
+  if (!node || !desc) return { ed, error: 'No such node' };
+  const r = coerceCell(fields([desc], node.params || {}, FIELD_CTX)[0], row, col, raw);
+  if (r.error) return { ed, error: r.error };
+  return dispatch(ed, { kind: 'param', nodeId, key: name, value: r.value }, nodeTypes);
 }
 
 /** What POST /api/check-prompt gets for a node: the text as typed now (`texts` overrides the stored values), or null. */

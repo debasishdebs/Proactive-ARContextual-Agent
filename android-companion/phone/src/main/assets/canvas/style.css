@@ -115,3 +115,18 @@ progress { width: 100%; }
 .hits td:first-child { min-width: 160px; }
 textarea[readonly] { background: var(--step); }
 @media (max-width: 480px) { .hits { display: block; overflow-x: auto; } }
+/* slice 3a: domain lanes, warnings, parameter tables */
+.node-card.lane-rt_glasses { border-left: 6px solid var(--accent); }
+.node-card.lane-rt_phone { border-left: 6px solid var(--muted); }
+.node-card.has-warning:not(.has-problem) { border-color: var(--warn, #b26a00); border-width: 2px; }
+.node-card .badge.warn { right: auto; left: -8px; background: var(--warn, #b26a00); }
+.lane-legend { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0 0 8px; padding: 0; }
+.lane-chip { padding: 2px 10px; border: 1.5px solid var(--line); border-radius: 12px; font-size: 13px; }
+.lane-chip.lane-rt_glasses { border-left: 6px solid var(--accent); }
+.lane-chip.lane-rt_phone { border-left: 6px solid var(--muted); }
+.bindings { margin: 0; padding-left: 18px; overflow-wrap: anywhere; }
+.warn-text, .warnings { color: var(--warn, #b26a00); }
+.table-scroll { overflow-x: auto; }
+table.params { border-collapse: collapse; font-size: 13px; }
+table.params th, table.params td { padding: 3px 5px; border: 1px solid var(--line); text-align: left; vertical-align: bottom; }
+table.params input[type=number] { width: 5.5em; }

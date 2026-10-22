@@ -1,5 +1,5 @@
-import { portCheck, problemsByNode, portLabel, edgeKey } from '../../main/assets/canvas/validate.js';
-import { nodeTypes, livePipe, eq, ok } from './fixtures.js';
+import { portCheck, attributeProblems, problemsByNode, portLabel, edgeKey } from '../../main/assets/canvas/validate.js';
+import { nodeTypes, allTypes, capturePipe, livePipe, eq, ok } from './fixtures.js';
 
 const PROTO = ['constructor', '__proto__', 'hasOwnProperty', 'toString'];
 
@@ -50,5 +50,22 @@ export const tests = {
     eq(portCheck(livePipe(), 'extract', 'photos', nodeTypes), 'Photo takes no input');
     eq(portLabel('PHOTOS'), 'Photo'); eq(portLabel('EXTRACTION'), 'Facts'); eq(portLabel('JSON'), 'JSON'); eq(portLabel('PREVIEW'), 'Preview');
     ok(portCheck(livePipe(), 'trust', 'prompt', nodeTypes), 'unknown node refused');
+  },
+
+  portCheckAllowsOnlyThePhotosBinding() {
+    const p = capturePipe();
+    p.edges = p.edges.filter((e) => e.to !== 'photos');
+    eq(portCheck(p, 'capture_1', 'photos', allTypes), null, 'capture.image feeds input.photos: the photos binding');
+    eq(portCheck(p, 'thresh_1', 'photos', allTypes), 'Photo takes no input');
+    eq(portCheck(p, 'rate_1', 'capture_1', allTypes), null);
+    eq(portCheck(p, 'head_1', 'capture_1', allTypes), 'Capture image accepts Trigger, not Motion');
+  },
+  capturePortsHaveLabels() {
+    eq(['MOTION_EVENT', 'TRIGGER', 'CONTEXT', 'SIGNAL'].map(portLabel), ['Motion', 'Trigger', 'Context', 'Signal']);
+  },
+  edgeProblemsFromCompileTexts() {
+    const t = attributeProblems(['node thresh_1: gyroPeak threshold must be between 0 and 10', 'edge a->b: crosses domains', 'pipeline has no capture half', 'node  x: weird']);
+    eq(t, [{ text: 'node thresh_1: gyroPeak threshold must be between 0 and 10', nodeId: 'thresh_1' },
+      { text: 'edge a->b: crosses domains', edge: { from: 'a', to: 'b' } }, { text: 'pipeline has no capture half' }, { text: 'node  x: weird' }]);
   },
 };

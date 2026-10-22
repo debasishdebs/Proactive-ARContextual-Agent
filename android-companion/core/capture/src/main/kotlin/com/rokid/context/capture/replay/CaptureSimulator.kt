@@ -46,6 +46,8 @@ class ReplayCandidate(
     val table: Map<ContextState, ContextCapturePolicy>? = null,
     /** False: the phone's context is not applied to capture (the UNKNOWN row is used whatever it says). */
     val ctxBound: Boolean = true,
+    /** True: replay a recording made under another wake with the SETTLE profile, as a plan always does (S27). Implied by [table]. */
+    val forceSettle: Boolean = false,
 ) {
     companion object {
         /** The table of a plan: the editable rows given, every other state the locked default row (an editable row left out is the UNKNOWN row, as in `ActiveConfig.of`). */
@@ -186,7 +188,7 @@ object CaptureSimulator {
         // recorded inputs
         var pf: TraceEvent.Profile = CaptureProfile.of(CameraWake.MOTION, snap.tier).let {
             TraceEvent.Profile(start, it.wake, it.settledCheckMs, it.quietCheckMs, it.walkCheckMs, it.stillCapMs, it.analysisMs, snap.tier, false, false, 3000, null, false)
-        }
+        }.let { if (cand?.forceSettle == true) settled(it) else it }
         var ctx = snap.ctx
         var resting = snap.resting
         var blocked: String? = null
@@ -248,6 +250,16 @@ object CaptureSimulator {
             store.seed(snap.ring.map { it.d to it.p }, snap.gateLastKeptAt ?: 0L)
         }
 
+        /** A plan runs SETTLE (S27): the recorded profile with the SETTLE wake and the SETTLE tier's gaps as floors (the row minima already in it stay). */
+        fun settled(e: TraceEvent.Profile): TraceEvent.Profile {
+            if (e.wake == CameraWake.SETTLE) return e
+            val b = CaptureProfile.of(CameraWake.SETTLE, e.tier)
+            return e.copy(
+                wake = CameraWake.SETTLE, settledMs = maxOf(e.settledMs, b.settledCheckMs), quietMs = maxOf(e.quietMs, b.quietCheckMs),
+                walkMs = maxOf(e.walkMs ?: 0L, b.walkCheckMs ?: 0L), stillCapMs = maxOf(e.stillCapMs, b.stillCapMs),
+            )
+        }
+
         fun newWin(t: Long) = Win(t, bindFailures, bindBackoffUntil.takeIf { it > t })
 
         fun mismatch(kind: String, at: Long, detail: String) {
@@ -258,14 +270,16 @@ object CaptureSimulator {
         // ---- the event loop ----
 
         fun accept(e: TraceEvent) {
-            advanceTo(e.tMs)
+            // The session decides, then appends the `ep` open at the tick's own instant: the tick due AT an open's time runs before the open is applied (an open that
+            // fails is recorded with its close at the same instant, and the close's back-off must not hide the decision that produced it).
+            advanceTo(if (e is TraceEvent.Episode && e.open) e.tMs + 1 else e.tMs)
             if (e.tMs > now) now = e.tMs
             when (e) {
                 is TraceEvent.Gyro -> { val s = cls.state.value; val d = cls.decelerating.value; cls.onGyro(e.x, e.y, e.z, e.sMs); afterSensor(e.tMs, s, d) }
                 is TraceEvent.Accel -> { val s = cls.state.value; val d = cls.decelerating.value; cls.onLinearAccel(e.x, e.y, e.z, e.sMs); afterSensor(e.tMs, s, d) }
                 is TraceEvent.Ctx -> ctx = e.state
                 is TraceEvent.Resting -> resting = e.on
-                is TraceEvent.Profile -> pf = e
+                is TraceEvent.Profile -> pf = if (cand?.forceSettle == true) settled(e) else e
                 is TraceEvent.GateParams -> if (cand?.gate == null) gateParams = GateParams(e.hamming, e.bigChange, e.ringAll)
                 is TraceEvent.Plan -> recordedHash = e.configHash
                 is TraceEvent.Backoff -> { stillStep = e.stillStep; kick(e.tMs) }
@@ -391,7 +405,13 @@ object CaptureSimulator {
             if (preRoll) { forceBrief = false; return }
             cur.flagged += e
             cur.endMs = e.tMs
-            if (!compared) { forceBrief = false; awaiting += RecOpen(e, cur); return }
+            if (!compared) {
+                forceBrief = false
+                // the candidate's own decision at this instant (the tick runs just before the open is applied) is the same open: nothing waits for a twin
+                val own = opens.lastOrNull()
+                if (own == null || !ReplayRule.opensMatch(e.tMs, e.cause, own.atMs, own.cause)) awaiting += RecOpen(e, cur)
+                return
+            }
             val twin = pendingReplayed.firstOrNull { ReplayRule.opensMatch(e.tMs, e.cause, it.open.atMs, it.open.cause) }
             if (twin != null) pendingReplayed.remove(twin) else awaiting += RecOpen(e, cur)
             closing += cur
