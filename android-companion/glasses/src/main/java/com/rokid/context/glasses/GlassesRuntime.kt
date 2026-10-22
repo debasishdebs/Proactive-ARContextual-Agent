@@ -136,6 +136,21 @@ class GlassesRuntime private constructor(private val app: Context) {
             io = { r -> writer.execute(r) }, log = { DiagLog.i(CAPTURE_TAG, it) },
         )
     }
+    /** Slice 3a Task 30: the persisted mark outbox (`mark_queue` prefs) and the tap that fills it. A mark never touches capture (S45). */
+    val markOutbox: com.rokid.context.glasses.mark.MarkOutbox by lazy {
+        com.rokid.context.glasses.mark.MarkOutbox(
+            com.rokid.context.glasses.mark.PrefsMarkStore(app.getSharedPreferences(com.rokid.context.glasses.mark.PrefsMarkStore.PREFS, Context.MODE_PRIVATE)),
+            wallClock = System::currentTimeMillis, newEpoch = { java.util.UUID.randomUUID().toString() },
+        )
+    }
+    val markCue = com.rokid.context.glasses.mark.MarkCue(scope)
+    val markTap: com.rokid.context.glasses.mark.MarkTap by lazy {
+        com.rokid.context.glasses.mark.MarkTap(
+            markOutbox, markCue, send = { m -> controller?.sendMark(m) ?: false }, enabled = { true },
+            wallClock = System::currentTimeMillis, elapsed = android.os.SystemClock::elapsedRealtime,
+            bootCount = { android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1) },
+        )
+    }
     /** Fix wave H3: a ~600 ms HUD mark per saved keyframe ("Capture blink on HUD", synced `captureCue`). */
     val captureBlink = com.rokid.context.glasses.hud.CaptureBlink(scope, { settingsCache.read().captureCue })
     /** The minimised icon (spec 2026-10-14 §3), one window per process; shown only while the keep-alive service runs. */
@@ -226,7 +241,9 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
         c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); ioScope.launch { applyPhoneSettings(s) } }
         c.onCapturePlan = { m -> plan.onMessage(m) }
-        c.onTraceControl = { m -> traceRecorder.onControl(m) }
+        c.onTraceControl = { m -> markOutbox.onEpoch(m.installId, m.deletionCounter); traceRecorder.onControl(m) }
+        c.onMarkAck = { a -> markOutbox.onAck(a) }
+        c.onMarksDue = { markTap.flush() }
         c.statusAck = { plan.statusAck().takeIf { it.gen != 0L } }   // the caps announcement stays HudController's gen-0 default
         attachJob?.cancel()
         attachJob = scope.launch {
