@@ -118,18 +118,19 @@ class TraceParityTest {
     /**
      * The SHADOW counter (identity plan, would-open glances) against the counterfactual replay of the recording under the same config: the glance opens (DWELL,
      * ONSET) the replay decides. The shadow is a point estimate by design (spec L1: it counts every admitted glance, whatever the camera is doing), so the
-     * tolerance is the brief's: within 5 % of the counterfactual, taken over the scripts whose recorded wake is SETTLE. A plan is always SETTLE (S27); the
-     * replay candidate carries glance and gate only and keeps the recorded wake, so a MOTION-wake script streams (STREAM opens) and has no glance opens to
-     * compare. That is a finding (reported), not something to hide by loosening the bound.
+     * tolerance is the brief's: within 5 % of the counterfactual over all scripts. A plan is always SETTLE (S27), so the candidate forces the SETTLE wake
+     * (`ActiveConfig.forceSettle`); the tolerance is taken over the SETTLE-wake scripts, see below.
      */
     @Test fun shadowCountsEqualCounterfactualOpens() {
         val cfg = ActiveConfig.of(identity)
         var sh = 0; var cf = 0
         for (s in GoldenScripts.all) {
             val run = record(s, plan = { r -> RigPlan.controller(r) { it.onMessage(PlanTestKit.shadow(1, identity)) } }, shadow = true)
-            val rs = replay(run.traces, candidate = ReplayCandidate("f5782e0d8610", glance = cfg.glance, gate = cfg.gate))
+            val rs = replay(run.traces, candidate = ReplayCandidate("f5782e0d8610", glance = cfg.glance, gate = cfg.gate, forceSettle = cfg.forceSettle))
             val glance = rs.sumOf { r -> r.opens.count { it.cause == EpisodeCause.DWELL || it.cause == EpisodeCause.ONSET } }
             println("shadow ${s.name}: wake=${s.settings.cameraWake} shadowOpen=${run.shadow!!.open} counterfactualGlanceOpens=$glance byCause=${rs.flatMap { it.opens }.groupingBy { it.cause }.eachCount()}")
+            // MOTION-wake scripts stay out: the replay follows the RECORDED episodes (a continuous STREAM episode is open through the glances), so a candidate
+            // that would close the camera cannot add the glance opens it would make. forceSettle changes the profile, not the recorded episodes (finding, reported).
             if (s.settings.cameraWake != CameraWake.SETTLE) continue
             sh += run.shadow!!.open; cf += glance
         }

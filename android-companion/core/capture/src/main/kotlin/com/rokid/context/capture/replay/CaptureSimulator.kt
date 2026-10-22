@@ -30,7 +30,7 @@ import com.rokid.context.glasses.capture.session.GlanceAdmission
  * carries; [glance] and [gate], when set, replace what the recording was made with. Without a candidate a replay is the BASE: the recorded config, checked
  * against the recording.
  */
-class ReplayCandidate(val configHash: String, val glance: GlanceParams? = null, val gate: GateParams? = null)
+class ReplayCandidate(val configHash: String, val glance: GlanceParams? = null, val gate: GateParams? = null, val forceSettle: Boolean = false)
 
 /** A camera open the replay decided (after the pre-roll). */
 data class ReplayOpen(val atMs: Long, val cause: EpisodeCause)
@@ -160,7 +160,7 @@ object CaptureSimulator {
         // recorded inputs
         var pf: TraceEvent.Profile = CaptureProfile.of(CameraWake.MOTION, snap.tier).let {
             TraceEvent.Profile(start, it.wake, it.settledCheckMs, it.quietCheckMs, it.walkCheckMs, it.stillCapMs, it.analysisMs, snap.tier, false, false, 3000, null, false)
-        }
+        }.let { if (cand?.forceSettle == true) settled(it) else it }
         var ctx = snap.ctx
         var resting = snap.resting
         var blocked: String? = null
@@ -218,6 +218,16 @@ object CaptureSimulator {
             store.seed(snap.ring.map { it.d to it.p }, snap.gateLastKeptAt ?: 0L)
         }
 
+        /** A plan runs SETTLE (S27): the recorded profile with the SETTLE wake and the SETTLE tier's gaps as floors (the row minima already in it stay). */
+        fun settled(e: TraceEvent.Profile): TraceEvent.Profile {
+            if (e.wake == CameraWake.SETTLE) return e
+            val b = CaptureProfile.of(CameraWake.SETTLE, e.tier)
+            return e.copy(
+                wake = CameraWake.SETTLE, settledMs = maxOf(e.settledMs, b.settledCheckMs), quietMs = maxOf(e.quietMs, b.quietCheckMs),
+                walkMs = maxOf(e.walkMs ?: 0L, b.walkCheckMs ?: 0L), stillCapMs = maxOf(e.stillCapMs, b.stillCapMs),
+            )
+        }
+
         fun newWin(t: Long) = Win(t, bindFailures, bindBackoffUntil.takeIf { it > t })
 
         fun mismatch(kind: String, at: Long, detail: String) {
@@ -237,7 +247,7 @@ object CaptureSimulator {
                 is TraceEvent.Accel -> { val s = cls.state.value; val d = cls.decelerating.value; cls.onLinearAccel(e.x, e.y, e.z, e.sMs); afterSensor(e.tMs, s, d) }
                 is TraceEvent.Ctx -> ctx = e.state
                 is TraceEvent.Resting -> resting = e.on
-                is TraceEvent.Profile -> pf = e
+                is TraceEvent.Profile -> pf = if (cand?.forceSettle == true) settled(e) else e
                 is TraceEvent.GateParams -> if (cand?.gate == null) gateParams = GateParams(e.hamming, e.bigChange, e.ringAll)
                 is TraceEvent.Plan -> recordedHash = e.configHash
                 is TraceEvent.Backoff -> { stillStep = e.stillStep; kick(e.tMs) }
