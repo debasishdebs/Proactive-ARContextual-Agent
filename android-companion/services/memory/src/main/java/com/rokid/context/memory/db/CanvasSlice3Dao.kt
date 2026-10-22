@@ -19,6 +19,9 @@ abstract class CanvasSlice3Dao {
     @Query("INSERT OR IGNORE INTO canvas_meta (`key`, value) VALUES (:key, :value)") protected abstract suspend fun insertMetaIgnore(key: String, value: String)
     @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = :key") protected abstract suspend fun incrementMeta(key: String): Int
 
+    /** Writes a durable key (kept by Delete all; hold no user data: the M1 evidence flag, plan JSON of a publish group). */
+    @Query("INSERT OR REPLACE INTO canvas_meta (`key`, value) VALUES (:key, :value)") abstract suspend fun putMeta(key: String, value: String)
+
     /** The durable label counter (0 until the first label write). */
     open suspend fun labelRev(): Long = meta(LABEL_REV)?.toLongOrNull() ?: 0L
 
@@ -129,6 +132,9 @@ abstract class CanvasSlice3Dao {
     /** The evidence gate 3 reads (S60): finished, valid, EXACT replays of exactly this config, newest first. */
     @Query("SELECT * FROM canvas_replay WHERE configHash = :configHash AND replayClass = 'EXACT' AND jobState = 'DONE' AND invalidated = 0 ORDER BY createdAt DESC, replayId")
     abstract suspend fun validExactReplays(configHash: String): List<CanvasReplayEntity>
+    /** Gate 3 of a plan publish (S60, S75): finished, valid replays of exactly this config of EITHER class, newest first (a never-recorded plan can only have been replayed as a candidate). */
+    @Query("SELECT * FROM canvas_replay WHERE configHash = :configHash AND jobState = 'DONE' AND invalidated = 0 ORDER BY createdAt DESC, replayId")
+    abstract suspend fun validReplays(configHash: String): List<CanvasReplayEntity>
     @Query("SELECT * FROM canvas_sweep WHERE sweepId = :id") abstract suspend fun sweep(id: String): CanvasSweepEntity?
     @Query("SELECT * FROM canvas_sweep ORDER BY createdAt DESC, sweepId LIMIT :limit") abstract suspend fun sweeps(limit: Int): List<CanvasSweepEntity>
     @Insert abstract suspend fun insertReplay(r: CanvasReplayEntity)

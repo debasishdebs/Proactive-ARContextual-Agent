@@ -50,7 +50,7 @@ class CanvasApi(
         private val ID = Regex("^[A-Za-z0-9:_-]{1,64}$")
         private val FROM = Regex("^[A-Za-z0-9:_-]{1,64}(@[0-9]{1,6})?$")
         private val VERSION = Regex("^[0-9]{1,6}$")
-        private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt", "/api/plans/compile")
+        private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt", "/api/plans/compile", "/api/plans/check")
         private val DAY = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
         const val DEFAULT_LIMIT = 60
         const val MAX_LIMIT = 120

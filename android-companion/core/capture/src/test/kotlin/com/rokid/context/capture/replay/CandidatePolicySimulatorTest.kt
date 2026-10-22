@@ -75,4 +75,24 @@ class CandidatePolicySimulatorTest {
         val r = run(listOf(TraceEvent.Resting(START, true)), ReplayCandidate("rest", table = table(0)), START + 40_000)
         assertEquals(listOf(START + 30_000 - ReplayFixtures.LEAD), r.opens.map { it.atMs })
     }
+
+    /**
+     * Task 27: `forceSettle` and a policy `table` together (the merge of the two candidate shapes). A plan always replays at SETTLE with the plan's row minima: the recorded
+     * wake is irrelevant. The same table gives the same opens with or without `forceSettle`, whatever wake the recording ran under (MOTION, a 5 s settled gap).
+     */
+    @Test fun forceSettleWithATableReplaysAtSettleWithTheRowMinima() {
+        val t = table(20_000)
+        val motionRecording = ReplayFixtures.initial(wake = com.rokid.context.core.model.CameraWake.MOTION, settledMs = 5_000L).filter { it !is TraceEvent.Ctx } + rest
+        fun opens(c: ReplayCandidate, init: List<TraceEvent>) =
+            CaptureSimulator.replay(ReplayFixtures.trace(emptyList(), endMs = START + 120_000, initial = init).asSequence(), ReplayFixtures.manifest(endMs = START + 120_000), c).opens.map { it.atMs }
+        val both = opens(ReplayCandidate("c20", table = t, forceSettle = true), motionRecording)
+        val step = 20_000 + 700 - ReplayFixtures.LEAD
+        assertEquals((0 until 5).map { START + 20_000 - ReplayFixtures.LEAD + it * step }, both)              // the row's 20 s, not the recorded MOTION wake's 5 s
+        assertEquals(both, opens(ReplayCandidate("c20", table = t), motionRecording))                          // forceSettle is implied by a table
+        assertEquals(both, opens(ReplayCandidate("c20", table = t, forceSettle = true), initial))              // and the recorded wake does not matter
+        // a row below the SETTLE tier gap is a minimum on top of SETTLE: 0 inherits SETTLE's 10 s whatever the recording ran at
+        val inherit = opens(ReplayCandidate("c0", table = table(0), forceSettle = true), motionRecording)
+        val s10 = 10_000 + 700 - ReplayFixtures.LEAD
+        assertEquals((0 until 12).map { START + 10_000 - ReplayFixtures.LEAD + it * s10 }.filter { it < START + 120_000 }.filter { it >= ReplayFixtures.PRE_ROLL_END }, inherit)
+    }
 }
