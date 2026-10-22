@@ -110,7 +110,8 @@ class CaptureSettingsViewModel(
     /** Phone clock ms since Hi Rokid's wear signal went missing; null = available. */
     private val wearUnknownSince: StateFlow<Long?> = MutableStateFlow(null),
     private val clock: () -> Long = System::currentTimeMillis,
-    private val ticker: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flow { while (true) { emit(Unit); kotlinx.coroutines.delay(30_000L) } },
+    /** Re-evaluates the missing-signal warning; the destination passes the 30 s one (a ViewModel never polls). */
+    private val ticker: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flowOf(Unit),
     private val plan: CapturePlanControl = CapturePlanControl.None,
 ) : ViewModel() {
     private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState, active: ActivePlan?): CaptureSettingsUiState {

@@ -11,6 +11,8 @@ import com.rokid.context.orchestration.MemoryWipe
 object MarkGraph {
     @Volatile private var recorder: MarkRecorder? = null
 
+    fun resetForTests() { recorder = null }
+
     fun recorder(app: Context): MarkRecorder = recorder ?: synchronized(this) {
         recorder ?: run {
             val ctx = app.applicationContext

@@ -84,6 +84,9 @@ import com.rokid.context.phone.ui.settings.prompts.PromptsListViewModel
 import com.rokid.context.phone.ui.settings.retrieval.RetrievalSettingsScreen
 import com.rokid.context.phone.ui.settings.retrieval.RetrievalViewModel
 
+/** Re-checks every 30 s whether the wear signal has been missing long enough to warn. */
+private val wearTicker: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flow { while (true) { emit(Unit); kotlinx.coroutines.delay(30_000L) } }
+
 /** Settings tree routes (spec §2.1). Same rule as Destinations.kt: the only place these ViewModels are created. */
 fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController, back: () -> Unit) {
     val s = deps.settings
@@ -133,7 +136,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_CAPTURE) {
-        val vm = viewModel { CaptureSettingsViewModel(s.hud, s.aiCallPace, s.keyframes.stats, s.contextSources.decision.map { it.state }, s.hud.wearUnknownSince, plan = s.capturePlan) }
+        val vm = viewModel { CaptureSettingsViewModel(s.hud, s.aiCallPace, s.keyframes.stats, s.contextSources.decision.map { it.state }, s.hud.wearUnknownSince, ticker = wearTicker, plan = s.capturePlan) }
         val state by vm.state.collectAsStateWithLifecycle()
         val ctx = androidx.compose.ui.platform.LocalContext.current
         val hiRokid = remember(ctx) { com.rokid.context.phone.ui.settings.capture.WearGuide.launchIntent(ctx) }
