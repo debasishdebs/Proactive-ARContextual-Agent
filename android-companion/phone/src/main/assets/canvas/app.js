@@ -24,6 +24,9 @@ export class ApiError extends Error {
   }
 }
 
+/** A request that outlived its view or session (the user left, signed out or the browser re-paired). Never shown, never paints anything. */
+export class StaleError extends Error { constructor() { super('stale'); this.stale = true; } }
+
 const root = document.getElementById('app');
 const nav = document.getElementById('nav');
 const banner = document.getElementById('banner');
@@ -32,6 +35,7 @@ const banner = document.getElementById('banner');
 function clearBanner() { clear(banner); banner.hidden = true; }
 
 function showError(err) {
+  if (err && err.stale) return;
   clear(banner);
   const known = err instanceof ApiError || (err && Array.isArray(err.problems));
   const msg = known && typeof err.message === 'string' ? err.message : 'Something went wrong.';
@@ -50,12 +54,23 @@ function showNotice(text) {
 }
 
 // ---- API ----
+let controllers = new Set(); // in-flight requests of the current view: aborted when it is left
+
 async function request(method, path, body) {
   const headers = {};
   if (token) headers.Authorization = 'Bearer ' + token;
   const init = { method, headers };
+  let c = null;
+  if (typeof AbortController !== 'undefined') {
+    c = new AbortController();
+    controllers.add(c);
+    init.signal = c.signal;
+  }
   if (body !== undefined) { headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
-  return fetch(path, init);
+  const done = () => { if (c) controllers.delete(c); };
+  const p = fetch(path, init);
+  p.then(done, done);
+  return p;
 }
 
 async function readError(res) {
@@ -65,15 +80,22 @@ async function readError(res) {
 }
 
 export async function api(method, path, body) {
+  const gen = generation; // every continuation below is bound to the view it started in
   let res;
-  try { res = await request(method, path, body); } catch (e) { throw new ApiError(0, 'network', 'The phone could not be reached.'); }
+  try { res = await request(method, path, body); } catch (e) {
+    if (gen !== generation) throw new StaleError();
+    throw new ApiError(0, 'network', 'The phone could not be reached.');
+  }
+  if (gen !== generation) throw new StaleError();
   if (res.status === 401) {
     setToken(null);
     showPairing('');
     throw new ApiError(401, 'unauthorized', 'Signed out. Pair again.');
   }
-  if (!res.ok) throw await readError(res);
-  return res.json();
+  if (!res.ok) { const err = await readError(res); if (gen !== generation) throw new StaleError(); throw err; }
+  const j = await res.json();
+  if (gen !== generation) throw new StaleError();
+  return j;
 }
 
 // ---- cleanup per view ----
@@ -89,6 +111,8 @@ function onLeave(fn) { leaveFns.push(fn); }
 
 function leave() {
   generation++;
+  for (const c of controllers) { try { c.abort(); } catch (e) { /* ignore */ } }
+  controllers = new Set();
   guardFn = null;
   for (const fn of leaveFns.splice(0)) { try { fn(); } catch (e) { /* ignore */ } }
   for (const p of imageCache.values()) p.then((u) => { if (u) URL.revokeObjectURL(u); }, () => {});
@@ -221,7 +245,7 @@ async function route(force) {
     else if (parts[0] === 'compare') await compareView(ctx, root, query.get('a') || '', query.get('b') || '');
     else root.appendChild(h('p', null, 'Not found.'));
   } catch (e) {
-    if (!(e instanceof ApiError && e.status === 401)) showError(e);
+    if (!(e instanceof ApiError && e.status === 401) && !(e && e.stale)) showError(e);
   }
 }
 
