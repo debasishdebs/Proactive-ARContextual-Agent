@@ -47,7 +47,7 @@ class SqlCipherMigrationDeviceTest {
     private fun clean() { suffixes.forEach { File(file.path + it).delete(); File(prodNamed.path + it).delete() } }
 
     private fun room(encrypted: Boolean): ContextDatabase = Room.databaseBuilder(ctx, ContextDatabase::class.java, name).apply {
-        if (encrypted) { System.loadLibrary("sqlcipher"); openHelperFactory(SupportOpenHelperFactory(key)) }
+        if (encrypted) { System.loadLibrary("sqlcipher"); openHelperFactory(SupportOpenHelperFactory(key.copyOf())) }
     }.build()
 
     private fun mem(id: String, text: String) = MemoryEntity(id, null, text, "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, 1, false, "")
@@ -58,7 +58,7 @@ class SqlCipherMigrationDeviceTest {
         room(false).let { db ->
             try { MemoryRepository(db.memoryDao()).apply { add(mem("m1", "Milk carton in the fridge")); add(mem("m2", "दूध खत्म हो गया")) } } finally { db.close() }
         }
-        val migrator = EncryptionMigrator(file, store, SqlCipherConverter) { key }
+        val migrator = EncryptionMigrator(file, store, SqlCipherConverter) { key.copyOf() }
         store.target = true
         assertTrue(migrator.prepare { false })
         assertFalse(EncryptionMigrator.isPlaintextSqlite(file))
@@ -75,7 +75,7 @@ class SqlCipherMigrationDeviceTest {
     }
 
     @Test fun theDeferredFactoryOpensAnEncryptedDatabaseOffMain() = runBlocking(Dispatchers.IO) {
-        val db = Room.databaseBuilder(ctx, ContextDatabase::class.java, name).openHelperFactory(DeferredOpenHelperFactory({ true }, { key })).build()
+        val db = Room.databaseBuilder(ctx, ContextDatabase::class.java, name).openHelperFactory(DeferredOpenHelperFactory({ true }, { key.copyOf() })).build()
         try {
             MemoryRepository(db.memoryDao()).add(mem("m1", "keys on the shelf"))
             assertEquals(listOf("m1"), searchIds(db, "shelf"))
@@ -148,7 +148,7 @@ class SqlCipherMigrationDeviceTest {
                 assertEquals(7, db.openHelper.writableDatabase.version)
                 assertEquals(listOf("m1"), searchIds(db, "shelf"))
                 assertCanvasTables(db)
-                assertEquals(0, db.openHelper.writableDatabase.query("SELECT COUNT(*) FROM canvas_live_trace").use { it.moveToFirst(); it.getInt(0) })
+                if (version != 6) assertEquals(0, db.openHelper.writableDatabase.query("SELECT COUNT(*) FROM canvas_live_trace").use { it.moveToFirst(); it.getInt(0) }) // the v6 seed inserts one row
                 v7Tables.forEach { t -> assertEquals("$t empty", 0, db.openHelper.writableDatabase.query("SELECT COUNT(*) FROM `$t`").use { it.moveToFirst(); it.getInt(0) }) }
                 assertEquals("PRAGMA integrity_check", "ok", db.openHelper.writableDatabase.query("PRAGMA integrity_check").use { it.moveToFirst(); it.getString(0) })
                 assertAfter(db)
