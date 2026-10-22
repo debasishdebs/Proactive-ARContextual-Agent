@@ -52,10 +52,20 @@ export function fields(descriptors, params, ctx) {
         break;
       default: // text
         f.control = d.name === 'template' ? 'textarea' : 'text';
-        f.value = cur === undefined ? '' : String(cur);
+        f.value = cur !== undefined ? String(cur) : d.default !== undefined ? String(d.default) : '';
     }
     return f;
   });
+}
+
+/** A schema is JSON text for an object; empty clears it ({value: undefined}). */
+function schemaText(raw) {
+  const s = String(raw == null ? '' : raw);
+  if (s.trim() === '') return { value: undefined };
+  let parsed;
+  try { parsed = JSON.parse(s); } catch (e) { return { error: 'Must be valid JSON' }; }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { error: 'Must be a JSON object' };
+  return { value: s };
 }
 
 const rangeText = (f) => (f.min !== undefined && f.max !== undefined ? 'Must be between ' + f.min + ' and ' + f.max
@@ -87,14 +97,7 @@ export function coerce(f, raw) {
       if (!f.options.some((o) => o.value === v)) return { error: 'Pick one of the listed options' };
       return { value: v };
     }
-    case 'schema': {
-      const s = String(raw == null ? '' : raw);
-      if (s.trim() === '') return { value: undefined }; // clears the param
-      let parsed;
-      try { parsed = JSON.parse(s); } catch (e) { return { error: 'Must be valid JSON' }; }
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { error: 'Must be a JSON object' };
-      return { value: s };
-    }
+    case 'schema': return schemaText(raw);
     case 'labels': {
       const items = String(raw == null ? '' : raw).split(',').map((x) => x.trim()).filter((x) => x.length > 0);
       if (items.length === 0) return { error: 'Add at least one label' };
@@ -106,4 +109,35 @@ export function coerce(f, raw) {
     default:
       return { value: String(raw == null ? '' : raw) };
   }
+}
+
+const text = (v) => (v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v));
+
+/**
+ * The inline parts of a prompt param: a draft prompt carries its own template and schema (editable); a live one shows
+ * the active prompt's text (read-only, `live` = {template, schema}); no live text known: no parts.
+ */
+export function promptParts(f, live) {
+  const draft = f.value === 'draft';
+  const src = draft ? (f.current && typeof f.current === 'object' ? f.current : {}) : live;
+  if (!src) return [];
+  return [
+    { part: 'template', label: 'Template', control: 'textarea', value: text(src.template), readOnly: !draft },
+    { part: 'schema', label: 'Schema (JSON)', control: 'textarea', value: text(src.schema), readOnly: !draft },
+  ];
+}
+
+/** raw text for one inline part → {value: the whole new prompt object} | {error}. Never mutates f. */
+export function coercePromptPart(f, part, raw) {
+  if (f.value !== 'draft') return { error: 'Switch to Draft to edit the prompt' };
+  const base = f.current && typeof f.current === 'object' ? Object.assign({}, f.current) : { source: 'draft' };
+  base.source = 'draft';
+  if (part === 'template') { base.template = String(raw == null ? '' : raw); return { value: base }; }
+  if (part === 'schema') {
+    const r = schemaText(raw);
+    if (r.error) return r;
+    if (r.value === undefined) delete base.schema; else base.schema = r.value;
+    return { value: base };
+  }
+  return { error: 'Unknown prompt field' };
 }

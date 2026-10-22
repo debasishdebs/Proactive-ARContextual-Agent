@@ -14,7 +14,7 @@ export const nodeTypes = [
   t('ai.prompt', 'Prompt', 'prompt', ['PHOTOS', 'JSON', 'EXTRACTION'], 'JSON', {
     params: [{ name: 'role', kind: 'role' }, { name: 'template', kind: 'text' }, { name: 'schema', kind: 'schema' }, { name: 'images', kind: 'bool' }],
   }),
-  t('route.switch', 'Switch', 'route', ['JSON'], 'JSON', { branchesFromCases: true, params: [{ name: 'cases', kind: 'labels' }], category: 'Routing' }),
+  t('route.switch', 'Switch', 'route', ['JSON'], 'JSON', { branchesFromCases: true, params: [{ name: 'field', kind: 'text', default: 'activity' }, { name: 'cases', kind: 'labels' }], category: 'Routing' }),
   t('memory.write', 'Save memory (preview)', 'write', ['EXTRACTION'], 'PREVIEW', { category: 'Memory' }),
 ];
 

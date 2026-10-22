@@ -1,6 +1,7 @@
 // The five views. Every string from the API is placed with textContent (through h()); there are no HTML sinks.
 import { h, clear, btn } from './dom.js';
-import { drawDag, kindOf } from './dag.js';
+import { mountEditor } from './floweditor.js';
+import { photoThumb, openPhoto } from './photos.js';
 
 const when = (ms) => (ms ? new Date(ms).toLocaleString() : '–');
 const pretty = (v) => JSON.stringify(v, null, 2);
@@ -9,9 +10,13 @@ const MAX_PHOTOS = 50;
 const PAGE = 60;
 
 function field(label, control) { return h('label', { class: 'field' }, h('span', null, label), control); }
-function problemList(list) {
-  if (!list || !list.length) return null;
-  return h('ul', { class: 'problems' }, list.map((p) => h('li', null, String(p))));
+/** The colour class of a node card in a run (input, ai, output, step). */
+function kindOf(type) {
+  const t = String(type || '');
+  if (t.startsWith('input.')) return 'input';
+  if (t === 'memory.write') return 'output';
+  if (t.startsWith('ai.')) return 'ai';
+  return 'step';
 }
 
 // ---------------------------------------------------------------- pipelines
@@ -50,22 +55,17 @@ function parseJson(text) { try { return JSON.parse(text); } catch (e) { return n
 
 export async function pipelineView(ctx, root, id) {
   const [types, data] = await Promise.all([ctx.api('GET', '/api/node-types'), ctx.api('GET', '/api/pipelines/' + enc(id))]);
-  const typeOf = (t) => types.find((x) => x.type === t);
-  const st = { data, pipe: parseJson(data.json), rev: data.draftRev, selected: null, dirty: false, checks: {} };
   const ro = !!data.builtIn;
+  const pipe = parseJson(data.json);
+  const status = h('span', { class: 'muted', role: 'status' });
+  const editorBox = h('div', { class: 'editor-box' });
+  let editor = null;
+  const showDirty = () => { status.textContent = editor && editor.isDirty() ? 'Unsaved changes' : ''; };
 
-  const dagBox = h('div', { class: 'dag-box' });
-  const inspector = h('section', { class: 'card' });
-  const status = h('span', { class: 'muted' });
-  const markDirty = () => { st.dirty = true; status.textContent = 'Unsaved changes'; };
-
-  const reload = async () => { await pipelineView(ctx, root, id); };
-
-  async function save(jsonText) {
+  async function saveJson(jsonText) {
     try {
-      const r = await ctx.api('PUT', '/api/pipelines/' + enc(id), { json: jsonText, draftRev: st.rev });
-      st.rev = r.draftRev;
-      await reload();
+      const r = await ctx.api('PUT', '/api/pipelines/' + enc(id), { json: jsonText, draftRev: editor ? editor.savedRev() : data.draftRev });
+      await ctx.reload();
       if (r.problems && r.problems.length) ctx.showError({ message: 'Saved, with problems.', problems: r.problems });
       else ctx.showNotice('Draft saved.');
     } catch (e) {
@@ -74,136 +74,60 @@ export async function pipelineView(ctx, root, id) {
     }
   }
 
-  function drawDagNow() {
-    clear(dagBox);
-    if (!st.pipe) { dagBox.appendChild(h('p', { class: 'muted' }, 'The draft cannot be drawn. Fix it in Edit JSON.')); return; }
-    dagBox.appendChild(drawDag(st.pipe, data.layout, { selected: st.selected, onSelect: (nid) => { st.selected = nid; drawDagNow(); drawInspector(); } }));
+  async function saveDraft() {
+    if (!editor) return;
+    const r = await editor.save();
+    showDirty();
+    if (r.ok) {
+      if (r.problems.length) ctx.showError({ message: 'Saved, with problems.', problems: r.problems });
+      else ctx.showNotice('Draft saved.');
+    } else if (r.conflict) ctx.showNotice('Changed elsewhere, reload');
+    else ctx.showError(r.error);
   }
 
-  function textInput(value, onInput, extra) {
-    const i = h('input', Object.assign({ type: 'text', value: value || '', disabled: ro }, extra || {}));
-    i.addEventListener('input', () => onInput(i.value));
-    return i;
-  }
-  function textArea(value, onInput, readOnly) {
-    const t = h('textarea', { rows: 8, spellcheck: 'false', disabled: ro || readOnly });
-    t.value = value || '';
-    t.addEventListener('input', () => onInput(t.value));
-    return t;
-  }
-
-  function promptEditor(node) {
-    const live = (data.activePrompts || {})[node.id] || {};
-    const box = h('div', { class: 'prompt-box' });
-    const results = h('div', { class: 'check' });
-    const draw = () => {
-      clear(box);
-      const isDraft = !!(node.params.prompt && node.params.prompt.source === 'draft');
-      const d = node.params.prompt;
-      const mode = (label, on) => btn(label, () => {
-        if (on === isDraft) return;
-        if (on) node.params.prompt = { source: 'draft', template: live.template || '', schema: live.schema == null ? null : live.schema };
-        else node.params.prompt = { source: 'live' };
-        markDirty();
-        draw();
-      }, 'btn' + (on === isDraft ? ' active' : ''));
-      box.appendChild(h('div', { class: 'row' }, mode('Live', false), mode('Draft', true)));
-      const tpl = isDraft ? d.template : live.template;
-      const sch = isDraft ? d.schema : live.schema;
-      const tplArea = textArea(tpl, (v) => { d.template = v; markDirty(); }, !isDraft);
-      const schArea = textArea(sch, (v) => { d.schema = v.trim() ? v : null; markDirty(); }, !isDraft);
-      box.appendChild(field('Template' + (isDraft ? '' : ' (live, read-only)'), tplArea));
-      box.appendChild(field('Schema' + (isDraft ? '' : ' (live, read-only)'), schArea));
-      box.appendChild(h('div', { class: 'row' }, btn('Check', async () => {
-        clear(results);
-        try {
-          const r = await ctx.api('POST', '/api/check-prompt', { nodeType: node.type, template: tplArea.value, schema: schArea.value.trim() ? schArea.value : null });
-          results.appendChild(r.problems.length ? problemList(r.problems) : h('p', { class: 'ok' }, 'No problems.'));
-        } catch (e) { ctx.showError(e); }
-      }), live.version != null ? h('span', { class: 'muted' }, 'live prompt v' + live.version) : null));
-      box.appendChild(results);
-    };
-    draw();
-    return box;
-  }
-
-  function freePromptEditor(node) {
-    const results = h('div', { class: 'check' });
-    return h('div', { class: 'prompt-box' },
-      field('Template', textArea(node.params.template, (v) => { node.params.template = v; markDirty(); })),
-      field('Schema (JSON)', textArea(node.params.schema, (v) => { if (v.trim()) node.params.schema = v; else delete node.params.schema; markDirty(); })),
-      h('div', { class: 'row' }, btn('Check', async () => {
-        clear(results);
-        try {
-          const r = await ctx.api('POST', '/api/check-prompt', { nodeType: node.type, template: String(node.params.template || ''), schema: node.params.schema ? String(node.params.schema) : null });
-          results.appendChild(r.problems.length ? problemList(r.problems) : h('p', { class: 'ok' }, 'No problems.'));
-        } catch (e) { ctx.showError(e); }
-      })), results);
-  }
-
-  function paramControl(node, t, p) {
-    const params = node.params;
-    switch (p.kind) {
-      case 'prompt': return promptEditor(node);
-      case 'int': {
-        const i = h('input', { type: 'number', min: p.min, max: p.max, value: params[p.name] == null ? '' : params[p.name], disabled: ro });
-        i.addEventListener('input', () => { const n = parseInt(i.value, 10); if (Number.isFinite(n)) params[p.name] = n; else delete params[p.name]; markDirty(); });
-        return field(p.name + (p.min != null ? ' (' + p.min + '–' + p.max + ')' : ''), i);
-      }
-      case 'bool': {
-        const c = h('input', { type: 'checkbox', checked: params[p.name] === true, disabled: ro });
-        c.addEventListener('change', () => { params[p.name] = c.checked; markDirty(); });
-        return field(p.name, c);
-      }
-      case 'labels': {
-        const cur = Array.isArray(params[p.name]) ? params[p.name].join(', ') : '';
-        return field(p.name + ' (comma separated)', textInput(cur, (v) => { params[p.name] = v.split(',').map((x) => x.trim()).filter(Boolean); markDirty(); }));
-      }
-      case 'schema': return null; // handled with the template
-      case 'text': if (p.name === 'template') return null; // fallthrough to the shared prompt editor below
-      // eslint-disable-next-line no-fallthrough
-      default: return field(p.name, textInput(params[p.name] == null ? '' : String(params[p.name]), (v) => { if (v) params[p.name] = v; else delete params[p.name]; markDirty(); }));
-    }
-  }
-
-  function drawInspector() {
-    clear(inspector);
-    const node = st.pipe && (st.pipe.nodes || []).find((n) => n.id === st.selected);
-    if (!node) { inspector.appendChild(h('p', { class: 'muted' }, 'Select a node to inspect it.')); return; }
-    if (!node.params || typeof node.params !== 'object') node.params = {};
-    const t = typeOf(node.type);
-    inspector.appendChild(h('h3', null, node.title || node.id));
-    inspector.appendChild(h('p', { class: 'muted' }, node.type + (t ? ' · ' + t.label : '') + ' · id ' + node.id));
-    if (ro) inspector.appendChild(h('p', { class: 'muted' }, 'Built-in pipelines are read-only. Duplicate it to edit.'));
-    inspector.appendChild(field('Title', textInput(node.title, (v) => { node.title = v; markDirty(); })));
-    if (t) for (const p of t.params) inspector.appendChild(paramControl(node, t, p));
-    if (node.type === 'ai.prompt') inspector.appendChild(freePromptEditor(node));
-  }
-
-  // header and actions
   clear(root);
   root.appendChild(h('h2', null, data.name));
   root.appendChild(h('p', { class: 'muted' }, 'Draft revision ' + data.draftRev + (data.live ? ' · LIVE v' + data.live.version : '') + (data.liveShape ? ' · live shape' : '')));
-  const probs = problemList(data.problems);
-  if (probs) root.appendChild(h('section', { class: 'card warn' }, h('strong', null, 'Problems'), probs));
   root.appendChild(h('div', { class: 'row wrap' },
-    ro ? null : btn('Save draft', () => { if (st.pipe) save(JSON.stringify(st.pipe, null, 2)); }, 'btn primary'),
+    ro ? btn('Duplicate to edit', async () => {
+      const name = window.prompt('Name for the copy', data.name + ' copy');
+      if (!name || !name.trim()) return;
+      try { const r = await ctx.api('POST', '/api/pipelines', { from: id, name: name.trim() }); ctx.go('#/p/' + enc(r.id)); } catch (e) { ctx.showError(e); }
+    }, 'btn primary') : null,
+    ro ? null : btn('Save draft', saveDraft, 'btn primary'),
     ro ? null : btn('Freeze', () => {
       const note = h('input', { type: 'text', maxlength: 80, placeholder: 'Note (80 characters at most)' });
       ctx.modal('Freeze draft', field('Note', note), [{ label: 'Freeze', cls: 'btn primary', run: async (close) => {
-        try { const r = await ctx.api('POST', '/api/pipelines/' + enc(id) + '/freeze', { note: note.value.slice(0, 80) }); close(); await reload(); ctx.showNotice('Frozen as v' + r.version + '.'); } catch (e) { close(); ctx.showError(e); }
+        close();
+        if (!editor) return;
+        const r = await editor.freeze(note.value.slice(0, 80));
+        if (r.ok) { await ctx.reload(); ctx.showNotice('Frozen as v' + r.version + '.'); } else if (r.conflict) ctx.showNotice(r.message); else ctx.showError(r.error);
       } }]);
     }),
     h('a', { class: 'btn', href: '#/run/new?p=' + enc(id) }, 'New run (draft)'),
     status));
-  root.appendChild(dagBox);
-  root.appendChild(inspector);
+  root.appendChild(editorBox);
 
-  // Edit JSON
+  if (!pipe) {
+    editorBox.appendChild(h('p', { class: 'muted' }, 'The draft cannot be edited here. Fix it in Edit JSON.'));
+  } else {
+    editor = mountEditor(editorBox, {
+      api: ctx.api, nodeTypes: types, readOnly: ro, onError: ctx.showError, onDraft: showDirty,
+      pipeline: { id, pipe, draftRev: data.draftRev, layout: data.layout, problems: data.problemsDetailed || [], activePrompts: data.activePrompts || {} },
+    });
+    const warn = (ev) => { if (editor.isDirty()) { ev.preventDefault(); ev.returnValue = ''; } };
+    window.addEventListener('beforeunload', warn);
+    ctx.onLeave(() => { window.removeEventListener('beforeunload', warn); editor.unmount(); });
+    ctx.guard(() => (editor.isDirty() ? 'You have unsaved changes to this pipeline. Leave without saving?' : null));
+  }
+
+  // Edit JSON: shows the editor's current draft when opened
   const jsonArea = h('textarea', { rows: 16, spellcheck: 'false', class: 'mono', disabled: ro });
-  jsonArea.value = st.pipe ? pretty(st.pipe) : String(data.json);
-  root.appendChild(h('details', { class: 'card' }, h('summary', null, 'Edit JSON'), jsonArea,
-    ro ? null : h('div', { class: 'row' }, btn('Save JSON', () => save(jsonArea.value), 'btn primary'))));
+  jsonArea.value = pipe ? pretty(pipe) : String(data.json);
+  const jsonBox = h('details', { class: 'card' }, h('summary', null, 'Edit JSON'), jsonArea,
+    ro ? null : h('div', { class: 'row' }, btn('Save JSON', () => saveJson(jsonArea.value), 'btn primary')));
+  jsonBox.addEventListener('toggle', () => { if (jsonBox.open && editor) jsonArea.value = pretty(editor.getDraft()); });
+  root.appendChild(jsonBox);
 
   // versions
   root.appendChild(h('section', { class: 'card' }, h('h3', null, 'Versions'),
@@ -216,16 +140,13 @@ export async function pipelineView(ctx, root, id) {
         if (!window.confirm('Publish v' + v.version + ' as the live prompts?')) return;
         try {
           const r = await ctx.api('POST', '/api/pipelines/' + enc(id) + '/versions/' + v.version + '/publish');
-          await reload();
+          await ctx.reload();
           ctx.showNotice('Published: ' + (r.keys || []).join(', '));
         } catch (e) {
           if (e.code === 'publish_blocked') ctx.showError({ message: 'Publish blocked.', problems: e.problems });
           else ctx.showError(e);
         }
       })))));
-
-  drawDagNow();
-  drawInspector();
 }
 
 // ---------------------------------------------------------------- run new
@@ -255,8 +176,9 @@ export async function runNewView(ctx, root, pipelineId, version) {
         cell.setAttribute('aria-pressed', st.selected.has(f.id) ? 'true' : 'false');
         upd();
       });
-      grid.appendChild(cell);
-      ctx.loadImage(img, '/api/frames/' + enc(f.id) + '/thumb', true);
+      grid.appendChild(h('div', { class: 'thumbwrap' }, cell,
+        btn('Enlarge', () => openPhoto(ctx, f.id), 'btn small')));
+      ctx.loadImage(img, '/api/frames/' + enc(f.id) + '/thumb', true, () => cell.setAttribute('title', 'Photo no longer available'));
     }
     upd();
   };
@@ -334,6 +256,16 @@ function topoOrder(pipe) {
   return out;
 }
 
+/** What each node returned for one photo: shown beside the full-size photo, so relevancy can be judged by eye. */
+function returnedValues(order, items, frameId) {
+  return order.map((n) => {
+    const it = items.find((x) => x.frameId === frameId && x.nodeId === n.id);
+    if (!it) return null;
+    return h('article', { class: 'nodecard ' + kindOf(n.type) }, h('h4', null, n.title || n.id),
+      renderOutput(it.output), it.error ? h('p', { class: 'err' }, 'error: ' + it.error) : null);
+  });
+}
+
 function renderOutput(o) {
   if (o === null || o === undefined) return h('p', { class: 'muted' }, '(no output)');
   const box = h('div', { class: 'out' });
@@ -408,13 +340,7 @@ export async function runView(ctx, root, runId) {
           return sel;
         })())));
     for (const frameId of frames) {
-      const img = h('img', { alt: 'photo', class: 'photo', width: 160, height: 160 });
-      img.addEventListener('click', () => {
-        const big = h('img', { alt: 'photo', class: 'big' });
-        ctx.loadImage(big, '/api/frames/' + enc(frameId) + '/image', false);
-        ctx.modal('Photo', big, []);
-      });
-      ctx.loadImage(img, '/api/frames/' + enc(frameId) + '/thumb', true);
+      const img = photoThumb(ctx, frameId, { value: () => returnedValues(order, items, frameId) });
       const meta = h('div', { class: 'meta' });
       frameDetails(frameId, meta);
       const cards = order.map((n) => {
@@ -464,9 +390,7 @@ export async function compareView(ctx, root, a, b) {
   root.appendChild(h('p', { class: 'muted' }, h('a', { href: '#/run/' + enc(a) }, 'Run A'), ' · ', h('a', { href: '#/run/' + enc(b) }, 'Run B')));
   if (!(data.frames || []).length) root.appendChild(h('p', { class: 'muted' }, 'The runs have no photo in common.'));
   for (const f of data.frames || []) {
-    const img = h('img', { alt: 'photo', class: 'photo', width: 160, height: 160 });
-    ctx.loadImage(img, '/api/frames/' + enc(f.frameId) + '/thumb', true);
-    root.appendChild(h('section', { class: 'card' }, img, (f.nodes || []).map((n) => {
+    const blocks = () => (f.nodes || []).map((n) => {
       const left = h('div', { class: 'col' }, h('strong', null, 'A'));
       const right = h('div', { class: 'col' }, h('strong', null, 'B'));
       for (const l of n.diff || []) {
@@ -474,6 +398,7 @@ export async function compareView(ctx, root, a, b) {
         if (l.op !== 'removed') right.appendChild(h('div', { class: 'dl ' + (l.op === 'added' ? 'add' : 'same') }, l.text));
       }
       return h('div', { class: 'cmp' }, h('h4', null, n.nodeId), h('div', { class: 'cols' }, left, right));
-    })));
+    });
+    root.appendChild(h('section', { class: 'card' }, photoThumb(ctx, f.frameId, { value: blocks }), blocks()));
   }
 }

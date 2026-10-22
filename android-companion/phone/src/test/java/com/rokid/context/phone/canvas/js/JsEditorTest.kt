@@ -10,6 +10,9 @@ class JsEditorTest {
     @Test fun flowAdapterTests() = JsHarness.assertAllPass("flowadapter.test.js")
     @Test fun paramFormTests() = JsHarness.assertAllPass("paramform.test.js")
     @Test fun draftStateTests() = JsHarness.assertAllPass("draftstate.test.js")
+    @Test fun editorLogicTests() = JsHarness.assertAllPass("editorlogic.test.js")
+    @Test fun flowEditorLoadTests() = JsHarness.assertAllPass("floweditor.test.js")
+    @Test fun editorFlowTests() = JsHarness.assertAllPass("editorflow.test.js")
 
     @Test fun aFileWithoutTestsFails() {
         val e = runCatching { JsHarness.assertAllPass("zero-tests.fixture.js") }.exceptionOrNull()

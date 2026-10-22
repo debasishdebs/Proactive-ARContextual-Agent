@@ -52,21 +52,30 @@ label.inline { display: inline-flex; align-items: center; gap: 6px; min-height: 
 .banner { margin: 8px 12px; padding: 10px 12px; border: 1px solid var(--warn); border-radius: 8px; background: var(--card); }
 .banner[hidden] { display: none; }
 .banner ul { margin: 6px 0; padding-left: 20px; }
-.dag-box { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 10px; margin: 10px 0; }
-svg.dag { display: block; max-width: none; }
-.dag .edge { fill: none; stroke: var(--muted); stroke-width: 1.6; }
-.dag .arrow { fill: var(--muted); }
-.dag .edge-label { fill: var(--muted); font-size: 12px; paint-order: stroke; stroke: var(--card); stroke-width: 4px; }
-.dag .node rect { stroke: var(--line); stroke-width: 1.5; cursor: pointer; }
-.dag .node.input rect { fill: var(--input); }
-.dag .node.step rect { fill: var(--step); }
-.dag .node.ai rect { fill: var(--ai); }
-.dag .node.output rect { fill: var(--output); }
-.dag .node.selected rect { stroke: var(--accent); stroke-width: 3; }
-.dag .node:focus { outline: none; }
-.dag .node:focus rect { stroke: var(--accent); stroke-width: 3; }
-.dag .node-title { fill: var(--fg); font-size: 14px; font-weight: 600; pointer-events: none; }
-.dag .node-type { fill: var(--muted); font-size: 12px; pointer-events: none; }
+/* the DAG editor (React Flow's own stylesheet loads first) */
+.editor-box { margin: 10px 0; }
+.palette { padding: 8px; }
+.palette-group { border: 1px solid var(--line); border-radius: 8px; margin: 6px 0; padding: 4px 8px 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.palette-group legend { font-size: 13px; color: var(--muted); padding: 0 4px; }
+.flow-pane { height: 60vh; min-height: 340px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; touch-action: none; }
+.flow-pane .react-flow__node:focus-visible, .flow-pane .react-flow__edge:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 10px; }
+.node-card { width: 180px; min-height: 64px; padding: 8px 10px; background: var(--step); color: var(--fg); border: 1.5px solid var(--line); border-radius: 10px; text-align: center; position: relative; }
+.node-card .nt { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.node-card .nk { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.node-card.pending { border-style: dashed; opacity: 0.85; }
+.node-card.has-problem { border-color: var(--bad); border-width: 2px; }
+.node-card.role-from { outline: 3px solid var(--accent); }
+.node-card.role-target { outline: 3px dashed var(--accent); }
+.react-flow__node.selected .node-card { border-color: var(--accent); border-width: 3px; }
+.node-card .badge { position: absolute; top: -8px; right: -8px; min-width: 22px; height: 22px; line-height: 22px; border-radius: 11px; background: var(--bad); color: var(--accent-fg); font-size: 12px; font-weight: 700; }
+.react-flow__edge.has-problem .react-flow__edge-path { stroke: var(--bad); stroke-dasharray: 6 4; }
+.react-flow__handle { width: 14px; height: 14px; }
+.refusal { min-height: 1.4em; margin: 6px 0; color: var(--bad); }
+.picker label.inline { margin-right: 12px; }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; white-space: nowrap; }
+.linkbtn { min-height: 44px; padding: 4px 0; background: none; border: 0; color: var(--bad); text-decoration: underline; text-align: left; }
+.inspector .field select { width: 100%; }
+@media (max-width: 480px) { .flow-pane { height: 55vh; } }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
 .thumb { flex-direction: column; align-items: stretch; padding: 4px; min-height: 120px; }
 .thumb img { width: 100%; height: auto; aspect-ratio: 1; object-fit: cover; border-radius: 6px; background: var(--step); }
@@ -91,3 +100,12 @@ progress { width: 100%; }
 .dl.del { background: var(--del); }
 .dl.same { color: var(--muted); }
 @media (max-width: 480px) { .cols { grid-template-columns: 1fr; } }
+.thumbwrap { display: flex; flex-direction: column; gap: 4px; }
+.photo-btn { padding: 0; min-height: 0; border: 0; background: none; cursor: zoom-in; }
+.photo-btn img { display: block; }
+.gone { padding: 8px; border: 1px dashed var(--line); border-radius: 8px; }
+.modal.fullshot { max-width: 1100px; width: 100%; }
+.fullshot { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+.fullshot .shot img.big { width: 100%; height: auto; }
+.shotvalue { min-width: 0; max-height: 75vh; overflow: auto; }
+@media (max-width: 700px) { .fullshot { grid-template-columns: 1fr; } }
