@@ -3,6 +3,7 @@ package com.rokid.context.glasses.capture.golden
 import com.rokid.context.core.model.context.ContextPolicies
 import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.glasses.capture.motion.GlanceParams
+import com.rokid.context.glasses.capture.plan.PlanController
 import com.rokid.context.glasses.capture.session.CaptureProfile
 import com.rokid.context.glasses.capture.session.HeatLevel
 import com.rokid.context.glasses.capture.session.HeatPoller
@@ -32,12 +33,19 @@ object DecisionGoldenRecorder {
         if (state in setOf(ContextState.REST, ContextState.VEHICLE_PASSENGER, ContextState.VEHICLE_DRIVING, ContextState.FLIGHT) ||
             (resting && state != ContextState.WALKING)) 300_000L else 60_000L
 
-    suspend fun record(test: TestScope, s: GoldenScript): String {
+    /**
+     * [planFor] (slice 3a Task 11): builds the plan controller for this rig and applies whatever plan the test wants BEFORE the session
+     * starts; the rig then reads gate values and glance tunables from it and the rows below come from its active config, the way
+     * CaptureService composes them. Null = the unmodified settings path of the frozen goldens.
+     */
+    suspend fun record(test: TestScope, s: GoldenScript, planFor: ((Rig) -> PlanController)? = null): String {
         val plan = ScriptPlan().also { s.plan(Random(s.seed), it, s.durationMs) }
         val r = Rig(test, s.settings, work = s.workMin, rest = s.restMin, glance = GlanceParams())
         r.scene = 1
+        val ctl = planFor?.invoke(r)
+        if (ctl != null) r.activePlan = { ctl.active }
         fun applyCtx(c: ContextState) {
-            val pol = ContextPolicies.of(c)
+            val pol = ctl?.active?.policyFor(c) ?: ContextPolicies.of(c)
             r.profile = CaptureProfile.of(r.settings.cameraWake, s.tier).withContext(pol)
             r.contextCap = pol.capPerMin
         }
