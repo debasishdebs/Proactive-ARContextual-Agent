@@ -17,6 +17,8 @@ interface IntentFrameStore {
     /** Rows changed: 1 = stored, 0 = the frame is gone. */
     suspend fun setIntent(frameId: String, label: String, conf: Float, at: Long): Int
     suspend fun tombstoned(frameId: String): Boolean
+    /** The canvas's write: one conditional UPDATE (no label yet AND not tombstoned). Default (fakes): [setIntent]. */
+    suspend fun setIntentIfUnlabelled(frameId: String, label: String, conf: Float, at: Long): Int = setIntent(frameId, label, conf, at)
 }
 
 /**

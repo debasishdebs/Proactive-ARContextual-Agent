@@ -41,12 +41,11 @@ data class AskPhotoRecall(
 )
 
 /**
- * The seam to the Ask photo gate of wave 3. A re-run of the user's Ask against the canvas may send photos to a model, so it must pass exactly the
+ * The seam to the Ask photo gate of wave 3. A re-run of the user's Ask against the canvas may send photos to a model, so it passes exactly the
  * gate a live Ask passes: the user's "Send matching photos with questions" switch (default OFF), the pipeline not paused, not inside quiet hours,
- * and an ANSWER endpoint that can see images. The wave 3 code (`AnswerService.photosAllowedNow`, `AskPhotoPolicy`, `PhotoRecall`) is not on this
- * branch, so the default [Refuse] never allows a photo. **The merge must bind it**: [allowed] = `AnswerService.photosAllowedNow(context)`,
- * [recall] = the photo search and lines of `AnswerService.retrieve` (`AskPhotoPolicy.select`, `photoLine`), [AskPhotoRecall.images] = `FramePhotos.load`.
- * [allowed] is asked before every [recall]; a throw from either means "no photos" (fail closed).
+ * and an ANSWER endpoint that can see images. The production binding is `AnswerService.askDebugPhotos()` (bound in `CanvasGraph` through
+ * `AskPhotoBinding`); the default [Refuse] never allows a photo. [allowed] is asked before every [recall]; a throw from either means "no photos"
+ * (fail closed). Photos captured after the ask are not offered.
  */
 interface AskDebugPhotos {
     suspend fun allowed(): Boolean

@@ -165,8 +165,8 @@ class AnswerService(
 
     /**
      * As [retrieve], but keeps the scores. [notAfterMs] drops memories with createdAt > it from the hits AND the fallback pool, BEFORE the retriever's
-     * limits (S34). Used by the Ask debug view only; [retrieve] and [answer] are unchanged. It sends no photos (the debug flow takes its photos
-     * through [com.rokid.context.canvas.AskDebugPhotos], which refuses by default).
+     * limits (S34). Used by the Ask debug view only; [retrieve] and [answer] are unchanged. It sends no photos itself: the debug flow takes its photos
+     * through [com.rokid.context.canvas.AskDebugPhotos] ([askDebugPhotos], the live Ask's gate; Refuse until bound).
      */
     suspend fun retrieveScored(question: String, nowMs: Long, notAfterMs: Long? = null): ScoredRetrieved {
         val q = AskText.collapse(question).take(MAX_QUESTION)
@@ -185,12 +185,14 @@ class AnswerService(
         return ScoredRetrieved(Retrieved(vars, kept), r.hits, r.modeUsed, r.semanticUnavailable, fallback, lines)
     }
 
-    private suspend fun recalledPhotos(q: String, nowMs: Long): List<Pair<PhotoHit, String>> {
+    private suspend fun recalledPhotos(q: String, nowMs: Long, notAfterMs: Long? = null): List<Pair<PhotoHit, String>> {
         val hits = try { if (photosAllowed()) photos(q, nowMs) else emptyList() } catch (c: CancellationException) { throw c } catch (e: Exception) {
             Log.i(TAG, "photo recall failed (${e.javaClass.simpleName})"); emptyList()
         }
         // The relevance floor: below it a photo gets neither an image nor a line (provisional values: AskPhotoPolicy).
-        return AskPhotoPolicy.select(hits.distinctBy { it.frameId }).map { it to (it.captionMemoryId ?: (PHOTO_CITE_PREFIX + it.frameId)) }
+        // Ask debug only: a photo known to be captured (else received) after the ask did not exist for it.
+        val visible = if (notAfterMs == null) hits else hits.filter { h -> (h.ts ?: h.receivedAt)?.let { it <= notAfterMs } ?: true }
+        return AskPhotoPolicy.select(visible.distinctBy { it.frameId }).map { it to (it.captionMemoryId ?: (PHOTO_CITE_PREFIX + it.frameId)) }
     }
 
     /**
@@ -218,7 +220,7 @@ class AnswerService(
     internal suspend fun debugPhotoRecall(question: String, nowMs: Long): com.rokid.context.canvas.AskPhotoRecall {
         val none = com.rokid.context.canvas.AskPhotoRecall(emptyList(), emptySet(), emptySet())
         val q = AskText.collapse(question).take(MAX_QUESTION)
-        val recalled = recalledPhotos(q, nowMs) // re-checks the gate before any search
+        val recalled = recalledPhotos(q, nowMs, notAfterMs = nowMs) // re-checks the gate before any search; photos after the ask are dropped
         if (recalled.isEmpty()) return none
         val endpoint = try { imageEndpointId() } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
         val withImage = if (endpoint == null) emptyList() else recalled.filter { it.first.photoStored }.take(MAX_PHOTO_IMAGES)

@@ -366,6 +366,14 @@ interface FrameMetaDao {
     @Query("UPDATE frame_meta SET intentLabel = :label, intentConf = :conf, intentAt = :at WHERE frameId = :frameId")
     suspend fun setIntent(frameId: String, label: String, conf: Float, at: Long): Int
 
+    /**
+     * The canvas's write: only when the photo has no label yet (the sampler's dedicated INTENT_CLASSIFY label always wins) and the frame is not
+     * tombstoned, in ONE statement so a Forget cannot slip in between a check and the write. Rows changed: 0 = labelled, tombstoned or gone.
+     */
+    @Query("UPDATE frame_meta SET intentLabel = :label, intentConf = :conf, intentAt = :at WHERE frameId = :frameId AND intentLabel IS NULL " +
+        "AND NOT EXISTS (SELECT 1 FROM forget_tombstone t WHERE t.frameId = :frameId)")
+    suspend fun setIntentIfUnlabelled(frameId: String, label: String, conf: Float, at: Long): Int
+
     /** The newest photo received at or after [sinceMs] that has no intent result yet. */
     @Query("SELECT * FROM frame_meta WHERE createdAt >= :sinceMs AND intentLabel IS NULL ORDER BY createdAt DESC, frameId LIMIT 1")
     suspend fun newestUnlabelled(sinceMs: Long): FrameMetaEntity?

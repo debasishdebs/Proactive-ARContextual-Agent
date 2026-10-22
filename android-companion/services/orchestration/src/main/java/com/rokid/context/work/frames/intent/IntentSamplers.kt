@@ -26,6 +26,9 @@ class RoomIntentFrameStore(private val db: () -> ContextDatabase) : IntentFrameS
     override suspend fun setIntent(frameId: String, label: String, conf: Float, at: Long): Int =
         db().frameMetaDao().setIntent(frameId, label, conf, at)
 
+    override suspend fun setIntentIfUnlabelled(frameId: String, label: String, conf: Float, at: Long): Int =
+        db().frameMetaDao().setIntentIfUnlabelled(frameId, label, conf, at)
+
     override suspend fun tombstoned(frameId: String): Boolean = db().forgetDao().tombstoned(listOf(frameId)).isNotEmpty()
 }
 

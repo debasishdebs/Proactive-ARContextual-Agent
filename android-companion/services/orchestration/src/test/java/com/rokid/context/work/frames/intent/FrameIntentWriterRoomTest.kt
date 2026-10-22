@@ -33,13 +33,24 @@ class FrameIntentWriterRoomTest {
     }
     private suspend fun label(id: String) = db.openHelper.readableDatabase.query("SELECT intentLabel FROM frame_meta WHERE frameId='$id'").use { if (it.moveToFirst()) it.getString(0) else "ROW_GONE" }
 
-    @Test fun aLiveLabelReachesFrameMetaAndATombstonedOrGoneFrameDoesNot() = runBlocking<Unit> {
+    @Test fun aLabelIsWrittenOnceAndASamplerLabelIsNeverOverwritten() = runBlocking<Unit> {
         frame("a"); frame("b")
         val w = FrameIntentWriter(RoomIntentFrameStore { db })
         w.record("a", "DRIVING", 0.9f, 5)
         assertEquals("DRIVING", label("a")); assertEquals(1, w.lastRows)
-        db.forgetDao().insertTombstone(ForgetTombstoneEntity("b", 1))
-        w.record("b", "DRIVING", 0.9f, 5)
-        assertNull(label("b")); w.record("nope", "DRIVING", 0.9f, 5); assertEquals(0, w.lastRows)
+        w.record("a", "WALKING", 0.9f, 6) // written once: the second label does not replace the first
+        assertEquals("DRIVING", label("a")); assertEquals(0, w.lastRows)
+        db.frameMetaDao().setIntent("b", "VEHICLE_PASSENGER", 0.7f, 3) // the sampler's label
+        w.record("b", "DRIVING", 0.99f, 9)
+        assertEquals("VEHICLE_PASSENGER", label("b")); assertEquals(0, w.lastRows)
+    }
+
+    @Test fun aTombstonedOrMissingFrameIsNotWritten() = runBlocking<Unit> {
+        frame("t")
+        db.forgetDao().insertTombstone(ForgetTombstoneEntity("t", 1)) // Forget fact: the row survives, the tombstone locks it
+        val w = FrameIntentWriter(RoomIntentFrameStore { db })
+        w.record("t", "DRIVING", 0.9f, 5)
+        assertNull(label("t")); assertEquals(0, w.lastRows)
+        w.record("nope", "DRIVING", 0.9f, 5); assertEquals(0, w.lastRows); assertEquals("ROW_GONE", label("nope"))
     }
 }
