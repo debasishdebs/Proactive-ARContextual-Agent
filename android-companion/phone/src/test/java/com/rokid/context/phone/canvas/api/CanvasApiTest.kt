@@ -11,6 +11,7 @@ import com.rokid.context.phone.canvas.server.HttpResponse
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -36,7 +37,7 @@ private class FakeBackend : CanvasBackend {
     var known = true
     var image: ByteArray? = byteArrayOf(1, 2, 3)
     var delayMs = 0L
-    var lastFrames: Triple<Long, Int, Boolean>? = null
+    var lastFrames: List<Any?>? = null
     var lastEstimateIds: List<String> = emptyList()
     var lastScore: List<Any>? = null
 
@@ -51,12 +52,18 @@ private class FakeBackend : CanvasBackend {
     override suspend fun duplicate(from: String, name: String): String { enter("duplicate:$from:$name"); return known("p-new") }
     override suspend fun saveDraft(id: String, json: String, rev: Int): CanvasRepository.SaveResult { enter("save:$rev:${json.length}"); known(0); return saveResult }
     override suspend fun deletePipeline(id: String): Boolean { enter("deletePipeline"); known(0); return deleteResult }
-    override suspend fun freeze(id: String, note: String): JsonObject { enter("freeze:$note"); known(0); return buildJsonObject { put("version", 2); put("hash", "h") } }
+    var freezeThrows: Exception? = null
+    var lastFreezeRev: Int? = -1
+    override suspend fun freeze(id: String, note: String, draftRev: Int?): JsonObject { enter("freeze:$note"); known(0); lastFreezeRev = draftRev; freezeThrows?.let { throw it }; return buildJsonObject { put("version", 2); put("hash", "h") } }
+    var lastValidate: String? = null
+    override suspend fun validate(json: String): JsonObject { enter("validate"); lastValidate = json; return buildJsonObject { put("problems", JsonArray(emptyList())); put("layout", JsonNull) } }
+    var lastDiff: List<String>? = null
+    override suspend fun diff(id: String, a: String, b: String): JsonObject? { enter("diff"); lastDiff = listOf(id, a, b); return if (known) buildJsonObject { put("nodes", JsonArray(emptyList())) } else null }
     override suspend fun publish(id: String, version: Int): CanvasPublisher.Outcome { enter("publish:$version"); known(0); return publishOutcome }
     override suspend fun activePublish() = buildJsonObject { enter("activePublish"); put("active", false) }
     override suspend fun rollback(): CanvasPublisher.Outcome { enter("rollback"); return rollbackOutcome }
     override suspend fun checkPrompt(nodeType: String, template: String, schema: String?): List<String> { enter("check:$nodeType"); return listOf("bad") }
-    override suspend fun frames(beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray { enter("frames"); lastFrames = Triple(beforeMs, limit, dwellOnly); return JsonArray(emptyList()) }
+    override suspend fun frames(afterMs: Long?, beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray { enter("frames"); lastFrames = listOf(afterMs, beforeMs, limit, dwellOnly); return JsonArray(emptyList()) }
     override suspend fun frame(id: String): JsonObject? { enter("frame"); return if (known) buildJsonObject { put("id", id) } else null }
     override suspend fun frameImage(id: String, thumb: Boolean): ByteArray? { enter("image:$thumb"); return image }
     override suspend fun estimate(pipelineId: String, version: Int?, frameIds: List<String>): Estimate { enter("estimate:$version"); known(0); lastEstimateIds = frameIds; return estimateResult }
@@ -177,7 +184,7 @@ class CanvasApiTest {
 
     @Test fun freezeInvalidPipeline() {
         val api2 = CanvasApi(object : CanvasBackend by be {
-            override suspend fun freeze(id: String, note: String): JsonObject = throw IllegalArgumentException("invalid_pipeline")
+            override suspend fun freeze(id: String, note: String, draftRev: Int?): JsonObject = throw IllegalArgumentException("invalid_pipeline")
         })
         val r = api2.handle(HttpRequest("POST", "/api/pipelines/p-1/freeze", emptyMap(), emptyMap(), ByteArray(0)))
         assertEquals(422, r.status)
@@ -211,7 +218,7 @@ class CanvasApiTest {
 
     @Test fun framesAndFrame() {
         assertEquals(200, call("GET", "/api/frames", query = mapOf("before" to "99", "limit" to "10", "dwell" to "true")).status)
-        assertEquals(Triple(99L, 10, true), be.lastFrames)
+        assertEquals(listOf<Any?>(null, 99L, 10, true), be.lastFrames)
         assertEquals(200, call("GET", "/api/frames/f_1").status)
         be.known = false
         assertEquals(404, call("GET", "/api/frames/f_1").status)
@@ -327,16 +334,15 @@ class CanvasApiTest {
 
     @Test fun limitClamped() {
         call("GET", "/api/frames", query = mapOf("limit" to "9999"))
-        assertEquals(120, be.lastFrames!!.second)
+        assertEquals(120, be.lastFrames!![2])
         call("GET", "/api/frames", query = mapOf("limit" to "0"))
-        assertEquals(1, be.lastFrames!!.second)
+        assertEquals(1, be.lastFrames!![2])
         call("GET", "/api/frames", query = mapOf("limit" to "-5"))
-        assertEquals(1, be.lastFrames!!.second)
+        assertEquals(1, be.lastFrames!![2])
         call("GET", "/api/frames")
-        assertEquals(60, be.lastFrames!!.second)
+        assertEquals(60, be.lastFrames!![2])
         val ids = (1..80).joinToString(",") { "\"f$it\"" }
-        call("POST", "/api/runs/estimate", """{"pipelineId":"p","frameIds":[$ids]}""")
-        assertEquals(50, be.lastEstimateIds.size) // clamped to 50
+        assertEquals(400, call("POST", "/api/runs/estimate", """{"pipelineId":"p","frameIds":[$ids]}""").status) // no longer truncated
         val long = "q".repeat(65)
         assertEquals(400, call("POST", "/api/runs/estimate", """{"pipelineId":"p","frameIds":["$long"]}""").status)
     }
@@ -372,5 +378,89 @@ class CanvasApiTest {
     @Test fun errorsNeverEchoInput() {
         val r = call("PUT", "/api/pipelines/p-1", """{"json":"{}","draftRev":"SECRETVALUE"}""")
         assertFalse(String(r.body).contains("SECRETVALUE"))
+    }
+
+    // ---- slice 2, Task 9: validate, diff, freeze rev, day filter, 50-photo cap ----
+
+    @Test fun validateEchoesRev() {
+        val r = call("POST", "/api/validate", """{"json":{"id":"p"},"rev":7}""")
+        assertEquals(200, r.status)
+        assertEquals(7, r.obj()["rev"]!!.jsonPrimitive.int)
+        assertEquals("""{"id":"p"}""", be.lastValidate)
+        assertTrue("rev" !in call("POST", "/api/validate", """{"json":"{}"}""").obj())
+        assertEquals(400, call("POST", "/api/validate", """{"json":"{}","rev":"x"}""").status)
+        assertEquals(400, call("POST", "/api/validate", """{"json":"{}","rev":-1}""").status)
+        assertEquals(400, call("POST", "/api/validate", "not json").status)
+        assertEquals(400, call("POST", "/api/validate", """{"rev":1}""").status)
+    }
+
+    @Test fun validateSavesNothingAndNeedsNoDraftRev() {
+        be.calls.clear()
+        assertEquals(200, call("POST", "/api/validate", """{"json":"{}"}""").status)
+        assertEquals(listOf("validate"), be.calls)
+    }
+
+    @Test fun diffRoute() {
+        val r = call("GET", "/api/pipelines/p-1/diff", query = mapOf("a" to "1", "b" to "draft"))
+        assertEquals(200, r.status)
+        assertEquals(listOf("p-1", "1", "draft"), be.lastDiff)
+        assertEquals(200, call("GET", "/api/pipelines/p-1/diff", query = mapOf("a" to "1", "b" to "2")).status)
+        assertEquals(400, call("GET", "/api/pipelines/p-1/diff", query = mapOf("a" to "x", "b" to "2")).status)
+        assertEquals(400, call("GET", "/api/pipelines/p-1/diff", query = mapOf("a" to "1")).status)
+        assertEquals(400, call("GET", "/api/pipelines/p-1/diff", query = mapOf("a" to "1", "b" to "../x")).status)
+        be.known = false
+        assertEquals(404, call("GET", "/api/pipelines/p-1/diff", query = mapOf("a" to "1", "b" to "2")).status)
+    }
+
+    @Test fun freezeStaleRevIs409() {
+        be.freezeThrows = CanvasRepository.DraftChanged()
+        val r = call("POST", "/api/pipelines/p-1/freeze", """{"draftRev":3}""")
+        assertEquals(409, r.status)
+        assertEquals("conflict", r.err())
+        assertEquals("The draft changed. Save again.", r.obj()["message"]!!.jsonPrimitive.content)
+        assertEquals(3, be.lastFreezeRev)
+        be.freezeThrows = null
+        assertEquals(200, call("POST", "/api/pipelines/p-1/freeze", """{"note":"n"}""").status)
+        assertEquals(null, be.lastFreezeRev)
+        assertEquals(400, call("POST", "/api/pipelines/p-1/freeze", """{"draftRev":"x"}""").status)
+        assertEquals(400, call("POST", "/api/pipelines/p-1/freeze", """{"draftRev":-2}""").status)
+    }
+
+    @Test fun frameIdsOver50Is400() {
+        val ids = (1..51).joinToString(",") { "\"f$it\"" }
+        val r = call("POST", "/api/runs/estimate", """{"pipelineId":"p","frameIds":[$ids]}""")
+        assertEquals(400, r.status)
+        assertEquals("bad_request", r.err())
+        assertEquals("At most 50 photos", r.obj()["message"]!!.jsonPrimitive.content)
+        assertEquals(400, call("POST", "/api/runs", """{"pipelineId":"p","frameIds":[$ids],"confirmToken":"t"}""").status)
+        val ok = (1..50).joinToString(",") { "\"f$it\"" }
+        assertEquals(200, call("POST", "/api/runs/estimate", """{"pipelineId":"p","frameIds":[$ok]}""").status)
+        assertEquals(50, be.lastEstimateIds.size)
+    }
+
+    @Test fun dayFilterParsed() {
+        val zone = java.time.ZoneId.of("Asia/Kolkata")
+        val za = CanvasApi(be, callTimeoutMs = 2_000, zone = { zone })
+        fun get(q: Map<String, String>) = za.handle(HttpRequest("GET", "/api/frames", q, mapOf("authorization" to "Bearer abc"), ByteArray(0)))
+        val start = java.time.LocalDate.of(2026, 10, 21).atStartOfDay(zone).toInstant().toEpochMilli()
+        val next = java.time.LocalDate.of(2026, 10, 22).atStartOfDay(zone).toInstant().toEpochMilli()
+        assertEquals(200, get(mapOf("day" to "2026-10-21")).status)
+        assertEquals(listOf<Any?>(start, next, 60, false), be.lastFrames)
+        // an earlier `before` wins; a later one is capped at the next midnight
+        get(mapOf("day" to "2026-10-21", "before" to (start + 1000).toString()))
+        assertEquals(listOf<Any?>(start, start + 1000, 60, false), be.lastFrames)
+        get(mapOf("day" to "2026-10-21", "before" to (next + 5000).toString()))
+        assertEquals(listOf<Any?>(start, next, 60, false), be.lastFrames)
+        // no day: today's behaviour
+        get(mapOf("before" to "99"))
+        assertEquals(listOf<Any?>(null, 99L, 60, false), be.lastFrames)
+    }
+
+    @Test fun dayFilterBadIs400() {
+        for (bad in listOf("2026-13-01", "2026-02-30", "21-10-2026", "2026-10-2", "yesterday", "", "2026-10-21T00:00", " 2026-10-21")) {
+            val r = call("GET", "/api/frames", query = mapOf("day" to bad))
+            assertEquals("day=[$bad]", 400, r.status)
+            assertEquals("bad_request", r.err())
+        }
     }
 }

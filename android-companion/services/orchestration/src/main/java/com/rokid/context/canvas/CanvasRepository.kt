@@ -26,6 +26,9 @@ class CanvasRepository(
         data class Unreadable(val reason: String) : SaveResult
     }
 
+    /** The draft was saved by someone else since the caller's save: [freeze] with an expected revision refuses (S38). */
+    class DraftChanged : IllegalStateException("draft_changed")
+
     /** Upserts the built-ins with the current code's JSON (they are read-only, so overwriting is safe). */
     suspend fun ensureBuiltIns() {
         val now = clock()
@@ -63,9 +66,13 @@ class CanvasRepository(
         return SaveResult.Saved(draftRev + 1, PipelineValidator.validate(p.copy(id = id)))
     }
 
-    /** Freezes the current draft as the next version. Same hash as the latest version returns that version. */
-    suspend fun freeze(id: String, note: String): CanvasPipelineVersionEntity {
+    /**
+     * Freezes the current draft as the next version. Same hash as the latest version returns that version.
+     * [expectedRev] (S38): when given and not the draft's current revision, throws [DraftChanged] and freezes nothing.
+     */
+    suspend fun freeze(id: String, note: String, expectedRev: Int? = null): CanvasPipelineVersionEntity {
         val entity = dao.pipeline(id) ?: throw IllegalArgumentException("invalid_pipeline")
+        if (expectedRev != null && entity.draftRev != expectedRev) throw DraftChanged()
         val p = PipelineJson.decode(entity.draftJson).getOrElse { throw IllegalArgumentException("invalid_pipeline") }
         if (PipelineValidator.validate(p).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
         val hash = PipelineHash.of(p)

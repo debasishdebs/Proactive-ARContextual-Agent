@@ -33,7 +33,7 @@ class CanvasServer(
      * At most [max] concurrent connections; the rest are closed at once. Every connection has a deadline
      * ([deadlineMs]) for each phase in which the client controls the pace: request line, headers and body, the
      * response write, and the idle wait for the next keep-alive request. It is disarmed only while our handler runs
-     * (the API bounds that itself). A client that drips bytes is closed when the deadline passes.
+     * (the API bounds a read itself; a mutation runs to completion). A client that drips bytes is closed when the deadline passes.
      */
     internal class BoundedRunner(private val max: Int, private val deadlineMs: Long, private val log: (String) -> Unit) : NanoHTTPD.AsyncRunner {
         private class Conn(val handler: NanoHTTPD.ClientHandler) { @Volatile var deadline = Long.MAX_VALUE }
