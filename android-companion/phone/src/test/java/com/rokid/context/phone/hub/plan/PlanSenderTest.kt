@@ -48,6 +48,24 @@ class PlanSenderTest {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     @After fun close() { scope.cancel(); prefs.edit().clear().commit() }
 
+    @Test fun deleteAllDropsTheDesiredPlanSoAReconnectResendsNothing() = runBlocking {
+        val s = sender(); s.onSessionReady(9_000); s.sendShadow("{\"p\":1}", "abc")
+        link.sent.clear()
+        prefs.edit().clear().commit() // what the wipe does to the persisted state
+        s.resetAfterWipe()
+        s.onSessionReady(20_000)
+        assertTrue("no plan is re-sent after Delete all", plans().isEmpty())
+        assertNull(s.capturePlan.value)
+    }
+
+    @Test fun aPlanBuiltBeforeADeleteAllIsNotPersistedAfterIt() = runBlocking {
+        var counter = 1L
+        val s = PlanSender(link, prefs, { "inst1" }, { now }, epochCounter = { val c = counter; counter++; c }) // the counter moves between build and persist
+        val r = runCatching { s.sendShadow("{}", "h") }
+        assertTrue(r.isFailure)
+        assertNull("nothing was persisted", prefs.getString("msg", null))
+    }
+
     @Test fun sendsAShadowPlanStampedForTheSession() = runBlocking {
         val s = sender()
         s.onSessionReady(9_000)

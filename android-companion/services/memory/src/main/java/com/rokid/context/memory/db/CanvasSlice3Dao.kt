@@ -160,9 +160,10 @@ abstract class CanvasSlice3Dao {
      * True when every source still exists, is not tombstoned and is at the revision that was read, and [expectedLabelRev] is still the label counter.
      * Called inside a commit transaction.
      */
-    private suspend fun sourcesHold(sources: List<TraceSource>, expectedLabelRev: Long): Boolean {
+    private suspend fun sourcesHold(sources: List<TraceSource>, expectedLabelRev: Long, epoch: DeletionEpoch): Boolean {
         if (labelRev() != expectedLabelRev) return false
-        return sources.all { s -> trace(s.traceId)?.let { !it.tombstoned && it.revision == s.revision } == true }
+        // A source recorded under another install or an older deletion counter (a Delete all cut short) never counts, even if its row is still there (S57).
+        return sources.all { s -> trace(s.traceId)?.let { !it.tombstoned && it.revision == s.revision && it.installId == epoch.installId && it.deletionCounter == epoch.counter } == true }
     }
 
     /**
@@ -171,7 +172,7 @@ abstract class CanvasSlice3Dao {
      */
     @Transaction open suspend fun commitReplayFenced(replayId: String, resultJson: String, configHash: String?, sources: List<TraceSource>, expectedLabelRev: Long, fence: DaoFence, now: Long): Boolean {
         if (!fence.holds()) return false
-        if (!sourcesHold(sources, expectedLabelRev)) return false
+        if (!sourcesHold(sources, expectedLabelRev, fence.now())) return false
         if (TraceSources.decode(replay(replayId)?.sourcesJson ?: return false) == null) return false // unreadable provenance: fail closed
         return finishReplay(replayId, resultJson, configHash, now) > 0
     }
@@ -179,7 +180,7 @@ abstract class CanvasSlice3Dao {
     /** As [commitReplayFenced], for a sweep. */
     @Transaction open suspend fun commitSweepFenced(sweepId: String, resultJson: String, configHash: String?, sources: List<TraceSource>, expectedLabelRev: Long, fence: DaoFence, now: Long): Boolean {
         if (!fence.holds()) return false
-        if (!sourcesHold(sources, expectedLabelRev)) return false
+        if (!sourcesHold(sources, expectedLabelRev, fence.now())) return false
         if (TraceSources.decode(sweep(sweepId)?.sourcesJson ?: return false) == null) return false
         return finishSweep(sweepId, resultJson, configHash, now) > 0
     }

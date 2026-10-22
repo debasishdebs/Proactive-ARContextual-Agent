@@ -21,6 +21,8 @@ class CanvasForgetCoordinator(
     private val filesDir: File,
     private val collect: CollectSession,
     private val send: suspend (TraceControl) -> Unit,
+    /** Hub-held state that Delete all must drop from memory too (the desired capture plan that is re-sent at every session). */
+    private val onWiped: () -> Unit = {},
 ) : ForgetListener {
     /** The user forgot the time range. Returns what was tombstoned. */
     suspend fun forgetRange(fromMs: Long, toMs: Long): CanvasSlice3Forget.Result {
@@ -32,6 +34,7 @@ class CanvasForgetCoordinator(
     }
 
     override suspend fun onDeleteAll() {
+        try { onWiped() } catch (e: Exception) { /* the persisted state is already cleared */ }
         trySend(collect.refresh()) // the persisted NEW epoch, collect off (the prefs were cleared): the glasses wipe what they hold
     }
 
