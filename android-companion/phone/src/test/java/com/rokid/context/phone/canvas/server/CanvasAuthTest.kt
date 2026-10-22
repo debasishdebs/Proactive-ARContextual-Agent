@@ -164,4 +164,74 @@ class CanvasAuthTest {
         assertTrue(auth.check(t))
         assertEquals(now, auth.lastActivityMs)
     }
+
+    private fun lockOut(): Long {
+        val code = auth.newCode().code
+        val wrong = if (code == "000000") "000001" else "000000"
+        var last: CanvasAuth.Pair = CanvasAuth.Pair.NoCode
+        repeat(CanvasAuth.MAX_TRIES) { last = auth.pair(wrong) }
+        return (last as CanvasAuth.Pair.Locked).untilMs - now
+    }
+
+    @Test fun noAutoCodeAfterLockout() {
+        lockOut()
+        assertNull(auth.currentCode())
+        assertTrue(auth.awaitingNewCode())
+        // time passing never mints one; only an explicit newCode() does
+        now += 3_600_000L
+        assertNull(auth.currentCode())
+        assertTrue(auth.awaitingNewCode())
+        assertEquals(CanvasAuth.Pair.NoCode, auth.pair("123456"))
+        auth.newCode()
+        assertFalse(auth.awaitingNewCode())
+        assertNotNull(auth.currentCode())
+    }
+
+    @Test fun lockoutEscalates() {
+        assertEquals(30_000L, lockOut())
+        now += 30_000L
+        assertEquals(120_000L, lockOut())
+        now += 120_000L
+        assertEquals(600_000L, lockOut())
+        now += 600_000L
+        assertEquals(600_000L, lockOut())
+        now += 600_000L
+        assertEquals(600_000L, lockOut())
+    }
+
+    @Test fun successResetsEscalation() {
+        lockOut(); now += 30_000L
+        lockOut(); now += 120_000L
+        val ok = auth.newCode().code
+        assertTrue(auth.pair(ok) is CanvasAuth.Pair.Ok)
+        assertEquals(30_000L, lockOut())
+    }
+
+    @Test fun codeMintedDuringALockOnlyStartsItsLifeAfterTheLock() {
+        lockOut() // 30 s
+        val c = auth.newCode()
+        assertEquals(now + 30_000L + CanvasAuth.CODE_TTL_MS, c.expiresAt)
+        assertTrue(auth.pair(c.code) is CanvasAuth.Pair.Locked)
+        now += 30_000L
+        assertTrue(auth.pair(c.code) is CanvasAuth.Pair.Ok)
+    }
+
+    @Test fun retryAfterTracksTheRemainingLock() {
+        assertEquals(0L, auth.retryAfterSeconds())
+        lockOut()
+        assertEquals(30L, auth.retryAfterSeconds())
+        now += 10_500L
+        assertEquals(20L, auth.retryAfterSeconds())
+        now += 30_000L
+        assertEquals(0L, auth.retryAfterSeconds())
+    }
+
+    @Test fun lockedAttemptsDoNotConsumeOrExtendTheLock() {
+        val len = lockOut()
+        val until = now + len
+        repeat(50) { assertEquals(CanvasAuth.Pair.Locked(until), auth.pair("000000")) }
+        now = until
+        val ok = auth.newCode().code
+        assertTrue(auth.pair(ok) is CanvasAuth.Pair.Ok)
+    }
 }

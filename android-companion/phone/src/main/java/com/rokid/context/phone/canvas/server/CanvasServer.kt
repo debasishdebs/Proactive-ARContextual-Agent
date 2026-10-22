@@ -8,20 +8,31 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
-/** Thin NanoHTTPD adapter: converts sessions to [HttpRequest] and [HttpResponse] back. All policy is in [CanvasRouter]. */
+/**
+ * Thin NanoHTTPD adapter: converts sessions to [HttpRequest] and [HttpResponse] back. All policy is in [CanvasRouter].
+ *
+ * With [bindLan] the server listens on 0.0.0.0 and speaks TLS 1.2 and 1.3 only, through [tls] (required then); there is no plain-HTTP
+ * LAN mode, and a plain request to the TLS port fails its handshake and is closed. Without it, plain HTTP on 127.0.0.1.
+ * [onStart] runs once after a successful bind (trace pruning); a failure there never fails the start.
+ */
 class CanvasServer(
     private val router: CanvasRouter,
     private val bindLan: Boolean,
+    private val tls: TlsIdentity? = null,
     private val log: (String) -> Unit = {},
     private val maxClients: Int = MAX_CLIENTS,
     private val deadlineMs: Long = DEADLINE_MS,
+    private val onStart: () -> Unit = {},
 ) {
+    init { require(!bindLan || tls != null) { "LAN needs a TLS identity" } }
+
     companion object {
         const val MAX_CLIENTS = 16
         const val DEADLINE_MS = 15_000L
         const val PORT = 8765
         val FALLBACK = 8766..8770
         const val MAX_BODY = 256 * 1024
+        internal val TLS_PROTOCOLS = arrayOf("TLSv1.3", "TLSv1.2")
     }
 
     private class Status(private val code: Int) : NanoHTTPD.Response.IStatus {
@@ -46,22 +57,39 @@ class CanvasServer(
 
         val active: Int get() = running.size
 
+        /** Set by [stop][CanvasServer.stop] and [closeAll]: a connection accepted in the race with the stop is closed at once. */
+        @Volatile var stopping = false
+
+        /** The log is only ever called through here: a throwing log must not stop the watchdog or a connection. */
+        private fun say(line: String) { runCatching { log(line) } }
+
         init {
             val tick = maxOf(20L, minOf(1_000L, deadlineMs / 4))
             watchdog.scheduleWithFixedDelay({
-                val now = System.currentTimeMillis()
-                for (c in running.values) if (now >= c.deadline) { c.deadline = Long.MAX_VALUE; log("CONN deadline"); c.handler.close() }
+                // One bad connection or log call must never end the periodic task (it would silently stop all deadlines).
+                runCatching {
+                    val now = System.currentTimeMillis()
+                    for (c in running.values) {
+                        val deadline = c.deadline // read once: a disarm may land between the comparison and the reset
+                        if (now >= deadline) {
+                            c.deadline = Long.MAX_VALUE
+                            say("CONN deadline")
+                            runCatching { c.handler.close() }
+                        }
+                    }
+                }
             }, tick, tick, TimeUnit.MILLISECONDS)
         }
 
         override fun exec(handler: NanoHTTPD.ClientHandler) {
-            if (!permits.tryAcquire()) { log("CONN over-cap"); handler.close(); return }
+            if (stopping) { handler.close(); return }
+            if (!permits.tryAcquire()) { say("CONN over-cap"); handler.close(); return }
             val conn = Conn(handler).also { it.deadline = System.currentTimeMillis() + deadlineMs }
             running[handler] = conn
             try {
                 pool.execute {
                     current.set(conn)
-                    try { handler.run() } catch (t: Throwable) { log("CONN error"); handler.close() } finally { current.remove(); release(handler) }
+                    try { handler.run() } catch (t: Throwable) { say("CONN error"); handler.close() } finally { current.remove(); release(handler) }
                 }
             } catch (e: Exception) { release(handler); handler.close() }
         }
@@ -71,6 +99,7 @@ class CanvasServer(
         private fun release(handler: NanoHTTPD.ClientHandler) { if (running.remove(handler) != null) permits.release() }
 
         override fun closeAll() {
+            stopping = true
             watchdog.shutdownNow()
             for (h in running.keys.toList()) h.close()
             pool.shutdown()
@@ -114,14 +143,18 @@ class CanvasServer(
         for (p in listOf(PORT) + FALLBACK) {
             val d = Daemon(if (bindLan) null else "127.0.0.1", p)
             try {
+                if (bindLan) d.makeSecure(tls!!.serverSocketFactory(), TLS_PROTOCOLS)
                 d.start(NanoHTTPD.SOCKET_READ_TIMEOUT, true)
             } catch (e: IOException) {
+                // This attempt's runner already started its watchdog thread; a busy port must not leave one behind.
+                runCatching { d.runner.closeAll() }
                 last = e
                 continue
             }
             daemon = d
             port = p
             bindHost = if (bindLan) "0.0.0.0" else "127.0.0.1"
+            runCatching { onStart() }
             return p
         }
         throw IOException("No free port for the canvas server", last)
@@ -129,7 +162,7 @@ class CanvasServer(
 
     @Synchronized
     fun stop() {
-        daemon?.stop()
+        daemon?.let { it.runner.stopping = true; it.stop() }
         daemon = null
         port = null
         bindHost = null
