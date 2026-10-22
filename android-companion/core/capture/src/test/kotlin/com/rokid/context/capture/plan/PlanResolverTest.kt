@@ -53,7 +53,11 @@ class PlanResolverTest {
         }
         assertTrue(id.policy.getValue(PlanState.VEHICLE_PASSENGER).nudges)
         assertFalse(id.policy.getValue(PlanState.VEHICLE_DRIVING).nudges)
-        assertFalse(PlanResolver.toContextPolicy(id.policy.getValue(PlanState.VEHICLE_DRIVING)).pause)
+        for (s in listOf(PlanState.VEHICLE_PASSENGER, PlanState.VEHICLE_DRIVING)) {
+            val mapped = PlanResolver.toContextPolicy(id.policy.getValue(s))
+            assertFalse(mapped.pause, "$s must never pause capture")
+            assertEquals(ContextPolicies.DEFAULT.getValue(ContextState.valueOf(s.name)), mapped, "$s maps back to today's row")
+        }
     }
 
     @Test fun toContextPolicyRoundTrip() {

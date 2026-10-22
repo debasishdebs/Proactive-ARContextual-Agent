@@ -15,6 +15,21 @@ object PlanValidator {
     /** [raw] is the parsed plan JSON, [p] its strict decode (null when that failed), [bytes] the UTF-8 length of the text. */
     fun problems(raw: JsonObject, p: CapturePlan?, bytes: Int): List<String> {
         val out = ArrayList<String>()
+        // The walkers below recurse: refuse deep nesting first (a real plan is about 6 levels), and never let one throw.
+        if (tooDeep(raw, 0)) return listOf("plan is nested too deep (max $MAX_DEPTH)")
+        return runCatching { walk(raw, p, bytes, out) }.getOrElse { listOf("plan could not be checked") }
+    }
+
+    private const val MAX_DEPTH = 32
+
+    private fun tooDeep(e: JsonElement, depth: Int): Boolean = when {
+        depth > MAX_DEPTH -> true
+        e is JsonObject -> e.values.any { tooDeep(it, depth + 1) }
+        e is JsonArray -> e.any { tooDeep(it, depth + 1) }
+        else -> false
+    }
+
+    private fun walk(raw: JsonObject, p: CapturePlan?, bytes: Int, out: MutableList<String>): List<String> {
         if (bytes > PLAN_MAX_BYTES) out += "plan is $bytes bytes (max $PLAN_MAX_BYTES)"
         val schema = (raw["planSchema"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()
         if (schema != PLAN_SCHEMA.toLong()) out += "plan schema ${schema ?: (raw["planSchema"] as? JsonPrimitive)?.content ?: "missing"} is not supported"
@@ -38,7 +53,7 @@ object PlanValidator {
         when (e) {
             is JsonNull -> {}
             is JsonPrimitive -> if (!e.isString && e.content != "true" && e.content != "false") {
-                val d = e.content.toDoubleOrNull()
+                val d = e.content.takeIf { PlanJson.isJsonNumber(it) }?.toDoubleOrNull()
                 if (d == null || !d.isFinite()) out += "${path.ifEmpty { "plan" }} is not a finite number"
             }
             is JsonArray -> e.forEachIndexed { i, x -> finite(x, "$path[$i]", out) }

@@ -15,24 +15,38 @@ data class ReceiverState(
     val appliedGen: Long, val phoneInstall: String, val mode: PlanMode, val planJson: String?, val configHash: String?,
     val trialStartElapsed: Long?, val trialMaxMs: Long?, val bootId: String, val previous: ReceiverState?, val terminal: Map<Long, String>,
     val effective: Boolean = false,
+    /** The phone's publish id for [appliedGen] (echoed in every ack so the phone can match it, S62). */
+    val publishId: String? = null,
+    /** The original mode and publish id of each terminal gen, so a re-ack of a REVERTED gen reports what was reverted. */
+    val terminalMeta: Map<Long, TerminalMeta> = emptyMap(),
 )
+
+/** What a REVERTED gen was before it reverted. */
+data class TerminalMeta(val mode: PlanMode, val publishId: String?)
 
 /**
  * Pure plan receiver for the glasses (S59). Stale and duplicate gens are answered without re-applying; a REVERTED gen is final; a
  * TRIAL is bounded on the glasses' own elapsed clock and ends on a reboot. Not thread-safe.
  */
-class PlanReceiver(private val persist: PlanPersistence, private val elapsed: () -> Long, private val bootId: () -> String) {
+class PlanReceiver(private val persist: PlanPersistence, private val elapsed: () -> Long, bootId: () -> String) {
+    /** Read once: a boot id cannot change inside a process. A persisted state from another boot is detected by comparing it to this. */
+    private val boot: String = bootId()
     private var st: ReceiverState? = persist.load()
 
     val current: ReceiverState? get() = st
 
     fun onMessage(m: CapturePlanMessage): CapturePlanAck {
         val cur = st?.takeIf { it.phoneInstall == m.phoneInstall }   // gens count per phone install
-        cur?.terminal?.get(m.gen)?.let { return ack(m.gen, cur.mode, PlanAckState.REVERTED, it, null, m.phoneInstall, m.publishId) }
+        cur?.terminal?.get(m.gen)?.let {
+            val was = cur.terminalMeta[m.gen]
+            return ack(m.gen, was?.mode ?: cur.mode, PlanAckState.REVERTED, it, null, m.phoneInstall, was?.publishId ?: m.publishId)
+        }
         if (cur != null && m.gen < cur.appliedGen) return reject(m, "stale")
         if (cur != null && m.gen == cur.appliedGen) {
             return ack(m.gen, cur.mode, if (cur.effective) PlanAckState.EFFECTIVE else PlanAckState.STAGED, null, cur.configHash, m.phoneInstall, m.publishId)
         }
+        // Unrestricted LIVE is not a capability of this build: a buggy or rogue phone must not get an unbounded plan staged (round 3).
+        if (m.mode == PlanMode.LIVE && "live" !in CAPS) return reject(m, "unsupported:live")
         if (m.mode == PlanMode.TRIAL && (m.trialMaxMs == null || m.trialMaxMs !in 1L..MAX_TRIAL_MS)) return reject(m, "bounds")
         var planJson: String? = null
         if (m.mode != PlanMode.SETTINGS) {
@@ -50,8 +64,9 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
         }
         val next = ReceiverState(
             appliedGen = m.gen, phoneInstall = m.phoneInstall, mode = m.mode, planJson = planJson, configHash = m.configHash.takeIf { planJson != null },
-            trialStartElapsed = null, trialMaxMs = m.trialMaxMs.takeIf { m.mode == PlanMode.TRIAL }, bootId = bootId(),
-            previous = (cur ?: st)?.copy(previous = null), terminal = cur?.terminal ?: emptyMap(), effective = false,
+            trialStartElapsed = null, trialMaxMs = m.trialMaxMs.takeIf { m.mode == PlanMode.TRIAL }, bootId = boot,
+            previous = (cur ?: st)?.copy(previous = null), terminal = cur?.terminal ?: emptyMap(), effective = false, publishId = m.publishId,
+            terminalMeta = cur?.terminalMeta ?: emptyMap(),
         )
         persist.commit(next); st = next
         return ack(m.gen, m.mode, PlanAckState.STAGED, null, next.configHash, m.phoneInstall, m.publishId)
@@ -65,13 +80,13 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
         }
         if (!cur.effective) {
             val next = cur.copy(
-                effective = true, bootId = bootId(),
+                effective = true, bootId = boot,
                 trialStartElapsed = if (cur.mode == PlanMode.TRIAL) cur.trialStartElapsed ?: elapsed() else null,
             )
             persist.commit(next); st = next
         }
         val s = st!!
-        return ack(gen, s.mode, PlanAckState.EFFECTIVE, null, s.configHash, s.phoneInstall, null)
+        return ack(gen, s.mode, PlanAckState.EFFECTIVE, null, s.configHash, s.phoneInstall, s.publishId)
     }
 
     /** [now] is the glasses' `elapsedRealtime`. Returns the REVERTED ack when the TRIAL ended, else null. */
@@ -79,23 +94,29 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
     fun tick(state: ContextState, now: Long): CapturePlanAck? {
         val cur = st ?: return null
         if (cur.mode != PlanMode.TRIAL || cur.appliedGen in cur.terminal) return null
-        if (cur.bootId != bootId()) return revert("auto:reboot")
+        if (cur.bootId != boot) return revert("auto:reboot")
         val start = cur.trialStartElapsed ?: return null
         val max = cur.trialMaxMs ?: return revert("auto:trial_end")
         if (now < start) return revert("auto:reboot")      // elapsed went backwards: treat as a reboot
         return if (now - start >= max) revert("auto:trial_end") else null
     }
 
-    /** Back to the settings path; the gen is terminal and is never applied again. */
+    /** Back to the settings path; the gen is terminal and is never applied again. The first reason stays: a second revert re-acks it. */
     fun revert(reason: String): CapturePlanAck {
         val cur = st ?: return CapturePlanAck(gen = 0, state = PlanAckState.REJECTED, reason = "stale", caps = CAPS)
+        cur.terminal[cur.appliedGen]?.let { first ->
+            val was = cur.terminalMeta[cur.appliedGen]
+            return ack(cur.appliedGen, was?.mode ?: cur.mode, PlanAckState.REVERTED, first, null, cur.phoneInstall, was?.publishId ?: cur.publishId)
+        }
         val terminal = (cur.terminal + (cur.appliedGen to reason)).entries.sortedBy { it.key }.takeLast(MAX_TERMINAL).associate { it.key to it.value }
+        val meta = (cur.terminalMeta + (cur.appliedGen to TerminalMeta(cur.mode, cur.publishId))).filterKeys { it in terminal }
         val next = ReceiverState(
             appliedGen = cur.appliedGen, phoneInstall = cur.phoneInstall, mode = PlanMode.SETTINGS, planJson = null, configHash = null,
-            trialStartElapsed = null, trialMaxMs = null, bootId = bootId(), previous = null, terminal = terminal, effective = true,
+            trialStartElapsed = null, trialMaxMs = null, bootId = boot, previous = null, terminal = terminal, effective = true,
+            publishId = cur.publishId, terminalMeta = meta,
         )
         persist.commit(next); st = next
-        return ack(cur.appliedGen, cur.mode, PlanAckState.REVERTED, reason, null, cur.phoneInstall, null)
+        return ack(cur.appliedGen, cur.mode, PlanAckState.REVERTED, reason, null, cur.phoneInstall, cur.publishId)
     }
 
     private fun reject(m: CapturePlanMessage, reason: String) = ack(m.gen, m.mode, PlanAckState.REJECTED, reason, null, m.phoneInstall, m.publishId)

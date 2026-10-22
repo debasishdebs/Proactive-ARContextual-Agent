@@ -135,20 +135,39 @@ class PlanValidatorTest {
     }
 
     @Test fun utf8BoundaryMultibyteName() {
-        fun planWithBytes(target: Int): CapturePlan {
-            // pad with ASCII, then end the name on a 2-byte character so that chars < bytes
-            val empty = PlanFixtures.plan(name = "é")
-            val bytes0 = PlanJson.encode(empty).toByteArray().size   // contains one 2-byte char
-            return PlanFixtures.plan(name = "a".repeat(target - bytes0) + "é")
-        }
-        val ok = planWithBytes(8_192)
+        val ok = PlanFixtures.planWithBytes(8_192)
         val okText = PlanJson.encode(ok)
-        assertEquals(8_192, okText.toByteArray().size)
+        assertEquals(8_192, okText.toByteArray(Charsets.UTF_8).size)
         assertTrue(okText.length < 8_192)   // chars alone would hide the overflow
         assertEquals(emptyList(), PlanValidator.check(okText).first)
-        val big = planWithBytes(8_193)
-        val bigText = PlanJson.encode(big)
-        assertEquals(8_193, bigText.toByteArray().size)
+        val bigText = PlanJson.encode(PlanFixtures.planWithBytes(8_193))
+        assertEquals(8_193, bigText.toByteArray(Charsets.UTF_8).size)
         assertEquals(listOf("plan is 8193 bytes (max 8192)"), PlanValidator.check(bigText).first)
+    }
+
+    @Test fun stillFractionsAreCappedAtOne() {
+        fun withFusion(k: String, v: Double) = problems(base.copy(phoneFusion = base.phoneFusion + (k to v)))
+        for (k in listOf("stillFrac", "stillFracWithImage")) {
+            assertEquals(emptyList(), withFusion(k, 1.0), k)
+            assertEquals(listOf("fusion.$k out of bounds ${PlanBounds.fmt(PlanBounds.FUSION_DEFAULTS.getValue(k) * 0.5)}–1"), withFusion(k, 1.01), k)
+        }
+    }
+
+    @Test fun deepNestingRefusedNotCrash() {
+        var deep: kotlinx.serialization.json.JsonElement = JsonPrimitive(1)
+        repeat(100_000) { deep = kotlinx.serialization.json.JsonArray(listOf(deep)) }
+        val raw = PlanFixtures.mutate { it["extra"] = deep }
+        assertEquals(listOf("plan is nested too deep (max 32)"), PlanValidator.problems(raw, null, 100))
+        // a real plan is about 6 levels deep
+        assertEquals(emptyList(), PlanValidator.problems(PlanFixtures.raw(), PlanFixtures.plan(), 100))
+    }
+
+    @Test fun refusesTokensOutsideTheJsonNumberGrammar() {
+        val t = PlanFixtures.text()
+        for (bad in listOf("0.6f", "1d", "0x1p-1", "+1", ".5", "01", "1.")) {
+            val text = t.replace("\"onsetRadS\":0.6", "\"onsetRadS\":$bad")
+            assertTrue(PlanJson.decodeStrict(text).isFailure, bad)
+            assertTrue(PlanValidator.check(text).first.isNotEmpty(), bad)
+        }
     }
 }

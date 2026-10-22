@@ -40,7 +40,10 @@ object PlanResolver {
         )
     }
 
-    /** The identity plan: rows, glance and gate equal today's defaults bit for bit (no clamping); the rest comes from [base]. */
+    /**
+     * Rows, glance and gate equal today's defaults bit for bit (no clamping); `ctxBound` and `phoneFusion` come from [base]. It is the
+     * exact identity plan (today's behaviour) only with the default [base]; a caller that wants no behaviour change passes nothing.
+     */
     fun identity(base: PlanConfig = defaults()): PlanConfig {
         val d = defaults()
         return base.copy(glance = d.glance, policy = d.policy, gate = d.gate)
@@ -48,7 +51,8 @@ object PlanResolver {
 
     /**
      * Fills every field [partial] (a `config` JSON object) leaves out from [base]. An explicit `null` capPerMin means "unchanged" and
-     * is kept. Fails (Result) on unknown keys or non-finite numbers.
+     * is kept. Fails (Result) on unknown keys or non-finite numbers. It does NOT check bounds or the fusion allowlist: the result MUST go
+     * through [PlanValidator] before it is published or applied.
      */
     fun resolve(partial: JsonObject, base: PlanConfig): Result<PlanConfig> =
         runCatching { PlanJson.decodeConfig(merge(PlanJson.configJson(base), partial)) }
