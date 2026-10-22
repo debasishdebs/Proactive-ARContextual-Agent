@@ -72,6 +72,8 @@ class HudController(
     /** Slice 3a: the unsolicited `pc_capture_plan_ack` sent on every session open (gen 0, no plan): tells the phone our caps. Task 11 fills in the applied plan. */
     @Volatile var capsAck: () -> com.rokid.context.core.model.CapturePlanAck =
         { com.rokid.context.core.model.CapturePlanAck(gen = 0, caps = com.rokid.context.capture.plan.PlanReceiver.CAPS) }
+    /** The state of the plan held (null = none ever): sent as a SEPARATE ack after the caps announcement, which stays gen 0 and caps-only (S74). */
+    @Volatile var statusAck: () -> com.rokid.context.core.model.CapturePlanAck? = { null }
     /** `pc_capture_plan` (slice 3a): a plan message of this session; the runtime's plan controller answers with acks through [sendPlanAck]. */
     @Volatile var onCapturePlan: (com.rokid.context.core.model.CapturePlanMessage) -> Unit = {}
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
@@ -190,6 +192,7 @@ class HudController(
             Log.i(TAG, "session open")
             sendHello()
             bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(capsAck())) // plumbing only; the phone shows "too old" for a peer that never sends it
+            try { statusAck()?.let { bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(it)) } } catch (e: Exception) { Log.w(TAG, "plan status ack failed: ${e.javaClass.simpleName}") }
             onSessionOpened()
         }
     }

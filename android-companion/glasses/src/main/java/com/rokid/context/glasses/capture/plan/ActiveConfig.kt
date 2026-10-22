@@ -27,18 +27,20 @@ data class ActiveConfig(
     val table: Map<ContextState, ContextCapturePolicy>,
     val ctxBound: Boolean,
     val configHash: String? = null,
+    /** A plan is always SETTLE wake (spec 3.4, S27): the settings wake is for the settings path only. */
+    val forceSettle: Boolean = true,
 ) {
     fun policyFor(applied: ContextState): ContextCapturePolicy = ContextPolicies.of(if (ctxBound) applied else ContextState.UNKNOWN, table)
 
     /** S68: the settings tier profile, then the row (minima via maxOf). The session applies `forRest()`, then heat and the battery tier. */
     fun profile(wake: CameraWake, tier: BudgetTier, applied: ContextState): CaptureProfile =
-        CaptureProfile.of(wake, tier).withContext(policyFor(applied))
+        CaptureProfile.of(if (forceSettle) CameraWake.SETTLE else wake, tier).withContext(policyFor(applied))
 
     /** Row `capPerMin` null = null here too: no context cap and no hard flag. */
     fun contextCap(applied: ContextState): Int? = policyFor(applied).capPerMin
 
     companion object {
-        val SETTINGS = ActiveConfig(GlanceParams(), GateParams(), ContextPolicies.DEFAULT, ctxBound = true)
+        val SETTINGS = ActiveConfig(GlanceParams(), GateParams(), ContextPolicies.DEFAULT, ctxBound = true, forceSettle = false)
 
         /** The config a LIVE or TRIAL plan applies. Only the plan's glance fields replace [GlanceParams] defaults (caps and sample limits are not plan params). */
         fun of(plan: CapturePlan): ActiveConfig {
