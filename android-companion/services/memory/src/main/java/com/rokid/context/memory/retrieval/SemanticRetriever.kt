@@ -17,13 +17,13 @@ class SemanticRetriever(
      * null = unavailable, so callers use lexical (R-51): no ACTIVE space, no embedder, a vault/Keystore failure, a
      * failed or wrong-size or unusable (zero / non-finite) query vector, or an index failure. Cancellation propagates.
      */
-    suspend fun search(query: String, limit: Int, minConfidence: Double = 0.0): List<Hit>? = try {
+    suspend fun search(query: String, limit: Int, minConfidence: Double = 0.0, notAfterMs: Long? = null): List<Hit>? = try {
         val space = spaces.queryable()
         // forSpace reads the endpoint key from the vault (Keystore decryption): IO, never the caller's thread.
         val embedder = space?.let { withContext(Dispatchers.IO) { embedders.forSpace(it) } }
         val q = embedder?.embedQuery(query)
         if (space == null || q == null || q.size != space.dim || !VectorMath.usable(q)) null
-        else index.search(space.id, q, limit, minConfidence)
+        else if (notAfterMs == null) index.search(space.id, q, limit, minConfidence) else index.searchUntil(space.id, q, limit, minConfidence, notAfterMs)
     } catch (c: CancellationException) {
         throw c
     } catch (e: Exception) {

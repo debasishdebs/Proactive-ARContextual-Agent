@@ -100,6 +100,10 @@ abstract class CanvasDao {
     // --- A/B groups, asks, token means ---
     @Query("SELECT * FROM canvas_run WHERE abGroup = :group ORDER BY startedAt, runId") abstract suspend fun runsInGroup(group: String): List<CanvasRunEntity>
     @Query("SELECT * FROM ask ORDER BY ts DESC LIMIT :limit") abstract suspend fun recentAsks(limit: Int): List<AskEntity>
+    @Query("SELECT * FROM ask WHERE id = :id") abstract suspend fun ask(id: String): AskEntity?
+    /** How many of [ids] are memories that still exist and are not INVALIDATED (the Forget fence of a replay, S35). */
+    open suspend fun liveMemoryCount(ids: Collection<String>): Int = ids.toList().chunked(CHUNK).sumOf { liveMemories(it) }
+    @Query("SELECT COUNT(*) FROM memory WHERE id IN (:ids) AND reviewState != 'INVALIDATED'") protected abstract suspend fun liveMemories(ids: List<String>): Int
     /**
      * Mean tokens per provider CALL (S32): sum of tokens / sum of calls over the last [limit] OK owner rows (rows that recorded both tokens and a call count)
      * whose nodeId is in [nodeIds]. A batch-mate row has neither, so a three-photo call counts once. [TokenMeans.n] is the number of owner rows.

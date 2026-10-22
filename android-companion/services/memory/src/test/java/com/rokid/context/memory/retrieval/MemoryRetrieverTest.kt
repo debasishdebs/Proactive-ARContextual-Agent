@@ -103,4 +103,48 @@ class MemoryRetrieverTest {
         assertEquals(200, retriever.retrieve("milk", s, now, poolOverride = 9_999).hits.size)
         assertEquals(MemoryRetriever.MAX_POOL_OVERRIDE, 200)
     }
+
+    // ---- notAfterMs (S34): the time bound applies BEFORE every limit ----
+
+    @Test fun manyNewerMatchesDontHideOlder() = runBlocking {
+        mem("old", "milk carton old", at = 10 * day)
+        repeat(60) { mem("new$it", "milk milk milk carton $it", at = 90 * day) } // denser: they fill the lexical pool of 40 on their own
+        val unbound = retriever.retrieve("milk", RetrievalSettings(mode = RetrievalMode.LEXICAL), now)
+        assertFalse("old" in unbound.hits.map { it.memory.id })           // today's behaviour: crowded out
+        val bound = retriever.retrieve("milk", RetrievalSettings(mode = RetrievalMode.LEXICAL), now, notAfterMs = 20 * day)
+        assertEquals(listOf("old"), bound.hits.map { it.memory.id })
+    }
+
+    @Test fun notAfterAppliedBeforeLimits() = runBlocking {
+        mem("old", "milk carton old", at = 10 * day)
+        repeat(60) { mem("new$it", "milk carton $it", at = 90 * day) }
+        // The query vector (0,1) points at the new memories; the old one is orthogonal and falls outside the semantic candidate pool of 40.
+        activeSpace("old" to floatArrayOf(1f, 0f), *(0 until 60).map { "new$it" to floatArrayOf(0f, 1f) }.toTypedArray())
+        val s = RetrievalSettings(mode = RetrievalMode.SEMANTIC, topK = 1)
+        assertEquals(1, retriever.retrieve("milk", s, now).hits.size)
+        assertFalse("old" == retriever.retrieve("milk", s, now).hits.single().memory.id)
+        val bound = retriever.retrieve("milk", s, now, notAfterMs = 20 * day)
+        assertEquals(listOf("old"), bound.hits.map { it.memory.id })
+        assertEquals(RetrievalMode.SEMANTIC, bound.modeUsed)
+        // topK too: with 3 old and 60 new, the bounded top-2 are old ones.
+        mem("old2", "milk carton old two", at = 11 * day); mem("old3", "milk carton old three", at = 12 * day)
+        assertTrue(retriever.retrieve("milk", RetrievalSettings(mode = RetrievalMode.LEXICAL, topK = 2), now, notAfterMs = 20 * day).hits.all { it.memory.createdAt <= 20 * day })
+    }
+
+    @Test fun notAfterIsInclusiveAndNullIsToday() = runBlocking {
+        mem("a", "milk carton a", at = 10 * day); mem("b", "milk carton b", at = 20 * day); mem("c", "milk carton c", at = 21 * day)
+        val s = RetrievalSettings(mode = RetrievalMode.LEXICAL)
+        assertEquals(setOf("a", "b"), retriever.retrieve("milk", s, now, notAfterMs = 20 * day).hits.map { it.memory.id }.toSet())
+        assertEquals(setOf("a", "b", "c"), retriever.retrieve("milk", s, now, notAfterMs = null).hits.map { it.memory.id }.toSet())
+    }
+
+    @Test fun fallbackPoolBounded() = runBlocking {
+        repeat(5) { mem("old$it", "x $it", at = (10 + it) * day) }
+        repeat(40) { mem("new$it", "y $it", at = 90 * day + it) }
+        assertEquals(30, memories.recent(30, null).size)
+        assertTrue(memories.recent(30, null).all { it.id.startsWith("new") })
+        val bound = memories.recent(30, 20 * day)
+        assertEquals(setOf("old0", "old1", "old2", "old3", "old4"), bound.map { it.id }.toSet())
+        assertEquals(memories.recent(30).map { it.id }, memories.recent(30, null).map { it.id })
+    }
 }

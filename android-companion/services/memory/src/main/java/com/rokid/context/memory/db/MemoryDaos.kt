@@ -26,6 +26,8 @@ interface MemoryDao {
     @Upsert suspend fun insert(memory: MemoryEntity)
     @Insert(onConflict = OnConflictStrategy.IGNORE) suspend fun insertIgnore(memory: MemoryEntity): Long
     @Query("SELECT * FROM memory ORDER BY createdAt DESC LIMIT :limit") suspend fun recent(limit: Int): List<MemoryEntity>
+    /** The newest [limit] memories created at or before [notAfterMs]: the bound comes before the limit (S34). */
+    @Query("SELECT * FROM memory WHERE createdAt <= :notAfterMs ORDER BY createdAt DESC LIMIT :limit") suspend fun recentUntil(limit: Int, notAfterMs: Long): List<MemoryEntity>
     @Query("SELECT * FROM memory ORDER BY createdAt ASC") suspend fun all(): List<MemoryEntity>
     @Query("SELECT * FROM memory WHERE createdAt >= :fromMs AND createdAt < :toMs AND reviewState != 'INVALIDATED' ORDER BY createdAt DESC")
     suspend fun between(fromMs: Long, toMs: Long): List<MemoryEntity>

@@ -49,6 +49,9 @@ abstract class EmbeddingDao {
      */
     @Query(LIVE_PAGE_SQL)
     abstract suspend fun livePage(spaceId: String, afterRowid: Long, minConfidence: Double, limit: Int): List<VectorRow>
+    /** [livePage] over the memories created at or before [notAfterMs] (S34). */
+    @Query(LIVE_PAGE_UNTIL_SQL)
+    abstract suspend fun livePageUntil(spaceId: String, afterRowid: Long, minConfidence: Double, notAfterMs: Long, limit: Int): List<VectorRow>
     @Query("SELECT COUNT(*) FROM memory WHERE id = :id AND reviewState != 'INVALIDATED'") protected abstract suspend fun liveMemory(id: String): Int
     @Upsert abstract suspend fun putVector(v: MemoryVectorEntity)
 
@@ -254,5 +257,8 @@ abstract class EmbeddingDao {
         const val LIVE_PAGE_SQL = "SELECT v.rowid AS rowid, v.memoryId AS memoryId, v.blob AS blob FROM memory_vector v " +
             "JOIN memory m ON m.id = v.memoryId WHERE v.spaceId = :spaceId AND v.rowid > :afterRowid AND m.reviewState = 'OK' " +
             "AND m.confidence >= :minConfidence ORDER BY v.rowid LIMIT :limit"
+        const val LIVE_PAGE_UNTIL_SQL = "SELECT v.rowid AS rowid, v.memoryId AS memoryId, v.blob AS blob FROM memory_vector v " +
+            "JOIN memory m ON m.id = v.memoryId WHERE v.spaceId = :spaceId AND v.rowid > :afterRowid AND m.reviewState = 'OK' " +
+            "AND m.confidence >= :minConfidence AND m.createdAt <= :notAfterMs ORDER BY v.rowid LIMIT :limit"
     }
 }

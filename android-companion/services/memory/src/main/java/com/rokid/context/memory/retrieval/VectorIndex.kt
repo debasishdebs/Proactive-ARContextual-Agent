@@ -11,6 +11,13 @@ data class Hit(val id: String, val score: Double)
 interface VectorIndex {
     /** Only memories with confidence ≥ [minConfidence] are candidates, so a threshold never empties the top-[limit]. */
     suspend fun search(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double = 0.0): List<Hit>
+
+    /**
+     * [search] over memories created at or before [notAfterMs], applied BEFORE the top-[limit] cut (S34). An index that cannot bound by time must
+     * say so: the default throws, and [SemanticRetriever] then falls back to lexical like any index failure.
+     */
+    suspend fun searchUntil(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double, notAfterMs: Long): List<Hit> =
+        throw UnsupportedOperationException("index cannot bound by time")
 }
 
 /**
@@ -21,7 +28,12 @@ interface VectorIndex {
  * [Dispatchers.Default], never on Main.
  */
 class BruteForceVectorIndex(private val dao: EmbeddingDao, private val pageSize: Int = 500) : VectorIndex {
-    override suspend fun search(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double): List<Hit> {
+    override suspend fun search(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double): List<Hit> = scan(spaceId, query, limit, minConfidence, null)
+
+    override suspend fun searchUntil(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double, notAfterMs: Long): List<Hit> =
+        scan(spaceId, query, limit, minConfidence, notAfterMs)
+
+    private suspend fun scan(spaceId: String, query: FloatArray, limit: Int, minConfidence: Double, notAfterMs: Long?): List<Hit> {
         if (limit <= 0 || !VectorMath.usable(query)) return emptyList()
         val page = pageSize.coerceAtLeast(1)
         return withContext(Dispatchers.Default) {
@@ -29,7 +41,7 @@ class BruteForceVectorIndex(private val dao: EmbeddingDao, private val pageSize:
             val v = FloatArray(query.size) // reused for every row: no per-vector allocation
             var after = 0L
             while (true) {
-                val rows = dao.livePage(spaceId, after, minConfidence, page)
+                val rows = if (notAfterMs == null) dao.livePage(spaceId, after, minConfidence, page) else dao.livePageUntil(spaceId, after, minConfidence, notAfterMs, page)
                 for (r in rows) {
                     // A corrupt blob or a vector of another dimension is skipped, never scored.
                     if (!VectorCodec.decodeInto(r.blob, v)) continue
