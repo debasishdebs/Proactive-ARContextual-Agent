@@ -330,9 +330,10 @@ class CanvasGraph(
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> Log.w(TAG, "canvas task failed (${t.javaClass.simpleName})") })
             val ref = java.util.concurrent.atomic.AtomicReference<CanvasGraph>()
             val backend = lazy { com.rokid.context.phone.canvas.api.AskPhotoBinding.bind(com.rokid.context.orchestration.AnswerService.forApp(app, extractFirst = false).askDebugPhotos()); CanvasBackendImpl.create(app, AiGraph.get(app), auth, lan = { ref.get()?.lan == true }, scope = scope) }
+            val extras = lazy { CanvasExtras.create(app, scope, DeveloperModeStore.get(app).enabled) }
             val maintenance = lazy { CanvasMaintenance(MemoryGraph.get(app).db.canvasDao()) }
             val graph = CanvasGraph(
-                auth, BackendCore(backend), AssetSource { name -> runCatching { app.assets.open("canvas/$name").use { it.readBytes() } }.getOrNull() },
+                auth, BackendCore(backend, extras), AssetSource { name -> runCatching { app.assets.open("canvas/$name").use { it.readBytes() } }.getOrNull() },
                 DeveloperModeStore.get(app).enabled, wifiIp = { LanAddress.wifiIpv4(app) }, scope = scope, log = { Log.i(TAG, it) },
                 tlsFactory = { KeystoreTlsIdentity(app) }, prune = { maintenance.value.pruneTraces() },
             )
@@ -343,12 +344,12 @@ class CanvasGraph(
 }
 
 /** [CanvasCore] over the one [CanvasBackendImpl] (built on first use, then reused). */
-class BackendCore(private val backend: Lazy<CanvasBackendImpl>) : CanvasCore {
-    private val apiLazy = lazy { CanvasApi(backend.value) }
+class BackendCore(private val backend: Lazy<CanvasBackendImpl>, private val extras: Lazy<CanvasExtras>? = null) : CanvasCore {
+    private val apiLazy = lazy { CanvasApi(backend.value, extras = extras?.value?.extras ?: emptyList()) }
     override val api = ApiHandler { apiLazy.value.handle(it) }
-    override suspend fun start() = backend.value.start()
+    override suspend fun start() { backend.value.start(); extras?.value?.start() }
     override fun runActive() = backend.isInitialized() && backend.value.runActive()
-    override suspend fun cancelActive() { if (backend.isInitialized()) backend.value.cancelActiveRun() }
+    override suspend fun cancelActive() { if (backend.isInitialized()) backend.value.cancelActiveRun() } // a replay stops by itself: ReplayService watches the switch
 
     override suspend fun home(): HomeData {
         val b = backend.value
