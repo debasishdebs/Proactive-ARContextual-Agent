@@ -334,9 +334,13 @@ class CanvasBackendImplTest {
 
     // ---- slice 2, Task 9 (commit 1): node types, validate, diff, freeze rev, day filter ----
 
+    private val slice2Types = listOf("input.photos", "ai.vision_extract", "gate.local_critic", "ai.critic", "ai.prompt", "route.switch", "memory.write")
+
     @Test fun nodeTypesCarryCategory() {
-        val types = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
-        fun s(t: String, k: String) = types.getValue(t)[k]!!.jsonPrimitive.content
+        val all = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
+        val types = all.filterKeys { it in slice2Types }
+        assertEquals(slice2Types.toSet(), types.keys)
+        fun s(t: String, k: String) = all.getValue(t)[k]!!.jsonPrimitive.content
         assertEquals(mapOf(
             "input.photos" to "photos", "ai.vision_extract" to "extract", "gate.local_critic" to "trust", "ai.critic" to "critic",
             "ai.prompt" to "prompt", "route.switch" to "route", "memory.write" to "write",
@@ -346,7 +350,7 @@ class CanvasBackendImplTest {
             "ai.prompt" to "AI", "route.switch" to "Routing", "memory.write" to "Memory",
         ), types.keys.associateWith { s(it, "category") })
         // exactly one photo input per pipeline: not offered by the palette
-        assertEquals(listOf("input.photos"), types.keys.filter { s(it, "palette") == "false" })
+        assertEquals(listOf("input.photos"), all.keys.filter { s(it, "palette") == "false" })
         assertTrue(types.keys.all { s(it, "domain") == "ASYNC" })
         // the editor needs the switch's field param to edit it
         val params = types.getValue("route.switch")["params"]!!.jsonArray.map { it.jsonObject }
@@ -354,7 +358,38 @@ class CanvasBackendImplTest {
         assertEquals("activity", params.first { it["name"]!!.jsonPrimitive.content == "field" }["default"]!!.jsonPrimitive.content)
         assertTrue(params.any { it["name"]!!.jsonPrimitive.content == "cases" })
         // every short id is valid as a node id prefix
-        assertTrue(types.keys.all { Regex("^[a-z][a-z0-9]{0,15}$").matches(s(it, "short")) })
+        assertTrue(all.keys.all { Regex("^[a-z][a-z0-9]{0,15}$").matches(s(it, "short")) })
+    }
+
+    @Test fun nodeTypesRouteServesV2() {
+        val types = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
+        fun s(t: String, k: String) = types.getValue(t)[k]!!.jsonPrimitive.content
+        // the registry's capture-half types, with the fields the editor reads
+        assertEquals("RT_GLASSES", s("imu.head_motion", "domain"))
+        assertEquals("Sensors", s("imu.head_motion", "category"))
+        assertEquals("head", s("imu.head_motion", "short"))
+        assertEquals("true", s("imu.head_motion", "root"))
+        assertEquals("RT_PHONE", s("hub.context", "domain"))
+        assertEquals("true", s("signal.in", "domainFromParams"))
+        assertEquals("TABLE", s("policy.capture_rate", "executor"))
+        assertEquals("Policy/Frequency", s("policy.capture_rate", "category"))
+        assertEquals("2", s("imu.head_motion", "sinceSchema"))
+        assertEquals("1", s("imu.head_motion", "version"))
+        // every type has the fields the editor consumes, and a valid id prefix
+        types.values.forEach { t -> listOf("short", "palette", "category", "domain", "inputs", "output", "params").forEach { k -> assertTrue(k, t.containsKey(k)) } }
+        // params come from the registry: numbers print as numbers, with their bounds
+        val onset = types.getValue("imu.head_motion")["params"]!!.jsonArray.map { it.jsonObject }.first { it["name"]!!.jsonPrimitive.content == "onsetRadS" }
+        assertEquals("number", onset["kind"]!!.jsonPrimitive.content)
+        assertEquals("0.4", onset["min"]!!.jsonPrimitive.content)
+        assertEquals("1", onset["max"]!!.jsonPrimitive.content)
+        // the policy table carries its row names and the timer photo gap heading
+        val rows = types.getValue("policy.capture_rate")["params"]!!.jsonArray.map { it.jsonObject }.first { it["name"]!!.jsonPrimitive.content == "rows" }
+        val table = rows["table"]!!.jsonObject
+        assertEquals(listOf("REST", "VEHICLE_PASSENGER", "VEHICLE_DRIVING", "FLIGHT"), table["rows"]!!.jsonArray.map { it.jsonPrimitive.content })
+        val groups = table["cols"]!!.jsonArray.map { it.jsonObject }.mapNotNull { it["group"]?.jsonPrimitive?.content }
+        assertEquals(List(4) { "timer photo gap (settled/quiet/walk/still cap)" }, groups)
+        // slice 2 types keep their editor params
+        assertTrue(types.getValue("ai.vision_extract")["params"]!!.jsonArray.any { it.jsonObject["name"]!!.jsonPrimitive.content == "batch" })
     }
 
     @Test fun validateReturnsLayoutAndProblems() = runBlocking<Unit> {
