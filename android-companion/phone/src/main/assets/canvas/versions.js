@@ -3,6 +3,7 @@ import { h, clear, btn } from './dom.js';
 import { rowsFor } from './diffview.js';
 import { MODES, callRangeText, rollbackProblems, historyRows, when } from './format.js';
 import { rollbackPayload } from './runlogic.js';
+import { planStatusCard } from './planpublish.js';
 
 const enc = encodeURIComponent;
 const side = (v) => (v === 'draft' ? 'the draft' : 'v' + v);
@@ -68,8 +69,8 @@ export async function publishCard(ctx, host) {
   const rows = historyRows(hist);
   host.appendChild(h('section', { class: 'card' }, h('h3', null, 'Publishing'),
     head ? h('p', null, 'Newest: ' + head.title + (pub.interpreter ? ' · interpreted ' + pub.interpreter.interpreted + ' · fallbacks ' + pub.interpreter.fallbacks : '')) : h('p', { class: 'muted' }, 'Nothing is published.'),
-    payload ? btn('Roll back', async () => {
-      if (!window.confirm('Roll back ' + head.title + '?')) return;
+    payload ? btn(head.groupId ? 'Undo latest (whole group)' : 'Roll back', async () => {
+      if (!window.confirm((head.groupId ? 'Undo the whole group, async half first then the capture plan: ' : 'Roll back ') + head.title + '?')) return;
       try {
         await ctx.api('POST', '/api/publish/rollback', payload);
         await ctx.reload();
@@ -81,4 +82,5 @@ export async function publishCard(ctx, host) {
     }, 'btn danger') : null,
     rows.length ? h('details', null, h('summary', null, 'History (' + rows.length + ')'),
       rows.map((r) => h('p', { class: 'muted' }, r.title + ' · ' + when(r.publishedAt) + (r.rolledBack ? ' · Rolled back: ' + (r.reason || 'by hand') : '')))) : null));
+  await planStatusCard(ctx, host);
 }

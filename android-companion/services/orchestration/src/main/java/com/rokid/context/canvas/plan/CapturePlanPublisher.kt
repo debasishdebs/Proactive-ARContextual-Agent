@@ -24,7 +24,7 @@ sealed interface PlanOutcome {
 
 /** The Settings row and the Diagnostics plan card (S12, S26): plain data, rendered by the phone UI. [rows] are the per-component states of the active group. */
 data class PlanStatus(val active: ActivePlan?, val rows: List<String>)
-data class ActivePlan(val publishId: Long, val groupId: String, val name: String, val version: Int, val mode: String, val configHash: String, val state: String) {
+data class ActivePlan(val publishId: Long, val groupId: String, val name: String, val version: Int, val mode: String, val configHash: String, val state: String, val sentAtMs: Long? = null) {
     /** "Capture plan: <name> v<N> (<mode>) · Use settings" */
     val settingsRow: String get() = PlanTexts.settingsRow(name, version, mode)
     /** What a settings row the plan resolved shows. */
@@ -204,7 +204,7 @@ class CapturePlanPublisher(
         val state = g?.state ?: "UNKNOWN"
         val async = canvas.activePublishes().firstOrNull { it.groupId == row.groupId && it.kind == CanvasPublisher.KIND_INTERPRETER }
         return PlanStatus(
-            ActivePlan(row.id, row.groupId!!, name, row.version, row.mode.orEmpty(), row.configHash.orEmpty(), state),
+            ActivePlan(row.id, row.groupId!!, name, row.version, row.mode.orEmpty(), row.configHash.orEmpty(), state, g?.sentAtMs),
             listOf(
                 "Glasses: $state · gen ${g?.gen ?: 0} · ${row.mode.orEmpty().lowercase()}",
                 "Phone RT: " + if (state == "EFFECTIVE") "applied" else "waiting for the glasses",

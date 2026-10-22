@@ -13,6 +13,7 @@ import com.rokid.context.memory.db.TraceSources
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -32,6 +33,8 @@ data class ReplayEvidence(
     val candidatePctPerMin: Double, val baselinePctPerMin: Double,
     /** Per context state: the highest p95 opens/min of any trace (ruling: a p95 cannot be merged exactly, the highest is the conservative ceiling for the auto-revert). */
     val opensP95PerMin: Map<String, Double>,
+    /** Over the replay's reports: windows the comparison could judge, windows it excluded as inexact, and whether any report says fusion is not replayed (Task 37 shows these beside the publish gates). */
+    val windowsCompared: Int = 0, val inexactWindows: Int = 0, val fusionWarning: Boolean = false,
 )
 
 data class GateReport(val configHash: String?, val gates: List<GateResult>, val evidence: ReplayEvidence?, val details: List<String> = emptyList()) {
@@ -106,12 +109,15 @@ class PlanEvidenceGates(
         val reports = runCatching { Json.parseToJsonElement(r.resultJson ?: return Missing("the replay has no result")).jsonObject["reports"]!!.jsonArray.map { it.jsonObject["report"]!!.jsonObject } }
             .getOrNull()?.takeIf { it.isNotEmpty() } ?: return Missing("the replay result is unreadable")
         var minutes = 0.0; var cand = 0.0; var base = 0.0
+        var compared = 0; var inexact = 0; var fusion = false
         val stateMinutes = HashMap<String, Double>(); val p95 = HashMap<String, Double>()
         for (rep in reports) {
             val m = rep.num("minutes") ?: return Missing("the replay result is unreadable")
             val b = rep["baseline"]?.jsonObject?.num("estimatedPctPerMin") ?: return Missing("the replay result is unreadable")
             val c = rep["candidate"]?.jsonObject?.num("estimatedPctPerMin") ?: b       // a replay of the recorded config only: the plan IS the baseline
             minutes += m; base += b * m; cand += c * m
+            compared += ((rep.num("basePassed") ?: 0.0) + (rep.num("baseFailed") ?: 0.0)).toInt(); inexact += (rep.num("inexactWindows") ?: 0.0).toInt()
+            if ((rep["shadowOrTrialOnly"] as? JsonPrimitive)?.booleanOrNull == true) fusion = true
             rep["states"]?.jsonObject?.forEach { (state, v) ->
                 val o = v.jsonObject
                 stateMinutes[state] = (stateMinutes[state] ?: 0.0) + (o.num("minutes") ?: 0.0)
@@ -121,7 +127,7 @@ class PlanEvidenceGates(
         if (minutes < MIN_MINUTES) return Missing(String.format(Locale.ROOT, "needs %d minutes of traces, has %.0f", MIN_MINUTES, minutes))
         val covered = stateMinutes.filterValues { it >= MIN_STATE_MINUTES }.keys
         if (covered.size < MIN_STATES) return Missing("needs $MIN_STATES states, has ${covered.size}")
-        return Found(ReplayEvidence(r.replayId, r.configHash.orEmpty(), minutes, covered.size, cand / minutes, base / minutes, p95.filterKeys { it in covered }.mapValues { round2(it.value) }))
+        return Found(ReplayEvidence(r.replayId, r.configHash.orEmpty(), minutes, covered.size, cand / minutes, base / minutes, p95.filterKeys { it in covered }.mapValues { round2(it.value) }, compared, inexact, fusion))
     }
 
     private suspend fun gate4(plan: CapturePlan?, e: ReplayEvidence?, mode: PlanMode): GateResult {

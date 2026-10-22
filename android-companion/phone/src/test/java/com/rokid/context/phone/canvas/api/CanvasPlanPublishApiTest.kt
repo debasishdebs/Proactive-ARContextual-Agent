@@ -230,6 +230,12 @@ class CanvasPlanPublishApiTest {
         val check = ok(call("POST", "/api/plans/check", publishBody(id, v, "SHADOW")))
         assertTrue(check.toString(), check["ok"]!!.jsonPrimitive.content.toBoolean()); assertEquals(hash, check["configHash"]!!.jsonPrimitive.content)
         assertTrue(sent.isEmpty())
+        // Task 37: the evidence behind gate 3 and the M1 flag ride along for the publish UI
+        val ev = check["evidence"]!!.jsonObject
+        assertEquals(40.0, ev["minutes"]!!.jsonPrimitive.content.toDouble(), 0.001); assertEquals(2, ev["statesCovered"]!!.jsonPrimitive.content.toInt())
+        assertEquals(1, ev["windowsCompared"]!!.jsonPrimitive.content.toInt()); assertEquals(0, ev["inexactWindows"]!!.jsonPrimitive.content.toInt())
+        assertEquals("false", ev["fusionWarning"]!!.jsonPrimitive.content); assertEquals(0.45, ev["candidatePctPerMin"]!!.jsonPrimitive.content.toDouble(), 0.001)
+        assertEquals("false", check["m1Passed"]!!.jsonPrimitive.content)
 
         // 1. the capture half publishes as a capture_plan and is SENT; the ASYNC half waits for the glasses (S25)
         val pub = ok(call("POST", "/api/plans/publish", publishBody(id, v, "SHADOW")))
@@ -255,6 +261,7 @@ class CanvasPlanPublishApiTest {
         val frozenGraph = PipelineJson.decode(runBlocking { canvas.version(id, v)!!.json }).getOrThrow()
         assertEquals("the interpreter's hash is slice 2's hash of the ASYNC projection", PipelineHash.of(frozenGraph.asyncProjection()), asyncRow.hash)
         assertNull(planRow.rolledBackAt); assertNull(asyncRow.rolledBackAt)
+        assertTrue("the send time feeds the trial countdown", status()["active"]!!.jsonObject["sentAtMs"]!!.jsonPrimitive.content.toLong() > 0)
         assertEquals(true, status()["active"]!!.jsonObject["settingsRow"]!!.jsonPrimitive.content.startsWith("Capture plan: Quiet walk v$v (shadow)"))
 
         // 3. a stale click undoes nothing; Undo latest by the newest publish's id undoes the whole group
@@ -281,6 +288,7 @@ class CanvasPlanPublishApiTest {
         dev.value = true
         assertEquals(400, call("POST", "/api/plans/m1-evidence", buildJsonObject { put("note", "x".repeat(81)) }).status)
         ok(call("POST", "/api/plans/m1-evidence", buildJsonObject { put("note", "worn run 1") }))
+        assertEquals("true", ok(call("POST", "/api/plans/check", publishBody(id, v, "TRIAL")))["m1Passed"]!!.jsonPrimitive.content)
         val trial = ok(call("POST", "/api/plans/publish", publishBody(id, v, "TRIAL")))
         assertEquals("TRIAL", trial["mode"]!!.jsonPrimitive.content)
         assertEquals(3_600_000L, sent.single().trialMaxMs)

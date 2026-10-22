@@ -45,7 +45,7 @@ export function rollbackProblems(problems) {
 /** Rows of /api/publish/history: {id, title, rolledBack, reason}. */
 export function historyRows(list) {
   return (list || []).map((p) => ({
-    id: p.id,
+    id: p.id, groupId: p.groupId || null,
     title: '#' + p.id + ' · ' + p.kind + (p.mode ? ' (' + p.mode + ')' : '') + ' · ' + p.pipelineId + ' v' + p.version,
     rolledBack: p.rolledBackAt !== null && p.rolledBackAt !== undefined,
     reason: p.rollbackReason || '',
