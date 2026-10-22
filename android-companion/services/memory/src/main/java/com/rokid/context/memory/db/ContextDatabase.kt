@@ -14,8 +14,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ShoppingItemEntity::class, NoteEntity::class,
         FrameMetaEntity::class, FrameStateEntity::class, FrameSourceEntity::class, FrameClusterEntity::class, FrameVectorEntity::class,
         CanvasPipelineEntity::class, CanvasPipelineVersionEntity::class, CanvasRunEntity::class, CanvasRunItemEntity::class, CanvasScoreEntity::class, CanvasPublishEntity::class, CanvasLiveTraceEntity::class,
+        CanvasTraceEntity::class, CanvasTraceEventEntity::class, CanvasReplayEntity::class, CanvasSweepEntity::class, CanvasLabelEntity::class, CanvasMetaEntity::class,
+        CanvasCalibrationEntity::class, CanvasGroupStateEntity::class, CanvasHelperJobEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -48,6 +50,7 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun frameClusterDao(): FrameClusterDao
     abstract fun frameAdoptionDao(): FrameAdoptionDao
     abstract fun canvasDao(): CanvasDao
+    abstract fun canvasSlice3Dao(): CanvasSlice3Dao
 }
 
 /**
@@ -135,5 +138,48 @@ val MIGRATION_5_6: Migration = object : Migration(5, 6) {
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_live_trace_frameId` ON `canvas_live_trace` (`frameId`)")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_live_trace_batchId` ON `canvas_live_trace` (`batchId`)")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_live_trace_at` ON `canvas_live_trace` (`at`)")
+    }
+}
+
+/**
+ * v6 → v7 (canvas slice 3a, migration A): additive only. Seven nullable columns on `canvas_publish` (a plan publish's group, component,
+ * plan JSON, config hash, generation, state and trial end), nine new tables (`canvas_trace`, `canvas_trace_event`, `canvas_replay`,
+ * `canvas_sweep`, `canvas_label`, `canvas_meta`, `canvas_calibration`, `canvas_group_state`, `canvas_helper_job`) and their indices. No existing
+ * column is changed, no table dropped or rewritten, nothing is copied. The statements are the ones Room generated for `7.json`. Existing publishes
+ * read NULL in every new column.
+ *
+ * If another branch also claims v7 at merge, DO NOT rename this migration or edit it (S64): rebase onto the other branch's latest schema, keep
+ * every existing migration, write a NEW latest → next migration for these statements, regenerate the exported schema and rerun every upgrade path.
+ */
+val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `canvas_publish` ADD COLUMN `groupId` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_publish` ADD COLUMN `component` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_publish` ADD COLUMN `planJson` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_publish` ADD COLUMN `configHash` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_publish` ADD COLUMN `gen` INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_publish` ADD COLUMN `state` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_publish` ADD COLUMN `trialEndsAt` INTEGER DEFAULT NULL")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_trace` (`traceId` TEXT NOT NULL, `source` TEXT NOT NULL, `status` TEXT NOT NULL, `manifestJson` TEXT NOT NULL, `wipeGen` INTEGER NOT NULL, `tombstoned` INTEGER NOT NULL DEFAULT 0, `revision` INTEGER NOT NULL DEFAULT 0, `parentTraceId` TEXT, `installId` TEXT NOT NULL DEFAULT '', `deletionCounter` INTEGER NOT NULL DEFAULT 0, `exact` INTEGER NOT NULL DEFAULT 1, `startedAtMs` INTEGER NOT NULL, `endedAtMs` INTEGER, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`traceId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_trace_startedAtMs` ON `canvas_trace` (`startedAtMs`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_trace_parentTraceId` ON `canvas_trace` (`parentTraceId`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_trace_event` (`traceId` TEXT NOT NULL, `seq` INTEGER NOT NULL, `tMs` INTEGER NOT NULL, `kind` TEXT NOT NULL, `payloadJson` TEXT NOT NULL, PRIMARY KEY(`traceId`, `seq`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_trace_event_tMs` ON `canvas_trace_event` (`tMs`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_replay` (`replayId` TEXT NOT NULL, `sweepId` TEXT, `paramsJson` TEXT NOT NULL, `replayClass` TEXT NOT NULL, `resultJson` TEXT, `invalidated` INTEGER NOT NULL DEFAULT 0, `sourcesJson` TEXT NOT NULL DEFAULT '[]', `labelRev` INTEGER NOT NULL DEFAULT 0, `jobState` TEXT NOT NULL DEFAULT 'RUNNING', `fromMs` INTEGER, `toMs` INTEGER, `createdAt` INTEGER NOT NULL, `finishedAt` INTEGER, `configHash` TEXT, PRIMARY KEY(`replayId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_replay_sweepId` ON `canvas_replay` (`sweepId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_replay_createdAt` ON `canvas_replay` (`createdAt`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_replay_configHash` ON `canvas_replay` (`configHash`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_sweep` (`sweepId` TEXT NOT NULL, `paramsJson` TEXT NOT NULL, `splitDaysJson` TEXT NOT NULL DEFAULT '[]', `resultJson` TEXT, `invalidated` INTEGER NOT NULL DEFAULT 0, `sourcesJson` TEXT NOT NULL DEFAULT '[]', `labelRev` INTEGER NOT NULL DEFAULT 0, `jobState` TEXT NOT NULL DEFAULT 'RUNNING', `fromMs` INTEGER, `toMs` INTEGER, `createdAt` INTEGER NOT NULL, `finishedAt` INTEGER, `configHash` TEXT, PRIMARY KEY(`sweepId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_sweep_createdAt` ON `canvas_sweep` (`createdAt`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_sweep_configHash` ON `canvas_sweep` (`configHash`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_label` (`labelId` TEXT NOT NULL, `kind` TEXT NOT NULL, `source` TEXT NOT NULL, `name` TEXT NOT NULL, `atMs` INTEGER NOT NULL, `frameId` TEXT, `traceId` TEXT, `provenance` TEXT NOT NULL DEFAULT '', `deletionCounter` INTEGER NOT NULL DEFAULT 0, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`labelId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_label_atMs` ON `canvas_label` (`atMs`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_label_frameId` ON `canvas_label` (`frameId`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_meta` (`key` TEXT NOT NULL, `value` TEXT NOT NULL, PRIMARY KEY(`key`))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_calibration` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `configHash` TEXT NOT NULL, `settingsRev` INTEGER NOT NULL, `mode` TEXT NOT NULL, `phasesJson` TEXT NOT NULL, `measuredJson` TEXT, `estimatedJson` TEXT, `artifactJson` TEXT, `verified` INTEGER NOT NULL DEFAULT 0, `createdAt` INTEGER NOT NULL)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_calibration_configHash` ON `canvas_calibration` (`configHash`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_group_state` (`groupId` TEXT NOT NULL, `gen` INTEGER NOT NULL, `publishId` INTEGER NOT NULL, `configHash` TEXT NOT NULL, `component` TEXT NOT NULL, `state` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, `mode` TEXT, `phoneInstall` TEXT, `sentAtMs` INTEGER, PRIMARY KEY(`groupId`))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_helper_job` (`jobId` TEXT NOT NULL, `capability` TEXT NOT NULL, `state` TEXT NOT NULL, `leaseOwner` TEXT, `leaseUntilMs` INTEGER, `frameIdsJson` TEXT NOT NULL DEFAULT '[]', `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`jobId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_helper_job_state` ON `canvas_helper_job` (`state`)")
     }
 }

@@ -91,6 +91,20 @@ data class CanvasPublishEntity(
     val mode: String? = null,
     /** Room v6: fixed short reason a publish was rolled back (auto-rollback), never provider text. */
     val rollbackReason: String? = null,
+    /** Room v7 (slice 3a capture-plan publish; all null for a prompts or interpreter publish): the publish group this row belongs to. */
+    val groupId: String? = null,
+    /** Room v7: the group component this row publishes: `capture_plan` in core (later ASYNC components add values). */
+    val component: String? = null,
+    /** Room v7: the canonical CapturePlan JSON (config and meta; no photo data). */
+    val planJson: String? = null,
+    /** Room v7: SHA-256 of the plan's config block. */
+    val configHash: String? = null,
+    /** Room v7: the group generation. */
+    val gen: Long? = null,
+    /** Room v7: the group state-machine state. */
+    val state: String? = null,
+    /** Room v7: when a TRIAL ends (glasses enforce it themselves). */
+    val trialEndsAt: Long? = null,
 )
 
 /**

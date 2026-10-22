@@ -23,11 +23,12 @@ class DatabaseFactoryUpgradeTest {
 
     private fun assertUpgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(6, raw.version)
+        assertEquals(7, raw.version)
         V1Fixture.tables(1).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertTrue(V1Fixture.tableNames(raw).containsAll(V1Fixture.FRAME_TABLES))
         assertNullCols(raw)
         assertV6Shape(raw, canvasRows = false)
+        assertV7Shape(raw, publishRows = false)
     }
 
     /** v6 additions: the live trace table (empty), and for a file that had canvas rows the defaults on the new columns. */
@@ -51,28 +52,50 @@ class DatabaseFactoryUpgradeTest {
     /** A real v3 file (frame_*, canvas_* and every other table seeded) through the production builders: canvas rows survive. */
     private fun assertV3Upgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(6, raw.version)
+        assertEquals(7, raw.version)
         V1Fixture.tables(3).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertEquals("CLOSED", raw.query("SELECT state FROM frame_cluster").use { it.moveToFirst(); it.getString(0) })
         assertTrue(raw.query("SELECT routedAt FROM frame_meta").use { it.moveToFirst(); it.isNull(0) })
         assertNullCols(raw)
         assertV6Shape(raw, canvasRows = true)
+        assertV7Shape(raw, publishRows = true)
     }
 
     /** A real v5 file (every table seeded): the nearest-lineage upgrade, canvas rows survive with defaults. */
     private fun assertV5Upgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(6, raw.version)
+        assertEquals(7, raw.version)
         V1Fixture.tables(5).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertEquals("v5", raw.query("SELECT intentLabel FROM frame_meta").use { it.moveToFirst(); it.getString(0) })
         assertV6Shape(raw, canvasRows = true)
+        assertV7Shape(raw, publishRows = true)
     }
+
+    /** A real v6 file (every table seeded): the nearest-lineage upgrade to v7, the slice 2 rows survive untouched. */
+    private fun assertV6Upgraded(db: ContextDatabase) {
+        val raw = db.openHelper.writableDatabase
+        assertEquals(7, raw.version)
+        V1Fixture.tables(6).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
+        assertEquals("v6", raw.query("SELECT kind FROM canvas_publish").use { it.moveToFirst(); it.getString(0) })
+        assertV7Shape(raw, publishRows = true)
+    }
+
+    /** v7 additions: nine new tables (empty) and, for a file that had a publish row, NULL on the seven new publish columns. */
+    private fun assertV7Shape(raw: androidx.sqlite.db.SupportSQLiteDatabase, publishRows: Boolean) {
+        V7_TABLES.forEach { assertTrue("table $it", V1Fixture.tableNames(raw).contains(it)); assertEquals("table $it empty", 0, V1Fixture.count(raw, it)) }
+        if (!publishRows) return
+        raw.query("SELECT groupId, component, planJson, configHash, gen, state, trialEndsAt FROM canvas_publish").use {
+            assertTrue(it.moveToFirst()); (0..6).forEach { i -> assertTrue("publish col $i null", it.isNull(i)) }
+        }
+    }
+
+    private fun createV6() { helper.createDatabase(DatabaseFactory.NAME, 6).use { V1Fixture.seedVersion(it, 6) } }
 
     private fun createV5() { helper.createDatabase(DatabaseFactory.NAME, 5).use { V1Fixture.seedVersion(it, 5) } }
 
     private fun createV3() { helper.createDatabase(DatabaseFactory.NAME, 3).use { V1Fixture.seedVersion(it, 3) } }
 
-    @Test fun v1FileUpgradesToV6ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
+    @Test fun v1FileUpgradesToV7ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
         listOf(false, true).forEach { deferred ->
             ctx.getDatabasePath(DatabaseFactory.NAME).delete()
             V1Fixture.create(DatabaseFactory.NAME)
@@ -81,7 +104,7 @@ class DatabaseFactoryUpgradeTest {
         }
     }
 
-    @Test fun v3FileUpgradesToV6ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
+    @Test fun v3FileUpgradesToV7ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
         listOf(false, true).forEach { deferred ->
             ctx.getDatabasePath(DatabaseFactory.NAME).delete()
             createV3()
@@ -90,12 +113,21 @@ class DatabaseFactoryUpgradeTest {
         }
     }
 
-    @Test fun v5FileUpgradesToV6ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
+    @Test fun v5FileUpgradesToV7ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
         listOf(false, true).forEach { deferred ->
             ctx.getDatabasePath(DatabaseFactory.NAME).delete()
             createV5()
             val db = if (deferred) DatabaseFactory.buildDeferred(ctx, { false }) { error("plain") } else DatabaseFactory.build(ctx, encrypted = false) { error("plain") }
             try { assertV5Upgraded(db) } finally { db.close() }
+        }
+    }
+
+    @Test fun v6FileUpgradesToV7ThroughBothBuilders() = runBlocking(Dispatchers.IO) {
+        listOf(false, true).forEach { deferred ->
+            ctx.getDatabasePath(DatabaseFactory.NAME).delete()
+            createV6()
+            val db = if (deferred) DatabaseFactory.buildDeferred(ctx, { false }) { error("plain") } else DatabaseFactory.build(ctx, encrypted = false) { error("plain") }
+            try { assertV6Upgraded(db) } finally { db.close() }
         }
     }
 
@@ -109,5 +141,9 @@ class DatabaseFactoryUpgradeTest {
         V1Fixture.create(DatabaseFactory.NAME)
         val db = DatabaseFactory.buildDeferred(ctx, { false }) { error("plain") }
         try { assertUpgraded(db) } finally { db.close() }
+    }
+
+    private companion object {
+        val V7_TABLES = listOf("canvas_trace", "canvas_trace_event", "canvas_replay", "canvas_sweep", "canvas_label", "canvas_meta", "canvas_calibration", "canvas_group_state", "canvas_helper_job")
     }
 }

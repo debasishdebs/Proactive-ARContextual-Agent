@@ -170,6 +170,7 @@ class ForgetService(
     /** Experiment canvas outputs are photo-derived: they go with the photo, in the same transaction as its tombstone. */
     private suspend fun dropCanvasOutputs(frameIds: List<String>) {
         db.canvasDao().deleteCanvasOutputsForFrames(frameIds) // items, scores and live traces, batch-wide (S25)
+        db.canvasSlice3Dao().deleteSliceOutputsForFrames(frameIds, clock()) // slice 3a: labels of the photos, the results that read them, helper jobs that carry them
     }
 
     private fun likeFor(id: String) = "%\"${MemoryRepository.escapeLike(id)}\"%"

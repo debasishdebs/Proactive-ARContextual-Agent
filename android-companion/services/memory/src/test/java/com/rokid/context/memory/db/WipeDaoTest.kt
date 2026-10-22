@@ -53,5 +53,41 @@ class WipeDaoTest {
         assertEquals("the publish itself holds no photo data and stays", 1, rowCount(raw, "canvas_publish"))
     }
 
+    private val wipedSlice3 = listOf("canvas_trace", "canvas_trace_event", "canvas_replay", "canvas_sweep", "canvas_label", "canvas_calibration", "canvas_helper_job")
+    private val keptSlice3 = listOf("canvas_meta", "canvas_group_state")
+
+    private suspend fun seedSlice3() {
+        val s = db.canvasSlice3Dao()
+        val epoch = DeletionEpoch("i", 1, 0)
+        val fence = DaoFence(0, epoch, { 0 }, { epoch })
+        s.acceptTraceFenced(CanvasTraceEntity("t1", "HUB", "COMPLETE", "{}", 0, installId = "i", deletionCounter = 1, startedAtMs = 1, createdAt = 1), fence)
+        s.appendEventsFenced("t1", listOf(CanvasTraceEventEntity("t1", 0, 1, "CTX", "{}")), fence)
+        s.insertReplay(CanvasReplayEntity("r1", null, "{}", "EXACT", "{}", createdAt = 1, jobState = "DONE")); s.insertSweep(CanvasSweepEntity("sw1", "{}", resultJson = "{}", jobState = "DONE", createdAt = 1))
+        s.insertLabelFenced(CanvasLabelEntity("l1", "MOMENT", "tap", "X", 5, createdAt = 1), fence)
+        s.insertCalibration(CanvasCalibrationEntity(configHash = "c", settingsRev = 1, mode = "LIVE", phasesJson = "[]", createdAt = 1))
+        s.insertHelperJob(CanvasHelperJobEntity("j1", "py", "QUEUED", frameIdsJson = "[\"f1\"]", createdAt = 1, updatedAt = 1))
+        s.upsertGroupState(CanvasGroupStateEntity("g1", 1, 1, "c", "capture_plan", "EFFECTIVE", 1))
+    }
+
+    /** Delete all reaches every slice 3a table that can hold derived data; the two that hold none are kept on purpose, and labelRev still moves. */
+    @Test fun wipeClearsSlice3TablesAndKeepsTheRecoveryRecord() = runBlocking {
+        seedSlice3()
+        val raw = db.openHelper.writableDatabase
+        wipedSlice3.forEach { assertEquals("seeded $it", 1, rowCount(raw, it)) }
+        val before = db.canvasSlice3Dao().labelRev()
+        db.wipeDao().wipeMemory()
+        wipedSlice3.forEach { assertEquals(it, 0, rowCount(raw, it)) }
+        keptSlice3.forEach { assertEquals("$it is kept by design", 1, rowCount(raw, it)) }
+        assertEquals("labelRev stays monotonic and moves, so nothing computed earlier reads as current", before + 1, db.canvasSlice3Dao().labelRev())
+    }
+
+    /** A table added later must be classified here (wiped or kept by design) or this fails: the wipe cannot silently miss a new table. */
+    @Test fun everyCanvasTableIsClassifiedForDeleteAll() {
+        val preExisting = setOf("canvas_pipeline", "canvas_pipeline_version", "canvas_publish", "canvas_run", "canvas_run_item", "canvas_score", "canvas_live_trace")
+        val raw = db.openHelper.readableDatabase
+        val actual = raw.query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'canvas\\_%' ESCAPE '\\'").use { c -> buildSet { while (c.moveToNext()) add(c.getString(0)) } }
+        assertEquals(preExisting + wipedSlice3 + keptSlice3, actual)
+    }
+
     private fun rowCount(raw: androidx.sqlite.db.SupportSQLiteDatabase, t: String) = raw.query("SELECT COUNT(*) FROM `$t`").use { it.moveToFirst(); it.getInt(0) }
 }

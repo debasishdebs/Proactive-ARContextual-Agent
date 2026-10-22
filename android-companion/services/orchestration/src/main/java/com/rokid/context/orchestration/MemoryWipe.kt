@@ -12,6 +12,9 @@ import com.rokid.context.data.runtime.QueueRuntimeStore
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.MemoryMaintenance
 import com.rokid.context.memory.db.ContextDatabase
+import com.rokid.context.memory.db.DeletionEpoch
+import com.rokid.context.memory.db.DeletionEpochStore
+import com.rokid.context.canvas.trace.FencedFiles
 import com.rokid.context.memory.legacy.LegacyImporter
 import com.rokid.context.work.OrchestrationScheduler
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +37,9 @@ object MemoryWipe {
      */
     val generation = AtomicLong(0)
 
+    /** Test seam: runs right after the deletion epoch is committed and before anything is deleted (a test throws here to model a crash). */
+    @Volatile internal var afterEpochCommit: (DeletionEpoch) -> Unit = {}
+
     /**
      * Stops the pipeline (fence, cancel the work, drop every queued job), deletes every memory row (with all vectors
      * and embedding spaces), every frame JPEG (the rows' paths plus [RokidFrameInbox.FRAME_DIRS]), the legacy logs and
@@ -44,6 +50,9 @@ object MemoryWipe {
      * cancellation only after the wipe has finished.
      */
     suspend fun deleteAll(context: Context, db: ContextDatabase = MemoryGraph.get(context).db): Int = withContext(Dispatchers.IO + NonCancellable) {
+        // S57: the persisted deletion epoch (`counter + 1`, `wipedAtMs`) is committed BEFORE anything is deleted, so a crash or power loss mid-wipe still
+        // leaves a durable record that everything recorded under the old counter is stale. If it cannot be committed nothing is deleted.
+        afterEpochCommit(DeletionEpochStore.of(context).commitWipe(System.currentTimeMillis()))
         // Fix round 3: never import here (a failing import must not block Delete all). An import in progress is
         // waited for (it holds the lock until it finishes or throws); then it is marked done and never runs again.
         MemoryGraph.markLegacyImportDone(context)
@@ -92,6 +101,8 @@ object MemoryWipe {
             MemoryExport.dir(context).listFiles()?.filter { it.isFile }?.forEach { it.delete() }
             // Final review I3: the debug photo test's labels (queries.json, the user's free text about their photos) and results.
             File(context.filesDir, PHOTO_EVAL_DIR).deleteRecursively()
+            // Slice 3a: sealed traces, pulled imports and orphan tmp files (the tables went with wipeMemory). The epoch above already refuses a fenced publish.
+            FencedFiles.DELETE_ALL_DIRS.forEach { File(context.filesDir, it).deleteRecursively() }
             MemoryMaintenance.vacuum(db)
             MemoryMaintenance.checkpoint(db)
             deleted
