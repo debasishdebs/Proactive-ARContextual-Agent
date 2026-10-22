@@ -268,4 +268,13 @@ class CaptureSimulatorTest {
         assertEquals(1, strict.keeps)                                           // the empty ring keeps the first frame; nothing differs by more than 64 bits after it
         assertEquals(3, strict.skips)
     }
+
+    @Test fun aCandidateCountsTheOpensItDecidesWhereARecordedOpenCoincides() {
+        val o = ReplayFixtures.timerOracle(untilMs = START + 60_000L)
+        val ev = ReplayFixtures.trace(o.events, endMs = START + 60_000L)
+        val base = run(ev)
+        val cand = run(ev, candidate = ReplayCandidate(configHash = "ffffffffffff"))
+        assertTrue(base.opens.isNotEmpty())
+        assertEquals(base.opens, cand.opens)                                    // the same config as a candidate decides the same opens: a recorded open is not a pre-emption
+    }
 }
