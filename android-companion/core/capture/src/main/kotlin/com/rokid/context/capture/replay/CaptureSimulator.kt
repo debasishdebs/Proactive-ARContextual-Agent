@@ -50,6 +50,22 @@ class ReplayCandidate(
     val forceSettle: Boolean = false,
 ) {
     companion object {
+        /** The candidate of a plan: what a LIVE plan of this config would apply (`ActiveConfig.of`), labelled with the plan's own hash. */
+        fun of(plan: com.rokid.context.capture.plan.CapturePlan): ReplayCandidate {
+            val g = plan.config.glance
+            val gt = plan.config.gate
+            return ReplayCandidate(
+                plan.configHash,
+                glance = GlanceParams(
+                    onsetRadS = g.onsetRadS, releaseRadS = g.releaseRadS, bridgeMs = g.bridgeMs, minBoutMs = g.minBoutMs, minBoutRad = g.minBoutRad,
+                    settleMs = g.settleMs, noveltyWindowMs = g.noveltyWindowMs, noveltyMinRad = g.noveltyMinRad, bigTurnRad = g.bigTurnRad,
+                ),
+                gate = GateParams(gt.hamming, gt.bigChange, gt.ringCompare == "all"),
+                table = policyTable(plan.config.policy),
+                ctxBound = plan.config.ctxBound,
+            )
+        }
+
         /** The table of a plan: the editable rows given, every other state the locked default row (an editable row left out is the UNKNOWN row, as in `ActiveConfig.of`). */
         fun policyTable(rows: Map<PlanState, PlanRow>): Map<ContextState, ContextCapturePolicy> {
             val unknown = ContextPolicies.DEFAULT.getValue(ContextState.UNKNOWN)
