@@ -36,6 +36,17 @@ abstract class WipeDao {
     @Query("DELETE FROM canvas_score") protected abstract suspend fun canvasScores()
     @Query("DELETE FROM canvas_run") protected abstract suspend fun canvasRuns()
     @Query("DELETE FROM canvas_live_trace") protected abstract suspend fun canvasTraces()
+    // Slice 3a (Room v7). WIPED: traces, hub events, replays, sweeps, marks and intent labels, calibration artifacts, helper jobs (they may carry photos).
+    // KEPT BY DESIGN (no user data): canvas_meta (the monotonic labelRev counter, bumped here so nothing computed earlier can read as current) and
+    // canvas_group_state (the S62 publish-group recovery record: hashes and states, needed to recover a deployed plan after a wipe).
+    @Query("DELETE FROM canvas_trace_event") protected abstract suspend fun slice3Events()
+    @Query("DELETE FROM canvas_trace") protected abstract suspend fun slice3Traces()
+    @Query("DELETE FROM canvas_replay") protected abstract suspend fun slice3Replays()
+    @Query("DELETE FROM canvas_sweep") protected abstract suspend fun slice3Sweeps()
+    @Query("DELETE FROM canvas_label") protected abstract suspend fun slice3Labels()
+    @Query("DELETE FROM canvas_calibration") protected abstract suspend fun slice3Calibration()
+    @Query("DELETE FROM canvas_helper_job") protected abstract suspend fun slice3HelperJobs()
+    @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = 'labelRev'") protected abstract suspend fun slice3BumpLabelRev(): Int
     @Query("SELECT path FROM frame") abstract suspend fun framePaths(): List<String>
 
     @Transaction
@@ -43,6 +54,7 @@ abstract class WipeDao {
         val proposals = proposalIds()
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         canvasItems(); canvasScores(); canvasRuns(); canvasTraces() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
+        slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3BumpLabelRev()
         scrubProposalParams(com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS); scrubActionLog()
         return proposals
     }

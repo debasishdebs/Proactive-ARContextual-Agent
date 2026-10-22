@@ -104,4 +104,29 @@ class ForgetCanvasTest {
         service.expirePhotos(listOf("a"))
         assertEquals(0, everything("a")); assertEquals(0, everything("b"))
     }
+
+    // --- slice 3a (Room v7): labels of a photo, the results that read them, helper jobs that carry it ---
+    private fun fence() = com.rokid.context.memory.db.DeletionEpoch("i", 1, 0).let { e -> com.rokid.context.memory.db.DaoFence(0, e, { 0 }, { e }) }
+    private suspend fun sliceRows(frame: String) {
+        val s = db.canvasSlice3Dao()
+        s.insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("l-$frame", "INTENT", "photo", "SHOPPING", 5, frameId = frame, createdAt = 1), fence())
+        s.insertHelperJob(com.rokid.context.memory.db.CanvasHelperJobEntity("j-$frame", "py", "QUEUED", frameIdsJson = "[\"$frame\"]", createdAt = 1, updatedAt = 1))
+        s.insertReplay(com.rokid.context.memory.db.CanvasReplayEntity("r-$frame", null, "{}", "EXACT", "{}", labelRev = s.labelRev(), jobState = "DONE", createdAt = 1))
+    }
+    private suspend fun sliceLeft(frame: String) = db.canvasSlice3Dao().let { s -> listOfNotNull(s.label("l-$frame"), s.helperJob("j-$frame")?.takeIf { it.state != "VOIDED" }).size }
+
+    @Test fun forgetMomentDeletesLabelsVoidsHelperJobsAndInvalidatesResults() = runBlocking {
+        frame("f1"); mem("m1", "f1"); frame("f2"); mem("m2", "f2"); sliceRows("f1"); sliceRows("f2")
+        service.forgetMoment("f1")
+        assertEquals(0, sliceLeft("f1")); assertEquals(2, sliceLeft("f2"))
+        val s = db.canvasSlice3Dao()
+        assertEquals("a result computed under the old labelRev is invalidated", true, s.replay("r-f2")!!.invalidated)
+        assertEquals(null, s.replay("r-f2")!!.resultJson)
+    }
+
+    @Test fun retentionPhotoExpiryReachesTheSameTables() = runBlocking {
+        frame("f1"); mem("m1", "f1"); sliceRows("f1")
+        service.expirePhotos(listOf("f1"))
+        assertEquals(0, sliceLeft("f1"))
+    }
 }
