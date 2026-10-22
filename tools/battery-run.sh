@@ -66,12 +66,15 @@ cmd_start() {
   case "$clk" in ''|*[!0-9]*) clk=100 ;; esac
   adb -s "$G" shell "echo label=$label > $RUNFILE; echo start=\$(date +%m-%d_%H:%M:%S) >> $RUNFILE; echo clk_tck=$clk >> $RUNFILE"
   adb -s "$G" shell 'pkill -f "[c]pu_logger"' >/dev/null 2>&1
-  local tmp
-  tmp="$(mktemp)"
-  cpu_logger_script > "$tmp"
-  adb -s "$G" push "$tmp" "$CPUSCRIPT" >/dev/null 2>&1
-  rm -f "$tmp"
-  adb -s "$G" shell "setsid nohup sh $CPUSCRIPT > $CPUFILE 2>/dev/null < /dev/null &"
+  # NOCPU=1 starts the battery logger only: the CPU sampler spawns ps/reads /proc about 20 times a minute and costs battery itself.
+  if [ "${NOCPU:-0}" != 1 ]; then
+    local tmp
+    tmp="$(mktemp)"
+    cpu_logger_script > "$tmp"
+    adb -s "$G" push "$tmp" "$CPUSCRIPT" >/dev/null 2>&1
+    rm -f "$tmp"
+    adb -s "$G" shell "setsid nohup sh $CPUSCRIPT > $CPUFILE 2>/dev/null < /dev/null &"
+  fi
   adb -s "$G" shell 'setsid nohup sh -c "while true; do echo \"\$(date +%m-%d_%H:%M:%S) \$(dumpsys battery | grep -E \"^ +(level|temperature|USB powered|AC powered):\" | tr -s \" \" | tr \"\\n\" \" \")\"; sleep 60; done # batt_logger" > /data/local/tmp/batt.log 2>&1 < /dev/null &'
   echo "started label=$label"
 }
