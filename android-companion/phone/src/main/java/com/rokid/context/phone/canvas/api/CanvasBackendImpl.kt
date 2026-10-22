@@ -74,7 +74,8 @@ class CanvasBackendImpl(
     private val ai: AiGraph,
     private val dao: CanvasDao,
     private val repo: CanvasRepository,
-    private val publisher: CanvasPublisher,
+    /** The one publisher of the process: the capture-plan publisher shares it, so publish and rollback of every kind are serialised by one lock. */
+    val publisher: CanvasPublisher,
     private val runner: CanvasRunner,
     private val scope: CoroutineScope,
     private val auth: CanvasAuth,
@@ -82,6 +83,8 @@ class CanvasBackendImpl(
     private val clock: () -> Long = System::currentTimeMillis,
     private val askDebug: Lazy<AskDebug>,
     private val thumbnailer: (ByteArray) -> ByteArray? = { FrameImagesHttp.thumbnail(it) },
+    /** Slice 3a (Task 28): the capture-plan publisher, read at call time (null until it is composed): Undo latest is group-aware through it. */
+    private val plans: () -> com.rokid.context.canvas.plan.CapturePlanPublisher? = { null },
 ) : CanvasBackend {
     companion object {
         private val pretty = Json { prettyPrint = true }
@@ -135,6 +138,7 @@ class CanvasBackendImpl(
             /** The Ask photo gate of a replay; [AskPhotoBinding] by default, which refuses every photo until a gate is bound. */
             askPhotos: () -> AskDebugPhotos = AskPhotoBinding::current,
             thumbnailer: (ByteArray) -> ByteArray? = { FrameImagesHttp.thumbnail(it) },
+            plans: () -> com.rokid.context.canvas.plan.CapturePlanPublisher? = { null },
         ): CanvasBackendImpl {
             val dao = MemoryGraph.get(app).db.canvasDao()
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
@@ -147,7 +151,7 @@ class CanvasBackendImpl(
             val askDebug = lazy {
                 AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos))
             }
-            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, thumbnailer)
+            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, thumbnailer, plans)
         }
 
         /** The gate is read at every call, so a gate bound after the first Ask view is the one used (and nothing bound is [AskDebugPhotos.Refuse]). */
@@ -399,6 +403,8 @@ class CanvasBackendImpl(
 
     private fun publishJson(p: CanvasPublishEntity) = buildJsonObject {
         put("id", p.id); put("kind", p.kind); put("mode", p.mode); put("pipelineId", p.pipelineId); put("version", p.version); put("publishedAt", p.publishedAt)
+        p.groupId?.let { put("groupId", it) }
+        p.configHash?.let { put("configHash", it) }
     }
 
     override suspend fun activePublish(): JsonObject {
@@ -410,6 +416,7 @@ class CanvasBackendImpl(
             put("active", p != null)
             if (p != null) { put("publishId", p.id); put("pipelineId", p.pipelineId); put("version", p.version); put("publishedAt", p.publishedAt) }
             put("stack", JsonArray(active.map(::publishJson)))
+            put("plan", active.firstOrNull { it.kind == CanvasPublisher.KIND_CAPTURE_PLAN }?.let(::publishJson) ?: JsonNull)
             put("interpreter", if (i == null) JsonNull else JsonObject(publishJson(i) + mapOf(
                 "interpreted" to JsonPrimitive(dao.interpretedCount(i.id)), "fallbacks" to JsonPrimitive(dao.recentFallbacks(i.id, Int.MAX_VALUE)),
             )))
@@ -460,7 +467,13 @@ class CanvasBackendImpl(
         }
     }
 
-    override suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome = publisher.rollback(expectedId)
+    /** Undo latest publish (S26): a publish of a group (a capture plan, its ASYNC interpreter) is undone as one unit, ASYNC first; anything else is slice 2's rollback. */
+    override suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome {
+        val planner = plans()
+        val newest = dao.activePublishes().firstOrNull()
+        return if (planner != null && newest != null && newest.id == expectedId && (newest.groupId != null || newest.kind == CanvasPublisher.KIND_CAPTURE_PLAN)) planner.undoLatest(expectedId)
+        else publisher.rollback(expectedId)
+    }
 
     override suspend fun checkPrompt(nodeType: String, template: String, schema: String?): List<String> {
         // the Ask debug view's template editor (Task 12): the Answer prompt has no pipeline node, only its prompt key

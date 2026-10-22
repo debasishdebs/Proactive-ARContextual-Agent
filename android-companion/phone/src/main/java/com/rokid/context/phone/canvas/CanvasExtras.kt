@@ -44,11 +44,14 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
         fun build(
             dao: com.rokid.context.memory.db.CanvasSlice3Dao, replay: ReplayService, devMode: StateFlow<Boolean>, startup: suspend () -> Unit,
             sender: () -> com.rokid.context.phone.hub.plan.PlanPublishPort?, collect: () -> com.rokid.context.canvas.trace.CollectSession?,
+            /** Task 27/28: the gated publish and the S26 actions, and the M1 record; null until the composition task (33) binds them (the routes then answer 503). */
+            plans: () -> com.rokid.context.canvas.plan.CapturePlanPublisher? = { null },
+            m1: () -> com.rokid.context.canvas.plan.M1EvidenceStore? = { null },
         ): CanvasExtras {
             val traces = TraceRoutes(dao, collect, devMode::value)
             val replays = ReplayRoutes(replay)
-            val plans = PlanRoutes(devMode::value, sender)
-            return CanvasExtras(listOf(ApiExtra(traces::handle), ApiExtra(replays::handle), ApiExtra(plans::handle)), replay, startup)
+            val planRoutes = PlanRoutes(devMode::value, sender, plans = plans, m1 = m1)
+            return CanvasExtras(listOf(ApiExtra(traces::handle), ApiExtra(replays::handle), ApiExtra(planRoutes::handle)), replay, startup)
         }
     }
 }

@@ -91,6 +91,8 @@ interface KeyframeDiagnostics {
     suspend fun clusterPromptIsCurrent(): Boolean = true
     /** The active canvas interpreter publish (null: none), count-only. */
     suspend fun livePipeline(): LivePipelineInfo? = null
+    /** The active canvas capture plan and its per-component group states (S25, S26); null: settings run the capture. */
+    suspend fun capturePlan(): com.rokid.context.canvas.plan.PlanStatus? = null
     /** Puts every FAILED_FINAL frame back to PENDING; returns how many. */
     suspend fun retryAllFinal(): Int
 
@@ -122,6 +124,7 @@ data class KeyframeRows(
     val promptCurrent: Boolean = true,
     val clusterPromptCurrent: Boolean = true,
     val livePipeline: LivePipelineInfo? = null,
+    val capturePlan: com.rokid.context.canvas.plan.PlanStatus? = null,
 )
 
 data class DiagnosticsUiState(val busy: Boolean = false, val message: String? = null)
@@ -149,7 +152,7 @@ class DiagnosticsViewModel(
     private fun refreshKeyframes() {
         viewModelScope.launch {
             val loaded = try {
-                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), retention = keyframes.retentionCounters(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent(), livePipeline = keyframes.livePipeline()) }
+                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), retention = keyframes.retentionCounters(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent(), livePipeline = keyframes.livePipeline(), capturePlan = keyframes.capturePlan()) }
             } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.i(TAG, "keyframe extras failed (${e.javaClass.simpleName})"); return@launch }
             extras.value = loaded
         }
@@ -329,7 +332,8 @@ object KeyframeLines {
         val calls = named.joinToString(" \u00b7 ") { "${it.name} ${st.callsPerHour[it] ?: 0}" } + " \u00b7 OTHER $other"
         val dropped = k.droppedNudges.entries.sortedBy { it.key }.joinToString(" \u00b7 ") { "${it.key} ${it.value}" }.ifEmpty { "none" }
         val live = k.livePipeline?.let { Line("kf_live_pipeline", "Live pipeline: ${it.name} v${it.version} \u00b7 ${if (it.live) "Live" else "Shadow"} \u00b7 ${it.fallbacks}/${it.interpreted} fell back") }
-        return listOfNotNull(
+        val plan = k.capturePlan?.active?.let { a -> listOf(Line("kf_capture_plan", "Capture plan: ${a.name} v${a.version} (${a.mode.lowercase()}) \u00b7 ${a.state}")) + k.capturePlan.rows.mapIndexed { i, r -> Line("kf_plan_row_$i", r) } }.orEmpty()
+        return plan + listOfNotNull(
             live,
             Line("kf_backlog", "Backlog ${st.backlog} \u2014 $states"),
             Line("kf_rate", "Keyframes per hour: ${st.keyframesPerHour}"),
