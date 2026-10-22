@@ -1,7 +1,7 @@
-import { fields, coerce, promptParts, coercePromptPart } from '../../main/assets/canvas/paramform.js';
-import { nodeTypes, eq, ok } from './fixtures.js';
+import { fields, coerce, promptParts, coercePromptPart, coerceCell, TABLE_HINT } from '../../main/assets/canvas/paramform.js';
+import { nodeTypes, allTypes, eq, ok } from './fixtures.js';
 
-const desc = (type) => nodeTypes.find((t) => t.type === type).params;
+const desc = (type) => allTypes.find((t) => t.type === type).params;
 const ctx = { roles: ['VISION', 'TEXT'], prompts: ['live', 'draft'] };
 const field = (type, name, params) => fields(desc(type), params || {}, ctx).find((f) => f.name === name);
 
@@ -116,5 +116,90 @@ export const tests = {
     const live = field('ai.vision_extract', 'prompt', { prompt: { source: 'live' } });
     eq(coercePromptPart(live, 'template', 'x'), { error: 'Switch to Draft to edit the prompt' });
     eq(f.current.template, 'a', 'the field is not mutated');
+  },
+
+  // ---- schema 2 (capture half): number, enum, maxLen, sweep marks, table
+  numberFieldCarriesStepAndSweep() {
+    const f = field('imu.head_motion', 'onsetRadS');
+    eq([f.control, f.min, f.max, f.step, f.value, f.sweep], ['number', 0.4, 1, 0.05, 0.6, true]);
+    eq(coerce(f, '0.75'), { value: 0.75 });
+    eq(coerce(f, '0.3'), { error: 'Must be between 0.4 and 1' });
+    eq(coerce(f, 'abc'), { error: 'Must be a number' });
+    eq(coerce(f, 'Infinity'), { error: 'Must be a number' });
+    eq(coerce(f, ''), { error: 'Must be a number' }, 'a plain number param has no blank');
+    eq(field('imu.head_motion', 'bridgeMs').sweep, true);
+    eq(field('gate.threshold', 'feature').sweep, false);
+  },
+  enumFieldIsASelectOverItsOptions() {
+    const f = field('gate.threshold', 'feature', { feature: 'boutMs' });
+    eq([f.control, f.value], ['select', 'boutMs']);
+    eq(f.options.map((o) => o.value), ['gyroPeak', 'boutMs', 'boutRad']);
+    eq(field('gate.threshold', 'op').value, '>', 'the default shows when unset');
+    eq(coerce(f, 'boutRad'), { value: 'boutRad' });
+    eq(coerce(f, 'nope'), { error: 'Pick one of the listed options' });
+  },
+  textMaxLenIsEnforced() {
+    const f = fields([{ name: 'note', kind: 'text', maxLen: 3 }], {}, ctx)[0];
+    eq(coerce(f, 'abc'), { value: 'abc' });
+    eq(coerce(f, 'abcd'), { error: 'At most 3 characters' });
+    eq(coerce(fields([{ name: 'note', kind: 'text' }], {}, ctx)[0], 'abcd'), { value: 'abcd' });
+  },
+  tableFieldShape() {
+    const f = field('policy.capture_rate', 'rows', { rows: { REST: { settledGapS: 60, capPerMin: 2 } } });
+    eq(f.control, 'table');
+    eq(f.table.rows.map((r) => r.name), ['REST', 'VEHICLE_PASSENGER', 'VEHICLE_DRIVING', 'FLIGHT']);
+    eq(f.table.cols.map((c) => c.name), ['capPerMin', 'settledGapS', 'quietGapS', 'walkGapS', 'stillCapGapS', 'forceSettle', 'nudges']);
+    const rest = f.table.rows[0].cells;
+    eq([rest[0].value, rest[1].value, rest[2].value], ['2', '60', ''], 'absent cells show blank');
+    eq(f.table.rows[1].cells[1].value, '');
+    eq(f.table.cols.find((c) => c.name === 'forceSettle').control, 'select', 'a bool column is a three-way select: unchanged, on, off');
+    eq(f.table.rows[0].cells[5].options.map((o) => o.value), ['', 'true', 'false']);
+    eq(f.table.groups, [{ label: 'timer photo gap (settled/quiet/walk/still cap)', span: 4 }], 'the four gap columns share one heading, the others have none');
+    eq(f.table.cols.find((c) => c.name === 'capPerMin').placeholder, 'unchanged');
+    eq(f.table.cols.find((c) => c.name === 'settledGapS').placeholder, 'inherit');
+  },
+  labelsSayTimerPhotoGap() {
+    const f = field('policy.capture_rate', 'rows');
+    const gaps = f.table.cols.filter((c) => /GapS$/.test(c.name));
+    eq(gaps.length, 4);
+    for (const c of gaps) ok(c.label.startsWith('timer photo gap ('), c.name + ': ' + c.label);
+    eq(f.table.groups[0].label.startsWith('timer photo gap'), true);
+    ok(TABLE_HINT.includes('reserved timer photo attempt'), TABLE_HINT);
+    ok(TABLE_HINT.includes('timer photo gap'), TABLE_HINT);
+    const everyText = JSON.stringify([f.label, f.table, TABLE_HINT]).toLowerCase();
+    for (const bad of ['clamp', 'resv', 'sampling gap', 'capture gap']) ok(!everyText.includes(bad), 'no "' + bad + '" in the labels');
+  },
+  blankMeansInherit() {
+    const f = field('policy.capture_rate', 'rows', { rows: { REST: { settledGapS: 60, capPerMin: 2, nudges: true } } });
+    const gap = coerceCell(f, 'REST', 'settledGapS', '');
+    eq(gap.value, { REST: { capPerMin: 2, nudges: true } }, 'a blank gap removes the cell: the settings profile applies');
+    const cap = coerceCell(f, 'REST', 'capPerMin', '  ');
+    eq(cap.value, { REST: { settledGapS: 60, nudges: true } }, 'a blank cap is "unchanged"');
+    const tri = coerceCell(f, 'REST', 'nudges', '');
+    eq(tri.value, { REST: { settledGapS: 60, capPerMin: 2 } });
+    eq(coerceCell(f, 'REST', 'settledGapS', '0').value.REST.settledGapS, 0, 'an explicit 0 is kept (inherit)');
+    eq(coerceCell(field('policy.capture_rate', 'rows', { rows: { REST: { nudges: true } } }), 'REST', 'nudges', '').value, undefined, 'the last cell going blank clears the whole param');
+    eq(coerceCell(f, 'FLIGHT', 'quietGapS', '').value, f.current, 'a blank on an absent cell changes nothing');
+    eq(coerce(field('imu.head_motion', 'bridgeMs'), ''), { error: 'Must be a whole number' }, 'only blankable or allow-zero table columns accept blank');
+  },
+  tableCellValidation() {
+    const f = field('policy.capture_rate', 'rows');
+    eq(coerceCell(f, 'REST', 'settledGapS', '4'), { error: 'Must be 0 (inherit) or between 5 and 300' });
+    eq(coerceCell(f, 'REST', 'settledGapS', '301'), { error: 'Must be 0 (inherit) or between 5 and 300' });
+    eq(coerceCell(f, 'REST', 'settledGapS', '5').value, { REST: { settledGapS: 5 } });
+    eq(coerceCell(f, 'REST', 'settledGapS', '12.5'), { error: 'Must be a whole number' });
+    eq(coerceCell(f, 'REST', 'capPerMin', '0'), { error: 'Must be between 1 and 4' });
+    eq(coerceCell(f, 'REST', 'capPerMin', '4').value, { REST: { capPerMin: 4 } });
+    eq(coerceCell(f, 'REST', 'forceSettle', 'false').value, { REST: { forceSettle: false } });
+    eq(coerceCell(f, 'REST', 'forceSettle', 'maybe'), { error: 'Pick one of the listed options' });
+    eq(coerceCell(f, 'WALKING', 'settledGapS', '10'), { error: 'No such row' });
+    eq(coerceCell(f, 'REST', 'nope', '10'), { error: 'No such column' });
+    eq(coerceCell(f, '__proto__', 'settledGapS', '10'), { error: 'No such row' });
+  },
+  tableEditNeverMutatesTheCurrentValue() {
+    const cur = { REST: { settledGapS: 60 } };
+    const f = field('policy.capture_rate', 'rows', { rows: cur });
+    coerceCell(f, 'REST', 'settledGapS', '90'); coerceCell(f, 'FLIGHT', 'quietGapS', '30');
+    eq(cur, { REST: { settledGapS: 60 } });
   },
 };
