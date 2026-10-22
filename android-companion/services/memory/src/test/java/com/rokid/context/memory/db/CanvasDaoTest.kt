@@ -214,6 +214,14 @@ class CanvasDaoTest {
         assertEquals(99L, dao.run("b")!!.finishedAt)
     }
 
+    @Test fun askByIdAndLiveMemoryCount() = runBlocking {
+        db.askDao().upsert(AskEntity("a1", 5, "q", "a", "[]", null, "phone_typed", false))
+        assertEquals("q", dao.ask("a1")!!.question); assertNull(dao.ask("nope"))
+        db.memoryDao().insert(MemoryEntity("m1", null, "x", "note", "", MemoryTier.SHORT, 0.9, ReviewState.OK, false, 1, false, ""))
+        db.memoryDao().insert(MemoryEntity("m2", null, "y", "note", "", MemoryTier.SHORT, 0.9, ReviewState.INVALIDATED, false, 1, false, ""))
+        assertEquals(1, dao.liveMemoryCount(listOf("m1", "m2", "gone"))); assertEquals(0, dao.liveMemoryCount(emptyList()))
+    }
+
     @Test fun recentFramesBetweenBounds() = runBlocking {
         listOf("f1" to 10L, "f2" to 20L, "f3" to 30L, "f4" to 40L).forEach { (id, ts) -> db.frameDao().insertIgnore(FrameEntity(id, ts, "/$id.jpg", "rokid_glasses")) }
         assertEquals(listOf("f3", "f2"), dao.recentFramesBetween(20, 40, false, 10).map { it.id })

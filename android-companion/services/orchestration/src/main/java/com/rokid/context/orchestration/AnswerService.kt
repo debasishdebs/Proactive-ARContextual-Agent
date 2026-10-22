@@ -21,6 +21,8 @@ import com.rokid.context.memory.db.AskEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.ReviewState
 import com.rokid.context.memory.retrieval.MemoryRetriever
+import com.rokid.context.memory.retrieval.RetrievalMode
+import com.rokid.context.memory.retrieval.ScoredMemory
 import com.rokid.context.memory.retrieval.RetrievalSettings
 import com.rokid.context.memory.retrieval.RetrievalSettingsStore
 import com.rokid.context.prompt.PromptComposer
@@ -112,6 +114,37 @@ class AnswerService(
             ),
             kept,
         )
+    }
+
+    /**
+     * [retrieved] is what [retrieve] returns for the same arguments; [hits] are the scored candidates before the prompt bound (empty on [fallback]);
+     * [lines] are the memory lines of the prompt, in order. [fallback] = no hits, the newest trusted memories stand in.
+     */
+    data class ScoredRetrieved(
+        val retrieved: Retrieved, val hits: List<ScoredMemory>, val mode: RetrievalMode, val semanticUnavailable: Boolean, val fallback: Boolean,
+        val lines: List<String> = emptyList(),
+    )
+
+    /**
+     * As [retrieve], but keeps the scores. [notAfterMs] drops memories with createdAt > it from the hits AND the fallback pool, BEFORE the retriever's
+     * limits (S34). Used by the Ask debug view only; [retrieve] and [answer] are unchanged. It sends no photos (the debug flow takes its photos
+     * through [com.rokid.context.canvas.AskDebugPhotos], which refuses by default).
+     */
+    suspend fun retrieveScored(question: String, nowMs: Long, notAfterMs: Long? = null): ScoredRetrieved {
+        val q = AskText.collapse(question).take(MAX_QUESTION)
+        val s = settings().clamped()
+        val r = retriever.retrieve(q, s, nowMs, notAfterMs = notAfterMs)
+        val fallback = r.hits.isEmpty()
+        val pool = if (!fallback) r.hits.map { it.memory } else
+            memory.memories.recent(30, notAfterMs).filter { it.reviewState == ReviewState.OK && it.confidence >= s.minConfidence }.take(minOf(FALLBACK, s.topK))
+        val lines = AskText.bounded(pool.map(::line))
+        val kept = pool.take(lines.size)
+        val vars = PromptVars(
+            question = PromptComposer.dataBlock("question", listOf(q)),
+            retrievedMemories = PromptComposer.dataBlock("memories", lines),
+            contextSources = PromptComposer.dataBlock("sources", sources.lines(q, nowMs)),
+        )
+        return ScoredRetrieved(Retrieved(vars, kept), r.hits, r.modeUsed, r.semanticUnavailable, fallback, lines)
     }
 
     /** Phone/HUD asks: every failure becomes one of the fixed short messages. */

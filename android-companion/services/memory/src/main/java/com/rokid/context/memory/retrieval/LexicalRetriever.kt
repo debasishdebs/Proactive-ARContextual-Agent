@@ -14,12 +14,13 @@ import kotlin.coroutines.coroutineContext
  * and peak memory is O(k) plus one CursorWindow. Reads on [io], never on Main; the cursor is closed on every path.
  */
 class LexicalRetriever(private val dao: RetrievalDao, private val io: CoroutineDispatcher = Dispatchers.IO) {
-    suspend fun search(query: String, limit: Int, minConfidence: Double = 0.0): List<Hit> {
+    /** [notAfterMs] (S34): only memories created at or before it are candidates, applied in the query, before [limit]. Null = today's behaviour. */
+    suspend fun search(query: String, limit: Int, minConfidence: Double = 0.0, notAfterMs: Long? = null): List<Hit> {
         if (limit <= 0) return emptyList()
         val match = SearchNormalizer.toAnyMatchQuery(query) ?: return emptyList()
         return withContext(io) {
             val top = TopHits(limit)
-            val cursor = dao.lexicalCursor(match, minConfidence)
+            val cursor = if (notAfterMs == null) dao.lexicalCursor(match, minConfidence) else dao.lexicalCursorUntil(match, minConfidence, notAfterMs)
             try {
                 val idCol = cursor.getColumnIndexOrThrow("id")
                 val miCol = cursor.getColumnIndexOrThrow("mi")

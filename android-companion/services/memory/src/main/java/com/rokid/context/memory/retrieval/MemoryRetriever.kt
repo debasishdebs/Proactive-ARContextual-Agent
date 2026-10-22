@@ -21,18 +21,22 @@ class MemoryRetriever(
     /**
      * [poolOverride] (recall only, <= [MAX_POOL_OVERRIDE]) replaces the clamped `topK`; null keeps today's behaviour.
      * All work (BM25, the embedder lookup and query, the vector scan, fusion) runs off the caller's thread. */
-    suspend fun retrieve(query: String, settings: RetrievalSettings, nowMs: Long, poolOverride: Int? = null): RetrievalResult =
-        withContext(Dispatchers.Default) { retrieveNow(query, settings.clamped().let { if (poolOverride == null) it else it.copy(topK = poolOverride.coerceIn(1, MAX_POOL_OVERRIDE)) }, nowMs) }
+    suspend fun retrieve(query: String, settings: RetrievalSettings, nowMs: Long, poolOverride: Int? = null, notAfterMs: Long? = null): RetrievalResult =
+        withContext(Dispatchers.Default) { retrieveNow(query, settings.clamped().let { if (poolOverride == null) it else it.copy(topK = poolOverride.coerceIn(1, MAX_POOL_OVERRIDE)) }, nowMs, notAfterMs) }
 
-    private suspend fun retrieveNow(query: String, s: RetrievalSettings, nowMs: Long): RetrievalResult {
+    /**
+     * [notAfterMs] (S34, the Ask debug view): only memories created at or before it exist for this call. It is applied before every limit: the lexical
+     * candidate query, the semantic candidate scan, the top-k. Null = today's behaviour, byte for byte.
+     */
+    private suspend fun retrieveNow(query: String, s: RetrievalSettings, nowMs: Long, notAfterMs: Long?): RetrievalResult {
         val pool = maxOf(s.topK * 5, 40)
-        val lex = if (s.mode == RetrievalMode.SEMANTIC) emptyList() else lexical.search(query, pool, s.minConfidence)
+        val lex = if (s.mode == RetrievalMode.SEMANTIC) emptyList() else lexical.search(query, pool, s.minConfidence, notAfterMs)
         // Semantic cosine is in [-1, 1]; shift to [0, 1] so recency and fusion only ever see non-negative scores.
-        val sem = if (s.mode == RetrievalMode.LEXICAL) null else semantic.search(query, pool, s.minConfidence)?.map { Hit(it.id, (it.score + 1) / 2) }
+        val sem = if (s.mode == RetrievalMode.LEXICAL) null else semantic.search(query, pool, s.minConfidence, notAfterMs)?.map { Hit(it.id, (it.score + 1) / 2) }
         val unavailable = s.mode != RetrievalMode.LEXICAL && sem == null
         val (scores, used) = when {
             s.mode == RetrievalMode.LEXICAL -> lex.associate { it.id to it.score } to RetrievalMode.LEXICAL
-            sem == null -> (if (s.mode == RetrievalMode.SEMANTIC) lexical.search(query, pool, s.minConfidence) else lex).associate { it.id to it.score } to RetrievalMode.LEXICAL
+            sem == null -> (if (s.mode == RetrievalMode.SEMANTIC) lexical.search(query, pool, s.minConfidence, notAfterMs) else lex).associate { it.id to it.score } to RetrievalMode.LEXICAL
             s.mode == RetrievalMode.SEMANTIC -> sem.associate { it.id to it.score } to RetrievalMode.SEMANTIC
             else -> s.fusion.fuse(lex, sem) to RetrievalMode.HYBRID
         }

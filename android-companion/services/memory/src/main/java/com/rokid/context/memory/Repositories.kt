@@ -26,6 +26,8 @@ class MemoryRepository(private val dao: MemoryDao) {
     suspend fun add(memory: MemoryEntity) = dao.insert(indexed(memory))
     suspend fun addIgnore(memory: MemoryEntity): Boolean = dao.insertIgnore(indexed(memory)) != -1L
     suspend fun recent(limit: Int) = dao.recent(limit)
+    /** [notAfterMs] null = [recent]; otherwise only memories created at or before it, bounded BEFORE the limit (S34, the as-of-an-ask fallback pool). */
+    suspend fun recent(limit: Int, notAfterMs: Long?): List<MemoryEntity> = if (notAfterMs == null) dao.recent(limit) else dao.recentUntil(limit, notAfterMs)
     suspend fun all() = dao.all()
     suspend fun search(userText: String, limit: Int): List<MemoryEntity> =
         SearchNormalizer.toMatchQuery(userText)?.let { dao.search(it, limit) } ?: emptyList()
