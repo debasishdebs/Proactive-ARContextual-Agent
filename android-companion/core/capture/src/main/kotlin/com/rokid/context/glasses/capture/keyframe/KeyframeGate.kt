@@ -15,6 +15,15 @@ sealed interface GateResult {
     data class Skip(val reason: String) : GateResult
 }
 
+/**
+ * The plan-tunable gate values (slice 3a, S68). The defaults are today's constants, so no plan means no change. [ringCompareAll] true
+ * = a sample must differ from each of the last 5 keyframes (today); false = from the newest one only.
+ */
+data class GateParams(val hamming: Int = KeyframeGate.HAMMING, val bigChange: Int = KeyframeGate.BIG_CHANGE, val ringCompareAll: Boolean = true)
+
+/** Sees every frame the gate scored, before the keep decision (the IMU/replay recorders). [d] and [p] are 0 when [passedBlur] is false. */
+fun interface ScoreListener { fun onScored(seq: Long, d: Long, p: Long, blur: Float, passedBlur: Boolean) }
+
 /** The last-5 keyframe ring and the last keep time, persisted so a service restart does not re-keep the same scene. */
 interface GateStore {
     fun lastKeyframes(): List<Pair<Long, Long>>
@@ -31,7 +40,10 @@ interface GateStore {
  * Rate cap (battery wave A3, spec section 5): with a `capPerMin`, at most that many keeps per rolling minute, up to twice
  * that many only when a glance (dwell) frame differs from every ring keyframe by at least [BIG_CHANGE] of 64 bits (never with [hardCap], used while resting); non-glance keeps stop at cap - 1 (at least 1) with no bonus; forced keeps are exempt.
  */
-class KeyframeGate(private val store: GateStore, private val clock: () -> Long) {
+class KeyframeGate(private val store: GateStore, private val clock: () -> Long, private val params: () -> GateParams = { GateParams() }) {
+    /** Keeps the trailing-lambda form `KeyframeGate(store) { now }` (the clock) working next to the params provider. */
+    constructor(store: GateStore, clock: () -> Long) : this(store, clock, { GateParams() })
+
     private class Scored(val c: Candidate, val d: Long, val p: Long, val blur: Float, val motion: MotionState)
 
     // Thread safety: offer() runs on the camera analysis executor, flushWindow() on the session timer or dwell
@@ -47,6 +59,14 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
 
     /** DUPLICATE and CAPPED skips since the previous call (the heartbeat); resets both. */
     @Synchronized fun takeSkipCounts(): Pair<Int, Int> = (duplicates to capped).also { duplicates = 0; capped = 0 }
+
+    @Volatile private var scoreListener: ScoreListener? = null
+
+    /** Null removes it. Called on the offering thread, under the gate lock: keep it cheap and never call back into the gate. */
+    fun setScoreListener(l: ScoreListener?) { scoreListener = l }
+
+    /** The current new-scene threshold (the plan's, else [HAMMING]); the session's same-scene backoff uses the same one. */
+    fun hammingNow(): Int = params().hamming
 
     /** (dHash, pHash) of the last frame that passed the blur check, or null before any. */
     @Synchronized fun lastHashes(): Pair<Long, Long>? = lastScoredHashes
@@ -76,8 +96,15 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
     fun offer(c: Candidate, motion: MotionState, dwellArmed: Boolean, force: Boolean = false, capPerMin: Int = Int.MAX_VALUE, hardCap: Boolean = false): GateResult {
         val now = clock()
         val blur = ImageHashes.blur(c.thumb)
-        if (blur < BLUR_FLOOR) return Skip(BLUR)
-        val s = Scored(c, ImageHashes.dHash(c.thumb), ImageHashes.pHash(c.thumb), blur, motion)
+        if (blur < BLUR_FLOOR) { scoreListener?.onScored(c.seq, 0L, 0L, blur, false); return Skip(BLUR) }
+        val d = ImageHashes.dHash(c.thumb); val p = ImageHashes.pHash(c.thumb)
+        scoreListener?.onScored(c.seq, d, p, blur, true)
+        return decide(c, d, p, blur, motion, dwellArmed, force, capPerMin, hardCap, now)
+    }
+
+    /** The decision for a scored sample, shared by [offer] and [offerScored] (one path, so a replay cannot drift from the live gate). */
+    private fun decide(c: Candidate, d: Long, p: Long, blur: Float, motion: MotionState, dwellArmed: Boolean, force: Boolean, capPerMin: Int, hardCap: Boolean, now: Long): GateResult {
+        val s = Scored(c, d, p, blur, motion)
         lastScoredHashes = s.d to s.p
         if (force) {
             window.clear()
@@ -93,6 +120,13 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
         }
         addToWindow(s, now)
         return if (now - windowStart >= WINDOW_MS) finish(window.toList().also { window.clear() }, dwell = false, now, capPerMin, hardCap) else Skip(WINDOW)
+    }
+
+    /** Replay entry (Tasks 16, 20): the same decision as [offer] from a recorded score; the candidate carries no pixels. */
+    @Synchronized
+    fun offerScored(seq: Long, d: Long, p: Long, blur: Float, motion: MotionState, dwellArmed: Boolean, force: Boolean, cap: Int, hard: Boolean, nowMs: Long): GateResult {
+        if (blur < BLUR_FLOOR) return Skip(BLUR)
+        return decide(Candidate(seq, Thumb(0, 0, ByteArray(0)), Nv21Frame(0, 0, 0, ByteArray(0))), d, p, blur, motion, dwellArmed, force, cap, hard, nowMs)
     }
 
     /** At window end: the best pending candidate, or null when nothing is pending. */
@@ -121,8 +155,9 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
     }
 
     private fun finish(pool: List<Scored>, dwell: Boolean, now: Long, capPerMin: Int, hardCap: Boolean = false): GateResult {
-        val ring = store.lastKeyframes()
-        val fresh = pool.filter { s -> ring.all { (d, p) -> minOf(hamming(s.d, d), hamming(s.p, p)) > HAMMING } }
+        val gp = params() // read once per decision: the threshold, the bonus and the ring rule always agree
+        val ring = store.lastKeyframes().let { if (gp.ringCompareAll) it else it.takeLast(1) }
+        val fresh = pool.filter { s -> ring.all { (d, p) -> minOf(hamming(s.d, d), hamming(s.p, p)) > gp.hamming } }
         val last = store.lastKeptAt()
         val gap = if (last <= 0L) Long.MAX_VALUE else now - last // never kept (a fresh store): nothing to throttle against
         // A clock that moved back (negative gap) does not throttle, or capture would stop until it caught up.
@@ -133,7 +168,7 @@ class KeyframeGate(private val store: GateStore, private val clock: () -> Long) 
             val k = keptTimes.count { now - it < CAP_WINDOW_MS }
             val dMin = ring.minOfOrNull { (d, p) -> minOf(hamming(best.d, d), hamming(best.p, p)) } ?: 64
             // A non-glance keep (timer or stream) stops at cap - 1 with no big-change bonus: one glance slot a minute stays free.
-            val over = if (dwell) k.toLong() >= (if (hardCap) 1L else 2L) * capPerMin || (k >= capPerMin && dMin < BIG_CHANGE)
+            val over = if (dwell) k.toLong() >= (if (hardCap) 1L else 2L) * capPerMin || (k >= capPerMin && dMin < gp.bigChange)
             else k >= maxOf(1, capPerMin - 1)
             if (over) { capped++; return Skip(CAPPED) }
         }
