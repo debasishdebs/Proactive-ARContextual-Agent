@@ -101,6 +101,7 @@ class AskDebug(
 
     /** Null: unknown ask. Throws [AskRedacted] for a redacted ask: its text was removed by Forget and must not be rebuilt. */
     suspend fun view(askId: String): View? {
+        val gen = generation() // before anything is loaded: a Forget / Delete all that finishes while the view is built must not be served
         val ask = dao.ask(askId) ?: return null
         if (ask.redacted) throw AskRedacted()
         val l = load(ask)
@@ -112,10 +113,19 @@ class AskDebug(
             l.sr.hits.map { Hit(it.memory.id, it.memory.text, it.memory.frameId, it.lexical, it.semantic, it.fused, it.score, it.memory.id in cited, it.memory.id in kept) }
         }
         val active = prompts.active(PromptKey.ANSWER)
-        return View(
+        val view = View(
             ask.id, ask.ts, ask.question, ask.answer, cited, ask.rating, hits, l.sr.mode.name, l.sr.fallback,
             compose(active.template, l.vars, ask.ts), active.template, active.version,
         )
+        // Rechecked right before returning: generation, the ask itself, and EVERY hit shown (also those outside the prompt) and every photo line.
+        if (generation() != gen) throw AskRedacted()
+        val now = dao.ask(askId) ?: return null
+        if (now.redacted) throw AskRedacted()
+        val memoryIds = hits.map { it.memoryId }.toSet() + (l.photos?.memoryIds ?: emptySet())
+        if (dao.liveMemoryCount(memoryIds) != memoryIds.size) throw AskRedacted()
+        val frameIds = (l.photos?.frameIds ?: emptySet()) + hits.mapNotNull { it.frameId }
+        if (frameIds.isNotEmpty() && dao.tombstonedAmong(frameIds) != 0) throw AskRedacted()
+        return view
     }
 
     /**

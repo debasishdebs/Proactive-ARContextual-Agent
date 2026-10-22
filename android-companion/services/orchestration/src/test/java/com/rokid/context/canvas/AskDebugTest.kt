@@ -239,6 +239,50 @@ class AskDebugTest {
         assertTrue(pausedReplay(debug()) { } is AskDebug.Replay.Ok)
     }
 
+    // ---- view fence: the GET must not return content forgotten while it was being built ----
+
+    private class SlowGate(val entered: CompletableDeferred<Unit>, val go: CompletableDeferred<Unit>) : AskDebugPhotos {
+        override suspend fun allowed(): Boolean { entered.complete(Unit); go.await(); return false }
+        override suspend fun recall(question: String, nowMs: Long) = AskPhotoRecall(emptyList(), emptySet(), emptySet())
+    }
+
+    private suspend fun pausedView(during: suspend () -> Unit): Result<AskDebug.View?> = coroutineScope {
+        val entered = CompletableDeferred<Unit>(); val go = CompletableDeferred<Unit>()
+        val d = debug(SlowGate(entered, go))
+        val job = async(Dispatchers.Default) { runCatching { d.view("a1") } }
+        withTimeout(10_000) { entered.await() }
+        during()
+        go.complete(Unit)
+        withTimeout(10_000) { job.await() }
+    }
+
+    @Test fun viewIsRefusedWhenTheAskIsRedactedWhileLoading() = runBlocking<Unit> {
+        add("m1", "milk carton in the fridge", 10); ask()
+        val r = pausedView { mem.db.openHelper.writableDatabase.execSQL("UPDATE ask SET redacted = 1 WHERE id = 'a1'") }
+        assertTrue(r.exceptionOrNull() is AskRedacted)
+    }
+
+    @Test fun viewIsRefusedAfterAWipeWhileLoading() = runBlocking<Unit> {
+        add("m1", "milk carton in the fridge", 10); ask()
+        assertTrue(pausedView { MemoryWipe.generation.incrementAndGet() }.exceptionOrNull() is AskRedacted)
+    }
+
+    @Test fun viewIsRefusedWhenAnyReturnedHitIsForgottenEvenOutsideThePrompt() = runBlocking<Unit> {
+        add("m1", "milk carton in the fridge", 10); add("m2", "milk bottle on the shelf", 20); ask()
+        val r = pausedView { mem.db.openHelper.writableDatabase.execSQL("UPDATE memory SET reviewState = 'INVALIDATED' WHERE id = 'm2'") }
+        assertTrue(r.exceptionOrNull() is AskRedacted)
+    }
+
+    @Test fun viewOfAnAskDeletedWhileLoadingIsNotFound() = runBlocking<Unit> {
+        add("m1", "milk carton in the fridge", 10); ask()
+        assertNull(pausedView { mem.db.openHelper.writableDatabase.execSQL("DELETE FROM ask WHERE id = 'a1'") }.getOrThrow())
+    }
+
+    @Test fun anUndisturbedViewStillReturns() = runBlocking<Unit> {
+        add("m1", "milk carton in the fridge", 10); ask()
+        assertEquals("a1", pausedView { }.getOrThrow()!!.askId)
+    }
+
     // ---- the Ask photo gate seam (wave 3 AskPhotoPolicy): refuses by default, images only after the gate says yes ----
 
     private class FakePhotos(var allow: Boolean, var throwOnAllowed: Boolean = false, val endpoint: String? = "az") : AskDebugPhotos {
