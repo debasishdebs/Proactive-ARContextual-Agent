@@ -90,6 +90,8 @@ class CanvasBackendImpl(
         private const val ASK_ANSWER_PREVIEW = 140
         /** Fixed text for a pipeline JSON that cannot be decoded (never the decoder's message, never the input). */
         const val UNDECODABLE = "The pipeline JSON is not valid."
+        /** The Ask debug view's template editor names the Answer prompt with this type (it has no pipeline node). */
+        const val ASK_ANSWER = "ask.answer"
 
         /** The id prefix of a node type (slice 3's registry replaces this mapping). */
         internal val SHORT = mapOf(
@@ -428,6 +430,8 @@ class CanvasBackendImpl(
     override suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome = publisher.rollback(expectedId)
 
     override suspend fun checkPrompt(nodeType: String, template: String, schema: String?): List<String> {
+        // the Ask debug view's template editor (Task 12): the Answer prompt has no pipeline node, only its prompt key
+        if (nodeType == ASK_ANSWER) return ai.testBed.compatibility(PromptKey.ANSWER, PromptDraft(template, schema))
         val type = NodeTypes.byType(nodeType) ?: return listOf("Unknown node type")
         type.promptKey?.let { return ai.testBed.compatibility(it, PromptDraft(template, schema)) }
         if (nodeType != NodeTypes.PROMPT) return listOf("This node has no prompt")

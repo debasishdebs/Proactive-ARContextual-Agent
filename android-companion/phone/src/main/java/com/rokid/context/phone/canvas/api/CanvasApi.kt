@@ -293,7 +293,7 @@ class CanvasApi(
         is CanvasPublisher.Outcome.Blocked -> throw ApiError(409, blockedCode, "Blocked.", o.reasons)
     }
 
-    /** The optional `expectedId` is the publish the user saw as the newest: an auto-rollback that won the race refuses the click instead of undoing the wrong publish. */
+    /** The required `expectedId` (400 without it) is the publish the user saw as the newest: an auto-rollback that won the race refuses the click instead of undoing the wrong publish. */
     private suspend fun rollback(req: HttpRequest): HttpResponse {
         val e = optBody(req)?.get("expectedId")
         if (e == null || e is JsonNull) throw bad("Reload and try again.") // a click names the publish it saw, or nothing is undone
