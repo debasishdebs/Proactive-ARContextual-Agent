@@ -42,6 +42,10 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
      */
     private var lastSessionStartMs = 0L
 
+    /** A revert whose write failed: the in-memory state is already reverted (fail closed); [tick] retries the write. */
+    var persistPending: Boolean = false
+        private set
+
     fun onMessage(m: CapturePlanMessage): CapturePlanAck {
         lastSessionStartMs = maxOf(lastSessionStartMs, m.sessionStartMs)
         val cur = st?.takeIf { it.phoneInstall == m.phoneInstall }   // gens count per phone install
@@ -100,6 +104,7 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
     /** [now] is the glasses' `elapsedRealtime`. Returns the REVERTED ack when the TRIAL ended, else null. */
     @Suppress("UNUSED_PARAMETER")
     fun tick(state: ContextState, now: Long): CapturePlanAck? {
+        retryPersist()
         val cur = st ?: return null
         if (cur.mode != PlanMode.TRIAL || cur.appliedGen in cur.terminal) return null
         if (cur.bootId != boot) return revert("auto:reboot")
@@ -123,8 +128,16 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
             trialStartElapsed = null, trialMaxMs = null, bootId = boot, previous = null, terminal = terminal, effective = true,
             publishId = cur.publishId, terminalMeta = meta,
         )
-        persist.commit(next); st = next
+        // A revert never fails open: the state is reverted in memory even if the write fails (the write is retried by tick).
+        st = next
+        try { persist.commit(next); persistPending = false } catch (e: Exception) { persistPending = true }
         return ack(cur.appliedGen, cur.mode, PlanAckState.REVERTED, reason, null, cur.phoneInstall, cur.publishId)
+    }
+
+    private fun retryPersist() {
+        if (!persistPending) return
+        val s = st ?: return
+        try { persist.commit(s); persistPending = false } catch (e: Exception) { /* still failing: try again at the next tick */ }
     }
 
     private fun reject(m: CapturePlanMessage, reason: String) = ack(m.gen, m.mode, PlanAckState.REJECTED, reason, null, m.phoneInstall, m.publishId, m.sessionStartMs)

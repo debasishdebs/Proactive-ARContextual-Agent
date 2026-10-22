@@ -369,4 +369,45 @@ class HudControllerTest {
         assertTrue(c.sendMotionHint(h))
         assertEquals(1, bridge.sent.count { it.first == Channels.MOTION_HINT })
     }
+
+    // ---- slice 3a Task 11: the plan channel ----
+
+    private fun planMsg(gen: Long = 1, atMs: Long = 5, sessionStartMs: Long = 0) =
+        Wire.encode(com.rokid.context.core.model.CapturePlanMessage(gen = gen, atMs = atMs, sessionStartMs = sessionStartMs, phoneInstall = "p1"))
+
+    @Test fun planMessageReachesTheHandlerAndAStaleCopyDoesNot() = runTest {
+        val c = controller()
+        val got = ArrayList<Long>()
+        c.onCapturePlan = { got += it.gen }
+        bridge.phone(Channels.CAPTURE_PLAN, planMsg(1))
+        bridge.phone(Channels.CAPTURE_PLAN, planMsg(2, atMs = 10, sessionStartMs = 11))   // older than its session
+        assertEquals(listOf(1L), got)
+    }
+
+    @Test fun planAckGoesOutOnlyWhileTheSessionIsOpen() = runTest {
+        val c = controller()
+        val a = com.rokid.context.core.model.CapturePlanAck(gen = 3, state = com.rokid.context.core.model.PlanAckState.EFFECTIVE)
+        assertEquals(false, c.sendPlanAck(a))
+        bridge.phone(Channels.STATE, state())
+        assertEquals(true, c.sendPlanAck(a))
+        assertEquals(2, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })    // the caps ack and this one
+    }
+
+    @Test fun sessionOpenSendsCapsAckThenASeparateStatusAck() = runTest {
+        val c = controller()
+        c.statusAck = { com.rokid.context.core.model.CapturePlanAck(gen = 7, state = com.rokid.context.core.model.PlanAckState.REVERTED, reason = "auto:reboot", caps = listOf("plan1", "shadow", "trial"), phoneInstall = "p1", sessionStartMs = 9) }
+        bridge.phone(Channels.STATE, state())
+        val acks = bridge.sent.filter { it.first == Channels.CAPTURE_PLAN_ACK }.map { (Wire.decode<com.rokid.context.core.model.CapturePlanAck>(it.second.single()) as com.rokid.context.core.model.Decoded.Ok).value }
+        assertEquals(2, acks.size)
+        val isCaps = { x: com.rokid.context.core.model.CapturePlanAck -> x.gen == 0L && x.phoneInstall.isEmpty() && x.sessionStartMs == 0L && x.reason == null }
+        kotlin.test.assertTrue(isCaps(acks[0]), "the announcement stays caps-only")
+        assertEquals(listOf("plan1", "shadow", "trial"), acks[0].caps)
+        assertEquals(7L, acks[1].gen); assertEquals("auto:reboot", acks[1].reason)
+        kotlin.test.assertFalse(isCaps(acks[1]))
+    }
+
+    @Test fun noStatusAckWhenNoPlanWasEverHeld() = runTest {
+        controller(); bridge.phone(Channels.STATE, state())
+        assertEquals(1, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
+    }
 }

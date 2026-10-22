@@ -112,6 +112,18 @@ class GlassesRuntime private constructor(private val app: Context) {
      */
     fun contextApplied(nowMs: Long = android.os.SystemClock.elapsedRealtime()): com.rokid.context.core.model.context.ContextState =
         contextGate.effective(nowMs, localMotion, lastWalkAtMs, settingsCache.readNormalized().motionSourcesOff)
+    /**
+     * Slice 3a: the capture plan (S59, S69). Built here so a persisted plan is loaded, and a TRIAL of another boot or past its limit is
+     * reverted, before the capture service starts. The boot id is `Settings.Global.BOOT_COUNT` (persisted by the OS, changes per boot).
+     */
+    val plan = com.rokid.context.glasses.capture.plan.PlanController(
+        com.rokid.context.glasses.capture.plan.PrefsPlanPersistence(app.getSharedPreferences(com.rokid.context.glasses.capture.plan.PrefsPlanPersistence.PREFS, Context.MODE_PRIVATE)),
+        elapsed = android.os.SystemClock::elapsedRealtime,
+        bootId = { com.rokid.context.capture.plan.BootId.of(android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, -1), System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime()) },
+        appliedState = { contextApplied() },
+        send = { a -> controller?.sendPlanAck(a) },
+        log = { DiagLog.i(CAPTURE_TAG, it) },
+    )
     /** Fix wave H3: a ~600 ms HUD mark per saved keyframe ("Capture blink on HUD", synced `captureCue`). */
     val captureBlink = com.rokid.context.glasses.hud.CaptureBlink(scope, { settingsCache.read().captureCue })
     /** The minimised icon (spec 2026-10-14 §3), one window per process; shown only while the keep-alive service runs. */
@@ -200,7 +212,9 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onPhoneUse = { u -> if (u == null) phoneUse.reset() else phoneUse.onRemote(u, android.os.SystemClock.elapsedRealtime()) }
         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
-        c.onPhoneSettings = { s -> ioScope.launch { applyPhoneSettings(s) } }
+        c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); ioScope.launch { applyPhoneSettings(s) } }
+        c.onCapturePlan = { m -> plan.onMessage(m) }
+        c.statusAck = { plan.statusAck().takeIf { it.gen != 0L } }   // the caps announcement stays HudController's gen-0 default
         attachJob?.cancel()
         attachJob = scope.launch {
             launch {
@@ -222,6 +236,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onAutoOpen = {}
         c.onSessionOpened = {}
         c.onPhoneSettings = {}
+        c.onCapturePlan = {}
         if (controller !== c) return
         ptt.cancel()
         ptt.onProblem = {} // only the current activity's handler: a newer activity's must survive an old detach
