@@ -80,8 +80,10 @@ class ReplayService(
     private val clock: () -> Long = System::currentTimeMillis,
     private val newId: () -> String = { "rp_" + UUID.randomUUID().toString().replace("-", "").take(16) },
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /** The one-job gate (S77): a [SweepService] given the same mutex excludes this service and the other way round. */
+    jobGate: Mutex = Mutex(),
 ) {
-    private val gate = Mutex()
+    private val gate = jobGate
     @Volatile private var running: Running? = null
     private class Running(val id: String, val job: Job, @Volatile var reason: ReplayCancel? = null)
 
