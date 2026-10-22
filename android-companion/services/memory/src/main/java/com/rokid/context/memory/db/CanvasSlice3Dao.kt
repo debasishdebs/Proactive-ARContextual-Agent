@@ -255,6 +255,8 @@ abstract class CanvasSlice3Dao {
     }
 
     // --- calibration ---
+    // TODO(3b, deletion graph fix 1): insertCalibration and insertHelperJob are NOT epoch-fenced (no production writer exists yet). The first writer must go through a
+    // fenced insert like insertLabelFenced; DeletionFencePinsTest pins today's behaviour so that change is deliberate.
     @Insert abstract suspend fun insertCalibration(c: CanvasCalibrationEntity): Long
     @Query("SELECT * FROM canvas_calibration WHERE configHash = :configHash ORDER BY id DESC") abstract suspend fun calibrations(configHash: String): List<CanvasCalibrationEntity>
     @Query("SELECT COUNT(*) FROM canvas_calibration WHERE configHash = :configHash AND verified = 1") abstract suspend fun verifiedCount(configHash: String): Int

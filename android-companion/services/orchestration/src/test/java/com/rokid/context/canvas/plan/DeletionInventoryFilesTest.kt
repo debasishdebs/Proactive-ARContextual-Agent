@@ -15,7 +15,7 @@ import java.io.File
  */
 class DeletionInventoryFilesTest {
     private val root: File = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
-    private val registeredNames = (DeletionGraph.TABLES + DeletionGraph.PREFS + DeletionGraph.GLASSES_PREFS + DeletionGraph.DIRS).map { it.name }.toSet()
+    private val registeredNames = (DeletionGraph.TABLES + DeletionGraph.PREFS + DeletionGraph.GLASSES_PREFS + DeletionGraph.GLASSES_FILES + DeletionGraph.DIRS).map { it.name }.toSet()
 
     @Test fun deleteAllClearsExactlyTheRegisteredPrefsAndFolders() {
         assertEquals(DeletionGraph.wipedPrefs.toSet(), MemoryWipe.WIPED_PREFS.toSet())
@@ -32,6 +32,22 @@ class DeletionInventoryFilesTest {
         assertTrue("scan broken", found.size >= 4)
         val missing = found.filter { it.first !in registeredNames }
         assertTrue("on-disk artefacts with no deletion decision (add to DeletionGraph and Delete all): $missing", missing.isEmpty())
+    }
+
+    /**
+     * The wide net (the const-name scan above is easy to dodge): ANY string literal that starts with canvas / mark / imu / trace and sits on a line that builds a File, opens a
+     * preferences file or names a folder, in ANY main source of the app, the services, the glasses and the cores, must be a registered artefact.
+     */
+    @Test fun noFileOrPrefsLiteralInAnyMainSourceEscapesTheRegistry() {
+        val lit = Regex(""""((?:canvas|mark|imu|trace|traces)[a-z_.]*)"""")
+        val ctx = Regex("""File\(|getSharedPreferences|PREFS|DIR|Dir\b|filesDir|cacheDir|\.xml""")
+        val found = HashMap<String, MutableSet<String>>()
+        root.walkTopDown().onEnter { it.name != "build" && it.name != ".git" && it.name != "node_modules" }
+            .filter { it.extension == "kt" && "/src/main/" in it.path }
+            .forEach { f -> f.readLines().filter { ctx.containsMatchIn(it) }.forEach { l -> lit.findAll(l).forEach { found.getOrPut(it.groupValues[1]) { HashSet() } += f.name } } }
+        assertTrue("scan broken: ${found.keys}", found.size >= 10)
+        val missing = found.filterKeys { it !in registeredNames }
+        assertTrue("on-disk artefacts with no deletion decision (add to DeletionGraph and make Delete all reach them): $missing", missing.isEmpty())
     }
 
     @Test fun everyBackupExcludedCanvasPathIsRegistered() {
