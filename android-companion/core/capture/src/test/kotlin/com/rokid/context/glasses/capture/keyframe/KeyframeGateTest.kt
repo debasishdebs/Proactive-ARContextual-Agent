@@ -350,4 +350,75 @@ class KeyframeGateTest {
         assertIs<GateResult.Keep>(timerKeep(10_000, 1, cap = 2, hard = true))
         assertEquals("CAPPED", reason(timerKeep(15_000, 2, cap = 2, hard = true)))
     }
+
+    // ---- slice 3a Task 11: the GateParams provider, ScoreListener and offerScored ----
+
+    private fun gateWith(st: MemStore, params: () -> GateParams) = KeyframeGate(st, { now }, params)
+
+    @Test fun hammingFromTheProviderDecidesWhatIsANewScene() {
+        val strict = gateWith(MemStore()) { GateParams(hamming = 64) }   // nothing can differ by more than 64 bits
+        now = 10_000; assertIs<GateResult.Keep>(strict.offer(cand(1), MotionState.STILL, false))
+        now = 20_000; assertEquals("DUPLICATE", reason(strict.offer(cand(2), MotionState.STILL, false)))
+        val dflt = gateWith(MemStore()) { GateParams() }
+        now = 10_000; assertIs<GateResult.Keep>(dflt.offer(cand(1), MotionState.STILL, false))
+        now = 20_000; assertIs<GateResult.Keep>(dflt.offer(cand(2), MotionState.STILL, false))
+    }
+
+    @Test fun ringCompareLastOnlySeesOnlyTheNewestKeyframe() {
+        for (all in listOf(true, false)) {
+            val st = MemStore()
+            val g = gateWith(st) { GateParams(ringCompareAll = all) }
+            now = 10_000; assertIs<GateResult.Keep>(g.offer(cand(1), MotionState.STILL, false))
+            now = 20_000; assertIs<GateResult.Keep>(g.offer(cand(2), MotionState.STILL, false))
+            now = 30_000   // scene 1 again: seen two keeps ago, but not the newest keyframe
+            val r = g.offer(cand(1), MotionState.STILL, false)
+            if (all) assertEquals("DUPLICATE", reason(r)) else assertIs<GateResult.Keep>(r)
+        }
+    }
+
+    @Test fun bigChangeFromTheProviderMovesTheBonusThreshold() {
+        // cap 1 hard=false: the second dwell keep in a minute is allowed only for a frame far from every ring keyframe
+        for ((bigChange, bonus) in listOf(64 to false, 1 to true)) {
+            val st = MemStore()
+            val g = gateWith(st) { GateParams(bigChange = bigChange) }
+            now = 10_000; assertIs<GateResult.Keep>(g.offer(cand(1), MotionState.STILL, true, capPerMin = 1))
+            now = 20_000
+            val r = g.offer(cand(2), MotionState.STILL, true, capPerMin = 1)
+            if (bonus) assertIs<GateResult.Keep>(r) else assertEquals("CAPPED", reason(r))
+        }
+    }
+
+    @Test fun scoreListenerSeesEveryScoredFrameBeforeTheDecision() {
+        val seen = ArrayList<List<Any>>()
+        val g = gateWith(MemStore()) { GateParams() }
+        g.setScoreListener { seq, d, p, blur, passed -> seen += listOf(seq, d, p, blur > 0f, passed) }
+        val a = cand(1); val blurry = cand(2, soft = 100)
+        now = 10_000; g.offer(a, MotionState.STILL, false)
+        now = 20_000; g.offer(blurry, MotionState.STILL, false)
+        assertEquals(2, seen.size)
+        assertEquals(listOf<Any>(a.seq, ImageHashes.dHash(a.thumb), ImageHashes.pHash(a.thumb), true, true), seen[0])
+        assertEquals(false, seen[1][4]); assertEquals(0L, seen[1][1]); assertEquals(0L, seen[1][2])
+        g.setScoreListener(null); g.offer(cand(3), MotionState.STILL, false)
+        assertEquals(2, seen.size)
+    }
+
+    @Test fun offerScoredDecidesLikeOfferFromTheRecordedScore() {
+        val scores = ArrayList<DoubleArray>()
+        val rec = ArrayList<List<Long>>()
+        val live = gateWith(MemStore()) { GateParams() }
+        live.setScoreListener { seq, d, p, blur, passed -> if (passed) rec += listOf(seq, d, p, blur.toRawBits().toLong()) }
+        val replay = gateWith(MemStore()) { GateParams() }
+        val script = listOf(Triple(10_000L, 1, MotionState.STILL), Triple(11_000L, 1, MotionState.STILL), Triple(20_000L, 2, MotionState.STILL), Triple(30_000L, 3, MotionState.WALKING), Triple(31_600L, 3, MotionState.WALKING), Triple(40_000L, 4, MotionState.STILL))
+        for ((t, scene, m) in script) {
+            now = t
+            val a = live.offer(cand(scene), m, dwellArmed = scene == 2, capPerMin = 4)
+            val last = rec.last()
+            val b = replay.offerScored(last[0], last[1], last[2], Float.fromBits(last[3].toInt()), m, scene == 2, false, 4, false, t)
+            assertEquals(a::class, b::class, "at $t")
+            if (a is GateResult.Keep) {
+                val k = b as GateResult.Keep
+                assertEquals(a.dhash, k.dhash); assertEquals(a.phash, k.phash); assertEquals(a.dwell, k.dwell); assertEquals(a.motion, k.motion)
+            } else assertEquals((a as GateResult.Skip).reason, (b as GateResult.Skip).reason, "at $t")
+        }
+    }
 }

@@ -9,7 +9,9 @@ package com.rokid.context.glasses.capture.motion
  * from its first sample's time minus one sample period (that sample's own dt, clamped to maxDtMs) to the last sample over the
  * release threshold. A real 300 ms look is therefore a bout at 20 Hz (6 samples, 250 ms apart first-to-last) as at 50 Hz.
  */
-class GlanceDetector(private val p: GlanceParams) {
+class GlanceDetector(p: GlanceParams) {
+    /** The tunables in force; the classifier swaps them under its lock ([MotionClassifier.setConfig]). */
+    var p: GlanceParams = p
     private enum class Phase { QUIET, BOUT, SETTLING }
 
     private var phase = Phase.QUIET
@@ -37,6 +39,12 @@ class GlanceDetector(private val p: GlanceParams) {
         }
         return false
     }
+
+    /** True when no bout is running and no glance is pending: the only moment the tunables may be swapped without mixing two models. */
+    fun isQuiet(): Boolean = phase == Phase.QUIET
+
+    /** Drops a running bout and any pending glance (a forced swap after the safe-boundary wait). Counters are kept. */
+    fun abort() { phase = Phase.QUIET; armed = false }
 
     /** The settle test alone (accel callbacks, with gyro time). */
     fun onTime(tMs: Long, still: Boolean): Boolean = phase == Phase.SETTLING && settled(tMs, still)

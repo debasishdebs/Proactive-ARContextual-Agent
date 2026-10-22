@@ -409,4 +409,45 @@ class MotionClassifierTest {
         val r = k.rotationSinceMarkRad()
         assertTrue(r in 0.95f..1.35f, "turn kept, drift bounded, was $r")
     }
+
+    // ---- slice 3a Task 11: one swappable config ----
+
+    @Test fun setConfigSwapsTheSettleTimeOfTheNextGlance() {
+        val k = defaults()
+        k.setConfig(GlanceParams(settleMs = 3_000))
+        gyroOn(k, 0, 400, 1.5f)
+        gyroOn(k, 400, 6000, 0f)
+        assertEquals(listOf(380L + 3_000), dwells)
+    }
+
+    @Test fun setConfigOnsetAboveTheTurnMeansNoGlance() {
+        val k = defaults()
+        k.setConfig(GlanceParams(onsetRadS = 2.0f))
+        gyroOn(k, 0, 400, 1.5f)
+        gyroOn(k, 400, 6000, 0f)
+        assertTrue(dwells.isEmpty(), "dwells=$dwells")
+        assertEquals(GlanceCounts(0, 0), k.takeGlanceCounts())
+        assertEquals(2.0f, k.config.onsetRadS)
+    }
+
+    @Test fun quietIsFalseInABoutAndWhileAGlanceIsPendingAndTrueAfterwards() {
+        val k = defaults()
+        assertTrue(k.quiet())
+        gyroOn(k, 0, 400, 1.5f)
+        assertFalse(k.quiet(), "mid bout")
+        gyroOn(k, 400, 600, 0f)
+        assertFalse(k.quiet(), "settling: a glance is pending")
+        gyroOn(k, 1000, 3000, 0f)
+        assertTrue(k.quiet())
+    }
+
+    @Test fun abortBoutDropsTheBoutAndItsGlance() {
+        val k = defaults()
+        gyroOn(k, 0, 400, 1.5f)
+        assertFalse(k.quiet())
+        k.abortBout()
+        assertTrue(k.quiet())
+        gyroOn(k, 400, 6000, 0f)
+        assertTrue(dwells.isEmpty(), "dwells=$dwells")
+    }
 }
