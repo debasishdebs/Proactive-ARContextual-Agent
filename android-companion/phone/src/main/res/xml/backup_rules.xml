@@ -49,4 +49,6 @@
     <exclude domain="sharedpref" path="ctx_hub_state.xml" />
     <!-- Canvas slice 2: the Developer mode switch is a per-device debug flag: off after a restore. -->
     <exclude domain="sharedpref" path="pc_dev.xml" />
+    <!-- AI call pace paces this phone's own model calls: per-device, default after a restore. -->
+    <exclude domain="sharedpref" path="ai_call_pace.xml" />
 </full-backup-content>

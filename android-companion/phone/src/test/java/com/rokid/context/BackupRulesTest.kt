@@ -54,6 +54,8 @@ class BackupRulesTest {
         com.rokid.context.phone.context.ContextSourceSettings.PREFS,
         // Canvas slice 2: the Developer mode switch is a per-device debug flag (Shadow runs only while it is on): off after a restore.
         com.rokid.context.phone.canvas.DeveloperModeStore.PREFS,
+        // AI call pace (10 / 12 / 15 s) paces this phone's own model calls (the call budget reads it): per-device, back to the default after a restore.
+        com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.PREFS,
     )
 
     /**
@@ -67,8 +69,6 @@ class BackupRulesTest {
         "persona_settings", "voice_settings", "nudge_engine",
         // The scene-grouping watch list ("keys", "receipt" ...): a plain user list of words, no ids into the DB (Ruling: wave 2 Task 3).
         "watch_list",
-        // AI call pace (10 / 12 / 15 s) is a plain user setting.
-        com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.PREFS,
         // Activity sort (Latest first / Oldest first / A-Z / Z-A) is a plain UI preference kept in hub_settings: restored.
         com.rokid.context.phone.ui.activity.PrefsActivitySort.PREFS,
     )
@@ -146,13 +146,15 @@ class BackupRulesTest {
      */
     @Test fun everyPrefsFileIsRuledOn() {
         val roots = listOf("src/main", "../services").map(::File)
-        val sources = roots.flatMap { it.walkTopDown().filter { f -> f.isFile && f.name.endsWith(".kt") && "/src/main/" in f.path && "/build/" !in f.path } }
+        val sources = roots.flatMap { it.walkTopDown().filter { f -> f.isFile && f.name.endsWith(".kt") && f.absoluteFile.invariantSeparatorsPath.let { p -> "/src/main/" in p && "/build/" !in p } } }
         val literal = Regex("""getSharedPreferences\(\s*"([^"]+)"""")
         val constant = Regex("""const val (?:PREFS|PREF|SECRET_PREF) = "([^"]+)"""")
         val created = Regex("""EncryptedSharedPreferences\.create\(\s*\w+,\s*"([^"]+)"""")
         val names = sources.flatMap { f -> val src = f.readText(); (literal.findAll(src) + constant.findAll(src) + created.findAll(src)).map { it.groupValues[1] } }.toSet()
         val keysAndMarkers = setOf("endpoint_keys", "db_key", "app_config_secret", "ai_seed", "legacy_import")
         assertTrue("found only ${names.size} prefs files: the scan is broken", names.size >= 15)
+        // the phone module's own files are scanned too (a path filter once skipped them): these two live only in :phone
+        assertTrue("the phone module's prefs are not scanned: $names", names.containsAll(setOf("pc_dev", "ai_call_pace")))
         val unruled = names - keysAndMarkers - setupState - restorable
         assertEquals("prefs files with no backup ruling", emptySet<String>(), unruled)
         assertTrue("a file is both restorable and excluded", (restorable intersect (setupState + keysAndMarkers)).isEmpty())
