@@ -239,6 +239,12 @@ class CanvasBackendImpl(
         put("version", v.version); put("hash", v.hash); put("note", v.note); put("frozenAt", v.frozenAt)
     }
 
+    /** A frozen version with its OWN publish-relevant shape (Task 12 fix): the dialog prices the version it publishes, not the draft. */
+    private fun versionWithShape(v: CanvasPipelineVersionEntity): JsonObject {
+        val p = PipelineJson.decode(v.json).getOrNull()
+        return JsonObject(versionJson(v) + mapOf("liveShape" to JsonPrimitive(p != null && LiveShape.matches(p)), "interpretable" to interpretableJson(p)))
+    }
+
     private suspend fun liveJson(id: String): JsonElement =
         dao.activePublishes().firstOrNull { it.kind == CanvasPublisher.KIND_PROMPTS && it.pipelineId == id }?.let { buildJsonObject { put("version", it.version) } } ?: JsonNull
 
@@ -275,7 +281,7 @@ class CanvasBackendImpl(
             put("problemsDetailed", JsonArray(detailed.map(::problemJson)))
             put("interpretable", interpretableJson(p))
             put("layout", p?.let { runCatching { PipelineFlows.layoutJson(it) }.getOrNull() } ?: emptyLayout)
-            put("versions", JsonArray(dao.versions(id).map(::versionJson)))
+            put("versions", JsonArray(dao.versions(id).map(::versionWithShape)))
             put("liveShape", p != null && LiveShape.matches(p))
             put("live", liveJson(id))
             put("activePrompts", prompts)
