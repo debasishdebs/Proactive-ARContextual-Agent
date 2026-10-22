@@ -204,6 +204,33 @@ class AnswerService(
         return "id=$citeId · $at · photo" + (imageNo?.let { " · image=$it" } ?: "") + " · $caption"
     }
 
+    /**
+     * The Ask debug view's photo gate (canvas slice 2, S13): the SAME gate and photo search a live Ask uses. [allowed] is the wave 3 gate
+     * ([photosAllowed]: switch, pause, quiet hours, vision on the checked endpoint); [recall] runs the gated search, [AskPhotoPolicy.select] and the live
+     * photo lines. The images load lazily (replay only) and carry the endpoint the gate checked: [com.rokid.context.canvas.AskPhotoRecall.imageEndpointId].
+     * With no such endpoint no image is offered at all (fail closed).
+     */
+    fun askDebugPhotos(): com.rokid.context.canvas.AskDebugPhotos = object : com.rokid.context.canvas.AskDebugPhotos {
+        override suspend fun allowed(): Boolean = photosAllowed()
+        override suspend fun recall(question: String, nowMs: Long): com.rokid.context.canvas.AskPhotoRecall = debugPhotoRecall(question, nowMs)
+    }
+
+    internal suspend fun debugPhotoRecall(question: String, nowMs: Long): com.rokid.context.canvas.AskPhotoRecall {
+        val none = com.rokid.context.canvas.AskPhotoRecall(emptyList(), emptySet(), emptySet())
+        val q = AskText.collapse(question).take(MAX_QUESTION)
+        val recalled = recalledPhotos(q, nowMs) // re-checks the gate before any search
+        if (recalled.isEmpty()) return none
+        val endpoint = try { imageEndpointId() } catch (c: CancellationException) { throw c } catch (_: Exception) { null }
+        val withImage = if (endpoint == null) emptyList() else recalled.filter { it.first.photoStored }.take(MAX_PHOTO_IMAGES)
+        val imageNo = withImage.mapIndexed { i, (_, cite) -> cite to i + 1 }.toMap()
+        val lines = recalled.map { (hit, cite) -> photoLine(hit, cite, imageNo[cite]) }.let { if (imageNo.isEmpty()) it else listOf(IMAGE_NOTE) + it }
+        return com.rokid.context.canvas.AskPhotoRecall(
+            lines, recalled.map { it.second }.toSet(), recalled.map { it.first.frameId }.toSet(), recalled.mapNotNull { it.first.captionMemoryId }.toSet(),
+            images = { withImage.mapNotNull { (hit, _) -> photoImages(listOf(hit.frameId))[hit.frameId] } },
+            imageEndpointId = endpoint.takeIf { withImage.isNotEmpty() },
+        )
+    }
+
     /** Phone/HUD asks: every failure becomes one of the fixed short messages. */
     suspend fun answer(question: String, source: String, nowMs: Long = System.currentTimeMillis()): AskOutcome = try {
         answerOrThrow(question, source, nowMs)
