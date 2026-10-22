@@ -3,22 +3,37 @@ import * as E from './env.js';
 import { eq, ok } from './fixtures.js';
 
 let booted = null;
-const SEEN = { requests: [] };
+const SEEN = { requests: [], aborts: 0 };
 
 async function boot() {
   if (booted) return booted;
   const env = E.setup(['app', 'nav', 'banner']);
   const table = E.routes();
   const api = E.fakeApi(table);
-  globalThis.fetch = async (path, init) => {
-    const headers = (init && init.headers) || {};
-    SEEN.requests.push({ path, auth: headers.Authorization });
+  // a real-looking AbortController, so the app's abort-on-leave path runs
+  globalThis.AbortController = class {
+    constructor() {
+      const listeners = [];
+      this.signal = { aborted: false, addEventListener: (t, f) => listeners.push(f) };
+      this.abort = () => { this.signal.aborted = true; SEEN.aborts++; listeners.forEach((f) => f()); };
+    }
+  };
+  const respond = async (path, init) => {
     try {
       const v = await api(init.method, path, init.body ? JSON.parse(init.body) : undefined);
       return { ok: true, status: 200, json: async () => v, blob: async () => ({}) };
     } catch (e) {
       return { ok: false, status: e.status, json: async () => ({ error: e.code, message: e.message, problems: e.problems }) };
     }
+  };
+  globalThis.fetch = (path, init) => {
+    const headers = (init && init.headers) || {};
+    SEEN.requests.push({ path, auth: headers.Authorization });
+    const run = respond(path, init);
+    const sig = init && init.signal;
+    if (!sig) return run;
+    // honours the abort signal like fetch: rejects with an AbortError the moment the app aborts
+    return new Promise((res, rej) => { sig.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; rej(e); }); run.then(res, rej); });
   };
   globalThis.React = { createElement: () => null };
   globalThis.ReactDOM = { createRoot() { return { render() {}, unmount() {} }; } };
@@ -115,6 +130,22 @@ export const tests = {
     E.click(E.buttons(b.nav, 'Sign out')[0]); await E.settle();
     eq(b.env.confirms, ['Unsaved!']);
     ok(b.root.children.length > 0 && !E.textOf(b.root).includes('Pair this browser'), 'still signed in');
+  },
+  async leavingARunNewViewMidLoadNeverPaintsItsThumbnailsOverTheNextView() {
+    const b = await boot();
+    b.env.confirmAnswer = true; b.app.ctx.guard(() => null);
+    await visit(b, '#/');
+    let release; const gate = new Promise((r) => { release = r; });
+    b.table['GET /api/pipelines'] = async () => { await gate; return []; };
+    globalThis.location.hash = '#/run/new?p=p1&v=1'; await E.settle(200);        // /api/pipelines is in flight
+    const framesBefore = SEEN.requests.filter((r) => r.path.startsWith('/api/frames')).length;
+    const abortsBefore = SEEN.aborts;
+    globalThis.location.hash = '#/asks'; await E.settle(300);
+    ok(SEEN.aborts > abortsBefore, 'leaving aborts the in-flight request');
+    release(); await E.settle(300);
+    eq(SEEN.requests.filter((r) => r.path.startsWith('/api/frames')).length, framesBefore, 'a stale run-new view asked for frames');
+    ok(E.textOf(b.root).includes('Asks') && !E.textOf(b.root).includes('New run'), 'the asks view was repainted by the stale run-new view: ' + E.textOf(b.root).slice(0, 80));
+    b.table['GET /api/pipelines'] = E.routes()['GET /api/pipelines'];
   },
   // LAST: it signs the shared boot out.
   async lateAsksResponseNeverReplacesThePairingScreenAfterSignOut() {
