@@ -50,6 +50,7 @@ data class StatusUi(
                     lastResumeAtMs = lastResumeAtMs,
                     nowMs = nowMs,
                     batterySaver = batterySaver,
+                    glassesNote = s.note,
                 ),
             ),
         )

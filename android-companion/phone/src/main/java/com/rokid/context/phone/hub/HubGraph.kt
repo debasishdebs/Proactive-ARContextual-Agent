@@ -209,6 +209,15 @@ object HubGraph {
             onMark = { m, a -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onMark(m, a) },
             onGlassesListenStart = { t -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
-        ).also { hubRef.set(it) }
+        ).also { hubRef.set(it) }.also { hub ->
+            // Process-lifetime watchdog: it outlives the hub service, so it can also bring a dead service back (ensureRunning is refused harmlessly where Android forbids it).
+            GlassesWatchdog(
+                now = System::currentTimeMillis, enabled = { KeepRunningNearby.of(app).enabled() },
+                captureActive = { hub.activePauses.value.isEmpty() }, hubRunning = { hub.started }, link = { hub.link.state.value },
+                lastHeardAtMs = { hub.lastHeardAtMs }, standingDown = hub::standingDown,
+                startHub = { ContextHubService.ensureRunning(app) }, reconnect = hub::watchdogReconnect, probeAlive = hub::watchdogProbe,
+                relaunch = hub::watchdogRelaunch, publish = hub::setWatchdogNote,
+            ).start(scope)
+        }
     }
 }

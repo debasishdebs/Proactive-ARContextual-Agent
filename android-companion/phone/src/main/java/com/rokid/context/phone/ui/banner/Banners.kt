@@ -51,6 +51,8 @@ data class BannerInputs(
     val nowMs: Long = 0,
     /** G7: Android Battery Saver is on, so asks are paused. */
     val batterySaver: Boolean = false,
+    /** The phone watchdog's line ("Glasses not connected · last heard 7 min ago"); replaces the title of the glasses banner. */
+    val glassesNote: String? = null,
 )
 
 data class BannerSpec(
@@ -72,7 +74,8 @@ object BannerResolver {
     fun candidates(i: BannerInputs): List<BannerSpec> = listOfNotNull(
         i.aiBlockedText?.let { BannerSpec(BannerKind.AI_BLOCKED, BannerTone.CORAL, "AI unavailable · ${short(it)}", "Fix now", BannerAction.FIX_AI) },
         if (i.batterySaver) BannerSpec(BannerKind.BATTERY_SAVER, BannerTone.AMBER, com.rokid.context.orchestration.AskActions.BATTERY_SAVER) else null,
-        when (i.link) {
+        if (i.glassesNote != null && i.link != LinkState.NOT_AUTHORIZED) BannerSpec(BannerKind.GLASSES_DISCONNECTED, BannerTone.SKY, i.glassesNote, "Open on glasses", BannerAction.RECONNECT)
+        else when (i.link) {
             LinkState.OFFLINE -> BannerSpec(BannerKind.GLASSES_DISCONNECTED, BannerTone.SKY, "Glasses disconnected", "Reconnect", BannerAction.RECONNECT)
             LinkState.CLOSED_ON_GLASSES -> BannerSpec(BannerKind.GLASSES_DISCONNECTED, BannerTone.SKY, "Closed on glasses \u00b7 capture stopped", "Open on glasses", BannerAction.RECONNECT)
             LinkState.NOT_AUTHORIZED -> BannerSpec(BannerKind.GLASSES_DISCONNECTED, BannerTone.SKY, "Glasses not authorized", "Reconnect", BannerAction.RECONNECT)

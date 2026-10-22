@@ -20,6 +20,7 @@ data class GlassesStatus(
     val bufferedFrames: Int,
     val lastFrameAtMs: Long?,
     val frame: StateFrame?,        // last StateFrame the phone broadcast (phone is source of truth)
+    val note: String? = null,      // the phone watchdog's status line, shown in the disconnect banner
 )
 
 interface GlassesStatusSource {
