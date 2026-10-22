@@ -89,6 +89,8 @@ interface KeyframeDiagnostics {
     suspend fun promptIsCurrent(): Boolean
     /** False when the stored CLUSTER_SUMMARY prompt lacks `cluster_id` / `source_frame_ids` (then one cluster per call). */
     suspend fun clusterPromptIsCurrent(): Boolean = true
+    /** The active canvas interpreter publish (null: none), count-only. */
+    suspend fun livePipeline(): LivePipelineInfo? = null
     /** Puts every FAILED_FINAL frame back to PENDING; returns how many. */
     suspend fun retryAllFinal(): Int
 
@@ -108,6 +110,9 @@ data class RetentionCounters(
     val describeWaiting: Int = 0, val describeFailed: Int = 0,
 )
 
+/** The active interpreter publish for the "Live pipeline" line: [live] false is Shadow. */
+data class LivePipelineInfo(val name: String, val version: Int, val live: Boolean, val fallbacks: Int, val interpreted: Int)
+
 /** The Keyframes block of Diagnostics: the stats plus the loaded extras. */
 data class KeyframeRows(
     val stats: KeyframeStats = KeyframeStats(),
@@ -116,6 +121,7 @@ data class KeyframeRows(
     val retention: RetentionCounters = RetentionCounters(),
     val promptCurrent: Boolean = true,
     val clusterPromptCurrent: Boolean = true,
+    val livePipeline: LivePipelineInfo? = null,
 )
 
 data class DiagnosticsUiState(val busy: Boolean = false, val message: String? = null)
@@ -143,7 +149,7 @@ class DiagnosticsViewModel(
     private fun refreshKeyframes() {
         viewModelScope.launch {
             val loaded = try {
-                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), retention = keyframes.retentionCounters(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent()) }
+                withContext(Dispatchers.IO) { KeyframeRows(droppedNudges = keyframes.droppedNudges(), sidecarLost = keyframes.sidecarLost(), retention = keyframes.retentionCounters(), promptCurrent = keyframes.promptIsCurrent(), clusterPromptCurrent = keyframes.clusterPromptIsCurrent(), livePipeline = keyframes.livePipeline()) }
             } catch (c: CancellationException) { throw c } catch (e: Exception) { Log.i(TAG, "keyframe extras failed (${e.javaClass.simpleName})"); return@launch }
             extras.value = loaded
         }
@@ -320,11 +326,13 @@ object KeyframeLines {
         val st = k.stats
         val states = (ORDER + (st.counts.keys - ORDER.toSet()).sorted()).filter { (st.counts[it] ?: 0) > 0 }
             .joinToString(" \u00b7 ") { "$it ${st.counts[it]}" }.ifEmpty { "none" }
-        val named = listOf(CallClass.USER, CallClass.EXTRACT, CallClass.NUDGE)
+        val named = listOf(CallClass.USER, CallClass.EXTRACT, CallClass.NUDGE, CallClass.EXPERIMENT)
         val other = st.callsPerHour.filterKeys { it !in named }.values.sum() // OTHER, CAPTION_QUEUE, BACKFILL
         val calls = named.joinToString(" \u00b7 ") { "${it.name} ${st.callsPerHour[it] ?: 0}" } + " \u00b7 OTHER $other"
         val dropped = k.droppedNudges.entries.sortedBy { it.key }.joinToString(" \u00b7 ") { "${it.key} ${it.value}" }.ifEmpty { "none" }
-        return listOf(
+        val live = k.livePipeline?.let { Line("kf_live_pipeline", "Live pipeline: ${it.name} v${it.version} \u00b7 ${if (it.live) "Live" else "Shadow"} \u00b7 ${it.fallbacks}/${it.interpreted} fell back") }
+        return listOfNotNull(
+            live,
             Line("kf_backlog", "Backlog ${st.backlog} \u2014 $states"),
             Line("kf_rate", "Keyframes per hour: ${st.keyframesPerHour}"),
             Line("kf_shed", "Skipped to keep up: ${st.shed}"),

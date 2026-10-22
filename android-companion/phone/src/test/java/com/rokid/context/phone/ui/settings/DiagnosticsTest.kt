@@ -67,6 +67,26 @@ class DiagnosticsTest {
         compose.onNodeWithTag("kf_sidecar").assertTextContains("4", substring = true)
     }
 
+    @Test fun livePipelineLineShown() {
+        show(KeyframeRows(stats, livePipeline = LivePipelineInfo("Intent, then extract", 3, live = true, fallbacks = 2, interpreted = 40)))
+        compose.onNodeWithTag("kf_live_pipeline").assertTextContains("Live pipeline: Intent, then extract v3 \u00b7 Live \u00b7 2/40 fell back")
+    }
+
+    @Test fun shadowPipelineLineSaysShadow() {
+        show(KeyframeRows(stats, livePipeline = LivePipelineInfo("P", 1, live = false, fallbacks = 0, interpreted = 0)))
+        compose.onNodeWithTag("kf_live_pipeline").assertTextContains("Live pipeline: P v1 \u00b7 Shadow \u00b7 0/0 fell back")
+    }
+
+    @Test fun noLivePipelineLineWithoutAnInterpreterPublish() {
+        show(KeyframeRows(stats))
+        compose.onNodeWithTag("kf_live_pipeline").assertDoesNotExist()
+    }
+
+    @Test fun experimentNamedInCallsLine() {
+        show(KeyframeRows(stats.copy(callsPerHour = mapOf(CallClass.EXPERIMENT to 5, CallClass.BACKFILL to 2))))
+        compose.onNodeWithTag("kf_calls").assertTextContains("EXPERIMENT 5", substring = true).assertTextContains("OTHER 2", substring = true)
+    }
+
     @Test fun showsRetentionCounters() {
         show(KeyframeRows(stats, retention = RetentionCounters(skippedDeleted = 12, describedBeforeDelete = 5, deletedUndescribed = 0, describeWaiting = 7, describeFailed = 2)))
         compose.onNodeWithTag("kf_retention").assertTextContains("skipped 12", substring = true).assertTextContains("described first 5", substring = true).assertTextContains("undescribed 0", substring = true).assertTextContains("waiting 7", substring = true).assertTextContains("describeFailed 2", substring = true)
