@@ -140,7 +140,7 @@ class ChunkCodecTest {
     }
 
     @Test fun timeMustNotGoBackwards() {
-        val g = TraceFixtures.goldenPayload.replace("""["fl",2700,"window"]""", """["fl",2599,"window"]""")
+        val g = TraceFixtures.goldenPayload.replace("""["fl",2700,"window",2698]""", """["fl",2599,"window",2698]""")
         assertEquals("not_monotonic", fail(decodeText(g)))
         assertFailsWith<TraceFormatException> { ChunkCodec.encode(id, 0, listOf(TraceEvent.PreRollEnd(5), TraceEvent.PreRollEnd(4))) }
         assertTrue(ChunkCodec.encode(id, 0, listOf(TraceEvent.PreRollEnd(5), TraceEvent.PreRollEnd(5))).eventCount == 2)  // equal times are fine

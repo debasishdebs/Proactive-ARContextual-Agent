@@ -99,16 +99,56 @@ object TraceFiles {
 }
 
 /**
- * Replay equality rule for Task 20 (I3). What the recorded data supports: the gate is replayed EXACTLY (`sc.nowMs`, `sc.cap/hard`, `pf` context cap, the
- * snapshot): every `gt` outcome and reason must be equal, and `gt.encoded` says whether the session's keyframe bookkeeping advanced. Camera opens depend on the
- * session tick clock, which is not recorded (only the append time of the `ep` open is): a replayed open MATCHES a recorded one when the cause is equal and
- * the open times differ by at most [OPEN_TOLERANCE_MS] (max of the 250 ms session tick and the append lag). Opens with no counterpart either way are mismatches.
+ * Replay equality rule for Task 20 (controller ruling: replay is APPROXIMATE, not bitwise-exact).
+ *
+ * - The gate is replayed from fully recorded inputs: `sc.nowMs`, `sc.cap/hard`, `fl.nowMs` (the flush decision time), `pf` context cap, the snapshot. Every `gt`
+ *   (seq, outcome, reason, `encoded`, `keptAtMs`) must then be EQUAL ([gatesMatch]).
+ * - Camera opens depend on the session tick clock (not recorded): a replayed open matches a recorded one when the cause is equal and the times differ by at
+ *   most [OPEN_TOLERANCE_MS] ([opensMatch]).
+ * - Not recorded, by decision: consumed `captureNow()` requests, the lifetime of a request waiting behind a bind back-off, and when the asynchronous
+ *   onset/dwell collectors ran or which transient StateFlow states a tick observed. A window of the trace that involves any of them is INEXACT
+ *   ([Exactness.classify]): the replay result model carries an `exact` flag (it is NOT on the wire), inexact windows are excluded from pass/fail and COUNTED
+ *   ([ReplayTally]).
  */
 object ReplayRule {
     const val OPEN_TOLERANCE_MS = 250L
     fun opensMatch(recordedAtMs: Long, recordedCause: EpisodeCause, replayedAtMs: Long, replayedCause: EpisodeCause): Boolean =
         recordedCause == replayedCause && Math.abs(recordedAtMs - replayedAtMs) <= OPEN_TOLERANCE_MS
-    fun gatesMatch(a: TraceEvent.Gate, b: TraceEvent.Gate): Boolean = a.seq == b.seq && a.outcome == b.outcome && a.reason == b.reason && a.encoded == b.encoded
+    fun gatesMatch(a: TraceEvent.Gate, b: TraceEvent.Gate): Boolean =
+        a.seq == b.seq && a.outcome == b.outcome && a.reason == b.reason && a.encoded == b.encoded && a.keptAtMs == b.keptAtMs
+}
+
+/** Why a replay window cannot be compared exactly. */
+enum class Inexact { CAPTURE_NOW, BIND_FAILURE, ASYNC_CALLBACK }
+
+object Exactness {
+    /**
+     * The reasons a window (its events, and the snapshot when the window starts the trace) is inexact: a `captureNow` request (an `ep` open with cause `now`, or an
+     * `sc` with `force`), a bind failure or back-off (an `ep` close with outcome busy, bind, cold or open_failed, or snapshot `bindBackoffUntil`/`bindFailures`), or an
+     * episode that depends on an async collector callback (an `ep` open with cause `dwell` or `onset`). Empty = exact.
+     */
+    fun classify(events: List<TraceEvent>, snapshot: StartSnapshot? = null): Set<Inexact> {
+        val r = LinkedHashSet<Inexact>()
+        if (snapshot != null && (snapshot.bindFailures > 0 || snapshot.bindBackoffUntil != null)) r += Inexact.BIND_FAILURE
+        for (e in events) when (e) {
+            is TraceEvent.Episode -> {
+                if (e.open && e.cause == EpisodeCause.NOW) r += Inexact.CAPTURE_NOW
+                if (e.open && (e.cause == EpisodeCause.DWELL || e.cause == EpisodeCause.ONSET)) r += Inexact.ASYNC_CALLBACK
+                if (!e.open && e.outcome in setOf(EpisodeOutcome.BUSY, EpisodeOutcome.BIND, EpisodeOutcome.COLD, EpisodeOutcome.OPEN_FAILED)) r += Inexact.BIND_FAILURE
+            }
+            is TraceEvent.Score -> if (e.force) r += Inexact.CAPTURE_NOW
+            else -> Unit
+        }
+        return r
+    }
+}
+
+/** The replay verdict counts: windows that passed, failed, and were inexact (excluded from pass/fail). */
+class ReplayTally {
+    var passed = 0; private set
+    var failed = 0; private set
+    var inexact = 0; private set
+    fun record(reasons: Set<Inexact>, matches: Boolean) { if (reasons.isNotEmpty()) inexact++ else if (matches) passed++ else failed++ }
 }
 
 /**
@@ -127,7 +167,7 @@ object SchedulerInputs {
         "session.startups" to "snapshot.startups", "session.openedAt" to "ep.openedAtMs", "session.firstFrameAt" to "ep.firstFrameAtMs",
         "session.episodeOutcome" to "ep.outcome", "session.lastKeyframeAt" to "snapshot.lastKeyframeAt", "session.keptAt" to "snapshot.keptAt",
         "session.pose" to "snapshot.pose", "session.lastPhotoAttemptAtMs" to "snapshot.lastPhotoAttemptAtMs", "session.cause" to "ep.cause",
-        "gate.cap" to "sc.cap", "gate.hard" to "sc.hard", "gate.nowMs" to "sc.nowMs", "dwell.ctxCap" to "pf.ctxCap", "dwell.hard" to "pf.hard", "session.keepEncoded" to "gt.encoded", "session.captureNow" to "ep.cause", "gate.force" to "sc.force", "gate.dwellArmed" to "sc.dwellArmed", "gate.motion" to "sc.motion",
+        "gate.flushNow" to "fl.nowMs", "session.keptAtMs" to "gt.keptAtMs", "session.bindFailures" to "snapshot.bindFailures", "classifier.prevGyroMs" to "snapshot.prevGyroMs", "gate.cap" to "sc.cap", "gate.hard" to "sc.hard", "gate.nowMs" to "sc.nowMs", "dwell.ctxCap" to "pf.ctxCap", "dwell.hard" to "pf.hard", "session.keepEncoded" to "gt.encoded", "session.captureNow" to "ep.cause", "gate.force" to "sc.force", "gate.dwellArmed" to "sc.dwellArmed", "gate.motion" to "sc.motion",
         "gate.lastKeptAt" to "snapshot.gateLastKeptAt", "gate.keptTimes" to "snapshot.gateKeptAt", "gate.ring" to "snapshot.ring", "gate.params" to "gp.hamming",
         "gate.scoreHashes" to "sc.d",
     )

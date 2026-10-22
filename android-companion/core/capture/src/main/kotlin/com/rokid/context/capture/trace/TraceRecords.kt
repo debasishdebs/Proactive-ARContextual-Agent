@@ -154,12 +154,16 @@ sealed interface TraceEvent {
     /**
      * `gt`: what the gate decided for [seq]: KEEP (reason "") or SKIP (reason one of [GATE_SKIP_REASONS]). The recorder appends it AFTER the encode attempt:
      * [encoded] is false only for a KEEP whose JPEG encode failed (the gate recorded the keep but the session's `lastKeyframeAt`/`keptAt` were NOT updated);
-     * it is true for every other event.
+     * it is true for every other event. [keptAtMs] is the session bookkeeping time of a successful keep (`SamplingSession.emit`: `lastKeyframeAt = now`,
+     * `keptAt.addLast(now)` and `motion.markPose()` all at this one instant, which is the frame-entry time or, for a flushed winner, the episode-end time):
+     * non-null exactly when the outcome is KEEP and [encoded]. It drives the glance-admission keep count and the pose-reset instant (novelty).
      */
-    data class Gate(override val tMs: Long, val seq: Long, val outcome: GateOutcome, val reason: String, val encoded: Boolean = true) : TraceEvent {
+    data class Gate(override val tMs: Long, val seq: Long, val outcome: GateOutcome, val reason: String, val encoded: Boolean = true, val keptAtMs: Long? = null) : TraceEvent {
         init {
             ms(tMs, "tMs"); ms(seq, "seq"); token(reason, "reason")
             require(encoded || outcome == GateOutcome.KEEP) { "only a keep can fail to encode" }
+            keptAtMs?.let { ms(it, "keptAtMs") }
+            require((keptAtMs != null) == (outcome == GateOutcome.KEEP && encoded)) { "keptAtMs is set exactly for an encoded keep" }
             when (outcome) {
                 GateOutcome.KEEP -> require(reason.isEmpty()) { "a keep has no reason" }
                 GateOutcome.SKIP -> require(reason in GATE_SKIP_REASONS) { "unknown skip reason" }
@@ -167,8 +171,11 @@ sealed interface TraceEvent {
         }
     }
 
-    /** `fl`: the gate window was flushed ([reason] is a token such as `window`, `timer`, `stop`). */
-    data class Flush(override val tMs: Long, val reason: String) : TraceEvent { init { ms(tMs, "tMs"); token(reason, "reason") } }
+    /**
+     * `fl`: the gate window was flushed ([reason] is a token such as `window`, `timer`, `stop`). [nowMs] is the clock `KeyframeGate.flushWindow()` itself read
+     * (`clock()`), the decision time replay must pass to the gate: the append time [tMs] can be later and would flip a throttle boundary.
+     */
+    data class Flush(override val tMs: Long, val reason: String, val nowMs: Long = tMs) : TraceEvent { init { ms(tMs, "tMs"); token(reason, "reason"); ms(nowMs, "nowMs") } }
 
     /** `bo`: the still-scene back-off step changed. */
     data class Backoff(override val tMs: Long, val stillStep: Int) : TraceEvent { init { ms(tMs, "tMs"); require(stillStep in 0..32) { "stillStep" } } }
@@ -263,6 +270,10 @@ data class StartSnapshot(
     /** `bindBackoffUntil`, or null when none is pending. */
     val bindBackoffUntil: Long?,
     val coldStartGrace: Boolean,
+    /** `bindFailures` (consecutive; the session latches the Fixed fallback at its limit), 0..[MAX_BIND_FAILURES]. */
+    val bindFailures: Int,
+    /** The classifier's previous gyro sensor time (`lastGyroMs`, the `dt` source for the first sample after the start), or null before any. */
+    val prevGyroMs: Long?,
     /** The brief-lead ring, oldest first, at most [MAX_STARTUPS]. */
     val startups: List<Long>,
     val pose: PoseSnapshot,
@@ -294,6 +305,8 @@ data class StartSnapshot(
         require(stillStep in 0..32) { "stillStep" }
         require(darkStreak in 0..MAX_DARK_STREAK) { "darkStreak" }
         bindBackoffUntil?.let { ms(it, "bindBackoffUntil") }
+        require(bindFailures in 0..MAX_BIND_FAILURES) { "bindFailures" }
+        prevGyroMs?.let { ms(it, "prevGyroMs") }
         require(startups.size <= MAX_STARTUPS) { "startups too long" }
         startups.forEach { ms(it, "startups") }
         lastPhotoAttemptAtMs?.let { ms(it, "lastPhotoAttemptAtMs") }
@@ -305,7 +318,7 @@ data class StartSnapshot(
         require(exact == (sampleEvery == 1)) { "exact must equal sampleEvery == 1" }
     }
 
-    companion object { const val MAX_RING = 5; const val MAX_KEPT = 64; const val MAX_STARTUPS = 20; const val MAX_SAMPLE_EVERY = 16 }
+    companion object { const val MAX_RING = 5; const val MAX_KEPT = 64; const val MAX_STARTUPS = 20; const val MAX_BIND_FAILURES = 100; const val MAX_SAMPLE_EVERY = 16 }
 }
 
 /**
@@ -324,7 +337,7 @@ object EventCodec {
         "gp" to listOf("hamming", "bigChange", "ringAll"), "pl" to listOf("gen", "configHash", "mode"),
         "ep" to listOf("open", "cause", "firstFrameAtMs", "openedAtMs", "outcome"),
         "sc" to listOf("seq", "d", "p", "blur", "passedBlur", "motion", "dwellArmed", "force", "cap", "hard", "nowMs"),
-        "gt" to listOf("seq", "outcome", "reason", "encoded"), "fl" to listOf("reason"), "bo" to listOf("stillStep"), "bl" to listOf("reason"),
+        "gt" to listOf("seq", "outcome", "reason", "encoded", "keptAtMs"), "fl" to listOf("reason", "nowMs"), "bo" to listOf("stillStep"), "bl" to listOf("reason"),
         "dk" to listOf("streak"), "pr" to emptyList(), "cl" to listOf("reason"),
     )
 
@@ -365,8 +378,8 @@ object EventCodec {
             is TraceEvent.Score -> {
                 head("sc"); num(e.seq); hex(e.d); hex(e.p); bits(e.blur); flag(e.passedBlur); str(e.motion.name); flag(e.dwellArmed); flag(e.force); nul(e.cap?.toLong()); flag(e.hard); num(e.nowMs)
             }
-            is TraceEvent.Gate -> { head("gt"); num(e.seq); str(e.outcome.name.lowercase()); str(e.reason); flag(e.encoded) }
-            is TraceEvent.Flush -> { head("fl"); str(e.reason) }
+            is TraceEvent.Gate -> { head("gt"); num(e.seq); str(e.outcome.name.lowercase()); str(e.reason); flag(e.encoded); nul(e.keptAtMs) }
+            is TraceEvent.Flush -> { head("fl"); str(e.reason); num(e.nowMs) }
             is TraceEvent.Backoff -> { head("bo"); num(e.stillStep.toLong()) }
             is TraceEvent.Blocked -> { head("bl"); if (e.reason == null) sb.append(",null") else str(e.reason) }
             is TraceEvent.DarkStreak -> { head("dk"); num(e.streak.toLong()) }
@@ -412,8 +425,8 @@ object EventCodec {
             "pl" -> TraceEvent.Plan(t, long(), str(), en(PlanMode.values()))
             "ep" -> TraceEvent.Episode(t, bool(), en(EpisodeCause.values(), lower = true), longOrNull(), longOrNull(), enOrNull(EpisodeOutcome.values()))
             "sc" -> TraceEvent.Score(t, long(), hex(), hex(), float(), bool(), en(MotionState.values()), bool(), bool(), longOrNull()?.also { if (it !in 0..100_000) bad() }?.toInt(), bool(), long())
-            "gt" -> TraceEvent.Gate(t, long(), en(GateOutcome.values(), lower = true), str(), bool())
-            "fl" -> TraceEvent.Flush(t, str())
+            "gt" -> TraceEvent.Gate(t, long(), en(GateOutcome.values(), lower = true), str(), bool(), longOrNull())
+            "fl" -> TraceEvent.Flush(t, str(), long())
             "bo" -> TraceEvent.Backoff(t, int())
             "bl" -> TraceEvent.Blocked(t, strOrNull())
             "dk" -> TraceEvent.DarkStreak(t, int())
