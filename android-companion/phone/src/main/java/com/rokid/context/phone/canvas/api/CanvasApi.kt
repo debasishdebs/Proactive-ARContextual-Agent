@@ -26,6 +26,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 
+/** A group of routes added to [CanvasApi]: null = the path is not this group's. */
+fun interface ApiExtra { suspend fun handle(req: HttpRequest): HttpResponse? }
+
 /**
  * The canvas JSON API (spec section 8). Auth, Host/Origin policy, body size and logging are the router's; this class only maps
  * routes to [CanvasBackend] calls and results to statuses. Messages are fixed texts: no input and no exception text is echoed.
@@ -38,6 +41,8 @@ class CanvasApi(
     /** The phone's zone: the day filter of `GET /api/frames?day=` is that day's local midnight to the next. */
     private val zone: () -> java.time.ZoneId = java.time.ZoneId::systemDefault,
     private val mutationDeadlineMs: Long = MUTATION_DEADLINE_MS,
+    /** Slice 3a route groups (traces and collect, replays, plans), asked before the built-in routes; one that does not own the path answers null. */
+    private val extras: List<ApiExtra> = emptyList(),
 ) : ApiHandler {
     private class ApiError(val status: Int, val code: String, val msg: String, val problems: List<String> = emptyList()) : Exception(code)
 
@@ -45,7 +50,7 @@ class CanvasApi(
         private val ID = Regex("^[A-Za-z0-9:_-]{1,64}$")
         private val FROM = Regex("^[A-Za-z0-9:_-]{1,64}(@[0-9]{1,6})?$")
         private val VERSION = Regex("^[0-9]{1,6}$")
-        private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt")
+        private val READ_ONLY_POSTS = setOf("/api/validate", "/api/runs/estimate", "/api/runs/estimate-ab", "/api/check-prompt", "/api/plans/compile")
         private val DAY = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
         const val DEFAULT_LIMIT = 60
         const val MAX_LIMIT = 120
@@ -93,6 +98,7 @@ class CanvasApi(
     private suspend fun dispatch(req: HttpRequest): HttpResponse {
         val s = req.path.removePrefix("/api").split('/').filter { it.isNotEmpty() }
         val m = req.method.uppercase()
+        for (x in extras) x.handle(req)?.let { return it }
         val key = templateOf(s) ?: throw ApiError(404, "not_found", "Not found.")
         return when ("$m $key") {
             "GET session" -> json(backend.session(token(req)))
