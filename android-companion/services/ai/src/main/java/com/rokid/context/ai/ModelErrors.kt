@@ -14,6 +14,8 @@ class ModelCallException(
     val retryable: Boolean,
     cause: Throwable? = null,
     val kind: FailureKind = if (retryable) FailureKind.TRANSIENT else FailureKind.REJECTED,
+    /** The provider replies the failed call consumed (every rejected attempt), for usage accounting. Empty when unknown. Never read for text. */
+    val replies: List<RoutedReply> = emptyList(),
 ) : RuntimeException(message, cause)
 
 /** A non-2xx reply. Never user-facing (UI maps by [code]); the message keeps "<provider> request failed: <code> <body>" for Diagnostics logs only (the router redacts it). */

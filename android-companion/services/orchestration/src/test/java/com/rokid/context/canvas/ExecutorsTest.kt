@@ -5,6 +5,11 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Endpoint
+import com.rokid.context.ai.InMemoryKeyVault
+import com.rokid.context.ai.InMemorySeedState
+import com.rokid.context.ai.ProviderBuilder
+import com.rokid.context.model.ModelProvider
+import com.rokid.context.model.ModelReply
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoutedReply
 import com.rokid.context.ai.canvas.NodeTypes
@@ -311,5 +316,46 @@ class ExecutorsTest {
         assertEquals(3, exec(NodeTypes.VISION_EXTRACT).chunkSize(extractNode(3)))
         assertNull(Executors.all()[NodeTypes.INPUT_PHOTOS])
         assertEquals(6, Executors.all().size)
+    }
+
+    // ---- usage (S32): tokens and calls sit on the one row that owns each provider call ----
+
+    private var providerCalls = 0
+    private fun tokenCtx(reply: (String) -> String): RunContext {
+        providerCalls = 0
+        val ai = AiGraph(MemoryGraph.get(app), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { _, _, _ ->
+            object : ModelProvider {
+                override suspend fun generate(prompt: String) = error("unused")
+                override suspend fun complete(request: ModelRequest): ModelReply { val n = ++providerCalls; return ModelReply(reply(request.prompt), 100 + n, 10 + n) }
+            }
+        }).also { AiGraph.resetForTests(it); TestAi.bindAll(it) }
+        return RunContext("run1", ai.runner, ai.router, ai.prompts, ai.persona, { r -> ai.bindings.get(r) })
+    }
+
+    @Test fun extractRecordsTokensAndModel() = runBlocking<Unit> {
+        val c = tokenCtx { extractReply(*sentIds(it).toTypedArray()) }
+        val r = exec(NodeTypes.VISION_EXTRACT).run(extractNode(3), listOf(item("ex1"), item("ex2"), item("ex3")), c)
+        assertEquals(1, providerCalls)
+        val owner = r[0].meta!!
+        assertEquals(101, owner.promptTokens); assertEquals(11, owner.completionTokens); assertEquals("gpt", owner.model); assertEquals(1, owner.calls)
+        listOf(r[1], r[2]).forEach { assertNull(it.meta!!.promptTokens); assertNull(it.meta!!.completionTokens); assertNull(it.meta!!.model); assertNull(it.meta!!.calls) }
+        assertEquals(1, r.sumOf { it.calls })
+    }
+
+    @Test fun extractFailureStillCountsTheCallAndKeepsNoTokens() = runBlocking<Unit> {
+        val c = tokenCtx { "garbage" }
+        val r = exec(NodeTypes.VISION_EXTRACT).run(extractNode(1), listOf(item("ex1")), c).single()
+        assertTrue(r.error != null)
+        assertEquals(2, r.meta!!.calls)       // the runner's rejected attempt and its retry
+        assertEquals(101 + 102, r.meta!!.promptTokens)
+    }
+
+    @Test fun criticAndPromptRecordTokensAndCalls() = runBlocking<Unit> {
+        val c = tokenCtx { """{"verdict":"pass","reasons":[]}""" }
+        val cr = exec(NodeTypes.CRITIC).run(node(NodeTypes.CRITIC), listOf(item("a", extraction("a"))), c).single()
+        assertEquals(1, cr.meta!!.calls); assertEquals(101, cr.meta!!.promptTokens); assertEquals("gpt", cr.meta!!.model)
+        val c2 = tokenCtx { """{"activity":"workout"}""" }
+        val pr = exec(NodeTypes.PROMPT).run(promptNode(), listOf(item("ex1")), c2).single()
+        assertEquals(1, pr.meta!!.calls); assertEquals(101, pr.meta!!.promptTokens); assertEquals(11, pr.meta!!.completionTokens)
     }
 }

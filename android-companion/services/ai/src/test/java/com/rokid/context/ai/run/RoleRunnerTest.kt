@@ -92,6 +92,27 @@ class RoleRunnerTest {
         assertEquals(FailureKind.INVALID_OUTPUT, e.kind); assertTrue(e.retryable)
     }
 
+    @Test fun resultListsEveryAttemptsReply() = runBlocking {
+        replies += "Sorry, I can't format that."
+        replies += """{"answer":"In the fridge","sources":["m1"]}"""
+        val r = ai.runner.run(call)
+        assertEquals(2, r.replies.size)
+        assertEquals(listOf(10, 10), r.replies.map { it.promptTokens })
+        assertTrue(r.replies.last() === r.reply)
+    }
+
+    @Test fun singleAttemptHasOneReply() = runBlocking {
+        replies += """{"answer":"In the fridge","sources":["m1"]}"""
+        assertEquals(1, ai.runner.run(call).replies.size)
+    }
+
+    @Test fun failureCarriesBothAttemptsReplies() = runBlocking {
+        replies += """{"answer":"x","sources":["nope"]}"""; replies += """{"answer":"x","sources":["nope"]}"""
+        val e = runCatching { ai.runner.run(call) }.exceptionOrNull() as ModelCallException
+        assertEquals(2, e.replies.size)
+        assertEquals(listOf(2, 2), e.replies.map { it.completionTokens })
+    }
+
     @Test fun endpointWithoutJsonSchemaGetsTheSchemaAsInstructions() = runBlocking {
         bind(setOf(Capability.CHAT))
         replies += """{"answer":"ok","sources":[]}"""

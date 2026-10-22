@@ -31,6 +31,8 @@ abstract class CanvasDao {
     @Query("SELECT * FROM canvas_run ORDER BY startedAt DESC LIMIT :limit") abstract suspend fun runs(limit: Int): List<CanvasRunEntity>
     @Query("SELECT * FROM canvas_run ORDER BY startedAt DESC LIMIT :limit") abstract fun observeRuns(limit: Int): Flow<List<CanvasRunEntity>>
     @Query("UPDATE canvas_run SET status = 'INTERRUPTED', finishedAt = :now WHERE status = 'RUNNING'") abstract suspend fun interruptRunning(now: Long): Int
+    /** S31 recovery: the QUEUED and RUNNING rows of an A/B group are CANCELLED (B must never start after a restart). Returns the rows changed. */
+    @Query("UPDATE canvas_run SET status = 'CANCELLED', finishedAt = :now WHERE abGroup IS NOT NULL AND status IN ('RUNNING', 'QUEUED')") abstract suspend fun cancelOpenGroupRuns(now: Long): Int
 
     @Transaction open suspend fun deleteRun(id: String) { deleteItems(id); deleteScores(id); deleteRunRow(id) }
 
@@ -98,8 +100,11 @@ abstract class CanvasDao {
     // --- A/B groups, asks, token means ---
     @Query("SELECT * FROM canvas_run WHERE abGroup = :group ORDER BY startedAt, runId") abstract suspend fun runsInGroup(group: String): List<CanvasRunEntity>
     @Query("SELECT * FROM ask ORDER BY ts DESC LIMIT :limit") abstract suspend fun recentAsks(limit: Int): List<AskEntity>
-    /** Mean tokens over the last [limit] OK items whose nodeId is in [nodeIds] (the caller passes the ids of same-type nodes). */
-    @Query("SELECT AVG(promptTokens) AS p, AVG(completionTokens) AS c, COUNT(*) AS n FROM (SELECT promptTokens, completionTokens FROM canvas_run_item WHERE nodeId IN (:nodeIds) AND status = 'OK' AND promptTokens IS NOT NULL ORDER BY rowid DESC LIMIT :limit)")
+    /**
+     * Mean tokens per provider CALL (S32): sum of tokens / sum of calls over the last [limit] OK owner rows (rows that recorded both tokens and a call count)
+     * whose nodeId is in [nodeIds]. A batch-mate row has neither, so a three-photo call counts once. [TokenMeans.n] is the number of owner rows.
+     */
+    @Query("SELECT CAST(SUM(promptTokens) AS REAL) / SUM(calls) AS p, CAST(SUM(completionTokens) AS REAL) / SUM(calls) AS c, COUNT(*) AS n FROM (SELECT promptTokens, completionTokens, calls FROM canvas_run_item WHERE nodeId IN (:nodeIds) AND status = 'OK' AND promptTokens IS NOT NULL AND calls IS NOT NULL AND calls > 0 ORDER BY rowid DESC LIMIT :limit)")
     abstract suspend fun tokenMeans(nodeIds: List<String>, limit: Int): TokenMeans
 
     // --- frames for the picker (read-only joins over existing tables) ---

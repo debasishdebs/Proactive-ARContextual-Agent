@@ -26,7 +26,14 @@ import kotlinx.serialization.json.jsonObject
 /** One photo of a VISION_EXTRACT call: its [frameId] labels the image in the prompt, [description] is the metadata line. */
 data class ExtractPhoto(val frameId: String, val description: String, val image: ModelImageInput)
 
-data class ExtractedBatch(val output: ExtractOutput, val promptVersion: Int)
+/** One provider attempt of an extraction: its tokens (null when the provider did not say), model and latency. */
+data class CallUsage(val promptTokens: Int?, val completionTokens: Int?, val model: String?, val latencyMs: Long)
+
+/**
+ * [attempts]: one entry per provider attempt behind this output, rejected-output retries and single-photo fallback calls included (S32).
+ * Empty by default (unknown), so every existing construction is unchanged.
+ */
+data class ExtractedBatch(val output: ExtractOutput, val promptVersion: Int, val attempts: List<CallUsage> = emptyList())
 
 /** A memory [ExtractSave.saveExtraction] wrote: [index] is the position in the (blank-filtered) facts, or null for a caption. */
 data class SavedMemory(val memoryId: String, val frameIds: List<String>, val index: Int?)
@@ -76,17 +83,19 @@ object ExtractSave {
             if (override != null) (override.outputSchema ?: DefaultSchemas.text(PromptKey.VISION_EXTRACT)) else runner.activeSchema(PromptKey.VISION_EXTRACT),
         )
         val parts = mutableListOf<ExtractedBatch>()
+        val attempts = mutableListOf<CallUsage>() // chronological: rejected batch calls, then their single-photo fallbacks (S32)
         for (chunk in if (current) photos.chunked(MAX_BATCH) else photos.map { listOf(it) }) {
             if (chunk.size > 1) {
                 try {
-                    parts += call(runner, chunk, callClass, override, contextSources); continue
+                    parts += call(runner, chunk, callClass, override, contextSources).also { attempts += it.attempts }; continue
                 } catch (e: ModelCallException) {
                     if (e.kind != FailureKind.INVALID_OUTPUT) throw e
+                    attempts += usageOf(e.replies)
                     Log.i(TAG, "batch of ${chunk.size} rejected as INVALID_OUTPUT; retrying one photo per call")
                 }
             }
             chunk.forEach { p ->
-                val r = call(runner, listOf(p), callClass, override, contextSources)
+                val r = call(runner, listOf(p), callClass, override, contextSources).also { attempts += it.attempts }
                 // Legacy reply (no source_frame_ids): the one photo sent is trivially the provenance.
                 parts += if (r.output.provenance) r else r.copy(output = r.output.copy(facts = r.output.facts.map {
                     if (it.sourceFrameIds.isEmpty()) it.copy(sourceFrameIds = listOf(p.frameId)) else it
@@ -96,8 +105,11 @@ object ExtractSave {
         return ExtractedBatch(
             ExtractOutput(parts.flatMap { it.output.facts }, captions = parts.flatMap { it.output.captions }, provenance = current),
             parts.last().promptVersion,
+            attempts.toList(),
         )
     }
+
+    private fun usageOf(replies: List<com.rokid.context.ai.RoutedReply>) = replies.map { CallUsage(it.promptTokens, it.completionTokens, it.model, it.latencyMs) }
 
     private suspend fun call(runner: RoleRunner, photos: List<ExtractPhoto>, callClass: CallClass, override: PromptDraft?, contextSources: String): ExtractedBatch {
         val lines = photos.map { "frame_id: ${it.frameId} - ${it.description}" }
@@ -105,7 +117,7 @@ object ExtractSave {
             RoleCall(PromptKey.VISION_EXTRACT, PromptVars(recentContext = PromptComposer.dataBlock("frames", lines), contextSources = contextSources),
                 images = photos.map { it.image }, inputIds = photos.map { it.frameId }.toSet(), fromFrames = true, callClass = callClass, override = override),
         )
-        return ExtractedBatch(r.output as ExtractOutput, r.promptVersion)
+        return ExtractedBatch(r.output as ExtractOutput, r.promptVersion, usageOf(r.replies))
     }
 
     /**

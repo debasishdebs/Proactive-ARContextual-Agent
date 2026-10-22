@@ -42,7 +42,8 @@ data class RoleCall(
         }
 }
 
-data class RoleResult(val output: ContractOutput, val raw: String, val reply: RoutedReply, val promptVersion: Int)
+/** [replies]: every provider reply the call consumed, the rejected attempts included ([reply] is the last one), for token accounting. */
+data class RoleResult(val output: ContractOutput, val raw: String, val reply: RoutedReply, val promptVersion: Int, val replies: List<RoutedReply> = listOf(reply))
 
 /**
  * Every production model call with an output contract (spec §4.4, §4.4.1): the active prompt version + SYSTEM
@@ -74,6 +75,7 @@ class RoleRunner(
         val ctx = SemanticContext(call.inputIds, at)
         var rejected: OutputEvaluation? = null
         var cutCap: Int? = null
+        val attempts = mutableListOf<com.rokid.context.ai.RoutedReply>()
         for (attempt in 1..2) {
             val text = rejected?.let { prompt + retryNote(it, cut = cutCap != null) } ?: prompt
             val cap = cutCap
@@ -82,12 +84,13 @@ class RoleRunner(
                 ModelRequest(text + plan.promptSuffix, call.images, maxTokens = cap, format = plan.format, requireImages = call.key == PromptKey.INTENT_CLASSIFY)
             }
             val reply = if (call.fromFrames) router.completeFromFrames(call.effectiveClass, build) else router.complete(role, call.effectiveClass, build)
+            attempts += reply
             val eval = OutputCheck.evaluate(call.key, schema, reply.text, ctx)
-            if (eval.ok) return RoleResult(checkNotNull(eval.output), reply.text, reply, versionNo)
+            if (eval.ok) return RoleResult(checkNotNull(eval.output), reply.text, reply, versionNo, attempts.toList())
             if (eval.schemaUnusable) {
                 // A corrected reply can't help; the job stays retryable so it succeeds once the prompt's schema is fixed.
                 Log.w(TAG, "${call.key.name} v$versionNo output schema can't be applied")
-                throw ModelCallException("${call.key.name} v$versionNo output schema can't be applied", retryable = true, kind = FailureKind.INVALID_OUTPUT)
+                throw ModelCallException("${call.key.name} v$versionNo output schema can't be applied", retryable = true, kind = FailureKind.INVALID_OUTPUT, replies = attempts.toList())
             }
             rejected = eval
             cutCap = if (reply.truncated) ((reply.maxTokens ?: ModelRequest.DEFAULT_MAX_TOKENS) * 2).coerceAtMost(ModelRequest.MAX_TOKENS_LIMIT) else null
@@ -95,7 +98,7 @@ class RoleRunner(
             Log.i(TAG, "${call.key.name} v$versionNo reply rejected (attempt $attempt, stage=${stage(eval)}, ${eval.problems().size} problem(s), cut=${reply.truncated}) from ${reply.endpoint.name}")
         }
         val last = checkNotNull(rejected)
-        throw ModelCallException("${call.key.name} reply didn't match its schema: ${failureSummary(last)}", retryable = true, kind = FailureKind.INVALID_OUTPUT)
+        throw ModelCallException("${call.key.name} reply didn't match its schema: ${failureSummary(last)}", retryable = true, kind = FailureKind.INVALID_OUTPUT, replies = attempts.toList())
     }
 
     private companion object {

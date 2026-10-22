@@ -14,8 +14,13 @@ import java.time.LocalDateTime
 
 data class CanvasItem(val frameId: String, val photo: ExtractPhoto, val value: CanvasValue)
 
+/**
+ * [calls] (S32): the provider calls this row OWNS, set only on the one row per provider call (null on its batch-mates and on rows that made no call).
+ * [promptTokens] and [completionTokens] are the call's summed tokens on that owner row only.
+ */
 data class CallMeta(
     val latencyMs: Long, val promptTokens: Int?, val completionTokens: Int?, val model: String?, val promptVersion: Int?, val batchId: String?,
+    val calls: Int? = null,
 )
 
 /**
