@@ -17,6 +17,9 @@ class GlassesBackupRulesTest {
     private val ns = "http://schemas.android.com/apk/res/android"
     private val everyDomain = listOf("root", "file", "database", "sharedpref", "external").map { "$it:." }.toSet()
 
+    /** Slice 3a (S81), named on top of the blanket excludes: prefs of the capture plan and the mark queue, the IMU trace folder and its tmp folder. */
+    private val slice3a = setOf("sharedpref:capture_plan.xml", "sharedpref:mark_queue.xml", "file:imu_trace", "file:imu_trace_tmp")
+
     private fun parse(path: String) = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
         .newDocumentBuilder().parse(File(path)).documentElement
 
@@ -39,7 +42,7 @@ class GlassesBackupRulesTest {
                 assertTrue("missing <$tag>", s != null); s!!
             }
         for (section in sections) {
-            assertEquals(section.tagName, everyDomain, excludes(section))
+            assertEquals(section.tagName, everyDomain + slice3a, excludes(section))
             assertEquals(section.tagName, 0, section.getElementsByTagName("include").length)
         }
     }
@@ -49,5 +52,16 @@ class GlassesBackupRulesTest {
         val src = File("src/main/java/com/rokid/context/glasses/GlassesRuntime.kt").readText()
         assertTrue(src.contains("File(app.filesDir, \"outbound\")"))
         assertTrue(src.contains("File(app.filesDir, \"pauses.preferences_pb\")"))
+    }
+
+    /** The blanket excludes stay in every section (the slice 3a names are an addition, never a replacement), so any file or pref not named is excluded too. */
+    @Test fun theBlanketExcludesStayAndTheSlice3aNamesAreAdded() {
+        val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) +
+            listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
+        for (section in sections) {
+            val ex = excludes(section)
+            assertTrue(section.tagName, ex.containsAll(everyDomain))
+            assertTrue(section.tagName, ex.containsAll(slice3a))
+        }
     }
 }
