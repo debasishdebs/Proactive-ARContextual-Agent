@@ -3,7 +3,10 @@ package com.rokid.context.phone.canvas.api
 import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.canvas.CanvasRepository
 import com.rokid.context.canvas.CanvasRunner
+import com.rokid.context.canvas.AbStarted
+import com.rokid.context.canvas.AskDebug
 import com.rokid.context.canvas.Estimate
+import com.rokid.context.canvas.TokenEstimate
 import com.rokid.context.canvas.LiveMode
 import com.rokid.context.canvas.ModelLabel
 import com.rokid.context.ai.contract.PromptKey
@@ -66,6 +69,18 @@ private class FakeBackend : CanvasBackend {
     override suspend fun rollback(expectedId: Long?): CanvasPublisher.Outcome { enter("rollback"); lastRollbackExpected = expectedId; return rollbackOutcome }
     var lastInterpreterPublish: Triple<String, Int, LiveMode>? = null
     override suspend fun publishInterpreter(id: String, version: Int, mode: LiveMode): CanvasPublisher.Outcome { enter("publishInterpreter:$mode"); known(0); lastInterpreterPublish = Triple(id, version, mode); return publishOutcome }
+    var estimateAbResult: Estimate = Estimate.Ok(2, 6, 10, listOf(ModelLabel("extract", "az", "gpt")), "tokAB", TokenEstimate(900, 120, 4))
+    var lastAb: List<Any?>? = null
+    override suspend fun estimateAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>): Estimate { enter("estimateAb"); known(0); lastAb = listOf(a, b, frameIds); return estimateAbResult }
+    var abThrows: Exception? = null
+    override suspend fun startAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>, token: String): AbStarted { enter("startAb:$token"); known(0); abThrows?.let { throw it }; lastAb = listOf(a, b, frameIds); return AbStarted("g1", "ra", "rb") }
+    var askRedacted = false
+    var replayResult: AskDebug.Replay = AskDebug.Replay.Ok("In the fridge", listOf("m1"), 321, 120, 12, "gpt")
+    var lastReplay: Pair<String, String>? = null
+    var replayDelayMs = 0L
+    override suspend fun asks(): JsonArray { enter("asks"); return JsonArray(listOf(buildJsonObject { put("id", "a1") })) }
+    override suspend fun ask(id: String): JsonObject? { enter("ask"); if (askRedacted) throw IllegalStateException("redacted"); return if (known) buildJsonObject { put("askId", id); put("composedPrompt", "SECRET PROMPT") } else null }
+    override suspend fun replayAsk(id: String, template: String): AskDebug.Replay { enter("replay"); if (replayDelayMs > 0) delay(replayDelayMs); lastReplay = id to template; return replayResult }
     var lastHistoryLimit = -1
     override suspend fun publishHistory(limit: Int): JsonArray { enter("history"); lastHistoryLimit = limit; return JsonArray(listOf(buildJsonObject { put("id", 1); put("kind", "interpreter") })) }
     var lastLiveLimit = -1
@@ -538,5 +553,123 @@ class CanvasApiTest {
         call("GET", "/api/live", query = mapOf("limit" to "9999")); assertEquals(100, be.lastLiveLimit)
         call("GET", "/api/live", query = mapOf("limit" to "7")); assertEquals(7, be.lastLiveLimit)
         assertEquals(400, call("GET", "/api/live", query = mapOf("limit" to "x")).status)
+    }
+
+    // ---- slice 2, Task 9 (commit 3): A/B, estimate tokens, Ask debug ----
+
+    @Test fun estimateCarriesTokens() {
+        be.estimateResult = Estimate.Ok(2, 3, 5, listOf(ModelLabel("extract", "az", "gpt")), "tok1", TokenEstimate(1200, 90, 7))
+        val t = call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","frameIds":["a"]}""").obj()["tokens"]!!.jsonObject
+        assertEquals(1200, t["promptTokens"]!!.jsonPrimitive.int); assertEquals(90, t["completionTokens"]!!.jsonPrimitive.int); assertEquals(7, t["basedOn"]!!.jsonPrimitive.int)
+        be.estimateResult = Estimate.Ok(2, 3, 5, emptyList(), "tok1", null)
+        assertEquals("null", call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","frameIds":["a"]}""").obj()["tokens"].toString())
+    }
+
+    @Test fun estimateAbRoute() {
+        val r = call("POST", "/api/runs/estimate-ab", """{"a":{"pipelineId":"p-1","version":2},"b":{"pipelineId":"p-2"},"frameIds":["f1","f2"]}""")
+        assertEquals(200, r.status)
+        assertEquals(listOf<Any?>(PipelineRef("p-1", 2), PipelineRef("p-2", null), listOf("f1", "f2")), be.lastAb)
+        val o = r.obj()
+        assertEquals("tokAB", o["confirmToken"]!!.jsonPrimitive.content); assertEquals(6, o["nominal"]!!.jsonPrimitive.int); assertEquals(10, o["max"]!!.jsonPrimitive.int)
+        assertEquals(900, o["tokens"]!!.jsonObject["promptTokens"]!!.jsonPrimitive.int)
+        be.estimateAbResult = Estimate.Refused(listOf("over the limit"))
+        val refused = call("POST", "/api/runs/estimate-ab", """{"a":{"pipelineId":"p-1"},"b":{"pipelineId":"p-2"},"frameIds":["f1"]}""")
+        assertEquals(422, refused.status); assertEquals("refused", refused.err())
+        assertEquals("over the limit", refused.obj()["problems"]!!.jsonArray[0].jsonPrimitive.content)
+        for (bad in listOf(
+            """{"b":{"pipelineId":"p-2"},"frameIds":["f1"]}""", """{"a":"p-1","b":{"pipelineId":"p-2"},"frameIds":["f1"]}""", """{"a":{"pipelineId":"a b"},"b":{"pipelineId":"p-2"},"frameIds":["f1"]}""",
+            """{"a":{"pipelineId":"p-1","version":0},"b":{"pipelineId":"p-2"},"frameIds":["f1"]}""", """{"a":{"pipelineId":"p-1"},"b":{"pipelineId":"p-2"}}""",
+        )) assertEquals(bad, 400, call("POST", "/api/runs/estimate-ab", bad).status)
+        be.known = false
+        assertEquals(404, call("POST", "/api/runs/estimate-ab", """{"a":{"pipelineId":"p-1"},"b":{"pipelineId":"p-2"},"frameIds":["f1"]}""").status)
+    }
+
+    @Test fun abResponseHasBothIds() {
+        val r = call("POST", "/api/runs/ab", """{"a":{"pipelineId":"p-1"},"b":{"pipelineId":"p-2","version":3},"frameIds":["f1"],"confirmToken":"tokAB"}""")
+        assertEquals(200, r.status)
+        assertEquals(setOf("group", "runA", "runB"), r.obj().keys)
+        assertEquals("g1", r.obj()["group"]!!.jsonPrimitive.content); assertEquals("ra", r.obj()["runA"]!!.jsonPrimitive.content); assertEquals("rb", r.obj()["runB"]!!.jsonPrimitive.content)
+        assertTrue("startAb:tokAB" in be.calls)
+        be.abThrows = CanvasRunner.Busy()
+        assertEquals(409, call("POST", "/api/runs/ab", """{"a":{"pipelineId":"p-1"},"b":{"pipelineId":"p-2"},"frameIds":["f1"],"confirmToken":"t"}""").status)
+        be.abThrows = IllegalArgumentException("bad_token")
+        assertEquals(400, call("POST", "/api/runs/ab", """{"a":{"pipelineId":"p-1"},"b":{"pipelineId":"p-2"},"frameIds":["f1"],"confirmToken":"t"}""").status)
+        be.abThrows = null
+        assertEquals(400, call("POST", "/api/runs/ab", """{"a":{"pipelineId":"p-1"},"b":{"pipelineId":"p-2"},"frameIds":["f1"]}""").status) // no token
+    }
+
+    @Test fun asksList() {
+        val r = call("GET", "/api/asks")
+        assertEquals(200, r.status)
+        assertEquals("a1", Json.parseToJsonElement(String(r.body)).jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun askViewAndErrors() {
+        val r = call("GET", "/api/asks/a1")
+        assertEquals(200, r.status)
+        assertEquals("SECRET PROMPT", r.obj()["composedPrompt"]!!.jsonPrimitive.content)
+        be.known = false
+        assertEquals(404, call("GET", "/api/asks/a1").status)
+        be.known = true
+        assertEquals(400, call("GET", "/api/asks/a.b").status)
+    }
+
+    @Test fun replayRedactedIs409() {
+        be.askRedacted = true
+        val v = call("GET", "/api/asks/a1")
+        assertEquals(409, v.status); assertEquals("refused", v.err()); assertEquals("This ask was redacted", v.obj()["message"]!!.jsonPrimitive.content)
+        be.replayResult = AskDebug.Replay.Failed("redacted")
+        val r = call("POST", "/api/asks/a1/replay", """{"template":"T"}""")
+        assertEquals(409, r.status); assertEquals("refused", r.err()); assertEquals("This ask was redacted", r.obj()["message"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun replayHappyPathAndInputChecks() {
+        val r = call("POST", "/api/asks/a1/replay", """{"template":"T {{question}}"}""")
+        assertEquals(200, r.status)
+        assertEquals("a1" to "T {{question}}", be.lastReplay)
+        val o = r.obj()
+        assertEquals("In the fridge", o["answer"]!!.jsonPrimitive.content); assertEquals("m1", o["sources"]!!.jsonArray[0].jsonPrimitive.content)
+        assertEquals(321, o["latencyMs"]!!.jsonPrimitive.int); assertEquals(120, o["promptTokens"]!!.jsonPrimitive.int); assertEquals(12, o["completionTokens"]!!.jsonPrimitive.int); assertEquals("gpt", o["model"]!!.jsonPrimitive.content)
+        assertEquals(400, call("POST", "/api/asks/a1/replay", """{}""").status)
+        assertEquals(400, call("POST", "/api/asks/a1/replay", """{"template":${"\"" + "x".repeat(70_000) + "\""}}""").status)
+        assertEquals(400, call("POST", "/api/asks/a.b/replay", """{"template":"T"}""").status)
+    }
+
+    @Test fun replayFailureWordsMapToFixedTexts() {
+        val expected = mapOf(
+            "not_found" to (404 to "not_found"),
+            "incompatible" to (422 to "refused"),
+            "forgotten" to (409 to "refused"),
+            "AUTH" to (502 to "model_failed"), "REJECTED" to (502 to "model_failed"), "INVALID_OUTPUT" to (502 to "model_failed"),
+            "TRANSIENT" to (502 to "model_failed"), "NOT_SET" to (502 to "model_failed"),
+            "SocketTimeoutException" to (502 to "model_failed"),
+        )
+        val texts = mutableSetOf<String>()
+        for ((word, st) in expected) {
+            be.replayResult = AskDebug.Replay.Failed(word)
+            val r = call("POST", "/api/asks/a1/replay", """{"template":"T"}""")
+            assertEquals(word, st.first, r.status); assertEquals(word, st.second, r.err())
+            val msg = r.obj()["message"]!!.jsonPrimitive.content
+            assertFalse("a kind or class name must not be echoed: $word", word.any { it.isUpperCase() } && msg.contains(word))
+            texts += msg
+        }
+        assertTrue("distinct fixed texts", texts.size >= 6)
+        // an unknown provider word never reaches the client
+        be.replayResult = AskDebug.Replay.Failed("secret provider text")
+        val r = call("POST", "/api/asks/a1/replay", """{"template":"T"}""")
+        assertEquals(502, r.status); assertFalse(String(r.body).contains("secret provider text"))
+    }
+
+    @Test fun replayHasADeadline() {
+        be.replayDelayMs = 5_000
+        val fast = CanvasApi(be, callTimeoutMs = 2_000, mutationDeadlineMs = 200)
+        val r = fast.handle(HttpRequest("POST", "/api/asks/a1/replay", emptyMap(), mapOf("authorization" to "Bearer abc"), """{"template":"T"}""".toByteArray()))
+        assertEquals(503, r.status); assertEquals("busy", r.err())
+    }
+
+    @Test fun replayRunsToCompletionWhenTheCallerIsCancelled() {
+        // a mutation is NonCancellable: the same 2 s read deadline does not cut a 300 ms replay, and a slow publish still finishes
+        be.replayDelayMs = 300
+        assertEquals(200, call("POST", "/api/asks/a1/replay", """{"template":"T"}""").status)
     }
 }

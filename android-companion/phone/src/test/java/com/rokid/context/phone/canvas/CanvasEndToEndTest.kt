@@ -248,6 +248,9 @@ class CanvasEndToEndTest {
             "GET" to "/api/frames/f1", "GET" to "/api/frames/f1/thumb", "GET" to "/api/frames/f1/image", "POST" to "/api/runs/estimate",
             "POST" to "/api/runs", "GET" to "/api/runs", "GET" to "/api/runs/r1", "POST" to "/api/runs/r1/cancel", "DELETE" to "/api/runs/r1",
             "PUT" to "/api/runs/r1/scores", "GET" to "/api/compare?a=r1&b=r2",
+            // slice 2
+            "POST" to "/api/validate", "GET" to "/api/pipelines/live-extract/diff?a=1&b=draft", "GET" to "/api/publish/history", "GET" to "/api/live",
+            "POST" to "/api/runs/estimate-ab", "POST" to "/api/runs/ab", "GET" to "/api/asks", "GET" to "/api/asks/a1", "POST" to "/api/asks/a1/replay",
         )
         for ((m, p) in routes) {
             assertEquals("$m $p without a token", 401, call(m, p, null, if (m == "GET") null else buildJsonObject { }).status)

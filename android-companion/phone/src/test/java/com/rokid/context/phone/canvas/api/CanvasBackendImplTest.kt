@@ -14,7 +14,17 @@ import com.rokid.context.ai.InMemorySeedState
 import com.rokid.context.ai.ProviderBuilder
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoleBinding
+import com.rokid.context.ai.contract.PromptKey
+import com.rokid.context.canvas.AskDebug
+import com.rokid.context.canvas.AskDebugPhotos
+import com.rokid.context.canvas.AskPhotoRecall
 import com.rokid.context.canvas.CanvasRepository
+import com.rokid.context.orchestration.AnswerService
+import com.rokid.context.memory.db.AskEntity
+import com.rokid.context.memory.retrieval.RetrievalMode
+import com.rokid.context.memory.retrieval.RetrievalSettings
+import com.rokid.context.model.ModelReply
+import com.rokid.context.model.ModelRequest
 import com.rokid.context.canvas.Estimate
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.CanvasLiveTraceEntity
@@ -80,12 +90,29 @@ class CanvasBackendImplTest {
         MemoryGraph.resetForTests(DatabaseFactory.inMemory(app))
         FrameImages.configureForTests(TinkFrameCipher.inMemoryForTests()) { true }
         ai = AiGraph(MemoryGraph.get(app), InMemoryKeyVault(), InMemorySeedState(), ProviderBuilder { _, _, _ ->
-            object : ModelProvider { override suspend fun generate(prompt: String): String = extractReply(sentIds(prompt)) }
+            object : ModelProvider {
+                override suspend fun generate(prompt: String): String = extractReply(sentIds(prompt))
+                override suspend fun complete(request: ModelRequest): ModelReply {
+                    requests += request
+                    gate?.await()
+                    val text = if (request.prompt.contains("BEGIN_DATA question")) """{"answer":"In the fridge","sources":[],"proposedAction":null}""" else generate(request.prompt)
+                    return ModelReply(text, 100, 10)
+                }
+            }
         }).also { AiGraph.resetForTests(it) }
-        backend = CanvasBackendImpl.create(app, ai, auth, { lan }, scope)
+        backend = newBackend()
     }
 
+    private val requests = java.util.concurrent.CopyOnWriteArrayList<ModelRequest>()
+    @Volatile private var gate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    private fun newBackend(photos: () -> AskDebugPhotos = AskPhotoBinding::current) = CanvasBackendImpl.create(
+        app, ai, auth, { lan }, scope,
+        answers = { AnswerService(MemoryGraph.get(app), ai.runner, ai.retriever, { RetrievalSettings(mode = RetrievalMode.LEXICAL, topK = 8) }) },
+        askPhotos = photos,
+    )
+
     @After fun tearDown() {
+        AskPhotoBinding.reset()
         scope.cancel()
         FrameImages.configureForTests(null) { false }
         AiGraph.resetForTests(null); MemoryGraph.get(app).db.close(); MemoryGraph.resetForTests(null)
@@ -529,11 +556,11 @@ class CanvasBackendImplTest {
         backend.live(10)
         assertEquals("a trace older than 7 days is pruned by a read", 0, dao.traces(pub, 10).size)
         // the history and the stack reads prune too (once an hour: a fresh backend has its own stamp)
-        val backend2 = CanvasBackendImpl.create(app, ai, auth, { lan }, scope)
+        val backend2 = newBackend()
         dao.upsertTrace(listOf(CanvasLiveTraceEntity(pub, "old2", "_batch", "LIVE", "OK", null, null, null, "b2", 1)))
         backend2.publishHistory(5)
         assertEquals(0, dao.traces(pub, 10).size)
-        val backend3 = CanvasBackendImpl.create(app, ai, auth, { lan }, scope)
+        val backend3 = newBackend()
         dao.upsertTrace(listOf(CanvasLiveTraceEntity(pub, "old3", "_batch", "LIVE", "OK", null, null, null, "b3", 1)))
         backend3.activePublish()
         assertEquals(0, dao.traces(pub, 10).size)
@@ -559,5 +586,182 @@ class CanvasBackendImplTest {
         assertEquals(a, dao.activeInterpreter()!!.id)
         assertTrue(backend.rollback(a) is com.rokid.context.canvas.CanvasPublisher.Outcome.Published)
         assertNull(dao.activeInterpreter())
+    }
+
+    // ---- slice 2, Task 9 (commit 3): usage, branches, compare, Ask debug ----
+
+    private suspend fun insertRun(id: String, pipeline: com.rokid.context.ai.canvas.Pipeline? = null, abGroup: String? = null, est: Int = 4, at: Long = 1) =
+        MemoryGraph.get(app).db.canvasDao().insertRun(CanvasRunEntity(
+            id, "p", null, "h", pipeline?.let { com.rokid.context.ai.canvas.PipelineJson.canonical(it) } ?: "{}", "DONE", 3, est, 0, 0, at, at + 1, "[]", abGroup))
+    private suspend fun insertItem(run: String, frame: String, node: String, branch: String? = null, calls: Int? = null, p: Int? = null, c: Int? = null, latency: Long? = null) =
+        MemoryGraph.get(app).db.canvasDao().upsertItem(CanvasRunItemEntity(run, frame, node, "OK", branch, """{"kind":"photo"}""", null, latency, p, c, null, null, null, calls))
+
+    @Test fun runUsageLine() = runBlocking<Unit> {
+        insertRun("r1", est = 5)
+        insertItem("r1", "f1", "extract", calls = 2, p = 300, c = 40, latency = 100)
+        insertItem("r1", "f2", "extract") // a batch-mate: no tokens, no calls
+        insertItem("r1", "f3", "critic", calls = 1, p = 50, c = 5, latency = 300)
+        val run = checkNotNull(backend.run("r1"))
+        val usage = run["usage"]!!.jsonObject
+        assertEquals(3, usage["calls"]!!.jsonPrimitive.int)
+        assertEquals(5, usage["est"]!!.jsonPrimitive.int)
+        assertEquals(350, usage["promptTokens"]!!.jsonPrimitive.int)
+        assertEquals(45, usage["completionTokens"]!!.jsonPrimitive.int)
+        assertEquals(200L, usage["medianLatencyMs"]!!.jsonPrimitive.content.toLong())
+        assertEquals("null", run["abGroup"].toString())
+        assertEquals(0, run["branches"]!!.jsonObject.size)
+        insertRun("r2"); assertEquals("null", checkNotNull(backend.run("r2"))["usage"]!!.jsonObject["medianLatencyMs"].toString())
+        insertRun("r3", abGroup = "g1"); assertEquals("g1", checkNotNull(backend.run("r3"))["abGroup"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun runBranchesCountPerSwitch() = runBlocking<Unit> {
+        val p = com.rokid.context.ai.canvas.DefaultPipelines.intentDraft("x")
+        insertRun("r1", p)
+        insertItem("r1", "f1", "route", "cooking"); insertItem("r1", "f2", "route", "cooking"); insertItem("r1", "f3", "route", "other")
+        insertItem("r1", "f1", "intent") // not a switch
+        val b = checkNotNull(backend.run("r1"))["branches"]!!.jsonObject
+        assertEquals(setOf("route"), b.keys)
+        assertEquals(mapOf("cooking" to 2, "other" to 1), b["route"]!!.jsonObject.mapValues { it.value.jsonPrimitive.int })
+    }
+
+    @Test fun compareBranchesAndAgreement() = runBlocking<Unit> {
+        val dao = MemoryGraph.get(app).db.canvasDao()
+        val p = com.rokid.context.ai.canvas.DefaultPipelines.intentDraft("x")
+        insertRun("ra", p); insertRun("rb", p)
+        for ((f, ba, bb) in listOf(Triple("f1", "cooking", "cooking"), Triple("f2", "cooking", "other"), Triple("f3", "other", "other"))) {
+            insertItem("ra", f, "route", ba); insertItem("rb", f, "route", bb)
+            insertItem("ra", f, "extract_other"); insertItem("rb", f, "extract_other")
+        }
+        insertItem("ra", "f4", "route", "cooking") // only in a: not counted
+        dao.upsertScore(com.rokid.context.memory.db.CanvasScoreEntity("ra", "f1", "extract_other", 1, "", 1)); dao.upsertScore(com.rokid.context.memory.db.CanvasScoreEntity("ra", "f2", "extract_other", 1, "", 1))
+        dao.upsertScore(com.rokid.context.memory.db.CanvasScoreEntity("rb", "f1", "extract_other", -1, "", 1)); dao.upsertScore(com.rokid.context.memory.db.CanvasScoreEntity("rb", "f3", "extract_other", 0, "", 1))
+        dao.upsertScore(com.rokid.context.memory.db.CanvasScoreEntity("rb", "f3", "route", 1, "", 1))
+        val c = checkNotNull(backend.compare("ra", "rb"))
+        val br = c["branches"]!!.jsonObject
+        assertEquals(mapOf("cooking" to 3, "other" to 1), br["a"]!!.jsonObject["route"]!!.jsonObject.mapValues { it.value.jsonPrimitive.int })
+        assertEquals(mapOf("cooking" to 1, "other" to 2), br["b"]!!.jsonObject["route"]!!.jsonObject.mapValues { it.value.jsonPrimitive.int })
+        assertEquals(2.0 / 3.0, c["agreement"]!!.jsonObject["route"]!!.jsonPrimitive.content.toDouble(), 1e-9)
+        val sums = c["scoreSums"]!!.jsonObject
+        assertEquals(2, sums["extract_other"]!!.jsonObject["a"]!!.jsonPrimitive.int); assertEquals(-1, sums["extract_other"]!!.jsonObject["b"]!!.jsonPrimitive.int)
+        assertEquals(0, sums["route"]!!.jsonObject["a"]!!.jsonPrimitive.int); assertEquals(1, sums["route"]!!.jsonObject["b"]!!.jsonPrimitive.int)
+        assertTrue(c["frames"] is JsonArray) // the old shape is intact
+    }
+
+    @Test fun compareAgreementIsAbsentWithoutASwitch() = runBlocking<Unit> {
+        insertRun("ra"); insertRun("rb"); insertItem("ra", "f1", "extract"); insertItem("rb", "f1", "extract")
+        val c = checkNotNull(backend.compare("ra", "rb"))
+        assertEquals(0, c["agreement"]!!.jsonObject.size)
+        assertEquals(0, c["branches"]!!.jsonObject["a"]!!.jsonObject.size)
+    }
+
+    @Test fun estimateAbThenStartAbReservesBothRunsAndCancelCancelsTheGroup() = runBlocking<Unit> {
+        bind()
+        listOf("f1", "f2", "f3").forEachIndexed { i, id -> seed(id, 1_000L + i) }
+        val ids = listOf("f1", "f2", "f3")
+        val a = PipelineRef("live-extract", null); val b = PipelineRef("live-extract", null)
+        val est = backend.estimateAb(a, b, ids) as Estimate.Ok
+        val single = backend.estimate("live-extract", null, ids) as Estimate.Ok
+        assertEquals(single.nominal * 2, est.nominal)
+        assertTrue(est.confirmToken != single.confirmToken)
+        gate = kotlinx.coroutines.CompletableDeferred()
+        val started = backend.startAb(a, b, ids, est.confirmToken)
+        val ra = checkNotNull(backend.run(started.runA)); val rb = checkNotNull(backend.run(started.runB))
+        assertEquals(started.group, ra["abGroup"]!!.jsonPrimitive.content); assertEquals(started.group, rb["abGroup"]!!.jsonPrimitive.content)
+        assertEquals("QUEUED", rb["status"]!!.jsonPrimitive.content)
+        // the token is spent, and any other run is refused while the group is live
+        try { backend.startAb(a, b, ids, est.confirmToken); org.junit.Assert.fail() } catch (e: com.rokid.context.canvas.CanvasRunner.Busy) { }
+        // cancelling the QUEUED member cancels the whole group
+        assertTrue(backend.cancelRun(started.runB))
+        gate!!.complete(Unit)
+        withTimeout(30_000) { while (backend.run(started.runA)!!["status"]!!.jsonPrimitive.content in listOf("RUNNING", "QUEUED") || backend.run(started.runB)!!["status"]!!.jsonPrimitive.content in listOf("RUNNING", "QUEUED")) delay(50) }
+        assertEquals("CANCELLED", backend.run(started.runA)!!["status"]!!.jsonPrimitive.content)
+        assertEquals("CANCELLED", backend.run(started.runB)!!["status"]!!.jsonPrimitive.content)
+        assertEquals(0, checkNotNull(backend.run(started.runB))["items"]!!.jsonArray.size)
+    }
+
+    // ---- Ask debug ----
+
+    private suspend fun seedAsk(id: String = "a1", ts: Long = 1_000, q: String = "milk", redacted: Boolean = false, frame: String? = null, sources: String = "[\"m1\"]") {
+        MemoryGraph.get(app).db.memoryDao().insert(MemoryEntity("m1", frame, "milk carton in the fridge", "object", "", MemoryTier.SHORT, 0.9, ReviewState.OK, true, 10, false, "milk carton in the fridge"))
+        MemoryGraph.get(app).db.askDao().upsert(AskEntity(id, ts, q, "In the fridge", sources, 1, "phone_typed", redacted))
+    }
+
+    @Test fun asksListedNewestFirst() = runBlocking<Unit> {
+        seedAsk("a1", ts = 5)
+        MemoryGraph.get(app).db.askDao().upsert(AskEntity("a2", 9, "eggs", "x".repeat(500), "[]", null, "phone_typed", false))
+        val list = backend.asks().map { it.jsonObject }
+        assertEquals(listOf("a2", "a1"), list.map { it["id"]!!.jsonPrimitive.content })
+        assertEquals(setOf("id", "ts", "question", "answer", "rating", "redacted"), list[0].keys)
+        assertTrue(list[0]["answer"]!!.jsonPrimitive.content.length <= 140) // a short answer
+        assertEquals("1", list[1]["rating"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun askViewHasScoresAndTheComposedPrompt() = runBlocking<Unit> {
+        seedAsk()
+        val v = checkNotNull(backend.ask("a1"))
+        assertEquals("milk", v["question"]!!.jsonPrimitive.content)
+        val hit = v["hits"]!!.jsonArray.single().jsonObject
+        assertEquals("m1", hit["memoryId"]!!.jsonPrimitive.content)
+        assertTrue(hit["score"]!!.jsonPrimitive.content.toDouble() > 0.0)
+        assertEquals("true", hit["cited"]!!.jsonPrimitive.content); assertEquals("true", hit["inPrompt"]!!.jsonPrimitive.content)
+        assertTrue(v["composedPrompt"]!!.jsonPrimitive.content.contains("milk carton in the fridge"))
+        assertEquals("LEXICAL", v["mode"]!!.jsonPrimitive.content)
+        assertEquals(listOf("m1"), v["cited"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertTrue(v["activeVersion"]!!.jsonPrimitive.int >= 1)
+        assertNull(backend.ask("nope"))
+    }
+
+    @Test fun askViewOfARedactedAskIsRefused() = runBlocking<Unit> {
+        seedAsk(redacted = true)
+        try { backend.ask("a1"); org.junit.Assert.fail() } catch (e: IllegalStateException) { assertEquals("redacted", e.message) }
+    }
+
+    @Test fun replayDoesNotChangeTheAskCount() = runBlocking<Unit> {
+        bind(); seedAsk()
+        val db = MemoryGraph.get(app).db
+        fun count(t: String) = db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM `$t`").use { it.moveToFirst(); it.getInt(0) }
+        val before = listOf("ask", "memory", "proposal").map(::count)
+        val r = backend.replayAsk("a1", "T {{question}} {{retrieved_memories}}") as AskDebug.Replay.Ok
+        assertEquals("In the fridge", r.answer)
+        assertEquals(before, listOf("ask", "memory", "proposal").map(::count))
+        assertEquals(1, requests.size)
+        assertTrue(requests.single().prompt.contains("milk carton in the fridge"))
+    }
+
+    @Test fun replayWithoutABindingNeverLoadsAnImage() = runBlocking<Unit> {
+        bind(); seed("f1", 500); seedAsk(frame = "f1")
+        assertTrue("the default is Refuse", AskPhotoBinding.current() === AskDebugPhotos.Refuse)
+        backend.ask("a1")
+        val r = backend.replayAsk("a1", "T {{question}} {{retrieved_memories}}")
+        assertTrue(r is AskDebug.Replay.Ok)
+        assertTrue(requests.isNotEmpty() && requests.all { it.images.isEmpty() })
+    }
+
+    @Test fun aRefusingGateIsNeverAskedToRecall() = runBlocking<Unit> {
+        bind(); seed("f1", 500); seedAsk(frame = "f1")
+        var recalls = 0; var asked = 0
+        val gateBinding = object : AskDebugPhotos {
+            override suspend fun allowed(): Boolean { asked++; return false }
+            override suspend fun recall(question: String, nowMs: Long): AskPhotoRecall { recalls++; return AskPhotoRecall(emptyList(), emptySet(), emptySet()) }
+        }
+        val b = newBackend { gateBinding }
+        b.replayAsk("a1", "T {{question}} {{retrieved_memories}}")
+        assertEquals(0, recalls); assertTrue(asked >= 1)
+        assertTrue(requests.all { it.images.isEmpty() })
+    }
+
+    @Test fun askCompatibilityIsTheRealTestBed() = runBlocking<Unit> {
+        bind()
+        val broken = com.rokid.context.prompt.PromptDraft("T", "{not json")
+        val real = ai.testBed.compatibility(PromptKey.ANSWER, broken)
+        assertTrue("the real gate reports the broken schema", real.isNotEmpty())
+        assertEquals(real, CanvasBackendImpl.compatibilityOf(ai)(PromptKey.ANSWER, broken))
+    }
+
+    @Test fun replayOfARedactedOrUnknownAskIsFailedWithFixedWords() = runBlocking<Unit> {
+        bind(); seedAsk(redacted = true)
+        assertEquals(AskDebug.Replay.Failed("redacted"), backend.replayAsk("a1", "T"))
+        assertEquals(AskDebug.Replay.Failed("not_found"), backend.replayAsk("nope", "T"))
+        assertTrue(requests.isEmpty())
     }
 }
