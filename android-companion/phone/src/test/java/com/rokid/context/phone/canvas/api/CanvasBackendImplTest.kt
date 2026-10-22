@@ -281,6 +281,12 @@ class CanvasBackendImplTest {
         assertTrue(backend.checkPrompt("route.switch", "t", null).isNotEmpty()) // no prompt on this node
     }
 
+    @Test fun checkPromptKnowsTheAskAnswerTemplate() = runBlocking<Unit> {
+        // Task 12's Ask debug view checks a template with nodeType "ask.answer": not "Unknown node type", but the Answer prompt's real compatibility check
+        val problems = backend.checkPrompt("ask.answer", "no placeholders at all", null)
+        assertTrue("got $problems", problems.none { it == "Unknown node type" || it == "This node has no prompt" })
+    }
+
     @Test fun sessionHasNoTokenAndLogoutEndsIt() = runBlocking<Unit> {
         val token = auth.newWebViewToken()
         val s = backend.session(token)
