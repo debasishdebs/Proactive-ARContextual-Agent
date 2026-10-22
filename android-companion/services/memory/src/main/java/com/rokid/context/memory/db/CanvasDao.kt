@@ -44,6 +44,17 @@ abstract class CanvasDao {
     @Upsert abstract suspend fun upsertItem(i: CanvasRunItemEntity)
     @Query("SELECT * FROM canvas_run_item WHERE runId = :id") abstract suspend fun items(id: String): List<CanvasRunItemEntity>
     @Upsert abstract suspend fun upsertScore(s: CanvasScoreEntity)
+    @Query("SELECT COUNT(*) FROM canvas_run_item WHERE runId = :runId AND frameId = :frameId AND nodeId = :nodeId") protected abstract suspend fun itemCount(runId: String, frameId: String, nodeId: String): Int
+    /**
+     * The user's score and note, written only if, INSIDE this transaction, the wipe generation is still [generation], the frame is not tombstoned and the
+     * parent item still exists: a Forget or Delete all between the caller's check and this write can never leave an orphan score holding the note.
+     */
+    @Transaction open suspend fun upsertScoreFenced(s: CanvasScoreEntity, generation: Long, currentGeneration: () -> Long): Boolean {
+        if (!fenceHolds(generation, setOf(s.frameId), currentGeneration)) return false
+        if (itemCount(s.runId, s.frameId, s.nodeId) == 0) return false
+        upsertScore(s)
+        return true
+    }
     @Query("SELECT * FROM canvas_score WHERE runId = :id") abstract suspend fun scores(id: String): List<CanvasScoreEntity>
 
     /** How many of [nodeIds] have at least one OK item in a DONE run of [hash] (publish's "tested" gate). */

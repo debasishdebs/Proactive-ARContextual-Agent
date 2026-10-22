@@ -286,4 +286,16 @@ class CanvasDaoTest {
         assertFalse(dao.insertRunItemsFenced(listOf(item("r", "f2")), emptyList(), 7, emptySet()) { 7 })
         assertEquals(0, dao.traces(1, 10).size); assertEquals(0, dao.items("r").size)
     }
+
+    @Test fun scoreIsWrittenOnlyForALiveItemInsideTheSameTransaction() = runBlocking {
+        dao.insertRun(run("r")); dao.upsertItem(item("r", "f1"))
+        assertTrue(dao.upsertScoreFenced(score("r", "f1"), 7) { 7 })
+        assertEquals(1, dao.scores("r").size)
+        assertFalse("wipe moved", dao.upsertScoreFenced(score("r", "f1").copy(score = -1, note = "secret"), 7) { 8 })
+        assertEquals(1, dao.scores("r")[0].score)
+        db.forgetDao().insertTombstone(ForgetTombstoneEntity("f1", 1))
+        assertFalse("tombstoned", dao.upsertScoreFenced(score("r", "f1"), 7) { 7 })
+        assertFalse("the item is gone (Forget/Delete all deleted it): the note must not recreate an orphan", dao.upsertScoreFenced(score("r", "gone"), 7) { 7 })
+        assertEquals(0, dao.scores("r").count { it.frameId == "gone" })
+    }
 }

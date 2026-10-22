@@ -624,8 +624,10 @@ class CanvasBackendImpl(
     }
 
     override suspend fun score(runId: String, frameId: String, nodeId: String, score: Int, note: String) {
-        if (dao.run(runId) == null || dao.items(runId).none { it.frameId == frameId && it.nodeId == nodeId }) throw NoSuchElementException("item")
-        dao.upsertScore(CanvasScoreEntity(runId, frameId, nodeId, score, note, clock()))
+        val gen = com.rokid.context.orchestration.MemoryWipe.generation.get()
+        if (dao.run(runId) == null) throw NoSuchElementException("item")
+        // generation, tombstone and the parent item are rechecked INSIDE the write's transaction (a Forget/Delete all in between must not recreate the note)
+        if (!dao.upsertScoreFenced(CanvasScoreEntity(runId, frameId, nodeId, score, note, clock()), gen, com.rokid.context.orchestration.MemoryWipe.generation::get)) throw NoSuchElementException("item")
     }
 
     override suspend fun compare(a: String, b: String): JsonObject? {
