@@ -7,8 +7,8 @@ package com.rokid.context.capture.trace
  *   offset is held, for at most [SLACK_MS] (marks and flushes land just outside a trace); farther away the map answers null.
  * - **Wall jump (I1):** when the offset moved by more than [MAX_WALL_JUMP_MS] between the samples, the glasses wall clock was corrected during the trace
  *   (NTP, link sync, a manual set). Interpolating would give a confidently wrong time, so [wallJump] is true and every wall answer is null.
- * - Phone wall time = glasses wall time + the phone offset. The offset is the manifest's `phoneOffsetMs` (filled at intake) or, when that is null,
- *   derived from the recorder's own phone samples (`startPhoneWallMs`/`endPhoneWallMs`), interpolated like the glasses offset. With neither: null.
+ * - Phone wall time = glasses wall time + the phone offset. The offset: the recorder's own phone samples (`startPhoneWallMs`/`endPhoneWallMs`), interpolated like the glasses offset, take precedence when present; the intake offset is the fallback.
+ *   With neither: null.
  * - **Reboot epoch:** `elapsedRealtime` restarts at every boot, so a map answers only for its own `bootId`; any other boot id gets null,
  *   never a guess. [resolve] picks the right map out of several traces by boot id and time.
  * - [uncertaintyMs] = the phone sync uncertainty (0 when unknown) plus the observed glasses drift between the two samples. It is never null: the drift is
@@ -34,7 +34,8 @@ class ClockMap private constructor(
 
     fun phoneWall(elapsedMs: Long, boot: String): Long? {
         val gw = glassesWall(elapsedMs, boot) ?: return null
-        val off = fixedPhoneOffset ?: if (phoneStart != null && phoneEnd != null) interp(phoneStart, phoneEnd, elapsedMs) else return null
+        // the trace's own phone samples win: an intake-time offset is wrong when the wall clock was corrected between recording and intake
+        val off = if (phoneStart != null && phoneEnd != null) interp(phoneStart, phoneEnd, elapsedMs) else fixedPhoneOffset ?: return null
         return gw + off
     }
 

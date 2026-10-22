@@ -18,14 +18,14 @@ object TraceFixtures {
     val events: List<TraceEvent> = listOf(
         TraceEvent.Ctx(1000, ContextState.REST),
         TraceEvent.Resting(1000, true),
-        TraceEvent.Profile(1000, CameraWake.SETTLE, 10_000, 30_000, null, 60_000, 333, BudgetTier.T0, lowPower = false, heatSlow = true, quickLookMs = 3000),
+        TraceEvent.Profile(1000, CameraWake.SETTLE, 10_000, 30_000, null, 60_000, 333, BudgetTier.T0, lowPower = false, heatSlow = true, quickLookMs = 3000, ctxCap = 3, hard = true),
         TraceEvent.GateParams(1000, 10, 24, true),
         TraceEvent.Plan(1000, 7, "abc123def456", PlanMode.SHADOW),
         TraceEvent.Gyro(1000, 990, 1.0f, -1.0f, 0.5f),
         TraceEvent.Accel(1004, 996, 0f, 0f, 9.80665f),     // batched delivery: sensor time is before the append time and out of order against the gyro
         TraceEvent.Episode(2000, true, EpisodeCause.TIMER),
-        TraceEvent.Score(2500, 42, 0x0123456789abcdefL, -0x0123456789abcdf0L, 12.5f, true, MotionState.STILL, dwellArmed = false, force = false, cap = 4, hard = false),
-        TraceEvent.Gate(2600, 42, GateOutcome.KEEP, ""),
+        TraceEvent.Score(2500, 42, 0x0123456789abcdefL, -0x0123456789abcdf0L, 12.5f, true, MotionState.STILL, dwellArmed = false, force = false, cap = 4, hard = false, nowMs = 2490),
+        TraceEvent.Gate(2600, 42, GateOutcome.KEEP, "", encoded = false),
         TraceEvent.Flush(2700, "window"),
         TraceEvent.Backoff(2800, 2),
         TraceEvent.Blocked(2900, null),
@@ -38,14 +38,14 @@ object TraceFixtures {
     val goldenPayload = """["PCT1","trace-0001-golden",0,17]
 ["cx",1000,"REST"]
 ["rs",1000,true]
-["pf",1000,"SETTLE",10000,30000,null,60000,333,"T0",false,true,3000]
+["pf",1000,"SETTLE",10000,30000,null,60000,333,"T0",false,true,3000,3,true]
 ["gp",1000,10,24,true]
 ["pl",1000,7,"abc123def456","SHADOW"]
 ["g",1000,990,1065353216,-1082130432,1056964608]
 ["a",1004,996,0,0,1092413450]
 ["ep",2000,true,"timer",null,null,null]
-["sc",2500,42,"0123456789abcdef","fedcba9876543210",1095237632,true,"STILL",false,false,4,false]
-["gt",2600,42,"keep",""]
+["sc",2500,42,"0123456789abcdef","fedcba9876543210",1095237632,true,"STILL",false,false,4,false,2490]
+["gt",2600,42,"keep","",false]
 ["fl",2700,"window"]
 ["bo",2800,2]
 ["bl",2900,null]
@@ -54,11 +54,11 @@ object TraceFixtures {
 ["pr",11000]
 ["cl",12000,"stop"]
 """
-    const val GOLDEN_RAW_BYTES = 581
-    const val GOLDEN_SHA = "aefe5fc24395570b82d0999aecbb4e40c8e56901feb17ab044dcb7e8782dce30"
+    const val GOLDEN_RAW_BYTES = 599
+    const val GOLDEN_SHA = "946d13e6c32110f73eb37e8b9a39e85f836eb4384569a274f6d62e43ce655086"
     /** A gzip of [goldenPayload] made by a different implementation (python gzip, mtime 0). */
-    const val GOLDEN_B64 = "H4sIAAAAAAAC/0VRTWuDQBC992fMeQM7+6V7LG2ghUBLFXoIPRhdJcRGUUP68zuzru1lZJ/vzbw3c4T3pxJBwDJVddhJKXHXDX0TriCkwOzr4Qj1DwikPwI+9kUJDE1zgpbpFhgY241T7MvysF9fUuhYr7e+F24FtBZQShBt1c8h6iOJm3RjaoJSKPPfu09wJqA61ah0E1pjHbkuXh6f3z6jpS6RvGe9s9pqhU7sUOYKtTRaEWydd8bJnAVVFBgSOIrKIq8MamOjl0Be1JaQ1nP+DhOsQf4K8+aaeJZ4RgmQ5I2MZbknn2SSHLahqU+VzzNnyQJKHuqt0pkjQ2vvonw9HLaFrNWs35hroQEuDbgE9gUxcEtrURmv/H6+NsM9gqeBwJxAFV9M8ekADDQXBiyF3TLy7tNQaO6h3xRklToPl9h1pOiI6Uo1nyOuBuZlGInwCxmw1DJFAgAA"
-    const val GOLDEN_TRACE_SHA = "75c4218219a541a6125eabcd951fcde31920057894fe325c4cccc95925f94a63"
+    const val GOLDEN_B64 = "H4sIAAAAAAAC/0VSTWuDQBC992fMeQL7rXssbaCFQEsVeig9GF0lxEZRQ/rzO7Ou6WVl37438+aNX/D+VEpAWKaqDjshhNx1Q9+EC6BAmX0/fEH9CyjpBeFjX5TA0DQnaJmugYGx3TjFviwP+/UmUMfzcu17dCugNUIpANuqn0PURxLqe61uTLWkQGX+W/QJzhCqYy2VbkJrrCPzxcvj89tndNYlkvesd1ZbraTDnRS5kloYrQi2zjvjRM6CKgoMCRxNzCKvjNTGCn4N5EVtg1JKp58wwTrP/WDeXBPPEs8oBEHeyFiWe/JJJslhG5r6WPk8c5YsSMFNvVU6c2RorV2Ur4fDlst6mvRVxkc33UJdXOpyDmwOkoKfW0pIZbyE2+nSDLcYyHEgMCdQxRtTfFoJA82ZAUtzb+PGbax9obmFflOQa6o8nGPVkVKQHHT8QXgzMSWYl2Ekwh/6dpsNVwIAAA=="
+    const val GOLDEN_TRACE_SHA = "132a333aeac7cf63fc341b074671ec6fb98cfeafe9f9351d5729b221fb1cb549"
 
     /** Explicit values (M8): a retune of the GlanceParams defaults must not break the frozen golden. */
     val glance = GlanceParams(
@@ -84,7 +84,7 @@ object TraceFixtures {
         chunkCount = chunkCount, eventCount = eventCount, rawBytes = rawBytes, traceSha256 = traceSha, recorded = recorded, closeReason = "stop", snapshot = snap,
     )
 
-    val goldenManifest = """{"bootId":"42","chunkCount":1,"closeReason":"stop","deletionCounter":3,"endElapsedMs":12000,"endPhoneWallMs":1700000012262,"endWallMs":1700000012010,"eventCount":17,"installId":"install-abc","offsetUncertaintyMs":40,"parentTraceId":null,"phoneOffsetMs":250,"rawBytes":581,"recorded":"COMPLETE","revision":1,"snapshot":{"bindBackoffUntil":900,"coldStartGrace":false,"ctx":"REST","darkStreak":1,"exact":true,"gateKeptAt":[100,480],"gateLastKeptAt":480,"glance":{"bigTurnRad":1061997773,"bridgeMs":250,"capPerMin":4,"deadbandRadS":1028443341,"maxDtMs":100,"minBoutMs":300,"minBoutRad":1048911544,"noveltyMinRad":1050253722,"noveltyWindowMs":20000,"onsetRadS":1058642330,"releaseRadS":1050253722,"restCapPerMin":2,"settleMs":1500},"keptAt":[100,200],"lastBriefAt":450,"lastCheckHash":["1111222233334444","5555666677778888"],"lastKeyframeAt":500,"lastPhotoAttemptAtMs":250,"planGen":7,"planHash":"abc123def456","pose":{"quietSinceMs":800,"qx":1036831949,"qy":0,"qz":-1110651699,"rx":1056964608,"ry":-1098907648,"rz":0,"walked":true},"resting":true,"ring":[["0123456789abcdef","fedcba9876543210"]],"sampleEvery":1,"settingsHash":"a1b2c3d4e5f6","startups":[300,420,510],"stillStep":2,"tier":"T0"},"startElapsedMs":1000,"startPhoneWallMs":1700000001250,"startWallMs":1700000001000,"traceId":"trace-0001-golden","traceSchema":1,"traceSha256":"$GOLDEN_TRACE_SHA"}"""
+    val goldenManifest = """{"bootId":"42","chunkCount":1,"closeReason":"stop","deletionCounter":3,"endElapsedMs":12000,"endPhoneWallMs":1700000012262,"endWallMs":1700000012010,"eventCount":17,"installId":"install-abc","offsetUncertaintyMs":40,"parentTraceId":null,"phoneOffsetMs":250,"rawBytes":599,"recorded":"COMPLETE","revision":1,"snapshot":{"bindBackoffUntil":900,"coldStartGrace":false,"ctx":"REST","darkStreak":1,"exact":true,"gateKeptAt":[100,480],"gateLastKeptAt":480,"glance":{"bigTurnRad":1061997773,"bridgeMs":250,"capPerMin":4,"deadbandRadS":1028443341,"maxDtMs":100,"minBoutMs":300,"minBoutRad":1048911544,"noveltyMinRad":1050253722,"noveltyWindowMs":20000,"onsetRadS":1058642330,"releaseRadS":1050253722,"restCapPerMin":2,"settleMs":1500},"keptAt":[100,200],"lastBriefAt":450,"lastCheckHash":["1111222233334444","5555666677778888"],"lastKeyframeAt":500,"lastPhotoAttemptAtMs":250,"planGen":7,"planHash":"abc123def456","pose":{"quietSinceMs":800,"qx":1036831949,"qy":0,"qz":-1110651699,"rx":1056964608,"ry":-1098907648,"rz":0,"walked":true},"resting":true,"ring":[["0123456789abcdef","fedcba9876543210"]],"sampleEvery":1,"settingsHash":"a1b2c3d4e5f6","startups":[300,420,510],"stillStep":2,"tier":"T0"},"startElapsedMs":1000,"startPhoneWallMs":1700000001250,"startWallMs":1700000001000,"traceId":"trace-0001-golden","traceSchema":1,"traceSha256":"$GOLDEN_TRACE_SHA"}"""
 
     fun gzipB64(raw: ByteArray): String {
         val bo = ByteArrayOutputStream()

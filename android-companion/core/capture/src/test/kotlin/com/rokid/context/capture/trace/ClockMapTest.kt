@@ -19,8 +19,8 @@ class ClockMapTest {
         assertEquals(1_700_000_012_010, map.glassesWall(12_000, boot))                     // end sample
         assertEquals(off0 + 6_500 + 5, map.glassesWall(6_500, boot))                       // midpoint: half the 10 ms drift
         assertEquals(1_700_000_001_000 + 250, map.phoneWall(1000, boot))                   // the phone offset is added
-        assertEquals(1_700_000_012_010 + 250, map.phoneWall(12_000, boot))
-        assertEquals(off0 + 6_500 + 5 + 250, map.phoneWall(6_500, boot))
+        assertEquals(1_700_000_012_010 + 252, map.phoneWall(12_000, boot))
+        assertEquals(off0 + 6_500 + 5 + 251, map.phoneWall(6_500, boot))
     }
 
     @Test fun holdsTheNearestOffsetForASmallOvershootOnly() {
@@ -77,8 +77,11 @@ class ClockMapTest {
         assertEquals(1_700_000_001_000 + 250, sampled.phoneWall(1000, boot))
         assertEquals(1_700_000_012_010 + 252, sampled.phoneWall(12_000, boot))
         assertEquals(off0 + 6_500 + 5 + 251, sampled.phoneWall(6_500, boot))
-        // an intake offset wins when present
-        assertEquals(1_700_000_001_000 + 250, map.phoneWall(1000, boot))
+        // the trace's own samples win over the intake offset (wall clock corrected between recording and intake), which is only the fallback
+        val staleIntake = ClockMap.of(m.copy(phoneOffsetMs = 9_999))
+        assertEquals(1_700_000_001_000 + 250, staleIntake.phoneWall(1000, boot))
+        assertEquals(1_700_000_012_010 + 252, staleIntake.phoneWall(12_000, boot))
+        assertEquals(1_700_000_001_000 + 9_999, ClockMap.of(m.copy(phoneOffsetMs = 9_999, startPhoneWallMs = null, endPhoneWallMs = null)).phoneWall(1000, boot))
         // neither: no phone time
         assertNull(ClockMap.of(m.copy(phoneOffsetMs = null, offsetUncertaintyMs = null, startPhoneWallMs = null, endPhoneWallMs = null)).phoneWall(1000, boot))
     }

@@ -95,14 +95,21 @@ sealed interface TraceEvent {
      * `pf`: the effective [com.rokid.context.glasses.capture.session.CaptureProfile] inputs after plan, heat and battery rules. [walkMs] null = no
      * walk check. [quickLookMs] is the settings Quick look (`CameraPolicy.holdMs` input). It must not change inside one trace: a settings edit
      * closes the trace ([CloseReason.SETTINGS]).
+     *
+     * This is the EFFECTIVE profile the session decides with, i.e. AFTER `CaptureProfile.forRest()` when resting (the `rs` event is a separate fact for
+     * `onDwell`/cap choice; replay must NOT apply `forRest` again to a `pf`). [ctxCap] (null = none) and [hard] are the effective context cap and hard flag
+     * (`ActiveConfig.contextCap(state)` after the plan table), so `capNow = min(glance cap for rest/normal, ctxCap)` and `hardNow` for `onDwell`,
+     * `timerHoldUntil` and `flushWindow` (which have no `sc`) are replayable from `snapshot.glance` + `rs` + `pf` without resolving the plan JSON.
+     * The recorder appends a new `pf` whenever any of these change (context, rest, heat, battery).
      */
     data class Profile(
         override val tMs: Long, val wake: CameraWake, val settledMs: Long, val quietMs: Long, val walkMs: Long?, val stillCapMs: Long,
         val analysisMs: Long, val tier: BudgetTier, val lowPower: Boolean, val heatSlow: Boolean, val quickLookMs: Long,
+        val ctxCap: Int?, val hard: Boolean,
     ) : TraceEvent {
         init {
             ms(tMs, "tMs"); ms(settledMs, "settledMs"); ms(quietMs, "quietMs"); walkMs?.let { ms(it, "walkMs") }; ms(stillCapMs, "stillCapMs"); ms(analysisMs, "analysisMs")
-            ms(quickLookMs, "quickLookMs")
+            ms(quickLookMs, "quickLookMs"); ctxCap?.let { require(it in 0..100_000) { "ctxCap" } }
         }
     }
 
@@ -133,19 +140,26 @@ sealed interface TraceEvent {
     /**
      * `sc`: one scored frame (blur failures included). [d] and [p] are the 64-bit dHash and pHash; [seq] is the session frame number.
      * [cap] and [hard] are the rate cap handed to `KeyframeGate.offerScored(..., cap, hard, nowMs)` (null = uncapped), so replay needs no
-     * context or plan re-derivation. [tMs] is the append time; the gate's own `now` is the clock at the offer, within the same lock.
+     * context or plan re-derivation. [tMs] is the append time; [nowMs] is the session clock the gate saw (`clock()` at the offer, passed to
+     * `offerScored(..., nowMs)`), so replay reproduces rate-cap, throttle and window boundaries exactly. `captureNow` has no event of its own: the
+     * request is the `ep` open with cause `now` (when the camera was closed) and the frame it produces is the `sc` with [force] true.
      */
     data class Score(
         override val tMs: Long, val seq: Long, val d: Long, val p: Long, val blur: Float, val passedBlur: Boolean, val motion: MotionState,
-        val dwellArmed: Boolean, val force: Boolean, val cap: Int?, val hard: Boolean,
+        val dwellArmed: Boolean, val force: Boolean, val cap: Int?, val hard: Boolean, val nowMs: Long,
     ) : TraceEvent {
-        init { ms(tMs, "tMs"); ms(seq, "seq"); finite(blur, "blur"); cap?.let { require(it in 0..100_000) { "cap" } } }
+        init { ms(tMs, "tMs"); ms(seq, "seq"); ms(nowMs, "nowMs"); finite(blur, "blur"); cap?.let { require(it in 0..100_000) { "cap" } } }
     }
 
-    /** `gt`: what the gate decided for [seq]: KEEP (reason "") or SKIP (reason one of [GATE_SKIP_REASONS]). */
-    data class Gate(override val tMs: Long, val seq: Long, val outcome: GateOutcome, val reason: String) : TraceEvent {
+    /**
+     * `gt`: what the gate decided for [seq]: KEEP (reason "") or SKIP (reason one of [GATE_SKIP_REASONS]). The recorder appends it AFTER the encode attempt:
+     * [encoded] is false only for a KEEP whose JPEG encode failed (the gate recorded the keep but the session's `lastKeyframeAt`/`keptAt` were NOT updated);
+     * it is true for every other event.
+     */
+    data class Gate(override val tMs: Long, val seq: Long, val outcome: GateOutcome, val reason: String, val encoded: Boolean = true) : TraceEvent {
         init {
             ms(tMs, "tMs"); ms(seq, "seq"); token(reason, "reason")
+            require(encoded || outcome == GateOutcome.KEEP) { "only a keep can fail to encode" }
             when (outcome) {
                 GateOutcome.KEEP -> require(reason.isEmpty()) { "a keep has no reason" }
                 GateOutcome.SKIP -> require(reason in GATE_SKIP_REASONS) { "unknown skip reason" }
@@ -165,6 +179,8 @@ sealed interface TraceEvent {
     /**
      * `dk`: the consecutive unusable (dark, no copy, blurred-and-settled) brief checks count changed ([streak], 0 after a usable brief frame).
      * `quiet = streak >= 3` is a `CameraPolicy.decide` input; dark frames never reach the gate, so no `sc` records them.
+     * The live counter is unbounded but only `>= 3` matters, so the recorder CLAMPS to [MAX_DARK_STREAK] ([clampDarkStreak]) here and in
+     * `StartSnapshot.darkStreak`; an unclamped value is refused.
      */
     data class DarkStreak(override val tMs: Long, val streak: Int) : TraceEvent { init { ms(tMs, "tMs"); require(streak in 0..MAX_DARK_STREAK) { "streak" } } }
 
@@ -176,6 +192,9 @@ sealed interface TraceEvent {
 }
 
 const val MAX_DARK_STREAK = 1_000
+
+/** The recorder's clamp for the unbounded dark-streak counter (only >= 3 matters). */
+fun clampDarkStreak(live: Int): Int = live.coerceIn(0, MAX_DARK_STREAK)
 
 /** `sampleEvery` applies only to `g` and `a`; every other event is always recorded. */
 val TraceEvent.isSensorSample: Boolean get() = this is TraceEvent.Gyro || this is TraceEvent.Accel
@@ -209,7 +228,8 @@ data class PoseSnapshot(
 /**
  * FROZEN (trace schema 1). The state the recorder captures at the clean boundary, so an exact replay starts from the same state.
  * Clean boundary (S65): the recorder starts only when the detector is QUIET, no camera episode is open and the gate window is empty;
- * the first 10 s are a pre-roll ([TraceBounds.PRE_ROLL_MS]) that refills the classifier windows. The recorder must also append `Ctx`,
+ * the first 10 s are a pre-roll ([TraceBounds.PRE_ROLL_MS]) that refills the classifier windows. Capture is also UNBLOCKED at the start (no pause, wear gate or
+ * camera-busy block): the recorder starts only then, so there is no initial `bl`; a later block or unblock is a `bl` event. The recorder must also append `Ctx`,
  * `Resting`, `Profile`, `GateParams` and `Plan` events at the start time (`tMs == startElapsedMs`, checked by [TraceAssembler]), so a replay needs
  * nothing but this snapshot and the events. All times are glasses elapsed ms of the trace's boot.
  *
@@ -238,7 +258,7 @@ data class StartSnapshot(
     val stillStep: Int,
     /** `lastCheckHash` (dHash, pHash of the previous brief check), or null. */
     val lastCheckHash: RingHash?,
-    /** Consecutive unusable brief checks (quiet when >= 3). */
+    /** Consecutive unusable brief checks (quiet when >= 3), clamped to [MAX_DARK_STREAK] by the recorder ([clampDarkStreak]). */
     val darkStreak: Int,
     /** `bindBackoffUntil`, or null when none is pending. */
     val bindBackoffUntil: Long?,
@@ -300,11 +320,11 @@ object EventCodec {
     /** The frozen field names per tag (after the tag and `tMs`), in wire order. */
     val FIELDS: Map<String, List<String>> = linkedMapOf(
         "g" to listOf("sMs", "x", "y", "z"), "a" to listOf("sMs", "x", "y", "z"), "cx" to listOf("state"), "rs" to listOf("on"),
-        "pf" to listOf("wake", "settledMs", "quietMs", "walkMs", "stillCapMs", "analysisMs", "tier", "lowPower", "heatSlow", "quickLookMs"),
+        "pf" to listOf("wake", "settledMs", "quietMs", "walkMs", "stillCapMs", "analysisMs", "tier", "lowPower", "heatSlow", "quickLookMs", "ctxCap", "hard"),
         "gp" to listOf("hamming", "bigChange", "ringAll"), "pl" to listOf("gen", "configHash", "mode"),
         "ep" to listOf("open", "cause", "firstFrameAtMs", "openedAtMs", "outcome"),
-        "sc" to listOf("seq", "d", "p", "blur", "passedBlur", "motion", "dwellArmed", "force", "cap", "hard"),
-        "gt" to listOf("seq", "outcome", "reason"), "fl" to listOf("reason"), "bo" to listOf("stillStep"), "bl" to listOf("reason"),
+        "sc" to listOf("seq", "d", "p", "blur", "passedBlur", "motion", "dwellArmed", "force", "cap", "hard", "nowMs"),
+        "gt" to listOf("seq", "outcome", "reason", "encoded"), "fl" to listOf("reason"), "bo" to listOf("stillStep"), "bl" to listOf("reason"),
         "dk" to listOf("streak"), "pr" to emptyList(), "cl" to listOf("reason"),
     )
 
@@ -335,7 +355,7 @@ object EventCodec {
             is TraceEvent.Resting -> { head("rs"); flag(e.on) }
             is TraceEvent.Profile -> {
                 head("pf"); str(e.wake.name); num(e.settledMs); num(e.quietMs); nul(e.walkMs); num(e.stillCapMs); num(e.analysisMs)
-                str(e.tier.name); flag(e.lowPower); flag(e.heatSlow); num(e.quickLookMs)
+                str(e.tier.name); flag(e.lowPower); flag(e.heatSlow); num(e.quickLookMs); nul(e.ctxCap?.toLong()); flag(e.hard)
             }
             is TraceEvent.GateParams -> { head("gp"); num(e.hamming.toLong()); num(e.bigChange.toLong()); flag(e.ringAll) }
             is TraceEvent.Plan -> { head("pl"); num(e.gen); str(e.configHash); str(e.mode.name) }
@@ -343,9 +363,9 @@ object EventCodec {
                 if (e.outcome == null) sb.append(",null") else str(e.outcome.name.lowercase())
             }
             is TraceEvent.Score -> {
-                head("sc"); num(e.seq); hex(e.d); hex(e.p); bits(e.blur); flag(e.passedBlur); str(e.motion.name); flag(e.dwellArmed); flag(e.force); nul(e.cap?.toLong()); flag(e.hard)
+                head("sc"); num(e.seq); hex(e.d); hex(e.p); bits(e.blur); flag(e.passedBlur); str(e.motion.name); flag(e.dwellArmed); flag(e.force); nul(e.cap?.toLong()); flag(e.hard); num(e.nowMs)
             }
-            is TraceEvent.Gate -> { head("gt"); num(e.seq); str(e.outcome.name.lowercase()); str(e.reason) }
+            is TraceEvent.Gate -> { head("gt"); num(e.seq); str(e.outcome.name.lowercase()); str(e.reason); flag(e.encoded) }
             is TraceEvent.Flush -> { head("fl"); str(e.reason) }
             is TraceEvent.Backoff -> { head("bo"); num(e.stillStep.toLong()) }
             is TraceEvent.Blocked -> { head("bl"); if (e.reason == null) sb.append(",null") else str(e.reason) }
@@ -387,12 +407,12 @@ object EventCodec {
             "a" -> TraceEvent.Accel(t, long(), float(), float(), float())
             "cx" -> TraceEvent.Ctx(t, en(ContextState.values()))
             "rs" -> TraceEvent.Resting(t, bool())
-            "pf" -> TraceEvent.Profile(t, en(CameraWake.values()), long(), long(), longOrNull(), long(), long(), en(BudgetTier.values()), bool(), bool(), long())
+            "pf" -> TraceEvent.Profile(t, en(CameraWake.values()), long(), long(), longOrNull(), long(), long(), en(BudgetTier.values()), bool(), bool(), long(), longOrNull()?.also { if (it !in 0..100_000) bad() }?.toInt(), bool())
             "gp" -> TraceEvent.GateParams(t, int(), int(), bool())
             "pl" -> TraceEvent.Plan(t, long(), str(), en(PlanMode.values()))
             "ep" -> TraceEvent.Episode(t, bool(), en(EpisodeCause.values(), lower = true), longOrNull(), longOrNull(), enOrNull(EpisodeOutcome.values()))
-            "sc" -> TraceEvent.Score(t, long(), hex(), hex(), float(), bool(), en(MotionState.values()), bool(), bool(), longOrNull()?.also { if (it !in 0..100_000) bad() }?.toInt(), bool())
-            "gt" -> TraceEvent.Gate(t, long(), en(GateOutcome.values(), lower = true), str())
+            "sc" -> TraceEvent.Score(t, long(), hex(), hex(), float(), bool(), en(MotionState.values()), bool(), bool(), longOrNull()?.also { if (it !in 0..100_000) bad() }?.toInt(), bool(), long())
+            "gt" -> TraceEvent.Gate(t, long(), en(GateOutcome.values(), lower = true), str(), bool())
             "fl" -> TraceEvent.Flush(t, str())
             "bo" -> TraceEvent.Backoff(t, int())
             "bl" -> TraceEvent.Blocked(t, strOrNull())

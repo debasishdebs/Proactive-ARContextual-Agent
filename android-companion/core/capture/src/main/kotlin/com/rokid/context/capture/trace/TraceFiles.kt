@@ -65,7 +65,7 @@ object TraceFiles {
     private val CHUNK_FILE = Regex("chunk-([0-9]{4})\\.json")
 
     fun dirName(traceId: String): String { require(TraceBounds.isTraceId(traceId)) { "traceId" }; return traceId }
-    fun chunkFile(seq: Int): String { require(seq in 0 until TraceBounds.MAX_CHUNKS) { "seq" }; return "chunk-%04d.json".format(seq) }
+    fun chunkFile(seq: Int): String { require(seq in 0 until TraceBounds.MAX_CHUNKS) { "seq" }; return String.format(java.util.Locale.ROOT, "chunk-%04d.json", seq) }
 
     fun encodeFile(c: TraceChunk): String = JSON.encodeToString(TraceChunk.serializer(), c)
 
@@ -99,6 +99,19 @@ object TraceFiles {
 }
 
 /**
+ * Replay equality rule for Task 20 (I3). What the recorded data supports: the gate is replayed EXACTLY (`sc.nowMs`, `sc.cap/hard`, `pf` context cap, the
+ * snapshot): every `gt` outcome and reason must be equal, and `gt.encoded` says whether the session's keyframe bookkeeping advanced. Camera opens depend on the
+ * session tick clock, which is not recorded (only the append time of the `ep` open is): a replayed open MATCHES a recorded one when the cause is equal and
+ * the open times differ by at most [OPEN_TOLERANCE_MS] (max of the 250 ms session tick and the append lag). Opens with no counterpart either way are mismatches.
+ */
+object ReplayRule {
+    const val OPEN_TOLERANCE_MS = 250L
+    fun opensMatch(recordedAtMs: Long, recordedCause: EpisodeCause, replayedAtMs: Long, replayedCause: EpisodeCause): Boolean =
+        recordedCause == replayedCause && Math.abs(recordedAtMs - replayedAtMs) <= OPEN_TOLERANCE_MS
+    fun gatesMatch(a: TraceEvent.Gate, b: TraceEvent.Gate): Boolean = a.seq == b.seq && a.outcome == b.outcome && a.reason == b.reason && a.encoded == b.encoded
+}
+
+/**
  * Every input the glasses scheduler reads (`CameraPolicy.decide`, the `SamplingSession` loop and `KeyframeGate.offerScored`) and where the trace
  * carries it (C2). A value is `tag.field` (an event), `snapshot.key` (the manifest snapshot) or `derived:...` (recomputed by replay from the others).
  * Task 20's replay may rely on exactly these; a new scheduler input means a schema bump.
@@ -114,7 +127,7 @@ object SchedulerInputs {
         "session.startups" to "snapshot.startups", "session.openedAt" to "ep.openedAtMs", "session.firstFrameAt" to "ep.firstFrameAtMs",
         "session.episodeOutcome" to "ep.outcome", "session.lastKeyframeAt" to "snapshot.lastKeyframeAt", "session.keptAt" to "snapshot.keptAt",
         "session.pose" to "snapshot.pose", "session.lastPhotoAttemptAtMs" to "snapshot.lastPhotoAttemptAtMs", "session.cause" to "ep.cause",
-        "gate.cap" to "sc.cap", "gate.hard" to "sc.hard", "gate.force" to "sc.force", "gate.dwellArmed" to "sc.dwellArmed", "gate.motion" to "sc.motion",
+        "gate.cap" to "sc.cap", "gate.hard" to "sc.hard", "gate.nowMs" to "sc.nowMs", "dwell.ctxCap" to "pf.ctxCap", "dwell.hard" to "pf.hard", "session.keepEncoded" to "gt.encoded", "session.captureNow" to "ep.cause", "gate.force" to "sc.force", "gate.dwellArmed" to "sc.dwellArmed", "gate.motion" to "sc.motion",
         "gate.lastKeptAt" to "snapshot.gateLastKeptAt", "gate.keptTimes" to "snapshot.gateKeptAt", "gate.ring" to "snapshot.ring", "gate.params" to "gp.hamming",
         "gate.scoreHashes" to "sc.d",
     )
