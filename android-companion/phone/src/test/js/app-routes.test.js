@@ -116,4 +116,19 @@ export const tests = {
     eq(b.env.confirms, ['Unsaved!']);
     ok(b.root.children.length > 0 && !E.textOf(b.root).includes('Pair this browser'), 'still signed in');
   },
+  // LAST: it signs the shared boot out.
+  async lateAsksResponseNeverReplacesThePairingScreenAfterSignOut() {
+    const b = await boot();
+    b.env.confirmAnswer = true; b.app.ctx.guard(() => null); // an earlier test left an unsaved-changes guard behind
+    await visit(b, '#/');
+    let release; const gate = new Promise((r) => { release = r; });
+    b.table['GET /api/asks'] = async () => { await gate; return [{ id: 'a9', ts: 1, question: 'PRIVATE QUESTION', answer: 'PRIVATE ANSWER', rating: null, redacted: false }]; };
+    globalThis.location.hash = '#/asks'; await E.settle(200);   // the request is now in flight
+    E.click(E.buttons(b.nav, 'Sign out')[0]); await E.settle(100);
+    ok(E.textOf(b.root).includes('Pair this browser'), 'pairing is shown');
+    release(); await E.settle(200);
+    ok(E.textOf(b.root).includes('Pair this browser'), 'the pairing screen was replaced by a late response');
+    ok(!E.textOf(b.root).includes('PRIVATE'), 'private text was painted after sign out');
+    eq(b.banner.hidden, true, 'a stale result showed an error: ' + E.textOf(b.banner));
+  },
 };
