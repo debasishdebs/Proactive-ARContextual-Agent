@@ -218,7 +218,16 @@ data class HudSettings(
     val motionSourcesOff: List<String> = emptyList(),
     /** Slice 3a, additive: a new phone sets true (it speaks `pc_capture_plan`). Glasses holding a persisted plan that see false revert to settings (`auto:old_phone`). */
     val planAware: Boolean = false,
+    /** Wear fallback, additive: park (pause) after a still run when no wear signal says otherwise. false = never by stillness (`pc_wear` still works). */
+    val wearParkEnabled: Boolean = true,
+    /** Wear fallback, additive: still seconds before parking while the wear signal is unknown ([WEAR_PARK_MIN_SEC]..[WEAR_PARK_MAX_SEC], see [normalized]). */
+    val wearParkUnknownSec: Int = 120,
+    /** Wear fallback, additive: still seconds before parking while Rokid says worn (same range). */
+    val wearParkWornSec: Int = 600,
 )
+
+const val WEAR_PARK_MIN_SEC = 30
+const val WEAR_PARK_MAX_SEC = 1_800
 
 /** Wave A3, additive: training label for the motion feature log. */
 @Serializable enum class MotionLabel { NONE, SITTING, GLANCING, CHORES, EATING, WALKING, NOT_WORN }
@@ -257,6 +266,8 @@ fun HudSettings.normalized(): HudSettings {
         workMinutes = w, restMinutes = r, quickLookMs = QUICK_LOOK_MS_ALLOWED.nearest(quickLookMs),
         batteryTargetHours = BATTERY_TARGET_HOURS_ALLOWED.nearest(batteryTargetHours),
         motionSourcesOff = motionSourcesOff.filter { it != "glasses_imu" },
+        wearParkUnknownSec = wearParkUnknownSec.coerceIn(WEAR_PARK_MIN_SEC, WEAR_PARK_MAX_SEC),
+        wearParkWornSec = wearParkWornSec.coerceIn(WEAR_PARK_MIN_SEC, WEAR_PARK_MAX_SEC),
     )
 }
 

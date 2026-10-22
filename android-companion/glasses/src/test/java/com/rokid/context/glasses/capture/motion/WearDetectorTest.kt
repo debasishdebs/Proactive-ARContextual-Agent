@@ -78,4 +78,39 @@ class WearDetectorTest {
         w.onRemote(false); still(120)
         assertEquals("wear=false known=true parked=true", w.verdictLine())
     }
+
+    @Test fun customUnknownThresholdIsHonoured() {
+        val d = WearDetector().apply { config = { WearParkConfig(true, 30_000L, 600_000L) } }
+        for (i in 0 until 29) d.onSecond(0f, 0f, i * 1000L)
+        assertFalse(d.parked.value)
+        d.onSecond(0f, 0f, 29_000L); assertTrue(d.parked.value)
+    }
+
+    @Test fun customWornThresholdIsHonoured() {
+        val d = WearDetector().apply { config = { WearParkConfig(true, 120_000L, 300_000L) } }
+        d.onRemote(true)
+        for (i in 0 until 299) d.onSecond(0f, 0f, i * 1000L)
+        assertFalse(d.parked.value)
+        d.onSecond(0f, 0f, 299_000L); assertTrue(d.parked.value)
+    }
+
+    @Test fun disabledNeverParksByStillnessButPcWearStillWorks() {
+        val d = WearDetector().apply { config = { WearParkConfig(false, 120_000L, 600_000L) } }
+        for (i in 0 until 5_000) d.onSecond(0f, 0f, i * 1000L)
+        assertFalse(d.parked.value)
+        d.onRemote(false); assertFalse(d.worn.value)
+    }
+
+    @Test fun configIsReadLiveSoALaterPushApplies() {
+        var cfg = WearParkConfig(false, 120_000L, 600_000L)
+        val d = WearDetector().apply { config = { cfg } }
+        for (i in 0 until 200) d.onSecond(0f, 0f, i * 1000L)
+        assertFalse(d.parked.value)
+        cfg = WearParkConfig(true, 120_000L, 600_000L)
+        d.onSecond(0f, 0f, 200_000L); assertTrue(d.parked.value)
+    }
+
+    @Test fun defaultsAreTwoAndTenMinutes() {
+        assertEquals(WearParkConfig(true, 120_000L, 600_000L), WearParkConfig.DEFAULT)
+    }
 }

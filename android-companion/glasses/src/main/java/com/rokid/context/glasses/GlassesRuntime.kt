@@ -96,7 +96,7 @@ class GlassesRuntime private constructor(private val app: Context) {
     /** About a second of "photo sent" after a frame is buffered or delivered (Glance check, icon ring pulse). */
     val photoCue = PhotoCue(scope)
     /** One wear state for the process, fed by the phone's `pc_wear` (see [WearDetector]); the sampling session gates on it. */
-    val wear = com.rokid.context.glasses.capture.motion.WearDetector()
+    val wear = com.rokid.context.glasses.capture.motion.WearDetector().apply { config = { com.rokid.context.glasses.capture.motion.WearParkConfig.of(settingsCache.read()) } }
     /** The phone's `pc_phone_ctx` (in use = screen on and unlocked), debounced; the sampling session gates on it. */
     val phoneUse = com.rokid.context.glasses.capture.session.PhoneUse()
     /** Wave B: the phone motion hub's state (`pc_motion_ctx`) with its TTL and the local walking veto (spec 2026-10-21 §9.1). */

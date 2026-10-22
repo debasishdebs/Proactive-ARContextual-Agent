@@ -32,11 +32,14 @@ import java.io.File
 interface HudSettingsControl {
     val settings: StateFlow<HudSettings>
     fun update(transform: (HudSettings) -> HudSettings)
+    /** Phone clock ms since Hi Rokid's wear signal went missing; null = available. Default: available. */
+    val wearUnknownSince: StateFlow<Long?> get() = kotlinx.coroutines.flow.MutableStateFlow(null)
 }
 
 class HubHudSettings(private val hub: Hub) : HudSettingsControl {
     override val settings: StateFlow<HudSettings> get() = hub.hudSettings
     override fun update(transform: (HudSettings) -> HudSettings) = hub.updateSettings(transform)
+    override val wearUnknownSince: StateFlow<Long?> get() = hub.wearUnknownSince
 }
 
 /** Everything the Settings screens need (no DI in v1). Only this file may reach for process-wide graphs. */

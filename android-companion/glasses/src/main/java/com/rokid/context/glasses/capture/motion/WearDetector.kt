@@ -1,6 +1,7 @@
 package com.rokid.context.glasses.capture.motion
 
 import kotlinx.coroutines.flow.MutableStateFlow
+import com.rokid.context.core.model.normalized
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -10,6 +11,9 @@ import kotlinx.coroutines.flow.StateFlow
  * constant "far" on these glasses, so [onProximity] only records what it saw for the diagnostic log and never changes [worn].
  */
 class WearDetector(@Suppress("UNUSED_PARAMETER") clock: () -> Long = { 0L }) {
+    /** The active parking thresholds, read once a second (the cached settings; a new phone push applies at the next second). */
+    @Volatile var config: () -> WearParkConfig = { WearParkConfig.DEFAULT }
+
     private val _worn = MutableStateFlow(true)
     val worn: StateFlow<Boolean> = _worn
 
@@ -30,7 +34,8 @@ class WearDetector(@Suppress("UNUSED_PARAMETER") clock: () -> Long = { 0L }) {
         if (gyroMax < STILL_GYRO && accVariance < STILL_ACC_VAR) {
             if (stillSinceMs < 0) stillSinceMs = tMs
             val run = tMs - stillSinceMs + 1000L // the run includes the second just ended
-            _parked.value = run >= (if (known && _worn.value) PARK_WORN_MS else PARK_UNKNOWN_MS)
+            val c = config()
+            _parked.value = c.enabled && run >= (if (known && _worn.value) c.wornMs else c.unknownMs)
         } else {
             stillSinceMs = -1L
             _parked.value = false
@@ -57,5 +62,13 @@ class WearDetector(@Suppress("UNUSED_PARAMETER") clock: () -> Long = { 0L }) {
         const val STILL_ACC_VAR = 0.01f
         const val PARK_UNKNOWN_MS = 120_000L
         const val PARK_WORN_MS = 600_000L
+    }
+}
+
+/** Park-when-still thresholds: [enabled] false never parks by stillness; [unknownMs] while the wear signal is unknown, [wornMs] while Rokid says worn. */
+data class WearParkConfig(val enabled: Boolean, val unknownMs: Long, val wornMs: Long) {
+    companion object {
+        val DEFAULT = WearParkConfig(true, WearDetector.PARK_UNKNOWN_MS, WearDetector.PARK_WORN_MS)
+        fun of(s: com.rokid.context.core.model.HudSettings) = s.normalized().let { WearParkConfig(it.wearParkEnabled, it.wearParkUnknownSec * 1000L, it.wearParkWornSec * 1000L) }
     }
 }
