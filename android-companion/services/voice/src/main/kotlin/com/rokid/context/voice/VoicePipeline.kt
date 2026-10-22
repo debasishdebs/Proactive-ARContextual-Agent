@@ -34,6 +34,7 @@ class VoicePipeline(
     private val onFallbackSuspected: () -> Unit = {},
     private val timings: VoiceTimings = VoiceTimings(),
     private val log: (String) -> Unit = {},
+    private val interceptor: UtteranceInterceptor = UtteranceInterceptor.PASS_THROUGH,
 ) {
     private val _state = MutableStateFlow<VoiceState>(VoiceState.Idle)
     val state: StateFlow<VoiceState> = _state.asStateFlow()
@@ -173,7 +174,7 @@ class VoicePipeline(
             delay(timings.finalTimeoutMs)
             val heard = (_state.value as? VoiceState.Listening)?.partial.orEmpty()
             val silent = session
-            onFinal(g, if (heard.isNotEmpty()) SttResult.Text(heard) else SttResult.NoSpeech, finalTimedOut = true)
+            onFinal(g, if (heard.isNotEmpty()) SttResult.Text(heard, genuineFinal = false) else SttResult.NoSpeech, finalTimedOut = true)
             // No final came: release the recognizer, its pipe and pump. After onFinal, so a late final it may send is inert.
             log("no final: session cancelled")
             silent?.cancel()
@@ -193,7 +194,7 @@ class VoicePipeline(
         session = null
         timer?.cancel(); maxTimer?.cancel()
         when (result) {
-            is SttResult.Text -> think(g, s.source, result.text)
+            is SttResult.Text -> think(g, s.source, result.text, result.genuineFinal)
             SttResult.NoSpeech, SttResult.Failed -> {
                 val why = when {
                     finalTimedOut -> VoiceOutcome.NO_FINAL
@@ -212,9 +213,20 @@ class VoicePipeline(
         }
     }
 
-    private fun think(g: Long, source: VoiceSource, transcript: String) {
-        val question = VoiceText.clean(transcript)
+    private fun think(g: Long, source: VoiceSource, transcript: String, genuineFinal: Boolean) {
+        var question = VoiceText.clean(transcript)
         if (question.isEmpty()) { problem(g, source, VoiceOutcome.NO_SPEECH, VoiceCopy.COULDNT_HEAR_HUD, VoiceCopy.COULDNT_HEAR_PHONE); return }
+        // Before Thinking is published: a handled utterance never shows Thinking and never reaches the answerer.
+        when (val r = try { interceptor.intercept(question, source, genuineFinal) } catch (e: Exception) {
+            log("interceptor failed (${e.javaClass.simpleName})"); InterceptResult.PassThrough
+        }) {
+            InterceptResult.PassThrough -> Unit
+            InterceptResult.Handled -> { outcome(VoiceOutcome.MARKED, source); set(VoiceState.Idle); return }
+            is InterceptResult.Ask -> {
+                question = VoiceText.clean(r.question)
+                if (question.isEmpty()) { outcome(VoiceOutcome.MARKED, source); set(VoiceState.Idle); return }
+            }
+        }
         set(VoiceState.Thinking(source, question))
         work = scope.launch {
             val r = try {
@@ -357,6 +369,8 @@ enum class VoiceOutcome {
     BLOCKED,
     /** The other source was listening or thinking: no listen started. */
     BUSY,
+    /** An [UtteranceInterceptor] consumed the utterance: no model call. */
+    MARKED,
     /** A new listen replaced one still listening or thinking. */
     SUPERSEDED,
 }
