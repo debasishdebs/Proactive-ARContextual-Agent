@@ -4,7 +4,7 @@
 // so this module (and app.js, which imports it) loads without them. Text from the API is only ever a React text child.
 import * as L from './editorlogic.js';
 import { canConnect } from './flowadapter.js';
-import { validateDraft, saveDraft, freezeDraft } from './editorflow.js';
+import { validateDraft, saveDraft, freezeDraft, compileDraft } from './editorflow.js';
 
 /**
  * opts: { api, pipeline: {id, pipe, draftRev, layout, problems, activePrompts}, nodeTypes, readOnly, onDraft({pipe, dirty}), onError(e) }
@@ -24,19 +24,49 @@ export function mountEditor(el, opts) {
   // ---- one node on the canvas
   const NodeCard = ({ id, data }) => {
     const probs = data.problems || [];
-    const cls = ['node-card', data.pending ? 'pending' : '', probs.length ? 'has-problem' : '', data.role ? 'role-' + data.role : ''].filter(Boolean).join(' ');
-    return html`<div className=${cls} aria-describedby=${probs.length ? 'prob-' + id : undefined}>
+    const warns = data.warnings || [];
+    const cls = ['node-card', data.pending ? 'pending' : '', probs.length ? 'has-problem' : '', warns.length ? 'has-warning' : '', 'lane-' + String(data.domain || 'ASYNC').toLowerCase(), data.role ? 'role-' + data.role : ''].filter(Boolean).join(' ');
+    return html`<div className=${cls} aria-describedby=${probs.length ? 'prob-' + id : warns.length ? 'warn-' + id : undefined}>
       <${RF.Handle} type="target" position=${RF.Position.Top} />
       <div className="nt">${data.title}</div>
       <div className="nk">${data.typeLabel}</div>
       ${probs.length ? html`<span className="badge" aria-hidden="true">${probs.length}</span>` : null}
+      ${warns.length ? html`<span className="badge warn" aria-hidden="true">${warns.length}</span>` : null}
       ${probs.length ? html`<ul id=${'prob-' + id} className="sr-only">${probs.map((t, i) => html`<li key=${i}>${t}</li>`)}</ul>` : null}
+      ${warns.length ? html`<ul id=${'warn-' + id} className="sr-only">${warns.map((t, i) => html`<li key=${i}>${t}</li>`)}</ul>` : null}
       <${RF.Handle} type="source" position=${RF.Position.Bottom} />
     </div>`;
   };
   const NODE_TYPES = { card: NodeCard };
 
   // ---- one inspector control: local text while typing, the draft only ever gets coerced values
+  // a table param: one row per activity, every cell its own tiny control; a refused value shows under the table
+  const TableControl = ({ spec, disabled, onCell }) => {
+    const t = spec.table;
+    const [err, setErr] = React.useState('');
+    return html`<div className="field table-field"><span>${spec.label}</span>
+      <p className="muted">${t.hint}</p>
+      <div className="table-scroll"><table className="params">
+        <thead>
+          ${t.groups.length ? html`<tr><th></th>${t.cols.map((c, i) => (c.group && (i === 0 || t.cols[i - 1].group !== c.group)
+            ? html`<th key=${c.name} colSpan=${t.groups.find((x) => x.label === c.group).span} scope="colgroup">${c.group}</th>`
+            : !c.group ? html`<th key=${c.name}></th>` : null))}</tr>` : null}
+          <tr><th scope="col">Activity</th>${t.cols.map((c) => html`<th key=${c.name} scope="col">${c.label}</th>`)}</tr>
+        </thead>
+        <tbody>${t.rows.map((r) => html`<tr key=${r.name}><th scope="row">${r.name}</th>${r.cells.map((cell, i) => {
+          const col = t.cols[i];
+          const label = r.name + ', ' + col.label;
+          return html`<td key=${cell.col}>${cell.control === 'select'
+            ? html`<select aria-label=${label} value=${cell.value} disabled=${disabled} onChange=${(e) => setErr(onCell(r.name, cell.col, e.target.value) || '')}>
+                ${cell.options.map((o) => html`<option key=${o.value} value=${o.value}>${o.label}</option>`)}</select>`
+            : html`<input type="number" aria-label=${label} placeholder=${cell.placeholder} min=${col.min} max=${col.max} defaultValue=${cell.value} disabled=${disabled}
+                onChange=${(e) => setErr(onCell(r.name, cell.col, e.target.value) || '')} />`}</td>`;
+        })}</tr>`)}</tbody>
+      </table></div>
+      ${err ? html`<span className="err" role="alert">${err}</span>` : null}
+    </div>`;
+  };
+
   const Control = ({ spec, disabled, onRaw, texts }) => {
     const [text, setText] = React.useState(spec.value);
     const [err, setErr] = React.useState('');
@@ -52,9 +82,9 @@ export function mountEditor(el, opts) {
     } else if (spec.control === 'textarea') {
       input = html`<textarea rows="6" spellCheck="false" value=${text} readOnly=${!!spec.readOnly} disabled=${disabled} onChange=${(e) => typed(e.target.value)} />`;
     } else {
-      input = html`<input type=${spec.control === 'number' ? 'number' : 'text'} min=${spec.min} max=${spec.max} value=${text} disabled=${disabled} onChange=${(e) => typed(e.target.value)} />`;
+      input = html`<input type=${spec.control === 'number' ? 'number' : 'text'} min=${spec.min} max=${spec.max} step=${spec.step} maxLength=${spec.maxLen} value=${text} disabled=${disabled} onChange=${(e) => typed(e.target.value)} />`;
     }
-    const hint = spec.control === 'number' && spec.min !== undefined ? ' (' + spec.min + '–' + spec.max + ')' : spec.control === 'labels' ? ' (comma separated)' : '';
+    const hint = (spec.control === 'number' && spec.min !== undefined ? ' (' + spec.min + '–' + spec.max + ')' : spec.control === 'labels' ? ' (comma separated)' : '') + (spec.sweep ? ' · can be swept' : '');
     return html`<label className="field"><span>${spec.label + hint}</span>${input}${err ? html`<span className="err" role="alert">${err}</span>` : null}</label>`;
   };
 
@@ -84,7 +114,10 @@ export function mountEditor(el, opts) {
       <${Control} key=${m.id + ':title'} spec=${{ label: 'Title', control: 'text', value: m.title }} disabled=${m.readOnly}
         onRaw=${(raw) => { const r = L.titleChange(store.get(), m.id, raw, nodeTypes); store.set(r.ed); return r.error; }} />
       ${m.fields.map((f) => html`<div key=${m.id + ':' + f.name}>
-        <${Control} spec=${Object.assign({ key: f.name }, f)} disabled=${m.readOnly} texts=${texts} onRaw=${change(f, null)} />
+        ${f.control === 'table'
+          ? html`<${TableControl} spec=${f} disabled=${m.readOnly}
+              onCell=${(row, col, raw) => { const r = L.tableChange(store.get(), m.id, f.name, row, col, raw, nodeTypes); store.set(r.ed); return r.error; }} />`
+          : html`<${Control} spec=${Object.assign({ key: f.name }, f)} disabled=${m.readOnly} texts=${texts} onRaw=${change(f, null)} />`}
         ${(f.parts || []).map((part) => html`<${Control} key=${m.id + ':' + f.name + ':' + part.part + ':' + f.value}
           spec=${Object.assign({ key: f.name + '.' + part.part }, part)} disabled=${m.readOnly} texts=${texts} onRaw=${change(f, part.part)} />`)}
       </div>`)}
@@ -110,6 +143,35 @@ export function mountEditor(el, opts) {
       <ul className="problems">${items.map((it, i) => html`<li key=${i}>${it.nodeId
         ? html`<button type="button" className="linkbtn" onClick=${() => { act((cur) => L.selectNode(cur, it.nodeId)); focusNode(it.nodeId); }}>${it.text}</button>`
         : it.text}</li>`)}</ul></section>`;
+  };
+
+  // the lanes (one per domain) and the named links between them
+  const Lanes = ({ ed }) => {
+    const lanes = L.lanesFor(ed, nodeTypes);
+    const binds = L.bindingsFor(ed, nodeTypes);
+    if (!lanes.length && !binds.length) return null;
+    return html`<section className="card lanes" aria-label="Lanes and bindings">
+      ${lanes.length ? html`<ul className="lane-legend">${lanes.map((l) => html`<li key=${l.domain} className=${'lane-chip lane-' + l.domain.toLowerCase()}>${l.label}</li>`)}</ul>` : null}
+      ${binds.length ? html`<h3>Bindings</h3><ul className="bindings">${binds.map((b) => html`<li key=${b.name} className=${b.state === 'bound' ? '' : 'warn-text'}>${b.text}</li>`)}</ul>` : null}
+    </section>`;
+  };
+
+  // compile checks the plan without saving; the draft is saved on its own
+  const CompilePanel = ({ ed, focusNode }) => {
+    const v = L.compileView(ed);
+    const running = !!v && v.state === 'running';
+    const focus = (id) => { act((cur) => L.selectNode(cur, id)); focusNode(id); };
+    const row = (it, i) => html`<li key=${i}>${it.nodeId ? html`<button type="button" className="linkbtn" onClick=${() => focus(it.nodeId)}>${it.text}</button>` : it.text}</li>`;
+    return html`<section className=${'card' + (v && v.state === 'done' && !v.ok ? ' warn' : '')} aria-label="Compile">
+      <h3>Compile</h3>
+      <p className="muted">Compile checks the plan without saving or sending it. Save the draft separately.</p>
+      <div className="row"><button type="button" className="btn" disabled=${running} onClick=${() => { compileDraft(store, api); }}>${running ? 'Compiling…' : 'Compile'}</button></div>
+      ${v && v.state === 'failed' ? html`<p className="err" role="alert">${v.message}</p>` : null}
+      ${v && v.state === 'done' ? html`<p className=${v.ok ? 'ok' : 'err'} role="status">${v.summary}</p>` : null}
+      ${v && v.note ? html`<p className="muted">${v.note}</p>` : null}
+      ${v && v.problems.length ? html`<ul className="problems">${v.problems.map(row)}</ul>` : null}
+      ${v && v.warnings.length ? html`<h4>Warnings</h4><ul className="warnings">${v.warnings.map(row)}</ul>` : null}
+    </section>`;
   };
 
   const Picker = ({ ed }) => {
@@ -196,7 +258,9 @@ export function mountEditor(el, opts) {
       </div>
       <p className="refusal" role="status" aria-live="polite">${ed.status}</p>
       <${Picker} ed=${ed} />
+      <${Lanes} ed=${ed} />
       <${Inspector} ed=${ed} />
+      <${CompilePanel} ed=${ed} focusNode=${focusNode} />
       <${Problems} ed=${ed} focusNode=${focusNode} />
     </div>`;
   };
@@ -210,6 +274,7 @@ export function mountEditor(el, opts) {
     leaveText: (what) => L.leaveText(store.get(), what),
     savedRev: () => store.get().ds.savedRev,
     save: () => saveDraft(store, api, p.id),
+    compile: () => compileDraft(store, api),
     freeze: (note) => freezeDraft(store, api, p.id, note),
     unmount() { off(); root.unmount(); },
   };

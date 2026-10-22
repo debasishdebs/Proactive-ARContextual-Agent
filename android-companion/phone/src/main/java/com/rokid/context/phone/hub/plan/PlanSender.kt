@@ -34,7 +34,7 @@ class PlanSender(
     private val clock: () -> Long = System::currentTimeMillis,
     /** Later (Task 13): the phone half of an accepted plan is applied on the phone. Called with the plan JSON, or null when the desired state is "use settings". */
     private val onDesired: (String?) -> Unit = {},
-) : PlanPublishPort {
+) : PlanPublishPort, com.rokid.context.canvas.plan.PlanTransport {
     private val lock = Any()
     private val _desired = MutableStateFlow(load())
     /** The `capturePlan` flow: the desired state, the message as last built (null = nothing was ever sent). */
@@ -54,6 +54,22 @@ class PlanSender(
         }
         runCatching { onDesired(planJson) }
         return PlanSendResult(msg.gen, push(msg))
+    }
+
+    /**
+     * The publish groups' way to the glasses (Task 26): any mode, with the group's publish id echoed in every ack. Like [sendShadow], the desired state is persisted and
+     * sent again at each session open. TRIAL/LIVE entry points are the later publish task's to expose.
+     */
+    override suspend fun send(mode: PlanMode, planJson: String?, configHash: String?, publishId: String, trialMaxMs: Long?): com.rokid.context.canvas.plan.SendOutcome {
+        val msg = synchronized(lock) {
+            val gen = prefs.getLong(KEY_GEN, 0L) + 1
+            val m = CapturePlanMessage(gen = gen, publishId = publishId, mode = mode, configHash = configHash, planJson = planJson, trialMaxMs = trialMaxMs, phoneInstall = install())
+            persist(m)
+            _desired.value = m
+            m
+        }
+        runCatching { onDesired(if (mode == PlanMode.SETTINGS) null else planJson) }
+        return com.rokid.context.canvas.plan.SendOutcome(msg.gen, push(msg))
     }
 
     /** Back to "use settings" (a new gen, so the glasses drop the plan). */

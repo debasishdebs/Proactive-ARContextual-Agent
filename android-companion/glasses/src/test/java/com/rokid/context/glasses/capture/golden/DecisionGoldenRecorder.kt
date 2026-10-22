@@ -43,9 +43,11 @@ object DecisionGoldenRecorder {
         sensorRate: (() -> com.rokid.context.glasses.capture.motion.SensorRate)? = null,
         /** True = the profile is composed the way CaptureService does for a plan (`ActiveConfig.profile`: forced SETTLE), not tier + row. */
         composeProfile: Boolean = false,
+        /** Slice 3a Task 23a: the IMU trace recorder to run beside the session (the caller adds it as a classifier tap in [onRig]). Null = none (the frozen goldens). */
+        trace: com.rokid.context.glasses.capture.trace.SessionTrace? = null,
     ): String {
         val plan = ScriptPlan().also { s.plan(Random(s.seed), it, s.durationMs) }
-        val r = Rig(test, s.settings, work = s.workMin, rest = s.restMin, glance = GlanceParams())
+        val r = Rig(test, s.settings, work = s.workMin, rest = s.restMin, glance = GlanceParams(), trace = trace)
         r.scene = 1
         onRig?.invoke(r)
         val ctl = planFor?.invoke(r)

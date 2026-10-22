@@ -1,6 +1,6 @@
 // The editor's async flows, pure over an injected `api(method, path, body)` and a store from editorlogic.createStore:
 // validate (stale replies dropped), save (CAS on the saved draft revision), and save-then-freeze under the edit lock.
-import { validationRequest, applyReply, markSaved, lockForSave, unlockAfterSave, isDirty, say } from './editorlogic.js';
+import { validationRequest, applyReply, markSaved, lockForSave, unlockAfterSave, isDirty, say, compileRequest, compileStart, applyCompile, compileFailed } from './editorlogic.js';
 
 const enc = encodeURIComponent;
 const fail = (e) => ({ ok: false, conflict: !!(e && e.status === 409), message: e && e.message ? String(e.message) : 'Request failed.', error: e });
@@ -15,6 +15,24 @@ export async function validateDraft(store, api) {
   } catch (e) { // the old layout and problems stay, and the editor says they may be stale
     const f = fail(e);
     store.update((ed) => say(ed, "Couldn't check the draft: " + f.message));
+    return f;
+  }
+}
+
+/**
+ * POST /api/plans/compile with the draft as it is now (saved or not): the route sends and stores nothing, and this never saves.
+ * The reply is shown for the revision it compiled; if the draft has moved on, the view says so.
+ */
+export async function compileDraft(store, api) {
+  store.update(compileStart);
+  const rev = store.get().compile.rev;
+  try {
+    const reply = await api('POST', '/api/plans/compile', compileRequest(store.get()));
+    store.update((ed) => applyCompile(ed, rev, reply));
+    return { ok: true, compiles: !!(reply && reply.ok) };
+  } catch (e) {
+    const f = fail(e);
+    store.update((ed) => compileFailed(ed, rev, "Couldn't compile the draft: " + f.message));
     return f;
   }
 }
