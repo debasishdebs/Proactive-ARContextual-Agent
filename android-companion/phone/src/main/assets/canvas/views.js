@@ -2,8 +2,10 @@
 import { h, clear, btn } from './dom.js';
 import { mountEditor } from './floweditor.js';
 import { photoThumb, openPhoto } from './photos.js';
+import { publishDialog, publishCard } from './versions.js';
+import { when, usageLine, branchText, compareSummary, tokenEstimateText } from './format.js';
+import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef } from './runlogic.js';
 
-const when = (ms) => (ms ? new Date(ms).toLocaleString() : '–');
 const pretty = (v) => JSON.stringify(v, null, 2);
 const enc = encodeURIComponent;
 const MAX_PHOTOS = 50;
@@ -26,6 +28,7 @@ export async function pipelinesView(ctx, root) {
   const lastRun = (id) => runs.filter((r) => r.pipelineId === id).sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))[0];
   clear(root);
   root.appendChild(h('h2', null, 'Pipelines'));
+  await publishCard(ctx, root);
   for (const p of list) {
     const lr = lastRun(p.id);
     root.appendChild(h('section', { class: 'card' },
@@ -155,27 +158,25 @@ export async function pipelineView(ctx, root, id) {
       h('strong', null, 'v' + v.version), data.live && data.live.version === v.version ? h('span', { class: 'tag live' }, 'LIVE') : null,
       h('span', { class: 'muted' }, (v.note || '') + ' · ' + when(v.frozenAt)),
       h('a', { class: 'btn', href: '#/run/new?p=' + enc(id) + '&v=' + v.version }, 'Run'),
-      btn('Publish', async () => {
-        if (!window.confirm('Publish v' + v.version + ' as the live prompts?')) return;
+      prevOf(data.versions, v.version) ? h('a', { class: 'btn', href: '#/p/' + enc(id) + '/diff?a=' + prevOf(data.versions, v.version) + '&b=' + v.version }, 'Diff with previous') : null,
+      h('a', { class: 'btn', href: '#/p/' + enc(id) + '/diff?a=' + v.version + '&b=draft' }, 'Diff with draft'),
+      btn('Publish', () => publishDialog(ctx, id, v.version, data, () => {
         // the publish re-renders this page: it must not silently drop unsaved canvas edits
         const lose = editor && editor.leaveText('Publishing reloads this page.');
-        if (lose && !window.confirm(lose)) return;
-        try {
-          const r = await ctx.api('POST', '/api/pipelines/' + enc(id) + '/versions/' + v.version + '/publish');
-          await ctx.reload();
-          ctx.showNotice('Published: ' + (r.keys || []).join(', '));
-        } catch (e) {
-          if (e.code === 'publish_blocked') ctx.showError({ message: 'Publish blocked.', problems: e.problems });
-          else ctx.showError(e);
-        }
-      })))));
+        return !(lose && !window.confirm(lose));
+      }))))));
 }
+
+/** The highest version below [v], or 0. */
+function prevOf(versions, v) { return Math.max(0, ...(versions || []).map((x) => x.version).filter((n) => n < v)); }
 
 // ---------------------------------------------------------------- run new
 
 export async function runNewView(ctx, root, pipelineId, version) {
   if (!pipelineId) { root.appendChild(h('p', null, 'Open a pipeline first.')); return; }
-  const st = { frames: [], selected: new Set(), done: false, dwell: false, motion: false };
+  const st = { frames: [], selected: new Set(), done: false, dwell: false, motion: false, day: '' };
+  let pipelines = [];
+  try { pipelines = await ctx.api('GET', '/api/pipelines'); } catch (e) { pipelines = []; } // only the A/B choices need it
   clear(root);
   root.appendChild(h('h2', null, 'New run'));
   const counter = h('span', { class: 'muted' });
@@ -213,6 +214,7 @@ export async function runNewView(ctx, root, pipelineId, version) {
     const q = new URLSearchParams({ limit: String(PAGE) });
     if (before !== null) q.set('before', String(before));
     if (st.dwell) q.set('dwell', 'true');
+    if (st.day) q.set('day', st.day);
     try {
       const got = await ctx.api('GET', '/api/frames?' + q.toString());
       const seen = new Set(st.frames.map((f) => f.id));
@@ -227,10 +229,16 @@ export async function runNewView(ctx, root, pipelineId, version) {
   dwell.addEventListener('change', () => { st.dwell = dwell.checked; st.frames = []; st.done = false; load(true); });
   const motion = h('input', { type: 'checkbox' });
   motion.addEventListener('change', () => { st.motion = motion.checked; drawGrid(); });
+  const day = h('input', { type: 'date', 'aria-label': 'Day' });
+  day.addEventListener('change', () => { st.day = day.value; st.frames = []; st.selected = new Set(); st.done = false; load(true); });
+  const baseRef = Object.assign({ pipelineId }, version ? { version: parseInt(version, 10) } : {});
+  const abSel = h('select', { 'aria-label': 'A/B against…' }, h('option', { value: '' }, 'A/B against…'),
+    abOptions(pipelines).map((o) => h('option', { value: o.value }, o.label)));
+  const refName = (r) => { const p = pipelines.find((x) => x.id === r.pipelineId); return (p ? p.name : r.pipelineId) + (r.version ? ' v' + r.version : ' (draft)'); };
   const newest = h('input', { type: 'number', min: 1, max: MAX_PHOTOS, value: 10, 'aria-label': 'How many newest photos' });
   root.appendChild(h('section', { class: 'card' },
     h('p', { class: 'muted' }, 'Pipeline ' + pipelineId + (version ? ' v' + version : ' (draft)')),
-    h('div', { class: 'row wrap' }, h('label', { class: 'inline' }, dwell, ' Dwell only'), h('label', { class: 'inline' }, motion, ' Motion only')),
+    h('div', { class: 'row wrap' }, h('label', { class: 'inline' }, dwell, ' Dwell only'), h('label', { class: 'inline' }, motion, ' Motion only'), h('label', { class: 'inline' }, 'Day ', day), abSel),
     h('div', { class: 'row wrap' }, newest, btn('Select newest N', () => {
       const n = Math.max(1, Math.min(MAX_PHOTOS, parseInt(newest.value, 10) || 1));
       st.selected = new Set(visible().slice().sort((a, b) => b.ts - a.ts).slice(0, n).map((f) => f.id));
@@ -242,18 +250,35 @@ export async function runNewView(ctx, root, pipelineId, version) {
   root.appendChild(h('div', { class: 'row sticky' }, btn('Estimate', async () => {
     const ids = visible().filter((f) => st.selected.has(f.id)).map((f) => f.id);
     if (!ids.length) { ctx.showNotice('Select at least one photo.'); return; }
+    const other = parseRef(abSel.value);
+    if (other) { await startAb(ids, other); return; }
     const body = { pipelineId, frameIds: ids };
     if (version) body.version = parseInt(version, 10);
     try {
       const e = await ctx.api('POST', '/api/runs/estimate', body);
-      const line = e.photos + ' photos · about ' + e.nominal + ' model calls (at most ' + e.max + ')';
-      const models = (e.models || []).map((m) => m.nodeId + ': ' + m.endpoint + ' / ' + m.model);
-      ctx.modal('Start this run?', h('div', null, h('p', null, line), models.length ? h('ul', null, models.map((m) => h('li', null, m))) : null), [
-        { label: 'Start', cls: 'btn primary', run: async (close) => {
-          try { const r = await ctx.api('POST', '/api/runs', Object.assign({ confirmToken: e.confirmToken }, body)); close(); ctx.go('#/run/' + enc(r.runId)); } catch (err) { close(); ctx.showError(err); }
-        } }]);
+      confirmStart(e, [], async () => { const r = await ctx.api('POST', '/api/runs', Object.assign({ confirmToken: e.confirmToken }, body)); ctx.go('#/run/' + enc(r.runId)); });
     } catch (err) { ctx.showError(err); }
   }, 'btn primary')));
+
+  /** One confirm for a run or an A/B pair: photos, calls, the model labels and (when the server has one) the token estimate. */
+  function confirmStart(e, head, start) {
+    const line = e.photos + ' photos · about ' + e.nominal + ' model calls (at most ' + e.max + ')';
+    const models = (e.models || []).map((m) => m.nodeId + ': ' + m.endpoint + ' / ' + m.model);
+    ctx.modal(head.length ? 'Start this A/B pair?' : 'Start this run?', h('div', null, head.map((t) => h('p', null, t)), h('p', null, line), h('p', { class: 'muted' }, tokenEstimateText(e.tokens)),
+      models.length ? h('ul', null, models.map((m) => h('li', null, m))) : null), [
+      { label: 'Start', cls: 'btn primary', run: async (close) => { try { await start(); close(); } catch (err) { close(); ctx.showError(err); } } }]);
+  }
+
+  async function startAb(ids, other) {
+    const body = { a: baseRef, b: other, frameIds: ids };
+    try {
+      const e = await ctx.api('POST', '/api/runs/estimate-ab', body);
+      confirmStart(e, ['A: ' + refName(baseRef), 'B: ' + refName(other)], async () => {
+        const r = await ctx.api('POST', '/api/runs/ab', Object.assign({ confirmToken: e.confirmToken }, body));
+        ctx.go('#/run/' + enc(r.runA));
+      });
+    } catch (err) { ctx.showError(err); }
+  }
   await load(true);
 }
 
@@ -306,6 +331,8 @@ export async function runView(ctx, root, runId) {
   let timer = null;
   let stopped = false;
   let drawnStatus = null;
+  let sawActive = false;
+  let attempt = 0;
   ctx.onLeave(() => { stopped = true; if (timer) clearTimeout(timer); });
   const scoreKey = (f, n) => f + '|' + n;
 
@@ -345,7 +372,8 @@ export async function runView(ctx, root, runId) {
     const scores = new Map((run.scores || []).map((s) => [scoreKey(s.frameId, s.nodeId), { score: s.score, note: s.note || '' }]));
     const frames = [];
     for (const i of items) if (!frames.includes(i.frameId)) frames.push(i.frameId);
-    const running = String(run.status).toUpperCase() === 'RUNNING';
+    const running = isActive(run.status);
+    const partner = partnerOf(others, run);
     clear(root);
     root.appendChild(h('h2', null, 'Run'));
     const pr = run.progress || { done: 0, total: 0 };
@@ -353,8 +381,11 @@ export async function runView(ctx, root, runId) {
       h('div', { class: 'row wrap' }, h('strong', null, String(run.status)), h('span', { class: 'muted' }, pr.done + ' / ' + pr.total + ' steps · ' + run.calls + ' calls · ' + run.failures + ' failures')),
       h('progress', { max: Math.max(1, pr.total), value: pr.done }),
       h('p', { class: 'muted' }, 'Pipeline ' + run.pipelineId + (run.version ? ' v' + run.version : ' (draft)') + ' · started ' + when(run.startedAt)),
+      h('p', null, usageLine(run.usage)),
+      branchText(run.branches).map((t) => h('p', { class: 'muted' }, t)),
+      partner ? h('p', null, 'A/B partner: ', h('a', { href: '#/run/' + enc(partner.runId) }, 'run ' + partner.runId), ' (' + partner.status + ')') : null,
       h('div', { class: 'row wrap' },
-        running ? btn('Cancel', async () => { try { await ctx.api('POST', '/api/runs/' + enc(runId) + '/cancel'); } catch (e) { ctx.showError(e); } }, 'btn danger') : null,
+        running ? btn(run.abGroup ? 'Cancel A/B pair' : 'Cancel', async () => { try { await ctx.api('POST', '/api/runs/' + enc(runId) + '/cancel'); } catch (e) { ctx.showError(e); } }, 'btn danger') : null,
         (() => {
           const sel = h('select', { 'aria-label': 'Compare with' }, h('option', { value: '' }, 'Compare with…'),
             others.filter((r) => r.runId !== runId).map((r) => h('option', { value: r.runId }, r.status + ' ' + when(r.startedAt))));
@@ -385,19 +416,30 @@ export async function runView(ctx, root, runId) {
     let run;
     try {
       run = await ctx.api('GET', '/api/runs/' + enc(runId));
-    } catch (e) { if (!stopped) ctx.showError(e); return; }
+      attempt = 0;
+    } catch (e) {
+      const wait = stopped ? null : retryDelay(attempt, e);
+      if (wait !== null) { attempt++; timer = setTimeout(() => tick(), wait); return; }
+      if (!stopped) ctx.showError(e);
+      return;
+    }
+    if (stopped) return;
+    let others = [];
+    try { others = await ctx.api('GET', '/api/runs'); } catch (e) { others = []; }
     if (stopped) return;
     const ae = document.activeElement;
     const editing = ae && root.contains(ae) && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.tagName === 'SELECT');
     if (!editing || !root.firstChild) {
-      let others = [];
-      try { others = await ctx.api('GET', '/api/runs'); } catch (e) { others = []; }
-      if (stopped) return;
       await draw(run, others);
       drawnStatus = String(run.status);
     }
-    // Poll until the status on screen is terminal, whether or not a field has focus.
-    if (String(run.status).toUpperCase() === 'RUNNING' || drawnStatus !== String(run.status)) timer = setTimeout(tick, 2000);
+    const partner = partnerOf(others, run);
+    const partnerActive = !!partner && isActive(partner.status);
+    if (isActive(run.status) || partnerActive) sawActive = true;
+    const pair = shouldAutoOpen(sawActive, run, partner) ? abPair(others, run.abGroup) : null;
+    if (pair) { ctx.go('#/compare?a=' + enc(pair.a) + '&b=' + enc(pair.b)); return; }
+    // Poll until the status on screen is terminal (and an A/B partner is), whether or not a field has focus.
+    if (isActive(run.status) || partnerActive || drawnStatus !== String(run.status)) timer = setTimeout(tick, 2000);
   }
   await tick();
 }
@@ -406,10 +448,18 @@ export async function runView(ctx, root, runId) {
 
 export async function compareView(ctx, root, a, b) {
   if (!a || !b) { root.appendChild(h('p', null, 'Pick two runs to compare.')); return; }
-  const data = await ctx.api('GET', '/api/compare?a=' + enc(a) + '&b=' + enc(b));
+  const [data, ra, rb] = await Promise.all([ctx.api('GET', '/api/compare?a=' + enc(a) + '&b=' + enc(b)),
+    ctx.api('GET', '/api/runs/' + enc(a)).catch(() => null), ctx.api('GET', '/api/runs/' + enc(b)).catch(() => null)]);
   clear(root);
   root.appendChild(h('h2', null, 'Compare'));
   root.appendChild(h('p', { class: 'muted' }, h('a', { href: '#/run/' + enc(a) }, 'Run A'), ' · ', h('a', { href: '#/run/' + enc(b) }, 'Run B')));
+  const sum = compareSummary(data);
+  root.appendChild(h('section', { class: 'card' },
+    ra ? h('p', null, 'A: ' + usageLine(ra.usage)) : null, rb ? h('p', null, 'B: ' + usageLine(rb.usage)) : null,
+    sum.switches.length ? h('h3', null, 'Branches') : null,
+    sum.switches.map((r) => h('p', null, r.id + ' · A: ' + (r.a || 'none') + ' · B: ' + (r.b || 'none') + ' · agreement ' + r.agreement)),
+    sum.scores.length ? h('h3', null, 'Score sums') : null,
+    sum.scores.map((r) => h('p', null, r.id + ' · A ' + r.a + ' · B ' + r.b))));
   if (!(data.frames || []).length) root.appendChild(h('p', { class: 'muted' }, 'The runs have no photo in common.'));
   for (const f of data.frames || []) {
     const blocks = () => (f.nodes || []).map((n) => {

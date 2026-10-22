@@ -13,6 +13,7 @@ class CanvasAssetsTest {
         "index.html", "app.js", "dom.js", "views.js", "boot.js", "style.css", "photos.js",
         "graph.js", "validate.js", "keys.js", "flowadapter.js", "paramform.js", "draftstate.js",
         "editorlogic.js", "editorflow.js", "floweditor.js", "jsx-shim.js",
+        "format.js", "diffview.js", "runlogic.js", "versions.js", "liveview.js", "asks.js",
     )
     private fun text(n: String) = File(dir, n).readText()
     private val js get() = names.filter { it.endsWith(".js") }
@@ -95,7 +96,7 @@ class CanvasAssetsTest {
         val f = text("floweditor.js")
         val top = f.substring(0, f.indexOf("export function mountEditor"))
         assertFalse("floweditor.js must not read globals at import time", top.contains("globalThis") || top.contains("React."))
-        for (n in listOf("editorlogic.js", "editorflow.js", "photos.js", "graph.js", "validate.js", "keys.js", "flowadapter.js", "paramform.js", "draftstate.js")) {
+        for (n in listOf("editorlogic.js", "editorflow.js", "photos.js", "graph.js", "validate.js", "keys.js", "flowadapter.js", "paramform.js", "draftstate.js", "format.js", "diffview.js", "runlogic.js")) {
             val t = text(n)
             assertFalse("$n (pure) must not touch React", Regex("globalThis|React\\.[a-z]|ReactDOM|useState|createElement|document\\.").containsMatchIn(t))
         }

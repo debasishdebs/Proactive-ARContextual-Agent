@@ -109,3 +109,10 @@ progress { width: 100%; }
 .fullshot .shot img.big { width: 100%; height: auto; }
 .shotvalue { min-width: 0; max-height: 75vh; overflow: auto; }
 @media (max-width: 700px) { .fullshot { grid-template-columns: 1fr; } }
+.dl.chg { background: var(--step); }
+.hits { width: 100%; border-collapse: collapse; font-size: 14px; }
+.hits th, .hits td { text-align: left; vertical-align: top; padding: 4px 6px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.hits td:first-child { min-width: 160px; }
+.tag.warn { color: var(--warn); border-color: var(--warn); }
+textarea[readonly] { background: var(--step); }
+@media (max-width: 480px) { .hits { display: block; overflow-x: auto; } }
