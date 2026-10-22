@@ -27,9 +27,12 @@ object SqlCipherConverter : EncryptionMigrator.DbConverter {
         step(FailReason.LOAD_LIBRARY) { SqlCipherLoader.ensureLoaded() }
         val cipherFile = if (toEncrypted) dst else src
         val plainFile = if (toEncrypted) src else dst
-        // Only the first connection may create the encrypted file; the second one opens what the export wrote.
+        // Only the first connection may create files: toEncrypted creates the encrypted target, and the other way it lets
+        // ATTACH create the not-yet-existing plaintext target (ATTACH inherits the open flags). The encrypted-to-plaintext
+        // source always exists (EncryptionMigrator.prepare returns early when the db file is missing). The second
+        // connection opens what the export wrote.
         run({ first ->
-            val flags = if (toEncrypted && first) SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.CREATE_IF_NECESSARY else SQLiteDatabase.OPEN_READWRITE
+            val flags = if (first) SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.CREATE_IF_NECESSARY else SQLiteDatabase.OPEN_READWRITE
             Cipher(SQLiteDatabase.openDatabase(cipherFile.absolutePath, key, null, flags, null, null))
         }, plainFile.absolutePath, toEncrypted)
     }
