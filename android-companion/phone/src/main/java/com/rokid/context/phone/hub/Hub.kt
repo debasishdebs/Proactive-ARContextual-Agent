@@ -135,7 +135,7 @@ class Hub(
             scope.launch { link.events.collect { guarded("event ${it::class.simpleName}") { onEvent(it) } } },
             scope.launch { link.ready.collect { guarded("ready") { onReady() } } },
             // null = unknown again (session closed, offline, BT lost): the stale value is dropped, never re-sent (fix wave I1).
-            scope.launch { link.wearing.collect { w -> lastWorn = w; if (w != null) { lastWornAtMs = clock(); Log.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else Log.i(TAG, "wear unknown") } },
+            scope.launch { link.wearing.collect { w -> lastWorn = w; _wearUnknownSince.value = if (w != null) null else (_wearUnknownSince.value ?: clock()); if (w != null) { lastWornAtMs = clock(); Log.i(TAG, "wear=$w"); guarded("wear") { sendWear() } } else Log.i(TAG, "wear unknown") } },
             scope.launch { phoneUse.collect { guarded("phone_ctx") { sendPhoneContext() } } },
             scope.launch { motionContext.collect { m -> guarded("motion_ctx") { onMotionContext(m) } } },
             scope.launch { guarded("prune") { withContext(io) { pauses.pruneHistory() } } },
@@ -270,6 +270,9 @@ class Hub(
 
     /** The Rokid SDK's wear state, newest first seen on this phone; forwarded to the glasses as `pc_wear` (they gate on it). */
     private var lastWorn: Boolean? = null
+    private val _wearUnknownSince = MutableStateFlow<Long?>(clock())
+    /** Phone clock ms since the wear signal went missing (hub start counts); null while it is available. For the Wear detection card. */
+    val wearUnknownSince: StateFlow<Long?> = _wearUnknownSince
     private var lastWornAtMs = 0L
 
     private suspend fun sendWear() {

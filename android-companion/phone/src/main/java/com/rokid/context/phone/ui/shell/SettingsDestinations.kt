@@ -133,11 +133,15 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
     }
 
     composable(Routes.SETTINGS_CAPTURE) {
-        val vm = viewModel { CaptureSettingsViewModel(s.hud, s.aiCallPace, s.keyframes.stats, s.contextSources.decision.map { it.state }) }
+        val vm = viewModel { CaptureSettingsViewModel(s.hud, s.aiCallPace, s.keyframes.stats, s.contextSources.decision.map { it.state }, s.hud.wearUnknownSince) }
         val state by vm.state.collectAsStateWithLifecycle()
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val hiRokid = remember(ctx) { com.rokid.context.phone.ui.settings.capture.WearGuide.launchIntent(ctx) }
         CaptureSettingsScreen(state, onBack = back, onModeChoice = vm::setModeChoice, onBatteryTarget = vm::setBatteryTarget, onPauseWhenPhoneInUse = vm::setPauseWhenPhoneInUse, onInterval = vm::setInterval, onQuickLook = vm::setQuickLook,
             onPauseWhenNotWorn = vm::setPauseWhenNotWorn, onCaptureCue = vm::setCaptureCue, onWork = vm::setWork, onRest = vm::setRest, onPace = vm::setPace,
-            onWorkRestEnabled = vm::setWorkRestEnabled, onMotionLabel = vm::setMotionLabel, onOpenContext = { nav.navigate(Routes.SETTINGS_CONTEXT) })
+            onWorkRestEnabled = vm::setWorkRestEnabled, onMotionLabel = vm::setMotionLabel, onOpenContext = { nav.navigate(Routes.SETTINGS_CONTEXT) },
+            onWearParkEnabled = vm::setWearParkEnabled, onWearParkUnknown = vm::setWearParkUnknownSec, onWearParkWorn = vm::setWearParkWornSec,
+            onOpenHiRokid = hiRokid?.let { i -> { runCatching { ctx.startActivity(i) } } })
     }
 
     composable(Routes.SETTINGS_CONTEXT) {

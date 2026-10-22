@@ -95,4 +95,20 @@ class WireSlice3aTest {
     @Test fun oldHelloStillDecodes() {
         assertEquals(71, ok<Hello>(res("old_glasses_hello.json")).glassesBatteryPct)
     }
+
+    @Test fun oldHudSettingsWithoutWearParkFieldsParsesToDefaults() {
+        val old = ok<HudSettings>(res("old_hud_settings.json"))
+        assertTrue(old.wearParkEnabled); assertEquals(120, old.wearParkUnknownSec); assertEquals(600, old.wearParkWornSec)
+        val s = HudSettings(wearParkEnabled = false, wearParkUnknownSec = 45, wearParkWornSec = 900)
+        assertEquals(s, ok<HudSettings>(Wire.encode(s)))
+        assertEquals(1, PROTOCOL_VERSION)
+    }
+
+    @Test fun wearParkSecondsAreClampedTo30sAnd30min() {
+        val lo = HudSettings(wearParkUnknownSec = 1, wearParkWornSec = -5).normalized()
+        assertEquals(30, lo.wearParkUnknownSec); assertEquals(30, lo.wearParkWornSec)
+        val hi = HudSettings(wearParkUnknownSec = 99_999, wearParkWornSec = 1_801).normalized()
+        assertEquals(1_800, hi.wearParkUnknownSec); assertEquals(1_800, hi.wearParkWornSec)
+        assertEquals(300, HudSettings(wearParkUnknownSec = 300).normalized().wearParkUnknownSec)
+    }
 }

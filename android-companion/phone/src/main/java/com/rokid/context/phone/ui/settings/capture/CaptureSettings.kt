@@ -76,6 +76,13 @@ data class CaptureSettingsUiState(
     val motionSourcesOff: List<String> = emptyList(),
     /** The committed context state in words (Unknown / Resting / Walking / Passenger / Driving / Flying). */
     val contextWord: String = "Unknown",
+    val wearParkEnabled: Boolean = true,
+    val wearParkUnknownSec: Int = 120,
+    val wearParkWornSec: Int = 600,
+    /** Hi Rokid's wear signal reached the phone. */
+    val wearSignalKnown: Boolean = true,
+    /** The signal has been missing for more than [WearGuide.MISSING_AFTER_MS]. */
+    val wearMissingLong: Boolean = false,
 ) {
     /** 0 Smart, 1 Settle, 2 Fixed. */
     val modeIndex: Int get() = when {
@@ -96,12 +103,19 @@ class CaptureSettingsViewModel(
     private val pace: AiCallPaceStore = AiCallPaceStore(),
     private val keyframes: StateFlow<KeyframeStats> = MutableStateFlow(KeyframeStats()),
     private val context: kotlinx.coroutines.flow.Flow<ContextState> = MutableStateFlow(ContextState.UNKNOWN),
+    /** Phone clock ms since Hi Rokid's wear signal went missing; null = available. */
+    private val wearUnknownSince: StateFlow<Long?> = MutableStateFlow(null),
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val ticker: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flow { while (true) { emit(Unit); kotlinx.coroutines.delay(30_000L) } },
 ) : ViewModel() {
     private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState): CaptureSettingsUiState {
         val n = h.normalized()
-        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs))
+        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs), n.wearParkEnabled, n.wearParkUnknownSec, n.wearParkWornSec)
     }
-    val state: StateFlow<CaptureSettingsUiState> = combine(hud.settings, pace.paceMs, keyframes, context, ::of)
+    private val wear = combine(wearUnknownSince, ticker) { since, _ -> since }
+    val state: StateFlow<CaptureSettingsUiState> = combine(combine(hud.settings, pace.paceMs, keyframes, context, ::of), wear) { ui, since ->
+        ui.copy(wearSignalKnown = since == null, wearMissingLong = WearGuide.missingLong(since, clock()))
+    }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value, ContextState.UNKNOWN))
 
     fun setMode(m: CaptureMode) = hud.update { it.copy(captureMode = m) }
@@ -120,6 +134,9 @@ class CaptureSettingsViewModel(
     fun setBurst(on: Boolean) = hud.update { it.copy(burstOnChange = on) }
     fun setQuickLook(ms: Int) = hud.update { it.copy(quickLookMs = ms).normalized() }
     fun setPauseWhenNotWorn(on: Boolean) = hud.update { it.copy(pauseWhenNotWorn = on) }
+    fun setWearParkEnabled(on: Boolean) = hud.update { it.copy(wearParkEnabled = on) }
+    fun setWearParkUnknownSec(sec: Int) = hud.update { it.copy(wearParkUnknownSec = sec).normalized() }
+    fun setWearParkWornSec(sec: Int) = hud.update { it.copy(wearParkWornSec = sec).normalized() }
     fun setCaptureCue(on: Boolean) = hud.update { it.copy(captureCue = on) }
     /** A Work over 45 min raises a lower Rest to 15 ([normalized]). */
     fun setWork(min: Int) = hud.update { it.copy(workMinutes = min).normalized() }
@@ -140,6 +157,7 @@ fun CaptureSettingsScreen(
     onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {},
     onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {},
     onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {}, onOpenContext: () -> Unit = {},
+    onWearParkEnabled: (Boolean) -> Unit = {}, onWearParkUnknown: (Int) -> Unit = {}, onWearParkWorn: (Int) -> Unit = {}, onOpenHiRokid: (() -> Unit)? = null,
 ) {
     val options = CaptureIntervals.options(state.intervalSec)
     val longWork = state.workMinutes > 45
@@ -165,6 +183,7 @@ fun CaptureSettingsScreen(
                 SwitchRow("Pause while I use my phone", null, state.pauseWhenPhoneInUse, onPauseWhenPhoneInUse, tag = "pause_phone_use")
             }
         }
+        item { WearDetectionCard(state, onWearParkEnabled, onWearParkUnknown, onWearParkWorn, onOpenHiRokid) }
         item {
             SettingsCard {
                 Text("Work and rest", style = MaterialTheme.typography.titleMedium)

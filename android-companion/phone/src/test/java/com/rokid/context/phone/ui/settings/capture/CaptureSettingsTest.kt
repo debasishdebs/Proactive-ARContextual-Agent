@@ -15,6 +15,8 @@ import com.rokid.context.core.model.WORK_MINUTES_ALLOWED
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.rokid.context.core.ui.theme.PcTheme
@@ -290,5 +292,69 @@ class CaptureSettingsTest {
     @Test fun motionLabelNoteShownWhenLabelSet() {
         show(CaptureSettingsUiState(motionLabel = MotionLabel.EATING))
         compose.onNodeWithTag("motion_label_note").assertExists()
+    }
+
+    // ---- Wear detection card ----
+
+    @Test fun wearParkSettingsRoundTripThroughTheViewModelAndClamp() = runBlocking {
+        val hud = FakeHudSettings()
+        val vm = CaptureSettingsViewModel(hud)
+        val s = withTimeout(5_000) { vm.state.first() }
+        assertTrue(s.wearParkEnabled); assertEquals(120, s.wearParkUnknownSec); assertEquals(600, s.wearParkWornSec)
+        vm.setWearParkEnabled(false); assertFalse(hud.settings.value.wearParkEnabled)
+        vm.setWearParkUnknownSec(300); assertEquals(300, hud.settings.value.wearParkUnknownSec)
+        vm.setWearParkWornSec(5); assertEquals(30, hud.settings.value.wearParkWornSec)
+        vm.setWearParkWornSec(99_999); assertEquals(1_800, hud.settings.value.wearParkWornSec)
+        vm.cancelScope()
+    }
+
+    @Test fun missingWarningNeedsMoreThanThreeMinutesWithoutASignal() {
+        assertFalse(WearGuide.missingLong(null, 10_000_000L))
+        assertFalse(WearGuide.missingLong(0L, WearGuide.MISSING_AFTER_MS))
+        assertTrue(WearGuide.missingLong(0L, WearGuide.MISSING_AFTER_MS + 1))
+    }
+
+    @Test fun viewModelShowsSignalAvailableThenMissingLong() = runBlocking {
+        val hud = FakeHudSettings()
+        val since = kotlinx.coroutines.flow.MutableStateFlow<Long?>(0L)
+        val vm = CaptureSettingsViewModel(hud, wearUnknownSince = since, clock = { 1_000_000L }, ticker = kotlinx.coroutines.flow.flowOf(Unit))
+        assertTrue(withTimeout(5_000) { vm.state.first { it.wearMissingLong } }.wearMissingLong)
+        since.value = null
+        val s = withTimeout(5_000) { vm.state.first { !it.wearMissingLong } }
+        assertTrue(s.wearSignalKnown)
+        vm.cancelScope()
+    }
+
+    @Test fun wearCardShowsBatteryTextWithoutClaimingAReason() {
+        show(CaptureSettingsUiState())
+        compose.onNodeWithTag("wear_card").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Turning it on in Hi Rokid may use more battery").assertExists()
+        compose.onNodeWithTag("wear_steps").assertExists()
+        compose.onNodeWithTag("wear_missing").assertDoesNotExist()
+        compose.onNodeWithTag("open_hi_rokid").assertDoesNotExist()
+    }
+
+    @Test fun wearCardWarnsWhenMissingAndOffersOpenWhenInstalled() {
+        var opened = 0
+        compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(wearSignalKnown = false, wearMissingLong = true), onBack = {}, onOpenHiRokid = { opened++ }) } }
+        compose.onNodeWithTag("wear_missing").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("open_hi_rokid").performScrollTo().performClick()
+        assertEquals(1, opened)
+    }
+
+    @Test fun wearCardSwitchAndPickersCallBack() {
+        var enabled: Boolean? = null; var unknown = 0; var worn = 0
+        compose.setContent { PcTheme { CaptureSettingsScreen(CaptureSettingsUiState(), onBack = {}, onWearParkEnabled = { enabled = it }, onWearParkUnknown = { unknown = it }, onWearParkWorn = { worn = it }) } }
+        compose.onNodeWithTag("wear_park_enabled").performScrollTo().performClick()
+        assertEquals(false, enabled)
+        compose.onNodeWithTag("wear_park_unknown").performScrollTo().performClick()
+        compose.onNodeWithText("5 min").performClick()
+        assertEquals(300, unknown)
+        assertEquals(0, worn)
+    }
+
+    @Test fun lagOptionsKeepACustomStoredValueAndStayInRange() {
+        assertEquals(listOf(30, 60, 120, 300, 600, 900, 1_800), WearGuide.LAG_SEC)
+        assertEquals((WearGuide.LAG_SEC + 45).sorted(), WearGuide.lagOptions(45))
     }
 }
