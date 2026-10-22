@@ -99,6 +99,8 @@ class AnswerService(
     private val beforeRetrieve: suspend () -> Unit = {},
     /** Wave 3 (R4): the photos that match the question by image vector, at most 2 are used. Never fails the ask: an error or a timeout is "none". */
     private val photos: suspend (question: String, nowMs: Long) -> List<PhotoHit> = { _, _ -> emptyList() },
+    /** The Ask debug view's historical photo search: [PhotoRecall.search] with the ask time as the cutoff, applied BEFORE top-k (vectors and captions). */
+    private val photosAsOf: suspend (question: String, notAfterMs: Long) -> List<PhotoHit> = { _, _ -> emptyList() },
     /** Asked before every photo search ([AskPhotoPolicy.allowed]: the user's switch, pipeline pause, quiet hours, an Answer model that sees images). False = no scan, no image, no photo line. */
     private val photosAllowed: suspend () -> Boolean = { false },
     /** The endpoint the gate checked (the ANSWER primary): images are sent only there, never to a fallback. */
@@ -186,7 +188,7 @@ class AnswerService(
     }
 
     private suspend fun recalledPhotos(q: String, nowMs: Long, notAfterMs: Long? = null): List<Pair<PhotoHit, String>> {
-        val hits = try { if (photosAllowed()) photos(q, nowMs) else emptyList() } catch (c: CancellationException) { throw c } catch (e: Exception) {
+        val hits = try { if (!photosAllowed()) emptyList() else if (notAfterMs != null) photosAsOf(q, notAfterMs) else photos(q, nowMs) } catch (c: CancellationException) { throw c } catch (e: Exception) {
             Log.i(TAG, "photo recall failed (${e.javaClass.simpleName})"); emptyList()
         }
         // The relevance floor: below it a photo gets neither an image nor a line (provisional values: AskPhotoPolicy).
@@ -381,6 +383,11 @@ class AnswerService(
                 photos = { q, _ ->
                     kotlinx.coroutines.withTimeoutOrNull(AskPhotoPolicy.ASK_TIMEOUT_MS) {
                         PhotoRecall.forApp(context).search(q, imageK = AskPhotoPolicy.MAX_PHOTOS, captionK = 0, budgetMs = AskPhotoPolicy.SCAN_BUDGET_MS).image
+                    }.orEmpty()
+                },
+                photosAsOf = { q, notAfter ->
+                    kotlinx.coroutines.withTimeoutOrNull(AskPhotoPolicy.ASK_TIMEOUT_MS) {
+                        PhotoRecall.forApp(context).search(q, imageK = AskPhotoPolicy.MAX_PHOTOS, captionK = 0, budgetMs = AskPhotoPolicy.SCAN_BUDGET_MS, notAfterMs = notAfter).image
                     }.orEmpty()
                 },
                 photoImages = { ids -> FramePhotos.load(context, ids).photos.associate { it.frameId to it.image } },

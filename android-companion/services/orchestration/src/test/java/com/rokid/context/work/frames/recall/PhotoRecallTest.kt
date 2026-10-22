@@ -125,6 +125,31 @@ class PhotoRecallTest {
         assertEquals(5 * hour, byId.getValue("live").ts)
     }
 
+    // ---- the Ask debug cutoff (S34): applied BEFORE top-k, to vectors and to caption text ----
+
+    @Test fun cutoffExcludesLaterPhotosBeforeTopKSoTheNextBestFillsTheSlot() = runBlocking {
+        photo("late", floatArrayOf(1f, 0f), ts = 9 * hour, createdAt = 9 * hour)
+        photo("early", floatArrayOf(0.8f, 0.2f), ts = 3 * hour, createdAt = 3 * hour)
+        val r = recall().search("milk", imageK = 1, captionK = 0, notAfterMs = 4 * hour)
+        assertEquals(listOf("early"), r.image.map { it.frameId })
+        assertEquals(listOf("late"), recall().search("milk", imageK = 1, captionK = 0).image.map { it.frameId }) // without a cutoff the later one wins
+    }
+
+    @Test fun cutoffHidesACaptionWrittenAfterTheAsk() = runBlocking {
+        photo("a", floatArrayOf(1f, 0f), ts = 3 * hour, createdAt = 3 * hour)
+        caption("a", memId = "cap_old", text = "old caption", at = 2 * hour); caption("a", memId = "cap_new", text = "new caption", at = 8 * hour)
+        assertEquals("new caption", recall().search("milk", captionK = 0).image.single().captionText)
+        val h = recall().search("milk", captionK = 0, notAfterMs = 4 * hour).image.single()
+        assertEquals("old caption", h.captionText); assertEquals("cap_old", h.captionMemoryId)
+    }
+
+    @Test fun cutoffReachesTheCaptionRetriever() = runBlocking {
+        var seen: Long? = -1
+        val r = PhotoRecall(db, ImageSpaces { emptyList() }, { _, _, _ -> captionHits }, { 10_000L }, captionsAsOf = { _, _, _, notAfter -> seen = notAfter; captionHits })
+        r.search("milk", notAfterMs = 4 * hour)
+        assertEquals(4 * hour, seen)
+    }
+
     @Test fun forgottenFrameNeverReturned() = runBlocking {
         photo("a", floatArrayOf(1f, 0f)); photo("gone", floatArrayOf(1f, 0f)); caption("gone")
         db.frameMetaDao().deleteFor(listOf("gone")) // forgotten mid-search: no meta

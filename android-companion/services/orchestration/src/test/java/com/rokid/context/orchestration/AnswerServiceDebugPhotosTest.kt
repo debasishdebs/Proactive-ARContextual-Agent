@@ -45,6 +45,7 @@ class AnswerServiceDebugPhotosTest {
         MemoryGraph.get(ctx), AiGraph.get(ctx).runner, AiGraph.get(ctx).retriever, { RetrievalSettings() },
         photosAllowed = { allow }, imageEndpointId = { endpoint },
         photos = { _, _ -> searches++; hits },
+        photosAsOf = { _, _ -> searches++; hits },
         photoImages = { ids -> imageLoads++; ids.associateWith { ModelImageInput("image/jpeg", "AAAA") } },
     )
 

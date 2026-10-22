@@ -54,23 +54,25 @@ class PhotoRecall(
     /** `MemoryRetriever.retrieve(query, settings, now, poolOverride = pool)`: the pool goes past the UI's topK clamp (S8). */
     private val captions: suspend (query: String, pool: Int, nowMs: Long) -> List<ScoredMemory>,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** `MemoryRetriever.retrieve(..., notAfterMs = ...)`: the caption fallback of a historical search. Without it a search with a cutoff has no caption fallback. */
+    private val captionsAsOf: (suspend (query: String, pool: Int, nowMs: Long, notAfterMs: Long) -> List<ScoredMemory>)? = null,
 ) {
     /** [imageK] = 0 skips the image scan; [captionK] = 0 skips the fallback. */
-    suspend fun search(query: String, imageK: Int = 24, captionK: Int = 24, budgetMs: Long = ImageScan.BUDGET_MS): RecallResult {
+    suspend fun search(query: String, imageK: Int = 24, captionK: Int = 24, budgetMs: Long = ImageScan.BUDGET_MS, notAfterMs: Long? = null): RecallResult {
         val t0 = clock()
         var state = ImageSearchState.RAN
         var imageIds = emptyList<Pair<String, Double>>()
         var scanned = 0
         var truncated = false
         if (imageK > 0) {
-            val scan = imageScan(query, imageK, budgetMs, t0)
+            val scan = imageScan(query, imageK, budgetMs, t0, notAfterMs)
             state = scan.state; imageIds = scan.hits; scanned = scan.scanned; truncated = scan.truncated
         }
         val imageSet = imageIds.map { it.first }.toSet()
         var captionState = CaptionSearchState.RAN
-        val captionHits = if (captionK > 0) captionScores(query, imageSet) ?: run { captionState = CaptionSearchState.FAILED; emptyList() } else emptyList()
-        val image = enrich(imageIds, PhotoSource.IMAGE)
-        val cap = enrich(captionHits, PhotoSource.CAPTION).take(captionK) // cut AFTER frames without frame_meta are dropped
+        val captionHits = if (captionK > 0) captionScores(query, imageSet, notAfterMs) ?: run { captionState = CaptionSearchState.FAILED; emptyList() } else emptyList()
+        val image = enrich(imageIds, PhotoSource.IMAGE, notAfterMs)
+        val cap = enrich(captionHits, PhotoSource.CAPTION, notAfterMs).take(captionK) // cut AFTER frames without frame_meta are dropped
         Log.i("PcRecall", "img=${image.size} cap=${cap.size} scanned=$scanned ms=${clock() - t0} state=$state")
         return RecallResult(image, cap, state, scanned, truncated, captionState)
     }
@@ -89,7 +91,7 @@ class PhotoRecall(
 
     private class ImageScanOutcome(val state: ImageSearchState, val hits: List<Pair<String, Double>>, val scanned: Int, val truncated: Boolean)
 
-    private suspend fun imageScan(query: String, k: Int, budgetMs: Long, startMs: Long): ImageScanOutcome {
+    private suspend fun imageScan(query: String, k: Int, budgetMs: Long, startMs: Long, notAfterMs: Long?): ImageScanOutcome {
         fun failed() = ImageScanOutcome(ImageSearchState.FAILED, emptyList(), 0, false)
         val target: ImageSpaceTarget = try {
             images.targets().firstOrNull { it.active } // S7: the ACTIVE one by flag, never "the first"
@@ -106,27 +108,27 @@ class PhotoRecall(
         val q = (if (full.size < target.imageDims) null else VectorMath.l2(full.copyOf(target.imageDims)).takeIf { VectorMath.usable(it) }) ?: return failed()
         return try {
             val r = withContext(Dispatchers.Default) {
-                ImageScan.topK(q, k, { before -> db.frameVectorDao().pageDesc(target.spaceId, before, ImageScan.PAGE).map { it.rowid to (it.frameId to it.blob) } }, clock, budgetMs = remaining)
+                ImageScan.topK(q, k, { before -> (if (notAfterMs == null) db.frameVectorDao().pageDesc(target.spaceId, before, ImageScan.PAGE) else db.frameVectorDao().pageDescNotAfter(target.spaceId, before, ImageScan.PAGE, notAfterMs)).map { it.rowid to (it.frameId to it.blob) } }, clock, budgetMs = remaining)
             }
             ImageScanOutcome(if (r.timedOut) ImageSearchState.TIMED_OUT else ImageSearchState.RAN, r.hits, r.scanned, r.truncated)
         } catch (c: CancellationException) { throw c } catch (_: Exception) { failed() }
     }
 
     /** Null = the retriever failed. */
-    private suspend fun captionScores(query: String, skip: Set<String>): List<Pair<String, Double>>? {
-        val hits = try { captions(query, CAPTION_POOL, clock()) } catch (c: CancellationException) { throw c } catch (_: Exception) { return null }
+    private suspend fun captionScores(query: String, skip: Set<String>, notAfterMs: Long?): List<Pair<String, Double>>? {
+        val hits = try { if (notAfterMs == null) captions(query, CAPTION_POOL, clock()) else (captionsAsOf ?: return null).invoke(query, CAPTION_POOL, clock(), notAfterMs) } catch (c: CancellationException) { throw c } catch (_: Exception) { return null }
         val best = HashMap<String, Double>()
         for (h in hits) { val f = h.memory.frameId ?: continue; if (f !in skip) best.merge(f, h.score, ::maxOf) }
         return best.entries.sortedWith(compareByDescending<Map.Entry<String, Double>> { it.value }.thenBy { it.key }).map { it.key to it.value }
     }
 
-    private suspend fun enrich(hits: List<Pair<String, Double>>, source: PhotoSource): List<PhotoHit> {
+    private suspend fun enrich(hits: List<Pair<String, Double>>, source: PhotoSource, notAfterMs: Long? = null): List<PhotoHit> {
         if (hits.isEmpty()) return emptyList()
         val ids = hits.map { it.first }.distinct()
         val metas = ids.chunked(CHUNK).flatMap { db.frameMetaDao().byIds(it) }.associateBy { it.frameId }
         val frames = ids.chunked(CHUNK).flatMap { db.frameDao().byIds(it) }.associateBy { it.id }
         val described = ids.chunked(CHUNK).flatMap { db.frameSourceDao().describedAmong(it) }.toSet()
-        val caps = ids.chunked(CHUNK).flatMap { db.frameSourceDao().newestCaptions(it) }.associateBy { it.frameId }
+        val caps = ids.chunked(CHUNK).flatMap { if (notAfterMs == null) db.frameSourceDao().newestCaptions(it) else db.frameSourceDao().newestCaptionsNotAfter(it, notAfterMs) }.associateBy { it.frameId }
         return hits.mapNotNull { (id, score) ->
             val meta = metas[id] ?: return@mapNotNull null // forgotten mid-search
             val frame = frames[id]
@@ -145,7 +147,8 @@ class PhotoRecall(
             val mem = MemoryGraph.get(app)
             val ai = AiGraph.get(app)
             val store = RetrievalSettingsStore.get(app)
-            return PhotoRecall(mem.db, SpaceImageSpaces(mem.spaces, ai.embedders), { q, pool, now -> ai.retriever.retrieve(q, store.settings.value, now, poolOverride = pool).hits })
+            return PhotoRecall(mem.db, SpaceImageSpaces(mem.spaces, ai.embedders), { q, pool, now -> ai.retriever.retrieve(q, store.settings.value, now, poolOverride = pool).hits },
+                captionsAsOf = { q, pool, now, notAfter -> ai.retriever.retrieve(q, store.settings.value, now, poolOverride = pool, notAfterMs = notAfter).hits })
         }
     }
 }
