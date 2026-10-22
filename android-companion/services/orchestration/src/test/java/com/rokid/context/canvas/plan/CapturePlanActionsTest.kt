@@ -244,4 +244,11 @@ class CapturePlanActionsTest {
         assertEquals(listOf("Glasses: EFFECTIVE · gen 1 · shadow", "Phone RT: applied", "ASYNC: shadow"), status().rows)
         assertEquals(hashA, status().active!!.configHash)
     }
+
+    @Test fun aReplayCandidateIsResolvedFromTheStoredPlanOfItsHashOnly() = runBlocking {
+        val c = ReplayCandidates(h.canvas)
+        val cand = c.forHash(hashA)!!
+        assertEquals(hashA, cand.configHash); assertNotNull(cand.table); assertNotNull(cand.gate)
+        assertNull("no stored plan has this hash", c.forHash("deadbeef"))
+    }
 }

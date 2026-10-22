@@ -120,19 +120,6 @@ object SweepPlanner {
     }
 
     /** The replay candidate of a point: what a LIVE plan of this config would apply (`ActiveConfig.of`). */
-    fun candidate(p: SweepPoint): ReplayCandidate {
-        val g = p.config.glance
-        val gt = p.config.gate
-        return ReplayCandidate(
-            p.configHash,
-            glance = GlanceParams(
-                onsetRadS = g.onsetRadS, releaseRadS = g.releaseRadS, bridgeMs = g.bridgeMs, minBoutMs = g.minBoutMs, minBoutRad = g.minBoutRad,
-                settleMs = g.settleMs, noveltyWindowMs = g.noveltyWindowMs, noveltyMinRad = g.noveltyMinRad, bigTurnRad = g.bigTurnRad,
-            ),
-            gate = GateParams(gt.hamming, gt.bigChange, gt.ringCompare == "all"),
-            table = ReplayCandidate.policyTable(p.config.policy),
-            ctxBound = p.config.ctxBound,
-        )
-    }
+    fun candidate(p: SweepPoint): ReplayCandidate = ReplayCandidate.of(CapturePlan(configHash = p.configHash, config = p.config, meta = PlanMeta("sweep", 0)))
 
 }

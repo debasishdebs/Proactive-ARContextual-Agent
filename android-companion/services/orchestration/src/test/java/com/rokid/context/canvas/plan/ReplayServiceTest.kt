@@ -95,6 +95,15 @@ class ReplayServiceTest {
         assertEquals("abc", row.configHash); assertEquals("EXACT", row.replayClass)
     }
 
+    @Test fun aTraceIdGivenTwiceIsReplayedAndCountedOnce() {
+        trace("t1", FakeTrace())
+        val id = runBlocking { service().start(ReplayRequest(listOf("t1", "t1", "t1"))) }
+        awaitState(id, "DONE")
+        val row = runBlocking { dao.replay(id)!! }
+        assertEquals(listOf("t1"), TraceSources.decode(row.sourcesJson)!!.map { it.traceId })
+        assertEquals("one report: a duplicate id must not triple the evidence minutes", 1, Regex("\"traceId\":\"t1\"").findAll(row.resultJson!!).count())
+    }
+
     @Test fun sourcesRecorded() {
         trace("t1", FakeTrace(rev = 2), rev = 2); trace("t2", FakeTrace(hash = "abc"))
         runBlocking { dao.bumpLabelRev(); dao.bumpLabelRev() }
