@@ -228,7 +228,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
             quiet = kotlin.coroutines.coroutineContext[NoNudge.Key] != null, live = liveDeps)
 
     private val intentWriter: FrameIntentSink by lazy {
-        com.rokid.context.work.frames.intent.FrameIntentWriter(com.rokid.context.work.frames.intent.RoomIntentFrameStore { db }, generation = { com.rokid.context.orchestration.MemoryWipe.generation.get() })
+        com.rokid.context.work.frames.intent.FrameIntentWriter(com.rokid.context.work.frames.intent.RoomIntentFrameStore { db })
     }
 
     /** The canvas interpreter seam's dependencies (spec section 5): no interpreter publish means the plain extraction. Built on first use. */

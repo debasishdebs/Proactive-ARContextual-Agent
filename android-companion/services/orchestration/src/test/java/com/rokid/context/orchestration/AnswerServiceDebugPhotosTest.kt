@@ -52,7 +52,7 @@ class AnswerServiceDebugPhotosTest {
         allow = false
         val p = service(listOf(hit("f1", 0.9))).askDebugPhotos()
         assertFalse(p.allowed())
-        val r = p.recall("mug", 1) // even a direct recall re-checks the gate
+        val r = p.recall("mug", 2_000) // even a direct recall re-checks the gate
         assertEquals(0, searches); assertEquals(0, imageLoads)
         assertTrue(r.lines.isEmpty()); assertNull(r.imageEndpointId); assertTrue(r.images().isEmpty()); assertEquals(0, imageLoads)
     }
@@ -60,7 +60,7 @@ class AnswerServiceDebugPhotosTest {
     @Test fun allowedGivesLiveLinesAndImagesOnlyOnTheCheckedEndpoint() = runBlocking<Unit> {
         val p = service(listOf(hit("f1", 0.9), hit("f2", 0.1))).askDebugPhotos() // f2 is below the floor
         assertTrue(p.allowed())
-        val r = p.recall("mug", 1)
+        val r = p.recall("mug", 2_000)
         assertEquals(1, searches); assertEquals(0, imageLoads) // the images are lazy
         assertEquals(setOf("f1"), r.frameIds); assertEquals(setOf("frame:f1"), r.citeIds)
         assertTrue(r.lines.any { it.startsWith("id=frame:f1 ·") && it.contains("image=1") })
@@ -68,15 +68,21 @@ class AnswerServiceDebugPhotosTest {
         assertEquals(1, r.images().size); assertEquals(1, imageLoads)
     }
 
+    @Test fun aPhotoCapturedAfterTheAskIsNotOffered() = runBlocking<Unit> {
+        val late = hit("late", 0.95).copy(ts = 5_000L, receivedAt = 5_000L)
+        val r = service(listOf(late, hit("early", 0.9))).askDebugPhotos().recall("mug", 2_000)
+        assertEquals(setOf("early"), r.frameIds)
+    }
+
     @Test fun noVisionEndpointMeansLinesWithoutImages() = runBlocking<Unit> {
         endpoint = null
-        val r = service(listOf(hit("f1", 0.9))).askDebugPhotos().recall("mug", 1)
+        val r = service(listOf(hit("f1", 0.9))).askDebugPhotos().recall("mug", 2_000)
         assertEquals(setOf("f1"), r.frameIds); assertFalse(r.lines.any { it.contains("image=") })
         assertNull(r.imageEndpointId); assertTrue(r.images().isEmpty()); assertEquals(0, imageLoads)
     }
 
     @Test fun anExpiredPhotoGetsALineButNoImage() = runBlocking<Unit> {
-        val r = service(listOf(hit("f1", 0.9, stored = false))).askDebugPhotos().recall("mug", 1)
+        val r = service(listOf(hit("f1", 0.9, stored = false))).askDebugPhotos().recall("mug", 2_000)
         assertEquals(1, r.frameIds.size); assertNull(r.imageEndpointId); assertTrue(r.images().isEmpty())
     }
 
