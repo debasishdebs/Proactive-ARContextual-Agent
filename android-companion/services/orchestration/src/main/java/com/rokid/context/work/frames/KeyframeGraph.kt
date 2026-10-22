@@ -78,7 +78,10 @@ object KeyframeGraph {
      */
     @Volatile var intentSampler: com.rokid.context.work.frames.intent.IntentSampler? = null
 
-    /** Wave B binds the real intent writer here; until then the canvas's labels live only in its own trace table. */
+    /**
+     * Test override of the canvas intent sink. [FrameIntentSink.None] (the default) means the production writer: [com.rokid.context.work.frames.intent.FrameIntentWriter]
+     * over the same [com.rokid.context.work.frames.intent.RoomIntentFrameStore] and tombstone/row fences as the image-intent sampler.
+     */
     @Volatile var intentSink: FrameIntentSink = FrameIntentSink.None
 
     @Volatile private var handle: KeyframeHandle? = null
@@ -224,6 +227,10 @@ class KeyframeHandle internal constructor(private val app: Context) {
         KeyframeExtract.run(app, frameIds, claimId, callClass, factPrefix(claimId), ::networkValidated, nudge = callClass != CallClass.BACKFILL && kotlin.coroutines.coroutineContext[NoNudge.Key] == null,
             quiet = kotlin.coroutines.coroutineContext[NoNudge.Key] != null, live = liveDeps)
 
+    private val intentWriter: FrameIntentSink by lazy {
+        com.rokid.context.work.frames.intent.FrameIntentWriter(com.rokid.context.work.frames.intent.RoomIntentFrameStore { db }, generation = { com.rokid.context.orchestration.MemoryWipe.generation.get() })
+    }
+
     /** The canvas interpreter seam's dependencies (spec section 5): no interpreter publish means the plain extraction. Built on first use. */
     private val liveDeps: LiveDeps by lazy {
         val ai = AiGraph.get(app)
@@ -231,7 +238,7 @@ class KeyframeHandle internal constructor(private val app: Context) {
         LiveDeps(
             dao = dao, runner = ai.runner,
             context = { runId, callClass -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }, callClass = callClass) },
-            sink = FrameIntentSink { frameId, label, confidence, atMs -> KeyframeGraph.intentSink.record(frameId, label, confidence, atMs) },
+            sink = FrameIntentSink { frameId, label, confidence, atMs -> (KeyframeGraph.intentSink.takeIf { it !== FrameIntentSink.None } ?: intentWriter).record(frameId, label, confidence, atMs) },
             publisher = { id, reason -> CanvasPublisher.autoRollbackOn(dao, clock, id, reason) },
             shadowAllowed = { app.getSharedPreferences("pc_dev", Context.MODE_PRIVATE).getBoolean("developer_mode", false) },
             clock = clock, scope = scope,
