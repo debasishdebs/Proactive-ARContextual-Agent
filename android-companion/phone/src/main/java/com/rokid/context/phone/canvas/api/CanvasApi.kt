@@ -111,8 +111,8 @@ class CanvasApi(
             "POST check-prompt" -> checkPrompt(req)
             "GET frames" -> frames(req)
             "GET frames/:id" -> json(backend.frame(id(s[1])) ?: throw NoSuchElementException())
-            "GET frames/:id/thumb" -> FrameImagesHttp.response(backend.frameImage(id(s[1]), thumb = true))
-            "GET frames/:id/image" -> FrameImagesHttp.response(backend.frameImage(id(s[1]), thumb = false))
+            "GET frames/:id/thumb" -> { sameOriginOnly(req); FrameImagesHttp.response(backend.frameImage(id(s[1]), thumb = true)) }
+            "GET frames/:id/image" -> { sameOriginOnly(req); FrameImagesHttp.response(backend.frameImage(id(s[1]), thumb = false)) }
             "POST runs/estimate" -> estimate(req)
             "POST runs/estimate-ab" -> estimateAb(req)
             "POST runs/ab" -> startAb(req)
@@ -146,6 +146,18 @@ class CanvasApi(
         s.size == 2 && s[0] == "runs" -> "runs/:id"
         s.size == 3 && s[0] == "runs" && s[2] in setOf("cancel", "scores") -> "runs/:id/${s[2]}"
         else -> null
+    }
+
+    /**
+     * Photos are for the canvas page itself. The router already refuses a foreign Host and needs the bearer token (a header no other site can add),
+     * and no response carries CORS headers; on top of that a request that names another origin, or that the browser marks cross-site or same-site, is refused.
+     */
+    private fun sameOriginOnly(req: HttpRequest) {
+        val host = req.headers["host"].orEmpty()
+        val origin = req.headers["origin"]
+        if (origin != null && origin != "http://$host" && origin != "https://$host") throw ApiError(403, "forbidden", "Not allowed.")
+        val site = req.headers["sec-fetch-site"]
+        if (site != null && site != "same-origin" && site != "none") throw ApiError(403, "forbidden", "Not allowed.")
     }
 
     private fun id(v: String): String = if (ID.matches(v)) v else throw bad("Bad id.")
