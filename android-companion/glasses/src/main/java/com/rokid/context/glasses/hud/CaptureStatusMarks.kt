@@ -47,3 +47,10 @@ fun CaptureCueMark(active: Boolean, modifier: Modifier = Modifier) {
     val mark = captureCueMark(active) ?: return
     BasicText(mark, modifier = modifier.padding(4.dp), style = TextStyle(color = Color.White, fontSize = 14.sp))
 }
+
+/** Slice 3a Task 30: the mark cue ("✓" or "mark undone", 600 ms, local); nothing when idle. */
+@Composable
+fun MarkCueMark(text: String?, modifier: Modifier = Modifier) {
+    val t = text ?: return
+    BasicText(t, modifier = modifier.padding(4.dp), style = TextStyle(color = Color.White, fontSize = 14.sp))
+}

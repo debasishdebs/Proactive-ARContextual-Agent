@@ -83,6 +83,10 @@ class HudController(
     @Volatile var onCapturePlan: (com.rokid.context.core.model.CapturePlanMessage) -> Unit = {}
     /** `pc_trace_ctl` (slice 3a): collect on/off, the deletion epoch; the IMU trace recorder consumes it. */
     @Volatile var onTraceControl: (com.rokid.context.core.model.TraceControl) -> Unit = {}
+    /** `pc_mark_ack` (slice 3a): the phone stored these marks; the outbox drops them. */
+    @Volatile var onMarkAck: (com.rokid.context.core.model.MarkAck) -> Unit = {}
+    /** The session is open and the phone is talking (session open, or a hello request on an open session): re-send unacked marks. */
+    @Volatile var onMarksDue: () -> Unit = {}
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
     @Volatile var onWear: (Boolean?) -> Unit = {}
     /** `pc_phone_ctx`: whether the phone is in use (screen on, unlocked); null = the session closed (unknown again). */
@@ -111,6 +115,7 @@ class HudController(
         bridge.subscribe(Channels.MOTION_CONTEXT) { text -> (Wire.decode<MotionContextMessage>(text) as? Decoded.Ok)?.value?.let(::onMotionContextMessage) }
         bridge.subscribe(Channels.CAPTURE_PLAN) { text -> (Wire.decode<com.rokid.context.core.model.CapturePlanMessage>(text) as? Decoded.Ok)?.value?.let(::onPlanMessage) }
         bridge.subscribe(Channels.TRACE_CTL) { text -> (Wire.decode<com.rokid.context.core.model.TraceControl>(text) as? Decoded.Ok)?.value?.let { m -> try { onTraceControl(m) } catch (e: Exception) { Log.w(TAG, "trace control failed: ${e.javaClass.simpleName}") } } }
+        bridge.subscribe(Channels.MARK_ACK) { text -> (Wire.decode<com.rokid.context.core.model.MarkAck>(text) as? Decoded.Ok)?.value?.let { a -> try { onMarkAck(a) } catch (e: Exception) { Log.w(TAG, "mark ack failed: ${e.javaClass.simpleName}") } } }
         bridge.subscribe(Channels.AUTO_OPEN) { text -> if (Wire.decode<AutoOpen>(text) is Decoded.Ok) { Log.i(TAG, "phone says: automatic reopen"); onAutoOpen() } }
         bridge.setConnectionListener(connected = { Log.i(TAG, "phone connected") }, disconnected = { closeSession("bt disconnected") })
         scope.launch { while (isActive) { refreshConnection(); delay(1_000) } }
@@ -181,7 +186,7 @@ class HudController(
                 if (exited) return
                 val wasOpen = _sessionOpen.value
                 phoneMessage() // opens the session (and says hello) if this is its first message
-                if (wasOpen) { sendCapsAck(); sendHello() } // a new phone session on a long-lived glasses session needs the caps again (also retries a failed send)
+                if (wasOpen) { sendCapsAck(); sendHello(); dueMarks() } // a new phone session on a long-lived glasses session needs the caps again (also retries a failed send)
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
             is Decoded.Malformed -> Log.w(TAG, "bad pc_hello_request (${d.reason})")
@@ -198,12 +203,16 @@ class HudController(
         liveness.onFrame()
         if (!exited && _sessionOpen.compareAndSet(false, true)) {
             Log.i(TAG, "session open")
+            sessionStartMs = clock()
             sendHello()
             sendCapsAck()
             try { statusAck()?.let { bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(it)) } } catch (e: Exception) { Log.w(TAG, "plan status ack failed: ${e.javaClass.simpleName}") }
             onSessionOpened()
+            dueMarks()
         }
     }
+
+    private fun dueMarks() { try { onMarksDue() } catch (e: Exception) { Log.w(TAG, "marks due failed: ${e.javaClass.simpleName}") } }
 
     /** Plumbing only; the phone shows "too old" for a peer that never sends it. A failed send or a throwing [capsAck] is retried at the next hello request. */
     private fun sendCapsAck() {
@@ -232,6 +241,13 @@ class HudController(
     fun onActivityStart() { exited = false }
 
     fun send(command: Command): Boolean = bridge.send(Channels.CMD, Wire.encode(CommandEnvelope(command = command))) == 0
+
+    /** Wall clock of this session's opening: `MarkMessage.sessionStartMs` (transport freshness; the phone never drops a mark for it). */
+    @Volatile private var sessionStartMs = 0L
+
+    /** `pc_mark` (slice 3a): only while the session is open; a false result keeps the mark queued. Occurrence time is in the message, never rewritten. */
+    fun sendMark(m: com.rokid.context.core.model.MarkMessage): Boolean =
+        _sessionOpen.value && bridge.send(Channels.MARK, Wire.encode(m.copy(sessionStartMs = sessionStartMs))) == 0
 
     /** `pc_capture_plan_ack`: only while the session is open (a closed session gets the status ack of [capsAck] on its next open). */
     fun sendPlanAck(a: com.rokid.context.core.model.CapturePlanAck): Boolean = _sessionOpen.value && bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(a)) == 0

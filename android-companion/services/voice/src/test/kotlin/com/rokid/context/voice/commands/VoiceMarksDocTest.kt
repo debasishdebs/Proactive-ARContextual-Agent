@@ -67,6 +67,8 @@ class VoiceMarksDocTest {
             "There is no hotword and no always-on listening.",
             "Unknown words in a mark command's own sentence save a plain mark.",
             "Voice marks are always on in this build.",
+            "Marking by tap on the glasses is always on in this build too, and has no switch yet.",
+            "never changes when photos are taken",
         ).forEach { assertTrue(it in doc, "missing sentence: $it") }
     }
 
