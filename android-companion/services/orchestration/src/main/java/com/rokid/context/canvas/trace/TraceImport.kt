@@ -43,7 +43,8 @@ class TraceImport(
     suspend fun importAll(pulled: File): List<TraceImportResult> =
         (pulled.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name } ?: emptyList()).map { import(it) }
 
-    suspend fun import(dir: File): TraceImportResult {
+    /** [allowPartial] false refuses a PARTIAL trace (code `partial_trace`) before anything is stored. */
+    suspend fun import(dir: File, allowPartial: Boolean = true): TraceImportResult {
         val f = fence()
         fun no(code: String) = TraceImportResult.Rejected(dir.name, code)
         if (!Files.isDirectory(dir.toPath(), LinkOption.NOFOLLOW_LINKS)) return no("not_a_directory")
@@ -58,6 +59,7 @@ class TraceImport(
             manifest = ok.first; verdict = ok.second
         } catch (e: CancellationException) { throw e } catch (e: Exception) { return no("bad_file") }
         if (dir.name != TraceFiles.dirName(manifest.traceId)) return no("dir_mismatch")
+        if (!allowPartial && verdict.status != TraceStatus.COMPLETE) return no("partial_trace")
         val epoch = f.now()
         if (manifest.installId != epoch.installId) return no("other_install")
         if (manifest.deletionCounter != epoch.counter) return no("old_epoch")

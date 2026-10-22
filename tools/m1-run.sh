@@ -6,9 +6,11 @@
 #   tools/m1-run.sh shadow                          POST /api/plans/debug-shadow (SHADOW only; Developer mode)
 #   tools/m1-run.sh status                          collect state, trace and replay counts, glasses heartbeat plan fields
 #   tools/m1-run.sh collect start [minutes] | stop | status
-#   tools/m1-run.sh pull <dir>                      glasses -> <dir> (trace-pull.sh) + heartbeat lines only; lists the phone's traces
-#   tools/m1-run.sh replay <traceId> [--diag file] [--tol pct]
-# Env: G glasses serial (default as trace-pull.sh); M1_SCHEME=http only for the local mock test; M1_DIAG=<file> reads heartbeats from a file (no adb).
+#   tools/m1-run.sh pull <dir> [--allow-partial]    glasses -> <dir> (trace-pull.sh) + heartbeat lines; then each trace is adb-pushed to the phone's staging dir and imported
+#                                                   (POST /api/traces/import; staging dir deleted by the phone on success); lists the phone's traces
+#   tools/m1-run.sh replay [<traceId>] [--diag file] [--tol pct]   (no id: the last trace imported by pull)
+# Env: G glasses serial (default as trace-pull.sh); M1_PHONE_TID adb transport id of the phone (auto: the only other device in `adb devices -l`; never selected by serial,
+#   the wireless serial contains spaces); M1_PHONE_PKG phone package (default com.rokid.context); M1_SCHEME=http only for the local mock test; M1_DIAG=<file> reads heartbeats from a file (no adb).
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -19,6 +21,9 @@ SCHEME="${M1_SCHEME:-https}"
 STATE="${TMPDIR:-/tmp}"; STATE="${STATE%/}/m1-run-$(id -u)"
 TOKHDR="$STATE/auth.hdr"
 LAST="$STATE/last.json"
+PHONE_PKG="${M1_PHONE_PKG:-com.rokid.context}"
+PHONE_STAGING="/sdcard/Android/data/$PHONE_PKG/files/trace-staging"
+LAST_TRACE="$STATE/last-trace"
 
 die() { echo "$*" >&2; exit 1; }
 need_state() { [ -f "$TOKHDR" ] && [ -f "$STATE/host" ] || die "not paired: run  tools/m1-run.sh pair <host:port> <code> <fp8>"; }
@@ -173,19 +178,63 @@ cmd_status() {
   echo "expect plan=$(echo $EXPECT_HASH | cut -c1-8) planMode=SHADOW once the ack is EFFECTIVE"
 }
 
+# phone_tid: the adb transport id of the phone (wireless adb); prints it, or nothing. Never a serial (it has spaces).
+phone_tid() {
+  if [ -n "${M1_PHONE_TID:-}" ]; then echo "$M1_PHONE_TID"; return; fi
+  command -v adb >/dev/null 2>&1 || return 0
+  adb devices -l 2>/dev/null | python3 -c 'import re,sys
+g=sys.argv[1]; ids=[]
+for line in sys.stdin:
+    m=re.match(r"^(.*?)\s+device\s.*transport_id:(\d+)",line)
+    if m and m.group(1)!=g: ids.append(m.group(2))
+print(ids[0] if len(ids)==1 else "")' "$G"
+}
+
+# import_traces <dir> <allow-partial 0|1>: adb push each pulled trace dir to the phone staging dir, then POST /api/traces/import (name only)
+import_traces() {
+  local out="$1" allow="$2" tid d id st n=0 bad=0
+  tid=$(phone_tid)
+  [ -n "$tid" ] || { echo "FAIL phone adb transport not found: attach the phone (wireless adb) or set M1_PHONE_TID=<transport id from adb devices -l>"; return 1; }
+  adb -t "$tid" shell "mkdir -p '$PHONE_STAGING'" >/dev/null 2>&1
+  for d in "$out"/*/; do
+    [ -f "$d/manifest.json" ] || continue
+    id=$(basename "$d")
+    case "$id" in *[!a-z0-9-]*|"") echo "skip odd dir name"; continue ;; esac
+    adb -t "$tid" shell "rm -rf '$PHONE_STAGING/$id'" >/dev/null 2>&1
+    if ! adb -t "$tid" push "${d%/}" "$PHONE_STAGING/" >/dev/null 2>&1; then echo "FAIL adb push of $id"; bad=$((bad + 1)); continue; fi
+    printf '{"name":"%s","allowPartial":%s}' "$id" "$([ "$allow" = 1 ] && echo true || echo false)" > "$STATE/imp.json"
+    st=$(api POST /api/traces/import "$STATE/imp.json")
+    if [ "$st" = 200 ]; then
+      echo "imported traceId=$(pj 'j.get("traceId")') status=$(pj 'j.get("status")') events=$(pj 'j.get("events")') chunks=$(pj 'j.get("chunks")') unchanged=$(pj 'j.get("unchanged")')"
+      pj 'j.get("traceId")' > "$LAST_TRACE"; n=$((n + 1))
+    else
+      errline "$st"; [ "$st" = 403 ] && echo "turn Developer mode on in the app"
+      [ "$st" = 409 ] && [ "$(pj 'j.get("error")')" = partial_trace ] && echo "PARTIAL trace: rerun with --allow-partial to keep it for replay"
+      bad=$((bad + 1))
+    fi
+  done
+  echo "imported $n trace(s), failed $bad"
+  [ "$bad" = 0 ] && [ "$n" -gt 0 ]
+}
+
 cmd_pull() {
-  [ $# -eq 1 ] || die "usage: m1-run.sh pull <dir>"
-  local out="$1"; mkdir -p "$out" || die "cannot create $out"
+  local out="" allow=0
+  while [ $# -gt 0 ]; do case "$1" in --allow-partial) allow=1; shift ;; *) [ -z "$out" ] && out="$1" || die "usage: m1-run.sh pull <dir> [--allow-partial]"; shift ;; esac; done
+  [ -n "$out" ] || die "usage: m1-run.sh pull <dir> [--allow-partial]"
+  mkdir -p "$out" || die "cannot create $out"
   if [ -z "${M1_DIAG:-}" ]; then "$HERE/trace-pull.sh" "$out" || exit 1; fi
   diag_text > "$out/heartbeats.log"
   echo "heartbeat lines saved: $(wc -l < "$out/heartbeats.log" | tr -d ' ') (no other log read)"
-  [ -f "$TOKHDR" ] && traces_summary
+  need_state; init_state
+  import_traces "$out" "$allow" || { traces_summary; exit 1; }
+  traces_summary
 }
 
 cmd_replay() {
-  [ $# -ge 1 ] || die "usage: m1-run.sh replay <traceId> [--diag file] [--tol pct]"
   need_state; init_state
-  local tid="$1" tol=5 diag=""; shift
+  local tid="" tol=5 diag=""
+  case "${1:-}" in ""|--*) tid=$(cat "$LAST_TRACE" 2>/dev/null) ;; *) tid="$1"; shift ;; esac
+  [ -n "$tid" ] || die "usage: m1-run.sh replay [<traceId>] [--diag file] [--tol pct] (no id and no earlier pull)"
   while [ $# -gt 0 ]; do case "$1" in --diag) diag="$2"; shift 2 ;; --tol) tol="$2"; shift 2 ;; *) die "unknown option" ;; esac; done
   case "$tid" in *[!A-Za-z0-9:_-]*|"") die "bad trace id" ;; esac
   printf '{"traceIds":["%s"],"candidate":{"configHash":"%s"}}' "$tid" "$EXPECT_HASH" > "$STATE/r.json"

@@ -66,6 +66,7 @@ android {
     }
 
     testOptions { unitTests.isIncludeAndroidResources = true }
+    sourceSets.getByName("test").java.srcDir("../services/orchestration/src/pulledfixtures/java")
 
     buildFeatures {
         buildConfig = true
