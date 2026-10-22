@@ -5,6 +5,7 @@ import com.rokid.context.capture.trace.GateOutcome
 import com.rokid.context.capture.trace.Inexact
 import com.rokid.context.capture.trace.Manifest
 import com.rokid.context.capture.trace.TraceEvent
+import com.rokid.context.core.model.context.ContextState
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
@@ -27,6 +28,9 @@ data class ReplayFigures(
     val estimatedHoursFromFull: Double,
 )
 
+/** What the replay saw of one context state: the minutes spent in it (after the pre-roll) and the 95th percentile of camera opens in a full minute spent in it (nearest rank; 0 with no full minute). */
+data class StateFigures(val minutes: Double, val opensP95PerMin: Double)
+
 /**
  * The result of a counterfactual (or baseline-only) replay. Replay is APPROXIMATE: [inexactWindows] were excluded from the base comparison and counted; every
  * figure is an estimate ("estimate" in the UI) until a verified LIVE interval exists (S11, S44).
@@ -46,6 +50,8 @@ data class ReplayReport(
     /** A plan whose fusion params differ from the trace's can run only in SHADOW or TRIAL (S30). */
     val shadowOrTrialOnly: Boolean,
     val warnings: List<String>,
+    /** Per context state (enum name) seen in the span: the evidence behind gate 3 ("covers 2 states") and the plan's `meta.expectOpensP95PerMin`. Opens are the candidate's, or the recorded config's when none was replayed. */
+    val states: Map<String, StateFigures> = emptyMap(),
 ) {
     fun toJson(): JsonElement {
         fun f(x: ReplayFigures) = buildJsonObject {
@@ -61,6 +67,7 @@ data class ReplayReport(
             put("inexactReasons", buildJsonObject { inexactReasons.toSortedMap().forEach { (k, v) -> put(k.name, v) } })
             put("shadowOrTrialOnly", shadowOrTrialOnly)
             put("warnings", JsonArray(warnings.map { JsonPrimitive(it) }))
+            put("states", buildJsonObject { states.toSortedMap().forEach { (k, v) -> put(k, buildJsonObject { put("minutes", v.minutes); put("opensP95PerMin", v.opensP95PerMin) }) } })
         }
     }
 }
@@ -84,6 +91,7 @@ object CounterfactualReplay {
     /** Everything the single pass over the events collects besides the simulator's own work: bounded by the number of gates and episodes, not by the sensor rate. */
     private class Seen {
         val gateAt = ArrayList<Long>(); val gateKeep = ArrayList<Boolean>()
+        val ctx = ArrayList<Pair<Long, ContextState>>()
         val durations = ArrayList<Long>()
         var openAt: Long? = null
         var preRollEnd: Long? = null
@@ -94,6 +102,7 @@ object CounterfactualReplay {
             last = e.tMs
             when (e) {
                 is TraceEvent.PreRollEnd -> preRollEnd = e.tMs
+                is TraceEvent.Ctx -> ctx += e.tMs to e.state
                 is TraceEvent.Gate -> { gateAt += e.tMs; gateKeep += (e.outcome == GateOutcome.KEEP) }
                 is TraceEvent.Episode -> if (e.open) openAt = e.tMs else {
                     val o = openAt; openAt = null
@@ -150,7 +159,35 @@ object CounterfactualReplay {
             replayClass = if (cand == null) "EXACT" else "COUNTERFACTUAL", minutes = minutes, baseline = baseline, candidate = candFigures, unobservedOpensPct = unobservedPct,
             basePassed = base.passed, baseFailed = base.failed, inexactWindows = base.inexact, inexactReasons = base.inexactReasons,
             shadowOrTrialOnly = fusionChanged, warnings = warnings,
+            states = stateFigures(m.snapshot.ctx, seen.ctx, start, seen.last, (cand?.opens ?: base.opens).map { it.atMs }),
         )
+    }
+
+    /**
+     * Minutes per context state over [[startMs], [endMs]] and the p95 of opens per FULL minute, each minute attributed to the state in effect at its start (ruling: the simplest
+     * attribution; a state change inside a minute is not split). [ctx] is time ordered; [initial] holds until the first event.
+     */
+    internal fun stateFigures(initial: ContextState, ctx: List<Pair<Long, ContextState>>, startMs: Long, endMs: Long, opens: List<Long>): Map<String, StateFigures> {
+        if (endMs <= startMs) return emptyMap()
+        fun at(t: Long): ContextState { var s = initial; for ((tm, st) in ctx) { if (tm <= t) s = st else break }; return s }
+        val ms = HashMap<ContextState, Long>()
+        var cursor = startMs; var cur = at(startMs)
+        for ((tm, st) in ctx) {
+            if (tm <= startMs) continue
+            if (tm >= endMs) break
+            ms[cur] = (ms[cur] ?: 0L) + (tm - cursor); cursor = tm; cur = st
+        }
+        ms[cur] = (ms[cur] ?: 0L) + (endMs - cursor)
+        val perState = HashMap<ContextState, MutableList<Int>>()
+        for (k in 0 until ((endMs - startMs) / 60_000L).toInt()) {
+            val from = startMs + k * 60_000L
+            perState.getOrPut(at(from)) { ArrayList() } += opens.count { it >= from && it < from + 60_000L }
+        }
+        return ms.filterValues { it > 0 }.entries.associate { (s, t) ->
+            val counts = perState[s]?.sorted().orEmpty()
+            val p95 = if (counts.isEmpty()) 0.0 else counts[(kotlin.math.ceil(0.95 * counts.size).toInt() - 1).coerceIn(0, counts.size - 1)].toDouble()
+            s.name to StateFigures(t / 60_000.0, p95)
+        }
     }
 
     class KeepEstimate(val keeps: Int, val unobserved: Int)

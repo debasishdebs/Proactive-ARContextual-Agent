@@ -69,6 +69,13 @@ abstract class CanvasDao {
     @Query("SELECT * FROM canvas_publish WHERE rolledBackAt IS NULL AND kind = 'interpreter' ORDER BY id DESC LIMIT 1") abstract suspend fun activeInterpreter(): CanvasPublishEntity?
     @Query("UPDATE canvas_publish SET rolledBackAt = :at, rollbackReason = :reason WHERE id = :id AND rolledBackAt IS NULL") abstract suspend fun markRolledBackWithReason(id: Long, at: Long, reason: String?): Int
     /** Every publish row, newest first (S43 history route). */
+    @Query("SELECT * FROM canvas_publish WHERE id = :id") abstract suspend fun publishRow(id: Long): CanvasPublishEntity?
+    /** Every capture-plan publish row (slice 3a), newest first, rolled back or not. */
+    @Query("SELECT * FROM canvas_publish WHERE component = 'capture_plan' ORDER BY id DESC") abstract suspend fun capturePlanPublishes(): List<CanvasPublishEntity>
+    @Query("SELECT * FROM canvas_publish WHERE groupId = :groupId ORDER BY id") abstract suspend fun publishesOfGroup(groupId: String): List<CanvasPublishEntity>
+    /** How many TRIAL publishes of this config were ever made (S11: at most 3 per `configHash`, kept even after a rollback). */
+    @Query("SELECT COUNT(*) FROM canvas_publish WHERE component = 'capture_plan' AND mode = 'TRIAL' AND configHash = :configHash") abstract suspend fun trialCount(configHash: String): Int
+    @Query("UPDATE canvas_publish SET gen = :gen, state = :state, trialEndsAt = :trialEndsAt WHERE id = :id") abstract suspend fun setPlanPublishState(id: Long, gen: Long?, state: String?, trialEndsAt: Long?): Int
     @Query("SELECT * FROM canvas_publish ORDER BY id DESC LIMIT :limit") abstract suspend fun publishHistory(limit: Int): List<CanvasPublishEntity>
 
     // --- live trace (Room v6) ---

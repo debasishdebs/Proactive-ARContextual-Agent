@@ -15,6 +15,7 @@ import com.rokid.context.core.model.MotionLabel
 import com.rokid.context.core.model.QUICK_LOOK_MS_ALLOWED
 import com.rokid.context.core.model.REST_MINUTES_ALLOWED
 import com.rokid.context.core.model.WORK_MINUTES_ALLOWED
+import com.rokid.context.canvas.plan.ActivePlan
 import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.core.model.normalized
 import androidx.compose.material.icons.Icons
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /** Glasses `CaptureCadence` accepts 30 s – 1 h (Phase 3 ruling); everything shown or saved is clamped to that. */
 object CaptureIntervals {
@@ -83,6 +85,8 @@ data class CaptureSettingsUiState(
     val wearSignalKnown: Boolean = true,
     /** The signal has been missing for more than [WearGuide.MISSING_AFTER_MS]. */
     val wearMissingLong: Boolean = false,
+    /** The active canvas capture plan (S12): the rows it resolved show "Frozen in canvas plan vN" and the Capture plan row offers "Use settings". Null when settings run the capture. */
+    val plan: ActivePlan? = null,
 ) {
     /** 0 Smart, 1 Settle, 2 Fixed. */
     val modeIndex: Int get() = when {
@@ -107,16 +111,17 @@ class CaptureSettingsViewModel(
     private val wearUnknownSince: StateFlow<Long?> = MutableStateFlow(null),
     private val clock: () -> Long = System::currentTimeMillis,
     private val ticker: kotlinx.coroutines.flow.Flow<Unit> = kotlinx.coroutines.flow.flow { while (true) { emit(Unit); kotlinx.coroutines.delay(30_000L) } },
+    private val plan: CapturePlanControl = CapturePlanControl.None,
 ) : ViewModel() {
-    private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState): CaptureSettingsUiState {
+    private fun of(h: HudSettings, paceMs: Long, kf: KeyframeStats, cs: ContextState, active: ActivePlan?): CaptureSettingsUiState {
         val n = h.normalized()
-        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs), n.wearParkEnabled, n.wearParkUnknownSec, n.wearParkWornSec)
+        return CaptureSettingsUiState(n.captureMode, CaptureIntervals.clamp(n.captureIntervalSec), n.quickLookMs, n.pauseWhenNotWorn, n.captureCue, n.workMinutes, n.restMinutes, paceMs, kf.keyframesPerHour, n.cameraWake, n.batteryTargetHours, n.pauseWhenPhoneInUse, n.workRestEnabled, n.motionLabel, n.motionSourcesOff, ContextSourcesUiState.word(cs), n.wearParkEnabled, n.wearParkUnknownSec, n.wearParkWornSec, plan = active)
     }
     private val wear = combine(wearUnknownSince, ticker) { since, _ -> since }
-    val state: StateFlow<CaptureSettingsUiState> = combine(combine(hud.settings, pace.paceMs, keyframes, context, ::of), wear) { ui, since ->
+    val state: StateFlow<CaptureSettingsUiState> = combine(combine(hud.settings, pace.paceMs, keyframes, context, plan.active, ::of), wear) { ui, since ->
         ui.copy(wearSignalKnown = since == null, wearMissingLong = WearGuide.missingLong(since, clock()))
     }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value, ContextState.UNKNOWN))
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), of(hud.settings.value, pace.paceMs.value, keyframes.value, ContextState.UNKNOWN, null))
 
     fun setMode(m: CaptureMode) = hud.update { it.copy(captureMode = m) }
     /** 0 Smart (motion wake), 1 Settle, 2 Fixed (wake untouched). */
@@ -149,6 +154,8 @@ class CaptureSettingsViewModel(
         hud.update { it.copy(motionSourcesOff = (it.motionSourcesOff.filter { s -> s != id } + if (on) emptyList() else listOf(id))).normalized() }
     }
     fun setPace(ms: Long) = pace.set(ms)
+    /** "Use settings" (S26): the capture overrides are disabled and the settings run the capture again. */
+    fun useSettings() { viewModelScope.launch { runCatching { plan.useSettings() } } }
 }
 
 @Composable
@@ -156,19 +163,30 @@ fun CaptureSettingsScreen(
     state: CaptureSettingsUiState, onBack: () -> Unit,
     onModeChoice: (Int) -> Unit = {}, onBatteryTarget: (Int) -> Unit = {}, onPauseWhenPhoneInUse: (Boolean) -> Unit = {}, onInterval: (Int) -> Unit = {}, onQuickLook: (Int) -> Unit = {},
     onPauseWhenNotWorn: (Boolean) -> Unit = {}, onCaptureCue: (Boolean) -> Unit = {}, onWork: (Int) -> Unit = {}, onRest: (Int) -> Unit = {}, onPace: (Long) -> Unit = {},
-    onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {}, onOpenContext: () -> Unit = {},
+    onWorkRestEnabled: (Boolean) -> Unit = {}, onMotionLabel: (MotionLabel) -> Unit = {}, onOpenContext: () -> Unit = {}, onUseSettings: () -> Unit = {},
     onWearParkEnabled: (Boolean) -> Unit = {}, onWearParkUnknown: (Int) -> Unit = {}, onWearParkWorn: (Int) -> Unit = {}, onOpenHiRokid: (() -> Unit)? = null,
 ) {
     val options = CaptureIntervals.options(state.intervalSec)
     val longWork = state.workMinutes > 45
     SettingsPage("Capture schedule", onBack, tag = "capture_settings") {
+        state.plan?.let { plan ->
+            item {
+                SettingsCard(Modifier.testTag("capture_plan")) {
+                    androidx.compose.foundation.layout.Box(Modifier.testTag("capture_plan_row")) {
+                        ChipRow(Icons.Outlined.Sensors, PcColors.ChipSky, plan.settingsRow, "Tap to run the capture from these settings again", onClick = onUseSettings)
+                    }
+                }
+            }
+        }
         item {
             SettingsCard {
                 Text("How the glasses take photos", style = MaterialTheme.typography.titleMedium)
                 NoticeText(state.statusLine, tag = "capture_status")
                 ChoiceRow("Capture mode", listOf("Smart", "Settle", "Fixed"), state.modeIndex, onModeChoice, tag = "mode")
+                state.plan?.let { NoticeText(it.frozenLabel, tag = "frozen_mode") }
                 if (state.mode == CaptureMode.FIXED) {
                     ChoiceRow("Every", options.map(CaptureIntervals::label), options.indexOf(state.intervalSec), { onInterval(options[it]) }, tag = "interval")
+                    state.plan?.let { NoticeText(it.frozenLabel, tag = "frozen_interval") }
                     NoticeText("Doubled automatically when the glasses battery is low.")
                 } else if (state.wake == CameraWake.SETTLE) {
                     NoticeText("Photos only when your head settles on something (about 1.5\u20132 s). Uses much less battery.", tag = "settle_note")
@@ -176,6 +194,7 @@ fun CaptureSettingsScreen(
                     NoticeText("Smart takes photos when you look at something new. Needs the latest glasses app; older glasses keep taking photos at a fixed interval.", tag = "smart_note")
                     ChoiceRow("Quick look", QUICK_LOOK_MS_ALLOWED.map(CaptureLabels::quickLook), QUICK_LOOK_MS_ALLOWED.indexOf(state.quickLookMs), { onQuickLook(QUICK_LOOK_MS_ALLOWED[it]) }, tag = "quick_look")
                     NoticeText("Shorter catches quicker glances; the camera light is on more.", tag = "quick_look_note")
+                    state.plan?.let { NoticeText(it.frozenLabel, tag = "frozen_quick_look") }
                 }
                 ChoiceRow("Battery target", BATTERY_TARGET_HOURS_ALLOWED.map { if (it == 0) "Off" else "$it h" }, BATTERY_TARGET_HOURS_ALLOWED.indexOf(state.batteryTargetHours), { onBatteryTarget(BATTERY_TARGET_HOURS_ALLOWED[it]) }, tag = "battery_target")
                 NoticeText("Takes fewer photos when the glasses battery would not last this long.")
@@ -188,6 +207,7 @@ fun CaptureSettingsScreen(
             SettingsCard {
                 Text("Work and rest", style = MaterialTheme.typography.titleMedium)
                 SwitchRow("Work and rest", "Off: capture never rests. On: rest captures glances only, at most 2 photos a minute.", state.workRestEnabled, onWorkRestEnabled, tag = "work_rest")
+                state.plan?.let { NoticeText(it.frozenLabel, tag = "frozen_work_rest") }
                 if (state.workRestEnabled) {
                     ChoiceRow("Work", WORK_MINUTES_ALLOWED.map { "$it min" }, WORK_MINUTES_ALLOWED.indexOf(state.workMinutes), { onWork(WORK_MINUTES_ALLOWED[it]) }, tag = "work")
                     val locked = if (longWork) REST_MINUTES_ALLOWED.indices.filter { REST_MINUTES_ALLOWED[it] < 15 }.toSet() else emptySet()

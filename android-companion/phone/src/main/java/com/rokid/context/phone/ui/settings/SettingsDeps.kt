@@ -97,6 +97,8 @@ class SettingsDeps(
     val glassesRestarts: kotlinx.coroutines.flow.StateFlow<String?> = kotlinx.coroutines.flow.MutableStateFlow(null),
     /** Wave B: the process-wide context hub's read side and the settings it observes (None when no hub exists). */
     val contextSources: ContextSourcesControl = ContextSourcesControl.None,
+    /** Settings > Capture: the active canvas capture plan row and "Use settings" (slice 3a Task 28). The composition task (33) binds the real one. */
+    val capturePlan: com.rokid.context.phone.ui.settings.capture.CapturePlanControl = com.rokid.context.phone.ui.settings.capture.CapturePlanControl.None,
 ) {
     val ai: AiGraph get() = lazyAi.value
     val testInputs: TestBedInputs get() = lazyTestInputs.value
