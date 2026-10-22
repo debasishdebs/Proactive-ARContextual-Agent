@@ -27,7 +27,7 @@ class DiagFile(private val file: File, private val maxBytes: Long = MAX_BYTES, p
         }
     }
 
-    companion object { const val MAX_BYTES = 200_000L }
+    companion object { const val MAX_BYTES = 3_000_000L }
 }
 
 /** The process-wide sink: [i] and [w] log to logcat as before AND to the file once [install]ed. */
