@@ -307,14 +307,14 @@ class CanvasRunner(
 
             // S25 lineage: a frame's downstream rows (trust, preview...) keep the batch of the model call they derive from, so a Forget of ANY frame of that
             // call reaches them (a fact from photos A+B also sits in B's preview).
-            val lineage = HashMap<String, String>()
+            val lineage = HashMap<String, LinkedHashSet<String>>() // frame -> every model call whose output its rows derive from (a later per-frame call must not hide a shared one)
 
             fun write(nodeId: String, frameId: String, r: NodeResult) {
                 val m = r.meta
-                m?.batchId?.let { lineage[frameId] = it }
+                val batch = CanvasLineage.compose(lineage.getOrPut(frameId) { LinkedHashSet() }, m?.batchId)
                 pending += CanvasRunItemEntity(
                     runId, frameId, nodeId, if (r.error == null) "OK" else "ERROR", r.branch, r.value?.let { CanvasValueJson.encode(it) }, r.error,
-                    m?.latencyMs, m?.promptTokens, m?.completionTokens, m?.model, m?.promptVersion, m?.batchId ?: lineage[frameId], m?.calls,
+                    m?.latencyMs, m?.promptTokens, m?.completionTokens, m?.model, m?.promptVersion, batch, m?.calls,
                 )
                 if (r.error != null) failures++
                 calls += r.calls

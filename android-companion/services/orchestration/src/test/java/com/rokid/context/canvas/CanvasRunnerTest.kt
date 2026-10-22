@@ -700,6 +700,25 @@ class CanvasRunnerTest {
         assertTrue("nothing derived from the batch survives", dao.items(run.runId).none { it.frameId == "f2" && it.batchId == "B1" })
     }
 
+    @Test fun forgettingAPhotoAlsoRemovesTheUnsureNeighbourRowsAfterThePerFrameCritic() = runBlocking<Unit> {
+        // f2 is unsure, so it goes through the (real-shaped) critic whose batch is PER FRAME and used to overwrite the shared extract batch (S25 lineage)
+        val ex = linkedMapOf<String, NodeExecutor>().apply {
+            putAll(liveFakes(unsure = setOf("f2")))
+            put(NodeTypes.VISION_EXTRACT, fake(NodeTypes.VISION_EXTRACT, chunk = 3, nominal = { 1 }) { _, it ->
+                NodeResult(it.frameId, extraction(it.frameId), calls = 1, meta = CallMeta(5, null, null, null, null, "B1"))
+            })
+            put(NodeTypes.CRITIC, fake(NodeTypes.CRITIC, nominal = { it }) { _, it ->
+                NodeResult(it.frameId, it.value, branch = "pass", calls = 1, meta = CallMeta(5, null, null, null, null, "critic:" + it.frameId, calls = 1))
+            })
+        }
+        val run = runAll(runner(ex), DefaultPipelines.liveExtract(), listOf("f1", "f2"))
+        val f2Nodes = dao.items(run.runId).filter { it.frameId == "f2" }.map { it.nodeId }.toSet()
+        assertTrue("the critic ran for the unsure frame", "critic" in f2Nodes && "write" in f2Nodes)
+        dao.deleteCanvasOutputsForFrames(listOf("f1"))
+        val left = dao.items(run.runId).filter { it.frameId == "f2" && it.outputJson != null && it.nodeId != "photos" }
+        assertTrue("rows of f2 derived from the shared call survive: " + left.map { it.nodeId }, left.isEmpty())
+    }
+
     @Test fun rejectedRetryCountedAsAttempt() = runBlocking<Unit> {
         val run = runAll(runner(Executors.all(), tokenContext { p, n -> if (n == 1) "not json" else good(p) }), DefaultPipelines.liveExtract(), frames(1))
         val owner = extractRows(run.runId).single()
