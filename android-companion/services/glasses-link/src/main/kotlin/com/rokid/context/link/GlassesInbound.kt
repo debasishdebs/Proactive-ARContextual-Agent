@@ -41,6 +41,10 @@ class GlassesInbound {
             )
             Channels.USER_EXIT -> gate(Wire.decode<com.rokid.context.core.model.UserExit>(first)) { GlassesEvent.UserExit }
             Channels.MOTION_HINT -> gate(Wire.decode<com.rokid.context.core.model.MotionHint>(first)) { GlassesEvent.MotionHintReceived(it) }
+            Channels.CAPTURE_PLAN_ACK -> gate(Wire.decode<com.rokid.context.core.model.CapturePlanAck>(first)) { GlassesEvent.PlanAckReceived(it) }
+            // Only `v` gates a mark: a queued mark older than the session is still a real moment (S74).
+            Channels.MARK -> gate(Wire.decode<com.rokid.context.core.model.MarkMessage>(first)) { GlassesEvent.MarkReceived(it) }
+            Channels.TRACE_CHUNK -> gate(Wire.decode<com.rokid.context.core.model.TraceChunk>(first)) { GlassesEvent.TraceChunkReceived(it) }
             Channels.LISTEN_END -> if (!listenAccepted) emptyList() else { listenAccepted = false; listOf(GlassesEvent.ListenEnd) }
             else -> emptyList()
         }

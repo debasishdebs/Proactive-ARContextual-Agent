@@ -1,5 +1,9 @@
 package com.rokid.context.capture.plan
 
+import com.rokid.context.core.model.CapturePlanAck
+import com.rokid.context.core.model.CapturePlanMessage
+import com.rokid.context.core.model.PlanAckState
+import com.rokid.context.core.model.PlanMode
 import com.rokid.context.core.model.context.ContextState
 import kotlin.test.Test
 import kotlin.test.assertEquals

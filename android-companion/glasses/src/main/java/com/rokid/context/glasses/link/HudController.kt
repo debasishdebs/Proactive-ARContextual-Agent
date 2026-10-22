@@ -69,6 +69,9 @@ class HudController(
     /** All three are called on a bridge thread. */
     @Volatile var onFrameAck: (FrameAck) -> Unit = {}
     @Volatile var onSessionOpened: () -> Unit = {}
+    /** Slice 3a: the unsolicited `pc_capture_plan_ack` sent on every session open (gen 0, no plan): tells the phone our caps. Task 11 fills in the applied plan. */
+    @Volatile var capsAck: () -> com.rokid.context.core.model.CapturePlanAck =
+        { com.rokid.context.core.model.CapturePlanAck(gen = 0, caps = com.rokid.context.capture.plan.PlanReceiver.CAPS) }
     /** `pc_wear`: the Rokid SDK's wear state from the phone; null = the session closed (unknown again). */
     @Volatile var onWear: (Boolean?) -> Unit = {}
     /** `pc_phone_ctx`: whether the phone is in use (screen on, unlocked); null = the session closed (unknown again). */
@@ -177,6 +180,7 @@ class HudController(
         if (!exited && _sessionOpen.compareAndSet(false, true)) {
             Log.i(TAG, "session open")
             sendHello()
+            bridge.send(Channels.CAPTURE_PLAN_ACK, Wire.encode(capsAck())) // plumbing only; the phone shows "too old" for a peer that never sends it
             onSessionOpened()
         }
     }

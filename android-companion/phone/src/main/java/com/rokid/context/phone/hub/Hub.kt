@@ -5,7 +5,14 @@ import com.rokid.context.core.model.Channels
 import com.rokid.context.core.model.Command
 import com.rokid.context.core.model.GlassesStatus
 import com.rokid.context.core.model.GlassesStatusSource
+import com.rokid.context.core.model.CapturePlanAck
 import com.rokid.context.core.model.HelloRequest
+import com.rokid.context.core.model.MarkMessage
+import com.rokid.context.core.model.TraceChunk
+import com.rokid.context.link.AckVerdict
+import com.rokid.context.link.PlanAckGate
+import com.rokid.context.link.PlanPeer
+import com.rokid.context.link.PlanPeerTracker
 import com.rokid.context.core.model.HudSettings
 import com.rokid.context.core.model.LinkState
 import com.rokid.context.core.model.MotionHint
@@ -75,6 +82,16 @@ class Hub(
     private val ctxStop: () -> Unit = {},
     /** Wave B: the current `applyToCapture` setting, used by the synthesized UNKNOWN revoke (null = the last sent value's). */
     private val applyToCapture: (() -> Boolean)? = null,
+    /** Slice 3a: this phone install's id; an ack on `pc_capture_plan_ack` must echo it (S74). Wired by a later task. */
+    private val phoneInstall: () -> String = { "" },
+    /** Slice 3a: an ack of this install and this session (the caller matches its outstanding gen). Stale acks never reach it. */
+    private val onPlanAck: (CapturePlanAck) -> Unit = {},
+    /** Slice 3a: the capabilities in the glasses' unsolicited caps ack of this session. */
+    private val onPlanCaps: (List<String>) -> Unit = {},
+    /** Slice 3a: a `pc_mark`, accepted whatever its age (occurrence time, not freshness). Idempotency is the receiver's. */
+    private val onMark: suspend (MarkMessage) -> Unit = {},
+    /** Slice 3a: a `pc_trace_chunk` (the transfer contract is a later task). */
+    private val onTraceChunk: suspend (TraceChunk) -> Unit = {},
 ) : GlassesStatusSource {
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
@@ -280,6 +297,13 @@ class Hub(
         link.send(Channels.PHONE_CONTEXT, Wire.encode(com.rokid.context.core.model.PhoneContextMessage(inUse = phoneUse.value, atMs = clock(), sessionStartMs = sessionStartMs)))
     }
 
+    private val ackGate = PlanAckGate(phoneInstall) { sessionStartMs }
+    private val peerTracker = PlanPeerTracker()
+    /** Acks dropped as stale since the app started (another install, another session, or pre-session). */
+    val planAckStale: Int get() = ackGate.ackStale
+    /** Whether the glasses app understands capture plans; TOO_OLD = it never sent a caps ack ("Glasses app too old for canvas plans"). */
+    fun planPeer(): PlanPeer = peerTracker.state(clock())
+
     /** Phone clock when the current glasses session began (a `pc_wear` stamped before it is stale; the glasses ignore it). */
     private var sessionStartMs = 0L
 
@@ -310,6 +334,7 @@ class Hub(
     /** `pc_settings` first, then a `pc_state` through the broadcaster (≤ 4 Hz, Global Constraint). */
     private suspend fun onReady() {
         newSession()
+        peerTracker.onSessionOpen(sessionStartMs)
         set(markDirty = false) { it.copy(versionMismatch = false, offset = null) }
         pushSettings()
         if (lastWorn != null) lastWornAtMs = clock() // the SDK's value is current for this session (it is dropped on every loss)
@@ -334,6 +359,7 @@ class Hub(
         when (e) {
             is GlassesEvent.HelloReceived -> {
                 val h = e.hello
+                peerTracker.onHello(now)
                 val measured = ClockOffset.fromHello(h.glassesNowMs, now)
                 offset = measured
                 val anchored = anchoredBeforeOffset.values.map(measured::recordToPhone)
@@ -392,6 +418,13 @@ class Hub(
             is GlassesEvent.Audio -> voice.onAudio(e.pcm) // never logged: it is the wearer's voice
             GlassesEvent.ListenEnd -> voice.onListenEnd()
             is GlassesEvent.MotionHintReceived -> onMotionHint(e.hint)
+            is GlassesEvent.PlanAckReceived -> when (ackGate.classify(e.ack)) {
+                AckVerdict.CAPS -> { peerTracker.onCapsAck(); onPlanCaps(e.ack.caps) }
+                AckVerdict.MATCH -> { peerTracker.onCapsAck(); onPlanAck(e.ack) }
+                AckVerdict.STALE -> Log.i(TAG, "stale pc_capture_plan_ack ignored (count=${ackGate.ackStale})")
+            }
+            is GlassesEvent.MarkReceived -> onMark(e.mark) // no freshness test: only `v` was gated on the way in
+            is GlassesEvent.TraceChunkReceived -> onTraceChunk(e.chunk)
         }
     }
 
