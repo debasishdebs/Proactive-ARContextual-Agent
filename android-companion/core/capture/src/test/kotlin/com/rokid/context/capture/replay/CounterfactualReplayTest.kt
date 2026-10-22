@@ -89,4 +89,35 @@ class CounterfactualReplayTest {
         val j = CounterfactualReplay.run({ ev.asSequence() }, ReplayFixtures.manifest(), ReplayCandidate("ffffffffffff")).toJson().toString()
         assertTrue("\"estimate\":true" in j); assertTrue("\"warnings\":[" in j); assertTrue("\"unobservedOpensPct\"" in j)
     }
+
+    // ---- per-state evidence (Task 27: gate 3 "covers 2 states", meta.expectOpensP95PerMin) ----
+
+    @Test fun statesCarryMinutesAndTheOpensP95PerState() {
+        val o = ReplayFixtures.timerOracle(untilMs = START + 170_000L)
+        val ev = ReplayFixtures.trace(o.events + TraceEvent.Ctx(START + 90_000L, com.rokid.context.core.model.context.ContextState.REST), endMs = START + 180_000L)
+        val r = CounterfactualReplay.run({ ev.asSequence() }, ReplayFixtures.manifest(endMs = START + 180_000L))
+        assertEquals(setOf("UNKNOWN", "REST"), r.states.keys)
+        assertEquals(80.0 / 60, r.states.getValue("UNKNOWN").minutes, 1e-9)       // from the pre-roll end (START + 10 s) to the REST event
+        assertEquals(90.0 / 60, r.states.getValue("REST").minutes, 1e-9)
+        assertTrue(r.states.getValue("UNKNOWN").opensP95PerMin >= 1.0)
+        val j = r.toJson().toString()
+        assertTrue(j.contains("\"states\":{\"REST\":{\"minutes\":1.5") && j.contains("\"opensP95PerMin\""), j)
+    }
+
+    @Test fun p95IsTheNearestRankOverFullMinutes() {
+        // 20 full minutes in REST: 19 minutes with 1 open, one with 7 -> nearest rank ceil(0.95 * 20) = 19th of the sorted counts = 1; with two busy minutes it is 7
+        val c = com.rokid.context.core.model.context.ContextState.REST
+        fun opens(busy: Set<Int>) = (0 until 20).flatMap { k -> (0 until if (k in busy) 7 else 1).map { j -> k * 60_000L + j * 1_000L } }
+        assertEquals(1.0, CounterfactualReplay.stateFigures(c, emptyList(), 0, 1_200_000, opens(setOf(3)))["REST"]!!.opensP95PerMin)
+        assertEquals(7.0, CounterfactualReplay.stateFigures(c, emptyList(), 0, 1_200_000, opens(setOf(3, 9)))["REST"]!!.opensP95PerMin)
+        assertEquals(emptyMap(), CounterfactualReplay.stateFigures(c, emptyList(), 5, 5, emptyList()))
+    }
+
+    @Test fun aMinuteBelongsToTheStateInEffectWhereItStarts() {
+        val rest = com.rokid.context.core.model.context.ContextState.REST; val walk = com.rokid.context.core.model.context.ContextState.WALKING
+        val f = CounterfactualReplay.stateFigures(rest, listOf(30_000L to walk), 0, 120_000, listOf(10_000L, 70_000L, 71_000L, 72_000L))
+        assertEquals(1.0, f.getValue("REST").opensP95PerMin)     // minute 0 starts in REST (1 open)
+        assertEquals(3.0, f.getValue("WALKING").opensP95PerMin)  // minute 1 starts in WALKING (3 opens)
+        assertEquals(0.5, f.getValue("REST").minutes, 1e-9); assertEquals(1.5, f.getValue("WALKING").minutes, 1e-9)
+    }
 }

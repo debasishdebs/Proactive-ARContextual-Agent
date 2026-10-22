@@ -54,6 +54,8 @@ class PlanPublishGroups(
     /** Activates the phone halves of an EFFECTIVE group (null = use settings). Idempotent. */
     private val activate: suspend (groupId: String, planJson: String?) -> Unit,
     private val plans: PlanSource,
+    /** Switches the phone halves (phone RT, ASYNC) of a group off when the glasses report it REVERTED (S25). Idempotent; called once per REVERTED ack that changed the row. */
+    private val deactivate: suspend (groupId: String) -> Unit = {},
 ) {
     private val ignored = AtomicInteger()
     private val retries = AtomicInteger()
@@ -107,7 +109,7 @@ class PlanPublishGroups(
                 a.reason == "persist" -> retries.incrementAndGet()   // retryable, never a verdict: the same gen is applied on the next send
                 else -> write(r, "FAILED")
             }
-            PlanAckState.REVERTED -> write(r, STATE_REVERTED)
+            PlanAckState.REVERTED -> { write(r, STATE_REVERTED); deactivate(r.groupId) }
         }
     }
 
