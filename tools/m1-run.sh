@@ -109,6 +109,27 @@ cmd_plan() {
   if [ "$h" = "$EXPECT_HASH" ] && [ "$pr" = 0 ]; then echo "PASS identity plan hash"; else echo "FAIL expected $EXPECT_HASH with 0 problems"; exit 1; fi
 }
 
+cmd_store() { # saves the identity plan as a frozen pipeline version so a replay can load its configuration by hash
+  need_state; init_state; identity_body "$STATE/identity.json"
+  local st id rev ver
+  python3 - "$STATE/dup.json" <<'PY'
+import json,sys
+json.dump({"from":"live-extract","name":"M1 identity capture plan"},open(sys.argv[1],"w"))
+PY
+  st=$(api POST /api/pipelines "$STATE/dup.json"); [ "$st" = 200 ] || { errline "$st"; exit 1; }
+  id=$(pj 'j.get("id")'); [ "$id" != "?" ] || die "no pipeline id"
+  python3 - "$STATE/identity.json" "$STATE/save.json" <<'PY'
+import json,sys
+j=json.load(open(sys.argv[1]))["json"]; j["id"]=sys.argv[0] and j["id"]
+json.dump({"json":j,"draftRev":0},open(sys.argv[2],"w"))
+PY
+  st=$(api PUT "/api/pipelines/$id" "$STATE/save.json"); [ "$st" = 200 ] || { errline "$st"; exit 1; }
+  rev=$(pj 'j.get("draftRev")'); echo "draft saved rev=$rev problems=$(pj 'len(j.get("problems",[]))')"
+  echo "{\"note\":\"M1 identity capture plan\",\"draftRev\":$rev}" > "$STATE/freeze.json"
+  st=$(api POST "/api/pipelines/$id/freeze" "$STATE/freeze.json"); [ "$st" = 200 ] || { errline "$st"; exit 1; }
+  echo "frozen: $(python3 -c 'import json;print(json.dumps({k:v for k,v in json.load(open("'"$LAST"'")).items() if k in ("version","n","configHash","hash")}))')"
+}
+
 cmd_shadow() {
   need_state; init_state; identity_body "$STATE/identity.json"
   python3 - "$STATE/identity.json" <<'PY'
@@ -276,7 +297,7 @@ PY
 [ $# -ge 1 ] || die "usage: m1-run.sh pair|plan|shadow|status|collect|pull|replay ..."
 sub="$1"; shift
 case "$sub" in
-  pair) cmd_pair "$@" ;; plan) cmd_plan ;; shadow) cmd_shadow ;; status) cmd_status ;;
+  pair) cmd_pair "$@" ;; store) cmd_store ;; plan) cmd_plan ;; shadow) cmd_shadow ;; status) cmd_status ;;
   collect) cmd_collect "$@" ;; pull) cmd_pull "$@" ;; replay) cmd_replay "$@" ;;
   get) need_state; [ -n "${1:-}" ] || die "usage: m1-run.sh get <path>"; api GET "$1" >/dev/null; cat "$LAST"; echo ;;  # read-only: prints the JSON body (the token is only in a header, never in a body)
   *) die "unknown subcommand: $sub" ;;
