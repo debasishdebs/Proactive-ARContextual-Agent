@@ -1,7 +1,6 @@
 package com.rokid.context.phone.canvas.api
 
 import android.content.Context
-import android.util.Base64
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.contract.PromptKey
@@ -32,6 +31,7 @@ import com.rokid.context.canvas.PhotoSource
 import com.rokid.context.canvas.RunContext
 import com.rokid.context.canvas.RunUsage
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.frames.FrameImages
 import com.rokid.context.memory.db.CanvasDao
 import com.rokid.context.memory.db.CanvasMaintenance
 import com.rokid.context.memory.db.CanvasPipelineVersionEntity
@@ -40,7 +40,7 @@ import com.rokid.context.memory.db.CanvasRunEntity
 import com.rokid.context.memory.db.CanvasScoreEntity
 import com.rokid.context.orchestration.AnswerService
 import com.rokid.context.orchestration.ExtractSave
-import com.rokid.context.orchestration.FrameInputs
+import com.rokid.context.orchestration.MemoryWipe
 import com.rokid.context.orchestration.PipelineRecords
 import com.rokid.context.phone.canvas.server.CanvasAuth
 import com.rokid.context.prompt.LineDiff
@@ -49,6 +49,9 @@ import com.rokid.context.work.frames.FramePhotos
 import com.rokid.context.work.frames.KeyframeGraph
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
@@ -450,11 +453,19 @@ class CanvasBackendImpl(
         }
     }
 
-    override suspend fun frameImage(id: String, thumb: Boolean): ByteArray? {
-        val f = PipelineRecords.framesByIds(app, listOf(id)).firstOrNull() ?: return null
-        val b64 = FrameInputs.fromFrames(listOf(f), 1).singleOrNull()?.base64Data ?: return null
-        val bytes = runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull() ?: return null
-        return if (thumb) FrameImagesHttp.thumbnail(bytes) else bytes
+    override suspend fun frameImage(id: String, thumb: Boolean): FrameImage? {
+        val generation = MemoryWipe.generation.get()
+        // framesByIds drops a tombstoned (forgotten) frame, an expired or deleted one (no row) and one whose file is gone
+        val frame = PipelineRecords.framesByIds(app, listOf(id)).firstOrNull() ?: return null
+        val bytes = withContext(Dispatchers.IO) {
+            if (File(frame.path).length() > FrameImagesHttp.MAX_IMAGE_BYTES) null else FrameImages.readBytes(frame.path) // opened in memory; nothing is written
+        } ?: return null
+        if (bytes.size > FrameImagesHttp.MAX_IMAGE_BYTES) return null
+        // like a live Ask (S35): a Forget or a Delete all that landed while the file was opened means nothing is served
+        if (MemoryWipe.generation.get() != generation || dao.tombstonedAmong(listOf(id)) > 0 || PipelineRecords.framesByIds(app, listOf(id)).isEmpty()) return null
+        val type = FrameImagesHttp.sniff(bytes) ?: return null
+        if (!thumb) return FrameImage(bytes, type)
+        return withContext(Dispatchers.Default) { FrameImagesHttp.thumbnail(bytes) }?.let { FrameImage(it, "image/jpeg") }
     }
 
     // ---- runs ----

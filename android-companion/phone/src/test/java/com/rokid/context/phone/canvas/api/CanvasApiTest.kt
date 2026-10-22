@@ -39,7 +39,7 @@ private class FakeBackend : CanvasBackend {
     var deleteResult = true
     var cancelResult = true
     var known = true
-    var image: ByteArray? = byteArrayOf(1, 2, 3)
+    var image: FrameImage? = FrameImage(byteArrayOf(1, 2, 3), "image/jpeg")
     var delayMs = 0L
     var lastFrames: List<Any?>? = null
     var lastEstimateIds: List<String> = emptyList()
@@ -88,7 +88,7 @@ private class FakeBackend : CanvasBackend {
     override suspend fun checkPrompt(nodeType: String, template: String, schema: String?): List<String> { enter("check:$nodeType"); return listOf("bad") }
     override suspend fun frames(afterMs: Long?, beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray { enter("frames"); lastFrames = listOf(afterMs, beforeMs, limit, dwellOnly); return JsonArray(emptyList()) }
     override suspend fun frame(id: String): JsonObject? { enter("frame"); return if (known) buildJsonObject { put("id", id) } else null }
-    override suspend fun frameImage(id: String, thumb: Boolean): ByteArray? { enter("image:$thumb"); return image }
+    override suspend fun frameImage(id: String, thumb: Boolean): FrameImage? { enter("image:$thumb"); return image }
     override suspend fun estimate(pipelineId: String, version: Int?, frameIds: List<String>): Estimate { enter("estimate:$version"); known(0); lastEstimateIds = frameIds; return estimateResult }
     override suspend fun startRun(pipelineId: String, version: Int?, frameIds: List<String>, token: String): String { enter("start:$token"); startThrows?.let { throw it }; return known("run1") }
     override suspend fun runs() = JsonArray(listOf(buildJsonObject { enter("runs"); put("runId", "run1") }))

@@ -59,7 +59,11 @@ interface CanvasBackend {
     suspend fun frames(afterMs: Long?, beforeMs: Long, limit: Int, dwellOnly: Boolean): JsonArray
     /** Metadata plus `live:[{id,text,type}]`. */
     suspend fun frame(id: String): JsonObject?
-    suspend fun frameImage(id: String, thumb: Boolean): ByteArray?
+    /**
+     * The photo of frame [id] (a [thumb]nail JPEG or the full-size image), decrypted in memory and never written anywhere; null (404) when the frame is
+     * unknown, forgotten, tombstoned, expired or wiped, or not an image within the size limits. There is no listing: a photo is served only by an id the caller names.
+     */
+    suspend fun frameImage(id: String, thumb: Boolean): FrameImage?
     suspend fun estimate(pipelineId: String, version: Int?, frameIds: List<String>): Estimate
     /** The price of an A/B pair: one token, bound to both pipelines (`hashA|hashB`) and the photos. */
     suspend fun estimateAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>): Estimate

@@ -235,9 +235,13 @@ class CanvasBackendImplTest {
 
     @Test fun thumbIsSmallJpeg() = runBlocking<Unit> {
         seed("f1", 1_000)
-        val full = checkNotNull(backend.frameImage("f1", thumb = false))
+        val fullImage = checkNotNull(backend.frameImage("f1", thumb = false))
+        val full = fullImage.bytes
+        assertEquals("image/jpeg", fullImage.contentType)
         assertTrue(full.contentEquals(jpeg)) // the sealed file is opened to the stored JPEG
-        val thumb = checkNotNull(backend.frameImage("f1", thumb = true))
+        val thumbImage = checkNotNull(backend.frameImage("f1", thumb = true))
+        val thumb = thumbImage.bytes
+        assertEquals("image/jpeg", thumbImage.contentType)
         assertTrue(thumb.size < full.size)
         assertEquals(0xFF, thumb[0].toInt() and 0xFF)
         assertEquals(0xD8, thumb[1].toInt() and 0xFF)
