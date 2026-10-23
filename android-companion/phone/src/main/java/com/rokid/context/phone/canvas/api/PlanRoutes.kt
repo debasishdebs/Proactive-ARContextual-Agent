@@ -3,6 +3,7 @@ package com.rokid.context.phone.canvas.api
 import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.canvas.plan.CompileResult
 import com.rokid.context.ai.canvas.plan.PlanCompiler
+import com.rokid.context.ai.canvas.plan.PlanShape
 import com.rokid.context.ai.canvas.Pipeline
 import com.rokid.context.canvas.plan.CapturePlanPublisher
 import com.rokid.context.canvas.plan.GateReport
@@ -83,7 +84,15 @@ class PlanRoutes(
     }
 
     private fun compileRoute(req: HttpRequest): HttpResponse {
-        val r = compile(pipeline(body(req)))
+        val p = pipeline(body(req))
+        if (PlanShape.tier3Nodes(p).isNotEmpty()) { // S6: reported like a failed gate, and no plan is offered for a tier-3 graph
+            return HttpResponse.json(200, buildJsonObject {
+                put("ok", false); put("planJson", JsonNull); put("configHash", JsonNull)
+                put("problems", JsonArray(listOf(JsonPrimitive(PlanShape.S6_REFUSAL)))); put("warnings", JsonArray(emptyList()))
+                put("staticCost", buildJsonObject { put("modelCalls", 0); put("rtOps", 0); put("cpuClass", "LOW") })
+            })
+        }
+        val r = compile(p)
         return HttpResponse.json(200, buildJsonObject {
             put("ok", r.problems.isEmpty())
             put("planJson", r.planJson?.let { JsonPrimitive(it) } ?: JsonNull)
@@ -101,7 +110,9 @@ class PlanRoutes(
         if (mode != null && mode !is JsonNull && (mode as? JsonPrimitive)?.takeIf { it.isString }?.content != "SHADOW") {
             return HttpResponse.error(400, "shadow_only", "Only SHADOW can be sent from here.")
         }
-        val r = compile(pipeline(b))
+        val p = pipeline(b)
+        if (PlanShape.tier3Nodes(p).isNotEmpty()) return HttpResponse.error(409, "publish_blocked", "Blocked.", listOf(PlanShape.S6_REFUSAL)) // S6, before compile and send
+        val r = compile(p)
         val plan = r.plan
         val planJson = r.planJson
         if (r.problems.isNotEmpty() || plan == null || planJson == null) return HttpResponse.error(422, "invalid_pipeline", "The pipeline has problems.", r.problems)
