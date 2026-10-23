@@ -142,3 +142,58 @@ def test_cli_build_runs_command_and_exit_code(fake):
     r = subprocess.run([sys.executable, LOCK_PY, "build", "--", sys.executable, "-c", "import sys; sys.exit(3)"],
                        env=fake.env(), capture_output=True, text=True)
     assert r.returncode == 3
+
+
+# ------------------------------------------------------------------ owner loop: no buffered-line hang (Codex finding 2)
+def _owner(fake, data, idle_s, close):
+    import io
+    import threading
+    r, w = os.pipe()
+    os.write(w, data)
+    if close:
+        os.close(w)
+    out = io.StringIO()
+    s = pca_lock.VmSession()
+    s.acquire()
+    t0 = time.monotonic()
+    pca_lock._owner_loop(s, os.fdopen(r), out, idle_s=idle_s)
+    took = time.monotonic() - t0
+    if not close:
+        os.close(w)
+    return out.getvalue().split("\n"), took, s
+
+
+def test_owner_two_commands_in_one_write_are_both_processed_at_once(fake):
+    fake.set_state("stopped")
+    lines, took, s = _owner(fake, b"status\nstatus\nstop\n", idle_s=5, close=False)
+    assert lines.count("state stopped") == 2 and "stopped" in lines and took < 3 and not s.held
+
+
+def test_owner_partial_line_then_eof_stops_without_hanging(fake):
+    fake.set_state("stopped")
+    lines, took, s = _owner(fake, b"status\nsta", idle_s=30, close=True)
+    assert lines.count("state stopped") == 1 and "stopped" in lines and took < 3 and not s.held
+
+
+def test_owner_partial_line_then_idle_timeout_stops(fake):
+    fake.set_state("stopped")
+    lines, took, s = _owner(fake, b"sta", idle_s=0.3, close=False)
+    assert "stopped" in lines and 0.2 < took < 5 and not s.held
+
+
+def test_poisoned_parent_environment_never_reaches_a_real_podman(tmp_path, monkeypatch):
+    import wp10_env
+    monkeypatch.setenv("PCA_PODMAN", "/nonexistent-real-podman")
+    monkeypatch.setenv("CONTAINER_HOST", "ssh://real@elsewhere/run/podman.sock")
+    monkeypatch.setenv("CONTAINER_CONNECTION", "real")
+    monkeypatch.setenv("PODMAN_CONNECTIONS_CONF", "/nonexistent")
+    f = wp10_env.Fake(str(tmp_path))
+    f.set_state("stopped")
+    e = f.env()
+    assert e["PCA_PODMAN"] == os.path.join(f.bin, "podman")
+    assert not any(k.startswith(("CONTAINER_", "PODMAN_", "DOCKER_")) for k in e)
+    r = subprocess.run([sys.executable, wp10_env.LOCK_PY, "state"], env=e, capture_output=True, text=True, timeout=60)
+    assert r.stdout.strip() == "stopped" and f.calls() == ["machine inspect pca => stopped"]
+    wp10_env.apply_env(monkeypatch, f)  # the in-process fixture path
+    assert os.environ["PCA_PODMAN"] == os.path.join(f.bin, "podman") and "CONTAINER_HOST" not in os.environ
+    assert pca_lock.machine_state() == "stopped" and len(f.calls()) == 2
