@@ -25,6 +25,8 @@ interface PortHarness {
     suspend fun voidAll()
     /** A frame Forget reduced to what the fence sees. */
     suspend fun forget()
+    /** Delete all: the deletion epoch moves (the frame revision does not). */
+    suspend fun deleteAll()
     suspend fun tick()
     /** Moves the clock; a real helper heartbeats every second while it holds a lease (the fake has no lease timer). */
     suspend fun advance(ms: Long)
@@ -36,16 +38,18 @@ internal class FakePortHarness : PortHarness {
     override var now = 1_000L
     override var sessionGen = 7L
     private var rev = 5L
-    private val fake = InMemoryHelperJobPort(now = { now }, sessionGen = { sessionGen }, newId = Counter()::next, fenceNow = { fenceAt(rev) })
+    private var epochCounter = 2L
+    private val fake = InMemoryHelperJobPort(now = { now }, sessionGen = { sessionGen }, newId = Counter()::next, fenceNow = { fenceAt(rev, epochCounter) })
     private class Counter { private var n = 0; fun next() = "job-${++n}" }
     override val port: HelperJobPort get() = fake
-    override suspend fun request(n: Int) = fakeRequest(fenceAt(rev), n)
+    override suspend fun request(n: Int) = fakeRequest(fenceAt(rev, epochCounter), n)
     override suspend fun leaseNext() = fake.leaseNext()
     override suspend fun complete(jobId: String, result: JsonObject) = fake.complete(jobId, result)
     override suspend fun fail(jobId: String, code: String) = fake.fail(jobId, code)
     override suspend fun cancel(jobId: String) = fake.cancel(jobId)
     override suspend fun voidAll() = fake.voidAll()
     override suspend fun forget() { rev++ }
+    override suspend fun deleteAll() { epochCounter++ }
     override suspend fun tick() = fake.tick()
     override suspend fun advance(ms: Long) { now += ms }
     override suspend fun state(jobId: String) = fake.state(jobId)
@@ -85,6 +89,7 @@ internal class RealPortHarness(waiterPollMs: Long = 600_000L) : PortHarness {
     override suspend fun cancel(jobId: String) = service.cancel(jobId)
     override suspend fun voidAll() { service.voidAll("test") }
     override suspend fun forget() { dao.bumpFrameForgetRev() }
+    override suspend fun deleteAll() { epoch = DeletionEpoch(epoch.installId, epoch.counter + 1, now) }
     override suspend fun tick() = service.sweep()
     override suspend fun advance(ms: Long) {
         var left = ms

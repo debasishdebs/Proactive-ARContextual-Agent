@@ -84,7 +84,7 @@ class HelperJobDaoTest {
         assertEquals(original, dao.releasePayload("j1", "h1", leased.leaseGen, f.now, f.live).payload)
         assertTrue(dao.heartbeatHelperJob("j1", "h1", leased.leaseGen, f.now + 1_000, LEASE_MS, f.live).ok)
         assertEquals("heartbeat does not touch the payload", original, dao.helperJob("j1")!!.payloadJson)
-        assertTrue(dao.failHelperJob("j1", "h1", leased.leaseGen, "killed", f.now + 2_000))
+        assertTrue(dao.failHelperJob("j1", "h1", leased.leaseGen, "killed", f.now + 2_000, f.live))
         assertNull("a terminal job keeps no payload", dao.helperJob("j1")!!.payloadJson)
     }
 
@@ -118,7 +118,7 @@ class HelperJobDaoTest {
         f.insertConfirmed("a", createdAt = f.now); f.insertConfirmed("b", createdAt = f.now + 1)
         val a = lease()!!
         assertNull("second lease while the first is live", lease())
-        assertTrue(dao.failHelperJob("a", "h1", a.leaseGen, "timeout", f.now))
+        assertTrue(dao.failHelperJob("a", "h1", a.leaseGen, "timeout", f.now, f.live))
         assertEquals("b", lease()!!.jobId)
     }
 
@@ -300,10 +300,40 @@ class HelperJobDaoTest {
 
     // ---- fail, cancel, void, expire, abort, cleanup ----
 
+    @Test fun failAfterTheDeletionEpochMovedVoidsTheJobAndIsRefused() = runBlocking {
+        val l = f.leased("j1")
+        f.newEpoch()
+        assertFalse("a moved deletion epoch is never acknowledged", dao.failHelperJob("j1", "h1", l.leaseGen, "oom", f.now, f.live))
+        assertEquals("VOIDED", state("j1")); assertNull(dao.helperJob("j1")!!.payloadJson)
+        assertEquals(listOf("j1"), dao.pendingCleanup(10).map { it.jobId })
+    }
+
+    @Test fun failAfterTheFrameForgetRevOrWipeMovedIsRefusedAndVoids() = runBlocking {
+        val a = f.leased("a"); f.bumpRev()
+        assertFalse(dao.failHelperJob("a", "h1", a.leaseGen, "oom", f.now, f.live)); assertEquals("VOIDED", state("a"))
+        val b = f.leased("b", helper = "h2"); f.wipe()
+        assertFalse(dao.failHelperJob("b", "h2", b.leaseGen, "oom", f.now, f.live)); assertEquals("VOIDED", state("b"))
+    }
+
+    @Test fun failAfterTheLeaseExpiredEndsLeaseExpiredNotTheHelpersCode() = runBlocking {
+        val l = f.leased("j1")
+        assertFalse(dao.failHelperJob("j1", "h1", l.leaseGen, "oom", f.now + LEASE_MS, f.live))
+        val row = dao.helperJob("j1")!!
+        assertEquals("FAILED", row.state); assertEquals("lease_expired", row.failCode)
+        assertEquals(listOf("j1"), dao.pendingCleanup(10).map { it.jobId })
+    }
+
+    @Test fun failAfterTheJobDeadlineEndsDeadlineExceeded() = runBlocking {
+        val l = f.leased("j1")
+        var t = f.now + 5_000; while (t < f.now + JOB_MS) { assertTrue(dao.heartbeatHelperJob("j1", "h1", l.leaseGen, t, LEASE_MS, f.live).ok); t += 5_000 }
+        assertFalse(dao.failHelperJob("j1", "h1", l.leaseGen, "oom", f.now + JOB_MS, f.live))
+        assertEquals("deadline_exceeded", dao.helperJob("j1")!!.failCode)
+    }
+
     @Test fun failStoresTheCodeNullsThePayloadAndEnqueuesCleanupInTheSameTransaction() = runBlocking {
         val l = f.leased("j1")
-        assertFalse("only the holder at its generation", dao.failHelperJob("j1", "other", l.leaseGen, "timeout", f.now))
-        assertTrue(dao.failHelperJob("j1", "h1", l.leaseGen, "timeout", f.now))
+        assertFalse("only the holder at its generation", dao.failHelperJob("j1", "other", l.leaseGen, "timeout", f.now, f.live))
+        assertTrue(dao.failHelperJob("j1", "h1", l.leaseGen, "timeout", f.now, f.live))
         val row = dao.helperJob("j1")!!
         assertEquals("FAILED", row.state); assertEquals("timeout", row.failCode); assertNull(row.payloadJson)
         assertEquals(listOf("j1"), dao.pendingCleanup(10).map { it.jobId })
