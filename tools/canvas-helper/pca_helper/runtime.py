@@ -20,8 +20,10 @@ from .protocol import constants
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 CONTAINER_RE = re.compile(r"^pca-job-[A-Za-z0-9_-]{1,64}$")
-GONE = ("no such container", "no container with name", "no such volume", "no volume with name", "not found", "is not running",
-        "can only kill running")
+# Object-specific absence answers only. A generic "not found" (connection, host, transport, unknown error) is NEVER absence.
+GONE_CONTAINER = re.compile(r"no such container|no container with name|container [^\s]+ does not exist", re.I)
+GONE_VOLUME = re.compile(r"no such volume|no volume with name|volume [^\s]+ does not exist", re.I)
+NOT_RUNNING = re.compile(r"is not running|can only kill running|container state improper", re.I)
 EXPORT_TIMEOUT_S = 60
 
 
@@ -139,15 +141,14 @@ class PodmanRuntime:
         return [l.strip() for l in out.splitlines() if CONTAINER_RE.match(l.strip())]
 
     @staticmethod
-    def _gone(err):
-        low = (err or "").lower()
-        return any(g in low for g in GONE)
+    def _gone(err, kind="container"):
+        return (GONE_CONTAINER if kind == "container" else GONE_VOLUME).search(err or "") is not None
 
     def kill(self, name):
         if not isinstance(name, str) or not CONTAINER_RE.match(name):
             return True
         rc, _, err = self._exec(["kill", name], timeout=self._kill_s)
-        return rc == 0 or self._gone(err)
+        return rc == 0 or self._gone(err) or NOT_RUNNING.search(err or "") is not None
 
     def remove(self, name):
         if not isinstance(name, str) or not CONTAINER_RE.match(name):
@@ -171,7 +172,7 @@ class PodmanRuntime:
         if not isinstance(name, str) or not re.match(r"^pca-job-[A-Za-z0-9_-]{1,64}$", name):
             return True  # a name podman cannot hold cannot exist
         rc, _, err = self._exec(["volume", "rm", "-f", name], timeout=30)
-        return rc == 0 or self._gone(err)
+        return rc == 0 or self._gone(err, "volume")
 
     def execute(self, args, timeout=3700):
         """Setup only: run one podman command (args after `--connection <name>`) and return its exit code; output is discarded."""
@@ -196,7 +197,7 @@ class PodmanRuntime:
         if rc != 0:
             raise RuntimeFail("runtime_error")
 
-    def export_volume(self, name, dest, cap_bytes):
+    def export_volume(self, name, dest, cap_bytes, cancel=None):
         """`podman volume export` through a pipe capped at cap_bytes + 1 (the head -c of the plan, done in-process): more than cap_bytes = too_large.
         Writes dest (0600, exclusive, never following a link). Returns the byte count. The partial file is removed on any failure."""
         fd = os.open(str(dest), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -210,12 +211,16 @@ class PodmanRuntime:
             timer.start()
             try:
                 while True:
+                    if cancel is not None and cancel.is_set():
+                        raise RuntimeFail("killed")
                     chunk = p.stdout.read(min(1 << 20, cap_bytes + 1 - total))
                     if not chunk:
                         break
                     total += len(chunk)
                     if total > cap_bytes:
                         raise ExportTooLarge()
+                    if cancel is not None and cancel.is_set():
+                        raise RuntimeFail("killed")
                     os.write(fd, chunk)
             finally:
                 timer.cancel()

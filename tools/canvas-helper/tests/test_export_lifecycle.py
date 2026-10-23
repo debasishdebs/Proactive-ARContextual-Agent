@@ -319,3 +319,107 @@ def test_second_job_is_refused_while_job_lock_is_held(env):
         assert rig.phone.of("fail")[0][2][2] == "resources_busy" and env.runs() == []
     finally:
         lock.release()
+
+
+# ------------------------------------------------------------------ review: gone-detection and worker quiescence
+POISON = ["Error: connection pca not found", "not found", "Error: host not found", "ssh: not found", "Error: unknown error: no route to host",
+          "Error: volume manager not found"]
+
+
+@pytest.mark.parametrize("text", POISON)
+def test_generic_not_found_never_counts_as_gone(env, text):
+    env.runtime._exec = lambda args, **k: (125, "", text)
+    assert env.runtime.remove_volume("pca-job-a") is False
+    assert env.runtime.remove("pca-job-a") is False
+    assert env.runtime.kill("pca-job-a") is False
+
+
+@pytest.mark.parametrize("text", ["Error: no such volume: pca-job-a", "Error: no volume with name pca-job-a found: no such volume",
+                                  "Error: volume pca-job-a does not exist"])
+def test_object_specific_absence_counts_as_gone_for_volumes(env, text):
+    env.runtime._exec = lambda args, **k: (1, "", text)
+    assert env.runtime.remove_volume("pca-job-a") is True
+
+
+@pytest.mark.parametrize("text", ["Error: no container with name or ID pca-job-a found: no such container", "Error: no such container pca-job-a",
+                                  "Error: container pca-job-a does not exist"])
+def test_object_specific_absence_counts_as_gone_for_containers(env, text):
+    env.runtime._exec = lambda args, **k: (1, "", text)
+    assert env.runtime.remove("pca-job-a") is True and env.runtime.kill("pca-job-a") is True
+
+
+def test_failed_volume_removal_with_connection_error_keeps_cleanup_pending(env):
+    env.write_config()
+    ws = ws_of(env)
+    ws.create("job1", b"{}")
+    env.journal.job_end("job1")
+    real = env.runtime._exec
+    env.runtime._exec = lambda args, **k: (125, "", "Error: connection pca not found")
+    from pca_helper.journal import CleanupExecutor
+    assert CleanupExecutor(env.store, env.journal, env.runtime).execute("job1") is False
+    assert env.volumes() == ["pca-job-job1"]
+    env.runtime._exec = real
+    assert CleanupExecutor(env.store, env.journal, env.runtime).execute("job1") is True and env.volumes() == []
+
+
+def test_kill_during_export_cancels_the_worker_before_reporting_gone(env, monkeypatch):
+    rig = Rig(env)
+    entered = []
+    real = env.runtime.export_volume
+
+    def slow(name, dest, cap, cancel=None):
+        entered.append(1)
+        assert cancel is not None and cancel.wait(10), "kill must cancel the export"
+        raise export.RuntimeFail("runtime_error")
+
+    monkeypatch.setattr(env.runtime, "export_volume", slow)
+    env.plan(files={"outputs.json": "{}"})
+    rig.lease()
+    end = time.monotonic() + 10
+    while not entered and time.monotonic() < end:
+        time.sleep(0.02)
+    h = rig.handle()
+    assert entered and not h.done()
+    assert h.kill() is True and h.done(), "kill returns only after the worker is quiescent"
+    rig.sup._deny(rig.sup._job, "cancelled")
+    assert_clean(env)
+
+
+def test_deletion_cleanup_during_collection_never_recreates_staging(env, monkeypatch):
+    import threading
+    rig = Rig(env)
+    entered, release = threading.Event(), threading.Event()
+    real = collector.collect
+
+    def slow_collect(path, limits, dest=None, cancel=None):
+        entered.set()
+        release.wait(10)
+        return real(path, limits, dest=dest, cancel=cancel)
+
+    monkeypatch.setattr(collector, "collect", slow_collect)
+    env.plan(files={"outputs.json": "{}"})
+    rig.lease()
+    assert entered.wait(10)
+    h = rig.handle()
+    h.JOIN_S = 0.2
+    rig.poll(cleanup=[{"cleanupId": "c1", "jobId": "job1"}])  # deletion cleanup removes the stage dir while the worker is still collecting
+    assert not (env.store.stage_dir / "job1").exists()
+    assert rig.sup.active_job_id == "job1" and not h.done(), "worker still active: kill was not confirmed, the job stays held"
+    assert env.journal.kill_pending() == ["pca-job-job1"]
+    release.set()
+    end = time.monotonic() + 10
+    while not h.done() and time.monotonic() < end:
+        time.sleep(0.02)
+    assert h.done() and not (env.store.stage_dir / "job1").exists(), "collection did not recreate the stage dir"
+    env.clock.advance(1500)
+    rig.sup.watchdog_check()  # the retry succeeds now
+    assert rig.sup.active_job_id is None
+    assert_clean(env)
+
+
+def test_abandon_removes_a_recreated_stage_dir(env):
+    ws = ws_of(env)
+    ws.create("job1", b"{}")
+    env.store.remove_path(env.store.stage_dir / "job1")
+    (env.store.stage_dir / "job1" / "extract").mkdir(parents=True)
+    assert ws.abandon("job1") and not (env.store.stage_dir / "job1").exists()

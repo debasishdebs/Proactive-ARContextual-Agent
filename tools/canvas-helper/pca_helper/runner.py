@@ -163,6 +163,7 @@ class JobHandle:
         self.name, self.job_id = name, job_id
         self._rt, self._ws, self._proc, self._lock, self._glue, self._log = runtime, workspace, proc, lock, glue, log
         self.cancelled = False
+        self._cancel = threading.Event()
         self._outcome = None
         self._done = threading.Event()
         self._t = threading.Thread(target=self._work, daemon=True)
@@ -180,7 +181,7 @@ class JobHandle:
                 outcome = {"kind": "fail", "code": EXIT_CODES.get(rc, "runtime_error")}
             else:
                 try:
-                    files = self._ws.export_and_collect(self.job_id)
+                    files = self._ws.export_and_collect(self.job_id, self._cancel)
                     outcome = {"kind": "fail", "code": "killed"} if self.cancelled else self._glue(files)
                 except Exception as e:
                     outcome = {"kind": "fail", "code": getattr(e, "code", "runtime_error")}
@@ -200,8 +201,18 @@ class JobHandle:
             finally:
                 self._done.set()
 
+    JOIN_S = 2.0  # bound of the wait for the worker to become quiescent
+
+    def _quiesce(self):
+        """Cancel export/collection and wait (bounded) for the worker: True only when it has ended, so no late write can follow a cleanup."""
+        self.cancelled = True
+        self._cancel.set()
+        self._t.join(self.JOIN_S)
+        return not self._t.is_alive()
+
     def kill(self):
         self.cancelled = True
+        self._cancel.set()
         self._rt.kill(self.name)
         self._rt.remove(self.name)
         try:
@@ -209,12 +220,15 @@ class JobHandle:
                 self._proc.terminate()  # the local `podman run` client only
         except OSError:
             pass
-        return not self._rt.container_exists(self.name)
+        gone = not self._rt.container_exists(self.name)
+        return self._quiesce() and gone
 
     def force_remove(self):
         self.cancelled = True
+        self._cancel.set()
         self._rt.remove(self.name)
-        return not self._rt.container_exists(self.name)
+        gone = not self._rt.container_exists(self.name)
+        return self._quiesce() and gone
 
     def done(self):
         return self._done.is_set()
