@@ -22,6 +22,7 @@ class DiagBootstrapTest {
     private val clock = ManualClock()
     private val queue = ArrayDeque<Runnable>()
     private var failDelete = false
+    private var killOnDelete = false
     private var ids = 0
     @AfterTest fun cleanup() { root.deleteRecursively() }
 
@@ -32,7 +33,7 @@ class DiagBootstrapTest {
         val diag = DiagRecord(DiagStateFile(File(root, "diag_state")), epochSaved = { rec.epochSaved }, io = { queue.addLast(it) })
         rec = TraceRecorder(
             File(root, "imu"), clock, { 1_700_000_000_000 + clock.t }, { "7" }, 1, io = { queue.addLast(it) }, newTraceId = { "trace-%04d-boot".format(++ids) },
-            deleteTree = { f -> if (failDelete) false else f.deleteRecursively() }, diagEnabled = diag::diagEnabled,
+            deleteTree = { f -> if (killOnDelete) throw Error("killed inside the wipe"); if (failDelete) false else f.deleteRecursively() }, diagEnabled = diag::diagEnabled,
         )
         diag.onChanged = { rec.onDiagChanged() }
         drain()
@@ -80,6 +81,35 @@ class DiagBootstrapTest {
         assertEquals(DiagFlagState.ARMED_NO_EPOCH, g.diag.state())
         drain()
         assertTrue(g.diag.diagEnabled()); assertEquals("inst-2\n0", File(root, "imu/trace_epoch").readText())
+    }
+
+    @Test fun aFailedFenceThenOfflineRestartDoesNotRecordUnderTheForgottenEpoch() {
+        val g = boot()
+        g.control(install = "inst-1", counter = 0); g.diag.onSettings(true); drain()
+        assertTrue(g.diag.diagEnabled())
+        File(root, "imu/traces/keep").mkdirs()
+        failDelete = true
+        g.control(install = "inst-1", counter = 1); drain() // Delete all: the wipe fails
+        val second = boot() // restart, phone offline
+        assertFalse(second.rec.wantsStart, "the deleted epoch must not be reused after a restart")
+        assertEquals(DiagFlagState.ARMED_NO_EPOCH, second.diag.state())
+        assertFalse(second.diag.diagEnabled())
+        failDelete = false
+        second.control(install = "inst-1", counter = 1); drain() // a control re-provisions
+        assertEquals(DiagFlagState.ENABLED, second.diag.state()); assertTrue(second.rec.wantsStart)
+    }
+
+    @Test fun aProcessDeathInsideTheWipeThenOfflineRestartDoesNotRecordUnderTheForgottenEpoch() {
+        val g = boot()
+        g.control(install = "inst-1", counter = 0); g.diag.onSettings(true); drain()
+        File(root, "imu/traces/keep").mkdirs()
+        killOnDelete = true
+        g.control(install = "inst-1", counter = 1)
+        try { drain() } catch (e: Error) { /* the process died here */ }
+        queue.clear(); killOnDelete = false
+        val second = boot()
+        assertEquals(DiagFlagState.ARMED_NO_EPOCH, second.diag.state())
+        assertFalse(second.rec.wantsStart)
     }
 
     @Test fun aFailedFenceKeepsTheFlagArmedNotEnabledUntilTheRetrySucceeds() {
