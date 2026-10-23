@@ -63,7 +63,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -119,6 +122,8 @@ class CanvasHomeViewModel(
     private val ensureService: () -> Unit,
     private val openUrl: (String) -> Unit,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Where the helper card and the grant prefs are read and written (never the main thread: SharedPreferences load and commit synchronously). */
+    private val io: kotlinx.coroutines.CoroutineDispatcher = kotlinx.coroutines.Dispatchers.IO,
 ) : ViewModel() {
     private data class Local(
         val showCode: Boolean = false, val nowMs: Long = 0L, val pipelines: List<PipelineRow> = emptyList(), val runs: List<RunRow> = emptyList(),
@@ -144,10 +149,13 @@ class CanvasHomeViewModel(
         ensureService()
         host.refreshNetwork()
         reload()
-        refreshHelper()
+        startHelperSubscription()
     }
 
-    fun onStop() { host.screenOpen = false }
+    fun onStop() {
+        host.screenOpen = false
+        helperJob?.cancel(); helperJob = null // below STARTED nothing is collected
+    }
 
     /** Once a second while the screen is up: the countdown, and a fresh code when the shown one expired. */
     fun tick() {
@@ -157,14 +165,41 @@ class CanvasHomeViewModel(
         // After a lockout nothing mints a code: the user taps "New code" (S17).
         if ((local.value.showCode || s.lan) && s.on && !s.pairLocked && (s.code == null || now >= s.codeExpiresAt)) host.pairingCode()
         host.refreshNetwork()
-        refreshHelper()
     }
 
-    /** Re-reads the helper card and the pending list from the host (a plain snapshot; WP6 replaces this refresh with its lifecycle-aware subscription). */
-    private fun refreshHelper() {
-        val card = host.helperNative.state()
-        val rows = host.helperConfirm.pending()
-        local.update { it.copy(helper = card, pendingRows = rows) }
+    private var helperJob: Job? = null
+
+    /**
+     * The helper card and the pending-confirmation list (c8 #3): a subscription that lives only while the screen is STARTED (it starts in [onStart], ends in [onStop]) and
+     * re-reads both every second, off the main thread. It does not wait for `host.status` to change: a run that creates a job, an expiry, a decline, a cancel elsewhere and a
+     * session end all show up within a second. Entries past their expiry are also dropped by [tick] through the clock.
+     */
+    private fun startHelperSubscription() {
+        helperJob?.cancel()
+        helperJob = viewModelScope.launch {
+            while (isActive) {
+                refreshHelperOnce()
+                delay(HELPER_REFRESH_MS)
+            }
+        }
+    }
+
+    private suspend fun refreshHelperOnce() {
+        try {
+            val (card, rows) = withContext(io) {
+                host.helperConfirm.refresh()
+                host.helperNative.state() to host.helperConfirm.pending()
+            }
+            local.update { it.copy(helper = card, pendingRows = rows) }
+        } catch (c: CancellationException) { throw c } catch (e: Exception) { /* the card stays as it was */ }
+    }
+
+    /** One native action, on the io dispatcher, then one refresh so the card shows its effect at once. */
+    private fun helperAction(action: () -> Unit) {
+        viewModelScope.launch {
+            try { withContext(io) { action() } } catch (c: CancellationException) { throw c } catch (e: Exception) { /* the refresh shows the truth */ }
+            refreshHelperOnce()
+        }
     }
 
     fun reload() {
@@ -226,15 +261,17 @@ class CanvasHomeViewModel(
     }
 
     /** The card's actions: each calls only the native helper action behind it (no HTTP surface, no key). */
-    fun acceptPairing() { host.helperNative.acceptPairing(); refreshHelper() }
-    fun setPyExecGrant(on: Boolean) { host.helperNative.setGrant("py_exec", on); refreshHelper() }
-    fun disconnectHelper() { host.helperNative.disconnectHelper(); refreshHelper() }
+    fun acceptPairing() = helperAction { host.helperNative.acceptPairing() }
+    fun setPyExecGrant(on: Boolean) = helperAction { host.helperNative.setGrant("py_exec", on) }
+    fun disconnectHelper() = helperAction { host.helperNative.disconnectHelper() }
 
     /** The confirm card's taps: only the bound callbacks. */
-    fun confirmRun(jobId: String) { host.helperConfirm.onConfirm(jobId); refreshHelper() }
-    fun declineRun(jobId: String) { host.helperConfirm.onCancel(jobId); refreshHelper() }
+    fun confirmRun(jobId: String) = helperAction { host.helperConfirm.onConfirm(jobId) }
+    fun declineRun(jobId: String) = helperAction { host.helperConfirm.onCancel(jobId) }
 
     fun messageShown() { local.update { it.copy(message = null) } }
+
+    companion object { const val HELPER_REFRESH_MS = 1_000L }
 }
 
 @Composable

@@ -32,6 +32,13 @@ class CanvasServer(
         const val PORT = 8765
         val FALLBACK = 8766..8770
         const val MAX_BODY = 256 * 1024
+        /** The helper's `result` post (a Python experiment's answers, at most 2 MiB of result plus its envelope). */
+        const val MAX_RESULT_BODY = 2 * 1024 * 1024 + 4096
+        private val RESULT_ROUTE = Regex("^/api/helper/jobs/[A-Za-z0-9:_-]{1,64}/result$")
+
+        /** The largest request body for [method] [path]: [MAX_BODY] everywhere except the one helper `result` route, which alone is raised to [MAX_RESULT_BODY]. */
+        fun bodyLimit(method: String, path: String): Int =
+            if (method.equals("POST", true) && RESULT_ROUTE.matches(path)) MAX_RESULT_BODY else MAX_BODY
         internal val TLS_PROTOCOLS = arrayOf("TLSv1.3", "TLSv1.2")
 
         // held strongly: java.util.logging keeps loggers weakly, and a collected one forgets its level
@@ -187,7 +194,7 @@ class CanvasServer(
         val query = s.parameters.mapNotNull { (k, v) -> v.firstOrNull()?.let { k to it } }.toMap()
         val method = s.method?.name ?: "GET"
         val len = headers["content-length"]?.trim()?.toLongOrNull()?.coerceAtLeast(0) ?: 0L
-        if (len > MAX_BODY) return HttpRequest(method, s.uri, query, headers, ByteArray(0), bodyTooLarge = true, remoteIp = s.remoteIpAddress)
+        if (len > bodyLimit(method, s.uri.substringBefore('?'))) return HttpRequest(method, s.uri, query, headers, ByteArray(0), bodyTooLarge = true, remoteIp = s.remoteIpAddress)
         val body = ByteArray(len.toInt())
         var read = 0
         val input = s.inputStream
