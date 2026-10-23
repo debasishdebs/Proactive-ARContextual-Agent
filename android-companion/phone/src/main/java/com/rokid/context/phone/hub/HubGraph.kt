@@ -45,6 +45,8 @@ object HubGraph {
         private set
     @Volatile var traceControl: com.rokid.context.phone.hub.plan.TraceControlPublisher? = null
         private set
+    /** LGC6-min feeds the glasses' reported diagnostic flag state here (`HubGraph.diagStatus.update(hello.diagFlagState)`); unknown until then. */
+    val diagStatus = com.rokid.context.phone.hub.plan.MutableGlassesDiagStatus()
 
     fun resetForTests(h: Hub?) { synchronized(this) { hub = h } }
 
@@ -174,6 +176,12 @@ object HubGraph {
         )
         val collect = com.rokid.context.canvas.trace.CollectSession.of(app)
         val ctl = com.rokid.context.phone.hub.plan.TraceControlPublisher(link, collect, scope).also { it.start() }
+        // LGC4P: Developer mode drives `HudSettings.diagRecord`; until LGC6-min feeds [diagStatus] the status stays unknown and the re-send is bounded.
+        val devMode = com.rokid.context.phone.canvas.DeveloperModeStore.get(app).enabled
+        val diagRetry = com.rokid.context.phone.hub.plan.DiagControlRetry(
+            scope, diagStatus, diagWanted = { devMode.value }, resend = ctl::resend,
+            log = { m -> com.rokid.context.phone.log.PhoneLogging.canvasPort().log(com.rokid.context.core.log.Level.I, "DiagControl", m) },
+        )
         val traceIntake = com.rokid.context.phone.hub.plan.LaterSeams.noTraceIntake // TODO(Task 18): TraceIntake
         planSender = sender; collectSession = collect; traceControl = ctl
         // Task 33: the publish groups sit behind the same transport; their graph is built on first use (it needs the AI graph) and warmed here so recover() runs at startup.
@@ -209,6 +217,7 @@ object HubGraph {
             onMark = { m, a -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onMark(m, a) },
             onGlassesListenStart = { t -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
+            devMode = devMode, diagControl = diagRetry,
         ).also { hubRef.set(it) }.also { hub ->
             // Process-lifetime watchdog: it outlives the hub service, so it can also bring a dead service back (ensureRunning is refused harmlessly where Android forbids it).
             GlassesWatchdog(

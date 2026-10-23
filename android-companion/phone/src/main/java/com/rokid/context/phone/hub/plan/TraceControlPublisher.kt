@@ -30,6 +30,9 @@ class TraceControlPublisher(private val link: GlassesLink, private val collect: 
     /** A glasses session opened: the session may have expired, and the epoch is read again (never cached). */
     suspend fun onSessionReady() { send(collect.refresh()) }
 
+    /** LGC4P: the current control again (epoch read fresh) while the glasses have not enabled diagnostics; same message the session-ready send builds. */
+    suspend fun resend() { send(collect.refresh()) }
+
     private suspend fun send(c: TraceControl) {
         try { link.send(Channels.TRACE_CTL, Wire.encode(c)) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* sent again at the next session */ }
     }

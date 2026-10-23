@@ -96,6 +96,10 @@ class Hub(
     private val onTraceChunk: suspend (TraceChunk) -> Unit = {},
     /** Slice 3a: a glasses session is ready (its [sessionStartMs] is passed): the plan sender and the trace control re-send their desired state. */
     private val onSessionReady: suspend (Long) -> Unit = {},
+    /** LGC4P: the Developer-mode switch (`DeveloperModeStore.enabled`), read at every settings push as `HudSettings.diagRecord`; never read from the stored settings. */
+    private val devMode: StateFlow<Boolean> = MutableStateFlow(false),
+    /** LGC4P: re-sends the trace control while the glasses have not reported the diagnostic flag enabled; null = none (tests). */
+    private val diagControl: com.rokid.context.phone.hub.plan.DiagControlRetry? = null,
 ) : GlassesStatusSource {
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
@@ -147,6 +151,8 @@ class Hub(
             scope.launch { nudges.latest.drop(1).collect { broadcaster.markDirty() } },
             // The gate's reason travels in pc_settings (the glasses toast it on tap = Ask, spec §5.1.1).
             scope.launch { voice.askBlockedReason.drop(1).collect { guarded("settings") { pushSettings() } } },
+            // LGC4P: Developer mode on/off republishes the settings at once (diagRecord) and restarts (on) or ends (off) the control re-send.
+            scope.launch { devMode.drop(1).collect { guarded("settings") { pushSettings(); broadcaster.markDirty(); diagControl?.restart() } } },
             broadcaster.start(),
         ) + listOfNotNull(relauncher?.start())
         // Fix wave I2: after a phone restart the wearer's exit still stands; only an explicit open ends it.
@@ -264,7 +270,7 @@ class Hub(
     private fun onLinkState(s: LinkState) {
         // Minimised keeps the glasses session (and its clock offset) on the background link; push-to-talk needs the HUD.
         if (s != LinkState.CONNECTED) voice.onLinkLost()
-        if (!s.carriesData) newSession()
+        if (!s.carriesData) { newSession(); diagControl?.cancel() }
         if (s == LinkState.CONNECTED) standDown.connected()
         if (!s.carriesData) set(markDirty = false) { it.copy(iconBlocked = false) } // a stale "no icon" row must not outlive the link
         set { it.copy(link = s, offset = offset, closedByUser = if (s == LinkState.CONNECTED) false else it.closedByUser) }
@@ -365,6 +371,7 @@ class Hub(
         motionContext.value?.let { sendMotionContext(it.copy(atMs = clock())) }
         sendAutoOpen()
         try { onSessionReady(sessionStartMs) } catch (e: CancellationException) { throw e } catch (e: Exception) { Log.w(TAG, "session-ready hook failed: ${e.javaClass.simpleName}") }
+        diagControl?.restart(newSession = true) // LGC4P: a new glasses session knows nothing of the last status
         broadcaster.markDirty()
     }
 
@@ -372,7 +379,8 @@ class Hub(
         val (active, resumed) = withContext(io) { pauses.active() to pauses.recentlyResumedIds() }
         val pushed = StateFrameBuilder.settingsFor(
             settings.read(), active, _state.value.offset, voice.askBlockedReason.value, resumed = resumed, zoneId = ZoneId.systemDefault().id,
-        )
+        // LGC4P: the Developer-mode switch at push time, never the stored value (a restart would otherwise re-send false and switch recording off).
+        ).copy(diagRecord = devMode.value)
         link.send(Channels.SETTINGS, Wire.encode(pushed))
     }
 
