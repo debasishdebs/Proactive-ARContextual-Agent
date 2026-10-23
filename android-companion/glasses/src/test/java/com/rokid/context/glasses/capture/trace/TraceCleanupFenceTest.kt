@@ -24,9 +24,9 @@ class TraceCleanupFenceTest {
     private val wall = 1_700_000_000_000
     @AfterTest fun cleanup() { root.deleteRecursively(); aside.deleteRecursively() }
 
-    private fun recorder(deleteTree: (File) -> Boolean = { it.deleteRecursively() }, writeRecord: (File, String) -> Boolean = com.rokid.context.glasses.log.DiagStateFile::atomicWrite, diag: Boolean = false) =
+    private fun recorder(deleteTree: (File) -> Boolean = { it.deleteRecursively() }, writeRecord: (File, String) -> Boolean = com.rokid.context.glasses.log.DiagStateFile::atomicWrite, diag: Boolean = false, readFile: (File) -> String = { it.readText(Charsets.UTF_8) }) =
         TraceRecorder(root, clock, { wall + clock.t }, { "7" }, 1, io = { r -> if (inline) r.run() else queue.addLast(r) },
-            newTraceId = { "trace-%04d-test".format(++ids) }, flushBytes = 2_000, deleteTree = deleteTree, writeRecord = writeRecord, diagEnabled = { diag })
+            newTraceId = { "trace-%04d-test".format(++ids) }, flushBytes = 2_000, deleteTree = deleteTree, writeRecord = writeRecord, diagEnabled = { diag }, readFile = readFile)
     private fun drain() { while (queue.isNotEmpty()) queue.removeFirst().run() }
     private fun TraceRecorder.begin() = start(TraceTestKit.start())
     private fun TraceRecorder.gyro(n: Int) = repeat(n) { clock.t += 20; onGyro(0.1f, -0.2f, 0.3f, clock.t - 5, MotionState.STILL) }
@@ -249,5 +249,61 @@ class TraceCleanupFenceTest {
             assertEquals(0, TraceTestKit.readAll(root).size, "'$bad': the valid trace did not survive a record it cannot fully read")
             assertFalse(r.cleanupPending(), "'$bad'")
         }
+    }
+
+    // ---- Codex combined review of the glasses chain ----
+
+    /** (1) The receipt is the FIRST task on the writer: a kill after the first task still has the record, and the abort's discard has not run yet. */
+    @Test fun KillBetweenAbortQueueAndPersistLosesNothing() {
+        val r = recorder(); r.onControl(TraceTestKit.collect(counter = 1)); r.begin(); r.gyro(150)
+        val tmp = File(root, "imu_trace_tmp").listFiles()!!.single()
+        inline = false
+        r.onControl(ctl(from = wall + clock.t - 60_000, to = wall + clock.t + 60_000)) // hits the running trace: it is aborted (its discard is queued)
+        assertFalse(r.recording)
+        queue.removeFirst().run() // the process dies right after the first queued task
+        assertTrue(pending.exists(), "the receipt was saved by the first task")
+        assertTrue(tmp.exists(), "the abort's deletion had not run: it is queued behind the receipt")
+        drain(); assertFalse(tmp.exists()); assertFalse(pending.exists())
+    }
+
+    /** (1) The reclaim fence sees a received cleanup that is only queued or held in memory, not just the file. */
+    @Test fun ReclaimIsFencedByAnInMemoryReceipt() {
+        val r0 = recorder(); r0.onControl(TraceTestKit.collect(counter = 1)); r0.begin(); r0.gyro(5); r0.close(CloseReason.STOP)
+        var held = true
+        val st = TraceStorage(root, SpacePolicy(floorBytes = 1L shl 40, sealReserveBytes = 1, initialWriteBytes = 1, softBudgetOverride = Long.MAX_VALUE / 4), { 0L }, receiptHeld = { held })
+        st.measureBudget()
+        assertFalse(st.reclaim(10).any); assertEquals(1, TraceTestKit.readAll(root).size, "held: nothing deleted although the file does not exist")
+        held = false
+        assertTrue(st.reclaim(10).any, "not held: the same call reclaims")
+    }
+
+    /** (2) A working list that cannot be READ is not an empty list: nothing is cleared. */
+    @Test fun WorkingListReadFailureRetainsBothRecords() {
+        val r0 = recorder(); r0.onControl(TraceTestKit.collect(counter = 1)); r0.begin(); r0.gyro(5); r0.close(CloseReason.STOP)
+        val id = TraceTestKit.readAll(root).single().manifest.traceId
+        File(root, "trace_forget").writeText("T trace-0098-old") // an earlier working list exists, so a read is needed
+        var failRead = true
+        val r = recorder(readFile = { f -> if (failRead && f.name == "trace_forget") throw java.io.IOException("read") else f.readText(Charsets.UTF_8) })
+        r.onControl(ctl(id))
+        assertTrue(pending.exists() && pending.readText().contains("T $id"), "the durable request survives an unreadable working list")
+        assertTrue(File(root, "trace_forget").exists()); assertEquals(1, TraceTestKit.readAll(root).size)
+        failRead = false
+        r.onControl(ctl())
+        assertEquals(0, TraceTestKit.readAll(root).size); assertFalse(pending.exists()); assertFalse(File(root, "trace_forget").exists())
+    }
+
+    /** (3) Constructing the recorder (what the main thread may do) reads no file: the epoch is loaded by the writer and a control that comes first waits for it. */
+    @Test fun ConstructionReadsNoEpochAndAnEarlyControlWaitsForTheWriter() {
+        val r0 = recorder(); r0.onControl(TraceTestKit.collect(counter = 1)); r0.begin(); r0.gyro(5); r0.close(CloseReason.STOP)
+        inline = false
+        val r = recorder()
+        assertFalse(r.epochSaved, "nothing was read by the constructor")
+        r.onControl(TraceTestKit.collect(counter = 1).copy(collect = true)) // the SAME epoch, before the writer loaded it: must not look like a new epoch
+        assertEquals(1, queue.size, "only the writer's start-up task is queued; the control waits")
+        drain()
+        assertTrue(r.epochSaved); assertEquals(1, TraceTestKit.readAll(root).size, "the valid trace was not wiped"); assertTrue(r.wantsStart)
+        val r2 = recorder()
+        r2.onControl(TraceTestKit.collect(install = "inst-new", counter = 9)); drain() // a different epoch before the load: applied after it, wipes
+        assertEquals(0, TraceTestKit.readAll(root).size); assertEquals("inst-new\n9", File(root, "trace_epoch").readText())
     }
 }
