@@ -34,6 +34,9 @@ object MemoryWipe {
     /** The plan state's generation counter: not personal data, and the glasses keep their generation across a Delete all, so the phone's must keep counting from it (else every later publish is stale there). */
     const val PLAN_GEN_KEY = "gen"
 
+    /** 3b WP2: the laptop helper's capability grants (`py_exec`, default off). Delete all clears them, so a wipe always leaves every grant off; the phone's `HelperGrants.PREFS` is the same name (a phone test pins it). */
+    const val HELPER_GRANTS_PREFS = "canvas_helper_grants"
+
     /** Clears one of [WIPED_PREFS]; the plan state keeps only its generation counter. */
     fun clearWipedPrefs(prefs: android.content.SharedPreferences, name: String): Boolean {
         val keep = if (name == PLAN_STATE_PREFS) prefs.getLong(PLAN_GEN_KEY, 0L).takeIf { it > 0 } else null
@@ -43,7 +46,7 @@ object MemoryWipe {
     }
 
     /** The prefs Delete all clears (a test pins it to [com.rokid.context.memory.forget.DeletionGraph.wipedPrefs]). */
-    val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS)
+    val WIPED_PREFS = listOf(PLAN_STATE_PREFS, com.rokid.context.canvas.trace.CollectSession.PREFS, HELPER_GRANTS_PREFS)
 
     /**
      * Bumped first by every Delete all. A writer that read it before its work began (a queue job before its claim, an

@@ -59,6 +59,8 @@
     <exclude domain="sharedpref" path="canvas_plan_state.xml" />
     <exclude domain="sharedpref" path="canvas_collect.xml" />
     <exclude domain="sharedpref" path="mark_settings.xml" />
+    <!-- 3b WP2: the helper capability grants (py_exec, default off) are per-install consent: a restore or a device transfer never turns a grant on. -->
+    <exclude domain="sharedpref" path="canvas_helper_grants.xml" />
     <exclude domain="file" path="canvas_traces" />
     <exclude domain="file" path="canvas_import" />
     <exclude domain="file" path="canvas_tmp" />

@@ -39,6 +39,7 @@ object DeletionGraph {
     val PREFS: List<Entry> = listOf(
         w("canvas_plan_state", "the publish-group and plan state sent to the glasses; cleared so a stale plan is never re-sent (only the generation counter stays: not personal data, and the glasses keep theirs)"),
         w("canvas_collect", "the Collect-for-tuning session window"),
+        w("canvas_helper_grants", "the laptop helper's capability grants (py_exec, default off): a wipe turns every grant off, so Delete all never leaves the helper allowed"),
         k("deletion_epoch", "the persisted deletion epoch (install id, counter, wipedAtMs): it IS the fence and holds no user data"),
         k("mark_settings", "reserved: mark toggles (settings, not memory); not written yet"),
     )
