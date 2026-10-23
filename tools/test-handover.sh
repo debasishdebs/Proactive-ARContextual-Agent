@@ -89,6 +89,10 @@ setup NoImportNeedsNoPairing
 run_h "$OUTD" --phone-tid 7 --watch-tid 9; [ "$RC" = 0 ] || bad "$CASE: files-only run without pairing must exit 0"
 has "not imported: needs pairing"; [ ! -d "$GD/imu/transferred" ] || bad "$CASE: marker without import"
 
+setup NoImportSkipsEvenWithPairingArgs
+run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import --host "$HP" --code 123456 --fp 00000000; [ "$RC" = 0 ] || bad "$CASE: rc $RC"
+logsnt ' push '; [ ! -d "$GD/imu/transferred" ] || bad "$CASE: marker with --no-import"; has "not imported: --no-import"; secrets_clean
+
 # 4. phone log rotations: a missing one is skipped with a count; a refused run-as prints the fixed message and exits 0
 setup MissingRotation
 rm -f "$S/data/$PPKG/files/logs/qna_eval.jsonl.1"
