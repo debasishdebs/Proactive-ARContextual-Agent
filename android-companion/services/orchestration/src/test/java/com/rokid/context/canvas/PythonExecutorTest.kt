@@ -15,6 +15,7 @@ import com.rokid.context.canvas.helper.PyOutcome
 import com.rokid.context.canvas.helper.PyRequest
 import com.rokid.context.canvas.helper.fenceAt
 import com.rokid.context.canvas.helper.okResult
+import com.rokid.context.canvas.helper.complete
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.canvas.ConfirmBinding
 import com.rokid.context.memory.canvas.HelperFence
@@ -210,8 +211,9 @@ class PythonExecutorTest {
         assertEquals(PythonExecutor.FRAME_FORGET, "frame_forget")
     }
 
-    @Test fun aFloatInTheInputIsRefusedAsAWholeChunkTodayD1() = runBlocking {
-        // D1 (float results) is OPEN: helper payloads and results are integer-only, so a float in an item's upstream JSON refuses the job (BundleHash is not changed here).
+    @Test fun aFloatInTheInputIsRefusedAsAWholeChunkAndThatInputRuleIsPermanent() = runBlocking {
+        // D1 (decided 2026-10-24) made RESULTS carry floats (the helper hashes the exact text it sends); phone-built payloads and inputs stay integer-only for good: a float in an item's
+        // upstream JSON refuses the whole job (BundleHash is unchanged, no shared float formatter exists).
         val real = InMemoryHelperJobPort(now = { 1_000L }, sessionGen = { 7 })
         val frac = listOf(CanvasItem("frame-0", photo("frame-0"), CanvasValue.Json(JsonObject(mapOf("score" to JsonPrimitive(0.73))))))
         assertEquals(listOf("refused"), run(exec(real), frac).map { it.error })
@@ -228,5 +230,20 @@ class PythonExecutorTest {
         assertEquals("job-1", port.leaseNext())
         assertEquals(emptyList<String>(), port.complete("job-1", okResult(listOf("i0", "i1"))))
         assertEquals(listOf(null, null), run.await().map { it.error })
+    }
+
+    @Test fun aFloatResultOutputFlowsToTheNodeResultAsTheHelperPrintedIt() = runBlocking {
+        // D1: a function returning 0.73 used to fail the whole job (bad_output); now the output passes `number` and reaches the item as its exact text
+        val port = InMemoryHelperJobPort(now = { 1_000L }, sessionGen = { 7 }, newId = { "job-1" })
+        val numberNode = node(outSchema = "{\"type\":\"object\",\"required\":[\"n\"],\"properties\":{\"n\":{\"type\":\"number\"}},\"additionalProperties\":false}")
+        val run = async(start = CoroutineStart.UNDISPATCHED) { run(exec(port), items(2), numberNode) }
+        val p = port.pendingConfirmations().single()
+        assertEquals(ConfirmResult.CONFIRMED, port.confirm(p.jobId, ConfirmBinding(p.jobId, p.bundleHash, p.sessionGen, p.expiresAtMs)))
+        assertEquals("job-1", port.leaseNext())
+        val text = """{"helperProtocol":1,"jobType":"py_exec","outputs":[{"id":"i0","ok":true,"output":{"n":0.73}},{"id":"i1","ok":true,"output":{"n":1e-05}}],"stats":{"ms":5}}"""
+        assertEquals(emptyList<String>(), port.complete("job-1", text, com.rokid.context.canvas.helper.BundleHash.ofCanonical(text)))
+        val out = run.await()
+        assertEquals(listOf(null, null), out.map { it.error })
+        assertEquals(listOf("0.73", "1e-05"), out.map { ((it.value as CanvasValue.Json).value as JsonObject).getValue("n").let { n -> (n as JsonPrimitive).content } })
     }
 }

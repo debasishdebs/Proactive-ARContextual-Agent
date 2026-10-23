@@ -19,7 +19,9 @@ interface PortHarness {
     var sessionGen: Long
     suspend fun request(n: Int = 2): PyRequest
     suspend fun leaseNext(): String?
-    suspend fun complete(jobId: String, result: JsonObject): List<String>
+    /** The helper posts the exact [text] it hashed and the [hash] it claims (decision D1). */
+    suspend fun completeText(jobId: String, text: String, hash: String): List<String>
+    suspend fun complete(jobId: String, result: JsonObject): List<String> = wire(result).let { (t, h) -> completeText(jobId, t, h) }
     suspend fun fail(jobId: String, code: String): Boolean
     suspend fun cancel(jobId: String): Boolean
     suspend fun voidAll()
@@ -44,7 +46,7 @@ internal class FakePortHarness : PortHarness {
     override val port: HelperJobPort get() = fake
     override suspend fun request(n: Int) = fakeRequest(fenceAt(rev, epochCounter), n)
     override suspend fun leaseNext() = fake.leaseNext()
-    override suspend fun complete(jobId: String, result: JsonObject) = fake.complete(jobId, result)
+    override suspend fun completeText(jobId: String, text: String, hash: String) = fake.complete(jobId, text, hash)
     override suspend fun fail(jobId: String, code: String) = fake.fail(jobId, code)
     override suspend fun cancel(jobId: String) = fake.cancel(jobId)
     override suspend fun voidAll() = fake.voidAll()
@@ -76,9 +78,9 @@ internal class RealPortHarness(waiterPollMs: Long = 600_000L) : PortHarness {
         leases[l.jobId] = "h1" to l.leaseGen
         return l.jobId
     }
-    override suspend fun complete(jobId: String, result: JsonObject): List<String> {
+    override suspend fun completeText(jobId: String, text: String, hash: String): List<String> {
         val (h, g) = leases[jobId] ?: return listOf("job is not leased")
-        return when (val r = service.commitResult(jobId, h, g, result)) {
+        return when (val r = service.commitResult(jobId, h, g, text, hash)) {
             is ResultCommit.Committed -> emptyList()
             is ResultCommit.Denied -> listOf(r.code)
             is ResultCommit.Invalid -> r.reasons

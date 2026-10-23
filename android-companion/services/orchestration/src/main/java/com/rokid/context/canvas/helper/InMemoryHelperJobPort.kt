@@ -121,13 +121,15 @@ class InMemoryHelperJobPort(
         job.id
     }
 
-    /** The helper posts a result. Returns the refusal reasons (empty = committed). The job stays LEASED when refused. */
-    fun complete(jobId: String, result: JsonObject): List<String> = synchronized(lock) {
+    /** The helper posts a result (the exact text and its claimed hash, as on the wire). Returns the refusal reasons (empty = committed). The job stays LEASED when refused. */
+    fun complete(jobId: String, resultCanonical: String, resultHash: String): List<String> = synchronized(lock) {
         tickLocked() // a result at or after lease + pyExecDeadlineMs is expired, not accepted
         val job = jobs[jobId]?.takeIf { it.state == HelperJobState.LEASED } ?: return listOf("job is not leased")
-        // the same order as the real service: canonical form and size first, then the shape against the payload
-        val canonical = try { BundleHash.canonical(result) } catch (_: IllegalArgumentException) { return listOf("result is not canonical") }
-        if (canonical.toByteArray(Charsets.UTF_8).size > HelperProtocol.MAX_RESULT_BYTES) return listOf("too_large")
+        // the same order as the real service: size, the hash over the text as received, the parse, then the shape against the payload
+        val result = when (val c = ResultWire.check(resultCanonical, resultHash)) {
+            is ResultWire.Checked.Rejected -> return listOf(if (c.kind == ResultWire.Kind.TOO_LARGE) "too_large" else c.reason)
+            is ResultWire.Checked.Ok -> c.result
+        }
         val errs = HelperProtocol.validateResult(job.payload, result)
         if (errs.isNotEmpty()) return errs
         finish(job, JobEvent.RESULT, result = result)
