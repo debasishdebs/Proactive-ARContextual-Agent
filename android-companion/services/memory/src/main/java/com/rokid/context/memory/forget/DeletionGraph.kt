@@ -58,6 +58,8 @@ object DeletionGraph {
         k("trace_epoch.part", "its atomic-write temp file"),
         w("trace_forget", "pending forget requests (ranges and ids); removed once carried out"),
         w("trace_forget.part", "its atomic-write temp file"),
+        k("trace_cleanup_pending", "the received-cleanup record (LGC8-min): wipe flag, target epoch and forget ids/ranges, no user data; kept until the cleanup it describes succeeded, replayed at start before recovery"),
+        k("trace_cleanup_pending.part", "its atomic-write temp file"),
     )
 
     /** Folders under `filesDir`. */
