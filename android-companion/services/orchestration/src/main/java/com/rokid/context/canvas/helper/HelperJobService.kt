@@ -81,20 +81,23 @@ class HelperJobService(
             sessionGen = sessionGen(), bundleHash = BundleHash.ofCanonical(canonical), payloadJson = canonical, confirmExpiresAtMs = t + HelperProtocol.CONFIRM_TTL_MS,
             itemCount = req.items.size, sourceChars = req.source.length,
         )
-        val waiter = Waiter()
-        waiters[id] = waiter
         try {
             // A Forget, Delete all or restart since the runner captured the fence: no row, nothing to clean up.
-            if (!store.insert(job, req.fence)) { waiters.remove(id); line("job refused by fence"); return PyOutcome.Voided }
+            if (!store.insert(job, req.fence)) { line("job refused by fence"); return PyOutcome.Voided }
+            // The waiter exists only once the row does: a concurrent sweep can never see "no row" for a job that is about to be inserted. A job closed between the insert
+            // and this registration is picked up from its terminal row by settle.
+            val w = Waiter()
+            waiters[id] = w
             line("job awaiting confirmation")
             settle(id)
             while (true) {
-                val done = withTimeoutOrNull(waiterPollMs) { waiter.outcome.await() }
+                val done = withTimeoutOrNull(waiterPollMs) { w.outcome.await() }
                 if (done != null) return done
                 sweep()
             }
-        } catch (e: CancellationException) {
-            withContext(NonCancellable) { cancel(id); waiters.remove(id) }
+        } catch (e: Throwable) {
+            // cancellation (the executor's coroutine) or any failure after the insert may have committed: the job must not outlive its run
+            withContext(NonCancellable) { runCatching { cancel(id) }; waiters.remove(id) }
             throw e
         }
     }
@@ -109,7 +112,7 @@ class HelperJobService(
         val now = clock()
         val row = store.job(jobId)
         // A job of another helper session (the session ended since the submit) can never be released: void it.
-        if (row != null && row.state == HelperJobState.AWAITING_CONFIRM.name && binding.sessionGen == row.sessionGen && now < (row.confirmExpiresAtMs ?: 0L) && row.sessionGen != sessionGen()) {
+        if (row != null && row.state == HelperJobState.AWAITING_CONFIRM.name && binding == ConfirmBinding(row.jobId, row.bundleHash.orEmpty(), row.sessionGen, row.confirmExpiresAtMs ?: 0L) && now < (row.confirmExpiresAtMs ?: 0L) && row.sessionGen != sessionGen()) {
             store.void(jobId, "session", now); settle(jobId); return ConfirmResult.STALE_FENCE
         }
         val r = when (store.confirm(jobId, binding, now)) {
@@ -233,7 +236,7 @@ class HelperJobService(
     /** The executor's outcome of a terminal row, or null while the job is open. Mirrors the in-memory fake exactly. */
     private fun outcomeOf(r: CanvasHelperJobEntity): PyOutcome? = when (HelperJobState.valueOf(r.state)) {
         HelperJobState.AWAITING_CONFIRM, HelperJobState.QUEUED, HelperJobState.LEASED -> null
-        HelperJobState.DONE -> done(r.resultJson)
+        HelperJobState.DONE -> if (r.resultJson == null && r.voidReason == "frame_forget") PyOutcome.Voided else done(r.resultJson)
         HelperJobState.VOIDED -> PyOutcome.Voided
         HelperJobState.ABORTED -> PyOutcome.Cancelled
         HelperJobState.CANCELLED -> if (r.voidReason == "declined") PyOutcome.NotConfirmed else PyOutcome.Cancelled
