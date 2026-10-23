@@ -1,5 +1,5 @@
 {
-  "_note": "each result refers to a valid payload by name (py_exec-payload-samples.json). A result is refused 422 invalid_result unless every payload item id appears exactly once and every ok output validates against outSchema.",
+  "_note": "each result refers to a valid payload by name (py_exec-payload-samples.json). A result is refused 422 invalid_result unless every payload item id appears exactly once and every ok output validates against outSchema. wireRows (decision D1, 2026-10-24): the helper posts resultCanonical (a STRING, Python json.dumps(result, sort_keys=True, separators=(',',':'), ensure_ascii=False)) and resultHash = lowercase hex sha256 of that exact string as UTF-8. The phone verifies the hash over the string AS RECEIVED (never over a re-printed value), then parses it (duplicate keys and invalid JSON are refused), then runs the per-member schema check. Floats pass `number` and fail `integer`. expect: ok | hash_mismatch | invalid_json | duplicate_key | not_object | schema_mismatch (the check order). pythonPrints: json.dumps of the parsed text gives exactly resultCanonical (Python can produce this text), so its sha256 is the row's hash.",
   "valid": [
     {
       "name": "allOk",
@@ -372,6 +372,350 @@
           "ms": 42
         }
       }
+    }
+  ],
+  "wireRows": [
+    {
+      "name": "floatScore",
+      "reason": "0.73 passes number",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "73b9b12591b3a4b0c356beaeec1063ff0a0bdaca704d238be18089e63f496d15",
+      "expect": "ok",
+      "pythonPrints": true
+    },
+    {
+      "name": "smallExponent",
+      "reason": "Python prints 1e-05 for 0.00001",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":1e-05,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":1e-05,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "a3ca0bbe1620eb7564ee1b41dc3212476fbbf94516f92bd767d29c7e6bb0125e",
+      "expect": "ok",
+      "pythonPrints": true
+    },
+    {
+      "name": "negativeZero",
+      "reason": "-0.0 is a number; Python prints -0.0",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":-0.0,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":-0.0,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "6b1636c80663865a1e947f57d44f802318d18c68228917c08b5ad32dad71fd33",
+      "expect": "ok",
+      "pythonPrints": true
+    },
+    {
+      "name": "wholeFloat",
+      "reason": "100.0 is a number (still fails integer, see invalid rows)",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":100.0,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":100.0,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "39ab5a79e69fc9068d6556bcc7ae31c417c4d6d88994b2bc9d713866df5b695c",
+      "expect": "ok",
+      "pythonPrints": true
+    },
+    {
+      "name": "nestedFloatInObjectAndArray",
+      "reason": "floats inside a nested object and an array",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.123456789,\"n\":3},\"score\":0.73,\"series\":[0.1,2.5e-07,1e+16,-3.5]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.123456789,\"n\":3},\"score\":0.73,\"series\":[0.1,2.5e-07,1e+16,-3.5]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "ada51b55e7e9dfa9d82dc245d4b703617ba955c9af01fadbd9202e52e8af479f",
+      "expect": "ok",
+      "pythonPrints": true
+    },
+    {
+      "name": "hugeAndTinyExponents",
+      "reason": "largest and smallest doubles",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[1.7976931348623157e+308,5e-324,1e-310]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[1.7976931348623157e+308,5e-324,1e-310]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "a3f5079b344356d5ab7853799a49b1a8898e060d435307de3bdcc36b7d4823db",
+      "expect": "ok",
+      "pythonPrints": true
+    },
+    {
+      "name": "unicodeLabelNotEscaped",
+      "reason": "ensure_ascii=False text hashed as UTF-8",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"count\":3,\"label\":\"café 日本語 😀 \\\"q\\\" \\\\ \\n\",\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"count\":3,\"label\":\"café 日本語 😀 \\\"q\\\" \\\\ \\n\",\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "c955714dafa660ecafde0d4cf5971ff896ab12bea7c1e80699fd9d311a859beb",
+      "expect": "ok",
+      "pythonPrints": true
+    },
+    {
+      "name": "integersStillFine",
+      "reason": "integer members stay integers",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"count\":7,\"meta\":{\"conf\":1,\"n\":0},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"count\":7,\"meta\":{\"conf\":1,\"n\":0},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "538f2654ccf0e35495cd66a87c7cd1ffeefa193e25c66f9ae26db95e6765c6f7",
+      "expect": "ok",
+      "pythonPrints": true
+    },
+    {
+      "name": "trailingZeroHashedAsReceived",
+      "reason": "0.730 is not Python's text for the value, but the hash covers the received text; the phone must not re-print",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.730,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.730,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "8cf565c37ff940fbe1a0395baf5a8752c6486e2d472d8916de7bd15927ed92a3",
+      "expect": "ok",
+      "pythonPrints": false
+    },
+    {
+      "name": "whitespaceAndKeyOrderAsReceived",
+      "reason": "unsorted keys and spaces, hash over the received text",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\": 1, \"jobType\": \"py_exec\", \"outputs\": [{\"id\": \"i0\", \"ok\": true, \"output\": {\"score\": 0.73, \"meta\": {\"conf\": 0.5}, \"series\": [0.1]}}, {\"id\": \"i1\", \"ok\": true, \"output\": {\"score\": 0.73, \"meta\": {\"conf\": 0.5}, \"series\": [0.1]}}], \"stats\": {\"ms\": 42}}",
+      "resultHash": "c357b71fd7f8533dc60957dfec56dda67bc4e8483fe12254301593110acfed61",
+      "expect": "ok",
+      "pythonPrints": false
+    },
+    {
+      "name": "exponentCapitalE",
+      "reason": "1E-5 hashed as received",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":1E-5,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":1E-5,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "1be24c8bfd510012931fc7d3ce07f029eba25829f9eec08d7b6d9d7b9236fc41",
+      "expect": "ok",
+      "pythonPrints": false
+    },
+    {
+      "name": "hashOfAnotherText",
+      "reason": "the hash is of a different result text",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "c7c42bae83e51e6bc0168ea1e5f088e546b0d0f494329725280636b46c90a5d9",
+      "expect": "hash_mismatch",
+      "pythonPrints": true
+    },
+    {
+      "name": "textParsesToOtherJsonThanHashClaims",
+      "reason": "the text says 0.74, the hash claims the 0.73 text",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.74,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.74,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "73b9b12591b3a4b0c356beaeec1063ff0a0bdaca704d238be18089e63f496d15",
+      "expect": "hash_mismatch",
+      "pythonPrints": true
+    },
+    {
+      "name": "sameValueOtherSpelling",
+      "reason": "0.730 hashes differently from 0.73: the claimed hash is of the 0.73 spelling",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.730,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.730,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "73b9b12591b3a4b0c356beaeec1063ff0a0bdaca704d238be18089e63f496d15",
+      "expect": "hash_mismatch",
+      "pythonPrints": false
+    },
+    {
+      "name": "hashUppercaseRefused",
+      "reason": "the hash is lowercase hex only",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "73B9B12591B3A4B0C356BEAEEC1063FF0A0BDACA704D238BE18089E63F496D15",
+      "expect": "hash_mismatch",
+      "pythonPrints": true
+    },
+    {
+      "name": "hashOfEmptyString",
+      "reason": "an empty claimed hash",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "",
+      "expect": "hash_mismatch",
+      "pythonPrints": true
+    },
+    {
+      "name": "duplicateTopLevelKey",
+      "reason": "a key repeated at the top level (hash is right)",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[],\"stats\":{\"ms\":1},\"stats\":{\"ms\":2}}",
+      "resultHash": "6fff1ce954c1aa7049922909c5a58963b9309ce91f66bab7cefe95a2ca62d364",
+      "expect": "duplicate_key",
+      "pythonPrints": false
+    },
+    {
+      "name": "duplicateNestedKey",
+      "reason": "a key repeated inside an output",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"score\":0.1,\"score\":0.2}}],\"stats\":{\"ms\":1}}",
+      "resultHash": "f1d358782e6ac62bcae98ac9d6b3649f7a446bf16854164bfd0b20b752f84c2f",
+      "expect": "duplicate_key",
+      "pythonPrints": false
+    },
+    {
+      "name": "duplicateKeyAfterEscape",
+      "reason": "same key spelled with an escape",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"a\":1,\"\\u0061\":2}",
+      "resultHash": "c95ba945b310a34906bbfc28ce1346b87741d5a2b3066d1d3ecfa0acbd86392c",
+      "expect": "duplicate_key",
+      "pythonPrints": false
+    },
+    {
+      "name": "notJson",
+      "reason": "plain text",
+      "payload": "floatTwo",
+      "resultCanonical": "not json",
+      "resultHash": "7ccfa1fbf3940e6f0c0375d87c0f9235a50514e14cb427bdfaf5077987b26ccf",
+      "expect": "invalid_json",
+      "pythonPrints": false
+    },
+    {
+      "name": "emptyText",
+      "reason": "empty string",
+      "payload": "floatTwo",
+      "resultCanonical": "",
+      "resultHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "expect": "invalid_json",
+      "pythonPrints": false
+    },
+    {
+      "name": "truncated",
+      "reason": "cut off",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\"",
+      "resultHash": "1c5ae8a8152574b04e2d026b80e1eb0a1dab8821da8a30b1b2033abd1b23ec93",
+      "expect": "invalid_json",
+      "pythonPrints": false
+    },
+    {
+      "name": "trailingGarbage",
+      "reason": "valid JSON then garbage",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}x",
+      "resultHash": "f921b1b0ab0883cf069117be84f7252c4f42f3c980476f5ba9d3b8a24d5677e2",
+      "expect": "invalid_json",
+      "pythonPrints": false
+    },
+    {
+      "name": "nanLiteral",
+      "reason": "NaN is not JSON",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":NaN,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":NaN,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "ed4c4c5c8061eda8c0e93d2e1753644887ca4754327b87e40a2c181cffbd8cb1",
+      "expect": "invalid_json",
+      "pythonPrints": false
+    },
+    {
+      "name": "infinityLiteral",
+      "reason": "Infinity is not JSON",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":Infinity,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":Infinity,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "a61f3f8df1e64e096f0f6a13cf580f1c8837d289a629a33e9a2adb276045a921",
+      "expect": "invalid_json",
+      "pythonPrints": false
+    },
+    {
+      "name": "leadingZero",
+      "reason": "01 is not a JSON number",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":01,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":01,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "6ef9b97124f8310bd83e12de120611120b6dfc07c7336a2cd8880273152643d7",
+      "expect": "invalid_json",
+      "pythonPrints": false
+    },
+    {
+      "name": "loneSurrogateEscape",
+      "reason": "an unpaired surrogate escape",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"\\ud800\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "9390d49245f1abde5a3f509bbc7b80ca0727fca16f39c3b86ba7bccca62dc57a",
+      "expect": "invalid_json",
+      "pythonPrints": false
+    },
+    {
+      "name": "rawControlCharacter",
+      "reason": "a raw newline inside a string",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i\n0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "61f249c6a0340d6fd4fa323c3f939f96e755ed5d69b31edd91b76004b7171d09",
+      "expect": "invalid_json",
+      "pythonPrints": false
+    },
+    {
+      "name": "notAnObject",
+      "reason": "a JSON array",
+      "payload": "floatTwo",
+      "resultCanonical": "[1,2]",
+      "resultHash": "49a64717d5d4cb19952e6eac2946415cf6879adacf9908e7d872332d32c6e684",
+      "expect": "not_object",
+      "pythonPrints": false
+    },
+    {
+      "name": "scalarText",
+      "reason": "a JSON number",
+      "payload": "floatTwo",
+      "resultCanonical": "0.73",
+      "resultHash": "99d03fc3771fe6848d675339fc49eeb1cb8d99a12e6358173336b99a2ec530ea",
+      "expect": "not_object",
+      "pythonPrints": false
+    },
+    {
+      "name": "floatForInteger",
+      "reason": "count is an integer member: 1.0 fails",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"count\":1.0,\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"count\":1.0,\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "14573ec87fef235f1d8b94ec0af47328f1c09466490356b39ea1be6389de5979",
+      "expect": "schema_mismatch",
+      "pythonPrints": true
+    },
+    {
+      "name": "nestedFloatForInteger",
+      "reason": "meta.n is an integer member inside a nested object",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5,\"n\":0.5},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5,\"n\":0.5},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "8c229732d33e526a96b64492525c9cd692dcbe874abdbe000b644e40a8992fd1",
+      "expect": "schema_mismatch",
+      "pythonPrints": true
+    },
+    {
+      "name": "exponentForInteger",
+      "reason": "1e2 is not an integer spelling",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"count\":1e2,\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"count\":1e2,\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "40340e4008f63de0aacd5deb35633741b1f8ddcea0d06494cce35ab1dd2fa565",
+      "expect": "schema_mismatch",
+      "pythonPrints": false
+    },
+    {
+      "name": "floatOverMaximum",
+      "reason": "score maximum is 100",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":100.5,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":100.5,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "4a2dbf26f26805312bfbddf32de695d99c0427708cea5dafd4ee609d8e903900",
+      "expect": "schema_mismatch",
+      "pythonPrints": true
+    },
+    {
+      "name": "stringForNumber",
+      "reason": "a string is not a number",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":\"0.73\",\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":\"0.73\",\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "7105b4988f20e92e6c6782b7d8730593df0bc3bbd19d0ead9c148a680059528b",
+      "expect": "schema_mismatch",
+      "pythonPrints": true
+    },
+    {
+      "name": "nestedFloatWrongTypeInArray",
+      "reason": "an array item that is not a number",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1,\"x\"]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":0.73,\"series\":[0.1,\"x\"]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "8233b3510188d75c9052eacf28d90625ff690ea1e326069d214addb795677e10",
+      "expect": "schema_mismatch",
+      "pythonPrints": true
+    },
+    {
+      "name": "nestedMissingRequired",
+      "reason": "meta.conf missing",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"n\":1},\"score\":0.73,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"n\":1},\"score\":0.73,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "aeaa87f5ffd40a1a1f33f3b68b23d66df97d3daca01a04251c1e8ad044568270",
+      "expect": "schema_mismatch",
+      "pythonPrints": true
+    },
+    {
+      "name": "hugeExponentBeyondDouble",
+      "reason": "1e400 is a JSON number (the phone keeps the text); max 100 refuses it",
+      "payload": "floatTwo",
+      "resultCanonical": "{\"helperProtocol\":1,\"jobType\":\"py_exec\",\"outputs\":[{\"id\":\"i0\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":1e400,\"series\":[0.1]}},{\"id\":\"i1\",\"ok\":true,\"output\":{\"meta\":{\"conf\":0.5},\"score\":1e400,\"series\":[0.1]}}],\"stats\":{\"ms\":42}}",
+      "resultHash": "fa35e803f183cc48a9d7832a46ecc2e88b46bcc1acae3b64eff3698e26eed3aa",
+      "expect": "schema_mismatch",
+      "pythonPrints": false
     }
   ]
 }

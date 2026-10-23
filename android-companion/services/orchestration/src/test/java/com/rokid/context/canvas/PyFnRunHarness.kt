@@ -14,6 +14,7 @@ import com.rokid.context.canvas.helper.PendingConfirmation
 import com.rokid.context.canvas.helper.PyOutcome
 import com.rokid.context.canvas.helper.PyRequest
 import com.rokid.context.canvas.helper.okResult
+import com.rokid.context.canvas.helper.commitResult
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.canvas.ConfirmBinding
 import com.rokid.context.memory.canvas.HelperFence
