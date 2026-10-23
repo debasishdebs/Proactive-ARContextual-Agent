@@ -1,0 +1,765 @@
+{
+  "_note": "Frozen rows of the shared schema subset (keywords: type required properties additionalProperties enum items minimum maximum minLength maxLength minItems maxItems; no pattern). instanceRows: validate(schema, instance) must equal valid. contractRows: validateContract(schema) is supported or refused. maxInstanceDepth 8: an instance nested deeper than 8 arrays/objects is invalid.",
+  "instanceRows": [
+    {
+      "id": "type.string.ok",
+      "schema": {
+        "type": "string"
+      },
+      "instance": "a",
+      "valid": true
+    },
+    {
+      "id": "type.string.bad",
+      "schema": {
+        "type": "string"
+      },
+      "instance": 1,
+      "valid": false
+    },
+    {
+      "id": "type.integer.ok",
+      "schema": {
+        "type": "integer"
+      },
+      "instance": 3,
+      "valid": true
+    },
+    {
+      "id": "type.integer.rejectsFraction",
+      "schema": {
+        "type": "integer"
+      },
+      "instance": 3.5,
+      "valid": false
+    },
+    {
+      "id": "type.number.ok",
+      "schema": {
+        "type": "number"
+      },
+      "instance": 3.5,
+      "valid": true
+    },
+    {
+      "id": "type.boolean.ok",
+      "schema": {
+        "type": "boolean"
+      },
+      "instance": false,
+      "valid": true
+    },
+    {
+      "id": "type.null.ok",
+      "schema": {
+        "type": "null"
+      },
+      "instance": null,
+      "valid": true
+    },
+    {
+      "id": "type.null.bad",
+      "schema": {
+        "type": "null"
+      },
+      "instance": 0,
+      "valid": false
+    },
+    {
+      "id": "enum.ok",
+      "schema": {
+        "enum": [
+          "a",
+          "b"
+        ]
+      },
+      "instance": "b",
+      "valid": true
+    },
+    {
+      "id": "enum.bad",
+      "schema": {
+        "enum": [
+          "a",
+          "b"
+        ]
+      },
+      "instance": "c",
+      "valid": false
+    },
+    {
+      "id": "minimum.boundaryOk",
+      "schema": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "instance": 0,
+      "valid": true
+    },
+    {
+      "id": "minimum.bad",
+      "schema": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "instance": -1,
+      "valid": false
+    },
+    {
+      "id": "maximum.boundaryOk",
+      "schema": {
+        "type": "integer",
+        "maximum": 10
+      },
+      "instance": 10,
+      "valid": true
+    },
+    {
+      "id": "maximum.bad",
+      "schema": {
+        "type": "integer",
+        "maximum": 10
+      },
+      "instance": 11,
+      "valid": false
+    },
+    {
+      "id": "minLength.boundaryOk",
+      "schema": {
+        "type": "string",
+        "minLength": 2
+      },
+      "instance": "ab",
+      "valid": true
+    },
+    {
+      "id": "minLength.bad",
+      "schema": {
+        "type": "string",
+        "minLength": 2
+      },
+      "instance": "a",
+      "valid": false
+    },
+    {
+      "id": "maxLength.boundaryOk",
+      "schema": {
+        "type": "string",
+        "maxLength": 2
+      },
+      "instance": "ab",
+      "valid": true
+    },
+    {
+      "id": "maxLength.bad",
+      "schema": {
+        "type": "string",
+        "maxLength": 2
+      },
+      "instance": "abc",
+      "valid": false
+    },
+    {
+      "id": "maxLength.countsCodePoints",
+      "schema": {
+        "type": "string",
+        "maxLength": 2
+      },
+      "instance": "😀😀",
+      "valid": true
+    },
+    {
+      "id": "minItems.boundaryOk",
+      "schema": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [
+        1
+      ],
+      "valid": true
+    },
+    {
+      "id": "minItems.bad",
+      "schema": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [],
+      "valid": false
+    },
+    {
+      "id": "maxItems.boundaryOk",
+      "schema": {
+        "type": "array",
+        "maxItems": 2,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [
+        1,
+        2
+      ],
+      "valid": true
+    },
+    {
+      "id": "maxItems.bad",
+      "schema": {
+        "type": "array",
+        "maxItems": 2,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [
+        1,
+        2,
+        3
+      ],
+      "valid": false
+    },
+    {
+      "id": "items.badElement",
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [
+        1,
+        "x"
+      ],
+      "valid": false
+    },
+    {
+      "id": "object.ok",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "instance": {
+        "a": 1
+      },
+      "valid": true
+    },
+    {
+      "id": "object.missingRequired",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "instance": {
+        "b": "x"
+      },
+      "valid": false
+    },
+    {
+      "id": "object.extraProperty",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "instance": {
+        "a": 1,
+        "c": 2
+      },
+      "valid": false
+    },
+    {
+      "id": "object.wrongPropertyType",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "instance": {
+        "a": "1"
+      },
+      "valid": false
+    },
+    {
+      "id": "nested.ok",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "l": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "a"
+              ],
+              "properties": {
+                "a": {
+                  "type": "integer"
+                },
+                "b": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "instance": {
+        "l": [
+          {
+            "a": 1
+          }
+        ]
+      },
+      "valid": true
+    },
+    {
+      "id": "nested.bad",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "l": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "a"
+              ],
+              "properties": {
+                "a": {
+                  "type": "integer"
+                },
+                "b": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "instance": {
+        "l": [
+          {
+            "a": 1,
+            "z": 0
+          }
+        ]
+      },
+      "valid": false
+    },
+    {
+      "id": "depth.atCap",
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "instance": [
+        [
+          [
+            [
+              [
+                [
+                  [
+                    [
+                      1
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ],
+      "valid": true
+    },
+    {
+      "id": "depth.overCap",
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "instance": [
+        [
+          [
+            [
+              [
+                [
+                  [
+                    [
+                      [
+                        1
+                      ]
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      ],
+      "valid": false
+    },
+    {
+      "id": "bound.maxLength.atMax",
+      "schema": {
+        "type": "string",
+        "maxLength": 2147483647
+      },
+      "instance": "x",
+      "valid": true
+    },
+    {
+      "id": "bound.maxLength.overMaxDoesNotThrow",
+      "schema": {
+        "type": "string",
+        "maxLength": 2147483648
+      },
+      "instance": "x",
+      "valid": true
+    },
+    {
+      "id": "bound.minLength.overMaxDoesNotThrow",
+      "schema": {
+        "type": "string",
+        "minLength": 2147483648
+      },
+      "instance": "x",
+      "valid": false
+    },
+    {
+      "id": "bound.maxItems.atMax",
+      "schema": {
+        "type": "array",
+        "maxItems": 2147483647,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [
+        1
+      ],
+      "valid": true
+    },
+    {
+      "id": "bound.maxItems.overMaxDoesNotThrow",
+      "schema": {
+        "type": "array",
+        "maxItems": 99999999999999999999,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [
+        1
+      ],
+      "valid": true
+    },
+    {
+      "id": "bound.minItems.overMaxDoesNotThrow",
+      "schema": {
+        "type": "array",
+        "minItems": 2147483648,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [
+        1
+      ],
+      "valid": false
+    }
+  ],
+  "contractRows": [
+    {
+      "id": "ok.object",
+      "schema": {
+        "type": "object",
+        "required": [
+          "a"
+        ],
+        "properties": {
+          "a": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "supported": true,
+      "reason": ""
+    },
+    {
+      "id": "ok.scalar",
+      "schema": {
+        "type": "string",
+        "maxLength": 5
+      },
+      "supported": true,
+      "reason": ""
+    },
+    {
+      "id": "refuse.pattern",
+      "schema": {
+        "type": "string",
+        "pattern": "^a$"
+      },
+      "supported": false,
+      "reason": "pattern is unsupported"
+    },
+    {
+      "id": "refuse.ref",
+      "schema": {
+        "$ref": "#/x"
+      },
+      "supported": false,
+      "reason": "unknown keyword"
+    },
+    {
+      "id": "refuse.oneOf",
+      "schema": {
+        "oneOf": [
+          {
+            "type": "string"
+          }
+        ]
+      },
+      "supported": false,
+      "reason": "unknown keyword"
+    },
+    {
+      "id": "refuse.format",
+      "schema": {
+        "type": "string",
+        "format": "date"
+      },
+      "supported": false,
+      "reason": "unknown keyword"
+    },
+    {
+      "id": "refuse.default",
+      "schema": {
+        "type": "string",
+        "default": "x"
+      },
+      "supported": false,
+      "reason": "unknown keyword"
+    },
+    {
+      "id": "refuse.objectWithoutAdditionalFalse",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "integer"
+          }
+        }
+      },
+      "supported": false,
+      "reason": "object schema needs additionalProperties false"
+    },
+    {
+      "id": "refuse.additionalTrue",
+      "schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": true
+      },
+      "supported": false,
+      "reason": "additionalProperties must be false"
+    },
+    {
+      "id": "refuse.unknownType",
+      "schema": {
+        "type": "date"
+      },
+      "supported": false,
+      "reason": "unknown type"
+    },
+    {
+      "id": "refuse.nestedPattern",
+      "schema": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "a"
+        }
+      },
+      "supported": false,
+      "reason": "pattern is unsupported (nested)"
+    },
+    {
+      "id": "bound.contract.maxLength.atMax",
+      "schema": {
+        "type": "string",
+        "maxLength": 2147483647
+      },
+      "supported": true,
+      "reason": ""
+    },
+    {
+      "id": "bound.contract.maxLength.overMax",
+      "schema": {
+        "type": "string",
+        "maxLength": 2147483648
+      },
+      "supported": false,
+      "reason": "bound above schemaSubsetMaxCount"
+    },
+    {
+      "id": "bound.contract.minLength.overMax",
+      "schema": {
+        "type": "string",
+        "minLength": 2147483648
+      },
+      "supported": false,
+      "reason": "bound above schemaSubsetMaxCount"
+    },
+    {
+      "id": "bound.contract.maxItems.overMax",
+      "schema": {
+        "type": "array",
+        "maxItems": 2147483648,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "supported": false,
+      "reason": "bound above schemaSubsetMaxCount"
+    },
+    {
+      "id": "bound.contract.minItems.overMax",
+      "schema": {
+        "type": "array",
+        "minItems": 99999999999999999999,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "supported": false,
+      "reason": "bound above schemaSubsetMaxCount"
+    },
+    {
+      "id": "bound.contract.maxItems.atMax",
+      "schema": {
+        "type": "array",
+        "maxItems": 2147483647,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "supported": true,
+      "reason": ""
+    },
+    {
+      "id": "refuse.notAnObject",
+      "schema": [
+        "type"
+      ],
+      "supported": false,
+      "reason": "schema must be an object"
+    }
+  ]
+}

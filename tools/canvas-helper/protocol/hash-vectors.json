@@ -1,0 +1,179 @@
+{
+  "_note": "bundleHash = lowercase hex SHA-256 of the UTF-8 canonical JSON: keys sorted by Unicode code point (not UTF-16 unit), separators ',' and ':', no whitespace, ensure_ascii=False (only \" \\\\ and control chars below 0x20 are escaped), integers only (no floats). Both languages must reproduce every row.",
+  "vectors": [
+    {
+      "name": "keyOrder",
+      "payload": {
+        "z": 1,
+        "a": {
+          "y": [
+            3,
+            2,
+            1
+          ],
+          "b": true
+        },
+        "m": null
+      },
+      "canonical": "{\"a\":{\"b\":true,\"y\":[3,2,1]},\"m\":null,\"z\":1}",
+      "sha256": "68a56145bbc3e2a5faf57cba53eb0aa681f3a2793d3810c8bb356454a0a1241d"
+    },
+    {
+      "name": "unicode",
+      "payload": {
+        "s": "café 日本語 😀",
+        "kéy": "x",
+        "quote": "a\"b\\c",
+        "ctl": "tab\there\nnl\u0001\u001f",
+        "del": ""
+      },
+      "canonical": "{\"ctl\":\"tab\\there\\nnl\\u0001\\u001f\",\"del\":\"\",\"kéy\":\"x\",\"quote\":\"a\\\"b\\\\c\",\"s\":\"café 日本語 😀\"}",
+      "sha256": "5dc19614b4332870bf9b657cf9b88d1bdcf614668e6589b591e52bf5c7c8e4b0"
+    },
+    {
+      "name": "codePointKeyOrder",
+      "payload": {
+        "😀": 1,
+        "￿": 2,
+        "�": 3,
+        "b": 4,
+        "B": 5
+      },
+      "canonical": "{\"B\":5,\"b\":4,\"�\":3,\"￿\":2,\"😀\":1}",
+      "sha256": "a90d6e23216a0fb677cf5919a88336cfc419be12998cf0a48f8d54245ea27133"
+    },
+    {
+      "name": "pyExecPayload",
+      "payload": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "source": "def run(x):\n    return {'n': len(x['text'])}\n",
+        "entry": "run",
+        "items": [
+          {
+            "id": "i0",
+            "input": {
+              "text": "héllo"
+            }
+          },
+          {
+            "id": "i1",
+            "input": {
+              "text": ""
+            }
+          }
+        ],
+        "outSchema": {
+          "type": "object",
+          "required": [
+            "n"
+          ],
+          "properties": {
+            "n": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "limits": {
+          "perItemMs": 5000,
+          "jobMs": 120000
+        }
+      },
+      "canonical": "{\"entry\":\"run\",\"helperProtocol\":1,\"items\":[{\"id\":\"i0\",\"input\":{\"text\":\"héllo\"}},{\"id\":\"i1\",\"input\":{\"text\":\"\"}}],\"jobType\":\"py_exec\",\"limits\":{\"jobMs\":120000,\"perItemMs\":5000},\"outSchema\":{\"additionalProperties\":false,\"properties\":{\"n\":{\"minimum\":0,\"type\":\"integer\"}},\"required\":[\"n\"],\"type\":\"object\"},\"source\":\"def run(x):\\n    return {'n': len(x['text'])}\\n\"}",
+      "sha256": "847184c740d57df305b6f636e0631558e4a897b8bc1de126ce95f51c94fd776f"
+    },
+    {
+      "name": "emptyContainers",
+      "payload": {
+        "a": {},
+        "b": [],
+        "c": [
+          {}
+        ],
+        "d": ""
+      },
+      "canonical": "{\"a\":{},\"b\":[],\"c\":[{}],\"d\":\"\"}",
+      "sha256": "cdb9a671d5312e3e6d40b656d5f9125847d25c7638988e7a14cd1348ce82d245"
+    },
+    {
+      "name": "negativeAndBigInts",
+      "payload": {
+        "n": -5,
+        "big": 9007199254740993,
+        "zero": 0
+      },
+      "canonical": "{\"big\":9007199254740993,\"n\":-5,\"zero\":0}",
+      "sha256": "9f36717137442315977d2e9e4f5526b42c129d86fe4118f0b12deb7b9c7e8a59"
+    }
+  ],
+  "provenance": "Produced by an independent script (Python json.dumps(sort_keys=True, separators=(',',':'), ensure_ascii=False) + hashlib.sha256 over the UTF-8 bytes) and cross-checked against the OpenSSL command line: write the canonical string to a file without a trailing newline and run 'openssl dgst -sha256 <file>'; both agree on every row. The Kotlin BundleHash is a separate implementation tested against these rows.",
+  "normalized": [
+    {
+      "name": "zero",
+      "rawJson": "{\"n\":0,\"z\":[0]}",
+      "canonical": "{\"n\":0,\"z\":[0]}",
+      "sha256": "12863069f59158436adc76cf7c2945fc511c3b63b1f835a474fbf6bd9e228ffd"
+    },
+    {
+      "name": "negativeZero",
+      "rawJson": "{\"n\":-0,\"z\":[-0]}",
+      "canonical": "{\"n\":0,\"z\":[0]}",
+      "sha256": "12863069f59158436adc76cf7c2945fc511c3b63b1f835a474fbf6bd9e228ffd"
+    },
+    {
+      "name": "surrogatePairIsAccepted",
+      "rawJson": "{\"s\":\"\\ud83d\\ude00\"}",
+      "canonical": "{\"s\":\"😀\"}",
+      "sha256": "f9949e1006d1ca22bc0b60ea94f09779f11a8f0a29bae250fc7ab313d879f5e7"
+    }
+  ],
+  "rejected": [
+    {
+      "name": "floatOnePointFive",
+      "rawJson": "{\"n\":1.5}",
+      "reason": "non-integer number"
+    },
+    {
+      "name": "floatOnePointZero",
+      "rawJson": "{\"n\":1.0}",
+      "reason": "1.0 is a float, not an integer"
+    },
+    {
+      "name": "nestedFloat",
+      "rawJson": "{\"a\":[{\"b\":2e0}]}",
+      "reason": "nested float"
+    },
+    {
+      "name": "nan",
+      "rawJson": "{\"n\":NaN}",
+      "reason": "non-finite number"
+    },
+    {
+      "name": "infinity",
+      "rawJson": "{\"n\":Infinity}",
+      "reason": "non-finite number"
+    },
+    {
+      "name": "loneHighSurrogateInString",
+      "rawJson": "{\"s\":\"\\ud800\"}",
+      "reason": "unpaired surrogate"
+    },
+    {
+      "name": "loneLowSurrogateInString",
+      "rawJson": "{\"s\":\"a\\udc00b\"}",
+      "reason": "unpaired surrogate"
+    },
+    {
+      "name": "highSurrogateNotFollowedByLow",
+      "rawJson": "{\"s\":\"\\ud800a\"}",
+      "reason": "unpaired surrogate"
+    },
+    {
+      "name": "loneSurrogateInKey",
+      "rawJson": "{\"\\ud800\":1}",
+      "reason": "unpaired surrogate"
+    }
+  ]
+}

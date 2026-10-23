@@ -1,0 +1,32 @@
+{
+  "_note": "Helper job id regex. Use FULL-match semantics (Python re.fullmatch, Kotlin Regex.matches): a trailing newline must NOT match.",
+  "regex": "^[A-Za-z0-9:_-]{1,64}$",
+  "valid": [
+    "a",
+    "job-1",
+    "A:b_c-9",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "0",
+    "j:1:2",
+    "_",
+    "-",
+    ":"
+  ],
+  "invalid": [
+    "",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "a b",
+    "a/b",
+    "a.b",
+    "..",
+    "a|b",
+    "é",
+    "ab\n",
+    "\nab",
+    "a\u0000",
+    "日本",
+    "a\tb",
+    " a",
+    "a "
+  ]
+}
