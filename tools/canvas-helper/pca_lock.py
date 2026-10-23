@@ -202,24 +202,49 @@ def _busy_exit(e):
     return EXIT_BUSY
 
 
-def _owner_loop(s, stdin, out):
+MAX_LINE = 65536
+
+
+def _owner_loop(s, stdin, out, idle_s=None):
+    """Control loop. Reads with os.read into an explicit buffer (never a buffered readline), processes every complete buffered line before selecting
+    again, and measures the idle deadline from the last complete command, so a partial line can neither block nor extend the idle timeout. EOF, a blank
+    line, `stop`, an over-long line or the idle timeout stop the session."""
     import select
-    idle = float(os.environ.get("PCA_VM_IDLE_S", "600"))
+    idle = float(os.environ.get("PCA_VM_IDLE_S", "600")) if idle_s is None else idle_s
+    fd = stdin.fileno()
     out.write("ready\n")
     out.flush()
+    buf = b""
+    deadline = time.monotonic() + idle
     while True:
-        ready, _, _ = select.select([stdin], [], [], idle)
-        line = stdin.readline() if ready else ""
-        line = line.strip()
-        if not line or line == "stop":
+        if b"\n" in buf:
+            raw, buf = buf.split(b"\n", 1)
+            line = raw.decode("utf-8", "replace").strip()
+            if not line or line == "stop":
+                break
+            if line == "status":
+                out.write("state %s\n" % machine_state())
+            elif line.startswith("exec "):
+                try:
+                    argv = shlex.split(line[5:])
+                except ValueError:
+                    argv = []
+                out.write("rc %d\n" % (s.run_step(argv) if argv else 2))
+            else:
+                out.write("error unknown command\n")
+            out.flush()
+            deadline = time.monotonic() + idle
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or len(buf) > MAX_LINE:
             break
-        if line == "status":
-            out.write("state %s\n" % machine_state())
-        elif line.startswith("exec "):
-            out.write("rc %d\n" % s.run_step(shlex.split(line[5:])))
-        else:
-            out.write("error unknown command\n")
-        out.flush()
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            break
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
+        buf += chunk
     stuck_reported = False
     while not s.stop_and_release(max_attempts=1):
         if not stuck_reported:
