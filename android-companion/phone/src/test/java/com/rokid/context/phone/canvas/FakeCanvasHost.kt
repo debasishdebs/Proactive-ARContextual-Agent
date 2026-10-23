@@ -67,7 +67,7 @@ class FakeCanvasHost(confirm: HelperConfirmActions? = null, native: HelperNative
     override fun refreshNetwork() {}
     var idle = false
     override fun shouldIdleStop() = idle
-    override fun stopWithNotice(text: String) { calls += "stopNotice"; status.value = CanvasStatus(notice = text) }
+    override fun stopWithNotice(text: String, cause: com.rokid.context.phone.canvas.helper.SessionEnd) { calls += "stopNotice"; terminated += cause; status.value = CanvasStatus(notice = text) }
     var newest: PublishRow? = PublishRow(7, "prompts", null)
     val rollbackIds = mutableListOf<Long>()
     override suspend fun home() = HomeData(emptyList(), emptyList(), newest != null, newest)

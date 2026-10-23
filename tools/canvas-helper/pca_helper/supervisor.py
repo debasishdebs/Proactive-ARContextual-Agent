@@ -15,12 +15,13 @@ that fits; WP8 must not present it to the user as "your function's output was in
 import json
 import re
 import threading
+import time
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from . import protocol
-from .client import NetworkError
+from .client import BodyTooLarge, NetworkError
 from .journal import CleanupExecutor, VOLUME_PREFIX
 
 DENIAL_STATUSES = (401, 403, 404, 409)
@@ -58,6 +59,7 @@ class ActiveJob:
     ended: bool = False
     kill_pending: bool = False
     next_kill_ms: int = 0
+    end_pending: bool = False
     kill_reason: Optional[str] = None
     inflight: int = 0
     next_post_ms: int = 0
@@ -225,10 +227,18 @@ class Supervisor:
         with self._lock:
             if self._job is not None:
                 return
-            self._job = job
+            overdue = self._overdue(job, self.clock.now_ms())
+            if not overdue:
+                self._job = job
+        if overdue:  # the answer came too late: the 3.5 s liveness window (from the SEND time) is already over; the phone's lease lapses by itself
+            self.log.event("lease_refused", reason="overdue")
+            return
         self.journal.add_job(job.job_id, VOLUME_PREFIX + job.job_id, str(self.store.job_stage_dir(job.job_id)),
                              str(self.store.job_stage_dir(job.job_id) / "export.tar"))
         self._fetch_and_start(job)
+
+    def _overdue(self, job, now):
+        return now > job.anchor + self.c["helperSelfKillMs"] or now > job.lease_deadline or now > job.job_deadline
 
     @staticmethod
     def _is_int(v):
@@ -260,8 +270,12 @@ class Supervisor:
             return
         with self._lock:
             dead = job.killed or job.ended
+            overdue = not dead and self._overdue(job, self.clock.now_ms())
         if dead:
             return  # denied, cancelled or killed during the payload fetch: the runner is never started for it
+        if overdue:
+            self._abort(job, "lease_overdue")
+            return
         remaining = max(job.job_deadline - self.clock.now_ms(), 0)
         try:
             handle = self.runner.start({"jobId": job.job_id, "leaseGen": job.lease_gen, "bundleHash": job.bundle_hash, "remainingMs": remaining}, payload)
@@ -375,7 +389,7 @@ class Supervisor:
                 return
             now = self.clock.now_ms()
             if job.killed:
-                retry = job.kill_pending and now >= job.next_kill_ms
+                retry = (job.kill_pending or job.end_pending) and now >= job.next_kill_ms
             elif now > job.anchor + self.c["helperSelfKillMs"]:
                 reason = "liveness"
             elif now > job.lease_deadline:
@@ -436,10 +450,24 @@ class Supervisor:
         with self._lock:
             if job.ended:
                 return
-            job.ended = True
+        try:
+            self.journal.job_end(job.job_id)  # the local cleanup entry is durable BEFORE the job is released
+        except Exception as e:
+            self.log.event("journal_error", cls=_snake(type(e).__name__))
+            try:
+                self.store.delete_job_copies(job.job_id)  # fallback: the inputs go now; the job stays held and the watchdog retries the journal write
+            except Exception:
+                pass
+            with self._lock:
+                job.killed = job.end_pending = True
+                job.next_kill_ms = self.clock.now_ms() + KILL_RETRY_MS
+            return
+        with self._lock:
+            if job.ended:
+                return
+            job.ended, job.end_pending = True, False
             if self._job is job:
                 self._job = None
-        self.journal.job_end(job.job_id)  # local cleanup entry: stage dir, artifacts and volume are removed (and retried until gone)
         self._run_pending_cleanups()
         self.log.event("job_end", outcome=outcome if re.fullmatch(r"[a-z_]{1,24}", outcome or "") else "other")
 
@@ -471,14 +499,30 @@ class Supervisor:
         with self._lock:
             job.posting = True
         try:
-            if out.get("kind") == "result":
-                self._post_result(job, out.get("result"))
-            else:
-                code = out.get("code")
-                self._post_fail(job, code if code in constants()["failCodes"] else "runtime_error")
+            try:
+                if out.get("kind") == "result":
+                    self._post_result(job, out.get("result"))
+                else:
+                    code = out.get("code")
+                    self._post_fail(job, code if code in constants()["failCodes"] else "runtime_error")
+            except (ValueError, OSError) as e:
+                # nothing in the post path may end the helper: fail the job safe, then make sure its copies are gone
+                self.log.event("post_error", cls=_snake(type(e).__name__))
+                self._fail_job_after_post_error(job)
         finally:
             with self._lock:
                 job.posting = False
+
+    def _fail_job_after_post_error(self, job):
+        if job.ended:
+            return
+        try:
+            resp = self.client.fail(job.job_id, job.lease_gen, "bad_output")
+            self.log.event("fail", status=resp.status)
+        except (NetworkError, ValueError, OSError):
+            self.log.event("fail", status=0)
+        self._kill(job)
+        self._end_job(job, "failed")
 
     def _retry_later(self, job):
         with self._lock:
@@ -499,6 +543,10 @@ class Supervisor:
         except NetworkError:
             self.log.event("result", status=0)
             self._retry_later(job)
+            return
+        except BodyTooLarge:
+            self.log.event("result", status=0, too_large=True)
+            self._post_fail(job, "too_large")
             return
         self.log.event("result", status=resp.status)
         if resp.ok:
@@ -533,11 +581,23 @@ class Supervisor:
             if self.expiry is not None:
                 self.expiry.sweep()
 
-    def shutdown(self):
-        """The helper process ends: a running job is killed and its copies deleted (the phone fails the lease and queues its own cleanup)."""
+    def shutdown(self, stop=None, unbounded=False):
+        """The helper process ends: a running job is killed and its copies deleted (the phone fails the lease and queues its own cleanup). A failed
+        kill is retried (watchdog rules, every 1 s) until the job is gone: for 10 s on an ordinary shutdown, until `stop` after a lost session."""
         job = self._job
         if job is not None:
             self._deny(job, "shutdown")
+        deadline = time.monotonic() + 10
+        while self._job is not None:
+            if unbounded:
+                if stop is not None and stop.is_set():
+                    break
+            elif time.monotonic() > deadline:
+                break
+            self.watchdog_guard()
+            threading.Event().wait(0.1)
+        if self._job is not None:
+            self.log.event("shutdown_job_left", pending=len(self.journal.kill_pending()))  # still journaled: the next start kills it
 
     def run(self, stop, max_cycles=None):
         """Recover, then poll every pollIntervalIdleMs; heartbeat and watchdog run on their own threads. Returns 'stopped', 'session_lost' or the
@@ -576,7 +636,7 @@ class Supervisor:
                 self.job_step()
                 stop.wait(0.1)
         finally:
-            self.shutdown()
+            self.shutdown(stop, unbounded=(status == "session_lost"))
             stop_threads.set()
             for t in threads:
                 if t.is_alive():

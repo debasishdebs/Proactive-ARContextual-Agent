@@ -45,9 +45,11 @@ def count_bounds_ok(schema, max_count):
         for k in ("minLength", "maxLength", "minItems", "maxItems"):
             if k in schema and (not isinstance(schema[k], int) or isinstance(schema[k], bool) or schema[k] < 0 or schema[k] > max_count):
                 return False
-        return all(count_bounds_ok(v, max_count) for v in schema.values())
-    if isinstance(schema, list):
-        return all(count_bounds_ok(v, max_count) for v in schema)
+        # recurse only through schema positions (property schemas and items); property NAMES and enum values are data, never schemas
+        props = schema.get("properties")
+        if isinstance(props, dict) and not all(count_bounds_ok(v, max_count) for v in props.values()):
+            return False
+        return count_bounds_ok(schema["items"], max_count) if "items" in schema else True
     return True
 
 

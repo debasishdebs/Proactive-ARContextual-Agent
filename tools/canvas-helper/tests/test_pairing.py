@@ -50,7 +50,8 @@ def test_pin_prefix_of_16_hex_digits_matches_and_pairing_stores_full_fingerprint
     assert json.loads(sent["body"]) == {"helperProtocol": 1, "code": CODE, "name": "laptop"}
     assert "Origin" not in sent["headers"] and "Authorization" not in sent["headers"]
     st = store.load_state()
-    assert st["pin"] == FP and st["token"].startswith("tok_") and st["host"] == "10.0.0.5" and st["port"] == 8443
+    assert res.token.startswith("tok_") and "tok_" not in repr(res)
+    assert st["pin"] == FP and "token" not in st and st["host"] == "10.0.0.5" and st["port"] == 8443
     assert oct(os.stat(store.state_path).st_mode & 0o777) == "0o600"
 
 
@@ -108,7 +109,7 @@ def test_oversize_bodies_refused_locally(tmp_path):
     tr = FakeTransport(FP)
     c = PhoneClient(tr, "h", 1, pin=FP, token="tok")
     with pytest.raises(ValueError):
-        c.result("j", 1, "h", {"x": "a" * (2 * 1024 * 1024)})
+        c.result("j", 1, "h", {"x": "a" * (2 * 1024 * 1024 + 4096)})
     with pytest.raises(ValueError):
         c.poll({"x": "a" * (1024 * 1024)})
     assert tr.sent == []

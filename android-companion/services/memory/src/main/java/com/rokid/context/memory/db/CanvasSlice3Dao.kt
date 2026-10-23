@@ -539,9 +539,18 @@ abstract class CanvasSlice3Dao {
         return HelperLeaseResult(true)
     }
 
-    /** The helper reports a failure ([code] from the fail enum): only the lease holder at its generation; payload nulled, cleanup enqueued. */
-    @Transaction open suspend fun failHelperJob(jobId: String, helperId: String, leaseGen: Long, code: String, now: Long): Boolean {
+    /**
+     * The helper reports a failure ([code] from the fail enum): only the live lease holder at its generation; payload nulled, cleanup enqueued. Like every other helper-facing
+     * call, a moved fence VOIDS the job and an expired lease or job deadline ends it `lease_expired` / `deadline_exceeded`: both answer false, so the helper's code is never
+     * acknowledged for a stale job.
+     */
+    @Transaction open suspend fun failHelperJob(jobId: String, helperId: String, leaseGen: Long, code: String, now: Long, live: HelperFenceLive): Boolean {
         val r = helperJob(jobId)?.takeIf { holdsLease(it, helperId, leaseGen) } ?: return false
+        if (!rowFenceHolds(r, live)) { closeJob(r, JobEvent.VOID, now, voidReason = "fence"); return false }
+        if ((r.leaseUntilMs ?: 0L) <= now || (r.deadlineMs ?: Long.MAX_VALUE) <= now) {
+            closeJob(r, JobEvent.LEASE_EXPIRE, now, failCode = if ((r.deadlineMs ?: Long.MAX_VALUE) <= now) "deadline_exceeded" else "lease_expired")
+            return false
+        }
         return closeJob(r, JobEvent.FAIL, now, failCode = code)
     }
 

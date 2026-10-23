@@ -78,7 +78,8 @@ class WipeDaoTest {
         val before = db.canvasSlice3Dao().labelRev()
         db.wipeDao().wipeMemory()
         wipedSlice3.forEach { assertEquals(it, 0, rowCount(raw, it)) }
-        keptSlice3.filter { it != "canvas_helper_cleanup" }.forEach { assertEquals("$it is kept by design", 1, rowCount(raw, it)) }
+        keptSlice3.filter { it != "canvas_helper_cleanup" && it != "canvas_meta" }.forEach { assertEquals("$it is kept by design", 1, rowCount(raw, it)) }
+        assertEquals("canvas_meta is kept by design: labelRev plus the frame_forget_rev row Delete all initialises and bumps (3b WP4)", 2, rowCount(raw, "canvas_meta"))
         assertEquals("canvas_helper_cleanup is kept by design: the row seeded before the wipe plus the wildcard row Delete all adds (3b WP4)", 2, rowCount(raw, "canvas_helper_cleanup"))
         assertEquals("labelRev stays monotonic and moves, so nothing computed earlier reads as current", before + 1, db.canvasSlice3Dao().labelRev())
     }
