@@ -89,12 +89,74 @@ class StallReplayTest {
         assertFalse(ReplayRule.opensMatch(2_000, EpisodeCause.TIMER, 1_499, EpisodeCause.TIMER))
     }
 
+    // ---- the stall uncertainty belongs to the resume decision only (Codex review of 7be5f473) ----
+
+    private fun withoutEpisodeAt(s: Scenario, at: Long) = s.events.filterNot { it is TraceEvent.Episode && (it.tMs == at || it.tMs == at + 800) }
+
+    private fun runEvents(s: Scenario, ev: List<TraceEvent>) = CaptureSimulator.replay(ev.asSequence(), ReplayFixtures.manifest(endMs = s.endMs))
+
+    /** A wrong decision in the window of a stall (here an extra TIMER decision before it: its recorded open is missing) is NOT hidden by the stall: the window fails. */
+    @Test fun anUnrelatedWrongDecisionInAStallWindowStillFails() {
+        val s = scenario(resumeDelay = 1_700)
+        val before = s.recordedOpens.last { it < s.stallStart }
+        val r = runEvents(s, withoutEpisodeAt(s, before))
+        assertTrue(r.failed >= 1, "failed=${r.failed} inexact=${r.inexact} ${r.mismatches}")
+    }
+
+    /** A gate disagreement in the same window as an excused resume latency still fails the window. */
+    @Test fun aGateRegressionInAStallWindowStillFails() {
+        val s = scenario(resumeDelay = 1_700)
+        val before = s.recordedOpens.last { it < s.stallStart }
+        val r = runEvents(s, (s.events + listOf(ReplayFixtures.score(before + 520, 1, scene = 1), ReplayFixtures.skip(before + 520, 1, "DUPLICATE"))).sortedBy { it.tMs })   // the gate would KEEP
+        assertTrue(r.failed >= 1 && r.mismatches.any { it.kind == "gate" }, "failed=${r.failed} inexact=${r.inexact} ${r.mismatches}")
+    }
+
+    /** The 1300 ms slack is for the FIRST decision after the stall: the second one (held for 1301 ms) has the normal 500 ms, so a recorded open 2200 ms after the resume is not its twin (it decides within 1301..1551 ms). */
+    @Test fun theSecondDecisionAfterAStallDoesNotReuseTheStallSlack() {
+        val s = scenario(resumeDelay = 2_200)
+        val r = run(s)
+        assertTrue(r.failed >= 1, "failed=${r.failed} inexact=${r.inexact} ${r.mismatches}")
+        assertTrue(r.mismatches.any { it.kind == "open_extra" && it.atMs > s.stallEnd + 1_300 }, r.mismatches.toString())
+    }
+
+    /** The resume latency is excused only for a recorded open with the cause of the resume decision: a different cause (here RESV where the replay decides TIMER) fails. */
+    @Test fun aWrongCauseAfterTheStallStillFails() {
+        val s = scenario(resumeDelay = 300)
+        val at = s.recordedOpens.first { it > s.stallEnd }
+        val ev = s.events.filterNot { it is TraceEvent.Episode && (it.tMs == at || it.tMs == at + 800) } + ReplayFixtures.timerEpisode(at, EpisodeCause.RESV)
+        val r = runEvents(s, ev.sortedBy { it.tMs })
+        assertTrue(r.failed >= 1, "failed=${r.failed} inexact=${r.inexact} ${r.mismatches}")
+    }
+
+    /** The same with the recorded open arriving AFTER the resume decision's slack ran out: still only a recorded open of the decision's cause excuses it. */
+    @Test fun aLateRecordedOpenOfAnotherCauseDoesNotExcuseTheResumeDecision() {
+        val s = scenario(resumeDelay = 1_700)
+        val at = s.recordedOpens.first { it > s.stallEnd }
+        val ev = s.events.filterNot { it is TraceEvent.Episode && (it.tMs == at || it.tMs == at + 800) } + ReplayFixtures.timerEpisode(at, EpisodeCause.RESV)
+        val r = runEvents(s, ev.sortedBy { it.tMs })
+        assertTrue(r.failed >= 1 && r.inexactReasons[Inexact.STALL] == null && r.mismatches.none { it.kind == "stall_resume" }, "failed=${r.failed} inexact=${r.inexact} ${r.mismatches}")
+    }
+
+    /** The excuse is bounded (twice the slack): a recorded open 3 s after the resume is not explained by the stall. */
+    @Test fun aRecordedOpenBeyondTheExcuseHorizonFails() {
+        val r = run(scenario(resumeDelay = 3_000))
+        assertTrue(r.failed >= 1 && r.inexactReasons[Inexact.STALL] == null, "failed=${r.failed} inexact=${r.inexact} ${r.mismatches}")
+    }
+
+    /** Without any recorded open after the stall the resume decision has no twin to be late for: it is an extra and fails. */
+    @Test fun aResumeDecisionWithNoRecordedTwinFails() {
+        val s = scenario(resumeDelay = 300)
+        val at = s.recordedOpens.first { it > s.stallEnd }
+        val r = runEvents(s, withoutEpisodeAt(s, at).filter { it.tMs < at || it is TraceEvent.Close || it is TraceEvent.Gyro || it is TraceEvent.Accel })
+        assertTrue(r.failed >= 1 && r.mismatches.any { it.kind == "open_extra" }, "failed=${r.failed} inexact=${r.inexact} ${r.mismatches}")
+    }
+
     /** A recorded open later than the stall slack is not judged: the window is excluded with the reason STALL (counted), not failed and not silently dropped. */
     @Test fun anUnmodelledResumeLatencyIsAStallWindowNotAFailure() {
         val r = run(scenario(resumeDelay = 1_700))
         assertEquals(0, r.failed, r.mismatches.toString())
         assertEquals(1, r.inexactReasons[Inexact.STALL], r.inexactReasons.toString())
-        assertTrue(r.mismatches.any { it.kind == "open_extra" || it.kind == "open_missed" }, "the disagreement stays visible: ${r.mismatches}")
+        assertTrue(r.mismatches.any { it.kind == "stall_resume" }, "the excused resume decision stays visible: ${r.mismatches}")
         assertEquals(1, r.inexactSpans.count { Inexact.STALL in it.reasons })
     }
 
@@ -179,7 +241,7 @@ class StallReplayTest {
         assertTrue(b.opensHigh > b.opensLow, "an excluded window widens the range")
         assertTrue(rep.warnings.any { it.contains("stall") }, rep.warnings.toString())
         val j = rep.toJson().toString()
-        assertTrue("\"opensLow\":${b.opensLow}" in j && "\"opensHigh\":${b.opensHigh}" in j && "\"glanceOpens\"" in j && "\"stalls\":{\"count\":1" in j && "\"inexactMinutes\"" in j, j)
+        assertTrue("\"opensLow\":${b.opensLow}" in j && "\"opensHigh\":${b.opensHigh}" in j && "\"glanceOpens\"" in j && "\"stalls\":{\"count\":1" in j && "\"inexactMinutes\"" in j && "\"opensRangeBasis\":\"excluded windows only" in j, j)
     }
 
     @Test fun boundsAreTheRecordedOpensInsideTheExcludedSpansPlusTheReplayedOnesOutside() {

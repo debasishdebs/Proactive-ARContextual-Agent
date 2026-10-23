@@ -21,10 +21,10 @@ class RealTraceReplayTest {
     private class Pin(val windows: Int, val passed: Int, val failed: Int, val inexact: Int, val baseOpens: Int, val identityOpens: Int, val stalls: Int)
 
     private val pins = mapOf(
-        // 24.8 min worn walk, COMPLETE: 38 stalls (208 s). Before the stall model: baseline 154 opens, identity candidate 122, 24 windows compared (20 pass, 4 fail), 92 ASYNC_CALLBACK.
-        "bc1f4b0e-b549-4361-b6d4-13a5ed61fda2" to Pin(116, 114, 0, 2, 117, 117, 38),
-        // 98.8 min, PARTIAL: 189 stalls (561 s). Three windows still fail (extra decisions away from a stall), not explained by this task.
-        "0e9c2f76-0ba4-4db2-84e7-8831fe6b789c" to Pin(409, 401, 3, 5, 415, 417, 189),
+        // 24.8 min worn walk, COMPLETE (after the Codex fix a stall excuses only its own resume decision: the 2 failing windows are a TIMER resume decision where the live loop opened a DWELL): 38 stalls (208 s). Before the stall model: baseline 154 opens, identity candidate 122, 24 windows compared (20 pass, 4 fail), 92 ASYNC_CALLBACK.
+        "bc1f4b0e-b549-4361-b6d4-13a5ed61fda2" to Pin(116, 114, 2, 0, 117, 117, 38),
+        // 98.8 min, PARTIAL: 189 stalls (561 s). Six windows fail (stall-resume decisions of another cause, and 3 extras not explained by this task).
+        "0e9c2f76-0ba4-4db2-84e7-8831fe6b789c" to Pin(409, 401, 6, 2, 415, 417, 189),
     )
 
     @Test fun realTracesReplayAsRecordedAcrossDeliveryStalls() {
