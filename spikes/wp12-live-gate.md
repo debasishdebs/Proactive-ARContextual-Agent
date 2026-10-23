@@ -30,7 +30,7 @@ one `pca_lock.py vm-session` owner; no host Gradle during the batch; the VM is s
 | 7 | `machine inspect` JSON has `State`, `Rootful`, `Mounts[].Source/Target`; `system connection list --format json` has `Name`, `URI`, `Default` | `runtime.check` | TODO |
 | 8 | `podman machine ssh <name> df -P -B1 /var` prints used bytes in column 3 | `runtime.vm_var_used_bytes` | TODO |
 | 9 | `ps -a --filter label=pca.helper` lists containers named `pca-job-<id>` | `runtime.list_containers` | TODO |
-| 10 | `container/vm/machine.sh recreate` does not pass `--cpus 2` or `--disk-size 20` (decision (c) of plan section 21); WP10 file, not changed here | `container/vm/machine.sh` | TODO controller decides |
+| 10 | `container/vm/machine.sh recreate` passes `--cpus 2 --disk-size 10` (user decision: NEW machine `pca`, 10 GB cap, alongside the user's `podman-machine-default`, which no script touches; the script refuses that name). Check `podman machine inspect pca` shows 2 CPUs, 4096 MiB, 10 GB disk and that `podman-machine-default` is unchanged | `container/vm/machine.sh` | TODO |
 
 ## Result
 

@@ -79,3 +79,34 @@ def test_machine_sh_refuses_unknown_command(fake):
     s, rc = run_in_owner(fake, "nuke")
     assert rc != 0 and fake.calls() == []
     s.release()
+
+
+def init_args_of(fake):
+    return next(c for c in fake.calls() if c.startswith("machine init")).split()
+
+
+def test_machine_init_passes_cpus_and_disk_cap_with_defaults(fake):
+    fake.set_state("absent")
+    s, rc = run_in_owner(fake, "recreate")
+    a = init_args_of(fake)
+    assert rc == 0 and a[a.index("--cpus") + 1] == "2" and a[a.index("--disk-size") + 1] == "10" and a[a.index("--memory") + 1] == "4096"
+    assert a[-1] == "pca"
+    s.release()
+
+
+def test_machine_init_disk_cap_is_overridable(fake, monkeypatch):
+    monkeypatch.setenv("PCA_MACHINE_DISK_GB", "12")
+    fake.set_state("absent")
+    s, rc = run_in_owner(fake, "recreate")
+    a = init_args_of(fake)
+    assert rc == 0 and a[a.index("--disk-size") + 1] == "12"
+    s.release()
+
+
+@pytest.mark.parametrize("cmd", ["recreate", "stop"])
+def test_machine_sh_refuses_the_users_default_machine_with_no_podman_call(fake, monkeypatch, cmd):
+    monkeypatch.setenv("PCA_MACHINE", "podman-machine-default")
+    fake.set_state("running")
+    s, rc = run_in_owner(fake, cmd)
+    assert rc != 0 and fake.calls() == [] and fake.state() == "running"
+    s.release()
