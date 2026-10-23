@@ -112,12 +112,74 @@ class PublishRefusesPyFnTest {
         assertTrue(h.sent.isEmpty()); noRows()
     }
 
-    /** The activation path (called after a glasses ack) goes through publishInterpreter: it publishes nothing for a tier-3 version. */
-    @Test fun activationOfATier3VersionPublishesNoAsyncHalf() {
+    /** Fix 1: an ASYNC-only graph (no capture half) with py.fn or tool.* gets the fixed S6 text on the capture-plan path, not "no capture half". */
+    @Test fun asyncOnlyTier3GraphGetsTheFixedS6TextOnTheCapturePlanPath() {
+        for (type in listOf("py.fn", "tool.draft")) {
+            val p = withNode(DefaultPipelines.liveExtract().copy(name = "Async $type"), type)
+            assertTrue("no capture half", !PlanShape.hasCaptureHalf(p))
+            val (id, v) = stored(p)
+            val o = runBlocking { h.plans.publish(id, v, PlanMode.SHADOW) } as PlanOutcome.Blocked
+            assertEquals(type, fixed, o.reasons)
+        }
+        assertTrue(h.sent.isEmpty()); noRows()
+    }
+
+    /** An ASYNC-only graph without tier 3 still says it has no capture half. */
+    @Test fun asyncOnlyPlainGraphStillSaysNoCaptureHalf() {
+        val (id, v) = stored(DefaultPipelines.liveExtract().copy(name = "Plain"))
+        val o = runBlocking { h.plans.publish(id, v, PlanMode.SHADOW) } as PlanOutcome.Blocked
+        assertEquals(listOf(com.rokid.context.canvas.plan.CapturePlanPublisher.NO_CAPTURE_HALF), o.reasons)
+    }
+
+    /** A capture_plan group (publish row, group state and plan source) over the stored version, as a glasses-accepted publish leaves it, through the real groups. */
+    private fun capturePlanGroup(id: String, v: Int, gid: String) = runBlocking {
+        val json = "{\"p\":1}"
+        h.canvas.insertPublish(com.rokid.context.memory.db.CanvasPublishEntity(
+            pipelineId = id, version = v, hash = "x", publishedAt = h.now++, rolledBackAt = null, snapshotJson = "{}", kind = CanvasPublisher.KIND_CAPTURE_PLAN,
+            mode = PlanMode.SHADOW.name, groupId = gid, component = com.rokid.context.canvas.plan.PlanPublishGroups.COMPONENT, planJson = json, configHash = "cfg", gen = null, state = "DESIRED", trialEndsAt = null,
+        ))
+        h.groups.publish(gid, 1, PlanMode.SHADOW, json, "cfg", null)
+        json
+    }
+    private fun interpreterRows(gid: String) = runBlocking { h.canvas.publishesOfGroup(gid) }.filter { it.kind == CanvasPublisher.KIND_INTERPRETER }
+
+    /** Activation (PlanActivation.activate, called by the groups on EFFECTIVE) of a tier-3 version publishes no interpreter row; the same fixture without tier 3 does (control). */
+    @Test fun activationThroughPlanActivationPublishesNoInterpreterForTier3() {
         val (id, v) = stored(withNode(PlanTestFixtures.full("Full"), "py.fn"))
-        val out = runBlocking { h.publisher.publishInterpreter(id, v, LiveMode.SHADOW, groupId = "g1") }
-        assertEquals(CanvasPublisher.Outcome.Blocked(fixed), out)
-        assertTrue(runBlocking { h.canvas.publishesOfGroup("g1") }.isEmpty())
+        val json = capturePlanGroup(id, v, "g1")
+        runBlocking { h.activation.activate("g1", json) }
+        assertTrue("no interpreter row", interpreterRows("g1").isEmpty())
+        noInterpreterAnywhere()
+    }
+
+    @Test fun activationControlPublishesTheInterpreterRowWithoutTier3() {
+        val (id, v) = stored(PlanTestFixtures.full("Full"))
+        val json = capturePlanGroup(id, v, "g1")
+        runBlocking { h.activation.activate("g1", json) }
+        assertEquals("the fixture can publish, so the tier-3 test above is meaningful", 1, interpreterRows("g1").size)
+    }
+
+    private fun noInterpreterAnywhere() = assertTrue(runBlocking { h.canvas.activePublishes() }.none { it.kind == CanvasPublisher.KIND_INTERPRETER })
+
+    /** EFFECTIVE ack, then a restart's recover() (EFFECTIVE activates again): neither makes an interpreter row for a tier-3 version. */
+    @Test fun effectiveAckAndRecoveryPublishNoInterpreterForTier3() {
+        val (id, v) = stored(withNode(PlanTestFixtures.full("Full"), "py.fn"))
+        capturePlanGroup(id, v, "g1")
+        h.effective()
+        assertEquals("EFFECTIVE", runBlocking { h.store.get("g1") }!!.state)
+        assertTrue(interpreterRows("g1").isEmpty())
+        runBlocking { h.groups.recover() }
+        assertTrue("recovery of an EFFECTIVE group", interpreterRows("g1").isEmpty())
+        noInterpreterAnywhere()
+    }
+
+    @Test fun effectiveAckAndRecoveryControlPublishOneInterpreterRowWithoutTier3() {
+        val (id, v) = stored(PlanTestFixtures.full("Full"))
+        capturePlanGroup(id, v, "g1")
+        h.effective()
+        assertEquals(1, interpreterRows("g1").size)
+        runBlocking { h.groups.recover() }
+        assertEquals("recovery is idempotent", 1, interpreterRows("g1").size)
     }
 
     /** An untouched Live extraction still publishes (the guard has no false positive). */
