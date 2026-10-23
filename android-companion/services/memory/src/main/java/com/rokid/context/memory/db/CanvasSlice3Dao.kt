@@ -45,21 +45,41 @@ abstract class CanvasSlice3Dao {
     open suspend fun isForgotten(atMs: Long): Boolean = forgottenRanges().any { atMs in it }
     open suspend fun overlapsForgotten(fromMs: Long, toMs: Long): Boolean = forgottenRanges().any { it.first <= toMs && it.last >= fromMs }
 
-    /** The outcome of one forget: the traces that were tombstoned, the marks deleted and the results invalidated. */
-    data class ForgetOutcome(val tombstonedTraceIds: List<String>, val labelsDeleted: Int, val resultsInvalidated: Int)
+    /** The outcome of one forget: the traces that were tombstoned, the marks deleted, the results invalidated and the open helper jobs voided (3b). */
+    data class ForgetOutcome(val tombstonedTraceIds: List<String>, val labelsDeleted: Int, val resultsInvalidated: Int, val helperJobsVoided: Int = 0)
+
+    /**
+     * Test seam (like `MemoryWipe.afterEpochCommit`): runs INSIDE [forgetRangeTx] and [deleteSliceOutputsForFrames] right after the frame-Forget fence moved, the open helper
+     * jobs were voided and their cleanup rows were written, so a test can throw there and prove all three roll back together. Always null in production.
+     */
+    @Volatile var testFaultAfterFenceMove: (() -> Unit)? = null
 
     /**
      * Forget of the time range [fromMs, toMs], in ONE transaction: the range is recorded as a durable fence FIRST (a mark, a voice command or a trace import for it is
      * refused from now on, whatever its delivery order), the live traces overlapping it are tombstoned, its marks are deleted, `labelRev` moves, and every result that read
-     * any of that is invalidated. Idempotent.
+     * any of that is invalidated. Idempotent. 3b: in the SAME transaction `frame_forget_rev` moves, every open helper job (also one still awaiting its tap) is voided with its
+     * payload and ids dropped, and one cleanup row per job is written (see [moveFrameForgetFence]); it tombstones TRACES only, never a frame.
      */
     @Transaction open suspend fun forgetRangeTx(fromMs: Long, toMs: Long, now: Long): ForgetOutcome {
         addForgetRange(fromMs, toMs)
+        val jobs = moveFrameForgetFence(now)
         val ids = liveTraces().filter { it.startedAtMs <= toMs && (it.endedAtMs ?: Long.MAX_VALUE) >= fromMs }.map { it.traceId }
         ids.forEach { tombstoneTrace(it, now) }
         val labels = deleteLabelsBetween(fromMs, toMs)
         val invalid = invalidateBySources(ids, fromMs, toMs, labelRevChanged = labels > 0)
-        return ForgetOutcome(ids, labels, invalid)
+        return ForgetOutcome(ids, labels, invalid, jobs)
+    }
+
+    /**
+     * The 3b deletion step shared by every Forget entry point, called INSIDE the Forget transaction: bumps `frame_forget_rev` (so a runner fence captured earlier and a
+     * result committed later both fail), voids EVERY open helper job including `AWAITING_CONFIRM` (a Forget of any frame voids the in-flight jobs, fail closed; a later tap is
+     * refused because the job is no longer awaiting), and writes one cleanup row per voided job (`closeJob`). Returns the jobs voided.
+     */
+    private suspend fun moveFrameForgetFence(now: Long): Int {
+        bumpFrameForgetRev()
+        val voided = voidAllHelperJobs("frame_forget", now)
+        testFaultAfterFenceMove?.invoke()
+        return voided
     }
 
     /** The durable label counter (0 until the first label write). */
@@ -294,14 +314,30 @@ abstract class CanvasSlice3Dao {
     @Query("SELECT jobId FROM canvas_helper_job WHERE state = 'LEASED' AND (leaseUntilMs <= :now OR deadlineMs <= :now) ORDER BY createdAt, jobId") protected abstract suspend fun leasedPastExpiry(now: Long): List<String>
 
     // A job is OPEN until it reaches DONE, VOIDED, FAILED, CANCELLED or ABORTED. The voided job drops its frame ids, payload and result: nothing about the photos stays on the phone.
-    @Query("UPDATE canvas_helper_job SET state = 'VOIDED', frameIdsJson = '[]', leaseOwner = NULL, leaseUntilMs = NULL, payloadJson = NULL, resultJson = NULL, voidReason = 'frame_forget', updatedAt = :now WHERE state NOT IN ('DONE', 'VOIDED', 'FAILED', 'CANCELLED', 'ABORTED') AND instr(frameIdsJson, :needle) > 0")
-    protected abstract suspend fun voidHelperJobsCarrying(needle: String, now: Long): Int
+    @Query("SELECT jobId FROM canvas_helper_job WHERE state IN ('AWAITING_CONFIRM', 'QUEUED', 'LEASED') AND instr(frameIdsJson, :needle) > 0 ORDER BY createdAt, jobId") protected abstract suspend fun openJobIdsCarrying(needle: String): List<String>
+    @Query("SELECT jobId FROM canvas_helper_job WHERE state = 'DONE' AND instr(frameIdsJson, :needle) > 0 ORDER BY createdAt, jobId") protected abstract suspend fun doneJobIdsCarrying(needle: String): List<String>
+    @Query("UPDATE canvas_helper_job SET resultJson = NULL, payloadJson = NULL, frameIdsJson = '[]', voidReason = 'frame_forget', updatedAt = :now WHERE jobId = :id AND state = 'DONE'")
+    protected abstract suspend fun scrubDoneRow(id: String, now: Long): Int
 
-    /** Forget of photos: every open helper job that carries one of them (also one still awaiting the tap) is voided and drops its ids and payload. WP4 adds the cleanup rows inside the deletion transactions. */
+    private fun frameNeedle(frameId: String) = "\"" + frameId.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+    /**
+     * Voids the open helper jobs (also one still awaiting the tap) that carry one of [frameIds]: state VOIDED, ids, payload and result dropped, one cleanup row each, in this
+     * transaction. The Forget entry points use [moveFrameForgetFence], which voids every open job; this narrower form is for callers that know the frames.
+     */
     @Transaction open suspend fun voidHelperJobsForFrames(frameIds: List<String>, now: Long): Int =
-        frameIds.sumOf { voidHelperJobsCarrying("\"" + it.replace("\\", "\\\\").replace("\"", "\\\"") + "\"", now) }
+        frameIds.flatMap { openJobIdsCarrying(frameNeedle(it)) }.distinct().count { closeById(it, JobEvent.VOID, now, voidReason = "frame_forget") }
 
-    // --- frame_forget_rev (core plan section 6, "Frame-Forget fence"): a counter in canvas_meta, bumped in the transaction of every frame Forget (WP4 wires it in) ---
+    /**
+     * A finished job whose input carried a forgotten frame keeps its DONE state but loses its result and ids (the hash stays so a retried commit is answered `voided`,
+     * never acked), and one more cleanup row tells the laptop to drop any copy. Returns the jobs scrubbed.
+     */
+    @Transaction open suspend fun scrubDoneJobsForFrames(frameIds: List<String>, now: Long): Int =
+        frameIds.flatMap { doneJobIdsCarrying(frameNeedle(it)) }.distinct().count { id ->
+            (scrubDoneRow(id, now) > 0).also { if (it) insertCleanup(CanvasHelperCleanupEntity(jobId = id, reason = "frame_forget", createdAt = now)) }
+        }
+
+    // --- frame_forget_rev (core plan section 6, "Frame-Forget fence"): a counter in canvas_meta, bumped in the transaction of every Forget (`forgetRangeTx`, `deleteSliceOutputsForFrames`, Delete all) ---
     /** The frame-Forget revision (0 until the first bump). Captured by the runner BEFORE it loads frames, re-read inside every helper-job transaction. */
     open suspend fun frameForgetRev(): Long = meta(FRAME_FORGET_REV)?.toLongOrNull() ?: 0L
 
@@ -524,13 +560,15 @@ abstract class CanvasSlice3Dao {
 
     /**
      * The Forget cascade of photos for the slice 3a tables (called by [CanvasDao.deleteCanvasOutputsForFrames], inside the Forget or retention
-     * transaction): their labels, the results that depended on those labels, and the helper jobs that carry them.
+     * transaction): their labels, the results that depended on those labels, and (3b) the helper jobs: `frame_forget_rev` moves, every open job is voided with its cleanup
+     * row, and the result of a DONE job that carried one of the frames is nulled. Called for every frame deletion (Forget moment, Forget fact with a frame lock, retention).
      */
     @Transaction open suspend fun deleteSliceOutputsForFrames(frameIds: List<String>, now: Long) {
         if (frameIds.isEmpty()) return
         val labels = deleteLabelsForFrames(frameIds)
         if (labels > 0) invalidateBySources(emptyList(), null, null, labelRevChanged = true)
-        voidHelperJobsForFrames(frameIds, now)
+        moveFrameForgetFence(now)
+        scrubDoneJobsForFrames(frameIds, now)
     }
 
 

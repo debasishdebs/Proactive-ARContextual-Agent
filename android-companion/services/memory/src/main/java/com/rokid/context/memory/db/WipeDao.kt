@@ -47,15 +47,21 @@ abstract class WipeDao {
     @Query("DELETE FROM canvas_calibration") protected abstract suspend fun slice3Calibration()
     @Query("DELETE FROM canvas_helper_job") protected abstract suspend fun slice3HelperJobs()
     @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = 'labelRev'") protected abstract suspend fun slice3BumpLabelRev(): Int
+    /** 3b: the one wildcard cleanup command (`jobId` = "*") that tells every device-side copy of every helper job to discard; the table is KEPT by Delete all. */
+    @Query("INSERT INTO canvas_helper_cleanup (jobId, reason, createdAt) VALUES ('*', 'delete_all', :now)") protected abstract suspend fun slice3WildcardCleanup(now: Long)
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'forgetRanges'") protected abstract suspend fun slice3ClearForgetRanges(): Int
     @Query("SELECT path FROM frame") abstract suspend fun framePaths(): List<String>
 
+    /** Delete all at the current time (the wildcard cleanup row is stamped with it). */
+    open suspend fun wipeMemory(): List<String> = wipeMemory(System.currentTimeMillis())
+
     @Transaction
-    open suspend fun wipeMemory(): List<String> {
+    open suspend fun wipeMemory(now: Long): List<String> {
         val proposals = proposalIds()
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         canvasItems(); canvasScores(); canvasRuns(); canvasTraces() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
         slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3ClearForgetRanges(); slice3BumpLabelRev()
+        slice3WildcardCleanup(now) // 3b: every device-side copy is told to discard; the job rows above are gone, the cleanup table is kept. The helper fence needs no bump here: Delete all moves the wipe generation and the persisted epoch (MemoryWipe.deleteAll)
         scrubProposalParams(com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS); scrubActionLog()
         return proposals
     }

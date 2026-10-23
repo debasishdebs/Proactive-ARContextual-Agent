@@ -382,11 +382,11 @@ class HelperJobDaoTest {
         assertEquals("limit", 1, dao.pendingCleanup(1).size)
         // Delete all removes the job rows but keeps the cleanup rows: the laptop copies must still be deleted.
         f.db.wipeDao().wipeMemory()
-        assertNull(dao.helperJob("a")); assertEquals(2, dao.pendingCleanup(10).size)
+        assertNull(dao.helperJob("a")); assertEquals("the two rows plus the wildcard row Delete all adds (3b WP4)", listOf("a", "b", "*"), dao.pendingCleanup(10).map { it.jobId })
         assertEquals(1, dao.ackCleanup(listOf(rows[0].cleanupId)))
-        assertEquals(listOf("b"), dao.pendingCleanup(10).map { it.jobId })
+        assertEquals(listOf("b", "*"), dao.pendingCleanup(10).map { it.jobId })
         assertEquals("30 days retention: only rows older than the cut-off go", 0, dao.purgeOldCleanup(2_000))
-        assertEquals(1, dao.purgeOldCleanup(2_001)); assertTrue(dao.pendingCleanup(10).isEmpty())
+        assertEquals(1, dao.purgeOldCleanup(2_001)); assertEquals(listOf("*"), dao.pendingCleanup(10).map { it.jobId })
     }
 
     // ---- reads and the revision counter ----
