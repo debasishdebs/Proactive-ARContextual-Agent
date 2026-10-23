@@ -50,9 +50,9 @@ abstract class CanvasSlice3Dao {
 
     /**
      * Test seam (like `MemoryWipe.afterEpochCommit`): runs INSIDE [forgetRangeTx] and [deleteSliceOutputsForFrames] right after the frame-Forget fence moved, the open helper
-     * jobs were voided and their cleanup rows were written, so a test can throw there and prove all three roll back together. Always null in production.
+     * jobs were voided and their cleanup rows were written, so a test can throw there and prove all three roll back together. Always null in production; module-internal.
      */
-    @Volatile var testFaultAfterFenceMove: (() -> Unit)? = null
+    @Volatile internal var testFaultAfterFenceMove: (() -> Unit)? = null
 
     /**
      * Forget of the time range [fromMs, toMs], in ONE transaction: the range is recorded as a durable fence FIRST (a mark, a voice command or a trace import for it is
@@ -323,9 +323,10 @@ abstract class CanvasSlice3Dao {
 
     /**
      * Voids the open helper jobs (also one still awaiting the tap) that carry one of [frameIds]: state VOIDED, ids, payload and result dropped, one cleanup row each, in this
-     * transaction. The Forget entry points use [moveFrameForgetFence], which voids every open job; this narrower form is for callers that know the frames.
+     * transaction. NEVER a deletion entry point: it does NOT bump `frame_forget_rev` and voids only the jobs that carry these frames. Forget paths call
+     * [moveFrameForgetFence] (through [forgetRangeTx] / [deleteSliceOutputsForFrames]). It has no production caller; it stays for the DAO tests.
      */
-    @Transaction open suspend fun voidHelperJobsForFrames(frameIds: List<String>, now: Long): Int =
+    @Transaction internal open suspend fun voidHelperJobsForFrames(frameIds: List<String>, now: Long): Int =
         frameIds.flatMap { openJobIdsCarrying(frameNeedle(it)) }.distinct().count { closeById(it, JobEvent.VOID, now, voidReason = "frame_forget") }
 
     /**
