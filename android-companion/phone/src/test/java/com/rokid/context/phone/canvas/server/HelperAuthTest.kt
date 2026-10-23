@@ -160,7 +160,9 @@ class HelperAuthTest {
     }
 
     @Test fun pairingNeedsTheNativeAcceptFirst() {
-        // nobody tapped Accept: even a guessed code has nothing to match
+        // nobody tapped Accept: no window, no code, even a guessed code has nothing to match
+        assertNull(helper.pairingCode())
+        assertNull(nativeActions.state().pairingCode)
         val r = router.handle(req("POST", "/api/helper/pair", body = pairBody("123456")))
         assertEquals(401, r.status)
         assertNull(helper.session())
