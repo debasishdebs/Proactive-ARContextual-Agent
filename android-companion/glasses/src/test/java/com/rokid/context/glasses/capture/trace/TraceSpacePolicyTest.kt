@@ -211,7 +211,7 @@ class TraceSpacePolicyTest {
         val s = sealTrace("trace-old0-0001", wall - 5_000_000, transferred = true)
         sealTrace("trace-old0-0002", wall - 4_000_000)
         epoch()
-        val r = recorder(policy(budget = dirBytes(root) + 4_000)); r.onControl(TraceTestKit.collect())
+        val r = recorder(policy(budget = dirBytes(root) + small.startNeed + 4_000)); r.onControl(TraceTestKit.collect()) // the START fits the budget: only the writing crosses it
         assertTrue(r.begin())
         r.gyro(3_000)
         assertTrue(r.recording, "crossing the soft budget never stops the trace")
