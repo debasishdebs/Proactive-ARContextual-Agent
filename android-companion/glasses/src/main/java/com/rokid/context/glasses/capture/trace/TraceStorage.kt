@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicLong
  * - `traces/<traceId>/`: a closed trace (`manifest.json` last, then the directory is renamed here atomically). Only these are importable.
  * - `trace_epoch`: the last deletion epoch seen (two lines: installId, counter).
  *
- * Every method is called from the single writer thread, except [recover] and [readEpoch] (construction). [used] counts the bytes of both directories.
+ * Every method is called from the single writer thread (the recorder's io thread, which also runs [recover]), except [readEpoch] (construction: one tiny file). [used] counts the bytes of both directories.
  */
 internal class TraceStorage(private val root: File, private val diskCapBytes: Long = Long.MAX_VALUE) {
     val tracesDir = File(root, "traces")
@@ -31,7 +31,9 @@ internal class TraceStorage(private val root: File, private val diskCapBytes: Lo
      * belongs to the persisted deletion epoch and fits the disk cap; anything else in tmp (another epoch, no start record, no readable chunk, over the cap) is deleted.
      * The used size is recounted.
      */
-    fun recover() {
+    fun recover(): RecoveryCounts {
+        val sealedBefore = tracesDir.list()?.size ?: 0
+        val found = tmpDir.listFiles()?.count { it.isDirectory } ?: 0
         used.set(sizeOf(tracesDir))
         val epoch = readEpoch()
         for (dir in tmpDir.listFiles()?.filter { it.isDirectory } ?: emptyList()) {
@@ -39,7 +41,11 @@ internal class TraceStorage(private val root: File, private val diskCapBytes: Lo
         }
         tmpDir.deleteRecursively()
         used.set(sizeOf(tracesDir))
+        return RecoveryCounts(found, ((tracesDir.list()?.size ?: 0) - sealedBefore).coerceAtLeast(0))
     }
+
+    /** Counts only (for the diagnostic log): unfinished traces found in tmp, and how many of them were sealed. */
+    class RecoveryCounts(val found: Int, val sealed: Int)
 
     /** Writes the start record of a trace (the manifest skeleton: everything the end cannot tell). It stays in tmp only; [publish] and [seal] remove it. */
     fun writeStart(id: String, m: Manifest) {
@@ -58,9 +64,10 @@ internal class TraceStorage(private val root: File, private val diskCapBytes: Lo
             val f = File(dir, TraceFiles.chunkFile(shas.size))
             if (!f.isFile) break
             // the chunk count in the file is still the placeholder (publish stamps it), so the decode is by parts
-            val c = try { TraceFiles.decodeFile(f.readText(Charsets.UTF_8)).getOrThrow().let { tc -> ChunkCodec.decode(tc.traceId, tc.seq, tc.sha256, tc.b64).getOrThrow() } } catch (e: Exception) { break }
-            if (c.traceId != m0.traceId || c.seq != shas.size || c.events.isEmpty() || c.events.first().tMs < lastT) break
-            shas += c.sha256; events += c.events.size; raw += c.rawBytes; lastT = c.events.last().tMs
+            // a streaming scan (checksum, header, line count, ordering), not a decode of every event: this runs on a slow device over hundreds of chunks (the ANR of 2026-10-23)
+            val c = try { TraceFiles.decodeFile(f.readText(Charsets.UTF_8)).getOrThrow().let { tc -> ChunkCodec.scan(tc.traceId, tc.seq, tc.sha256, tc.b64).getOrThrow() } } catch (e: Exception) { break }
+            if (c.traceId != m0.traceId || c.seq != shas.size || c.eventCount < 1 || c.firstTMs < lastT) break
+            shas += c.sha256; events += c.eventCount; raw += c.rawBytes; lastT = c.lastTMs
         }
         if (shas.isEmpty()) return
         for (extra in dir.listFiles() ?: emptyArray()) {
