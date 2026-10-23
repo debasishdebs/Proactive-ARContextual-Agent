@@ -10,7 +10,7 @@ import java.security.MessageDigest
 /**
  * `bundleHash` = lowercase hex SHA-256 of the canonical JSON of the whole payload. Canonical form (identical to Python
  * `json.dumps(sort_keys=True, separators=(",",":"), ensure_ascii=False).encode("utf-8")`): object keys sorted by Unicode code point (NOT by UTF-16 unit),
- * no whitespace, only `"` `\` and control characters below 0x20 escaped, integers only (a float is refused so both languages cannot disagree on its text).
+ * no whitespace, only `"` `\` and control characters below 0x20 escaped, integers only (a float or non-finite number is refused so both languages cannot disagree on its text; integer `-0` is written `0`, as Python parses it), and an unpaired surrogate in a key or string is refused (Python cannot encode it).
  * Both languages must pass tools/canvas-helper/protocol/hash-vectors.json.
  */
 object BundleHash {
@@ -29,7 +29,7 @@ object BundleHash {
             is JsonPrimitive -> when {
                 e.isString -> string(e.content, sb)
                 e.content == "true" || e.content == "false" -> sb.append(e.content)
-                INT.matches(e.content) -> sb.append(e.content)
+                INT.matches(e.content) -> sb.append(if (e.content == "-0") "0" else e.content)
                 else -> throw IllegalArgumentException("non-integer number")
             }
             is JsonArray -> { sb.append('['); e.forEachIndexed { i, v -> if (i > 0) sb.append(','); write(v, sb) }; sb.append(']') }
@@ -51,7 +51,19 @@ object BundleHash {
         (a.length - i).compareTo(b.length - j)
     }
 
+    /** Python refuses to encode an unpaired surrogate; so must we (no replacement bytes get hashed). */
+    private fun requirePaired(s: String) {
+        var i = 0
+        while (i < s.length) {
+            val c = s[i]
+            if (Character.isHighSurrogate(c)) { if (i + 1 < s.length && Character.isLowSurrogate(s[i + 1])) i++ else throw IllegalArgumentException("unpaired surrogate") }
+            else if (Character.isLowSurrogate(c)) throw IllegalArgumentException("unpaired surrogate")
+            i++
+        }
+    }
+
     private fun string(s: String, sb: StringBuilder) {
+        requirePaired(s)
         sb.append('"')
         for (c in s) when {
             c == '"' -> sb.append("\\\"")

@@ -1009,6 +1009,73 @@
       }
     },
     {
+      "name": "fractionalItemInput",
+      "reason": "item input holds a non-integer number (not canonical)",
+      "payload": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "source": "def run(x):\n    return {'n': len(x['text'])}\n",
+        "entry": "run",
+        "items": [
+          {
+            "id": "i0",
+            "input": {
+              "x": 1.5
+            }
+          }
+        ],
+        "outSchema": {
+          "type": "object",
+          "required": [
+            "n"
+          ],
+          "properties": {
+            "n": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "limits": {
+          "perItemMs": 5000,
+          "jobMs": 120000
+        }
+      }
+    },
+    {
+      "name": "fractionalSchemaBound",
+      "reason": "schema bound is not an integer (not canonical)",
+      "payload": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "source": "def run(x):\n    return {'n': len(x['text'])}\n",
+        "entry": "run",
+        "items": [
+          {
+            "id": "i0",
+            "input": {
+              "text": "a"
+            }
+          }
+        ],
+        "outSchema": {
+          "type": "object",
+          "properties": {
+            "n": {
+              "type": "integer",
+              "minimum": 1.5
+            }
+          },
+          "additionalProperties": false
+        },
+        "limits": {
+          "perItemMs": 5000,
+          "jobMs": 120000
+        }
+      }
+    },
+    {
       "name": "limitsMissingJobMs",
       "reason": "limits incomplete",
       "payload": {

@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.math.BigDecimal
+import java.math.BigInteger
 
 /**
  * The shared schema subset (core plan section 6): `type, required, properties, additionalProperties:false, enum, items, minimum, maximum, minLength, maxLength,
@@ -18,6 +19,8 @@ object SchemaSubset {
     )
     private val TYPES = setOf("object", "array", "string", "integer", "number", "boolean", "null")
     private val INT = Regex("-?(0|[1-9][0-9]*)")
+    /** Shared upper bound of minLength/maxLength/minItems/maxItems (constants.json `schemaSubsetMaxCount`); larger bounds are refused by [validateContract]. */
+    const val MAX_COUNT = Int.MAX_VALUE.toLong()
     private const val MAX_SCHEMA_DEPTH = 16
 
     /** Empty = the schema is inside the subset. */
@@ -38,7 +41,7 @@ object SchemaSubset {
         s["items"]?.let { contract(it, depth + 1, errs) }
         s["enum"]?.let { if (it !is JsonArray || it.isEmpty()) errs += "enum must be a non-empty list" }
         for (k in listOf("minimum", "maximum")) s[k]?.let { if (!isNumber(it)) errs += "$k must be a number" }
-        for (k in listOf("minLength", "maxLength", "minItems", "maxItems")) s[k]?.let { if (!(it is JsonPrimitive && !it.isString && INT.matches(it.content) && !it.content.startsWith("-"))) errs += "$k must be a non-negative integer" }
+        for (k in listOf("minLength", "maxLength", "minItems", "maxItems")) s[k]?.let { if (!(it is JsonPrimitive && !it.isString && INT.matches(it.content) && !it.content.startsWith("-"))) errs += "$k must be a non-negative integer" else if (BigInteger(it.content) > BigInteger.valueOf(MAX_COUNT)) errs += "$k above the supported bound" }
         val ap = s["additionalProperties"]
         if (ap != null && !(ap is JsonPrimitive && !ap.isString && ap.content == "false")) errs += "additionalProperties must be false"
         val objectSchema = (type is JsonPrimitive && type.content == "object") || s.containsKey("properties")
@@ -66,12 +69,12 @@ object SchemaSubset {
         }
         if (v is JsonPrimitive && v.isString) {
             val len = v.content.codePointCount(0, v.content.length)
-            s["minLength"]?.let { if (len < intOf(it)) return false }
-            s["maxLength"]?.let { if (len > intOf(it)) return false }
+            s["minLength"]?.let { if (BigInteger.valueOf(len.toLong()) < intOf(it)) return false }
+            s["maxLength"]?.let { if (BigInteger.valueOf(len.toLong()) > intOf(it)) return false }
         }
         if (v is JsonArray) {
-            s["minItems"]?.let { if (v.size < intOf(it)) return false }
-            s["maxItems"]?.let { if (v.size > intOf(it)) return false }
+            s["minItems"]?.let { if (BigInteger.valueOf(v.size.toLong()) < intOf(it)) return false }
+            s["maxItems"]?.let { if (BigInteger.valueOf(v.size.toLong()) > intOf(it)) return false }
             s["items"]?.let { sub -> if (v.any { !check(sub, it) }) return false }
         }
         if (v is JsonObject) {
@@ -83,7 +86,7 @@ object SchemaSubset {
         return true
     }
 
-    private fun intOf(e: JsonElement) = (e as JsonPrimitive).content.toInt()
+    private fun intOf(e: JsonElement) = BigInteger((e as JsonPrimitive).content)
 
     private fun typeOk(t: String, v: JsonElement): Boolean = when (t) {
         "object" -> v is JsonObject
