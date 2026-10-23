@@ -12,6 +12,7 @@ import com.rokid.context.memory.canvas.HelperConfirmOutcome.STALE_FENCE
 import com.rokid.context.memory.db.HelperJobFixture.Companion.CONFIRM_TTL
 import com.rokid.context.memory.db.HelperJobFixture.Companion.JOB_MS
 import com.rokid.context.memory.db.HelperJobFixture.Companion.LEASE_MS
+import com.rokid.context.memory.db.HelperJobFixture.Companion.QUEUE_WAIT
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -85,7 +86,7 @@ class ConfirmDaoTest {
         assertEquals(STALE_FENCE, confirm(j))
         val row = dao.helperJob("j1")!!
         assertEquals("fail closed: the job is voided, not left confirmable", "VOIDED", row.state); assertNull(row.payloadJson)
-        assertNull("never leasable", dao.leaseHelperJob(types, "h1", 7, f.now, LEASE_MS, JOB_MS, f.live))
+        assertNull("never leasable", dao.leaseHelperJob(types, "h1", 7, f.now, LEASE_MS, JOB_MS, QUEUE_WAIT, f.live))
         assertEquals("no payload release for it either", "voided", dao.releasePayload("j1", "h1", 1, f.now, f.live).denial)
         assertEquals("and the helper is told to clean up", listOf("j1"), dao.pendingCleanup(10).map { it.jobId })
     }
@@ -99,7 +100,7 @@ class ConfirmDaoTest {
 
     @Test fun awaitingJobNeverLeasable() = runBlocking {
         f.insert("j1")
-        assertNull(dao.leaseHelperJob(types, "h1", 7, f.now, LEASE_MS, JOB_MS, f.live))
+        assertNull(dao.leaseHelperJob(types, "h1", 7, f.now, LEASE_MS, JOB_MS, QUEUE_WAIT, f.live))
         assertTrue("and never in the available list", dao.availableHelperJobs(types, 7).isEmpty())
         assertEquals("AWAITING_CONFIRM", state("j1"))
     }
@@ -111,7 +112,7 @@ class ConfirmDaoTest {
         assertEquals("CANCELLED", row.state); assertEquals("declined", row.voidReason); assertNull(row.payloadJson)
         assertEquals(NOT_AWAITING, confirm(j))
         assertTrue("declining again does nothing", !dao.declineConfirm("j1", f.now + 2))
-        assertNull(dao.leaseHelperJob(types, "h1", 7, f.now, LEASE_MS, JOB_MS, f.live))
+        assertNull(dao.leaseHelperJob(types, "h1", 7, f.now, LEASE_MS, JOB_MS, QUEUE_WAIT, f.live))
     }
 
     @Test fun declineOfAConfirmedJobIsRefused() = runBlocking {
@@ -124,7 +125,7 @@ class ConfirmDaoTest {
         assertEquals(CONFIRMED, confirm(j))
         repeat(3) { assertEquals(DUPLICATE, confirm(j)) }
         assertEquals("one job in the queue", 1, dao.availableHelperJobs(types, 7).size)
-        val l = checkNotNull(dao.leaseHelperJob(types, "h1", 7, f.now, LEASE_MS, JOB_MS, f.live))
+        val l = checkNotNull(dao.leaseHelperJob(types, "h1", 7, f.now, LEASE_MS, JOB_MS, QUEUE_WAIT, f.live))
         assertEquals("still a duplicate once leased, and the lease is untouched", DUPLICATE, confirm(j))
         assertEquals("LEASED", state("j1")); assertEquals(l.leaseGen, dao.helperJob("j1")!!.leaseGen)
     }

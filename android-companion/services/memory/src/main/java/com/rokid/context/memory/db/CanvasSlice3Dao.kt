@@ -430,9 +430,11 @@ abstract class CanvasSlice3Dao {
     /**
      * Leases the oldest CONFIRMED job of an allowed type and the current session to [helperId], only when that helper has no other LEASED job (`maxActiveJobs = 1`, in SQL, so two
      * racing leases of one helper grant exactly one). An AWAITING_CONFIRM job is never a candidate. A candidate whose fence moved is voided here (fail closed) and skipped.
-     * The lease lasts [leaseMs]; the job deadline starts NOW (at lease, not at confirm) and lasts [jobDeadlineMs]. Returns metadata only: the payload goes through [releasePayload].
+     * The lease lasts [leaseMs]; the job deadline starts NOW (at lease, not at confirm) and lasts [jobDeadlineMs]; queued jobs older than [queueWaitMs] since their confirmation are expired first. Returns metadata only: the payload goes through [releasePayload].
      */
-    @Transaction open suspend fun leaseHelperJob(types: List<String>, helperId: String, sessionGen: Long, now: Long, leaseMs: Long, jobDeadlineMs: Long, live: HelperFenceLive): LeasedHelperJob? {
+    @Transaction open suspend fun leaseHelperJob(types: List<String>, helperId: String, sessionGen: Long, now: Long, leaseMs: Long, jobDeadlineMs: Long, queueWaitMs: Long, live: HelperFenceLive): LeasedHelperJob? {
+        // A confirmed job that waited queueWaitMs ends here (FAILED resources_busy + cleanup) even if nobody ran the sweep: an overdue job is never leased.
+        queuedPastWait(now, queueWaitMs).forEach { closeById(it, JobEvent.EXPIRE, now, failCode = "resources_busy") }
         while (true) {
             val c = nextLeaseCandidate(types, sessionGen, helperId) ?: return null
             if (!rowFenceHolds(c, live)) { closeJob(c, JobEvent.VOID, now, voidReason = "fence"); continue }
@@ -490,9 +492,13 @@ abstract class CanvasSlice3Dao {
      */
     @Transaction open suspend fun commitHelperResultFenced(jobId: String, helperId: String, leaseGen: Long, resultHash: String, resultJson: String, now: Long, live: HelperFenceLive): HelperLeaseResult {
         val r = helperJob(jobId)
-        if (r != null && stateOf(r) == HelperJobState.DONE && r.leaseOwner == helperId && r.leaseGen == leaseGen && r.resultHash == resultHash) return HelperLeaseResult(true, duplicate = true)
+        if (r != null && stateOf(r) == HelperJobState.DONE && r.leaseOwner == helperId && r.leaseGen == leaseGen && r.resultHash == resultHash) {
+            // DONE is terminal: a moved fence is answered with the deletion-class denial, never by another transition (and never an ok for forgotten data).
+            return if (rowFenceHolds(r, live)) HelperLeaseResult(true, duplicate = true) else HelperLeaseResult(false, "voided")
+        }
         if (holdsLease(r, helperId, leaseGen) && !rowFenceHolds(r!!, live)) { closeJob(r, JobEvent.VOID, now, voidReason = "fence"); return HelperLeaseResult(false, "voided") }
         if (commitRow(jobId, helperId, leaseGen, resultHash, resultJson, now) == 0) return HelperLeaseResult(false, denialOf(r, helperId, leaseGen, now))
+        insertCleanup(CanvasHelperCleanupEntity(jobId = jobId, reason = "done", createdAt = now)) // the laptop copies of a finished job are deleted too
         return HelperLeaseResult(true)
     }
 
