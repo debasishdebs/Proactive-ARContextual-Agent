@@ -27,24 +27,24 @@ def mk(tmp_path, pin, fp=FP):
 
 
 def test_fingerprint_mismatch_sends_no_code(tmp_path):
-    tr, store, log = mk(tmp_path, "deadbeef")
+    tr, store, log = mk(tmp_path, "deadbeef" * 2)
     with pytest.raises(PinMismatch):
-        pair(store, tr, "10.0.0.5", 8443, CODE, "laptop", "deadbeef", log)
+        pair(store, tr, "10.0.0.5", 8443, CODE, "laptop", "deadbeef" * 2, log)
     assert tr.sent == [], "nothing, in particular not the pairing code, was sent"
     assert store.load_state() is None
 
 
 def test_missing_pin_sends_no_code(tmp_path):
-    for pin in (None, "", "abc", "zz" * 8):  # missing, empty, shorter than 8 hex digits, not hex
+    for pin in (None, "", "abc", "zz" * 8, "ab" * 4, "a" * 15, "zz" * 16):  # missing, empty, short (8 and 15 digits are too short), not hex
         tr, store, log = mk(tmp_path / str(pin), pin)
         with pytest.raises(MissingPin):
             pair(store, tr, "10.0.0.5", 8443, CODE, "laptop", pin, log)
         assert tr.sent == [] and tr.opened == [], "no connection at all without a pin"
 
 
-def test_pin_prefix_of_8_hex_digits_matches_and_pairing_stores_full_fingerprint(tmp_path):
+def test_pin_prefix_of_16_hex_digits_matches_and_pairing_stores_full_fingerprint(tmp_path):
     tr, store, log = mk(tmp_path, None)
-    res = pair(store, tr, "10.0.0.5", 8443, CODE, "laptop", "AB:AB:AB:AB", log)
+    res = pair(store, tr, "10.0.0.5", 8443, CODE, "laptop", "AB:AB:AB:AB:AB:AB:AB:AB", log)
     assert res.helper_id == "h1"
     sent = tr.sent[0]
     assert json.loads(sent["body"]) == {"helperProtocol": 1, "code": CODE, "name": "laptop"}
@@ -52,6 +52,22 @@ def test_pin_prefix_of_8_hex_digits_matches_and_pairing_stores_full_fingerprint(
     st = store.load_state()
     assert st["pin"] == FP and st["token"].startswith("tok_") and st["host"] == "10.0.0.5" and st["port"] == 8443
     assert oct(os.stat(store.state_path).st_mode & 0o777) == "0o600"
+
+
+def test_peer_matching_only_8_to_15_digits_of_the_pin_is_refused_with_no_bytes_sent(tmp_path):
+    pin = "ab" * 8  # 16 hex digits
+    for k in range(8, 16):
+        peer = pin[:k] + ("c" if pin[k] != "c" else "d") + "0" * (63 - k)  # first k digits equal, digit k+1 differs
+        tr = FakeTransport(peer)
+        tr.route("POST", "/api/helper/pair", GOOD_PAIR)
+        store = Store(tmp_path / str(k))
+        with pytest.raises(PinMismatch):
+            pair(store, tr, "10.0.0.5", 8443, CODE, "laptop", pin, Logger(sink=[].append))
+        assert tr.sent == [] and store.load_state() is None, k
+        c = PhoneClient(tr, "h", 1, pin=pin, token="tok")
+        with pytest.raises(PinMismatch):
+            c.poll({})
+        assert tr.sent == []
 
 
 def test_pinned_fingerprint_enforced_on_every_call(tmp_path):
@@ -116,8 +132,9 @@ def test_bad_pair_code_gives_fixed_error_without_echo(tmp_path):
 
 
 def test_normalize_pin():
-    assert normalize_pin("AB:cd ef:01") == "abcdef01"
+    assert normalize_pin("AB:cd ef:01:23:45:67:89") == "abcdef0123456789"
     assert normalize_pin("abc") is None and normalize_pin(None) is None and normalize_pin("xyzxyzxyz") is None
+    assert normalize_pin("abcdef01") is None and normalize_pin("a" * 15) is None and normalize_pin("a" * 16) == "a" * 16
 
 
 # ---------------------------------------------------------------- real sockets (loopback only): the production transport
@@ -171,10 +188,10 @@ def test_real_tls_pin_match_and_mismatch(tmp_path):
     crt, key, fp = _cert(tmp_path)
     srv = _Server(crt, key)
     try:
-        c = PhoneClient(TlsTransport(), "127.0.0.1", srv.port, pin=fp[:8], token=None)
+        c = PhoneClient(TlsTransport(), "127.0.0.1", srv.port, pin=fp[:16], token=None)
         r = c.pair(CODE, "laptop")
         assert r.status == 200 and srv.requests == 1 and c.observed_fingerprint == fp
-        bad = PhoneClient(TlsTransport(), "127.0.0.1", srv.port, pin="0" * 8 if not fp.startswith("0" * 8) else "1" * 8, token=None)
+        bad = PhoneClient(TlsTransport(), "127.0.0.1", srv.port, pin="0" * 16 if not fp.startswith("0" * 16) else "1" * 16, token=None)
         with pytest.raises(PinMismatch):
             bad.pair(CODE, "laptop")
         assert srv.requests == 1, "the mismatching client never sent a request"
