@@ -93,7 +93,7 @@ class TraceBoundaryLgc5Test {
         assertTrue(all[1].manifest.startElapsedMs >= all[0].manifest.endElapsedMs, "segments never overlap")
     }
 
-    @Test fun AnEpisodeAndAGateWindowAreNamedWhenARecorderKeepsRefusing() = runTest {
+    @Test fun AnEpisodeIsNamedWhenARecorderKeepsRefusing() = runTest {
         // A recorder that always wants a trace and never takes one: the session keeps offering and keeps saying what stood in the way.
         val fx = Fx(this, root) { inner ->
             object : SessionTrace by inner { override val wantsStart: Boolean get() = true; override fun start(s: TraceStart) = false }
