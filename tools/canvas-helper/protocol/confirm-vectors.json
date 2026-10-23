@@ -1,0 +1,208 @@
+{
+  "_note": "Per-run confirmation. tag = HMAC-SHA256(key, message) hex, message = jobId|bundleHash|sessionGen|expiresAtMs (decimal, no padding). The HMAC implementation lives in :phone (WP2); WP1 pins the message format and the refusals. Changing any one field must change the message and the tag, and the confirm operation must refuse a binding that differs from the stored job in any field. transitions: [from, event, to|null]; null = refused. AWAITING_CONFIRM goes to QUEUED only by CONFIRM.",
+  "testKeyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "cases": [
+    {
+      "name": "accepted",
+      "binding": {
+        "jobId": "job-1",
+        "bundleHash": "73449d42e9b6b083761e50cfdf6fbe631946f4c12dd02ac8e5c64eaedeb2850f",
+        "sessionGen": 7,
+        "expiresAtMs": 1700000120000
+      },
+      "expectedMessage": "job-1|73449d42e9b6b083761e50cfdf6fbe631946f4c12dd02ac8e5c64eaedeb2850f|7|1700000120000",
+      "expectedTag": "ea0571722ad51f299e79a1f82752b7f11a8c9a040fe9364aecc32e38f777fb52",
+      "accept": true
+    },
+    {
+      "name": "otherJobId",
+      "binding": {
+        "jobId": "job-2",
+        "bundleHash": "73449d42e9b6b083761e50cfdf6fbe631946f4c12dd02ac8e5c64eaedeb2850f",
+        "sessionGen": 7,
+        "expiresAtMs": 1700000120000
+      },
+      "expectedMessage": "job-2|73449d42e9b6b083761e50cfdf6fbe631946f4c12dd02ac8e5c64eaedeb2850f|7|1700000120000",
+      "expectedTag": "4b1a7181851190a24893495d673d04385b95a26e9ef28a4f44126e7fc79679cc",
+      "accept": false
+    },
+    {
+      "name": "otherBundleHash",
+      "binding": {
+        "jobId": "job-1",
+        "bundleHash": "d8832a1b44e0743b0465f2c7daa51efa12d7c5538fbc27240b46adaeb465ab87",
+        "sessionGen": 7,
+        "expiresAtMs": 1700000120000
+      },
+      "expectedMessage": "job-1|d8832a1b44e0743b0465f2c7daa51efa12d7c5538fbc27240b46adaeb465ab87|7|1700000120000",
+      "expectedTag": "8ccf7c53b16eb36936a1a1c8d879263326e3a511b9eebf4229778c4e105fc880",
+      "accept": false
+    },
+    {
+      "name": "otherSessionGen",
+      "binding": {
+        "jobId": "job-1",
+        "bundleHash": "73449d42e9b6b083761e50cfdf6fbe631946f4c12dd02ac8e5c64eaedeb2850f",
+        "sessionGen": 8,
+        "expiresAtMs": 1700000120000
+      },
+      "expectedMessage": "job-1|73449d42e9b6b083761e50cfdf6fbe631946f4c12dd02ac8e5c64eaedeb2850f|8|1700000120000",
+      "expectedTag": "10e529e43ef98095719f72ec153028bc4027dffd2d478fce7dcfcc21c8020af9",
+      "accept": false
+    },
+    {
+      "name": "otherExpiresAtMs",
+      "binding": {
+        "jobId": "job-1",
+        "bundleHash": "73449d42e9b6b083761e50cfdf6fbe631946f4c12dd02ac8e5c64eaedeb2850f",
+        "sessionGen": 7,
+        "expiresAtMs": 1700000120001
+      },
+      "expectedMessage": "job-1|73449d42e9b6b083761e50cfdf6fbe631946f4c12dd02ac8e5c64eaedeb2850f|7|1700000120001",
+      "expectedTag": "9b802f7e76f51f390a74f145ab459fcfe4e567905b95f6a856d66666f839210d",
+      "accept": false
+    }
+  ],
+  "transitions": [
+    [
+      "AWAITING_CONFIRM",
+      "CONFIRM",
+      "QUEUED"
+    ],
+    [
+      "AWAITING_CONFIRM",
+      "DECLINE",
+      "CANCELLED"
+    ],
+    [
+      "AWAITING_CONFIRM",
+      "EXPIRE",
+      "FAILED"
+    ],
+    [
+      "AWAITING_CONFIRM",
+      "CANCEL",
+      "CANCELLED"
+    ],
+    [
+      "AWAITING_CONFIRM",
+      "VOID",
+      "VOIDED"
+    ],
+    [
+      "AWAITING_CONFIRM",
+      "ABORT",
+      "ABORTED"
+    ],
+    [
+      "AWAITING_CONFIRM",
+      "LEASE",
+      null
+    ],
+    [
+      "AWAITING_CONFIRM",
+      "RESULT",
+      null
+    ],
+    [
+      "AWAITING_CONFIRM",
+      "HEARTBEAT",
+      null
+    ],
+    [
+      "QUEUED",
+      "CONFIRM",
+      null
+    ],
+    [
+      "QUEUED",
+      "LEASE",
+      "LEASED"
+    ],
+    [
+      "QUEUED",
+      "VOID",
+      "VOIDED"
+    ],
+    [
+      "QUEUED",
+      "CANCEL",
+      "CANCELLED"
+    ],
+    [
+      "QUEUED",
+      "EXPIRE",
+      "FAILED"
+    ],
+    [
+      "LEASED",
+      "CONFIRM",
+      null
+    ],
+    [
+      "LEASED",
+      "RESULT",
+      "DONE"
+    ],
+    [
+      "LEASED",
+      "FAIL",
+      "FAILED"
+    ],
+    [
+      "LEASED",
+      "LEASE_EXPIRE",
+      "FAILED"
+    ],
+    [
+      "LEASED",
+      "VOID",
+      "VOIDED"
+    ],
+    [
+      "LEASED",
+      "CANCEL",
+      "CANCELLED"
+    ],
+    [
+      "LEASED",
+      "ABORT",
+      "ABORTED"
+    ],
+    [
+      "LEASED",
+      "HEARTBEAT",
+      "LEASED"
+    ],
+    [
+      "DONE",
+      "CONFIRM",
+      null
+    ],
+    [
+      "DONE",
+      "VOID",
+      null
+    ],
+    [
+      "FAILED",
+      "CONFIRM",
+      null
+    ],
+    [
+      "CANCELLED",
+      "CONFIRM",
+      null
+    ],
+    [
+      "VOIDED",
+      "CONFIRM",
+      null
+    ],
+    [
+      "ABORTED",
+      "CONFIRM",
+      null
+    ]
+  ]
+}

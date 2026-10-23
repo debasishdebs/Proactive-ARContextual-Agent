@@ -1,0 +1,35 @@
+package com.rokid.context.canvas.helper
+
+import com.rokid.context.memory.canvas.HelperFence
+import com.rokid.context.memory.db.DeletionEpoch
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.yield
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+
+fun fenceAt(rev: Long) = HelperFence(wipeGen = 3, deletionEpoch = DeletionEpoch("install-a", 2, 0), frameForgetRev = rev)
+
+val TEST_OUT_SCHEMA = JsonObject(mapOf(
+    "type" to JsonPrimitive("object"), "required" to JsonArray(listOf(JsonPrimitive("n"))),
+    "properties" to JsonObject(mapOf("n" to JsonObject(mapOf("type" to JsonPrimitive("integer"), "minimum" to JsonPrimitive(0))))),
+    "additionalProperties" to JsonPrimitive(false),
+))
+
+fun fakeRequest(fence: HelperFence = fenceAt(5), n: Int = 2) = PyRequest(
+    source = "def run(x):\n    return {'n': len(x['text'])}\n",
+    items = (0 until n).map { PyItem("i$it", JsonObject(mapOf("text" to JsonPrimitive("t$it")))) },
+    outSchema = TEST_OUT_SCHEMA,
+    frameIds = (0 until n).map { "frame-$it" },
+    fence = fence,
+)
+
+fun okResult(ids: List<String>) = JsonObject(mapOf(
+    "helperProtocol" to JsonPrimitive(1), "jobType" to JsonPrimitive("py_exec"),
+    "outputs" to JsonArray(ids.map { JsonObject(mapOf("id" to JsonPrimitive(it), "ok" to JsonPrimitive(true), "output" to JsonObject(mapOf("n" to JsonPrimitive(1))))) }),
+    "stats" to JsonObject(mapOf("ms" to JsonPrimitive(5))),
+))
