@@ -100,6 +100,9 @@ class TraceRecorder(
     private var deletionCounter = 0L
     /** The last epoch wipe left something behind: the epoch stays unsaved and the wipe is retried at the next control. */
     @Volatile private var wipeFailed = false
+    /** Epoch wipes queued on the writer and not finished yet (incremented under [lock] with the epoch adoption). No trace starts while one is pending or the last one failed. */
+    private val wipesPending = AtomicInteger(0)
+    private fun storageSettled() = recovered && wipesPending.get() == 0 && !wipeFailed
     // collect window
     @Volatile private var collect = false
     @Volatile private var collectUntil = Long.MAX_VALUE
@@ -142,7 +145,7 @@ class TraceRecorder(
     val usedBytes: Long get() = storage.used.get()
 
     override val wantsStart: Boolean
-        get() = recovered && !recording && collectingNow(clock()) && installId.isNotEmpty() && storage.used.get() < diskCapBytes
+        get() = storageSettled() && !recording && collectingNow(clock()) && installId.isNotEmpty() && storage.used.get() < diskCapBytes
 
     private fun collectingNow(now: Long) = collect && now < collectUntil
 
@@ -178,15 +181,22 @@ class TraceRecorder(
             collect = c.collect
             collectUntil = if (c.collect && c.collectUntilMs != null && c.atMs > 0) now + (c.collectUntilMs!! - c.atMs) else Long.MAX_VALUE
             if (recording && !collectingNow(now)) closeLocked(CloseReason.STOP)
-        }
-        // A new epoch is persisted only after its wipe really succeeded; a wipe that failed is retried by EVERY following control (also of the same epoch).
-        if (wipe || wipeFailed) io {
-            val ok = try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}"); false }
-            wipeFailed = !ok
-            if (ok) { val (i, n) = synchronized(lock) { installId to deletionCounter }; try { storage.writeEpoch(i, n) } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
-        }
-        if (forgetLines.isNotEmpty() || storage.hasPendingForget()) io {
-            try { if (forgetLines.isNotEmpty()) storage.addForget(forgetLines); if (!storage.runForget()) log("trace forget incomplete: retried at the next control") } catch (e: Exception) { log("trace forget failed: ${e.javaClass.simpleName}") }
+            // Storage work is enqueued under the SAME lock as the epoch adoption (so no start can slip between the adoption and the wipe), and the epoch to persist is captured here.
+            // A trace cannot start while a wipe is pending or failed ([storageSettled]).
+            if (wipe || wipeFailed) {
+                val adoptedInstall = installId; val adoptedCounter = deletionCounter
+                wipesPending.incrementAndGet()
+                io {
+                    try {
+                        val ok = try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}"); false }
+                        wipeFailed = !ok
+                        if (ok) { try { storage.writeEpoch(adoptedInstall, adoptedCounter) } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
+                    } finally { wipesPending.decrementAndGet() }
+                }
+            }
+            if (forgetLines.isNotEmpty() || storage.hasPendingForget()) io {
+                try { if (forgetLines.isNotEmpty()) storage.addForget(forgetLines); if (!storage.runForget()) log("trace forget incomplete: retried at the next control") } catch (e: Exception) { log("trace forget failed: ${e.javaClass.simpleName}") }
+            }
         }
     }
 
@@ -194,7 +204,7 @@ class TraceRecorder(
 
     override fun start(s: TraceStart): Boolean = synchronized(lock) {
         val now = clock()
-        if (!recovered || recording || !collectingNow(now) || installId.isEmpty() || storage.used.get() >= diskCapBytes) return false
+        if (!storageSettled() || recording || !collectingNow(now) || installId.isEmpty() || storage.used.get() >= diskCapBytes) return false
         if (s.snapshot.sampleEvery != sampleEvery) return false
         val id = newTraceId()
         if (!TraceBounds.isTraceId(id)) return false

@@ -60,32 +60,38 @@ class TraceRecoveryLargeTest {
         return n
     }
 
-    private fun construct(io: java.util.concurrent.ExecutorService) =
-        TraceRecorder(root, { System.nanoTime() / 1_000_000 }, { 1_700_000_000_000 }, { "7" }, 1, io = { r -> io.execute(r) })
+    /** An executor whose tasks all wait for [release]: the recovery runnable is held, so the test controls exactly when it runs. */
+    private val release = CountDownLatch(1)
+    private fun gatedIo() = Executors.newSingleThreadExecutor { r -> Thread(r, "imu-trace-test").also { it.isDaemon = true } }.also { executors += it }
 
-    private fun newIo() = Executors.newSingleThreadExecutor { r -> Thread(r, "imu-trace-test").also { it.isDaemon = true } }.also { executors += it }
+    private fun construct(io: java.util.concurrent.ExecutorService, gate: CountDownLatch? = null) =
+        TraceRecorder(root, { System.nanoTime() / 1_000_000 }, { 1_700_000_000_000 }, { "7" }, 1, io = { r -> io.execute { gate?.await(); r.run() } })
 
     private fun sealedDone() = File(root, "traces").listFiles()?.size == 1 && File(root, "imu_trace_tmp").listFiles().isNullOrEmpty()
 
-    @Test fun aLargeKilledTraceIsSealedOffTheCallingThreadAndConstructionReturnsAtOnce() {
+    @Test fun aLargeKilledTraceIsSealedOffTheCallingThreadByAScanNotADecode() {
         val total = killedLargeTrace()
-        val io = newIo()
+        val io = gatedIo()
+        val callerThread = Thread.currentThread()
 
+        // construction: the recovery is held behind the latch, so nothing of it can have run on this thread or at all
         val c0 = System.nanoTime()
-        val r = construct(io)
-        val constructMs = (System.nanoTime() - c0) / 1_000_000
-        println("LARGE-FIXTURE constructionMs=$constructMs events=$total chunks=$chunks")
-        assertTrue(constructMs < 250, "construction must not recover on the calling thread: took $constructMs ms")
+        val r = construct(io, release)
+        println("LARGE-FIXTURE constructionMs=${(System.nanoTime() - c0) / 1_000_000} events=$total chunks=$chunks")
+        assertTrue(File(root, "imu_trace_tmp/$traceId").isDirectory && File(root, "traces").listFiles().isNullOrEmpty(), "construction recovered nothing")
+        r.onControl(TraceTestKit.collect(counter = 1)) // same epoch as the persisted one: no wipe
+        assertFalse(r.wantsStart, "no trace may start before the recovery finished")
+        assertFalse(r.start(TraceTestKit.start()), "start refuses before the recovery finished")
 
-        // the recorder is safe to use while recovery is still running: no trace starts before it is done, and a control is accepted
-        r.onControl(TraceTestKit.collect(counter = 1))
-        if (!sealedDone()) assertFalse(r.wantsStart, "no trace may start before the recovery finished")
-
-        val deadline = System.nanoTime() + 180_000_000_000L
-        while (!sealedDone() && System.nanoTime() < deadline) Thread.sleep(20)
-        val recoveryMs = (System.nanoTime() - c0) / 1_000_000
-        println("LARGE-FIXTURE recoveryMs=$recoveryMs")
-        assertTrue(sealedDone(), "recovery did not finish in 180 s")
+        val decodes0 = com.rokid.context.capture.trace.EventCodec.decodeCount.get()
+        val r0 = System.nanoTime()
+        release.countDown()
+        val done = CountDownLatch(1); io.execute { done.countDown() } // runs after the recovery on the same single thread
+        assertTrue(done.await(180, TimeUnit.SECONDS), "recovery did not finish")
+        println("LARGE-FIXTURE recoveryMs=${(System.nanoTime() - r0) / 1_000_000}")
+        assertTrue(sealedDone())
+        assertEquals(decodes0, com.rokid.context.capture.trace.EventCodec.decodeCount.get(), "sealing scans the chunks: it must not strict-decode a single event (452,000 would be the full decode)")
+        assertTrue(Thread.currentThread() === callerThread)
 
         val t = TraceTestKit.readAll(root).single()
         assertEquals(chunks, t.manifest.chunkCount)
@@ -94,21 +100,16 @@ class TraceRecoveryLargeTest {
         assertEquals(CloseReason.STOP, t.manifest.closeReason)
         assertEquals(TraceStatus.PARTIAL, t.verification.status)
         assertEquals(t.events.last().tMs, t.manifest.endElapsedMs)
-
-        // a started trace now works, and a second construction does not redo any work
-        val latch = CountDownLatch(1)
-        io.execute { latch.countDown() }
-        assertTrue(latch.await(30, TimeUnit.SECONDS))
         assertTrue(r.wantsStart, "recovery finished: the recorder may start traces")
+
+        // a second construction finds nothing to recover: no chunk is read or decoded again
         val before = File(root, "traces").listFiles()!!.map { it.name to it.lastModified() }
-        val s0 = System.nanoTime()
-        val io2 = newIo()
+        val decodes1 = com.rokid.context.capture.trace.EventCodec.decodeCount.get()
+        val io2 = gatedIo()
         construct(io2)
         val l2 = CountDownLatch(1); io2.execute { l2.countDown() }
-        assertTrue(l2.await(30, TimeUnit.SECONDS))
-        val secondMs = (System.nanoTime() - s0) / 1_000_000
-        println("LARGE-FIXTURE secondConstructionMs=$secondMs")
-        assertTrue(secondMs < 2_000, "nothing is left to recover: $secondMs ms")
+        assertTrue(l2.await(60, TimeUnit.SECONDS))
+        assertEquals(decodes1, com.rokid.context.capture.trace.EventCodec.decodeCount.get())
         assertEquals(before, File(root, "traces").listFiles()!!.map { it.name to it.lastModified() })
     }
 }

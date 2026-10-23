@@ -20,7 +20,11 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Every method is called from the single writer thread (the recorder's io thread, which also runs [recover]), except [readEpoch] (construction: one tiny file). [used] counts the bytes of both directories.
  */
-internal class TraceStorage(private val root: File, private val diskCapBytes: Long = Long.MAX_VALUE) {
+internal class TraceStorage(
+    private val root: File, private val diskCapBytes: Long = Long.MAX_VALUE,
+    /** Test seam: called at the named points of [publish] (`stamp:<i>` after chunk i was stamped, `manifest`, `beforeRename`); a test throws from it to simulate the process dying there. */
+    private val checkpoint: (String) -> Unit = {},
+) {
     val tracesDir = File(root, "traces")
     val tmpDir = File(root, "imu_trace_tmp")
     private val epochFile = File(root, "trace_epoch")
@@ -56,7 +60,30 @@ internal class TraceStorage(private val root: File, private val diskCapBytes: Lo
         if (!part.renameTo(File(dir, START_FILE))) throw java.io.IOException("rename")
     }
 
+    /**
+     * A directory the process left after the manifest was written but before the rename (a second death during [publish]): the chunks are stamped and the manifest is
+     * complete, so only the rename is missing. Finishes it. Returns true when the directory was handled here (published, or not of this epoch / over the cap and left for
+     * the delete), false when it has no valid manifest (then it is sealed from its start record).
+     */
+    private fun finishPublication(dir: File, epoch: Pair<String, Long>): Boolean {
+        val mf = File(dir, TraceFiles.MANIFEST_FILE)
+        if (!mf.isFile) return false
+        val m = try { ManifestChunk.decode(TraceFiles.decodeFile(mf.readText(Charsets.UTF_8)).getOrThrow()).getOrThrow() } catch (e: Exception) { return false }
+        if (m.traceId != dir.name) return false
+        if (m.installId != epoch.first || m.deletionCounter != epoch.second) return true
+        for (i in 0 until m.chunkCount) if (!File(dir, TraceFiles.chunkFile(i)).isFile) return false
+        for (extra in dir.listFiles() ?: emptyArray()) {
+            val i = CHUNK_NAME.matchEntire(extra.name)?.groupValues?.get(1)?.toInt()
+            if (extra.name != TraceFiles.MANIFEST_FILE && (i == null || i >= m.chunkCount)) extra.delete()
+        }
+        if (sizeOf(tracesDir) + sizeOf(dir) > diskCapBytes) return true
+        tracesDir.mkdirs()
+        if (!dir.renameTo(File(tracesDir, TraceFiles.dirName(m.traceId)))) throw java.io.IOException("rename")
+        return true
+    }
+
     private fun seal(dir: File, epoch: Pair<String, Long>) {
+        if (finishPublication(dir, epoch)) return
         val m0 = ManifestChunk.decode(TraceFiles.decodeFile(File(dir, START_FILE).readText(Charsets.UTF_8)).getOrThrow()).getOrThrow()
         if (m0.traceId != dir.name || m0.installId != epoch.first || m0.deletionCounter != epoch.second) return
         val shas = ArrayList<String>(); var events = 0L; var raw = 0L; var lastT = m0.startElapsedMs
@@ -82,9 +109,8 @@ internal class TraceStorage(private val root: File, private val diskCapBytes: Lo
             chunkCount = shas.size, eventCount = events, rawBytes = raw, traceSha256 = Manifest.traceSha(shas),
             recorded = TraceStatus.PARTIAL, closeReason = CloseReason.STOP,
         )
-        File(dir, START_FILE).delete()
         if (sizeOf(tracesDir) + sizeOf(dir) + MANIFEST_ALLOWANCE > diskCapBytes) return
-        publish(m.traceId, m)
+        publish(m.traceId, m) // keeps the start record until the manifest exists (a death here is recovered again)
     }
 
     fun readEpoch(): Pair<String, Long> = try {
@@ -126,11 +152,17 @@ internal class TraceStorage(private val root: File, private val diskCapBytes: Lo
             part.writeText(TraceFiles.encodeFile(c.copy(count = m.chunkCount)), Charsets.UTF_8)
             if (!part.renameTo(f)) throw java.io.IOException("rename")
             used.addAndGet(f.length() - old)
+            checkpoint("stamp:$i")
         }
-        File(dir, START_FILE).delete()
+        // The start record stays until the manifest is complete: a death while stamping is still sealable from it, and a death after the manifest is finished by [finishPublication].
         val mf = File(dir, TraceFiles.MANIFEST_FILE)
-        mf.writeText(TraceFiles.encodeFile(ManifestChunk.encode(m)), Charsets.UTF_8)
+        val mpart = File(dir, TraceFiles.MANIFEST_FILE + ".part")
+        mpart.writeText(TraceFiles.encodeFile(ManifestChunk.encode(m)), Charsets.UTF_8)
+        if (!mpart.renameTo(mf)) throw java.io.IOException("rename")
         used.addAndGet(mf.length())
+        checkpoint("manifest")
+        File(dir, START_FILE).delete()
+        checkpoint("beforeRename")
         tracesDir.mkdirs()
         if (!dir.renameTo(File(tracesDir, TraceFiles.dirName(id)))) throw java.io.IOException("rename")
     }
