@@ -35,6 +35,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$OUT" ] || usage
+# Every run exports into its OWN fresh subdirectory: an older export (a trace since deleted from the glasses) can never be imported or marked by this run.
+OUT="${OUT%/}/handover-$(date +%Y%m%d-%H%M%S)-$$"
 command -v adb >/dev/null 2>&1 || die "adb not found"
 case "$PTID$WTID" in *[!0-9]*) die "transport ids are numbers (adb devices -l, transport_id:N)" ;; esac
 
@@ -58,7 +60,8 @@ for t in $PTID $WTID; do case " $OTHERS " in *" $t "*) ;; *) die "REFUSED: trans
 echo "devices: glasses=1 phone=$([ -n "$PTID" ] && echo 1 || echo 0) watch=$([ -n "$WTID" ] && echo 1 || echo 0)"
 
 # --- fence: ANY trace export is refused while a received cleanup is pending (coarse, no quarantine index); an unreadable answer fails closed
-P=$(adb -s "$G" exec-out run-as "$PKG" sh -c 'test -e files/trace_cleanup_pending && echo PENDING || echo CLEAR' 2>/dev/null | tr -d '\r')
+# adb joins its arguments into ONE remote shell text, so the whole run-as command is a single string with the script in single quotes (no quote may be lost on the way).
+P=$(adb -s "$G" exec-out "run-as $PKG sh -c 'test -e files/trace_cleanup_pending && echo PENDING || echo CLEAR'" 2>/dev/null | tr -d '\r')
 case "$P" in
   CLEAR) ;;
   PENDING) die "REFUSED: files/trace_cleanup_pending exists on the glasses (a Delete all or Forget is still being carried out). No trace or log was exported; let the glasses finish (open the app, retry later)." ;;
@@ -66,6 +69,7 @@ case "$P" in
 esac
 
 mkdir -p "$OUT/logs/glasses" "$OUT/logs/phone" || die "cannot create $OUT"
+echo "export dir: $OUT"
 PRIV=$(mktemp -d) || die "no tmp dir"
 trap 'rm -rf "$PRIV"' EXIT
 
@@ -74,7 +78,7 @@ pull_text() {
   local sel=() pkg rel dest p
   while [ "$1" != -- ]; do sel+=("$1"); shift; done
   shift; pkg="$1"; rel="$2"; dest="$3"
-  p=$(adb "${sel[@]}" exec-out run-as "$pkg" sh -c "test -f $rel && echo Y || echo N" 2>/dev/null | tr -d '\r')
+  p=$(adb "${sel[@]}" exec-out "run-as $pkg sh -c 'test -f $rel && echo Y || echo N'" 2>/dev/null | tr -d '\r')
   case "$p" in
     Y) adb "${sel[@]}" exec-out run-as "$pkg" cat "$rel" 2>/dev/null | "$HERE/battery-run.sh" filter-diag > "$dest"; echo found ;;
     N) echo missing ;;
@@ -169,7 +173,7 @@ echo "$IMP"
 marked=0
 for id in $(echo "$IMP" | sed -n 's/^imported traceId=\([a-z0-9-]*\) .*/\1/p'); do
   # the marker: zero-byte, own directory, never inside the trace dir (the pull and TraceFiles.verify see an unchanged layout)
-  if adb -s "$G" exec-out run-as "$PKG" sh -c "mkdir -p $MARKDIR && : > $MARKDIR/$id" >/dev/null 2>&1; then marked=$((marked + 1)); else echo "marker not written for one trace (run-as refused)"; irc=1; fi
+  if adb -s "$G" exec-out "run-as $PKG sh -c 'mkdir -p $MARKDIR && : > $MARKDIR/$id'" >/dev/null 2>&1; then marked=$((marked + 1)); else echo "marker not written for one trace (run-as refused)"; irc=1; fi
 done
 echo "marked $marked trace(s) as transferred"
 exit "$irc"
