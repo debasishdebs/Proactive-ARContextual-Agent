@@ -63,5 +63,14 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
+// LGC6-min: the production-path integration test needs the phone's real status store and control retry, and the two apps are sibling modules. Their ONE pure-JVM file is copied into
+// this module's UNIT-TEST sources only (never into the app): it has no Android or phone dependency beyond :core:model.
+val phoneDiagRetryForTest = tasks.register<Copy>("copyPhoneDiagRetryForTest") {
+    from(rootProject.file("phone/src/main/java/com/rokid/context/phone/hub/plan/DiagControlRetry.kt"))
+    into(layout.buildDirectory.dir("generated/phoneDiagRetryForTest/com/rokid/context/phone/hub/plan"))
+}
+android.sourceSets.getByName("test").kotlin.srcDir(layout.buildDirectory.dir("generated/phoneDiagRetryForTest"))
+tasks.matching { it.name.startsWith("compile") && it.name.contains("UnitTestKotlin") }.configureEach { dependsOn(phoneDiagRetryForTest) }
+
 // Compose UI tests need ui-test-manifest's host activity, which is debug-only; release unit tests would have none.
 androidComponents { beforeVariants(selector().withBuildType("release")) { it.enableUnitTest = false } }

@@ -100,6 +100,8 @@ class Hub(
     private val devMode: StateFlow<Boolean> = MutableStateFlow(false),
     /** LGC4P: re-sends the trace control while the glasses have not reported the diagnostic flag enabled; null = none (tests). */
     private val diagControl: com.rokid.context.phone.hub.plan.DiagControlRetry? = null,
+    /** LGC6-min: where every `Hello`'s `diagFlagState` / `traceBlocker` goes (the retry reads it); null = nobody listens (tests, no trace services). */
+    private val diagStatus: com.rokid.context.phone.hub.plan.MutableGlassesDiagStatus? = null,
 ) : GlassesStatusSource {
     private val relauncher: GlassesRelauncher? = reopenGuards?.let {
         // Fix wave I4: the relauncher's connect is automatic: the link does not retry it by itself (guards, backoff and the hourly cap are ours).
@@ -391,6 +393,7 @@ class Hub(
         when (e) {
             is GlassesEvent.HelloReceived -> {
                 val h = e.hello
+                diagStatus?.onHello(h)
                 peerTracker.onHello(now)
                 val measured = ClockOffset.fromHello(h.glassesNowMs, now)
                 offset = measured

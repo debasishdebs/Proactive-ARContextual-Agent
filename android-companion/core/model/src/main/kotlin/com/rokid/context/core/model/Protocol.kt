@@ -451,6 +451,13 @@ data class Hello(
     val userExitAtMs: Long? = null,
     /** Fix wave I, additive: the app went to icon mode but "display over other apps" is off, so no icon shows (capture runs unseen). */
     val iconBlocked: Boolean = false,
+    /**
+     * LGC6-min, additive: the glasses' diagnostic flag state, one of `unprovisioned`, `armed_no_epoch`, `enabled`, `disabled` (a fixed vocabulary, never free text).
+     * Null from an older glasses; a phone treats null or an unknown word as "unknown".
+     */
+    val diagFlagState: String? = null,
+    /** LGC6-min, additive: why no trace can start right now, one fixed word (`none`, `gate_off`, `armed_no_epoch`, ...); never free text. Null from an older glasses. */
+    val traceBlocker: String? = null,
 )
 
 /** Phone → glasses on `pc_hello_request`: the glasses answer with [Hello]. Sent rate-limited when a frame is held. */

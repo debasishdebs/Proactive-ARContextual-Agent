@@ -1,5 +1,6 @@
 package com.rokid.context.glasses
 
+import com.rokid.context.glasses.log.withDiagFields
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -276,7 +277,10 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); ioScope.launch { applyPhoneSettings(s) } }
         c.onPhoneSettingsPush = { s -> diagRecord.onSettings(s.diagRecord) }
         c.onCapturePlan = { m -> plan.onMessage(m) }
-        c.onTraceControl = { m -> markOutbox.onEpoch(m.installId, m.deletionCounter); traceRecorder.onControl(m); diagRecord.retryPersist() }
+        c.onTraceControl = { m -> markOutbox.onEpoch(m.installId, m.deletionCounter); traceRecorder.onControl(m); diagRecord.retryPersist()
+            // LGC6-min: tell the phone the new state once the control's ordered work (fence, epoch save) has run on the writer, so its re-send ends at `enabled` without waiting for a frame's hello.
+            traceWriter.execute { try { controller?.sendHello() } catch (e: Exception) { /* the next hello carries it */ } }
+        }
         c.onMarkAck = { a -> markOutbox.onAck(a) }
         c.onMarksDue = { markTap.flush() }
         c.statusAck = { plan.onLinkSession(); plan.statusAck().takeIf { it.gen != 0L } }   // the caps announcement stays HudController's gen-0 default
@@ -324,7 +328,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         lastRestartGapSec = restarts.lastGapSec,
         userExitAtMs = restarts.userExitAtMs,
         iconBlocked = iconBlocked && uiMode.get() == UiModeStore.ICON,
-    )
+    ).withDiagFields(diagRecord, if (traceRecorderLazy.isInitialized()) traceState else null) // LGC6-min: memory reads only, never builds the recorder on this thread
 
     /** Serialises a captured frame's write with the pause toggle's buffer clear (spec §5.5). */
     private val captureGate = Any()
