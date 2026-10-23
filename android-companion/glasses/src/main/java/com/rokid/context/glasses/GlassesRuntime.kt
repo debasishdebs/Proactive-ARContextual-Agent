@@ -61,7 +61,7 @@ import java.io.File
  * session can be open (spec §1.7), so nothing is sent without one.
  */
 class GlassesRuntime private constructor(private val app: Context) {
-    /** Fix wave K4: PcCapture / PcUplink lines also go to files/capture_diag.log; first, so every later log line lands there. */
+    /** Fix wave K4 / LGC3: installs the glasses diagnostic log (through the DiagLog shim; no filesystem work here); first, so every later log line lands there. */
     private val diagInstalled = DiagLog.install(app.filesDir)
     /** Nothing launched here may crash the glasses app; only the exception's simple name is logged. */
     private val errors = CoroutineExceptionHandler { _, e -> Log.w(TAG, "runtime job failed: ${e.javaClass.simpleName}") }
