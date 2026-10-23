@@ -57,3 +57,11 @@ Do the WP12 entry list first (machine recreated in B1, `pca-helper setup` config
 
 WP13 live: TODO PASS/FAIL. Machine stopped at exit: TODO. `python.stamp` written by the gate script only: TODO. Evidence (images.lock, outputs of steps 1-7)
 is committed from the B2 gate worktree in the one evidence commit; no code change after a stamp.
+
+## LIVE RESULT (controller, 2026-10-24 05:18 IST, tested commit 7bf98935 + this evidence commit)
+
+- Machine: NEW `pca` (applehv, 2 CPUs, 4096 MiB, 10 GB disk, ONE mount `~/.pca-helper/stage:/stage`, rootless) created by `machine.sh recreate` inside the vm-session owner in ~25 s; `podman-machine-default` untouched (stopped; default connection unchanged); `pca` stopped and confirmed at exit.
+- Base `python:3.12-slim` pinned by digest in `container/pyjob/Containerfile` and `images.lock`; image `localhost/pca-pyjob:1` built via `pca-helper setup --apply`.
+- `py_gate_live.sh`: PASS on all 16 checks (image, round_trip, ids_once, user_10001, root_readonly, network_none, out_writable, float_result, per_item_timeout_kill (3.0 s for a 60 s sleep), exception, schema_mismatch, too_big, oom, volume_gone, stage_gone, kill_within_5s (0.29 s)); `python.stamp` written; `pca-helper doctor` all ok with the VM running. S2c: `ls /Users` inside the VM fails (No such file or directory).
+- Live facts found and fixed (podman 6.1.4): (1) `podman build` has no `--cpus` (now `--cpu-period/--cpu-quota`); (2) the `pca` connection is not the default after `machine init` (runtime check no longer requires default; the user's default stays `podman-machine-default`); (3) `machine inspect` has no `Mounts` (read from `~/.config/containers/podman/machine/applehv/pca.json`).
+- NOT done: step 5 (kill on deletion through the supervisor with a paired phone), step 6 (B2 frame run in the browser), step 7 (v0.9.3 device run): they need the phone and you. Doctor quirk: `vm disk` prints `ok (disk_low: ...)`: wording to check (df over `machine ssh`).
