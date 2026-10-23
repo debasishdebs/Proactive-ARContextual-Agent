@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """FAKE podman for the WP10 tests. It never talks to a real machine: all state lives in the directory named by PCA_FAKE_PODMAN_DIR
 (state, calls.log, flag files stop_fails / inspect_garbage). Without that variable it refuses to do anything."""
+import io
 import json
 import os
+import shutil
 import sys
+import tarfile
+import time
 
 D = os.environ.get("PCA_FAKE_PODMAN_DIR")
 if not D:
@@ -33,6 +37,165 @@ def flag(name):
     return os.path.exists(os.path.join(D, name))
 
 
+def containers_dir():
+    p = os.path.join(D, "containers")
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def volumes_dir():
+    p = os.path.join(D, "volumes")
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def fail(msg, rc=125):
+    sys.stderr.write("Error: %s\n" % msg)
+    return rc
+
+
+def volume_tar(name):
+    raw = os.path.join(volumes_dir(), name + ".rawtar")
+    if os.path.exists(raw):
+        with open(raw, "rb") as f:
+            return f.read()
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as t:
+        root = os.path.join(volumes_dir(), name)
+        for dp, dn, fn in os.walk(root):
+            for n in sorted(dn + fn):
+                full = os.path.join(dp, n)
+                t.add(full, arcname=os.path.relpath(full, root), recursive=False)
+    return buf.getvalue()
+
+
+def engine(a):
+    if flag("podman_broken"):
+        return fail("runtime broken")
+    log(" ".join(a))
+    if a[:3] == ["system", "connection", "list"]:
+        default = [{"Name": "pca", "URI": "ssh://core@127.0.0.1:50000/run/user/501/podman/podman.sock", "Identity": "k", "Default": True, "IsMachine": True},
+                   {"Name": "pca-root", "URI": "ssh://root@127.0.0.1:50000/run/podman/podman.sock", "Identity": "k", "Default": False, "IsMachine": True}]
+        print(rd("connections.json", "") or json.dumps(default))
+        return 0
+    if a[:1] == ["info"]:
+        print(json.dumps({"host": {"security": {"rootless": not flag("machine_rootful")}}}))
+        return 0
+    if a[:2] == ["container", "exists"]:
+        return 0 if os.path.exists(os.path.join(containers_dir(), a[2])) else 1
+    if a[:1] == ["ps"]:
+        for n in sorted(os.listdir(containers_dir())):
+            print(n)
+        return 0
+    if a[:1] == ["kill"]:
+        if flag("kill_fails"):
+            return fail("kill failed")
+        p = os.path.join(containers_dir(), a[-1])
+        if not os.path.exists(p):
+            return fail("no container with name or ID %s found: no such container" % a[-1], 125)
+        os.remove(p)
+        return 0
+    if a[:2] == ["rm", "-f"]:
+        if flag("rm_fails"):
+            return fail("rm failed")
+        p = os.path.join(containers_dir(), a[-1])
+        if not os.path.exists(p):
+            return fail("no container with name or ID %s found: no such container" % a[-1], 1)
+        os.remove(p)
+        return 0
+    if a[:2] == ["volume", "ls"]:
+        for n in sorted(os.listdir(volumes_dir())):
+            if not n.endswith(".rawtar"):
+                print(n)
+        return 0
+    if a[:2] == ["volume", "create"]:
+        if flag("volume_create_fails"):
+            return fail("volume create failed")
+        os.makedirs(os.path.join(volumes_dir(), a[-1]), exist_ok=True)
+        print(a[-1])
+        return 0
+    if a[:2] == ["volume", "rm"]:
+        if flag("volume_rm_fails"):
+            return fail("volume rm failed")
+        p = os.path.join(volumes_dir(), a[-1])
+        if not os.path.isdir(p):
+            return fail("no volume with name %s found: no such volume" % a[-1], 1)
+        shutil.rmtree(p)
+        if os.path.exists(p + ".rawtar"):
+            os.remove(p + ".rawtar")
+        return 0
+    if a[:2] == ["volume", "export"]:
+        if flag("export_endless"):
+            chunk = b"\0" * 65536
+            try:
+                while True:
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
+            except (BrokenPipeError, OSError):
+                return 0
+        if flag("export_fails"):
+            return fail("export failed")
+        if not os.path.isdir(os.path.join(volumes_dir(), a[-1])):
+            return fail("no such volume", 125)
+        try:
+            sys.stdout.buffer.write(volume_tar(a[-1]))
+            sys.stdout.buffer.flush()
+        except (BrokenPipeError, OSError):
+            pass
+        return 0
+    if a[:2] == ["image", "exists"]:
+        return 0 if a[2] in rd("images", "localhost/pca-pyjob:1\nlocalhost/pca-probe:1").split("\n") else 1
+    if a[:1] == ["build"]:
+        return fail("build failed") if flag("build_fails") else 0
+    if a[:1] == ["run"]:
+        return fake_run(a)
+    log("UNEXPECTED " + " ".join(a))
+    return 98
+
+
+def fake_run(a):
+    name = a[a.index("--name") + 1]
+    with open(os.path.join(D, "runs.jsonl"), "a") as f:
+        f.write(json.dumps(a) + "\n")
+    if flag("run_fails_start"):
+        return fail("cannot start")
+    vol = [x.split(":")[0] for i, x in enumerate(a) if i and a[i - 1] == "-v" and not x.startswith("/")]
+    vdir = os.path.join(volumes_dir(), vol[0]) if vol else None
+    if vdir is not None and not os.path.isdir(vdir):
+        return fail("no such volume")  # stricter than real podman (which would auto-create): the helper must create it first
+    cpath = os.path.join(containers_dir(), name)
+    with open(cpath, "w") as f:
+        f.write("1")
+    try:
+        plan = json.loads(rd("run_plan.json", "") or "{}")
+    except ValueError:
+        plan = {}
+    if plan.get("hold"):
+        end = time.time() + 20
+        while os.path.exists(cpath) and time.time() < end:
+            time.sleep(0.02)
+        return 137  # killed (the record is gone)
+    if vdir is not None:
+        for n, text in (plan.get("files") or {}).items():
+            os.makedirs(os.path.dirname(os.path.join(vdir, n)) or vdir, exist_ok=True)
+            with open(os.path.join(vdir, n), "w") as f:
+                f.write(text)
+        for n, target in (plan.get("links") or {}).items():
+            os.symlink(target, os.path.join(vdir, n))
+        for n in plan.get("fifos") or []:
+            os.mkfifo(os.path.join(vdir, n))
+        if plan.get("rawtar"):
+            with open(os.path.join(volumes_dir(), vol[0] + ".rawtar"), "wb") as f:
+                f.write(bytes.fromhex(plan["rawtar"]))
+        for n, size in (plan.get("big") or {}).items():
+            with open(os.path.join(vdir, n), "wb") as f:
+                f.truncate(size)
+    if os.path.exists(cpath):
+        os.remove(cpath)  # --rm
+    return int(plan.get("rc", 0))
+
+
+
 args = sys.argv[1:]
 state = rd("state", "stopped")
 if args[:2] == ["machine", "stop"]:
@@ -51,7 +214,9 @@ elif args[:2] == ["machine", "inspect"]:
         print("garbage")
     else:
         log(" ".join(args) + " => " + state)
-        print(json.dumps([{"Name": "pca", "State": state}]))
+        info = {"Name": "pca", "State": state, "Rootful": flag("machine_rootful"),
+                "Mounts": json.loads(rd("machine_mounts", "")) if rd("machine_mounts", "") else [{"Source": os.environ.get("PCA_STAGE_DIR", "/stage-src"), "Target": "/stage"}]}
+        print(json.dumps([info]))
 elif args[:2] == ["machine", "rm"]:
     log(" ".join(args))
     if state in ("running", "starting"):
@@ -65,6 +230,14 @@ elif args[:2] == ["machine", "init"]:
 elif args[:2] == ["machine", "start"]:
     log(" ".join(args))
     wr("state", "running")
+elif args[:2] == ["machine", "ssh"]:
+    log(" ".join(args))
+    print("Filesystem 1-blocks Used Available Capacity Mounted on")
+    print(rd("vm_df", "/dev/vda 21474836480 1073741824 20401094656 5% /var"))
 else:
-    log("UNEXPECTED " + " ".join(args))
-    sys.exit(98)
+    rest = list(args)
+    if rest[:1] == ["--connection"]:
+        with open(os.path.join(D, "connections.log"), "a") as f:
+            f.write(rest[1] + "\n")
+        rest = rest[2:]
+    sys.exit(engine(rest))
