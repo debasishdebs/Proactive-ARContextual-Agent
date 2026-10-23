@@ -29,7 +29,7 @@ def plan(table, home, podman, repo):
     s = table.profiles["setup"]
     conn = table.machine["name"]
     image = table.job_profile("py_exec").image
-    build = [podman, "--connection", conn, "build", "--memory", "%dm" % s.memory_mb, "--memory-swap", "%dm" % s.memory_mb, "--cpus", str(s.cpus),
+    build = [podman, "--connection", conn, "build", "--memory", "%dm" % s.memory_mb, "--memory-swap", "%dm" % s.memory_mb, "--cpu-period", "100000", "--cpu-quota", str(int(s.cpus) * 100000),
              "-t", image, "-f", os.path.join(repo, IMAGE_CONTEXT, "Containerfile"), os.path.join(repo, IMAGE_CONTEXT)]
     return [Step("config", None, "write %s" % os.path.join(str(home), "config.json")),
             Step("machine", None, "run container/vm/machine.sh recreate inside `pca_lock.py vm-session` (the VM lifecycle is never done here)"),

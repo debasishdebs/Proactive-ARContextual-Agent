@@ -124,7 +124,7 @@ def test_setup_plan_is_argv_snapshot_with_the_setup_row_limits(env):
     assert build[:4] == [env.fake.bin + "/podman", "--connection", "pca", "build"]
     s = env.table.profiles["setup"]
     assert "--memory" in build and build[build.index("--memory") + 1] == "%dm" % s.memory_mb
-    assert build[build.index("--memory-swap") + 1] == "%dm" % s.memory_mb and build[build.index("--cpus") + 1] == str(s.cpus)
+    assert build[build.index("--memory-swap") + 1] == "%dm" % s.memory_mb and build[build.index("--cpu-quota") + 1] == str(int(s.cpus) * 100000) and "--cpus" not in build  # podman build has no --cpus (live fact, podman 6.1.4)
     assert build[build.index("-t") + 1] == env.table.profiles["py_exec"].image
     assert "--privileged" not in build and "-v" not in build
     assert next(s for s in steps if s.name == "machine").argv is None, "the VM lifecycle is machine.sh through pca_lock.py, never setup"
