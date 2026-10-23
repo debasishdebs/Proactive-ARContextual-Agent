@@ -36,6 +36,20 @@ class CanvasServer(
         const val MAX_RESULT_BODY = 2 * 1024 * 1024 + 4096
         private val RESULT_ROUTE = Regex("^/api/helper/jobs/[A-Za-z0-9:_-]{1,64}/result$")
 
+        /** Reads up to [len] bytes in chunks of at most 64 KiB: a peer that claims much and sends little costs only what it sent, never a buffer sized from its Content-Length. */
+        internal fun readBody(input: java.io.InputStream, len: Long): ByteArray {
+            val out = java.io.ByteArrayOutputStream(minOf(len, 64L * 1024).toInt())
+            val buf = ByteArray(64 * 1024)
+            var left = len
+            while (left > 0) {
+                val n = input.read(buf, 0, minOf(left, buf.size.toLong()).toInt())
+                if (n < 0) break
+                out.write(buf, 0, n)
+                left -= n
+            }
+            return out.toByteArray()
+        }
+
         /** The largest request body for [method] [path]: [MAX_BODY] everywhere except the one helper `result` route, which alone is raised to [MAX_RESULT_BODY]. */
         fun bodyLimit(method: String, path: String): Int =
             if (method.equals("POST", true) && RESULT_ROUTE.matches(path)) MAX_RESULT_BODY else MAX_BODY
@@ -194,16 +208,11 @@ class CanvasServer(
         val query = s.parameters.mapNotNull { (k, v) -> v.firstOrNull()?.let { k to it } }.toMap()
         val method = s.method?.name ?: "GET"
         val len = headers["content-length"]?.trim()?.toLongOrNull()?.coerceAtLeast(0) ?: 0L
-        if (len > bodyLimit(method, s.uri.substringBefore('?'))) return HttpRequest(method, s.uri, query, headers, ByteArray(0), bodyTooLarge = true, remoteIp = s.remoteIpAddress)
-        val body = ByteArray(len.toInt())
-        var read = 0
-        val input = s.inputStream
-        while (read < body.size) {
-            val n = input.read(body, read, body.size - read)
-            if (n < 0) break
-            read += n
-        }
-        return HttpRequest(method, s.uri, query, headers, if (read == body.size) body else body.copyOf(read), remoteIp = s.remoteIpAddress)
+        val path = s.uri.substringBefore('?')
+        // The size is decided before a byte is read: the larger limit only for an allowed Host with the live helper token; a claim above the limit is refused unread.
+        val limit = if (len > MAX_BODY && router.mayReadLargeBody(method, path, headers)) bodyLimit(method, path) else MAX_BODY
+        if (len > limit) return HttpRequest(method, s.uri, query, headers, ByteArray(0), bodyTooLarge = true, remoteIp = s.remoteIpAddress)
+        return HttpRequest(method, s.uri, query, headers, readBody(s.inputStream, len), remoteIp = s.remoteIpAddress)
     }
 
     private fun toResponse(r: HttpResponse): NanoHTTPD.Response {

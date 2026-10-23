@@ -39,7 +39,7 @@ class InMemoryHelperJobPort(
     private val jobs = LinkedHashMap<String, Job>()
 
     override suspend fun runPy(req: PyRequest): PyOutcome {
-        val id = when (val r = submit(req)) { is Submitted.Ok -> r.id; is Submitted.Bad -> return PyOutcome.Refused(r.reason) }
+        val id = when (val r = submit(req)) { is Submitted.Ok -> r.id; is Submitted.Bad -> return PyOutcome.Refused(r.reason); Submitted.Stale -> return PyOutcome.Voided }
         val job = synchronized(lock) { jobs.getValue(id) }
         try {
             return job.outcome.await()
@@ -49,13 +49,15 @@ class InMemoryHelperJobPort(
         }
     }
 
-    private sealed class Submitted { class Ok(val id: String) : Submitted(); class Bad(val reason: String) : Submitted() }
+    private sealed class Submitted { class Ok(val id: String) : Submitted(); class Bad(val reason: String) : Submitted(); object Stale : Submitted() }
 
     private fun submit(req: PyRequest): Submitted {
         val payload = req.payload()
         val errs = HelperProtocol.validatePayload(payload)
         if (errs.isNotEmpty()) return Submitted.Bad(errs.first())
         val hash = try { BundleHash.of(payload) } catch (_: IllegalArgumentException) { return Submitted.Bad("payload is not canonical") }
+        // A Forget or Delete all since the runner captured the fence: no job at all (the real service refuses the insert the same way).
+        if (fenceNow != null && !req.fence.holds(fenceNow.invoke())) return Submitted.Stale
         synchronized(lock) {
             val t = now()
             val job = Job(newId(), payload, hash, sessionGen(), t + HelperProtocol.CONFIRM_TTL_MS, req.fence, req.items.size, req.source.length, HelperJobState.AWAITING_CONFIRM, t)
@@ -123,14 +125,21 @@ class InMemoryHelperJobPort(
     fun complete(jobId: String, result: JsonObject): List<String> = synchronized(lock) {
         tickLocked() // a result at or after lease + pyExecDeadlineMs is expired, not accepted
         val job = jobs[jobId]?.takeIf { it.state == HelperJobState.LEASED } ?: return listOf("job is not leased")
+        // the same order as the real service: canonical form and size first, then the shape against the payload
+        val canonical = try { BundleHash.canonical(result) } catch (_: IllegalArgumentException) { return listOf("result is not canonical") }
+        if (canonical.toByteArray(Charsets.UTF_8).size > HelperProtocol.MAX_RESULT_BYTES) return listOf("too_large")
         val errs = HelperProtocol.validateResult(job.payload, result)
         if (errs.isNotEmpty()) return errs
         finish(job, JobEvent.RESULT, result = result)
         emptyList()
     }
 
+    /** The helper reports a failure. A moved fence voids the job and an expired job deadline ends it `timeout`: both answer false (the code is never acknowledged for a stale job). */
     fun fail(jobId: String, code: String): Boolean = synchronized(lock) {
         val job = jobs[jobId]?.takeIf { it.state == HelperJobState.LEASED && code in HelperProtocol.FAIL_CODES } ?: return false
+        if (fenceNow != null && !job.fence.holds(fenceNow.invoke())) { finish(job, JobEvent.VOID); return false }
+        tickLocked()
+        if (job.state != HelperJobState.LEASED) return false
         finish(job, JobEvent.FAIL, code)
     }
 

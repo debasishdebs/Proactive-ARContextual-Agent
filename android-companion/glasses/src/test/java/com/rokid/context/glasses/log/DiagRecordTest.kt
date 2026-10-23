@@ -147,6 +147,21 @@ class DiagRecordTest {
         r.onSettings(false); drain(); assertEquals(2, n)
     }
 
+    @Test fun retryPersistSavesAFailedWriteWithoutWaitingForTheNextSettingsPush() {
+        epoch = true
+        val r = rec(); drain()
+        writeOk = false
+        r.onSettings(true); drain()
+        assertTrue(r.persistFailed)
+        writeOk = true
+        r.retryPersist(); drain() // called by the next trace control
+        assertFalse(r.persistFailed)
+        assertTrue(rec().also { drain() }.requested())
+        val n = writes.size
+        r.retryPersist(); drain()
+        assertEquals(n, writes.size, "nothing failed: no write")
+    }
+
     @Test fun theSourceNeverTouchesPcLogPolicy() {
         // capture_diag.log stays always-on in LG-MIN (the heartbeat readers need it): the flag must never feed PcLog.setDiagnostic.
         val src = File("src/main/java/com/rokid/context/glasses/log/DiagRecord.kt").readText()

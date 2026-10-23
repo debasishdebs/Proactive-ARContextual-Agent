@@ -156,4 +156,29 @@ class TraceDiagGateTest {
         r.begin()
         assertNull(r.startBlocker(), "already recording is not a fault")
     }
+
+    @Test fun aFailedDeleteOfTheOldEpochFileCountsAsAFailedWipeAndBlocksRecording() {
+        File(root, "trace_epoch").mkdirs(); File(root, "trace_epoch/x").writeText("x") // cannot be deleted as a file: the old epoch cannot be cleared
+        diag = true
+        val r = recorder(); r.provision("inst-new", 3)
+        assertFalse(r.epochSaved); assertEquals(TraceStartBlocker.WIPE_FAILED, r.startBlocker())
+        assertFalse(r.wantsStart)
+    }
+
+    @Test fun writeEpochIsCheckedAndThrowsWhenNothingReachedTheDisk() {
+        File(root, "trace_epoch").mkdirs(); File(root, "trace_epoch/x").writeText("x") // the target cannot be replaced
+        val st = TraceStorage(root)
+        var threw = false
+        try { st.writeEpoch("inst-1", 1) } catch (e: java.io.IOException) { threw = true }
+        assertTrue(threw, "a failed rename must not look like a saved epoch")
+    }
+
+    @Test fun clearEpochRemovesTheFileAndReportsFailure() {
+        File(root, "trace_epoch").writeText("inst-1\n1")
+        val st = TraceStorage(root)
+        assertTrue(st.clearEpoch()); assertFalse(File(root, "trace_epoch").exists())
+        assertTrue(st.clearEpoch(), "nothing to clear is success")
+        File(root, "trace_epoch").mkdirs(); File(root, "trace_epoch/x").writeText("x")
+        assertFalse(st.clearEpoch())
+    }
 }

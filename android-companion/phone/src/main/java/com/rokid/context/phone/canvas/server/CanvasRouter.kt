@@ -122,6 +122,17 @@ class CanvasRouter(
         return static(req)
     }
 
+    /**
+     * Asked by the server BEFORE any body byte is read: only an allowed Host carrying the LIVE helper token may send more than [CanvasServer.MAX_BODY] (the one `result` route,
+     * [CanvasServer.bodyLimit]). Everyone else keeps the small bound, so an unauthenticated peer cannot make the phone hold a 2 MiB buffer per connection.
+     */
+    fun mayReadLargeBody(method: String, path: String, headers: Map<String, String>): Boolean {
+        if (CanvasServer.bodyLimit(method, path) <= CanvasServer.MAX_BODY || !hosts.hostAllowed(headers["host"])) return false
+        val h = headers["authorization"] ?: return false
+        if (h.length <= 7 || !h.regionMatches(0, "Bearer ", 0, 7, ignoreCase = true)) return false
+        return helperAuth?.check(h.substring(7).trim()) == true
+    }
+
     private fun bearer(req: HttpRequest): String? {
         val h = req.headers["authorization"] ?: return null
         if (h.length <= 7 || !h.regionMatches(0, "Bearer ", 0, 7, ignoreCase = true)) return null

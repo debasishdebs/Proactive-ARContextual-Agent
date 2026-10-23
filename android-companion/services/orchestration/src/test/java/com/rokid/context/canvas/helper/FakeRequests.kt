@@ -12,7 +12,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-fun fenceAt(rev: Long) = HelperFence(wipeGen = 3, deletionEpoch = DeletionEpoch("install-a", 2, 0), frameForgetRev = rev)
+fun fenceAt(rev: Long, epochCounter: Long = 2) = HelperFence(wipeGen = 3, deletionEpoch = DeletionEpoch("install-a", epochCounter, 0), frameForgetRev = rev)
 
 val TEST_OUT_SCHEMA = JsonObject(mapOf(
     "type" to JsonPrimitive("object"), "required" to JsonArray(listOf(JsonPrimitive("n"))),
