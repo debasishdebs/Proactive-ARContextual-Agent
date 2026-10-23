@@ -140,7 +140,8 @@ class InterpretableShapeTest {
         // "node <id>: <type> can't run before extraction" is defence in depth: the port types already keep every other
         // type behind an extractor. This fails the day a type that accepts PHOTOS or JSON is added, so the rule gets a real test then.
         val early = NodeTypes.all.filter { PortType.PHOTOS in it.inputs || PortType.JSON in it.inputs }.map { it.type }.toSet()
-        assertEquals(setOf(NodeTypes.VISION_EXTRACT, NodeTypes.PROMPT, NodeTypes.SWITCH), early)
+        // WP7: `py.fn` takes JSON. It is tier 3 (S6: never published, refused before this shape rule is reached) and the rule does name it, as the comment above promised.
+        assertEquals(setOf(NodeTypes.VISION_EXTRACT, NodeTypes.PROMPT, NodeTypes.SWITCH, NodeTypes.PY_FN), early)
     }
 
     @Test fun rangeAtTwelvePhotosIsExactAndFast() {

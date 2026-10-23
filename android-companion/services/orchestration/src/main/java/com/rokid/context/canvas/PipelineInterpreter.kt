@@ -6,6 +6,7 @@ import com.rokid.context.ai.canvas.InterpretableShape
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.Pipeline
 import com.rokid.context.ai.canvas.PipelineNode
+import com.rokid.context.ai.canvas.plan.PlanShape
 import com.rokid.context.ai.contract.ExtractOutput
 import com.rokid.context.ai.contract.Fact
 import com.rokid.context.ai.contract.FrameCaption
@@ -65,6 +66,7 @@ class PipelineInterpreter(
         fun failed(reason: String): Outcome = Outcome.Failed(reason, traces + batchRows(reason))
 
         if (photos.isEmpty()) return failed("no_photos")
+        if (PlanShape.tier3Nodes(p).isNotEmpty()) return failed(TIER3) // S6, fail closed: `py.fn` and `tool.` nodes never run here, and `preSaveNodes` would otherwise skip them silently
         val photoById = photos.associateBy { it.frameId }
         val order = photos.withIndex().associate { it.value.frameId to it.index }
         val outputs = HashMap<String, Map<String, ItemFlow.Out>>()
@@ -172,6 +174,8 @@ class PipelineInterpreter(
     }
 
     companion object {
+        /** The fixed `Failed.reason` of a graph that holds a tier-3 node (S6). */
+        const val TIER3 = "tier3_node"
         const val OUTPUT_CAP = 8_000
         const val TRUNCATED = "...[truncated]"
         const val BATCH = "_batch"

@@ -89,6 +89,8 @@ class CanvasPublisher(
     suspend fun publishInterpreter(pipelineId: String, version: Int, mode: LiveMode, groupId: String? = null): Outcome = lock.withLock {
         val v = dao.version(pipelineId, version) ?: return@withLock Outcome.Blocked(listOf("Version not found"))
         val full = PipelineJson.decode(v.json).getOrNull() ?: return@withLock Outcome.Blocked(listOf("Version is unreadable"))
+        // S6: tier 3 (`py.fn`, any `tool.` node) never publishes. First, on the FULL graph, before the projection can drop or keep anything.
+        if (PlanShape.tier3Nodes(full).isNotEmpty()) return@withLock Outcome.Blocked(listOf(PlanShape.S6_REFUSAL))
         // S72: a full three-domain graph publishes its ASYNC projection; the hash is the slice 2 hash of that projection, so a tested identity is kept.
         val p = PlanShape.asyncProjection(full)
         val hash = if (p === full) v.hash else PipelineHash.of(p)
@@ -127,6 +129,7 @@ class CanvasPublisher(
     private suspend fun publishLocked(pipelineId: String, version: Int): Outcome {
         val v = dao.version(pipelineId, version) ?: return Outcome.Blocked(listOf("Version not found"))
         val p = PipelineJson.decode(v.json).getOrNull() ?: return Outcome.Blocked(listOf("Version is unreadable"))
+        if (PlanShape.tier3Nodes(p).isNotEmpty()) return Outcome.Blocked(listOf(PlanShape.S6_REFUSAL)) // S6, before the shape test
         if (!LiveShape.matches(p)) return Outcome.Blocked(listOf("Only pipelines shaped like Live extraction can go live in this version"))
         val nodes = LiveShape.draftPromptNodes(p)
         if (nodes.isEmpty()) return Outcome.Blocked(listOf("Nothing to publish: every prompt is Live"))
