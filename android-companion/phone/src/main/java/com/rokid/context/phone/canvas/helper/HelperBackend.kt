@@ -103,7 +103,7 @@ class HelperBackend(
             )
             val native = BoundHelperNative(HelperNative(auth, grants, clock, log), session, ender)
             val routes = HelperRoutes(auth, service, store, grants::isOn, clock, log)
-            val browser = HelperBrowserRoutes(auth, service, grants::isOn)
+            val browser = HelperBrowserRoutes(auth, service, grants::isOn, clock)
             return HelperBackend(auth, grants, confirm, service, store, adapter, routes, browser, session, native, hooks)
         }
 

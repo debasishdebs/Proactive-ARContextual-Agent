@@ -66,7 +66,20 @@ console is free of CSP errors (the policy is `default-src 'self'`, no inline scr
 3. Roll back. The previous prompt is active again and history shows it.
 4. A second rollback is refused ("rollback_blocked"). Edit the live prompt by hand after a publish, then roll back: it must be refused too.
 
-## 6. Report back
+## 6. Python helper (laptop)
+
+Needs the laptop helper installed and a Wi-Fi LAN with the phone. Never paste the pairing code, a token or a job id into a report.
+
+1. In the app, Accept pairing, enter the code on the laptop, and turn the Python grant on. The browser run page shows "Laptop helper: paired", the grant and "The helper is ready".
+2. In the browser build a pipeline with a Python step (photos, a prompt, then py.fn), pick 3 photos, Estimate, Start. The run page shows "Waiting for your tap on the phone" with a countdown that follows the phone's clock. There is no Confirm button in the browser, and nothing on the laptop has started.
+3. On the phone tap Confirm on the card: the laptop runs it and the run page shows the Python results as plain text (put `<b>x</b>` in the output: it must stay literal).
+4. Start another run and tap Decline: the run page says the run was not confirmed (declined or expired) and that nothing was sent. Start one more and wait for the two minutes: the same text, and the card leaves the phone.
+5. Start a run, do not tap, and Forget one of its photos in the app: the run ends CANCELLED with none of its rows kept. A Forget of a photo that is not in the run shows "Stopped: a photo was forgotten" (STOPPED_FORGET); the card is gone and a late Confirm is impossible.
+6. Start a run, tap Confirm, then turn the Python grant off while the laptop works: the job is voided within seconds and the laptop deletes its copy. Repeat with Disconnect and with leaving the LAN (Wi-Fi off).
+7. With the grant on and no tap, watch the laptop's helper log for 2 minutes: it is polling and leasing nothing, and it never receives the source.
+8. Restart the app: the helper needs a new pairing (its token did not survive) and the grant is off.
+
+## 7. Report back
 
 Note any step that failed, the console errors, and for crashes the logcat of the `CanvasService` process (never paste the pairing
 code or token, and never share unfiltered logcat from the glasses side).
