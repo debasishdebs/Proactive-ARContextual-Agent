@@ -494,7 +494,8 @@ object CaptureSimulator {
             // The latency of the live loop after a stall is excused for the resume decision only, and only by a recorded open of ITS cause.
             val late = stallPending.firstOrNull { it.open.cause == e.cause && e.tMs - it.open.atMs in 0..STALL_EXCUSE_MS }
             if (late != null) { stallPending.remove(late); late.win.stallExcused++; mismatch("stall_resume", late.open.atMs, "resume decision (${late.open.cause}) after a stall; the recorded open followed ${e.tMs - late.open.atMs} ms later") }
-            val twin = pendingReplayed.firstOrNull { ReplayRule.opensMatch(e.tMs, e.cause, it.open.atMs, it.open.cause, it.open.lateSlackMs) }
+            // One recorded open explains ONE decision: when it excused the stalled resume decision it is not also the twin of a later pending one (that stays an extra).
+            val twin = if (late != null) null else pendingReplayed.firstOrNull { ReplayRule.opensMatch(e.tMs, e.cause, it.open.atMs, it.open.cause, it.open.lateSlackMs) }
             if (twin != null) { pendingReplayed.remove(twin); twinned += e.tMs } else if (late != null) twinned += e.tMs else awaiting += RecOpen(e, cur)
             closing += cur
             cur = newWin(e.tMs).also { it.flagged += e }
