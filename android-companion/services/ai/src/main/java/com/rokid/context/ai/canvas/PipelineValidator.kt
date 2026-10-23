@@ -20,6 +20,8 @@ object PipelineValidator {
     private const val MAX_NODES = 40
     private const val MAX_EDGES = 80
     private const val MAX_TEXT = 16_000
+    /** WP8: at most this many `py.fn` nodes in one graph (each is its own laptop job and its own native tap). */
+    const val MAX_PY_FN = 3
 
     /** The texts of [problems], unchanged. */
     fun validate(p: Pipeline): List<String> = problems(p).map { it.text }
@@ -141,6 +143,27 @@ object PipelineValidator {
 
         // Params
         byId.forEach { (id, n) -> types[id]?.let { t -> paramProblems(id, n, t).forEach { out.node(id, it) } } }
+        pyFnProblems(byId.values.filter { it.type == NodeTypes.PY_FN && types[it.id] != null }, valid).forEach { out.node(it.first, it.second) }
+        return out
+    }
+
+    /**
+     * The one shape a `py.fn` node may be in (WP8; what `PythonExecutor` supports): at most [MAX_PY_FN] such nodes in a graph (each is its own laptop job and native tap), each with
+     * a non-blank `source`, an `outSchema` that is a JSON object (the schema-subset check itself runs when the job is created) and exactly one incoming edge (its JSON comes from one
+     * upstream node). A graph that also has a capture half is fine: a run executes the ASYNC half only (the RT nodes have no executor and produce nothing), and a `py.fn` graph is
+     * never published (S6). Returns (nodeId, text) pairs.
+     */
+    private fun pyFnProblems(fns: List<PipelineNode>, edges: List<PipelineEdge>): List<Pair<String, String>> {
+        if (fns.isEmpty()) return emptyList()
+        val out = mutableListOf<Pair<String, String>>()
+        fns.forEachIndexed { i, n ->
+            if (i >= MAX_PY_FN) out += n.id to "too many py.fn nodes (max $MAX_PY_FN)"
+            val src = (n.params["source"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            if (src == null || src.isBlank()) out += n.id to "node ${n.id}: py.fn source required"
+            val schema = (n.params["outSchema"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            if (schema == null || runCatching { Json.parseToJsonElement(schema) }.getOrNull() !is JsonObject) out += n.id to "node ${n.id}: py.fn outSchema must be a JSON object"
+            if (edges.count { it.to == n.id } != 1) out += n.id to "node ${n.id}: py.fn takes exactly one input edge"
+        }
         return out
     }
 
