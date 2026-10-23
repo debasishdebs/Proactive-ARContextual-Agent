@@ -251,7 +251,11 @@ class TraceRecorder(
         wipesPending.incrementAndGet()
         io {
             try {
-                val ok = try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}"); false }
+                // Privacy order (LGC4): the old epoch leaves the disk BEFORE the fence runs, so a restart (or a failed wipe) can never read the forgotten epoch back as durable and
+                // record under it. A failed clear counts as a failed wipe. The window between the in-memory adoption (onControl) and this task reaching the writer is NOT closed
+                // here: it belongs to LGC8-min (persist the received cleanup and its target epoch before acting, replay before recovery).
+                val cleared = try { storage.clearEpoch() } catch (e: Exception) { false }
+                val ok = cleared && try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}"); false }
                 var saved = false
                 if (ok) { try { storage.writeEpoch(adoptedInstall, adoptedCounter); saved = true } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
                 // An epoch that could not be written counts as a failed wipe (retried by the next control or the start checks): otherwise `armed_no_epoch` would never heal.

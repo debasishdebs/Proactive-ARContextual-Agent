@@ -79,13 +79,16 @@ class GlassesRuntimeTest {
         val c = HudController(runtime.scope, bridge, HudSettingsCache(app.getSharedPreferences("rt_diag", 0)), { Hello(glassesBatteryPct = 80, bufferSize = 0, glassesNowMs = 0, pauses = emptyList()) })
         runtime.attach(c); c.start()
         val seen = java.util.concurrent.CountDownLatch(1)
-        runtime.diagRecord.onChanged = { seen.countDown() }
+        val previousHook = runtime.diagRecord.onChanged
+        runtime.diagRecord.onChanged = { previousHook(); seen.countDown() }
+        try {
         bridge.phone(Channels.SETTINGS, com.rokid.context.core.model.Wire.encode(HudSettings(diagRecord = true)))
         check(seen.await(10, java.util.concurrent.TimeUnit.SECONDS)) { "the writer applied the request" }
         assertEquals(com.rokid.context.glasses.log.DiagFlagState.ARMED_NO_EPOCH, runtime.diagRecord.state())
         assertEquals(false, runtime.diagRecord.diagEnabled())
         assertEquals("1", java.io.File(java.io.File(app.applicationInfo.dataDir, "files"), "diag_state").readText().trim())
         assertEquals("armed_no_epoch", runtime.diagRecord.state().wire)
+        } finally { runtime.diagRecord.onChanged = previousHook }
     }
 
     /** Minor 7: an old activity's late detach must not wipe the new activity's push-to-talk toast handler. */
