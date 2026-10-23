@@ -299,7 +299,8 @@ class CanvasSlice3DaoTest {
         assertEquals(listOf("lm", "lo"), dao.labels().map { it.labelId }.sorted())
         assertTrue(dao.replay("r")!!.invalidated); assertNull(dao.replay("r")!!.resultJson)
         assertEquals("VOIDED", dao.helperJob("j1")!!.state); assertEquals("[]", dao.helperJob("j1")!!.frameIdsJson); assertNull(dao.helperJob("j1")!!.leaseOwner)
-        assertEquals("QUEUED", dao.helperJob("j2")!!.state)
+        assertEquals("3b WP4: a Forget of any frame moves frame_forget_rev, which voids every in-flight job (fail closed), with its cleanup row", "VOIDED", dao.helperJob("j2")!!.state)
+        assertEquals(listOf("j1", "j2"), dao.pendingCleanup(10).map { it.jobId })
     }
 
     @Test fun traceSourcesRoundTrip() {
