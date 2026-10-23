@@ -22,6 +22,10 @@ class NetworkError(Exception):
     """Connection failure, timeout, TLS failure or a malformed answer. The message never carries request or response content."""
 
 
+class BodyTooLarge(ValueError):
+    """The serialised request body is over the protocol limit; nothing was sent."""
+
+
 class PinMismatch(Exception):
     pass
 
@@ -143,7 +147,7 @@ class PhoneClient:
         c = constants()
         self._hb_timeout = c["heartbeatRequestTimeoutMs"] / 1000.0
         self._max_body = c["maxRequestBodyBytes"]
-        self._max_result = c["maxResultBytes"]
+        self._max_result = c["resultBodyMaxBytes"]  # the whole result envelope (phone: CanvasServer.MAX_RESULT_BODY), not just the result
 
     def _call(self, method, path, obj=None, timeout_s=DEFAULT_TIMEOUT_S, auth=True, raw=False, max_body=None):
         if self._pin is None:
@@ -152,7 +156,7 @@ class PhoneClient:
         if obj is not None:
             data = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
             if len(data) > (max_body or self._max_body):
-                raise ValueError("request body too large")
+                raise BodyTooLarge("request body too large")
         headers = {"Accept": "application/json"}
         if data is not None:
             headers["Content-Type"] = "application/json"
