@@ -193,6 +193,18 @@ class HelperDeletionTest {
         assertEquals("delete_all", dao.pendingCleanup(100).first { it.jobId == "*" }.reason)
     }
 
+    @Test fun deleteAllRefusesARunnerThatCapturedAfterBothIncrementsAndLoadedBeforeTheWipe() = runBlocking {
+        // MemoryWipe.deleteAll advances the epoch and the generation BEFORE WipeDao.wipeMemory; a runner capturing in that window holds the NEW values and the unchanged revision.
+        f.wipe(); f.newEpoch()
+        val fence = f.fence()                                 // captured after both increments, then the old photo is loaded and the runner pauses
+        frame("f-late")
+        db.wipeDao().wipeMemory()                             // the database wipe commits
+        assertEquals("precondition: the wipe deleted the frame", 0, db.wipeDao().framePaths().size)
+        assertTrue("Delete all moves frame_forget_rev inside its transaction", dao.frameForgetRev() > fence.frameForgetRev)
+        assertFalse("the delayed insert is refused", dao.insertHelperJobFenced(f.job("late", frames = "[\"f-late\"]"), fence, f.live))
+        assertNull(dao.helperJob("late"))
+    }
+
     // ---- restart ----
 
     @Test fun cleanupSurvivesRestart() = runBlocking {
