@@ -6,12 +6,14 @@ import com.rokid.context.ai.EnvDefaults
 class ContextApp : Application() {
     override fun onCreate() {
         super.onCreate()
-        // Always-on logging LGC2: the ONE phone log sink, installed first so every later component logs through PcLog's gate. The Developer mode flag
-        // (SharedPreferences load) is read off the main thread and pushed into PcLog; Delete all clears the diagnostic files through the listener.
+        // Always-on logging LGC2: the ONE phone log sink, installed first so every later component logs through PcLog's gate. Nothing here touches the
+        // filesystem on the main thread: the path is built from dataDir (Context.getFilesDir() may stat or create the directory), the writer creates it,
+        // and the Developer mode flag (SharedPreferences load) is applied on IO BEFORE the bootstrap ring drains. Delete all clears the files through the listener.
         com.rokid.context.phone.log.PhoneLogging.install(
-            filesDir, { com.rokid.context.phone.canvas.DeveloperModeStore.get(this).enabled },
+            java.io.File(applicationInfo.dataDir, "files"), { com.rokid.context.phone.canvas.DeveloperModeStore.get(this).enabled },
+            com.rokid.context.phone.log.PrefsWipePending(this),
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO),
-        )?.let { com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.log.LogWipeListener(it)) }
+        )?.let { com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.log.LogWipeListener(it.wiper)) }
         // Fix wave I5: stamp the process start before any worker can claim a frame (the start release spares newer claims).
         com.rokid.context.work.frames.ProcessStart.wallMs
         EnvDefaults.init(

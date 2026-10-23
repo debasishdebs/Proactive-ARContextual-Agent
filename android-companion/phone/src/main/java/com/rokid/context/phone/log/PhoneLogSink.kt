@@ -32,7 +32,7 @@ class PhoneLogSink(
     fun wipe(timeoutMillis: Long = 5_000): Boolean =
         try { writer.clear().get(timeoutMillis, TimeUnit.MILLISECONDS) == true } catch (_: Throwable) { false }
 
-    fun close() { writer.close(drain = false) }
+    fun close() = writer.close(drain = false)
 
     companion object {
         /** Under `filesDir`; excluded from backup and device transfer (backup_rules.xml, data_extraction_rules.xml). */
@@ -40,8 +40,9 @@ class PhoneLogSink(
         /** Two files of at most half each (the writer's rule): 2 x 3 MB. */
         const val MAX_BYTES = 6_000_000L
 
-        fun create(filesDir: File): PhoneLogSink =
-            PhoneLogSink(AsyncLineWriter(File(File(filesDir, LOG_DIR), LogFiles.PCA_LOG), maxBytes = MAX_BYTES))
+        /** Side-effect free: only builds paths; the writer thread creates the directory on its first append. [maxBytes] is a test seam. */
+        fun create(filesDir: File, maxBytes: Long = MAX_BYTES): PhoneLogSink =
+            PhoneLogSink(AsyncLineWriter(File(File(filesDir, LOG_DIR), LogFiles.PCA_LOG), maxBytes = maxBytes))
 
         private fun androidLog(level: Level, tag: String, msg: String) {
             when (level) {

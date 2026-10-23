@@ -59,6 +59,8 @@
         <exclude domain="external" path="trace-staging" />
         <!-- Always-on logging LGC2: files/logs (pca.log, pca.log.1): never backed up or transferred. -->
         <exclude domain="file" path="logs" />
+        <!-- LGC2: the pending log-wipe request is per-install. -->
+        <exclude domain="sharedpref" path="log_wipe_state.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="endpoint_keys.xml" />
@@ -118,5 +120,7 @@
         <exclude domain="external" path="trace-staging" />
         <!-- Always-on logging LGC2: files/logs (pca.log, pca.log.1): never backed up or transferred. -->
         <exclude domain="file" path="logs" />
+        <!-- LGC2: the pending log-wipe request is per-install. -->
+        <exclude domain="sharedpref" path="log_wipe_state.xml" />
     </device-transfer>
 </data-extraction-rules>

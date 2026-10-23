@@ -66,4 +66,6 @@
     <exclude domain="external" path="trace-staging" />
     <!-- Always-on logging LGC2: files/logs (pca.log, pca.log.1) is a per-install diagnostic record (counts only, but device-specific): never backed up or transferred. -->
     <exclude domain="file" path="logs" />
+    <!-- LGC2: the pending log-wipe request is per-install. -->
+    <exclude domain="sharedpref" path="log_wipe_state.xml" />
 </full-backup-content>
