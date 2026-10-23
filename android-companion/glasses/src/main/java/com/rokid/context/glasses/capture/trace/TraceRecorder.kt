@@ -81,6 +81,8 @@ class TraceRecorder(
     private val diagEnabled: () -> Boolean = { false },
     /** LGC8-min: where the received-cleanup record lives (production: `files/trace_cleanup_pending`; default: next to the epoch file). */
     pendingFile: File = File(root, "trace_cleanup_pending"),
+    /** LGC5: runs once on the writer thread right after the start-up recovery (the `trace boot:` line comes from it). A throw is contained. */
+    private val onRecovered: (RecoveryInfo) -> Unit = {},
 ) : SessionTrace, SampleTap {
     init { require(sampleEvery in 1..StartSnapshot.MAX_SAMPLE_EVERY) { "sampleEvery" } }
 
@@ -146,6 +148,9 @@ class TraceRecorder(
 
     /** False until the start-up recovery (queued on [io] first, so it runs before every other storage task) has finished: no trace starts before. */
     @Volatile private var recovered = false
+    @Volatile private var recoveredMs = 0L
+    /** Traces sealed or published since this process started (an in-memory count: reading it never touches the disk). */
+    private val tracesDone = AtomicInteger(0)
 
     init {
         // DECISION: the persisted epoch (a 2-line file) is read here, synchronously: [onControl] must compare the phone's epoch against it, and reading it on the writer
@@ -156,12 +161,18 @@ class TraceRecorder(
         io {
             // LGC8-min: the received cleanup is replayed FIRST, before recovery can seal anything (a killed trace in a forgotten range must be deleted, not sealed).
             try { replayPending() } catch (e: Exception) { log("trace cleanup replay failed: ${e.javaClass.simpleName}") }
+            var info = RecoveryInfo(0, 0, 0)
             try {
                 val t0 = System.nanoTime()
                 val n = storage.recover()
-                if (n.found > 0) log("trace recovery: found=${n.found} sealed=${n.sealed} ms=${(System.nanoTime() - t0) / 1_000_000}")
+                val ms = (System.nanoTime() - t0) / 1_000_000
+                info = RecoveryInfo(n.found, n.sealed, ms)
+                tracesDone.addAndGet(n.sealed)
+                if (n.found > 0) log("trace recovery: found=${n.found} sealed=${n.sealed} ms=$ms")
             } catch (e: Exception) { log("trace recovery failed: ${e.javaClass.simpleName}") }
+            recoveredMs = info.ms
             recovered = true
+            try { onRecovered(RecoveryInfo(info.found, info.sealed, info.ms, epochDurable)) } catch (e: Exception) { log("trace boot report failed: ${e.javaClass.simpleName}") }
         }
     }
 
@@ -208,6 +219,16 @@ class TraceRecorder(
         else -> null
     }
 
+    /** The state line's inputs, from memory only (volatile and atomic reads: no disk, no lock, safe on any thread). */
+    fun state(): TraceState {
+        val now = clock()
+        val c = collectingNow(now)
+        return TraceState(
+            recovered = recovered, recoveredMs = recoveredMs, collect = c, untilInMs = if (c && collectUntil != Long.MAX_VALUE) collectUntil - now else null,
+            diag = diagEnabled(), epochSaved = epochDurable, usedBytes = storage.used.get(), capBytes = diskCapBytes, recording = recording, traces = tracesDone.get(),
+        )
+    }
+
     /** The diagnostic flag changed (the writer thread, after `DiagRecord` applied it): a running trace that nothing allows any more closes `stop` (nothing is deleted). */
     fun onDiagChanged() {
         synchronized(lock) { if (recording && !recordingAllowed(clock())) closeLocked(CloseReason.STOP) }
@@ -222,7 +243,7 @@ class TraceRecorder(
         var liveId: String? = null
         synchronized(lock) {
             val now = clock()
-            if (c.installId == installId && c.deletionCounter < deletionCounter) return // a stale message of this pairing
+            if (c.installId == installId && c.deletionCounter < deletionCounter) return // a stale message of this install
             phone = if (c.atMs > 0) PhoneSample(c.atMs, now) else phone
             if (c.installId != installId || c.deletionCounter > deletionCounter) {
                 abortLocked()
@@ -542,6 +563,7 @@ class TraceRecorder(
                 closeReason = end.reason, snapshot = j.snapshot,
             )
             storage.publish(j.id, m)
+            tracesDone.incrementAndGet()
         } catch (e: java.io.IOException) {
             // An I/O error says nothing about the trace: the directory (start record or manifest) stays in tmp and the next start's recovery finishes it.
             log("trace not published (kept for recovery): ${e.javaClass.simpleName}")
@@ -593,6 +615,15 @@ class TraceRecorder(
         private val SPLIT_CODES = setOf("b64_too_long", "gunzip_too_big", "too_many_events")
     }
 }
+
+/** What the start-up recovery found (counts only): killed traces in tmp, how many it sealed, how long it took. */
+class RecoveryInfo(val found: Int, val sealed: Int, val ms: Long, val epochSaved: Boolean = false)
+
+/** The recorder's own state, as the state line prints it (counts and flags only). */
+class TraceState(
+    val recovered: Boolean, val recoveredMs: Long, val collect: Boolean, val untilInMs: Long?, val diag: Boolean, val epochSaved: Boolean,
+    val usedBytes: Long, val capBytes: Long, val recording: Boolean, val traces: Int,
+)
 
 /** Why no trace can start right now ([TraceRecorder.startBlocker]); [wire] is the stable name the status line and `Hello.traceBlocker` carry. */
 enum class TraceStartBlocker(val wire: String) {
