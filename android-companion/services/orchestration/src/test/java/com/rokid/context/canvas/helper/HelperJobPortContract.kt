@@ -6,10 +6,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -27,7 +31,7 @@ abstract class HelperJobPortContract {
     private val scope = CoroutineScope(Dispatchers.Default)
     private val known = HashSet<String>()
 
-    @After fun closeAll() { scope.cancel(); h.close() }
+    @After fun closeAll() { runBlocking { scope.coroutineContext[Job]!!.cancelAndJoin() }; h.close() }
 
     private class Run(val jobId: String, val outcome: Deferred<PyOutcome>)
 
@@ -97,9 +101,35 @@ abstract class HelperJobPortContract {
         assertTrue(h.port.pendingConfirmations().isEmpty())
     }
 
+    @Test fun aStaleFenceSubmissionIsVoidedWithNoJob() = runBlocking {
+        val req = h.request()
+        h.forget()
+        assertEquals(PyOutcome.Voided, withTimeout(5_000) { h.port.runPy(req) })
+        assertTrue(h.port.pendingConfirmations().isEmpty())
+        val req2 = h.request()
+        h.deleteAll()
+        assertEquals(PyOutcome.Voided, withTimeout(5_000) { h.port.runPy(req2) })
+        assertTrue(h.port.pendingConfirmations().isEmpty())
+    }
+
+    @Test fun aSchemaValidButFractionalResultIsRefusedAndTheJobStaysLeased() = runBlocking {
+        val base = h.request()
+        val numberSchema = JsonObject(TEST_OUT_SCHEMA + ("properties" to JsonObject(mapOf("n" to JsonObject(mapOf("type" to JsonPrimitive("number")))))))
+        val r = start(PyRequest(base.source, base.items, numberSchema, base.frameIds, base.fence))
+        assertEquals(ConfirmResult.CONFIRMED, h.port.confirm(r.jobId, binding(r.jobId)))
+        assertEquals(r.jobId, h.leaseNext())
+        fun result(n: Number) = JsonObject(okResult(listOf("i0", "i1")) + ("outputs" to JsonArray(listOf("i0", "i1").map {
+            JsonObject(mapOf("id" to JsonPrimitive(it), "ok" to JsonPrimitive(true), "output" to JsonObject(mapOf("n" to JsonPrimitive(n)))))
+        })))
+        assertTrue(h.complete(r.jobId, result(1.5)).isNotEmpty())
+        assertEquals(HelperJobState.LEASED, h.state(r.jobId))
+        assertEquals(emptyList<String>(), h.complete(r.jobId, result(1)))
+        assertTrue(r.await() is PyOutcome.Done)
+    }
+
     @Test fun cancellingTheCallerCancelsTheJob() = runBlocking {
         val r = start(h.request())
-        r.outcome.cancel()
+        r.outcome.cancelAndJoin()
         withTimeout(10_000) { while (h.state(r.jobId) != HelperJobState.CANCELLED) delay(5) }
         assertTrue(h.port.pendingConfirmations().isEmpty())
     }
@@ -149,6 +179,30 @@ abstract class HelperJobPortContract {
         assertTrue(!h.fail(r.jobId, "not_a_code"))
         assertTrue(h.fail(r.jobId, "oom"))
         assertEquals(PyOutcome.Failed("oom"), r.await())
+    }
+
+    @Test fun failAfterAForgetIsRefusedAndTheJobIsVoided() = runBlocking {
+        val r = leasedRun()
+        h.forget()
+        assertTrue(!h.fail(r.jobId, "oom"))
+        assertEquals(PyOutcome.Voided, r.await())
+        assertEquals(HelperJobState.VOIDED, h.state(r.jobId))
+    }
+
+    @Test fun failAfterDeleteAllIsRefusedAndTheJobIsVoided() = runBlocking {
+        val r = leasedRun()
+        h.deleteAll()
+        assertTrue(!h.fail(r.jobId, "oom"))
+        assertEquals(PyOutcome.Voided, r.await())
+        assertEquals(HelperJobState.VOIDED, h.state(r.jobId))
+    }
+
+    @Test fun failAtTheExecutionDeadlineIsRefusedAndTheJobFailsTimeout() = runBlocking {
+        val r = leasedRun()
+        h.advance(HelperProtocol.PY_EXEC_DEADLINE_MS)
+        assertTrue(!h.fail(r.jobId, "oom"))
+        assertEquals(HelperJobState.FAILED, h.state(r.jobId))
+        assertEquals(PyOutcome.Failed("timeout"), r.await())
     }
 
     @Test fun confirmIsIdempotentAndRefusesAnotherBinding() = runBlocking {
