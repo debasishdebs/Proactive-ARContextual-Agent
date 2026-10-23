@@ -39,7 +39,8 @@ object RealLogFs : LogFs {
  *   appends (no growth past the limit). Each file stays within maxBytes / 2, so disk use is at most [maxBytes].
  * - [close]: drain (write what is queued, unless a failure is pending) or discard; returns a termination future. The closed
  *   check is made under the queue lock, so no append can enqueue after the worker exits.
- * [beforeWrite] is a test seam called on the writer thread with a record in flight; [clockNanos] and [fs] are test seams too.
+ * [beforeWrite] (record in flight), [afterWork] (a work item finished) and [onBackoffWait] (worker re-checked the clock during a
+ * backoff and did not attempt) are test seams called on the writer thread; [clockNanos] and [fs] are test seams too.
  */
 class AsyncLineWriter(
     private val file: File,
@@ -49,8 +50,11 @@ class AsyncLineWriter(
     private val fs: LogFs = RealLogFs,
     private val clockNanos: () -> Long = System::nanoTime,
     private val beforeWrite: () -> Unit = {},
+    private val afterWork: () -> Unit = {},
+    private val onBackoffWait: () -> Unit = {},
 ) {
-    private class Cmd(var clear: Boolean, val acks: MutableList<CompletableFuture<Boolean>>)
+    /** One command with ONE shared acknowledgement, however many callers coalesced into it (retained state is O(1) per command). */
+    private class Cmd(var clear: Boolean, val ack: CompletableFuture<Boolean> = CompletableFuture())
 
     private sealed class Work {
         class Fence(val cmd: Cmd) : Work()
@@ -59,6 +63,8 @@ class AsyncLineWriter(
         class Overflow(val n: Long) : Work()
         class Terminate(val acks: List<CompletableFuture<Boolean>>) : Work()
     }
+
+    init { require(maxBytes / 2 >= MAX_RECORD_BYTES) { "maxBytes must allow one maximum record (${MAX_RECORD_BYTES} bytes) per file" } }
 
     private val older = File(file.path + ".1")
     private val lock = Object()
@@ -69,6 +75,7 @@ class AsyncLineWriter(
     private var closed = false                    // guarded by lock
     private var drain = false                     // guarded by lock
     @Volatile private var ioFailureCount = 0
+    private var rotationPending = false           // writer thread: a needed rotation has not completed yet
     private var consecutive = 0                   // writer thread; read under lock only by the writer
     @Volatile private var nextAttempt = 0L
     private val fmt = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US)   // writer thread only
@@ -89,16 +96,15 @@ class AsyncLineWriter(
     fun clear(): CompletableFuture<Boolean> = command(clear = true)
 
     private fun command(clear: Boolean): CompletableFuture<Boolean> {
-        val f = CompletableFuture<Boolean>()
         synchronized(lock) {
-            if (closed) { f.complete(false); return f }
+            if (closed) return CompletableFuture.completedFuture(false)
             entries.clear(); dropped = 0
             val tail = cmds.peekLast()
-            if (tail != null && (tail.clear == clear || cmds.size >= MAX_CMDS)) { tail.clear = tail.clear || clear; tail.acks += f }
-            else cmds.addLast(Cmd(clear, mutableListOf(f)))
+            val cmd = if (tail != null && (tail.clear == clear || cmds.size >= MAX_CMDS)) tail.also { it.clear = it.clear || clear }
+                      else Cmd(clear).also { cmds.addLast(it) }
             lock.notifyAll()
+            return cmd.ack      // callers that coalesce share the same future (a fence upgraded to a clear completes when the clear is done)
         }
-        return f
     }
 
     /** Stops the writer: [drain] writes what is queued first (unless a failure is pending), otherwise discards it. */
@@ -112,6 +118,7 @@ class AsyncLineWriter(
     fun queueSize(): Int = synchronized(lock) { entries.size }
     fun dropped(): Long = synchronized(lock) { dropped }
     fun ioFailures(): Int = ioFailureCount
+    internal fun retainedAcksForTest(): Int = synchronized(lock) { cmds.size }   // one shared ack per retained command
 
     /** Waits until nothing is queued or in flight and no command is pending (tests, and flush before a pull). */
     fun awaitIdle(timeoutMillis: Long): Boolean {
@@ -129,7 +136,7 @@ class AsyncLineWriter(
         synchronized(lock) {
         while (true) {
             if (closed && (!drain || consecutive > 0)) {
-                val acks = cmds.flatMap { it.acks }
+                val acks = cmds.map { it.ack }
                 cmds.clear(); entries.clear(); dropped = 0
                 return Work.Terminate(acks)
             }
@@ -147,6 +154,7 @@ class AsyncLineWriter(
                 lock.wait(1000); continue
             }
             // waiting out a backoff: re-check the clock in short slices (appends keep queueing, bounded)
+            try { onBackoffWait() } catch (_: Throwable) { }
             val remainMs = ((nextAttempt - clockNanos()) / 1_000_000).coerceIn(1, 20)
             lock.wait(remainMs)
         }
@@ -160,16 +168,16 @@ class AsyncLineWriter(
                 try {
                     when (work) {
                         is Work.Terminate -> { work.acks.forEach { it.complete(false) }; terminated.complete(Unit); return }
-                        is Work.Fence -> work.cmd.acks.forEach { it.complete(true) }
+                        is Work.Fence -> work.cmd.ack.complete(true)
                         is Work.Clear -> if (doClear()) {
                             synchronized(lock) { if (cmds.peekFirst() === work.cmd) cmds.pollFirst() }
-                            work.cmd.acks.forEach { it.complete(true) }
+                            work.cmd.ack.complete(true)
                         }
                         is Work.Write -> { hook(); write(format(work.line)) }
                         is Work.Overflow -> { hook(); write(format(Line(Level.W, "PcLog", "log overflow dropped=${work.n}", System.currentTimeMillis()))) }
                     }
                 } catch (_: Throwable) { fail() }
-                finally { synchronized(lock) { busy = false } }
+                finally { synchronized(lock) { busy = false }; try { afterWork() } catch (_: Throwable) { } }
             }
         } finally { terminated.complete(Unit) }
     }
@@ -191,9 +199,12 @@ class AsyncLineWriter(
     private fun write(bytes: ByteArray) {
         try {
             val len = fs.length(file)
-            if (len > 0 && len + bytes.size > maxBytes / 2) {
+            if (len == 0L) rotationPending = false          // nothing to rotate (new file, or cleared meanwhile)
+            if (len > 0 && (rotationPending || len + bytes.size > maxBytes / 2)) {
+                rotationPending = true          // retained until it succeeds: nothing is appended around a failed rotation
                 if (fs.exists(older) && !fs.delete(older)) return fail()
                 if (!fs.rename(file, older)) return fail()
+                rotationPending = false
             }
             fs.append(file, bytes)
             succeed()
@@ -208,5 +219,9 @@ class AsyncLineWriter(
         nextAttempt = clockNanos() + (backoffMillis shl minOf(consecutive - 1, 4)) * 1_000_000
     }
 
-    private companion object { const val MAX_CMDS = 16 }
+    companion object {
+        private const val MAX_CMDS = 16
+        /** Upper bound of one formatted record in bytes (timestamp 18 + level + tag 64 + msg 1024 + separators), rounded up. */
+        const val MAX_RECORD_BYTES = 1_200
+    }
 }
