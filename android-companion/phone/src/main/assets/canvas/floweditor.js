@@ -80,7 +80,7 @@ export function mountEditor(el, opts) {
         ${spec.options.map((o) => html`<option key=${o.value} value=${o.value}>${o.label}</option>`)}
       </select>`;
     } else if (spec.control === 'textarea') {
-      input = html`<textarea rows="6" spellCheck="false" value=${text} readOnly=${!!spec.readOnly} disabled=${disabled} onChange=${(e) => typed(e.target.value)} />`;
+      input = html`<textarea rows="6" spellCheck="false" maxLength=${spec.maxLen} value=${text} readOnly=${!!spec.readOnly} disabled=${disabled} onChange=${(e) => typed(e.target.value)} />`;
     } else {
       input = html`<input type=${spec.control === 'number' ? 'number' : 'text'} min=${spec.min} max=${spec.max} step=${spec.step} maxLength=${spec.maxLen} value=${text} disabled=${disabled} onChange=${(e) => typed(e.target.value)} />`;
     }

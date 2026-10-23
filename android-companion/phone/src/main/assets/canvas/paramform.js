@@ -100,7 +100,7 @@ export function fields(descriptors, params, ctx) {
         f.value = Array.isArray(cur) ? cur.join(', ') : '';
         break;
       default: // text
-        f.control = d.name === 'template' ? 'textarea' : 'text';
+        f.control = d.name === 'template' || d.name === 'source' || d.name === 'outSchema' ? 'textarea' : 'text'; // source and outSchema: the Python node's fields
         if (d.maxLen !== undefined) f.maxLen = d.maxLen;
         f.value = cur !== undefined ? String(cur) : d.default !== undefined ? String(d.default) : '';
     }
