@@ -6,6 +6,7 @@ TOKEN = "mock-token-xyz"
 class H(BaseHTTPRequestHandler):
     polls = 0
     imports = []
+    last = ""
     def log_message(self, *a): pass
     def send(self, code, obj):
         b = json.dumps(obj).encode(); self.send_response(code); self.send_header("Content-Type", "application/json")
@@ -33,6 +34,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/collect/stop": return self.send(200, {"active": False, "untilMs": None})
         if p == "/api/replays":
             assert b["candidate"]["configHash"] == "f5782e0d8610"
+            H.last = b["traceIds"][0]
             return self.send(202, {"replayId": "r1"})
         self.send(404, {"error": "not_found"})
     def do_GET(self):
@@ -45,7 +47,11 @@ class H(BaseHTTPRequestHandler):
             H.polls += 1
             if H.polls < 2: return self.send(200, {"replayId": "r1", "jobState": "RUNNING"})
             fig = lambda o: {"configHash": "f5782e0d8610", "opens": o, "estimatedHoursFromFull": 7.5, "estimatedPctPerMin": 0.22}
-            rep = {"minutes": 25.0, "baseline": fig(100), "candidate": fig(100), "unobservedOpensPct": 3.0, "basePassed": 24, "baseFailed": 0, "inexactWindows": 2, "warnings": []}
+            # Task 23c: the counterfactual glance admissions (the shadow's counterpart) and the DWELL+ONSET opens (admissions that became an open); the trace "t-noadm" answers like a
+            # phone build before the stall model: no glanceAdmissions at all
+            cand = fig(100); cand["glanceOpens"] = 90
+            if H.last != "t-noadm": cand["glanceAdmissions"] = 100
+            rep = {"minutes": 25.0, "baseline": fig(100), "candidate": cand, "unobservedOpensPct": 3.0, "basePassed": 24, "baseFailed": 0, "inexactWindows": 2, "warnings": []}
             return self.send(200, {"replayId": "r1", "jobState": "DONE", "result": {"estimate": True, "reports": [{"traceId": "t-1", "report": rep}]}})
         self.send(404, {"error": "not_found"})
 srv = HTTPServer(("127.0.0.1", 0), H)
