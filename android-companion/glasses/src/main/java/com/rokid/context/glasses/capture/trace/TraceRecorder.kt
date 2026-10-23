@@ -51,6 +51,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * **Forget (S58, P7).** A control's tombstones and forget range delete the closed traces they match (and drop a running one that overlaps); the request is kept in
  * `trace_forget` until the delete really succeeded, so a failed delete is retried at the next control. A failed epoch wipe is retried too, and the new epoch is persisted only after it.
  *
+ * **Received cleanup (LGC8-min).** A control's epoch wipe and forget lines are persisted FIRST in `trace_cleanup_pending` (the single source of truth of [cleanupPending]), then
+ * acted on; forget covers `imu_trace_tmp` too (not the live job). The record is rewritten as each part succeeds and removed only when all did. At process start it is REPLAYED
+ * on the writer thread before [TraceStorage.recover] (which leaves tmp alone while a record still exists), so a killed trace in a forgotten range is deleted, never sealed.
+ *
  * Not here: the transfer (`send`).
  *
  * Lock order: session, then classifier and gate, then [lock]. The recorder never calls back into any of them.
@@ -75,6 +79,8 @@ class TraceRecorder(
     private val deleteTree: (File) -> Boolean = { it.deleteRecursively() },
     /** LGC4: the single diagnostic-recording predicate (the persisted `diag_record` flag, effective only once the epoch is saved). Default: never. */
     private val diagEnabled: () -> Boolean = { false },
+    /** LGC8-min: where the received-cleanup record lives (production: `files/trace_cleanup_pending`; default: next to the epoch file). */
+    pendingFile: File = File(root, "trace_cleanup_pending"),
 ) : SessionTrace, SampleTap {
     init { require(sampleEvery in 1..StartSnapshot.MAX_SAMPLE_EVERY) { "sampleEvery" } }
 
@@ -98,7 +104,7 @@ class TraceRecorder(
     private class Finish(val endElapsed: Long, val endWall: Long, val endPhone: PhoneSample?, val reason: String)
 
     private val lock = Any()
-    private val storage = TraceStorage(root, diskCapBytes, renameDir = renameDir, deleteTree = deleteTree)
+    private val storage = TraceStorage(root, diskCapBytes, renameDir = renameDir, deleteTree = deleteTree, pendingFile = pendingFile)
 
     // epoch (guarded by lock)
     @Volatile private var installId = ""
@@ -114,6 +120,8 @@ class TraceRecorder(
     private val wipesPending = AtomicInteger(0)
     @Volatile private var wipeAttempts = 0
     private var nextWipeRetryAt = 0L
+    /** The epoch read from disk at construction: a replayed cleanup adopts its target epoch only while no control has changed the in-memory one since. */
+    private var startEpoch: Pair<String, Long> = "" to 0L
     private fun storageSettled(): Boolean { retryWipeIfDue(); return recovered && wipesPending.get() == 0 && !wipeFailed }
     // collect window
     @Volatile private var collect = false
@@ -144,8 +152,10 @@ class TraceRecorder(
         // would let a first control race the load (it would see no epoch and wipe valid traces). It is a few bytes, not a decode. Everything else is on the writer.
         // (The persisted epoch is two lines, cheap, read here so [onControl] compares against it.) The recovery seals a killed trace of any length: NEVER on the calling thread
         // (the construction is reached from the main thread: the ANR loop of 2026-10-23), so it is the first task of the writer thread.
-        storage.readEpoch().let { installId = it.first; deletionCounter = it.second; epochDurable = it.first.isNotEmpty() }
+        storage.readEpoch().let { installId = it.first; deletionCounter = it.second; epochDurable = it.first.isNotEmpty(); startEpoch = it }
         io {
+            // LGC8-min: the received cleanup is replayed FIRST, before recovery can seal anything (a killed trace in a forgotten range must be deleted, not sealed).
+            try { replayPending() } catch (e: Exception) { log("trace cleanup replay failed: ${e.javaClass.simpleName}") }
             try {
                 val t0 = System.nanoTime()
                 val n = storage.recover()
@@ -154,6 +164,15 @@ class TraceRecorder(
             recovered = true
         }
     }
+
+    /**
+     * LGC8-min: a received cleanup (epoch wipe and/or forget) is still pending. The answer is the existence of `trace_cleanup_pending`, the single source of truth (a stat, no
+     * state in memory). While it is true the hand-over tool refuses every trace ([exportableTraceIds] is empty).
+     */
+    fun cleanupPending(): Boolean = storage.cleanupPending()
+
+    /** The sealed traces a hand-over may export: none while [cleanupPending] (coarse refusal), else every sealed trace id. */
+    fun exportableTraceIds(): List<String> = storage.exportableTraceIds()
 
     /** Bytes under `traces/` and `imu_trace_tmp/` (tests, diagnostics). */
     val usedBytes: Long get() = storage.used.get()
@@ -200,6 +219,7 @@ class TraceRecorder(
     fun onControl(c: TraceControl) {
         var wipe = false
         var forgetLines: List<String> = emptyList()
+        var liveId: String? = null
         synchronized(lock) {
             val now = clock()
             if (c.installId == installId && c.deletionCounter < deletionCounter) return // a stale message of this pairing
@@ -224,22 +244,61 @@ class TraceRecorder(
                     if (hit) abortLocked()
                 }
             }
+            liveId = job?.id // a live (not aborted) job's tmp directory is never touched by a forget: its own tasks own it
             collect = c.collect
             collectUntil = if (c.collect && c.collectUntilMs != null && c.atMs > 0) now + (c.collectUntilMs!! - c.atMs) else Long.MAX_VALUE
             if (recording && !recordingAllowed(now)) closeLocked(CloseReason.STOP)
             // Storage work is enqueued under the SAME lock as the epoch adoption (so no start can slip between the adoption and the wipe), and the epoch to persist is captured here.
             // A trace cannot start while a wipe is pending or failed ([storageSettled]).
+            // LGC8-min: the received cleanup and its target epoch are PERSISTED (first task on the writer) before any deletion runs; the record leaves only when everything succeeded.
+            if (wipe || forgetLines.isNotEmpty()) {
+                val tI = installId; val tC = deletionCounter; val w = wipe; val lines = forgetLines
+                io {
+                    try { if (!storage.persistCleanup(w, tI, tC, lines)) log("trace cleanup record not saved") } catch (e: Exception) { log("trace cleanup record failed: ${e.javaClass.simpleName}") }
+                    try { if (lines.isNotEmpty()) storage.addForget(lines) } catch (e: Exception) { log("trace forget list failed: ${e.javaClass.simpleName}") }
+                }
+            }
             if (wipe || wipeFailed) enqueueWipeLocked()
             // the pending-forget check is a file access: it runs in the queued task, not under the lock
+            val keep = liveId?.let { setOf(it) } ?: emptySet()
             io {
                 try {
-                    if (forgetLines.isNotEmpty() || storage.hasPendingForget()) {
-                        if (forgetLines.isNotEmpty()) storage.addForget(forgetLines)
-                        if (!storage.runForget()) log("trace forget incomplete: retried at the next control")
+                    if (storage.hasPendingForget()) {
+                        if (storage.runForget(keep)) storage.finishForget() else log("trace forget incomplete: retained, retried at the next control or start")
                     }
                 } catch (e: Exception) { log("trace forget failed: ${e.javaClass.simpleName}") }
             }
         }
+    }
+
+    /**
+     * Start-up replay of a cleanup the glasses already received (writer thread, BEFORE [TraceStorage.recover]): the epoch wipe to the persisted target epoch (the target is saved
+     * only after the wipe succeeded) and the forget lines, tmp directories included. Anything that fails keeps the record; recovery then leaves tmp alone until a later start succeeds.
+     */
+    private fun replayPending() {
+        val p = storage.readPending() ?: return
+        var done = true // only for the log line
+        if (p.wipe) {
+            val cleared = try { storage.clearEpoch() } catch (e: Exception) { false }
+            val ok = cleared && try { storage.wipe() } catch (e: Exception) { false }
+            var saved = false
+            if (ok && p.installId != null) { try { storage.writeEpoch(p.installId, p.counter); saved = true } catch (e: Exception) { log("trace epoch not saved") } }
+            val finished = ok && (p.installId == null || saved)
+            synchronized(lock) {
+                // adopt the target in memory unless a control already moved the epoch on
+                if (p.installId != null && (installId to deletionCounter) == startEpoch) {
+                    installId = p.installId; deletionCounter = p.counter
+                    epochDurable = saved
+                    if (!saved) { wipeFailed = true; wipeAttempts = 1; nextWipeRetryAt = clock() + WIPE_RETRY_MS }
+                }
+            }
+            if (finished) storage.finishWipe(p.installId ?: "", p.counter) else done = false
+        }
+        if (p.lines.isNotEmpty()) {
+            storage.addForget(p.lines)
+            if (storage.runForget()) storage.finishForget() else done = false
+        }
+        log("trace cleanup replay: wipe=${p.wipe} lines=${p.lines.size} done=$done")
     }
 
     /**
@@ -260,6 +319,7 @@ class TraceRecorder(
                 if (ok) { try { storage.writeEpoch(adoptedInstall, adoptedCounter); saved = true } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
                 // An epoch that could not be written counts as a failed wipe (retried by the next control or the start checks): otherwise `armed_no_epoch` would never heal.
                 if (saved) synchronized(lock) { if (installId == adoptedInstall && deletionCounter == adoptedCounter) epochDurable = true }
+                if (saved) storage.finishWipe(adoptedInstall, adoptedCounter) // LGC8-min: only now may the wipe part of the pending record go
                 wipeFailed = !saved
                 wipeAttempts = if (saved) 0 else (wipeAttempts + 1).coerceAtMost(WIPE_RETRY_MAX_SHIFT)
             } finally { wipesPending.decrementAndGet() }
