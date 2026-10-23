@@ -133,12 +133,17 @@ class CanvasHomeViewModel(
 
     private val local = MutableStateFlow(Local(nowMs = clock()))
 
+    /** The card shows what the helper must check: the server's address and the first 16 digits of the certificate it presents (from the same status the LAN card uses). */
+    private fun withCertificate(card: HelperCardState, s: CanvasStatus): HelperCardState =
+        if (!card.available) card
+        else card.copy(fingerprint16 = if (s.lan) HelperCardState.fingerprint16(s.fingerprint) else null, hostPort = if (s.lan && s.lanIp != null && s.port != null) "${s.lanIp}:${s.port}" else null)
+
     val state: StateFlow<CanvasHomeUi> = combine(host.status, local) { s, l ->
         val left = if (s.code != null) ((s.codeExpiresAt - l.nowMs) / 1000).toInt().coerceAtLeast(0) else 0
         CanvasHomeUi(
             status = s, showCode = (l.showCode || s.lan) && s.code != null, secondsLeft = left, wifiAvailable = s.lanIp != null,
             pipelines = l.pipelines, runs = l.runs, publishActive = l.publishActive, newestPublish = l.newest, message = l.message ?: s.notice,
-            helper = l.helper,
+            helper = withCertificate(l.helper, s),
             pending = l.pendingRows.filter { it.expiresAtMs > l.nowMs }.map { PendingConfirmUi(it, ((it.expiresAtMs - l.nowMs + 999) / 1000).toInt()) },
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, CanvasHomeUi(status = host.status.value))
