@@ -173,7 +173,7 @@ class PlanEvidenceGates(
         /** The 60-minute TRIAL the glasses enforce themselves (S59). */
         const val TRIAL_MAX_MS = 3_600_000L
         const val G1 = "Gate 1: the capture plan does not compile cleanly."
-        const val G2 = "Gate 2: the graph has a tier-3 node, and generated or laptop-run code never publishes."
+        const val G2 = PlanShape.S6_REFUSAL
         const val G3 = "Gate 3: needs a finished replay of this exact plan over at least 30 minutes of complete traces covering at least 2 states, on current traces and labels"
         const val G4_M1 = "Gate 4: a TRIAL or LIVE plan is blocked until milestone M1 (the worn device run) is recorded as passed. SHADOW is not blocked."
         const val G4_TRIALS = "Gate 4: this plan has already had 3 trials."
