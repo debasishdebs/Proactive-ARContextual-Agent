@@ -1,5 +1,5 @@
 """Pairing: the user types the phone's certificate fingerprint; without a usable pin no connection is made and no code is sent."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .client import MissingPin, PhoneClient, normalize_pin
 
@@ -13,6 +13,7 @@ class PairResult:
     helper_id: str
     session_gen: int
     caps: dict
+    token: str = field(default="", repr=False)  # memory-only session token: owned by the caller, never written to disk
 
 
 _TEXT = {401: "the phone refused the pairing code", 409: "helper protocol mismatch", 429: "pairing is locked on the phone, try again later",
@@ -37,7 +38,8 @@ def pair(store, transport, host, port, code, name, pin, log):
         raise PairError("the phone's pairing answer is malformed")
     log.register_secret(token)
     caps = b.get("caps") if isinstance(b.get("caps"), dict) else {}
-    store.save_state({"host": host, "port": port, "pin": client.observed_fingerprint, "token": token, "helperId": helper_id, "sessionGen": gen,
+    # only non-secret pairing metadata is persisted; the token lives in memory for this process, so a helper restart must re-pair
+    store.save_state({"host": host, "port": port, "pin": client.observed_fingerprint, "helperId": helper_id, "sessionGen": gen,
                       "name": (name or "helper")[:40]})
     log.event("pair", status=200)
-    return PairResult(helper_id, gen, caps)
+    return PairResult(helper_id, gen, caps, token)

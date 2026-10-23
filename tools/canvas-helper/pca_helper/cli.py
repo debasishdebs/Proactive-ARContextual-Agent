@@ -1,5 +1,7 @@
-"""Command line: `pair HOST:PORT FINGERPRINT [CODE|-]`, `run [--once]`, `doctor` (stub: runtime, setup and gate checks arrive with WP12/WP13).
-All output goes through the `out` / `err` streams of `main` (never a raw print); secrets are never written."""
+"""Command line: `run HOST:PORT FINGERPRINT [CODE|-] [--once]` and `doctor` (stub: runtime, setup and gate checks arrive with WP12/WP13).
+`run` pairs and then supervises IN THE SAME PROCESS: the helper session token is memory-only (user ruling), so a helper restart pairs again with
+a fresh code; only non-secret pairing metadata (host, port, fingerprint) is written to disk. All output goes through the `out` / `err` streams of
+`main` (never a raw print); secrets are never written."""
 import argparse
 import getpass as _getpass
 import os
@@ -39,7 +41,21 @@ def _split_host(hp):
     return host, int(port)
 
 
-USAGE = "usage: pca-helper pair HOST:PORT FINGERPRINT [CODE|-] | run [--once] | doctor\n"
+USAGE = "usage: pca-helper run HOST:PORT FINGERPRINT [CODE|-] [--once] | doctor\n"
+
+
+def _pair_failure(e, err):
+    if isinstance(e, MissingPin):
+        err.write("give at least 16 hex digits of the certificate fingerprint shown on the phone; nothing was sent\n")
+        return 2
+    if isinstance(e, PinMismatch):
+        err.write("FINGERPRINT MISMATCH: not pairing; nothing was sent\n")
+        return 1
+    if isinstance(e, PairError):
+        err.write("%s\n" % e)
+        return 1
+    err.write("cannot reach the phone\n")
+    return 1
 
 
 def main(argv=None, out=None, err=None, home=None, transport=None, clock=None, env=None, getpass=None):
@@ -49,13 +65,12 @@ def main(argv=None, out=None, err=None, home=None, transport=None, clock=None, e
     env = os.environ if env is None else env
     p = _Args(prog="pca-helper")
     sub = p.add_subparsers(dest="cmd")
-    sp = sub.add_parser("pair")
-    sp.add_argument("hostport")
-    sp.add_argument("fingerprint")
-    sp.add_argument("code", nargs="?")  # omitted or "-": prompted without echo (keeps it out of shell history and ps)
-    sp.add_argument("--name", default="laptop")
     sr = sub.add_parser("run")
+    sr.add_argument("hostport")
+    sr.add_argument("fingerprint")
+    sr.add_argument("code", nargs="?")  # omitted or "-": prompted without echo (keeps it out of shell history and ps)
     sr.add_argument("--once", action="store_true")
+    sr.add_argument("--name", default="laptop")
     sub.add_parser("doctor")
     try:
         a = p.parse_args(argv)
@@ -70,70 +85,52 @@ def main(argv=None, out=None, err=None, home=None, transport=None, clock=None, e
     clock = clock or SystemClock()
     log = Logger(sink=lambda line: err.write(line + "\n"))
 
-    if a.cmd == "pair":
+    if a.cmd == "run":
         try:
             host, port = _split_host(a.hostport)
         except ValueError:
             err.write("expected HOST:PORT\n")
             return 2
-        if normalize_pin(a.fingerprint) is None:  # before any prompt or connection
-            err.write("give at least 16 hex digits of the certificate fingerprint shown on the phone; nothing was sent\n")
-            return 2
+        if normalize_pin(a.fingerprint) is None:  # before any prompt, connection or disk write
+            return _pair_failure(MissingPin(), err)
+        store.purge_legacy_token()  # an older build persisted the token: it is deleted now, whatever happens next
         code = a.code
         if code is None or code == "-":
             code = (getpass or _getpass.getpass)("pairing code: ")
         try:
             res = pair(store, transport, host, port, code, a.name, a.fingerprint, log)
-        except MissingPin:
-            err.write("give at least 16 hex digits of the certificate fingerprint shown on the phone; nothing was sent\n")
-            return 2
-        except PinMismatch:
-            err.write("FINGERPRINT MISMATCH: not pairing; nothing was sent\n")
-            return 1
-        except PairError as e:
-            err.write("%s\n" % e)
-            return 1
-        except NetworkError:
-            err.write("cannot reach the phone\n")
-            return 1
-        out.write("paired; py_exec grant %s on the phone\n" % ("is" if res.caps.get("py_exec") else "is not yet"))
-        return 0
-
-    if a.cmd == "run":
+        except (MissingPin, PinMismatch, PairError, NetworkError) as e:
+            return _pair_failure(e, err)
+        log.register_secret(res.token)
         st = store.load_state()
-        if not st:
-            err.write("not paired: run `pca-helper pair HOST:PORT FINGERPRINT` first\n")
-            return 1
-        log.register_secret(st["token"])
-        client = PhoneClient(transport, st["host"], st["port"], st["pin"], st["token"])
+        client = PhoneClient(transport, host, port, st["pin"], res.token)
+        out.write("paired; py_exec grant %s on the phone\n" % ("is" if res.caps.get("py_exec") else "is not yet"))
         journal = Journal(store.journal_dir, clock)
         sup = Supervisor(client, NullRunner(), journal, store, clock, log, runtime=None, ready=lambda: False, expiry=ArtifactExpiry(journal, clock, log))
         import threading
         try:
             status = sup.run(threading.Event(), max_cycles=1 if a.once else None)
         except PinMismatch:
-            err.write("FINGERPRINT MISMATCH: the phone's certificate changed; re-pair\n")
-            return 1
-        except MissingPin:
-            err.write("no pin stored: re-pair\n")
+            err.write("FINGERPRINT MISMATCH: the phone's certificate changed; run again\n")
             return 1
         if status == "session_lost":
-            err.write("the phone ended the session: pair again\n")
+            err.write("the phone ended the session: run again with a new code\n")
             return 3
         if a.once and status == "error":
             return 1
         return 0
 
     # doctor (stub)
-    st = store.load_state()
+    st = store.load_state() or {}
     checks = [
         ("home dir mode 0700", (store.home.stat().st_mode & 0o777) == 0o700),
-        ("paired", bool(st)),
-        ("fingerprint pin stored", bool(st and st.get("pin"))),
+        ("pairing metadata", bool(st.get("host") and st.get("pin"))),
+        ("no persisted session token", "token" not in st),
         ("runtime", False),
         ("python gate stamp", False),
     ]
-    notes = {"runtime": " (needs_runtime: runtime checks arrive with the runtime work package)", "python gate stamp": " (no stamp in this build)"}
+    notes = {"runtime": " (needs_runtime: runtime checks arrive with the runtime work package)", "python gate stamp": " (no stamp in this build)",
+             "pairing metadata": " (informational: every start pairs again)", "no persisted session token": " (run once to delete it)"}
     bad = False
     for name, ok in checks:
         out.write("%s %s%s\n" % ("ok  " if ok else "FAIL", name, "" if ok else notes.get(name, "")))
