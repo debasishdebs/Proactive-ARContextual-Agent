@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonObject
 interface PortHarness {
     val port: HelperJobPort
     var now: Long
+    var sessionGen: Long
     suspend fun request(n: Int = 2): PyRequest
     suspend fun leaseNext(): String?
     suspend fun complete(jobId: String, result: JsonObject): List<String>
@@ -33,8 +34,9 @@ interface PortHarness {
 
 internal class FakePortHarness : PortHarness {
     override var now = 1_000L
+    override var sessionGen = 7L
     private var rev = 5L
-    private val fake = InMemoryHelperJobPort(now = { now }, sessionGen = { 7 }, newId = Counter()::next, fenceNow = { fenceAt(rev) })
+    private val fake = InMemoryHelperJobPort(now = { now }, sessionGen = { sessionGen }, newId = Counter()::next, fenceNow = { fenceAt(rev) })
     private class Counter { private var n = 0; fun next() = "job-${++n}" }
     override val port: HelperJobPort get() = fake
     override suspend fun request(n: Int) = fakeRequest(fenceAt(rev), n)
@@ -49,8 +51,9 @@ internal class FakePortHarness : PortHarness {
     override suspend fun state(jobId: String) = fake.state(jobId)
 }
 
-internal class RealPortHarness(waiterPollMs: Long = 600_000L, val sessionGen: () -> Long = { 7L }) : PortHarness {
+internal class RealPortHarness(waiterPollMs: Long = 600_000L) : PortHarness {
     override var now = 1_000L
+    override var sessionGen = 7L
     val db: ContextDatabase = DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     val dao = db.canvasSlice3Dao()
     var epoch = DeletionEpoch("install-a", 2, 0)
@@ -58,7 +61,7 @@ internal class RealPortHarness(waiterPollMs: Long = 600_000L, val sessionGen: ()
     val readiness = InMemoryReadinessStore()
     val lines = java.util.concurrent.CopyOnWriteArrayList<String>()
     private var ids = 0
-    val service = HelperJobService(store, { now }, sessionGen, readiness, { _, _, m -> lines += m }, { "hj_${++ids}" }, waiterPollMs)
+    val service = HelperJobService(store, { now }, { sessionGen }, readiness, { _, _, m -> lines += m }, { "hj_${++ids}" }, waiterPollMs)
     private val leases = HashMap<String, Pair<String, Long>>()
     override val port: HelperJobPort get() = service
 

@@ -203,6 +203,24 @@ abstract class HelperJobPortContract {
         assertNull(h.leaseNext())
     }
 
+    @Test fun aSessionChangeSinceSubmitRefusesTheTapAndVoids() = runBlocking {
+        val r = start(h.request())
+        val b = binding(r.jobId)
+        h.sessionGen = 8
+        assertEquals(ConfirmResult.STALE_FENCE, h.port.confirm(r.jobId, b))
+        assertEquals(PyOutcome.Voided, r.await())
+        assertEquals(HelperJobState.VOIDED, h.state(r.jobId))
+        assertNull(h.leaseNext())
+    }
+
+    @Test fun aWrongBindingIsAMismatchEvenAfterASessionChange() = runBlocking {
+        val r = start(h.request())
+        val b = binding(r.jobId)
+        h.sessionGen = 8
+        assertEquals(ConfirmResult.MISMATCH, h.port.confirm(r.jobId, b.copy(bundleHash = "x".repeat(64))))
+        assertEquals(HelperJobState.AWAITING_CONFIRM, h.state(r.jobId))
+    }
+
     @Test fun aConfirmedJobThatIsNotLeasedWithinTheQueueWaitFailsResourcesBusy() = runBlocking {
         val r = confirmed()
         h.advance(HelperProtocol.QUEUE_WAIT_MS - 1); h.tick()

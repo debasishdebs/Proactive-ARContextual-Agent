@@ -25,8 +25,7 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class HelperJobServiceTest {
-    private var gen = 7L
-    private val h = RealPortHarness(sessionGen = { gen })
+    private val h = RealPortHarness()
     private val svc = h.service
     private val scope = CoroutineScope(Dispatchers.Default)
     private val known = HashSet<String>()
@@ -107,7 +106,7 @@ class HelperJobServiceTest {
         assertTrue(types.none { it.startsWith("javax.crypto") || it == "[B" || it.contains("Key") || it.contains("Mac") })
         val confirm = HelperJobPort::class.java.methods.single { it.name == "confirm" }
         assertTrue(confirm.parameterTypes.any { it == ConfirmBinding::class.java })
-        val dir = File("src/main/java/com/rokid/context/canvas/helper")
+        val dir = listOf("src/main/java", "android-companion/services/orchestration/src/main/java", System.getProperty("user.dir") + "/src/main/java").map { File(it, "com/rokid/context/canvas/helper") }.firstOrNull { it.isDirectory } ?: File("missing")
         assertTrue("main sources not found from ${File(".").absoluteFile}", dir.isDirectory)
         for (f in dir.listFiles { x -> x.extension == "kt" }!!) {
             val t = f.readText()
@@ -116,15 +115,6 @@ class HelperJobServiceTest {
             assertFalse("${f.name} imports android.util", t.contains("import android.util"))
             assertFalse("${f.name} calls Log.x", Regex("""\bLog\.[diwev]\(""").containsMatchIn(t))
         }
-    }
-
-    @Test fun aSessionChangeSinceSubmitRefusesTheTapAndVoids() = runBlocking {
-        val r = start()
-        val b = binding(r.jobId)
-        gen = 8
-        assertEquals(ConfirmResult.STALE_FENCE, svc.confirm(r.jobId, b))
-        assertEquals(PyOutcome.Voided, r.await())
-        assertEquals(HelperJobState.VOIDED, h.state(r.jobId))
     }
 
     @Test fun aForgetBetweenCaptureAndSubmitRefusesTheJobWithNoRow() = runBlocking {
@@ -323,5 +313,55 @@ class HelperJobServiceTest {
         for (l in h.lines) {
             assertFalse(l, l.contains(r.jobId)); assertFalse(l, l.contains(row.bundleHash!!)); assertFalse(l, l.contains("frame-")); assertFalse(l, l.contains("h1"))
         }
+    }
+
+    // ---- review 1 ----
+
+    private class Hooked(val inner: HelperJobStore, val beforeInsert: suspend () -> Unit = {}, val afterCommit: suspend () -> Unit = {}) : HelperJobStore by inner {
+        override suspend fun insert(job: com.rokid.context.memory.db.CanvasHelperJobEntity, fence: com.rokid.context.memory.canvas.HelperFence): Boolean { beforeInsert(); return inner.insert(job, fence) }
+        override suspend fun commit(jobId: String, helperId: String, leaseGen: Long, resultHash: String, resultJson: String, now: Long): com.rokid.context.memory.canvas.HelperLeaseResult =
+            inner.commit(jobId, helperId, leaseGen, resultHash, resultJson, now).also { afterCommit() }
+    }
+
+    private fun service(store: HelperJobStore) = HelperJobService(store, { h.now }, { h.sessionGen }, h.readiness, { _, _, _ -> }, Counter()::next, 600_000L)
+    private class Counter { private var n = 0; fun next() = "hx_${++n}" }
+
+    @Test fun aSweepDuringInsertDoesNotCompleteTheRun() = runBlocking {
+        lateinit var s2: HelperJobService
+        s2 = service(Hooked(h.store, beforeInsert = { s2.sweep() }))
+        val d = scope.async { s2.runPy(h.request()) }
+        val id = withTimeout(10_000) { var f: String? = null; while (f == null) { f = s2.pendingConfirmations().firstOrNull()?.jobId; if (f == null) delay(5) }; f }
+        assertFalse("the run ended before its job existed", d.isCompleted)
+        val p = s2.pendingConfirmations().single()
+        assertEquals(ConfirmResult.CONFIRMED, s2.confirm(id, ConfirmBinding(p.jobId, p.bundleHash, p.sessionGen, p.expiresAtMs)))
+        val l = s2.lease("h1", listOf("py_exec"))!!
+        assertEquals(ResultCommit.Committed(false), s2.commitResult(l.jobId, "h1", l.leaseGen, ok2))
+        assertTrue(withTimeout(10_000) { d.await() } is PyOutcome.Done)
+        assertEquals(0, s2.waiterCount())
+    }
+
+    @Test fun anErrorInsideRunPyCancelsTheJobAndDropsTheWaiter() = runBlocking {
+        val boom = object : HelperJobStore by h.store {
+            override suspend fun insert(job: com.rokid.context.memory.db.CanvasHelperJobEntity, fence: com.rokid.context.memory.canvas.HelperFence): Boolean {
+                val ok = h.store.insert(job, fence); throw IllegalStateException("after commit")
+            }
+        }
+        val s2 = service(boom)
+        val r = runCatching { s2.runPy(h.request()) }
+        assertTrue(r.exceptionOrNull() is IllegalStateException)
+        assertEquals(0, s2.waiterCount())
+        assertTrue(svc.pendingConfirmations().isEmpty())
+        assertEquals(1, cleanupJobs().size)
+    }
+
+    @Test fun aDoneRowScrubbedByAFrameForgetEndsVoided() = runBlocking {
+        val s2 = service(Hooked(h.store, afterCommit = { h.dao.scrubDoneJobsForFrames(listOf("frame-0"), h.now) }))
+        val d = scope.async { s2.runPy(h.request()) }
+        val id = withTimeout(10_000) { var f: String? = null; while (f == null) { f = s2.pendingConfirmations().firstOrNull()?.jobId; if (f == null) delay(5) }; f }
+        val p = s2.pendingConfirmations().single()
+        s2.confirm(id, ConfirmBinding(p.jobId, p.bundleHash, p.sessionGen, p.expiresAtMs))
+        val l = s2.lease("h1", listOf("py_exec"))!!
+        s2.commitResult(l.jobId, "h1", l.leaseGen, ok2)
+        assertEquals(PyOutcome.Voided, withTimeout(10_000) { d.await() })
     }
 }
