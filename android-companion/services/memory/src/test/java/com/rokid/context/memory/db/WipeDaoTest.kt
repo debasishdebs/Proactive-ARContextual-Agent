@@ -54,7 +54,7 @@ class WipeDaoTest {
     }
 
     private val wipedSlice3 = listOf("canvas_trace", "canvas_trace_event", "canvas_replay", "canvas_sweep", "canvas_label", "canvas_calibration", "canvas_helper_job")
-    private val keptSlice3 = listOf("canvas_meta", "canvas_group_state")
+    private val keptSlice3 = listOf("canvas_meta", "canvas_group_state", "canvas_helper_cleanup")
 
     private suspend fun seedSlice3() {
         val s = db.canvasSlice3Dao()
@@ -66,10 +66,11 @@ class WipeDaoTest {
         s.insertLabelFenced(CanvasLabelEntity("l1", "MOMENT", "tap", "X", 5, createdAt = 1), fence)
         s.insertCalibration(CanvasCalibrationEntity(configHash = "c", settingsRev = 1, mode = "LIVE", phasesJson = "[]", createdAt = 1))
         s.insertHelperJob(CanvasHelperJobEntity("j1", "py", "QUEUED", frameIdsJson = "[\"f1\"]", createdAt = 1, updatedAt = 1))
+        s.cancelHelperJob("j1", 2) // the job row stays (CANCELLED) and one cleanup row is enqueued: Delete all keeps that row, the laptop copies must still be deleted
         s.upsertGroupState(CanvasGroupStateEntity("g1", 1, 1, "c", "capture_plan", "EFFECTIVE", 1))
     }
 
-    /** Delete all reaches every slice 3a table that can hold derived data; the two that hold none are kept on purpose, and labelRev still moves. */
+    /** Delete all reaches every slice 3a table that can hold derived data; the three that hold none (meta, group state, the helper cleanup commands) are kept on purpose, and labelRev still moves. */
     @Test fun wipeClearsSlice3TablesAndKeepsTheRecoveryRecord() = runBlocking {
         seedSlice3()
         val raw = db.openHelper.writableDatabase

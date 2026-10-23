@@ -34,6 +34,7 @@ class DeletionGraphWipeTest {
         s.insertLabelFenced(CanvasLabelEntity("l1", "MOMENT", "tap", "X", 5, createdAt = 1), f)
         s.insertCalibration(CanvasCalibrationEntity(configHash = "c", settingsRev = 1, mode = "LIVE", phasesJson = "[]", createdAt = 1))
         s.insertHelperJob(CanvasHelperJobEntity("j1", "py", "QUEUED", frameIdsJson = "[\"f1\"]", createdAt = 1, updatedAt = 1))
+        s.cancelHelperJob("j1", 2) // enqueues the kept canvas_helper_cleanup row
         s.upsertGroupState(CanvasGroupStateEntity("g1", 1, 1, "c", "capture_plan", "EFFECTIVE", 1))
         c.upsertPipeline(CanvasPipelineEntity("p", "p", "{}", 0, false, 1, 1)); c.insertVersion(CanvasPipelineVersionEntity("p", 1, "{}", "h", "", 1))
         c.insertPublish(CanvasPublishEntity(pipelineId = "p", version = 1, hash = "h", publishedAt = 1, rolledBackAt = null, snapshotJson = "{}"))
