@@ -1,9 +1,11 @@
 package com.rokid.context.capture.replay
 
 import com.rokid.context.capture.plan.PlanBounds
+import com.rokid.context.capture.trace.EpisodeCause
 import com.rokid.context.capture.trace.GateOutcome
 import com.rokid.context.capture.trace.Inexact
 import com.rokid.context.capture.trace.Manifest
+import com.rokid.context.capture.trace.ReplayRule
 import com.rokid.context.capture.trace.TraceEvent
 import com.rokid.context.core.model.context.ContextState
 import kotlinx.serialization.json.JsonArray
@@ -26,6 +28,13 @@ data class ReplayFigures(
     val unobservedOpens: Int,
     val estimatedPctPerMin: Double,
     val estimatedHoursFromFull: Double,
+    /** Opens decided by a glance (DWELL, ONSET): the counterpart of the shadow's `shOpen` (Task 23c parity criterion). */
+    val glanceOpens: Int = 0,
+    /** The opens as a range: [opensLow]..[opensHigh] bound what the windows the verdict could not judge may hold (see [CounterfactualReplay.bounds]). Equal to [opens] when none was excluded. */
+    val opensLow: Int = opens,
+    val opensHigh: Int = opens,
+    /** Glances admitted by the IMU admission test, whatever the camera was doing (replay's keep bookkeeping): what the shadow's `shOpen` counts. [glanceOpens] are the ones that became an open. */
+    val glanceAdmissions: Int = 0,
 )
 
 /** What the replay saw of one context state: the minutes spent in it (after the pre-roll) and the 95th percentile of camera opens in a full minute spent in it (nearest rank; 0 with no full minute). */
@@ -52,12 +61,20 @@ data class ReplayReport(
     val warnings: List<String>,
     /** Per context state (enum name) seen in the span: the evidence behind gate 3 ("covers 2 states") and the plan's `meta.expectOpensP95PerMin`. Opens are the candidate's, or the recorded config's when none was replayed. */
     val states: Map<String, StateFigures> = emptyMap(),
+    /** The minutes the excluded (inexact) windows cover, and their share of the span in percent. */
+    val inexactMinutes: Double = 0.0,
+    val inexactSharePct: Double = 0.0,
+    /** Sensor delivery stalls after the pre-roll: how many, their total seconds and their share of the span in percent. */
+    val stallCount: Int = 0,
+    val stallSeconds: Double = 0.0,
+    val stallSharePct: Double = 0.0,
 ) {
     fun toJson(): JsonElement {
         fun f(x: ReplayFigures) = buildJsonObject {
             put("configHash", x.configHash); put("opens", x.opens); put("opensPerMin", x.opensPerMin); put("camOpenS", x.camOpenS); put("camOpenSPerMin", x.camOpenSPerMin)
             put("keeps", x.keeps); put("keepsPerMin", x.keepsPerMin); put("unobservedOpens", x.unobservedOpens)
             put("estimatedPctPerMin", x.estimatedPctPerMin); put("estimatedHoursFromFull", x.estimatedHoursFromFull)
+            put("glanceOpens", x.glanceOpens); put("glanceAdmissions", x.glanceAdmissions); put("opensLow", x.opensLow); put("opensHigh", x.opensHigh)
         }
         return buildJsonObject {
             put("replayClass", replayClass); put("estimate", true); put("minutes", minutes)
@@ -67,6 +84,8 @@ data class ReplayReport(
             put("inexactReasons", buildJsonObject { inexactReasons.toSortedMap().forEach { (k, v) -> put(k.name, v) } })
             put("shadowOrTrialOnly", shadowOrTrialOnly)
             put("warnings", JsonArray(warnings.map { JsonPrimitive(it) }))
+            put("inexactMinutes", inexactMinutes); put("inexactSharePct", inexactSharePct)
+            put("stalls", buildJsonObject { put("count", stallCount); put("seconds", stallSeconds); put("sharePct", stallSharePct) })
             put("states", buildJsonObject { states.toSortedMap().forEach { (k, v) -> put(k, buildJsonObject { put("minutes", v.minutes); put("opensP95PerMin", v.opensP95PerMin) }) } })
         }
     }
@@ -131,25 +150,33 @@ object CounterfactualReplay {
         val meanOpenS = if (seen.durations.isEmpty()) DEFAULT_OPEN_S else seen.durations.average() / 1000.0
 
         fun perMin(x: Double) = if (minutes > 0.0) x / minutes else 0.0
-        fun figures(hash: String, opens: Int, camS: Double, keeps: Double, unobserved: Int): ReplayFigures {
+        fun figures(hash: String, os: List<ReplayOpen>, admissions: Int, camS: Double, keeps: Double, unobserved: Int): ReplayFigures {
             val camPerMin = perMin(camS)
             val pct = BatteryLine.pctPerMin(camPerMin)
-            return ReplayFigures(hash, opens, perMin(opens.toDouble()), camS, camPerMin, keeps, perMin(keeps), unobserved, pct, BatteryLine.hoursFromFull(pct))
+            val (low, high) = bounds(os, base.inexactSpans, base.recordedOpens)
+            val glance = os.count { it.cause == EpisodeCause.DWELL || it.cause == EpisodeCause.ONSET }
+            return ReplayFigures(hash, os.size, perMin(os.size.toDouble()), camS, camPerMin, keeps, perMin(keeps), unobserved, pct, BatteryLine.hoursFromFull(pct), glance, low, high, admissions)
         }
 
         // The recorded config: the recorded durations are the camera-open time (not an estimate), the keeps are the replayed (= recorded) ones.
-        val baseline = figures(base.configHash, base.opens.size, seen.durations.sum() / 1000.0, base.keeps.toDouble(), 0)
+        val baseline = figures(base.configHash, base.opens, base.glanceAdmissions, seen.durations.sum() / 1000.0, base.keeps.toDouble(), 0)
         var candFigures: ReplayFigures? = null
         var unobservedPct = 0.0
         if (cand != null) {
             val est = estimateKeeps(cand.opens.map { it.atMs }, seen.gateAt, seen.gateKeep)
-            candFigures = figures(cand.configHash, cand.opens.size, cand.opens.size * meanOpenS, est.keeps.toDouble(), est.unobserved)
+            candFigures = figures(cand.configHash, cand.opens, cand.glanceAdmissions, cand.opens.size * meanOpenS, est.keeps.toDouble(), est.unobserved)
             unobservedPct = if (cand.opens.isEmpty()) 0.0 else 100.0 * est.unobserved / cand.opens.size
         }
 
         val warnings = ArrayList<String>()
         if (base.inexact > 0) warnings += "$APPROXIMATE_WARNING: ${base.inexact} window(s) excluded (${base.inexactReasons.entries.sortedBy { it.key.name }.joinToString(", ") { "${it.key.name.lowercase()} ${it.value}" }})"
         else warnings += APPROXIMATE_WARNING
+        val spanMs = ((seen.last - start).coerceAtLeast(0L)).toDouble()
+        val inexactMs = base.inexactSpans.sumOf { (minOf(it.endMs, seen.last) - maxOf(it.startMs, start)).coerceAtLeast(0L) }.toDouble()
+        fun pct(x: Double) = if (spanMs > 0.0) 100.0 * x / spanMs else 0.0
+        val stallSeconds = base.stalls.ms / 1000.0
+        if (base.stalls.count > 0) warnings += "sensor delivery stalls: ${base.stalls.count} (${"%.1f".format(java.util.Locale.ROOT, stallSeconds)} s, ${"%.1f".format(java.util.Locale.ROOT, pct(base.stalls.ms.toDouble()))} % of the span); the replay decides at the delivery instant, not inside them"
+        if (base.inexact > 0) warnings += "excluded windows cover ${"%.1f".format(java.util.Locale.ROOT, inexactMs / 60_000.0)} min (${"%.1f".format(java.util.Locale.ROOT, pct(inexactMs))} % of the span): opens are bounded to [${baseline.opensLow}, ${baseline.opensHigh}] for the recorded config"
         if (base.failed > 0) warnings += "the replay disagrees with the recording in ${base.failed} window(s)"
         warnings += ESTIMATE_WARNING
         if (cand != null) warnings += "unobserved opens: ${"%.1f".format(java.util.Locale.ROOT, unobservedPct)} %"
@@ -160,6 +187,8 @@ object CounterfactualReplay {
             basePassed = base.passed, baseFailed = base.failed, inexactWindows = base.inexact, inexactReasons = base.inexactReasons,
             shadowOrTrialOnly = fusionChanged, warnings = warnings,
             states = stateFigures(m.snapshot.ctx, seen.ctx, start, seen.last, (cand?.opens ?: base.opens).map { it.atMs }),
+            inexactMinutes = inexactMs / 60_000.0, inexactSharePct = pct(inexactMs),
+            stallCount = base.stalls.count, stallSeconds = stallSeconds, stallSharePct = pct(base.stalls.ms.toDouble()),
         )
     }
 
@@ -188,6 +217,21 @@ object CounterfactualReplay {
             val p95 = if (counts.isEmpty()) 0.0 else counts[(kotlin.math.ceil(0.95 * counts.size).toInt() - 1).coerceIn(0, counts.size - 1)].toDouble()
             s.name to StateFigures(t / 60_000.0, p95)
         }
+    }
+
+    /**
+     * The opens of a replay as a range, so the windows the verdict could not judge ([spans], half-open `[start, end)` in RECORDED time) are bounded instead of dropped: inside them the
+     * truth is the RECORDED opens ([recorded]) when the config is the recorded one, and anything up to the replayed ones added when it is not. `low` = replayed opens outside the
+     * spans + recorded opens inside them; `high` = `low` + replayed opens inside them. With no excluded window both are the replayed count. A replayed open is placed in recorded
+     * time by adding the late match slack ([ReplayRule.LATE_SLACK_MS]: the live loop follows the replay's decision by up to that much), so a decision and its recorded twin fall on the
+     * same side of a span edge and are not counted twice.
+     */
+    fun bounds(opens: List<ReplayOpen>, spans: List<InexactSpan>, recorded: List<Long>): Pair<Int, Int> {
+        if (spans.isEmpty()) return opens.size to opens.size
+        fun inside(t: Long) = spans.any { t >= it.startMs && t < it.endMs }
+        val inO = opens.count { inside(it.atMs + ReplayRule.LATE_SLACK_MS) }
+        val low = (opens.size - inO) + recorded.count { inside(it) }
+        return low to (low + inO)
     }
 
     class KeepEstimate(val keeps: Int, val unobserved: Int)

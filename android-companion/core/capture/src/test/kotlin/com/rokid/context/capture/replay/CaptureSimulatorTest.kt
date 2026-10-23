@@ -266,10 +266,9 @@ class CaptureSimulatorTest {
      * A head turn at 20.0-20.7 s over three timer checks. By hand from the glance model: the first over-threshold sample (20,000) is the onset and the loop is
      * kicked, so the ONSET brief check opens at once; the bout ends at 20,700, settles 1.5 s later and the glance fires on the 22,200 sample, which opens a DWELL
      * check on the next tick (admission: 21 s since the last keyframe is past the 20 s novelty window). The ONSET episode runs until 21,000 because the camera
-     * stays up while the head decelerates. The replay recomputes both opens from the sensors alone; their windows are inexact (async callbacks), the timer
-     * window before them still passes.
+     * stays up while the head decelerates. The replay recomputes both opens from the sensors alone; each has a twin, so no window is excluded (Task 23c).
      */
-    @Test fun asyncDwellWindowIsInexactButStillReplayed() {
+    @Test fun dwellAndOnsetWindowsWithATwinAreExact() {
         val end = START + 25_000
         val sensors = (START..end step 20).flatMap { t ->
             val turning = t in 20_000..20_700
@@ -285,9 +284,10 @@ class CaptureSimulatorTest {
         assertEquals(listOf(EpisodeCause.TIMER, EpisodeCause.ONSET, EpisodeCause.DWELL), r.opens.map { it.cause }, r.opens.toString())
         assertTrue(r.opens[1].atMs in 20_000..20_250, r.opens.toString())
         assertTrue(r.opens[2].atMs in 22_200..22_450, r.opens.toString())
-        assertEquals(1, r.passed)
-        assertEquals(3, r.inexact)
-        assertEquals(3, r.inexactReasons[Inexact.ASYNC_CALLBACK])
+        // Task 23c: every recorded dwell/onset open has a replayed twin, so no window depends on an unmodelled callback: all four are exact and pass.
+        assertEquals(4, r.passed)
+        assertEquals(0, r.inexact)
+        assertEquals(emptyMap(), r.inexactReasons)
         assertEquals(0, r.failed, r.mismatches.toString())
     }
 

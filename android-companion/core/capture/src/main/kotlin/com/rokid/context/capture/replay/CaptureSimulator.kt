@@ -75,7 +75,13 @@ class ReplayCandidate(
 }
 
 /** A camera open the replay decided (after the pre-roll). */
-data class ReplayOpen(val atMs: Long, val cause: EpisodeCause)
+data class ReplayOpen(val atMs: Long, val cause: EpisodeCause, val lateSlackMs: Long = ReplayRule.LATE_SLACK_MS)
+
+/** The sensor delivery stalls a replay saw after the pre-roll: gaps in the delivery time `tMs` of the gyro/accel events longer than [CaptureSimulator.STALL_MS]. */
+data class StallStats(val count: Int = 0, val ms: Long = 0L)
+
+/** A window the verdict excluded: the recorded span `[startMs, endMs)` (the recorded open that starts it up to the one that ends it) and why. */
+data class InexactSpan(val startMs: Long, val endMs: Long, val reasons: Set<Inexact>)
 
 /** One place where the replay and the recording disagree. [kind]: `open_missed`, `open_extra`, `gate`, `gate_missing`, `gate_extra`. */
 data class ReplayMismatch(val kind: String, val atMs: Long, val detail: String)
@@ -103,6 +109,12 @@ data class ReplayResult(
     /** The first [CaptureSimulator.MAX_MISMATCHES] disagreements; [mismatchCount] is the total. */
     val mismatches: List<ReplayMismatch>,
     val mismatchCount: Int,
+    /** Where the excluded windows lie (BASE replay only), the recorded opens after the pre-roll and the delivery stalls: the bounds of [CounterfactualReplay] are computed from them. */
+    val inexactSpans: List<InexactSpan> = emptyList(),
+    val recordedOpens: List<Long> = emptyList(),
+    val stalls: StallStats = StallStats(),
+    /** Glances (dwell) that `GlanceAdmission` admitted after the pre-roll, whatever the camera was doing: what the shadow counts (`shOpen`), on the replay's own keep bookkeeping. */
+    val glanceAdmissions: Int = 0,
 ) {
     /** True when no window had to be excluded. */
     val exact: Boolean get() = inexact == 0
@@ -124,7 +136,11 @@ data class ReplayResult(
  * - Gates are replayed from fully recorded inputs and must be EQUAL ([ReplayRule.gatesMatch]). The session bookkeeping times (`gt.keptAtMs`, `gt.encoded`)
  *   are recorded facts the replay adopts for a keep it reproduced, not something it can derive (the frame-entry time and the encoder are not in the trace).
  * - The trace is cut into windows at every recorded open (a window runs from one recorded open to the next, both ends included). A window that contains a
- *   `captureNow` request, a bind failure or back-off, or an async dwell/onset episode ([Exactness.classify]) is INEXACT: excluded from pass/fail and counted.
+ *   `captureNow` request, a bind failure or back-off, or a dwell/onset episode WITHOUT a replayed twin ([Exactness.classify]) is INEXACT: excluded from pass/fail and counted.
+ * - Sensor delivery (Task 23c): the glasses deliver sensor data late, in bursts (`tMs` jumps, `sMs` stays continuous) and the live loop decides nothing meanwhile. A delivery gap
+ *   longer than [STALL_MS] is a stall: the replay does not tick inside it, decides at the delivery instant on the burst as delivered (the classifier reads `sMs`), and
+ *   lets the first decision after it match a recorded open up to [ReplayRule.STALL_LATE_SLACK_MS] later. A window with a stall in which the replay and the recording still
+ *   disagree is INEXACT with the reason [Inexact.STALL] (bounded in the report, not failed).
  * - Everything before `PreRollEnd` warms the state up and is discarded.
  *
  * Assumption about the recorder (Task 16), pinned by the tests here: one `gt` follows every `sc` for the seq the gate judged, and a window or flush keep appends
@@ -135,6 +151,8 @@ data class ReplayResult(
 object CaptureSimulator {
     const val TICK_MS = 250L
     const val MAX_MISMATCHES = 64
+    /** A delivery gap of the sensor events longer than this is a stall: the live loop made no decision inside one (real traces: 38 stalls, 1.0-8.1 s, no recorded open inside any). */
+    const val STALL_MS = 1_000L
 
     /** A BASE replay (no [candidate]) of the recorded config, or a counterfactual one. `IllegalArgumentException("approximate trace")` for a trace that is not exact. */
     fun replay(events: Sequence<TraceEvent>, m: Manifest, candidate: ReplayCandidate? = null): ReplayResult {
@@ -183,6 +201,8 @@ object CaptureSimulator {
         var extra = 0
         var missed = 0
         var gateBad = 0
+        /** A delivery stall ended inside this window: the replay does not decide inside it and the resume latency of the live loop is only bounded (see [Inexact.STALL]). */
+        var stalled = false
     }
 
     private class RecOpen(val ev: TraceEvent.Episode, val win: Win)
@@ -238,6 +258,18 @@ object CaptureSimulator {
         var dwellFired = false
         var onsetFired = false
 
+        // sensor delivery (the recorded `tMs` of the gyro/accel events) and its stalls
+        var lastSensorT: Long? = null
+        var resumeAt = 0L
+        var afterStall = false
+        var stallCount = 0
+        var stallMs = 0L
+        /** The recorded opens (by `tMs`) that had a replayed twin: a dwell/onset window is exact only for those ([Exactness.classify]). */
+        val twinned = HashSet<Long>()
+        val recordedOpens = ArrayList<Long>()
+        var admissions = 0
+        val spans = ArrayList<InexactSpan>()
+
         // comparison state
         val compared = base
         var preRoll = true
@@ -288,6 +320,7 @@ object CaptureSimulator {
         fun accept(e: TraceEvent) {
             // The session decides, then appends the `ep` open at the tick's own instant: the tick due AT an open's time runs before the open is applied (an open that
             // fails is recorded with its close at the same instant, and the close's back-off must not hide the decision that produced it).
+            if (e is TraceEvent.Gyro || e is TraceEvent.Accel) onDelivery(e.tMs)
             advanceTo(if (e is TraceEvent.Episode && e.open) e.tMs + 1 else e.tMs)
             if (e.tMs > now) now = e.tMs
             when (e) {
@@ -310,8 +343,28 @@ object CaptureSimulator {
             }
         }
 
+        /**
+         * Sensor delivery model (Task 23c). The glasses deliver sensor data in bursts after a delay (the recorded `tMs` jumps, the sensor time `sMs` stays continuous, see
+         * `TraceEvent.Gyro`) and the live loop decides nothing while the data is held back: no recorded open lies inside any of the 38 stalls of a real 25 minute trace. So a
+         * delivery gap longer than [STALL_MS] is a STALL: the replay does not tick through it (it would decide, and re-decide every second, on data the live loop did not have)
+         * and resumes ticking at the delivery instant, deciding on the burst as delivered (the classifier still reads `sMs`).
+         */
+        fun onDelivery(t: Long) {
+            val last = lastSensorT
+            if (last != null && t - last > STALL_MS) {
+                advanceTo(t)                          // the ticks up to the start of the stall (see the limit in advanceTo)
+                nextTickAt = maxOf(nextTickAt, t)
+                afterStall = true; resumeAt = t
+                if (!preRoll) { stallCount++; stallMs += t - last; cur.stalled = true }
+            }
+            lastSensorT = t
+        }
+
         fun advanceTo(t: Long) {
-            while (nextTickAt < t) {
+            // No tick runs more than one tick after the last delivered sensor event once the delivery has been silent for longer than a stall.
+            val last = lastSensorT
+            val limit = if (last != null && t - last > STALL_MS) minOf(t, last + TICK_MS) else t
+            while (nextTickAt < limit) {
                 val at = nextTickAt
                 val wait = tick(at)
                 nextTickAt = at + wait.coerceAtLeast(1L)
@@ -346,7 +399,7 @@ object CaptureSimulator {
         fun onDwell(t: Long) {
             val k = keptAt.count { t - it < 60_000L }
             val d = GlanceAdmission.decide(t - lastKeyframeAt, k, capNowFor(ctxCapNow()), hardNow(), cls.rotationSinceMarkRad(), cls.walkedSinceMark(), glance)
-            if (d == GlanceAdmission.Decision.OPEN) pendingDwellAt = t
+            if (d == GlanceAdmission.Decision.OPEN) { pendingDwellAt = t; if (!preRoll) admissions++ }
         }
 
         // ---- the tick (SamplingSession.tick) ----
@@ -401,15 +454,20 @@ object CaptureSimulator {
         /** The scheduler would open the camera now, for [cause]. */
         fun decide(t: Long, cause: EpisodeCause) {
             forceBrief = false
-            suppressUntil = t + DECISION_HOLD_MS
+            // The first decision after a stall: the live loop follows the burst by up to STALL_LATE_SLACK_MS, so the recorded open may be that late and the replay waits for it
+            // instead of deciding again every second (a live session decides once, the open follows at once).
+            val post = afterStall && t - resumeAt <= ReplayRule.STALL_LATE_SLACK_MS
+            afterStall = false
+            val slack = if (post) ReplayRule.STALL_LATE_SLACK_MS else ReplayRule.LATE_SLACK_MS
+            suppressUntil = t + if (post) ReplayRule.STALL_LATE_SLACK_MS + 1 else DECISION_HOLD_MS
             if (ownCadence) { lastBriefAt = t + CANDIDATE_OPEN_MS; lastPhotoAttemptAt = t }   // the candidate's next check follows ITS open, not the recorded close
             if (preRoll) return
-            val ro = ReplayOpen(t, cause)
+            val ro = ReplayOpen(t, cause, slack)
             opens += ro
             // A candidate keeps no verdict, but a recorded open at the same instant is the SAME decision (not a pre-emption of it): consume it, so the candidate's opens are counted.
-            if (!compared) { awaiting.firstOrNull { ReplayRule.opensMatch(it.ev.tMs, it.ev.cause, t, cause) }?.let { awaiting.remove(it) }; return }
-            val rec = awaiting.firstOrNull { ReplayRule.opensMatch(it.ev.tMs, it.ev.cause, t, cause) }
-            if (rec != null) awaiting.remove(rec) else pendingReplayed += RepOpen(ro, cur)
+            if (!compared) { awaiting.firstOrNull { ReplayRule.opensMatch(it.ev.tMs, it.ev.cause, t, cause, slack) }?.let { awaiting.remove(it) }; return }
+            val rec = awaiting.firstOrNull { ReplayRule.opensMatch(it.ev.tMs, it.ev.cause, t, cause, slack) }
+            if (rec != null) { awaiting.remove(rec); twinned += rec.ev.tMs } else pendingReplayed += RepOpen(ro, cur)
         }
 
         // ---- recorded episodes ----
@@ -419,17 +477,18 @@ object CaptureSimulator {
             epContinuous = e.cause == EpisodeCause.STREAM
             suppressUntil = 0L
             if (preRoll) { forceBrief = false; return }
+            recordedOpens += e.tMs
             cur.flagged += e
             cur.endMs = e.tMs
             if (!compared) {
                 forceBrief = false
                 // the candidate's own decision at this instant (the tick runs just before the open is applied) is the same open: nothing waits for a twin
                 val own = opens.lastOrNull()
-                if (own == null || !ReplayRule.opensMatch(e.tMs, e.cause, own.atMs, own.cause)) awaiting += RecOpen(e, cur)
+                if (own == null || !ReplayRule.opensMatch(e.tMs, e.cause, own.atMs, own.cause, own.lateSlackMs)) awaiting += RecOpen(e, cur)
                 return
             }
-            val twin = pendingReplayed.firstOrNull { ReplayRule.opensMatch(e.tMs, e.cause, it.open.atMs, it.open.cause) }
-            if (twin != null) pendingReplayed.remove(twin) else awaiting += RecOpen(e, cur)
+            val twin = pendingReplayed.firstOrNull { ReplayRule.opensMatch(e.tMs, e.cause, it.open.atMs, it.open.cause, it.open.lateSlackMs) }
+            if (twin != null) { pendingReplayed.remove(twin); twinned += e.tMs } else awaiting += RecOpen(e, cur)
             closing += cur
             cur = newWin(e.tMs).also { it.flagged += e }
         }
@@ -536,7 +595,7 @@ object CaptureSimulator {
             val it1 = pendingReplayed.iterator()
             while (it1.hasNext()) {
                 val p = it1.next()
-                if (p.open.atMs + ReplayRule.LATE_SLACK_MS < t) {
+                if (p.open.atMs + p.open.lateSlackMs < t) {
                     it1.remove(); p.win.extra++
                     mismatch("open_extra", p.open.atMs, "replay would open (${p.open.cause}) with no recorded open")
                 }
@@ -554,13 +613,17 @@ object CaptureSimulator {
                 val x = it3.next()
                 if (x.nowMs + GATE_PAIR_MS < t) { it3.remove(); x.win.gateBad++; mismatch("gate_missing", x.nowMs, "replayed gate seq=${x.seq} has no recorded gt") }
             }
-            while (closing.isNotEmpty() && closing.first().endMs + ReplayRule.LATE_SLACK_MS < t) finalize(closing.removeFirst())
+            while (closing.isNotEmpty() && closing.first().endMs + ReplayRule.STALL_LATE_SLACK_MS < t) finalize(closing.removeFirst())
         }
 
         fun finalize(w: Win) {
             if (!compared) return
             val carry = snap.copy(bindFailures = w.carryFailures, bindBackoffUntil = w.carryBackoff)
-            val reasons = Exactness.classify(w.flagged, carry)
+            val reasons = LinkedHashSet(Exactness.classify(w.flagged, carry, twinned))
+            // A stall ended in this window and the replay and the recording disagree in it: the resume latency of the live loop is the only thing unmodelled, so the window is excluded
+            // and BOUNDED (the span, the stall totals and the [low, high] opens of the report) instead of being failed or dropped without a trace.
+            if (w.stalled && (w.extra > 0 || w.missed > 0)) reasons += Inexact.STALL
+            if (reasons.isNotEmpty()) spans += InexactSpan(w.startMs, if (w.endMs >= 0) w.endMs else now + 1, reasons)
             reasons.forEach { reasonCounts.merge(it, 1, Int::plus) }
             tally.record(reasons, w.extra == 0 && w.missed == 0 && w.gateBad == 0)
         }
@@ -568,7 +631,7 @@ object CaptureSimulator {
         fun finish(): ReplayResult {
             if (compared && !preRoll) {
                 // what falls inside the last tolerance of the trace cannot be judged: its twin would have come after the close
-                pendingReplayed.removeAll { it.open.atMs + ReplayRule.LATE_SLACK_MS >= now }
+                pendingReplayed.removeAll { it.open.atMs + it.open.lateSlackMs >= now }
                 awaiting.removeAll { it.ev.tMs + ReplayRule.EARLY_SLACK_MS >= now }
                 expected.removeAll { it.nowMs + GATE_PAIR_MS >= now }
                 settle(now + 1)
@@ -578,6 +641,7 @@ object CaptureSimulator {
             val hash = cand?.configHash ?: recordedHash ?: snap.planHash ?: "0"
             return ReplayResult(
                 hash, compared, opens, gates, keeps, skips, tally.passed, tally.failed, tally.inexact, LinkedHashMap(reasonCounts), mismatches, mismatchCount,
+                inexactSpans = spans, recordedOpens = recordedOpens, stalls = StallStats(stallCount, stallMs), glanceAdmissions = admissions,
             )
         }
     }
