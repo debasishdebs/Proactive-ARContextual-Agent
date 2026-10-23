@@ -39,6 +39,44 @@ def canonical_json(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
+def _check_result(o):
+    """The result domain (decision D1): JSON values INCLUDING finite floats, str keys only, no unpaired surrogate. Bool is checked before int."""
+    if o is None or isinstance(o, (bool, int)):
+        return
+    if isinstance(o, float):
+        if o != o or o in (float("inf"), float("-inf")):
+            raise ValueError("non-finite number")
+        return
+    if isinstance(o, str):
+        _check_str(o)
+        return
+    if isinstance(o, list):
+        for x in o:
+            _check_result(x)
+        return
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if not isinstance(k, str):
+                raise ValueError("object keys must be strings")
+            _check_str(k)
+            _check_result(v)
+        return
+    raise ValueError("unsupported value")
+
+
+def result_canonical(result):
+    """The text of a result envelope (decision D1, 2026-10-24): sorted keys, no whitespace, no ASCII escaping, floats printed by Python's repr.
+    The helper sends THIS STRING and hashes exactly its UTF-8 bytes; the phone verifies the hash over the string as received and never re-prints it,
+    so no float formatter is shared between the languages. Phone-built payloads and inputs keep the integer-only `canonical_json`."""
+    _check_result(result)
+    return json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def result_hash(text):
+    """Lowercase hex SHA-256 of the exact UTF-8 bytes of the result text."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def count_bounds_ok(schema, max_count):
     """The shared upper bound on minLength/maxLength/minItems/maxItems (constants.json schemaSubsetMaxCount); the Kotlin SchemaSubset enforces the same."""
     if isinstance(schema, dict):

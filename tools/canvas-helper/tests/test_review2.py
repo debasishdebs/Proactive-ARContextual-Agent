@@ -146,7 +146,7 @@ def test_result_exactly_at_the_result_limit_whose_envelope_is_over_the_wire_limi
     c._max_result = CONSTS["maxResultBytes"]  # a phone whose body limit equals the result limit: the envelope can never fit
     h.phone.result = lambda *a: c.result(*a)
     r = {"x": ""}
-    r["x"] = "a" * (CONSTS["maxResultBytes"] - len(protocol.canonical_json(r).encode()))
+    r["x"] = "a" * (CONSTS["maxResultBytes"] - len(L.result_canonical(r).encode()))
     handle.finished = {"kind": "result", "result": r}
     h.sup.job_step()  # must not raise
     assert tr.sent == [] and h.phone.of("fail")[0][2] == ("job1", 1, "too_large")

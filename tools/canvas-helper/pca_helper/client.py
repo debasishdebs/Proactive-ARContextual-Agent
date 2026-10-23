@@ -199,8 +199,9 @@ class PhoneClient:
     def heartbeat(self, job_id, lease_gen):
         return self._call("POST", "/api/helper/jobs/%s/heartbeat" % job_id, {"leaseGen": lease_gen}, timeout_s=self._hb_timeout)
 
-    def result(self, job_id, lease_gen, result_hash, result):
-        return self._call("POST", "/api/helper/jobs/%s/result" % job_id, {"leaseGen": lease_gen, "resultHash": result_hash, "result": result},
+    def result(self, job_id, lease_gen, result_hash, result_canonical):
+        """`result_canonical` is the exact TEXT (a str) the hash covers (decision D1); the phone verifies the hash over it as received, then parses it."""
+        return self._call("POST", "/api/helper/jobs/%s/result" % job_id, {"leaseGen": lease_gen, "resultHash": result_hash, "resultCanonical": result_canonical},
                           max_body=self._max_result)
 
     def fail(self, job_id, lease_gen, code):

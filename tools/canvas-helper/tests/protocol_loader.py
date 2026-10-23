@@ -30,7 +30,7 @@ def load(name):
         return json.load(f)
 
 
-from pca_helper.canonical import bundle_hash, canonical_json, count_bounds_ok, job_id_ok  # noqa: E402,F401  (single implementation, shipped in the package)
+from pca_helper.canonical import bundle_hash, canonical_json, count_bounds_ok, job_id_ok, result_canonical, result_hash  # noqa: E402,F401  (single implementation, shipped in the package)
 
 
 def confirm_message(b):
