@@ -118,28 +118,38 @@ object ReplayRule {
      */
     const val EARLY_SLACK_MS = 250L
     const val LATE_SLACK_MS = 500L
-    fun opensMatch(recordedAtMs: Long, recordedCause: EpisodeCause, replayedAtMs: Long, replayedCause: EpisodeCause): Boolean =
-        recordedCause == replayedCause && (recordedAtMs - replayedAtMs) in -EARLY_SLACK_MS..LATE_SLACK_MS
+    /**
+     * The first decision after a sensor delivery stall (Task 23c, real trace bc1f4b0e: the first recorded open after a delivery stall followed the stall end by 266-1254 ms, and none fell inside a stall).
+     * A recorded open may follow that decision by up to this much; every other decision keeps [LATE_SLACK_MS].
+     */
+    const val STALL_LATE_SLACK_MS = 1_300L
+    fun opensMatch(recordedAtMs: Long, recordedCause: EpisodeCause, replayedAtMs: Long, replayedCause: EpisodeCause, lateSlackMs: Long = LATE_SLACK_MS): Boolean =
+        recordedCause == replayedCause && (recordedAtMs - replayedAtMs) in -EARLY_SLACK_MS..lateSlackMs
     fun gatesMatch(a: TraceEvent.Gate, b: TraceEvent.Gate): Boolean =
         a.seq == b.seq && a.outcome == b.outcome && a.reason == b.reason && a.encoded == b.encoded && a.keptAtMs == b.keptAtMs
 }
 
 /** Why a replay window cannot be compared exactly. */
-enum class Inexact { CAPTURE_NOW, BIND_FAILURE, ASYNC_CALLBACK }
+enum class Inexact { CAPTURE_NOW, BIND_FAILURE, ASYNC_CALLBACK, STALL }
 
 object Exactness {
     /**
      * The reasons a window (its events, and the snapshot when the window starts the trace) is inexact: a `captureNow` request (an `ep` open with cause `now`, or an
      * `sc` with `force`), a bind failure or back-off (an `ep` close with outcome busy, bind, cold or open_failed, or snapshot `bindBackoffUntil`/`bindFailures`), or an
      * episode that depends on an async collector callback (an `ep` open with cause `dwell` or `onset`). Empty = exact.
+     *
+     * Task 23c: the replay re-derives dwell and onset from the same samples (real trace: all 71 recorded dwell opens had a replayed twin within -175..+483 ms), so when the caller
+     * knows which recorded opens had a replay twin ([twinned], by recorded `tMs`) only an open WITHOUT a twin is an async-callback window: truly unmodelled. [twinned] null =
+     * the twins are unknown and every dwell/onset open is flagged (the conservative form).
+     * `STALL` is not decided here: it needs the replay's delivery times (see `CaptureSimulator`).
      */
-    fun classify(events: List<TraceEvent>, snapshot: StartSnapshot? = null): Set<Inexact> {
+    fun classify(events: List<TraceEvent>, snapshot: StartSnapshot? = null, twinned: Set<Long>? = null): Set<Inexact> {
         val r = LinkedHashSet<Inexact>()
         if (snapshot != null && (snapshot.bindFailures > 0 || snapshot.bindBackoffUntil != null)) r += Inexact.BIND_FAILURE
         for (e in events) when (e) {
             is TraceEvent.Episode -> {
                 if (e.open && e.cause == EpisodeCause.NOW) r += Inexact.CAPTURE_NOW
-                if (e.open && (e.cause == EpisodeCause.DWELL || e.cause == EpisodeCause.ONSET)) r += Inexact.ASYNC_CALLBACK
+                if (e.open && (e.cause == EpisodeCause.DWELL || e.cause == EpisodeCause.ONSET) && (twinned == null || e.tMs !in twinned)) r += Inexact.ASYNC_CALLBACK
                 if (!e.open && e.outcome in setOf(EpisodeOutcome.BUSY, EpisodeOutcome.BIND, EpisodeOutcome.COLD, EpisodeOutcome.OPEN_FAILED)) r += Inexact.BIND_FAILURE
             }
             is TraceEvent.Score -> if (e.force) r += Inexact.CAPTURE_NOW

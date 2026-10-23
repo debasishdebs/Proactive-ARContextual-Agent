@@ -8,7 +8,7 @@
 #   tools/m1-run.sh collect start [minutes] | stop | status
 #   tools/m1-run.sh pull <dir> [--allow-partial]    glasses -> <dir> (trace-pull.sh) + heartbeat lines; then each trace is adb-pushed to the phone's staging dir and imported
 #                                                   (POST /api/traces/import; staging dir deleted by the phone on success); lists the phone's traces
-#   tools/m1-run.sh replay [<traceId>] [--diag file] [--tol pct]   (no id: the last trace imported by pull)
+#   tools/m1-run.sh replay [<traceId>] [--diag file] [--tol pct] [--legacy-total]   (no id: the last trace imported by pull; --legacy-total = old +-5 % of ALL opens, SETTLE-wake scripts only)
 # Env: G glasses serial (default as trace-pull.sh); M1_PHONE_TID adb transport id of the phone (auto: the only other device in `adb devices -l`; never selected by serial,
 #   the wireless serial contains spaces); M1_PHONE_PKG phone package (default com.rokid.context); M1_SCHEME=http only for the local mock test; M1_DIAG=<file> reads heartbeats from a file (no adb).
 set -u
@@ -142,21 +142,32 @@ PY
   [ "$(pj 'j.get("sent")')" = True ] || echo "NOTE sent=false: the plan is stored and goes out when the glasses link is up"
 }
 
-# heartbeat_summary < diag text on stdin: only heartbeat lines, only counts/short fields; the SHADOW window of the identity plan
+# heartbeat_summary [fromMs toMs] < diag text on stdin: only heartbeat lines, only counts/short fields; the SHADOW heartbeats of the identity plan. With fromMs/toMs (the trace
+# interval in wall-clock ms, as the replay job reports it) only heartbeats stamped inside it count, and only those of the expected plan hash; the heartbeat timestamp (MM-DD HH:MM:SS.mmm,
+# no year or zone) is read in this machine's zone and in the year of fromMs. Without an interval every SHADOW heartbeat counts (the caller must supply a trimmed log) and the line says so.
 heartbeat_summary() {
   python3 -c '
-import sys,re
+import sys,datetime
+lo=int(sys.argv[1]) if len(sys.argv)>2 and sys.argv[1].isdigit() else None
+hi=int(sys.argv[2]) if lo is not None and sys.argv[2].isdigit() else None
+plan=sys.argv[3] if len(sys.argv)>3 else ""
+year=datetime.datetime.fromtimestamp(lo/1000.0).year if lo is not None else None
 rows=[]
 for line in sys.stdin:
     if "heartbeat v=2" not in line: continue
     kv=dict(t.split("=",1) for t in line.split() if "=" in t)
+    p=line.split()
+    if lo is not None and hi is not None:
+        try: ms=datetime.datetime.strptime("%d-%s %s" % (year,p[0],p[1]),"%Y-%m-%d %H:%M:%S.%f").timestamp()*1000
+        except Exception: continue
+        if not (lo<=ms<=hi): continue
     rows.append(kv)
-sh=[r for r in rows if r.get("planMode")=="SHADOW"]
+sh=[r for r in rows if r.get("planMode")=="SHADOW" and (not plan or r.get("plan","").startswith(plan))]
 def i(r,k):
     try: return int(r.get(k,"0"))
     except ValueError: return 0
 last=rows[-1] if rows else {}
-print("hb_lines=%d shadow_hb=%d plan=%s gen=%s planMode=%s planRevert=%s shOpen=%d shSkip=%d" % (len(rows),len(sh),last.get("plan","none"),last.get("gen","0"),last.get("planMode","na"),last.get("planRevert","na"),sum(i(r,"shOpen") for r in sh),sum(i(r,"shSkip") for r in sh)))'
+print("hb_lines=%d shadow_hb=%d plan=%s gen=%s planMode=%s planRevert=%s shOpen=%d shSkip=%d window=%s" % (len(rows),len(sh),last.get("plan","none"),last.get("gen","0"),last.get("planMode","na"),last.get("planRevert","na"),sum(i(r,"shOpen") for r in sh),sum(i(r,"shSkip") for r in sh),"trace-interval" if lo is not None and hi is not None else "UNFILTERED"))' "$@"
 }
 
 # diag_text: heartbeat lines from the glasses own-tag log (or $M1_DIAG); no other line is ever read onward
@@ -253,10 +264,10 @@ cmd_pull() {
 
 cmd_replay() {
   need_state; init_state
-  local tid="" tol=5 diag=""
+  local tid="" tol=5 diag="" legacy=0
   case "${1:-}" in ""|--*) tid=$(cat "$LAST_TRACE" 2>/dev/null) ;; *) tid="$1"; shift ;; esac
-  [ -n "$tid" ] || die "usage: m1-run.sh replay [<traceId>] [--diag file] [--tol pct] (no id and no earlier pull)"
-  while [ $# -gt 0 ]; do case "$1" in --diag) diag="$2"; shift 2 ;; --tol) tol="$2"; shift 2 ;; *) die "unknown option" ;; esac; done
+  [ -n "$tid" ] || die "usage: m1-run.sh replay [<traceId>] [--diag file] [--tol pct] [--legacy-total] (no id and no earlier pull)"
+  while [ $# -gt 0 ]; do case "$1" in --diag) diag="$2"; shift 2 ;; --tol) tol="$2"; shift 2 ;; --legacy-total) legacy=1; shift ;; *) die "unknown option" ;; esac; done
   case "$tid" in *[!A-Za-z0-9:_-]*|"") die "bad trace id" ;; esac
   printf '{"traceIds":["%s"],"candidate":{"configHash":"%s"}}' "$tid" "$EXPECT_HASH" > "$STATE/r.json"
   local st; st=$(api POST /api/replays "$STATE/r.json")
@@ -271,10 +282,13 @@ cmd_replay() {
   echo "jobState=$state"
   [ "$state" = DONE ] || { echo "FAIL replay did not finish DONE"; exit 1; }
   local dt=""; if [ -n "$diag" ]; then dt=$(grep 'heartbeat v=2' "$diag"); else dt=$(diag_text); fi
-  local sh; sh=$(printf '%s\n' "$dt" | heartbeat_summary)
-  python3 - "$LAST" "$tol" "$sh" <<'PY'
+  # The trace interval and plan hash restrict the heartbeats counted (fromMs/toMs of the replay job: the trace's wall-clock interval); an unknown interval leaves them unfiltered.
+  local fms tms; fms=$(pj 'j.get("fromMs")'); tms=$(pj 'j.get("toMs")')
+  local sh; sh=$(printf '%s\n' "$dt" | heartbeat_summary "$fms" "$tms" "${EXPECT_HASH:0:8}")
+  case "$sh" in *UNFILTERED*) echo "NOTE trace interval unknown: every SHADOW heartbeat of the log counts (use --diag with a log trimmed to the run)" ;; esac
+  python3 - "$LAST" "$tol" "$sh" "$legacy" <<'PY'
 import json,sys
-j=json.load(open(sys.argv[1])); tol=float(sys.argv[2]); sh=dict(t.split("=",1) for t in sys.argv[3].split() if "=" in t)
+j=json.load(open(sys.argv[1])); tol=float(sys.argv[2]); sh=dict(t.split("=",1) for t in sys.argv[3].split() if "=" in t); legacy=sys.argv[4]=="1"
 rep=(j.get("result") or {}).get("reports") or []
 if not rep: print("FAIL no report in the result"); sys.exit(1)
 r=rep[0]["report"]; b=r["baseline"]; c=r.get("candidate") or {}
@@ -282,14 +296,36 @@ passed,failed,inex=r["basePassed"],r["baseFailed"],r["inexactWindows"]
 print("windows_compared=%d inexact_windows_excluded=%d base_pass=%d base_fail=%d minutes=%.1f" % (passed+failed,inex,passed,failed,r["minutes"]))
 print("BatteryLine hours_from_full=%s pct_per_min=%s (estimate)" % (b.get("estimatedHoursFromFull"),b.get("estimatedPctPerMin")))
 print("counterfactual opens=%s baseline opens=%s unobservedOpensPct=%s warnings=%d" % (c.get("opens"),b.get("opens"),r.get("unobservedOpensPct"),len(r.get("warnings",[]))))
+# Inexact windows are BOUNDED, not ignored (reported separately from the verdict): reasons, minutes covered, delivery stalls, opens as [low, high].
+st=r.get("stalls") or {}
+print("inexact_bounds reasons=%s covered=%.2f min (%.1f %% of the span) | delivery stalls: %s (%.0f s, %.1f %% of the span)" % (
+    json.dumps(r.get("inexactReasons",{}),sort_keys=True),r.get("inexactMinutes",0.0),r.get("inexactSharePct",0.0),st.get("count",0),st.get("seconds",0.0),st.get("sharePct",0.0)))
+print("opens_range baseline=[%s, %s] counterfactual=[%s, %s] (low = replayed opens in exact windows + recorded opens in inexact ones; high = low + replayed opens in inexact ones; covers the excluded windows only and assumes every other window passed: NOT a bound while base_fail>0)" % (
+    b.get("opensLow",b.get("opens")),b.get("opensHigh",b.get("opens")),c.get("opensLow",c.get("opens")),c.get("opensHigh",c.get("opens"))))
 ok=failed==0 and passed>0
 print("%s exact parity (base_fail=0, windows>0)" % ("PASS" if ok else "FAIL"))
-cf=c.get("opens"); s=int(sh.get("shOpen","0")); n=int(sh.get("shadow_hb","0"))
+s=int(sh.get("shOpen","0")); n=int(sh.get("shadow_hb","0"))
 print("shadow shOpen=%d over %d SHADOW heartbeats (plan=%s planMode=%s)" % (s,n,sh.get("plan"),sh.get("planMode")))
-if cf is None or n==0: print("FAIL no counterfactual opens or no SHADOW heartbeats to compare"); sys.exit(1)
-dev=abs(s-cf)/cf*100 if cf else (0 if s==0 else 100)
-ok2=dev<=tol
-print("%s shadow vs counterfactual opens: %d vs %s, deviation %.1f%% (limit %.1f%%)" % ("PASS" if ok2 else "FAIL",s,cf,dev,tol))
+if not c or n==0: print("FAIL no counterfactual or no SHADOW heartbeats to compare"); sys.exit(1)
+def verdict(name,cf,limit_pct):
+    # tolerance max(limit_pct %, 4 opens) of the counterfactual figure
+    allow=max(limit_pct/100.0*cf,4.0); diff=s-cf
+    dev=abs(diff)/cf*100 if cf else (0.0 if s==0 else 100.0)
+    return abs(diff)<=allow, "%s shadow shOpen=%d vs counterfactual %s=%s, diff %+d (%.1f %%), allowed +-%.1f" % ("PASS" if abs(diff)<=allow else "FAIL",s,name,cf,diff,dev,allow)
+if legacy:
+    # The old criterion, only valid for SETTLE-wake scripted traces (GoldenScripts): shadow total within +-tol %% of ALL counterfactual opens.
+    cf=c.get("opens"); dev=abs(s-cf)/cf*100 if cf else (0 if s==0 else 100)
+    ok2=dev<=tol
+    print("%s shadow vs counterfactual opens (legacy total criterion, SETTLE-wake scripts only): %d vs %s, deviation %.1f%% (limit %.1f%%)" % ("PASS" if ok2 else "FAIL",s,cf,dev,tol))
+else:
+    # Real walking traces: shOpen counts glance ADMISSIONS (GlanceAdmission OPEN, whatever the camera is doing, no timer opens), so it is compared with the counterfactual's glance
+    # admissions; the DWELL+ONSET opens (admissions that also became a camera open) are printed next to it, never the total opens.
+    adm=c.get("glanceAdmissions"); go=c.get("glanceOpens")
+    if adm is None: print("FAIL the report has no glanceAdmissions: the phone build predates the stall model (rebuild and reinstall), or use --legacy-total for SETTLE-wake scripts"); sys.exit(1)
+    ok2,line=verdict("glance_admissions",adm,tol)
+    print(line+" (limit max(%.1f %%, 4 opens))" % tol)
+    if go is not None:
+        _,l2=verdict("dwell_onset_opens",go,tol); print("INFO "+l2.split(" ",1)[1])
 sys.exit(0 if ok and ok2 else 1)
 PY
 }
