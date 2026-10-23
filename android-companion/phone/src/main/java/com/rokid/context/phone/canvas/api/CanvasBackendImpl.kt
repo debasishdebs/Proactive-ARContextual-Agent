@@ -148,6 +148,8 @@ class CanvasBackendImpl(
             helperJobs: com.rokid.context.canvas.helper.HelperJobPort? = null,
             /** 3b WP6: extra node executors (WP8's `py.fn`), composed beside the built-in ones; none by default. A type that a built-in already owns is refused. */
             extraExecutors: Map<String, NodeExecutor> = emptyMap(),
+            /** 3b WP8: the ONE call-side logger the runner writes its count-only lines to (production: the gated core port). */
+            log: com.rokid.context.canvas.helper.CanvasLogSink = com.rokid.context.phone.log.PhoneLogging.canvasPort(),
         ): CanvasBackendImpl {
             val dao = MemoryGraph.get(app).db.canvasDao()
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
@@ -155,7 +157,7 @@ class CanvasBackendImpl(
             val runner = CanvasRunner(
                 dao, photos, composeExecutors(extraExecutors),
                 { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
-                ConfirmTokens(clock), hot, clock,
+                ConfirmTokens(clock), hot, clock, log = log,
             )
             val askDebug = lazy {
                 AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos))
