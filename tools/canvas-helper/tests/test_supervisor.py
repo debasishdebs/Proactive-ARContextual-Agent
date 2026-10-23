@@ -221,7 +221,7 @@ def test_supervisor_policy_kill_failure_forces_remove_journals_and_retries(tmp_p
     h.sup.watchdog_check()
     assert handle.kills == 1 and handle.force_removes == 1
     assert h.sup.active_job_id == "job1", "container not confirmed gone: the job stays held, no new lease"
-    assert h.journal.kill_pending() == ["job1"]
+    assert h.journal.kill_pending() == ["pca-job-job1"]
     h.clock.set_mono(T0 + 3501 + 999)
     h.sup.watchdog_check()
     assert handle.kills == 1, "retry only every 1 s"
@@ -530,3 +530,103 @@ def test_threads_start_and_stop_cleanly(tmp_path):
     stop.set()
     t.join(5)
     assert not t.is_alive() and threading.active_count() == before
+
+
+# ---------------------------------------------------------------- review 1: fail-safe watchdog, late start, pending kills, pending cleanups
+
+def test_watchdog_exception_fails_safe_kills_every_job_and_deletes_copies(tmp_path):
+    h = make(tmp_path)
+    handle = leased(h)
+
+    def boom():
+        raise RuntimeError("injected")
+    h.sup.watchdog_check = boom
+    h.sup.watchdog_guard()  # must not raise
+    assert handle.kills == 1 and h.sup.active_job_id is None and not h.store.job_stage_dir("job1").exists()
+    assert any(l.startswith("watchdog_error") for l in h.lines) and not any("injected" in l for l in h.lines)
+    h.sup.watchdog_guard()  # keeps working afterwards
+
+
+def test_watchdog_thread_survives_an_exception_and_keeps_ticking(tmp_path):
+    import time
+    from pca_helper.clock import SystemClock
+    h = make(tmp_path)
+    h.sup.clock = SystemClock()
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        raise RuntimeError("injected")
+    h.sup.watchdog_check = flaky
+    stop = threading.Event()
+    t = threading.Thread(target=h.sup.run, args=(stop,))
+    t.start()
+    time.sleep(0.6)
+    stop.set()
+    t.join(5)
+    assert len(calls) >= 3, "the watchdog loop outlived the exception"
+
+
+def test_denial_during_payload_fetch_starts_no_runner(tmp_path):
+    h = make(tmp_path)
+    blk = Block(then=Response(200, payload_bytes(), None))
+    h.phone.push("lease", lease_response(h.clock))
+    h.phone.push("payload", blk)
+    t = threading.Thread(target=h.sup.lease_once)
+    t.start()
+    assert blk.entered.wait(5)
+    h.phone.push("heartbeat", err(409, "voided"))
+    h.sup.heartbeat_tick()
+    assert h.sup.active_job_id is None
+    blk.release()
+    t.join(5)
+    assert h.runner.started == [] and not h.store.job_stage_dir("job1").exists()
+
+
+def test_late_start_kill_failure_is_journaled_retried_and_blocks_leasing(tmp_path):
+    h = make(tmp_path)
+    h.runner.block = Block()
+    h.runner.kill_fail_first = True
+    h.phone.push("lease", lease_response(h.clock))
+    h.phone.push("payload", Response(200, payload_bytes(), None))
+    t = threading.Thread(target=h.sup.lease_once)
+    t.start()
+    assert h.runner.block.entered.wait(5)
+    h.phone.push("heartbeat", err(403, "capability_revoked"))
+    h.sup.heartbeat_tick()  # denial while the runner is still starting
+    h.runner.block.release()
+    t.join(5)
+    handle = h.runner.handles[0]
+    assert handle.kills >= 1 and handle.force_removes >= 1
+    assert h.journal.kill_pending() == ["pca-job-job1"]
+    h.runtime.containers.append("pca-job-job1")
+    # no second lease while a container may still be running
+    h.phone.push("poll", poll_resp(["py_exec"]))
+    h.sup.poll_once()
+    assert h.phone.names().count("lease") == 1
+    # retried every 1 s by the watchdog
+    n = handle.kills + h.runtime.events.count(("kill", "pca-job-job1"))
+    h.clock.advance(999)
+    h.sup.watchdog_check()
+    assert handle.kills + h.runtime.events.count(("kill", "pca-job-job1")) == n
+    h.clock.advance(1)
+    h.sup.watchdog_check()
+    assert ("kill", "pca-job-job1") in h.runtime.events and ("remove", "pca-job-job1") in h.runtime.events
+    assert h.journal.kill_pending() == [] and not h.store.job_stage_dir("job1").exists()
+
+
+def test_pending_cleanup_blocks_leasing_so_a_star_cleanup_cannot_hit_a_new_job(tmp_path):
+    h = make(tmp_path)
+    h.runtime.volumes.append("pca-job-old")
+    h.runtime.remove_volume = lambda n: False  # the star cleanup keeps failing
+    h.phone.push("poll", poll_resp(cleanup=[{"cleanupId": "c1", "jobId": "*"}]), poll_resp(["py_exec"]))
+    h.sup.poll_once()
+    h.sup.poll_once()
+    assert "lease" not in h.phone.names()
+
+
+def test_orphan_sweep_logs_the_number_checked_not_the_survivors(tmp_path):
+    h = make(tmp_path)
+    h.runtime.containers.extend(["pca-job-a", "pca-job-b"])
+    h.sup.recover()
+    assert any(l.startswith("orphan_sweep") and "containers_checked=2" in l for l in h.lines)

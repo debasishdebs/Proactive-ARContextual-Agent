@@ -187,3 +187,39 @@ def test_cleanup_command_removes_artifacts_early(tmp_path):
     h.phone.push("poll", poll_resp(cleanup=[{"cleanupId": "c1", "jobId": "jobA"}]))
     h.sup.poll_once()
     assert not f.exists() and h.journal.artifacts() == []
+
+
+def test_retention_7d_expires_when_the_wall_clock_was_set_back(tmp_path):
+    h = make(tmp_path)
+    f = h.store.job_artifact_dir("jobA")
+    f.mkdir(parents=True)
+    h.expiry.register("art1", str(f))
+    h.clock.wall -= 30 * DAY  # a dead RTC or a manual rewind: the artifact would otherwise outlive its 7 days
+    assert h.expiry.sweep() == 1 and not f.exists()
+
+
+def test_journal_readers_and_writers_are_thread_safe(tmp_path):
+    import threading
+    s = Store(tmp_path / "home")
+    j = Journal(s.journal_dir, FakeClock())
+    errors, stop = [], threading.Event()
+
+    def reader():
+        while not stop.is_set():
+            try:
+                j.pending_cleanups(); j.acks_to_send(); j.open_jobs(); j.known_job_ids(); j.all_volumes(); j.artifacts(); j.has_pending_cleanup_for("x")
+            except Exception as e:  # dictionary changed size during iteration
+                errors.append(type(e).__name__)
+                return
+
+    ts = [threading.Thread(target=reader) for _ in range(3)]
+    for t in ts:
+        t.start()
+    for i in range(60):
+        j.add_job("j%d" % i, "pca-job-j%d" % i, "/s", "/e")
+        j.job_end("j%d" % i)
+        j.add_cleanup("c%d" % i, "j%d" % i)
+    stop.set()
+    for t in ts:
+        t.join(10)
+    assert errors == []
