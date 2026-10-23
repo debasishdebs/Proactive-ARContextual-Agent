@@ -55,7 +55,7 @@ class DaoHelperJobStore(private val dao: CanvasSlice3Dao, private val live: Help
     override suspend fun heartbeat(jobId: String, helperId: String, leaseGen: Long, now: Long, leaseMs: Long) = dao.heartbeatHelperJob(jobId, helperId, leaseGen, now, leaseMs, live)
     override suspend fun commit(jobId: String, helperId: String, leaseGen: Long, resultHash: String, resultJson: String, now: Long) =
         dao.commitHelperResultFenced(jobId, helperId, leaseGen, resultHash, resultJson, now, live)
-    override suspend fun fail(jobId: String, helperId: String, leaseGen: Long, code: String, now: Long) = dao.failHelperJob(jobId, helperId, leaseGen, code, now)
+    override suspend fun fail(jobId: String, helperId: String, leaseGen: Long, code: String, now: Long) = dao.failHelperJob(jobId, helperId, leaseGen, code, now, live)
     override suspend fun awaiting() = dao.awaitingConfirmJobs()
     override suspend fun available(types: List<String>, sessionGen: Long) = dao.availableHelperJobs(types, sessionGen)
     override suspend fun pendingCleanup(limit: Int) = dao.pendingCleanup(limit)
