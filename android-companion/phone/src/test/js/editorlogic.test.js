@@ -377,6 +377,23 @@ export const tests = {
     ok(!JSON.stringify(g).includes('Expression'), 'an expression node (not liveable until 3c) is not offered');
     ok(!JSON.stringify(g).includes('input.photos') && !JSON.stringify(g).includes('"Photo"'), 'the Photo input stays out of the palette');
   },
+  paletteOffersThePythonExperimentUnderCodeWithItsHint() {
+    const hint = 'Needs the laptop helper and your confirmation on the phone for each run; never published to the glasses.';
+    const py = Object.assign({}, captureTypes[0], { type: 'py.fn', label: 'Python (experiment)', short: 'pyfn', inputs: ['JSON'], output: 'JSON', root: false, domain: 'ASYNC', executor: 'PYTHON',
+      category: 'Code', liveable: false, hint, params: [{ name: 'source', kind: 'text', label: 'Source', maxLen: 16000 }, { name: 'outSchema', kind: 'text', label: 'Output schema', maxLen: 4000 }] });
+    const expr = Object.assign({}, captureTypes[0], { type: 'expr', label: 'Expression', liveable: false, executor: 'EXPR', category: 'Thresholds/Filters' });
+    const types = allTypes.concat([py, expr]);
+    const g = E.paletteGroups(open(), types);
+    const code = g.find((x) => x.category === 'Code');
+    ok(code, 'a Code group');
+    eq(code.items, [{ type: 'py.fn', label: 'Python (experiment)', hint }]);
+    ok(!JSON.stringify(g).includes('Expression'), 'an unliveable non-python type stays hidden');
+    ok(g.filter((x) => x.category !== 'Code').every((x) => x.items.every((i) => !i.hint)), 'other items carry no hint');
+    // adding it from the palette gives a node with empty source and outSchema (the validator asks for them) and the registry short id
+    const ed = E.addFromPalette(E.selectNode(open(), 'extract'), 'py.fn', types);
+    const n = ed.ds.pipe.nodes.find((x) => x.type === 'py.fn');
+    ok(n, 'py.fn node added'); eq(n.params, { source: '', outSchema: '' }); ok(n.id.startsWith('pyfn'), 'id from short: ' + n.id);
+  },
   inspectorIsGeneratedFromTheParamSchema() {
     const cap = () => E.open(capturePipe(), 1, { layers: 5, columns: 1, cells: {} }, []);
     let ed = E.selectNode(cap(), 'head_1');

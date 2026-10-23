@@ -350,7 +350,12 @@ class CanvasBackendImplTest {
             "ai.prompt" to "AI", "route.switch" to "Routing", "memory.write" to "Memory",
         ), types.keys.associateWith { s(it, "category") })
         // exactly one photo input per pipeline: not offered by the palette
-        assertEquals(listOf("input.photos", "py.fn"), all.keys.filter { s(it, "palette") == "false" }) // WP7: py.fn is registered but not offered until the helper exists (WP9)
+        assertEquals(listOf("input.photos"), all.keys.filter { s(it, "palette") == "false" })
+        // py.fn IS offered (WP9 UI exists): in Code, labelled, with the hint; S6 flags unchanged (never liveable)
+        assertEquals("true", s("py.fn", "palette")); assertEquals("Code", s("py.fn", "category")); assertEquals("Python (experiment)", s("py.fn", "label"))
+        assertEquals("false", s("py.fn", "liveable")); assertEquals("ASYNC", s("py.fn", "domain")); assertEquals("PYTHON", s("py.fn", "executor"))
+        assertTrue(s("py.fn", "hint").contains("laptop helper") && s("py.fn", "hint").contains("never published to the glasses"))
+        assertTrue("no other type carries a hint", all.filterKeys { it != "py.fn" }.values.all { it["hint"]!!.jsonPrimitive.content.isEmpty() })
         assertTrue(types.keys.all { s(it, "domain") == "ASYNC" })
         // the editor needs the switch's field param to edit it
         val params = types.getValue("route.switch")["params"]!!.jsonArray.map { it.jsonObject }

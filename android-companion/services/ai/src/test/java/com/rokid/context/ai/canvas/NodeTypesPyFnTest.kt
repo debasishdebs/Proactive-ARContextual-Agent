@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** WP7: the `py.fn` registry entry. It is an ASYNC code node that is never liveable and never part of a v1 graph; it has no executor here (WP8 owns `PythonExecutor`). */
@@ -14,11 +15,23 @@ class NodeTypesPyFnTest {
         assertNotNull("py.fn is registered", t)
         t!!
         assertEquals(Domain.ASYNC, t.domain); assertEquals(Category.CODE, t.category); assertEquals(ExecutorKind.PYTHON, t.executor)
-        assertFalse(t.liveable); assertFalse("not offered in the palette until the helper exists (WP9)", t.palette)
+        assertFalse(t.liveable); assertTrue("offered in the palette now that the helper UI exists (WP9)", t.palette)
         assertEquals(0, t.cost.modelCalls); assertEquals(0, t.cost.rtOps)
         assertEquals(setOf(PortType.JSON), t.inputs); assertEquals(PortType.JSON, t.output)
         assertEquals(setOf("source", "outSchema"), t.params.specs.map { it.name }.toSet())
         assertEquals(16000, t.params.specs.first { it.name == "source" }.maxLen)
+    }
+
+    /** The palette entry: a clear label, a hint that names the laptop helper, the per-run tap and the never-published rule; the S6 flags are unchanged. */
+    @Test fun paletteEntryHasLabelHintAndKeepsS6Flags() {
+        val t = NodeTypes.byType("py.fn")!!
+        assertEquals("Python (experiment)", t.label)
+        assertEquals("Code", t.category.label)
+        assertFalse(t.liveable)
+        for (w in listOf("laptop helper", "confirm", "never published to the glasses")) assertTrue("hint mentions $w: ${t.hint}", t.hint.contains(w))
+        assertTrue("short hint", t.hint.length <= 160)
+        assertEquals("every other palette type has no hint", emptyList<String>(), NodeTypes.all.filter { it.type != "py.fn" && it.hint.isNotEmpty() }.map { it.type })
+        assertEquals("only the photo input is hidden", listOf("input.photos"), NodeTypes.all.filter { !it.palette }.map { it.type })
     }
 
     @Test fun v1SchemaCannotHoldPyFn() {

@@ -188,16 +188,17 @@ export function refusalFromConnectionState(cs, pipe, nodeTypes) {
 
 // ---------------------------------------------------------------- palette
 
-/** [{category, items:[{type, label}]}] for the palette; empty when read-only. */
+/** [{category, items:[{type, label, hint?}]}] for the palette; empty when read-only. */
 export function paletteGroups(ed, nodeTypes) {
   if (isReadOnly(ed)) return [];
   const groups = [];
   for (const t of nodeTypes || []) {
-    if (!t.palette || t.liveable === false) continue; // `expr` is registered but hidden until 3c
+    // `expr` is registered but hidden until 3c; the python experiment node is the one unliveable type offered (S6 keeps it out of every publish)
+    if (!t.palette || (t.liveable === false && t.executor !== 'PYTHON')) continue;
     const cat = String(t.category || 'Other');
     let g = groups.find((x) => x.category === cat);
     if (!g) { g = { category: cat, items: [] }; groups.push(g); }
-    g.items.push({ type: t.type, label: t.label });
+    g.items.push(t.hint ? { type: t.type, label: t.label, hint: t.hint } : { type: t.type, label: t.label });
   }
   return groups;
 }
