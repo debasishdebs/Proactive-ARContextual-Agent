@@ -107,12 +107,16 @@ class PodmanRuntime:
             raise NeedsRuntime("connections unreadable")
         row = next((r for r in rows if isinstance(r, dict) and r.get("Name") == self.connection), None)
         uri = str(row.get("URI", "")) if row else ""
-        if row is None or row.get("Default") is not True or "/run/user/" not in uri or re.match(r"^[a-z+]+://root@", uri):
-            raise NeedsRuntime("connection is not the default user-level connection")
+        if row is None or "/run/user/" not in uri or re.match(r"^[a-z+]+://root@", uri):
+            # Every command carries `--connection <name>`, so the connection need NOT be the default one (live fact, podman 6.1.4: `machine init` does not
+            # make a second machine the default, and the user's own default machine must stay untouched). It must exist and be a user-level URI.
+            raise NeedsRuntime("connection is missing or not a user-level connection")
         info = self.machine_info()
         if str(info.get("Name", self.machine)) != self.machine or info.get("Rootful") is not False:
             raise NeedsRuntime("machine name or rootless mismatch")
         mounts = info.get("Mounts")
+        if mounts is None:  # live fact (podman 6.1.4 applehv): `machine inspect` has no Mounts key; the machine config file does
+            mounts = self._mounts_from_config()
         if not isinstance(mounts, list) or len(mounts) != 1 or not isinstance(mounts[0], dict) or mounts[0].get("Target") != "/stage" \
                 or not str(mounts[0].get("Source", "")).rstrip("/").endswith("/stage"):
             raise NeedsRuntime("machine must mount exactly the staging root")
@@ -127,6 +131,22 @@ class PodmanRuntime:
             if not ok:
                 raise NeedsRuntime("runtime is not rootless")
         return info
+
+    machine_config_glob = os.path.join(os.path.expanduser("~"), ".config", "containers", "podman", "machine", "*", "%s.json")
+
+    def _mounts_from_config(self):
+        """The machine's mounts from its own config file (read-only, no podman call, valid while the VM is stopped)."""
+        import glob
+        for path in sorted(glob.glob(self.machine_config_glob % self.machine)):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                continue
+            m = data.get("Mounts") if isinstance(data, dict) else None
+            if isinstance(m, list):
+                return m
+        return None
 
     def require_running(self):
         if self.machine_state() != "running":
