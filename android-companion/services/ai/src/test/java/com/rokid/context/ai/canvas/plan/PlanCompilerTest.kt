@@ -358,6 +358,17 @@ class PlanCompilerTest {
         assertEquals(ok(graph()).planJson!!.substringBefore("\"meta\""), ok(withAsync).planJson!!.substringBefore("\"meta\""))
     }
 
+    /** A `py.fn` node on the ASYNC half (now addable from the palette) is not part of the capture config: same config hash and plan JSON. */
+    @Test fun pyFnOnTheAsyncHalfDoesNotChangeTheCaptureConfigHash() {
+        val base = ok(graph())
+        val withPy = graph(extra = listOf(node("photos", NodeTypes.INPUT_PHOTOS), node("p", NodeTypes.PROMPT, obj("schema" to "{\"type\":\"object\"}")),
+            node("fn", NodeTypes.PY_FN, obj("source" to "def run(x):\n  return {}\n", "outSchema" to "{\"type\":\"object\"}"))),
+            edges = chainEdges + PipelineEdge("cam", "photos") + PipelineEdge("photos", "p") + PipelineEdge("p", "fn"))
+        val r = ok(withPy)
+        assertEquals(base.plan!!.configHash, r.plan!!.configHash)
+        assertEquals(base.planJson!!.substringBefore("\"meta\""), r.planJson!!.substringBefore("\"meta\""))
+    }
+
     @Test fun asyncOnlyPipelineHasNoCaptureHalf() {
         val p = Pipeline(2, "p", "P", listOf(node("photos", NodeTypes.INPUT_PHOTOS), node("extract", NodeTypes.VISION_EXTRACT)), listOf(PipelineEdge("photos", "extract")))
         assertEquals(listOf("pipeline has no capture half"), refused(p))
