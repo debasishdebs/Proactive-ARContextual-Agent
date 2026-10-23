@@ -175,4 +175,71 @@ class PipelineValidatorTest {
         assertEquals(emptyList<String>(), problems(DefaultPipelines.liveExtract()))
         assertEquals(problems(minimal()), PipelineValidator.problems(minimal()).map { it.text })
     }
+    // ---- WP8: a py.fn graph is valid only in the shapes the executor supports ----
+    // Supported: an ASYNC-only photo-experiment graph (no capture half), 1..MAX_PY_FN py.fn nodes, each with a non-blank `source`, an `outSchema` that is a JSON object and
+    // exactly one incoming edge (JSON in, from the photos path). Anything else fails validation, so it can never be frozen or run.
+
+    private fun pyFn(id: String = "fn", params: JsonObject = pyParams()) = node(id, NodeTypes.PY_FN, params)
+    private fun pyParams(source: String? = "def run(x):\n    return {}\n", outSchema: String? = "{\"type\":\"object\",\"additionalProperties\":false}") = buildJsonObject {
+        source?.let { put("source", it) }; outSchema?.let { put("outSchema", it) }
+    }
+    private fun pipe2(nodes: List<PipelineNode>, edges: List<PipelineEdge>) = Pipeline(2, "p", "P", nodes, edges)
+    private fun prompt(id: String = "intent") = aiPrompt(id) { mapOf("schema" to JsonPrimitive(schema)) }
+    private fun pyGraph(fn: PipelineNode = pyFn()) = pipe2(listOf(photos(), prompt(), fn), listOf(PipelineEdge("photos", "intent"), PipelineEdge("intent", fn.id)))
+
+    @Test fun pyFnGraphOfTheSupportedShapeIsValid() {
+        assertEquals(emptyList<String>(), problems(pyGraph()))
+        // a py.fn may follow a switch branch and feed on to another py.fn
+        val chain = pipe2(listOf(photos(), prompt(), pyFn("a"), pyFn("b")), listOf(PipelineEdge("photos", "intent"), PipelineEdge("intent", "a"), PipelineEdge("a", "b")))
+        assertEquals(emptyList<String>(), problems(chain))
+    }
+
+    @Test fun pyFnNeedsASource() {
+        assertHas(pyGraph(pyFn(params = pyParams(source = null))), "node fn: py.fn source required")
+        assertHas(pyGraph(pyFn(params = pyParams(source = "  \n"))), "node fn: py.fn source required")
+    }
+
+    @Test fun pyFnNeedsAnOutSchemaThatIsAJsonObject() {
+        assertHas(pyGraph(pyFn(params = pyParams(outSchema = null))), "node fn: py.fn outSchema must be a JSON object")
+        assertHas(pyGraph(pyFn(params = pyParams(outSchema = "[1]"))), "node fn: py.fn outSchema must be a JSON object")
+        assertHas(pyGraph(pyFn(params = pyParams(outSchema = "not json"))), "node fn: py.fn outSchema must be a JSON object")
+    }
+
+    @Test fun pyFnTakesExactlyOneInputEdge() {
+        val two = pipe2(
+            listOf(photos(), prompt("p1"), prompt("p2"), pyFn()),
+            listOf(PipelineEdge("photos", "p1"), PipelineEdge("photos", "p2"), PipelineEdge("p1", "fn"), PipelineEdge("p2", "fn")),
+        )
+        assertHas(two, "node fn: py.fn takes exactly one input edge")
+        // no input edge at all: a py.fn is also unreachable (the existing rule), and the shape rule says so too
+        assertHas(pipe2(listOf(photos(), prompt(), pyFn()), listOf(PipelineEdge("photos", "intent"))), "node fn: py.fn takes exactly one input edge")
+    }
+
+    @Test fun pyFnGraphHasNoCaptureHalf() {
+        val rt = listOf(
+            node("head", NodeTypes.IMU_HEAD_MOTION), node("cam", NodeTypes.CAPTURE_IMAGE),
+        )
+        val g = pipe2(
+            rt + listOf(photos(), prompt(), pyFn()),
+            listOf(PipelineEdge("head", "cam"), PipelineEdge("cam", "photos"), PipelineEdge("photos", "intent"), PipelineEdge("intent", "fn")),
+        )
+        assertHas(g, "node fn: py.fn runs only in a graph without a capture half")
+    }
+
+    @Test fun pyFnNodeCountIsBounded() {
+        val max = PipelineValidator.MAX_PY_FN
+        fun chain(n: Int): Pipeline {
+            val fns = (1..n).map { pyFn("f$it") }
+            val edges = listOf(PipelineEdge("photos", "intent"), PipelineEdge("intent", "f1")) + (2..n).map { PipelineEdge("f${it - 1}", "f$it") }
+            return pipe2(listOf(photos(), prompt()) + fns, edges)
+        }
+        assertEquals(emptyList<String>(), problems(chain(max)))
+        assertHas(chain(max + 1), "too many py.fn nodes (max $max)")
+    }
+
+    @Test fun pyFnRulesDoNotChangeAnyOtherGraph() {
+        // frozen: a graph without py.fn validates exactly as before (the rules are all keyed on the py.fn type)
+        assertEquals(emptyList<String>(), problems(DefaultPipelines.liveExtract()))
+        assertEquals(emptyList<String>(), problems(minimal()))
+    }
 }
