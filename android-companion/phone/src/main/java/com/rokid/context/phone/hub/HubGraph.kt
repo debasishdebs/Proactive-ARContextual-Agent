@@ -45,7 +45,7 @@ object HubGraph {
         private set
     @Volatile var traceControl: com.rokid.context.phone.hub.plan.TraceControlPublisher? = null
         private set
-    /** LGC6-min feeds the glasses' reported diagnostic flag state here (`HubGraph.diagStatus.update(hello.diagFlagState)`); unknown until then. */
+    /** The glasses' reported diagnostic flag state and trace blocker, fed by the hub on every Hello (LGC6-min); unknown until then. */
     val diagStatus = com.rokid.context.phone.hub.plan.MutableGlassesDiagStatus()
 
     fun resetForTests(h: Hub?) { synchronized(this) { hub = h } }
@@ -176,7 +176,7 @@ object HubGraph {
         )
         val collect = com.rokid.context.canvas.trace.CollectSession.of(app)
         val ctl = com.rokid.context.phone.hub.plan.TraceControlPublisher(link, collect, scope).also { it.start() }
-        // LGC4P: Developer mode drives `HudSettings.diagRecord`; until LGC6-min feeds [diagStatus] the status stays unknown and the re-send is bounded.
+        // LGC4P: Developer mode drives `HudSettings.diagRecord`; [diagStatus] is fed by every Hello (LGC6-min); until the first one it is unknown and the re-send is bounded.
         val devMode = com.rokid.context.phone.canvas.DeveloperModeStore.get(app).enabled
         val diagRetry = com.rokid.context.phone.hub.plan.DiagControlRetry(
             scope, diagStatus, diagWanted = com.rokid.context.phone.hub.plan.DiagControlRetry.wantedWhen(devMode, link.state), resend = ctl::resend,
@@ -217,7 +217,7 @@ object HubGraph {
             onMark = { m, a -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onMark(m, a) },
             onGlassesListenStart = { t -> com.rokid.context.phone.canvas.MarkGraph.recorder(app).onListenStart(t) },
             onSessionReady = { start -> sender.onSessionReady(start); ctl.onSessionReady() },
-            devMode = devMode, diagControl = diagRetry,
+            devMode = devMode, diagControl = diagRetry, diagStatus = diagStatus,
         ).also { hubRef.set(it) }.also { hub ->
             // Process-lifetime watchdog: it outlives the hub service, so it can also bring a dead service back (ensureRunning is refused harmlessly where Android forbids it).
             GlassesWatchdog(

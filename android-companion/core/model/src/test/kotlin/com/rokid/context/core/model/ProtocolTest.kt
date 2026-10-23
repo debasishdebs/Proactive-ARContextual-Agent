@@ -107,6 +107,22 @@ class ProtocolTest {
         assertEquals(Decoded.Ok(a), Wire.decode<AutoOpen>(Wire.encode(a)))
     }
 
+    /** LGC6-min: `diagFlagState` and `traceBlocker` are additive strings (fixed vocabulary, never free text); PROTOCOL_VERSION stays 1. */
+    @Test fun helloDiagFieldsRoundTripAndOldPeersStillParse() {
+        assertEquals(1, PROTOCOL_VERSION)
+        val old = """{"v":1,"glassesBatteryPct":80,"bufferSize":0,"glassesNowMs":5,"pauses":[]}"""
+        val d = assertIs<Decoded.Ok<Hello>>(Wire.decode<Hello>(old)).value
+        assertEquals(null, d.diagFlagState); assertEquals(null, d.traceBlocker)
+        val h = Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = 5, pauses = emptyList(), diagFlagState = "armed_no_epoch", traceBlocker = "gate_off")
+        assertEquals(Decoded.Ok(h), Wire.decode<Hello>(Wire.encode(h)))
+        // a newer peer's unknown extra field is tolerated by the existing parser rules
+        val newer = """{"v":1,"glassesBatteryPct":80,"bufferSize":0,"glassesNowMs":5,"pauses":[],"diagFlagState":"enabled","traceBlocker":"none","futureField":{"x":1}}"""
+        val n = assertIs<Decoded.Ok<Hello>>(Wire.decode<Hello>(newer)).value
+        assertEquals("enabled", n.diagFlagState); assertEquals("none", n.traceBlocker)
+        // an all-default hello adds no new key the old phone would have to know (explicitNulls/defaults follow the codec's own rules)
+        assertEquals(Wire.encode(Hello(glassesBatteryPct = 1, bufferSize = 0, glassesNowMs = 5, pauses = emptyList())).contains("diagFlagState"), false)
+    }
+
     /** Fix wave H3: `captureCue` is additive, default on; old phones' settings (no field) keep the blink on. */
     @Test fun captureCueIsAdditiveDefaultOn() {
         assertTrue(assertIs<Decoded.Ok<HudSettings>>(Wire.decode<HudSettings>("""{"v":1}""")).value.captureCue)

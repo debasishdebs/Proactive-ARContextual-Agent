@@ -66,7 +66,7 @@ class HubDiagRecordTest {
         val retry = DiagControlRetry(backgroundScope, status, diagWanted = DiagControlRetry.wantedWhen(dev, link.state), resend = { resends += testScheduler.currentTime })
         val hub = Hub(
             backgroundScope, link, pauses, settings, ingestor, sources, clock = { now }, io = io ?: StandardTestDispatcher(testScheduler),
-            devMode = dev, diagControl = retry,
+            devMode = dev, diagControl = retry, diagStatus = status,
         )
         hub.start(); runCurrent()
         return Rig(hub, link, dev, status, resends)
@@ -148,6 +148,52 @@ class HubDiagRecordTest {
         r.link.emitReady(); runCurrent() // a new glasses session
         assertEquals(DiagFlagState.UNKNOWN, r.status.state.value)
         advanceTimeBy(5_001); assertEquals(1, r.resends.size)
+    }
+
+    private fun hello(flag: String? = null, blocker: String? = null) = com.rokid.context.core.model.Hello(
+        glassesBatteryPct = 77, bufferSize = 0, glassesNowMs = now, pauses = emptyList(), diagFlagState = flag, traceBlocker = blocker,
+    )
+
+    @Test fun EveryHelloFeedsTheStatusStoreNewestWins() = runTest {
+        val r = rig(devOn = true); r.link.emitReady(); runCurrent()
+        r.link.emit(GlassesEvent.HelloReceived(hello("armed_no_epoch", "armed_no_epoch"))); runCurrent()
+        assertEquals(DiagFlagState.ARMED_NO_EPOCH, r.status.state.value); assertEquals("armed_no_epoch", r.status.traceBlocker.value)
+        r.link.emit(GlassesEvent.HelloReceived(hello("enabled", "none"))); runCurrent()
+        assertEquals(DiagFlagState.ENABLED, r.status.state.value); assertEquals("none", r.status.traceBlocker.value)
+        r.link.emit(GlassesEvent.HelloReceived(hello("disabled", "gate_off"))); runCurrent()
+        assertEquals("a later statement replaces the earlier one", DiagFlagState.DISABLED, r.status.state.value)
+    }
+
+    @Test fun HelloWithoutTheFieldOrWithAnUnknownWordIsUnknown() = runTest {
+        val r = rig(devOn = true); r.link.emitReady(); runCurrent()
+        r.link.emit(GlassesEvent.HelloReceived(hello("enabled", "none"))); runCurrent()
+        r.link.emit(GlassesEvent.HelloReceived(hello(null, null))); runCurrent() // an old glasses
+        assertEquals(DiagFlagState.UNKNOWN, r.status.state.value); assertEquals(null, r.status.traceBlocker.value)
+        r.link.emit(GlassesEvent.HelloReceived(hello("enabled", "none"))); runCurrent()
+        r.link.emit(GlassesEvent.HelloReceived(hello("quantum", "x"))); runCurrent()
+        assertEquals(DiagFlagState.UNKNOWN, r.status.state.value)
+    }
+
+    @Test fun AFreeTextBlockerIsNeverStored() = runTest {
+        val r = rig(devOn = true); r.link.emitReady(); runCurrent()
+        r.link.emit(GlassesEvent.HelloReceived(hello("enabled", "Please call 555-0100 about user@example.com"))); runCurrent()
+        assertEquals(null, r.status.traceBlocker.value)
+        r.link.emit(GlassesEvent.HelloReceived(hello("enabled", "x".repeat(200)))); runCurrent()
+        assertEquals(null, r.status.traceBlocker.value)
+    }
+
+    @Test fun AHelloReportingEnabledEndsTheRetryAtHubLevel() = runTest {
+        val r = rig(devOn = true); r.link.emitReady(); runCurrent()
+        advanceTimeBy(5_001); assertEquals(1, r.resends.size)
+        r.link.emit(GlassesEvent.HelloReceived(hello("enabled", "none"))); runCurrent()
+        advanceTimeBy(600_000); assertEquals(1, r.resends.size)
+    }
+
+    @Test fun ANewSessionDropsTheLastHellosStatusAndBlocker() = runTest {
+        val r = rig(devOn = true); r.link.emitReady(); runCurrent()
+        r.link.emit(GlassesEvent.HelloReceived(hello("enabled", "none"))); runCurrent()
+        r.link.emitReady(); runCurrent()
+        assertEquals(DiagFlagState.UNKNOWN, r.status.state.value); assertEquals(null, r.status.traceBlocker.value)
     }
 
     @Test fun LinkLossStopsTheRetry() = runTest {
