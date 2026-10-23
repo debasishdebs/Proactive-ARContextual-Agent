@@ -36,6 +36,7 @@ setup() {
 run_h() {
   OUT=$(PATH="$S/bin:$PATH" FAKE="$S" ADB_LOG="$ADB_LOG" G=GSER1 M1_SCHEME=http TMPDIR="$S/tmp" "$H" "$@" 2>&1 < /dev/null); RC=$?
   echo "--- $CASE rc=$RC"; echo "$OUT" | sed 's/^/    /'
+  RUND=$(ls -d "$1"/handover-* 2>/dev/null | tail -1)
   [ -e "$ADB_LOG.bad" ] && bad "$CASE: the fake adb received a forbidden command: $(cat "$ADB_LOG.bad")"
   logsnt ' logcat'; logsnt 'exec-out run-as com.rokid.context.glasses logcat'
   return 0
@@ -49,7 +50,7 @@ secrets_clean() { # nothing secret on stdout/stderr or in any pulled file
 setup RequiredTids
 run_h "$OUTD"; [ "$RC" != 0 ] || bad "$CASE: ran without tids"
 has "M1_PHONE_TID"; has "M1_WATCH_TID"; has "2 non-glasses"
-logsnt 'exec-out'; [ ! -d "$OUTD/trace-aaaa-0001" ] || bad "$CASE: pulled before the check"
+logsnt 'exec-out'; [ ! -d "$RUND/trace-aaaa-0001" ] || bad "$CASE: pulled before the check"
 setup RequiredTidsPhoneOnly
 M1_PHONE_TID=7 run_h "$OUTD"; [ "$RC" != 0 ] || bad "$CASE: ran with only the phone tid"
 has "M1_WATCH_TID"; logsnt 'exec-out'
@@ -65,10 +66,10 @@ echo "epoch=2" > "$GD/trace_cleanup_pending"
 run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" != 0 ] || bad "$CASE: exported while trace_cleanup_pending exists"
 has "trace_cleanup_pending"; has "REFUSED"
 logsnt 'capture_diag'; logsnt 'tar -c'; logsnt 'files/logs'
-[ ! -d "$OUTD/trace-aaaa-0001" ] || bad "$CASE: a trace was exported"
+[ ! -d "$RUND/trace-aaaa-0001" ] || bad "$CASE: a trace was exported"
 setup PendingProbeFailsClosed
 FAKE_RUNAS_REFUSED=$GPKG run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" != 0 ] || bad "$CASE: exported with an unreadable pending state"
-[ ! -d "$OUTD/trace-aaaa-0001" ] || bad "$CASE: a trace was exported"
+[ ! -d "$RUND/trace-aaaa-0001" ] || bad "$CASE: a trace was exported"
 setup TracePullRefusesToo
 echo "epoch=2" > "$GD/trace_cleanup_pending"
 OUT=$(PATH="$S/bin:$PATH" FAKE="$S" ADB_LOG="$ADB_LOG" G=GSER1 "$HERE/trace-pull.sh" "$OUTD" 2>&1 < /dev/null); RC=$?
@@ -77,10 +78,10 @@ OUT=$(PATH="$S/bin:$PATH" FAKE="$S" ADB_LOG="$ADB_LOG" G=GSER1 "$HERE/trace-pull
 # 3. --no-import: files only, exit 0, nothing marked, no push, no pairing needed; phone by transport id, never serial; no logcat at all
 setup NoImport
 run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" = 0 ] || bad "$CASE: rc $RC"
-[ -f "$OUTD/trace-aaaa-0001/manifest.json" ] || bad "$CASE: sealed trace not pulled"
-[ ! -d "$OUTD/trace-unclosed-0001" ] || bad "$CASE: unclosed trace pulled"
-for f in capture_diag.log capture_diag.log.1; do [ -f "$OUTD/logs/glasses/$f" ] || bad "$CASE: logs/glasses/$f missing"; done
-for f in pca.log pca.log.1 qna_eval.jsonl qna_eval.jsonl.1; do [ -f "$OUTD/logs/phone/$f" ] || bad "$CASE: logs/phone/$f missing"; done
+[ -f "$RUND/trace-aaaa-0001/manifest.json" ] || bad "$CASE: sealed trace not pulled"
+[ ! -d "$RUND/trace-unclosed-0001" ] || bad "$CASE: unclosed trace pulled"
+for f in capture_diag.log capture_diag.log.1; do [ -f "$RUND/logs/glasses/$f" ] || bad "$CASE: logs/glasses/$f missing"; done
+for f in pca.log pca.log.1 qna_eval.jsonl qna_eval.jsonl.1; do [ -f "$RUND/logs/phone/$f" ] || bad "$CASE: logs/phone/$f missing"; done
 has "not imported"; has "pulled 1 trace(s)"
 [ ! -d "$GD/imu/transferred" ] || bad "$CASE: a marker was written without an import"
 logsnt ' push '; logs "^-t 7 exec-out run-as $PPKG"; logsnt '^-s adb-PHN'; logsnt ' logcat'
@@ -97,19 +98,20 @@ logsnt ' push '; [ ! -d "$GD/imu/transferred" ] || bad "$CASE: marker with --no-
 setup MissingRotation
 rm -f "$S/data/$PPKG/files/logs/qna_eval.jsonl.1"
 run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" = 0 ] || bad "$CASE: rc $RC"
-has "skipped 1"; [ ! -f "$OUTD/logs/phone/qna_eval.jsonl.1" ] || bad "$CASE: ghost rotation"; [ -f "$OUTD/logs/phone/qna_eval.jsonl" ] || bad "$CASE: present rotation lost"
+has "skipped 1"; [ ! -f "$RUND/logs/phone/qna_eval.jsonl.1" ] || bad "$CASE: ghost rotation"; [ -f "$RUND/logs/phone/qna_eval.jsonl" ] || bad "$CASE: present rotation lost"
 setup PhoneRunAsRefused
 FAKE_RUNAS_REFUSED=$PPKG run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" = 0 ] || bad "$CASE: rc $RC"
-has "phone logs not pulled: run-as refused (build not debuggable)"; [ -f "$OUTD/trace-aaaa-0001/manifest.json" ] || bad "$CASE: glasses traces lost"
+has "phone logs not pulled: run-as refused (build not debuggable)"; [ -f "$RUND/trace-aaaa-0001/manifest.json" ] || bad "$CASE: glasses traces lost"
 
 # 5. watch logcat only when WATCH_TAGS is set (by tid, the filtered tags, through the deny list); never the glasses logcat
 setup WatchTagsUnset
 run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; logsnt 'logcat'
 setup WatchTagsSet
 OUT=$(WATCH_TAGS="PcWatch:I *:S" PATH="$S/bin:$PATH" FAKE="$S" ADB_LOG="$ADB_LOG" G=GSER1 M1_SCHEME=http TMPDIR="$S/tmp" "$H" "$OUTD" --phone-tid 7 --watch-tid 9 --no-import 2>&1 < /dev/null); RC=$?
+RUND=$(ls -d "$OUTD"/handover-* | tail -1)
 echo "--- $CASE rc=$RC"; echo "$OUT" | sed 's/^/    /'
-[ "$RC" = 0 ] || bad "$CASE: rc $RC"; logs '^-t 9 logcat -d -v time -s PcWatch:I \*:S'; logsnt '^-s GSER1 .*logcat'; [ -s "$OUTD/logs/watch/logcat.txt" ] || bad "$CASE: no watch log"
-grep -q 'zzz999\|deviceSecret' "$OUTD/logs/watch/logcat.txt" && bad "$CASE: secret line in the watch log"
+[ "$RC" = 0 ] || bad "$CASE: rc $RC"; logs '^-t 9 logcat -d -v time -s PcWatch:I \*:S'; logsnt '^-s GSER1 .*logcat'; [ -s "$RUND/logs/watch/logcat.txt" ] || bad "$CASE: no watch log"
+grep -q 'zzz999\|deviceSecret' "$RUND/logs/watch/logcat.txt" && bad "$CASE: secret line in the watch log"
 hasnt zzz999
 
 # 6. heartbeat evidence: no heartbeat, or none fresh, rejects BEFORE traces or import; the labelled override continues
@@ -124,7 +126,7 @@ has "NO FRESH HEARTBEAT EVIDENCE"; logsnt 'tar -c'
 setup HeartbeatOverride
 printf '10-24 10:10:00.000 I PcCapture status ok\n' > "$GD/capture_diag.log"
 run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import --allow-no-heartbeat; [ "$RC" = 0 ] || bad "$CASE: override refused"
-has "NO FRESH HEARTBEAT EVIDENCE"; has "continuing"; [ -f "$OUTD/trace-aaaa-0001/manifest.json" ] || bad "$CASE: nothing pulled"
+has "NO FRESH HEARTBEAT EVIDENCE"; has "continuing"; [ -f "$RUND/trace-aaaa-0001/manifest.json" ] || bad "$CASE: nothing pulled"
 
 # 7. import: pairing only here (args), then the marker OUTSIDE the trace dir, only for traces whose import succeeded; nothing is stored
 setup ImportMarks
@@ -149,8 +151,28 @@ setup SecondPullAfterMark
 run_h "$OUTD" --phone-tid 7 --watch-tid 9 --host "$HP" --code 123456 --fp 00000000
 [ "$RC" = 0 ] || bad "$CASE: first import rc $RC"
 run_h "$OUTD.2" --phone-tid 7 --watch-tid 9 --host "$HP" --code 123456 --fp 00000000
-[ "$RC" = 0 ] || bad "$CASE: second pull after the mark failed (bad_file_set?)"; [ -f "$OUTD.2/trace-aaaa-0001/manifest.json" ] || bad "$CASE: second pull lost the trace"
+[ "$RC" = 0 ] || bad "$CASE: second pull after the mark failed (bad_file_set?)"; [ -f "$RUND/trace-aaaa-0001/manifest.json" ] || bad "$CASE: second pull lost the trace"
 [ -f "$GD/imu/transferred/trace-aaaa-0001" ] || bad "$CASE: marker gone"
+
+# 7b. output dir reuse: every run exports into its own fresh subdirectory; a stale trace from an earlier hand-over (since deleted on the glasses) is never imported or marked
+setup StaleTraceNeverImported
+mkdir -p "$OUTD/trace-stale-0001" "$OUTD/handover-00000000-old/trace-stale-0002"; echo '{}' > "$OUTD/trace-stale-0001/manifest.json"; echo '{}' > "$OUTD/handover-00000000-old/trace-stale-0002/manifest.json"
+run_h "$OUTD" --phone-tid 7 --watch-tid 9 --host "$HP" --code 123456 --fp 00000000; [ "$RC" = 0 ] || bad "$CASE: rc $RC"
+has "export dir: $RUND"; [ -f "$RUND/trace-aaaa-0001/manifest.json" ] || bad "$CASE: current trace missing from the fresh dir"
+[ ! -e "$RUND/trace-stale-0001" ] || bad "$CASE: stale trace in the fresh dir"
+[ ! -e "$GD/imu/transferred/trace-stale-0001" ] && [ ! -e "$GD/imu/transferred/trace-stale-0002" ] || bad "$CASE: a stale trace was marked"
+logsnt 'trace-stale'; hasnt "traceId=trace-stale"
+
+# 7c. remote shell parsing (the fake joins the arguments and parses them like the real remote shell): the fence must SEE a pending cleanup and a clear one
+setup FenceSeesPending
+echo "epoch=2" > "$GD/trace_cleanup_pending"
+run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" != 0 ] || bad "$CASE: pending cleanup not seen through remote shell parsing"; has "files/trace_cleanup_pending exists"; has "No trace or log was exported"; logsnt capture_diag
+setup FenceSeesClear
+run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" = 0 ] || bad "$CASE: clear state refused (rc $RC)"; hasnt "REFUSED"
+setup MarkerAndProbesThroughRemoteShell
+run_h "$OUTD" --phone-tid 7 --watch-tid 9 --host "$HP" --code 123456 --fp 00000000
+[ -f "$GD/imu/transferred/trace-aaaa-0001" ] || bad "$CASE: marker not created through the remote shell"
+[ -f "$RUND/logs/phone/pca.log" ] && [ -f "$RUND/logs/glasses/capture_diag.log" ] || bad "$CASE: log probes lost through the remote shell"
 
 # 8. static: the script never names an install/uninstall/am/pm/force-stop/pkill/killall command, and its only logcat is the watch one
 if grep -n -E 'adb[^#]*[ "](install|uninstall|force-stop)|shell +(am|pm) |pkill|killall' "$H" | grep -v '^[0-9]*:#'; then bad "static: forbidden command in handover.sh"; fi

@@ -19,12 +19,14 @@ case "${1:-}" in
   logcat) echo "10-24 10:00:00.000 W WatchTag: watch line deviceSecret=zzz999"; echo "10-24 10:00:01.000 I WatchTag: ok"; exit 0 ;;
   exec-out)
     shift
-    if [ "${1:-}" = run-as ]; then
-      pkg="$2"; shift 2
-      if [ "${FAKE_RUNAS_REFUSED:-}" = "$pkg" ]; then echo "run-as: package not debuggable: $pkg" >&2; exit 1; fi
-      [ -d "$FAKE/data/$pkg" ] || { echo "run-as: unknown package: $pkg" >&2; exit 1; }
-      cd "$FAKE/data/$pkg" && exec "$@"
-    fi
-    exit 1 ;;
+    # Like real adb: the arguments are joined with spaces and parsed by a REMOTE shell (a lost quote changes the command). run-as is a function: it only affects the command it prefixes.
+    export FAKE FAKE_RUNAS_REFUSED
+    exec bash -c 'run-as() {
+      local pkg="$1"; shift
+      if [ "${FAKE_RUNAS_REFUSED:-}" = "$pkg" ]; then echo "run-as: package not debuggable: $pkg" >&2; return 1; fi
+      [ -d "$FAKE/data/$pkg" ] || { echo "run-as: unknown package: $pkg" >&2; return 1; }
+      ( cd "$FAKE/data/$pkg" && exec "$@" )
+    }
+    cd /; '"$*" ;;
 esac
 exit 1
