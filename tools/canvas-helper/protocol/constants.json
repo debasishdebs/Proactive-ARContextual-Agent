@@ -21,6 +21,7 @@
   "maxRequestBodyBytes": 1048576,
   "maxPayloadBytes": 1048576,
   "maxResultBytes": 2097152,
+  "resultBodyMaxBytes": 2101248,
   "py": {
     "sourceMaxChars": 16000,
     "itemsMin": 1,

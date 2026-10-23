@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from . import protocol
-from .client import NetworkError
+from .client import BodyTooLarge, NetworkError
 from .journal import CleanupExecutor, VOLUME_PREFIX
 
 DENIAL_STATUSES = (401, 403, 404, 409)
@@ -471,14 +471,30 @@ class Supervisor:
         with self._lock:
             job.posting = True
         try:
-            if out.get("kind") == "result":
-                self._post_result(job, out.get("result"))
-            else:
-                code = out.get("code")
-                self._post_fail(job, code if code in constants()["failCodes"] else "runtime_error")
+            try:
+                if out.get("kind") == "result":
+                    self._post_result(job, out.get("result"))
+                else:
+                    code = out.get("code")
+                    self._post_fail(job, code if code in constants()["failCodes"] else "runtime_error")
+            except (ValueError, OSError) as e:
+                # nothing in the post path may end the helper: fail the job safe, then make sure its copies are gone
+                self.log.event("post_error", cls=_snake(type(e).__name__))
+                self._fail_job_after_post_error(job)
         finally:
             with self._lock:
                 job.posting = False
+
+    def _fail_job_after_post_error(self, job):
+        if job.ended:
+            return
+        try:
+            resp = self.client.fail(job.job_id, job.lease_gen, "bad_output")
+            self.log.event("fail", status=resp.status)
+        except (NetworkError, ValueError, OSError):
+            self.log.event("fail", status=0)
+        self._kill(job)
+        self._end_job(job, "failed")
 
     def _retry_later(self, job):
         with self._lock:
@@ -499,6 +515,10 @@ class Supervisor:
         except NetworkError:
             self.log.event("result", status=0)
             self._retry_later(job)
+            return
+        except BodyTooLarge:
+            self.log.event("result", status=0, too_large=True)
+            self._post_fail(job, "too_large")
             return
         self.log.event("result", status=resp.status)
         if resp.ok:
