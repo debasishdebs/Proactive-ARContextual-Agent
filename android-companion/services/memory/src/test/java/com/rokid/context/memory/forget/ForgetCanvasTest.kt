@@ -118,8 +118,9 @@ class ForgetCanvasTest {
     @Test fun forgetMomentDeletesLabelsVoidsHelperJobsAndInvalidatesResults() = runBlocking {
         frame("f1"); mem("m1", "f1"); frame("f2", ts = 1_000_000); mem("m2", "f2"); sliceRows("f1"); sliceRows("f2", 1_000_000) // f2 is far from f1 in time: the time link must not reach it
         service.forgetMoment("f1")
-        assertEquals(0, sliceLeft("f1")); assertEquals(2, sliceLeft("f2"))
         val s = db.canvasSlice3Dao()
+        assertEquals(0, sliceLeft("f1")); assertEquals("the label of the far frame stays; its job is voided too (3b WP4: any frame Forget moves frame_forget_rev, which fails every in-flight job closed)", 1, sliceLeft("f2"))
+        assertEquals("VOIDED", s.helperJob("j-f2")!!.state)
         assertEquals("a result computed under the old labelRev is invalidated", true, s.replay("r-f2")!!.invalidated)
         assertEquals(null, s.replay("r-f2")!!.resultJson)
     }
