@@ -60,12 +60,12 @@ class PcLogTest {
         PcLog.install(sink)
         val release = CountDownLatch(1); val entered = CountDownLatch(1)
         // the flag owner loads the persisted flag on ITS thread and then publishes the snapshot
-        val loader = Thread { entered.countDown(); release.await(30, TimeUnit.SECONDS); PcLog.setDiagnostic(true) }
+        val loader = Thread { entered.countDown(); release.await(120, TimeUnit.SECONDS); PcLog.setDiagnostic(true) }
             .apply { isDaemon = true; start() }
         try {
             assertTrue(entered.await(5, TimeUnit.SECONDS))
             val caller = Thread { PcLog.e("T", "direct"); PcLog.port("canvas").log(Level.E, "T", "port") }.apply { isDaemon = true; start() }
-            caller.join(30_000)
+            caller.join(30_000)   // shorter than the loader's own 120 s wait: logging can only finish if it never waited for the loader
             assertFalse(caller.isAlive, "logging waited for the flag loader")
             assertEquals(2, sink.got.size)
             assertTrue(sink.got.all { it.second == Route(true, true) })   // W/E reach both outputs while the flag is unknown
