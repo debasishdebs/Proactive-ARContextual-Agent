@@ -101,8 +101,10 @@ class DiagRecord(
     /** THE predicate of the trace gate: requested AND the epoch is durable. */
     fun diagEnabled(): Boolean = requestedNow && epochSaved()
 
-    fun state(): DiagFlagState {
-        val saved = epochSaved()
+    fun state(): DiagFlagState = stateFor(epochSaved())
+
+    /** [state] for an epoch fact the caller already has (the boot line reads it from the recovery, without touching the recorder). */
+    fun stateFor(saved: Boolean): DiagFlagState {
         return when {
             requestedNow && saved -> DiagFlagState.ENABLED
             requestedNow -> DiagFlagState.ARMED_NO_EPOCH
