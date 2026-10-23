@@ -142,21 +142,32 @@ PY
   [ "$(pj 'j.get("sent")')" = True ] || echo "NOTE sent=false: the plan is stored and goes out when the glasses link is up"
 }
 
-# heartbeat_summary < diag text on stdin: only heartbeat lines, only counts/short fields; the SHADOW window of the identity plan
+# heartbeat_summary [fromMs toMs] < diag text on stdin: only heartbeat lines, only counts/short fields; the SHADOW heartbeats of the identity plan. With fromMs/toMs (the trace
+# interval in wall-clock ms, as the replay job reports it) only heartbeats stamped inside it count, and only those of the expected plan hash; the heartbeat timestamp (MM-DD HH:MM:SS.mmm,
+# no year or zone) is read in this machine's zone and in the year of fromMs. Without an interval every SHADOW heartbeat counts (the caller must supply a trimmed log) and the line says so.
 heartbeat_summary() {
   python3 -c '
-import sys,re
+import sys,datetime
+lo=int(sys.argv[1]) if len(sys.argv)>2 and sys.argv[1].isdigit() else None
+hi=int(sys.argv[2]) if lo is not None and sys.argv[2].isdigit() else None
+plan=sys.argv[3] if len(sys.argv)>3 else ""
+year=datetime.datetime.fromtimestamp(lo/1000.0).year if lo is not None else None
 rows=[]
 for line in sys.stdin:
     if "heartbeat v=2" not in line: continue
     kv=dict(t.split("=",1) for t in line.split() if "=" in t)
+    p=line.split()
+    if lo is not None and hi is not None:
+        try: ms=datetime.datetime.strptime("%d-%s %s" % (year,p[0],p[1]),"%Y-%m-%d %H:%M:%S.%f").timestamp()*1000
+        except Exception: continue
+        if not (lo<=ms<=hi): continue
     rows.append(kv)
-sh=[r for r in rows if r.get("planMode")=="SHADOW"]
+sh=[r for r in rows if r.get("planMode")=="SHADOW" and (not plan or r.get("plan","").startswith(plan))]
 def i(r,k):
     try: return int(r.get(k,"0"))
     except ValueError: return 0
 last=rows[-1] if rows else {}
-print("hb_lines=%d shadow_hb=%d plan=%s gen=%s planMode=%s planRevert=%s shOpen=%d shSkip=%d" % (len(rows),len(sh),last.get("plan","none"),last.get("gen","0"),last.get("planMode","na"),last.get("planRevert","na"),sum(i(r,"shOpen") for r in sh),sum(i(r,"shSkip") for r in sh)))'
+print("hb_lines=%d shadow_hb=%d plan=%s gen=%s planMode=%s planRevert=%s shOpen=%d shSkip=%d window=%s" % (len(rows),len(sh),last.get("plan","none"),last.get("gen","0"),last.get("planMode","na"),last.get("planRevert","na"),sum(i(r,"shOpen") for r in sh),sum(i(r,"shSkip") for r in sh),"trace-interval" if lo is not None and hi is not None else "UNFILTERED"))' "$@"
 }
 
 # diag_text: heartbeat lines from the glasses own-tag log (or $M1_DIAG); no other line is ever read onward
@@ -271,7 +282,10 @@ cmd_replay() {
   echo "jobState=$state"
   [ "$state" = DONE ] || { echo "FAIL replay did not finish DONE"; exit 1; }
   local dt=""; if [ -n "$diag" ]; then dt=$(grep 'heartbeat v=2' "$diag"); else dt=$(diag_text); fi
-  local sh; sh=$(printf '%s\n' "$dt" | heartbeat_summary)
+  # The trace interval and plan hash restrict the heartbeats counted (fromMs/toMs of the replay job: the trace's wall-clock interval); an unknown interval leaves them unfiltered.
+  local fms tms; fms=$(pj 'j.get("fromMs")'); tms=$(pj 'j.get("toMs")')
+  local sh; sh=$(printf '%s\n' "$dt" | heartbeat_summary "$fms" "$tms" "${EXPECT_HASH:0:8}")
+  case "$sh" in *UNFILTERED*) echo "NOTE trace interval unknown: every SHADOW heartbeat of the log counts (use --diag with a log trimmed to the run)" ;; esac
   python3 - "$LAST" "$tol" "$sh" "$legacy" <<'PY'
 import json,sys
 j=json.load(open(sys.argv[1])); tol=float(sys.argv[2]); sh=dict(t.split("=",1) for t in sys.argv[3].split() if "=" in t); legacy=sys.argv[4]=="1"
@@ -286,7 +300,7 @@ print("counterfactual opens=%s baseline opens=%s unobservedOpensPct=%s warnings=
 st=r.get("stalls") or {}
 print("inexact_bounds reasons=%s covered=%.2f min (%.1f %% of the span) | delivery stalls: %s (%.0f s, %.1f %% of the span)" % (
     json.dumps(r.get("inexactReasons",{}),sort_keys=True),r.get("inexactMinutes",0.0),r.get("inexactSharePct",0.0),st.get("count",0),st.get("seconds",0.0),st.get("sharePct",0.0)))
-print("opens_range baseline=[%s, %s] counterfactual=[%s, %s] (low = replayed opens in exact windows + recorded opens in inexact ones; high = low + replayed opens in inexact ones)" % (
+print("opens_range baseline=[%s, %s] counterfactual=[%s, %s] (low = replayed opens in exact windows + recorded opens in inexact ones; high = low + replayed opens in inexact ones; covers the excluded windows only and assumes every other window passed: NOT a bound while base_fail>0)" % (
     b.get("opensLow",b.get("opens")),b.get("opensHigh",b.get("opens")),c.get("opensLow",c.get("opens")),c.get("opensHigh",c.get("opens"))))
 ok=failed==0 and passed>0
 print("%s exact parity (base_fail=0, windows>0)" % ("PASS" if ok else "FAIL"))

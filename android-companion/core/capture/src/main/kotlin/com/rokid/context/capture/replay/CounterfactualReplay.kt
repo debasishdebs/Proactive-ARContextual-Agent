@@ -84,6 +84,7 @@ data class ReplayReport(
             put("inexactReasons", buildJsonObject { inexactReasons.toSortedMap().forEach { (k, v) -> put(k.name, v) } })
             put("shadowOrTrialOnly", shadowOrTrialOnly)
             put("warnings", JsonArray(warnings.map { JsonPrimitive(it) }))
+            put("opensRangeBasis", CounterfactualReplay.OPENS_RANGE_BASIS)
             put("inexactMinutes", inexactMinutes); put("inexactSharePct", inexactSharePct)
             put("stalls", buildJsonObject { put("count", stallCount); put("seconds", stallSeconds); put("sharePct", stallSharePct) })
             put("states", buildJsonObject { states.toSortedMap().forEach { (k, v) -> put(k, buildJsonObject { put("minutes", v.minutes); put("opensP95PerMin", v.opensP95PerMin) }) } })
@@ -104,6 +105,8 @@ object CounterfactualReplay {
     const val NEAREST_FRAME_MS = 2_000L
     const val DEFAULT_OPEN_S = 0.7
     const val FUSION_WARNING = "fusion changes are not replayed"
+    /** What `opensLow`/`opensHigh` are: uncertainty from the excluded windows only, conditional on the other windows passing. */
+    const val OPENS_RANGE_BASIS = "excluded windows only; assumes every other window passed (not a bound while baseFailed > 0)"
     const val APPROXIMATE_WARNING = "replay is approximate"
     const val ESTIMATE_WARNING = "keeps and battery are estimates"
 
@@ -176,7 +179,7 @@ object CounterfactualReplay {
         fun pct(x: Double) = if (spanMs > 0.0) 100.0 * x / spanMs else 0.0
         val stallSeconds = base.stalls.ms / 1000.0
         if (base.stalls.count > 0) warnings += "sensor delivery stalls: ${base.stalls.count} (${"%.1f".format(java.util.Locale.ROOT, stallSeconds)} s, ${"%.1f".format(java.util.Locale.ROOT, pct(base.stalls.ms.toDouble()))} % of the span); the replay decides at the delivery instant, not inside them"
-        if (base.inexact > 0) warnings += "excluded windows cover ${"%.1f".format(java.util.Locale.ROOT, inexactMs / 60_000.0)} min (${"%.1f".format(java.util.Locale.ROOT, pct(inexactMs))} % of the span): opens are bounded to [${baseline.opensLow}, ${baseline.opensHigh}] for the recorded config"
+        if (base.inexact > 0) warnings += "excluded windows cover ${"%.1f".format(java.util.Locale.ROOT, inexactMs / 60_000.0)} min (${"%.1f".format(java.util.Locale.ROOT, pct(inexactMs))} % of the span): opens range [${baseline.opensLow}, ${baseline.opensHigh}] covers the excluded windows only and assumes every other window passed (it is not a bound while windows fail)"
         if (base.failed > 0) warnings += "the replay disagrees with the recording in ${base.failed} window(s)"
         warnings += ESTIMATE_WARNING
         if (cand != null) warnings += "unobserved opens: ${"%.1f".format(java.util.Locale.ROOT, unobservedPct)} %"

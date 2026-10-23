@@ -181,6 +181,8 @@ object CaptureSimulator {
     private const val TEN_MIN_MS = 10 * 60_000L
     private const val DECISION_HOLD_MS = 1_000L
     private const val GATE_PAIR_MS = 2_000L
+    /** How long after a resume decision whose slack ran out a recorded open of its cause still explains it (twice the slack). */
+    private const val STALL_EXCUSE_MS = 2 * ReplayRule.STALL_LATE_SLACK_MS
 
     /** The replay's gate store: the last five keyframes and the last keep time, seeded from the snapshot. */
     private class Store : GateStore {
@@ -201,8 +203,8 @@ object CaptureSimulator {
         var extra = 0
         var missed = 0
         var gateBad = 0
-        /** A delivery stall ended inside this window: the replay does not decide inside it and the resume latency of the live loop is only bounded (see [Inexact.STALL]). */
-        var stalled = false
+        /** Resume decisions of a stall whose cause-matched recorded open came later than the stall slack: the only thing a stall excuses (see [Inexact.STALL]). */
+        var stallExcused = 0
     }
 
     private class RecOpen(val ev: TraceEvent.Episode, val win: Win)
@@ -269,6 +271,8 @@ object CaptureSimulator {
         val recordedOpens = ArrayList<Long>()
         var admissions = 0
         val spans = ArrayList<InexactSpan>()
+        /** First decisions after a stall whose own slack ran out unmatched: they wait [STALL_EXCUSE_MS] for a recorded open of their cause, else they are plain extras. */
+        val stallPending = ArrayList<RepOpen>()
 
         // comparison state
         val compared = base
@@ -355,7 +359,7 @@ object CaptureSimulator {
                 advanceTo(t)                          // the ticks up to the start of the stall (see the limit in advanceTo)
                 nextTickAt = maxOf(nextTickAt, t)
                 afterStall = true; resumeAt = t
-                if (!preRoll) { stallCount++; stallMs += t - last; cur.stalled = true }
+                if (!preRoll) { stallCount++; stallMs += t - last }
             }
             lastSensorT = t
         }
@@ -487,8 +491,11 @@ object CaptureSimulator {
                 if (own == null || !ReplayRule.opensMatch(e.tMs, e.cause, own.atMs, own.cause, own.lateSlackMs)) awaiting += RecOpen(e, cur)
                 return
             }
+            // The latency of the live loop after a stall is excused for the resume decision only, and only by a recorded open of ITS cause.
+            val late = stallPending.firstOrNull { it.open.cause == e.cause && e.tMs - it.open.atMs in 0..STALL_EXCUSE_MS }
+            if (late != null) { stallPending.remove(late); late.win.stallExcused++; mismatch("stall_resume", late.open.atMs, "resume decision (${late.open.cause}) after a stall; the recorded open followed ${e.tMs - late.open.atMs} ms later") }
             val twin = pendingReplayed.firstOrNull { ReplayRule.opensMatch(e.tMs, e.cause, it.open.atMs, it.open.cause, it.open.lateSlackMs) }
-            if (twin != null) { pendingReplayed.remove(twin); twinned += e.tMs } else awaiting += RecOpen(e, cur)
+            if (twin != null) { pendingReplayed.remove(twin); twinned += e.tMs } else if (late != null) twinned += e.tMs else awaiting += RecOpen(e, cur)
             closing += cur
             cur = newWin(e.tMs).also { it.flagged += e }
         }
@@ -596,9 +603,15 @@ object CaptureSimulator {
             while (it1.hasNext()) {
                 val p = it1.next()
                 if (p.open.atMs + p.open.lateSlackMs < t) {
-                    it1.remove(); p.win.extra++
-                    mismatch("open_extra", p.open.atMs, "replay would open (${p.open.cause}) with no recorded open")
+                    it1.remove()
+                    if (p.open.lateSlackMs > ReplayRule.LATE_SLACK_MS) stallPending += p
+                    else { p.win.extra++; mismatch("open_extra", p.open.atMs, "replay would open (${p.open.cause}) with no recorded open") }
                 }
+            }
+            val it1b = stallPending.iterator()
+            while (it1b.hasNext()) {
+                val p = it1b.next()
+                if (p.open.atMs + STALL_EXCUSE_MS < t) { it1b.remove(); p.win.extra++; mismatch("open_extra", p.open.atMs, "replay would open (${p.open.cause}) after a stall with no recorded open of that cause") }
             }
             val it2 = awaiting.iterator()
             while (it2.hasNext()) {
@@ -613,16 +626,17 @@ object CaptureSimulator {
                 val x = it3.next()
                 if (x.nowMs + GATE_PAIR_MS < t) { it3.remove(); x.win.gateBad++; mismatch("gate_missing", x.nowMs, "replayed gate seq=${x.seq} has no recorded gt") }
             }
-            while (closing.isNotEmpty() && closing.first().endMs + ReplayRule.STALL_LATE_SLACK_MS < t) finalize(closing.removeFirst())
+            while (closing.isNotEmpty() && closing.first().endMs + STALL_EXCUSE_MS < t) finalize(closing.removeFirst())
         }
 
         fun finalize(w: Win) {
             if (!compared) return
             val carry = snap.copy(bindFailures = w.carryFailures, bindBackoffUntil = w.carryBackoff)
             val reasons = LinkedHashSet(Exactness.classify(w.flagged, carry, twinned))
-            // A stall ended in this window and the replay and the recording disagree in it: the resume latency of the live loop is the only thing unmodelled, so the window is excluded
-            // and BOUNDED (the span, the stall totals and the [low, high] opens of the report) instead of being failed or dropped without a trace.
-            if (w.stalled && (w.extra > 0 || w.missed > 0)) reasons += Inexact.STALL
+            // The first decision after a stall met its recorded open later than the stall slack and nothing else in the window disagrees: the resume latency of the live loop is
+            // the only thing unmodelled, so the window is excluded and BOUNDED (the span, the stall totals and the [low, high] opens of the report). Any other extra, miss or gate
+            // disagreement in the window still FAILS it: a stall excuses its own resume decision, not the window.
+            if (w.stallExcused > 0 && w.extra == 0 && w.missed == 0 && w.gateBad == 0) reasons += Inexact.STALL
             if (reasons.isNotEmpty()) spans += InexactSpan(w.startMs, if (w.endMs >= 0) w.endMs else now + 1, reasons)
             reasons.forEach { reasonCounts.merge(it, 1, Int::plus) }
             tally.record(reasons, w.extra == 0 && w.missed == 0 && w.gateBad == 0)
@@ -632,6 +646,7 @@ object CaptureSimulator {
             if (compared && !preRoll) {
                 // what falls inside the last tolerance of the trace cannot be judged: its twin would have come after the close
                 pendingReplayed.removeAll { it.open.atMs + it.open.lateSlackMs >= now }
+                stallPending.removeAll { it.open.atMs + STALL_EXCUSE_MS >= now }
                 awaiting.removeAll { it.ev.tMs + ReplayRule.EARLY_SLACK_MS >= now }
                 expected.removeAll { it.nowMs + GATE_PAIR_MS >= now }
                 settle(now + 1)
