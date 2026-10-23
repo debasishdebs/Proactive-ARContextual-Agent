@@ -12,6 +12,29 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 
 /**
+ * The numbers of the space policy (plan 3.7). [initialWriteBytes] is the bounded first physical write of a trace: one chunk file at its frozen size limit plus the manifest
+ * skeleton (`start.json`), NOT the per-trace cap and not a whole-trace headroom. [softBudgetOverride] is for tests.
+ */
+class SpacePolicy(
+    val floorBytes: Long = 64L shl 20,
+    val sealReserveBytes: Long = 16L shl 20,
+    val initialWriteBytes: Long = TraceFiles.MAX_FILE_CHARS + (TraceBounds.MAX_MANIFEST_BYTES + 2) / 3 * 4 + 1_024L,
+    val softMaxBytes: Long = 1_536L shl 20,
+    val softFraction: Double = 0.20,
+    val softBudgetOverride: Long? = null,
+) {
+    fun softBudgetFor(free: Long): Long = softBudgetOverride ?: minOf(softMaxBytes, (free * softFraction).toLong())
+    /** `needBytes` at a trace start. */
+    val startNeed: Long get() = sealReserveBytes + initialWriteBytes
+}
+
+/** Counts of one reclaim pass: transferred and oldest traces deleted, bytes freed, deletes that failed. */
+class ReclaimResult(val transferred: Int, val oldest: Int, val freedBytes: Long, val failed: Int) {
+    val any: Boolean get() = transferred + oldest + failed > 0
+    fun line(): String = "trace reclaim: transferred=$transferred oldest=$oldest freedMB=${freedBytes shr 20} failed=$failed"
+}
+
+/**
  * The recorder's files. Layout (the frozen [TraceFiles] layout, one directory per trace):
  * - `imu_trace_tmp/<traceId>/chunk-NNNN.json`: a trace being written. A chunk file is written under a `.part` name and renamed, so a crash leaves
  *   no half file that looks complete; the whole directory is invisible to import until [publish].
@@ -22,7 +45,13 @@ import java.util.concurrent.atomic.AtomicLong
  * Every method is called from the single writer thread (the recorder's io thread, which also runs [recover]), except [readEpoch] (construction: one tiny file). [used] counts the bytes of both directories.
  */
 internal class TraceStorage(
-    private val root: File, private val diskCapBytes: Long = Long.MAX_VALUE,
+    private val root: File,
+    /** LGC7-min (plan 3.7): the space numbers (floor, sealing reserve, initial write bound, soft budget). */
+    private val space: SpacePolicy = SpacePolicy(),
+    /** Physical free bytes of the volume that holds [root] (production: `usableSpace`, a `statvfs`). Called ONLY on the writer thread. */
+    private val freeBytes: () -> Long = { root.usableSpace },
+    /** Called with the outcome of every reclaim pass that deleted or failed to delete something (the recorder logs the counts line). */
+    private val onReclaim: (ReclaimResult) -> Unit = {},
     /** Test seam: called at the named points of [publish] (`stamp:<i>` after chunk i was stamped, `manifest`, `beforeRename`); a test throws from it to simulate the process dying there. */
     private val checkpoint: (String) -> Unit = {},
     /** Test seams for an I/O error: the directory rename of a publication, and the recursive delete of a wipe. */
@@ -43,6 +72,24 @@ internal class TraceStorage(
     /** Transfer markers (LGC9, plan 3.8): `<root>/transferred/<traceId>`, zero bytes, in their own directory: never inside `traces/<id>/` (the frozen layout) and never listed by the pull. */
     val transferredDir = File(root, "transferred")
     val used = AtomicLong(0)
+
+    // ---- space policy (LGC7-min, plan 3.7) ----
+    /** The soft budget: min(1.5 GB, 20 % of physical free space), re-measured at each trace start and after recovery. Until the first measure it is the maximum. */
+    @Volatile var softBudgetBytes: Long = space.softBudgetOverride ?: space.softMaxBytes
+        private set
+    /** The free space as of the last measure (memory only, so a caller thread can read it without I/O). */
+    @Volatile private var freeCached: Long = Long.MAX_VALUE
+
+    /** SKELETON (LGC7-min RED): measures nothing yet. */
+    fun measureBudget() {}
+    /** SKELETON: always true. */
+    fun hasStartRoom(): Boolean = true
+    /** SKELETON: always room. */
+    fun ensureRoom(chunkBytes: Long, closing: Boolean): Boolean = true
+    /** SKELETON: nothing to do. */
+    fun ensureSealRoom() {}
+    /** SKELETON: reclaims nothing. */
+    fun reclaim(needBytes: Long, protect: Set<String> = emptySet()): ReclaimResult = ReclaimResult(0, 0, 0, 0)
 
     /**
      * Start-up: an unfinished trace (the process died: killed on a call, a crash) is SEALED as a PARTIAL trace and moved to `traces/` ([seal]) instead of deleted, when it
@@ -104,7 +151,6 @@ internal class TraceStorage(
             val i = CHUNK_NAME.matchEntire(extra.name)?.groupValues?.get(1)?.toInt()
             if (extra.name != TraceFiles.MANIFEST_FILE && (i == null || i >= m.chunkCount)) extra.delete()
         }
-        if (sizeOf(tracesDir) + sizeOf(dir) > diskCapBytes) return true
         tracesDir.mkdirs()
         if (!renameDir(dir, File(tracesDir, TraceFiles.dirName(m.traceId)))) throw Retryable(java.io.IOException("rename"))
         return true
@@ -140,7 +186,6 @@ internal class TraceStorage(
             chunkCount = shas.size, eventCount = events, rawBytes = raw, traceSha256 = Manifest.traceSha(shas),
             recorded = TraceStatus.PARTIAL, closeReason = CloseReason.STOP,
         )
-        if (sizeOf(tracesDir) + sizeOf(dir) + MANIFEST_ALLOWANCE > diskCapBytes) return
         try { publish(m.traceId, m) } catch (e: java.io.IOException) { throw Retryable(e) } // keeps the start record until the manifest exists (a death here is recovered again)
     }
 
