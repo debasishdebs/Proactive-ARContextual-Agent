@@ -125,17 +125,30 @@ class GlassesRuntime private constructor(private val app: Context) {
         log = { DiagLog.i(CAPTURE_TAG, it) },
     )
     /**
-     * Slice 3a Task 16: the IMU trace recorder. Records only while the phone's `pc_trace_ctl` says collect (default: never). Files go under
+     * Slice 3a Task 16: the IMU trace recorder. Records only while diagnostics are on with a saved epoch ([diagRecord]) or the phone's `pc_trace_ctl` says collect (default: never). Files go under
      * `files/imu/` (`traces/`, `imu_trace_tmp/`, `trace_epoch`); all file work runs on its own idle-blocked daemon thread (no timer, no wake-up).
      */
     val traceRecorder: com.rokid.context.glasses.capture.trace.TraceRecorder by lazy {
-        val writer = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "imu-trace").also { it.isDaemon = true } }
         com.rokid.context.glasses.capture.trace.TraceRecorder(
             root = File(app.filesDir, "imu"), clock = android.os.SystemClock::elapsedRealtime, wallClock = System::currentTimeMillis,
             bootId = { com.rokid.context.capture.trace.Manifest.bootIdOf(android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, 0).coerceAtLeast(0)) },
-            io = { r -> writer.execute(r) }, log = { DiagLog.i(CAPTURE_TAG, it) },
+            io = { r -> traceWriter.execute(r) }, log = { DiagLog.i(CAPTURE_TAG, it) },
+            diagEnabled = diagRecord::diagEnabled,
         )
     }
+    /** The single storage writer (idle-blocked daemon thread, no timer): the recorder's epoch wipe / recovery and the `diag_state` load and saves run on it, in order. */
+    private val traceWriter: java.util.concurrent.ExecutorService by lazy {
+        java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "imu-trace").also { it.isDaemon = true } }
+    }
+    /**
+     * LGC4: the persisted `diag_record` request (`files/diag_state`, path from `dataDir`, read on the writer) and `diagEnabled()`, the single trace-gate predicate. The request
+     * only takes effect once the recorder's epoch is durable. When it goes off a running diagnostic trace closes. The glasses LOG policy does not follow it (see the log package policy constant).
+     * Status read API for LGC6-min: `diagRecord.state().wire` and `traceRecorder.startBlocker()?.wire`.
+     */
+    val diagRecord: com.rokid.context.glasses.log.DiagRecord = com.rokid.context.glasses.log.DiagRecord(
+        com.rokid.context.glasses.log.DiagStateFile.forApp(app),
+        epochSaved = { traceRecorder.epochSaved }, io = { r -> traceWriter.execute(r) }, log = { DiagLog.i(CAPTURE_TAG, it) },
+    ).also { d -> d.onChanged = { traceRecorder.onDiagChanged() } }
     /** Slice 3a Task 30: the persisted mark outbox (`mark_queue` prefs) and the tap that fills it. A mark never touches capture (S45). */
     val markOutbox: com.rokid.context.glasses.mark.MarkOutbox by lazy {
         com.rokid.context.glasses.mark.MarkOutbox(
@@ -239,7 +252,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onPhoneUse = { u -> if (u == null) phoneUse.reset() else phoneUse.onRemote(u, android.os.SystemClock.elapsedRealtime()) }
         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
-        c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); ioScope.launch { applyPhoneSettings(s) } }
+        c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); diagRecord.onSettings(s.diagRecord); ioScope.launch { applyPhoneSettings(s) } }
         c.onCapturePlan = { m -> plan.onMessage(m) }
         c.onTraceControl = { m -> markOutbox.onEpoch(m.installId, m.deletionCounter); traceRecorder.onControl(m) }
         c.onMarkAck = { a -> markOutbox.onAck(a) }
