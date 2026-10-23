@@ -21,9 +21,20 @@ run collect start 25; chk "collect active=True untilMs=25000"
 run collect stop; chk "collect active=False"
 M1_DIAG="$T/diag_ok.log" run status; chk "traces=1 COMPLETE=1"; chk "shadow_hb=2"; chk "planMode=SHADOW"
 run replay t-1 --diag "$T/diag_ok.log"; chk "windows_compared=24 inexact_windows_excluded=2 base_pass=24 base_fail=0"
-chk "hours_from_full=7.5"; chk "PASS exact parity"; chk "PASS shadow vs counterfactual opens: 102 vs 100, deviation 2.0%"
-run replay t-1 --diag "$T/diag_bad.log" && { echo "FAIL: 130 vs 100 should fail the 5% check"; fail=1; }
-chk "FAIL shadow vs counterfactual opens: 130 vs 100"
+chk "hours_from_full=7.5"; chk "PASS exact parity"
+# Task 23c criterion: shadow shOpen against the counterfactual GLANCE ADMISSIONS within max(5 %, 4 opens); the DWELL+ONSET opens are only an INFO line (mock: admissions 100, opens 90)
+chk "PASS shadow shOpen=102 vs counterfactual glance_admissions=100, diff +2 (2.0 %), allowed +-5.0"
+chk "INFO shadow shOpen=102 vs counterfactual dwell_onset_opens=90, diff +12"
+chk "inexact_bounds reasons={}"; chk "opens_range baseline=[100, 100]"
+run replay t-1 --diag "$T/diag_bad.log" && { echo "FAIL: 130 vs 100 admissions should fail the criterion"; fail=1; }
+chk "FAIL shadow shOpen=130 vs counterfactual glance_admissions=100"
+# a report without glanceAdmissions (a phone build before the stall model) fails closed with a clear message, never silently passes
+run replay t-noadm --diag "$T/diag_ok.log" && { echo "FAIL: a report without glanceAdmissions must not pass"; fail=1; }
+chk "the report has no glanceAdmissions"
+# the old total-opens criterion, only for SETTLE-wake scripts
+run replay t-1 --legacy-total --diag "$T/diag_ok.log"; chk "PASS shadow vs counterfactual opens (legacy total criterion, SETTLE-wake scripts only): 102 vs 100, deviation 2.0%"
+run replay t-1 --legacy-total --diag "$T/diag_bad.log" && { echo "FAIL: legacy 130 vs 100 should fail the 5% check"; fail=1; }
+chk "FAIL shadow vs counterfactual opens (legacy total criterion, SETTLE-wake scripts only): 130 vs 100"
 # pull: a stub adb (glasses on USB serial G, phone on wireless adb whose serial has spaces) records its arguments; the phone is selected by transport id only
 mkdir -p "$W/bin"; cat > "$W/bin/adb" <<'STUB'
 #!/usr/bin/env bash
