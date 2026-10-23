@@ -82,7 +82,11 @@ object HelperProtocol {
             val a = int(limits["perItemMs"]); val b = int(limits["jobMs"])
             if (a == null || a < 1 || a > PY_PER_ITEM_MS || b == null || b < 1 || b > PY_JOB_MS) errs += "limits out of range"
         }
-        if (errs.isEmpty() && BundleHash.canonical(payload).toByteArray(Charsets.UTF_8).size > MAX_PAYLOAD_BYTES) errs += "payload too large"
+        if (errs.isEmpty()) {
+            // the canonical form is integer-only with paired surrogates; a domain failure is a validation error, not an exception (BundleHash itself still throws)
+            try { if (BundleHash.canonical(payload).toByteArray(Charsets.UTF_8).size > MAX_PAYLOAD_BYTES) errs += "payload too large" }
+            catch (_: IllegalArgumentException) { errs += "payload is not canonical" }
+        }
         return errs.toList()
     }
 

@@ -51,6 +51,33 @@ class HelperProtocolFixturesTest {
         for (v in hashVectors) assertEquals(v.str("name"), v.str("sha256"), BundleHash.of(v.getValue("payload")))
     }
 
+    @Test fun normalizedHashVectorsNegativeZeroAndSurrogatePair() {
+        val d = load("hash-vectors.json")
+        val rows = d.arr("normalized").map { it.o() }
+        for (v in rows) {
+            val el = kotlinx.serialization.json.Json.parseToJsonElement(v.str("rawJson"))
+            assertEquals(v.str("name"), v.str("canonical"), BundleHash.canonical(el))
+            assertEquals(v.str("name"), v.str("sha256"), BundleHash.of(el))
+        }
+        assertEquals(rows.first { it.str("name") == "zero" }.str("sha256"), rows.first { it.str("name") == "negativeZero" }.str("sha256"))
+    }
+
+    @Test fun rejectedHashVectorsFloatsNonFiniteAndUnpairedSurrogates() {
+        val rows = load("hash-vectors.json").arr("rejected").map { it.o() }
+        assertTrue(rows.size >= 9)
+        for (v in rows) {
+            try {
+                BundleHash.canonical(kotlinx.serialization.json.Json.parseToJsonElement(v.str("rawJson")))
+                fail("accepted ${v.str("name")}")
+            } catch (_: IllegalArgumentException) { } // SerializationException is an IllegalArgumentException too
+        }
+    }
+
+    @Test fun schemaBoundIsTheFrozenSharedNumber() {
+        assertEquals(load("constants.json").num("schemaSubsetMaxCount"), SchemaSubset.MAX_COUNT)
+        assertEquals(Int.MAX_VALUE.toLong(), SchemaSubset.MAX_COUNT)
+    }
+
     @Test fun hashRefusesFloatsBecauseCanonicalNumbersAreIntegersOnly() {
         try { BundleHash.canonical(JsonPrimitive(1.5)); fail("float accepted") } catch (_: IllegalArgumentException) { }
     }

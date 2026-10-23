@@ -416,7 +416,10 @@
                   "items": {
                     "type": "array",
                     "items": {
-                      "type": "integer"
+                      "type": "array",
+                      "items": {
+                        "type": "integer"
+                      }
                     }
                   }
                 }
@@ -432,7 +435,9 @@
               [
                 [
                   [
-                    1
+                    [
+                      1
+                    ]
                   ]
                 ]
               ]
@@ -492,6 +497,75 @@
             ]
           ]
         ]
+      ],
+      "valid": false
+    },
+    {
+      "id": "bound.maxLength.atMax",
+      "schema": {
+        "type": "string",
+        "maxLength": 2147483647
+      },
+      "instance": "x",
+      "valid": true
+    },
+    {
+      "id": "bound.maxLength.overMaxDoesNotThrow",
+      "schema": {
+        "type": "string",
+        "maxLength": 2147483648
+      },
+      "instance": "x",
+      "valid": true
+    },
+    {
+      "id": "bound.minLength.overMaxDoesNotThrow",
+      "schema": {
+        "type": "string",
+        "minLength": 2147483648
+      },
+      "instance": "x",
+      "valid": false
+    },
+    {
+      "id": "bound.maxItems.atMax",
+      "schema": {
+        "type": "array",
+        "maxItems": 2147483647,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [
+        1
+      ],
+      "valid": true
+    },
+    {
+      "id": "bound.maxItems.overMaxDoesNotThrow",
+      "schema": {
+        "type": "array",
+        "maxItems": 99999999999999999999,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [
+        1
+      ],
+      "valid": true
+    },
+    {
+      "id": "bound.minItems.overMaxDoesNotThrow",
+      "schema": {
+        "type": "array",
+        "minItems": 2147483648,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "instance": [
+        1
       ],
       "valid": false
     }
@@ -615,6 +689,69 @@
       },
       "supported": false,
       "reason": "pattern is unsupported (nested)"
+    },
+    {
+      "id": "bound.contract.maxLength.atMax",
+      "schema": {
+        "type": "string",
+        "maxLength": 2147483647
+      },
+      "supported": true,
+      "reason": ""
+    },
+    {
+      "id": "bound.contract.maxLength.overMax",
+      "schema": {
+        "type": "string",
+        "maxLength": 2147483648
+      },
+      "supported": false,
+      "reason": "bound above schemaSubsetMaxCount"
+    },
+    {
+      "id": "bound.contract.minLength.overMax",
+      "schema": {
+        "type": "string",
+        "minLength": 2147483648
+      },
+      "supported": false,
+      "reason": "bound above schemaSubsetMaxCount"
+    },
+    {
+      "id": "bound.contract.maxItems.overMax",
+      "schema": {
+        "type": "array",
+        "maxItems": 2147483648,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "supported": false,
+      "reason": "bound above schemaSubsetMaxCount"
+    },
+    {
+      "id": "bound.contract.minItems.overMax",
+      "schema": {
+        "type": "array",
+        "minItems": 99999999999999999999,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "supported": false,
+      "reason": "bound above schemaSubsetMaxCount"
+    },
+    {
+      "id": "bound.contract.maxItems.atMax",
+      "schema": {
+        "type": "array",
+        "maxItems": 2147483647,
+        "items": {
+          "type": "integer"
+        }
+      },
+      "supported": true,
+      "reason": ""
     },
     {
       "id": "refuse.notAnObject",

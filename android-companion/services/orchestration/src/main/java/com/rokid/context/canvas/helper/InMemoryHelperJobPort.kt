@@ -105,6 +105,7 @@ class InMemoryHelperJobPort(
         for (j in jobs.values.toList()) when (j.state) {
             HelperJobState.AWAITING_CONFIRM -> if (t >= j.expiresAtMs) finish(j, JobEvent.EXPIRE)
             HelperJobState.QUEUED -> if (t >= j.stateSince + HelperProtocol.QUEUE_WAIT_MS) finish(j, JobEvent.EXPIRE)
+            HelperJobState.LEASED -> if (t >= j.stateSince + HelperProtocol.PY_EXEC_DEADLINE_MS) finish(j, JobEvent.EXPIRE)
             else -> Unit
         }
     }
@@ -120,6 +121,7 @@ class InMemoryHelperJobPort(
 
     /** The helper posts a result. Returns the refusal reasons (empty = committed). The job stays LEASED when refused. */
     fun complete(jobId: String, result: JsonObject): List<String> = synchronized(lock) {
+        tickLocked() // a result at or after lease + pyExecDeadlineMs is expired, not accepted
         val job = jobs[jobId]?.takeIf { it.state == HelperJobState.LEASED } ?: return listOf("job is not leased")
         val errs = HelperProtocol.validateResult(job.payload, result)
         if (errs.isNotEmpty()) return errs
@@ -147,6 +149,7 @@ class InMemoryHelperJobPort(
             next == HelperJobState.ABORTED -> PyOutcome.Cancelled
             event == JobEvent.CANCEL -> PyOutcome.Cancelled
             event == JobEvent.DECLINE || (event == JobEvent.EXPIRE && before == HelperJobState.AWAITING_CONFIRM) -> PyOutcome.NotConfirmed
+            event == JobEvent.EXPIRE && before == HelperJobState.LEASED -> PyOutcome.Failed("timeout")
             event == JobEvent.EXPIRE -> PyOutcome.Failed("resources_busy")
             else -> PyOutcome.Failed(failCode ?: "runtime_error")
         })

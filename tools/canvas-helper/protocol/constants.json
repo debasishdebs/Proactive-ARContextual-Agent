@@ -35,6 +35,7 @@
   "queueWaitMs": 30000,
   "execWaitMs": 135000,
   "maxActiveJobs": 1,
+  "schemaSubsetMaxCount": 2147483647,
   "cleanupRetentionDays": 30,
   "helperArtifactRetentionDays": 7,
   "jobIdRegex": "^[A-Za-z0-9:_-]{1,64}$",
