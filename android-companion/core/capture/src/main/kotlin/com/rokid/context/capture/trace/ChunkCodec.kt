@@ -24,6 +24,9 @@ class DecodedChunk(val traceId: String, val seq: Int, val events: List<TraceEven
     val lastTMs: Long get() = events.last().tMs
 }
 
+/** What a streaming [ChunkCodec.scan] learns about a verified chunk without building its events. */
+class ScannedChunk(val traceId: String, val seq: Int, val eventCount: Int, val rawBytes: Int, val sha256: String, val firstTMs: Long, val lastTMs: Long)
+
 /**
  * FROZEN (trace schema 1). The chunk wire format.
  *
@@ -93,19 +96,8 @@ object ChunkCodec {
     }
 
     private fun decodeOrThrow(traceId: String, seq: Int, sha256: String, b64: String, bounds: TraceBounds): DecodedChunk {
-        if (!TraceBounds.isTraceId(traceId)) throw TraceFormatException("bad_trace_id")
-        if (seq !in 0 until bounds.maxChunks) throw TraceFormatException("seq")
-        if (!SHA.matches(sha256)) throw TraceFormatException("sha_invalid")
-        if (b64.length > bounds.maxB64Chars) throw TraceFormatException("b64_too_long")
-        if (b64.length % 4 != 0) throw TraceFormatException("b64_invalid") // padded base64 only (the JDK decoder would accept unpadded input)
-        val gz = try { Base64.getDecoder().decode(b64) } catch (e: IllegalArgumentException) { throw TraceFormatException("b64_invalid") }
-        val raw = gunzipLimited(gz, bounds.maxRawBytes)
-        if (sha256Hex(raw) != sha256) throw TraceFormatException("sha_mismatch")
-        val text = try {
-            Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(raw)).toString()
-        } catch (e: java.nio.charset.CharacterCodingException) { throw TraceFormatException("bad_payload") }
-        if (text.isEmpty()) throw TraceFormatException("bad_header")
-        if (text.indexOf('\r') >= 0 || !text.endsWith("\n")) throw TraceFormatException("bad_payload")
+        val raw = verifiedRaw(traceId, seq, sha256, b64, bounds)
+        val text = utf8(raw)
         val lines = text.substring(0, text.length - 1).split('\n')
         if (lines.any { it.isEmpty() }) throw TraceFormatException("bad_payload")
         val count = parseHeader(lines[0], traceId, seq, bounds)
@@ -119,6 +111,55 @@ object ChunkCodec {
             events.add(e)
         }
         return DecodedChunk(traceId, seq, events, raw.size, sha256)
+    }
+
+    /**
+     * A streaming check for a recovery that must be cheap (a killed trace of hundreds of chunks sealed on a slow device): everything [decode] checks about the
+     * CHUNK (kind-independent: trace id, seq, sha, base64, gunzip bound, the SHA-256 of the raw payload, UTF-8, the header, the line count, `tMs` non-decreasing)
+     * and each event line is validated by [EventCodec.scanLine] (grammar, field count, canonical values, bounds; no event object, no regex per field, no JSON tree, no re-encode). The chunk checksum already proves
+     * the payload is the bytes the recorder encoded, so a full event decode adds nothing for a trace this process wrote. Never use it for an imported (untrusted) trace.
+     */
+    fun scan(traceId: String, seq: Int, sha256: String, b64: String, bounds: TraceBounds = TraceBounds.DEFAULT): Result<ScannedChunk> =
+        runCatching {
+            val raw = verifiedRaw(traceId, seq, sha256, b64, bounds)
+            val text = utf8(raw)
+            val end = text.length - 1 // the final '\n'
+            val nl = text.indexOf('\n')
+            val count = parseHeader(text.substring(0, nl), traceId, seq, bounds)
+            var pos = nl + 1; var lines = 0; var prev = 0L; var first = 0L
+            while (pos <= end) {
+                val e = text.indexOf('\n', pos)
+                if (e == pos || e < 0) throw TraceFormatException("bad_payload")
+                val t = EventCodec.scanLine(text, pos, e) // throws bad_event
+                if (t < prev) throw TraceFormatException("not_monotonic")
+                if (lines == 0) first = t
+                prev = t; lines++
+                if (lines > count) throw TraceFormatException("line_count")
+                pos = e + 1
+            }
+            if (lines != count) throw TraceFormatException("line_count")
+            ScannedChunk(traceId, seq, count, raw.size, sha256, first, prev)
+        }.recoverFormat()
+
+    private fun verifiedRaw(traceId: String, seq: Int, sha256: String, b64: String, bounds: TraceBounds): ByteArray {
+        if (!TraceBounds.isTraceId(traceId)) throw TraceFormatException("bad_trace_id")
+        if (seq !in 0 until bounds.maxChunks) throw TraceFormatException("seq")
+        if (!SHA.matches(sha256)) throw TraceFormatException("sha_invalid")
+        if (b64.length > bounds.maxB64Chars) throw TraceFormatException("b64_too_long")
+        if (b64.length % 4 != 0) throw TraceFormatException("b64_invalid") // padded base64 only (the JDK decoder would accept unpadded input)
+        val gz = try { Base64.getDecoder().decode(b64) } catch (e: IllegalArgumentException) { throw TraceFormatException("b64_invalid") }
+        val raw = gunzipLimited(gz, bounds.maxRawBytes)
+        if (sha256Hex(raw) != sha256) throw TraceFormatException("sha_mismatch")
+        return raw
+    }
+
+    private fun utf8(raw: ByteArray): String {
+        val text = try {
+            Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(raw)).toString()
+        } catch (e: java.nio.charset.CharacterCodingException) { throw TraceFormatException("bad_payload") }
+        if (text.isEmpty()) throw TraceFormatException("bad_header")
+        if (text.indexOf('\r') >= 0 || !text.endsWith("\n")) throw TraceFormatException("bad_payload")
+        return text
     }
 
     private fun parseHeader(line: String, traceId: String, seq: Int, bounds: TraceBounds): Int {

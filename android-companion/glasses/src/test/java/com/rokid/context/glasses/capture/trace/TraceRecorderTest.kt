@@ -200,7 +200,7 @@ class TraceRecorderTest {
 
     @Test fun chunkFilesGoToTheTmpDirectoryThenTheWholeTraceIsRenamedWithItsManifestLast() {
         inline = false
-        val r = recorder(flush = 2_000); r.onControl(TraceTestKit.collect()); r.begin()
+        val r = recorder(flush = 2_000); drain() /* the queued start-up recovery */; r.onControl(TraceTestKit.collect()); drain() /* the epoch wipe */; r.begin()
         repeat(200) { r.gyro(1); drain() } // the writer keeps up
         val tmp = File(root, "imu_trace_tmp")
         val inTmp = tmp.listFiles()!!.single().list()!!.toList()
@@ -240,7 +240,7 @@ class TraceRecorderTest {
 
     @Test fun aWriterThatFallsBehindNeverBlocksTheSensorPathAndMarksThePartial() {
         inline = false
-        val r = recorder(flush = 4_000, bufferEvents = 128); r.onControl(TraceTestKit.collect()); r.begin()
+        val r = recorder(flush = 4_000, bufferEvents = 128); drain() /* the queued start-up recovery */; r.onControl(TraceTestKit.collect()); drain() /* the epoch wipe */; r.begin()
         r.gyro(5_000) // returns at once although nothing is ever written
         r.close(CloseReason.STOP)
         drain()
@@ -288,6 +288,82 @@ class TraceRecorderTest {
         assertEquals(listOf("trace-0001-test"), File(root, "traces").list()!!.toList(), "the importable directory holds only the frozen file set")
         assertTrue(File(root, "traces/trace-0001-test").list()!!.none { it == "start.json" })
         assertTrue(r.usedBytes > 0 && r.usedBytes == File(root, "traces").walkTopDown().filter { it.isFile }.sumOf { it.length() })
+    }
+
+    @Test fun noTraceStartsBeforeTheQueuedRecoveryHasRun() {
+        killedMidTrace(chunks = 2)
+        inline = false
+        val r = recorder(); r.onControl(TraceTestKit.collect(counter = 1))
+        assertTrue(queue.isNotEmpty(), "recovery is queued on the io thread, not run by the constructor")
+        assertFalse(r.wantsStart, "recovery has not run yet")
+        assertFalse(r.begin(), "no trace starts before the recovery finished")
+        drain()
+        assertTrue(r.wantsStart)
+        assertTrue(r.begin())
+        r.close(CloseReason.STOP); drain()
+        assertEquals(2, TraceTestKit.readAll(root).size, "the sealed trace and the new one")
+    }
+
+    @Test fun noTraceStartsBetweenTheEpochAdoptionAndItsQueuedWipe() {
+        inline = false
+        val r = recorder(); drain() // recovery done
+        r.onControl(TraceTestKit.collect(install = "inst-new", counter = 5)) // adopts the epoch; the wipe is queued under the same lock
+        assertTrue(queue.isNotEmpty(), "the wipe is queued, not run")
+        assertFalse(r.wantsStart, "an epoch wipe is pending: no trace may start into a store about to be wiped")
+        assertFalse(r.begin())
+        drain() // the wipe runs and the epoch is saved
+        assertEquals("inst-new\n5", File(root, "trace_epoch").readText())
+        assertTrue(r.wantsStart)
+        assertTrue(r.begin()); r.gyro(5); r.close(CloseReason.STOP); drain()
+        assertEquals(1, TraceTestKit.readAll(root).size, "the new trace survives: the wipe ran before it")
+    }
+
+    @Test fun theEpochPersistedIsTheOneAdoptedWhenAnotherControlFollows() {
+        inline = false
+        val r = recorder(); drain()
+        r.onControl(TraceTestKit.collect(install = "inst-a", counter = 1))
+        r.onControl(TraceTestKit.collect(install = "inst-a", counter = 2)) // adopted before the first wipe ran
+        drain()
+        assertEquals("inst-a\n2", File(root, "trace_epoch").readText())
+    }
+
+    @Test fun aFailedWipeIsRetriedByTheStartChecksWithoutAnotherControl() {
+        inline = false
+        var failDelete = true
+        val r = TraceRecorder(root, clock, { 1_700_000_000_000 + clock.t }, { "7" }, 1, io = { x -> queue.addLast(x) }, newTraceId = { "trace-%04d-test".format(++ids) },
+            deleteTree = { f -> if (failDelete) false else f.deleteRecursively() })
+        drain()
+        File(root, "traces/keep").mkdirs()
+        r.onControl(TraceTestKit.collect(install = "inst-b", counter = 1)); drain() // the wipe fails
+        assertFalse(r.wantsStart, "the wipe failed: starts stay blocked")
+        failDelete = false
+        clock.t += 60_000
+        assertFalse(r.wantsStart, "the check queues the retry; it has not run yet")
+        assertTrue(queue.isNotEmpty(), "a retry was queued with no further control")
+        drain()
+        assertTrue(r.wantsStart, "the retry succeeded: recording is possible again")
+        assertEquals("inst-b\n1", File(root, "trace_epoch").readText())
+    }
+
+    @Test fun aRestartWithAPersistedEpochAndNoPendingWipeIsNotBlocked() {
+        File(root, "trace_epoch").writeText("inst-1\n1")
+        inline = false
+        val r = recorder(); drain()
+        r.onControl(TraceTestKit.collect(counter = 1)) // the same epoch: nothing to wipe
+        assertTrue(queue.size <= 1 && r.wantsStart || run { drain(); r.wantsStart })
+        assertTrue(r.wantsStart)
+    }
+
+    @Test fun aFailedPublicationRenameKeepsTheTraceForTheNextRecovery() {
+        var failRename = true
+        val r = TraceRecorder(root, clock, { 1_700_000_000_000 + clock.t }, { "7" }, 1, io = { it.run() }, newTraceId = { "trace-%04d-test".format(++ids) },
+            flushBytes = 2_000, renameDir = { a, b -> if (failRename) false else a.renameTo(b) })
+        r.onControl(TraceTestKit.collect()); r.begin(); r.gyro(300); r.close(CloseReason.STOP)
+        assertEquals(0, TraceTestKit.readAll(root).size, "the rename failed")
+        assertTrue(File(root, "imu_trace_tmp").listFiles()!!.single().isDirectory, "kept, not discarded")
+        failRename = false
+        recorder()
+        assertEquals(1, TraceTestKit.readAll(root).size, "the next start's recovery finished the publication")
     }
 
     @Test fun anUnfinishedTraceFromAnOlderEpochIsDeletedNotSealed() {

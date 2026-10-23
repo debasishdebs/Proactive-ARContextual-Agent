@@ -348,8 +348,21 @@ object EventCodec {
         is TraceEvent.PreRollEnd -> "pr"; is TraceEvent.Close -> "cl"
     }
 
-    private val INT = Regex("-?(0|[1-9][0-9]{0,15})")
-    private val HEX16 = Regex("[0-9a-f]{16}")
+    /** `-?(0|[1-9][0-9]{0,15})` (the canonical integer text), without a regex: the decode runs per field of every event. */
+    private fun isInt(s: String): Boolean {
+        var i = if (s.isNotEmpty() && s[0] == '-') 1 else 0
+        val digits = s.length - i
+        if (digits < 1 || digits > 16) return false
+        if (s[i] == '0') return digits == 1
+        while (i < s.length) { if (s[i] !in '0'..'9') return false; i++ }
+        return true
+    }
+    /** `[0-9a-f]{16}` without a regex. */
+    private fun isHex16(s: String): Boolean {
+        if (s.length != 16) return false
+        for (c in s) if (c !in '0'..'9' && c !in 'a'..'f') return false
+        return true
+    }
     private fun bad(): Nothing = throw TraceFormatException("bad_event")
 
     fun encode(e: TraceEvent): String {
@@ -391,10 +404,128 @@ object EventCodec {
 
     /** Strict: only a line that re-encodes to exactly itself is accepted (no whitespace, `+1`, `-0`, `1.0` or differing escapes). Throws [TraceFormatException]. */
     fun decode(line: String): TraceEvent {
+        decodeCount.incrementAndGet()
         if (line.length > TraceBounds.MAX_LINE_CHARS) bad()
         val e = try { parse(line) } catch (x: TraceFormatException) { throw x } catch (x: Exception) { bad() }
         if (encode(e) != line) bad()
         return e
+    }
+
+    /** Strict [decode] calls so far in this process (a diagnostic: a test asserts that crash recovery, which must only scan, decodes none). */
+    val decodeCount = java.util.concurrent.atomic.AtomicLong()
+
+    private val NAMES_CTX = ContextState.values().map { it.name }.toSet()
+    private val NAMES_WAKE = CameraWake.values().map { it.name }.toSet()
+    private val NAMES_TIER = BudgetTier.values().map { it.name }.toSet()
+    private val NAMES_PLAN = PlanMode.values().map { it.name }.toSet()
+    private val NAMES_MOTION = MotionState.values().map { it.name }.toSet()
+    private val NAMES_CAUSE = EpisodeCause.values().map { it.name.lowercase() }.toSet()
+    private val NAMES_OUTCOME = EpisodeOutcome.values().map { it.name.lowercase() }.toSet()
+    private val NAMES_GATE = GateOutcome.values().map { it.name.lowercase() }.toSet()
+
+    /** A cursor over one line `text[pos, end)` for [scanLine]: every read validates one field exactly as [parse] plus the event constructors do, and builds nothing. */
+    private class Scan(val text: String, var pos: Int, val end: Int) {
+        fun comma() { if (pos >= end - 1 || text[pos] != ',') throw TraceFormatException("bad_event"); pos++ }
+        private fun isNull(): Boolean = if (text.startsWith("null", pos) && endsField(pos + 4)) { pos += 4; true } else false
+        /** A canonical integer (`-?(0|[1-9][0-9]{0,15})`, and not `-0`, which no encoder writes). */
+        fun long(): Long {
+            val neg = pos < end && text[pos] == '-'
+            if (neg) pos++
+            val ds = pos
+            var v = 0L
+            while (pos < end && text[pos] in '0'..'9') { v = v * 10 + (text[pos] - '0'); pos++ }
+            val n = pos - ds
+            if (n < 1 || n > 16 || (n > 1 && text[ds] == '0') || (neg && v == 0L)) throw TraceFormatException("bad_event")
+            if (pos >= end || (text[pos] != ',' && text[pos] != ']')) throw TraceFormatException("bad_event")
+            return if (neg) -v else v
+        }
+        fun ms(): Long = long().also { if (it !in 0..TraceBounds.MAX_MS) throw TraceFormatException("bad_event") }
+        fun msOrNull(): Long? = if (isNull()) null else ms()
+        fun intIn(lo: Int, hi: Int): Int = long().also { if (it < lo || it > hi) throw TraceFormatException("bad_event") }.toInt()
+        fun intInOrNull(lo: Int, hi: Int): Int? = if (isNull()) null else intIn(lo, hi)
+        fun float() { val f = Float.fromBits(intIn(Int.MIN_VALUE, Int.MAX_VALUE)); if (!f.isFinite()) throw TraceFormatException("bad_event") }
+        fun bool(): Boolean = when {
+            text.startsWith("true", pos) && endsField(pos + 4) -> { pos += 4; true }
+            text.startsWith("false", pos) && endsField(pos + 5) -> { pos += 5; false }
+            else -> throw TraceFormatException("bad_event")
+        }
+        private fun endsField(at: Int) = at < end && (text[at] == ',' || text[at] == ']')
+        /** A quoted string with no escape and no control character (so it re-encodes to itself); returns its text. */
+        fun str(): String {
+            if (pos >= end || text[pos] != '"') throw TraceFormatException("bad_event")
+            val s = pos + 1
+            var i = s
+            while (i < end && text[i] != '"') { val c = text[i]; if (c == '\\' || c < ' ') throw TraceFormatException("bad_event"); i++ }
+            if (i >= end || !endsField(i + 1)) throw TraceFormatException("bad_event")
+            pos = i + 1
+            return text.substring(s, i)
+        }
+        fun enum(names: Set<String>): String = str().also { if (it !in names) throw TraceFormatException("bad_event") }
+        fun enumOrNull(names: Set<String>): String? = if (isNull()) null else enum(names)
+        fun hex16() { if (!isHex16(str())) throw TraceFormatException("bad_event") }
+        /** `[A-Za-z0-9_:.-]{0,32}` (or 1..32) by character checks, no regex. */
+        fun token(allowEmpty: Boolean = true): String = str().also { s ->
+            if (s.length > 32 || (!allowEmpty && s.isEmpty())) throw TraceFormatException("bad_event")
+            for (ch in s) if (ch !in 'a'..'z' && ch !in 'A'..'Z' && ch !in '0'..'9' && ch != '_' && ch != ':' && ch != '.' && ch != '-') throw TraceFormatException("bad_event")
+        }
+        fun tokenOrNull(): String? = if (isNull()) null else token()
+        /** `[0-9a-f]{1,64}` by character checks, no regex. */
+        fun hash(): String = str().also { s ->
+            if (s.isEmpty() || s.length > 64) throw TraceFormatException("bad_event")
+            for (ch in s) if (ch !in '0'..'9' && ch !in 'a'..'f') throw TraceFormatException("bad_event")
+        }
+    }
+
+    /**
+     * Validates the event line `text[from, to)` in place and returns its `tMs`: the same grammar, field count, canonical values, enum names and bounds that
+     * [decode] enforces (it does not build the event, use a regex per field, parse a JSON tree or re-encode; the cross-field rules of `ep` and `gt` are checked too).
+     * Throws [TraceFormatException] (`bad_event`). For a trace this process wrote (crash recovery) where the chunk checksum already vouches for the bytes: [decode] stays the importer.
+     */
+    fun scanLine(text: String, from: Int, to: Int): Long {
+        if (to - from < 8 || to - from > TraceBounds.MAX_LINE_CHARS || text[from] != '[' || text[from + 1] != '"' || text[to - 1] != ']') bad()
+        var i = from + 2
+        val tagStart = i
+        while (i < to && text[i] != '"') i++
+        if (i >= to - 1 || text[i + 1] != ',') bad()
+        val tl = i - tagStart
+        val tag = TAGS.firstOrNull { it.length == tl && text.startsWith(it, tagStart) } ?: bad()
+        val c = Scan(text, i + 2, to)
+        val t = c.ms()
+        fun more() = c.comma()
+        when (tag) {
+            "g", "a" -> { more(); c.ms(); more(); c.float(); more(); c.float(); more(); c.float() }
+            "cx" -> { more(); c.enum(NAMES_CTX) }
+            "rs" -> { more(); c.bool() }
+            "pf" -> {
+                more(); c.enum(NAMES_WAKE); more(); c.ms(); more(); c.ms(); more(); c.msOrNull(); more(); c.ms(); more(); c.ms()
+                more(); c.enum(NAMES_TIER); more(); c.bool(); more(); c.bool(); more(); c.ms(); more(); c.intInOrNull(0, 100_000); more(); c.bool()
+            }
+            "gp" -> { more(); c.intIn(0, 64); more(); c.intIn(0, 64); more(); c.bool() }
+            "pl" -> { more(); c.ms(); more(); c.hash(); more(); c.enum(NAMES_PLAN) }
+            "ep" -> {
+                more(); val open = c.bool(); more(); c.enum(NAMES_CAUSE); more(); val ff = c.msOrNull(); more(); val op = c.msOrNull(); more(); val out = c.enumOrNull(NAMES_OUTCOME)
+                if (open) { if (ff != null || op != null || out != null) bad() } else if (out == null) bad()
+            }
+            "sc" -> {
+                more(); c.ms(); more(); c.hex16(); more(); c.hex16(); more(); c.float(); more(); c.bool(); more(); c.enum(NAMES_MOTION); more(); c.bool(); more(); c.bool()
+                more(); c.intInOrNull(0, 100_000); more(); c.bool(); more(); c.ms()
+            }
+            "gt" -> {
+                more(); c.ms(); more(); val out = c.enum(NAMES_GATE); more(); val reason = c.token(); more(); val encoded = c.bool(); more(); val kept = c.msOrNull()
+                val keep = out == "keep"
+                if (!encoded && !keep) bad()
+                if ((kept != null) != (keep && encoded)) bad()
+                if (keep) { if (reason.isNotEmpty()) bad() } else if (reason !in GATE_SKIP_REASONS) bad()
+            }
+            "fl" -> { more(); c.token(); more(); c.ms() }
+            "bo" -> { more(); c.intIn(0, 32) }
+            "bl" -> { more(); c.tokenOrNull() }
+            "dk" -> { more(); c.intIn(0, MAX_DARK_STREAK) }
+            "pr" -> {}
+            "cl" -> { more(); c.token(allowEmpty = false) }
+        }
+        if (c.pos != to - 1) bad() // exactly the closing bracket is left: no missing or extra field
+        return t
     }
 
     private fun parse(line: String): TraceEvent {
@@ -403,14 +534,14 @@ object EventCodec {
         var i = 0
         fun next(): JsonElement = if (i < a.size) a[i++] else bad()
         fun prim(): JsonPrimitive = next() as? JsonPrimitive ?: bad()
-        fun long(): Long { val p = prim(); if (p is JsonNull || p.isString || !INT.matches(p.content)) bad(); return p.content.toLong() }
+        fun long(): Long { val p = prim(); if (p is JsonNull || p.isString || !isInt(p.content)) bad(); return p.content.toLong() }
         fun int(): Int = long().also { if (it !in Int.MIN_VALUE..Int.MAX_VALUE) bad() }.toInt()
         fun bool(): Boolean { val p = prim(); if (p is JsonNull || p.isString) bad(); return when (p.content) { "true" -> true; "false" -> false; else -> bad() } }
         fun str(): String { val p = prim(); if (p is JsonNull || !p.isString) bad(); return p.content }
         fun strOrNull(): String? { val p = prim(); return if (p is JsonNull) null else { if (!p.isString) bad(); p.content } }
-        fun longOrNull(): Long? { val p = prim(); return if (p is JsonNull) null else { if (p.isString || !INT.matches(p.content)) bad(); p.content.toLong() } }
+        fun longOrNull(): Long? { val p = prim(); return if (p is JsonNull) null else { if (p.isString || !isInt(p.content)) bad(); p.content.toLong() } }
         fun float(): Float = Float.fromBits(int())
-        fun hex(): Long { val s = str(); if (!HEX16.matches(s)) bad(); return java.lang.Long.parseUnsignedLong(s, 16) }
+        fun hex(): Long { val s = str(); if (!isHex16(s)) bad(); return java.lang.Long.parseUnsignedLong(s, 16) }
         fun <T : Enum<T>> en(values: Array<T>, lower: Boolean = false): T { val s = str(); return values.firstOrNull { (if (lower) it.name.lowercase() else it.name) == s } ?: bad() }
         fun <T : Enum<T>> enOrNull(values: Array<T>): T? { val p = prim(); if (p is JsonNull) return null; if (!p.isString) bad(); return values.firstOrNull { it.name.lowercase() == p.content } ?: bad() }
         val tag = str()
