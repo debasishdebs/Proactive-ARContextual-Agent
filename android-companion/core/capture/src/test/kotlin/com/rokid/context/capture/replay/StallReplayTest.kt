@@ -151,13 +151,13 @@ class StallReplayTest {
         assertTrue(r.failed >= 1 && r.mismatches.any { it.kind == "open_extra" }, "failed=${r.failed} inexact=${r.inexact} ${r.mismatches}")
     }
 
-    /** A recorded open later than the stall slack is not judged: the window is excluded with the reason STALL (counted), not failed and not silently dropped. */
-    @Test fun anUnmodelledResumeLatencyIsAStallWindowNotAFailure() {
-        val r = run(scenario(resumeDelay = 1_700))
-        assertEquals(0, r.failed, r.mismatches.toString())
-        assertEquals(1, r.inexactReasons[Inexact.STALL], r.inexactReasons.toString())
-        assertTrue(r.mismatches.any { it.kind == "stall_resume" }, "the excused resume decision stays visible: ${r.mismatches}")
-        assertEquals(1, r.inexactSpans.count { Inexact.STALL in it.reasons })
+    /** One recorded open explains ONE replayed decision: when it excuses the stalled resume decision it is not also the twin of the second decision, which stays an extra. */
+    @Test fun aRecordedOpenIsNotConsumedByTheExcuseAndTheTwinAtOnce() {
+        val s = scenario(resumeDelay = 1_700)
+        val r = run(s)
+        assertTrue(r.mismatches.any { it.kind == "stall_resume" }, r.mismatches.toString())
+        assertTrue(r.mismatches.any { it.kind == "open_extra" && it.atMs > s.stallEnd + 1_300 }, "the second decision stays an extra: ${r.mismatches}")
+        assertEquals(1, r.failed, "failed=${r.failed} inexact=${r.inexact} ${r.mismatches}")
     }
 
     @Test fun stallsAreCountedWithTheirDeliveryGap() {
@@ -228,17 +228,24 @@ class StallReplayTest {
 
     // ---- (4) bounds and report fields ----
 
+    /** A trace with a stall (resume matched) and, after its last timer, a recorded dwell open the replay cannot reproduce (no sensors for it): one ASYNC window to bound. */
     @Test fun reportBoundsTheOpensOfTheExcludedWindowsAndReportsTheStalls() {
-        val s = scenario(resumeDelay = 1_700)
-        val rep = CounterfactualReplay.run({ s.events.asSequence() }, ReplayFixtures.manifest(endMs = s.endMs))
-        assertEquals(1, rep.inexactReasons[Inexact.STALL])
+        val s = scenario(resumeDelay = 300)
+        val at = s.recordedOpens.last() + 2_000
+        val end = s.endMs + 2_500
+        val ev = s.events.filterNot { it is TraceEvent.Close } + listOf(
+            TraceEvent.Episode(at, true, EpisodeCause.DWELL), TraceEvent.Episode(at + 800, false, EpisodeCause.DWELL, at + 500, at + 50, EpisodeOutcome.OK), TraceEvent.Close(end, "stop"),
+        )
+        val rep = CounterfactualReplay.run({ ev.asSequence() }, ReplayFixtures.manifest(endMs = end))
+        assertEquals(2, rep.inexactReasons[Inexact.ASYNC_CALLBACK], rep.inexactReasons.toString())   // both windows that contain the dwell open
+        assertEquals(0, rep.baseFailed, rep.warnings.toString())
         assertTrue(rep.inexactMinutes > 0.0 && rep.inexactSharePct > 0.0, "minutes=${rep.inexactMinutes} share=${rep.inexactSharePct}")
         assertEquals(1, rep.stallCount)
         assertTrue(rep.stallSeconds in 6.0..6.04, rep.stallSeconds.toString())
         assertTrue(rep.stallSharePct > 0.0)
         val b = rep.baseline
-        assertTrue(b.opensLow <= s.recordedOpens.size && s.recordedOpens.size <= b.opensHigh, "recorded ${s.recordedOpens.size} not in [${b.opensLow}, ${b.opensHigh}]")
-        assertTrue(b.opensHigh > b.opensLow, "an excluded window widens the range")
+        val recorded = s.recordedOpens.size + 1
+        assertTrue(b.opensLow <= recorded && recorded <= b.opensHigh, "recorded $recorded not in [${b.opensLow}, ${b.opensHigh}]")
         assertTrue(rep.warnings.any { it.contains("stall") }, rep.warnings.toString())
         val j = rep.toJson().toString()
         assertTrue("\"opensLow\":${b.opensLow}" in j && "\"opensHigh\":${b.opensHigh}" in j && "\"glanceOpens\"" in j && "\"stalls\":{\"count\":1" in j && "\"inexactMinutes\"" in j && "\"opensRangeBasis\":\"excluded windows only" in j, j)
