@@ -116,7 +116,7 @@ object ChunkCodec {
     /**
      * A streaming check for a recovery that must be cheap (a killed trace of hundreds of chunks sealed on a slow device): everything [decode] checks about the
      * CHUNK (kind-independent: trace id, seq, sha, base64, gunzip bound, the SHA-256 of the raw payload, UTF-8, the header, the line count, `tMs` non-decreasing)
-     * but each event line is only checked structurally (`["tag",<tMs>` and a closing bracket, no regex, no JSON tree, no re-encode). The chunk checksum already proves
+     * and each event line is validated by [EventCodec.scanLine] (grammar, field count, canonical values, bounds; no event object, no regex per field, no JSON tree, no re-encode). The chunk checksum already proves
      * the payload is the bytes the recorder encoded, so a full event decode adds nothing for a trace this process wrote. Never use it for an imported (untrusted) trace.
      */
     fun scan(traceId: String, seq: Int, sha256: String, b64: String, bounds: TraceBounds = TraceBounds.DEFAULT): Result<ScannedChunk> =
@@ -130,7 +130,7 @@ object ChunkCodec {
             while (pos <= end) {
                 val e = text.indexOf('\n', pos)
                 if (e == pos || e < 0) throw TraceFormatException("bad_payload")
-                val t = EventCodec.scanTMs(text, pos, e) // throws bad_event
+                val t = EventCodec.scanLine(text, pos, e) // throws bad_event
                 if (t < prev) throw TraceFormatException("not_monotonic")
                 if (lines == 0) first = t
                 prev = t; lines++

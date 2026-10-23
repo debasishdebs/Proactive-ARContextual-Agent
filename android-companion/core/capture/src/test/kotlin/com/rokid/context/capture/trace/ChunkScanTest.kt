@@ -66,4 +66,52 @@ class ChunkScanTest {
             assertEquals(hexRe.matches(h), accepted, "hex '$h'")
         }
     }
+
+    // ---- the strict event grammar: scan refuses exactly what decode refuses (Codex review 1, finding 1) ----
+
+    private fun decodeOk(line: String) = try { EventCodec.decode(line); true } catch (e: TraceFormatException) { false }
+    private fun scanOk(line: String) = try { EventCodec.scanLine(line, 0, line.length); true } catch (e: TraceFormatException) { false }
+
+    @Test fun aChecksumValidChunkWithABadEventIsRefusedByScanLikeDecode() {
+        val h = "[\"PCT1\",\"$id\",0,2]"
+        for (bad in listOf("[\"rs\",1000,garbage]", "[\"rs\",1000]", "[\"pr\",-0]", "[\"rs\",1000,true,1]", "[\"pr\",1000,1]")) {
+            val (d, s) = both("$h\n[\"cx\",1000,\"REST\"]\n$bad\n")
+            assertTrue(d.isFailure, "decode refuses $bad"); assertTrue(s.isFailure, "scan refuses $bad")
+        }
+    }
+
+    @Test fun scanLineAgreesWithDecodeOnEveryTagAndOnMutatedFields() {
+        val golden = TraceFixtures.goldenPayload.lines().drop(1).filter { it.isNotEmpty() }
+        assertEquals(16, golden.map { it.substring(2, it.indexOf('"', 2)) }.toSet().size, "all 16 tags are covered")
+        val junk = listOf("garbage", "-0", "01", "null", "true", "false", "\"x\"", "\"\"", "99999999999999999", "-1", "1.0", "2147483648", "-2147483649", "2147483647", "\"0123456789abcdeg\"", "\"STILL\"", "\"still\"", "1099511627776", "1099511627775", "1073741824", "[]", "\"a\\\\b\"", "65", "33", "101")
+        var n = 0
+        for (line in golden) {
+            assertTrue(decodeOk(line) && scanOk(line), "the golden line is accepted by both: $line")
+            val parts = line.substring(1, line.length - 1).split(',')
+            for (i in parts.indices) {
+                // drop field i, and add a field after i
+                listOf(parts.filterIndexed { j, _ -> j != i }, parts.take(i + 1) + "1" + parts.drop(i + 1)).forEach { p ->
+                    val l = "[" + p.joinToString(",") + "]"; n++
+                    assertEquals(decodeOk(l), scanOk(l), "count: $l")
+                }
+                for (j in junk) {
+                    val l = "[" + parts.mapIndexed { k, v -> if (k == i) j else v }.joinToString(",") + "]"; n++
+                    assertEquals(decodeOk(l), scanOk(l), "field $i -> $j: $l")
+                }
+            }
+        }
+        assertTrue(n > 1000, "enough cases: $n")
+    }
+
+    @Test fun scanLineAgreesWithDecodeOnRandomLines() {
+        val rnd = java.util.Random(20261023)
+        val golden = TraceFixtures.goldenPayload.lines().drop(1).filter { it.isNotEmpty() }
+        val alphabet = "[]\",-0123456789truefalsnl\\ aAZ"
+        repeat(20_000) {
+            val base = golden[rnd.nextInt(golden.size)].toCharArray()
+            repeat(1 + rnd.nextInt(3)) { base[rnd.nextInt(base.size)] = alphabet[rnd.nextInt(alphabet.length)] }
+            val l = String(base)
+            assertEquals(decodeOk(l), scanOk(l), "random line: $l")
+        }
+    }
 }
