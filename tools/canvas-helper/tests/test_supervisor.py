@@ -630,3 +630,95 @@ def test_orphan_sweep_logs_the_number_checked_not_the_survivors(tmp_path):
     h.runtime.containers.extend(["pca-job-a", "pca-job-b"])
     h.sup.recover()
     assert any(l.startswith("orphan_sweep") and "containers_checked=2" in l for l in h.lines)
+
+
+# ---------------------------------------------------------------- WP6 review finding 13: the result envelope limit
+
+def _envelope_len(result):
+    import json
+    return len(json.dumps({"leaseGen": 1, "resultHash": "0" * 64, "result": result}, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def _result_of_envelope_size(n):
+    r = {"x": ""}
+    r["x"] = "a" * (n - _envelope_len(r))
+    assert _envelope_len(r) == n
+    return r
+
+
+def test_result_body_limit_comes_from_constants_and_mirrors_the_phone():
+    assert CONSTS["resultBodyMaxBytes"] == 2 * 1024 * 1024 + 4096 == 2101248  # Kotlin CanvasServer.MAX_RESULT_BODY
+
+
+def test_client_result_envelope_limit_minus_one_limit_and_plus_one(tmp_path):
+    from fakes import FakeTransport
+    from pca_helper.client import BodyTooLarge, PhoneClient
+    lim = CONSTS["resultBodyMaxBytes"]
+    for delta, ok in ((-1, True), (0, True), (1, False)):
+        tr = FakeTransport("ab" * 32)
+        tr.route("POST", "/api/helper/jobs/j/result", (200, {"committed": True, "duplicate": False}))
+        c = PhoneClient(tr, "h", 1, pin="ab" * 8, token="tok")
+        r = _result_of_envelope_size(lim + delta)
+        if ok:
+            assert c.result("j", 1, "0" * 64, r).status == 200 and len(tr.sent[0]["body"]) == lim + delta
+        else:
+            with pytest.raises(BodyTooLarge):
+                c.result("j", 1, "0" * 64, r)
+            assert tr.sent == []
+
+
+def _real_result_client(h):
+    from fakes import FakeTransport
+    from pca_helper.client import PhoneClient
+    tr = FakeTransport("ab" * 32)
+    tr.route("POST", "/api/helper/jobs/job1/result", (200, {"committed": True, "duplicate": False}))
+    c = PhoneClient(tr, "h", 1, pin="ab" * 8, token="tok")
+    h.phone.result = lambda *a: (h.phone.calls.append(("result", h.clock.now_ms(), a)), c.result(*a))[1]
+    return tr
+
+
+def test_result_at_the_2mib_result_limit_is_posted_not_a_crash(tmp_path):
+    from pca_helper import protocol
+    h = make(tmp_path)
+    handle = leased(h)
+    tr = _real_result_client(h)
+    r = {"x": ""}
+    r["x"] = "a" * (CONSTS["maxResultBytes"] - len(protocol.canonical_json(r).encode()))
+    assert len(protocol.canonical_json(r).encode()) == CONSTS["maxResultBytes"]
+    handle.finished = {"kind": "result", "result": r}
+    h.sup.job_step()
+    assert len(tr.sent) == 1 and h.sup.active_job_id is None and "fail" not in h.phone.names()
+
+
+def test_oversize_result_fails_the_job_cleans_up_and_never_ends_the_helper(tmp_path):
+    from pca_helper import protocol
+    h = make(tmp_path)
+    handle = leased(h)
+    tr = _real_result_client(h)
+    r = {"x": "a" * CONSTS["maxResultBytes"]}  # canonical size is over 2 MiB
+    handle.finished = {"kind": "result", "result": r}
+    h.sup.job_step()  # must not raise
+    assert tr.sent == [] and h.phone.of("fail")[0][2] == ("job1", 1, "too_large")
+    assert h.sup.active_job_id is None and not h.store.job_stage_dir("job1").exists() and h.journal.open_jobs() == []
+    h.sup.watchdog_guard()  # still alive
+
+
+@pytest.mark.parametrize("exc", [ValueError("x"), OSError("disk")])
+def test_any_value_or_os_error_in_the_result_post_path_fails_the_job_safe(tmp_path, exc):
+    h = make(tmp_path)
+    handle = leased(h)
+    handle.finished = {"kind": "result", "result": RESULTS["allOk"]["result"]}
+    h.phone.push("result", exc)
+    h.sup.job_step()  # must not raise
+    assert h.phone.of("fail")[0][2] == ("job1", 1, "bad_output")
+    assert h.sup.active_job_id is None and not h.store.job_stage_dir("job1").exists()
+
+
+def test_result_post_error_and_fail_post_error_still_ends_the_job_without_raising(tmp_path):
+    h = make(tmp_path)
+    handle = leased(h)
+    handle.finished = {"kind": "result", "result": RESULTS["allOk"]["result"]}
+    h.phone.push("result", ValueError("x"))
+    h.phone.push("fail", OSError("disk"))
+    h.sup.job_step()
+    assert h.sup.active_job_id is None and not h.store.job_stage_dir("job1").exists()

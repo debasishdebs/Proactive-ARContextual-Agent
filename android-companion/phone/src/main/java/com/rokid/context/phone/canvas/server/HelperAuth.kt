@@ -81,6 +81,12 @@ class HelperAuth(
 
     fun session(): Session? = synchronized(lock) { session }
 
+    /** The session [token] belongs to, in ONE step (null for a stale or wrong token): a request is served as the helper whose token it carries, never as a newer pairing. */
+    fun sessionFor(token: String?): Session? = synchronized(lock) {
+        val mine = this.token ?: return null
+        if (token.isNullOrEmpty() || !MessageDigest.isEqual(token.toByteArray(Charsets.UTF_8), mine)) null else session
+    }
+
     fun sessionGen(): Long = synchronized(lock) { gen }
 
     /** Disconnect: the token stops working at once and the pairing window closes. The pairing count keeps going. */

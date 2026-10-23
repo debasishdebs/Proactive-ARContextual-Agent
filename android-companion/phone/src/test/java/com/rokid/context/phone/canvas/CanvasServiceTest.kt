@@ -96,7 +96,7 @@ class CanvasServiceTest {
         host.start(false)
         val svc = Robolectric.buildService(CanvasService::class.java).create().get()
         svc.onTimeout(1, 1)
-        assertTrue(host.terminated.contains(SessionEnd.TIME_LIMIT))
+        assertEquals(SessionEnd.TIME_LIMIT, host.terminated.first())
     }
 
     @Test fun destroyingTheServiceTerminatesTheSessionWithShutdown() {
@@ -109,6 +109,6 @@ class CanvasServiceTest {
     @Test fun aRefusedForegroundStartTerminatesTheSession() {
         val ctl = Robolectric.buildService(ThrowingCanvasService::class.java, Intent(app, ThrowingCanvasService::class.java)).create()
         ctl.startCommand(0, 1)
-        assertTrue("the notice path stops through the session end", host.terminated.isNotEmpty() || host.calls.contains("stopNotice"))
+        assertEquals(listOf(SessionEnd.TIME_LIMIT), host.terminated)
     }
 }

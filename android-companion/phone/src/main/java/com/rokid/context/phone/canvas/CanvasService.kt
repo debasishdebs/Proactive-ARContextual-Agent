@@ -100,7 +100,7 @@ open class CanvasService : Service() {
     override fun onTimeout(startId: Int) = timedOut()
 
     private fun timedOut() {
-        graph.stopWithNotice(NOTICE_TIME_LIMIT)
+        graph.stopWithNotice(NOTICE_TIME_LIMIT, SessionEnd.TIME_LIMIT)
         graph.revokeAll()
         shutDown(SessionEnd.TIME_LIMIT)
     }
@@ -111,7 +111,7 @@ open class CanvasService : Service() {
         true
     } catch (e: Exception) {
         // ForegroundServiceStartNotAllowedException, SecurityException, IllegalStateException and the like: never crash the process.
-        graph.stopWithNotice(NOTICE_NOT_ALLOWED)
+        graph.stopWithNotice(NOTICE_NOT_ALLOWED, SessionEnd.TIME_LIMIT)
         stopSelf()
         false
     }

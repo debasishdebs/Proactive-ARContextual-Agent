@@ -64,59 +64,97 @@ def run_cli(tmp_path, argv, tr=None, prompt=None):
     return code, out.getvalue(), err.getvalue()
 
 
-def test_cli_pair_without_fingerprint_exits_2_and_sends_nothing(tmp_path):
+FP16 = "abababababababab"
+PAIR_OK = (200, {"token": "tok_" + "Q7" * 20, "helperId": "h1", "sessionGen": 1, "caps": {"py_exec": True}, "constants": {}})
+POLL_OK = (200, {"sessionGen": 1, "caps": {"py_exec": True}, "serverTimeMs": 0, "available": [], "cancel": [], "cleanup": []})
+
+
+def test_cli_run_without_a_usable_fingerprint_exits_2_and_sends_nothing(tmp_path):
     tr = FakeTransport()
-    code, out, err = run_cli(tmp_path, ["pair", "10.0.0.5:8443"], tr)
-    assert code == 2 and tr.opened == [] and tr.sent == []
-    code, out, err = run_cli(tmp_path, ["pair", "10.0.0.5:8443", "abababab", "123456"], tr)  # 8 digits: too short
-    assert code == 2 and tr.opened == [] and tr.sent == [] and "123456" not in out + err
-    code, out, err = run_cli(tmp_path, ["pair", "10.0.0.5:8443", "a" * 15, "123456"], tr)
-    assert code == 2 and tr.opened == [] and tr.sent == [] and "123456" not in out + err
+    assert run_cli(tmp_path, ["run", "10.0.0.5:8443"], tr)[0] == 2
+    for fp in ("abababab", "a" * 15):
+        code, out, err = run_cli(tmp_path, ["run", "10.0.0.5:8443", fp, "123456"], tr)
+        assert code == 2 and tr.opened == [] and tr.sent == [] and "123456" not in out + err
 
 
-def test_cli_pair_then_run_once_and_never_prints_secrets(tmp_path):
+def test_cli_run_pairs_then_supervises_in_one_process_and_never_prints_secrets(tmp_path):
     tr = FakeTransport("ab" * 32)
-    tok = "tok_" + "Q7" * 20
-    tr.route("POST", "/api/helper/pair", (200, {"token": tok, "helperId": "h1", "sessionGen": 1, "caps": {"py_exec": True}, "constants": {}}))
-    code, out, err = run_cli(tmp_path, ["pair", "10.0.0.5:8443", "abababababababab", "654321"], tr)
+    tok = PAIR_OK[1]["token"]
+    tr.route("POST", "/api/helper/pair", PAIR_OK)
+    tr.route("POST", "/api/helper/poll", POLL_OK)
+    code, out, err = run_cli(tmp_path, ["run", "10.0.0.5:8443", FP16, "654321", "--once"], tr)
     assert code == 0
-    tr.route("POST", "/api/helper/poll", (200, {"sessionGen": 1, "caps": {"py_exec": True}, "serverTimeMs": 0, "available": [], "cancel": [], "cleanup": []}))
-    code2, out2, err2 = run_cli(tmp_path, ["run", "--once"], tr)
-    assert code2 == 0
-    everything = out + err + out2 + err2
     for secret in (tok, "654321", "ab" * 32):
-        assert secret not in everything
-    poll = [s for s in tr.sent if s["path"].endswith("/poll")][0]
+        assert secret not in out + err
+    poll = [x for x in tr.sent if x["path"].endswith("/poll")][0]
     assert poll["headers"]["Authorization"] == "Bearer " + tok
     assert json.loads(poll["body"])["ready"] == {"py_exec": False}, "no runtime in WP11: never advertises ready"
 
 
-def test_cli_run_without_pairing_fails_cleanly(tmp_path):
-    code, out, err = run_cli(tmp_path, ["run", "--once"])
-    assert code == 1 and "pair" in (out + err)
+def test_helper_session_token_is_memory_only_and_a_restart_must_re_pair(tmp_path):
+    tok = PAIR_OK[1]["token"]
+    tr = FakeTransport("ab" * 32)
+    tr.route("POST", "/api/helper/pair", PAIR_OK)
+    tr.route("POST", "/api/helper/poll", POLL_OK)
+    asked = []
+    run_cli(tmp_path, ["run", "h:1", FP16, "--once"], tr, prompt=lambda m: asked.append(m) or "111111")
+    home = tmp_path / "home"
+    for f in home.rglob("*"):
+        if f.is_file():
+            assert tok.encode() not in f.read_bytes(), f.name
+    st = json.loads((home / "state.json").read_text())
+    assert "token" not in st and st["host"] == "h" and st["port"] == 1 and st["pin"] == "ab" * 32
+    # a helper restart: the second process has no token and must pair again (a second pairing request with a fresh code)
+    tr.route("POST", "/api/helper/pair", PAIR_OK)
+    tr.route("POST", "/api/helper/poll", POLL_OK)
+    run_cli(tmp_path, ["run", "h:1", FP16, "--once"], tr, prompt=lambda m: asked.append(m) or "222222")
+    assert len(asked) == 2 and len([x for x in tr.sent if x["path"].endswith("/pair")]) == 2
+
+
+def test_legacy_persisted_token_is_deleted_on_start(tmp_path):
+    from pca_helper.store import Store
+    legacy = "legacy-token-" + "Z" * 30
+    Store(tmp_path / "home").save_state({"host": "h", "port": 1, "pin": "ab" * 32, "token": legacy, "helperId": "x"})
+    tr = FakeTransport("ab" * 32)
+    tr.route("POST", "/api/helper/pair", PAIR_OK)
+    tr.route("POST", "/api/helper/poll", POLL_OK)
+    run_cli(tmp_path, ["run", "h:1", FP16, "999999", "--once"], tr)
+    for f in (tmp_path / "home").rglob("*"):
+        if f.is_file():
+            assert legacy.encode() not in f.read_bytes(), f.name
+    assert "token" not in json.loads((tmp_path / "home" / "state.json").read_text())
+
+
+def test_legacy_token_is_purged_even_when_pairing_then_fails(tmp_path):
+    from pca_helper.store import Store
+    Store(tmp_path / "home").save_state({"host": "h", "port": 1, "pin": "ab" * 32, "token": "legacy-" + "Z" * 30})
+    tr = FakeTransport("cd" * 32)  # fingerprint mismatch
+    assert run_cli(tmp_path, ["run", "h:1", FP16, "1", "--once"], tr)[0] == 1
+    assert "token" not in json.loads((tmp_path / "home" / "state.json").read_text())
 
 
 def test_cli_run_exits_3_when_session_is_gone(tmp_path):
     tr = FakeTransport("ab" * 32)
-    tr.route("POST", "/api/helper/pair", (200, {"token": "t" * 24, "helperId": "h", "sessionGen": 1, "caps": {}, "constants": {}}))
-    run_cli(tmp_path, ["pair", "h:1", "abababababababab", "1"], tr)
+    tr.route("POST", "/api/helper/pair", PAIR_OK)
     tr.route("POST", "/api/helper/poll", (401, {"error": "unauthorized", "message": "x"}))
-    assert run_cli(tmp_path, ["run", "--once"], tr)[0] == 3
+    assert run_cli(tmp_path, ["run", "h:1", FP16, "1", "--once"], tr)[0] == 3
 
 
 def test_cli_doctor_stub_reports_checks_without_secrets(tmp_path):
     code, out, err = run_cli(tmp_path, ["doctor"])
-    assert code == 1 and "FAIL" in out and "paired" in out and "runtime" in out
+    assert code == 1 and "FAIL" in out and "pairing metadata" in out and "runtime" in out
 
 
 def test_cli_unknown_command_exits_2(tmp_path):
     assert run_cli(tmp_path, ["nope"])[0] == 2
+    assert run_cli(tmp_path, ["pair", "h:1", FP16, "1"])[0] == 2, "no separate pair command: the token cannot outlive the process"
 
 
-def test_cli_pair_code_prompted_when_omitted_or_dash_and_never_echoed(tmp_path):
-    for argv in (["pair", "h:1", "abababababababab"], ["pair", "h:1", "abababababababab", "-"]):
+def test_cli_code_prompted_when_omitted_or_dash_and_never_echoed(tmp_path):
+    for argv in (["run", "h:1", FP16, "--once"], ["run", "h:1", FP16, "-", "--once"]):
         tr = FakeTransport("ab" * 32)
-        tr.route("POST", "/api/helper/pair", (200, {"token": "t" * 24, "helperId": "h", "sessionGen": 1, "caps": {}, "constants": {}}))
+        tr.route("POST", "/api/helper/pair", PAIR_OK)
+        tr.route("POST", "/api/helper/poll", POLL_OK)
         asked = []
         code, out, err = run_cli(tmp_path / str(len(argv)), argv, tr, prompt=lambda msg: asked.append(msg) or "777123")
         assert code == 0 and len(asked) == 1
@@ -125,5 +163,5 @@ def test_cli_pair_code_prompted_when_omitted_or_dash_and_never_echoed(tmp_path):
 
 def test_cli_missing_pin_never_prompts_for_the_code(tmp_path):
     asked = []
-    code, _, _ = run_cli(tmp_path, ["pair", "h:1", "abab"], prompt=lambda m: asked.append(m) or "1")
+    code, _, _ = run_cli(tmp_path, ["run", "h:1", "abab"], prompt=lambda m: asked.append(m) or "1")
     assert code == 2 and asked == []

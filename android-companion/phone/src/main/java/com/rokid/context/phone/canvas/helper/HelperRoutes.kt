@@ -25,6 +25,8 @@ import kotlinx.serialization.json.put
  * exception text is echoed. It holds no confirmation, grant-writer or pairing dependency: a request cannot confirm, decline, toggle a grant or open pairing (the card does
  * that natively), and `lease` and `available` never show an unconfirmed job, so payload, heartbeat and result for one answer 409 `not_confirmed` from the DAO.
  *
+ * Bodies are parsed with exact key sets; a repeated key in one object keeps its LAST value (kotlinx.serialization does not reject duplicates): the helper is the trusted principal of threat model A.
+ *
  * `POST /poll` body `{helperProtocol, active:[{jobId,leaseGen}], cleanupAcks:["<cleanupId>"], ready:{py_exec}}`; the answer is `{sessionGen, caps, serverTimeMs, available:[type],
  * cancel:[jobId], cleanup:[{cleanupId:"<n>", jobId}]}`. `cleanupId` is the row's number written as a decimal STRING (the helper treats it as opaque text and echoes it back).
  */
@@ -77,7 +79,8 @@ class HelperRoutes(
     private suspend fun dispatch(req: HttpRequest): HttpResponse {
         val segs = req.path.split('/').filter { it.isNotEmpty() }.drop(2) // after "api" and "helper"
         val m = req.method.uppercase()
-        val session = auth.session() ?: throw Denied("unauthorized")
+        val bearer = req.headers["authorization"]?.takeIf { it.length > 7 && it.regionMatches(0, "Bearer ", 0, 7, ignoreCase = true) }?.substring(7)?.trim()
+        val session = auth.sessionFor(bearer) ?: throw Denied("unauthorized")
         return when {
             m == "POST" && segs == listOf("poll") -> poll(req, session)
             m == "POST" && segs == listOf("lease") -> lease(req, session)
@@ -191,8 +194,9 @@ class HelperRoutes(
         val o = body(req, setOf("leaseGen", "resultHash", "result"))
         val gen = long(o["leaseGen"])
         val hash = text(o["resultHash"])
-        if (!Regex("^[0-9a-f]{64}$").matches(hash)) throw Denied("bad_request")
-        val result = o["result"] as? JsonObject ?: throw Denied("bad_request")
+        // 422, not 400: the helper retries a 400 until its watchdog kills the job, but answers 422 with a `fail(bad_output)`
+        if (!Regex("^[0-9a-f]{64}$").matches(hash)) throw Denied("invalid_result")
+        val result = o["result"] as? JsonObject ?: throw Denied("invalid_result")
         requireGrant()
         return when (val c = service.commitResult(jobId, s.helperId, gen, result)) {
             is ResultCommit.Committed -> { log.helperLine(if (c.duplicate) "result duplicate" else "result committed"); HttpResponse.json(200, buildJsonObject { put("committed", !c.duplicate); put("duplicate", c.duplicate) }) }

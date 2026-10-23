@@ -106,12 +106,12 @@ class Journal:
     def job_end(self, job_id):
         """Terminal outcome: the job is closed and a local cleanup entry (no phone ack) enqueues the removal of every copy."""
         with self._lock:
-            if job_id in self._jobs and self._jobs[job_id]["open"]:
-                self._append({"t": "job_end", "jobId": job_id})
             cid = "local:" + job_id
             if cid in self._cleanups and self._cleanups[cid]["status"] != "pending":
                 cid = "%s:%d" % (cid, len(self._cleanups))
-            self.add_cleanup(cid, job_id, local=True)
+            self.add_cleanup(cid, job_id, local=True)  # the cleanup is durable FIRST: a crash between the two records leaves it pending
+            if job_id in self._jobs and self._jobs[job_id]["open"]:
+                self._append({"t": "job_end", "jobId": job_id})
 
     def purge_job(self, job_id):
         if job_id in self._jobs:
