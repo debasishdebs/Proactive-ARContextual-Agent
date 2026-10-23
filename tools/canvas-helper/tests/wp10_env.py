@@ -13,6 +13,19 @@ PROBE = os.path.join(REPO, "spikes", "s2_probe.py")
 LOCK_PY = os.path.join(REPO, "tools", "canvas-helper", "pca_lock.py")
 
 
+ALLOWED_ENV = ("HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE")
+POISON_PREFIXES = ("CONTAINER_", "PODMAN_", "DOCKER_", "PCA_")
+
+
+def apply_env(monkeypatch, fake):
+    """In-process: drop every variable that could select a podman binary, machine or connection, then set the fake."""
+    for k in list(os.environ):
+        if k.startswith(POISON_PREFIXES):
+            monkeypatch.delenv(k)
+    for k, v in fake.patch().items():
+        monkeypatch.setenv(k, v)
+
+
 class Fake:
     def __init__(self, root):
         self.root = root
@@ -48,12 +61,13 @@ class Fake:
             return []
 
     def env(self):
-        e = dict(os.environ)
+        """Subprocess environment: an ALLOW-LIST of the parent's variables plus the fake patch, so nothing inherited can select a real podman."""
+        e = {k: os.environ[k] for k in ALLOWED_ENV if k in os.environ}
         e.update(self.patch())
         return e
 
     def patch(self):
-        return {"PATH": self.bin + ":/usr/bin:/bin", "PCA_LOCK_DIR": self.locks, "PCA_FAKE_PODMAN_DIR": self.dir,
+        return {"PATH": self.bin + ":/usr/bin:/bin", "PCA_PODMAN": os.path.join(self.bin, "podman"), "PCA_LOCK_DIR": self.locks, "PCA_FAKE_PODMAN_DIR": self.dir,
                 "PCA_PYTHON": sys.executable, "PCA_STAGE_DIR": self.stage, "PCA_MACHINE": "pca", "PCA_POLL_S": "0",
                 "PCA_CONFIRM_TRIES": "3", "PCA_STOP_RETRY_S": "0.05"}
 
@@ -62,7 +76,6 @@ class Fake:
 def fake(tmp_path, monkeypatch):
     f = Fake(str(tmp_path))
     f.set_state("stopped")
-    for k, v in f.patch().items():
-        monkeypatch.setenv(k, v)
+    apply_env(monkeypatch, f)
     assert shutil.which("podman") == os.path.join(f.bin, "podman")
     return f
