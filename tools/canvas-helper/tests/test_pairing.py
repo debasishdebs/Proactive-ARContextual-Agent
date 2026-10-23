@@ -50,7 +50,8 @@ def test_pin_prefix_of_16_hex_digits_matches_and_pairing_stores_full_fingerprint
     assert json.loads(sent["body"]) == {"helperProtocol": 1, "code": CODE, "name": "laptop"}
     assert "Origin" not in sent["headers"] and "Authorization" not in sent["headers"]
     st = store.load_state()
-    assert st["pin"] == FP and st["token"].startswith("tok_") and st["host"] == "10.0.0.5" and st["port"] == 8443
+    assert res.token.startswith("tok_") and "tok_" not in repr(res)
+    assert st["pin"] == FP and "token" not in st and st["host"] == "10.0.0.5" and st["port"] == 8443
     assert oct(os.stat(store.state_path).st_mode & 0o777) == "0o600"
 
 
