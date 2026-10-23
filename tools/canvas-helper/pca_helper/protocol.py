@@ -23,6 +23,14 @@ def canonical_json(obj):
     return _canon.canonical_json(obj)
 
 
+def result_canonical(obj):
+    return _canon.result_canonical(obj)
+
+
+def result_hash(text):
+    return _canon.result_hash(text)
+
+
 def bundle_hash(obj):
     return _canon.bundle_hash(obj)
 
