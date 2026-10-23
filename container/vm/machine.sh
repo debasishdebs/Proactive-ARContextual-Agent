@@ -5,7 +5,7 @@
 # Runs only inside the vm-session owner (tools/canvas-helper/pca_lock.py vm-session), which holds host.lock for the whole sequence and
 # releases it only after a confirmed stop. `machine rm` is refused while the previous machine is not confirmed stopped.
 # Environment: PCA_MACHINE (pca), PCA_STAGE_DIR (~/.pca-helper/stage), PCA_PODMAN (podman), PCA_PYTHON (python3), PCA_CONFIRM_TRIES (30),
-# PCA_POLL_S (1), PCA_MACHINE_MEMORY_MB (4096).
+# PCA_POLL_S (1), PCA_MACHINE_MEMORY_MB (4096), PCA_MACHINE_DISK_GB (10). Refuses the machine name podman-machine-default (exit 2, no podman call).
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCK_PY="$HERE/../../tools/canvas-helper/pca_lock.py"
@@ -15,8 +15,12 @@ STAGE="${PCA_STAGE_DIR:-$HOME/.pca-helper/stage}"
 TRIES="${PCA_CONFIRM_TRIES:-30}"
 POLL="${PCA_POLL_S:-1}"
 MEM="${PCA_MACHINE_MEMORY_MB:-4096}"
+DISK="${PCA_MACHINE_DISK_GB:-10}"
 
 die() { echo "machine.sh: $*" >&2; exit "${2:-1}"; }
+
+# The user's own machine is never touched by any script here: refuse before any podman call.
+[ "$NAME" != "podman-machine-default" ] || die "refusing to operate on podman-machine-default" 2
 
 # Existence/state: prints stopped|running|starting|absent|unknown.
 state() {
@@ -68,7 +72,7 @@ cmd_recreate() {
       ;;
     *) die "previous machine state unknown; nothing removed" 1 ;;
   esac
-  "$PODMAN" machine init --memory "$MEM" --volume "$STAGE:/stage" "$NAME" >/dev/null 2>&1 || die "machine init failed" 1
+  "$PODMAN" machine init --cpus 2 --disk-size "$DISK" --memory "$MEM" --volume "$STAGE:/stage" "$NAME" >/dev/null 2>&1 || die "machine init failed" 1
   "$PODMAN" machine start "$NAME" >/dev/null 2>&1 || die "machine start failed" 1
 }
 
