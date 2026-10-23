@@ -1,0 +1,18 @@
+# Job image of py_exec (core plan WP13). Standard library only: NO pip, no extra packages, no compilers.
+# Base: the official python:3.12-slim image, PINNED BY DIGEST in the controller's live step (B2): replace <DIGEST> below with the digest of the
+# image you pulled (`podman pull docker.io/library/python:3.12-slim` then `podman image inspect --format '{{.Digest}}'`), and record the digest in
+# images.lock beside the image id of the build (spikes/wp13-live-gate.md, step 1). Until then the tag below is a placeholder for the pinned form.
+FROM docker.io/library/python:3.12-slim@sha256:<DIGEST>
+
+# The user is 10001 (profiles: py_exec --user 10001). /out is created here and owned by 10001 so that the named volume mounted at /out is
+# initialised (copy-up) with that owner and is writable by the job.
+RUN groupadd --gid 10001 pyjob && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin pyjob \
+ && mkdir -p /out /in /app && chown 10001:10001 /out && chmod 0700 /out
+
+COPY pyjob_entry.py schema_lite.py /app/
+
+USER 10001:10001
+WORKDIR /tmp
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONHASHSEED=0
+# The runner passes no command and forbids --entrypoint: this is the whole job.
+ENTRYPOINT ["python3", "/app/pyjob_entry.py"]
