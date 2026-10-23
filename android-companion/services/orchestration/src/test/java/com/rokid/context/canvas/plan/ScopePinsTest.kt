@@ -26,6 +26,8 @@ import java.io.File
 @RunWith(AndroidJUnit4::class)
 @Config(sdk = [34])
 class ScopePinsTest {
+    /** The existing `fence`, `clock` and `newId` providers (all `() -> X`); nothing else may be function-typed. */
+    private companion object { val THREE_PROVIDERS = List(3) { "kotlin.jvm.functions.Function0" } }
     private val root: File = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
     private fun mainSources() = root.walkTopDown().onEnter { it.name != "build" && it.name != ".git" && it.name != "node_modules" }.filter { it.extension == "kt" && "/src/main/" in it.path }.toList()
     private fun src(name: String) = mainSources().single { it.name == name }.readText()
@@ -45,12 +47,7 @@ class ScopePinsTest {
         } finally { h.close() }
     }
 
-    /** The debug route accepts SHADOW only (grep of its source: the other modes are named only as refusals). */
-    @Test fun debugRouteStaysShadowOnly() {
-        val s = src("PlanRoutes.kt")
-        assertTrue("the SHADOW-only rule is still in the route", Regex("""debug-shadow""").containsMatchIn(s))
-        assertFalse("no route text publishes LIVE directly", Regex("""PlanMode\.LIVE""").containsMatchIn(s.substringAfter("debug-shadow")))
-    }
+    // The debug route stays SHADOW-only: pinned through the real route in :phone `PlanRoutesTest.debugShadowIsShadowOnlyThroughTheRoute` (a source grep here would only restate the code).
 
     // ---- fusion tunables ----
 
@@ -105,6 +102,10 @@ class ScopePinsTest {
             val types = cls.declaredConstructors.flatMap { it.parameterTypes.toList() } + cls.declaredFields.map { it.type }
             assertTrue("${cls.simpleName} holds ${types.map { it.name }}", types.none { it.name.contains("helper", ignoreCase = true) || it.name.contains("Python") || it.name.contains("NodeExecutor") || it.name.contains("PipelineInterpreter") })
         }
+        // A helper port can hide in a lambda: the function-typed constructor parameters are pinned by arity, so a new one (any name) fails here and needs a decision.
+        val fnTypes = { c: Class<*> -> c.declaredConstructors.filter { !it.isSynthetic }.maxByOrNull { it.parameterCount }!!.parameterTypes.map { it.name }.filter { it.startsWith("kotlin.jvm.functions.") || it.startsWith("kotlin.coroutines.") }.sorted() }
+        assertEquals(THREE_PROVIDERS, fnTypes(SweepService::class.java))
+        assertEquals(THREE_PROVIDERS, fnTypes(ReplayService::class.java))
         for (f in listOf("SweepService.kt", "ReplayService.kt")) assertFalse(f, Regex("""(?i)helper|py\.fn|python|NodeExecutor|Executors\b""").containsMatchIn(src(f)))
         assertTrue("replay and sweep requests have no graph in them", ReplayRequest::class.java.declaredFields.none { it.type.name.contains("Pipeline") } && SweepRequest::class.java.declaredFields.none { it.type.name.contains("Pipeline") })
     }

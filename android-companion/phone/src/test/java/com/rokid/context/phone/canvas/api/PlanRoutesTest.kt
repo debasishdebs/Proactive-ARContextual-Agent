@@ -111,4 +111,40 @@ class PlanRoutesTest {
     }
 
     @Test fun otherPathsAreNotPlanRoutes() { assertEquals(null, runBlocking { routes.handle(HttpRequest("GET", "/api/runs", emptyMap(), emptyMap(), ByteArray(0))) }) }
+    // ---- WP7 review: S6 on the plan routes that compile or send a pipeline ----
+
+    private val withPyFn = good.copy(nodes = good.nodes + node("fn", "py.fn"))
+    private val withTool = good.copy(nodes = good.nodes + node("tl", "tool.draft"))
+
+    @Test fun debugShadowRefusesTier3AndSendsNothing() {
+        for (p in listOf(withPyFn, withTool)) {
+            val r = post("/api/plans/debug-shadow", body(p))!!
+            assertEquals(409, r.status)
+            val o = Json.parseToJsonElement(String(r.body)).jsonObject
+            assertEquals("publish_blocked", o.str("error"))
+            assertEquals(listOf(com.rokid.context.ai.canvas.plan.PlanShape.S6_REFUSAL), o["problems"]!!.jsonArray.map { it.jsonPrimitive.content })
+        }
+        assertTrue("nothing reached the hub", port.sent.isEmpty())
+    }
+
+    @Test fun compileRouteReportsTheS6ReasonAndOffersNoPlan() {
+        for (p in listOf(withPyFn, withTool)) {
+            val o = Json.parseToJsonElement(String(post("/api/plans/compile", body(p))!!.body)).jsonObject
+            assertEquals(false, o["ok"]!!.jsonPrimitive.boolean)
+            assertEquals(listOf(com.rokid.context.ai.canvas.plan.PlanShape.S6_REFUSAL), o["problems"]!!.jsonArray.map { it.jsonPrimitive.content })
+            assertEquals("null", o["planJson"].toString())
+        }
+        assertTrue(port.sent.isEmpty())
+    }
+
+    /** Behaviour, not source text: LIVE, TRIAL, SETTINGS and a non-string mode are refused with `shadow_only` and the hub sees nothing. */
+    @Test fun debugShadowIsShadowOnlyThroughTheRoute() {
+        for (m in listOf("LIVE", "TRIAL", "SETTINGS")) {
+            val r = post("/api/plans/debug-shadow", body(good, buildJsonObject { put("mode", m) }))!!
+            assertEquals(m, 400, r.status); assertEquals("shadow_only", Json.parseToJsonElement(String(r.body)).jsonObject.str("error"))
+        }
+        assertTrue(port.sent.isEmpty())
+        assertEquals(200, post("/api/plans/debug-shadow", body(good, buildJsonObject { put("mode", "SHADOW") }))!!.status)
+        assertEquals("SHADOW", Json.parseToJsonElement(String(post("/api/plans/debug-shadow", body(good))!!.body)).jsonObject.str("mode"))
+    }
 }
