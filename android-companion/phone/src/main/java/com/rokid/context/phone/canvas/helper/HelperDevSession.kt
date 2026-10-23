@@ -141,15 +141,21 @@ class HelperDevSession(
     private var startedAt = 0L
     @Volatile private var lastScreenAt = 0L
     private var endJob: Job? = null
+    /** An end is queued or running (set and cleared under [lock]); [stopRequested] accumulates stop requests that arrive while it is. */
+    private var endPending = false
+    private var stopRequested = false
     private var watcher: Job? = null
 
     private fun line(msg: String) { try { log.log(Level.I, "canvas", msg) } catch (_: Throwable) { } }
 
-    /** Starts a session (first pairing acceptance or grant-on). A second call while one is active does nothing: the confirmation key is made once per session. */
-    fun start() {
+    /**
+     * Starts a session (first pairing acceptance or grant-on). A second call while one is active does nothing: the confirmation key is made once per session.
+     * Returns true when a session is active afterwards, false when the start was declined (the caller must not enable pairing or a grant).
+     */
+    fun start(): Boolean {
         synchronized(lock) {
-            if (active) return
-            if (endJob?.isActive == true) return // an end is still queued: it would revoke this session's credentials; the card shows the truth and the user taps again
+            if (active) return true
+            if (endJob?.isActive == true) return false // an end is still queued: it would revoke this session's credentials; the card shows the truth and the user taps again
             active = true
             needsEnd = true
             startedAt = clock()
@@ -159,6 +165,7 @@ class HelperDevSession(
             watcher?.cancel()
             watcher = scope.launch { while (isActive) { delay(checkEveryMs); checkExpiry() } }
             line("session started")
+            return true
         }
     }
 
@@ -189,6 +196,8 @@ class HelperDevSession(
         val runEnd = synchronized(lock) {
             if (!needsEnd) false else {
                 needsEnd = false
+                endPending = true
+                stopRequested = stop
                 active = false
                 watcher?.cancel(); watcher = null
                 network.unregister()
@@ -196,21 +205,21 @@ class HelperDevSession(
             }
         }
         if (runEnd) {
-            val job = scope.launch {
+            val job = synchronized(lock) { scope.launch {
                 try {
                     ender.endSession(deletion)
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { line("session end failed") } finally {
                     try { onEnded() } catch (_: Throwable) { }
-                    if (stop) stopServer() // last, and whatever happened before
+                    val stopNow = synchronized(lock) { endPending = false; stopRequested } // a stop requested while this end ran (Disconnect, then shutdown) counts
+                    if (stopNow) stopServer() // last, and whatever happened before
                     line("session ended")
                 }
-            }
-            synchronized(lock) { endJob = job }
+            }.also { endJob = it } } // assigned under the lock the end takes, so a concurrent request always sees THIS job
             return job
         }
         // already ended (or ending). An end that is still running stops the server itself; otherwise stop it NOW, inline (a cheap synchronized stop): a queued stop could land on a server
         // that was started in the meantime.
-        val running = synchronized(lock) { endJob?.takeIf { it.isActive } }
+        val running = synchronized(lock) { if (endPending) { if (stop) stopRequested = true; endJob ?: kotlinx.coroutines.CompletableDeferred(Unit) } else null }
         if (running != null) return running
         if (stop) stopServer()
         return kotlinx.coroutines.CompletableDeferred(Unit)
