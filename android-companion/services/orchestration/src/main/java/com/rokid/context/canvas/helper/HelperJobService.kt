@@ -157,19 +157,23 @@ class HelperJobService(
         store.heartbeat(jobId, helperId, leaseGen, clock(), HelperProtocol.LEASE_MS).also { afterLeaseCall(jobId, it, terminalOnOk = false) }
 
     /**
-     * Commits the helper's result: the shape is checked against the stored payload first (an invalid result changes nothing and the lease stays), then the DAO commits in one
-     * fenced transaction. The result hash (the idempotency key of a repeat) is the canonical hash of the result computed here, never a value taken from the request.
+     * Commits the helper's result (decision D1, 2026-10-24). [resultCanonical] is the exact TEXT the helper hashed and [resultHash] its claimed SHA-256: [ResultWire.check] verifies the hash over
+     * the text AS RECEIVED, then parses it (duplicate keys and invalid JSON are `Invalid`), then the shape and every output member are checked against the stored payload's `outSchema`
+     * (floats pass `number`, fail `integer`). An invalid result changes nothing and the lease stays; the DAO then commits in one fenced transaction. The stored hash (the idempotency key of a repeat) is the
+     * verified one, and the stored text is the received text.
      */
-    suspend fun commitResult(jobId: String, helperId: String, leaseGen: Long, result: JsonObject): ResultCommit {
-        val canonical = try { BundleHash.canonical(result) } catch (_: IllegalArgumentException) { return ResultCommit.Invalid(listOf("result is not canonical")) }
-        if (canonical.toByteArray(Charsets.UTF_8).size > HelperProtocol.MAX_RESULT_BYTES) return ResultCommit.TooLarge
+    suspend fun commitResult(jobId: String, helperId: String, leaseGen: Long, resultCanonical: String, resultHash: String): ResultCommit {
+        val result = when (val c = ResultWire.check(resultCanonical, resultHash)) {
+            is ResultWire.Checked.Rejected -> return if (c.kind == ResultWire.Kind.TOO_LARGE) ResultCommit.TooLarge else ResultCommit.Invalid(listOf(c.reason))
+            is ResultWire.Checked.Ok -> c.result
+        }
         val row = store.job(jobId)
         val payload = row?.takeIf { it.state == HelperJobState.LEASED.name && it.leaseOwner == helperId && it.leaseGen == leaseGen }?.payloadJson
         if (payload != null) {
             val errs = HelperProtocol.validateResult(Json.parseToJsonElement(payload), result)
             if (errs.isNotEmpty()) return ResultCommit.Invalid(errs)
         }
-        val r = store.commit(jobId, helperId, leaseGen, BundleHash.ofCanonical(canonical), canonical, clock())
+        val r = store.commit(jobId, helperId, leaseGen, resultHash, resultCanonical, clock())
         afterLeaseCall(jobId, r, terminalOnOk = true)
         return if (r.ok) ResultCommit.Committed(r.duplicate) else ResultCommit.Denied(r.denial ?: "stale_generation")
     }

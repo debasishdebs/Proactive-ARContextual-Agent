@@ -29,7 +29,8 @@ import kotlin.coroutines.coroutineContext
  * (that item only), `refused`; helper outcomes `not_confirmed` (declined or expired tap: nothing was released), `killed` (helper silent / lease expired), `timeout`, `resources_busy`,
  * `needs_runtime`, `oom`, `runtime_error`, `bad_output`, `too_large`, `disk_low`; `frame_forget` (a Forget voided the job: the runner ends the run `STOPPED_FORGET`), `voided` (grant off,
  * Disconnect, session end), `cancelled`, `no_helper`; per item `timeout`, `schema_mismatch`, `exception`, `oom`, `too_big`; `no_result` (the helper did not answer this item).
- * Helper payloads and results are integer-only today (decision D1 for float results is open): an input with a float is refused as a whole chunk (`refused`).
+ * Helper payloads (so the inputs) are integer-only for good: an input with a float is refused as a whole chunk (`refused`). Results may carry floats (decision D1, 2026-10-24): the helper hashes the exact text it
+ * sends, the phone verifies the hash over that text and parses it ([com.rokid.context.canvas.helper.ResultWire]), and a float output passes an `outSchema` member of type `number` and fails `integer`.
  */
 class PythonExecutor(private val helper: HelperJobPort?, private val fenceNow: suspend () -> HelperFence) : HelperExecutor {
     override val type = NodeTypes.PY_FN

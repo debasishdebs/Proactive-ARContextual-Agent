@@ -146,24 +146,27 @@ class HelperHarness(ctx: Context, log: CanvasLogSink = com.rokid.context.phone.l
     fun lease(token: String) = call("POST", "/api/helper/lease", token, """{"helperProtocol":1,"types":["py_exec"]}""")
     fun payload(token: String, jobId: String, leaseGen: Long) = call("GET", "/api/helper/jobs/$jobId/payload", token, query = mapOf("leaseGen" to "$leaseGen"))
     fun heartbeat(token: String, jobId: String, leaseGen: Long) = call("POST", "/api/helper/jobs/$jobId/heartbeat", token, """{"leaseGen":$leaseGen}""")
-    fun result(token: String, jobId: String, leaseGen: Long, result: String) =
-        call("POST", "/api/helper/jobs/$jobId/result", token, """{"leaseGen":$leaseGen,"resultHash":"${"0".repeat(64)}","result":$result}""")
+    /** D1: the envelope carries the exact result TEXT and the SHA-256 of that text (default: the right one); the text is sent as one JSON string. */
+    fun result(token: String, jobId: String, leaseGen: Long, resultText: String, hash: String = com.rokid.context.canvas.helper.BundleHash.ofCanonical(resultText)) =
+        call("POST", "/api/helper/jobs/$jobId/result", token, buildJsonObject { put("leaseGen", leaseGen); put("resultHash", hash); put("resultCanonical", resultText) }.toString())
     fun fail(token: String, jobId: String, leaseGen: Long, code: String) = call("POST", "/api/helper/jobs/$jobId/fail", token, """{"leaseGen":$leaseGen,"code":"$code"}""")
 
     // ---- the executor side ----
     val outSchema: JsonObject = Json.parseToJsonElement("""{"type":"object","required":["n"],"properties":{"n":{"type":"integer"}},"additionalProperties":false}""").jsonObject
 
-    suspend fun request(frameIds: List<String> = listOf("frame-1"), items: Int = 1): PyRequest {
+    val numberSchema: JsonObject = Json.parseToJsonElement("""{"type":"object","required":["n"],"properties":{"n":{"type":"number"}},"additionalProperties":false}""").jsonObject
+
+    suspend fun request(frameIds: List<String> = listOf("frame-1"), items: Int = 1, schema: JsonObject = outSchema): PyRequest {
         val fence = HelperFence(wipeGen, epoch, dao.frameForgetRev())
         return PyRequest(
             source = "def run(x):\n    return {'n': 1}\n", items = (0 until items).map { PyItem("i$it", buildJsonObject { put("k", it) }) },
-            outSchema = outSchema, frameIds = frameIds, fence = fence,
+            outSchema = schema, frameIds = frameIds, fence = fence,
         )
     }
 
     /** Starts a run on a real thread (the runner's side); the caller reads [await]. */
-    fun startRun(frameIds: List<String> = listOf("frame-1"), items: Int = 1): Deferred<PyOutcome> =
-        CoroutineScope(Dispatchers.Default).async { port.runPy(request(frameIds, items)) }
+    fun startRun(frameIds: List<String> = listOf("frame-1"), items: Int = 1, schema: JsonObject = outSchema): Deferred<PyOutcome> =
+        CoroutineScope(Dispatchers.Default).async { port.runPy(request(frameIds, items, schema)) }
 
     /** Waits (real time, bounded) until one job is awaiting the tap, and returns its id. */
     fun awaitPendingJob(): String = runBlocking {
@@ -185,6 +188,10 @@ class HelperHarness(ctx: Context, log: CanvasLogSink = com.rokid.context.phone.l
         "outputs" to JsonArray((0 until items).map { buildJsonObject { put("id", "i$it"); put("ok", true); put("output", buildJsonObject { put("n", 1) }) } }),
         "stats" to buildJsonObject { put("ms", 5) },
     )).toString()
+
+    /** The exact text a Python helper prints for one item whose output is `{"n": <nText>}` (nText is the number's text, e.g. `0.73`). */
+    fun textResult(nText: String, items: Int = 1): String =
+        """{"helperProtocol":1,"jobType":"py_exec","outputs":[${(0 until items).joinToString(",") { """{"id":"i$it","ok":true,"output":{"n":$nText}}""" }}],"stats":{"ms":5}}"""
 
     /** Confirm, lease, fetch the payload: returns (jobId, leaseGen). */
     fun confirmAndLease(token: String): Pair<String, Long> {

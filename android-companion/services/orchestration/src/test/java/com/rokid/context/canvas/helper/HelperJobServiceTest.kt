@@ -246,6 +246,33 @@ class HelperJobServiceTest {
         assertEquals(listOf(r.jobId), cleanupJobs())
     }
 
+    @Test fun theStoredResultIsTheReceivedTextAndItsClaimedHashAndARepeatOfTheSameTextIsADuplicate() = runBlocking {
+        val base = h.request()
+        val numberSchema = kotlinx.serialization.json.JsonObject(TEST_OUT_SCHEMA + ("properties" to kotlinx.serialization.json.JsonObject(mapOf("n" to kotlinx.serialization.json.JsonObject(mapOf("type" to kotlinx.serialization.json.JsonPrimitive("number")))))))
+        val r = start(PyRequest(base.source, base.items, numberSchema, base.frameIds, base.fence))
+        assertEquals(ConfirmResult.CONFIRMED, svc.confirm(r.jobId, binding(r.jobId)))
+        assertEquals(r.jobId, h.leaseNext())
+        val text = """{"stats":{"ms": 5},"jobType":"py_exec","helperProtocol":1,"outputs":[{"id":"i0","ok":true,"output":{"n":0.730}},{"id":"i1","ok":true,"output":{"n":1E-5}}]}"""
+        val hash = BundleHash.ofCanonical(text)
+        assertEquals(ResultCommit.Committed(false), svc.commitResult(r.jobId, "h1", 1, text, hash))
+        val row = h.store.job(r.jobId)!!
+        assertEquals("the stored result is the received text, never a re-print", text, row.resultJson)
+        assertEquals(hash, row.resultHash)
+        assertEquals(ResultCommit.Committed(true), svc.commitResult(r.jobId, "h1", 1, text, hash))
+        val out = r.await() as PyOutcome.Done
+        assertEquals(listOf("0.730", "1E-5"), out.outputs.map { (it.output as kotlinx.serialization.json.JsonObject).getValue("n").let { n -> (n as kotlinx.serialization.json.JsonPrimitive).content } })
+    }
+
+    @Test fun aWrongHashIsAnInvalidCommitAndTooLargeIsMeasuredOnTheString() = runBlocking {
+        val r = leased()
+        val text = BundleHash.canonical(ok2)
+        assertTrue(svc.commitResult(r.jobId, "h1", 1, text, "0".repeat(64)) is ResultCommit.Invalid)
+        assertEquals(HelperJobState.LEASED, h.state(r.jobId))
+        val big = "{\"a\":\"" + "é".repeat(HelperProtocol.MAX_RESULT_BYTES.toInt() / 2) + "\"}" // fewer characters than the limit, more UTF-8 bytes
+        assertEquals(ResultCommit.TooLarge, svc.commitResult(r.jobId, "h1", 1, big, BundleHash.ofCanonical(big)))
+        assertEquals(HelperJobState.LEASED, h.state(r.jobId))
+    }
+
     @Test fun anInvalidResultIsAnInvalidCommitAndKeepsTheLease() = runBlocking {
         val r = leased()
         assertTrue(svc.commitResult(r.jobId, "h1", 1, okResult(listOf("i0"))) is ResultCommit.Invalid)

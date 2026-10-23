@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sys
@@ -126,3 +127,62 @@ def test_depth_rows_hit_the_cap_exactly():
     cap = L.load("constants.json")["py"]["maxInstanceDepth"]
     assert depth(rows["depth.atCap"]["instance"]) == cap and rows["depth.atCap"]["valid"] is True
     assert depth(rows["depth.overCap"]["instance"]) == cap + 1 and rows["depth.overCap"]["valid"] is False
+
+
+# ---- D1 (2026-10-24): the helper hashes the EXACT TEXT it sends. The Kotlin side runs the same rows (HelperProtocolFixturesTest.resultWireRows).
+def _wire_rows():
+    return L.load("py_exec-result-samples.json")["wireRows"]
+
+
+def test_wire_rows_cover_the_decided_cases():
+    names = {r["name"] for r in _wire_rows()}
+    for n in ("floatScore", "smallExponent", "negativeZero", "wholeFloat", "nestedFloatInObjectAndArray", "hugeAndTinyExponents", "unicodeLabelNotEscaped",
+              "trailingZeroHashedAsReceived", "hashOfAnotherText", "textParsesToOtherJsonThanHashClaims", "duplicateTopLevelKey", "duplicateNestedKey", "notJson",
+              "floatForInteger", "nestedFloatForInteger"):
+        assert n in names, n
+    assert {r["expect"] for r in _wire_rows()} == {"ok", "hash_mismatch", "invalid_json", "duplicate_key", "not_object", "schema_mismatch"}
+    assert len({r["name"] for r in _wire_rows()}) == len(_wire_rows())
+
+
+def test_wire_rows_python_prints_exactly_the_text_and_hashes_that_text():
+    printed = 0
+    for r in _wire_rows():
+        text = r["resultCanonical"]
+        if r["pythonPrints"]:
+            printed += 1
+            assert L.result_canonical(json.loads(text)) == text, r["name"]
+        if r["expect"] == "hash_mismatch":
+            assert L.result_hash(text) != r["resultHash"], r["name"]
+        else:
+            assert L.result_hash(text) == r["resultHash"], r["name"]
+            assert r["resultHash"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+    assert printed >= 15
+
+
+def test_result_canonical_allows_floats_but_never_non_json_values():
+    assert L.result_canonical({"b": 0.73, "a": [1e-05, -0.0, 100.0, 1, True, None]}) == '{"a":[1e-05,-0.0,100.0,1,true,null],"b":0.73}'
+    assert L.result_canonical({"s": "café 😀"}) == '{"s":"café 😀"}'
+    for bad in (float("nan"), float("inf"), {"a": float("-inf")}, {1: "int key"}, {"s": "\ud800"}, {"k\udfff": 1}, (1, 2), {1, 2}, b"x", object()):
+        with pytest.raises(ValueError):
+            L.result_canonical(bad)
+
+
+def test_input_and_payload_canonical_form_stays_integer_only():
+    # D1 decided the phone-built payloads/inputs stay integer-only: bundle_hash / canonical_json still refuse floats
+    for bad in (0.73, {"a": [1e-05]}, -0.0, 100.0):
+        with pytest.raises(ValueError):
+            L.canonical_json(bad)
+        with pytest.raises(ValueError):
+            L.bundle_hash(bad)
+
+
+def test_client_result_envelope_carries_the_text_and_hash_and_no_result_object():
+    from fakes import FakeTransport
+    from pca_helper.client import PhoneClient
+    tr = FakeTransport("ab" * 32)
+    tr.route("POST", "/api/helper/jobs/j/result", (200, {"committed": True, "duplicate": False}))
+    c = PhoneClient(tr, "h", 1, pin="ab" * 8, token="tok")
+    text = L.result_canonical({"a": 0.73})
+    assert c.result("j", 3, L.result_hash(text), text).status == 200
+    body = json.loads(tr.sent[0]["body"])
+    assert body == {"leaseGen": 3, "resultHash": L.result_hash(text), "resultCanonical": text}
