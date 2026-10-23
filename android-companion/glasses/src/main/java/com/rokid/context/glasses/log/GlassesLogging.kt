@@ -12,10 +12,21 @@ object GlassesLogging {
      * doing so, so the policy is ON.
      * TODO(LGC4): replace this constant with the persisted `diag_record` flag (three-state bootstrap, `diagEnabled()`); until then no
      * other code may call `PcLog.setDiagnostic` on the glasses.
+     * READER HAZARD for LGC4: `tools/battery-run.sh` and `tools/m1-run.sh` read the I-level `heartbeat v=2` lines from `capture_diag.log`.
+     * With diagnostics off those lines are no longer written, so the tools would silently starve (battery summaries lose samples, M1 can
+     * report old rows or zero/default values). Measurement needs diagnostics enabled: LGC4 must make both tools reject, or clearly label,
+     * a run without fresh heartbeat evidence.
      */
     const val DIAGNOSTIC_RECORD = true
 
     private val ONCE = AtomicBoolean(false)
+
+    /**
+     * The directory `capture_diag.log` lives in, built WITHOUT touching the filesystem: `Context.getFilesDir()` checks and may create
+     * the directory (main-thread IO when called from `Activity.onCreate`), `applicationInfo.dataDir` is a plain string. The writer thread
+     * creates the directory on its first append.
+     */
+    fun logDir(context: android.content.Context): File = File(context.applicationInfo.dataDir, "files")
 
     /**
      * Installs the [GlassesLogSink] into PcLog exactly once per process (later calls return null). Nothing here touches the filesystem on

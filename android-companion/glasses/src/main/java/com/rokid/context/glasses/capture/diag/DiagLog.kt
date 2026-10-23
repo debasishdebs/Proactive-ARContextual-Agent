@@ -2,6 +2,7 @@ package com.rokid.context.glasses.capture.diag
 
 import com.rokid.context.core.log.PcLog
 import com.rokid.context.glasses.log.GlassesLogging
+import android.content.Context
 import java.io.File
 
 /**
@@ -12,6 +13,9 @@ import java.io.File
 object DiagLog {
     /** Installs the glasses sink once per process; does no filesystem work on the calling thread. */
     fun install(filesDir: File) { GlassesLogging.install(filesDir) }
+
+    /** Production entry: derives the directory from `applicationInfo.dataDir` (a string), never `filesDir` (a getter that does IO). */
+    fun install(app: Context) { GlassesLogging.install(GlassesLogging.logDir(app)) }
 
     fun i(tag: String, msg: String) = PcLog.i(tag, msg)
     fun w(tag: String, msg: String) = PcLog.w(tag, msg)

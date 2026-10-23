@@ -63,8 +63,14 @@ class GlassesLoggingTest {
 
     @Test fun installIsOnceAndARefusedInstallClosesTheWriterAndRearms() {
         val once = AtomicBoolean(false)
-        val h1 = GlassesLogging.install(dir, installer = { false }, once = once, setDiagnostic = {})
+        var refused: GlassesLogSink? = null
+        val h1 = GlassesLogging.install(dir, installer = { false }, once = once, setDiagnostic = {}, sinkFactory = { GlassesLogSink.create(it).also { s -> refused = s } })
         assertNull(h1)
+        val control = GlassesLogSink.create(dir)
+        assertTrue(control.fence().get(2, java.util.concurrent.TimeUnit.SECONDS), "an open writer acknowledges a fence")
+        control.close().get(2, java.util.concurrent.TimeUnit.SECONDS)
+        assertFalse(refused!!.fence().get(2, java.util.concurrent.TimeUnit.SECONDS), "the refused writer was closed by install")
+        refused!!.close().get(2, java.util.concurrent.TimeUnit.SECONDS)      // and its thread terminated
         assertFalse(once.get(), "re-armed after a refusal")
         val h2 = GlassesLogging.install(dir, installer = { true }, once = once, setDiagnostic = {})
         assertNotNull(h2)

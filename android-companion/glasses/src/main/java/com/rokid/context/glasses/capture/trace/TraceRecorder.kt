@@ -330,7 +330,7 @@ class TraceRecorder(
                 addObj(make(t))
                 after(t)
             } catch (e: IllegalArgumentException) {
-                drop("bounds:" + e.message) // a value outside the frozen bounds: never crash capture, mark the trace PARTIAL
+                drop("bounds:" + e.javaClass.simpleName) // a value outside the frozen bounds: never crash capture, mark the trace PARTIAL
             }
         }
     }

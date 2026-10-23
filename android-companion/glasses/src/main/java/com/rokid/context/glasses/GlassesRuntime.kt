@@ -62,7 +62,7 @@ import java.io.File
  */
 class GlassesRuntime private constructor(private val app: Context) {
     /** Fix wave K4 / LGC3: installs the glasses diagnostic log (through the DiagLog shim; no filesystem work here); first, so every later log line lands there. */
-    private val diagInstalled = DiagLog.install(app.filesDir)
+    private val diagInstalled = DiagLog.install(app)
     /** Nothing launched here may crash the glasses app; only the exception's simple name is logged. */
     private val errors = CoroutineExceptionHandler { _, e -> Log.w(TAG, "runtime job failed: ${e.javaClass.simpleName}") }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + errors)

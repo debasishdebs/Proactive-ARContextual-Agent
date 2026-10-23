@@ -93,9 +93,26 @@ class GlassesLogSinkTest {
     }
 
     @Test fun diskFailureNeverReachesTheCaller() {
-        val failing = object : LogFs by RealLogFs { override fun append(f: File, bytes: ByteArray) { throw java.io.IOException("disk") } }
+        val attempted = java.util.concurrent.CountDownLatch(1)
+        val failing = object : LogFs by RealLogFs { override fun append(f: File, bytes: ByteArray) { attempted.countDown(); throw java.io.IOException("disk") } }
         val s = GlassesLogSink.create(dir, fs = failing)
         s.emit(Line(Level.W, "PcCapture", "m", 0L), Route(false, true))
+        assertTrue(attempted.await(3, java.util.concurrent.TimeUnit.SECONDS), "the failing append really ran on the writer thread")
+        s.emit(Line(Level.W, "PcCapture", "after", 0L), Route(false, true))      // still never throws into the caller
+        s.close().get(3, java.util.concurrent.TimeUnit.SECONDS)
+    }
+
+    /** One record is "MM-dd HH:mm:ss.SSS L T " (23 bytes with a one-char tag) + msg + "\n" = 24 + msg; maxBytes 4000 gives 2000 per file. */
+    private fun rec(total: Int) = Line(Level.I, "T", "x".repeat(total - 24), 0L)
+
+    @Test fun anExactFillStaysInTheFileAndTheNextRecordRotates() {
+        val s = GlassesLogSink.create(dir, maxBytes = 4_000)
+        repeat(4) { s.emit(rec(500), Route(false, true)) }              // 4 x 500 = exactly 2000 = half
+        assertTrue(s.awaitIdle(3_000))
+        assertEquals(2_000L, main.length()); assertFalse(older.exists(), "an exact fill does not rotate")
+        s.emit(rec(500), Route(false, true))
+        assertTrue(s.awaitIdle(3_000))
+        assertEquals(2_000L, older.length(), "the full file became .log.1"); assertEquals(500L, main.length())
         s.close()
     }
 }
