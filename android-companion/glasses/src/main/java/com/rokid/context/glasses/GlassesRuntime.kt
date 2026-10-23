@@ -128,15 +128,29 @@ class GlassesRuntime private constructor(private val app: Context) {
      * Slice 3a Task 16: the IMU trace recorder. Records only while diagnostics are on with a saved epoch ([diagRecord]) or the phone's `pc_trace_ctl` says collect (default: never). Files go under
      * `files/imu/` (`traces/`, `imu_trace_tmp/`, `trace_epoch`); all file work runs on its own idle-blocked daemon thread (no timer, no wake-up).
      */
-    val traceRecorder: com.rokid.context.glasses.capture.trace.TraceRecorder by lazy {
+    private val traceRecorderLazy = lazy {
         com.rokid.context.glasses.capture.trace.TraceRecorder(
             root = File(app.filesDir, "imu"), clock = android.os.SystemClock::elapsedRealtime, wallClock = System::currentTimeMillis,
             bootId = { com.rokid.context.capture.trace.Manifest.bootIdOf(android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, 0).coerceAtLeast(0)) },
             io = { r -> traceWriter.execute(r) }, log = { DiagLog.i(CAPTURE_TAG, it) },
             diagEnabled = diagRecord::diagEnabled,
             pendingFile = File(app.filesDir, "trace_cleanup_pending"), // LGC8-min: the received-cleanup record, the single source of truth for `cleanupPending()`
+            // LGC5: at process start, after the recovery (writer thread): restart count, flag state, epoch and how many killed traces were found. Reads no recorder (it may still be constructing).
+            onRecovered = { r -> DiagLog.i(TRACE_TAG, com.rokid.context.glasses.capture.trace.TraceStateReporter.boot(restarts.closes, diagRecord.stateFor(r.epochSaved), r.epochSaved, r.found)) },
         )
     }
+    val traceRecorder: com.rokid.context.glasses.capture.trace.TraceRecorder by traceRecorderLazy
+    /** LGC5: where the capture session says why it offered no clean boundary (read by [traceState]). */
+    val traceBoundary = com.rokid.context.glasses.capture.trace.TraceBoundaryReporter()
+    /** LGC5: the `trace state:` line (tag [TRACE_TAG]); driven by [pollTraceState]. */
+    val traceState: com.rokid.context.glasses.capture.trace.TraceStateReporter by lazy {
+        com.rokid.context.glasses.capture.trace.TraceStateReporter(
+            traceRecorder, traceBoundary, { diagRecord.state() }, android.os.SystemClock::elapsedRealtime,
+            emit = { warn, line -> if (warn) DiagLog.w(TRACE_TAG, line) else DiagLog.i(TRACE_TAG, line) },
+        )
+    }
+    /** Prints the state line when the blocker changed or a minute passed. A no-op until the recorder exists (this never constructs it on the calling thread); memory reads only. */
+    fun pollTraceState() { if (traceRecorderLazy.isInitialized()) traceState.poll() }
     /** The single storage writer (idle-blocked daemon thread, no timer): the recorder's epoch wipe / recovery and the `diag_state` load and saves run on it, in order. */
     private val traceWriter: java.util.concurrent.ExecutorService by lazy {
         java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "imu-trace").also { it.isDaemon = true } }
@@ -218,10 +232,16 @@ class GlassesRuntime private constructor(private val app: Context) {
 
     init {
         runCatching { restarts.onProcessStart() }
-        scope.launch { while (true) { delay(HEARTBEAT_MS); runCatching { restarts.heartbeat() } } }
+        scope.launch { while (true) { delay(HEARTBEAT_MS); runCatching { restarts.heartbeat() }; runCatching { pollTraceState() } } }
         // The icon ticks once a second: redraw it as the cue starts and ends, so a 1 s pulse is never missed.
         scope.launch { photoCue.active.collect { minimisedIcon.refresh() } }
         scope.launch { captureBlink.active.collect { minimisedIcon.refresh() } }
+    }
+
+    init {
+        // LGC5: build the recorder on the WRITER thread (queued after the `diag_state` load): its recovery, the replayed cleanup and the `trace boot:` line then happen at process start, whatever the
+        // capture mode, and the main thread never constructs it first. A later main-thread access finds it built or waits only for the (cheap) construction.
+        traceWriter.execute { runCatching { traceRecorder } }
     }
 
     /** Tap = Ask (spec §5.1). Only an open session takes it; capture pauses don't matter (Ask is a user action). */
@@ -371,6 +391,7 @@ class GlassesRuntime private constructor(private val app: Context) {
         const val TAG = "PcGlasses"
         const val UPLINK_TAG = "PcUplink"
         const val CAPTURE_TAG = "PcCapture"
+        const val TRACE_TAG = "PcTrace"
         const val HEARTBEAT_MS = 30_000L
         const val FLUSH_AFTER_HELLO_MS = 500L
         @Volatile private var instance: GlassesRuntime? = null
