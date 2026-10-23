@@ -507,7 +507,11 @@ class PipelineInterpreterTest {
     }
     // ---- WP7 pins: unknown and tier-3 nodes ----
 
-    /** Pin: a node type the interpreter's map does not hold fails the batch with the fixed `no_executor` code; it is never skipped. */
+    /**
+     * Pin: an in-path node (one of `InterpretableShape.preSaveNodes`: input, prompt, switch, extract) whose executor is missing fails the batch with `no_executor`.
+     * A node type OUTSIDE that set is skipped silently by `preSaveNodes`, so tier 3 is closed by the start guard, not by this code
+     * (see `interpreterRefusesToStartWithTier3Node`; do not remove that guard as redundant).
+     */
     @Test fun aNodeWithNoExecutorFailsTheBatchWithNoExecutor() = runBlocking<Unit> {
         graph { "" }
         val f = failed(run(DefaultPipelines.liveExtract(), photos("ex1"), i = interpreter(emptyMap())))
