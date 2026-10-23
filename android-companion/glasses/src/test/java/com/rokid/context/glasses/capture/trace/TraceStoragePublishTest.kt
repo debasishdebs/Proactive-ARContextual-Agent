@@ -153,4 +153,61 @@ class TraceStoragePublishTest {
         TraceStorage(root).recover()
         assertEquals(0, TraceTestKit.readAll(root).size); assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty())
     }
+
+    // ---- a read I/O error is not a rejection (Codex review 3, finding 1) ----
+
+    private fun failingRead(name: String, on: () -> Boolean) = TraceStorage(root, readFile = { f -> if (on() && f.name == name) throw java.io.IOException("read") else f.readText(Charsets.UTF_8) })
+
+    @Test fun aReadErrorOnTheManifestKeepsTheManifestOnlyDirectoryAndALaterRecoveryPublishesIt() {
+        manifestOnly(4)
+        failingRead("manifest.json") { true }.recover()
+        assertTrue(File(root, "imu_trace_tmp/$id/manifest.json").isFile, "kept after the transient read error")
+        TraceStorage(root).recover()
+        assertEquals(4, TraceTestKit.readAll(root).single().manifest.chunkCount)
+    }
+
+    @Test fun aReadErrorOnTheStartRecordKeepsTheDirectoryAndALaterRecoverySealsIt() {
+        val storage = TraceStorage(root, checkpoint = { if (it == "stamp:0") throw Died(it) })
+        val m = written(storage, 3)
+        try { storage.publish(id, m) } catch (e: Died) { /* gone */ }
+        failingRead("start.json") { true }.recover()
+        assertTrue(File(root, "imu_trace_tmp/$id/start.json").isFile)
+        TraceStorage(root).recover()
+        assertEquals(3, TraceTestKit.readAll(root).single().manifest.chunkCount)
+    }
+
+    @Test fun aReadErrorOnAChunkDoesNotTruncateTheSealedTrace() {
+        val storage = TraceStorage(root, checkpoint = { if (it == "stamp:0") throw Died(it) })
+        val m = written(storage, 4)
+        try { storage.publish(id, m) } catch (e: Died) { /* gone */ }
+        failingRead("chunk-0002.json") { true }.recover()
+        assertTrue(File(root, "imu_trace_tmp/$id/chunk-0003.json").isFile, "no chunk was deleted by the failed read")
+        TraceStorage(root).recover()
+        assertEquals(4, TraceTestKit.readAll(root).single().manifest.chunkCount, "the later recovery keeps every chunk")
+    }
+
+    // ---- bytes of a failed publication are on the live accounting (finding 2) ----
+
+    private fun realBytes() = listOf("traces", "imu_trace_tmp").sumOf { d -> File(root, d).walkTopDown().filter { it.isFile }.sumOf { it.length() } }
+
+    @Test fun repeatedFailedStampsAndAFailedManifestWriteLeaveTheAccountingEqualToTheDisk() {
+        var failOn: String? = null
+        val storage = TraceStorage(root, writeFile = { f, t -> f.writeText(t, Charsets.UTF_8); if (f.name == failOn) throw java.io.IOException("disk full after writing") })
+        val m = written(storage, 4)
+        failOn = "chunk-0001.json.part"
+        repeat(3) {
+            try { storage.publish(id, m); error("must fail") } catch (e: java.io.IOException) { /* retained */ }
+            assertEquals(realBytes(), storage.used.get(), "after failed stamp #${it + 1}: the .part bytes are accounted or gone")
+        }
+        failOn = "manifest.json.part"
+        try { storage.publish(id, m); error("must fail") } catch (e: java.io.IOException) { /* retained */ }
+        assertEquals(realBytes(), storage.used.get(), "after a failed manifest write")
+        assertTrue(File(root, "imu_trace_tmp/$id/start.json").isFile, "still sealable")
+        // a later recovery is clean: no stale .part file reaches traces/
+        failOn = null
+        TraceStorage(root).recover()
+        val t = File(root, "traces/$id")
+        assertTrue(t.list()!!.none { it.endsWith(".part") })
+        assertEquals(4, TraceTestKit.readAll(root).single().manifest.chunkCount)
+    }
 }
