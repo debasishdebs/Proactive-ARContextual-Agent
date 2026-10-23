@@ -206,7 +206,9 @@ cmd_status() {
   [ "$st" = 200 ] && echo "collect active=$(pj 'j.get("active")') untilMs=$(pj 'j.get("untilMs")')" || errline "$st"
   traces_summary
   st=$(api GET /api/replays); [ "$st" = 200 ] && echo "replays=$(pj 'len(j)') running=$(pj 'sum(1 for r in j if r.get("jobState")=="RUNNING")')"
-  echo "glasses (heartbeat tail; the phone has no plan-ack route): $(diag_text | tail -200 | heartbeat_summary)"
+  local hbs; hbs=$(diag_text | tail -200 | heartbeat_summary)
+  echo "glasses (heartbeat tail; the phone has no plan-ack route): $hbs"
+  case "$hbs" in "hb_lines=0 "*) echo "NO HEARTBEAT EVIDENCE: no heartbeat v=2 line in the glasses log (diagnostics may be off)" ;; esac
   echo "expect plan=$(echo $EXPECT_HASH | cut -c1-8) planMode=SHADOW once the ack is EFFECTIVE"
 }
 
@@ -257,9 +259,23 @@ cmd_pull() {
   if [ -z "${M1_DIAG:-}" ]; then "$HERE/trace-pull.sh" "$out" || exit 1; fi
   diag_text > "$out/heartbeats.log"
   echo "heartbeat lines saved: $(wc -l < "$out/heartbeats.log" | tr -d ' ') (no other log read)"
+  # LGC4 hazard: with the diagnostic flag off no heartbeat reaches the log: such a run is rejected before the import (M1_ALLOW_NO_HEARTBEAT=1 labels and continues).
+  if [ ! -s "$out/heartbeats.log" ]; then
+    echo "NO HEARTBEAT EVIDENCE: no heartbeat v=2 line in the glasses log (diagnostics may be off), so the run cannot be attributed to a recording build"
+    if [ "${M1_ALLOW_NO_HEARTBEAT:-0}" = 1 ]; then echo "continuing (M1_ALLOW_NO_HEARTBEAT=1): the imported trace is LABELLED unverified"; else echo "rejected before the import; turn Developer mode on and rerun (or M1_ALLOW_NO_HEARTBEAT=1)"; exit 1; fi
+  fi
   need_state; init_state
   import_traces "$out" "$allow" || { traces_summary; exit 1; }
   traces_summary
+}
+
+# import <dir> [--allow-partial]: only the phone half of pull (used by tools/handover.sh): adb push each trace dir of <dir> to the staging dir and import it; prints "imported traceId=..." lines
+cmd_import() {
+  local out="" allow=0
+  while [ $# -gt 0 ]; do case "$1" in --allow-partial) allow=1; shift ;; *) [ -z "$out" ] && out="$1" || die "usage: m1-run.sh import <dir> [--allow-partial]"; shift ;; esac; done
+  [ -d "$out" ] || die "usage: m1-run.sh import <dir> [--allow-partial]"
+  need_state; init_state
+  import_traces "$out" "$allow"
 }
 
 cmd_replay() {
@@ -282,6 +298,7 @@ cmd_replay() {
   echo "jobState=$state"
   [ "$state" = DONE ] || { echo "FAIL replay did not finish DONE"; exit 1; }
   local dt=""; if [ -n "$diag" ]; then dt=$(grep 'heartbeat v=2' "$diag"); else dt=$(diag_text); fi
+  [ -n "$dt" ] || echo "NO HEARTBEAT EVIDENCE: no heartbeat v=2 line in the glasses log (diagnostics may be off): the shadow comparison below cannot pass"
   # The trace interval and plan hash restrict the heartbeats counted (fromMs/toMs of the replay job: the trace's wall-clock interval); an unknown interval leaves them unfiltered.
   local fms tms; fms=$(pj 'j.get("fromMs")'); tms=$(pj 'j.get("toMs")')
   local sh; sh=$(printf '%s\n' "$dt" | heartbeat_summary "$fms" "$tms" "${EXPECT_HASH:0:8}")
@@ -334,7 +351,7 @@ PY
 sub="$1"; shift
 case "$sub" in
   pair) cmd_pair "$@" ;; store) cmd_store ;; plan) cmd_plan ;; shadow) cmd_shadow ;; status) cmd_status ;;
-  collect) cmd_collect "$@" ;; pull) cmd_pull "$@" ;; replay) cmd_replay "$@" ;;
+  collect) cmd_collect "$@" ;; pull) cmd_pull "$@" ;; import) cmd_import "$@" ;; replay) cmd_replay "$@" ;;
   get) need_state; [ -n "${1:-}" ] || die "usage: m1-run.sh get <path>"; api GET "$1" >/dev/null; cat "$LAST"; echo ;;  # read-only: prints the JSON body (the token is only in a header, never in a body)
   *) die "unknown subcommand: $sub" ;;
 esac

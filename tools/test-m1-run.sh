@@ -42,5 +42,12 @@ PATH="$W/bin:$PATH" M1_DIAG="$T/diag_ok.log" run pull "$W/pull"; chk "imported 1
 PATH="$W/bin:$PATH" M1_PHONE_TID=9 M1_DIAG="$T/diag_ok.log" run pull "$W/pull" >/dev/null; grep -q -- '-t 9 push' "$ADB_LOG" || { echo "FAIL: M1_PHONE_TID ignored"; fail=1; }
 run replay --diag "$T/diag_ok.log"; chk "replay started"
 grep -q SHOULDNOTAPPEAR "$W/pull/heartbeats.log" "$T/diag_ok.log" >/dev/null && grep -q SHOULDNOTAPPEAR "$W/pull/heartbeats.log" && { echo "FAIL: non-heartbeat line leaked into the pull"; fail=1; }
+# LGC4 hazard: a pull without heartbeat evidence (diagnostics may be off) is rejected BEFORE any import; M1_ALLOW_NO_HEARTBEAT=1 only labels it; status labels it.
+printf '10-21 10:00:00.000 I PcCapture status ok\n' > "$W/nohb.log"
+: > "$ADB_LOG"; rm -rf "$W/pull2"; mkdir -p "$W/pull2/trace-aaaa-0001"; echo '{}' > "$W/pull2/trace-aaaa-0001/manifest.json"
+PATH="$W/bin:$PATH" M1_DIAG="$W/nohb.log" run pull "$W/pull2" && { echo "FAIL: pull without heartbeats must be rejected"; fail=1; }
+chk "NO HEARTBEAT EVIDENCE"; grep -q ' push ' "$ADB_LOG" && { echo "FAIL: imported although there was no heartbeat evidence"; fail=1; }
+PATH="$W/bin:$PATH" M1_ALLOW_NO_HEARTBEAT=1 M1_DIAG="$W/nohb.log" run pull "$W/pull2"; chk "imported 1 trace(s), failed 0"; chk "continuing"
+M1_DIAG="$W/nohb.log" run status; chk "NO HEARTBEAT EVIDENCE"
 no "mock-token-xyz"; no "Bearer"; no "SHOULDNOTAPPEAR"; no "123456"
 [ "$fail" = 0 ] && echo "ALL OK" || { echo "FAILED"; exit 1; }
