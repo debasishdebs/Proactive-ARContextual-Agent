@@ -283,6 +283,39 @@ class HelperDevSessionTest {
         assertTrue(s.active)
     }
 
+    private class RecordingNative : HelperNativeActions {
+        val pairings = java.util.concurrent.atomic.AtomicInteger()
+        val grantsOn = java.util.concurrent.atomic.AtomicInteger()
+        override fun state(): HelperCardState = throw UnsupportedOperationException()
+        override fun acceptPairing() { pairings.incrementAndGet() }
+        override fun setGrant(grant: String, on: Boolean) { if (on) grantsOn.incrementAndGet() }
+        override fun disconnectHelper() {}
+    }
+
+    @Test fun aDeclinedStartDoesNotEnablePairingOrGrantOn() {
+        val r = Rig(); val s = r.session()
+        val inner = RecordingNative(); val bound = BoundHelperNative(inner, s, r.ender)
+        s.start(); s.terminate(SessionEnd.NOTIFICATION_STOP)          // the end is queued: start() declines
+        bound.acceptPairing()
+        bound.setGrant(HelperGrants.PY_EXEC, true)
+        assertEquals("pairing must not open while the session cannot start", 0, inner.pairings.get())
+        assertEquals("a grant must not turn on while the session cannot start", 0, inner.grantsOn.get())
+        r.dispatcher.scheduler.advanceUntilIdle()
+        bound.acceptPairing()
+        bound.setGrant(HelperGrants.PY_EXEC, true)
+        assertEquals(1, inner.pairings.get())
+        assertEquals(1, inner.grantsOn.get())
+    }
+
+    @Test fun aShutdownDuringDisconnectCleanupStillStopsTheServer() {
+        val r = Rig(); val s = r.session()
+        s.start(); s.endHelperSession()                                 // Disconnect cleanup queued, stop=false
+        s.terminate(SessionEnd.SHUTDOWN)                                // joins the running end job
+        r.dispatcher.scheduler.advanceUntilIdle()
+        assertEquals("the server must stop once the shutdown was requested", 1, r.stops.get())
+        assertEquals(1, r.ends.get())
+    }
+
     @Test fun theExpiryWatcherLoopEndsTheSessionByItself() {
         val r = Rig()
         val real = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob())
