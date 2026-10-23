@@ -66,10 +66,35 @@ def test_rootful_default_connection_refused(env):
         rt_mod.load_runtime(env.store, env.journal, env.log, environ={}).check()
 
 
-def test_connection_missing_or_not_default_refused(env):
+def test_connection_not_default_is_accepted(env):
+    """Live fact (podman 6.1.4): the second machine is not the default connection and the user's default must stay untouched."""
     env.write_config()
-    for rows in ([], [{"Name": "other", "URI": "ssh://core@h:1/run/user/501/podman/podman.sock", "Default": True}],
-                 [{"Name": "pca", "URI": "ssh://core@h:1/run/user/501/podman/podman.sock", "Default": False}]):
+    with open(os.path.join(env.fake.dir, "connections.json"), "w") as f:
+        json.dump([{"Name": "pca", "URI": "ssh://core@h:1/run/user/501/podman/podman.sock", "Default": False}], f)
+    rt_mod.load_runtime(env.store, env.journal, env.log, environ={}).check()
+
+
+def test_mounts_come_from_the_machine_config_when_inspect_has_none(env, tmp_path):
+    env.write_config()
+    rt = rt_mod.load_runtime(env.store, env.journal, env.log, environ={})
+    real = rt.machine_info
+    def no_mounts():
+        d = dict(real()); d.pop("Mounts", None); return d
+    rt.machine_info = no_mounts
+    cfg = tmp_path / "m"; cfg.mkdir()
+    rt.machine_config_glob = str(cfg / "%s.json")
+    with pytest.raises(rt_mod.NeedsRuntime):  # no config file at all: unverifiable = refused
+        rt.check()
+    (cfg / "pca.json").write_text(json.dumps({"Mounts": [{"Source": str(env.home / "stage"), "Target": "/stage"}]}))
+    rt.check()
+    (cfg / "pca.json").write_text(json.dumps({"Mounts": [{"Source": "/Users/<user>", "Target": "/Users/<user>"}]}))
+    with pytest.raises(rt_mod.NeedsRuntime):
+        rt.check()
+
+
+def test_connection_missing_refused(env):
+    env.write_config()
+    for rows in ([], [{"Name": "other", "URI": "ssh://core@h:1/run/user/501/podman/podman.sock", "Default": True}]):
         with open(os.path.join(env.fake.dir, "connections.json"), "w") as f:
             json.dump(rows, f)
         with pytest.raises(rt_mod.NeedsRuntime):
