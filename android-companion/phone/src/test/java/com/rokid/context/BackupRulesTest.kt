@@ -24,6 +24,8 @@ class BackupRulesTest {
         "file:models",
         // Final review I4: the photo test's labels (queries.json holds the user's free text about their photos) never leave the phone.
         "file:photo-eval",
+        // Always-on logging LGC2: files/logs (pca.log, pca.log.1) is a per-install diagnostic record: never backed up or transferred.
+        "file:logs",
     ) + secretBaks + memoryCopies + slice3aFiles.map { "file:$it" } +
         // Final pass 10: the dev-mode trace staging folder under the app's EXTERNAL files dir (raw sensor traces, readable by adb): never backed up or transferred.
         "external:${com.rokid.context.canvas.trace.FencedFiles.STAGING_DIR}" + setupState.map { "sharedpref:$it.xml" }
@@ -56,6 +58,8 @@ class BackupRulesTest {
         com.rokid.context.phone.context.ContextSourceSettings.PREFS,
         // Canvas slice 2: the Developer mode switch is a per-device debug flag (Shadow runs only while it is on): off after a restore.
         com.rokid.context.phone.canvas.DeveloperModeStore.PREFS,
+        // Always-on logging LGC2: the pending log-wipe request is per-install state: never restored onto another install.
+        com.rokid.context.phone.log.PrefsWipePending.PREFS,
         // AI call pace (10 / 12 / 15 s) paces this phone's own model calls (the call budget reads it): per-device, back to the default after a restore.
         com.rokid.context.phone.ui.settings.capture.AiCallPaceStore.PREFS,
         // Fix round 1: "Send matching photos with questions" is an opt-in privacy switch: off after a restore.
@@ -130,6 +134,13 @@ class BackupRulesTest {
             assertEquals(tag, excluded, excludes(section!!))
             assertEquals("$tag: no <include>", 0, includes(section))
         }
+    }
+
+    @Test fun filesLogsExcludedFromBackupAndTransfer() {
+        val sections = listOf(parse("src/main/res/xml/backup_rules.xml")) +
+            listOf("cloud-backup", "device-transfer").map { parse("src/main/res/xml/data_extraction_rules.xml").getElementsByTagName(it).item(0) as Element }
+        assertEquals(3, sections.size)
+        for (section in sections) assertTrue("${section.tagName}: file:logs", "file:logs" in excludes(section))
     }
 
     /** The queue log's name is private to QueueRuntimeStore: pin it so a rename can't silently drop the exclusion. */
