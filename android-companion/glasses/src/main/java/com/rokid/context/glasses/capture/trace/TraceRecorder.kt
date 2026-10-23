@@ -86,6 +86,8 @@ class TraceRecorder(
     private val diagEnabled: () -> Boolean = { false },
     /** LGC8-min: where the received-cleanup record lives (production: `files/trace_cleanup_pending`; default: next to the epoch file). */
     pendingFile: File = File(root, "trace_cleanup_pending"),
+    /** Test seam: the atomic record writer for the cleanup record and the `trace_forget` working list (false = not saved). */
+    writeRecord: (File, String) -> Boolean = com.rokid.context.glasses.log.DiagStateFile::atomicWrite,
     /** LGC5: runs once on the writer thread right after the start-up recovery (the `trace boot:` line comes from it). A throw is contained. */
     private val onRecovered: (RecoveryInfo) -> Unit = {},
 ) : SessionTrace, SampleTap {
@@ -112,7 +114,7 @@ class TraceRecorder(
     private class Finish(val endElapsed: Long, val endWall: Long, val endPhone: PhoneSample?, val reason: String)
 
     private val lock = Any()
-    private val storage = TraceStorage(root, space, freeBytes, onReclaim = { r -> if (r.any) log(r.line()) }, renameDir = renameDir, deleteTree = deleteTree, pendingFile = pendingFile)
+    private val storage = TraceStorage(root, space, freeBytes, onReclaim = { r -> if (r.any) log(r.line()) }, renameDir = renameDir, deleteTree = deleteTree, pendingFile = pendingFile, writeRecord = writeRecord)
 
     // epoch (guarded by lock)
     @Volatile private var installId = ""
@@ -127,10 +129,17 @@ class TraceRecorder(
     /** Epoch wipes queued on the writer and not finished yet (incremented under [lock] with the epoch adoption). No trace starts while one is pending or the last one failed. */
     private val wipesPending = AtomicInteger(0)
     @Volatile private var wipeAttempts = 0
+    /**
+     * LGC8-min: a received cleanup could not be PERSISTED, so nothing was deleted and no epoch was completed; [unpersisted] holds it (writer thread only) until a retry saves it.
+     * Recording stays blocked ([TraceStartBlocker.CLEANUP_PERSIST_FAILED]) meanwhile.
+     */
+    @Volatile private var persistFailed = false
+    private var unpersisted: Received? = null
+    private class Received(val wipe: Boolean, val installId: String, val counter: Long, val lines: List<String>)
     private var nextWipeRetryAt = 0L
     /** The epoch read from disk at construction: a replayed cleanup adopts its target epoch only while no control has changed the in-memory one since. */
     private var startEpoch: Pair<String, Long> = "" to 0L
-    private fun storageSettled(): Boolean { retryWipeIfDue(); return recovered && wipesPending.get() == 0 && !wipeFailed }
+    private fun storageSettled(): Boolean { retryWipeIfDue(); return recovered && wipesPending.get() == 0 && !wipeFailed && !persistFailed }
     // collect window
     @Volatile private var collect = false
     @Volatile private var collectUntil = Long.MAX_VALUE
@@ -243,6 +252,7 @@ class TraceRecorder(
     fun startBlocker(): TraceStartBlocker? = when {
         !recovered -> TraceStartBlocker.RECOVERING
         wipesPending.get() != 0 -> TraceStartBlocker.WIPE_PENDING
+        persistFailed -> TraceStartBlocker.CLEANUP_PERSIST_FAILED
         wipeFailed -> TraceStartBlocker.WIPE_FAILED
         recording -> null
         !recordingAllowed(clock()) -> TraceStartBlocker.GATE_OFF
@@ -290,7 +300,7 @@ class TraceRecorder(
                 val margin = if (c.atMs > 0) FORGET_MARGIN_MS else FORGET_MARGIN_NO_CLOCK_MS
                 val lines = ArrayList<String>()
                 c.tombstones.filter { com.rokid.context.capture.trace.TraceBounds.isTraceId(it) }.forEach { lines += "T $it" }
-                if (c.forgetFromMs != null && c.forgetToMs != null) lines += "R ${c.forgetFromMs!! - offset - margin} ${c.forgetToMs!! - offset + margin}"
+                if (c.forgetFromMs != null && c.forgetToMs != null && c.forgetFromMs!! - offset - margin <= c.forgetToMs!! - offset + margin) lines += "R ${c.forgetFromMs!! - offset - margin} ${c.forgetToMs!! - offset + margin}"
                 forgetLines = lines
                 job?.let { j ->
                     val hit = lines.any { l -> l == "T ${j.id}" || (l.startsWith("R ") && l.split(' ').let { p -> j.startWall <= p[2].toLong() && wallClock() >= p[1].toLong() } ) }
@@ -303,25 +313,52 @@ class TraceRecorder(
             if (recording && !recordingAllowed(now)) closeLocked(CloseReason.STOP)
             // Storage work is enqueued under the SAME lock as the epoch adoption (so no start can slip between the adoption and the wipe), and the epoch to persist is captured here.
             // A trace cannot start while a wipe is pending or failed ([storageSettled]).
-            // LGC8-min: the received cleanup and its target epoch are PERSISTED (first task on the writer) before any deletion runs; the record leaves only when everything succeeded.
+            // LGC8-min: the received cleanup and its target epoch are PERSISTED (first task on the writer) before any deletion runs; nothing is deleted, and no epoch is completed,
+            // while the record is not durable (the retry below); the record leaves only when everything succeeded.
             if (wipe || forgetLines.isNotEmpty()) {
-                val tI = installId; val tC = deletionCounter; val w = wipe; val lines = forgetLines
-                io {
-                    try { if (!storage.persistCleanup(w, tI, tC, lines)) log("trace cleanup record not saved") } catch (e: Exception) { log("trace cleanup record failed: ${e.javaClass.simpleName}") }
-                    try { if (lines.isNotEmpty()) storage.addForget(lines) } catch (e: Exception) { log("trace forget list failed: ${e.javaClass.simpleName}") }
-                }
+                val rcv = Received(wipe, installId, deletionCounter, forgetLines)
+                io { receive(rcv) }
             }
             if (wipe || wipeFailed) enqueueWipeLocked()
-            // the pending-forget check is a file access: it runs in the queued task, not under the lock
-            val keep = liveId?.let { setOf(it) } ?: emptySet()
-            io {
-                try {
-                    if (storage.hasPendingForget()) {
-                        if (storage.runForget(keep)) storage.finishForget() else log("trace forget incomplete: retained, retried at the next control or start")
-                    }
-                } catch (e: Exception) { log("trace forget failed: ${e.javaClass.simpleName}") }
-            }
+            enqueueForgetLocked(liveId)
         }
+    }
+
+    /** Queues the forget run (caller holds [lock]); [liveId] is the running job whose tmp directory is never touched. */
+    private fun enqueueForgetLocked(liveId: String?) {
+        val keep = liveId?.let { setOf(it) } ?: emptySet()
+        io { runForgetTask(keep) }
+    }
+
+    /** Writer thread: merges a received cleanup into the unpersisted set and tries to save it. */
+    private fun receive(r: Received) {
+        val u = unpersisted
+        unpersisted = if (u == null) r else Received(u.wipe || r.wipe, if (r.wipe) r.installId else u.installId, if (r.wipe) r.counter else u.counter, (u.lines + r.lines).distinct())
+        ensurePersisted()
+    }
+
+    /** Writer thread: true when nothing is waiting to be saved. On a failure [persistFailed] blocks recording and the caller must not delete anything. */
+    private fun ensurePersisted(): Boolean {
+        val u = unpersisted ?: return true
+        val ok = try { storage.persistCleanup(u.wipe, u.installId, u.counter, u.lines) } catch (e: Exception) { false }
+        if (!ok) { persistFailed = true; log("trace cleanup record not saved: nothing deleted, retried"); return false }
+        unpersisted = null; persistFailed = false
+        return true
+    }
+
+    /**
+     * Writer thread: executes the COMPLETE durable pending set (the record is the truth; the working list is refilled from it first, and a failed refill stops here), and
+     * clears the forget part only when that whole set was really applied.
+     */
+    private fun runForgetTask(keep: Set<String>) {
+        try {
+            if (!ensurePersisted()) return
+            val p = storage.readPending()
+            if (p != null && p.lines.isNotEmpty()) storage.addForget(p.lines) // throws when not saved: nothing below runs, nothing is cleared
+            if (storage.hasPendingForget()) {
+                if (storage.runForget(keep)) { if (p != null) storage.finishForget() } else log("trace forget incomplete: retained, retried at the next control or start")
+            }
+        } catch (e: Exception) { log("trace forget failed: ${e.javaClass.simpleName}") }
     }
 
     /**
@@ -338,18 +375,18 @@ class TraceRecorder(
             if (ok && p.installId != null) { try { storage.writeEpoch(p.installId, p.counter); saved = true } catch (e: Exception) { log("trace epoch not saved") } }
             val finished = ok && (p.installId == null || saved)
             synchronized(lock) {
-                // adopt the target in memory unless a control already moved the epoch on
-                if (p.installId != null && (installId to deletionCounter) == startEpoch) {
-                    installId = p.installId; deletionCounter = p.counter
-                    epochDurable = saved
-                    if (!saved) { wipeFailed = true; wipeAttempts = 1; nextWipeRetryAt = clock() + WIPE_RETRY_MS }
+                // adopt the target in memory unless a control already moved the epoch on; an UNKNOWN target (unreadable record) invalidates the epoch read from disk: no recording
+                // under it, even with diagnostics on, until a valid control establishes and saves a new one
+                if ((installId to deletionCounter) == startEpoch) {
+                    if (p.installId != null) { installId = p.installId; deletionCounter = p.counter; epochDurable = saved }
+                    else { installId = ""; deletionCounter = 0; epochDurable = false }
+                    if (!finished) { wipeFailed = true; wipeAttempts = 1; nextWipeRetryAt = clock() + WIPE_RETRY_MS }
                 }
             }
             if (finished) storage.finishWipe(p.installId ?: "", p.counter) else done = false
         }
         if (p.lines.isNotEmpty()) {
-            storage.addForget(p.lines)
-            if (storage.runForget()) storage.finishForget() else done = false
+            try { storage.addForget(p.lines); if (storage.runForget()) storage.finishForget() else done = false } catch (e: Exception) { done = false }
         }
         log("trace cleanup replay: wipe=${p.wipe} lines=${p.lines.size} done=$done")
     }
@@ -366,12 +403,14 @@ class TraceRecorder(
                 // Privacy order (LGC4): the old epoch leaves the disk BEFORE the fence runs, so a restart (or a failed wipe) can never read the forgotten epoch back as durable and
                 // record under it. A failed clear counts as a failed wipe. The window between the in-memory adoption (onControl) and this task reaching the writer is NOT closed
                 // here: it belongs to LGC8-min (persist the received cleanup and its target epoch before acting, replay before recovery).
-                val cleared = try { storage.clearEpoch() } catch (e: Exception) { false }
+                val persisted = ensurePersisted() // LGC8-min: no epoch clear, no delete and no epoch save before the cleanup record is durable
+                val cleared = persisted && try { storage.clearEpoch() } catch (e: Exception) { false }
                 val ok = cleared && try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}"); false }
                 var saved = false
-                if (ok) { try { storage.writeEpoch(adoptedInstall, adoptedCounter); saved = true } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
+                if (ok && adoptedInstall.isEmpty()) saved = true // an unknown target (unreadable record): wiped, and no epoch exists until a valid control brings one
+                else if (ok) { try { storage.writeEpoch(adoptedInstall, adoptedCounter); saved = true } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
                 // An epoch that could not be written counts as a failed wipe (retried by the next control or the start checks): otherwise `armed_no_epoch` would never heal.
-                if (saved) synchronized(lock) { if (installId == adoptedInstall && deletionCounter == adoptedCounter) epochDurable = true }
+                if (saved && adoptedInstall.isNotEmpty()) synchronized(lock) { if (installId == adoptedInstall && deletionCounter == adoptedCounter) epochDurable = true }
                 if (saved) storage.finishWipe(adoptedInstall, adoptedCounter) // LGC8-min: only now may the wipe part of the pending record go
                 wipeFailed = !saved
                 wipeAttempts = if (saved) 0 else (wipeAttempts + 1).coerceAtMost(WIPE_RETRY_MAX_SHIFT)
@@ -381,12 +420,12 @@ class TraceRecorder(
 
     /** A failed wipe with none pending: queue it again once the backoff (2 s doubling to about 64 s) has passed, so recording never waits for a control that may not come. */
     private fun retryWipeIfDue() {
-        if (!wipeFailed || wipesPending.get() != 0) return
+        if (!(wipeFailed || persistFailed) || wipesPending.get() != 0) return
         synchronized(lock) {
             val now = clock()
-            if (!wipeFailed || wipesPending.get() != 0 || now < nextWipeRetryAt) return
+            if (!(wipeFailed || persistFailed) || wipesPending.get() != 0 || now < nextWipeRetryAt) return
             nextWipeRetryAt = now + (WIPE_RETRY_MS shl wipeAttempts)
-            enqueueWipeLocked()
+            if (wipeFailed) enqueueWipeLocked() else enqueueForgetLocked(job?.id) // a forget-only cleanup that could not be saved: save it, then run it
         }
     }
 
@@ -674,5 +713,5 @@ class TraceState(
 
 /** Why no trace can start right now ([TraceRecorder.startBlocker]); [wire] is the stable name the status line and `Hello.traceBlocker` carry. */
 enum class TraceStartBlocker(val wire: String) {
-    RECOVERING("recovering"), WIPE_PENDING("wipe_pending"), WIPE_FAILED("wipe_failed"), GATE_OFF("gate_off"), NO_EPOCH("no_epoch"), DISK_FULL("disk_full"),
+    RECOVERING("recovering"), WIPE_PENDING("wipe_pending"), WIPE_FAILED("wipe_failed"), CLEANUP_PERSIST_FAILED("cleanup_persist_failed"), GATE_OFF("gate_off"), NO_EPOCH("no_epoch"), DISK_FULL("disk_full"),
 }
