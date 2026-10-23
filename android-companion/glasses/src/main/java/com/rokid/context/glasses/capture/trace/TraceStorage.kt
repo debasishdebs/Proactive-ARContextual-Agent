@@ -12,6 +12,32 @@ import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 
 /**
+ * The numbers of the space policy (plan 3.7). [initialWriteBytes] is the bounded first physical write of a trace: one chunk file at its frozen size limit plus the manifest
+ * skeleton (`start.json`), NOT the per-trace cap and not a whole-trace headroom. [softBudgetOverride] is for tests.
+ */
+class SpacePolicy(
+    val floorBytes: Long = 64L shl 20,
+    val sealReserveBytes: Long = 16L shl 20,
+    val initialWriteBytes: Long = TraceFiles.MAX_FILE_CHARS + (TraceBounds.MAX_MANIFEST_BYTES + 2) / 3 * 4 + 1_024L,
+    val softMaxBytes: Long = 1_536L shl 20,
+    val softFraction: Double = 0.20,
+    val softBudgetOverride: Long? = null,
+) {
+    fun softBudgetFor(free: Long): Long = softBudgetOverride ?: minOf(softMaxBytes, (free * softFraction).toLong())
+    /** `needBytes` at a trace start. */
+    val startNeed: Long get() = sealReserveBytes + initialWriteBytes
+}
+
+/** Physical free bytes of the volume that will hold [root]: asked of the nearest directory that exists (a first run has no `imu` directory yet, and `usableSpace` of a missing path is 0). */
+internal fun volumeFreeBytes(root: File): Long = generateSequence(root) { it.parentFile }.firstOrNull { it.exists() }?.usableSpace ?: Long.MAX_VALUE
+
+/** Counts of one reclaim pass: transferred and oldest traces deleted, bytes freed, deletes that failed. */
+class ReclaimResult(val transferred: Int, val oldest: Int, val freedBytes: Long, val failed: Int) {
+    val any: Boolean get() = transferred + oldest + failed > 0
+    fun line(): String = "trace reclaim: transferred=$transferred oldest=$oldest freedMB=${freedBytes shr 20} failed=$failed"
+}
+
+/**
  * The recorder's files. Layout (the frozen [TraceFiles] layout, one directory per trace):
  * - `imu_trace_tmp/<traceId>/chunk-NNNN.json`: a trace being written. A chunk file is written under a `.part` name and renamed, so a crash leaves
  *   no half file that looks complete; the whole directory is invisible to import until [publish].
@@ -22,7 +48,13 @@ import java.util.concurrent.atomic.AtomicLong
  * Every method is called from the single writer thread (the recorder's io thread, which also runs [recover]), except [readEpoch] (construction: one tiny file). [used] counts the bytes of both directories.
  */
 internal class TraceStorage(
-    private val root: File, private val diskCapBytes: Long = Long.MAX_VALUE,
+    private val root: File,
+    /** LGC7-min (plan 3.7): the space numbers (floor, sealing reserve, initial write bound, soft budget). */
+    private val space: SpacePolicy = SpacePolicy(),
+    /** Physical free bytes of the volume that holds [root] (production: `usableSpace`, a `statvfs`). Called ONLY on the writer thread. */
+    private val freeBytes: () -> Long = { volumeFreeBytes(root) },
+    /** Called with the outcome of every reclaim pass that deleted or failed to delete something (the recorder logs the counts line). */
+    private val onReclaim: (ReclaimResult) -> Unit = {},
     /** Test seam: called at the named points of [publish] (`stamp:<i>` after chunk i was stamped, `manifest`, `beforeRename`); a test throws from it to simulate the process dying there. */
     private val checkpoint: (String) -> Unit = {},
     /** Test seams for an I/O error: the directory rename of a publication, and the recursive delete of a wipe. */
@@ -44,13 +76,94 @@ internal class TraceStorage(
     val transferredDir = File(root, "transferred")
     val used = AtomicLong(0)
 
+    // ---- space policy (LGC7-min, plan 3.7) ----
+    /** The soft budget: min(1.5 GB, 20 % of physical free space), re-measured at each trace start and after recovery. Until the first measure it is the maximum. */
+    @Volatile var softBudgetBytes: Long = space.softBudgetOverride ?: space.softMaxBytes
+        private set
+    /** The free space as of the last measure (memory only, so a caller thread can read it without I/O). */
+    @Volatile private var freeCached: Long = Long.MAX_VALUE
+
+    /** Physical free bytes now (WRITER THREAD ONLY: a `statvfs`); refreshes [freeCached]. A volume that cannot be measured counts as roomy: only a measured shortage stops anything. */
+    private fun measure(): Long {
+        val f = try { freeBytes() } catch (e: Exception) { return freeCached }
+        freeCached = f
+        return f
+    }
+
+    /** Re-reads the physical free space into the cache (writer thread). */
+    fun refreshFree() { measure() }
+
+    /** Re-measures the soft budget (`min(1.5 GB, 20 %` of physical free space`)`): at recovery, at each trace start and in the boundary retry. Writer thread. */
+    fun measureBudget() { softBudgetBytes = space.softBudgetFor(measure()) }
+
+    /** Memory only (any thread): the last measured free space holds the bounded first write of a trace above the floor and the sealing reserve. NOT the per-trace cap, NOT a whole-trace headroom. */
+    fun hasStartRoom(): Boolean = freeCached >= space.floorBytes + space.startNeed
+
+    /**
+     * Room for the next batch of [chunkBytes] (writer thread). A normal batch needs the floor, the sealing reserve and itself; the CLOSING batch may spend the reserve (it is what the
+     * reserve is for) but never the floor. When the physical room or the soft budget is short, [reclaim] runs first (the soft budget only schedules reclaim: it never refuses). False
+     * only when the PHYSICAL room is still short after the reclaim.
+     */
+    fun ensureRoom(chunkBytes: Long, closing: Boolean): Boolean {
+        val need = if (closing) chunkBytes else space.sealReserveBytes + chunkBytes
+        if (measure() >= space.floorBytes + need && used.get() + need <= softBudgetBytes) return true
+        reclaim(need, honorBudget = !closing)
+        return measure() >= space.floorBytes + need
+    }
+
+    /** Room to seal (the stamping rewrite and the manifest), writer thread: reclaim up to the sealing reserve when the floor and the reserve are not both free, then require the floor and the bounded write. Throws [java.io.IOException] when there is no room (nothing is discarded). */
+    fun ensureSealRoom() {
+        if (measure() < space.floorBytes + space.sealReserveBytes) reclaim(space.sealReserveBytes, honorBudget = false)
+        if (measure() < space.floorBytes + space.initialWriteBytes) throw java.io.IOException("space")
+    }
+
+    /**
+     * Reclaims sealed traces until the PHYSICAL free space holds the floor and [needBytes] and (when [honorBudget]) the used bytes plus [needBytes] fit the soft budget (plan 3.7(a), (b)):
+     * first the traces with a transfer marker (oldest first), then the oldest by `endWallMs`. WRITER THREAD ONLY. Never touches `imu_trace_tmp` (the running trace and unfinished ones), the
+     * ids in [protect] (recovered traces), or anything while a received cleanup is pending (the fence: reclaim runs after the replay, never beside it). When only the budget is crossed
+     * (the physical room is fine) the newest sealed trace that was not transferred is kept: the budget alone never deletes the latest evidence. A delete that fails is counted and
+     * tried again at the next boundary.
+     */
+    fun reclaim(needBytes: Long, protect: Set<String> = emptySet(), honorBudget: Boolean = true): ReclaimResult {
+        if (cleanupPending()) return NO_RECLAIM
+        fun satisfied() = measure() >= space.floorBytes + needBytes && (!honorBudget || used.get() + needBytes <= softBudgetBytes)
+        if (satisfied()) return NO_RECLAIM
+        val all = (tracesDir.listFiles() ?: emptyArray()).filter { it.isDirectory && TraceBounds.isTraceId(it.name) }.map { Candidate(it, endWallOf(it), isTransferred(it.name)) }
+        val transferred = all.filter { it.transferred && it.dir.name !in protect }.sortedWith(compareBy({ it.endWall }, { it.dir.name }))
+        val others = all.filter { !it.transferred && it.dir.name !in protect }.sortedWith(compareBy({ it.endWall }, { it.dir.name }))
+        val newestKept = all.filter { !it.transferred }.maxWithOrNull(compareBy({ it.endWall }, { it.dir.name }))
+        var t = 0; var o = 0; var failed = 0; var freed = 0L
+        for (c in transferred + others) {
+            if (satisfied()) break
+            if (!c.transferred && c === newestKept && measure() >= space.floorBytes + needBytes) continue
+            val n = sizeOf(c.dir)
+            try { deleteTree(c.dir) } catch (e: Exception) { /* counted below: the directory is still there */ }
+            if (c.dir.exists()) { failed++; continue }
+            used.addAndGet(-n); freed += n
+            clearMarker(c.dir.name)
+            if (c.transferred) t++ else o++
+        }
+        recount()
+        val r = ReclaimResult(t, o, freed, failed)
+        if (r.any) onReclaim(r)
+        return r
+    }
+
+    private class Candidate(val dir: File, val endWall: Long, val transferred: Boolean)
+
+    /** The `endWallMs` of a sealed trace; a manifest that cannot be read sorts first (it can never be exported, so it is the cheapest to lose). */
+    private fun endWallOf(dir: File): Long = try {
+        ManifestChunk.decode(TraceFiles.decodeFile(readFile(File(dir, TraceFiles.MANIFEST_FILE))).getOrThrow()).getOrThrow().endWallMs
+    } catch (e: Exception) { Long.MIN_VALUE }
+
     /**
      * Start-up: an unfinished trace (the process died: killed on a call, a crash) is SEALED as a PARTIAL trace and moved to `traces/` ([seal]) instead of deleted, when it
      * belongs to the persisted deletion epoch and fits the disk cap; anything else in tmp (another epoch, no start record, no readable chunk, over the cap) is deleted.
      * The used size is recounted.
      */
     fun recover(): RecoveryCounts {
-        val sealedBefore = tracesDir.list()?.size ?: 0
+        val sealedBefore = tracesDir.list()?.toSet() ?: emptySet()
+        measureBudget()
         val found = tmpDir.listFiles()?.count { it.isDirectory } ?: 0
         used.set(sizeOf(tracesDir))
         // LGC8-min: while a received cleanup is still pending (its replay failed again) nothing in tmp is sealed or deleted here: a killed trace the cleanup targets must not
@@ -66,7 +179,10 @@ internal class TraceStorage(
         tmpDir.listFiles()?.filter { !it.isDirectory }?.forEach { it.delete() }
         pruneMarkers()
         used.set(sizeOf(tracesDir) + sizeOf(tmpDir))
-        return RecoveryCounts(found, ((tracesDir.list()?.size ?: 0) - sealedBefore).coerceAtLeast(0))
+        // Plan 3.7: an over-budget (or short) state after recovery reclaims OLDER sealed traces; the traces this recovery sealed are never candidates.
+        val recovered = (tracesDir.list()?.toSet() ?: emptySet()) - sealedBefore
+        reclaim(space.startNeed, protect = recovered)
+        return RecoveryCounts(found, recovered.size)
     }
 
     /** A publication that failed on I/O (a rename, a write): the directory can still be finished by a later recovery, so it is kept, not deleted. */
@@ -104,7 +220,6 @@ internal class TraceStorage(
             val i = CHUNK_NAME.matchEntire(extra.name)?.groupValues?.get(1)?.toInt()
             if (extra.name != TraceFiles.MANIFEST_FILE && (i == null || i >= m.chunkCount)) extra.delete()
         }
-        if (sizeOf(tracesDir) + sizeOf(dir) > diskCapBytes) return true
         tracesDir.mkdirs()
         if (!renameDir(dir, File(tracesDir, TraceFiles.dirName(m.traceId)))) throw Retryable(java.io.IOException("rename"))
         return true
@@ -140,8 +255,8 @@ internal class TraceStorage(
             chunkCount = shas.size, eventCount = events, rawBytes = raw, traceSha256 = Manifest.traceSha(shas),
             recorded = TraceStatus.PARTIAL, closeReason = CloseReason.STOP,
         )
-        if (sizeOf(tracesDir) + sizeOf(dir) + MANIFEST_ALLOWANCE > diskCapBytes) return
-        try { publish(m.traceId, m) } catch (e: java.io.IOException) { throw Retryable(e) } // keeps the start record until the manifest exists (a death here is recovered again)
+        // No room is not a rejection: the directory stays for a later recovery (the soft budget never decides here: only the physical floor and the sealing reserve do).
+        try { ensureSealRoom(); publish(m.traceId, m) } catch (e: java.io.IOException) { throw Retryable(e) } // keeps the start record until the manifest exists (a death here is recovered again)
     }
 
     fun readEpoch(): Pair<String, Long> = try {
@@ -410,7 +525,7 @@ internal class TraceStorage(
         const val START_FILE = "start.json"
         const val RECORD_HEAD = "cleanup1"
         const val PART = ".part"
-        const val MANIFEST_ALLOWANCE = 4_096L
+        val NO_RECLAIM = ReclaimResult(0, 0, 0, 0)
         val CHUNK_NAME = Regex("chunk-(\\d{4})\\.json")
     }
 

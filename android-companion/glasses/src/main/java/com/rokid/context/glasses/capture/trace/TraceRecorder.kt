@@ -41,8 +41,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * If the writer falls behind ([MAX_IN_FLIGHT] buffers) the newest batch is dropped and the trace is recorded PARTIAL, never blocked.
  *
  * **Disk.** Chunk files go to `imu_trace_tmp/<id>/` (renamed from `.part`), the manifest is written last and the directory is renamed to
- * `traces/<id>/` at close ([TraceStorage]). At [diskCapBytes] (150 MB, including the running trace) the trace closes with `cap` and no new one
- * starts until space is freed; nothing is deleted to make room and no event is dropped for it. A chunk the codec refuses as too big
+ * `traces/<id>/` at close ([TraceStorage]). **Space (LGC7-min, plan 3.7).** A trace starts when the volume holds its bounded first write (a chunk and the manifest
+ * skeleton) above the 64 MB floor and the 16 MB sealing reserve; a later batch needs the floor, the reserve and itself, checked at the write. Crossing the soft budget
+ * (min of 1.5 GB and 20 % of free space) reclaims on the writer thread (sealed traces with a transfer marker, then the oldest) and the trace keeps writing; only PHYSICAL
+ * exhaustion after a reclaim closes it (`cap`, [TraceStartBlocker.DISK_FULL]), and the next boundary retries. The seal needs only the floor and the bounded rewrite. A chunk the codec refuses as too big
  * (`b64_too_long`: the real limit is 90,000 base64 characters) is split in two and retried.
  *
  * **Epoch (S57).** A [TraceControl] with a different `installId`, or a larger `deletionCounter`, drops the buffer and the running trace, deletes
@@ -69,7 +71,10 @@ class TraceRecorder(
     /** Runs a task on the single writer thread (tests: inline). Must run tasks in order. */
     private val io: (Runnable) -> Unit,
     private val newTraceId: () -> String = { java.util.UUID.randomUUID().toString() },
-    private val diskCapBytes: Long = DISK_CAP_BYTES,
+    /** LGC7-min (plan 3.7): floor, sealing reserve, initial write bound and soft budget. */
+    private val space: SpacePolicy = SpacePolicy(),
+    /** Physical free bytes under [root]; called only on the writer thread (tests: a fake volume). */
+    private val freeBytes: () -> Long = { volumeFreeBytes(root) },
     private val flushBytes: Int = FLUSH_BYTES,
     private val bounds: TraceBounds = TraceBounds.DEFAULT,
     private val bufferEvents: Int = BUFFER_EVENTS,
@@ -100,13 +105,14 @@ class TraceRecorder(
         var events = 0L
         var raw = 0L
         var writeFailed = false
+        var spaceLogged = false
     }
 
     private class PhoneSample(val atMs: Long, val arrivedElapsed: Long)
     private class Finish(val endElapsed: Long, val endWall: Long, val endPhone: PhoneSample?, val reason: String)
 
     private val lock = Any()
-    private val storage = TraceStorage(root, diskCapBytes, renameDir = renameDir, deleteTree = deleteTree, pendingFile = pendingFile)
+    private val storage = TraceStorage(root, space, freeBytes, onReclaim = { r -> if (r.any) log(r.line()) }, renameDir = renameDir, deleteTree = deleteTree, pendingFile = pendingFile)
 
     // epoch (guarded by lock)
     @Volatile private var installId = ""
@@ -189,7 +195,33 @@ class TraceRecorder(
     val usedBytes: Long get() = storage.used.get()
 
     override val wantsStart: Boolean
-        get() = storageSettled() && !recording && recordingAllowed(clock()) && installId.isNotEmpty() && storage.used.get() < diskCapBytes
+        get() = storageSettled() && !recording && recordingAllowed(clock()) && installId.isNotEmpty() && hasRoom()
+
+    /**
+     * LGC7-min: room for the bounded first write above the floor and the sealing reserve, from memory (the writer's last measure: no I/O on the caller). When there is none, ONE retry
+     * is queued on the writer (reclaim, then a fresh measure), so the next boundary sees the room that reclaim made: simple retry, no backoff scheduler.
+     */
+    private fun hasRoom(): Boolean {
+        if (storage.hasStartRoom()) return true
+        scheduleMaintenance()
+        return false
+    }
+
+    private val maintenanceQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var nextMaintenanceAt = 0L
+
+    /** Queues one space pass on the writer thread (coalesced; after a pass that found no room, the next one waits [MAINTENANCE_GAP_MS] so a full disk is not rescanned at every poll). */
+    private fun scheduleMaintenance() {
+        if (clock() < nextMaintenanceAt || !maintenanceQueued.compareAndSet(false, true)) return
+        io {
+            try {
+                storage.measureBudget()
+                storage.reclaim(space.startNeed)
+                nextMaintenanceAt = if (storage.hasStartRoom()) 0L else clock() + MAINTENANCE_GAP_MS
+            } catch (e: Exception) { log("trace space pass failed: ${e.javaClass.simpleName}") }
+            finally { maintenanceQueued.set(false) }
+        }
+    }
 
     /** The laptop's `pc_trace_ctl` collect window (its own `collectUntil`). */
     private fun collectingNow(now: Long) = collect && now < collectUntil
@@ -215,7 +247,7 @@ class TraceRecorder(
         recording -> null
         !recordingAllowed(clock()) -> TraceStartBlocker.GATE_OFF
         installId.isEmpty() -> TraceStartBlocker.NO_EPOCH
-        storage.used.get() >= diskCapBytes -> TraceStartBlocker.DISK_CAP
+        !storage.hasStartRoom() -> TraceStartBlocker.DISK_FULL
         else -> null
     }
 
@@ -225,7 +257,7 @@ class TraceRecorder(
         val c = collectingNow(now)
         return TraceState(
             recovered = recovered, recoveredMs = recoveredMs, collect = c, untilInMs = if (c && collectUntil != Long.MAX_VALUE) collectUntil - now else null,
-            diag = diagEnabled(), epochSaved = epochDurable, usedBytes = storage.used.get(), capBytes = diskCapBytes, recording = recording, traces = tracesDone.get(),
+            diag = diagEnabled(), epochSaved = epochDurable, usedBytes = storage.used.get(), softBudgetBytes = storage.softBudgetBytes, recording = recording, traces = tracesDone.get(),
         )
     }
 
@@ -362,7 +394,7 @@ class TraceRecorder(
 
     override fun start(s: TraceStart): Boolean = synchronized(lock) {
         val now = clock()
-        if (!storageSettled() || recording || !recordingAllowed(now) || installId.isEmpty() || storage.used.get() >= diskCapBytes) return false
+        if (!storageSettled() || recording || !recordingAllowed(now) || installId.isEmpty() || !hasRoom()) return false
         if (s.snapshot.sampleEvery != sampleEvery) return false
         val id = newTraceId()
         if (!TraceBounds.isTraceId(id)) return false
@@ -387,6 +419,7 @@ class TraceRecorder(
         }
         est = 5 * EST_EVENT
         recording = true
+        if (storage.used.get() + space.startNeed > storage.softBudgetBytes) scheduleMaintenance() // crossing the soft budget schedules a reclaim; the trace starts and keeps writing
         true
     }
 
@@ -516,11 +549,13 @@ class TraceRecorder(
         if (events.isEmpty()) return
         try {
             val e = ChunkCodec.encode(j.id, j.seq, events, bounds)
-            if (j.seq == 0) writeStartRecord(j)
+            if (j.seq == 0) { storage.measureBudget(); writeStartRecord(j) } // the soft budget is re-measured at each trace start
+            // LGC7-min: the next batch needs the floor, the sealing reserve and itself (the closing batch: the floor and itself). The soft budget only reclaims; PHYSICAL exhaustion alone stops the trace.
+            if (!storage.ensureRoom(e.b64.length.toLong() + CHUNK_ENVELOPE, events.any { it is TraceEvent.Close })) { spaceExhausted(j); return }
             val c = TraceChunk(traceId = j.id, kind = ChunkCodec.KIND, seq = j.seq, count = 0, installId = j.installId, deletionCounter = j.counter, sha256 = e.sha256, b64 = e.b64)
             try { storage.writeChunk(j.id, j.seq, c) } catch (x: java.io.IOException) { j.writeFailed = true; log("trace chunk not written"); return }
             j.shas += e.sha256; j.events += e.eventCount; j.raw += e.rawBytes; j.seq++
-            if (j.seq >= CHUNK_SOFT_LIMIT || j.raw >= RAW_SOFT_LIMIT || j.events >= EVENT_SOFT_LIMIT || storage.used.get() >= diskCapBytes) capClose = true
+            if (j.seq >= CHUNK_SOFT_LIMIT || j.raw >= RAW_SOFT_LIMIT || j.events >= EVENT_SOFT_LIMIT) capClose = true
         } catch (x: TraceFormatException) {
             // The real limit is the 90,000 base64 characters: split in two (the first half keeps the seq) and retry.
             if (events.size > 1 && x.code in SPLIT_CODES) {
@@ -529,6 +564,13 @@ class TraceRecorder(
                 writeBatch(j, events.subList(mid, events.size))
             } else { j.writeFailed = true; log("trace chunk refused: ${x.code}") }
         }
+    }
+
+    /** No physical room for this batch even after reclaim: it is dropped (the trace is PARTIAL) and the trace closes `cap` at the next append. The recorder retries at every boundary. */
+    private fun spaceExhausted(j: Job) {
+        j.dropped = true
+        capClose = true
+        if (!j.spaceLogged) { j.spaceLogged = true; log("trace space exhausted: batch dropped, trace closes cap") }
     }
 
     /** The start record a restart seals a killed trace from (writer thread, once per trace, before the first chunk): the end fields are placeholders the seal replaces. */
@@ -562,8 +604,10 @@ class TraceRecorder(
                 recorded = if (j.dropped || j.writeFailed) TraceStatus.PARTIAL else TraceStatus.COMPLETE,
                 closeReason = end.reason, snapshot = j.snapshot,
             )
+            storage.ensureSealRoom() // no room: an IOException, the directory stays for the next recovery (nothing is discarded)
             storage.publish(j.id, m)
             tracesDone.incrementAndGet()
+            storage.refreshFree()
         } catch (e: java.io.IOException) {
             // An I/O error says nothing about the trace: the directory (start record or manifest) stays in tmp and the next start's recovery finishes it.
             log("trace not published (kept for recovery): ${e.javaClass.simpleName}")
@@ -596,7 +640,6 @@ class TraceRecorder(
     override fun onFlush(reason: String, nowMs: Long) = rec { TraceEvent.Flush(it, reason, nowMs) }
 
     companion object {
-        const val DISK_CAP_BYTES = 150L * 1024 * 1024
         /** S73-style flush point: about 64 KB of event text, well under the 90,000 character b64 bound after gzip. */
         const val FLUSH_BYTES = 64 * 1024
         const val BUFFER_EVENTS = 4096
@@ -606,6 +649,10 @@ class TraceRecorder(
         const val FORGET_MARGIN_NO_CLOCK_MS = 3_600_000L
         const val MAX_IN_FLIGHT = 3
         private const val WIPE_RETRY_MS = 2_000L
+        /** After a space pass that left no room, the next one waits this long. */
+        private const val MAINTENANCE_GAP_MS = 5_000L
+        /** A chunk file is its base64 plus the frozen envelope (`TraceFiles.MAX_FILE_CHARS - MAX_B64_CHARS`). */
+        private const val CHUNK_ENVELOPE = 1_024
         private const val WIPE_RETRY_MAX_SHIFT = 5
         private const val EST_SAMPLE = 56
         private const val EST_EVENT = 72
@@ -622,10 +669,10 @@ class RecoveryInfo(val found: Int, val sealed: Int, val ms: Long, val epochSaved
 /** The recorder's own state, as the state line prints it (counts and flags only). */
 class TraceState(
     val recovered: Boolean, val recoveredMs: Long, val collect: Boolean, val untilInMs: Long?, val diag: Boolean, val epochSaved: Boolean,
-    val usedBytes: Long, val capBytes: Long, val recording: Boolean, val traces: Int,
+    val usedBytes: Long, val softBudgetBytes: Long, val recording: Boolean, val traces: Int,
 )
 
 /** Why no trace can start right now ([TraceRecorder.startBlocker]); [wire] is the stable name the status line and `Hello.traceBlocker` carry. */
 enum class TraceStartBlocker(val wire: String) {
-    RECOVERING("recovering"), WIPE_PENDING("wipe_pending"), WIPE_FAILED("wipe_failed"), GATE_OFF("gate_off"), NO_EPOCH("no_epoch"), DISK_CAP("disk_cap"),
+    RECOVERING("recovering"), WIPE_PENDING("wipe_pending"), WIPE_FAILED("wipe_failed"), GATE_OFF("gate_off"), NO_EPOCH("no_epoch"), DISK_FULL("disk_full"),
 }
