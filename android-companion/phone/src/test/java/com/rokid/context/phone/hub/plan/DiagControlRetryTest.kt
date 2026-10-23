@@ -55,12 +55,17 @@ class DiagControlRetryTest {
         val st = Fake(); val times = mutableListOf<Long>()
         make(st, times = times).restart()
         advanceTimeBy(10_000_000)
-        assertEquals(DiagControlRetry.MAX_ATTEMPTS, times.size)
-        assertTrue("a rapid restart storm does not multiply the schedule", run {
-            val t2 = mutableListOf<Long>(); val r = make(st, times = t2)
-            repeat(50) { r.restart() }
-            advanceTimeBy(10_000_000); t2.size <= DiagControlRetry.MAX_ATTEMPTS
-        })
+        assertEquals(12, times.size)
+    }
+
+    @Test fun RapidRestartsLeaveExactlyOneReplacementSchedule() = runTest {
+        val st = Fake(); val times = mutableListOf<Long>()
+        val r = make(st, times = times)
+        repeat(50) { r.restart(); runCurrent(); advanceTimeBy(1_000) } // each original job has started (is sleeping) before it is replaced
+        val base = testScheduler.currentTime
+        advanceTimeBy(10_000_000)
+        val expected = listOf(5L, 15, 35, 75, 135, 195, 255, 315, 375, 435, 495, 555).map { base - 1_000 + it * 1_000 } // the last restart was 1 s before `base`
+        assertEquals(expected, times)
     }
 
     @Test fun RestartResetsTheScheduleAndInvalidatesOnNewSession() = runTest {
@@ -87,7 +92,7 @@ class DiagControlRetryTest {
         val times = mutableListOf<Long>()
         DiagControlRetry(backgroundScope, UnknownGlassesDiagStatus, { true }, resend = { times += 1 }).restart()
         advanceTimeBy(10_000_000)
-        assertEquals(DiagControlRetry.MAX_ATTEMPTS, times.size)
+        assertEquals(12, times.size)
     }
 
     @Test fun UpdateMapsWireNames() {

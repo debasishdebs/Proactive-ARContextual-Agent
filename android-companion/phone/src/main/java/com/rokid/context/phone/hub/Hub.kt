@@ -169,6 +169,7 @@ class Hub(
         // The glasses must not keep applying a context after this session: tell them UNKNOWN before the collector and the link go.
         ctxStop()
         scope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { guarded("motion_ctx") { onMotionContext(null) } }
+        diagControl?.cancel() // LGC4P: the retry lives on the graph scope; the link-state collector is cancelled before link.close() so it would never hear the loss
         jobs.forEach { it.cancel() }
         jobs = emptyList()
         relauncher?.stop()

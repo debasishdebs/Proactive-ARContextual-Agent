@@ -1,5 +1,6 @@
 package com.rokid.context.phone.hub.plan
 
+import com.rokid.context.core.model.carriesData
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -75,5 +76,8 @@ class DiagControlRetry(
         return when (status.state.value) { DiagFlagState.ENABLED, DiagFlagState.DISABLED -> false; else -> true }
     }
 
-    companion object { const val MIN_DELAY_MS = 5_000L; const val MAX_DELAY_MS = 60_000L; const val MAX_ATTEMPTS = 12 }
+    companion object {
+        /** The production condition: Developer mode on AND a glasses session that carries data (a schedule never starts, or restarts, while offline). */
+        fun wantedWhen(dev: StateFlow<Boolean>, link: StateFlow<com.rokid.context.core.model.LinkState>): () -> Boolean = { dev.value && link.value.carriesData }
+        const val MIN_DELAY_MS = 5_000L; const val MAX_DELAY_MS = 60_000L; const val MAX_ATTEMPTS = 12 }
 }
