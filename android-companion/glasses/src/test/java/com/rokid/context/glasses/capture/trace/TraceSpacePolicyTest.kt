@@ -22,7 +22,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * LGC7-min (plan 3.7): the basic space policy at `wantsStart` / `start` / `writeBatch` / `seal`. The volume is fake: free bytes are `capacity - bytes under root - external`, or a fixed number,
+ * LGC7-min (plan 3.7): the basic space policy at `wantsStart` / `start` / `writeBatch` / `seal`. The volume is fake: free bytes are `capacity - bytes under root`, or a fixed number,
  * and every number of the policy is the real one unless a test says otherwise (the small policy keeps files of a few KB meaningful).
  */
 class TraceSpacePolicyTest {
@@ -32,16 +32,15 @@ class TraceSpacePolicyTest {
     private val logs = CopyOnWriteArrayList<String>()
     private val wall = 1_700_000_000_000
     private var capacity = Long.MAX_VALUE / 4
-    private val external = 0L
     private var fixedFree: Long? = null
     private val executors = ArrayList<java.util.concurrent.ExecutorService>()
     @AfterTest fun cleanup() { executors.forEach { it.shutdownNow() }; root.deleteRecursively() }
 
     private fun dirBytes(f: File): Long = if (!f.exists()) 0 else if (f.isFile) f.length() else (f.listFiles() ?: emptyArray()).sumOf { dirBytes(it) }
-    private val freeSeam: () -> Long = { fixedFree ?: (capacity - external - dirBytes(root)).coerceAtLeast(0) }
+    private val freeSeam: () -> Long = { fixedFree ?: (capacity - dirBytes(root)).coerceAtLeast(0) }
     private fun free() = freeSeam()
     /** The volume has exactly [n] bytes free right now, whatever is written afterwards (the capacity follows the files). */
-    private fun freeIs(n: Long) { capacity = n + external + dirBytes(root) }
+    private fun freeIs(n: Long) { capacity = n + dirBytes(root) }
 
     /** Small numbers: a chunk file here is about 1 to 3 KB, so these are a few chunks. */
     private val small = SpacePolicy(floorBytes = 20_000, sealReserveBytes = 10_000, initialWriteBytes = 6_000, softBudgetOverride = Long.MAX_VALUE / 4)
@@ -253,8 +252,8 @@ class TraceSpacePolicyTest {
         assertTrue(r.begin()); r.gyro(200)
         freeIs(small.floorBytes + small.startNeed - 1) // one byte short of a start, before the closing batch and the seal take their share
         r.close(CloseReason.STOP)
-        assertFalse(r.wantsStart, "no room right now")
         assertEquals(TraceStartBlocker.DISK_FULL, r.startBlocker())
+        assertFalse(r.wantsStart, "no room right now (this poll queues the retry)")
         assertTrue(r.wantsStart, "the boundary retry reclaimed the transferred trace and the next start is allowed")
         assertFalse("trace-old0-0001" in sealed())
         assertTrue(r.begin())
@@ -277,7 +276,7 @@ class TraceSpacePolicyTest {
         r.gyro(6_000)
         assertFalse(r.recording)
         val t = TraceTestKit.readAll(root).single()
-        assertEquals("ok", t.verification.reason)
+        assertEquals(TraceStatus.PARTIAL, t.manifest.recorded) // batches that did not fit above the reserve were dropped; the trace itself verified and sealed
         assertTrue(t.all<TraceEvent.Close>().isNotEmpty(), "normal batches stopped above the reserve, so the closing batch and the seal still fit")
     }
 
