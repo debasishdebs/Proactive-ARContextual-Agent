@@ -152,6 +152,11 @@ class HelperDeletionTest {
         assertTrue(dao.commitHelperResultFenced("b", "h2", b.leaseGen, "rhb", "{\"b\":1}", f.now, f.live).ok)
         service.forgetMoment("f-a")
         assertEquals("only the result that carried the forgotten frame is nulled", "{\"b\":1}", dao.helperJob("b")!!.resultJson)
+        assertNull("the forgotten frame's job WAS scrubbed", dao.helperJob("a")!!.resultJson); assertEquals("[]", dao.helperJob("a")!!.frameIdsJson); assertEquals("DONE", state("a"))
+        assertTrue(dao.pendingCleanup(100).any { it.jobId == "a" && it.reason == "frame_forget" })
+        val retry = dao.commitHelperResultFenced("a", "h1", a.leaseGen, "rha", "{\"a\":1}", f.now, f.live)
+        assertFalse("a retried commit on a scrubbed DONE row is never acked", retry.ok); assertFalse(retry.duplicate); assertEquals("voided", retry.denial)
+        assertNull("and nothing is stored again", dao.helperJob("a")!!.resultJson)
     }
 
     @Test fun forgetMomentOfAnIdWithNoRowsStillMovesTheFenceAndVoids() = runBlocking {
