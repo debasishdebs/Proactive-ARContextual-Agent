@@ -4,6 +4,7 @@ import com.rokid.context.capture.trace.ChunkCodec
 import com.rokid.context.capture.trace.CloseReason
 import com.rokid.context.capture.trace.Manifest
 import com.rokid.context.capture.trace.ManifestChunk
+import com.rokid.context.capture.trace.TraceBounds
 import com.rokid.context.capture.trace.TraceFiles
 import com.rokid.context.capture.trace.TraceStatus
 import com.rokid.context.core.model.TraceChunk
@@ -34,6 +35,8 @@ internal class TraceStorage(
     val tracesDir = File(root, "traces")
     val tmpDir = File(root, "imu_trace_tmp")
     private val epochFile = File(root, "trace_epoch")
+    /** Transfer markers (LGC9, plan 3.8): `<root>/transferred/<traceId>`, zero bytes, in their own directory: never inside `traces/<id>/` (the frozen layout) and never listed by the pull. */
+    val transferredDir = File(root, "transferred")
     val used = AtomicLong(0)
 
     /**
@@ -53,6 +56,7 @@ internal class TraceStorage(
             if (!retry) deleteTree(dir)
         }
         tmpDir.listFiles()?.filter { !it.isDirectory }?.forEach { it.delete() }
+        pruneMarkers()
         used.set(sizeOf(tracesDir) + sizeOf(tmpDir))
         return RecoveryCounts(found, ((tracesDir.list()?.size ?: 0) - sealedBefore).coerceAtLeast(0))
     }
@@ -219,8 +223,49 @@ internal class TraceStorage(
     fun wipe(): Boolean {
         deleteTree(tmpDir)
         deleteTree(tracesDir)
+        deleteTree(transferredDir)
         used.set(sizeOf(tracesDir) + sizeOf(tmpDir))
-        return !tmpDir.exists() && !tracesDir.exists()
+        return !tmpDir.exists() && !tracesDir.exists() && !transferredDir.exists()
+    }
+
+    // ---- transfer markers (LGC9) ----
+    // The id is checked against the trace-id grammar ([a-z0-9-]{8,64}) BEFORE it becomes a path, so no separator, dot or empty name can reach a file operation.
+    private fun markerOf(id: String): File? = if (TraceBounds.isTraceId(id)) File(transferredDir, id) else null
+
+    /** True when [id] is a valid id with a marker file (a directory of that name is not a marker). The reclaim path (3.7(a)) reads this. */
+    fun isTransferred(id: String): Boolean = markerOf(id)?.isFile == true
+
+    /**
+     * Records that the sealed trace [id] was imported: a zero-byte file written under a `.part` name, synced, renamed (a crash leaves no half marker). Idempotent.
+     * False for an invalid id, a trace that is not sealed here, or an I/O error. The hand-over script writes the same file with `run-as`; this is the in-process twin.
+     */
+    fun markTransferred(id: String): Boolean {
+        val marker = markerOf(id) ?: return false
+        if (!File(tracesDir, id).isDirectory) return false
+        if (marker.isFile) return true
+        return try {
+            transferredDir.mkdirs()
+            val part = File(transferredDir, "$id$PART")
+            java.io.FileOutputStream(part).use { it.fd.sync() }
+            if (!part.renameTo(marker)) { part.delete(); false } else true
+        } catch (e: java.io.IOException) { false }
+    }
+
+    /** Removes the marker of [id]. True when none is left; false for an invalid id or a marker that could not be removed. */
+    fun clearMarker(id: String): Boolean {
+        val marker = markerOf(id) ?: return false
+        return try { marker.delete() || !marker.exists() } catch (e: Exception) { false }
+    }
+
+    /** The ids that carry a marker, sorted; temp files and any other name are ignored. */
+    fun transferredIds(): List<String> =
+        (transferredDir.listFiles() ?: emptyArray()).filter { it.isFile && TraceBounds.isTraceId(it.name) }.map { it.name }.sorted()
+
+    /** Start-up sweep: a marker whose trace is gone (a crash between the two deletes) and any `.part` leftover are removed. */
+    private fun pruneMarkers() {
+        for (f in transferredDir.listFiles() ?: return) {
+            if (f.isFile && (f.name.endsWith(PART) || (TraceBounds.isTraceId(f.name) && !File(tracesDir, f.name).isDirectory))) f.delete()
+        }
     }
 
     // ---- forget requests (S58, P7): durable until carried out, so a failed delete is retried and a forgotten trace cannot be pulled later ----
@@ -252,7 +297,7 @@ internal class TraceStorage(
                 val m = try { ManifestChunk.decode(TraceFiles.decodeFile(File(dir, TraceFiles.MANIFEST_FILE).readText(Charsets.UTF_8)).getOrThrow()).getOrThrow() } catch (e: Exception) { null }
                 m == null || ranges.any { m.startWallMs <= it.last && m.endWallMs >= it.first }
             }
-            if (hit) { val n = sizeOf(dir); dir.deleteRecursively(); if (dir.exists()) ok = false else used.addAndGet(-n) }
+            if (hit) { val n = sizeOf(dir); dir.deleteRecursively(); if (dir.exists()) ok = false else { used.addAndGet(-n); if (!clearMarker(dir.name) && TraceBounds.isTraceId(dir.name)) ok = false } }
         }
         if (ok) forgetFile.delete()
         return ok && !forgetFile.exists()
@@ -260,6 +305,7 @@ internal class TraceStorage(
 
     private companion object {
         const val START_FILE = "start.json"
+        const val PART = ".part"
         const val MANIFEST_ALLOWANCE = 4_096L
         val CHUNK_NAME = Regex("chunk-(\\d{4})\\.json")
     }
