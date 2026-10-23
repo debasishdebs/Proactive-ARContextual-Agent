@@ -60,7 +60,7 @@ class TraceStoragePublishTest {
     }
 
     @Test fun aDeathWhileStampingStillSealsTheTraceFromItsStartRecord() {
-        val storage = TraceStorage(root) { if (it == "stamp:1") throw Died(it) }
+        val storage = TraceStorage(root, checkpoint = { if (it == "stamp:1") throw Died(it) })
         val m = written(storage, 4)
         try { storage.publish(id, m); error("should have died") } catch (e: Died) { /* the process is gone */ }
         assertTrue(File(root, "imu_trace_tmp/$id/start.json").isFile, "the start record is kept while stamping")
@@ -68,7 +68,7 @@ class TraceStoragePublishTest {
     }
 
     @Test fun aDeathAfterTheManifestIsWrittenIsFinishedFromTheManifestOnlyDirectory() {
-        val storage = TraceStorage(root) { if (it == "beforeRename") throw Died(it) }
+        val storage = TraceStorage(root, checkpoint = { if (it == "beforeRename") throw Died(it) })
         val m = written(storage, 4)
         try { storage.publish(id, m); error("should have died") } catch (e: Died) { /* gone just before the rename */ }
         assertFalse(File(root, "imu_trace_tmp/$id/start.json").exists(), "removed just before the rename")
@@ -81,7 +81,7 @@ class TraceStoragePublishTest {
     }
 
     @Test fun aDeathRightAfterTheManifestRenameKeepsTheStartRecordAndIsStillFinished() {
-        val storage = TraceStorage(root) { if (it == "manifest") throw Died(it) }
+        val storage = TraceStorage(root, checkpoint = { if (it == "manifest") throw Died(it) })
         val m = written(storage, 3)
         try { storage.publish(id, m); error("should have died") } catch (e: Died) { /* gone */ }
         assertTrue(File(root, "imu_trace_tmp/$id/start.json").isFile && File(root, "imu_trace_tmp/$id/manifest.json").isFile)
@@ -97,5 +97,60 @@ class TraceStoragePublishTest {
         assertEquals(2, t.manifest.chunkCount, "the two good chunks before the bad one")
         assertEquals(TraceStatus.PARTIAL, t.manifest.recorded)
         assertEquals(100L, t.manifest.eventCount)
+    }
+
+    // ---- retryable I/O errors keep a finishable trace; rejected directories go (Codex review 2, finding 1) ----
+
+    private var failRename = true
+    private fun flaky() = TraceStorage(root, renameDir = { a, b -> if (failRename) false else a.renameTo(b) })
+
+    @Test fun aFailedFinalRenameKeepsTheManifestOnlyDirectoryAndTheRetryPublishesIt() {
+        val storage = flaky()
+        val m = written(storage, 4)
+        try { storage.publish(id, m); error("the rename must fail") } catch (e: java.io.IOException) { /* retryable */ }
+        flaky().recover() // first recovery: the rename still fails
+        assertTrue(File(root, "imu_trace_tmp/$id/manifest.json").isFile, "kept for the next recovery")
+        assertTrue(File(root, "traces").listFiles().isNullOrEmpty())
+        failRename = false
+        flaky().recover(); flaky().recover() // the retry publishes; a second recovery has nothing left to do
+        assertEquals(1, TraceTestKit.readAll(root).size)
+        assertEquals(4, TraceTestKit.readAll(root).single().manifest.chunkCount)
+        assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty())
+    }
+
+    @Test fun aFailedRenameWhileSealingFromAStartRecordIsRetriedToo() {
+        val storage = TraceStorage(root, checkpoint = { if (it == "stamp:0") throw Died(it) })
+        val m = written(storage, 3)
+        try { storage.publish(id, m) } catch (e: Died) { /* gone while stamping */ }
+        flaky().recover() // seals, the final rename fails: the directory (now with a manifest) stays
+        assertTrue(File(root, "imu_trace_tmp/$id").isDirectory)
+        failRename = false
+        flaky().recover()
+        assertEquals(3, TraceTestKit.readAll(root).single().manifest.chunkCount)
+    }
+
+    private fun manifestOnly(chunks: Int = 3): File {
+        val storage = TraceStorage(root, checkpoint = { if (it == "beforeRename") throw Died(it) })
+        val m = written(storage, chunks)
+        try { storage.publish(id, m) } catch (e: Died) { /* gone */ }
+        return File(root, "imu_trace_tmp/$id")
+    }
+
+    @Test fun aManifestOnlyDirectoryOfAnotherEpochIsDeletedNotPublished() {
+        manifestOnly(); File(root, "trace_epoch").writeText("inst-1\n2")
+        TraceStorage(root).recover()
+        assertEquals(0, TraceTestKit.readAll(root).size); assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty())
+    }
+
+    @Test fun aManifestOnlyDirectoryWhoseNameIsNotItsTraceIdIsDeletedNotPublished() {
+        val d = manifestOnly(); d.renameTo(File(root, "imu_trace_tmp/trace-other-0002"))
+        TraceStorage(root).recover()
+        assertEquals(0, TraceTestKit.readAll(root).size); assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty())
+    }
+
+    @Test fun aManifestOnlyDirectoryMissingAChunkIsDeletedNotPublished() {
+        val d = manifestOnly(); File(d, "chunk-0001.json").delete()
+        TraceStorage(root).recover()
+        assertEquals(0, TraceTestKit.readAll(root).size); assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty())
     }
 }

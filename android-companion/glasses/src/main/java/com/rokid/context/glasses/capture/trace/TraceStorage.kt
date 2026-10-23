@@ -24,6 +24,9 @@ internal class TraceStorage(
     private val root: File, private val diskCapBytes: Long = Long.MAX_VALUE,
     /** Test seam: called at the named points of [publish] (`stamp:<i>` after chunk i was stamped, `manifest`, `beforeRename`); a test throws from it to simulate the process dying there. */
     private val checkpoint: (String) -> Unit = {},
+    /** Test seams for an I/O error: the directory rename of a publication, and the recursive delete of a wipe. */
+    private val renameDir: (File, File) -> Boolean = { a, b -> a.renameTo(b) },
+    private val deleteTree: (File) -> Boolean = { it.deleteRecursively() },
 ) {
     val tracesDir = File(root, "traces")
     val tmpDir = File(root, "imu_trace_tmp")
@@ -41,12 +44,18 @@ internal class TraceStorage(
         used.set(sizeOf(tracesDir))
         val epoch = readEpoch()
         for (dir in tmpDir.listFiles()?.filter { it.isDirectory } ?: emptyList()) {
-            try { seal(dir, epoch) } catch (e: Exception) { /* not sealable: deleted below */ }
+            // An I/O error (a rename or a write that failed) says nothing about the trace: a directory that can still be finished stays in tmp for the next recovery.
+            // Only a directory that was REJECTED (wrong epoch, no start record, no readable chunk, over the cap, a format error) is deleted.
+            val retry = try { seal(dir, epoch); false } catch (e: Retryable) { true } catch (e: Exception) { false }
+            if (!retry) deleteTree(dir)
         }
-        tmpDir.deleteRecursively()
-        used.set(sizeOf(tracesDir))
+        tmpDir.listFiles()?.filter { !it.isDirectory }?.forEach { it.delete() }
+        used.set(sizeOf(tracesDir) + sizeOf(tmpDir))
         return RecoveryCounts(found, ((tracesDir.list()?.size ?: 0) - sealedBefore).coerceAtLeast(0))
     }
+
+    /** A publication that failed on I/O (a rename, a write): the directory can still be finished by a later recovery, so it is kept, not deleted. */
+    private class Retryable(cause: Throwable) : Exception(cause)
 
     /** Counts only (for the diagnostic log): unfinished traces found in tmp, and how many of them were sealed. */
     class RecoveryCounts(val found: Int, val sealed: Int)
@@ -78,7 +87,7 @@ internal class TraceStorage(
         }
         if (sizeOf(tracesDir) + sizeOf(dir) > diskCapBytes) return true
         tracesDir.mkdirs()
-        if (!dir.renameTo(File(tracesDir, TraceFiles.dirName(m.traceId)))) throw java.io.IOException("rename")
+        if (!renameDir(dir, File(tracesDir, TraceFiles.dirName(m.traceId)))) throw Retryable(java.io.IOException("rename"))
         return true
     }
 
@@ -110,7 +119,7 @@ internal class TraceStorage(
             recorded = TraceStatus.PARTIAL, closeReason = CloseReason.STOP,
         )
         if (sizeOf(tracesDir) + sizeOf(dir) + MANIFEST_ALLOWANCE > diskCapBytes) return
-        publish(m.traceId, m) // keeps the start record until the manifest exists (a death here is recovered again)
+        try { publish(m.traceId, m) } catch (e: java.io.IOException) { throw Retryable(e) } // keeps the start record until the manifest exists (a death here is recovered again)
     }
 
     fun readEpoch(): Pair<String, Long> = try {
@@ -164,7 +173,7 @@ internal class TraceStorage(
         File(dir, START_FILE).delete()
         checkpoint("beforeRename")
         tracesDir.mkdirs()
-        if (!dir.renameTo(File(tracesDir, TraceFiles.dirName(id)))) throw java.io.IOException("rename")
+        if (!renameDir(dir, File(tracesDir, TraceFiles.dirName(id)))) throw java.io.IOException("rename")
     }
 
     fun discard(id: String) {
@@ -175,8 +184,8 @@ internal class TraceStorage(
 
     /** A new epoch: every local trace and the tmp directory go. True only when both are really gone (the caller then adopts the epoch; else it retries at the next control). */
     fun wipe(): Boolean {
-        tmpDir.deleteRecursively()
-        tracesDir.deleteRecursively()
+        deleteTree(tmpDir)
+        deleteTree(tracesDir)
         used.set(sizeOf(tracesDir) + sizeOf(tmpDir))
         return !tmpDir.exists() && !tracesDir.exists()
     }
