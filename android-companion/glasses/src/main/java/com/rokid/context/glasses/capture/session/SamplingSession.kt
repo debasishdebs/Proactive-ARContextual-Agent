@@ -24,6 +24,7 @@ import com.rokid.context.capture.trace.PoseSnapshot
 import com.rokid.context.capture.trace.RingHash
 import com.rokid.context.capture.trace.StartSnapshot
 import com.rokid.context.capture.trace.clampDarkStreak
+import com.rokid.context.glasses.capture.trace.BoundaryBlocker
 import com.rokid.context.glasses.capture.trace.SessionTrace
 import com.rokid.context.glasses.capture.trace.TraceInfo
 import com.rokid.context.glasses.capture.trace.TraceProfile
@@ -122,6 +123,8 @@ class SamplingSession(
     private val trace: SessionTrace? = null,
     /** The settings hash, plan and budget tier in force, for the trace's start and its close-on-change rule. Null = no trace can start. */
     private val traceInfo: () -> TraceInfo? = { null },
+    /** LGC5: the session-side boundary blockers (counters only), read by the trace state line. Null = not reported. */
+    private val traceBoundary: com.rokid.context.glasses.capture.trace.TraceBoundaryReporter? = null,
 ) {
     private class Episode(val continuous0: Boolean, val why: String) {
         @Volatile var continuous = continuous0
@@ -262,6 +265,7 @@ class SamplingSession(
             motion.markPose()
             shareFromAt = now // the first heartbeat snapshot spans the session, not the whole clock
             lastBriefAt = now - DUE_NOW_MS // the first brief check is due at once, at any cadence
+            traceBoundary?.report(null) // a session runs: the recorder's own blocker and the boundary checks speak from the first tick
         }
         if (trace != null) gate.setScoreListener { seq, d, p, blur, passed ->
             // Runs inside gate.offer on the offering thread, under [lock] (onFrame): the offer context fields were set just before it.
@@ -285,6 +289,7 @@ class SamplingSession(
         synchronized(lock) {
             if (stopped) return
             stopped = true
+            traceBoundary?.report(BoundaryBlocker.SESSION_INACTIVE)
             blocked = reason
             pendingDwellAt = null; pendingNowAt = null; forceBrief = false
             ep = episode
@@ -437,6 +442,7 @@ class SamplingSession(
             else if (why == "heat") { tr.close(CloseReason.STOP); resetTraced() }
         }
         if (tr.recording) {
+            reportBoundary(null)
             if (why != tracedBlock) { tracedBlock = why; tr.onBlocked(why) }
             val ctx = appliedState()
             if (ctx != tracedCtx) { tracedCtx = ctx; tr.onContext(ctx) }
@@ -447,17 +453,34 @@ class SamplingSession(
             }
             val g = gate.paramsNow()
             if (g != tracedGate) { tracedGate = g; tr.onGateParams(g) }
-        } else if (why == null && tr.wantsStart && episode == null && emitsInFlight == 0 && pendingDwellAt == null && pendingNowAt == null && !forceBrief && motion.quiet()) {
-            if (info == null) return
-            val gs = gate.traceState(now)
-            if (!gs.windowEmpty) return
-            val start = try { traceStart(now, s, prof, info, gs) } catch (e: IllegalArgumentException) { log("trace start refused: ${e.javaClass.simpleName}"); return }
-            if (tr.start(start)) {
-                tracedBlock = null; tracedCtx = start.snapshot.ctx; tracedResting = start.snapshot.resting
-                tracedProfile = start.profile; tracedGate = start.gate
+        } else {
+            // LGC5: say why no clean boundary was offered. Only while the recorder WANTS one (its own blockers speak otherwise), in the order the checks run.
+            val wants = tr.wantsStart
+            val blocker = when {
+                !wants -> null
+                why != null -> BoundaryBlocker.CAPTURE_BLOCKED
+                !motion.quiet() -> BoundaryBlocker.NOT_QUIET // the head is moving: the more fundamental answer, an episode may well be running because of it
+                episode != null || emitsInFlight != 0 || pendingDwellAt != null || pendingNowAt != null || forceBrief -> BoundaryBlocker.EPISODE
+                else -> null
+            }
+            reportBoundary(blocker)
+            if (wants && blocker == null) {
+                if (info == null) return
+                val gs = gate.traceState(now)
+                if (!gs.windowEmpty) { reportBoundary(BoundaryBlocker.GATE_WINDOW); return }
+                val start = try { traceStart(now, s, prof, info, gs) } catch (e: IllegalArgumentException) { log("trace start refused: ${e.javaClass.simpleName}"); traceBoundary?.offered(false); return }
+                val took = tr.start(start)
+                traceBoundary?.offered(took)
+                if (took) {
+                    tracedBlock = null; tracedCtx = start.snapshot.ctx; tracedResting = start.snapshot.resting
+                    tracedProfile = start.profile; tracedGate = start.gate
+                }
             }
         }
     }
+
+    /** Caller holds [lock]. A tick that races the session's stop must not overwrite `session_inactive`. */
+    private fun reportBoundary(b: BoundaryBlocker?) { if (!stopped) traceBoundary?.report(b) }
 
     private fun resetTraced() { tracedBlock = null; tracedCtx = null; tracedResting = false; tracedProfile = null; tracedGate = null }
 
@@ -650,6 +673,7 @@ class SamplingSession(
         if (bindFailures >= MAX_BIND_FAILURES && !stopped) {
             degraded = true
             stopped = true
+            traceBoundary?.report(BoundaryBlocker.SESSION_INACTIVE)
             trace?.close(CloseReason.STOP)
             blocked = "bind"
             job?.cancel()
