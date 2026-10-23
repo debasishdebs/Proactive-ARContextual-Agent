@@ -15,6 +15,7 @@ from . import doctor as doctor_mod
 from . import profiles
 from . import setup as setup_mod
 from .journal import Journal
+from .jobs_py import PyJobGlue
 from .log import Logger
 from .pair import PairError, pair
 from .runner import JobRunner
@@ -134,7 +135,7 @@ def main(argv=None, out=None, err=None, home=None, transport=None, clock=None, e
         try:
             rt = load_runtime(store, journal, log, env)
             rt.check()
-            runner, ready = JobRunner(rt, store, journal, profiles.load_table(), clock, log), Ready(store, rt, clock)
+            runner, ready = JobRunner(rt, store, journal, profiles.load_table(), clock, log, glue=PyJobGlue()), Ready(store, rt, clock)
         except NeedsRuntime:  # no usable runtime: every job would be `needs_runtime`, so none is offered
             rt, runner, ready = None, NullRunner(), (lambda: False)
         sup = Supervisor(client, runner, journal, store, clock, log, runtime=rt, ready=ready, expiry=ArtifactExpiry(journal, clock, log))
