@@ -69,7 +69,10 @@ class TraceRecorder(
     /** Runs a task on the single writer thread (tests: inline). Must run tasks in order. */
     private val io: (Runnable) -> Unit,
     private val newTraceId: () -> String = { java.util.UUID.randomUUID().toString() },
-    private val diskCapBytes: Long = DISK_CAP_BYTES,
+    /** LGC7-min (plan 3.7): floor, sealing reserve, initial write bound and soft budget. */
+    private val space: SpacePolicy = SpacePolicy(),
+    /** Physical free bytes under [root]; called only on the writer thread (tests: a fake volume). */
+    private val freeBytes: () -> Long = { root.usableSpace },
     private val flushBytes: Int = FLUSH_BYTES,
     private val bounds: TraceBounds = TraceBounds.DEFAULT,
     private val bufferEvents: Int = BUFFER_EVENTS,
@@ -106,7 +109,7 @@ class TraceRecorder(
     private class Finish(val endElapsed: Long, val endWall: Long, val endPhone: PhoneSample?, val reason: String)
 
     private val lock = Any()
-    private val storage = TraceStorage(root, diskCapBytes, renameDir = renameDir, deleteTree = deleteTree, pendingFile = pendingFile)
+    private val storage = TraceStorage(root, space, freeBytes, onReclaim = { r -> if (r.any) log(r.line()) }, renameDir = renameDir, deleteTree = deleteTree, pendingFile = pendingFile)
 
     // epoch (guarded by lock)
     @Volatile private var installId = ""
@@ -189,7 +192,7 @@ class TraceRecorder(
     val usedBytes: Long get() = storage.used.get()
 
     override val wantsStart: Boolean
-        get() = storageSettled() && !recording && recordingAllowed(clock()) && installId.isNotEmpty() && storage.used.get() < diskCapBytes
+        get() = storageSettled() && !recording && recordingAllowed(clock()) && installId.isNotEmpty()
 
     /** The laptop's `pc_trace_ctl` collect window (its own `collectUntil`). */
     private fun collectingNow(now: Long) = collect && now < collectUntil
@@ -215,7 +218,7 @@ class TraceRecorder(
         recording -> null
         !recordingAllowed(clock()) -> TraceStartBlocker.GATE_OFF
         installId.isEmpty() -> TraceStartBlocker.NO_EPOCH
-        storage.used.get() >= diskCapBytes -> TraceStartBlocker.DISK_CAP
+        !storage.hasStartRoom() -> TraceStartBlocker.DISK_FULL
         else -> null
     }
 
@@ -225,7 +228,7 @@ class TraceRecorder(
         val c = collectingNow(now)
         return TraceState(
             recovered = recovered, recoveredMs = recoveredMs, collect = c, untilInMs = if (c && collectUntil != Long.MAX_VALUE) collectUntil - now else null,
-            diag = diagEnabled(), epochSaved = epochDurable, usedBytes = storage.used.get(), capBytes = diskCapBytes, recording = recording, traces = tracesDone.get(),
+            diag = diagEnabled(), epochSaved = epochDurable, usedBytes = storage.used.get(), softBudgetBytes = storage.softBudgetBytes, recording = recording, traces = tracesDone.get(),
         )
     }
 
@@ -362,7 +365,7 @@ class TraceRecorder(
 
     override fun start(s: TraceStart): Boolean = synchronized(lock) {
         val now = clock()
-        if (!storageSettled() || recording || !recordingAllowed(now) || installId.isEmpty() || storage.used.get() >= diskCapBytes) return false
+        if (!storageSettled() || recording || !recordingAllowed(now) || installId.isEmpty() ) return false
         if (s.snapshot.sampleEvery != sampleEvery) return false
         val id = newTraceId()
         if (!TraceBounds.isTraceId(id)) return false
@@ -520,7 +523,7 @@ class TraceRecorder(
             val c = TraceChunk(traceId = j.id, kind = ChunkCodec.KIND, seq = j.seq, count = 0, installId = j.installId, deletionCounter = j.counter, sha256 = e.sha256, b64 = e.b64)
             try { storage.writeChunk(j.id, j.seq, c) } catch (x: java.io.IOException) { j.writeFailed = true; log("trace chunk not written"); return }
             j.shas += e.sha256; j.events += e.eventCount; j.raw += e.rawBytes; j.seq++
-            if (j.seq >= CHUNK_SOFT_LIMIT || j.raw >= RAW_SOFT_LIMIT || j.events >= EVENT_SOFT_LIMIT || storage.used.get() >= diskCapBytes) capClose = true
+            if (j.seq >= CHUNK_SOFT_LIMIT || j.raw >= RAW_SOFT_LIMIT || j.events >= EVENT_SOFT_LIMIT) capClose = true
         } catch (x: TraceFormatException) {
             // The real limit is the 90,000 base64 characters: split in two (the first half keeps the seq) and retry.
             if (events.size > 1 && x.code in SPLIT_CODES) {
@@ -596,7 +599,6 @@ class TraceRecorder(
     override fun onFlush(reason: String, nowMs: Long) = rec { TraceEvent.Flush(it, reason, nowMs) }
 
     companion object {
-        const val DISK_CAP_BYTES = 150L * 1024 * 1024
         /** S73-style flush point: about 64 KB of event text, well under the 90,000 character b64 bound after gzip. */
         const val FLUSH_BYTES = 64 * 1024
         const val BUFFER_EVENTS = 4096
@@ -622,10 +624,10 @@ class RecoveryInfo(val found: Int, val sealed: Int, val ms: Long, val epochSaved
 /** The recorder's own state, as the state line prints it (counts and flags only). */
 class TraceState(
     val recovered: Boolean, val recoveredMs: Long, val collect: Boolean, val untilInMs: Long?, val diag: Boolean, val epochSaved: Boolean,
-    val usedBytes: Long, val capBytes: Long, val recording: Boolean, val traces: Int,
+    val usedBytes: Long, val softBudgetBytes: Long, val recording: Boolean, val traces: Int,
 )
 
 /** Why no trace can start right now ([TraceRecorder.startBlocker]); [wire] is the stable name the status line and `Hello.traceBlocker` carry. */
 enum class TraceStartBlocker(val wire: String) {
-    RECOVERING("recovering"), WIPE_PENDING("wipe_pending"), WIPE_FAILED("wipe_failed"), GATE_OFF("gate_off"), NO_EPOCH("no_epoch"), DISK_CAP("disk_cap"),
+    RECOVERING("recovering"), WIPE_PENDING("wipe_pending"), WIPE_FAILED("wipe_failed"), GATE_OFF("gate_off"), NO_EPOCH("no_epoch"), DISK_FULL("disk_full"),
 }

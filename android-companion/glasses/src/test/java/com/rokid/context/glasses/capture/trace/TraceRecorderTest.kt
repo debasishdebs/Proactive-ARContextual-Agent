@@ -29,10 +29,10 @@ class TraceRecorderTest {
     private var ids = 0
     @AfterTest fun cleanup() { root.deleteRecursively() }
 
-    private fun recorder(sampleEvery: Int = 1, cap: Long = TraceRecorder.DISK_CAP_BYTES, flush: Int = TraceRecorder.FLUSH_BYTES, bounds: TraceBounds = TraceBounds.DEFAULT, bufferEvents: Int = TraceRecorder.BUFFER_EVENTS) =
+    private fun recorder(sampleEvery: Int = 1, flush: Int = TraceRecorder.FLUSH_BYTES, bounds: TraceBounds = TraceBounds.DEFAULT, bufferEvents: Int = TraceRecorder.BUFFER_EVENTS) =
         TraceRecorder(
             root, clock, { 1_700_000_000_000 + clock.t }, { "7" }, sampleEvery, io = { r -> if (inline) r.run() else queue.addLast(r) },
-            newTraceId = { "trace-%04d-test".format(++ids) }, diskCapBytes = cap, flushBytes = flush, bounds = bounds, bufferEvents = bufferEvents,
+            newTraceId = { "trace-%04d-test".format(++ids) }, flushBytes = flush, bounds = bounds, bufferEvents = bufferEvents,
         )
     private fun drain() { while (queue.isNotEmpty()) queue.removeFirst().run() }
 
@@ -374,13 +374,6 @@ class TraceRecorderTest {
         assertEquals(0, TraceTestKit.readAll(root).size)
     }
 
-    @Test fun anUnfinishedTraceThatWouldExceedTheDiskCapIsDeleted() {
-        killedMidTrace(chunks = 3)
-        recorder(cap = 1_000)
-        assertTrue(File(root, "imu_trace_tmp").listFiles().isNullOrEmpty())
-        assertEquals(0, TraceTestKit.readAll(root).size, "nothing is evicted and nothing is sealed over the cap")
-    }
-
     @Test fun aTornTailChunkEndsTheSealedTraceAtTheLastGoodChunk() {
         killedMidTrace(chunks = 4)
         val dir = File(root, "imu_trace_tmp").listFiles()!!.single()
@@ -399,17 +392,6 @@ class TraceRecorderTest {
     }
 
     // ---- caps ----
-
-    @Test fun theDiskCapClosesTheTraceWithCapAndBlocksNewOnesWithoutDeletingAnything() {
-        val r = recorder(cap = 20_000, flush = 3_000); r.onControl(TraceTestKit.collect()); r.begin()
-        r.gyro(2_000)
-        assertFalse(r.recording, "closed by the cap")
-        assertFalse(r.wantsStart, "no new trace while the disk is full")
-        val t = TraceTestKit.readAll(root).single()
-        assertEquals("cap", t.manifest.closeReason)
-        assertEquals(TraceStatus.COMPLETE, t.manifest.recorded, "nothing was dropped for the cap")
-        assertEquals("ok", t.verification.reason)
-    }
 
     // ---- epoch ----
 

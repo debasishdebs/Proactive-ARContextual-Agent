@@ -45,7 +45,7 @@ class TraceStateReporter(
     private fun line(b: String): String {
         val s = recorder.state()
         return "trace state: blocker=$b recovered=${s.recovered.i()} recoveredMs=${s.recoveredMs} collect=${s.collect.i()} untilInMs=${s.untilInMs ?: "-"} diag=${s.diag.i()} " +
-            "flagState=${flagState().wire} epoch=${if (s.epochSaved) "set" else "unset"} usedMB=${s.usedBytes shr 20} softMB=${s.capBytes shr 20} rec=${s.recording.i()} " +
+            "flagState=${flagState().wire} epoch=${if (s.epochSaved) "set" else "unset"} usedMB=${s.usedBytes shr 20} softMB=${s.softBudgetBytes shr 20} rec=${s.recording.i()} " +
             "traces=${s.traces} offers=${boundary.offers} starts=${boundary.starts} startRefused=${boundary.startRefused}"
     }
 
@@ -56,7 +56,7 @@ class TraceStateReporter(
 
     companion object {
         /** A blocker that is a fault (a warning), as opposed to a normal state: a wipe that keeps failing, or no room. */
-        private val FAULTS = setOf(TraceStartBlocker.WIPE_FAILED.wire, TraceStartBlocker.DISK_CAP.wire)
+        private val FAULTS = setOf(TraceStartBlocker.WIPE_FAILED.wire, TraceStartBlocker.DISK_FULL.wire)
 
         /** `trace boot:` at process start, after the recovery: how often the app restarted, the flag state, whether an epoch is saved, how many killed traces recovery found. */
         fun boot(restart: Int, flag: DiagFlagState, epochSaved: Boolean, killedTraces: Int): String =
