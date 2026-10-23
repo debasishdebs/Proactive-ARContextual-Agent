@@ -2,13 +2,13 @@ package com.rokid.context.phone.canvas
 
 import com.rokid.context.phone.hub.HubGraph
 import android.content.Context
-import android.util.Log
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.canvas.Pipeline
 import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.canvas.CanvasPublisher
 import com.rokid.context.memory.MemoryGraph
 import com.rokid.context.memory.db.CanvasMaintenance
+import com.rokid.context.core.log.Level
 import com.rokid.context.phone.canvas.api.CanvasApi
 import com.rokid.context.phone.canvas.api.CanvasBackendImpl
 import com.rokid.context.phone.canvas.server.ApiHandler
@@ -16,6 +16,10 @@ import com.rokid.context.phone.canvas.server.AssetSource
 import com.rokid.context.phone.canvas.server.CanvasAuth
 import com.rokid.context.phone.canvas.server.CanvasRouter
 import com.rokid.context.phone.canvas.server.CanvasServer
+import com.rokid.context.phone.canvas.server.HelperAuth
+import com.rokid.context.phone.canvas.helper.HelperConfirmActions
+import com.rokid.context.phone.canvas.helper.HelperNativeActions
+import com.rokid.context.phone.log.PhoneLogging
 import com.rokid.context.phone.canvas.server.HostPolicy
 import com.rokid.context.phone.canvas.server.KeystoreTlsIdentity
 import com.rokid.context.phone.canvas.server.TlsIdentity
@@ -111,6 +115,12 @@ interface CanvasHost {
     fun shouldIdleStop(): Boolean
     /** Stops the server and tells the canvas screen why, in fixed text. */
     fun stopWithNotice(text: String)
+    /**
+     * 3b WP2 seams, inert by default (the production host answers "no helper, nothing pending" until WP6 binds the real ones): the native laptop-helper card actions
+     * and the per-run confirmation callbacks. Neither has an HTTP surface.
+     */
+    val helperNative: HelperNativeActions get() = HelperNativeActions.UNAVAILABLE
+    val helperConfirm: HelperConfirmActions get() = HelperConfirmActions.NONE
     suspend fun home(): HomeData
     /** Rolls back the publish [expectedId], the one the user saw as the newest. */
     suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome
@@ -137,6 +147,11 @@ class CanvasGraph(
     private val newServer: (CanvasRouter, Boolean, TlsIdentity?) -> CanvasServer = { r, lan, tls ->
         CanvasServer(r, lan, tls, log, onStart = { scope.launch { try { prune() } catch (e: CancellationException) { throw e } catch (e: Exception) { /* history only */ } } })
     },
+    /** 3b WP2: the laptop helper's identity and its authenticated routes (WP6 binds both and the two seams below; null = no helper). */
+    private val helperAuth: HelperAuth? = null,
+    private val helperApi: ApiHandler? = null,
+    override val helperNative: HelperNativeActions = HelperNativeActions.UNAVAILABLE,
+    override val helperConfirm: HelperConfirmActions = HelperConfirmActions.NONE,
 ) : CanvasHost {
     @Volatile private var server: CanvasServer? = null
     @Volatile private var lanOn = false
@@ -166,7 +181,7 @@ class CanvasGraph(
     }
 
     private val router = CanvasRouter(
-        auth, HostPolicy(port = { server?.port ?: 0 }, lanIp = { if (lanOn) wifiIp() else null }, secure = { lanOn }), core.api, assets, log,
+        auth, HostPolicy(port = { server?.port ?: 0 }, lanIp = { if (lanOn) wifiIp() else null }, secure = { lanOn }), core.api, assets, helperAuth = helperAuth, helperApi = helperApi, log = log,
     )
     private val _status = MutableStateFlow(CanvasStatus())
     override val status: StateFlow<CanvasStatus> = _status.asStateFlow()
@@ -328,14 +343,15 @@ class CanvasGraph(
 
         private fun build(app: Context): CanvasGraph {
             val auth = CanvasAuth(System::currentTimeMillis)
-            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> Log.w(TAG, "canvas task failed (${t.javaClass.simpleName})") })
+            val port = PhoneLogging.canvasPort() // the gated core port, never the platform logger (always-on rule)
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> port.log(Level.W, TAG, "canvas task failed (${t.javaClass.simpleName})") })
             val ref = java.util.concurrent.atomic.AtomicReference<CanvasGraph>()
             val backend = lazy { com.rokid.context.phone.canvas.api.AskPhotoBinding.bind(com.rokid.context.orchestration.AnswerService.forApp(app, extractFirst = false).askDebugPhotos()); HubGraph.get(app); CanvasBackendImpl.create(app, AiGraph.get(app), auth, lan = { ref.get()?.lan == true }, scope = scope, plans = { PlanGraph.current()?.publisher }, sharedPublisher = PlanGraph.current()?.canvasPublisher) }
             val extras = lazy { CanvasExtras.create(app, scope, DeveloperModeStore.get(app).enabled) }
             val maintenance = lazy { CanvasMaintenance(MemoryGraph.get(app).db.canvasDao()) }
             val graph = CanvasGraph(
                 auth, BackendCore(backend, extras), AssetSource { name -> runCatching { app.assets.open("canvas/$name").use { it.readBytes() } }.getOrNull() },
-                DeveloperModeStore.get(app).enabled, wifiIp = { LanAddress.wifiIpv4(app) }, scope = scope, log = { Log.i(TAG, it) },
+                DeveloperModeStore.get(app).enabled, wifiIp = { LanAddress.wifiIpv4(app) }, scope = scope, log = { port.log(Level.I, TAG, it) },
                 tlsFactory = { KeystoreTlsIdentity(app) }, prune = { maintenance.value.pruneTraces() },
             )
             ref.set(graph)
