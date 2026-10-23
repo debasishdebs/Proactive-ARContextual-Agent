@@ -451,7 +451,7 @@ class SamplingSession(
             if (info == null) return
             val gs = gate.traceState(now)
             if (!gs.windowEmpty) return
-            val start = try { traceStart(now, s, prof, info, gs) } catch (e: IllegalArgumentException) { log("trace start refused: ${e.message}"); return }
+            val start = try { traceStart(now, s, prof, info, gs) } catch (e: IllegalArgumentException) { log("trace start refused: ${e.javaClass.simpleName}"); return }
             if (tr.start(start)) {
                 tracedBlock = null; tracedCtx = start.snapshot.ctx; tracedResting = start.snapshot.resting
                 tracedProfile = start.profile; tracedGate = start.gate
