@@ -104,6 +104,21 @@ class WireSlice3aTest {
         assertEquals(1, PROTOCOL_VERSION)
     }
 
+    /** LGC4 WireDiagRecordRoundTrip + OldPhoneSettingsDefaultOff: the flag is additive; an old sender's JSON (no field) means OFF. */
+    @Test fun wireDiagRecordRoundTripAndOldSenderDefaultsOff() {
+        assertFalse(HudSettings().diagRecord)
+        assertFalse(ok<HudSettings>(res("old_hud_settings.json")).diagRecord, "an old phone never sends the field: OFF")
+        val on = HudSettings(diagRecord = true)
+        val text = Wire.encode(on)
+        assertTrue(text.contains("\"diagRecord\":true"), "the field name on the wire is diagRecord")
+        assertEquals(on, ok<HudSettings>(text))
+        assertTrue(ok<HudSettings>(text).normalized().diagRecord, "normalized() keeps the flag")
+        assertFalse(ok<HudSettings>(Wire.encode(HudSettings(diagRecord = false))).diagRecord)
+        // an old glasses build (a frozen subset without the field) still decodes the new JSON
+        assertIs<Decoded.Ok<OldHudSettingsSubset>>(Wire.decode<OldHudSettingsSubset>(text))
+        assertEquals(1, PROTOCOL_VERSION)
+    }
+
     @Test fun wearParkSecondsAreClampedTo30sAnd30min() {
         val lo = HudSettings(wearParkUnknownSec = 1, wearParkWornSec = -5).normalized()
         assertEquals(30, lo.wearParkUnknownSec); assertEquals(30, lo.wearParkWornSec)
