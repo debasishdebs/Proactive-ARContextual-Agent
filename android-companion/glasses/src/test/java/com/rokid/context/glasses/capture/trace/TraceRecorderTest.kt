@@ -327,19 +327,43 @@ class TraceRecorderTest {
         assertEquals("inst-a\n2", File(root, "trace_epoch").readText())
     }
 
-    @Test fun aFailedWipeBlocksStartsUntilARetrySucceeds() {
-        val r = recorder()
-        r.onControl(TraceTestKit.collect())
+    @Test fun aFailedWipeIsRetriedByTheStartChecksWithoutAnotherControl() {
+        inline = false
+        var failDelete = true
+        val r = TraceRecorder(root, clock, { 1_700_000_000_000 + clock.t }, { "7" }, 1, io = { x -> queue.addLast(x) }, newTraceId = { "trace-%04d-test".format(++ids) },
+            deleteTree = { f -> if (failDelete) false else f.deleteRecursively() })
+        drain()
+        File(root, "traces/keep").mkdirs()
+        r.onControl(TraceTestKit.collect(install = "inst-b", counter = 1)); drain() // the wipe fails
+        assertFalse(r.wantsStart, "the wipe failed: starts stay blocked")
+        failDelete = false
+        clock.t += 60_000
+        assertFalse(r.wantsStart, "the check queues the retry; it has not run yet")
+        assertTrue(queue.isNotEmpty(), "a retry was queued with no further control")
+        drain()
+        assertTrue(r.wantsStart, "the retry succeeded: recording is possible again")
+        assertEquals("inst-b\n1", File(root, "trace_epoch").readText())
+    }
+
+    @Test fun aRestartWithAPersistedEpochAndNoPendingWipeIsNotBlocked() {
+        File(root, "trace_epoch").writeText("inst-1\n1")
+        inline = false
+        val r = recorder(); drain()
+        r.onControl(TraceTestKit.collect(counter = 1)) // the same epoch: nothing to wipe
+        assertTrue(queue.size <= 1 && r.wantsStart || run { drain(); r.wantsStart })
         assertTrue(r.wantsStart)
-        File(root, "traces").mkdirs()
-        val blocker = File(root, "traces/keep"); blocker.mkdirs(); File(blocker, "f").writeText("x")
-        blocker.setWritable(false); File(root, "traces").setWritable(false)
-        try {
-            r.onControl(TraceTestKit.collect(install = "inst-b", counter = 1))
-            if (File(root, "traces").exists()) { assertFalse(r.wantsStart, "the wipe left something behind: starts stay blocked") }
-        } finally { File(root, "traces").setWritable(true); blocker.setWritable(true) }
-        r.onControl(TraceTestKit.collect(install = "inst-b", counter = 1)) // the retry
-        assertTrue(r.wantsStart)
+    }
+
+    @Test fun aFailedPublicationRenameKeepsTheTraceForTheNextRecovery() {
+        var failRename = true
+        val r = TraceRecorder(root, clock, { 1_700_000_000_000 + clock.t }, { "7" }, 1, io = { it.run() }, newTraceId = { "trace-%04d-test".format(++ids) },
+            flushBytes = 2_000, renameDir = { a, b -> if (failRename) false else a.renameTo(b) })
+        r.onControl(TraceTestKit.collect()); r.begin(); r.gyro(300); r.close(CloseReason.STOP)
+        assertEquals(0, TraceTestKit.readAll(root).size, "the rename failed")
+        assertTrue(File(root, "imu_trace_tmp").listFiles()!!.single().isDirectory, "kept, not discarded")
+        failRename = false
+        recorder()
+        assertEquals(1, TraceTestKit.readAll(root).size, "the next start's recovery finished the publication")
     }
 
     @Test fun anUnfinishedTraceFromAnOlderEpochIsDeletedNotSealed() {

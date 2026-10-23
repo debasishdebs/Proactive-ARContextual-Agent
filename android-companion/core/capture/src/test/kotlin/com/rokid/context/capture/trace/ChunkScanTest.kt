@@ -114,4 +114,14 @@ class ChunkScanTest {
             assertEquals(decodeOk(l), scanOk(l), "random line: $l")
         }
     }
+
+    @Test fun tokenAndHashBoundariesMatchDecode() {
+        val tokens = listOf("", "a", "a".repeat(32), "a".repeat(33), "A-Z_0:9.x", "a b", "a/b", "é", "a\u007f", "-", ".")
+        for (t in tokens) {
+            val fl = "[\"fl\",1000,\"$t\",1000]"; val cl = "[\"cl\",1000,\"$t\"]"; val bl = "[\"bl\",1000,\"$t\"]"
+            for (l in listOf(fl, cl, bl)) assertEquals(decodeOk(l), scanOk(l), "token '$t' in $l")
+        }
+        val hashes = listOf("", "0", "f", "abc123def456", "a".repeat(64), "a".repeat(65), "ABC", "g", "0x1", "00")
+        for (h in hashes) { val l = "[\"pl\",1000,7,\"$h\",\"SHADOW\"]"; assertEquals(decodeOk(l), scanOk(l), "hash '$h'") }
+    }
 }

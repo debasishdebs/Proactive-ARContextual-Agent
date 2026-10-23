@@ -70,6 +70,9 @@ class TraceRecorder(
     private val bounds: TraceBounds = TraceBounds.DEFAULT,
     private val bufferEvents: Int = BUFFER_EVENTS,
     private val log: (String) -> Unit = {},
+    /** Test seams for an I/O error in the storage (the publication rename, the wipe's delete). */
+    private val renameDir: (File, File) -> Boolean = { a, b -> a.renameTo(b) },
+    private val deleteTree: (File) -> Boolean = { it.deleteRecursively() },
 ) : SessionTrace, SampleTap {
     init { require(sampleEvery in 1..StartSnapshot.MAX_SAMPLE_EVERY) { "sampleEvery" } }
 
@@ -93,7 +96,7 @@ class TraceRecorder(
     private class Finish(val endElapsed: Long, val endWall: Long, val endPhone: PhoneSample?, val reason: String)
 
     private val lock = Any()
-    private val storage = TraceStorage(root, diskCapBytes)
+    private val storage = TraceStorage(root, diskCapBytes, renameDir = renameDir, deleteTree = deleteTree)
 
     // epoch (guarded by lock)
     private var installId = ""
@@ -102,7 +105,9 @@ class TraceRecorder(
     @Volatile private var wipeFailed = false
     /** Epoch wipes queued on the writer and not finished yet (incremented under [lock] with the epoch adoption). No trace starts while one is pending or the last one failed. */
     private val wipesPending = AtomicInteger(0)
-    private fun storageSettled() = recovered && wipesPending.get() == 0 && !wipeFailed
+    @Volatile private var wipeAttempts = 0
+    private var nextWipeRetryAt = 0L
+    private fun storageSettled(): Boolean { retryWipeIfDue(); return recovered && wipesPending.get() == 0 && !wipeFailed }
     // collect window
     @Volatile private var collect = false
     @Volatile private var collectUntil = Long.MAX_VALUE
@@ -128,7 +133,9 @@ class TraceRecorder(
     @Volatile private var recovered = false
 
     init {
-        // The persisted epoch is two lines (cheap, read here so [onControl] compares against it). The recovery seals a killed trace of any length: NEVER on the calling thread
+        // DECISION: the persisted epoch (a 2-line file) is read here, synchronously: [onControl] must compare the phone's epoch against it, and reading it on the writer
+        // would let a first control race the load (it would see no epoch and wipe valid traces). It is a few bytes, not a decode. Everything else is on the writer.
+        // (The persisted epoch is two lines, cheap, read here so [onControl] compares against it.) The recovery seals a killed trace of any length: NEVER on the calling thread
         // (the construction is reached from the main thread: the ANR loop of 2026-10-23), so it is the first task of the writer thread.
         storage.readEpoch().let { installId = it.first; deletionCounter = it.second }
         io {
@@ -183,20 +190,44 @@ class TraceRecorder(
             if (recording && !collectingNow(now)) closeLocked(CloseReason.STOP)
             // Storage work is enqueued under the SAME lock as the epoch adoption (so no start can slip between the adoption and the wipe), and the epoch to persist is captured here.
             // A trace cannot start while a wipe is pending or failed ([storageSettled]).
-            if (wipe || wipeFailed) {
-                val adoptedInstall = installId; val adoptedCounter = deletionCounter
-                wipesPending.incrementAndGet()
-                io {
-                    try {
-                        val ok = try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}"); false }
-                        wipeFailed = !ok
-                        if (ok) { try { storage.writeEpoch(adoptedInstall, adoptedCounter) } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
-                    } finally { wipesPending.decrementAndGet() }
-                }
+            if (wipe || wipeFailed) enqueueWipeLocked()
+            // the pending-forget check is a file access: it runs in the queued task, not under the lock
+            io {
+                try {
+                    if (forgetLines.isNotEmpty() || storage.hasPendingForget()) {
+                        if (forgetLines.isNotEmpty()) storage.addForget(forgetLines)
+                        if (!storage.runForget()) log("trace forget incomplete: retried at the next control")
+                    }
+                } catch (e: Exception) { log("trace forget failed: ${e.javaClass.simpleName}") }
             }
-            if (forgetLines.isNotEmpty() || storage.hasPendingForget()) io {
-                try { if (forgetLines.isNotEmpty()) storage.addForget(forgetLines); if (!storage.runForget()) log("trace forget incomplete: retried at the next control") } catch (e: Exception) { log("trace forget failed: ${e.javaClass.simpleName}") }
-            }
+        }
+    }
+
+    /**
+     * Queues the wipe of the epoch in force (caller holds [lock]): captured here, persisted only after the wipe really succeeded. A failed wipe is retried by every
+     * following control AND, with no control at all, by [retryWipeIfDue] (called from the start-eligibility checks) after a bounded backoff.
+     */
+    private fun enqueueWipeLocked() {
+        val adoptedInstall = installId; val adoptedCounter = deletionCounter
+        wipesPending.incrementAndGet()
+        io {
+            try {
+                val ok = try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}"); false }
+                if (ok) { try { storage.writeEpoch(adoptedInstall, adoptedCounter) } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
+                wipeFailed = !ok
+                wipeAttempts = if (ok) 0 else (wipeAttempts + 1).coerceAtMost(WIPE_RETRY_MAX_SHIFT)
+            } finally { wipesPending.decrementAndGet() }
+        }
+    }
+
+    /** A failed wipe with none pending: queue it again once the backoff (2 s doubling to about 64 s) has passed, so recording never waits for a control that may not come. */
+    private fun retryWipeIfDue() {
+        if (!wipeFailed || wipesPending.get() != 0) return
+        synchronized(lock) {
+            val now = clock()
+            if (!wipeFailed || wipesPending.get() != 0 || now < nextWipeRetryAt) return
+            nextWipeRetryAt = now + (WIPE_RETRY_MS shl wipeAttempts)
+            enqueueWipeLocked()
         }
     }
 
@@ -405,6 +436,9 @@ class TraceRecorder(
                 closeReason = end.reason, snapshot = j.snapshot,
             )
             storage.publish(j.id, m)
+        } catch (e: java.io.IOException) {
+            // An I/O error says nothing about the trace: the directory (start record or manifest) stays in tmp and the next start's recovery finishes it.
+            log("trace not published (kept for recovery): ${e.javaClass.simpleName}")
         } catch (e: Exception) {
             log("trace not published: ${e.javaClass.simpleName}")
             try { storage.discard(j.id) } catch (x: Exception) { /* swept at the next start */ }
@@ -443,6 +477,8 @@ class TraceRecorder(
         /** With no phone clock in the control the range cannot be mapped: delete an hour either side rather than miss it. */
         const val FORGET_MARGIN_NO_CLOCK_MS = 3_600_000L
         const val MAX_IN_FLIGHT = 3
+        private const val WIPE_RETRY_MS = 2_000L
+        private const val WIPE_RETRY_MAX_SHIFT = 5
         private const val EST_SAMPLE = 56
         private const val EST_EVENT = 72
         private const val CHUNK_SOFT_LIMIT = 4_000

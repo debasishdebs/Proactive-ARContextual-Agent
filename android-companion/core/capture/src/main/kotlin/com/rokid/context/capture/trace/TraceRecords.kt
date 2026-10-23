@@ -463,9 +463,17 @@ object EventCodec {
         fun enum(names: Set<String>): String = str().also { if (it !in names) throw TraceFormatException("bad_event") }
         fun enumOrNull(names: Set<String>): String? = if (isNull()) null else enum(names)
         fun hex16() { if (!isHex16(str())) throw TraceFormatException("bad_event") }
-        fun token(allowEmpty: Boolean = true): String = str().also { if (!TOKEN.matches(it) || (!allowEmpty && it.isEmpty())) throw TraceFormatException("bad_event") }
+        /** `[A-Za-z0-9_:.-]{0,32}` (or 1..32) by character checks, no regex. */
+        fun token(allowEmpty: Boolean = true): String = str().also { s ->
+            if (s.length > 32 || (!allowEmpty && s.isEmpty())) throw TraceFormatException("bad_event")
+            for (ch in s) if (ch !in 'a'..'z' && ch !in 'A'..'Z' && ch !in '0'..'9' && ch != '_' && ch != ':' && ch != '.' && ch != '-') throw TraceFormatException("bad_event")
+        }
         fun tokenOrNull(): String? = if (isNull()) null else token()
-        fun hash(): String = str().also { if (!HASH.matches(it)) throw TraceFormatException("bad_event") }
+        /** `[0-9a-f]{1,64}` by character checks, no regex. */
+        fun hash(): String = str().also { s ->
+            if (s.isEmpty() || s.length > 64) throw TraceFormatException("bad_event")
+            for (ch in s) if (ch !in '0'..'9' && ch !in 'a'..'f') throw TraceFormatException("bad_event")
+        }
     }
 
     /**
