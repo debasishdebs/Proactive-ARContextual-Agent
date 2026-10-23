@@ -32,13 +32,16 @@ class HelperAuth(
     }
 
     private val lock = Any()
-    private val limiter = PairingLimiter(clock, random, codeTtlMs = HelperProtocol.PAIR_CODE_TTL_MS)
+    private val limiter = PairingLimiter(clock, random, codeTtlMs = HelperProtocol.PAIR_CODE_TTL_MS, lock = lock)
     private var token: ByteArray? = null
     private var session: Session? = null
     private var gen = 0L
 
+    /** Test seam: runs right after a good code was consumed and before its token exists. */
+    internal var afterCodeConsumed: () -> Unit = {}
+
     /** Native only (the card's "Accept pairing"): opens a pairing window of `pairCodeTtlMs` with a fresh code. */
-    fun acceptPairing(): PairingLimiter.Code = limiter.newCode()
+    fun acceptPairing(): PairingLimiter.Code = synchronized(lock) { limiter.newCode() }
 
     fun pairingCode(): PairingLimiter.Code? = limiter.currentCode()
 
@@ -47,20 +50,27 @@ class HelperAuth(
     /** The `caps` of the pair answer: each known grant and whether it is on right now. */
     fun caps(): Map<String, Boolean> = HelperGrants.KNOWN.associateWith { grantOn(it) }
 
-    /** One pairing guess ([name] was checked by the route). A good one replaces any earlier helper's token. */
-    fun pair(code: String, name: String, ip: String?): PairResult = when (val r = limiter.attempt(code, ip)) {
-        PairingLimiter.Result.Ok -> synchronized(lock) {
-            val bytes = ByteArray(32).also { random.nextBytes(it) }
-            val t = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
-            val s = Session(helperId = hex(ByteArray(8).also { random.nextBytes(it) }), name = name, sessionGen = ++gen, pairedAtMs = clock())
-            token = t.toByteArray(Charsets.UTF_8)
-            session = s
-            log.helperLine("helper pair ok")
-            PairResult.Ok(t, s)
+    /**
+     * One pairing guess ([name] was checked by the route). A good one replaces any earlier helper's token. The whole attempt, from the code check to the token, is one
+     * step under the same lock as [acceptPairing] and [revoke] (the limiter shares it), so a disconnect can never complete between the code being consumed and the
+     * token being installed: it waits, then revokes that token.
+     */
+    fun pair(code: String, name: String, ip: String?): PairResult = synchronized(lock) {
+        when (val r = limiter.attempt(code, ip)) {
+            PairingLimiter.Result.Ok -> {
+                afterCodeConsumed()
+                val bytes = ByteArray(32).also { random.nextBytes(it) }
+                val t = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+                val s = Session(helperId = hex(ByteArray(8).also { random.nextBytes(it) }), name = name, sessionGen = ++gen, pairedAtMs = clock())
+                token = t.toByteArray(Charsets.UTF_8)
+                session = s
+                log.helperLine("helper pair ok")
+                PairResult.Ok(t, s)
+            }
+            is PairingLimiter.Result.Wrong -> { log.helperLine("helper pair wrong"); PairResult.Wrong(r.triesLeft) }
+            is PairingLimiter.Result.Locked -> { log.helperLine("helper pair locked"); PairResult.Locked(r.untilMs) }
+            PairingLimiter.Result.NoCode -> { log.helperLine("helper pair nocode"); PairResult.NoCode }
         }
-        is PairingLimiter.Result.Wrong -> { log.helperLine("helper pair wrong"); PairResult.Wrong(r.triesLeft) }
-        is PairingLimiter.Result.Locked -> { log.helperLine("helper pair locked"); PairResult.Locked(r.untilMs) }
-        PairingLimiter.Result.NoCode -> { log.helperLine("helper pair nocode"); PairResult.NoCode }
     }
 
     fun check(token: String?): Boolean = synchronized(lock) {
@@ -75,8 +85,7 @@ class HelperAuth(
 
     /** Disconnect: the token stops working at once and the pairing window closes. The pairing count keeps going. */
     fun revoke() {
-        synchronized(lock) { token = null; session = null }
-        limiter.closeCode()
+        synchronized(lock) { token = null; session = null; limiter.closeCode() }
     }
 
     private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }

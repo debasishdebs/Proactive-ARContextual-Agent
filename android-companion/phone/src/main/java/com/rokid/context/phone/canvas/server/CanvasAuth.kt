@@ -30,12 +30,15 @@ class CanvasAuth(private val clock: () -> Long, private val random: SecureRandom
     private class Session(val token: ByteArray, val createdAt: Long, var lastSeen: Long)
 
     private val lock = Any()
-    private val limiter = PairingLimiter(clock, random)
+    private val limiter = PairingLimiter(clock, random, lock = lock)
     private val sessions = ArrayList<Session>() // oldest first
 
     /** The newest successful [check] (the service's idle rule); starts at construction time. */
     @Volatile var lastActivityMs: Long = clock()
         private set
+
+    /** Test seam: runs right after a good code was consumed and before its session exists. */
+    internal var afterCodeConsumed: () -> Unit = {}
 
     /** Mints a code (see [PairingLimiter.newCode]). */
     fun newCode(): Code = limiter.newCode().let { Code(it.code, it.expiresAt) }
@@ -54,11 +57,13 @@ class CanvasAuth(private val clock: () -> Long, private val random: SecureRandom
     fun currentCode(): Code? = limiter.currentCode()?.let { Code(it.code, it.expiresAt) }
 
     /** One pairing guess; the rules (per device lock, global back-stop, single use) are [PairingLimiter]'s. A good guess opens a bearer session. */
-    fun pair(code: String, ip: String? = null): Pair = when (val r = limiter.attempt(code, ip)) {
-        PairingLimiter.Result.Ok -> Pair.Ok(newWebViewToken())
-        is PairingLimiter.Result.Wrong -> Pair.Wrong(r.triesLeft)
-        is PairingLimiter.Result.Locked -> Pair.Locked(r.untilMs)
-        PairingLimiter.Result.NoCode -> Pair.NoCode
+    fun pair(code: String, ip: String? = null): Pair = synchronized(lock) { // one lock across the check and the session, as in v0.9.1: revokeAll() waits for it
+        when (val r = limiter.attempt(code, ip)) {
+            PairingLimiter.Result.Ok -> { afterCodeConsumed(); Pair.Ok(addSession()) }
+            is PairingLimiter.Result.Wrong -> Pair.Wrong(r.triesLeft)
+            is PairingLimiter.Result.Locked -> Pair.Locked(r.untilMs)
+            PairingLimiter.Result.NoCode -> Pair.NoCode
+        }
     }
 
     fun newWebViewToken(): String = synchronized(lock) { addSession() }
