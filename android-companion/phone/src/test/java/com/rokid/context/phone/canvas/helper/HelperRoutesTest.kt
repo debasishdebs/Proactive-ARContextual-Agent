@@ -240,7 +240,7 @@ class HelperRoutesTest {
     @Test fun deletionTableCancelVoidForgetDeleteAll() {
         run { val (id, gen) = leasedJob(); runBlocking { h.backend.service.cancel(id) }; assertDeleted(id, gen) }
         run { val (id, gen) = leasedJob(); runBlocking { h.backend.service.voidJob(id, "void") }; assertDeleted(id, gen) }
-        run { val (id, gen) = leasedJob(); runBlocking { h.dao.voidHelperJobsForFrames(listOf("frame-1"), h.now) }; assertDeleted(id, gen) } // Forget of the frame
+        run { val (id, gen) = leasedJob(); runBlocking { h.dao.bumpFrameForgetRev() }; assertDeleted(id, gen) } // Forget of a frame: the revision the fence reads moves (voidHelperJobsForFrames is internal to :services:memory since WP4's fix and is not a deletion entry point)
         run { val (id, gen) = leasedJob(); h.wipeGen += 1; assertDeleted(id, gen) }                                                           // Delete all (the fence moves)
     }
 
