@@ -200,7 +200,7 @@ class TraceRecorderTest {
 
     @Test fun chunkFilesGoToTheTmpDirectoryThenTheWholeTraceIsRenamedWithItsManifestLast() {
         inline = false
-        val r = recorder(flush = 2_000); r.onControl(TraceTestKit.collect()); r.begin()
+        val r = recorder(flush = 2_000); drain() /* the queued start-up recovery */; r.onControl(TraceTestKit.collect()); r.begin()
         repeat(200) { r.gyro(1); drain() } // the writer keeps up
         val tmp = File(root, "imu_trace_tmp")
         val inTmp = tmp.listFiles()!!.single().list()!!.toList()
@@ -240,7 +240,7 @@ class TraceRecorderTest {
 
     @Test fun aWriterThatFallsBehindNeverBlocksTheSensorPathAndMarksThePartial() {
         inline = false
-        val r = recorder(flush = 4_000, bufferEvents = 128); r.onControl(TraceTestKit.collect()); r.begin()
+        val r = recorder(flush = 4_000, bufferEvents = 128); drain() /* the queued start-up recovery */; r.onControl(TraceTestKit.collect()); r.begin()
         r.gyro(5_000) // returns at once although nothing is ever written
         r.close(CloseReason.STOP)
         drain()
@@ -288,6 +288,20 @@ class TraceRecorderTest {
         assertEquals(listOf("trace-0001-test"), File(root, "traces").list()!!.toList(), "the importable directory holds only the frozen file set")
         assertTrue(File(root, "traces/trace-0001-test").list()!!.none { it == "start.json" })
         assertTrue(r.usedBytes > 0 && r.usedBytes == File(root, "traces").walkTopDown().filter { it.isFile }.sumOf { it.length() })
+    }
+
+    @Test fun noTraceStartsBeforeTheQueuedRecoveryHasRun() {
+        killedMidTrace(chunks = 2)
+        inline = false
+        val r = recorder(); r.onControl(TraceTestKit.collect(counter = 1))
+        assertTrue(queue.isNotEmpty(), "recovery is queued on the io thread, not run by the constructor")
+        assertFalse(r.wantsStart, "recovery has not run yet")
+        assertFalse(r.begin(), "no trace starts before the recovery finished")
+        drain()
+        assertTrue(r.wantsStart)
+        assertTrue(r.begin())
+        r.close(CloseReason.STOP); drain()
+        assertEquals(2, TraceTestKit.readAll(root).size, "the sealed trace and the new one")
     }
 
     @Test fun anUnfinishedTraceFromAnOlderEpochIsDeletedNotSealed() {

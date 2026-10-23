@@ -121,16 +121,28 @@ class TraceRecorder(
     private var preRollDone = true
     private var activeInfo: TraceInfo? = null
 
+    /** False until the start-up recovery (queued on [io] first, so it runs before every other storage task) has finished: no trace starts before. */
+    @Volatile private var recovered = false
+
     init {
-        storage.recover()
+        // The persisted epoch is two lines (cheap, read here so [onControl] compares against it). The recovery seals a killed trace of any length: NEVER on the calling thread
+        // (the construction is reached from the main thread: the ANR loop of 2026-10-23), so it is the first task of the writer thread.
         storage.readEpoch().let { installId = it.first; deletionCounter = it.second }
+        io {
+            try {
+                val t0 = System.nanoTime()
+                val n = storage.recover()
+                if (n.found > 0) log("trace recovery: found=${n.found} sealed=${n.sealed} ms=${(System.nanoTime() - t0) / 1_000_000}")
+            } catch (e: Exception) { log("trace recovery failed: ${e.javaClass.simpleName}") }
+            recovered = true
+        }
     }
 
     /** Bytes under `traces/` and `imu_trace_tmp/` (tests, diagnostics). */
     val usedBytes: Long get() = storage.used.get()
 
     override val wantsStart: Boolean
-        get() = !recording && collectingNow(clock()) && installId.isNotEmpty() && storage.used.get() < diskCapBytes
+        get() = recovered && !recording && collectingNow(clock()) && installId.isNotEmpty() && storage.used.get() < diskCapBytes
 
     private fun collectingNow(now: Long) = collect && now < collectUntil
 
@@ -182,7 +194,7 @@ class TraceRecorder(
 
     override fun start(s: TraceStart): Boolean = synchronized(lock) {
         val now = clock()
-        if (recording || !collectingNow(now) || installId.isEmpty() || storage.used.get() >= diskCapBytes) return false
+        if (!recovered || recording || !collectingNow(now) || installId.isEmpty() || storage.used.get() >= diskCapBytes) return false
         if (s.snapshot.sampleEvery != sampleEvery) return false
         val id = newTraceId()
         if (!TraceBounds.isTraceId(id)) return false

@@ -348,8 +348,21 @@ object EventCodec {
         is TraceEvent.PreRollEnd -> "pr"; is TraceEvent.Close -> "cl"
     }
 
-    private val INT = Regex("-?(0|[1-9][0-9]{0,15})")
-    private val HEX16 = Regex("[0-9a-f]{16}")
+    /** `-?(0|[1-9][0-9]{0,15})` (the canonical integer text), without a regex: the decode runs per field of every event. */
+    private fun isInt(s: String): Boolean {
+        var i = if (s.isNotEmpty() && s[0] == '-') 1 else 0
+        val digits = s.length - i
+        if (digits < 1 || digits > 16) return false
+        if (s[i] == '0') return digits == 1
+        while (i < s.length) { if (s[i] !in '0'..'9') return false; i++ }
+        return true
+    }
+    /** `[0-9a-f]{16}` without a regex. */
+    private fun isHex16(s: String): Boolean {
+        if (s.length != 16) return false
+        for (c in s) if (c !in '0'..'9' && c !in 'a'..'f') return false
+        return true
+    }
     private fun bad(): Nothing = throw TraceFormatException("bad_event")
 
     fun encode(e: TraceEvent): String {
@@ -397,20 +410,43 @@ object EventCodec {
         return e
     }
 
+    /**
+     * The `tMs` of the event line `text[from, to)` read in place (no allocation of the line, no regex, no JSON tree): the line must look like `["<tag>",<tMs>` followed by
+     * `,` or `]` (the tag is one of [TAGS]) and end with `]`. Throws [TraceFormatException] (`bad_event`). A structural check only: [decode] is the strict inverse.
+     */
+    fun scanTMs(text: String, from: Int, to: Int): Long {
+        if (to - from < 8 || to - from > TraceBounds.MAX_LINE_CHARS || text[from] != '[' || text[from + 1] != '"' || text[to - 1] != ']') bad()
+        var i = from + 2
+        val tagStart = i
+        while (i < to && text[i] != '"') i++
+        if (i >= to - 1 || text[i + 1] != ',') bad()
+        val tl = i - tagStart
+        if (tl !in 1..2 || TAGS.none { it.length == tl && text.startsWith(it, tagStart) }) bad()
+        i += 2
+        val neg = i < to && text[i] == '-'
+        if (neg) i++
+        val ds = i
+        var v = 0L
+        while (i < to && text[i] in '0'..'9') { v = v * 10 + (text[i] - '0'); i++ }
+        val n = i - ds
+        if (n < 1 || n > 16 || (n > 1 && text[ds] == '0') || i >= to || (text[i] != ',' && text[i] != ']')) bad()
+        return if (neg) -v else v
+    }
+
     private fun parse(line: String): TraceEvent {
         val a = kotlinx.serialization.json.Json.parseToJsonElement(line) as? JsonArray ?: bad()
         if (a.size < 2) bad()
         var i = 0
         fun next(): JsonElement = if (i < a.size) a[i++] else bad()
         fun prim(): JsonPrimitive = next() as? JsonPrimitive ?: bad()
-        fun long(): Long { val p = prim(); if (p is JsonNull || p.isString || !INT.matches(p.content)) bad(); return p.content.toLong() }
+        fun long(): Long { val p = prim(); if (p is JsonNull || p.isString || !isInt(p.content)) bad(); return p.content.toLong() }
         fun int(): Int = long().also { if (it !in Int.MIN_VALUE..Int.MAX_VALUE) bad() }.toInt()
         fun bool(): Boolean { val p = prim(); if (p is JsonNull || p.isString) bad(); return when (p.content) { "true" -> true; "false" -> false; else -> bad() } }
         fun str(): String { val p = prim(); if (p is JsonNull || !p.isString) bad(); return p.content }
         fun strOrNull(): String? { val p = prim(); return if (p is JsonNull) null else { if (!p.isString) bad(); p.content } }
-        fun longOrNull(): Long? { val p = prim(); return if (p is JsonNull) null else { if (p.isString || !INT.matches(p.content)) bad(); p.content.toLong() } }
+        fun longOrNull(): Long? { val p = prim(); return if (p is JsonNull) null else { if (p.isString || !isInt(p.content)) bad(); p.content.toLong() } }
         fun float(): Float = Float.fromBits(int())
-        fun hex(): Long { val s = str(); if (!HEX16.matches(s)) bad(); return java.lang.Long.parseUnsignedLong(s, 16) }
+        fun hex(): Long { val s = str(); if (!isHex16(s)) bad(); return java.lang.Long.parseUnsignedLong(s, 16) }
         fun <T : Enum<T>> en(values: Array<T>, lower: Boolean = false): T { val s = str(); return values.firstOrNull { (if (lower) it.name.lowercase() else it.name) == s } ?: bad() }
         fun <T : Enum<T>> enOrNull(values: Array<T>): T? { val p = prim(); if (p is JsonNull) return null; if (!p.isString) bad(); return values.firstOrNull { it.name.lowercase() == p.content } ?: bad() }
         val tag = str()
