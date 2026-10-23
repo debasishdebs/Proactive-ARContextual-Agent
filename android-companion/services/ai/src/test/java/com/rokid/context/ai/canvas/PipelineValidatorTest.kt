@@ -215,15 +215,22 @@ class PipelineValidatorTest {
         assertHas(pipe2(listOf(photos(), prompt(), pyFn()), listOf(PipelineEdge("photos", "intent"))), "node fn: py.fn takes exactly one input edge")
     }
 
-    @Test fun pyFnGraphHasNoCaptureHalf() {
-        val rt = listOf(
-            node("head", NodeTypes.IMU_HEAD_MOTION), node("cam", NodeTypes.CAPTURE_IMAGE),
-        )
+    @Test fun pyFnGraphMayHaveACaptureHalfBecauseARunExecutesTheAsyncHalfOnly() {
+        val rt = listOf(node("head", NodeTypes.IMU_HEAD_MOTION), node("nov", NodeTypes.GATE_NOVELTY), node("cam", NodeTypes.CAPTURE_IMAGE))
         val g = pipe2(
             rt + listOf(photos(), prompt(), pyFn()),
-            listOf(PipelineEdge("head", "cam"), PipelineEdge("cam", "photos"), PipelineEdge("photos", "intent"), PipelineEdge("intent", "fn")),
+            listOf(PipelineEdge("head", "nov"), PipelineEdge("nov", "cam"), PipelineEdge("cam", "photos"), PipelineEdge("photos", "intent"), PipelineEdge("intent", "fn")),
         )
-        assertHas(g, "node fn: py.fn runs only in a graph without a capture half")
+        assertEquals(emptyList<String>(), problems(g))
+    }
+
+    @Test fun pyFnInputMustComeFromTheAsyncHalf() {
+        // a py.fn fed from a capture-half node crosses domains: the existing rule refuses it, and the one-edge rule still holds
+        val g = pipe2(
+            listOf(node("head", NodeTypes.IMU_HEAD_MOTION), node("nov", NodeTypes.GATE_NOVELTY), node("cam", NodeTypes.CAPTURE_IMAGE), photos(), pyFn()),
+            listOf(PipelineEdge("head", "nov"), PipelineEdge("nov", "cam"), PipelineEdge("cam", "photos"), PipelineEdge("cam", "fn")),
+        )
+        assertTrue(problems(g).isNotEmpty())
     }
 
     @Test fun pyFnNodeCountIsBounded() {
