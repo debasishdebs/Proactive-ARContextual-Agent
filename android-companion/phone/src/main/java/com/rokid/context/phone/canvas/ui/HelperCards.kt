@@ -39,6 +39,15 @@ fun HelperCard(state: HelperCardState, onAcceptPairing: () -> Unit, onGrantPyExe
                     Text("Pairing code", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
                     Text(state.pairingCode, style = MaterialTheme.typography.headlineMedium, modifier = Modifier.testTag("helper_pair_code"))
                     Text(CanvasHomeText.countdown(state.pairingSecondsLeft), style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft, modifier = Modifier.testTag("helper_pair_left"))
+                    if (state.fingerprint16 != null && state.hostPort != null) {
+                        Text("Laptop address", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
+                        Text(state.hostPort, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.testTag("helper_host"))
+                        Text("Certificate fingerprint (first 16 digits)", style = MaterialTheme.typography.labelMedium, color = PcColors.InkSoft)
+                        Text(state.fingerprint16, style = MaterialTheme.typography.titleMedium, modifier = Modifier.testTag("helper_fingerprint"))
+                        Text("Type all 16 digits on the laptop. It checks them before it sends the code.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft)
+                    } else {
+                        Text("Turn on Use from a laptop first: the laptop checks this phone's certificate before it sends the code.", style = MaterialTheme.typography.bodySmall, color = PcColors.InkSoft, modifier = Modifier.testTag("helper_needs_lan"))
+                    }
                 }
                 Button(onClick = onAcceptPairing, modifier = Modifier.testTag("helper_accept_pairing")) { Text(if (state.pairingCode != null) "New code" else "Accept pairing") }
             } else {

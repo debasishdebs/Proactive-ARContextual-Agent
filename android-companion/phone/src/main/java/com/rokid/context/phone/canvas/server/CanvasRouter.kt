@@ -103,7 +103,7 @@ class CanvasRouter(
     private fun route(req: HttpRequest): HttpResponse {
         val host = req.headers["host"]
         if (!hosts.hostAllowed(host)) return HttpResponse.error(421, "forbidden_host", "Host not allowed.")
-        if (req.bodyTooLarge || req.body.size > CanvasServer.MAX_BODY) return HttpResponse.error(413, "too_large", "Request body too large.")
+        if (req.bodyTooLarge || req.body.size > CanvasServer.bodyLimit(req.method, req.path)) return HttpResponse.error(413, "too_large", "Request body too large.")
         if (!hosts.originAllowed(req.method, req.headers["origin"], host)) return HttpResponse.error(403, "forbidden", "Origin not allowed.")
 
         val isApi = req.path == "/api" || req.path.startsWith("/api/")

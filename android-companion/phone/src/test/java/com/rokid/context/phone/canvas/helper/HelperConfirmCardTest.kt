@@ -83,23 +83,24 @@ class HelperConfirmCardTest {
         val host = FakeCanvasHost()
         var now = 10_000L
         host.fakeConfirm.rows = listOf(row("j1", expires = 100_000L), row("j2", expires = 20_000L))
-        val vm = CanvasHomeViewModel(host, ensureService = {}, openUrl = {}, clock = { now })
-        vm.tick()
+        val vm = CanvasHomeViewModel(host, ensureService = {}, openUrl = {}, clock = { now }, io = main.dispatcher)
+        vm.onStart()
         assertEquals(listOf("j1", "j2"), vm.state.value.pending.map { it.row.jobId })
         assertEquals(listOf(90, 10), vm.state.value.pending.map { it.secondsLeft })
         now = 20_000L
         vm.tick()
         assertEquals("expired entries drop at expiry", listOf("j1"), vm.state.value.pending.map { it.row.jobId })
         host.fakeConfirm.rows = emptyList()
-        vm.tick()
+        main.dispatcher.scheduler.advanceTimeBy(1_001)
         assertTrue(vm.state.value.pending.isEmpty())
+        vm.onStop()
     }
 
     @Test fun viewModelTapsReachOnlyTheConfirmActions() {
         val host = FakeCanvasHost()
         host.fakeConfirm.rows = listOf(row("j1"))
-        val vm = CanvasHomeViewModel(host, ensureService = {}, openUrl = {}, clock = { 0L })
-        vm.tick()
+        val vm = CanvasHomeViewModel(host, ensureService = {}, openUrl = {}, clock = { 0L }, io = main.dispatcher)
+        vm.onStart()
         host.calls.clear()
         vm.confirmRun("j1")
         vm.declineRun("j1")

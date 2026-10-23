@@ -17,7 +17,10 @@ import com.rokid.context.phone.canvas.server.CanvasAuth
 import com.rokid.context.phone.canvas.server.CanvasRouter
 import com.rokid.context.phone.canvas.server.CanvasServer
 import com.rokid.context.phone.canvas.server.HelperAuth
+import com.rokid.context.phone.canvas.helper.HelperBackend
 import com.rokid.context.phone.canvas.helper.HelperConfirmActions
+import com.rokid.context.phone.canvas.helper.HelperDevSession
+import com.rokid.context.phone.canvas.helper.SessionEnd
 import com.rokid.context.phone.canvas.helper.HelperNativeActions
 import com.rokid.context.phone.log.PhoneLogging
 import com.rokid.context.phone.canvas.server.HostPolicy
@@ -121,6 +124,11 @@ interface CanvasHost {
      */
     val helperNative: HelperNativeActions get() = HelperNativeActions.UNAVAILABLE
     val helperConfirm: HelperConfirmActions get() = HelperConfirmActions.NONE
+    /**
+     * 3b WP6 (S52): THE way the canvas stops. The service's every stop path (notification Stop, idle stop, developer mode off, time limit, shutdown) calls this with its cause; a host with
+     * a helper session ends that session first (grants off, token revoked, jobs voided, cleanup enqueued) and stops the server last. A host without one just stops.
+     */
+    fun terminateSession(cause: SessionEnd) { stop() }
     suspend fun home(): HomeData
     /** Rolls back the publish [expectedId], the one the user saw as the newest. */
     suspend fun rollback(expectedId: Long): CanvasPublisher.Outcome
@@ -152,6 +160,8 @@ class CanvasGraph(
     private val helperApi: ApiHandler? = null,
     override val helperNative: HelperNativeActions = HelperNativeActions.UNAVAILABLE,
     override val helperConfirm: HelperConfirmActions = HelperConfirmActions.NONE,
+    /** 3b WP6: the helper dev session (S52); every stop path of this graph goes through its one termination operation. Null = no helper. */
+    private val helperSession: HelperDevSession? = null,
 ) : CanvasHost {
     @Volatile private var server: CanvasServer? = null
     @Volatile private var lanOn = false
@@ -185,7 +195,11 @@ class CanvasGraph(
     )
     private val _status = MutableStateFlow(CanvasStatus())
     override val status: StateFlow<CanvasStatus> = _status.asStateFlow()
-    @Volatile override var screenOpen = false
+    @Volatile private var screen = false
+    /** True while a canvas screen shows. Each change counts as user activity for the helper session's four-hour clock. */
+    override var screenOpen: Boolean
+        get() = screen
+        set(v) { screen = v; helperSession?.noteScreen() }
 
     /** Whether LAN is on right now (the backend's session info reads this). */
     val lan: Boolean get() = lanOn
@@ -194,7 +208,7 @@ class CanvasGraph(
         // The certificate (a keystore key on first use) and one trace prune, both off the caller's thread.
         scope.launch { ensureTls() }
         scope.launch { try { prune() } catch (e: CancellationException) { throw e } catch (e: Exception) { /* history only */ } }
-        scope.launch { devMode.collect { on -> if (!on) { stop(); revokeAll(); try { core.cancelActive() } catch (e: Exception) { log("canvas cancel failed (${e.javaClass.simpleName})") } } } }
+        scope.launch { devMode.collect { on -> if (!on) { terminateSession(SessionEnd.DEVELOPER_MODE_OFF); revokeAll(); try { core.cancelActive() } catch (e: Exception) { log("canvas cancel failed (${e.javaClass.simpleName})") } } } }
     }
 
     @Synchronized
@@ -312,7 +326,13 @@ class CanvasGraph(
 
     override fun stopWithNotice(text: String) {
         notice = text
-        stop()
+        terminateSession(SessionEnd.SHUTDOWN)
+    }
+
+    /** One way to end: the session's termination (which stops this server last); without a session, just [stop]. */
+    override fun terminateSession(cause: SessionEnd) {
+        val session = helperSession
+        if (session == null) stop() else session.terminate(cause)
     }
 
     private fun publish() {
@@ -346,23 +366,27 @@ class CanvasGraph(
             val port = PhoneLogging.canvasPort() // the gated core port, never the platform logger (always-on rule)
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t -> port.log(Level.W, TAG, "canvas task failed (${t.javaClass.simpleName})") })
             val ref = java.util.concurrent.atomic.AtomicReference<CanvasGraph>()
-            val backend = lazy { com.rokid.context.phone.canvas.api.AskPhotoBinding.bind(com.rokid.context.orchestration.AnswerService.forApp(app, extractFirst = false).askDebugPhotos()); HubGraph.get(app); CanvasBackendImpl.create(app, AiGraph.get(app), auth, lan = { ref.get()?.lan == true }, scope = scope, plans = { PlanGraph.current()?.publisher }, sharedPublisher = PlanGraph.current()?.canvasPublisher) }
+            // 3b WP6: the laptop helper, built once with the ONE gated logger port; its session stops THIS graph's server last.
+            val helper = HelperBackend.forApp(app, auth, scope, screenOpen = { ref.get()?.screenOpen == true }, stopServer = { ref.get()?.stop() }, log = port)
+            val backend = lazy { com.rokid.context.phone.canvas.api.AskPhotoBinding.bind(com.rokid.context.orchestration.AnswerService.forApp(app, extractFirst = false).askDebugPhotos()); HubGraph.get(app); CanvasBackendImpl.create(app, AiGraph.get(app), auth, lan = { ref.get()?.lan == true }, scope = scope, plans = { PlanGraph.current()?.publisher }, sharedPublisher = PlanGraph.current()?.canvasPublisher, helperJobs = helper.service) }
             val extras = lazy { CanvasExtras.create(app, scope, DeveloperModeStore.get(app).enabled) }
             val maintenance = lazy { CanvasMaintenance(MemoryGraph.get(app).db.canvasDao()) }
             val graph = CanvasGraph(
-                auth, BackendCore(backend, extras), AssetSource { name -> runCatching { app.assets.open("canvas/$name").use { it.readBytes() } }.getOrNull() },
+                auth, BackendCore(backend, extras, listOf(helper.browserRoutes)), AssetSource { name -> runCatching { app.assets.open("canvas/$name").use { it.readBytes() } }.getOrNull() },
                 DeveloperModeStore.get(app).enabled, wifiIp = { LanAddress.wifiIpv4(app) }, scope = scope, log = { port.log(Level.I, TAG, it) },
                 tlsFactory = { KeystoreTlsIdentity(app) }, prune = { maintenance.value.pruneTraces() },
+                helperAuth = helper.auth, helperApi = helper.routes, helperNative = helper.native, helperConfirm = helper.adapter, helperSession = helper.session,
             )
             ref.set(graph)
+            helper.session.recoverAtStart() // a restart killed every token and confirmation: grants off, open jobs aborted with their cleanup (never stops the server)
             return graph
         }
     }
 }
 
 /** [CanvasCore] over the one [CanvasBackendImpl] (built on first use, then reused). */
-class BackendCore(private val backend: Lazy<CanvasBackendImpl>, private val extras: Lazy<CanvasExtras>? = null) : CanvasCore {
-    private val apiLazy = lazy { CanvasApi(backend.value, extras = extras?.value?.extras ?: emptyList()) }
+class BackendCore(private val backend: Lazy<CanvasBackendImpl>, private val extras: Lazy<CanvasExtras>? = null, private val helperExtras: List<com.rokid.context.phone.canvas.api.ApiExtra> = emptyList()) : CanvasCore {
+    private val apiLazy = lazy { CanvasApi(backend.value, extras = (extras?.value?.extras ?: emptyList()) + helperExtras) }
     override val api = ApiHandler { apiLazy.value.handle(it) }
     override suspend fun start() { backend.value.start(); extras?.value?.start() }
     override fun runActive() = backend.isInitialized() && backend.value.runActive()
