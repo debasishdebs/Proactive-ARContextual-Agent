@@ -26,6 +26,16 @@ class HelperUiContractTest {
         )) assertTrue("helperview.js lacks '$s'", t.contains(s))
     }
 
+    /** The editor's Add-a-step list shows the palette hint (py.fn: needs the laptop helper and a per-run tap, never published) as text, and the palette filter lets only the python node past `liveable:false`. */
+    @Test fun theAddAStepListShowsTheHintAndOffersThePythonNode() {
+        val ed = code("floweditor.js")
+        assertTrue("floweditor.js does not render the palette hint", ed.contains("it.hint"))
+        assertFalse("hint through innerHTML", ed.contains("dangerouslySetInnerHTML"))
+        val logic = code("editorlogic.js")
+        assertTrue(logic.contains("hint: t.hint"))
+        assertTrue("the python node passes the palette filter", logic.contains("'PYTHON'"))
+    }
+
     @Test fun theViewsUseTheHelperModule() {
         val v = text("views.js")
         assertTrue(v.contains("from './helperview.js'"))

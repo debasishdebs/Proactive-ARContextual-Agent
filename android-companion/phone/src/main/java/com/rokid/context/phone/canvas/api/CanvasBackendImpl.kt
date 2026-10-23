@@ -237,6 +237,7 @@ class CanvasBackendImpl(
             put("root", t.root)
             put("sinceSchema", t.sinceSchema)
             put("liveable", t.liveable)
+            put("hint", t.hint)
             put("cost", buildJsonObject { put("modelCalls", t.cost.modelCalls); put("rtOps", t.cost.rtOps); put("cpuClass", t.cost.cpuClass) })
         }
     })

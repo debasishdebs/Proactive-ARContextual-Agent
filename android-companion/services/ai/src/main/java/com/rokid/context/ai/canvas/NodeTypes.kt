@@ -45,6 +45,8 @@ data class NodeType(
     val mixedIn: Boolean = false,
     /** The domain comes from `params.domain` (the `signal.*` nodes). */
     val domainFromParams: Boolean = false,
+    /** A short line the palette shows under the label; empty for every type but the experiment node. */
+    val hint: String = "",
 )
 
 object NodeTypes {
@@ -116,10 +118,11 @@ object NodeTypes {
             category = Category.ACTIONS_CAPTURE, short = "capture", params = CaptureParams.captureImage),
     )
 
-    /** The python experiment node (S6 tier 3). Not in the palette until the helper capability exists (WP9); `entry` is the fixed function name `run`, not a param. */
+    /** The python experiment node (S6 tier 3). In the palette since WP9 (the helper UI exists) but never liveable and never published; `entry` is the fixed function name `run`, not a param. */
     private val experiments: List<NodeType> = listOf(
-        NodeType(PY_FN, "Python function", setOf(PortType.JSON), PortType.JSON, sinceSchema = 2, domain = Domain.ASYNC, category = Category.CODE,
-            executor = ExecutorKind.PYTHON, short = "pyfn", palette = false, liveable = false, cost = CostSpec(modelCalls = 0),
+        NodeType(PY_FN, "Python (experiment)", setOf(PortType.JSON), PortType.JSON, sinceSchema = 2, domain = Domain.ASYNC, category = Category.CODE,
+            executor = ExecutorKind.PYTHON, short = "pyfn", liveable = false, cost = CostSpec(modelCalls = 0),
+            hint = "Needs the laptop helper and your confirm tap on the phone for each run; never published to the glasses.",
             params = ParamSchema(listOf(
                 ParamSpec("source", ParamKind.TEXT, label = "Source", maxLen = 16000),
                 ParamSpec("outSchema", ParamKind.TEXT, label = "Output schema", maxLen = 4000),
