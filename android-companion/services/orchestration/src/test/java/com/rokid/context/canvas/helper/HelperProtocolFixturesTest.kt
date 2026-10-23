@@ -154,6 +154,35 @@ class HelperProtocolFixturesTest {
         for (v in s.arr("invalid").map { it.o() }) assertTrue(v.str("name"), HelperProtocol.validateResult(payloads.getValue(v.str("payload")), v.getValue("result")).isNotEmpty())
     }
 
+    private fun wireVerdict(payloads: Map<String, kotlinx.serialization.json.JsonElement>, r: JsonObject): String =
+        when (val c = ResultWire.check(r.str("resultCanonical"), r.str("resultHash"))) {
+            is ResultWire.Checked.Rejected -> when (c.kind) {
+                ResultWire.Kind.HASH -> "hash_mismatch"
+                ResultWire.Kind.JSON -> "invalid_json"
+                ResultWire.Kind.DUPLICATE_KEY -> "duplicate_key"
+                ResultWire.Kind.NOT_OBJECT -> "not_object"
+                ResultWire.Kind.TOO_LARGE -> "too_large"
+            }
+            is ResultWire.Checked.Ok -> if (HelperProtocol.validateResult(payloads.getValue(r.str("payload")), c.result).isEmpty()) "ok" else "schema_mismatch"
+        }
+
+    /** D1: the same rows the Python tests run (test_protocol_fixtures.py): the hash covers the text as received, then parse, then the per-member schema check. */
+    @Test fun resultWireRows() {
+        val payloads = load("py_exec-payload-samples.json").arr("valid").map { it.o() }.associate { it.str("name") to it.getValue("payload") }
+        val rows = load("py_exec-result-samples.json").arr("wireRows").map { it.o() }
+        assertTrue(rows.size >= 35)
+        assertEquals(setOf("ok", "hash_mismatch", "invalid_json", "duplicate_key", "not_object", "schema_mismatch"), rows.map { it.str("expect") }.toSet())
+        for (r in rows) assertEquals(r.str("name"), r.str("expect"), wireVerdict(payloads, r))
+    }
+
+    @Test fun anOkRowKeepsTheNumberTextAndNeverReprintsIt() {
+        val r = load("py_exec-result-samples.json").arr("wireRows").map { it.o() }.first { it.str("name") == "trailingZeroHashedAsReceived" }
+        val c = ResultWire.check(r.str("resultCanonical"), r.str("resultHash")) as ResultWire.Checked.Ok
+        assertEquals(r.str("resultCanonical"), c.text)
+        val n = c.result.getValue("outputs").jsonArray[0].jsonObject.getValue("output").jsonObject.getValue("score").jsonPrimitive
+        assertEquals("0.730", n.content)
+    }
+
     @Test fun validationMessagesNeverEchoContent() {
         val bad = JsonObject(mapOf("helperProtocol" to JsonPrimitive(1), "source" to JsonPrimitive("SECRET-CONTENT"), "zz" to JsonPrimitive("SECRET-KEY")))
         val errs = HelperProtocol.validatePayload(bad)

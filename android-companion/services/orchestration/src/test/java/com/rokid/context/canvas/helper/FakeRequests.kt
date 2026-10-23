@@ -33,3 +33,11 @@ fun okResult(ids: List<String>) = JsonObject(mapOf(
     "outputs" to JsonArray(ids.map { JsonObject(mapOf("id" to JsonPrimitive(it), "ok" to JsonPrimitive(true), "output" to JsonObject(mapOf("n" to JsonPrimitive(1))))) }),
     "stats" to JsonObject(mapOf("ms" to JsonPrimitive(5))),
 ))
+
+/** The wire form of a test result built as a [JsonObject] (integers only): the text the helper would hash and its SHA-256. Float rows give the text directly. */
+fun wire(result: JsonObject): Pair<String, String> { val t = BundleHash.canonical(result); return t to BundleHash.ofCanonical(t) }
+
+suspend fun HelperJobService.commitResult(jobId: String, helperId: String, leaseGen: Long, result: JsonObject): ResultCommit =
+    wire(result).let { (t, h) -> commitResult(jobId, helperId, leaseGen, t, h) }
+
+fun InMemoryHelperJobPort.complete(jobId: String, result: JsonObject): List<String> = wire(result).let { (t, h) -> complete(jobId, t, h) }

@@ -177,6 +177,52 @@ class HelperRoutesTest {
         assertEquals(200, h.heartbeat(token, id, gen).status)
     }
 
+    // ---- D1 (2026-10-24): the hash covers the exact text; floats pass `number` and fail `integer` ----
+
+    @Test fun aFloatResultForANumberMemberIsCommittedAndTheRunGetsTheFloatAsPrinted() {
+        val run = h.startRun(schema = h.numberSchema)
+        val (id, gen) = h.confirmAndLease(token)
+        assertEquals(200, h.result(token, id, gen, h.textResult("0.730")).status) // 0.730 is not Python's text for the value: the hash is of the text as received
+        val out = runBlocking { run.await() } as PyOutcome.Done
+        assertEquals("0.730", out.outputs.single().output!!.jsonObject["n"]!!.jsonPrimitive.content)
+    }
+
+    @Test fun aFloatForAnIntegerMemberIs422AndTheLeaseSurvives() {
+        h.startRun()
+        val (id, gen) = h.confirmAndLease(token)
+        for (t in listOf("0.73", "1.0", "1e2", "-0.0")) {
+            val r = h.result(token, id, gen, h.textResult(t))
+            assertEquals(t, 422, r.status)
+            assertEquals("invalid_result", h.json(r)["error"]!!.jsonPrimitive.content)
+        }
+        assertEquals(200, h.heartbeat(token, id, gen).status)
+    }
+
+    @Test fun aHashThatIsNotOfTheReceivedTextIs422EvenWhenTheValueIsTheSame() {
+        h.startRun(schema = h.numberSchema)
+        val (id, gen) = h.confirmAndLease(token)
+        val spelledOtherwise = com.rokid.context.canvas.helper.BundleHash.ofCanonical(h.textResult("0.73"))
+        assertEquals(422, h.result(token, id, gen, h.textResult("0.730"), hash = spelledOtherwise).status)
+        assertEquals(422, h.result(token, id, gen, h.textResult("0.73"), hash = "0".repeat(64)).status)
+        assertEquals(200, h.result(token, id, gen, h.textResult("0.73")).status)
+    }
+
+    @Test fun duplicateKeysAndNonJsonTextsAre422() {
+        h.startRun(schema = h.numberSchema)
+        val (id, gen) = h.confirmAndLease(token)
+        val dup = """{"helperProtocol":1,"jobType":"py_exec","outputs":[{"id":"i0","ok":true,"output":{"n":1,"n":2}}],"stats":{"ms":5}}"""
+        for (t in listOf(dup, "not json", "", """{"a":NaN}""", "[1]")) assertEquals(t, 422, h.result(token, id, gen, t).status)
+        assertEquals(200, h.heartbeat(token, id, gen).status)
+    }
+
+    @Test fun theOldResultObjectEnvelopeIsABadRequest() {
+        h.startRun()
+        val (id, gen) = h.confirmAndLease(token)
+        val old = h.call("POST", "/api/helper/jobs/$id/result", token, """{"leaseGen":$gen,"resultHash":"${"0".repeat(64)}","result":${h.okResult()}}""")
+        assertEquals(400, old.status)
+        assertEquals(200, h.heartbeat(token, id, gen).status)
+    }
+
     @Test fun staleLeaseGenerationIs409() {
         h.startRun()
         val (id, gen) = h.confirmAndLease(token)
@@ -219,7 +265,7 @@ class HelperRoutesTest {
         // through the router: 300 KB is too large for the heartbeat route and accepted (and then judged on its content) for the result route
         val big = " ".repeat(300 * 1024)
         assertEquals(413, h.call("POST", "/api/helper/jobs/j1/heartbeat", token, """{"leaseGen":1}$big""").status)
-        assertNotEquals413(h.call("POST", "/api/helper/jobs/j1/result", token, """{"leaseGen":1,"resultHash":"${"0".repeat(64)}","result":{}}$big"""))
+        assertNotEquals413(h.call("POST", "/api/helper/jobs/j1/result", token, """{"leaseGen":1,"resultHash":"${"0".repeat(64)}","resultCanonical":"{}"}$big"""))
         assertEquals(413, h.call("POST", "/api/helper/jobs/j1/result", token, " ".repeat(2 * 1024 * 1024 + 4097)).status)
     }
 
@@ -309,10 +355,12 @@ class HelperRoutesTest {
     @Test fun aMalformedResultEnvelopeAnswers422SoTheHelperPostsFailInsteadOfRetrying() {
         h.startRun()
         val (id, gen) = h.confirmAndLease(token)
-        val nonObject = h.call("POST", "/api/helper/jobs/$id/result", token, """{"leaseGen":$gen,"resultHash":"${"0".repeat(64)}","result":null}""")
-        assertEquals(422, nonObject.status)
-        assertEquals("invalid_result", h.json(nonObject)["error"]!!.jsonPrimitive.content)
-        val badHash = h.call("POST", "/api/helper/jobs/$id/result", token, """{"leaseGen":$gen,"resultHash":"xyz","result":${h.okResult()}}""")
+        val nonString = h.call("POST", "/api/helper/jobs/$id/result", token, """{"leaseGen":$gen,"resultHash":"${"0".repeat(64)}","resultCanonical":null}""")
+        assertEquals(422, nonString.status)
+        assertEquals("invalid_result", h.json(nonString)["error"]!!.jsonPrimitive.content)
+        val objectNotText = h.call("POST", "/api/helper/jobs/$id/result", token, """{"leaseGen":$gen,"resultHash":"${"0".repeat(64)}","resultCanonical":${h.okResult()}}""")
+        assertEquals("the text is a JSON string, an embedded object is not the exact text", 422, objectNotText.status)
+        val badHash = h.result(token, id, gen, h.okResult(), hash = "xyz")
         assertEquals(422, badHash.status)
         assertEquals(200, h.heartbeat(token, id, gen).status)
     }
