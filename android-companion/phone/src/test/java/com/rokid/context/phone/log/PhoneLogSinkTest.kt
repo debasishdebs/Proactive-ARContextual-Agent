@@ -28,10 +28,19 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-private class MemPending(var value: Boolean = false) : WipePendingStore {
-    val history = ArrayList<Boolean>()
-    override fun pending() = value
-    override fun set(pending: Boolean) { value = pending; history += pending }
+private class MemPending(@Volatile var value: Boolean = false) : WipePendingStore {
+    val history = java.util.concurrent.CopyOnWriteArrayList<Boolean>()
+    @Volatile var failWrites = 0                 // the next n writes report "not persisted"
+    @Volatile var alwaysFail = false
+    @Volatile var readFails = false
+    @Volatile var pauseFalseWrite: Pair<CountDownLatch, CountDownLatch>? = null     // (entered, resume) for the first write(false)
+    override fun read(): Boolean? = if (readFails) null else value
+    override fun write(pending: Boolean): Boolean {
+        if (alwaysFail) return false
+        if (failWrites > 0) { failWrites--; return false }
+        if (!pending) pauseFalseWrite?.let { (entered, resume) -> pauseFalseWrite = null; entered.countDown(); resume.await(5, TimeUnit.SECONDS) }
+        value = pending; history += pending; return true
+    }
 }
 
 class PhoneLogSinkTest {
@@ -41,8 +50,8 @@ class PhoneLogSinkTest {
     private val logcat = ArrayList<Triple<Level, String, String>>()
     private val unconfined get() = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
-    @Before fun setUp() { logFile = File(tmp.newFolder("files"), "logs/pca.log"); PcLog.resetForTest() }
-    @After fun tearDown() { writers.forEach { it.close(false) }; ForgetListeners.clearForTests(); PcLog.resetForTest() }
+    @Before fun setUp() { logFile = File(tmp.newFolder("files"), "logs/pca.log"); PcLog.testOnlyResetNeverCallFromProduction() }
+    @After fun tearDown() { writers.forEach { it.close(false) }; ForgetListeners.clearForTests(); PcLog.testOnlyResetNeverCallFromProduction() }
 
     private fun writer(maxBytes: Long = 6_000_000L, beforeWrite: () -> Unit = {}) =
         AsyncLineWriter(logFile, maxBytes = maxBytes, beforeWrite = beforeWrite).also { writers += it }
@@ -94,10 +103,14 @@ class PhoneLogSinkTest {
         val s = PhoneLogSink.create(root, maxBytes = budget)
         val f = File(root, "logs/pca.log"); val old = File(root, "logs/pca.log.1")
         for (i in 0 until 200) s.emit(Line(Level.W, "T", "line-$i-" + "x".repeat(80), 1L), Route(false, true))
-        assertTrue(awaitTrue { old.exists() })
-        s.close().get(3, TimeUnit.SECONDS)
+        s.emit(Line(Level.W, "T", "final-record", 1L), Route(false, true))
+        assertTrue("idle: everything written", s.awaitIdle(5000))      // before close(false), which discards what is queued
         assertTrue(old.exists()); assertTrue(f.length() <= budget / 2); assertTrue(old.length() <= budget / 2)
-        assertTrue("never a third rotation", setOf("pca.log", "pca.log.1").containsAll(root.resolve("logs").list()!!.toSet()))
+        assertTrue("the last record survives the rotation", f.readText().contains("final-record"))
+        assertTrue("never a third file", setOf("pca.log", "pca.log.1").containsAll(root.resolve("logs").list()!!.toSet()))
+        val done = s.close()
+        done.get(3, TimeUnit.SECONDS)       // termination observed separately from idleness
+        assertTrue(done.isDone)
     }
 
     @Test fun installCreatesNoDirectoryAndTouchesNoFileOnTheCallingThread() {
@@ -133,7 +146,9 @@ class PhoneLogSinkTest {
         val w = writer(); val s = sink(w)
         val i = PhoneLogging.install(tmp.newFolder("c"), { MutableStateFlow(false) }, MemPending(), unconfined, installer = { false }, once = once, sinkFactory = { s })
         assertNotNull(i); runBlocking { i!!.ready.join() }
+        assertEquals(InstallResult.REFUSED, i!!.result)
         assertFalse("re-armed after a refused install", once.get())
+        s.close().get(3, TimeUnit.SECONDS)       // termination observed (the install path already closed it)
         s.emit(Line(Level.W, "T", "after-refusal", 1L), Route(false, true))      // a closed writer accepts nothing
         assertTrue(w.awaitIdle(2000))
         assertFalse(fileText().contains("after-refusal"))
@@ -176,7 +191,7 @@ class PhoneLogSinkTest {
 
     @Test fun diagnosticAndLevelMatrixThroughPcLogAndPhoneSink() {
         for (diag in listOf(false, true)) {
-            PcLog.resetForTest(); logcat.clear(); logFile.parentFile?.deleteRecursively()
+            PcLog.testOnlyResetNeverCallFromProduction(); logcat.clear(); logFile.parentFile?.deleteRecursively()
             val w = writer(); val s = sink(w)
             val i = PhoneLogging.install(tmp.newFolder("m$diag"), { MutableStateFlow(diag) }, MemPending(), unconfined, once = AtomicBoolean(false), sinkFactory = { s })
             assertNotNull(i); runBlocking { i!!.ready.join() }
@@ -259,7 +274,106 @@ class PhoneLogSinkTest {
 
     @Test fun deleteAllHookOwnership() {
         val root = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
-        assertTrue(File(root, "phone/src/main/java/com/rokid/context/ContextApp.kt").readText().contains("LogWipeListener(it.wiper)"))
+        assertTrue(File(root, "phone/src/main/java/com/rokid/context/ContextApp.kt").readText().contains("LogWipeListener(it.wiper, it.ready)"))
         assertTrue(File(root, "services/orchestration/src/main/java/com/rokid/context/orchestration/MemoryWipe.kt").readText().contains("ForgetListeners.deleteAll()"))
+    }
+
+    @Test fun failedPersistIsRetriedBoundedAndNotTakenAsSuccess() {
+        val pend = MemPending(); pend.failWrites = 2
+        assertFalse(LogWiper({ false }, pend).wipe())
+        assertTrue("third attempt persisted the request", pend.value)
+        val always = MemPending().also { it.alwaysFail = true }
+        val ops = AtomicInteger(0); val ok = AtomicBoolean(false)
+        val w = LogWiper({ ops.incrementAndGet(); ok.get() }, always)
+        assertFalse(w.wipe()); assertEquals(1, ops.get())
+        ok.set(true); w.retryPending()
+        assertEquals("kept in memory and retried in this process", 2, ops.get())
+        w.retryPending(); assertEquals("done: no third wipe", 2, ops.get())
+    }
+
+    @Test fun unreadablePendingStateIsNotTakenAsNotPending() {
+        val pend = MemPending(false).also { it.readFails = true }
+        val ops = AtomicInteger(0)
+        LogWiper({ ops.incrementAndGet(); true }, pend).retryPending()
+        assertEquals(1, ops.get())
+        val clean = AtomicInteger(0)
+        LogWiper({ clean.incrementAndGet(); true }, MemPending(false)).retryPending()
+        assertEquals(0, clean.get())
+    }
+
+    @Test fun overlappingWipesCannotClearEachOthersRequest() {
+        val entered = CountDownLatch(1); val resume = CountDownLatch(1)
+        val pend = MemPending().also { it.pauseFalseWrite = entered to resume }
+        val ops = AtomicInteger(0)
+        val w = LogWiper({ ops.incrementAndGet() == 1 }, pend)      // A acknowledged, B times out
+        val a = Thread { w.wipe() }.apply { start() }
+        assertTrue(entered.await(3, TimeUnit.SECONDS))              // A: acknowledged, paused before clearing its marker
+        val b = Thread { w.wipe() }.apply { start() }
+        assertTrue(awaitTrue { b.state == Thread.State.BLOCKED || ops.get() >= 2 })
+        resume.countDown(); a.join(5000); b.join(5000)
+        assertTrue("B's request must survive A's late clear", pend.value)
+    }
+
+    @Test fun listenerWaitsForTheInstallBarrierBeforeClearing() {
+        val ready = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val ops = AtomicInteger(0)
+        val l = LogWipeListener(LogWiper({ ops.incrementAndGet(); true }, MemPending()), ready)
+        val t = Thread { runBlocking { l.onDeleteAll() } }.apply { start() }
+        Thread.sleep(200)       // negative check: can only false-pass, never flake
+        assertEquals(0, ops.get())
+        ready.complete(Unit); t.join(5000)
+        assertEquals(1, ops.get())
+    }
+
+    @Test fun acknowledgedWipeIsNotUndoneByTheBootstrapReplay() {
+        val root = tmp.newFolder("barrier"); val release = CountDownLatch(1); val pend = MemPending()
+        val i = PhoneLogging.install(root, { release.await(5, TimeUnit.SECONDS); MutableStateFlow(false) }, pend,
+            CoroutineScope(SupervisorJob() + Dispatchers.IO), once = AtomicBoolean(false), sinkFactory = { PhoneLogSink(writerAt(File(it, "logs/pca.log")), { _, _, _ -> }) })
+        PcLog.w("Early", "old-record")                       // bootstrap ring
+        val t = Thread { runBlocking { LogWipeListener(i!!.wiper, i.ready).onDeleteAll() } }.apply { start() }
+        awaitTrue(400) { pend.history.isNotEmpty() }         // with the barrier nothing happens until the loader is released
+        release.countDown()
+        t.join(8000); runBlocking { i!!.ready.join() }
+        assertTrue(writers.last().awaitIdle(3000))
+        assertFalse("old record reappeared after the acknowledged wipe: ${fileText(File(root, "logs/pca.log"))}", File(root, "logs/pca.log").exists())
+        assertFalse(pend.value)
+    }
+
+    private fun fileText(f: File) = if (f.exists()) f.readText() else ""
+
+    @Test fun scopeCancelledBeforeStartCleansUpAndRearms() {
+        val once = AtomicBoolean(false)
+        val w = writer(); val s = sink(w)
+        val i = PhoneLogging.install(tmp.newFolder("cx"), { MutableStateFlow(false) }, MemPending(), CoroutineScope(kotlinx.coroutines.Job().also { it.cancel() }),
+            installer = { error("must not run") }, once = once, sinkFactory = { s })
+        runBlocking { i!!.ready.join() }
+        assertEquals(InstallResult.CANCELLED, i!!.result)
+        assertFalse(once.get())
+        s.emit(Line(Level.W, "T", "late", 1L), Route(false, true)); assertTrue(w.awaitIdle(2000))
+        assertFalse("the install path closed the writer", logFile.exists())
+        s.close().get(3, TimeUnit.SECONDS)
+    }
+
+    @Test fun scopeCancelledDuringLoaderNeverInstalls() {
+        val release = CountDownLatch(1); val once = AtomicBoolean(false); val installs = AtomicInteger(0)
+        val job = kotlinx.coroutines.Job()
+        val i = PhoneLogging.install(tmp.newFolder("cy"), { release.await(5, TimeUnit.SECONDS); MutableStateFlow(false) }, MemPending(),
+            CoroutineScope(job + Dispatchers.IO), installer = { installs.incrementAndGet(); true }, once = once)
+        job.cancel(); release.countDown()
+        runBlocking { i!!.ready.join() }
+        assertEquals(0, installs.get()); assertEquals(InstallResult.CANCELLED, i!!.result); assertFalse(once.get())
+    }
+
+    @Test fun successfulInstallReportsSuccess() {
+        val i = PhoneLogging.install(tmp.newFolder("ok"), { MutableStateFlow(false) }, MemPending(), unconfined, installer = { true }, once = AtomicBoolean(false))
+        runBlocking { i!!.ready.join() }
+        assertEquals(InstallResult.SUCCESS, i!!.result); i.sink.close()
+    }
+
+    @Test fun noMainSourceCallsTheTestOnlyReset() {
+        val root = generateSequence(File("").absoluteFile) { it.parentFile }.first { File(it, "settings.gradle.kts").exists() }
+        val hits = root.walkTopDown().onEnter { it.name != "build" && it.name != ".git" }
+            .filter { it.extension == "kt" && "/src/main/" in it.path && it.name != "PcLog.kt" && "testOnlyResetNeverCallFromProduction" in it.readText() }.toList()
+        assertTrue("production code calls the test-only reset: $hits", hits.isEmpty())
     }
 }

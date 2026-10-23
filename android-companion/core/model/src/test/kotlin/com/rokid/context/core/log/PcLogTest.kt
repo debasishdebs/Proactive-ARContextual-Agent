@@ -18,8 +18,8 @@ internal class RecSink : LogSink {
 class PcLogTest {
     private val sink = RecSink()
 
-    @BeforeTest fun setUp() { PcLog.resetForTest() }
-    @AfterTest fun tearDown() { PcLog.resetForTest() }
+    @BeforeTest fun setUp() { PcLog.testOnlyResetNeverCallFromProduction() }
+    @AfterTest fun tearDown() { PcLog.testOnlyResetNeverCallFromProduction() }
 
     /** The table is written out literally here (not via LogPolicy) so the test pins the contract itself. */
     private fun expected(level: Level, diag: Boolean): Route = when (level) {
@@ -37,7 +37,7 @@ class PcLogTest {
         val viaPort: LogPort = PcLog.port("canvas")
         val viaPort3b: LogPort = PcLog.port("phone")
         for (d in listOf(false, true)) for (level in Level.values()) {
-            PcLog.resetForTest(); PcLog.install(sink); PcLog.setDiagnostic(d)
+            PcLog.testOnlyResetNeverCallFromProduction(); PcLog.install(sink); PcLog.setDiagnostic(d)
             sink.got.clear()
             direct(level, "direct")
             viaPort.log(level, "T", "port")

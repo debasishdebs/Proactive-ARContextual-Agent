@@ -13,7 +13,7 @@ class ContextApp : Application() {
             java.io.File(applicationInfo.dataDir, "files"), { com.rokid.context.phone.canvas.DeveloperModeStore.get(this).enabled },
             com.rokid.context.phone.log.PrefsWipePending(this),
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO),
-        )?.let { com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.log.LogWipeListener(it.wiper)) }
+        )?.let { com.rokid.context.memory.forget.ForgetListeners.register(com.rokid.context.phone.log.LogWipeListener(it.wiper, it.ready)) }
         // Fix wave I5: stamp the process start before any worker can claim a frame (the start release spares newer claims).
         com.rokid.context.work.frames.ProcessStart.wallMs
         EnvDefaults.init(
