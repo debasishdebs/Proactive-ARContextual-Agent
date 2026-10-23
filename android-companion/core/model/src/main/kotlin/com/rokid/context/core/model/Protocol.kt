@@ -224,6 +224,11 @@ data class HudSettings(
     val wearParkUnknownSec: Int = 120,
     /** Wear fallback, additive: still seconds before parking while Rokid says worn (same range). */
     val wearParkWornSec: Int = 600,
+    /**
+     * Always-on diagnostic recording (LGC4), additive: the phone's Developer mode as the glasses should see it. Absent on the wire (an old phone) = false = OFF.
+     * Deliberately NOT part of the trace settings hash. It is only a REQUEST: the glasses record only once a deletion epoch is also saved (three-state bootstrap).
+     */
+    val diagRecord: Boolean = false,
 )
 
 const val WEAR_PARK_MIN_SEC = 30
