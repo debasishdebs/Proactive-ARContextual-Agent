@@ -61,8 +61,8 @@ class AsyncLineWriterTest {
     /** Waits until the worker has re-checked the clock [n] more times during a backoff without attempting anything. */
     private fun idleWaits(p: Probe, n: Int = 3) { val w0 = p.waits.get(); awaitCond(what = "backoff waits") { p.waits.get() >= w0 + n } }
 
-    @BeforeTest fun setUp() { PcLog.resetForTest() }
-    @AfterTest fun tearDown() { PcLog.resetForTest(); open.forEach { it.close() } }
+    @BeforeTest fun setUp() { PcLog.testOnlyResetNeverCallFromProduction() }
+    @AfterTest fun tearDown() { PcLog.testOnlyResetNeverCallFromProduction(); open.forEach { it.close() } }
 
     @Test fun writesFormattedLinesOffTheCallerThread() {
         val w = writer()

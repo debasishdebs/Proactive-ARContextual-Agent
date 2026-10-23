@@ -32,6 +32,9 @@ class PhoneLogSink(
     fun wipe(timeoutMillis: Long = 5_000): Boolean =
         try { writer.clear().get(timeoutMillis, TimeUnit.MILLISECONDS) == true } catch (_: Throwable) { false }
 
+    /** Waits until nothing is queued or in flight (tests; flush before a pull). */
+    internal fun awaitIdle(timeoutMillis: Long): Boolean = writer.awaitIdle(timeoutMillis)
+
     fun close() = writer.close(drain = false)
 
     companion object {
