@@ -79,6 +79,10 @@ object PcLog : LogPort {
         override fun log(level: Level, tag: String, msg: String) = PcLog.log(level, tag, msg)
     }
 
-    internal fun resetForTest() { synchronized(lock) { sink = null; installing = false; ring.clear(); diagnostic = false } }
+    /**
+     * TEST SEAM ONLY, public so tests of other modules can isolate process state: drops the sink, the ring and the diagnostic snapshot.
+     * Production code must NEVER call it (a phone test scans every main source for this name).
+     */
+    fun testOnlyResetNeverCallFromProduction() { synchronized(lock) { sink = null; installing = false; ring.clear(); diagnostic = false } }
     internal fun bufferedForTest(): List<Line> = synchronized(lock) { ring.toList() }
 }
