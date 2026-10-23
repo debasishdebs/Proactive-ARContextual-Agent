@@ -51,21 +51,22 @@ class HelperDeletion(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     /** The `py_exec` grant was turned off. */
-    suspend fun grantOff(): Int = run(HelperDeletionCause.GRANT_OFF) { hooks.grantsOff() }
+    suspend fun grantOff(): Int = run(HelperDeletionCause.GRANT_OFF, { hooks.grantsOff() })
 
     /** The user chose Disconnect (all helpers): the token is revoked. */
-    suspend fun disconnectAll(): Int = run(HelperDeletionCause.DISCONNECT) { hooks.revokeHelper() }
+    suspend fun disconnectAll(): Int = run(HelperDeletionCause.DISCONNECT, { hooks.revokeHelper() })
 
     /** Any session end: grant off, token revoked (in that order), then every open job voided with [cause] as the reason. */
-    suspend fun endSession(cause: HelperDeletionCause): Int = run(cause) { hooks.grantsOff(); hooks.revokeHelper() }
+    suspend fun endSession(cause: HelperDeletionCause): Int = run(cause, { hooks.grantsOff() }, { hooks.revokeHelper() })
 
     /** Process start: every open job belonged to a dead process (tokens and confirmations are memory-only): ABORTED, payload dropped, cleanup enqueued. */
     suspend fun restart(): Int = dao.abortOpenHelperJobs(clock())
 
-    private suspend fun run(cause: HelperDeletionCause, credentials: () -> Unit): Int {
+    /** Every step runs even if an earlier one threw (a failed grant write must not leave the token valid), then the jobs are voided; the FIRST failure is rethrown, later ones attached. */
+    private suspend fun run(cause: HelperDeletionCause, vararg steps: () -> Unit): Int {
         var failure: Throwable? = null
-        try { credentials() } catch (e: Throwable) { failure = e }
-        val ended = dao.voidAllHelperJobs(cause.code, clock())
+        for (step in steps) try { step() } catch (e: Throwable) { failure?.addSuppressed(e) ?: run { failure = e } }
+        val ended = try { dao.voidAllHelperJobs(cause.code, clock()) } catch (e: Throwable) { failure?.let(e::addSuppressed); throw e }
         failure?.let { throw it }
         return ended
     }

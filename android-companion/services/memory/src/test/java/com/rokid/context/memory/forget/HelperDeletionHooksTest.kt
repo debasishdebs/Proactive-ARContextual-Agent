@@ -30,9 +30,9 @@ class HelperDeletionHooksTest {
     private val dao = f.dao
     @After fun close() = f.close()
 
-    private class Recorder(val calls: MutableList<String> = mutableListOf(), var failGrant: Boolean = false) : HelperSessionHooks {
-        override fun grantsOff() { calls += "grantsOff"; if (failGrant) error("prefs unavailable") }
-        override fun revokeHelper() { calls += "revokeHelper" }
+    private class Recorder(val calls: MutableList<String> = mutableListOf(), var failGrant: Boolean = false, var failRevoke: Boolean = false) : HelperSessionHooks {
+        override fun grantsOff() { calls += "grantsOff"; if (failGrant) error("grant: prefs unavailable") }
+        override fun revokeHelper() { calls += "revokeHelper"; if (failRevoke) error("revoke: unavailable") }
     }
 
     private val hooks = Recorder()
@@ -81,6 +81,48 @@ class HelperDeletionHooksTest {
         val failing = HelperDeletion(dao, Recorder(failGrant = true)) { f.now }
         assertThrows(IllegalStateException::class.java) { runBlocking { failing.grantOff() } }
         listOf("awaiting", "queued", "leased").forEach { assertEquals("fail closed: $it", "VOIDED", state(it)) }
+    }
+
+    @Test fun endSessionRevokesEvenWhenGrantHookFails() = runBlocking {
+        openJobs()
+        val rec = Recorder(failGrant = true)
+        val e = assertThrows(IllegalStateException::class.java) { runBlocking { HelperDeletion(dao, rec) { f.now }.endSession(HelperDeletionCause.SESSION_END) } }
+        assertEquals("grant: prefs unavailable", e.message)
+        assertEquals("the token is revoked although the grant hook threw", listOf("grantsOff", "revokeHelper"), rec.calls)
+        listOf("awaiting", "queued", "leased").forEach { assertEquals(it, "VOIDED", state(it)) }
+    }
+
+    @Test fun endSessionVoidsAndRethrowsFirstWhenRevokeAloneOrBothFail() = runBlocking {
+        openJobs()
+        val rec = Recorder(failRevoke = true)
+        val e = assertThrows(IllegalStateException::class.java) { runBlocking { HelperDeletion(dao, rec) { f.now }.endSession(HelperDeletionCause.SESSION_END) } }
+        assertEquals("revoke: unavailable", e.message); assertEquals(listOf("grantsOff", "revokeHelper"), rec.calls)
+        listOf("awaiting", "queued", "leased").forEach { assertEquals(it, "VOIDED", state(it)) }
+        val both = Recorder(failGrant = true, failRevoke = true)
+        val e2 = assertThrows(IllegalStateException::class.java) { runBlocking { HelperDeletion(dao, both) { f.now }.endSession(HelperDeletionCause.SESSION_END) } }
+        assertEquals("the FIRST failure is rethrown", "grant: prefs unavailable", e2.message)
+        assertEquals("the second is attached", listOf("revoke: unavailable"), e2.suppressed.map { it.message }); assertEquals(listOf("grantsOff", "revokeHelper"), both.calls)
+    }
+
+    @Test fun disconnectAndGrantOffVoidWhenTheirHookFails() = runBlocking {
+        f.insert("a"); f.insert("b")
+        assertThrows(IllegalStateException::class.java) { runBlocking { HelperDeletion(dao, Recorder(failRevoke = true)) { f.now }.disconnectAll() } }
+        listOf("a", "b").forEach { assertEquals(it, "VOIDED", state(it)) }
+        f.insert("c")
+        assertThrows(IllegalStateException::class.java) { runBlocking { HelperDeletion(dao, Recorder(failGrant = true)) { f.now }.grantOff() } }
+        assertEquals("VOIDED", state("c"))
+    }
+
+    @Test fun faultInForgetMomentRollsBackFrameTombstoneAndFence() = runBlocking {
+        val db = f.db
+        db.frameDao().insertIgnore(com.rokid.context.memory.db.FrameEntity("f-j1", 1, "/f-j1.jpg", "rokid_glasses")); f.insert("j1")
+        val service = ForgetService(db, com.rokid.context.memory.ProposalRepository(db.proposalDao(), db.actionDao(), db)) { f.now }
+        val rev0 = dao.frameForgetRev()
+        dao.testFaultAfterFenceMove = { error("injected") }
+        try { assertThrows(IllegalStateException::class.java) { runBlocking { service.forgetMoment("f-j1") } } } finally { dao.testFaultAfterFenceMove = null }
+        assertEquals("the frame row is still there", 1, db.frameDao().byIds(listOf("f-j1")).size)
+        assertEquals("no tombstone", 0, db.canvasDao().tombstonedAmong(listOf("f-j1")))
+        assertEquals(rev0, dao.frameForgetRev()); assertEquals("AWAITING_CONFIRM", state("j1")); assertEquals(emptyList<Pair<String, String>>(), cleanup())
     }
 
     @Test fun restartAbortsOpenJobsAndEnqueuesCleanup() = runBlocking {
