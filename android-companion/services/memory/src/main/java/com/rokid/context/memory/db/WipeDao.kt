@@ -50,6 +50,8 @@ abstract class WipeDao {
     /** 3b: the one wildcard cleanup command (`jobId` = "*") that tells every device-side copy of every helper job to discard; the table is KEPT by Delete all. */
     @Query("INSERT INTO canvas_helper_cleanup (jobId, reason, createdAt) VALUES ('*', 'delete_all', :now)") protected abstract suspend fun slice3WildcardCleanup(now: Long)
     @Query("UPDATE canvas_meta SET value = '' WHERE `key` = 'forgetRanges'") protected abstract suspend fun slice3ClearForgetRanges(): Int
+    @Query("INSERT OR IGNORE INTO canvas_meta (`key`, value) VALUES ('frame_forget_rev', '0')") protected abstract suspend fun slice3InitForgetRev()
+    @Query("UPDATE canvas_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE `key` = 'frame_forget_rev'") protected abstract suspend fun slice3BumpForgetRev(): Int
     @Query("SELECT path FROM frame") abstract suspend fun framePaths(): List<String>
 
     /** Delete all at the current time (the wildcard cleanup row is stamped with it). */
@@ -61,7 +63,8 @@ abstract class WipeDao {
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         canvasItems(); canvasScores(); canvasRuns(); canvasTraces() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
         slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3ClearForgetRanges(); slice3BumpLabelRev()
-        slice3WildcardCleanup(now) // 3b: every device-side copy is told to discard; the job rows above are gone, the cleanup table is kept. The helper fence needs no bump here: Delete all moves the wipe generation and the persisted epoch (MemoryWipe.deleteAll)
+        slice3WildcardCleanup(now) // 3b: every device-side copy is told to discard; the job rows above are gone, the cleanup table is kept.
+        slice3InitForgetRev(); slice3BumpForgetRev() // 3b: frame_forget_rev moves in THIS transaction too: a runner that captured the new generation and epoch (MemoryWipe.deleteAll moves both first) but loaded an old photo must still be refused
         scrubProposalParams(com.rokid.context.memory.forget.ForgetService.REDACTED_PARAMS); scrubActionLog()
         return proposals
     }
