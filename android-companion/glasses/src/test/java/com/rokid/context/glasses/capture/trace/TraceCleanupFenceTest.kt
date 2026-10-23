@@ -122,7 +122,8 @@ class TraceCleanupFenceTest {
         val r = withTmpTraceAddedLater(id) { recorder() }
         r.onControl(TraceTestKit.collect(counter = 1)); r.begin(); r.gyro(40) // a live trace: its tmp directory must survive the forget below
         val live = File(root, "imu_trace_tmp").list()!!.single { it != id }
-        r.onControl(ctl(from = 1, to = 2)) // a range far from the live trace on its clock; the killed one has an unknown end and is hit only by what overlaps
+        // a range in the FUTURE: the live trace does not overlap it (it is not aborted), yet by its start record alone a tmp directory would match: the live job must still be spared
+        r.onControl(ctl(from = wall + clock.t + 3_600_000, to = wall + clock.t + 7_200_000))
         assertTrue(File(root, "imu_trace_tmp/$live").exists(), "the live job's directory is never touched by a forget")
         r.onControl(ctl(id))
         assertFalse(File(root, "imu_trace_tmp/$id").exists())
