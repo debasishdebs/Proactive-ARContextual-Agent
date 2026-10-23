@@ -179,7 +179,7 @@ object HubGraph {
         // LGC4P: Developer mode drives `HudSettings.diagRecord`; until LGC6-min feeds [diagStatus] the status stays unknown and the re-send is bounded.
         val devMode = com.rokid.context.phone.canvas.DeveloperModeStore.get(app).enabled
         val diagRetry = com.rokid.context.phone.hub.plan.DiagControlRetry(
-            scope, diagStatus, diagWanted = { devMode.value }, resend = ctl::resend,
+            scope, diagStatus, diagWanted = com.rokid.context.phone.hub.plan.DiagControlRetry.wantedWhen(devMode, link.state), resend = ctl::resend,
             log = { m -> com.rokid.context.phone.log.PhoneLogging.canvasPort().log(com.rokid.context.core.log.Level.I, "DiagControl", m) },
         )
         val traceIntake = com.rokid.context.phone.hub.plan.LaterSeams.noTraceIntake // TODO(Task 18): TraceIntake

@@ -55,17 +55,17 @@ class HubDiagRecordTest {
 
     private class Rig(val hub: Hub, val link: FakeGlassesLink, val dev: MutableStateFlow<Boolean>, val status: MutableGlassesDiagStatus, val resends: MutableList<Long>)
 
-    private fun TestScope.rig(devOn: Boolean = false, storedDiag: Boolean = false, prefsName: String = "hub_diag_${tmp.root.name}", extra: HudSettings.() -> HudSettings = { this }): Rig {
-        val link = FakeGlassesLink(); link.setState(LinkState.CONNECTED)
+    private fun TestScope.rig(devOn: Boolean = false, storedDiag: Boolean = false, prefsName: String = "hub_diag_${tmp.root.name}", extra: HudSettings.() -> HudSettings = { this }, linkState: LinkState = LinkState.CONNECTED, io: kotlinx.coroutines.CoroutineDispatcher? = null): Rig {
+        val link = FakeGlassesLink(); link.setState(linkState)
         val dev = MutableStateFlow(devOn); val status = MutableGlassesDiagStatus(); val resends = mutableListOf<Long>()
         val pauses = HubPauses(db.pauseDao(), now = { now })
         val ledger = ReceivedFrameLedger(File(tmp.root, "ledger.txt"))
         val ingestor = FrameIngestor(File(tmp.root, "inbox"), FrameReassembler(), FrameAdmission(ledger, pauses), ledger, onStored = {})
         val settings = HubSettingsStore(ctx.getSharedPreferences(prefsName, 0)) { "hud" }
         if (storedDiag) settings.write(settings.read().copy(diagRecord = true).extra())
-        val retry = DiagControlRetry(backgroundScope, status, diagWanted = { dev.value }, resend = { resends += testScheduler.currentTime })
+        val retry = DiagControlRetry(backgroundScope, status, diagWanted = DiagControlRetry.wantedWhen(dev, link.state), resend = { resends += testScheduler.currentTime })
         val hub = Hub(
-            backgroundScope, link, pauses, settings, ingestor, sources, clock = { now }, io = StandardTestDispatcher(testScheduler),
+            backgroundScope, link, pauses, settings, ingestor, sources, clock = { now }, io = io ?: StandardTestDispatcher(testScheduler),
             devMode = dev, diagControl = retry,
         )
         hub.start(); runCurrent()
@@ -154,5 +154,33 @@ class HubDiagRecordTest {
         val r = rig(devOn = true); r.link.emitReady(); runCurrent()
         r.link.setState(LinkState.OFFLINE); runCurrent()
         advanceTimeBy(600_000); assertTrue(r.resends.isEmpty())
+    }
+
+    @Test fun HubStopCancelsTheRetry() = runTest {
+        val r = rig(devOn = true); r.link.emitReady(); runCurrent()
+        r.hub.stop(); runCurrent()
+        advanceTimeBy(600_000)
+        assertTrue("no control re-send after the hub stopped", r.resends.isEmpty())
+    }
+
+    @Test fun DeveloperModeSwitchedOnWhileOfflineStartsNoSchedule() = runTest {
+        val r = rig(devOn = false, linkState = LinkState.OFFLINE)
+        r.dev.value = true; runCurrent()
+        advanceTimeBy(600_000)
+        assertTrue(r.resends.isEmpty())
+        r.link.setState(LinkState.CONNECTED); r.link.emitReady(); runCurrent(); advanceTimeBy(5_001)
+        assertEquals("the schedule starts with the next session", 1, r.resends.size)
+    }
+
+    @Test fun OnReadySuspendedThenLinkLostMustNotRestartTheSchedule() = runTest {
+        val queued = ArrayDeque<Runnable>()
+        val manualIo = object : kotlinx.coroutines.CoroutineDispatcher() { override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) { queued.add(block) } }
+        val r = rig(devOn = true, io = manualIo)
+        r.link.emitReady(); runCurrent()
+        assertTrue("onReady is parked in its settings load", queued.isNotEmpty())
+        r.link.setState(LinkState.OFFLINE); runCurrent()
+        while (queued.isNotEmpty()) { queued.removeFirst().run(); runCurrent() } // onReady resumes after the link is gone
+        advanceTimeBy(600_000)
+        assertTrue("a resumed onReady must not restart a cancelled schedule", r.resends.isEmpty())
     }
 }
