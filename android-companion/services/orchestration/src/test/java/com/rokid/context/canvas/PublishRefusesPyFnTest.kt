@@ -28,7 +28,7 @@ import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
 
 /**
- * WP7 (S6, part B P15): `py.fn` and every `tool.`-prefixed node can never be published, on every path that can publish, with ONE fixed text ([PlanShape.S6_REFUSAL]).
+ * WP7 (S6, part B P15): `py.fn` and every `tool.`-prefixed node can never be published, on every path that can publish, with the fixed text [PlanShape.S6_REFUSAL]: the ONLY reason on the `CanvasPublisher` paths, one of the reasons (beside gates 3, 5 ...) on the capture-plan paths.
  * Versions are inserted straight into the table (the stored-row threat: a version the editor could not freeze must still be refused), so the tests do not depend on the validator.
  */
 @RunWith(AndroidJUnit4::class)
