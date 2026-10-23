@@ -1,12 +1,13 @@
 package com.rokid.context.canvas
 
-import android.util.Log
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.Pipeline
 import com.rokid.context.ai.canvas.PipelineHash
 import com.rokid.context.ai.canvas.PipelineJson
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PipelineValidator
+import com.rokid.context.canvas.helper.CanvasLogSink
+import com.rokid.context.core.log.Level
 import com.rokid.context.memory.db.CanvasDao
 import com.rokid.context.memory.db.CanvasRunEntity
 import com.rokid.context.memory.db.CanvasRunItemEntity
@@ -14,7 +15,11 @@ import com.rokid.context.orchestration.ExtractPhoto
 import com.rokid.context.orchestration.MemoryWipe
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -61,6 +66,8 @@ class CanvasRunner(
     private val clock: () -> Long = System::currentTimeMillis,
     private val newId: () -> String = { UUID.randomUUID().toString() },
     private val generation: () -> Long = MemoryWipe.generation::get,
+    /** Count-only lines through the one logger (never ids, tokens or provider text). */
+    private val log: CanvasLogSink = CanvasLogSink { _, _, _ -> },
 ) {
     companion object {
         const val MAX_PHOTOS = 50
@@ -68,7 +75,6 @@ class CanvasRunner(
         const val KEEP_RUNS = 20
         /** Owner rows behind one per-call token mean (S32). */
         private const val TOKEN_HISTORY = 200
-        private const val TAG = "CanvasRunner"
     }
 
     class Busy : IllegalStateException("another run is in progress")
@@ -84,6 +90,8 @@ class CanvasRunner(
     private val _active = MutableStateFlow<String?>(null)
     val active: StateFlow<String?> = _active
     private val cancelled = AtomicReference<String?>(null)
+    /** The coroutine of the chunk a [HelperExecutor] is suspended in (WP8): [cancel] and [cancelGroup] cancel it so the executor's port ends the helper job instead of waiting its bounded waits out. */
+    private val chunkJob = AtomicReference<Deferred<*>?>(null)
     @Volatile private var group: Group? = null
     private val modelsByToken = object : LinkedHashMap<String, List<String>>() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<String>>) = size > 32
@@ -94,16 +102,21 @@ class CanvasRunner(
 
     /** Cancels [runId]: the running run at its next chunk, or either run of the live A/B group (which cancels the whole group, B included). */
     fun cancel(runId: String): Boolean {
-        group?.takeIf { it.owns(runId) }?.let { it.cancelled = true; return true }
+        group?.takeIf { it.owns(runId) }?.let { it.cancelled = true; interruptChunk(); return true }
         if (_active.value != runId) return false
         cancelled.set(runId)
+        interruptChunk()
         return true
     }
+
+    /** Cancels the chunk coroutine of a [HelperExecutor], if one is suspended (the flag is always set first: a chunk that starts later sees it). */
+    private fun interruptChunk() { chunkJob.get()?.cancel(CancellationException("run cancelled")) }
 
     /** Cancels the live A/B group [groupId], including between A's end and B's start. False when no such group is live. */
     fun cancelGroup(groupId: String): Boolean {
         val g = group?.takeIf { it.id == groupId && !it.cancelled } ?: return false
         g.cancelled = true
+        interruptChunk()
         return true
     }
 
@@ -111,6 +124,9 @@ class CanvasRunner(
     fun isBusy(runId: String): Boolean = _active.value == runId || group?.owns(runId) == true
 
     private fun isCancelled(runId: String) = cancelled.get() == runId || group?.let { it.owns(runId) && it.cancelled } == true
+
+    /** Count-only, fixed texts: never a run, frame or node id, token, class name or provider text. A sink that throws must never reach the run. */
+    private fun line(level: Level, msg: String) { try { log.log(level, "canvas", msg) } catch (_: Throwable) { } }
 
     private suspend fun price(p: Pipeline, ids: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Priced {
         var nominal = 0
@@ -225,7 +241,7 @@ class CanvasRunner(
                 } catch (c: CancellationException) {
                     throw c
                 } catch (t: Throwable) {
-                    Log.w(TAG, "run aborted: ${t.javaClass.simpleName}") // never let a canvas error reach the process (it hosts the glasses link)
+                    line(Level.W, "run aborted") // never let a canvas error reach the process (it hosts the glasses link)
                 } finally {
                     _active.value = null
                     lock.unlock()
@@ -274,7 +290,7 @@ class CanvasRunner(
                 } catch (c: CancellationException) {
                     throw c
                 } catch (t: Throwable) {
-                    Log.w(TAG, "group aborted: ${t.javaClass.simpleName}")
+                    line(Level.W, "group aborted")
                 } finally {
                     withContext(NonCancellable) {
                         // B never started (A did not end DONE, the group was cancelled, or the scope died): it must not stay QUEUED.
@@ -299,6 +315,9 @@ class CanvasRunner(
         try {
             val ctx = context(runId)
             val gen = generation() // captured BEFORE the photos are loaded: every write below is fenced on it (S24)
+            // WP8: a pipeline with a helper node also captures the helper fence (wipe generation, deletion epoch, frame-Forget revision) BEFORE the frames load; the run's own
+            // write below stays the existing fenced path (insertRunItemsFenced) on the wipe generation and the tombstones.
+            val helperFence = p.nodes.firstNotNullOfOrNull { executors[it.type] as? HelperExecutor }?.captureFence()
             val load = photos.load(ids)
             val photoById: Map<String, ExtractPhoto> = load.photos.associateBy { it.frameId }
             val order = ids.withIndex().associate { it.value to it.index }
@@ -357,14 +376,18 @@ class CanvasRunner(
                     if (hot()) { status = "STOPPED_HOT"; break@stop }
                     // Pre-call fence: after a wipe or a Forget the loaded bytes must not be sent again (the commit fence alone only drops the write).
                     if (generation() != gen || dao.tombstonedAmong(chunk.map { it.frameId }) > 0) { status = "CANCELLED"; break@stop }
-                    val results = ex?.run(node, chunk, ctx)?.associateBy { it.frameId }.orEmpty()
+                    val ran = if (ex is HelperExecutor && helperFence != null) runInterruptible(runId, ex, node, chunk, ctx, helperFence) else ex?.run(node, chunk, ctx)
+                    if (ran == null) { status = "CANCELLED"; break@stop } // cancelled while the chunk was suspended in the helper executor
+                    val results = ran.associateBy { it.frameId }
                     for (item in chunk) {
                         val r = results[item.frameId] ?: NodeResult(item.frameId, null, error = if (ex == null) "no_executor" else "no_result")
                         write(node.id, item.frameId, r)
                         r.value?.let { produced[item.frameId] = ItemFlow.Out(it, r.branch) }
                     }
-                    if (!flush()) { Log.i(TAG, "write dropped by the wipe/forget fence"); status = "CANCELLED"; break@stop }
+                    if (!flush()) { line(Level.I, "write dropped by the wipe/forget fence"); status = "CANCELLED"; break@stop }
                     dao.updateRun(runId, "RUNNING", calls, failures, null)
+                    // a Forget voided the helper job (it voids EVERY open job): later nodes would only fail the same way, so the run ends with a status of its own
+                    if (results.values.any { it.error == PythonExecutor.FRAME_FORGET }) { status = "STOPPED_FORGET"; break@stop }
                 }
                 outputs[node.id] = produced
             }
@@ -372,11 +395,30 @@ class CanvasRunner(
             withContext(NonCancellable) { finish(runId, "CANCELLED", calls, failures) }
             throw c
         } catch (e: Throwable) {
-            Log.w(TAG, "run failed: ${e.javaClass.simpleName}")
+            line(Level.W, "run failed")
             status = "FAILED"
         }
         return withContext(NonCancellable) { finish(runId, status, calls, failures) }
     }
+
+    /**
+     * Runs one chunk of a [HelperExecutor] in its own coroutine so [cancel] / [cancelGroup] can interrupt it: the executor's port then ends the helper job. Returns null when this
+     * run was cancelled meanwhile (the caller ends the run CANCELLED); a cancellation of the run's own scope is rethrown, as before. The fence the runner captured before the frames
+     * loaded travels in the coroutine context ([RunHelperFence]).
+     */
+    private suspend fun runInterruptible(runId: String, ex: NodeExecutor, node: PipelineNode, chunk: List<CanvasItem>, ctx: RunContext, fence: com.rokid.context.memory.canvas.HelperFence): List<NodeResult>? =
+        coroutineScope {
+            val d = async(RunHelperFence(fence), start = CoroutineStart.LAZY) { ex.run(node, chunk, ctx) }
+            chunkJob.set(d)
+            try {
+                // the flag is set before the chunk job is read by cancel(), and the job is published before the flag is read here: one of the two always sees the other
+                if (isCancelled(runId)) { d.cancel(); null } else { d.start(); d.await() }
+            } catch (c: CancellationException) {
+                if (isActive && isCancelled(runId)) null else throw c
+            } finally {
+                chunkJob.compareAndSet(d, null)
+            }
+        }
 
     /** The row must reach a terminal state even when the DB threw once: retry as FAILED, then give up quietly (recoverAtStart sweeps it). Returns the status written. */
     private suspend fun finish(runId: String, status: String, calls: Int, failures: Int): String {
