@@ -303,4 +303,28 @@ class HelperRoutesTest {
         assertNull(h.backend.auth.pairingCode())
         assertNotNull(HelperDeletionCause.DISCONNECT)
     }
+
+    // ---- review 1 ----
+
+    @Test fun aMalformedResultEnvelopeAnswers422SoTheHelperPostsFailInsteadOfRetrying() {
+        h.startRun()
+        val (id, gen) = h.confirmAndLease(token)
+        val nonObject = h.call("POST", "/api/helper/jobs/$id/result", token, """{"leaseGen":$gen,"resultHash":"${"0".repeat(64)}","result":null}""")
+        assertEquals(422, nonObject.status)
+        assertEquals("invalid_result", h.json(nonObject)["error"]!!.jsonPrimitive.content)
+        val badHash = h.call("POST", "/api/helper/jobs/$id/result", token, """{"leaseGen":$gen,"resultHash":"xyz","result":${h.okResult()}}""")
+        assertEquals(422, badHash.status)
+        assertEquals(200, h.heartbeat(token, id, gen).status)
+    }
+
+    @Test fun aRequestIsServedForTheHelperWhoseTokenItCarriesNotTheNewestPairing() {
+        val old = token
+        val oldSession = h.backend.auth.sessionFor(old)
+        assertNotNull(oldSession)
+        val fresh = h.pairHelper(grantOn = false)                    // a second pairing replaces the first helper
+        assertNull("the old token no longer maps to any session", h.backend.auth.sessionFor(old))
+        assertEquals(h.backend.auth.session(), h.backend.auth.sessionFor(fresh))
+        assertNull(h.backend.auth.sessionFor(null))
+        assertNull(h.backend.auth.sessionFor("nope"))
+    }
 }

@@ -109,7 +109,7 @@ class HelperDevSessionTest {
 
     @Test fun observerIsRegisteredAtSessionStartAndUnregisteredAfterEnd() {
         assertEquals(1, h.network.registrations)
-        runBlocking { h.backend.session.terminate(SessionEnd.DISCONNECT).join() }
+        runBlocking { h.backend.session.endHelperSession().join() }
         assertEquals(1, h.network.unregistrations)
         assertFalse(h.network.registered)
         // a second session registers again; a second end after it unregisters once more
@@ -143,7 +143,6 @@ class HelperDevSessionTest {
             "expiry" to { x -> x.now += hours4; check(x.backend.session.checkExpiry()); runBlocking { x.backend.session.awaitEnd() } },
             "lan loss" to { x -> x.network.lose(); runBlocking { x.backend.session.awaitEnd() } },
             "developer mode off" to { x -> runBlocking { x.backend.session.terminate(SessionEnd.DEVELOPER_MODE_OFF).join() } },
-            "disconnect" to { x -> x.backend.native.disconnectHelper(); runBlocking { x.backend.session.awaitEnd() } },
             "service shutdown" to { x -> runBlocking { x.backend.session.terminate(SessionEnd.SHUTDOWN).join() } },
         )
         for ((name, stop) in paths) {
@@ -215,5 +214,92 @@ class HelperDevSessionTest {
         h.backend.native.acceptPairing()
         assertTrue("a new session rotates again", h.backend.confirm.tag(b) != t1)
         assertTrue("an old tag does not verify any more", !h.backend.confirm.verify(b, t0, 0L))
+    }
+
+    // ---- review 1 (decision: Disconnect ends the HELPER session only) ----
+
+    @Test fun disconnectEndsOnlyTheHelperSessionAndNeverStopsTheServer() {
+        val b = com.rokid.context.memory.canvas.ConfirmBinding("j", "a".repeat(64), 1, 99_000L)
+        val t0 = h.backend.confirm.tag(b)
+        val job = pendingJob()
+        h.order.events.clear()
+        h.backend.native.disconnectHelper()
+        runBlocking { h.backend.session.awaitEnd() }
+        assertFalse(h.backend.grants.isOn(HelperGrants.PY_EXEC))
+        assertFalse(h.backend.auth.check(token))
+        assertTrue("the confirmation key was rotated", h.backend.confirm.tag(b) != t0)
+        assertEquals("VOIDED", runBlocking { h.dao.helperJob(job) }!!.state)
+        assertTrue(runBlocking { h.dao.pendingCleanup(50) }.any { it.jobId == job })
+        assertTrue(h.backend.adapter.pending().isEmpty())
+        assertFalse(h.network.registered)
+        assertEquals("the canvas server and service stay up while the user is on the screen", 0, h.serverStops)
+        val ev = h.order.events.toList()
+        assertTrue(ev.toString(), ev.indexOf("hooks:grants_off") < ev.indexOf("hooks:revoke"))
+        assertTrue(ev.toString(), ev.none { it == "server:stop" })
+        // idempotent, and a later stop path still stops the server without redoing the job end
+        val jobsCalls = h.order.events.count { it.startsWith("jobs:") }
+        runBlocking { h.backend.session.endHelperSession().join() }
+        assertEquals(jobsCalls, h.order.events.count { it.startsWith("jobs:") })
+        runBlocking { h.backend.session.terminate(SessionEnd.NOTIFICATION_STOP).join() }
+        assertEquals(1, h.serverStops)
+        assertEquals(jobsCalls, h.order.events.count { it.startsWith("jobs:") })
+    }
+
+    // ---- direct session, queued scope (nothing runs until the test lets it) ----
+
+    private class Rig {
+        var now = 0L
+        val stops = java.util.concurrent.atomic.AtomicInteger()
+        val ends = java.util.concurrent.atomic.AtomicInteger()
+        val net = FakeNetworkWatch()
+        val ender = object : HelperJobEnder {
+            override suspend fun grantOff() = 0
+            override suspend fun endSession(cause: com.rokid.context.memory.canvas.HelperDeletionCause): Int { ends.incrementAndGet(); return 0 }
+            override suspend fun recover() = 0
+        }
+        val dispatcher = kotlinx.coroutines.test.StandardTestDispatcher()
+        val scope = kotlinx.coroutines.CoroutineScope(dispatcher)
+        fun session(checkEveryMs: Long = 60_000, scope: kotlinx.coroutines.CoroutineScope = this.scope) =
+            HelperDevSession({ now }, scope, ender, com.rokid.context.memory.canvas.HelperSessionHooks.NONE, net, { 0L }, { false }, { stops.incrementAndGet() }, inactivityMs = 1_000, checkEveryMs = checkEveryMs)
+    }
+
+    @Test fun aTerminateAfterTheEndStopsTheServerBeforeItReturns() {
+        val r = Rig(); val s = r.session()
+        s.start(); s.terminate(SessionEnd.NOTIFICATION_STOP)
+        r.dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(1, r.stops.get())
+        s.terminate(SessionEnd.SHUTDOWN)                               // nothing has been given a chance to run: the stop must already have happened
+        assertEquals(2, r.stops.get())
+    }
+
+    @Test fun aStartWhileAnEndIsStillQueuedDoesNotOpenASessionTheEndWouldKill() {
+        val r = Rig(); val s = r.session()
+        s.start(); s.terminate(SessionEnd.NOTIFICATION_STOP)
+        s.start()
+        assertFalse("no active session with credentials the queued end will revoke", s.active)
+        assertEquals(1, r.net.registrations)
+        r.dispatcher.scheduler.advanceUntilIdle()
+        s.start()
+        assertTrue(s.active)
+    }
+
+    @Test fun theExpiryWatcherLoopEndsTheSessionByItself() {
+        val r = Rig()
+        val real = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default + kotlinx.coroutines.SupervisorJob())
+        try {
+            val s = r.session(checkEveryMs = 10, scope = real)
+            s.start()
+            r.now = 1_000
+            val end = System.currentTimeMillis() + 5_000
+            while (r.ends.get() == 0 && System.currentTimeMillis() < end) Thread.sleep(10)
+            assertEquals(1, r.ends.get())
+            assertFalse(s.active)
+        } finally { real.coroutineContext[kotlinx.coroutines.Job]?.cancel() }
+    }
+
+    @Test fun theSettingsDeveloperSwitchUsesTheOneEndPath() {
+        val src = java.io.File("src/main/java/com/rokid/context/phone/ui/shell/SettingsDestinations.kt").readText()
+        assertTrue(src.contains("terminateSession(") && src.contains("SessionEnd.DEVELOPER_MODE_OFF"))
+        assertFalse(src.contains("it.stop(); it.revokeAll()"))
     }
 }
