@@ -5,6 +5,7 @@ import { photoThumb, openPhoto } from './photos.js';
 import { publishDialog, publishCard } from './versions.js';
 import { planDialog } from './planpublish.js';
 import { when, usageLine, branchText, compareSummary, tokenEstimateText } from './format.js';
+import { statusLabel, errorText, helperCard, loadHelperStatus, hasPython } from './helperview.js';
 import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction, isMoving } from './runlogic.js';
 
 const pretty = (v) => JSON.stringify(v, null, 2);
@@ -38,7 +39,7 @@ export async function pipelinesView(ctx, root) {
         p.builtIn ? h('span', { class: 'tag' }, 'built-in') : null,
         p.live ? h('span', { class: 'tag live' }, 'LIVE v' + p.live.version) : null),
       h('p', { class: 'muted' }, 'Versions: ' + ((p.versions || []).map((v) => 'v' + v.version).join(', ') || 'none') +
-        ' · Last run: ' + (lr ? lr.status + ' ' + when(lr.startedAt) : 'none')),
+        ' · Last run: ' + (lr ? statusLabel(lr.status) + ' ' + when(lr.startedAt) : 'none')),
       h('div', { class: 'row wrap' },
         h('a', { class: 'btn primary', href: '#/p/' + enc(p.id) }, 'Open'),
         btn('Duplicate', async () => {
@@ -182,6 +183,7 @@ export async function runNewView(ctx, root, pipelineId, version) {
   clear(root);
   root.appendChild(h('h2', null, 'New run'));
   const counter = h('span', { class: 'muted' });
+  const helperSlot = h('div', null);
   const grid = h('div', { class: 'grid' });
   const more = h('div', { class: 'row' });
   const visible = () => st.frames.filter((f) => !st.motion || isMoving(f.motion));
@@ -247,6 +249,7 @@ export async function runNewView(ctx, root, pipelineId, version) {
       drawGrid();
     }), btn('Clear', () => { st.selected = new Set(); drawGrid(); })),
     counter));
+  root.appendChild(helperSlot);
   root.appendChild(grid);
   root.appendChild(more);
   root.appendChild(h('div', { class: 'row sticky' }, btn('Estimate', async () => {
@@ -281,6 +284,14 @@ export async function runNewView(ctx, root, pipelineId, version) {
       });
     } catch (err) { ctx.showError(err); }
   }
+  // a Python pipeline needs the laptop helper and one tap on the phone per run: show where that stands (status only; the page has no way to tap for you)
+  try {
+    const p = await ctx.api('GET', '/api/pipelines/' + enc(pipelineId));
+    if (hasPython(parseJson(p && p.json))) {
+      helperSlot.appendChild(helperCard(await loadHelperStatus(ctx)));
+      helperSlot.appendChild(h('p', { class: 'muted' }, 'Each Python step waits for a tap on the phone after you start the run.'));
+    }
+  } catch (e) { if (e && e.stale) return; /* the card is a convenience */ }
   await load(true);
 }
 
@@ -311,7 +322,7 @@ function returnedValues(order, items, frameId) {
     const it = items.find((x) => x.frameId === frameId && x.nodeId === n.id);
     if (!it) return null;
     return h('article', { class: 'nodecard ' + kindOf(n.type) }, h('h4', null, n.title || n.id),
-      renderOutput(it.output), it.error ? h('p', { class: 'err' }, 'error: ' + it.error) : null);
+      renderOutput(it.output), it.error ? h('p', { class: 'err' }, 'error: ' + errorText(it.error)) : null);
   });
 }
 
@@ -371,7 +382,7 @@ export async function runView(ctx, root, runId) {
     return h('div', { class: 'scorebar' }, h('div', { class: 'row' }, up, down), note);
   }
 
-  async function draw(run, others) {
+  async function draw(run, others, helper) {
     const pipe = parseJson(run.pipelineJson);
     const order = topoOrder(pipe);
     const items = run.items || [];
@@ -384,12 +395,12 @@ export async function runView(ctx, root, runId) {
     root.appendChild(h('h2', null, 'Run'));
     const pr = run.progress || { done: 0, total: 0 };
     root.appendChild(h('section', { class: 'card' },
-      h('div', { class: 'row wrap' }, h('strong', null, String(run.status)), h('span', { class: 'muted' }, pr.done + ' / ' + pr.total + ' steps · ' + run.calls + ' calls · ' + run.failures + ' failures')),
+      h('div', { class: 'row wrap' }, h('strong', { class: String(run.status) === 'STOPPED_FORGET' ? 'forgotten' : null }, statusLabel(run.status)), h('span', { class: 'muted' }, pr.done + ' / ' + pr.total + ' steps · ' + run.calls + ' calls · ' + run.failures + ' failures')),
       h('progress', { max: Math.max(1, pr.total), value: pr.done }),
       h('p', { class: 'muted' }, 'Pipeline ' + run.pipelineId + (run.version ? ' v' + run.version : ' (draft)') + ' · started ' + when(run.startedAt)),
       h('p', null, usageLine(run.usage)),
       branchText(run.branches).map((t) => h('p', { class: 'muted' }, t)),
-      partner ? h('p', null, 'A/B partner: ', h('a', { href: '#/run/' + enc(partner.runId) }, 'run ' + partner.runId), ' (' + partner.status + ')') : null,
+      partner ? h('p', null, 'A/B partner: ', h('a', { href: '#/run/' + enc(partner.runId) }, 'run ' + partner.runId), ' (' + statusLabel(partner.status) + ')') : null,
       h('div', { class: 'row wrap' },
         (running || (partner && isActive(partner.status))) ? btn(run.abGroup ? 'Cancel A/B pair' : 'Cancel', async () => { try { await ctx.api('POST', '/api/runs/' + enc(runId) + '/cancel'); } catch (e) { ctx.showError(e); } }, 'btn danger') : null,
         (() => {
@@ -398,6 +409,7 @@ export async function runView(ctx, root, runId) {
           sel.addEventListener('change', () => { if (sel.value) ctx.go('#/compare?a=' + enc(runId) + '&b=' + enc(sel.value)); });
           return sel;
         })())));
+    if (helper !== undefined) root.appendChild(helperCard(helper));
     for (const frameId of frames) {
       const img = photoThumb(ctx, frameId, { value: () => returnedValues(order, items, frameId) });
       const meta = h('div', { class: 'meta' });
@@ -409,7 +421,7 @@ export async function runView(ctx, root, runId) {
           h('h4', null, n.title || n.id, ' ', h('span', { class: 'tag' }, String(it.status))),
           it.branch ? h('p', { class: 'muted' }, 'route: ' + it.branch) : null,
           renderOutput(it.output),
-          it.error ? h('p', { class: 'err' }, 'error: ' + it.error) : null,
+          it.error ? h('p', { class: 'err' }, 'error: ' + errorText(it.error)) : null,
           h('p', { class: 'muted' }, (it.latencyMs != null ? it.latencyMs + ' ms' : '') + ' · tokens ' + (it.promptTokens || 0) + '/' + (it.completionTokens || 0) + (it.model ? ' · ' + it.model : '') + (it.promptVersion != null ? ' · prompt v' + it.promptVersion : '')),
           scoreControls(run, frameId, n.id, scores));
       });
@@ -433,10 +445,13 @@ export async function runView(ctx, root, runId) {
     let others = [];
     try { others = await ctx.api('GET', '/api/runs'); } catch (e) { others = []; }
     if (stopped) return;
+    // a run with a Python step that is still going: say what the laptop is waiting for (the tap is on the phone); undefined = no card
+    let helper;
+    if (isActive(run.status) && hasPython(parseJson(run.pipelineJson))) { helper = await loadHelperStatus(ctx); if (stopped) return; }
     const ae = document.activeElement;
     const editing = ae && root.contains(ae) && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.tagName === 'SELECT');
     if ((!editing || !root.firstChild) && shouldRedraw(drawnStatus, run)) {
-      await draw(run, others);
+      await draw(run, others, helper);
       drawnStatus = String(run.status);
     }
     const partner = partnerOf(others, run);

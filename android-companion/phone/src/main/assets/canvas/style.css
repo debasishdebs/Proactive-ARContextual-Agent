@@ -137,3 +137,7 @@ table.params input[type=number] { width: 5.5em; }
 table.results td, table.results th { white-space: nowrap; }
 .param-row input { width: 7em; }
 .plain { list-style: none; padding: 0; margin: 0; }
+
+.helper-card p { margin: 4px 0; }
+.helper-waiting { border-left: 4px solid var(--accent, #2563eb); }
+.forgotten { color: var(--bad); }

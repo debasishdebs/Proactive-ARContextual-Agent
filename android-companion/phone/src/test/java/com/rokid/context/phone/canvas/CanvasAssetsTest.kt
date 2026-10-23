@@ -14,7 +14,7 @@ class CanvasAssetsTest {
         "graph.js", "validate.js", "keys.js", "flowadapter.js", "paramform.js", "draftstate.js",
         "editorlogic.js", "editorflow.js", "floweditor.js", "jsx-shim.js",
         "format.js", "diffview.js", "runlogic.js", "versions.js", "liveview.js", "asks.js",
-        "pareto.js", "replayview.js", "paretoview.js",
+        "pareto.js", "replayview.js", "paretoview.js", "helperview.js",
     )
     private fun text(n: String) = File(dir, n).readText()
     private val js get() = names.filter { it.endsWith(".js") }
