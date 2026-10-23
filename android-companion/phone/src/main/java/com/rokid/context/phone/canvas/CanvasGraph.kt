@@ -117,7 +117,7 @@ interface CanvasHost {
     /** The service's idle rule (see [CanvasGraph.shouldIdleStop]). */
     fun shouldIdleStop(): Boolean
     /** Stops the server and tells the canvas screen why, in fixed text. */
-    fun stopWithNotice(text: String)
+    fun stopWithNotice(text: String, cause: SessionEnd = SessionEnd.SHUTDOWN)
     /**
      * 3b WP2 seams, inert by default (the production host answers "no helper, nothing pending" until WP6 binds the real ones): the native laptop-helper card actions
      * and the per-run confirmation callbacks. Neither has an HTTP surface.
@@ -324,9 +324,9 @@ class CanvasGraph(
 
     @Volatile private var notice: String? = null
 
-    override fun stopWithNotice(text: String) {
+    override fun stopWithNotice(text: String, cause: SessionEnd) {
         notice = text
-        terminateSession(SessionEnd.SHUTDOWN)
+        terminateSession(cause)
     }
 
     /** One way to end: the session's termination (which stops this server last); without a session, just [stop]. */

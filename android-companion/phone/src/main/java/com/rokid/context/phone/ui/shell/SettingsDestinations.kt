@@ -307,7 +307,7 @@ fun NavGraphBuilder.settingsDestinations(deps: PhoneDeps, nav: NavHostController
             onDeveloperMode = { on ->
                 dev.set(on)
                 if (!on) { // off: the server stops and every browser session ends, now
-                    CanvasGraph.get(app).let { it.stop(); it.revokeAll() }
+                    CanvasGraph.get(app).let { it.terminateSession(com.rokid.context.phone.canvas.helper.SessionEnd.DEVELOPER_MODE_OFF); it.revokeAll() }
                     CanvasService.stop(app)
                 }
             },
