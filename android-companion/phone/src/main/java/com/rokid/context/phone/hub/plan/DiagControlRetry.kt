@@ -22,9 +22,18 @@ interface GlassesDiagStatusSource {
 class MutableGlassesDiagStatus : GlassesDiagStatusSource {
     private val _state = MutableStateFlow(DiagFlagState.UNKNOWN)
     override val state: StateFlow<DiagFlagState> = _state
+    private val _traceBlocker = MutableStateFlow<String?>(null)
+    /** LGC6-min: the glasses' last reported `Hello.traceBlocker` (a fixed word; anything else is dropped), kept for a later UI. Null = unknown. No UI reads it yet. */
+    val traceBlocker: StateFlow<String?> = _traceBlocker
     /** LGC6-min: feed the glasses' reported `diagFlagState` wire name (`Hello.diagFlagState`); null or an unknown name = unknown. */
     fun update(wire: String?) { _state.value = DiagFlagState.fromWire(wire) }
-    override fun invalidate() { _state.value = DiagFlagState.UNKNOWN }
+    /** LGC6-min: every `Hello` from the glasses; the newest statement wins, an older glasses (no fields) means unknown. */
+    fun onHello(h: com.rokid.context.core.model.Hello) {
+        _traceBlocker.value = h.traceBlocker?.takeIf { BLOCKER_WORD.matches(it) }
+        update(h.diagFlagState)
+    }
+    override fun invalidate() { _state.value = DiagFlagState.UNKNOWN; _traceBlocker.value = null }
+    private companion object { val BLOCKER_WORD = Regex("[a-z][a-z0-9_]{0,39}") }
 }
 
 object UnknownGlassesDiagStatus : GlassesDiagStatusSource {
