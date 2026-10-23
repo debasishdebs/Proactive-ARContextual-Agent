@@ -397,9 +397,8 @@ internal class TraceStorage(
     /** Lines `R <fromWallMs> <toWallMs>` (a range on the GLASSES wall clock) and `T <traceId>`. */
     fun addForget(lines: List<String>) {
         root.mkdirs()
-        val part = File(root, "trace_forget.part")
-        part.writeText((pendingForget() + lines).distinct().joinToString("\n"))
-        if (!part.renameTo(forgetFile)) { forgetFile.delete(); part.renameTo(forgetFile) }
+        // checked and atomic (LGC8-min): a failed update of the working list must be SEEN, never silently skipped, so no request is ever cleared on the strength of a list that lacks it
+        if (!writeRecord(forgetFile, (pendingForget() + lines).distinct().joinToString("\n"))) throw java.io.IOException("trace_forget not saved")
     }
 
     fun pendingForget(): List<String> = try { forgetFile.readText().lines().filter { it.isNotBlank() } } catch (e: Exception) { emptyList() }
@@ -474,15 +473,24 @@ internal class TraceStorage(
         val text = try { readFile(pendingFile) } catch (e: Exception) { return PendingCleanup(true, null, 0, emptyList()) }
         val rows = text.lines().filter { it.isNotBlank() }
         if (rows.firstOrNull() != RECORD_HEAD) return PendingCleanup(true, null, 0, emptyList())
-        var wipe = false; var install: String? = null; var counter = 0L; val lines = ArrayList<String>()
+        val bad = PendingCleanup(true, null, 0, emptyList())
+        var wipe = false; var install: String? = null; var counter: Long? = null; val lines = ArrayList<String>()
         for (r in rows.drop(1)) when {
             r == "W" -> wipe = true
-            r.startsWith("I ") -> install = r.substring(2)
-            r.startsWith("C ") -> counter = r.substring(2).trim().toLongOrNull() ?: return PendingCleanup(true, null, 0, emptyList())
-            r.startsWith("T ") || r.startsWith("R ") -> lines += r
-            else -> return PendingCleanup(true, null, 0, emptyList())
+            r.startsWith("I ") -> { if (r.length <= 2 || install != null) return bad; install = r.substring(2) }
+            r.startsWith("C ") -> { if (counter != null) return bad; counter = r.substring(2).toLongOrNull() ?: return bad }
+            r.startsWith("T ") -> { if (!TraceBounds.isTraceId(r.substring(2))) return bad; lines += r }
+            r.startsWith("R ") -> {
+                val p = r.split(' ')
+                if (p.size != 3) return bad
+                val from = p[1].toLongOrNull() ?: return bad; val to = p[2].toLongOrNull() ?: return bad
+                if (from > to) return bad
+                lines += r
+            }
+            else -> return bad
         }
-        return PendingCleanup(wipe, install, counter, lines.distinct())
+        if ((install != null || counter != null) && (!wipe || install == null || counter == null)) return bad
+        return PendingCleanup(wipe, install, counter ?: 0L, lines.distinct())
     }
 
     /** Persists a received cleanup BEFORE it is acted on, merged with what is already pending (the newest target epoch wins, the lines accumulate). True when it is on disk. */
