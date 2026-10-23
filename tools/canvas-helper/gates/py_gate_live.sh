@@ -12,6 +12,12 @@ REPO=$(cd "$HELPER_DIR/../.." && pwd)
 export PYTHONPATH="$HELPER_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1
 
+# MANDATORY owner guard (same mechanism as container/vm/machine.sh): nothing below runs, mutates or invokes the runtime unless this process runs
+# inside the active `pca_lock.py vm-session` owner (PCA_VM_SESSION=1 AND the owner holds host.lock). Exit 2 when that cannot be verified.
+if [ "${PCA_VM_SESSION:-}" != 1 ] || ! "${PCA_PYTHON:-python3}" "$HELPER_DIR/pca_lock.py" check-owner >/dev/null 2>&1; then
+  echo "refused: run this gate inside the pca_lock.py vm-session owner (no vm-session owner verified); nothing was changed" >&2
+  exit 2
+fi
 if [ ! -f "${PCA_HELPER_HOME:-$HOME/.pca-helper}/config.json" ]; then
   echo "not ready: run 'pca-helper setup --podman <absolute path> --apply' first (writes config.json and builds the image)" >&2
   exit 2

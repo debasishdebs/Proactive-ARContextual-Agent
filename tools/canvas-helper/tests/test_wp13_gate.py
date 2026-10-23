@@ -10,6 +10,7 @@ import pytest
 
 from pca_helper import doctor, gate_stamp
 from pca_helper.store import Store
+from wp10_env import fake  # noqa: F401
 
 REPO = Path(__file__).resolve().parents[3]
 CONTAINERFILE = (REPO / "container" / "pyjob" / "Containerfile").read_text()
@@ -82,3 +83,50 @@ def test_gate_script_is_valid_sh_and_stamps_only_through_the_stamp_writer():
 def test_gate_script_never_touches_the_machine_lifecycle():
     src = code_of(GATE)
     assert not re.search(r"machine\s+(init|start|stop|rm)", src), "the VM lifecycle belongs to machine.sh inside the vm-session owner"
+
+
+# ------------------------------------------------------------------ the owner guard (Codex WP13 review): refuse BEFORE any mutation
+def _gate_env(fake, tmp_path, home):
+    tmp = tmp_path / "tmpdir"
+    tmp.mkdir(exist_ok=True)
+    e = fake.env()
+    e.update({"PCA_HELPER_HOME": str(home), "TMPDIR": str(tmp)})
+    return e, tmp
+
+
+def _prepare_home(fake, tmp_path):
+    store = Store(tmp_path / "gh")
+    (store.home / "config.json").write_text(json.dumps({"runtime": {"podman": __import__("os").path.join(fake.bin, "podman"), "connection": "pca", "machine": "pca"}}))
+    gate_stamp.write_stamp(store, all_pass(), commit="old")
+    return store
+
+
+def test_gate_refuses_outside_the_vm_session_owner_before_any_mutation(fake, tmp_path):
+    store = _prepare_home(fake, tmp_path)
+    fake.set_state("running")
+    stamp = doctor.gate_stamp_path(store)
+    before = stamp.read_bytes()
+    env, tmp = _gate_env(fake, tmp_path, store.home)
+    for extra in ({}, {"PCA_VM_SESSION": "1"}):  # no env flag; the flag alone without a lock-holding owner
+        r = subprocess.run(["/bin/sh", str(GATE)], env={**env, **extra}, capture_output=True, text=True, timeout=60)
+        assert r.returncode == 2 and "vm-session" in r.stderr
+        assert stamp.read_bytes() == before, "the stamp is not touched"
+        assert list(tmp.iterdir()) == [], "no temp file"
+        assert fake.calls() == [], "the runtime is never invoked"
+
+
+def test_gate_inside_an_owner_reaches_the_checks(fake, tmp_path, monkeypatch):
+    import pca_lock
+    store = _prepare_home(fake, tmp_path)
+    fake.set_state("running")
+    monkeypatch.setenv("PCA_HELPER_HOME", str(store.home))
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    s = pca_lock.VmSession()
+    s.acquire()
+    try:
+        rc = s.run_step(["/bin/sh", str(GATE)])
+    finally:
+        s.stop_and_release(max_attempts=1)
+    assert rc != 2 or fake.calls(), "past the guard"
+    assert not doctor.gate_ready(store), "the old stamp was cleared and a gate that failed against the fake wrote none"
+    assert fake.calls(), "the runtime was reached"
