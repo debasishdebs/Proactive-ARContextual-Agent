@@ -505,4 +505,28 @@ class PipelineInterpreterTest {
         CriticExecutor.run(node(NodeTypes.CRITIC, "critic"), listOf(CanvasItem("ex1", photo("ex1"), v)), ctx(CallClass.EXTRACT))
         assertEquals(listOf(CallClass.EXTRACT), classes)
     }
+    // ---- WP7 pins: unknown and tier-3 nodes ----
+
+    /** Pin: a node type the interpreter's map does not hold fails the batch with the fixed `no_executor` code; it is never skipped. */
+    @Test fun aNodeWithNoExecutorFailsTheBatchWithNoExecutor() = runBlocking<Unit> {
+        graph { "" }
+        val f = failed(run(DefaultPipelines.liveExtract(), photos("ex1"), i = interpreter(emptyMap())))
+        assertEquals("no_executor", f.reason)
+        assertTrue(f.traces.any { it.nodeId == "extract" && it.error == "no_executor" })
+    }
+
+    /** Defence in depth (S6): a graph with a tier-3 node never starts; no executor runs, every photo gets a `_batch` ERROR row with the fixed reason. */
+    @Test fun interpreterRefusesToStartWithTier3Node() = runBlocking<Unit> {
+        graph { "" }
+        var ran = 0
+        val spy = mapOf(NodeTypes.VISION_EXTRACT to fake(NodeTypes.VISION_EXTRACT) { _, items -> ran++; items.map { NodeResult(it.frameId, null) } })
+        for (type in listOf("py.fn", "tool.draft", "tool.generated")) {
+            val base = DefaultPipelines.liveExtract()
+            val p = base.copy(nodes = base.nodes + node(type, "t3"))
+            val f = failed(run(p, photos("ex1", "ex2"), i = interpreter(spy)))
+            assertEquals(type, "tier3_node", f.reason)
+            assertEquals(type, 2, f.traces.count { it.nodeId == "_batch" && it.error == "tier3_node" })
+        }
+        assertEquals("no executor was called", 0, ran)
+    }
 }
