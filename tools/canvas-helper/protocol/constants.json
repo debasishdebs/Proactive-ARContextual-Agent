@@ -1,0 +1,139 @@
+{
+  "_note": "Single source of numbers for helper protocol v1 (core plan section 6). Fixtures win over prose. Python-only fixtures (c5 #4).",
+  "helperProtocol": 1,
+  "jobTypes": [
+    "py_exec"
+  ],
+  "caps": [
+    "py_exec"
+  ],
+  "pairCodeTtlMs": 120000,
+  "pollIntervalIdleMs": 3000,
+  "heartbeatIntervalMs": 1000,
+  "heartbeatRequestTimeoutMs": 1000,
+  "leaseMs": 10000,
+  "helperSelfKillMs": 3500,
+  "watchdogTickMs": 100,
+  "schedulingSlackMs": 300,
+  "killBudgetMs": 1000,
+  "maxKillLatencyMs": 5000,
+  "readyStaleMs": 15000,
+  "maxRequestBodyBytes": 1048576,
+  "maxPayloadBytes": 1048576,
+  "maxResultBytes": 2097152,
+  "py": {
+    "sourceMaxChars": 16000,
+    "itemsMin": 1,
+    "itemsMax": 50,
+    "perItemMs": 5000,
+    "jobMs": 120000,
+    "entry": "run",
+    "maxInstanceDepth": 8
+  },
+  "pyExecDeadlineMs": 130000,
+  "confirmTtlMs": 120000,
+  "queueWaitMs": 30000,
+  "execWaitMs": 135000,
+  "maxActiveJobs": 1,
+  "cleanupRetentionDays": 30,
+  "helperArtifactRetentionDays": 7,
+  "jobIdRegex": "^[A-Za-z0-9:_-]{1,64}$",
+  "itemIdRegex": "^i(0|[1-9][0-9]{0,1})$",
+  "denials": {
+    "401": [
+      "unauthorized"
+    ],
+    "403": [
+      "capability_revoked"
+    ],
+    "404": [
+      "not_found"
+    ],
+    "409": [
+      "lease_expired",
+      "voided",
+      "cancelled",
+      "stale_generation",
+      "deadline_exceeded",
+      "protocol_mismatch",
+      "not_confirmed"
+    ],
+    "413": [
+      "too_large"
+    ],
+    "422": [
+      "invalid_result"
+    ],
+    "429": [
+      "refused"
+    ],
+    "400": [
+      "bad_request"
+    ]
+  },
+  "deletionClassDenials": [
+    "unauthorized",
+    "capability_revoked",
+    "not_found",
+    "voided",
+    "cancelled",
+    "not_confirmed"
+  ],
+  "failCodes": [
+    "needs_runtime",
+    "timeout",
+    "oom",
+    "runtime_error",
+    "killed",
+    "bad_output",
+    "too_large",
+    "resources_busy",
+    "disk_low"
+  ],
+  "itemCodes": [
+    "timeout",
+    "schema_mismatch",
+    "exception",
+    "oom",
+    "too_big"
+  ],
+  "jobStates": [
+    "AWAITING_CONFIRM",
+    "QUEUED",
+    "LEASED",
+    "DONE",
+    "FAILED",
+    "CANCELLED",
+    "VOIDED",
+    "ABORTED"
+  ],
+  "openJobStates": [
+    "AWAITING_CONFIRM",
+    "QUEUED",
+    "LEASED"
+  ],
+  "schemaSubsetKeywords": [
+    "type",
+    "required",
+    "properties",
+    "additionalProperties",
+    "enum",
+    "items",
+    "minimum",
+    "maximum",
+    "minLength",
+    "maxLength",
+    "minItems",
+    "maxItems"
+  ],
+  "schemaTypes": [
+    "object",
+    "array",
+    "string",
+    "integer",
+    "number",
+    "boolean",
+    "null"
+  ],
+  "confirmMessageFormat": "jobId|bundleHash|sessionGen|expiresAtMs"
+}

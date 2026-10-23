@@ -1,0 +1,377 @@
+{
+  "_note": "each result refers to a valid payload by name (py_exec-payload-samples.json). A result is refused 422 invalid_result unless every payload item id appears exactly once and every ok output validates against outSchema.",
+  "valid": [
+    {
+      "name": "allOk",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "outputs": [
+          {
+            "id": "i0",
+            "ok": true,
+            "output": {
+              "n": 1
+            }
+          },
+          {
+            "id": "i1",
+            "ok": true,
+            "output": {
+              "n": 2
+            }
+          },
+          {
+            "id": "i2",
+            "ok": true,
+            "output": {
+              "n": 0
+            }
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    },
+    {
+      "name": "mixedItemCodes",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "outputs": [
+          {
+            "id": "i0",
+            "ok": true,
+            "output": {
+              "n": 1
+            }
+          },
+          {
+            "id": "i1",
+            "ok": false,
+            "code": "timeout"
+          },
+          {
+            "id": "i2",
+            "ok": false,
+            "code": "schema_mismatch"
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    },
+    {
+      "name": "outOfOrderIds",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "outputs": [
+          {
+            "id": "i2",
+            "ok": true,
+            "output": {
+              "n": 0
+            }
+          },
+          {
+            "id": "i0",
+            "ok": true,
+            "output": {
+              "n": 1
+            }
+          },
+          {
+            "id": "i1",
+            "ok": true,
+            "output": {
+              "n": 2
+            }
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missingItem",
+      "reason": "an item id is missing",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "outputs": [
+          {
+            "id": "i0",
+            "ok": true,
+            "output": {
+              "n": 1
+            }
+          },
+          {
+            "id": "i1",
+            "ok": true,
+            "output": {
+              "n": 2
+            }
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    },
+    {
+      "name": "duplicateItem",
+      "reason": "an item id appears twice",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "outputs": [
+          {
+            "id": "i0",
+            "ok": true,
+            "output": {
+              "n": 1
+            }
+          },
+          {
+            "id": "i0",
+            "ok": true,
+            "output": {
+              "n": 1
+            }
+          },
+          {
+            "id": "i1",
+            "ok": true,
+            "output": {
+              "n": 2
+            }
+          },
+          {
+            "id": "i2",
+            "ok": true,
+            "output": {
+              "n": 0
+            }
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    },
+    {
+      "name": "unknownItem",
+      "reason": "an id not in the payload",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "outputs": [
+          {
+            "id": "i0",
+            "ok": true,
+            "output": {
+              "n": 1
+            }
+          },
+          {
+            "id": "i1",
+            "ok": true,
+            "output": {
+              "n": 2
+            }
+          },
+          {
+            "id": "i9",
+            "ok": true,
+            "output": {
+              "n": 0
+            }
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    },
+    {
+      "name": "networkCode",
+      "reason": "item code network is not in the CORE enum",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "outputs": [
+          {
+            "id": "i0",
+            "ok": false,
+            "code": "network"
+          },
+          {
+            "id": "i1",
+            "ok": true,
+            "output": {
+              "n": 2
+            }
+          },
+          {
+            "id": "i2",
+            "ok": true,
+            "output": {
+              "n": 0
+            }
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    },
+    {
+      "name": "okWithoutOutput",
+      "reason": "ok item without output",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "outputs": [
+          {
+            "id": "i0",
+            "ok": true
+          },
+          {
+            "id": "i1",
+            "ok": true,
+            "output": {
+              "n": 2
+            }
+          },
+          {
+            "id": "i2",
+            "ok": true,
+            "output": {
+              "n": 0
+            }
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    },
+    {
+      "name": "failedWithoutCode",
+      "reason": "not ok item without code",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "outputs": [
+          {
+            "id": "i0",
+            "ok": false
+          },
+          {
+            "id": "i1",
+            "ok": true,
+            "output": {
+              "n": 2
+            }
+          },
+          {
+            "id": "i2",
+            "ok": true,
+            "output": {
+              "n": 0
+            }
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    },
+    {
+      "name": "outputViolatesOutSchema",
+      "reason": "output does not match outSchema (an ok item must validate)",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "outputs": [
+          {
+            "id": "i0",
+            "ok": true,
+            "output": {
+              "n": "x"
+            }
+          },
+          {
+            "id": "i1",
+            "ok": true,
+            "output": {
+              "n": 2
+            }
+          },
+          {
+            "id": "i2",
+            "ok": true,
+            "output": {
+              "n": 0
+            }
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    },
+    {
+      "name": "wrongJobType",
+      "reason": "jobType not py_exec",
+      "payload": "threeItems",
+      "result": {
+        "helperProtocol": 1,
+        "jobType": "tool_build",
+        "outputs": [
+          {
+            "id": "i0",
+            "ok": true,
+            "output": {
+              "n": 1
+            }
+          },
+          {
+            "id": "i1",
+            "ok": true,
+            "output": {
+              "n": 2
+            }
+          },
+          {
+            "id": "i2",
+            "ok": true,
+            "output": {
+              "n": 0
+            }
+          }
+        ],
+        "stats": {
+          "ms": 42
+        }
+      }
+    }
+  ]
+}

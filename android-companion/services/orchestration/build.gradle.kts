@@ -34,3 +34,6 @@ dependencies {
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
 }
+
+// WP1: the shared helper-protocol fixtures are read by the unit tests; make them an input so a changed fixture re-runs the tests.
+tasks.withType<Test>().configureEach { inputs.dir(rootProject.projectDir.resolve("../tools/canvas-helper/protocol")).withPropertyName("helperProtocolFixtures") }
