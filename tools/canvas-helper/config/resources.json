@@ -1,6 +1,6 @@
 {
   "_note": "The ONE resource config (core plan section 2; part A table 6 minus the loop-mount columns). Every number of every container row lives here and nowhere else. `job` rows run leased jobs (only py_exec in CORE); `setup` and `probe` are non-job rows of the same table. A cell may be replaced only by a measured value (live gate).",
-  "machine": {"name": "pca", "cpus": 2, "memoryMb": 4096, "diskGb": 20, "stageMount": "$HOME/.pca-helper/stage:/stage"},
+  "machine": {"name": "pca", "cpus": 2, "memoryMb": 4096, "diskGb": 10, "stageMount": "$HOME/.pca-helper/stage:/stage"},
   "host": {"minFreeDiskGb": 15, "minMemoryFreePercent": 25, "vmVarMaxGiB": 17},
   "profiles": {
     "py_exec": {
