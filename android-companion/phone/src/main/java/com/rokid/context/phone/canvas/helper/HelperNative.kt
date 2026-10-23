@@ -13,8 +13,23 @@ data class HelperCardState(
     /** The open pairing window's code, shown on the phone for the user to type on the laptop. */
     val pairingCode: String? = null,
     val pairingSecondsLeft: Int = 0,
+    /**
+     * The first 16 hex digits (64 bits) of the SHA-256 of the certificate the server presents, in 4 groups of 4, for the user to type next to the pairing code on the laptop (the
+     * helper pins it before it sends the code and requires at least 16 digits). Null while LAN is off: no certificate is presented then. Filled by the view model from the host status.
+     */
+    val fingerprint16: String? = null,
+    /** `ip:port` of the LAN server the helper connects to, shown beside the code; null while LAN is off. */
+    val hostPort: String? = null,
 ) {
-    companion object { val UNAVAILABLE = HelperCardState(available = false) }
+    companion object {
+        val UNAVAILABLE = HelperCardState(available = false)
+
+        /** The first 16 hex digits of [full] (any grouping or case), upper case, in 4 groups of 4; null when there are fewer than 16 digits. */
+        fun fingerprint16(full: String?): String? {
+            val hex = full.orEmpty().filter { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
+            return if (hex.length < 16) null else hex.take(16).uppercase().chunked(4).joinToString(" ")
+        }
+    }
 }
 
 /**
