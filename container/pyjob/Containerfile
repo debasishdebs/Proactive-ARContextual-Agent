@@ -2,7 +2,7 @@
 # Base: the official python:3.12-slim image, PINNED BY DIGEST in the controller's live step (B2): replace <DIGEST> below with the digest of the
 # image you pulled (`podman pull docker.io/library/python:3.12-slim` then `podman image inspect --format '{{.Digest}}'`), and record the digest in
 # images.lock beside the image id of the build (spikes/wp13-live-gate.md, step 1). Until then the tag below is a placeholder for the pinned form.
-FROM docker.io/library/python:3.12-slim@sha256:<DIGEST>
+FROM docker.io/library/python:3.12-slim@sha256:6c6ae3622772575c3ac02ecb2b02a06d05f19e1713a0cbff476ef37bca79e90f
 
 # The user is 10001 (profiles: py_exec --user 10001). /out is created here and owned by 10001 so that the named volume mounted at /out is
 # initialised (copy-up) with that owner and is writable by the job.
