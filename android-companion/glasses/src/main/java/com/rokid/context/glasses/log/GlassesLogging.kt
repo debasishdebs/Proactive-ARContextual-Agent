@@ -8,14 +8,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Process-start wiring of the glasses logger (called once, from `GlassesRuntime`, through the `DiagLog` shim). */
 object GlassesLogging {
     /**
-     * THE single owner of the glasses diagnostic policy. The glasses diag log has always recorded every line (I and W) and must keep
-     * doing so, so the policy is ON.
-     * TODO(LGC4): replace this constant with the persisted `diag_record` flag (three-state bootstrap, `diagEnabled()`); until then no
-     * other code may call `PcLog.setDiagnostic` on the glasses.
-     * READER HAZARD for LGC4: `tools/battery-run.sh` and `tools/m1-run.sh` read the I-level `heartbeat v=2` lines from `capture_diag.log`.
-     * With diagnostics off those lines are no longer written, so the tools would silently starve (battery summaries lose samples, M1 can
-     * report old rows or zero/default values). Measurement needs diagnostics enabled: LGC4 must make both tools reject, or clearly label,
-     * a run without fresh heartbeat evidence.
+     * THE single owner of the glasses LOG policy. The glasses diag log has always recorded every line (I and W) and must keep doing so, so the policy is ON.
+     * LGC4 DECISION (LG-MIN, plan 0A): this does NOT follow the persisted `diag_record` flag. The flag drives the TRACE gate only (`DiagRecord.diagEnabled()`). The reason is
+     * the reader hazard: `tools/battery-run.sh` and `tools/m1-run.sh` read the I-level `heartbeat v=2` lines from `capture_diag.log`; with diagnostics off those lines would no
+     * longer be written and the tools would silently starve (battery summaries lose samples, M1 can report old rows or zero/default values). The log may follow the flag only
+     * after both tools reject, or clearly label, a run without fresh heartbeat evidence (LGC10-min / a later package). No other code may call `PcLog.setDiagnostic` on the glasses
+     * (pinned by `DiagRecordTest.theSourceNeverTouchesPcLogPolicy` and `GlassesLoggingTest.currentPolicyIsAlwaysOnWithASingleOwner`).
      */
     const val DIAGNOSTIC_RECORD = true
 

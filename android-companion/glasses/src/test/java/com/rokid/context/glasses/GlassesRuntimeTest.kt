@@ -72,6 +72,22 @@ class GlassesRuntimeTest {
         assertEquals(1, bridge.sent.count { it.first == Channels.HELLO })
     }
 
+    /** LGC4: a `pc_settings` push with `diagRecord=true` reaches the persisted request (armed: no epoch yet), under `dataDir/files/diag_state`; an old push (no field) leaves it off. */
+    @Test fun aSettingsPushDrivesTheDiagRecordRequestAndPersistsItWithoutAnEpoch() {
+        val runtime = GlassesRuntime.get(app)
+        val bridge = FakeBridge()
+        val c = HudController(runtime.scope, bridge, HudSettingsCache(app.getSharedPreferences("rt_diag", 0)), { Hello(glassesBatteryPct = 80, bufferSize = 0, glassesNowMs = 0, pauses = emptyList()) })
+        runtime.attach(c); c.start()
+        val seen = java.util.concurrent.CountDownLatch(1)
+        runtime.diagRecord.onChanged = { seen.countDown() }
+        bridge.phone(Channels.SETTINGS, com.rokid.context.core.model.Wire.encode(HudSettings(diagRecord = true)))
+        check(seen.await(10, java.util.concurrent.TimeUnit.SECONDS)) { "the writer applied the request" }
+        assertEquals(com.rokid.context.glasses.log.DiagFlagState.ARMED_NO_EPOCH, runtime.diagRecord.state())
+        assertEquals(false, runtime.diagRecord.diagEnabled())
+        assertEquals("1", java.io.File(java.io.File(app.applicationInfo.dataDir, "files"), "diag_state").readText().trim())
+        assertEquals("armed_no_epoch", runtime.diagRecord.state().wire)
+    }
+
     /** Minor 7: an old activity's late detach must not wipe the new activity's push-to-talk toast handler. */
     @Test fun anOldControllersDetachKeepsTheNewProblemHandler() {
         GlassesRuntime.bridgeFactory = { FakeBridge() }

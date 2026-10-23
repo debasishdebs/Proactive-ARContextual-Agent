@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * The glasses IMU trace recorder (slice 3a Task 16) on the FROZEN trace schema 1 (`:core:capture` trace package; nothing here changes it).
  *
- * **When it records.** Only while the phone's [TraceControl] says `collect` (and `collectUntilMs` has not passed) AND the session offers a clean
+ * **When it records.** Only while [recordingAllowed] (LGC4: diagnostics are on with a durable epoch, OR the phone's [TraceControl] says `collect` and `collectUntilMs` has not passed) AND the session offers a clean
  * boundary ([SessionTrace.wantsStart], [start]): the detector QUIET, no camera episode, an empty gate window, capture unblocked. A trace starts
  * with the initial `cx rs pf gp pl` events at its start time, then a 10 s pre-roll (`pr` at exactly start + 10 s). It ends (`cl`, manifest
  * `closeReason`) on collect off or expiry (`stop`), a privacy pause (`pause`), heat STOP (`stop`), a plan activation (`plan`), a plan revert
@@ -73,6 +73,8 @@ class TraceRecorder(
     /** Test seams for an I/O error in the storage (the publication rename, the wipe's delete). */
     private val renameDir: (File, File) -> Boolean = { a, b -> a.renameTo(b) },
     private val deleteTree: (File) -> Boolean = { it.deleteRecursively() },
+    /** LGC4: the single diagnostic-recording predicate (the persisted `diag_record` flag, effective only once the epoch is saved). Default: never. */
+    private val diagEnabled: () -> Boolean = { false },
 ) : SessionTrace, SampleTap {
     init { require(sampleEvery in 1..StartSnapshot.MAX_SAMPLE_EVERY) { "sampleEvery" } }
 
@@ -99,8 +101,13 @@ class TraceRecorder(
     private val storage = TraceStorage(root, diskCapBytes, renameDir = renameDir, deleteTree = deleteTree)
 
     // epoch (guarded by lock)
-    private var installId = ""
+    @Volatile private var installId = ""
     private var deletionCounter = 0L
+    /**
+     * LGC4: the adopted epoch is DURABLE on disk (read at construction, or written after its ordered wipe succeeded). False from the adoption of a new epoch until the wipe
+     * and the epoch file are done: the persisted `diag_record` request becomes effective only then (fence, then epoch, then flag).
+     */
+    @Volatile private var epochDurable = false
     /** The last epoch wipe left something behind: the epoch stays unsaved and the wipe is retried at the next control. */
     @Volatile private var wipeFailed = false
     /** Epoch wipes queued on the writer and not finished yet (incremented under [lock] with the epoch adoption). No trace starts while one is pending or the last one failed. */
@@ -137,7 +144,7 @@ class TraceRecorder(
         // would let a first control race the load (it would see no epoch and wipe valid traces). It is a few bytes, not a decode. Everything else is on the writer.
         // (The persisted epoch is two lines, cheap, read here so [onControl] compares against it.) The recovery seals a killed trace of any length: NEVER on the calling thread
         // (the construction is reached from the main thread: the ANR loop of 2026-10-23), so it is the first task of the writer thread.
-        storage.readEpoch().let { installId = it.first; deletionCounter = it.second }
+        storage.readEpoch().let { installId = it.first; deletionCounter = it.second; epochDurable = it.first.isNotEmpty() }
         io {
             try {
                 val t0 = System.nanoTime()
@@ -152,9 +159,40 @@ class TraceRecorder(
     val usedBytes: Long get() = storage.used.get()
 
     override val wantsStart: Boolean
-        get() = storageSettled() && !recording && collectingNow(clock()) && installId.isNotEmpty() && storage.used.get() < diskCapBytes
+        get() = storageSettled() && !recording && recordingAllowed(clock()) && installId.isNotEmpty() && storage.used.get() < diskCapBytes
 
+    /** The laptop's `pc_trace_ctl` collect window (its own `collectUntil`). */
     private fun collectingNow(now: Long) = collect && now < collectUntil
+
+    /**
+     * THE trace gate (LGC4), the only place the two sources meet: diagnostics (the persisted flag, effective only with a durable epoch) OR an open laptop collect window.
+     * Used by [wantsStart], [start], [onControl] and the append path; nothing else decides whether a trace may exist.
+     */
+    private fun recordingAllowed(now: Long) = diagEnabled() || collectingNow(now)
+
+    /** The adopted epoch is durably saved (see [epochDurable]); what `DiagRecord` turns into `ENABLED` / `ARMED_NO_EPOCH`. */
+    val epochSaved: Boolean get() = epochDurable
+
+    /**
+     * Why [wantsStart] is false right now, or null when a trace could start (or one is already recording: that is not a fault). A read-only derivation (no retry is queued),
+     * checked in the order the guarantees were added: recovery first, then the ordered epoch wipe, then the gate, the epoch and the disk. LGC6-min puts [TraceStartBlocker.wire]
+     * into `Hello.traceBlocker`; the session-side blockers (not a clean boundary) belong to LGC5.
+     */
+    fun startBlocker(): TraceStartBlocker? = when {
+        !recovered -> TraceStartBlocker.RECOVERING
+        wipesPending.get() != 0 -> TraceStartBlocker.WIPE_PENDING
+        wipeFailed -> TraceStartBlocker.WIPE_FAILED
+        recording -> null
+        !recordingAllowed(clock()) -> TraceStartBlocker.GATE_OFF
+        installId.isEmpty() -> TraceStartBlocker.NO_EPOCH
+        storage.used.get() >= diskCapBytes -> TraceStartBlocker.DISK_CAP
+        else -> null
+    }
+
+    /** The diagnostic flag changed (the writer thread, after `DiagRecord` applied it): a running trace that nothing allows any more closes `stop` (nothing is deleted). */
+    fun onDiagChanged() {
+        synchronized(lock) { if (recording && !recordingAllowed(clock())) closeLocked(CloseReason.STOP) }
+    }
 
     // ---- link: TraceControl ----
 
@@ -169,6 +207,7 @@ class TraceRecorder(
             if (c.installId != installId || c.deletionCounter > deletionCounter) {
                 abortLocked()
                 installId = c.installId; deletionCounter = c.deletionCounter
+                epochDurable = false // fence first: the diagnostic request stays ineffective until the wipe ran and this epoch is on disk
                 wipe = true
             }
             // Forget (S58, P7): the phone's range is on ITS clock; the offset from this very message maps it to the glasses wall clock, widened for safety. A running trace that
@@ -187,7 +226,7 @@ class TraceRecorder(
             }
             collect = c.collect
             collectUntil = if (c.collect && c.collectUntilMs != null && c.atMs > 0) now + (c.collectUntilMs!! - c.atMs) else Long.MAX_VALUE
-            if (recording && !collectingNow(now)) closeLocked(CloseReason.STOP)
+            if (recording && !recordingAllowed(now)) closeLocked(CloseReason.STOP)
             // Storage work is enqueued under the SAME lock as the epoch adoption (so no start can slip between the adoption and the wipe), and the epoch to persist is captured here.
             // A trace cannot start while a wipe is pending or failed ([storageSettled]).
             if (wipe || wipeFailed) enqueueWipeLocked()
@@ -213,9 +252,12 @@ class TraceRecorder(
         io {
             try {
                 val ok = try { storage.wipe() } catch (e: Exception) { log("trace wipe failed: ${e.javaClass.simpleName}"); false }
-                if (ok) { try { storage.writeEpoch(adoptedInstall, adoptedCounter) } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
-                wipeFailed = !ok
-                wipeAttempts = if (ok) 0 else (wipeAttempts + 1).coerceAtMost(WIPE_RETRY_MAX_SHIFT)
+                var saved = false
+                if (ok) { try { storage.writeEpoch(adoptedInstall, adoptedCounter); saved = true } catch (e: Exception) { log("trace epoch not saved: ${e.javaClass.simpleName}") } }
+                // An epoch that could not be written counts as a failed wipe (retried by the next control or the start checks): otherwise `armed_no_epoch` would never heal.
+                if (saved) synchronized(lock) { if (installId == adoptedInstall && deletionCounter == adoptedCounter) epochDurable = true }
+                wipeFailed = !saved
+                wipeAttempts = if (saved) 0 else (wipeAttempts + 1).coerceAtMost(WIPE_RETRY_MAX_SHIFT)
             } finally { wipesPending.decrementAndGet() }
         }
     }
@@ -235,7 +277,7 @@ class TraceRecorder(
 
     override fun start(s: TraceStart): Boolean = synchronized(lock) {
         val now = clock()
-        if (!storageSettled() || recording || !collectingNow(now) || installId.isEmpty() || storage.used.get() >= diskCapBytes) return false
+        if (!storageSettled() || recording || !recordingAllowed(now) || installId.isEmpty() || storage.used.get() >= diskCapBytes) return false
         if (s.snapshot.sampleEvery != sampleEvery) return false
         val id = newTraceId()
         if (!TraceBounds.isTraceId(id)) return false
@@ -337,7 +379,7 @@ class TraceRecorder(
 
     private fun after(t: Long) {
         if (capClose) { closeLocked(CloseReason.CAP); return }
-        if (t >= collectUntil) { closeLocked(CloseReason.STOP); return }
+        if (!recordingAllowed(t)) { closeLocked(CloseReason.STOP); return }
         if (est >= flushBytes) flushLocked(force = false)
     }
 
@@ -486,4 +528,9 @@ class TraceRecorder(
         private const val EVENT_SOFT_LIMIT = 9_500_000L
         private val SPLIT_CODES = setOf("b64_too_long", "gunzip_too_big", "too_many_events")
     }
+}
+
+/** Why no trace can start right now ([TraceRecorder.startBlocker]); [wire] is the stable name the status line and `Hello.traceBlocker` carry. */
+enum class TraceStartBlocker(val wire: String) {
+    RECOVERING("recovering"), WIPE_PENDING("wipe_pending"), WIPE_FAILED("wipe_failed"), GATE_OFF("gate_off"), NO_EPOCH("no_epoch"), DISK_CAP("disk_cap"),
 }
