@@ -141,7 +141,10 @@ class TraceRecorder(
     private val queuedReceipts = AtomicInteger(0)
     /** The writer has loaded the epoch (its first task); controls that arrive earlier wait in [early] and are applied, in order, right after. Declared before the init block (an inline writer runs it in the constructor). */
     private var loaded = false
-    private val early = ArrayList<TraceControl>()
+    private class Early(val c: TraceControl, val elapsed: Long, val wall: Long)
+    private val early = ArrayList<Early>()
+    /** Discards of aborted jobs whose cleanup receipt is not durable yet (writer thread only): they run only after it is saved. */
+    private val deferredDiscards = ArrayList<String>()
     private class Received(val wipe: Boolean, val installId: String, val counter: Long, val lines: List<String>)
     private var nextWipeRetryAt = 0L
     /** The epoch read from disk at construction: a replayed cleanup adopts its target epoch only while no control has changed the in-memory one since. */
@@ -191,12 +194,14 @@ class TraceRecorder(
                 if (n.found > 0) log("trace recovery: found=${n.found} sealed=${n.sealed} ms=$ms")
             } catch (e: Exception) { log("trace recovery failed: ${e.javaClass.simpleName}") }
             recoveredMs = info.ms
-            recovered = true
-            try { onRecovered(RecoveryInfo(info.found, info.sealed, info.ms, epochDurable)) } catch (e: Exception) { log("trace boot report failed: ${e.javaClass.simpleName}") }
-            while (true) { // the controls that waited for the load, in order; the last empty check flips [loaded] under the lock
-                val batch = synchronized(lock) { if (early.isEmpty()) { loaded = true; null } else early.toList().also { early.clear() } } ?: break
-                batch.forEach { applyControl(it) }
+            val bootInfo = RecoveryInfo(info.found, info.sealed, info.ms, epochDurable) // the state at boot: the waiting controls below are applied after it
+            // The controls that waited for the load, in order, each with ITS arrival clocks. Readiness ([loaded], [recovered]) is published under the lock only when none is left, so
+            // no trace can start between two waiting controls (a collect on and its collect off).
+            while (true) {
+                val batch = synchronized(lock) { if (early.isEmpty()) { loaded = true; recovered = true; null } else early.toList().also { early.clear() } } ?: break
+                batch.forEach { applyControl(it.c, it.elapsed, it.wall) }
             }
+            try { onRecovered(bootInfo) } catch (e: Exception) { log("trace boot report failed: ${e.javaClass.simpleName}") } // [recovered] is true by now
         }
     }
 
@@ -289,22 +294,22 @@ class TraceRecorder(
 
     /** The phone's `pc_trace_ctl` (link thread). Applies the epoch, then the collect window. Tombstones, forget ranges and `send` are Task 17. */
     fun onControl(c: TraceControl) {
-        synchronized(lock) { if (!loaded) { early += c; return } }
-        applyControl(c)
+        synchronized(lock) { if (!loaded) { early += Early(c, clock(), wallClock()); return } }
+        applyControl(c, clock(), wallClock())
     }
 
-    private fun applyControl(c: TraceControl) {
+    /** [now] and [wall] are the clocks at the control's ARRIVAL (a control that waited for the writer's load keeps its own: a long recovery must not shift ranges or extend a window). */
+    private fun applyControl(c: TraceControl, now: Long, wall: Long) {
         var wipe = false
         var forgetLines: List<String> = emptyList()
         var liveId: String? = null
         synchronized(lock) {
-            val now = clock()
             if (c.installId == installId && c.deletionCounter < deletionCounter) return // a stale message of this install
             phone = if (c.atMs > 0) PhoneSample(c.atMs, now) else phone
             wipe = c.installId != installId || c.deletionCounter > deletionCounter
             // The forget lines first (they need only the control): the receipt below must be the FIRST task queued, before any abort deletes anything.
             if (c.tombstones.isNotEmpty() || (c.forgetFromMs != null && c.forgetToMs != null)) {
-                val offset = if (c.atMs > 0) c.atMs - wallClock() else 0L
+                val offset = if (c.atMs > 0) c.atMs - wall else 0L
                 val margin = if (c.atMs > 0) FORGET_MARGIN_MS else FORGET_MARGIN_NO_CLOCK_MS
                 val lines = ArrayList<String>()
                 c.tombstones.filter { com.rokid.context.capture.trace.TraceBounds.isTraceId(it) }.forEach { lines += "T $it" }
@@ -358,6 +363,7 @@ class TraceRecorder(
         val ok = try { storage.persistCleanup(u.wipe, u.installId, u.counter, u.lines) } catch (e: Exception) { false }
         if (!ok) { persistFailed = true; log("trace cleanup record not saved: nothing deleted, retried"); return false }
         unpersisted = null; persistFailed = false
+        if (deferredDiscards.isNotEmpty()) { val ids = deferredDiscards.toList(); deferredDiscards.clear(); ids.forEach { discardNow(it) } }
         return true
     }
 
@@ -515,8 +521,11 @@ class TraceRecorder(
         recording = false
         job = null; activeInfo = null
         cur?.clear(); est = 0
-        io { try { storage.discard(j.id) } catch (e: Exception) { /* the wipe that follows removes it */ } }
+        // The discard waits for the cleanup receipt to be DURABLE: when it could not be saved the directory stays (it is the evidence a retry still has to remove) and goes after the save.
+        io { if (ensurePersisted()) discardNow(j.id) else deferredDiscards += j.id }
     }
+
+    private fun discardNow(id: String) { try { storage.discard(id) } catch (e: Exception) { /* the wipe that follows removes it */ } }
 
     // ---- append path (every caller holds lock) ----
 

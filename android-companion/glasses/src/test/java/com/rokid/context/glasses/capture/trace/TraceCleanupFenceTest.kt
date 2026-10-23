@@ -24,8 +24,8 @@ class TraceCleanupFenceTest {
     private val wall = 1_700_000_000_000
     @AfterTest fun cleanup() { root.deleteRecursively(); aside.deleteRecursively() }
 
-    private fun recorder(deleteTree: (File) -> Boolean = { it.deleteRecursively() }, writeRecord: (File, String) -> Boolean = com.rokid.context.glasses.log.DiagStateFile::atomicWrite, diag: Boolean = false, readFile: (File) -> String = { it.readText(Charsets.UTF_8) }) =
-        TraceRecorder(root, clock, { wall + clock.t }, { "7" }, 1, io = { r -> if (inline) r.run() else queue.addLast(r) },
+    private fun recorder(deleteTree: (File) -> Boolean = { it.deleteRecursively() }, writeRecord: (File, String) -> Boolean = com.rokid.context.glasses.log.DiagStateFile::atomicWrite, diag: Boolean = false, readFile: (File) -> String = { it.readText(Charsets.UTF_8) }, ioHook: ((Runnable) -> Unit)? = null) =
+        TraceRecorder(root, clock, { wall + clock.t }, { "7" }, 1, io = { r -> ioHook?.invoke(r); if (inline) r.run() else queue.addLast(r) },
             newTraceId = { "trace-%04d-test".format(++ids) }, flushBytes = 2_000, deleteTree = deleteTree, writeRecord = writeRecord, diagEnabled = { diag }, readFile = readFile)
     private fun drain() { while (queue.isNotEmpty()) queue.removeFirst().run() }
     private fun TraceRecorder.begin() = start(TraceTestKit.start())
@@ -305,5 +305,48 @@ class TraceCleanupFenceTest {
         val r2 = recorder()
         r2.onControl(TraceTestKit.collect(install = "inst-new", counter = 9)); drain() // a different epoch before the load: applied after it, wipes
         assertEquals(0, TraceTestKit.readAll(root).size); assertEquals("inst-new\n9", File(root, "trace_epoch").readText())
+    }
+
+    // ---- Codex re-check ----
+
+    /** (1) The receipt could not be saved: the aborted trace's discard waits (it is the evidence a retry must still remove) and runs after the record is durable. */
+    @Test fun PersistFailureThenAbortDefersTheDiscardUntilTheRecordIsDurable() {
+        File(root, "trace_epoch").writeText("inst-1\n1")
+        var failPending = true
+        val r = recorder(writeRecord = { f, t -> if (failPending && f.name == "trace_cleanup_pending") false else com.rokid.context.glasses.log.DiagStateFile.atomicWrite(f, t) })
+        r.onControl(TraceTestKit.collect(counter = 1)); assertTrue(r.begin()); r.gyro(150)
+        val tmp = File(root, "imu_trace_tmp").listFiles()!!.single()
+        r.onControl(ctl(from = wall + clock.t - 60_000, to = wall + clock.t + 60_000)) // aborts the running trace; the record cannot be saved
+        assertFalse(r.recording); assertEquals(TraceStartBlocker.CLEANUP_PERSIST_FAILED, r.startBlocker())
+        assertTrue(tmp.exists(), "no discard before the receipt is durable")
+        failPending = false; clock.t += 60_000; r.wantsStart // the retry saves the record, then the deferred discard runs
+        assertFalse(tmp.exists()); assertFalse(pending.exists())
+    }
+
+    /** (2) Readiness is published only when the waiting controls are applied: a start attempted between a buffered collect-on and collect-off is refused. */
+    @Test fun NoStartBetweenTwoControlsThatWaitedForTheWriter() {
+        val r0 = recorder(); r0.onControl(TraceTestKit.collect(counter = 1)); r0.begin(); r0.gyro(5); r0.close(CloseReason.STOP)
+        inline = false
+        var attempted: Boolean? = null; var calls = 0; lateinit var r: TraceRecorder
+        r = recorder(ioHook = { if (++calls == 2 && attempted == null) attempted = r.begin() }) // call 1 = the writer start-up; call 2 comes from the first buffered control's own queued work
+        r.onControl(TraceTestKit.collect(counter = 1).copy(collect = true))
+        r.onControl(TraceTestKit.collect(counter = 1).copy(collect = false))
+        drain()
+        assertEquals(false, attempted, "mid-drain the recorder is not ready: the collect window of control 1 must not start a trace")
+        assertFalse(r.wantsStart, "after the drain the last control (collect off) rules")
+    }
+
+    /** (3) A control that waited for the writer keeps its ARRIVAL clocks: a long recovery neither shifts its forget range nor extends its collect window. */
+    @Test fun DelayedDrainUsesTheArrivalTimeForForgetRangeAndCollectDeadline() {
+        val r0 = recorder(); r0.onControl(TraceTestKit.collect(counter = 1)); r0.begin(); r0.gyro(5); r0.close(CloseReason.STOP)
+        val m = TraceTestKit.readAll(root).single().manifest
+        inline = false
+        val r = recorder()
+        val at = wall + clock.t
+        r.onControl(TraceTestKit.collect(counter = 1).copy(atMs = at, collect = true, collectUntilMs = at + 10_000, forgetFromMs = m.startWallMs - 1_000, forgetToMs = m.endWallMs + 1_000))
+        clock.t += 60_000 // the writer is busy (a long recovery) for a minute
+        drain()
+        assertEquals(0, TraceTestKit.readAll(root).size, "the forget range was mapped with the arrival clocks: the trace is inside it")
+        assertFalse(r.wantsStart, "the 10 s collect window ended 50 s ago on the arrival clock")
     }
 }
