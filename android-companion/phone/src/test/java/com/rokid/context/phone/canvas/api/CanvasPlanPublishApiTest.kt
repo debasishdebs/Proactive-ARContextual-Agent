@@ -309,6 +309,16 @@ class CanvasPlanPublishApiTest {
         assertTrue(sent.isEmpty()); assertTrue(ok(call("GET", "/api/publish"))["stack"]!!.jsonArray.isEmpty())
     }
 
+    /** An ASYNC-only graph (no capture half) holding py.fn or a tool node: the plan publish route answers the fixed S6 text, not "no capture half". */
+    @Test fun planPublishRouteRefusesAnAsyncOnlyTier3GraphWithTheFixedText() {
+        for (type in listOf("py.fn", "tool.draft")) {
+            val (id, v) = storedTier3(withNode(DefaultPipelines.liveExtract().copy(name = "T3a $type"), type))
+            val r = call("POST", "/api/plans/publish", publishBody(id, v, "SHADOW"))
+            assertEquals(type, 409, r.status); assertEquals(type, s6, problems(r))
+        }
+        assertTrue(sent.isEmpty()); assertTrue(ok(call("GET", "/api/publish"))["stack"]!!.jsonArray.isEmpty())
+    }
+
     @Test fun trialAndLiveAreRefusedUntilM1IsRecordedThroughTheRoute() {
         val (id, v) = frozen(fullGraph("T")); addReplay(PlanCompiler.compile(fullGraph("T")).plan!!.configHash)
         val blocked = call("POST", "/api/plans/publish", publishBody(id, v, "TRIAL"))

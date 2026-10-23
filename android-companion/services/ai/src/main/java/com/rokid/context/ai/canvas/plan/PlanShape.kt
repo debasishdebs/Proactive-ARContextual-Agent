@@ -2,6 +2,7 @@ package com.rokid.context.ai.canvas.plan
 
 import com.rokid.context.ai.canvas.Domain
 import com.rokid.context.ai.canvas.ExecutorKind
+import com.rokid.context.ai.canvas.NodeType
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.Pipeline
 
@@ -37,9 +38,13 @@ object PlanShape {
      * entry runs on the laptop (`ExecutorKind.PYTHON`, `DRAFT`), or one of the REPLAY_ONLY domain. The registry lookup is the unresolved one (`byType`), so a schema-1 graph that
      * names a newer type is still caught. This is the ONE guard every publish path calls (S6: [S6_REFUSAL]).
      */
-    fun tier3Nodes(p: Pipeline): List<String> = p.nodes.filter { n ->
-        val t = NodeTypes.byType(n.type)
-        n.type.startsWith("py.") || n.type.startsWith("tool.") || domainOf(p, n.type, n) == Domain.REPLAY_ONLY ||
+    fun tier3Nodes(p: Pipeline): List<String> = tier3Nodes(p, NodeTypes::byType)
+
+    /** [tier3Nodes] over an injectable descriptor [lookup] (the unresolved `byType` in production), so the metadata rules are testable without a registered type. */
+    fun tier3Nodes(p: Pipeline, lookup: (String) -> NodeType?): List<String> = p.nodes.filter { n ->
+        val t = lookup(n.type)
+        val resolved = t?.takeIf { it.sinceSchema <= p.schema }?.let { NodeTypes.domainOf(n, it) }
+        n.type.startsWith("py.") || n.type.startsWith("tool.") || resolved == Domain.REPLAY_ONLY ||
             t?.executor == ExecutorKind.PYTHON || t?.executor == ExecutorKind.DRAFT || t?.domain == Domain.REPLAY_ONLY
     }.map { it.id }.sorted()
 }
