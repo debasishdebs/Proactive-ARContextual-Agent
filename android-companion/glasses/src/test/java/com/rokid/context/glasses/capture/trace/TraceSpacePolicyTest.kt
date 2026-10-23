@@ -321,6 +321,20 @@ class TraceSpacePolicyTest {
         assertEquals(setOf(id), sealed())
     }
 
+    /** Recovery of TWO unfinished traces under low free space: sealing the second may reclaim, and must not delete the first one recovered in the same pass. */
+    @Test fun RecoveryOfTwoUnfinishedTracesNeverReclaimsTheFirstRecoveredOne() {
+        val a = killedMidTrace()
+        val aside = TraceTestKit.tempDir()
+        try {
+            assertTrue(File(root, "imu_trace_tmp/$a").renameTo(File(aside, a)))
+            val b = killedMidTrace()
+            assertTrue(File(aside, a).renameTo(File(root, "imu_trace_tmp/$a")))
+            freeIs(small.floorBytes + 7_000) // below floor + reserve (30_000), above floor + initial write (26_000): each seal tries to reclaim
+            recorder()
+            assertEquals(setOf(a, b), sealed(), "both unfinished traces were sealed and neither was reclaimed by the other's sealing room")
+        } finally { aside.deleteRecursively() }
+    }
+
     // ---- threads ----
 
     @Test fun NoMainThreadIo() {
