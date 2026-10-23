@@ -53,6 +53,15 @@ class Store:
     def save_state(self, state):
         self.write_atomic(self.state_path, json.dumps(state, sort_keys=True).encode("utf-8"))
 
+    def purge_legacy_token(self):
+        """The helper session token is memory-only: a `token` persisted by an older build is deleted. True when one was removed."""
+        st = self.load_state()
+        if isinstance(st, dict) and "token" in st:
+            st.pop("token")
+            self.save_state(st)
+            return True
+        return False
+
     def load_state(self):
         try:
             with open(self.state_path, encoding="utf-8") as f:
