@@ -77,9 +77,20 @@ def _validate(tf, lim):
     return files
 
 
-def _write(dest, name, data):
-    path = os.path.join(dest, *name.split("/"))
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+def _write(dest, name, data, cancel):
+    """Never recreates a deleted staging tree: the destination must still exist and the job must not be cancelled; sub-directories are made one level
+    at a time (mkdir, not makedirs) so a vanished parent is an error, not a recreation."""
+    comps = name.split("/")
+    cur = dest
+    for c in comps[:-1]:
+        _guard(dest, cancel)
+        cur = os.path.join(cur, c)
+        try:
+            os.mkdir(cur, 0o700)
+        except FileExistsError:
+            pass
+    _guard(dest, cancel)
+    path = os.path.join(cur, comps[-1])
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         os.write(fd, data) if data else None
@@ -87,7 +98,12 @@ def _write(dest, name, data):
         os.close(fd)
 
 
-def collect(tar_path, limits, dest=None):
+def _guard(dest, cancel):
+    if (cancel is not None and cancel.is_set()) or not os.path.isdir(dest):
+        raise CollectorRefused("killed", "cancelled or staging removed")
+
+
+def collect(tar_path, limits, dest=None, cancel=None):
     try:
         with tarfile.open(str(tar_path), mode="r:") as tf:
             files = _validate(tf, limits)
@@ -103,7 +119,12 @@ def collect(tar_path, limits, dest=None):
     except (tarfile.TarError, EOFError, OSError, ValueError, UnicodeError):
         raise _bad("not a readable tar")
     if dest is not None:
-        os.makedirs(str(dest), mode=0o700, exist_ok=False)
-        for name, data in out.items():
-            _write(str(dest), name, data)
+        try:
+            if cancel is not None and cancel.is_set():
+                raise CollectorRefused("killed", "cancelled")
+            os.mkdir(str(dest), 0o700)  # not makedirs: a deleted stage dir is never recreated
+            for name, data in out.items():
+                _write(str(dest), name, data, cancel)
+        except OSError:
+            raise _bad("cannot write the extraction tree")
     return out

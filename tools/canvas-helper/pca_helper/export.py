@@ -66,7 +66,7 @@ class Workspace:
         return indir
 
     # ------------------------------------------------------------------ 3. export (bounded) + collect
-    def export_and_collect(self, job_id):
+    def export_and_collect(self, job_id, cancel=None):
         """Call only after the container has exited. Returns {relative name: bytes}. The volume is removed before this returns, whatever happens."""
         name = volume_name(job_id)
         cap = export_cap_bytes(self.profile)
@@ -74,13 +74,15 @@ class Workspace:
             if self.probes.free_disk_bytes(str(self.store.stage_dir)) < cap:
                 raise WorkspaceFail("disk_low")
             try:
-                self.runtime.export_volume(name, self.export_path(job_id), cap)
+                self.runtime.export_volume(name, self.export_path(job_id), cap, cancel)
             except ExportTooLarge:
                 raise WorkspaceFail("too_large")
-            except (RuntimeFail, OSError):
+            except RuntimeFail as e:
+                raise WorkspaceFail("killed" if e.code == "killed" else "runtime_error")
+            except OSError:
                 raise WorkspaceFail("runtime_error")
             try:
-                return collector.collect(self.export_path(job_id), collector.limits_of(self.profile), dest=self.extract_dir(job_id))
+                return collector.collect(self.export_path(job_id), collector.limits_of(self.profile), dest=self.extract_dir(job_id), cancel=cancel)
             except collector.CollectorRefused as e:
                 self.log.event("collector_refused", code=e.code)
                 raise WorkspaceFail(e.code)
@@ -96,4 +98,5 @@ class Workspace:
     def abandon(self, job_id):
         """No export: failure, cancel or void. True when the volume and the transient files are gone."""
         ok = self.runtime.remove_volume(volume_name(job_id))
-        return self.remove_transient(job_id) and ok
+        self.remove_transient(job_id)
+        return self.store.remove_path(self.stage(job_id)) and ok  # the whole stage dir, also one a late writer recreated
