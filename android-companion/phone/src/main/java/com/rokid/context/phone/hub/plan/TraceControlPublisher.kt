@@ -30,6 +30,9 @@ class TraceControlPublisher(private val link: GlassesLink, private val collect: 
     /** A glasses session opened: the session may have expired, and the epoch is read again (never cached). */
     suspend fun onSessionReady() { send(collect.refresh()) }
 
+    /** LGC4P: the current control again (epoch read fresh, built without publishing to the flow: a refresh() would also make the flow collector send a second copy). */
+    suspend fun resend() { send(collect.control()) }
+
     private suspend fun send(c: TraceControl) {
         try { link.send(Channels.TRACE_CTL, Wire.encode(c)) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { /* sent again at the next session */ }
     }
