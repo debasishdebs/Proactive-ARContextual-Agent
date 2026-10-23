@@ -1,3 +1,5 @@
+import hashlib
+import json
 import threading
 
 import pytest
@@ -341,9 +343,35 @@ def test_result_posted_with_canonical_result_hash_and_copies_deleted_on_accept(t
     handle.finished = {"kind": "result", "result": result}
     h.sup.job_step()
     call = h.phone.of("result")[0][2]
-    assert call[:2] == ("job1", 1) and call[2] == L.bundle_hash(result) and call[3] == result
+    text = L.result_canonical(result)
+    assert call[:2] == ("job1", 1) and isinstance(call[3], str) and call[3] == text and call[2] == L.result_hash(text)
+    assert call[2] == hashlib.sha256(text.encode("utf-8")).hexdigest()
     assert not h.store.job_stage_dir("job1").exists()
     assert h.sup.active_job_id is None and h.journal.open_jobs() == []
+
+
+def test_float_result_is_posted_as_its_exact_printed_text_and_the_hash_covers_that_text(tmp_path):
+    # D1: 0.73 used to fail the whole job with bad_output; now the helper hashes the exact text it sends
+    h = make(tmp_path)
+    handle = leased(h)
+    result = {"helperProtocol": 1, "jobType": "py_exec", "outputs": [{"id": "i0", "ok": True, "output": {"score": 0.73, "tiny": 1e-05, "neg": -0.0, "whole": 100.0, "xs": [0.1, 2.5e-07]}}], "stats": {"ms": 3}}
+    handle.finished = {"kind": "result", "result": result}
+    h.sup.job_step()
+    assert "fail" not in h.phone.names()
+    call = h.phone.of("result")[0][2]
+    want = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    assert call[3] == want and '"score":0.73' in want and '"tiny":1e-05' in want and '"neg":-0.0' in want and '"whole":100.0' in want
+    assert call[2] == hashlib.sha256(want.encode("utf-8")).hexdigest()
+    assert h.sup.active_job_id is None
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_float_result_fails_bad_output_and_posts_no_result(tmp_path, bad):
+    h = make(tmp_path)
+    handle = leased(h)
+    handle.finished = {"kind": "result", "result": {"helperProtocol": 1, "jobType": "py_exec", "outputs": [{"id": "i0", "ok": True, "output": {"x": bad}}], "stats": {"ms": 1}}}
+    h.sup.job_step()
+    assert "result" not in h.phone.names() and h.phone.of("fail")[0][2] == ("job1", 1, "bad_output")
 
 
 def test_result_too_large_posts_fail_too_large(tmp_path):
@@ -635,15 +663,18 @@ def test_orphan_sweep_logs_the_number_checked_not_the_survivors(tmp_path):
 # ---------------------------------------------------------------- WP6 review finding 13: the result envelope limit
 
 def _envelope_len(result):
-    import json
-    return len(json.dumps({"leaseGen": 1, "resultHash": "0" * 64, "result": result}, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    return len(json.dumps({"leaseGen": 1, "resultHash": "0" * 64, "resultCanonical": result}, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
 
 def _result_of_envelope_size(n):
     r = {"x": ""}
-    r["x"] = "a" * (n - _envelope_len(r))
-    assert _envelope_len(r) == n
-    return r
+    r["x"] = "a" * (n - _envelope_len(protocol_canon(r)))
+    assert _envelope_len(protocol_canon(r)) == n
+    return protocol_canon(r)
+
+
+def protocol_canon(r):
+    return json.dumps(r, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def test_result_body_limit_comes_from_constants_and_mirrors_the_phone():
@@ -683,8 +714,8 @@ def test_result_at_the_2mib_result_limit_is_posted_not_a_crash(tmp_path):
     handle = leased(h)
     tr = _real_result_client(h)
     r = {"x": ""}
-    r["x"] = "a" * (CONSTS["maxResultBytes"] - len(protocol.canonical_json(r).encode()))
-    assert len(protocol.canonical_json(r).encode()) == CONSTS["maxResultBytes"]
+    r["x"] = "a" * (CONSTS["maxResultBytes"] - len(L.result_canonical(r).encode()))
+    assert len(L.result_canonical(r).encode()) == CONSTS["maxResultBytes"]
     handle.finished = {"kind": "result", "result": r}
     h.sup.job_step()
     assert len(tr.sent) == 1 and h.sup.active_job_id is None and "fail" not in h.phone.names()

@@ -442,6 +442,76 @@
           "jobMs": 120000
         }
       }
+    },
+    {
+      "name": "floatTwo",
+      "payload": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "source": "def run(x):\n    return {'score': 0.73, 'meta': {'conf': 0.5}, 'series': [0.1]}\n",
+        "entry": "run",
+        "items": [
+          {
+            "id": "i0",
+            "input": {
+              "text": "a"
+            }
+          },
+          {
+            "id": "i1",
+            "input": {
+              "text": "b"
+            }
+          }
+        ],
+        "outSchema": {
+          "type": "object",
+          "required": [
+            "score",
+            "meta",
+            "series"
+          ],
+          "properties": {
+            "score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "count": {
+              "type": "integer"
+            },
+            "label": {
+              "type": "string"
+            },
+            "meta": {
+              "type": "object",
+              "required": [
+                "conf"
+              ],
+              "properties": {
+                "conf": {
+                  "type": "number"
+                },
+                "n": {
+                  "type": "integer"
+                }
+              },
+              "additionalProperties": false
+            },
+            "series": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "limits": {
+          "perItemMs": 5000,
+          "jobMs": 120000
+        }
+      }
     }
   ],
   "invalid": [

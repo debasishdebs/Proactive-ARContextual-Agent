@@ -14,6 +14,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -112,19 +113,51 @@ abstract class HelperJobPortContract {
         assertTrue(h.port.pendingConfirmations().isEmpty())
     }
 
-    @Test fun aSchemaValidButFractionalResultIsRefusedAndTheJobStaysLeased() = runBlocking {
+    private fun numberRequest(): suspend () -> PyRequest = {
         val base = h.request()
-        val numberSchema = JsonObject(TEST_OUT_SCHEMA + ("properties" to JsonObject(mapOf("n" to JsonObject(mapOf("type" to JsonPrimitive("number")))))))
-        val r = start(PyRequest(base.source, base.items, numberSchema, base.frameIds, base.fence))
+        PyRequest(base.source, base.items, JsonObject(TEST_OUT_SCHEMA + ("properties" to JsonObject(mapOf("n" to JsonObject(mapOf("type" to JsonPrimitive("number"))))))), base.frameIds, base.fence)
+    }
+
+    /** The exact text a Python helper prints for two items whose output is `{"n": <n>}`. */
+    private fun text(n: String) = """{"helperProtocol":1,"jobType":"py_exec","outputs":[{"id":"i0","ok":true,"output":{"n":$n}},{"id":"i1","ok":true,"output":{"n":$n}}],"stats":{"ms":5}}"""
+    private fun sha(t: String) = BundleHash.ofCanonical(t)
+
+    private suspend fun leasedNumberRun(): Run {
+        val r = start(numberRequest()())
         assertEquals(ConfirmResult.CONFIRMED, h.port.confirm(r.jobId, binding(r.jobId)))
         assertEquals(r.jobId, h.leaseNext())
-        fun result(n: Number) = JsonObject(okResult(listOf("i0", "i1")) + ("outputs" to JsonArray(listOf("i0", "i1").map {
-            JsonObject(mapOf("id" to JsonPrimitive(it), "ok" to JsonPrimitive(true), "output" to JsonObject(mapOf("n" to JsonPrimitive(n)))))
-        })))
-        assertTrue(h.complete(r.jobId, result(1.5)).isNotEmpty())
+        return r
+    }
+
+    @Test fun aFractionalResultForANumberMemberIsAcceptedAsReceived() = runBlocking {
+        val r = leasedNumberRun()
+        assertEquals(emptyList<String>(), h.completeText(r.jobId, text("0.730"), sha(text("0.730"))))
+        val out = r.await() as PyOutcome.Done
+        assertEquals(listOf("0.730", "0.730"), out.outputs.map { (it.output as JsonObject).getValue("n").jsonPrimitive.content })
+    }
+
+    @Test fun aFractionalResultForAnIntegerMemberIsRefusedAndTheJobStaysLeased() = runBlocking {
+        val r = leasedRun()
+        for (n in listOf("1.5", "1.0", "-0.0", "1e2", "0.73")) assertTrue(n, h.completeText(r.jobId, text(n), sha(text(n))).isNotEmpty())
         assertEquals(HelperJobState.LEASED, h.state(r.jobId))
-        assertEquals(emptyList<String>(), h.complete(r.jobId, result(1)))
+        assertEquals(emptyList<String>(), h.completeText(r.jobId, text("1"), sha(text("1"))))
         assertTrue(r.await() is PyOutcome.Done)
+    }
+
+    @Test fun aHashThatIsNotOfTheReceivedTextIsRefusedAndTheJobStaysLeased() = runBlocking {
+        val r = leasedNumberRun()
+        assertTrue("another value", h.completeText(r.jobId, text("0.74"), sha(text("0.73"))).isNotEmpty())
+        assertTrue("the same value spelled differently", h.completeText(r.jobId, text("0.730"), sha(text("0.73"))).isNotEmpty())
+        assertTrue("an upper-case hash", h.completeText(r.jobId, text("0.73"), sha(text("0.73")).uppercase()).isNotEmpty())
+        assertEquals(HelperJobState.LEASED, h.state(r.jobId))
+        assertEquals(emptyList<String>(), h.completeText(r.jobId, text("0.73"), sha(text("0.73"))))
+    }
+
+    @Test fun aDuplicateKeyOrNonJsonTextIsRefusedEvenWithTheRightHash() = runBlocking {
+        val r = leasedNumberRun()
+        val dup = """{"helperProtocol":1,"jobType":"py_exec","outputs":[{"id":"i0","ok":true,"output":{"n":1,"n":2}},{"id":"i1","ok":true,"output":{"n":1}}],"stats":{"ms":5}}"""
+        for (t in listOf(dup, "not json", "", """{"a":NaN}""", "[1]", text("0.73") + " x")) assertTrue(t, h.completeText(r.jobId, t, sha(t)).isNotEmpty())
+        assertEquals(HelperJobState.LEASED, h.state(r.jobId))
     }
 
     @Test fun cancellingTheCallerCancelsTheJob() = runBlocking {

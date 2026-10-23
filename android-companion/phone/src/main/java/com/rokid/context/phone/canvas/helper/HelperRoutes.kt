@@ -191,14 +191,15 @@ class HelperRoutes(
     }
 
     private suspend fun result(req: HttpRequest, s: HelperAuth.Session, jobId: String): HttpResponse {
-        val o = body(req, setOf("leaseGen", "resultHash", "result"))
+        val o = body(req, setOf("leaseGen", "resultHash", "resultCanonical"))
         val gen = long(o["leaseGen"])
         val hash = text(o["resultHash"])
         // 422, not 400: the helper retries a 400 until its watchdog kills the job, but answers 422 with a `fail(bad_output)`
         if (!Regex("^[0-9a-f]{64}$").matches(hash)) throw Denied("invalid_result")
-        val result = o["result"] as? JsonObject ?: throw Denied("invalid_result")
+        // D1: the hash covers this exact string; it is verified over the string as received, then parsed (never re-printed)
+        val text = (o["resultCanonical"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw Denied("invalid_result")
         requireGrant()
-        return when (val c = service.commitResult(jobId, s.helperId, gen, result)) {
+        return when (val c = service.commitResult(jobId, s.helperId, gen, text, hash)) {
             is ResultCommit.Committed -> { log.helperLine(if (c.duplicate) "result duplicate" else "result committed"); HttpResponse.json(200, buildJsonObject { put("committed", !c.duplicate); put("duplicate", c.duplicate) }) }
             is ResultCommit.Denied -> throw Denied(c.code)
             is ResultCommit.Invalid -> throw Denied("invalid_result")

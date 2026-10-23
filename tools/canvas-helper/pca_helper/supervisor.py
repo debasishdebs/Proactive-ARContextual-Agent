@@ -541,16 +541,16 @@ class Supervisor:
 
     def _post_result(self, job, result):
         try:
-            canon = protocol.canonical_json(result)
+            canon = protocol.result_canonical(result)  # floats allowed (D1); NaN, Infinity and non-JSON values are bad_output
         except ValueError:
             self._post_fail(job, "bad_output")
             return
         if len(canon.encode("utf-8")) > self.c["maxResultBytes"]:
             self._post_fail(job, "too_large")
             return
-        h = protocol.bundle_hash(result)
+        h = protocol.result_hash(canon)  # of exactly the text that is sent
         try:
-            resp = self.client.result(job.job_id, job.lease_gen, h, result)
+            resp = self.client.result(job.job_id, job.lease_gen, h, canon)
         except NetworkError:
             self.log.event("result", status=0)
             self._retry_later(job)
