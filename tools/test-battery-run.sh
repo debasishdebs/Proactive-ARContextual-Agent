@@ -76,5 +76,17 @@ case "$bout" in *"Binary file"*) echo "FAIL: filter-diag printed Binary file mat
 for d in capture_diag.log capture_diag.log.1; do
   grep -q "files/$d 2>/dev/null | filter_diag > " "$HERE/battery-run.sh" || { echo "FAIL: pull of $d does not go through filter_diag"; fail=1; }
 done
+# LGC4 hazard: a run without heartbeat evidence in its window (diagnostics may be off) is REJECTED (rc 3, labelled) in both modes; ALLOW_NO_HEARTBEAT=1 only labels it.
+tmpd="$(mktemp -d)"; cp "$HERE"/testdata/battery-run/{batt.log,batt_run.txt,cpu.log} "$tmpd"/
+for m in "" minutes; do
+  nout="$("$HERE/battery-run.sh" summary "$tmpd" $m)"; nrc=$?
+  case "$nout" in *"NO HEARTBEAT EVIDENCE"*) ;; *) echo "FAIL: no-heartbeat run ($m) is not labelled"; fail=1 ;; esac
+  [ "$nrc" = 3 ] || { echo "FAIL: no-heartbeat run ($m) exited $nrc, expected 3"; fail=1; }
+done
+nout="$(ALLOW_NO_HEARTBEAT=1 "$HERE/battery-run.sh" summary "$tmpd")"; nrc=$?
+case "$nout" in *"NO HEARTBEAT EVIDENCE"*) ;; *) echo "FAIL: override must still label"; fail=1 ;; esac
+[ "$nrc" = 0 ] || { echo "FAIL: ALLOW_NO_HEARTBEAT=1 exited $nrc"; fail=1; }
+rm -rf "$tmpd"
+case "$out" in *"NO HEARTBEAT EVIDENCE"*) echo "FAIL: a run with heartbeats is labelled"; fail=1 ;; esac
 [ $fail -eq 0 ] && echo "PASS"
 exit $fail
