@@ -55,6 +55,9 @@ class TraceStateReporter(
     private fun Boolean.i() = if (this) 1 else 0
 
     companion object {
+        /** Every word [blocker] can return, and so every word `Hello.traceBlocker` can carry (closed: a test pins it). */
+        val VOCABULARY: Set<String> = TraceStartBlocker.entries.map { it.wire }.toSet() + BoundaryBlocker.entries.map { it.wire } + setOf("armed_no_epoch", "already_recording", "none")
+
         /** A blocker that is a fault (a warning), as opposed to a normal state: a wipe that keeps failing, or no room. */
         private val FAULTS = setOf(TraceStartBlocker.WIPE_FAILED.wire, TraceStartBlocker.DISK_CAP.wire)
 
