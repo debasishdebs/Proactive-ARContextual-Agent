@@ -20,6 +20,8 @@ object PipelineValidator {
     private const val MAX_NODES = 40
     private const val MAX_EDGES = 80
     private const val MAX_TEXT = 16_000
+    /** WP8: at most this many `py.fn` nodes in one graph (each is its own laptop job and its own native tap). */
+    const val MAX_PY_FN = 3
 
     /** The texts of [problems], unchanged. */
     fun validate(p: Pipeline): List<String> = problems(p).map { it.text }
@@ -141,6 +143,28 @@ object PipelineValidator {
 
         // Params
         byId.forEach { (id, n) -> types[id]?.let { t -> paramProblems(id, n, t).forEach { out.node(id, it) } } }
+        pyFnProblems(byId.values.filter { it.type == NodeTypes.PY_FN && types[it.id] != null }, valid, domains).forEach { out.node(it.first, it.second) }
+        return out
+    }
+
+    /**
+     * The one shape of graph a `py.fn` node may be in (WP8; what `PythonExecutor` supports): an ASYNC-only photo-experiment graph (a capture half has no executor for it and a
+     * `py.fn` is never published), at most [MAX_PY_FN] such nodes, each with a non-blank `source`, an `outSchema` that is a JSON object (the schema-subset check itself runs when
+     * the job is created) and exactly one incoming edge. Returns (nodeId, text) pairs.
+     */
+    private fun pyFnProblems(fns: List<PipelineNode>, edges: List<PipelineEdge>, domains: Map<String, Domain>): List<Pair<String, String>> {
+        if (fns.isEmpty()) return emptyList()
+        val out = mutableListOf<Pair<String, String>>()
+        val capture = domains.values.any { it == Domain.RT_GLASSES || it == Domain.RT_PHONE }
+        fns.forEachIndexed { i, n ->
+            if (i >= MAX_PY_FN) out += n.id to "too many py.fn nodes (max $MAX_PY_FN)"
+            val src = (n.params["source"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            if (src == null || src.isBlank()) out += n.id to "node ${n.id}: py.fn source required"
+            val schema = (n.params["outSchema"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            if (schema == null || runCatching { Json.parseToJsonElement(schema) }.getOrNull() !is JsonObject) out += n.id to "node ${n.id}: py.fn outSchema must be a JSON object"
+            if (edges.count { it.to == n.id } != 1) out += n.id to "node ${n.id}: py.fn takes exactly one input edge"
+            if (capture) out += n.id to "node ${n.id}: py.fn runs only in a graph without a capture half"
+        }
         return out
     }
 
