@@ -2,13 +2,41 @@ package com.rokid.context.phone.canvas
 
 import com.rokid.context.ai.canvas.Pipeline
 import com.rokid.context.canvas.CanvasPublisher
+import com.rokid.context.phone.canvas.helper.HelperCardState
+import com.rokid.context.phone.canvas.helper.HelperConfirmActions
+import com.rokid.context.phone.canvas.helper.HelperNativeActions
+import com.rokid.context.phone.canvas.helper.PendingConfirmRow
 import com.rokid.context.phone.canvas.server.CanvasAuth
 import kotlinx.coroutines.flow.MutableStateFlow
+
+/** Records the per-run confirmation callbacks (WP2: the card calls only these). */
+class FakeHelperConfirm : HelperConfirmActions {
+    var rows: List<PendingConfirmRow> = emptyList()
+    val confirmed = mutableListOf<String>()
+    val cancelled = mutableListOf<String>()
+    override fun onConfirm(jobId: String) { confirmed += jobId }
+    override fun onCancel(jobId: String) { cancelled += jobId }
+    override fun pending(): List<PendingConfirmRow> = rows
+}
+
+/** Records the native helper card actions. */
+class FakeHelperNative : HelperNativeActions {
+    var card = HelperCardState(available = true)
+    val calls = mutableListOf<String>()
+    override fun state() = card
+    override fun acceptPairing() { calls += "accept" }
+    override fun setGrant(grant: String, on: Boolean) { calls += "grant:$grant:$on"; card = card.copy(grantPyExec = on) }
+    override fun disconnectHelper() { calls += "disconnect" }
+}
 
 /** A [CanvasHost] that records calls; [start] binds a pretend port. */
 class FakeCanvasHost : CanvasHost {
     override val status = MutableStateFlow(CanvasStatus())
     override var screenOpen = false
+    val fakeConfirm = FakeHelperConfirm()
+    val fakeNative = FakeHelperNative()
+    override val helperConfirm: HelperConfirmActions get() = fakeConfirm
+    override val helperNative: HelperNativeActions get() = fakeNative
     var outcome: CanvasPublisher.Outcome = CanvasPublisher.Outcome.Blocked(listOf("Critic was changed after the publish."))
     val calls = mutableListOf<String>()
     override fun start(lan: Boolean) { calls += "start:$lan"; status.value = CanvasStatus(on = true, port = 8765, lan = lan, lanIp = "192.168.1.20") }
