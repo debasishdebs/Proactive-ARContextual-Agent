@@ -258,11 +258,24 @@ summary_minutes() {
   ' ${cpu:+"$cpu"} "$@" /dev/null # /dev/null: awk with no file arguments would read stdin
 }
 
+# LGC4 hazard: with the diagnostic flag off no heartbeat v=2 line reaches capture_diag.log, so a window without one cannot be attributed to a recording build.
+# Such a summary is labelled and rejected (rc 3); ALLOW_NO_HEARTBEAT=1 labels only.
+summary_checked() {
+  local o rc
+  o="$(cmd_summary "$@")"; rc=$?
+  [ -z "$o" ] || printf '%s\n' "$o"
+  [ "$rc" = 0 ] || return "$rc"
+  if [ "${2:-}" = minutes ]; then case "$o" in *" opens1m="*) return 0 ;; esac; else case "$o" in *"hb_lines=0 "*) ;; *) return 0 ;; esac; fi
+  echo "NO HEARTBEAT EVIDENCE in the run window (diagnostics may be off): the figures above are not attributable to a recording build"
+  [ "${ALLOW_NO_HEARTBEAT:-0}" = 1 ] && return 0
+  echo "rejected (rc 3); ALLOW_NO_HEARTBEAT=1 keeps the labelled output" >&2; return 3
+}
+
 case "${1:-}" in
   start) shift; cmd_start "$@" ;;
   stop) cmd_stop ;;
   pull) shift; cmd_pull "$@" ;;
-  summary) shift; cmd_summary "$@" ;;
+  summary) shift; summary_checked "$@" ;;
   print-cpu-logger) cpu_logger_script ;;
   filter-diag) filter_diag ;;
   *) echo "usage: $0 start <label> | stop | pull <dir> | summary <dir> [minutes]" >&2; exit 2 ;;
