@@ -64,4 +64,6 @@
     <exclude domain="file" path="canvas_tmp" />
     <!-- Final pass 10: the dev-mode trace staging folder (raw sensor traces, adb-readable) under the EXTERNAL files dir. -->
     <exclude domain="external" path="trace-staging" />
+    <!-- Always-on logging LGC2: files/logs (pca.log, pca.log.1) is a per-install diagnostic record (counts only, but device-specific): never backed up or transferred. -->
+    <exclude domain="file" path="logs" />
 </full-backup-content>

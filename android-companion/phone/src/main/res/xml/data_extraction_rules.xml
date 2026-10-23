@@ -57,6 +57,8 @@
         <exclude domain="file" path="canvas_tmp" />
         <!-- Final pass 10: the dev-mode trace staging folder (raw sensor traces, adb-readable) under the EXTERNAL files dir. -->
         <exclude domain="external" path="trace-staging" />
+        <!-- Always-on logging LGC2: files/logs (pca.log, pca.log.1): never backed up or transferred. -->
+        <exclude domain="file" path="logs" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="endpoint_keys.xml" />
@@ -114,5 +116,7 @@
         <exclude domain="file" path="canvas_tmp" />
         <!-- Final pass 10: the dev-mode trace staging folder (raw sensor traces, adb-readable) under the EXTERNAL files dir. -->
         <exclude domain="external" path="trace-staging" />
+        <!-- Always-on logging LGC2: files/logs (pca.log, pca.log.1): never backed up or transferred. -->
+        <exclude domain="file" path="logs" />
     </device-transfer>
 </data-extraction-rules>
