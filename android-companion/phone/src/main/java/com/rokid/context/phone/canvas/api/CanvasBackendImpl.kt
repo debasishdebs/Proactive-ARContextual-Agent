@@ -25,6 +25,7 @@ import com.rokid.context.canvas.CanvasRunner
 import com.rokid.context.canvas.ConfirmTokens
 import com.rokid.context.canvas.Estimate
 import com.rokid.context.canvas.Executors
+import com.rokid.context.canvas.NodeExecutor
 import com.rokid.context.canvas.LiveMode
 import com.rokid.context.canvas.ModelLabel
 import com.rokid.context.canvas.PhotoLoad
@@ -85,6 +86,8 @@ class CanvasBackendImpl(
     private val thumbnailer: (ByteArray) -> ByteArray? = { FrameImagesHttp.thumbnail(it) },
     /** Slice 3a (Task 28): the capture-plan publisher, read at call time (null until it is composed): Undo latest is group-aware through it. */
     private val plans: () -> com.rokid.context.canvas.plan.CapturePlanPublisher? = { null },
+    /** 3b WP6: the helper job port (WP8 builds `py.fn` over it); null when no helper is bound. */
+    val helperJobs: com.rokid.context.canvas.helper.HelperJobPort? = null,
 ) : CanvasBackend {
     companion object {
         private val pretty = Json { prettyPrint = true }
@@ -141,19 +144,30 @@ class CanvasBackendImpl(
             plans: () -> com.rokid.context.canvas.plan.CapturePlanPublisher? = { null },
             /** Task 33: the process's ONE publisher (the plan graph's), so slice 2 publishes and the plan groups share a lock; null builds its own (tests). */
             sharedPublisher: CanvasPublisher? = null,
+            /** 3b WP6: the laptop-helper job port the experiment executor (WP8) submits through; null = no helper. Nothing here uses it yet. */
+            helperJobs: com.rokid.context.canvas.helper.HelperJobPort? = null,
+            /** 3b WP6: extra node executors (WP8's `py.fn`), composed beside the built-in ones; none by default. A type that a built-in already owns is refused. */
+            extraExecutors: Map<String, NodeExecutor> = emptyMap(),
         ): CanvasBackendImpl {
             val dao = MemoryGraph.get(app).db.canvasDao()
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
             val publisher = sharedPublisher ?: CanvasPublisher(dao, ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, clock, CanvasPublisher.inTransaction(MemoryGraph.get(app).db))
             val runner = CanvasRunner(
-                dao, photos, Executors.all(),
+                dao, photos, composeExecutors(extraExecutors),
                 { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
                 ConfirmTokens(clock), hot, clock,
             )
             val askDebug = lazy {
                 AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos))
             }
-            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, thumbnailer, plans)
+            return CanvasBackendImpl(app, ai, dao, repo, publisher, runner, scope, auth, lan, clock, askDebug, thumbnailer, plans, helperJobs)
+        }
+
+        /** The built-in executors plus [extra]; an extra executor never replaces a built-in node type. */
+        internal fun composeExecutors(extra: Map<String, NodeExecutor>): Map<String, NodeExecutor> {
+            val base = Executors.all()
+            require(extra.keys.none { it in base }) { "an extra executor may not replace a built-in node" }
+            return base + extra
         }
 
         /** The gate is read at every call, so a gate bound after the first Ask view is the one used (and nothing bound is [AskDebugPhotos.Refuse]). */

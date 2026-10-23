@@ -17,6 +17,8 @@ class FakeHelperConfirm : HelperConfirmActions {
     override fun onConfirm(jobId: String) { confirmed += jobId }
     override fun onCancel(jobId: String) { cancelled += jobId }
     override fun pending(): List<PendingConfirmRow> = rows
+    var refreshes = 0
+    override suspend fun refresh() { refreshes++ }
 }
 
 /** Records the native helper card actions. */
@@ -30,13 +32,16 @@ class FakeHelperNative : HelperNativeActions {
 }
 
 /** A [CanvasHost] that records calls; [start] binds a pretend port. */
-class FakeCanvasHost : CanvasHost {
+class FakeCanvasHost(confirm: HelperConfirmActions? = null, native: HelperNativeActions? = null) : CanvasHost {
     override val status = MutableStateFlow(CanvasStatus())
     override var screenOpen = false
     val fakeConfirm = FakeHelperConfirm()
     val fakeNative = FakeHelperNative()
-    override val helperConfirm: HelperConfirmActions get() = fakeConfirm
-    override val helperNative: HelperNativeActions get() = fakeNative
+    override val helperConfirm: HelperConfirmActions = confirm ?: fakeConfirm
+    override val helperNative: HelperNativeActions = native ?: fakeNative
+    /** The causes the service ended the session with (S52: one termination operation). */
+    val terminated = mutableListOf<com.rokid.context.phone.canvas.helper.SessionEnd>()
+    override fun terminateSession(cause: com.rokid.context.phone.canvas.helper.SessionEnd) { terminated += cause; calls += "terminate:${cause.name}"; stop() }
     var outcome: CanvasPublisher.Outcome = CanvasPublisher.Outcome.Blocked(listOf("Critic was changed after the publish."))
     val calls = mutableListOf<String>()
     override fun start(lan: Boolean) { calls += "start:$lan"; status.value = CanvasStatus(on = true, port = 8765, lan = lan, lanIp = "192.168.1.20") }

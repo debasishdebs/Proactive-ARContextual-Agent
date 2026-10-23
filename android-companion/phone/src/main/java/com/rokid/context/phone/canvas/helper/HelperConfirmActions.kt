@@ -13,6 +13,12 @@ interface HelperConfirmActions {
     fun onCancel(jobId: String)
     fun pending(): List<PendingConfirmRow>
 
+    /**
+     * WP6: re-reads the pending list from its source (the job port is suspend, [pending] is a plain snapshot). The view model's STARTED-scoped loop calls it once a second
+     * off the main thread. A source that needs no refresh keeps the default.
+     */
+    suspend fun refresh() {}
+
     companion object {
         /** The inert default (no job is ever pending): the production host until WP6 binds the adapter. */
         val NONE: HelperConfirmActions = object : HelperConfirmActions {

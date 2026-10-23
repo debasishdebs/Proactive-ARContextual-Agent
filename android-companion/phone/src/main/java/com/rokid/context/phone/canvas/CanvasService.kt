@@ -12,6 +12,9 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.rokid.context.core.log.Level
+import com.rokid.context.phone.canvas.helper.SessionEnd
+import com.rokid.context.phone.log.PhoneLogging
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,7 +30,7 @@ import kotlinx.coroutines.launch
  * no open canvas screen), on the notification's Stop action, or when Developer mode turns off.
  */
 open class CanvasService : Service() {
-    private val scope = CoroutineScope(Dispatchers.Default + CoroutineExceptionHandler { _, t -> android.util.Log.w("CanvasService", "task failed (${t.javaClass.simpleName})") })
+    private val scope = CoroutineScope(Dispatchers.Default + CoroutineExceptionHandler { _, t -> PhoneLogging.canvasPort().log(Level.W, "CanvasService", "task failed (${t.javaClass.simpleName})") })
     private var watcher: Job? = null
     private lateinit var graph: CanvasHost
 
@@ -44,12 +47,12 @@ open class CanvasService : Service() {
         if (intent?.action == ACTION_STOP || !DeveloperModeStore.get(this).enabled.value) {
             // A started foreground service must still enter the foreground before it may stop.
             if (!enterForegroundSafely("Stopping")) return START_NOT_STICKY
-            shutDown()
+            shutDown(if (intent?.action == ACTION_STOP) SessionEnd.NOTIFICATION_STOP else SessionEnd.DEVELOPER_MODE_OFF)
             return START_NOT_STICKY
         }
         if (!enterForegroundSafely(text(graph.status.value))) return START_NOT_STICKY
         if (!graph.status.value.on) graph.start(false)
-        if (!graph.status.value.on) { shutDown(); return START_NOT_STICKY } // the server could not bind
+        if (!graph.status.value.on) { shutDown(SessionEnd.SHUTDOWN); return START_NOT_STICKY } // the server could not bind
         if (watcher == null) watcher = scope.launch { watch() }
         return START_NOT_STICKY
     }
@@ -60,19 +63,30 @@ open class CanvasService : Service() {
         try {
             while (scope.isActive) {
                 delay(TICK_MS)
-                if (!DeveloperModeStore.get(this@CanvasService).enabled.value || graph.shouldIdleStop()) { shutDown(); return }
+                if (checkStop()) return
             }
         } finally { updates.cancel() }
     }
 
+    /** One tick of the stop rules: developer mode off or the idle rule ends the session (and with it the server and this service). True when it did. */
+    internal fun checkStop(): Boolean {
+        val cause = when {
+            !DeveloperModeStore.get(this).enabled.value -> SessionEnd.DEVELOPER_MODE_OFF
+            graph.shouldIdleStop() -> SessionEnd.IDLE_STOP
+            else -> return false
+        }
+        shutDown(cause)
+        return true
+    }
+
     private fun launchStatus(onChange: (CanvasStatus) -> Unit): Job = scope.launch {
         graph.status.drop(1).collect { s ->
-            if (!s.on) shutDown() else onChange(s)
+            if (!s.on) shutDown(SessionEnd.SHUTDOWN) else onChange(s)
         }
     }
 
-    private fun shutDown() {
-        graph.stop()
+    private fun shutDown(cause: SessionEnd) {
+        graph.terminateSession(cause) // the ONE end: grants off, token revoked, jobs voided, cleanup enqueued, server stopped last
         runCatching { ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE) }
         stopSelf()
     }
@@ -88,7 +102,7 @@ open class CanvasService : Service() {
     private fun timedOut() {
         graph.stopWithNotice(NOTICE_TIME_LIMIT)
         graph.revokeAll()
-        shutDown()
+        shutDown(SessionEnd.TIME_LIMIT)
     }
 
     /** False when the system refused the foreground start: the server is then stopped, the service ends and the canvas screen says why. */
@@ -106,6 +120,7 @@ open class CanvasService : Service() {
     protected open fun enterForeground(text: String) = startForegroundNow(text)
 
     override fun onDestroy() {
+        graph.terminateSession(SessionEnd.SHUTDOWN)
         watcher?.cancel()
         scope.coroutineContext[Job]?.cancel()
         super.onDestroy()
