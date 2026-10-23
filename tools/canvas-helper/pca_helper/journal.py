@@ -46,19 +46,32 @@ class Journal:
             except (ValueError, UnicodeDecodeError, KeyError, TypeError):
                 continue  # torn or foreign line
 
+    @staticmethod
+    def _write_all(fd, data):
+        view = memoryview(data)
+        while len(view):
+            n = os.write(fd, view)
+            view = view[n:]
+
     def _append(self, rec):
+        """Memory is updated ONLY after the whole record was written and fsync'd: a failed append leaves the bookkeeping exactly as it was, so a
+        retry persists it again (nothing is skipped because memory already looked done). After any failure the next append starts on a fresh line."""
+        line = (json.dumps(rec, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
         with self._lock:
-            self._apply(rec)
-            line = (json.dumps(rec, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
             fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
             try:
-                if self._needs_newline:
-                    os.write(fd, b"\n")
-                    self._needs_newline = False
-                os.write(fd, line)
-                fsync_fd(fd)
+                try:
+                    if self._needs_newline:
+                        self._write_all(fd, b"\n")
+                        self._needs_newline = False
+                    self._write_all(fd, line)
+                    fsync_fd(fd)
+                except BaseException:
+                    self._needs_newline = True  # a partial line may be on disk; replay skips it, the next record must not glue onto it
+                    raise
             finally:
                 os.close(fd)
+            self._apply(rec)
 
     def _apply(self, r):
         t = r["t"]
