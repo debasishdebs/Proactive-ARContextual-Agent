@@ -760,6 +760,38 @@
       ],
       "supported": false,
       "reason": "schema must be an object"
+    },
+    {
+      "id": "ok.propertyNamedLikeAKeyword",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "minLength": {
+            "type": "integer"
+          },
+          "maxItems": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "supported": true,
+      "reason": "a property NAME is not a keyword"
+    },
+    {
+      "id": "ok.enumObjectWithKeywordKey",
+      "schema": {
+        "enum": [
+          {
+            "minLength": "x",
+            "maxItems": [
+              1
+            ]
+          }
+        ]
+      },
+      "supported": true,
+      "reason": "enum values are data, never schemas"
     }
   ]
 }

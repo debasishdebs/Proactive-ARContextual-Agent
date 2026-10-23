@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 object GlassesLogging {
     /**
      * THE single owner of the glasses LOG policy. The glasses diag log has always recorded every line (I and W) and must keep doing so, so the policy is ON.
-     * LGC4 DECISION (LG-MIN, plan 0A): this does NOT follow the persisted `diag_record` flag. The flag drives the TRACE gate only (`DiagRecord.diagEnabled()`). The reason is
+     * LGC4 DECISION (LG-MIN, plan 0A), a DELIBERATE DEPARTURE from plan 3.1 (which says the glasses file policy follows the persisted `diag_record`); LGC10-min or a later package owns the switch: this does NOT follow the persisted `diag_record` flag. The flag drives the TRACE gate only (`DiagRecord.diagEnabled()`). The reason is
      * the reader hazard: `tools/battery-run.sh` and `tools/m1-run.sh` read the I-level `heartbeat v=2` lines from `capture_diag.log`; with diagnostics off those lines would no
      * longer be written and the tools would silently starve (battery summaries lose samples, M1 can report old rows or zero/default values). The log may follow the flag only
      * after both tools reject, or clearly label, a run without fresh heartbeat evidence (LGC10-min / a later package). No other code may call `PcLog.setDiagnostic` on the glasses

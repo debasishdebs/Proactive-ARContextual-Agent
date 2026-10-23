@@ -22,7 +22,7 @@ import java.security.SecureRandom
 
 /**
  * The native helper actions with the session lifecycle bound in (core plan WP6): the card's "Accept pairing" and a grant-on START the dev session; a grant-off voids the open
- * jobs (WP4 `grantOff`: also one awaiting its tap) with their cleanup; Disconnect revokes and ENDS the session through the one termination operation. The wrapped
+ * jobs (WP4 `grantOff`: also one awaiting its tap) with their cleanup; Disconnect ends the HELPER session (grant off, token and key revoked, jobs voided) without stopping the canvas server. The wrapped
  * [HelperNative] does the credential work. These calls read and commit preferences and touch the database: the view model calls them off the main thread.
  */
 class BoundHelperNative(
@@ -46,7 +46,7 @@ class BoundHelperNative(
 
     override fun disconnectHelper() {
         inner.disconnectHelper()
-        session.terminate(SessionEnd.DISCONNECT)
+        session.endHelperSession() // the helper session only: the canvas server stays up while the user is on the screen
     }
 }
 

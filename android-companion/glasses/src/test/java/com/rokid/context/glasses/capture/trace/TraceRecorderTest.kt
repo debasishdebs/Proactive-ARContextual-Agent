@@ -479,7 +479,7 @@ class TraceRecorderTest {
         dir.setWritable(false); File(root, "traces").listFiles()!!.forEach { it.setWritable(false) }
         try { r.onControl(TraceTestKit.collect(counter = 2)) } finally { dir.setWritable(true); File(root, "traces").listFiles()?.forEach { it.setWritable(true) } }
         if (File(root, "traces").exists()) {
-            assertEquals("inst-1\n1", File(root, "trace_epoch").readText(), "not adopted on disk while the wipe failed")
+            assertTrue(File(root, "trace_epoch").takeIf { it.exists() }?.readText() != "inst-1\n1", "LGC4: the forgotten epoch is cleared from disk before the fence runs, so a restart cannot reuse it")
             r.onControl(TraceTestKit.collect(counter = 2)) // the SAME (new) epoch again: retries
         }
         assertEquals(0, TraceTestKit.readAll(root).size)

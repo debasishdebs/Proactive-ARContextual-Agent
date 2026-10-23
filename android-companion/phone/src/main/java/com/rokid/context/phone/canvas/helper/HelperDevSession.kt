@@ -31,8 +31,6 @@ enum class SessionEnd(val deletion: HelperDeletionCause) {
     /** The session's own Wi-Fi observer saw the LAN go. */
     LAN_LOSS(HelperDeletionCause.SESSION_END),
     DEVELOPER_MODE_OFF(HelperDeletionCause.DEVELOPER_MODE_OFF),
-    /** The user's Disconnect on the native card. */
-    DISCONNECT(HelperDeletionCause.DISCONNECT),
     /** The service was destroyed, or the server stopped under it. */
     SHUTDOWN(HelperDeletionCause.SESSION_END),
     /** Android's foreground-service time limit, or a start the system refused. */
@@ -109,6 +107,9 @@ class ConnectivityNetworkWatch(context: Context) : NetworkWatch {
  * the canvas server and service ([stopServer]). It is idempotent, and it runs for every end: notification Stop, idle stop, four-hour expiry, Wi-Fi loss, developer mode off,
  * Disconnect, service shutdown and the time limit. The server always stops, even when an earlier step failed.
  *
+ * Accepted: a server restart (LAN toggle, certificate rotation) ABORTS open helper jobs through the backend start while this session lives on, and the four-hour expiry can only fire
+ * while the service lives (a helper-only session falls under the existing 30 min idle rule).
+ *
  * Two clocks never mix. The inactivity expiry reads [userActivityMs] (the newest authenticated BROWSER request: helper polls and heartbeats never reach it) and the open canvas
  * screen; [inactivityMs] (four hours) without either ends the session. The Wi-Fi observer belongs to the session (registered at start, unregistered at the end), not to any screen.
  */
@@ -148,6 +149,7 @@ class HelperDevSession(
     fun start() {
         synchronized(lock) {
             if (active) return
+            if (endJob?.isActive == true) return // an end is still queued: it would revoke this session's credentials; the card shows the truth and the user taps again
             active = true
             needsEnd = true
             startedAt = clock()
@@ -174,8 +176,16 @@ class HelperDevSession(
         return true
     }
 
-    /** The one end of a session. Never blocks the caller: the database work runs on [scope]; the returned job completes when the end (including the server stop) is done. */
-    fun terminate(cause: SessionEnd): Job {
+    /** The one end of a session that also stops the server. Never blocks the caller: the database work runs on [scope]; the returned job completes when the end (including the server stop) is done. */
+    fun terminate(cause: SessionEnd): Job = end(cause.deletion, stop = true)
+
+    /**
+     * The user's Disconnect: ends the HELPER session only (grants off, token revoked, confirmation key rotated, every open job voided with its cleanup, observer and watcher
+     * stopped) and does NOT stop the canvas server or service, so the screen the user is on stays up. Idempotent and sharing the latch of [terminate].
+     */
+    fun endHelperSession(): Job = end(HelperDeletionCause.DISCONNECT, stop = false)
+
+    private fun end(deletion: HelperDeletionCause, stop: Boolean): Job {
         val runEnd = synchronized(lock) {
             if (!needsEnd) false else {
                 needsEnd = false
@@ -188,19 +198,22 @@ class HelperDevSession(
         if (runEnd) {
             val job = scope.launch {
                 try {
-                    ender.endSession(cause.deletion)
+                    ender.endSession(deletion)
                 } catch (e: CancellationException) { throw e } catch (e: Exception) { line("session end failed") } finally {
                     try { onEnded() } catch (_: Throwable) { }
-                    stopServer() // last, and whatever happened before
+                    if (stop) stopServer() // last, and whatever happened before
                     line("session ended")
                 }
             }
             synchronized(lock) { endJob = job }
             return job
         }
-        // already ended (or ending): an end that is still running will stop the server; otherwise stop it again (harmless on a stopped server, needed for one that was started since)
+        // already ended (or ending). An end that is still running stops the server itself; otherwise stop it NOW, inline (a cheap synchronized stop): a queued stop could land on a server
+        // that was started in the meantime.
         val running = synchronized(lock) { endJob?.takeIf { it.isActive } }
-        return running ?: scope.launch { stopServer() }
+        if (running != null) return running
+        if (stop) stopServer()
+        return kotlinx.coroutines.CompletableDeferred(Unit)
     }
 
     /** Waits for the end that is running or ran last (tests). */

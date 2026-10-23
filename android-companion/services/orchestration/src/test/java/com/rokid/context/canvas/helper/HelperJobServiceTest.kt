@@ -7,7 +7,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -31,7 +32,7 @@ class HelperJobServiceTest {
     private val known = HashSet<String>()
     private val ok2 = okResult(listOf("i0", "i1"))
 
-    @After fun close() { scope.cancel(); h.close() }
+    @After fun close() { runBlocking { scope.coroutineContext[Job]!!.cancelAndJoin() }; h.close() }
 
     private class Run(val jobId: String, val outcome: Deferred<PyOutcome>)
 
@@ -173,13 +174,13 @@ class HelperJobServiceTest {
     @Test fun cancelInEachWaitEnqueuesCleanup() = runBlocking {
         // the executor's coroutine is cancelled during confirmation, then queue, then execution (one job at a time so each phase is exactly that job's)
         val inConfirm = start()
-        inConfirm.outcome.cancel()
+        inConfirm.outcome.cancelAndJoin()
         awaitState(inConfirm.jobId, HelperJobState.CANCELLED)
         val inQueue = confirmed()
-        inQueue.outcome.cancel()
+        inQueue.outcome.cancelAndJoin()
         awaitState(inQueue.jobId, HelperJobState.CANCELLED)
         val inExec = leased()
-        inExec.outcome.cancel()
+        inExec.outcome.cancelAndJoin()
         awaitState(inExec.jobId, HelperJobState.CANCELLED)
         assertEquals(listOf(inConfirm.jobId, inQueue.jobId, inExec.jobId), cleanupJobs())
         assertEquals(0, svc.waiterCount())
@@ -283,6 +284,35 @@ class HelperJobServiceTest {
             own.now += HelperProtocol.CONFIRM_TTL_MS
             assertEquals(PyOutcome.NotConfirmed, withTimeout(10_000) { d.await() })
         } finally { own.close() }
+    }
+
+    // ---- failJob never acknowledges a stale job (Codex review) ----
+
+    @Test fun failAfterTheDeletionEpochMovedIsRefusedAndTheJobVoids() = runBlocking {
+        val r = leased()
+        h.epoch = com.rokid.context.memory.db.DeletionEpoch("install-a", 3, h.now)
+        assertFalse(svc.failJob(r.jobId, "h1", 1, "oom"))
+        assertEquals(PyOutcome.Voided, r.await())
+        assertEquals(HelperJobState.VOIDED, h.state(r.jobId))
+        assertEquals(listOf(r.jobId), cleanupJobs())
+        assertNull(h.store.job(r.jobId)!!.payloadJson)
+    }
+
+    @Test fun failAfterTheLeaseExpiredEndsKilledNotTheHelpersCode() = runBlocking {
+        val r = leased()
+        h.now += HelperProtocol.LEASE_MS // no heartbeat: the lease ran out, no sweep ran yet
+        assertFalse(svc.failJob(r.jobId, "h1", 1, "oom"))
+        assertEquals(PyOutcome.Failed("killed"), r.await())
+        assertEquals(listOf(r.jobId), cleanupJobs())
+    }
+
+    @Test fun failAfterTheJobDeadlineEndsTimeoutNotTheHelpersCode() = runBlocking {
+        val r = leased()
+        h.advance(HelperProtocol.PY_EXEC_DEADLINE_MS - 1_000)
+        h.now += 1_000 // the last second passes without a heartbeat or a sweep
+        assertFalse(svc.failJob(r.jobId, "h1", 1, "oom"))
+        assertEquals(PyOutcome.Failed("timeout"), r.await())
+        assertEquals(HelperJobState.FAILED, h.state(r.jobId))
     }
 
     // ---- readiness ----
