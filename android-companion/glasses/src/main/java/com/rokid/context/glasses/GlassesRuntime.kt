@@ -252,9 +252,10 @@ class GlassesRuntime private constructor(private val app: Context) {
         c.onPhoneUse = { u -> if (u == null) phoneUse.reset() else phoneUse.onRemote(u, android.os.SystemClock.elapsedRealtime()) }
         // Hello goes out first; give the phone a moment to take the clock offset before frames follow.
         c.onSessionOpened = { scope.launch { delay(FLUSH_AFTER_HELLO_MS); uplink.kick() } }
-        c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); diagRecord.onSettings(s.diagRecord); ioScope.launch { applyPhoneSettings(s) } }
+        c.onPhoneSettings = { s -> plan.onPhoneSettings(s.planAware); ioScope.launch { applyPhoneSettings(s) } }
+        c.onPhoneSettingsPush = { s -> diagRecord.onSettings(s.diagRecord) }
         c.onCapturePlan = { m -> plan.onMessage(m) }
-        c.onTraceControl = { m -> markOutbox.onEpoch(m.installId, m.deletionCounter); traceRecorder.onControl(m) }
+        c.onTraceControl = { m -> markOutbox.onEpoch(m.installId, m.deletionCounter); traceRecorder.onControl(m); diagRecord.retryPersist() }
         c.onMarkAck = { a -> markOutbox.onAck(a) }
         c.onMarksDue = { markTap.flush() }
         c.statusAck = { plan.onLinkSession(); plan.statusAck().takeIf { it.gen != 0L } }   // the caps announcement stays HudController's gen-0 default

@@ -6,7 +6,8 @@ import java.io.FileOutputStream
 /**
  * The glasses' diagnostic-recording state as reported to the phone (LGC6-min puts [wire] into `Hello.diagFlagState`; LGC4P re-sends the control while it reads
  * `armed_no_epoch`). Three-state bootstrap of the plan (section 3.4) plus one extra reading:
- *  - [UNPROVISIONED]: never asked to record AND no epoch saved: the expected default of a glasses that never met a phone. Not a fault.
+ *  - [UNPROVISIONED]: NOT requested AND no durable epoch. The expected default of a glasses that never met a phone (not a fault), but it is also what a PROVISIONED glasses reads
+ *    while a deletion fence is in progress or after a failed epoch write (the old epoch is cleared first); it does not prove "never contacted".
  *  - [ARMED_NO_EPOCH]: a phone asked for diagnostics (`HudSettings.diagRecord`, persisted) but no deletion epoch is durably saved yet. Records NOTHING.
  *  - [ENABLED]: asked AND the epoch is durable: the trace gate is open.
  *  - [DISABLED]: an epoch is saved but diagnostics are not requested (Developer mode off, or an old phone).
@@ -88,6 +89,11 @@ class DiagRecord(
         io {
             try { requestedNow = store.load() } catch (e: Exception) { log("diag state not read: ${e.javaClass.simpleName}") }
         }
+    }
+
+    /** Retries a failed save without waiting for the next settings push (the runtime calls it at every `TraceControl`, which the phone also re-sends while `armed_no_epoch`). */
+    fun retryPersist() {
+        io { if (persistFailed) { val ok = try { store.store(requestedNow) } catch (e: Exception) { false }; persistFailed = !ok } }
     }
 
     fun requested(): Boolean = requestedNow

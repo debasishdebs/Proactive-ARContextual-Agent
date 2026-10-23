@@ -98,6 +98,8 @@ class HudController(
      * (a frame carries no clock flag) and with no resumes.
      */
     @Volatile var onPhoneSettings: (HudSettings) -> Unit = {}
+    /** Only a real `pc_settings` push (not the cached copy a `pc_state` pause list re-applies through [onPhoneSettings]): what the persisted diagnostic request is driven from (LGC4). */
+    @Volatile var onPhoneSettingsPush: (HudSettings) -> Unit = {}
 
     /** `pc_motion_ctx` (wave B): a fresh message of this session; null = the session closed (the gate resets). */
     @Volatile var onMotionContext: (MotionContextMessage?) -> Unit = {}
@@ -172,6 +174,7 @@ class HudController(
                 _settings.value = v
                 cache.write(v)
                 onPhoneSettings(v)
+                onPhoneSettingsPush(v)
             }
             is Decoded.VersionMismatch -> markOutdated(d.remote)
             is Decoded.Malformed -> Log.w(TAG, "bad pc_settings (${d.reason})")
