@@ -88,6 +88,8 @@ class TraceRecorder(
     pendingFile: File = File(root, "trace_cleanup_pending"),
     /** Test seam: the atomic record writer for the cleanup record and the `trace_forget` working list (false = not saved). */
     writeRecord: (File, String) -> Boolean = com.rokid.context.glasses.log.DiagStateFile::atomicWrite,
+    /** Test seam: reads a record file (the working forget list, manifests). */
+    readFile: (File) -> String = { it.readText(Charsets.UTF_8) },
     /** LGC5: runs once on the writer thread right after the start-up recovery (the `trace boot:` line comes from it). A throw is contained. */
     private val onRecovered: (RecoveryInfo) -> Unit = {},
 ) : SessionTrace, SampleTap {
@@ -114,7 +116,7 @@ class TraceRecorder(
     private class Finish(val endElapsed: Long, val endWall: Long, val endPhone: PhoneSample?, val reason: String)
 
     private val lock = Any()
-    private val storage = TraceStorage(root, space, freeBytes, onReclaim = { r -> if (r.any) log(r.line()) }, renameDir = renameDir, deleteTree = deleteTree, pendingFile = pendingFile, writeRecord = writeRecord)
+    private val storage = TraceStorage(root, space, freeBytes, onReclaim = { r -> if (r.any) log(r.line()) }, renameDir = renameDir, deleteTree = deleteTree, pendingFile = pendingFile, writeRecord = writeRecord, readFile = readFile, receiptHeld = { queuedReceipts.get() > 0 || unpersisted != null })
 
     // epoch (guarded by lock)
     @Volatile private var installId = ""
@@ -134,7 +136,12 @@ class TraceRecorder(
      * Recording stays blocked ([TraceStartBlocker.CLEANUP_PERSIST_FAILED]) meanwhile.
      */
     @Volatile private var persistFailed = false
-    private var unpersisted: Received? = null
+    @Volatile private var unpersisted: Received? = null
+    /** Received cleanups queued on the writer and not yet saved (incremented under [lock] when the control arrives): the reclaim fence sees them before the file exists. */
+    private val queuedReceipts = AtomicInteger(0)
+    /** The writer has loaded the epoch (its first task); controls that arrive earlier wait in [early] and are applied, in order, right after. Declared before the init block (an inline writer runs it in the constructor). */
+    private var loaded = false
+    private val early = ArrayList<TraceControl>()
     private class Received(val wipe: Boolean, val installId: String, val counter: Long, val lines: List<String>)
     private var nextWipeRetryAt = 0L
     /** The epoch read from disk at construction: a replayed cleanup adopts its target epoch only while no control has changed the in-memory one since. */
@@ -168,12 +175,10 @@ class TraceRecorder(
     private val tracesDone = AtomicInteger(0)
 
     init {
-        // DECISION: the persisted epoch (a 2-line file) is read here, synchronously: [onControl] must compare the phone's epoch against it, and reading it on the writer
-        // would let a first control race the load (it would see no epoch and wipe valid traces). It is a few bytes, not a decode. Everything else is on the writer.
-        // (The persisted epoch is two lines, cheap, read here so [onControl] compares against it.) The recovery seals a killed trace of any length: NEVER on the calling thread
-        // (the construction is reached from the main thread: the ANR loop of 2026-10-23), so it is the first task of the writer thread.
-        storage.readEpoch().let { installId = it.first; deletionCounter = it.second; epochDurable = it.first.isNotEmpty(); startEpoch = it }
+        // The recorder does NO file I/O in its constructor (it is reachable from the main thread: the ANR loop of 2026-10-23). The persisted epoch (2 lines) is loaded by the FIRST writer
+        // task; a control that arrives before it waits in [early] (so it can never see "no epoch" and wipe valid traces) and is applied right after the recovery; no trace starts before.
         io {
+            try { storage.readEpoch().let { synchronized(lock) { installId = it.first; deletionCounter = it.second; epochDurable = it.first.isNotEmpty(); startEpoch = it } } } catch (e: Exception) { log("trace epoch not read") }
             // LGC8-min: the received cleanup is replayed FIRST, before recovery can seal anything (a killed trace in a forgotten range must be deleted, not sealed).
             try { replayPending() } catch (e: Exception) { log("trace cleanup replay failed: ${e.javaClass.simpleName}") }
             var info = RecoveryInfo(0, 0, 0)
@@ -188,6 +193,10 @@ class TraceRecorder(
             recoveredMs = info.ms
             recovered = true
             try { onRecovered(RecoveryInfo(info.found, info.sealed, info.ms, epochDurable)) } catch (e: Exception) { log("trace boot report failed: ${e.javaClass.simpleName}") }
+            while (true) { // the controls that waited for the load, in order; the last empty check flips [loaded] under the lock
+                val batch = synchronized(lock) { if (early.isEmpty()) { loaded = true; null } else early.toList().also { early.clear() } } ?: break
+                batch.forEach { applyControl(it) }
+            }
         }
     }
 
@@ -280,6 +289,11 @@ class TraceRecorder(
 
     /** The phone's `pc_trace_ctl` (link thread). Applies the epoch, then the collect window. Tombstones, forget ranges and `send` are Task 17. */
     fun onControl(c: TraceControl) {
+        synchronized(lock) { if (!loaded) { early += c; return } }
+        applyControl(c)
+    }
+
+    private fun applyControl(c: TraceControl) {
         var wipe = false
         var forgetLines: List<String> = emptyList()
         var liveId: String? = null
@@ -287,14 +301,8 @@ class TraceRecorder(
             val now = clock()
             if (c.installId == installId && c.deletionCounter < deletionCounter) return // a stale message of this install
             phone = if (c.atMs > 0) PhoneSample(c.atMs, now) else phone
-            if (c.installId != installId || c.deletionCounter > deletionCounter) {
-                abortLocked()
-                installId = c.installId; deletionCounter = c.deletionCounter
-                epochDurable = false // fence first: the diagnostic request stays ineffective until the wipe ran and this epoch is on disk
-                wipe = true
-            }
-            // Forget (S58, P7): the phone's range is on ITS clock; the offset from this very message maps it to the glasses wall clock, widened for safety. A running trace that
-            // overlaps (or is listed) is dropped now; the closed ones are deleted by [TraceStorage.runForget], which is retried until it succeeds.
+            wipe = c.installId != installId || c.deletionCounter > deletionCounter
+            // The forget lines first (they need only the control): the receipt below must be the FIRST task queued, before any abort deletes anything.
             if (c.tombstones.isNotEmpty() || (c.forgetFromMs != null && c.forgetToMs != null)) {
                 val offset = if (c.atMs > 0) c.atMs - wallClock() else 0L
                 val margin = if (c.atMs > 0) FORGET_MARGIN_MS else FORGET_MARGIN_NO_CLOCK_MS
@@ -302,10 +310,23 @@ class TraceRecorder(
                 c.tombstones.filter { com.rokid.context.capture.trace.TraceBounds.isTraceId(it) }.forEach { lines += "T $it" }
                 if (c.forgetFromMs != null && c.forgetToMs != null && c.forgetFromMs!! - offset - margin <= c.forgetToMs!! - offset + margin) lines += "R ${c.forgetFromMs!! - offset - margin} ${c.forgetToMs!! - offset + margin}"
                 forgetLines = lines
-                job?.let { j ->
-                    val hit = lines.any { l -> l == "T ${j.id}" || (l.startsWith("R ") && l.split(' ').let { p -> j.startWall <= p[2].toLong() && wallClock() >= p[1].toLong() } ) }
-                    if (hit) abortLocked()
-                }
+            }
+            // LGC8-min receipt fence: the received cleanup is the first task on the writer and is counted at once (reclaim sees it before the file exists); every deletion below
+            // (abort discards, wipe, forget, reclaim) is queued after it.
+            if (wipe || forgetLines.isNotEmpty()) {
+                val rcv = Received(wipe, c.installId, c.deletionCounter, forgetLines)
+                queuedReceipts.incrementAndGet()
+                io { try { receive(rcv) } finally { queuedReceipts.decrementAndGet() } }
+            }
+            if (wipe) {
+                abortLocked()
+                installId = c.installId; deletionCounter = c.deletionCounter
+                epochDurable = false // fence first: the diagnostic request stays ineffective until the wipe ran and this epoch is on disk
+            }
+            // Forget (S58, P7): a running trace that overlaps (or is listed) is dropped now; the closed ones are deleted by [TraceStorage.runForget], which is retried until it succeeds.
+            job?.let { j ->
+                val hit = forgetLines.any { l -> l == "T ${j.id}" || (l.startsWith("R ") && l.split(' ').let { p -> j.startWall <= p[2].toLong() && wallClock() >= p[1].toLong() } ) }
+                if (hit) abortLocked()
             }
             liveId = job?.id // a live (not aborted) job's tmp directory is never touched by a forget: its own tasks own it
             collect = c.collect
@@ -313,12 +334,6 @@ class TraceRecorder(
             if (recording && !recordingAllowed(now)) closeLocked(CloseReason.STOP)
             // Storage work is enqueued under the SAME lock as the epoch adoption (so no start can slip between the adoption and the wipe), and the epoch to persist is captured here.
             // A trace cannot start while a wipe is pending or failed ([storageSettled]).
-            // LGC8-min: the received cleanup and its target epoch are PERSISTED (first task on the writer) before any deletion runs; nothing is deleted, and no epoch is completed,
-            // while the record is not durable (the retry below); the record leaves only when everything succeeded.
-            if (wipe || forgetLines.isNotEmpty()) {
-                val rcv = Received(wipe, installId, deletionCounter, forgetLines)
-                io { receive(rcv) }
-            }
             if (wipe || wipeFailed) enqueueWipeLocked()
             enqueueForgetLocked(liveId)
         }

@@ -68,6 +68,8 @@ internal class TraceStorage(
     private val writeRecord: (File, String) -> Boolean = com.rokid.context.glasses.log.DiagStateFile::atomicWrite,
     /** Test seam: removes one marker file (true when it is gone). */
     private val deleteMarker: (File) -> Boolean = { it.delete() || !it.exists() },
+    /** LGC8-min: true while the recorder holds a received cleanup that is queued or not yet durable (memory, any thread): reclaim must not run beside it, not only when the file exists. */
+    private val receiptHeld: () -> Boolean = { false },
 ) {
     val tracesDir = File(root, "traces")
     val tmpDir = File(root, "imu_trace_tmp")
@@ -125,7 +127,8 @@ internal class TraceStorage(
      * tried again at the next boundary.
      */
     fun reclaim(needBytes: Long, protect: Set<String> = emptySet(), honorBudget: Boolean = true): ReclaimResult {
-        if (cleanupPending()) return NO_RECLAIM
+        if (cleanupPending() || receiptHeld()) return NO_RECLAIM
+        val protect = protect + recoveryProtect
         fun satisfied() = measure() >= space.floorBytes + needBytes && (!honorBudget || used.get() + needBytes <= softBudgetBytes)
         if (satisfied()) return NO_RECLAIM
         val all = (tracesDir.listFiles() ?: emptyArray()).filter { it.isDirectory && TraceBounds.isTraceId(it.name) }.map { Candidate(it, endWallOf(it), isTransferred(it.name)) }
@@ -161,7 +164,15 @@ internal class TraceStorage(
      * belongs to the persisted deletion epoch and fits the disk cap; anything else in tmp (another epoch, no start record, no readable chunk, over the cap) is deleted.
      * The used size is recounted.
      */
+    /** Traces this recovery pass sealed so far (writer thread): every nested reclaim of the pass (the sealing room of the NEXT trace) leaves them alone. */
+    private val recoveryProtect = HashSet<String>()
+
     fun recover(): RecoveryCounts {
+        recoveryProtect.clear()
+        try { return recoverPass() } finally { recoveryProtect.clear() }
+    }
+
+    private fun recoverPass(): RecoveryCounts {
         val sealedBefore = tracesDir.list()?.toSet() ?: emptySet()
         measureBudget()
         val found = tmpDir.listFiles()?.count { it.isDirectory } ?: 0
@@ -175,6 +186,7 @@ internal class TraceStorage(
             // Only a directory that was REJECTED (wrong epoch, no start record, no readable chunk, over the cap, a format error) is deleted.
             val retry = try { seal(dir, epoch); false } catch (e: Retryable) { true } catch (e: Exception) { false }
             if (!retry) deleteTree(dir)
+            recoveryProtect += (tracesDir.list()?.toSet() ?: emptySet()) - sealedBefore
         }
         tmpDir.listFiles()?.filter { !it.isDirectory }?.forEach { it.delete() }
         pruneMarkers()
@@ -401,7 +413,8 @@ internal class TraceStorage(
         if (!writeRecord(forgetFile, (pendingForget() + lines).distinct().joinToString("\n"))) throw java.io.IOException("trace_forget not saved")
     }
 
-    fun pendingForget(): List<String> = try { forgetFile.readText().lines().filter { it.isNotBlank() } } catch (e: Exception) { emptyList() }
+    /** The working list. A file that does not exist is empty; one that exists but cannot be READ throws (never "empty": an unread list must not look like a finished one). */
+    fun pendingForget(): List<String> = if (!forgetFile.exists()) emptyList() else readFile(forgetFile).lines().filter { it.isNotBlank() }
     fun hasPendingForget(): Boolean = forgetFile.exists()
 
     /**
