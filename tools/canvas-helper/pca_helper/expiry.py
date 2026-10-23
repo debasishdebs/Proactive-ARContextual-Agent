@@ -19,7 +19,7 @@ class ArtifactExpiry:
         now = self.clock.wall_ms()
         removed = 0
         for a in self.journal.artifacts():
-            if a["expiresAtMs"] <= now and Store.remove_path(a["path"]):
+            if (a["expiresAtMs"] <= now or now < a["createdAtMs"]) and Store.remove_path(a["path"]):  # clock set back past creation: expire
                 self.journal.artifact_removed(a["id"])
                 removed += 1
         if removed:

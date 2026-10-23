@@ -58,24 +58,27 @@ def test_import_has_no_side_effects(tmp_path):
     assert list(tmp_path.iterdir()) == [], "no ~/.pca-helper created at import"
 
 
-def run_cli(tmp_path, argv, tr=None):
+def run_cli(tmp_path, argv, tr=None, prompt=None):
     out, err = io.StringIO(), io.StringIO()
-    code = main(argv, out=out, err=err, home=tmp_path / "home", transport=tr or FakeTransport())
+    code = main(argv, out=out, err=err, home=tmp_path / "home", transport=tr or FakeTransport(), getpass=prompt)
     return code, out.getvalue(), err.getvalue()
 
 
 def test_cli_pair_without_fingerprint_exits_2_and_sends_nothing(tmp_path):
     tr = FakeTransport()
-    code, out, err = run_cli(tmp_path, ["pair", "10.0.0.5:8443", "123456"], tr)
+    code, out, err = run_cli(tmp_path, ["pair", "10.0.0.5:8443"], tr)
     assert code == 2 and tr.opened == [] and tr.sent == []
-    assert "123456" not in out + err
+    code, out, err = run_cli(tmp_path, ["pair", "10.0.0.5:8443", "abababab", "123456"], tr)  # 8 digits: too short
+    assert code == 2 and tr.opened == [] and tr.sent == [] and "123456" not in out + err
+    code, out, err = run_cli(tmp_path, ["pair", "10.0.0.5:8443", "a" * 15, "123456"], tr)
+    assert code == 2 and tr.opened == [] and tr.sent == [] and "123456" not in out + err
 
 
 def test_cli_pair_then_run_once_and_never_prints_secrets(tmp_path):
     tr = FakeTransport("ab" * 32)
     tok = "tok_" + "Q7" * 20
     tr.route("POST", "/api/helper/pair", (200, {"token": tok, "helperId": "h1", "sessionGen": 1, "caps": {"py_exec": True}, "constants": {}}))
-    code, out, err = run_cli(tmp_path, ["pair", "10.0.0.5:8443", "654321", "abababab"], tr)
+    code, out, err = run_cli(tmp_path, ["pair", "10.0.0.5:8443", "abababababababab", "654321"], tr)
     assert code == 0
     tr.route("POST", "/api/helper/poll", (200, {"sessionGen": 1, "caps": {"py_exec": True}, "serverTimeMs": 0, "available": [], "cancel": [], "cleanup": []}))
     code2, out2, err2 = run_cli(tmp_path, ["run", "--once"], tr)
@@ -96,7 +99,7 @@ def test_cli_run_without_pairing_fails_cleanly(tmp_path):
 def test_cli_run_exits_3_when_session_is_gone(tmp_path):
     tr = FakeTransport("ab" * 32)
     tr.route("POST", "/api/helper/pair", (200, {"token": "t" * 24, "helperId": "h", "sessionGen": 1, "caps": {}, "constants": {}}))
-    run_cli(tmp_path, ["pair", "h:1", "1", "abababab"], tr)
+    run_cli(tmp_path, ["pair", "h:1", "abababababababab", "1"], tr)
     tr.route("POST", "/api/helper/poll", (401, {"error": "unauthorized", "message": "x"}))
     assert run_cli(tmp_path, ["run", "--once"], tr)[0] == 3
 
@@ -108,3 +111,19 @@ def test_cli_doctor_stub_reports_checks_without_secrets(tmp_path):
 
 def test_cli_unknown_command_exits_2(tmp_path):
     assert run_cli(tmp_path, ["nope"])[0] == 2
+
+
+def test_cli_pair_code_prompted_when_omitted_or_dash_and_never_echoed(tmp_path):
+    for argv in (["pair", "h:1", "abababababababab"], ["pair", "h:1", "abababababababab", "-"]):
+        tr = FakeTransport("ab" * 32)
+        tr.route("POST", "/api/helper/pair", (200, {"token": "t" * 24, "helperId": "h", "sessionGen": 1, "caps": {}, "constants": {}}))
+        asked = []
+        code, out, err = run_cli(tmp_path / str(len(argv)), argv, tr, prompt=lambda msg: asked.append(msg) or "777123")
+        assert code == 0 and len(asked) == 1
+        assert json.loads(tr.sent[0]["body"])["code"] == "777123" and "777123" not in out + err
+
+
+def test_cli_missing_pin_never_prompts_for_the_code(tmp_path):
+    asked = []
+    code, _, _ = run_cli(tmp_path, ["pair", "h:1", "abab"], prompt=lambda m: asked.append(m) or "1")
+    assert code == 2 and asked == []

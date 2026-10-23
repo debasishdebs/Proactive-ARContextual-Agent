@@ -22,7 +22,7 @@ _TEXT = {401: "the phone refused the pairing code", 409: "helper protocol mismat
 def pair(store, transport, host, port, code, name, pin, log):
     pin_n = normalize_pin(pin)
     if pin_n is None:
-        raise MissingPin("give at least 8 hex digits of the fingerprint shown on the phone")
+        raise MissingPin("give at least 16 hex digits of the fingerprint shown on the phone")
     if not isinstance(code, str) or not code.strip():
         raise PairError("a pairing code is required")
     log.register_secret(code)

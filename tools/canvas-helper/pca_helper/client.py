@@ -41,12 +41,16 @@ class Response:
         return 200 <= self.status < 300
 
 
+MIN_PIN_HEX = 16  # 64 bits: a shorter prefix can be ground against a CERT_NONE peer, so it is refused before anything is sent
+
+
 def normalize_pin(pin):
-    """The user types the fingerprint shown on the phone (at least 8 hex digits, ':' and spaces allowed). None when absent or unusable."""
+    """The user types the fingerprint shown on the phone (at least MIN_PIN_HEX = 16 hex digits, ':' and spaces allowed, case-insensitive).
+    None when absent or unusable. The phone displays 16 or more digits (WP6/WP9)."""
     if not isinstance(pin, str):
         return None
     p = re.sub(r"[\s:]", "", pin).lower()
-    if len(p) < 8 or len(p) > 64 or re.fullmatch(r"[0-9a-f]+", p) is None:
+    if len(p) < MIN_PIN_HEX or len(p) > 64 or re.fullmatch(r"[0-9a-f]+", p) is None:
         return None
     return p
 

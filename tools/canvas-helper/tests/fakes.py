@@ -158,6 +158,7 @@ class FakeRunner:
         self.store = store
         self.raises = None
         self.block = None
+        self.kill_fail_first = False
 
     def start(self, job, payload):
         self.started.append((job, payload))
@@ -171,6 +172,9 @@ class FakeRunner:
             d.mkdir(parents=True, exist_ok=True)
             (d / "x.bin").write_bytes(b"input")
         h = FakeHandle("pca-job-" + job["jobId"])
+        if self.kill_fail_first:
+            h.kill_results.append(False)
+            h.force_results.append(False)
         self.handles.append(h)
         return h
 

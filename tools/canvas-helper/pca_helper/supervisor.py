@@ -8,11 +8,14 @@
 * a deletion-class denial (including `not_confirmed`) deletes every laptop copy at once and posts no result and no fail.
 The runner is an interface (WP12/WP13): `start(job, payload) -> Handle`; Handle: `kill() -> bool`, `force_remove() -> bool`, `done() -> bool`,
 `outcome() -> {"kind": "result", "result": {...}} | {"kind": "fail", "code": str}`. The runtime interface (WP12) is: `list_containers()`, `kill(name)`,
-`remove(name)`, `list_volumes()`, `remove_volume(name)`. No subprocess and no host execution of job code exists in this package.
+`remove(name)`, `list_volumes()`, `remove_volume(name)`. A container is named `pca-job-<jobId>` (Handle.name, else that default): that name is the
+kill-pending key in the journal. A payload that fails its integrity checks (hash, length, shape) is reported as fail `bad_output`, the only enum code
+that fits; WP8 must not present it to the user as "your function's output was invalid". No subprocess and no host execution of job code exists in this package.
 """
 import json
 import re
 import threading
+
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -25,6 +28,10 @@ KILL_RETRY_MS = 1000
 RESULT_RETRY_MS = 1000
 MAINTENANCE_INTERVAL_MS = 3600 * 1000
 WATCHDOG_TICK_S = protocol.constants()["watchdogTickMs"] / 1000.0
+
+
+def _snake(name):
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()[:24]
 
 
 def constants():
@@ -75,6 +82,7 @@ class Supervisor:
         self._job = None
         self.session_lost = False
         self._last_maintenance = None
+        self._next_pending_ms = 0
 
     @property
     def active_job_id(self):
@@ -86,12 +94,16 @@ class Supervisor:
         """Orphans first: every labelled container is killed and removed, every job the journal still calls open is closed (its copies are removed
         by the local cleanup), every pca-job-* volume goes (no job is open at start), pending cleanup commands are resumed, expired artifacts swept."""
         if self.runtime is not None:
-            for name in self.runtime.list_containers():
+            names = self.runtime.list_containers()
+            failed = 0
+            for name in names:
                 ok = self.runtime.kill(name)
                 ok = self.runtime.remove(name) and ok
                 if not ok:
+                    failed += 1
                     self.journal.kill_pending_add(name)
-            self.log.event("orphan_sweep", containers_checked=len(self.runtime.list_containers()))
+                    self._next_pending_ms = self.clock.now_ms() + KILL_RETRY_MS
+            self.log.event("orphan_sweep", containers_checked=len(names), kill_failed=failed)
         for j in self.journal.open_jobs():
             self.journal.job_end(j["jobId"])
         if self.runtime is not None:
@@ -110,16 +122,35 @@ class Supervisor:
             else:
                 self.log.event("cleanup_retry", local=c["local"])
 
+    def _retry_pending_kills_if_due(self):
+        now = self.clock.now_ms()
+        if now >= self._next_pending_ms:
+            self._next_pending_ms = now + KILL_RETRY_MS
+            self._retry_pending_kills()
+
     def _retry_pending_kills(self):
+        """Containers whose kill failed outside a held job (orphans at start, a container started after a denial): kill by name, success = gone."""
         if self.runtime is None:
             return
-        for key in self.journal.kill_pending():
-            if key == self.active_job_id:
-                continue
-            ok = self.runtime.kill(key)
-            ok = self.runtime.remove(key) and ok
-            if ok:
+        keys = self.journal.kill_pending()
+        if not keys:
+            return
+        job = self._job
+        active = self._cname(job) if job is not None else None
+        for key in keys:
+            if key == active:
+                continue  # the held job's own retry loop owns it
+            try:
+                self.runtime.kill(key)
+                self.runtime.remove(key)
+                gone = key not in self.runtime.list_containers()
+            except Exception:
+                gone = False
+            if gone:
                 self.journal.kill_done(key)
+
+    def _cname(self, job):
+        return getattr(job.handle, "name", None) or VOLUME_PREFIX + job.job_id
 
     def _process_cleanups(self, cmds):
         valid = [c for c in cmds if isinstance(c, dict) and isinstance(c.get("cleanupId"), str) and isinstance(c.get("jobId"), str)]
@@ -135,7 +166,7 @@ class Supervisor:
     # ================================================================= poll / lease
     def poll_once(self):
         self._run_pending_cleanups()
-        self._retry_pending_kills()
+        self._retry_pending_kills_if_due()
         with self._lock:
             job = self._job
             active = [{"jobId": job.job_id, "leaseGen": job.lease_gen}] if job is not None and not job.ended else []
@@ -163,7 +194,9 @@ class Supervisor:
         for jid in data.get("cancel") or []:
             if job is not None and job.job_id == jid:
                 self._deny(job, "cancelled")
-        if "py_exec" in (data.get("available") or []) and self.ready() and self._job is None and not self.session_lost:
+        if ("py_exec" in (data.get("available") or []) and self.ready() and self._job is None and not self.session_lost
+                and not self.journal.pending_cleanups() and not self.journal.kill_pending()):
+            # never lease while a cleanup (a `*` would hit the new job) or a kill is still pending
             self.lease_once()
         return "ok"
 
@@ -225,6 +258,10 @@ class Supervisor:
         if payload is None:
             self._fail_job(job, "bad_output")
             return
+        with self._lock:
+            dead = job.killed or job.ended
+        if dead:
+            return  # denied, cancelled or killed during the payload fetch: the runner is never started for it
         remaining = max(job.job_deadline - self.clock.now_ms(), 0)
         try:
             handle = self.runner.start({"jobId": job.job_id, "leaseGen": job.lease_gen, "bundleHash": job.bundle_hash, "remainingMs": remaining}, payload)
@@ -238,12 +275,18 @@ class Supervisor:
             late = job.killed or job.ended
             if not late:
                 job.handle = handle
-        if late:  # killed or ended while the runner was starting: never leave the new container behind
+        if late:  # killed or ended while the runner was starting: never leave the new container or its inputs behind
+            ok = False
             try:
-                if not handle.kill():
-                    handle.force_remove()
-            finally:
-                self._executor.execute(job.job_id)
+                ok = bool(handle.kill()) or bool(handle.force_remove())
+            except Exception:
+                ok = False
+            if not ok:
+                self.journal.kill_pending_add(getattr(handle, "name", None) or VOLUME_PREFIX + job.job_id)
+                self._next_pending_ms = self.clock.now_ms() + KILL_RETRY_MS
+                self.log.event("kill_failed")
+            self.journal.job_end(job.job_id)  # a fresh local cleanup entry, retried every poll until the copies and the volume are gone
+            self._run_pending_cleanups()
 
     def _verified_payload(self, job, raw):
         if len(raw) != job.payload_bytes or len(raw) > self.c["maxPayloadBytes"]:
@@ -290,7 +333,41 @@ class Supervisor:
             self._deny(job, deny)
 
     # ================================================================= watchdog (its own thread; reads deadlines only)
+    def watchdog_guard(self):
+        """The watchdog thread's body: it must never die. An unexpected exception fails SAFE (every running job is killed and its copies deleted, the
+        class name is logged, never the message) and the loop keeps running."""
+        try:
+            self.watchdog_check()
+        except Exception as e:
+            self.log.event("watchdog_error", cls=_snake(type(e).__name__))
+            self._fail_safe()
+
+    def _fail_safe(self):
+        job = self._job
+        if job is None:
+            return
+        try:
+            self._deny(job, "watchdog_error")
+            return
+        except Exception:
+            pass
+        try:
+            h = job.handle
+            if h is not None and not h.kill():
+                h.force_remove()
+        except Exception:
+            pass
+        try:
+            self.store.delete_job_copies(job.job_id)
+        except Exception:
+            pass
+        with self._lock:
+            job.killed = job.ended = True
+            if self._job is job:
+                self._job = None
+
     def watchdog_check(self):
+        self._retry_pending_kills_if_due()
         reason, retry = None, False
         with self._lock:
             job = self._job
@@ -325,12 +402,12 @@ class Supervisor:
         if ok:
             with self._lock:
                 job.kill_pending = False
-            self.journal.kill_done(job.job_id)
+            self.journal.kill_done(self._cname(job))
             return True
         with self._lock:
             job.kill_pending = True
             job.next_kill_ms = self.clock.now_ms() + KILL_RETRY_MS
-        self.journal.kill_pending_add(job.job_id)
+        self.journal.kill_pending_add(self._cname(job))
         self.log.event("kill_failed")
         return False
 
@@ -470,12 +547,15 @@ class Supervisor:
 
         def beat_loop():
             while not stop_threads.is_set():
-                self.heartbeat_tick()
+                try:
+                    self.heartbeat_tick()
+                except Exception as e:
+                    self.log.event("heartbeat_error", cls=_snake(type(e).__name__))
                 stop_threads.wait(hb_s)
 
         def watch_loop():
             while not stop_threads.is_set():
-                self.watchdog_check()
+                self.watchdog_guard()
                 stop_threads.wait(WATCHDOG_TICK_S)
 
         threads = [threading.Thread(target=beat_loop, daemon=True), threading.Thread(target=watch_loop, daemon=True)]

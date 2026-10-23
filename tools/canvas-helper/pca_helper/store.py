@@ -1,4 +1,5 @@
 """On-disk state under ~/.pca-helper: atomic writes, files 0600, dirs 0700, never state inside a job dir."""
+import fcntl
 import json
 import os
 import re
@@ -6,6 +7,17 @@ import shutil
 from pathlib import Path
 
 from .protocol import constants
+
+
+def fsync_fd(fd):
+    """Flush to stable storage: on macOS plain fsync does not reach the drive, F_FULLFSYNC does."""
+    if hasattr(fcntl, "F_FULLFSYNC"):
+        try:
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+            return
+        except OSError:
+            pass
+    os.fsync(fd)
 
 
 class Store:
@@ -27,14 +39,14 @@ class Store:
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
                 f.flush()
-                os.fsync(f.fileno())
+                fsync_fd(f.fileno())
             os.replace(str(tmp), str(path))
         finally:
             if tmp.exists():
                 tmp.unlink()
         dfd = os.open(str(path.parent), os.O_RDONLY)
         try:
-            os.fsync(dfd)
+            fsync_fd(dfd)
         finally:
             os.close(dfd)
 
