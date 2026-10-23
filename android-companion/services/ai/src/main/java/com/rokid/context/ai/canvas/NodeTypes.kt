@@ -67,6 +67,9 @@ object NodeTypes {
     const val POLICY_CAPTURE_RATE = "policy.capture_rate"
     const val CAPTURE_IMAGE = "capture.image"
 
+    /** S6 tier 3: laptop-run Python. Registered so a graph can hold it, never published, never run on the phone and never in `Executors.all()` (its executor is the experiment map's, WP8). */
+    const val PY_FN = "py.fn"
+
     const val OTHER = "other"
 
     /** The domains a `signal.*` node may run in. */
@@ -113,7 +116,17 @@ object NodeTypes {
             category = Category.ACTIONS_CAPTURE, short = "capture", params = CaptureParams.captureImage),
     )
 
-    val all: List<NodeType> = legacy + capture
+    /** The python experiment node (S6 tier 3). Not in the palette until the helper capability exists (WP9); `entry` is the fixed function name `run`, not a param. */
+    private val experiments: List<NodeType> = listOf(
+        NodeType(PY_FN, "Python function", setOf(PortType.JSON), PortType.JSON, sinceSchema = 2, domain = Domain.ASYNC, category = Category.CODE,
+            executor = ExecutorKind.PYTHON, short = "pyfn", palette = false, liveable = false, cost = CostSpec(modelCalls = 0),
+            params = ParamSchema(listOf(
+                ParamSpec("source", ParamKind.TEXT, label = "Source", maxLen = 16000),
+                ParamSpec("outSchema", ParamKind.TEXT, label = "Output schema", maxLen = 4000),
+            ))),
+    )
+
+    val all: List<NodeType> = legacy + capture + experiments
 
     private val index = all.associateBy { it.type }
 

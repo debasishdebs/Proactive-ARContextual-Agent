@@ -277,6 +277,38 @@ class CanvasPlanPublishApiTest {
 
     private fun status() = ok(call("GET", "/api/plans/status"))
 
+    /** WP7 (S6, P15): a stored version holding `py.fn` or a `tool.` node reaches every publish route and is refused with the one fixed text; nothing is published or sent. */
+    private fun storedTier3(p: Pipeline): Pair<String, Int> {
+        val id = ok(call("POST", "/api/pipelines", buildJsonObject { put("from", "live-extract"); put("name", p.name) }))["id"]!!.jsonPrimitive.content
+        runBlocking {
+            val json = PipelineJson.encode(p.copy(id = id))
+            db.canvasDao().insertVersion(com.rokid.context.memory.db.CanvasPipelineVersionEntity(id, 1, json, PipelineHash.of(p.copy(id = id)), "n", 1L))
+        }
+        return id to 1
+    }
+    private fun withNode(p: Pipeline, type: String) = p.copy(nodes = p.nodes + node("t3", type))
+    private val s6 = listOf(com.rokid.context.ai.canvas.plan.PlanShape.S6_REFUSAL)
+
+    @Test fun apiPublishRouteRefusesTier3() {
+        for (type in listOf("py.fn", "tool.draft")) for (mode in listOf("shadow", "live", "prompts")) {
+            val (id, v) = storedTier3(withNode(DefaultPipelines.liveExtract().copy(name = "T3 $type $mode"), type))
+            val r = call("POST", "/api/pipelines/$id/versions/$v/publish", buildJsonObject { put("mode", mode) })
+            assertEquals("$type $mode", 409, r.status); assertEquals("publish_blocked", json(r)["error"]!!.jsonPrimitive.content); assertEquals(s6, problems(r))
+        }
+        assertTrue(ok(call("GET", "/api/publish"))["stack"]!!.jsonArray.isEmpty())
+    }
+
+    @Test fun planRoutesRefuseTier3AndCheckReportsTheReason() {
+        for (type in listOf("py.fn", "tool.draft")) {
+            val (id, v) = storedTier3(withNode(fullGraph("T3p $type"), type))
+            val chk = ok(call("POST", "/api/plans/check", publishBody(id, v, "SHADOW")))
+            assertEquals("false", chk["ok"]!!.jsonPrimitive.content)
+            val r = call("POST", "/api/plans/publish", publishBody(id, v, "SHADOW"))
+            assertEquals(type, 409, r.status); assertTrue(problems(r).toString(), s6.single() in problems(r))
+        }
+        assertTrue(sent.isEmpty()); assertTrue(ok(call("GET", "/api/publish"))["stack"]!!.jsonArray.isEmpty())
+    }
+
     @Test fun trialAndLiveAreRefusedUntilM1IsRecordedThroughTheRoute() {
         val (id, v) = frozen(fullGraph("T")); addReplay(PlanCompiler.compile(fullGraph("T")).plan!!.configHash)
         val blocked = call("POST", "/api/plans/publish", publishBody(id, v, "TRIAL"))

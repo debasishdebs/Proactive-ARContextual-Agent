@@ -1,6 +1,7 @@
 package com.rokid.context.ai.canvas.plan
 
 import com.rokid.context.ai.canvas.Domain
+import com.rokid.context.ai.canvas.ExecutorKind
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.Pipeline
 
@@ -28,12 +29,18 @@ object PlanShape {
     /** True when the projection still has an ASYNC pipeline to publish (it has its photo input). */
     fun hasAsyncHalf(p: Pipeline): Boolean = asyncProjection(p).nodes.any { it.type == NodeTypes.INPUT_PHOTOS }
 
+    /** The one fixed S6 refusal text (gate 2): every publish path answers exactly this when [tier3Nodes] is not empty. */
+    const val S6_REFUSAL = "Gate 2: the graph has a tier-3 node, and generated or laptop-run code never publishes."
+
     /**
-     * Gate 2 (S6): nodes of tier 3, which never publish. Ruling: tier 3 is generated or laptop-run code, that is a node type under `py.` or `tool.`, or one of the
-     * REPLAY_ONLY domain. The catalogue has none yet; this keeps the gate real for the node types that will.
+     * Gate 2 (S6): nodes of tier 3, which never publish. Ruling: tier 3 is generated or laptop-run code, that is a node type under `py.` or `tool.`, a type whose registry
+     * entry runs on the laptop (`ExecutorKind.PYTHON`, `DRAFT`), or one of the REPLAY_ONLY domain. The registry lookup is the unresolved one (`byType`), so a schema-1 graph that
+     * names a newer type is still caught. This is the ONE guard every publish path calls (S6: [S6_REFUSAL]).
      */
     fun tier3Nodes(p: Pipeline): List<String> = p.nodes.filter { n ->
-        n.type.startsWith("py.") || n.type.startsWith("tool.") || domainOf(p, n.type, n) == Domain.REPLAY_ONLY
+        val t = NodeTypes.byType(n.type)
+        n.type.startsWith("py.") || n.type.startsWith("tool.") || domainOf(p, n.type, n) == Domain.REPLAY_ONLY ||
+            t?.executor == ExecutorKind.PYTHON || t?.executor == ExecutorKind.DRAFT || t?.domain == Domain.REPLAY_ONLY
     }.map { it.id }.sorted()
 }
 
