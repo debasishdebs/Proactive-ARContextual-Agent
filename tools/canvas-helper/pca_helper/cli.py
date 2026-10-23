@@ -1,4 +1,4 @@
-"""Command line: `run HOST:PORT FINGERPRINT [CODE|-] [--once]` and `doctor` (stub: runtime, setup and gate checks arrive with WP12/WP13).
+"""Command line: `run HOST:PORT FINGERPRINT [CODE|-] [--once]`, `doctor` and `setup [--podman PATH] [--apply]` (WP12).
 `run` pairs and then supervises IN THE SAME PROCESS: the helper session token is memory-only (user ruling), so a helper restart pairs again with
 a fresh code; only non-secret pairing metadata (host, port, fingerprint) is written to disk. All output goes through the `out` / `err` streams of
 `main` (never a raw print); secrets are never written."""
@@ -11,15 +11,20 @@ from pathlib import Path
 from .client import MissingPin, NetworkError, PhoneClient, PinMismatch, TlsTransport, normalize_pin
 from .clock import SystemClock
 from .expiry import ArtifactExpiry
+from . import doctor as doctor_mod
+from . import profiles
+from . import setup as setup_mod
 from .journal import Journal
 from .log import Logger
 from .pair import PairError, pair
+from .runner import JobRunner
+from .runtime import NeedsRuntime, load_runtime
 from .store import Store
 from .supervisor import RunnerError, Supervisor
 
 
 class NullRunner:
-    """No runtime exists in this build (WP12): a job can only fail `needs_runtime`. There is no host fallback and job code is never executed here."""
+    """No runtime is configured: a job can only fail `needs_runtime`. There is no host fallback and job code is never executed here."""
 
     def start(self, job, payload):
         raise RunnerError("needs_runtime")
@@ -41,7 +46,24 @@ def _split_host(hp):
     return host, int(port)
 
 
-USAGE = "usage: pca-helper run HOST:PORT FINGERPRINT [CODE|-] [--once] | doctor\n"
+USAGE = "usage: pca-helper run HOST:PORT FINGERPRINT [CODE|-] [--once] | doctor | setup [--podman PATH] [--apply]\n"
+
+READY_CACHE_MS = 10_000
+
+
+class Ready:
+    """`ready.py_exec` of the poll body: a runtime is configured, the python gate stamp exists and the machine is up (cached, so a poll never waits)."""
+
+    def __init__(self, store, runtime, clock):
+        self.store, self.runtime, self.clock = store, runtime, clock
+        self._at, self._val = None, False
+
+    def __call__(self):
+        now = self.clock.now_ms()
+        if self._at is None or now - self._at >= READY_CACHE_MS:
+            self._at = now
+            self._val = self.runtime is not None and doctor_mod.gate_ready(self.store) and self.runtime.machine_state() == "running"
+        return self._val
 
 
 def _pair_failure(e, err):
@@ -58,7 +80,7 @@ def _pair_failure(e, err):
     return 1
 
 
-def main(argv=None, out=None, err=None, home=None, transport=None, clock=None, env=None, getpass=None):
+def main(argv=None, out=None, err=None, home=None, transport=None, clock=None, env=None, getpass=None, probes=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     out = out or sys.stdout
     err = err or sys.stderr
@@ -72,6 +94,9 @@ def main(argv=None, out=None, err=None, home=None, transport=None, clock=None, e
     sr.add_argument("--once", action="store_true")
     sr.add_argument("--name", default="laptop")
     sub.add_parser("doctor")
+    ss = sub.add_parser("setup")
+    ss.add_argument("--podman", default="")
+    ss.add_argument("--apply", action="store_true")
     try:
         a = p.parse_args(argv)
     except (ValueError, SystemExit):
@@ -106,7 +131,13 @@ def main(argv=None, out=None, err=None, home=None, transport=None, clock=None, e
         client = PhoneClient(transport, host, port, st["pin"], res.token)
         out.write("paired; py_exec grant %s on the phone\n" % ("is" if res.caps.get("py_exec") else "is not yet"))
         journal = Journal(store.journal_dir, clock)
-        sup = Supervisor(client, NullRunner(), journal, store, clock, log, runtime=None, ready=lambda: False, expiry=ArtifactExpiry(journal, clock, log))
+        try:
+            rt = load_runtime(store, journal, log, env)
+            rt.check()
+            runner, ready = JobRunner(rt, store, journal, profiles.load_table(), clock, log), Ready(store, rt, clock)
+        except NeedsRuntime:  # no usable runtime: every job would be `needs_runtime`, so none is offered
+            rt, runner, ready = None, NullRunner(), (lambda: False)
+        sup = Supervisor(client, runner, journal, store, clock, log, runtime=rt, ready=ready, expiry=ArtifactExpiry(journal, clock, log))
         import threading
         try:
             status = sup.run(threading.Event(), max_cycles=1 if a.once else None)
@@ -120,19 +151,6 @@ def main(argv=None, out=None, err=None, home=None, transport=None, clock=None, e
             return 1
         return 0
 
-    # doctor (stub)
-    st = store.load_state() or {}
-    checks = [
-        ("home dir mode 0700", (store.home.stat().st_mode & 0o777) == 0o700),
-        ("pairing metadata", bool(st.get("host") and st.get("pin"))),
-        ("no persisted session token", "token" not in st),
-        ("runtime", False),
-        ("python gate stamp", False),
-    ]
-    notes = {"runtime": " (needs_runtime: runtime checks arrive with the runtime work package)", "python gate stamp": " (no stamp in this build)",
-             "pairing metadata": " (informational: every start pairs again)", "no persisted session token": " (run once to delete it)"}
-    bad = False
-    for name, ok in checks:
-        out.write("%s %s%s\n" % ("ok  " if ok else "FAIL", name, "" if ok else notes.get(name, "")))
-        bad = bad or not ok
-    return 1 if bad else 0
+    if a.cmd == "setup":
+        return setup_mod.main(store, out, profiles.load_table(), a.podman, a.apply, str(Path(__file__).resolve().parents[3]), log)
+    return doctor_mod.run(store, out, probes=probes, log=log)

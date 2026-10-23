@@ -1,0 +1,25 @@
+{
+  "_note": "The ONE resource config (core plan section 2; part A table 6 minus the loop-mount columns). Every number of every container row lives here and nowhere else. `job` rows run leased jobs (only py_exec in CORE); `setup` and `probe` are non-job rows of the same table. A cell may be replaced only by a measured value (live gate).",
+  "machine": {"name": "pca", "cpus": 2, "memoryMb": 4096, "diskGb": 20, "stageMount": "$HOME/.pca-helper/stage:/stage"},
+  "host": {"minFreeDiskGb": 15, "minMemoryFreePercent": 25, "vmVarMaxGiB": 17},
+  "profiles": {
+    "py_exec": {
+      "job": true, "image": "localhost/pca-pyjob:1", "network": "none", "user": "10001",
+      "memoryMb": 1024, "memorySwapMb": 1024, "cpus": 1, "pidsLimit": 128, "tmpfsMb": 64, "tmpfsNoexec": true,
+      "logMaxBytes": 1048576, "deadlineS": 120, "perItemS": 5,
+      "outMaxBytes": 33554432, "outMaxFiles": 200, "outMaxDepth": 8, "outNameMaxBytes": {"outputs.json": 33554432}
+    },
+    "setup": {
+      "job": false, "image": null, "network": "pca-egress", "user": "10001",
+      "memoryMb": 3072, "memorySwapMb": 3072, "cpus": 2, "pidsLimit": 1024, "tmpfsMb": 512, "tmpfsNoexec": false,
+      "logMaxBytes": 8388608, "deadlineS": 3600,
+      "outMaxBytes": 8589934592, "outMaxFiles": 200, "outMaxDepth": 8, "outNameMaxBytes": {}
+    },
+    "probe": {
+      "job": false, "image": "localhost/pca-probe:1", "network": "none", "user": "10001",
+      "memoryMb": 512, "memorySwapMb": 512, "cpus": 1, "pidsLimit": 256, "tmpfsMb": 64, "tmpfsNoexec": true,
+      "logMaxBytes": 1048576, "deadlineS": 600,
+      "outMaxBytes": 67108864, "outMaxFiles": 200, "outMaxDepth": 8, "outNameMaxBytes": {}
+    }
+  }
+}
