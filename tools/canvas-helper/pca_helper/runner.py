@@ -287,6 +287,7 @@ class JobRunner:
         except BaseException:
             lock.release()
             raise
-        h = JobHandle(volume_name(job_id), job_id, self.runtime, ws, proc, lock, self._glue, self.log)
+        glue = self._glue.for_job(payload) if hasattr(self._glue, "for_job") else self._glue  # WP13: a glue that needs the payload (item ids, outSchema)
+        h = JobHandle(volume_name(job_id), job_id, self.runtime, ws, proc, lock, glue, self.log)
         h.begin()
         return h
