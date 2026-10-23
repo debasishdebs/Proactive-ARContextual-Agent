@@ -31,6 +31,9 @@ internal class TraceStorage(
     /** Test seams for a read and a write of a record file (the production ones are plain UTF-8 file I/O). */
     private val readFile: (File) -> String = { it.readText(Charsets.UTF_8) },
     private val writeFile: (File, String) -> Unit = { f, t -> f.writeText(t, Charsets.UTF_8) },
+    /** LGC8-min: the received-cleanup record (`files/trace_cleanup_pending`; production passes `filesDir`, default next to the epoch) and its atomic writer (temp file, fsync, rename; false on failure). */
+    private val pendingFile: File = File(root, "trace_cleanup_pending"),
+    private val writeRecord: (File, String) -> Boolean = com.rokid.context.glasses.log.DiagStateFile::atomicWrite,
 ) {
     val tracesDir = File(root, "traces")
     val tmpDir = File(root, "imu_trace_tmp")
@@ -48,6 +51,9 @@ internal class TraceStorage(
         val sealedBefore = tracesDir.list()?.size ?: 0
         val found = tmpDir.listFiles()?.count { it.isDirectory } ?: 0
         used.set(sizeOf(tracesDir))
+        // LGC8-min: while a received cleanup is still pending (its replay failed again) nothing in tmp is sealed or deleted here: a killed trace the cleanup targets must not
+        // become an importable trace. The next start replays the record first and recovers afterwards.
+        if (cleanupPending()) { pruneMarkers(); used.set(sizeOf(tracesDir) + sizeOf(tmpDir)); return RecoveryCounts(found, 0) }
         val epoch = readEpoch()
         for (dir in tmpDir.listFiles()?.filter { it.isDirectory } ?: emptyList()) {
             // An I/O error (a rename or a write that failed) says nothing about the trace: a directory that can still be finished stays in tmp for the next recovery.
@@ -284,9 +290,11 @@ internal class TraceStorage(
 
     /**
      * Carries out every pending forget request: a trace in `traces/` whose id is listed, or whose wall-clock interval overlaps a listed range, or whose manifest cannot be
-     * read (it cannot be shown not to overlap), is deleted. The request file is removed only when everything matched is really gone. Returns that.
+     * read (it cannot be shown not to overlap), is deleted. LGC8-min: the same for every directory in `imu_trace_tmp/` (an unfinished trace has no known end, so it is hit
+     * when it STARTED at or before the end of a range; one with no readable start record cannot be shown not to overlap), except the ids in [keep] (the live job, which the
+     * recorder aborts itself). The request file is removed only when everything matched is really gone. Returns that.
      */
-    fun runForget(): Boolean {
+    fun runForget(keep: Set<String> = emptySet()): Boolean {
         val lines = pendingForget()
         if (lines.isEmpty()) { forgetFile.delete(); return true }
         val ids = lines.filter { it.startsWith("T ") }.map { it.substring(2).trim() }.toSet()
@@ -297,14 +305,103 @@ internal class TraceStorage(
                 val m = try { ManifestChunk.decode(TraceFiles.decodeFile(File(dir, TraceFiles.MANIFEST_FILE).readText(Charsets.UTF_8)).getOrThrow()).getOrThrow() } catch (e: Exception) { null }
                 m == null || ranges.any { m.startWallMs <= it.last && m.endWallMs >= it.first }
             }
-            if (hit) { val n = sizeOf(dir); dir.deleteRecursively(); if (dir.exists()) ok = false else { used.addAndGet(-n); if (!clearMarker(dir.name) && TraceBounds.isTraceId(dir.name)) ok = false } }
+            if (hit) { val n = sizeOf(dir); deleteTree(dir); if (dir.exists()) ok = false else { used.addAndGet(-n); if (!clearMarker(dir.name) && TraceBounds.isTraceId(dir.name)) ok = false } }
         }
+        for (dir in tmpDir.listFiles()?.filter { it.isDirectory && it.name !in keep } ?: emptyList()) {
+            val hit = dir.name in ids || run {
+                val finished = File(dir, TraceFiles.MANIFEST_FILE).isFile
+                val m = tmpManifest(dir)
+                m == null || ranges.any { m.startWallMs <= it.last && (!finished || m.endWallMs >= it.first) }
+            }
+            if (hit) { deleteTree(dir); if (dir.exists()) ok = false }
+        }
+        recount()
         if (ok) forgetFile.delete()
         return ok && !forgetFile.exists()
     }
 
+    /** The manifest of an unfinished trace (the complete one if the publication got that far, else the start record), or null when neither can be read. */
+    private fun tmpManifest(dir: File): Manifest? {
+        for (name in listOf(TraceFiles.MANIFEST_FILE, START_FILE)) {
+            val f = File(dir, name)
+            if (f.isFile) return try { ManifestChunk.decode(TraceFiles.decodeFile(f.readText(Charsets.UTF_8)).getOrThrow()).getOrThrow() } catch (e: Exception) { null }
+        }
+        return null
+    }
+
+    // ---- the received cleanup (LGC8-min, plan 3.9) ----
+    // `trace_cleanup_pending` is the SINGLE source of truth for "a cleanup is pending": written before anything is deleted, rewritten as each part finishes, removed only when
+    // every part really succeeded. `trace_forget` stays the working list [runForget] reads (it is refilled from this record at every replay).
+
+    /** What a received control asked for: wipe everything under the target epoch ([wipe], [installId], [counter]) and/or forget [lines] (`T <id>` / `R <from> <to>`). */
+    class PendingCleanup(val wipe: Boolean, val installId: String?, val counter: Long, val lines: List<String>) {
+        val isEmpty: Boolean get() = !wipe && lines.isEmpty()
+        fun encode(): String = buildString {
+            append(RECORD_HEAD).append('\n')
+            if (wipe) { append("W\n"); if (installId != null) append("I ").append(installId).append('\n').append("C ").append(counter).append('\n') }
+            lines.forEach { append(it).append('\n') }
+        }
+    }
+
+    /** True while the record exists. This is the whole answer; nothing else (no flag in memory) decides it. */
+    fun cleanupPending(): Boolean = pendingFile.exists()
+
+    /** The record, or null when none exists. A record that exists but cannot be read or understood means "wipe everything": the safe reading of an unknown request. */
+    fun readPending(): PendingCleanup? {
+        if (!pendingFile.exists()) return null
+        val text = try { readFile(pendingFile) } catch (e: Exception) { return PendingCleanup(true, null, 0, emptyList()) }
+        val rows = text.lines().filter { it.isNotBlank() }
+        if (rows.firstOrNull() != RECORD_HEAD) return PendingCleanup(true, null, 0, emptyList())
+        var wipe = false; var install: String? = null; var counter = 0L; val lines = ArrayList<String>()
+        for (r in rows.drop(1)) when {
+            r == "W" -> wipe = true
+            r.startsWith("I ") -> install = r.substring(2)
+            r.startsWith("C ") -> counter = r.substring(2).trim().toLongOrNull() ?: return PendingCleanup(true, null, 0, emptyList())
+            r.startsWith("T ") || r.startsWith("R ") -> lines += r
+            else -> return PendingCleanup(true, null, 0, emptyList())
+        }
+        return PendingCleanup(wipe, install, counter, lines.distinct())
+    }
+
+    /** Persists a received cleanup BEFORE it is acted on, merged with what is already pending (the newest target epoch wins, the lines accumulate). True when it is on disk. */
+    fun persistCleanup(wipe: Boolean, installId: String, counter: Long, lines: List<String>): Boolean {
+        val cur = readPending()
+        val merged = PendingCleanup(
+            wipe = wipe || cur?.wipe == true,
+            installId = if (wipe) installId else cur?.installId,
+            counter = if (wipe) counter else cur?.counter ?: 0L,
+            lines = ((cur?.lines ?: emptyList()) + lines).distinct(),
+        )
+        return savePending(merged)
+    }
+
+    /** The epoch wipe of the target ([installId], [counter]) really succeeded and the epoch is saved: that part of the record is done (the record goes when nothing else is left). */
+    fun finishWipe(installId: String, counter: Long) {
+        val p = readPending() ?: return
+        if (!p.wipe || (p.installId != null && (p.installId != installId || p.counter != counter))) return // a newer target is still to be wiped
+        savePending(PendingCleanup(false, null, 0, p.lines))
+    }
+
+    /** Every forget line really took effect ([runForget] returned true): that part of the record is done. */
+    fun finishForget() {
+        val p = readPending() ?: return
+        savePending(PendingCleanup(p.wipe, p.installId, p.counter, emptyList()))
+    }
+
+    private fun savePending(p: PendingCleanup): Boolean =
+        if (p.isEmpty) (try { pendingFile.delete() || !pendingFile.exists() } catch (e: Exception) { false })
+        else try { writeRecord(pendingFile, p.encode()) } catch (e: Exception) { false }
+
+    /**
+     * The sealed traces a hand-over may export: NONE while a cleanup is pending (LGC8-min, coarse refusal: no quarantine index, no per-trace list). The hand-over tool
+     * (LGC10-min) refuses all traces on the same fact, the existence of `trace_cleanup_pending`.
+     */
+    fun exportableTraceIds(): List<String> =
+        if (cleanupPending()) emptyList() else (tracesDir.listFiles() ?: emptyArray()).filter { it.isDirectory && TraceBounds.isTraceId(it.name) }.map { it.name }.sorted()
+
     private companion object {
         const val START_FILE = "start.json"
+        const val RECORD_HEAD = "cleanup1"
         const val PART = ".part"
         const val MANIFEST_ALLOWANCE = 4_096L
         val CHUNK_NAME = Regex("chunk-(\\d{4})\\.json")

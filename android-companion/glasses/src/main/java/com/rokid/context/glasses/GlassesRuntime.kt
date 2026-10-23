@@ -134,6 +134,7 @@ class GlassesRuntime private constructor(private val app: Context) {
             bootId = { com.rokid.context.capture.trace.Manifest.bootIdOf(android.provider.Settings.Global.getInt(app.contentResolver, android.provider.Settings.Global.BOOT_COUNT, 0).coerceAtLeast(0)) },
             io = { r -> traceWriter.execute(r) }, log = { DiagLog.i(CAPTURE_TAG, it) },
             diagEnabled = diagRecord::diagEnabled,
+            pendingFile = File(app.filesDir, "trace_cleanup_pending"), // LGC8-min: the received-cleanup record, the single source of truth for `cleanupPending()`
         )
     }
     /** The single storage writer (idle-blocked daemon thread, no timer): the recorder's epoch wipe / recovery and the `diag_state` load and saves run on it, in order. */

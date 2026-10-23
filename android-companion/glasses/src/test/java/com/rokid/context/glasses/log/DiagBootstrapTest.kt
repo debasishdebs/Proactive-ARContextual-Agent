@@ -107,9 +107,14 @@ class DiagBootstrapTest {
         g.control(install = "inst-1", counter = 1)
         try { drain() } catch (e: Error) { /* the process died here */ }
         queue.clear(); killOnDelete = false
+        assertTrue(File(root, "imu/trace_cleanup_pending").exists(), "LGC8-min: the received cleanup and its target epoch were persisted before the wipe ran")
         val second = boot()
-        assertEquals(DiagFlagState.ARMED_NO_EPOCH, second.diag.state())
-        assertFalse(second.rec.wantsStart)
+        // LGC8-min: the restart REPLAYS the persisted cleanup before recovery: the wipe completes, the target epoch is saved from the record (never the forgotten one), and only then
+        // does the request become effective. Fence, epoch, flag: the order holds across the process death, without waiting for a control.
+        assertFalse(File(root, "imu/traces/keep").exists(), "the interrupted wipe was finished at start")
+        assertEquals("inst-1\n1", File(root, "imu/trace_epoch").readText())
+        assertEquals(DiagFlagState.ENABLED, second.diag.state())
+        assertFalse(File(root, "imu/trace_cleanup_pending").exists())
     }
 
     @Test fun aFailedFenceKeepsTheFlagArmedNotEnabledUntilTheRetrySucceeds() {
