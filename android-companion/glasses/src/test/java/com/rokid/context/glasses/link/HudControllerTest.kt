@@ -145,6 +145,18 @@ class HudControllerTest {
         assertEquals("a pc_state list is inexact; pc_settings keeps its flag", listOf(false, true), exact)
     }
 
+    /** LGC4: only a real `pc_settings` push drives `onPhoneSettingsPush` (the persisted diagnostic request); a pc_state pause list re-applies CACHED settings and must not. */
+    @Test fun onlyARealSettingsPushDrivesThePersistedDiagnosticRequest() = runTest {
+        val c = controller(prefs = "lgc4push")
+        val pushes = mutableListOf<Boolean>()
+        c.onPhoneSettingsPush = { pushes += it.diagRecord }
+        val p = PauseRecord("p1", PauseOrigin.PHONE, 1, null)
+        bridge.phone(Channels.STATE, state(CaptureState.Paused(listOf(p))))
+        assertEquals("a state frame is not a settings push", emptyList<Boolean>(), pushes)
+        bridge.phone(Channels.SETTINGS, Wire.encode(HudSettings(diagRecord = true)))
+        assertEquals(listOf(true), pushes)
+    }
+
     /** Fix round 1 (M12): a push with out-of-range quiet minutes is kept without them (cached and forwarded). */
     @Test fun outOfRangeQuietHoursAreDroppedFromAPush() = runTest {
         val c = controller(prefs = "m12")

@@ -137,11 +137,21 @@ internal class TraceStorage(
         (l.getOrNull(0) ?: "") to (l.getOrNull(1)?.trim()?.toLongOrNull() ?: 0L)
     } catch (e: Exception) { "" to 0L }
 
+    /**
+     * Removes the persisted epoch (LGC4). Called FIRST in every epoch wipe task: from then until [writeEpoch] succeeds a restart reads NO epoch, so nothing can be recorded
+     * under the forgotten one. True when no epoch file is left; false (a failed wipe, recording stays blocked) when it could not be removed.
+     */
+    fun clearEpoch(): Boolean = try { epochFile.delete() || !epochFile.exists() } catch (e: Exception) { false }
+
+    /** Durable and checked (LGC4): temp file, fsync, rename; throws [java.io.IOException] when the new epoch is not what is on disk. */
     fun writeEpoch(installId: String, counter: Long) {
         root.mkdirs()
         val part = File(root, "trace_epoch.part")
-        part.writeText("$installId\n$counter")
-        if (!part.renameTo(epochFile)) { epochFile.delete(); part.renameTo(epochFile) }
+        java.io.FileOutputStream(part).use { it.write("$installId\n$counter".toByteArray(Charsets.UTF_8)); it.fd.sync() }
+        if (!part.renameTo(epochFile)) {
+            epochFile.delete()
+            if (!part.renameTo(epochFile)) throw java.io.IOException("epoch not saved")
+        }
     }
 
     fun jobDir(id: String) = File(tmpDir, TraceFiles.dirName(id))
