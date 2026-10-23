@@ -34,6 +34,8 @@ internal class TraceStorage(
     /** LGC8-min: the received-cleanup record (`files/trace_cleanup_pending`; production passes `filesDir`, default next to the epoch) and its atomic writer (temp file, fsync, rename; false on failure). */
     private val pendingFile: File = File(root, "trace_cleanup_pending"),
     private val writeRecord: (File, String) -> Boolean = com.rokid.context.glasses.log.DiagStateFile::atomicWrite,
+    /** Test seam: removes one marker file (true when it is gone). */
+    private val deleteMarker: (File) -> Boolean = { it.delete() || !it.exists() },
 ) {
     val tracesDir = File(root, "traces")
     val tmpDir = File(root, "imu_trace_tmp")
@@ -260,7 +262,7 @@ internal class TraceStorage(
     /** Removes the marker of [id]. True when none is left; false for an invalid id or a marker that could not be removed. */
     fun clearMarker(id: String): Boolean {
         val marker = markerOf(id) ?: return false
-        return try { marker.delete() || !marker.exists() } catch (e: Exception) { false }
+        return try { deleteMarker(marker) } catch (e: Exception) { false }
     }
 
     /** The ids that carry a marker, sorted; temp files and any other name are ignored. */
@@ -305,7 +307,11 @@ internal class TraceStorage(
                 val m = try { ManifestChunk.decode(TraceFiles.decodeFile(File(dir, TraceFiles.MANIFEST_FILE).readText(Charsets.UTF_8)).getOrThrow()).getOrThrow() } catch (e: Exception) { null }
                 m == null || ranges.any { m.startWallMs <= it.last && m.endWallMs >= it.first }
             }
-            if (hit) { val n = sizeOf(dir); deleteTree(dir); if (dir.exists()) ok = false else { used.addAndGet(-n); if (!clearMarker(dir.name) && TraceBounds.isTraceId(dir.name)) ok = false } }
+            if (hit) {
+                // The marker goes FIRST: if it cannot be removed the trace stays (and the request with it), so a retry still finds the pair; a trace without its marker is harmless, a marker without its trace is not.
+                if (TraceBounds.isTraceId(dir.name) && !clearMarker(dir.name)) { ok = false; continue }
+                val n = sizeOf(dir); deleteTree(dir); if (dir.exists()) ok = false else used.addAndGet(-n)
+            }
         }
         for (dir in tmpDir.listFiles()?.filter { it.isDirectory && it.name !in keep } ?: emptyList()) {
             val hit = dir.name in ids || run {
@@ -316,6 +322,7 @@ internal class TraceStorage(
             if (hit) { deleteTree(dir); if (dir.exists()) ok = false }
         }
         recount()
+        pruneMarkers() // a marker whose trace is gone never outlives the forget
         if (ok) forgetFile.delete()
         return ok && !forgetFile.exists()
     }
