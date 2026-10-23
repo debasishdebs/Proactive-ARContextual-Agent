@@ -78,8 +78,8 @@ class HelperCardTest {
 
     @Test fun viewModelCallsOnlyTheNativeActions() {
         val host = FakeCanvasHost()
-        val vm = CanvasHomeViewModel(host, ensureService = {}, openUrl = {}, clock = { 0L })
-        vm.tick()
+        val vm = CanvasHomeViewModel(host, ensureService = {}, openUrl = {}, clock = { 0L }, io = main.dispatcher)
+        vm.onStart()                                                       // WP6: the card is read by the STARTED-scoped subscription, off the main thread
         assertTrue(vm.state.value.helper.available)
         host.calls.clear()
         vm.acceptPairing(); vm.setPyExecGrant(true); vm.disconnectHelper()
