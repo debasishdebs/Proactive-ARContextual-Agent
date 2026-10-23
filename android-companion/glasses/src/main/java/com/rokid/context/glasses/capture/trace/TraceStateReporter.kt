@@ -59,7 +59,7 @@ class TraceStateReporter(
         val VOCABULARY: Set<String> = TraceStartBlocker.entries.map { it.wire }.toSet() + BoundaryBlocker.entries.map { it.wire } + setOf("armed_no_epoch", "already_recording", "none")
 
         /** A blocker that is a fault (a warning), as opposed to a normal state: a wipe that keeps failing, or no room. */
-        private val FAULTS = setOf(TraceStartBlocker.WIPE_FAILED.wire, TraceStartBlocker.DISK_FULL.wire)
+        private val FAULTS = setOf(TraceStartBlocker.WIPE_FAILED.wire, TraceStartBlocker.CLEANUP_PERSIST_FAILED.wire, TraceStartBlocker.DISK_FULL.wire)
 
         /** `trace boot:` at process start, after the recovery: how often the app restarted, the flag state, whether an epoch is saved, how many killed traces recovery found. */
         fun boot(restart: Int, flag: DiagFlagState, epochSaved: Boolean, killedTraces: Int): String =
