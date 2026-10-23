@@ -157,4 +157,21 @@ class TraceCleanupFenceTest {
         r.onControl(ctl(id))
         assertEquals(0, TraceTestKit.readAll(root).size); assertFalse(File(root, "transferred/$id").exists())
     }
+
+    @Test fun AMarkerThatCouldNotBeRemovedIsRetriedAndNeverOutlivesItsTrace() {
+        val r0 = recorder(); r0.onControl(TraceTestKit.collect(counter = 1)); r0.begin(); r0.gyro(5); r0.close(CloseReason.STOP)
+        val id = TraceTestKit.readAll(root).single().manifest.traceId
+        File(root, "transferred").mkdirs(); File(root, "transferred/$id").writeBytes(ByteArray(0))
+        var failMarker = true
+        val storage = TraceStorage(root, deleteMarker = { f -> if (failMarker) false else f.delete() })
+        storage.addForget(listOf("T $id"))
+        assertFalse(storage.runForget(), "the marker could not be removed: the request stays")
+        assertTrue(File(root, "trace_forget").exists())
+        failMarker = false
+        assertTrue(storage.runForget())
+        assertEquals(0, TraceTestKit.readAll(root).size); assertFalse(File(root, "transferred/$id").exists())
+        // the pair the other way round: the trace is already gone (an earlier attempt) and only the marker is left
+        File(root, "transferred/$id").writeBytes(ByteArray(0)); storage.addForget(listOf("T $id"))
+        assertTrue(storage.runForget()); assertFalse(File(root, "transferred/$id").exists(), "an orphan marker is pruned by the forget itself")
+    }
 }
