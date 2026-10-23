@@ -309,4 +309,22 @@ class CanvasAuthTest {
         }
         assertTrue("tracked=${auth.trackedIps()}", auth.trackedIps() <= CanvasAuth.MAX_TRACKED_IPS)
     }
+
+    /** v0.9.1 held one lock across validation and session creation: revokeAll() issued mid-pairing waits, then ends that very session. */
+    @Test fun revokeAllDuringAPairingInvalidatesTheTokenItIssues() {
+        val reached = java.util.concurrent.CountDownLatch(1)
+        val resume = java.util.concurrent.CountDownLatch(1)
+        auth.afterCodeConsumed = { reached.countDown(); resume.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+        val code = auth.newCode().code
+        var result: CanvasAuth.Pair? = null
+        val pairing = Thread { result = auth.pair(code) }.also { it.start() }
+        assertTrue(reached.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val revoking = Thread { auth.revokeAll() }.also { it.start() }
+        revoking.join(300)                       // fixed code: still blocked here; a revoke that finishes now would let the token below survive
+        resume.countDown()
+        pairing.join(5000); revoking.join(5000)
+        val token = (result as CanvasAuth.Pair.Ok).token
+        assertFalse("a session minted by a pairing that raced revokeAll must not authenticate", auth.check(token))
+        assertEquals(0, auth.sessionCount())
+    }
 }

@@ -53,6 +53,8 @@ import com.rokid.context.phone.canvas.CanvasService
 import com.rokid.context.phone.canvas.CanvasStatus
 import com.rokid.context.phone.canvas.PipelineRow
 import com.rokid.context.phone.canvas.PublishRow
+import com.rokid.context.phone.canvas.helper.HelperCardState
+import com.rokid.context.phone.canvas.helper.PendingConfirmRow
 import com.rokid.context.phone.canvas.RunRow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -84,6 +86,10 @@ data class CanvasHomeUi(
     val newestPublish: PublishRow? = null,
     /** Shown once in a snackbar, then cleared by [CanvasHomeViewModel.messageShown]. */
     val message: String? = null,
+    /** 3b WP2: the native laptop-helper card (pair, grant, disconnect); hidden until the host binds a helper. */
+    val helper: HelperCardState = HelperCardState.UNAVAILABLE,
+    /** 3b WP2: jobs waiting for the user's tap, with their countdown (WP6 binds the live subscription; the card and these seams are WP2's). */
+    val pending: List<PendingConfirmUi> = emptyList(),
 )
 
 object CanvasHomeText {
@@ -117,6 +123,7 @@ class CanvasHomeViewModel(
     private data class Local(
         val showCode: Boolean = false, val nowMs: Long = 0L, val pipelines: List<PipelineRow> = emptyList(), val runs: List<RunRow> = emptyList(),
         val publishActive: Boolean = false, val newest: PublishRow? = null, val message: String? = null,
+        val helper: HelperCardState = HelperCardState.UNAVAILABLE, val pendingRows: List<PendingConfirmRow> = emptyList(),
     )
 
     private val local = MutableStateFlow(Local(nowMs = clock()))
@@ -126,6 +133,8 @@ class CanvasHomeViewModel(
         CanvasHomeUi(
             status = s, showCode = (l.showCode || s.lan) && s.code != null, secondsLeft = left, wifiAvailable = s.lanIp != null,
             pipelines = l.pipelines, runs = l.runs, publishActive = l.publishActive, newestPublish = l.newest, message = l.message ?: s.notice,
+            helper = l.helper,
+            pending = l.pendingRows.filter { it.expiresAtMs > l.nowMs }.map { PendingConfirmUi(it, ((it.expiresAtMs - l.nowMs + 999) / 1000).toInt()) },
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, CanvasHomeUi(status = host.status.value))
 
@@ -135,6 +144,7 @@ class CanvasHomeViewModel(
         ensureService()
         host.refreshNetwork()
         reload()
+        refreshHelper()
     }
 
     fun onStop() { host.screenOpen = false }
@@ -147,6 +157,14 @@ class CanvasHomeViewModel(
         // After a lockout nothing mints a code: the user taps "New code" (S17).
         if ((local.value.showCode || s.lan) && s.on && !s.pairLocked && (s.code == null || now >= s.codeExpiresAt)) host.pairingCode()
         host.refreshNetwork()
+        refreshHelper()
+    }
+
+    /** Re-reads the helper card and the pending list from the host (a plain snapshot; WP6 replaces this refresh with its lifecycle-aware subscription). */
+    private fun refreshHelper() {
+        val card = host.helperNative.state()
+        val rows = host.helperConfirm.pending()
+        local.update { it.copy(helper = card, pendingRows = rows) }
     }
 
     fun reload() {
@@ -207,6 +225,15 @@ class CanvasHomeViewModel(
         local.update { it.copy(message = "New certificate. Every browser was signed out.") }
     }
 
+    /** The card's actions: each calls only the native helper action behind it (no HTTP surface, no key). */
+    fun acceptPairing() { host.helperNative.acceptPairing(); refreshHelper() }
+    fun setPyExecGrant(on: Boolean) { host.helperNative.setGrant("py_exec", on); refreshHelper() }
+    fun disconnectHelper() { host.helperNative.disconnectHelper(); refreshHelper() }
+
+    /** The confirm card's taps: only the bound callbacks. */
+    fun confirmRun(jobId: String) { host.helperConfirm.onConfirm(jobId); refreshHelper() }
+    fun declineRun(jobId: String) { host.helperConfirm.onCancel(jobId); refreshHelper() }
+
     fun messageShown() { local.update { it.copy(message = null) } }
 }
 
@@ -223,6 +250,11 @@ fun CanvasHomeScreen(
     onMessageShown: () -> Unit,
     onNewCode: () -> Unit = {},
     onNewCertificate: () -> Unit = {},
+    onAcceptPairing: () -> Unit = {},
+    onGrantPyExec: (Boolean) -> Unit = {},
+    onDisconnectHelper: () -> Unit = {},
+    onConfirmRun: (String) -> Unit = {},
+    onDeclineRun: (String) -> Unit = {},
 ) {
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(ui.message) {
@@ -231,6 +263,7 @@ fun CanvasHomeScreen(
     Box(Modifier.fillMaxSize().background(PcColors.SurfaceSoft)) {
         LazyColumn(Modifier.fillMaxSize().testTag("canvas_scroll")) {
             item { ScreenHeader("Experiment canvas", onBack) }
+            item { HelperConfirmCard(ui.pending, onConfirmRun, onDeclineRun) }
             item {
                 SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -289,6 +322,7 @@ fun CanvasHomeScreen(
                     }
                 }
             }
+            item { HelperCard(ui.helper, onAcceptPairing, onGrantPyExec, onDisconnectHelper) }
             item { SectionLabel("Pipelines") }
             item {
                 SoftCard(Modifier.padding(horizontal = 16.dp).fillMaxWidth()) {
@@ -364,5 +398,7 @@ fun CanvasHomeRoute(host: CanvasHost, onBack: () -> Unit, onOpenEditor: () -> Un
         ui, onBack, onOpenEditor, onOpenBrowser = vm::openInBrowser, onLan = vm::setLan, onOpenPipeline = onOpenPipeline,
         onRollback = vm::rollback, onSignOutAll = vm::signOutAll, onMessageShown = vm::messageShown,
         onNewCode = vm::newCode, onNewCertificate = vm::newCertificate,
+        onAcceptPairing = vm::acceptPairing, onGrantPyExec = vm::setPyExecGrant, onDisconnectHelper = vm::disconnectHelper,
+        onConfirmRun = vm::confirmRun, onDeclineRun = vm::declineRun,
     )
 }

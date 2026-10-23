@@ -71,7 +71,11 @@ class BackupRulesTest {
      * install id would let another install's data pass its fence, or revoke a wipe), the plan and collection state, and the mark settings. The last three are
      * ruled on ahead of the tasks that create them, so the XML is final before any of that code can write a file.
      */
-    private val slice3aPrefs: Set<String> get() = setOf(com.rokid.context.memory.db.DeletionEpochStore.PREFS, "canvas_plan_state", "canvas_collect", "mark_settings")
+    private val slice3aPrefs: Set<String> get() = setOf(
+        com.rokid.context.memory.db.DeletionEpochStore.PREFS, "canvas_plan_state", "canvas_collect", "mark_settings",
+        // 3b WP2: the helper capability grants (py_exec, default off) are per-install consent: a restore never turns a grant on.
+        com.rokid.context.phone.canvas.helper.HelperGrants.PREFS,
+    )
 
     /** Slice 3a folders under `files/`: sealed sensor traces, pulled imports and their tmp files. Sensor and label data: never backed up or transferred. */
     private val slice3aFiles: Set<String> get() = setOf(
