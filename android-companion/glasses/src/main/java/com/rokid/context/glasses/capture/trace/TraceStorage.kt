@@ -27,6 +27,9 @@ internal class TraceStorage(
     /** Test seams for an I/O error: the directory rename of a publication, and the recursive delete of a wipe. */
     private val renameDir: (File, File) -> Boolean = { a, b -> a.renameTo(b) },
     private val deleteTree: (File) -> Boolean = { it.deleteRecursively() },
+    /** Test seams for a read and a write of a record file (the production ones are plain UTF-8 file I/O). */
+    private val readFile: (File) -> String = { it.readText(Charsets.UTF_8) },
+    private val writeFile: (File, String) -> Unit = { f, t -> f.writeText(t, Charsets.UTF_8) },
 ) {
     val tracesDir = File(root, "traces")
     val tmpDir = File(root, "imu_trace_tmp")
@@ -57,6 +60,9 @@ internal class TraceStorage(
     /** A publication that failed on I/O (a rename, a write): the directory can still be finished by a later recovery, so it is kept, not deleted. */
     private class Retryable(cause: Throwable) : Exception(cause)
 
+    /** The text of a record file that EXISTS: a read I/O error is [Retryable] (it says nothing about the record), never a rejection. A missing file is the caller's check. */
+    private fun readRecord(f: File): String = try { readFile(f) } catch (e: java.io.IOException) { throw Retryable(e) }
+
     /** Counts only (for the diagnostic log): unfinished traces found in tmp, and how many of them were sealed. */
     class RecoveryCounts(val found: Int, val sealed: Int)
 
@@ -77,7 +83,8 @@ internal class TraceStorage(
     private fun finishPublication(dir: File, epoch: Pair<String, Long>): Boolean {
         val mf = File(dir, TraceFiles.MANIFEST_FILE)
         if (!mf.isFile) return false
-        val m = try { ManifestChunk.decode(TraceFiles.decodeFile(mf.readText(Charsets.UTF_8)).getOrThrow()).getOrThrow() } catch (e: Exception) { return false }
+        val text = readRecord(mf) // an I/O error here keeps the directory
+        val m = try { ManifestChunk.decode(TraceFiles.decodeFile(text).getOrThrow()).getOrThrow() } catch (e: Exception) { return false }
         if (m.traceId != dir.name) return false
         if (m.installId != epoch.first || m.deletionCounter != epoch.second) return true
         for (i in 0 until m.chunkCount) if (!File(dir, TraceFiles.chunkFile(i)).isFile) return false
@@ -93,7 +100,9 @@ internal class TraceStorage(
 
     private fun seal(dir: File, epoch: Pair<String, Long>) {
         if (finishPublication(dir, epoch)) return
-        val m0 = ManifestChunk.decode(TraceFiles.decodeFile(File(dir, START_FILE).readText(Charsets.UTF_8)).getOrThrow()).getOrThrow()
+        val sf = File(dir, START_FILE)
+        if (!sf.isFile) throw IllegalStateException("no start record") // genuinely missing: rejected
+        val m0 = ManifestChunk.decode(TraceFiles.decodeFile(readRecord(sf)).getOrThrow()).getOrThrow()
         if (m0.traceId != dir.name || m0.installId != epoch.first || m0.deletionCounter != epoch.second) return
         val shas = ArrayList<String>(); var events = 0L; var raw = 0L; var lastT = m0.startElapsedMs
         while (shas.size < com.rokid.context.capture.trace.TraceBounds.MAX_CHUNKS) {
@@ -101,7 +110,8 @@ internal class TraceStorage(
             if (!f.isFile) break
             // the chunk count in the file is still the placeholder (publish stamps it), so the decode is by parts
             // a streaming scan (checksum, header, line count, ordering), not a decode of every event: this runs on a slow device over hundreds of chunks (the ANR of 2026-10-23)
-            val c = try { TraceFiles.decodeFile(f.readText(Charsets.UTF_8)).getOrThrow().let { tc -> ChunkCodec.scan(tc.traceId, tc.seq, tc.sha256, tc.b64).getOrThrow() } } catch (e: Exception) { break }
+            val text = readRecord(f) // a read error must not look like a torn tail: nothing is truncated or deleted on it
+            val c = try { TraceFiles.decodeFile(text).getOrThrow().let { tc -> ChunkCodec.scan(tc.traceId, tc.seq, tc.sha256, tc.b64).getOrThrow() } } catch (e: Exception) { break }
             if (c.traceId != m0.traceId || c.seq != shas.size || c.eventCount < 1 || c.firstTMs < lastT) break
             shas += c.sha256; events += c.eventCount; raw += c.rawBytes; lastT = c.lastTMs
         }
@@ -142,9 +152,11 @@ internal class TraceStorage(
         dir.mkdirs()
         val text = TraceFiles.encodeFile(c)
         val part = File(dir, TraceFiles.chunkFile(seq) + ".part")
-        part.writeText(text, Charsets.UTF_8)
+        try {
+            writeFile(part, text)
+            if (!part.renameTo(File(dir, TraceFiles.chunkFile(seq)))) throw java.io.IOException("rename")
+        } catch (e: java.io.IOException) { part.delete(); recount(); throw e }
         val dest = File(dir, TraceFiles.chunkFile(seq))
-        if (!part.renameTo(dest)) throw java.io.IOException("rename")
         val n = dest.length()
         used.addAndGet(n)
         return n
@@ -152,13 +164,24 @@ internal class TraceStorage(
 
     /** Closes the trace: stamps the final chunk count into every chunk file, writes the manifest last and moves the directory to `traces/`. */
     fun publish(id: String, m: Manifest) {
+        try { publishUnchecked(id, m) } catch (e: java.io.IOException) {
+            // The directory stays (start record or manifest: a later recovery finishes it), but bytes of a half-written `.part` file are gone and the live accounting is the disk again.
+            jobDir(id).listFiles()?.filter { it.name.endsWith(".part") }?.forEach { it.delete() }
+            recount()
+            throw e
+        }
+    }
+
+    private fun recount() { used.set(sizeOf(tracesDir) + sizeOf(tmpDir)) }
+
+    private fun publishUnchecked(id: String, m: Manifest) {
         val dir = jobDir(id)
         for (i in 0 until m.chunkCount) {
             val f = File(dir, TraceFiles.chunkFile(i))
             val old = f.length()
-            val c = TraceFiles.decodeFile(f.readText(Charsets.UTF_8)).getOrThrow()
+            val c = TraceFiles.decodeFile(readFile(f)).getOrThrow()
             val part = File(dir, TraceFiles.chunkFile(i) + ".part")
-            part.writeText(TraceFiles.encodeFile(c.copy(count = m.chunkCount)), Charsets.UTF_8)
+            writeFile(part, TraceFiles.encodeFile(c.copy(count = m.chunkCount)))
             if (!part.renameTo(f)) throw java.io.IOException("rename")
             used.addAndGet(f.length() - old)
             checkpoint("stamp:$i")
@@ -166,7 +189,7 @@ internal class TraceStorage(
         // The start record stays until the manifest is complete: a death while stamping is still sealable from it, and a death after the manifest is finished by [finishPublication].
         val mf = File(dir, TraceFiles.MANIFEST_FILE)
         val mpart = File(dir, TraceFiles.MANIFEST_FILE + ".part")
-        mpart.writeText(TraceFiles.encodeFile(ManifestChunk.encode(m)), Charsets.UTF_8)
+        writeFile(mpart, TraceFiles.encodeFile(ManifestChunk.encode(m)))
         if (!mpart.renameTo(mf)) throw java.io.IOException("rename")
         used.addAndGet(mf.length())
         checkpoint("manifest")
