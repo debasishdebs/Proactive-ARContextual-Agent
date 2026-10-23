@@ -233,8 +233,13 @@ class Supervisor:
         if overdue:  # the answer came too late: the 3.5 s liveness window (from the SEND time) is already over; the phone's lease lapses by itself
             self.log.event("lease_refused", reason="overdue")
             return
-        self.journal.add_job(job.job_id, VOLUME_PREFIX + job.job_id, str(self.store.job_stage_dir(job.job_id)),
-                             str(self.store.job_stage_dir(job.job_id) / "export.tar"))
+        try:
+            self.journal.add_job(job.job_id, VOLUME_PREFIX + job.job_id, str(self.store.job_stage_dir(job.job_id)),
+                                 str(self.store.job_stage_dir(job.job_id) / "export.tar"))
+        except Exception as e:
+            self.log.event("journal_error", cls=_snake(type(e).__name__))
+            self._abort(job, "journal_error")  # without a durable job record nothing may run
+            return
         self._fetch_and_start(job)
 
     def _overdue(self, job, now):
@@ -473,14 +478,18 @@ class Supervisor:
 
     # ================================================================= job completion (main loop)
     def _fail_job(self, job, code):
-        """Post `fail` once (best effort) and end the job; used when the job never ran or the runner reported a failure."""
-        self._kill(job)
+        """Post `fail` once (best effort) and end the job; used when the job never ran or the runner reported a failure. A container that cannot
+        be confirmed gone keeps the job held (the watchdog retries the kill every 1 s)."""
+        with self._lock:
+            job.killed = True
+        ok = self._kill(job)
         try:
             resp = self.client.fail(job.job_id, job.lease_gen, code)
             self.log.event("fail", status=resp.status)
         except NetworkError:
             self.log.event("fail", status=0)
-        self._end_job(job, "failed")
+        if ok:
+            self._end_job(job, "failed")
 
     def job_step(self):
         with self._lock:
@@ -521,8 +530,10 @@ class Supervisor:
             self.log.event("fail", status=resp.status)
         except (NetworkError, ValueError, OSError):
             self.log.event("fail", status=0)
-        self._kill(job)
-        self._end_job(job, "failed")
+        with self._lock:
+            job.killed = True
+        if self._kill(job):
+            self._end_job(job, "failed")  # else: held, the watchdog retries the kill every 1 s
 
     def _retry_later(self, job):
         with self._lock:
@@ -581,23 +592,40 @@ class Supervisor:
             if self.expiry is not None:
                 self.expiry.sweep()
 
-    def shutdown(self, stop=None, unbounded=False):
-        """The helper process ends: a running job is killed and its copies deleted (the phone fails the lease and queues its own cleanup). A failed
-        kill is retried (watchdog rules, every 1 s) until the job is gone: for 10 s on an ordinary shutdown, until `stop` after a lost session."""
+    SHUTDOWN_BUDGET_S = 10
+    SESSION_LOST_BUDGET_S = 30
+
+    def _owes_work(self):
+        return (self._job is not None or bool(self.journal.pending_cleanups())
+                or (self.runtime is not None and bool(self.journal.kill_pending())))
+
+    def shutdown(self, stop=None, budget_s=None):
+        """The helper process ends: a running job is killed and its copies deleted (the phone fails the lease and queues its own cleanup). Within the
+        budget (SHUTDOWN_BUDGET_S, SESSION_LOST_BUDGET_S after a lost session) everything the helper still owes is retried every second: a held job's
+        kill, journaled pending kills (also after the job was released) and pending cleanups. Whatever is left stays in the journal (kill-pending
+        entries, pending cleanups, the open job record): the next start owns the retry."""
         job = self._job
         if job is not None:
-            self._deny(job, "shutdown")
-        deadline = time.monotonic() + 10
-        while self._job is not None:
-            if unbounded:
-                if stop is not None and stop.is_set():
-                    break
-            elif time.monotonic() > deadline:
+            try:
+                self._deny(job, "shutdown")
+            except Exception as e:
+                self.log.event("shutdown_error", cls=_snake(type(e).__name__))
+        deadline = time.monotonic() + (self.SHUTDOWN_BUDGET_S if budget_s is None else budget_s)
+        next_try = 0.0
+        while self._owes_work():
+            if time.monotonic() > deadline:
+                self.log.event("shutdown_left", cleanups=len(self.journal.pending_cleanups()), kills=len(self.journal.kill_pending()),
+                               job=self._job is not None)
                 break
-            self.watchdog_guard()
+            try:
+                self.watchdog_guard()
+                if time.monotonic() >= next_try:
+                    next_try = time.monotonic() + 1.0
+                    self._retry_pending_kills()
+                    self._run_pending_cleanups()
+            except Exception as e:
+                self.log.event("shutdown_error", cls=_snake(type(e).__name__))
             threading.Event().wait(0.1)
-        if self._job is not None:
-            self.log.event("shutdown_job_left", pending=len(self.journal.kill_pending()))  # still journaled: the next start kills it
 
     def run(self, stop, max_cycles=None):
         """Recover, then poll every pollIntervalIdleMs; heartbeat and watchdog run on their own threads. Returns 'stopped', 'session_lost' or the
@@ -636,9 +664,11 @@ class Supervisor:
                 self.job_step()
                 stop.wait(0.1)
         finally:
-            self.shutdown(stop, unbounded=(status == "session_lost"))
-            stop_threads.set()
-            for t in threads:
-                if t.is_alive():
-                    t.join(5)
+            try:
+                self.shutdown(stop, budget_s=self.SESSION_LOST_BUDGET_S if status == "session_lost" else self.SHUTDOWN_BUDGET_S)
+            finally:
+                stop_threads.set()
+                for t in threads:
+                    if t.is_alive():
+                        t.join(5)
         return status
