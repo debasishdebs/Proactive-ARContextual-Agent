@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""FAKE podman for the WP10 tests. It never talks to a real machine: all state lives in the directory named by PCA_FAKE_PODMAN_DIR
+(state, calls.log, flag files stop_fails / inspect_garbage). Without that variable it refuses to do anything."""
+import json
+import os
+import sys
+
+D = os.environ.get("PCA_FAKE_PODMAN_DIR")
+if not D:
+    sys.stderr.write("fake podman: PCA_FAKE_PODMAN_DIR not set\n")
+    sys.exit(99)
+
+
+def rd(name, default=""):
+    try:
+        with open(os.path.join(D, name)) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def wr(name, text):
+    with open(os.path.join(D, name), "w") as f:
+        f.write(text)
+
+
+def log(line):
+    with open(os.path.join(D, "calls.log"), "a") as f:
+        f.write(line + "\n")
+
+
+def flag(name):
+    return os.path.exists(os.path.join(D, name))
+
+
+args = sys.argv[1:]
+state = rd("state", "stopped")
+if args[:2] == ["machine", "stop"]:
+    log(" ".join(args))
+    if state == "absent" or flag("stop_fails"):
+        sys.stderr.write("Error: stop failed\n")
+        sys.exit(125)
+    wr("state", "stopped")
+elif args[:2] == ["machine", "inspect"]:
+    if state == "absent":
+        log(" ".join(args) + " => absent")
+        sys.stderr.write("Error: pca: VM does not exist\n")
+        sys.exit(125)
+    if flag("inspect_garbage"):
+        log(" ".join(args) + " => garbage")
+        print("garbage")
+    else:
+        log(" ".join(args) + " => " + state)
+        print(json.dumps([{"Name": "pca", "State": state}]))
+elif args[:2] == ["machine", "rm"]:
+    log(" ".join(args))
+    if state in ("running", "starting"):
+        log("VIOLATION rm while " + state)
+        sys.stderr.write("Error: machine is running\n")
+        sys.exit(125)
+    wr("state", "absent")
+elif args[:2] == ["machine", "init"]:
+    log(" ".join(args))
+    wr("state", "stopped")
+elif args[:2] == ["machine", "start"]:
+    log(" ".join(args))
+    wr("state", "running")
+else:
+    log("UNEXPECTED " + " ".join(args))
+    sys.exit(98)
