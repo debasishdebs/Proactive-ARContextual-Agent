@@ -50,7 +50,7 @@ internal class HelperJobFixture {
     /** Insert, confirm and lease [id] to [helper]; returns the leased job. */
     suspend fun leased(id: String, helper: String = "h1", sessionGen: Long = 7): com.rokid.context.memory.canvas.LeasedHelperJob {
         insertConfirmed(id, sessionGen)
-        return checkNotNull(dao.leaseHelperJob(listOf("py_exec"), helper, sessionGen, now, LEASE_MS, JOB_MS, live)) { "fixture lease refused" }
+        return checkNotNull(dao.leaseHelperJob(listOf("py_exec"), helper, sessionGen, now, LEASE_MS, JOB_MS, QUEUE_WAIT, live)) { "fixture lease refused" }
     }
 
     fun close() = db.close()

@@ -30,7 +30,7 @@ class HelperJobDaoTest {
     @After fun close() = f.close()
 
     private val types = listOf("py_exec")
-    private suspend fun lease(helper: String = "h1", sessionGen: Long = 7) = dao.leaseHelperJob(types, helper, sessionGen, f.now, LEASE_MS, JOB_MS, f.live)
+    private suspend fun lease(helper: String = "h1", sessionGen: Long = 7) = dao.leaseHelperJob(types, helper, sessionGen, f.now, LEASE_MS, JOB_MS, QUEUE_WAIT, f.live)
     private suspend fun state(id: String) = dao.helperJob(id)!!.state
 
     // ---- insert ----
@@ -130,7 +130,7 @@ class HelperJobDaoTest {
 
     @Test fun leaseSkipsOtherJobTypes() = runBlocking {
         f.insertConfirmed("j1")
-        assertNull(dao.leaseHelperJob(listOf("tool_build"), "h1", 7, f.now, LEASE_MS, JOB_MS, f.live))
+        assertNull(dao.leaseHelperJob(listOf("tool_build"), "h1", 7, f.now, LEASE_MS, JOB_MS, QUEUE_WAIT, f.live))
     }
 
     @Test fun leaseSkipsAndVoidsAJobWhoseFrameForgetRevisionMoved() = runBlocking {
@@ -328,7 +328,7 @@ class HelperJobDaoTest {
         assertEquals(3, dao.voidAllHelperJobs("disconnect", f.now))
         listOf("await", "queued", "leased").forEach { assertEquals(it, "VOIDED", state(it)); assertNull(dao.helperJob(it)!!.payloadJson); assertEquals("disconnect", dao.helperJob(it)!!.voidReason) }
         assertEquals("DONE", state("done")); assertEquals("{\"r\":1}", dao.helperJob("done")!!.resultJson)
-        assertEquals(setOf("await", "queued", "leased"), dao.pendingCleanup(10).map { it.jobId }.toSet())
+        assertEquals(setOf("await", "queued", "leased", "done"), dao.pendingCleanup(10).map { it.jobId }.toSet()) // "done" = its commit's cleanup command
         assertEquals("heartbeat after the void", "voided", dao.heartbeatHelperJob("leased", "h1", l.leaseGen, f.now + 1, LEASE_MS, f.live).denial)
     }
 
@@ -370,7 +370,7 @@ class HelperJobDaoTest {
         assertEquals("one replay and three helper jobs", 4, dao.markRunningAborted(99))
         listOf("await", "queued", "leased").forEach { assertEquals(it, "ABORTED", state(it)); assertNull(dao.helperJob(it)!!.payloadJson) }
         assertEquals("DONE", state("done"))
-        assertEquals(3, dao.pendingCleanup(10).size)
+        assertEquals("three aborted jobs plus the done job's commit command", 4, dao.pendingCleanup(10).size)
         assertEquals("idempotent", 0, dao.markRunningAborted(100))
     }
 
@@ -426,5 +426,70 @@ class HelperJobDaoTest {
         f.leased("j1")
         assertEquals(com.rokid.context.memory.canvas.HelperConfirmOutcome.DUPLICATE, dao.confirmJobFenced("j1", f.binding(f.job("j1")), f.live, f.now))
         assertEquals("LEASED", state("j1"))
+    }
+
+    // ---- review fixes (Codex 2026-10-23) ----
+
+    @Test fun successfulCommitEnqueuesExactlyOneCleanupAndADuplicateNone() = runBlocking {
+        val l = f.leased("j1")
+        assertTrue(dao.pendingCleanup(10).isEmpty())
+        assertTrue(dao.commitHelperResultFenced("j1", "h1", l.leaseGen, "rh", "{\"r\":1}", f.now, f.live).ok)
+        assertEquals(listOf("j1"), dao.pendingCleanup(10).map { it.jobId }); assertEquals("done", dao.pendingCleanup(10)[0].reason)
+        assertTrue(dao.commitHelperResultFenced("j1", "h1", l.leaseGen, "rh", "{\"r\":1}", f.now + 1, f.live).duplicate)
+        assertEquals("a duplicate adds none", 1, dao.pendingCleanup(10).size)
+        val m = f.leased("j2", helper = "h2"); f.bumpRev()
+        assertFalse(dao.commitHelperResultFenced("j2", "h2", m.leaseGen, "rh", "{}", f.now, f.live).ok)
+        assertEquals("a refused commit adds only the void's own command", 1, dao.pendingCleanup(10).count { it.jobId == "j2" })
+    }
+
+    private suspend fun duplicateAfter(id: String, advance: () -> Unit) {
+        val l = f.leased(id)
+        assertTrue(dao.commitHelperResultFenced(id, "h1", l.leaseGen, "rh", "{\"r\":1}", f.now, f.live).ok)
+        val cleanupBefore = dao.pendingCleanup(10).size
+        advance()
+        val r = dao.commitHelperResultFenced(id, "h1", l.leaseGen, "rh", "{\"r\":1}", f.now + 1, f.live)
+        assertFalse("an identical retry after the fence moved is not acked", r.ok); assertFalse(r.duplicate); assertEquals("voided", r.denial)
+        assertEquals("a terminal row is not transitioned", "DONE", state(id)); assertEquals(cleanupBefore, dao.pendingCleanup(10).size)
+    }
+
+    @Test fun duplicateResultAfterFrameForgetRevMovedIsDenied() = runBlocking { duplicateAfter("j1") { runBlocking { f.bumpRev() } } }
+    @Test fun duplicateResultAfterWipeGenerationMovedIsDenied() = runBlocking { duplicateAfter("j1") { f.wipe() } }
+    @Test fun duplicateResultAfterDeletionEpochMovedIsDenied() = runBlocking { duplicateAfter("j1") { f.newEpoch() } }
+
+    private suspend fun leaseAt(t: Long) = dao.leaseHelperJob(types, "h1", 7, t, LEASE_MS, JOB_MS, QUEUE_WAIT, f.live)
+
+    @Test fun queuedJobIsLeasableUntilTheQueueWaitAndExpiredAtIt() = runBlocking {
+        f.insertConfirmed("early") // confirmed at f.now
+        assertEquals("deadline - 1: still leasable", "early", leaseAt(f.now + QUEUE_WAIT - 1)!!.jobId)
+    }
+
+    @Test fun overdueQueuedJobIsExpiredByTheLeaseItselfWithoutTheSweep() = runBlocking {
+        f.insertConfirmed("at")
+        assertNull("at the deadline", leaseAt(f.now + QUEUE_WAIT))
+        assertEquals("FAILED", state("at")); assertEquals("resources_busy", dao.helperJob("at")!!.failCode); assertNull(dao.helperJob("at")!!.payloadJson)
+        assertEquals(listOf("at"), dao.pendingCleanup(10).map { it.jobId })
+        f.insertConfirmed("past")
+        assertNull("past the deadline", leaseAt(f.now + QUEUE_WAIT + 5_000)); assertEquals("resources_busy", dao.helperJob("past")!!.failCode)
+    }
+
+    @Test fun overdueJobIsSkippedForAFreshOne() = runBlocking {
+        f.insertConfirmed("old", createdAt = f.now)
+        f.now += QUEUE_WAIT - 10
+        f.insertConfirmed("fresh", createdAt = f.now)
+        assertEquals("fresh", leaseAt(f.now + 10)!!.jobId)
+        assertEquals("resources_busy", dao.helperJob("old")!!.failCode)
+    }
+
+    @Test fun olderAwaitingJobDoesNotStarveALaterConfirmedJob() = runBlocking {
+        f.insert("await", createdAt = f.now); f.insertConfirmed("confirmed", createdAt = f.now + 5)
+        assertEquals("confirmed", dao.leaseHelperJob(types, "h1", 7, f.now, LEASE_MS, JOB_MS, QUEUE_WAIT, f.live)!!.jobId)
+        assertEquals("AWAITING_CONFIRM", state("await"))
+    }
+
+    @Test fun staleFenceCandidateIsVoidedAndSkippedForAFreshOne() = runBlocking {
+        f.insertConfirmed("stale", createdAt = f.now); f.bumpRev(); f.insertConfirmed("fresh", createdAt = f.now + 5)
+        assertEquals("fresh", leaseAt(f.now)!!.jobId)
+        assertEquals("VOIDED", state("stale")); assertNull(dao.helperJob("stale")!!.payloadJson)
+        assertEquals(1, dao.pendingCleanup(10).count { it.jobId == "stale" })
     }
 }
