@@ -237,7 +237,9 @@ export function mountEditor(el, opts) {
             aria-pressed=${ed.armed === it.type}
             onDragStart=${(ev) => { ev.dataTransfer.setData('text/plain', it.type); ev.dataTransfer.effectAllowed = 'copy'; }}
             onPointerDown=${(ev) => { pointer.current = ev.pointerType; }}
+            title=${it.hint || undefined} aria-describedby=${it.hint ? 'hint-' + it.type : undefined}
             onClick=${() => { const touch = pointer.current === 'touch'; pointer.current = ''; act((cur) => (touch ? L.arm(cur, it.type, nodeTypes) : L.addFromPalette(cur, it.type, nodeTypes))); }}>${it.label}</button>`)}
+          ${gr.items.filter((it) => it.hint).map((it) => html`<p key=${'h-' + it.type} id=${'hint-' + it.type} className="muted palette-hint">${it.hint}</p>`)}
         </fieldset>`) : html`<p className="muted">${ed.readOnly ? L.READ_ONLY_TEXT : 'Saving. Editing is paused.'}</p>`}
       </section>
       <div className="flow-pane" ref=${pane} onKeyDown=${onKeyDown}
