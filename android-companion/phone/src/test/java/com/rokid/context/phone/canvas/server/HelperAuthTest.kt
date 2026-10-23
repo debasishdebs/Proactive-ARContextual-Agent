@@ -22,8 +22,8 @@ import org.junit.Test
 class HelperAuthTest {
     private var now = 1_000_000L
     private val browser = CanvasAuth(clock = { now })
-    private val helper = HelperAuth(clock = { now }, log = { _, _, _ -> })
     private val grants = HelperGrants(MemoryGrantStore())
+    private val helper = HelperAuth(clock = { now }, log = { _, _, _ -> }, grantOn = { grants.isOn(it) })
     private val nativeActions = HelperNative(helper, grants, clock = { now }, log = { _, _, _ -> })
     private val hosts = HostPolicy(port = { 8765 }, lanIp = { null })
     private val browserCalls = mutableListOf<HttpRequest>()
@@ -264,5 +264,56 @@ class HelperAuthTest {
         assertTrue(s.paired); assertEquals("my-laptop", s.helperName); assertNull("the code is gone once used", s.pairingCode); assertFalse(s.grantPyExec)
         nativeActions.setGrant(HelperGrants.PY_EXEC, true)
         assertTrue(nativeActions.state().grantPyExec)
+    }
+
+    /** Disconnect mid-pairing: code consumed -> disconnect -> pairing resumes must leave NO valid token (deterministic interleaving, latches). */
+    @Test fun disconnectDuringAPairingLeavesNoValidToken() {
+        val reached = java.util.concurrent.CountDownLatch(1)
+        val resume = java.util.concurrent.CountDownLatch(1)
+        helper.afterCodeConsumed = { reached.countDown(); resume.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+        nativeActions.acceptPairing()
+        val code = helper.pairingCode()!!.code
+        var result: HelperAuth.PairResult? = null
+        val pairing = Thread { result = helper.pair(code, "laptop", "10.0.0.7") }.also { it.start() }
+        assertTrue(reached.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val disconnecting = Thread { nativeActions.disconnectHelper() }.also { it.start() }
+        disconnecting.join(300)
+        resume.countDown()
+        pairing.join(5000); disconnecting.join(5000)
+        val token = (result as? HelperAuth.PairResult.Ok)?.token
+        assertFalse("no valid token after a disconnect that raced the pairing", token != null && helper.check(token))
+        assertNull(helper.session())
+        assertNull(helper.pairingCode())
+    }
+
+    private val constantsJson: JsonObject = run {
+        var d: java.io.File? = java.io.File(System.getProperty("user.dir")).absoluteFile
+        while (d != null && !java.io.File(d, "tools/canvas-helper/protocol").isDirectory) d = d.parentFile
+        Json.parseToJsonElement(java.io.File(requireNotNull(d), "tools/canvas-helper/protocol/constants.json").readText()).jsonObject
+    }
+
+    /** The pair answer's `constants` is a SUBSET of constants.json (the ten numbers the helper needs to start); each is compared on its own with the fixture. */
+    @Test fun pairResponseConstantsAreTheTenFixtureValues() {
+        nativeActions.acceptPairing()
+        val r = router.handle(req("POST", "/api/helper/pair", body = pairBody(helper.pairingCode()!!.code)))
+        val c = r.obj()["constants"]!!.jsonObject
+        val keys = listOf("helperProtocol", "pollIntervalIdleMs", "heartbeatIntervalMs", "heartbeatRequestTimeoutMs", "leaseMs", "helperSelfKillMs", "pyExecDeadlineMs", "confirmTtlMs", "maxPayloadBytes", "maxResultBytes")
+        assertEquals(keys.toSet(), c.keys)
+        for (k in keys) assertEquals(k, constantsJson[k]!!.jsonPrimitive.content, c[k]!!.jsonPrimitive.content)
+    }
+
+    @Test fun capsReportTheGrantAsABooleanAndReplayIsRefused() {
+        nativeActions.setGrant(HelperGrants.PY_EXEC, true)
+        nativeActions.acceptPairing()
+        val body = pairBody(helper.pairingCode()!!.code)
+        val first = router.handle(req("POST", "/api/helper/pair", body = body))
+        assertEquals(200, first.status)
+        assertEquals(true, first.obj()["caps"]!!.jsonObject["py_exec"]!!.jsonPrimitive.booleanOrNull)
+        val token = first.obj()["token"]!!.jsonPrimitive.content
+        val replay = router.handle(req("POST", "/api/helper/pair", body = body))
+        assertEquals(401, replay.status)
+        assertFalse("no token in the replay answer", replay.obj().containsKey("token"))
+        assertTrue("the first token is the only one", helper.check(token))
+        assertEquals(1, helper.session()!!.sessionGen)
     }
 }

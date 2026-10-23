@@ -148,6 +148,8 @@ class CanvasRouter(
     }
 
     /**
+     * The answer's `constants` object is the SUBSET of constants.json the helper needs to start (ten numbers: helperProtocol, pollIntervalIdleMs, heartbeatIntervalMs,
+     * heartbeatRequestTimeoutMs, leaseMs, helperSelfKillMs, pyExecDeadlineMs, confirmTtlMs, maxPayloadBytes, maxResultBytes); `caps` maps each known grant to whether it is on now.
      * `POST /api/helper/pair` `{helperProtocol, code, name}` (section 6; nothing else is read, no fingerprint: the helper pins the certificate before it sends anything).
      * The code exists only while the user's native "Accept pairing" tap has a window open.
      */

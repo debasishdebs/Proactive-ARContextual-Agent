@@ -15,6 +15,11 @@ class PairingLimiter(
     private val clock: () -> Long,
     private val random: SecureRandom = SecureRandom(),
     private val codeTtlMs: Long = CODE_TTL_MS,
+    /**
+     * The lock every operation takes. An owner that must make "consume the code" and "install the credential" (or "revoke") one atomic step passes ITS lock here
+     * (the monitor is reentrant), exactly as v0.9.1's single CanvasAuth lock behaved.
+     */
+    private val lock: Any = Any(),
 ) {
     companion object {
         const val CODE_TTL_MS = 5 * 60_000L
@@ -39,7 +44,6 @@ class PairingLimiter(
     /** Per remote device: wrong guesses against the current code, and its own escalating lock. */
     private class IpState { var tries = 0; var lockedUntil = 0L; var lockouts = 0; var lastSeen = 0L }
 
-    private val lock = Any()
     private var code: Code? = null
     /** Wrong guesses from every device since the code was minted (the global back-stop). */
     private var wrongTotal = 0
