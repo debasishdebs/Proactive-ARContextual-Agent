@@ -118,7 +118,7 @@ class FrameUplink(
                     buffer.readJpeg(f)
                 } catch (e: IOException) {
                     if (f.jpeg.exists()) throw e
-                    log("unreadable $id: dropped")
+                    log("unreadable frame: dropped")
                     forget(id); buffer.remove(id); dropped++; bufferChanged()
                     continue
                 }
@@ -129,12 +129,12 @@ class FrameUplink(
                 if (outcome != Outcome.INTERRUPTED) forget(id)
                 when (outcome) {
                     Outcome.DELIVERED -> {
-                        buffer.remove(id); sent++; log("delivered $id")
+                        buffer.remove(id); sent++; log("delivered frame")
                         try { onDelivered(id) } catch (e: Exception) { log("delivered notice failed: ${e.javaClass.simpleName}") }
                     }
-                    Outcome.DROPPED -> { buffer.remove(id); dropped++; log("dropped $id after ${config.maxNacks} NACKs"); bufferChanged() }
+                    Outcome.DROPPED -> { buffer.remove(id); dropped++; log("dropped frame after ${config.maxNacks} NACKs"); bufferChanged() }
                     Outcome.RETAINED -> { log("flush stopped after ${config.maxAttempts} timeouts; retained=${buffer.size}"); break }
-                    Outcome.CLEARED -> log("$id cleared while sending; not sent further")
+                    Outcome.CLEARED -> log("frame cleared while sending; not sent further")
                     Outcome.INTERRUPTED -> { log("flush interrupted; retained=${buffer.size}"); break }
                 }
             } catch (e: CancellationException) {
@@ -157,7 +157,7 @@ class FrameUplink(
         if (n < MAX_CRASHES) { synchronized(crashes) { crashes[id] = n }; return false }
         forget(id)
         buffer.remove(id)
-        log("dropped $id after $n crashes")
+        log("dropped frame after $n crashes")
         return true
     }
 
@@ -188,14 +188,14 @@ class FrameUplink(
                 when {
                     ack == null -> {
                         timeouts++
-                        log("frame $frameId timeout $timeouts/${config.maxAttempts}")
+                        log("frame timeout $timeouts/${config.maxAttempts}")
                         if (timeouts >= config.maxAttempts) return Outcome.RETAINED
                         delay(config.retryBackoffMs)
                     }
                     ack.ok -> return Outcome.DELIVERED
                     else -> {
                         nacks++
-                        log("frame $frameId NACK ${ack.reason} $nacks/${config.maxNacks}")
+                        log("frame NACK $nacks/${config.maxNacks}")
                         if (nacks >= config.maxNacks) return Outcome.DROPPED
                     }
                 }

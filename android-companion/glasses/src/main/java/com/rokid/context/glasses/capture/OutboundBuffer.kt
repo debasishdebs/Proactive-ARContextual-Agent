@@ -77,7 +77,7 @@ class OutboundBuffer(
         if (!write(j, m, jpeg, metaBytes)) {
             if (frames.isEmpty()) return false
             val victim = dropVictim()
-            log("storage full: dropped ${frames.getValue(victim).meta.frameId}")
+            log("storage full: dropped 1 frame buffered=${frames.size}")
             delete(victim)
             if (!write(j, m, jpeg, metaBytes)) return false
         }
@@ -95,7 +95,7 @@ class OutboundBuffer(
             val (key, f) = frames.firstEntry()
             val age = ageMs(f.meta)
             if (age != null && age <= maxAgeMs) return f
-            log("dropped ${f.meta.frameId}: ${if (age == null) "unknown age" else "older than 72 h"}")
+            log("dropped 1 frame: ${if (age == null) "unknown age" else "older than 72 h"}")
             delete(key)
         }
         return null
@@ -152,7 +152,7 @@ class OutboundBuffer(
     private fun enforceCaps(logDrops: Boolean = true) {
         while (frames.size > 1 && (frames.size > capacity || totalBytes > maxBytes)) {
             val victim = dropVictim()
-            if (logDrops) log("buffer full: dropped ${frames.getValue(victim).meta.frameId}")
+            if (logDrops) log("buffer full: dropped 1 frame buffered=${frames.size}")
             delete(victim)
         }
     }

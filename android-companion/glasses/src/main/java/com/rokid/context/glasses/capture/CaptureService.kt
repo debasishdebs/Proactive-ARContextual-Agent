@@ -532,9 +532,9 @@ class CaptureService : LifecycleService() {
             BufferResult.STORED -> Unit
             BufferResult.PAUSED -> { DiagLog.i(TAG, "capture skipped: paused"); return Outcome.SKIPPED }
             // OutboundBuffer logged the exception class; the capture fails and retries in 15 s (CaptureCadence.RETRY_MS).
-            BufferResult.NOT_STORED -> { DiagLog.w(TAG, "capture failed: frame $frameId not buffered"); return Outcome.FAILED }
+            BufferResult.NOT_STORED -> { DiagLog.w(TAG, "capture failed: frame not buffered"); return Outcome.FAILED }
         }
-        DiagLog.i(TAG, "buffered $frameId (${out.jpeg.size / 1024} KB, w=${out.width}) buffer=${runtime.buffer.size}")
+        DiagLog.i(TAG, "buffered frame (${out.jpeg.size / 1024} KB, w=${out.width}) buffer=${runtime.buffer.size}")
         runtime.onFrameBuffered()
         runtime.fallback.onCaptureSucceeded()
         return Outcome.BUFFERED
