@@ -26,6 +26,7 @@ object DeletionGraph {
         w("canvas_label", "marks and intent labels (times, sources and enum names; no text)"),
         w("canvas_calibration", "measured-run calibration artifacts"),
         w("canvas_helper_job", "laptop-helper jobs; they carry photo ids"),
+        k("canvas_helper_cleanup", "opaque job ids and reason codes only, no user data; must survive Delete all so the laptop copies are still deleted"),
         w("canvas_run", "photo experiment runs"), w("canvas_run_item", "per-photo run outputs"), w("canvas_score", "per-photo scores"),
         w("canvas_live_trace", "per-photo live outputs"),
         k("canvas_meta", "the monotonic labelRev counter (bumped by the wipe so no earlier result reads as current); the forgetRanges fence value is emptied by the wipe; otherwise no user data"),

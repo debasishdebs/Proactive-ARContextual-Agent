@@ -15,9 +15,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         FrameMetaEntity::class, FrameStateEntity::class, FrameSourceEntity::class, FrameClusterEntity::class, FrameVectorEntity::class,
         CanvasPipelineEntity::class, CanvasPipelineVersionEntity::class, CanvasRunEntity::class, CanvasRunItemEntity::class, CanvasScoreEntity::class, CanvasPublishEntity::class, CanvasLiveTraceEntity::class,
         CanvasTraceEntity::class, CanvasTraceEventEntity::class, CanvasReplayEntity::class, CanvasSweepEntity::class, CanvasLabelEntity::class, CanvasMetaEntity::class,
-        CanvasCalibrationEntity::class, CanvasGroupStateEntity::class, CanvasHelperJobEntity::class,
+        CanvasCalibrationEntity::class, CanvasGroupStateEntity::class, CanvasHelperJobEntity::class, CanvasHelperCleanupEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -181,5 +181,39 @@ val MIGRATION_6_7: Migration = object : Migration(6, 7) {
         db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_group_state` (`groupId` TEXT NOT NULL, `gen` INTEGER NOT NULL, `publishId` INTEGER NOT NULL, `configHash` TEXT NOT NULL, `component` TEXT NOT NULL, `state` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, `mode` TEXT, `phoneInstall` TEXT, `sentAtMs` INTEGER, PRIMARY KEY(`groupId`))")
         db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_helper_job` (`jobId` TEXT NOT NULL, `capability` TEXT NOT NULL, `state` TEXT NOT NULL, `leaseOwner` TEXT, `leaseUntilMs` INTEGER, `frameIdsJson` TEXT NOT NULL DEFAULT '[]', `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`jobId`))")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_canvas_helper_job_state` ON `canvas_helper_job` (`state`)")
+    }
+}
+
+/**
+ * v7 → v8 (canvas slice 3b, WP3): ADDITIVE only. Twenty columns on `canvas_helper_job` (lease, immutable payload and hash, result, confirmation window,
+ * the captured fence, the fail and void reasons) and the new `canvas_helper_cleanup` table. No existing column is changed, no table dropped or rewritten, nothing is
+ * copied or updated: a v7 job row simply reads the defaults. `frame_forget_rev` is a `canvas_meta` key (absent = 0) and needs no statement. The frozen v7
+ * schema (`7.json`) is untouched; the statements are the ones Room generated for `8.json`. The Moment slice takes v9/v10 and 3c after them.
+ *
+ * If another branch also claims v8 at merge, DO NOT rename this migration or edit it (S64): rebase, write a NEW latest → next migration, regenerate the schema.
+ */
+val MIGRATION_7_8: Migration = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `jobType` TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `ownerRef` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `sessionGen` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `leaseGen` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `lastHeartbeatMs` INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `deadlineMs` INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `bundleHash` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `payloadJson` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `resultJson` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `resultHash` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `confirmExpiresAtMs` INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `confirmedAtMs` INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `wipeGen` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `installId` TEXT NOT NULL DEFAULT ''")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `deletionCounter` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `frameForgetRev` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `itemCount` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `sourceChars` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `failCode` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `voidReason` TEXT DEFAULT NULL")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_helper_cleanup` (`cleanupId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `jobId` TEXT NOT NULL, `reason` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)")
     }
 }

@@ -155,7 +155,17 @@ data class CanvasGroupStateEntity(
     val sentAtMs: Long? = null,
 )
 
-/** A laptop-helper job (3b only starts writing it). `frameIdsJson` lists the photos it carries, so Forget can void it. */
+/**
+ * A laptop-helper job (3b, Room v8). `capability` is the legacy v7 column and stays; v8 jobs write the same value as `jobType` (`py_exec`).
+ * `frameIdsJson` lists the photos it carries, so Forget can void it. States are the names of `HelperJobState` (core plan section 6): every CORE
+ * `py_exec` job is inserted as AWAITING_CONFIRM and leaves it only through the DAO's confirm, decline, expiry, cancel or void.
+ *
+ * The v8 columns are FROZEN at WP3's merge (no later WP adds one; the Moment slice takes v9/v10): the lease (`leaseGen`, `lastHeartbeatMs`,
+ * `deadlineMs`), the immutable payload and its `bundleHash` (written once at insert; only ever nulled afterwards), the result, the confirmation
+ * window (`confirmExpiresAtMs`, `confirmedAtMs`) and the fence the job captured BEFORE its inputs loaded (`wipeGen`, `installId`,
+ * `deletionCounter`, `frameForgetRev`), re-checked in every transaction that releases the payload, renews the lease or commits the result.
+ * `itemCount` and `sourceChars` are what the native confirm card shows (no payload read). The HMAC tag is never stored.
+ */
 @Entity(tableName = "canvas_helper_job", indices = [Index("state")])
 data class CanvasHelperJobEntity(
     @PrimaryKey val jobId: String,
@@ -166,4 +176,36 @@ data class CanvasHelperJobEntity(
     @ColumnInfo(defaultValue = "'[]'") val frameIdsJson: String = "[]",
     val createdAt: Long,
     val updatedAt: Long,
+    @ColumnInfo(defaultValue = "''") val jobType: String = "",
+    val ownerRef: String? = null,
+    @ColumnInfo(defaultValue = "0") val sessionGen: Long = 0,
+    @ColumnInfo(defaultValue = "0") val leaseGen: Long = 0,
+    val lastHeartbeatMs: Long? = null,
+    val deadlineMs: Long? = null,
+    val bundleHash: String? = null,
+    val payloadJson: String? = null,
+    val resultJson: String? = null,
+    val resultHash: String? = null,
+    val confirmExpiresAtMs: Long? = null,
+    val confirmedAtMs: Long? = null,
+    @ColumnInfo(defaultValue = "0") val wipeGen: Long = 0,
+    @ColumnInfo(defaultValue = "''") val installId: String = "",
+    @ColumnInfo(defaultValue = "0") val deletionCounter: Long = 0,
+    @ColumnInfo(defaultValue = "0") val frameForgetRev: Long = 0,
+    @ColumnInfo(defaultValue = "0") val itemCount: Int = 0,
+    @ColumnInfo(defaultValue = "0") val sourceChars: Int = 0,
+    val failCode: String? = null,
+    val voidReason: String? = null,
+)
+
+/**
+ * A pending instruction for the laptop helper to delete its copies of a job (`jobId` = "*" means every job, Delete all). Opaque ids and a reason code only:
+ * no user data, so it SURVIVES Delete all (the laptop copies must still be deleted). Re-sent by the poll until the helper acks it; purged after 30 days.
+ */
+@Entity(tableName = "canvas_helper_cleanup")
+data class CanvasHelperCleanupEntity(
+    @PrimaryKey(autoGenerate = true) val cleanupId: Long = 0,
+    val jobId: String,
+    val reason: String,
+    val createdAt: Long,
 )

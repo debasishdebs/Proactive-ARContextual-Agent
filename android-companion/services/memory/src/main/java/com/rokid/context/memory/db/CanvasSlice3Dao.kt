@@ -6,6 +6,15 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Upsert
+import com.rokid.context.memory.canvas.ConfirmBinding
+import com.rokid.context.memory.canvas.HelperConfirmOutcome
+import com.rokid.context.memory.canvas.HelperFence
+import com.rokid.context.memory.canvas.HelperFenceLive
+import com.rokid.context.memory.canvas.HelperJobInfo
+import com.rokid.context.memory.canvas.HelperLeaseResult
+import com.rokid.context.memory.canvas.HelperJobState
+import com.rokid.context.memory.canvas.JobEvent
+import com.rokid.context.memory.canvas.LeasedHelperJob
 
 /**
  * Slice 3a (Room v7) DAO. Every write that commits DERIVED data (a trace chunk, a replay or sweep result, a mark) is fenced INSIDE its transaction on
@@ -192,8 +201,8 @@ abstract class CanvasSlice3Dao {
     @Query("UPDATE canvas_replay SET jobState = 'ABORTED', finishedAt = :now WHERE jobState = 'RUNNING'") protected abstract suspend fun abortReplays(now: Long): Int
     @Query("UPDATE canvas_sweep SET jobState = 'ABORTED', finishedAt = :now WHERE jobState = 'RUNNING'") protected abstract suspend fun abortSweeps(now: Long): Int
 
-    /** Start-up recovery (S77): a job still RUNNING belonged to a dead process. Marks every such replay and sweep ABORTED; returns how many. */
-    @Transaction open suspend fun markRunningAborted(now: Long): Int = abortReplays(now) + abortSweeps(now)
+    /** Start-up recovery (S77): a job still RUNNING belonged to a dead process. Marks every such replay and sweep, and every OPEN helper job (their tokens and confirmations are memory-only, so they are all dead), ABORTED; returns how many. */
+    @Transaction open suspend fun markRunningAborted(now: Long): Int = abortReplays(now) + abortSweeps(now) + abortOpenHelperJobs(now)
 
     /**
      * True when every source still exists, is not tombstoned and is at the revision that was read, and [expectedLabelRev] is still the label counter.
@@ -260,8 +269,8 @@ abstract class CanvasSlice3Dao {
     }
 
     // --- calibration ---
-    // TODO(3b, deletion graph fix 1): insertCalibration and insertHelperJob are NOT epoch-fenced (no production writer exists yet). The first writer must go through a
-    // fenced insert like insertLabelFenced; DeletionFencePinsTest pins today's behaviour so that change is deliberate.
+    // TODO(3b, deletion graph fix 1): insertCalibration is NOT epoch-fenced (no production writer exists yet). The first writer must go through a fenced insert like
+    // insertLabelFenced; DeletionFencePinsTest pins today's behaviour so that change is deliberate. (insertHelperJob: see the helper-job section; production uses insertHelperJobFenced.)
     @Insert abstract suspend fun insertCalibration(c: CanvasCalibrationEntity): Long
     @Query("SELECT * FROM canvas_calibration WHERE configHash = :configHash ORDER BY id DESC") abstract suspend fun calibrations(configHash: String): List<CanvasCalibrationEntity>
     @Query("SELECT COUNT(*) FROM canvas_calibration WHERE configHash = :configHash AND verified = 1") abstract suspend fun verifiedCount(configHash: String): Int
@@ -272,16 +281,240 @@ abstract class CanvasSlice3Dao {
     @Query("SELECT * FROM canvas_group_state ORDER BY updatedAt DESC, groupId") abstract suspend fun groupStates(): List<CanvasGroupStateEntity>
     @Query("DELETE FROM canvas_group_state WHERE groupId = :groupId") abstract suspend fun deleteGroupState(groupId: String): Int
 
-    // --- helper jobs (3b writes them) ---
+    // --- helper jobs (3b, Room v8) ---
+    /** Legacy unfenced insert (v7 tests only): NOTHING in production calls it (pinned by DeletionFencePinsTest); production inserts through [insertHelperJobFenced]. */
     @Insert abstract suspend fun insertHelperJob(j: CanvasHelperJobEntity)
+    @Insert(onConflict = OnConflictStrategy.IGNORE) protected abstract suspend fun insertHelperJobRow(j: CanvasHelperJobEntity): Long
     @Query("SELECT * FROM canvas_helper_job WHERE jobId = :id") abstract suspend fun helperJob(id: String): CanvasHelperJobEntity?
-    @Query("SELECT * FROM canvas_helper_job WHERE state NOT IN ('DONE', 'VOIDED', 'FAILED')") abstract suspend fun openHelperJobs(): List<CanvasHelperJobEntity>
-    @Query("UPDATE canvas_helper_job SET state = 'VOIDED', frameIdsJson = '[]', leaseOwner = NULL, leaseUntilMs = NULL, updatedAt = :now WHERE state NOT IN ('DONE', 'VOIDED', 'FAILED') AND instr(frameIdsJson, :needle) > 0")
+    @Query("SELECT * FROM canvas_helper_job WHERE state NOT IN ('DONE', 'VOIDED', 'FAILED', 'CANCELLED', 'ABORTED')") abstract suspend fun openHelperJobs(): List<CanvasHelperJobEntity>
+    @Query("SELECT jobId FROM canvas_helper_job WHERE state IN ('AWAITING_CONFIRM', 'QUEUED', 'LEASED') ORDER BY createdAt, jobId") protected abstract suspend fun openHelperJobIds(): List<String>
+    @Query("SELECT jobId FROM canvas_helper_job WHERE state IN ('AWAITING_CONFIRM', 'QUEUED', 'LEASED') AND frameForgetRev != :rev ORDER BY createdAt, jobId") protected abstract suspend fun openJobIdsOfOtherFrameRev(rev: Long): List<String>
+    @Query("SELECT jobId FROM canvas_helper_job WHERE state = 'AWAITING_CONFIRM' AND confirmExpiresAtMs <= :now ORDER BY createdAt, jobId") protected abstract suspend fun awaitingPastWindow(now: Long): List<String>
+    @Query("SELECT jobId FROM canvas_helper_job WHERE state = 'QUEUED' AND confirmedAtMs + :queueWaitMs <= :now ORDER BY createdAt, jobId") protected abstract suspend fun queuedPastWait(now: Long, queueWaitMs: Long): List<String>
+    @Query("SELECT jobId FROM canvas_helper_job WHERE state = 'LEASED' AND (leaseUntilMs <= :now OR deadlineMs <= :now) ORDER BY createdAt, jobId") protected abstract suspend fun leasedPastExpiry(now: Long): List<String>
+
+    // A job is OPEN until it reaches DONE, VOIDED, FAILED, CANCELLED or ABORTED. The voided job drops its frame ids, payload and result: nothing about the photos stays on the phone.
+    @Query("UPDATE canvas_helper_job SET state = 'VOIDED', frameIdsJson = '[]', leaseOwner = NULL, leaseUntilMs = NULL, payloadJson = NULL, resultJson = NULL, voidReason = 'frame_forget', updatedAt = :now WHERE state NOT IN ('DONE', 'VOIDED', 'FAILED', 'CANCELLED', 'ABORTED') AND instr(frameIdsJson, :needle) > 0")
     protected abstract suspend fun voidHelperJobsCarrying(needle: String, now: Long): Int
 
-    /** Forget of photos: every open helper job that carries one of them is voided and drops the ids (the helper deletes its inputs on its next poll). */
+    /** Forget of photos: every open helper job that carries one of them (also one still awaiting the tap) is voided and drops its ids and payload. WP4 adds the cleanup rows inside the deletion transactions. */
     @Transaction open suspend fun voidHelperJobsForFrames(frameIds: List<String>, now: Long): Int =
         frameIds.sumOf { voidHelperJobsCarrying("\"" + it.replace("\\", "\\\\").replace("\"", "\\\"") + "\"", now) }
+
+    // --- frame_forget_rev (core plan section 6, "Frame-Forget fence"): a counter in canvas_meta, bumped in the transaction of every frame Forget (WP4 wires it in) ---
+    /** The frame-Forget revision (0 until the first bump). Captured by the runner BEFORE it loads frames, re-read inside every helper-job transaction. */
+    open suspend fun frameForgetRev(): Long = meta(FRAME_FORGET_REV)?.toLongOrNull() ?: 0L
+
+    /** Bumps `frame_forget_rev` and returns the new value. A primitive: it moves the fence by itself (tests call it directly; WP4 calls it inside the Forget transactions). */
+    @Transaction open suspend fun bumpFrameForgetRev(): Long {
+        insertMetaIgnore(FRAME_FORGET_REV, "0")
+        incrementMeta(FRAME_FORGET_REV)
+        return frameForgetRev()
+    }
+
+    /** True when nothing was deleted since [r] was inserted: wipe generation, deletion epoch and `frame_forget_rev`, the last read in this transaction. */
+    private suspend fun rowFenceHolds(r: CanvasHelperJobEntity, live: HelperFenceLive): Boolean {
+        if (r.wipeGen != live.wipeGen()) return false
+        val e = live.epoch()
+        if (r.installId != e.installId || r.deletionCounter != e.counter) return false
+        return frameForgetRev() == r.frameForgetRev
+    }
+
+    private fun stateOf(r: CanvasHelperJobEntity): HelperJobState? = runCatching { HelperJobState.valueOf(r.state) }.getOrNull()
+
+    // --- insert ---
+    /**
+     * Inserts a `py_exec` job in AWAITING_CONFIRM only if, INSIDE this transaction, [fence] (captured BEFORE the inputs loaded) still holds against [live] and the
+     * persisted `frame_forget_rev`. A frame with no labels and no trace sources is invisible to every other check, so the revision is the only thing that tells this
+     * insert that a Forget landed after the runner's pre-check. The row stores the fence; the payload and its `bundleHash` are written once here and never updated, only nulled.
+     */
+    @Transaction open suspend fun insertHelperJobFenced(job: CanvasHelperJobEntity, fence: HelperFence, live: HelperFenceLive): Boolean {
+        if (fence.wipeGen != live.wipeGen()) return false
+        if (!fence.deletionEpoch.sameEpoch(live.epoch())) return false
+        if (frameForgetRev() != fence.frameForgetRev) return false
+        if (job.bundleHash == null || job.payloadJson == null || job.confirmExpiresAtMs == null) return false
+        val row = job.copy(
+            state = HelperJobState.AWAITING_CONFIRM.name, jobType = job.jobType.ifBlank { job.capability }, leaseOwner = null, leaseUntilMs = null, leaseGen = 0, lastHeartbeatMs = null,
+            deadlineMs = null, resultJson = null, resultHash = null, confirmedAtMs = null, wipeGen = fence.wipeGen, installId = fence.deletionEpoch.installId,
+            deletionCounter = fence.deletionEpoch.counter, frameForgetRev = fence.frameForgetRev, failCode = null, voidReason = null,
+        )
+        return insertHelperJobRow(row) != -1L
+    }
+
+    // --- terminal transitions (every one enqueues the cleanup row in the same transaction) ---
+    @Query("UPDATE canvas_helper_job SET state = :to, failCode = :failCode, voidReason = :voidReason, payloadJson = NULL, resultJson = NULL, frameIdsJson = '[]', leaseOwner = NULL, leaseUntilMs = NULL, updatedAt = :now WHERE jobId = :id AND state = :from")
+    protected abstract suspend fun closeRow(id: String, from: String, to: String, failCode: String?, voidReason: String?, now: Long): Int
+
+    @Insert protected abstract suspend fun insertCleanup(c: CanvasHelperCleanupEntity): Long
+
+    /** Moves [r] by [event] through [HelperJobState.next] into a terminal state, nulls its payload and result, and enqueues its cleanup row. False when the state machine refuses. */
+    private suspend fun closeJob(r: CanvasHelperJobEntity, event: JobEvent, now: Long, failCode: String? = null, voidReason: String? = null): Boolean {
+        val from = stateOf(r) ?: return false
+        val to = from.next(event)?.takeIf { !it.open } ?: return false
+        if (closeRow(r.jobId, from.name, to.name, failCode, voidReason, now) == 0) return false
+        insertCleanup(CanvasHelperCleanupEntity(jobId = r.jobId, reason = voidReason ?: failCode ?: to.name.lowercase(), createdAt = now))
+        return true
+    }
+
+    private suspend fun closeById(id: String, event: JobEvent, now: Long, failCode: String? = null, voidReason: String? = null): Boolean =
+        helperJob(id)?.let { closeJob(it, event, now, failCode, voidReason) } ?: false
+
+    @Transaction open suspend fun cancelHelperJob(jobId: String, now: Long): Boolean = closeById(jobId, JobEvent.CANCEL, now, voidReason = "cancelled")
+
+    /** A deletion cause, grant off, Disconnect or session end for one job: any open state to VOIDED. */
+    @Transaction open suspend fun voidHelperJob(jobId: String, reason: String, now: Long): Boolean = closeById(jobId, JobEvent.VOID, now, voidReason = reason)
+
+    @Transaction open suspend fun voidAllHelperJobs(reason: String, now: Long): Int = openHelperJobIds().count { closeById(it, JobEvent.VOID, now, voidReason = reason) }
+
+    /** Voids every open job captured under another `frame_forget_rev` (fail closed: a Forget of any frame voids the in-flight helper jobs). */
+    @Transaction open suspend fun voidJobsWithStaleFrameRev(now: Long): Int = openJobIdsOfOtherFrameRev(frameForgetRev()).count { closeById(it, JobEvent.VOID, now, voidReason = "frame_forget") }
+
+    /** After a process restart every open job is dead (tokens and confirmations are memory-only): ABORTED, payload nulled, cleanup enqueued. */
+    @Transaction open suspend fun abortOpenHelperJobs(now: Long): Int = openHelperJobIds().count { closeById(it, JobEvent.ABORT, now, voidReason = "restart") }
+
+    // --- the confirmation window ---
+    @Query("UPDATE canvas_helper_job SET state = 'QUEUED', confirmedAtMs = :now, updatedAt = :now WHERE jobId = :id AND state = 'AWAITING_CONFIRM'")
+    protected abstract suspend fun confirmRow(id: String, now: Long): Int
+
+    /**
+     * The ONE transaction that moves AWAITING_CONFIRM to QUEUED (the native tap). It re-checks the state, that [binding] equals the stored job in every field (job id, bundle
+     * hash, session generation, expiry; the HMAC tag was verified by `:phone`), that the window has not closed and that the fence still holds. A closed window ends the job
+     * (FAILED `not_confirmed`); a moved fence VOIDS it, so a tap after a Forget can never release a payload. A repeat of the same binding is a harmless DUPLICATE.
+     */
+    @Transaction open suspend fun confirmJobFenced(jobId: String, binding: ConfirmBinding, live: HelperFenceLive, now: Long): HelperConfirmOutcome {
+        val r = helperJob(jobId) ?: return HelperConfirmOutcome.NOT_FOUND
+        val st = stateOf(r)
+        val same = binding.jobId == r.jobId && binding.bundleHash == r.bundleHash && binding.sessionGen == r.sessionGen && binding.expiresAtMs == r.confirmExpiresAtMs
+        if ((st == HelperJobState.QUEUED || st == HelperJobState.LEASED) && r.confirmedAtMs != null && same) return HelperConfirmOutcome.DUPLICATE
+        if (st != HelperJobState.AWAITING_CONFIRM) return HelperConfirmOutcome.NOT_AWAITING
+        if (!same) return HelperConfirmOutcome.MISMATCH
+        if (now >= (r.confirmExpiresAtMs ?: 0L)) { closeJob(r, JobEvent.EXPIRE, now, failCode = "not_confirmed"); return HelperConfirmOutcome.EXPIRED }
+        if (!rowFenceHolds(r, live)) { closeJob(r, JobEvent.VOID, now, voidReason = "fence"); return HelperConfirmOutcome.STALE_FENCE }
+        return if (confirmRow(jobId, now) == 1) HelperConfirmOutcome.CONFIRMED else HelperConfirmOutcome.NOT_AWAITING
+    }
+
+    /** The user declined the tap: AWAITING_CONFIRM to CANCELLED (`declined`). False for any other state. */
+    @Transaction open suspend fun declineConfirm(jobId: String, now: Long): Boolean {
+        val r = helperJob(jobId)?.takeIf { stateOf(it) == HelperJobState.AWAITING_CONFIRM } ?: return false
+        return closeJob(r, JobEvent.DECLINE, now, voidReason = "declined")
+    }
+
+    /** Ends every job whose confirmation window closed (FAILED `not_confirmed`); returns their ids so the service completes the waiters. */
+    @Transaction open suspend fun expireAwaitingConfirm(now: Long): List<String> = awaitingPastWindow(now).filter { closeById(it, JobEvent.EXPIRE, now, failCode = "not_confirmed") }
+
+    /** Ends every confirmed job that waited [queueWaitMs] without a lease (FAILED `resources_busy`). */
+    @Transaction open suspend fun expireQueuedHelperJobs(now: Long, queueWaitMs: Long): List<String> = queuedPastWait(now, queueWaitMs).filter { closeById(it, JobEvent.EXPIRE, now, failCode = "resources_busy") }
+
+    /** Ends every lease whose lease or job deadline passed (`deadlineMs <= now` wins over the lease: FAILED `deadline_exceeded`, else `lease_expired`). */
+    @Transaction open suspend fun expireHelperLeases(now: Long): List<String> = leasedPastExpiry(now).filter { id ->
+        val r = helperJob(id) ?: return@filter false
+        closeJob(r, JobEvent.LEASE_EXPIRE, now, failCode = if ((r.deadlineMs ?: Long.MAX_VALUE) <= now) "deadline_exceeded" else "lease_expired")
+    }
+
+    // --- lease, payload release, heartbeat, result, fail ---
+    @Query("SELECT * FROM canvas_helper_job WHERE state = 'QUEUED' AND confirmedAtMs IS NOT NULL AND jobType IN (:types) AND sessionGen = :sessionGen AND NOT EXISTS (SELECT 1 FROM canvas_helper_job WHERE state = 'LEASED' AND leaseOwner = :helperId) ORDER BY createdAt, jobId LIMIT 1")
+    protected abstract suspend fun nextLeaseCandidate(types: List<String>, sessionGen: Long, helperId: String): CanvasHelperJobEntity?
+
+    @Query("UPDATE canvas_helper_job SET state = 'LEASED', leaseOwner = :helperId, leaseUntilMs = :leaseUntil, leaseGen = leaseGen + 1, lastHeartbeatMs = :now, deadlineMs = :deadline, updatedAt = :now WHERE jobId = :id AND state = 'QUEUED'")
+    protected abstract suspend fun leaseRow(id: String, helperId: String, leaseUntil: Long, deadline: Long, now: Long): Int
+
+    @Query("SELECT payloadJson FROM canvas_helper_job WHERE jobId = :id AND state = 'LEASED' AND leaseOwner = :helperId AND leaseGen = :leaseGen AND leaseUntilMs > :now AND deadlineMs > :now")
+    protected abstract suspend fun payloadOfLiveLease(id: String, helperId: String, leaseGen: Long, now: Long): String?
+
+    @Query("UPDATE canvas_helper_job SET leaseUntilMs = :leaseUntil, lastHeartbeatMs = :now, updatedAt = :now WHERE jobId = :id AND state = 'LEASED' AND leaseOwner = :helperId AND leaseGen = :leaseGen AND leaseUntilMs > :now AND deadlineMs > :now")
+    protected abstract suspend fun renewLease(id: String, helperId: String, leaseGen: Long, leaseUntil: Long, now: Long): Int
+
+    @Query("UPDATE canvas_helper_job SET state = 'DONE', resultJson = :resultJson, resultHash = :resultHash, payloadJson = NULL, updatedAt = :now WHERE jobId = :id AND state = 'LEASED' AND leaseOwner = :helperId AND leaseGen = :leaseGen AND leaseUntilMs > :now AND deadlineMs > :now")
+    protected abstract suspend fun commitRow(id: String, helperId: String, leaseGen: Long, resultHash: String, resultJson: String, now: Long): Int
+
+    /**
+     * Leases the oldest CONFIRMED job of an allowed type and the current session to [helperId], only when that helper has no other LEASED job (`maxActiveJobs = 1`, in SQL, so two
+     * racing leases of one helper grant exactly one). An AWAITING_CONFIRM job is never a candidate. A candidate whose fence moved is voided here (fail closed) and skipped.
+     * The lease lasts [leaseMs]; the job deadline starts NOW (at lease, not at confirm) and lasts [jobDeadlineMs]. Returns metadata only: the payload goes through [releasePayload].
+     */
+    @Transaction open suspend fun leaseHelperJob(types: List<String>, helperId: String, sessionGen: Long, now: Long, leaseMs: Long, jobDeadlineMs: Long, live: HelperFenceLive): LeasedHelperJob? {
+        while (true) {
+            val c = nextLeaseCandidate(types, sessionGen, helperId) ?: return null
+            if (!rowFenceHolds(c, live)) { closeJob(c, JobEvent.VOID, now, voidReason = "fence"); continue }
+            if (leaseRow(c.jobId, helperId, now + leaseMs, now + jobDeadlineMs, now) == 0) return null
+            return LeasedHelperJob(c.jobId, c.jobType, c.leaseGen + 1, now + leaseMs, now + jobDeadlineMs, c.bundleHash.orEmpty(), c.payloadJson.orEmpty().toByteArray(Charsets.UTF_8).size)
+        }
+    }
+
+    /** The protocol denial code for [r] when it is not the live lease of [helperId] at [leaseGen]: `not_found`, `not_confirmed`, `voided`, `cancelled`, `stale_generation`, `lease_expired`, `deadline_exceeded`. */
+    private fun denialOf(r: CanvasHelperJobEntity?, helperId: String, leaseGen: Long, now: Long): String {
+        if (r == null) return "not_found"
+        return when (stateOf(r)) {
+            HelperJobState.AWAITING_CONFIRM -> "not_confirmed"
+            HelperJobState.CANCELLED -> "cancelled"
+            HelperJobState.VOIDED, HelperJobState.ABORTED -> "voided"
+            HelperJobState.FAILED -> when (r.failCode) { "not_confirmed", "deadline_exceeded" -> r.failCode!!; else -> "lease_expired" }
+            HelperJobState.DONE, HelperJobState.QUEUED, null -> "stale_generation"
+            HelperJobState.LEASED -> when {
+                r.leaseOwner != helperId || r.leaseGen != leaseGen -> "stale_generation"
+                (r.deadlineMs ?: Long.MAX_VALUE) <= now -> "deadline_exceeded"
+                else -> "lease_expired"
+            }
+        }
+    }
+
+    /** True when [r] is LEASED to [helperId] at [leaseGen] (before any time check): the only rows whose fence is re-checked (and voided) by release, heartbeat and commit. */
+    private fun holdsLease(r: CanvasHelperJobEntity?, helperId: String, leaseGen: Long) =
+        r != null && stateOf(r) == HelperJobState.LEASED && r.leaseOwner == helperId && r.leaseGen == leaseGen
+
+    /**
+     * Releases the payload to the lease holder: the job is LEASED to [helperId] at [leaseGen], the lease and the job deadline are live AND the fence holds
+     * (wipe generation, deletion epoch, `frame_forget_rev` re-read here). A moved fence VOIDS the job and no payload leaves. Repeatable for the same lease (a helper retry).
+     */
+    @Transaction open suspend fun releasePayload(jobId: String, helperId: String, leaseGen: Long, now: Long, live: HelperFenceLive): HelperLeaseResult {
+        val r = helperJob(jobId)
+        if (holdsLease(r, helperId, leaseGen) && !rowFenceHolds(r!!, live)) { closeJob(r, JobEvent.VOID, now, voidReason = "fence"); return HelperLeaseResult(false, "voided") }
+        val payload = payloadOfLiveLease(jobId, helperId, leaseGen, now) ?: return HelperLeaseResult(false, denialOf(r, helperId, leaseGen, now))
+        return HelperLeaseResult(true, payload = payload)
+    }
+
+    /**
+     * Renews the lease: the single place that extends a lease and the single place whose success means a 200 to the helper. A moved fence voids the job and answers a denial, so the
+     * helper is never acked after a deletion event.
+     */
+    @Transaction open suspend fun heartbeatHelperJob(jobId: String, helperId: String, leaseGen: Long, now: Long, leaseMs: Long, live: HelperFenceLive): HelperLeaseResult {
+        val r = helperJob(jobId)
+        if (holdsLease(r, helperId, leaseGen) && !rowFenceHolds(r!!, live)) { closeJob(r, JobEvent.VOID, now, voidReason = "fence"); return HelperLeaseResult(false, "voided") }
+        if (renewLease(jobId, helperId, leaseGen, now + leaseMs, now) == 0) return HelperLeaseResult(false, denialOf(r, helperId, leaseGen, now))
+        return HelperLeaseResult(true, leaseUntilMs = now + leaseMs)
+    }
+
+    /**
+     * Commits the helper's result: the fence is re-checked first (a moved fence voids the job and nothing is stored), then the job must be the live lease of [helperId] at [leaseGen]
+     * (`deadlineMs <= now` is expired). The payload is nulled with the commit. The same result repeated is an idempotent DUPLICATE; a different one for a DONE job is refused.
+     */
+    @Transaction open suspend fun commitHelperResultFenced(jobId: String, helperId: String, leaseGen: Long, resultHash: String, resultJson: String, now: Long, live: HelperFenceLive): HelperLeaseResult {
+        val r = helperJob(jobId)
+        if (r != null && stateOf(r) == HelperJobState.DONE && r.leaseOwner == helperId && r.leaseGen == leaseGen && r.resultHash == resultHash) return HelperLeaseResult(true, duplicate = true)
+        if (holdsLease(r, helperId, leaseGen) && !rowFenceHolds(r!!, live)) { closeJob(r, JobEvent.VOID, now, voidReason = "fence"); return HelperLeaseResult(false, "voided") }
+        if (commitRow(jobId, helperId, leaseGen, resultHash, resultJson, now) == 0) return HelperLeaseResult(false, denialOf(r, helperId, leaseGen, now))
+        return HelperLeaseResult(true)
+    }
+
+    /** The helper reports a failure ([code] from the fail enum): only the lease holder at its generation; payload nulled, cleanup enqueued. */
+    @Transaction open suspend fun failHelperJob(jobId: String, helperId: String, leaseGen: Long, code: String, now: Long): Boolean {
+        val r = helperJob(jobId)?.takeIf { holdsLease(it, helperId, leaseGen) } ?: return false
+        return closeJob(r, JobEvent.FAIL, now, failCode = code)
+    }
+
+    // --- reads for the poll and the native confirm card (no payload, no result) ---
+    @Query("SELECT jobId, jobType, state, bundleHash, sessionGen, confirmExpiresAtMs, itemCount, sourceChars, COALESCE(LENGTH(CAST(payloadJson AS BLOB)), 0) AS payloadBytes, createdAt FROM canvas_helper_job WHERE state = 'AWAITING_CONFIRM' ORDER BY createdAt, jobId")
+    abstract suspend fun awaitingConfirmJobs(): List<HelperJobInfo>
+
+    /** The confirmed, queued jobs a helper of this session may lease (the poll's `available`); never an AWAITING_CONFIRM job. */
+    @Query("SELECT jobId, jobType, state, bundleHash, sessionGen, confirmExpiresAtMs, itemCount, sourceChars, COALESCE(LENGTH(CAST(payloadJson AS BLOB)), 0) AS payloadBytes, createdAt FROM canvas_helper_job WHERE state = 'QUEUED' AND confirmedAtMs IS NOT NULL AND jobType IN (:types) AND sessionGen = :sessionGen ORDER BY createdAt, jobId")
+    abstract suspend fun availableHelperJobs(types: List<String>, sessionGen: Long): List<HelperJobInfo>
+
+    // --- the cleanup commands the helper executes (survive Delete all) ---
+    @Query("SELECT * FROM canvas_helper_cleanup ORDER BY cleanupId LIMIT :limit") abstract suspend fun pendingCleanup(limit: Int): List<CanvasHelperCleanupEntity>
+    @Query("DELETE FROM canvas_helper_cleanup WHERE cleanupId IN (:ids)") abstract suspend fun ackCleanup(ids: List<Long>): Int
+    /** Drops cleanup rows older than the retention (30 days on the phone). */
+    @Query("DELETE FROM canvas_helper_cleanup WHERE createdAt < :olderThanMs") abstract suspend fun purgeOldCleanup(olderThanMs: Long): Int
 
     /**
      * The Forget cascade of photos for the slice 3a tables (called by [CanvasDao.deleteCanvasOutputsForFrames], inside the Forget or retention
@@ -294,8 +527,10 @@ abstract class CanvasSlice3Dao {
         voidHelperJobsForFrames(frameIds, now)
     }
 
+
     companion object {
         const val LABEL_REV = "labelRev"
+        const val FRAME_FORGET_REV = "frame_forget_rev"
         const val FORGET_RANGES = "forgetRanges"
         const val MAX_RANGES = 200
         fun parseRanges(text: String?): List<LongRange> = text.orEmpty().split(';').mapNotNull { p ->
