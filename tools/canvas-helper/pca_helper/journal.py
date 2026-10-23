@@ -7,6 +7,7 @@ import re
 import threading
 
 from .protocol import constants
+from .store import fsync_fd
 
 VOLUME_PREFIX = "pca-job-"
 
@@ -14,7 +15,7 @@ VOLUME_PREFIX = "pca-job-"
 class Journal:
     def __init__(self, directory, clock):
         self._clock = clock
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.path = os.path.join(str(directory), "journal.jsonl")
         self._jobs, self._cleanups, self._kill, self._artifacts = {}, {}, {}, {}
         self._needs_newline = False
@@ -22,6 +23,11 @@ class Journal:
         if not os.path.exists(self.path):
             fd = os.open(self.path, os.O_WRONLY | os.O_CREAT, 0o600)
             os.close(fd)
+            dfd = os.open(os.path.dirname(self.path), os.O_RDONLY)
+            try:
+                fsync_fd(dfd)
+            finally:
+                os.close(dfd)
         os.chmod(self.path, 0o600)
 
     # ------------------------------------------------------------ persistence
@@ -50,7 +56,7 @@ class Journal:
                     os.write(fd, b"\n")
                     self._needs_newline = False
                 os.write(fd, line)
-                os.fsync(fd)
+                fsync_fd(fd)
             finally:
                 os.close(fd)
 
@@ -99,58 +105,69 @@ class Journal:
 
     def job_end(self, job_id):
         """Terminal outcome: the job is closed and a local cleanup entry (no phone ack) enqueues the removal of every copy."""
-        if job_id in self._jobs and self._jobs[job_id]["open"]:
-            self._append({"t": "job_end", "jobId": job_id})
-        cid = "local:" + job_id
-        if cid in self._cleanups and self._cleanups[cid]["status"] != "pending":
-            cid = "%s:%d" % (cid, len(self._cleanups))
-        self.add_cleanup(cid, job_id, local=True)
+        with self._lock:
+            if job_id in self._jobs and self._jobs[job_id]["open"]:
+                self._append({"t": "job_end", "jobId": job_id})
+            cid = "local:" + job_id
+            if cid in self._cleanups and self._cleanups[cid]["status"] != "pending":
+                cid = "%s:%d" % (cid, len(self._cleanups))
+            self.add_cleanup(cid, job_id, local=True)
 
     def purge_job(self, job_id):
         if job_id in self._jobs:
             self._append({"t": "job_purged", "jobId": job_id})
 
     def open_jobs(self):
-        return [dict(j) for j in self._jobs.values() if j["open"]]
+        with self._lock:
+            return [dict(j) for j in self._jobs.values() if j["open"]]
 
     def known_job_ids(self):
-        return list(self._jobs)
+        with self._lock:
+            return list(self._jobs)
 
     def job_volumes(self, job_id):
-        return list(self._jobs.get(job_id, {}).get("volumes", []))
+        with self._lock:
+            return list(self._jobs.get(job_id, {}).get("volumes", []))
 
     def all_volumes(self):
-        return [v for j in self._jobs.values() for v in j["volumes"]]
+        with self._lock:
+            return [v for j in self._jobs.values() for v in j["volumes"]]
 
     # ------------------------------------------------------------ cleanup commands and acks
     def add_cleanup(self, cleanup_id, job_id, local=False):
-        c = self._cleanups.get(cleanup_id)
-        if c is None:
-            self._append({"t": "cleanup", "cleanupId": cleanup_id, "jobId": job_id, "local": local})
-        elif c["status"] == "acked":
-            self._append({"t": "cleanup_redelivered", "cleanupId": cleanup_id})  # lost ack: the phone resent it, ack it again
+        with self._lock:
+            c = self._cleanups.get(cleanup_id)
+            if c is None:
+                self._append({"t": "cleanup", "cleanupId": cleanup_id, "jobId": job_id, "local": local})
+            elif c["status"] == "acked":
+                self._append({"t": "cleanup_redelivered", "cleanupId": cleanup_id})  # lost ack: the phone resent it, ack it again
 
     def pending_cleanups(self):
-        return [dict(c) for c in self._cleanups.values() if c["status"] == "pending"]
+        with self._lock:
+            return [dict(c) for c in self._cleanups.values() if c["status"] == "pending"]
 
     def has_pending_cleanup_for(self, job_id):
-        return any(c["status"] == "pending" and c["jobId"] in (job_id, "*") for c in self._cleanups.values())
+        with self._lock:
+            return any(c["status"] == "pending" and c["jobId"] in (job_id, "*") for c in self._cleanups.values())
 
     def cleanup_done(self, cleanup_id):
-        c = self._cleanups.get(cleanup_id)
-        if c is None:
-            return
-        self._append({"t": "cleanup_done", "cleanupId": cleanup_id})
-        if c["local"]:
-            self._append({"t": "cleanup_acked", "cleanupId": cleanup_id})  # nothing to tell the phone
+        with self._lock:
+            c = self._cleanups.get(cleanup_id)
+            if c is None:
+                return
+            self._append({"t": "cleanup_done", "cleanupId": cleanup_id})
+            if c["local"]:
+                self._append({"t": "cleanup_acked", "cleanupId": cleanup_id})  # nothing to tell the phone
 
     def acks_to_send(self):
-        return [c["cleanupId"] for c in self._cleanups.values() if c["status"] == "done" and not c["local"]]
+        with self._lock:
+            return [c["cleanupId"] for c in self._cleanups.values() if c["status"] == "done" and not c["local"]]
 
     def acked(self, ids):
-        for i in ids:
-            if i in self._cleanups and self._cleanups[i]["status"] == "done":
-                self._append({"t": "cleanup_acked", "cleanupId": i})
+        with self._lock:
+            for i in ids:
+                if i in self._cleanups and self._cleanups[i]["status"] == "done":
+                    self._append({"t": "cleanup_acked", "cleanupId": i})
 
     # ------------------------------------------------------------ kill retries
     def kill_pending_add(self, key):
@@ -161,7 +178,8 @@ class Journal:
             self._append({"t": "kill_done", "key": key})
 
     def kill_pending(self):
-        return list(self._kill)
+        with self._lock:
+            return list(self._kill)
 
     # ------------------------------------------------------------ retained artifacts (expiry.py)
     def add_artifact(self, art_id, path, job_id, created_ms, expires_ms):
@@ -172,7 +190,8 @@ class Journal:
             self._append({"t": "artifact_removed", "id": art_id})
 
     def artifacts(self):
-        return [dict(a) for a in self._artifacts.values()]
+        with self._lock:
+            return [dict(a) for a in self._artifacts.values()]
 
 
 class CleanupExecutor:

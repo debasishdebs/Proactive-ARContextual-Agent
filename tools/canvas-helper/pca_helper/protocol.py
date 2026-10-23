@@ -1,17 +1,14 @@
-"""Helper protocol v1 on the Python side: numbers and canonical hash come from the shared WP1 fixtures, never restated here.
-
-Constants are read from `tools/canvas-helper/protocol/constants.json`. The canonical JSON / bundle hash / job-id check are the WP1 loader's
-(`tests/protocol_loader.py`), loaded by path so there is exactly one implementation (the Kotlin side is BundleHash.kt and HelperProtocol.kt).
-"""
-import importlib.util
+"""Helper protocol v1 on the Python side: numbers come from the shared WP1 fixtures (`protocol/constants.json`), never restated here; canonical JSON,
+bundle hash and the job-id check live in `canonical.py` (one implementation, pinned to the Kotlin BundleHash by the shared vectors)."""
 import json
 from pathlib import Path
+
+from . import canonical as _canon
 
 ROOT = Path(__file__).resolve().parent.parent
 PROTOCOL_DIR = ROOT / "protocol"
 
 _consts = None
-_loader = None
 
 
 def constants():
@@ -22,26 +19,16 @@ def constants():
     return _consts
 
 
-def _protocol_loader():
-    global _loader
-    if _loader is None:
-        spec = importlib.util.spec_from_file_location("pca_protocol_loader", ROOT / "tests" / "protocol_loader.py")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _loader = mod
-    return _loader
-
-
 def canonical_json(obj):
-    return _protocol_loader().canonical_json(obj)
+    return _canon.canonical_json(obj)
 
 
 def bundle_hash(obj):
-    return _protocol_loader().bundle_hash(obj)
+    return _canon.bundle_hash(obj)
 
 
 def job_id_ok(s):
-    return isinstance(s, str) and _protocol_loader().job_id_ok(constants()["jobIdRegex"], s)
+    return isinstance(s, str) and _canon.job_id_ok(constants()["jobIdRegex"], s)
 
 
 def deletion_class_denials():
@@ -82,7 +69,7 @@ def _schema_errors(schema, errs, c):
 
 
 def _loader_count_ok(schema, c):
-    return _protocol_loader().count_bounds_ok(schema, c["schemaSubsetMaxCount"])
+    return _canon.count_bounds_ok(schema, c["schemaSubsetMaxCount"])
 
 
 def validate_payload(payload):
