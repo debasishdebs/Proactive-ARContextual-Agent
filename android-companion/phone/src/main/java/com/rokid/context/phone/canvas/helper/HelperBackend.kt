@@ -33,13 +33,13 @@ class BoundHelperNative(
     override fun state(): HelperCardState = inner.state()
 
     override fun acceptPairing() {
-        session.start()
+        if (!session.start()) return // declined (an end is still queued): no pairing window for a session that cannot open
         inner.acceptPairing()
     }
 
     override fun setGrant(grant: String, on: Boolean) {
         if (grant !in HelperGrants.KNOWN) return
-        if (on) session.start()
+        if (on && !session.start()) return // declined: a grant must not turn on without a session
         inner.setGrant(grant, on)
         if (!on) runBlocking { ender.grantOff() }
     }
