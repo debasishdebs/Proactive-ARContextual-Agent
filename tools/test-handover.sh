@@ -166,7 +166,7 @@ logsnt 'trace-stale'; hasnt "traceId=trace-stale"
 # 7c. remote shell parsing (the fake joins the arguments and parses them like the real remote shell): the fence must SEE a pending cleanup and a clear one
 setup FenceSeesPending
 echo "epoch=2" > "$GD/trace_cleanup_pending"
-run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" != 0 ] || bad "$CASE: pending cleanup not seen through remote shell parsing"; has "files/trace_cleanup_pending exists"
+run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" != 0 ] || bad "$CASE: pending cleanup not seen through remote shell parsing"; has "files/trace_cleanup_pending exists"; has "No trace or log was exported"; logsnt capture_diag
 setup FenceSeesClear
 run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" = 0 ] || bad "$CASE: clear state refused (rc $RC)"; hasnt "REFUSED"
 setup MarkerAndProbesThroughRemoteShell
