@@ -74,6 +74,7 @@ class CapturePlanPublisher(
     suspend fun publish(pipelineId: String, version: Int, mode: PlanMode): PlanOutcome = lock.withLock {
         if (mode == PlanMode.SETTINGS) return@withLock PlanOutcome.Blocked(listOf("Use settings is an action, not a publish."))
         val c = prepare(pipelineId, version) ?: return@withLock PlanOutcome.Blocked(listOf("Version not found"))
+        if (PlanShape.tier3Nodes(c.pipeline).isNotEmpty()) return@withLock PlanOutcome.Blocked(listOf(PlanShape.S6_REFUSAL)) // S6 first: an ASYNC-only tier-3 graph gets the fixed text, not "no capture half"
         if (!PlanShape.hasCaptureHalf(c.pipeline)) return@withLock PlanOutcome.Blocked(listOf(NO_CAPTURE_HALF))
         val report = gates.evaluate(c.pipeline, c.compile, mode)
         if (!report.ok) return@withLock PlanOutcome.Blocked(report.reasons)
