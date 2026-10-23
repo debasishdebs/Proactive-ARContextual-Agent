@@ -368,7 +368,7 @@ class CanvasGraph(
             val ref = java.util.concurrent.atomic.AtomicReference<CanvasGraph>()
             // 3b WP6: the laptop helper, built once with the ONE gated logger port; its session stops THIS graph's server last.
             val helper = HelperBackend.forApp(app, auth, scope, screenOpen = { ref.get()?.screenOpen == true }, stopServer = { ref.get()?.stop() }, log = port)
-            val backend = lazy { com.rokid.context.phone.canvas.api.AskPhotoBinding.bind(com.rokid.context.orchestration.AnswerService.forApp(app, extractFirst = false).askDebugPhotos()); HubGraph.get(app); CanvasBackendImpl.create(app, AiGraph.get(app), auth, lan = { ref.get()?.lan == true }, scope = scope, plans = { PlanGraph.current()?.publisher }, sharedPublisher = PlanGraph.current()?.canvasPublisher, helperJobs = helper.service) }
+            val backend = lazy { com.rokid.context.phone.canvas.api.AskPhotoBinding.bind(com.rokid.context.orchestration.AnswerService.forApp(app, extractFirst = false).askDebugPhotos()); HubGraph.get(app); CanvasBackendImpl.create(app, AiGraph.get(app), auth, lan = { ref.get()?.lan == true }, scope = scope, plans = { PlanGraph.current()?.publisher }, sharedPublisher = PlanGraph.current()?.canvasPublisher, helperJobs = helper.service, extraExecutors = com.rokid.context.canvas.ExperimentExecutors.forApp(app, helper.service), log = port) }
             val extras = lazy { CanvasExtras.create(app, scope, DeveloperModeStore.get(app).enabled) }
             val maintenance = lazy { CanvasMaintenance(MemoryGraph.get(app).db.canvasDao()) }
             val graph = CanvasGraph(
