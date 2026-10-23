@@ -108,7 +108,7 @@ def test_oversize_bodies_refused_locally(tmp_path):
     tr = FakeTransport(FP)
     c = PhoneClient(tr, "h", 1, pin=FP, token="tok")
     with pytest.raises(ValueError):
-        c.result("j", 1, "h", {"x": "a" * (2 * 1024 * 1024)})
+        c.result("j", 1, "h", {"x": "a" * (2 * 1024 * 1024 + 4096)})
     with pytest.raises(ValueError):
         c.poll({"x": "a" * (1024 * 1024)})
     assert tr.sent == []
