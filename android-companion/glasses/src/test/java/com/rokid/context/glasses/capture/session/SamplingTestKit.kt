@@ -138,6 +138,8 @@ class Rig(
     val glance: GlanceParams = GlanceParams.LEGACY,
     /** Slice 3a Task 16: the IMU trace recorder under test (null = none). */
     val trace: com.rokid.context.glasses.capture.trace.SessionTrace? = null,
+    /** LGC5: where the session reports why it offered no clean boundary. */
+    val boundary: com.rokid.context.glasses.capture.trace.TraceBoundaryReporter? = null,
 ) {
     /** What the session reports to the trace as the settings hash, plan and tier in force; a test changes it to simulate a plan or settings change. */
     @Volatile var traceInfo: com.rokid.context.glasses.capture.trace.TraceInfo? = com.rokid.context.glasses.capture.trace.TraceInfo("a1b2c3d4e5f6", 0, null, com.rokid.context.core.model.PlanMode.SETTINGS, BudgetTier.T0)
@@ -176,7 +178,7 @@ class Rig(
     val session = SamplingSession(
         scope = test.backgroundScope, camera = camera, owner = owner, motion = motion, wear = wear, gate = gate, heat = heat,
         workRest = sessionWorkRest, encoder = encoder, sink = { k, _ -> keyframes += clock() to k }, clock = clock, settings = { settings },
-        capturePaused = { paused }, profile = { profileReads++; profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance, glanceNow = { activePlan?.invoke()?.glance ?: glance }, contextCap = { contextCap }, appliedState = { applied }, onCeilingHit = { ceilingHits += it }, trace = trace, traceInfo = { traceInfo },
+        capturePaused = { paused }, profile = { profileReads++; profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance, glanceNow = { activePlan?.invoke()?.glance ?: glance }, contextCap = { contextCap }, appliedState = { applied }, onCeilingHit = { ceilingHits += it }, trace = trace, traceInfo = { traceInfo }, traceBoundary = boundary,
         fixedCapture = { owner.acquire("fixed") { fixedCaptures += clock(); fixedDuring() } },
     )
 

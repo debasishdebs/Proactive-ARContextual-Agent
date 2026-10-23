@@ -256,7 +256,7 @@ class CaptureService : LifecycleService() {
             contextCap = { plan.active.contextCap(appliedContext()) },
             appliedState = { appliedContext() }, onCeilingHit = { autoRevert.onCeilingHit(it, plan.runningId()) },
             phoneInUse = { runtime.phoneUse.active(SystemClock.elapsedRealtime()) },
-            trace = runtime.traceRecorder,
+            trace = runtime.traceRecorder, traceBoundary = runtime.traceBoundary,
             traceInfo = { val k = plan.traceKey(); TraceInfo(TraceSettingsHash.of(runtime.settingsCache.readNormalized()), k.gen, k.configHash, k.mode, budget.tier.value) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
         )
@@ -326,6 +326,7 @@ class CaptureService : LifecycleService() {
         val why = st?.reason ?: if (degraded) "bind" else if (runtime.settingsCache.capture().captureMode == CaptureMode.SMART) "idle" else "fixed"
         val shown = (st ?: SessionStatus(false, MotionState.STILL, 0, null, why)).copy(cooling = heat.level.value == HeatLevel.STOP, degraded = degraded)
         runtime.captureStatus.value = shown
+        try { runtime.pollTraceState() } catch (e: Exception) { /* never skips the status line */ }
         // Counts and states only. One line when it changes, and a heartbeat every minute.
         val line = "status running=${shown.running} reason=${shown.reason} motion=${shown.motion} keyframes10m=${shown.keyframesLast10Min} resting=${shown.restingUntilMs != null} heat=${heat.level.value} degraded=$degraded ${smart?.session?.startupStats() ?: ""}"
         // Fix wave K3/K4: the heartbeat (every minute) adds what the retest could not show: ui mode, rate, camera share, battery temp, wear, restart gap.
