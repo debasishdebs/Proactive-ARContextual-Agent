@@ -3,7 +3,7 @@ import * as X from '../../main/assets/canvas/exprgraph.js';
 import { addNode as addCanvasNode } from '../../main/assets/canvas/graph.js';
 import { fields, coerce } from '../../main/assets/canvas/paramform.js';
 import { applyCompile, compileStart, compileView, exprPanel, open } from '../../main/assets/canvas/editorlogic.js';
-import { exprGuardType, allTypes, eq, ok } from './fixtures.js';
+import { exprGuardType, exprValueType, allTypes, eq, ok } from './fixtures.js';
 
 const two = () => { // fast -> still, both valid; still reads fast
   let g = X.defaultGraph();
@@ -206,11 +206,50 @@ export const tests = {
     eq(a.steps.fast[0].nodes, ['limit', 'over']);
     eq(a.general.map((p) => p.code), ['EXPR_TOO_MANY_NODES']);
   },
+  paletteAddsAValueNodeWithAValidNumericGraphAndTheDefaultTarget() {
+    const r = addCanvasNode({ schema: 2, id: 'p', name: 'p', nodes: [], edges: [] }, exprValueType, null, allTypes);
+    const n = r.pipe.nodes[0];
+    eq(n.params.graph, X.defaultGraphFor('expr.value')); eq(n.params.row, 'REST'); eq(n.params.field, 'capPerMin');
+    eq(X.defaultGraphFor('expr.guard'), X.defaultGraph());
+    eq(X.targetNote('capPerMin').includes('1 to 4'), true); eq(X.targetNote('quietGapS').includes('5 to 300'), true); eq(X.targetNote(''), '');
+  },
+  windowNodesAreEditableAndOnlyFracTakesAThreshold() {
+    let g = X.addNode(X.defaultGraph(), 'fast', 'win').graph;
+    const id = 'win';
+    eq(g.steps[0].nodes.find((n) => n.id === id), { id, op: 'win', name: 'stepHz', agg: 'mean', sec: 10 });
+    g = X.setNodeParam(g, 'fast', id, 'agg', 'frac').graph;
+    eq(g.steps[0].nodes.find((n) => n.id === id).t, 0.5);
+    g = X.setNodeParam(g, 'fast', id, 'sec', '300').graph; g = X.setNodeParam(g, 'fast', id, 'name', 'gyroMax').graph; g = X.setNodeParam(g, 'fast', id, 't', '1.5').graph;
+    eq(g.steps[0].nodes.find((n) => n.id === id), { id, op: 'win', name: 'gyroMax', agg: 'frac', sec: 300, t: 1.5 });
+    eq(X.nodeLabel(g.steps[0].nodes.find((n) => n.id === id)), 'frac gyroMax 300 s > 1.5');
+    eq('t' in X.setNodeParam(g, 'fast', id, 'agg', 'max').graph.steps[0].nodes.find((n) => n.id === id), false);
+    for (const [k, v] of [['sec', '0'], ['sec', '301'], ['sec', '1.5'], ['name', 'ctx'], ['name', 'ctxAgeS'], ['agg', 'median']]) ok(X.setNodeParam(g, 'fast', id, k, v).error, k + ' ' + v);
+    eq(X.setWire(g, 'fast', id + '.a', 'speed').error, 'No such port');
+    eq(X.nodeLabel({ id: 'x', op: 'nope' }), 'nope');
+  },
+  metersShowWindowTermsAndStateBytes() {
+    const w = (n, agg, sec, t) => Object.assign({ op: 'win', name: n, agg, sec }, t === undefined ? {} : { t });
+    const plan = JSON.stringify({ config: { exprs: [{ id: 'a', s: [w('stepHz', 'mean', 10), w('gyroMax', 'max', 300), w('stepHz', 'mean', 10)] }, { id: 'b', s: [w('stepHz', 'frac', 5, 1)] }] } });
+    const m = X.exprMeters(plan);
+    eq(m.terms, 3); eq(m.stateBytes, 4 * 10 + 8 * 300 + 4 * 5, 'a shared term counts once; max costs 8 bytes a second');
+    const t = X.metersText({ nodes: 4, maxNodes: 32, cost: 6, maxCost: 64, bytes: 900, maxBytes: 8192, terms: m.terms, maxTerms: X.MAX_WINDOWS, stateBytes: m.stateBytes });
+    ok(t.includes('windows 3/4') && t.includes('window state 2460 bytes') && t.includes('8192'), t);
+  },
+  tryBodyAndLines() {
+    let g = X.addNode(X.defaultGraph(), 'fast', 'win').graph;
+    eq(X.signalsOf(g), ['gyroMax', 'stepHz'], 'headSpeed folds into gyroMax; windows count');
+    eq(X.tryBody(g, { stepHz: 2 }, null), { graph: g, signals: { gyroMax: 0, stepHz: 2 } });
+    eq(X.tryBody(g, {}, { row: 'REST', field: 'capPerMin' }).role, 'value');
+    eq(X.tryLines({ ok: true, steps: [{ name: 'fast', result: { state: 'BOOL', value: false } }, { name: 'w', result: { state: 'NOT_READY' } }], output: { state: 'BOOL', value: false }, verdict: 'drop' }),
+      ['fast = false', 'w = NOT_READY', 'result: false (drop the picture)']);
+    eq(X.tryLines({ ok: false, problems: ['node try: EXPR_PORT: x'] }), ['node try: EXPR_PORT: x']);
+    eq(X.tryLines({ ok: true, steps: [], output: { state: 'NUM', value: 3 }, applied: 3 }), ['result: 3 (the row gets 3)']);
+  },
   metersComeFromTheCompileResult() {
     const plan = JSON.stringify({ planSchema: 2, configHash: 'abc', meta: { name: 'p' }, config: { exprs: [{ id: 'e1', role: 'guard', out: 2, s: [{ op: 'sig', name: 'gyroMax' }, { op: 'const', v: 1.5 }, { op: 'cmp', f: '>', a: 0, b: 1 }, { op: 'in', a: 0, set: ['REST', 'WALKING'] }, { op: 'fresh', a: 0, ms: 5 }] }] } });
     const m = X.exprMeters(plan);
     eq(m.nodes, 5); eq(m.byId.e1, { nodes: 5, cost: 1 + 1 + 1 + 3 + 2 });
-    eq(X.exprMeters('not json'), { nodes: 0, byId: {} });
+    eq(X.exprMeters('not json'), { nodes: 0, byId: {}, terms: 0, stateBytes: 0 });
     eq(X.exprMeters(JSON.stringify({ exprs: [{ id: 'e1', s: [{ op: 'sig', name: 'ctx' }] }] })).nodes, 0, 'a top-level exprs is not the compiled shape');
     let ed = open({ schema: 2, id: 'p', name: 'p', nodes: [{ id: 'e1', type: 'expr.guard', title: 'g', params: { graph: X.defaultGraph() } }], edges: [] }, 1, {}, [], {});
     ed = compileStart(ed);
