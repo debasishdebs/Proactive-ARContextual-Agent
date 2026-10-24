@@ -8,3 +8,5 @@
 - [Container runtime install OK](container-runtime-install-ok.md) — user allows installing Podman/Docker when slice 3 helper starts
 - [Agent dispatch hygiene](agent-dispatch-hygiene.md) — no git stash / no machine-wide pkill / clean after merges / one agent per worktree
 - [No debug APKs on releases](no-debug-apks-on-releases.md) — attach no APKs to GitHub releases until builds are release-signed (not debug)
+- [Slice 3b scope rulings](slice3b-scope-rulings.md) — threat model A, Codex as diff reviewer, NL tools to v2, single logger, worktree-per-WP
+- [Handoff pointer 2026-10-24](handoff-pointer-2026-10-24.md) — where the handoff, version train and v0.9.3 status live; worktrees cleaned 2026-10-25, retained folder list
