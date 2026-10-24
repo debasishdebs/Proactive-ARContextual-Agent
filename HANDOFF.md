@@ -1,46 +1,53 @@
-# HANDOFF
+# HANDOFF for the next chat (written 2026-10-24 ~19:00 IST; read this first, then MORNING.md)
 
-Last Updated: 2026-05-28
+## 0. How to work with this user (binding)
+- Sonnet implementers only (no Opus unless the user allows); at most 3 agents at once; TDD with RED for the right reason and one named mutation per behaviour; one Gradle at a time (`./gradlew --no-daemon -Dorg.gradle.workers.max=2 --offline`, clean module tests); rerun flaky-looking failures ALONE (known flaky: PromptEditorTest, LocalModelsPageTest, JsEditorTest, StepSheetTest, CanvasServerTest port tests).
+- Codex = diff reviewer in place of the user: `codex exec -m gpt-6.1-sol -c model_reasoning_effort=medium -s read-only --skip-git-repo-check --ephemeral -C <worktree> -o <out.md> "<prompt>" < /dev/null` (gpt-6.0-sol is REJECTED on this account). One SCOPED review per phase; block only on Important-class defects; fixes by the same Sonnet agent.
+- Run long jobs as TRACKED background tasks (run_in_background); never leave work pending without a watcher. The user lost a night to this once; do not repeat.
+- Never: git push (the user pushes), git stash, pkill/killall, gradle --stop, uninstall the phone app (deletes the SQLCipher key), read glasses logcat (leaks the device secret; read own tags via `run-as ... files/capture_diag.log`), print secrets/pairing codes/tokens, install while the user is on a call, install without the user's "go" + a phone backup first (`adb exec-out run-as com.rokid.context tar -cf - databases shared_prefs > ~/Desktop/rokid/backups/pca-phone-pre-<tag>-<ts>.tar`, then `adb install -r`).
+- Credits are low (~$349 on Oct 24 morning for the month; see the memory note usage-budget-2026-10). Short briefs, few agents, no repeat Codex sweeps. Suggest a fresh chat at natural stops.
+- Threat model A (own laptop/CLI/key); hostile-code hardening is slice 3d. Room schema is v10 now; PROTOCOL_VERSION stays 1; DB migrations additive only.
+- Pairing codes are single use and rotate (~1 min). The canvas LAN server is `https://192.168.68.100:8765` (self-signed, fingerprint starts 46:45:42:0A). Tools: `tools/m1-run.sh pair|pull <dir> --allow-partial|replay`, `tools/handover.sh <out> [--allow-partial] [--no-import] [--host --code --fp]` (wear-window pull from the glasses heartbeat `chg=`), M1 gate = failing windows <= T% (default 3, hard cap 5, `--max-fail-pct`) + shadow-vs-glance-admissions parity.
 
-## Session Summary
-- Created standalone repo: `proactive-context-agent`.
-- Added initial architecture and policy docs.
-- Copied reference model abstraction source to:
-  - `reference/language_models.py`
-- Added starter implementation files:
-  - `src/model_gateway.py`
-  - `src/phone_request_policy.py`
-- Added tracking files:
-  - `MEMORY.md`
-  - `CONTEXT.md`
-  - `HANDOFF.md`
+## 1. Branches and worktrees (all under ~/Desktop/rokid/)
+- `v0.9.1` (worktree `pca-v091`): the build INSTALLED on the glasses/phone at 12:45 (6adc222f) + bug fixes only (WP8 missing-executor, doctor wording, glasses-only pipeline "not found" fix db725ebb).
+- `v0.9.2` (worktree `pca-int1`, tip 7257bab5 + later merges): everything new: 3c E1 guards (graph model, boxed editor, glasses runner, replay parity), Moment phase 1 (Room v9) + blocks (Room v10), M1 gate + wear-window handover, built-in Default capture, composite nodes phase A, design docs. The phone APK of tip 0f7b6ff8 is INSTALLED (18:39). Glasses installed build is the 12:45 one (no 3c runner on the glasses yet: glasses-debug.apk at 17:05 has it but is not installed).
+- Running when this was written: agent a85a99e43c5d49202 in worktree `pca-merged` (branch feat/merged-view): (1) fix the composite card overlapping the next node (collapsed height vs layout cell; spacing by real node height) and (2) merged multi-pipeline view (checkboxes on the Pipelines list, read-only merged lanes, signal-name links, dashed captured-frames link capture.image -> input.photos/input.moments, "Show with capture"). When it reports: merge into v0.9.2, rebuild the phone APK, ask for "go" before installing.
+- Other worktrees (pca-3b-*, pca-lgc*, pca-moment*, pca-3c-*, pca-defcap, pca-composite, pca-3b-gate, ...) are merged and can be removed with `git worktree remove` when the user asks. Visual companion server for brainstorming runs at localhost:51188 (project dir pca-int1/.superpowers, add to .gitignore).
+- Scratchpad: /private/tmp/claude-501/-Users-debasishkanhar/5f738bb7-228a-40ad-8dd1-9f72f0041163/scratchpad (Codex prompts/outputs, live-batch.sh, logs).
 
-## What Is Ready
-1. Baseline project structure for brainstorming-to-build flow.
-2. Locked policy values captured in durable docs.
-3. Uniform model interface scaffold ready for backend adapters.
+## 2. Main modules and what they do
+- `core:model`: shared types and wire protocol (Hello with diagFlagState/traceBlocker, plan/signal types), the logger (PcLog, LogPolicy, sinks), the shared step-operation library (`context/graph`: Sample, StepOps) used by expressions.
+- `core:capture` (pure JVM, shared glasses/phone): motion classifier and glance logic, capture PLAN (PlanConfig, PlanValidator, PlanResolver, SignalCatalog, ExprRunner), trace format/codecs, replay (CaptureSimulator, CounterfactualReplay).
+- `glasses` (Android app on the Rokid glasses): capture service, sensor feed, trace recorder + storage (space policy, cleanup fence, transferred markers, always-on diagnostic recording), plan controller, link to the phone.
+- `phone` (Android app): Compose UI, the canvas LAN server and its browser app (assets/canvas: editor, boxed expression editor, composite nodes, helper card), helper routes and native confirmation cards, hub/link to the glasses, log sink.
+- `services:memory`: Room database (v10), Forget/Delete-all fences, Moments store and cascade, object audit and derived-field tables, trace clock fix, cleanup outbox, helper job tables.
+- `services:ai`: AI endpoints/prompts/embeddings, the canvas node registry (NodeTypes), PipelineValidator, PlanCompiler, expression program model and lowering, built-in pipelines (DefaultPipelines).
+- `services:orchestration`: canvas runner and executors, helper job service (py_exec), Python executor, Moment builder/trigger, trace import, replay/sweep, memory wipe.
+- `tools/canvas-helper` (Python, laptop): pairing, supervisor/journal, Podman runtime, runner, collector, py job glue and schema check; `container/pyjob` (job image), `spikes/` (live-gate docs), `tools/*.sh` (m1-run, handover, battery-run, trace-pull), `tools/trace-lab` (laptop sensor-trace analysis).
+- Podman: new machine `pca` (10 GB cap, one /stage mount) alongside the user's `podman-machine-default` (never touched); both stopped when idle; live gate re-run = `live-batch.sh` in the scratchpad inside a `pca_lock.py vm-session` owner.
 
-## Immediate Next Steps
-1. Add `DECISIONS.md` with timestamped log entries (optional if user wants one file for decision chronology).
-2. Implement Kotlin/Android equivalents of `phone_request_policy.py`.
-3. Add config schema for battery thresholds and intervals.
-4. Define memory file format (`memory.md` + JSON index schema).
+## 3. Feedback from the user this evening (must not be lost)
+1. Canvas = end-to-end settings/config/tuning: glasses capture (sensors, frequency, rules) must be visible and tunable there. Generic flow: Source -> Aggregate -> Process -> Condition -> Outcome across WATCH/GLASSES/PHONE lanes (spec `2026-10-24-generic-flow-families.md`).
+2. Black-box nodes (hidden rules, e.g. Confidence check) must be expandable composite nodes (amber, double click expands to the inner flow, real settings editable, defaults = today). Phase A done (Confidence check: aggregate mean|min|max, operator >=|>, cutoff default 0.70). Phases B-D listed in `2026-10-24-composite-nodes-design.md`.
+3. Photo node needs a source/filter setting; "Connect to" on the last node says "No valid target" (rename to something like Next step); capture frequency and sensor rules must be visible: built-in "Default capture" exists now; the starter pipeline with both halves and the merged multi-pipeline view are the answer.
+4. Spacing bug: expanded/collapsed composite overlaps the next node (fix in progress).
+5. Scenes: first use is an input node in the canvas; Scene decisions in `2026-10-24-moment-scene-design-decisions.md` (hour windows, activity-change break, hash 25%/embedding 0.75 start thresholds, 5-minute cap, recorded cut reason, hide derived fields at once, user-configurable rebuild cadence, audio later with the same interfaces; generic SummarizeInput/CaptionInput/EmbedInput).
+6. Moments: stored Moments ON by default (kill switch only).
 
-## Risks / Open Questions
-1. Which exact Rokid runtime/API layer will provide capture + event hooks?
-2. Should voice trigger integration use native Rokid assistant callbacks or companion-side intent bridge first?
-3. What retention window is acceptable for privacy and storage budget?
-
-## Implementation Progress (Fast Mode)
-- Completed Tasks 1-11 baseline coding with targeted unit tests and incremental commits.
-- Remaining: Task 12 final full-suite verification and cleanup.
-
-## Final Verification Snapshot
-- Branch: feat/proactive-mvp-implementation
-- Full unit suite: `cd android-companion && ./gradlew testDebugUnitTest` (PASS)
-- Lint: `cd android-companion && ./gradlew lintDebug` (PASS)
-- Targeted regressions: ProviderBlockFlowTest, MemoryRetentionTest, ModelSlotManagerTest (PASS)
-
-## Remaining Deferred Items
-- Full Compose UI rendering and instrumentation-level UI tests are deferred.
-- Device-level USB validation (Rokid + phone) remains pending integration phase.
+## 4. Pending before the v1 freeze
+### 3b
+- Live steps with the user + phone: kill-on-deletion timing through the supervisor; the real frame run in the browser (confirm tap on the phone, float result, Forget mid-run, cancel); the device run (S52 checks). Docs: `spikes/wp13-live-gate.md`.
+- Decisions left: declined vs expired shown separately; own-frame Forget ending STOPPED_FORGET; vision-extract -> Python adapter; helper gets only capture times for Moment photos (pixels?); two files with android.util.Log (CanvasPublisher, MemoryWipe) until the log ratchet (RawLogScanTest) lands; GlassesRuntime can still construct the recorder lazily from Main (reads no file now).
+- Release bookkeeping: versionName 0.9.x, tags, merge to v0.9-beta; the user pushes. Release-signed build before any APK goes to GitHub.
+### 3c
+- E1 guards done, verified only under GraalVM. Pending: the worn 35-minute SHADOW gate (X7) with the user; LIVE stays refused until the battery work LA7/LA9; `expr.value` + windows (E2: C1b, X6), phone try-it (X8), fuzz (X9), device re-run (X10); detectors D (entry gate: 7 days, 20 h complete traces, 30 marks, a written query list) and connectors K (excluded for now). CaptureService post-veto context wiring has no unit test.
+### Moments
+- Outbox drainer (phone files, glasses frames/ranges, laptop helper), sensor features per Moment second (`moment_sensor`, canonical phone-second windows), Scene tables + SceneBuilder + `input.scenes` node + scene-level derived fields, audio part kind, ItemRef/CanvasItem refactor and unified Forget entry points (spec phases 2-3), receipt-store discovery (RokidFrameInbox), real Summarize/Caption/Embed implementations, rebuild-cadence settings UI, encrypted-DB (SQLCipher) migration androidTest on the emulator AVD MyEmulator only.
+### Canvas / UI
+- Composite phases B (vision extract, critic, memory write), C (glasses lane: head motion, settle, novelty, rate cap, capture image; compile golden each), D (hub.context); palette regrouped by the five families; Photo node settings; starter pipeline with both halves; watch lane, aggregate nodes, tunable heuristic/ML Process node, Summary node; all editors still need a real-browser visual check (layout, dark theme, tap sizes, React mounting).
+### Bugs / diagnostics
+- M1: edge-aware shadow counting (parity failed by 1 open on trace 5814127b: 73 vs 68); 8 failing replay windows split into blip / held timer / silent live loop / late tick categories (3 unexplained); M1 pass on a second trace; QnA failures (blue can) undiagnosed (needs question times); the missing 16:13 trace (state lines now name every blocker: wait for the next occurrence); sensor FIFO delivery latency lead (10-14 % stalls); phone `files/logs/pca.log` appears only when something is logged.
+- Doctor/live facts fixed; minor Codex leftovers: Moment newest-N underfill when one second holds a huge number of photos; a final Codex re-check of 3c E1 fixes, the last Moment fence fix and the composite nodes was not run.
+### Freeze checklist
+- Install the glasses build with the 3c runner + LGC chain, full-day worn run (diagnostic recording), pull with handover, M1 passes; WP13 live steps; Task 38; release-signed build; version bumps and tags; Codex final review; remove worktrees; usage check.
