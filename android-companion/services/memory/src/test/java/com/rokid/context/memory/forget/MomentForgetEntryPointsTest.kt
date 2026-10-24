@@ -95,6 +95,17 @@ class MomentForgetEntryPointsTest {
         assertEquals(FrameIntake.Outcome.ADDED, FrameIntake(db) { 1_000 + day }.commit(FrameEntity("later", MS + 600_000, "/p/later.jpg", "rokid_glasses"), rows("later", null)))
     }
 
+    /** A Forget repeated more than 24 h later must refresh the recency marker, or an unknown-capture-time frame slips in right after it. */
+    private suspend fun repeatedAfterADay(forgetIt: suspend (MomentForget) -> Unit) {
+        var now = 1_000L
+        val f = MomentForget(db, fx.service) { now }
+        forgetIt(f); now += 25L * 3600 * 1000; forgetIt(f)
+        val late = FrameEntity("d", MS + 999_000_000, "/p/d.jpg", "rokid_glasses") // file time far outside the range, capture time unknown
+        assertEquals(FrameIntake.Outcome.FENCED, FrameIntake(db) { now + 1_000 }.commit(late, rows("d", null)))
+    }
+    @Test fun aRepeatedLongRangeForgetRefreshesTheRecencyMarker() = runBlocking<Unit> { repeatedAfterADay { it.forgetRange(MS, MS + 100_000_000) } }
+    @Test fun aRepeatedSingleSecondForgetRefreshesTheRecencyMarker() = runBlocking<Unit> { repeatedAfterADay { it.forgetMoments(listOf(fx.id)) } }
+
     // --- Delete all ---
     @Test fun deleteAllWipesTheProjectionAndFencesButKeepsUnackedCleanupAndAddsItsOwn() = runBlocking<Unit> {
         projected(); fx.forget.forgetMoments(listOf(fx.id)); fx.project(fx.id, MomentPartKind.FRAME to "a")
