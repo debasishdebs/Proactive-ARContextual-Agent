@@ -5,6 +5,8 @@ import com.rokid.context.ai.canvas.plan.ExprTestSupport.G1
 import com.rokid.context.ai.canvas.plan.ExprTestSupport.codes
 import com.rokid.context.ai.canvas.plan.ExprTestSupport.graph
 import com.rokid.context.ai.canvas.plan.ExprTestSupport.step
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.int
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -14,10 +16,14 @@ class ExprProgramTest {
     @Test fun validProgramHasNoProblems() = assertEquals(emptyList<ExprCode>(), codes(G1))
 
     @Test fun stepReferenceOrderIsFree() {
-        // `final` is listed before the steps it reads; the order of the list is not the order of evaluation
-        val c = ExprProgram.parse(ExprRole.GUARD, ExprTestSupport.json(G1)).first!!.check()
+        // `alpha` is listed first and reads `zeta`; evaluation (and lowering) order is dependency order, not list or alphabetical order
+        val zeta = FAST.replace("\"name\":\"fast\"", "\"name\":\"zeta\"")
+        val alpha = step("alpha", """{"name":"f","step":"zeta"}""", """{"id":"n","op":"not"}""", """["f","n.a"]""", "n")
+        val c = ExprProgram.parse(ExprRole.GUARD, ExprTestSupport.json(graph(alpha, zeta, out = "alpha"))).first!!.check()
         assertEquals(emptyList<ExprDiag>(), c.problems)
-        assertEquals(listOf("drive", "fast", "final"), c.stepOrder)
+        assertEquals(listOf("zeta", "alpha"), c.stepOrder)
+        // forward references cannot exist in what is lowered: every operand index is below its entry
+        c.lowered.forEachIndexed { i, e -> listOf("a", "b", "c").forEach { k -> e[k]?.let { assertTrue((it as JsonPrimitive).int < i) } } }
     }
 
     @Test fun loopAcrossStepsIsRefused() {
