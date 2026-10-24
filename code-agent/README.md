@@ -13,7 +13,7 @@ code-agent/
   README.md            this index
   handoffs/            pointers to the handoff docs (they stay in docs/superpowers/specs/)
   claude/              working rules + memory snapshot (live copy: ~/.claude/projects/<project>/memory)
-  codex/               reviews/ (18 reviews), prompts/
+  codex/               reviews/ (Codex reviews, newest: scenes v11, sensor v12, derive), prompts/
   superpowers/sdd/     one folder per executed plan: briefs, task reports, review/diagnosis files, integration ledger
   releases/            release-notes markdown used with `gh release create --notes-file`
 ```
