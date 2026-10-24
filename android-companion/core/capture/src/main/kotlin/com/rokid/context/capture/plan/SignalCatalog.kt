@@ -1,6 +1,7 @@
 package com.rokid.context.capture.plan
 
 import com.rokid.context.core.model.context.ContextState
+import com.rokid.context.core.model.context.graph.WindowRing
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -53,6 +54,17 @@ object SignalCatalog {
     fun toJson(): JsonObject = buildJsonObject {
         put("sigSchema", SCHEMA)
         put("aliases", JsonObject(aliases.mapValues { JsonPrimitive(it.value) }))
+        // 3c E2a: the window ops of catalogue 2 (`win` over a one-second feature); a plan that uses them carries sigSchema 2
+        put(
+            "windows",
+            buildJsonObject {
+                put("sigSchema", SIG_SCHEMA_WIN)
+                put("aggs", JsonArray(listOf("max", "mean", "frac").map { JsonPrimitive(it) }))
+                put("minSeconds", WindowRing.MIN_SECONDS); put("maxSeconds", WindowRing.MAX_SECONDS); put("maxTerms", WindowRing.MAX_TERMS)
+                put("signals", JsonArray(featureNames.map { JsonPrimitive(it) }))
+                put("fracNeedsThreshold", true)
+            },
+        )
         put(
             "signals",
             JsonArray(

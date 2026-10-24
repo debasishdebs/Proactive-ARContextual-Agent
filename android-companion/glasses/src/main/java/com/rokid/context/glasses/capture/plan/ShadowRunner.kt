@@ -55,6 +55,7 @@ class ShadowRunner(
         val c = config()
         if (c !== cfg) {
             cfg = c; runner = c?.exprRunner
+            runner?.bind(signals)   // 3c C1b: a SHADOW plan's windows start empty at its apply
             detector = c?.let { GlanceDetector(it.glance) }
             lastGyroMs = -1L; lastKeyAt = tMs; keptAt.clear(); resetPose(); quietSince = -1L
         }

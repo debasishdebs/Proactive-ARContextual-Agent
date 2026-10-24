@@ -35,14 +35,26 @@ object PlanValidator {
         val exprs = ((raw["config"] as? JsonObject)?.get("exprs") as? JsonArray)?.takeIf { it.isNotEmpty() }
         val wanted = if (exprs != null) PLAN_SCHEMA_EXPR else PLAN_SCHEMA   // the schema follows the content: 2 iff exprs
         if (schema != wanted.toLong()) out += "plan schema ${schema ?: (raw["planSchema"] as? JsonPrimitive)?.content ?: "missing"} is not supported"
-        if (exprs != null && ((raw["config"] as JsonObject)["sigSchema"] as? JsonPrimitive)?.content != SIG_SCHEMA.toString()) {
-            out += "sigSchema must be $SIG_SCHEMA"
+        val progs = exprs?.mapNotNull { it as? JsonObject } ?: emptyList()
+        val wantSig = if (ExprWindows.needsSig2(progs)) SIG_SCHEMA_WIN else SIG_SCHEMA   // windows and value programs are catalogue 2: an older runner must refuse them
+        if (exprs != null && ((raw["config"] as JsonObject)["sigSchema"] as? JsonPrimitive)?.content != wantSig.toString()) {
+            out += "sigSchema must be $wantSig"
         }
+        if (exprs != null) windows(progs, bytes, out)
         finite(raw, "", out)
         sensing(raw, out)
         rawRules(raw, out)
         if (p != null) bounds(p, out)
         return out.distinct()
+    }
+
+    /** 3c C1b: at most [com.rokid.context.core.model.context.graph.WindowRing.MAX_TERMS] distinct window terms of 1-300 s, their ring bytes counted in the plan cap. */
+    private fun windows(progs: List<JsonObject>, bytes: Int, out: MutableList<String>) {
+        val terms = ExprWindows.termsOf(progs)
+        if (terms == null) { out += "expression window term is malformed"; return }
+        if (terms.size > com.rokid.context.core.model.context.graph.WindowRing.MAX_TERMS) out += "plan has ${terms.size} window terms (max ${com.rokid.context.core.model.context.graph.WindowRing.MAX_TERMS})"
+        val state = ExprWindows.stateBytes(terms)
+        if (state > 0 && bytes + state > PLAN_MAX_BYTES && bytes <= PLAN_MAX_BYTES) out += "plan is $bytes bytes with $state bytes of window state (max $PLAN_MAX_BYTES)"
     }
 
     /** Convenience for text: size, parse, strict decode, then [problems]. Returns the decoded plan when it decoded. */

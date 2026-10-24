@@ -75,6 +75,8 @@ class PlanReceiver(
             // S24: a plan that needs a capability this build lacks is refused as such, before any version or bounds judgement.
             val hasExprs = ((raw["config"] as? JsonObject)?.get("exprs") as? JsonArray)?.isNotEmpty() == true
             if (hasExprs) for (cap in listOf(CAP_EXPR, CAP_SIG1)) if (cap !in caps) return reject(m, "unsupported:$cap")
+            val progs = ((raw["config"] as? JsonObject)?.get("exprs") as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
+            if (hasExprs && ExprWindows.needsSig2(progs) && CAP_SIG2 !in caps) return reject(m, "unsupported:$CAP_SIG2")
             val plan = PlanJson.decodeStrict(planJson).getOrNull()
             val problems = PlanValidator.problems(raw, plan, bytes)
             if (problems.any { it.startsWith("plan schema ") }) return reject(m, "version")
@@ -158,8 +160,10 @@ class PlanReceiver(
         private const val MAX_TERMINAL = 16
         const val CAP_EXPR = "expr"
         const val CAP_SIG1 = "sig1"
+        /** Window terms and value programs (3c E2a). */
+        const val CAP_SIG2 = "sig2"
         val CAPS = listOf("plan1", "shadow", "trial")
         /** What a build with the expression runner advertises (X3 switches the glasses to it). */
-        val CAPS_EXPR = CAPS + listOf(CAP_EXPR, CAP_SIG1)
+        val CAPS_EXPR = CAPS + listOf(CAP_EXPR, CAP_SIG1, CAP_SIG2)
     }
 }
