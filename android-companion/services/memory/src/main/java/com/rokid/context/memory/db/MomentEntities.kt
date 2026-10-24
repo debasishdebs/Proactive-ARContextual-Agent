@@ -73,3 +73,14 @@ object CleanupTarget {
     /** Delete all: every device-side copy. */
     const val ALL = "ALL"
 }
+
+/** Payload builders: fixed key order and minimal escaping, because the payload text is the idempotence key of the outbox row. */
+object CleanupPayload {
+    fun one(key: String, value: String) = "{\"$key\":${str(value)}}"
+    fun range(fromMs: Long, toMs: Long) = "{\"fromMs\":$fromMs,\"toMs\":$toMs}"
+    private fun str(v: String): String = buildString {
+        append('"')
+        v.forEach { c -> when { c == '"' -> append("\\\""); c == '\\' -> append("\\\\"); c < ' ' -> append("\\u%04x".format(c.code)); else -> append(c) } }
+        append('"')
+    }
+}
