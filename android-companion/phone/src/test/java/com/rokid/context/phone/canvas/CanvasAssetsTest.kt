@@ -108,7 +108,8 @@ class CanvasAssetsTest {
 
     @Test fun jsUnderSizeBudget() {
         val lines = all.filter { it.name.endsWith(".js") }.sumOf { it.readText().lines().size }
-        assertEquals(true, lines <= 4550) // the Scenes run page (scenesRunView, ~55 lines, budget raised by 50); merged view added mergedflow.js + mergedview.js (+~110 lines, budget raised by 100); composite nodes added compositeview.js (~130 lines) and X5 added the boxed expression editor (exprgraph.js + exprview.js, ~650 lines)
+        assertEquals(true, lines <= 4614) // E2b: window nodes, the Value default graph and clamp note, window meters and the try-it panel in the boxed editor (+74 lines, budget raised by 64 from 4550 because the old budget had 10 spare); 
+        // the Scenes run page (scenesRunView, ~55 lines, budget raised by 50); merged view added mergedflow.js + mergedview.js (+~110 lines, budget raised by 100); composite nodes added compositeview.js (~130 lines) and X5 added the boxed expression editor (exprgraph.js + exprview.js, ~650 lines)
     }
 
     @Test fun checkReadsLiveEditorValues() {
