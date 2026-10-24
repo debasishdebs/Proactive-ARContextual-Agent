@@ -42,7 +42,7 @@ class SceneStoreTest {
         momentIds.map { ScenePartEntity(id, ScenePartKind.MOMENT, it, "r", it.toLong(16) * 1000) }
 
     private suspend fun seed(id: String = sceneId, momentIds: List<String> = ids) {
-        momentIds.forEach { md.replace(MomentEntity(it, 1, 1, "h", 1), emptyList()) }
+        momentIds.forEach { md.replace(MomentEntity(it, 1, 1, "h", 1, com.rokid.context.memory.moment.MomentType.FRAME), emptyList()) }
         sd.replace(scene(id), parts(id, momentIds))
         audit.record(scene(id), AuditOp.BUILT, AuditStep.BUILD)
         DerivedField.ALL.forEach { audit.writeDerived(scene(id), it, "a photo of a cat", null, 1) }

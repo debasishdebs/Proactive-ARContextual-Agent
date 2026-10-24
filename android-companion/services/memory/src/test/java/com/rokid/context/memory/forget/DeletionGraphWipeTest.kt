@@ -42,7 +42,7 @@ class DeletionGraphWipeTest {
         c.upsertItem(CanvasRunItemEntity("r", "f", "n", "OK", null, "{}", null, null, null, null, null, null, null)); c.upsertScore(CanvasScoreEntity("r", "f", "n", 1, "", 1))
         c.upsertTrace(listOf(CanvasLiveTraceEntity(1, "f", "_batch", "LIVE", "OK", null, "{}", null, "b", 1)))
         val m = db.momentDao()
-        m.replace(MomentEntity("00000001", 1, 1, "h", 1), listOf(MomentPartEntity("00000001", "FRAME", "f", "r", 1))); m.insertTombstones(listOf(MomentTombstoneEntity("00000002", 1)))
+        m.replace(MomentEntity("00000001", 1, 1, "h", 1, com.rokid.context.memory.moment.MomentType.FRAME), listOf(MomentPartEntity("00000001", "FRAME", "f", "r", 1))); m.insertTombstones(listOf(MomentTombstoneEntity("00000002", 1)))
         m.insertTraceDeps(listOf(MomentTraceDepEntity("00000001", "t", 1))); m.insertOutbox(listOf(CleanupOutboxEntity(target = "PHONE_FILE", payloadJson = "{}", createdAt = 1, ackedAt = 5)))
         db.objectDao().appendAudit("MOMENT", "00000001", "BUILT", 1, "build"); db.objectDao().upsertDerived(com.rokid.context.memory.db.ObjectDerivedEntity("MOMENT", "00000001", "SUMMARY", "s", null, 1, null, 1))
         db.sceneDao().replace(SceneEntity("S00000001", 1, 0, 0, 999, "HOUR_END", null, null, null, 1, 1), listOf(ScenePartEntity("S00000001", "MOMENT", "00000001", "r", 0)))

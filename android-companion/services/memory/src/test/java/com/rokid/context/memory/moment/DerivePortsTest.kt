@@ -36,7 +36,7 @@ class DerivePortsTest {
         val reg = DeriveRegistry(); val runner = DeriveRunner(audit, reg, alwaysHolds)
         listOf(ObjectKind.MOMENT, ObjectKind.AUDIO, ObjectKind.SCENE, "FAKE").forEach { k ->
             echo(k, reg)
-            val o = ObjectRef(k, "id-$k", 3); audit.record(o, AuditOp.BUILT, AuditStep.BUILD); if (k == ObjectKind.MOMENT) db.momentDao().upsertMoment(com.rokid.context.memory.db.MomentEntity(o.id, 1, 1, "h", 1))
+            val o = ObjectRef(k, "id-$k", 3); audit.record(o, AuditOp.BUILT, AuditStep.BUILD); if (k == ObjectKind.MOMENT) db.momentDao().upsertMoment(com.rokid.context.memory.db.MomentEntity(o.id, 1, 1, "h", 1, com.rokid.context.memory.moment.MomentType.FRAME))
             assertNotNull(k, reg.summarizer(k)); assertNotNull(reg.captioner(k)); assertNotNull(reg.embedder(k))
             assertTrue(k, runner.rebuild(o, DerivedField.SUMMARY)); assertEquals("sum id-$k", audit.readDerived(o, DerivedField.SUMMARY)?.value)
             assertTrue(runner.rebuild(o, DerivedField.EMBEDDING)); assertEquals("emb:id-$k", audit.readDerived(o, DerivedField.EMBEDDING)?.ref)
