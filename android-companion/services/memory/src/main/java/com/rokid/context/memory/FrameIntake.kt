@@ -17,7 +17,7 @@ data class FrameRows(val meta: FrameMetaEntity, val state: FrameStateEntity)
  * The ingest commit: the frame row, its `frame_meta` and its PENDING `frame_state` in ONE Room transaction, so a crash
  * leaves all three or none. A resend of a glasses frame under another database id (same `wireFrameId`) is not stored twice.
  */
-class FrameIntake(private val db: ContextDatabase) {
+class FrameIntake(private val db: ContextDatabase, private val clock: () -> Long = System::currentTimeMillis) {
     /** [FENCED]: the photo's time lies in a Moment Forget fence (a forgotten second or range), so nothing was stored and its JPEG is queued for deletion in the durable outbox. */
     enum class Outcome { ADDED, DUPLICATE, WIRE_DUPLICATE, FENCED }
 
@@ -26,7 +26,7 @@ class FrameIntake(private val db: ContextDatabase) {
         if (fencedByMomentForget(frame, rows)) {
             val sidecar = frame.path.removeSuffix(".jpg") + ".meta.json"
             db.momentDao().insertOutbox(listOf(frame.path, sidecar).filter { it.isNotBlank() }.distinct().map {
-                CleanupOutboxEntity(target = CleanupTarget.PHONE_FILE, payloadJson = CleanupPayload.one("path", it), createdAt = System.currentTimeMillis())
+                CleanupOutboxEntity(target = CleanupTarget.PHONE_FILE, payloadJson = CleanupPayload.one("path", it), createdAt = clock())
             })
             return@withTransaction Outcome.FENCED
         }
@@ -43,12 +43,20 @@ class FrameIntake(private val db: ContextDatabase) {
         }
     }
 
-    /** True when the capture time (or the file time, whichever lies in a forgotten second) touches a Moment Forget range or a tombstoned second. */
+    /**
+     * True when the photo may lie in a forgotten interval. USABLE capture evidence is `capturedAtMs` only; the file time `frame.ts` is not (a delayed frame keeps a late file
+     * time). With evidence the frame is fenced when its capture time (or file time) touches a Moment Forget range or tombstoned second. WITHOUT evidence it cannot be proven
+     * outside a fence, so it is also refused while any Moment Forget happened within [UNKNOWN_TIME_FENCE_MS] (conservative: unknown capture time is never admitted next to a Forget).
+     */
     private suspend fun fencedByMomentForget(frame: FrameEntity, rows: FrameRows): Boolean {
-        val times = listOfNotNull(frame.ts, rows.meta.capturedAtMs).distinct()
+        val captured = rows.meta.capturedAtMs
+        val times = listOfNotNull(frame.ts, captured).distinct()
         val s3 = db.canvasSlice3Dao()
         if (times.any { s3.momentFenced(it, it) }) return true
         val ids = times.mapNotNull { runCatching { MomentId.ofMs(it) }.getOrNull() }
-        return ids.isNotEmpty() && db.momentDao().tombstonedAmong(ids).isNotEmpty()
+        if (ids.isNotEmpty() && db.momentDao().tombstonedAmong(ids).isNotEmpty()) return true
+        return captured == null && db.momentDao().tombstonesSince(clock() - UNKNOWN_TIME_FENCE_MS) > 0
     }
+
+    companion object { const val UNKNOWN_TIME_FENCE_MS = 24L * 3600 * 1000 }
 }

@@ -6,6 +6,7 @@ import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.db.DaoFence
 import com.rokid.context.memory.db.DeletionEpoch
 import com.rokid.context.memory.db.FrameEntity
+import com.rokid.context.memory.db.FrameMetaEntity
 import com.rokid.context.memory.db.MemoryEntity
 import com.rokid.context.memory.db.MemoryTier
 import com.rokid.context.memory.db.MomentPartEntity
@@ -15,7 +16,10 @@ import com.rokid.context.memory.db.ReviewState
 class MomentFixture(val db: ContextDatabase) {
     companion object { const val SEC = 1_761_000_000L; const val MS = SEC * 1000 }
 
-    suspend fun frame(id: String, ts: Long) = db.frameDao().insertIgnore(FrameEntity(id, ts, "/$id.jpg", "rokid_glasses", phash = "p$id"))
+    suspend fun frame(id: String, ts: Long, captured: Boolean = true) {
+        db.frameDao().insertIgnore(FrameEntity(id, ts, "/$id.jpg", "rokid_glasses", phash = "p$id"))
+        if (captured) db.frameMetaDao().upsert(FrameMetaEntity(id, null, null, "STILL", false, null, null, null, null, null, null, null, null, null, 1, capturedAtMs = ts))
+    }
     suspend fun memory(id: String, frameId: String?, derived: Boolean = false, createdAt: Long = 1) =
         db.memoryDao().insert(MemoryEntity(id, frameId, "text of $id", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, createdAt, derived, "text of $id"))
     suspend fun mark(id: String, atMs: Long) {

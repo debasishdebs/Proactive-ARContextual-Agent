@@ -61,6 +61,9 @@ abstract class MomentDao {
     // --- tombstones ---
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertTombstones(t: List<MomentTombstoneEntity>)
     @Query("SELECT momentId FROM moment_tombstone WHERE momentId IN (:ids)") abstract suspend fun tombstonedAmong(ids: List<String>): List<String>
+    @Query("SELECT COUNT(*) FROM moment_tombstone WHERE createdAt >= :since") abstract suspend fun tombstonesSince(since: Long): Int
+    /** Frames among [ids] with no capture time on `frame_meta` (no usable capture evidence: file or receipt time only). */
+    @Query("SELECT f.id FROM frame f LEFT JOIN frame_meta m ON m.frameId = f.id WHERE f.id IN (:ids) AND m.capturedAtMs IS NULL") abstract suspend fun framesWithoutCaptureTime(ids: List<String>): List<String>
     @Query("SELECT COUNT(*) FROM moment_tombstone") abstract suspend fun tombstoneCount(): Int
 
     // --- cleanup outbox ---

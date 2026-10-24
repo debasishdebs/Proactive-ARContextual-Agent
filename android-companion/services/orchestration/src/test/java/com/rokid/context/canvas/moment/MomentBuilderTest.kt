@@ -84,6 +84,12 @@ class MomentBuilderTest {
         assertEquals(1, builder.build(listOf(id)).removed); assertNull(db.momentDao().moment(id)); assertTrue(kinds(id).isEmpty())
     }
 
+    @Test fun aSecondWithAPhotoOfUnknownCaptureTimeIsNotAMoment() = runBlocking<Unit> {
+        fx.frame("a", MS + 5); fx.frame("u", MS + 6, captured = false)
+        val r = builder.build(listOf(id))
+        assertEquals(0, r.stored); assertEquals(1, r.refused); assertNull(db.momentDao().moment(id))
+    }
+
     @Test fun malformedIdsAndTheSwitchOffWriteNothing() = runBlocking<Unit> {
         fx.frame("a", MS + 5)
         assertEquals(MomentBuilder.Report.NONE, builder.build(listOf("zz", "123")))
