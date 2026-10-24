@@ -66,7 +66,8 @@ def run(store, out, probes=None, log=None, table=None):
             missing = [t for t in (py.image,) if not rt.image_exists(t)]
             add("images", not missing, "" if not missing else " (%d missing: run setup)" % len(missing))
             used = rt.vm_var_used_bytes()
-            add("vm disk", used is not None and used <= table.host["vmVarMaxGiB"] * GIB, " (disk_low: VM /var above the limit or unreadable)")
+            disk_ok = used is not None and used <= table.host["vmVarMaxGiB"] * GIB
+            add("vm disk", disk_ok, "" if disk_ok else " (disk_low: VM /var above the limit or unreadable)")
         else:
             add("images", True, " (skipped: machine stopped)")
             add("vm disk", True, " (skipped: machine stopped)")
