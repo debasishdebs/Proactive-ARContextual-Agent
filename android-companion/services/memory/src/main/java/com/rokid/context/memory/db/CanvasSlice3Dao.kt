@@ -77,6 +77,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         val jobs = moveFrameForgetFence(now)
         val ids = forgettableTraces().filter { TraceClock.overlaps(it, fromMs, toMs) }.map { it.traceId }
         ids.forEach { tombstoneTrace(it, now) }
+        purgeSensorBetween(fromMs, toMs, now, "forget") // the sensor rows of the range go whichever trace they came from
         val labels = deleteLabelsBetween(fromMs, toMs)
         val invalid = invalidateBySources(ids, fromMs, toMs, labelRevChanged = labels > 0)
         return ForgetOutcome(ids, labels, invalid, jobs)
@@ -198,7 +199,8 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         if (!fence.holds()) return false
         val epoch = fence.now()
         if (t.installId != epoch.installId || t.deletionCounter != epoch.counter) return false
-        if (trace(t.traceId)?.tombstoned == true) return false
+        val existing = trace(t.traceId)
+        if (existing?.tombstoned == true) return false
         val ranges = forgottenRanges()
         val admitted = when {
             t.clockQuality == TraceClock.UNMAPPED && CoarseTraceEvidence.overlapsAny(t, ranges) -> t.copy(clockQuality = TraceClock.QUARANTINED) // recoverable: stored, hidden, forgotten with any later range
@@ -207,6 +209,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
             else -> t
         }
         upsertTrace(admitted)
+        if (existing != null && existing.manifestJson != admitted.manifestJson) purgeSensorOfTrace(t.traceId, System.currentTimeMillis(), "stale") // other content: the old per-second numbers are obsolete
         return true
     }
 
@@ -227,6 +230,7 @@ abstract class CanvasSlice3Dao : DerivedStaleDao() {
         deleteEventsOf(traceId)
         insertTombstoneStub(traceId, now)
         markTombstoned(traceId)
+        purgeSensorOfTrace(traceId, now, "forget") // every Moment second computed from this trace, in any Moment
     }
 
     // --- replays and sweeps (S75, S77) ---

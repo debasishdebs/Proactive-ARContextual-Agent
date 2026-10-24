@@ -34,11 +34,26 @@ abstract class MomentDao : DerivedStaleDao() {
     }
 
     /**
+     * Sets the sensor rows of one Moment to [rows] (empty = none). Returns false and writes nothing when the Moment does not exist or the rows are already exactly these; otherwise the old
+     * rows are replaced and, in the SAME transaction, the derived fields of the Moment and of its Scenes are hidden and its input revision moves (INVALIDATED, names only). [hide] false is for a
+     * Moment that is being created in this very transaction (it has no derived field to hide and its BUILT row is its first input revision).
+     */
+    @Transaction open suspend fun replaceSensor(momentId: String, rows: List<MomentSensorEntity>, now: Long, step: String, hide: Boolean = true): Boolean {
+        require(rows.all { it.momentId == momentId }) { "sensor rows of another Moment" }
+        if (momentExists(momentId) == 0) return false
+        val old = sensorOf(listOf(momentId))
+        if (old == rows.sortedBy { it.phoneSecond }) return false
+        deleteSensorOf(listOf(momentId)); insertSensor(rows)
+        if (hide) hideAfterSensorChange(listOf(momentId), now, step)
+        return true
+    }
+
+    /**
      * Removes [ids] and everything that hangs on them (parts, trace deps), and shrinks every Scene that held one of them (its derived fields are hidden in this same transaction).
      * [step] is the audit step name of that shrink: `forget` (the default: Forget and the source cleanup) or `build` (the builder dropped a Moment that no longer qualifies).
      */
     @Transaction open suspend fun remove(ids: List<String>, step: String = "forget") {
-        ids.chunked(CHUNK).forEach { deleteParts(it); deleteTraceDeps(it); deleteMoments(it); deleteObjectRows(it) }
+        ids.chunked(CHUNK).forEach { deleteParts(it); deleteTraceDeps(it); deleteSensorOf(it); deleteMoments(it); deleteObjectRows(it) }
         if (ids.isNotEmpty()) shrinkScenesHolding(ids, step)
     }
     // The audit and the derived fields of a Moment go WITH the Moment, on every path that removes one (Forget cascade, source cleanup, builder removal).

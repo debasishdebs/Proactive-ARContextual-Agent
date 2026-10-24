@@ -67,6 +67,8 @@ abstract class WipeDao {
     // Scenes (Room v11). WIPED: the Scenes and their membership edges (their audit and derived fields go with the two tables above).
     @Query("DELETE FROM scene_part") protected abstract suspend fun sceneParts()
     @Query("DELETE FROM scene") protected abstract suspend fun scenes()
+    // Sensor features per Moment second (Room v12). WIPED: numbers only, but computed from traces that Delete all removes.
+    @Query("DELETE FROM moment_sensor") protected abstract suspend fun momentSensor()
     @Query("SELECT path FROM frame") abstract suspend fun framePaths(): List<String>
 
     /** Delete all at the current time (the wildcard cleanup row is stamped with it). */
@@ -75,7 +77,7 @@ abstract class WipeDao {
     @Transaction
     open suspend fun wipeMemory(now: Long): List<String> {
         val proposals = proposalIds()
-        ackedOutbox(); momentWipeCleanup(now); objectAudit(); objectDerived(); sceneParts(); scenes(); momentParts(); momentTraceDeps(); moments(); momentTombstones(); momentClearForgetRanges() // the cleanup command is written BEFORE any source reference goes
+        ackedOutbox(); momentWipeCleanup(now); objectAudit(); objectDerived(); sceneParts(); scenes(); momentSensor(); momentParts(); momentTraceDeps(); moments(); momentTombstones(); momentClearForgetRanges() // the cleanup command is written BEFORE any source reference goes
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         canvasItems(); canvasScores(); canvasRuns(); canvasTraces() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
         slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3ClearForgetRanges(); slice3BumpLabelRev()
