@@ -204,3 +204,18 @@ Why E1 is 14 h and not the brief's 15 h first slice: no parser, no JS evaluator,
 4. Detector entry gate: **7 days, >= 20 h of COMPLETE traces, >= 30 marks, and a written list of wanted people/object queries.**
 5. Tier (a) shape for detectors: **merged into the extract schema** (S18, 0 extra calls) unless the A/B says otherwise.
 6. First connector: **none named, so only K1 is scheduled until you pick one** (read-only first).
+
+## 10. X2 as built: the two-level `expr.guard` graph (overrides the X2 "form table of steps")
+Canvas node `expr.guard` (RT_GLASSES, MOTION_EVENT in/out, category Thresholds/Filters, palette, **liveable=false**: SHADOW/TRIAL only) has ONE param `graph`, no generated form (editor = X5). Code: `ExprProgram.kt` (model, parser, validator, lowering of one program), `ExprLowering.kt` (pass inside `PlanCompiler`), role `GUARD|VALUE` (VALUE must end in a number; no node uses it yet).
+
+```
+graph = { "steps": [ Step, ... ], "out": "<step name>" }                     // list order is NOT evaluation order
+Step  = { "name": "[a-z][a-z0-9_]{0,23}", "inputs": [Input...], "nodes": [Node...], "wires": [["from","node.port"]...], "out": "<node id>" }
+Input = { "name": "<local handle>", exactly one of  "sig": "<catalogue signal or alias>" | "step": "<other step name>" | "const": <number|true|false> }
+Node  = { "id": "[a-z][a-z0-9_]{0,23}", "op": ..., params }   // ports a,b,c; every port wired exactly once; "from" = a node id or an input name of THIS step
+  sig {name}  const {value}  cmp {f: < <= > >= ==} (a,b num)  arith {f: + - * /} (a,b num)  and/or (a,b bool)  not (a)  in {set:[states]} (a enum)
+  clamp {lo,hi} (a num)  choose (a bool, b, c same type)  fresh {ms 1..60000} (a any)      // no windows in E1
+```
+Rules (codes `EXPR_*`, shown as `node <id>: <CODE>: text`): step names unique (`EXPR_DUP_NAME`) and patterned (`EXPR_BAD_NAME`); a loop between steps or inside a step is `EXPR_LOOP`; unknown step/node/out is `EXPR_UNKNOWN_REF`, a wire from a node of another step is `EXPR_FOREIGN_NODE`; `EXPR_UNKNOWN_SIGNAL`, `EXPR_WRONG_TYPE`, `EXPR_PORT`, `EXPR_BAD_PARAM`, `EXPR_SHAPE` (malformed or unknown key), `EXPR_NO_GRAPH`; guard output not bool is `EXPR_GUARD_NOT_BOOL`; limits: lowered nodes (sig/const inputs and nodes, counted per use) <= 32 over ALL programs (`EXPR_TOO_MANY_NODES`), <= 6 programs (`EXPR_TOO_MANY_PROGRAMS`), cost <= 64 per program (`EXPR_COST`; unit costs: literal/signal/cmp/logic/arith 1, clamp/choose/fresh 2, `in` 1+len; 32 nodes cost <= 224 so the 256 plan cap is implied), plan <= 8192 bytes with `exprs` counted (`EXPR_BYTES`). WARN `EXPR_GUARD_READS_CTX` when a guard reads `ctx` or `ctxAgeS` (U2). Constants stay graph values (`steps[i].nodes[j].value` or `steps[i].inputs[j].const`) so the tuner can sweep them by path.
+
+Lowered (`PlanConfig.exprs`, planSchema 2, sigSchema 1): one object per program, ordered by canvas node id: `{"id","role":"guard","out":<index>,"s":[entry...]}`. Steps are ordered by dependency (lexicographic tie-break), nodes inside a step likewise; a signal/constant input becomes an entry where first used; a `step` input is the index of that step's output. Entries are post-order: `a`,`b`,`c` are indexes strictly below the entry (forward references cannot exist). Entry forms: `{op:sig,name}` (canonical name), `{op:const,v}`, `{op:cmp|arith,f,a,b}`, `{op:and|or,a,b}`, `{op:not,a}`, `{op:in,a,set:[sorted]}`, `{op:clamp,a,lo,hi}`, `{op:choose,a,b,c}`, `{op:fresh,a,ms}`. Only these ops and keys exist, so a lowered program cannot name a capture (asserted in `ExprLowering.assertPure`). Pinned by `ExprGraphGoldenTest`.
