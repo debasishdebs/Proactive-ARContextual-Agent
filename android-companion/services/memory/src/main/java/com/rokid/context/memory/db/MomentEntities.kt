@@ -1,5 +1,6 @@
 package com.rokid.context.memory.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -18,6 +19,10 @@ data class MomentEntity(
     val contentRev: Int,
     val contentHash: String,
     val builtAt: Long,
+    /** What anchors the Moment (Room v13). Derived from the parts by the builder, never defaulted in code; the column default exists only for the rows that were stored before v13 (all FRAME). */
+    @ColumnInfo(defaultValue = "FRAME") val momentType: com.rokid.context.memory.moment.MomentType,
+    /** Why a MARK Moment has no photo (content-free code); null for a FRAME Moment. */
+    @ColumnInfo(defaultValue = "NULL") val noPhotoReason: com.rokid.context.memory.moment.NoPhotoReason? = null,
 ) : com.rokid.context.memory.moment.MomentObject {
     override val kind: String get() = com.rokid.context.memory.moment.ObjectKind.MOMENT
     override val id: String get() = momentId
@@ -42,6 +47,8 @@ data class MomentPartEntity(
     val refId: String,
     val partRev: String,
     val partTimeMs: Long,
+    /** A MARK part's code (its source: tap, voice, phone_voice, retro, ask_tap); null for every other part. A fixed token, never text (Room v13). */
+    @ColumnInfo(defaultValue = "NULL") val code: String? = null,
 )
 
 /** A forgotten second. Inserted for every requested Moment id (also when no Moment row exists): the builder refuses to recreate it. Wiped by Delete all (the epoch fence covers that). */

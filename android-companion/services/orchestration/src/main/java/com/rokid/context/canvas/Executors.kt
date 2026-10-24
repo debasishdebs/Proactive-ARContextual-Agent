@@ -203,6 +203,26 @@ object PromptExecutor : NodeExecutor {
  */
 object SummaryExecutor : NodeExecutor {
     override val type = NodeTypes.SUMMARY
+
+    /**
+     * True when the item holds words a model could summarise. A Scene or Moment item (itemType scene or moment) holds words only in its `text` (metadata such as ids, times, counts and the
+     * rule are not words); another JSON value (a Prompt's answer) needs at least one non-blank string; an Extraction needs a non-blank fact or caption.
+     */
+    internal fun hasVisibleText(v: CanvasValue): Boolean = when (v) {
+        is CanvasValue.Json -> {
+            val o = v.value as? JsonObject
+            val kind = (o?.get("itemType") as? JsonPrimitive)?.takeIf { p -> p.isString }?.content
+            if (kind == "scene" || kind == "moment") ((o?.get("text") as? JsonPrimitive)?.takeIf { p -> p.isString }?.content).orEmpty().isNotBlank() else hasString(v.value)
+        }
+        is CanvasValue.Extraction -> v.facts.any { f -> f.text.isNotBlank() } || v.captions.any { c -> c.caption.isNotBlank() }
+        else -> false
+    }
+
+    private fun hasString(e: kotlinx.serialization.json.JsonElement): Boolean = when (e) {
+        is JsonPrimitive -> e.isString && e.content.isNotBlank()
+        is JsonObject -> e.values.any { hasString(it) }
+        is kotlinx.serialization.json.JsonArray -> e.any { hasString(it) }
+    }
     override fun nominalCalls(node: PipelineNode, items: Int) = items
     override fun maxCalls(node: PipelineNode, items: Int) = items
 
@@ -215,6 +235,8 @@ object SummaryExecutor : NodeExecutor {
                 is CanvasValue.Extraction -> CanvasValueJson.encode(v)
                 else -> return@map NodeResult(it.frameId, null, error = "BAD_INPUT")
             }
+            // nothing visible to summarise (a Scene or Moment with no visible text, an empty extraction): no model call, an item error, never a made-up result
+            if (!hasVisibleText(it.value)) return@map NodeResult(it.frameId, null, error = "NO_INPUT")
             if (!bound) return@map NodeResult(it.frameId, null, error = "NOT_SET")
             val vars = PromptVars(contextSources = PromptComposer.dataBlock("upstream", listOf(upstream)))
             val prompt = PromptComposer.compose(system, SummaryNode.TEMPLATE, vars.toMap(ctx.persona.persona.value, NowText.of(ctx.now())))

@@ -42,7 +42,7 @@ class ActivitySortTest {
     @After fun tearDown() { vms.forEach { it.cancelScope() }; TestGraph.close(ctx) }
 
     private fun vm(sort: ActivitySortStore) = ActivityViewModel(
-        Period.TODAY, FakeGlassesStatusSource(), FakePipelineControl(), graph.timeline, graph.asks, graph.nudges,
+        Period.TODAY, FakeGlassesStatusSource(), FakePipelineControl(), graph.timeline, graph.asks, graph.nudges, graph.marks,
         clock = flowOf(Fixtures.at(TODAY, 20)), storagePct = flowOf(null), zone = { ZONE }, sort = sort,
     ).also { vms += it }
 

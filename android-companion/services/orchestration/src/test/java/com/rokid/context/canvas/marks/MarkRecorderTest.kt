@@ -221,4 +221,16 @@ class MarkRecorderTest {
         assertTrue(logs.all { it.length < 60 })
         assertNull(labels().firstOrNull { it.provenance.length > 20 })
     }
+
+    @Test fun anUndoneOrRetaggedMarkTellsTheMomentSideWithItsTimeAndNothingElse() = runBlocking<Unit> {
+        val changed = ArrayList<Long>(); val recorded = ArrayList<Long>()
+        val r = MarkRecorder(dao, { DaoFence(0, epoch, { 0 }, { epoch }) }, { t0 }, { logs += it }, onRecorded = { recorded += it }, onChanged = { changed += it })
+        r.onMark(mark(1), at(t0)); r.onMark(mark(2, listen = false), at(t0 + 9_000))
+        assertEquals(listOf(t0, t0 + 9_000), recorded); assertTrue(changed.isEmpty())
+        r.onListenStart(t0); r.onAsk(glasses = true) // the tap mark bound to the listen was an ordinary question: re-tagged ask_tap
+        assertEquals(listOf(t0), changed)
+        r.onMark(mark(3, undo = 2), at(t0 + 20_000))
+        assertEquals("the undone mark's own time", listOf(t0, t0 + 9_000), changed)
+        assertTrue(labels().none { it.labelId == "mk:e:2" })
+    }
 }

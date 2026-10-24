@@ -91,6 +91,8 @@ class MomentForget(
             val strayLabels = labels.toList().chunked(CHUNK).flatMap { md.labelIdsAmong(it) }
             strayLabels.chunked(CHUNK).forEach { md.deleteLabels(it) }
             if (strayLabels.isNotEmpty()) s3.bumpLabelRev()
+            // the rows of a run over a MARK Moment list its marks as lineage tokens (mf:<labelId>): a mark that is forgotten takes them with it
+            if (labels.isNotEmpty()) db.canvasDao().deleteCanvasOutputsForFrames(labels.toList())
             // 4. The projection: every Moment named, in range, or holding any forgotten source.
             val dropped = HashSet<String>(projected)
             dropped += md.dropHolding(frames, memories, labels)

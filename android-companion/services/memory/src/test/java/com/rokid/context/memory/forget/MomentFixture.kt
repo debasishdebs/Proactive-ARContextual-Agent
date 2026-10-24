@@ -35,7 +35,7 @@ class MomentForgetFixture(val db: ContextDatabase, now: Long = 1_000) {
     }
     suspend fun ask(id: String, citesFrame: String) = db.askDao().upsert(AskEntity(id, 1, "q", "a", "[\"frame:$citesFrame\"]", null, "test", false))
     /** A projection row set, written directly (so a test can make it stale or leave it empty). */
-    suspend fun project(momentId: String, vararg parts: Pair<String, String>) = db.momentDao().replace(MomentEntity(momentId, 1, 1, "h", 1), parts.map { MomentPartEntity(momentId, it.first, it.second, "r", 1) })
+    suspend fun project(momentId: String, vararg parts: Pair<String, String>) = db.momentDao().replace(MomentEntity(momentId, 1, 1, "h", 1, com.rokid.context.memory.moment.MomentType.FRAME), parts.map { MomentPartEntity(momentId, it.first, it.second, "r", 1) })
 
     suspend fun frameIds() = db.frameDao().all().map { it.id }.sorted()
     suspend fun memoryIds() = db.forgetDao().memories(listOf("m1", "m2", "s1", "x1", "x2", "o1")).filter { it.reviewState != com.rokid.context.memory.db.ReviewState.INVALIDATED }.map { it.id }.sorted()

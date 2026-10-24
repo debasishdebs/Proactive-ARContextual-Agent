@@ -48,3 +48,18 @@ FRAME, MEMORY, CITE, MARK, SUMMARY, OTHER (built for Moments). **Sensor** and **
 - A lost Scene member invalidates the Scene artifacts (**yes**); a warning that exports already handed out cannot be recalled (**yes**).
 - Hour windows as a hard Scene boundary (**yes**, to confirm).
 - Quarantined trace files stay on disk until a Forget or Delete all (**accepted**).
+
+## 8. Update 2026-10-25 (user): a Moment can be born from a mark alone
+Found on the first real wear window after v0.9.3: four marks at 01:50-01:51 (tap + voice, all recorded and acknowledged on the phone) produced no Moment and appear nowhere in the app, because capture was paused at 20% battery (no frames) and a Moment so far needed a photo second; marks lived only as `canvas_label` rows that no screen reads.
+New definition (supersedes section 2/3 wording that makes a photo the anchor):
+- A **Moment is a timestamp** (phone-clock second, same `MomentId`) that may carry **any of**: photos, sensor seconds, marks, memories. **Photos and sensors are optional.** A mark creates a Moment by itself.
+- A mark carries a **code** (its source: tap, voice, retro, ask) so later queries can say "my marks" or "ask marks". No text is stored in the label (privacy rule unchanged); `Text` style marks, if added later, follow the same Moment rule.
+- A mark-only Moment records WHY there is no photo/sensor part when known (capture paused: battery / user / persisted pause; capture off; no trace), as a content-free reason code on the Moment, not as free text.
+- Forget, Delete all, tombstones, the outbox and the audit table treat a mark-only Moment exactly like any other (the mark label is the source; deleting it deletes the Moment; Scene membership shrinks as before).
+- Readers: `input.moments`, `GET /api/moments`, the Activity tab ("Marks" section: time, code, joined Moment, reason for no photo) and later Scene building all see mark-only Moments. Scene rules: a mark-only Moment has no frame hash, so it joins the neighbouring Scene by time/activity and never cuts one by frame change.
+- Capture is NOT triggered by a mark (anti-goal kept: a mark never touches capture). Whether a mark should also take one photo while capture is paused is a separate, undecided product question.
+
+### 8.1 MomentType (user suggestion, 2026-10-25)
+- Add `MomentType` = what ANCHORS the Moment: `FRAME` (today's, has at least one photo), `MARK` (born from a mark, photo and sensors optional); `AUDIO` and others reserved. Stored as a column (additive migration) derived deterministically from the parts at build time, so queries can filter ("my marks", "ask marks") and readers can branch.
+- Downstream code must branch on the type, not on "has a photo": the type is NOT given a default anywhere and every `when` over it is exhaustive, so the compiler lists every site that must decide (this replaces the manual hunt for photo assumptions). Known sites: Moment readers and counts (`photos`), SceneCutter frame comparison (a MARK Moment has no hash and never cuts), sensor rows (a MARK Moment gets sensor rows only if a trace covers its second), resolver newest-N, derive inputs, Activity tab.
+- Later (user idea): a code graph (graphify) over the repo to see the dependency DAG of Moment readers; not needed for this slice because the compiler enforces completeness.
