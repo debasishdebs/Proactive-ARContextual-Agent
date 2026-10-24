@@ -39,7 +39,7 @@ class DaoSceneSource(private val db: ContextDatabase, private val config: SceneC
                 val activity = frames.mapNotNull { meta[it.refId]?.motion }.filter { it in config.activityStates }
                     .groupingBy { it }.eachCount().entries.sortedWith(compareBy({ -it.value }, { it.key })).firstOrNull()?.key
                     ?: sensor[m.momentId]?.motionState?.takeIf { it in config.activityStates } // photos logged none: the sensor second of the Moment (only STILL, WALKING, VEHICLE count)
-                out += SceneMoment(m.momentId, (MomentId.parse(m.momentId) ?: continue) * 1000, activity, hash(first?.phash), hash(last?.phash), vector(first), vector(last), m.contentHash)
+                out += SceneMoment(m.momentId, (MomentId.parse(m.momentId) ?: continue) * 1000, m.momentType, activity, hash(first?.phash), hash(last?.phash), vector(first), vector(last), m.contentHash)
             }
         }
         return out

@@ -15,6 +15,7 @@ class MemoryGraph private constructor(val db: ContextDatabase, retired: RetiredC
     val memoryEdits = MemoryEdits(db.memoryViewDao(), memories)
     val asks = AskRepository(db.askDao())
     val nudges = NudgeRepository(db.nudgeDao())
+    val marks = MarkRepository(db.momentDao())
     val proposals = ProposalRepository(db.proposalDao(), db.actionDao(), db)
     val shopping = db.shoppingDao()
     val notes = db.noteDao()

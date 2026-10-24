@@ -23,6 +23,7 @@ object MarkGraph {
                 wallClock = System::currentTimeMillis,
                 log = { android.util.Log.i("PcMarks", it) },
                 onRecorded = { com.rokid.context.canvas.moment.MomentTriggers.get(ctx).onMarkRecorded(it) },
+                onChanged = { com.rokid.context.canvas.moment.MomentTriggers.get(ctx).onMarkRecorded(it) },
             )
         }.also { recorder = it }
     }

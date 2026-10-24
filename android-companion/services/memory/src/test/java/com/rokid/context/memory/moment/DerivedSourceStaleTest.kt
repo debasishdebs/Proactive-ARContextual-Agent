@@ -34,7 +34,7 @@ class DerivedSourceStaleTest {
     @After fun close() = db.close()
 
     private suspend fun moment(vararg parts: Pair<String, String>) {
-        db.momentDao().replace(MomentEntity(m.id, 1, 1, "h", 1), parts.map { MomentPartEntity(m.id, it.first, it.second, "r", 1) })
+        db.momentDao().replace(MomentEntity(m.id, 1, 1, "h", 1, com.rokid.context.memory.moment.MomentType.FRAME), parts.map { MomentPartEntity(m.id, it.first, it.second, "r", 1) })
         DerivedField.ALL.forEach { audit.writeDerived(m, it, "v", null, 1) }
     }
     private suspend fun mark(id: String) = s3.insertLabelFenced(CanvasLabelEntity(id, "MOMENT", "tap", "X", 5, createdAt = 1), fence)

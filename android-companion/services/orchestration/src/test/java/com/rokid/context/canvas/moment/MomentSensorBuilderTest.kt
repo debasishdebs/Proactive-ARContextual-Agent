@@ -95,6 +95,16 @@ class MomentSensorBuilderTest {
         assertTrue(rows().isEmpty())
     }
 
+    @Test fun aMarkMomentGetsSensorRowsOnlyWhenATraceCoversItsSecond() = runBlocking<Unit> {
+        fx.mark("mk:1:1", SEC * 1000 + 100, "tap")
+        val far = MomentId.format(SEC + 500); fx.mark("mk:1:2", (SEC + 500) * 1000 + 100, "voice")
+        import()
+        builder.build(listOf(id, far))
+        assertEquals(com.rokid.context.memory.moment.MomentType.MARK, md.moment(id)!!.momentType)
+        assertEquals("the covered second has its row", listOf(id), rows().map { it.momentId })
+        assertEquals("the uncovered MARK Moment exists with no sensor row", com.rokid.context.memory.moment.MomentType.MARK, md.moment(far)!!.momentType)
+    }
+
     @Test fun aSecondOfATraceWithNoPhoneClockGetsNoRow() = runBlocking<Unit> {
         photo(); import(clock = PulledTraces.PhoneClock())
         assertEquals(TraceClock.UNMAPPED, s3.trace("trace-aaaa-0001")!!.clockQuality)

@@ -94,6 +94,19 @@ class SummaryExecutorTest {
         assertEquals("NOT_SET", r.error); assertEquals(0, r.calls); assertNull(r.value); assertTrue(prompts.isEmpty())
     }
 
+    @Test fun anItemWithNoVisibleTextMakesNoModelCallAndIsAnItemErrorNotAResult() = runBlocking<Unit> {
+        val moment = CanvasValue.Json(buildJsonObject { put("itemType", "moment"); put("momentId", "00000001"); put("startMs", 1000L) })
+        val blankScene = scene("S1", "  ")
+        val noText = CanvasValue.Json(buildJsonObject { put("itemType", "scene"); put("sceneId", "S2") })
+        val empty = CanvasValue.Extraction(listOf(Fact(" ", "summary", 0.9, emptyList())), emptyList())
+        val r = exec().run(node, listOf(item("m", moment), item("s", blankScene), item("t", noText), item("e", empty)), ctx { reply() })
+        assertTrue("no model call at all: " + prompts, prompts.isEmpty() && roles.isEmpty() && requests.isEmpty())
+        assertEquals(List(4) { "NO_INPUT" }, r.map { it.error }); assertTrue(r.all { it.value == null && it.calls == 0 })
+        // a Scene that does have words still gets its call, so the rule is about the words and not about the item kind
+        val ok = exec().run(node, listOf(item("a", scene("S3", "alpha"))), ctx { reply() }).single()
+        assertNull(ok.error); assertEquals(1, prompts.size)
+    }
+
     @Test fun badModelOutputIsAFixedErrorWithNoValueButTheCallIsCounted() = runBlocking<Unit> {
         assertEquals("NOT_JSON", exec().run(node, listOf(item("a", scene("S1", "x"))), ctx { "hello there" }).single().let { assertNull(it.value); assertEquals(1, it.calls); it.error })
         for (bad in listOf("""{"summary":"s","confidence":2}""", """{"summary":"","confidence":0.5}""", """{"summary":"s"}""", """{"summary":"s","confidence":0.5,"extra":1}""")) {

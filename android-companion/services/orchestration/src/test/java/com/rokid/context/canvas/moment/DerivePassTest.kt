@@ -165,4 +165,25 @@ class DerivePassTest {
         pass().runIfDue(MS)
         assertEquals(1, prompts.size); assertEquals(2, admitCalls) // no third ask after the refusal
     }
+
+    // --- a MARK Moment with no visible text gets no model call ---
+
+    @Test fun aMarkMomentWithNoVisibleTextMakesNoModelCallAndABareMarkIsNotText() = runBlocking<Unit> {
+        fx.mark("mk:1:1", t(0) + 100, "voice"); moments.build(listOf(mid(0))); scenes(); on()
+        assertEquals(emptyList<String>(), inputs.lines(ObjectRef(ObjectKind.MOMENT, mid(0), 1)))
+        val r = pass().runIfDue(MS)
+        assertEquals(0, r!!.objects); assertTrue("no model call: $prompts", prompts.isEmpty())
+    }
+
+    @Test fun anIntentWordOfAMarkIsVisibleTextAndGivesOneCall() = runBlocking<Unit> {
+        fx.mark("mk:1:1", t(0) + 100, "voice"); fx.mark("mk:1:1:i", t(0) + 100, "voice", "INTENT", "groceries"); moments.build(listOf(mid(0))); scenes(); on()
+        assertEquals(listOf("groceries"), inputs.lines(ObjectRef(ObjectKind.MOMENT, mid(0), 1)))
+        pass().runIfDue(MS)
+        assertTrue(prompts.isNotEmpty() && prompts.all { it.contains("- groceries") })
+    }
+
+    @Test fun aPhotoMomentWithOnlyABareMarkLostTheMeaninglessMomentNote() = runBlocking<Unit> {
+        photo(0, "cat on sofa"); fx.mark("mk:1:1", t(0) + 100, "tap"); moments.build(listOf(mid(0)))
+        assertEquals(listOf("cat on sofa"), inputs.lines(ObjectRef(ObjectKind.MOMENT, mid(0), 1)))
+    }
 }

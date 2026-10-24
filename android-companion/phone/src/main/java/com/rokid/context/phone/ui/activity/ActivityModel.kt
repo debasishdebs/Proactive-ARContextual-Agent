@@ -3,6 +3,9 @@ package com.rokid.context.phone.ui.activity
 import com.rokid.context.memory.DayBucket
 import com.rokid.context.memory.db.FrameEntity
 import com.rokid.context.memory.db.MemoryEntity
+import com.rokid.context.memory.db.MomentDao
+import com.rokid.context.memory.moment.MomentType
+import com.rokid.context.memory.moment.NoPhotoReason
 import com.rokid.context.phone.ui.status.StatusUi
 import java.time.DayOfWeek
 import java.time.Instant
@@ -95,6 +98,44 @@ object Timeline {
     }
 }
 
+/** One mark as the Activity tab shows it (read-only): when, how it was made, whether a Moment holds it and, for a Moment with no photo, why. Fixed words only; a mark carries no text. */
+data class MarkRowUi(val labelId: String, val atMs: Long, val time: String, val code: String, val joined: String, val reason: String?)
+
+object MarkRows {
+    private val DAY_HHMM = DateTimeFormatter.ofPattern("EEE d MMM HH:mm", Locale.ENGLISH)
+    const val EMPTY = "No marks yet. A tap or a voice mark on your glasses will show up here."
+
+    fun codeLabel(code: String): String = when (code) {
+        "tap" -> "Tap"
+        "voice" -> "Voice"
+        "phone_voice" -> "Voice (phone)"
+        "retro" -> "Said afterwards"
+        "ask_tap" -> "Ask"
+        else -> code
+    }
+
+    /** Whether a Moment holds the mark, and which kind. Exhaustive over the Moment type: a new type must say what it shows. */
+    fun joinedLabel(type: MomentType?): String = when (type) {
+        null -> "Not in a Moment yet"
+        MomentType.FRAME -> "In a Moment with a photo"
+        MomentType.MARK -> "Moment with no photo"
+    }
+
+    /** Only a Moment with no photo has a reason; UNKNOWN is the only one the phone can know today. */
+    fun reasonLabel(type: MomentType?, reason: NoPhotoReason?): String? = when (type) {
+        null, MomentType.FRAME -> null
+        MomentType.MARK -> when (reason) {
+            null, NoPhotoReason.UNKNOWN -> "No photo: reason unknown"
+        }
+    }
+
+    /** [withDay] adds the weekday and date (Week and Month). Order is the one the rows come in (newest first). */
+    fun rows(rows: List<MomentDao.MarkRow>, zone: ZoneId, withDay: Boolean): List<MarkRowUi> = rows.map { r ->
+        val at = Instant.ofEpochMilli(r.atMs).atZone(zone)
+        MarkRowUi(r.labelId, r.atMs, (if (withDay) DAY_HHMM else HHMM).format(at), codeLabel(r.code), joinedLabel(r.momentType), reasonLabel(r.momentType, r.noPhotoReason))
+    }
+}
+
 object ActivityModel {
     private val SHORT_DAY = DateTimeFormatter.ofPattern("EEE d MMM", Locale.ENGLISH)
     private val SHORT_DAY_YEAR = DateTimeFormatter.ofPattern("EEE d MMM yyyy", Locale.ENGLISH)
@@ -152,4 +193,6 @@ data class ActivityUiState(
     val dayRows: List<DayRow> = emptyList(),
     val today: LocalDate? = null,
     val sort: ActivitySort = ActivitySort.DEFAULT,
+    /** The marks of the period, newest first (read-only). */
+    val marks: List<MarkRowUi> = emptyList(),
 )
