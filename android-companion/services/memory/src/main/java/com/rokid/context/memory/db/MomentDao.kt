@@ -83,6 +83,8 @@ abstract class MomentDao : DerivedStaleDao() {
     @Insert(onConflict = OnConflictStrategy.IGNORE) abstract suspend fun insertOutbox(rows: List<CleanupOutboxEntity>): List<Long>
     @Query("SELECT * FROM cleanup_outbox WHERE ackedAt IS NULL ORDER BY id") abstract suspend fun pendingOutbox(): List<CleanupOutboxEntity>
     @Query("SELECT COUNT(*) FROM cleanup_outbox") abstract suspend fun outboxCount(): Int
+    /** The drainer's confirm: the row goes only after the deletion is confirmed (a row left behind by a crash is simply drained again). */
+    @Query("DELETE FROM cleanup_outbox WHERE id = :id") abstract suspend fun removeOutbox(id: Long): Int
     @Query("UPDATE cleanup_outbox SET ackedAt = :now WHERE id = :id AND ackedAt IS NULL") abstract suspend fun ack(id: Long, now: Long): Int
 
     // --- discovery in the AUTHORITATIVE stores (never the projection) ---

@@ -81,6 +81,36 @@ object CleanupTarget {
 object CleanupPayload {
     fun one(key: String, value: String) = "{\"$key\":${str(value)}}"
     fun range(fromMs: Long, toMs: Long) = "{\"fromMs\":$fromMs,\"toMs\":$toMs}"
+    /** The inverse of [one]: the string value of [key], or null when the text is not exactly `{"key":"value"}` as [one] writes it. */
+    fun parseOne(json: String, key: String): String? {
+        val head = "{\"$key\":\""
+        if (!json.startsWith(head) || !json.endsWith("\"}") || json.length < head.length + 2) return null
+        val body = json.substring(head.length, json.length - 2)
+        val out = StringBuilder(); var i = 0
+        while (i < body.length) {
+            val c = body[i]
+            when {
+                c == '"' -> return null // an unescaped quote ends the value early
+                c != '\\' -> { out.append(c); i++ }
+                i + 1 >= body.length -> return null
+                body[i + 1] == '"' || body[i + 1] == '\\' -> { out.append(body[i + 1]); i += 2 }
+                body[i + 1] == 'u' && i + 6 <= body.length -> {
+                    val code = body.substring(i + 2, i + 6).toIntOrNull(16) ?: return null
+                    out.append(code.toChar()); i += 6
+                }
+                else -> return null
+            }
+        }
+        return out.toString()
+    }
+
+    /** The inverse of [range]: `(fromMs, toMs)`, or null when malformed or inverted. */
+    fun parseRange(json: String): Pair<Long, Long>? {
+        val m = RANGE.matchEntire(json) ?: return null
+        val from = m.groupValues[1].toLongOrNull() ?: return null; val to = m.groupValues[2].toLongOrNull() ?: return null
+        return if (to < from) null else from to to
+    }
+    private val RANGE = Regex("""\{"fromMs":(-?\d+),"toMs":(-?\d+)\}""")
     private fun str(v: String): String = buildString {
         append('"')
         v.forEach { c -> when { c == '"' -> append("\\\""); c == '\\' -> append("\\\\"); c < ' ' -> append("\\u%04x".format(c.code)); else -> append(c) } }
