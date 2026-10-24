@@ -66,7 +66,7 @@ class HudControllerTest {
         assertEquals(0L, a.gen)
         assertEquals(null, a.effectiveHash); assertEquals(null, a.publishId)
         assertEquals(com.rokid.context.core.model.PlanMode.SETTINGS, a.mode)
-        assertEquals(listOf("plan1", "shadow", "trial"), a.caps)
+        assertEquals(com.rokid.context.capture.plan.PlanReceiver.CAPS_EXPR, a.caps)
         bridge.phone(Channels.STATE, state())
         assertEquals("once per session open", 1, bridge.sent.count { it.first == Channels.CAPTURE_PLAN_ACK })
         bridge.disconnected(); bridge.phone(Channels.STATE, state())
@@ -413,7 +413,7 @@ class HudControllerTest {
         assertEquals(2, acks.size)
         val isCaps = { x: com.rokid.context.core.model.CapturePlanAck -> x.gen == 0L && x.phoneInstall.isEmpty() && x.sessionStartMs == 0L && x.reason == null }
         kotlin.test.assertTrue(isCaps(acks[0]), "the announcement stays caps-only")
-        assertEquals(listOf("plan1", "shadow", "trial"), acks[0].caps)
+        assertEquals(com.rokid.context.capture.plan.PlanReceiver.CAPS_EXPR, acks[0].caps)
         assertEquals(7L, acks[1].gen); assertEquals("auto:reboot", acks[1].reason)
         kotlin.test.assertFalse(isCaps(acks[1]))
     }
