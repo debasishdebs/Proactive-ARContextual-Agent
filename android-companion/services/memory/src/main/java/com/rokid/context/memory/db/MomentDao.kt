@@ -33,7 +33,11 @@ abstract class MomentDao {
     }
 
     /** Removes [ids] and everything that hangs on them (parts, trace deps). */
-    @Transaction open suspend fun remove(ids: List<String>) = ids.chunked(CHUNK).forEach { deleteParts(it); deleteTraceDeps(it); deleteMoments(it) }
+    @Transaction open suspend fun remove(ids: List<String>) = ids.chunked(CHUNK).forEach { deleteParts(it); deleteTraceDeps(it); deleteMoments(it); deleteObjectRows(it) }
+    // The audit and the derived fields of a Moment go WITH the Moment, on every path that removes one (Forget cascade, source cleanup, builder removal).
+    @Query("DELETE FROM object_audit WHERE objectKind = 'MOMENT' AND objectId IN (:ids)") protected abstract suspend fun deleteAuditRows(ids: List<String>)
+    @Query("DELETE FROM object_derived WHERE objectKind = 'MOMENT' AND objectId IN (:ids)") protected abstract suspend fun deleteDerivedRows(ids: List<String>)
+    private suspend fun deleteObjectRows(ids: List<String>) { deleteAuditRows(ids); deleteDerivedRows(ids) }
 
     /**
      * Source-to-projection cleanup: removes every stored Moment that holds one of these deleted (or invalidated) sources, so a projection never keeps a reference to something Forget
