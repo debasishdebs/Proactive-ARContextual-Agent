@@ -45,6 +45,20 @@ export const visionExtractInner = {
   note: ['Read only except the batch size: the vision prompt (live or draft) is chosen in the inspector.', 'A bad batch is asked again one frame per call.'],
 };
 
+// what /api/node-types serves for ai.critic: read only, nothing exposed (its one setting, the prompt, stays in the inspector)
+export const criticInner = {
+  nodes: [
+    { id: 'facts', label: 'Facts in', kind: 'source' }, { id: 'any', label: 'Any facts?', kind: 'op' }, { id: 'bound', label: 'Critic model set?', kind: 'op' },
+    { id: 'prompt', label: 'Critic prompt', kind: 'op' }, { id: 'model', label: 'Ask the model', kind: 'op' }, { id: 'pass', label: 'pass', kind: 'branch' }, { id: 'fail', label: 'fail', kind: 'branch' },
+  ],
+  wires: [
+    { from: 'facts', to: 'any', port: '' }, { from: 'any', to: 'pass', port: 'none' }, { from: 'any', to: 'bound', port: 'some' }, { from: 'bound', to: 'fail', port: 'no' },
+    { from: 'bound', to: 'prompt', port: 'yes' }, { from: 'prompt', to: 'model', port: '' }, { from: 'model', to: 'pass', port: 'ok' }, { from: 'model', to: 'fail', port: 'not ok or error' },
+  ],
+  exposed: [],
+  note: ['Read only: the critic prompt (live or draft) is chosen in the inspector; this node has no other setting.', 'No facts: pass without asking the model.'],
+};
+
 // what /api/node-types serves for input.photos (CanvasBackendImplTest checks the real JSON); every default is today's behaviour
 export const photoParams = [
   { name: 'source', kind: 'enum', label: 'Source', options: ['glasses', 'all'], default: 'glasses' },
@@ -59,7 +73,7 @@ export const nodeTypes = [
     params: visionExtractParams, inner: visionExtractInner,
   }),
   t('gate.local_critic', 'Local trust check', 'trust', ['EXTRACTION'], 'EXTRACTION', { branches: ['trusted', 'unsure'], category: 'Checks', params: localCriticParams, inner: localCriticInner }),
-  t('ai.critic', 'Critic', 'critic', ['EXTRACTION'], 'EXTRACTION', { branches: ['pass', 'fail'], params: [{ name: 'prompt', kind: 'prompt' }] }),
+  t('ai.critic', 'Critic', 'critic', ['EXTRACTION'], 'EXTRACTION', { branches: ['pass', 'fail'], params: [{ name: 'prompt', kind: 'prompt' }], inner: criticInner }),
   t('ai.prompt', 'Prompt', 'prompt', ['PHOTOS', 'JSON', 'EXTRACTION'], 'JSON', {
     params: [{ name: 'role', kind: 'role' }, { name: 'template', kind: 'text' }, { name: 'schema', kind: 'schema' }, { name: 'images', kind: 'bool' }],
   }),
