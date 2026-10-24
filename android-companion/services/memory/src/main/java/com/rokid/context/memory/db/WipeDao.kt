@@ -64,6 +64,9 @@ abstract class WipeDao {
     // Moment building blocks part 2 (Room v10). WIPED: the audit and the derived fields of every Moment-family object (the audit is content-free, but it is deleted with its objects).
     @Query("DELETE FROM object_audit") protected abstract suspend fun objectAudit()
     @Query("DELETE FROM object_derived") protected abstract suspend fun objectDerived()
+    // Scenes (Room v11). WIPED: the Scenes and their membership edges (their audit and derived fields go with the two tables above).
+    @Query("DELETE FROM scene_part") protected abstract suspend fun sceneParts()
+    @Query("DELETE FROM scene") protected abstract suspend fun scenes()
     @Query("SELECT path FROM frame") abstract suspend fun framePaths(): List<String>
 
     /** Delete all at the current time (the wildcard cleanup row is stamped with it). */
@@ -72,7 +75,7 @@ abstract class WipeDao {
     @Transaction
     open suspend fun wipeMemory(now: Long): List<String> {
         val proposals = proposalIds()
-        ackedOutbox(); momentWipeCleanup(now); objectAudit(); objectDerived(); momentParts(); momentTraceDeps(); moments(); momentTombstones(); momentClearForgetRanges() // the cleanup command is written BEFORE any source reference goes
+        ackedOutbox(); momentWipeCleanup(now); objectAudit(); objectDerived(); sceneParts(); scenes(); momentParts(); momentTraceDeps(); moments(); momentTombstones(); momentClearForgetRanges() // the cleanup command is written BEFORE any source reference goes
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         canvasItems(); canvasScores(); canvasRuns(); canvasTraces() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
         slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3ClearForgetRanges(); slice3BumpLabelRev()

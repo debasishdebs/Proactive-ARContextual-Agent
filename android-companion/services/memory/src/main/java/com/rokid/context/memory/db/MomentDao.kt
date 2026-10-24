@@ -8,7 +8,7 @@ import androidx.room.Transaction
 
 /** Moment projection, tombstones, the cleanup outbox and the authoritative-store discovery queries of Moment Forget. Callers chunk every list at 500. */
 @Dao
-abstract class MomentDao {
+abstract class MomentDao : DerivedStaleDao() {
     // --- projection ---
     @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun upsertMoment(m: MomentEntity)
     @Insert(onConflict = OnConflictStrategy.REPLACE) abstract suspend fun insertParts(p: List<MomentPartEntity>)
@@ -32,8 +32,14 @@ abstract class MomentDao {
         insertParts(parts)
     }
 
-    /** Removes [ids] and everything that hangs on them (parts, trace deps). */
-    @Transaction open suspend fun remove(ids: List<String>) = ids.chunked(CHUNK).forEach { deleteParts(it); deleteTraceDeps(it); deleteMoments(it); deleteObjectRows(it) }
+    /**
+     * Removes [ids] and everything that hangs on them (parts, trace deps), and shrinks every Scene that held one of them (its derived fields are hidden in this same transaction).
+     * [step] is the audit step name of that shrink: `forget` (the default: Forget and the source cleanup) or `build` (the builder dropped a Moment that no longer qualifies).
+     */
+    @Transaction open suspend fun remove(ids: List<String>, step: String = "forget") {
+        ids.chunked(CHUNK).forEach { deleteParts(it); deleteTraceDeps(it); deleteMoments(it); deleteObjectRows(it) }
+        if (ids.isNotEmpty()) shrinkScenesHolding(ids, step)
+    }
     // The audit and the derived fields of a Moment go WITH the Moment, on every path that removes one (Forget cascade, source cleanup, builder removal).
     @Query("DELETE FROM object_audit WHERE objectKind = 'MOMENT' AND objectId IN (:ids)") protected abstract suspend fun deleteAuditRows(ids: List<String>)
     @Query("DELETE FROM object_derived WHERE objectKind = 'MOMENT' AND objectId IN (:ids)") protected abstract suspend fun deleteDerivedRows(ids: List<String>)

@@ -5,16 +5,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
-/** Fails when a `canvas_*`, `moment*` or `cleanup_outbox` table is added without a deletion decision, or a decision names a table that is gone, or WipeDao disagrees with the registry. */
+/** Fails when a `canvas_*`, `moment*`, `object_*`, `scene*` or `cleanup_outbox` table is added without a deletion decision, or a decision names a table that is gone, or WipeDao disagrees with the registry. */
 class DeletionGraphInventoryTest {
     private val mainDir: File = generateSequence(File("").absoluteFile) { it.parentFile }.map { File(it, "src/main/java/com/rokid/context/memory") }.first { it.isDirectory }
     /** Room's annotations are not reflectable (CLASS retention), so the entity declarations and the migration SQL are scanned instead. */
     private val tables: List<String> = mainDir.walkTopDown().filter { it.extension == "kt" }.flatMap { f ->
         val t = f.readText()
-        Regex("tableName = \"((?:canvas_|moment|object_)\\w*|cleanup_outbox)\"").findAll(t).map { it.groupValues[1] } + Regex("CREATE TABLE IF NOT EXISTS `((?:canvas_|moment|object_)\\w*|cleanup_outbox)`").findAll(t).map { it.groupValues[1] }
+        Regex("tableName = \"((?:canvas_|moment|object_|scene)\\w*|cleanup_outbox)\"").findAll(t).map { it.groupValues[1] } + Regex("CREATE TABLE IF NOT EXISTS `((?:canvas_|moment|object_|scene)\\w*|cleanup_outbox)`").findAll(t).map { it.groupValues[1] }
     }.toSet().toList()
 
-    @Test fun theScanFindsTheTablesItShould() = assertTrue("scan broken: ${tables.size} tables", tables.size >= 21)
+    @Test fun theScanFindsTheTablesItShould() = assertTrue("scan broken: ${tables.size} tables", tables.size >= 23)
 
     @Test fun everyCanvasTableIsRegisteredInTheDeletionGraph() {
         val registered = DeletionGraph.TABLES.map { it.name }.toSet()
@@ -35,7 +35,7 @@ class DeletionGraphInventoryTest {
     /** WipeDao is the code that deletes: its DELETE statements must match the registry exactly (kept tables are never deleted, wiped ones always are). */
     @Test fun wipeDaoDeletesExactlyTheWipedTables() {
         val src = File(mainDir, "db/WipeDao.kt").readText()
-        val deleted = Regex("DELETE FROM ((?:canvas_|moment|object_)\\w*)\"").findAll(src).map { it.groupValues[1] }.toSet()
+        val deleted = Regex("DELETE FROM ((?:canvas_|moment|object_|scene)\\w*)\"").findAll(src).map { it.groupValues[1] }.toSet()
         assertEquals(DeletionGraph.wipedTables.toSet(), deleted)
         DeletionGraph.TABLES.filter { it.fate == DeletionGraph.Fate.KEPT }.forEach { assertTrue("${it.name} is kept but WipeDao deletes it", it.name !in deleted) }
     }

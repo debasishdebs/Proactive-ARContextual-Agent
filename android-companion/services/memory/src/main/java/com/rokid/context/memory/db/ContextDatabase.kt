@@ -18,8 +18,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CanvasCalibrationEntity::class, CanvasGroupStateEntity::class, CanvasHelperJobEntity::class, CanvasHelperCleanupEntity::class,
         MomentEntity::class, MomentPartEntity::class, MomentTombstoneEntity::class, MomentTraceDepEntity::class, CleanupOutboxEntity::class,
         ObjectAuditEntity::class, ObjectDerivedEntity::class,
+        SceneEntity::class, ScenePartEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -55,6 +56,7 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun canvasSlice3Dao(): CanvasSlice3Dao
     abstract fun momentDao(): MomentDao
     abstract fun objectDao(): ObjectDao
+    abstract fun sceneDao(): SceneDao
 }
 
 /**
@@ -259,5 +261,21 @@ val MIGRATION_9_10: Migration = object : Migration(9, 10) {
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_object_audit_refKind_refId` ON `object_audit` (`refKind`, `refId`)")
         db.execSQL("CREATE TABLE IF NOT EXISTS `object_derived` (`objectKind` TEXT NOT NULL, `objectId` TEXT NOT NULL, `field` TEXT NOT NULL, `value` TEXT, `ref` TEXT, `builtRev` INTEGER NOT NULL, `staleSince` INTEGER DEFAULT NULL, `atMs` INTEGER NOT NULL, PRIMARY KEY(`objectKind`, `objectId`, `field`))")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_object_derived_objectKind_objectId` ON `object_derived` (`objectKind`, `objectId`)")
+    }
+}
+
+/**
+ * v10 → v11 (Scenes): ADDITIVE only. Two new tables, `scene` and `scene_part`, and their indices. No existing table or column is changed, nothing is copied, updated or dropped. The
+ * statements are the ones Room generated for `11.json`; the frozen `10.json` is untouched. If another branch also claims v11 at merge, DO NOT rename or edit this migration (S64):
+ * rebase, write a NEW latest → next migration, regenerate the schema.
+ */
+val MIGRATION_10_11: Migration = object : Migration(10, 11) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `scene` (`sceneId` TEXT NOT NULL, `buildRev` INTEGER NOT NULL, `hourStartMs` INTEGER NOT NULL, `startMs` INTEGER NOT NULL, `endMs` INTEGER NOT NULL, `boundaryRule` TEXT NOT NULL, `startTrigger` TEXT, `endTrigger` TEXT, `activity` TEXT, `membershipRev` INTEGER NOT NULL, `builtAt` INTEGER NOT NULL, PRIMARY KEY(`sceneId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_scene_hourStartMs` ON `scene` (`hourStartMs`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_scene_startMs` ON `scene` (`startMs`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `scene_part` (`sceneId` TEXT NOT NULL, `kind` TEXT NOT NULL, `refId` TEXT NOT NULL, `partRev` TEXT NOT NULL, `partTimeMs` INTEGER NOT NULL, PRIMARY KEY(`sceneId`, `kind`, `refId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_scene_part_sceneId` ON `scene_part` (`sceneId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_scene_part_kind_refId` ON `scene_part` (`kind`, `refId`)")
     }
 }

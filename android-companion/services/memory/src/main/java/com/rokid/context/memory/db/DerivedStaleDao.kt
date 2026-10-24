@@ -22,6 +22,40 @@ abstract class DerivedStaleDao {
     @Query("SELECT COALESCE(MAX(seq), 0) FROM object_audit WHERE objectKind = :kind AND objectId = :id AND op NOT IN ('DERIVED_BUILT', 'DERIVED_STALE', 'DERIVED_HIDDEN', 'OUTBOX_QUEUED')")
     abstract suspend fun inputSeq(kind: String, id: String): Int
 
+    // --- Scenes: the part of the shrink rule that every DAO removing a Moment needs ---
+    @Query("SELECT DISTINCT sceneId FROM scene_part WHERE kind = 'MOMENT' AND refId IN (:momentIds)") abstract suspend fun sceneIdsHoldingMoments(momentIds: List<String>): List<String>
+    @Query("SELECT refId FROM scene_part WHERE sceneId = :sceneId AND kind = 'MOMENT' AND refId IN (:momentIds) ORDER BY refId") abstract suspend fun sceneMomentRefs(sceneId: String, momentIds: List<String>): List<String>
+    @Query("DELETE FROM scene_part WHERE sceneId = :sceneId AND kind = 'MOMENT' AND refId IN (:momentIds)") abstract suspend fun deleteSceneMomentParts(sceneId: String, momentIds: List<String>)
+    @Query("SELECT COUNT(*) FROM scene_part WHERE sceneId = :sceneId") abstract suspend fun scenePartTotal(sceneId: String): Int
+    @Query("SELECT MIN(partTimeMs) FROM scene_part WHERE sceneId = :sceneId") abstract suspend fun scenePartFirstMs(sceneId: String): Long?
+    @Query("SELECT MAX(partTimeMs) FROM scene_part WHERE sceneId = :sceneId") abstract suspend fun scenePartLastMs(sceneId: String): Long?
+    @Query("UPDATE scene SET startMs = :startMs, endMs = :endMs, membershipRev = membershipRev + 1 WHERE sceneId = :sceneId") abstract suspend fun shrinkSceneRow(sceneId: String, startMs: Long, endMs: Long)
+    @Query("DELETE FROM scene WHERE sceneId IN (:ids)") protected abstract suspend fun deleteSceneRows(ids: List<String>)
+    @Query("DELETE FROM object_audit WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun deleteSceneAudit(ids: List<String>)
+    @Query("DELETE FROM object_derived WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun deleteSceneDerived(ids: List<String>)
+
+    /** Deletes the Scene rows, their audit rows and their derived fields (the parts are the caller's). */
+    protected suspend fun purgeScenes(ids: List<String>) { deleteSceneRows(ids); deleteSceneAudit(ids); deleteSceneDerived(ids) }
+
+    /**
+     * Moments were removed (Forget, or the builder): every Scene that held one loses that part. In the SAME transaction (the caller's) the Scene shrinks (window and `membershipRev`),
+     * its audit gets PART_REMOVED per lost part (and FORGOTTEN when [step] is `forget`) and its derived fields (SUMMARY, CAPTION, EMBEDDING) are hidden at once: they were built from
+     * a part that is gone. A Scene left with no part is deleted with its audit and derived rows. Returns the Scenes touched.
+     */
+    suspend fun shrinkScenesHolding(momentIds: Collection<String>, step: String, now: Long = System.currentTimeMillis()): Int {
+        val chunks = momentIds.toList().chunked(500)
+        val scenes = chunks.flatMap { sceneIdsHoldingMoments(it) }.distinct().sorted()
+        for (sceneId in scenes) {
+            val lost = chunks.flatMap { sceneMomentRefs(sceneId, it) }.distinct().sorted()
+            chunks.forEach { deleteSceneMomentParts(sceneId, it) }
+            if (scenePartTotal(sceneId) == 0) { purgeScenes(listOf(sceneId)); continue }
+            lost.forEach { appendAuditRow("SCENE", sceneId, "PART_REMOVED", now, step, "MOMENT", it); if (step == "forget") appendAuditRow("SCENE", sceneId, "FORGOTTEN", now, step, "MOMENT", it) }
+            shrinkSceneRow(sceneId, requireNotNull(scenePartFirstMs(sceneId)), requireNotNull(scenePartLastMs(sceneId)) + 999)
+            markStaleCore("SCENE", sceneId, now, step, "MOMENT", lost.singleOrNull(), force = true)
+        }
+        return scenes.size
+    }
+
     suspend fun appendAuditRow(kind: String, id: String, op: String, atMs: Long, step: String, refKind: String? = null, refId: String? = null): Int {
         val seq = nextAuditSeq(kind, id)
         insertAuditRow(ObjectAuditEntity(kind, id, seq, op, atMs, step, refKind, refId))
