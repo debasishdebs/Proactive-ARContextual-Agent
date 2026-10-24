@@ -4,12 +4,31 @@ const t = (type, label, short, inputs, output, extra) => Object.assign({
   type, label, short, inputs, output, branches: [], branchesFromCases: false, params: [], palette: true, category: 'AI',
 }, extra || {});
 
+// what /api/node-types serves for gate.local_critic (CanvasBackendImplTest checks the real JSON has this shape and the 0.7 default)
+export const localCriticParams = [
+  { name: 'aggregate', kind: 'enum', label: 'Combine the fact confidences by', options: ['mean', 'min', 'max'], default: 'mean' },
+  { name: 'operator', kind: 'enum', label: 'Trusted when confidence is', options: ['>=', '>'], default: '>=' },
+  { name: 'cutoff', kind: 'number', label: 'Cutoff', min: 0, max: 1, step: 0.05, default: 0.7 },
+];
+export const localCriticInner = {
+  nodes: [
+    { id: 'facts', label: 'Facts in (none: trusted)', kind: 'source' }, { id: 'aggregate', label: 'Combine confidences', kind: 'op' },
+    { id: 'cutoff', label: 'Cutoff', kind: 'const' }, { id: 'compare', label: 'Compare', kind: 'op' },
+    { id: 'trusted', label: 'trusted', kind: 'branch' }, { id: 'unsure', label: 'unsure', kind: 'branch' },
+  ],
+  wires: [
+    { from: 'facts', to: 'aggregate', port: '' }, { from: 'aggregate', to: 'compare', port: 'value' }, { from: 'cutoff', to: 'compare', port: 'cutoff' },
+    { from: 'compare', to: 'trusted', port: 'yes' }, { from: 'compare', to: 'unsure', port: 'no' },
+  ],
+  exposed: [{ param: 'aggregate', node: 'aggregate' }, { param: 'operator', node: 'compare' }, { param: 'cutoff', node: 'cutoff' }],
+};
+
 export const nodeTypes = [
   t('input.photos', 'Photo', 'photos', [], 'PHOTOS', { palette: false, category: 'Inputs' }),
   t('ai.vision_extract', 'Facts from frames', 'extract', ['PHOTOS', 'JSON'], 'EXTRACTION', {
     params: [{ name: 'batch', kind: 'int', min: 1, max: 3 }, { name: 'prompt', kind: 'prompt' }],
   }),
-  t('gate.local_critic', 'Local trust check', 'trust', ['EXTRACTION'], 'EXTRACTION', { branches: ['trusted', 'unsure'], category: 'Checks' }),
+  t('gate.local_critic', 'Local trust check', 'trust', ['EXTRACTION'], 'EXTRACTION', { branches: ['trusted', 'unsure'], category: 'Checks', params: localCriticParams, inner: localCriticInner }),
   t('ai.critic', 'Critic', 'critic', ['EXTRACTION'], 'EXTRACTION', { branches: ['pass', 'fail'], params: [{ name: 'prompt', kind: 'prompt' }] }),
   t('ai.prompt', 'Prompt', 'prompt', ['PHOTOS', 'JSON', 'EXTRACTION'], 'JSON', {
     params: [{ name: 'role', kind: 'role' }, { name: 'template', kind: 'text' }, { name: 'schema', kind: 'schema' }, { name: 'images', kind: 'bool' }],

@@ -6,6 +6,16 @@ const flow = (pipe, problems, opts, lay) => toFlow(pipe || livePipe(), lay === u
 const node = (f, id) => f.nodes.find((n) => n.id === id);
 
 export const tests = {
+  onlyACompositeTypeCarriesItsInnerFlowAndParams() {
+    const f = flow();
+    const c = node(f, 'trust');
+    ok(c.data.composite, 'the local critic is composite');
+    eq(c.data.composite.inner.nodes.length, 6);
+    eq(c.data.composite.descriptors.map((d) => d.name), ['aggregate', 'operator', 'cutoff']);
+    eq(c.data.composite.params, {});
+    for (const n of f.nodes.filter((x) => x.id !== 'trust')) eq(n.data.composite, null, n.id + ' is plain');
+  },
+
   protoKeyIdsDontCrash() {
     for (const id of ['constructor', '__proto__', 'hasOwnProperty', 'toString']) {
       const pipe = { schema: 1, id: 'p', name: 'p', nodes: [{ id: 'photos', type: 'input.photos', title: 'Photo', params: {} }, { id, type: 'ai.vision_extract', title: 'X', params: {} }], edges: [{ from: 'photos', to: id }] };
