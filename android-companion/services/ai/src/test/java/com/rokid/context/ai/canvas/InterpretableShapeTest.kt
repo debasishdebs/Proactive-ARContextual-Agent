@@ -163,7 +163,16 @@ class InterpretableShapeTest {
         // type behind an extractor. This fails the day a type that accepts PHOTOS or JSON is added, so the rule gets a real test then.
         val early = NodeTypes.all.filter { PortType.PHOTOS in it.inputs || PortType.JSON in it.inputs }.map { it.type }.toSet()
         // WP7: `py.fn` takes JSON. It is tier 3 (S6: never published, refused before this shape rule is reached) and the rule does name it, as the comment above promised.
-        assertEquals(setOf(NodeTypes.VISION_EXTRACT, NodeTypes.PROMPT, NodeTypes.SWITCH, NodeTypes.PY_FN), early)
+        // v0.9.4: `proc.summary` takes JSON too; the rule that keeps it out of an interpreter is exercised below (summaryAfterAPromptBlocked)
+        assertEquals(setOf(NodeTypes.VISION_EXTRACT, NodeTypes.PROMPT, NodeTypes.SUMMARY, NodeTypes.SWITCH, NodeTypes.PY_FN), early)
+    }
+
+    @Test fun summaryAfterAPromptBlocked() {
+        val sum = PipelineNode("sum", NodeTypes.SUMMARY, "Summary", none)
+        val p = Pipeline(2, "p", "P", listOf(photos(), prompt("ask"), sum, PipelineNode("write", NodeTypes.MEMORY_WRITE, "w", none)),
+            listOf(e("photos", "ask"), e("ask", "sum"), e("sum", "write")))
+        assertEquals(emptyList<String>(), PipelineValidator.validate(p))
+        assertHas(p, "node sum: proc.summary can't run before extraction")
     }
 
     @Test fun rangeAtTwelvePhotosIsExactAndFast() {
