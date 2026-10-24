@@ -78,7 +78,7 @@ object NodeTypes {
     /** Moment-lite: the root of an experiment over Moments (a derived read model, nothing stored). ASYNC only, never published, never run on the phone's own nodes: only `py.fn` accepts its output. */
     const val INPUT_MOMENTS = "input.moments"
 
-    /** Scenes: an ASYNC input root next to `input.moments`, read by the phone-side scene executor (stored Scenes of a time window). Never published, no glasses plan; nothing accepts its SCENES output yet. */
+    /** Scenes: an ASYNC input root next to `input.moments`, read by the phone-side scene executor (stored Scenes of a time window). Never published, no glasses plan; `ai.prompt` and `py.fn` accept its SCENES output (a run item per Scene with its visible text). */
     const val INPUT_SCENES = "input.scenes"
 
     const val OTHER = "other"
@@ -98,7 +98,7 @@ object NodeTypes {
             category = Category.CHECKS, short = "trust", params = LocalTrust.schema, inner = LocalTrust.inner),
         NodeType(CRITIC, "Critic", setOf(PortType.EXTRACTION), PortType.EXTRACTION, PromptKey.CRITIC, branches = { listOf("pass", "fail") },
             executor = ExecutorKind.PROMPT, short = "critic"),
-        NodeType(PROMPT, "Prompt", setOf(PortType.PHOTOS, PortType.JSON, PortType.EXTRACTION), PortType.JSON, executor = ExecutorKind.PROMPT, short = "prompt"),
+        NodeType(PROMPT, "Prompt", setOf(PortType.PHOTOS, PortType.JSON, PortType.EXTRACTION, PortType.SCENES), PortType.JSON, executor = ExecutorKind.PROMPT, short = "prompt"),
         NodeType(SWITCH, "Switch", setOf(PortType.JSON), PortType.JSON, branches = { switchCases(it) + OTHER }, category = Category.ROUTING, short = "route"),
         NodeType(MEMORY_WRITE, "Save memory (preview)", setOf(PortType.EXTRACTION), PortType.PREVIEW, category = Category.MEMORY, executor = ExecutorKind.TOOL, short = "write"),
     )
@@ -136,7 +136,7 @@ object NodeTypes {
             short = "moments", liveable = false, root = true, cost = CostSpec(modelCalls = 0)),
         NodeType(INPUT_SCENES, "Scenes", emptySet(), PortType.SCENES, sinceSchema = 2, domain = Domain.ASYNC, category = Category.INPUTS,
             short = "scenes", liveable = false, root = true, cost = CostSpec(modelCalls = 0)),
-        NodeType(PY_FN, "Python (experiment)", setOf(PortType.JSON, PortType.MOMENTS), PortType.JSON, sinceSchema = 2, domain = Domain.ASYNC, category = Category.CODE,
+        NodeType(PY_FN, "Python (experiment)", setOf(PortType.JSON, PortType.MOMENTS, PortType.SCENES), PortType.JSON, sinceSchema = 2, domain = Domain.ASYNC, category = Category.CODE,
             executor = ExecutorKind.PYTHON, short = "pyfn", liveable = false, cost = CostSpec(modelCalls = 0),
             hint = "Needs the laptop helper and your confirm tap on the phone for each run; never published to the glasses.",
             params = ParamSchema(listOf(

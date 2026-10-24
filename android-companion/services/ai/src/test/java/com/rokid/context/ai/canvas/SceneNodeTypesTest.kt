@@ -34,10 +34,15 @@ class SceneNodeTypesTest {
         assertEquals(emptyList<String>(), problems(pipe(listOf(scenes()))))
     }
 
-    @Test fun noNodeAcceptsScenesYet() {
-        for (type in listOf(NodeTypes.PY_FN, NodeTypes.VISION_EXTRACT, NodeTypes.PROMPT, NodeTypes.CRITIC, NodeTypes.SWITCH, NodeTypes.MEMORY_WRITE)) {
-            val params = if (type == NodeTypes.PROMPT) buildJsonObject { put("schema", "{\"type\":\"object\"}") } else none
+    @Test fun onlyPromptAndPythonAcceptScenes() {
+        val prompt = buildJsonObject { put("schema", "{\"type\":\"object\"}") }
+        for (type in listOf(NodeTypes.PROMPT, NodeTypes.PY_FN)) {
+            val params = if (type == NodeTypes.PROMPT) prompt else buildJsonObject { put("source", "def run(x):\n    return {'n': 1}\n"); put("outSchema", "{\"type\":\"object\"}") }
             val r = problems(pipe(listOf(scenes(), PipelineNode("x", type, "x", params)), listOf(PipelineEdge("scenes", "x"))))
+            assertEquals("$type takes SCENES", emptyList<String>(), r)
+        }
+        for (type in listOf(NodeTypes.VISION_EXTRACT, NodeTypes.CRITIC, NodeTypes.SWITCH, NodeTypes.MEMORY_WRITE)) {
+            val r = problems(pipe(listOf(scenes(), PipelineNode("x", type, "x", none)), listOf(PipelineEdge("scenes", "x"))))
             assertTrue("$type must refuse SCENES: $r", r.any { it.contains("SCENES not accepted by x") })
         }
     }

@@ -18,6 +18,7 @@ abstract class SceneDao : DerivedStaleDao() {
     @Query("SELECT * FROM scene ORDER BY startMs, sceneId") abstract suspend fun allScenes(): List<SceneEntity>
     /** Scenes that overlap `[fromMs, toMs]`, oldest first. */
     @Query("SELECT * FROM scene WHERE endMs >= :fromMs AND startMs <= :toMs ORDER BY startMs, sceneId LIMIT :limit") abstract suspend fun scenesBetween(fromMs: Long, toMs: Long, limit: Int): List<SceneEntity>
+    @Query("SELECT * FROM scene WHERE sceneId IN (:ids) ORDER BY startMs, sceneId") abstract suspend fun scenesByIds(ids: List<String>): List<SceneEntity>
     @Query("SELECT * FROM scene WHERE hourStartMs >= :fromHour AND hourStartMs <= :toHour ORDER BY startMs, sceneId") abstract suspend fun scenesInHours(fromHour: Long, toHour: Long): List<SceneEntity>
     @Query("SELECT * FROM scene_part WHERE sceneId = :id ORDER BY partTimeMs, kind, refId") abstract suspend fun parts(id: String): List<ScenePartEntity>
     @Query("SELECT * FROM scene_part WHERE sceneId IN (:ids) ORDER BY sceneId, partTimeMs, kind, refId") abstract suspend fun partsOf(ids: List<String>): List<ScenePartEntity>
