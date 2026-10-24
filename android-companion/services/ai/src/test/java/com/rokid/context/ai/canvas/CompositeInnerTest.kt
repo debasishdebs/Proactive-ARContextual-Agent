@@ -17,7 +17,7 @@ class CompositeInnerTest {
 
     /** Phase A: the local critic; phase B adds the async black boxes one by one. */
     @Test fun theCompositeTypesAreTheOnesBuiltSoFar() {
-        assertEquals(setOf(NodeTypes.LOCAL_CRITIC, NodeTypes.VISION_EXTRACT, NodeTypes.CRITIC), NodeTypes.all.filter { it.inner != null }.map { it.type }.toSet())
+        assertEquals(setOf(NodeTypes.LOCAL_CRITIC, NodeTypes.VISION_EXTRACT, NodeTypes.CRITIC, NodeTypes.MEMORY_WRITE), NodeTypes.all.filter { it.inner != null }.map { it.type }.toSet())
     }
 
     @Test fun everyInnerFlowIsWellFormed() {
@@ -99,5 +99,20 @@ class CompositeInnerTest {
         assertTrue(c.wires.any { it.from == "any" && it.to == "pass" && it.port == "none" })
         assertTrue(c.wires.any { it.from == "bound" && it.to == "fail" && it.port == "no" })
         assertTrue(c.note.any { it.contains("Read only") && it.contains("inspector") })
+    }
+
+    @Test fun saveMemoryShowsItsRealRowRulesReadOnlyAndSaysThereIsNoDedupe() {
+        val t = NodeTypes.byType(NodeTypes.MEMORY_WRITE)!!
+        val m = t.inner!!
+        assertEquals(emptyList<InnerExposed>(), m.exposed)
+        assertEquals(ParamSchema.NONE, t.params)
+        val labels = m.nodes.associate { it.id to it.label }
+        assertTrue(labels.getValue("factRow").contains("SHORT")); assertTrue(labels.getValue("captionRow").contains("LONG"))
+        // the review state feeds the fact row only: captions never wait for review
+        assertTrue(m.wires.any { it.from == "review" && it.to == "factRow" })
+        assertTrue(m.wires.none { it.from == "review" && it.to == "captionRow" })
+        assertTrue(m.note.any { it.contains("no duplicate or novelty check") })
+        assertTrue(m.note.any { it.contains("Preview only") })
+        assertEquals(setOf("preview"), m.nodes.filter { it.kind == "branch" }.map { it.id }.toSet())
     }
 }

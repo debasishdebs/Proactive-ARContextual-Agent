@@ -2,7 +2,7 @@
 // collapse/expand, the inner boxes and wires, exposed params as inputs inside the owning box (defaults shown), edits reported to the host, labels as text.
 import { mountComposite, layout } from '../../main/assets/canvas/compositeview.js';
 import { findAll, find } from './fake-dom.js';
-import { eq, ok, localCriticParams, localCriticInner, visionExtractParams, visionExtractInner, criticInner } from './fixtures.js';
+import { eq, ok, localCriticParams, localCriticInner, visionExtractParams, visionExtractInner, criticInner, memoryWriteInner } from './fixtures.js';
 import * as E from './env.js';
 
 const cls = (el, c) => el.classList.contains(c);
@@ -167,6 +167,16 @@ export const tests = {
       eq(controls(root).length, 0, 'nothing is editable');
       ok(boxes(root).every((b) => cls(b, 'read-only')));
       ok(E.textOf(root).includes('Read only: the critic prompt'));
+    });
+  },
+  saveMemoryDrawsThreeSourcesAndNoInputAndSaysThereIsNoDedupe() {
+    mount({ title: 'Save memory', inner: JSON.parse(JSON.stringify(memoryWriteInner)), descriptors: [] }, ({ root, w }) => {
+      w.expand();
+      eq(boxes(root).length, 9); eq(wires(root).length, 8);
+      eq(controls(root).length, 0);
+      ok(E.textOf(root).includes('no duplicate or novelty check') && E.textOf(root).includes('Fact row (SHORT)'));
+      const L = layout(JSON.parse(JSON.stringify(memoryWriteInner)));
+      ok(L.boxes.every((a, i) => L.boxes.every((b, j) => i === j || a.x !== b.x || a.y + a.h <= b.y || b.y + b.h <= a.y)), 'boxes in a column never overlap');
     });
   },
 };
