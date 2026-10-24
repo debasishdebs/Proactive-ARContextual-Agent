@@ -47,6 +47,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -240,6 +241,12 @@ class CanvasRunnerTest {
         val boom = liveFakes() + (NodeTypes.VISION_EXTRACT to fake(NodeTypes.VISION_EXTRACT) { _, _ -> throw StackOverflowError() })
         val run = runAll(runner(boom), DefaultPipelines.liveExtract(), frames(1))
         assertEquals("FAILED", run.status)
+    }
+
+    @Test fun aMissingExecutorFailsItemsWithNoExecutorAndIsNotACancel() = runBlocking<Unit> {
+        val run = runAll(runner(liveFakes() - NodeTypes.VISION_EXTRACT), DefaultPipelines.liveExtract(), frames(2))
+        assertNotEquals("CANCELLED", run.status) // WP8 review minor: only an interrupted helper chunk returns null
+        assertTrue(dao.items(run.runId).any { it.nodeId == "extract" && it.error == "no_executor" })
     }
 
     // ---- walking the graph ----
