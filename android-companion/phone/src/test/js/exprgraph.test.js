@@ -207,10 +207,11 @@ export const tests = {
     eq(a.general.map((p) => p.code), ['EXPR_TOO_MANY_NODES']);
   },
   metersComeFromTheCompileResult() {
-    const plan = JSON.stringify({ exprs: [{ id: 'e1', role: 'guard', out: 2, s: [{ op: 'sig', name: 'gyroMax' }, { op: 'const', v: 1.5 }, { op: 'cmp', f: '>', a: 0, b: 1 }, { op: 'in', a: 0, set: ['REST', 'WALKING'] }, { op: 'fresh', a: 0, ms: 5 }] }] });
+    const plan = JSON.stringify({ planSchema: 2, configHash: 'abc', meta: { name: 'p' }, config: { exprs: [{ id: 'e1', role: 'guard', out: 2, s: [{ op: 'sig', name: 'gyroMax' }, { op: 'const', v: 1.5 }, { op: 'cmp', f: '>', a: 0, b: 1 }, { op: 'in', a: 0, set: ['REST', 'WALKING'] }, { op: 'fresh', a: 0, ms: 5 }] }] } });
     const m = X.exprMeters(plan);
     eq(m.nodes, 5); eq(m.byId.e1, { nodes: 5, cost: 1 + 1 + 1 + 3 + 2 });
     eq(X.exprMeters('not json'), { nodes: 0, byId: {} });
+    eq(X.exprMeters(JSON.stringify({ exprs: [{ id: 'e1', s: [{ op: 'sig', name: 'ctx' }] }] })).nodes, 0, 'a top-level exprs is not the compiled shape');
     let ed = open({ schema: 2, id: 'p', name: 'p', nodes: [{ id: 'e1', type: 'expr.guard', title: 'g', params: { graph: X.defaultGraph() } }], edges: [] }, 1, {}, [], {});
     ed = compileStart(ed);
     ed = applyCompile(ed, ed.compile.rev, { ok: false, planJson: plan, problems: ['node e1: EXPR_PORT: step fast: port over.b is not wired', 'node other: something'], warnings: ['node e1: EXPR_GUARD_READS_CTX: step fast: reads ctx'] });

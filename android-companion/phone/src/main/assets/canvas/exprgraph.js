@@ -413,12 +413,12 @@ export function attribute(g, texts) {
 }
 
 const COST = { clamp: 2, choose: 2, fresh: 2 };
-/** planJson → {nodes: lowered total over all programs, byId: {canvasId: {nodes, cost}}}; unparsable gives zero. */
+/** planJson (the whole compiled plan, as /api/plans/compile returns it) → {nodes: lowered total over all programs, byId: {canvasId: {nodes, cost}}}; unparsable gives zero. */
 export function exprMeters(planJson) {
   const res = { nodes: 0, byId: {} };
   let plan;
   try { plan = JSON.parse(planJson); } catch (e) { return res; }
-  for (const p of (plan && plan.exprs) || []) {
+  for (const p of (plan && plan.config && plan.config.exprs) || []) { // CapturePlan: planJson = {planSchema, configHash, config: {..., exprs}, meta}
     const s = p.s || [];
     res.nodes += s.length;
     res.byId[p.id] = { nodes: s.length, cost: s.reduce((c, e) => c + (e.op === 'in' ? 1 + (e.set || []).length : own(COST, e.op) ? COST[e.op] : 1), 0) };
