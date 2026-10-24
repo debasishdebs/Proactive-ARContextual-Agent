@@ -21,7 +21,7 @@ class GlanceGuard(
         val r = active().exprRunner ?: return true
         val e0 = r.errTotal
         val keep = r.keep(nowMs, signals, applied(), ctxAgeS())
-        if (r.errTotal != e0) revert.onExprErr(nowMs, running())
+        if (r.errTotal != e0) revert.onExprErr(nowMs, running(), (r.errTotal - e0).toInt())
         return keep
     }
 }

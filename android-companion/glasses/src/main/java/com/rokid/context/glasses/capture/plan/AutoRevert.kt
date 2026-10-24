@@ -19,9 +19,9 @@ class AutoRevert(private val windowMs: Long = WINDOW_MS, private val limit: Int 
     }
 
     /** One non-div0 expression ERROR (3c X3). Div0 never comes here (Q11). A hit with no running plan (settings, SHADOW) is dropped. */
-    @Synchronized fun onExprErr(nowMs: Long, running: PlanId?) {
+    @Synchronized fun onExprErr(nowMs: Long, running: PlanId?, n: Int = 1) {
         if (running == null) return
-        errs.addLast(Hit(nowMs, running)); while (errs.size > ERR_LIMIT + 1) errs.removeFirst()
+        repeat(minOf(n, ERR_LIMIT + 1)) { errs.addLast(Hit(nowMs, running)) }; while (errs.size > ERR_LIMIT + 1) errs.removeFirst()
     }
 
     /** The reason to revert [running] with now, or null. Hits of any other plan are discarded; firing clears the hits (once per breach). */
