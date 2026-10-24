@@ -34,8 +34,20 @@ abstract class DerivedStaleDao {
     @Query("DELETE FROM object_audit WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun deleteSceneAudit(ids: List<String>)
     @Query("DELETE FROM object_derived WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun deleteSceneDerived(ids: List<String>)
 
-    /** Deletes the Scene rows, their audit rows and their derived fields (the parts are the caller's). */
-    protected suspend fun purgeScenes(ids: List<String>) { deleteSceneRows(ids); deleteSceneAudit(ids); deleteSceneDerived(ids) }
+    @Query("SELECT COALESCE(MAX(seq), 0) FROM object_audit WHERE objectKind = 'SCENE' AND objectId IN (:ids)") protected abstract suspend fun sceneMaxSeq(ids: List<String>): Int
+    @Query("SELECT value FROM canvas_meta WHERE `key` = 'scene_seq_floor'") protected abstract suspend fun sceneSeqFloorValue(): String?
+    @Query("INSERT OR REPLACE INTO canvas_meta (`key`, value) VALUES ('scene_seq_floor', :value)") protected abstract suspend fun putSceneSeqFloor(value: String)
+
+    /**
+     * Deletes the Scene rows, their audit rows and their derived fields (the parts are the caller's). A Scene id can come back with other members, so the highest audit seq of the
+     * deleted Scenes is kept in `canvas_meta` (`scene_seq_floor`, a counter, no user data): [appendAuditRow] never gives a Scene a seq at or below it, so the input revision of a Scene
+     * id never goes back and a derive that started before the deletion is refused when it ends.
+     */
+    protected suspend fun purgeScenes(ids: List<String>) {
+        val top = sceneMaxSeq(ids)
+        if (top > (sceneSeqFloorValue()?.toIntOrNull() ?: 0)) putSceneSeqFloor(top.toString())
+        deleteSceneRows(ids); deleteSceneAudit(ids); deleteSceneDerived(ids)
+    }
 
     /**
      * Moments were removed (Forget, or the builder): every Scene that held one loses that part. In the SAME transaction (the caller's) the Scene shrinks (window and `membershipRev`),
@@ -57,13 +69,15 @@ abstract class DerivedStaleDao {
     }
 
     suspend fun appendAuditRow(kind: String, id: String, op: String, atMs: Long, step: String, refKind: String? = null, refId: String? = null): Int {
-        val seq = nextAuditSeq(kind, id)
+        val seq = if (kind == "SCENE") maxOf(nextAuditSeq(kind, id), (sceneSeqFloorValue()?.toIntOrNull() ?: 0) + 1) else nextAuditSeq(kind, id)
         insertAuditRow(ObjectAuditEntity(kind, id, seq, op, atMs, step, refKind, refId))
         return seq
     }
 
     /** Hides every fresh derived field of the object NOW and writes INVALIDATED plus DERIVED_STALE and DERIVED_HIDDEN per field. Returns the fields hidden (0 and no row when nothing was fresh). */
     suspend fun markStaleCore(kind: String, id: String, now: Long, step: String, refKind: String?, refId: String?, force: Boolean = false): Int {
+        // A Moment changed or was invalidated (a mark undone, corrected or retagged, a memory edited, a rebuild that changed it): every Scene holding it was built from the old Moment.
+        if (kind == "MOMENT") sceneIdsHoldingMoments(listOf(id)).sorted().forEach { markStaleCore("SCENE", it, now, step, "MOMENT", id, force = true) }
         val fields = freshFields(kind, id)
         // [force]: a SOURCE changed. The INVALIDATED row is written even when no field is fresh, because it is the revision a derive that started earlier is checked against.
         if (fields.isEmpty()) { if (force) appendAuditRow(kind, id, "INVALIDATED", now, step, refKind, refId); return 0 }
