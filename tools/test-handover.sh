@@ -34,7 +34,7 @@ setup() {
 }
 # run_h <args...>: stdin closed (no prompts); the output (stdout+stderr) in $OUT, status in $RC
 run_h() {
-  OUT=$(PATH="$S/bin:$PATH" FAKE="$S" ADB_LOG="$ADB_LOG" G=GSER1 M1_SCHEME=http TMPDIR="$S/tmp" "$H" "$@" 2>&1 < /dev/null); RC=$?
+  OUT=$(PATH="$S/bin:$PATH" FAKE="$S" ADB_LOG="$ADB_LOG" G=GSER1 M1_SCHEME=http TMPDIR="$S/tmp" PCA_HELPER_HOME="$S/helper" "$H" "$@" 2>&1 < /dev/null); RC=$?
   echo "--- $CASE rc=$RC"; echo "$OUT" | sed 's/^/    /'
   RUND=$(ls -d "$1"/handover-* 2>/dev/null | tail -1)
   [ -e "$ADB_LOG.bad" ] && bad "$CASE: the fake adb received a forbidden command: $(cat "$ADB_LOG.bad")"
@@ -118,15 +118,43 @@ hasnt zzz999
 setup NoHeartbeat
 printf '10-24 10:10:00.000 I PcCapture status ok\n' > "$GD/capture_diag.log"; : > "$GD/capture_diag.log.1"
 run_h "$OUTD" --phone-tid 7 --watch-tid 9; [ "$RC" != 0 ] || bad "$CASE: accepted a run without heartbeat"
-has "NO FRESH HEARTBEAT EVIDENCE"; logsnt 'tar -c'; logsnt ' push '; [ ! -d "$GD/imu/transferred" ] || bad "$CASE: marker"
-setup StaleHeartbeat
-printf '10-24 06:00:00.000 I PcCapture heartbeat v=2 plan=x\n' > "$GD/capture_diag.log"
-run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" != 0 ] || bad "$CASE: accepted a stale heartbeat (4.5 h old)"
-has "NO FRESH HEARTBEAT EVIDENCE"; logsnt 'tar -c'
+has "NO HEARTBEAT EVIDENCE"; logsnt 'tar -c'; logsnt ' push '; [ ! -d "$GD/imu/transferred" ] || bad "$CASE: marker"
 setup HeartbeatOverride
-printf '10-24 10:10:00.000 I PcCapture status ok\n' > "$GD/capture_diag.log"
+printf '10-24 10:10:00.000 I PcCapture status ok\n' > "$GD/capture_diag.log"; : > "$GD/capture_diag.log.1"
 run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import --allow-no-heartbeat; [ "$RC" = 0 ] || bad "$CASE: override refused"
-has "NO FRESH HEARTBEAT EVIDENCE"; has "continuing"; [ -f "$RUND/trace-aaaa-0001/manifest.json" ] || bad "$CASE: nothing pulled"
+has "NO HEARTBEAT EVIDENCE"; has "continuing"; [ -f "$RUND/trace-aaaa-0001/manifest.json" ] || bad "$CASE: nothing pulled"
+
+
+# 6b. WEAR WINDOW from the chg= heartbeats (glasses clock; FAKE_NOW is 10-24 10:30). Manifest end times are glasses wall ms (endWallMs), read in the host zone like m1-run.sh does.
+hbl() { printf '%s I PcCapture heartbeat v=2 running=true batt=80 chg=%s wear=true\n' "$1" "$2"; }
+epoch() { python3 -c 'import datetime,sys; print(int(datetime.datetime.strptime("%d-%s"%(datetime.datetime.now().year,sys.argv[1]),"%Y-%m-%d %H:%M").timestamp()*1000))' "$1"; }
+mtrace() { mkdir -p "$GD/imu/traces/$1"; echo "{\"endWallMs\":$(epoch "10-24 $2")}" > "$GD/imu/traces/$1/manifest.json"; echo '{"c":1}' > "$GD/imu/traces/$1/chunk-0001.json"; }
+setup WindowUnplugReplug
+{ hbl "10-24 07:00:00.000" false; hbl "10-24 07:10:00.000" true; echo "10-24 07:30:00.000 I PcCapture status BEFOREWINDOW"; hbl "10-24 08:00:00.000" false; echo "10-24 08:05:00.000 I x $SECRET"; echo "10-24 08:06:00.000 I PcCapture status INWINDOW"; hbl "10-24 08:10:00.000" false; hbl "10-24 08:20:00.000" true; hbl "10-24 08:30:00.000" true; } > "$GD/capture_diag.log"; : > "$GD/capture_diag.log.1"
+rm -rf "$GD/imu/traces"/*; mtrace trace-before-0001 "07:30"; mtrace trace-inside-0001 "08:15"; mkdir -p "$GD/imu/traces/trace-untimed-0001"; echo '{}' > "$GD/imu/traces/trace-untimed-0001/manifest.json"
+run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" = 0 ] || bad "$CASE: rc $RC"
+has "wear window (glasses clock): start 10-24 08:00:00.000, end 10-24 08:20:00.000 (plugged in again); heartbeats in window: 2"
+has "traces_pulled=2 skipped_before_window=1 untimed=1"
+[ ! -d "$RUND/trace-before-0001" ] || bad "$CASE: a trace that ended before the window was pulled"
+[ -f "$RUND/trace-inside-0001/manifest.json" ] || bad "$CASE: the trace inside the window is missing"
+[ -f "$RUND/trace-untimed-0001/manifest.json" ] || bad "$CASE: the untimed trace was not included"
+grep -q INWINDOW "$RUND/logs/glasses/capture_diag.log" || bad "$CASE: an in-window log line is missing"
+grep -q BEFOREWINDOW "$RUND/logs/glasses/capture_diag.log" && bad "$CASE: a log line before the window start was kept"
+grep -q '^10-24 07:' "$RUND/logs/glasses/capture_diag.log" && bad "$CASE: a pre-window heartbeat was kept"
+secrets_clean
+grep -q '^[0-9]\{4\}-10-24T[0-9:]*$' "$S/helper/glasses-usb-last" || bad "$CASE: glasses-usb-last missing or not ISO"
+setup WindowNeverUnplugged
+{ hbl "10-24 06:00:00.000" false; hbl "10-24 08:00:00.000" false; hbl "10-24 10:20:00.000" false; } > "$GD/capture_diag.log"; : > "$GD/capture_diag.log.1"
+mtrace trace-early-0001 "05:00"; mtrace trace-late-0001 "09:00"
+M1_HB_MAX_AGE_MIN=5 run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" = 0 ] || bad "$CASE: rc $RC"
+has "start 10-24 06:00:00.000, end 10-24 10:20:00.000 (last heartbeat); heartbeats in window: 3"
+has "skipped_before_window=1"; has "deprecated and ignored"; [ ! -d "$RUND/trace-early-0001" ] || bad "$CASE: pre-window trace pulled"
+[ ! -e "$S/helper/glasses-usb-last" ] || bad "$CASE: unplug file written without a plug-in transition"
+setup WindowNoHeartbeatInWindow
+{ hbl "10-24 08:00:00.000" true; hbl "10-24 09:00:00.000" true; } > "$GD/capture_diag.log"; : > "$GD/capture_diag.log.1"
+run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import; [ "$RC" != 0 ] || bad "$CASE: accepted a log where the glasses were never unplugged"
+has "NO HEARTBEAT EVIDENCE"; logsnt 'tar -c'
+run_h "$OUTD" --phone-tid 7 --watch-tid 9 --no-import --allow-no-heartbeat; [ "$RC" = 0 ] || bad "$CASE: override refused"; has "continuing"; has "LABELLED"
 
 # 7. import: pairing only here (args), then the marker OUTSIDE the trace dir, only for traces whose import succeeded; nothing is stored
 setup ImportMarks
