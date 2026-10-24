@@ -46,6 +46,15 @@ data class Moment(
     val bindingKey: String get() = "$id:$contentRev:$contentHash"
 }
 
+/**
+ * The mark ids a run over [m] lists as lineage (`mf:<labelId>`), so Forgetting a mark deletes the run rows. A FRAME Moment keeps its photos as its lineage; a MARK Moment has none, so its marks carry it.
+ * Exhaustive over the type: a new type must decide.
+ */
+fun markLineage(m: Moment): List<String> = when (m.type) {
+    MomentType.FRAME -> emptyList()
+    MomentType.MARK -> m.marks.map { it.id }
+}
+
 /** One second holds more photos than a Moment can fingerprint completely: refused, never silently truncated. */
 class MomentTooBig : IllegalStateException("moment_too_big")
 
