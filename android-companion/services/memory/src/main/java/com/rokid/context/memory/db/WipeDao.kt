@@ -69,7 +69,7 @@ abstract class WipeDao {
     @Transaction
     open suspend fun wipeMemory(now: Long): List<String> {
         val proposals = proposalIds()
-        momentWipeCleanup(now); ackedOutbox(); momentParts(); momentTraceDeps(); moments(); momentTombstones(); momentClearForgetRanges() // the cleanup command is written BEFORE any source reference goes
+        ackedOutbox(); momentWipeCleanup(now); momentParts(); momentTraceDeps(); moments(); momentTombstones(); momentClearForgetRanges() // the cleanup command is written BEFORE any source reference goes
         sources(); frameSources(); vectors(); frameVectors(); spaces(); memories(); frames(); frameClusters(); frameStates(); frameMetas(); tombstones(); asks(); nudges(); openProposals(); traces()
         canvasItems(); canvasScores(); canvasRuns(); canvasTraces() // photo-derived experiment outputs; pipelines, versions and publishes hold prompts and stay
         slice3Events(); slice3Traces(); slice3Replays(); slice3Sweeps(); slice3Labels(); slice3Calibration(); slice3HelperJobs(); slice3ClearForgetRanges(); slice3BumpLabelRev()

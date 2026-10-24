@@ -69,12 +69,30 @@ class MomentForgetEntryPointsTest {
     @Test fun aFrameOutsideTheFenceIsAdmittedAndSoIsABurstNeighbourOfAForgottenPhoto() = runBlocking<Unit> {
         fx.frame("a", MS + 5); fx.forget.forgetMoments(listOf(fx.id)) // the +-10 s photo link widening is NOT a Moment fence
         assertEquals(FrameIntake.Outcome.ADDED, FrameIntake(db).commit(FrameEntity("ok", MS + 3000, "/p/ok.jpg", "rokid_glasses"), rows("ok", MS + 3000)))
-        assertEquals(FrameIntake.Outcome.ADDED, FrameIntake(db).commit(FrameEntity("ok2", MS + 1000, "/p/ok2.jpg", "rokid_glasses"), rows("ok2", null)))
+        assertEquals(FrameIntake.Outcome.ADDED, FrameIntake(db).commit(FrameEntity("ok2", MS + 1000, "/p/ok2.jpg", "rokid_glasses"), rows("ok2", MS + 1000)))
     }
 
     @Test fun aTombstonedSecondRefusesAFrameEvenWithoutARangeFence() = runBlocking<Unit> {
         db.momentDao().insertTombstones(listOf(com.rokid.context.memory.db.MomentTombstoneEntity(fx.id, 1)))
         assertEquals(FrameIntake.Outcome.FENCED, FrameIntake(db).commit(FrameEntity("late", MS + 10, "/p/late.jpg", "rokid_glasses"), rows("late", null)))
+    }
+
+    @Test fun aDelayedFrameOfUnknownCaptureTimeWithAFileTimeOutsideTheForgottenIntervalIsRefused() = runBlocking<Unit> {
+        fx.forget.forgetMoments(listOf(fx.id))
+        val delayed = FrameEntity("delayed", MS + 600_000, "/p/delayed.jpg", "rokid_glasses") // file time far outside, capture time unknown
+        assertEquals(FrameIntake.Outcome.FENCED, FrameIntake(db) { 2_000 }.commit(delayed, rows("delayed", null)))
+        assertEquals(0, db.frameDao().count()); assertTrue(fx.outbox().contains(CleanupTarget.PHONE_FILE to "{\"path\":\"/p/delayed.jpg\"}"))
+    }
+
+    @Test fun aLongRangeForgetStillLeavesARecencyMarkerForUnknownTimeFrames() = runBlocking<Unit> {
+        fx.forget.forgetRange(MS, MS + 100_000_000)
+        assertEquals(FrameIntake.Outcome.FENCED, FrameIntake(db) { 2_000 }.commit(FrameEntity("d", MS + 999_000_000, "/p/d.jpg", "rokid_glasses"), rows("d", null)))
+    }
+
+    @Test fun unknownTimeFramesAreAdmittedAgainWhenNoRecentForgetExists() = runBlocking<Unit> {
+        fx.forget.forgetMoments(listOf(fx.id))
+        val day = 25L * 3600 * 1000
+        assertEquals(FrameIntake.Outcome.ADDED, FrameIntake(db) { 1_000 + day }.commit(FrameEntity("later", MS + 600_000, "/p/later.jpg", "rokid_glasses"), rows("later", null)))
     }
 
     // --- Delete all ---
@@ -90,6 +108,15 @@ class MomentForgetEntryPointsTest {
         assertTrue(box.any { it.target == CleanupTarget.ALL })
         assertEquals("the acked row is gone", 0, box.count { it.payloadJson.contains("acked") })
         assertEquals(pendingBefore + 1, db.momentDao().outboxCount())
+    }
+
+    @Test fun wipeAcknowledgeCaptureWipeLeavesAPendingAllCommand() = runBlocking<Unit> {
+        db.wipeDao().wipeMemory(1)
+        val first = db.momentDao().pendingOutbox().single { it.target == CleanupTarget.ALL }
+        assertEquals(1, db.momentDao().ack(first.id, 2))
+        fx.frame("a", MS + 5)
+        db.wipeDao().wipeMemory(3)
+        assertEquals("a second wipe must queue its own device-wide command", 1, db.momentDao().pendingOutbox().count { it.target == CleanupTarget.ALL })
     }
 
     @Test fun deleteAllTwiceDoesNotDuplicateTheDeviceWideCommand() = runBlocking<Unit> {
