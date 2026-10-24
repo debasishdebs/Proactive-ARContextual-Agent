@@ -253,6 +253,26 @@ class CanvasBackendImplTest {
         assertTrue(backend.estimate("live-extract", null, emptyList()) is Estimate.Refused)
     }
 
+    private val summaryJson = """{"schema":2,"id":"p","name":"sum","nodes":[
+        {"id":"photos","type":"input.photos","title":"p","params":{}},{"id":"ex","type":"ai.vision_extract","title":"e","params":{}},
+        {"id":"sum","type":"proc.summary","title":"Summary","params":{}},{"id":"w","type":"memory.write","title":"w","params":{}}],
+        "edges":[{"from":"photos","to":"ex"},{"from":"ex","to":"sum"},{"from":"sum","to":"w"}]}"""
+
+    /** The estimate names the user's binding for the Summary node (its own text role), like any model node, and counts its calls. */
+    @Test fun estimateNamesTheSummaryNodesModelAndCountsItsCalls() = runBlocking<Unit> {
+        seed("f1", 1_000); seed("f2", 2_000)
+        val copy = backend.duplicate("live-extract", "with summary")
+        val rev = checkNotNull(backend.pipeline(copy))["draftRev"]!!.jsonPrimitive.int
+        assertTrue(backend.saveDraft(copy, summaryJson, rev) is CanvasRepository.SaveResult.Saved)
+        val unbound = backend.estimate(copy, null, listOf("f1", "f2")) as Estimate.Ok
+        assertEquals(setOf("ex", "sum"), unbound.models.map { it.nodeId }.toSet())
+        assertTrue(unbound.models.all { it.endpoint == "not set" })
+        bind()
+        val ok = backend.estimate(copy, null, listOf("f1", "f2")) as Estimate.Ok
+        assertEquals(listOf("Azure", "gpt"), ok.models.first { it.nodeId == "sum" }.let { listOf(it.endpoint, it.model) })
+        assertEquals("2 extraction calls (batch 1) + 2 summaries", 4, ok.nominal)
+    }
+
     @Test fun nodeTypesServeTheFamilyOfEveryType() {
         val types = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
         fun f(t: String) = types.getValue(t)["family"]!!.jsonPrimitive.content
