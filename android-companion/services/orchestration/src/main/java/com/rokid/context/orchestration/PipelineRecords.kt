@@ -49,6 +49,8 @@ object PipelineRecords {
         // With [rows] the frame, its frame_meta and its PENDING frame_state land in one transaction (keyframe capture P1).
         val ok = if (rows == null) graph(context).frames.add(stored)
         else graph(context).intake.commit(stored, rows) == com.rokid.context.memory.FrameIntake.Outcome.ADDED
+        // The stored Moment of that second is built off this thread, coalesced; a frame with no capture evidence schedules nothing (unknown capture time is never a Moment).
+        if (ok && rows != null) com.rokid.context.canvas.moment.MomentTriggers.get(context).onFrameCommitted(stored.ts, rows.meta.capturedAtMs)
         Log.i(TAG, "append ok=$ok frameId=${frame.id}")
         return ok
     }

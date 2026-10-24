@@ -75,7 +75,7 @@ abstract class CanvasSlice3Dao {
     @Transaction open suspend fun forgetRangeTx(fromMs: Long, toMs: Long, now: Long): ForgetOutcome {
         addForgetRange(fromMs, toMs)
         val jobs = moveFrameForgetFence(now)
-        val ids = liveTraces().filter { it.startedAtMs <= toMs && (it.endedAtMs ?: Long.MAX_VALUE) >= fromMs }.map { it.traceId }
+        val ids = liveTraces().filter { TraceClock.overlaps(it, fromMs, toMs) }.map { it.traceId }
         ids.forEach { tombstoneTrace(it, now) }
         val labels = deleteLabelsBetween(fromMs, toMs)
         val invalid = invalidateBySources(ids, fromMs, toMs, labelRevChanged = labels > 0)
@@ -169,6 +169,9 @@ abstract class CanvasSlice3Dao {
     // --- traces and events ---
     @Query("SELECT * FROM canvas_trace WHERE traceId = :id") abstract suspend fun trace(id: String): CanvasTraceEntity?
     @Query("SELECT * FROM canvas_trace WHERE tombstoned = 0 ORDER BY startedAtMs, traceId") abstract suspend fun liveTraces(): List<CanvasTraceEntity>
+    /** Backfill of a pre-v10 row (spec 7.2): maps it to the phone clock only while it is still live, still UNMAPPED and still holds the manifest it was read with. Returns rows changed. */
+    @Query("UPDATE canvas_trace SET phoneStartMs = :start, phoneEndMs = :end, clockQuality = :quality, uncertaintyMs = :unc WHERE traceId = :id AND tombstoned = 0 AND clockQuality = 'UNMAPPED' AND manifestJson = :manifestJson")
+    abstract suspend fun mapTraceClock(id: String, manifestJson: String, start: Long, end: Long?, quality: String, unc: Long): Int
     @Query("SELECT * FROM canvas_trace_event WHERE traceId = :id ORDER BY seq") abstract suspend fun events(id: String): List<CanvasTraceEventEntity>
     @Query("SELECT COUNT(*) FROM canvas_trace_event WHERE traceId = :id") abstract suspend fun eventCount(id: String): Int
     @Upsert protected abstract suspend fun upsertTrace(t: CanvasTraceEntity)
@@ -187,7 +190,7 @@ abstract class CanvasSlice3Dao {
         val epoch = fence.now()
         if (t.installId != epoch.installId || t.deletionCounter != epoch.counter) return false
         if (trace(t.traceId)?.tombstoned == true) return false
-        if (overlapsForgotten(t.startedAtMs, t.endedAtMs ?: t.startedAtMs)) return false
+        if (TraceClock.overlapsAny(t, forgottenRanges())) return false
         upsertTrace(t)
         return true
     }

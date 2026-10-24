@@ -81,10 +81,12 @@ class TraceImport(
             var movedAside = false
             val published = files.publish(tmp, finalDir) {
                 if (!f.holds()) return@publish false
+                val phone = TracePhoneClock.of(manifest) // the interval on the PHONE clock: Forget and admission compare THIS, never the glasses wall times
                 val row = CanvasTraceEntity(
                     traceId = manifest.traceId, source = "IMU", status = verdict.status.name, manifestJson = manifest.encode(), wipeGen = f.generation,
                     revision = revision, parentTraceId = manifest.parentTraceId, installId = manifest.installId, deletionCounter = manifest.deletionCounter,
                     exact = manifest.exact, startedAtMs = manifest.startWallMs, endedAtMs = manifest.endWallMs, createdAt = clock(),
+                    phoneStartMs = phone.phoneStartMs, phoneEndMs = phone.phoneEndMs, clockQuality = phone.clockQuality, uncertaintyMs = phone.uncertaintyMs,
                 )
                 if (!dao.acceptTraceFenced(row, f)) return@publish false
                 if (existing != null) dao.invalidateBySources(listOf(manifest.traceId), null, null, false)

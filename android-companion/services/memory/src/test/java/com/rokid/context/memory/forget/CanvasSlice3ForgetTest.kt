@@ -126,7 +126,7 @@ class CanvasSlice3ForgetTest {
         forget.forgetRange(1_000, 2_000)
         val e = CanvasTraceEntity("late-trace-1", "IMU", "COMPLETE", "{}", 0, installId = "i", deletionCounter = 1, startedAtMs = 1_900, endedAtMs = 2_500, createdAt = 3)
         assertFalse(dao.acceptTraceFenced(e, fence))
-        assertTrue(dao.acceptTraceFenced(e.copy(traceId = "late-trace-2", startedAtMs = 3_000, endedAtMs = 3_500), fence))
+        assertTrue(dao.acceptTraceFenced(e.copy(traceId = "late-trace-2", startedAtMs = 3_000, endedAtMs = 3_500, phoneStartMs = 3_000, phoneEndMs = 3_500), fence))
     }
 
     @Test fun rangesMergeAndAreCapped() = runBlocking {

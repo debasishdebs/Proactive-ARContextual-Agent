@@ -34,6 +34,8 @@ class MarkRecorder(
     private val fence: () -> DaoFence,
     private val wallClock: () -> Long,
     private val log: (String) -> Unit = {},
+    /** Called (never blocking) with the phone-clock time of every mark or intent that was actually stored, so the Moment builder trigger can attach it to its second. */
+    private val onRecorded: (Long) -> Unit = {},
 ) {
     private val lock = Mutex()
     private class Listen(val startAt: Long, var bound: String? = null, val glasses: Boolean = true)
@@ -83,6 +85,7 @@ class MarkRecorder(
             else unjoined += Pending(id, arrival.mappedAtMs)
         }
         log("mark recorded")
+        onRecorded(arrival.mappedAtMs)
         true
     }
 
@@ -118,10 +121,10 @@ class MarkRecorder(
         val id = already ?: l.bound ?: "vm:${l.startAt}:${if (l.glasses) 'g' else 'p'}"
         if (already == null) {
             if (l.bound != null) dao.retagLabel(id, source)
-            else dao.insertLabelFenced(CanvasLabelEntity(id, KIND_MOMENT, source, MOMENT, l.startAt, provenance = "clock:receipt", deletionCounter = f.now().counter, createdAt = wallClock()), f)
+            else if (dao.insertLabelFenced(CanvasLabelEntity(id, KIND_MOMENT, source, MOMENT, l.startAt, provenance = "clock:receipt", deletionCounter = f.now().counter, createdAt = wallClock()), f)) onRecorded(l.startAt)
         }
         if (intent != null && dao.label("$id:i") == null) {
-            dao.insertLabelFenced(CanvasLabelEntity("$id:i", KIND_INTENT, source, intent, l.startAt, provenance = "intent", deletionCounter = f.now().counter, createdAt = wallClock()), f)
+            if (dao.insertLabelFenced(CanvasLabelEntity("$id:i", KIND_INTENT, source, intent, l.startAt, provenance = "intent", deletionCounter = f.now().counter, createdAt = wallClock()), f)) onRecorded(l.startAt)
         }
         log("voice mark recorded")
         return id
