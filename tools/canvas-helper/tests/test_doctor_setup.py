@@ -82,6 +82,16 @@ def test_memory_opera_and_disk_checks(env):
     assert "memory free" in out
 
 
+def test_vm_disk_ok_line_carries_no_failure_note(env):
+    """Live fact: a healthy running VM printed `ok vm disk (disk_low: ...)`; the note belongs to a failure only."""
+    healthy(env)
+    with open(os.path.join(env.fake.dir, "vm_df"), "w") as f:
+        f.write("/dev/vda 21474836480 %d 100 1%% /var" % (1 << 30))
+    code, out = run(env)
+    line = [l for l in out.splitlines() if "vm disk" in l][0]
+    assert line.startswith("ok") and "disk_low" not in line
+
+
 def test_vm_disk_checked_only_when_running(env):
     healthy(env)
     with open(os.path.join(env.fake.dir, "vm_df"), "w") as f:
