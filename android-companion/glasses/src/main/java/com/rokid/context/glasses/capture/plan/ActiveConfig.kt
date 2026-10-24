@@ -1,6 +1,7 @@
 package com.rokid.context.glasses.capture.plan
 
 import com.rokid.context.capture.plan.CapturePlan
+import com.rokid.context.capture.plan.ExprRunner
 import com.rokid.context.capture.plan.PlanResolver
 import com.rokid.context.capture.plan.PlanState
 import com.rokid.context.core.model.CameraWake
@@ -29,6 +30,8 @@ data class ActiveConfig(
     val configHash: String? = null,
     /** A plan is always SETTLE wake (spec 3.4, S27): the settings wake is for the settings path only. */
     val forceSettle: Boolean = true,
+    /** 3c X3: the plan's expression guards (null = none). SHADOW counts with it, TRIAL acts with it; settings never has one. */
+    val exprRunner: ExprRunner? = null,
 ) {
     fun policyFor(applied: ContextState): ContextCapturePolicy = ContextPolicies.of(if (ctxBound) applied else ContextState.UNKNOWN, table)
 
@@ -61,6 +64,7 @@ data class ActiveConfig(
                 table = mapOf(ContextState.UNKNOWN to unknown, ContextState.WALKING to ContextPolicies.DEFAULT.getValue(ContextState.WALKING)) + rows,
                 ctxBound = plan.config.ctxBound,
                 configHash = plan.configHash,
+                exprRunner = ExprRunner.of(plan.config.exprs),
             )
         }
     }

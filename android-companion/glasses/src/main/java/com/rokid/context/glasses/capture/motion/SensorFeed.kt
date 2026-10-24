@@ -61,10 +61,12 @@ class AndroidSensorFeed internal constructor(
     private val verboseFeatures: Boolean = false,
     private val label: () -> MotionLabel = { MotionLabel.NONE },
     private val csvDir: File? = null,
+    /** 3c X3: receives each second's features for the expression guards (a plain write, no sensor, timer or wakeup of its own). */
+    private val signals: com.rokid.context.capture.plan.ExprSignals? = null,
 ) : SensorFeed {
-    constructor(context: Context, verboseFeatures: Boolean = false, label: () -> MotionLabel = { MotionLabel.NONE }, csvDir: File? = null) : this(
+    constructor(context: Context, verboseFeatures: Boolean = false, label: () -> MotionLabel = { MotionLabel.NONE }, csvDir: File? = null, signals: com.rokid.context.capture.plan.ExprSignals? = null) : this(
         ManagerRegistry(context.getSystemService(Context.SENSOR_SERVICE) as SensorManager),
-        verboseFeatures = verboseFeatures, label = label, csvDir = csvDir,
+        verboseFeatures = verboseFeatures, label = label, csvDir = csvDir, signals = signals,
     )
 
     // Shadow only: the model and fusion are logged to the CSV and never read by capture.
@@ -151,6 +153,7 @@ class AndroidSensorFeed internal constructor(
         runCatching {
             val t = now()
             val sf = SecondFeatures(f.gyroMax, f.gyroMean, f.gyroRms, f.aboveOnFrac, f.accVariance, f.stepHz.toFloat(), f.rotRad)
+            signals?.set(sf, t)
             val ev = imuSource.onSecond(sf, t)
             val fused = MotionFusion.fuse(listOf(ev), t)
             val l = label()

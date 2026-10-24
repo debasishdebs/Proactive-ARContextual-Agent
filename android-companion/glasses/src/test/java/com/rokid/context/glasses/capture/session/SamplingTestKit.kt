@@ -165,6 +165,8 @@ class Rig(
     var gyroMag = 0f
     var profile: CaptureProfile = CaptureProfile.DEFAULT
     var contextCap: Int? = null
+    /** 3c X3: the expression guard at a glance candidate (true = keep). */
+    @Volatile var glanceKeep: (Long) -> Boolean = { true }
     /** The times the session reported a refusal by the hard ceiling (2 x the cap); the auto-revert counts these. */
     val ceilingHits = ArrayList<Long>()
     /** The context state applied to capture now (the service passes the hub's); it picks the reserved timer attempt's bound. */
@@ -178,7 +180,7 @@ class Rig(
     val session = SamplingSession(
         scope = test.backgroundScope, camera = camera, owner = owner, motion = motion, wear = wear, gate = gate, heat = heat,
         workRest = sessionWorkRest, encoder = encoder, sink = { k, _ -> keyframes += clock() to k }, clock = clock, settings = { settings },
-        capturePaused = { paused }, profile = { profileReads++; profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance, glanceNow = { activePlan?.invoke()?.glance ?: glance }, contextCap = { contextCap }, appliedState = { applied }, onCeilingHit = { ceilingHits += it }, trace = trace, traceInfo = { traceInfo }, traceBoundary = boundary,
+        capturePaused = { paused }, profile = { profileReads++; profile }, phoneInUse = { phoneInUse }, onFallback = { fallbacks++; test.backgroundScope.launch { onFallbackAction() } }, log = { logs += it }, glance = glance, glanceNow = { activePlan?.invoke()?.glance ?: glance }, contextCap = { contextCap }, glanceKeep = { glanceKeep(it) }, appliedState = { applied }, onCeilingHit = { ceilingHits += it }, trace = trace, traceInfo = { traceInfo }, traceBoundary = boundary,
         fixedCapture = { owner.acquire("fixed") { fixedCaptures += clock(); fixedDuring() } },
     )
 

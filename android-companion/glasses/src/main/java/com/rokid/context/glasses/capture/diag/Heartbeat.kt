@@ -46,6 +46,10 @@ data class Heartbeat(
     /** SHADOW's counterfactual glance opens and skips since the previous heartbeat (counts, not per-minute). */
     val shOpen: Int = 0,
     val shSkip: Int = 0,
+    /** 3c X3: SHADOW would-drops by an expression guard, and the expression errors (div0 apart: it never counts toward auto-revert). */
+    val shDrop: Int = 0,
+    val exprErr: Int = 0,
+    val exprDiv0: Int = 0,
 ) {
     private fun perMin(v: Long, spanMs: Long = stats.spanMs): Long = v * 60_000L / spanMs.coerceAtLeast(1)
 
@@ -62,7 +66,8 @@ data class Heartbeat(
             "glances1m=${perMin(stats.glances.toLong())} micro1m=${perMin(stats.micro.toLong())} novelSkip1m=${perMin(stats.novelSkips.toLong())} " +
             "capped1m=${perMin(stats.capped.toLong())} same1m=${perMin(stats.same.toLong())} scrOn=$scrOn scrOurs=$scrOurs nudgeOff=$nudgeOff" +
             " ctx=$ctx ctxAgeS=${ctxAgeS ?: "na"} ctxApplied=$ctxApplied ctxVeto=$ctxVeto" +
-            " plan=$plan gen=$gen planMode=$planMode ruleSkip1m=0 exprErr=0 planRevert=$planRevert resv=${stats.wakes["resv"] ?: 0} shOpen=$shOpen shSkip=$shSkip" +
+            " plan=$plan gen=$gen planMode=$planMode ruleSkip1m=0 exprErr=$exprErr planRevert=$planRevert resv=${stats.wakes["resv"] ?: 0} shOpen=$shOpen shSkip=$shSkip" +
+            (if (shDrop > 0 || exprDiv0 > 0) " shDrop=$shDrop exprDiv0=$exprDiv0" else "") +
             " worn=${if (wear) 1 else 0} charging=${if (charging) 1 else 0}" +
             if (csvFail > 0) " csvFail=$csvFail" else ""
     }

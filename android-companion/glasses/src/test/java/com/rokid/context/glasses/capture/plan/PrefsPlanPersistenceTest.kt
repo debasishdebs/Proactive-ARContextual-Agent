@@ -25,7 +25,7 @@ class PrefsPlanPersistenceTest {
         assertEquals(PlanAckState.STAGED, first.onMessage(PlanTestKit.trial(1, PlanTestKit.plan(), 60_000)).state)
         assertTrue(prefs.getString("state", "")!!.contains("\"effective\":true"))
         val second = PlanController(PrefsPlanPersistence(prefs), { 20_000L }, { "bc:4" }, { com.rokid.context.core.model.context.ContextState.UNKNOWN }, {})
-        assertEquals(PlanReceiver.CAPS, second.statusAck().caps)
+        assertEquals(PlanReceiver.CAPS_EXPR, second.statusAck().caps)
         assertEquals(PlanAckState.EFFECTIVE, second.statusAck().state)
         assertEquals(PlanTestKit.plan().configHash, second.active.configHash)
     }

@@ -53,7 +53,7 @@ class PlanController(
     private val log: (String) -> Unit = {},
 ) {
     private val lock = Any()
-    private val receiver = PlanReceiver(persist, elapsed, bootId)
+    private val receiver = PlanReceiver(persist, elapsed, bootId, PlanReceiver.CAPS_EXPR)
 
     /** The config capture reads right now. Changes only inside [lock], at a safe boundary. */
     @Volatile private var activeCfg: ActiveConfig = ActiveConfig.SETTINGS
@@ -132,7 +132,7 @@ class PlanController(
             // The state could not be persisted: nothing is staged, nothing changes, and the throw never reaches the link callback.
             failClosed()   // a newer message supersedes the held plan: if its write failed (e.g. a SETTINGS rollback) the TRIAL must not keep running
             log("plan message not applied: ${e.javaClass.simpleName}")
-            CapturePlanAck(gen = m.gen, publishId = m.publishId, mode = m.mode, state = PlanAckState.REJECTED, reason = "persist", caps = PlanReceiver.CAPS, phoneInstall = m.phoneInstall).also { out += it }
+            CapturePlanAck(gen = m.gen, publishId = m.publishId, mode = m.mode, state = PlanAckState.REJECTED, reason = "persist", caps = PlanReceiver.CAPS_EXPR, phoneInstall = m.phoneInstall).also { out += it }
         }
     }
 
@@ -146,7 +146,7 @@ class PlanController(
         if (st == null || st.phoneInstall != id.install || st.appliedGen != id.gen) {
             // A staged replacement B owns the receiver's state: revert A alone (settings back, B left pending and still activatable).
             val was = id
-            val ack = CapturePlanAck(gen = was.gen, publishId = runningPub, mode = was.mode, state = PlanAckState.REVERTED, reason = reason, caps = PlanReceiver.CAPS, phoneInstall = was.install)
+            val ack = CapturePlanAck(gen = was.gen, publishId = runningPub, mode = was.mode, state = PlanAckState.REVERTED, reason = reason, caps = PlanReceiver.CAPS_EXPR, phoneInstall = was.install)
             running = null; runningDeadlineMs = Long.MAX_VALUE; runningPub = null
             if (activeCfg != ActiveConfig.SETTINGS) { host?.let { if (!it.quiet()) it.abortBout() }; swap(ActiveConfig.SETTINGS) }
             out += ack
@@ -213,13 +213,13 @@ class PlanController(
     fun statusAck(): CapturePlanAck = synchronized(lock) {
         // A TRIAL past its limit is ended before it is reported, even while the capture service (and its tick) is not running.
         try { receiver.tick(appliedState(), elapsed())?.let { reverted(it, ArrayList()) } } catch (e: Exception) { failClosed(); log("plan tick failed: ${e.javaClass.simpleName}") }
-        val st = receiver.current ?: return CapturePlanAck(gen = 0, caps = PlanReceiver.CAPS)
+        val st = receiver.current ?: return CapturePlanAck(gen = 0, caps = PlanReceiver.CAPS_EXPR)
         val reason = st.terminal[st.appliedGen]
         val was = st.terminalMeta[st.appliedGen]
         CapturePlanAck(
             gen = st.appliedGen, publishId = was?.publishId ?: st.publishId, mode = was?.mode ?: st.mode, effectiveHash = if (reason == null) st.configHash else null,
             state = if (reason != null) PlanAckState.REVERTED else if (st.effective) PlanAckState.EFFECTIVE else PlanAckState.STAGED,
-            reason = reason, caps = PlanReceiver.CAPS, phoneInstall = st.phoneInstall, sessionStartMs = session,
+            reason = reason, caps = PlanReceiver.CAPS_EXPR, phoneInstall = st.phoneInstall, sessionStartMs = session,
         )
     }
 
