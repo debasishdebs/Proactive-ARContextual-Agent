@@ -58,3 +58,8 @@ Branch `feat/expr-e2a` (worktree ~/Desktop/rokid/pca-v094c), from v0.9.4 tip 445
 
 ## Test results
 Final clean run, one Gradle (`--continue`): :core:capture 454 (1 skipped, as before), :glasses 926, :services:ai 688, :services:orchestration 1694, :phone 1833. Only failure: `PromptEditorTest.savingCreatesVersionTwoThenOverwritesWhenVersioningIsOff` (known flaky), green when rerun alone. 0 other failures.
+
+## Codex fixes (after the merge into v0.9.4, a4d799ce)
+1. **Glasses-side program limits.** `PlanValidator` now enforces for EVERY program kind what the compiler enforces: at most 32 lowered nodes over all programs and cost <= 64 per program (unit costs as the compiler: clamp/choose/fresh/win 2, `in` 1+set size, others 1), on top of the existing 6 programs and 4 window terms. An over-limit hand-built plan is rejected with reason `bounds`. Tests: `ExprLimitsOnTheGlassesTest` (200-step value, 33 nodes, 218 cost, guards, shared node limit, receiver reason). Mutation (both checks removed): 3 tests RED, restored.
+2. **Replay evaluates values every simulated second.** `CaptureSimulator.featureTick` (features into the signals, then `tickValues`) now also runs on every scheduler tick inside `advanceTo`, so an event-free stretch re-evaluates each second as the device loop does. Test `ReplayValueEventFreeTest.ReplayValueParityOverAnEventFreeStretch` (value `5 + ctxAgeS/10` s over 400 s with no events). Mutation (tick only on events): RED, restored.
+Final run: :core:capture, :glasses, :services:ai, :services:orchestration, :phone all green except `LocalModelsPageTest` and `PromptEditorTest` (known flaky), green when rerun alone.

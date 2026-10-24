@@ -22,6 +22,8 @@ object PlanValidator {
 
     private const val MAX_DEPTH = 32
     private const val MAX_PROGRAMS = 6
+    private const val MAX_NODES = 32
+    private const val MAX_COST = 64
 
     private fun tooDeep(e: JsonElement, depth: Int): Boolean = when {
         depth > MAX_DEPTH -> true
@@ -61,6 +63,22 @@ object PlanValidator {
     /** 3c E2a: a value program tunes one field of one editable row, once; WALKING and UNKNOWN are locked (S32). */
     private fun values(progs: List<JsonObject>, out: MutableList<String>) {
         if (progs.size > MAX_PROGRAMS) out += "plan has ${progs.size} expression programs (max $MAX_PROGRAMS)"
+        // the glasses do not trust the phone compiler: the compile-time limits hold here for EVERY program kind (32 lowered nodes over all programs, cost 64 each)
+        var nodes = 0
+        for (p in progs) {
+            val steps = (p["s"] as? JsonArray) ?: continue
+            nodes += steps.size
+            val cost = steps.sumOf { e ->
+                val o = e as? JsonObject
+                when ((o?.get("op") as? JsonPrimitive)?.content) {
+                    "clamp", "choose", "fresh", "win" -> 2
+                    "in" -> 1 + ((o?.get("set") as? JsonArray)?.size ?: 0)
+                    else -> 1
+                }.toInt()
+            }
+            if (cost > MAX_COST) out += "expr ${(p["id"] as? JsonPrimitive)?.content ?: "?"}: evaluation cost $cost (max $MAX_COST)"
+        }
+        if (nodes > MAX_NODES) out += "expression programs have $nodes nodes in all (max $MAX_NODES)"
         val seen = HashSet<String>()
         for (p in progs) {
             val role = (p["role"] as? JsonPrimitive)?.content
