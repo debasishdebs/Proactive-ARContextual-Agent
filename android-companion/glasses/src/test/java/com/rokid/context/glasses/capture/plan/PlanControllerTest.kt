@@ -127,7 +127,7 @@ class PlanControllerTest {
         assertEquals("auto:reboot", mem.state!!.terminal[1])
         val s = c2.statusAck()
         assertEquals(PlanAckState.REVERTED, s.state); assertEquals("auto:reboot", s.reason); assertEquals(1L, s.gen)
-        assertEquals(PlanReceiver.CAPS, s.caps)
+        assertEquals(PlanReceiver.CAPS_EXPR, s.caps)
     }
 
     @Test fun aPersistedTrialOfTheSameBootResumesWithItsOriginalClock() {
@@ -181,7 +181,7 @@ class PlanControllerTest {
 
     @Test fun statusAckWithoutAnyPlanIsTheCapsAnnouncement() {
         val a = ctl().statusAck()
-        assertEquals(0L, a.gen); assertEquals(PlanReceiver.CAPS, a.caps); assertEquals("", a.phoneInstall)
+        assertEquals(0L, a.gen); assertEquals(PlanReceiver.CAPS_EXPR, a.caps); assertEquals("", a.phoneInstall)
     }
 
     @Test fun anAbsentEditableRowIsTheUnknownRowNotTheDefaultRestRow() {

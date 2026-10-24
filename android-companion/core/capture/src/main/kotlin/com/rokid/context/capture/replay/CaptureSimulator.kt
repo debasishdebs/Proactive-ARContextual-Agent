@@ -30,6 +30,9 @@ import com.rokid.context.glasses.capture.motion.MotionClassifier
 import com.rokid.context.glasses.capture.session.CameraPolicy
 import com.rokid.context.glasses.capture.session.CaptureProfile
 import com.rokid.context.glasses.capture.session.GlanceAdmission
+import com.rokid.context.capture.plan.ExprRunner
+import com.rokid.context.capture.plan.ExprSignals
+import com.rokid.context.glasses.capture.motion.model.SecondFeatures
 
 /**
  * A counterfactual config to replay the same recording under (Task 21 builds the full one from a `CapturePlan`). [configHash] is the identity the result
@@ -48,6 +51,8 @@ class ReplayCandidate(
     val ctxBound: Boolean = true,
     /** True: replay a recording made under another wake with the SETTLE profile, as a plan always does (S27). Implied by [table]. */
     val forceSettle: Boolean = false,
+    /** The plan's lowered expression programs (3c X4): each replay builds its OWN [ExprRunner] from them (the shared runner, no second evaluator), so counters never leak between replays. */
+    val exprs: List<kotlinx.serialization.json.JsonObject> = emptyList(),
 ) {
     companion object {
         /** The candidate of a plan: what a LIVE plan of this config would apply (`ActiveConfig.of`), labelled with the plan's own hash. */
@@ -63,6 +68,7 @@ class ReplayCandidate(
                 gate = GateParams(gt.hamming, gt.bigChange, gt.ringCompare == "all"),
                 table = policyTable(plan.config.policy),
                 ctxBound = plan.config.ctxBound,
+                exprs = plan.config.exprs,
             )
         }
 
@@ -73,6 +79,9 @@ class ReplayCandidate(
         }
     }
 }
+
+/** One guard verdict at a glance candidate: [keep] false = the candidate was dropped. */
+data class GuardDecision(val atMs: Long, val keep: Boolean)
 
 /** A camera open the replay decided (after the pre-roll). */
 data class ReplayOpen(val atMs: Long, val cause: EpisodeCause, val lateSlackMs: Long = ReplayRule.LATE_SLACK_MS)
@@ -115,6 +124,13 @@ data class ReplayResult(
     val stalls: StallStats = StallStats(),
     /** Glances (dwell) that `GlanceAdmission` admitted after the pre-roll, whatever the camera was doing: what the shadow counts (`shOpen`), on the replay's own keep bookkeeping. */
     val glanceAdmissions: Int = 0,
+    /** 3c X4: per guard id, the glance candidates the guard would DROP (a candidate replay with guards acts on them too); empty without guards. */
+    val guardDrops: Map<String, Int> = emptyMap(),
+    /** Every guard decision in order (`keep` false = dropped), for parity with the live runner. Evaluations the 2/s limit answered from the previous verdict are included. */
+    val guardDecisions: List<GuardDecision> = emptyList(),
+    /** Expression errors the replayed guards ended in (div0 apart, as live). */
+    val exprErr: Int = 0,
+    val exprDiv0: Int = 0,
 ) {
     /** True when no window had to be excluded. */
     val exact: Boolean get() = inexact == 0
@@ -222,6 +238,12 @@ object CaptureSimulator {
         val store = Store()
         val gate = KeyframeGate(store, { gateNow }, { gateParams })
         val cls = MotionClassifier({ now }, glance)
+        // 3c X4: the candidate's guards, evaluated by the same ExprRunner the glasses run, on the classifier's own per-second features (read once a second of event time, as the sensor feed does).
+        val runner: ExprRunner? = cand?.exprs?.takeIf { it.isNotEmpty() }?.let { ExprRunner.of(it) }
+        val signals = ExprSignals()
+        var lastFeatAt = Long.MIN_VALUE
+        var ctxAt = start
+        val guardLog = ArrayList<GuardDecision>()
 
         // recorded inputs
         var pf: TraceEvent.Profile = CaptureProfile.of(CameraWake.MOTION, snap.tier).let {
@@ -327,10 +349,14 @@ object CaptureSimulator {
             if (e is TraceEvent.Gyro || e is TraceEvent.Accel) onDelivery(e.tMs)
             advanceTo(if (e is TraceEvent.Episode && e.open) e.tMs + 1 else e.tMs)
             if (e.tMs > now) now = e.tMs
+            if (runner != null && (lastFeatAt == Long.MIN_VALUE || now - lastFeatAt >= 1_000L)) {
+                val f = cls.features(); lastFeatAt = now
+                signals.set(SecondFeatures(f.gyroMax, f.gyroMean, f.gyroRms, f.aboveOnFrac, f.accVariance, f.stepHz.toFloat(), f.rotRad), now)
+            }
             when (e) {
                 is TraceEvent.Gyro -> { val s = cls.state.value; val d = cls.decelerating.value; cls.onGyro(e.x, e.y, e.z, e.sMs); afterSensor(e.tMs, s, d) }
                 is TraceEvent.Accel -> { val s = cls.state.value; val d = cls.decelerating.value; cls.onLinearAccel(e.x, e.y, e.z, e.sMs); afterSensor(e.tMs, s, d) }
-                is TraceEvent.Ctx -> ctx = e.state
+                is TraceEvent.Ctx -> { ctx = e.state; ctxAt = e.tMs }
                 is TraceEvent.Resting -> resting = e.on
                 is TraceEvent.Profile -> pf = if (cand?.forceSettle == true) settled(e) else e
                 is TraceEvent.GateParams -> if (cand?.gate == null) gateParams = GateParams(e.hamming, e.bigChange, e.ringAll)
@@ -402,7 +428,8 @@ object CaptureSimulator {
 
         fun onDwell(t: Long) {
             val k = keptAt.count { t - it < 60_000L }
-            val d = GlanceAdmission.decide(t - lastKeyframeAt, k, capNowFor(ctxCapNow()), hardNow(), cls.rotationSinceMarkRad(), cls.walkedSinceMark(), glance)
+            val keepGuard = runner?.keep(t, signals, if (cand?.ctxBound == false) ContextState.UNKNOWN else ctx, (t - ctxAt) / 1000L)?.also { if (!preRoll) guardLog += GuardDecision(t, it) } ?: true
+            val d = GlanceAdmission.decide(t - lastKeyframeAt, k, capNowFor(ctxCapNow()), hardNow(), cls.rotationSinceMarkRad(), cls.walkedSinceMark(), glance, keepGuard)
             if (d == GlanceAdmission.Decision.OPEN) { pendingDwellAt = t; if (!preRoll) admissions++ }
         }
 
@@ -658,6 +685,8 @@ object CaptureSimulator {
             return ReplayResult(
                 hash, compared, opens, gates, keeps, skips, tally.passed, tally.failed, tally.inexact, LinkedHashMap(reasonCounts), mismatches, mismatchCount,
                 inexactSpans = spans, recordedOpens = recordedOpens, stalls = StallStats(stallCount, stallMs), glanceAdmissions = admissions,
+                guardDrops = runner?.let { r -> r.guardIds.indices.associate { r.guardIds[it] to r.drops(it) } } ?: emptyMap(),
+                guardDecisions = guardLog, exprErr = runner?.takeCounts()?.get(0) ?: 0, exprDiv0 = runner?.exprDiv0 ?: 0,
             )
         }
     }
