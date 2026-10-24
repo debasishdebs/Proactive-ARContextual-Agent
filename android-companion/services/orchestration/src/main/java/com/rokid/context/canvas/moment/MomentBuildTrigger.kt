@@ -35,6 +35,7 @@ class MomentBuildTrigger(
 ) {
     private val lock = Any()
     private val pending = LinkedHashSet<String>()
+    private val pendingHours = LinkedHashSet<Long>()
     private var job: Job? = null
     private val buildCount = AtomicInteger(); private val secondCount = AtomicInteger(); private val failureCount = AtomicInteger()
 
@@ -55,6 +56,20 @@ class MomentBuildTrigger(
         enqueue(atMs)
     }
 
+    /**
+     * A trace was imported: the clock hours its PHONE-clock interval `[startMs, endMs]` touches are rebuilt (coalesced per hour with every other pending trigger, on [scope]), so the
+     * sensor rows of Moments built before the trace arrived are backfilled. At most [MAX_TRACE_HOURS] hours, the ones nearest the end of the trace (a corrupt manifest cannot
+     * schedule years of rebuilds; the cadence and the frame triggers cover the rest).
+     */
+    fun onTraceImported(startMs: Long, endMs: Long) {
+        if (!enabled() || endMs < startMs || startMs < 0) return
+        val first = Math.floorDiv(startMs, HOUR_MS); val last = Math.floorDiv(endMs, HOUR_MS)
+        synchronized(lock) {
+            for (h in maxOf(first, last - MAX_TRACE_HOURS + 1)..last) pendingHours += h * HOUR_MS
+            if (job?.isActive != true) job = scope.launch { drain() }
+        }
+    }
+
     private fun enqueue(ms: Long) {
         val id = try { MomentId.ofMs(ms) } catch (_: IllegalArgumentException) { return } // outside 1970..2106: no Moment
         synchronized(lock) {
@@ -66,13 +81,16 @@ class MomentBuildTrigger(
     private suspend fun drain() {
         while (true) {
             delay(debounceMs)
-            val batch = synchronized(lock) {
-                if (pending.isEmpty()) { job = null; return }
-                pending.take(MAX_BATCH).also { pending.removeAll(it.toSet()) }
+            val batch: List<String>; val hours: List<Long>
+            synchronized(lock) {
+                if (pending.isEmpty() && pendingHours.isEmpty()) { job = null; return }
+                batch = pending.take(MAX_BATCH).also { pending.removeAll(it.toSet()) }
+                hours = pendingHours.toList().also { pendingHours.clear() }
             }
             if (!enabled()) continue
             try {
-                build(batch); buildCount.incrementAndGet(); secondCount.addAndGet(batch.size)
+                if (batch.isNotEmpty()) { build(batch); buildCount.incrementAndGet(); secondCount.addAndGet(batch.size) }
+                for (h in hours.sorted()) rebuild(h, h + HOUR_MS - 1)
             } catch (e: CancellationException) { throw e } catch (e: Exception) { failureCount.incrementAndGet() } // the cadence rebuilds it
         }
     }
@@ -96,6 +114,8 @@ class MomentBuildTrigger(
     companion object {
         const val DEBOUNCE_MS = 500L
         const val MAX_BATCH = 200
+        /** The most clock hours one imported trace can schedule (a trace is hours long, not weeks). */
+        const val MAX_TRACE_HOURS = 48
         const val HOUR_MS = 3_600_000L
     }
 }
