@@ -12,6 +12,7 @@ class JsEditorTest {
     @Test fun draftStateTests() = JsHarness.assertAllPass("draftstate.test.js")
     @Test fun editorLogicTests() = JsHarness.assertAllPass("editorlogic.test.js")
     @Test fun flowEditorLoadTests() = JsHarness.assertAllPass("floweditor.test.js")
+    @Test fun exprGraphTests() = JsHarness.assertAllPass("exprgraph.test.js")
     @Test fun editorFlowTests() = JsHarness.assertAllPass("editorflow.test.js")
 
     @Test fun aFileWithoutTestsFails() {

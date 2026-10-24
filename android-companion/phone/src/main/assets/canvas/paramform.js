@@ -1,5 +1,6 @@
 // The inspector's field model: node-type param descriptors → form fields, and raw input → coerced values. Pure.
 // No JSON Schema library: a schema is only checked to be valid JSON here; the server is the authority.
+import { parseGraph, defaultGraph } from './exprgraph.js';
 
 const own = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
 const ID = /^[a-z][a-z0-9_]{0,31}$/;
@@ -77,6 +78,10 @@ export function fields(descriptors, params, ctx) {
         f.table = tableModel(d.table, cur);
         f.value = cur;
         break;
+      case 'graph': // the expr.guard graph: the boxed editor (exprview.js) edits it; the value is the graph object itself
+        f.control = 'graph';
+        f.value = cur !== undefined ? cur : defaultGraph();
+        break;
       case 'bool':
         f.control = 'checkbox';
         f.value = cur !== undefined ? cur === true : d.default === true;
@@ -99,7 +104,14 @@ export function fields(descriptors, params, ctx) {
         f.control = 'labels';
         f.value = Array.isArray(cur) ? cur.join(', ') : '';
         break;
-      default: // text
+      default: // text; a kind this page does not know shows its value as read-only JSON and refuses edits (the server stays the authority)
+        if (d.kind !== 'text' && d.kind !== undefined) {
+          f.unknown = true;
+          f.control = 'textarea';
+          f.readOnly = true;
+          f.value = cur === undefined ? '' : typeof cur === 'string' ? cur : JSON.stringify(cur);
+          break;
+        }
         f.control = d.name === 'template' || d.name === 'source' || d.name === 'outSchema' ? 'textarea' : 'text'; // source and outSchema: the Python node's fields
         if (d.maxLen !== undefined) f.maxLen = d.maxLen;
         f.value = cur !== undefined ? String(cur) : d.default !== undefined ? String(d.default) : '';
@@ -169,6 +181,7 @@ export function coerce(f, raw) {
       return { value: v };
     }
     case 'table': return { error: 'Edit a cell' };
+    case 'graph': { const r = parseGraph(raw); return r.error ? { error: r.error } : { value: r.graph }; }
     case 'int': {
       const s = typeof raw === 'number' ? String(raw) : String(raw == null ? '' : raw).trim();
       if (!/^-?\d+$/.test(s)) return { error: 'Must be a whole number' };
@@ -202,6 +215,7 @@ export function coerce(f, raw) {
       return { value: items };
     }
     default: {
+      if (f.unknown) return { error: "This parameter can't be edited here" };
       const v = String(raw == null ? '' : raw);
       if (f.maxLen !== undefined && v.length > f.maxLen) return { error: 'At most ' + f.maxLen + ' characters' };
       return { value: v };
