@@ -52,6 +52,15 @@ class LoweringDeterministicTest {
         assertEquals(plan.configHash, PlanJson.configHash(PlanJson.decodeStrict(r.planJson!!).getOrThrow().config))
     }
 
+    /** The editor's meters (X5, exprgraph.js exprMeters) read `config.exprs` of planJson: pin that shape. */
+    @Test fun planJsonCarriesTheExprsUnderConfig() {
+        val root = kotlinx.serialization.json.Json.parseToJsonElement(compile("g1" to G1).planJson!!) as JsonObject
+        assertTrue("top level has no exprs", "exprs" !in root)
+        val exprs = (root["config"] as JsonObject)["exprs"] as JsonArray
+        assertEquals(listOf("g1"), exprs.map { ((it as JsonObject)["id"] as JsonPrimitive).content })
+        assertTrue(((exprs[0] as JsonObject)["s"] as JsonArray).isNotEmpty())
+    }
+
     @Test fun noExprNodeMeansSchema1AndNoExprs() {
         val plan = compile().plan!!
         assertEquals(1, plan.planSchema)
