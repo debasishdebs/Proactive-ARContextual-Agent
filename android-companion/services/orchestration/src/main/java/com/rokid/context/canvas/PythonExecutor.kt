@@ -56,7 +56,7 @@ class PythonExecutor(private val helper: HelperJobPort?, private val fenceNow: s
             source = source,
             items = sendable.mapIndexed { i, it -> PyItem("i$i", (it.value as CanvasValue.Json).value) },
             outSchema = schema,
-            frameIds = sendable.map { it.frameId },
+            frameIds = coroutineContext[RunMomentFrames]?.frames.let { m -> sendable.flatMap { m?.get(it.frameId) ?: listOf(it.frameId) } },
             fence = fence,
             perItemMs = HelperProtocol.PY_PER_ITEM_MS,
             jobMs = HelperProtocol.PY_JOB_MS,
