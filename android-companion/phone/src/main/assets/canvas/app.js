@@ -7,6 +7,8 @@ import { liveView } from './liveview.js';
 import { asksView, askView } from './asks.js';
 import { replayView } from './replayview.js';
 import { sweepView } from './paretoview.js';
+import { mergedView } from './mergedview.js';
+import { parseIds } from './mergedflow.js';
 
 const TOKEN_KEY = 'pcToken';
 let token = null;
@@ -248,6 +250,7 @@ async function route(force) {
     else if (parts[0] === 'sweep') await sweepView(ctx, root);
     else if (parts[0] === 'asks') await asksView(ctx, root);
     else if (parts[0] === 'ask' && parts[1]) await askView(ctx, root, parts[1]);
+    else if (parts[0] === 'merged') await mergedView(ctx, root, parseIds(query.get('ids')));
     else if (parts[0] === 'compare') await compareView(ctx, root, query.get('a') || '', query.get('b') || '');
     else root.appendChild(h('p', null, 'Not found.'));
   } catch (e) {

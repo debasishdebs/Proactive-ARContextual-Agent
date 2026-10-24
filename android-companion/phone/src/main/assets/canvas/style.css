@@ -176,10 +176,37 @@ table.results td, table.results th { white-space: nowrap; }
 /* composite (black-box) nodes: a distinct colour, an "expandable" marker, and the inner flow (boxes reuse the .expr-* classes) */
 .node-card.composite { background: var(--comp); border-color: var(--comp-line); }
 .node-card:has(.comp.open) { width: auto; max-width: 760px; }
-.comp-mark { display: inline-block; margin-top: 4px; padding: 0 8px; border-radius: 10px; background: var(--comp-line); color: var(--accent-fg); font-size: 11px; font-weight: 700; }
-.comp-host { margin-top: 6px; text-align: left; }
+.comp-mark { display: inline-block; padding: 0 8px; border-radius: 10px; background: var(--comp-line); color: var(--accent-fg); font-size: 11px; font-weight: 700; }
+.comp-host { text-align: left; }
+/* the collapsed card is exactly CARD_H (flowadapter.js) tall: title, type, then the marker and the Expand button on ONE row, nothing sticks out */
+.node-card.composite { box-sizing: border-box; padding: 4px 10px; }
+.node-card.composite:not(:has(.comp.open)) { height: 96px; }
+.node-card.composite:not(:has(.comp.open)) .nt, .node-card.composite:not(:has(.comp.open)) .nk { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.comp-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; }
+.node-card:has(.comp.open) .comp-host { flex-basis: 100%; }
 .comp-svg .comp-fo { overflow: visible; }
 .comp-field { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #111; }
 .comp-field input, .comp-field select { width: 100%; min-width: 0; box-sizing: border-box; }
 .comp-box.read-only .expr-box-body { stroke-dasharray: 4 3; }
 .comp-errs { margin: 4px 0 0; text-align: left; }
+
+/* merged multi-pipeline view (read only): lanes as bands, one colour per pipeline, a name pill on each node */
+.merged-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.merged-lane-band { fill: var(--step); opacity: 0.6; }
+.merged-lane-label { fill: var(--muted); font-size: 13px; font-weight: 600; }
+.merged-node-body { fill: var(--card); stroke-width: 2; }
+.merged-node.composite .merged-node-body { fill: var(--comp); stroke: var(--comp-line); }
+.merged-node-title { fill: var(--fg); font-size: 13px; font-weight: 600; }
+.merged-node-type, .merged-edge-label, .merged-link-label { fill: var(--muted); font-size: 11px; }
+.merged-pill-text { fill: #fff; font-size: 11px; font-weight: 700; }
+.merged-edge-line, .merged-link-line { stroke: var(--muted); stroke-width: 1.5; }
+.merged-head { fill: var(--muted); }
+.merged-link-signal .merged-link-line { stroke: var(--accent); stroke-width: 2.5; }
+.merged-link.dashed .merged-link-line { stroke-dasharray: 6 4; }
+.merged-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 0; }
+.merged-chip { padding: 4px 10px; border-radius: 12px; border: 2px solid var(--line); }
+.merged-error { border-style: dashed; color: var(--bad); }
+.pl0 { --pl: #1f6fb2; } .pl1 { --pl: #b24a1f; } .pl2 { --pl: #2f8a4b; } .pl3 { --pl: #8a3fb2; } .pl4 { --pl: #a08a14; } .pl5 { --pl: #b21f6a; }
+.merged-node .merged-node-body, .merged-chip { stroke: var(--pl); border-color: var(--pl); }
+.merged-node .merged-pill { fill: var(--pl); }
+.merged-node.composite .merged-node-body { stroke: var(--comp-line); }

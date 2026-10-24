@@ -4,6 +4,7 @@ import { mountEditor } from './floweditor.js';
 import { photoThumb, openPhoto } from './photos.js';
 import { publishDialog, publishCard } from './versions.js';
 import { planDialog } from './planpublish.js';
+import { mergedHref, withCapture } from './mergedflow.js';
 import { when, usageLine, branchText, compareSummary, tokenEstimateText } from './format.js';
 import { statusLabel, errorText, helperCard, loadHelperStatus, hasPython } from './helperview.js';
 import { isActive, partnerOf, abPair, shouldAutoOpen, retryDelay, abOptions, parseRef, refKey, shouldRedraw, pollAction, isMoving } from './runlogic.js';
@@ -31,10 +32,17 @@ export async function pipelinesView(ctx, root) {
   clear(root);
   root.appendChild(h('h2', null, 'Pipelines'));
   await publishCard(ctx, root);
+  // merged view: tick pipelines, then open them together read-only (#/merged?ids=a,b)
+  const picked = new Set();
+  const mergedBtn = btn('View merged flow', () => { if (picked.size) ctx.go(mergedHref(Array.from(picked))); }, 'btn primary');
+  const syncMerged = () => { mergedBtn.disabled = picked.size === 0; };
+  syncMerged();
+  root.appendChild(h('div', { class: 'row wrap' }, mergedBtn, h('span', { class: 'muted' }, 'Tick two or more pipelines to see them together.')));
   for (const p of list) {
     const lr = lastRun(p.id);
     root.appendChild(h('section', { class: 'card' },
       h('div', { class: 'row wrap' },
+        h('input', { type: 'checkbox', 'aria-label': 'Select ' + p.name, onchange: (ev) => { if (ev.target.checked) picked.add(p.id); else picked.delete(p.id); syncMerged(); } }),
         h('strong', null, p.name),
         p.builtIn ? h('span', { class: 'tag' }, 'built-in') : null,
         p.live ? h('span', { class: 'tag live' }, 'LIVE v' + p.live.version) : null),
@@ -42,6 +50,7 @@ export async function pipelinesView(ctx, root) {
         ' · Last run: ' + (lr ? statusLabel(lr.status) + ' ' + when(lr.startedAt) : 'none')),
       h('div', { class: 'row wrap' },
         h('a', { class: 'btn primary', href: '#/p/' + enc(p.id) }, 'Open'),
+        p.id === 'default-capture' ? null : btn('Show with capture', () => ctx.go(mergedHref(withCapture(p.id)))),
         btn('Duplicate', async () => {
           const name = window.prompt('Name for the copy', p.name + ' copy');
           if (!name || !name.trim()) return;
@@ -106,6 +115,7 @@ export async function pipelineView(ctx, root, id) {
   clear(root);
   root.appendChild(h('h2', null, data.name));
   root.appendChild(revLine);
+  if (id !== 'default-capture') root.appendChild(h('p', null, h('a', { class: 'btn', href: mergedHref(withCapture(id)) }, 'Show with capture')));
   const saveBtn = ro ? null : btn('Save draft', exclusive(saveDraft), 'btn primary');
   const freezeBtn = ro ? null : btn('Freeze', () => {
     const note = h('input', { type: 'text', maxlength: 80, placeholder: 'Note (80 characters at most)' });

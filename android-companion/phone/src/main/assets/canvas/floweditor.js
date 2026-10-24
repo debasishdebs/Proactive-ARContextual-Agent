@@ -27,12 +27,15 @@ export function mountEditor(el, opts) {
   // a composite (black-box) node hosts compositeview.js: collapsed it is one card, expanded its inner flow with the node's params as inputs.
   // The widgets by node id let a double click or Enter on the card toggle it; an edit goes through the same inputChange as the inspector.
   const widgets = {};
+  const exp = Object.create(null); // which composites are open: UI state the layout needs (an open one pushes the nodes below it down)
+  const expSubs = new Set();
   const CompositeHost = ({ id, data }) => {
     const host = React.useRef(null);
     const w = React.useRef(null);
     React.useEffect(() => {
       w.current = mountComposite(host.current, {
         title: data.title, inner: data.composite.inner, descriptors: data.composite.descriptors, params: data.composite.params, readOnly: data.readOnly,
+        onToggle: (v) => { exp[id] = v; expSubs.forEach((f) => f()); },
         onParam: (name, raw) => { const r = L.inputChange(store.get(), id, name, null, raw, nodeTypes, env); store.set(r.ed); return r.error; },
       });
       widgets[id] = w.current;
@@ -50,8 +53,7 @@ export function mountEditor(el, opts) {
       <${RF.Handle} type="target" position=${RF.Position.Top} />
       <div className="nt">${data.title}</div>
       <div className="nk">${data.typeLabel}</div>
-      ${data.composite ? html`<span className="comp-mark" title="Expandable: double click, or press Enter, to open its inner flow">expandable</span>` : null}
-      ${data.composite ? html`<${CompositeHost} id=${id} data=${data} />` : null}
+      ${data.composite ? html`<div className="comp-row"><span className="comp-mark" title="Expandable: double click, or press Enter, to open its inner flow">expandable</span><${CompositeHost} id=${id} data=${data} /></div>` : null}
       ${probs.length ? html`<span className="badge" aria-hidden="true">${probs.length}</span>` : null}
       ${warns.length ? html`<span className="badge warn" aria-hidden="true">${warns.length}</span>` : null}
       ${probs.length ? html`<ul id=${'prob-' + id} className="sr-only">${probs.map((t, i) => html`<li key=${i}>${t}</li>`)}</ul>` : null}
@@ -234,9 +236,11 @@ export function mountEditor(el, opts) {
     const pane = React.useRef(null);
     const palette = React.useRef(null);
     const pointer = React.useRef('');
+    const [, bump] = React.useState(0);
+    React.useEffect(() => { const f = () => bump((n) => n + 1); expSubs.add(f); return () => expSubs.delete(f); }, []);
     const [measured, setMeasured] = React.useState(Object.create(null));
     const last = React.useRef(null);
-    const flow = L.stabilize(last.current, L.flowFor(ed, nodeTypes), measured);
+    const flow = L.stabilize(last.current, L.flowFor(ed, nodeTypes, exp), measured);
     last.current = flow;
 
     // validate 250 ms after the last change; a reply for an older revision is dropped by the draft state
@@ -284,7 +288,7 @@ export function mountEditor(el, opts) {
       </section>
       <div className="flow-pane" ref=${pane} onKeyDown=${onKeyDown}
         onDragOver=${(ev) => { ev.preventDefault(); ev.dataTransfer.dropEffect = 'copy'; }}
-        onDrop=${(ev) => { ev.preventDefault(); const type = ev.dataTransfer.getData('text/plain'); if (type) { const at = where(ev); act((cur) => L.dropOnPane(cur, type, at, L.flowFor(cur, nodeTypes).nodes, nodeTypes)); } }}>
+        onDrop=${(ev) => { ev.preventDefault(); const type = ev.dataTransfer.getData('text/plain'); if (type) { const at = where(ev); act((cur) => L.dropOnPane(cur, type, at, L.flowFor(cur, nodeTypes, exp).nodes, nodeTypes)); } }}>
         <${RF.ReactFlow} nodes=${flow.nodes} edges=${flow.edges} nodeTypes=${NODE_TYPES} colorMode="system"
           zoomOnDoubleClick=${false} nodesDraggable=${false} nodesFocusable=${true} edgesFocusable=${true} nodesConnectable=${!ro} fitView=${true} zoomOnPinch=${true} panOnDrag=${true}
           deleteKeyCode=${['Delete', 'Backspace']} minZoom=${0.3}
@@ -296,7 +300,7 @@ export function mountEditor(el, opts) {
           onBeforeDelete=${async (items) => L.deletable(items)}
           onNodesDelete=${(ns) => act((cur) => L.removeItems(cur, { nodeIds: ns.map((n) => n.id), edgeIds: [] }, nodeTypes))}
           onEdgesDelete=${(es) => act((cur) => L.removeItems(cur, { nodeIds: [], edgeIds: es.map((x) => x.id) }, nodeTypes))}
-          onPaneClick=${(ev) => { const at = where(ev); act((cur) => L.paneClick(cur, at, L.flowFor(cur, nodeTypes).nodes, nodeTypes)); }} />
+          onPaneClick=${(ev) => { const at = where(ev); act((cur) => L.paneClick(cur, at, L.flowFor(cur, nodeTypes, exp).nodes, nodeTypes)); }} />
       </div>
       <p className="refusal" role="status" aria-live="polite">${ed.status}</p>
       <${Picker} ed=${ed} />

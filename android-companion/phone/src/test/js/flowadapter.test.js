@@ -1,11 +1,44 @@
-import { toFlow, canConnect, applyChange, edgeFromId, lanesOf, bindingsOf, CELL_W, CELL_H, LANE_GAP } from '../../main/assets/canvas/flowadapter.js';
+import { toFlow, canConnect, applyChange, edgeFromId, lanesOf, bindingsOf, CELL_W, CELL_H, LANE_GAP, CARD_W, CARD_H, MIN_GAP } from '../../main/assets/canvas/flowadapter.js';
 import { nodeTypes, allTypes, capturePipe, livePipe, liveCells, eq, ok } from './fixtures.js';
 
 const layout = { layers: 5, columns: 1, cells: liveCells };
 const flow = (pipe, problems, opts, lay) => toFlow(pipe || livePipe(), lay === undefined ? layout : lay, problems || [], nodeTypes, opts || {});
 const node = (f, id) => f.nodes.find((n) => n.id === id);
 
+const boxOf = (n) => ({ id: n.id, x: n.position.x, y: n.position.y, w: n.data.cardW, h: n.data.cardH });
+const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+const noOverlap = (f) => { const bs = f.nodes.map(boxOf); for (let i = 0; i < bs.length; i++) for (let j = i + 1; j < bs.length; j++) ok(!overlap(bs[i], bs[j]), bs[i].id + ' overlaps ' + bs[j].id); };
+/** each edge between nodes stacked in a column leaves MIN_GAP of free space (the edge label) between the boxes */
+const labelRoom = (f) => { for (const e of f.edges) { const a = boxOf(node(f, e.source)), b = boxOf(node(f, e.target)); if (b.y > a.y) ok(b.y - (a.y + a.h) >= MIN_GAP, e.id + ' has no room for its label: ' + (b.y - (a.y + a.h))); } };
+
 export const tests = {
+  layoutConstantsLeaveRoomForLabels() {
+    ok(CARD_H + MIN_GAP <= CELL_H, 'a collapsed card plus the label gap must fit its layout cell');
+    ok(MIN_GAP >= 24); eq(CARD_W <= CELL_W - 20, true);
+  },
+  collapsedChainWithACompositeHasNoOverlapAndRoomForLabels() {
+    const f = flow(); noOverlap(f); labelRoom(f);
+    eq(node(f, 'critic').position.y, 3 * CELL_H);
+    eq(node(f, 'trust').data.cardH, CARD_H);
+  },
+  expandedCompositePushesItsSuccessorsDown() {
+    const c = flow(); const f = flow(null, null, { expanded: { trust: true } });
+    noOverlap(f); labelRoom(f);
+    const h = node(f, 'trust').data.cardH;
+    ok(h > CARD_H, 'an expanded composite is taller than the collapsed card');
+    for (const id of ['critic', 'write']) eq(node(f, id).position.y, node(c, id).position.y + (node(f, 'trust').position.y + h + MIN_GAP - node(c, 'critic').position.y), id + ' moves down by the extra height');
+    for (const id of ['photos', 'extract', 'trust']) eq(node(f, id).position, node(c, id).position, id + ' above or at it does not move');
+  },
+  collapsingRestoresTheCollapsedPositions() {
+    eq(flow(null, null, { expanded: { trust: false } }).nodes.map((n) => n.position), flow().nodes.map((n) => n.position));
+  },
+  pendingRowSitsBelowAnExpandedComposite() {
+    const p = livePipe(); p.nodes.push({ id: 'late', type: 'ai.prompt', title: 'Late', params: {} });
+    const f = flow(p, null, { expanded: { trust: true } });
+    noOverlap(f);
+    ok(node(f, 'late').position.y >= node(f, 'write').position.y + CARD_H, 'pending row is below the last layer');
+  },
+
   onlyACompositeTypeCarriesItsInnerFlowAndParams() {
     const f = flow();
     const c = node(f, 'trust');
