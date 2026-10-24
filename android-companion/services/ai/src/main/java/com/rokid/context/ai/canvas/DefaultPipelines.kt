@@ -7,12 +7,13 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
-/** The built-in pipelines, seeded read-only at first open. Both pass [PipelineValidator]. */
+/** The built-in pipelines, seeded read-only at first open. All pass [PipelineValidator]. */
 object DefaultPipelines {
     const val LIVE_EXTRACT = "live-extract"
     const val INTENT_DRAFT = "intent-draft"
     val INTENT_LABELS = listOf("sitting_idle", "workout", "computer_work", "driving", "walking", "other")
-    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT)
+    const val DEFAULT_CAPTURE = "default-capture"
+    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE)
 
     private val none = JsonObject(emptyMap())
     private val livePrompt = buildJsonObject { putJsonObject("prompt") { put("source", "live") } }
@@ -79,5 +80,28 @@ object DefaultPipelines {
         nodes += PipelineNode("write", NodeTypes.MEMORY_WRITE, "Save memory", none)
         (cases + NodeTypes.OTHER).forEach { edges += PipelineEdge("extract_$it", "write") }
         return Pipeline(PipelineJson.SCHEMA, INTENT_DRAFT, "Intent, then extract", nodes, edges)
+    }
+
+    /**
+     * The glasses-side capture the settings run today, as a pipeline: the identity plan's nodes at their defaults, wired as the identity
+     * plan. It compiles to the identity plan (hash f5782e0d8610). Existing as a built-in activates nothing: only a publish activates a plan.
+     */
+    fun defaultCapture(): Pipeline {
+        fun signal(name: String, domain: String) = buildJsonObject { put("name", name); put("domain", domain) }
+        val nodes = listOf(
+            PipelineNode("head", NodeTypes.IMU_HEAD_MOTION, "Head movement", none),
+            PipelineNode("thresh", NodeTypes.GATE_THRESHOLD, "Movement threshold", buildJsonObject { put("feature", "gyroPeak"); put("op", ">"); put("value", 0.6) }),
+            PipelineNode("settle", NodeTypes.IMU_SETTLE, "Settle", none),
+            PipelineNode("novel", NodeTypes.GATE_NOVELTY, "Novelty", none),
+            PipelineNode("rate", NodeTypes.POLICY_CAPTURE_RATE, "Capture rate", none),
+            PipelineNode("cap", NodeTypes.GATE_RATE_CAP, "Rate cap", none),
+            PipelineNode("cam", NodeTypes.CAPTURE_IMAGE, "Take photo", none),
+            PipelineNode("cin", NodeTypes.SIGNAL_IN, "Context in", signal("ctx", "RT_GLASSES")),
+            PipelineNode("hub", NodeTypes.HUB_CONTEXT, "Phone context", none),
+            PipelineNode("cout", NodeTypes.SIGNAL_OUT, "Context out", signal("ctx", "RT_PHONE")),
+        )
+        val edges = listOf("head" to "thresh", "thresh" to "settle", "settle" to "novel", "novel" to "rate", "cin" to "rate", "rate" to "cap", "cap" to "cam", "hub" to "cout")
+            .map { PipelineEdge(it.first, it.second) }
+        return Pipeline(PipelineJson.SCHEMA_V2, DEFAULT_CAPTURE, "Default capture", nodes, edges)
     }
 }

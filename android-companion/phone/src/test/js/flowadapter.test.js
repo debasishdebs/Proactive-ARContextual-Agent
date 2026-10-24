@@ -185,6 +185,26 @@ export const tests = {
     eq(node(f, 'capture_1').data.domain, 'RT_GLASSES');
     eq(node(f, 'photos').position.y, 4 * CELL_H, 'rows still come from the layer');
   },
+  defaultCaptureHasLanesAndNoAsyncHalf() {
+    const n = (id, type, params) => ({ id, type, title: id, params: params || {} });
+    const pipe = {
+      schema: 2, id: 'default-capture', name: 'Default capture',
+      nodes: [n('head', 'imu.head_motion'), n('thresh', 'gate.threshold', { feature: 'gyroPeak', op: '>', value: 0.6 }), n('settle', 'imu.settle'),
+        n('novel', 'gate.novelty'), n('rate', 'policy.capture_rate'), n('cap', 'gate.rate_cap'), n('cam', 'capture.image'),
+        n('cin', 'signal.in', { name: 'ctx', domain: 'RT_GLASSES' }), n('hub', 'hub.context'), n('cout', 'signal.out', { name: 'ctx', domain: 'RT_PHONE' })],
+      edges: [['head', 'thresh'], ['thresh', 'settle'], ['settle', 'novel'], ['novel', 'rate'], ['cin', 'rate'], ['rate', 'cap'], ['cap', 'cam'], ['hub', 'cout']].map(([from, to]) => ({ from, to })),
+    };
+    const cells = { head: { layer: 0, column: 0 }, thresh: { layer: 1, column: 0 }, settle: { layer: 2, column: 0 }, novel: { layer: 3, column: 0 }, rate: { layer: 4, column: 0 },
+      cap: { layer: 5, column: 0 }, cam: { layer: 6, column: 0 }, cin: { layer: 0, column: 1 }, hub: { layer: 0, column: 2 }, cout: { layer: 1, column: 2 } };
+    const glasses = (type) => Object.assign({}, allTypes.find((t) => t.type === 'gate.threshold'), { type, params: [] });
+    const types = allTypes.concat(['imu.settle', 'gate.novelty', 'gate.rate_cap'].map(glasses)); // the fixture lacks these three
+    const f = toFlow(pipe, { layers: 7, columns: 3, cells }, [], types, { readOnly: true });
+    eq(f.nodes.length, 10);
+    eq(f.edges.length, 8);
+    eq(f.lanes.map((l) => l.domain), ['RT_GLASSES', 'RT_PHONE']);
+    for (const nd of f.nodes) { const l = f.lanes.find((x) => x.domain === nd.data.domain); ok(nd.position.x >= l.x && nd.position.x + CELL_W <= l.x + l.width, nd.id + ' sits inside its lane'); }
+    eq(bindingsOf(pipe, types).length >= 1, true);
+  },
   oneDomainKeepsTheSlice2Positions() {
     const f = flow();
     eq(f.lanes, [], 'a single-domain graph has no lanes');
