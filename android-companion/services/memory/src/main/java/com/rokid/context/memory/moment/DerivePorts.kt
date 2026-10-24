@@ -5,7 +5,7 @@ data class RebuildReason(val op: String?, val refKind: String?, val refId: Strin
 
 /** What a port is asked: ANY [MomentObject], the field, and the reason. */
 /** [fence] is the deletion generation and epoch and [inputSeq] the input revision, both captured BEFORE the port runs and re-checked when its answer is written. */
-data class DeriveRequest(val obj: MomentObject, val field: String, val reason: RebuildReason, val fence: com.rokid.context.memory.db.DaoFence? = null, val inputSeq: Int = 0)
+data class DeriveRequest(val obj: MomentObject, val field: String, val reason: RebuildReason, val fence: com.rokid.context.memory.db.DaoFence, val inputSeq: Int)
 
 /** What a port answers: one derived-field write ([value] for SUMMARY and CAPTION, [ref] for EMBEDDING). */
 data class DerivedWrite(val field: String, val value: String? = null, val ref: String? = null, val builtRev: Int)
@@ -32,13 +32,13 @@ class DeriveRegistry {
 }
 
 /** Rebuilds derived fields through the registry. Reads the reason from the audit, calls the port of the object's kind and writes the answer with [ObjectAudit.writeDerived]. */
-class DeriveRunner(private val audit: ObjectAudit, private val registry: DeriveRegistry, private val fence: (() -> com.rokid.context.memory.db.DaoFence)? = null) {
+class DeriveRunner(private val audit: ObjectAudit, private val registry: DeriveRegistry, private val fence: () -> com.rokid.context.memory.db.DaoFence) {
     /** True when a port answered and its write was stored. A result that is obsolete when it arrives (object deleted, Delete all, inputs changed) is dropped: see [rebuildOutcome]. */
     suspend fun rebuild(obj: MomentObject, field: String): Boolean = rebuildOutcome(obj, field) == com.rokid.context.memory.db.ObjectDao.WriteOutcome.WRITTEN
 
     /** [WriteOutcome.WRITTEN] when stored, the rejection when the answer was obsolete, null when no port answered. */
     suspend fun rebuildOutcome(obj: MomentObject, field: String): com.rokid.context.memory.db.ObjectDao.WriteOutcome? {
-        val captured = fence?.invoke()
+        val captured = fence()
         val req = DeriveRequest(obj, field, audit.reason(obj), captured, audit.inputSeq(obj))
         val answer = when (field) {
             DerivedField.SUMMARY -> registry.summarizer(obj.kind)?.summarize(req)

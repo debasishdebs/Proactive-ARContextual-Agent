@@ -43,7 +43,8 @@ class ObjectAudit(private val dao: ObjectDao, private val clock: () -> Long = Sy
         return dao.markStaleTx(objectKind, objectId, clock(), step, refKind, refId)
     }
 
-    /** Writes (or rewrites) a derived field; it is fresh from now on. */
+    /** Writes (or rewrites) a derived field with NO deletion-fence or revision check: for tests and seeding only. Production code writes through [writeDerivedGuarded] (via DeriveRunner). */
+    @androidx.annotation.VisibleForTesting
     suspend fun writeDerived(obj: MomentObject, field: String, value: String?, ref: String?, builtRev: Int) {
         require(field in DerivedField.ALL) { "unknown derived field" }
         dao.writeDerivedTx(ObjectDerivedEntity(obj.kind, obj.id, field, value, ref, builtRev, null, clock()), AuditStep.DERIVE)
@@ -53,7 +54,7 @@ class ObjectAudit(private val dao: ObjectDao, private val clock: () -> Long = Sy
     suspend fun inputSeq(obj: MomentObject): Int = dao.inputSeq(obj.kind, obj.id)
 
     /** The guarded write of a derive result: rejected (nothing written, typed outcome) when the deletion generation moved, the object is gone or its inputs changed since [expectedSeq]. */
-    suspend fun writeDerivedGuarded(obj: MomentObject, field: String, value: String?, ref: String?, builtRev: Int, fence: com.rokid.context.memory.db.DaoFence?, expectedSeq: Int): ObjectDao.WriteOutcome {
+    suspend fun writeDerivedGuarded(obj: MomentObject, field: String, value: String?, ref: String?, builtRev: Int, fence: com.rokid.context.memory.db.DaoFence, expectedSeq: Int): ObjectDao.WriteOutcome {
         require(field in DerivedField.ALL) { "unknown derived field" }
         return dao.writeDerivedGuardedTx(ObjectDerivedEntity(obj.kind, obj.id, field, value, ref, builtRev, null, clock()), AuditStep.DERIVE, fence, expectedSeq)
     }

@@ -19,6 +19,8 @@ import org.robolectric.annotation.Config
 class DerivePortsTest {
     private val db = com.rokid.context.memory.db.DatabaseFactory.inMemory(ApplicationProvider.getApplicationContext())
     private val audit = ObjectAudit(db.objectDao()) { 5 }
+    /** A fence that always holds (these tests do not wipe). */
+    private val alwaysHolds = { com.rokid.context.memory.db.DeletionEpoch("i", 1, 0).let { e -> com.rokid.context.memory.db.DaoFence(0, e, { 0 }, { e }) } }
     @After fun close() = db.close()
 
     /** Test-only adapters: echo the object id and the reason. */
@@ -31,7 +33,7 @@ class DerivePortsTest {
     )
 
     @Test fun theSameCallSitesServeEveryKindOfTheFamily() = runBlocking<Unit> {
-        val reg = DeriveRegistry(); val runner = DeriveRunner(audit, reg)
+        val reg = DeriveRegistry(); val runner = DeriveRunner(audit, reg, alwaysHolds)
         listOf(ObjectKind.MOMENT, ObjectKind.AUDIO, ObjectKind.SCENE, "FAKE").forEach { k ->
             echo(k, reg)
             val o = ObjectRef(k, "id-$k", 3); audit.record(o, AuditOp.BUILT, AuditStep.BUILD); if (k == ObjectKind.MOMENT) db.momentDao().upsertMoment(com.rokid.context.memory.db.MomentEntity(o.id, 1, 1, "h", 1))
@@ -44,14 +46,14 @@ class DerivePortsTest {
     @Test fun aKindWithNoRegisteredPortIsNotRebuiltAndNothingIsWritten() = runBlocking<Unit> {
         val reg = DeriveRegistry(); echo(ObjectKind.MOMENT, reg)
         val o = ObjectRef(ObjectKind.AUDIO, "a1", 1)
-        assertNull(reg.summarizer(ObjectKind.AUDIO)); assertFalse(DeriveRunner(audit, reg).rebuild(o, DerivedField.SUMMARY))
+        assertNull(reg.summarizer(ObjectKind.AUDIO)); assertFalse(DeriveRunner(audit, reg, alwaysHolds).rebuild(o, DerivedField.SUMMARY))
         assertTrue(audit.audit(o).isEmpty()); assertEquals(0, db.objectDao().derivedCount())
     }
 
     @Test fun theRequestCarriesTheRebuildReasonFromTheAudit() = runBlocking<Unit> {
         val reg = DeriveRegistry(); echo("FAKE", reg); val o = ObjectRef("FAKE", "p1", 1)
         audit.record(o, AuditOp.BUILT, AuditStep.BUILD); audit.partRemoved(o, AuditStep.BUILD, "FRAME", "f1")
-        DeriveRunner(audit, reg).rebuild(o, DerivedField.SUMMARY)
+        DeriveRunner(audit, reg, alwaysHolds).rebuild(o, DerivedField.SUMMARY)
         assertEquals(RebuildReason(AuditOp.PART_REMOVED, "FRAME", "f1"), seen.single().reason)
     }
 
@@ -59,18 +61,18 @@ class DerivePortsTest {
         val reg = DeriveRegistry(); echo("FAKE", reg); val o = ObjectRef("FAKE", "p1", 4); audit.record(o, AuditOp.BUILT, AuditStep.BUILD)
         audit.writeDerived(o, DerivedField.SUMMARY, "fresh", null, 4); audit.writeDerived(o, DerivedField.CAPTION, "old", null, 4); audit.markStale("FAKE", "p1")
         audit.writeDerived(o, DerivedField.SUMMARY, "fresh", null, 4) // summary rebuilt already
-        val n = DeriveRunner(audit, reg).rebuildMissingOrStale(o)
+        val n = DeriveRunner(audit, reg, alwaysHolds).rebuildMissingOrStale(o)
         assertEquals("caption (stale) and embedding (absent)", 2, n)
         assertEquals("fresh", audit.readDerived(o, DerivedField.SUMMARY)?.value); assertEquals("cap p1", audit.readDerived(o, DerivedField.CAPTION)?.value)
     }
 
     @Test fun aPortThatReturnsNothingWritesNothing() = runBlocking<Unit> {
         val reg = DeriveRegistry(); reg.register("FAKE", summarize = SummarizeInput { null })
-        assertFalse(DeriveRunner(audit, reg).rebuild(ObjectRef("FAKE", "p1", 1), DerivedField.SUMMARY)); assertEquals(0, db.objectDao().derivedCount())
+        assertFalse(DeriveRunner(audit, reg, alwaysHolds).rebuild(ObjectRef("FAKE", "p1", 1), DerivedField.SUMMARY)); assertEquals(0, db.objectDao().derivedCount())
     }
 
     @Test fun aPortMayOnlyWriteTheFieldItWasAskedFor() = runBlocking<Unit> {
         val reg = DeriveRegistry(); reg.register("FAKE", summarize = SummarizeInput { DerivedWrite(DerivedField.CAPTION, value = "x", builtRev = 1) })
-        assertFalse(DeriveRunner(audit, reg).rebuild(ObjectRef("FAKE", "p1", 1), DerivedField.SUMMARY)); assertEquals(0, db.objectDao().derivedCount())
+        assertFalse(DeriveRunner(audit, reg, alwaysHolds).rebuild(ObjectRef("FAKE", "p1", 1), DerivedField.SUMMARY)); assertEquals(0, db.objectDao().derivedCount())
     }
 }
