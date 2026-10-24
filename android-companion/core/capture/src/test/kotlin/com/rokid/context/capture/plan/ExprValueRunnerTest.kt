@@ -154,3 +154,45 @@ class ExprValueRunnerTest {
         assertTrue(ExprWindows.needsSig2(c.exprs))
     }
 }
+
+/** The glasses enforce the compile-time program limits themselves (the phone compiler is not trusted). */
+class ExprLimitsOnTheGlassesTest {
+    private fun consts(n: Int) = (0 until n).joinToString(",") { """{"op":"const","v":$it}""" }
+    private fun prog(role: String, id: String, steps: Int, extra: String = ""): JsonObject =
+        Json.parseToJsonElement("""{"id":"$id","role":"$role",${extra}"out":0,"s":[${consts(steps)}]}""").jsonObject
+    private fun value(steps: Int, id: String = "v") = prog("value", id, steps, """"row":"REST","field":"capPerMin",""")
+    private fun guard(steps: Int, id: String = "g") = prog("guard", id, steps)
+    private fun check(vararg e: JsonObject): List<String> {
+        val c = PlanResolver.identity().copy(exprs = e.toList(), sigSchema = SIG_SCHEMA_WIN)
+        val p = CapturePlan(planSchemaFor(c), PlanJson.configHash(c), c, PlanMeta("t", 1))
+        return PlanValidator.check(PlanJson.encode(p)).first
+    }
+
+    @Test fun anOverLimitValueProgramIsRefusedWithABoundsReason() {
+        assertEquals(emptyList(), check(value(32)))
+        assertTrue(check(value(200)).any { "nodes in all (max 32)" in it }, check(value(200)).toString())
+        assertTrue(check(value(200)).any { "evaluation cost 200 (max 64)" in it })
+        // 33 nodes of cost 1 is over the node limit alone; cost 64 is reached by 32 two-cost nodes
+        assertTrue(check(value(33)).any { "33 nodes" in it })
+        val twoCost = Json.parseToJsonElement("""{"id":"c","role":"guard","out":0,"s":[{"op":"const","v":1},${(1 until 32).joinToString(",") { """{"op":"clamp","a":0,"lo":0,"hi":1}""" }}]}""").jsonObject
+        assertEquals(emptyList<String>(), check(twoCost).filter { "cost" in it }, "cost 1 + 31 * 2 = 63 is allowed")
+        // 32 nodes, so the node limit holds, but `in` over six states costs 7 each: 1 + 31 * 7 = 218
+        val over = Json.parseToJsonElement("""{"id":"c","role":"guard","out":0,"s":[{"op":"const","v":1},${(1 until 32).joinToString(",") { """{"op":"in","a":0,"set":["REST","FLIGHT","WALKING","UNKNOWN","VEHICLE_DRIVING","VEHICLE_PASSENGER"]}""" }}]}""").jsonObject
+        assertTrue(check(over).any { "evaluation cost 218 (max 64)" in it } && check(over).none { "nodes in all" in it }, check(over).toString())
+        assertTrue(check(guard(40)).any { "nodes in all" in it }, "guards too")
+    }
+
+    @Test fun theNodeLimitIsOverAllPrograms() {
+        assertEquals(emptyList(), check(guard(16, "a"), value(16, "b")))
+        assertTrue(check(guard(17, "a"), value(16, "b")).any { "33 nodes in all (max 32)" in it })
+    }
+
+    @Test fun theReceiverRejectsAnOverLimitPlanAsBounds() {
+        val c = PlanResolver.identity().copy(exprs = listOf(value(200)), sigSchema = SIG_SCHEMA_WIN)
+        val p = CapturePlan(planSchemaFor(c), PlanJson.configHash(c), c, PlanMeta("t", 1))
+        val msg = com.rokid.context.core.model.CapturePlanMessage(gen = 1, mode = com.rokid.context.core.model.PlanMode.SHADOW, configHash = p.configHash, planJson = PlanJson.encode(p), phoneInstall = "p1", atMs = 5)
+        class Mem : PlanPersistence { var s: ReceiverState? = null; override fun load() = s; override fun commit(s: ReceiverState) { this.s = s } }
+        val a = PlanReceiver(Mem(), { 1L }, { "b" }, caps = PlanReceiver.CAPS_EXPR).onMessage(msg)
+        assertEquals(com.rokid.context.core.model.PlanAckState.REJECTED, a.state); assertEquals("bounds", a.reason)
+    }
+}
