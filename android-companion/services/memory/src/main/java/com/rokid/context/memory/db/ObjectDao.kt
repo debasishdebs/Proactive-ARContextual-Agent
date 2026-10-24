@@ -52,8 +52,8 @@ abstract class ObjectDao : DerivedStaleDao() {
      * parent object still exists, and that its input revision is still [expectedSeq] (no part, source or invalidation since). Only then are the field and its DERIVED_BUILT row written; a
      * rejected result writes nothing (no field, no audit row), so a derive that finished late can neither resurrect a deleted object nor expose an obsolete answer.
      */
-    @Transaction open suspend fun writeDerivedGuardedTx(row: ObjectDerivedEntity, step: String, fence: DaoFence?, expectedSeq: Int): WriteOutcome {
-        if (fence != null && !fence.holds()) return WriteOutcome.OBSOLETE_GENERATION
+    @Transaction open suspend fun writeDerivedGuardedTx(row: ObjectDerivedEntity, step: String, fence: DaoFence, expectedSeq: Int): WriteOutcome {
+        if (!fence.holds()) return WriteOutcome.OBSOLETE_GENERATION
         val exists = if (row.objectKind == "MOMENT") momentExists(row.objectId) > 0 else auditRowCount(row.objectKind, row.objectId) > 0
         if (!exists) return WriteOutcome.PARENT_GONE
         if (inputSeq(row.objectKind, row.objectId) != expectedSeq) return WriteOutcome.STALE_INPUT
