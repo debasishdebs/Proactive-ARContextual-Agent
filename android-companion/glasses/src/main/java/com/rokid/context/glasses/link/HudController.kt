@@ -76,7 +76,7 @@ class HudController(
      * `PlanReceiver`.)
      */
     @Volatile var capsAck: () -> com.rokid.context.core.model.CapturePlanAck =
-        { com.rokid.context.core.model.CapturePlanAck(gen = 0, caps = com.rokid.context.capture.plan.PlanReceiver.CAPS) }
+        { com.rokid.context.core.model.CapturePlanAck(gen = 0, caps = com.rokid.context.capture.plan.PlanReceiver.CAPS_EXPR) }
     /** The state of the plan held (null = none ever): sent as a SEPARATE ack after the caps announcement, which stays gen 0 and caps-only (S74). */
     @Volatile var statusAck: () -> com.rokid.context.core.model.CapturePlanAck? = { null }
     /** `pc_capture_plan` (slice 3a): a plan message of this session; the runtime's plan controller answers with acks through [sendPlanAck]. */

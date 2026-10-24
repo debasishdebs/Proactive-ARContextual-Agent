@@ -31,6 +31,7 @@ import com.rokid.context.glasses.capture.keyframe.GateResult
 import com.rokid.context.glasses.capture.keyframe.KeyframeGate
 import com.rokid.context.glasses.capture.keyframe.PrefsGateStore
 import com.rokid.context.glasses.capture.plan.AutoRevert
+import com.rokid.context.glasses.capture.plan.GlanceGuard
 import com.rokid.context.glasses.capture.trace.TraceInfo
 import com.rokid.context.glasses.capture.trace.TraceSettingsHash
 import com.rokid.context.glasses.capture.plan.ShadowCounts
@@ -100,6 +101,7 @@ class CaptureService : LifecycleService() {
     private var smart: Smart? = null
     /** Local auto-revert rules (the hard ceiling); fed by the session, checked on the supervisor's 1 s beat. */
     private val autoRevert = AutoRevert()
+    private val exprSignals = com.rokid.context.capture.plan.ExprSignals()
     /** The applied context as of the supervisor's last beat: SHADOW reads it on the sensor thread, where the hub must not be polled. */
     @Volatile private var appliedCache = ContextState.UNKNOWN
     private var hintSender: MotionHintSender? = null
@@ -244,6 +246,7 @@ class CaptureService : LifecycleService() {
         ratePolicy.reset()
         val wear = runtime.wear
         wear.resetStillRun() // a still run from before a session restart must not park the glasses at once
+        val guard = GlanceGuard({ plan.active }, exprSignals, { appliedContext() }, { (runtime.contextGate.ageMs(clock()) ?: 0L) / 1000L }, autoRevert) { plan.runningId() }
         val session = SamplingSession(
             scope = scope, camera = CameraXSamplingCamera(this, this, cameraExecutor), owner = runtime.cameraOwner, motion = motion,
             wear = wear, gate = gate, heat = heat, workRest = runtime.workRest, encoder = AndroidKeyframeEncoder, sink = ::onKeyframe, clock = clock,
@@ -259,12 +262,13 @@ class CaptureService : LifecycleService() {
             trace = runtime.traceRecorder, traceBoundary = runtime.traceBoundary,
             traceInfo = { val k = plan.traceKey(); TraceInfo(TraceSettingsHash.of(runtime.settingsCache.readNormalized()), k.gen, k.configHash, k.mode, budget.tier.value) },
             fixedCapture = { fixedOneShot() }, onFallback = ::onSessionFallback, log = { DiagLog.i(TAG, it) }, workContext = Dispatchers.Default, glance = glance, glanceNow = { plan.active.glance },
+            glanceKeep = guard::keep,
         )
         hintSender = MotionHintSender(clock) { h -> runtime.controller?.sendMotionHint(h) == true }
         val verbose = DiagFlags.verboseFeatures(filesDir)
         DiagLog.i(TAG, "diag verbose features=${if (verbose) "on" else "off"}")
-        val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir).also { it.start(motion, wear) }
-        val shadow = ShadowRunner({ plan.shadow }, { appliedCache }, { runtime.workRest.resting.value != null }) // SHADOW: counts only, no camera
+        val feed = AndroidSensorFeed(this, verbose, label = { runtime.settingsCache.readNormalized().motionLabel }, csvDir = filesDir, signals = exprSignals).also { it.start(motion, wear) }
+        val shadow = ShadowRunner({ plan.shadow }, { appliedCache }, { runtime.workRest.resting.value != null }, exprSignals, { (runtime.contextGate.ageMs(SystemClock.elapsedRealtime()) ?: 0L) / 1000L }) // SHADOW: counts only, no camera
         motion.addTap(shadow)
         motion.addTap(runtime.traceRecorder) // records only while a trace runs (collect on, clean boundary); one volatile read otherwise
         val sm = Smart(session, feed, motion, shadow)
@@ -359,7 +363,8 @@ class CaptureService : LifecycleService() {
                 lastUpBytes = upTotal; lastUpAt = now
                 val (scrOn, scrOurs, nudgeOff) = runtime.screenWakes.take()
                 val sh = smart?.shadow?.take() ?: ShadowCounts(0, 0)
-                hb.copy(scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, ctxVeto = runtime.contextGate.takeVetoes(), shOpen = sh.open, shSkip = sh.skip).format()
+                val act = runtime.plan.active.exprRunner?.takeCounts()
+                hb.copy(scrOn = scrOn, scrOurs = scrOurs, nudgeOff = nudgeOff, ctxVeto = runtime.contextGate.takeVetoes(), shOpen = sh.open, shSkip = sh.skip, shDrop = sh.drop, exprErr = sh.exprErr + (act?.get(0) ?: 0), exprDiv0 = sh.exprDiv0 + (act?.get(1) ?: 0)).format()
             }?.let { DiagLog.i(TAG, it) }
         }
         val key = "${shown.running}|${shown.reason}|${shown.restingUntilMs != null}|${heat.level.value}|$degraded"

@@ -1,5 +1,7 @@
 package com.rokid.context.glasses.capture.plan
 
+import com.rokid.context.capture.plan.ExprRunner
+import com.rokid.context.capture.plan.ExprSignals
 import com.rokid.context.core.model.MotionState
 import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.glasses.capture.motion.GlanceDetector
@@ -9,7 +11,7 @@ import com.rokid.context.glasses.capture.session.GlanceAdmission
 import kotlin.math.sqrt
 
 /** Counterfactual glance opens and skips since the previous [ShadowRunner.take]. */
-data class ShadowCounts(val open: Int, val skip: Int)
+data class ShadowCounts(val open: Int, val skip: Int, val drop: Int = 0, val exprErr: Int = 0, val exprDiv0: Int = 0)
 
 /**
  * SHADOW (S67): a second glance detector on the same sensor samples (through [SampleTap]), configured by the SHADOW plan, that only COUNTS
@@ -24,12 +26,17 @@ class ShadowRunner(
     private val config: () -> ActiveConfig?,
     private val applied: () -> ContextState,
     private val resting: () -> Boolean = { false },
+    /** 3c X3: the features the guards read and the context age; a SHADOW guard only COUNTS would-drops (S67), it never acts. */
+    private val signals: ExprSignals = ExprSignals(),
+    private val ctxAgeS: () -> Long = { 0L },
 ) : SampleTap {
     private val lock = Any()
     private var cfg: ActiveConfig? = null
     private var detector: GlanceDetector? = null
     private var open = 0
     private var skip = 0
+    private var drop = 0
+    private var runner: ExprRunner? = null
 
     private var lastGyroMs = -1L
     private var lastKeyAt = 0L
@@ -39,12 +46,15 @@ class ShadowRunner(
     private var quietSince = -1L
     private var walked = false
 
-    fun take(): ShadowCounts = synchronized(lock) { ShadowCounts(open, skip).also { open = 0; skip = 0 } }
+    fun take(): ShadowCounts = synchronized(lock) {
+        val c = runner?.takeCounts()
+        ShadowCounts(open, skip, drop, c?.get(0) ?: 0, c?.get(1) ?: 0).also { open = 0; skip = 0; drop = 0 }
+    }
 
     private fun sync(tMs: Long): ActiveConfig? {
         val c = config()
         if (c !== cfg) {
-            cfg = c
+            cfg = c; runner = c?.exprRunner
             detector = c?.let { GlanceDetector(it.glance) }
             lastGyroMs = -1L; lastKeyAt = tMs; keptAt.clear(); resetPose(); quietSince = -1L
         }
@@ -83,7 +93,9 @@ class ShadowRunner(
         val rowCap = c.contextCap(applied())
         val cap = minOf(if (resting()) g.restCapPerMin else g.capPerMin, rowCap ?: Int.MAX_VALUE)
         val turned = sqrt(rx * rx + ry * ry + rz * rz)
-        when (GlanceAdmission.decide(now - lastKeyAt, keptAt.size, cap, resting() || rowCap != null, turned, walked, g)) {
+        val keepGuard = c.exprRunner?.keep(now, signals, applied(), ctxAgeS()) ?: true
+        when (GlanceAdmission.decide(now - lastKeyAt, keptAt.size, cap, resting() || rowCap != null, turned, walked, g, keepGuard)) {
+            GlanceAdmission.Decision.GUARD_DROP -> drop++
             GlanceAdmission.Decision.OPEN -> { open++; lastKeyAt = now; keptAt.addLast(now); resetPose() }
             else -> skip++
         }
