@@ -1,5 +1,6 @@
 package com.rokid.context.canvas.moment
 
+import com.rokid.context.memory.db.MomentSensorEntity
 import java.security.MessageDigest
 
 /** A photo of a Moment. [rev] is a stable fingerprint of what the frame row says (never the image bytes, never a path). */
@@ -19,6 +20,8 @@ interface MomentSource {
     suspend fun framesNewest(fromMs: Long, toMs: Long, limit: Int): List<MomentFrame>
     suspend fun memories(frameIds: List<String>): List<Pair<String, MomentRef>>
     suspend fun marks(fromMs: Long, toMs: Long): List<MomentMark>
+    /** The stored sensor rows of these Moments (`moment_sensor`); none by default (a source that does not read them). */
+    suspend fun sensor(momentIds: List<String>): List<MomentSensorEntity> = emptyList()
 }
 
 /**
@@ -29,6 +32,8 @@ interface MomentSource {
 data class Moment(
     val id: String, val startMs: Long, val frames: List<MomentFrame>, val memories: List<MomentRef>, val marks: List<MomentMark>,
     val contentRev: Int, val contentHash: String,
+    /** The compact sensor summary of this second, only when the source had `moment_sensor` rows for it. NOT part of [contentHash] or [bindingKey]: sensor rows are derived, never evidence of what the Moment holds. */
+    val sensor: SensorSummary? = null,
 ) {
     /** What an estimate token binds for this Moment. */
     val bindingKey: String get() = "$id:$contentRev:$contentHash"
@@ -51,10 +56,10 @@ class MomentResolver(private val source: MomentSource) {
         val last = seconds.last() * 1000 + 999
         val marks = source.marks(first, last)
         val mem = source.memories(frames.map { it.id }).groupBy({ it.first }, { it.second })
-        return seconds.map { s ->
+        return withSensor(seconds.map { s ->
             val here = frames.filter { Math.floorDiv(it.ts, 1000L) == s }
             build(s, here, here.flatMap { mem[it.id].orEmpty() }, marks.filter { Math.floorDiv(it.atMs, 1000L) == s })
-        }
+        })
     }
 
     /** The requested Moments as they are NOW, in request order; a malformed id, a duplicate, and a second with no live photo are dropped. */
@@ -68,7 +73,13 @@ class MomentResolver(private val source: MomentSource) {
             if (frames.isEmpty()) continue
             out += build(s, frames, source.memories(frames.map { it.id }).map { it.second }, source.marks(lo, lo + 999))
         }
-        return out
+        return withSensor(out)
+    }
+
+    private suspend fun withSensor(ms: List<Moment>): List<Moment> {
+        if (ms.isEmpty()) return ms
+        val rows = source.sensor(ms.map { it.id }).groupBy { it.momentId }
+        return if (rows.isEmpty()) ms else ms.map { m -> m.copy(sensor = SensorSummary.of(rows[m.id].orEmpty())) }
     }
 
     private fun build(second: Long, frames: List<MomentFrame>, memories: List<MomentRef>, marks: List<MomentMark>): Moment {

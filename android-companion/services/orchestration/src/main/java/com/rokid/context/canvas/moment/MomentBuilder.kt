@@ -30,6 +30,8 @@ class MomentBuilder(
     private val db: ContextDatabase,
     private val enabled: () -> Boolean = { MomentStoreSwitch.DEFAULT_ENABLED },
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Where the per-second sensor features come from; null = the builder writes and touches no sensor row. */
+    private val sensors: MomentSensors? = null,
 ) {
     /** [stored] Moments written, [removed] stale ones deleted (no live photo, forgotten, or too big), [refused] seconds a tombstone or a Moment Forget range fenced. */
     data class Report(val stored: Int, val removed: Int, val refused: Int) { companion object { val NONE = Report(0, 0, 0) } }
@@ -42,22 +44,37 @@ class MomentBuilder(
         if (!enabled()) return Report.NONE
         val wanted = ids.distinct().filter { MomentId.parse(it) != null }
         if (wanted.isEmpty()) return Report.NONE
-        return db.withTransaction { buildTx(wanted) }
+        val loaded = loadSensors(wanted) // trace files are read first, off this thread and outside the transaction
+        return db.withTransaction { buildTx(wanted, loaded) }
     }
 
     /** Rebuilds every second that holds a live photo in `[fromMs, toMs]` and drops stored Moments of that window that no longer qualify. */
     suspend fun rebuildWindow(fromMs: Long, toMs: Long): Report {
         if (!enabled() || toMs < fromMs) return Report.NONE
-        return db.withTransaction {
-            val lo = maxOf(fromMs, 0L); val hi = minOf(toMs, (MomentId.MAX_SECOND + 1) * 1000 - 1)
-            if (hi < lo) return@withTransaction Report.NONE
-            val live = dao.liveFrameSeconds(lo, hi).filter { it in 0..MomentId.MAX_SECOND }.map { MomentId.format(it) }
-            val stored = dao.momentIdsBetween(MomentId.format(lo / 1000), MomentId.format(hi / 1000))
-            buildTx((live + stored).distinct())
-        }
+        val lo = maxOf(fromMs, 0L); val hi = minOf(toMs, (MomentId.MAX_SECOND + 1) * 1000 - 1)
+        if (hi < lo) return Report.NONE
+        val loaded = loadSensors(candidateIds(lo, hi)) // read outside the transaction; a second that appears meanwhile is simply not decided (the next build does)
+        return db.withTransaction { buildTx(candidateIds(lo, hi), loaded) }
     }
 
-    private suspend fun buildTx(ids: List<String>): Report {
+    private suspend fun candidateIds(lo: Long, hi: Long): List<String> {
+        val live = dao.liveFrameSeconds(lo, hi).filter { it in 0..MomentId.MAX_SECOND }.map { MomentId.format(it) }
+        val stored = dao.momentIdsBetween(MomentId.format(lo / 1000), MomentId.format(hi / 1000))
+        return (live + stored).distinct()
+    }
+
+    private suspend fun loadSensors(ids: List<String>): MomentSensors.Loaded? {
+        val s = sensors ?: return null
+        val loaded = s.load(ids.mapNotNull { MomentId.parse(it) })
+        testAfterSensorLoad?.invoke()
+        return loaded
+    }
+
+    /** Test seam: runs after the trace files were read and before the build transaction starts, so a test can delete or replace a trace in between. Always null in production. */
+    @Volatile internal var testAfterSensorLoad: (suspend () -> Unit)? = null
+
+    private suspend fun buildTx(ids: List<String>, loaded: MomentSensors.Loaded?): Report {
+        val valid = if (loaded != null) sensors!!.validTraces(loaded) else emptySet()
         val tomb = ids.chunked(CHUNK).flatMap { dao.tombstonedAmong(it) }.toSet()
         val slice3 = db.canvasSlice3Dao()
         var stored = 0; var removed = 0; var refused = 0
@@ -77,6 +94,11 @@ class MomentBuilder(
             val entity = MomentEntity(m.id, BUILD_REV, m.contentRev, m.contentHash, clock()); val parts = partsOf(m)
             dao.replace(entity, parts)
             recordAudit(entity, before, beforeParts, parts)
+            // the sensor numbers of this second, from the traces as they are NOW; a second that was not part of the read is left alone
+            val second = MomentId.parse(id)
+            if (loaded != null && second != null && second in loaded.seconds) {
+                dao.replaceSensor(id, listOfNotNull(sensors!!.rowFor(loaded, second, valid)), clock(), AuditStep.BUILD, hide = before != null)
+            }
             stored++
         }
         return Report(stored, removed, refused)
