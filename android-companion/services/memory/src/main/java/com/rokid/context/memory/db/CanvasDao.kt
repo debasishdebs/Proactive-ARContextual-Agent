@@ -164,10 +164,17 @@ abstract class CanvasDao {
     )
     abstract suspend fun momentFrames(fromMs: Long, toMs: Long, limit: Int): List<MomentFrameRow>
 
+    /** The NEWEST [limit] live frames in the range, returned oldest first (the Moment picker lists the newest page). */
+    @Query(
+        "SELECT * FROM (SELECT f.id AS id, f.ts AS ts, (f.ts || ':' || COALESCE(f.phash, '') || ':' || COALESCE(f.placeLabel, '') || ':' || COALESCE(f.luma, '')) AS rev FROM frame f " +
+            "WHERE f.ts >= :fromMs AND f.ts <= :toMs AND f.id NOT IN (SELECT frameId FROM forget_tombstone) ORDER BY f.ts DESC, f.id DESC LIMIT :limit) ORDER BY ts, id",
+    )
+    abstract suspend fun momentFramesNewest(fromMs: Long, toMs: Long, limit: Int): List<MomentFrameRow>
+
     /** The not-invalidated memories of [frameIds] (their own frame, or a source frame): (frameId, memoryId, rev). */
     @Query(
-        "SELECT m.frameId AS frameId, m.id AS id, (m.reviewState || ':' || m.text) AS rev FROM memory m WHERE m.frameId IN (:frameIds) AND m.reviewState != 'INVALIDATED' " +
-            "UNION SELECT fs.frameId AS frameId, m.id AS id, (m.reviewState || ':' || m.text) AS rev FROM frame_source fs JOIN memory m ON m.id = fs.memoryId " +
+        "SELECT m.frameId AS frameId, m.id AS id, (m.reviewState || ':' || m.type || ':' || m.tier || ':' || m.confidence || ':' || m.trusted || ':' || m.derived || ':' || m.createdAt || ':' || m.tags || ':' || m.text) AS rev FROM memory m WHERE m.frameId IN (:frameIds) AND m.reviewState != 'INVALIDATED' " +
+            "UNION SELECT fs.frameId AS frameId, m.id AS id, (m.reviewState || ':' || m.type || ':' || m.tier || ':' || m.confidence || ':' || m.trusted || ':' || m.derived || ':' || m.createdAt || ':' || m.tags || ':' || m.text) AS rev FROM frame_source fs JOIN memory m ON m.id = fs.memoryId " +
             "WHERE fs.frameId IN (:frameIds) AND m.reviewState != 'INVALIDATED'",
     )
     abstract suspend fun momentMemories(frameIds: List<String>): List<MomentMemoryRow>

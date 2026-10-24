@@ -7,6 +7,8 @@ import com.rokid.context.memory.db.CanvasSlice3Dao
 class DaoMomentSource(private val dao: CanvasDao, private val dao3: CanvasSlice3Dao) : MomentSource {
     override suspend fun frames(fromMs: Long, toMs: Long, limit: Int) = dao.momentFrames(fromMs, toMs, limit).map { MomentFrame(it.id, it.ts, it.rev) }
 
+    override suspend fun framesNewest(fromMs: Long, toMs: Long, limit: Int) = dao.momentFramesNewest(fromMs, toMs, limit).map { MomentFrame(it.id, it.ts, it.rev) }
+
     override suspend fun memories(frameIds: List<String>): List<Pair<String, MomentRef>> =
         frameIds.chunked(CHUNK).flatMap { c -> dao.momentMemories(c).map { it.frameId to MomentRef(it.id, it.rev) } }
 

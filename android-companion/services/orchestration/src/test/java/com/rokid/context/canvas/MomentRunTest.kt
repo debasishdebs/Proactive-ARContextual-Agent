@@ -149,6 +149,22 @@ class MomentRunTest {
         assertMoved { start(r, e.confirmToken) }
     }
 
+    @Test fun aMemoryTypeEditBetweenEstimateAndStartRefuses() = runBlocking<Unit> {
+        seed()
+        h.db.memoryDao().insert(com.rokid.context.memory.db.MemoryEntity("m1", "fA", "a cat", "fact", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.9, com.rokid.context.memory.db.ReviewState.OK, true, ms, false, "a cat"))
+        val r = runner()
+        val e = estimate(r)
+        h.db.memoryDao().insert(com.rokid.context.memory.db.MemoryEntity("m1", "fA", "a cat", "preference", "", com.rokid.context.memory.db.MemoryTier.SHORT, 0.9, com.rokid.context.memory.db.ReviewState.OK, true, ms, false, "a cat"))
+        assertMoved { start(r, e.confirmToken) }
+    }
+
+    @Test fun anOverfullSecondIsRefusedAtEstimateWithAReason() = runBlocking<Unit> {
+        val over = MomentResolver.FRAME_CAP + 1
+        h.db.openHelper.writableDatabase.let { d -> d.beginTransaction(); try { for (i in 0 until over) d.execSQL("INSERT INTO frame (id, ts, path, source, payload) VALUES ('x$i', ${ms + i % 1000}, '/x.jpg', 'rokid_glasses', '')"); d.setTransactionSuccessful() } finally { d.endTransaction() } }
+        val res = runner().estimateMoments(pipeline(), listOf(m0), label)
+        assertTrue(res is Estimate.Refused && res.reasons.any { it.contains("more than") })
+    }
+
     @Test fun aCorrectedMarkBetweenEstimateAndStartRefuses() = runBlocking<Unit> {
         seed()
         val r = runner()
