@@ -81,7 +81,7 @@ class MomentForget(
             }
             frames.toList().chunked(CHUNK).forEach { c -> memories += md.memoryIdsOfFrames(c) }
             val wire = frames.toList().chunked(CHUNK).flatMap { md.wireIds(it) }.map { it.wireFrameId }
-            val liveTracesBefore = s3.liveTraces().map { it.traceId }.toSet()
+            val liveTracesBefore = s3.forgettableTraces().map { it.traceId }.toSet()
             // 3. The cascade: the existing code paths, in this transaction.
             var cascade = ForgetService.Result.EMPTY
             for (f in frames) cascade = cascade.plus(service.forgetMomentTx(f))
@@ -97,7 +97,7 @@ class MomentForget(
             md.remove(projected.toList())
             spans.forEach { dropped += md.dropBetween(it.first, it.last) }
             // 5. The durable cleanup, same transaction.
-            val tombstonedTraces = liveTracesBefore - s3.liveTraces().map { it.traceId }.toSet()
+            val tombstonedTraces = liveTracesBefore - s3.forgettableTraces().map { it.traceId }.toSet()
             val rows = ArrayList<CleanupOutboxEntity>()
             fun row(target: String, json: String) = rows.add(CleanupOutboxEntity(target = target, payloadJson = json, createdAt = now))
             fun one(key: String, v: String) = CleanupPayload.one(key, v)

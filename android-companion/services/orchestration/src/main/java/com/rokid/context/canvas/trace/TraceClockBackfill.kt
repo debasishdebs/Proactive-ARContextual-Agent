@@ -13,8 +13,8 @@ import kotlinx.coroutines.CancellationException
 class TraceClockBackfill(private val dao: CanvasSlice3Dao) {
     suspend fun run(): Int {
         var mapped = 0
-        for (row in dao.liveTraces()) {
-            if (row.clockQuality != TraceClock.UNMAPPED) continue
+        for (row in dao.forgettableTraces()) {
+            if (row.clockQuality != TraceClock.UNMAPPED && row.clockQuality != TraceClock.QUARANTINED) continue
             val interval = when {
                 row.source == "HUB" -> TracePhoneClock.Interval(row.startedAtMs, row.endedAtMs, TraceClock.EXACT, 0)
                 else -> try {

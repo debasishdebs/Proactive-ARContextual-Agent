@@ -22,7 +22,7 @@ import com.rokid.context.memory.canvas.LeasedHelperJob
  * Transactional tombstones and invalidation for Forget live here too; the Forget cascade itself is Task 34.
  */
 @Dao
-abstract class CanvasSlice3Dao {
+abstract class CanvasSlice3Dao : DerivedStaleDao() {
     // --- canvas_meta and labelRev (S75) ---
     @Query("SELECT value FROM canvas_meta WHERE `key` = :key") abstract suspend fun meta(key: String): String?
     @Query("INSERT OR IGNORE INTO canvas_meta (`key`, value) VALUES (:key, :value)") protected abstract suspend fun insertMetaIgnore(key: String, value: String)
@@ -75,7 +75,7 @@ abstract class CanvasSlice3Dao {
     @Transaction open suspend fun forgetRangeTx(fromMs: Long, toMs: Long, now: Long): ForgetOutcome {
         addForgetRange(fromMs, toMs)
         val jobs = moveFrameForgetFence(now)
-        val ids = liveTraces().filter { TraceClock.overlaps(it, fromMs, toMs) }.map { it.traceId }
+        val ids = forgettableTraces().filter { TraceClock.overlaps(it, fromMs, toMs) }.map { it.traceId }
         ids.forEach { tombstoneTrace(it, now) }
         val labels = deleteLabelsBetween(fromMs, toMs)
         val invalid = invalidateBySources(ids, fromMs, toMs, labelRevChanged = labels > 0)
@@ -109,6 +109,8 @@ abstract class CanvasSlice3Dao {
     @Query("SELECT * FROM canvas_label WHERE labelId = :id") abstract suspend fun label(id: String): CanvasLabelEntity?
     @Query("SELECT * FROM canvas_label ORDER BY atMs, labelId") abstract suspend fun labels(): List<CanvasLabelEntity>
     @Query("SELECT * FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs ORDER BY atMs, labelId") abstract suspend fun labelsBetween(fromMs: Long, toMs: Long): List<CanvasLabelEntity>
+    @Query("SELECT labelId FROM canvas_label WHERE frameId IN (:frameIds)") protected abstract suspend fun labelIdsOfFrames(frameIds: List<String>): List<String>
+    @Query("SELECT labelId FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs") protected abstract suspend fun labelIdsBetweenTimes(fromMs: Long, toMs: Long): List<String>
     @Query("DELETE FROM canvas_label WHERE labelId = :id") protected abstract suspend fun deleteLabelRow(id: String): Int
     @Query("UPDATE canvas_label SET name = :name WHERE labelId = :id") protected abstract suspend fun renameLabelRow(id: String, name: String): Int
     @Query("UPDATE canvas_label SET source = :source WHERE labelId = :id") protected abstract suspend fun retagLabelRow(id: String, source: String): Int
@@ -132,7 +134,7 @@ abstract class CanvasSlice3Dao {
     /** Deletes one label; the results computed under the old labels (they embody it) are invalidated in the same transaction. */
     @Transaction open suspend fun deleteLabel(id: String): Boolean {
         val n = deleteLabelRow(id)
-        if (n > 0) { bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true) }
+        if (n > 0) { bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true); staleMomentsHolding(listOf(MomentPartKind.MARK), listOf(id)) }
         return n > 0
     }
 
@@ -141,36 +143,43 @@ abstract class CanvasSlice3Dao {
         val cur = label(id) ?: return false
         if (cur.source == source) return true
         val n = retagLabelRow(id, source)
-        if (n > 0) bumpLabelRev()
+        if (n > 0) { bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), listOf(id)) }
         return n > 0
     }
 
     @Transaction open suspend fun correctLabel(id: String, name: String): Boolean {
         val n = renameLabelRow(id, name)
-        if (n > 0) { bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true) }
+        if (n > 0) { bumpLabelRev(); invalidateBySources(emptyList(), null, null, labelRevChanged = true); staleMomentsHolding(listOf(MomentPartKind.MARK), listOf(id)) }
         return n > 0
     }
 
     /** Forget of photos: their labels go, `labelRev` moves (the caller invalidates the dependent results). Returns the labels deleted. */
     @Transaction open suspend fun deleteLabelsForFrames(frameIds: List<String>): Int {
         if (frameIds.isEmpty()) return 0
+        val gone = frameIds.chunked(CHUNK).flatMap { labelIdsOfFrames(it) }
         val n = frameIds.chunked(CHUNK).sumOf { deleteLabelRowsForFrames(it) }
-        if (n > 0) bumpLabelRev()
+        if (n > 0) { bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), gone) }
         return n
     }
 
     /** Forget of a time range [fromMs, toMs] (both inclusive, the same bounds as [invalidateBySources]): the marks inside it go and `labelRev` moves. */
     @Transaction open suspend fun deleteLabelsBetween(fromMs: Long, toMs: Long): Int {
+        val gone = labelIdsBetweenTimes(fromMs, toMs)
         val n = deleteLabelRowsBetween(fromMs, toMs)
-        if (n > 0) bumpLabelRev()
+        if (n > 0) { bumpLabelRev(); staleMomentsHolding(listOf(MomentPartKind.MARK), gone) }
         return n
     }
 
     // --- traces and events ---
     @Query("SELECT * FROM canvas_trace WHERE traceId = :id") abstract suspend fun trace(id: String): CanvasTraceEntity?
-    @Query("SELECT * FROM canvas_trace WHERE tombstoned = 0 ORDER BY startedAtMs, traceId") abstract suspend fun liveTraces(): List<CanvasTraceEntity>
+    /** The traces a READER may see: live and not quarantined (a quarantined trace is hidden from every list, replay, sweep, plan-evidence and export input). */
+    @Query("SELECT * FROM canvas_trace WHERE tombstoned = 0 AND clockQuality != 'QUARANTINED' ORDER BY startedAtMs, traceId") abstract suspend fun liveTraces(): List<CanvasTraceEntity>
+    /** Every live trace INCLUDING quarantined ones: what Forget and the clock backfill scan. Never for a reader. */
+    @Query("SELECT * FROM canvas_trace WHERE tombstoned = 0 ORDER BY startedAtMs, traceId") abstract suspend fun forgettableTraces(): List<CanvasTraceEntity>
+    /** One trace for a READER: null when unknown, tombstoned or quarantined. */
+    open suspend fun readableTrace(id: String): CanvasTraceEntity? = trace(id)?.takeIf { !it.tombstoned && it.clockQuality != TraceClock.QUARANTINED }
     /** Backfill of a pre-v10 row (spec 7.2): maps it to the phone clock only while it is still live, still UNMAPPED and still holds the manifest it was read with. Returns rows changed. */
-    @Query("UPDATE canvas_trace SET phoneStartMs = :start, phoneEndMs = :end, clockQuality = :quality, uncertaintyMs = :unc WHERE traceId = :id AND tombstoned = 0 AND clockQuality = 'UNMAPPED' AND manifestJson = :manifestJson")
+    @Query("UPDATE canvas_trace SET phoneStartMs = :start, phoneEndMs = :end, clockQuality = :quality, uncertaintyMs = :unc WHERE traceId = :id AND tombstoned = 0 AND clockQuality IN ('UNMAPPED', 'QUARANTINED') AND manifestJson = :manifestJson")
     abstract suspend fun mapTraceClock(id: String, manifestJson: String, start: Long, end: Long?, quality: String, unc: Long): Int
     @Query("SELECT * FROM canvas_trace_event WHERE traceId = :id ORDER BY seq") abstract suspend fun events(id: String): List<CanvasTraceEventEntity>
     @Query("SELECT COUNT(*) FROM canvas_trace_event WHERE traceId = :id") abstract suspend fun eventCount(id: String): Int
@@ -190,8 +199,14 @@ abstract class CanvasSlice3Dao {
         val epoch = fence.now()
         if (t.installId != epoch.installId || t.deletionCounter != epoch.counter) return false
         if (trace(t.traceId)?.tombstoned == true) return false
-        if (TraceClock.overlapsAny(t, forgottenRanges())) return false
-        upsertTrace(t)
+        val ranges = forgottenRanges()
+        val admitted = when {
+            t.clockQuality == TraceClock.UNMAPPED && CoarseTraceEvidence.overlapsAny(t, ranges) -> t.copy(clockQuality = TraceClock.QUARANTINED) // recoverable: stored, hidden, forgotten with any later range
+            t.clockQuality == TraceClock.UNMAPPED -> t // coarse evidence is disjoint from every Forget: admitted, still unbounded for later Forgets
+            TraceClock.overlapsAny(t, ranges) -> return false
+            else -> t
+        }
+        upsertTrace(admitted)
         return true
     }
 
