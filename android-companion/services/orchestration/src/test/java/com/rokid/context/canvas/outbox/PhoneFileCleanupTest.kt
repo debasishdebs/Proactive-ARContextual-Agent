@@ -39,4 +39,9 @@ class PhoneFileCleanupTest {
         val root = files(); val d = File(root, "inbox").apply { mkdirs() }; File(d, "x").writeBytes(byteArrayOf(1))
         assertEquals(CleanupResult.FAILED, port(root).deleteConfirmed(d.absolutePath)); assertTrue(File(d, "x").exists())
     }
+
+    @Test fun aRelativePathIsRefusedEvenWhenItResolvesInsideARoot() = runBlocking<Unit> {
+        val cwd = File(System.getProperty("user.dir")!!); val f = File(cwd, "outbox-relative-path-test.tmp").apply { writeBytes(byteArrayOf(1)) }
+        try { assertEquals(CleanupResult.FAILED, PhoneFileCleanup(listOf(cwd)).deleteConfirmed(f.name)); assertTrue(f.exists()) } finally { f.delete() }
+    }
 }
