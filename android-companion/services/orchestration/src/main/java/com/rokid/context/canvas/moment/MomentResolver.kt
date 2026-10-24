@@ -1,6 +1,7 @@
 package com.rokid.context.canvas.moment
 
 import com.rokid.context.memory.db.MomentSensorEntity
+import com.rokid.context.memory.moment.MomentType
 import java.security.MessageDigest
 
 /** A photo of a Moment. [rev] is a stable fingerprint of what the frame row says (never the image bytes, never a path). */
@@ -9,7 +10,8 @@ data class MomentFrame(val id: String, val ts: Long, val rev: String)
 /** A memory (or any other id-bearing part) attached by reference. */
 data class MomentRef(val id: String, val rev: String)
 
-data class MomentMark(val id: String, val atMs: Long, val rev: String)
+/** A mark of a Moment. [code] is how it was made (tap, voice, phone_voice, retro, ask_tap): a fixed token, never text. */
+data class MomentMark(val id: String, val atMs: Long, val rev: String, val code: String)
 
 /** Read-only access to the existing tables; nothing here writes. Forgotten (tombstoned) frames are never returned. */
 interface MomentSource {
@@ -20,6 +22,8 @@ interface MomentSource {
     suspend fun framesNewest(fromMs: Long, toMs: Long, limit: Int): List<MomentFrame>
     suspend fun memories(frameIds: List<String>): List<Pair<String, MomentRef>>
     suspend fun marks(fromMs: Long, toMs: Long): List<MomentMark>
+    /** The newest [limit] marks in the range, oldest first (a mark makes a Moment by itself, so a listing must see them next to the photos). */
+    suspend fun marksNewest(fromMs: Long, toMs: Long, limit: Int): List<MomentMark> = marks(fromMs, toMs).takeLast(limit)
     /** The stored sensor rows of these Moments (`moment_sensor`); none by default (a source that does not read them). */
     suspend fun sensor(momentIds: List<String>): List<MomentSensorEntity> = emptyList()
 }
@@ -30,7 +34,10 @@ interface MomentSource {
  * the hash proves freshness).
  */
 data class Moment(
-    val id: String, val startMs: Long, val frames: List<MomentFrame>, val memories: List<MomentRef>, val marks: List<MomentMark>,
+    val id: String, val startMs: Long,
+    /** What anchors this Moment, derived from its parts ([MomentType.of]): FRAME when it holds a photo, else MARK. No default: every reader must say what a Moment without a photo means. */
+    val type: MomentType,
+    val frames: List<MomentFrame>, val memories: List<MomentRef>, val marks: List<MomentMark>,
     val contentRev: Int, val contentHash: String,
     /** The compact sensor summary of this second, only when the source had `moment_sensor` rows for it. NOT part of [contentHash] or [bindingKey]: sensor rows are derived, never evidence of what the Moment holds. */
     val sensor: SensorSummary? = null,
@@ -50,11 +57,11 @@ class MomentResolver(private val source: MomentSource) {
         val hi = minOf(toMs, (MomentId.MAX_SECOND + 1) * 1000 - 1)
         if (hi < lo) return emptyList()
         val frames = source.framesNewest(lo, hi, FRAME_CAP)
-        val seconds = frames.map { Math.floorDiv(it.ts, 1000L) }.distinct().sorted().takeLast(limit)
+        // a mark holds its second by itself; when the frame read was cut short, a mark older than the oldest photo read could belong to a second whose photos were not read, so it is left out
+        val markFloor = if (frames.size >= FRAME_CAP) frames.minOf { it.ts } else lo
+        val marks = source.marksNewest(maxOf(lo, markFloor), hi, MARK_CAP)
+        val seconds = (frames.map { Math.floorDiv(it.ts, 1000L) } + marks.map { Math.floorDiv(it.atMs, 1000L) }).distinct().sorted().takeLast(limit)
         if (seconds.isEmpty()) return emptyList()
-        val first = seconds.first() * 1000
-        val last = seconds.last() * 1000 + 999
-        val marks = source.marks(first, last)
         val mem = source.memories(frames.map { it.id }).groupBy({ it.first }, { it.second })
         return withSensor(seconds.map { s ->
             val here = frames.filter { Math.floorDiv(it.ts, 1000L) == s }
@@ -62,7 +69,7 @@ class MomentResolver(private val source: MomentSource) {
         })
     }
 
-    /** The requested Moments as they are NOW, in request order; a malformed id, a duplicate, and a second with no live photo are dropped. */
+    /** The requested Moments as they are NOW, in request order; a malformed id, a duplicate, and a second with neither a live photo nor a mark are dropped. */
     suspend fun resolve(ids: List<String>): List<Moment> {
         val out = ArrayList<Moment>()
         for (id in ids.distinct()) {
@@ -70,8 +77,9 @@ class MomentResolver(private val source: MomentSource) {
             val lo = s * 1000
             val frames = source.frames(lo, lo + 999, FRAME_CAP + 1)
             if (frames.size > FRAME_CAP) throw MomentTooBig()
-            if (frames.isEmpty()) continue
-            out += build(s, frames, source.memories(frames.map { it.id }).map { it.second }, source.marks(lo, lo + 999))
+            val marks = source.marks(lo, lo + 999)
+            if (frames.isEmpty() && marks.isEmpty()) continue
+            out += build(s, frames, source.memories(frames.map { it.id }).map { it.second }, marks)
         }
         return withSensor(out)
     }
@@ -86,10 +94,13 @@ class MomentResolver(private val source: MomentSource) {
         val f = frames.sortedWith(compareBy({ it.ts }, { it.id }))
         val m = memories.distinctBy { it.id }.sortedBy { it.id }
         val k = marks.sortedWith(compareBy({ it.atMs }, { it.id }))
-        val lines = f.map { "F|${it.id}|${it.ts}|${it.rev}" } + m.map { "M|${it.id}|${it.rev}" } + k.map { "K|${it.id}|${it.atMs}|${it.rev}" }
+        val lines = f.map { "F|${it.id}|${it.ts}|${it.rev}" } + m.map { "M|${it.id}|${it.rev}" } + k.map { "K|${it.id}|${it.atMs}|${it.rev}|${it.code}" }
         val digest = MessageDigest.getInstance("SHA-256").digest(lines.sorted().joinToString("\n").toByteArray(Charsets.UTF_8))
-        return Moment(MomentId.format(second), second * 1000, f, m, k, lines.size, digest.joinToString("") { "%02x".format(it) })
+        val type = checkNotNull(MomentType.of(f.size, k.size)) { "a second with neither a photo nor a mark is not a Moment" }
+        return Moment(MomentId.format(second), second * 1000, type, f, m, k, lines.size, digest.joinToString("") { "%02x".format(it) })
     }
 
-    companion object { const val FRAME_CAP = 2000 }
+    companion object { const val FRAME_CAP = 2000
+        /** The most marks a listing reads (marks are rare; this only bounds a window over years). */
+        const val MARK_CAP = 5000 }
 }

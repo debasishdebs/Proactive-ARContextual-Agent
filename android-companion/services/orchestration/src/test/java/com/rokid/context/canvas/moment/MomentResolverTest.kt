@@ -1,5 +1,6 @@
 package com.rokid.context.canvas.moment
 
+import com.rokid.context.memory.moment.MomentType
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -32,17 +33,38 @@ class MomentResolverTest {
         val src = FakeSource(
             frames = listOf(f("a", ms + 1), f("z", ms + 5000)),
             memories = listOf("a" to MomentRef("m1", "v1"), "z" to MomentRef("m2", "v1")),
-            marks = listOf(MomentMark("L1", ms + 500, "k1"), MomentMark("L2", ms + 2500, "k1")),
+            marks = listOf(MomentMark("L1", ms + 500, "k1", "tap"), MomentMark("L2", ms + 2500, "k1", "tap")),
         )
         val m = MomentResolver(src).resolve(listOf(MomentId.format(sec))).single()
         assertEquals(listOf("m1"), m.memories.map { it.id })
         assertEquals(listOf("L1"), m.marks.map { it.id })
     }
 
-    @Test fun aSecondWithNoFrameIsNotAMoment() = runBlocking<Unit> {
-        val src = FakeSource(frames = listOf(f("a", ms)), marks = listOf(MomentMark("L", ms + 3000, "k")))
-        assertEquals(listOf(MomentId.format(sec)), MomentResolver(src).window(ms, ms + 9000, 50).map { it.id })
-        assertTrue(MomentResolver(src).resolve(listOf(MomentId.format(sec + 3))).isEmpty())
+    @Test fun aSecondWithAMarkButNoFrameIsAMarkMomentWithItsCodeAndNoPhotos() = runBlocking<Unit> {
+        val src = FakeSource(frames = listOf(f("a", ms)), marks = listOf(MomentMark("L", ms + 3000, "k", "voice")))
+        val w = MomentResolver(src).window(ms, ms + 9000, 50)
+        assertEquals(listOf(MomentId.format(sec), MomentId.format(sec + 3)), w.map { it.id })
+        assertEquals(listOf(MomentType.FRAME, MomentType.MARK), w.map { it.type })
+        val m = MomentResolver(src).resolve(listOf(MomentId.format(sec + 3))).single()
+        assertEquals(MomentType.MARK, m.type); assertTrue("no photo, never invented", m.frames.isEmpty() && m.memories.isEmpty())
+        assertEquals(listOf("voice"), m.marks.map { it.code }); assertEquals(ms + 3000, m.startMs)
+        assertTrue("a second with neither is still not a Moment", MomentResolver(src).resolve(listOf(MomentId.format(sec + 4))).isEmpty())
+    }
+
+    @Test fun aSecondWithAFrameAndAMarkIsAFrameMoment() = runBlocking<Unit> {
+        val src = FakeSource(frames = listOf(f("a", ms + 5)), marks = listOf(MomentMark("L", ms + 500, "k", "tap")))
+        assertEquals(MomentType.FRAME, MomentResolver(src).resolve(listOf(MomentId.format(sec))).single().type)
+        assertEquals(MomentType.FRAME, MomentResolver(src).window(ms, ms + 999, 5).single().type)
+    }
+
+    @Test fun theNewestNCountsMarkSecondsToo() = runBlocking<Unit> {
+        val src = FakeSource(frames = listOf(f("a", ms), f("b", ms + 1000)), marks = listOf(MomentMark("L1", ms + 5000, "k", "tap"), MomentMark("L2", ms - 5000, "k", "tap")))
+        assertEquals(listOf(MomentId.format(sec + 1), MomentId.format(sec + 5)), MomentResolver(src).window(ms - 9000, ms + 9000, 2).map { it.id })
+    }
+
+    @Test fun theCodeOfAMarkIsPartOfTheContentHash() = runBlocking<Unit> {
+        fun hash(code: String) = runBlocking { MomentResolver(FakeSource(marks = listOf(MomentMark("L", ms, "k", code)))).resolve(listOf(MomentId.format(sec))).single().contentHash }
+        assertTrue(hash("tap") == hash("tap")); assertNotEquals(hash("tap"), hash("voice"))
     }
 
     @Test fun resolveKeepsTheRequestedOrderDropsMissingAndBadIds() = runBlocking<Unit> {
@@ -62,13 +84,13 @@ class MomentResolverTest {
 
     @Test fun hashMovesWhenAnyMemberOrItsRevisionMoves() = runBlocking<Unit> {
         suspend fun hash(src: FakeSource) = MomentResolver(src).resolve(listOf(MomentId.format(sec))).single().contentHash
-        val base = FakeSource(frames = listOf(f("a", ms)), memories = listOf("a" to MomentRef("m1", "v1")), marks = listOf(MomentMark("L", ms, "k1")))
+        val base = FakeSource(frames = listOf(f("a", ms)), memories = listOf("a" to MomentRef("m1", "v1")), marks = listOf(MomentMark("L", ms, "k1", "tap")))
         val h = hash(base)
         assertNotEquals("a late frame", h, hash(FakeSource(base.frames + f("b", ms + 1), base.memories, base.marks)))
         assertNotEquals("a frame revision", h, hash(FakeSource(listOf(f("a", ms, "r2")), base.memories, base.marks)))
         assertNotEquals("a memory revision", h, hash(FakeSource(base.frames, listOf("a" to MomentRef("m1", "v2")), base.marks)))
         assertNotEquals("a new memory", h, hash(FakeSource(base.frames, base.memories + ("a" to MomentRef("m3", "v1")), base.marks)))
-        assertNotEquals("a corrected mark", h, hash(FakeSource(base.frames, base.memories, listOf(MomentMark("L", ms, "k2")))))
+        assertNotEquals("a corrected mark", h, hash(FakeSource(base.frames, base.memories, listOf(MomentMark("L", ms, "k2", "tap")))))
         assertNotEquals("a removed mark", h, hash(FakeSource(base.frames, base.memories, emptyList())))
         assertNotEquals("a removed frame changes the member count too", h, hash(FakeSource(listOf(f("a", ms), f("q", ms + 9)), base.memories, base.marks)))
     }
@@ -76,7 +98,7 @@ class MomentResolverTest {
     @Test fun partsAreNotConfusableAcrossKinds() = runBlocking<Unit> {
         suspend fun hash(src: FakeSource) = MomentResolver(src).resolve(listOf(MomentId.format(sec))).single().contentHash
         val a = hash(FakeSource(frames = listOf(f("a", ms)), memories = listOf("a" to MomentRef("x", "v"))))
-        val b = hash(FakeSource(frames = listOf(f("a", ms)), marks = listOf(MomentMark("x", ms, "v"))))
+        val b = hash(FakeSource(frames = listOf(f("a", ms)), marks = listOf(MomentMark("x", ms, "v", "tap"))))
         assertNotEquals(a, b)
     }
 

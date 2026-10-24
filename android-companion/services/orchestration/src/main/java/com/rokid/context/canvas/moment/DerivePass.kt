@@ -96,7 +96,8 @@ class DeriveInputs(private val db: ContextDatabase) {
     private suspend fun momentLines(id: String): List<String> {
         val parts = db.momentDao().parts(id)
         val memories = db.memoryViewDao().byIds(parts.filter { it.kind == MomentPartKind.MEMORY }.map { it.refId }).filter { it.reviewState == ReviewState.OK }.sortedBy { it.id }.map { it.text }
-        val marks = parts.filter { it.kind == MomentPartKind.MARK }.sortedBy { it.refId }.mapNotNull { db.canvasSlice3Dao().label(it.refId)?.name }
+        // only an INTENT word is words: a plain mark is named MOMENT, which says nothing, so a MARK Moment with no intent word and no memory has no visible text and gets no model call
+        val marks = parts.filter { it.kind == MomentPartKind.MARK }.sortedBy { it.refId }.mapNotNull { db.canvasSlice3Dao().label(it.refId)?.takeIf { l -> l.kind == com.rokid.context.canvas.marks.MarkRecorder.KIND_INTENT }?.name }
         return memories + marks
     }
 

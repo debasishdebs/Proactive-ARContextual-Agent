@@ -126,6 +126,17 @@ class CanvasBackendImplTest {
         Role.entries.filter { it != Role.EMBED }.forEach { ai.bindings.set(RoleBinding(it, "az", "gpt")).getOrThrow() }
     }
 
+    @Test fun theMomentListHasTheTypeAndAMarkMomentHasNoPhoto() = runBlocking<Unit> {
+        val db = MemoryGraph.get(app).db
+        val e = com.rokid.context.memory.db.DeletionEpoch("i", 1, 0)
+        db.canvasSlice3Dao().insertLabelFenced(com.rokid.context.memory.db.CanvasLabelEntity("mk:1:1", "MOMENT", "voice", "MOMENT", 1_761_000_000_500L, createdAt = 1), com.rokid.context.memory.db.DaoFence(0, e, { 0 }, { e }))
+        db.frameDao().insertIgnore(FrameEntity("f1", 1_761_000_005_000L, "/f1.jpg", "rokid"))
+        val rows = backend.moments(0, 1_761_000_100_000L, 10).map { it as kotlinx.serialization.json.JsonObject }
+        assertEquals(listOf("MARK", "FRAME"), rows.map { (it["type"] as kotlinx.serialization.json.JsonPrimitive).content })
+        assertEquals(listOf("0", "1"), rows.map { (it["photos"] as kotlinx.serialization.json.JsonPrimitive).content })
+        assertEquals(listOf("1", "0"), rows.map { (it["marks"] as kotlinx.serialization.json.JsonPrimitive).content })
+    }
+
     /** A sealed JPEG in the archive and its `frame` row; the source starts with "rokid" like real frames. */
     private fun seed(id: String, ts: Long): FrameEntity {
         val file = File(tmp.root, "rokid_${ts}_$id.jpg").apply { writeBytes(FrameImages.forDisk(jpeg)) }

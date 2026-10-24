@@ -36,6 +36,8 @@ class MarkRecorder(
     private val log: (String) -> Unit = {},
     /** Called (never blocking) with the phone-clock time of every mark or intent that was actually stored, so the Moment builder trigger can attach it to its second. */
     private val onRecorded: (Long) -> Unit = {},
+    /** Called (never blocking) with the phone-clock time of a mark that was undone or re-tagged, so the Moment of that second is rebuilt (a MARK Moment goes with its mark; the code follows the tag). */
+    private val onChanged: (Long) -> Unit = {},
 ) {
     private val lock = Mutex()
     private class Listen(val startAt: Long, var bound: String? = null, val glasses: Boolean = true)
@@ -66,7 +68,9 @@ class MarkRecorder(
         val f = fence()
         if (m.undo != null) {
             val target = "mk:${m.epoch}:${m.undo}"
+            val at = dao.label(target)?.atMs
             dao.deleteLabel(target); dao.deleteLabel("$target:i")
+            at?.let(onChanged)
             unjoined.removeAll { it.id == target }
             if (listen?.bound == target) listen?.bound = null
             log("mark undone")
@@ -101,7 +105,9 @@ class MarkRecorder(
             VoiceMark.Undo -> {
                 val target = momentId ?: l.bound ?: newestUndoable(nowMs)
                 if (target != null) {
+                    val at = dao.label(target)?.atMs
                     dao.deleteLabel(target); dao.deleteLabel("$target:i")
+                    at?.let(onChanged)
                     unjoined.removeAll { it.id == target }
                     if (l.bound == target) l.bound = null
                     momentId = null
@@ -114,13 +120,13 @@ class MarkRecorder(
     /** The utterance was an ordinary question: a tap mark bound to this listen stays, flagged `ask_tap` (excluded from recall by default). */
     suspend fun onAsk(glasses: Boolean) = lock.withLock {
         val l = listen?.takeIf { it.glasses && glasses } ?: return@withLock
-        l.bound?.let { dao.retagLabel(it, SRC_ASK_TAP) }
+        l.bound?.let { id -> val at = dao.label(id)?.atMs; dao.retagLabel(id, SRC_ASK_TAP); at?.let(onChanged) }
     }
 
     private suspend fun ensureMoment(l: Listen, f: DaoFence, source: String, already: String?, intent: String?, nowMs: Long): String? {
         val id = already ?: l.bound ?: "vm:${l.startAt}:${if (l.glasses) 'g' else 'p'}"
         if (already == null) {
-            if (l.bound != null) dao.retagLabel(id, source)
+            if (l.bound != null) { val at = dao.label(id)?.atMs; dao.retagLabel(id, source); at?.let(onChanged) }
             else if (dao.insertLabelFenced(CanvasLabelEntity(id, KIND_MOMENT, source, MOMENT, l.startAt, provenance = "clock:receipt", deletionCounter = f.now().counter, createdAt = wallClock()), f)) onRecorded(l.startAt)
         }
         if (intent != null && dao.label("$id:i") == null) {

@@ -13,7 +13,7 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * The production caller of [MomentBuilder] (nothing else in the app builds stored Moments). Three triggers feed it: a frame commit ([onFrameCommitted]), a recorded mark
+ * The production caller of [MomentBuilder] (nothing else in the app builds stored Moments). Three triggers feed it: a frame commit ([onFrameCommitted]), a recorded, undone or re-tagged mark
  * ([onMarkRecorded]) and a periodic cadence ([rebuildRecent], the current and the previous hour, run by `MomentCadenceWorker`).
  *
  * - **Off the calling thread, no disk I/O on it:** the two `on...` calls only add a second id to an in-memory set (non-blocking) and make sure ONE drain coroutine is running on [scope]
@@ -32,6 +32,8 @@ class MomentBuildTrigger(
     private val enabled: () -> Boolean,
     private val scope: CoroutineScope,
     private val debounceMs: Long = DEBOUNCE_MS,
+    /** Runs at the start of every cadence tick before the window rebuild: the one-time catch-up of existing marks (it stores its own done-marker and does nothing afterwards). */
+    private val catchUp: suspend (Long) -> Unit = {},
 ) {
     private val lock = Any()
     private val pending = LinkedHashSet<String>()
@@ -107,6 +109,7 @@ class MomentBuildTrigger(
     /** The cadence: rebuilds every second of the previous and the current hour (phone clock) and drops stored Moments of it that no longer qualify. */
     suspend fun rebuildRecent(nowMs: Long): MomentBuilder.Report {
         if (!enabled()) return MomentBuilder.Report.NONE
+        try { catchUp(nowMs) } catch (e: CancellationException) { throw e } catch (e: Exception) { failureCount.incrementAndGet() } // unset marker: the next tick retries; the rebuild below must not wait on it
         val hour = Math.floorDiv(nowMs, HOUR_MS) * HOUR_MS
         return rebuild(hour - HOUR_MS, nowMs)
     }
@@ -133,6 +136,7 @@ object MomentTriggers {
             MomentBuildTrigger(
                 build = builder::build, rebuild = builder::rebuildWindow, enabled = { MomentStoreSwitch.DEFAULT_ENABLED },
                 scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+                catchUp = { builder.catchUpMarks(it) },
             )
         }.also { instance = it }
     }

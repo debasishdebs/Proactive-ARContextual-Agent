@@ -44,8 +44,8 @@ class MomentBuilderTest {
         )
     }
 
-    @Test fun aSecondWithoutALivePhotoIsNotAMomentAndAForgottenPhotoDoesNotCount() = runBlocking<Unit> {
-        fx.mark("L", MS + 3000); fx.memory("m", null, createdAt = MS + 3000)
+    @Test fun aSecondWithNeitherALivePhotoNorAMarkIsNotAMomentAndAForgottenPhotoDoesNotCount() = runBlocking<Unit> {
+        fx.memory("m", null, createdAt = MS + 3000)
         fx.frame("t", MS + 1); db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("t", 1))
         assertEquals(0, builder.build(listOf(MomentId.format(SEC + 3), id)).stored)
         assertTrue(db.momentDao().allMoments().isEmpty())

@@ -22,9 +22,9 @@ class MomentFixture(val db: ContextDatabase) {
     }
     suspend fun memory(id: String, frameId: String?, derived: Boolean = false, createdAt: Long = 1) =
         db.memoryDao().insert(MemoryEntity(id, frameId, "text of $id", "note", "", MemoryTier.SHORT, 0.8, ReviewState.OK, false, createdAt, derived, "text of $id"))
-    suspend fun mark(id: String, atMs: Long) {
+    suspend fun mark(id: String, atMs: Long, source: String = "tap", kind: String = "MOMENT", name: String = "X") {
         val e = DeletionEpoch("i", 1, 0)
-        db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity(id, "MOMENT", "tap", "X", atMs, createdAt = 1), DaoFence(0, e, { 0 }, { e }))
+        db.canvasSlice3Dao().insertLabelFenced(CanvasLabelEntity(id, kind, source, name, atMs, createdAt = 1), DaoFence(0, e, { 0 }, { e }))
     }
     suspend fun ask(id: String, citesFrame: String) = db.askDao().upsert(AskEntity(id, 1, "q", "a", "[\"frame:$citesFrame\"]", null, "test", false))
 

@@ -58,6 +58,10 @@ class MomentRebuildEqualityTest {
         seed(); builder.rebuildWindow(MS, MS + 20_000)
         db.forgetDao().insertTombstone(com.rokid.context.memory.db.ForgetTombstoneEntity("c", 1)) // the photo of second +9 is forgotten
         builder.rebuildWindow(MS, MS + 20_000)
-        assertEquals(setOf(MomentId.format(SEC), MomentId.format(SEC + 1)), db.momentDao().allMoments().map { it.momentId }.toSet())
+        // the photo of second +9 is gone, its mark (L9) is not: the second is now a MARK Moment (a mark alone makes a Moment); a second with nothing left would be dropped
+        assertEquals(setOf(MomentId.format(SEC), MomentId.format(SEC + 1), MomentId.format(SEC + 9)), db.momentDao().allMoments().map { it.momentId }.toSet())
+        assertEquals(com.rokid.context.memory.moment.MomentType.MARK, db.momentDao().moment(MomentId.format(SEC + 9))!!.momentType)
+        db.canvasSlice3Dao().deleteLabel("L9"); builder.rebuildWindow(MS, MS + 20_000)
+        assertEquals("with its mark gone too, nothing holds the second", setOf(MomentId.format(SEC), MomentId.format(SEC + 1)), db.momentDao().allMoments().map { it.momentId }.toSet())
     }
 }

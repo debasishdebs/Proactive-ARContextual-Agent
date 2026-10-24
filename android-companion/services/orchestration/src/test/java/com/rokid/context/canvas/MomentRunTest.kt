@@ -108,7 +108,7 @@ class MomentRunTest {
         val items = kotlinx.serialization.json.Json.parseToJsonElement(payload).jsonObject.getValue("items").jsonArray
         assertEquals(listOf("i0", "i1"), items.map { it.jsonObject.getValue("id").jsonPrimitive.content })
         val first = items[0].jsonObject.getValue("input").jsonObject
-        assertEquals(setOf("itemType", "momentId", "contentRev", "contentHash", "startMs", "photos", "sensor"), first.keys)
+        assertEquals(setOf("itemType", "momentId", "contentRev", "contentHash", "startMs", "type", "photos", "marks", "sensor"), first.keys)
         assertEquals("moment", first.getValue("itemType").jsonPrimitive.content)
         assertEquals(m0, first.getValue("momentId").jsonPrimitive.content)
         assertEquals(ms.toString(), first.getValue("startMs").jsonPrimitive.content)
@@ -125,7 +125,7 @@ class MomentRunTest {
         val before = h.db.openHelper.readableDatabase.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { c -> generateSequence { if (c.moveToNext()) c.getString(0) else null }.toList() }
         resolver().window(0, ms * 2, 50); resolver().resolve(listOf(m0))
         val after = h.db.openHelper.readableDatabase.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { c -> generateSequence { if (c.moveToNext()) c.getString(0) else null }.toList() }
-        assertEquals(before, after); assertEquals(12, h.db.openHelper.readableDatabase.version)
+        assertEquals(before, after); assertEquals(13, h.db.openHelper.readableDatabase.version)
         // v9 added the stored-Moment tables; the derived resolver and the run path write none of them (only the builder does, and it is not called here).
         listOf("moment", "moment_part", "moment_tombstone", "moment_trace_dep", "cleanup_outbox", "object_audit", "object_derived", "scene", "scene_part", "moment_sensor").forEach { t -> assertEquals(t, 0, h.db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $t").use { c -> c.moveToFirst(); c.getInt(0) }) }
     }
