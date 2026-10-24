@@ -44,14 +44,14 @@ class CanvasRepositoryTest {
     @Test fun builtInsSeededAndRefreshed() = runBlocking<Unit> {
         repo.ensureBuiltIns()
         val all = repo.list()
-        assertEquals(setOf("live-extract", "intent-draft"), all.map { it.id }.toSet())
+        assertEquals(setOf("live-extract", "intent-draft", "default-capture"), all.map { it.id }.toSet())
         assertTrue(all.all { it.builtIn && it.draftRev == 0 })
         val intent = PipelineJson.decode(repo.get("intent-draft")!!.draftJson).getOrThrow()
         assertTrue(PipelineJson.encode(intent).contains("SEED for VISION_EXTRACT"))
         // overwritten each call: a changed seed shows up, and nothing is duplicated
         val again = CanvasRepository(dao, { "NEW SEED" }, { now++ }, { "x" })
         again.ensureBuiltIns()
-        assertEquals(2, again.list().size)
+        assertEquals(3, again.list().size)
         assertTrue(again.get("intent-draft")!!.draftJson.contains("NEW SEED"))
         assertFalse(again.get("intent-draft")!!.draftJson.contains("SEED for"))
     }
@@ -90,6 +90,20 @@ class CanvasRepositoryTest {
         assertEquals(before, repo.get("live-extract")!!.draftJson)
         assertFalse(repo.delete("live-extract"))
         assertNotNull(repo.get("live-extract"))
+    }
+
+    @Test fun defaultCaptureIsABuiltInThatDuplicatesAndNeverDeletes() = runBlocking<Unit> {
+        repo.ensureBuiltIns()
+        val dc = repo.get("default-capture")!!
+        assertTrue(dc.builtIn); assertEquals("Default capture", dc.name)
+        assertEquals(CanvasRepository.SaveResult.ReadOnly, repo.saveDraft("default-capture", dc.draftJson, 0))
+        assertFalse(repo.delete("default-capture"))
+        assertNotNull(repo.get("default-capture"))
+        assertTrue(dao.activePublishes().isEmpty()) // existing as a pipeline activates nothing
+        val copy = repo.duplicate("default-capture", null, "My capture")
+        val c = repo.get(copy)!!
+        assertFalse(c.builtIn)
+        assertEquals(DefaultPipelines.defaultCapture().copy(id = copy, name = "My capture"), PipelineJson.decode(c.draftJson).getOrThrow())
     }
 
     @Test fun unreadableNotSaved() = runBlocking<Unit> {
