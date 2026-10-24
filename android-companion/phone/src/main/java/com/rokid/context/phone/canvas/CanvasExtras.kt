@@ -70,6 +70,7 @@ class CanvasExtras(val extras: List<ApiExtra>, val replay: ReplayService, privat
                 add(ApiExtra(traces::handle)); add(ApiExtra(replays::handle))
                 if (sweeps != null) SweepRoutes(sweeps).let { add(ApiExtra(it::handle)) }
                 add(ApiExtra(planRoutes::handle))
+                add(ApiExtra(com.rokid.context.phone.canvas.api.ExprRoutes()::handle))
             }
             return CanvasExtras(all, replay, startup, sweeps)
         }
