@@ -3,6 +3,7 @@ package com.rokid.context.canvas
 import com.rokid.context.ai.ModelCallException
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoutedReply
+import com.rokid.context.ai.canvas.ExtractComposite
 import com.rokid.context.ai.canvas.LocalTrust
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.PipelineNode
@@ -61,7 +62,7 @@ private fun ceilDiv(n: Int, d: Int) = (n + d - 1) / d
 object VisionExtractExecutor : NodeExecutor {
     override val type = NodeTypes.VISION_EXTRACT
 
-    private fun batch(node: PipelineNode) = (node.params["batch"] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.coerceIn(1, ExtractSave.MAX_BATCH) ?: 1
+    private fun batch(node: PipelineNode) = (node.params["batch"] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull?.coerceIn(1, ExtractSave.MAX_BATCH) ?: ExtractComposite.DEFAULT_BATCH
 
     override fun chunkSize(node: PipelineNode) = batch(node)
     override fun nominalCalls(node: PipelineNode, items: Int) = ceilDiv(items, batch(node))

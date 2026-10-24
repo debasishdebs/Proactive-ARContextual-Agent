@@ -11,7 +11,8 @@ import kotlinx.serialization.json.doubleOrNull
 data class InnerNode(val id: String, val label: String, val kind: String)
 data class InnerWire(val from: String, val to: String, val port: String = "")
 data class InnerExposed(val param: String, val node: String)
-data class InnerFlow(val nodes: List<InnerNode>, val wires: List<InnerWire>, val exposed: List<InnerExposed>)
+/** [note] are short lines drawn under the boxes: what a read-only composite cannot show as boxes (empty for gate.local_critic). */
+data class InnerFlow(val nodes: List<InnerNode>, val wires: List<InnerWire>, val exposed: List<InnerExposed>, val note: List<String> = emptyList())
 
 /**
  * The rule of `gate.local_critic`, parameterised. At the defaults it is exactly `ExtractFollowUp.locallyTrusted(CriticWorker(), ..)`:
@@ -70,5 +71,35 @@ object LocalTrust {
             InnerWire("compare", "trusted", "yes"), InnerWire("compare", "unsure", "no"),
         ),
         exposed = listOf(InnerExposed("aggregate", "aggregate"), InnerExposed("operator", "compare"), InnerExposed("cutoff", "cutoff")),
+    )
+}
+
+/**
+ * `ai.vision_extract` ("Facts from frames"), phase B. A VIEW of `VisionExtractExecutor` and `ExtractSave.extract`: nothing here runs.
+ * The one real setting that is safe to show inline is `batch` (frames per model call); an absent `batch` is [DEFAULT_BATCH], as in the executor.
+ * `prompt` (live or draft) is a real setting too but its editor needs the prompt list, so it stays in the inspector and its box is read-only.
+ */
+object ExtractComposite {
+    const val DEFAULT_BATCH = 1
+
+    val inner = InnerFlow(
+        nodes = listOf(
+            InnerNode("frames", "Frames in", "source"),
+            InnerNode("batch", "Frames per call", "op"),
+            InnerNode("prompt", "Vision prompt", "op"),
+            InnerNode("model", "Model call", "op"),
+            InnerNode("retry", "Retry one by one", "op"),
+            InnerNode("parse", "Parse facts", "op"),
+        ),
+        wires = listOf(
+            InnerWire("frames", "batch"), InnerWire("batch", "prompt"), InnerWire("prompt", "model"),
+            InnerWire("model", "retry", "bad batch"), InnerWire("model", "parse", "valid"), InnerWire("retry", "parse"),
+        ),
+        exposed = listOf(InnerExposed("batch", "batch")),
+        note = listOf(
+            "Read only except the batch size: the vision prompt (live or draft) is chosen in the inspector.",
+            "A batch of several frames that the model answers invalidly is asked again one frame per call.",
+            "Facts are matched to their frames by source_frame_ids; each frame keeps at most one caption.",
+        ),
     )
 }

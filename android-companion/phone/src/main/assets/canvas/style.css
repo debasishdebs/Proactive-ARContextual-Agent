@@ -191,6 +191,7 @@ table.results td, table.results th { white-space: nowrap; }
 .comp-field { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #111; }
 .comp-field input, .comp-field select { width: 100%; min-width: 0; box-sizing: border-box; }
 .comp-box.read-only .expr-box-body { stroke-dasharray: 4 3; }
+.comp-note { font-size: 12px; fill: currentColor; }
 .comp-errs { margin: 4px 0 0; text-align: left; }
 
 /* merged multi-pipeline view (read only): lanes as bands, one colour per pipeline, a name pill on each node */

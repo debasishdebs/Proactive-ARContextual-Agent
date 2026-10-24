@@ -100,7 +100,7 @@ export const tests = {
   },
   aCompositeStaysACollapsedAmberCard() {
     const m = build(live());
-    eq(node(m, 'live-extract::trust').composite, true); eq(node(m, 'live-extract::extract').composite, false);
+    eq(node(m, 'live-extract::trust').composite, true); eq(node(m, 'live-extract::extract').composite, true); eq(node(m, 'live-extract::critic').composite, false);
   },
   idsAreParsedDedupedAndTheCaptureShortcutAddsTheBuiltIn() {
     eq(parseIds(''), []); eq(parseIds(null), []); eq(parseIds('a,,b, a ,c'), ['a', 'b', 'c']);

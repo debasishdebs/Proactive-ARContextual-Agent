@@ -1,4 +1,5 @@
 import { toFlow, canConnect, applyChange, edgeFromId, lanesOf, bindingsOf, CELL_W, CELL_H, LANE_GAP, CARD_W, CARD_H, MIN_GAP } from '../../main/assets/canvas/flowadapter.js';
+import { layout as innerLayout } from '../../main/assets/canvas/compositeview.js';
 import { nodeTypes, allTypes, capturePipe, livePipe, liveCells, eq, ok } from './fixtures.js';
 
 const layout = { layers: 5, columns: 1, cells: liveCells };
@@ -46,7 +47,16 @@ export const tests = {
     eq(c.data.composite.inner.nodes.length, 6);
     eq(c.data.composite.descriptors.map((d) => d.name), ['aggregate', 'operator', 'cutoff']);
     eq(c.data.composite.params, {});
-    for (const n of f.nodes.filter((x) => x.id !== 'trust')) eq(n.data.composite, null, n.id + ' is plain');
+    for (const n of f.nodes.filter((x) => !['trust', 'extract'].includes(x.id))) eq(n.data.composite, null, n.id + ' is plain');
+  },
+  anExpandedFactsFromFramesCardCountsItsNoteAndPushesTheRestDown() {
+    const f = flow(null, null, { expanded: { extract: true } }); noOverlap(f); labelRoom(f);
+    const ex = node(f, 'extract');
+    eq(ex.data.composite.inner.exposed.map((e) => e.param), ['batch']);
+    const L = innerLayout(ex.data.composite.inner);
+    ok(L.height > innerLayout({ ...ex.data.composite.inner, note: [] }).height, 'the note is part of the inner height');
+    ok(ex.data.cardH >= CARD_H + L.height, 'the card is as tall as its inner flow with the note');
+    ok(node(f, 'trust').position.y >= ex.position.y + ex.data.cardH + MIN_GAP, 'the next node is below the expanded card');
   },
 
   protoKeyIdsDontCrash() {
