@@ -162,6 +162,29 @@ class ExecutorsTest {
 
     // ---- critics ----
 
+    private fun lcParams(agg: String? = null, op: String? = null, cut: Double? = null) = buildJsonObject {
+        agg?.let { put("aggregate", it) }; op?.let { put("operator", it) }; cut?.let { put("cutoff", it) }
+    }
+    private suspend fun lcBranches(params: JsonObject, vararg conf: List<Double>) = exec(NodeTypes.LOCAL_CRITIC).run(
+        node(NodeTypes.LOCAL_CRITIC, params),
+        conf.mapIndexed { i, c -> item("i$i", CanvasValue.Extraction(c.map { Fact("f", "object", it, emptyList()) }, emptyList())) }, ctx { "" },
+    ).map { it.branch }
+
+    @Test fun localCriticReadsItsExposedParams() = runBlocking<Unit> {
+        val facts = listOf(0.9, 0.5) // mean 0.7
+        assertEquals(listOf("trusted"), lcBranches(lcParams(), facts))
+        assertEquals(listOf("unsure"), lcBranches(lcParams(agg = "min"), facts))
+        assertEquals(listOf("trusted"), lcBranches(lcParams(agg = "max"), listOf(0.9, 0.1)))
+        assertEquals(listOf("unsure"), lcBranches(lcParams(cut = 0.8), listOf(0.75)))
+        assertEquals(listOf("unsure"), lcBranches(lcParams(op = ">"), listOf(0.7)))
+        assertEquals(listOf("trusted", "trusted"), lcBranches(lcParams(agg = "min", cut = 1.0, op = ">"), emptyList(), emptyList()))
+    }
+
+    @Test fun localCriticWithExplicitDefaultsEqualsNoParams() = runBlocking<Unit> {
+        val lists = listOf(listOf(0.9), listOf(0.3), listOf(0.7), listOf(0.69, 0.71), emptyList())
+        assertEquals(lcBranches(lcParams(), *lists.toTypedArray()), lcBranches(lcParams("mean", ">=", 0.70), *lists.toTypedArray()))
+    }
+
     @Test fun localCriticBranches() = runBlocking<Unit> {
         val c = ctx { "" }
         val r = exec(NodeTypes.LOCAL_CRITIC).run(

@@ -3,6 +3,7 @@ package com.rokid.context.canvas
 import com.rokid.context.ai.ModelCallException
 import com.rokid.context.ai.Role
 import com.rokid.context.ai.RoutedReply
+import com.rokid.context.ai.canvas.LocalTrust
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PromptSource
@@ -14,7 +15,6 @@ import com.rokid.context.ai.run.RoleCall
 import com.rokid.context.ai.schema.JsonSchemaValidator
 import com.rokid.context.ai.schema.ModelJson
 import com.rokid.context.ai.schema.StructuredOutput
-import com.rokid.context.domain.summary.CriticWorker
 import com.rokid.context.model.ModelRequest
 import com.rokid.context.orchestration.CallUsage
 import com.rokid.context.orchestration.ExtractFollowUp
@@ -104,8 +104,9 @@ object LocalCriticExecutor : NodeExecutor {
     override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
 
     override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> = items.map {
+        val settings = LocalTrust.settings(node.params) // absent params: today's mean >= 0.70 (see LocalTrust)
         val v = it.value as? CanvasValue.Extraction ?: return@map NodeResult(it.frameId, null, error = "BAD_INPUT")
-        val trusted = ExtractFollowUp.locallyTrusted(CriticWorker(), "${ctx.runId}:${it.frameId}", v.facts)
+        val trusted = LocalTrust.decide(v.facts.map { f -> f.confidence }, settings)
         NodeResult(it.frameId, v.copy(trusted = trusted), branch = if (trusted) "trusted" else "unsure")
     }
 }

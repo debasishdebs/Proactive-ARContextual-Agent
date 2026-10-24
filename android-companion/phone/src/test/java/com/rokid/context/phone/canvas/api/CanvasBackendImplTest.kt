@@ -336,6 +336,16 @@ class CanvasBackendImplTest {
 
     private val slice2Types = listOf("input.photos", "ai.vision_extract", "gate.local_critic", "ai.critic", "ai.prompt", "route.switch", "memory.write")
 
+    @Test fun nodeTypesServeTheInnerFlowOfTheLocalCriticOnly() {
+        val all = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
+        assertEquals(listOf("gate.local_critic"), all.filterValues { "inner" in it }.keys.toList())
+        val inner = all.getValue("gate.local_critic")["inner"]!!.jsonObject
+        assertEquals(setOf("facts", "aggregate", "cutoff", "compare", "trusted", "unsure"), inner["nodes"]!!.jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }.toSet())
+        assertEquals(listOf("aggregate", "operator", "cutoff"), inner["exposed"]!!.jsonArray.map { it.jsonObject["param"]!!.jsonPrimitive.content })
+        val cut = all.getValue("gate.local_critic")["params"]!!.jsonArray.map { it.jsonObject }.first { it["name"]!!.jsonPrimitive.content == "cutoff" }
+        assertEquals(0.7, cut["default"]!!.jsonPrimitive.content.toDouble(), 0.0)
+    }
+
     @Test fun nodeTypesCarryCategory() {
         val all = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
         val types = all.filterKeys { it in slice2Types }
