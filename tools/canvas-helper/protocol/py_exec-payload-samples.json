@@ -1,5 +1,5 @@
 {
-  "_note": "valid payloads must validate; invalid ones must each be refused (reason is documentation). Item ids are opaque indices i0..i49, never frame ids.",
+  "_note": "valid payloads must validate; invalid ones must each be refused (reason is documentation). Item ids are opaque indices i0..i49, never frame ids. momentItems: the Moment-lite item shape (momentId, contentRev, contentHash, startMs, photos:[{tsMs}] with capture times only, sensor:null): no frame ids, no refs, no bytes.",
   "valid": [
     {
       "name": "oneItem",
@@ -503,6 +503,69 @@
               "items": {
                 "type": "number"
               }
+            }
+          },
+          "additionalProperties": false
+        },
+        "limits": {
+          "perItemMs": 5000,
+          "jobMs": 120000
+        }
+      }
+    },
+    {
+      "name": "momentItems",
+      "payload": {
+        "helperProtocol": 1,
+        "jobType": "py_exec",
+        "source": "def run(x):\n    return {'n': len(x['photos'])}\n",
+        "entry": "run",
+        "items": [
+          {
+            "id": "i0",
+            "input": {
+              "itemType": "moment",
+              "momentId": "69011b80",
+              "contentRev": 2,
+              "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "startMs": 1761000000000,
+              "photos": [
+                {
+                  "tsMs": 1761000000010
+                },
+                {
+                  "tsMs": 1761000000900
+                }
+              ],
+              "sensor": null
+            }
+          },
+          {
+            "id": "i1",
+            "input": {
+              "itemType": "moment",
+              "momentId": "69011b85",
+              "contentRev": 1,
+              "contentHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "startMs": 1761000005000,
+              "photos": [
+                {
+                  "tsMs": 1761000005000
+                }
+              ],
+              "sensor": null
+            }
+          }
+        ],
+        "outSchema": {
+          "type": "object",
+          "required": [
+            "n"
+          ],
+          "properties": {
+            "n": {
+              "type": "integer",
+              "minimum": 0
             }
           },
           "additionalProperties": false
