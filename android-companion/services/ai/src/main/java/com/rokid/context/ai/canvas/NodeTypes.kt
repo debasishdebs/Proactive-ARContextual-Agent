@@ -58,6 +58,7 @@ object NodeTypes {
     const val SWITCH = "route.switch"
     const val MEMORY_WRITE = "memory.write"
 
+    const val EXPR_GUARD = "expr.guard"
     const val IMU_HEAD_MOTION = "imu.head_motion"
     const val IMU_SETTLE = "imu.settle"
     const val GATE_THRESHOLD = "gate.threshold"
@@ -104,6 +105,9 @@ object NodeTypes {
             category = Category.SENSORS, short = "settle", params = CaptureParams.settle),
         NodeType(GATE_THRESHOLD, "Threshold", setOf(PortType.MOTION_EVENT), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
             category = Category.THRESHOLDS_FILTERS, short = "thresh", params = CaptureParams.threshold),
+        // E1 expression guard: the whole two-level graph is the one `graph` param (validated, no generated form: the editor is X5). SHADOW/TRIAL only.
+        NodeType(EXPR_GUARD, "Guard (expression)", setOf(PortType.MOTION_EVENT), PortType.MOTION_EVENT, sinceSchema = 2, domain = Domain.RT_GLASSES,
+            category = Category.THRESHOLDS_FILTERS, executor = ExecutorKind.EXPR, short = "guard", params = ExprParams.guard, liveable = false, cost = CostSpec(rtOps = 1)),
         NodeType(GATE_NOVELTY, "Novelty", setOf(PortType.MOTION_EVENT), PortType.TRIGGER, sinceSchema = 2, domain = Domain.RT_GLASSES,
             category = Category.THRESHOLDS_FILTERS, short = "novelty", params = CaptureParams.novelty),
         NodeType(HUB_CONTEXT, "Motion from context hub", emptySet(), PortType.CONTEXT, sinceSchema = 2, domain = Domain.RT_PHONE,
