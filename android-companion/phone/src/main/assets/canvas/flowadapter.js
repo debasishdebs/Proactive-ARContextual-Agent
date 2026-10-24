@@ -1,8 +1,12 @@
 // Pipeline model <-> React Flow view model. Pure: no React, no DOM. React Flow never owns the data.
 import { addNode, removeNode, connect, disconnect, setParam, setTitle } from './graph.js';
+import { layout as innerLayout } from './compositeview.js';
 import { portLabel, problemsByNode, edgeKey, typeOf, own, isPhotosBinding } from './validate.js';
 
 export const CELL_W = 220, CELL_H = 120, LANE_GAP = 40;
+/** A collapsed card is CARD_H tall (style.css pins the same number) and a layer is at least CARD_H + MIN_GAP: the gap holds the edge label. */
+export const CARD_W = 180, CARD_H = 96, MIN_GAP = 24;
+const EXPANDED_PAD = 16;
 
 /** The three rooted domains (S34), left to right; any other domain name follows in order of appearance. */
 export const LANES = [{ domain: 'RT_GLASSES', label: 'Glasses (real time)' }, { domain: 'RT_PHONE', label: 'Phone (real time)' }, { domain: 'ASYNC', label: 'Async (phone)' }];
@@ -14,6 +18,8 @@ const nodeDomain = (n, nt) => {
   if (nt && nt.domainFromParams && n.params && typeof n.params.domain === 'string') return n.params.domain;
   return domainOf(nt);
 };
+/** Real card height: collapsed CARD_H; an expanded composite adds its inner flow (expansion is UI state, passed in as opts.expanded). */
+const heightOf = (n, nt, expanded) => (nt && nt.inner && expanded && expanded[n.id] === true ? CARD_H + innerLayout(nt.inner).height + EXPANDED_PAD : CARD_H);
 const titleOf = (n, nt) => String(n.title || (nt && nt.label) || n.id);
 
 /**
@@ -56,13 +62,22 @@ export function toFlow(pipe, layout, problems, nodeTypes, opts) {
   const by = problemsByNode(problems);
   const warned = problemsByNode(opts && opts.warnings);
   const lm = laneModel(pipe, cells, nodeTypes);
-  const nodes = (pipe.nodes || []).filter((n) => own(cells, n.id)).map((n) => node(n, lm.x ? lm.x(n, cells[n.id].column) : cells[n.id].column * CELL_W, cells[n.id].layer * CELL_H, false));
+  const expanded = (opts && opts.expanded) || {};
+  const hOf = new Map((pipe.nodes || []).map((n) => [n.id, heightOf(n, typeOf(nodeTypes, n.type), expanded)]));
+  // y of each layer: at least CELL_H, taller when a node in the layer is taller than its cell (an expanded composite pushes the layers below it down)
+  const rows = Math.max(layers, 1 + Math.max(-1, ...(pipe.nodes || []).filter((n) => own(cells, n.id)).map((n) => cells[n.id].layer)));
+  const ys = [0];
+  for (let i = 0; i < rows; i++) {
+    const tallest = Math.max(0, ...(pipe.nodes || []).filter((n) => own(cells, n.id) && cells[n.id].layer === i).map((n) => hOf.get(n.id)));
+    ys.push(ys[i] + Math.max(CELL_H, tallest + MIN_GAP));
+  }
+  const nodes = (pipe.nodes || []).filter((n) => own(cells, n.id)).map((n) => node(n, lm.x ? lm.x(n, cells[n.id].column) : cells[n.id].column * CELL_W, ys[cells[n.id].layer], false));
   const pendingIdx = new Map();
   (pipe.nodes || []).filter((n) => !own(cells, n.id)).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .forEach((n) => {
       const d = nodeDomain(n, typeOf(nodeTypes, n.type));
       const i = pendingIdx.get(d) || 0; pendingIdx.set(d, i + 1);
-      nodes.push(node(n, lm.laneX ? lm.laneX(n) + i * CELL_W : nodes.filter((m) => m.data.pending).length * CELL_W, layers * CELL_H, true));
+      nodes.push(node(n, lm.laneX ? lm.laneX(n) + i * CELL_W : nodes.filter((m) => m.data.pending).length * CELL_W, ys[layers], true));
     });
   // Keep the pipeline's node order for stable rendering.
   const order = new Map((pipe.nodes || []).map((n, i) => [n.id, i]));
@@ -82,6 +97,7 @@ export function toFlow(pipe, layout, problems, nodeTypes, opts) {
         title, typeLabel,
         inPorts: nt ? (nt.inputs || []).map(portLabel) : [],
         outPort: nt ? portLabel(nt.output) : '',
+        cardW: CARD_W, cardH: hOf.get(n.id),
         problems: probs.slice(), warnings: warns.slice(), domain: nodeDomain(n, nt), pending, readOnly,
         composite: nt && nt.inner ? { inner: nt.inner, descriptors: nt.params || [], params: n.params || {} } : null,
       },

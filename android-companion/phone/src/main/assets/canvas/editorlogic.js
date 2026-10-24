@@ -241,11 +241,11 @@ export function dropOnPane(ed, type, pos, flowNodes, nodeTypes) {
 // ---------------------------------------------------------------- the view model
 
 /** toFlow plus the editor's selection and connect-mode marks, and the compile marks while they still describe this draft. */
-export function flowFor(ed, nodeTypes) {
+export function flowFor(ed, nodeTypes, expanded) {
   const c = compileView(ed);
   const marks = c && c.state === 'done' && !c.stale ? c : null;
   const problems = marks ? (ed.ds.problems || []).concat(marks.problems.filter((p) => p.nodeId || p.edge)) : ed.ds.problems;
-  const f = toFlow(ed.ds.pipe, ed.ds.layout, problems, nodeTypes, { readOnly: isReadOnly(ed), warnings: marks ? marks.warnings.filter((w) => w.nodeId) : [] });
+  const f = toFlow(ed.ds.pipe, ed.ds.layout, problems, nodeTypes, { expanded, readOnly: isReadOnly(ed), warnings: marks ? marks.warnings.filter((w) => w.nodeId) : [] });
   const connecting = ed.nav.mode === 'connecting';
   for (const n of f.nodes) {
     n.selected = ed.sel.nodes.includes(n.id);
