@@ -1,5 +1,6 @@
 package com.rokid.context.canvas.moment
 
+import androidx.room.withTransaction
 import com.rokid.context.ai.canvas.NodeTypes
 import com.rokid.context.memory.db.ContextDatabase
 import com.rokid.context.memory.moment.DerivedField
@@ -27,16 +28,25 @@ class SceneInputExecutor(private val db: ContextDatabase) {
     val type = NodeTypes.INPUT_SCENES
     private val audit = ObjectAudit(db.objectDao())
 
+    /** Test seam: runs after the Scenes and their parts were read and before the derived fields are, so a test can commit a Forget in between. Always null in production. */
+    @Volatile internal var testBetweenReads: (suspend () -> Unit)? = null
+
     suspend fun run(fromMs: Long, toMs: Long, limit: Int = MAX_SCENES): List<SceneView> {
         if (toMs < fromMs) return emptyList()
-        val dao = db.sceneDao()
-        val scenes = dao.scenesBetween(fromMs, toMs, limit.coerceIn(1, MAX_SCENES))
-        if (scenes.isEmpty()) return emptyList()
-        val parts = dao.partsOf(scenes.map { it.sceneId }).groupBy { it.sceneId }
-        return scenes.map { s ->
-            val derived = DerivedField.ALL.mapNotNull { f -> audit.readDerived(s, f)?.let { f to it } }.toMap()
-            SceneView(s.sceneId, s.hourStartMs, s.startMs, s.endMs, s.boundaryRule, s.activity, s.startTrigger, s.endTrigger, s.membershipRev,
-                parts[s.sceneId].orEmpty().filter { it.kind == com.rokid.context.memory.db.ScenePartKind.MOMENT }.map { it.refId }, derived)
+        // ONE transaction: the Scenes, their members and their derived fields come from the same state, so a Forget cannot commit between two of the reads (it waits for this one).
+        return db.withTransaction {
+            val dao = db.sceneDao()
+            val scenes = dao.scenesBetween(fromMs, toMs, limit.coerceIn(1, MAX_SCENES))
+            if (scenes.isEmpty()) return@withTransaction emptyList()
+            val parts = dao.partsOf(scenes.map { it.sceneId }).groupBy { it.sceneId }
+            testBetweenReads?.invoke()
+            scenes.map { s ->
+                // a field shows only while it is fresh AND was built from the Scene's current input revision
+                val seq = audit.inputSeq(s)
+                val derived = DerivedField.ALL.mapNotNull { f -> audit.readDerived(s, f)?.takeIf { it.builtRev == seq }?.let { f to it } }.toMap()
+                SceneView(s.sceneId, s.hourStartMs, s.startMs, s.endMs, s.boundaryRule, s.activity, s.startTrigger, s.endTrigger, s.membershipRev,
+                    parts[s.sceneId].orEmpty().filter { it.kind == com.rokid.context.memory.db.ScenePartKind.MOMENT }.map { it.refId }, derived)
+            }
         }
     }
 

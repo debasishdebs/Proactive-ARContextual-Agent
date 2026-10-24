@@ -160,4 +160,21 @@ class SceneBuilderTest {
         assertEquals(listOf(mid(0)), db.sceneDao().parts(sid(0)).map { it.refId })
         assertEquals(0, audit.audit(ObjectRef(ObjectKind.SCENE, sid(0), 1)).count { it.op == AuditOp.FORGOTTEN })
     }
+
+    /** A derive that started for the old Scene must stay refused after the Scene id was removed and later rebuilt with other members: the input revision never goes back. */
+    @Test fun aSceneRecreatedUnderTheSameIdNeverReusesAnInputRevisionOfItsEarlierLife() = runBlocking<Unit> {
+        photo(100); photo(130); rebuild()                                  // SA = {A, B}
+        val sa = ObjectRef(ObjectKind.SCENE, sid(100), 1)
+        val epoch = com.rokid.context.memory.db.DeletionEpoch("i", 1, 0); val fence = com.rokid.context.memory.db.DaoFence(0, epoch, { 0 }, { epoch })
+        val startedAt = audit.inputSeq(sa)                                  // the derive for {A, B} starts here
+        photo(70); rebuild()                                                // an earlier Moment X: SA is replaced by SX = {X, A, B}
+        assertNull(db.sceneDao().scene(sid(100)))
+        db.momentDao().remove(listOf(mid(70), mid(130)), "build")           // X and B go
+        rebuild()                                                           // SA = {A} is rebuilt under the same id
+        assertEquals(listOf(mid(100)), db.sceneDao().parts(sid(100)).map { it.refId })
+        assertTrue("revision must have moved on", audit.inputSeq(sa) > startedAt)
+        val out = audit.writeDerivedGuarded(sa, DerivedField.SUMMARY, "A and B", null, startedAt, fence, startedAt)
+        assertEquals(com.rokid.context.memory.db.ObjectDao.WriteOutcome.STALE_INPUT, out)
+        assertNull(audit.readDerived(sa, DerivedField.SUMMARY))
+    }
 }
