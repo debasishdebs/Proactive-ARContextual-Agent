@@ -40,9 +40,9 @@ class MomentWiringTest {
 
     @Before fun setUp() {
         WorkManagerTestInitHelper.initializeTestWorkManager(ctx)
-        MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx)); MomentTriggers.resetForTests()
+        MemoryGraph.resetForTests(DatabaseFactory.inMemory(ctx)); MomentTriggers.resetForTests(); SceneTriggers.resetForTests()
     }
-    @After fun tearDown() { db.close(); MemoryGraph.resetForTests(null); MomentTriggers.resetForTests() }
+    @After fun tearDown() { db.close(); MemoryGraph.resetForTests(null); MomentTriggers.resetForTests(); SceneTriggers.resetForTests() }
 
     private fun jpg(name: String) = File(ctx.filesDir, name).apply { writeBytes(byteArrayOf(1)) }.absolutePath
     private fun rows(id: String, captured: Long?) = FrameRows(

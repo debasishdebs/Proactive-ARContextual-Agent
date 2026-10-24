@@ -37,6 +37,8 @@ object DeletionGraph {
         w("moment_trace_dep", "reserved trace dependencies of a Moment; empty until a trace writer exists"),
         w("object_audit", "append-only audit of Moment-family objects: ids, op names, times and step names only, no content; deleted with its object and by Delete all"),
         w("object_derived", "derived SUMMARY, CAPTION and EMBEDDING fields of Moment-family objects; deleted with the object and by Delete all"),
+        w("scene", "stored Scenes (a rebuildable grouping of Moments: window, boundary rule, activity, revisions; no text, no photo data)"),
+        w("scene_part", "Scene membership edges: references to Moments (ids and revisions only); also removed one by one when a Moment is forgotten"),
         k("cleanup_outbox", "ids, paths and ranges only, no user content; unacknowledged rows survive Delete all so glasses, laptop and phone-file cleanup still happens; only acknowledged rows are removed"),
         k("canvas_pipeline", "pipelines are user-authored prompts and settings"), k("canvas_pipeline_version", "frozen pipeline versions: prompts"),
         k("canvas_publish", "publish records: hashes and snapshots of prompts, no photo data"),
