@@ -46,6 +46,7 @@ class DeletionGraphWipeTest {
         m.insertTraceDeps(listOf(MomentTraceDepEntity("00000001", "t", 1))); m.insertOutbox(listOf(CleanupOutboxEntity(target = "PHONE_FILE", payloadJson = "{}", createdAt = 1, ackedAt = 5)))
         db.objectDao().appendAudit("MOMENT", "00000001", "BUILT", 1, "build"); db.objectDao().upsertDerived(com.rokid.context.memory.db.ObjectDerivedEntity("MOMENT", "00000001", "SUMMARY", "s", null, 1, null, 1))
         db.sceneDao().replace(SceneEntity("S00000001", 1, 0, 0, 999, "HOUR_END", null, null, null, 1, 1), listOf(ScenePartEntity("S00000001", "MOMENT", "00000001", "r", 0)))
+        m.replaceSensor("00000001", listOf(com.rokid.context.memory.db.MomentSensorEntity("00000001", 5, "t", 1, "OFFSET_ESTIMATED", 1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, "STILL", null, 1, 1)), 1, "build")
         s.forgetRangeTx(100, 200, 1) // writes the forget-range fence into canvas_meta
     }
 

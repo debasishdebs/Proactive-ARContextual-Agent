@@ -91,7 +91,7 @@ class CanvasBackendImpl(
     val helperJobs: com.rokid.context.canvas.helper.HelperJobPort? = null,
     /** Moment-lite: the read-only resolver behind `GET /api/moments` (the runner holds the same one for Moment runs). */
     private val momentResolver: com.rokid.context.canvas.moment.MomentResolver = com.rokid.context.canvas.moment.MomentResolver(
-        com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao()),
+        com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao(), MemoryGraph.get(app).db.momentDao()),
     ),
 ) : CanvasBackend {
     companion object {
@@ -159,7 +159,7 @@ class CanvasBackendImpl(
             val dao = MemoryGraph.get(app).db.canvasDao()
             val repo = CanvasRepository(dao, { key -> ai.prompts.active(key).template }, clock)
             val publisher = sharedPublisher ?: CanvasPublisher(dao, ai.prompts, { key, draft -> ai.testBed.compatibility(key, draft) }, clock, CanvasPublisher.inTransaction(MemoryGraph.get(app).db))
-            val momentResolver = com.rokid.context.canvas.moment.MomentResolver(com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao()))
+            val momentResolver = com.rokid.context.canvas.moment.MomentResolver(com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao(), MemoryGraph.get(app).db.momentDao()))
             val runner = CanvasRunner(
                 dao, photos, composeExecutors(extraExecutors),
                 { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
@@ -588,7 +588,7 @@ class CanvasBackendImpl(
 
     override suspend fun moments(afterMs: Long, beforeMs: Long, limit: Int): JsonArray =
         JsonArray(momentResolver.window(afterMs, beforeMs - 1, limit).map { m ->
-            buildJsonObject { put("id", m.id); put("startMs", m.startMs); put("photos", m.frames.size); put("memories", m.memories.size); put("marks", m.marks.size) }
+            buildJsonObject { put("id", m.id); put("startMs", m.startMs); put("photos", m.frames.size); put("memories", m.memories.size); put("marks", m.marks.size); m.sensor?.let { put("sensor", it.toJson()) } }
         })
 
     override suspend fun estimateMoments(pipelineId: String, version: Int?, momentIds: List<String>): Estimate {

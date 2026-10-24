@@ -65,7 +65,7 @@ class MigrationV10to11Test {
         var d: File? = File(System.getProperty("user.dir")).absoluteFile
         while (d != null && !File(d, "src/main/java/com/rokid/context/memory/db/ContextDatabase.kt").isFile) d = d.parentFile
         val src = File(requireNotNull(d), "src/main/java/com/rokid/context/memory/db/ContextDatabase.kt").readText()
-        val sql = Regex("execSQL\\(\"([^\"]*)\"\\)").findAll(src.substring(src.indexOf("val MIGRATION_10_11"))).map { it.groupValues[1] }.toList()
+        val sql = Regex("execSQL\\(\"([^\"]*)\"\\)").findAll(src.substring(src.indexOf("val MIGRATION_10_11"), src.indexOf("val MIGRATION_11_12"))).map { it.groupValues[1] }.toList()
         assertEquals(6, sql.size)
         sql.forEach { s -> assertTrue(s, s.startsWith("CREATE TABLE IF NOT EXISTS") || s.startsWith("CREATE INDEX IF NOT EXISTS")) }
         sql.forEach { s -> listOf("ALTER", "DROP", "RENAME", "DELETE", "UPDATE", "INSERT").forEach { w -> assertFalse("$w in $s", Regex("\\b$w\\b", RegexOption.IGNORE_CASE).containsMatchIn(s)) } }

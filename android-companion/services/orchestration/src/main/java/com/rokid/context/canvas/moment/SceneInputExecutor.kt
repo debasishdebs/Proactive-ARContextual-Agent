@@ -17,6 +17,8 @@ import kotlinx.serialization.json.put
 data class SceneView(
     val id: String, val hourStartMs: Long, val startMs: Long, val endMs: Long, val rule: String, val activity: String?,
     val startTrigger: String?, val endTrigger: String?, val membershipRev: Int, val momentIds: List<String>, val derived: Map<String, DerivedValue>,
+    /** The compact sensor summary over the member seconds that have `moment_sensor` rows, and the summary of each such member; null and empty when no member has one. */
+    val sensor: SensorSummary? = null, val momentSensor: Map<String, SensorSummary> = emptyMap(),
 )
 
 /**
@@ -39,13 +41,17 @@ class SceneInputExecutor(private val db: ContextDatabase) {
             val scenes = dao.scenesBetween(fromMs, toMs, limit.coerceIn(1, MAX_SCENES))
             if (scenes.isEmpty()) return@withTransaction emptyList()
             val parts = dao.partsOf(scenes.map { it.sceneId }).groupBy { it.sceneId }
+            val memberIds = parts.values.flatten().filter { it.kind == com.rokid.context.memory.db.ScenePartKind.MOMENT }.map { it.refId }.distinct()
+            val sensorRows = memberIds.chunked(500).flatMap { db.momentDao().sensorOf(it) }.groupBy { it.momentId } // read in the same transaction as the Scenes
             testBetweenReads?.invoke()
             scenes.map { s ->
                 // a field shows only while it is fresh AND was built from the Scene's current input revision
                 val seq = audit.inputSeq(s)
                 val derived = DerivedField.ALL.mapNotNull { f -> audit.readDerived(s, f)?.takeIf { it.builtRev == seq }?.let { f to it } }.toMap()
-                SceneView(s.sceneId, s.hourStartMs, s.startMs, s.endMs, s.boundaryRule, s.activity, s.startTrigger, s.endTrigger, s.membershipRev,
-                    parts[s.sceneId].orEmpty().filter { it.kind == com.rokid.context.memory.db.ScenePartKind.MOMENT }.map { it.refId }, derived)
+                val ids = parts[s.sceneId].orEmpty().filter { it.kind == com.rokid.context.memory.db.ScenePartKind.MOMENT }.map { it.refId }
+                val mine = ids.mapNotNull { id -> sensorRows[id]?.let { id to it } }.toMap()
+                SceneView(s.sceneId, s.hourStartMs, s.startMs, s.endMs, s.boundaryRule, s.activity, s.startTrigger, s.endTrigger, s.membershipRev, ids, derived,
+                    SensorSummary.of(mine.values.flatten()), mine.mapNotNull { (id, r) -> SensorSummary.of(r)?.let { id to it } }.toMap())
             }
         }
     }
@@ -57,6 +63,8 @@ class SceneInputExecutor(private val db: ContextDatabase) {
             put("startTrigger", v.startTrigger?.let { JsonPrimitive(it) } ?: JsonNull); put("endTrigger", v.endTrigger?.let { JsonPrimitive(it) } ?: JsonNull)
             put("membershipRev", v.membershipRev)
             put("momentIds", JsonArray(v.momentIds.map { JsonPrimitive(it) }))
+            v.sensor?.let { put("sensor", it.toJson()) }
+            if (v.momentSensor.isNotEmpty()) put("momentSensor", JsonObject(v.momentSensor.mapValues { (_, s) -> s.toJson() }))
             put("derived", JsonObject(v.derived.mapValues { (_, d) -> buildJsonObject { put("value", d.value?.let { JsonPrimitive(it) } ?: JsonNull); put("ref", d.ref?.let { JsonPrimitive(it) } ?: JsonNull); put("builtRev", d.builtRev) } }))
         }
     })
