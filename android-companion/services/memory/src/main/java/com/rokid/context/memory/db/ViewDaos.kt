@@ -22,7 +22,7 @@ interface FrameViewDao {
 }
 
 @Dao
-abstract class MemoryViewDao {
+abstract class MemoryViewDao : DerivedStaleDao() {
     @Query("SELECT * FROM memory WHERE createdAt >= :fromMs AND createdAt < :toMs AND reviewState = 'OK' ORDER BY createdAt DESC")
     abstract fun observeVisibleBetween(fromMs: Long, toMs: Long): Flow<List<MemoryEntity>>
 
@@ -39,14 +39,19 @@ abstract class MemoryViewDao {
     abstract fun observeNeedsReviewCount(): Flow<Int>
 
     @Query("UPDATE memory SET reviewState = :to WHERE id = :id AND reviewState = :from")
-    abstract suspend fun moveReviewState(id: String, from: String, to: String): Int
+    protected abstract suspend fun moveReviewStateRow(id: String, from: String, to: String): Int
+
+    /** A review move changes what the Moment shows of the memory: the derived fields of the Moments holding it are hidden in the same transaction. */
+    @Transaction open suspend fun moveReviewState(id: String, from: String, to: String): Int =
+        moveReviewStateRow(id, from, to).also { if (it > 0) staleMomentsHolding(MEMORY_PARTS, listOf(id)) }
 
     @Query("SELECT * FROM memory WHERE id = :id") abstract fun observe(id: String): Flow<MemoryEntity?>
     @Query("SELECT * FROM memory WHERE id = :id") abstract suspend fun byId(id: String): MemoryEntity?
     @Query("SELECT * FROM memory WHERE id IN (:ids)") abstract suspend fun byIds(ids: List<String>): List<MemoryEntity>
 
     /** Returns the number of rows changed (0 = unknown id). */
-    @Query("UPDATE memory SET trusted = :trusted WHERE id = :id") abstract suspend fun setTrusted(id: String, trusted: Boolean): Int
+    @Query("UPDATE memory SET trusted = :trusted WHERE id = :id") protected abstract suspend fun setTrustedRow(id: String, trusted: Boolean): Int
+    @Transaction open suspend fun setTrusted(id: String, trusted: Boolean): Int = setTrustedRow(id, trusted).also { if (it > 0) staleMomentsHolding(MEMORY_PARTS, listOf(id)) }
 
     @Query("UPDATE memory SET text = :text, searchText = :searchText WHERE id = :id AND reviewState != 'INVALIDATED'")
     protected abstract suspend fun updateText(id: String, text: String, searchText: String): Int
@@ -58,8 +63,10 @@ abstract class MemoryViewDao {
     @Transaction
     open suspend fun editText(id: String, text: String): Int {
         val current = byId(id) ?: return 0
-        return updateText(id, text, SearchNormalizer.normalize("$text ${current.tags}"))
+        return updateText(id, text, SearchNormalizer.normalize("$text ${current.tags}")).also { if (it > 0) staleMomentsHolding(MEMORY_PARTS, listOf(id)) }
     }
+
+    private companion object { val MEMORY_PARTS = listOf(MomentPartKind.MEMORY, MomentPartKind.SUMMARY) }
 }
 
 @Dao

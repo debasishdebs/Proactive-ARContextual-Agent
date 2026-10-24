@@ -102,7 +102,7 @@ class PlanEvidenceGates(
         if (r.labelRev != labelRev) return Missing("the labels changed since the replay")
         val sources = TraceSources.decode(r.sourcesJson)?.takeIf { it.isNotEmpty() } ?: return Missing("the replay's traces are unknown")
         for (s in sources) {
-            val t = dao.trace(s.traceId)
+            val t = dao.readableTrace(s.traceId)
             if (t == null || t.tombstoned || t.revision != s.revision) return Missing("a trace changed since the replay")
             if (t.status != "COMPLETE") return Missing("a trace is not complete")
         }
