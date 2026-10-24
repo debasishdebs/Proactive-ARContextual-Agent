@@ -21,7 +21,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         SceneEntity::class, ScenePartEntity::class,
         MomentSensorEntity::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -290,5 +290,19 @@ val MIGRATION_11_12: Migration = object : Migration(11, 12) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS `moment_sensor` (`momentId` TEXT NOT NULL, `phoneSecond` INTEGER NOT NULL, `traceId` TEXT NOT NULL, `traceRevision` INTEGER NOT NULL, `clockQuality` TEXT NOT NULL, `uncertaintyMs` INTEGER NOT NULL, `gyroMax` REAL NOT NULL, `gyroMean` REAL NOT NULL, `gyroRms` REAL NOT NULL, `aboveOnFrac` REAL NOT NULL, `accVar` REAL NOT NULL, `stepHz` REAL NOT NULL, `rotRad` REAL NOT NULL, `motionState` TEXT NOT NULL, `contextCode` TEXT, `nGyro` INTEGER NOT NULL, `nAcc` INTEGER NOT NULL, PRIMARY KEY(`momentId`, `phoneSecond`))")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_moment_sensor_traceId` ON `moment_sensor` (`traceId`)")
+    }
+}
+
+/**
+ * v12 → v13 (a Moment can be born from a mark alone): ADDITIVE only, three new nullable-or-defaulted columns and nothing else. `moment.momentType` (existing rows become FRAME, which is what
+ * every one of them is), `moment.noPhotoReason` and `moment_part.code` (null for every existing part). Nothing is copied, updated, dropped or renamed. The statements are the ones Room
+ * generated for `13.json`; the frozen `12.json` is untouched. If another branch also claims v13 at merge, DO NOT rename or edit this migration: rebase, write a NEW latest → next
+ * migration, regenerate the schema.
+ */
+val MIGRATION_12_13: Migration = object : Migration(12, 13) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `moment` ADD COLUMN `momentType` TEXT NOT NULL DEFAULT 'FRAME'")
+        db.execSQL("ALTER TABLE `moment` ADD COLUMN `noPhotoReason` TEXT DEFAULT NULL")
+        db.execSQL("ALTER TABLE `moment_part` ADD COLUMN `code` TEXT DEFAULT NULL")
     }
 }

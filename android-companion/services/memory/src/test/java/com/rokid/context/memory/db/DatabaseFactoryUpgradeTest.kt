@@ -23,7 +23,7 @@ class DatabaseFactoryUpgradeTest {
 
     private fun assertUpgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(12, raw.version)
+        assertEquals(13, raw.version)
         V1Fixture.tables(1).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertTrue(V1Fixture.tableNames(raw).containsAll(V1Fixture.FRAME_TABLES))
         assertNullCols(raw)
@@ -53,7 +53,7 @@ class DatabaseFactoryUpgradeTest {
     /** A real v3 file (frame_*, canvas_* and every other table seeded) through the production builders: canvas rows survive. */
     private fun assertV3Upgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(12, raw.version)
+        assertEquals(13, raw.version)
         V1Fixture.tables(3).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertEquals("CLOSED", raw.query("SELECT state FROM frame_cluster").use { it.moveToFirst(); it.getString(0) })
         assertTrue(raw.query("SELECT routedAt FROM frame_meta").use { it.moveToFirst(); it.isNull(0) })
@@ -66,7 +66,7 @@ class DatabaseFactoryUpgradeTest {
     /** A real v5 file (every table seeded): the nearest-lineage upgrade, canvas rows survive with defaults. */
     private fun assertV5Upgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(12, raw.version)
+        assertEquals(13, raw.version)
         V1Fixture.tables(5).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertEquals("v5", raw.query("SELECT intentLabel FROM frame_meta").use { it.moveToFirst(); it.getString(0) })
         assertV6Shape(raw, canvasRows = true)
@@ -77,7 +77,7 @@ class DatabaseFactoryUpgradeTest {
     /** A real v6 file (every table seeded): the nearest-lineage upgrade to v8, the slice 2 rows survive untouched. */
     private fun assertV6Upgraded(db: ContextDatabase) {
         val raw = db.openHelper.writableDatabase
-        assertEquals(12, raw.version)
+        assertEquals(13, raw.version)
         V1Fixture.tables(6).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
         assertEquals("v6", raw.query("SELECT kind FROM canvas_publish").use { it.moveToFirst(); it.getString(0) })
         assertV7Shape(raw, publishRows = true)
@@ -95,6 +95,8 @@ class DatabaseFactoryUpgradeTest {
         listOf("scene", "scene_part").forEach { assertTrue("table $it", V1Fixture.tableNames(raw).contains(it)); assertEquals("table $it empty", 0, V1Fixture.count(raw, it)) }
         // v12 additions (sensor features per Moment second): one empty table.
         listOf("moment_sensor").forEach { assertTrue("table $it", V1Fixture.tableNames(raw).contains(it)); assertEquals("table $it empty", 0, V1Fixture.count(raw, it)) }
+        // v13 additions (a Moment can be born from a mark): three columns on the existing Moment tables (no row exists on a v1 lineage; a later v12 row becomes FRAME, see MigrationV12to13Test).
+        raw.query("SELECT momentType, noPhotoReason, (SELECT code FROM moment_part LIMIT 1) FROM moment").close()
         assertTrue(V1Fixture.tableNames(raw).contains("canvas_helper_cleanup")); assertEquals(0, V1Fixture.count(raw, "canvas_helper_cleanup"))
         raw.query("SELECT jobType, sessionGen, leaseGen, frameForgetRev, payloadJson, failCode FROM canvas_helper_job").use {
             while (it.moveToNext()) { assertEquals("", it.getString(0)); assertEquals(0L, it.getLong(1)); assertEquals(0L, it.getLong(2)); assertEquals(0L, it.getLong(3)); assertTrue(it.isNull(4)); assertTrue(it.isNull(5)) }
@@ -160,7 +162,7 @@ class DatabaseFactoryUpgradeTest {
             val db = if (deferred) DatabaseFactory.buildDeferred(ctx, { false }) { error("plain") } else DatabaseFactory.build(ctx, encrypted = false) { error("plain") }
             try {
                 val raw = db.openHelper.writableDatabase
-                assertEquals(12, raw.version)
+                assertEquals(13, raw.version)
                 V1Fixture.tables(7).keys.forEach { assertEquals("table $it", 1, V1Fixture.count(raw, it)) }
                 assertEquals("v7", raw.query("SELECT state FROM canvas_helper_job").use { it.moveToFirst(); it.getString(0) })
                 assertV8Shape(raw)

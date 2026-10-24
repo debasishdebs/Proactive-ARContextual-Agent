@@ -46,7 +46,7 @@ class MomentSensorStoreTest {
 
     private fun row(i: Int, trace: String = "t1", rev: Int = 1, gyroMax: Double = 7.31, unc: Long = 40L) =
         MomentSensorEntity(id(i), base + i, trace, rev, TraceClock.OFFSET_ESTIMATED, unc, gyroMax, 0.5, 0.6, 0.25, 0.125, 1.5, 0.75, "WALKING", "REST", 50, 40)
-    private fun moment(i: Int) = MomentEntity(id(i), 1, 1, "h", 1)
+    private fun moment(i: Int) = MomentEntity(id(i), 1, 1, "h", 1, MomentType.FRAME)
     private fun trace(tid: String, startMs: Long, endMs: Long, unc: Long = 40L, manifest: String = "{}") =
         CanvasTraceEntity(tid, "IMU", "COMPLETE", manifest, 5, false, 1, null, epoch.installId, epoch.counter, true, startMs, endMs, 1, startMs, endMs, TraceClock.OFFSET_ESTIMATED, unc)
     private fun scene(sid: String, from: Int, to: Int) = SceneEntity(sid, 1, 0L, (base + from) * 1000, (base + to) * 1000 + 999, SceneRule.FRAME_CHANGE, null, null, null, 1, 1L)
@@ -178,7 +178,7 @@ class MomentSensorStoreTest {
         val fx = MomentForgetFixture(db)
         val sec = MomentForgetFixture.SEC
         val at = listOf(0L, 30L, 60L) // a Forget of one photo also takes everything within 10 s of it, so the neighbours are far apart
-        at.forEach { d -> fx.frame("f$d", (sec + d) * 1000 + 5); val m = MomentId.format(sec + d); md.replace(MomentEntity(m, 1, 1, "h", 1), emptyList()); md.replaceSensor(m, listOf(row(0).copy(momentId = m, phoneSecond = sec + d)), 1, "build") }
+        at.forEach { d -> fx.frame("f$d", (sec + d) * 1000 + 5); val m = MomentId.format(sec + d); md.replace(MomentEntity(m, 1, 1, "h", 1, com.rokid.context.memory.moment.MomentType.FRAME), emptyList()); md.replaceSensor(m, listOf(row(0).copy(momentId = m, phoneSecond = sec + d)), 1, "build") }
         fx.forget.forgetMoments(listOf(MomentId.format(sec)))
         assertEquals(listOf(MomentId.format(sec + 30), MomentId.format(sec + 60)), sensorMoments())
         fx.forget.forgetRange((sec + 30) * 1000, (sec + 31) * 1000)

@@ -115,6 +115,25 @@ abstract class MomentDao : DerivedStaleDao() {
     @Query("SELECT labelId FROM canvas_label WHERE labelId IN (:ids)") abstract suspend fun labelIdsAmong(ids: List<String>): List<String>
     /** Distinct seconds that hold a live (not tombstoned) frame, for a window rebuild. */
     @Query("SELECT DISTINCT ts / 1000 FROM frame WHERE ts >= :fromMs AND ts <= :toMs AND ts >= 0 AND id NOT IN (SELECT frameId FROM forget_tombstone) ORDER BY 1") abstract suspend fun liveFrameSeconds(fromMs: Long, toMs: Long): List<Long>
+    /** Distinct seconds that hold a mark (a `canvas_label` row), for a window rebuild and the one-time catch-up: a mark makes a Moment by itself. */
+    @Query("SELECT DISTINCT atMs / 1000 FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs AND atMs >= 0 ORDER BY 1") abstract suspend fun labelSeconds(fromMs: Long, toMs: Long): List<Long>
+
+    /**
+     * The marks of a time range, newest first, for the Activity tab (read-only): the mark's own code and time, and the Moment that holds it with its type and no-photo reason (null columns = no
+     * Moment holds it yet). Only MOMENT rows: an INTENT row is the word that goes with a mark, not a mark.
+     */
+    @Query(
+        "SELECT l.labelId AS labelId, l.source AS code, l.atMs AS atMs, p.momentId AS momentId, m.momentType AS momentType, m.noPhotoReason AS noPhotoReason " +
+            "FROM canvas_label l LEFT JOIN moment_part p ON p.kind = 'MARK' AND p.refId = l.labelId LEFT JOIN moment m ON m.momentId = p.momentId " +
+            "WHERE l.kind = 'MOMENT' AND l.atMs >= :fromMs AND l.atMs <= :toMs ORDER BY l.atMs DESC, l.labelId",
+    )
+    abstract fun marksIn(fromMs: Long, toMs: Long): kotlinx.coroutines.flow.Flow<List<MarkRow>>
+
+    data class MarkRow(
+        val labelId: String, val code: String, val atMs: Long, val momentId: String?,
+        val momentType: com.rokid.context.memory.moment.MomentType?, val noPhotoReason: com.rokid.context.memory.moment.NoPhotoReason?,
+    )
+
     @Query("SELECT m.id FROM memory m WHERE m.derived = 1 AND m.id IN (:ids)") abstract suspend fun derivedAmong(ids: List<String>): List<String>
 
     data class WireIdRow(val frameId: String, val wireFrameId: String)
