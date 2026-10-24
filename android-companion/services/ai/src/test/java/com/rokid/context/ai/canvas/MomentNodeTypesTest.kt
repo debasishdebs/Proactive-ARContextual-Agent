@@ -35,9 +35,9 @@ class MomentNodeTypesTest {
     }
 
     @Test fun noOtherNodeAcceptsMoments() {
-        for (type in listOf(NodeTypes.VISION_EXTRACT, NodeTypes.PROMPT, NodeTypes.CRITIC, NodeTypes.LOCAL_CRITIC, NodeTypes.SWITCH, NodeTypes.MEMORY_WRITE)) {
-            val params = if (type == NodeTypes.PROMPT) buildJsonObject { put("schema", "{\"type\":\"object\"}") } else none
-            val r = problems(pipe(listOf(moments(), PipelineNode("x", type, "x", params)), listOf(PipelineEdge("moments", "x"))))
+        // v0.9.4: ai.prompt (and proc.summary, see SummaryNodeTypeTest) now take MOMENTS so the starter chain Moments -> Prompt -> Summary validates
+        for (type in listOf(NodeTypes.VISION_EXTRACT, NodeTypes.CRITIC, NodeTypes.LOCAL_CRITIC, NodeTypes.SWITCH, NodeTypes.MEMORY_WRITE)) {
+            val r = problems(pipe(listOf(moments(), PipelineNode("x", type, "x", none)), listOf(PipelineEdge("moments", "x"))))
             assertTrue("$type must refuse MOMENTS: $r", r.any { it.contains("MOMENTS not accepted by x") })
         }
     }
