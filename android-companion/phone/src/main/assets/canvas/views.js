@@ -190,6 +190,7 @@ export async function runNewView(ctx, root, pipelineId, version) {
   // a pipeline that starts at `input.moments` is run over Moments (the photos of one second), not over single photos
   try {
     const p0 = await ctx.api('GET', '/api/pipelines/' + enc(pipelineId));
+    if (hasInput(parseJson(p0 && p0.json), 'input.scenes')) { await scenesRunView(ctx, root, pipelineId, version, parseJson(p0.json)); return; }
     if (hasMomentsInput(parseJson(p0 && p0.json))) { await momentsRunView(ctx, root, pipelineId, version, parseJson(p0.json)); return; }
   } catch (e) { if (e && e.stale) return; /* fall back to the photo page */ }
   const st = { frames: [], selected: new Set(), done: false, dwell: false, motion: false, day: '' };
@@ -311,7 +312,64 @@ export async function runNewView(ctx, root, pipelineId, version) {
 }
 
 /** True when the graph's input is `input.moments`. */
-const hasMomentsInput = (pipe) => !!pipe && Array.isArray(pipe.nodes) && pipe.nodes.some((n) => n && n.type === 'input.moments');
+const hasInput = (pipe, type) => !!pipe && Array.isArray(pipe.nodes) && pipe.nodes.some((n) => n && n.type === type);
+const hasMomentsInput = (pipe) => hasInput(pipe, 'input.moments');
+
+/** Scenes run page: pick Scenes (a time window of stored Scenes), estimate, confirm, start. A Prompt step receives only each Scene's visible text, never a photo. */
+async function scenesRunView(ctx, root, pipelineId, version, pipe) {
+  const st = { scenes: [], selected: new Set() };
+  clear(root);
+  root.appendChild(h('h2', null, 'New run over Scenes'));
+  const counter = h('span', { class: 'muted' });
+  const list = h('div', { class: 'moments' });
+  const helperSlot = h('div', null);
+  const upd = () => { counter.textContent = st.selected.size + ' of ' + MAX_PHOTOS + ' Scenes selected'; };
+  const draw = () => {
+    clear(list);
+    if (!st.scenes.length) list.appendChild(h('p', { class: 'muted' }, 'No Scenes in this period.'));
+    for (const sc of st.scenes) {
+      const box = h('input', { type: 'checkbox', 'aria-label': 'Scene ' + sc.id });
+      box.checked = st.selected.has(sc.id);
+      box.addEventListener('change', () => {
+        if (!box.checked) st.selected.delete(sc.id);
+        else if (st.selected.size < MAX_PHOTOS) st.selected.add(sc.id);
+        else { box.checked = false; ctx.showNotice('At most ' + MAX_PHOTOS + ' Scenes per run.'); return; }
+        upd();
+      });
+      list.appendChild(h('label', { class: 'inline' }, box, ' ' + new Date(sc.startMs).toLocaleString() + ' · ' + sc.momentIds.length + (sc.momentIds.length === 1 ? ' moment' : ' moments') + (sc.activity ? ' · ' + sc.activity : '')));
+    }
+    upd();
+  };
+  async function load(day) {
+    const from = day ? new Date(day + 'T00:00:00').getTime() : Date.now() - 86400000;
+    const to = day ? from + 86400000 : Date.now();
+    try { st.scenes = await ctx.api('GET', '/api/scenes?from=' + from + '&to=' + to + '&limit=200'); st.selected = new Set(); draw(); } catch (e) { ctx.showError(e); }
+  }
+  const day = h('input', { type: 'date', 'aria-label': 'Day' });
+  day.addEventListener('change', () => load(day.value));
+  root.appendChild(h('section', { class: 'card' }, h('p', { class: 'muted' }, 'Pipeline ' + pipelineId + (version ? ' v' + version : ' (draft)') + ' · last 24 hours unless you pick a day'),
+    h('div', { class: 'row wrap' }, h('label', { class: 'inline' }, 'Day ', day), btn('Clear', () => { st.selected = new Set(); draw(); })), counter));
+  root.appendChild(helperSlot);
+  root.appendChild(list);
+  root.appendChild(h('div', { class: 'row sticky' }, btn('Estimate', async () => {
+    const ids = st.scenes.filter((sc) => st.selected.has(sc.id)).map((sc) => sc.id);
+    if (!ids.length) { ctx.showNotice('Select at least one Scene.'); return; }
+    const body = { pipelineId, sceneIds: ids };
+    if (version) body.version = parseInt(version, 10);
+    try {
+      const e = await ctx.api('POST', '/api/runs/estimate', body);
+      ctx.modal('Start this run?', h('div', null, h('p', null, e.photos + ' Scenes · ' + e.photoCount + ' photos'),
+        h('p', { class: 'muted' }, 'Your steps receive each Scene\'s visible summary and caption only (a hidden or stale one is left out), never a photo. If a Scene changes before you start, nothing runs.')), [
+        { label: 'Start', cls: 'btn primary', run: async (close) => {
+          try { const r = await ctx.api('POST', '/api/runs', Object.assign({ confirmToken: e.confirmToken }, body)); close(); ctx.go('#/run/' + enc(r.runId)); } catch (err) { close(); ctx.showError(err); }
+        } }]);
+    } catch (err) { ctx.showError(err); }
+  }, 'btn primary')));
+  if (hasPython(pipe)) {
+    try { helperSlot.appendChild(helperCard(await loadHelperStatus(ctx))); } catch (e) { if (e && e.stale) return; }
+  }
+  await load('');
+}
 
 /**
  * Moment-lite run page: pick Moments (each is the photos of one second, with a photo count) of a day, estimate, confirm, start. It reuses the photo page's day filter
@@ -500,8 +558,8 @@ export async function runView(ctx, root, runId) {
         })())));
     if (helper !== undefined) root.appendChild(helperCard(helper));
     for (const frameId of frames) {
-      const isMoment = frameId.startsWith('moment:'); // a Moment run's item: no single photo to show
-      const img = isMoment ? h('strong', null, 'Moment ' + frameId.slice(7)) : photoThumb(ctx, frameId, { value: () => returnedValues(order, items, frameId) });
+      const isMoment = frameId.startsWith('moment:') || frameId.startsWith('scene:'); // a Moment or Scene run's item: no single photo to show
+      const img = isMoment ? h('strong', null, (frameId.startsWith('scene:') ? 'Scene ' + frameId.slice(6) : 'Moment ' + frameId.slice(7))) : photoThumb(ctx, frameId, { value: () => returnedValues(order, items, frameId) });
       const meta = h('div', { class: 'meta' });
       if (!isMoment) frameDetails(frameId, meta);
       const cards = order.map((n) => {

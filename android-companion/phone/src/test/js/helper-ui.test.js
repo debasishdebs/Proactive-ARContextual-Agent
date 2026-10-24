@@ -34,6 +34,18 @@ const momentPipe = () => JSON.stringify({
   ],
   edges: [{ from: 'moments', to: 'fn' }],
 });
+const scenePipe = () => JSON.stringify({
+  schema: 2, id: 'sp1', name: 'Scenes',
+  nodes: [
+    { id: 'scenes', type: 'input.scenes', title: 'Scenes', params: {} },
+    { id: 'ask', type: 'ai.prompt', title: 'Prompt', params: { schema: '{"type":"object"}' } },
+  ],
+  edges: [{ from: 'scenes', to: 'ask' }],
+});
+const sceneList = [
+  { id: 'S69011b80', startMs: 1761000000000, endMs: 1761000030000, rule: 'FRAME_CHANGE', activity: 'WALKING', momentIds: ['69011b80', '69011b9e'], derived: {} },
+  { id: 'S69011d10', startMs: 1761000400000, endMs: 1761000400000, rule: 'HOUR_END', activity: null, momentIds: ['69011d10'], derived: {} },
+];
 const momentList = [
   { id: '69011b80', startMs: 1761000000000, photos: 2, memories: 1, marks: 0 },
   { id: '69011b85', startMs: 1761000005000, photos: 1, memories: 0, marks: 1 },
@@ -251,6 +263,49 @@ export const tests = {
       await runView(ctx, root, 'rm1');
       has(root, 'Moment 69011b80');
       ok(!api.calls.some((c) => c.path.startsWith('/api/frames')), 'no frame lookup for a Moment item');
+    });
+  },
+
+  // ---- Scenes: a pipeline that starts at input.scenes is run over Scenes ----
+  async newRunOverScenesListsScenesAndSendsSceneIdsOnly() {
+    await withView({
+      'GET /api/pipelines/sp1': Object.assign(E.pipelineData(), { id: 'sp1', json: scenePipe() }),
+      'GET /api/scenes': sceneList,
+      'POST /api/runs/estimate': { nominal: 2, max: 2, photos: 2, kind: 'scenes', photoCount: 3, models: [], confirmToken: 'tok', tokens: null },
+      'POST /api/runs': { runId: 'r8' },
+    }, async ({ ctx, root, api }) => {
+      await runNewView(ctx, root, 'sp1', '1');
+      ok(api.calls.some((c) => c.path.startsWith('/api/scenes?') && c.path.includes('from=') && c.path.includes('to=')), 'the window is sent');
+      ok(!api.calls.some((c) => c.path.startsWith('/api/frames') || c.path.startsWith('/api/moments')), 'the Scene page lists only Scenes');
+      has(root, '2 moments'); has(root, 'WALKING');
+      const boxes = findAll(root, (e) => e.tagName === 'input' && e.getAttribute('type') === 'checkbox');
+      eq(boxes.length, 2);
+      boxes[0].checked = true; boxes[0].dispatch('change');
+      has(root, '1 of 50 Scenes selected');
+      E.click(E.buttons(root, 'Estimate')[0]); await E.settle();
+      eq(api.calls.find((c) => c.path === '/api/runs/estimate').body, { pipelineId: 'sp1', sceneIds: ['S69011b80'], version: 1 });
+      has(ctx.modals[0].content, '2 Scenes');
+      await E.runAction(ctx, 'Start');
+      eq(api.calls.find((c) => c.path === '/api/runs').body, { confirmToken: 'tok', pipelineId: 'sp1', sceneIds: ['S69011b80'], version: 1 });
+      eq(ctx.gone, ['#/run/r8']);
+    });
+  },
+  async newRunOverScenesWithNothingSelectedAsksForOne() {
+    await withView({ 'GET /api/pipelines/sp1': Object.assign(E.pipelineData(), { id: 'sp1', json: scenePipe() }), 'GET /api/scenes': sceneList }, async ({ ctx, root, api }) => {
+      await runNewView(ctx, root, 'sp1', '');
+      E.click(E.buttons(root, 'Estimate')[0]); await E.settle();
+      eq(ctx.notices, ['Select at least one Scene.']);
+      ok(!api.calls.some((c) => c.path === '/api/runs/estimate'));
+    });
+  },
+  async aSceneRunViewNamesTheSceneAndNeverAsksForAFrame() {
+    await withView({
+      'GET /api/runs/rs1': Object.assign(pyRun('DONE', [item('ask', { frameId: 'scene:S69011b80', output: { n: 1 } })]), { runId: 'rs1', pipelineJson: scenePipe() }),
+      'GET /api/runs': [E.runRow('rs1', 'DONE', null, 1)],
+    }, async ({ ctx, root, api }) => {
+      await runView(ctx, root, 'rs1');
+      has(root, 'Scene S69011b80');
+      ok(!api.calls.some((c) => c.path.startsWith('/api/frames')), 'no frame lookup for a Scene item');
     });
   },
 
