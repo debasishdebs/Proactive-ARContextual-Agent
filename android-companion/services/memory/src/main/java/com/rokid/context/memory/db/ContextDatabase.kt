@@ -16,8 +16,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CanvasPipelineEntity::class, CanvasPipelineVersionEntity::class, CanvasRunEntity::class, CanvasRunItemEntity::class, CanvasScoreEntity::class, CanvasPublishEntity::class, CanvasLiveTraceEntity::class,
         CanvasTraceEntity::class, CanvasTraceEventEntity::class, CanvasReplayEntity::class, CanvasSweepEntity::class, CanvasLabelEntity::class, CanvasMetaEntity::class,
         CanvasCalibrationEntity::class, CanvasGroupStateEntity::class, CanvasHelperJobEntity::class, CanvasHelperCleanupEntity::class,
+        MomentEntity::class, MomentPartEntity::class, MomentTombstoneEntity::class, MomentTraceDepEntity::class, CleanupOutboxEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -51,6 +52,7 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun frameAdoptionDao(): FrameAdoptionDao
     abstract fun canvasDao(): CanvasDao
     abstract fun canvasSlice3Dao(): CanvasSlice3Dao
+    abstract fun momentDao(): MomentDao
 }
 
 /**
@@ -215,5 +217,25 @@ val MIGRATION_7_8: Migration = object : Migration(7, 8) {
         db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `failCode` TEXT DEFAULT NULL")
         db.execSQL("ALTER TABLE `canvas_helper_job` ADD COLUMN `voidReason` TEXT DEFAULT NULL")
         db.execSQL("CREATE TABLE IF NOT EXISTS `canvas_helper_cleanup` (`cleanupId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `jobId` TEXT NOT NULL, `reason` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)")
+    }
+}
+
+/**
+ * v8 → v9 (Moment model phase 1): ADDITIVE only. Five new tables (`moment`, `moment_part`, `moment_tombstone`, `moment_trace_dep` (reserved, empty), `cleanup_outbox`) and their
+ * indices. No existing table or column is changed, nothing is copied, updated or dropped. The statements are the ones Room generated for `9.json`; the frozen `8.json` is
+ * untouched. If another branch also claims v9 at merge, DO NOT rename or edit this migration (S64): rebase, write a NEW latest → next migration, regenerate the schema.
+ */
+val MIGRATION_8_9: Migration = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS `moment` (`momentId` TEXT NOT NULL, `buildRev` INTEGER NOT NULL, `contentRev` INTEGER NOT NULL, `contentHash` TEXT NOT NULL, `builtAt` INTEGER NOT NULL, PRIMARY KEY(`momentId`))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `moment_part` (`momentId` TEXT NOT NULL, `kind` TEXT NOT NULL, `refId` TEXT NOT NULL, `partRev` TEXT NOT NULL, `partTimeMs` INTEGER NOT NULL, PRIMARY KEY(`momentId`, `kind`, `refId`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_moment_part_momentId` ON `moment_part` (`momentId`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_moment_part_kind_refId` ON `moment_part` (`kind`, `refId`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `moment_tombstone` (`momentId` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`momentId`))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `moment_trace_dep` (`momentId` TEXT NOT NULL, `traceId` TEXT NOT NULL, `revision` INTEGER NOT NULL, PRIMARY KEY(`momentId`, `traceId`, `revision`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_moment_trace_dep_traceId` ON `moment_trace_dep` (`traceId`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `cleanup_outbox` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `target` TEXT NOT NULL, `payloadJson` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `ackedAt` INTEGER)")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_cleanup_outbox_target_payloadJson` ON `cleanup_outbox` (`target`, `payloadJson`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_cleanup_outbox_ackedAt` ON `cleanup_outbox` (`ackedAt`)")
     }
 }

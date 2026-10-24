@@ -16,6 +16,7 @@ class CanvasSlice3Forget(private val db: ContextDatabase, private val clock: () 
 
     suspend fun forgetRange(fromMs: Long, toMs: Long): Result = db.withTransaction {
         val o = db.canvasSlice3Dao().forgetRangeTx(fromMs, toMs, clock())
+        db.momentDao().dropBetween(fromMs, toMs) // its marks are gone: so are the stored Moments of that time
         Result(o.tombstonedTraceIds, o.labelsDeleted, o.resultsInvalidated)
     }
 }
