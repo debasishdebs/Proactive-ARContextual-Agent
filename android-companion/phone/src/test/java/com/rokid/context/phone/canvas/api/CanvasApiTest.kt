@@ -91,6 +91,11 @@ private class FakeBackend : CanvasBackend {
     override suspend fun frame(id: String): JsonObject? { enter("frame"); return if (known) buildJsonObject { put("id", id) } else null }
     override suspend fun frameImage(id: String, thumb: Boolean): FrameImage? { enter("image:$thumb"); return image }
     var lastMoments: List<Any?>? = null
+    var lastScenes: List<Any?>? = null
+    var sceneStartThrows: Exception? = null
+    override suspend fun scenes(fromMs: Long, toMs: Long, limit: Int): JsonArray { enter("scenes"); lastScenes = listOf(fromMs, toMs, limit); return JsonArray(listOf(buildJsonObject { put("id", "S69011b80"); put("startMs", 1761000000000L) })) }
+    override suspend fun estimateScenes(pipelineId: String, version: Int?, sceneIds: List<String>): Estimate { enter("estimateScenes:$version"); known(0); lastEstimateIds = sceneIds; return Estimate.Ok(sceneIds.size, 0, 0, emptyList(), "tokS", kind = "scenes", photoCount = 4) }
+    override suspend fun startSceneRun(pipelineId: String, version: Int?, sceneIds: List<String>, token: String): String { enter("startScenes:$token"); sceneStartThrows?.let { throw it }; lastEstimateIds = sceneIds; return "runS" }
     var momentStartThrows: Exception? = null
     override suspend fun moments(afterMs: Long, beforeMs: Long, limit: Int): JsonArray { enter("moments"); lastMoments = listOf(afterMs, beforeMs, limit); return JsonArray(listOf(buildJsonObject { put("id", "69011b80"); put("startMs", 1761000000000L); put("photos", 2) })) }
     override suspend fun estimateMoments(pipelineId: String, version: Int?, momentIds: List<String>): Estimate { enter("estimateMoments:$version"); known(0); lastEstimateIds = momentIds; return Estimate.Ok(momentIds.size, 0, 0, emptyList(), "tokM", kind = "moments", photoCount = 5) }
@@ -604,6 +609,40 @@ class CanvasApiTest {
         val moved = call("POST", "/api/runs", """{"pipelineId":"p-1","momentIds":["69011b80"],"confirmToken":"tokM"}""")
         assertEquals(409, moved.status); assertEquals("moments_moved", moved.err())
         assertTrue(moved.obj()["message"]!!.jsonPrimitive.content.contains("Estimate again"))
+    }
+
+    // ---- Scenes ----
+
+    @Test fun scenesRouteListsAWindowAndRefusesBadNumbers() {
+        val r = call("GET", "/api/scenes", query = mapOf("from" to "1000", "to" to "5000", "limit" to "7"))
+        assertEquals(200, r.status)
+        assertEquals("S69011b80", Json.parseToJsonElement(String(r.body)).jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content)
+        assertEquals(listOf<Any?>(1000L, 5000L, 7), be.lastScenes)
+        assertEquals(400, call("GET", "/api/scenes", query = mapOf("from" to "x")).status)
+        assertEquals(400, call("GET", "/api/scenes", query = mapOf("to" to "1.5")).status)
+        assertEquals(405, call("POST", "/api/scenes", "{}").status)
+    }
+
+    @Test fun sceneIdsGoToTheScenePathAndAMovedSceneIsATyped409() {
+        val e = call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","version":2,"sceneIds":["S69011b80","S69011b85"]}""")
+        assertEquals(200, e.status); assertEquals(listOf("S69011b80", "S69011b85"), be.lastEstimateIds)
+        assertTrue("estimateScenes:2" in be.calls); assertFalse(be.calls.any { it.startsWith("estimate:") || it.startsWith("estimateMoments") })
+        assertEquals("scenes", e.obj()["kind"]!!.jsonPrimitive.content); assertEquals(4, e.obj()["photoCount"]!!.jsonPrimitive.int)
+        val ok = call("POST", "/api/runs", """{"pipelineId":"p-1","sceneIds":["S69011b80"],"confirmToken":"tokS"}""")
+        assertEquals("runS", ok.obj()["runId"]!!.jsonPrimitive.content); assertTrue("startScenes:tokS" in be.calls)
+        be.sceneStartThrows = CanvasRunner.ScenesMoved()
+        val moved = call("POST", "/api/runs", """{"pipelineId":"p-1","sceneIds":["S69011b80"],"confirmToken":"tokS"}""")
+        assertEquals(409, moved.status); assertEquals("scenes_moved", moved.err())
+    }
+
+    @Test fun badSceneIdsAre400() {
+        for (bad in listOf("""["zz"]""", """["69011b80"]""", """["s69011b80"]""", """["S69011B80"]""", """[1]""", """"S69011b80"""")) {
+            assertEquals(bad, 400, call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","sceneIds":$bad}""").status)
+            assertEquals(bad, 400, call("POST", "/api/runs", """{"pipelineId":"p-1","sceneIds":$bad,"confirmToken":"t"}""").status)
+        }
+        val many = (1..51).joinToString(",") { "\"S%08x\"".format(it) }
+        assertEquals(400, call("POST", "/api/runs/estimate", """{"pipelineId":"p-1","sceneIds":[$many]}""").status)
+        assertFalse(be.calls.any { it.startsWith("estimateScenes") || it.startsWith("startScenes") })
     }
 
     @Test fun estimateCarriesTokens() {
