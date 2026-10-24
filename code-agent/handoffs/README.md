@@ -7,3 +7,5 @@ The authoritative handoff documents stay where the planning tooling wrote them:
 - Earlier history: [`docs/superpowers/specs/2026-10-21-handoff.md`](../../docs/superpowers/specs/2026-10-21-handoff.md), `docs/superpowers/specs/2026-10-14-status-and-backlog.md`.
 - Plans: `docs/superpowers/plans/`; specs and design decisions: `docs/superpowers/specs/`.
 - Task-level evidence (briefs, reports, ledgers): [`../superpowers/sdd/`](../superpowers/sdd/).
+
+**Slice 3b / 3c era planning docs (2026-10-23), kept in `docs/superpowers/`:** plans `plans/2026-10-23-canvas-slice3b-core/` (the core plan and the LATER backlog, threat model A), `plans/2026-10-23-canvas-slice3b/` (the hardened 187 h set, source/backlog only), `plans/2026-10-23-always-on-logging.md`; specs `specs/2026-10-23-always-on-diagnostic-recording.md`, `specs/2026-10-23-anr-trace-recovery-finding.md`, `specs/2026-10-23-followups-and-decisions.md`, `specs/2026-10-23-moment-model-design.md` (the Moment base design; `specs/2026-10-24-moment-scene-design-decisions.md` wins where they differ). `specs/2026-10-22-handoff-evening.md` carries the 2026-10-23 rulings (item 4b).
