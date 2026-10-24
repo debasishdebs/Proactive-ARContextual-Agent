@@ -10,6 +10,8 @@ import com.rokid.context.canvas.helper.CanvasLogSink
 import com.rokid.context.canvas.moment.Moment
 import com.rokid.context.canvas.moment.MomentResolver
 import com.rokid.context.canvas.moment.MomentId
+import com.rokid.context.canvas.moment.SceneRunItem
+import com.rokid.context.canvas.moment.SceneRunSource
 import com.rokid.context.core.log.Level
 import com.rokid.context.memory.db.CanvasDao
 import com.rokid.context.memory.db.CanvasRunEntity
@@ -81,6 +83,8 @@ class CanvasRunner(
     private val log: CanvasLogSink = CanvasLogSink { _, _, _ -> },
     /** Moment-lite: the read-only resolver a Moment run uses (estimate, start and again right after the fence capture); null = no Moment runs. */
     private val moments: MomentResolver? = null,
+    /** The read-only source a Scene run uses (estimate, start and again right after the fence capture); null = no Scene runs. */
+    private val scenes: SceneRunSource? = null,
 ) {
     companion object {
         const val MAX_PHOTOS = 50
@@ -89,6 +93,7 @@ class CanvasRunner(
         /** Owner rows behind one per-call token mean (S32). */
         private const val TOKEN_HISTORY = 200
         const val MOMENT_KEY_PREFIX = "moment:"
+        const val SCENE_KEY_PREFIX = "scene:"
         /** Lineage token of a member photo of a Moment run (the `batchId` column), so the Forget cascade finds the rows. */
         const val MEMBER_TOKEN = "mf:"
         private val NO_PHOTO = ExtractPhoto("", "", ModelImageInput("image/jpeg", ""))
@@ -99,8 +104,12 @@ class CanvasRunner(
     /** A Moment run was estimated, but a Moment (a photo, a memory, a mark) changed or vanished before the start: nothing ran, estimate again. */
     class MomentsMoved : IllegalStateException("moments_moved")
 
+    /** A Scene run was estimated, but a Scene (a member, its text, a hidden field) changed or vanished before the start: nothing ran, estimate again. */
+    class ScenesMoved : IllegalStateException("scenes_moved")
+
     /** The Moment ids of a Moment run (chronological) and the sorted binding keys the estimate token bound. */
     private class MomentSel(val ids: List<String>, val bound: List<String>)
+    private class SceneSel(val ids: List<String>, val bound: List<String>)
 
     private class Group(val id: String, val runA: String, val runB: String) {
         @Volatile var cancelled = false
@@ -200,10 +209,11 @@ class CanvasRunner(
     }
 
     private fun takesMoments(p: Pipeline) = p.nodes.any { it.type == NodeTypes.INPUT_MOMENTS }
+    private fun takesScenes(p: Pipeline) = p.nodes.any { it.type == NodeTypes.INPUT_SCENES }
 
     suspend fun estimate(p: Pipeline, frameIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
         val ids = frameIds.distinct()
-        if (takesMoments(p)) return Estimate.Refused(listOf("pipeline needs moments"))
+        if (takesMoments(p) || takesScenes(p)) return Estimate.Refused(listOf("pipeline needs moments or scenes"))
         val c = price(p, ids, labels)
         val reasons = refusals(PipelineValidator.validate(p).isNotEmpty(), ids, c.nominal)
         if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
@@ -218,7 +228,7 @@ class CanvasRunner(
      */
     suspend fun estimateAb(a: Pipeline, b: Pipeline, frameIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
         val ids = frameIds.distinct()
-        if (takesMoments(a) || takesMoments(b)) return Estimate.Refused(listOf("A/B runs over moments are not supported"))
+        if (takesMoments(a) || takesMoments(b) || takesScenes(a) || takesScenes(b)) return Estimate.Refused(listOf("A/B runs over moments are not supported"))
         val ca = price(a, ids, labels)
         val cb = price(b, ids, labels)
         val problems = PipelineValidator.validate(a).isNotEmpty() || PipelineValidator.validate(b).isNotEmpty()
@@ -264,6 +274,74 @@ class CanvasRunner(
         return Estimate.Ok(res.size, c.nominal, c.max, c.models, token, c.tokens, kind = "moments", photoCount = res.sumOf { it.frames.size })
     }
 
+    /** The item key of a Scene in run rows (`scene:<id>`): never mistaken for a frame id or a Moment key. */
+    private fun keyOf(s: SceneRunItem) = SCENE_KEY_PREFIX + s.id
+    private fun bindingOfScenes(res: List<SceneRunItem>) = res.map { it.binding }.sorted()
+    private fun sceneIdsOf(raw: List<String>): List<String> = raw.distinct().also { l -> if (l.any { it.length < 2 || it[0] != 'S' || MomentId.parse(it.substring(1)) == null }) throw IllegalArgumentException("bad_scene_id") }.sorted()
+
+    /** The price of a Scene run. The token binds the pipeline hash, the sorted Scene ids AND what each Scene would hand a node now (its text, members and member photos). */
+    suspend fun estimateScenes(p: Pipeline, sceneIds: List<String>, labels: suspend (PipelineNode) -> ModelLabel?): Estimate {
+        val source = scenes ?: return Estimate.Refused(listOf("scenes are not available"))
+        val ids = sceneIdsOf(sceneIds)
+        val res = try { source.resolve(ids) } catch (e: com.rokid.context.canvas.moment.MomentTooBig) { return Estimate.Refused(listOf("a Moment has more than ${MomentResolver.FRAME_CAP} photos")) }
+        val c = price(p, res.map(::keyOf), labels)
+        val reasons = mutableListOf<String>()
+        if (!takesScenes(p)) reasons += "pipeline does not take scenes"
+        if (ids.isEmpty()) reasons += "no scenes"
+        if (ids.size > MAX_PHOTOS) reasons += "more than $MAX_PHOTOS scenes"
+        if (res.size != ids.size) reasons += "some scenes do not exist any more"
+        if (PipelineValidator.validate(p).isNotEmpty()) reasons += "pipeline has problems"
+        if (c.nominal > MAX_NOMINAL_CALLS) reasons += "more than $MAX_NOMINAL_CALLS model calls"
+        if (reasons.isNotEmpty()) return Estimate.Refused(reasons)
+        val token = tokens.issue(PipelineHash.of(p), ids, bindingOfScenes(res).joinToString("\n"))
+        synchronized(modelsByToken) { modelsByToken[token] = listOf(modelsJson(c.models)) }
+        return Estimate.Ok(res.size, c.nominal, c.max, c.models, token, c.tokens, kind = "scenes", photoCount = res.sumOf { it.frameIds.size })
+    }
+
+    /** Starts a Scene run: the Moment run's rules, with [ScenesMoved] when anything a Scene would hand a node changed since the estimate. */
+    suspend fun startScenes(p: Pipeline, pipelineId: String, version: Int?, sceneIds: List<String>, confirmToken: String, scope: CoroutineScope): String {
+        val source = scenes ?: throw IllegalArgumentException("scenes are not available")
+        if (!lock.tryLock()) throw Busy()
+        var launched = false
+        try {
+            val ids = sceneIdsOf(sceneIds)
+            if (ids.size > MAX_PHOTOS) throw IllegalArgumentException("more than $MAX_PHOTOS scenes")
+            if (PipelineValidator.validate(p).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
+            if (!takesScenes(p)) throw IllegalArgumentException("pipeline does not take scenes")
+            val res = try { source.resolve(ids) } catch (e: com.rokid.context.canvas.moment.MomentTooBig) { throw ScenesMoved() }
+            val bound = bindingOfScenes(res)
+            when (tokens.consumeBound(confirmToken, PipelineHash.of(p), ids, bound.joinToString("\n"))) {
+                ConfirmTokens.Verdict.BAD -> throw IllegalArgumentException("bad_token")
+                ConfirmTokens.Verdict.MOVED -> { line(Level.I, "scenes moved since the estimate"); throw ScenesMoved() }
+                ConfirmTokens.Verdict.OK -> Unit
+            }
+            if (res.size != ids.size) throw ScenesMoved()
+            val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
+            dao.pruneRuns(KEEP_RUNS - 1)
+            val runId = newId()
+            val keys = res.map(::keyOf)
+            dao.insertRun(runRow(runId, pipelineId, version, p, "RUNNING", keys, models, null))
+            cancelled.set(null)
+            _active.value = runId
+            launched = true
+            scope.launch(start = CoroutineStart.ATOMIC) {
+                try {
+                    execute(runId, p, keys, ssel = SceneSel(ids, bound))
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    line(Level.W, "run aborted")
+                } finally {
+                    _active.value = null
+                    lock.unlock()
+                }
+            }
+            return runId
+        } finally {
+            if (!launched) lock.unlock()
+        }
+    }
+
     private fun abHash(a: Pipeline, b: Pipeline) = PipelineHash.of(a) + "|" + PipelineHash.of(b)
 
     private fun modelsJson(models: List<ModelLabel>) = JsonArray(models.map {
@@ -284,7 +362,7 @@ class CanvasRunner(
             val ids = frameIds.distinct()
             if (ids.size > MAX_PHOTOS) throw IllegalArgumentException("more than $MAX_PHOTOS photos")
             if (PipelineValidator.validate(p).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
-            if (takesMoments(p)) throw IllegalArgumentException("pipeline needs moments")
+            if (takesMoments(p) || takesScenes(p)) throw IllegalArgumentException("pipeline needs moments or scenes")
             if (!tokens.consume(confirmToken, PipelineHash.of(p), ids)) throw IllegalArgumentException("bad_token")
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }?.firstOrNull() ?: "[]"
             dao.pruneRuns(KEEP_RUNS - 1)
@@ -374,7 +452,7 @@ class CanvasRunner(
             val (a, versionA) = spec.a
             val (b, versionB) = spec.b
             if (PipelineValidator.validate(a).isNotEmpty() || PipelineValidator.validate(b).isNotEmpty()) throw IllegalArgumentException("invalid_pipeline")
-            if (takesMoments(a) || takesMoments(b)) throw IllegalArgumentException("A/B runs over moments are not supported")
+            if (takesMoments(a) || takesMoments(b) || takesScenes(a) || takesScenes(b)) throw IllegalArgumentException("A/B runs over moments are not supported")
             if (!tokens.consume(confirmToken, abHash(a, b), ids)) throw IllegalArgumentException("bad_token")
             val models = synchronized(modelsByToken) { modelsByToken.remove(confirmToken) }.orEmpty()
             dao.pruneRuns(KEEP_RUNS - 2) // once for the group: neither of its rows exists yet, so neither can be pruned
@@ -416,7 +494,7 @@ class CanvasRunner(
     }
 
     /** Runs one run to a terminal row and returns the status it wrote ("DONE", "CANCELLED", "STOPPED_HOT", "FAILED"). Rethrows cancellation of the scope. */
-    private suspend fun execute(runId: String, p: Pipeline, ids: List<String>, sel: MomentSel? = null): String {
+    private suspend fun execute(runId: String, p: Pipeline, ids: List<String>, sel: MomentSel? = null, ssel: SceneSel? = null): String {
         var calls = 0
         var failures = 0
         var status = "DONE"
@@ -432,9 +510,14 @@ class CanvasRunner(
                 if (bindingOf(res) != sel.bound) { line(Level.I, "moments moved before the run"); return withContext(NonCancellable) { finish(runId, "CANCELLED", calls, failures) } }
                 res.associateBy(::keyOf)
             }
-            val members: Map<String, List<String>> = momentByKey.mapValues { (_, m) -> m.frames.map { it.id } }
+            val sceneByKey: Map<String, SceneRunItem> = if (ssel == null) emptyMap() else {
+                val res = scenes?.resolve(ssel.ids).orEmpty()
+                if (bindingOfScenes(res) != ssel.bound) { line(Level.I, "scenes moved before the run"); return withContext(NonCancellable) { finish(runId, "CANCELLED", calls, failures) } }
+                res.associateBy(::keyOf)
+            }
+            val members: Map<String, List<String>> = momentByKey.mapValues { (_, m) -> m.frames.map { it.id } } + sceneByKey.mapValues { (_, s) -> s.frameIds }
             val allMembers: Set<String> = members.values.flatten().toSet()
-            val photoById: Map<String, ExtractPhoto> = if (sel == null) photos.load(ids).photos.associateBy { it.frameId } else emptyMap()
+            val photoById: Map<String, ExtractPhoto> = if (sel == null && ssel == null) photos.load(ids).photos.associateBy { it.frameId } else emptyMap()
             val order = ids.withIndex().associate { it.value to it.index }
             val outputs = HashMap<String, Map<String, ItemFlow.Out>>()
             val pending = ArrayList<CanvasRunItemEntity>()
@@ -486,6 +569,20 @@ class CanvasRunner(
                         val m = momentByKey[id]
                         if (m != null) {
                             val v = CanvasValue.Json(momentItem(m))
+                            write(node.id, id, NodeResult(id, v))
+                            inputs[id] = v
+                        } else write(node.id, id, NodeResult(id, null, error = "unreadable"))
+                    }
+                    outputs[node.id] = inputs.mapValues { ItemFlow.Out(it.value, null) }
+                    if (!flush()) { status = "CANCELLED"; break@stop }
+                    dao.updateRun(runId, "RUNNING", calls, failures, null)
+                    continue
+                }
+                if (node.type == NodeTypes.INPUT_SCENES) {
+                    for (id in ids) {
+                        val s = sceneByKey[id]
+                        if (s != null) {
+                            val v = CanvasValue.Json(s.json)
                             write(node.id, id, NodeResult(id, v))
                             inputs[id] = v
                         } else write(node.id, id, NodeResult(id, null, error = "unreadable"))
