@@ -37,6 +37,12 @@ data class CanvasTraceEntity(
     val startedAtMs: Long,
     val endedAtMs: Long? = null,
     val createdAt: Long,
+    // Room v10 (spec 7.2): the trace interval on the PHONE clock. `startedAtMs`/`endedAtMs` stay the glasses wall times of an imported trace and are NEVER compared with a phone range.
+    // The Kotlin defaults describe a row written on the phone clock (hub traces, tests); the SQL default is the conservative UNMAPPED, which is what a pre-v10 row has until it is backfilled.
+    @ColumnInfo(defaultValue = "0") val phoneStartMs: Long = startedAtMs,
+    val phoneEndMs: Long? = endedAtMs,
+    @ColumnInfo(defaultValue = "UNMAPPED") val clockQuality: String = TraceClock.EXACT,
+    @ColumnInfo(defaultValue = "0") val uncertaintyMs: Long = 0,
 )
 
 /** Hub trace event (enum names, kmh rounded to 5, confidence): numbers and enum names only. */

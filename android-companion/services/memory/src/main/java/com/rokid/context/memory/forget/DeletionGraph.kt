@@ -35,6 +35,8 @@ object DeletionGraph {
         w("moment_part", "Moment membership edges (ids and revisions only)"),
         w("moment_tombstone", "forgotten seconds; the deletion epoch is the fence after Delete all, as with the frame tombstones"),
         w("moment_trace_dep", "reserved trace dependencies of a Moment; empty until a trace writer exists"),
+        w("object_audit", "append-only audit of Moment-family objects: ids, op names, times and step names only, no content; deleted with its object and by Delete all"),
+        w("object_derived", "derived SUMMARY, CAPTION and EMBEDDING fields of Moment-family objects; deleted with the object and by Delete all"),
         k("cleanup_outbox", "ids, paths and ranges only, no user content; unacknowledged rows survive Delete all so glasses, laptop and phone-file cleanup still happens; only acknowledged rows are removed"),
         k("canvas_pipeline", "pipelines are user-authored prompts and settings"), k("canvas_pipeline_version", "frozen pipeline versions: prompts"),
         k("canvas_publish", "publish records: hashes and snapshots of prompts, no photo data"),

@@ -39,15 +39,28 @@ object PulledTraces {
         planGen = 7, planHash = "abc123def456", glance = glance, ctx = ContextState.REST, resting = true, tier = BudgetTier.T0, sampleEvery = 1, exact = true,
     )
 
-    /** Writes `<root>/<id>/` and returns the directory. [recorded] PARTIAL changes the manifest (so a re-import differs). */
-    fun write(root: File, id: String, installId: String, counter: Long, recorded: TraceStatus = TraceStatus.COMPLETE, dirName: String = id): File {
+    /** Phone-clock evidence of a fixture manifest (all null = no phone offset, no samples: the trace cannot be mapped to the phone clock). */
+    data class PhoneClock(
+        val phoneOffsetMs: Long? = null, val offsetUncertaintyMs: Long? = null,
+        val startPhoneWallMs: Long? = null, val endPhoneWallMs: Long? = null, val startPhoneAgeMs: Long? = null, val endPhoneAgeMs: Long? = null,
+    )
+
+    /** The fixture manifest: glasses wall 1_700_000_001_000 .. 1_700_000_012_010 (elapsed 1000 .. 12_000, so the wall offset drifts by 10 ms), [clock] as given. */
+    fun manifest(id: String, installId: String, counter: Long, recorded: TraceStatus = TraceStatus.COMPLETE, clock: PhoneClock = PhoneClock()): Manifest {
         val enc = ChunkCodec.encode(id, 0, events)
-        val m = Manifest(
+        return Manifest(
             traceId = id, installId = installId, deletionCounter = counter, revision = 1, parentTraceId = null, bootId = "42", startElapsedMs = 1000, endElapsedMs = 12_000,
-            startWallMs = 1_700_000_001_000, endWallMs = 1_700_000_012_010, startPhoneWallMs = null, endPhoneWallMs = null, startPhoneAgeMs = null, endPhoneAgeMs = null,
-            phoneOffsetMs = null, offsetUncertaintyMs = null, chunkCount = 1, eventCount = events.size.toLong(), rawBytes = enc.rawBytes.toLong(),
+            startWallMs = 1_700_000_001_000, endWallMs = 1_700_000_012_010, startPhoneWallMs = clock.startPhoneWallMs, endPhoneWallMs = clock.endPhoneWallMs,
+            startPhoneAgeMs = clock.startPhoneAgeMs, endPhoneAgeMs = clock.endPhoneAgeMs,
+            phoneOffsetMs = clock.phoneOffsetMs, offsetUncertaintyMs = clock.offsetUncertaintyMs, chunkCount = 1, eventCount = events.size.toLong(), rawBytes = enc.rawBytes.toLong(),
             traceSha256 = Manifest.traceSha(listOf(enc.sha256)), recorded = recorded, closeReason = "stop", snapshot = snapshot,
         )
+    }
+
+    /** Writes `<root>/<id>/` and returns the directory. [recorded] PARTIAL changes the manifest (so a re-import differs). */
+    fun write(root: File, id: String, installId: String, counter: Long, recorded: TraceStatus = TraceStatus.COMPLETE, dirName: String = id, clock: PhoneClock = PhoneClock()): File {
+        val enc = ChunkCodec.encode(id, 0, events)
+        val m = manifest(id, installId, counter, recorded, clock)
         val dir = File(root, dirName).apply { mkdirs() }
         File(dir, TraceFiles.MANIFEST_FILE).writeText(TraceFiles.encodeFile(ManifestChunk.encode(m)))
         val c = TraceChunk(traceId = id, kind = ChunkCodec.KIND, seq = 0, count = 1, installId = installId, deletionCounter = counter, sha256 = enc.sha256, b64 = enc.b64)
