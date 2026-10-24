@@ -37,6 +37,25 @@ abstract class ObjectDao {
     @Query("SELECT field FROM object_derived WHERE objectKind = :kind AND objectId = :id AND staleSince IS NULL ORDER BY field") abstract suspend fun freshFields(kind: String, id: String): List<String>
     @Query("UPDATE object_derived SET staleSince = :now WHERE objectKind = :kind AND objectId = :id AND staleSince IS NULL") abstract suspend fun staleAll(kind: String, id: String, now: Long): Int
 
+    /**
+     * Hides every fresh derived field of the object NOW (readers get null from this transaction on) and records it: one INVALIDATED row for the object (with the part or source that
+     * caused it), and per field one DERIVED_STALE and one DERIVED_HIDDEN row (the field name only). Returns the fields hidden; 0 (and no row) when there was nothing fresh.
+     */
+    @Transaction open suspend fun markStaleTx(kind: String, id: String, now: Long, step: String, refKind: String?, refId: String?): Int {
+        val fields = freshFields(kind, id)
+        if (fields.isEmpty()) return 0
+        staleAll(kind, id, now)
+        appendAudit(kind, id, "INVALIDATED", now, step, refKind, refId)
+        fields.forEach { f -> appendAudit(kind, id, "DERIVED_STALE", now, step, "FIELD", f); appendAudit(kind, id, "DERIVED_HIDDEN", now, step, "FIELD", f) }
+        return fields.size
+    }
+
+    /** Writes a fresh derived field (clears `staleSince`) and records DERIVED_BUILT with the field name only. */
+    @Transaction open suspend fun writeDerivedTx(row: ObjectDerivedEntity, step: String) {
+        upsertDerived(row)
+        appendAudit(row.objectKind, row.objectId, "DERIVED_BUILT", row.atMs, step, "FIELD", row.field)
+    }
+
     // --- delete with the object ---
     @Query("DELETE FROM object_audit WHERE objectKind = :kind AND objectId IN (:ids)") protected abstract suspend fun deleteAudit(kind: String, ids: List<String>)
     @Query("DELETE FROM object_derived WHERE objectKind = :kind AND objectId IN (:ids)") protected abstract suspend fun deleteDerived(kind: String, ids: List<String>)

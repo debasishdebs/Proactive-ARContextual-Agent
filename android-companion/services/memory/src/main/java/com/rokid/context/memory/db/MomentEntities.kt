@@ -14,11 +14,14 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "moment")
 data class MomentEntity(
     @PrimaryKey val momentId: String,
-    val buildRev: Int,
+    override val buildRev: Int,
     val contentRev: Int,
     val contentHash: String,
     val builtAt: Long,
-)
+) : com.rokid.context.memory.moment.MomentObject {
+    override val kind: String get() = com.rokid.context.memory.moment.ObjectKind.MOMENT
+    override val id: String get() = momentId
+}
 
 /** Part kinds of a stored Moment. SENSOR is reserved for the sensor phase and is never written here. */
 object MomentPartKind {
