@@ -276,10 +276,27 @@ class CanvasBackendImplTest {
     @Test fun nodeTypesServeTheFamilyOfEveryType() {
         val types = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
         fun f(t: String) = types.getValue(t)["family"]!!.jsonPrimitive.content
-        assertEquals(setOf("Source", "Process", "Condition", "Outcome"), types.keys.map(::f).toSet()) // Aggregate has no type yet: the palette says coming soon
+        assertEquals(setOf("Source", "Aggregate", "Process", "Condition", "Outcome"), types.keys.map(::f).toSet())
+        assertEquals(listOf("Aggregate", "Process", "Condition"), listOf("agg.window", "proc.summary", "gate.compare").map(::f))
         assertEquals(listOf("Source", "Source", "Process", "Condition", "Outcome", "Outcome"),
             listOf("input.photos", "imu.head_motion", "ai.prompt", "gate.local_critic", "memory.write", "capture.image").map(::f))
         assertEquals("Checks", types.getValue("gate.local_critic")["category"]!!.jsonPrimitive.content) // the old category is still served
+    }
+
+    /** The inspector is generated from these descriptors, so the Aggregate and the compare need no editor code. */
+    @Test fun nodeTypesServeTheWindowAndCompareSettingsWithTheirDefaults() {
+        val types = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
+        fun params(t: String) = types.getValue(t)["params"]!!.jsonArray.map { it.jsonObject }.associateBy { it["name"]!!.jsonPrimitive.content }
+        val w = params("agg.window")
+        assertEquals(listOf("feature", "op", "window"), w.keys.toList())
+        assertEquals(listOf("gyroMean", "mean", "10"), w.values.map { it["default"]!!.jsonPrimitive.content })
+        assertEquals(listOf("mean", "min", "max", "count"), w.getValue("op")["options"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(listOf("1", "50"), listOf("min", "max").map { w.getValue("window")[it]!!.jsonPrimitive.content })
+        val c = params("gate.compare")
+        assertEquals(listOf(">=", "0.5"), c.values.map { it["default"]!!.jsonPrimitive.content })
+        assertEquals(listOf("yes", "no"), types.getValue("gate.compare")["branches"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals("NUMBER", types.getValue("agg.window")["output"]!!.jsonPrimitive.content)
+        assertEquals(emptyList<String>(), params("proc.summary").keys.toList())
     }
 
     @Test fun nodeTypesServeThePhotoSettingsWithTodaysDefaults() {

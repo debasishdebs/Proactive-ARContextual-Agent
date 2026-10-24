@@ -6,9 +6,11 @@ import com.rokid.context.ai.RoutedReply
 import com.rokid.context.ai.canvas.ExtractComposite
 import com.rokid.context.ai.canvas.LocalTrust
 import com.rokid.context.ai.canvas.NodeTypes
+import com.rokid.context.ai.canvas.NumberCompare
 import com.rokid.context.ai.canvas.PipelineNode
 import com.rokid.context.ai.canvas.PromptSource
 import com.rokid.context.ai.canvas.SummaryNode
+import com.rokid.context.ai.canvas.WindowAggregate
 import com.rokid.context.ai.canvas.promptSource
 import com.rokid.context.ai.contract.CriticOutput
 import com.rokid.context.ai.contract.Fact
@@ -28,8 +30,10 @@ import com.rokid.context.prompt.PromptVars
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.intOrNull
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -39,7 +43,7 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 object Executors {
     fun all(): Map<String, NodeExecutor> =
-        listOf(VisionExtractExecutor, LocalCriticExecutor, CriticExecutor, PromptExecutor, SummaryExecutor, SwitchExecutor, MemoryWritePreviewExecutor).associateBy { it.type }
+        listOf(VisionExtractExecutor, LocalCriticExecutor, CriticExecutor, PromptExecutor, SummaryExecutor, WindowAggregateExecutor, CompareExecutor, SwitchExecutor, MemoryWritePreviewExecutor).associateBy { it.type }
 }
 
 private fun PipelineNode.draft(): PromptDraft? = (promptSource() as? PromptSource.Draft)?.let { PromptDraft(it.template, it.schema) }
@@ -232,6 +236,51 @@ object SummaryExecutor : NodeExecutor {
             } catch (e: Exception) {
                 NodeResult(it.frameId, null, error = failure(e), meta = CallMeta((System.nanoTime() - started) / 1_000_000, null, null, null, null, batchId, calls = 1), calls = 1, cause = e)
             }
+        }
+    }
+}
+
+/**
+ * `agg.window`: a pure, deterministic number per item (no model, no clock): [WindowAggregate.over] the sensor summaries of the items in run order. The runner hands it the whole run in ONE
+ * chunk (a window looks back over earlier items). A JSON item with no sensor summary adds nothing to a window; an empty window has no mean, min or max, which is the fixed error NO_DATA.
+ */
+object WindowAggregateExecutor : NodeExecutor {
+    override val type = NodeTypes.AGG_WINDOW
+    override fun chunkSize(node: PipelineNode) = Int.MAX_VALUE
+    override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+    override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+
+    override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
+        val s = WindowAggregate.settings(node.params)
+        val valid = items.filter { it.value is CanvasValue.Json }
+        val values = valid.map { WindowAggregate.featureOf((it.value as CanvasValue.Json).value, s.feature) }
+        val numbers = WindowAggregate.over(values, s.op, s.window)
+        val windowed = valid.indices.associate { valid[it].frameId to it }
+        return items.map { item ->
+            val i = windowed[item.frameId] ?: return@map NodeResult(item.frameId, null, error = "BAD_INPUT")
+            val v = numbers[i] ?: return@map NodeResult(item.frameId, null, error = "NO_DATA")
+            val n = values.subList(maxOf(0, i - s.window + 1), i + 1).count { it != null }
+            NodeResult(item.frameId, CanvasValue.Json(buildJsonObject {
+                put("value", if (s.op == "count") JsonPrimitive(v.toLong()) else JsonPrimitive(v)); put("n", n)
+                put("feature", s.feature); put("op", s.op); put("window", s.window)
+            }))
+        }
+    }
+}
+
+/** `gate.compare`: the aggregate's `value` against a cutoff; branch `yes` or `no`, the number passes through unchanged. No model. */
+object CompareExecutor : NodeExecutor {
+    override val type = NodeTypes.COMPARE
+    override fun nominalCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+    override fun maxCalls(node: PipelineNode, items: Int) = noCalls(node, items)
+
+    override suspend fun run(node: PipelineNode, items: List<CanvasItem>, ctx: RunContext): List<NodeResult> {
+        val s = NumberCompare.settings(node.params)
+        return items.map {
+            val v = it.value as? CanvasValue.Json
+            val n = ((v?.value as? JsonObject)?.get("value") as? JsonPrimitive)?.takeIf { p -> !p.isString }?.doubleOrNull
+                ?: return@map NodeResult(it.frameId, null, error = "BAD_INPUT")
+            NodeResult(it.frameId, v, branch = if (NumberCompare.holds(n, s)) "yes" else "no")
         }
     }
 }

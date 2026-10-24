@@ -222,6 +222,11 @@ export const tests = {
     eq(E.paletteGroups(open(), nodeTypes.concat([stray])).pop().category, 'Other', 'a type with no family is still offered, under Other');
     eq(E.paletteGroups(open({ readOnly: true }), nodeTypes), [], 'read-only: no palette');
   },
+  anAggregateTypeFillsItsGroupAndTheSoonLineGoes() {
+    const win = Object.assign({}, nodeTypes[1], { type: 'agg.window', label: 'Window aggregate', family: 'Aggregate', domain: 'ASYNC' });
+    const agg = E.paletteGroups(open(), nodeTypes.concat([win])).find((x) => x.category === 'Aggregate');
+    eq([agg.soon, agg.items.map((i) => i.type)], [false, ['agg.window']], 'the first Aggregate removes "Coming soon" with no editor change');
+  },
   nextStepWordingReplacesConnectTo() {
     eq([E.NEXT_STEP_LABEL, E.NO_NEXT_STEP], ['Next step', 'No next step needed']);
   },
