@@ -242,6 +242,12 @@ class OrchestrationScheduler(
         workManager.enqueueUniquePeriodicWork(com.rokid.context.orchestration.forget.RetentionWorker.NAME, ExistingPeriodicWorkPolicy.KEEP, request)
     }
 
+    /** The Moment cadence: every 15 minutes (WorkManager's minimum) the current and the previous hour of stored Moments are rebuilt (see `MomentCadenceWorker`). Unique, KEEP; it only rebuilds a projection, so a pause does not cancel it. */
+    fun ensureMomentCadence() {
+        val request = PeriodicWorkRequestBuilder<com.rokid.context.canvas.moment.MomentCadenceWorker>(15, TimeUnit.MINUTES).build()
+        workManager.enqueueUniquePeriodicWork(com.rokid.context.canvas.moment.MomentCadenceWorker.NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+    }
+
     /**
      * The night job (Task 9): one unique periodic 24 h job, KEEP, that needs a charger and an idle device. It describes the photos about to
      * expire (BACKFILL calls), then runs the index backfill. Unlike retention it makes AI calls, so [pausePipeline] cancels it.
@@ -255,6 +261,7 @@ class OrchestrationScheduler(
 
     fun scheduleCritic() {
         ensureRetention()
+        ensureMomentCadence()
         ensureNightIndex()
         val request = PeriodicWorkRequestBuilder<CriticWorkerJob>(3, TimeUnit.HOURS)
             .addTag(TAG_CRITIC)

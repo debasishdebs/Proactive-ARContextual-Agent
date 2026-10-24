@@ -22,6 +22,7 @@ object MarkGraph {
                 fence = { DaoFence(MemoryWipe.generation.get(), epoch.read(), MemoryWipe.generation::get, epoch::read) },
                 wallClock = System::currentTimeMillis,
                 log = { android.util.Log.i("PcMarks", it) },
+                onRecorded = { com.rokid.context.canvas.moment.MomentTriggers.get(ctx).onMarkRecorded(it) },
             )
         }.also { recorder = it }
     }

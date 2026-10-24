@@ -17,8 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CanvasTraceEntity::class, CanvasTraceEventEntity::class, CanvasReplayEntity::class, CanvasSweepEntity::class, CanvasLabelEntity::class, CanvasMetaEntity::class,
         CanvasCalibrationEntity::class, CanvasGroupStateEntity::class, CanvasHelperJobEntity::class, CanvasHelperCleanupEntity::class,
         MomentEntity::class, MomentPartEntity::class, MomentTombstoneEntity::class, MomentTraceDepEntity::class, CleanupOutboxEntity::class,
+        ObjectAuditEntity::class, ObjectDerivedEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 abstract class ContextDatabase : RoomDatabase() {
@@ -53,6 +54,7 @@ abstract class ContextDatabase : RoomDatabase() {
     abstract fun canvasDao(): CanvasDao
     abstract fun canvasSlice3Dao(): CanvasSlice3Dao
     abstract fun momentDao(): MomentDao
+    abstract fun objectDao(): ObjectDao
 }
 
 /**
@@ -237,5 +239,25 @@ val MIGRATION_8_9: Migration = object : Migration(8, 9) {
         db.execSQL("CREATE TABLE IF NOT EXISTS `cleanup_outbox` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `target` TEXT NOT NULL, `payloadJson` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `ackedAt` INTEGER)")
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_cleanup_outbox_target_payloadJson` ON `cleanup_outbox` (`target`, `payloadJson`)")
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_cleanup_outbox_ackedAt` ON `cleanup_outbox` (`ackedAt`)")
+    }
+}
+
+/**
+ * v9 → v10 (Moment building blocks, part 2): ADDITIVE only. Four columns on `canvas_trace` (the trace interval on the PHONE clock, spec 7.2: `phoneStartMs`, `phoneEndMs`,
+ * `clockQuality`, `uncertaintyMs`; a pre-v10 row gets the conservative `UNMAPPED`, selected by every range until the first-run `TraceClockBackfill` maps it from its stored
+ * manifest) and two new tables: `object_audit` (the append-only, content-free audit of Moment-family objects) and `object_derived` (their SUMMARY, CAPTION and EMBEDDING fields).
+ * Nothing is copied, updated or dropped. The statements are the ones Room generated for `10.json`; the frozen `9.json` is untouched.
+ */
+val MIGRATION_9_10: Migration = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `canvas_trace` ADD COLUMN `phoneStartMs` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `canvas_trace` ADD COLUMN `phoneEndMs` INTEGER DEFAULT NULL")
+        db.execSQL("ALTER TABLE `canvas_trace` ADD COLUMN `clockQuality` TEXT NOT NULL DEFAULT 'UNMAPPED'")
+        db.execSQL("ALTER TABLE `canvas_trace` ADD COLUMN `uncertaintyMs` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `object_audit` (`objectKind` TEXT NOT NULL, `objectId` TEXT NOT NULL, `seq` INTEGER NOT NULL, `op` TEXT NOT NULL, `atMs` INTEGER NOT NULL, `step` TEXT NOT NULL, `refKind` TEXT, `refId` TEXT, PRIMARY KEY(`objectKind`, `objectId`, `seq`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_object_audit_op` ON `object_audit` (`op`)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_object_audit_refKind_refId` ON `object_audit` (`refKind`, `refId`)")
+        db.execSQL("CREATE TABLE IF NOT EXISTS `object_derived` (`objectKind` TEXT NOT NULL, `objectId` TEXT NOT NULL, `field` TEXT NOT NULL, `value` TEXT, `ref` TEXT, `builtRev` INTEGER NOT NULL, `staleSince` INTEGER DEFAULT NULL, `atMs` INTEGER NOT NULL, PRIMARY KEY(`objectKind`, `objectId`, `field`))")
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_object_derived_objectKind_objectId` ON `object_derived` (`objectKind`, `objectId`)")
     }
 }
