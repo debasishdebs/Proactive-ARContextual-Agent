@@ -58,6 +58,8 @@ class SummaryRunTest {
         for (s in listOf(0L, 30L, 400L)) fx.frame("f$s", t(s) + 5)
         MomentBuilder(h.db, enabled = { true }, clock = { 5 }).build(listOf(mid(0), mid(30), mid(400)))
         SceneBuilder(h.db, enabled = { true }, clock = { 5 }).rebuildWindow(t(0), t(3599))
+        // a Scene with no visible text gets no Summary call, so the two Scenes under test carry the words of their first Moment
+        for (s in listOf(0L, 400L)) ObjectAudit(h.db.objectDao()) { 7 }.writeDerived(ObjectRef(ObjectKind.MOMENT, mid(s), 1), DerivedField.CAPTION, "Desk at $s", null, 1)
     }
 
     private fun resolver() = MomentResolver(DaoMomentSource(h.dao, h.dao3))
