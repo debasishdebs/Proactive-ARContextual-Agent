@@ -1,6 +1,7 @@
 // Pure pipeline-graph operations for the canvas editor. Never mutates its input;
 // every operation returns { pipe, error? } (on error, pipe is the unchanged input).
 import { portCheck, typeOf } from './validate.js';
+import { defaultGraph } from './exprgraph.js';
 
 const clone = (p) => JSON.parse(JSON.stringify(p));
 const fail = (pipe, error) => ({ pipe, error });
@@ -42,6 +43,7 @@ function defaultParams(nodeType) {
       case 'int': case 'number': out[d.name] = d.min !== undefined ? d.min : 0; break;
       case 'enum': if (Array.isArray(d.options) && d.options.length) out[d.name] = d.options[0]; break;
       case 'table': break; // empty: every cell inherits
+      case 'graph': out[d.name] = defaultGraph(); break; // expr.guard starts valid: one step `fast`, headSpeed > 1.5
       case 'bool': out[d.name] = false; break;
       case 'text': out[d.name] = ''; break;
       case 'prompt': out[d.name] = { source: 'live' }; break;

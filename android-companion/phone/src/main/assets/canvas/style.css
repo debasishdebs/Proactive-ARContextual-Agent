@@ -141,3 +141,32 @@ table.results td, table.results th { white-space: nowrap; }
 .helper-card p { margin: 4px 0; }
 .helper-waiting { border-left: 4px solid var(--accent, #2563eb); }
 .forgotten { color: var(--bad); }
+
+/* expr.guard boxed editor: light boxes with dark text and white-on-colour pills, so it reads on any theme */
+.expr-scroll { overflow: auto; background: #f4f4f6; border: 1px solid var(--line); border-radius: 10px; }
+.expr-svg { display: block; font: 13px system-ui, sans-serif; }
+.expr-box, .expr-node { cursor: pointer; }
+.expr-box:focus-visible, .expr-node:focus-visible { outline: 3px solid var(--accent); }
+.expr-box-body { stroke-width: 3; }
+.expr-box.selected .expr-box-body, .expr-node.selected .expr-node-body { stroke-width: 5; }
+.expr-box.has-problem .expr-box-body, .expr-node.has-problem .expr-node-body { stroke: #b3261e; stroke-dasharray: 6 3; }
+.expr-box-text, .expr-node-id { fill: #111; }
+.expr-node-id { font-weight: 600; }
+.expr-node-body { fill: #fff; stroke: #444; stroke-width: 1.5; }
+.expr-node.input .expr-node-body { fill: #e8f0fd; }
+.expr-pill-text { fill: #fff; font-weight: 700; }
+.expr-pill-arrow, .expr-arrowhead { fill: #b3261e; }
+.expr-arrow-line { stroke: #b3261e; stroke-width: 5; }
+.expr-wire-line { stroke: #555; stroke-width: 2; }
+.expr-wirehead { fill: #555; }
+.expr-port { fill: #111; font-size: 11px; }
+.xs0 .expr-box-body { fill: #e3effb; stroke: #2f6fb5; } .xs0 .expr-pill { fill: #2f6fb5; }
+.xs1 .expr-box-body { fill: #e2f4ea; stroke: #23844f; } .xs1 .expr-pill { fill: #23844f; }
+.xs2 .expr-box-body { fill: #fbeadb; stroke: #b8651f; } .xs2 .expr-pill { fill: #b8651f; }
+.xs3 .expr-box-body { fill: #efe6fa; stroke: #6a3fb5; } .xs3 .expr-pill { fill: #6a3fb5; }
+.xs4 .expr-box-body { fill: #fbe6ef; stroke: #b5306a; } .xs4 .expr-pill { fill: #b5306a; }
+.xs5 .expr-box-body { fill: #e6f1f1; stroke: #2a7f86; } .xs5 .expr-pill { fill: #2a7f86; }
+.expr-panel { border-top: 1px solid var(--line); margin-top: 8px; }
+.expr-inputs { list-style: none; padding: 0; margin: 6px 0; }
+.expr-input { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+.expr-input select, .expr-input input { width: auto; min-width: 120px; }
