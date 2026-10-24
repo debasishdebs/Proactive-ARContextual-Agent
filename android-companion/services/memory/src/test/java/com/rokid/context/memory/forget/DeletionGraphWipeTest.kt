@@ -41,6 +41,9 @@ class DeletionGraphWipeTest {
         c.insertRun(CanvasRunEntity("r", "p", 1, "h", "{}", "DONE", 1, 1, 1, 0, 1, 2, "[]"))
         c.upsertItem(CanvasRunItemEntity("r", "f", "n", "OK", null, "{}", null, null, null, null, null, null, null)); c.upsertScore(CanvasScoreEntity("r", "f", "n", 1, "", 1))
         c.upsertTrace(listOf(CanvasLiveTraceEntity(1, "f", "_batch", "LIVE", "OK", null, "{}", null, "b", 1)))
+        val m = db.momentDao()
+        m.replace(MomentEntity("00000001", 1, 1, "h", 1), listOf(MomentPartEntity("00000001", "FRAME", "f", "r", 1))); m.insertTombstones(listOf(MomentTombstoneEntity("00000002", 1)))
+        m.insertTraceDeps(listOf(MomentTraceDepEntity("00000001", "t", 1))); m.insertOutbox(listOf(CleanupOutboxEntity(target = "PHONE_FILE", payloadJson = "{}", createdAt = 1, ackedAt = 5)))
         s.forgetRangeTx(100, 200, 1) // writes the forget-range fence into canvas_meta
     }
 
