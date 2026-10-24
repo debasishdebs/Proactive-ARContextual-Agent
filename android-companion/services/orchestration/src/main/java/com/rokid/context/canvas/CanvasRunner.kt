@@ -12,6 +12,7 @@ import com.rokid.context.canvas.moment.MomentResolver
 import com.rokid.context.canvas.moment.MomentId
 import com.rokid.context.canvas.moment.SceneRunItem
 import com.rokid.context.canvas.moment.SceneRunSource
+import com.rokid.context.memory.moment.MomentType
 import com.rokid.context.core.log.Level
 import com.rokid.context.memory.db.CanvasDao
 import com.rokid.context.memory.db.CanvasRunEntity
@@ -528,6 +529,13 @@ class CanvasRunner(
             val lineage = HashMap<String, LinkedHashSet<String>>() // frame -> every model call whose output its rows derive from (a later per-frame call must not hide a shared one)
 
             members.forEach { (k, f) -> lineage[k] = LinkedHashSet(f.map { MEMBER_TOKEN + it }) }
+            // a MARK Moment has no photo to carry the lineage: its marks do (a Forget of the mark deletes the rows, see MomentForget); a FRAME Moment keeps its photos as before
+            momentByKey.forEach { (k, m) ->
+                when (m.type) {
+                    MomentType.FRAME -> Unit
+                    MomentType.MARK -> lineage.getOrPut(k) { LinkedHashSet() }.addAll(m.marks.map { MEMBER_TOKEN + it.id })
+                }
+            }
 
             fun write(nodeId: String, frameId: String, r: NodeResult) {
                 val m = r.meta
@@ -651,7 +659,8 @@ class CanvasRunner(
 
     /**
      * What the helper receives for one Moment (moment-model spec 9, minus what this slice does not send): no frame id, no image bytes, no file ref. [photos] carries only the
-     * capture time of each photo (so its length is the photo count); `sensor` is null (no sensor input yet). Integers and strings only.
+     * capture time of each photo (so its length is the photo count; a MARK Moment has NO photo and says so: `type` MARK, `photos` empty); `marks` carries the time and code (tap, voice,
+     * phone_voice, retro, ask_tap) of each mark, never a word; `sensor` is null (no sensor input yet). Integers and strings only.
      */
     private fun momentItem(m: Moment): JsonObject = JsonObject(mapOf(
         "itemType" to JsonPrimitive("moment"),
@@ -659,7 +668,9 @@ class CanvasRunner(
         "contentRev" to JsonPrimitive(m.contentRev),
         "contentHash" to JsonPrimitive(m.contentHash),
         "startMs" to JsonPrimitive(m.startMs),
+        "type" to JsonPrimitive(m.type.name),
         "photos" to JsonArray(m.frames.map { JsonObject(mapOf("tsMs" to JsonPrimitive(it.ts))) }),
+        "marks" to JsonArray(m.marks.map { JsonObject(mapOf("tsMs" to JsonPrimitive(it.atMs), "code" to JsonPrimitive(it.code))) }),
         "sensor" to JsonNull,
     ))
 

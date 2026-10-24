@@ -1,6 +1,7 @@
 package com.rokid.context.canvas.moment
 
 import com.rokid.context.memory.db.SceneRule
+import com.rokid.context.memory.moment.MomentType
 
 /**
  * Every tunable of the Scene boundary rules in one place (scene design section 4: starting values, to be tuned on real traces and photos). [hashDistanceFraction] is the share of the
@@ -25,7 +26,7 @@ data class SceneConfig(
 
 /** What the cutter needs to know about one stored Moment (one phone-clock second). Hashes and embeddings are those of its first and last photo; null = not available. */
 class SceneMoment(
-    val id: String, val startMs: Long, val activity: String?,
+    val id: String, val startMs: Long, val type: MomentType, val activity: String?,
     val hashFirst: Long?, val hashLast: Long?, val embFirst: FloatArray?, val embLast: FloatArray?, val contentHash: String,
 )
 
@@ -51,7 +52,7 @@ class SceneCutter(private val config: SceneConfig = SceneConfig()) {
         val out = ArrayList<ScenePlan>()
         var cur = ArrayList<SceneMoment>()
         for (m in sorted) {
-            val rule = if (cur.isEmpty()) null else cutRule(cur.first(), cur.last(), m)
+            val rule = if (cur.isEmpty()) null else cutRule(cur.first(), cur, m)
             if (rule != null) { out += plan(cur, rule); cur = ArrayList() }
             cur += m
         }
@@ -61,11 +62,21 @@ class SceneCutter(private val config: SceneConfig = SceneConfig()) {
 
     private fun hourOf(ms: Long) = Math.floorDiv(ms, SceneConfig.HOUR_MS) * SceneConfig.HOUR_MS
 
-    private fun cutRule(first: SceneMoment, prev: SceneMoment, next: SceneMoment): String? {
+    /** True for a Moment that has photos to compare. A MARK Moment has no frame hash: it never cuts by frame or activity change and is invisible to those rules (it joins the Scene by time). */
+    private fun hasFrames(m: SceneMoment): Boolean = when (m.type) {
+        MomentType.FRAME -> true
+        MomentType.MARK -> false
+    }
+
+    private fun cutRule(first: SceneMoment, cur: List<SceneMoment>, next: SceneMoment): String? {
         if (hourOf(next.startMs) != hourOf(first.startMs)) return SceneRule.HOUR_END
-        val a = prev.activity; val b = next.activity
-        if (a != null && b != null) { if (a != b) return SceneRule.ACTIVITY_CHANGE }
-        else if (frameChanged(prev, next)) return SceneRule.FRAME_CHANGE
+        // frames and activity are compared between the last Moment WITH photos of this Scene and the next one with photos; a MARK Moment in between changes nothing
+        val prev = if (hasFrames(next)) cur.lastOrNull { hasFrames(it) } else null
+        if (prev != null) {
+            val a = prev.activity; val b = next.activity
+            if (a != null && b != null) { if (a != b) return SceneRule.ACTIVITY_CHANGE }
+            else if (frameChanged(prev, next)) return SceneRule.FRAME_CHANGE
+        }
         if (next.startMs - first.startMs >= config.capMs) return SceneRule.CAP_5_MIN
         return null
     }

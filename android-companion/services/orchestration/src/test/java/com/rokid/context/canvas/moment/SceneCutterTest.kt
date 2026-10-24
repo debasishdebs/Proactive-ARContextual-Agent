@@ -11,7 +11,10 @@ class SceneCutterTest {
     private val cutter = SceneCutter()
 
     private fun m(offsetSec: Long, activity: String? = null, hash: Long? = null, emb: FloatArray? = null, rev: String = "h") =
-        SceneMoment(MomentId.format((base / 1000) + offsetSec), base + offsetSec * 1000, activity, hash, hash, emb, emb, rev)
+        SceneMoment(MomentId.format((base / 1000) + offsetSec), base + offsetSec * 1000, com.rokid.context.memory.moment.MomentType.FRAME, activity, hash, hash, emb, emb, rev)
+
+    private fun mark(offsetSec: Long, activity: String? = null) =
+        SceneMoment(MomentId.format((base / 1000) + offsetSec), base + offsetSec * 1000, com.rokid.context.memory.moment.MomentType.MARK, activity, null, null, null, null, "h")
 
     private fun ids(p: List<ScenePlan>) = p.map { s -> s.members.map { (it.startMs - base) / 1000 } }
 
@@ -120,5 +123,29 @@ class SceneCutterTest {
         assertEquals(1, tight.cut(listOf(m(0, hash = 0), m(1, hash = 15))).size)
         assertEquals(2, SceneCutter(SceneConfig(capMs = 60_000)).cut((0L..60L).map { m(it, hash = 0) }).size)
         assertEquals(16, SceneConfig().maxHashBits)
+    }
+
+    // --- a MARK Moment has no frame hash: it never cuts by frame or activity and joins the neighbouring Scene by time ---
+
+    @Test fun aMarkMomentBetweenTwoSimilarPhotosJoinsTheSceneAndCutsNothing() {
+        val p = cutter.cut(listOf(m(0, hash = 0), mark(1), m(2, hash = 0)))
+        assertEquals(listOf(listOf(0L, 1L, 2L)), ids(p))
+    }
+
+    @Test fun theFrameRuleStillComparesThePhotosAcrossAMarkMomentAndTheMarkJoinsTheEarlierScene() {
+        val p = cutter.cut(listOf(m(0, hash = 0), mark(1), m(2, hash = (1L shl 17) - 1)))
+        assertEquals(listOf(listOf(0L, 1L), listOf(2L)), ids(p)); assertEquals(SceneRule.FRAME_CHANGE, p[0].rule)
+    }
+
+    @Test fun aMarkMomentWithAnActivityThatDiffersNeverCutsByActivity() {
+        val p = cutter.cut(listOf(m(0, "STILL", 0), mark(1, "WALKING"), m(2, "STILL", 0)))
+        assertEquals(listOf(listOf(0L, 1L, 2L)), ids(p))
+    }
+
+    @Test fun marksAloneAreOneSceneUntilTheHourOrTheFiveMinuteCap() {
+        assertEquals(listOf(listOf(0L, 100L, 299L)), ids(cutter.cut(listOf(mark(0), mark(100), mark(299)))))
+        val p = cutter.cut(listOf(mark(0), mark(100), mark(300)))
+        assertEquals(listOf(listOf(0L, 100L), listOf(300L)), ids(p)); assertEquals(SceneRule.CAP_5_MIN, p[0].rule)
+        assertEquals(2, cutter.cut(listOf(mark(3599), mark(3600))).size)
     }
 }
