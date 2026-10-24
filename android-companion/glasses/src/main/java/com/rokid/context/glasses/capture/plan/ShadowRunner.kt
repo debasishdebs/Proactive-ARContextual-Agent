@@ -55,6 +55,7 @@ class ShadowRunner(
         val c = config()
         if (c !== cfg) {
             cfg = c; runner = c?.exprRunner
+            runner?.bind(signals)   // 3c C1b: a SHADOW plan's windows start empty at its apply
             detector = c?.let { GlanceDetector(it.glance) }
             lastGyroMs = -1L; lastKeyAt = tMs; keptAt.clear(); resetPose(); quietSince = -1L
         }
@@ -90,6 +91,7 @@ class ShadowRunner(
     private fun fired(c: ActiveConfig, now: Long) {
         val g = c.glance
         while (keptAt.isNotEmpty() && now - keptAt.first() >= 60_000L) keptAt.removeFirst()
+        c.exprRunner?.tickValues(now, signals, applied(), ctxAgeS())   // a SHADOW value program only changes what is COUNTED (the would-be cap), never real capture
         val rowCap = c.contextCap(applied())
         val cap = minOf(if (resting()) g.restCapPerMin else g.capPerMin, rowCap ?: Int.MAX_VALUE)
         val turned = sqrt(rx * rx + ry * ry + rz * rz)

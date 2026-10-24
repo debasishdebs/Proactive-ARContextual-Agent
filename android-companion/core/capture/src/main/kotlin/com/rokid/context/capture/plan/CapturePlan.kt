@@ -7,6 +7,8 @@ import kotlinx.serialization.json.JsonObject
 const val PLAN_SCHEMA = 1
 const val PLAN_SCHEMA_EXPR = 2
 const val SIG_SCHEMA = 1
+/** Catalogue 2 (3c E2a): window terms and value programs. A plan that uses them carries it, so an older runner refuses the plan instead of skipping the programs. */
+const val SIG_SCHEMA_WIN = 2
 const val PLAN_MAX_BYTES = 8_192
 
 /** S83: fixed in Kotlin, never plan params. */
