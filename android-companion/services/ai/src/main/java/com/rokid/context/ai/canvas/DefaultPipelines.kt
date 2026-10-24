@@ -14,7 +14,8 @@ object DefaultPipelines {
     val INTENT_LABELS = listOf("sitting_idle", "workout", "computer_work", "driving", "walking", "other")
     const val DEFAULT_CAPTURE = "default-capture"
     const val STARTER = "starter-capture-extract"
-    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE, STARTER)
+    const val STARTER_MOMENT_SUMMARY = "starter-moment-summary"
+    val all: List<String> = listOf(LIVE_EXTRACT, INTENT_DRAFT, DEFAULT_CAPTURE, STARTER, STARTER_MOMENT_SUMMARY)
 
     private val none = JsonObject(emptyMap())
     private val livePrompt = buildJsonObject { putJsonObject("prompt") { put("source", "live") } }
@@ -118,5 +119,37 @@ object DefaultPipelines {
             PipelineJson.SCHEMA_V2, STARTER, "Starter: capture and extract",
             glasses.nodes + phone.nodes, glasses.edges + phone.edges + PipelineEdge("cam", "photos"),
         )
+    }
+
+    private const val MOMENT_TEMPLATE = "Describe in at most three plain sentences what happened in this Moment, using only the data below. " +
+        "Reply with JSON only: {\"description\": <text>}.\n\n{{context_sources}}"
+
+    private val momentSchema = buildJsonObject {
+        put("type", "object")
+        putJsonObject("properties") { putJsonObject("description") { put("type", "string"); put("maxLength", 600) } }
+        put("required", JsonArray(listOf(JsonPrimitive("description"))))
+        put("additionalProperties", false)
+    }.toString()
+
+    /**
+     * The user's chain next to the glasses lane: the Default capture nodes and wires untouched (plan hash f5782e0d8610) and, on the phone, Moments -> Prompt -> Summary ->
+     * Confidence check -> Save memory (preview). A Confidence check has two outcomes and both go to Save, which shows the review state of each row. The Moments input is tier 3
+     * (never published), so this is a read-only picture and a run template: clone it, pick Moments on the New run page. It is a separate built-in because a pipeline has ONE input root,
+     * so it cannot be added to `starter-capture-extract` (whose Photo input and wiring stay exactly as they were).
+     */
+    fun starterMomentSummary(): Pipeline {
+        val glasses = defaultCapture()
+        val nodes = listOf(
+            PipelineNode("moments", NodeTypes.INPUT_MOMENTS, "Moments", none),
+            PipelineNode("ask", NodeTypes.PROMPT, "Prompt", buildJsonObject { put("name", "moment"); put("template", MOMENT_TEMPLATE); put("schema", momentSchema) }),
+            PipelineNode("sum", NodeTypes.SUMMARY, "Summary", none),
+            PipelineNode("trust", NodeTypes.LOCAL_CRITIC, "Confidence check", none),
+            PipelineNode("write", NodeTypes.MEMORY_WRITE, "Save memory", none),
+        )
+        val edges = listOf(
+            PipelineEdge("moments", "ask"), PipelineEdge("ask", "sum"), PipelineEdge("sum", "trust"),
+            PipelineEdge("trust", "write", "trusted"), PipelineEdge("trust", "write", "unsure"),
+        )
+        return Pipeline(PipelineJson.SCHEMA_V2, STARTER_MOMENT_SUMMARY, "Starter: moments to summary", glasses.nodes + nodes, glasses.edges + edges)
     }
 }
