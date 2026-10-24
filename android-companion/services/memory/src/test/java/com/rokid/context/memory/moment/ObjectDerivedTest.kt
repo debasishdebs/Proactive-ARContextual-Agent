@@ -45,7 +45,7 @@ class ObjectDerivedTest {
         audit.writeDerived(fake, DerivedField.CAPTION, "c", null, 1)
         audit.markStale("FAKE", "p1"); val first = audit.staleSince(fake, DerivedField.CAPTION)
         assertEquals(0, audit.markStale("FAKE", "p1")); assertEquals(first, audit.staleSince(fake, DerivedField.CAPTION))
-        assertEquals(1, audit.audit(fake).count { it.op == AuditOp.INVALIDATED })
+        assertEquals(1, audit.audit(fake).count { it.op == AuditOp.DERIVED_STALE })
     }
 
     @Test fun aRebuildMakesTheFieldVisibleAgain() = runBlocking<Unit> {

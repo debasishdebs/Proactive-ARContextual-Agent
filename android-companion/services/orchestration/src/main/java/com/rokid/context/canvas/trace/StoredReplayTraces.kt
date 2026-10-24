@@ -21,7 +21,7 @@ class StoredReplayTraces(
 ) : ReplayTraces {
     override suspend fun load(traceId: String): ReplayTrace? {
         if (!TraceBounds.isTraceId(traceId)) return null
-        val row = dao.trace(traceId) ?: return null
+        val row = dao.readableTrace(traceId) ?: return null
         if (row.tombstoned) return null
         epoch?.invoke()?.let { e -> if (row.installId != e.installId || row.deletionCounter != e.counter) return null }
         val manifest = Manifest.decodeStrict(row.manifestJson).getOrNull() ?: return null
