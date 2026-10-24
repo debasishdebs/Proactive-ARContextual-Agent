@@ -10,17 +10,17 @@ const EXPANDED_PAD = 16;
 
 /** The three rooted domains (S34), left to right; any other domain name follows in order of appearance. */
 export const LANES = [{ domain: 'RT_GLASSES', label: 'Glasses (real time)' }, { domain: 'RT_PHONE', label: 'Phone (real time)' }, { domain: 'ASYNC', label: 'Async (phone)' }];
-const laneLabel = (d) => { const l = LANES.find((x) => x.domain === d); return l ? l.label : String(d); };
+export const laneLabel = (d) => { const l = LANES.find((x) => x.domain === d); return l ? l.label : String(d); };
 
 const domainOf = (nt) => (nt && nt.domain) || 'ASYNC';
 /** A signal node's domain is its own `domain` param (S34); every other node's is its type's. */
-const nodeDomain = (n, nt) => {
+export const nodeDomain = (n, nt) => {
   if (nt && nt.domainFromParams && n.params && typeof n.params.domain === 'string') return n.params.domain;
   return domainOf(nt);
 };
 /** Real card height: collapsed CARD_H; an expanded composite adds its inner flow (expansion is UI state, passed in as opts.expanded). */
 const heightOf = (n, nt, expanded) => (nt && nt.inner && expanded && expanded[n.id] === true ? CARD_H + innerLayout(nt.inner).height + EXPANDED_PAD : CARD_H);
-const titleOf = (n, nt) => String(n.title || (nt && nt.label) || n.id);
+export const titleOf = (n, nt) => String(n.title || (nt && nt.label) || n.id);
 
 /**
  * Domain lanes: each domain present gets its own band of columns, in LANES order. Only a graph with two or more domains has lanes
