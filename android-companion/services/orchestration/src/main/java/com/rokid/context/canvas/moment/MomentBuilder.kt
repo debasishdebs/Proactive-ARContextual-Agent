@@ -61,8 +61,11 @@ class MomentBuilder(
         for (id in ids) {
             val s = MomentId.parse(id) ?: continue
             val fenced = id in tomb || slice3.momentFenced(s * 1000, s * 1000 + 999)
-            resolved[id] = if (fenced) null else try { resolver.resolve(listOf(id)).singleOrNull() } catch (_: MomentTooBig) { null }
-            if (fenced) refused++
+            val m = if (fenced) null else try { resolver.resolve(listOf(id)).singleOrNull() } catch (_: MomentTooBig) { null }
+            // Unknown capture time = no Moment (spec 3.1): a second holding a photo with only a file or receipt time is never stored.
+            val unknown = m != null && dao.framesWithoutCaptureTime(m.frames.map { it.id }).isNotEmpty()
+            resolved[id] = if (unknown) null else m
+            if (fenced || unknown) refused++
         }
         for ((id, m) in resolved) {
             if (m == null) { if (dao.moment(id) != null || dao.parts(id).isNotEmpty()) { dao.remove(listOf(id)); removed++ }; continue }
