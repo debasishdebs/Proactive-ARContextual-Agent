@@ -234,6 +234,15 @@ class CanvasBackendImplTest {
         assertTrue(backend.estimate("live-extract", null, emptyList()) is Estimate.Refused)
     }
 
+    @Test fun nodeTypesServeTheFamilyOfEveryType() {
+        val types = backend.nodeTypes().map { it.jsonObject }.associateBy { it["type"]!!.jsonPrimitive.content }
+        fun f(t: String) = types.getValue(t)["family"]!!.jsonPrimitive.content
+        assertEquals(setOf("Source", "Process", "Condition", "Outcome"), types.keys.map(::f).toSet()) // Aggregate has no type yet: the palette says coming soon
+        assertEquals(listOf("Source", "Source", "Process", "Condition", "Outcome", "Outcome"),
+            listOf("input.photos", "imu.head_motion", "ai.prompt", "gate.local_critic", "memory.write", "capture.image").map(::f))
+        assertEquals("Checks", types.getValue("gate.local_critic")["category"]!!.jsonPrimitive.content) // the old category is still served
+    }
+
     @Test fun nodeTypesServeThePhotoSettingsWithTodaysDefaults() {
         val photos = backend.nodeTypes().map { it.jsonObject }.first { it["type"]!!.jsonPrimitive.content == "input.photos" }
         val params = photos["params"]!!.jsonArray.map { it.jsonObject }.associateBy { it["name"]!!.jsonPrimitive.content }

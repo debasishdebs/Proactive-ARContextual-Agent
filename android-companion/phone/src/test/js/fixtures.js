@@ -1,7 +1,14 @@
 // Shared fixtures for the editor-stream JS tests (not a test file: it exports no `tests`).
 // Node types mirror GET /api/node-types (Task 9 adds short, palette, category).
+// the family each type serves in GET /api/node-types (NodeFamiliesTest checks the registry): Source, Aggregate, Process, Condition, Outcome
+export const FAMILY = {
+  'input.photos': 'Source', 'imu.head_motion': 'Source', 'imu.settle': 'Source', 'hub.context': 'Source', 'signal.in': 'Source',
+  'ai.vision_extract': 'Process', 'ai.prompt': 'Process', 'ai.critic': 'Process',
+  'gate.local_critic': 'Condition', 'route.switch': 'Condition', 'gate.threshold': 'Condition', 'gate.novelty': 'Condition', 'gate.rate_cap': 'Condition', 'expr.guard': 'Condition',
+  'memory.write': 'Outcome', 'capture.image': 'Outcome', 'policy.capture_rate': 'Outcome', 'signal.out': 'Outcome',
+};
 const t = (type, label, short, inputs, output, extra) => Object.assign({
-  type, label, short, inputs, output, branches: [], branchesFromCases: false, params: [], palette: true, category: 'AI',
+  type, label, short, inputs, output, branches: [], branchesFromCases: false, params: [], palette: true, category: 'AI', family: FAMILY[type],
 }, extra || {});
 
 // what /api/node-types serves for gate.local_critic (CanvasBackendImplTest checks the real JSON has this shape and the 0.7 default)
@@ -82,7 +89,7 @@ export function ok(v, msg) { if (!v) throw new Error(msg || 'expected truthy'); 
 const GAP = 'timer photo gap (settled/quiet/walk/still cap)';
 const gapCol = (name, l) => ({ name, label: 'timer photo gap (' + l + ')', kind: 'int', min: 5, max: 300, blankable: false, allowZero: true, group: GAP });
 const v2 = (type, label, short, inputs, output, domain, category, extra) => Object.assign({
-  type, label, short, inputs, output, branches: [], branchesFromCases: false, params: [], palette: true, category, version: 1, sinceSchema: 2, domain,
+  type, label, short, inputs, output, branches: [], branchesFromCases: false, params: [], palette: true, category, family: FAMILY[type], version: 1, sinceSchema: 2, domain,
   domainFromParams: false, executor: 'BUILTIN', root: false, liveable: true, cost: { modelCalls: 0, rtOps: 0, cpuClass: 0 },
 }, extra || {});
 const num = (name, min, max, def, step) => ({ name, kind: 'number', min, max, step, default: def, sweep: true });

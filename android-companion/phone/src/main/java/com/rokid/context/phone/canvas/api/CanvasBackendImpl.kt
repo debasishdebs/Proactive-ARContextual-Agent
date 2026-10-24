@@ -240,6 +240,7 @@ class CanvasBackendImpl(
             put("params", JsonArray(if (t.params.specs.isEmpty()) paramsOf(t.type) else t.params.specs.map { paramJson(it) }))
             put("short", t.short.ifEmpty { t.type.substringAfterLast('.') })
             put("category", t.category.label)
+            put("family", t.family.label) // the palette group: Source, Aggregate, Process, Condition, Outcome
             put("palette", t.palette) // exactly one photo input per pipeline: not offered
             put("domain", t.domain.name)
             put("domainFromParams", t.domainFromParams)
