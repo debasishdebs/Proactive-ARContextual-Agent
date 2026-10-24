@@ -17,3 +17,8 @@ interface HelperExecutor : NodeExecutor {
 class RunHelperFence(val fence: HelperFence) : AbstractCoroutineContextElement(Key) {
     companion object Key : CoroutineContext.Key<RunHelperFence>
 }
+
+/** Moment runs: for each Moment item key, the frame ids behind it. The executor files them with the job (so a Forget of any member finds it); they are never sent to the helper. */
+class RunMomentFrames(val frames: Map<String, List<String>>) : AbstractCoroutineContextElement(Key) {
+    companion object Key : CoroutineContext.Key<RunMomentFrames>
+}
