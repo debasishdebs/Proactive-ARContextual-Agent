@@ -83,6 +83,7 @@ export function toFlow(pipe, layout, problems, nodeTypes, opts) {
         inPorts: nt ? (nt.inputs || []).map(portLabel) : [],
         outPort: nt ? portLabel(nt.output) : '',
         problems: probs.slice(), warnings: warns.slice(), domain: nodeDomain(n, nt), pending, readOnly,
+        composite: nt && nt.inner ? { inner: nt.inner, descriptors: nt.params || [], params: n.params || {} } : null,
       },
       deletable: !readOnly && n.type !== 'input.photos',
       connectable: !readOnly,
