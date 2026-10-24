@@ -576,6 +576,7 @@ class CanvasBackendImpl(
 
     private fun roleOf(n: PipelineNode): Role? {
         NodeTypes.byType(n.type)?.promptKey?.let { return it.role }
+        if (n.type == NodeTypes.SUMMARY) return Role.SUMMARIZE // the fixed-text node runs on the same text role as an image-less Prompt
         if (n.type != NodeTypes.PROMPT) return null
         val named = (n.params["role"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { s -> Role.entries.firstOrNull { it.name == s } }
         val images = (n.params["images"] as? JsonPrimitive)?.takeIf { !it.isString }?.content == "true"

@@ -23,7 +23,8 @@ class DefaultPipelinesTest {
     @Test fun bothDefaultsValidate() {
         assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.liveExtract()))
         assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.intentDraft(seed)))
-        assertEquals(listOf(DefaultPipelines.LIVE_EXTRACT, DefaultPipelines.INTENT_DRAFT, DefaultPipelines.DEFAULT_CAPTURE, DefaultPipelines.STARTER), DefaultPipelines.all)
+        assertEquals(listOf(DefaultPipelines.LIVE_EXTRACT, DefaultPipelines.INTENT_DRAFT, DefaultPipelines.DEFAULT_CAPTURE, DefaultPipelines.STARTER, DefaultPipelines.STARTER_MOMENT_SUMMARY), DefaultPipelines.all)
+        assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.starterMomentSummary()))
         assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.starter()))
         assertEquals(emptyList<String>(), PipelineValidator.validate(DefaultPipelines.defaultCapture()))
     }
