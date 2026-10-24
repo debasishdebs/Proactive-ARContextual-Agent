@@ -44,14 +44,14 @@ class CanvasRepositoryTest {
     @Test fun builtInsSeededAndRefreshed() = runBlocking<Unit> {
         repo.ensureBuiltIns()
         val all = repo.list()
-        assertEquals(setOf("live-extract", "intent-draft", "default-capture"), all.map { it.id }.toSet())
+        assertEquals(setOf("live-extract", "intent-draft", "default-capture", "starter-capture-extract"), all.map { it.id }.toSet())
         assertTrue(all.all { it.builtIn && it.draftRev == 0 })
         val intent = PipelineJson.decode(repo.get("intent-draft")!!.draftJson).getOrThrow()
         assertTrue(PipelineJson.encode(intent).contains("SEED for VISION_EXTRACT"))
         // overwritten each call: a changed seed shows up, and nothing is duplicated
         val again = CanvasRepository(dao, { "NEW SEED" }, { now++ }, { "x" })
         again.ensureBuiltIns()
-        assertEquals(3, again.list().size)
+        assertEquals(4, again.list().size)
         assertTrue(again.get("intent-draft")!!.draftJson.contains("NEW SEED"))
         assertFalse(again.get("intent-draft")!!.draftJson.contains("SEED for"))
     }
@@ -104,6 +104,23 @@ class CanvasRepositoryTest {
         val c = repo.get(copy)!!
         assertFalse(c.builtIn)
         assertEquals(DefaultPipelines.defaultCapture().copy(id = copy, name = "My capture"), PipelineJson.decode(c.draftJson).getOrThrow())
+    }
+
+    @Test fun starterIsAReadOnlyBuiltInThatClonesToAnEditableDraftAndIsNeverActive() = runBlocking<Unit> {
+        repo.ensureBuiltIns()
+        val st = repo.get("starter-capture-extract")!!
+        assertTrue(st.builtIn); assertEquals("Starter: capture and extract", st.name)
+        assertEquals(CanvasRepository.SaveResult.ReadOnly, repo.saveDraft("starter-capture-extract", st.draftJson, 0))
+        assertFalse(repo.delete("starter-capture-extract"))
+        assertNotNull(repo.get("starter-capture-extract"))
+        assertTrue("existing as a pipeline activates nothing", dao.activePublishes().isEmpty())
+        assertEquals(DefaultPipelines.starter(), PipelineJson.decode(st.draftJson).getOrThrow())
+        val copy = repo.duplicate("starter-capture-extract", null, "My starter")
+        val c = repo.get(copy)!!
+        assertFalse(c.builtIn)
+        assertEquals(DefaultPipelines.starter().copy(id = copy, name = "My starter"), PipelineJson.decode(c.draftJson).getOrThrow())
+        val edited = PipelineJson.encode(PipelineJson.decode(c.draftJson).getOrThrow().let { p -> p.copy(nodes = p.nodes.map { if (it.id == "extract") it.copy(title = "Mine") else it }) })
+        assertTrue("the clone is editable", repo.saveDraft(copy, edited, c.draftRev) is CanvasRepository.SaveResult.Saved)
     }
 
     @Test fun unreadableNotSaved() = runBlocking<Unit> {

@@ -8,6 +8,11 @@ const live = () => ({ id: 'live-extract', name: 'Live', pipe: livePipe() });
 const sender = () => ({ id: 'snd', name: 'Sender', pipe: { schema: 2, id: 'snd', name: 'Sender', nodes: [{ id: 'h', type: 'hub.context', title: 'Hub', params: {} }, { id: 'out', type: 'signal.out', title: 'Send intent', params: { name: 'intent', domain: 'RT_PHONE' } }, { id: 'lost', type: 'signal.out', title: 'Send nowhere', params: { name: 'nobody', domain: 'RT_PHONE' } }], edges: [{ from: 'h', to: 'out' }] } });
 const receiver = () => ({ id: 'rcv', name: 'Receiver', pipe: { schema: 2, id: 'rcv', name: 'Receiver', nodes: [{ id: 'in', type: 'signal.in', title: 'Got intent', params: { name: 'intent', domain: 'RT_GLASSES' } }, { id: 'photos', type: 'input.photos', title: 'Photo', params: {} }], edges: [] } });
 const moments = () => ({ id: 'mom', name: 'Moments', pipe: { schema: 1, id: 'mom', name: 'Moments', nodes: [{ id: 'm', type: 'input.moments', title: 'Moments', params: {} }], edges: [] } });
+/** The built-in starter: the glasses capture lane and the live extraction in ONE pipeline, joined by capture image -> Photo. */
+const starter = () => {
+  const c = capturePipe(), l = livePipe();
+  return { id: 'starter', name: 'Starter', pipe: { schema: 2, id: 'starter', name: 'Starter', nodes: c.nodes.concat(l.nodes.filter((n) => n.id !== 'photos')), edges: c.edges.concat(l.edges) } };
+};
 const build = (...e) => buildMerged(e, allTypes);
 const node = (m, id) => m.nodes.find((n) => n.id === id);
 const overlap = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -21,6 +26,14 @@ export const tests = {
     eq(node(m, 'live-2::photos').localId, 'photos'); eq(node(m, 'live-2::photos').pid, 'live-2');
     for (const e of m.edges) ok(node(m, e.from) && node(m, e.to), 'edge endpoints are prefixed ids: ' + e.from);
     eq(m.edges.filter((e) => e.kind === 'flow' && e.from.startsWith('live-2::')).length, livePipe().edges.length);
+  },
+  aSinglePipelineWithBothHalvesShowsAllThreeLanesAndTheJoin() {
+    const m = build(starter());
+    eq(m.lanes.map((l) => l.domain), ['RT_GLASSES', 'RT_PHONE', 'ASYNC']);
+    eq(m.nodes.filter((n) => n.domain === 'RT_GLASSES').length > 0 && m.nodes.some((n) => n.id === 'starter::extract' && n.domain === 'ASYNC'), true);
+    ok(m.edges.some((e) => e.kind === 'flow' && e.from === 'starter::capture_1' && e.to === 'starter::photos'), 'capture image feeds the Photo input as an ordinary edge');
+    ok(!m.edges.some((e) => e.kind === 'frames'), 'no captured-frames link: the join is inside the one pipeline');
+    for (const n of m.nodes) { const l = m.lanes.find((x) => x.domain === n.domain); ok(n.x >= l.x && n.x + n.w <= l.x + l.width, n.id + ' lies inside its lane'); }
   },
   nodesAreGroupedInLanesGlassesPhoneAsync() {
     const m = build(cap(), live());
