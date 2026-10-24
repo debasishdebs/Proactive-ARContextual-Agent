@@ -86,6 +86,14 @@ class MomentSensorStoreTest {
         assertTrue("the input revision moved, so a derive that started earlier is refused", db.objectDao().inputSeq("MOMENT", id(0)) > seqBefore)
     }
 
+    @Test fun theInputRevisionMovesEvenWhenNoDerivedFieldWasFreshToHide() = runBlocking<Unit> {
+        md.replace(moment(0), emptyList()); audit.record(moment(0), AuditOp.BUILT, AuditStep.BUILD)
+        md.replaceSensor(id(0), listOf(row(0)), 1, "build")
+        val before = db.objectDao().inputSeq("MOMENT", id(0))
+        assertTrue(md.replaceSensor(id(0), listOf(row(0, gyroMax = 9.0)), 50, "build"))
+        assertTrue("a derive that started before this change must be refused when it ends", db.objectDao().inputSeq("MOMENT", id(0)) > before)
+    }
+
     @Test fun addingOrDroppingASecondAlsoHides() = runBlocking<Unit> {
         seed()
         assertTrue(md.replaceSensor(id(1), emptyList(), 50, "build")); assertFalse(fresh(1)); assertTrue(md.sensorOf(listOf(id(1))).isEmpty())
