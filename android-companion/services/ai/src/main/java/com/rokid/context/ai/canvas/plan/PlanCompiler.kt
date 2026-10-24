@@ -167,8 +167,13 @@ object PlanCompiler {
         val warnings = LinkedHashSet<String>()
         val policy = chain.firstOrNull { it.type == NodeTypes.POLICY_CAPTURE_RATE }?.let { rows(it, base.policy, profile, warnings) } ?: base.policy
         // expression guards: two-level graphs lowered to the plan's step list (X2); the plan stays schema 1 without any
-        val exprNodes = glasses.filter { it.type == NodeTypes.EXPR_GUARD }
-        val lowered = ExprLowering.lower(exprNodes.map { it.id to it.params["graph"] })
+        val exprNodes = glasses.filter { it.type == NodeTypes.EXPR_GUARD || it.type == NodeTypes.EXPR_VALUE }
+        val lowered = ExprLowering.lowerAll(
+            exprNodes.map { n ->
+                if (n.type == NodeTypes.EXPR_VALUE) ExprLowering.Entry(n.id, n.params["graph"], ExprRole.VALUE, str(n, "row") ?: "REST", str(n, "field") ?: "capPerMin")
+                else ExprLowering.Entry(n.id, n.params["graph"])
+            },
+        )
         problems += lowered.problems
         warnings += lowered.warnings
         if (problems.isNotEmpty()) return failed(problems, cost)

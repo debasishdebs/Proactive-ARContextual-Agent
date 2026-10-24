@@ -137,6 +137,8 @@ data class ReplayResult(
      * decisions of its first [windowWarmingS] seconds are warming (guards keep, values take the row default), not exact against the recording.
      */
     val windowWarmingS: Int = 0,
+    /** 3c E2a: per value program id, the one-second ticks on which it overrode its row field (an UNAVAILABLE or ERROR tick keeps the row default and is not counted). */
+    val valueTicks: Map<String, Int> = emptyMap(),
 ) {
     /** True when no window had to be excluded. */
     val exact: Boolean get() = inexact == 0
@@ -265,7 +267,10 @@ object CaptureSimulator {
         var recordedHash: String? = null
 
         /** The candidate's policy row for the recorded context (`ActiveConfig.policyFor`), or null when the candidate has no table (the recorded profile is used). */
-        fun candRow(): ContextCapturePolicy? = cand?.table?.let { ContextPolicies.of(if (cand.ctxBound) ctx else ContextState.UNKNOWN, it) }
+        fun candRow(): ContextCapturePolicy? = cand?.table?.let { t ->
+            val state = if (cand.ctxBound) ctx else ContextState.UNKNOWN
+            ContextPolicies.of(state, t).let { row -> runner?.tune(state, row) ?: row }   // 3c E2a: the value programs' overrides, the same hook as ActiveConfig.policyFor
+        }
         val ownCadence = cand?.table != null
 
         // scheduler state (SamplingSession)
@@ -360,6 +365,7 @@ object CaptureSimulator {
             if (runner != null && (lastFeatAt == Long.MIN_VALUE || now - lastFeatAt >= 1_000L)) {
                 val f = cls.features(); lastFeatAt = now
                 signals.set(SecondFeatures(f.gyroMax, f.gyroMean, f.gyroRms, f.aboveOnFrac, f.accVariance, f.stepHz.toFloat(), f.rotRad), now)
+                runner.tickValues(now, signals, ctx, (now - ctxAt) / 1000L)   // the 1 Hz row tick, right after the second's features
             }
             when (e) {
                 is TraceEvent.Gyro -> { val s = cls.state.value; val d = cls.decelerating.value; cls.onGyro(e.x, e.y, e.z, e.sMs); afterSensor(e.tMs, s, d) }
@@ -697,6 +703,7 @@ object CaptureSimulator {
                 guardDrops = runner?.let { r -> r.guardIds.indices.associate { r.guardIds[it] to r.drops(it) } } ?: emptyMap(),
                 guardDecisions = guardLog, exprErr = counts?.get(0) ?: 0, exprDiv0 = counts?.get(1) ?: 0,
                 windowWarmingS = runner?.windowHorizonS ?: 0,
+                valueTicks = runner?.let { r -> r.valueIds.indices.associate { r.valueIds[it] to r.tunedTicks(it) } } ?: emptyMap(),
             )
         }
     }

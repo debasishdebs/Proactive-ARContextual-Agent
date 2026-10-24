@@ -16,6 +16,18 @@ class GlanceGuard(
     private val revert: AutoRevert,
     private val running: () -> PlanId?,
 ) {
+    /**
+     * The 1 Hz row tick of the plan's VALUE programs (3c E2a), from the existing 1 s loop: they tune the capture cap and the gap seconds of the editable rows, clamped, and an
+     * ERROR or an UNAVAILABLE signal leaves the row's default. Their non-div0 errors count toward `auto:exprErr` like a guard's.
+     */
+    fun tickValues(nowMs: Long) {
+        val r = active().exprRunner ?: return
+        if (!r.hasValues) return
+        val e0 = r.errTotal
+        r.tickValues(nowMs, signals, applied(), ctxAgeS())
+        if (r.errTotal != e0) revert.onExprErr(nowMs, running(), (r.errTotal - e0).toInt())
+    }
+
     /** True = keep the candidate. */
     fun keep(nowMs: Long): Boolean {
         val r = active().exprRunner ?: return true

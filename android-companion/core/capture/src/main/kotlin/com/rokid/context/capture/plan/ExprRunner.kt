@@ -1,5 +1,6 @@
 package com.rokid.context.capture.plan
 
+import com.rokid.context.core.model.context.ContextCapturePolicy
 import com.rokid.context.core.model.context.ContextState
 import com.rokid.context.core.model.context.graph.Sample
 import com.rokid.context.core.model.context.graph.StepOps
@@ -97,16 +98,23 @@ internal class WindowState(val terms: Array<ExprWindows.Term>) {
  * `x / 0`, which never counts toward auto-revert). Signals read the existing features and the applied context state; a stale or missing feature is
  * UNAVAILABLE, never a default value. `in.set` state names map to wire codes through [ctxCode].
  */
-class ExprRunner private constructor(private val progs: List<Prog>, private val win: WindowState?) {
+class ExprRunner private constructor(private val progs: List<Prog>, private val vals: List<Prog>, private val win: WindowState?) {
     private class Prog(
         val id: String, val out: Int, val op: IntArray, val a: IntArray, val b: IntArray, val c: IntArray, val f: IntArray,
         val num: DoubleArray, val hi: DoubleArray, val ms: LongArray, val sig: IntArray, val sets: Array<IntArray?>, val flag: BooleanArray, val wi: IntArray,
+        val row: Int = -1, val field: Int = -1,
     ) {
         val st = Array(op.size) { Sample() }
         var drops = 0
+        /** Ticks that answered an override (values only). */
+        var tuned = 0
     }
 
     val guardIds: List<String> = progs.map { it.id }
+    val valueIds: List<String> = vals.map { it.id }
+    val hasValues: Boolean get() = vals.isNotEmpty()
+    /** Ticks per value program (index = [valueIds]) that answered an override of the row default. */
+    fun tunedTicks(i: Int): Int = vals[i].tuned
     val size: Int get() = progs.size
 
     /** Evaluations that ended in a non-div0 ERROR / a div0 ERROR since the last [takeCounts] (and in total). */
@@ -129,10 +137,10 @@ class ExprRunner private constructor(private val progs: List<Prog>, private val 
     val windowHorizonS: Int get() = win?.terms?.maxOfOrNull { it.seconds } ?: 0
 
     /** Binds the window rings to [sig] at this instant (the plan apply): they start empty and fill one second at a time. Idempotent. */
-    fun bind(sig: ExprSignals) { win?.let { sig.feed(it) } }
+    @Synchronized fun bind(sig: ExprSignals) { win?.let { sig.feed(it) } }
 
     /** Reads the seconds written since the last call into the rings (the 1 Hz tick). Cheap; evaluations do it too, so a missed tick loses nothing. */
-    fun tick(sig: ExprSignals) { win?.let { sig.feed(it) } }
+    @Synchronized fun tick(sig: ExprSignals) { win?.let { sig.feed(it) } }
 
     /** Returns and clears the counters since the last call (error, div0, drops). Not hot-path. */
     fun takeCounts(): IntArray {
@@ -141,8 +149,59 @@ class ExprRunner private constructor(private val progs: List<Prog>, private val 
         return r
     }
 
+    private val tunedCap = IntArray(PlanState.entries.size) { NONE }
+    private val tunedGapMs = LongArray(PlanState.entries.size * GAPS) { NONE.toLong() }
+    private val rowOfState = IntArray(ContextState.entries.size) { i -> ExprValues.rowIndex(ContextState.entries[i].name) }
+    private var lastValMs = Long.MIN_VALUE
+
+    /**
+     * The 1 Hz row tick of the VALUE programs (at most one evaluation a second): each program is evaluated and its number clamped to the row's existing
+     * bounds ([ExprValues]) and held as that row field's override. UNAVAILABLE (a warming window, a stale signal) and ERROR clear the override, so the row
+     * keeps its default; an error is counted like a guard's ([exprErr], [exprDiv0] for `x / 0`, never toward auto-revert). Never throws; allocates nothing.
+     */
+    @Synchronized fun tickValues(nowMs: Long, sig: ExprSignals, ctx: ContextState, ctxAgeS: Long) {
+        val arr = vals
+        if (arr.isEmpty()) return
+        val dt = nowMs - lastValMs
+        if (lastValMs != Long.MIN_VALUE && dt >= 0 && dt < VALUE_INTERVAL_MS) return
+        lastValMs = nowMs
+        win?.let { sig.feed(it) }
+        for (pi in 0 until arr.size) {
+            val p = arr[pi]
+            val r = run(p, nowMs, sig, ctx, ctxAgeS)
+            val slot = if (p.field == ExprValues.CAP) -1 else p.row * GAPS + (p.field - 1)
+            var set = false
+            if (r.error) { if (r.errorKind == Sample.ERR_DIV0) exprDiv0++ else { exprErr++; errTotal++ } }
+            else if (r.available && r.type == Sample.Type.NUM) {
+                if (p.field == ExprValues.CAP) tunedCap[p.row] = ExprValues.clampCap(r.num) else tunedGapMs[slot] = ExprValues.clampGapMs(r.num)
+                set = true; p.tuned++
+            }
+            if (!set) { if (p.field == ExprValues.CAP) tunedCap[p.row] = NONE else tunedGapMs[slot] = NONE.toLong() }
+        }
+    }
+
+    /**
+     * The row hook: [base] (the plan's row of [state]) with the value programs' current overrides. Only the four editable rows can be tuned, so WALKING and
+     * UNKNOWN come back unchanged; a field with no (or an unavailable, or an erroring) override keeps the row's own value. Allocates only when something is tuned.
+     */
+    @Synchronized fun tune(state: ContextState, base: ContextCapturePolicy): ContextCapturePolicy {
+        if (vals.isEmpty()) return base
+        val row = rowOfState[state.ordinal]
+        if (row < 0) return base
+        val cap = tunedCap[row]
+        val g = row * GAPS
+        if (cap == NONE && tunedGapMs[g] < 0 && tunedGapMs[g + 1] < 0 && tunedGapMs[g + 2] < 0 && tunedGapMs[g + 3] < 0) return base
+        return base.copy(
+            capPerMin = if (cap != NONE) cap else base.capPerMin,
+            minSettledCheckMs = if (tunedGapMs[g] >= 0) tunedGapMs[g] else base.minSettledCheckMs,
+            minQuietCheckMs = if (tunedGapMs[g + 1] >= 0) tunedGapMs[g + 1] else base.minQuietCheckMs,
+            minWalkCheckMs = if (tunedGapMs[g + 2] >= 0) tunedGapMs[g + 2] else base.minWalkCheckMs,
+            minStillCapMs = if (tunedGapMs[g + 3] >= 0) tunedGapMs[g + 3] else base.minStillCapMs,
+        )
+    }
+
     /** True = keep the glance candidate; false = DROP it (and only that: nothing is ever force-captured). Never throws. */
-    fun keep(nowMs: Long, sig: ExprSignals, ctx: ContextState, ctxAgeS: Long): Boolean {
+    @Synchronized fun keep(nowMs: Long, sig: ExprSignals, ctx: ContextState, ctxAgeS: Long): Boolean {
         val arr = parr; val n = arr.size
         if (n == 0) return true
         val dt = nowMs - lastEvalMs
@@ -191,6 +250,10 @@ class ExprRunner private constructor(private val progs: List<Prog>, private val 
         /** At most two evaluations a second (F1). */
         const val MAX_EVAL_PER_S = 2
         const val MIN_INTERVAL_MS = 1_000L / MAX_EVAL_PER_S
+        /** Value programs read the row once a second. */
+        const val VALUE_INTERVAL_MS = 1_000L
+        private const val NONE = -1
+        private const val GAPS = 4
         private val FEATURES = SignalCatalog.featureNames.size
         private val SIG_CTX = FEATURES
         private const val OP_SIG = 0; private const val OP_CONST = 1; private const val OP_CMP = 2; private const val OP_ARITH = 3
@@ -203,14 +266,16 @@ class ExprRunner private constructor(private val progs: List<Prog>, private val 
         private val CMP = mapOf("<" to StepOps.LT, "<=" to StepOps.LE, ">" to StepOps.GT, ">=" to StepOps.GE, "==" to StepOps.EQ)
         private val ARITH = mapOf("+" to StepOps.ADD, "-" to StepOps.SUB, "*" to StepOps.MUL, "/" to StepOps.DIV)
 
-        /** Builds the runner of the `guard` entries of [exprs]; null when there are none or an entry is malformed (no guard = capture unchanged). */
+        /** Builds the runner of the `guard` and `value` entries of [exprs]; null when there are none or an entry is malformed (no program = capture unchanged). */
         fun of(exprs: List<JsonObject>): ExprRunner? {
-            val g = exprs.filter { (it["role"] as? JsonPrimitive)?.content == "guard" }
-            if (g.isEmpty()) return null
+            fun role(o: JsonObject) = (o["role"] as? JsonPrimitive)?.content
+            val g = exprs.filter { role(it) == "guard" }
+            val v = exprs.filter { role(it) == "value" }
+            if (g.isEmpty() && v.isEmpty()) return null
             return try {
-                val terms = ExprWindows.termsOf(g) ?: return null
+                val terms = ExprWindows.termsOf(g + v) ?: return null
                 val ws = if (terms.isEmpty()) null else WindowState(terms.toTypedArray())
-                ExprRunner(g.map { parse(it, terms) }, ws)
+                ExprRunner(g.map { parse(it, terms).also { p -> require(p.row < 0) { "guard target" } } }, v.map { parse(it, terms).also { p -> require(p.row >= 0) { "value target" } } }, ws)
             } catch (e: RuntimeException) { null }
         }
 
@@ -255,7 +320,10 @@ class ExprRunner private constructor(private val progs: List<Prog>, private val 
             val id = (e["id"] as JsonPrimitive).content
             val out = (e["out"] as JsonPrimitive).intOrNull ?: error("out")
             require(out in 0 until n)
-            return Prog(id, out, op, a, b, c, f, nm, hi, ms, sg, sets, flag, wi)
+            val row = (e["row"] as? JsonPrimitive)?.content?.let { ExprValues.rowIndex(it).also { r -> require(r >= 0) { "row" } } } ?: -1
+            val field = (e["field"] as? JsonPrimitive)?.content?.let { ExprValues.fieldIndex(it).also { x -> require(x >= 0) { "field" } } } ?: -1
+            require((row >= 0) == (field >= 0)) { "target" }
+            return Prog(id, out, op, a, b, c, f, nm, hi, ms, sg, sets, flag, wi, row, field)
         }
     }
 }
