@@ -9,10 +9,10 @@ import com.rokid.context.ai.canvas.PipelineValidator
 import com.rokid.context.canvas.helper.CanvasLogSink
 import com.rokid.context.canvas.moment.Moment
 import com.rokid.context.canvas.moment.MomentResolver
+import com.rokid.context.canvas.moment.markLineage
 import com.rokid.context.canvas.moment.MomentId
 import com.rokid.context.canvas.moment.SceneRunItem
 import com.rokid.context.canvas.moment.SceneRunSource
-import com.rokid.context.memory.moment.MomentType
 import com.rokid.context.core.log.Level
 import com.rokid.context.memory.db.CanvasDao
 import com.rokid.context.memory.db.CanvasRunEntity
@@ -529,13 +529,10 @@ class CanvasRunner(
             val lineage = HashMap<String, LinkedHashSet<String>>() // frame -> every model call whose output its rows derive from (a later per-frame call must not hide a shared one)
 
             members.forEach { (k, f) -> lineage[k] = LinkedHashSet(f.map { MEMBER_TOKEN + it }) }
-            // a MARK Moment has no photo to carry the lineage: its marks do (a Forget of the mark deletes the rows, see MomentForget); a FRAME Moment keeps its photos as before
-            momentByKey.forEach { (k, m) ->
-                when (m.type) {
-                    MomentType.FRAME -> Unit
-                    MomentType.MARK -> lineage.getOrPut(k) { LinkedHashSet() }.addAll(m.marks.map { MEMBER_TOKEN + it.id })
-                }
-            }
+            // a MARK Moment has no photo to carry the lineage: its marks do (a Forget of the mark deletes the rows, see CanvasSlice3Dao.deleteRunRowsOfLabels); a Scene run lists the marks of its MARK Moments
+            val markLineageOf: Map<String, List<String>> = momentByKey.mapValues { (_, m) -> markLineage(m) } + sceneByKey.mapValues { (_, s) -> s.markIds }
+            markLineageOf.forEach { (k, ids) -> if (ids.isNotEmpty()) lineage.getOrPut(k) { LinkedHashSet() }.addAll(ids.map { MEMBER_TOKEN + it }) }
+            val allMarks: Set<String> = markLineageOf.values.flatten().toSet()
 
             fun write(nodeId: String, frameId: String, r: NodeResult) {
                 val m = r.meta
@@ -552,7 +549,7 @@ class CanvasRunner(
             suspend fun flush(): Boolean {
                 if (pending.isEmpty()) return true
                 val rows = pending.toList(); pending.clear()
-                return dao.insertRunItemsFenced(rows, emptyList(), gen, allMembers, generation)
+                return dao.insertRunItemsFenced(rows, emptyList(), gen, allMembers, allMarks, generation)
             }
 
             stop@ for (node in ItemFlow.topological(p)) {
@@ -612,7 +609,7 @@ class CanvasRunner(
                     if (isCancelled(runId)) { status = "CANCELLED"; break@stop }
                     if (hot()) { status = "STOPPED_HOT"; break@stop }
                     // Pre-call fence: after a wipe or a Forget the loaded bytes must not be sent again (the commit fence alone only drops the write).
-                    if (generation() != gen || dao.tombstonedAmong(chunk.flatMap { members[it.frameId] ?: listOf(it.frameId) }) > 0) { status = "CANCELLED"; break@stop }
+                    if (generation() != gen || dao.tombstonedAmong(chunk.flatMap { members[it.frameId] ?: listOf(it.frameId) }) > 0 || dao.labelsMissing(chunk.flatMap { markLineageOf[it.frameId].orEmpty() }) > 0) { status = "CANCELLED"; break@stop }
                     val ran = if (ex is HelperExecutor && helperFence != null) runInterruptible(runId, ex, node, chunk, ctx, helperFence, members) else if (ex == null) emptyList() else ex.run(node, chunk, ctx) // no executor: per-item no_executor, not a cancel
                     if (ran == null) { status = "CANCELLED"; break@stop } // cancelled while the chunk was suspended in the helper executor
                     val results = ran.associateBy { it.frameId }
