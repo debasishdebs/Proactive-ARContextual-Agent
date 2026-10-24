@@ -5,7 +5,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-enum class PortType { PHOTOS, EXTRACTION, JSON, PREVIEW, IMU, MOTION_EVENT, CONTEXT, TRIGGER, VECTOR, TEXT, SIGNAL, MOMENTS }
+enum class PortType { PHOTOS, EXTRACTION, JSON, PREVIEW, IMU, MOTION_EVENT, CONTEXT, TRIGGER, VECTOR, TEXT, SIGNAL, MOMENTS, SCENES }
 
 /** Where a node runs (slice 3 section 2). A `signal.*` node's domain is its `params.domain`, per instance. */
 enum class Domain { RT_GLASSES, RT_PHONE, ASYNC, REPLAY_ONLY }
@@ -78,6 +78,9 @@ object NodeTypes {
     /** Moment-lite: the root of an experiment over Moments (a derived read model, nothing stored). ASYNC only, never published, never run on the phone's own nodes: only `py.fn` accepts its output. */
     const val INPUT_MOMENTS = "input.moments"
 
+    /** Scenes: an ASYNC input root next to `input.moments`, read by the phone-side scene executor (stored Scenes of a time window). Never published, no glasses plan; nothing accepts its SCENES output yet. */
+    const val INPUT_SCENES = "input.scenes"
+
     const val OTHER = "other"
 
     /** The domains a `signal.*` node may run in. */
@@ -131,6 +134,8 @@ object NodeTypes {
     private val experiments: List<NodeType> = listOf(
         NodeType(INPUT_MOMENTS, "Moments", emptySet(), PortType.MOMENTS, sinceSchema = 2, domain = Domain.ASYNC, category = Category.INPUTS,
             short = "moments", liveable = false, root = true, cost = CostSpec(modelCalls = 0)),
+        NodeType(INPUT_SCENES, "Scenes", emptySet(), PortType.SCENES, sinceSchema = 2, domain = Domain.ASYNC, category = Category.INPUTS,
+            short = "scenes", liveable = false, root = true, cost = CostSpec(modelCalls = 0)),
         NodeType(PY_FN, "Python (experiment)", setOf(PortType.JSON, PortType.MOMENTS), PortType.JSON, sinceSchema = 2, domain = Domain.ASYNC, category = Category.CODE,
             executor = ExecutorKind.PYTHON, short = "pyfn", liveable = false, cost = CostSpec(modelCalls = 0),
             hint = "Needs the laptop helper and your confirm tap on the phone for each run; never published to the glasses.",
