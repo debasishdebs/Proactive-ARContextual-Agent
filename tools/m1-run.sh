@@ -8,7 +8,8 @@
 #   tools/m1-run.sh collect start [minutes] | stop | status
 #   tools/m1-run.sh pull <dir> [--allow-partial]    glasses -> <dir> (trace-pull.sh) + heartbeat lines; then each trace is adb-pushed to the phone's staging dir and imported
 #                                                   (POST /api/traces/import; staging dir deleted by the phone on success); lists the phone's traces
-#   tools/m1-run.sh replay [<traceId>] [--diag file] [--tol pct] [--legacy-total]   (no id: the last trace imported by pull; --legacy-total = old +-5 % of ALL opens, SETTLE-wake scripts only)
+#   tools/m1-run.sh replay [<traceId>] [--diag file] [--tol pct] [--legacy-total] [--max-fail-pct T]   (no id: the last trace imported by pull; --legacy-total = old +-5 % of ALL opens, SETTLE-wake scripts only)
+# Gate: failing windows (base_fail) / compared windows (base_pass + base_fail) must be <= T percent; T = --max-fail-pct or M1_MAX_FAIL_PCT, default 3, HARD CAP 5 (above 5 or non-numeric: refused before any replay).
 # Env: G glasses serial (default as trace-pull.sh); M1_PHONE_TID adb transport id of the phone (auto: the only other device in `adb devices -l`; never selected by serial,
 #   the wireless serial contains spaces); M1_PHONE_PKG phone package (default com.rokid.context); M1_SCHEME=http only for the local mock test; M1_DIAG=<file> reads heartbeats from a file (no adb).
 set -u
@@ -280,10 +281,14 @@ cmd_import() {
 
 cmd_replay() {
   need_state; init_state
-  local tid="" tol=5 diag="" legacy=0
+  local tid="" tol=5 diag="" legacy=0 maxfail="${M1_MAX_FAIL_PCT:-3}"
   case "${1:-}" in ""|--*) tid=$(cat "$LAST_TRACE" 2>/dev/null) ;; *) tid="$1"; shift ;; esac
   [ -n "$tid" ] || die "usage: m1-run.sh replay [<traceId>] [--diag file] [--tol pct] [--legacy-total] (no id and no earlier pull)"
-  while [ $# -gt 0 ]; do case "$1" in --diag) diag="$2"; shift 2 ;; --tol) tol="$2"; shift 2 ;; --legacy-total) legacy=1; shift ;; *) die "unknown option" ;; esac; done
+  while [ $# -gt 0 ]; do case "$1" in --diag) diag="$2"; shift 2 ;; --tol) tol="$2"; shift 2 ;; --legacy-total) legacy=1; shift ;; --max-fail-pct) [ $# -ge 2 ] || die "--max-fail-pct needs a value"; maxfail="$2"; shift 2 ;; *) die "unknown option" ;; esac; done
+  # the failing-window threshold: numeric, at most the hard cap 5; refused before anything is replayed
+  python3 -c 'import re,sys
+v=sys.argv[1]
+sys.exit(0 if re.fullmatch(r"[0-9]+(\.[0-9]+)?",v) and float(v)<=5 else 1)' "$maxfail" || die "REFUSED: max failing-window share '$maxfail' is not a number from 0 to 5 (hard cap 5 percent); nothing was replayed"
   case "$tid" in *[!A-Za-z0-9:_-]*|"") die "bad trace id" ;; esac
   printf '{"traceIds":["%s"],"candidate":{"configHash":"%s"}}' "$tid" "$EXPECT_HASH" > "$STATE/r.json"
   local st; st=$(api POST /api/replays "$STATE/r.json")
@@ -303,9 +308,9 @@ cmd_replay() {
   local fms tms; fms=$(pj 'j.get("fromMs")'); tms=$(pj 'j.get("toMs")')
   local sh; sh=$(printf '%s\n' "$dt" | heartbeat_summary "$fms" "$tms" "${EXPECT_HASH:0:8}")
   case "$sh" in *UNFILTERED*) echo "NOTE trace interval unknown: every SHADOW heartbeat of the log counts (use --diag with a log trimmed to the run)" ;; esac
-  python3 - "$LAST" "$tol" "$sh" "$legacy" <<'PY'
+  python3 - "$LAST" "$tol" "$sh" "$legacy" "$maxfail" <<'PY'
 import json,sys
-j=json.load(open(sys.argv[1])); tol=float(sys.argv[2]); sh=dict(t.split("=",1) for t in sys.argv[3].split() if "=" in t); legacy=sys.argv[4]=="1"
+j=json.load(open(sys.argv[1])); tol=float(sys.argv[2]); sh=dict(t.split("=",1) for t in sys.argv[3].split() if "=" in t); legacy=sys.argv[4]=="1"; maxfail=float(sys.argv[5])
 rep=(j.get("result") or {}).get("reports") or []
 if not rep: print("FAIL no report in the result"); sys.exit(1)
 r=rep[0]["report"]; b=r["baseline"]; c=r.get("candidate") or {}
@@ -319,8 +324,14 @@ print("inexact_bounds reasons=%s covered=%.2f min (%.1f %% of the span) | delive
     json.dumps(r.get("inexactReasons",{}),sort_keys=True),r.get("inexactMinutes",0.0),r.get("inexactSharePct",0.0),st.get("count",0),st.get("seconds",0.0),st.get("sharePct",0.0)))
 print("opens_range baseline=[%s, %s] counterfactual=[%s, %s] (low = replayed opens in exact windows + recorded opens in inexact ones; high = low + replayed opens in inexact ones; covers the excluded windows only and assumes every other window passed: NOT a bound while base_fail>0)" % (
     b.get("opensLow",b.get("opens")),b.get("opensHigh",b.get("opens")),c.get("opensLow",c.get("opens")),c.get("opensHigh",c.get("opens"))))
-ok=failed==0 and passed>0
-print("%s exact parity (base_fail=0, windows>0)" % ("PASS" if ok else "FAIL"))
+# Gate (user decision): failing windows / ALL compared windows (base_pass + base_fail; the inexact ones are excluded and bounded above) <= T percent (T <= 5, hard cap enforced before the replay)
+total=passed+failed; share=(100.0*failed/total) if total else 100.0
+ok=total>0 and share<=maxfail
+kinds=r.get("baseFailKinds")
+print("failing_windows=%d total_windows=%d share=%.2f %% T=%s %%" % (failed,total,share,("%g" % maxfail)))
+if kinds: print("failure classification (counts by kind): %s" % ", ".join("%s=%s" % (k,kinds[k]) for k in sorted(kinds)))
+else: print("failure classification: unclassified (%d), informational, not a failure" % failed)
+print("%s failing-window share %.2f %% <= %s %% (windows>0)" % ("PASS" if ok else "FAIL",share,"%g" % maxfail))
 s=int(sh.get("shOpen","0")); n=int(sh.get("shadow_hb","0"))
 print("shadow shOpen=%d over %d SHADOW heartbeats (plan=%s planMode=%s)" % (s,n,sh.get("plan"),sh.get("planMode")))
 if not c or n==0: print("FAIL no counterfactual or no SHADOW heartbeats to compare"); sys.exit(1)

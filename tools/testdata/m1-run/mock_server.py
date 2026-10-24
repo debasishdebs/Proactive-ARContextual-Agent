@@ -52,6 +52,10 @@ class H(BaseHTTPRequestHandler):
             cand = fig(100); cand["glanceOpens"] = 90
             if H.last != "t-noadm": cand["glanceAdmissions"] = 100
             rep = {"minutes": 25.0, "baseline": fig(100), "candidate": cand, "unobservedOpensPct": 3.0, "basePassed": 24, "baseFailed": 0, "inexactWindows": 2, "warnings": []}
+            # trace "t-f<failing>-<total>": that many failing windows of that many compared windows (gate share tests); "t-fk2-100" also carries a failure classification
+            if H.last.startswith("t-f"):
+                nf, nt = H.last[3:].replace("k", "").split("-"); rep["baseFailed"] = int(nf); rep["basePassed"] = int(nt) - int(nf)
+                if "k" in H.last[:5]: rep["baseFailKinds"] = {"GATE_DIFF": 1, "OPEN_MISS": 1}
             return self.send(200, {"replayId": "r1", "jobState": "DONE", "result": {"estimate": True, "reports": [{"traceId": "t-1", "report": rep}]}})
         self.send(404, {"error": "not_found"})
 srv = HTTPServer(("127.0.0.1", 0), H)
