@@ -53,7 +53,7 @@ class ForgetService(
      */
     suspend fun forgetMoment(frameId: String, redactCites: Boolean = true): Result = notifying { forgetMomentTx(frameId, redactCites) }
 
-    private suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true): Result = db.withTransaction {
+    internal suspend fun forgetMomentTx(frameId: String, redactCites: Boolean = true): Result = db.withTransaction {
         val cites = if (redactCites) setOf(PHOTO_CITE_PREFIX + frameId) else emptySet()
         val frame = dao.frame(frameId)
         val ids = dao.memoryIdsOfFrame(frameId)
@@ -65,6 +65,7 @@ class ForgetService(
         }
         val r = cascade(ids, lockFrames = true, extraCited = cites)
         dao.insertTombstone(ForgetTombstoneEntity(frameId, clock()))
+        db.momentDao().dropHolding(listOf(frameId), ids) // source-to-projection cleanup: no stored Moment keeps a reference to what Forget removed
         dropCanvasOutputs(listOf(frameId), listOfNotNull(frame?.ts))
         dao.deleteFrame(frameId)
         listOf(frameId).let { dao.deleteFrameSourcesOfFrames(it); dao.deleteFrameVectorsFor(it); dao.deleteFrameMetaFor(it); dao.deleteFrameStateFor(it) }
@@ -77,7 +78,7 @@ class ForgetService(
      */
     suspend fun forgetFacts(ids: Collection<String>, lockFrames: Boolean = true): Result = notifying { forgetFactsTx(ids, lockFrames) }
 
-    private suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true): Result = db.withTransaction {
+    internal suspend fun forgetFactsTx(ids: Collection<String>, lockFrames: Boolean = true): Result = db.withTransaction {
         cascade(ids.distinct(), lockFrames)
     }
 
@@ -122,6 +123,7 @@ class ForgetService(
             dao.deleteFrame(id)
             frame.path.takeIf { it.isNotBlank() }?.let { paths += it; paths += sidecarOf(it) }
         }
+        db.momentDao().dropHolding(expiredIds, emptyList()) // a Moment with no live photo is not a Moment
         dropCanvasOutputs(expiredIds, expiredTimes) // S25: frame retention uses the same cascade, once for the whole set
         Result.EMPTY.copy(framesToDelete = paths.distinct(), expiredFrames = expired)
     }
@@ -145,6 +147,7 @@ class ForgetService(
         f.chunked(CHUNK).forEach { c -> dao.deleteFrameSourcesFor(c); dao.deleteEdgesFrom(c); dao.deleteEdgesTo(c); dao.deleteVectorsFor(c); dao.deleteMemories(c) }
         // 3. D: hidden, vectors gone.
         d.chunked(CHUNK).forEach { c -> dao.invalidate(c); dao.deleteVectorsFor(c) }
+        db.momentDao().dropHolding(frames, f + d) // the stored Moments holding a deleted or invalidated memory (or a locked photo) are rebuildable: drop them
         // 4. Extraction lock.
         val now = clock()
         if (lockFrames) { frames.forEach { dao.insertTombstone(ForgetTombstoneEntity(it, now)) }; dropCanvasOutputs(frames) }
@@ -182,7 +185,7 @@ class ForgetService(
     private val pendingFrames = java.util.concurrent.ConcurrentLinkedQueue<Pending>()
 
     /** Runs [tx]; only after it committed are the registered [ForgetListener]s told which photos went (a rolled-back transaction tells nobody). */
-    private suspend fun notifying(tx: suspend () -> Result): Result {
+    internal suspend fun notifying(tx: suspend () -> Result): Result {
         val r = try { tx() } catch (e: Throwable) { pendingFrames.clear(); throw e }
         val all = generateSequence { pendingFrames.poll() }.toList()
         val ids = all.flatMap { it.frames }.distinct()
@@ -198,6 +201,7 @@ class ForgetService(
         // range Forget. Conservative on purpose: a privacy action errs on deleting a little more.
         val spans = capturedAt.map { (it - PHOTO_LINK_MS)..(it + PHOTO_LINK_MS) }.let(CanvasSlice3Dao::mergeRanges).map { r ->
             val o = db.canvasSlice3Dao().forgetRangeTx(r.first, r.last, clock())
+            db.momentDao().dropBetween(r.first, r.last) // the marks of that time are gone: so are the stored Moments that held them
             Triple(r.first, r.last, o.tombstonedTraceIds)
         }
         if (frameIds.isNotEmpty() || spans.isNotEmpty()) pendingFrames.add(Pending(frameIds, spans))

@@ -1,4 +1,4 @@
-package com.rokid.context.canvas.moment
+package com.rokid.context.memory.moment
 
 /**
  * A Moment id is the lowercase hex of the phone-clock epoch second, zero-padded to 8 digits (moment-model spec 3.1): a pure function of the second, so there is

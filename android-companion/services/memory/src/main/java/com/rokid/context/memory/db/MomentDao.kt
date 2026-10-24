@@ -51,8 +51,8 @@ abstract class MomentDao {
     /** Removes every stored Moment whose second lies in `[fromMs, toMs]` (a Forget of that time). Returns the Moment ids removed. */
     @Transaction open suspend fun dropBetween(fromMs: Long, toMs: Long): List<String> {
         if (toMs < 0) return emptyList()
-        val lo = com.rokid.context.canvas.moment.MomentId.format(Math.floorDiv(maxOf(fromMs, 0L), 1000L).coerceAtMost(com.rokid.context.canvas.moment.MomentId.MAX_SECOND))
-        val hi = com.rokid.context.canvas.moment.MomentId.format(Math.floorDiv(toMs, 1000L).coerceAtMost(com.rokid.context.canvas.moment.MomentId.MAX_SECOND))
+        val lo = com.rokid.context.memory.moment.MomentId.format(Math.floorDiv(maxOf(fromMs, 0L), 1000L).coerceAtMost(com.rokid.context.memory.moment.MomentId.MAX_SECOND))
+        val hi = com.rokid.context.memory.moment.MomentId.format(Math.floorDiv(toMs, 1000L).coerceAtMost(com.rokid.context.memory.moment.MomentId.MAX_SECOND))
         val ids = momentIdsBetween(lo, hi)
         remove(ids)
         return ids
@@ -78,6 +78,7 @@ abstract class MomentDao {
     @Query("SELECT frameId, wireFrameId FROM frame_meta WHERE frameId IN (:frameIds) AND wireFrameId IS NOT NULL") abstract suspend fun wireIds(frameIds: List<String>): List<WireIdRow>
     @Query("SELECT path FROM frame WHERE id IN (:frameIds) AND path != ''") abstract suspend fun framePaths(frameIds: List<String>): List<String>
     @Query("SELECT labelId FROM canvas_label WHERE atMs >= :fromMs AND atMs <= :toMs ORDER BY labelId") abstract suspend fun labelIdsBetween(fromMs: Long, toMs: Long): List<String>
+    @Query("DELETE FROM canvas_label WHERE labelId IN (:ids)") abstract suspend fun deleteLabels(ids: List<String>)
     @Query("SELECT labelId FROM canvas_label WHERE labelId IN (:ids)") abstract suspend fun labelIdsAmong(ids: List<String>): List<String>
     /** Distinct seconds that hold a live (not tombstoned) frame, for a window rebuild. */
     @Query("SELECT DISTINCT ts / 1000 FROM frame WHERE ts >= :fromMs AND ts <= :toMs AND ts >= 0 AND id NOT IN (SELECT frameId FROM forget_tombstone) ORDER BY 1") abstract suspend fun liveFrameSeconds(fromMs: Long, toMs: Long): List<Long>

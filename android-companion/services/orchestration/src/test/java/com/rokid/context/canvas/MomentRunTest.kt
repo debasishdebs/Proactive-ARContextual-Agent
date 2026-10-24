@@ -120,13 +120,14 @@ class MomentRunTest {
         h.answer(PyFnRunHarness.Lease(l.jobId, l.leaseGen, listOf("i0", "i1"))); h.finish(r)
     }
 
-    @Test fun nothingIsPersistedByTheMomentLayerAndTheSchemaStaysV8() = runBlocking<Unit> {
+    @Test fun nothingIsPersistedByTheDerivedMomentLayerAndTheStoredTablesStayEmpty() = runBlocking<Unit> {
         seed()
         val before = h.db.openHelper.readableDatabase.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { c -> generateSequence { if (c.moveToNext()) c.getString(0) else null }.toList() }
         resolver().window(0, ms * 2, 50); resolver().resolve(listOf(m0))
         val after = h.db.openHelper.readableDatabase.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").use { c -> generateSequence { if (c.moveToNext()) c.getString(0) else null }.toList() }
-        assertEquals(before, after); assertEquals(8, h.db.openHelper.readableDatabase.version)
-        assertTrue("no moment table", after.none { it.contains("moment", ignoreCase = true) })
+        assertEquals(before, after); assertEquals(9, h.db.openHelper.readableDatabase.version)
+        // v9 added the stored-Moment tables; the derived resolver and the run path write none of them (only the builder does, and it is not called here).
+        listOf("moment", "moment_part", "moment_tombstone", "moment_trace_dep", "cleanup_outbox").forEach { t -> assertEquals(t, 0, h.db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM $t").use { c -> c.moveToFirst(); c.getInt(0) }) }
     }
 
     // ---- freshness binding ----
