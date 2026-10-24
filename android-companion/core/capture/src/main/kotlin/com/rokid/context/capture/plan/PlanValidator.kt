@@ -32,7 +32,12 @@ object PlanValidator {
     private fun walk(raw: JsonObject, p: CapturePlan?, bytes: Int, out: MutableList<String>): List<String> {
         if (bytes > PLAN_MAX_BYTES) out += "plan is $bytes bytes (max $PLAN_MAX_BYTES)"
         val schema = (raw["planSchema"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toLongOrNull()
-        if (schema != PLAN_SCHEMA.toLong()) out += "plan schema ${schema ?: (raw["planSchema"] as? JsonPrimitive)?.content ?: "missing"} is not supported"
+        val exprs = ((raw["config"] as? JsonObject)?.get("exprs") as? JsonArray)?.takeIf { it.isNotEmpty() }
+        val wanted = if (exprs != null) PLAN_SCHEMA_EXPR else PLAN_SCHEMA   // the schema follows the content: 2 iff exprs
+        if (schema != wanted.toLong()) out += "plan schema ${schema ?: (raw["planSchema"] as? JsonPrimitive)?.content ?: "missing"} is not supported"
+        if (exprs != null && ((raw["config"] as JsonObject)["sigSchema"] as? JsonPrimitive)?.content != SIG_SCHEMA.toString()) {
+            out += "sigSchema must be $SIG_SCHEMA"
+        }
         finite(raw, "", out)
         sensing(raw, out)
         rawRules(raw, out)

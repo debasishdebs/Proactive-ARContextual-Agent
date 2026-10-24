@@ -6,7 +6,7 @@ import kotlinx.serialization.json.JsonObject
 
 object PlanFixtures {
     fun plan(config: PlanConfig = PlanResolver.identity(), name: String = "t", meta: PlanMeta = PlanMeta(name, 1)) =
-        CapturePlan(PLAN_SCHEMA, PlanJson.configHash(config), config, meta)
+        CapturePlan(planSchemaFor(config), PlanJson.configHash(config), config, meta)
 
     fun text(p: CapturePlan = plan()) = PlanJson.encode(p)
 

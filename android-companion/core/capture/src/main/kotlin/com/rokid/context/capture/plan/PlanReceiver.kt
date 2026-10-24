@@ -6,6 +6,7 @@ import com.rokid.context.core.model.PlanAckState
 import com.rokid.context.core.model.PlanMode
 import com.rokid.context.core.model.context.ContextState
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 
 interface PlanPersistence { fun load(): ReceiverState?; fun commit(s: ReceiverState) }
@@ -28,7 +29,11 @@ data class TerminalMeta(val mode: PlanMode, val publishId: String?)
  * Pure plan receiver for the glasses (S59). Stale and duplicate gens are answered without re-applying; a REVERTED gen is final; a
  * TRIAL is bounded on the glasses' own elapsed clock and ends on a reboot. Not thread-safe.
  */
-class PlanReceiver(private val persist: PlanPersistence, private val elapsed: () -> Long, bootId: () -> String) {
+class PlanReceiver(
+    private val persist: PlanPersistence, private val elapsed: () -> Long, bootId: () -> String,
+    /** The capabilities this build advertises and enforces. Tests and the expression runner (X3) pass [CAPS_EXPR]. */
+    private val caps: List<String> = CAPS,
+) {
     /** Read once: a boot id cannot change inside a process. A persisted state from another boot is detected by comparing it to this. */
     private val boot: String = bootId()
     private var st: ReceiverState? = persist.load()
@@ -58,7 +63,7 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
             return ack(m.gen, cur.mode, if (cur.effective) PlanAckState.EFFECTIVE else PlanAckState.STAGED, null, cur.configHash, m.phoneInstall, m.publishId, m.sessionStartMs)
         }
         // Unrestricted LIVE is not a capability of this build: a buggy or rogue phone must not get an unbounded plan staged (round 3).
-        if (m.mode == PlanMode.LIVE && "live" !in CAPS) return reject(m, "unsupported:live")
+        if (m.mode == PlanMode.LIVE && "live" !in caps) return reject(m, "unsupported:live")
         if (m.mode == PlanMode.TRIAL && (m.trialMaxMs == null || m.trialMaxMs !in 1L..MAX_TRIAL_MS)) return reject(m, "bounds")
         var planJson: String? = null
         if (m.mode != PlanMode.SETTINGS) {
@@ -67,6 +72,9 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
             val bytes = planJson.toByteArray(Charsets.UTF_8).size
             if (bytes > PLAN_MAX_BYTES) return reject(m, "too_big")
             val raw = runCatching { Json.parseToJsonElement(planJson) as? JsonObject }.getOrNull() ?: return reject(m, "schema")
+            // S24: a plan that needs a capability this build lacks is refused as such, before any version or bounds judgement.
+            val hasExprs = ((raw["config"] as? JsonObject)?.get("exprs") as? JsonArray)?.isNotEmpty() == true
+            if (hasExprs) for (cap in listOf(CAP_EXPR, CAP_SIG1)) if (cap !in caps) return reject(m, "unsupported:$cap")
             val plan = PlanJson.decodeStrict(planJson).getOrNull()
             val problems = PlanValidator.problems(raw, plan, bytes)
             if (problems.any { it.startsWith("plan schema ") }) return reject(m, "version")
@@ -88,7 +96,7 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
     fun activated(gen: Long): CapturePlanAck {
         val cur = st
         if (cur == null || cur.appliedGen != gen || gen in cur.terminal) {
-            return CapturePlanAck(gen = gen, state = PlanAckState.REJECTED, reason = "stale", phoneInstall = cur?.phoneInstall ?: "", caps = CAPS)
+            return CapturePlanAck(gen = gen, state = PlanAckState.REJECTED, reason = "stale", phoneInstall = cur?.phoneInstall ?: "", caps = caps)
         }
         if (!cur.effective) {
             val next = cur.copy(
@@ -116,7 +124,7 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
 
     /** Back to the settings path; the gen is terminal and is never applied again. The first reason stays: a second revert re-acks it. */
     fun revert(reason: String): CapturePlanAck {
-        val cur = st ?: return CapturePlanAck(gen = 0, state = PlanAckState.REJECTED, reason = "stale", caps = CAPS)
+        val cur = st ?: return CapturePlanAck(gen = 0, state = PlanAckState.REJECTED, reason = "stale", caps = caps)
         cur.terminal[cur.appliedGen]?.let { first ->
             val was = cur.terminalMeta[cur.appliedGen]
             return ack(cur.appliedGen, was?.mode ?: cur.mode, PlanAckState.REVERTED, first, null, cur.phoneInstall, was?.publishId ?: cur.publishId)
@@ -143,11 +151,15 @@ class PlanReceiver(private val persist: PlanPersistence, private val elapsed: ()
     private fun reject(m: CapturePlanMessage, reason: String) = ack(m.gen, m.mode, PlanAckState.REJECTED, reason, null, m.phoneInstall, m.publishId, m.sessionStartMs)
 
     private fun ack(gen: Long, mode: PlanMode, state: PlanAckState, reason: String?, hash: String?, install: String, publishId: String?, session: Long = lastSessionStartMs) =
-        CapturePlanAck(gen = gen, publishId = publishId, mode = mode, effectiveHash = hash, state = state, reason = reason, phoneInstall = install, caps = CAPS, sessionStartMs = session)
+        CapturePlanAck(gen = gen, publishId = publishId, mode = mode, effectiveHash = hash, state = state, reason = reason, phoneInstall = install, caps = caps, sessionStartMs = session)
 
     companion object {
         const val MAX_TRIAL_MS = 3_600_000L
         private const val MAX_TERMINAL = 16
+        const val CAP_EXPR = "expr"
+        const val CAP_SIG1 = "sig1"
         val CAPS = listOf("plan1", "shadow", "trial")
+        /** What a build with the expression runner advertises (X3 switches the glasses to it). */
+        val CAPS_EXPR = CAPS + listOf(CAP_EXPR, CAP_SIG1)
     }
 }
