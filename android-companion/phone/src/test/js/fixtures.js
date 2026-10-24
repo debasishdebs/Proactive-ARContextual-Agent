@@ -59,6 +59,22 @@ export const criticInner = {
   note: ['Read only: the critic prompt (live or draft) is chosen in the inspector; this node has no other setting.', 'No facts: pass without asking the model.'],
 };
 
+// what /api/node-types serves for memory.write: read only, no params
+export const memoryWriteInner = {
+  nodes: [
+    { id: 'facts', label: 'Facts in', kind: 'source' }, { id: 'captions', label: 'Captions in', kind: 'source' }, { id: 'trusted', label: 'Trusted flag', kind: 'source' },
+    { id: 'dropFacts', label: 'Drop blank facts', kind: 'op' }, { id: 'dropCaptions', label: 'Drop blank captions', kind: 'op' }, { id: 'review', label: 'Review state', kind: 'op' },
+    { id: 'factRow', label: 'Fact row (SHORT)', kind: 'op' }, { id: 'captionRow', label: 'Caption row (LONG)', kind: 'op' }, { id: 'preview', label: 'Preview rows', kind: 'branch' },
+  ],
+  wires: [
+    { from: 'facts', to: 'dropFacts', port: '' }, { from: 'captions', to: 'dropCaptions', port: '' }, { from: 'trusted', to: 'review', port: '' },
+    { from: 'dropFacts', to: 'factRow', port: '' }, { from: 'review', to: 'factRow', port: 'OK or NEEDS_REVIEW' },
+    { from: 'dropCaptions', to: 'captionRow', port: '' }, { from: 'factRow', to: 'preview', port: '' }, { from: 'captionRow', to: 'preview', port: '' },
+  ],
+  exposed: [],
+  note: ['Read only: this node has no settings. Preview only: nothing is written to memory here.', 'There is no duplicate or novelty check in this node.'],
+};
+
 // what /api/node-types serves for input.photos (CanvasBackendImplTest checks the real JSON); every default is today's behaviour
 export const photoParams = [
   { name: 'source', kind: 'enum', label: 'Source', options: ['glasses', 'all'], default: 'glasses' },
@@ -78,7 +94,7 @@ export const nodeTypes = [
     params: [{ name: 'role', kind: 'role' }, { name: 'template', kind: 'text' }, { name: 'schema', kind: 'schema' }, { name: 'images', kind: 'bool' }],
   }),
   t('route.switch', 'Switch', 'route', ['JSON'], 'JSON', { branchesFromCases: true, params: [{ name: 'field', kind: 'text', default: 'activity' }, { name: 'cases', kind: 'labels' }], category: 'Routing' }),
-  t('memory.write', 'Save memory (preview)', 'write', ['EXTRACTION'], 'PREVIEW', { category: 'Memory' }),
+  t('memory.write', 'Save memory (preview)', 'write', ['EXTRACTION'], 'PREVIEW', { category: 'Memory', inner: memoryWriteInner }),
 ];
 
 /** photos -> extract -> trust -(trusted)-> write ; trust -(unsure)-> critic -(pass|fail)-> write */

@@ -131,3 +131,35 @@ object CriticComposite {
         ),
     )
 }
+
+/**
+ * `memory.write` ("Save memory (preview)"), phase B. A read-only VIEW of `MemoryWritePreviewExecutor`: it has no settings, so nothing is exposed.
+ * Stages as coded: blank facts and blank captions are dropped, a fact becomes a SHORT row marked OK only when the upstream check trusted the
+ * extraction (else NEEDS_REVIEW), a caption becomes a LONG row that is always OK. It writes nothing and has no duplicate or novelty check.
+ */
+object MemoryWriteComposite {
+    val inner = InnerFlow(
+        nodes = listOf(
+            InnerNode("facts", "Facts in", "source"),
+            InnerNode("captions", "Captions in", "source"),
+            InnerNode("trusted", "Trusted flag", "source"),
+            InnerNode("dropFacts", "Drop blank facts", "op"),
+            InnerNode("dropCaptions", "Drop blank captions", "op"),
+            InnerNode("review", "Review state", "op"),
+            InnerNode("factRow", "Fact row (SHORT)", "op"),
+            InnerNode("captionRow", "Caption row (LONG)", "op"),
+            InnerNode("preview", "Preview rows", "branch"),
+        ),
+        wires = listOf(
+            InnerWire("facts", "dropFacts"), InnerWire("captions", "dropCaptions"), InnerWire("trusted", "review"),
+            InnerWire("dropFacts", "factRow"), InnerWire("review", "factRow", "OK or NEEDS_REVIEW"),
+            InnerWire("dropCaptions", "captionRow"), InnerWire("factRow", "preview"), InnerWire("captionRow", "preview"),
+        ),
+        exposed = emptyList(),
+        note = listOf(
+            "Read only: this node has no settings. Preview only: nothing is written to memory here.",
+            "A fact row is OK only when the check before it trusted the facts, otherwise NEEDS_REVIEW; a caption row is always OK.",
+            "There is no duplicate or novelty check in this node.",
+        ),
+    )
+}
