@@ -44,6 +44,9 @@ class DerivePassTest {
     private val hour = Math.floorDiv(MS, 3_600_000L) * 3_600_000L
     private val epoch = DeletionEpoch("i", 1, 0)
     private val cadence = DeriveCadence(db)
+    private val inputs = DeriveInputs(db)
+    private var admitCalls = 0
+    private var refuseAdmitOnCall = 0
     private val prompts = ArrayList<String>()
     private var onModel: suspend () -> Unit = {}
     private var fail = false
@@ -56,9 +59,9 @@ class DerivePassTest {
 
     private val model = DeriveText { p -> prompts += p; onModel(); if (fail) throw IllegalStateException("model down"); "REPLY-${prompts.size}" }
     private fun pass(max: Int = 10, text: DeriveText = model): DerivePass {
-        val inputs = DeriveInputs(db)
-        val reg = DeriveRegistry().also { r -> TextDerivePorts(inputs, text).registerIn(r) }
-        return DerivePass(db, reg, cadence, { DaoFence(0, epoch, { 0 }, { epoch }) }, inputs, { admitted }, max)
+        val gate = DeriveGate(enabled = { cadence.enabled() }, admit = { admitCalls++; admitted && (refuseAdmitOnCall == 0 || admitCalls != refuseAdmitOnCall) })
+        val reg = DeriveRegistry().also { r -> TextDerivePorts(inputs, text, gate).registerIn(r) }
+        return DerivePass(db, reg, cadence, { DaoFence(0, epoch, { 0 }, { epoch }) }, inputs, gate, max)
     }
 
     private suspend fun photo(sec: Long, memoryText: String? = "cat on sofa $sec", motion: String = "STILL") {
@@ -140,5 +143,26 @@ class DerivePassTest {
         photo(0); photo(30); photo(60); scenes(); on()
         val r = pass(max = 2).runIfDue(MS)!!
         assertEquals(2, r.objects); assertEquals(4, prompts.size) // SUMMARY and CAPTION of two objects
+    }
+
+    @Test fun aForgetBetweenReadingTheInputsAndTheModelCallStopsTheCall() = runBlocking<Unit> {
+        photo(0, "kept note"); photo(30, "FORGOTTEN-NOTE"); scenes(); on()
+        inputs.testAfterRead = { inputs.testAfterRead = null; forget.forgetMoments(listOf(mid(30))) } // commits after the Scene's text was read
+        pass().runIfDue(MS)
+        assertTrue(prompts.isNotEmpty())
+        prompts.forEach { assertFalse(it, it.contains("FORGOTTEN-NOTE")) }
+    }
+
+    @Test fun theKillSwitchIsReReadBeforeEveryCallAndNothingIsWrittenAfterItGoesOff() = runBlocking<Unit> {
+        photo(0); photo(30); scenes(); on()
+        onModel = { cadence.setEnabled(false); onModel = {} } // switched off during the first model call
+        pass().runIfDue(MS)
+        assertEquals(1, prompts.size); assertEquals(0, db.objectDao().derivedCount())
+    }
+
+    @Test fun everyModelCallNeedsItsOwnAdmissionAndTheFirstRefusalStopsThePass() = runBlocking<Unit> {
+        photo(0); photo(30); scenes(); on(); refuseAdmitOnCall = 2
+        pass().runIfDue(MS)
+        assertEquals(1, prompts.size); assertEquals(2, admitCalls) // no third ask after the refusal
     }
 }
