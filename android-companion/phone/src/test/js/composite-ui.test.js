@@ -2,7 +2,7 @@
 // collapse/expand, the inner boxes and wires, exposed params as inputs inside the owning box (defaults shown), edits reported to the host, labels as text.
 import { mountComposite, layout } from '../../main/assets/canvas/compositeview.js';
 import { findAll, find } from './fake-dom.js';
-import { eq, ok, localCriticParams, localCriticInner } from './fixtures.js';
+import { eq, ok, localCriticParams, localCriticInner, visionExtractParams, visionExtractInner, criticInner, memoryWriteInner } from './fixtures.js';
 import * as E from './env.js';
 
 const cls = (el, c) => el.classList.contains(c);
@@ -135,5 +135,48 @@ export const tests = {
   everyExposedParamNamesARealDescriptorAndBox() {
     const i = inner(); const names = descriptors.map((d) => d.name); const ids = i.nodes.map((n) => n.id);
     for (const e of i.exposed) ok(names.includes(e.param) && ids.includes(e.node), e.param);
+  },
+  // ---- phase B: a composite whose prompt stays in the inspector and whose boxes are mostly read only
+  factsFromFramesShowsOnlyTheBatchAsAnInputWithTodaysDefault() {
+    mount({ title: 'Facts from frames', inner: JSON.parse(JSON.stringify(visionExtractInner)), descriptors: visionExtractParams }, ({ root, w }) => {
+      w.expand();
+      eq(boxes(root).length, 6); eq(wires(root).length, 6);
+      const all = controls(root);
+      eq(all.length, 1, 'only the batch is editable');
+      eq(controls(box(root, 'batch'))[0].value, '1'); eq(controls(box(root, 'batch'))[0].getAttribute('max'), '3');
+      ok(all[0].getAttribute('aria-label').includes('default 1'));
+      eq(controls(box(root, 'prompt')).length, 0, 'the prompt box is read only');
+      ok(E.textOf(root).includes('bad batch') && E.textOf(root).includes('Retry one by one'));
+    });
+  },
+  aNoteIsDrawnAsTextBelowTheBoxesAndCountedInTheHeight() {
+    const withNote = layout(JSON.parse(JSON.stringify(visionExtractInner)));
+    const i = JSON.parse(JSON.stringify(visionExtractInner)); delete i.note;
+    ok(withNote.height > layout(i).height, 'the note makes room for itself');
+    mount({ inner: JSON.parse(JSON.stringify(visionExtractInner)), descriptors: visionExtractParams }, ({ root, w }) => {
+      w.expand();
+      ok(E.textOf(root).includes('Read only except the batch size') && E.textOf(root).includes('asked again one frame per call'));
+      eq(findAll(root, (e) => cls(e, 'comp-note')).length, 2);
+    });
+    mount({}, ({ root, w }) => { w.expand(); eq(findAll(root, (e) => cls(e, 'comp-note')).length, 0, 'no note, nothing drawn'); });
+  },
+  aReadOnlyCompositeDrawsItsStagesWithNoInputAtAll() {
+    mount({ title: 'Critic', inner: JSON.parse(JSON.stringify(criticInner)), descriptors: [{ name: 'prompt', kind: 'prompt' }] }, ({ root, w }) => {
+      w.expand();
+      eq(boxes(root).length, 7); eq(wires(root).length, 8);
+      eq(controls(root).length, 0, 'nothing is editable');
+      ok(boxes(root).every((b) => cls(b, 'read-only')));
+      ok(E.textOf(root).includes('Read only: the critic prompt'));
+    });
+  },
+  saveMemoryDrawsThreeSourcesAndNoInputAndSaysThereIsNoDedupe() {
+    mount({ title: 'Save memory', inner: JSON.parse(JSON.stringify(memoryWriteInner)), descriptors: [] }, ({ root, w }) => {
+      w.expand();
+      eq(boxes(root).length, 9); eq(wires(root).length, 8);
+      eq(controls(root).length, 0);
+      ok(E.textOf(root).includes('no duplicate or novelty check') && E.textOf(root).includes('Fact row (SHORT)'));
+      const L = layout(JSON.parse(JSON.stringify(memoryWriteInner)));
+      ok(L.boxes.every((a, i) => L.boxes.every((b, j) => i === j || a.x !== b.x || a.y + a.h <= b.y || b.y + b.h <= a.y)), 'boxes in a column never overlap');
+    });
   },
 };

@@ -308,6 +308,18 @@ class ExecutorsTest {
         assertEquals(listOf("SHORT", "LONG"), b.map { it.tier })
     }
 
+    /** What the Save memory composite draws (blank text dropped, captions always OK, nothing deduplicated) is what the executor does. */
+    @Test fun previewDropsBlankTextKeepsCaptionsOkAndDoesNotDeduplicate() = runBlocking<Unit> {
+        val v = CanvasValue.Extraction(
+            listOf(Fact("Mug", "object", 0.9, emptyList(), listOf("a")), Fact("  ", "object", 0.9, emptyList(), listOf("a")), Fact("Mug", "object", 0.9, emptyList(), listOf("a"))),
+            listOf(FrameCaption("a", ""), FrameCaption("a", "Desk")), trusted = false,
+        )
+        val rows = (exec(NodeTypes.MEMORY_WRITE).run(node(NodeTypes.MEMORY_WRITE), listOf(item("a", v)), ctx { "" })[0].value as CanvasValue.Preview).rows
+        assertEquals(listOf("Mug", "Mug", "Desk"), rows.map { it.text })
+        assertEquals(listOf("NEEDS_REVIEW", "NEEDS_REVIEW", "OK"), rows.map { it.review })
+        assertEquals(listOf("SHORT", "SHORT", "LONG"), rows.map { it.tier })
+    }
+
     // ---- hard rule ----
 
     private fun count(t: String) = MemoryGraph.get(app).db.openHelper.readableDatabase.query("SELECT COUNT(*) FROM `$t`").use { it.moveToFirst(); it.getInt(0) }

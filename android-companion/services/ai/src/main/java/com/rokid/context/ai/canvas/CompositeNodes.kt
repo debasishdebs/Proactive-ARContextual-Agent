@@ -11,7 +11,8 @@ import kotlinx.serialization.json.doubleOrNull
 data class InnerNode(val id: String, val label: String, val kind: String)
 data class InnerWire(val from: String, val to: String, val port: String = "")
 data class InnerExposed(val param: String, val node: String)
-data class InnerFlow(val nodes: List<InnerNode>, val wires: List<InnerWire>, val exposed: List<InnerExposed>)
+/** [note] are short lines drawn under the boxes: what a read-only composite cannot show as boxes (empty for gate.local_critic). */
+data class InnerFlow(val nodes: List<InnerNode>, val wires: List<InnerWire>, val exposed: List<InnerExposed>, val note: List<String> = emptyList())
 
 /**
  * The rule of `gate.local_critic`, parameterised. At the defaults it is exactly `ExtractFollowUp.locallyTrusted(CriticWorker(), ..)`:
@@ -70,5 +71,95 @@ object LocalTrust {
             InnerWire("compare", "trusted", "yes"), InnerWire("compare", "unsure", "no"),
         ),
         exposed = listOf(InnerExposed("aggregate", "aggregate"), InnerExposed("operator", "compare"), InnerExposed("cutoff", "cutoff")),
+    )
+}
+
+/**
+ * `ai.vision_extract` ("Facts from frames"), phase B. A VIEW of `VisionExtractExecutor` and `ExtractSave.extract`: nothing here runs.
+ * The one real setting that is safe to show inline is `batch` (frames per model call); an absent `batch` is [DEFAULT_BATCH], as in the executor.
+ * `prompt` (live or draft) is a real setting too but its editor needs the prompt list, so it stays in the inspector and its box is read-only.
+ */
+object ExtractComposite {
+    const val DEFAULT_BATCH = 1
+
+    val inner = InnerFlow(
+        nodes = listOf(
+            InnerNode("frames", "Frames in", "source"),
+            InnerNode("batch", "Frames per call", "op"),
+            InnerNode("prompt", "Vision prompt", "op"),
+            InnerNode("model", "Model call", "op"),
+            InnerNode("retry", "Retry one by one", "op"),
+            InnerNode("parse", "Parse facts", "op"),
+        ),
+        wires = listOf(
+            InnerWire("frames", "batch"), InnerWire("batch", "prompt"), InnerWire("prompt", "model"),
+            InnerWire("model", "retry", "bad batch"), InnerWire("model", "parse", "valid"), InnerWire("retry", "parse"),
+        ),
+        exposed = listOf(InnerExposed("batch", "batch")),
+        note = listOf(
+            "Read only except the batch size: the vision prompt (live or draft) is chosen in the inspector.",
+            "A batch of several frames that the model answers invalidly is asked again one frame per call.",
+            "Facts are matched to their frames by source_frame_ids; each frame keeps at most one caption.",
+        ),
+    )
+}
+
+/**
+ * `ai.critic`, phase B. A read-only VIEW of `CriticExecutor`: nothing is exposed because the only setting, the critic prompt (live or draft),
+ * is edited in the inspector. The two shortcuts (no facts passes, no model bound fails) and the failure rule are real and fixed.
+ */
+object CriticComposite {
+    val inner = InnerFlow(
+        nodes = listOf(
+            InnerNode("facts", "Facts in", "source"),
+            InnerNode("any", "Any facts?", "op"),
+            InnerNode("bound", "Critic model set?", "op"),
+            InnerNode("prompt", "Critic prompt", "op"),
+            InnerNode("model", "Ask the model", "op"),
+            InnerNode("pass", "pass", "branch"),
+            InnerNode("fail", "fail", "branch"),
+        ),
+        wires = listOf(
+            InnerWire("facts", "any"), InnerWire("any", "pass", "none"), InnerWire("any", "bound", "some"),
+            InnerWire("bound", "fail", "no"), InnerWire("bound", "prompt", "yes"), InnerWire("prompt", "model"),
+            InnerWire("model", "pass", "ok"), InnerWire("model", "fail", "not ok or error"),
+        ),
+        exposed = emptyList(),
+        note = listOf(
+            "Read only: the critic prompt (live or draft) is chosen in the inspector; this node has no other setting.",
+            "No facts: pass without asking the model. No critic model set: fail. A failed model call also fails (the local verdict stays unsure).",
+        ),
+    )
+}
+
+/**
+ * `memory.write` ("Save memory (preview)"), phase B. A read-only VIEW of `MemoryWritePreviewExecutor`: it has no settings, so nothing is exposed.
+ * Stages as coded: blank facts and blank captions are dropped, a fact becomes a SHORT row marked OK only when the upstream check trusted the
+ * extraction (else NEEDS_REVIEW), a caption becomes a LONG row that is always OK. It writes nothing and has no duplicate or novelty check.
+ */
+object MemoryWriteComposite {
+    val inner = InnerFlow(
+        nodes = listOf(
+            InnerNode("facts", "Facts in", "source"),
+            InnerNode("captions", "Captions in", "source"),
+            InnerNode("trusted", "Trusted flag", "source"),
+            InnerNode("dropFacts", "Drop blank facts", "op"),
+            InnerNode("dropCaptions", "Drop blank captions", "op"),
+            InnerNode("review", "Review state", "op"),
+            InnerNode("factRow", "Fact row (SHORT)", "op"),
+            InnerNode("captionRow", "Caption row (LONG)", "op"),
+            InnerNode("preview", "Preview rows", "branch"),
+        ),
+        wires = listOf(
+            InnerWire("facts", "dropFacts"), InnerWire("captions", "dropCaptions"), InnerWire("trusted", "review"),
+            InnerWire("dropFacts", "factRow"), InnerWire("review", "factRow", "OK or NEEDS_REVIEW"),
+            InnerWire("dropCaptions", "captionRow"), InnerWire("factRow", "preview"), InnerWire("captionRow", "preview"),
+        ),
+        exposed = emptyList(),
+        note = listOf(
+            "Read only: this node has no settings. Preview only: nothing is written to memory here.",
+            "A fact row is OK only when the check before it trusted the facts, otherwise NEEDS_REVIEW; a caption row is always OK.",
+            "There is no duplicate or novelty check in this node.",
+        ),
     )
 }

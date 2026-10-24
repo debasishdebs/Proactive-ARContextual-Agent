@@ -5,7 +5,7 @@
 import { h, s, clear } from './dom.js';
 import { fields } from './paramform.js';
 
-export const BOX = { w: 176, head: 40, field: 58, min: 62, gapX: 56, gapY: 22, pad: 14 };
+export const BOX = { w: 176, head: 40, field: 58, min: 62, gapX: 56, gapY: 22, pad: 14, noteLine: 18 };
 
 const layoutDepth = (inner) => {
   const depth = new Map(inner.nodes.map((n) => [n.id, 0]));
@@ -39,7 +39,8 @@ export function layout(inner) {
     const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x, y2 = b.y + b.h / 2, mx = (x1 + x2) / 2;
     return { from: w.from, to: w.to, port: w.port || '', d: 'M' + x1 + ' ' + y1 + ' C' + mx + ' ' + y1 + ' ' + mx + ' ' + y2 + ' ' + x2 + ' ' + y2, lx: x2 - 6, ly: y2 - 6 };
   });
-  return { boxes, wires, width: BOX.pad * 2 + cols.length * BOX.w + Math.max(0, cols.length - 1) * BOX.gapX, height: height + BOX.pad };
+  const notes = (inner.note || []).length;
+  return { boxes, wires, notesY: height + BOX.pad, width: BOX.pad * 2 + cols.length * BOX.w + Math.max(0, cols.length - 1) * BOX.gapX, height: height + BOX.pad + notes * BOX.noteLine };
 }
 
 const hint = (d) => (d && d.default !== undefined ? ' (default ' + d.default + ')' : '');
@@ -101,6 +102,7 @@ export function mountComposite(el, opts) {
       });
       root.appendChild(g);
     }
+    (inner.note || []).forEach((t, i) => root.appendChild(s('text', { x: BOX.pad, y: L.notesY + (i + 1) * BOX.noteLine - 4, class: 'comp-note' }, t)));
     return h('div', { class: 'expr-scroll comp-scroll' }, root);
   }
 

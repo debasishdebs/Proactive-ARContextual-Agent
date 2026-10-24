@@ -101,14 +101,14 @@ object NodeTypes {
     private val legacy: List<NodeType> = listOf(
         NodeType(INPUT_PHOTOS, "Photo", emptySet(), PortType.PHOTOS, category = Category.INPUTS, short = "photos", palette = false, root = true, params = PhotoSettings.schema, family = Family.SOURCE),
         NodeType(VISION_EXTRACT, "Facts from frames", setOf(PortType.PHOTOS, PortType.JSON), PortType.EXTRACTION, PromptKey.VISION_EXTRACT,
-            executor = ExecutorKind.PROMPT, short = "extract", family = Family.PROCESS),
+            executor = ExecutorKind.PROMPT, short = "extract", inner = ExtractComposite.inner, family = Family.PROCESS),
         NodeType(LOCAL_CRITIC, "Local trust check", setOf(PortType.EXTRACTION), PortType.EXTRACTION, branches = { listOf("trusted", "unsure") },
             category = Category.CHECKS, short = "trust", params = LocalTrust.schema, inner = LocalTrust.inner, family = Family.CONDITION),
         NodeType(CRITIC, "Critic", setOf(PortType.EXTRACTION), PortType.EXTRACTION, PromptKey.CRITIC, branches = { listOf("pass", "fail") },
-            executor = ExecutorKind.PROMPT, short = "critic", family = Family.PROCESS),
+            executor = ExecutorKind.PROMPT, short = "critic", inner = CriticComposite.inner, family = Family.PROCESS),
         NodeType(PROMPT, "Prompt", setOf(PortType.PHOTOS, PortType.JSON, PortType.EXTRACTION, PortType.SCENES), PortType.JSON, executor = ExecutorKind.PROMPT, short = "prompt", family = Family.PROCESS),
         NodeType(SWITCH, "Switch", setOf(PortType.JSON), PortType.JSON, branches = { switchCases(it) + OTHER }, category = Category.ROUTING, short = "route", family = Family.CONDITION),
-        NodeType(MEMORY_WRITE, "Save memory (preview)", setOf(PortType.EXTRACTION), PortType.PREVIEW, category = Category.MEMORY, executor = ExecutorKind.TOOL, short = "write", family = Family.OUTCOME),
+        NodeType(MEMORY_WRITE, "Save memory (preview)", setOf(PortType.EXTRACTION), PortType.PREVIEW, category = Category.MEMORY, executor = ExecutorKind.TOOL, short = "write", inner = MemoryWriteComposite.inner, family = Family.OUTCOME),
     )
 
     private val capture: List<NodeType> = listOf(
