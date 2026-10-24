@@ -18,11 +18,15 @@ WP13 LIVE gate: 16/16 PASS on podman 6.1.4 (new machine `pca`, 10 GB; `podman-ma
 - Codex combined final re-check of all fixes since their last review: VERDICT READY, no Critical/Important. One Minor left open: Moment newest-N can underfill when a recent second holds very many photos (MomentResolver.kt ~47, fetch is capped at 2000 frames before choosing distinct seconds; fix = paginate).
 
 ## NEEDS YOU (nothing else is blocked)
-1. When you take the glasses off: plug them in, tell me; I pull traces with `tools/handover.sh` and read the state line. (No trace exists for the hours you wore them after 12:45 and before 14:40.)
+1. DONE 15:30-15:40: glasses plugged in, wear window 14:43-15:28 pulled with `tools/handover.sh` (trace 5814127b, PARTIAL, 15:02-15:32, 29.6 min: capture was PAUSED 14:43-15:02, so no earlier trace is expected; state lines name every blocker). Import + M1 replay of it still needs a fresh pairing code each (single use, ~1 min): `m1-run.sh pair ...; m1-run.sh pull <dir> --allow-partial; m1-run.sh replay`. The phone refuses PARTIAL traces without `--allow-partial`.
 2. DONE (your decision): M1 gate = failing windows <= T% (default 3, hard cap 5, `--max-fail-pct` / M1_MAX_FAIL_PCT) + shadow-vs-admissions parity. Both real traces pass at 3% (1.7% and 1.5%). Failure classification prints `unclassified` until the replay report carries `baseFailKinds`.
 3. DONE (your idea): hand-over pulls only the WEAR WINDOW (last unplug by heartbeat `chg` to the next plug-in/end); no fixed age limit; window with no heartbeat is rejected.
 4. WP13 live steps 5-7 (kill-on-deletion through the supervisor, B2 frame run in the browser, device run) need your phone, a helper pairing code and your confirm taps: say "start helper".
 5. Not built, by design/decision: vision-extract -> Python adapter; declined vs expired shown separately; stored Moment tables/sensors/Scenes (55-87 h later); two older files still hold android.util.Log (CanvasPublisher, MemoryWipe: logging ratchet); GlassesRuntime can still construct the recorder lazily from Main (reads no file).
+
+## Found and fixed this afternoon
+- handover.sh read the trace end time from the wrong place (real manifests are a b64 envelope): fixed 855a7152, tests now use the real format. `--allow-partial` now passes through to the import (4faee104).
+- First on-device proof of the always-on logging chain: `trace boot/state` lines name every blocker (gate_off -> enabled, capture_blocked while paused, not_quiet, recovering, already_recording). A killed trace is sealed PARTIAL at the next start (killedTraces=1) and recording resumes in seconds.
 
 ## Usage note
 Monthly credits: ~$349 left on Oct 24 morning (see memory note). Start a fresh chat for the next big step.
