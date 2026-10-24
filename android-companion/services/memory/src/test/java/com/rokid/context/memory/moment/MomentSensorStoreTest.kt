@@ -138,6 +138,13 @@ class MomentSensorStoreTest {
         assertFalse(fresh(1)); assertFalse(sceneFresh())
     }
 
+    @Test fun aRangeForgetOfSeveralSecondsTakesEverySecondOfTheRangeAndNoOther() = runBlocking<Unit> {
+        seed()
+        (3..5).forEach { md.replace(moment(it), emptyList()); md.replaceSensor(id(it), listOf(row(it, "t3")), 1, "build") }
+        s3.forgetRangeTx((base + 1) * 1000 + 500, (base + 4) * 1000 + 100, 30_000)
+        assertEquals(listOf(id(0), id(5)), sensorMoments())
+    }
+
     @Test fun reImportingATraceWithOtherContentDropsItsOldRows() = runBlocking<Unit> {
         seed()
         s3.acceptTraceFenced(trace("t1", base * 1000, (base + 1) * 1000, manifest = "{\"a\":1}"), fence())
