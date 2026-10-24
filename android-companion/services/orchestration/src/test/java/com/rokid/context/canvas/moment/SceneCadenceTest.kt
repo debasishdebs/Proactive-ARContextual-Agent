@@ -35,9 +35,9 @@ class SceneCadenceTest {
 
     @Test fun theDefaultIsEveryWorkerTickAndAStoredValueIsClampedAndKept() = runBlocking<Unit> {
         val c = cadence()
-        assertEquals(SceneCadence.DEFAULT_PER_DAY, c.perDay())
+        assertEquals(96, c.perDay())
         c.setPerDay(4); assertEquals(4, cadence().perDay())
-        c.setPerDay(0); assertEquals(1, c.perDay()); c.setPerDay(1000); assertEquals(SceneCadence.MAX_PER_DAY, c.perDay())
+        c.setPerDay(0); assertEquals(1, c.perDay()); c.setPerDay(1000); assertEquals(96, c.perDay())
     }
 
     @Test fun itRunsTheFirstTimeThenOnlyWhenTheIntervalHasPassed() = runBlocking<Unit> {
