@@ -183,6 +183,19 @@ class CanvasBackendImplTest {
         assertTrue(checkNotNull(backend.pipeline(copy))["problems"]!!.jsonArray.isNotEmpty())
     }
 
+    @Test fun defaultCaptureIsListedBuiltInAndOpens() = runBlocking<Unit> {
+        val row = backend.pipelines().first { it.jsonObject["id"]!!.jsonPrimitive.content == "default-capture" }.jsonObject
+        assertEquals("true", row["builtIn"]!!.jsonPrimitive.content)
+        assertEquals("Default capture", row["name"]!!.jsonPrimitive.content)
+        val p = checkNotNull(backend.pipeline("default-capture"))
+        assertEquals("true", p["builtIn"]!!.jsonPrimitive.content)
+        assertEquals(0, p["problems"]!!.jsonArray.size)
+        assertEquals("null", p["live"].toString())
+        assertTrue(p["layout"]!!.jsonObject["cells"]!!.jsonObject.containsKey("head"))
+        val copy = backend.duplicate("default-capture", "My capture")
+        assertEquals("false", checkNotNull(backend.pipeline(copy))["builtIn"]!!.jsonPrimitive.content)
+    }
+
     private val glassesOnlyJson = """{"schema":2,"id":"p","name":"identity","nodes":[
         {"id":"head","type":"imu.head_motion","title":"head","params":{}},
         {"id":"thresh","type":"gate.threshold","title":"thresh","params":{"feature":"gyroPeak","op":">","value":0.6}},
@@ -202,6 +215,7 @@ class CanvasBackendImplTest {
         val p = checkNotNull(backend.pipeline(copy)) // null is the editor's "Not found."
         assertEquals(0, p["problems"]!!.jsonArray.size)
         assertEquals("false", p["liveShape"]!!.jsonPrimitive.content)
+        assertTrue(p["layout"]!!.jsonObject["cells"]!!.jsonObject.containsKey("head"))
         assertTrue(p["interpretable"]!!.jsonObject["problems"]!!.jsonArray.isNotEmpty())
     }
 
