@@ -94,6 +94,8 @@ class CanvasBackendImpl(
         com.rokid.context.canvas.moment.DaoMomentSource(dao, MemoryGraph.get(app).db.canvasSlice3Dao(), MemoryGraph.get(app).db.momentDao()),
     ),
 ) : CanvasBackend {
+    /** Scenes: the read-only executor behind `GET /api/scenes`. */
+    private val sceneExec = com.rokid.context.canvas.moment.SceneInputExecutor(MemoryGraph.get(app).db)
     companion object {
         private val pretty = Json { prettyPrint = true }
         private const val NOT_SET = "not set"
@@ -163,7 +165,7 @@ class CanvasBackendImpl(
             val runner = CanvasRunner(
                 dao, photos, composeExecutors(extraExecutors),
                 { runId -> RunContext(runId, ai.runner, ai.router, ai.prompts, ai.persona, { role -> ai.bindings.get(role) }) },
-                ConfirmTokens(clock), hot, clock, log = log, moments = momentResolver,
+                ConfirmTokens(clock), hot, clock, log = log, moments = momentResolver, scenes = com.rokid.context.canvas.moment.DaoSceneRunSource(MemoryGraph.get(app).db, momentResolver),
             )
             val askDebug = lazy {
                 AskDebug(dao, answers(), ai.runner, ai.prompts, { ai.persona }, compatibilityOf(ai), photos = LiveBoundPhotos(askPhotos))
@@ -590,6 +592,18 @@ class CanvasBackendImpl(
         JsonArray(momentResolver.window(afterMs, beforeMs - 1, limit).map { m ->
             buildJsonObject { put("id", m.id); put("startMs", m.startMs); put("photos", m.frames.size); put("memories", m.memories.size); put("marks", m.marks.size); m.sensor?.let { put("sensor", it.toJson()) } }
         })
+
+    override suspend fun scenes(fromMs: Long, toMs: Long, limit: Int): JsonArray = sceneExec.toJson(sceneExec.run(fromMs, toMs, limit))
+
+    override suspend fun estimateScenes(pipelineId: String, version: Int?, sceneIds: List<String>): Estimate {
+        val p = loadPipeline(pipelineId, version) ?: return Estimate.Refused(listOf("pipeline is not readable"))
+        return runner.estimateScenes(p, sceneIds, ::label)
+    }
+
+    override suspend fun startSceneRun(pipelineId: String, version: Int?, sceneIds: List<String>, token: String): String {
+        val p = loadPipeline(pipelineId, version) ?: throw IllegalArgumentException("invalid_pipeline")
+        return runner.startScenes(p, pipelineId, version, sceneIds, token, scope)
+    }
 
     override suspend fun estimateMoments(pipelineId: String, version: Int?, momentIds: List<String>): Estimate {
         val p = loadPipeline(pipelineId, version) ?: return Estimate.Refused(listOf("pipeline is not readable"))

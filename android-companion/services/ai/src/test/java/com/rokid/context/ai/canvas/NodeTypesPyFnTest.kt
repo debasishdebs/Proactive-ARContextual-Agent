@@ -17,7 +17,7 @@ class NodeTypesPyFnTest {
         assertEquals(Domain.ASYNC, t.domain); assertEquals(Category.CODE, t.category); assertEquals(ExecutorKind.PYTHON, t.executor)
         assertFalse(t.liveable); assertTrue("offered in the palette now that the helper UI exists (WP9)", t.palette)
         assertEquals(0, t.cost.modelCalls); assertEquals(0, t.cost.rtOps)
-        assertEquals(setOf(PortType.JSON, PortType.MOMENTS), t.inputs); assertEquals(PortType.JSON, t.output)
+        assertEquals(setOf(PortType.JSON, PortType.MOMENTS, PortType.SCENES), t.inputs); assertEquals(PortType.JSON, t.output)
         assertEquals(setOf("source", "outSchema"), t.params.specs.map { it.name }.toSet())
         assertEquals(16000, t.params.specs.first { it.name == "source" }.maxLen)
     }

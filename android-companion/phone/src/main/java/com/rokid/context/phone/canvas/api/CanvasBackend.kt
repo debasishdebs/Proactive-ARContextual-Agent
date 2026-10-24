@@ -71,6 +71,12 @@ interface CanvasBackend {
     suspend fun estimateMoments(pipelineId: String, version: Int?, momentIds: List<String>): Estimate = Estimate.Refused(listOf("moments are not available"))
     /** Starts a Moment run; [CanvasRunner.MomentsMoved] when anything changed since the estimate. */
     suspend fun startMomentRun(pipelineId: String, version: Int?, momentIds: List<String>, token: String): String = throw IllegalArgumentException("moments are not available")
+    /** Scenes (read-only) overlapping `[fromMs, toMs]`, oldest first: id, window, cut rule, activity, member Moment ids, sensor summary, and derived fields only while fresh (never a hidden one). */
+    suspend fun scenes(fromMs: Long, toMs: Long, limit: Int): JsonArray = JsonArray(emptyList())
+    /** Prices a run over Scenes; the token binds what each Scene would hand a node. */
+    suspend fun estimateScenes(pipelineId: String, version: Int?, sceneIds: List<String>): Estimate = Estimate.Refused(listOf("scenes are not available"))
+    /** Starts a Scene run; [CanvasRunner.ScenesMoved] when anything changed since the estimate. */
+    suspend fun startSceneRun(pipelineId: String, version: Int?, sceneIds: List<String>, token: String): String = throw IllegalArgumentException("scenes are not available")
     /** The price of an A/B pair: one token, bound to both pipelines (`hashA|hashB`) and the photos. */
     suspend fun estimateAb(a: PipelineRef, b: PipelineRef, frameIds: List<String>): Estimate
     /** Starts A now and B after it ends DONE; both ids are reserved up front. [CanvasRunner.Busy] while any run or group is active. */
