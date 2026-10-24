@@ -1,0 +1,1303 @@
+[
+ {
+  "name": "cmp < at the boundary 1.5 vs 1.5",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "sig",
+     "name": "gyroMax"
+    },
+    {
+     "op": "const",
+     "v": 1.5
+    },
+    {
+     "op": "cmp",
+     "f": "<",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1.5
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "BOOL",
+   "value": false
+  }
+ },
+ {
+  "name": "cmp <= at the boundary 1.5 vs 1.5",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "sig",
+     "name": "gyroMax"
+    },
+    {
+     "op": "const",
+     "v": 1.5
+    },
+    {
+     "op": "cmp",
+     "f": "<=",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1.5
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "BOOL",
+   "value": true
+  }
+ },
+ {
+  "name": "cmp > at the boundary 1.5 vs 1.5",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "sig",
+     "name": "gyroMax"
+    },
+    {
+     "op": "const",
+     "v": 1.5
+    },
+    {
+     "op": "cmp",
+     "f": ">",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1.5
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "BOOL",
+   "value": false
+  }
+ },
+ {
+  "name": "cmp >= at the boundary 1.5 vs 1.5",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "sig",
+     "name": "gyroMax"
+    },
+    {
+     "op": "const",
+     "v": 1.5
+    },
+    {
+     "op": "cmp",
+     "f": ">=",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1.5
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "BOOL",
+   "value": true
+  }
+ },
+ {
+  "name": "cmp == at the boundary 1.5 vs 1.5",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "sig",
+     "name": "gyroMax"
+    },
+    {
+     "op": "const",
+     "v": 1.5
+    },
+    {
+     "op": "cmp",
+     "f": "==",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1.5
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "BOOL",
+   "value": true
+  }
+ },
+ {
+  "name": "strict greater just below the threshold",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "sig",
+     "name": "gyroMax"
+    },
+    {
+     "op": "const",
+     "v": 1.5
+    },
+    {
+     "op": "cmp",
+     "f": ">",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1.4999
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "BOOL",
+   "value": false
+  }
+ },
+ {
+  "name": "headSpeed is gyroMax",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "sig",
+     "name": "headSpeed"
+    },
+    {
+     "op": "const",
+     "v": 1
+    },
+    {
+     "op": "cmp",
+     "f": ">",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 2
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "BOOL",
+   "value": true
+  }
+ },
+ {
+  "name": "div by zero is an ERROR, never 0",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "sig",
+     "name": "gyroMax"
+    },
+    {
+     "op": "const",
+     "v": 0
+    },
+    {
+     "op": "arith",
+     "f": "/",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "DIV0"
+  }
+ },
+ {
+  "name": "0 / 0 is a div0 error too",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "const",
+     "v": 0
+    },
+    {
+     "op": "const",
+     "v": 0
+    },
+    {
+     "op": "arith",
+     "f": "/",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "gyroMax": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "DIV0"
+  }
+ },
+ {
+  "name": "a feature is available exactly 3000 ms after its write",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 0,
+   "s": [
+    {
+     "op": "sig",
+     "name": "stepHz"
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 2
+   }
+  ],
+  "readAfterMs": 3000,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 2
+  }
+ },
+ {
+  "name": "a feature is UNAVAILABLE 3001 ms after its write",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 0,
+   "s": [
+    {
+     "op": "sig",
+     "name": "stepHz"
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 2
+   }
+  ],
+  "readAfterMs": 3001,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ },
+ {
+  "name": "no write at all is UNAVAILABLE",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 0,
+   "s": [
+    {
+     "op": "sig",
+     "name": "stepHz"
+    }
+   ]
+  },
+  "writes": [],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ },
+ {
+  "name": "clamp high",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 1,
+   "s": [
+    {
+     "op": "const",
+     "v": 5
+    },
+    {
+     "op": "clamp",
+     "a": 0,
+     "lo": 1,
+     "hi": 4
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 4
+  }
+ },
+ {
+  "name": "clamp low",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 1,
+   "s": [
+    {
+     "op": "const",
+     "v": -1
+    },
+    {
+     "op": "clamp",
+     "a": 0,
+     "lo": 1,
+     "hi": 4
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 1
+  }
+ },
+ {
+  "name": "choose reads only the branch it picks (the other one would divide by zero)",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 5,
+   "s": [
+    {
+     "op": "const",
+     "v": false
+    },
+    {
+     "op": "const",
+     "v": 1
+    },
+    {
+     "op": "const",
+     "v": 0
+    },
+    {
+     "op": "arith",
+     "f": "/",
+     "a": 1,
+     "b": 2
+    },
+    {
+     "op": "const",
+     "v": 7
+    },
+    {
+     "op": "choose",
+     "a": 0,
+     "b": 3,
+     "c": 4
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 7
+  }
+ },
+ {
+  "name": "choose picking the failing branch is that error",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 5,
+   "s": [
+    {
+     "op": "const",
+     "v": true
+    },
+    {
+     "op": "const",
+     "v": 1
+    },
+    {
+     "op": "const",
+     "v": 0
+    },
+    {
+     "op": "arith",
+     "f": "/",
+     "a": 1,
+     "b": 2
+    },
+    {
+     "op": "const",
+     "v": 7
+    },
+    {
+     "op": "choose",
+     "a": 0,
+     "b": 3,
+     "c": 4
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "DIV0"
+  }
+ },
+ {
+  "name": "fresh passes an age equal to its limit",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 1,
+   "s": [
+    {
+     "op": "sig",
+     "name": "stepHz"
+    },
+    {
+     "op": "fresh",
+     "a": 0,
+     "ms": 1000
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 2
+   }
+  ],
+  "readAfterMs": 1000,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 2
+  }
+ },
+ {
+  "name": "fresh drops an age one ms over",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 1,
+   "s": [
+    {
+     "op": "sig",
+     "name": "stepHz"
+    },
+    {
+     "op": "fresh",
+     "a": 0,
+     "ms": 1000
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 2
+   }
+  ],
+  "readAfterMs": 1001,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ },
+ {
+  "name": "and of false and true is false",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 4,
+   "s": [
+    {
+     "op": "const",
+     "v": false
+    },
+    {
+     "op": "sig",
+     "name": "stepHz"
+    },
+    {
+     "op": "const",
+     "v": 1
+    },
+    {
+     "op": "cmp",
+     "f": ">",
+     "a": 1,
+     "b": 2
+    },
+    {
+     "op": "and",
+     "a": 0,
+     "b": 3
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 2
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "BOOL",
+   "value": false
+  }
+ },
+ {
+  "name": "and is strict: false and a stale signal is unavailable",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 4,
+   "s": [
+    {
+     "op": "const",
+     "v": false
+    },
+    {
+     "op": "sig",
+     "name": "stepHz"
+    },
+    {
+     "op": "const",
+     "v": 1
+    },
+    {
+     "op": "cmp",
+     "f": ">",
+     "a": 1,
+     "b": 2
+    },
+    {
+     "op": "and",
+     "a": 0,
+     "b": 3
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 2
+   }
+  ],
+  "readAfterMs": 3500,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ },
+ {
+  "name": "not of unavailable stays unavailable (never true)",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 3,
+   "s": [
+    {
+     "op": "sig",
+     "name": "stepHz"
+    },
+    {
+     "op": "const",
+     "v": 1
+    },
+    {
+     "op": "cmp",
+     "f": ">",
+     "a": 0,
+     "b": 1
+    },
+    {
+     "op": "not",
+     "a": 2
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 2
+   }
+  ],
+  "readAfterMs": 3500,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ },
+ {
+  "name": "in over the context state",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 1,
+   "s": [
+    {
+     "op": "sig",
+     "name": "ctx"
+    },
+    {
+     "op": "in",
+     "a": 0,
+     "set": [
+      "REST",
+      "WALKING"
+     ]
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "WALKING",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "BOOL",
+   "value": true
+  }
+ },
+ {
+  "name": "in outside the set",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 1,
+   "s": [
+    {
+     "op": "sig",
+     "name": "ctx"
+    },
+    {
+     "op": "in",
+     "a": 0,
+     "set": [
+      "REST",
+      "WALKING"
+     ]
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "FLIGHT",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "BOOL",
+   "value": false
+  }
+ },
+ {
+  "name": "ctxAgeS is a number",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "sig",
+     "name": "ctxAgeS"
+    },
+    {
+     "op": "const",
+     "v": 10
+    },
+    {
+     "op": "cmp",
+     "f": ">",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 11,
+  "expect": {
+   "state": "BOOL",
+   "value": true
+  }
+ },
+ {
+  "name": "window mean of 1,2,3 over 3 s",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "mean",
+     "sec": 3
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 1
+   },
+   {
+    "sec": 2,
+    "stepHz": 2
+   },
+   {
+    "sec": 3,
+    "stepHz": 3
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 2
+  }
+ },
+ {
+  "name": "window max of 1,3,2 over 3 s",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "max",
+     "sec": 3
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 1
+   },
+   {
+    "sec": 2,
+    "stepHz": 3
+   },
+   {
+    "sec": 3,
+    "stepHz": 2
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 3
+  }
+ },
+ {
+  "name": "window frac above 1.5 of 1,2,3",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "frac",
+     "sec": 3,
+     "t": 1.5
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 1
+   },
+   {
+    "sec": 2,
+    "stepHz": 2
+   },
+   {
+    "sec": 3,
+    "stepHz": 3
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 0.6666666666666666
+  }
+ },
+ {
+  "name": "window frac is strictly above the threshold",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "frac",
+     "sec": 3,
+     "t": 2
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 1
+   },
+   {
+    "sec": 2,
+    "stepHz": 2
+   },
+   {
+    "sec": 3,
+    "stepHz": 3
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 0.3333333333333333
+  }
+ },
+ {
+  "name": "window of 0.1 three times is exactly 0.1 (integer milli-unit sums)",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "mean",
+     "sec": 3
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 0.1
+   },
+   {
+    "sec": 2,
+    "stepHz": 0.1
+   },
+   {
+    "sec": 3,
+    "stepHz": 0.1
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 0.1
+  }
+ },
+ {
+  "name": "a window sees only its own horizon",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "max",
+     "sec": 2
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 9
+   },
+   {
+    "sec": 2,
+    "stepHz": 1
+   },
+   {
+    "sec": 3,
+    "stepHz": 2
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 2
+  }
+ },
+ {
+  "name": "a window with fewer seconds than its horizon is not ready",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "mean",
+     "sec": 3
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 1
+   },
+   {
+    "sec": 2,
+    "stepHz": 2
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NOT_READY"
+  }
+ },
+ {
+  "name": "a missed second invalidates every window that covers it",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "mean",
+     "sec": 3
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 1
+   },
+   {
+    "sec": 3,
+    "stepHz": 2
+   },
+   {
+    "sec": 4,
+    "stepHz": 3
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NOT_READY"
+  }
+ },
+ {
+  "name": "... and the window recovers when the gap has left it",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "mean",
+     "sec": 3
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 1
+   },
+   {
+    "sec": 3,
+    "stepHz": 2
+   },
+   {
+    "sec": 4,
+    "stepHz": 3
+   },
+   {
+    "sec": 5,
+    "stepHz": 4
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NUM",
+   "value": 3
+  }
+ },
+ {
+  "name": "a window on a stale feed is not ready",
+  "program": {
+   "id": "p",
+   "role": "value",
+   "out": 0,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "mean",
+     "sec": 1
+    }
+   ],
+   "row": "REST",
+   "field": "capPerMin"
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 1
+   }
+  ],
+  "readAfterMs": 3001,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "NOT_READY"
+  }
+ },
+ {
+  "name": "a derived result of a warming window is unavailable and the guard keeps",
+  "program": {
+   "id": "p",
+   "role": "guard",
+   "out": 2,
+   "s": [
+    {
+     "op": "win",
+     "name": "stepHz",
+     "agg": "mean",
+     "sec": 5
+    },
+    {
+     "op": "const",
+     "v": 1
+    },
+    {
+     "op": "cmp",
+     "f": "<",
+     "a": 0,
+     "b": 1
+    }
+   ]
+  },
+  "writes": [
+   {
+    "sec": 1,
+    "stepHz": 0
+   },
+   {
+    "sec": 2,
+    "stepHz": 0
+   }
+  ],
+  "readAfterMs": 0,
+  "ctx": "REST",
+  "ctxAgeS": 0,
+  "expect": {
+   "state": "UNAV"
+  }
+ }
+]
