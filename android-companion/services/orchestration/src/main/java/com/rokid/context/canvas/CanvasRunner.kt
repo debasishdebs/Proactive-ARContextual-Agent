@@ -508,7 +508,7 @@ class CanvasRunner(
                     if (hot()) { status = "STOPPED_HOT"; break@stop }
                     // Pre-call fence: after a wipe or a Forget the loaded bytes must not be sent again (the commit fence alone only drops the write).
                     if (generation() != gen || dao.tombstonedAmong(chunk.flatMap { members[it.frameId] ?: listOf(it.frameId) }) > 0) { status = "CANCELLED"; break@stop }
-                    val ran = if (ex is HelperExecutor && helperFence != null) runInterruptible(runId, ex, node, chunk, ctx, helperFence, members) else ex?.run(node, chunk, ctx)
+                    val ran = if (ex is HelperExecutor && helperFence != null) runInterruptible(runId, ex, node, chunk, ctx, helperFence, members) else if (ex == null) emptyList() else ex.run(node, chunk, ctx) // no executor: per-item no_executor, not a cancel
                     if (ran == null) { status = "CANCELLED"; break@stop } // cancelled while the chunk was suspended in the helper executor
                     val results = ran.associateBy { it.frameId }
                     for (item in chunk) {
