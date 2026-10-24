@@ -8,7 +8,7 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 
 /** The param kinds of the v2 descriptors; [wire] is the `kind` the editor reads (int, bool and text are the slice 2 kinds). */
-enum class ParamKind(val wire: String) { INT("int"), NUMBER("number"), ENUM("enum"), BOOL("bool"), TEXT("text"), TABLE("table") }
+enum class ParamKind(val wire: String) { INT("int"), NUMBER("number"), ENUM("enum"), BOOL("bool"), TEXT("text"), TABLE("table"), GRAPH("graph") }
 
 /**
  * One table column. [blankable] accepts null or absent ("unchanged"); [allowZero] accepts 0 ("inherit") next to the [min]..[max] range, and null too (a blank gap is 0, S68).
@@ -88,6 +88,11 @@ object CaptureParams {
     ))
 }
 
+/** The expression node descriptor: one structured `graph` param, no per-node generated form (X5 draws its own editor). */
+object ExprParams {
+    val guard = ParamSchema(listOf(ParamSpec("graph", ParamKind.GRAPH, label = "Expression graph")))
+}
+
 /** Validates a node's params against its [ParamSchema]. Problems are fixed texts naming the node id, the param and the bound. */
 object ParamCheck {
     fun problems(id: String, t: NodeType, params: JsonObject): List<String> {
@@ -100,10 +105,16 @@ object ParamCheck {
             val v = params[spec.name] ?: continue
             // a signal node's domain has its own text (see PipelineValidator)
             if (t.domainFromParams && spec.name == "domain") continue
-            out += one(id, spec, v)
+            out += if (spec.kind == ParamKind.GRAPH) graph(id, t, v) else one(id, spec, v)
         }
         if (out.isEmpty()) cross(id, t, params, out)
         return out
+    }
+
+    private fun graph(id: String, t: NodeType, v: JsonElement): List<String> {
+        val role = if (t.type == NodeTypes.EXPR_GUARD) com.rokid.context.ai.canvas.plan.ExprRole.GUARD else com.rokid.context.ai.canvas.plan.ExprRole.VALUE
+        val (p, bad) = com.rokid.context.ai.canvas.plan.ExprProgram.parse(role, v)
+        return (bad + (p?.check()?.problems ?: emptyList())).map { "node $id: $it" }
     }
 
     private fun one(id: String, s: ParamSpec, v: JsonElement): List<String> = when (s.kind) {
@@ -125,6 +136,7 @@ object ParamCheck {
             if (c == null || (s.maxLen > 0 && c.length > s.maxLen)) listOf("node $id: ${s.name} too long") else emptyList()
         }
         ParamKind.TABLE -> table(id, s, v)
+        ParamKind.GRAPH -> emptyList()   // checked with the node type in graph()
     }
 
     private fun table(id: String, s: ParamSpec, v: JsonElement): List<String> {
@@ -165,6 +177,7 @@ object ParamCheck {
 
     private fun cross(id: String, t: NodeType, params: JsonObject, out: MutableList<String>) {
         when (t.type) {
+            NodeTypes.EXPR_GUARD -> if ("graph" !in params) out += "node $id: ${com.rokid.context.ai.canvas.plan.ExprCode.EXPR_NO_GRAPH}: graph is missing"
             NodeTypes.IMU_HEAD_MOTION -> {
                 val onset = dbl(params, "onsetRadS", 0.6)
                 if (dbl(params, "releaseRadS", 0.3) > onset) out += "node $id: releaseRadS must not exceed onsetRadS"
