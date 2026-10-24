@@ -20,6 +20,8 @@ object InterpretableShape {
     /** Empty means the pipeline can be published as an interpreter. */
     fun problems(p: Pipeline): List<String> {
         if (PipelineValidator.validate(p).isNotEmpty()) return listOf("Fix the pipeline's problems first")
+        // A glasses-only plan (no async half) or a Moments input has no photo root to walk from; it is not an interpreter.
+        if (p.nodes.none { it.type == NodeTypes.INPUT_PHOTOS }) return listOf("Needs a Photo input")
         val out = LinkedHashSet<String>()
         val byId = p.nodes.associateBy { it.id }
         val out1 = next(p)

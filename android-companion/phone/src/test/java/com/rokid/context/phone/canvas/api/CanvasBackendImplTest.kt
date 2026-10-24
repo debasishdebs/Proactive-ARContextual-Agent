@@ -183,6 +183,28 @@ class CanvasBackendImplTest {
         assertTrue(checkNotNull(backend.pipeline(copy))["problems"]!!.jsonArray.isNotEmpty())
     }
 
+    private val glassesOnlyJson = """{"schema":2,"id":"p","name":"identity","nodes":[
+        {"id":"head","type":"imu.head_motion","title":"head","params":{}},
+        {"id":"thresh","type":"gate.threshold","title":"thresh","params":{"feature":"gyroPeak","op":">","value":0.6}},
+        {"id":"settle","type":"imu.settle","title":"settle","params":{}},{"id":"novel","type":"gate.novelty","title":"novel","params":{}},
+        {"id":"rate","type":"policy.capture_rate","title":"rate","params":{}},{"id":"cap","type":"gate.rate_cap","title":"cap","params":{}},
+        {"id":"cam","type":"capture.image","title":"cam","params":{}},
+        {"id":"cin","type":"signal.in","title":"cin","params":{"name":"ctx","domain":"RT_GLASSES"}},{"id":"hub","type":"hub.context","title":"hub","params":{}},
+        {"id":"cout","type":"signal.out","title":"cout","params":{"name":"ctx","domain":"RT_PHONE"}}],
+        "edges":[{"from":"head","to":"thresh"},{"from":"thresh","to":"settle"},{"from":"settle","to":"novel"},{"from":"novel","to":"rate"},
+        {"from":"cin","to":"rate"},{"from":"rate","to":"cap"},{"from":"cap","to":"cam"},{"from":"hub","to":"cout"}]}"""
+
+    /** tools/m1-run.sh store: a duplicate of live-extract whose draft is replaced by the glasses-only identity graph; the editor GETs it on open. */
+    @Test fun aGlassesOnlyDraftOpensInTheEditor() = runBlocking<Unit> {
+        val copy = backend.duplicate("live-extract", "M1 identity capture plan")
+        val rev = checkNotNull(backend.pipeline(copy))["draftRev"]!!.jsonPrimitive.int
+        assertTrue(backend.saveDraft(copy, glassesOnlyJson, rev) is CanvasRepository.SaveResult.Saved)
+        val p = checkNotNull(backend.pipeline(copy)) // null is the editor's "Not found."
+        assertEquals(0, p["problems"]!!.jsonArray.size)
+        assertEquals("false", p["liveShape"]!!.jsonPrimitive.content)
+        assertTrue(p["interpretable"]!!.jsonObject["problems"]!!.jsonArray.isNotEmpty())
+    }
+
     @Test fun estimateListsModels() = runBlocking<Unit> {
         seed("f1", 1_000); seed("f2", 2_000); seed("f3", 3_000)
         val unbound = backend.estimate("live-extract", null, listOf("f1", "f2", "f3")) as Estimate.Ok
