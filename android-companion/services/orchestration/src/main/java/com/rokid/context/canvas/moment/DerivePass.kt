@@ -1,6 +1,7 @@
 package com.rokid.context.canvas.moment
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.rokid.context.ai.AiGraph
 import com.rokid.context.ai.Role
 import com.rokid.context.core.log.PcLog
@@ -61,12 +62,27 @@ class DeriveCadence(db: ContextDatabase) {
     }
 }
 
+/** The two permissions a model call needs, asked before EVERY call: the stored switch is still on and the app admits one more background call. */
+class DeriveGate(private val enabled: suspend () -> Boolean, private val admit: suspend () -> Boolean) {
+    /** Set when a call was refused: the pass stops at once. */
+    @Volatile var refused = false
+    suspend fun allow(): Boolean = (enabled() && admit()).also { if (!it) refused = true }
+    /** After the call: the switch must still be on for the answer to be kept. */
+    suspend fun stillOn(): Boolean = enabled().also { if (!it) refused = true }
+}
+
 /**
  * What the model may read of an object: ONLY text a reader can see. A Moment: its visible memories (review state OK) and its marks' names. A Scene: for each member Moment its fresh
  * (never hidden or stale) SUMMARY, else that Moment's own visible text. Never photo bytes, paths, ids or any hidden field. Bounded in count and length.
  */
 class DeriveInputs(private val db: ContextDatabase) {
     private val audit = ObjectAudit(db.objectDao())
+
+    /** Test seam: runs after the inputs of one object were read and before the model call. Always null in production. */
+    @Volatile internal var testAfterRead: (suspend () -> Unit)? = null
+
+    /** The lines AND the input revision they belong to, read in ONE transaction (a Forget or review change cannot commit between two reads); null when the revision is not [seq] any more. */
+    suspend fun snapshot(obj: MomentObject, seq: Int): List<String>? = db.withTransaction { if (audit.inputSeq(obj) != seq) null else lines(obj) }
 
     suspend fun lines(obj: MomentObject): List<String> = when (obj.kind) {
         ObjectKind.MOMENT -> momentLines(obj.id)
@@ -88,14 +104,19 @@ class DeriveInputs(private val db: ContextDatabase) {
 }
 
 /** The real SUMMARY and CAPTION ports for MOMENT and SCENE: a short fixed prompt over [DeriveInputs]; null (nothing written) when there is nothing to say or the model gave nothing. */
-class TextDerivePorts(private val inputs: DeriveInputs, private val text: DeriveText) : SummarizeInput, CaptionInput {
+class TextDerivePorts(private val inputs: DeriveInputs, private val text: DeriveText, private val gate: DeriveGate) : SummarizeInput, CaptionInput {
     override suspend fun summarize(req: DeriveRequest): DerivedWrite? = derive(req, DerivedField.SUMMARY, "Write one short plain sentence saying what happened", MAX_SUMMARY)
     override suspend fun caption(req: DeriveRequest): DerivedWrite? = derive(req, DerivedField.CAPTION, "Write a caption of at most 8 words for", MAX_CAPTION)
 
     private suspend fun derive(req: DeriveRequest, field: String, task: String, max: Int): DerivedWrite? {
-        val lines = inputs.lines(req.obj).ifEmpty { return null }
+        val lines = inputs.snapshot(req.obj, req.inputSeq)?.ifEmpty { null } ?: return null // the inputs moved since the derive started: no call
+        inputs.testAfterRead?.invoke()
+        if (!gate.allow()) return null // the switch and the app's admission are asked before EVERY call
+        // immediately before the call: the same inputs at the same revision, and no Delete all since
+        if (!req.fence.holds() || inputs.snapshot(req.obj, req.inputSeq) != lines) return null
         val what = if (req.obj.kind == ObjectKind.SCENE) "this scene" else "this moment"
         val reply = text.complete(prompt(task, what, lines)) ?: return null
+        if (!gate.stillOn()) return null // switched off while the model ran: nothing is written
         val clean = reply.replace(Regex("\\s+"), " ").trim().take(max)
         return if (clean.isEmpty()) null else DerivedWrite(field, value = clean, builtRev = req.inputSeq)
     }
@@ -116,27 +137,30 @@ class TextDerivePorts(private val inputs: DeriveInputs, private val text: Derive
  */
 class DerivePass(
     private val db: ContextDatabase, registry: DeriveRegistry, private val cadence: DeriveCadence, fence: () -> DaoFence,
-    private val inputs: DeriveInputs, private val admit: suspend () -> Boolean, private val maxObjects: Int = MAX_OBJECTS,
+    private val inputs: DeriveInputs, private val gate: DeriveGate, private val maxObjects: Int = MAX_OBJECTS,
 ) {
     data class Report(val written: Int, val rejected: Int, val failed: Int, val objects: Int)
     private val audit = ObjectAudit(db.objectDao())
     private val runner = DeriveRunner(audit, registry, fence)
 
     suspend fun runIfDue(nowMs: Long): Report? {
-        if (!cadence.enabled() || !cadence.isDue(nowMs) || !admit()) return null
+        if (!cadence.enabled() || !cadence.isDue(nowMs)) return null
+        gate.refused = false
         var written = 0; var rejected = 0; var failed = 0; var objects = 0
         for (obj in candidates(nowMs)) {
-            if (objects >= maxObjects || failed > 0) break
+            if (objects >= maxObjects || failed > 0 || gate.refused || !cadence.enabled()) break
             val seq = audit.inputSeq(obj)
             val need = listOf(DerivedField.SUMMARY, DerivedField.CAPTION).filter { f -> audit.readDerived(obj, f)?.takeIf { it.builtRev == seq } == null }
             if (need.isEmpty() || inputs.lines(obj).isEmpty()) continue
             objects++
             for (f in need) {
+                if (gate.refused || !cadence.enabled()) break // the switch is re-read before every field call; a refused call stops the pass
                 try {
                     when (runner.rebuildOutcome(obj, f)) { WriteOutcome.WRITTEN -> written++; null -> {}; else -> rejected++ }
                 } catch (c: CancellationException) { throw c } catch (e: Exception) { failed++; break }
             }
         }
+        if (gate.refused && written + rejected + failed == 0) return null // never admitted: it stays due
         cadence.markRan(nowMs)
         PcLog.i("derive", "objects=$objects written=$written rejected=$rejected failed=$failed")
         return Report(written, rejected, failed, objects)
@@ -166,9 +190,10 @@ object DeriveTriggers {
             val db = MemoryGraph.get(app).db
             val ai = AiGraph.get(app); val epoch = DeletionEpochStore.of(app)
             val inputs = DeriveInputs(db)
-            val registry = DeriveRegistry().also { TextDerivePorts(inputs, RouterDeriveText(ai.router)).registerIn(it) }
-            DerivePass(db, registry, DeriveCadence(db), { DaoFence(MemoryWipe.generation.get(), epoch.read(), MemoryWipe.generation::get, epoch::read) }, inputs,
-                admit = { ai.bindings.get(Role.SUMMARIZE) != null && com.rokid.context.work.frames.KeyframeGraph.get(app).admitBackgroundCall() })
+            val cadence = DeriveCadence(db)
+            val gate = DeriveGate(enabled = cadence::enabled, admit = { ai.bindings.get(Role.SUMMARIZE) != null && com.rokid.context.work.frames.KeyframeGraph.get(app).admitBackgroundCall() })
+            val registry = DeriveRegistry().also { TextDerivePorts(inputs, RouterDeriveText(ai.router), gate).registerIn(it) }
+            DerivePass(db, registry, cadence, { DaoFence(MemoryWipe.generation.get(), epoch.read(), MemoryWipe.generation::get, epoch::read) }, inputs, gate)
         }.also { instance = it }
     }
 
