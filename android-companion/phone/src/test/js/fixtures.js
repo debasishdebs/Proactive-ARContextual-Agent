@@ -30,6 +30,51 @@ export const localCriticInner = {
   exposed: [{ param: 'aggregate', node: 'aggregate' }, { param: 'operator', node: 'compare' }, { param: 'cutoff', node: 'cutoff' }],
 };
 
+// what /api/node-types serves for ai.vision_extract (CanvasBackendImplTest checks the real JSON): the batch default is today's (absent = 1); the prompt is not exposed
+export const visionExtractParams = [{ name: 'batch', kind: 'int', min: 1, max: 3, default: 1 }, { name: 'prompt', kind: 'prompt' }];
+export const visionExtractInner = {
+  nodes: [
+    { id: 'frames', label: 'Frames in', kind: 'source' }, { id: 'batch', label: 'Frames per call', kind: 'op' }, { id: 'prompt', label: 'Vision prompt', kind: 'op' },
+    { id: 'model', label: 'Model call', kind: 'op' }, { id: 'retry', label: 'Retry one by one', kind: 'op' }, { id: 'parse', label: 'Parse facts', kind: 'op' },
+  ],
+  wires: [
+    { from: 'frames', to: 'batch', port: '' }, { from: 'batch', to: 'prompt', port: '' }, { from: 'prompt', to: 'model', port: '' },
+    { from: 'model', to: 'retry', port: 'bad batch' }, { from: 'model', to: 'parse', port: 'valid' }, { from: 'retry', to: 'parse', port: '' },
+  ],
+  exposed: [{ param: 'batch', node: 'batch' }],
+  note: ['Read only except the batch size: the vision prompt (live or draft) is chosen in the inspector.', 'A bad batch is asked again one frame per call.'],
+};
+
+// what /api/node-types serves for ai.critic: read only, nothing exposed (its one setting, the prompt, stays in the inspector)
+export const criticInner = {
+  nodes: [
+    { id: 'facts', label: 'Facts in', kind: 'source' }, { id: 'any', label: 'Any facts?', kind: 'op' }, { id: 'bound', label: 'Critic model set?', kind: 'op' },
+    { id: 'prompt', label: 'Critic prompt', kind: 'op' }, { id: 'model', label: 'Ask the model', kind: 'op' }, { id: 'pass', label: 'pass', kind: 'branch' }, { id: 'fail', label: 'fail', kind: 'branch' },
+  ],
+  wires: [
+    { from: 'facts', to: 'any', port: '' }, { from: 'any', to: 'pass', port: 'none' }, { from: 'any', to: 'bound', port: 'some' }, { from: 'bound', to: 'fail', port: 'no' },
+    { from: 'bound', to: 'prompt', port: 'yes' }, { from: 'prompt', to: 'model', port: '' }, { from: 'model', to: 'pass', port: 'ok' }, { from: 'model', to: 'fail', port: 'not ok or error' },
+  ],
+  exposed: [],
+  note: ['Read only: the critic prompt (live or draft) is chosen in the inspector; this node has no other setting.', 'No facts: pass without asking the model.'],
+};
+
+// what /api/node-types serves for memory.write: read only, no params
+export const memoryWriteInner = {
+  nodes: [
+    { id: 'facts', label: 'Facts in', kind: 'source' }, { id: 'captions', label: 'Captions in', kind: 'source' }, { id: 'trusted', label: 'Trusted flag', kind: 'source' },
+    { id: 'dropFacts', label: 'Drop blank facts', kind: 'op' }, { id: 'dropCaptions', label: 'Drop blank captions', kind: 'op' }, { id: 'review', label: 'Review state', kind: 'op' },
+    { id: 'factRow', label: 'Fact row (SHORT)', kind: 'op' }, { id: 'captionRow', label: 'Caption row (LONG)', kind: 'op' }, { id: 'preview', label: 'Preview rows', kind: 'branch' },
+  ],
+  wires: [
+    { from: 'facts', to: 'dropFacts', port: '' }, { from: 'captions', to: 'dropCaptions', port: '' }, { from: 'trusted', to: 'review', port: '' },
+    { from: 'dropFacts', to: 'factRow', port: '' }, { from: 'review', to: 'factRow', port: 'OK or NEEDS_REVIEW' },
+    { from: 'dropCaptions', to: 'captionRow', port: '' }, { from: 'factRow', to: 'preview', port: '' }, { from: 'captionRow', to: 'preview', port: '' },
+  ],
+  exposed: [],
+  note: ['Read only: this node has no settings. Preview only: nothing is written to memory here.', 'There is no duplicate or novelty check in this node.'],
+};
+
 // what /api/node-types serves for input.photos (CanvasBackendImplTest checks the real JSON); every default is today's behaviour
 export const photoParams = [
   { name: 'source', kind: 'enum', label: 'Source', options: ['glasses', 'all'], default: 'glasses' },
@@ -41,15 +86,15 @@ export const photoParams = [
 export const nodeTypes = [
   t('input.photos', 'Photo', 'photos', [], 'PHOTOS', { palette: false, category: 'Inputs', params: photoParams }),
   t('ai.vision_extract', 'Facts from frames', 'extract', ['PHOTOS', 'JSON'], 'EXTRACTION', {
-    params: [{ name: 'batch', kind: 'int', min: 1, max: 3 }, { name: 'prompt', kind: 'prompt' }],
+    params: visionExtractParams, inner: visionExtractInner,
   }),
   t('gate.local_critic', 'Local trust check', 'trust', ['EXTRACTION'], 'EXTRACTION', { branches: ['trusted', 'unsure'], category: 'Checks', params: localCriticParams, inner: localCriticInner }),
-  t('ai.critic', 'Critic', 'critic', ['EXTRACTION'], 'EXTRACTION', { branches: ['pass', 'fail'], params: [{ name: 'prompt', kind: 'prompt' }] }),
+  t('ai.critic', 'Critic', 'critic', ['EXTRACTION'], 'EXTRACTION', { branches: ['pass', 'fail'], params: [{ name: 'prompt', kind: 'prompt' }], inner: criticInner }),
   t('ai.prompt', 'Prompt', 'prompt', ['PHOTOS', 'JSON', 'EXTRACTION'], 'JSON', {
     params: [{ name: 'role', kind: 'role' }, { name: 'template', kind: 'text' }, { name: 'schema', kind: 'schema' }, { name: 'images', kind: 'bool' }],
   }),
   t('route.switch', 'Switch', 'route', ['JSON'], 'JSON', { branchesFromCases: true, params: [{ name: 'field', kind: 'text', default: 'activity' }, { name: 'cases', kind: 'labels' }], category: 'Routing' }),
-  t('memory.write', 'Save memory (preview)', 'write', ['EXTRACTION'], 'PREVIEW', { category: 'Memory' }),
+  t('memory.write', 'Save memory (preview)', 'write', ['EXTRACTION'], 'PREVIEW', { category: 'Memory', inner: memoryWriteInner }),
 ];
 
 /** photos -> extract -> trust -(trusted)-> write ; trust -(unsure)-> critic -(pass|fail)-> write */
