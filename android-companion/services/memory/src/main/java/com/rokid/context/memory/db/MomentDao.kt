@@ -35,15 +35,16 @@ abstract class MomentDao : DerivedStaleDao() {
 
     /**
      * Sets the sensor rows of one Moment to [rows] (empty = none). Returns false and writes nothing when the Moment does not exist or the rows are already exactly these; otherwise the old
-     * rows are replaced and, in the SAME transaction, the derived fields of the Moment and of its Scenes are hidden and its input revision moves (INVALIDATED, names only).
+     * rows are replaced and, in the SAME transaction, the derived fields of the Moment and of its Scenes are hidden and its input revision moves (INVALIDATED, names only). [hide] false is for a
+     * Moment that is being created in this very transaction (it has no derived field to hide and its BUILT row is its first input revision).
      */
-    @Transaction open suspend fun replaceSensor(momentId: String, rows: List<MomentSensorEntity>, now: Long, step: String): Boolean {
+    @Transaction open suspend fun replaceSensor(momentId: String, rows: List<MomentSensorEntity>, now: Long, step: String, hide: Boolean = true): Boolean {
         require(rows.all { it.momentId == momentId }) { "sensor rows of another Moment" }
         if (momentExists(momentId) == 0) return false
         val old = sensorOf(listOf(momentId))
         if (old == rows.sortedBy { it.phoneSecond }) return false
         deleteSensorOf(listOf(momentId)); insertSensor(rows)
-        hideAfterSensorChange(listOf(momentId), now, step)
+        if (hide) hideAfterSensorChange(listOf(momentId), now, step)
         return true
     }
 

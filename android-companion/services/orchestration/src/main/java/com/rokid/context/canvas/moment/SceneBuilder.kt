@@ -18,7 +18,8 @@ interface SceneSource {
 }
 
 /**
- * The production [SceneSource]: the stored `moment` projection (so a forgotten Moment is never seen) plus, per Moment, the hash, the motion state and, when the photo has an image
+ * The production [SceneSource]: the stored `moment` projection (so a forgotten Moment is never seen) plus, per Moment, the hash, the motion state (that of its photos, else that of its
+ * `moment_sensor` second) and, when the photo has an image
  * embedding, the vector of its first and its last photo. Nothing here writes.
  */
 class DaoSceneSource(private val db: ContextDatabase, private val config: SceneConfig = SceneConfig()) : SceneSource {
@@ -31,11 +32,13 @@ class DaoSceneSource(private val db: ContextDatabase, private val config: SceneC
         for (chunk in moments.chunked(CHUNK)) {
             val parts = md.partsOf(chunk.map { it.momentId }).filter { it.kind == MomentPartKind.FRAME }.groupBy { it.momentId }
             val meta = db.frameMetaDao().byIds(parts.values.flatten().map { it.refId }.distinct().chunked(CHUNK).flatten()).associateBy { it.frameId }
+            val sensor = md.sensorOf(chunk.map { it.momentId }).associateBy { it.momentId }
             for (m in chunk) {
                 val frames = parts[m.momentId].orEmpty().sortedWith(compareBy({ it.partTimeMs }, { it.refId }))
                 val first = frames.firstOrNull()?.let { meta[it.refId] }; val last = frames.lastOrNull()?.let { meta[it.refId] }
                 val activity = frames.mapNotNull { meta[it.refId]?.motion }.filter { it in config.activityStates }
                     .groupingBy { it }.eachCount().entries.sortedWith(compareBy({ -it.value }, { it.key })).firstOrNull()?.key
+                    ?: sensor[m.momentId]?.motionState?.takeIf { it in config.activityStates } // photos logged none: the sensor second of the Moment (only STILL, WALKING, VEHICLE count)
                 out += SceneMoment(m.momentId, (MomentId.parse(m.momentId) ?: continue) * 1000, activity, hash(first?.phash), hash(last?.phash), vector(first), vector(last), m.contentHash)
             }
         }

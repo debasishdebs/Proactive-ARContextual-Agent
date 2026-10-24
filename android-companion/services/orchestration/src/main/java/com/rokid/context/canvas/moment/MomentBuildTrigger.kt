@@ -2,6 +2,7 @@ package com.rokid.context.canvas.moment
 
 import android.content.Context
 import com.rokid.context.memory.MemoryGraph
+import com.rokid.context.memory.db.DeletionEpochStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -105,7 +106,10 @@ object MomentTriggers {
 
     fun get(context: Context): MomentBuildTrigger = instance ?: synchronized(this) {
         instance ?: run {
-            val builder = MomentBuilder(MemoryGraph.get(context).db)
+            val db = MemoryGraph.get(context).db
+            // the sensor numbers of each second come from the imported traces (read on Dispatchers.IO, before the build transaction)
+            val sensors = MomentSensors(db.canvasSlice3Dao(), java.io.File(context.filesDir, com.rokid.context.canvas.trace.FencedFiles.TRACES_DIR), DeletionEpochStore.of(context)::read)
+            val builder = MomentBuilder(db, sensors = sensors)
             MomentBuildTrigger(
                 build = builder::build, rebuild = builder::rebuildWindow, enabled = { MomentStoreSwitch.DEFAULT_ENABLED },
                 scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),

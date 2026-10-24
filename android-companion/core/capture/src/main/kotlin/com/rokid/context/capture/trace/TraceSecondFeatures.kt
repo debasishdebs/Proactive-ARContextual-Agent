@@ -33,7 +33,7 @@ object TraceSecondFeatures {
         var current = Long.MIN_VALUE; var nGyro = 0; var nAcc = 0
 
         fun flush() {
-            if (current == Long.MIN_VALUE || nGyro + nAcc == 0) return
+            if (current == Long.MIN_VALUE) return // a second exists only once a gyro or accel sample entered it
             val f = classifier.features()
             rows += SecondFeatureRow(
                 current, f.gyroMax.toDouble(), f.gyroMean.toDouble(), f.gyroRms.toDouble(), f.aboveOnFrac.toDouble(), f.accVariance.toDouble(), f.stepHz, f.rotRad.toDouble(),
