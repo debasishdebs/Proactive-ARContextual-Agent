@@ -217,6 +217,19 @@ class CanvasBackendImplTest {
         assertEquals(0, d["problems"]!!.jsonArray.size)
     }
 
+    @Test fun theMomentSummaryStarterOpensWithItsChainAndIsNotAnInterpreter() = runBlocking<Unit> {
+        val row = backend.pipelines().first { it.jsonObject["id"]!!.jsonPrimitive.content == "starter-moment-summary" }.jsonObject
+        assertEquals("true", row["builtIn"]!!.jsonPrimitive.content); assertEquals("null", row["live"].toString())
+        val p = checkNotNull(backend.pipeline("starter-moment-summary"))
+        assertEquals(0, p["problems"]!!.jsonArray.size)
+        val cells = p["layout"]!!.jsonObject["cells"]!!.jsonObject
+        assertTrue(listOf("head", "cam", "moments", "ask", "sum", "trust", "write").all { cells.containsKey(it) })
+        assertEquals("false", p["liveShape"]!!.jsonPrimitive.content)
+        assertTrue("never published: its Moments input is tier 3", p["interpretable"]!!.jsonObject["problems"]!!.jsonArray.isNotEmpty())
+        val copy = backend.duplicate("starter-moment-summary", "My moments")
+        assertEquals(0, checkNotNull(backend.pipeline(copy))["problems"]!!.jsonArray.size)
+    }
+
     private val glassesOnlyJson = """{"schema":2,"id":"p","name":"identity","nodes":[
         {"id":"head","type":"imu.head_motion","title":"head","params":{}},
         {"id":"thresh","type":"gate.threshold","title":"thresh","params":{"feature":"gyroPeak","op":">","value":0.6}},
